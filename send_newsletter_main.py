@@ -404,7 +404,7 @@ def main():
         )
     holdings.columns = cols
 
-    required = {"Stock", "Shares", "Layer"}
+    required = {"Stock", "Shares", "AvgCost", "Layer"}
     missing = required - set(holdings.columns)
     if missing:
         raise ValueError(f"holdings.csv missing columns: {sorted(missing)}. Found: {list(holdings.columns)}")
