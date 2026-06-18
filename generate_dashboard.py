@@ -1,0 +1,569 @@
+#!/usr/bin/env python3
+"""Generate a self-contained HTML investment dashboard from investment.db."""
+
+import csv
+import json
+import sqlite3
+from datetime import datetime
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+PROJECT_DIR = Path("/Users/ai_lab/Desktop/investment")
+DB_PATH = PROJECT_DIR / "out" / "investment.db"
+HOLDINGS_CSV = PROJECT_DIR / "holdings.csv"
+OUT_PATH = PROJECT_DIR / "out" / "dashboard.html"
+TZ = ZoneInfo("America/New_York")
+
+LAYER_NAMES = {
+    1: "Structural Ballast",
+    2: "Cash-Flow Engines",
+    3: "Compounders",
+    4: "Convexity / Optionality",
+    5: "Shock Absorbers / Regime Hedges",
+}
+
+def normalize_ticker(t: str) -> str:
+    t = str(t).strip().upper().lstrip("$")
+    if "." in t:
+        left, right = t.split(".", 1)
+        if right in {"A", "B", "C", "D"}:
+            t = f"{left}-{right}"
+    return t
+
+def load_csv_holdings() -> dict:
+    """Return {ticker: {shares, layer_label}} from holdings.csv — always current."""
+    result = {}
+    with open(HOLDINGS_CSV, newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            ticker = normalize_ticker(row["Stock"])
+            layer_num = int(str(row["Layer"]).strip())
+            layer_label = f"Layer {layer_num}: {LAYER_NAMES[layer_num]}"
+            result[ticker] = {
+                "shares": float(row["Shares"]),
+                "layer": layer_label,
+                "layer_num": layer_num,
+            }
+    return result
+
+LAYER_COLORS = {
+    "Layer 1: Structural Ballast":         "#4A90D9",
+    "Layer 2: Cash-Flow Engines":          "#50C878",
+    "Layer 3: Compounders":                "#F5A623",
+    "Layer 4: Convexity / Optionality":    "#E74C3C",
+    "Layer 5: Shock Absorbers / Regime Hedges": "#9B59B6",
+}
+LAYER_SHORT = {
+    "Layer 1: Structural Ballast":         "L1 Ballast",
+    "Layer 2: Cash-Flow Engines":          "L2 Cash-Flow",
+    "Layer 3: Compounders":                "L3 Compounders",
+    "Layer 4: Convexity / Optionality":    "L4 Convexity",
+    "Layer 5: Shock Absorbers / Regime Hedges": "L5 Hedges",
+}
+
+def money(x):
+    sign = "-" if x < 0 else ""
+    return f"{sign}${abs(x):,.0f}"
+
+def pct(x):
+    return f"{x:+.2f}%"
+
+def load_data():
+    conn = sqlite3.connect(str(DB_PATH))
+    conn.row_factory = sqlite3.Row
+
+    portfolio = [dict(r) for r in conn.execute(
+        "SELECT * FROM portfolio_day ORDER BY day"
+    )]
+    layers = [dict(r) for r in conn.execute(
+        "SELECT * FROM layer_day ORDER BY day, layer"
+    )]
+    holdings = [dict(r) for r in conn.execute(
+        "SELECT * FROM holding_day ORDER BY day, layer, ticker"
+    )]
+    conn.close()
+    return portfolio, layers, holdings
+
+
+def rebuild_today_holdings(today_date: str, db_holdings: list[dict], csv_holdings: dict) -> tuple[list[dict], list[dict]]:
+    """
+    Rebuild today's per-holding and per-layer snapshots using CSV shares (source of
+    truth) and DB prices (last newsletter run).  Returns (holdings, layers).
+    """
+    # ticker -> price from DB (last known close)
+    db_prices = {h["ticker"]: h["price"] for h in db_holdings if h["day"] == today_date}
+
+    rebuilt = []
+    for ticker, meta in csv_holdings.items():
+        price = db_prices.get(ticker)
+        if price is None:
+            continue  # ticker added to CSV but not yet priced — skip gracefully
+        shares = meta["shares"]
+        value = shares * price
+        rebuilt.append({
+            "day": today_date,
+            "ticker": ticker,
+            "layer": meta["layer"],
+            "layer_num": meta["layer_num"],
+            "shares": shares,
+            "price": price,
+            "value": value,
+        })
+
+    # Derive change figures: need prev-day prices from DB
+    prev_prices = {}
+    if db_holdings:
+        # Find the most recent day before today that has data
+        days_with_data = sorted(set(h["day"] for h in db_holdings if h["day"] < today_date), reverse=True)
+        if days_with_data:
+            prev_day = days_with_data[0]
+            prev_prices = {h["ticker"]: h["price"] for h in db_holdings if h["day"] == prev_day}
+
+    total_value = sum(h["value"] for h in rebuilt)
+
+    for h in rebuilt:
+        prev_price = prev_prices.get(h["ticker"])
+        if prev_price and prev_price > 0:
+            prev_value = h["shares"] * prev_price
+            h["change_dollars"] = h["value"] - prev_value
+            h["change_pct"] = (h["change_dollars"] / prev_value) * 100.0
+        else:
+            h["change_dollars"] = 0.0
+            h["change_pct"] = 0.0
+        h["weight_pct"] = (h["value"] / total_value * 100.0) if total_value else 0.0
+
+    # Rebuild layers
+    layer_map: dict[str, dict] = {}
+    for h in rebuilt:
+        ln = h["layer"]
+        if ln not in layer_map:
+            layer_map[ln] = {"layer": ln, "value": 0.0, "prev_value": 0.0, "change_dollars": 0.0}
+        prev_price = prev_prices.get(h["ticker"])
+        layer_map[ln]["value"] += h["value"]
+        if prev_price:
+            layer_map[ln]["prev_value"] += h["shares"] * prev_price
+
+    layers = []
+    for ln, data in layer_map.items():
+        pv = data["prev_value"]
+        chg = data["value"] - pv
+        layers.append({
+            "layer": ln,
+            "value": data["value"],
+            "change_dollars": chg,
+            "change_pct": (chg / pv * 100.0) if pv > 0 else 0.0,
+            "weight_pct": (data["value"] / total_value * 100.0) if total_value else 0.0,
+        })
+
+    layers.sort(key=lambda l: l["layer"])
+    return rebuilt, layers, total_value
+
+
+def build_dashboard(portfolio, layers, holdings):
+    today = portfolio[-1] if portfolio else {}
+    today_date = today.get("day", "")
+
+    csv_holdings = load_csv_holdings()
+    today_holdings, today_layers, total_value_csv = rebuild_today_holdings(today_date, holdings, csv_holdings)
+
+    today_holdings_sorted = sorted(today_holdings, key=lambda h: (h["layer"], -h["value"]))
+
+    total_v = total_value_csv
+    total_chg = sum(h["change_dollars"] for h in today_holdings)
+    prev_total = total_v - total_chg
+    total_chg_pct = (total_chg / prev_total * 100.0) if prev_total else 0.0
+    spy_chg = today.get("spy_change_pct", 0)
+
+    # ---- portfolio history chart data ----
+    port_dates = [r["day"] for r in portfolio]
+    port_values = [r["total_value"] for r in portfolio]
+    port_chg_pct = [r["total_change_pct"] for r in portfolio]
+    spy_chg_pct = [r["spy_change_pct"] for r in portfolio]
+
+    # Cumulative return from first day
+    base = portfolio[0]["total_value"] if portfolio else 1
+    port_cum = [((v / base) - 1) * 100 for v in port_values]
+
+    # SPY cumulative (sum of daily %, approximate)
+    spy_cum = []
+    running = 0.0
+    for r in portfolio:
+        running += r["spy_change_pct"]
+        spy_cum.append(round(running, 4))
+
+    # ---- layer weight history ----
+    all_layer_names = sorted(set(l["layer"] for l in layers))
+    layer_weight_by_date = {}
+    for l in layers:
+        d = l["day"]
+        if d not in layer_weight_by_date:
+            layer_weight_by_date[d] = {}
+        layer_weight_by_date[d][l["layer"]] = l["weight_pct"]
+
+    layer_weight_datasets = []
+    for ln in all_layer_names:
+        layer_weight_datasets.append({
+            "label": LAYER_SHORT.get(ln, ln),
+            "data": [layer_weight_by_date.get(d, {}).get(ln, 0) for d in port_dates],
+            "backgroundColor": LAYER_COLORS.get(ln, "#999"),
+            "borderColor": LAYER_COLORS.get(ln, "#999"),
+            "fill": False,
+            "tension": 0.3,
+            "pointRadius": 2,
+        })
+
+    # ---- today pie ----
+    pie_labels = [LAYER_SHORT.get(l["layer"], l["layer"]) for l in today_layers]
+    pie_values = [l["value"] for l in today_layers]
+    pie_colors = [LAYER_COLORS.get(l["layer"], "#999") for l in today_layers]
+
+    # ---- today layer bar ----
+    layer_bar_labels = [LAYER_SHORT.get(l["layer"], l["layer"]) for l in today_layers]
+    layer_bar_chg = [round(l["change_pct"], 3) for l in today_layers]
+    layer_bar_colors = [
+        "#27ae60" if v >= 0 else "#e74c3c"
+        for v in layer_bar_chg
+    ]
+
+    # ---- flags ----
+    LAYER_GROSS_DOMINANCE_PCT = 50.0
+    HOLDING_GROSS_DOMINANCE_PCT = 25.0
+    flags = []
+    total_change = total_chg
+
+    gross_layers = sum(abs(l["change_dollars"]) for l in today_layers)
+    if gross_layers > 1e-9:
+        top_l = max(today_layers, key=lambda l: abs(l["change_dollars"]))
+        share = abs(top_l["change_dollars"]) / gross_layers * 100
+        if share > LAYER_GROSS_DOMINANCE_PCT:
+            net_txt = f" (net contribution: {pct((top_l['change_dollars']/total_change)*100)})" if abs(total_change) > 1e-9 else ""
+            flags.append(f"⚠️ {top_l['layer']} drove {share:.1f}% of today's gross movement{net_txt}.")
+
+    gross_holdings = sum(abs(h["change_dollars"]) for h in today_holdings)
+    if gross_holdings > 1e-9:
+        top_h = max(today_holdings, key=lambda h: abs(h["change_dollars"]))
+        share = abs(top_h["change_dollars"]) / gross_holdings * 100
+        if share > HOLDING_GROSS_DOMINANCE_PCT:
+            net_txt = f" (net contribution: {pct((top_h['change_dollars']/total_change)*100)})" if abs(total_change) > 1e-9 else ""
+            flags.append(f"⚠️ {top_h['ticker']} drove {share:.1f}% of today's gross movement{net_txt}.")
+
+    flags_html = ""
+    if flags:
+        flags_html = '<div class="flags">' + "".join(f'<div class="flag">{f}</div>' for f in flags) + "</div>"
+
+    anchor = "process-consistent" if not flags else "process-stressed"
+    anchor_color = "#27ae60" if not flags else "#e67e22"
+
+    # ---- holdings table rows ----
+    holdings_rows = ""
+    prev_layer = None
+    for h in today_holdings_sorted:
+        if h["layer"] != prev_layer:
+            lcolor = LAYER_COLORS.get(h["layer"], "#999")
+            holdings_rows += f'<tr class="layer-header"><td colspan="7" style="background:{lcolor}22;border-left:4px solid {lcolor};padding:6px 10px;font-weight:600;color:#333">{h["layer"]}</td></tr>\n'
+            prev_layer = h["layer"]
+        chg_class = "pos" if h["change_pct"] >= 0 else "neg"
+        holdings_rows += f"""<tr>
+          <td>{h["ticker"]}</td>
+          <td>{h["shares"]:,.2f}</td>
+          <td>${h["price"]:,.2f}</td>
+          <td>{money(h["value"])}</td>
+          <td class="{chg_class}">{money(h["change_dollars"])}</td>
+          <td class="{chg_class}">{pct(h["change_pct"])}</td>
+          <td>{h["weight_pct"]:.1f}%</td>
+        </tr>\n"""
+
+    # ---- layer summary rows ----
+    layer_rows = ""
+    for l in today_layers:
+        lcolor = LAYER_COLORS.get(l["layer"], "#999")
+        chg_class = "pos" if l["change_pct"] >= 0 else "neg"
+        layer_rows += f"""<tr>
+          <td><span class="dot" style="background:{lcolor}"></span>{LAYER_SHORT.get(l["layer"], l["layer"])}</td>
+          <td>{money(l["value"])}</td>
+          <td>{l["weight_pct"]:.1f}%</td>
+          <td class="{chg_class}">{money(l["change_dollars"])}</td>
+          <td class="{chg_class}">{pct(l["change_pct"])}</td>
+        </tr>\n"""
+
+    # ---- JSON for charts ----
+    chart_data = json.dumps({
+        "dates": port_dates,
+        "portValues": port_values,
+        "portCum": port_cum,
+        "spyCum": spy_cum,
+        "portChgPct": port_chg_pct,
+        "spyChgPct": spy_chg_pct,
+        "pieLabels": pie_labels,
+        "pieValues": pie_values,
+        "pieColors": pie_colors,
+        "layerBarLabels": layer_bar_labels,
+        "layerBarChg": layer_bar_chg,
+        "layerBarColors": layer_bar_colors,
+        "layerWeightDatasets": layer_weight_datasets,
+    }, default=float)
+
+    generated_at = datetime.now(TZ).strftime("%A, %B %d, %Y at %I:%M %p ET")
+    chg_class_main = "pos" if total_chg >= 0 else "neg"
+    spy_class = "pos" if spy_chg >= 0 else "neg"
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Investment Dashboard — {today_date}</title>
+  <script src="../chart.umd.min.js"></script>
+  <style>
+    *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
+    body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; background: #f4f6f9; color: #2c3e50; font-size: 14px; }}
+    h1 {{ font-size: 1.4rem; font-weight: 700; }}
+    h2 {{ font-size: 1rem; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: #7f8c8d; margin-bottom: 12px; }}
+
+    header {{ background: #1a2340; color: #fff; padding: 18px 28px; display: flex; align-items: center; justify-content: space-between; }}
+    header .subtitle {{ font-size: .85rem; color: #a0aec0; margin-top: 2px; }}
+
+    .grid {{ display: grid; gap: 18px; padding: 20px 28px; }}
+    .kpi-row {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }}
+    .two-col {{ display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }}
+    .three-col {{ display: grid; grid-template-columns: 2fr 1fr; gap: 18px; }}
+
+    .card {{ background: #fff; border-radius: 10px; padding: 20px; box-shadow: 0 1px 4px rgba(0,0,0,.07); }}
+    .kpi {{ background: #fff; border-radius: 10px; padding: 16px 20px; box-shadow: 0 1px 4px rgba(0,0,0,.07); }}
+    .kpi .label {{ font-size: .78rem; color: #7f8c8d; text-transform: uppercase; letter-spacing: .04em; }}
+    .kpi .value {{ font-size: 1.5rem; font-weight: 700; margin-top: 4px; }}
+    .kpi .sub {{ font-size: .82rem; margin-top: 2px; }}
+
+    .pos {{ color: #27ae60; }}
+    .neg {{ color: #e74c3c; }}
+
+    canvas {{ max-height: 260px; }}
+
+    table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
+    th {{ text-align: left; padding: 7px 10px; border-bottom: 2px solid #eee; color: #7f8c8d; font-weight: 600; font-size: .75rem; text-transform: uppercase; }}
+    td {{ padding: 7px 10px; border-bottom: 1px solid #f2f4f7; }}
+    tr:last-child td {{ border-bottom: none; }}
+    .layer-header td {{ font-size: .8rem; }}
+    .dot {{ display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 7px; vertical-align: middle; }}
+
+    .flags {{ margin-top: 10px; }}
+    .flag {{ background: #fff8e1; border-left: 3px solid #f39c12; padding: 8px 12px; margin-bottom: 6px; border-radius: 4px; font-size: .85rem; }}
+
+    .anchor-bar {{ background: #fff; border-radius: 10px; padding: 14px 20px; box-shadow: 0 1px 4px rgba(0,0,0,.07); display: flex; align-items: center; gap: 10px; }}
+    .anchor-dot {{ width: 12px; height: 12px; border-radius: 50%; background: {anchor_color}; flex-shrink: 0; }}
+    .anchor-bar span {{ font-size: .88rem; }}
+
+    .generated {{ text-align: right; font-size: .75rem; color: #a0aec0; padding: 0 28px 16px; }}
+
+    @media (max-width: 800px) {{
+      .kpi-row {{ grid-template-columns: 1fr 1fr; }}
+      .two-col, .three-col {{ grid-template-columns: 1fr; }}
+    }}
+  </style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>Investment Dashboard</h1>
+    <div class="subtitle">{today_date} &nbsp;·&nbsp; {len(today_holdings)} holdings across 5 layers</div>
+  </div>
+</header>
+
+<div class="grid">
+
+  <!-- KPI row -->
+  <div class="kpi-row">
+    <div class="kpi">
+      <div class="label">Portfolio Value</div>
+      <div class="value">{money(total_v)}</div>
+    </div>
+    <div class="kpi">
+      <div class="label">Daily Change</div>
+      <div class="value {chg_class_main}">{money(total_chg)}</div>
+      <div class="sub {chg_class_main}">{pct(total_chg_pct)}</div>
+    </div>
+    <div class="kpi">
+      <div class="label">SPY Change</div>
+      <div class="value {spy_class}">{pct(spy_chg)}</div>
+    </div>
+    <div class="kpi">
+      <div class="label">vs SPY (today)</div>
+      <div class="value {'pos' if (total_chg_pct - spy_chg) >= 0 else 'neg'}">{pct(total_chg_pct - spy_chg)}</div>
+      <div class="sub" style="color:#aaa">alpha</div>
+    </div>
+  </div>
+
+  <!-- Discipline anchor -->
+  <div class="anchor-bar">
+    <div class="anchor-dot"></div>
+    <span>Discipline anchor: today's portfolio behavior was <b style="color:{anchor_color}">{anchor}</b> with no judgment violations requiring action.</span>
+  </div>
+
+  {flags_html}
+
+  <!-- Main charts row -->
+  <div class="three-col">
+    <div class="card">
+      <h2>Portfolio vs SPY — Cumulative Return</h2>
+      <canvas id="cumChart"></canvas>
+    </div>
+    <div class="card">
+      <h2>Allocation by Layer</h2>
+      <canvas id="pieChart"></canvas>
+    </div>
+  </div>
+
+  <!-- Layer weight drift + today bar -->
+  <div class="two-col">
+    <div class="card">
+      <h2>Layer Weight Over Time (%)</h2>
+      <canvas id="weightChart"></canvas>
+    </div>
+    <div class="card">
+      <h2>Today's Layer Performance</h2>
+      <canvas id="layerBar"></canvas>
+    </div>
+  </div>
+
+  <!-- Layer table -->
+  <div class="card">
+    <h2>Layer Summary — {today_date}</h2>
+    <table>
+      <thead><tr><th>Layer</th><th>Value</th><th>Weight</th><th>Δ $</th><th>Δ %</th></tr></thead>
+      <tbody>{layer_rows}</tbody>
+    </table>
+  </div>
+
+  <!-- Holdings table -->
+  <div class="card">
+    <h2>Holdings — {today_date}</h2>
+    <table>
+      <thead><tr><th>Ticker</th><th>Shares</th><th>Price</th><th>Value</th><th>Δ $</th><th>Δ %</th><th>Weight</th></tr></thead>
+      <tbody>{holdings_rows}</tbody>
+    </table>
+  </div>
+
+</div>
+
+<div class="generated">Generated {generated_at}</div>
+
+<script>
+const D = {chart_data};
+
+// Cumulative return chart
+new Chart(document.getElementById("cumChart"), {{
+  type: "line",
+  data: {{
+    labels: D.dates,
+    datasets: [
+      {{
+        label: "Portfolio",
+        data: D.portCum,
+        borderColor: "#4A90D9",
+        backgroundColor: "rgba(74,144,217,0.08)",
+        fill: true,
+        tension: 0.3,
+        pointRadius: 1,
+        borderWidth: 2,
+      }},
+      {{
+        label: "SPY",
+        data: D.spyCum,
+        borderColor: "#e67e22",
+        backgroundColor: "transparent",
+        tension: 0.3,
+        pointRadius: 1,
+        borderWidth: 1.5,
+        borderDash: [5,3],
+      }}
+    ]
+  }},
+  options: {{
+    responsive: true,
+    interaction: {{ mode: "index", intersect: false }},
+    plugins: {{ legend: {{ position: "top" }} }},
+    scales: {{
+      y: {{
+        ticks: {{ callback: v => v.toFixed(1) + "%" }},
+        grid: {{ color: "#f0f0f0" }}
+      }},
+      x: {{ grid: {{ display: false }}, ticks: {{ maxTicksLimit: 8 }} }}
+    }}
+  }}
+}});
+
+// Pie chart
+new Chart(document.getElementById("pieChart"), {{
+  type: "doughnut",
+  data: {{
+    labels: D.pieLabels,
+    datasets: [{{ data: D.pieValues, backgroundColor: D.pieColors, borderWidth: 2, borderColor: "#fff" }}]
+  }},
+  options: {{
+    responsive: true,
+    plugins: {{
+      legend: {{ position: "bottom", labels: {{ font: {{ size: 11 }}, boxWidth: 12 }} }},
+      tooltip: {{ callbacks: {{ label: ctx => ` ${{ctx.label}}: ${{ctx.parsed.toLocaleString("en-US", {{style:"currency", currency:"USD", maximumFractionDigits:0}})}}` }} }}
+    }}
+  }}
+}});
+
+// Layer weight over time
+new Chart(document.getElementById("weightChart"), {{
+  type: "line",
+  data: {{ labels: D.dates, datasets: D.layerWeightDatasets }},
+  options: {{
+    responsive: true,
+    interaction: {{ mode: "index", intersect: false }},
+    plugins: {{ legend: {{ position: "bottom", labels: {{ font: {{ size: 11 }}, boxWidth: 12 }} }} }},
+    scales: {{
+      y: {{
+        ticks: {{ callback: v => v.toFixed(0) + "%" }},
+        grid: {{ color: "#f0f0f0" }}
+      }},
+      x: {{ grid: {{ display: false }}, ticks: {{ maxTicksLimit: 8 }} }}
+    }}
+  }}
+}});
+
+// Today's layer bar
+new Chart(document.getElementById("layerBar"), {{
+  type: "bar",
+  data: {{
+    labels: D.layerBarLabels,
+    datasets: [{{
+      label: "Δ % today",
+      data: D.layerBarChg,
+      backgroundColor: D.layerBarColors,
+      borderRadius: 4,
+    }}]
+  }},
+  options: {{
+    responsive: true,
+    plugins: {{ legend: {{ display: false }} }},
+    scales: {{
+      y: {{
+        ticks: {{ callback: v => v.toFixed(2) + "%" }},
+        grid: {{ color: "#f0f0f0" }}
+      }},
+      x: {{ grid: {{ display: false }} }}
+    }}
+  }}
+}});
+</script>
+</body>
+</html>
+"""
+    return html
+
+
+def main():
+    portfolio, layers, holdings = load_data()
+    html = build_dashboard(portfolio, layers, holdings)
+    OUT_PATH.write_text(html, encoding="utf-8")
+    print(f"Dashboard written to: {OUT_PATH}")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,26 @@
+# Secrets & credentials
+credentials.json
+token.json
+.env
+
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# macOS
+.DS_Store
+
+# Numbers spreadsheet (CSV is source of truth)
+*.numbers
+
+# Generated outputs
+out/investment.db
+out/*.log
+out/last_run_date.txt
+out/layer_allocation.png
+out/dashboard.html
+out/launchd.out
+out/launchd.err
+out/wrapper.log
