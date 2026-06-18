@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-import base64
+import os
+import smtplib
 import time
 import sqlite3
 from pathlib import Path
@@ -17,28 +18,25 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.image import MIMEImage
 
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
-from googleapiclient.discovery import build
+from dotenv import load_dotenv
+load_dotenv(Path(__file__).parent / ".env")
 
 
 # -------------------------
 # CONFIG
 # -------------------------
-SCOPES = ["https://www.googleapis.com/auth/gmail.send"]
-
 PROJECT_DIR = Path("/Users/ai_lab/Desktop/investment")
 HOLDINGS_CSV = PROJECT_DIR / "holdings.csv"
-CREDENTIALS_JSON = PROJECT_DIR / "credentials.json"
-TOKEN_JSON = PROJECT_DIR / "token.json"
 OUT_DIR = PROJECT_DIR / "out"
 OUT_DIR.mkdir(exist_ok=True)
 
 DB_PATH = OUT_DIR / "investment.db"
 CHART_PATH = OUT_DIR / "layer_allocation.png"
 
-TO_EMAILS = ["robertjsherman1@gmail.com"]
+EMAIL_FROM = os.getenv("EMAIL_FROM")
+EMAIL_APP_PASSWORD = os.getenv("EMAIL_APP_PASSWORD")
+TO_EMAILS = [os.getenv("EMAIL_TO", "robertjsherman1@gmail.com")]
+
 BENCHMARK = "SPY"
 TZ = ZoneInfo("America/New_York")
 
@@ -240,26 +238,11 @@ def store_snapshot(day: str,
 
 
 # -------------------------
-# GMAIL OAUTH (NO PROFILE CALL)
+# EMAIL (SMTP + APP PASSWORD)
 # -------------------------
-def get_gmail_service():
-    creds = None
-    if TOKEN_JSON.exists():
-        creds = Credentials.from_authorized_user_file(str(TOKEN_JSON), SCOPES)
-
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file(str(CREDENTIALS_JSON), SCOPES)
-            creds = flow.run_local_server(port=0)
-        TOKEN_JSON.write_text(creds.to_json())
-
-    return build("gmail", "v1", credentials=creds)
-
-
-def build_gmail_message(to_emails: list[str], subject: str, html_body: str, inline_png_path: Path) -> dict:
+def build_message(to_emails: list[str], subject: str, html_body: str, inline_png_path: Path) -> MIMEMultipart:
     msg = MIMEMultipart("related")
+    msg["From"] = EMAIL_FROM
     msg["To"] = ", ".join(to_emails)
     msg["Subject"] = subject
 
@@ -272,12 +255,13 @@ def build_gmail_message(to_emails: list[str], subject: str, html_body: str, inli
     img.add_header("Content-Disposition", "inline", filename=inline_png_path.name)
     msg.attach(img)
 
-    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
-    return {"raw": raw}
+    return msg
 
 
-def send_gmail(service, message: dict) -> None:
-    service.users().messages().send(userId="me", body=message).execute()
+def send_email(msg: MIMEMultipart) -> None:
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+        smtp.login(EMAIL_FROM, EMAIL_APP_PASSWORD)
+        smtp.send_message(msg)
 
 
 # -------------------------
@@ -392,8 +376,8 @@ def build_html(report_date: str,
 def main():
     if not HOLDINGS_CSV.exists():
         raise FileNotFoundError(f"Missing holdings CSV at {HOLDINGS_CSV}")
-    if not CREDENTIALS_JSON.exists():
-        raise FileNotFoundError(f"Missing OAuth credentials at {CREDENTIALS_JSON}")
+    if not EMAIL_FROM or not EMAIL_APP_PASSWORD:
+        raise RuntimeError("EMAIL_FROM and EMAIL_APP_PASSWORD must be set in .env")
 
     holdings = pd.read_csv(HOLDINGS_CSV)
     cols = [str(c).strip() for c in holdings.columns]
@@ -489,9 +473,8 @@ def main():
         flags=flags,
     )
 
-    service = get_gmail_service()
-    message = build_gmail_message(TO_EMAILS, subject, html, CHART_PATH)
-    send_gmail(service, message)
+    message = build_message(TO_EMAILS, subject, html, CHART_PATH)
+    send_email(message)
 
 
 if __name__ == "__main__":
