@@ -318,8 +318,9 @@ def build_dashboard(portfolio, layers, holdings):
 
     # Covered call ticker dropdown — all holdings sorted alphabetically
     cc_ticker_options = "\n        ".join(
-        f'<option value="{h["ticker"]}">{h["ticker"]}</option>'
+        f'<option value="{h["ticker"]}">{h["ticker"]} ({h["shares"]:,.0f} shares)</option>'
         for h in sorted(today_holdings, key=lambda x: x["ticker"])
+        if h["shares"] >= 100
     )
 
     # Total gain vs cost basis
