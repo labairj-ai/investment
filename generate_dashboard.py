@@ -303,6 +303,12 @@ def build_dashboard(portfolio, layers, holdings):
         "layerWeightDatasets": layer_weight_datasets,
     }, default=float)
 
+    # Covered call ticker dropdown — all holdings sorted alphabetically
+    cc_ticker_options = "\n        ".join(
+        f'<option value="{h["ticker"]}">{h["ticker"]}</option>'
+        for h in sorted(today_holdings, key=lambda x: x["ticker"])
+    )
+
     generated_at = datetime.now(TZ).strftime("%A, %B %d, %Y at %I:%M %p ET")
     chg_class_main = "pos" if total_chg >= 0 else "neg"
     spy_class = "pos" if spy_chg >= 0 else "neg"
@@ -445,6 +451,23 @@ def build_dashboard(portfolio, layers, holdings):
     </table>
   </div>
 
+  <!-- Covered Call Analyzer -->
+  <div class="card" id="cc-card">
+    <h2>Covered Call Analyzer</h2>
+    <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:14px;">
+      <select id="cc-ticker" style="padding:8px 12px;border:1px solid #dde;border-radius:6px;font-size:13px;background:#fff;color:#2c3e50;min-width:160px;">
+        <option value="">Select a holding…</option>
+        {cc_ticker_options}
+      </select>
+      <button id="cc-btn" onclick="analyzeCoveredCall()"
+        style="padding:8px 18px;background:#1a2340;color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;">
+        Get Recommendations
+      </button>
+      <span id="cc-status" style="font-size:12px;color:#7f8c8d;"></span>
+    </div>
+    <div id="cc-results"></div>
+  </div>
+
 </div>
 
 <div class="generated">Generated {generated_at}</div>
@@ -552,6 +575,95 @@ new Chart(document.getElementById("layerBar"), {{
     }}
   }}
 }});
+
+// ── Covered Call Analyzer ─────────────────────────────────────────────────
+async function analyzeCoveredCall() {{
+  const ticker = document.getElementById("cc-ticker").value;
+  if (!ticker) return;
+  const status  = document.getElementById("cc-status");
+  const results = document.getElementById("cc-results");
+  const btn     = document.getElementById("cc-btn");
+
+  btn.disabled  = true;
+  btn.textContent = "Fetching…";
+  status.textContent = "";
+  results.innerHTML  = "";
+
+  try {{
+    const res  = await fetch(`/api/covered-calls?ticker=${{ticker}}`);
+    const data = await res.json();
+
+    if (!data.ok) {{
+      status.textContent = "⚠ " + (data.error || "No results.");
+    }} else {{
+      results.innerHTML = renderCC(data);
+    }}
+  }} catch(e) {{
+    status.textContent = "Error: " + e.message;
+  }} finally {{
+    btn.disabled = false;
+    btn.textContent = "Get Recommendations";
+  }}
+}}
+
+function renderCC(d) {{
+  const fmt  = v => "$" + v.toFixed(2);
+  const pct  = v => v.toFixed(1) + "%";
+
+  const gainColor = d.gain_pct >= 0 ? "#27ae60" : "#e74c3c";
+  const floorNote = d.already_at_target
+    ? `Already up ${{pct(d.gain_pct)}} — floor = current × 1.10`
+    : `Up ${{pct(d.gain_pct)}} from cost — floor = cost × 1.10`;
+
+  const meta = `
+    <div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:14px;font-size:13px;">
+      <span>Current <b>${{fmt(d.current_price)}}</b></span>
+      <span>Cost basis <b>${{fmt(d.avg_cost)}}</b></span>
+      <span>Gain <b style="color:${{gainColor}}">${{d.gain_pct >= 0 ? "+" : ""}}${{pct(d.gain_pct)}}</b></span>
+      <span>Min strike <b>${{fmt(d.strike_floor)}}</b> <span style="color:#888;font-size:11px;">(${{floorNote}})</span></span>
+    </div>`;
+
+  if (!d.recs || d.recs.length === 0) {{
+    return meta + `<p style="color:#888;font-size:13px;">No qualifying contracts found.</p>`;
+  }}
+
+  const rows = d.recs.map((r, i) => {{
+    const highlight = i === 0 ? "background:#f0f7ff;" : "";
+    const plColor   = r.profit_if_called >= 10 ? "#27ae60" : "#e67e22";
+    return `<tr style="${{highlight}}border-bottom:1px solid #f2f4f7;">
+      <td style="padding:8px 10px;font-weight:${{i===0?"700":"400"}}">${{r.expiration}}</td>
+      <td style="padding:8px 10px;">${{fmt(r.strike)}}</td>
+      <td style="padding:8px 10px;color:#7f8c8d;">${{r.dte}}d</td>
+      <td style="padding:8px 10px;">${{fmt(r.bid)}}</td>
+      <td style="padding:8px 10px;">${{fmt(r.ask)}}</td>
+      <td style="padding:8px 10px;font-weight:600;">${{fmt(r.mid)}}</td>
+      <td style="padding:8px 10px;">${{pct(r.premium_pct)}}</td>
+      <td style="padding:8px 10px;font-weight:700;color:#1a2340;">${{pct(r.annualized_ret)}}</td>
+      <td style="padding:8px 10px;font-weight:700;color:${{plColor}};">+${{pct(r.profit_if_called)}}</td>
+      <td style="padding:8px 10px;color:#aaa;font-size:11px;">${{r.open_interest ?? "—"}}</td>
+    </tr>`;
+  }}).join("");
+
+  return meta + `
+    <div style="overflow-x:auto;">
+    <table style="width:100%;border-collapse:collapse;font-size:13px;">
+      <thead><tr style="background:#f4f6f9;">
+        <th style="padding:7px 10px;text-align:left;color:#7f8c8d;font-size:11px;text-transform:uppercase;">Expiry</th>
+        <th style="padding:7px 10px;text-align:left;color:#7f8c8d;font-size:11px;text-transform:uppercase;">Strike</th>
+        <th style="padding:7px 10px;text-align:left;color:#7f8c8d;font-size:11px;text-transform:uppercase;">DTE</th>
+        <th style="padding:7px 10px;text-align:left;color:#7f8c8d;font-size:11px;text-transform:uppercase;">Bid</th>
+        <th style="padding:7px 10px;text-align:left;color:#7f8c8d;font-size:11px;text-transform:uppercase;">Ask</th>
+        <th style="padding:7px 10px;text-align:left;color:#7f8c8d;font-size:11px;text-transform:uppercase;">Mid</th>
+        <th style="padding:7px 10px;text-align:left;color:#7f8c8d;font-size:11px;text-transform:uppercase;">Prem%</th>
+        <th style="padding:7px 10px;text-align:left;color:#7f8c8d;font-size:11px;text-transform:uppercase;">Ann%</th>
+        <th style="padding:7px 10px;text-align:left;color:#7f8c8d;font-size:11px;text-transform:uppercase;">P/L if Called</th>
+        <th style="padding:7px 10px;text-align:left;color:#7f8c8d;font-size:11px;text-transform:uppercase;">OI</th>
+      </tr></thead>
+      <tbody>${{rows}}</tbody>
+    </table>
+    </div>
+    <p style="font-size:11px;color:#aaa;margin-top:8px;">Top ${{d.recs.length}} contracts by annualized return. Highlighted row = best pick.</p>`;
+}}
 </script>
 </body>
 </html>
