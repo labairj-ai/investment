@@ -660,7 +660,7 @@ function renderCC(d) {{
       <td style="padding:8px 10px;">${{pct(r.premium_pct)}}</td>
       <td style="padding:8px 10px;font-weight:700;color:#1a2340;">${{pct(r.annualized_ret)}}</td>
       <td style="padding:8px 10px;font-weight:700;color:${{plColor}};">+${{pct(r.profit_if_called)}}</td>
-      <td style="padding:8px 10px;font-weight:600;color:${{r.delta < 0.2 ? '#27ae60' : r.delta < 0.35 ? '#e67e22' : '#e74c3c'}};">${{(r.delta * 100).toFixed(1)}}%</td>
+      <td style="padding:8px 10px;font-weight:600;color:${{!r.delta ? '#aaa' : r.delta < 0.2 ? '#27ae60' : r.delta < 0.35 ? '#e67e22' : '#e74c3c'}};">${{r.delta ? (r.delta * 100).toFixed(1) + '%' : '—'}}</td>
       <td style="padding:8px 10px;color:#aaa;font-size:11px;">${{r.open_interest ?? "—"}}</td>
     </tr>`;
   }}).join("");

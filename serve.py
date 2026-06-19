@@ -6,6 +6,7 @@ Serves static files at http://localhost:5001 and handles:
 """
 
 import json
+import math
 import http.server
 import os
 import sys
@@ -15,6 +16,15 @@ from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
 PORT = 5001
+
+
+def _safe_float(v, default=0.0):
+    """Convert v to float, returning default for None/NaN/inf."""
+    try:
+        f = float(v)
+        return default if (math.isnan(f) or math.isinf(f)) else f
+    except (TypeError, ValueError):
+        return default
 PROJECT_DIR = Path(__file__).parent
 os.chdir(PROJECT_DIR)
 
@@ -61,7 +71,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     "profit_if_called": round(float(row["profit_if_called"]), 1),
                     "open_interest":  int(row.get("openInterest") or 0),
                     "volume":         int(row.get("volume") or 0),
-                    "delta":          round(float(row.get("delta") or 0), 3),
+                    "delta":          round(_safe_float(row.get("delta")), 3),
                 })
 
             self._json({
