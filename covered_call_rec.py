@@ -16,6 +16,7 @@ Premium collected is added to effective profit calculation.
 """
 
 import csv
+import math
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -23,6 +24,23 @@ from pathlib import Path
 import yfinance as yf
 import warnings
 warnings.filterwarnings("ignore")
+
+RISK_FREE_RATE = 0.045  # approximate US 10-yr treasury
+
+
+def _norm_cdf(x: float) -> float:
+    return 0.5 * (1.0 + math.erf(x / math.sqrt(2)))
+
+
+def call_delta(S: float, K: float, T: float, sigma: float, r: float = RISK_FREE_RATE) -> float:
+    """Black-Scholes delta for a European call. Returns 0 if inputs are invalid."""
+    if T <= 0 or sigma <= 0 or S <= 0 or K <= 0:
+        return 0.0
+    try:
+        d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
+        return _norm_cdf(d1)
+    except (ValueError, ZeroDivisionError):
+        return 0.0
 
 PROJECT_DIR = Path(__file__).parent
 HOLDINGS_CSV = PROJECT_DIR / "holdings.csv"
@@ -115,6 +133,12 @@ def analyze(ticker: str, avg_cost: float, shares: float):
         calls["profit_if_called"] = (
             (calls["strike"] - avg_cost + calls["mid"]) / avg_cost * 100
         )
+        T = dte / 365
+        calls["delta"] = calls.apply(
+            lambda r: call_delta(current_price, r["strike"], T,
+                                 float(r["impliedVolatility"]) if r["impliedVolatility"] > 0 else 0.0),
+            axis=1
+        )
         rows.append(calls)
 
     if not rows:
@@ -160,8 +184,8 @@ def print_report(r: dict) -> None:
           f"bid ≥ ${MIN_BID})\n")
 
     print(f"  {'Expiry':<12} {'Strike':>7} {'DTE':>4} {'Bid':>6} {'Ask':>6} "
-          f"{'Mid':>6} {'Prem%':>6} {'Ann%':>7} {'P/L if called':>14}")
-    print("  " + "-" * 80)
+          f"{'Mid':>6} {'Prem%':>6} {'Ann%':>7} {'P/L if called':>14} {'Prob Called':>12}")
+    print("  " + "-" * 95)
 
     for _, row in r["recs"].iterrows():
         print(
@@ -174,6 +198,7 @@ def print_report(r: dict) -> None:
             f"{row['premium_pct']:>5.1f}% "
             f"{row['annualized_ret']:>6.1f}% "
             f"  {row['profit_if_called']:>+.1f}% vs cost"
+            f"  {row['delta']*100:>5.1f}%"
         )
     print()
 

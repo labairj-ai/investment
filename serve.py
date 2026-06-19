@@ -61,6 +61,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     "profit_if_called": round(float(row["profit_if_called"]), 1),
                     "open_interest":  int(row.get("openInterest") or 0),
                     "volume":         int(row.get("volume") or 0),
+                    "delta":          round(float(row.get("delta") or 0), 3),
                 })
 
             self._json({
