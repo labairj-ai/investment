@@ -31,7 +31,7 @@ def normalize_ticker(t: str) -> str:
     return t
 
 def load_csv_holdings() -> dict:
-    """Return {ticker: {shares, layer_label}} from holdings.csv — always current."""
+    """Return {ticker: {shares, avg_cost, layer_label}} from holdings.csv — always current."""
     result = {}
     with open(HOLDINGS_CSV, newline="") as f:
         reader = csv.DictReader(f)
@@ -40,8 +40,9 @@ def load_csv_holdings() -> dict:
             layer_num = int(str(row["Layer"]).strip())
             layer_label = f"Layer {layer_num}: {LAYER_NAMES[layer_num]}"
             result[ticker] = {
-                "shares": float(row["Shares"]),
-                "layer": layer_label,
+                "shares":   float(row["Shares"]),
+                "avg_cost": float(row["AvgCost"]),
+                "layer":    layer_label,
                 "layer_num": layer_num,
             }
     return result
@@ -98,22 +99,25 @@ def rebuild_today_holdings(today_date: str, db_holdings: list[dict], csv_holding
         price = db_prices.get(ticker)
         if price is None:
             continue  # ticker added to CSV but not yet priced — skip gracefully
-        shares = meta["shares"]
-        value = shares * price
+        shares    = meta["shares"]
+        avg_cost  = meta["avg_cost"]
+        value     = shares * price
+        cost_basis = shares * avg_cost
         rebuilt.append({
-            "day": today_date,
-            "ticker": ticker,
-            "layer": meta["layer"],
-            "layer_num": meta["layer_num"],
-            "shares": shares,
-            "price": price,
-            "value": value,
+            "day":        today_date,
+            "ticker":     ticker,
+            "layer":      meta["layer"],
+            "layer_num":  meta["layer_num"],
+            "shares":     shares,
+            "avg_cost":   avg_cost,
+            "price":      price,
+            "value":      value,
+            "cost_basis": cost_basis,
         })
 
-    # Derive change figures: need prev-day prices from DB
+    # Derive daily change figures: need prev-day prices from DB
     prev_prices = {}
     if db_holdings:
-        # Find the most recent day before today that has data
         days_with_data = sorted(set(h["day"] for h in db_holdings if h["day"] < today_date), reverse=True)
         if days_with_data:
             prev_day = days_with_data[0]
@@ -122,6 +126,7 @@ def rebuild_today_holdings(today_date: str, db_holdings: list[dict], csv_holding
     total_value = sum(h["value"] for h in rebuilt)
 
     for h in rebuilt:
+        # Daily change
         prev_price = prev_prices.get(h["ticker"])
         if prev_price and prev_price > 0:
             prev_value = h["shares"] * prev_price
@@ -130,6 +135,12 @@ def rebuild_today_holdings(today_date: str, db_holdings: list[dict], csv_holding
         else:
             h["change_dollars"] = 0.0
             h["change_pct"] = 0.0
+
+        # Total gain vs cost basis
+        cost_basis = h["cost_basis"]
+        h["total_gain_dollars"] = h["value"] - cost_basis
+        h["total_gain_pct"] = ((h["value"] - cost_basis) / cost_basis * 100.0) if cost_basis else 0.0
+
         h["weight_pct"] = (h["value"] / total_value * 100.0) if total_value else 0.0
 
     # Rebuild layers
@@ -260,16 +271,18 @@ def build_dashboard(portfolio, layers, holdings):
     for h in today_holdings_sorted:
         if h["layer"] != prev_layer:
             lcolor = LAYER_COLORS.get(h["layer"], "#999")
-            holdings_rows += f'<tr class="layer-header"><td colspan="7" style="background:{lcolor}22;border-left:4px solid {lcolor};padding:6px 10px;font-weight:600;color:#333">{h["layer"]}</td></tr>\n'
+            holdings_rows += f'<tr class="layer-header"><td colspan="8" style="background:{lcolor}22;border-left:4px solid {lcolor};padding:6px 10px;font-weight:600;color:#333">{h["layer"]}</td></tr>\n'
             prev_layer = h["layer"]
-        chg_class = "pos" if h["change_pct"] >= 0 else "neg"
+        daily_class = "pos" if h["change_pct"] >= 0 else "neg"
+        gain_class  = "pos" if h["total_gain_pct"] >= 0 else "neg"
         holdings_rows += f"""<tr>
           <td>{h["ticker"]}</td>
           <td>{h["shares"]:,.2f}</td>
+          <td>${h["avg_cost"]:,.2f}</td>
           <td>${h["price"]:,.2f}</td>
           <td>{money(h["value"])}</td>
-          <td class="{chg_class}">{money(h["change_dollars"])}</td>
-          <td class="{chg_class}">{pct(h["change_pct"])}</td>
+          <td class="{gain_class}" style="font-weight:600;">{pct(h["total_gain_pct"])}</td>
+          <td class="{daily_class}">{pct(h["change_pct"])}</td>
           <td>{h["weight_pct"]:.1f}%</td>
         </tr>\n"""
 
@@ -308,6 +321,12 @@ def build_dashboard(portfolio, layers, holdings):
         f'<option value="{h["ticker"]}">{h["ticker"]}</option>'
         for h in sorted(today_holdings, key=lambda x: x["ticker"])
     )
+
+    # Total gain vs cost basis
+    total_cost_basis  = sum(h["cost_basis"] for h in today_holdings)
+    total_gain_dollars = total_v - total_cost_basis
+    total_gain_pct     = (total_gain_dollars / total_cost_basis * 100.0) if total_cost_basis else 0.0
+    gain_class_main    = "pos" if total_gain_dollars >= 0 else "neg"
 
     generated_at = datetime.now(TZ).strftime("%A, %B %d, %Y at %I:%M %p ET")
     chg_class_main = "pos" if total_chg >= 0 else "neg"
@@ -395,9 +414,9 @@ def build_dashboard(portfolio, layers, holdings):
       <div class="value {spy_class}">{pct(spy_chg)}</div>
     </div>
     <div class="kpi">
-      <div class="label">vs SPY (today)</div>
-      <div class="value {'pos' if (total_chg_pct - spy_chg) >= 0 else 'neg'}">{pct(total_chg_pct - spy_chg)}</div>
-      <div class="sub" style="color:#aaa">alpha</div>
+      <div class="label">Total Gain vs Cost</div>
+      <div class="value {gain_class_main}">{money(total_gain_dollars)}</div>
+      <div class="sub {gain_class_main}">{pct(total_gain_pct)}</div>
     </div>
   </div>
 
@@ -446,7 +465,7 @@ def build_dashboard(portfolio, layers, holdings):
   <div class="card">
     <h2>Holdings — {today_date}</h2>
     <table>
-      <thead><tr><th>Ticker</th><th>Shares</th><th>Price</th><th>Value</th><th>Δ $</th><th>Δ %</th><th>Weight</th></tr></thead>
+      <thead><tr><th>Ticker</th><th>Shares</th><th>Avg Cost</th><th>Price</th><th>Value</th><th>Total Gain</th><th>Daily Δ</th><th>Weight</th></tr></thead>
       <tbody>{holdings_rows}</tbody>
     </table>
   </div>
