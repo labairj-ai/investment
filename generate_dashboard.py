@@ -313,6 +313,7 @@ def build_dashboard(portfolio, layers, holdings):
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Investment Dashboard — {today_date}</title>
+  <link rel="icon" type="image/svg+xml" href="../favicon.svg">
   <script src="../chart.umd.min.js"></script>
   <style>
     *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
