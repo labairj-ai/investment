@@ -35,11 +35,20 @@ MIN_BID = 0.10   # ignore illiquid contracts with no real bid
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
+def normalize_ticker(t: str) -> str:
+    t = str(t).strip().upper().lstrip("$")
+    if "." in t:
+        left, right = t.split(".", 1)
+        if right in {"A", "B", "C", "D"}:
+            t = f"{left}-{right}"
+    return t
+
+
 def load_holdings() -> dict:
     result = {}
     with open(HOLDINGS_CSV) as f:
         for row in csv.DictReader(f):
-            t = row["Stock"].strip().upper()
+            t = normalize_ticker(row["Stock"])
             result[t] = {
                 "shares":   float(row["Shares"]),
                 "avg_cost": float(row["AvgCost"]),
