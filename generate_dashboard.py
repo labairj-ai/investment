@@ -471,6 +471,16 @@ def build_dashboard(portfolio, layers, holdings):
     </table>
   </div>
 
+  <!-- Dividends -->
+  <div class="card" id="div-card">
+    <h2 style="display:flex;align-items:center;justify-content:space-between;">
+      Upcoming Dividends
+      <button onclick="loadDividends()" style="font-size:11px;padding:4px 12px;background:#f4f6f9;border:1px solid #dde;border-radius:5px;cursor:pointer;color:#555;font-weight:500;">↻ Refresh</button>
+    </h2>
+    <div id="div-status" style="font-size:12px;color:#7f8c8d;">Loading…</div>
+    <div id="div-results"></div>
+  </div>
+
   <!-- Covered Call Analyzer -->
   <div class="card" id="cc-card">
     <h2>Covered Call Analyzer</h2>
@@ -595,6 +605,73 @@ new Chart(document.getElementById("layerBar"), {{
     }}
   }}
 }});
+
+// ── Dividends ──────────────────────────────────────────────────────────────
+async function loadDividends() {{
+  const status  = document.getElementById("div-status");
+  const results = document.getElementById("div-results");
+  status.textContent = "Loading dividend data…";
+  results.innerHTML  = "";
+
+  try {{
+    const res  = await fetch("/api/dividends");
+    const data = await res.json();
+    if (!data.ok) {{ status.textContent = "Error: " + data.error; return; }}
+
+    status.textContent = "";
+    const rows = data.results.map(r => {{
+      const declared = r.declared && r.ex_div_date;
+      const badge = declared
+        ? `<span style="background:#e8f8ee;color:#1a6e38;border:1px solid #a8e0b8;border-radius:4px;padding:1px 7px;font-size:10px;font-weight:700;">DECLARED</span>`
+        : `<span style="background:#f4f6f9;color:#888;border:1px solid #dde;border-radius:4px;padding:1px 7px;font-size:10px;">LAST PAID</span>`;
+      const exDiv   = r.ex_div_date  || "TBD";
+      const payDay  = r.pay_date     || "TBD";
+      const amount  = r.declared_amount ? "$" + r.declared_amount.toFixed(4) : r.last_amount ? "$" + r.last_amount.toFixed(4) : "—";
+      const total   = r.total_payout  ? "$" + r.total_payout.toLocaleString("en-US", {{minimumFractionDigits:2, maximumFractionDigits:2}}) : "—";
+      const income  = r.annual_income ? "$" + r.annual_income.toLocaleString("en-US", {{minimumFractionDigits:2, maximumFractionDigits:2}}) : "—";
+      const yld     = r.div_yield     ? r.div_yield.toFixed(2) + "%" : "—";
+      const yoc     = r.yield_on_cost ? r.yield_on_cost.toFixed(2) + "%" : "—";
+      const daysTag = r.days_to_ex !== null && r.days_to_ex >= 0
+        ? `<span style="color:${{r.days_to_ex <= 14 ? '#c8102e' : r.days_to_ex <= 30 ? '#e67e22' : '#555'}};font-weight:600;">${{r.days_to_ex}}d</span>`
+        : "";
+      return `<tr style="border-bottom:1px solid #f2f4f7;">
+        <td style="padding:8px 10px;font-weight:600;">${{r.ticker}}</td>
+        <td style="padding:8px 10px;">${{badge}}</td>
+        <td style="padding:8px 10px;">${{exDiv}} ${{daysTag}}</td>
+        <td style="padding:8px 10px;">${{payDay}}</td>
+        <td style="padding:8px 10px;font-weight:600;">${{amount}}</td>
+        <td style="padding:8px 10px;">${{total}}</td>
+        <td style="padding:8px 10px;">${{income}}</td>
+        <td style="padding:8px 10px;">${{yld}}</td>
+        <td style="padding:8px 10px;color:#888;">${{yoc}}</td>
+      </tr>`;
+    }}).join("");
+
+    results.innerHTML = `
+      <div style="overflow-x:auto;margin-top:10px;">
+      <table style="width:100%;border-collapse:collapse;font-size:13px;">
+        <thead><tr style="background:#f4f6f9;">
+          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Ticker</th>
+          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Status</th>
+          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Ex-Div Date</th>
+          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Pay Date</th>
+          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Amount/Share</th>
+          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">This Payout</th>
+          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Annual Income</th>
+          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Yield</th>
+          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Yield on Cost</th>
+        </tr></thead>
+        <tbody>${{rows}}</tbody>
+      </table>
+      </div>
+      <p style="font-size:11px;color:#aaa;margin-top:8px;">As of ${{data.as_of}}. DECLARED = upcoming announced date. LAST PAID = most recent; next date not yet announced.</p>`;
+  }} catch(e) {{
+    status.textContent = "Error: " + e.message;
+  }}
+}}
+
+// Auto-load dividends on page open
+window.addEventListener("load", loadDividends);
 
 // ── Covered Call Analyzer ─────────────────────────────────────────────────
 async function analyzeCoveredCall() {{
