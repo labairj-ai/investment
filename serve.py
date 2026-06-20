@@ -130,30 +130,45 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 row = {"ticker": ticker, "layer_num": meta["layer"],
                        "layer": LAYER_NAMES.get(meta["layer"], f"Layer {meta['layer']}")}
                 try:
-                    tk  = yf.Ticker(ticker)
-                    cal = tk.calendar or {}
-                    raw = cal.get("Earnings Date", [])
-                    if not isinstance(raw, list):
-                        raw = [raw]
+                    tk = yf.Ticker(ticker)
 
-                    # Find the nearest date — upcoming preferred, else most recent past
-                    upcoming = [d for d in raw if d and hasattr(d, "year") and d >= today]
-                    past     = [d for d in raw if d and hasattr(d, "year") and d < today]
+                    # ── 1. check calendar for declared upcoming date ──────────
+                    upcoming = []
+                    past     = []
+                    try:
+                        cal = tk.calendar or {}
+                        raw = cal.get("Earnings Date", [])
+                        if not isinstance(raw, list):
+                            raw = [raw]
+                        for d in raw:
+                            if d and hasattr(d, "year"):
+                                (upcoming if d >= today else past).append(d)
+                    except Exception:
+                        pass
+
+                    # ── 2. fall back to earnings_dates history ────────────────
+                    if not upcoming and not past:
+                        try:
+                            ed = tk.earnings_dates
+                            if ed is not None and not ed.empty:
+                                for ts in ed.index:
+                                    d = ts.date() if hasattr(ts, "date") else ts
+                                    (upcoming if d >= today else past).append(d)
+                        except Exception:
+                            pass
 
                     if upcoming:
-                        target      = min(upcoming)
-                        is_upcoming = True
+                        target, is_upcoming = min(upcoming), True
                     elif past:
-                        target      = max(past)
-                        is_upcoming = False
+                        target, is_upcoming = max(past), False
                     else:
-                        return row  # no earnings data
+                        return row  # no earnings data anywhere
 
                     days = (target - today).days
                     row.update({
-                        "earnings_date":  str(target),
-                        "is_upcoming":    is_upcoming,
-                        "days_to_earn":   days,
+                        "earnings_date": str(target),
+                        "is_upcoming":   is_upcoming,
+                        "days_to_earn":  days,
                     })
                 except Exception:
                     pass
