@@ -291,7 +291,7 @@ def build_dashboard(portfolio, layers, holdings):
     for l in today_layers:
         lcolor    = LAYER_COLORS.get(l["layer"], "#999")
         chg_class = "pos" if l["change_pct"] >= 0 else "neg"
-        layer_num = l["layer"].split()[1]  # "Layer 3: ..." → "3"
+        layer_num = l["layer"].split()[1].rstrip(":")  # "Layer 3: ..." → "3"
         layer_rows += f"""<tr>
           <td><span class="dot" style="background:{lcolor}"></span>{LAYER_SHORT.get(l["layer"], l["layer"])}</td>
           <td>{money(l["value"])}</td>
