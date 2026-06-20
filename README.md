@@ -1,6 +1,6 @@
 # Investment Dashboard & Newsletter
 
-A personal investment tracking system that sends a daily email newsletter, maintains a local web dashboard, and provides a covered call analyzer. Prices are pulled from Yahoo Finance; email is sent via Gmail SMTP.
+A personal investment tracking system that sends a daily email newsletter, maintains a local web dashboard, and provides covered call and dividend analysis. Prices are pulled from Yahoo Finance; email is sent via Gmail SMTP.
 
 ---
 
@@ -8,18 +8,19 @@ A personal investment tracking system that sends a daily email newsletter, maint
 
 | Feature | Description |
 |---|---|
-| **Daily Newsletter** | Fetches closing prices, computes P&L by layer and holding, emails an HTML report each morning |
-| **Local Dashboard** | Interactive web UI at `http://localhost:5001/out/dashboard.html` — portfolio value, cumulative return vs SPY, layer allocation, holdings table with total gain vs cost basis |
-| **Covered Call Analyzer** | In-dashboard tool that fetches live option chains and recommends contracts based on your cost basis and a 10% profit floor |
+| **Daily Newsletter** | Fetches closing prices, computes P&L by layer and holding, emails an HTML report each morning at 8 AM |
+| **Local Dashboard** | Interactive web UI at `http://localhost:5001/out/dashboard.html` with charts, holdings table, and live analysis tools |
+| **Covered Call Analyzer** | Recommends option contracts based on your cost basis, flags blackout windows (earnings, ex-div) |
+| **Dividend Tracker** | Auto-loads upcoming and last-known dividend dates, per-holding payout, annual income, yield and yield on cost |
 
 ---
 
 ## Requirements
 
 - macOS (launchd automation is macOS-specific)
-- Python 3.9+
+- Python 3.9+ with a virtual environment
 - A Gmail account with an [App Password](https://myaccount.google.com/apppasswords) enabled
-- Homebrew Python (for the dashboard login item): `/opt/homebrew/opt/python@3.14/bin/python3.14`
+- Homebrew Python at `/opt/homebrew/opt/python@3.14/bin/python3.14` (used by the dashboard login item)
 
 ---
 
@@ -28,7 +29,7 @@ A personal investment tracking system that sends a daily email newsletter, maint
 ### 1. Clone the repo
 
 ```bash
-git clone https://github.com/labairj-ai/investment.git
+git clone https://github.com/labairj-ai/investment.git ~/Desktop/investment
 cd ~/Desktop/investment
 ```
 
@@ -42,7 +43,7 @@ venv/bin/pip install pandas yfinance matplotlib python-dotenv
 
 ### 3. Create `.env`
 
-Copy the template below and fill in your credentials. This file is gitignored and never committed.
+This file is gitignored and never committed. Create it manually:
 
 ```
 EMAIL_FROM=you@gmail.com
@@ -50,11 +51,11 @@ EMAIL_APP_PASSWORD=xxxx xxxx xxxx xxxx
 EMAIL_TO=recipient@gmail.com
 ```
 
-> **Gmail App Password**: Go to [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords), generate a password for "Mail", and paste the 16-character code above.
+> **Gmail App Password**: Go to [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords), generate a password for "Mail", and paste the 16-character code (no spaces) as `EMAIL_APP_PASSWORD`.
 
 ### 4. Populate `holdings.csv`
 
-The file has four columns:
+The file has four columns — edit directly or tell Claude to add positions one at a time:
 
 ```
 Stock,Shares,AvgCost,Layer
@@ -65,13 +66,13 @@ EW,100,85.31,3
 
 **Layer definitions:**
 
-| Layer | Name |
-|---|---|
-| 1 | Structural Ballast |
-| 2 | Cash-Flow Engines |
-| 3 | Compounders |
-| 4 | Convexity / Optionality |
-| 5 | Shock Absorbers / Regime Hedges |
+| Layer | Name | Examples |
+|---|---|---|
+| 1 | Structural Ballast | Index funds, BRK.B |
+| 2 | Cash-Flow Engines | SCHD, XOM, dividend payers |
+| 3 | Compounders | GRMN, WMT, EW, NFLX |
+| 4 | Convexity / Optionality | JOBY, BTC, IGV |
+| 5 | Shock Absorbers / Regime Hedges | MCO, UNP, ITOCF, MITSF, NOC |
 
 ### 5. Run the newsletter once to seed the database
 
@@ -79,7 +80,7 @@ EW,100,85.31,3
 venv/bin/python3 send_newsletter_main.py
 ```
 
-This fetches prices, stores history in `out/investment.db`, generates `out/layer_allocation.png`, and sends the email. Subsequent runs on the same day are blocked by a flag file.
+This fetches prices, writes history to `out/investment.db`, generates `out/layer_allocation.png`, and sends the email. The flag file `out/last_run_date.txt` prevents double-sends on the same day.
 
 ### 6. Generate the dashboard
 
@@ -93,17 +94,19 @@ Output: `out/dashboard.html`
 
 ## Running the Dashboard
 
-### Manual (interactive)
+### Manual
 
 ```bash
 python3 serve.py
 ```
 
-Opens `http://localhost:5001/out/dashboard.html` automatically in your browser. Press `Ctrl+C` to stop.
+Opens `http://localhost:5001/out/dashboard.html` automatically. Press `Ctrl+C` to stop.
+
+`serve.py` is a full local API server — it serves static files **and** handles live API endpoints for the covered call analyzer and dividend tracker.
 
 ### Auto-start on login (macOS)
 
-The repo includes `InvestmentDashboard.app` — a background macOS app that starts the server silently on login.
+`InvestmentDashboard.app` is a background macOS app that silently starts the server on login (no dock icon, no window).
 
 **One-time setup:**
 
@@ -115,9 +118,9 @@ Then add it to **System Settings → General → Login Items** so it runs automa
 
 ---
 
-## Automating the Daily Newsletter (macOS launchd)
+## Automating the Daily Newsletter
 
-The repo includes `com.investment.newsletter.plist` which schedules `run_investment.sh` at **8:00 AM daily**.
+The repo includes `com.investment.newsletter.plist`, which schedules `run_investment.sh` at **8:00 AM daily** via launchd.
 
 **Install:**
 
@@ -126,7 +129,7 @@ cp com.investment.newsletter.plist ~/Library/LaunchAgents/
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.investment.newsletter.plist
 ```
 
-**Check it loaded:**
+**Verify:**
 
 ```bash
 launchctl list | grep investment
@@ -134,31 +137,68 @@ launchctl list | grep investment
 
 **Logs:** `out/newsletter.log`
 
+`run_investment.sh` runs both `send_newsletter_main.py` (email + DB write) and `generate_dashboard.py` (dashboard regeneration) in sequence.
+
 ---
 
-## Covered Call Analyzer
+## Dashboard Features
 
-Available in the dashboard for any holding with **100+ shares**. Select a ticker and click **Get Recommendations**.
+### KPI Cards (top row)
+- **Portfolio Value** — total market value
+- **Daily Change** — today's P&L vs yesterday's close
+- **SPY Change** — benchmark comparison
+- **Total Gain vs Cost** — unrealized P&L vs your average cost across all holdings
+- **Est. Annual Dividends** — estimated annual dividend income (populated on page load)
+
+### Charts
+- Portfolio vs SPY cumulative return
+- Allocation by layer (doughnut)
+- Layer weight over time
+- Today's layer performance (bar)
+
+### Holdings Table
+Columns: **Ticker | Shares | Avg Cost | Price | Value | Total Gain | Daily Δ | Weight**
+
+Total Gain shows true return vs your cost basis, not just daily moves.
+
+### Covered Call Analyzer
+Select any holding with **100+ shares** from the dropdown and click **Get Recommendations**.
+
+Fetches live option chains and returns contracts ranked by annualized premium return, filtered to your minimum profit criteria.
 
 **Strike selection logic:**
-- If the stock is **not yet up 10%** from your cost: minimum strike = `avg_cost × 1.10`
-- If the stock is **already up ≥ 10%**: minimum strike = `current_price × 1.10` (lock in gain + another 10%)
+- Stock not yet up 10% from cost → floor = `avg_cost × 1.10`
+- Stock already up ≥ 10% → floor = `current_price × 1.10` (lock in gain + another 10%)
 
-Results are ranked by annualized premium return and show:
-- Strike, expiration, DTE
-- Bid / Ask / Mid premium
-- Premium % and annualized return
-- Total P&L if called away vs your cost basis
-- **Prob Called** — Black-Scholes delta (≈ probability of assignment), color-coded green / orange / red
+**Columns:** Expiry | Strike | DTE | Bid | Ask | Mid | Prem% | Ann% | P/L if Called | Prob Called | OI
 
-Can also be run from the command line:
+**Blackout windows** are flagged per contract:
+- 📵 **AVOID** (red) — an earnings date falls between today and expiration (IV crush + gap risk)
+- ⚠️ **CAUTION** (yellow) — ex-dividend date before expiration (early assignment / exercise risk)
+
+**Prob Called** is the Black-Scholes delta (≈ probability of assignment), color-coded green < 20%, orange 20–35%, red > 35%.
+
+### Dividend Tracker
+Auto-loads on page open (parallel fetch, ~4 seconds). Hit **Refresh** to update; results are cached for 1 hour.
+
+**Columns:** Ticker | Status | Ex-Div Date | Pay Date | Amount/Share | This Payout | Annual Income | Yield | Yield on Cost
+
+- **UPCOMING** (green) — ex-div date is confirmed and in the future
+- **LAST KNOWN** (grey) — most recent declared date; next not yet announced
+- Days countdown: red ≤ 14 days, orange ≤ 30 days, green further out; past dates show "Xd ago"
+
+---
+
+## Covered Call CLI
+
+Can also be run directly from the terminal:
 
 ```bash
 # Single ticker
 venv/bin/python3 covered_call_rec.py EW
 
 # Multiple tickers
-venv/bin/python3 covered_call_rec.py EW GRMN JOBY
+venv/bin/python3 covered_call_rec.py EW GRMN WMT
 
 # All holdings with 100+ shares
 venv/bin/python3 covered_call_rec.py
@@ -170,25 +210,27 @@ venv/bin/python3 covered_call_rec.py
 
 ```
 investment/
-├── holdings.csv                  # Portfolio positions (source of truth)
-├── send_newsletter_main.py       # Fetches prices, sends email, writes to DB
-├── generate_dashboard.py         # Generates out/dashboard.html from DB
-├── serve.py                      # Local HTTP server + /api/covered-calls endpoint
-├── covered_call_rec.py           # Covered call recommendation engine
-├── run_investment.sh             # Entry point: newsletter → dashboard (run daily)
-├── serve_daemon.sh               # Shell wrapper for launchd dashboard server
-├── com.investment.newsletter.plist  # launchd plist — daily newsletter at 8AM
-├── chart.umd.min.js              # Bundled Chart.js (no CDN dependency)
-├── favicon.svg                   # Dashboard browser tab icon
-├── InvestmentDashboard.app/      # macOS login item — auto-starts serve.py
-├── .env                          # ⚠ Not committed — email credentials
+├── holdings.csv                     # Portfolio positions — source of truth
+├── send_newsletter_main.py          # Fetches prices, sends email, writes DB
+├── generate_dashboard.py            # Generates out/dashboard.html from DB + CSV
+├── serve.py                         # Local HTTP server + API endpoints
+│                                    #   GET /api/covered-calls?ticker=XX
+│                                    #   GET /api/dividends
+├── covered_call_rec.py              # Covered call recommendation + blackout engine
+├── run_investment.sh                # Entry point: newsletter → dashboard (runs daily)
+├── serve_daemon.sh                  # Shell wrapper for launchd (cleans Python env)
+├── com.investment.newsletter.plist  # launchd — daily newsletter at 8 AM
+├── chart.umd.min.js                 # Bundled Chart.js (no CDN dependency)
+├── favicon.svg                      # Dashboard browser tab icon
+├── InvestmentDashboard.app/         # macOS login item — auto-starts serve.py
+├── .env                             # ⚠ Not committed — email credentials
 └── out/
-    ├── investment.db             # SQLite price history
-    ├── dashboard.html            # Generated dashboard (open via serve.py)
-    ├── layer_allocation.png      # Pie chart attached to newsletter email
-    ├── newsletter.log            # Daily run log
-    ├── covered_calls_analysis.md # Manual covered call notes
-    └── volume_analysis.md        # Manual volume notes
+    ├── investment.db                # SQLite price + holding history
+    ├── dashboard.html               # Generated dashboard (served by serve.py)
+    ├── layer_allocation.png         # Pie chart attached to newsletter
+    ├── newsletter.log               # Daily run log
+    ├── covered_calls_analysis.md    # Manual covered call notes
+    └── volume_analysis.md           # Manual volume notes
 ```
 
 ---
@@ -210,7 +252,18 @@ git clone https://github.com/labairj-ai/investment.git ~/Desktop/investment
 cd ~/Desktop/investment
 python3 -m venv venv
 venv/bin/pip install pandas yfinance matplotlib python-dotenv
-# Create .env with credentials
-# Install launchd plist (see Automating section above)
-# Add InvestmentDashboard.app to Login Items
+
+# Create .env with credentials (see Setup section above)
+
+# Install daily newsletter schedule
+cp com.investment.newsletter.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.investment.newsletter.plist
+
+# Seed the database
+venv/bin/python3 send_newsletter_main.py
+
+# Generate dashboard
+venv/bin/python3 generate_dashboard.py
+
+# Add InvestmentDashboard.app to System Settings → Login Items
 ```
