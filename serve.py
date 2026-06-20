@@ -18,8 +18,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-_div_cache = {"data": None, "ts": 0}
-_DIV_CACHE_TTL = 3600  # seconds
+_div_cache  = {"data": None, "ts": 0}
+_earn_cache = {"data": None, "ts": 0}
+_DIV_CACHE_TTL  = 3600  # seconds
+_EARN_CACHE_TTL = 3600
 
 PORT = 5001
 
@@ -43,6 +45,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._handle_covered_calls(parse_qs(parsed.query))
         elif parsed.path == "/api/dividends":
             self._handle_dividends()
+        elif parsed.path == "/api/earnings":
+            self._handle_earnings()
         else:
             super().do_GET()
 
@@ -95,6 +99,90 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 "strike_floor":     round(result["strike_floor"], 2),
                 "recs":             recs,
             })
+
+        except Exception as e:
+            self._json_error(500, str(e))
+
+    def _handle_earnings(self):
+        try:
+            import yfinance as yf
+            import warnings
+            from datetime import date, datetime
+            warnings.filterwarnings("ignore")
+
+            from covered_call_rec import load_holdings
+
+            if _earn_cache["data"] and (time.time() - _earn_cache["ts"]) < _EARN_CACHE_TTL:
+                return self._json(_earn_cache["data"])
+
+            holdings  = load_holdings()
+            today     = date.today()
+
+            LAYER_NAMES = {
+                1: "Layer 1: Structural Ballast",
+                2: "Layer 2: Cash-Flow Engines",
+                3: "Layer 3: Compounders",
+                4: "Layer 4: Convexity / Optionality",
+                5: "Layer 5: Shock Absorbers / Regime Hedges",
+            }
+
+            def fetch_one(ticker, meta):
+                row = {"ticker": ticker, "layer_num": meta["layer"],
+                       "layer": LAYER_NAMES.get(meta["layer"], f"Layer {meta['layer']}")}
+                try:
+                    tk  = yf.Ticker(ticker)
+                    cal = tk.calendar or {}
+                    raw = cal.get("Earnings Date", [])
+                    if not isinstance(raw, list):
+                        raw = [raw]
+
+                    # Find the nearest date — upcoming preferred, else most recent past
+                    upcoming = [d for d in raw if d and hasattr(d, "year") and d >= today]
+                    past     = [d for d in raw if d and hasattr(d, "year") and d < today]
+
+                    if upcoming:
+                        target      = min(upcoming)
+                        is_upcoming = True
+                    elif past:
+                        target      = max(past)
+                        is_upcoming = False
+                    else:
+                        return row  # no earnings data
+
+                    days = (target - today).days
+                    row.update({
+                        "earnings_date":  str(target),
+                        "is_upcoming":    is_upcoming,
+                        "days_to_earn":   days,
+                    })
+                except Exception:
+                    pass
+                return row
+
+            items       = list(holdings.items())
+            results_raw = []
+            with ThreadPoolExecutor(max_workers=10) as pool:
+                for r in pool.map(lambda kv: fetch_one(kv[0], kv[1]), items):
+                    if r.get("earnings_date"):
+                        results_raw.append(r)
+
+            # Deduplicate
+            seen, results = set(), []
+            for r in results_raw:
+                if r["ticker"] not in seen:
+                    seen.add(r["ticker"])
+                    results.append(r)
+
+            # Sort: upcoming first by days_to_earn, then past by days descending
+            results.sort(key=lambda r: (
+                0 if r.get("is_upcoming") else 1,
+                r.get("days_to_earn", 9999)
+            ))
+
+            payload = {"ok": True, "results": results, "as_of": today.isoformat()}
+            _earn_cache["data"] = payload
+            _earn_cache["ts"]   = time.time()
+            self._json(payload)
 
         except Exception as e:
             self._json_error(500, str(e))

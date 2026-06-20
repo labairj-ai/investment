@@ -289,14 +289,16 @@ def build_dashboard(portfolio, layers, holdings):
     # ---- layer summary rows ----
     layer_rows = ""
     for l in today_layers:
-        lcolor = LAYER_COLORS.get(l["layer"], "#999")
+        lcolor    = LAYER_COLORS.get(l["layer"], "#999")
         chg_class = "pos" if l["change_pct"] >= 0 else "neg"
+        layer_num = l["layer"].split()[1]  # "Layer 3: ..." → "3"
         layer_rows += f"""<tr>
           <td><span class="dot" style="background:{lcolor}"></span>{LAYER_SHORT.get(l["layer"], l["layer"])}</td>
           <td>{money(l["value"])}</td>
           <td>{l["weight_pct"]:.1f}%</td>
           <td class="{chg_class}">{money(l["change_dollars"])}</td>
           <td class="{chg_class}">{pct(l["change_pct"])}</td>
+          <td id="layer-earn-{layer_num}" style="font-size:12px;color:#7f8c8d;">—</td>
         </tr>\n"""
 
     # ---- JSON for charts ----
@@ -462,7 +464,7 @@ def build_dashboard(portfolio, layers, holdings):
   <div class="card">
     <h2>Layer Summary — {today_date}</h2>
     <table>
-      <thead><tr><th>Layer</th><th>Value</th><th>Weight</th><th>Δ $</th><th>Δ %</th></tr></thead>
+      <thead><tr><th>Layer</th><th>Value</th><th>Weight</th><th>Δ $</th><th>Δ %</th><th>Next Earnings</th></tr></thead>
       <tbody>{layer_rows}</tbody>
     </table>
   </div>
@@ -686,6 +688,59 @@ async function loadDividends() {{
 
 // Auto-load dividends on page open
 window.addEventListener("load", loadDividends);
+
+// ── Layer Earnings ──────────────────────────────────────────────────────────
+async function loadLayerEarnings() {{
+  try {{
+    const res  = await fetch("/api/earnings");
+    const data = await res.json();
+    if (!data.ok) return;
+
+    // For each layer, find the soonest earnings (upcoming preferred, else most recent past)
+    const best = {{}};
+    for (const item of data.results) {{
+      const ln = item.layer_num;
+      if (!best[ln]) {{
+        best[ln] = item;
+      }} else {{
+        // Prefer upcoming over past; among same type, pick nearest
+        const currUp  = best[ln].is_upcoming;
+        const itemUp  = item.is_upcoming;
+        if (itemUp && !currUp) {{
+          best[ln] = item;
+        }} else if (itemUp === currUp) {{
+          if (Math.abs(item.days_to_earn) < Math.abs(best[ln].days_to_earn))
+            best[ln] = item;
+        }}
+      }}
+    }}
+
+    for (const [ln, item] of Object.entries(best)) {{
+      const el = document.getElementById("layer-earn-" + ln);
+      if (!el) continue;
+
+      const d     = new Date(item.earnings_date + "T00:00:00");
+      const label = d.toLocaleDateString("en-US", {{ month:"short", day:"numeric" }});
+      const days  = item.days_to_earn;
+
+      let color = "#7f8c8d";
+      let suffix = "";
+
+      if (item.is_upcoming) {{
+        color  = days <= 7  ? "#c8102e"
+               : days <= 21 ? "#e67e22"
+               : "#27ae60";
+        suffix = ` <span style="color:${{color}};font-size:11px;">(${{days}}d)</span>`;
+      }} else {{
+        suffix = ` <span style="color:#bbb;font-size:10px;">(est.)</span>`;
+      }}
+
+      el.innerHTML = `<b style="color:#2c3e50;">${{item.ticker}}</b> ${{label}}${{suffix}}`;
+    }}
+  }} catch(e) {{}}
+}}
+
+window.addEventListener("load", loadLayerEarnings);
 
 // ── Covered Call Analyzer ─────────────────────────────────────────────────
 async function analyzeCoveredCall() {{
