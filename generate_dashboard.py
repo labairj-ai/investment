@@ -739,10 +739,33 @@ function renderCC(d) {{
   }}
 
   const rows = d.recs.map((r, i) => {{
-    const highlight = i === 0 ? "background:#f0f7ff;" : "";
-    const plColor   = r.profit_if_called >= 10 ? "#27ae60" : "#e67e22";
-    return `<tr style="${{highlight}}border-bottom:1px solid #f2f4f7;">
-      <td style="padding:8px 10px;font-weight:${{i===0?"700":"400"}}">${{r.expiration}}</td>
+    const rowBg   = r.has_avoid   ? "background:#fff5f5;"
+                  : r.has_caution ? "background:#fffbf0;"
+                  : i === 0       ? "background:#f0f7ff;"
+                  : "";
+    const plColor = r.profit_if_called >= 10 ? "#27ae60" : "#e67e22";
+
+    // Blackout badge
+    let blackout = "";
+    if (r.has_avoid) {{
+      blackout = `<div style="margin-top:4px;font-size:10px;font-weight:700;color:#c8102e;">📵 AVOID</div>`;
+    }} else if (r.has_caution) {{
+      blackout = `<div style="margin-top:4px;font-size:10px;font-weight:700;color:#e67e22;">⚠️ CAUTION</div>`;
+    }}
+
+    // Risk event detail lines
+    const riskLines = (r.risk_events || []).map(e => {{
+      const color = e.severity === "avoid" ? "#c8102e" : "#e67e22";
+      const icon  = e.severity === "avoid" ? "📵" : "⚠️";
+      return `<div style="font-size:10px;color:${{color}};margin-top:2px;">${{icon}} ${{e.label.replace(/^[📵⚠️\s]+/, "")}}</div>`;
+    }}).join("");
+
+    return `<tr style="${{rowBg}}border-bottom:1px solid #f2f4f7;">
+      <td style="padding:8px 10px;">
+        <span style="font-weight:${{i===0?"700":"400"}}">${{r.expiration}}</span>
+        ${{blackout}}
+        ${{riskLines}}
+      </td>
       <td style="padding:8px 10px;">${{fmt(r.strike)}}</td>
       <td style="padding:8px 10px;color:#7f8c8d;">${{r.dte}}d</td>
       <td style="padding:8px 10px;">${{fmt(r.bid)}}</td>

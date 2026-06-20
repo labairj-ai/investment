@@ -80,6 +80,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     "open_interest":  int(row.get("openInterest") or 0),
                     "volume":         int(row.get("volume") or 0),
                     "delta":          round(_safe_float(row.get("delta")), 3),
+                    "risk_events":    list(row.get("risk_events") or []),
+                    "has_avoid":      bool(row.get("has_avoid")),
+                    "has_caution":    bool(row.get("has_caution")),
                 })
 
             self._json({

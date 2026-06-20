@@ -82,6 +82,51 @@ def min_strike(current_price: float, avg_cost: float) -> float:
     return base
 
 
+def get_risk_events(stock: yf.Ticker, today, exp_date) -> list:
+    """
+    Returns risk events that fall within [today, exp_date]:
+      - AVOID  (earnings): option spans an earnings report
+      - CAUTION (ex-div):  ex-dividend before expiry → early assignment risk
+    """
+    events = []
+    try:
+        cal = stock.calendar or {}
+
+        # ── earnings ──────────────────────────────────────────────────────────
+        raw_earnings = cal.get("Earnings Date", [])
+        if not isinstance(raw_earnings, list):
+            raw_earnings = [raw_earnings]
+        for ed in raw_earnings:
+            if ed is None:
+                continue
+            ed_date = ed if hasattr(ed, "year") else datetime.strptime(str(ed), "%Y-%m-%d").date()
+            if today < ed_date <= exp_date:
+                days_to_earn = (ed_date - today).days
+                days_before_exp = (exp_date - ed_date).days
+                events.append({
+                    "type":     "earnings",
+                    "severity": "avoid",
+                    "date":     str(ed_date),
+                    "label":    f"📵 AVOID — earnings {str(ed_date)} ({days_to_earn}d away, {days_before_exp}d before expiry)",
+                })
+
+        # ── ex-dividend ───────────────────────────────────────────────────────
+        raw_ex = cal.get("Ex-Dividend Date")
+        if raw_ex and hasattr(raw_ex, "year"):
+            if today < raw_ex <= exp_date:
+                days_to_ex = (raw_ex - today).days
+                events.append({
+                    "type":     "ex_div",
+                    "severity": "caution",
+                    "date":     str(raw_ex),
+                    "label":    f"⚠️  CAUTION — ex-div {str(raw_ex)} ({days_to_ex}d away, early assignment risk)",
+                })
+    except Exception:
+        pass
+
+    return events
+
+
 def analyze(ticker: str, avg_cost: float, shares: float):
     stock = yf.Ticker(ticker)
 
@@ -114,7 +159,8 @@ def analyze(ticker: str, avg_cost: float, shares: float):
 
     rows = []
     for exp in expirations:
-        dte = (datetime.strptime(exp, "%Y-%m-%d").date() - today).days
+        exp_date = datetime.strptime(exp, "%Y-%m-%d").date()
+        dte      = (exp_date - today).days
         try:
             calls = stock.option_chain(exp).calls
         except Exception:
@@ -139,6 +185,12 @@ def analyze(ticker: str, avg_cost: float, shares: float):
                                  float(r["impliedVolatility"]) if r["impliedVolatility"] > 0 else 0.0),
             axis=1
         )
+
+        risk = get_risk_events(stock, today, exp_date)
+        calls["risk_events"]  = [risk] * len(calls)
+        calls["has_avoid"]    = any(e["severity"] == "avoid"   for e in risk)
+        calls["has_caution"]  = any(e["severity"] == "caution" for e in risk)
+
         rows.append(calls)
 
     if not rows:
@@ -188,6 +240,8 @@ def print_report(r: dict) -> None:
     print("  " + "-" * 95)
 
     for _, row in r["recs"].iterrows():
+        avoid_tag   = " 📵AVOID"   if row.get("has_avoid")   else ""
+        caution_tag = " ⚠️ CAUTION" if row.get("has_caution") else ""
         print(
             f"  {row['expiration']:<12} "
             f"${row['strike']:>6.2f} "
@@ -199,7 +253,10 @@ def print_report(r: dict) -> None:
             f"{row['annualized_ret']:>6.1f}% "
             f"  {row['profit_if_called']:>+.1f}% vs cost"
             f"  {row['delta']*100:>5.1f}%"
+            f"{avoid_tag}{caution_tag}"
         )
+        for event in (row.get("risk_events") or []):
+            print(f"    {event['label']}")
     print()
 
 
