@@ -271,7 +271,7 @@ def build_dashboard(portfolio, layers, holdings):
     for h in today_holdings_sorted:
         if h["layer"] != prev_layer:
             lcolor = LAYER_COLORS.get(h["layer"], "#999")
-            holdings_rows += f'<tr class="layer-header"><td colspan="8" style="background:{lcolor}22;border-left:4px solid {lcolor};padding:6px 10px;font-weight:600;color:#333">{h["layer"]}</td></tr>\n'
+            holdings_rows += f'<tr class="layer-header"><td colspan="9" style="background:{lcolor}22;border-left:4px solid {lcolor};padding:6px 10px;font-weight:600;color:#333">{h["layer"]}</td></tr>\n'
             prev_layer = h["layer"]
         daily_class = "pos" if h["change_pct"] >= 0 else "neg"
         gain_class  = "pos" if h["total_gain_pct"] >= 0 else "neg"
@@ -284,6 +284,7 @@ def build_dashboard(portfolio, layers, holdings):
           <td class="{gain_class}" style="font-weight:600;">{pct(h["total_gain_pct"])}</td>
           <td class="{daily_class}">{pct(h["change_pct"])}</td>
           <td>{h["weight_pct"]:.1f}%</td>
+          <td id="earn-{h["ticker"]}" style="font-size:12px;color:#7f8c8d;">—</td>
         </tr>\n"""
 
     # ---- layer summary rows ----
@@ -473,7 +474,7 @@ def build_dashboard(portfolio, layers, holdings):
   <div class="card">
     <h2>Holdings — {today_date}</h2>
     <table>
-      <thead><tr><th>Ticker</th><th>Shares</th><th>Avg Cost</th><th>Price</th><th>Value</th><th>Total Gain</th><th>Daily Δ</th><th>Weight</th></tr></thead>
+      <thead><tr><th>Ticker</th><th>Shares</th><th>Avg Cost</th><th>Price</th><th>Value</th><th>Total Gain</th><th>Daily Δ</th><th>Weight</th><th>Next Earnings</th></tr></thead>
       <tbody>{holdings_rows}</tbody>
     </table>
   </div>
@@ -715,29 +716,35 @@ async function loadLayerEarnings() {{
       }}
     }}
 
+    // ── layer summary cells ──────────────────────────────────────────────────
     for (const [ln, item] of Object.entries(best)) {{
       const el = document.getElementById("layer-earn-" + ln);
       if (!el) continue;
+      el.innerHTML = earnCell(item, true);
+    }}
 
-      const d     = new Date(item.earnings_date + "T00:00:00");
-      const label = d.toLocaleDateString("en-US", {{ month:"short", day:"numeric" }});
-      const days  = item.days_to_earn;
-
-      let color = "#7f8c8d";
-      let suffix = "";
-
-      if (item.is_upcoming) {{
-        color  = days <= 7  ? "#c8102e"
-               : days <= 21 ? "#e67e22"
-               : "#27ae60";
-        suffix = ` <span style="color:${{color}};font-size:11px;">(${{days}}d)</span>`;
-      }} else {{
-        suffix = ` <span style="color:#bbb;font-size:10px;">(est.)</span>`;
-      }}
-
-      el.innerHTML = `<b style="color:#2c3e50;">${{item.ticker}}</b> ${{label}}${{suffix}}`;
+    // ── per-holding cells ────────────────────────────────────────────────────
+    for (const item of data.results) {{
+      const el = document.getElementById("earn-" + item.ticker);
+      if (!el) continue;
+      el.innerHTML = earnCell(item, false);
     }}
   }} catch(e) {{}}
+}}
+
+function earnCell(item, showTicker) {{
+  const d     = new Date(item.earnings_date + "T00:00:00");
+  const label = d.toLocaleDateString("en-US", {{ month:"short", day:"numeric" }});
+  const days  = item.days_to_earn;
+  let color = "#7f8c8d", suffix = "";
+  if (item.is_upcoming) {{
+    color  = days <= 7 ? "#c8102e" : days <= 21 ? "#e67e22" : "#27ae60";
+    suffix = ` <span style="color:${{color}};font-size:11px;">(${{days}}d)</span>`;
+  }} else {{
+    suffix = ` <span style="color:#bbb;font-size:10px;">(est.)</span>`;
+  }}
+  const prefix = showTicker ? `<b style="color:#2c3e50;">${{item.ticker}}</b> ` : "";
+  return `${{prefix}}<span style="color:${{item.is_upcoming ? color : '#7f8c8d'}};">${{label}}</span>${{suffix}}`;
 }}
 
 window.addEventListener("load", loadLayerEarnings);
