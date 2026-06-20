@@ -130,11 +130,13 @@ def get_risk_events(stock: yf.Ticker, today, exp_date) -> list:
 def analyze(ticker: str, avg_cost: float, shares: float):
     stock = yf.Ticker(ticker)
 
-    hist = stock.history(period="5d")
+    hist = stock.history(period="52wk")
     if hist.empty:
         print(f"  [{ticker}] No price data — skipping.")
         return None
-    current_price = float(hist["Close"].dropna().iloc[-1])
+    current_price  = float(hist["Close"].dropna().iloc[-1])
+    week52_high    = float(hist["High"].max())
+    week52_high_dt = hist["High"].idxmax().strftime("%Y-%m-%d")
 
     strike_floor = min_strike(current_price, avg_cost)
     gain_pct = (current_price - avg_cost) / avg_cost * 100
@@ -209,6 +211,8 @@ def analyze(ticker: str, avg_cost: float, shares: float):
         "gain_pct":          gain_pct,
         "already_at_target": already_at_target,
         "strike_floor":      strike_floor,
+        "week52_high":       week52_high,
+        "week52_high_dt":    week52_high_dt,
         "recs":              all_calls,
     }
 
@@ -220,10 +224,12 @@ def print_report(r: dict) -> None:
     gain  = r["gain_pct"]
     floor = r["strike_floor"]
 
+    w52  = r["week52_high"]
+    w52d = r["week52_high_dt"]
     print()
     print("=" * 64)
-    print(f"  {t}  —  current ${price:.2f}  |  cost basis ${cost:.2f}  |  "
-          f"gain {gain:+.1f}%")
+    print(f"  {t}  —  current ${price:.2f}  |  avg cost ${cost:.2f}  |  "
+          f"gain {gain:+.1f}%  |  52w high ${w52:.2f} ({w52d})")
 
     if r["already_at_target"]:
         print(f"  ✓ Already up ≥10% — floor set to current × 1.10 = ${floor:.2f}")

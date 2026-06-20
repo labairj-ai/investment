@@ -97,6 +97,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 "gain_pct":         round(result["gain_pct"], 2),
                 "already_at_target": result["already_at_target"],
                 "strike_floor":     round(result["strike_floor"], 2),
+                "week52_high":      round(result["week52_high"], 2),
+                "week52_high_dt":   result["week52_high_dt"],
                 "recs":             recs,
             })
 

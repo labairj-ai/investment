@@ -787,13 +787,17 @@ function renderCC(d) {{
   const floorNote = d.already_at_target
     ? `Already up ${{pct(d.gain_pct)}} — floor = current × 1.10`
     : `Up ${{pct(d.gain_pct)}} from cost — floor = cost × 1.10`;
+  const w52Color = d.current_price >= d.week52_high * 0.95 ? "#c8102e"
+                 : d.current_price >= d.week52_high * 0.80 ? "#e67e22"
+                 : "#555";
 
   const meta = `
     <div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:14px;font-size:13px;">
       <span>Current <b>${{fmt(d.current_price)}}</b></span>
-      <span>Cost basis <b>${{fmt(d.avg_cost)}}</b></span>
+      <span>Avg Cost/Share <b>${{fmt(d.avg_cost)}}</b></span>
       <span>Gain <b style="color:${{gainColor}}">${{d.gain_pct >= 0 ? "+" : ""}}${{pct(d.gain_pct)}}</b></span>
-      <span>Min strike <b>${{fmt(d.strike_floor)}}</b> <span style="color:#888;font-size:11px;">(${{floorNote}})</span></span>
+      <span>52w High <b style="color:${{w52Color}}">${{fmt(d.week52_high)}}</b> <span style="color:#aaa;font-size:11px;">${{d.week52_high_dt}}</span></span>
+      <span>Min Strike <b>${{fmt(d.strike_floor)}}</b> <span style="color:#888;font-size:11px;">(${{floorNote}})</span></span>
     </div>`;
 
   if (!d.recs || d.recs.length === 0) {{
