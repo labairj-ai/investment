@@ -351,7 +351,7 @@ def build_dashboard(portfolio, layers, holdings):
     header .subtitle {{ font-size: .85rem; color: #a0aec0; margin-top: 2px; }}
 
     .grid {{ display: grid; gap: 18px; padding: 20px 28px; }}
-    .kpi-row {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }}
+    .kpi-row {{ display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; }}
     .two-col {{ display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }}
     .three-col {{ display: grid; grid-template-columns: 2fr 1fr; gap: 18px; }}
 
@@ -383,7 +383,7 @@ def build_dashboard(portfolio, layers, holdings):
     .generated {{ text-align: right; font-size: .75rem; color: #a0aec0; padding: 0 28px 16px; }}
 
     @media (max-width: 800px) {{
-      .kpi-row {{ grid-template-columns: 1fr 1fr; }}
+      .kpi-row {{ grid-template-columns: 1fr 1fr 1fr; }}
       .two-col, .three-col {{ grid-template-columns: 1fr; }}
     }}
   </style>
@@ -418,6 +418,11 @@ def build_dashboard(portfolio, layers, holdings):
       <div class="label">Total Gain vs Cost</div>
       <div class="value {gain_class_main}">{money(total_gain_dollars)}</div>
       <div class="sub {gain_class_main}">{pct(total_gain_pct)}</div>
+    </div>
+    <div class="kpi">
+      <div class="label">Est. Annual Dividends</div>
+      <div class="value" id="kpi-div-value" style="color:#27ae60;">—</div>
+      <div class="sub" id="kpi-div-yield" style="color:#aaa;"></div>
     </div>
   </div>
 
@@ -618,22 +623,31 @@ async function loadDividends() {{
     const data = await res.json();
     if (!data.ok) {{ status.textContent = "Error: " + data.error; return; }}
 
+    // ── populate annual dividend KPI card ────────────────────────────────
+    const totalAnnual = data.results.reduce((s, r) => s + (r.annual_income || 0), 0);
+    const totalPort   = {total_v};
+    document.getElementById("kpi-div-value").textContent =
+      "$" + Math.round(totalAnnual).toLocaleString("en-US");
+    document.getElementById("kpi-div-yield").textContent =
+      totalPort > 0 ? (totalAnnual / totalPort * 100).toFixed(2) + "% portfolio yield" : "";
+
     status.textContent = "";
     const rows = data.results.map(r => {{
-      const declared = r.declared && r.ex_div_date;
-      const badge = declared
-        ? `<span style="background:#e8f8ee;color:#1a6e38;border:1px solid #a8e0b8;border-radius:4px;padding:1px 7px;font-size:10px;font-weight:700;">DECLARED</span>`
-        : `<span style="background:#f4f6f9;color:#888;border:1px solid #dde;border-radius:4px;padding:1px 7px;font-size:10px;">LAST PAID</span>`;
-      const exDiv   = r.ex_div_date  || "TBD";
-      const payDay  = r.pay_date     || "TBD";
-      const amount  = r.declared_amount ? "$" + r.declared_amount.toFixed(4) : r.last_amount ? "$" + r.last_amount.toFixed(4) : "—";
-      const total   = r.total_payout  ? "$" + r.total_payout.toLocaleString("en-US", {{minimumFractionDigits:2, maximumFractionDigits:2}}) : "—";
-      const income  = r.annual_income ? "$" + r.annual_income.toLocaleString("en-US", {{minimumFractionDigits:2, maximumFractionDigits:2}}) : "—";
-      const yld     = r.div_yield     ? r.div_yield.toFixed(2) + "%" : "—";
-      const yoc     = r.yield_on_cost ? r.yield_on_cost.toFixed(2) + "%" : "—";
+      const badge = r.declared
+        ? `<span style="background:#e8f8ee;color:#1a6e38;border:1px solid #a8e0b8;border-radius:4px;padding:1px 7px;font-size:10px;font-weight:700;">UPCOMING</span>`
+        : `<span style="background:#f4f6f9;color:#888;border:1px solid #dde;border-radius:4px;padding:1px 7px;font-size:10px;">LAST KNOWN</span>`;
+      const exDiv  = r.ex_div_date || "—";
+      const payDay = r.pay_date    || "—";
+      const amount = r.declared_amount ? "$" + r.declared_amount.toFixed(4) : "—";
+      const total  = r.total_payout  ? "$" + r.total_payout.toLocaleString("en-US", {{minimumFractionDigits:2, maximumFractionDigits:2}}) : "—";
+      const income = r.annual_income ? "$" + r.annual_income.toLocaleString("en-US", {{minimumFractionDigits:2, maximumFractionDigits:2}}) : "—";
+      const yld    = r.div_yield     ? r.div_yield.toFixed(2) + "%" : "—";
+      const yoc    = r.yield_on_cost ? r.yield_on_cost.toFixed(2) + "%" : "—";
       const daysTag = r.days_to_ex !== null && r.days_to_ex >= 0
-        ? `<span style="color:${{r.days_to_ex <= 14 ? '#c8102e' : r.days_to_ex <= 30 ? '#e67e22' : '#555'}};font-weight:600;">${{r.days_to_ex}}d</span>`
-        : "";
+        ? `<span style="color:${{r.days_to_ex <= 14 ? '#c8102e' : r.days_to_ex <= 30 ? '#e67e22' : '#27ae60'}};font-weight:600;">${{r.days_to_ex}}d away</span>`
+        : r.days_to_ex !== null
+          ? `<span style="color:#aaa;font-size:11px;">${{Math.abs(r.days_to_ex)}}d ago</span>`
+          : "";
       return `<tr style="border-bottom:1px solid #f2f4f7;">
         <td style="padding:8px 10px;font-weight:600;">${{r.ticker}}</td>
         <td style="padding:8px 10px;">${{badge}}</td>

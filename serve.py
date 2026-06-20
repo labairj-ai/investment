@@ -149,60 +149,58 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     if not last_amount:
                         return row
 
-                    # ── upcoming declared dates from calendar ─────────────────
+                    # ── declared dates from calendar (keep even if past) ──────
                     ex_date = pay_date = None
                     try:
                         cal = tk.calendar or {}
                         raw_ex  = cal.get("Ex-Dividend Date")
                         raw_pay = cal.get("Dividend Date")
                         if hasattr(raw_ex, "strftime"):
-                            ex_str = raw_ex.strftime("%Y-%m-%d")
-                            # Only use if it's in the future
-                            if datetime.strptime(ex_str, "%Y-%m-%d").date() >= today:
-                                ex_date = ex_str
+                            ex_date  = raw_ex.strftime("%Y-%m-%d")
                         if hasattr(raw_pay, "strftime"):
-                            pay_str = raw_pay.strftime("%Y-%m-%d")
-                            if datetime.strptime(pay_str, "%Y-%m-%d").date() >= today:
-                                pay_date = pay_str
+                            pay_date = raw_pay.strftime("%Y-%m-%d")
                     except Exception:
                         pass
 
-                    # Fall back to info exDividendDate if calendar missing
+                    # Fall back to info exDividendDate (unix timestamp)
                     if not ex_date:
                         try:
                             info = tk.info or {}
                             ts = info.get("exDividendDate")
                             if ts:
-                                d = datetime.utcfromtimestamp(ts).date()
-                                if d >= today:
-                                    ex_date = d.strftime("%Y-%m-%d")
+                                ex_date = datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d")
                         except Exception:
                             pass
+
+                    # Fall back to last dividend date from history
+                    if not ex_date and last_date:
+                        ex_date = last_date
 
                     # ── compute yields from rate + price (not yfinance yield) ─
                     div_yield = round(annual_rate / price * 100, 2) if annual_rate and price else None
                     yoc       = round(annual_rate / avg_cost * 100, 2) if annual_rate and avg_cost else None
 
-                    # ── days until ex-div ─────────────────────────────────────
+                    # ── days until ex-div (negative = already past) ───────────
                     days_to_ex = None
                     if ex_date:
                         days_to_ex = (datetime.strptime(ex_date, "%Y-%m-%d").date() - today).days
 
-                    declared_amount = last_amount  # best estimate for next payout
+                    # declared = confirmed future date; otherwise showing most recent known
+                    is_upcoming = days_to_ex is not None and days_to_ex >= 0
 
                     row.update({
                         "ex_div_date":     ex_date,
                         "pay_date":        pay_date,
-                        "declared_amount": declared_amount,
+                        "declared_amount": last_amount,
                         "annual_rate":     annual_rate,
                         "div_yield":       div_yield,
                         "yield_on_cost":   yoc,
                         "last_amount":     last_amount,
                         "last_date":       last_date,
-                        "total_payout":    round(declared_amount * shares, 2) if declared_amount else None,
+                        "total_payout":    round(last_amount * shares, 2) if last_amount else None,
                         "annual_income":   round(annual_rate * shares, 2) if annual_rate else None,
                         "days_to_ex":      days_to_ex,
-                        "declared":        bool(ex_date),
+                        "declared":        is_upcoming,
                     })
                     results.append(row)
 
