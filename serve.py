@@ -12,9 +12,14 @@ import http.server
 import os
 import sys
 import threading
+import time
 import webbrowser
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
+
+_div_cache = {"data": None, "ts": 0}
+_DIV_CACHE_TTL = 3600  # seconds
 
 PORT = 5001
 
@@ -99,16 +104,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             warnings.filterwarnings("ignore")
 
             from covered_call_rec import load_holdings
+
+            # ── serve from cache if fresh ────────────────────────────────────
+            if _div_cache["data"] and (time.time() - _div_cache["ts"]) < _DIV_CACHE_TTL:
+                return self._json(_div_cache["data"])
+
             holdings = load_holdings()
-
             today = date.today()
-            results = []
 
-            for ticker, meta in sorted(holdings.items()):
+            def fetch_one(ticker, meta):
                 shares   = meta["shares"]
                 avg_cost = meta["avg_cost"]
                 row = {"ticker": ticker, "shares": shares}
-
                 try:
                     tk = yf.Ticker(ticker)
 
@@ -140,7 +147,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
                     # Skip tickers with no dividend history at all
                     if not last_amount:
-                        continue
+                        return row
 
                     # ── upcoming declared dates from calendar ─────────────────
                     ex_date = pay_date = None
@@ -201,7 +208,22 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
                 except Exception as e:
                     row["error"] = str(e)
-                    results.append(row)
+                return row
+
+            # ── fetch all tickers in parallel ────────────────────────────────
+            items   = list(holdings.items())
+            results_raw = []
+            with ThreadPoolExecutor(max_workers=10) as pool:
+                for row in pool.map(lambda kv: fetch_one(kv[0], kv[1]), items):
+                    if row and row.get("last_amount"):
+                        results_raw.append(row)
+
+            # Deduplicate (yfinance occasionally triggers double fetches in threads)
+            seen, results = set(), []
+            for r in results_raw:
+                if r["ticker"] not in seen:
+                    seen.add(r["ticker"])
+                    results.append(r)
 
             # Sort: upcoming declared first by days_to_ex, then last-paid by ticker
             results.sort(key=lambda r: (
@@ -210,7 +232,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 r["ticker"]
             ))
 
-            self._json({"ok": True, "results": results, "as_of": today.isoformat()})
+            payload = {"ok": True, "results": results, "as_of": today.isoformat()}
+            _div_cache["data"] = payload
+            _div_cache["ts"]   = time.time()
+            self._json(payload)
 
         except Exception as e:
             self._json_error(500, str(e))
