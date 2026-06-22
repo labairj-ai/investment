@@ -720,6 +720,11 @@ async function loadDividendTimeline() {{
     const recvd  = data.received.map((v, i) => i <= idx ? v : null);
     const expctd = data.expected.map((v, i) => i >= idx ? v : null);
 
+    // Cumulative total across all months (received past + expected future)
+    const combined = data.months.map((_, i) => (data.received[i] || 0) + (data.expected[i] || 0));
+    let running = 0;
+    const cumulative = combined.map(v => {{ running += v; return Math.round(running * 100) / 100; }});
+
     if (divTimelineChartInst) divTimelineChartInst.destroy();
     divTimelineChartInst = new Chart(canvas, {{
       type: "bar",
@@ -733,6 +738,7 @@ async function loadDividendTimeline() {{
             borderColor:     "#4A90D9",
             borderWidth: 1,
             borderRadius: 3,
+            yAxisID: "y",
           }},
           {{
             label: "Expected",
@@ -741,7 +747,19 @@ async function loadDividendTimeline() {{
             borderColor:     "#50C878",
             borderWidth: 1,
             borderRadius: 3,
-            borderDash: [4, 3],
+            yAxisID: "y",
+          }},
+          {{
+            type: "line",
+            label: "Cumulative",
+            data:  cumulative,
+            borderColor:     "#9B59B6",
+            backgroundColor: "rgba(155,89,182,0.08)",
+            borderWidth: 2,
+            pointRadius: 2,
+            tension: 0.3,
+            fill: false,
+            yAxisID: "y2",
           }},
         ]
       }},
@@ -752,29 +770,24 @@ async function loadDividendTimeline() {{
           legend: {{ position: "top", labels: {{ font: {{ size: 11 }}, boxWidth: 12 }} }},
           tooltip: {{
             callbacks: {{
-              label: ctx => ` ${{ctx.dataset.label}}: ${{ctx.parsed.y != null ? ctx.parsed.y.toFixed(2) : "—"}}`,
+              label: ctx => ` ${{ctx.dataset.label}}: ${{ctx.parsed.y != null ? "$" + ctx.parsed.y.toLocaleString("en-US", {{minimumFractionDigits:2, maximumFractionDigits:2}}) : "—"}}`,
             }}
           }},
-          annotation: idx != null ? {{
-            annotations: {{
-              nowLine: {{
-                type: "line",
-                xMin: idx,
-                xMax: idx,
-                borderColor: "#e74c3c",
-                borderWidth: 1.5,
-                borderDash: [4, 3],
-                label: {{ content: "Today", display: true, position: "start",
-                          font: {{ size: 10 }}, color: "#e74c3c", backgroundColor: "transparent" }}
-              }}
-            }}
-          }} : {{}},
         }},
         scales: {{
           y: {{
             beginAtZero: true,
+            position: "left",
             ticks: {{ callback: v => "$" + v.toFixed(0) }},
-            grid: {{ color: "#f0f0f0" }}
+            grid: {{ color: "#f0f0f0" }},
+            title: {{ display: true, text: "Monthly", font: {{ size: 10 }}, color: "#aaa" }},
+          }},
+          y2: {{
+            beginAtZero: true,
+            position: "right",
+            ticks: {{ callback: v => "$" + (v >= 1000 ? (v/1000).toFixed(1) + "k" : v.toFixed(0)) }},
+            grid: {{ drawOnChartArea: false }},
+            title: {{ display: true, text: "Cumulative", font: {{ size: 10 }}, color: "#9B59B6" }},
           }},
           x: {{ grid: {{ display: false }}, ticks: {{ font: {{ size: 10 }} }} }}
         }}
