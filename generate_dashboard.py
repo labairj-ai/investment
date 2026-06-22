@@ -479,6 +479,13 @@ def build_dashboard(portfolio, layers, holdings):
     </table>
   </div>
 
+  <!-- Dividend Timeline Chart -->
+  <div class="card">
+    <h2>Dividend Income by Month</h2>
+    <div id="div-timeline-status" style="font-size:12px;color:#7f8c8d;">Loading…</div>
+    <canvas id="divTimelineChart" style="max-height:220px;display:none;"></canvas>
+  </div>
+
   <!-- Dividends -->
   <div class="card" id="div-card">
     <h2 style="display:flex;align-items:center;justify-content:space-between;">
@@ -689,6 +696,96 @@ async function loadDividends() {{
 
 // Auto-load dividends on page open
 window.addEventListener("load", loadDividends);
+
+// ── Dividend Timeline Chart ─────────────────────────────────────────────────
+let divTimelineChartInst = null;
+
+async function loadDividendTimeline() {{
+  const status = document.getElementById("div-timeline-status");
+  const canvas = document.getElementById("divTimelineChart");
+  try {{
+    const res  = await fetch("/api/dividend-timeline");
+    const data = await res.json();
+    if (!data.ok) {{ status.textContent = "Error loading timeline."; return; }}
+
+    status.textContent = "";
+    canvas.style.display = "block";
+
+    const labels = data.months.map(m => {{
+      const [y, mo] = m.split("-");
+      return new Date(+y, +mo - 1, 1).toLocaleDateString("en-US", {{month:"short", year:"2-digit"}});
+    }});
+
+    const idx    = data.this_month_idx;
+    const recvd  = data.received.map((v, i) => i <= idx ? v : null);
+    const expctd = data.expected.map((v, i) => i >= idx ? v : null);
+
+    if (divTimelineChartInst) divTimelineChartInst.destroy();
+    divTimelineChartInst = new Chart(canvas, {{
+      type: "bar",
+      data: {{
+        labels,
+        datasets: [
+          {{
+            label: "Received",
+            data:  recvd,
+            backgroundColor: "rgba(74,144,217,0.75)",
+            borderColor:     "#4A90D9",
+            borderWidth: 1,
+            borderRadius: 3,
+          }},
+          {{
+            label: "Expected",
+            data:  expctd,
+            backgroundColor: "rgba(80,200,120,0.55)",
+            borderColor:     "#50C878",
+            borderWidth: 1,
+            borderRadius: 3,
+            borderDash: [4, 3],
+          }},
+        ]
+      }},
+      options: {{
+        responsive: true,
+        interaction: {{ mode: "index", intersect: false }},
+        plugins: {{
+          legend: {{ position: "top", labels: {{ font: {{ size: 11 }}, boxWidth: 12 }} }},
+          tooltip: {{
+            callbacks: {{
+              label: ctx => ` ${{ctx.dataset.label}}: ${{ctx.parsed.y != null ? ctx.parsed.y.toFixed(2) : "—"}}`,
+            }}
+          }},
+          annotation: idx != null ? {{
+            annotations: {{
+              nowLine: {{
+                type: "line",
+                xMin: idx,
+                xMax: idx,
+                borderColor: "#e74c3c",
+                borderWidth: 1.5,
+                borderDash: [4, 3],
+                label: {{ content: "Today", display: true, position: "start",
+                          font: {{ size: 10 }}, color: "#e74c3c", backgroundColor: "transparent" }}
+              }}
+            }}
+          }} : {{}},
+        }},
+        scales: {{
+          y: {{
+            beginAtZero: true,
+            ticks: {{ callback: v => "$" + v.toFixed(0) }},
+            grid: {{ color: "#f0f0f0" }}
+          }},
+          x: {{ grid: {{ display: false }}, ticks: {{ font: {{ size: 10 }} }} }}
+        }}
+      }}
+    }});
+  }} catch(e) {{
+    status.textContent = "Error: " + e.message;
+  }}
+}}
+
+window.addEventListener("load", loadDividendTimeline);
 
 // ── Layer Earnings ──────────────────────────────────────────────────────────
 async function loadLayerEarnings() {{

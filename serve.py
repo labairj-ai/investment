@@ -18,10 +18,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-_div_cache  = {"data": None, "ts": 0}
-_earn_cache = {"data": None, "ts": 0}
-_DIV_CACHE_TTL  = 3600  # seconds
-_EARN_CACHE_TTL = 3600
+_div_cache      = {"data": None, "ts": 0}
+_earn_cache     = {"data": None, "ts": 0}
+_timeline_cache = {"data": None, "ts": 0}
+_DIV_CACHE_TTL      = 3600
+_EARN_CACHE_TTL     = 3600
+_TIMELINE_CACHE_TTL = 3600
 
 PORT = 5001
 
@@ -47,6 +49,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._handle_dividends()
         elif parsed.path == "/api/earnings":
             self._handle_earnings()
+        elif parsed.path == "/api/dividend-timeline":
+            self._handle_dividend_timeline()
         else:
             super().do_GET()
 
@@ -101,6 +105,120 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 "week52_high_dt":   result["week52_high_dt"],
                 "recs":             recs,
             })
+
+        except Exception as e:
+            self._json_error(500, str(e))
+
+    def _handle_dividend_timeline(self):
+        try:
+            import yfinance as yf
+            import warnings
+            from collections import defaultdict
+            from datetime import date, timedelta
+            warnings.filterwarnings("ignore")
+
+            from covered_call_rec import load_holdings
+
+            if _timeline_cache["data"] and (time.time() - _timeline_cache["ts"]) < _TIMELINE_CACHE_TTL:
+                return self._json(_timeline_cache["data"])
+
+            holdings = load_holdings()
+            today    = date.today()
+            MONTHS_BACK    = 12
+            MONTHS_FORWARD = 12
+
+            # Build ordered month list
+            months = []
+            y, m = today.year, today.month
+            # go back
+            by, bm = y, m
+            for _ in range(MONTHS_BACK):
+                bm -= 1
+                if bm == 0:
+                    bm = 12
+                    by -= 1
+            months_back_start = date(by, bm, 1)
+            cur = months_back_start
+            while cur <= date(y + 1, m, 1) + timedelta(days=MONTHS_FORWARD * 31):
+                months.append(cur.strftime("%Y-%m"))
+                # advance one month
+                nm = cur.month + 1
+                ny = cur.year + (1 if nm > 12 else 0)
+                nm = nm if nm <= 12 else 1
+                cur = date(ny, nm, 1)
+            # trim to MONTHS_BACK + MONTHS_FORWARD + 1
+            this_month = today.strftime("%Y-%m")
+            if this_month in months:
+                idx = months.index(this_month)
+                months = months[max(0, idx - MONTHS_BACK): idx + MONTHS_FORWARD + 1]
+
+            received = defaultdict(float)
+            expected = defaultdict(float)
+
+            def fetch_one(ticker, meta):
+                shares = meta["shares"]
+                r_local = defaultdict(float)
+                e_local = defaultdict(float)
+                try:
+                    tk   = yf.Ticker(ticker)
+                    divs = tk.dividends
+                    if divs.empty:
+                        return r_local, e_local
+
+                    # ── historical received ───────────────────────────────────
+                    for ts, amount in divs.items():
+                        d = ts.date() if hasattr(ts, "date") else ts
+                        mk = d.strftime("%Y-%m")
+                        if mk in months:
+                            if d < today:
+                                r_local[mk] += float(amount) * shares
+
+                    # ── estimate future ───────────────────────────────────────
+                    if len(divs) >= 2:
+                        recent = divs.tail(4)
+                        intervals = [(recent.index[i] - recent.index[i-1]).days
+                                     for i in range(1, len(recent))]
+                        avg_days  = sum(intervals) / len(intervals)
+                        freq_days = int(round(avg_days))
+
+                        last_date   = divs.index[-1].date()
+                        last_amount = float(divs.iloc[-1])
+
+                        next_d = last_date + timedelta(days=freq_days)
+                        cutoff = today + timedelta(days=MONTHS_FORWARD * 31)
+                        while next_d <= cutoff:
+                            mk = next_d.strftime("%Y-%m")
+                            if mk in months and next_d > today:
+                                e_local[mk] += last_amount * shares
+                            next_d += timedelta(days=freq_days)
+
+                except Exception:
+                    pass
+                return r_local, e_local
+
+            items = list(holdings.items())
+            with ThreadPoolExecutor(max_workers=10) as pool:
+                for r_local, e_local in pool.map(lambda kv: fetch_one(kv[0], kv[1]), items):
+                    for mk, v in r_local.items():
+                        received[mk] += v
+                    for mk, v in e_local.items():
+                        expected[mk] += v
+
+            received_series = [round(received.get(mk, 0), 2) for mk in months]
+            expected_series = [round(expected.get(mk, 0), 2) for mk in months]
+            this_idx        = months.index(this_month) if this_month in months else None
+
+            payload = {
+                "ok":           True,
+                "months":       months,
+                "received":     received_series,
+                "expected":     expected_series,
+                "this_month":   this_month,
+                "this_month_idx": this_idx,
+            }
+            _timeline_cache["data"] = payload
+            _timeline_cache["ts"]   = time.time()
+            self._json(payload)
 
         except Exception as e:
             self._json_error(500, str(e))
