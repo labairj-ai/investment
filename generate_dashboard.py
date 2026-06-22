@@ -398,6 +398,16 @@ def build_dashboard(portfolio, layers, holdings):
     <h1>Investment Dashboard</h1>
     <div class="subtitle">{today_date} &nbsp;·&nbsp; {len(today_holdings)} holdings across 5 layers</div>
   </div>
+  <div style="display:flex;align-items:center;gap:8px;">
+    <label style="font-size:11px;color:#a0aec0;white-space:nowrap;">Tax Bracket</label>
+    <select onchange="onTaxBracketChange(this)" style="font-size:12px;padding:5px 10px;border:none;border-radius:5px;background:#2d3a55;color:#e2e8f0;cursor:pointer;">
+      <option value="0">$150k MFJ</option>
+      <option value="1">$300k MFJ</option>
+      <option value="2" selected>$500k MFJ</option>
+      <option value="3">$750k MFJ</option>
+      <option value="4">$1M+ MFJ</option>
+    </select>
+  </div>
 </header>
 
 <div class="grid">
@@ -488,18 +498,9 @@ def build_dashboard(portfolio, layers, holdings):
 
   <!-- Dividends -->
   <div class="card" id="div-card">
-    <h2 style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+    <h2 style="display:flex;align-items:center;justify-content:space-between;">
       Upcoming Dividends
-      <span style="display:flex;gap:8px;align-items:center;">
-        <select onchange="onTaxBracketChange(this)" style="font-size:11px;padding:4px 8px;border:1px solid #dde;border-radius:5px;background:#fff;color:#555;">
-          <option value="0">$150k household</option>
-          <option value="1">$300k household</option>
-          <option value="2" selected>$500k household</option>
-          <option value="3">$750k household</option>
-          <option value="4">$1M+ household</option>
-        </select>
-        <button onclick="loadDividends()" style="font-size:11px;padding:4px 12px;background:#f4f6f9;border:1px solid #dde;border-radius:5px;cursor:pointer;color:#555;font-weight:500;">↻ Refresh</button>
-      </span>
+      <button onclick="loadDividends()" style="font-size:11px;padding:4px 12px;background:#f4f6f9;border:1px solid #dde;border-radius:5px;cursor:pointer;color:#555;font-weight:500;">↻ Refresh</button>
     </h2>
     <div id="div-status" style="font-size:12px;color:#7f8c8d;">Loading…</div>
     <div id="div-results"></div>
