@@ -622,6 +622,19 @@ new Chart(document.getElementById("layerBar"), {{
 }});
 
 // ── Dividends ──────────────────────────────────────────────────────────────
+// Tax assumptions: MFJ $500k household income, 2026
+// Qualified dividends: 15% rate + 3.8% NIIT = 18.8%
+// Ordinary income marginal rate: 32% (taxable income ~$470k after std deduction)
+const TAX_QUALIFIED = 0.188;
+const TAX_ORDINARY  = 0.320;
+
+// Tickers that typically pay ordinary (non-qualified) dividends
+const ORDINARY_DIV_TICKERS = new Set(["BTC"]);
+
+function divTaxRate(ticker) {{
+  return ORDINARY_DIV_TICKERS.has(ticker) ? TAX_ORDINARY : TAX_QUALIFIED;
+}}
+
 async function loadDividends() {{
   const status  = document.getElementById("div-status");
   const results = document.getElementById("div-results");
@@ -634,15 +647,22 @@ async function loadDividends() {{
     if (!data.ok) {{ status.textContent = "Error: " + data.error; return; }}
 
     // ── populate annual dividend KPI card ────────────────────────────────
-    const totalAnnual = data.results.reduce((s, r) => s + (r.annual_income || 0), 0);
-    const totalPort   = {total_v};
+    const totalAnnual    = data.results.reduce((s, r) => s + (r.annual_income || 0), 0);
+    const totalAfterTax  = data.results.reduce((s, r) => s + (r.annual_income || 0) * (1 - divTaxRate(r.ticker)), 0);
+    const totalPort      = {total_v};
     document.getElementById("kpi-div-value").textContent =
       "$" + Math.round(totalAnnual).toLocaleString("en-US");
     document.getElementById("kpi-div-yield").textContent =
-      totalPort > 0 ? (totalAnnual / totalPort * 100).toFixed(2) + "% portfolio yield" : "";
+      (totalPort > 0 ? (totalAnnual / totalPort * 100).toFixed(2) + "% yield" : "") +
+      "  ·  $" + Math.round(totalAfterTax).toLocaleString("en-US") + " after-tax";
 
     status.textContent = "";
     const rows = data.results.map(r => {{
+      const taxRate   = divTaxRate(r.ticker);
+      const taxLabel  = taxRate === TAX_ORDINARY ? "32% ord." : "18.8% qual.";
+      const annualTax = r.annual_income ? r.annual_income * taxRate : null;
+      const netIncome = r.annual_income ? r.annual_income * (1 - taxRate) : null;
+
       const badge = r.declared
         ? `<span style="background:#e8f8ee;color:#1a6e38;border:1px solid #a8e0b8;border-radius:4px;padding:1px 7px;font-size:10px;font-weight:700;">UPCOMING</span>`
         : `<span style="background:#f4f6f9;color:#888;border:1px solid #dde;border-radius:4px;padding:1px 7px;font-size:10px;">LAST KNOWN</span>`;
@@ -651,6 +671,8 @@ async function loadDividends() {{
       const amount = r.declared_amount ? "$" + r.declared_amount.toFixed(4) : "—";
       const total  = r.total_payout  ? "$" + r.total_payout.toLocaleString("en-US", {{minimumFractionDigits:2, maximumFractionDigits:2}}) : "—";
       const income = r.annual_income ? "$" + r.annual_income.toLocaleString("en-US", {{minimumFractionDigits:2, maximumFractionDigits:2}}) : "—";
+      const taxStr = annualTax ? `<span style="color:#e74c3c;">-${{annualTax.toLocaleString("en-US",{{minimumFractionDigits:2,maximumFractionDigits:2}})}}</span><br><span style="font-size:10px;color:#aaa;">${{taxLabel}}</span>` : "—";
+      const netStr = netIncome ? `<b style="color:#27ae60;">${{netIncome.toLocaleString("en-US",{{minimumFractionDigits:2,maximumFractionDigits:2}})}}</b>` : "—";
       const yld    = r.div_yield     ? r.div_yield.toFixed(2) + "%" : "—";
       const yoc    = r.yield_on_cost ? r.yield_on_cost.toFixed(2) + "%" : "—";
       const daysTag = r.days_to_ex !== null && r.days_to_ex >= 0
@@ -666,6 +688,8 @@ async function loadDividends() {{
         <td style="padding:8px 10px;font-weight:600;">${{amount}}</td>
         <td style="padding:8px 10px;">${{total}}</td>
         <td style="padding:8px 10px;">${{income}}</td>
+        <td style="padding:8px 10px;">${{taxStr}}</td>
+        <td style="padding:8px 10px;">${{netStr}}</td>
         <td style="padding:8px 10px;">${{yld}}</td>
         <td style="padding:8px 10px;color:#888;">${{yoc}}</td>
       </tr>`;
@@ -682,13 +706,15 @@ async function loadDividends() {{
           <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Amount/Share</th>
           <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">This Payout</th>
           <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Annual Income</th>
+          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Est. Tax</th>
+          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Net After-Tax</th>
           <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Yield</th>
           <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Yield on Cost</th>
         </tr></thead>
         <tbody>${{rows}}</tbody>
       </table>
       </div>
-      <p style="font-size:11px;color:#aaa;margin-top:8px;">As of ${{data.as_of}}. DECLARED = upcoming announced date. LAST PAID = most recent; next date not yet announced.</p>`;
+      <p style="font-size:11px;color:#aaa;margin-top:8px;">As of ${{data.as_of}}. Tax: MFJ $500k income — qualified dividends 18.8% (15% + 3.8% NIIT), ordinary 32%. DECLARED = upcoming announced date.</p>`;
   }} catch(e) {{
     status.textContent = "Error: " + e.message;
   }}
@@ -720,10 +746,17 @@ async function loadDividendTimeline() {{
     const recvd  = data.received.map((v, i) => i <= idx ? v : null);
     const expctd = data.expected.map((v, i) => i >= idx ? v : null);
 
-    // Cumulative total across all months (received past + expected future)
+    // Cumulative gross total
     const combined = data.months.map((_, i) => (data.received[i] || 0) + (data.expected[i] || 0));
     let running = 0;
     const cumulative = combined.map(v => {{ running += v; return Math.round(running * 100) / 100; }});
+
+    // Cumulative after-tax (18.8% qualified rate for all, conservative)
+    let runningNet = 0;
+    const cumulativeNet = combined.map(v => {{
+      runningNet += v * (1 - TAX_QUALIFIED);
+      return Math.round(runningNet * 100) / 100;
+    }});
 
     if (divTimelineChartInst) divTimelineChartInst.destroy();
     divTimelineChartInst = new Chart(canvas, {{
@@ -751,7 +784,7 @@ async function loadDividendTimeline() {{
           }},
           {{
             type: "line",
-            label: "Cumulative",
+            label: "Cumulative (gross)",
             data:  cumulative,
             borderColor:     "#9B59B6",
             backgroundColor: "rgba(155,89,182,0.08)",
@@ -759,6 +792,19 @@ async function loadDividendTimeline() {{
             pointRadius: 2,
             tension: 0.3,
             fill: false,
+            yAxisID: "y2",
+          }},
+          {{
+            type: "line",
+            label: "Cumulative (after-tax)",
+            data:  cumulativeNet,
+            borderColor:     "#E67E22",
+            backgroundColor: "rgba(230,126,34,0.06)",
+            borderWidth: 2,
+            pointRadius: 2,
+            tension: 0.3,
+            fill: false,
+            borderDash: [5, 3],
             yAxisID: "y2",
           }},
         ]
