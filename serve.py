@@ -316,6 +316,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             holdings = load_holdings()
             today = date.today()
 
+            def classify_div_type(info, ticker):
+                """Return 'qualified', 'ordinary', or 'tax_exempt'."""
+                qt       = (info.get("quoteType")  or "").upper()
+                sector   = (info.get("sector")     or "").lower()
+                category = (info.get("category")   or "").lower()
+                name     = (info.get("longName")   or info.get("shortName") or "").lower()
+                muni_kw  = ["municipal", "muni ", "tax-exempt", "tax exempt"]
+                if qt == "CRYPTOCURRENCY":
+                    return "ordinary"
+                if "real estate" in sector:       # REITs → ordinary
+                    return "ordinary"
+                if any(kw in category or kw in name for kw in muni_kw):
+                    return "tax_exempt"           # muni bond funds → federal exempt
+                return "qualified"
+
             def fetch_one(ticker, meta):
                 shares   = meta["shares"]
                 avg_cost = meta["avg_cost"]
@@ -380,6 +395,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     if not ex_date and last_date:
                         ex_date = last_date
 
+                    # ── classify dividend tax type ────────────────────────────
+                    tax_type = "qualified"  # default
+                    try:
+                        info     = tk.info or {}
+                        tax_type = classify_div_type(info, ticker)
+                    except Exception:
+                        pass
+
                     # ── compute yields from rate + price (not yfinance yield) ─
                     div_yield = round(annual_rate / price * 100, 2) if annual_rate and price else None
                     yoc       = round(annual_rate / avg_cost * 100, 2) if annual_rate and avg_cost else None
@@ -405,6 +428,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         "annual_income":   round(annual_rate * shares, 2) if annual_rate else None,
                         "days_to_ex":      days_to_ex,
                         "declared":        is_upcoming,
+                        "tax_type":        tax_type,
                     })
                     results.append(row)
 

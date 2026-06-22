@@ -488,9 +488,18 @@ def build_dashboard(portfolio, layers, holdings):
 
   <!-- Dividends -->
   <div class="card" id="div-card">
-    <h2 style="display:flex;align-items:center;justify-content:space-between;">
+    <h2 style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
       Upcoming Dividends
-      <button onclick="loadDividends()" style="font-size:11px;padding:4px 12px;background:#f4f6f9;border:1px solid #dde;border-radius:5px;cursor:pointer;color:#555;font-weight:500;">↻ Refresh</button>
+      <span style="display:flex;gap:8px;align-items:center;">
+        <select onchange="onTaxBracketChange(this)" style="font-size:11px;padding:4px 8px;border:1px solid #dde;border-radius:5px;background:#fff;color:#555;">
+          <option value="0">$150k household</option>
+          <option value="1">$300k household</option>
+          <option value="2" selected>$500k household</option>
+          <option value="3">$750k household</option>
+          <option value="4">$1M+ household</option>
+        </select>
+        <button onclick="loadDividends()" style="font-size:11px;padding:4px 12px;background:#f4f6f9;border:1px solid #dde;border-radius:5px;cursor:pointer;color:#555;font-weight:500;">↻ Refresh</button>
+      </span>
     </h2>
     <div id="div-status" style="font-size:12px;color:#7f8c8d;">Loading…</div>
     <div id="div-results"></div>
@@ -622,102 +631,144 @@ new Chart(document.getElementById("layerBar"), {{
 }});
 
 // ── Dividends ──────────────────────────────────────────────────────────────
-// Tax assumptions: MFJ $500k household income, 2026
-// Qualified dividends: 15% rate + 3.8% NIIT = 18.8%
-// Ordinary income marginal rate: 32% (taxable income ~$470k after std deduction)
-const TAX_QUALIFIED = 0.188;
-const TAX_ORDINARY  = 0.320;
+// 2026 MFJ tax brackets (after ~$30k standard deduction)
+// qualified = cap gains rate + NIIT; ordinary = marginal rate + NIIT
+const TAX_BRACKETS = [
+  {{ label: "$150k household",  qualified: 0.15,  niit: 0.000, ordinary: 0.22 }},
+  {{ label: "$300k household",  qualified: 0.15,  niit: 0.038, ordinary: 0.24 }},
+  {{ label: "$500k household",  qualified: 0.15,  niit: 0.038, ordinary: 0.32 }},
+  {{ label: "$750k household",  qualified: 0.20,  niit: 0.038, ordinary: 0.35 }},
+  {{ label: "$1M+ household",   qualified: 0.20,  niit: 0.038, ordinary: 0.37 }},
+];
+let CURRENT_BRACKET = TAX_BRACKETS[2];  // default $500k
 
-// Tickers that typically pay ordinary (non-qualified) dividends
-const ORDINARY_DIV_TICKERS = new Set(["BTC"]);
+function effectiveRate(tax_type) {{
+  if (tax_type === "tax_exempt") return 0;
+  if (tax_type === "ordinary")   return CURRENT_BRACKET.ordinary + CURRENT_BRACKET.niit;
+  return CURRENT_BRACKET.qualified + CURRENT_BRACKET.niit;  // qualified
+}}
 
-function divTaxRate(ticker) {{
-  return ORDINARY_DIV_TICKERS.has(ticker) ? TAX_ORDINARY : TAX_QUALIFIED;
+function taxTypeLabel(tax_type) {{
+  if (tax_type === "tax_exempt") return "Tax-Exempt";
+  if (tax_type === "ordinary")   return "Ordinary";
+  return "Qualified";
+}}
+
+let _divData = null;
+
+function renderDividendTable() {{
+  if (!_divData) return;
+  const results = document.getElementById("div-results");
+  const b = CURRENT_BRACKET;
+
+  const totalAnnual   = _divData.results.reduce((s, r) => s + (r.annual_income || 0), 0);
+  const totalAfterTax = _divData.results.reduce((s, r) => s + (r.annual_income || 0) * (1 - effectiveRate(r.tax_type || "qualified")), 0);
+  const totalPort     = {total_v};
+  document.getElementById("kpi-div-value").textContent =
+    "$" + Math.round(totalAnnual).toLocaleString("en-US");
+  document.getElementById("kpi-div-yield").textContent =
+    (totalPort > 0 ? (totalAnnual / totalPort * 100).toFixed(2) + "% yield" : "") +
+    "  ·  $" + Math.round(totalAfterTax).toLocaleString("en-US") + " after-tax";
+
+  const rows = _divData.results.map(r => {{
+    const taxType   = r.tax_type || "qualified";
+    const rate      = effectiveRate(taxType);
+    const typeLabel = taxTypeLabel(taxType);
+    const ratePct   = (rate * 100).toFixed(1) + "%";
+    const typeColor = taxType === "tax_exempt" ? "#27ae60"
+                    : taxType === "ordinary"   ? "#c8102e"
+                    : "#555";
+    const annualTax = r.annual_income ? r.annual_income * rate : null;
+    const netIncome = r.annual_income ? r.annual_income * (1 - rate) : null;
+
+    const badge = r.declared
+      ? `<span style="background:#e8f8ee;color:#1a6e38;border:1px solid #a8e0b8;border-radius:4px;padding:1px 7px;font-size:10px;font-weight:700;">UPCOMING</span>`
+      : `<span style="background:#f4f6f9;color:#888;border:1px solid #dde;border-radius:4px;padding:1px 7px;font-size:10px;">LAST KNOWN</span>`;
+    const exDiv  = r.ex_div_date || "—";
+    const payDay = r.pay_date    || "—";
+    const amount = r.declared_amount ? "$" + r.declared_amount.toFixed(4) : "—";
+    const total  = r.total_payout  ? "$" + r.total_payout.toLocaleString("en-US", {{minimumFractionDigits:2, maximumFractionDigits:2}}) : "—";
+    const income = r.annual_income ? "$" + r.annual_income.toLocaleString("en-US", {{minimumFractionDigits:2, maximumFractionDigits:2}}) : "—";
+    const taxStr = taxType === "tax_exempt"
+      ? `<span style="color:#27ae60;font-size:11px;">Federal Exempt</span>`
+      : annualTax
+        ? `<span style="color:#e74c3c;">-${{annualTax.toLocaleString("en-US",{{minimumFractionDigits:2,maximumFractionDigits:2}})}}</span>
+           <br><span style="font-size:10px;color:${{typeColor}};">${{typeLabel}} ${{ratePct}}</span>`
+        : "—";
+    const netStr = netIncome
+      ? `<b style="color:#27ae60;">${{netIncome.toLocaleString("en-US",{{minimumFractionDigits:2,maximumFractionDigits:2}})}}</b>`
+      : taxType === "tax_exempt" ? `<b style="color:#27ae60;">${{income}}</b>` : "—";
+    const yld = r.div_yield     ? r.div_yield.toFixed(2) + "%" : "—";
+    const yoc = r.yield_on_cost ? r.yield_on_cost.toFixed(2) + "%" : "—";
+    const daysTag = r.days_to_ex !== null && r.days_to_ex >= 0
+      ? `<span style="color:${{r.days_to_ex <= 14 ? '#c8102e' : r.days_to_ex <= 30 ? '#e67e22' : '#27ae60'}};font-weight:600;">${{r.days_to_ex}}d away</span>`
+      : r.days_to_ex !== null
+        ? `<span style="color:#aaa;font-size:11px;">${{Math.abs(r.days_to_ex)}}d ago</span>`
+        : "";
+    return `<tr style="border-bottom:1px solid #f2f4f7;">
+      <td style="padding:8px 10px;font-weight:600;">${{r.ticker}}</td>
+      <td style="padding:8px 10px;">${{badge}}</td>
+      <td style="padding:8px 10px;">${{exDiv}} ${{daysTag}}</td>
+      <td style="padding:8px 10px;">${{payDay}}</td>
+      <td style="padding:8px 10px;font-weight:600;">${{amount}}</td>
+      <td style="padding:8px 10px;">${{total}}</td>
+      <td style="padding:8px 10px;">${{income}}</td>
+      <td style="padding:8px 10px;">${{taxStr}}</td>
+      <td style="padding:8px 10px;">${{netStr}}</td>
+      <td style="padding:8px 10px;">${{yld}}</td>
+      <td style="padding:8px 10px;color:#888;">${{yoc}}</td>
+    </tr>`;
+  }}).join("");
+
+  const qRate = ((b.qualified + b.niit) * 100).toFixed(1);
+  const oRate = ((b.ordinary  + b.niit) * 100).toFixed(1);
+
+  results.innerHTML = `
+    <div style="overflow-x:auto;margin-top:10px;">
+    <table style="width:100%;border-collapse:collapse;font-size:13px;">
+      <thead><tr style="background:#f4f6f9;">
+        <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Ticker</th>
+        <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Status</th>
+        <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Ex-Div Date</th>
+        <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Pay Date</th>
+        <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Amount/Share</th>
+        <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">This Payout</th>
+        <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Annual Income</th>
+        <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Est. Tax</th>
+        <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Net After-Tax</th>
+        <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Yield</th>
+        <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Yield on Cost</th>
+      </tr></thead>
+      <tbody>${{rows}}</tbody>
+    </table>
+    </div>
+    <p style="font-size:11px;color:#aaa;margin-top:8px;">
+      Tax basis: MFJ ${{b.label.replace(" household","")}} — Qualified ${{qRate}}% (cap gains + NIIT), Ordinary ${{oRate}}% (marginal + NIIT), Municipal = federal exempt.
+      As of ${{_divData.as_of}}.
+    </p>`;
 }}
 
 async function loadDividends() {{
-  const status  = document.getElementById("div-status");
-  const results = document.getElementById("div-results");
+  const status = document.getElementById("div-status");
   status.textContent = "Loading dividend data…";
-  results.innerHTML  = "";
-
+  document.getElementById("div-results").innerHTML = "";
   try {{
     const res  = await fetch("/api/dividends");
     const data = await res.json();
     if (!data.ok) {{ status.textContent = "Error: " + data.error; return; }}
-
-    // ── populate annual dividend KPI card ────────────────────────────────
-    const totalAnnual    = data.results.reduce((s, r) => s + (r.annual_income || 0), 0);
-    const totalAfterTax  = data.results.reduce((s, r) => s + (r.annual_income || 0) * (1 - divTaxRate(r.ticker)), 0);
-    const totalPort      = {total_v};
-    document.getElementById("kpi-div-value").textContent =
-      "$" + Math.round(totalAnnual).toLocaleString("en-US");
-    document.getElementById("kpi-div-yield").textContent =
-      (totalPort > 0 ? (totalAnnual / totalPort * 100).toFixed(2) + "% yield" : "") +
-      "  ·  $" + Math.round(totalAfterTax).toLocaleString("en-US") + " after-tax";
-
+    _divData = data;
     status.textContent = "";
-    const rows = data.results.map(r => {{
-      const taxRate   = divTaxRate(r.ticker);
-      const taxLabel  = taxRate === TAX_ORDINARY ? "32% ord." : "18.8% qual.";
-      const annualTax = r.annual_income ? r.annual_income * taxRate : null;
-      const netIncome = r.annual_income ? r.annual_income * (1 - taxRate) : null;
-
-      const badge = r.declared
-        ? `<span style="background:#e8f8ee;color:#1a6e38;border:1px solid #a8e0b8;border-radius:4px;padding:1px 7px;font-size:10px;font-weight:700;">UPCOMING</span>`
-        : `<span style="background:#f4f6f9;color:#888;border:1px solid #dde;border-radius:4px;padding:1px 7px;font-size:10px;">LAST KNOWN</span>`;
-      const exDiv  = r.ex_div_date || "—";
-      const payDay = r.pay_date    || "—";
-      const amount = r.declared_amount ? "$" + r.declared_amount.toFixed(4) : "—";
-      const total  = r.total_payout  ? "$" + r.total_payout.toLocaleString("en-US", {{minimumFractionDigits:2, maximumFractionDigits:2}}) : "—";
-      const income = r.annual_income ? "$" + r.annual_income.toLocaleString("en-US", {{minimumFractionDigits:2, maximumFractionDigits:2}}) : "—";
-      const taxStr = annualTax ? `<span style="color:#e74c3c;">-${{annualTax.toLocaleString("en-US",{{minimumFractionDigits:2,maximumFractionDigits:2}})}}</span><br><span style="font-size:10px;color:#aaa;">${{taxLabel}}</span>` : "—";
-      const netStr = netIncome ? `<b style="color:#27ae60;">${{netIncome.toLocaleString("en-US",{{minimumFractionDigits:2,maximumFractionDigits:2}})}}</b>` : "—";
-      const yld    = r.div_yield     ? r.div_yield.toFixed(2) + "%" : "—";
-      const yoc    = r.yield_on_cost ? r.yield_on_cost.toFixed(2) + "%" : "—";
-      const daysTag = r.days_to_ex !== null && r.days_to_ex >= 0
-        ? `<span style="color:${{r.days_to_ex <= 14 ? '#c8102e' : r.days_to_ex <= 30 ? '#e67e22' : '#27ae60'}};font-weight:600;">${{r.days_to_ex}}d away</span>`
-        : r.days_to_ex !== null
-          ? `<span style="color:#aaa;font-size:11px;">${{Math.abs(r.days_to_ex)}}d ago</span>`
-          : "";
-      return `<tr style="border-bottom:1px solid #f2f4f7;">
-        <td style="padding:8px 10px;font-weight:600;">${{r.ticker}}</td>
-        <td style="padding:8px 10px;">${{badge}}</td>
-        <td style="padding:8px 10px;">${{exDiv}} ${{daysTag}}</td>
-        <td style="padding:8px 10px;">${{payDay}}</td>
-        <td style="padding:8px 10px;font-weight:600;">${{amount}}</td>
-        <td style="padding:8px 10px;">${{total}}</td>
-        <td style="padding:8px 10px;">${{income}}</td>
-        <td style="padding:8px 10px;">${{taxStr}}</td>
-        <td style="padding:8px 10px;">${{netStr}}</td>
-        <td style="padding:8px 10px;">${{yld}}</td>
-        <td style="padding:8px 10px;color:#888;">${{yoc}}</td>
-      </tr>`;
-    }}).join("");
-
-    results.innerHTML = `
-      <div style="overflow-x:auto;margin-top:10px;">
-      <table style="width:100%;border-collapse:collapse;font-size:13px;">
-        <thead><tr style="background:#f4f6f9;">
-          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Ticker</th>
-          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Status</th>
-          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Ex-Div Date</th>
-          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Pay Date</th>
-          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Amount/Share</th>
-          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">This Payout</th>
-          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Annual Income</th>
-          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Est. Tax</th>
-          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Net After-Tax</th>
-          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Yield</th>
-          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Yield on Cost</th>
-        </tr></thead>
-        <tbody>${{rows}}</tbody>
-      </table>
-      </div>
-      <p style="font-size:11px;color:#aaa;margin-top:8px;">As of ${{data.as_of}}. Tax: MFJ $500k income — qualified dividends 18.8% (15% + 3.8% NIIT), ordinary 32%. DECLARED = upcoming announced date.</p>`;
+    renderDividendTable();
   }} catch(e) {{
     status.textContent = "Error: " + e.message;
   }}
+}}
+
+function onTaxBracketChange(sel) {{
+  CURRENT_BRACKET = TAX_BRACKETS[sel.value];
+  renderDividendTable();
+  // Redraw chart with new after-tax line
+  if (typeof loadDividendTimeline === "function") loadDividendTimeline();
 }}
 
 // Auto-load dividends on page open
@@ -751,10 +802,11 @@ async function loadDividendTimeline() {{
     let running = 0;
     const cumulative = combined.map(v => {{ running += v; return Math.round(running * 100) / 100; }});
 
-    // Cumulative after-tax (18.8% qualified rate for all, conservative)
+    // Cumulative after-tax using current bracket's qualified rate (conservative avg)
+    const netRate = CURRENT_BRACKET.qualified + CURRENT_BRACKET.niit;
     let runningNet = 0;
     const cumulativeNet = combined.map(v => {{
-      runningNet += v * (1 - TAX_QUALIFIED);
+      runningNet += v * (1 - netRate);
       return Math.round(runningNet * 100) / 100;
     }});
 
