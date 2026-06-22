@@ -504,6 +504,25 @@ def build_dashboard(portfolio, layers, holdings):
     </h2>
     <div id="div-status" style="font-size:12px;color:#7f8c8d;">Loading…</div>
     <div id="div-results"></div>
+
+    <!-- Ticker Lookup -->
+    <div style="margin-top:24px;padding-top:18px;border-top:1px solid #eee;">
+      <h2 style="margin-bottom:12px;">Dividend Lookup</h2>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+        <input id="lookup-ticker" type="text" placeholder="Ticker (e.g. VYM)"
+          style="padding:7px 12px;border:1px solid #dde;border-radius:6px;font-size:13px;width:130px;text-transform:uppercase;"
+          onkeydown="if(event.key==='Enter') lookupDividend()">
+        <input id="lookup-shares" type="number" placeholder="# Shares" min="1"
+          style="padding:7px 12px;border:1px solid #dde;border-radius:6px;font-size:13px;width:120px;"
+          onkeydown="if(event.key==='Enter') lookupDividend()">
+        <button onclick="lookupDividend()"
+          style="padding:7px 18px;background:#1a2340;color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;">
+          Look Up
+        </button>
+        <span id="lookup-status" style="font-size:12px;color:#7f8c8d;"></span>
+      </div>
+      <div id="lookup-results" style="margin-top:14px;"></div>
+    </div>
   </div>
 
   <!-- Covered Call Analyzer -->
@@ -653,6 +672,95 @@ function taxTypeLabel(tax_type) {{
   if (tax_type === "tax_exempt") return "Tax-Exempt";
   if (tax_type === "ordinary")   return "Ordinary";
   return "Qualified";
+}}
+
+// ── Dividend Lookup ───────────────────────────────────────────────────────────
+async function lookupDividend() {{
+  const ticker  = (document.getElementById("lookup-ticker").value || "").trim().toUpperCase();
+  const shares  = parseFloat(document.getElementById("lookup-shares").value) || 0;
+  const status  = document.getElementById("lookup-status");
+  const results = document.getElementById("lookup-results");
+
+  if (!ticker) {{ status.textContent = "Enter a ticker."; return; }}
+
+  status.textContent = `Fetching ${{ticker}}…`;
+  results.innerHTML  = "";
+
+  try {{
+    const res  = await fetch(`/api/dividend-lookup?ticker=${{ticker}}&shares=${{shares}}`);
+    const d    = await res.json();
+    if (!d.ok) {{ status.textContent = d.error || "Not found."; return; }}
+    status.textContent = "";
+
+    if (!d.annual_rate) {{
+      results.innerHTML = `<p style="color:#888;font-size:13px;">
+        <b>${{d.ticker}}</b> (${{d.name}}) — no dividend history found. Current price: $${{d.price?.toFixed(2) ?? "—"}}</p>`;
+      return;
+    }}
+
+    const rate      = effectiveRate(d.tax_type || "qualified");
+    const typeLabel = taxTypeLabel(d.tax_type || "qualified");
+    const ratePct   = (rate * 100).toFixed(1) + "%";
+    const tax       = d.annual_income ? d.annual_income * rate : null;
+    const net       = d.annual_income ? d.annual_income * (1 - rate) : null;
+    const fmt       = v => v != null ? "$" + v.toLocaleString("en-US", {{minimumFractionDigits:2, maximumFractionDigits:2}}) : "—";
+
+    // Portfolio comparison
+    const portAnnual = _divData
+      ? _divData.results.reduce((s,r) => s + (r.annual_income||0), 0) : 0;
+    const portNet    = _divData
+      ? _divData.results.reduce((s,r) => s + (r.annual_income||0)*(1-effectiveRate(r.tax_type||"qualified")), 0) : 0;
+    const newAnnual  = portAnnual + (d.annual_income || 0);
+    const newNet     = portNet    + (net || 0);
+
+    const exInfo = d.ex_div_date
+      ? `${{d.ex_div_date}}${{d.days_to_ex != null ? ` (${{d.days_to_ex >= 0 ? d.days_to_ex+"d away" : Math.abs(d.days_to_ex)+"d ago"}})` : ""}}`
+      : "—";
+    const taxColor = d.tax_type === "tax_exempt" ? "#27ae60"
+                   : d.tax_type === "ordinary"   ? "#c8102e" : "#555";
+
+    results.innerHTML = `
+      <div style="background:#f8fafc;border:1.5px solid #dde;border-radius:8px;padding:16px 20px;">
+        <div style="font-size:14px;font-weight:700;margin-bottom:10px;color:#1a2340;">
+          ${{d.ticker}} &nbsp;<span style="font-weight:400;color:#7f8c8d;font-size:12px;">${{d.name}}</span>
+          <span style="float:right;font-size:12px;color:#555;">$${{d.price?.toFixed(2)}} / share</span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:14px;">
+          ${{card("Ex-Div Date", exInfo)}}
+          ${{card("Pay Date", d.pay_date || "—")}}
+          ${{card("Amount / Share", d.declared_amount ? "$"+d.declared_amount.toFixed(4) : "—")}}
+          ${{card("Annual Rate", d.annual_rate ? "$"+d.annual_rate.toFixed(4) : "—")}}
+          ${{card("Div Yield", d.div_yield ? d.div_yield.toFixed(2)+"%" : "—")}}
+          ${{card("Tax Type", `<span style="color:${{taxColor}}">${{typeLabel}} (${{ratePct}})</span>`)}}
+        </div>
+        ${{shares > 0 ? `
+        <div style="border-top:1px solid #eee;padding-top:12px;margin-top:4px;">
+          <div style="font-size:12px;font-weight:700;color:#7f8c8d;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;">
+            With ${{shares.toLocaleString()}} shares
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:14px;">
+            ${{card("This Payout", fmt(d.total_payout))}}
+            ${{card("Annual Income", fmt(d.annual_income), "#1a2340")}}
+            ${{card("Est. Tax", tax ? `-${{(tax).toLocaleString("en-US",{{minimumFractionDigits:2,maximumFractionDigits:2}})}}` : "—", "#e74c3c")}}
+            ${{card("Net After-Tax", fmt(net), "#27ae60")}}
+          </div>
+          <div style="font-size:12px;color:#555;background:#fff;border:1px solid #e8f0fe;border-radius:6px;padding:10px 14px;">
+            📊 <b>Portfolio impact:</b>
+            Annual income ${{fmt(portAnnual)}} → <b>${{fmt(newAnnual)}}</b> &nbsp;·&nbsp;
+            After-tax ${{fmt(portNet)}} → <b style="color:#27ae60;">${{fmt(newNet)}}</b>
+          </div>
+        </div>` : ""}}
+      </div>`;
+  }} catch(e) {{
+    status.textContent = "Error: " + e.message;
+  }}
+}}
+
+function card(label, value, color="#2c3e50") {{
+  return `<div style="background:#fff;border:1px solid #eee;border-radius:6px;padding:10px 12px;">
+    <div style="font-size:10px;color:#aaa;text-transform:uppercase;letter-spacing:.08em;margin-bottom:3px;">${{label}}</div>
+    <div style="font-size:13px;font-weight:600;color:${{color}}">${{value}}</div>
+  </div>`;
 }}
 
 let _divData = null;

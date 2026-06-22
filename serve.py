@@ -28,6 +28,22 @@ _TIMELINE_CACHE_TTL = 3600
 PORT = 5001
 
 
+def _classify_div_type(info, ticker):
+    """Return 'qualified', 'ordinary', or 'tax_exempt' for a holding."""
+    qt       = (info.get("quoteType")  or "").upper()
+    sector   = (info.get("sector")     or "").lower()
+    category = (info.get("category")   or "").lower()
+    name     = (info.get("longName")   or info.get("shortName") or "").lower()
+    muni_kw  = ["municipal", "muni ", "tax-exempt", "tax exempt"]
+    if qt == "CRYPTOCURRENCY":
+        return "ordinary"
+    if "real estate" in sector:
+        return "ordinary"
+    if any(kw in category or kw in name for kw in muni_kw):
+        return "tax_exempt"
+    return "qualified"
+
+
 def _safe_float(v, default=0.0):
     """Convert v to float, returning default for None/NaN/inf."""
     try:
@@ -51,6 +67,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._handle_earnings()
         elif parsed.path == "/api/dividend-timeline":
             self._handle_dividend_timeline()
+        elif parsed.path == "/api/dividend-lookup":
+            self._handle_dividend_lookup(parse_qs(parsed.query))
         else:
             super().do_GET()
 
@@ -300,6 +318,109 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         except Exception as e:
             self._json_error(500, str(e))
 
+    def _handle_dividend_lookup(self, params):
+        try:
+            import yfinance as yf
+            import warnings
+            from datetime import date, datetime
+            warnings.filterwarnings("ignore")
+
+            ticker = (params.get("ticker", [None])[0] or "").upper().strip()
+            shares = float(params.get("shares", ["0"])[0] or 0)
+            if not ticker:
+                return self._json_error(400, "Missing ticker")
+
+            from covered_call_rec import normalize_ticker
+            ticker = normalize_ticker(ticker)
+
+            today = date.today()
+            tk    = yf.Ticker(ticker)
+
+            # Price
+            price = None
+            try:
+                hist  = tk.history(period="2d")
+                price = _safe_float(hist["Close"].dropna().iloc[-1]) if not hist.empty else None
+            except Exception:
+                pass
+
+            if price is None:
+                return self._json({"ok": False, "error": f"Could not fetch price for {ticker}"})
+
+            # Name
+            name = ticker
+            try:
+                info = tk.info or {}
+                name = info.get("longName") or info.get("shortName") or ticker
+            except Exception:
+                info = {}
+
+            # Dividend history
+            last_amount = last_date = annual_rate = None
+            try:
+                divs = tk.dividends
+                if not divs.empty:
+                    last_amount = round(float(divs.iloc[-1]), 4)
+                    last_date   = divs.index[-1].strftime("%Y-%m-%d")
+                    if len(divs) >= 2:
+                        intervals = [(divs.index[i] - divs.index[i-1]).days
+                                     for i in range(max(1, len(divs)-4), len(divs))]
+                        avg_days  = sum(intervals) / len(intervals)
+                        freq      = 4 if avg_days < 100 else (2 if avg_days < 250 else 1)
+                        annual_rate = round(float(divs.iloc[-1]) * freq, 4)
+            except Exception:
+                pass
+
+            # Upcoming dates
+            ex_date = pay_date = None
+            try:
+                cal = tk.calendar or {}
+                raw_ex  = cal.get("Ex-Dividend Date")
+                raw_pay = cal.get("Dividend Date")
+                if hasattr(raw_ex, "strftime"):
+                    ex_date  = raw_ex.strftime("%Y-%m-%d")
+                if hasattr(raw_pay, "strftime"):
+                    pay_date = raw_pay.strftime("%Y-%m-%d")
+            except Exception:
+                pass
+            if not ex_date and last_date:
+                ex_date = last_date
+
+            days_to_ex  = (datetime.strptime(ex_date, "%Y-%m-%d").date() - today).days if ex_date else None
+            is_upcoming = days_to_ex is not None and days_to_ex >= 0
+
+            # Tax type
+            try:
+                tax_type = _classify_div_type(info, ticker)
+            except Exception:
+                tax_type = "qualified"
+
+            div_yield   = round(annual_rate / price * 100, 2) if annual_rate and price else None
+            total_payout  = round(last_amount * shares, 2)   if last_amount and shares else None
+            annual_income = round(annual_rate * shares, 2)    if annual_rate and shares else None
+
+            self._json({
+                "ok":           True,
+                "ticker":       ticker,
+                "name":         name,
+                "price":        round(price, 2) if price else None,
+                "shares":       shares,
+                "ex_div_date":  ex_date,
+                "pay_date":     pay_date,
+                "declared_amount": last_amount,
+                "last_date":    last_date,
+                "annual_rate":  annual_rate,
+                "div_yield":    div_yield,
+                "total_payout": total_payout,
+                "annual_income":annual_income,
+                "days_to_ex":   days_to_ex,
+                "declared":     is_upcoming,
+                "tax_type":     tax_type,
+            })
+
+        except Exception as e:
+            self._json_error(500, str(e))
+
     def _handle_dividends(self):
         try:
             import yfinance as yf
@@ -315,21 +436,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
             holdings = load_holdings()
             today = date.today()
-
-            def classify_div_type(info, ticker):
-                """Return 'qualified', 'ordinary', or 'tax_exempt'."""
-                qt       = (info.get("quoteType")  or "").upper()
-                sector   = (info.get("sector")     or "").lower()
-                category = (info.get("category")   or "").lower()
-                name     = (info.get("longName")   or info.get("shortName") or "").lower()
-                muni_kw  = ["municipal", "muni ", "tax-exempt", "tax exempt"]
-                if qt == "CRYPTOCURRENCY":
-                    return "ordinary"
-                if "real estate" in sector:       # REITs → ordinary
-                    return "ordinary"
-                if any(kw in category or kw in name for kw in muni_kw):
-                    return "tax_exempt"           # muni bond funds → federal exempt
-                return "qualified"
 
             def fetch_one(ticker, meta):
                 shares   = meta["shares"]
@@ -399,7 +505,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     tax_type = "qualified"  # default
                     try:
                         info     = tk.info or {}
-                        tax_type = classify_div_type(info, ticker)
+                        tax_type = _classify_div_type(info, ticker)
                     except Exception:
                         pass
 
