@@ -122,35 +122,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if _timeline_cache["data"] and (time.time() - _timeline_cache["ts"]) < _TIMELINE_CACHE_TTL:
                 return self._json(_timeline_cache["data"])
 
-            holdings = load_holdings()
-            today    = date.today()
-            MONTHS_BACK    = 12
-            MONTHS_FORWARD = 12
-
-            # Build ordered month list
-            months = []
-            y, m = today.year, today.month
-            # go back
-            by, bm = y, m
-            for _ in range(MONTHS_BACK):
-                bm -= 1
-                if bm == 0:
-                    bm = 12
-                    by -= 1
-            months_back_start = date(by, bm, 1)
-            cur = months_back_start
-            while cur <= date(y + 1, m, 1) + timedelta(days=MONTHS_FORWARD * 31):
-                months.append(cur.strftime("%Y-%m"))
-                # advance one month
-                nm = cur.month + 1
-                ny = cur.year + (1 if nm > 12 else 0)
-                nm = nm if nm <= 12 else 1
-                cur = date(ny, nm, 1)
-            # trim to MONTHS_BACK + MONTHS_FORWARD + 1
+            holdings   = load_holdings()
+            today      = date.today()
+            this_year  = today.year
             this_month = today.strftime("%Y-%m")
-            if this_month in months:
-                idx = months.index(this_month)
-                months = months[max(0, idx - MONTHS_BACK): idx + MONTHS_FORWARD + 1]
+
+            # Always Jan–Dec of the current year
+            months = [date(this_year, m, 1).strftime("%Y-%m") for m in range(1, 13)]
 
             received = defaultdict(float)
             expected = defaultdict(float)
@@ -185,7 +163,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         last_amount = float(divs.iloc[-1])
 
                         next_d = last_date + timedelta(days=freq_days)
-                        cutoff = today + timedelta(days=MONTHS_FORWARD * 31)
+                        cutoff = date(this_year, 12, 31)
                         while next_d <= cutoff:
                             mk = next_d.strftime("%Y-%m")
                             if mk in months and next_d > today:
