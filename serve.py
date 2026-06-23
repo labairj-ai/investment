@@ -55,6 +55,59 @@ PROJECT_DIR = Path(__file__).parent
 os.chdir(PROJECT_DIR)
 
 
+# ── Daily newsletter scheduler ────────────────────────────────────────────────
+def _run_daily():
+    """
+    Background thread: runs the newsletter + dashboard once per day.
+    Fires immediately if it's ≥ 8 AM ET and hasn't run today.
+    Rechecks every 30 minutes to catch the 8 AM window if the server
+    was already running beforehand.
+    """
+    import subprocess
+    from zoneinfo import ZoneInfo
+    from datetime import datetime as _dt
+    TZ      = ZoneInfo("America/New_York")
+    FLAG    = PROJECT_DIR / "out" / "last_run_date.txt"
+    VENV_PY = PROJECT_DIR / "venv" / "bin" / "python3"
+    LOG     = PROJECT_DIR / "out" / "newsletter.log"
+
+    def already_ran(today):
+        try:
+            return FLAG.read_text().strip() == today
+        except Exception:
+            return False
+
+    def run():
+        with open(LOG, "a") as lf:
+            lf.write(f"\n=== SCHEDULER {_dt.now(TZ)} ===\n")
+            for script in ["send_newsletter_main.py", "generate_dashboard.py"]:
+                result = subprocess.run(
+                    [str(VENV_PY), str(PROJECT_DIR / script)],
+                    cwd=str(PROJECT_DIR),
+                    capture_output=True, text=True, timeout=300
+                )
+                lf.write(result.stdout or "")
+                if result.returncode != 0:
+                    lf.write(f"ERROR ({script}): {result.stderr}\n")
+                    return False
+        return True
+
+    while True:
+        now   = _dt.now(TZ)
+        today = now.date().isoformat()
+        if now.hour >= 8 and not already_ran(today):
+            print(f"[Scheduler] Running newsletter for {today}…")
+            if run():
+                FLAG.write_text(today)
+                print(f"[Scheduler] Done for {today}.")
+            else:
+                print(f"[Scheduler] Failed — will retry in 30 min.")
+        time.sleep(1800)
+
+
+threading.Thread(target=_run_daily, daemon=True).start()
+
+
 class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self):
