@@ -21,9 +21,24 @@ from urllib.parse import urlparse, parse_qs
 _div_cache      = {"data": None, "ts": 0}
 _earn_cache     = {"data": None, "ts": 0}
 _timeline_cache = {"data": None, "ts": 0}
-_DIV_CACHE_TTL      = 3600
+_DIV_CACHE_TTL      = 3600   # 1 hour
 _EARN_CACHE_TTL     = 3600
 _TIMELINE_CACHE_TTL = 3600
+
+
+def _cache_valid(cache, ttl):
+    """Cache is valid only if fresh AND from today (invalidates at midnight)."""
+    if not cache["data"] or (time.time() - cache["ts"]) > ttl:
+        return False
+    from datetime import date
+    return cache.get("date") == date.today().isoformat()
+
+
+def _cache_set(cache, data):
+    from datetime import date
+    cache["data"] = data
+    cache["ts"]   = time.time()
+    cache["date"] = date.today().isoformat()
 
 PORT = 5001
 
@@ -190,7 +205,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
             from covered_call_rec import load_holdings
 
-            if _timeline_cache["data"] and (time.time() - _timeline_cache["ts"]) < _TIMELINE_CACHE_TTL:
+            if _cache_valid(_timeline_cache, _TIMELINE_CACHE_TTL):
                 return self._json(_timeline_cache["data"])
 
             holdings   = load_holdings()
@@ -265,8 +280,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 "this_month":   this_month,
                 "this_month_idx": this_idx,
             }
-            _timeline_cache["data"] = payload
-            _timeline_cache["ts"]   = time.time()
+            _cache_set(_timeline_cache, payload)
             self._json(payload)
 
         except Exception as e:
@@ -281,7 +295,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
             from covered_call_rec import load_holdings
 
-            if _earn_cache["data"] and (time.time() - _earn_cache["ts"]) < _EARN_CACHE_TTL:
+            if _cache_valid(_earn_cache, _EARN_CACHE_TTL):
                 return self._json(_earn_cache["data"])
 
             holdings  = load_holdings()
@@ -364,8 +378,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             ))
 
             payload = {"ok": True, "results": results, "as_of": today.isoformat()}
-            _earn_cache["data"] = payload
-            _earn_cache["ts"]   = time.time()
+            _cache_set(_earn_cache, payload)
             self._json(payload)
 
         except Exception as e:
@@ -484,7 +497,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             from covered_call_rec import load_holdings
 
             # ── serve from cache if fresh ────────────────────────────────────
-            if _div_cache["data"] and (time.time() - _div_cache["ts"]) < _DIV_CACHE_TTL:
+            if _cache_valid(_div_cache, _DIV_CACHE_TTL):
                 return self._json(_div_cache["data"])
 
             holdings = load_holdings()
@@ -618,8 +631,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             ))
 
             payload = {"ok": True, "results": results, "as_of": today.isoformat()}
-            _div_cache["data"] = payload
-            _div_cache["ts"]   = time.time()
+            _cache_set(_div_cache, payload)
             self._json(payload)
 
         except Exception as e:
@@ -630,6 +642,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", len(body))
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(body)
@@ -639,6 +652,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", len(body))
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 

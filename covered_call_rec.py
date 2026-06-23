@@ -130,13 +130,21 @@ def get_risk_events(stock: yf.Ticker, today, exp_date) -> list:
 def analyze(ticker: str, avg_cost: float, shares: float):
     stock = yf.Ticker(ticker)
 
-    hist = stock.history(period="52wk")
-    if hist.empty:
+    # Current price: short fetch so it's always today's data
+    price_hist = stock.history(period="2d")
+    if price_hist.empty:
         print(f"  [{ticker}] No price data — skipping.")
         return None
-    current_price  = float(hist["Close"].dropna().iloc[-1])
-    week52_high    = float(hist["High"].max())
-    week52_high_dt = hist["High"].idxmax().strftime("%Y-%m-%d")
+    current_price = float(price_hist["Close"].dropna().iloc[-1])
+
+    # 52-week high: separate full-year fetch
+    hist = stock.history(period="52wk")
+    if hist.empty:
+        week52_high    = current_price
+        week52_high_dt = "n/a"
+    else:
+        week52_high    = float(hist["High"].max())
+        week52_high_dt = hist["High"].idxmax().strftime("%Y-%m-%d")
 
     strike_floor = min_strike(current_price, avg_cost)
     gain_pct = (current_price - avg_cost) / avg_cost * 100
