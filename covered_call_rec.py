@@ -47,8 +47,11 @@ HOLDINGS_CSV = PROJECT_DIR / "holdings.csv"
 
 MIN_DTE = 21
 MAX_DTE = 60
-TOP_N  = 5
+TOP_N   = 5
 MIN_BID = 0.10   # ignore illiquid contracts with no real bid
+# Covered calls beyond 50% above current price have negligible premium;
+# also filters out legacy pre-split contracts with unadjusted strikes
+MAX_STRIKE_MULTIPLIER = 1.50
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -176,7 +179,9 @@ def analyze(ticker: str, avg_cost: float, shares: float):
         except Exception:
             continue
 
+        max_strike = current_price * MAX_STRIKE_MULTIPLIER
         calls = calls[calls["strike"] >= strike_floor].copy()
+        calls = calls[calls["strike"] <= max_strike].copy()
         calls = calls[calls["bid"] >= MIN_BID].copy()
         if calls.empty:
             continue
