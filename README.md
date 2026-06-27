@@ -13,7 +13,7 @@ A personal investment tracking system that sends a daily email newsletter, maint
 | **Covered Call Analyzer** | Recommends option contracts based on your cost basis, flags blackout windows (earnings, ex-div) |
 | **Dividend Tracker** | Dividend dates, tax impact by income bracket, monthly income chart, and ticker lookup tool |
 | **Earnings Calendar** | Next earnings date per holding shown in Layer Summary and Holdings table |
-| **Buffett Screener** | Nightly scan of ~2,300 NYSE tickers; surfaces stocks passing all 6 Buffett quality criteria with live progress, ETA, and crash detection |
+| **Buffett Screener** | Nightly scan of ~2,300 NYSE tickers; surfaces stocks passing all 6 Buffett quality criteria with live progress, ETA, crash detection, and email alerts for new winners |
 
 ---
 
@@ -242,6 +242,8 @@ The screener runs automatically at **2 AM ET** each night as a background thread
 | In progress | Live ticker count, partial winner count, and ETA to completion |
 | Crashed / killed early | Red warning banner noting the scan was incomplete, with partial winners shown |
 | Completed | Full results with timestamp and ticker count |
+
+**New winner notifications:** every 100 tickers, the screener compares fresh winners against the previous list. Any ticker that qualifies for the first time triggers a Gmail notification with the ticker, company, price, gross/net income margins, and quick links to Yahoo Finance and CNBC. Uses the same `EMAIL_FROM` / `EMAIL_APP_PASSWORD` / `EMAIL_TO` credentials as the daily newsletter — no extra config required. On the very first scan all winners are treated as new; subsequent nightly runs only email genuine additions.
 
 **Logs:** `out/screener.log`
 
