@@ -489,6 +489,23 @@ def build_dashboard(portfolio, layers, holdings):
     </table>
   </div>
 
+  <!-- Covered Call Analyzer -->
+  <div class="card" id="cc-card">
+    <h2>Covered Call Analyzer</h2>
+    <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:14px;">
+      <select id="cc-ticker" style="padding:8px 12px;border:1px solid #dde;border-radius:6px;font-size:13px;background:#fff;color:#2c3e50;min-width:160px;">
+        <option value="">Select a holding…</option>
+        {cc_ticker_options}
+      </select>
+      <button id="cc-btn" onclick="analyzeCoveredCall()"
+        style="padding:8px 18px;background:#1a2340;color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;">
+        Get Recommendations
+      </button>
+      <span id="cc-status" style="font-size:12px;color:#7f8c8d;"></span>
+    </div>
+    <div id="cc-results"></div>
+  </div>
+
   <!-- Dividend Timeline Chart -->
   <div class="card">
     <h2>Dividend Income by Month</h2>
@@ -534,22 +551,6 @@ def build_dashboard(portfolio, layers, holdings):
     <div id="buffett-meta" style="font-size:12px;color:#7f8c8d;margin-bottom:10px;">Loading…</div>
     <div id="buffett-results"></div>
   </div>
-
-  <!-- Covered Call Analyzer -->
-  <div class="card" id="cc-card">
-    <h2>Covered Call Analyzer</h2>
-    <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:14px;">
-      <select id="cc-ticker" style="padding:8px 12px;border:1px solid #dde;border-radius:6px;font-size:13px;background:#fff;color:#2c3e50;min-width:160px;">
-        <option value="">Select a holding…</option>
-        {cc_ticker_options}
-      </select>
-      <button id="cc-btn" onclick="analyzeCoveredCall()"
-        style="padding:8px 18px;background:#1a2340;color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;">
-        Get Recommendations
-      </button>
-      <span id="cc-status" style="font-size:12px;color:#7f8c8d;"></span>
-    </div>
-    <div id="cc-results"></div>
   </div>
 
 </div>
