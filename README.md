@@ -13,7 +13,7 @@ A personal investment tracking system that sends a daily email newsletter, maint
 | **Covered Call Analyzer** | Recommends option contracts based on your cost basis, flags blackout windows (earnings, ex-div) |
 | **Dividend Tracker** | Dividend dates, tax impact by income bracket, monthly income chart, and ticker lookup tool |
 | **Earnings Calendar** | Next earnings date per holding shown in Layer Summary and Holdings table |
-| **Buffett Screener** | Nightly scan of ~2,300 NYSE tickers; surfaces stocks passing all 6 Buffett quality criteria |
+| **Buffett Screener** | Nightly scan of ~2,300 NYSE tickers; surfaces stocks passing all 6 Buffett quality criteria with live progress, ETA, and crash detection |
 
 ---
 
@@ -230,7 +230,18 @@ The screener runs automatically at **2 AM ET** each night as a background thread
 
 **Smart caching:** each ticker's `mostRecentQuarter` date is checked before re-fetching. Tickers whose quarter hasn't changed are served from the local cache (`out/buffett.db`) — typical run after the first scan takes a fraction of the time.
 
-**Results** appear in the dashboard's **Buffett Screener** card (sorted by Gross Margin). Hit **↻ Refresh** to reload from the latest scan.
+**Incremental writes:** winners are flushed to `buffett_winners` every 100 tickers, not just at the end. A crash or kill at ticker 1,500 preserves the winners found up to that point.
+
+**Results** appear in the dashboard's **Buffett Screener** card (sorted by Gross Margin) with quick links to Yahoo Finance, CNBC, and MarketWatch for each ticker. Hit **↻ Refresh** to reload from the latest scan.
+
+**Dashboard scan states:**
+
+| State | What you see |
+|---|---|
+| Never run | Grey "No scan results yet" message |
+| In progress | Live ticker count, partial winner count, and ETA to completion |
+| Crashed / killed early | Red warning banner noting the scan was incomplete, with partial winners shown |
+| Completed | Full results with timestamp and ticker count |
 
 **Logs:** `out/screener.log`
 
