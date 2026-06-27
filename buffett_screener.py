@@ -154,6 +154,38 @@ def _passes_filters(r):
 LOCK_FILE = PROJECT_DIR / "out" / "buffett_screener.lock"
 
 
+def _flush(conn, results, now_str, scanned_so_far, total_tickers, complete):
+    """Commit cache, rewrite winners, and update meta. Called every 100 tickers."""
+    winners = [r for r in results if _passes_filters(r)]
+
+    conn.execute("DELETE FROM buffett_winners")
+    for w in winners:
+        conn.execute("""
+            INSERT OR REPLACE INTO buffett_winners
+            (ticker, company, price, last_quarter_date,
+             gross_margin, sga_margin, net_income_margin,
+             interest_margin, capex_margin, cash_gt_debt, scanned_at)
+            VALUES (:ticker, :company, :price, :last_quarter_date,
+                    :gross_margin, :sga_margin, :net_income_margin,
+                    :interest_margin, :capex_margin, :cash_gt_debt, :scanned_at)
+        """, {**w, "scanned_at": w.get("scanned_at", now_str)})
+
+    if complete:
+        conn.execute(
+            "INSERT OR REPLACE INTO buffett_meta (key, value) VALUES ('last_scan', ?)",
+            (now_str,)
+        )
+    conn.execute(
+        "INSERT OR REPLACE INTO buffett_meta (key, value) VALUES ('tickers_scanned', ?)",
+        (str(scanned_so_far),)
+    )
+    conn.execute(
+        "INSERT OR REPLACE INTO buffett_meta (key, value) VALUES ('winners_found', ?)",
+        (str(len(winners)),)
+    )
+    conn.commit()
+
+
 def _acquire_lock():
     """Return True if we got the lock, False if another instance is running."""
     import os
@@ -230,42 +262,15 @@ def run():
             time.sleep(0.05)
 
         if i > 0 and i % 100 == 0:
-            conn.commit()
+            _flush(conn, results, now_str, i, len(tickers), complete=False)
             print(f"[Buffett] {i}/{len(tickers)} processed…")
 
-    conn.commit()
-
-    winners = [r for r in results if _passes_filters(r)]
-
-    conn.execute("DELETE FROM buffett_winners")
-    for w in winners:
-        conn.execute("""
-            INSERT OR REPLACE INTO buffett_winners
-            (ticker, company, price, last_quarter_date,
-             gross_margin, sga_margin, net_income_margin,
-             interest_margin, capex_margin, cash_gt_debt, scanned_at)
-            VALUES (:ticker, :company, :price, :last_quarter_date,
-                    :gross_margin, :sga_margin, :net_income_margin,
-                    :interest_margin, :capex_margin, :cash_gt_debt, :scanned_at)
-        """, {**w, "scanned_at": w.get("scanned_at", now_str)})
-
-    conn.execute(
-        "INSERT OR REPLACE INTO buffett_meta (key, value) VALUES ('last_scan', ?)",
-        (now_str,)
-    )
-    conn.execute(
-        "INSERT OR REPLACE INTO buffett_meta (key, value) VALUES ('tickers_scanned', ?)",
-        (str(len(tickers)),)
-    )
-    conn.execute(
-        "INSERT OR REPLACE INTO buffett_meta (key, value) VALUES ('winners_found', ?)",
-        (str(len(winners)),)
-    )
-    conn.commit()
+    _flush(conn, results, now_str, len(tickers), len(tickers), complete=True)
     conn.close()
     LOCK_FILE.unlink(missing_ok=True)
 
-    print(f"[Buffett] Done. {len(winners)} winners from {len(results)} scanned.")
+    winners_count = sum(1 for r in results if _passes_filters(r))
+    print(f"[Buffett] Done. {winners_count} winners from {len(results)} scanned.")
 
 
 if __name__ == "__main__":

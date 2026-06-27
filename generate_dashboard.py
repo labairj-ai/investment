@@ -1093,9 +1093,10 @@ async function loadBuffett() {{
     if (!m.last_scan) {{
       const cached = data.cache_count || 0;
       if (cached > 0) {{
-        metaEl.innerHTML = `<span style="color:#e67e22;">⏳ Scan in progress — ${{cached.toLocaleString()}} tickers scanned so far. Results will appear here when complete.</span>`;
+        const partial = parseInt(m.winners_found || "0");
+        metaEl.innerHTML = `<span style="color:#e67e22;">⏳ Scan in progress — ${{cached.toLocaleString()}} tickers scanned, <b>${{partial}}</b> winners so far. Full results appear when complete.</span>`;
       }} else {{
-        metaEl.innerHTML = `<span style="color:#e67e22;">No scan results yet — screener runs nightly at 2 AM ET.</span>`;
+        metaEl.innerHTML = `<span style="color:#aaa;">No scan results yet — screener runs nightly at 2 AM ET.</span>`;
       }}
       return;
     }}
