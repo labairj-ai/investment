@@ -123,6 +123,51 @@ def _run_daily():
 threading.Thread(target=_run_daily, daemon=True).start()
 
 
+# ── Nightly Buffett screener (2 AM ET) ───────────────────────────────────────
+def _run_screener():
+    """Background thread: runs the Buffett screener once per day at 2 AM ET."""
+    import subprocess
+    from zoneinfo import ZoneInfo
+    from datetime import datetime as _dt
+    TZ      = ZoneInfo("America/New_York")
+    FLAG    = PROJECT_DIR / "out" / "last_screener_date.txt"
+    VENV_PY = PROJECT_DIR / "venv" / "bin" / "python3"
+    LOG     = PROJECT_DIR / "out" / "screener.log"
+
+    def already_ran(today):
+        try:
+            return FLAG.read_text().strip() == today
+        except Exception:
+            return False
+
+    while True:
+        now   = _dt.now(TZ)
+        today = now.date().isoformat()
+        if now.hour >= 2 and not already_ran(today):
+            print(f"[Screener] Starting Buffett scan for {today}…")
+            try:
+                with open(LOG, "a") as lf:
+                    lf.write(f"\n=== SCREENER {_dt.now(TZ)} ===\n")
+                    result = subprocess.run(
+                        [str(VENV_PY), str(PROJECT_DIR / "buffett_screener.py")],
+                        cwd=str(PROJECT_DIR),
+                        capture_output=True, text=True
+                    )
+                    lf.write(result.stdout or "")
+                    if result.returncode != 0:
+                        lf.write(f"ERROR: {result.stderr}\n")
+                        print(f"[Screener] Failed — check {LOG}")
+                    else:
+                        FLAG.write_text(today)
+                        print(f"[Screener] Done for {today}.")
+            except Exception as exc:
+                print(f"[Screener] Exception: {exc}")
+        time.sleep(1800)
+
+
+threading.Thread(target=_run_screener, daemon=True).start()
+
+
 class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self):
@@ -137,6 +182,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._handle_dividend_timeline()
         elif parsed.path == "/api/dividend-lookup":
             self._handle_dividend_lookup(parse_qs(parsed.query))
+        elif parsed.path == "/api/buffett-winners":
+            self._handle_buffett_winners()
         else:
             super().do_GET()
 
@@ -634,6 +681,28 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             _cache_set(_div_cache, payload)
             self._json(payload)
 
+        except Exception as e:
+            self._json_error(500, str(e))
+
+    def _handle_buffett_winners(self):
+        try:
+            import sqlite3
+            db = PROJECT_DIR / "out" / "buffett.db"
+            if not db.exists():
+                return self._json({"ok": True, "winners": [], "meta": {}})
+
+            conn = sqlite3.connect(str(db), timeout=10)
+            conn.row_factory = sqlite3.Row
+
+            winners = [dict(r) for r in conn.execute(
+                "SELECT * FROM buffett_winners ORDER BY gross_margin DESC"
+            )]
+            meta = {
+                row["key"]: row["value"]
+                for row in conn.execute("SELECT key, value FROM buffett_meta")
+            }
+            conn.close()
+            self._json({"ok": True, "winners": winners, "meta": meta})
         except Exception as e:
             self._json_error(500, str(e))
 

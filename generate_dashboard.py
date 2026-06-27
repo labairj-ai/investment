@@ -525,6 +525,16 @@ def build_dashboard(portfolio, layers, holdings):
     </div>
   </div>
 
+  <!-- Buffett Screener -->
+  <div class="card" id="buffett-card">
+    <h2 style="display:flex;align-items:center;justify-content:space-between;">
+      Buffett Screener — NYSE Winners
+      <button onclick="loadBuffett()" style="font-size:11px;padding:4px 12px;background:#f4f6f9;border:1px solid #dde;border-radius:5px;cursor:pointer;color:#555;font-weight:500;">↻ Refresh</button>
+    </h2>
+    <div id="buffett-meta" style="font-size:12px;color:#7f8c8d;margin-bottom:10px;">Loading…</div>
+    <div id="buffett-results"></div>
+  </div>
+
   <!-- Covered Call Analyzer -->
   <div class="card" id="cc-card">
     <h2>Covered Call Analyzer</h2>
@@ -1065,6 +1075,75 @@ function earnCell(item, showTicker) {{
 }}
 
 window.addEventListener("load", loadLayerEarnings);
+
+// ── Buffett Screener ──────────────────────────────────────────────────────
+async function loadBuffett() {{
+  const metaEl   = document.getElementById("buffett-meta");
+  const resultsEl = document.getElementById("buffett-results");
+  metaEl.textContent = "Loading…";
+  resultsEl.innerHTML = "";
+
+  try {{
+    const res  = await fetch("/api/buffett-winners");
+    const data = await res.json();
+    if (!data.ok) {{ metaEl.textContent = "Error loading screener data."; return; }}
+
+    const m = data.meta || {{}};
+    if (!m.last_scan) {{
+      metaEl.innerHTML = `<span style="color:#e67e22;">No scan results yet — screener runs nightly at 2 AM ET.</span>`;
+      return;
+    }}
+
+    metaEl.innerHTML = `
+      Last scan: <b>${{m.last_scan}}</b> &nbsp;·&nbsp;
+      Tickers scanned: <b>${{m.tickers_scanned || "—"}}</b> &nbsp;·&nbsp;
+      Winners: <b style="color:#27ae60;">${{m.winners_found || data.winners.length}}</b>
+      <span style="color:#aaa;font-size:11px;"> (Gross ≥40% · SG&A ≤30% · Net Income ≥20% · Interest ≤15% · CapEx ≤50% · Cash&gt;Debt)</span>`;
+
+    if (!data.winners.length) {{
+      resultsEl.innerHTML = `<p style="color:#888;font-size:13px;">No winners found in the last scan.</p>`;
+      return;
+    }}
+
+    const rows = data.winners.map(w => `
+      <tr style="border-bottom:1px solid #f2f4f7;">
+        <td style="padding:8px 10px;font-weight:700;color:#1a2340;">${{w.ticker}}</td>
+        <td style="padding:8px 10px;color:#555;">${{w.company || "—"}}</td>
+        <td style="padding:8px 10px;">${{w.price ? "$" + w.price.toFixed(2) : "—"}}</td>
+        <td style="padding:8px 10px;color:#7f8c8d;font-size:11px;">${{w.last_quarter_date || "—"}}</td>
+        <td style="padding:8px 10px;font-weight:600;color:#27ae60;">${{w.gross_margin?.toFixed(1)}}%</td>
+        <td style="padding:8px 10px;">${{w.sga_margin?.toFixed(1)}}%</td>
+        <td style="padding:8px 10px;font-weight:600;color:#27ae60;">${{w.net_income_margin?.toFixed(1)}}%</td>
+        <td style="padding:8px 10px;">${{w.interest_margin?.toFixed(1)}}%</td>
+        <td style="padding:8px 10px;">${{w.capex_margin?.toFixed(1)}}%</td>
+        <td style="padding:8px 10px;color:#27ae60;font-weight:600;">${{w.cash_gt_debt}}</td>
+      </tr>`).join("");
+
+    resultsEl.innerHTML = `
+      <div style="overflow-x:auto;">
+      <table style="width:100%;border-collapse:collapse;font-size:13px;">
+        <thead><tr style="background:#f4f6f9;">
+          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Ticker</th>
+          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Company</th>
+          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Price</th>
+          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Quarter</th>
+          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#27ae60;text-transform:uppercase;">Gross Margin</th>
+          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">SG&amp;A Margin</th>
+          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#27ae60;text-transform:uppercase;">Net Income Margin</th>
+          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Interest Margin</th>
+          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">CapEx Margin</th>
+          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#27ae60;text-transform:uppercase;">Cash&gt;Debt</th>
+        </tr></thead>
+        <tbody>${{rows}}</tbody>
+      </table>
+      </div>
+      <p style="font-size:11px;color:#aaa;margin-top:8px;">Sorted by Gross Margin descending. Margins: SG&amp;A and Interest relative to Gross Profit / Operating Income respectively; CapEx relative to Net Income.</p>`;
+  }} catch(e) {{
+    metaEl.textContent = "Error: " + e.message;
+  }}
+}}
+
+window.addEventListener("load", loadBuffett);
 
 // ── Covered Call Analyzer ─────────────────────────────────────────────────
 async function analyzeCoveredCall() {{
