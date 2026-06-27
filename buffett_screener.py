@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """Warren Buffett NYSE screener — runs nightly, stores results in buffett.db."""
 
+import os
 import random
+import smtplib
 import sqlite3
 import time
 from datetime import datetime
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from pathlib import Path
 
 PROJECT_DIR = Path(__file__).parent
-DB_PATH = PROJECT_DIR / "out" / "buffett.db"
+DB_PATH     = PROJECT_DIR / "out" / "buffett.db"
 
 
 def _init_db(conn):
@@ -154,9 +158,88 @@ def _passes_filters(r):
 LOCK_FILE = PROJECT_DIR / "out" / "buffett_screener.lock"
 
 
+def _send_new_winners_email(new_tickers: list[dict]) -> None:
+    """Email a digest of newly qualifying Buffett winners."""
+    from dotenv import load_dotenv
+    load_dotenv(PROJECT_DIR / ".env")
+
+    email_from = os.getenv("EMAIL_FROM")
+    app_pw     = os.getenv("EMAIL_APP_PASSWORD")
+    email_to   = os.getenv("EMAIL_TO")
+
+    if not all([email_from, app_pw, email_to]):
+        print("[Buffett] Email credentials missing — skipping new-winner notification.")
+        return
+
+    ticker_rows = "".join(f"""
+        <tr>
+          <td style="padding:8px 12px;font-weight:700;color:#1a2340;">{t['ticker']}</td>
+          <td style="padding:8px 12px;color:#555;">{t.get('company','—')}</td>
+          <td style="padding:8px 12px;">${t['price']:.2f}</td>
+          <td style="padding:8px 12px;color:#27ae60;">{t.get('gross_margin',0):.1f}%</td>
+          <td style="padding:8px 12px;">{t.get('net_income_margin',0):.1f}%</td>
+          <td style="padding:8px 12px;">
+            <a href="https://finance.yahoo.com/quote/{t['ticker']}" style="margin-right:6px;">YF</a>
+            <a href="https://www.cnbc.com/quotes/{t['ticker'].replace('-','.')}">CNBC</a>
+          </td>
+        </tr>""" for t in new_tickers)
+
+    count = len(new_tickers)
+    html = f"""
+    <html><body style="font-family:-apple-system,sans-serif;color:#2c3e50;max-width:600px;margin:0 auto;">
+      <h2 style="color:#1a2340;">
+        📈 {count} New Buffett Screener Winner{'s' if count != 1 else ''}
+      </h2>
+      <p style="color:#7f8c8d;font-size:13px;">
+        The following ticker{'s' if count != 1 else ''} passed all 6 Buffett quality criteria
+        for the first time in today's NYSE scan.
+      </p>
+      <table style="width:100%;border-collapse:collapse;font-size:13px;">
+        <thead>
+          <tr style="background:#f4f6f9;">
+            <th style="padding:8px 12px;text-align:left;color:#7f8c8d;">Ticker</th>
+            <th style="padding:8px 12px;text-align:left;color:#7f8c8d;">Company</th>
+            <th style="padding:8px 12px;text-align:left;color:#7f8c8d;">Price</th>
+            <th style="padding:8px 12px;text-align:left;color:#27ae60;">Gross Margin</th>
+            <th style="padding:8px 12px;text-align:left;color:#27ae60;">Net Income Margin</th>
+            <th style="padding:8px 12px;text-align:left;color:#7f8c8d;">Research</th>
+          </tr>
+        </thead>
+        <tbody>{ticker_rows}</tbody>
+      </table>
+      <p style="font-size:11px;color:#aaa;margin-top:16px;">
+        Criteria: Gross ≥40% · SG&amp;A ≤30% · Net Income ≥20% · Interest ≤15% · CapEx ≤50% · Cash&gt;Debt
+      </p>
+    </body></html>"""
+
+    subject = f"📈 Buffett Screener: {count} new winner{'s' if count != 1 else ''} — {datetime.now().strftime('%b %d, %Y')}"
+
+    msg = MIMEMultipart("alternative")
+    msg["From"]    = email_from
+    msg["To"]      = email_to
+    msg["Subject"] = subject
+    msg.attach(MIMEText(html, "html"))
+
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+            smtp.login(email_from, app_pw)
+            smtp.send_message(msg)
+        print(f"[Buffett] Emailed {count} new winner(s) to {email_to}.")
+    except Exception as e:
+        print(f"[Buffett] Email failed: {e}")
+
+
 def _flush(conn, results, now_str, scanned_so_far, total_tickers, complete):
-    """Commit cache, rewrite winners, and update meta. Called every 100 tickers."""
+    """Commit cache, rewrite winners, update meta, and email any new tickers."""
     winners = [r for r in results if _passes_filters(r)]
+
+    # Detect genuinely new tickers (not in previous winners)
+    prev_tickers = {
+        row[0] for row in conn.execute("SELECT ticker FROM buffett_winners")
+    }
+    new_winners = [w for w in winners if w["ticker"] not in prev_tickers]
+    if new_winners:
+        _send_new_winners_email(new_winners)
 
     conn.execute("DELETE FROM buffett_winners")
     for w in winners:
@@ -202,7 +285,6 @@ def _acquire_lock():
 
 
 def run():
-    import os
     import yfinance as yf
 
     if not _acquire_lock():
