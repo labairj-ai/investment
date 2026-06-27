@@ -718,8 +718,22 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 except (ProcessLookupError, ValueError, OSError):
                     pass
 
+            eta_seconds = None
+            if scan_running and cache_count > 0 and meta.get("scan_started") and meta.get("total_tickers"):
+                from datetime import datetime as _dt
+                try:
+                    started = _dt.strptime(meta["scan_started"], "%Y-%m-%d %H:%M:%S")
+                    elapsed = (_dt.now() - started).total_seconds()
+                    total   = int(meta["total_tickers"])
+                    rate    = cache_count / elapsed  # tickers per second
+                    if rate > 0:
+                        eta_seconds = int((total - cache_count) / rate)
+                except Exception:
+                    pass
+
             self._json({"ok": True, "winners": winners, "meta": meta,
-                        "cache_count": cache_count, "scan_running": scan_running})
+                        "cache_count": cache_count, "scan_running": scan_running,
+                        "eta_seconds": eta_seconds})
         except Exception as e:
             self._json_error(500, str(e))
 

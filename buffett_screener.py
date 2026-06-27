@@ -223,6 +223,17 @@ def run():
     results = []
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+    # Record scan start so the API can compute ETA
+    conn.execute(
+        "INSERT OR REPLACE INTO buffett_meta (key, value) VALUES ('scan_started', ?)",
+        (now_str,)
+    )
+    conn.execute(
+        "INSERT OR REPLACE INTO buffett_meta (key, value) VALUES ('total_tickers', ?)",
+        (str(len(tickers)),)
+    )
+    conn.commit()
+
     for i, ticker in enumerate(tickers):
         should_fetch = True
 

@@ -1101,7 +1101,17 @@ async function loadBuffett() {{
         return;
       }} else if (running) {{
         // Actively scanning
-        metaEl.innerHTML = `⏳ Scan in progress — <b>${{cached.toLocaleString()}}</b> tickers scanned, <b>${{partial}}</b> winners so far. Full results appear when complete.`;
+        const eta = data.eta_seconds;
+        let etaStr = "";
+        if (eta != null && eta > 0) {{
+          const h = Math.floor(eta / 3600);
+          const m = Math.floor((eta % 3600) / 60);
+          const s = eta % 60;
+          if (h > 0)      etaStr = ` &nbsp;·&nbsp; ETA ~${{h}}h ${{m}}m`;
+          else if (m > 0) etaStr = ` &nbsp;·&nbsp; ETA ~${{m}}m ${{s}}s`;
+          else            etaStr = ` &nbsp;·&nbsp; ETA ~${{s}}s`;
+        }}
+        metaEl.innerHTML = `⏳ Scan in progress — <b>${{cached.toLocaleString()}}</b> tickers scanned, <b>${{partial}}</b> winners so far${{etaStr}}. Full results appear when complete.`;
         // Still show partial winners below if any exist
         if (!data.winners.length) return;
       }} else {{
