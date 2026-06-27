@@ -1089,23 +1089,42 @@ async function loadBuffett() {{
     const data = await res.json();
     if (!data.ok) {{ metaEl.textContent = "Error loading screener data."; return; }}
 
-    const m = data.meta || {{}};
+    const m       = data.meta || {{}};
+    const cached  = data.cache_count || 0;
+    const running = data.scan_running;
+    const partial = parseInt(m.winners_found || "0");
+
     if (!m.last_scan) {{
-      const cached = data.cache_count || 0;
-      if (cached > 0) {{
-        const partial = parseInt(m.winners_found || "0");
-        metaEl.innerHTML = `<span style="color:#e67e22;">⏳ Scan in progress — ${{cached.toLocaleString()}} tickers scanned, <b>${{partial}}</b> winners so far. Full results appear when complete.</span>`;
-      }} else {{
+      if (cached === 0) {{
+        // Never started
         metaEl.innerHTML = `<span style="color:#aaa;">No scan results yet — screener runs nightly at 2 AM ET.</span>`;
+        return;
+      }} else if (running) {{
+        // Actively scanning
+        metaEl.innerHTML = `⏳ Scan in progress — <b>${{cached.toLocaleString()}}</b> tickers scanned, <b>${{partial}}</b> winners so far. Full results appear when complete.`;
+        // Still show partial winners below if any exist
+        if (!data.winners.length) return;
+      }} else {{
+        // Crashed / killed before finishing
+        metaEl.innerHTML = `
+          <div style="background:#fff5f0;border-left:3px solid #e74c3c;padding:8px 12px;border-radius:4px;margin-bottom:8px;font-size:12px;">
+            ⚠️ <b>Incomplete scan</b> — the last run stopped at <b>${{cached.toLocaleString()}}</b> of ~2,348 tickers before finishing.
+            The ${{partial}} winner${{partial !== 1 ? "s" : ""}} below reflect only what was scanned.
+            Next automatic scan runs at 2 AM ET, or click <b>↻ Refresh</b> after restarting the screener manually.
+          </div>`;
+        if (!data.winners.length) return;
       }}
-      return;
     }}
 
+    const inProgressNote = running
+      ? ` &nbsp;<span style="color:#e67e22;font-size:11px;">⏳ new scan in progress (${{cached.toLocaleString()}} done)</span>`
+      : "";
     metaEl.innerHTML = `
-      Last scan: <b>${{m.last_scan}}</b> &nbsp;·&nbsp;
+      Last completed scan: <b>${{m.last_scan}}</b> &nbsp;·&nbsp;
       Tickers scanned: <b>${{m.tickers_scanned || "—"}}</b> &nbsp;·&nbsp;
       Winners: <b style="color:#27ae60;">${{m.winners_found || data.winners.length}}</b>
-      <span style="color:#aaa;font-size:11px;"> (Gross ≥40% · SG&A ≤30% · Net Income ≥20% · Interest ≤15% · CapEx ≤50% · Cash&gt;Debt)</span>`;
+      ${{inProgressNote}}
+      <span style="color:#aaa;font-size:11px;display:block;margin-top:3px;">(Gross ≥40% · SG&A ≤30% · Net Income ≥20% · Interest ≤15% · CapEx ≤50% · Cash&gt;Debt)</span>`;
 
     if (!data.winners.length) {{
       resultsEl.innerHTML = `<p style="color:#888;font-size:13px;">No winners found in the last scan.</p>`;

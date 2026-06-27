@@ -705,8 +705,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 "SELECT COUNT(*) FROM buffett_cache"
             ).fetchone()[0]
             conn.close()
+
+            # Check if screener process is actively running via lock file
+            import os as _os
+            scan_running = False
+            lock = PROJECT_DIR / "out" / "buffett_screener.lock"
+            if lock.exists():
+                try:
+                    pid = int(lock.read_text().strip())
+                    _os.kill(pid, 0)
+                    scan_running = True
+                except (ProcessLookupError, ValueError, OSError):
+                    pass
+
             self._json({"ok": True, "winners": winners, "meta": meta,
-                        "cache_count": cache_count})
+                        "cache_count": cache_count, "scan_running": scan_running})
         except Exception as e:
             self._json_error(500, str(e))
 
