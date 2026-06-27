@@ -1105,9 +1105,21 @@ async function loadBuffett() {{
       return;
     }}
 
-    const rows = data.winners.map(w => `
+    const rows = data.winners.map(w => {{
+      const yf  = `https://finance.yahoo.com/quote/${{w.ticker}}`;
+      const cnbc = `https://www.cnbc.com/quotes/${{w.ticker.replace("-",".")}}`;
+      const mw  = `https://www.marketwatch.com/investing/stock/${{w.ticker.replace("-",".").toLowerCase()}}`;
+      const linkStyle = `font-size:10px;padding:1px 5px;border-radius:3px;border:1px solid #dde;color:#555;text-decoration:none;white-space:nowrap;`;
+      return `
       <tr style="border-bottom:1px solid #f2f4f7;">
-        <td style="padding:8px 10px;font-weight:700;color:#1a2340;">${{w.ticker}}</td>
+        <td style="padding:8px 10px;">
+          <div style="font-weight:700;color:#1a2340;margin-bottom:4px;">${{w.ticker}}</div>
+          <div style="display:flex;gap:4px;">
+            <a href="${{yf}}" target="_blank" rel="noopener" style="${{linkStyle}}background:#f0f7ff;">YF</a>
+            <a href="${{cnbc}}" target="_blank" rel="noopener" style="${{linkStyle}}background:#fff8f0;">CNBC</a>
+            <a href="${{mw}}" target="_blank" rel="noopener" style="${{linkStyle}}background:#f0fff4;">MW</a>
+          </div>
+        </td>
         <td style="padding:8px 10px;color:#555;">${{w.company || "—"}}</td>
         <td style="padding:8px 10px;">${{w.price ? "$" + w.price.toFixed(2) : "—"}}</td>
         <td style="padding:8px 10px;color:#7f8c8d;font-size:11px;">${{w.last_quarter_date || "—"}}</td>
@@ -1117,7 +1129,8 @@ async function loadBuffett() {{
         <td style="padding:8px 10px;">${{w.interest_margin?.toFixed(1)}}%</td>
         <td style="padding:8px 10px;">${{w.capex_margin?.toFixed(1)}}%</td>
         <td style="padding:8px 10px;color:#27ae60;font-weight:600;">${{w.cash_gt_debt}}</td>
-      </tr>`).join("");
+      </tr>`;
+    }}).join("");
 
     resultsEl.innerHTML = `
       <div style="overflow-x:auto;">
