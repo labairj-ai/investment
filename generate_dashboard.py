@@ -1091,7 +1091,12 @@ async function loadBuffett() {{
 
     const m = data.meta || {{}};
     if (!m.last_scan) {{
-      metaEl.innerHTML = `<span style="color:#e67e22;">No scan results yet — screener runs nightly at 2 AM ET.</span>`;
+      const cached = data.cache_count || 0;
+      if (cached > 0) {{
+        metaEl.innerHTML = `<span style="color:#e67e22;">⏳ Scan in progress — ${{cached.toLocaleString()}} tickers scanned so far. Results will appear here when complete.</span>`;
+      }} else {{
+        metaEl.innerHTML = `<span style="color:#e67e22;">No scan results yet — screener runs nightly at 2 AM ET.</span>`;
+      }}
       return;
     }}
 

@@ -701,8 +701,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 row["key"]: row["value"]
                 for row in conn.execute("SELECT key, value FROM buffett_meta")
             }
+            cache_count = conn.execute(
+                "SELECT COUNT(*) FROM buffett_cache"
+            ).fetchone()[0]
             conn.close()
-            self._json({"ok": True, "winners": winners, "meta": meta})
+            self._json({"ok": True, "winners": winners, "meta": meta,
+                        "cache_count": cache_count})
         except Exception as e:
             self._json_error(500, str(e))
 
