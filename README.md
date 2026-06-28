@@ -11,9 +11,13 @@ A personal investment tracking system that sends a daily email newsletter, maint
 | **Daily Newsletter** | Fetches closing prices, computes P&L by layer and holding, emails an HTML report each morning at 8 AM |
 | **Local Dashboard** | Interactive web UI at `http://localhost:5001/out/dashboard.html` with charts, holdings table, and live analysis tools |
 | **Covered Call Analyzer** | Recommends option contracts based on your cost basis, flags blackout windows (earnings, ex-div) |
+| **Covered Call Tracker** | Log and track open/closed covered call positions; shows DTE, total premium collected, all-time income |
 | **Dividend Tracker** | Dividend dates, tax impact by income bracket, monthly income chart, and ticker lookup tool |
 | **Earnings Calendar** | Next earnings date per holding shown in Layer Summary and Holdings table |
-| **Buffett Screener** | Nightly scan of ~2,300 NYSE tickers; surfaces stocks passing all 6 Buffett quality criteria with live progress, ETA, crash detection, and email alerts for new winners |
+| **Buffett Screener** | Nightly scan of ~2,300 NYSE tickers; surfaces stocks passing all 6 Buffett quality criteria with valuation metrics, history tracking, and email alerts for new winners |
+| **Portfolio Reminders** | Daily 7 AM email when any holding has earnings or ex-div within 3 days |
+| **Layer Drift Alerts** | Daily check of layer weights vs. targets in `layer_targets.json`; emails when any layer drifts ≥5pp |
+| **ST/LT Gain Flags** | Holdings table shows ST/LT badge per position once `PurchaseDate` is set in `holdings.csv` |
 
 ---
 
@@ -56,14 +60,16 @@ EMAIL_TO=recipient@gmail.com
 
 ### 4. Populate `holdings.csv`
 
-The file has four columns — edit directly or tell Claude to add positions one at a time:
+The file has five columns — edit directly or tell Claude to add positions:
 
 ```
-Stock,Shares,AvgCost,Layer
-JOBY,100,9.67,4
-EW,100,85.31,3
+Stock,Shares,AvgCost,Layer,PurchaseDate
+JOBY,100,9.67,4,2023-11-15
+EW,100,85.31,3,
 ...
 ```
+
+`PurchaseDate` is optional (leave blank for existing positions). When set, the Holdings table shows an **ST** (short-term, <1 year) or **LT** (long-term, ≥1 year) badge on the Total Gain column to flag tax treatment.
 
 **Layer definitions:**
 
@@ -114,7 +120,10 @@ Opens `http://localhost:5001/out/dashboard.html` automatically. Press `Ctrl+C` t
 | `GET /api/dividend-lookup?ticker=VYM&shares=100` | Dividend info for any ticker |
 | `GET /api/dividend-timeline` | Monthly income (Jan–Dec, current year) |
 | `GET /api/earnings` | Next earnings dates for all holdings |
-| `GET /api/buffett-winners` | Latest Buffett screener results from `out/buffett.db` |
+| `GET /api/buffett-winners` | Latest Buffett screener results (includes valuation + first_seen) |
+| `GET /api/cc-positions` | All logged covered call positions |
+| `POST /api/cc-positions` | Log a new covered call position |
+| `PATCH /api/cc-positions/<id>` | Update position status / closing details |
 
 ### Auto-start on login (macOS)
 
@@ -180,10 +189,11 @@ Columns: **Layer | Value | Weight | Δ$ | Δ% | Next Earnings**
 Next Earnings shows the soonest reporting ticker per layer, color-coded red ≤ 7 days, orange ≤ 21 days, green further out.
 
 ### Holdings Table
-Columns: **Ticker | Shares | Avg Cost | Price | Value | Total Gain | Daily Δ | Weight | Next Earnings**
+Columns: **Ticker | Shares | Avg Cost | Price | Value | Total Gain | Daily Δ | Weight | Next Earnings | Purchased**
 
-- Total Gain shows true return vs cost basis
+- Total Gain shows true return vs cost basis, with **ST** / **LT** tax badge when `PurchaseDate` is set
 - Next Earnings populated per holding on page load
+- Purchased column shows your entry date for tracking holding periods
 
 ### Covered Call Analyzer
 Select any holding with **100+ shares** from the dropdown and click **Get Recommendations**.
@@ -196,6 +206,14 @@ Select any holding with **100+ shares** from the dropdown and click **Get Recomm
 - Ceiling: `current_price × 1.50` (filters out pre-split legacy contracts)
 
 **Columns:** Expiry | Strike | DTE | Bid | Ask | Mid | Prem% | Ann% | P/L if Called | Prob Called | OI
+
+### Covered Call Position Tracker
+
+Below the Covered Call Analyzer is a **Position Tracker** card. Use the expandable form to log a new position (ticker, contracts, strike, expiry, premium/contract, open date). A table shows all open and closed/expired/assigned positions with:
+- **DTE** countdown for open positions (red ≤7d, orange ≤21d, green further)
+- **Total Premium** = contracts × premium × 100
+- Summary bar: open positions count, open premium held, all-time premium collected
+- **Close** button → prompts for buy-back cost, marks position closed
 
 **Blackout windows** flagged per contract:
 - 📵 **AVOID** (red row) — earnings date falls within the option window
@@ -243,6 +261,10 @@ The screener runs automatically at **2 AM ET** each night as a background thread
 | Crashed / killed early | Red warning banner noting the scan was incomplete, with partial winners shown |
 | Completed | Full results with timestamp and ticker count |
 
+**Valuation metrics:** each winner now shows **P/E** (trailing), **P/FCF** (market cap ÷ free cash flow), and **EV/EBITDA** alongside the quality criteria — populated on the next nightly scan.
+
+**Historical tracking:** every completed scan writes a `buffett_winner_history` row per winner. The dashboard's First Seen date shows when each ticker first qualified.
+
 **New winner notifications:** every 100 tickers, the screener compares fresh winners against the previous list. Any ticker that qualifies for the first time triggers a Gmail notification with the ticker, company, price, gross/net income margins, and quick links to Yahoo Finance and CNBC. Uses the same `EMAIL_FROM` / `EMAIL_APP_PASSWORD` / `EMAIL_TO` credentials as the daily newsletter — no extra config required. On the very first scan all winners are treated as new; subsequent nightly runs only email genuine additions.
 
 **Logs:** `out/screener.log`
@@ -254,6 +276,34 @@ venv/bin/python3 buffett_screener.py
 ```
 
 > Only one instance runs at a time — a PID lock file (`out/buffett_screener.lock`) prevents concurrent runs caused by orphaned processes.
+
+---
+
+## Portfolio Reminders (7 AM ET)
+
+`serve.py` runs a daily reminder thread at **7 AM ET**. It scans all holdings for earnings dates and ex-dividend dates within the next 3 days and sends a single digest email listing upcoming events with urgency indicators (🔴 next day · 🟡 2 days · 🟢 3 days) and estimated ex-div payouts.
+
+**Flag file:** `out/last_reminder_date.txt` — prevents double-sends per day.
+
+---
+
+## Layer Drift Alerts
+
+After each successful newsletter run (8 AM), `serve.py` checks whether any layer has drifted ≥ 5 percentage points from its target allocation.
+
+**Targets file:** `layer_targets.json` — created automatically from your current weights on first run. Edit it to define your intended allocations:
+
+```json
+{
+  "1": 28.5,
+  "2": 12.0,
+  "3": 35.0,
+  "4": 14.5,
+  "5": 10.0
+}
+```
+
+Keys are layer numbers (1–5); values are target percentages. When any layer drifts ≥5pp, an email lists each drifting layer with target, current weight, and direction.
 
 ---
 
@@ -278,10 +328,13 @@ venv/bin/python3 covered_call_rec.py
 
 ```
 investment/
-├── holdings.csv                     # Portfolio positions — source of truth
+├── holdings.csv                     # Portfolio positions — Stock, Shares, AvgCost, Layer, PurchaseDate
+├── layer_targets.json               # Target layer allocations for drift alerts (auto-created)
 ├── send_newsletter_main.py          # Fetches prices, sends email, writes DB
 ├── generate_dashboard.py            # Generates out/dashboard.html from DB + CSV
 ├── serve.py                         # Local HTTP server + API endpoints + schedulers
+│                                    #   GET/POST /api/cc-positions
+│                                    #   PATCH    /api/cc-positions/<id>
 │                                    #   GET /api/covered-calls?ticker=XX
 │                                    #   GET /api/dividends
 │                                    #   GET /api/dividend-lookup?ticker=XX&shares=N
@@ -306,6 +359,7 @@ investment/
     ├── screener.log                 # Nightly Buffett screener log
     ├── last_run_date.txt            # Flag — prevents double newsletter sends
     ├── last_screener_date.txt       # Flag — prevents double screener runs
+    ├── last_reminder_date.txt       # Flag — prevents double reminder emails
     ├── buffett_screener.lock        # PID lock — prevents concurrent screener instances
     ├── covered_calls_analysis.md    # Manual covered call notes
     └── volume_analysis.md           # Manual volume notes

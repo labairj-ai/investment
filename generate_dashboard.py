@@ -4,7 +4,7 @@
 import csv
 import json
 import sqlite3
-from datetime import datetime
+from datetime import datetime, date
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -31,19 +31,21 @@ def normalize_ticker(t: str) -> str:
     return t
 
 def load_csv_holdings() -> dict:
-    """Return {ticker: {shares, avg_cost, layer_label}} from holdings.csv — always current."""
+    """Return {ticker: {shares, avg_cost, layer_label, purchase_date}} from holdings.csv."""
     result = {}
     with open(HOLDINGS_CSV, newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            ticker = normalize_ticker(row["Stock"])
-            layer_num = int(str(row["Layer"]).strip())
+            ticker      = normalize_ticker(row["Stock"])
+            layer_num   = int(str(row["Layer"]).strip())
             layer_label = f"Layer {layer_num}: {LAYER_NAMES[layer_num]}"
+            purchase_date = row.get("PurchaseDate", "").strip() or None
             result[ticker] = {
-                "shares":   float(row["Shares"]),
-                "avg_cost": float(row["AvgCost"]),
-                "layer":    layer_label,
-                "layer_num": layer_num,
+                "shares":        float(row["Shares"]),
+                "avg_cost":      float(row["AvgCost"]),
+                "layer":         layer_label,
+                "layer_num":     layer_num,
+                "purchase_date": purchase_date,
             }
     return result
 
@@ -104,15 +106,16 @@ def rebuild_today_holdings(today_date: str, db_holdings: list[dict], csv_holding
         value     = shares * price
         cost_basis = shares * avg_cost
         rebuilt.append({
-            "day":        today_date,
-            "ticker":     ticker,
-            "layer":      meta["layer"],
-            "layer_num":  meta["layer_num"],
-            "shares":     shares,
-            "avg_cost":   avg_cost,
-            "price":      price,
-            "value":      value,
-            "cost_basis": cost_basis,
+            "day":           today_date,
+            "ticker":        ticker,
+            "layer":         meta["layer"],
+            "layer_num":     meta["layer_num"],
+            "shares":        shares,
+            "avg_cost":      avg_cost,
+            "price":         price,
+            "value":         value,
+            "cost_basis":    cost_basis,
+            "purchase_date": meta.get("purchase_date"),
         })
 
     # Derive daily change figures: need prev-day prices from DB
@@ -266,25 +269,41 @@ def build_dashboard(portfolio, layers, holdings):
     anchor_color = "#27ae60" if not flags else "#e67e22"
 
     # ---- holdings table rows ----
+    today_obj   = date.today()
     holdings_rows = ""
     prev_layer = None
     for h in today_holdings_sorted:
         if h["layer"] != prev_layer:
             lcolor = LAYER_COLORS.get(h["layer"], "#999")
-            holdings_rows += f'<tr class="layer-header"><td colspan="9" style="background:{lcolor}22;border-left:4px solid {lcolor};padding:6px 10px;font-weight:600;color:#333">{h["layer"]}</td></tr>\n'
+            holdings_rows += f'<tr class="layer-header"><td colspan="10" style="background:{lcolor}22;border-left:4px solid {lcolor};padding:6px 10px;font-weight:600;color:#333">{h["layer"]}</td></tr>\n'
             prev_layer = h["layer"]
         daily_class = "pos" if h["change_pct"] >= 0 else "neg"
         gain_class  = "pos" if h["total_gain_pct"] >= 0 else "neg"
+
+        # ST/LT badge
+        stlt_badge = ""
+        pd = h.get("purchase_date")
+        if pd:
+            try:
+                days_held = (today_obj - date.fromisoformat(pd)).days
+                if days_held < 365:
+                    stlt_badge = ' <span style="background:#fff0f0;color:#e74c3c;border:1px solid #fcc;border-radius:3px;padding:1px 5px;font-size:9px;font-weight:700;vertical-align:middle;">ST</span>'
+                else:
+                    stlt_badge = ' <span style="background:#f0fff4;color:#27ae60;border:1px solid #ade;border-radius:3px;padding:1px 5px;font-size:9px;font-weight:700;vertical-align:middle;">LT</span>'
+            except ValueError:
+                pass
+
         holdings_rows += f"""<tr>
           <td>{h["ticker"]}</td>
           <td>{h["shares"]:,.2f}</td>
           <td>${h["avg_cost"]:,.2f}</td>
           <td>${h["price"]:,.2f}</td>
           <td>{money(h["value"])}</td>
-          <td class="{gain_class}" style="font-weight:600;">{pct(h["total_gain_pct"])}</td>
+          <td class="{gain_class}" style="font-weight:600;">{pct(h["total_gain_pct"])}{stlt_badge}</td>
           <td class="{daily_class}">{pct(h["change_pct"])}</td>
           <td>{h["weight_pct"]:.1f}%</td>
           <td id="earn-{h["ticker"]}" style="font-size:12px;color:#7f8c8d;">—</td>
+          <td style="font-size:11px;color:#aaa;">{pd or "—"}</td>
         </tr>\n"""
 
     # ---- layer summary rows ----
@@ -484,9 +503,10 @@ def build_dashboard(portfolio, layers, holdings):
   <div class="card">
     <h2>Holdings — {today_date}</h2>
     <table>
-      <thead><tr><th>Ticker</th><th>Shares</th><th>Avg Cost</th><th>Price</th><th>Value</th><th>Total Gain</th><th>Daily Δ</th><th>Weight</th><th>Next Earnings</th></tr></thead>
+      <thead><tr><th>Ticker</th><th>Shares</th><th>Avg Cost</th><th>Price</th><th>Value</th><th>Total Gain</th><th>Daily Δ</th><th>Weight</th><th>Next Earnings</th><th>Purchased</th></tr></thead>
       <tbody>{holdings_rows}</tbody>
     </table>
+    <p style="font-size:11px;color:#aaa;margin-top:8px;">ST = short-term (&lt;1yr, higher tax rate) · LT = long-term (≥1yr). Add PurchaseDate to holdings.csv to enable.</p>
   </div>
 
   <!-- Covered Call Analyzer -->
@@ -504,6 +524,50 @@ def build_dashboard(portfolio, layers, holdings):
       <span id="cc-status" style="font-size:12px;color:#7f8c8d;"></span>
     </div>
     <div id="cc-results"></div>
+  </div>
+
+  <!-- Covered Call Position Tracker -->
+  <div class="card" id="cc-tracker-card">
+    <h2 style="display:flex;align-items:center;justify-content:space-between;">
+      Covered Call Position Tracker
+      <button onclick="loadCCPositions()" style="font-size:11px;padding:4px 12px;background:#f4f6f9;border:1px solid #dde;border-radius:5px;cursor:pointer;color:#555;font-weight:500;">↻ Refresh</button>
+    </h2>
+
+    <!-- Log new position form -->
+    <details style="margin-bottom:16px;">
+      <summary style="cursor:pointer;font-size:12px;font-weight:600;color:#7f8c8d;text-transform:uppercase;letter-spacing:.05em;padding:6px 0;">
+        + Log New Position
+      </summary>
+      <div style="margin-top:12px;padding:14px 16px;background:#f8fafc;border-radius:8px;border:1px solid #eee;">
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:10px;">
+          <div><label style="font-size:10px;color:#aaa;text-transform:uppercase;">Ticker</label>
+            <input id="cc-log-ticker" placeholder="e.g. EW" style="width:100%;margin-top:3px;padding:6px 8px;border:1px solid #dde;border-radius:5px;font-size:13px;text-transform:uppercase;"></div>
+          <div><label style="font-size:10px;color:#aaa;text-transform:uppercase;">Contracts</label>
+            <input id="cc-log-contracts" type="number" min="1" placeholder="1" style="width:100%;margin-top:3px;padding:6px 8px;border:1px solid #dde;border-radius:5px;font-size:13px;"></div>
+          <div><label style="font-size:10px;color:#aaa;text-transform:uppercase;">Strike ($)</label>
+            <input id="cc-log-strike" type="number" step="0.5" placeholder="100.00" style="width:100%;margin-top:3px;padding:6px 8px;border:1px solid #dde;border-radius:5px;font-size:13px;"></div>
+          <div><label style="font-size:10px;color:#aaa;text-transform:uppercase;">Expiry</label>
+            <input id="cc-log-expiry" type="date" style="width:100%;margin-top:3px;padding:6px 8px;border:1px solid #dde;border-radius:5px;font-size:13px;"></div>
+          <div><label style="font-size:10px;color:#aaa;text-transform:uppercase;">Premium / Contract ($)</label>
+            <input id="cc-log-premium" type="number" step="0.01" placeholder="2.50" style="width:100%;margin-top:3px;padding:6px 8px;border:1px solid #dde;border-radius:5px;font-size:13px;"></div>
+          <div><label style="font-size:10px;color:#aaa;text-transform:uppercase;">Opened</label>
+            <input id="cc-log-date" type="date" style="width:100%;margin-top:3px;padding:6px 8px;border:1px solid #dde;border-radius:5px;font-size:13px;"></div>
+        </div>
+        <div style="margin-bottom:10px;">
+          <label style="font-size:10px;color:#aaa;text-transform:uppercase;">Notes (optional)</label>
+          <input id="cc-log-notes" placeholder="e.g. earnings next week" style="width:100%;margin-top:3px;padding:6px 8px;border:1px solid #dde;border-radius:5px;font-size:13px;">
+        </div>
+        <button onclick="logCCPosition()"
+          style="padding:7px 18px;background:#1a2340;color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;">
+          Log Position
+        </button>
+        <span id="cc-log-status" style="margin-left:10px;font-size:12px;color:#7f8c8d;"></span>
+      </div>
+    </details>
+
+    <!-- Positions table -->
+    <div id="cc-tracker-status" style="font-size:12px;color:#7f8c8d;">Loading…</div>
+    <div id="cc-tracker-results"></div>
   </div>
 
   <!-- Dividend Timeline Chart -->
@@ -1142,15 +1206,19 @@ async function loadBuffett() {{
     }}
 
     const rows = data.winners.map(w => {{
-      const yf  = `https://finance.yahoo.com/quote/${{w.ticker}}`;
-      const cnbc = `https://www.cnbc.com/quotes/${{w.ticker.replace("-",".")}}`;
-      const mw  = `https://www.marketwatch.com/investing/stock/${{w.ticker.replace("-",".").toLowerCase()}}`;
+      const yf       = `https://finance.yahoo.com/quote/${{w.ticker}}`;
+      const cnbc     = `https://www.cnbc.com/quotes/${{w.ticker.replace("-",".")}}`;
+      const mw       = `https://www.marketwatch.com/investing/stock/${{w.ticker.replace("-",".").toLowerCase()}}`;
       const linkStyle = `font-size:10px;padding:1px 5px;border-radius:3px;border:1px solid #dde;color:#555;text-decoration:none;white-space:nowrap;`;
+      const fmtVal   = v => v != null && v !== 0 ? v.toFixed(1) + "x" : "—";
+      const firstSeen = w.first_seen
+        ? `<div style="font-size:10px;color:#aaa;margin-top:2px;">since ${{w.first_seen}}</div>` : "";
       return `
       <tr style="border-bottom:1px solid #f2f4f7;">
         <td style="padding:8px 10px;">
-          <div style="font-weight:700;color:#1a2340;margin-bottom:4px;">${{w.ticker}}</div>
-          <div style="display:flex;gap:4px;">
+          <div style="font-weight:700;color:#1a2340;margin-bottom:2px;">${{w.ticker}}</div>
+          ${{firstSeen}}
+          <div style="display:flex;gap:4px;margin-top:3px;">
             <a href="${{yf}}" target="_blank" rel="noopener" style="${{linkStyle}}background:#f0f7ff;">YF</a>
             <a href="${{cnbc}}" target="_blank" rel="noopener" style="${{linkStyle}}background:#fff8f0;">CNBC</a>
             <a href="${{mw}}" target="_blank" rel="noopener" style="${{linkStyle}}background:#f0fff4;">MW</a>
@@ -1158,13 +1226,15 @@ async function loadBuffett() {{
         </td>
         <td style="padding:8px 10px;color:#555;">${{w.company || "—"}}</td>
         <td style="padding:8px 10px;">${{w.price ? "$" + w.price.toFixed(2) : "—"}}</td>
-        <td style="padding:8px 10px;color:#7f8c8d;font-size:11px;">${{w.last_quarter_date || "—"}}</td>
         <td style="padding:8px 10px;font-weight:600;color:#27ae60;">${{w.gross_margin?.toFixed(1)}}%</td>
         <td style="padding:8px 10px;">${{w.sga_margin?.toFixed(1)}}%</td>
         <td style="padding:8px 10px;font-weight:600;color:#27ae60;">${{w.net_income_margin?.toFixed(1)}}%</td>
         <td style="padding:8px 10px;">${{w.interest_margin?.toFixed(1)}}%</td>
         <td style="padding:8px 10px;">${{w.capex_margin?.toFixed(1)}}%</td>
         <td style="padding:8px 10px;color:#27ae60;font-weight:600;">${{w.cash_gt_debt}}</td>
+        <td style="padding:8px 10px;color:#555;">${{w.pe_ratio != null ? w.pe_ratio.toFixed(1) + "x" : "—"}}</td>
+        <td style="padding:8px 10px;color:#555;">${{fmtVal(w.p_fcf)}}</td>
+        <td style="padding:8px 10px;color:#555;">${{fmtVal(w.ev_ebitda)}}</td>
       </tr>`;
     }}).join("");
 
@@ -1175,24 +1245,182 @@ async function loadBuffett() {{
           <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Ticker</th>
           <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Company</th>
           <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Price</th>
-          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Quarter</th>
-          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#27ae60;text-transform:uppercase;">Gross Margin</th>
-          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">SG&amp;A Margin</th>
-          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#27ae60;text-transform:uppercase;">Net Income Margin</th>
-          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Interest Margin</th>
-          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">CapEx Margin</th>
+          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#27ae60;text-transform:uppercase;">Gross %</th>
+          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">SG&amp;A %</th>
+          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#27ae60;text-transform:uppercase;">Net Inc %</th>
+          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Interest %</th>
+          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">CapEx %</th>
           <th style="padding:7px 10px;text-align:left;font-size:11px;color:#27ae60;text-transform:uppercase;">Cash&gt;Debt</th>
+          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#2980b9;text-transform:uppercase;">P/E</th>
+          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#2980b9;text-transform:uppercase;">P/FCF</th>
+          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#2980b9;text-transform:uppercase;">EV/EBITDA</th>
         </tr></thead>
         <tbody>${{rows}}</tbody>
       </table>
       </div>
-      <p style="font-size:11px;color:#aaa;margin-top:8px;">Sorted by Gross Margin descending. Margins: SG&amp;A and Interest relative to Gross Profit / Operating Income respectively; CapEx relative to Net Income.</p>`;
+      <p style="font-size:11px;color:#aaa;margin-top:8px;">
+        Sorted by Gross Margin. Quality criteria: Gross ≥40% · SG&amp;A ≤30% · Net Income ≥20% · Interest ≤15% · CapEx ≤50% · Cash&gt;Debt.
+        Valuation: P/E = trailing; P/FCF = market cap / free cash flow; EV/EBITDA from yfinance.
+        <span style="color:#2980b9;">Blue columns</span> = valuation (populated on next nightly scan).
+      </p>`;
   }} catch(e) {{
     metaEl.textContent = "Error: " + e.message;
   }}
 }}
 
 window.addEventListener("load", loadBuffett);
+
+// ── CC Position Tracker ───────────────────────────────────────────────────
+async function loadCCPositions() {{
+  const status  = document.getElementById("cc-tracker-status");
+  const results = document.getElementById("cc-tracker-results");
+  status.textContent = "Loading…";
+  results.innerHTML  = "";
+
+  try {{
+    const res  = await fetch("/api/cc-positions");
+    const data = await res.json();
+    if (!data.ok) {{ status.textContent = "Error: " + data.error; return; }}
+
+    const positions = data.positions || [];
+    status.textContent = "";
+
+    if (!positions.length) {{
+      results.innerHTML = `<p style="color:#888;font-size:13px;margin-top:8px;">No positions logged yet. Use the form above to add your first covered call.</p>`;
+      return;
+    }}
+
+    const today       = new Date().toISOString().slice(0,10);
+    const open        = positions.filter(p => p.status === "open");
+    const closed      = positions.filter(p => p.status !== "open");
+    const totalPremium = positions.reduce((s,p) => s + p.premium_per_contract * p.contracts * 100, 0);
+    const openPremium  = open.reduce((s,p) => s + p.premium_per_contract * p.contracts * 100, 0);
+
+    function statusBadge(p) {{
+      const colors = {{open:"#e8f8ee;color:#1a6e38;border-color:#a8e0b8", closed:"#f4f6f9;color:#888;border-color:#dde",
+                       expired:"#fff8e1;color:#8a6d00;border-color:#ffe082", assigned:"#fff0f0;color:#c8102e;border-color:#fcc"}};
+      const c = colors[p.status] || colors["closed"];
+      return `<span style="background:${{c}};border:1px solid;border-radius:4px;padding:1px 7px;font-size:10px;font-weight:700;">${{p.status.toUpperCase()}}</span>`;
+    }}
+
+    function dteTag(expiry) {{
+      const d = Math.round((new Date(expiry + "T00:00:00") - new Date()) / 86400000);
+      if (d < 0) return `<span style="color:#aaa;font-size:11px;">(expired)</span>`;
+      const c = d <= 7 ? "#c8102e" : d <= 21 ? "#e67e22" : "#27ae60";
+      return `<span style="color:${{c}};font-size:11px;">${{d}}d</span>`;
+    }}
+
+    const makeRow = p => {{
+      const total = (p.premium_per_contract * p.contracts * 100).toFixed(2);
+      const closeBtn = p.status === "open"
+        ? `<button onclick="closeCC(${{p.id}})" style="font-size:10px;padding:2px 8px;background:#f4f6f9;border:1px solid #dde;border-radius:4px;cursor:pointer;">Close</button>`
+        : "";
+      return `<tr style="border-bottom:1px solid #f2f4f7;">
+        <td style="padding:7px 10px;font-weight:700;">${{p.ticker}}</td>
+        <td style="padding:7px 10px;">${{p.contracts}}x</td>
+        <td style="padding:7px 10px;">$${{p.strike.toFixed(2)}}</td>
+        <td style="padding:7px 10px;">${{p.expiry}} ${{p.status==="open" ? dteTag(p.expiry) : ""}}</td>
+        <td style="padding:7px 10px;">$${{p.premium_per_contract.toFixed(2)}}</td>
+        <td style="padding:7px 10px;font-weight:600;color:#27ae60;">$${{total}}</td>
+        <td style="padding:7px 10px;">${{statusBadge(p)}}</td>
+        <td style="padding:7px 10px;">${{p.opened_date}}</td>
+        <td style="padding:7px 10px;color:#aaa;font-size:11px;">${{p.notes || ""}}</td>
+        <td style="padding:7px 10px;">${{closeBtn}}</td>
+      </tr>`;
+    }};
+
+    const summaryHtml = `
+      <div style="display:flex;gap:20px;flex-wrap:wrap;margin-bottom:14px;padding:12px 16px;background:#f8fafc;border-radius:8px;font-size:13px;">
+        <span>Open positions: <b>${{open.length}}</b></span>
+        <span>Open premium held: <b style="color:#27ae60;">$${{openPremium.toFixed(2)}}</b></span>
+        <span>All-time premium collected: <b style="color:#1a2340;">$${{totalPremium.toFixed(2)}}</b></span>
+      </div>`;
+
+    const thead = `<thead><tr style="background:#f4f6f9;">
+      <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Ticker</th>
+      <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Contracts</th>
+      <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Strike</th>
+      <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Expiry / DTE</th>
+      <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Prem/Contract</th>
+      <th style="padding:7px 10px;text-align:left;font-size:11px;color:#27ae60;text-transform:uppercase;">Total Premium</th>
+      <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Status</th>
+      <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Opened</th>
+      <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Notes</th>
+      <th></th>
+    </tr></thead>`;
+
+    let tableHtml = summaryHtml + `<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:13px;">${{thead}}<tbody>`;
+    if (open.length) {{
+      tableHtml += `<tr><td colspan="10" style="padding:5px 10px;font-size:11px;font-weight:700;color:#1a2340;background:#f0f7ff;">Open Positions</td></tr>`;
+      tableHtml += open.map(makeRow).join("");
+    }}
+    if (closed.length) {{
+      tableHtml += `<tr><td colspan="10" style="padding:5px 10px;font-size:11px;font-weight:700;color:#888;background:#f9f9f9;">Closed / Expired / Assigned</td></tr>`;
+      tableHtml += closed.map(makeRow).join("");
+    }}
+    tableHtml += `</tbody></table></div>`;
+    results.innerHTML = tableHtml;
+  }} catch(e) {{
+    status.textContent = "Error: " + e.message;
+  }}
+}}
+
+async function logCCPosition() {{
+  const status = document.getElementById("cc-log-status");
+  const body   = {{
+    ticker:               (document.getElementById("cc-log-ticker").value   || "").trim().toUpperCase(),
+    contracts:            parseInt(document.getElementById("cc-log-contracts").value),
+    strike:               parseFloat(document.getElementById("cc-log-strike").value),
+    expiry:               document.getElementById("cc-log-expiry").value,
+    premium_per_contract: parseFloat(document.getElementById("cc-log-premium").value),
+    opened_date:          document.getElementById("cc-log-date").value,
+    notes:                document.getElementById("cc-log-notes").value,
+  }};
+
+  if (!body.ticker || !body.contracts || !body.strike || !body.expiry ||
+      !body.premium_per_contract || !body.opened_date) {{
+    status.textContent = "⚠ Fill in all required fields.";
+    return;
+  }}
+
+  status.textContent = "Saving…";
+  try {{
+    const res  = await fetch("/api/cc-positions", {{
+      method:  "POST",
+      headers: {{"Content-Type":"application/json"}},
+      body:    JSON.stringify(body),
+    }});
+    const data = await res.json();
+    if (!data.ok) {{ status.textContent = "Error: " + data.error; return; }}
+    status.textContent = "✓ Logged!";
+    setTimeout(() => {{ status.textContent = ""; }}, 2000);
+    loadCCPositions();
+  }} catch(e) {{
+    status.textContent = "Error: " + e.message;
+  }}
+}}
+
+async function closeCC(id) {{
+  const closedDate  = new Date().toISOString().slice(0,10);
+  const closedPrice = prompt("Closing price / buy-back cost per contract ($):");
+  if (closedPrice === null) return;
+  try {{
+    await fetch(`/api/cc-positions/${{id}}`, {{
+      method:  "PATCH",
+      headers: {{"Content-Type":"application/json"}},
+      body:    JSON.stringify({{
+        status:      "closed",
+        closed_date: closedDate,
+        closed_price: parseFloat(closedPrice) || null,
+      }}),
+    }});
+    loadCCPositions();
+  }} catch(e) {{
+    alert("Error: " + e.message);
+  }}
+}}
+
+window.addEventListener("load", loadCCPositions);
 
 // ── Covered Call Analyzer ─────────────────────────────────────────────────
 async function analyzeCoveredCall() {{
@@ -1268,7 +1496,7 @@ function renderCC(d) {{
     const riskLines = (r.risk_events || []).map(e => {{
       const color = e.severity === "avoid" ? "#c8102e" : "#e67e22";
       const icon  = e.severity === "avoid" ? "📵" : "⚠️";
-      return `<div style="font-size:10px;color:${{color}};margin-top:2px;">${{icon}} ${{e.label.replace(/^[📵⚠️\s]+/, "")}}</div>`;
+      return `<div style="font-size:10px;color:${{color}};margin-top:2px;">${{icon}} ${{e.label.replace(/^[📵⚠️\\s]+/, "")}}</div>`;
     }}).join("");
 
     return `<tr style="${{rowBg}}border-bottom:1px solid #f2f4f7;">

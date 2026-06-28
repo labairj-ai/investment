@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Warren Buffett NYSE screener — runs nightly, stores results in buffett.db."""
 
+import math
 import os
 import random
 import smtplib
@@ -13,6 +14,15 @@ from pathlib import Path
 
 PROJECT_DIR = Path(__file__).parent
 DB_PATH     = PROJECT_DIR / "out" / "buffett.db"
+LOCK_FILE   = PROJECT_DIR / "out" / "buffett_screener.lock"
+
+
+def _safe_float(v, default=None):
+    try:
+        f = float(v)
+        return default if (math.isnan(f) or math.isinf(f)) else f
+    except (TypeError, ValueError):
+        return default
 
 
 def _init_db(conn):
@@ -31,6 +41,9 @@ def _init_db(conn):
             capex_margin      REAL,
             cash_gt_debt      TEXT,
             adj_debt_equity   REAL,
+            pe_ratio          REAL,
+            p_fcf             REAL,
+            ev_ebitda         REAL,
             scanned_at        TEXT
         );
         CREATE TABLE IF NOT EXISTS buffett_winners (
@@ -44,13 +57,39 @@ def _init_db(conn):
             interest_margin   REAL,
             capex_margin      REAL,
             cash_gt_debt      TEXT,
+            pe_ratio          REAL,
+            p_fcf             REAL,
+            ev_ebitda         REAL,
             scanned_at        TEXT
         );
         CREATE TABLE IF NOT EXISTS buffett_meta (
             key   TEXT PRIMARY KEY,
             value TEXT
         );
+        CREATE TABLE IF NOT EXISTS buffett_winner_history (
+            ticker            TEXT,
+            scan_date         TEXT,
+            gross_margin      REAL,
+            net_income_margin REAL,
+            pe_ratio          REAL,
+            p_fcf             REAL,
+            ev_ebitda         REAL,
+            PRIMARY KEY (ticker, scan_date)
+        );
     """)
+    # Migrate existing tables that predate the valuation + history columns
+    for table, col in [
+        ("buffett_cache", "pe_ratio"),
+        ("buffett_cache", "p_fcf"),
+        ("buffett_cache", "ev_ebitda"),
+        ("buffett_winners", "pe_ratio"),
+        ("buffett_winners", "p_fcf"),
+        ("buffett_winners", "ev_ebitda"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} REAL")
+        except sqlite3.OperationalError:
+            pass  # column already exists
     conn.commit()
 
 
@@ -75,7 +114,7 @@ def get_financial_data(ticker):
         import yfinance as yf
 
         stock = yf.Ticker(ticker)
-        info = stock.info
+        info  = stock.info
 
         if info.get("quoteType") != "EQUITY":
             return None
@@ -83,8 +122,8 @@ def get_financial_data(ticker):
             return None
 
         fin = stock.financials
-        bs = stock.balance_sheet
-        cf = stock.cashflow
+        bs  = stock.balance_sheet
+        cf  = stock.cashflow
 
         if fin.empty or bs.empty:
             return None
@@ -103,7 +142,7 @@ def get_financial_data(ticker):
             except Exception:
                 return 0.0
 
-        rev = get_val(fin, "Total Revenue")
+        rev        = get_val(fin, "Total Revenue")
         if rev == 0:
             return None
 
@@ -120,6 +159,13 @@ def get_financial_data(ticker):
         total_liab   = get_val(bs, "Total Liabilities Net Minority Interest")
         equity       = get_val(bs, "Stockholders Equity")
         treasury     = get_val(bs, "Treasury Stock")
+
+        # Valuation metrics
+        pe_ratio   = _safe_float(info.get("trailingPE"))
+        market_cap = info.get("marketCap") or 0
+        fcf        = info.get("freeCashflow") or 0
+        p_fcf      = round(market_cap / fcf, 1) if fcf and fcf > 0 else None
+        ev_ebitda  = _safe_float(info.get("enterpriseToEbitda"))
 
         def margin(num, den):
             return round((num / den) * 100, 2) if den else 0.0
@@ -139,6 +185,9 @@ def get_financial_data(ticker):
             "capex_margin":      margin(abs(capex), net_income),
             "cash_gt_debt":      "Yes" if cash > total_debt else "No",
             "adj_debt_equity":   round(total_liab / equity_adj, 2) if equity_adj else 0.0,
+            "pe_ratio":          round(pe_ratio, 1) if pe_ratio is not None else None,
+            "p_fcf":             p_fcf,
+            "ev_ebitda":         round(ev_ebitda, 1) if ev_ebitda is not None else None,
         }
     except Exception:
         return None
@@ -153,9 +202,6 @@ def _passes_filters(r):
         and r.get("capex_margin", 100)    <= 50
         and r.get("cash_gt_debt")         == "Yes"
     )
-
-
-LOCK_FILE = PROJECT_DIR / "out" / "buffett_screener.lock"
 
 
 def _send_new_winners_email(new_tickers: list[dict]) -> None:
@@ -178,6 +224,7 @@ def _send_new_winners_email(new_tickers: list[dict]) -> None:
           <td style="padding:8px 12px;">${t['price']:.2f}</td>
           <td style="padding:8px 12px;color:#27ae60;">{t.get('gross_margin',0):.1f}%</td>
           <td style="padding:8px 12px;">{t.get('net_income_margin',0):.1f}%</td>
+          <td style="padding:8px 12px;">{t.get('pe_ratio') or '—'}</td>
           <td style="padding:8px 12px;">
             <a href="https://finance.yahoo.com/quote/{t['ticker']}" style="margin-right:6px;">YF</a>
             <a href="https://www.cnbc.com/quotes/{t['ticker'].replace('-','.')}">CNBC</a>
@@ -186,7 +233,7 @@ def _send_new_winners_email(new_tickers: list[dict]) -> None:
 
     count = len(new_tickers)
     html = f"""
-    <html><body style="font-family:-apple-system,sans-serif;color:#2c3e50;max-width:600px;margin:0 auto;">
+    <html><body style="font-family:-apple-system,sans-serif;color:#2c3e50;max-width:640px;margin:0 auto;">
       <h2 style="color:#1a2340;">
         📈 {count} New Buffett Screener Winner{'s' if count != 1 else ''}
       </h2>
@@ -201,7 +248,8 @@ def _send_new_winners_email(new_tickers: list[dict]) -> None:
             <th style="padding:8px 12px;text-align:left;color:#7f8c8d;">Company</th>
             <th style="padding:8px 12px;text-align:left;color:#7f8c8d;">Price</th>
             <th style="padding:8px 12px;text-align:left;color:#27ae60;">Gross Margin</th>
-            <th style="padding:8px 12px;text-align:left;color:#27ae60;">Net Income Margin</th>
+            <th style="padding:8px 12px;text-align:left;color:#27ae60;">Net Income</th>
+            <th style="padding:8px 12px;text-align:left;color:#7f8c8d;">P/E</th>
             <th style="padding:8px 12px;text-align:left;color:#7f8c8d;">Research</th>
           </tr>
         </thead>
@@ -230,7 +278,7 @@ def _send_new_winners_email(new_tickers: list[dict]) -> None:
 
 
 def _flush(conn, results, now_str, scanned_so_far, total_tickers, complete):
-    """Commit cache, rewrite winners, update meta, and email any new tickers."""
+    """Commit cache, rewrite winners, update meta, email new tickers, record history."""
     winners = [r for r in results if _passes_filters(r)]
 
     # Detect genuinely new tickers (not in previous winners)
@@ -247,10 +295,12 @@ def _flush(conn, results, now_str, scanned_so_far, total_tickers, complete):
             INSERT OR REPLACE INTO buffett_winners
             (ticker, company, price, last_quarter_date,
              gross_margin, sga_margin, net_income_margin,
-             interest_margin, capex_margin, cash_gt_debt, scanned_at)
+             interest_margin, capex_margin, cash_gt_debt,
+             pe_ratio, p_fcf, ev_ebitda, scanned_at)
             VALUES (:ticker, :company, :price, :last_quarter_date,
                     :gross_margin, :sga_margin, :net_income_margin,
-                    :interest_margin, :capex_margin, :cash_gt_debt, :scanned_at)
+                    :interest_margin, :capex_margin, :cash_gt_debt,
+                    :pe_ratio, :p_fcf, :ev_ebitda, :scanned_at)
         """, {**w, "scanned_at": w.get("scanned_at", now_str)})
 
     if complete:
@@ -258,6 +308,17 @@ def _flush(conn, results, now_str, scanned_so_far, total_tickers, complete):
             "INSERT OR REPLACE INTO buffett_meta (key, value) VALUES ('last_scan', ?)",
             (now_str,)
         )
+        # Write one history row per winner for this scan date
+        scan_date = now_str[:10]
+        for w in winners:
+            conn.execute("""
+                INSERT OR IGNORE INTO buffett_winner_history
+                (ticker, scan_date, gross_margin, net_income_margin, pe_ratio, p_fcf, ev_ebitda)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (w["ticker"], scan_date,
+                  w.get("gross_margin"), w.get("net_income_margin"),
+                  w.get("pe_ratio"), w.get("p_fcf"), w.get("ev_ebitda")))
+
     conn.execute(
         "INSERT OR REPLACE INTO buffett_meta (key, value) VALUES ('tickers_scanned', ?)",
         (str(scanned_so_far),)
@@ -271,15 +332,14 @@ def _flush(conn, results, now_str, scanned_so_far, total_tickers, complete):
 
 def _acquire_lock():
     """Return True if we got the lock, False if another instance is running."""
-    import os
     if LOCK_FILE.exists():
         try:
             pid = int(LOCK_FILE.read_text().strip())
-            os.kill(pid, 0)  # signal 0 = just check if process exists
+            os.kill(pid, 0)
             print(f"[Buffett] Already running (PID {pid}), exiting.")
             return False
         except (ProcessLookupError, ValueError):
-            LOCK_FILE.unlink(missing_ok=True)  # stale lock
+            LOCK_FILE.unlink(missing_ok=True)
     LOCK_FILE.write_text(str(os.getpid()))
     return True
 
@@ -305,7 +365,7 @@ def run():
     results = []
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # Record scan start so the API can compute ETA
+    # Record scan start for ETA computation
     conn.execute(
         "INSERT OR REPLACE INTO buffett_meta (key, value) VALUES ('scan_started', ?)",
         (now_str,)
@@ -322,7 +382,7 @@ def run():
         if ticker in cache:
             try:
                 fast_info = yf.Ticker(ticker).info
-                new_q_ts = fast_info.get("mostRecentQuarter", 0)
+                new_q_ts  = fast_info.get("mostRecentQuarter", 0)
                 new_q_date = (
                     datetime.fromtimestamp(new_q_ts).strftime("%Y-%m-%d")
                     if new_q_ts else None
@@ -344,11 +404,13 @@ def run():
                     (ticker, company, price, last_quarter_date,
                      gross_margin, sga_margin, rd_margin, depr_margin,
                      interest_margin, net_income_margin, capex_margin,
-                     cash_gt_debt, adj_debt_equity, scanned_at)
+                     cash_gt_debt, adj_debt_equity,
+                     pe_ratio, p_fcf, ev_ebitda, scanned_at)
                     VALUES (:ticker, :company, :price, :last_quarter_date,
                             :gross_margin, :sga_margin, :rd_margin, :depr_margin,
                             :interest_margin, :net_income_margin, :capex_margin,
-                            :cash_gt_debt, :adj_debt_equity, :scanned_at)
+                            :cash_gt_debt, :adj_debt_equity,
+                            :pe_ratio, :p_fcf, :ev_ebitda, :scanned_at)
                 """, data)
             time.sleep(random.uniform(0.5, 1.5))
         else:
