@@ -453,7 +453,7 @@ def run():
         else:
             time.sleep(0.05)
 
-        if i > 0 and i % 100 == 0:
+        if i > 0 and i % 50 == 0:
             _flush(conn, results, now_str, i, len(tickers), complete=False,
                    ever_winners=ever_winners)
             print(f"[Buffett] {i}/{len(tickers)} processed…")
