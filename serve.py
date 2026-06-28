@@ -573,6 +573,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urlparse(self.path)
+        if parsed.path in ("/", ""):
+            self.send_response(302)
+            self.send_header("Location", "/out/dashboard.html")
+            self.end_headers()
+            return
         if parsed.path == "/api/covered-calls":
             self._handle_covered_calls(parse_qs(parsed.query))
         elif parsed.path == "/api/dividends":
