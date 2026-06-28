@@ -194,13 +194,16 @@ def get_financial_data(ticker):
 
 
 def _passes_filters(r):
+    def _g(key, default):
+        v = r.get(key)
+        return v if v is not None else default
     return (
-        r.get("gross_margin", 0)      >= 40
-        and r.get("sga_margin", 100)      <= 30
-        and r.get("net_income_margin", 0) >= 20
-        and r.get("interest_margin", 100) <= 15
-        and r.get("capex_margin", 100)    <= 50
-        and r.get("cash_gt_debt")         == "Yes"
+        _g("gross_margin", 0)      >= 40
+        and _g("sga_margin", 100)      <= 30
+        and _g("net_income_margin", 0) >= 20
+        and _g("interest_margin", 100) <= 15
+        and _g("capex_margin", 100)    <= 50
+        and r.get("cash_gt_debt")      == "Yes"
     )
 
 
@@ -348,7 +351,7 @@ def run():
     import yfinance as yf
 
     if not _acquire_lock():
-        return
+        return False
 
     conn = sqlite3.connect(str(DB_PATH), timeout=30)
     conn.row_factory = sqlite3.Row
@@ -429,7 +432,10 @@ def run():
 
 
 if __name__ == "__main__":
+    import sys
     try:
-        run()
+        completed = run()
     finally:
         LOCK_FILE.unlink(missing_ok=True)
+    if completed is False:
+        sys.exit(1)
