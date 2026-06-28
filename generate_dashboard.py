@@ -655,6 +655,49 @@ def build_dashboard(portfolio, layers, holdings):
     </div>
   </div>
 
+  <!-- Buffett Deep-Dive Analyzer -->
+  <div class="card" id="buffett-deep-card">
+    <h2 style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+      <span>Buffett Deep-Dive Analyzer</span>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <input id="deep-ticker-input" placeholder="e.g. AAPL" maxlength="10"
+          style="width:100px;padding:5px 10px;border:1px solid #dde;border-radius:5px;font-size:13px;text-transform:uppercase;"
+          onkeydown="if(event.key==='Enter')runDeepAnalysis()">
+        <button onclick="runDeepAnalysis()"
+          style="padding:5px 16px;background:#1a2340;color:#fff;border:none;border-radius:5px;font-size:13px;font-weight:600;cursor:pointer;">
+          Analyze
+        </button>
+      </div>
+    </h2>
+    <div id="deep-status" style="font-size:13px;color:#7f8c8d;min-height:20px;"></div>
+
+    <!-- Summary bar (hidden until result loads) -->
+    <div id="deep-summary" style="display:none;align-items:center;gap:20px;flex-wrap:wrap;
+         background:#f8fafc;border-radius:8px;padding:14px 18px;margin:14px 0;">
+      <div>
+        <div style="font-size:10px;color:#aaa;text-transform:uppercase;letter-spacing:.04em;">Ticker</div>
+        <div id="deep-ticker-label" style="font-size:22px;font-weight:800;color:#1a2340;"></div>
+      </div>
+      <div>
+        <div style="font-size:10px;color:#aaa;text-transform:uppercase;letter-spacing:.04em;">Price</div>
+        <div id="deep-price-label" style="font-size:22px;font-weight:700;color:#1a2340;"></div>
+      </div>
+      <div style="border-left:2px solid #dde;padding-left:18px;">
+        <div style="font-size:10px;color:#aaa;text-transform:uppercase;letter-spacing:.04em;">Buffett Score</div>
+        <div id="deep-score-label" style="font-size:28px;font-weight:800;"></div>
+      </div>
+      <div id="deep-score-bar-wrap" style="flex:1;min-width:180px;">
+        <div style="background:#e8ecf0;border-radius:4px;height:8px;overflow:hidden;">
+          <div id="deep-score-bar" style="height:8px;border-radius:4px;transition:width .4s;"></div>
+        </div>
+        <div id="deep-score-label2" style="font-size:11px;color:#888;margin-top:4px;"></div>
+      </div>
+    </div>
+
+    <!-- Results table -->
+    <div id="deep-results-wrap"></div>
+  </div>
+
   <!-- Covered Call Analyzer -->
   <div class="card" id="cc-card">
     <h2>Covered Call Analyzer</h2>
@@ -1955,6 +1998,73 @@ async function loadBuffett() {{
 }}
 
 window.addEventListener("load", loadBuffett);
+
+// ── Buffett Deep-Dive Analyzer ────────────────────────────────────────────
+async function runDeepAnalysis() {{
+  const input  = document.getElementById("deep-ticker-input");
+  const ticker = (input?.value || "").trim().toUpperCase();
+  if (!ticker) {{ input?.focus(); return; }}
+
+  const status  = document.getElementById("deep-status");
+  const summary = document.getElementById("deep-summary");
+  const wrap    = document.getElementById("deep-results-wrap");
+  status.textContent  = `Fetching financials for ${{ticker}}…`;
+  summary.style.display = "none";
+  wrap.innerHTML = "";
+
+  try {{
+    const res  = await fetch(`/api/buffett-analysis?ticker=${{encodeURIComponent(ticker)}}`);
+    const data = await res.json();
+    if (!data.ok) {{ status.textContent = "Error: " + data.error; return; }}
+
+    status.textContent = "";
+    const score = data.score;
+    const max   = data.max_score;
+    const pct   = score / max;
+    const scoreColor = pct >= 0.77 ? "#27ae60" : pct >= 0.54 ? "#e67e22" : "#e74c3c";
+    const verdict    = pct >= 0.77 ? "Strong Buffett candidate" : pct >= 0.54 ? "Mixed signals" : "Does not pass Buffett screen";
+
+    document.getElementById("deep-ticker-label").textContent = data.ticker;
+    document.getElementById("deep-price-label").textContent  = data.price > 0 ? `$${{data.price.toFixed(2)}}` : "—";
+    const scoreEl = document.getElementById("deep-score-label");
+    scoreEl.textContent = `${{score}}/${{max}}`;
+    scoreEl.style.color = scoreColor;
+    document.getElementById("deep-score-bar").style.width      = `${{(pct*100).toFixed(0)}}%`;
+    document.getElementById("deep-score-bar").style.background = scoreColor;
+    document.getElementById("deep-score-label2").textContent   = verdict;
+    summary.style.display = "flex";
+
+    const rows = data.results.map(r => {{
+      const isPass = r.Result === "PASS";
+      const isNA   = r.Result === "N/A";
+      const badgeBg    = isPass ? "#f0fff4" : isNA ? "#f4f4f4" : "#fff0f0";
+      const badgeBdr   = isPass ? "#ade"    : isNA ? "#ddd"    : "#fcc";
+      const badgeColor = isPass ? "#27ae60" : isNA ? "#888"    : "#e74c3c";
+      return `<tr style="border-bottom:1px solid #f5f5f5;">
+        <td style="padding:7px 10px;font-weight:600;color:#1a2340;">${{r.Metric}}</td>
+        <td style="padding:7px 10px;font-family:monospace;font-size:12px;color:#555;">${{r.Value}}</td>
+        <td style="padding:7px 10px;font-size:12px;color:#888;">${{r.Criteria}}</td>
+        <td style="padding:7px 10px;">
+          <span style="background:${{badgeBg}};color:${{badgeColor}};border:1px solid ${{badgeBdr}};
+            border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;">${{r.Result}}</span>
+        </td>
+        <td style="padding:7px 10px;font-size:11px;color:#aaa;">${{r.Note||""}}</td>
+      </tr>`;
+    }}).join("");
+
+    wrap.innerHTML = `<div style="overflow-x:auto;">
+      <table style="width:100%;border-collapse:collapse;font-size:13px;">
+        <thead><tr style="background:#f4f6f9;text-align:left;">
+          <th style="padding:7px 10px;font-size:10px;color:#888;text-transform:uppercase;">Metric</th>
+          <th style="padding:7px 10px;font-size:10px;color:#888;text-transform:uppercase;">Value</th>
+          <th style="padding:7px 10px;font-size:10px;color:#888;text-transform:uppercase;">Criteria</th>
+          <th style="padding:7px 10px;font-size:10px;color:#888;text-transform:uppercase;">Result</th>
+          <th style="padding:7px 10px;font-size:10px;color:#888;text-transform:uppercase;">Note</th>
+        </tr></thead>
+        <tbody>${{rows}}</tbody>
+      </table></div>`;
+  }} catch(e) {{ status.textContent = "Error: " + e.message; }}
+}}
 
 // ── CC Position Tracker ───────────────────────────────────────────────────
 async function loadCCPositions() {{

@@ -651,6 +651,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._handle_dividend_lookup(parse_qs(parsed.query))
         elif parsed.path == "/api/buffett-winners":
             self._handle_buffett_winners()
+        elif parsed.path == "/api/buffett-analysis":
+            self._handle_buffett_analysis(parse_qs(parsed.query))
         elif parsed.path == "/api/cc-positions":
             self._handle_cc_positions_get()
         elif parsed.path == "/api/lots":
@@ -1359,6 +1361,138 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             _cache_set(_div_cache, payload)
             self._json(payload)
 
+        except Exception as e:
+            self._json_error(500, str(e))
+
+    def _handle_buffett_analysis(self, params):
+        ticker_symbol = (params.get("ticker", [None])[0] or "").upper().strip()
+        if not ticker_symbol:
+            self._json({"ok": False, "error": "ticker required"})
+            return
+        try:
+            import yfinance as yf
+            import pandas as pd
+
+            stock        = yf.Ticker(ticker_symbol)
+            income_stmt  = stock.financials
+            balance_sheet = stock.balance_sheet
+            cash_flow    = stock.cashflow
+
+            if income_stmt.empty:
+                self._json({"ok": False, "error": f"No financial data found for {ticker_symbol}"})
+                return
+
+            def get_val(df, keys, year_idx=0):
+                if isinstance(keys, str):
+                    keys = [keys]
+                for key in keys:
+                    if key in df.index:
+                        try:
+                            val = df.iloc[df.index.get_loc(key), year_idx]
+                            if not pd.isna(val):
+                                return float(val)
+                        except Exception:
+                            pass
+                return 0.0
+
+            revenue       = get_val(income_stmt,   ["Total Revenue", "Revenue"])
+            gross_profit  = get_val(income_stmt,   ["Gross Profit", "Net Interest Income"])
+            sga           = get_val(income_stmt,   ["Selling General And Administration", "Operating Expense"])
+            rnd           = get_val(income_stmt,   "Research And Development")
+            depreciation  = get_val(cash_flow,     ["DepreciationAndAmortization", "Depreciation"])
+            if depreciation == 0:
+                depreciation = get_val(income_stmt, "Reconciled Depreciation")
+            interest_exp  = get_val(income_stmt,   ["Interest Expense", "Interest Expense Non Operating"])
+            op_income     = get_val(income_stmt,   ["Operating Income", "Operating Profit"])
+            net_income    = get_val(income_stmt,   ["Net Income", "Net Income Common Stockholders"])
+            eps_current   = get_val(income_stmt,   "Basic EPS", 0)
+            eps_prev      = get_val(income_stmt,   "Basic EPS", 1)
+            cash          = get_val(balance_sheet, ["Cash And Cash Equivalents", "Cash Financial"])
+            total_debt    = get_val(balance_sheet, ["Total Debt", "Long Term Debt"])
+            equity        = get_val(balance_sheet, ["Stockholders Equity", "Total Equity Gross Minority Interest"])
+            treasury_stock = get_val(balance_sheet, "Treasury Stock")
+            preferred_stock = get_val(balance_sheet, "Preferred Stock")
+            re_cur        = get_val(balance_sheet, "Retained Earnings", 0)
+            re_1          = get_val(balance_sheet, "Retained Earnings", 1)
+            capex         = abs(get_val(cash_flow, ["Capital Expenditure", "Capital Expenditures"]))
+
+            is_financial = (gross_profit == 0 and revenue > 0)
+            results = []
+
+            def check(metric, value_str, criteria, passed, note=""):
+                results.append({"Metric": metric, "Value": value_str, "Criteria": criteria,
+                                 "Result": "PASS" if passed else "FAIL", "Note": note})
+
+            # 1. Gross Margin
+            gm = (gross_profit / revenue) if revenue else 0
+            if is_financial:
+                results.append({"Metric": "Gross Margin", "Value": "N/A", "Criteria": "> 40%",
+                                 "Result": "N/A", "Note": "Bank / Insurer"})
+                gp_valid = False
+            else:
+                check("Gross Margin", f"{gm:.1%}", "> 40%", gm > 0.40)
+                gp_valid = gross_profit > 0
+
+            # 2-4. Expense margins
+            if gp_valid:
+                check("SG&A Margin",         f"{sga/gross_profit:.1%}",         "< 30%", sga/gross_profit < 0.30)
+                check("R&D Margin",          f"{rnd/gross_profit:.1%}",         "< 30%", rnd/gross_profit < 0.30)
+                check("Depreciation Margin", f"{depreciation/gross_profit:.1%}","< 10%", depreciation/gross_profit < 0.10)
+            else:
+                for m in ["SG&A Margin", "R&D Margin", "Depreciation Margin"]:
+                    check(m, "Neg/Zero GP", m.split()[0], False)
+
+            # 5. Interest margin
+            if op_income > 0:
+                check("Interest Margin", f"{interest_exp/op_income:.1%}", "< 15%", interest_exp/op_income < 0.15)
+            else:
+                check("Interest Margin", "Neg Op Inc", "< 15%", False, "Op Income negative")
+
+            # 6. Net income margin
+            nm = (net_income / revenue) if revenue else 0
+            check("Net Income Margin", f"{nm:.1%}", "> 20%", nm > 0.20)
+
+            # 7. EPS growth
+            check("EPS Growth", f"${eps_current:.2f} vs ${eps_prev:.2f}", "Trend Up", eps_current > eps_prev)
+
+            # 8. Retained earnings
+            check("Retained Earnings", "Trending up" if re_cur > re_1 else "Declining",
+                  "Growth", re_cur > re_1)
+
+            # 9. Cash vs debt
+            check("Cash vs Debt",
+                  f"${cash/1e9:.2f}B vs ${total_debt/1e9:.2f}B", "Cash > Debt", cash > total_debt)
+
+            # 10. Debt / equity
+            if equity > 0:
+                de = total_debt / equity
+                check("Debt / Equity", f"{de:.2f}", "< 0.80", de < 0.80)
+            else:
+                check("Debt / Equity", "Neg Equity", "< 0.80", False)
+
+            # 11. Preferred stock
+            check("Preferred Stock", f"${preferred_stock/1e6:.1f}M" if preferred_stock else "$0",
+                  "None", preferred_stock == 0)
+
+            # 12. Buybacks
+            check("Share Buybacks", f"${treasury_stock/1e6:.1f}M" if treasury_stock else "$0",
+                  "Present", treasury_stock != 0)
+
+            # 13. CapEx margin
+            if net_income > 0:
+                cm = capex / net_income
+                check("CapEx / Net Income", f"{cm:.1%}", "< 25%", cm < 0.25)
+            else:
+                check("CapEx / Net Income", "Neg Net Inc", "< 25%", False, "Net income negative")
+
+            try:
+                price = float(stock.history(period="1d")["Close"].iloc[-1])
+            except Exception:
+                price = 0.0
+
+            score = sum(1 for r in results if r["Result"] == "PASS")
+            self._json({"ok": True, "ticker": ticker_symbol, "price": price,
+                        "score": score, "max_score": len(results), "results": results})
         except Exception as e:
             self._json_error(500, str(e))
 
