@@ -281,8 +281,12 @@ def _send_new_winners_email(new_tickers: list[dict]) -> None:
 
 
 def _flush(conn, results, now_str, scanned_so_far, total_tickers, complete,
-           ever_winners: set | None = None):
+           ever_winners=None):
     """Commit cache, rewrite winners, update meta, email new tickers, record history."""
+    # Commit any pending cache-hit UPDATEs from the main loop before anything
+    # else runs — this ensures pe_ratio / p_fcf / ev_ebitda are persisted even
+    # if an error occurs later in this function.
+    conn.commit()
     winners = [r for r in results if _passes_filters(r)]
 
     # Only email on the final flush, and only for tickers that have NEVER

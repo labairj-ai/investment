@@ -188,7 +188,7 @@ venv/bin/python3 send_newsletter_main.py && venv/bin/python3 generate_dashboard.
 - **Est. Annual Dividends** — gross annual dividend income; subtitle shows net after-tax
 
 ### Charts
-- Portfolio vs SPY cumulative return
+- **Portfolio vs SPY cumulative return** — time-weighted return (TWR) anchored to Feb 11, 2026. When new money is added (new positions, additional shares), those capital inflows are treated as external cash flows and excluded from the return calculation — they never show as a percentage gain spike. Both portfolio and SPY start at 0% on the baseline date for a true apples-to-apples comparison.
 - Allocation by layer (doughnut)
 - Layer weight over time
 - Today's layer performance (bar)
@@ -307,7 +307,7 @@ The screener runs automatically at **2 AM ET** each night as a background thread
 | CapEx / Net Income | ≤ 50% |
 | Cash > Total Debt | Yes |
 
-**Smart caching:** tickers whose `mostRecentQuarter` hasn't changed skip the full financial fetch. Valuation metrics (P/E, P/FCF, EV/EBITDA) are always refreshed from today's price data even on cache hits, so they're never stale.
+**Smart caching:** tickers whose `mostRecentQuarter` hasn't changed skip the full financial fetch. Valuation metrics (P/E, P/FCF, EV/EBITDA) are always refreshed from current price data even on cache hits, so they're never stale. Cache updates are committed immediately before any flush logic runs, so they survive even if a scan is interrupted mid-run.
 
 **No repeat emails:** The screener emails only when a ticker qualifies for the **first time ever**. Once a ticker appears in `buffett_winner_history` it is never re-notified, regardless of how many subsequent scans it passes. The email fires once per scan run (at completion), not at each intermediate flush.
 

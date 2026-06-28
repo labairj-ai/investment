@@ -191,16 +191,35 @@ def build_dashboard(portfolio, layers, holdings):
     port_chg_pct = [r["total_change_pct"] for r in portfolio]
     spy_chg_pct = [r["spy_change_pct"] for r in portfolio]
 
-    # Cumulative return from first day
-    base = portfolio[0]["total_value"] if portfolio else 1
-    port_cum = [((v / base) - 1) * 100 for v in port_values]
+    # Time-weighted return — capital additions (new money) don't inflate the %.
+    # When total_value jumps more than price-change alone explains, we close the
+    # current sub-period and restart at the post-inflow value, then chain the
+    # factors together.  Both series start at 0 % on the first date.
+    port_cum    = [0.0]
+    _twr_factor = 1.0
+    _sub_start  = portfolio[0]["total_value"] if portfolio else 1.0
+    for _i in range(1, len(portfolio)):
+        _prev = portfolio[_i - 1]["total_value"]
+        _curr = portfolio[_i]["total_value"]
+        _pchg = portfolio[_i].get("total_change_dollars", 0) or 0
+        # Skip weekend/holiday duplicates where the newsletter repeats the same row
+        if abs(_curr - _prev) > 1.0:
+            _val_ex_cf = _prev + _pchg          # expected value from prices alone
+            _cf        = _curr - _val_ex_cf     # residual = external cash flow
+            _threshold = max(1000.0, 0.005 * _prev)
+            if abs(_cf) > _threshold:
+                if _sub_start:
+                    _twr_factor *= _val_ex_cf / _sub_start
+                _sub_start = _curr
+        _within = (_curr / _sub_start) if _sub_start else 1.0
+        port_cum.append(round((_twr_factor * _within - 1) * 100, 4))
 
-    # SPY cumulative (sum of daily %, approximate)
-    spy_cum = []
-    running = 0.0
-    for r in portfolio:
-        running += r["spy_change_pct"]
-        spy_cum.append(round(running, 4))
+    # SPY normalized to 0 % on first date, properly compounded
+    spy_cum = [0.0]
+    _spy_f  = 1.0
+    for _r in portfolio[1:]:
+        _spy_f *= 1.0 + (_r.get("spy_change_pct", 0) or 0) / 100.0
+        spy_cum.append(round((_spy_f - 1) * 100, 4))
 
     # ---- layer weight history ----
     all_layer_names = sorted(set(l["layer"] for l in layers))
@@ -630,7 +649,7 @@ def build_dashboard(portfolio, layers, holdings):
   <!-- Main charts row -->
   <div class="three-col">
     <div class="card">
-      <h2>Portfolio vs SPY — Cumulative Return</h2>
+      <h2>Portfolio vs SPY — Cumulative Return <span style="font-size:11px;font-weight:400;color:#aaa;">(time-weighted, since Feb 11 2026)</span></h2>
       <canvas id="cumChart"></canvas>
     </div>
     <div class="card">
