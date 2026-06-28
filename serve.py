@@ -681,6 +681,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._handle_lot_add()
         elif parsed.path == "/api/sells":
             self._handle_sell_add()
+        elif parsed.path == "/api/holdings":
+            self._handle_holding_add()
         else:
             self.send_response(404)
             self.end_headers()
@@ -800,6 +802,146 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             )
 
             self._json({"ok": True, "ticker": ticker, "new_layer": new_layer, "layer_num": layer_num})
+        except Exception as e:
+            self._json_error(500, str(e))
+
+    def _handle_holding_add(self):
+        """POST /api/holdings — add a new position to holdings.csv and seed today's DB row."""
+        try:
+            body      = self._read_body()
+            raw_ticker = str(body.get("ticker", "")).strip().upper()
+            # Normalize BRK.B → BRK-B
+            ticker = raw_ticker.replace(".", "-") if "." in raw_ticker else raw_ticker
+            shares    = float(body.get("shares", 0))
+            avg_cost  = float(body.get("avg_cost", 0))
+            layer_num = int(body.get("layer_num", 0))
+
+            if not ticker:
+                return self._json_error(400, "ticker is required")
+            if shares <= 0:
+                return self._json_error(400, "shares must be > 0")
+            if avg_cost <= 0:
+                return self._json_error(400, "avg_cost must be > 0")
+            if layer_num not in self._LAYER_NAMES:
+                return self._json_error(400, "layer_num must be 1–5")
+
+            holdings_csv = PROJECT_DIR / "holdings.csv"
+            layer_label  = self._LAYER_NAMES[layer_num]
+
+            # Check for duplicate
+            existing_tickers = set()
+            rows, fieldnames = [], None
+            if holdings_csv.exists():
+                with open(holdings_csv, newline="") as f:
+                    reader = _csv_mod.DictReader(f)
+                    fieldnames = reader.fieldnames
+                    for row in reader:
+                        raw = str(row["Stock"]).strip().upper()
+                        norm = raw.replace(".", "-") if "." in raw else raw
+                        existing_tickers.add(norm)
+                        rows.append(row)
+
+            if ticker in existing_tickers:
+                return self._json_error(409, f"{ticker} is already in your holdings. Use the Lots form to add shares.")
+
+            # Append new row to CSV
+            new_row = {
+                "Stock":   ticker,
+                "Shares":  str(shares),
+                "AvgCost": str(avg_cost),
+                "Layer":   str(layer_num),
+            }
+            rows.append(new_row)
+            if not fieldnames:
+                fieldnames = ["Stock", "Shares", "AvgCost", "Layer"]
+
+            with open(holdings_csv, "w", newline="") as f:
+                writer = _csv_mod.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(rows)
+
+            # Fetch current price from yfinance and seed holding_day for today
+            price = None
+            try:
+                import yfinance as yf
+                import warnings
+                warnings.filterwarnings("ignore")
+                # yfinance expects the original dot notation for some tickers (BRK-B → BRK-B is fine)
+                tk = yf.Ticker(ticker)
+                info = tk.fast_info
+                price = float(info.get("last_price") or info.get("previous_close") or 0) or None
+                if not price:
+                    hist = tk.history(period="2d")
+                    if not hist.empty:
+                        price = float(hist["Close"].iloc[-1])
+            except Exception:
+                price = None
+
+            if price and price > 0:
+                today = datetime.date.today().isoformat()
+                value = shares * price
+                db    = PROJECT_DIR / "out" / "investment.db"
+                if db.exists():
+                    conn = sqlite3.connect(str(db), timeout=10)
+                    conn.row_factory = sqlite3.Row
+
+                    conn.execute(
+                        "INSERT OR REPLACE INTO holding_day "
+                        "(day, ticker, layer, shares, price, value, change_dollars, change_pct, weight_pct) "
+                        "VALUES (?,?,?,?,?,?,0,0,0)",
+                        (today, ticker, layer_label, shares, price, value)
+                    )
+
+                    # Recompute today's layer_day and portfolio_day weights
+                    hrows = conn.execute(
+                        "SELECT layer, value, change_dollars FROM holding_day WHERE day=?", (today,)
+                    ).fetchall()
+
+                    day_layer = collections.defaultdict(lambda: {"value": 0.0, "change": 0.0})
+                    total_val = 0.0
+                    for r in hrows:
+                        day_layer[r["layer"]]["value"]  += r["value"]
+                        day_layer[r["layer"]]["change"] += r["change_dollars"]
+                        total_val += r["value"]
+
+                    # Update weight_pct for the new holding
+                    for h_row in hrows:
+                        w = (h_row["value"] / total_val * 100) if total_val else 0
+                        conn.execute(
+                            "UPDATE holding_day SET weight_pct=? WHERE day=? AND ticker=?",
+                            (w, today, ticker)
+                        )
+
+                    # Recompute layer_day for today
+                    for layer, d in day_layer.items():
+                        w        = (d["value"] / total_val * 100) if total_val else 0
+                        prev_val = d["value"] - d["change"]
+                        chg_pct  = (d["change"] / prev_val * 100) if prev_val else 0.0
+                        conn.execute(
+                            "INSERT OR REPLACE INTO layer_day "
+                            "(day, layer, value, change_dollars, change_pct, weight_pct) VALUES (?,?,?,?,?,?)",
+                            (today, layer, d["value"], d["change"], chg_pct, w)
+                        )
+
+                    conn.commit()
+                    conn.close()
+
+            # Regenerate dashboard
+            import subprocess
+            subprocess.run(
+                ["python3", "generate_dashboard.py"],
+                cwd=str(PROJECT_DIR),
+                capture_output=True,
+                timeout=30,
+            )
+
+            self._json({
+                "ok":        True,
+                "ticker":    ticker,
+                "layer":     layer_label,
+                "price":     price,
+                "value":     round(shares * price, 2) if price else None,
+            })
         except Exception as e:
             self._json_error(500, str(e))
 

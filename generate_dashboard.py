@@ -663,6 +663,55 @@ def build_dashboard(portfolio, layers, holdings):
   <!-- Holdings table -->
   <div class="card">
     <h2>Holdings — {today_date}</h2>
+
+    <!-- Add position form -->
+    <details style="margin-bottom:16px;">
+      <summary style="cursor:pointer;font-size:12px;font-weight:600;color:#7f8c8d;text-transform:uppercase;letter-spacing:.05em;padding:6px 0;">
+        + Add Position
+      </summary>
+      <div style="margin-top:12px;padding:14px 16px;background:#f8fafc;border-radius:8px;border:1px solid #eee;">
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:12px;">
+          <div>
+            <label style="font-size:10px;color:#aaa;text-transform:uppercase;">Ticker</label>
+            <input id="add-pos-ticker" placeholder="e.g. AAPL" autocomplete="off"
+              style="width:100%;margin-top:3px;padding:6px 8px;border:1px solid #dde;border-radius:5px;font-size:13px;text-transform:uppercase;">
+          </div>
+          <div>
+            <label style="font-size:10px;color:#aaa;text-transform:uppercase;">Shares</label>
+            <input id="add-pos-shares" type="number" step="0.001" min="0" placeholder="100"
+              style="width:100%;margin-top:3px;padding:6px 8px;border:1px solid #dde;border-radius:5px;font-size:13px;">
+          </div>
+          <div>
+            <label style="font-size:10px;color:#aaa;text-transform:uppercase;">Avg Cost / Share ($)</label>
+            <input id="add-pos-cost" type="number" step="0.01" min="0" placeholder="150.00"
+              style="width:100%;margin-top:3px;padding:6px 8px;border:1px solid #dde;border-radius:5px;font-size:13px;">
+          </div>
+          <div>
+            <label style="font-size:10px;color:#aaa;text-transform:uppercase;">Layer</label>
+            <select id="add-pos-layer"
+              style="width:100%;margin-top:3px;padding:6px 8px;border:1px solid #dde;border-radius:5px;font-size:13px;background:#fff;">
+              <option value="1">L1 — Structural Ballast</option>
+              <option value="2">L2 — Cash-Flow Engines</option>
+              <option value="3" selected>L3 — Compounders</option>
+              <option value="4">L4 — Convexity / Optionality</option>
+              <option value="5">L5 — Shock Absorbers / Hedges</option>
+            </select>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+          <button onclick="addHolding()"
+            style="padding:7px 18px;background:#1a2340;color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;">
+            Add Position
+          </button>
+          <span id="add-pos-status" style="font-size:12px;color:#7f8c8d;"></span>
+        </div>
+        <div style="font-size:11px;color:#aaa;margin-top:10px;line-height:1.5;">
+          After adding, use <b>Lots</b> to record the tax purchase date(s) and cost basis for each lot.
+          The current market price is fetched automatically — the position will appear in the table after saving.
+        </div>
+      </div>
+    </details>
+
     <table>
       <thead><tr><th>Ticker</th><th>Shares</th><th>Avg Cost</th><th>Price</th><th>Value</th><th>Total Gain</th><th>Daily Δ</th><th>Weight</th><th>Next Earnings</th><th>Layer</th><th>Tax Lots</th></tr></thead>
       <tbody>{holdings_rows}</tbody>
@@ -1638,6 +1687,40 @@ async function deleteLot(id) {{
 }}
 
 window.addEventListener("load", loadAllLots);
+
+// ── Add Position ──────────────────────────────────────────────────────────
+async function addHolding() {{
+  const statusEl  = document.getElementById("add-pos-status");
+  const ticker    = (document.getElementById("add-pos-ticker").value || "").trim().toUpperCase();
+  const shares    = parseFloat(document.getElementById("add-pos-shares").value);
+  const avg_cost  = parseFloat(document.getElementById("add-pos-cost").value);
+  const layer_num = parseInt(document.getElementById("add-pos-layer").value);
+
+  if (!ticker)         {{ statusEl.textContent = "⚠ Enter a ticker."; return; }}
+  if (!(shares > 0))   {{ statusEl.textContent = "⚠ Shares must be > 0."; return; }}
+  if (!(avg_cost > 0)) {{ statusEl.textContent = "⚠ Avg cost must be > 0."; return; }}
+
+  statusEl.textContent = "Saving and fetching price…";
+  try {{
+    const res  = await fetch("/api/holdings", {{
+      method:  "POST",
+      headers: {{"Content-Type": "application/json"}},
+      body:    JSON.stringify({{ ticker, shares, avg_cost, layer_num }}),
+    }});
+    const data = await res.json();
+    if (!data.ok) {{
+      statusEl.textContent = "Error: " + data.error;
+      return;
+    }}
+    const priceNote = data.price
+      ? ` · current price $$${{data.price.toFixed(2)}} · position value $$${{data.value?.toFixed(2)}}`
+      : " · price will update on next newsletter run";
+    statusEl.innerHTML = `<span style="color:#27ae60;">✓ ${{data.ticker}} added to ${{data.layer}}${{priceNote}}. Reloading…</span>`;
+    setTimeout(() => window.location.reload(), 1200);
+  }} catch(e) {{
+    statusEl.textContent = "Error: " + e.message;
+  }}
+}}
 
 // ── FIFO Sell Tracker ────────────────────────────────────────────────────
 let _allSells = {{}};   // {{ ticker: [sell, ...] }}
