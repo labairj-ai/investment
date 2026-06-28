@@ -280,17 +280,18 @@ def _send_new_winners_email(new_tickers: list[dict]) -> None:
         print(f"[Buffett] Email failed: {e}")
 
 
-def _flush(conn, results, now_str, scanned_so_far, total_tickers, complete):
+def _flush(conn, results, now_str, scanned_so_far, total_tickers, complete,
+           ever_winners: set | None = None):
     """Commit cache, rewrite winners, update meta, email new tickers, record history."""
     winners = [r for r in results if _passes_filters(r)]
 
-    # Detect genuinely new tickers (not in previous winners)
-    prev_tickers = {
-        row[0] for row in conn.execute("SELECT ticker FROM buffett_winners")
-    }
-    new_winners = [w for w in winners if w["ticker"] not in prev_tickers]
-    if new_winners:
-        _send_new_winners_email(new_winners)
+    # Only email on the final flush, and only for tickers that have NEVER
+    # appeared in buffett_winner_history — so existing winners don't trigger
+    # repeat notifications on every scan run.
+    if complete and ever_winners is not None:
+        new_winners = [w for w in winners if w["ticker"] not in ever_winners]
+        if new_winners:
+            _send_new_winners_email(new_winners)
 
     conn.execute("DELETE FROM buffett_winners")
     for w in winners:
@@ -379,13 +380,22 @@ def run():
     )
     conn.commit()
 
+    # Capture the full set of tickers ever seen as winners — used by _flush
+    # to distinguish genuinely new discoveries from repeat qualifiers.
+    # Read this ONCE before any flush can mutate buffett_winners.
+    ever_winners = {
+        row[0] for row in conn.execute(
+            "SELECT DISTINCT ticker FROM buffett_winner_history"
+        )
+    }
+
     for i, ticker in enumerate(tickers):
         should_fetch = True
 
         if ticker in cache:
             try:
-                fast_info = yf.Ticker(ticker).info
-                new_q_ts  = fast_info.get("mostRecentQuarter", 0)
+                info       = yf.Ticker(ticker).info
+                new_q_ts   = info.get("mostRecentQuarter", 0)
                 new_q_date = (
                     datetime.fromtimestamp(new_q_ts).strftime("%Y-%m-%d")
                     if new_q_ts else None
@@ -393,7 +403,27 @@ def run():
                 cached_date = cache[ticker].get("last_quarter_date")
                 if new_q_date and new_q_date == cached_date:
                     should_fetch = False
-                    results.append(dict(cache[ticker]))
+                    row = dict(cache[ticker])
+                    # Valuation metrics move with price — always refresh them
+                    # even on a cache hit so they're never stale/null.
+                    pe_ratio   = _safe_float(info.get("trailingPE"))
+                    market_cap = info.get("marketCap") or 0
+                    fcf        = info.get("freeCashflow") or 0
+                    p_fcf      = round(market_cap / fcf, 1) if fcf and fcf > 0 else None
+                    ev_ebitda  = _safe_float(info.get("enterpriseToEbitda"))
+                    row["pe_ratio"]  = round(pe_ratio, 1) if pe_ratio is not None else None
+                    row["p_fcf"]     = p_fcf
+                    row["ev_ebitda"] = round(ev_ebitda, 1) if ev_ebitda is not None else None
+                    row["price"]     = (info.get("currentPrice")
+                                        or info.get("regularMarketPrice")
+                                        or row.get("price"))
+                    results.append(row)
+                    # Keep cache current with today's valuation metrics
+                    conn.execute(
+                        "UPDATE buffett_cache SET pe_ratio=?, p_fcf=?, ev_ebitda=?, price=?"
+                        " WHERE ticker=?",
+                        (row["pe_ratio"], row["p_fcf"], row["ev_ebitda"], row["price"], ticker)
+                    )
             except Exception:
                 pass
 
@@ -420,10 +450,12 @@ def run():
             time.sleep(0.05)
 
         if i > 0 and i % 100 == 0:
-            _flush(conn, results, now_str, i, len(tickers), complete=False)
+            _flush(conn, results, now_str, i, len(tickers), complete=False,
+                   ever_winners=ever_winners)
             print(f"[Buffett] {i}/{len(tickers)} processed…")
 
-    _flush(conn, results, now_str, len(tickers), len(tickers), complete=True)
+    _flush(conn, results, now_str, len(tickers), len(tickers), complete=True,
+           ever_winners=ever_winners)
     conn.close()
     LOCK_FILE.unlink(missing_ok=True)
 
