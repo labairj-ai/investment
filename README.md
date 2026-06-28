@@ -17,7 +17,7 @@ A personal investment tracking system that sends a daily email newsletter, maint
 | **Buffett Screener** | Nightly scan of ~2,300 NYSE tickers; surfaces stocks passing all 6 Buffett quality criteria with valuation metrics, history tracking, and email alerts for new winners |
 | **Portfolio Reminders** | Daily 7 AM email when any holding has earnings or ex-div within 3 days |
 | **Layer Drift Alerts** | Daily check of layer weights vs. targets in `layer_targets.json`; emails when any layer drifts ≥5pp |
-| **ST/LT Gain Flags** | Holdings table shows ST/LT badge per position once `PurchaseDate` is set in `holdings.csv` |
+| **Tax Lot Tracker** | Lot-level cost basis per holding (multiple purchase dates/prices); modal popup shows per-lot ST/LT term, unrealized G/L, days to LT conversion, weighted avg cost |
 
 ---
 
@@ -124,6 +124,10 @@ Opens `http://localhost:5001/out/dashboard.html` automatically. Press `Ctrl+C` t
 | `GET /api/cc-positions` | All logged covered call positions |
 | `POST /api/cc-positions` | Log a new covered call position |
 | `PATCH /api/cc-positions/<id>` | Update position status / closing details |
+| `GET /api/lots` | All cost lots (grouped by ticker in JS) |
+| `GET /api/lots?ticker=EW` | Lots for a specific ticker |
+| `POST /api/lots` | Add a cost lot |
+| `DELETE /api/lots/<id>` | Remove a cost lot |
 
 ### Auto-start on login (macOS)
 
@@ -189,11 +193,22 @@ Columns: **Layer | Value | Weight | Δ$ | Δ% | Next Earnings**
 Next Earnings shows the soonest reporting ticker per layer, color-coded red ≤ 7 days, orange ≤ 21 days, green further out.
 
 ### Holdings Table
-Columns: **Ticker | Shares | Avg Cost | Price | Value | Total Gain | Daily Δ | Weight | Next Earnings | Purchased**
+Columns: **Ticker | Shares | Avg Cost | Price | Value | Total Gain | Daily Δ | Weight | Next Earnings | Tax Lots**
 
-- Total Gain shows true return vs cost basis, with **ST** / **LT** tax badge when `PurchaseDate` is set
+- Total Gain shows true return vs cost basis, with **ST** / **LT** / **Mixed** tax badge derived from your cost lots
 - Next Earnings populated per holding on page load
-- Purchased column shows your entry date for tracking holding periods
+- **Lots** button opens a modal with full per-lot breakdown (see Tax Lot Tracker below)
+
+### Tax Lot Tracker (modal)
+
+Click **Lots** on any holding row to open the lot tracker. The modal shows:
+
+- **Per-lot table**: purchase date, shares, cost/share, total cost, days held, ST/LT badge, unrealized G/L amount and %, days until the lot turns LT (for short-term lots)
+- **Summary bar**: lot count, total shares tracked, weighted avg cost, ST shares, LT shares, total G/L
+- **Add Lot form**: date picker, shares, cost/share, optional notes — supports any number of lots per ticker
+- **Remove** button per lot (with confirmation)
+
+Lots are stored in `out/investment.db` (table `cost_lots`) and persist independently of `holdings.csv`. The `holdings.csv` avg cost drives P&L calculations; the lot tracker is solely for tax-lot accounting.
 
 ### Covered Call Analyzer
 Select any holding with **100+ shares** from the dropdown and click **Get Recommendations**.

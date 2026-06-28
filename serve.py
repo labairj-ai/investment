@@ -125,6 +125,29 @@ def _init_cc_table():
 _init_cc_table()
 
 
+# ── Cost-lot tracking table ───────────────────────────────────────────────────
+def _init_lots_table():
+    db = PROJECT_DIR / "out" / "investment.db"
+    if not db.exists():
+        return
+    conn = sqlite3.connect(str(db), timeout=10)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS cost_lots (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticker         TEXT    NOT NULL,
+            shares         REAL    NOT NULL,
+            cost_per_share REAL    NOT NULL,
+            purchase_date  TEXT    NOT NULL,
+            notes          TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+
+_init_lots_table()
+
+
 # ── Daily newsletter + drift alert scheduler ──────────────────────────────────
 def _check_layer_drift():
     """Compare current layer weights to layer_targets.json. Email if any drift ≥5pp."""
@@ -543,6 +566,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._handle_buffett_winners()
         elif parsed.path == "/api/cc-positions":
             self._handle_cc_positions_get()
+        elif parsed.path == "/api/lots":
+            self._handle_lots_get(parse_qs(parsed.query).get("ticker", [None])[0])
         else:
             super().do_GET()
 
@@ -550,6 +575,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/api/cc-positions":
             self._handle_cc_add()
+        elif parsed.path == "/api/lots":
+            self._handle_lot_add()
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def do_DELETE(self):
+        parsed = urlparse(self.path)
+        parts  = parsed.path.rstrip("/").split("/")
+        if len(parts) == 4 and parts[1] == "api" and parts[2] == "lots" and parts[3].isdigit():
+            self._handle_lot_delete(int(parts[3]))
         else:
             self.send_response(404)
             self.end_headers()
@@ -624,6 +660,61 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return self._json_error(400, "No updatable fields provided")
             values.append(pos_id)
             conn.execute(f"UPDATE cc_positions SET {', '.join(updates)} WHERE id = ?", values)
+            conn.commit()
+            conn.close()
+            self._json({"ok": True})
+        except Exception as e:
+            self._json_error(500, str(e))
+
+    # ── Cost lots ─────────────────────────────────────────────────────────────
+    def _handle_lots_get(self, ticker=None):
+        try:
+            db = PROJECT_DIR / "out" / "investment.db"
+            if not db.exists():
+                return self._json({"ok": True, "lots": []})
+            conn = sqlite3.connect(str(db), timeout=10)
+            conn.row_factory = sqlite3.Row
+            if ticker:
+                lots = [dict(r) for r in conn.execute(
+                    "SELECT * FROM cost_lots WHERE ticker = ? ORDER BY purchase_date",
+                    (ticker.upper(),)
+                )]
+            else:
+                lots = [dict(r) for r in conn.execute(
+                    "SELECT * FROM cost_lots ORDER BY ticker, purchase_date"
+                )]
+            conn.close()
+            self._json({"ok": True, "lots": lots})
+        except Exception as e:
+            self._json_error(500, str(e))
+
+    def _handle_lot_add(self):
+        try:
+            body     = self._read_body()
+            required = ["ticker", "shares", "cost_per_share", "purchase_date"]
+            missing  = [f for f in required if not body.get(f)]
+            if missing:
+                return self._json_error(400, f"Missing: {', '.join(missing)}")
+            db   = PROJECT_DIR / "out" / "investment.db"
+            conn = sqlite3.connect(str(db), timeout=10)
+            cur  = conn.execute("""
+                INSERT INTO cost_lots (ticker, shares, cost_per_share, purchase_date, notes)
+                VALUES (?, ?, ?, ?, ?)
+            """, (body["ticker"].upper(), float(body["shares"]),
+                  float(body["cost_per_share"]), body["purchase_date"],
+                  body.get("notes", "")))
+            conn.commit()
+            pos_id = cur.lastrowid
+            conn.close()
+            self._json({"ok": True, "id": pos_id})
+        except Exception as e:
+            self._json_error(500, str(e))
+
+    def _handle_lot_delete(self, lot_id: int):
+        try:
+            db   = PROJECT_DIR / "out" / "investment.db"
+            conn = sqlite3.connect(str(db), timeout=10)
+            conn.execute("DELETE FROM cost_lots WHERE id = ?", (lot_id,))
             conn.commit()
             conn.close()
             self._json({"ok": True})

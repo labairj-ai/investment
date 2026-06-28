@@ -4,7 +4,7 @@
 import csv
 import json
 import sqlite3
-from datetime import datetime, date
+from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -31,7 +31,7 @@ def normalize_ticker(t: str) -> str:
     return t
 
 def load_csv_holdings() -> dict:
-    """Return {ticker: {shares, avg_cost, layer_label, purchase_date}} from holdings.csv."""
+    """Return {ticker: {shares, avg_cost, layer_label}} from holdings.csv — always current."""
     result = {}
     with open(HOLDINGS_CSV, newline="") as f:
         reader = csv.DictReader(f)
@@ -39,13 +39,11 @@ def load_csv_holdings() -> dict:
             ticker      = normalize_ticker(row["Stock"])
             layer_num   = int(str(row["Layer"]).strip())
             layer_label = f"Layer {layer_num}: {LAYER_NAMES[layer_num]}"
-            purchase_date = row.get("PurchaseDate", "").strip() or None
             result[ticker] = {
-                "shares":        float(row["Shares"]),
-                "avg_cost":      float(row["AvgCost"]),
-                "layer":         layer_label,
-                "layer_num":     layer_num,
-                "purchase_date": purchase_date,
+                "shares":    float(row["Shares"]),
+                "avg_cost":  float(row["AvgCost"]),
+                "layer":     layer_label,
+                "layer_num": layer_num,
             }
     return result
 
@@ -106,16 +104,15 @@ def rebuild_today_holdings(today_date: str, db_holdings: list[dict], csv_holding
         value     = shares * price
         cost_basis = shares * avg_cost
         rebuilt.append({
-            "day":           today_date,
-            "ticker":        ticker,
-            "layer":         meta["layer"],
-            "layer_num":     meta["layer_num"],
-            "shares":        shares,
-            "avg_cost":      avg_cost,
-            "price":         price,
-            "value":         value,
-            "cost_basis":    cost_basis,
-            "purchase_date": meta.get("purchase_date"),
+            "day":        today_date,
+            "ticker":     ticker,
+            "layer":      meta["layer"],
+            "layer_num":  meta["layer_num"],
+            "shares":     shares,
+            "avg_cost":   avg_cost,
+            "price":      price,
+            "value":      value,
+            "cost_basis": cost_basis,
         })
 
     # Derive daily change figures: need prev-day prices from DB
@@ -269,7 +266,6 @@ def build_dashboard(portfolio, layers, holdings):
     anchor_color = "#27ae60" if not flags else "#e67e22"
 
     # ---- holdings table rows ----
-    today_obj   = date.today()
     holdings_rows = ""
     prev_layer = None
     for h in today_holdings_sorted:
@@ -279,31 +275,17 @@ def build_dashboard(portfolio, layers, holdings):
             prev_layer = h["layer"]
         daily_class = "pos" if h["change_pct"] >= 0 else "neg"
         gain_class  = "pos" if h["total_gain_pct"] >= 0 else "neg"
-
-        # ST/LT badge
-        stlt_badge = ""
-        pd = h.get("purchase_date")
-        if pd:
-            try:
-                days_held = (today_obj - date.fromisoformat(pd)).days
-                if days_held < 365:
-                    stlt_badge = ' <span style="background:#fff0f0;color:#e74c3c;border:1px solid #fcc;border-radius:3px;padding:1px 5px;font-size:9px;font-weight:700;vertical-align:middle;">ST</span>'
-                else:
-                    stlt_badge = ' <span style="background:#f0fff4;color:#27ae60;border:1px solid #ade;border-radius:3px;padding:1px 5px;font-size:9px;font-weight:700;vertical-align:middle;">LT</span>'
-            except ValueError:
-                pass
-
         holdings_rows += f"""<tr>
           <td>{h["ticker"]}</td>
           <td>{h["shares"]:,.2f}</td>
           <td>${h["avg_cost"]:,.2f}</td>
           <td>${h["price"]:,.2f}</td>
           <td>{money(h["value"])}</td>
-          <td class="{gain_class}" style="font-weight:600;">{pct(h["total_gain_pct"])}{stlt_badge}</td>
+          <td class="{gain_class}" style="font-weight:600;">{pct(h["total_gain_pct"])} <span id="stlt-{h["ticker"]}" style="font-size:9px;vertical-align:middle;"></span></td>
           <td class="{daily_class}">{pct(h["change_pct"])}</td>
           <td>{h["weight_pct"]:.1f}%</td>
           <td id="earn-{h["ticker"]}" style="font-size:12px;color:#7f8c8d;">—</td>
-          <td style="font-size:11px;color:#aaa;">{pd or "—"}</td>
+          <td><button onclick="openLotsModal('{h["ticker"]}', {h["price"]:.4f})" style="font-size:10px;padding:2px 8px;background:#f4f6f9;border:1px solid #dde;border-radius:4px;cursor:pointer;color:#555;" title="View / edit tax lots">Lots</button></td>
         </tr>\n"""
 
     # ---- layer summary rows ----
@@ -412,6 +394,50 @@ def build_dashboard(portfolio, layers, holdings):
 </head>
 <body>
 
+<!-- ── Tax Lots Modal ─────────────────────────────────────────────────────── -->
+<div id="lots-modal-overlay" onclick="closeLots(event)" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1000;align-items:center;justify-content:center;">
+  <div onclick="event.stopPropagation()" style="background:#fff;border-radius:12px;padding:28px 32px;max-width:760px;width:95%;max-height:88vh;overflow-y:auto;box-shadow:0 8px 40px rgba(0,0,0,.2);position:relative;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;">
+      <div>
+        <h2 id="lots-modal-title" style="font-size:1.1rem;font-weight:700;color:#1a2340;margin:0;text-transform:none;letter-spacing:0;"></h2>
+        <div id="lots-modal-subtitle" style="font-size:12px;color:#7f8c8d;margin-top:3px;"></div>
+      </div>
+      <button onclick="closeLotsModal()" style="background:none;border:none;font-size:20px;cursor:pointer;color:#aaa;padding:4px 8px;">✕</button>
+    </div>
+
+    <!-- Summary bar -->
+    <div id="lots-summary" style="display:none;background:#f8fafc;border-radius:8px;padding:12px 16px;margin-bottom:16px;font-size:13px;display:flex;gap:24px;flex-wrap:wrap;"></div>
+
+    <!-- Existing lots table -->
+    <div id="lots-table-wrap"></div>
+
+    <!-- Add lot form -->
+    <div style="margin-top:20px;padding-top:16px;border-top:1px solid #eee;">
+      <div style="font-size:11px;font-weight:700;color:#7f8c8d;text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px;">Add a Lot</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:10px;">
+        <div>
+          <label style="font-size:10px;color:#aaa;text-transform:uppercase;">Purchased</label>
+          <input id="lot-date" type="date" style="width:100%;margin-top:3px;padding:6px 8px;border:1px solid #dde;border-radius:5px;font-size:13px;">
+        </div>
+        <div>
+          <label style="font-size:10px;color:#aaa;text-transform:uppercase;">Shares</label>
+          <input id="lot-shares" type="number" step="0.001" min="0.001" placeholder="50" style="width:100%;margin-top:3px;padding:6px 8px;border:1px solid #dde;border-radius:5px;font-size:13px;">
+        </div>
+        <div>
+          <label style="font-size:10px;color:#aaa;text-transform:uppercase;">Cost / Share ($)</label>
+          <input id="lot-cost" type="number" step="0.01" min="0.01" placeholder="85.00" style="width:100%;margin-top:3px;padding:6px 8px;border:1px solid #dde;border-radius:5px;font-size:13px;">
+        </div>
+        <div>
+          <label style="font-size:10px;color:#aaa;text-transform:uppercase;">Notes (optional)</label>
+          <input id="lot-notes" placeholder="e.g. DRIP" style="width:100%;margin-top:3px;padding:6px 8px;border:1px solid #dde;border-radius:5px;font-size:13px;">
+        </div>
+      </div>
+      <button onclick="addLot()" style="padding:7px 18px;background:#1a2340;color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;">Add Lot</button>
+      <span id="lot-status" style="margin-left:10px;font-size:12px;color:#7f8c8d;"></span>
+    </div>
+  </div>
+</div>
+
 <header>
   <div>
     <h1>Investment Dashboard</h1>
@@ -503,10 +529,10 @@ def build_dashboard(portfolio, layers, holdings):
   <div class="card">
     <h2>Holdings — {today_date}</h2>
     <table>
-      <thead><tr><th>Ticker</th><th>Shares</th><th>Avg Cost</th><th>Price</th><th>Value</th><th>Total Gain</th><th>Daily Δ</th><th>Weight</th><th>Next Earnings</th><th>Purchased</th></tr></thead>
+      <thead><tr><th>Ticker</th><th>Shares</th><th>Avg Cost</th><th>Price</th><th>Value</th><th>Total Gain</th><th>Daily Δ</th><th>Weight</th><th>Next Earnings</th><th>Tax Lots</th></tr></thead>
       <tbody>{holdings_rows}</tbody>
     </table>
-    <p style="font-size:11px;color:#aaa;margin-top:8px;">ST = short-term (&lt;1yr, higher tax rate) · LT = long-term (≥1yr). Add PurchaseDate to holdings.csv to enable.</p>
+    <p style="font-size:11px;color:#aaa;margin-top:8px;">ST = short-term (&lt;1yr) · LT = long-term (≥1yr) — derived from your tax lots. Click <b>Lots</b> to add or view purchase history.</p>
   </div>
 
   <!-- Covered Call Analyzer -->
@@ -1140,6 +1166,208 @@ function earnCell(item, showTicker) {{
 }}
 
 window.addEventListener("load", loadLayerEarnings);
+
+// ── Tax Lot Tracker ───────────────────────────────────────────────────────
+let _allLots = {{}};      // {{ ticker: [lot, ...] }}
+let _lotsModalTicker = null;
+let _lotsModalPrice  = null;
+
+async function loadAllLots() {{
+  try {{
+    const res  = await fetch("/api/lots");
+    const data = await res.json();
+    if (!data.ok) return;
+    _allLots = {{}};
+    for (const lot of data.lots) {{
+      if (!_allLots[lot.ticker]) _allLots[lot.ticker] = [];
+      _allLots[lot.ticker].push(lot);
+    }}
+    renderAllStltBadges();
+  }} catch(e) {{}}
+}}
+
+function renderAllStltBadges() {{
+  const today = new Date();
+  today.setHours(0,0,0,0);
+  for (const [ticker, lots] of Object.entries(_allLots)) {{
+    const el = document.getElementById("stlt-" + ticker);
+    if (!el || !lots.length) continue;
+    const hasST = lots.some(l => {{
+      const d = new Date(l.purchase_date + "T00:00:00");
+      return (today - d) / 86400000 < 365;
+    }});
+    const allLT = lots.every(l => {{
+      const d = new Date(l.purchase_date + "T00:00:00");
+      return (today - d) / 86400000 >= 365;
+    }});
+    if (hasST && allLT === false) {{
+      el.innerHTML = `<span style="background:#fff0f0;color:#e74c3c;border:1px solid #fcc;border-radius:3px;padding:1px 5px;font-weight:700;">ST</span>`;
+    }} else if (allLT) {{
+      el.innerHTML = `<span style="background:#f0fff4;color:#27ae60;border:1px solid #ade;border-radius:3px;padding:1px 5px;font-weight:700;">LT</span>`;
+    }} else {{
+      el.innerHTML = `<span style="background:#fff8e1;color:#8a6d00;border:1px solid #ffe;border-radius:3px;padding:1px 5px;font-weight:700;">Mixed</span>`;
+    }}
+  }}
+}}
+
+function openLotsModal(ticker, currentPrice) {{
+  _lotsModalTicker = ticker;
+  _lotsModalPrice  = currentPrice;
+  document.getElementById("lots-modal-title").textContent = ticker + " — Tax Lots";
+  document.getElementById("lot-notes").value = "";
+  document.getElementById("lot-status").textContent = "";
+  renderLotsModal();
+  document.getElementById("lots-modal-overlay").style.display = "flex";
+}}
+
+function closeLotsModal() {{
+  document.getElementById("lots-modal-overlay").style.display = "none";
+  _lotsModalTicker = null;
+}}
+
+function closeLots(e) {{
+  if (e.target === document.getElementById("lots-modal-overlay")) closeLotsModal();
+}}
+
+function renderLotsModal() {{
+  const ticker = _lotsModalTicker;
+  const price  = _lotsModalPrice;
+  const lots   = (_allLots[ticker] || []).slice().sort((a,b) => a.purchase_date.localeCompare(b.purchase_date));
+  const today  = new Date(); today.setHours(0,0,0,0);
+
+  const wrap  = document.getElementById("lots-table-wrap");
+  const sumEl = document.getElementById("lots-summary");
+
+  if (!lots.length) {{
+    wrap.innerHTML = `<p style="color:#888;font-size:13px;">No lots recorded yet. Add your first lot below.</p>`;
+    sumEl.style.display = "none";
+    document.getElementById("lots-modal-subtitle").textContent = "";
+    return;
+  }}
+
+  let totalShares = 0, totalCost = 0, totalSTShares = 0, totalLTShares = 0;
+  const rows = lots.map(l => {{
+    const purchaseDate = new Date(l.purchase_date + "T00:00:00");
+    const daysHeld = Math.floor((today - purchaseDate) / 86400000);
+    const isLT    = daysHeld >= 365;
+    const termBadge = isLT
+      ? `<span style="background:#f0fff4;color:#27ae60;border:1px solid #ade;border-radius:3px;padding:1px 6px;font-size:10px;font-weight:700;">LT</span>`
+      : `<span style="background:#fff0f0;color:#e74c3c;border:1px solid #fcc;border-radius:3px;padding:1px 6px;font-size:10px;font-weight:700;">ST</span>`;
+    const lotValue    = l.shares * price;
+    const lotCost     = l.shares * l.cost_per_share;
+    const lotGain     = lotValue - lotCost;
+    const lotGainPct  = lotCost > 0 ? (lotGain / lotCost * 100) : 0;
+    const gainColor   = lotGain >= 0 ? "#27ae60" : "#e74c3c";
+    const ltDate      = new Date(purchaseDate); ltDate.setFullYear(ltDate.getFullYear() + 1);
+    const ltStr       = isLT ? "" : `<div style="font-size:10px;color:#aaa;">LT: ${{ltDate.toLocaleDateString("en-US",{{month:"short",day:"numeric",year:"numeric"}})}} (${{365-daysHeld}}d)</div>`;
+
+    totalShares += l.shares;
+    totalCost   += lotCost;
+    if (isLT) totalLTShares += l.shares; else totalSTShares += l.shares;
+
+    return `<tr style="border-bottom:1px solid #f2f4f7;">
+      <td style="padding:7px 10px;">${{l.purchase_date}}</td>
+      <td style="padding:7px 10px;">${{l.shares.toLocaleString("en-US",{{minimumFractionDigits:0,maximumFractionDigits:4}})}}</td>
+      <td style="padding:7px 10px;">$${{l.cost_per_share.toFixed(2)}}</td>
+      <td style="padding:7px 10px;">$${{lotCost.toLocaleString("en-US",{{minimumFractionDigits:2,maximumFractionDigits:2}})}}</td>
+      <td style="padding:7px 10px;color:#555;">${{daysHeld}}d ${{termBadge}}</td>
+      <td style="padding:7px 10px;">${{ltStr}}
+        <span style="font-weight:600;color:${{gainColor}};">${{lotGain >= 0 ? "+" : ""}}<span>$${{Math.abs(lotGain).toLocaleString("en-US",{{minimumFractionDigits:2,maximumFractionDigits:2}})}}</span>
+        <span style="font-size:11px;color:${{gainColor}};"> (${{lotGainPct >= 0 ? "+" : ""}}${{lotGainPct.toFixed(1)}}%)</span>
+      </td>
+      <td style="padding:7px 10px;color:#aaa;font-size:11px;">${{l.notes || ""}}</td>
+      <td style="padding:7px 10px;">
+        <button onclick="deleteLot(${{l.id}})" style="font-size:10px;padding:2px 8px;background:#fff0f0;border:1px solid #fcc;border-radius:4px;cursor:pointer;color:#e74c3c;">✕</button>
+      </td>
+    </tr>`;
+  }}).join("");
+
+  wrap.innerHTML = `
+    <div style="overflow-x:auto;">
+    <table style="width:100%;border-collapse:collapse;font-size:13px;">
+      <thead><tr style="background:#f4f6f9;">
+        <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Purchased</th>
+        <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Shares</th>
+        <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Cost/Share</th>
+        <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Total Cost</th>
+        <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Held / Term</th>
+        <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Unrealized G/L</th>
+        <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Notes</th>
+        <th></th>
+      </tr></thead>
+      <tbody>${{rows}}</tbody>
+    </table></div>`;
+
+  const wavgCost = totalShares > 0 ? totalCost / totalShares : 0;
+  const totalGain = totalShares * price - totalCost;
+  const totalGainPct = totalCost > 0 ? totalGain / totalCost * 100 : 0;
+  const gainColor = totalGain >= 0 ? "#27ae60" : "#e74c3c";
+  sumEl.style.display = "flex";
+  sumEl.innerHTML = `
+    <span>Lots tracked: <b>${{lots.length}}</b></span>
+    <span>Shares: <b>${{totalShares.toLocaleString("en-US",{{minimumFractionDigits:0,maximumFractionDigits:4}})}}</b></span>
+    <span>Wtd avg cost: <b>$${{wavgCost.toFixed(2)}}</b></span>
+    <span>ST: <b style="color:#e74c3c;">${{totalSTShares.toLocaleString("en-US",{{minimumFractionDigits:0,maximumFractionDigits:4}})}}</b> shares</span>
+    <span>LT: <b style="color:#27ae60;">${{totalLTShares.toLocaleString("en-US",{{minimumFractionDigits:0,maximumFractionDigits:4}})}}</b> shares</span>
+    <span>Total G/L: <b style="color:${{gainColor}};">${{totalGain >= 0 ? "+" : ""}}$${{Math.abs(totalGain).toLocaleString("en-US",{{minimumFractionDigits:2,maximumFractionDigits:2}})}} (${{totalGainPct >= 0 ? "+" : ""}}${{totalGainPct.toFixed(1)}}%)</b></span>`;
+
+  document.getElementById("lots-modal-subtitle").textContent =
+    `Current price: $${{price?.toFixed(2)}} · ${{totalSTShares > 0 && totalLTShares > 0 ? "Mixed ST/LT" : totalSTShares > 0 ? "All short-term" : "All long-term"}}`;
+}}
+
+async function addLot() {{
+  const ticker = _lotsModalTicker;
+  if (!ticker) return;
+  const status = document.getElementById("lot-status");
+  const body   = {{
+    ticker,
+    shares:         parseFloat(document.getElementById("lot-shares").value),
+    cost_per_share: parseFloat(document.getElementById("lot-cost").value),
+    purchase_date:  document.getElementById("lot-date").value,
+    notes:          document.getElementById("lot-notes").value,
+  }};
+  if (!body.shares || !body.cost_per_share || !body.purchase_date) {{
+    status.textContent = "⚠ Date, shares, and cost are required.";
+    return;
+  }}
+  status.textContent = "Saving…";
+  try {{
+    const res  = await fetch("/api/lots", {{
+      method: "POST", headers: {{"Content-Type":"application/json"}},
+      body: JSON.stringify(body),
+    }});
+    const data = await res.json();
+    if (!data.ok) {{ status.textContent = "Error: " + data.error; return; }}
+    status.textContent = "✓ Added";
+    document.getElementById("lot-shares").value = "";
+    document.getElementById("lot-cost").value   = "";
+    document.getElementById("lot-date").value   = "";
+    document.getElementById("lot-notes").value  = "";
+    setTimeout(() => {{ status.textContent = ""; }}, 1500);
+    // Refresh local cache
+    if (!_allLots[ticker]) _allLots[ticker] = [];
+    _allLots[ticker].push({{id: data.id, ticker, ...body}});
+    renderLotsModal();
+    renderAllStltBadges();
+  }} catch(e) {{ status.textContent = "Error: " + e.message; }}
+}}
+
+async function deleteLot(id) {{
+  if (!confirm("Remove this lot?")) return;
+  try {{
+    const res  = await fetch(`/api/lots/${{id}}`, {{ method: "DELETE" }});
+    const data = await res.json();
+    if (!data.ok) {{ alert("Error: " + data.error); return; }}
+    const ticker = _lotsModalTicker;
+    if (ticker && _allLots[ticker]) {{
+      _allLots[ticker] = _allLots[ticker].filter(l => l.id !== id);
+    }}
+    renderLotsModal();
+    renderAllStltBadges();
+  }} catch(e) {{ alert("Error: " + e.message); }}
+}}
+
+window.addEventListener("load", loadAllLots);
 
 // ── Buffett Screener ──────────────────────────────────────────────────────
 async function loadBuffett() {{
