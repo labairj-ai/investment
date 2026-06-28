@@ -1192,20 +1192,17 @@ function renderAllStltBadges() {{
   for (const [ticker, lots] of Object.entries(_allLots)) {{
     const el = document.getElementById("stlt-" + ticker);
     if (!el || !lots.length) continue;
-    const hasST = lots.some(l => {{
-      const d = new Date(l.purchase_date + "T00:00:00");
-      return (today - d) / 86400000 < 365;
-    }});
-    const allLT = lots.every(l => {{
-      const d = new Date(l.purchase_date + "T00:00:00");
-      return (today - d) / 86400000 >= 365;
-    }});
-    if (hasST && allLT === false) {{
-      el.innerHTML = `<span style="background:#fff0f0;color:#e74c3c;border:1px solid #fcc;border-radius:3px;padding:1px 5px;font-weight:700;">ST</span>`;
-    }} else if (allLT) {{
-      el.innerHTML = `<span style="background:#f0fff4;color:#27ae60;border:1px solid #ade;border-radius:3px;padding:1px 5px;font-weight:700;">LT</span>`;
+    const hasST = lots.some(l => (today - new Date(l.purchase_date + "T00:00:00")) / 86400000 < 365);
+    const hasLT = lots.some(l => (today - new Date(l.purchase_date + "T00:00:00")) / 86400000 >= 365);
+    const stCount = lots.filter(l => (today - new Date(l.purchase_date + "T00:00:00")) / 86400000 < 365).length;
+    if (hasST && hasLT) {{
+      el.innerHTML = `<span title="Mixed holding: ${{stCount}} short-term lot${{stCount!==1?'s':''}} — click Lots for details"
+        style="background:#fff3cd;color:#7d5a00;border:1.5px solid #e6ac00;border-radius:4px;padding:2px 7px;font-weight:700;font-size:9px;letter-spacing:.03em;cursor:default;">
+        ⚠ MIXED</span>`;
+    }} else if (hasST) {{
+      el.innerHTML = `<span style="background:#fff0f0;color:#e74c3c;border:1px solid #fcc;border-radius:3px;padding:1px 5px;font-weight:700;font-size:9px;">ST</span>`;
     }} else {{
-      el.innerHTML = `<span style="background:#fff8e1;color:#8a6d00;border:1px solid #ffe;border-radius:3px;padding:1px 5px;font-weight:700;">Mixed</span>`;
+      el.innerHTML = `<span style="background:#f0fff4;color:#27ae60;border:1px solid #ade;border-radius:3px;padding:1px 5px;font-weight:700;font-size:9px;">LT</span>`;
     }}
   }}
 }}
