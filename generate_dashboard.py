@@ -2240,6 +2240,14 @@ async function loadCCPositions() {{
     status.textContent = "";
     renderCCPositions();
     renderRealizedGains();
+    const autoExpired = data.auto_expired || [];
+    if (autoExpired.length) {{
+      const n = autoExpired.length;
+      status.innerHTML = `<span style="color:#8a6d00;background:#fff8e1;border:1px solid #ffe082;border-radius:4px;padding:3px 10px;font-size:12px;">
+        ✓ ${{n}} position${{n>1?"s":""}} past expiry auto-recorded as expired (full premium kept). Verify if any were assigned instead.
+      </span>`;
+      setTimeout(() => {{ if (status.innerHTML.includes("auto-recorded")) status.textContent = ""; }}, 8000);
+    }}
   }} catch(e) {{
     status.textContent = "Error: " + e.message;
   }}

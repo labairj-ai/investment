@@ -13,6 +13,7 @@ Serves static files at http://localhost:5001 and handles:
   PATCH /api/cc-positions/<id>       → update position status / close details
 """
 
+import datetime
 import json
 import math
 import http.server
@@ -714,11 +715,34 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return self._json({"ok": True, "positions": []})
             conn = sqlite3.connect(str(db), timeout=10)
             conn.row_factory = sqlite3.Row
+
+            # Auto-expire any open positions whose expiry date has passed.
+            # Options expire at end of day on the expiry date, so we compare
+            # strictly: expiry < today (i.e. the day after expiry has arrived).
+            today = datetime.date.today().isoformat()
+            past_open = conn.execute(
+                "SELECT id, premium_per_contract, contracts, expiry "
+                "FROM cc_positions WHERE status = 'open' AND expiry < ?",
+                (today,)
+            ).fetchall()
+            for row in past_open:
+                net = round(row["premium_per_contract"] * row["contracts"] * 100, 2)
+                conn.execute(
+                    "UPDATE cc_positions "
+                    "SET status='expired', close_type='expired', "
+                    "    closed_date=?, net_premium=? "
+                    "WHERE id=?",
+                    (row["expiry"], net, row["id"])
+                )
+            if past_open:
+                conn.commit()
+
             positions = [dict(r) for r in conn.execute(
                 "SELECT * FROM cc_positions ORDER BY opened_date DESC, id DESC"
             )]
             conn.close()
-            self._json({"ok": True, "positions": positions})
+            auto_expired = [r["id"] for r in past_open]
+            self._json({"ok": True, "positions": positions, "auto_expired": auto_expired})
         except Exception as e:
             self._json_error(500, str(e))
 
