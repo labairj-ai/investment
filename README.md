@@ -1,6 +1,6 @@
 # Investment Dashboard & Newsletter
 
-A personal investment tracking system that sends a daily email newsletter, maintains a local web dashboard, and provides covered call and dividend analysis. Prices are pulled from Yahoo Finance; email is sent via Gmail SMTP.
+A personal investment tracking system that sends a daily email newsletter, maintains a local web dashboard, and provides covered call, dividend, and tax analysis. Prices are pulled from Yahoo Finance; email is sent via Gmail SMTP.
 
 ---
 
@@ -9,15 +9,19 @@ A personal investment tracking system that sends a daily email newsletter, maint
 | Feature | Description |
 |---|---|
 | **Daily Newsletter** | Fetches closing prices, computes P&L by layer and holding, emails an HTML report each morning at 8 AM |
-| **Local Dashboard** | Interactive web UI at `http://localhost:5001/out/dashboard.html` with charts, holdings table, and live analysis tools |
+| **Local Dashboard** | Interactive web UI at `http://localhost:5001` with charts, holdings table, and live analysis tools |
 | **Covered Call Analyzer** | Recommends option contracts based on your cost basis, flags blackout windows (earnings, ex-div) |
 | **Covered Call Tracker** | Log and track open/closed covered call positions; shows DTE, total premium collected, all-time income |
 | **Dividend Tracker** | Dividend dates, tax impact by income bracket, monthly income chart, and ticker lookup tool |
 | **Earnings Calendar** | Next earnings date per holding shown in Layer Summary and Holdings table |
 | **Buffett Screener** | Nightly scan of ~2,300 NYSE tickers; surfaces stocks passing all 6 Buffett quality criteria with valuation metrics, history tracking, and email alerts for new winners |
+| **Buffett Deep-Dive** | On-demand 13-point Buffett analysis for any ticker — gross margin, expense margins, EPS trend, balance sheet strength, buybacks, and more |
 | **Portfolio Reminders** | Daily 7 AM email when any holding has earnings or ex-div within 3 days |
 | **Layer Drift Alerts** | Daily check of layer weights vs. targets in `layer_targets.json`; emails when any layer drifts ≥5pp |
-| **Tax Lot Tracker** | Lot-level cost basis per holding (multiple purchase dates/prices); modal popup shows per-lot ST/LT term, unrealized G/L, days to LT conversion, weighted avg cost |
+| **Tax Lot Tracker** | Lot-level cost basis per holding; modal shows per-lot ST/LT term, unrealized G/L, days to LT conversion |
+| **FIFO Sell Tracker** | Record sales with automatic FIFO lot matching; previews which lots are consumed before confirming |
+| **Realized Gains & Tax** | Dashboard card showing YTD (or all-time) realized gains split by ST/LT with estimated federal tax at editable bracket rates |
+| **Private Data Backup** | Daily push of `investment.db`, `holdings.csv`, and `buffett.db` to a separate private GitHub repo |
 
 ---
 
@@ -60,16 +64,12 @@ EMAIL_TO=recipient@gmail.com
 
 ### 4. Populate `holdings.csv`
 
-The file has five columns — edit directly or tell Claude to add positions:
-
 ```
-Stock,Shares,AvgCost,Layer,PurchaseDate
-JOBY,100,9.67,4,2023-11-15
-EW,100,85.31,3,
+Stock,Shares,AvgCost,Layer
+JOBY,100,9.67,4
+EW,100,85.31,3
 ...
 ```
-
-`PurchaseDate` is optional (leave blank for existing positions). When set, the Holdings table shows an **ST** (short-term, <1 year) or **LT** (long-term, ≥1 year) badge on the Total Gain column to flag tax treatment.
 
 **Layer definitions:**
 
@@ -107,9 +107,21 @@ Output: `out/dashboard.html`
 python3 serve.py
 ```
 
-Opens `http://localhost:5001/out/dashboard.html` automatically. Press `Ctrl+C` to stop.
+Navigating to `http://localhost:5001` redirects automatically to the dashboard. Press `Ctrl+C` to stop.
 
 `serve.py` is a full local API server — it serves static files **and** handles live API endpoints, and runs the daily newsletter automatically as a background thread.
+
+### Auto-start on login (macOS)
+
+The dashboard server is managed by a launchd agent (`com.investment.dashboard`) that starts `run_server.sh` (an infinite-loop wrapper around `serve.py`) automatically on login. If `serve.py` crashes, the wrapper restarts it within 5 seconds.
+
+To start or restart the agent:
+
+```bash
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.investment.dashboard.plist 2>/dev/null || true
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.investment.dashboard.plist
+launchctl kickstart gui/$(id -u)/com.investment.dashboard
+```
 
 ### API Endpoints
 
@@ -121,42 +133,32 @@ Opens `http://localhost:5001/out/dashboard.html` automatically. Press `Ctrl+C` t
 | `GET /api/dividend-timeline` | Monthly income (Jan–Dec, current year) |
 | `GET /api/earnings` | Next earnings dates for all holdings |
 | `GET /api/buffett-winners` | Latest Buffett screener results (includes valuation + first_seen) |
+| `GET /api/buffett-analysis?ticker=KO` | On-demand 13-point Buffett deep-dive for any ticker |
 | `GET /api/cc-positions` | All logged covered call positions |
 | `POST /api/cc-positions` | Log a new covered call position |
 | `PATCH /api/cc-positions/<id>` | Update position status / closing details |
-| `GET /api/lots` | All cost lots (grouped by ticker in JS) |
+| `GET /api/lots` | All cost lots across all tickers |
 | `GET /api/lots?ticker=EW` | Lots for a specific ticker |
 | `POST /api/lots` | Add a cost lot |
 | `DELETE /api/lots/<id>` | Remove a cost lot |
-
-### Auto-start on login (macOS)
-
-The dashboard server is managed by a launchd agent (`com.investment.dashboard`) that starts `serve.py` automatically on login and keeps it alive.
-
-**One-time setup** (if not already loaded):
-
-```bash
-launchctl load ~/Library/LaunchAgents/com.investment.dashboard.plist
-```
-
-To reload after editing the plist:
-
-```bash
-launchctl unload ~/Library/LaunchAgents/com.investment.dashboard.plist
-launchctl load ~/Library/LaunchAgents/com.investment.dashboard.plist
-```
+| `GET /api/sells` | All sell transactions across all tickers |
+| `GET /api/sells?ticker=EW` | Sell history for a specific ticker |
+| `POST /api/sells` | Record a sale (FIFO lot allocation executed server-side) |
+| `DELETE /api/sells/<id>` | Undo a sale (lots restored from snapshot) |
 
 ---
 
 ## Daily Newsletter
 
-The newsletter runs automatically inside `serve.py` as a background thread — **no launchd required**. When the server starts:
+The newsletter runs automatically inside `serve.py` as a background thread — **no separate launchd job required**. When the server starts:
 
 1. Checks if today's newsletter has already run (`out/last_run_date.txt`)
 2. If not and it's ≥ 8 AM ET, runs `send_newsletter_main.py` → `generate_dashboard.py`
 3. Rechecks every 30 minutes as a safety net
 
-This means as long as the dashboard server is running (via the launchd agent), the newsletter and dashboard will always be current.
+After a successful newsletter run, two additional checks fire automatically:
+- **Layer drift check** — emails if any layer has drifted ≥5pp from `layer_targets.json`
+- **Data backup** — pushes `investment.db`, `holdings.csv`, and `buffett.db` to the private `investment-data` repo
 
 **Logs:** `out/newsletter.log`
 
@@ -178,7 +180,7 @@ venv/bin/python3 send_newsletter_main.py && venv/bin/python3 generate_dashboard.
 - **Daily Change** — today's P&L vs yesterday's close
 - **SPY Change** — benchmark comparison
 - **Total Gain vs Cost** — unrealized P&L vs your average cost across all holdings
-- **Est. Annual Dividends** — gross annual dividend income (populated on page load); subtitle shows net after-tax
+- **Est. Annual Dividends** — gross annual dividend income; subtitle shows net after-tax
 
 ### Charts
 - Portfolio vs SPY cumulative return
@@ -190,151 +192,167 @@ venv/bin/python3 send_newsletter_main.py && venv/bin/python3 generate_dashboard.
 ### Layer Summary Table
 Columns: **Layer | Value | Weight | Δ$ | Δ% | Next Earnings**
 
-Next Earnings shows the soonest reporting ticker per layer, color-coded red ≤ 7 days, orange ≤ 21 days, green further out.
+Next Earnings shows the soonest reporting ticker per layer, color-coded red ≤7 days, orange ≤21 days, green further out.
 
 ### Holdings Table
 Columns: **Ticker | Shares | Avg Cost | Price | Value | Total Gain | Daily Δ | Weight | Next Earnings | Tax Lots**
 
-- Total Gain shows true return vs cost basis, with **ST** / **LT** / **Mixed** tax badge derived from your cost lots
-- Next Earnings populated per holding on page load
-- **Lots** button opens a modal with full per-lot breakdown (see Tax Lot Tracker below)
+- Total Gain shows true return vs cost basis, with **ST** / **LT** / **⚠ MIXED** tax badge derived from your cost lots (tooltip shows ST lot count)
+- **Lots** button opens the lot tracker modal
 
 ### Tax Lot Tracker (modal)
 
-Click **Lots** on any holding row to open the lot tracker. The modal shows:
+Click **Lots** on any holding to open the modal. It contains three sections:
 
-- **Per-lot table**: purchase date, shares, cost/share, total cost, days held, ST/LT badge, unrealized G/L amount and %, days until the lot turns LT (for short-term lots)
-- **Summary bar**: lot count, total shares tracked, weighted avg cost, ST shares, LT shares, total G/L
-- **Add Lot form**: date picker, shares, cost/share, optional notes — supports any number of lots per ticker
-- **Remove** button per lot (with confirmation)
+**Current Lots:**
+- Per-lot table: purchase date, shares, cost/share, total cost, days held, ST/LT badge, unrealized G/L, days until lot turns LT
+- Summary bar: lot count, total shares tracked, weighted avg cost, ST/LT share split, total G/L at current price
+- Add Lot form (date, shares, cost/share, optional notes) and per-lot Remove button
 
-Lots are stored in `out/investment.db` (table `cost_lots`) and persist independently of `holdings.csv`. The `holdings.csv` avg cost drives P&L calculations; the lot tracker is solely for tax-lot accounting.
+**Record a Sale (FIFO):**
+- Enter date sold, shares, sell price, and optional notes
+- Click **Preview FIFO →** to see exactly which lots will be consumed (oldest first) before committing — shows per-lot cost basis, proceeds, gain/loss, and ST/LT term
+- Click **Confirm Sale** to execute: oldest lots are reduced or deleted, the sale is recorded
+- Click **Undo** on any past sale to fully restore the consumed lots
+
+**Sell History:**
+- All past sells for the ticker: date, shares, price, total G/L, ST G/L, LT G/L, lot-level detail
+
+Lots are stored in `out/investment.db` (`cost_lots` table). Sells are stored in `sell_transactions`. Both persist independently of `holdings.csv`.
+
+### Realized Gains & Tax Estimate
+
+A dedicated dashboard card (below Holdings, above Buffett Deep-Dive) showing:
+
+- **Year filter**: This Year (default) or All Time
+- **Three KPI tiles**: Total Realized G/L · Short-Term G/L (ordinary income) · Long-Term G/L (cap gains rate)
+- **Tax estimator**: editable ST and LT rate inputs (saved in browser localStorage), optional NIIT (3.8%) checkbox, and computed Est. ST Tax / Est. LT Tax / Total Est. Tax
+- **Per-transaction table**: ticker, date, shares, price, total G/L, ST G/L, LT G/L, estimated tax per sell, lot-level detail, notes
+
+Estimated tax applies to positive gains only (losses offset within each term bucket). Federal rates only — does not include state taxes.
+
+### Buffett Deep-Dive Analyzer
+
+Type any ticker and click **Analyze** (or press Enter) to run a 13-point Buffett analysis on demand.
+
+**Score bar**: color-coded green (≥10/13 — strong), amber (7–9 — mixed), red (<7 — fails screen), with a one-line verdict.
+
+**13 metrics checked:**
+
+| # | Metric | Criteria |
+|---|---|---|
+| 1 | Gross Margin | > 40% |
+| 2 | SG&A / Gross Profit | < 30% |
+| 3 | R&D / Gross Profit | < 30% |
+| 4 | Depreciation / Gross Profit | < 10% |
+| 5 | Interest / Operating Income | < 15% |
+| 6 | Net Income Margin | > 20% |
+| 7 | EPS Growth | Year-over-year increase |
+| 8 | Retained Earnings | Growing |
+| 9 | Cash vs Total Debt | Cash > Debt |
+| 10 | Debt / Equity | < 0.80 |
+| 11 | Preferred Stock | None |
+| 12 | Share Buybacks | Present |
+| 13 | CapEx / Net Income | < 25% |
+
+Banks and insurers are detected automatically (Gross Margin shown as N/A; other expense margins skip).
+
+### Buffett Screener (nightly)
+
+The screener runs automatically at **2 AM ET** each night as a background thread inside `serve.py`. It scans the full NYSE (~2,300 tickers) applying six quality criteria (subset of the deep-dive):
+
+| Metric | Threshold |
+|---|---|
+| Gross Margin | ≥ 40% |
+| SG&A / Gross Profit | ≤ 30% |
+| Net Income Margin | ≥ 20% |
+| Interest / Op. Income | ≤ 15% |
+| CapEx / Net Income | ≤ 50% |
+| Cash > Total Debt | Yes |
+
+**Smart caching:** tickers whose `mostRecentQuarter` hasn't changed are served from `out/buffett.db` — typical nightly run after the first scan is a fraction of the time.
+
+**Valuation metrics:** each winner shows **P/E**, **P/FCF**, and **EV/EBITDA** alongside the quality criteria.
+
+**Historical tracking:** `buffett_winner_history` records when each ticker first qualified; shown as "since YYYY-MM-DD" in the screener card.
+
+**New winner alerts:** any ticker qualifying for the first time triggers a Gmail notification.
+
+**Logs:** `out/screener.log`
+
+```bash
+venv/bin/python3 buffett_screener.py   # run manually
+```
 
 ### Covered Call Analyzer
-Select any holding with **100+ shares** from the dropdown and click **Get Recommendations**.
-
-**Info bar:** Current price | Avg Cost/Share | Gain % | 52-week High (date) | Min Strike
+Select any holding with **100+ shares** and click **Get Recommendations**.
 
 **Strike selection logic:**
 - Stock not yet up 10% from cost → floor = `avg_cost × 1.10`
-- Stock already up ≥ 10% → floor = `current_price × 1.10` (lock in gain + another 10%)
-- Ceiling: `current_price × 1.50` (filters out pre-split legacy contracts)
+- Stock already up ≥10% → floor = `current_price × 1.10`
+- Ceiling: `current_price × 1.50`
 
 **Columns:** Expiry | Strike | DTE | Bid | Ask | Mid | Prem% | Ann% | P/L if Called | Prob Called | OI
 
 ### Covered Call Position Tracker
+Log new positions (ticker, contracts, strike, expiry, premium/contract, open date). Table shows all open/closed positions with DTE countdown, total premium, and summary bar (open count, open premium, all-time income).
 
-Below the Covered Call Analyzer is a **Position Tracker** card. Use the expandable form to log a new position (ticker, contracts, strike, expiry, premium/contract, open date). A table shows all open and closed/expired/assigned positions with:
-- **DTE** countdown for open positions (red ≤7d, orange ≤21d, green further)
-- **Total Premium** = contracts × premium × 100
-- Summary bar: open positions count, open premium held, all-time premium collected
-- **Close** button → prompts for buy-back cost, marks position closed
-
-**Blackout windows** flagged per contract:
-- 📵 **AVOID** (red row) — earnings date falls within the option window
-- ⚠️ **CAUTION** (yellow row) — ex-dividend date before expiration (early assignment risk)
-
-**Prob Called** is the Black-Scholes delta, color-coded green < 20%, orange 20–35%, red > 35%.
+**Blackout flags:** 📵 AVOID (earnings in window) · ⚠️ CAUTION (ex-div before expiry)
 
 ### Dividend Tracker
-Auto-loads on page open (~4 seconds, parallel fetch). Hit **Refresh** to update; cached 1 hour per day.
+Auto-loads on page open. Hit **Refresh** to update; cached 1 hour per day.
 
 **Columns:** Ticker | Status | Ex-Div Date | Pay Date | Amount/Share | This Payout | Annual Income | Est. Tax | Net After-Tax | Yield | Yield on Cost
 
-- **UPCOMING** (green) — confirmed future ex-div date
-- **LAST KNOWN** (grey) — most recent date; next not yet announced
-- Tax type auto-classified: Qualified (18.8% at $500k), Ordinary (e.g. REITs), Federal Exempt (muni funds)
-- Footnote shows exact rates for the selected bracket
-
-**Dividend Lookup** (bottom of card): enter any ticker + share count to see dividend metrics and how adding that position would change your portfolio's annual income and after-tax total.
-
-### Buffett Screener
-
-The screener runs automatically at **2 AM ET** each night as a background thread inside `serve.py`. It scans the full NYSE (~2,300 tickers) using Yahoo Finance and applies Warren Buffett's six quality criteria:
-
-| Metric | Threshold | What it measures |
-|---|---|---|
-| Gross Margin | ≥ 40% | Durable pricing power |
-| SG&A / Gross Profit | ≤ 30% | Lean cost structure |
-| Net Income Margin | ≥ 20% | True earnings power |
-| Interest / Op. Income | ≤ 15% | Low debt burden |
-| CapEx / Net Income | ≤ 50% | Capital-light business |
-| Cash > Total Debt | Yes | Balance sheet strength |
-
-**Smart caching:** each ticker's `mostRecentQuarter` date is checked before re-fetching. Tickers whose quarter hasn't changed are served from the local cache (`out/buffett.db`) — typical run after the first scan takes a fraction of the time.
-
-**Incremental writes:** winners are flushed to `buffett_winners` every 100 tickers, not just at the end. A crash or kill at ticker 1,500 preserves the winners found up to that point.
-
-**Results** appear in the dashboard's **Buffett Screener** card (sorted by Gross Margin) with quick links to Yahoo Finance, CNBC, and MarketWatch for each ticker. Hit **↻ Refresh** to reload from the latest scan.
-
-**Dashboard scan states:**
-
-| State | What you see |
-|---|---|
-| Never run | Grey "No scan results yet" message |
-| In progress | Live ticker count, partial winner count, and ETA to completion |
-| Crashed / killed early | Red warning banner noting the scan was incomplete, with partial winners shown |
-| Completed | Full results with timestamp and ticker count |
-
-**Valuation metrics:** each winner now shows **P/E** (trailing), **P/FCF** (market cap ÷ free cash flow), and **EV/EBITDA** alongside the quality criteria — populated on the next nightly scan.
-
-**Historical tracking:** every completed scan writes a `buffett_winner_history` row per winner. The dashboard's First Seen date shows when each ticker first qualified.
-
-**New winner notifications:** every 100 tickers, the screener compares fresh winners against the previous list. Any ticker that qualifies for the first time triggers a Gmail notification with the ticker, company, price, gross/net income margins, and quick links to Yahoo Finance and CNBC. Uses the same `EMAIL_FROM` / `EMAIL_APP_PASSWORD` / `EMAIL_TO` credentials as the daily newsletter — no extra config required. On the very first scan all winners are treated as new; subsequent nightly runs only email genuine additions.
-
-**Logs:** `out/screener.log`
-
-To run manually at any time:
-
-```bash
-venv/bin/python3 buffett_screener.py
-```
-
-> Only one instance runs at a time — a PID lock file (`out/buffett_screener.lock`) prevents concurrent runs caused by orphaned processes.
+**Dividend Lookup**: enter any ticker + share count to see metrics and projected portfolio impact.
 
 ---
 
 ## Portfolio Reminders (7 AM ET)
 
-`serve.py` runs a daily reminder thread at **7 AM ET**. It scans all holdings for earnings dates and ex-dividend dates within the next 3 days and sends a single digest email listing upcoming events with urgency indicators (🔴 next day · 🟡 2 days · 🟢 3 days) and estimated ex-div payouts.
+`serve.py` runs a daily reminder thread at **7 AM ET**. It scans all holdings for earnings and ex-dividend dates within 3 days and sends a single digest email with urgency indicators (🔴 next day · 🟡 2 days · 🟢 3 days).
 
-**Flag file:** `out/last_reminder_date.txt` — prevents double-sends per day.
+**Flag file:** `out/last_reminder_date.txt`
 
 ---
 
 ## Layer Drift Alerts
 
-After each successful newsletter run (8 AM), `serve.py` checks whether any layer has drifted ≥ 5 percentage points from its target allocation.
+After each successful 8 AM newsletter run, `serve.py` checks whether any layer has drifted ≥5pp from its target.
 
-**Targets file:** `layer_targets.json` — created automatically from your current weights on first run. Edit it to define your intended allocations:
+**Targets file:** `layer_targets.json` — created automatically from current weights on first run:
 
 ```json
-{
-  "1": 28.5,
-  "2": 12.0,
-  "3": 35.0,
-  "4": 14.5,
-  "5": 10.0
-}
+{ "1": 28.5, "2": 12.0, "3": 35.0, "4": 14.5, "5": 10.0 }
 ```
 
-Keys are layer numbers (1–5); values are target percentages. When any layer drifts ≥5pp, an email lists each drifting layer with target, current weight, and direction.
+---
+
+## Private Data Backup
+
+Financial data (`investment.db`, `holdings.csv`, `buffett.db`) is backed up daily to a **separate private GitHub repo** (`investment-data`) — stays private even if this code repo is made public.
+
+**Run manually:**
+```bash
+bash ~/Desktop/investment/backup_data.sh
+```
+
+**Restore on a new machine:**
+```bash
+git clone https://github.com/labairj-ai/investment-data.git ~/.investment-backup
+cp ~/.investment-backup/investment.db ~/Desktop/investment/out/
+cp ~/.investment-backup/holdings.csv  ~/Desktop/investment/
+cp ~/.investment-backup/buffett.db    ~/Desktop/investment/out/
+```
 
 ---
 
 ## Covered Call CLI
 
-Can also be run directly from the terminal:
-
 ```bash
-# Single ticker
-venv/bin/python3 covered_call_rec.py EW
-
-# Multiple tickers
-venv/bin/python3 covered_call_rec.py EW GRMN WMT
-
-# All holdings with 100+ shares
-venv/bin/python3 covered_call_rec.py
+venv/bin/python3 covered_call_rec.py EW          # single ticker
+venv/bin/python3 covered_call_rec.py EW GRMN WMT # multiple
+venv/bin/python3 covered_call_rec.py              # all holdings ≥100 shares
 ```
 
 ---
@@ -343,31 +361,22 @@ venv/bin/python3 covered_call_rec.py
 
 ```
 investment/
-├── holdings.csv                     # Portfolio positions — Stock, Shares, AvgCost, Layer, PurchaseDate
+├── holdings.csv                     # Portfolio positions — Stock, Shares, AvgCost, Layer
 ├── layer_targets.json               # Target layer allocations for drift alerts (auto-created)
+├── backup_data.sh                   # Pushes DB + CSV to private investment-data repo
+├── run_server.sh                    # Infinite-loop wrapper around serve.py (used by launchd)
 ├── send_newsletter_main.py          # Fetches prices, sends email, writes DB
-├── generate_dashboard.py            # Generates out/dashboard.html from DB + CSV
-├── serve.py                         # Local HTTP server + API endpoints + schedulers
-│                                    #   GET/POST /api/cc-positions
-│                                    #   PATCH    /api/cc-positions/<id>
-│                                    #   GET /api/covered-calls?ticker=XX
-│                                    #   GET /api/dividends
-│                                    #   GET /api/dividend-lookup?ticker=XX&shares=N
-│                                    #   GET /api/dividend-timeline
-│                                    #   GET /api/earnings
-│                                    #   GET /api/buffett-winners
-├── buffett_screener.py              # NYSE Buffett screener — runs nightly at 2 AM ET
+├── generate_dashboard.py            # Generates out/dashboard.html
+├── serve.py                         # HTTP server + all API endpoints + schedulers
+├── buffett_screener.py              # NYSE Buffett screener — nightly at 2 AM ET
 ├── covered_call_rec.py              # Covered call recommendation + blackout engine
-├── run_investment.sh                # Manual entry point: newsletter → dashboard
-├── serve_daemon.sh                  # Legacy static file server (superseded by serve.py)
-├── com.investment.newsletter.plist  # launchd plist — newsletter at 8 AM (backup)
+├── run_investment.sh                # Manual newsletter entry point
 ├── chart.umd.min.js                 # Bundled Chart.js (no CDN dependency)
 ├── favicon.svg                      # Dashboard browser tab icon
-├── InvestmentDashboard.app/         # Legacy macOS app wrapper (superseded by launchd agent)
 ├── .env                             # ⚠ Not committed — email credentials
 └── out/
-    ├── investment.db                # SQLite price + holding history
-    ├── buffett.db                   # SQLite Buffett screener cache + winners
+    ├── investment.db                # SQLite: price history, cc_positions, cost_lots, sell_transactions
+    ├── buffett.db                   # SQLite: Buffett screener cache, winners, history
     ├── dashboard.html               # Generated dashboard (served by serve.py)
     ├── layer_allocation.png         # Pie chart attached to newsletter
     ├── newsletter.log               # Daily newsletter run log
@@ -375,9 +384,7 @@ investment/
     ├── last_run_date.txt            # Flag — prevents double newsletter sends
     ├── last_screener_date.txt       # Flag — prevents double screener runs
     ├── last_reminder_date.txt       # Flag — prevents double reminder emails
-    ├── buffett_screener.lock        # PID lock — prevents concurrent screener instances
-    ├── covered_calls_analysis.md    # Manual covered call notes
-    └── volume_analysis.md           # Manual volume notes
+    └── buffett_screener.lock        # PID lock — prevents concurrent screener instances
 ```
 
 ---
@@ -400,17 +407,18 @@ cd ~/Desktop/investment
 python3 -m venv venv
 venv/bin/pip install pandas yfinance matplotlib python-dotenv
 
-# Create .env with credentials (see Setup section above)
+# Restore data backup
+git clone https://github.com/labairj-ai/investment-data.git ~/.investment-backup
+cp ~/.investment-backup/investment.db out/
+cp ~/.investment-backup/holdings.csv  .
+cp ~/.investment-backup/buffett.db    out/
 
-# Seed the database
-venv/bin/python3 send_newsletter_main.py
+# Create .env with credentials (see Setup above)
 
 # Generate dashboard
 venv/bin/python3 generate_dashboard.py
 
-# Start the server (runs newsletter + screener schedulers automatically)
-python3 serve.py
-
-# Or load the launchd agent for auto-start on login
-launchctl load ~/Library/LaunchAgents/com.investment.dashboard.plist
+# Start the server
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.investment.dashboard.plist
+launchctl kickstart gui/$(id -u)/com.investment.dashboard
 ```
