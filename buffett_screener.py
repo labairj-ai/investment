@@ -469,12 +469,17 @@ def run():
 
 if __name__ == "__main__":
     import sys
-    # Only clean up the lock if THIS process acquired it — rejected processes
-    # (completed=False) must not delete the lock that belongs to the real scan.
+    _my_pid = str(os.getpid())
     try:
         completed = run()
     except Exception:
-        LOCK_FILE.unlink(missing_ok=True)
+        # Only delete the lock if WE own it — a process that crashed because the
+        # DB was locked by another scan must not evict that scan's lock entry.
+        try:
+            if LOCK_FILE.exists() and LOCK_FILE.read_text().strip() == _my_pid:
+                LOCK_FILE.unlink(missing_ok=True)
+        except OSError:
+            pass
         raise
     if completed is False:
         sys.exit(1)
