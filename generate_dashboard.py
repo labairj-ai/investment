@@ -509,6 +509,18 @@ def build_dashboard(portfolio, layers, holdings):
         style="width:100%;margin-top:4px;padding:7px 10px;border:1px solid #dde;border-radius:6px;font-size:13px;">
     </div>
 
+    <!-- Shown only when Assigned is selected -->
+    <div id="cc-assign-sell-row" style="display:none;background:#fff8e1;border:1px solid #ffe082;border-radius:8px;padding:12px 14px;margin-bottom:14px;">
+      <div style="font-size:12px;font-weight:700;color:#7a5c00;margin-bottom:6px;">Assignment = stock sale at strike</div>
+      <div style="font-size:12px;color:#555;margin-bottom:10px;" id="cc-assign-sell-desc"></div>
+      <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;font-size:13px;">
+        <input type="checkbox" id="cc-assign-fifo-check" checked style="margin-top:2px;width:15px;height:15px;cursor:pointer;flex-shrink:0;">
+        <span>Record the stock sale in the FIFO tracker<br>
+          <span style="font-size:11px;color:#888;">The stock capital gain/loss will appear in the ST/LT gain section above the CC premium income.</span>
+        </span>
+      </label>
+    </div>
+
     <div id="cc-close-preview" style="display:none;background:#f0fff4;border:1px solid #ade;border-radius:7px;padding:10px 14px;margin-bottom:14px;font-size:13px;"></div>
 
     <button onclick="confirmCCClose()"
@@ -639,7 +651,7 @@ def build_dashboard(portfolio, layers, holdings):
       <div style="background:#fff0f0;border-radius:8px;padding:14px 16px;border-left:3px solid #e74c3c;">
         <div style="font-size:10px;color:#aaa;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px;">Short-Term (&lt;1yr)</div>
         <div id="gains-st" style="font-size:22px;font-weight:700;color:#e74c3c;">—</div>
-        <div style="font-size:11px;color:#aaa;margin-top:2px;">Taxed as ordinary income</div>
+        <div id="gains-st-sub" style="font-size:11px;color:#aaa;margin-top:2px;">Taxed as ordinary income</div>
       </div>
       <div style="background:#f0fff4;border-radius:8px;padding:14px 16px;border-left:3px solid #27ae60;">
         <div style="font-size:10px;color:#aaa;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px;">Long-Term (≥1yr)</div>
@@ -1815,40 +1827,70 @@ function renderRealizedGains() {{
   }}
   sells = sells.slice().sort((a,b) => b.sell_date.localeCompare(a.sell_date));
 
-  const totalGain = sells.reduce((s, x) => s + (x.realized_gain || 0), 0);
-  const stGain    = sells.reduce((s, x) => s + (x.st_gain || 0), 0);
-  const ltGain    = sells.reduce((s, x) => s + (x.lt_gain || 0), 0);
+  const stockSTGain = sells.reduce((s, x) => s + (x.st_gain || 0), 0);
+  const ltGain      = sells.reduce((s, x) => s + (x.lt_gain || 0), 0);
+  const stockTotal  = sells.reduce((s, x) => s + (x.realized_gain || 0), 0);
+
+  // CC premium income — always short-term ordinary income
+  const yearCCClosed = _allCCPositions.filter(p =>
+    p.status !== "open" && p.net_premium != null &&
+    (yearFilter === "all" || p.closed_date?.startsWith(curYear))
+  );
+  const ccNetTotal = yearCCClosed.reduce((s, p) => s + (p.net_premium || 0), 0);
+
+  // Combined totals
+  const stGain    = stockSTGain + ccNetTotal;   // CC is always ST ordinary income
+  const totalGain = stockTotal  + ccNetTotal;
+  const hasData   = sells.length > 0 || yearCCClosed.length > 0;
 
   const stTax  = Math.max(0, stGain) * (stRate + niit);
   const ltTax  = Math.max(0, ltGain) * (ltRate + niit);
   const totTax = stTax + ltTax;
 
+  const fmt2 = v => "$" + v.toLocaleString("en-US",{{minimumFractionDigits:2,maximumFractionDigits:2}});
+
   // KPI updates
   const totalEl = document.getElementById("gains-total");
   if (totalEl) {{
-    totalEl.textContent  = sells.length ? _fmtGain(totalGain) : "—";
-    totalEl.style.color  = sells.length ? _gainColor(totalGain) : "#1a2340";
+    totalEl.textContent = hasData ? _fmtGain(totalGain) : "—";
+    totalEl.style.color = hasData ? _gainColor(totalGain) : "#1a2340";
   }}
   const stEl = document.getElementById("gains-st");
   if (stEl) {{
-    stEl.textContent = sells.length ? _fmtGain(stGain) : "—";
-    stEl.style.color = sells.length ? (stGain >= 0 ? "#c0392b" : "#27ae60") : "#e74c3c";
+    stEl.textContent = hasData ? _fmtGain(stGain) : "—";
+    stEl.style.color = hasData ? (stGain >= 0 ? "#c0392b" : "#27ae60") : "#e74c3c";
   }}
   const ltEl = document.getElementById("gains-lt");
   if (ltEl) {{
-    ltEl.textContent = sells.length ? _fmtGain(ltGain) : "—";
-    ltEl.style.color = sells.length ? (ltGain >= 0 ? "#27ae60" : "#e74c3c") : "#27ae60";
+    ltEl.textContent = hasData ? _fmtGain(ltGain) : "—";
+    ltEl.style.color = hasData ? (ltGain >= 0 ? "#27ae60" : "#e74c3c") : "#27ae60";
   }}
-  const countEl = document.getElementById("gains-txn-count");
-  if (countEl) countEl.textContent = sells.length ? `${{sells.length}} transaction${{sells.length!==1?"s":""}}` : "";
 
-  const fmt2 = v => "$" + v.toLocaleString("en-US",{{minimumFractionDigits:2,maximumFractionDigits:2}});
+  // Sub-lines showing breakdown when CC income is present
+  const countEl = document.getElementById("gains-txn-count");
+  if (countEl) {{
+    const parts = [];
+    if (sells.length)        parts.push(`${{sells.length}} stock sale${{sells.length!==1?"s":""}}`);
+    if (yearCCClosed.length) parts.push(`${{yearCCClosed.length}} CC close${{yearCCClosed.length!==1?"s":""}}`);
+    countEl.textContent = parts.join(" · ");
+  }}
+  const stSubEl = document.getElementById("gains-st-sub");
+  if (stSubEl) {{
+    if (yearCCClosed.length && sells.length) {{
+      stSubEl.innerHTML = `Stock ST: <b>${{_fmtGain(stockSTGain)}}</b> · CC premium: <b>${{_fmtGain(ccNetTotal)}}</b>`;
+    }} else if (yearCCClosed.length) {{
+      stSubEl.textContent = "Includes CC premium income";
+    }} else {{
+      stSubEl.textContent = "Taxed as ordinary income";
+    }}
+  }}
+
   const estStEl = document.getElementById("tax-est-st");
-  if (estStEl) {{ estStEl.textContent = sells.length ? fmt2(stTax)  : "—"; estStEl.style.color = stTax  > 0 ? "#c0392b" : "#888"; }}
+  if (estStEl) {{ estStEl.textContent = hasData ? fmt2(stTax) : "—"; estStEl.style.color = stTax > 0 ? "#c0392b" : "#888"; }}
   const estLtEl = document.getElementById("tax-est-lt");
-  if (estLtEl) {{ estLtEl.textContent = sells.length ? fmt2(ltTax)  : "—"; estLtEl.style.color = ltTax  > 0 ? "#c0392b" : "#888"; }}
+  if (estLtEl) {{ estLtEl.textContent = hasData ? fmt2(ltTax) : "—"; estLtEl.style.color = ltTax > 0 ? "#c0392b" : "#888"; }}
   const estTotEl = document.getElementById("tax-est-total");
-  if (estTotEl) {{ estTotEl.textContent = sells.length ? fmt2(totTax) : "—"; estTotEl.style.color = totTax > 0 ? "#c0392b" : "#888"; }}
+  if (estTotEl) {{ estTotEl.textContent = hasData ? fmt2(totTax) : "—"; estTotEl.style.color = totTax > 0 ? "#c0392b" : "#888"; }}
 
   // Per-transaction table
   const wrap = document.getElementById("gains-table-wrap");
@@ -1905,17 +1947,11 @@ function renderRealizedGains() {{
     Est. Tax = positive gains only · federal rate only · rates: ST ${{(stRate*100).toFixed(1)}}%${{niit?" +3.8% NIIT":""}} / LT ${{(ltRate*100).toFixed(1)}}%${{niit?" +3.8% NIIT":""}}
   </div>`;
 
-  // ── Option Premium Income (CC) ───────────────────────────────────────────
-  let ccPremiums = _allCCPositions.filter(p => p.status !== "open" && p.net_premium != null);
-  if (yearFilter === "cur") {{
-    ccPremiums = ccPremiums.filter(p => p.closed_date?.startsWith(curYear));
-  }}
+  // ── Option Premium Income (CC) ─── reuses yearCCClosed + ccNetTotal from above
+  const ccTax = Math.max(0, ccNetTotal) * (stRate + niit);
 
-  const ccNetTotal = ccPremiums.reduce((s, p) => s + (p.net_premium || 0), 0);
-  const ccTax      = Math.max(0, ccNetTotal) * (stRate + niit);
-
-  if (ccPremiums.length) {{
-    const ccRows = ccPremiums
+  if (yearCCClosed.length) {{
+    const ccRows = yearCCClosed
       .slice().sort((a,b) => b.closed_date.localeCompare(a.closed_date))
       .map(p => {{
         const gross  = p.premium_per_contract * p.contracts * 100;
@@ -1970,7 +2006,7 @@ function renderRealizedGains() {{
           </tr></thead>
           <tbody>${{ccRows}}</tbody>
         </table></div>
-        <div style="font-size:10px;color:#bbb;margin-top:6px;">CC premium is always short-term ordinary income regardless of how long the position was open</div>
+        <div style="font-size:10px;color:#bbb;margin-top:6px;">CC premium income is always short-term ordinary income and is included in the Short-Term KPI and tax estimate above. When assigned, the stock capital gain/loss is tracked separately via the FIFO sell tracker.</div>
       </div>`;
   }}
 }}
@@ -2363,8 +2399,9 @@ function openCCCloseModal(id) {{
   document.getElementById("cc-close-date").value  = new Date().toISOString().slice(0,10);
   document.getElementById("cc-close-price").value = "";
   document.getElementById("cc-close-status").textContent = "";
-  document.getElementById("cc-close-preview").style.display = "none";
-  document.getElementById("cc-buyback-row").style.display   = "none";
+  document.getElementById("cc-close-preview").style.display   = "none";
+  document.getElementById("cc-buyback-row").style.display     = "none";
+  document.getElementById("cc-assign-sell-row").style.display = "none";
 
   // Reset type button styles
   ["expired","buyback","assigned"].forEach(t => {{
@@ -2391,7 +2428,22 @@ function setCCCloseType(type) {{
     el.style.background  = active ? "#1a2340" : "#fff";
     el.style.color       = active ? "#fff"    : "#333";
   }});
-  document.getElementById("cc-buyback-row").style.display = type === "buyback" ? "block" : "none";
+  document.getElementById("cc-buyback-row").style.display    = type === "buyback"  ? "block" : "none";
+  const assignRow = document.getElementById("cc-assign-sell-row");
+  if (assignRow) {{
+    assignRow.style.display = type === "assigned" ? "block" : "none";
+    if (type === "assigned") {{
+      const p = _allCCPositions.find(x => x.id === _ccCloseTargetId);
+      if (p) {{
+        const shares = p.contracts * 100;
+        const desc   = document.getElementById("cc-assign-sell-desc");
+        if (desc) desc.textContent =
+          `${{shares}} shares of ${{p.ticker}} will be sold at the ${{p.strike.toFixed(2)}} strike. ` +
+          `The capital gain or loss on those shares (vs. your cost basis) goes in the ST/LT section above. ` +
+          `The option premium (${{_fmtGain(p.net_premium ?? p.premium_per_contract * p.contracts * 100)}}) is tracked separately as CC income.`;
+      }}
+    }}
+  }}
   _updateCCClosePreview();
 }}
 
@@ -2442,8 +2494,45 @@ async function confirmCCClose() {{
       document.getElementById("cc-close-status").textContent = "Error: " + data.error;
       return;
     }}
+
+    // If assigned and user wants to record the stock sale in the FIFO tracker
+    if (_ccCloseType === "assigned") {{
+      const fifoCheck = document.getElementById("cc-assign-fifo-check");
+      if (fifoCheck?.checked) {{
+        const p = _allCCPositions.find(x => x.id === _ccCloseTargetId);
+        if (p) {{
+          document.getElementById("cc-close-status").textContent = "Recording stock sale…";
+          try {{
+            const sellRes = await fetch("/api/sells", {{
+              method: "POST", headers: {{"Content-Type":"application/json"}},
+              body: JSON.stringify({{
+                ticker:     p.ticker,
+                shares_sold: p.contracts * 100,
+                sell_price: p.strike,
+                sell_date:  closeDate,
+              }}),
+            }});
+            const sellData = await sellRes.json();
+            if (!sellData.ok) {{
+              document.getElementById("cc-close-status").textContent =
+                "CC closed. Stock sell error: " + sellData.error;
+              await loadCCPositions();
+              await loadAllSells();
+              return;
+            }}
+          }} catch(e2) {{
+            document.getElementById("cc-close-status").textContent = "CC closed. Sell error: " + e2.message;
+            await loadCCPositions();
+            await loadAllSells();
+            return;
+          }}
+        }}
+      }}
+    }}
+
     document.getElementById("cc-close-overlay").style.display = "none";
     await loadCCPositions();
+    await loadAllSells();
   }} catch(e) {{
     document.getElementById("cc-close-status").textContent = "Error: " + e.message;
   }}
