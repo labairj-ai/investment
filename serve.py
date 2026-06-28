@@ -13,6 +13,8 @@ Serves static files at http://localhost:5001 and handles:
   PATCH /api/cc-positions/<id>       → update position status / close details
 """
 
+import collections
+import csv as _csv_mod
 import datetime
 import json
 import math
@@ -699,6 +701,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         parts  = parsed.path.rstrip("/").split("/")
         if len(parts) == 4 and parts[1] == "api" and parts[2] == "cc-positions" and parts[3].isdigit():
             self._handle_cc_update(int(parts[3]))
+        elif len(parts) == 4 and parts[1] == "api" and parts[2] == "holdings":
+            self._handle_holding_layer_update(parts[3].upper())
         else:
             self.send_response(404)
             self.end_headers()
@@ -706,6 +710,98 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def _read_body(self):
         length = int(self.headers.get("Content-Length", 0))
         return json.loads(self.rfile.read(length)) if length else {}
+
+    # ── Holdings layer reassignment ───────────────────────────────────────────
+    _LAYER_NAMES = {
+        1: "Layer 1: Structural Ballast",
+        2: "Layer 2: Cash-Flow Engines",
+        3: "Layer 3: Compounders",
+        4: "Layer 4: Convexity / Optionality",
+        5: "Layer 5: Shock Absorbers / Regime Hedges",
+    }
+
+    def _handle_holding_layer_update(self, ticker: str):
+        try:
+            body      = self._read_body()
+            layer_num = int(body.get("layer_num", 0))
+            if layer_num not in self._LAYER_NAMES:
+                return self._json_error(400, "layer_num must be 1–5")
+
+            new_layer = self._LAYER_NAMES[layer_num]
+            holdings_csv = PROJECT_DIR / "holdings.csv"
+
+            # 1. Update holdings.csv ─────────────────────────────────────────
+            rows, fieldnames, found = [], None, False
+            with open(holdings_csv, newline="") as f:
+                reader = _csv_mod.DictReader(f)
+                fieldnames = reader.fieldnames
+                for row in reader:
+                    raw = str(row["Stock"]).strip().upper()
+                    # Normalize BRK.B → BRK-B for comparison
+                    norm = raw.replace(".", "-") if "." in raw else raw
+                    if norm == ticker or raw == ticker:
+                        row["Layer"] = str(layer_num)
+                        found = True
+                    rows.append(row)
+
+            if not found:
+                return self._json_error(404, f"{ticker} not found in holdings.csv")
+
+            with open(holdings_csv, "w", newline="") as f:
+                writer = _csv_mod.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(rows)
+
+            # 2. Rewrite DB history ──────────────────────────────────────────
+            db = PROJECT_DIR / "out" / "investment.db"
+            if db.exists():
+                conn = sqlite3.connect(str(db), timeout=10)
+                conn.row_factory = sqlite3.Row
+
+                conn.execute(
+                    "UPDATE holding_day SET layer = ? WHERE ticker = ?",
+                    (new_layer, ticker)
+                )
+
+                # Fully recompute layer_day from holding_day
+                hrows = conn.execute(
+                    "SELECT day, layer, value, change_dollars FROM holding_day"
+                ).fetchall()
+
+                day_layer = collections.defaultdict(lambda: {"value": 0.0, "change": 0.0})
+                day_total = collections.defaultdict(float)
+                for r in hrows:
+                    key = (r["day"], r["layer"])
+                    day_layer[key]["value"]  += r["value"]
+                    day_layer[key]["change"] += r["change_dollars"]
+                    day_total[r["day"]]      += r["value"]
+
+                conn.execute("DELETE FROM layer_day")
+                for (day, layer), d in day_layer.items():
+                    total    = day_total[day]
+                    weight   = (d["value"] / total * 100) if total else 0.0
+                    prev_val = d["value"] - d["change"]
+                    chg_pct  = (d["change"] / prev_val * 100) if prev_val else 0.0
+                    conn.execute(
+                        "INSERT INTO layer_day (day, layer, value, change_dollars, change_pct, weight_pct) "
+                        "VALUES (?,?,?,?,?,?)",
+                        (day, layer, d["value"], d["change"], chg_pct, weight)
+                    )
+                conn.commit()
+                conn.close()
+
+            # 3. Regenerate dashboard HTML ────────────────────────────────────
+            import subprocess
+            subprocess.run(
+                ["python3", "generate_dashboard.py"],
+                cwd=str(PROJECT_DIR),
+                capture_output=True,
+                timeout=30,
+            )
+
+            self._json({"ok": True, "ticker": ticker, "new_layer": new_layer, "layer_num": layer_num})
+        except Exception as e:
+            self._json_error(500, str(e))
 
     # ── CC positions ──────────────────────────────────────────────────────────
     def _handle_cc_positions_get(self):

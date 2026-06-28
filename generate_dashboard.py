@@ -271,7 +271,7 @@ def build_dashboard(portfolio, layers, holdings):
     for h in today_holdings_sorted:
         if h["layer"] != prev_layer:
             lcolor = LAYER_COLORS.get(h["layer"], "#999")
-            holdings_rows += f'<tr class="layer-header"><td colspan="10" style="background:{lcolor}22;border-left:4px solid {lcolor};padding:6px 10px;font-weight:600;color:#333">{h["layer"]}</td></tr>\n'
+            holdings_rows += f'<tr class="layer-header"><td colspan="11" style="background:{lcolor}22;border-left:4px solid {lcolor};padding:6px 10px;font-weight:600;color:#333">{h["layer"]}</td></tr>\n'
             prev_layer = h["layer"]
         daily_class = "pos" if h["change_pct"] >= 0 else "neg"
         gain_class  = "pos" if h["total_gain_pct"] >= 0 else "neg"
@@ -285,6 +285,9 @@ def build_dashboard(portfolio, layers, holdings):
           <td class="{daily_class}">{pct(h["change_pct"])}</td>
           <td>{h["weight_pct"]:.1f}%</td>
           <td id="earn-{h["ticker"]}" style="font-size:12px;color:#7f8c8d;">—</td>
+          <td><span onclick="openLayerModal('{h["ticker"]}', {h["layer_num"]})"
+            style="cursor:pointer;background:{lcolor}18;color:{lcolor};border:1px solid {lcolor}66;border-radius:4px;padding:2px 8px;font-size:10px;font-weight:700;white-space:nowrap;"
+            title="Click to reassign layer">L{h["layer_num"]}</span></td>
           <td><button onclick="openLotsModal('{h["ticker"]}', {h["price"]:.4f})" style="font-size:10px;padding:2px 8px;background:#f4f6f9;border:1px solid #dde;border-radius:4px;cursor:pointer;color:#555;" title="View / edit tax lots">Lots</button></td>
         </tr>\n"""
 
@@ -531,6 +534,45 @@ def build_dashboard(portfolio, layers, holdings):
   </div>
 </div>
 
+<!-- Layer reassignment modal -->
+<div id="layer-change-overlay" onclick="closeLayerModal(event)"
+  style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1000;align-items:center;justify-content:center;">
+  <div onclick="event.stopPropagation()"
+    style="background:#fff;border-radius:12px;padding:28px 32px;max-width:460px;width:95%;box-shadow:0 8px 40px rgba(0,0,0,.2);">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+      <h2 style="font-size:1.05rem;font-weight:700;color:#1a2340;margin:0;">Reassign Layer</h2>
+      <button onclick="closeLayerModal()" style="background:none;border:none;font-size:20px;cursor:pointer;color:#aaa;padding:4px 8px;">✕</button>
+    </div>
+    <div id="layer-change-summary" style="background:#f8fafc;border-radius:8px;padding:10px 14px;margin-bottom:18px;font-size:13px;"></div>
+    <div style="font-size:10px;font-weight:700;color:#7f8c8d;text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px;">Move to layer</div>
+    <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:20px;">
+      <button id="lbtn-1" onclick="pickLayer(1)" style="text-align:left;padding:10px 14px;border:2px solid #dde;border-radius:7px;background:#fff;cursor:pointer;font-size:13px;">
+        <span style="font-weight:700;color:#4A90D9;">L1</span> &nbsp;Structural Ballast
+      </button>
+      <button id="lbtn-2" onclick="pickLayer(2)" style="text-align:left;padding:10px 14px;border:2px solid #dde;border-radius:7px;background:#fff;cursor:pointer;font-size:13px;">
+        <span style="font-weight:700;color:#50C878;">L2</span> &nbsp;Cash-Flow Engines
+      </button>
+      <button id="lbtn-3" onclick="pickLayer(3)" style="text-align:left;padding:10px 14px;border:2px solid #dde;border-radius:7px;background:#fff;cursor:pointer;font-size:13px;">
+        <span style="font-weight:700;color:#F5A623;">L3</span> &nbsp;Compounders
+      </button>
+      <button id="lbtn-4" onclick="pickLayer(4)" style="text-align:left;padding:10px 14px;border:2px solid #dde;border-radius:7px;background:#fff;cursor:pointer;font-size:13px;">
+        <span style="font-weight:700;color:#E74C3C;">L4</span> &nbsp;Convexity / Optionality
+      </button>
+      <button id="lbtn-5" onclick="pickLayer(5)" style="text-align:left;padding:10px 14px;border:2px solid #dde;border-radius:7px;background:#fff;cursor:pointer;font-size:13px;">
+        <span style="font-weight:700;color:#9B59B6;">L5</span> &nbsp;Shock Absorbers / Regime Hedges
+      </button>
+    </div>
+    <div style="font-size:11px;color:#aaa;margin-bottom:14px;line-height:1.5;">
+      History is rewritten retroactively — the layer weight chart will show this holding as always having been in the new layer, with no artificial spike.
+    </div>
+    <button onclick="confirmLayerChange()"
+      style="width:100%;padding:10px;background:#1a2340;color:#fff;border:none;border-radius:7px;font-size:14px;font-weight:700;cursor:pointer;">
+      Confirm Reassignment
+    </button>
+    <div id="layer-change-status" style="margin-top:8px;font-size:12px;color:#888;text-align:center;"></div>
+  </div>
+</div>
+
 <header>
   <div>
     <h1>Investment Dashboard</h1>
@@ -622,7 +664,7 @@ def build_dashboard(portfolio, layers, holdings):
   <div class="card">
     <h2>Holdings — {today_date}</h2>
     <table>
-      <thead><tr><th>Ticker</th><th>Shares</th><th>Avg Cost</th><th>Price</th><th>Value</th><th>Total Gain</th><th>Daily Δ</th><th>Weight</th><th>Next Earnings</th><th>Tax Lots</th></tr></thead>
+      <thead><tr><th>Ticker</th><th>Shares</th><th>Avg Cost</th><th>Price</th><th>Value</th><th>Total Gain</th><th>Daily Δ</th><th>Weight</th><th>Next Earnings</th><th>Layer</th><th>Tax Lots</th></tr></thead>
       <tbody>{holdings_rows}</tbody>
     </table>
     <p style="font-size:11px;color:#aaa;margin-top:8px;">ST = short-term (&lt;1yr) · LT = long-term (≥1yr) — derived from your tax lots. Click <b>Lots</b> to add or view purchase history.</p>
@@ -2547,6 +2589,77 @@ async function confirmCCClose() {{
 }}
 
 window.addEventListener("load", loadCCPositions);
+
+// ── Layer Reassignment ────────────────────────────────────────────────────
+const _LAYER_COLORS = {{
+  1: "#4A90D9", 2: "#50C878", 3: "#F5A623", 4: "#E74C3C", 5: "#9B59B6"
+}};
+const _LAYER_LABELS = {{
+  1: "L1 Structural Ballast",
+  2: "L2 Cash-Flow Engines",
+  3: "L3 Compounders",
+  4: "L4 Convexity / Optionality",
+  5: "L5 Shock Absorbers / Regime Hedges",
+}};
+
+let _layerChangeTicker  = null;
+let _layerChangeFrom    = null;
+let _layerChangeTo      = null;
+
+function openLayerModal(ticker, currentLayerNum) {{
+  _layerChangeTicker = ticker;
+  _layerChangeFrom   = currentLayerNum;
+  _layerChangeTo     = currentLayerNum;
+  document.getElementById("layer-change-summary").innerHTML =
+    `<b style="font-size:15px;">${{ticker}}</b>
+     <span style="color:#888;margin:0 8px;">·</span>
+     currently in <b style="color:${{_LAYER_COLORS[currentLayerNum]}};">${{_LAYER_LABELS[currentLayerNum]}}</b>`;
+  document.getElementById("layer-change-status").textContent = "";
+  pickLayer(currentLayerNum);
+  document.getElementById("layer-change-overlay").style.display = "flex";
+}}
+
+function closeLayerModal(e) {{
+  if (!e || e.target === document.getElementById("layer-change-overlay"))
+    document.getElementById("layer-change-overlay").style.display = "none";
+}}
+
+function pickLayer(num) {{
+  _layerChangeTo = num;
+  for (let i = 1; i <= 5; i++) {{
+    const btn = document.getElementById("lbtn-" + i);
+    if (!btn) continue;
+    const active = i === num;
+    btn.style.borderColor = active ? _LAYER_COLORS[i] : "#dde";
+    btn.style.background  = active ? _LAYER_COLORS[i] + "18" : "#fff";
+    btn.style.fontWeight  = active ? "700" : "400";
+  }}
+}}
+
+async function confirmLayerChange() {{
+  if (_layerChangeTo === _layerChangeFrom) {{
+    document.getElementById("layer-change-overlay").style.display = "none";
+    return;
+  }}
+  const statusEl = document.getElementById("layer-change-status");
+  statusEl.textContent = "Saving and rewriting history…";
+  try {{
+    const res  = await fetch(`/api/holdings/${{_layerChangeTicker}}`, {{
+      method: "PATCH",
+      headers: {{"Content-Type":"application/json"}},
+      body: JSON.stringify({{ layer_num: _layerChangeTo }}),
+    }});
+    const data = await res.json();
+    if (!data.ok) {{
+      statusEl.textContent = "Error: " + data.error;
+      return;
+    }}
+    statusEl.textContent = "Done — reloading…";
+    window.location.reload();
+  }} catch(e) {{
+    statusEl.textContent = "Error: " + e.message;
+  }}
+}}
 
 // ── Covered Call Analyzer ─────────────────────────────────────────────────
 async function analyzeCoveredCall() {{
