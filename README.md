@@ -79,7 +79,7 @@ You can also add positions directly from the dashboard UI — see [Holdings Mana
 | Layer | Name | Examples |
 |---|---|---|
 | 1 | Structural Ballast | Index funds, BRK.B |
-| 2 | Cash-Flow Engines | SCHD, XOM, dividend payers |
+| 2 | Cash-Flow Engines | SCHD, XOM — dividend payers yielding ≥3%; sub-3% dividend payers belong in L3 Compounders |
 | 3 | Compounders | GRMN, WMT, EW, NFLX |
 | 4 | Convexity / Optionality | JOBY, BTC, IGV |
 | 5 | Shock Absorbers / Regime Hedges | MCO, UNP, ITOCF, MITSF, NOC |
