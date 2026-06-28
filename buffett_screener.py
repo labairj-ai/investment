@@ -469,9 +469,12 @@ def run():
 
 if __name__ == "__main__":
     import sys
+    # Only clean up the lock if THIS process acquired it — rejected processes
+    # (completed=False) must not delete the lock that belongs to the real scan.
     try:
         completed = run()
-    finally:
+    except Exception:
         LOCK_FILE.unlink(missing_ok=True)
+        raise
     if completed is False:
         sys.exit(1)
