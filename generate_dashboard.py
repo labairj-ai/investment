@@ -567,6 +567,94 @@ def build_dashboard(portfolio, layers, holdings):
     <p style="font-size:11px;color:#aaa;margin-top:8px;">ST = short-term (&lt;1yr) · LT = long-term (≥1yr) — derived from your tax lots. Click <b>Lots</b> to add or view purchase history.</p>
   </div>
 
+  <!-- Realized Gains & Tax Estimate -->
+  <div class="card" id="realized-gains-card">
+    <h2 style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+      <span>Realized Gains &amp; Tax Estimate</span>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <select id="gains-year-filter" onchange="renderRealizedGains()" style="font-size:12px;padding:4px 8px;border:1px solid #dde;border-radius:5px;background:#f9f9f9;cursor:pointer;">
+          <option value="cur">This Year</option>
+          <option value="all">All Time</option>
+        </select>
+        <button onclick="renderRealizedGains()" style="font-size:11px;padding:4px 12px;background:#f4f6f9;border:1px solid #dde;border-radius:5px;cursor:pointer;color:#555;">↻</button>
+      </div>
+    </h2>
+
+    <!-- KPI row -->
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:18px;" id="gains-kpi-row">
+      <div style="background:#f8fafc;border-radius:8px;padding:14px 16px;">
+        <div style="font-size:10px;color:#aaa;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px;">Total Realized G/L</div>
+        <div id="gains-total" style="font-size:22px;font-weight:700;color:#1a2340;">—</div>
+        <div id="gains-txn-count" style="font-size:11px;color:#aaa;margin-top:2px;"></div>
+      </div>
+      <div style="background:#fff0f0;border-radius:8px;padding:14px 16px;border-left:3px solid #e74c3c;">
+        <div style="font-size:10px;color:#aaa;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px;">Short-Term (&lt;1yr)</div>
+        <div id="gains-st" style="font-size:22px;font-weight:700;color:#e74c3c;">—</div>
+        <div style="font-size:11px;color:#aaa;margin-top:2px;">Taxed as ordinary income</div>
+      </div>
+      <div style="background:#f0fff4;border-radius:8px;padding:14px 16px;border-left:3px solid #27ae60;">
+        <div style="font-size:10px;color:#aaa;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px;">Long-Term (≥1yr)</div>
+        <div id="gains-lt" style="font-size:22px;font-weight:700;color:#27ae60;">—</div>
+        <div style="font-size:11px;color:#aaa;margin-top:2px;">Preferred cap gains rate</div>
+      </div>
+    </div>
+
+    <!-- Tax estimate row -->
+    <div style="background:#f4f6f9;border-radius:8px;padding:14px 18px;margin-bottom:16px;">
+      <div style="font-size:10px;font-weight:700;color:#7f8c8d;text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px;">
+        Estimated Federal Tax
+        <span style="font-weight:400;text-transform:none;letter-spacing:0;margin-left:6px;color:#bbb;">Adjust rates for your bracket · saved in browser</span>
+      </div>
+      <div style="display:flex;gap:20px;flex-wrap:wrap;align-items:flex-end;">
+        <div>
+          <label style="font-size:10px;color:#aaa;text-transform:uppercase;">ST Rate</label>
+          <div style="display:flex;align-items:center;gap:4px;margin-top:3px;">
+            <input id="tax-st-rate" type="number" min="0" max="60" step="0.5" value="35"
+              oninput="renderRealizedGains()"
+              style="width:64px;padding:5px 7px;border:1px solid #dde;border-radius:5px;font-size:13px;font-weight:600;">
+            <span style="font-size:13px;color:#555;">%</span>
+          </div>
+        </div>
+        <div>
+          <label style="font-size:10px;color:#aaa;text-transform:uppercase;">LT Rate</label>
+          <div style="display:flex;align-items:center;gap:4px;margin-top:3px;">
+            <input id="tax-lt-rate" type="number" min="0" max="40" step="0.5" value="20"
+              oninput="renderRealizedGains()"
+              style="width:64px;padding:5px 7px;border:1px solid #dde;border-radius:5px;font-size:13px;font-weight:600;">
+            <span style="font-size:13px;color:#555;">%</span>
+          </div>
+        </div>
+        <div>
+          <label style="font-size:10px;color:#aaa;text-transform:uppercase;">NIIT (3.8%)</label>
+          <div style="margin-top:6px;">
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;">
+              <input id="tax-niit" type="checkbox" onchange="renderRealizedGains()" style="width:15px;height:15px;cursor:pointer;">
+              <span style="color:#555;">Include</span>
+            </label>
+          </div>
+        </div>
+        <div style="padding-bottom:2px;">
+          <div style="font-size:10px;color:#aaa;text-transform:uppercase;margin-bottom:4px;">Est. ST Tax</div>
+          <div id="tax-est-st" style="font-size:18px;font-weight:700;color:#c0392b;">—</div>
+        </div>
+        <div style="padding-bottom:2px;">
+          <div style="font-size:10px;color:#aaa;text-transform:uppercase;margin-bottom:4px;">Est. LT Tax</div>
+          <div id="tax-est-lt" style="font-size:18px;font-weight:700;color:#27ae60;">—</div>
+        </div>
+        <div style="padding-bottom:2px;border-left:2px solid #dde;padding-left:18px;">
+          <div style="font-size:10px;color:#aaa;text-transform:uppercase;margin-bottom:4px;">Total Est. Tax</div>
+          <div id="tax-est-total" style="font-size:22px;font-weight:700;color:#1a2340;">—</div>
+        </div>
+      </div>
+      <div style="font-size:10px;color:#bbb;margin-top:8px;">Federal only · does not include state taxes · consult a tax advisor</div>
+    </div>
+
+    <!-- Per-transaction table -->
+    <div id="gains-table-wrap">
+      <div style="font-size:13px;color:#aaa;">No sales recorded yet. Use the Lots modal on any holding to record a sale.</div>
+    </div>
+  </div>
+
   <!-- Covered Call Analyzer -->
   <div class="card" id="cc-card">
     <h2>Covered Call Analyzer</h2>
@@ -1540,6 +1628,7 @@ async function confirmSell() {{
     renderLotsModal();
     renderSellHistory(ticker);
     renderAllStltBadges();
+    renderRealizedGains();
   }} catch(e) {{ status.textContent = "Error: " + e.message; }}
 }}
 
@@ -1596,13 +1685,147 @@ async function undoSell(id) {{
       _allSells[ticker] = _allSells[ticker].filter(s => s.id !== id);
     }}
     await loadAllLots();
+    await loadAllSells();
     renderLotsModal();
     renderSellHistory(ticker);
     renderAllStltBadges();
+    renderRealizedGains();
   }} catch(e) {{ alert("Error: " + e.message); }}
 }}
 
 window.addEventListener("load", loadAllSells);
+
+// ── Realized Gains & Tax Estimate ────────────────────────────────────────
+function _fmtGain(v) {{
+  const abs = Math.abs(v).toLocaleString("en-US", {{minimumFractionDigits:2, maximumFractionDigits:2}});
+  return (v >= 0 ? "+" : "−") + "$" + abs;
+}}
+function _gainColor(v) {{ return v >= 0 ? "#27ae60" : "#e74c3c"; }}
+
+function renderRealizedGains() {{
+  const yearFilter = document.getElementById("gains-year-filter")?.value || "cur";
+  const curYear    = new Date().getFullYear().toString();
+  const stRate     = parseFloat(document.getElementById("tax-st-rate")?.value  || 35) / 100;
+  const ltRate     = parseFloat(document.getElementById("tax-lt-rate")?.value  || 20) / 100;
+  const niit       = document.getElementById("tax-niit")?.checked ? 0.038 : 0;
+
+  // Save rates to localStorage
+  try {{
+    localStorage.setItem("tax_st_rate", document.getElementById("tax-st-rate").value);
+    localStorage.setItem("tax_lt_rate", document.getElementById("tax-lt-rate").value);
+    localStorage.setItem("tax_niit",    document.getElementById("tax-niit").checked ? "1" : "0");
+  }} catch(e) {{}}
+
+  // Flatten all sells and filter by year
+  let sells = Object.values(_allSells).flat();
+  if (yearFilter === "cur") {{
+    sells = sells.filter(s => s.sell_date?.startsWith(curYear));
+  }}
+  sells = sells.slice().sort((a,b) => b.sell_date.localeCompare(a.sell_date));
+
+  const totalGain = sells.reduce((s, x) => s + (x.realized_gain || 0), 0);
+  const stGain    = sells.reduce((s, x) => s + (x.st_gain || 0), 0);
+  const ltGain    = sells.reduce((s, x) => s + (x.lt_gain || 0), 0);
+
+  const stTax  = Math.max(0, stGain) * (stRate + niit);
+  const ltTax  = Math.max(0, ltGain) * (ltRate + niit);
+  const totTax = stTax + ltTax;
+
+  // KPI updates
+  const totalEl = document.getElementById("gains-total");
+  if (totalEl) {{
+    totalEl.textContent  = sells.length ? _fmtGain(totalGain) : "—";
+    totalEl.style.color  = sells.length ? _gainColor(totalGain) : "#1a2340";
+  }}
+  const stEl = document.getElementById("gains-st");
+  if (stEl) {{
+    stEl.textContent = sells.length ? _fmtGain(stGain) : "—";
+    stEl.style.color = sells.length ? (stGain >= 0 ? "#c0392b" : "#27ae60") : "#e74c3c";
+  }}
+  const ltEl = document.getElementById("gains-lt");
+  if (ltEl) {{
+    ltEl.textContent = sells.length ? _fmtGain(ltGain) : "—";
+    ltEl.style.color = sells.length ? (ltGain >= 0 ? "#27ae60" : "#e74c3c") : "#27ae60";
+  }}
+  const countEl = document.getElementById("gains-txn-count");
+  if (countEl) countEl.textContent = sells.length ? `${{sells.length}} transaction${{sells.length!==1?"s":""}}` : "";
+
+  const fmt2 = v => "$" + v.toLocaleString("en-US",{{minimumFractionDigits:2,maximumFractionDigits:2}});
+  const estStEl = document.getElementById("tax-est-st");
+  if (estStEl) {{ estStEl.textContent = sells.length ? fmt2(stTax)  : "—"; estStEl.style.color = stTax  > 0 ? "#c0392b" : "#888"; }}
+  const estLtEl = document.getElementById("tax-est-lt");
+  if (estLtEl) {{ estLtEl.textContent = sells.length ? fmt2(ltTax)  : "—"; estLtEl.style.color = ltTax  > 0 ? "#c0392b" : "#888"; }}
+  const estTotEl = document.getElementById("tax-est-total");
+  if (estTotEl) {{ estTotEl.textContent = sells.length ? fmt2(totTax) : "—"; estTotEl.style.color = totTax > 0 ? "#c0392b" : "#888"; }}
+
+  // Per-transaction table
+  const wrap = document.getElementById("gains-table-wrap");
+  if (!wrap) return;
+  if (!sells.length) {{
+    wrap.innerHTML = `<div style="font-size:13px;color:#aaa;">No sales recorded${{yearFilter==="cur"?" for "+curYear:" yet"}}. Use the <b>Lots</b> modal on any holding to record a sale.</div>`;
+    return;
+  }}
+
+  const rows = sells.map(s => {{
+    const gc  = _gainColor(s.realized_gain || 0);
+    const stc = (s.st_gain || 0) !== 0 ? _gainColor(s.st_gain) : "#aaa";
+    const ltc = (s.lt_gain || 0) !== 0 ? _gainColor(s.lt_gain) : "#aaa";
+    const stTaxRow = Math.max(0, s.st_gain || 0) * (stRate + niit);
+    const ltTaxRow = Math.max(0, s.lt_gain || 0) * (ltRate + niit);
+    const totTaxRow = stTaxRow + ltTaxRow;
+    const detail = (s.fifo_detail || []).map(a => {{
+      const badge = a.term === "LT"
+        ? `<span style="background:#f0fff4;color:#27ae60;border:1px solid #ade;border-radius:3px;padding:0 4px;font-size:9px;font-weight:700;">LT</span>`
+        : `<span style="background:#fff0f0;color:#e74c3c;border:1px solid #fcc;border-radius:3px;padding:0 4px;font-size:9px;font-weight:700;">ST</span>`;
+      return `${{a.shares}}sh@$${{a.cost_per_share?.toFixed(2)}} ${{badge}}`;
+    }}).join(" · ");
+    return `<tr style="border-bottom:1px solid #f5f5f5;">
+      <td style="padding:7px 8px;font-weight:600;">${{s.ticker}}</td>
+      <td style="padding:7px 8px;color:#555;">${{s.sell_date}}</td>
+      <td style="padding:7px 8px;">${{s.shares_sold?.toLocaleString("en-US",{{maximumFractionDigits:4}})}}</td>
+      <td style="padding:7px 8px;">$${{s.sell_price?.toFixed(2)}}</td>
+      <td style="padding:7px 8px;font-weight:700;color:${{gc}};">${{_fmtGain(s.realized_gain||0)}}</td>
+      <td style="padding:7px 8px;color:${{stc}};">${{(s.st_gain||0)!==0?_fmtGain(s.st_gain):"—"}}</td>
+      <td style="padding:7px 8px;color:${{ltc}};">${{(s.lt_gain||0)!==0?_fmtGain(s.lt_gain):"—"}}</td>
+      <td style="padding:7px 8px;color:#c0392b;font-weight:600;">${{totTaxRow>0?"~"+fmt2(totTaxRow):"—"}}</td>
+      <td style="padding:7px 8px;font-size:11px;color:#aaa;">${{detail}}</td>
+      <td style="padding:7px 8px;font-size:11px;color:#aaa;">${{s.notes||""}}</td>
+    </tr>`;
+  }}).join("");
+
+  wrap.innerHTML = `<div style="overflow-x:auto;margin-top:4px;">
+    <table style="width:100%;border-collapse:collapse;font-size:13px;">
+      <thead><tr style="background:#f4f6f9;text-align:left;">
+        <th style="padding:6px 8px;font-size:10px;color:#888;text-transform:uppercase;">Ticker</th>
+        <th style="padding:6px 8px;font-size:10px;color:#888;text-transform:uppercase;">Date</th>
+        <th style="padding:6px 8px;font-size:10px;color:#888;text-transform:uppercase;">Shares</th>
+        <th style="padding:6px 8px;font-size:10px;color:#888;text-transform:uppercase;">Price</th>
+        <th style="padding:6px 8px;font-size:10px;color:#888;text-transform:uppercase;">Total G/L</th>
+        <th style="padding:6px 8px;font-size:10px;color:#888;text-transform:uppercase;">ST G/L</th>
+        <th style="padding:6px 8px;font-size:10px;color:#888;text-transform:uppercase;">LT G/L</th>
+        <th style="padding:6px 8px;font-size:10px;color:#888;text-transform:uppercase;">Est. Tax</th>
+        <th style="padding:6px 8px;font-size:10px;color:#888;text-transform:uppercase;">Lot Detail</th>
+        <th style="padding:6px 8px;font-size:10px;color:#888;text-transform:uppercase;">Notes</th>
+      </tr></thead>
+      <tbody>${{rows}}</tbody>
+    </table></div>
+  <div style="font-size:10px;color:#bbb;margin-top:8px;">
+    Est. Tax = positive gains only · federal rate only · rates: ST ${{(stRate*100).toFixed(1)}}%${{niit?" +3.8% NIIT":""}} / LT ${{(ltRate*100).toFixed(1)}}%${{niit?" +3.8% NIIT":""}}
+  </div>`;
+}}
+
+function _initTaxRates() {{
+  try {{
+    const st = localStorage.getItem("tax_st_rate");
+    const lt = localStorage.getItem("tax_lt_rate");
+    const ni = localStorage.getItem("tax_niit");
+    if (st) document.getElementById("tax-st-rate").value = st;
+    if (lt) document.getElementById("tax-lt-rate").value = lt;
+    if (ni) document.getElementById("tax-niit").checked  = ni === "1";
+  }} catch(e) {{}}
+}}
+
+window.addEventListener("load", () => {{ _initTaxRates(); renderRealizedGains(); }});
 
 // ── Buffett Screener ──────────────────────────────────────────────────────
 async function loadBuffett() {{
