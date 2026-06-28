@@ -1,6 +1,6 @@
 # Investment Dashboard & Newsletter
 
-A personal investment tracking system that sends a daily email newsletter, maintains a local web dashboard, and provides covered call, dividend, and tax analysis. Prices are pulled from Yahoo Finance; email is sent via Gmail SMTP.
+A personal investment tracking system that sends a daily email newsletter, maintains a local web dashboard, and provides covered call, dividend, tax, and Buffett analysis tools. Prices are pulled from Yahoo Finance; email is sent via Gmail SMTP.
 
 ---
 
@@ -8,19 +8,20 @@ A personal investment tracking system that sends a daily email newsletter, maint
 
 | Feature | Description |
 |---|---|
-| **Daily Newsletter** | Fetches closing prices, computes P&L by layer and holding, emails an HTML report each morning at 8 AM |
+| **Daily Newsletter** | Fetches closing prices, computes P&L by layer and holding, emails an HTML report each morning at 8 AM ET |
 | **Local Dashboard** | Interactive web UI at `http://localhost:5001` with charts, holdings table, and live analysis tools |
+| **Add / Manage Positions** | Add new positions directly from the Holdings UI (ticker, shares, avg cost, layer); reassign any holding to a different layer with full retroactive history rewrite |
 | **Covered Call Analyzer** | Recommends option contracts based on your cost basis, flags blackout windows (earnings, ex-div) |
-| **Covered Call Tracker** | Log and track open/closed covered call positions; shows DTE, total premium collected, all-time income |
+| **Covered Call Tracker** | Log and track open/closed covered call positions; tracks net P&L per position with close types (expired / bought back / assigned); auto-expires positions past their expiry date |
 | **Dividend Tracker** | Dividend dates, tax impact by income bracket, monthly income chart, and ticker lookup tool |
 | **Earnings Calendar** | Next earnings date per holding shown in Layer Summary and Holdings table |
-| **Buffett Screener** | Nightly scan of ~2,300 NYSE tickers; surfaces stocks passing all 6 Buffett quality criteria with valuation metrics, history tracking, and email alerts for new winners |
+| **Buffett Screener** | Nightly scan of ~2,300 NYSE tickers; surfaces stocks passing all 6 Buffett quality criteria; emails only net-new winners (no repeat notifications for stocks already on the list) |
 | **Buffett Deep-Dive** | On-demand 13-point Buffett analysis for any ticker — gross margin, expense margins, EPS trend, balance sheet strength, buybacks, and more |
-| **Portfolio Reminders** | Daily 7 AM email when any holding has earnings or ex-div within 3 days |
+| **Portfolio Reminders** | Daily 7 AM ET email when any holding has earnings or ex-div within 3 days |
 | **Layer Drift Alerts** | Daily check of layer weights vs. targets in `layer_targets.json`; emails when any layer drifts ≥5pp |
 | **Tax Lot Tracker** | Lot-level cost basis per holding; modal shows per-lot ST/LT term, unrealized G/L, days to LT conversion |
-| **FIFO Sell Tracker** | Record sales with automatic FIFO lot matching; previews which lots are consumed before confirming |
-| **Realized Gains & Tax** | Dashboard card showing YTD (or all-time) realized gains split by ST/LT with estimated federal tax at editable bracket rates |
+| **FIFO Sell Tracker** | Record sales with automatic FIFO lot matching; previews which lots are consumed before confirming; undo support |
+| **Realized Gains & Tax** | Dashboard card showing YTD (or all-time) realized gains split by ST/LT — **includes covered call premium income** — with estimated federal tax at editable bracket rates |
 | **Private Data Backup** | Daily push of `investment.db`, `holdings.csv`, and `buffett.db` to a separate private GitHub repo |
 
 ---
@@ -71,6 +72,8 @@ EW,100,85.31,3
 ...
 ```
 
+You can also add positions directly from the dashboard UI — see [Holdings Management](#holdings-management) below.
+
 **Layer definitions:**
 
 | Layer | Name | Examples |
@@ -109,7 +112,7 @@ python3 serve.py
 
 Navigating to `http://localhost:5001` redirects automatically to the dashboard. Press `Ctrl+C` to stop.
 
-`serve.py` is a full local API server — it serves static files **and** handles live API endpoints, and runs the daily newsletter automatically as a background thread.
+`serve.py` is a full local API server — it serves static files **and** handles live API endpoints, and runs the daily newsletter and screener automatically as background threads.
 
 ### Auto-start on login (macOS)
 
@@ -134,9 +137,9 @@ launchctl kickstart gui/$(id -u)/com.investment.dashboard
 | `GET /api/earnings` | Next earnings dates for all holdings |
 | `GET /api/buffett-winners` | Latest Buffett screener results (includes valuation + first_seen) |
 | `GET /api/buffett-analysis?ticker=KO` | On-demand 13-point Buffett deep-dive for any ticker |
-| `GET /api/cc-positions` | All logged covered call positions |
+| `GET /api/cc-positions` | All logged covered call positions (auto-expires past-expiry open positions) |
 | `POST /api/cc-positions` | Log a new covered call position |
-| `PATCH /api/cc-positions/<id>` | Update position status / closing details |
+| `PATCH /api/cc-positions/<id>` | Update position status / closing details (computes net_premium server-side) |
 | `GET /api/lots` | All cost lots across all tickers |
 | `GET /api/lots?ticker=EW` | Lots for a specific ticker |
 | `POST /api/lots` | Add a cost lot |
@@ -145,6 +148,8 @@ launchctl kickstart gui/$(id -u)/com.investment.dashboard
 | `GET /api/sells?ticker=EW` | Sell history for a specific ticker |
 | `POST /api/sells` | Record a sale (FIFO lot allocation executed server-side) |
 | `DELETE /api/sells/<id>` | Undo a sale (lots restored from snapshot) |
+| `POST /api/holdings` | Add a new position (appends to CSV, fetches price, seeds DB) |
+| `PATCH /api/holdings/<ticker>` | Reassign a holding's layer (rewrites all history retroactively) |
 
 ---
 
@@ -195,10 +200,23 @@ Columns: **Layer | Value | Weight | Δ$ | Δ% | Next Earnings**
 Next Earnings shows the soonest reporting ticker per layer, color-coded red ≤7 days, orange ≤21 days, green further out.
 
 ### Holdings Table
-Columns: **Ticker | Shares | Avg Cost | Price | Value | Total Gain | Daily Δ | Weight | Next Earnings | Tax Lots**
+Columns: **Ticker | Shares | Avg Cost | Price | Value | Total Gain | Daily Δ | Weight | Next Earnings | Layer | Tax Lots**
 
-- Total Gain shows true return vs cost basis, with **ST** / **LT** / **⚠ MIXED** tax badge derived from your cost lots (tooltip shows ST lot count)
+- Total Gain shows true return vs cost basis, with **ST** / **LT** / **⚠ MIXED** tax badge derived from your cost lots
+- **Layer badge** (L1–L5, color-coded) — click to reassign the holding to a different layer; history is rewritten retroactively so no artificial spike appears in the weight chart
 - **Lots** button opens the lot tracker modal
+
+### Holdings Management
+
+**Add a position** — click **+ Add Position** above the holdings table. Enter:
+- Ticker, Shares, Avg Cost / Share, Layer (dropdown)
+
+The server fetches the current market price from Yahoo Finance immediately, so the position appears in the table and layer allocation after saving. If the price isn't available (off-market hours), it will populate on the next newsletter run. After adding, use the **Lots** button to record the tax lot purchase date(s) and cost basis.
+
+**Reassign a layer** — click any **L1–L5 badge** in the Layer column. The modal shows the current layer and lets you pick a new one. On confirm:
+1. `holdings.csv` is updated
+2. Every historical row in `holding_day` for that ticker is rewritten to the new layer
+3. `layer_day` is fully recomputed from `holding_day` for all dates — the Layer Weight Over Time chart shows the holding as always having been in the new layer, with no discontinuity
 
 ### Tax Lot Tracker (modal)
 
@@ -222,14 +240,33 @@ Lots are stored in `out/investment.db` (`cost_lots` table). Sells are stored in 
 
 ### Realized Gains & Tax Estimate
 
-A dedicated dashboard card (below Holdings, above Buffett Deep-Dive) showing:
+A dedicated dashboard card (below Holdings) showing the combined tax picture for stock sales **and** covered call premium income:
 
 - **Year filter**: This Year (default) or All Time
-- **Three KPI tiles**: Total Realized G/L · Short-Term G/L (ordinary income) · Long-Term G/L (cap gains rate)
+- **Three KPI tiles**:
+  - **Total Realized** — stock capital gains + CC net premium income combined
+  - **Short-Term / Ordinary** — stock ST gains + CC premium (both taxed at ordinary income rate); shows breakdown sub-line when both are present
+  - **Long-Term** — stock LT gains only (CC income never goes here)
 - **Tax estimator**: editable ST and LT rate inputs (saved in browser localStorage), optional NIIT (3.8%) checkbox, and computed Est. ST Tax / Est. LT Tax / Total Est. Tax
 - **Per-transaction table**: ticker, date, shares, price, total G/L, ST G/L, LT G/L, estimated tax per sell, lot-level detail, notes
+- **Option Premium Income section**: per-position breakdown of gross premium collected, buyback cost (if bought back early), net income, estimated tax, and close type
 
 Estimated tax applies to positive gains only (losses offset within each term bucket). Federal rates only — does not include state taxes.
+
+### Covered Call Position Tracker
+
+**Logging:** Use the **+ Log New Position** form — ticker, contracts, strike, expiry, premium/contract, open date.
+
+**Closing a position:** Click **Close ▾** on any open row. A modal appears with three close types:
+- **Expired Worthless** — option expired OTM; full premium is kept; `closed_price = 0`
+- **Bought Back** — enter the buy-back price; net income = (sold − bought) × contracts × 100
+- **Assigned** — stock called away at strike; full premium kept; optionally records the stock sale in the FIFO tracker at the strike price (the resulting stock capital gain/loss flows into ST/LT section)
+
+**Auto-expiry:** On every page load, any open position whose expiry date has passed is automatically recorded as expired (full premium kept, `closed_date` set to the actual expiry date). A toast notification appears and prompts you to verify if any were actually assigned.
+
+**Net P&L column:** Closed positions show actual net realized income, with buyback cost called out in red when applicable. The summary bar shows open gross premium and net realized income separately.
+
+**Tax integration:** CC net premium income always flows into the **Short-Term / Ordinary** KPI tile and the EST. ST Tax calculation — premium income is always taxed as ordinary income regardless of how long the position was open.
 
 ### Buffett Deep-Dive Analyzer
 
@@ -259,7 +296,7 @@ Banks and insurers are detected automatically (Gross Margin shown as N/A; other 
 
 ### Buffett Screener (nightly)
 
-The screener runs automatically at **2 AM ET** each night as a background thread inside `serve.py`. It scans the full NYSE (~2,300 tickers) applying six quality criteria (subset of the deep-dive):
+The screener runs automatically at **2 AM ET** each night as a background thread inside `serve.py`. It scans the full NYSE (~2,300 tickers) applying six quality criteria:
 
 | Metric | Threshold |
 |---|---|
@@ -270,13 +307,11 @@ The screener runs automatically at **2 AM ET** each night as a background thread
 | CapEx / Net Income | ≤ 50% |
 | Cash > Total Debt | Yes |
 
-**Smart caching:** tickers whose `mostRecentQuarter` hasn't changed are served from `out/buffett.db` — typical nightly run after the first scan is a fraction of the time.
+**Smart caching:** tickers whose `mostRecentQuarter` hasn't changed skip the full financial fetch. Valuation metrics (P/E, P/FCF, EV/EBITDA) are always refreshed from today's price data even on cache hits, so they're never stale.
 
-**Valuation metrics:** each winner shows **P/E**, **P/FCF**, and **EV/EBITDA** alongside the quality criteria.
+**No repeat emails:** The screener emails only when a ticker qualifies for the **first time ever**. Once a ticker appears in `buffett_winner_history` it is never re-notified, regardless of how many subsequent scans it passes. The email fires once per scan run (at completion), not at each intermediate flush.
 
 **Historical tracking:** `buffett_winner_history` records when each ticker first qualified; shown as "since YYYY-MM-DD" in the screener card.
-
-**New winner alerts:** any ticker qualifying for the first time triggers a Gmail notification.
 
 **Logs:** `out/screener.log`
 
@@ -293,11 +328,6 @@ Select any holding with **100+ shares** and click **Get Recommendations**.
 - Ceiling: `current_price × 1.50`
 
 **Columns:** Expiry | Strike | DTE | Bid | Ask | Mid | Prem% | Ann% | P/L if Called | Prob Called | OI
-
-### Covered Call Position Tracker
-Log new positions (ticker, contracts, strike, expiry, premium/contract, open date). Table shows all open/closed positions with DTE countdown, total premium, and summary bar (open count, open premium, all-time income).
-
-**Blackout flags:** 📵 AVOID (earnings in window) · ⚠️ CAUTION (ex-div before expiry)
 
 ### Dividend Tracker
 Auto-loads on page open. Hit **Refresh** to update; cached 1 hour per day.
