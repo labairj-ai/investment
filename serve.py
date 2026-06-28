@@ -148,6 +148,67 @@ def _init_lots_table():
 _init_lots_table()
 
 
+def _init_sells_table():
+    db = PROJECT_DIR / "out" / "investment.db"
+    if not db.exists():
+        return
+    conn = sqlite3.connect(str(db), timeout=10)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS sell_transactions (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticker        TEXT    NOT NULL,
+            shares_sold   REAL    NOT NULL,
+            sell_price    REAL    NOT NULL,
+            sell_date     TEXT    NOT NULL,
+            realized_gain REAL,
+            st_gain       REAL,
+            lt_gain       REAL,
+            fifo_detail   TEXT,
+            notes         TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+_init_sells_table()
+
+
+def _fifo_allocate(lots, shares_to_sell, sell_price, sell_date):
+    """FIFO cost basis allocation. lots sorted oldest-first by caller.
+    Returns (allocations, error_string_or_None)."""
+    from datetime import date as _date
+    total_avail = sum(l["shares"] for l in lots)
+    if shares_to_sell > total_avail + 1e-6:
+        return None, f"Only {total_avail} shares in lots; cannot sell {shares_to_sell}"
+    sell_dt   = _date.fromisoformat(sell_date)
+    remaining = shares_to_sell
+    allocs    = []
+    for lot in lots:
+        if remaining <= 1e-6:
+            break
+        purchase_dt = _date.fromisoformat(lot["purchase_date"])
+        days_held   = (sell_dt - purchase_dt).days
+        term        = "LT" if days_held >= 365 else "ST"
+        used        = min(lot["shares"], remaining)
+        cost_basis  = round(used * lot["cost_per_share"], 6)
+        proceeds    = round(used * sell_price, 6)
+        allocs.append({
+            "lot_id":        lot["id"],
+            "purchase_date": lot["purchase_date"],
+            "cost_per_share":lot["cost_per_share"],
+            "original_shares":lot["shares"],
+            "notes":         lot.get("notes") or "",
+            "shares":        round(used, 6),
+            "days_held":     days_held,
+            "term":          term,
+            "cost_basis":    cost_basis,
+            "proceeds":      proceeds,
+            "gain":          round(proceeds - cost_basis, 6),
+        })
+        remaining -= used
+    return allocs, None
+
+
 # ── Daily newsletter + drift alert scheduler ──────────────────────────────────
 def _check_layer_drift():
     """Compare current layer weights to layer_targets.json. Email if any drift ≥5pp."""
@@ -594,6 +655,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._handle_cc_positions_get()
         elif parsed.path == "/api/lots":
             self._handle_lots_get(parse_qs(parsed.query).get("ticker", [None])[0])
+        elif parsed.path == "/api/sells":
+            self._handle_sells_get(parse_qs(parsed.query).get("ticker", [None])[0])
         else:
             super().do_GET()
 
@@ -603,6 +666,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._handle_cc_add()
         elif parsed.path == "/api/lots":
             self._handle_lot_add()
+        elif parsed.path == "/api/sells":
+            self._handle_sell_add()
         else:
             self.send_response(404)
             self.end_headers()
@@ -612,6 +677,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         parts  = parsed.path.rstrip("/").split("/")
         if len(parts) == 4 and parts[1] == "api" and parts[2] == "lots" and parts[3].isdigit():
             self._handle_lot_delete(int(parts[3]))
+        elif len(parts) == 4 and parts[1] == "api" and parts[2] == "sells" and parts[3].isdigit():
+            self._handle_sell_undo(int(parts[3]))
         else:
             self.send_response(404)
             self.end_headers()
@@ -741,6 +808,122 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             db   = PROJECT_DIR / "out" / "investment.db"
             conn = sqlite3.connect(str(db), timeout=10)
             conn.execute("DELETE FROM cost_lots WHERE id = ?", (lot_id,))
+            conn.commit()
+            conn.close()
+            self._json({"ok": True})
+        except Exception as e:
+            self._json_error(500, str(e))
+
+    # ── Sell transactions ─────────────────────────────────────────────────────
+    def _handle_sells_get(self, ticker=None):
+        try:
+            import json as _json
+            db   = PROJECT_DIR / "out" / "investment.db"
+            conn = sqlite3.connect(str(db), timeout=10)
+            conn.row_factory = sqlite3.Row
+            if ticker:
+                rows = conn.execute(
+                    "SELECT * FROM sell_transactions WHERE ticker=? ORDER BY sell_date DESC, id DESC",
+                    (ticker.upper(),)
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM sell_transactions ORDER BY sell_date DESC, id DESC"
+                ).fetchall()
+            conn.close()
+            sells = []
+            for r in rows:
+                d = dict(r)
+                if d.get("fifo_detail"):
+                    d["fifo_detail"] = _json.loads(d["fifo_detail"])
+                sells.append(d)
+            self._json({"ok": True, "sells": sells})
+        except Exception as e:
+            self._json_error(500, str(e))
+
+    def _handle_sell_add(self):
+        try:
+            import json as _json
+            length = int(self.headers.get("Content-Length", 0))
+            data   = _json.loads(self.rfile.read(length))
+            ticker      = (data.get("ticker") or "").upper().strip()
+            shares_sold = float(data.get("shares_sold", 0))
+            sell_price  = float(data.get("sell_price", 0))
+            sell_date   = (data.get("sell_date") or "").strip()
+            notes       = (data.get("notes") or "").strip()
+            if not ticker or shares_sold <= 0 or sell_price <= 0 or not sell_date:
+                self._json({"ok": False, "error": "ticker, shares_sold, sell_price, and sell_date required"})
+                return
+            db   = PROJECT_DIR / "out" / "investment.db"
+            conn = sqlite3.connect(str(db), timeout=10)
+            conn.row_factory = sqlite3.Row
+            lots = [dict(r) for r in conn.execute(
+                "SELECT * FROM cost_lots WHERE ticker=? ORDER BY purchase_date ASC, id ASC",
+                (ticker,)
+            ).fetchall()]
+            allocs, error = _fifo_allocate(lots, shares_sold, sell_price, sell_date)
+            if error:
+                conn.close()
+                self._json({"ok": False, "error": error})
+                return
+            total_gain = round(sum(a["gain"] for a in allocs), 6)
+            st_gain    = round(sum(a["gain"] for a in allocs if a["term"] == "ST"), 6)
+            lt_gain    = round(sum(a["gain"] for a in allocs if a["term"] == "LT"), 6)
+            cur = conn.execute(
+                """INSERT INTO sell_transactions
+                   (ticker, shares_sold, sell_price, sell_date, realized_gain, st_gain, lt_gain, fifo_detail, notes)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                (ticker, shares_sold, sell_price, sell_date,
+                 total_gain, st_gain, lt_gain, _json.dumps(allocs), notes)
+            )
+            sell_id = cur.lastrowid
+            # Mutate lots: reduce partially consumed, delete fully consumed
+            for alloc in allocs:
+                remaining = round(alloc["original_shares"] - alloc["shares"], 6)
+                if remaining < 1e-4:
+                    conn.execute("DELETE FROM cost_lots WHERE id=?", (alloc["lot_id"],))
+                else:
+                    conn.execute("UPDATE cost_lots SET shares=? WHERE id=?",
+                                 (remaining, alloc["lot_id"]))
+            conn.commit()
+            conn.close()
+            self._json({"ok": True, "id": sell_id, "realized_gain": total_gain,
+                        "st_gain": st_gain, "lt_gain": lt_gain, "allocations": allocs})
+        except Exception as e:
+            self._json_error(500, str(e))
+
+    def _handle_sell_undo(self, sell_id: int):
+        """Undo a sell: restore lots from fifo_detail snapshot, delete the sell record."""
+        try:
+            import json as _json
+            db   = PROJECT_DIR / "out" / "investment.db"
+            conn = sqlite3.connect(str(db), timeout=10)
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT * FROM sell_transactions WHERE id=?", (sell_id,)
+            ).fetchone()
+            if not row:
+                conn.close()
+                self._json({"ok": False, "error": "Sell not found"})
+                return
+            allocs = _json.loads(row["fifo_detail"] or "[]")
+            for alloc in allocs:
+                existing = conn.execute(
+                    "SELECT id, shares FROM cost_lots WHERE id=?", (alloc["lot_id"],)
+                ).fetchone()
+                if existing:
+                    # Lot still exists (was partially consumed) — add shares back
+                    conn.execute("UPDATE cost_lots SET shares=? WHERE id=?",
+                                 (round(existing["shares"] + alloc["shares"], 6), alloc["lot_id"]))
+                else:
+                    # Lot was deleted (fully consumed) — re-create it
+                    conn.execute(
+                        """INSERT INTO cost_lots (id, ticker, shares, cost_per_share, purchase_date, notes)
+                           VALUES (?,?,?,?,?,?)""",
+                        (alloc["lot_id"], row["ticker"], alloc["original_shares"],
+                         alloc["cost_per_share"], alloc["purchase_date"], alloc.get("notes") or "")
+                    )
+            conn.execute("DELETE FROM sell_transactions WHERE id=?", (sell_id,))
             conn.commit()
             conn.close()
             self._json({"ok": True})

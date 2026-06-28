@@ -435,6 +435,38 @@ def build_dashboard(portfolio, layers, holdings):
       <button onclick="addLot()" style="padding:7px 18px;background:#1a2340;color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;">Add Lot</button>
       <span id="lot-status" style="margin-left:10px;font-size:12px;color:#7f8c8d;"></span>
     </div>
+
+    <!-- ── Record a Sale ─────────────────────────────────────────────────── -->
+    <div style="margin-top:20px;padding-top:16px;border-top:2px solid #f0f0f0;">
+      <div style="font-size:11px;font-weight:700;color:#7f8c8d;text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px;">Record a Sale (FIFO)</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:10px;">
+        <div>
+          <label style="font-size:10px;color:#aaa;text-transform:uppercase;">Date Sold</label>
+          <input id="sell-date" type="date" style="width:100%;margin-top:3px;padding:6px 8px;border:1px solid #dde;border-radius:5px;font-size:13px;">
+        </div>
+        <div>
+          <label style="font-size:10px;color:#aaa;text-transform:uppercase;">Shares Sold</label>
+          <input id="sell-shares" type="number" step="0.001" min="0.001" placeholder="50" style="width:100%;margin-top:3px;padding:6px 8px;border:1px solid #dde;border-radius:5px;font-size:13px;">
+        </div>
+        <div>
+          <label style="font-size:10px;color:#aaa;text-transform:uppercase;">Sell Price ($)</label>
+          <input id="sell-price" type="number" step="0.01" min="0.01" placeholder="95.00" style="width:100%;margin-top:3px;padding:6px 8px;border:1px solid #dde;border-radius:5px;font-size:13px;">
+        </div>
+        <div>
+          <label style="font-size:10px;color:#aaa;text-transform:uppercase;">Notes (optional)</label>
+          <input id="sell-notes" placeholder="e.g. rebalance" style="width:100%;margin-top:3px;padding:6px 8px;border:1px solid #dde;border-radius:5px;font-size:13px;">
+        </div>
+      </div>
+      <button onclick="showFifoPreview()" style="padding:7px 18px;background:#e67e22;color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;">Preview FIFO →</button>
+      <span id="sell-status" style="margin-left:10px;font-size:12px;color:#7f8c8d;"></span>
+      <div id="fifo-preview-wrap" style="margin-top:12px;"></div>
+    </div>
+
+    <!-- ── Sell History ──────────────────────────────────────────────────── -->
+    <div style="margin-top:20px;padding-top:16px;border-top:1px solid #eee;">
+      <div style="font-size:11px;font-weight:700;color:#7f8c8d;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;">Sell History</div>
+      <div id="sell-history-wrap"><span style="font-size:13px;color:#aaa;">No sales recorded.</span></div>
+    </div>
   </div>
 </div>
 
@@ -1213,7 +1245,14 @@ function openLotsModal(ticker, currentPrice) {{
   document.getElementById("lots-modal-title").textContent = ticker + " — Tax Lots";
   document.getElementById("lot-notes").value = "";
   document.getElementById("lot-status").textContent = "";
+  document.getElementById("sell-shares").value = "";
+  document.getElementById("sell-price").value  = "";
+  document.getElementById("sell-date").value   = "";
+  document.getElementById("sell-notes").value  = "";
+  document.getElementById("sell-status").textContent = "";
+  document.getElementById("fifo-preview-wrap").innerHTML = "";
   renderLotsModal();
+  renderSellHistory(ticker);
   document.getElementById("lots-modal-overlay").style.display = "flex";
 }}
 
@@ -1365,6 +1404,205 @@ async function deleteLot(id) {{
 }}
 
 window.addEventListener("load", loadAllLots);
+
+// ── FIFO Sell Tracker ────────────────────────────────────────────────────
+let _allSells = {{}};   // {{ ticker: [sell, ...] }}
+
+async function loadAllSells() {{
+  try {{
+    const res  = await fetch("/api/sells");
+    const data = await res.json();
+    if (!data.ok) return;
+    _allSells = {{}};
+    for (const s of data.sells) {{
+      if (!_allSells[s.ticker]) _allSells[s.ticker] = [];
+      _allSells[s.ticker].push(s);
+    }}
+  }} catch(e) {{}}
+}}
+
+function _fifoPreviewCalc(lots, sharesToSell, sellPrice, sellDate) {{
+  const sorted = [...lots].sort((a, b) =>
+    a.purchase_date < b.purchase_date ? -1 : a.purchase_date > b.purchase_date ? 1 : a.id - b.id
+  );
+  const sellDt    = new Date(sellDate + "T00:00:00");
+  let   remaining = sharesToSell;
+  const allocs    = [];
+  for (const lot of sorted) {{
+    if (remaining <= 0.0001) break;
+    const purchaseDt  = new Date(lot.purchase_date + "T00:00:00");
+    const daysHeld    = Math.floor((sellDt - purchaseDt) / 86400000);
+    const term        = daysHeld >= 365 ? "LT" : "ST";
+    const sharesUsed  = Math.min(lot.shares, remaining);
+    const costBasis   = sharesUsed * lot.cost_per_share;
+    const proceeds    = sharesUsed * sellPrice;
+    allocs.push({{ lot_id: lot.id, purchase_date: lot.purchase_date,
+      cost_per_share: lot.cost_per_share, shares: sharesUsed, days_held: daysHeld,
+      term, cost_basis: costBasis, proceeds, gain: proceeds - costBasis }});
+    remaining -= sharesUsed;
+  }}
+  if (remaining > 0.0001) return {{ error: `Only ${{sharesToSell - remaining}} shares in lots — cannot sell ${{sharesToSell}}` }};
+  return {{ allocs }};
+}}
+
+function showFifoPreview() {{
+  const ticker    = _lotsModalTicker;
+  const lots      = _allLots[ticker] || [];
+  const wrap      = document.getElementById("fifo-preview-wrap");
+  const status    = document.getElementById("sell-status");
+  const shares    = parseFloat(document.getElementById("sell-shares").value);
+  const price     = parseFloat(document.getElementById("sell-price").value);
+  const date      = document.getElementById("sell-date").value;
+
+  status.textContent = "";
+  if (!shares || !price || !date) {{ status.textContent = "⚠ Date, shares, and price are required."; return; }}
+
+  const result = _fifoPreviewCalc(lots, shares, price, date);
+  if (result.error) {{ wrap.innerHTML = `<p style="color:#e74c3c;font-size:13px;">${{result.error}}</p>`; return; }}
+
+  const {{allocs}} = result;
+  const totalGain = allocs.reduce((s, a) => s + a.gain, 0);
+  const stGain    = allocs.filter(a => a.term === "ST").reduce((s, a) => s + a.gain, 0);
+  const ltGain    = allocs.filter(a => a.term === "LT").reduce((s, a) => s + a.gain, 0);
+  const gainColor = totalGain >= 0 ? "#27ae60" : "#e74c3c";
+
+  const rows = allocs.map(a => {{
+    const gc = a.gain >= 0 ? "#27ae60" : "#e74c3c";
+    const badge = a.term === "LT"
+      ? `<span style="background:#f0fff4;color:#27ae60;border:1px solid #ade;border-radius:3px;padding:1px 5px;font-size:10px;font-weight:700;">LT</span>`
+      : `<span style="background:#fff0f0;color:#e74c3c;border:1px solid #fcc;border-radius:3px;padding:1px 5px;font-size:10px;font-weight:700;">ST</span>`;
+    return `<tr style="border-bottom:1px solid #f5f5f5;">
+      <td style="padding:5px 8px;">${{a.purchase_date}}</td>
+      <td style="padding:5px 8px;">${{a.shares.toLocaleString("en-US",{{minimumFractionDigits:0,maximumFractionDigits:4}})}}</td>
+      <td style="padding:5px 8px;">$${{a.cost_per_share.toFixed(2)}}</td>
+      <td style="padding:5px 8px;">$${{a.cost_basis.toLocaleString("en-US",{{minimumFractionDigits:2,maximumFractionDigits:2}})}}</td>
+      <td style="padding:5px 8px;">$${{a.proceeds.toLocaleString("en-US",{{minimumFractionDigits:2,maximumFractionDigits:2}})}}</td>
+      <td style="padding:5px 8px;font-weight:600;color:${{gc}};">${{a.gain>=0?"+":""}}$${{Math.abs(a.gain).toLocaleString("en-US",{{minimumFractionDigits:2,maximumFractionDigits:2}})}}</td>
+      <td style="padding:5px 8px;">${{badge}} ${{a.days_held}}d</td>
+    </tr>`;
+  }}).join("");
+
+  wrap.innerHTML = `
+    <div style="background:#fffbf0;border:1px solid #f0d080;border-radius:8px;padding:14px;">
+      <div style="font-size:11px;font-weight:700;color:#7f8c8d;text-transform:uppercase;margin-bottom:8px;">FIFO Lot Allocation Preview</div>
+      <div style="overflow-x:auto;">
+      <table style="width:100%;border-collapse:collapse;font-size:12px;">
+        <thead><tr style="background:#f9f3e0;">
+          <th style="padding:5px 8px;text-align:left;color:#888;font-size:10px;text-transform:uppercase;">Lot Date</th>
+          <th style="padding:5px 8px;text-align:left;color:#888;font-size:10px;text-transform:uppercase;">Shares</th>
+          <th style="padding:5px 8px;text-align:left;color:#888;font-size:10px;text-transform:uppercase;">Cost/Share</th>
+          <th style="padding:5px 8px;text-align:left;color:#888;font-size:10px;text-transform:uppercase;">Cost Basis</th>
+          <th style="padding:5px 8px;text-align:left;color:#888;font-size:10px;text-transform:uppercase;">Proceeds</th>
+          <th style="padding:5px 8px;text-align:left;color:#888;font-size:10px;text-transform:uppercase;">Gain / Loss</th>
+          <th style="padding:5px 8px;text-align:left;color:#888;font-size:10px;text-transform:uppercase;">Term</th>
+        </tr></thead>
+        <tbody>${{rows}}</tbody>
+      </table></div>
+      <div style="margin-top:10px;padding-top:8px;border-top:1px solid #e8d88a;display:flex;gap:20px;flex-wrap:wrap;font-size:12px;">
+        <span>Proceeds: <b>$${{(shares*price).toLocaleString("en-US",{{minimumFractionDigits:2,maximumFractionDigits:2}})}}</b></span>
+        <span>ST Gain: <b style="color:${{stGain>=0?"#27ae60":"#e74c3c"}}">${{stGain>=0?"+":""}}$${{Math.abs(stGain).toFixed(2)}}</b></span>
+        <span>LT Gain: <b style="color:${{ltGain>=0?"#27ae60":"#e74c3c"}}">${{ltGain>=0?"+":""}}$${{Math.abs(ltGain).toFixed(2)}}</b></span>
+        <span>Total G/L: <b style="color:${{gainColor}}">${{totalGain>=0?"+":""}}$${{Math.abs(totalGain).toFixed(2)}}</b></span>
+      </div>
+      <button onclick="confirmSell()" style="margin-top:12px;padding:7px 20px;background:#c0392b;color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;">Confirm Sale</button>
+      <span style="margin-left:8px;font-size:11px;color:#aaa;">This will reduce/remove the oldest lots and record the sale.</span>
+    </div>`;
+}}
+
+async function confirmSell() {{
+  const ticker = _lotsModalTicker;
+  const status = document.getElementById("sell-status");
+  const body   = {{
+    ticker,
+    shares_sold: parseFloat(document.getElementById("sell-shares").value),
+    sell_price:  parseFloat(document.getElementById("sell-price").value),
+    sell_date:   document.getElementById("sell-date").value,
+    notes:       document.getElementById("sell-notes").value,
+  }};
+  status.textContent = "Recording…";
+  try {{
+    const res  = await fetch("/api/sells", {{
+      method: "POST", headers: {{"Content-Type":"application/json"}},
+      body: JSON.stringify(body),
+    }});
+    const data = await res.json();
+    if (!data.ok) {{ status.textContent = "Error: " + data.error; return; }}
+    status.textContent = "✓ Sale recorded";
+    document.getElementById("sell-shares").value = "";
+    document.getElementById("sell-price").value  = "";
+    document.getElementById("sell-date").value   = "";
+    document.getElementById("sell-notes").value  = "";
+    document.getElementById("fifo-preview-wrap").innerHTML = "";
+    setTimeout(() => {{ status.textContent = ""; }}, 2000);
+    // Refresh lot cache from server (lots may have been mutated)
+    await loadAllLots();
+    await loadAllSells();
+    renderLotsModal();
+    renderSellHistory(ticker);
+    renderAllStltBadges();
+  }} catch(e) {{ status.textContent = "Error: " + e.message; }}
+}}
+
+function renderSellHistory(ticker) {{
+  const wrap  = document.getElementById("sell-history-wrap");
+  const sells = (_allSells[ticker] || []).slice().sort((a,b) => b.sell_date.localeCompare(a.sell_date));
+  if (!sells.length) {{
+    wrap.innerHTML = `<span style="font-size:13px;color:#aaa;">No sales recorded.</span>`;
+    return;
+  }}
+  const rows = sells.map(s => {{
+    const gc = s.realized_gain >= 0 ? "#27ae60" : "#e74c3c";
+    const detail = (s.fifo_detail || []).map(a => {{
+      const badge = a.term === "LT"
+        ? `<span style="background:#f0fff4;color:#27ae60;border:1px solid #ade;border-radius:3px;padding:0 4px;font-size:9px;font-weight:700;">LT</span>`
+        : `<span style="background:#fff0f0;color:#e74c3c;border:1px solid #fcc;border-radius:3px;padding:0 4px;font-size:9px;font-weight:700;">ST</span>`;
+      const gc2 = a.gain >= 0 ? "#27ae60" : "#e74c3c";
+      return `${{a.shares}} sh @ $${{a.cost_per_share?.toFixed(2)}} (${{a.purchase_date}}) ${{badge}} <span style="color:${{gc2}}">${{a.gain>=0?"+":""}}$${{Math.abs(a.gain||0).toFixed(2)}}</span>`;
+    }}).join("<br>");
+    return `<tr style="border-bottom:1px solid #f5f5f5;vertical-align:top;">
+      <td style="padding:6px 8px;white-space:nowrap;">${{s.sell_date}}</td>
+      <td style="padding:6px 8px;">${{s.shares_sold}}</td>
+      <td style="padding:6px 8px;">$${{s.sell_price?.toFixed(2)}}</td>
+      <td style="padding:6px 8px;font-weight:600;color:${{gc}};">${{s.realized_gain>=0?"+":""}}$${{Math.abs(s.realized_gain||0).toFixed(2)}}</td>
+      <td style="padding:6px 8px;color:#e74c3c;">${{s.st_gain!==0?(s.st_gain>=0?"+":"")+"$"+Math.abs(s.st_gain||0).toFixed(2):"—"}}</td>
+      <td style="padding:6px 8px;color:#27ae60;">${{s.lt_gain!==0?(s.lt_gain>=0?"+":"")+"$"+Math.abs(s.lt_gain||0).toFixed(2):"—"}}</td>
+      <td style="padding:6px 8px;font-size:11px;color:#888;line-height:1.6;">${{detail}}</td>
+      <td style="padding:6px 8px;"><button onclick="undoSell(${{s.id}})" style="font-size:10px;padding:2px 8px;background:#fff0f0;border:1px solid #fcc;border-radius:4px;cursor:pointer;color:#e74c3c;">Undo</button></td>
+    </tr>`;
+  }}).join("");
+  wrap.innerHTML = `<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:12px;">
+    <thead><tr style="background:#f4f6f9;">
+      <th style="padding:5px 8px;text-align:left;font-size:10px;color:#888;text-transform:uppercase;">Date</th>
+      <th style="padding:5px 8px;text-align:left;font-size:10px;color:#888;text-transform:uppercase;">Shares</th>
+      <th style="padding:5px 8px;text-align:left;font-size:10px;color:#888;text-transform:uppercase;">Price</th>
+      <th style="padding:5px 8px;text-align:left;font-size:10px;color:#888;text-transform:uppercase;">Total G/L</th>
+      <th style="padding:5px 8px;text-align:left;font-size:10px;color:#888;text-transform:uppercase;">ST</th>
+      <th style="padding:5px 8px;text-align:left;font-size:10px;color:#888;text-transform:uppercase;">LT</th>
+      <th style="padding:5px 8px;text-align:left;font-size:10px;color:#888;text-transform:uppercase;">Lot Detail</th>
+      <th></th>
+    </tr></thead>
+    <tbody>${{rows}}</tbody>
+  </table></div>`;
+}}
+
+async function undoSell(id) {{
+  if (!confirm("Undo this sale? Lots will be restored.")) return;
+  try {{
+    const res  = await fetch(`/api/sells/${{id}}`, {{ method: "DELETE" }});
+    const data = await res.json();
+    if (!data.ok) {{ alert("Error: " + data.error); return; }}
+    const ticker = _lotsModalTicker;
+    if (ticker && _allSells[ticker]) {{
+      _allSells[ticker] = _allSells[ticker].filter(s => s.id !== id);
+    }}
+    await loadAllLots();
+    renderLotsModal();
+    renderSellHistory(ticker);
+    renderAllStltBadges();
+  }} catch(e) {{ alert("Error: " + e.message); }}
+}}
+
+window.addEventListener("load", loadAllSells);
 
 // ── Buffett Screener ──────────────────────────────────────────────────────
 async function loadBuffett() {{
