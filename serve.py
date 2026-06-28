@@ -683,6 +683,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._handle_sell_add()
         elif parsed.path == "/api/holdings":
             self._handle_holding_add()
+        elif parsed.path == "/api/buffett-scan":
+            self._handle_buffett_scan_trigger()
         else:
             self.send_response(404)
             self.end_headers()
@@ -1781,9 +1783,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def _handle_buffett_winners(self):
         try:
+            from datetime import datetime as _dt
             db = PROJECT_DIR / "out" / "buffett.db"
             if not db.exists():
-                return self._json({"ok": True, "winners": [], "meta": {}})
+                return self._json({"ok": True, "winners": [], "meta": {},
+                                   "cache_count": 0, "scan_running": False,
+                                   "eta_seconds": None, "scan_duration": None,
+                                   "log_tail": []})
 
             conn = sqlite3.connect(str(db), timeout=10)
             conn.row_factory = sqlite3.Row
@@ -1799,7 +1805,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 "SELECT COUNT(*) FROM buffett_cache"
             ).fetchone()[0]
 
-            # First-seen date per winner from history table
             try:
                 first_seen = {
                     row[0]: row[1]
@@ -1826,23 +1831,71 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     pass
 
             eta_seconds = None
-            if scan_running and cache_count > 0 and meta.get("scan_started") and meta.get("total_tickers"):
-                from datetime import datetime as _dt
+            tickers_scanned = int(meta.get("tickers_scanned") or 0)
+            total_tickers   = int(meta.get("total_tickers") or 2348)
+            if scan_running and tickers_scanned > 0 and meta.get("scan_started"):
                 try:
                     started = _dt.strptime(meta["scan_started"], "%Y-%m-%d %H:%M:%S")
                     elapsed = (_dt.now() - started).total_seconds()
-                    total   = int(meta["total_tickers"])
-                    rate    = cache_count / elapsed
+                    rate    = tickers_scanned / elapsed
                     if rate > 0:
-                        eta_seconds = int((total - cache_count) / rate)
+                        eta_seconds = int((total_tickers - tickers_scanned) / rate)
                 except Exception:
                     pass
 
+            # Duration of last completed scan
+            scan_duration = None
+            if meta.get("scan_started") and meta.get("last_scan"):
+                try:
+                    s = _dt.strptime(meta["scan_started"], "%Y-%m-%d %H:%M:%S")
+                    e = _dt.strptime(meta["last_scan"],    "%Y-%m-%d %H:%M:%S")
+                    d = int((e - s).total_seconds())
+                    if 0 < d < 7200:
+                        scan_duration = d
+                except Exception:
+                    pass
+
+            # Last 20 lines of screener log for the UI error/status panel
+            log_tail = []
+            try:
+                log_path = PROJECT_DIR / "out" / "screener.log"
+                if log_path.exists():
+                    log_tail = log_path.read_text(errors="replace").splitlines()[-20:]
+            except Exception:
+                pass
+
             self._json({"ok": True, "winners": winners, "meta": meta,
                         "cache_count": cache_count, "scan_running": scan_running,
-                        "eta_seconds": eta_seconds})
+                        "eta_seconds": eta_seconds, "scan_duration": scan_duration,
+                        "log_tail": log_tail})
         except Exception as e:
             self._json_error(500, str(e))
+
+    def _handle_buffett_scan_trigger(self):
+        """POST /api/buffett-scan — start a manual scan if one isn't already running."""
+        import subprocess, threading
+        lock = PROJECT_DIR / "out" / "buffett_screener.lock"
+        if lock.exists():
+            try:
+                pid = int(lock.read_text().strip())
+                os.kill(pid, 0)
+                return self._json({"ok": False, "reason": "already_running", "pid": pid})
+            except (ProcessLookupError, ValueError, OSError):
+                lock.unlink(missing_ok=True)
+
+        VENV_PY = PROJECT_DIR / "venv" / "bin" / "python3"
+        LOG     = PROJECT_DIR / "out" / "screener.log"
+
+        def _bg():
+            with open(LOG, "a") as lf:
+                lf.write(f"\n=== MANUAL SCAN {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===\n")
+                subprocess.run(
+                    [str(VENV_PY), str(PROJECT_DIR / "buffett_screener.py")],
+                    cwd=str(PROJECT_DIR), stdout=lf, stderr=lf
+                )
+
+        threading.Thread(target=_bg, daemon=True).start()
+        self._json({"ok": True, "started": True})
 
     def _json(self, data):
         body = json.dumps(data).encode()

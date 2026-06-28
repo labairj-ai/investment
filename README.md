@@ -135,7 +135,8 @@ launchctl kickstart gui/$(id -u)/com.investment.dashboard
 | `GET /api/dividend-lookup?ticker=VYM&shares=100` | Dividend info for any ticker |
 | `GET /api/dividend-timeline` | Monthly income (Jan–Dec, current year) |
 | `GET /api/earnings` | Next earnings dates for all holdings |
-| `GET /api/buffett-winners` | Latest Buffett screener results (includes valuation + first_seen) |
+| `GET /api/buffett-winners` | Latest Buffett screener results (includes valuation, first_seen, scan_duration, log_tail) |
+| `POST /api/buffett-scan` | Start a manual screener run (no-op if already running; returns `{ok, reason}`) |
 | `GET /api/buffett-analysis?ticker=KO` | On-demand 13-point Buffett deep-dive for any ticker |
 | `GET /api/cc-positions` | All logged covered call positions (auto-expires past-expiry open positions) |
 | `POST /api/cc-positions` | Log a new covered call position |
@@ -312,6 +313,15 @@ The screener runs automatically at **2 AM ET** each night as a background thread
 **No repeat emails:** The screener emails only when a ticker qualifies for the **first time ever**. Once a ticker appears in `buffett_winner_history` it is never re-notified, regardless of how many subsequent scans it passes. The email fires once per scan run (at completion), not at each intermediate flush.
 
 **Historical tracking:** `buffett_winner_history` records when each ticker first qualified; shown as "since YYYY-MM-DD" in the screener card.
+
+**Dashboard UI:** The screener card shows full live status:
+- **Status badge** — ✓ Complete / ⏳ Scanning / ⚠ Incomplete / Never run
+- **Progress bar + ETA** — visible while a scan is running; auto-refreshes every 20 seconds
+- **▶ Run Scan button** — triggers a manual scan immediately via `POST /api/buffett-scan`; button is disabled while a scan is already running
+- **Criteria chips** — the 6 quality filters displayed inline so it's always clear what the screener tests
+- **Partial results** — winners found so far appear in the table even before the scan finishes, with a "partial results (X% scanned)" note
+- **Scan duration** — how long the last completed scan took
+- **Log tail panel** — collapsible view of the last 20 lines of `screener.log`, color-coded (red = errors, orange = warnings, blue = section headers)
 
 **Logs:** `out/screener.log`
 

@@ -412,6 +412,7 @@ def build_dashboard(portfolio, layers, holdings):
       .kpi-row {{ grid-template-columns: 1fr 1fr 1fr; }}
       .two-col, .three-col {{ grid-template-columns: 1fr; }}
     }}
+    @keyframes spin {{ from {{ transform: rotate(0deg); }} to {{ transform: rotate(360deg); }} }}
   </style>
 </head>
 <body>
@@ -968,12 +969,60 @@ def build_dashboard(portfolio, layers, holdings):
 
   <!-- Buffett Screener -->
   <div class="card" id="buffett-card">
-    <h2 style="display:flex;align-items:center;justify-content:space-between;">
+    <h2 style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
       Buffett Screener — NYSE Winners
-      <button onclick="loadBuffett()" style="font-size:11px;padding:4px 12px;background:#f4f6f9;border:1px solid #dde;border-radius:5px;cursor:pointer;color:#555;font-weight:500;">↻ Refresh</button>
+      <span style="display:flex;gap:6px;align-items:center;">
+        <button id="buffett-run-btn" onclick="triggerBuffettScan()"
+          style="font-size:11px;padding:4px 12px;background:#1a2340;color:#fff;border:none;border-radius:5px;cursor:pointer;font-weight:500;">
+          ▶ Run Scan
+        </button>
+        <button onclick="loadBuffett()"
+          style="font-size:11px;padding:4px 10px;background:#f4f6f9;border:1px solid #dde;border-radius:5px;cursor:pointer;color:#555;">
+          ↻
+        </button>
+      </span>
     </h2>
-    <div id="buffett-meta" style="font-size:12px;color:#7f8c8d;margin-bottom:10px;">Loading…</div>
+
+    <!-- Status banner -->
+    <div id="buffett-status-bar" style="margin-bottom:12px;"></div>
+
+    <!-- Progress bar (hidden when idle) -->
+    <div id="buffett-progress-wrap" style="display:none;margin-bottom:12px;">
+      <div style="display:flex;justify-content:space-between;font-size:11px;color:#7f8c8d;margin-bottom:4px;">
+        <span id="buffett-progress-label">Scanning…</span>
+        <span id="buffett-progress-pct"></span>
+      </div>
+      <div style="background:#eef0f4;border-radius:4px;height:8px;overflow:hidden;">
+        <div id="buffett-progress-bar"
+          style="height:100%;background:linear-gradient(90deg,#2980b9,#27ae60);border-radius:4px;transition:width .4s ease;width:0%;"></div>
+      </div>
+      <div id="buffett-eta" style="font-size:11px;color:#7f8c8d;margin-top:4px;"></div>
+    </div>
+
+    <!-- Criteria chips -->
+    <div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:14px;">
+      <span style="font-size:10px;padding:2px 7px;background:#e8f8f0;color:#27ae60;border-radius:10px;border:1px solid #b2dfcc;">Gross ≥40%</span>
+      <span style="font-size:10px;padding:2px 7px;background:#f4f6f9;color:#555;border-radius:10px;border:1px solid #dde;">SG&amp;A ≤30%</span>
+      <span style="font-size:10px;padding:2px 7px;background:#e8f8f0;color:#27ae60;border-radius:10px;border:1px solid #b2dfcc;">Net Income ≥20%</span>
+      <span style="font-size:10px;padding:2px 7px;background:#f4f6f9;color:#555;border-radius:10px;border:1px solid #dde;">Interest ≤15%</span>
+      <span style="font-size:10px;padding:2px 7px;background:#f4f6f9;color:#555;border-radius:10px;border:1px solid #dde;">CapEx ≤50%</span>
+      <span style="font-size:10px;padding:2px 7px;background:#e8f8f0;color:#27ae60;border-radius:10px;border:1px solid #b2dfcc;">Cash &gt; Debt</span>
+      <span style="font-size:10px;padding:2px 7px;background:#ebf5fb;color:#2980b9;border-radius:10px;border:1px solid #aed6f1;">+ P/E · P/FCF · EV/EBITDA</span>
+    </div>
+
+    <!-- Winners table -->
     <div id="buffett-results"></div>
+
+    <!-- Log panel (collapsible) -->
+    <div id="buffett-log-wrap" style="display:none;margin-top:12px;">
+      <div onclick="document.getElementById('buffett-log-body').style.display = document.getElementById('buffett-log-body').style.display==='none' ? 'block' : 'none'"
+        style="font-size:11px;color:#7f8c8d;cursor:pointer;user-select:none;padding:4px 0;">
+        ▾ Recent screener log
+      </div>
+      <div id="buffett-log-body" style="display:none;background:#1a1a2e;border-radius:6px;padding:10px 12px;margin-top:4px;max-height:180px;overflow-y:auto;">
+        <pre id="buffett-log-pre" style="margin:0;font-size:11px;line-height:1.6;white-space:pre-wrap;word-break:break-all;"></pre>
+      </div>
+    </div>
   </div>
   </div>
 
@@ -2169,129 +2218,235 @@ function _initTaxRates() {{
 window.addEventListener("load", () => {{ _initTaxRates(); renderRealizedGains(); }});
 
 // ── Buffett Screener ──────────────────────────────────────────────────────
+let _buffettPollTimer = null;
+
+function _fmtDuration(sec) {{
+  if (!sec || sec <= 0) return "";
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+  if (h > 0) return `${{h}}h ${{m}}m`;
+  if (m > 0) return `${{m}}m ${{s}}s`;
+  return `${{s}}s`;
+}}
+
+async function triggerBuffettScan() {{
+  const btn = document.getElementById("buffett-run-btn");
+  btn.disabled = true;
+  btn.textContent = "Starting…";
+  try {{
+    const res  = await fetch("/api/buffett-scan", {{method:"POST"}});
+    const data = await res.json();
+    if (data.ok) {{
+      btn.textContent = "▶ Running…";
+      setTimeout(loadBuffett, 1500);
+    }} else {{
+      btn.textContent = "▶ Run Scan";
+      btn.disabled = false;
+      alert(data.reason === "already_running" ? "A scan is already in progress." : "Could not start scan: " + (data.reason || "unknown error"));
+    }}
+  }} catch(e) {{
+    btn.textContent = "▶ Run Scan";
+    btn.disabled = false;
+  }}
+}}
+
 async function loadBuffett() {{
-  const metaEl   = document.getElementById("buffett-meta");
+  const statusEl  = document.getElementById("buffett-status-bar");
   const resultsEl = document.getElementById("buffett-results");
-  metaEl.textContent = "Loading…";
-  resultsEl.innerHTML = "";
+  const progWrap  = document.getElementById("buffett-progress-wrap");
+  const progBar   = document.getElementById("buffett-progress-bar");
+  const progLabel = document.getElementById("buffett-progress-label");
+  const progPct   = document.getElementById("buffett-progress-pct");
+  const etaEl     = document.getElementById("buffett-eta");
+  const logWrap   = document.getElementById("buffett-log-wrap");
+  const logPre    = document.getElementById("buffett-log-pre");
+  const runBtn    = document.getElementById("buffett-run-btn");
 
   try {{
     const res  = await fetch("/api/buffett-winners");
     const data = await res.json();
-    if (!data.ok) {{ metaEl.textContent = "Error loading screener data."; return; }}
-
-    const m       = data.meta || {{}};
-    const cached  = data.cache_count || 0;
-    const running = data.scan_running;
-    const partial = parseInt(m.winners_found || "0");
-
-    if (!m.last_scan) {{
-      if (cached === 0) {{
-        // Never started
-        metaEl.innerHTML = `<span style="color:#aaa;">No scan results yet — screener runs nightly at 2 AM ET.</span>`;
-        return;
-      }} else if (running) {{
-        // Actively scanning
-        const eta = data.eta_seconds;
-        let etaStr = "";
-        if (eta != null && eta > 0) {{
-          const h = Math.floor(eta / 3600);
-          const m = Math.floor((eta % 3600) / 60);
-          const s = eta % 60;
-          if (h > 0)      etaStr = ` &nbsp;·&nbsp; ETA ~${{h}}h ${{m}}m`;
-          else if (m > 0) etaStr = ` &nbsp;·&nbsp; ETA ~${{m}}m ${{s}}s`;
-          else            etaStr = ` &nbsp;·&nbsp; ETA ~${{s}}s`;
-        }}
-        metaEl.innerHTML = `⏳ Scan in progress — <b>${{cached.toLocaleString()}}</b> tickers scanned, <b>${{partial}}</b> winners so far${{etaStr}}. Full results appear when complete.`;
-        // Still show partial winners below if any exist
-        if (!data.winners.length) return;
-      }} else {{
-        // Crashed / killed before finishing
-        metaEl.innerHTML = `
-          <div style="background:#fff5f0;border-left:3px solid #e74c3c;padding:8px 12px;border-radius:4px;margin-bottom:8px;font-size:12px;">
-            ⚠️ <b>Incomplete scan</b> — the last run stopped at <b>${{cached.toLocaleString()}}</b> of ~2,348 tickers before finishing.
-            The ${{partial}} winner${{partial !== 1 ? "s" : ""}} below reflect only what was scanned.
-            Next automatic scan runs at 2 AM ET, or click <b>↻ Refresh</b> after restarting the screener manually.
-          </div>`;
-        if (!data.winners.length) return;
-      }}
-    }}
-
-    const inProgressNote = running
-      ? ` &nbsp;<span style="color:#e67e22;font-size:11px;">⏳ new scan in progress (${{cached.toLocaleString()}} done)</span>`
-      : "";
-    metaEl.innerHTML = `
-      Last completed scan: <b>${{m.last_scan}}</b> &nbsp;·&nbsp;
-      Tickers scanned: <b>${{m.tickers_scanned || "—"}}</b> &nbsp;·&nbsp;
-      Winners: <b style="color:#27ae60;">${{m.winners_found || data.winners.length}}</b>
-      ${{inProgressNote}}
-      <span style="color:#aaa;font-size:11px;display:block;margin-top:3px;">(Gross ≥40% · SG&A ≤30% · Net Income ≥20% · Interest ≤15% · CapEx ≤50% · Cash&gt;Debt)</span>`;
-
-    if (!data.winners.length) {{
-      resultsEl.innerHTML = `<p style="color:#888;font-size:13px;">No winners found in the last scan.</p>`;
+    if (!data.ok) {{
+      statusEl.innerHTML = `<div style="background:#fff5f0;border-left:3px solid #e74c3c;padding:8px 12px;border-radius:4px;font-size:12px;">
+        ⚠️ Error loading screener data.</div>`;
       return;
     }}
 
-    const rows = data.winners.map(w => {{
-      const yf       = `https://finance.yahoo.com/quote/${{w.ticker}}`;
-      const cnbc     = `https://www.cnbc.com/quotes/${{w.ticker.replace("-",".")}}`;
-      const mw       = `https://www.marketwatch.com/investing/stock/${{w.ticker.replace("-",".").toLowerCase()}}`;
-      const linkStyle = `font-size:10px;padding:1px 5px;border-radius:3px;border:1px solid #dde;color:#555;text-decoration:none;white-space:nowrap;`;
-      const fmtVal   = v => v != null && v !== 0 ? v.toFixed(1) + "x" : "—";
-      const firstSeen = w.first_seen
-        ? `<div style="font-size:10px;color:#aaa;margin-top:2px;">since ${{w.first_seen}}</div>` : "";
+    const m            = data.meta || {{}};
+    const running      = !!data.scan_running;
+    const cached       = data.cache_count || 0;
+    const scanned      = parseInt(m.tickers_scanned || "0");
+    const total        = parseInt(m.total_tickers || "2348");
+    const winnersFound = parseInt(m.winners_found || data.winners.length || "0");
+    const eta          = data.eta_seconds;
+    const dur          = data.scan_duration;
+    const lastScan     = m.last_scan || null;
+    const scanStarted  = m.scan_started || null;
+    const pct          = total > 0 ? Math.min(100, Math.round(scanned / total * 100)) : 0;
+    const hasResults   = data.winners.length > 0;
+
+    // ── Run button state ──
+    runBtn.disabled    = running;
+    runBtn.textContent = running ? "▶ Running…" : "▶ Run Scan";
+
+    // ── Auto-poll while running (every 20s) ──
+    clearTimeout(_buffettPollTimer);
+    if (running) {{
+      _buffettPollTimer = setTimeout(loadBuffett, 20000);
+    }}
+
+    // ── Status badge + stats row ──
+    let badge = "", statsLine = "";
+
+    if (running) {{
+      badge = `<span style="display:inline-flex;align-items:center;gap:5px;background:#fff8e1;color:#e67e22;border:1px solid #ffe082;border-radius:12px;padding:3px 10px;font-size:11px;font-weight:600;">
+        <span style="animation:spin 1s linear infinite;display:inline-block;">⏳</span> Scanning
+      </span>`;
+      statsLine = `<span style="color:#7f8c8d;">${{scanned.toLocaleString()}} / ${{total.toLocaleString()}} tickers</span>
+        &nbsp;·&nbsp; <span style="color:#27ae60;font-weight:600;">${{winnersFound}} winner${{winnersFound!==1?"s":""}} so far</span>
+        ${{scanStarted ? `&nbsp;·&nbsp; started ${{scanStarted.slice(11,16)}}` : ""}}`;
+    }} else if (lastScan) {{
+      const isComplete = scanned >= total * 0.95;
+      if (isComplete) {{
+        badge = `<span style="background:#e8f8f0;color:#27ae60;border:1px solid #b2dfcc;border-radius:12px;padding:3px 10px;font-size:11px;font-weight:600;">✓ Complete</span>`;
+      }} else {{
+        badge = `<span style="background:#fff5f0;color:#e74c3c;border:1px solid #f5c6cb;border-radius:12px;padding:3px 10px;font-size:11px;font-weight:600;">⚠ Incomplete</span>`;
+      }}
+      statsLine = `<span style="color:#7f8c8d;">Last scan: <b>${{lastScan}}</b></span>
+        &nbsp;·&nbsp; ${{scanned.toLocaleString()}} tickers
+        &nbsp;·&nbsp; <span style="color:#27ae60;font-weight:600;">${{winnersFound}} winner${{winnersFound!==1?"s":""}}</span>
+        ${{dur ? `&nbsp;·&nbsp; <span style="color:#aaa;">ran in ${{_fmtDuration(dur)}}</span>` : ""}}`;
+    }} else if (cached === 0) {{
+      badge = `<span style="background:#f4f6f9;color:#aaa;border:1px solid #dde;border-radius:12px;padding:3px 10px;font-size:11px;">Never run</span>`;
+      statsLine = `<span style="color:#aaa;">Auto-scan runs at 2 AM ET — or click Run Scan to start now.</span>`;
+    }} else {{
+      badge = `<span style="background:#fff5f0;color:#e74c3c;border:1px solid #f5c6cb;border-radius:12px;padding:3px 10px;font-size:11px;font-weight:600;">⚠ Stopped</span>`;
+      statsLine = `<span style="color:#7f8c8d;">Stopped at ${{cached.toLocaleString()}} tickers — no completed scan yet.</span>`;
+    }}
+
+    statusEl.innerHTML = `
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px;">
+        ${{badge}}
+        <span>${{statsLine}}</span>
+      </div>`;
+
+    // ── Progress bar ──
+    if (running || (lastScan && scanned < total)) {{
+      progWrap.style.display = "block";
+      progBar.style.width    = pct + "%";
+      progLabel.textContent  = running
+        ? `${{scanned.toLocaleString()}} of ${{total.toLocaleString()}} tickers scanned`
+        : `${{pct}}% of tickers covered in last scan`;
+      progPct.textContent  = pct + "%";
+      etaEl.innerHTML = running && eta != null && eta > 0
+        ? `ETA ~${{_fmtDuration(eta)}} remaining`
+        : running ? "Calculating ETA…" : "";
+    }} else {{
+      progWrap.style.display = "none";
+    }}
+
+    // ── Error / incomplete banner ──
+    if (!running && lastScan && scanned < total * 0.95) {{
+      resultsEl.innerHTML = `
+        <div style="background:#fff5f0;border-left:3px solid #e74c3c;padding:8px 12px;border-radius:4px;margin-bottom:10px;font-size:12px;">
+          ⚠️ <b>Scan stopped at ${{pct}}%</b> (${{scanned.toLocaleString()}} / ${{total.toLocaleString()}} tickers).
+          The ${{winnersFound}} result${{winnersFound!==1?"s":""}} below cover only what was scanned.
+          Click <b>▶ Run Scan</b> to restart, or wait for the 2 AM auto-run.
+        </div>`;
+    }} else {{
+      resultsEl.innerHTML = "";
+    }}
+
+    // ── Log tail ──
+    const logLines = data.log_tail || [];
+    if (logLines.length) {{
+      logWrap.style.display = "block";
+      const colored = logLines.map(l => {{
+        const isErr  = /error|traceback|exception|typeerror|valueerror|operationalerror/i.test(l);
+        const isWarn = /warning|warn|already running/i.test(l);
+        const isSep  = l.startsWith("===");
+        const color  = isErr ? "#e74c3c" : isWarn ? "#e67e22" : isSep ? "#2980b9" : "#a0a8c0";
+        return `<span style="color:${{color}}">${{l.replace(/&/g,"&amp;").replace(/</g,"&lt;")}}</span>`;
+      }}).join("\\n");
+      logPre.innerHTML = colored;
+    }} else {{
+      logWrap.style.display = "none";
+    }}
+
+    // ── Winners table ──
+    if (!hasResults) {{
+      if (!running) {{
+        resultsEl.innerHTML += `<p style="color:#888;font-size:13px;margin-top:8px;">No winners found yet.</p>`;
+      }}
+      return;
+    }}
+
+    const fmtVal = v => (v != null && isFinite(v)) ? v.toFixed(1) + "x" : "—";
+    const lnk    = `font-size:10px;padding:1px 5px;border-radius:3px;border:1px solid #dde;color:#555;text-decoration:none;white-space:nowrap;`;
+
+    const rows = data.winners.map((w, i) => {{
+      const yf   = `https://finance.yahoo.com/quote/${{w.ticker}}`;
+      const cnbc = `https://www.cnbc.com/quotes/${{w.ticker.replace("-",".")}}`;
+      const mw   = `https://www.marketwatch.com/investing/stock/${{w.ticker.replace("-",".").toLowerCase()}}`;
+      const since = w.first_seen
+        ? `<div style="font-size:10px;color:#aaa;margin-top:1px;">since ${{w.first_seen}}</div>` : "";
+      const rowBg = i % 2 === 0 ? "#fff" : "#fafbfc";
       return `
-      <tr style="border-bottom:1px solid #f2f4f7;">
-        <td style="padding:8px 10px;">
-          <div style="font-weight:700;color:#1a2340;margin-bottom:2px;">${{w.ticker}}</div>
-          ${{firstSeen}}
-          <div style="display:flex;gap:4px;margin-top:3px;">
-            <a href="${{yf}}" target="_blank" rel="noopener" style="${{linkStyle}}background:#f0f7ff;">YF</a>
-            <a href="${{cnbc}}" target="_blank" rel="noopener" style="${{linkStyle}}background:#fff8f0;">CNBC</a>
-            <a href="${{mw}}" target="_blank" rel="noopener" style="${{linkStyle}}background:#f0fff4;">MW</a>
-          </div>
-        </td>
-        <td style="padding:8px 10px;color:#555;">${{w.company || "—"}}</td>
-        <td style="padding:8px 10px;">${{w.price ? "$" + w.price.toFixed(2) : "—"}}</td>
-        <td style="padding:8px 10px;font-weight:600;color:#27ae60;">${{w.gross_margin?.toFixed(1)}}%</td>
-        <td style="padding:8px 10px;">${{w.sga_margin?.toFixed(1)}}%</td>
-        <td style="padding:8px 10px;font-weight:600;color:#27ae60;">${{w.net_income_margin?.toFixed(1)}}%</td>
-        <td style="padding:8px 10px;">${{w.interest_margin?.toFixed(1)}}%</td>
-        <td style="padding:8px 10px;">${{w.capex_margin?.toFixed(1)}}%</td>
-        <td style="padding:8px 10px;color:#27ae60;font-weight:600;">${{w.cash_gt_debt}}</td>
-        <td style="padding:8px 10px;color:#555;">${{w.pe_ratio != null ? w.pe_ratio.toFixed(1) + "x" : "—"}}</td>
-        <td style="padding:8px 10px;color:#555;">${{fmtVal(w.p_fcf)}}</td>
-        <td style="padding:8px 10px;color:#555;">${{fmtVal(w.ev_ebitda)}}</td>
-      </tr>`;
+        <tr style="background:${{rowBg}};border-bottom:1px solid #f0f2f5;">
+          <td style="padding:8px 10px;font-size:11px;color:#bbb;text-align:center;">${{i+1}}</td>
+          <td style="padding:8px 10px;">
+            <div style="font-weight:700;color:#1a2340;">${{w.ticker}}</div>
+            ${{since}}
+            <div style="display:flex;gap:3px;margin-top:3px;">
+              <a href="${{yf}}"   target="_blank" rel="noopener" style="${{lnk}}background:#f0f7ff;">YF</a>
+              <a href="${{cnbc}}" target="_blank" rel="noopener" style="${{lnk}}background:#fff8f0;">CNBC</a>
+              <a href="${{mw}}"   target="_blank" rel="noopener" style="${{lnk}}background:#f0fff4;">MW</a>
+            </div>
+          </td>
+          <td style="padding:8px 10px;color:#555;font-size:12px;">${{w.company || "—"}}</td>
+          <td style="padding:8px 10px;">${{w.price ? "$" + w.price.toFixed(2) : "—"}}</td>
+          <td style="padding:8px 10px;font-weight:700;color:#27ae60;">${{w.gross_margin?.toFixed(1)}}%</td>
+          <td style="padding:8px 10px;color:#555;">${{w.sga_margin?.toFixed(1)}}%</td>
+          <td style="padding:8px 10px;font-weight:600;color:#27ae60;">${{w.net_income_margin?.toFixed(1)}}%</td>
+          <td style="padding:8px 10px;color:#555;">${{w.interest_margin?.toFixed(1)}}%</td>
+          <td style="padding:8px 10px;color:#555;">${{w.capex_margin?.toFixed(1)}}%</td>
+          <td style="padding:8px 10px;font-weight:600;color:#27ae60;">${{w.cash_gt_debt}}</td>
+          <td style="padding:8px 10px;color:#2980b9;">${{w.pe_ratio != null ? w.pe_ratio.toFixed(1) + "x" : "—"}}</td>
+          <td style="padding:8px 10px;color:#2980b9;">${{fmtVal(w.p_fcf)}}</td>
+          <td style="padding:8px 10px;color:#2980b9;">${{fmtVal(w.ev_ebitda)}}</td>
+        </tr>`;
     }}).join("");
 
-    resultsEl.innerHTML = `
+    const partialNote = (running || (lastScan && scanned < total * 0.95))
+      ? `<span style="color:#e67e22;"> · partial results (${{pct}}% scanned)</span>` : "";
+
+    resultsEl.innerHTML += `
       <div style="overflow-x:auto;">
       <table style="width:100%;border-collapse:collapse;font-size:13px;">
-        <thead><tr style="background:#f4f6f9;">
-          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Ticker</th>
-          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Company</th>
-          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Price</th>
-          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#27ae60;text-transform:uppercase;">Gross %</th>
-          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">SG&amp;A %</th>
-          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#27ae60;text-transform:uppercase;">Net Inc %</th>
-          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Interest %</th>
-          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">CapEx %</th>
-          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#27ae60;text-transform:uppercase;">Cash&gt;Debt</th>
-          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#2980b9;text-transform:uppercase;">P/E</th>
-          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#2980b9;text-transform:uppercase;">P/FCF</th>
-          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#2980b9;text-transform:uppercase;">EV/EBITDA</th>
+        <thead><tr style="background:#f4f6f9;border-bottom:2px solid #e8eaf0;">
+          <th style="padding:7px 6px;text-align:center;font-size:10px;color:#bbb;width:28px;">#</th>
+          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;letter-spacing:.04em;">Ticker</th>
+          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;letter-spacing:.04em;">Company</th>
+          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;letter-spacing:.04em;">Price</th>
+          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#27ae60;text-transform:uppercase;letter-spacing:.04em;">Gross %</th>
+          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;letter-spacing:.04em;">SG&amp;A %</th>
+          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#27ae60;text-transform:uppercase;letter-spacing:.04em;">Net Inc %</th>
+          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;letter-spacing:.04em;">Interest %</th>
+          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;letter-spacing:.04em;">CapEx %</th>
+          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#27ae60;text-transform:uppercase;letter-spacing:.04em;">Cash&gt;Debt</th>
+          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#2980b9;text-transform:uppercase;letter-spacing:.04em;">P/E</th>
+          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#2980b9;text-transform:uppercase;letter-spacing:.04em;">P/FCF</th>
+          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#2980b9;text-transform:uppercase;letter-spacing:.04em;">EV/EBITDA</th>
         </tr></thead>
         <tbody>${{rows}}</tbody>
       </table>
       </div>
-      <p style="font-size:11px;color:#aaa;margin-top:8px;">
-        Sorted by Gross Margin. Quality criteria: Gross ≥40% · SG&amp;A ≤30% · Net Income ≥20% · Interest ≤15% · CapEx ≤50% · Cash&gt;Debt.
-        Valuation: P/E = trailing; P/FCF = market cap / free cash flow; EV/EBITDA from yfinance.
-        <span style="color:#2980b9;">Blue columns</span> = valuation (populated on next nightly scan).
+      <p style="font-size:11px;color:#aaa;margin-top:6px;">
+        Sorted by Gross Margin · Green = quality pass · Blue = valuation (trailing P/E, mktcap/FCF, EV/EBITDA)${{partialNote}}
       </p>`;
+
   }} catch(e) {{
-    metaEl.textContent = "Error: " + e.message;
+    document.getElementById("buffett-status-bar").innerHTML =
+      `<div style="background:#fff5f0;border-left:3px solid #e74c3c;padding:8px 12px;border-radius:4px;font-size:12px;">
+        ⚠️ Failed to load screener data: ${{e.message}}</div>`;
   }}
 }}
 
