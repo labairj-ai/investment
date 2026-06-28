@@ -115,9 +115,17 @@ def _init_cc_table():
             status               TEXT    NOT NULL DEFAULT 'open',
             closed_date          TEXT,
             closed_price         REAL,
+            close_type           TEXT,
+            net_premium          REAL,
             notes                TEXT
         )
     """)
+    # Migrate existing tables that predate these columns
+    for col, typedef in [("close_type", "TEXT"), ("net_premium", "REAL")]:
+        try:
+            conn.execute(f"ALTER TABLE cc_positions ADD COLUMN {col} {typedef}")
+        except sqlite3.OperationalError:
+            pass
     conn.commit()
     conn.close()
 
@@ -744,12 +752,25 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             body    = self._read_body()
             db      = PROJECT_DIR / "out" / "investment.db"
             conn    = sqlite3.connect(str(db), timeout=10)
+            conn.row_factory = sqlite3.Row
             updates = []
             values  = []
-            for field in ["status", "closed_date", "closed_price", "notes"]:
+            for field in ["status", "closed_date", "closed_price", "close_type", "notes"]:
                 if field in body:
                     updates.append(f"{field} = ?")
                     values.append(body[field])
+            # Auto-compute net_premium whenever the position is being closed
+            new_status = body.get("status", "")
+            if new_status in ("closed", "expired", "assigned"):
+                row = conn.execute(
+                    "SELECT premium_per_contract, contracts FROM cc_positions WHERE id = ?",
+                    (pos_id,)
+                ).fetchone()
+                if row:
+                    buyback = float(body.get("closed_price") or 0)
+                    net     = round((row["premium_per_contract"] - buyback) * row["contracts"] * 100, 2)
+                    updates.append("net_premium = ?")
+                    values.append(net)
             if not updates:
                 conn.close()
                 return self._json_error(400, "No updatable fields provided")

@@ -470,6 +470,55 @@ def build_dashboard(portfolio, layers, holdings):
   </div>
 </div>
 
+<!-- ── CC Close Modal ──────────────────────────────────────────────────────── -->
+<div id="cc-close-overlay" onclick="closeCCModal(event)"
+  style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1000;align-items:center;justify-content:center;">
+  <div onclick="event.stopPropagation()"
+    style="background:#fff;border-radius:12px;padding:28px 32px;max-width:480px;width:95%;box-shadow:0 8px 40px rgba(0,0,0,.2);position:relative;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;">
+      <h2 style="font-size:1.05rem;font-weight:700;color:#1a2340;margin:0;">Close Position</h2>
+      <button onclick="closeCCModal()" style="background:none;border:none;font-size:20px;cursor:pointer;color:#aaa;padding:4px 8px;">✕</button>
+    </div>
+    <div id="cc-close-summary" style="background:#f8fafc;border-radius:8px;padding:12px 16px;margin-bottom:18px;font-size:13px;"></div>
+
+    <div style="font-size:10px;font-weight:700;color:#7f8c8d;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;">How did it close?</div>
+    <div style="display:flex;gap:8px;margin-bottom:18px;">
+      <button id="cc-type-expired"  onclick="setCCCloseType('expired')"
+        style="flex:1;padding:8px;border:2px solid #dde;border-radius:7px;background:#fff;font-size:12px;font-weight:600;cursor:pointer;">
+        Expired Worthless<br><span style="font-weight:400;color:#888;">Full premium kept</span>
+      </button>
+      <button id="cc-type-buyback"  onclick="setCCCloseType('buyback')"
+        style="flex:1;padding:8px;border:2px solid #dde;border-radius:7px;background:#fff;font-size:12px;font-weight:600;cursor:pointer;">
+        Bought Back<br><span style="font-weight:400;color:#888;">Partial profit</span>
+      </button>
+      <button id="cc-type-assigned" onclick="setCCCloseType('assigned')"
+        style="flex:1;padding:8px;border:2px solid #dde;border-radius:7px;background:#fff;font-size:12px;font-weight:600;cursor:pointer;">
+        Assigned<br><span style="font-weight:400;color:#888;">Stock called away</span>
+      </button>
+    </div>
+
+    <div id="cc-buyback-row" style="display:none;margin-bottom:14px;">
+      <label style="font-size:10px;color:#aaa;text-transform:uppercase;">Buy-back Price / Contract ($)</label>
+      <input id="cc-close-price" type="number" step="0.01" min="0" placeholder="0.09"
+        style="width:100%;margin-top:4px;padding:7px 10px;border:1px solid #dde;border-radius:6px;font-size:14px;font-weight:600;">
+    </div>
+
+    <div style="margin-bottom:18px;">
+      <label style="font-size:10px;color:#aaa;text-transform:uppercase;">Close Date</label>
+      <input id="cc-close-date" type="date"
+        style="width:100%;margin-top:4px;padding:7px 10px;border:1px solid #dde;border-radius:6px;font-size:13px;">
+    </div>
+
+    <div id="cc-close-preview" style="display:none;background:#f0fff4;border:1px solid #ade;border-radius:7px;padding:10px 14px;margin-bottom:14px;font-size:13px;"></div>
+
+    <button onclick="confirmCCClose()"
+      style="width:100%;padding:10px;background:#1a2340;color:#fff;border:none;border-radius:7px;font-size:14px;font-weight:700;cursor:pointer;">
+      Confirm Close
+    </button>
+    <div id="cc-close-status" style="margin-top:8px;font-size:12px;color:#888;text-align:center;"></div>
+  </div>
+</div>
+
 <header>
   <div>
     <h1>Investment Dashboard</h1>
@@ -1855,6 +1904,75 @@ function renderRealizedGains() {{
   <div style="font-size:10px;color:#bbb;margin-top:8px;">
     Est. Tax = positive gains only · federal rate only · rates: ST ${{(stRate*100).toFixed(1)}}%${{niit?" +3.8% NIIT":""}} / LT ${{(ltRate*100).toFixed(1)}}%${{niit?" +3.8% NIIT":""}}
   </div>`;
+
+  // ── Option Premium Income (CC) ───────────────────────────────────────────
+  let ccPremiums = _allCCPositions.filter(p => p.status !== "open" && p.net_premium != null);
+  if (yearFilter === "cur") {{
+    ccPremiums = ccPremiums.filter(p => p.closed_date?.startsWith(curYear));
+  }}
+
+  const ccNetTotal = ccPremiums.reduce((s, p) => s + (p.net_premium || 0), 0);
+  const ccTax      = Math.max(0, ccNetTotal) * (stRate + niit);
+
+  if (ccPremiums.length) {{
+    const ccRows = ccPremiums
+      .slice().sort((a,b) => b.closed_date.localeCompare(a.closed_date))
+      .map(p => {{
+        const gross  = p.premium_per_contract * p.contracts * 100;
+        const buyback = p.closed_price != null ? p.closed_price * p.contracts * 100 : 0;
+        const net    = p.net_premium || 0;
+        const gc     = net >= 0 ? "#27ae60" : "#e74c3c";
+        const typeMap = {{ expired: "Expired", buyback: "Buy Back", assigned: "Assigned" }};
+        const badge = {{
+          expired:  "background:#fff8e1;color:#8a6d00;border:1px solid #ffe082",
+          buyback:  "background:#f4f6f9;color:#555;border:1px solid #dde",
+          assigned: "background:#fff0f0;color:#c8102e;border:1px solid #fcc",
+        }}[p.close_type] || "background:#f4f4f4;color:#888;border:1px solid #eee";
+        return `<tr style="border-bottom:1px solid #f5f5f5;">
+          <td style="padding:6px 8px;font-weight:600;">${{p.ticker}}</td>
+          <td style="padding:6px 8px;">$${{p.strike.toFixed(2)}} call</td>
+          <td style="padding:6px 8px;">${{p.expiry}}</td>
+          <td style="padding:6px 8px;">${{p.contracts}}×</td>
+          <td style="padding:6px 8px;">$${{p.premium_per_contract.toFixed(2)}}</td>
+          <td style="padding:6px 8px;color:#555;">$${{gross.toFixed(2)}}</td>
+          <td style="padding:6px 8px;color:#e74c3c;">${{buyback > 0 ? "−$"+buyback.toFixed(2) : "—"}}</td>
+          <td style="padding:6px 8px;font-weight:700;color:${{gc}};">${{net>=0?"+":""}}$${{Math.abs(net).toFixed(2)}}</td>
+          <td style="padding:6px 8px;color:#c0392b;">~$${{(Math.max(0,net)*(stRate+niit)).toFixed(2)}}</td>
+          <td style="padding:6px 8px;"><span style="border-radius:4px;padding:1px 7px;font-size:10px;font-weight:700;${{badge}}">${{typeMap[p.close_type]||p.status}}</span></td>
+          <td style="padding:6px 8px;color:#aaa;font-size:11px;">${{p.closed_date||""}}</td>
+        </tr>`;
+      }}).join("");
+
+    wrap.innerHTML += `
+      <div style="margin-top:20px;padding-top:16px;border-top:2px solid #f0f0f0;">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px;">
+          <div style="font-size:11px;font-weight:700;color:#7f8c8d;text-transform:uppercase;letter-spacing:.05em;">
+            Option Premium Income (Short-Term Ordinary)
+          </div>
+          <div style="display:flex;gap:16px;font-size:13px;">
+            <span>Net Income: <b style="color:#27ae60;">${{ccNetTotal>=0?"+":""}}$${{Math.abs(ccNetTotal).toFixed(2)}}</b></span>
+            <span>Est. Tax (ST ${{(stRate*100).toFixed(0)}}%${{niit?"+3.8%":""}}): <b style="color:#c0392b;">~$${{ccTax.toFixed(2)}}</b></span>
+          </div>
+        </div>
+        <div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:12px;">
+          <thead><tr style="background:#f4f6f9;">
+            <th style="padding:5px 8px;text-align:left;font-size:10px;color:#888;text-transform:uppercase;">Ticker</th>
+            <th style="padding:5px 8px;text-align:left;font-size:10px;color:#888;text-transform:uppercase;">Strike</th>
+            <th style="padding:5px 8px;text-align:left;font-size:10px;color:#888;text-transform:uppercase;">Expiry</th>
+            <th style="padding:5px 8px;text-align:left;font-size:10px;color:#888;text-transform:uppercase;">Contracts</th>
+            <th style="padding:5px 8px;text-align:left;font-size:10px;color:#888;text-transform:uppercase;">Prem/Contract</th>
+            <th style="padding:5px 8px;text-align:left;font-size:10px;color:#888;text-transform:uppercase;">Gross</th>
+            <th style="padding:5px 8px;text-align:left;font-size:10px;color:#888;text-transform:uppercase;">Buyback Cost</th>
+            <th style="padding:5px 8px;text-align:left;font-size:10px;color:#27ae60;text-transform:uppercase;">Net Income</th>
+            <th style="padding:5px 8px;text-align:left;font-size:10px;color:#c0392b;text-transform:uppercase;">Est. Tax</th>
+            <th style="padding:5px 8px;text-align:left;font-size:10px;color:#888;text-transform:uppercase;">Close Type</th>
+            <th style="padding:5px 8px;text-align:left;font-size:10px;color:#888;text-transform:uppercase;">Closed</th>
+          </tr></thead>
+          <tbody>${{ccRows}}</tbody>
+        </table></div>
+        <div style="font-size:10px;color:#bbb;margin-top:6px;">CC premium is always short-term ordinary income regardless of how long the position was open</div>
+      </div>`;
+  }}
 }}
 
 function _initTaxRates() {{
@@ -2067,6 +2185,11 @@ async function runDeepAnalysis() {{
 }}
 
 // ── CC Position Tracker ───────────────────────────────────────────────────
+// ── CC Position Tracker ───────────────────────────────────────────────────
+let _allCCPositions = [];
+let _ccCloseTargetId = null;
+let _ccCloseType     = null;
+
 async function loadCCPositions() {{
   const status  = document.getElementById("cc-tracker-status");
   const results = document.getElementById("cc-tracker-results");
@@ -2077,94 +2200,121 @@ async function loadCCPositions() {{
     const res  = await fetch("/api/cc-positions");
     const data = await res.json();
     if (!data.ok) {{ status.textContent = "Error: " + data.error; return; }}
-
-    const positions = data.positions || [];
+    _allCCPositions = data.positions || [];
     status.textContent = "";
-
-    if (!positions.length) {{
-      results.innerHTML = `<p style="color:#888;font-size:13px;margin-top:8px;">No positions logged yet. Use the form above to add your first covered call.</p>`;
-      return;
-    }}
-
-    const today       = new Date().toISOString().slice(0,10);
-    const open        = positions.filter(p => p.status === "open");
-    const closed      = positions.filter(p => p.status !== "open");
-    const totalPremium = positions.reduce((s,p) => s + p.premium_per_contract * p.contracts * 100, 0);
-    const openPremium  = open.reduce((s,p) => s + p.premium_per_contract * p.contracts * 100, 0);
-
-    function statusBadge(p) {{
-      const colors = {{open:"#e8f8ee;color:#1a6e38;border-color:#a8e0b8", closed:"#f4f6f9;color:#888;border-color:#dde",
-                       expired:"#fff8e1;color:#8a6d00;border-color:#ffe082", assigned:"#fff0f0;color:#c8102e;border-color:#fcc"}};
-      const c = colors[p.status] || colors["closed"];
-      return `<span style="background:${{c}};border:1px solid;border-radius:4px;padding:1px 7px;font-size:10px;font-weight:700;">${{p.status.toUpperCase()}}</span>`;
-    }}
-
-    function dteTag(expiry) {{
-      const d = Math.round((new Date(expiry + "T00:00:00") - new Date()) / 86400000);
-      if (d < 0) return `<span style="color:#aaa;font-size:11px;">(expired)</span>`;
-      const c = d <= 7 ? "#c8102e" : d <= 21 ? "#e67e22" : "#27ae60";
-      return `<span style="color:${{c}};font-size:11px;">${{d}}d</span>`;
-    }}
-
-    const makeRow = p => {{
-      const total = (p.premium_per_contract * p.contracts * 100).toFixed(2);
-      const closeBtn = p.status === "open"
-        ? `<button onclick="closeCC(${{p.id}})" style="font-size:10px;padding:2px 8px;background:#f4f6f9;border:1px solid #dde;border-radius:4px;cursor:pointer;">Close</button>`
-        : "";
-      return `<tr style="border-bottom:1px solid #f2f4f7;">
-        <td style="padding:7px 10px;font-weight:700;">${{p.ticker}}</td>
-        <td style="padding:7px 10px;">${{p.contracts}}x</td>
-        <td style="padding:7px 10px;">$${{p.strike.toFixed(2)}}</td>
-        <td style="padding:7px 10px;">${{p.expiry}} ${{p.status==="open" ? dteTag(p.expiry) : ""}}</td>
-        <td style="padding:7px 10px;">$${{p.premium_per_contract.toFixed(2)}}</td>
-        <td style="padding:7px 10px;font-weight:600;color:#27ae60;">$${{total}}</td>
-        <td style="padding:7px 10px;">${{statusBadge(p)}}</td>
-        <td style="padding:7px 10px;">${{p.opened_date}}</td>
-        <td style="padding:7px 10px;color:#aaa;font-size:11px;">${{p.notes || ""}}</td>
-        <td style="padding:7px 10px;">${{closeBtn}}</td>
-      </tr>`;
-    }};
-
-    const summaryHtml = `
-      <div style="display:flex;gap:20px;flex-wrap:wrap;margin-bottom:14px;padding:12px 16px;background:#f8fafc;border-radius:8px;font-size:13px;">
-        <span>Open positions: <b>${{open.length}}</b></span>
-        <span>Open premium held: <b style="color:#27ae60;">$${{openPremium.toFixed(2)}}</b></span>
-        <span>All-time premium collected: <b style="color:#1a2340;">$${{totalPremium.toFixed(2)}}</b></span>
-      </div>`;
-
-    const thead = `<thead><tr style="background:#f4f6f9;">
-      <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Ticker</th>
-      <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Contracts</th>
-      <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Strike</th>
-      <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Expiry / DTE</th>
-      <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Prem/Contract</th>
-      <th style="padding:7px 10px;text-align:left;font-size:11px;color:#27ae60;text-transform:uppercase;">Total Premium</th>
-      <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Status</th>
-      <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Opened</th>
-      <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Notes</th>
-      <th></th>
-    </tr></thead>`;
-
-    let tableHtml = summaryHtml + `<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:13px;">${{thead}}<tbody>`;
-    if (open.length) {{
-      tableHtml += `<tr><td colspan="10" style="padding:5px 10px;font-size:11px;font-weight:700;color:#1a2340;background:#f0f7ff;">Open Positions</td></tr>`;
-      tableHtml += open.map(makeRow).join("");
-    }}
-    if (closed.length) {{
-      tableHtml += `<tr><td colspan="10" style="padding:5px 10px;font-size:11px;font-weight:700;color:#888;background:#f9f9f9;">Closed / Expired / Assigned</td></tr>`;
-      tableHtml += closed.map(makeRow).join("");
-    }}
-    tableHtml += `</tbody></table></div>`;
-    results.innerHTML = tableHtml;
+    renderCCPositions();
+    renderRealizedGains();
   }} catch(e) {{
     status.textContent = "Error: " + e.message;
   }}
 }}
 
+function renderCCPositions() {{
+  const results = document.getElementById("cc-tracker-results");
+  const positions = _allCCPositions;
+
+  if (!positions.length) {{
+    results.innerHTML = `<p style="color:#888;font-size:13px;margin-top:8px;">No positions logged yet. Use the form above to add your first covered call.</p>`;
+    return;
+  }}
+
+  const open   = positions.filter(p => p.status === "open");
+  const closed = positions.filter(p => p.status !== "open");
+
+  const openGross     = open.reduce((s,p)   => s + p.premium_per_contract * p.contracts * 100, 0);
+  const netRealized   = closed.reduce((s,p) => s + (p.net_premium ?? 0), 0);
+  const grossRealized = closed.reduce((s,p) => s + p.premium_per_contract * p.contracts * 100, 0);
+  const buybackCost   = grossRealized - netRealized;
+
+  function statusBadge(p) {{
+    const map = {{
+      open:     "background:#e8f8ee;color:#1a6e38;border-color:#a8e0b8",
+      expired:  "background:#fff8e1;color:#8a6d00;border-color:#ffe082",
+      assigned: "background:#fff0f0;color:#c8102e;border-color:#fcc",
+      closed:   "background:#f4f6f9;color:#888;border-color:#dde",
+    }};
+    const c = map[p.status] || map.closed;
+    const label = p.close_type ? p.close_type.toUpperCase() : p.status.toUpperCase();
+    return `<span style="border:1px solid;border-radius:4px;padding:1px 7px;font-size:10px;font-weight:700;${{c}}">${{label}}</span>`;
+  }}
+
+  function dteTag(expiry) {{
+    const d = Math.round((new Date(expiry + "T00:00:00") - new Date()) / 86400000);
+    if (d < 0) return `<span style="color:#aaa;font-size:11px;">(expired)</span>`;
+    const c = d <= 7 ? "#c8102e" : d <= 21 ? "#e67e22" : "#27ae60";
+    return `<span style="color:${{c}};font-weight:600;font-size:11px;">${{d}}d</span>`;
+  }}
+
+  const makeRow = p => {{
+    const gross    = p.premium_per_contract * p.contracts * 100;
+    const isOpen   = p.status === "open";
+    const net      = p.net_premium;
+    const buyback  = p.closed_price != null ? p.closed_price * p.contracts * 100 : null;
+
+    const netCell  = isOpen
+      ? `<td style="padding:7px 10px;color:#aaa;font-size:11px;">open</td>`
+      : `<td style="padding:7px 10px;font-weight:700;color:#27ae60;">
+           +$${{(net ?? 0).toFixed(2)}}
+           ${{buyback ? `<div style="font-size:10px;color:#e74c3c;font-weight:400;">−$${{buyback.toFixed(2)}} buyback</div>` : ""}}
+         </td>`;
+
+    const actionCell = isOpen
+      ? `<td style="padding:7px 10px;white-space:nowrap;">
+           <button onclick="openCCCloseModal(${{p.id}})"
+             style="font-size:10px;padding:3px 10px;background:#1a2340;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600;">
+             Close ▾
+           </button>
+         </td>`
+      : `<td style="padding:7px 10px;font-size:11px;color:#aaa;">${{p.closed_date || ""}}</td>`;
+
+    return `<tr style="border-bottom:1px solid #f2f4f7;">
+      <td style="padding:7px 10px;font-weight:700;">${{p.ticker}}</td>
+      <td style="padding:7px 10px;">${{p.contracts}}×</td>
+      <td style="padding:7px 10px;">$${{p.strike.toFixed(2)}}</td>
+      <td style="padding:7px 10px;">${{p.expiry}} ${{isOpen ? dteTag(p.expiry) : ""}}</td>
+      <td style="padding:7px 10px;">$${{p.premium_per_contract.toFixed(2)}}</td>
+      <td style="padding:7px 10px;color:#555;">$${{gross.toFixed(2)}}</td>
+      ${{netCell}}
+      <td style="padding:7px 10px;">${{statusBadge(p)}}</td>
+      <td style="padding:7px 10px;font-size:11px;color:#aaa;">${{p.opened_date}}</td>
+      <td style="padding:7px 10px;font-size:11px;color:#aaa;">${{p.notes || ""}}</td>
+      ${{actionCell}}
+    </tr>`;
+  }};
+
+  const summaryHtml = `
+    <div style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:14px;padding:12px 16px;background:#f8fafc;border-radius:8px;font-size:13px;">
+      <span>Open: <b>${{open.length}}</b></span>
+      <span>Open gross premium: <b style="color:#1a6e38;">$${{openGross.toFixed(2)}}</b></span>
+      <span style="border-left:1px solid #dde;padding-left:16px;">Net realized income: <b style="color:#27ae60;">$${{netRealized.toFixed(2)}}</b></span>
+      ${{buybackCost > 0 ? `<span style="color:#aaa;font-size:12px;">($${{grossRealized.toFixed(2)}} gross − $${{buybackCost.toFixed(2)}} buybacks)</span>` : ""}}
+    </div>`;
+
+  const th = s => `<th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">${{s}}</th>`;
+  const thead = `<thead><tr style="background:#f4f6f9;">
+    ${{th("Ticker")}}${{th("Contracts")}}${{th("Strike")}}${{th("Expiry/DTE")}}
+    ${{th("Prem/Contract")}}${{th("Gross")}}
+    <th style="padding:7px 10px;text-align:left;font-size:11px;color:#27ae60;text-transform:uppercase;">Net Realized</th>
+    ${{th("Status")}}${{th("Opened")}}${{th("Notes")}}${{th("")}}
+  </tr></thead>`;
+
+  let html = summaryHtml + `<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:13px;">${{thead}}<tbody>`;
+  if (open.length) {{
+    html += `<tr><td colspan="11" style="padding:5px 10px;font-size:11px;font-weight:700;color:#1a2340;background:#f0f7ff;">Open Positions</td></tr>`;
+    html += open.map(makeRow).join("");
+  }}
+  if (closed.length) {{
+    html += `<tr><td colspan="11" style="padding:5px 10px;font-size:11px;font-weight:700;color:#888;background:#f9f9f9;">Closed / Expired / Assigned</td></tr>`;
+    html += closed.map(makeRow).join("");
+  }}
+  html += `</tbody></table></div>`;
+  results.innerHTML = html;
+}}
+
 async function logCCPosition() {{
   const status = document.getElementById("cc-log-status");
   const body   = {{
-    ticker:               (document.getElementById("cc-log-ticker").value   || "").trim().toUpperCase(),
+    ticker:               (document.getElementById("cc-log-ticker").value || "").trim().toUpperCase(),
     contracts:            parseInt(document.getElementById("cc-log-contracts").value),
     strike:               parseFloat(document.getElementById("cc-log-strike").value),
     expiry:               document.getElementById("cc-log-expiry").value,
@@ -2172,47 +2322,130 @@ async function logCCPosition() {{
     opened_date:          document.getElementById("cc-log-date").value,
     notes:                document.getElementById("cc-log-notes").value,
   }};
-
   if (!body.ticker || !body.contracts || !body.strike || !body.expiry ||
       !body.premium_per_contract || !body.opened_date) {{
     status.textContent = "⚠ Fill in all required fields.";
     return;
   }}
-
   status.textContent = "Saving…";
   try {{
     const res  = await fetch("/api/cc-positions", {{
-      method:  "POST",
-      headers: {{"Content-Type":"application/json"}},
-      body:    JSON.stringify(body),
+      method: "POST", headers: {{"Content-Type":"application/json"}},
+      body: JSON.stringify(body),
     }});
     const data = await res.json();
     if (!data.ok) {{ status.textContent = "Error: " + data.error; return; }}
     status.textContent = "✓ Logged!";
     setTimeout(() => {{ status.textContent = ""; }}, 2000);
     loadCCPositions();
-  }} catch(e) {{
-    status.textContent = "Error: " + e.message;
-  }}
+  }} catch(e) {{ status.textContent = "Error: " + e.message; }}
 }}
 
-async function closeCC(id) {{
-  const closedDate  = new Date().toISOString().slice(0,10);
-  const closedPrice = prompt("Closing price / buy-back cost per contract ($):");
-  if (closedPrice === null) return;
+// ── CC Close Modal ────────────────────────────────────────────────────────
+function openCCCloseModal(id) {{
+  _ccCloseTargetId = id;
+  _ccCloseType     = null;
+  const p = _allCCPositions.find(x => x.id === id);
+  if (!p) return;
+
+  const gross = (p.premium_per_contract * p.contracts * 100).toFixed(2);
+  document.getElementById("cc-close-summary").innerHTML =
+    `<b style="font-size:15px;">${{p.ticker}}</b>
+     <span style="color:#888;margin:0 8px;">·</span>
+     ${{p.contracts}}× ${{p.strike.toFixed(2)}} call
+     <span style="color:#888;margin:0 8px;">·</span>
+     exp ${{p.expiry}}
+     <span style="color:#888;margin:0 8px;">·</span>
+     sold @ <b>$${{p.premium_per_contract.toFixed(2)}}</b>/contract
+     <span style="color:#888;margin:0 8px;">·</span>
+     gross <b style="color:#1a6e38;">$${{gross}}</b>`;
+
+  document.getElementById("cc-close-date").value  = new Date().toISOString().slice(0,10);
+  document.getElementById("cc-close-price").value = "";
+  document.getElementById("cc-close-status").textContent = "";
+  document.getElementById("cc-close-preview").style.display = "none";
+  document.getElementById("cc-buyback-row").style.display   = "none";
+
+  // Reset type button styles
+  ["expired","buyback","assigned"].forEach(t => {{
+    const el = document.getElementById("cc-type-" + t);
+    el.style.borderColor = "#dde";
+    el.style.background  = "#fff";
+    el.style.color       = "#333";
+  }});
+
+  document.getElementById("cc-close-overlay").style.display = "flex";
+}}
+
+function closeCCModal(e) {{
+  if (!e || e.target === document.getElementById("cc-close-overlay"))
+    document.getElementById("cc-close-overlay").style.display = "none";
+}}
+
+function setCCCloseType(type) {{
+  _ccCloseType = type;
+  ["expired","buyback","assigned"].forEach(t => {{
+    const el = document.getElementById("cc-type-" + t);
+    const active = t === type;
+    el.style.borderColor = active ? "#1a2340" : "#dde";
+    el.style.background  = active ? "#1a2340" : "#fff";
+    el.style.color       = active ? "#fff"    : "#333";
+  }});
+  document.getElementById("cc-buyback-row").style.display = type === "buyback" ? "block" : "none";
+  _updateCCClosePreview();
+}}
+
+function _updateCCClosePreview() {{
+  const p = _allCCPositions.find(x => x.id === _ccCloseTargetId);
+  if (!p || !_ccCloseType) return;
+  const buyback = _ccCloseType === "buyback"
+    ? (parseFloat(document.getElementById("cc-close-price").value) || 0) : 0;
+  const net   = (p.premium_per_contract - buyback) * p.contracts * 100;
+  const gross = p.premium_per_contract * p.contracts * 100;
+  const preview = document.getElementById("cc-close-preview");
+  preview.style.display = "block";
+  preview.style.background = net >= 0 ? "#f0fff4" : "#fff0f0";
+  preview.style.borderColor = net >= 0 ? "#ade" : "#fcc";
+  preview.innerHTML = `
+    Net realized income: <b style="color:${{net>=0?"#27ae60":"#e74c3c"}};">${{net>=0?"+":""}}$${{Math.abs(net).toFixed(2)}}</b>
+    ${{buyback > 0 ? `<span style="color:#888;font-size:11px;">($${{gross.toFixed(2)}} gross − $${{(buyback*p.contracts*100).toFixed(2)}} buyback)</span>` : ""}}
+    <br><span style="font-size:11px;color:#888;">Always short-term ordinary income · taxed at your ST rate</span>`;
+}}
+
+document.getElementById("cc-close-price")?.addEventListener("input", _updateCCClosePreview);
+
+async function confirmCCClose() {{
+  if (!_ccCloseType) {{
+    document.getElementById("cc-close-status").textContent = "⚠ Select how the position closed.";
+    return;
+  }}
+  const closeDate  = document.getElementById("cc-close-date").value;
+  const closePrice = _ccCloseType === "buyback"
+    ? parseFloat(document.getElementById("cc-close-price").value) || 0 : 0;
+
+  const statusMap = {{ expired: "expired", buyback: "closed", assigned: "assigned" }};
+  const body = {{
+    status:      statusMap[_ccCloseType],
+    close_type:  _ccCloseType,
+    closed_date: closeDate,
+    closed_price: closePrice > 0 ? closePrice : null,
+  }};
+
+  document.getElementById("cc-close-status").textContent = "Saving…";
   try {{
-    await fetch(`/api/cc-positions/${{id}}`, {{
-      method:  "PATCH",
-      headers: {{"Content-Type":"application/json"}},
-      body:    JSON.stringify({{
-        status:      "closed",
-        closed_date: closedDate,
-        closed_price: parseFloat(closedPrice) || null,
-      }}),
+    const res  = await fetch(`/api/cc-positions/${{_ccCloseTargetId}}`, {{
+      method: "PATCH", headers: {{"Content-Type":"application/json"}},
+      body: JSON.stringify(body),
     }});
-    loadCCPositions();
+    const data = await res.json();
+    if (!data.ok) {{
+      document.getElementById("cc-close-status").textContent = "Error: " + data.error;
+      return;
+    }}
+    document.getElementById("cc-close-overlay").style.display = "none";
+    await loadCCPositions();
   }} catch(e) {{
-    alert("Error: " + e.message);
+    document.getElementById("cc-close-status").textContent = "Error: " + e.message;
   }}
 }}
 
