@@ -276,6 +276,23 @@ def _check_layer_drift():
         print(f"[DriftAlert] Email failed: {e}")
 
 
+def _backup_data():
+    """Push investment.db, buffett.db, and holdings.csv to the private data repo."""
+    script = PROJECT_DIR / "backup_data.sh"
+    if not script.exists():
+        return
+    import subprocess
+    result = subprocess.run(
+        ["bash", str(script)],
+        cwd=str(PROJECT_DIR),
+        capture_output=True, text=True, timeout=120
+    )
+    if result.stdout:
+        print(result.stdout.strip())
+    if result.returncode != 0:
+        print(f"[Backup] Failed: {result.stderr.strip()}")
+
+
 def _run_daily():
     """
     Background thread: runs the newsletter + dashboard once per day at 8 AM ET.
@@ -322,6 +339,10 @@ def _run_daily():
                     _check_layer_drift()
                 except Exception as exc:
                     print(f"[DriftAlert] Exception: {exc}")
+                try:
+                    _backup_data()
+                except Exception as exc:
+                    print(f"[Backup] Exception: {exc}")
             else:
                 print(f"[Scheduler] Failed — will retry in 30 min.")
         time.sleep(1800)
