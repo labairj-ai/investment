@@ -1,62 +1,71 @@
 #!/usr/bin/env python3
+"""
+Daily Investment Digest — single consolidated email that merges:
+  • Portfolio snapshot + layer performance
+  • Layer allocation vs target (inline drift warnings when ≥5pp off)
+  • Holdings performance grouped by layer
+  • Upcoming earnings & ex-dividend events (next 3 days)
+  • Judgment health rubric + concentration flags
+"""
+import json
 import os
 import smtplib
-import time
 import sqlite3
+import time
+import warnings
+from concurrent.futures import ThreadPoolExecutor
+from datetime import date, datetime, timedelta
 from pathlib import Path
-from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 import yfinance as yf
 
-import matplotlib
-matplotlib.use("Agg")  # cron/headless safe
-import matplotlib.pyplot as plt
-
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from email.mime.image import MIMEImage
-
 from dotenv import load_dotenv
+
 load_dotenv(Path(__file__).parent / ".env")
 
-
-# -------------------------
-# CONFIG
-# -------------------------
-PROJECT_DIR = Path("/Users/ai_lab/Desktop/investment")
-HOLDINGS_CSV = PROJECT_DIR / "holdings.csv"
-OUT_DIR = PROJECT_DIR / "out"
+# ─── Config ───────────────────────────────────────────────────────────────────
+PROJECT_DIR      = Path("/Users/ai_lab/Desktop/investment")
+HOLDINGS_CSV     = PROJECT_DIR / "holdings.csv"
+LAYER_TARGETS_F  = PROJECT_DIR / "layer_targets.json"
+DB_PATH          = PROJECT_DIR / "out" / "investment.db"
+OUT_DIR          = PROJECT_DIR / "out"
 OUT_DIR.mkdir(exist_ok=True)
 
-DB_PATH = OUT_DIR / "investment.db"
-CHART_PATH = OUT_DIR / "layer_allocation.png"
+EMAIL_FROM       = os.getenv("EMAIL_FROM")
+EMAIL_APP_PW     = os.getenv("EMAIL_APP_PASSWORD")
+TO_EMAILS        = [os.getenv("EMAIL_TO", "robertjsherman1@gmail.com")]
 
-EMAIL_FROM = os.getenv("EMAIL_FROM")
-EMAIL_APP_PASSWORD = os.getenv("EMAIL_APP_PASSWORD")
-TO_EMAILS = [os.getenv("EMAIL_TO", "robertjsherman1@gmail.com")]
-
-BENCHMARK = "SPY"
-TZ = ZoneInfo("America/New_York")
+BENCHMARK        = "SPY"
+TZ               = ZoneInfo("America/New_York")
+DRIFT_THRESHOLD  = 5.0
+EVENTS_WINDOW    = 3   # days ahead for earnings / ex-div alerts
 
 LAYER_NAMES = {
-    1: "Structural Ballast",
-    2: "Cash-Flow Engines",
-    3: "Compounders",
-    4: "Convexity / Optionality",
-    5: "Shock Absorbers / Regime Hedges",
+    1: "L1 Structural Ballast",
+    2: "L2 Cash-Flow Engines",
+    3: "L3 Compounders",
+    4: "L4 Convexity",
+    5: "L5 Shock Absorbers",
 }
+LAYER_COLORS = {
+    1: "#4A90D9",
+    2: "#27ae60",
+    3: "#e67e22",
+    4: "#7c3aed",
+    5: "#9B59B6",
+}
+LAYER_TARGETS_DEFAULT = {1: 25.0, 2: 20.0, 3: 35.0, 4: 12.0, 5: 8.0}
 
-# Flags thresholds
-LAYER_GROSS_DOMINANCE_PCT = 50.0
-HOLDING_GROSS_DOMINANCE_PCT = 25.0
+LAYER_GROSS_DOM   = 50.0
+HOLDING_GROSS_DOM = 25.0
 
 
-# -------------------------
-# HELPERS
-# -------------------------
-def normalize_yahoo_ticker(t: str) -> str:
+# ─── Helpers ──────────────────────────────────────────────────────────────────
+def normalize_ticker(t: str) -> str:
     t = str(t).strip().upper()
     if t.startswith("$"):
         t = t[1:]
@@ -79,32 +88,16 @@ def signed_pct(x: float) -> str:
     return f"{x:+.1f}%"
 
 
-def df_to_html_table(df: pd.DataFrame) -> str:
-    return df.to_html(index=False, border=0, justify="left").replace(
-        "<table",
-        "<table cellpadding='6' cellspacing='0' style='border-collapse:collapse; width:100%; max-width:980px;'"
-    ).replace(
-        "<th>",
-        "<th style='border-bottom:1px solid #ddd; text-align:left;'>"
-    ).replace(
-        "<td>",
-        "<td style='border-bottom:1px solid #f2f2f2;'>"
-    )
+def color_change(x: float) -> str:
+    return "#27ae60" if x >= 0 else "#e74c3c"
 
 
-# -------------------------
-# PRICING
-# -------------------------
+# ─── Pricing ──────────────────────────────────────────────────────────────────
 def fetch_last_two_closes(tickers: list[str]) -> pd.DataFrame:
-    """
-    Per-ticker fetch with retry (avoids occasional yfinance batch/cache lock issues).
-    Returns df indexed by normalized ticker with close_yday, close_prev.
-    """
     rows = []
     for raw in tickers:
-        t = normalize_yahoo_ticker(raw)
+        t = normalize_ticker(raw)
         last_err = None
-
         for attempt in range(1, 4):
             try:
                 hist = yf.Ticker(t).history(period="10d", interval="1d")
@@ -113,353 +106,516 @@ def fetch_last_two_closes(tickers: list[str]) -> pd.DataFrame:
                     rows.append((t, float(s.iloc[-1]), float(s.iloc[-2])))
                     last_err = None
                     break
-                last_err = RuntimeError(f"Not enough closes for {t} (need 2). Got {len(s)} rows.")
+                last_err = RuntimeError(f"Only {len(s)} closes for {t}")
             except Exception as e:
                 last_err = e
             time.sleep(1.0 * attempt)
-
-        if last_err is not None:
-            raise RuntimeError(f"Failed to fetch closes for '{raw}' (normalized '{t}'). Last error: {last_err}")
-
+        if last_err:
+            raise RuntimeError(f"Failed to fetch '{raw}': {last_err}")
     return pd.DataFrame(rows, columns=["ticker", "close_yday", "close_prev"]).set_index("ticker")
 
 
-# -------------------------
-# CHART
-# -------------------------
-def make_layer_pie(layers_df: pd.DataFrame, out_path: Path) -> None:
-    total = float(layers_df["value_yday"].sum())
-    if total <= 0:
-        raise RuntimeError("Total portfolio value <= 0; cannot create allocation pie chart.")
+# ─── Calendar events ──────────────────────────────────────────────────────────
+def fetch_calendar_events(tickers: list[str]) -> tuple[list, list]:
+    """Parallel yfinance calendar fetch. Returns (earn_alerts, exdiv_alerts)."""
+    warnings.filterwarnings("ignore")
+    today  = date.today()
+    window = today + timedelta(days=EVENTS_WINDOW)
+    earn_alerts, exdiv_alerts = [], []
+    import threading
+    lock_e = threading.Lock()
+    lock_x = threading.Lock()
 
-    labels = [f'{row["Layer"]}\n{(row["value_yday"]/total)*100:.1f}%' for _, row in layers_df.iterrows()]
+    def check_one(ticker):
+        try:
+            tk  = yf.Ticker(ticker)
+            cal = tk.calendar or {}
 
-    plt.figure(figsize=(7, 7))
-    plt.pie(layers_df["value_yday"], labels=labels, startangle=90)
-    plt.title("Portfolio Allocation by Layer (Market Value)")
-    plt.tight_layout()
-    plt.savefig(out_path, dpi=200)
-    plt.close()
+            raw = cal.get("Earnings Date", [])
+            if not isinstance(raw, list):
+                raw = [raw]
+            for d in raw:
+                if not d or not hasattr(d, "year"):
+                    continue
+                dd = d.date() if hasattr(d, "date") else d
+                if today <= dd <= window:
+                    with lock_e:
+                        earn_alerts.append({"ticker": ticker, "date": str(dd), "days": (dd - today).days})
+
+            raw_ex = cal.get("Ex-Dividend Date")
+            if raw_ex and hasattr(raw_ex, "year"):
+                dd = raw_ex.date() if hasattr(raw_ex, "date") else raw_ex
+                if today <= dd <= window:
+                    amount = None
+                    try:
+                        divs = tk.dividends
+                        if not divs.empty:
+                            amount = round(float(divs.iloc[-1]), 4)
+                    except Exception:
+                        pass
+                    with lock_x:
+                        exdiv_alerts.append({"ticker": ticker, "date": str(dd), "days": (dd - today).days, "amount": amount})
+        except Exception:
+            pass
+
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        list(pool.map(check_one, tickers))
+
+    return (
+        sorted(earn_alerts,  key=lambda x: x["days"]),
+        sorted(exdiv_alerts, key=lambda x: x["days"]),
+    )
 
 
-# -------------------------
-# SQLITE STORAGE
-# -------------------------
+# ─── Layer drift ──────────────────────────────────────────────────────────────
+def load_layer_targets() -> dict[int, float]:
+    try:
+        raw = json.loads(LAYER_TARGETS_F.read_text())
+        return {int(k): float(v) for k, v in raw.items()}
+    except Exception:
+        return LAYER_TARGETS_DEFAULT.copy()
+
+
+def compute_drift(layer_weights: dict) -> list[dict]:
+    """Returns layers with abs(drift) >= DRIFT_THRESHOLD, sorted by abs drift desc."""
+    targets = load_layer_targets()
+    drifts = []
+    for lnum in range(1, 6):
+        target  = targets.get(lnum, 0)
+        current = layer_weights.get(lnum, {}).get("weight_pct", 0)
+        drift   = current - target
+        if abs(drift) >= DRIFT_THRESHOLD:
+            drifts.append({
+                "layer_num":  lnum,
+                "layer_name": LAYER_NAMES.get(lnum, f"L{lnum}"),
+                "color":      LAYER_COLORS.get(lnum, "#888"),
+                "target":     target,
+                "current":    current,
+                "drift":      drift,
+            })
+    return sorted(drifts, key=lambda d: abs(d["drift"]), reverse=True)
+
+
+# ─── SQLite storage ───────────────────────────────────────────────────────────
 def init_db(conn: sqlite3.Connection) -> None:
-    conn.execute("""
-    CREATE TABLE IF NOT EXISTS portfolio_day (
-      day TEXT PRIMARY KEY,
-      total_value REAL,
-      total_change_dollars REAL,
-      total_change_pct REAL,
-      spy_change_pct REAL
-    )""")
-
-    conn.execute("""
-    CREATE TABLE IF NOT EXISTS layer_day (
-      day TEXT,
-      layer TEXT,
-      value REAL,
-      change_dollars REAL,
-      change_pct REAL,
-      weight_pct REAL,
-      PRIMARY KEY (day, layer)
-    )""")
-
-    conn.execute("""
-    CREATE TABLE IF NOT EXISTS holding_day (
-      day TEXT,
-      ticker TEXT,
-      layer TEXT,
-      shares REAL,
-      price REAL,
-      value REAL,
-      change_dollars REAL,
-      change_pct REAL,
-      weight_pct REAL,
-      PRIMARY KEY (day, ticker)
-    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS portfolio_day (
+      day TEXT PRIMARY KEY, total_value REAL, total_change_dollars REAL,
+      total_change_pct REAL, spy_change_pct REAL)""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS layer_day (
+      day TEXT, layer TEXT, value REAL, change_dollars REAL,
+      change_pct REAL, weight_pct REAL, PRIMARY KEY (day, layer))""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS holding_day (
+      day TEXT, ticker TEXT, layer TEXT, shares REAL, price REAL, value REAL,
+      change_dollars REAL, change_pct REAL, weight_pct REAL, PRIMARY KEY (day, ticker))""")
 
 
-def store_snapshot(day: str,
-                   total_value: float,
-                   total_change: float,
-                   total_change_pct: float,
-                   spy_change_pct: float,
-                   layers_df: pd.DataFrame,
-                   holdings_df: pd.DataFrame) -> None:
-    """
-    Writes/updates a single day's snapshot (idempotent).
-    """
-    conn = sqlite3.connect(str(DB_PATH))
+def store_snapshot(day, total_value, total_change, total_change_pct,
+                   spy_change_pct, layers_df, holdings_df):
+    conn = sqlite3.connect(str(DB_PATH), timeout=10)
     try:
         init_db(conn)
-
-        conn.execute("""
-          INSERT OR REPLACE INTO portfolio_day
-          (day, total_value, total_change_dollars, total_change_pct, spy_change_pct)
-          VALUES (?, ?, ?, ?, ?)
-        """, (day, float(total_value), float(total_change), float(total_change_pct), float(spy_change_pct)))
-
+        conn.execute(
+            "INSERT OR REPLACE INTO portfolio_day VALUES (?,?,?,?,?)",
+            (day, total_value, total_change, total_change_pct, spy_change_pct),
+        )
         for _, r in layers_df.iterrows():
-            conn.execute("""
-              INSERT OR REPLACE INTO layer_day
-              (day, layer, value, change_dollars, change_pct, weight_pct)
-              VALUES (?, ?, ?, ?, ?, ?)
-            """, (
-                day,
-                str(r["Layer"]),
-                float(r["value_yday"]),
-                float(r["chg_dollars"]),
-                float(r["chg_pct"]),
-                float(r["weight_pct"]),
-            ))
-
+            conn.execute(
+                "INSERT OR REPLACE INTO layer_day VALUES (?,?,?,?,?,?)",
+                (day, r["Layer"], r["value_yday"], r["chg_dollars"], r["chg_pct"], r["weight_pct"]),
+            )
         for _, r in holdings_df.iterrows():
-            conn.execute("""
-              INSERT OR REPLACE INTO holding_day
-              (day, ticker, layer, shares, price, value, change_dollars, change_pct, weight_pct)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                day,
-                str(r["Stock"]),
-                str(r["LayerLabel"]),
-                float(r["Shares"]),
-                float(r["close_yday"]),
-                float(r["value_yday"]),
-                float(r["chg_dollars"]),
-                float(r["chg_pct"]),
-                float(r["weight_pct"]),
-            ))
-
+            conn.execute(
+                "INSERT OR REPLACE INTO holding_day VALUES (?,?,?,?,?,?,?,?,?)",
+                (day, r["Stock"], r["LayerLabel"], r["Shares"], r["close_yday"],
+                 r["value_yday"], r["chg_dollars"], r["chg_pct"], r["weight_pct"]),
+            )
         conn.commit()
     finally:
         conn.close()
 
 
-# -------------------------
-# EMAIL (SMTP + APP PASSWORD)
-# -------------------------
-def build_message(to_emails: list[str], subject: str, html_body: str, inline_png_path: Path) -> MIMEMultipart:
-    msg = MIMEMultipart("related")
-    msg["From"] = EMAIL_FROM
-    msg["To"] = ", ".join(to_emails)
-    msg["Subject"] = subject
+# ─── Rubric + flags ───────────────────────────────────────────────────────────
+def rubric_and_flags(total_change, layers, holdings):
+    flags = []
+    gross_l = float(layers["chg_dollars"].abs().sum())
+    gross_h = float(holdings["chg_dollars"].abs().sum())
 
-    alt = MIMEMultipart("alternative")
-    msg.attach(alt)
-    alt.attach(MIMEText(html_body, "html"))
-
-    img = MIMEImage(inline_png_path.read_bytes(), _subtype="png")
-    img.add_header("Content-ID", "<layer_pie>")
-    img.add_header("Content-Disposition", "inline", filename=inline_png_path.name)
-    msg.attach(img)
-
-    return msg
-
-
-def send_email(msg: MIMEMultipart) -> None:
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
-        smtp.login(EMAIL_FROM, EMAIL_APP_PASSWORD)
-        smtp.send_message(msg)
-
-
-# -------------------------
-# RUBRIC + FLAGS (NORMALIZED)
-# -------------------------
-def rubric_and_flags(total_change: float, layers: pd.DataFrame, holdings: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
-    """
-    Important change:
-    - Flags are based on SHARE OF GROSS MOVEMENT (abs changes summed), so percentages are always 0–100.
-    - We ALSO show net contribution (signed % of net move) in parentheses for context.
-    """
-    flags: list[str] = []
-
-    gross_layers = float(layers["chg_dollars"].abs().sum())
-    gross_holdings = float(holdings["chg_dollars"].abs().sum())
-
-    # Layer dominance (gross share)
-    if gross_layers > 1e-9:
+    if gross_l > 1e-9:
         tmp = layers.copy()
-        tmp["gross_share_pct"] = (tmp["chg_dollars"].abs() / gross_layers) * 100.0
-        top_layer = tmp.sort_values("gross_share_pct", ascending=False).iloc[0]
+        tmp["gsh"] = (tmp["chg_dollars"].abs() / gross_l) * 100
+        top = tmp.sort_values("gsh", ascending=False).iloc[0]
+        if float(top["gsh"]) > LAYER_GROSS_DOM:
+            net = (float(top["chg_dollars"]) / float(total_change) * 100) if abs(total_change) > 1e-9 else 0
+            flags.append(f"⚠️ {top['Layer']} drove {top['gsh']:.1f}% of today's gross movement (net: {signed_pct(net)}).")
 
-        if float(top_layer["gross_share_pct"]) > LAYER_GROSS_DOMINANCE_PCT:
-            if abs(total_change) > 1e-9:
-                net_pct = (float(top_layer["chg_dollars"]) / float(total_change)) * 100.0
-                net_txt = f" (net contribution: {signed_pct(net_pct)})"
-            else:
-                net_txt = " (net contribution: n/a)"
-            flags.append(
-                f"⚠️ {top_layer['Layer']} drove {top_layer['gross_share_pct']:.1f}% of today’s gross movement{net_txt}."
-            )
-
-    # Holding dominance (gross share)
-    if gross_holdings > 1e-9:
+    if gross_h > 1e-9:
         h = holdings.copy()
-        h["gross_share_pct"] = (h["chg_dollars"].abs() / gross_holdings) * 100.0
-        top_hold = h.sort_values("gross_share_pct", ascending=False).iloc[0]
-
-        if float(top_hold["gross_share_pct"]) > HOLDING_GROSS_DOMINANCE_PCT:
-            if abs(total_change) > 1e-9:
-                net_pct = (float(top_hold["chg_dollars"]) / float(total_change)) * 100.0
-                net_txt = f" (net contribution: {signed_pct(net_pct)})"
-            else:
-                net_txt = " (net contribution: n/a)"
-            flags.append(
-                f"⚠️ {top_hold['Stock']} drove {top_hold['gross_share_pct']:.1f}% of today’s gross movement{net_txt}."
-            )
+        h["gsh"] = (h["chg_dollars"].abs() / gross_h) * 100
+        top = h.sort_values("gsh", ascending=False).iloc[0]
+        if float(top["gsh"]) > HOLDING_GROSS_DOM:
+            net = (float(top["chg_dollars"]) / float(total_change) * 100) if abs(total_change) > 1e-9 else 0
+            flags.append(f"⚠️ {top['Stock']} drove {top['gsh']:.1f}% of today's gross movement (net: {signed_pct(net)}).")
 
     rubric_rows = [
-        ("Outcome vs Process", "🟢 Green", "Daily outcome attributed by layer; no role violations detected by rule."),
-        ("Risk Concentration Drift", "🟢 Green" if len(flags) == 0 else "🟡 Yellow",
-         "No dominance flags." if len(flags) == 0 else "Dominance flag(s) triggered; monitor concentration."),
-        ("Time Horizon Discipline", "🟢 Green", "Daily movements treated as signal/noise; no action prompts included."),
-        ("Execution Hygiene", "🟢 Green", "Automated snapshot stored; repeatable process executed."),
+        ("Outcome vs Process",       "🟢 Green",
+         "Daily outcome attributed by layer; no role violations detected."),
+        ("Risk Concentration Drift", "🟢 Green" if not flags else "🟡 Yellow",
+         "No dominance flags." if not flags else "Dominance flag(s) triggered; monitor concentration."),
+        ("Time Horizon Discipline",  "🟢 Green",
+         "Daily movements treated as signal/noise; no action prompts."),
+        ("Execution Hygiene",        "🟢 Green",
+         "Automated snapshot stored; repeatable process executed."),
     ]
     return pd.DataFrame(rubric_rows, columns=["Judgment Category", "Status", "Rationale"]), flags
 
 
-# -------------------------
-# EMAIL HTML
-# -------------------------
-def build_html(report_date: str,
-               total_value: float, total_change: float, total_change_pct: float,
-               spy_change_pct: float,
-               layer_table_html: str,
-               holdings_table_html: str,
-               rubric_table_html: str,
-               flags: list[str]) -> str:
+# ─── Email sender ─────────────────────────────────────────────────────────────
+def send_email(subject: str, html: str) -> None:
+    msg = MIMEMultipart("alternative")
+    msg["From"]    = EMAIL_FROM
+    msg["To"]      = ", ".join(TO_EMAILS)
+    msg["Subject"] = subject
+    msg.attach(MIMEText(html, "html"))
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+        smtp.login(EMAIL_FROM, EMAIL_APP_PW)
+        smtp.send_message(msg)
+
+
+# ─── HTML builder ─────────────────────────────────────────────────────────────
+_TD = "style='padding:7px 12px;border-bottom:1px solid #f2f2f2;'"
+_TH = "style='padding:7px 12px;text-align:left;border-bottom:1px solid #ddd;background:#f8fafc;'"
+_CARD = "style='border:1px solid #e0e7ef;border-radius:8px;margin-bottom:16px;overflow:hidden;'"
+
+
+def _table(headers: list[str], rows: list[list[str]]) -> str:
+    ths = "".join(f"<th {_TH}>{h}</th>" for h in headers)
+    trs = "".join(
+        "<tr>" + "".join(f"<td {_TD}>{c}</td>" for c in row) + "</tr>"
+        for row in rows
+    )
+    return (
+        f"<table cellpadding='0' cellspacing='0' "
+        f"style='border-collapse:collapse;width:100%;font-size:13px;'>"
+        f"<thead><tr>{ths}</tr></thead><tbody>{trs}</tbody></table>"
+    )
+
+
+def _section(title: str, body: str, accent: str = "#1a2340") -> str:
+    return (
+        f"<div {_CARD}>"
+        f"<div style='background:{accent};color:#fff;padding:10px 16px;"
+        f"font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;'>"
+        f"{title}</div>"
+        f"<div style='padding:16px;'>{body}</div>"
+        f"</div>"
+    )
+
+
+def build_html(
+    report_date: str,
+    total_value: float,
+    total_change: float,
+    total_change_pct: float,
+    spy_change_pct: float,
+    layer_weights: dict,     # {lnum: {weight_pct, value_yday, chg_dollars, chg_pct}}
+    holdings: pd.DataFrame,
+    drift_alerts: list[dict],
+    earn_alerts: list[dict],
+    exdiv_alerts: list[dict],
+    rubric_df: pd.DataFrame,
+    flags: list[str],
+) -> str:
+
+    targets = load_layer_targets()
+    chg_color = color_change(total_change)
+
+    # ── 1. Snapshot ──────────────────────────────────────────────────────────
+    best = holdings.loc[holdings["chg_dollars"].abs().idxmax()]
+    best_txt = (f"{best['Stock']} {signed_pct(float(best['chg_pct']))} "
+                f"({money(float(best['chg_dollars']))})")
+
+    snapshot_html = (
+        f"<table cellpadding='0' cellspacing='0' style='width:100%;'><tr>"
+        f"<td style='padding:0 24px 0 0;'>"
+        f"<div style='font-size:30px;font-weight:700;color:#1a2340;'>{money(total_value)}</div>"
+        f"<div style='font-size:12px;color:#aaa;margin-top:2px;'>Total Portfolio Value</div>"
+        f"</td>"
+        f"<td style='padding:0 24px;border-left:1px solid #e0e7ef;'>"
+        f"<div style='font-size:22px;font-weight:700;color:{chg_color};'>"
+        f"{signed_pct(total_change_pct)} &nbsp; {money(total_change)}</div>"
+        f"<div style='font-size:12px;color:#aaa;margin-top:2px;'>Today · SPY {signed_pct(spy_change_pct)}</div>"
+        f"</td>"
+        f"<td style='padding:0 0 0 24px;border-left:1px solid #e0e7ef;'>"
+        f"<div style='font-size:13px;font-weight:600;color:#1a2340;'>{best_txt}</div>"
+        f"<div style='font-size:12px;color:#aaa;margin-top:2px;'>Biggest mover</div>"
+        f"</td>"
+        f"</tr></table>"
+    )
+
+    # ── 2. Layer Allocation vs Target ────────────────────────────────────────
+    layer_rows = []
+    for lnum in range(1, 6):
+        lw   = layer_weights.get(lnum, {})
+        act  = lw.get("weight_pct", 0.0)
+        val  = lw.get("value_yday", 0.0)
+        dchg = lw.get("chg_dollars", 0.0)
+        dpct = lw.get("chg_pct", 0.0)
+        tgt  = targets.get(lnum, 0.0)
+        drift = act - tgt
+        color = LAYER_COLORS.get(lnum, "#888")
+
+        if abs(drift) <= 2:
+            drift_html = f"<span style='color:#27ae60;font-weight:600;'>✓ {drift:+.1f}pp</span>"
+        elif drift > 0:
+            drift_html = f"<span style='color:#e67e22;font-weight:600;'>▲ {drift:+.1f}pp</span>"
+        else:
+            drift_html = f"<span style='color:#2980b9;font-weight:600;'>▼ {drift:+.1f}pp</span>"
+
+        name_html = (
+            f"<span style='display:inline-block;width:10px;height:10px;border-radius:50%;"
+            f"background:{color};margin-right:6px;vertical-align:middle;'></span>"
+            f"<b>{LAYER_NAMES.get(lnum, f'L{lnum}')}</b>"
+        )
+        chg_c = color_change(dchg)
+        layer_rows.append([
+            name_html,
+            money(val),
+            f"{act:.1f}%",
+            f"{tgt:.0f}%",
+            drift_html,
+            f"<span style='color:{chg_c};'>{signed_pct(dpct)} / {money(dchg)}</span>",
+        ])
+
+    alloc_table = _table(
+        ["Layer", "Value", "Actual", "Target", "Drift", "Today Δ"],
+        layer_rows,
+    )
+
+    # Drift warning box (if any layers ≥5pp off)
+    drift_warning = ""
+    if drift_alerts:
+        items = "".join(
+            f"<li style='margin-bottom:4px;'>"
+            f"<b>{d['layer_name']}</b>: {d['current']:.1f}% actual vs {d['target']:.0f}% target — "
+            f"<span style='color:{'#e74c3c' if abs(d['drift'])>=10 else '#e67e22'};font-weight:700;'>"
+            f"{d['drift']:+.1f}pp</span></li>"
+            for d in drift_alerts
+        )
+        drift_warning = (
+            f"<div style='background:#fff8f0;border:1px solid #f5cba7;border-radius:6px;"
+            f"padding:12px 16px;margin-bottom:14px;'>"
+            f"<b style='color:#7d5a00;'>⚖️ Rebalancing needed</b> — "
+            f"{len(drift_alerts)} layer{'s' if len(drift_alerts)!=1 else ''} drifted "
+            f"≥{DRIFT_THRESHOLD:.0f}pp from target:<ul style='margin:8px 0 0;padding-left:18px;'>{items}</ul>"
+            f"</div>"
+        )
+
+    alloc_body = drift_warning + alloc_table
+
+    # ── 3. Holdings Performance ───────────────────────────────────────────────
+    h = holdings.copy().sort_values(["Layer", "chg_dollars"], ascending=[True, False])
+    hold_rows = []
+    for _, r in h.iterrows():
+        c = color_change(float(r["chg_dollars"]))
+        hold_rows.append([
+            r["LayerLabel"],
+            f"<b>{r['Stock']}</b>",
+            f"{r['Shares']:g}",
+            money(float(r["value_yday"])),
+            f"<span style='color:{c};'>{signed_pct(float(r['chg_pct']))} / {money(float(r['chg_dollars']))}</span>",
+        ])
+    hold_table = _table(["Layer", "Ticker", "Shares", "Value", "Today Δ"], hold_rows)
+
+    # ── 4. Calendar events ────────────────────────────────────────────────────
+    events_html = ""
+
+    def urgency(days):
+        return "🔴" if days <= 1 else "🟡" if days <= 2 else "🟢"
+
+    if earn_alerts:
+        earn_rows = [
+            [f"<b>{a['ticker']}</b>", a["date"],
+             f"{a['days']}d {urgency(a['days'])}"]
+            for a in earn_alerts
+        ]
+        events_html += (
+            "<p style='font-size:12px;font-weight:700;color:#1a2340;margin:0 0 8px;'>"
+            f"📊 Upcoming Earnings ({len(earn_alerts)} holding{'s' if len(earn_alerts)!=1 else ''})</p>"
+            + _table(["Ticker", "Date", "Days Away"], earn_rows)
+            + "<br>"
+        )
+
+    if exdiv_alerts:
+        def payout(a):
+            if a.get("amount") and a.get("shares"):
+                return f"${a['amount'] * a['shares']:,.2f}"
+            return "—"
+
+        exdiv_rows = [
+            [f"<b>{a['ticker']}</b>", a["date"],
+             f"{a['days']}d {urgency(a['days'])}", payout(a)]
+            for a in exdiv_alerts
+        ]
+        events_html += (
+            "<p style='font-size:12px;font-weight:700;color:#1a2340;margin:0 0 8px;'>"
+            f"💵 Upcoming Ex-Dividend ({len(exdiv_alerts)} holding{'s' if len(exdiv_alerts)!=1 else ''})</p>"
+            + _table(["Ticker", "Ex-Date", "Days Away", "Est. Payout"], exdiv_rows)
+        )
+
+    # ── 5. Rubric + flags ─────────────────────────────────────────────────────
+    rubric_rows_html = []
+    for _, r in rubric_df.iterrows():
+        rubric_rows_html.append([r["Judgment Category"], r["Status"], r["Rationale"]])
+    rubric_table = _table(["Judgment Category", "Status", "Rationale"], rubric_rows_html)
 
     flags_html = ""
     if flags:
-        flags_html = "<h3>Automated Flags</h3><ul>" + "".join(f"<li>{f}</li>" for f in flags) + "</ul>"
+        items = "".join(f"<li style='margin-bottom:4px;'>{f}</li>" for f in flags)
+        flags_html = (
+            f"<div style='background:#fff1f1;border:1px solid #fca5a5;border-radius:6px;"
+            f"padding:12px 16px;margin-top:14px;'>"
+            f"<b style='color:#7f1d1d;'>Automated Flags</b>"
+            f"<ul style='margin:8px 0 0;padding-left:18px;'>{items}</ul></div>"
+        )
 
-    anchor_state = "process-consistent" if not flags else "process-stressed"
+    anchor = "process-consistent" if not flags else "process-stressed"
+
+    # ── Assemble ──────────────────────────────────────────────────────────────
+    sections = [
+        _section("📈 Portfolio Snapshot", snapshot_html),
+        _section("⚖️ Layer Allocation vs Target", alloc_body),
+        _section("📋 Holdings Performance", hold_table),
+    ]
+    if events_html:
+        sections.append(_section("⏰ Upcoming Events (Next 3 Days)", events_html, accent="#2980b9"))
+    sections.append(_section("🧠 Judgment Health", rubric_table + flags_html))
+
+    body = "\n".join(sections)
 
     return f"""
-    <html>
-      <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; line-height: 1.35;">
-        <h2>Daily Portfolio Newsletter — {report_date}</h2>
+<html>
+<body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;
+             line-height:1.4;background:#f4f6f9;padding:20px;color:#2c3e50;">
+  <div style="max-width:680px;margin:0 auto;">
 
-        <h3>Executive Snapshot</h3>
-        <ul>
-          <li><b>Total value:</b> {money(total_value)}</li>
-          <li><b>Daily change:</b> {money(total_change)} ({pct(total_change_pct)})</li>
-          <li><b>SPY change:</b> {pct(spy_change_pct)}</li>
-        </ul>
+    <!-- Header -->
+    <div style="background:#1a2340;color:#fff;padding:18px 20px;border-radius:8px 8px 0 0;margin-bottom:0;">
+      <div style="font-size:18px;font-weight:700;letter-spacing:.02em;">Daily Investment Digest</div>
+      <div style="font-size:12px;opacity:.7;margin-top:3px;">{report_date}</div>
+    </div>
 
-        <h3>Layer Performance</h3>
-        {layer_table_html}
+    <div style="background:#fff;border:1px solid #e0e7ef;border-top:none;
+                border-radius:0 0 8px 8px;padding:20px;margin-bottom:16px;">
+      {body}
+    </div>
 
-        <h3>Allocation by Layer (Market Value)</h3>
-        <img src="cid:layer_pie" alt="Layer allocation pie chart" style="max-width:650px;width:100%;height:auto;" />
+    <!-- Footer -->
+    <div style="font-size:11px;color:#aaa;text-align:center;padding:0 0 12px;">
+      Discipline anchor: today's behavior was <b style="color:#555;">{anchor}</b>
+      with no judgment violations requiring action. &nbsp;·&nbsp;
+      Layer targets in <code>layer_targets.json</code>
+    </div>
 
-        <h3>Holdings Performance (Grouped by Layer)</h3>
-        {holdings_table_html}
-
-        <h3>Judgment Health Rubric</h3>
-        {rubric_table_html}
-
-        {flags_html}
-
-        <hr/>
-        <p><b>Discipline anchor:</b> Today’s portfolio behavior was <b>{anchor_state}</b> with no judgment violations requiring action.</p>
-      </body>
-    </html>
-    """
+  </div>
+</body>
+</html>"""
 
 
-# -------------------------
-# MAIN
-# -------------------------
+# ─── Main ─────────────────────────────────────────────────────────────────────
 def main():
     if not HOLDINGS_CSV.exists():
         raise FileNotFoundError(f"Missing holdings CSV at {HOLDINGS_CSV}")
-    if not EMAIL_FROM or not EMAIL_APP_PASSWORD:
+    if not EMAIL_FROM or not EMAIL_APP_PW:
         raise RuntimeError("EMAIL_FROM and EMAIL_APP_PASSWORD must be set in .env")
 
-    holdings = pd.read_csv(HOLDINGS_CSV)
-    cols = [str(c).strip() for c in holdings.columns]
+    # ── Load holdings ─────────────────────────────────────────────────────────
+    raw = pd.read_csv(HOLDINGS_CSV)
+    cols = [str(c).strip() for c in raw.columns]
     if all(c.startswith("Unnamed") for c in cols):
-        raise ValueError(
-            "holdings.csv appears to have no header row (all columns Unnamed). "
-            "Fix in Numbers: enable Header Row and set columns to Stock,Shares,Layer, then re-export."
-        )
-    holdings.columns = cols
+        raise ValueError("holdings.csv has no header row. Set Stock, Shares, AvgCost, Layer columns.")
+    raw.columns = cols
 
     required = {"Stock", "Shares", "AvgCost", "Layer"}
-    missing = required - set(holdings.columns)
+    missing = required - set(raw.columns)
     if missing:
-        raise ValueError(f"holdings.csv missing columns: {sorted(missing)}. Found: {list(holdings.columns)}")
+        raise ValueError(f"holdings.csv missing columns: {sorted(missing)}")
 
-    holdings["Stock"] = holdings["Stock"].astype(str).str.strip().str.upper().map(normalize_yahoo_ticker)
+    holdings = raw.copy()
+    holdings["Stock"]  = holdings["Stock"].astype(str).str.strip().str.upper().map(normalize_ticker)
     holdings["Shares"] = holdings["Shares"].astype(float)
-    holdings["Layer"] = holdings["Layer"].astype(int)
-
-    holdings["LayerName"] = holdings["Layer"].map(lambda x: LAYER_NAMES.get(int(x), f"Layer {x}"))
+    holdings["Layer"]  = holdings["Layer"].astype(int)
+    holdings["LayerName"]  = holdings["Layer"].map(lambda x: LAYER_NAMES.get(int(x), f"Layer {x}"))
     holdings["LayerLabel"] = holdings.apply(lambda r: f"Layer {int(r['Layer'])}: {r['LayerName']}", axis=1)
 
-    tickers = sorted(set(holdings["Stock"].tolist() + [BENCHMARK]))
-    closes = fetch_last_two_closes(tickers)
+    stock_tickers = sorted(set(holdings["Stock"].tolist()))
+    all_tickers   = stock_tickers + [BENCHMARK]
 
+    # ── Parallel: prices + calendar events ───────────────────────────────────
+    earn_alerts = exdiv_alerts = []
+    with ThreadPoolExecutor(max_workers=2) as outer:
+        close_fut   = outer.submit(fetch_last_two_closes, all_tickers)
+        cal_fut     = outer.submit(fetch_calendar_events, stock_tickers)
+        closes          = close_fut.result()
+        earn_alerts, exdiv_alerts = cal_fut.result()
+
+    # ── Enrich holdings ───────────────────────────────────────────────────────
     holdings["close_yday"] = holdings["Stock"].map(closes["close_yday"])
     holdings["close_prev"] = holdings["Stock"].map(closes["close_prev"])
-
     holdings["value_yday"] = holdings["Shares"] * holdings["close_yday"]
     holdings["value_prev"] = holdings["Shares"] * holdings["close_prev"]
     holdings["chg_dollars"] = holdings["value_yday"] - holdings["value_prev"]
-    holdings["chg_pct"] = (holdings["chg_dollars"] / holdings["value_prev"]) * 100.0
+    holdings["chg_pct"]     = (holdings["chg_dollars"] / holdings["value_prev"]) * 100.0
 
-    layers = holdings.groupby(["LayerLabel"], as_index=False).agg(
+    total_value      = float(holdings["value_yday"].sum())
+    total_prev       = float(holdings["value_prev"].sum())
+    total_change     = total_value - total_prev
+    total_change_pct = (total_change / total_prev * 100) if total_prev else 0.0
+
+    b = closes.loc[normalize_ticker(BENCHMARK)]
+    spy_change_pct = ((float(b["close_yday"]) - float(b["close_prev"])) / float(b["close_prev"])) * 100.0
+
+    # ── Layer aggregation ─────────────────────────────────────────────────────
+    layers = holdings.groupby("LayerLabel", as_index=False).agg(
         value_yday=("value_yday", "sum"),
         value_prev=("value_prev", "sum"),
         chg_dollars=("chg_dollars", "sum"),
     )
-    layers["chg_pct"] = (layers["chg_dollars"] / layers["value_prev"]) * 100.0
+    layers["chg_pct"]    = (layers["chg_dollars"] / layers["value_prev"]) * 100.0
+    layers["weight_pct"] = (layers["value_yday"] / total_value) * 100.0
+    layers = layers.rename(columns={"LayerLabel": "Layer"})
 
-    total_value = float(holdings["value_yday"].sum())
-    total_prev = float(holdings["value_prev"].sum())
-    total_change = total_value - total_prev
-    total_change_pct = (total_change / total_prev) * 100.0 if total_prev else 0.0
+    # layer_weights keyed by layer number for drift check + HTML
+    lnum_map = {f"Layer {n}: {LAYER_NAMES[n]}": n for n in range(1, 6)}
+    layer_weights = {}
+    for _, r in layers.iterrows():
+        lnum = lnum_map.get(r["Layer"])
+        if lnum:
+            layer_weights[lnum] = {
+                "weight_pct":  float(r["weight_pct"]),
+                "value_yday":  float(r["value_yday"]),
+                "chg_dollars": float(r["chg_dollars"]),
+                "chg_pct":     float(r["chg_pct"]),
+            }
 
-    b = closes.loc[normalize_yahoo_ticker(BENCHMARK)]
-    spy_change_pct = ((float(b["close_yday"]) - float(b["close_prev"])) / float(b["close_prev"])) * 100.0
+    drift_alerts = compute_drift(layer_weights)
 
-    # chart + weights
-    pie_df = layers.rename(columns={"LayerLabel": "Layer"}).copy()
-    pie_df["weight_pct"] = (pie_df["value_yday"] / total_value) * 100.0
-    make_layer_pie(pie_df[["Layer", "value_yday"]], CHART_PATH)
-
-    holdings_db = holdings.copy()
-    holdings_db["weight_pct"] = (holdings_db["value_yday"] / total_value) * 100.0
-
-    # DB write (every run)
+    # ── DB snapshot ───────────────────────────────────────────────────────────
     day = datetime.now(TZ).strftime("%Y-%m-%d")
-    store_snapshot(day, total_value, total_change, total_change_pct, spy_change_pct, pie_df, holdings_db)
+    holdings["weight_pct"] = (holdings["value_yday"] / total_value) * 100.0
+    store_snapshot(day, total_value, total_change, total_change_pct,
+                   spy_change_pct, layers, holdings)
 
-    # tables for email
-    layer_display = pie_df.copy()
-    layer_display["Value"] = layer_display["value_yday"].map(money)
-    layer_display["Δ $"] = layer_display["chg_dollars"].map(money)
-    layer_display["Δ %"] = layer_display["chg_pct"].map(pct)
-    layer_display["Weight"] = layer_display["weight_pct"].map(lambda x: f"{x:.1f}%")
-    layer_display = layer_display[["Layer", "Value", "Weight", "Δ $", "Δ %"]]
-    layer_table_html = df_to_html_table(layer_display)
+    # ── Rubric + flags ────────────────────────────────────────────────────────
+    rubric_df, flags = rubric_and_flags(total_change, layers, holdings)
 
-    h = holdings.copy()
-    h["Value"] = h["value_yday"].map(money)
-    h["Δ $"] = h["chg_dollars"].map(money)
-    h["Δ %"] = h["chg_pct"].map(pct)
-    h = h.sort_values(["Layer", "chg_dollars"], ascending=[True, False])
-    holdings_display = h[["LayerLabel", "Stock", "Shares", "Value", "Δ $", "Δ %"]].rename(columns={"LayerLabel": "Layer"})
-    holdings_table_html = df_to_html_table(holdings_display)
-
-    rubric_df, flags = rubric_and_flags(total_change, pie_df, holdings)
-    rubric_table_html = df_to_html_table(rubric_df)
-
+    # ── Build + send ──────────────────────────────────────────────────────────
     report_date = datetime.now(TZ).strftime("%A, %B %d, %Y")
-    subject = f"Daily Portfolio Newsletter — {datetime.now(TZ).strftime('%Y-%m-%d')}"
+    subject     = f"📬 Investment Digest — {datetime.now(TZ).strftime('%Y-%m-%d')}"
+
+    # Add drift alert indicator to subject if rebalancing needed
+    if drift_alerts:
+        n = len(drift_alerts)
+        subject = f"⚖️ Investment Digest — {datetime.now(TZ).strftime('%Y-%m-%d')} ({n} layer drift{'s' if n>1 else ''})"
 
     html = build_html(
         report_date=report_date,
@@ -467,14 +623,19 @@ def main():
         total_change=total_change,
         total_change_pct=total_change_pct,
         spy_change_pct=spy_change_pct,
-        layer_table_html=layer_table_html,
-        holdings_table_html=holdings_table_html,
-        rubric_table_html=rubric_table_html,
+        layer_weights=layer_weights,
+        holdings=holdings,
+        drift_alerts=drift_alerts,
+        earn_alerts=earn_alerts,
+        exdiv_alerts=exdiv_alerts,
+        rubric_df=rubric_df,
         flags=flags,
     )
 
-    message = build_message(TO_EMAILS, subject, html, CHART_PATH)
-    send_email(message)
+    send_email(subject, html)
+    print(f"[Newsletter] Sent for {day} — "
+          f"{len(earn_alerts)} earning alert(s), {len(exdiv_alerts)} ex-div alert(s), "
+          f"{len(drift_alerts)} drift alert(s), {len(flags)} flag(s)")
 
 
 if __name__ == "__main__":
