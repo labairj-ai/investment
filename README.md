@@ -197,16 +197,26 @@ Two-column layout: wide left panel for goals, right column for barbell health + 
 - For any behind quarter: recommended capital to deploy at current portfolio yield
 - Header shows both required CAGRs and current dividend yield
 
-**Barbell Health (Taleb)** (right column, top)
-- Current L4 Convexity / Optionality allocation vs the 10–15% target band
-- Color-coded status: under-barbelled / in range / over-barbelled
-- **L4 Recommendations**: shows current L4 holdings as chips (ticker + weight %); recommends whether to add to existing positions, initiate a new convexity position, or pause L4 purchases based on how far L4 is from the 10–15% band
+**Layer Allocation vs Target** (right column, top)
+- Shows all 5 layers side-by-side with actual weight %, architecture-based target %, and drift
+- Drift color-coding: **green ✓** = within 2pp, **orange ▲** = over target, **blue ▼** = under target
+- Each layer row has a horizontal progress bar (0–50% scale) with a dark marker line at the target weight, so over/under is instantly visible
+- L4 Convexity row is annotated with the Taleb barbell "(10–15% band)"
+- Target weights are set in `layer_targets.json` (architecture-based defaults):
+
+| Layer | Name | Target |
+|-------|------|--------|
+| L1 | Structural Ballast | 25% |
+| L2 | Cash-Flow Engines | 20% |
+| L3 | Compounders | 35% |
+| L4 | Convexity | 12% |
+| L5 | Shock Absorbers | 8% |
 
 **Recommended Purchases** (right column, bottom)
 - Live recommendation engine that fetches `/api/buffett-winners` and `/api/earnings` on every page load
 - Filters the Buffett screener's passing universe to exclude stocks already held and any with high value-trap risk
 - Scores remaining candidates by risk level (low › medium › unknown) and valuation (penalizes P/E > 40, EV/EBITDA > 25, P/FCF > 35)
-- Groups recommendations by layer, matched to whichever layers are most underweight vs `layer_targets.json`; L4 is excluded (handled by the Barbell panel above)
+- Groups recommendations by layer, matched to whichever layers are most underweight vs `layer_targets.json` targets
 - Each pick shows: risk badge (✓ Low / ⚠ Med / ? Unrated), P/E · P/FCF · EV/EBITDA · dividend yield, screener's layer assignment reason, and any active value trap flags (e.g. *gross margin compressing 2 yrs in a row*)
 - Earnings warning (⚠ earnings in Nd) for any pick with an earnings date within 14 days
 - L2 Cash-Flow Engine section shows estimated monthly income from deploying the layer gap at current portfolio yield
@@ -398,10 +408,10 @@ Auto-loads on page open. Hit **Refresh** to update; cached 1 hour per day.
 
 After each successful 8 AM newsletter run, `serve.py` checks whether any layer has drifted ≥5pp from its target.
 
-**Targets file:** `layer_targets.json` — created automatically from current weights on first run:
+**Targets file:** `layer_targets.json` — edit to adjust targets; defaults reflect the portfolio architecture:
 
 ```json
-{ "1": 28.5, "2": 12.0, "3": 35.0, "4": 14.5, "5": 10.0 }
+{ "1": 25, "2": 20, "3": 35, "4": 12, "5": 8 }
 ```
 
 ---
