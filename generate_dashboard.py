@@ -746,30 +746,16 @@ def build_dashboard(portfolio, layers, holdings):
       <!-- Right column: Barbell + Principles stacked -->
       <div style="display:flex;flex-direction:column;gap:14px;">
 
-        <!-- Barbell Health -->
-        <div style="background:#f9f8ff;border:1px solid #d8d0f0;border-radius:8px;padding:14px 16px;">
-          <div style="font-size:11px;font-weight:700;color:#6c3fc5;text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px;">
-            Barbell Health (Taleb)
-          </div>
-          <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
-            <span id="goal-l4-pct" style="font-size:22px;font-weight:700;color:#1a2340;">—</span>
-            <div>
-              <div style="font-size:11px;color:#7f8c8d;">L4 Convexity / Optionality</div>
-              <div style="font-size:10px;color:#aaa;">target: 10–15% of portfolio</div>
+        <!-- Layer Allocation vs Target -->
+        <div style="background:#fff;border:1px solid #e0e7ef;border-radius:8px;padding:12px 14px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+            <div style="font-size:11px;font-weight:700;color:#1a2340;text-transform:uppercase;letter-spacing:.05em;">
+              Layer Allocation vs Target
             </div>
+            <div style="font-size:9px;color:#bbb;letter-spacing:.03em;">bar scale: 0–50%</div>
           </div>
-          <div style="background:#ede9fc;border-radius:4px;height:7px;overflow:hidden;margin-bottom:5px;position:relative;">
-            <div style="position:absolute;left:40%;right:0;top:0;bottom:0;background:#d4c9f7;border-radius:4px;"></div>
-            <div style="position:absolute;left:40%;width:20%;top:0;bottom:0;background:#b39ddb;border-radius:4px;"></div>
-            <div id="goal-l4-bar" style="position:absolute;left:0;top:0;bottom:0;background:#6c3fc5;border-radius:4px;width:0%;transition:width .5s;"></div>
-          </div>
-          <div style="display:flex;justify-content:space-between;font-size:10px;color:#aaa;margin-bottom:10px;">
-            <span>0%</span><span style="color:#6c3fc5;">10%</span><span style="color:#6c3fc5;">15%</span><span>25%</span>
-          </div>
-          <div id="goal-l4-status" style="font-size:11px;margin-bottom:10px;"></div>
-          <div style="border-top:1px solid #ede9fc;padding-top:10px;">
-            <div style="font-size:11px;font-weight:700;color:#6c3fc5;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px;">Recommendations</div>
-            <div id="goal-l4-recs" style="font-size:11px;color:#555;line-height:1.7;"></div>
+          <div id="goal-layer-alloc" style="font-size:11px;">
+            <div style="color:#aaa;font-style:italic;">Loading…</div>
           </div>
         </div>
 
@@ -789,15 +775,9 @@ def build_dashboard(portfolio, layers, holdings):
   </div>
 
   <!-- Main charts row -->
-  <div class="three-col">
-    <div class="card">
-      <h2>Portfolio vs SPY — Cumulative Return <span style="font-size:11px;font-weight:400;color:#aaa;">(time-weighted, since Feb 11 2026)</span></h2>
-      <canvas id="cumChart"></canvas>
-    </div>
-    <div class="card">
-      <h2>Allocation by Layer</h2>
-      <canvas id="pieChart"></canvas>
-    </div>
+  <div class="card">
+    <h2>Portfolio vs SPY — Cumulative Return <span style="font-size:11px;font-weight:400;color:#aaa;">(time-weighted, since Feb 11 2026)</span></h2>
+    <canvas id="cumChart"></canvas>
   </div>
 
   <!-- Layer weight drift + today bar -->
@@ -1217,21 +1197,6 @@ new Chart(document.getElementById("cumChart"), {{
 }});
 
 // Pie chart
-new Chart(document.getElementById("pieChart"), {{
-  type: "doughnut",
-  data: {{
-    labels: D.pieLabels,
-    datasets: [{{ data: D.pieValues, backgroundColor: D.pieColors, borderWidth: 2, borderColor: "#fff" }}]
-  }},
-  options: {{
-    responsive: true,
-    plugins: {{
-      legend: {{ position: "bottom", labels: {{ font: {{ size: 11 }}, boxWidth: 12 }} }},
-      tooltip: {{ callbacks: {{ label: ctx => ` ${{ctx.label}}: ${{ctx.parsed.toLocaleString("en-US", {{style:"currency", currency:"USD", maximumFractionDigits:0}})}}` }} }}
-    }}
-  }}
-}});
-
 // Layer weight over time
 new Chart(document.getElementById("weightChart"), {{
   type: "line",
@@ -1665,74 +1630,57 @@ function renderGoalsCard() {{
       ${{rows}}`;
   }}
 
-  // ── Barbell (L4) health ──
-  const lw   = D.layerWeightsByNum || {{}};
-  const l4   = (lw[4] || {{}}).weight || 0;
-  const l4Val = (lw[4] || {{}}).value  || 0;
-  const total = D.totalValue || 0;
+  // ── Layer Allocation vs Target ──
+  const lw      = D.layerWeightsByNum || {{}};
+  const targets = D.layerTargets     || {{}};
+  const total   = D.totalValue       || 0;
 
-  const l4El = document.getElementById("goal-l4-pct");
-  if (l4El) l4El.textContent = l4.toFixed(1) + "%";
-  const l4Bar = document.getElementById("goal-l4-bar");
-  if (l4Bar) l4Bar.style.width = Math.min(100, l4 / 25 * 100) + "%";
-  const l4Stat = document.getElementById("goal-l4-status");
-  if (l4Stat) {{
-    if (l4 < 10) {{
-      l4Stat.innerHTML = `<span style="color:#e67e22;">⚠ Under-barbelled.</span> L4 is ${{l4.toFixed(1)}}% — target 10–15%.`;
-    }} else if (l4 <= 15) {{
-      l4Stat.innerHTML = `<span style="color:#27ae60;">✓ In range.</span> ${{l4.toFixed(1)}}% in L4 — barbell is healthy.`;
-    }} else {{
-      l4Stat.innerHTML = `<span style="color:#e74c3c;">⚠ Over-barbelled.</span> ${{l4.toFixed(1)}}% in L4 exceeds 15% target.`;
-    }}
-  }}
+  const ALLOC_META = {{
+    1: {{ name: "L1 Structural Ballast",  color: "#4A90D9" }},
+    2: {{ name: "L2 Cash-Flow Engines",   color: "#27ae60" }},
+    3: {{ name: "L3 Compounders",         color: "#e67e22" }},
+    4: {{ name: "L4 Convexity",           color: "#7c3aed", band: "10–15% band" }},
+    5: {{ name: "L5 Shock Absorbers",     color: "#9B59B6" }},
+  }};
 
-  // ── Recommendations ──
-  const recsEl = document.getElementById("goal-l4-recs");
-  if (!recsEl) return;
+  const allocEl = document.getElementById("goal-layer-alloc");
+  if (allocEl) {{
+    const rows = [1,2,3,4,5].map(n => {{
+      const actual = (lw[n] || {{}}).weight || 0;
+      const target = targets[n] || 0;
+      const drift  = actual - target;
+      const m      = ALLOC_META[n];
 
-  const positions = (D.l4Positions || []).slice().sort((a,b) => b.value - a.value);
+      const driftColor = Math.abs(drift) <= 2 ? "#27ae60" : drift > 0 ? "#e67e22" : "#2980b9";
+      const driftIcon  = Math.abs(drift) <= 2 ? "✓" : drift > 0 ? "▲" : "▼";
+      const driftStr   = Math.abs(drift) < 0.05 ? "on target" : `${{drift > 0 ? "+" : ""}}${{drift.toFixed(1)}}pp`;
 
-  // Position chips
-  const chips = positions.length
-    ? positions.map(p =>
-        `<span style="display:inline-block;background:#ede9fc;border:1px solid #d8d0f0;border-radius:4px;padding:2px 7px;margin:2px 3px 2px 0;font-size:10px;font-weight:600;color:#6c3fc5;">
-          ${{p.ticker}} <span style="color:#888;font-weight:400;">${{p.weight.toFixed(1)}}%</span>
-        </span>`
-      ).join("")
-    : `<span style="color:#aaa;font-size:10px;">No L4 positions yet</span>`;
+      const barPct    = Math.min(100, (actual / 50) * 100).toFixed(1);
+      const targetPct = Math.min(100, (target / 50) * 100).toFixed(1);
+      const bandTag   = m.band ? `<span style="font-size:9px;color:#aaa;"> (${{m.band}})</span>` : "";
 
-  let action = "";
-  if (l4 < 10) {{
-    const needed = total > 0 ? Math.max(0, total * 0.10 - l4Val) : 0;
-    if (positions.length > 0) {{
-      action = `<div style="margin-top:8px;padding:8px 10px;background:#fff8f0;border:1px solid #f5cba7;border-radius:6px;color:#7d5a00;">
-        <b>Add to existing L4.</b> Invest ${{fmt$(needed)}} more into current L4 positions to reach 10%.
-        Focus on the highest-conviction holding already in the barbell.
+      return `
+      <div style="margin-bottom:${{n < 5 ? "10px" : "0"}};">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px;">
+          <div style="display:flex;align-items:center;gap:5px;">
+            <span style="width:7px;height:7px;border-radius:50%;background:${{m.color}};display:inline-block;flex-shrink:0;"></span>
+            <span style="font-weight:600;color:#1a2340;">${{m.name}}</span>${{bandTag}}
+          </div>
+          <div style="display:flex;align-items:center;gap:6px;font-size:10px;white-space:nowrap;">
+            <span style="color:#1a2340;font-weight:700;">${{actual.toFixed(1)}}%</span>
+            <span style="color:#bbb;">/ ${{target}}%</span>
+            <span style="color:${{driftColor}};font-weight:600;">${{driftIcon}} ${{driftStr}}</span>
+          </div>
+        </div>
+        <div style="position:relative;height:6px;background:#f0f2f5;border-radius:3px;">
+          <div style="position:absolute;left:0;top:0;bottom:0;width:${{barPct}}%;background:${{m.color}};border-radius:3px;opacity:0.8;transition:width .5s;"></div>
+          <div style="position:absolute;left:${{targetPct}}%;top:-2px;bottom:-2px;width:2px;background:#1a2340;border-radius:1px;opacity:0.35;"></div>
+        </div>
       </div>`;
-    }} else {{
-      action = `<div style="margin-top:8px;padding:8px 10px;background:#fff8f0;border:1px solid #f5cba7;border-radius:6px;color:#7d5a00;">
-        <b>Initiate a convexity position.</b> No L4 holdings yet. Allocate ${{fmt$(total * 0.10)}} (~10% of portfolio)
-        to a high-conviction asymmetric idea — one that could 5–10× but you can afford to lose.
-      </div>`;
-    }}
-  }} else if (l4 <= 15) {{
-    const maxAdd = total > 0 ? Math.max(0, total * 0.15 - l4Val) : 0;
-    action = `<div style="margin-top:8px;padding:8px 10px;background:#f0fdf4;border:1px solid #a7f3d0;border-radius:6px;color:#065f46;">
-      <b>Barbell healthy.</b> Up to ${{fmt$(maxAdd)}} more can go into L4 before hitting 15%.
-      Direct new capital to core layers (L1–L3) or add to your strongest L4 conviction.
-    </div>`;
-  }} else {{
-    const excess = l4Val - total * 0.15;
-    action = `<div style="margin-top:8px;padding:8px 10px;background:#fff1f1;border:1px solid #fca5a5;border-radius:6px;color:#7f1d1d;">
-      <b>Pause L4 purchases.</b> ${{fmt$(excess)}} above 15% ceiling. Review whether any L4 positions
-      have grown into core compounders — if so, reclassify to L3 and rebalance.
-    </div>`;
-  }}
+    }}).join("");
 
-  recsEl.innerHTML = `
-    <div style="margin-bottom:4px;color:#888;font-size:10px;text-transform:uppercase;letter-spacing:.04em;">Current L4 holdings</div>
-    <div style="margin-bottom:2px;">${{chips}}</div>
-    ${{action}}`;
+    allocEl.innerHTML = rows || `<div style="color:#aaa;">No portfolio data</div>`;
+  }}
 
   // Kick off async recommendation engine (fetches screener + earnings)
   loadRecommendations({{
