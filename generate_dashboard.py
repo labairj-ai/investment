@@ -2583,6 +2583,26 @@ async function loadBuffett() {{
       4: {{ label:"L4",  bg:"#6c3fc5", color:"#fff",    title:"Convexity / Optionality — nonlinear upside" }},
       5: {{ label:"L5",  bg:"#b22222", color:"#fff",    title:"Shock Absorber — performs when assumptions fail" }},
     }};
+    const _trapMeta = {{
+      low:    {{ label:"✓ Low",    bg:"#eafaf1", color:"#1e8449", border:"#a9dfbf" }},
+      medium: {{ label:"⚠ Medium", bg:"#fef9e7", color:"#b7770d", border:"#f9e79f" }},
+      high:   {{ label:"⛔ High",  bg:"#fdf2f2", color:"#c0392b", border:"#f5c6cb" }},
+    }};
+    const _trapBadge = (risk, flagsJson) => {{
+      if (!risk) return `<span style="color:#bbb;font-size:11px;">—</span>`;
+      const m = _trapMeta[risk] || _trapMeta.low;
+      let flags = [];
+      try {{ flags = JSON.parse(flagsJson || "[]"); }} catch(e) {{}}
+      const tooltip = flags.length ? flags.join("\\n") : "No value trap signals detected";
+      const flagLines = flags.length
+        ? flags.map(f => `<div style="font-size:10px;color:#888;margin-top:2px;line-height:1.3;">• ${{f}}</div>`).join("")
+        : `<div style="font-size:10px;color:#aaa;margin-top:2px;">No signals detected</div>`;
+      return `<span title="${{tooltip}}"
+        style="display:inline-block;padding:2px 7px;border-radius:10px;font-size:10px;font-weight:700;
+               background:${{m.bg}};color:${{m.color}};border:1px solid ${{m.border}};
+               cursor:default;white-space:nowrap;">${{m.label}}</span>${{flagLines}}`;
+    }};
+
     const _layerBadge = (rec, reason) => {{
       if (!rec) return "—";
       const m = _layerMeta[rec] || {{}};
@@ -2613,6 +2633,7 @@ async function loadBuffett() {{
           </td>
           <td style="padding:8px 10px;color:#555;font-size:12px;">${{w.company || "—"}}</td>
           <td style="padding:8px 6px;vertical-align:middle;">${{_layerBadge(w.layer_rec, w.layer_reason)}}</td>
+          <td style="padding:8px 6px;vertical-align:top;">${{_trapBadge(w.value_trap_risk, w.value_trap_flags)}}</td>
           <td style="padding:8px 10px;">${{w.price ? "$" + w.price.toFixed(2) : "—"}}</td>
           <td style="padding:8px 10px;font-weight:700;color:#27ae60;">${{w.gross_margin?.toFixed(1)}}%</td>
           <td style="padding:8px 10px;color:#555;">${{w.sga_margin?.toFixed(1)}}%</td>
@@ -2637,6 +2658,7 @@ async function loadBuffett() {{
           <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;letter-spacing:.04em;">Ticker</th>
           <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;letter-spacing:.04em;">Company</th>
           <th style="padding:7px 10px;text-align:left;font-size:11px;color:#9b59b6;text-transform:uppercase;letter-spacing:.04em;">Layer</th>
+          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#c0392b;text-transform:uppercase;letter-spacing:.04em;">Trap Risk</th>
           <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;letter-spacing:.04em;">Price</th>
           <th style="padding:7px 10px;text-align:left;font-size:11px;color:#27ae60;text-transform:uppercase;letter-spacing:.04em;">Gross %</th>
           <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;letter-spacing:.04em;">SG&amp;A %</th>
@@ -2652,7 +2674,7 @@ async function loadBuffett() {{
       </table>
       </div>
       <p style="font-size:11px;color:#aaa;margin-top:6px;">
-        Sorted by Gross Margin · Green = quality pass · Blue = valuation · Purple = layer recommendation${{partialNote}}
+        Sorted by Gross Margin · Green = quality pass · Blue = valuation · Purple = layer · Red = value trap risk${{partialNote}}
       </p>`;
 
   }} catch(e) {{

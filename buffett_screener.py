@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Warren Buffett NYSE screener — runs nightly, stores results in buffett.db."""
 
+import json as _json
 import math
 import os
 import random
@@ -97,10 +98,14 @@ def _init_db(conn):
         ("buffett_winners", "ev_ebitda",       "REAL"),
         ("buffett_winners", "sector",          "TEXT"),
         ("buffett_winners", "industry",        "TEXT"),
-        ("buffett_winners", "dividend_yield",  "REAL"),
-        ("buffett_winners", "market_cap",      "REAL"),
-        ("buffett_winners", "layer_rec",       "INTEGER"),
-        ("buffett_winners", "layer_reason",    "TEXT"),
+        ("buffett_winners", "dividend_yield",   "REAL"),
+        ("buffett_winners", "market_cap",       "REAL"),
+        ("buffett_winners", "layer_rec",        "INTEGER"),
+        ("buffett_winners", "layer_reason",     "TEXT"),
+        ("buffett_winners", "value_trap_risk",  "TEXT"),
+        ("buffett_winners", "value_trap_flags", "TEXT"),
+        ("buffett_cache",   "value_trap_risk",  "TEXT"),
+        ("buffett_cache",   "value_trap_flags", "TEXT"),
     ]
     for table, col, coltype in migrations:
         try:
@@ -191,27 +196,30 @@ def get_financial_data(ticker):
             return round((num / den) * 100, 2) if den else 0.0
 
         equity_adj = equity + abs(treasury)
+        trap_risk, trap_flags = _value_trap_risk(fin, cf, info)
         return {
-            "ticker":            ticker,
-            "company":           info.get("shortName", ticker),
-            "price":             info.get("currentPrice", 0) or 0,
-            "last_quarter_date": last_q_date,
-            "gross_margin":      margin(gross_profit, rev),
-            "sga_margin":        margin(sga, gross_profit),
-            "rd_margin":         margin(r_d, gross_profit),
-            "depr_margin":       margin(depr, gross_profit),
-            "interest_margin":   margin(interest, op_income),
-            "net_income_margin": margin(net_income, rev),
-            "capex_margin":      margin(abs(capex), net_income),
-            "cash_gt_debt":      "Yes" if cash > total_debt else "No",
-            "adj_debt_equity":   round(total_liab / equity_adj, 2) if equity_adj else 0.0,
-            "pe_ratio":          round(pe_ratio, 1) if pe_ratio is not None else None,
-            "p_fcf":             p_fcf,
-            "ev_ebitda":         round(ev_ebitda, 1) if ev_ebitda is not None else None,
-            "sector":            sector,
-            "industry":          industry,
-            "dividend_yield":    round(dividend_yield, 4) if dividend_yield else None,
-            "market_cap":        market_cap or None,
+            "ticker":             ticker,
+            "company":            info.get("shortName", ticker),
+            "price":              info.get("currentPrice", 0) or 0,
+            "last_quarter_date":  last_q_date,
+            "gross_margin":       margin(gross_profit, rev),
+            "sga_margin":         margin(sga, gross_profit),
+            "rd_margin":          margin(r_d, gross_profit),
+            "depr_margin":        margin(depr, gross_profit),
+            "interest_margin":    margin(interest, op_income),
+            "net_income_margin":  margin(net_income, rev),
+            "capex_margin":       margin(abs(capex), net_income),
+            "cash_gt_debt":       "Yes" if cash > total_debt else "No",
+            "adj_debt_equity":    round(total_liab / equity_adj, 2) if equity_adj else 0.0,
+            "pe_ratio":           round(pe_ratio, 1) if pe_ratio is not None else None,
+            "p_fcf":              p_fcf,
+            "ev_ebitda":          round(ev_ebitda, 1) if ev_ebitda is not None else None,
+            "sector":             sector,
+            "industry":           industry,
+            "dividend_yield":     round(dividend_yield, 4) if dividend_yield else None,
+            "market_cap":         market_cap or None,
+            "value_trap_risk":    trap_risk,
+            "value_trap_flags":   _json.dumps(trap_flags),
         }
     except Exception:
         return None
@@ -229,6 +237,120 @@ def _passes_filters(r):
         and _g("capex_margin", 100)    <= 50
         and r.get("cash_gt_debt")      == "Yes"
     )
+
+
+def _value_trap_risk(fin, cf, info):
+    """
+    Detect value trap signals for a Buffett screener winner.
+    A value trap is a company that LOOKS high-quality historically but whose
+    underlying business is deteriorating — the screen caught a lagging picture.
+
+    Returns (risk_level: str, flags: list[str])
+      risk_level: 'low' | 'medium' | 'high'
+      flags:      human-readable warning strings for the UI
+    """
+    flags = []
+
+    def _gv(df, row, col=0):
+        try:
+            if row in df.index:
+                v = float(df.loc[row].iloc[col])
+                return None if (math.isnan(v) or math.isinf(v)) else v
+        except Exception:
+            pass
+        return None
+
+    # ── Multi-year revenue trend ──────────────────────────────────────────
+    rev = [_gv(fin, "Total Revenue", i) for i in range(3)]
+    if all(v and v > 0 for v in rev):
+        if rev[0] < rev[1] and rev[1] < rev[2]:
+            pct = (rev[0] / rev[2] - 1) * 100
+            flags.append(f"Revenue declining 2 yrs in a row ({pct:+.1f}% over 2yr)")
+        elif rev[0] is not None and rev[1] is not None and rev[0] < rev[1] * 0.93:
+            pct = (rev[0] / rev[1] - 1) * 100
+            flags.append(f"Revenue fell {pct:+.1f}% YoY")
+    elif rev[0] and rev[1] and rev[0] < rev[1] * 0.93:
+        pct = (rev[0] / rev[1] - 1) * 100
+        flags.append(f"Revenue fell {pct:+.1f}% YoY")
+
+    # ── Multi-year net income trend ───────────────────────────────────────
+    ni = [_gv(fin, "Net Income", i) for i in range(3)]
+    if all(v and v > 0 for v in ni):
+        if ni[0] < ni[1] and ni[1] < ni[2]:
+            pct = (ni[0] / ni[2] - 1) * 100
+            flags.append(f"Net income declining 2 yrs in a row ({pct:+.1f}% over 2yr)")
+        elif ni[0] is not None and ni[1] is not None and ni[0] < ni[1] * 0.80:
+            pct = (ni[0] / ni[1] - 1) * 100
+            flags.append(f"Net income dropped sharply YoY ({pct:+.1f}%)")
+    elif ni[0] and ni[1] and ni[0] > 0 and ni[0] < ni[1] * 0.80:
+        pct = (ni[0] / ni[1] - 1) * 100
+        flags.append(f"Net income dropped sharply YoY ({pct:+.1f}%)")
+
+    # ── Gross margin compression (moat erosion signal) ────────────────────
+    gp  = [_gv(fin, "Gross Profit", i) for i in range(3)]
+    r3  = [_gv(fin, "Total Revenue", i) for i in range(3)]
+    gms = []
+    for g, r in zip(gp, r3):
+        if g and r and r > 0:
+            gms.append(g / r)
+        else:
+            gms.append(None)
+    if len(gms) >= 3 and all(v is not None for v in gms[:3]):
+        if gms[0] < gms[1] and gms[1] < gms[2]:
+            flags.append(
+                f"Gross margin compressing 2 yrs in a row "
+                f"({gms[2]*100:.1f}% → {gms[1]*100:.1f}% → {gms[0]*100:.1f}%)"
+            )
+    elif len(gms) >= 2 and gms[0] is not None and gms[1] is not None:
+        if gms[0] < gms[1] - 0.05:
+            flags.append(
+                f"Gross margin dropped {(gms[1]-gms[0])*100:.1f}pp YoY "
+                f"({gms[1]*100:.1f}% → {gms[0]*100:.1f}%)"
+            )
+
+    # ── FCF vs net income (earnings quality) ──────────────────────────────
+    fcf    = _safe_float(info.get("freeCashflow"))
+    ni_ttm = _safe_float(info.get("netIncomeToCommon"))
+    if ni_ttm and ni_ttm > 0:
+        if fcf is not None and fcf < 0:
+            flags.append("Free cash flow is negative despite positive net income")
+        elif fcf is not None and fcf < ni_ttm * 0.50:
+            ratio = fcf / ni_ttm * 100
+            flags.append(
+                f"FCF is only {ratio:.0f}% of net income — reported earnings may be overstated"
+            )
+
+    # ── Operating cash flow vs net income (accruals) ──────────────────────
+    ocf = _gv(cf, "Operating Cash Flow") or _gv(cf, "Cash From Operations")
+    ni0 = ni[0] if ni[0] else (_gv(fin, "Net Income") or 0)
+    if ni0 and ni0 > 0 and ocf is not None:
+        if ocf < 0:
+            flags.append(
+                "Operating cash flow is negative — reported earnings not converting to cash"
+            )
+        elif ocf < ni0 * 0.55:
+            flags.append(
+                f"Operating CF ({ocf/1e6:.0f}M) is only {ocf/ni0*100:.0f}% of net income — accruals concern"
+            )
+
+    # ── Forward EPS vs trailing EPS (analyst expectations) ────────────────
+    fwd_eps   = _safe_float(info.get("forwardEps"))
+    trail_eps = _safe_float(info.get("trailingEps"))
+    if fwd_eps is not None and trail_eps and trail_eps > 0:
+        if fwd_eps < trail_eps * 0.82:
+            decline = (fwd_eps / trail_eps - 1) * 100
+            flags.append(
+                f"Analysts forecast EPS {decline:+.1f}% below trailing — expected earnings decline"
+            )
+
+    # ── Score ──────────────────────────────────────────────────────────────
+    # Flags are roughly ordered by severity; any 2+ = high risk
+    if len(flags) == 0:
+        return "low", []
+    elif len(flags) == 1:
+        return "medium", flags
+    else:
+        return "high", flags
 
 
 def _assign_layer(r):
@@ -387,13 +509,17 @@ def _flush(conn, results, now_str, scanned_so_far, total_tickers, complete,
              interest_margin, capex_margin, cash_gt_debt,
              pe_ratio, p_fcf, ev_ebitda,
              sector, industry, dividend_yield, market_cap,
-             layer_rec, layer_reason, scanned_at)
+             layer_rec, layer_reason,
+             value_trap_risk, value_trap_flags,
+             scanned_at)
             VALUES (:ticker, :company, :price, :last_quarter_date,
                     :gross_margin, :sga_margin, :net_income_margin,
                     :interest_margin, :capex_margin, :cash_gt_debt,
                     :pe_ratio, :p_fcf, :ev_ebitda,
                     :sector, :industry, :dividend_yield, :market_cap,
-                    :layer_rec, :layer_reason, :scanned_at)
+                    :layer_rec, :layer_reason,
+                    :value_trap_risk, :value_trap_flags,
+                    :scanned_at)
         """, {**w, "scanned_at": w.get("scanned_at", now_str),
               "layer_rec": layer_rec, "layer_reason": layer_reason})
 
@@ -537,13 +663,15 @@ def run():
                      interest_margin, net_income_margin, capex_margin,
                      cash_gt_debt, adj_debt_equity,
                      pe_ratio, p_fcf, ev_ebitda,
-                     sector, industry, dividend_yield, market_cap, scanned_at)
+                     sector, industry, dividend_yield, market_cap,
+                     value_trap_risk, value_trap_flags, scanned_at)
                     VALUES (:ticker, :company, :price, :last_quarter_date,
                             :gross_margin, :sga_margin, :rd_margin, :depr_margin,
                             :interest_margin, :net_income_margin, :capex_margin,
                             :cash_gt_debt, :adj_debt_equity,
                             :pe_ratio, :p_fcf, :ev_ebitda,
-                            :sector, :industry, :dividend_yield, :market_cap, :scanned_at)
+                            :sector, :industry, :dividend_yield, :market_cap,
+                            :value_trap_risk, :value_trap_flags, :scanned_at)
                 """, data)
             time.sleep(random.uniform(0.5, 1.5))
         else:
