@@ -106,6 +106,8 @@ def _init_db(conn):
         ("buffett_winners", "value_trap_flags", "TEXT"),
         ("buffett_cache",   "value_trap_risk",  "TEXT"),
         ("buffett_cache",   "value_trap_flags", "TEXT"),
+        ("buffett_winners", "exchange",         "TEXT"),
+        ("buffett_cache",   "exchange",         "TEXT"),
     ]
     for table, col, coltype in migrations:
         try:
@@ -212,6 +214,12 @@ def get_financial_data(ticker):
         sector        = info.get("sector") or ""
         industry      = info.get("industry") or ""
         dividend_yield = _safe_float(info.get("dividendYield"), 0) or 0
+        _exch_raw = info.get("exchange") or ""
+        exchange = (
+            "NYSE"   if _exch_raw in ("NYQ", "NYS", "NYB", "NYM") else
+            "NASDAQ" if _exch_raw.startswith(("NMS", "NGM", "NCM", "NAS")) else
+            _exch_raw or None
+        )
 
         def margin(num, den):
             return round((num / den) * 100, 2) if den else 0.0
@@ -241,6 +249,7 @@ def get_financial_data(ticker):
             "market_cap":         market_cap or None,
             "value_trap_risk":    trap_risk,
             "value_trap_flags":   _json.dumps(trap_flags),
+            "exchange":           exchange,
         }
     except Exception:
         return None
@@ -532,7 +541,7 @@ def _flush(conn, results, now_str, scanned_so_far, total_tickers, complete,
              sector, industry, dividend_yield, market_cap,
              layer_rec, layer_reason,
              value_trap_risk, value_trap_flags,
-             scanned_at)
+             exchange, scanned_at)
             VALUES (:ticker, :company, :price, :last_quarter_date,
                     :gross_margin, :sga_margin, :net_income_margin,
                     :interest_margin, :capex_margin, :cash_gt_debt,
@@ -540,7 +549,7 @@ def _flush(conn, results, now_str, scanned_so_far, total_tickers, complete,
                     :sector, :industry, :dividend_yield, :market_cap,
                     :layer_rec, :layer_reason,
                     :value_trap_risk, :value_trap_flags,
-                    :scanned_at)
+                    :exchange, :scanned_at)
         """, {**w, "scanned_at": w.get("scanned_at", now_str),
               "layer_rec": layer_rec, "layer_reason": layer_reason})
 
@@ -689,14 +698,14 @@ def run():
                      cash_gt_debt, adj_debt_equity,
                      pe_ratio, p_fcf, ev_ebitda,
                      sector, industry, dividend_yield, market_cap,
-                     value_trap_risk, value_trap_flags, scanned_at)
+                     value_trap_risk, value_trap_flags, exchange, scanned_at)
                     VALUES (:ticker, :company, :price, :last_quarter_date,
                             :gross_margin, :sga_margin, :rd_margin, :depr_margin,
                             :interest_margin, :net_income_margin, :capex_margin,
                             :cash_gt_debt, :adj_debt_equity,
                             :pe_ratio, :p_fcf, :ev_ebitda,
                             :sector, :industry, :dividend_yield, :market_cap,
-                            :value_trap_risk, :value_trap_flags, :scanned_at)
+                            :value_trap_risk, :value_trap_flags, :exchange, :scanned_at)
                 """, data)
             time.sleep(random.uniform(0.5, 1.5))
         else:

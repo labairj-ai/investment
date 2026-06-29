@@ -1860,10 +1860,13 @@ async function loadRecommendations(ctx) {{
     const layerReason = w.layer_reason
       ? `<div style="color:#aaa;font-size:9px;margin-top:1px;">${{w.layer_reason}}</div>` : "";
 
+    const exchBadge = w.exchange
+      ? `<span style="font-size:9px;font-weight:600;padding:1px 5px;border-radius:3px;background:${{w.exchange==="NYSE"?"#e8f4fd":"#edf7ed"}};color:${{w.exchange==="NYSE"?"#1a5276":"#1e8449"}};">${{w.exchange}}</span>`
+      : "";
     return `<div style="background:#f9fbfd;border:1px solid #e8edf4;border-radius:6px;padding:6px 9px;margin-bottom:5px;">
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
         <span style="font-weight:700;font-size:12px;color:#1a2340;">${{w.ticker}}</span>
-        ${{rBadge}}${{valStr}}${{earnWarn}}
+        ${{exchBadge}}${{rBadge}}${{valStr}}${{earnWarn}}
       </div>
       ${{flagStr}}${{layerReason}}
     </div>`;
@@ -3102,7 +3105,10 @@ async function loadBuffett() {{
         <tr style="background:${{rowBg}};border-bottom:1px solid #f0f2f5;">
           <td style="padding:8px 10px;font-size:11px;color:#bbb;text-align:center;">${{i+1}}</td>
           <td style="padding:8px 10px;">
-            <div style="font-weight:700;color:#1a2340;">${{w.ticker}}</div>
+            <div style="display:flex;align-items:center;gap:5px;">
+              <span style="font-weight:700;color:#1a2340;">${{w.ticker}}</span>
+              ${{w.exchange ? `<span style="font-size:9px;font-weight:600;padding:1px 5px;border-radius:3px;background:${{w.exchange==="NYSE"?"#e8f4fd":"#edf7ed"}};color:${{w.exchange==="NYSE"?"#1a5276":"#1e8449"}};">${{w.exchange}}</span>` : ""}}
+            </div>
             ${{since}}
             <div style="display:flex;gap:3px;margin-top:3px;">
               <a href="${{yf}}"   target="_blank" rel="noopener" style="${{lnk}}background:#f0f7ff;">YF</a>
