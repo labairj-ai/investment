@@ -2849,6 +2849,54 @@ window.addEventListener("load", () => {{ _initTaxRates(); renderRealizedGains();
 // ── Buffett Screener ──────────────────────────────────────────────────────
 let _buffettPollTimer  = null;
 let _startupPollCount  = 0;
+let _buffettAllWinners = [];
+let _bSort    = {{ col: "gross_margin", dir: -1 }};
+let _bFilters = {{ q: "", exchange: "", layer: 0, risk: "" }};
+
+// ── Shared helpers (used by table + recommendations) ──────────────────────
+const _bFmtVal = v => (v != null && isFinite(v)) ? v.toFixed(1) + "x" : "—";
+const _bLnk    = `font-size:10px;padding:1px 5px;border-radius:3px;border:1px solid #dde;color:#555;text-decoration:none;white-space:nowrap;`;
+const _bLayerMeta = {{
+  1: {{ label:"L1", bg:"#1a2340", color:"#fff", title:"Structural Ballast" }},
+  2: {{ label:"L2", bg:"#1a7a4a", color:"#fff", title:"Cash-Flow Engine" }},
+  3: {{ label:"L3", bg:"#d4800a", color:"#fff", title:"Compounder" }},
+  4: {{ label:"L4", bg:"#6c3fc5", color:"#fff", title:"Convexity / Optionality" }},
+  5: {{ label:"L5", bg:"#b22222", color:"#fff", title:"Shock Absorber" }},
+}};
+const _bTrapMeta = {{
+  low:    {{ label:"✓ Low",    bg:"#eafaf1", color:"#1e8449", border:"#a9dfbf" }},
+  medium: {{ label:"⚠ Medium", bg:"#fef9e7", color:"#b7770d", border:"#f9e79f" }},
+  high:   {{ label:"⛔ High",  bg:"#fdf2f2", color:"#c0392b", border:"#f5c6cb" }},
+}};
+function _bTrapBadge(risk, flagsJson) {{
+  if (!risk) return `<span style="color:#bbb;font-size:11px;">—</span>`;
+  const m = _bTrapMeta[risk] || _bTrapMeta.low;
+  let flags = [];
+  try {{ flags = JSON.parse(flagsJson || "[]"); }} catch(e) {{}}
+  const flagLines = flags.length
+    ? flags.map(f => `<div style="font-size:10px;color:#888;margin-top:2px;line-height:1.3;">• ${{f}}</div>`).join("")
+    : `<div style="font-size:10px;color:#aaa;margin-top:2px;">No signals detected</div>`;
+  return `<span title="${{flags.join("\\n") || "No signals"}}"
+    style="display:inline-block;padding:2px 7px;border-radius:10px;font-size:10px;font-weight:700;
+           background:${{m.bg}};color:${{m.color}};border:1px solid ${{m.border}};cursor:default;white-space:nowrap;">${{m.label}}</span>${{flagLines}}`;
+}}
+function _bLayerBadge(rec, reason) {{
+  if (!rec) return "—";
+  const m = _bLayerMeta[rec] || {{}};
+  return `<span title="${{reason || m.title || ""}}"
+    style="display:inline-block;padding:2px 7px;border-radius:10px;font-size:10px;font-weight:700;
+           background:${{m.bg}};color:${{m.color}};cursor:default;white-space:nowrap;">${{m.label}}</span>
+    <div style="font-size:10px;color:#888;margin-top:2px;max-width:120px;line-height:1.3;">${{reason || ""}}</div>`;
+}}
+function _bSortBy(col) {{
+  if (_bSort.col === col) {{ _bSort.dir *= -1; }}
+  else {{ _bSort.col = col; _bSort.dir = -1; }}
+  _renderBuffettTable();
+}}
+function _bSetFilter(key, val) {{
+  _bFilters[key] = val;
+  _renderBuffettTable();
+}}
 
 function _fmtDuration(sec) {{
   if (!sec || sec <= 0) return "";
@@ -3054,113 +3102,19 @@ async function loadBuffett() {{
       return;
     }}
 
-    const fmtVal = v => (v != null && isFinite(v)) ? v.toFixed(1) + "x" : "—";
-    const lnk    = `font-size:10px;padding:1px 5px;border-radius:3px;border:1px solid #dde;color:#555;text-decoration:none;white-space:nowrap;`;
-
-    // Layer badge styles matching the portfolio architecture model
-    const _layerMeta = {{
-      1: {{ label:"L1",  bg:"#1a2340", color:"#fff",    title:"Structural Ballast — keeps system standing under stress" }},
-      2: {{ label:"L2",  bg:"#1a7a4a", color:"#fff",    title:"Cash-Flow Engine — pays you to wait" }},
-      3: {{ label:"L3",  bg:"#d4800a", color:"#fff",    title:"Compounder — long-duration wealth creation" }},
-      4: {{ label:"L4",  bg:"#6c3fc5", color:"#fff",    title:"Convexity / Optionality — nonlinear upside" }},
-      5: {{ label:"L5",  bg:"#b22222", color:"#fff",    title:"Shock Absorber — performs when assumptions fail" }},
-    }};
-    const _trapMeta = {{
-      low:    {{ label:"✓ Low",    bg:"#eafaf1", color:"#1e8449", border:"#a9dfbf" }},
-      medium: {{ label:"⚠ Medium", bg:"#fef9e7", color:"#b7770d", border:"#f9e79f" }},
-      high:   {{ label:"⛔ High",  bg:"#fdf2f2", color:"#c0392b", border:"#f5c6cb" }},
-    }};
-    const _trapBadge = (risk, flagsJson) => {{
-      if (!risk) return `<span style="color:#bbb;font-size:11px;">—</span>`;
-      const m = _trapMeta[risk] || _trapMeta.low;
-      let flags = [];
-      try {{ flags = JSON.parse(flagsJson || "[]"); }} catch(e) {{}}
-      const tooltip = flags.length ? flags.join("\\n") : "No value trap signals detected";
-      const flagLines = flags.length
-        ? flags.map(f => `<div style="font-size:10px;color:#888;margin-top:2px;line-height:1.3;">• ${{f}}</div>`).join("")
-        : `<div style="font-size:10px;color:#aaa;margin-top:2px;">No signals detected</div>`;
-      return `<span title="${{tooltip}}"
-        style="display:inline-block;padding:2px 7px;border-radius:10px;font-size:10px;font-weight:700;
-               background:${{m.bg}};color:${{m.color}};border:1px solid ${{m.border}};
-               cursor:default;white-space:nowrap;">${{m.label}}</span>${{flagLines}}`;
-    }};
-
-    const _layerBadge = (rec, reason) => {{
-      if (!rec) return "—";
-      const m = _layerMeta[rec] || {{}};
-      return `<span title="${{reason || m.title || ""}}"
-        style="display:inline-block;padding:2px 7px;border-radius:10px;font-size:10px;font-weight:700;
-               background:${{m.bg}};color:${{m.color}};cursor:default;white-space:nowrap;">${{m.label}}</span>
-        <div style="font-size:10px;color:#888;margin-top:2px;max-width:120px;line-height:1.3;">${{reason || ""}}</div>`;
-    }};
-
-    const rows = data.winners.map((w, i) => {{
-      const yf   = `https://finance.yahoo.com/quote/${{w.ticker}}`;
-      const cnbc = `https://www.cnbc.com/quotes/${{w.ticker.replace("-",".")}}`;
-      const mw   = `https://www.marketwatch.com/investing/stock/${{w.ticker.replace("-",".").toLowerCase()}}`;
-      const since = w.first_seen
-        ? `<div style="font-size:10px;color:#aaa;margin-top:1px;">since ${{w.first_seen}}</div>` : "";
-      const rowBg = i % 2 === 0 ? "#fff" : "#fafbfc";
-      return `
-        <tr style="background:${{rowBg}};border-bottom:1px solid #f0f2f5;">
-          <td style="padding:8px 10px;font-size:11px;color:#bbb;text-align:center;">${{i+1}}</td>
-          <td style="padding:8px 10px;">
-            <div style="display:flex;align-items:center;gap:5px;">
-              <span style="font-weight:700;color:#1a2340;">${{w.ticker}}</span>
-              ${{w.exchange ? `<span style="font-size:9px;font-weight:600;padding:1px 5px;border-radius:3px;background:${{w.exchange==="NYSE"?"#e8f4fd":"#edf7ed"}};color:${{w.exchange==="NYSE"?"#1a5276":"#1e8449"}};">${{w.exchange}}</span>` : ""}}
-            </div>
-            ${{since}}
-            <div style="display:flex;gap:3px;margin-top:3px;">
-              <a href="${{yf}}"   target="_blank" rel="noopener" style="${{lnk}}background:#f0f7ff;">YF</a>
-              <a href="${{cnbc}}" target="_blank" rel="noopener" style="${{lnk}}background:#fff8f0;">CNBC</a>
-              <a href="${{mw}}"   target="_blank" rel="noopener" style="${{lnk}}background:#f0fff4;">MW</a>
-            </div>
-          </td>
-          <td style="padding:8px 10px;color:#555;font-size:12px;">${{w.company || "—"}}</td>
-          <td style="padding:8px 6px;vertical-align:middle;">${{_layerBadge(w.layer_rec, w.layer_reason)}}</td>
-          <td style="padding:8px 6px;vertical-align:top;">${{_trapBadge(w.value_trap_risk, w.value_trap_flags)}}</td>
-          <td style="padding:8px 10px;">${{w.price ? "$" + w.price.toFixed(2) : "—"}}</td>
-          <td style="padding:8px 10px;font-weight:700;color:#27ae60;">${{w.gross_margin?.toFixed(1)}}%</td>
-          <td style="padding:8px 10px;color:#555;">${{w.sga_margin?.toFixed(1)}}%</td>
-          <td style="padding:8px 10px;font-weight:600;color:#27ae60;">${{w.net_income_margin?.toFixed(1)}}%</td>
-          <td style="padding:8px 10px;color:#555;">${{w.interest_margin?.toFixed(1)}}%</td>
-          <td style="padding:8px 10px;color:#555;">${{w.capex_margin?.toFixed(1)}}%</td>
-          <td style="padding:8px 10px;font-weight:600;color:#27ae60;">${{w.cash_gt_debt}}</td>
-          <td style="padding:8px 10px;color:#2980b9;">${{w.pe_ratio != null ? w.pe_ratio.toFixed(1) + "x" : "—"}}</td>
-          <td style="padding:8px 10px;color:#2980b9;">${{fmtVal(w.p_fcf)}}</td>
-          <td style="padding:8px 10px;color:#2980b9;">${{fmtVal(w.ev_ebitda)}}</td>
-        </tr>`;
-    }}).join("\\n");
+    // Store for filter/sort re-renders; reset sort to default on fresh load
+    _buffettAllWinners = data.winners;
+    _bSort    = {{ col: "gross_margin", dir: -1 }};
+    _bFilters = {{ q: "", exchange: "", layer: 0, risk: "" }};
 
     const partialNote = (running || (lastScan && scanned < total * 0.95))
       ? `<span style="color:#e67e22;"> · partial results (${{pct}}% scanned)</span>` : "";
 
-    resultsEl.innerHTML += `
-      <div style="overflow-x:auto;">
-      <table style="width:100%;border-collapse:collapse;font-size:13px;">
-        <thead><tr style="background:#f4f6f9;border-bottom:2px solid #e8eaf0;">
-          <th style="padding:7px 6px;text-align:center;font-size:10px;color:#bbb;width:28px;">#</th>
-          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;letter-spacing:.04em;">Ticker</th>
-          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;letter-spacing:.04em;">Company</th>
-          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#9b59b6;text-transform:uppercase;letter-spacing:.04em;">Layer</th>
-          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#c0392b;text-transform:uppercase;letter-spacing:.04em;">Trap Risk</th>
-          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;letter-spacing:.04em;">Price</th>
-          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#27ae60;text-transform:uppercase;letter-spacing:.04em;">Gross %</th>
-          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;letter-spacing:.04em;">SG&amp;A %</th>
-          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#27ae60;text-transform:uppercase;letter-spacing:.04em;">Net Inc %</th>
-          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;letter-spacing:.04em;">Interest %</th>
-          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;letter-spacing:.04em;">CapEx %</th>
-          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#27ae60;text-transform:uppercase;letter-spacing:.04em;">Cash&gt;Debt</th>
-          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#2980b9;text-transform:uppercase;letter-spacing:.04em;">P/E</th>
-          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#2980b9;text-transform:uppercase;letter-spacing:.04em;">P/FCF</th>
-          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#2980b9;text-transform:uppercase;letter-spacing:.04em;">EV/EBITDA</th>
-        </tr></thead>
-        <tbody>${{rows}}</tbody>
-      </table>
-      </div>
+    resultsEl.innerHTML += `<div id="buffett-table-wrap"></div>
       <p style="font-size:11px;color:#aaa;margin-top:6px;">
-        Sorted by Gross Margin · Green = quality pass · Blue = valuation · Purple = layer · Red = value trap risk${{partialNote}}
+        Green = quality · Blue = valuation · Purple = layer · Red = trap risk${{partialNote}}
       </p>`;
+    _renderBuffettTable();
 
   }} catch(e) {{
     document.getElementById("buffett-status-bar").innerHTML =
@@ -3170,6 +3124,156 @@ async function loadBuffett() {{
 }}
 
 window.addEventListener("load", loadBuffett);
+
+// ── Buffett table: filter + sort renderer ─────────────────────────────────
+function _renderBuffettTable() {{
+  const wrap = document.getElementById("buffett-table-wrap");
+  if (!wrap || !_buffettAllWinners.length) return;
+
+  const q    = (_bFilters.q || "").toLowerCase();
+  const exch = _bFilters.exchange;
+  const lyr  = _bFilters.layer;
+  const risk = _bFilters.risk;
+
+  // Filter
+  let rows = _buffettAllWinners.filter(w => {{
+    if (exch && w.exchange !== exch) return false;
+    if (lyr  && w.layer_rec !== lyr) return false;
+    if (risk && w.value_trap_risk !== risk) return false;
+    if (q) {{
+      const hay = ((w.ticker||"") + " " + (w.company||"") + " " + (w.sector||"")).toLowerCase();
+      if (!hay.includes(q)) return false;
+    }}
+    return true;
+  }});
+
+  // Sort
+  const riskOrder = {{ low:1, medium:2, high:3, null:9, undefined:9 }};
+  const col = _bSort.col;
+  const dir = _bSort.dir;
+  rows = rows.slice().sort((a, b) => {{
+    let av, bv;
+    if (col === "ticker")           {{ av = a.ticker || ""; bv = b.ticker || ""; }}
+    else if (col === "company")     {{ av = a.company || ""; bv = b.company || ""; }}
+    else if (col === "layer_rec")   {{ av = a.layer_rec || 99; bv = b.layer_rec || 99; }}
+    else if (col === "value_trap_risk") {{ av = riskOrder[a.value_trap_risk]||9; bv = riskOrder[b.value_trap_risk]||9; }}
+    else {{ av = a[col] ?? (dir > 0 ? Infinity : -Infinity); bv = b[col] ?? (dir > 0 ? Infinity : -Infinity); }}
+    if (typeof av === "string") return dir * av.localeCompare(bv);
+    return dir * (av - bv);
+  }});
+
+  // Column header builder
+  const thStyle = (c, label, color="#7f8c8d", align="left") => {{
+    const active = _bSort.col === c;
+    const arrow  = active ? (_bSort.dir < 0 ? " ▼" : " ▲") : ` <span style="color:#ddd;font-size:9px;">⇅</span>`;
+    const hl     = active ? "background:#ecf0ff;" : "";
+    return `<th onclick="_bSortBy('${{c}}')" style="padding:7px 10px;text-align:${{align}};font-size:11px;color:${{color}};
+      text-transform:uppercase;letter-spacing:.04em;cursor:pointer;user-select:none;white-space:nowrap;${{hl}}
+      border-bottom:2px solid ${{active?"#6c63ff":"transparent"}};">
+      ${{label}}${{arrow}}</th>`;
+  }};
+
+  // Filter chip builder
+  const chip = (key, val, label, activeVal) => {{
+    const on = activeVal === val;
+    return `<span onclick="_bSetFilter('${{key}}','${{on ? "" : val}}')"
+      style="cursor:pointer;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:600;user-select:none;
+             border:1px solid ${{on?"#6c63ff":"#dde"}};background:${{on?"#6c63ff":"#f4f6f9"}};
+             color:${{on?"#fff":"#555"}};">
+      ${{label}}</span>`;
+  }};
+
+  const matchTxt = rows.length === _buffettAllWinners.length
+    ? `${{_buffettAllWinners.length}} stocks`
+    : `${{rows.length}} of ${{_buffettAllWinners.length}} stocks`;
+
+  const filterBar = `
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;
+                padding:8px 12px;background:#f8fafc;border:1px solid #e8edf4;border-radius:8px;">
+      <input id="b-filter-q" value="${{_bFilters.q}}" placeholder="Search ticker / company…"
+        oninput="_bFilters.q=this.value;_renderBuffettTable()"
+        style="padding:4px 8px;border:1px solid #dde;border-radius:6px;font-size:11px;
+               width:170px;outline:none;color:#333;">
+      <span style="font-size:10px;color:#aaa;font-weight:600;text-transform:uppercase;letter-spacing:.04em;">Exchange</span>
+      ${{chip("exchange","NYSE","NYSE",exch)}}
+      ${{chip("exchange","NASDAQ","NASDAQ",exch)}}
+      <span style="font-size:10px;color:#aaa;font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-left:4px;">Layer</span>
+      ${{[1,2,3,4,5].map(n => chip("layer",n,"L"+n,lyr)).join("")}}
+      <span style="font-size:10px;color:#aaa;font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-left:4px;">Risk</span>
+      ${{chip("risk","low","Low",risk)}}
+      ${{chip("risk","medium","Med",risk)}}
+      ${{chip("risk","high","High",risk)}}
+      <span style="margin-left:auto;font-size:11px;color:#aaa;">${{matchTxt}}</span>
+    </div>`;
+
+  const tableRows = rows.map((w, i) => {{
+    const yf   = `https://finance.yahoo.com/quote/${{w.ticker}}`;
+    const cnbc = `https://www.cnbc.com/quotes/${{w.ticker.replace("-",".")}}`;
+    const mw   = `https://www.marketwatch.com/investing/stock/${{w.ticker.replace("-",".").toLowerCase()}}`;
+    const since = w.first_seen ? `<div style="font-size:10px;color:#aaa;margin-top:1px;">since ${{w.first_seen}}</div>` : "";
+    const exBadge = w.exchange
+      ? `<span style="font-size:9px;font-weight:600;padding:1px 5px;border-radius:3px;
+           background:${{w.exchange==="NYSE"?"#e8f4fd":"#edf7ed"}};
+           color:${{w.exchange==="NYSE"?"#1a5276":"#1e8449"}};">${{w.exchange}}</span>` : "";
+    const rowBg = i % 2 === 0 ? "#fff" : "#fafbfc";
+    return `
+      <tr style="background:${{rowBg}};border-bottom:1px solid #f0f2f5;">
+        <td style="padding:8px 10px;font-size:11px;color:#bbb;text-align:center;">${{i+1}}</td>
+        <td style="padding:8px 10px;">
+          <div style="display:flex;align-items:center;gap:5px;">
+            <span style="font-weight:700;color:#1a2340;">${{w.ticker}}</span>${{exBadge}}
+          </div>
+          ${{since}}
+          <div style="display:flex;gap:3px;margin-top:3px;">
+            <a href="${{yf}}"   target="_blank" rel="noopener" style="${{_bLnk}}background:#f0f7ff;">YF</a>
+            <a href="${{cnbc}}" target="_blank" rel="noopener" style="${{_bLnk}}background:#fff8f0;">CNBC</a>
+            <a href="${{mw}}"   target="_blank" rel="noopener" style="${{_bLnk}}background:#f0fff4;">MW</a>
+          </div>
+        </td>
+        <td style="padding:8px 10px;color:#555;font-size:12px;">${{w.company || "—"}}</td>
+        <td style="padding:8px 6px;vertical-align:middle;">${{_bLayerBadge(w.layer_rec, w.layer_reason)}}</td>
+        <td style="padding:8px 6px;vertical-align:top;">${{_bTrapBadge(w.value_trap_risk, w.value_trap_flags)}}</td>
+        <td style="padding:8px 10px;">${{w.price ? "$" + w.price.toFixed(2) : "—"}}</td>
+        <td style="padding:8px 10px;font-weight:700;color:#27ae60;">${{w.gross_margin?.toFixed(1)}}%</td>
+        <td style="padding:8px 10px;color:#555;">${{w.sga_margin?.toFixed(1)}}%</td>
+        <td style="padding:8px 10px;font-weight:600;color:#27ae60;">${{w.net_income_margin?.toFixed(1)}}%</td>
+        <td style="padding:8px 10px;color:#555;">${{w.interest_margin?.toFixed(1)}}%</td>
+        <td style="padding:8px 10px;color:#555;">${{w.capex_margin?.toFixed(1)}}%</td>
+        <td style="padding:8px 10px;font-weight:600;color:#27ae60;">${{w.cash_gt_debt}}</td>
+        <td style="padding:8px 10px;color:#2980b9;">${{w.pe_ratio != null ? w.pe_ratio.toFixed(1) + "x" : "—"}}</td>
+        <td style="padding:8px 10px;color:#2980b9;">${{_bFmtVal(w.p_fcf)}}</td>
+        <td style="padding:8px 10px;color:#2980b9;">${{_bFmtVal(w.ev_ebitda)}}</td>
+      </tr>`;
+  }}).join("\\n");
+
+  const noResults = rows.length === 0
+    ? `<tr><td colspan="15" style="padding:20px;text-align:center;color:#aaa;font-size:12px;">
+         No stocks match the current filters.</td></tr>` : "";
+
+  wrap.innerHTML = filterBar + `
+    <div style="overflow-x:auto;">
+    <table style="width:100%;border-collapse:collapse;font-size:13px;">
+      <thead><tr style="background:#f4f6f9;border-bottom:2px solid #e8eaf0;">
+        <th style="padding:7px 6px;text-align:center;font-size:10px;color:#bbb;width:28px;">#</th>
+        ${{thStyle("ticker","Ticker")}}
+        ${{thStyle("company","Company")}}
+        ${{thStyle("layer_rec","Layer","#9b59b6")}}
+        ${{thStyle("value_trap_risk","Trap Risk","#c0392b")}}
+        ${{thStyle("price","Price")}}
+        ${{thStyle("gross_margin","Gross %","#27ae60")}}
+        ${{thStyle("sga_margin","SG&amp;A %")}}
+        ${{thStyle("net_income_margin","Net Inc %","#27ae60")}}
+        ${{thStyle("interest_margin","Interest %")}}
+        ${{thStyle("capex_margin","CapEx %")}}
+        ${{thStyle("cash_gt_debt","Cash&gt;Debt","#27ae60")}}
+        ${{thStyle("pe_ratio","P/E","#2980b9")}}
+        ${{thStyle("p_fcf","P/FCF","#2980b9")}}
+        ${{thStyle("ev_ebitda","EV/EBITDA","#2980b9")}}
+      </tr></thead>
+      <tbody>${{tableRows}}${{noResults}}</tbody>
+    </table>
+    </div>`;
+}}
 
 // ── Buffett Deep-Dive Analyzer ────────────────────────────────────────────
 async function runDeepAnalysis() {{
