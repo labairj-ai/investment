@@ -9,7 +9,7 @@ A personal investment tracking system that sends a daily email newsletter, maint
 | Feature | Description |
 |---|---|
 | **Investment Goals & Strategy** | Dividend goal ($5k/mo by 2036) + portfolio value goal ($2M by 2036) with 8-quarter rolling targets; barbell health with L4 recs; live **Recommended Purchases** panel backed by Buffett screener data, layer drift, dividend yield impact, valuation multiples, value trap flags, and earnings calendar |
-| **Daily Newsletter** | Fetches closing prices, computes P&L by layer and holding, emails an HTML report each morning at 8 AM ET |
+| **Daily Investment Digest** | Single 8 AM email covering: portfolio snapshot, layer allocation vs target (with drift warnings), holdings performance, upcoming earnings/ex-div events, and the judgment health rubric |
 | **Local Dashboard** | Interactive web UI at `http://localhost:5001` with charts, holdings table, and live analysis tools |
 | **Add / Manage Positions** | Add new positions directly from the Holdings UI (ticker, shares, avg cost, layer); reassign any holding to a different layer with full retroactive history rewrite |
 | **Covered Call Analyzer** | Recommends option contracts based on your cost basis, flags blackout windows (earnings, ex-div) |
@@ -18,8 +18,7 @@ A personal investment tracking system that sends a daily email newsletter, maint
 | **Earnings Calendar** | Next earnings date per holding shown in Layer Summary and Holdings table |
 | **Buffett Screener** | Nightly scan of ~6,500 NYSE + NASDAQ tickers (deduplicated); surfaces stocks passing all 6 Buffett quality criteria; emails only net-new winners (no repeat notifications for stocks already on the list) |
 | **Buffett Deep-Dive** | On-demand 13-point Buffett analysis for any ticker — gross margin, expense margins, EPS trend, balance sheet strength, buybacks, and more |
-| **Portfolio Reminders** | Daily 7 AM ET email when any holding has earnings or ex-div within 3 days |
-| **Layer Drift Alerts** | Daily check of layer weights vs. targets in `layer_targets.json`; emails when any layer drifts ≥5pp |
+| **Layer Drift Alerts** | Inline in the daily digest: orange warning box when any layer drifts ≥5pp from target; subject line flags the count |
 | **Tax Lot Tracker** | Lot-level cost basis per holding; modal shows per-lot ST/LT term, unrealized G/L, days to LT conversion |
 | **FIFO Sell Tracker** | Record sales with automatic FIFO lot matching; previews which lots are consumed before confirming; undo support |
 | **Realized Gains & Tax** | Dashboard card showing YTD (or all-time) realized gains split by ST/LT — **includes covered call premium income** — with estimated federal tax at editable bracket rates |
@@ -155,17 +154,24 @@ launchctl kickstart gui/$(id -u)/com.investment.dashboard
 
 ---
 
-## Daily Newsletter
+## Daily Investment Digest
 
-The newsletter runs automatically inside `serve.py` as a background thread — **no separate launchd job required**. When the server starts:
+One email per day at **8 AM ET**, covering everything in a single HTML digest:
 
-1. Checks if today's newsletter has already run (`out/last_run_date.txt`)
+| Section | What it shows |
+|---------|---------------|
+| **📈 Portfolio Snapshot** | Total value, daily Δ%, SPY comparison, biggest mover |
+| **⚖️ Layer Allocation vs Target** | All 5 layers: actual %, target %, drift (✓/▲/▼); orange warning box + subject-line flag when any layer is ≥5pp off |
+| **📋 Holdings Performance** | All holdings grouped by layer, sorted by today's Δ$ |
+| **⏰ Upcoming Events** | Earnings 📊 and ex-dividend 💵 dates in the next 3 days; urgency icons (🔴 tomorrow · 🟡 2 days · 🟢 3 days); section omitted if no events |
+| **🧠 Judgment Health** | Rubric + automated concentration-dominance flags |
+
+Runs automatically inside `serve.py` as a background thread — **no separate launchd job required**:
+
+1. Checks if today's digest has already sent (`out/last_run_date.txt`)
 2. If not and it's ≥ 8 AM ET, runs `send_newsletter_main.py` → `generate_dashboard.py`
-3. Rechecks every 30 minutes as a safety net
-
-After a successful newsletter run, two additional checks fire automatically:
-- **Layer drift check** — emails if any layer has drifted ≥5pp from `layer_targets.json`
-- **Data backup** — pushes `investment.db`, `holdings.csv`, and `buffett.db` to the private `investment-data` repo
+3. After success, triggers the **data backup** to the private `investment-data` repo
+4. Rechecks every 30 minutes as a safety net
 
 **Logs:** `out/newsletter.log`
 
@@ -396,19 +402,11 @@ Auto-loads on page open. Hit **Refresh** to update; cached 1 hour per day.
 
 ---
 
-## Portfolio Reminders (7 AM ET)
+## Layer Drift Targets
 
-`serve.py` runs a daily reminder thread at **7 AM ET**. It scans all holdings for earnings and ex-dividend dates within 3 days and sends a single digest email with urgency indicators (🔴 next day · 🟡 2 days · 🟢 3 days).
+`layer_targets.json` sets the recommended weight for each layer. Drift vs. these targets is shown in both the dashboard (Layer Allocation vs Target panel) and the daily email digest (inline warning when any layer is ≥5pp off).
 
-**Flag file:** `out/last_reminder_date.txt`
-
----
-
-## Layer Drift Alerts
-
-After each successful 8 AM newsletter run, `serve.py` checks whether any layer has drifted ≥5pp from its target.
-
-**Targets file:** `layer_targets.json` — edit to adjust targets; defaults reflect the portfolio architecture:
+**Targets file:** `layer_targets.json` — edit to adjust; defaults reflect the portfolio architecture:
 
 ```json
 { "1": 25, "2": 20, "3": 35, "4": 12, "5": 8 }
@@ -450,7 +448,7 @@ venv/bin/python3 covered_call_rec.py              # all holdings ≥100 shares
 ```
 investment/
 ├── holdings.csv                     # Portfolio positions — Stock, Shares, AvgCost, Layer
-├── layer_targets.json               # Target layer allocations for drift alerts (auto-created)
+├── layer_targets.json               # Target layer allocations (used by dashboard + email digest)
 ├── backup_data.sh                   # Pushes DB + CSV to private investment-data repo
 ├── run_server.sh                    # Infinite-loop wrapper around serve.py (used by launchd)
 ├── send_newsletter_main.py          # Fetches prices, sends email, writes DB
@@ -466,12 +464,10 @@ investment/
     ├── investment.db                # SQLite: price history, cc_positions, cost_lots, sell_transactions
     ├── buffett.db                   # SQLite: Buffett screener cache, winners, history
     ├── dashboard.html               # Generated dashboard (served by serve.py)
-    ├── layer_allocation.png         # Pie chart attached to newsletter
-    ├── newsletter.log               # Daily newsletter run log
+    ├── newsletter.log               # Daily digest run log
     ├── screener.log                 # Nightly Buffett screener log
-    ├── last_run_date.txt            # Flag — prevents double newsletter sends
+    ├── last_run_date.txt            # Flag — prevents double digest sends
     ├── last_screener_date.txt       # Flag — prevents double screener runs
-    ├── last_reminder_date.txt       # Flag — prevents double reminder emails
     └── buffett_screener.lock        # PID lock — prevents concurrent screener instances
 ```
 
