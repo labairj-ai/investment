@@ -326,6 +326,14 @@ def build_dashboard(portfolio, layers, holdings):
         </tr>\n"""
 
     # ---- JSON for charts ----
+    layer_weights_by_num = {}
+    for _l in today_layers:
+        try:
+            _n = int(_l["layer"].split()[1].rstrip(":"))
+            layer_weights_by_num[_n] = {"weight": round(_l["weight_pct"], 2), "value": round(_l["value"], 2)}
+        except Exception:
+            pass
+
     chart_data = json.dumps({
         "dates": port_dates,
         "portValues": port_values,
@@ -340,6 +348,7 @@ def build_dashboard(portfolio, layers, holdings):
         "layerBarChg": layer_bar_chg,
         "layerBarColors": layer_bar_colors,
         "layerWeightDatasets": layer_weight_datasets,
+        "layerWeightsByNum":   layer_weights_by_num,
     }, default=float)
 
     # Covered call ticker dropdown — all holdings sorted alphabetically
@@ -646,6 +655,111 @@ def build_dashboard(portfolio, layers, holdings):
   </div>
 
   {flags_html}
+
+  <!-- Investment Goals & Strategy -->
+  <div class="card" id="goals-card">
+    <h2 style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+      Investment Goals &amp; Strategy
+      <span style="font-size:11px;color:#aaa;font-weight:400;">auto-updates with dividend data</span>
+    </h2>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr 1.15fr;gap:16px;">
+
+      <!-- Dividend Goal -->
+      <div style="background:#f8fffe;border:1px solid #d4edda;border-radius:8px;padding:14px 16px;">
+        <div style="font-size:11px;font-weight:700;color:#27ae60;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;">
+          Dividend Goal — $5,000 / mo by 2036
+        </div>
+        <div style="display:flex;align-items:baseline;gap:6px;margin-bottom:4px;">
+          <span id="goal-div-monthly" style="font-size:24px;font-weight:700;color:#1a2340;">—</span>
+          <span style="font-size:12px;color:#7f8c8d;">/ mo gross</span>
+        </div>
+        <div id="goal-div-net" style="font-size:11px;color:#7f8c8d;margin-bottom:8px;">after tax: —</div>
+        <div style="background:#e8f5e9;border-radius:4px;height:7px;overflow:hidden;margin-bottom:6px;">
+          <div id="goal-div-bar" style="height:100%;background:linear-gradient(90deg,#27ae60,#1abc9c);border-radius:4px;width:0%;transition:width .5s;"></div>
+        </div>
+        <div id="goal-div-pct" style="font-size:11px;color:#27ae60;font-weight:600;margin-bottom:8px;">0% of target</div>
+        <div id="goal-div-gap" style="font-size:11px;color:#7f8c8d;margin-bottom:4px;"></div>
+        <div id="goal-div-cagr" style="font-size:11px;color:#7f8c8d;"></div>
+        <div id="goal-div-milestones" style="margin-top:10px;font-size:11px;"></div>
+      </div>
+
+      <!-- Barbell + Tax -->
+      <div style="background:#f9f8ff;border:1px solid #d8d0f0;border-radius:8px;padding:14px 16px;">
+        <div style="font-size:11px;font-weight:700;color:#6c3fc5;text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px;">
+          Barbell Health (Taleb)
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+          <span id="goal-l4-pct" style="font-size:22px;font-weight:700;color:#1a2340;">—</span>
+          <div>
+            <div style="font-size:11px;color:#7f8c8d;">L4 Convexity / Optionality</div>
+            <div style="font-size:10px;color:#aaa;">target: 10–15% of portfolio</div>
+          </div>
+        </div>
+        <div style="background:#ede9fc;border-radius:4px;height:7px;overflow:hidden;margin-bottom:5px;position:relative;">
+          <div style="position:absolute;left:40%;right:0;top:0;bottom:0;background:#d4c9f7;border-radius:4px;"></div>
+          <div style="position:absolute;left:40%;width:20%;top:0;bottom:0;background:#b39ddb;border-radius:4px;"></div>
+          <div id="goal-l4-bar" style="position:absolute;left:0;top:0;bottom:0;background:#6c3fc5;border-radius:4px;width:0%;transition:width .5s;"></div>
+        </div>
+        <div style="display:flex;justify-content:space-between;font-size:10px;color:#aaa;margin-bottom:12px;">
+          <span>0%</span><span style="color:#6c3fc5;">10%</span><span style="color:#6c3fc5;">15%</span><span>25%</span>
+        </div>
+        <div id="goal-l4-status" style="font-size:11px;margin-bottom:14px;"></div>
+
+        <div style="border-top:1px solid #ede9fc;padding-top:12px;">
+          <div style="font-size:11px;font-weight:700;color:#c0392b;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px;">Tax Context</div>
+          <div style="font-size:11px;color:#555;line-height:1.8;">
+            <div>HH income &gt;$500k &nbsp;→&nbsp; <b>Top bracket (37% ordinary)</b></div>
+            <div>Qualified div / LTCG &nbsp;→&nbsp; <b>23.8%</b> (20% + 3.8% NIIT)</div>
+            <div>ST gain &nbsp;→&nbsp; <b>40.8%</b> (37% + 3.8% NIIT)</div>
+            <div style="margin-top:4px;color:#e67e22;">Every sale is expensive. Hold &gt;1yr. Favor qualified dividends.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Investment Principles -->
+      <div style="background:#f9fbfd;border:1px solid #d6e4f0;border-radius:8px;padding:14px 16px;">
+        <div style="font-size:11px;font-weight:700;color:#2980b9;text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px;">
+          Investment Principles
+        </div>
+        <div style="display:flex;flex-direction:column;gap:7px;font-size:11px;color:#444;line-height:1.5;">
+          <div style="display:flex;gap:7px;align-items:flex-start;">
+            <span style="color:#27ae60;font-weight:700;flex-shrink:0;">✓</span>
+            <span><b>Long-term hold.</b> Every position expected to be held years, not months. Minimize turnover and taxes.</span>
+          </div>
+          <div style="display:flex;gap:7px;align-items:flex-start;">
+            <span style="color:#27ae60;font-weight:700;flex-shrink:0;">✓</span>
+            <span><b>Barbell (Taleb).</b> 10–15% in high-conviction L4 convexity plays. Remainder in long-duration growth. No overlap in roles.</span>
+          </div>
+          <div style="display:flex;gap:7px;align-items:flex-start;">
+            <span style="color:#27ae60;font-weight:700;flex-shrink:0;">✓</span>
+            <span><b>Dividends → reinvest 100%.</b> DRIP or redirect to better opportunities (e.g. redirect SCHD dividends to a conviction buy).</span>
+          </div>
+          <div style="display:flex;gap:7px;align-items:flex-start;">
+            <span style="color:#27ae60;font-weight:700;flex-shrink:0;">✓</span>
+            <span><b>Low-cost passive core.</b> Index funds in L1: low expense ratios, no active management fees.</span>
+          </div>
+          <div style="display:flex;gap:7px;align-items:flex-start;">
+            <span style="color:#27ae60;font-weight:700;flex-shrink:0;">✓</span>
+            <span><b>No gimmicks.</b> No products you cannot explain. No ESG mandates. No politically-motivated tilts. Profit is the goal.</span>
+          </div>
+          <div style="display:flex;gap:7px;align-items:flex-start;">
+            <span style="color:#27ae60;font-weight:700;flex-shrink:0;">✓</span>
+            <span><b>International = competitive advantage only.</b> Non-US holdings must have a clear regional edge vs US alternatives.</span>
+          </div>
+          <div style="display:flex;gap:7px;align-items:flex-start;">
+            <span style="color:#27ae60;font-weight:700;flex-shrink:0;">✓</span>
+            <span><b>Review alternatives.</b> Always compare vs rentals, land, 2nd property. Factor interest rates and your time cost.</span>
+          </div>
+          <div style="display:flex;gap:7px;align-items:flex-start;">
+            <span style="color:#27ae60;font-weight:700;flex-shrink:0;">✓</span>
+            <span><b>Buffett/Munger/Graham.</b> Margin of safety. Capital allocation quality. Avoid lollapalooza traps. Invert: what breaks first?</span>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
 
   <!-- Main charts row -->
   <div class="three-col">
@@ -1352,6 +1466,7 @@ async function loadDividends() {{
     _divData = data;
     status.textContent = "";
     renderDividendTable();
+    renderGoalsCard();
   }} catch(e) {{
     status.textContent = "Error: " + e.message;
   }}
@@ -1360,8 +1475,83 @@ async function loadDividends() {{
 function onTaxBracketChange(sel) {{
   CURRENT_BRACKET = TAX_BRACKETS[sel.value];
   renderDividendTable();
+  renderGoalsCard();
   // Redraw chart with new after-tax line
   if (typeof loadDividendTimeline === "function") loadDividendTimeline();
+}}
+
+// ── Investment Goals card ──────────────────────────────────────────────────
+function renderGoalsCard() {{
+  // ── Dividend goal ──
+  const GOAL_MONTHLY    = 5000;      // $5,000/mo gross target
+  const GOAL_YEAR       = 2036;
+  const CUR_YEAR        = new Date().getFullYear();
+  const YEARS_LEFT      = Math.max(1, GOAL_YEAR - CUR_YEAR);
+  const NIIT_RATE       = 0.038;
+  const DIV_TAX_RATE    = 0.20 + NIIT_RATE;  // qualified div at top bracket
+
+  const totalAnnual = _divData
+    ? _divData.results.reduce((s, r) => s + (r.annual_income || 0), 0) : 0;
+  const monthly     = totalAnnual / 12;
+  const monthlyNet  = monthly * (1 - DIV_TAX_RATE);
+  const pct         = Math.min(100, totalAnnual > 0 ? (monthly / GOAL_MONTHLY * 100) : 0);
+  const gap         = GOAL_MONTHLY - monthly;
+  // required dividend CAGR to hit $5k/mo from today, ignoring new capital
+  const reqCagr     = totalAnnual > 0
+    ? (Math.pow(GOAL_MONTHLY / monthly, 1 / YEARS_LEFT) - 1) * 100 : null;
+
+  const fmt$ = v => "$" + v.toLocaleString("en-US", {{minimumFractionDigits:0, maximumFractionDigits:0}});
+  const fmtM = v => "$" + v.toLocaleString("en-US", {{minimumFractionDigits:0, maximumFractionDigits:0}}) + "/mo";
+
+  const mEl = document.getElementById("goal-div-monthly");
+  if (mEl) mEl.textContent = fmtM(monthly);
+  const nEl = document.getElementById("goal-div-net");
+  if (nEl) nEl.textContent = `after tax (23.8%): ${{fmtM(monthlyNet)}}`;
+  const bEl = document.getElementById("goal-div-bar");
+  if (bEl) bEl.style.width = pct + "%";
+  const pEl = document.getElementById("goal-div-pct");
+  if (pEl) {{ pEl.textContent = pct.toFixed(1) + "% of $5,000/mo target"; pEl.style.color = pct >= 80 ? "#27ae60" : pct >= 40 ? "#e67e22" : "#e74c3c"; }}
+  const gEl = document.getElementById("goal-div-gap");
+  if (gEl) gEl.textContent = gap > 0 ? `Gap: ${{fmtM(gap)}} · ${{YEARS_LEFT}} yrs to ${{GOAL_YEAR}}` : `✓ Target reached!`;
+  const cEl = document.getElementById("goal-div-cagr");
+  if (cEl) cEl.textContent = reqCagr != null
+    ? `Required div CAGR (div growth + DRIP + new capital): ${{reqCagr.toFixed(1)}}%/yr`
+    : "No dividend data yet";
+
+  // Milestone projection at required CAGR
+  const msEl = document.getElementById("goal-div-milestones");
+  if (msEl && reqCagr != null && monthly > 0) {{
+    const rate = reqCagr / 100;
+    const milestones = [1000, 2000, 3000, 4000, 5000];
+    let rows = "";
+    for (const m of milestones) {{
+      if (m <= monthly) {{ rows += `<tr><td style="color:#27ae60;">✓ ${{fmt$(m)}}/mo</td><td style="color:#27ae60;">Achieved</td></tr>`; continue; }}
+      const yrs  = Math.log(m / monthly) / Math.log(1 + rate);
+      const year = CUR_YEAR + Math.ceil(yrs);
+      rows += `<tr><td style="color:#7f8c8d;">${{fmt$(m)}}/mo</td><td style="color:#7f8c8d;">~${{year}}</td></tr>`;
+    }}
+    msEl.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:10px;">
+      <tr><th style="text-align:left;color:#aaa;font-weight:500;">Milestone</th><th style="text-align:left;color:#aaa;font-weight:500;">At ${{reqCagr.toFixed(1)}}% CAGR</th></tr>
+      ${{rows}}</table>`;
+  }}
+
+  // ── Barbell (L4) health ──
+  const lw = D.layerWeightsByNum || {{}};
+  const l4 = (lw[4] || {{}}).weight || 0;
+  const l4El = document.getElementById("goal-l4-pct");
+  if (l4El) l4El.textContent = l4.toFixed(1) + "%";
+  const l4Bar = document.getElementById("goal-l4-bar");
+  if (l4Bar) l4Bar.style.width = Math.min(100, l4 / 25 * 100) + "%";
+  const l4Stat = document.getElementById("goal-l4-status");
+  if (l4Stat) {{
+    if (l4 < 10) {{
+      l4Stat.innerHTML = `<span style="color:#e67e22;">⚠ Under-barbelled.</span> L4 is ${{l4.toFixed(1)}}% — target 10–15%. Consider adding a conviction convexity position.`;
+    }} else if (l4 <= 15) {{
+      l4Stat.innerHTML = `<span style="color:#27ae60;">✓ In range.</span> ${{l4.toFixed(1)}}% in L4 — barbell is healthy.`;
+    }} else {{
+      l4Stat.innerHTML = `<span style="color:#e74c3c;">⚠ Over-barbelled.</span> ${{l4.toFixed(1)}}% in L4 exceeds 15% target — review if any positions have grown into core.`;
+    }}
+  }}
 }}
 
 // Auto-load dividends on page open

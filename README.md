@@ -8,6 +8,7 @@ A personal investment tracking system that sends a daily email newsletter, maint
 
 | Feature | Description |
 |---|---|
+| **Investment Goals & Strategy** | Persistent card showing dividend goal progress ($5k/mo by 2036), barbell health (L4 vs 10–15% target), tax context (23.8% LTCG, 40.8% ST at >$500k income), and 8 investment principles — auto-updates with live dividend data |
 | **Daily Newsletter** | Fetches closing prices, computes P&L by layer and holding, emails an HTML report each morning at 8 AM ET |
 | **Local Dashboard** | Interactive web UI at `http://localhost:5001` with charts, holdings table, and live analysis tools |
 | **Add / Manage Positions** | Add new positions directly from the Holdings UI (ticker, shares, avg cost, layer); reassign any holding to a different layer with full retroactive history rewrite |
@@ -177,6 +178,25 @@ venv/bin/python3 send_newsletter_main.py && venv/bin/python3 generate_dashboard.
 ---
 
 ## Dashboard Features
+
+### Investment Goals & Strategy Card
+
+Positioned at the top of the dashboard, this card surfaces three panels:
+
+**Dividend Goal — $5,000/mo by 2036**
+- Current monthly gross and after-tax (23.8%) dividend income vs the $5,000/month target
+- Progress bar + percentage of goal reached
+- Gap in $/month and years remaining
+- Required CAGR (from dividend growth + DRIP + new capital) to hit goal
+- Milestone table: when each $1k increment is hit at the required CAGR
+
+**Barbell Health (Taleb)**
+- Current L4 Convexity / Optionality allocation vs the 10–15% target band
+- Color-coded status: under-barbelled / in range / over-barbelled
+- Tax Context panel: key rates for >$500k household income (23.8% qualified div/LTCG, 40.8% ST)
+
+**Investment Principles**
+- 8 core principles displayed as a compact reference: long-term hold, barbell model, 100% dividend reinvestment, low-cost passive core, no gimmicks/ESG, international only with stated competitive advantage, alternative investment review, Buffett/Munger/Graham philosophy
 
 ### Header
 - **Tax Bracket dropdown** (top right) — toggles between $150k / $300k / $500k / $750k / $1M+ MFJ income scenarios; updates all dividend tax calculations and the after-tax chart line in real time
