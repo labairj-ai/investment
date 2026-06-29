@@ -39,6 +39,10 @@ _DIV_CACHE_TTL      = 3600
 _EARN_CACHE_TTL     = 3600
 _TIMELINE_CACHE_TTL = 3600
 
+# Timestamp until which we report scan_running=True even before the lock
+# file appears — covers the subprocess startup latency (~30-60 s).
+_scan_launching_until = 0.0
+
 
 def _cache_valid(cache, ttl):
     if not cache["data"] or (time.time() - cache["ts"]) > ttl:
@@ -1829,6 +1833,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     scan_running = True
                 except (ProcessLookupError, ValueError, OSError):
                     pass
+            # Grace window: subprocess is still starting up (no lock file yet)
+            if not scan_running and time.time() < _scan_launching_until:
+                scan_running = True
 
             eta_seconds = None
             tickers_scanned = int(meta.get("tickers_scanned") or 0)
@@ -1873,6 +1880,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def _handle_buffett_scan_trigger(self):
         """POST /api/buffett-scan — start a manual scan if one isn't already running."""
+        global _scan_launching_until
         import subprocess, threading
         lock = PROJECT_DIR / "out" / "buffett_screener.lock"
         if lock.exists():
@@ -1882,6 +1890,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return self._json({"ok": False, "reason": "already_running", "pid": pid})
             except (ProcessLookupError, ValueError, OSError):
                 lock.unlink(missing_ok=True)
+        # If we're still in the launch window from a previous trigger, don't double-fire
+        if time.time() < _scan_launching_until:
+            return self._json({"ok": False, "reason": "already_running"})
+
+        # Set a 90-second grace window so the winners API reports scan_running=True
+        # immediately, before the subprocess has had time to write the lock file.
+        _scan_launching_until = time.time() + 90
 
         VENV_PY = PROJECT_DIR / "venv" / "bin" / "python3"
         LOG     = PROJECT_DIR / "out" / "screener.log"

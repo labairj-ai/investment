@@ -2411,7 +2411,8 @@ function _initTaxRates() {{
 window.addEventListener("load", () => {{ _initTaxRates(); renderRealizedGains(); }});
 
 // ── Buffett Screener ──────────────────────────────────────────────────────
-let _buffettPollTimer = null;
+let _buffettPollTimer  = null;
+let _startupPollCount  = 0;
 
 function _fmtDuration(sec) {{
   if (!sec || sec <= 0) return "";
@@ -2422,24 +2423,69 @@ function _fmtDuration(sec) {{
 }}
 
 async function triggerBuffettScan() {{
-  const btn = document.getElementById("buffett-run-btn");
-  btn.disabled = true;
-  btn.textContent = "Starting…";
+  const btn      = document.getElementById("buffett-run-btn");
+  const statusEl = document.getElementById("buffett-status-bar");
+  const progWrap = document.getElementById("buffett-progress-wrap");
+  const progBar  = document.getElementById("buffett-progress-bar");
+
+  btn.disabled       = true;
+  btn.textContent    = "Starting…";
+  _startupPollCount  = 0;
+
+  // Paint immediate feedback so the user knows something is happening
+  statusEl.innerHTML = `
+    <div style="display:flex;align-items:center;gap:10px;font-size:12px;">
+      <span style="display:inline-flex;align-items:center;gap:5px;background:#fff8e1;color:#e67e22;
+                   border:1px solid #ffe082;border-radius:12px;padding:3px 10px;font-size:11px;font-weight:600;">
+        <span style="animation:spin 1s linear infinite;display:inline-block;">⏳</span> Starting…
+      </span>
+      <span style="color:#7f8c8d;">Launching screener — fetching tickers…</span>
+    </div>`;
+  if (progWrap) {{
+    progWrap.style.display = "block";
+    if (progBar) {{ progBar.style.width = "0%"; }}
+    const lbl = document.getElementById("buffett-progress-label");
+    const pct = document.getElementById("buffett-progress-pct");
+    const eta = document.getElementById("buffett-eta");
+    if (lbl) lbl.textContent = "Initialising…";
+    if (pct) pct.textContent = "0%";
+    if (eta) eta.textContent = "ETA calculating…";
+  }}
+
   try {{
     const res  = await fetch("/api/buffett-scan", {{method:"POST"}});
     const data = await res.json();
     if (data.ok) {{
       btn.textContent = "▶ Running…";
-      setTimeout(loadBuffett, 1500);
+      // Poll every 5 s until scan_running is confirmed, then switch to 20 s cadence
+      clearTimeout(_buffettPollTimer);
+      _buffettPollTimer = setTimeout(_buffettStartupPoll, 5000);
     }} else {{
       btn.textContent = "▶ Run Scan";
       btn.disabled = false;
-      alert(data.reason === "already_running" ? "A scan is already in progress." : "Could not start scan: " + (data.reason || "unknown error"));
+      statusEl.innerHTML = `
+        <div style="background:#fff5f0;border-left:3px solid #e74c3c;padding:8px 12px;border-radius:4px;font-size:12px;">
+          ${{data.reason === "already_running" ? "⚠ A scan is already in progress." : "⚠ Could not start scan: " + (data.reason || "unknown error")}}
+        </div>`;
     }}
   }} catch(e) {{
     btn.textContent = "▶ Run Scan";
     btn.disabled = false;
+    statusEl.innerHTML = `<div style="background:#fff5f0;border-left:3px solid #e74c3c;padding:8px 12px;border-radius:4px;font-size:12px;">
+      ⚠ Network error: ${{e.message}}</div>`;
   }}
+}}
+
+// Fast-poll during startup (every 5 s), falls back to normal 20 s once confirmed running
+async function _buffettStartupPoll() {{
+  _startupPollCount++;
+  await loadBuffett();
+  // Keep fast-polling for up to 2 min (24 × 5 s) in case startup is slow
+  if (_startupPollCount < 24) {{
+    clearTimeout(_buffettPollTimer);
+    _buffettPollTimer = setTimeout(_buffettStartupPoll, 5000);
+  }}
+  // loadBuffett() will set up its own 20 s timer once it sees scan_running = true
 }}
 
 async function loadBuffett() {{
