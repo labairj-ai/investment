@@ -2031,10 +2031,14 @@ function renderRealizedGains() {{
   );
   const ccNetTotal = yearCCClosed.reduce((s, p) => s + (p.net_premium || 0), 0);
 
+  // Prior YTD gains not yet entered as individual transactions (all ST until validated)
+  const PRIOR_ST_2026 = 5288.53;
+  const priorST = (yearFilter === "cur") ? PRIOR_ST_2026 : 0;
+
   // Combined totals
-  const stGain    = stockSTGain + ccNetTotal;   // CC is always ST ordinary income
-  const totalGain = stockTotal  + ccNetTotal;
-  const hasData   = sells.length > 0 || yearCCClosed.length > 0;
+  const stGain    = stockSTGain + ccNetTotal + priorST;
+  const totalGain = stockTotal  + ccNetTotal + priorST;
+  const hasData   = sells.length > 0 || yearCCClosed.length > 0 || priorST > 0;
 
   const stTax  = Math.max(0, stGain) * (stRate + niit);
   const ltTax  = Math.max(0, ltGain) * (ltRate + niit);
@@ -2065,17 +2069,16 @@ function renderRealizedGains() {{
     const parts = [];
     if (sells.length)        parts.push(`${{sells.length}} stock sale${{sells.length!==1?"s":""}}`);
     if (yearCCClosed.length) parts.push(`${{yearCCClosed.length}} CC close${{yearCCClosed.length!==1?"s":""}}`);
+    if (priorST > 0)         parts.push(`+${{fmt2(priorST)}} prior ST (unvalidated)`);
     countEl.textContent = parts.join(" · ");
   }}
   const stSubEl = document.getElementById("gains-st-sub");
   if (stSubEl) {{
-    if (yearCCClosed.length && sells.length) {{
-      stSubEl.innerHTML = `Stock ST: <b>${{_fmtGain(stockSTGain)}}</b> · CC premium: <b>${{_fmtGain(ccNetTotal)}}</b>`;
-    }} else if (yearCCClosed.length) {{
-      stSubEl.textContent = "Includes CC premium income";
-    }} else {{
-      stSubEl.textContent = "Taxed as ordinary income";
-    }}
+    const stParts = [];
+    if (sells.length)        stParts.push(`Stock ST: <b>${{_fmtGain(stockSTGain)}}</b>`);
+    if (ccNetTotal)          stParts.push(`CC: <b>${{_fmtGain(ccNetTotal)}}</b>`);
+    if (priorST > 0)         stParts.push(`Prior ST: <b style="color:#e67e22;">${{fmt2(priorST)}} ⚠</b>`);
+    stSubEl.innerHTML = stParts.length > 1 ? stParts.join(" · ") : "Taxed as ordinary income";
   }}
 
   const estStEl = document.getElementById("tax-est-st");
