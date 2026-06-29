@@ -1905,7 +1905,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             global _scan_launching_until
             try:
                 with open(LOG, "a") as lf:
-                    lf.write(f"\n=== MANUAL SCAN {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===\n")
+                    lf.write(f"\n=== MANUAL SCAN {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===\n")
                     subprocess.run(
                         [str(VENV_PY), str(PROJECT_DIR / "buffett_screener.py")],
                         cwd=str(PROJECT_DIR), stdout=lf, stderr=lf
