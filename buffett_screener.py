@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Warren Buffett NYSE screener — runs nightly, stores results in buffett.db."""
+"""Warren Buffett NYSE + NASDAQ screener — runs nightly, stores results in buffett.db."""
 
 import json as _json
 import math
@@ -115,20 +115,41 @@ def _init_db(conn):
     conn.commit()
 
 
+def _fetch_tickers_from_url(url):
+    import pandas as pd
+    df = pd.read_json(url)
+    clean = []
+    for t in df["symbol"].tolist():
+        if "^" in t or ("W" in t and len(t) > 5):
+            continue
+        t = t.replace(".", "-").replace("/", "-")
+        clean.append(t)
+    return clean
+
+
 def get_clean_nyse_tickers():
     try:
-        import pandas as pd
-        url = "https://raw.githubusercontent.com/rreichel3/US-Stock-Symbols/main/nyse/nyse_full_tickers.json"
-        df = pd.read_json(url)
-        clean = []
-        for t in df["symbol"].tolist():
-            if "^" in t or ("W" in t and len(t) > 5):
-                continue
-            t = t.replace(".", "-").replace("/", "-")
-            clean.append(t)
-        return list(set(clean))
+        return list(set(_fetch_tickers_from_url(
+            "https://raw.githubusercontent.com/rreichel3/US-Stock-Symbols/main/nyse/nyse_full_tickers.json"
+        )))
     except Exception:
         return ["BRK-B", "KO", "JNJ", "PG"]
+
+
+def get_clean_nasdaq_tickers():
+    try:
+        return list(set(_fetch_tickers_from_url(
+            "https://raw.githubusercontent.com/rreichel3/US-Stock-Symbols/main/nasdaq/nasdaq_full_tickers.json"
+        )))
+    except Exception:
+        return []
+
+
+def get_all_tickers():
+    """Return deduplicated NYSE + NASDAQ tickers."""
+    nyse   = get_clean_nyse_tickers()
+    nasdaq = get_clean_nasdaq_tickers()
+    return list(set(nyse + nasdaq))
 
 
 def get_financial_data(ticker):
@@ -574,8 +595,8 @@ def run():
     conn.row_factory = sqlite3.Row
     _init_db(conn)
 
-    tickers = get_clean_nyse_tickers()
-    print(f"[Buffett] Scanning {len(tickers)} NYSE tickers…")
+    tickers = get_all_tickers()
+    print(f"[Buffett] Scanning {len(tickers)} NYSE + NASDAQ tickers…")
 
     cache = {
         row["ticker"]: dict(row)

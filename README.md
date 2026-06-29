@@ -8,7 +8,7 @@ A personal investment tracking system that sends a daily email newsletter, maint
 
 | Feature | Description |
 |---|---|
-| **Investment Goals & Strategy** | Persistent card showing dividend goal progress ($5k/mo by 2036), barbell health (L4 vs 10–15% target), tax context (23.8% LTCG, 40.8% ST at >$500k income), and 8 investment principles — auto-updates with live dividend data |
+| **Investment Goals & Strategy** | Persistent card showing dividend goal ($5k/mo by 2036) + portfolio value goal ($2M by 2036), each with 8-quarter rolling targets and capital deployment recs; barbell health with L4 recommendations; 8 investment principles — auto-updates with live dividend data |
 | **Daily Newsletter** | Fetches closing prices, computes P&L by layer and holding, emails an HTML report each morning at 8 AM ET |
 | **Local Dashboard** | Interactive web UI at `http://localhost:5001` with charts, holdings table, and live analysis tools |
 | **Add / Manage Positions** | Add new positions directly from the Holdings UI (ticker, shares, avg cost, layer); reassign any holding to a different layer with full retroactive history rewrite |
@@ -16,7 +16,7 @@ A personal investment tracking system that sends a daily email newsletter, maint
 | **Covered Call Tracker** | Log and track open/closed covered call positions; tracks net P&L per position with close types (expired / bought back / assigned); auto-expires positions past their expiry date |
 | **Dividend Tracker** | Dividend dates, tax impact by income bracket, monthly income chart, and ticker lookup tool |
 | **Earnings Calendar** | Next earnings date per holding shown in Layer Summary and Holdings table |
-| **Buffett Screener** | Nightly scan of ~2,300 NYSE tickers; surfaces stocks passing all 6 Buffett quality criteria; emails only net-new winners (no repeat notifications for stocks already on the list) |
+| **Buffett Screener** | Nightly scan of ~6,500 NYSE + NASDAQ tickers (deduplicated); surfaces stocks passing all 6 Buffett quality criteria; emails only net-new winners (no repeat notifications for stocks already on the list) |
 | **Buffett Deep-Dive** | On-demand 13-point Buffett analysis for any ticker — gross margin, expense margins, EPS trend, balance sheet strength, buybacks, and more |
 | **Portfolio Reminders** | Daily 7 AM ET email when any holding has earnings or ex-div within 3 days |
 | **Layer Drift Alerts** | Daily check of layer weights vs. targets in `layer_targets.json`; emails when any layer drifts ≥5pp |
@@ -181,22 +181,29 @@ venv/bin/python3 send_newsletter_main.py && venv/bin/python3 generate_dashboard.
 
 ### Investment Goals & Strategy Card
 
-Positioned at the top of the dashboard, this card surfaces three panels:
+Two-column layout: wide left panel for goals, right column for barbell health + investment principles.
 
-**Dividend Goal — $5,000/mo by 2036**
+**Dividend Goal — $5,000/mo by 2036** (left panel, top)
 - Current monthly gross and after-tax (23.8%) dividend income vs the $5,000/month target
 - Progress bar + percentage of goal reached
-- Gap in $/month and years remaining
-- Required CAGR (from dividend growth + DRIP + new capital) to hit goal
-- Milestone table: when each $1k increment is hit at the required CAGR
+- Gap in $/month, years remaining, and required CAGR
 
-**Barbell Health (Taleb)**
+**Portfolio Value Goal — $2M by 2036** (left panel, below dividend goal)
+- Current portfolio value vs the $2,000,000 target
+- Progress bar + required CAGR to reach $2M from today's value
+
+**Quarterly Targets table** (left panel, bottom) — 8 rolling quarters showing both goals side by side:
+- Each row: quarter label, dividend target ($/mo), portfolio target ($), status badges (on track / behind)
+- For any behind quarter: recommended capital to deploy at current portfolio yield
+- Header shows both required CAGRs and current dividend yield
+
+**Barbell Health (Taleb)** (right column, top)
 - Current L4 Convexity / Optionality allocation vs the 10–15% target band
 - Color-coded status: under-barbelled / in range / over-barbelled
-- Tax Context panel: key rates for >$500k household income (23.8% qualified div/LTCG, 40.8% ST)
+- **L4 Recommendations**: shows current L4 holdings as chips (ticker + weight %); recommends whether to add to existing positions, initiate a new convexity position, or pause L4 purchases based on how far L4 is from the 10–15% band
 
-**Investment Principles**
-- 8 core principles displayed as a compact reference: long-term hold, barbell model, 100% dividend reinvestment, low-cost passive core, no gimmicks/ESG, international only with stated competitive advantage, alternative investment review, Buffett/Munger/Graham philosophy
+**Investment Principles** (right column, bottom)
+- 8 core principles as a compact reference: long-term hold, barbell model, 100% DRIP, low-cost passive core, no gimmicks/ESG, international only with edge, alternative review, Buffett/Munger/Graham philosophy
 
 ### Header
 - **Tax Bracket dropdown** (top right) — toggles between $150k / $300k / $500k / $750k / $1M+ MFJ income scenarios; updates all dividend tax calculations and the after-tax chart line in real time
@@ -207,6 +214,7 @@ Positioned at the top of the dashboard, this card surfaces three panels:
 - **SPY Change** — benchmark comparison
 - **Total Gain vs Cost** — unrealized P&L vs your average cost across all holdings
 - **Est. Annual Dividends** — gross annual dividend income; subtitle shows net after-tax
+- **Est. Tax Bill** — current year's estimated federal tax (ST + LT); flips to "Final" label in the following year; accounts for stock gains, CC premium income, and any prior-year carryforward amounts
 
 ### Charts
 - **Portfolio vs SPY cumulative return** — time-weighted return (TWR) anchored to Feb 11, 2026. When new money is added (new positions, additional shares), those capital inflows are treated as external cash flows and excluded from the return calculation — they never show as a percentage gain spike. Both portfolio and SPY start at 0% on the baseline date for a true apples-to-apples comparison.
@@ -317,7 +325,7 @@ Banks and insurers are detected automatically (Gross Margin shown as N/A; other 
 
 ### Buffett Screener (nightly)
 
-The screener runs automatically at **2 AM ET** each night as a background thread inside `serve.py`. It scans the full NYSE (~2,300 tickers) applying six quality criteria:
+The screener runs automatically at **2 AM ET** each night as a background thread inside `serve.py`. It scans NYSE + NASDAQ (~6,500 deduplicated tickers) applying six quality criteria:
 
 | Metric | Threshold |
 |---|---|
