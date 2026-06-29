@@ -3,6 +3,7 @@
 
 import csv
 import json
+import os
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -339,6 +340,13 @@ def build_dashboard(portfolio, layers, holdings):
         for h in today_holdings if h.get("layer_num") == 4
     ]
 
+    _lt_path = os.path.join(os.path.dirname(__file__), "layer_targets.json")
+    try:
+        with open(_lt_path) as _f:
+            layer_targets_data = {int(k): v for k, v in json.load(_f).items()}
+    except Exception:
+        layer_targets_data = {}
+
     chart_data = json.dumps({
         "dates": port_dates,
         "portValues": port_values,
@@ -354,6 +362,7 @@ def build_dashboard(portfolio, layers, holdings):
         "layerBarColors": layer_bar_colors,
         "layerWeightDatasets": layer_weight_datasets,
         "layerWeightsByNum":   layer_weights_by_num,
+        "layerTargets":        layer_targets_data,
         "l4Positions":         l4_positions,
         "totalValue":          round(total_value_csv, 2),
     }, default=float)
@@ -763,20 +772,13 @@ def build_dashboard(portfolio, layers, holdings):
           </div>
         </div>
 
-        <!-- Investment Principles (compact) -->
-        <div style="background:#f9fbfd;border:1px solid #d6e4f0;border-radius:8px;padding:12px 14px;">
-          <div style="font-size:11px;font-weight:700;color:#2980b9;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;">
-            Investment Principles
+        <!-- Recommended Purchases -->
+        <div style="background:#fff;border:1px solid #e0e7ef;border-radius:8px;padding:12px 14px;">
+          <div style="font-size:11px;font-weight:700;color:#1a2340;text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px;">
+            Recommended Purchases
           </div>
-          <div style="display:flex;flex-direction:column;gap:4px;font-size:11px;color:#555;line-height:1.4;">
-            <div><span style="color:#27ae60;font-weight:700;">✓</span> <b>Long-term hold.</b> Years, not months. Minimize turnover &amp; taxes.</div>
-            <div><span style="color:#27ae60;font-weight:700;">✓</span> <b>Barbell (Taleb).</b> 10–15% L4 convexity. Remainder in growth. No role overlap.</div>
-            <div><span style="color:#27ae60;font-weight:700;">✓</span> <b>100% DRIP.</b> Reinvest or redirect to highest-conviction opportunity.</div>
-            <div><span style="color:#27ae60;font-weight:700;">✓</span> <b>Low-cost passive core.</b> Index funds in L1. No active management fees.</div>
-            <div><span style="color:#27ae60;font-weight:700;">✓</span> <b>No gimmicks / ESG.</b> Profit is the goal.</div>
-            <div><span style="color:#27ae60;font-weight:700;">✓</span> <b>International = edge only.</b> Clear advantage vs US alternatives required.</div>
-            <div><span style="color:#27ae60;font-weight:700;">✓</span> <b>Compare alternatives.</b> Rentals, land, 2nd property vs equities.</div>
-            <div><span style="color:#27ae60;font-weight:700;">✓</span> <b>Graham / Munger / Buffett.</b> Margin of safety. Invert. What breaks first?</div>
+          <div id="goal-recommendations" style="display:flex;flex-direction:column;gap:8px;font-size:11px;">
+            <div style="color:#aaa;font-style:italic;">Loading…</div>
           </div>
         </div>
 
@@ -1564,15 +1566,16 @@ function renderGoalsCard() {{
     : "No portfolio data";
 
   // Quarterly targets with recommendations
+  const today        = new Date();
+  const Q_END_MONTH  = [2, 5, 8, 11];
+  const Q_END_DAY    = [31, 30, 30, 31];
+  const Q_NAMES      = ["Q1","Q2","Q3","Q4"];
+  const curQ         = Math.floor(today.getMonth() / 3);
+  const rate         = reqCagr != null ? reqCagr / 100 : 0;
+  const portYield    = (totalAnnual > 0 && D.totalValue > 0) ? totalAnnual / D.totalValue : 0;
+
   const msEl = document.getElementById("goal-div-milestones");
   if (msEl && reqCagr != null && monthly > 0) {{
-    const rate         = reqCagr / 100;
-    const today        = new Date();
-    const portYield    = (totalAnnual > 0 && D.totalValue > 0) ? totalAnnual / D.totalValue : 0;
-    const Q_END_MONTH  = [2, 5, 8, 11];
-    const Q_END_DAY    = [31, 30, 30, 31];
-    const Q_NAMES      = ["Q1","Q2","Q3","Q4"];
-    const curQ         = Math.floor(today.getMonth() / 3);
 
     let yr = today.getFullYear();
     let q  = curQ;
@@ -1729,6 +1732,110 @@ function renderGoalsCard() {{
     <div style="margin-bottom:4px;color:#888;font-size:10px;text-transform:uppercase;letter-spacing:.04em;">Current L4 holdings</div>
     <div style="margin-bottom:2px;">${{chips}}</div>
     ${{action}}`;
+
+  // ── Recommended Purchases ──────────────────────────────────────────────────
+  const recPanel = document.getElementById("goal-recommendations");
+  if (!recPanel) return;
+
+  const LAYER_META = {{
+    1: {{ name: "L1 Structural Ballast",       color: "#4A90D9", ex: "index funds, BRK.B",            divFocus: false }},
+    2: {{ name: "L2 Cash-Flow Engines",         color: "#27ae60", ex: "SCHD, VYM, dividend payers ≥3%", divFocus: true  }},
+    3: {{ name: "L3 Compounders",               color: "#F5A623", ex: "GRMN, WMT, quality growers",    divFocus: false }},
+    4: {{ name: "L4 Convexity",                 color: "#E74C3C", ex: "see barbell panel above",        divFocus: false }},
+    5: {{ name: "L5 Shock Absorbers",           color: "#9B59B6", ex: "MCO, UNP, regime hedges",        divFocus: false }},
+  }};
+
+  const targets = D.layerTargets      || {{}};
+  const portYield2 = totalAnnual > 0 && portVal > 0 ? totalAnnual / portVal : 0;
+
+  // Build recs array, push in priority order
+  const recs = [];
+
+  // 1. Dividend gap → L2 buy rec (use next-quarter target gap)
+  if (reqCagr != null && monthly > 0 && gap > 1) {{
+    // Use Q2/nearest-quarter gap already computed above
+    const nextQDate  = new Date(today.getFullYear(), Q_END_MONTH[curQ], Q_END_DAY[curQ]);
+    const nextYrsAhd = Math.max(0, (nextQDate - today) / (365.25 * 86400000));
+    const nextTarget = monthly * Math.pow(1 + rate, nextYrsAhd);
+    const nextGap    = Math.max(0, nextTarget - monthly);
+    const capitalForDiv = portYield2 > 0 ? (nextGap * 12) / portYield2 : 0;
+    recs.push({{
+      priority: 1,
+      color: "#27ae60",
+      border: "#a9dfbf",
+      bg: "#f0fdf4",
+      label: "Close dividend gap",
+      body: `Add <b>${{fmt$(capitalForDiv)}}</b> to <b>L2 Cash-Flow Engines</b> (SCHD, VYM, dividend payers ≥3%) to generate +<b>${{fmtM(nextGap)}}</b> and hit the next quarterly target.`,
+    }});
+  }} else if (reqCagr != null && monthly > 0 && gap <= 1) {{
+    recs.push({{
+      priority: 1,
+      color: "#27ae60",
+      border: "#a9dfbf",
+      bg: "#f0fdf4",
+      label: "Dividend on track",
+      body: `Current income of <b>${{fmtM(monthly)}}</b> is on pace. DRIP or redirect dividends to your most underweight layer.`,
+    }});
+  }}
+
+  // 2. Layer drift — find most underweight layer excluding L4 (handled by barbell)
+  let worstDrift = 0, worstLayer = null;
+  for (let n = 1; n <= 5; n++) {{
+    if (n === 4) continue;
+    const tgt  = targets[n] || 0;
+    const curr = (lw[n] || {{}}).weight || 0;
+    const drift = tgt - curr;  // positive = underweight
+    if (drift > worstDrift) {{ worstDrift = drift; worstLayer = n; }}
+  }}
+  if (worstLayer && worstDrift > 2) {{
+    const tgt      = targets[worstLayer] || 0;
+    const curr     = (lw[worstLayer] || {{}}).weight || 0;
+    const dollarGap = portVal > 0 ? Math.max(0, (worstDrift / 100) * portVal) : 0;
+    const meta     = LAYER_META[worstLayer];
+    recs.push({{
+      priority: 2,
+      color: meta.color,
+      border: "#dde3ec",
+      bg: "#f9fbfd",
+      label: `Rebalance into ${{meta.name}}`,
+      body: `${{meta.name}} is at <b>${{curr.toFixed(1)}}%</b> vs <b>${{tgt.toFixed(1)}}%</b> target — <b>${{worstDrift.toFixed(1)}}pp</b> underweight. Deploy <b>${{fmt$(dollarGap)}}</b> (${{meta.ex}}).`,
+    }});
+  }}
+
+  // 3. Portfolio value pace — capital to deploy this quarter
+  if (portCagr != null && portVal > 0) {{
+    const nextQDate   = new Date(today.getFullYear(), Q_END_MONTH[curQ], Q_END_DAY[curQ]);
+    const nextYrsAhd  = Math.max(0, (nextQDate - today) / (365.25 * 86400000));
+    const portQTarget = portVal * Math.pow(1 + portCagr / 100, nextYrsAhd > 0 ? nextYrsAhd : 0.25);
+    const portQGapNow = Math.max(0, portQTarget - portVal);
+    const growthAtCagr = portVal * (Math.pow(1 + portCagr / 100, 0.25) - 1);
+    const capitalNeeded = Math.max(0, portQTarget - portVal - growthAtCagr);
+    if (capitalNeeded > 100) {{
+      recs.push({{
+        priority: 3,
+        color: "#2980b9",
+        border: "#bfdbfe",
+        bg: "#eff6ff",
+        label: "Capital pace for $2M",
+        body: `Target <b>${{fmt$(portQTarget)}}</b> by end of this quarter. Beyond organic growth, deploy <b>${{fmt$(capitalNeeded)}}</b> — prioritize whichever layer is most underweight.`,
+      }});
+    }} else {{
+      recs.push({{
+        priority: 3,
+        color: "#2980b9",
+        border: "#bfdbfe",
+        bg: "#eff6ff",
+        label: "Portfolio on pace",
+        body: `Organic growth at <b>${{portCagr.toFixed(1)}}% CAGR</b> is sufficient to reach the quarterly target. Additional capital accelerates the path to $2M.`,
+      }});
+    }}
+  }}
+
+  recPanel.innerHTML = recs.map(r => `
+    <div style="background:${{r.bg}};border:1px solid ${{r.border}};border-radius:7px;padding:9px 11px;">
+      <div style="font-weight:700;color:${{r.color}};font-size:11px;margin-bottom:3px;">${{r.label}}</div>
+      <div style="color:#444;font-size:11px;line-height:1.5;">${{r.body}}</div>
+    </div>`).join("");
 }}
 
 // Auto-load dividends on page open
