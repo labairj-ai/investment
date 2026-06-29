@@ -2385,6 +2385,23 @@ async function loadBuffett() {{
     const fmtVal = v => (v != null && isFinite(v)) ? v.toFixed(1) + "x" : "—";
     const lnk    = `font-size:10px;padding:1px 5px;border-radius:3px;border:1px solid #dde;color:#555;text-decoration:none;white-space:nowrap;`;
 
+    // Layer badge styles matching the portfolio architecture model
+    const _layerMeta = {{
+      1: {{ label:"L1",  bg:"#1a2340", color:"#fff",    title:"Structural Ballast — keeps system standing under stress" }},
+      2: {{ label:"L2",  bg:"#1a7a4a", color:"#fff",    title:"Cash-Flow Engine — pays you to wait" }},
+      3: {{ label:"L3",  bg:"#d4800a", color:"#fff",    title:"Compounder — long-duration wealth creation" }},
+      4: {{ label:"L4",  bg:"#6c3fc5", color:"#fff",    title:"Convexity / Optionality — nonlinear upside" }},
+      5: {{ label:"L5",  bg:"#b22222", color:"#fff",    title:"Shock Absorber — performs when assumptions fail" }},
+    }};
+    const _layerBadge = (rec, reason) => {{
+      if (!rec) return "—";
+      const m = _layerMeta[rec] || {{}};
+      return `<span title="${{reason || m.title || ""}}"
+        style="display:inline-block;padding:2px 7px;border-radius:10px;font-size:10px;font-weight:700;
+               background:${{m.bg}};color:${{m.color}};cursor:default;white-space:nowrap;">${{m.label}}</span>
+        <div style="font-size:10px;color:#888;margin-top:2px;max-width:120px;line-height:1.3;">${{reason || ""}}</div>`;
+    }};
+
     const rows = data.winners.map((w, i) => {{
       const yf   = `https://finance.yahoo.com/quote/${{w.ticker}}`;
       const cnbc = `https://www.cnbc.com/quotes/${{w.ticker.replace("-",".")}}`;
@@ -2405,6 +2422,7 @@ async function loadBuffett() {{
             </div>
           </td>
           <td style="padding:8px 10px;color:#555;font-size:12px;">${{w.company || "—"}}</td>
+          <td style="padding:8px 6px;vertical-align:middle;">${{_layerBadge(w.layer_rec, w.layer_reason)}}</td>
           <td style="padding:8px 10px;">${{w.price ? "$" + w.price.toFixed(2) : "—"}}</td>
           <td style="padding:8px 10px;font-weight:700;color:#27ae60;">${{w.gross_margin?.toFixed(1)}}%</td>
           <td style="padding:8px 10px;color:#555;">${{w.sga_margin?.toFixed(1)}}%</td>
@@ -2416,7 +2434,7 @@ async function loadBuffett() {{
           <td style="padding:8px 10px;color:#2980b9;">${{fmtVal(w.p_fcf)}}</td>
           <td style="padding:8px 10px;color:#2980b9;">${{fmtVal(w.ev_ebitda)}}</td>
         </tr>`;
-    }}).join("");
+    }}).join("\\n");
 
     const partialNote = (running || (lastScan && scanned < total * 0.95))
       ? `<span style="color:#e67e22;"> · partial results (${{pct}}% scanned)</span>` : "";
@@ -2428,6 +2446,7 @@ async function loadBuffett() {{
           <th style="padding:7px 6px;text-align:center;font-size:10px;color:#bbb;width:28px;">#</th>
           <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;letter-spacing:.04em;">Ticker</th>
           <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;letter-spacing:.04em;">Company</th>
+          <th style="padding:7px 10px;text-align:left;font-size:11px;color:#9b59b6;text-transform:uppercase;letter-spacing:.04em;">Layer</th>
           <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;letter-spacing:.04em;">Price</th>
           <th style="padding:7px 10px;text-align:left;font-size:11px;color:#27ae60;text-transform:uppercase;letter-spacing:.04em;">Gross %</th>
           <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;letter-spacing:.04em;">SG&amp;A %</th>
@@ -2443,7 +2462,7 @@ async function loadBuffett() {{
       </table>
       </div>
       <p style="font-size:11px;color:#aaa;margin-top:6px;">
-        Sorted by Gross Margin · Green = quality pass · Blue = valuation (trailing P/E, mktcap/FCF, EV/EBITDA)${{partialNote}}
+        Sorted by Gross Margin · Green = quality pass · Blue = valuation · Purple = layer recommendation${{partialNote}}
       </p>`;
 
   }} catch(e) {{

@@ -60,6 +60,12 @@ def _init_db(conn):
             pe_ratio          REAL,
             p_fcf             REAL,
             ev_ebitda         REAL,
+            sector            TEXT,
+            industry          TEXT,
+            dividend_yield    REAL,
+            market_cap        REAL,
+            layer_rec         INTEGER,
+            layer_reason      TEXT,
             scanned_at        TEXT
         );
         CREATE TABLE IF NOT EXISTS buffett_meta (
@@ -77,17 +83,28 @@ def _init_db(conn):
             PRIMARY KEY (ticker, scan_date)
         );
     """)
-    # Migrate existing tables that predate the valuation + history columns
-    for table, col in [
-        ("buffett_cache", "pe_ratio"),
-        ("buffett_cache", "p_fcf"),
-        ("buffett_cache", "ev_ebitda"),
-        ("buffett_winners", "pe_ratio"),
-        ("buffett_winners", "p_fcf"),
-        ("buffett_winners", "ev_ebitda"),
-    ]:
+    # Migrate existing tables
+    migrations = [
+        ("buffett_cache",   "pe_ratio",       "REAL"),
+        ("buffett_cache",   "p_fcf",           "REAL"),
+        ("buffett_cache",   "ev_ebitda",       "REAL"),
+        ("buffett_cache",   "sector",          "TEXT"),
+        ("buffett_cache",   "industry",        "TEXT"),
+        ("buffett_cache",   "dividend_yield",  "REAL"),
+        ("buffett_cache",   "market_cap",      "REAL"),
+        ("buffett_winners", "pe_ratio",        "REAL"),
+        ("buffett_winners", "p_fcf",           "REAL"),
+        ("buffett_winners", "ev_ebitda",       "REAL"),
+        ("buffett_winners", "sector",          "TEXT"),
+        ("buffett_winners", "industry",        "TEXT"),
+        ("buffett_winners", "dividend_yield",  "REAL"),
+        ("buffett_winners", "market_cap",      "REAL"),
+        ("buffett_winners", "layer_rec",       "INTEGER"),
+        ("buffett_winners", "layer_reason",    "TEXT"),
+    ]
+    for table, col, coltype in migrations:
         try:
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} REAL")
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {coltype}")
         except sqlite3.OperationalError:
             pass  # column already exists
     conn.commit()
@@ -160,12 +177,15 @@ def get_financial_data(ticker):
         equity       = get_val(bs, "Stockholders Equity")
         treasury     = get_val(bs, "Treasury Stock")
 
-        # Valuation metrics
-        pe_ratio   = _safe_float(info.get("trailingPE"))
-        market_cap = info.get("marketCap") or 0
-        fcf        = info.get("freeCashflow") or 0
-        p_fcf      = round(market_cap / fcf, 1) if fcf and fcf > 0 else None
-        ev_ebitda  = _safe_float(info.get("enterpriseToEbitda"))
+        # Valuation and classification metrics
+        pe_ratio      = _safe_float(info.get("trailingPE"))
+        market_cap    = info.get("marketCap") or 0
+        fcf           = info.get("freeCashflow") or 0
+        p_fcf         = round(market_cap / fcf, 1) if fcf and fcf > 0 else None
+        ev_ebitda     = _safe_float(info.get("enterpriseToEbitda"))
+        sector        = info.get("sector") or ""
+        industry      = info.get("industry") or ""
+        dividend_yield = _safe_float(info.get("dividendYield"), 0) or 0
 
         def margin(num, den):
             return round((num / den) * 100, 2) if den else 0.0
@@ -188,6 +208,10 @@ def get_financial_data(ticker):
             "pe_ratio":          round(pe_ratio, 1) if pe_ratio is not None else None,
             "p_fcf":             p_fcf,
             "ev_ebitda":         round(ev_ebitda, 1) if ev_ebitda is not None else None,
+            "sector":            sector,
+            "industry":          industry,
+            "dividend_yield":    round(dividend_yield, 4) if dividend_yield else None,
+            "market_cap":        market_cap or None,
         }
     except Exception:
         return None
@@ -205,6 +229,62 @@ def _passes_filters(r):
         and _g("capex_margin", 100)    <= 50
         and r.get("cash_gt_debt")      == "Yes"
     )
+
+
+def _assign_layer(r):
+    """
+    Map a Buffett screener winner to a Portfolio Architecture layer (1–5).
+    Returns (layer_num: int, reason: str).
+
+    Layer 1 – Structural Ballast:   mega-cap, ultra-stable, loss-absorbing
+    Layer 2 – Cash-Flow Engines:    dividend payers, pricing power, pays to wait
+    Layer 3 – Compounders:          quality long-duration businesses (default)
+    Layer 4 – Convexity/Optionality:small-cap, high-growth, nonlinear upside
+    Layer 5 – Shock Absorbers:      defense, energy, utilities, infrastructure monopolies
+    """
+    sector   = (r.get("sector")   or "").strip()
+    industry = (r.get("industry") or "").strip().lower()
+    div_yld  = r.get("dividend_yield") or 0
+    mcap     = r.get("market_cap")  or 0
+    pe       = r.get("pe_ratio")
+
+    # ── Layer 5: Shock Absorbers / Regime Hedges ─────────────────────────────
+    if sector == "Energy":
+        return 5, "Energy sector — regime hedge"
+    if sector == "Utilities":
+        return 5, "Utility — infrastructure monopoly"
+    if sector == "Basic Materials":
+        return 5, "Materials/commodities — regime hedge"
+    if any(kw in industry for kw in ["defense", "aerospace", "military", "weapon", "ammunition"]):
+        return 5, "Defense/aerospace — regime hedge"
+    if any(kw in industry for kw in ["railroad", "rail road", "pipeline", "oil & gas", "oil gas"]):
+        return 5, "Infrastructure/energy — regime hedge"
+    if any(kw in industry for kw in ["financial data", "financial exchanges", "credit service"]):
+        return 5, "Financial data monopoly — regime hedge"
+
+    # ── Layer 2: Cash-Flow Engines ────────────────────────────────────────────
+    if div_yld >= 0.03:
+        return 2, f"Dividend yield {div_yld*100:.1f}% — cash-flow engine"
+    if div_yld >= 0.015 and sector in ("Financial Services", "Real Estate", "Consumer Defensive"):
+        return 2, f"Income-oriented {sector.lower()} — cash-flow engine"
+
+    # ── Layer 4: Convexity / Optionality ─────────────────────────────────────
+    if 0 < mcap < 3_000_000_000:
+        return 4, f"Small-cap (${mcap/1e9:.1f}B) — convexity/optionality"
+    if sector == "Technology" and pe and pe > 40:
+        return 4, "High-growth tech — convexity"
+    if sector == "Communication Services" and (not pe or pe > 40 or mcap < 10_000_000_000):
+        return 4, "High-growth communications — convexity"
+    if sector == "Healthcare" and mcap < 5_000_000_000:
+        return 4, "Growth healthcare — convexity"
+
+    # ── Layer 1: Structural Ballast ───────────────────────────────────────────
+    if mcap > 300_000_000_000 and sector in ("Consumer Defensive", "Financial Services",
+                                              "Industrials", "Technology"):
+        return 1, f"Mega-cap {sector.lower()} ballast"
+
+    # ── Layer 3: Compounders (default for quality businesses) ─────────────────
+    return 3, "Quality compounder — long-duration growth"
 
 
 def _send_new_winners_email(new_tickers: list[dict]) -> None:
@@ -299,17 +379,23 @@ def _flush(conn, results, now_str, scanned_so_far, total_tickers, complete,
 
     conn.execute("DELETE FROM buffett_winners")
     for w in winners:
+        layer_rec, layer_reason = _assign_layer(w)
         conn.execute("""
             INSERT OR REPLACE INTO buffett_winners
             (ticker, company, price, last_quarter_date,
              gross_margin, sga_margin, net_income_margin,
              interest_margin, capex_margin, cash_gt_debt,
-             pe_ratio, p_fcf, ev_ebitda, scanned_at)
+             pe_ratio, p_fcf, ev_ebitda,
+             sector, industry, dividend_yield, market_cap,
+             layer_rec, layer_reason, scanned_at)
             VALUES (:ticker, :company, :price, :last_quarter_date,
                     :gross_margin, :sga_margin, :net_income_margin,
                     :interest_margin, :capex_margin, :cash_gt_debt,
-                    :pe_ratio, :p_fcf, :ev_ebitda, :scanned_at)
-        """, {**w, "scanned_at": w.get("scanned_at", now_str)})
+                    :pe_ratio, :p_fcf, :ev_ebitda,
+                    :sector, :industry, :dividend_yield, :market_cap,
+                    :layer_rec, :layer_reason, :scanned_at)
+        """, {**w, "scanned_at": w.get("scanned_at", now_str),
+              "layer_rec": layer_rec, "layer_reason": layer_reason})
 
     if complete:
         conn.execute(
@@ -415,18 +501,26 @@ def run():
                     fcf        = info.get("freeCashflow") or 0
                     p_fcf      = round(market_cap / fcf, 1) if fcf and fcf > 0 else None
                     ev_ebitda  = _safe_float(info.get("enterpriseToEbitda"))
-                    row["pe_ratio"]  = round(pe_ratio, 1) if pe_ratio is not None else None
-                    row["p_fcf"]     = p_fcf
-                    row["ev_ebitda"] = round(ev_ebitda, 1) if ev_ebitda is not None else None
-                    row["price"]     = (info.get("currentPrice")
-                                        or info.get("regularMarketPrice")
-                                        or row.get("price"))
+                    row["pe_ratio"]       = round(pe_ratio, 1) if pe_ratio is not None else None
+                    row["p_fcf"]          = p_fcf
+                    row["ev_ebitda"]      = round(ev_ebitda, 1) if ev_ebitda is not None else None
+                    row["price"]          = (info.get("currentPrice")
+                                             or info.get("regularMarketPrice")
+                                             or row.get("price"))
+                    row["sector"]         = info.get("sector") or row.get("sector") or ""
+                    row["industry"]       = info.get("industry") or row.get("industry") or ""
+                    div = _safe_float(info.get("dividendYield"), 0) or 0
+                    row["dividend_yield"] = round(div, 4) if div else row.get("dividend_yield")
+                    row["market_cap"]     = info.get("marketCap") or row.get("market_cap")
                     results.append(row)
-                    # Keep cache current with today's valuation metrics
+                    # Keep cache current with today's valuation + classification
                     conn.execute(
-                        "UPDATE buffett_cache SET pe_ratio=?, p_fcf=?, ev_ebitda=?, price=?"
+                        "UPDATE buffett_cache SET pe_ratio=?, p_fcf=?, ev_ebitda=?, price=?,"
+                        " sector=?, industry=?, dividend_yield=?, market_cap=?"
                         " WHERE ticker=?",
-                        (row["pe_ratio"], row["p_fcf"], row["ev_ebitda"], row["price"], ticker)
+                        (row["pe_ratio"], row["p_fcf"], row["ev_ebitda"], row["price"],
+                         row["sector"], row["industry"], row["dividend_yield"],
+                         row["market_cap"], ticker)
                     )
             except Exception:
                 pass
@@ -442,12 +536,14 @@ def run():
                      gross_margin, sga_margin, rd_margin, depr_margin,
                      interest_margin, net_income_margin, capex_margin,
                      cash_gt_debt, adj_debt_equity,
-                     pe_ratio, p_fcf, ev_ebitda, scanned_at)
+                     pe_ratio, p_fcf, ev_ebitda,
+                     sector, industry, dividend_yield, market_cap, scanned_at)
                     VALUES (:ticker, :company, :price, :last_quarter_date,
                             :gross_margin, :sga_margin, :rd_margin, :depr_margin,
                             :interest_margin, :net_income_margin, :capex_margin,
                             :cash_gt_debt, :adj_debt_equity,
-                            :pe_ratio, :p_fcf, :ev_ebitda, :scanned_at)
+                            :pe_ratio, :p_fcf, :ev_ebitda,
+                            :sector, :industry, :dividend_yield, :market_cap, :scanned_at)
                 """, data)
             time.sleep(random.uniform(0.5, 1.5))
         else:
