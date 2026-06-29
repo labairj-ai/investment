@@ -445,6 +445,7 @@ def _run_screener():
         today = now.date().isoformat()
         if now.hour >= 2 and not already_ran(today):
             print(f"[Screener] Starting Buffett scan for {today}…")
+            FLAG.write_text(today)   # mark today before running — prevents retries on crash
             try:
                 with open(LOG, "a") as lf:
                     lf.write(f"\n=== SCREENER {_dt.now(TZ)} ===\n")
@@ -458,7 +459,6 @@ def _run_screener():
                         lf.write(f"ERROR: {result.stderr}\n")
                         print(f"[Screener] Failed — check {LOG}")
                     else:
-                        FLAG.write_text(today)
                         print(f"[Screener] Done for {today}.")
             except Exception as exc:
                 print(f"[Screener] Exception: {exc}")
