@@ -356,6 +356,7 @@ The screener runs automatically at **2 AM ET** each night as a background thread
 - **Criteria chips** — the 6 quality filters displayed inline so it's always clear what the screener tests
 - **Partial results** — winners found so far appear in the table even before the scan finishes, with a "partial results (X% scanned)" note
 - **Scan duration** — how long the last completed scan took
+- **Exchange badge** — each winner shows a color-coded **NYSE** (blue) or **NASDAQ** (green) badge next to the ticker in both the screener table and the Recommended Purchases panel
 - **Log tail panel** — collapsible view of the last 20 lines of `screener.log`, color-coded (red = errors, orange = warnings, blue = section headers)
 
 **Logs:** `out/screener.log`
