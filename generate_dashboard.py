@@ -365,6 +365,7 @@ def build_dashboard(portfolio, layers, holdings):
         "layerTargets":        layer_targets_data,
         "l4Positions":         l4_positions,
         "totalValue":          round(total_value_csv, 2),
+        "holdings":            [{"ticker": h["ticker"], "layer": h["layer_num"]} for h in today_holdings],
     }, default=float)
 
     # Covered call ticker dropdown — all holdings sorted alphabetically
@@ -1733,109 +1734,206 @@ function renderGoalsCard() {{
     <div style="margin-bottom:2px;">${{chips}}</div>
     ${{action}}`;
 
-  // ── Recommended Purchases ──────────────────────────────────────────────────
+  // Kick off async recommendation engine (fetches screener + earnings)
+  loadRecommendations({{
+    portVal, totalAnnual, monthly, gap, reqCagr, portCagr,
+    rate, today, Q_END_MONTH, Q_END_DAY, curQ,
+  }});
+}}
+
+// ── Recommendation engine ──────────────────────────────────────────────────
+const LAYER_META = {{
+  1: {{ name: "L1 Structural Ballast",  color: "#4A90D9", bg: "#eff6ff", border: "#bfdbfe" }},
+  2: {{ name: "L2 Cash-Flow Engines",   color: "#27ae60", bg: "#f0fdf4", border: "#a9dfbf" }},
+  3: {{ name: "L3 Compounders",         color: "#e67e22", bg: "#fff8f0", border: "#f5cba7" }},
+  4: {{ name: "L4 Convexity",           color: "#E74C3C", bg: "#fff1f1", border: "#fbb6b6" }},
+  5: {{ name: "L5 Shock Absorbers",     color: "#9B59B6", bg: "#f9f0ff", border: "#d7b8f5" }},
+}};
+
+async function loadRecommendations(ctx) {{
   const recPanel = document.getElementById("goal-recommendations");
   if (!recPanel) return;
 
-  const LAYER_META = {{
-    1: {{ name: "L1 Structural Ballast",       color: "#4A90D9", ex: "index funds, BRK.B",            divFocus: false }},
-    2: {{ name: "L2 Cash-Flow Engines",         color: "#27ae60", ex: "SCHD, VYM, dividend payers ≥3%", divFocus: true  }},
-    3: {{ name: "L3 Compounders",               color: "#F5A623", ex: "GRMN, WMT, quality growers",    divFocus: false }},
-    4: {{ name: "L4 Convexity",                 color: "#E74C3C", ex: "see barbell panel above",        divFocus: false }},
-    5: {{ name: "L5 Shock Absorbers",           color: "#9B59B6", ex: "MCO, UNP, regime hedges",        divFocus: false }},
-  }};
+  const {{ portVal, totalAnnual, monthly, gap, reqCagr, portCagr,
+          rate, today, Q_END_MONTH, Q_END_DAY, curQ }} = ctx;
 
-  const targets = D.layerTargets      || {{}};
-  const portYield2 = totalAnnual > 0 && portVal > 0 ? totalAnnual / portVal : 0;
+  const fmt$ = v => "$" + Math.round(v).toLocaleString("en-US");
+  const fmtM = v => "$" + Math.round(v).toLocaleString("en-US") + "/mo";
 
-  // Build recs array, push in priority order
-  const recs = [];
-
-  // 1. Dividend gap → L2 buy rec (use next-quarter target gap)
-  if (reqCagr != null && monthly > 0 && gap > 1) {{
-    // Use Q2/nearest-quarter gap already computed above
-    const nextQDate  = new Date(today.getFullYear(), Q_END_MONTH[curQ], Q_END_DAY[curQ]);
-    const nextYrsAhd = Math.max(0, (nextQDate - today) / (365.25 * 86400000));
-    const nextTarget = monthly * Math.pow(1 + rate, nextYrsAhd);
-    const nextGap    = Math.max(0, nextTarget - monthly);
-    const capitalForDiv = portYield2 > 0 ? (nextGap * 12) / portYield2 : 0;
-    recs.push({{
-      priority: 1,
-      color: "#27ae60",
-      border: "#a9dfbf",
-      bg: "#f0fdf4",
-      label: "Close dividend gap",
-      body: `Add <b>${{fmt$(capitalForDiv)}}</b> to <b>L2 Cash-Flow Engines</b> (SCHD, VYM, dividend payers ≥3%) to generate +<b>${{fmtM(nextGap)}}</b> and hit the next quarterly target.`,
-    }});
-  }} else if (reqCagr != null && monthly > 0 && gap <= 1) {{
-    recs.push({{
-      priority: 1,
-      color: "#27ae60",
-      border: "#a9dfbf",
-      bg: "#f0fdf4",
-      label: "Dividend on track",
-      body: `Current income of <b>${{fmtM(monthly)}}</b> is on pace. DRIP or redirect dividends to your most underweight layer.`,
-    }});
+  // Fetch screener winners + earnings in parallel
+  let winners = [], earningsByTicker = {{}};
+  try {{
+    const [wRes, eRes] = await Promise.all([
+      fetch("/api/buffett-winners"),
+      fetch("/api/earnings"),
+    ]);
+    const wData = await wRes.json();
+    const eData = await eRes.json();
+    winners = wData.winners || [];
+    for (const e of (eData.earnings || [])) {{
+      if (e.next_earnings_date) earningsByTicker[e.ticker] = e.next_earnings_date;
+    }}
+  }} catch(e) {{
+    recPanel.innerHTML = `<div style="color:#aaa;font-size:11px;">Could not load screener data.</div>`;
+    return;
   }}
 
-  // 2. Layer drift — find most underweight layer excluding L4 (handled by barbell)
-  let worstDrift = 0, worstLayer = null;
+  const heldSet    = new Set((D.holdings || []).map(h => h.ticker));
+  const targets    = D.layerTargets     || {{}};
+  const lw         = D.layerWeightsByNum || {{}};
+  const portYield  = totalAnnual > 0 && portVal > 0 ? totalAnnual / portVal : 0;
+
+  // Dividend yield of held tickers from _divData (for L2 context)
+  const divYieldHeld = {{}};
+  for (const r of (_divData?.results || [])) {{
+    if (r.ticker && r.yield) divYieldHeld[r.ticker] = r.yield;
+  }}
+
+  // ── Score each winner ────────────────────────────────────────────────────
+  const RISK_SCORE = {{ low: 3, medium: 2, unknown: 1, high: -99 }};
+  const now = Date.now();
+
+  const candidates = winners
+    .filter(w => !heldSet.has(w.ticker) && w.value_trap_risk !== "high")
+    .map(w => {{
+      // Valuation penalty — prefer cheaper on a composite of available metrics
+      let valPenalty = 0;
+      if (w.pe_ratio  && w.pe_ratio  > 40) valPenalty += 1;
+      if (w.pe_ratio  && w.pe_ratio  > 60) valPenalty += 1;
+      if (w.ev_ebitda && w.ev_ebitda > 25) valPenalty += 1;
+      if (w.p_fcf     && w.p_fcf     > 35) valPenalty += 1;
+
+      // Earnings proximity flag (within 14 days)
+      let earningsFlag = null;
+      const eDate = earningsByTicker[w.ticker];
+      if (eDate) {{
+        const daysAway = Math.round((new Date(eDate) - now) / 86400000);
+        if (daysAway >= 0 && daysAway <= 14) earningsFlag = daysAway;
+      }}
+
+      // Value trap flags
+      let trapFlags = [];
+      try {{ trapFlags = JSON.parse(w.value_trap_flags || "[]"); }} catch(_) {{}}
+
+      return {{
+        ...w,
+        score: (RISK_SCORE[w.value_trap_risk] || 1) * 10 - valPenalty,
+        earningsFlag,
+        trapFlags,
+        layerFit: w.layer_rec || 3,
+      }};
+    }})
+    .sort((a, b) => b.score - a.score);
+
+  // ── Layer gaps (all layers, sorted by underweight %) ────────────────────
+  const layerGaps = [];
   for (let n = 1; n <= 5; n++) {{
-    if (n === 4) continue;
     const tgt  = targets[n] || 0;
     const curr = (lw[n] || {{}}).weight || 0;
-    const drift = tgt - curr;  // positive = underweight
-    if (drift > worstDrift) {{ worstDrift = drift; worstLayer = n; }}
+    const drift = tgt - curr;
+    if (drift > 1) layerGaps.push({{ n, tgt, curr, drift, dollar: (drift / 100) * portVal }});
   }}
-  if (worstLayer && worstDrift > 2) {{
-    const tgt      = targets[worstLayer] || 0;
-    const curr     = (lw[worstLayer] || {{}}).weight || 0;
-    const dollarGap = portVal > 0 ? Math.max(0, (worstDrift / 100) * portVal) : 0;
-    const meta     = LAYER_META[worstLayer];
-    recs.push({{
-      priority: 2,
-      color: meta.color,
-      border: "#dde3ec",
-      bg: "#f9fbfd",
-      label: `Rebalance into ${{meta.name}}`,
-      body: `${{meta.name}} is at <b>${{curr.toFixed(1)}}%</b> vs <b>${{tgt.toFixed(1)}}%</b> target — <b>${{worstDrift.toFixed(1)}}pp</b> underweight. Deploy <b>${{fmt$(dollarGap)}}</b> (${{meta.ex}}).`,
-    }});
+  layerGaps.sort((a, b) => b.drift - a.drift);
+
+  // ── Helper: render a candidate ticker chip ───────────────────────────────
+  const riskColor = {{ low: "#1e8449", medium: "#9a6700", unknown: "#7f8c8d", high: "#c0392b" }};
+  const riskBg    = {{ low: "#eafaf1", medium: "#fef9e7", unknown: "#f4f4f4", high: "#fdecea" }};
+  const riskLabel = {{ low: "✓ Low risk", medium: "⚠ Med risk", unknown: "? Unrated", high: "✗ High risk" }};
+
+  function tickerCard(w) {{
+    const risk  = w.value_trap_risk || "unknown";
+    const rBadge = `<span style="background:${{riskBg[risk]}};color:${{riskColor[risk]}};border-radius:4px;padding:1px 5px;font-size:9px;font-weight:700;">${{riskLabel[risk]}}</span>`;
+
+    const vals = [];
+    if (w.pe_ratio  != null) vals.push(`P/E ${{w.pe_ratio.toFixed(0)}}`);
+    if (w.p_fcf     != null) vals.push(`P/FCF ${{w.p_fcf.toFixed(0)}}`);
+    if (w.ev_ebitda != null) vals.push(`EV/EBITDA ${{w.ev_ebitda.toFixed(0)}}`);
+    if (w.dividend_yield && w.dividend_yield > 0) vals.push(`Yield ${{(w.dividend_yield*100).toFixed(1)}}%`);
+    const valStr = vals.length ? `<span style="color:#888;font-size:10px;"> · ${{vals.join(" · ")}}</span>` : "";
+
+    const earnWarn = w.earningsFlag != null
+      ? `<span style="color:#e67e22;font-size:10px;"> ⚠ earnings in ${{w.earningsFlag}}d</span>` : "";
+
+    const flagStr = w.trapFlags.length
+      ? `<div style="color:#c0392b;font-size:9px;margin-top:2px;">⚑ ${{w.trapFlags.join(", ")}}</div>` : "";
+
+    const layerReason = w.layer_reason
+      ? `<div style="color:#aaa;font-size:9px;margin-top:1px;">${{w.layer_reason}}</div>` : "";
+
+    return `<div style="background:#f9fbfd;border:1px solid #e8edf4;border-radius:6px;padding:6px 9px;margin-bottom:5px;">
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+        <span style="font-weight:700;font-size:12px;color:#1a2340;">${{w.ticker}}</span>
+        ${{rBadge}}${{valStr}}${{earnWarn}}
+      </div>
+      ${{flagStr}}${{layerReason}}
+    </div>`;
   }}
 
-  // 3. Portfolio value pace — capital to deploy this quarter
+  // ── Build recommendation sections ────────────────────────────────────────
+  let html = "";
+
+  // 1. For each underweight layer, show top Buffett picks that fit
+  const usedLayers = new Set();
+  for (const lg of layerGaps.slice(0, 4)) {{
+    if (lg.n === 4) continue; // L4 handled by barbell panel
+    const picks = candidates.filter(c => c.layerFit === lg.n).slice(0, 3);
+    if (!picks.length) continue;
+    usedLayers.add(lg.n);
+
+    const meta = LAYER_META[lg.n];
+    const divLine = lg.n === 2 && portYield > 0
+      ? `<div style="font-size:10px;color:#27ae60;margin-bottom:6px;">
+           +${{fmtM((lg.dollar * portYield) / 12)}} estimated monthly income from deploying ${{fmt$(lg.dollar)}} at ${{(portYield*100).toFixed(1)}}% yield
+         </div>` : "";
+
+    html += `<div style="margin-bottom:12px;">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:4px;">
+        <span style="font-weight:700;color:${{meta.color}};font-size:11px;">${{meta.name}}</span>
+        <span style="font-size:10px;color:#888;">${{lg.curr.toFixed(1)}}% → ${{lg.tgt.toFixed(1)}}% target · deploy ${{fmt$(lg.dollar)}}</span>
+      </div>
+      ${{divLine}}
+      ${{picks.map(tickerCard).join("")}}
+    </div>`;
+  }}
+
+  // 2. Capital pace for $2M goal
   if (portCagr != null && portVal > 0) {{
-    const nextQDate   = new Date(today.getFullYear(), Q_END_MONTH[curQ], Q_END_DAY[curQ]);
-    const nextYrsAhd  = Math.max(0, (nextQDate - today) / (365.25 * 86400000));
-    const portQTarget = portVal * Math.pow(1 + portCagr / 100, nextYrsAhd > 0 ? nextYrsAhd : 0.25);
-    const portQGapNow = Math.max(0, portQTarget - portVal);
-    const growthAtCagr = portVal * (Math.pow(1 + portCagr / 100, 0.25) - 1);
-    const capitalNeeded = Math.max(0, portQTarget - portVal - growthAtCagr);
-    if (capitalNeeded > 100) {{
-      recs.push({{
-        priority: 3,
-        color: "#2980b9",
-        border: "#bfdbfe",
-        bg: "#eff6ff",
-        label: "Capital pace for $2M",
-        body: `Target <b>${{fmt$(portQTarget)}}</b> by end of this quarter. Beyond organic growth, deploy <b>${{fmt$(capitalNeeded)}}</b> — prioritize whichever layer is most underweight.`,
-      }});
+    const nextQDate    = new Date(today.getFullYear(), Q_END_MONTH[curQ], Q_END_DAY[curQ]);
+    const nextYrsAhd   = Math.max(0, (nextQDate - today) / (365.25 * 86400000));
+    const portQTarget  = portVal * Math.pow(1 + portCagr / 100, Math.max(nextYrsAhd, 0.25));
+    const growthOnly   = portVal * (Math.pow(1 + portCagr / 100, 0.25) - 1);
+    const newCapNeeded = Math.max(0, portQTarget - portVal - growthOnly);
+
+    if (newCapNeeded > 500) {{
+      html += `<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:7px;padding:9px 11px;margin-bottom:8px;">
+        <div style="font-weight:700;color:#2980b9;font-size:11px;margin-bottom:3px;">Capital pace — $2M by 2036</div>
+        <div style="color:#444;font-size:11px;line-height:1.5;">
+          Deploy <b>${{fmt$(newCapNeeded)}}</b> this quarter to stay on pace for ${{fmt$(portQTarget)}} by Q-end.
+          Prioritize the most underweight layer above.
+        </div>
+      </div>`;
     }} else {{
-      recs.push({{
-        priority: 3,
-        color: "#2980b9",
-        border: "#bfdbfe",
-        bg: "#eff6ff",
-        label: "Portfolio on pace",
-        body: `Organic growth at <b>${{portCagr.toFixed(1)}}% CAGR</b> is sufficient to reach the quarterly target. Additional capital accelerates the path to $2M.`,
-      }});
+      html += `<div style="background:#f0fdf4;border:1px solid #a9dfbf;border-radius:7px;padding:9px 11px;margin-bottom:8px;">
+        <div style="font-weight:700;color:#27ae60;font-size:11px;margin-bottom:2px;">Portfolio on pace for $2M</div>
+        <div style="color:#444;font-size:11px;">Organic growth at ${{portCagr.toFixed(1)}}% CAGR covers this quarter. Additional capital accelerates the timeline.</div>
+      </div>`;
     }}
   }}
 
-  recPanel.innerHTML = recs.map(r => `
-    <div style="background:${{r.bg}};border:1px solid ${{r.border}};border-radius:7px;padding:9px 11px;">
-      <div style="font-weight:700;color:${{r.color}};font-size:11px;margin-bottom:3px;">${{r.label}}</div>
-      <div style="color:#444;font-size:11px;line-height:1.5;">${{r.body}}</div>
-    </div>`).join("");
+  // 3. If no screener data aligned with underweight layers, show best overall picks
+  if (!usedLayers.size) {{
+    const topPicks = candidates.slice(0, 3);
+    if (topPicks.length) {{
+      html += `<div style="margin-bottom:8px;">
+        <div style="font-weight:700;color:#1a2340;font-size:11px;margin-bottom:6px;">Top Buffett screener picks</div>
+        ${{topPicks.map(tickerCard).join("")}}
+      </div>`;
+    }} else {{
+      html += `<div style="color:#aaa;font-size:11px;font-style:italic;">No screener winners yet — run the Buffett scan below.</div>`;
+    }}
+  }}
+
+  recPanel.innerHTML = html || `<div style="color:#aaa;font-size:11px;font-style:italic;">No recommendations available.</div>`;
 }}
 
 // Auto-load dividends on page open
