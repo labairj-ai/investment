@@ -594,6 +594,10 @@ def run():
         "INSERT OR REPLACE INTO buffett_meta (key, value) VALUES ('total_tickers', ?)",
         (str(len(tickers)),)
     )
+    # Reset progress counter so the UI shows 0% immediately, not leftover from last run.
+    conn.execute(
+        "INSERT OR REPLACE INTO buffett_meta (key, value) VALUES ('tickers_scanned', '0')"
+    )
     conn.commit()
 
     # Capture the full set of tickers ever seen as winners — used by _flush
