@@ -1902,12 +1902,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         LOG     = PROJECT_DIR / "out" / "screener.log"
 
         def _bg():
-            with open(LOG, "a") as lf:
-                lf.write(f"\n=== MANUAL SCAN {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===\n")
-                subprocess.run(
-                    [str(VENV_PY), str(PROJECT_DIR / "buffett_screener.py")],
-                    cwd=str(PROJECT_DIR), stdout=lf, stderr=lf
-                )
+            global _scan_launching_until
+            try:
+                with open(LOG, "a") as lf:
+                    lf.write(f"\n=== MANUAL SCAN {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===\n")
+                    subprocess.run(
+                        [str(VENV_PY), str(PROJECT_DIR / "buffett_screener.py")],
+                        cwd=str(PROJECT_DIR), stdout=lf, stderr=lf
+                    )
+            finally:
+                # Once the subprocess exits (success or crash), clear the grace
+                # window so the UI immediately stops showing "Scanning".
+                _scan_launching_until = 0.0
 
         threading.Thread(target=_bg, daemon=True).start()
         self._json({"ok": True, "started": True})
