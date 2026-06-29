@@ -3740,8 +3740,15 @@ function renderCC(d) {{
       <span>Min Strike <b>${{fmt(d.strike_floor)}}</b> <span style="color:#888;font-size:11px;">(${{floorNote}})</span></span>
     </div>`;
 
+  const noteHtml = d.note
+    ? `<div style="background:#fff8f0;border:1px solid #f5cba7;border-radius:6px;
+                   padding:9px 12px;margin-bottom:12px;font-size:12px;color:#7d5a00;">
+        ${{d.note}}
+       </div>`
+    : "";
+
   if (!d.recs || d.recs.length === 0) {{
-    return meta + `<p style="color:#888;font-size:13px;">No qualifying contracts found.</p>`;
+    return meta + noteHtml + `<p style="color:#888;font-size:13px;">No qualifying contracts found.</p>`;
   }}
 
   const rows = d.recs.map((r, i) => {{
@@ -3804,7 +3811,8 @@ function renderCC(d) {{
       <tbody>${{rows}}</tbody>
     </table>
     </div>
-    <p style="font-size:11px;color:#aaa;margin-top:8px;">Top ${{d.recs.length}} contracts by annualized return. Highlighted row = best pick.</p>`;
+    <p style="font-size:11px;color:#aaa;margin-top:8px;">Top ${{d.recs.length}} contracts by annualized return. Highlighted row = best pick.</p>
+    ${{noteHtml}}`;
 }}
 </script>
 </body>

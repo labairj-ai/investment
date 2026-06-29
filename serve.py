@@ -632,6 +632,23 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     conn.commit()
                     conn.close()
 
+            # Seed opening lot in cost_lots
+            db = PROJECT_DIR / "out" / "investment.db"
+            if db.exists():
+                today_str = datetime.date.today().isoformat()
+                conn = sqlite3.connect(str(db), timeout=10)
+                existing = conn.execute(
+                    "SELECT COUNT(*) FROM cost_lots WHERE ticker=?", (ticker,)
+                ).fetchone()[0]
+                if existing == 0:
+                    conn.execute(
+                        "INSERT INTO cost_lots (ticker, shares, cost_per_share, purchase_date, notes) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        (ticker, shares, avg_cost, today_str, "Opening lot (auto-created)")
+                    )
+                    conn.commit()
+                conn.close()
+
             # Regenerate dashboard
             import subprocess
             subprocess.run(
@@ -972,6 +989,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 "week52_high":       round(result["week52_high"], 2),
                 "week52_high_dt":    result["week52_high_dt"],
                 "recs":              recs,
+                "data_mode":         result.get("data_mode", "live"),
+                "dte_extended":      result.get("dte_extended", False),
+                "note":              result.get("note"),
             })
 
         except Exception as e:
