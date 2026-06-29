@@ -8,7 +8,7 @@ A personal investment tracking system that sends a daily email newsletter, maint
 
 | Feature | Description |
 |---|---|
-| **Investment Goals & Strategy** | Persistent card showing dividend goal ($5k/mo by 2036) + portfolio value goal ($2M by 2036), each with 8-quarter rolling targets and capital deployment recs; barbell health with L4 recommendations; 8 investment principles — auto-updates with live dividend data |
+| **Investment Goals & Strategy** | Dividend goal ($5k/mo by 2036) + portfolio value goal ($2M by 2036) with 8-quarter rolling targets; barbell health with L4 recs; live **Recommended Purchases** panel backed by Buffett screener data, layer drift, dividend yield impact, valuation multiples, value trap flags, and earnings calendar |
 | **Daily Newsletter** | Fetches closing prices, computes P&L by layer and holding, emails an HTML report each morning at 8 AM ET |
 | **Local Dashboard** | Interactive web UI at `http://localhost:5001` with charts, holdings table, and live analysis tools |
 | **Add / Manage Positions** | Add new positions directly from the Holdings UI (ticker, shares, avg cost, layer); reassign any holding to a different layer with full retroactive history rewrite |
@@ -202,8 +202,15 @@ Two-column layout: wide left panel for goals, right column for barbell health + 
 - Color-coded status: under-barbelled / in range / over-barbelled
 - **L4 Recommendations**: shows current L4 holdings as chips (ticker + weight %); recommends whether to add to existing positions, initiate a new convexity position, or pause L4 purchases based on how far L4 is from the 10–15% band
 
-**Investment Principles** (right column, bottom)
-- 8 core principles as a compact reference: long-term hold, barbell model, 100% DRIP, low-cost passive core, no gimmicks/ESG, international only with edge, alternative review, Buffett/Munger/Graham philosophy
+**Recommended Purchases** (right column, bottom)
+- Live recommendation engine that fetches `/api/buffett-winners` and `/api/earnings` on every page load
+- Filters the Buffett screener's passing universe to exclude stocks already held and any with high value-trap risk
+- Scores remaining candidates by risk level (low › medium › unknown) and valuation (penalizes P/E > 40, EV/EBITDA > 25, P/FCF > 35)
+- Groups recommendations by layer, matched to whichever layers are most underweight vs `layer_targets.json`; L4 is excluded (handled by the Barbell panel above)
+- Each pick shows: risk badge (✓ Low / ⚠ Med / ? Unrated), P/E · P/FCF · EV/EBITDA · dividend yield, screener's layer assignment reason, and any active value trap flags (e.g. *gross margin compressing 2 yrs in a row*)
+- Earnings warning (⚠ earnings in Nd) for any pick with an earnings date within 14 days
+- L2 Cash-Flow Engine section shows estimated monthly income from deploying the layer gap at current portfolio yield
+- Bottom card shows whether organic growth covers the $2M quarterly portfolio target or new capital is needed this quarter
 
 ### Header
 - **Tax Bracket dropdown** (top right) — toggles between $150k / $300k / $500k / $750k / $1M+ MFJ income scenarios; updates all dividend tax calculations and the after-tax chart line in real time
