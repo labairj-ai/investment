@@ -380,14 +380,13 @@ def build_html(
         layer_rows.append([
             name_html,
             money(val),
-            f"{act:.1f}%",
-            f"{tgt:.0f}%",
+            f"{act:.1f}% / {tgt:.0f}%",
             drift_html,
-            f"<span style='color:{chg_c};'>{signed_pct(dpct)} / {money(dchg)}</span>",
+            f"<span style='color:{chg_c};'>{signed_pct(dpct)} ({money(dchg)})</span>",
         ])
 
     alloc_table = _table(
-        ["Layer", "Value", "Actual", "Target", "Drift", "Today Δ"],
+        ["Layer", "Value", "Actual / Target", "Drift", "Today Δ"],
         layer_rows,
     )
 
@@ -412,21 +411,7 @@ def build_html(
 
     alloc_body = drift_warning + alloc_table
 
-    # ── 3. Holdings Performance ───────────────────────────────────────────────
-    h = holdings.copy().sort_values(["Layer", "chg_dollars"], ascending=[True, False])
-    hold_rows = []
-    for _, r in h.iterrows():
-        c = color_change(float(r["chg_dollars"]))
-        hold_rows.append([
-            r["LayerLabel"],
-            f"<b>{r['Stock']}</b>",
-            f"{r['Shares']:g}",
-            money(float(r["value_yday"])),
-            f"<span style='color:{c};'>{signed_pct(float(r['chg_pct']))} / {money(float(r['chg_dollars']))}</span>",
-        ])
-    hold_table = _table(["Layer", "Ticker", "Shares", "Value", "Today Δ"], hold_rows)
-
-    # ── 4. Calendar events ────────────────────────────────────────────────────
+    # ── 3. Calendar events ────────────────────────────────────────────────────
     events_html = ""
 
     def urgency(days):
@@ -462,7 +447,7 @@ def build_html(
             + _table(["Ticker", "Ex-Date", "Days Away", "Est. Payout"], exdiv_rows)
         )
 
-    # ── 5. Rubric + flags ─────────────────────────────────────────────────────
+    # ── 4. Rubric + flags ─────────────────────────────────────────────────────
     rubric_rows_html = []
     for _, r in rubric_df.iterrows():
         rubric_rows_html.append([r["Judgment Category"], r["Status"], r["Rationale"]])
@@ -484,7 +469,6 @@ def build_html(
     sections = [
         _section("📈 Portfolio Snapshot", snapshot_html),
         _section("⚖️ Layer Allocation vs Target", alloc_body),
-        _section("📋 Holdings Performance", hold_table),
     ]
     if events_html:
         sections.append(_section("⏰ Upcoming Events (Next 3 Days)", events_html, accent="#2980b9"))
