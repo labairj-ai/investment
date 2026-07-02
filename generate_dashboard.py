@@ -1501,16 +1501,17 @@ function renderGoalsCard() {{
   const GOAL_YEAR       = 2036;
   const CUR_YEAR        = new Date().getFullYear();
   const YEARS_LEFT      = Math.max(1, GOAL_YEAR - CUR_YEAR);
-  const NIIT_RATE       = 0.038;
-  const DIV_TAX_RATE    = 0.20 + NIIT_RATE;
+  const DIV_TAX_RATE = CURRENT_BRACKET.qualified + CURRENT_BRACKET.niit;
 
   const totalAnnual = _divData
+    ? _divData.results.reduce((s, r) => s + (r.annual_income || 0) * (1 - effectiveRate(r.tax_type || "qualified")), 0) : 0;
+  const totalGross  = _divData
     ? _divData.results.reduce((s, r) => s + (r.annual_income || 0), 0) : 0;
-  const monthly     = totalAnnual / 12;
-  const monthlyNet  = monthly * (1 - DIV_TAX_RATE);
-  const pct         = Math.min(100, totalAnnual > 0 ? (monthly / GOAL_MONTHLY * 100) : 0);
+  const monthly     = totalGross / 12;
+  const monthlyNet  = totalAnnual / 12;
+  const pct         = Math.min(100, totalGross > 0 ? (monthly / GOAL_MONTHLY * 100) : 0);
   const gap         = GOAL_MONTHLY - monthly;
-  const reqCagr     = totalAnnual > 0
+  const reqCagr     = totalGross > 0
     ? (Math.pow(GOAL_MONTHLY / monthly, 1 / YEARS_LEFT) - 1) * 100 : null;
 
   // ── Portfolio value goal ──
@@ -1525,7 +1526,7 @@ function renderGoalsCard() {{
   const mEl = document.getElementById("goal-div-monthly");
   if (mEl) mEl.textContent = fmtM(monthly);
   const nEl = document.getElementById("goal-div-net");
-  if (nEl) nEl.textContent = `after tax (23.8%): ${{fmtM(monthlyNet)}}`;
+  if (nEl) nEl.textContent = `after tax (${{(DIV_TAX_RATE*100).toFixed(1)}}% avg): ${{fmtM(monthlyNet)}}`;
   const bEl = document.getElementById("goal-div-bar");
   if (bEl) bEl.style.width = pct + "%";
   const pEl = document.getElementById("goal-div-pct");
