@@ -1501,11 +1501,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     seen.add(r["ticker"])
                     results.append(r)
 
-            results.sort(key=lambda r: (
-                0 if r.get("declared") else (1 if r.get("pay_pending") else 2),
-                r.get("days_to_ex") if r.get("days_to_ex") is not None else 9999,
-                r["ticker"]
-            ))
+            def _div_sort_key(r):
+                group = 0 if r.get("declared") else (1 if r.get("pay_pending") else 2)
+                dtex  = r.get("days_to_ex") if r.get("days_to_ex") is not None else 9999
+                # UPCOMING/PAY DUE: ascending (soonest first)
+                # LAST KNOWN: descending (most recent first) — negate the negative days_to_ex
+                if group == 2:
+                    dtex = -dtex
+                return (group, dtex, r["ticker"])
+
+            results.sort(key=_div_sort_key)
 
             payload = {"ok": True, "results": results, "as_of": today.isoformat()}
             _cache_set(_div_cache, payload)
