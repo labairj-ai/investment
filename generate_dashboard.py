@@ -1447,7 +1447,7 @@ function renderDividendTable() {{
   results.innerHTML = `
     <div style="overflow-x:auto;margin-top:10px;">
     <table style="width:100%;border-collapse:collapse;font-size:13px;">
-      <thead><tr style="background:#f4f6f9;">
+      <thead id="div-thead"><tr style="background:#f4f6f9;">
         <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Ticker</th>
         <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Status</th>
         <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Ex-Div Date</th>
@@ -3231,7 +3231,7 @@ function _renderBuffettTable() {{
   wrap.innerHTML = filterBar + `
     <div style="overflow-x:auto;">
     <table style="width:100%;border-collapse:collapse;font-size:13px;">
-      <thead><tr style="background:#f4f6f9;border-bottom:2px solid #e8eaf0;">
+      <thead id="screener-thead"><tr style="background:#f4f6f9;border-bottom:2px solid #e8eaf0;">
         <th style="padding:7px 6px;text-align:center;font-size:10px;color:#bbb;width:28px;">#</th>
         ${{thStyle("ticker","Ticker")}}
         ${{thStyle("company","Company")}}
@@ -3845,44 +3845,63 @@ function renderCC(d) {{
     ${{noteHtml}}`;
 }}
 
-// ── Sticky holdings header ─────────────────────────────────────────────────
+// ── Sticky table headers ────────────────────────────────────────────────────
+// Watches a set of (theadId, wrapperId) pairs. For dynamic tables (div/screener)
+// the thead is injected by JS after load, so we poll until found then attach.
 window.addEventListener("load", function() {{
-  const thead = document.getElementById("holdings-thead");
-  const wrap  = document.getElementById("holdings-scroll-wrap");
-  if (!thead || !wrap) return;
+  // [theadId, scrollWrapperId or null (use thead's closest table parent)]
+  const TABLES = [
+    ["holdings-thead",  "holdings-scroll-wrap"],
+    ["div-thead",       null],
+    ["screener-thead",  null],
+  ];
 
-  let ghost = null;
+  const ghosts = {{}};
+
+  function makeOrUpdateGhost(id, thead) {{
+    const parent = thead.closest("div[style*='overflow-x']") || thead.closest(".table-scroll") || thead.parentElement.parentElement;
+    const wrapRect = parent.getBoundingClientRect();
+
+    if (!ghosts[id]) {{
+      const g = document.createElement("table");
+      g.id = id + "-ghost";
+      g.style.cssText =
+        "position:fixed;top:0;z-index:200;background:#fff;border-collapse:collapse;" +
+        "box-shadow:0 2px 6px rgba(0,0,0,.12);pointer-events:none;";
+      g.appendChild(thead.cloneNode(true));
+      const liveThs  = thead.querySelectorAll("th");
+      const ghostThs = g.querySelectorAll("th");
+      liveThs.forEach((th, i) => {{
+        if (ghostThs[i]) ghostThs[i].style.width = th.offsetWidth + "px";
+      }});
+      document.body.appendChild(g);
+      ghosts[id] = g;
+    }}
+    ghosts[id].style.left  = wrapRect.left + "px";
+    ghosts[id].style.width = wrapRect.width + "px";
+  }}
+
+  function removeGhost(id) {{
+    if (ghosts[id]) {{ ghosts[id].remove(); delete ghosts[id]; }}
+  }}
 
   function onScroll() {{
-    const theadRect = thead.getBoundingClientRect();
-    const wrapRect  = wrap.getBoundingClientRect();
-
-    if (theadRect.top < 0 && wrapRect.bottom > 40) {{
-      if (!ghost) {{
-        // Wrap cloned thead in a <table> so it renders correctly as a root element
-        ghost = document.createElement("table");
-        ghost.id = "holdings-thead-ghost";
-        ghost.style.cssText =
-          "position:fixed;top:0;z-index:200;background:#fff;border-collapse:collapse;" +
-          "box-shadow:0 2px 6px rgba(0,0,0,.12);pointer-events:none;";
-        ghost.appendChild(thead.cloneNode(true));
-        // Lock each column to the live header's current width
-        const liveThs  = thead.querySelectorAll("th");
-        const ghostThs = ghost.querySelectorAll("th");
-        liveThs.forEach((th, i) => {{
-          if (ghostThs[i]) ghostThs[i].style.width = th.offsetWidth + "px";
-        }});
-        document.body.appendChild(ghost);
+    TABLES.forEach(([theadId]) => {{
+      const thead = document.getElementById(theadId);
+      if (!thead) return;
+      const theadRect = thead.getBoundingClientRect();
+      const table     = thead.closest("table");
+      const tableRect = table ? table.getBoundingClientRect() : theadRect;
+      if (theadRect.top < 0 && tableRect.bottom > 40) {{
+        makeOrUpdateGhost(theadId, thead);
+      }} else {{
+        removeGhost(theadId);
       }}
-      ghost.style.left  = wrapRect.left + "px";
-      ghost.style.width = wrapRect.width + "px";
-    }} else {{
-      if (ghost) {{ ghost.remove(); ghost = null; }}
-    }}
+    }});
   }}
 
   window.addEventListener("scroll", onScroll, {{ passive: true }});
-  window.addEventListener("resize", onScroll, {{ passive: true }});
+  window.addEventListener("resize", onScroll,  {{ passive: true }});
 }});
 
 async function refreshDashboard() {{
