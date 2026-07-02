@@ -674,7 +674,7 @@ def build_dashboard(portfolio, layers, holdings):
       <div class="sub {gain_class_main}">{pct(total_gain_pct)}</div>
     </div>
     <div class="kpi">
-      <div class="label">Est. Annual Dividends</div>
+      <div class="label">Est. Annual Dividends (After-Tax)</div>
       <div class="value" id="kpi-div-value" style="color:#27ae60;">—</div>
       <div class="sub" id="kpi-div-yield" style="color:#aaa;"></div>
     </div>
@@ -1383,10 +1383,11 @@ function renderDividendTable() {{
   const totalAfterTax = _divData.results.reduce((s, r) => s + (r.annual_income || 0) * (1 - effectiveRate(r.tax_type || "qualified")), 0);
   const totalPort     = {total_v};
   document.getElementById("kpi-div-value").textContent =
-    "$" + Math.round(totalAnnual).toLocaleString("en-US");
+    "$" + Math.round(totalAfterTax).toLocaleString("en-US");
   document.getElementById("kpi-div-yield").textContent =
-    (totalPort > 0 ? (totalAnnual / totalPort * 100).toFixed(2) + "% yield" : "") +
-    "  ·  $" + Math.round(totalAfterTax).toLocaleString("en-US") + " after-tax";
+    "after-tax  ·  gross $" + Math.round(totalAnnual).toLocaleString("en-US") +
+    (totalPort > 0 ? "  ·  " + (totalAnnual / totalPort * 100).toFixed(2) + "% yield" : "");
+  _flashEl("kpi-div-value");
 
   const rows = _divData.results.map(r => {{
     const taxType   = r.tax_type || "qualified";
@@ -1485,11 +1486,18 @@ async function loadDividends() {{
   }}
 }}
 
+function _flashEl(id) {{
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.style.transition = "background 0.1s";
+  el.style.background = "#fffbe6";
+  setTimeout(() => {{ el.style.background = ""; }}, 600);
+}}
+
 function onTaxBracketChange(sel) {{
   CURRENT_BRACKET = TAX_BRACKETS[sel.value];
   renderDividendTable();
   renderGoalsCard();
-  // Redraw chart with new after-tax line
   if (typeof loadDividendTimeline === "function") loadDividendTimeline();
 }}
 
@@ -1526,7 +1534,7 @@ function renderGoalsCard() {{
   const mEl = document.getElementById("goal-div-monthly");
   if (mEl) mEl.textContent = fmtM(monthly);
   const nEl = document.getElementById("goal-div-net");
-  if (nEl) nEl.textContent = `after tax (${{(DIV_TAX_RATE*100).toFixed(1)}}% avg): ${{fmtM(monthlyNet)}}`;
+  if (nEl) {{ nEl.textContent = `after tax (${{(DIV_TAX_RATE*100).toFixed(1)}}% avg): ${{fmtM(monthlyNet)}}`; _flashEl("goal-div-net"); }}
   const bEl = document.getElementById("goal-div-bar");
   if (bEl) bEl.style.width = pct + "%";
   const pEl = document.getElementById("goal-div-pct");
