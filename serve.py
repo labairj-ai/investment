@@ -87,6 +87,42 @@ def _safe_float(v, default=0.0):
         return default
 
 
+def _next_business_day(d, offset=1):
+    """Return d + offset business days (Mon–Fri)."""
+    from datetime import timedelta
+    result = d
+    added  = 0
+    while added < offset:
+        result += timedelta(days=1)
+        if result.weekday() < 5:
+            added += 1
+    return result
+
+
+def _fetch_sa_pay_date(ticker):
+    """Scrape stockanalysis.com ETF dividend history and return {ex_date: pay_date} for recent entries."""
+    import urllib.request, re
+    try:
+        url = f"https://stockanalysis.com/etf/{ticker.lower()}/dividend/"
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+            "Accept": "*/*",
+        })
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            html = resp.read().decode()
+        mapping = {}
+        for m in re.finditer(r'\{dt:"(\d{4}-\d{2}-\d{2})"[^}]+pay:"(\d{4}-\d{2}-\d{2})"', html):
+            mapping[m.group(1)] = m.group(2)
+        return mapping
+    except Exception:
+        return {}
+
+
+# Tickers that are mutual funds with no public pay-date API.
+# For these we estimate: pay ≈ ex_date + 1 business day (Vanguard/Fidelity practice).
+_MUTUAL_FUND_TICKERS = {"VTSAX", "VFIAX", "VVIAX", "VTMGX", "VGTSX", "FSPTX", "FXAIX", "FSKAX"}
+
+
 def _send_email(email_from, app_pw, email_to, subject, html):
     msg = MIMEMultipart("alternative")
     msg["From"]    = email_from
@@ -1381,6 +1417,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     # or more than 90 days after ex-div (yfinance returns wrong-cycle
                     # annual dates for WMT/GRMN etc). Past pay dates are kept for
                     # LAST KNOWN rows where they correctly show when payment occurred.
+                    pay_date_estimated = False
                     if pay_date:
                         try:
                             from datetime import timedelta as _td
@@ -1391,6 +1428,26 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                                 pay_date = None
                         except Exception:
                             pay_date = None
+
+                    # Supplemental pay date lookup when yfinance has none
+                    if not pay_date and ex_date:
+                        from datetime import timedelta as _td
+                        ex_dt = datetime.strptime(ex_date, "%Y-%m-%d").date()
+                        if ticker in _MUTUAL_FUND_TICKERS:
+                            # Vanguard/Fidelity funds pay on or 1 business day after ex-div
+                            pay_date = _next_business_day(ex_dt, 1).strftime("%Y-%m-%d")
+                            pay_date_estimated = True
+                        else:
+                            # Try stockanalysis.com for ETFs
+                            try:
+                                sa_map = _fetch_sa_pay_date(ticker)
+                                if ex_date in sa_map:
+                                    candidate = sa_map[ex_date]
+                                    pay_dt = datetime.strptime(candidate, "%Y-%m-%d").date()
+                                    if ex_dt <= pay_dt <= ex_dt + _td(days=90):
+                                        pay_date = candidate
+                            except Exception:
+                                pass
 
                     tax_type = "qualified"
                     try:
@@ -1412,20 +1469,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     )
 
                     row.update({
-                        "ex_div_date":     ex_date,
-                        "pay_date":        pay_date,
-                        "declared_amount": last_amount,
-                        "annual_rate":     annual_rate,
-                        "div_yield":       div_yield,
-                        "yield_on_cost":   yoc,
-                        "last_amount":     last_amount,
-                        "last_date":       last_date,
-                        "total_payout":    round(last_amount * shares, 2) if last_amount else None,
-                        "annual_income":   round(annual_rate * shares, 2) if annual_rate else None,
-                        "days_to_ex":      days_to_ex,
-                        "declared":        is_upcoming,
-                        "pay_pending":     pay_pending,
-                        "tax_type":        tax_type,
+                        "ex_div_date":        ex_date,
+                        "pay_date":           pay_date,
+                        "pay_date_estimated": pay_date_estimated,
+                        "declared_amount":    last_amount,
+                        "annual_rate":        annual_rate,
+                        "div_yield":          div_yield,
+                        "yield_on_cost":      yoc,
+                        "last_amount":        last_amount,
+                        "last_date":          last_date,
+                        "total_payout":       round(last_amount * shares, 2) if last_amount else None,
+                        "annual_income":      round(annual_rate * shares, 2) if annual_rate else None,
+                        "days_to_ex":         days_to_ex,
+                        "declared":           is_upcoming,
+                        "pay_pending":        pay_pending,
+                        "tax_type":           tax_type,
                     })
                 except Exception as e:
                     row["error"] = str(e)

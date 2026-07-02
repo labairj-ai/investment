@@ -1404,7 +1404,7 @@ function renderDividendTable() {{
         ? `<span style="background:#fff8e1;color:#8a6200;border:1px solid #f5d87a;border-radius:4px;padding:1px 7px;font-size:10px;font-weight:700;">PAYMENT DUE</span>`
         : `<span style="background:#f4f6f9;color:#888;border:1px solid #dde;border-radius:4px;padding:1px 7px;font-size:10px;">LAST KNOWN</span>`;
     const exDiv  = r.ex_div_date || "—";
-    const payDay = r.pay_date    || "—";
+    const payDay = r.pay_date ? (r.pay_date_estimated ? "~" + r.pay_date : r.pay_date) : "—";
     const amount = r.declared_amount ? "$" + r.declared_amount.toFixed(4) : "—";
     const total  = r.total_payout  ? "$" + r.total_payout.toLocaleString("en-US", {{minimumFractionDigits:2, maximumFractionDigits:2}}) : "—";
     const income = r.annual_income ? "$" + r.annual_income.toLocaleString("en-US", {{minimumFractionDigits:2, maximumFractionDigits:2}}) : "—";
