@@ -3364,15 +3364,15 @@ function renderCCPositions() {{
   const netRealized   = closed.reduce((s,p) => s + (p.net_premium ?? 0), 0);
   const grossRealized = closed.reduce((s,p) => s + p.premium_per_contract * p.contracts * 100, 0);
   const buybackCost   = grossRealized - netRealized;
-  const openMtmTotal  = open.filter(p => p.pnl_total !== null).reduce((s,p) => s + p.pnl_total, 0);
-  const openMtmDay    = open.filter(p => p.pnl_day  !== null).reduce((s,p) => s + p.pnl_day,   0);
-  const hasMtm        = open.some(p => p.current_mark != null);
+  const openMtmTotal  = open.filter(p => p.pnl_total != null && !isNaN(p.pnl_total)).reduce((s,p) => s + p.pnl_total, 0);
+  const openMtmDay    = open.filter(p => p.pnl_day   != null && !isNaN(p.pnl_day)).reduce((s,p)  => s + p.pnl_day,   0);
+  const hasMtm        = open.some(p => p.current_mark != null && p.pnl_total != null && !isNaN(p.pnl_total));
 
   // Adjust the daily change KPI to include today's option P&L
   (function() {{
     const el  = document.getElementById("kpi-daily-value");
     const pct = document.getElementById("kpi-daily-pct");
-    if (!el || !hasMtm) return;
+    if (!el || !hasMtm || openMtmDay === 0) return;
     const stockChg  = parseFloat(el.dataset.stockChg  || 0);
     const totalVal  = parseFloat(el.dataset.totalValue || 0);
     const adjChg    = stockChg + openMtmDay;
@@ -3459,7 +3459,7 @@ function renderCCPositions() {{
     </tr>`;
   }};
 
-  const fmtPnl = v => v === null ? "—" : (v >= 0 ? `<span style="color:#27ae60;">+$${{v.toFixed(2)}}</span>` : `<span style="color:#e74c3c;">-$${{Math.abs(v).toFixed(2)}}</span>`);
+  const fmtPnl = v => (v == null || isNaN(v)) ? `<span style="color:#ccc;">—</span>` : (v >= 0 ? `<span style="color:#27ae60;">+$${{v.toFixed(2)}}</span>` : `<span style="color:#e74c3c;">-$${{Math.abs(v).toFixed(2)}}</span>`);
 
   const summaryHtml = `
     <div style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:14px;padding:12px 16px;background:#f8fafc;border-radius:8px;font-size:13px;">
