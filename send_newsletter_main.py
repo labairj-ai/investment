@@ -124,7 +124,8 @@ def fetch_cc_mtm() -> None:
             ask = float(r["ask"])
             mark = (bid + ask) / 2 if (bid > 0 or ask > 0) else float(r["lastPrice"])
             if mark > 0:
-                updates.append((mark, prev_mark, row["id"]))
+                # Seed prev_mark on first successful fetch so pnl_day = 0 rather than null
+                updates.append((mark, prev_mark if prev_mark is not None else mark, row["id"]))
         except Exception:
             pass
 
