@@ -421,11 +421,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     # ── Holdings layer reassignment ───────────────────────────────────────────
     _LAYER_NAMES = {
-        1: "Layer 1: Structural Ballast",
-        2: "Layer 2: Cash-Flow Engines",
-        3: "Layer 3: Compounders",
-        4: "Layer 4: Convexity / Optionality",
-        5: "Layer 5: Shock Absorbers / Regime Hedges",
+        1: "Layer 1: L1 Structural Ballast",
+        2: "Layer 2: L2 Cash-Flow Engines",
+        3: "Layer 3: L3 Compounders",
+        4: "Layer 4: L4 Convexity",
+        5: "Layer 5: L5 Shock Absorbers",
     }
 
     def _handle_holding_layer_update(self, ticker: str):
