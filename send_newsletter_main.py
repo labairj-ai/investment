@@ -511,10 +511,10 @@ def build_html(
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
-def main():
+def main(send_email_flag: bool = True):
     if not HOLDINGS_CSV.exists():
         raise FileNotFoundError(f"Missing holdings CSV at {HOLDINGS_CSV}")
-    if not EMAIL_FROM or not EMAIL_APP_PW:
+    if send_email_flag and (not EMAIL_FROM or not EMAIL_APP_PW):
         raise RuntimeError("EMAIL_FROM and EMAIL_APP_PASSWORD must be set in .env")
 
     # ── Load holdings ─────────────────────────────────────────────────────────
@@ -621,11 +621,18 @@ def main():
         flags=flags,
     )
 
-    send_email(subject, html)
-    print(f"[Newsletter] Sent for {day} — "
-          f"{len(earn_alerts)} earning alert(s), {len(exdiv_alerts)} ex-div alert(s), "
-          f"{len(drift_alerts)} drift alert(s), {len(flags)} flag(s)")
+    if send_email_flag:
+        send_email(subject, html)
+        print(f"[Newsletter] Sent for {day} — "
+              f"{len(earn_alerts)} earning alert(s), {len(exdiv_alerts)} ex-div alert(s), "
+              f"{len(drift_alerts)} drift alert(s), {len(flags)} flag(s)")
+    else:
+        print(f"[Newsletter] Data updated for {day} (email skipped)")
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--no-email", action="store_true", help="Update data and dashboard without sending the newsletter email")
+    args = parser.parse_args()
+    main(send_email_flag=not args.no_email)

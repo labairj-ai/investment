@@ -1787,19 +1787,23 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self._json({"ok": True, "started": True})
 
     def _handle_refresh_dashboard(self):
-        """POST /api/refresh-dashboard — regenerate dashboard.html without sending email."""
+        """POST /api/refresh-dashboard — fetch fresh prices, update DB, regenerate dashboard (no email)."""
         import subprocess
         VENV_PY = PROJECT_DIR / "venv" / "bin" / "python3"
         try:
-            result = subprocess.run(
-                [str(VENV_PY), str(PROJECT_DIR / "generate_dashboard.py")],
-                cwd=str(PROJECT_DIR),
-                capture_output=True, text=True, timeout=120,
-            )
-            if result.returncode == 0:
-                self._json({"ok": True})
-            else:
-                self._json_error(500, result.stderr.strip() or "generate_dashboard.py failed")
+            for script, extra_args in [
+                ("send_newsletter_main.py", ["--no-email"]),
+                ("generate_dashboard.py",   []),
+            ]:
+                result = subprocess.run(
+                    [str(VENV_PY), str(PROJECT_DIR / script)] + extra_args,
+                    cwd=str(PROJECT_DIR),
+                    capture_output=True, text=True, timeout=300,
+                )
+                if result.returncode != 0:
+                    self._json_error(500, f"{script} failed: {result.stderr.strip()}")
+                    return
+            self._json({"ok": True})
         except Exception as e:
             self._json_error(500, str(e))
 
