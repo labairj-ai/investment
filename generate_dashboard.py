@@ -3372,7 +3372,7 @@ function renderCCPositions() {{
   (function() {{
     const el  = document.getElementById("kpi-daily-value");
     const pct = document.getElementById("kpi-daily-pct");
-    if (!el || !hasMtm || openMtmDay === 0) return;
+    if (!el || !hasMtm) return;
     const stockChg  = parseFloat(el.dataset.stockChg  || 0);
     const totalVal  = parseFloat(el.dataset.totalValue || 0);
     const adjChg    = stockChg + openMtmDay;
