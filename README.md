@@ -13,7 +13,7 @@ A personal investment tracking system that sends a daily email newsletter, maint
 | **Local Dashboard** | Interactive web UI at `http://localhost:5001` with charts, holdings table, and live analysis tools |
 | **Add / Manage Positions** | Add new positions directly from the Holdings UI (ticker, shares, avg cost, layer); reassign any holding to a different layer with full retroactive history rewrite; opening lot auto-created in the Tax Lot Tracker on position add |
 | **Covered Call Analyzer** | Recommends option contracts based on your cost basis, flags blackout windows (earnings, ex-div); three-tier fallback (live bids → ask-proxy → Black-Scholes from historical vol) ensures results even when markets are closed or options are illiquid |
-| **Covered Call Tracker** | Log and track open/closed covered call positions; tracks net P&L per position with close types (expired / bought back / assigned); auto-expires positions past their expiry date |
+| **Covered Call Tracker** | Log and track open/closed covered call positions; live mark-to-market option prices (bid/ask mid from yfinance); Unrealized P&L and Today's P&L columns per position; daily change KPI is adjusted mark-to-market; bulk import via `covered_calls.csv`; auto-expires past-expiry positions |
 | **Dividend Tracker** | Dividend dates, tax impact by income bracket, monthly income chart, and ticker lookup tool |
 | **Earnings Calendar** | Next earnings date per holding shown in Layer Summary and Holdings table |
 | **Buffett Screener** | Nightly scan of ~6,500 NYSE + NASDAQ tickers (deduplicated); surfaces stocks passing all 6 Buffett quality criteria; emails only net-new winners (no repeat notifications for stocks already on the list) |
@@ -138,8 +138,9 @@ launchctl kickstart gui/$(id -u)/com.investment.dashboard
 | `GET /api/buffett-winners` | Latest Buffett screener results (includes valuation, first_seen, scan_duration, log_tail) |
 | `POST /api/buffett-scan` | Start a manual screener run (no-op if already running; returns `{ok, reason}`) |
 | `GET /api/buffett-analysis?ticker=KO` | On-demand 13-point Buffett deep-dive for any ticker |
-| `GET /api/cc-positions` | All logged covered call positions (auto-expires past-expiry open positions) |
+| `GET /api/cc-positions` | All logged covered call positions; includes computed `pnl_total` and `pnl_day` for open positions with mark data; auto-expires past-expiry open positions |
 | `POST /api/cc-positions` | Log a new covered call position |
+| `POST /api/cc-import` | Import open positions from `covered_calls.csv`; skips duplicates |
 | `PATCH /api/cc-positions/<id>` | Update position status / closing details (computes net_premium server-side) |
 | `GET /api/lots` | All cost lots across all tickers |
 | `GET /api/lots?ticker=EW` | Lots for a specific ticker |
@@ -218,10 +219,10 @@ Two-column layout: wide left panel for goals, right column for barbell health + 
 
 | Layer | Name | Target |
 |-------|------|--------|
-| L1 | Structural Ballast | 25% |
-| L2 | Cash-Flow Engines | 20% |
-| L3 | Compounders | 35% |
-| L4 | Convexity | 12% |
+| L1 | Structural Ballast | 35% |
+| L2 | Cash-Flow Engines | 22% |
+| L3 | Compounders | 30% |
+| L4 | Convexity | 10% |
 | L5 | Shock Absorbers | 8% |
 
 **Recommended Purchases** (right column, bottom)
@@ -240,7 +241,7 @@ Two-column layout: wide left panel for goals, right column for barbell health + 
 
 ### KPI Cards (top row)
 - **Portfolio Value** — total market value
-- **Daily Change** — today's P&L vs yesterday's close
+- **Daily Change** — today's P&L vs yesterday's close, using live `fast_info.last_price` vs `fast_info.previous_close` (true 1-day delta, not close-vs-close from the prior morning's snapshot). When open covered call positions have mark-to-market data, today's option P&L is added automatically.
 - **SPY Change** — benchmark comparison
 - **Total Gain vs Cost** — unrealized P&L vs your average cost across all holdings
 - **Est. Annual Dividends (After-Tax)** — after-tax annual dividend income at the selected bracket; subtitle shows gross income and portfolio yield. Updates immediately when the Tax Bracket dropdown changes.
@@ -260,6 +261,8 @@ Next Earnings shows the soonest reporting ticker per layer, color-coded red ≤7
 
 ### Holdings Table
 Columns: **Ticker | Shares | Avg Cost | Price | Value | Total Gain | Daily Δ | Weight | Next Earnings | Layer | Tax Lots**
+
+Column headers are **sticky** — they float at the top of the viewport as you scroll down the page (applies to Holdings, Dividend, Buffett Screener, and CC Tracker tables).
 
 - Total Gain shows true return vs cost basis, with **ST** / **LT** / **⚠ MIXED** tax badge derived from your cost lots
 - **Layer badge** (L1–L5, color-coded) — click to reassign the holding to a different layer; history is rewritten retroactively so no artificial spike appears in the weight chart
@@ -314,7 +317,24 @@ Estimated tax applies to positive gains only (losses offset within each term buc
 
 ### Covered Call Position Tracker
 
+**Bulk import:** Edit `covered_calls.csv` with your open positions and click **⬆ Import CSV** in the card header. Skips any position already in the DB (matched on ticker + strike + expiry). Format:
+
+```
+ticker,contracts,strike,expiry,premium_per_contract,opened_date,notes
+EW,1,100,2026-08-21,0.90,2026-06-22,monthly
+NFLX,1,100,2026-07-31,0.24,2026-06-29,
+```
+
 **Logging:** Use the **+ Log New Position** form — ticker, contracts, strike, expiry, premium/contract, open date.
+
+**Mark-to-market columns (open positions):**
+- **Mark** — current option price (bid/ask midpoint from yfinance; fetched on every ↻ Refresh Data)
+- **Unrealized P&L** — total gain/loss on the option position since it was sold: `(premium − mark) × contracts × 100`
+- **Today's P&L** — option price movement since the previous refresh: `(prev_mark − mark) × contracts × 100`
+
+Today's option P&L is also added to the **Daily Change KPI** at the top of the dashboard. The first refresh after opening a position seeds the baseline; daily delta appears from the second refresh onwards.
+
+**Tickers are normalized** automatically — entering `BRK.B` in the form stores `BRK-B` so yfinance option chain lookups work correctly.
 
 **Closing a position:** Click **Close ▾** on any open row. A modal appears with three close types:
 - **Expired Worthless** — option expired OTM; full premium is kept; `closed_price = 0`
@@ -426,7 +446,7 @@ Auto-loads on page open. Hit **Refresh** to update; cached 1 hour per day.
 **Targets file:** `layer_targets.json` — edit to adjust; defaults reflect the portfolio architecture:
 
 ```json
-{ "1": 25, "2": 20, "3": 35, "4": 12, "5": 8 }
+{ "1": 35, "2": 22, "3": 30, "4": 10, "5": 8 }
 ```
 
 ---
@@ -465,6 +485,7 @@ venv/bin/python3 covered_call_rec.py              # all holdings ≥100 shares
 ```
 investment/
 ├── holdings.csv                     # Portfolio positions — Stock, Shares, AvgCost, Layer
+├── covered_calls.csv                # Bulk-import seed for open covered call positions
 ├── layer_targets.json               # Target layer allocations (used by dashboard + email digest)
 ├── backup_data.sh                   # Pushes DB + CSV to private investment-data repo
 ├── run_server.sh                    # Infinite-loop wrapper around serve.py (used by launchd)
