@@ -1385,7 +1385,7 @@ function renderDividendTable() {{
   document.getElementById("kpi-div-value").textContent =
     "$" + Math.round(totalAfterTax).toLocaleString("en-US");
   document.getElementById("kpi-div-yield").textContent =
-    "after-tax  ·  gross $" + Math.round(totalAnnual).toLocaleString("en-US") +
+    "gross $" + Math.round(totalAnnual).toLocaleString("en-US") +
     (totalPort > 0 ? "  ·  " + (totalAnnual / totalPort * 100).toFixed(2) + "% yield" : "");
   _flashEl("kpi-div-value");
 
