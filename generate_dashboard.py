@@ -1400,7 +1400,9 @@ function renderDividendTable() {{
 
     const badge = r.declared
       ? `<span style="background:#e8f8ee;color:#1a6e38;border:1px solid #a8e0b8;border-radius:4px;padding:1px 7px;font-size:10px;font-weight:700;">UPCOMING</span>`
-      : `<span style="background:#f4f6f9;color:#888;border:1px solid #dde;border-radius:4px;padding:1px 7px;font-size:10px;">LAST KNOWN</span>`;
+      : r.pay_pending
+        ? `<span style="background:#fff8e1;color:#8a6200;border:1px solid #f5d87a;border-radius:4px;padding:1px 7px;font-size:10px;font-weight:700;">PAYMENT DUE</span>`
+        : `<span style="background:#f4f6f9;color:#888;border:1px solid #dde;border-radius:4px;padding:1px 7px;font-size:10px;">LAST KNOWN</span>`;
     const exDiv  = r.ex_div_date || "—";
     const payDay = r.pay_date    || "—";
     const amount = r.declared_amount ? "$" + r.declared_amount.toFixed(4) : "—";

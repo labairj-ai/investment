@@ -1405,6 +1405,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     if ex_date:
                         days_to_ex = (datetime.strptime(ex_date, "%Y-%m-%d").date() - today).days
                     is_upcoming = days_to_ex is not None and days_to_ex >= 0
+                    pay_pending = (
+                        not is_upcoming
+                        and pay_date is not None
+                        and datetime.strptime(pay_date, "%Y-%m-%d").date() >= today
+                    )
 
                     row.update({
                         "ex_div_date":     ex_date,
@@ -1419,6 +1424,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         "annual_income":   round(annual_rate * shares, 2) if annual_rate else None,
                         "days_to_ex":      days_to_ex,
                         "declared":        is_upcoming,
+                        "pay_pending":     pay_pending,
                         "tax_type":        tax_type,
                     })
                 except Exception as e:
@@ -1438,7 +1444,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     results.append(r)
 
             results.sort(key=lambda r: (
-                0 if r.get("declared") else 1,
+                0 if r.get("declared") else (1 if r.get("pay_pending") else 2),
                 r.get("days_to_ex") if r.get("days_to_ex") is not None else 9999,
                 r["ticker"]
             ))
