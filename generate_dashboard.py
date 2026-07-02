@@ -422,7 +422,7 @@ def build_dashboard(portfolio, layers, holdings):
 
     .table-scroll {{ overflow-x: auto; -webkit-overflow-scrolling: touch; }}
     table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
-    th {{ text-align: left; padding: 7px 10px; border-bottom: 2px solid #eee; color: #7f8c8d; font-weight: 600; font-size: .75rem; text-transform: uppercase; white-space: nowrap; }}
+    th {{ text-align: left; padding: 7px 10px; border-bottom: 2px solid #eee; color: #7f8c8d; font-weight: 600; font-size: .75rem; text-transform: uppercase; white-space: nowrap; background: #fff; }}
     td {{ padding: 7px 10px; border-bottom: 1px solid #f2f4f7; }}
     tr:last-child td {{ border-bottom: none; }}
     .layer-header td {{ font-size: .8rem; }}
@@ -872,7 +872,7 @@ def build_dashboard(portfolio, layers, holdings):
 
     <div class="table-scroll">
     <table>
-      <thead><tr><th>Ticker</th><th>Shares</th><th>Avg Cost</th><th>Price</th><th>Value</th><th>Total Gain</th><th>Daily Δ</th><th>Weight</th><th>Next Earnings</th><th>Layer</th><th>Tax Lots</th></tr></thead>
+      <thead style="position:sticky;top:0;z-index:2;"><tr><th>Ticker</th><th>Shares</th><th>Avg Cost</th><th>Price</th><th>Value</th><th>Total Gain</th><th>Daily Δ</th><th>Weight</th><th>Next Earnings</th><th>Layer</th><th>Tax Lots</th></tr></thead>
       <tbody>{holdings_rows}</tbody>
     </table>
     </div>
