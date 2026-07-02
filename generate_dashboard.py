@@ -397,23 +397,23 @@ def build_dashboard(portfolio, layers, holdings):
   <script src="../chart.umd.min.js"></script>
   <style>
     *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
-    body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; background: #f4f6f9; color: #2c3e50; font-size: 14px; min-width: 320px; }}
+    body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; background: #f4f6f9; color: #2c3e50; font-size: 14px; overflow-x: hidden; }}
     h1 {{ font-size: 1.4rem; font-weight: 700; }}
     h2 {{ font-size: 1rem; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: #7f8c8d; margin-bottom: 12px; }}
 
-    header {{ background: #1a2340; color: #fff; padding: 14px 16px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }}
+    header {{ background: #1a2340; color: #fff; padding: 18px 28px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }}
     header .subtitle {{ font-size: .85rem; color: #a0aec0; margin-top: 2px; }}
 
-    .grid {{ display: grid; gap: 14px; padding: 14px 16px; }}
-    .kpi-row {{ display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; }}
-    .two-col {{ display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }}
-    .three-col {{ display: grid; grid-template-columns: 2fr 1fr; gap: 14px; }}
+    .grid {{ display: grid; gap: 18px; padding: 20px 28px; }}
+    .kpi-row {{ display: grid; grid-template-columns: repeat(6, 1fr); gap: 14px; }}
+    .two-col {{ display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }}
+    .three-col {{ display: grid; grid-template-columns: 2fr 1fr; gap: 18px; }}
 
-    .card {{ background: #fff; border-radius: 10px; padding: 16px; box-shadow: 0 1px 4px rgba(0,0,0,.07); }}
-    .kpi {{ background: #fff; border-radius: 10px; padding: 12px 14px; box-shadow: 0 1px 4px rgba(0,0,0,.07); }}
-    .kpi .label {{ font-size: .75rem; color: #7f8c8d; text-transform: uppercase; letter-spacing: .04em; }}
-    .kpi .value {{ font-size: 1.3rem; font-weight: 700; margin-top: 4px; }}
-    .kpi .sub {{ font-size: .80rem; margin-top: 2px; }}
+    .card {{ background: #fff; border-radius: 10px; padding: 20px; box-shadow: 0 1px 4px rgba(0,0,0,.07); min-width: 0; }}
+    .kpi {{ background: #fff; border-radius: 10px; padding: 16px 20px; box-shadow: 0 1px 4px rgba(0,0,0,.07); min-width: 0; }}
+    .kpi .label {{ font-size: .78rem; color: #7f8c8d; text-transform: uppercase; letter-spacing: .04em; }}
+    .kpi .value {{ font-size: 1.5rem; font-weight: 700; margin-top: 4px; }}
+    .kpi .sub {{ font-size: .82rem; margin-top: 2px; }}
 
     .pos {{ color: #27ae60; }}
     .neg {{ color: #e74c3c; }}
@@ -422,35 +422,35 @@ def build_dashboard(portfolio, layers, holdings):
 
     .table-scroll {{ overflow-x: auto; -webkit-overflow-scrolling: touch; }}
     table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
-    th {{ text-align: left; padding: 6px 8px; border-bottom: 2px solid #eee; color: #7f8c8d; font-weight: 600; font-size: .72rem; text-transform: uppercase; white-space: nowrap; }}
-    td {{ padding: 6px 8px; border-bottom: 1px solid #f2f4f7; white-space: nowrap; }}
+    th {{ text-align: left; padding: 7px 10px; border-bottom: 2px solid #eee; color: #7f8c8d; font-weight: 600; font-size: .75rem; text-transform: uppercase; white-space: nowrap; }}
+    td {{ padding: 7px 10px; border-bottom: 1px solid #f2f4f7; }}
     tr:last-child td {{ border-bottom: none; }}
-    .layer-header td {{ font-size: .8rem; white-space: normal; }}
+    .layer-header td {{ font-size: .8rem; }}
     .dot {{ display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 7px; vertical-align: middle; }}
 
     .flags {{ margin-top: 10px; }}
     .flag {{ background: #fff8e1; border-left: 3px solid #f39c12; padding: 8px 12px; margin-bottom: 6px; border-radius: 4px; font-size: .85rem; }}
 
-    .anchor-bar {{ background: #fff; border-radius: 10px; padding: 12px 16px; box-shadow: 0 1px 4px rgba(0,0,0,.07); display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }}
+    .anchor-bar {{ background: #fff; border-radius: 10px; padding: 14px 20px; box-shadow: 0 1px 4px rgba(0,0,0,.07); display: flex; align-items: center; gap: 10px; }}
     .anchor-dot {{ width: 12px; height: 12px; border-radius: 50%; background: {anchor_color}; flex-shrink: 0; }}
     .anchor-bar span {{ font-size: .88rem; }}
 
-    .generated {{ text-align: right; font-size: .75rem; color: #a0aec0; padding: 0 16px 12px; }}
+    .generated {{ text-align: right; font-size: .75rem; color: #a0aec0; padding: 0 28px 16px; }}
 
-    /* ── Responsive breakpoints ── */
-    @media (max-width: 1100px) {{
+    @media (max-width: 1200px) {{
       .kpi-row {{ grid-template-columns: repeat(3, 1fr); }}
       .three-col {{ grid-template-columns: 1fr; }}
+      .grid {{ padding: 16px 20px; gap: 14px; }}
     }}
-    @media (max-width: 800px) {{
+    @media (max-width: 900px) {{
       .kpi-row {{ grid-template-columns: repeat(3, 1fr); }}
       .two-col, .three-col {{ grid-template-columns: 1fr; }}
-      .kpi .value {{ font-size: 1.1rem; }}
+      .grid {{ padding: 12px 14px; gap: 12px; }}
+      header {{ padding: 14px 16px; }}
     }}
-    @media (max-width: 560px) {{
+    @media (max-width: 600px) {{
       .kpi-row {{ grid-template-columns: repeat(2, 1fr); }}
-      .grid {{ padding: 10px; gap: 10px; }}
-      h1 {{ font-size: 1.1rem; }}
+      .kpi .value {{ font-size: 1.2rem; }}
     }}
     @keyframes spin {{ from {{ transform: rotate(0deg); }} to {{ transform: rotate(360deg); }} }}
   </style>
