@@ -296,7 +296,7 @@ def _backup_data():
 
 def _run_daily():
     """
-    Background thread: runs the unified daily newsletter + dashboard once per day at 8 AM ET.
+    Background thread: runs the unified daily newsletter + dashboard once per day at 7 AM ET.
     The newsletter itself handles portfolio snapshot, layer drift, earnings/ex-div events,
     and the judgment rubric in a single email.
     """
@@ -332,7 +332,7 @@ def _run_daily():
     while True:
         now   = _dt.now(TZ)
         today = now.date().isoformat()
-        if now.hour >= 8 and not already_ran(today):
+        if now.hour >= 7 and not already_ran(today):
             print(f"[Scheduler] Running newsletter for {today}…")
             if run():
                 FLAG.write_text(today)

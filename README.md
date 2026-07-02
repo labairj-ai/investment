@@ -9,7 +9,7 @@ A personal investment tracking system that sends a daily email newsletter, maint
 | Feature | Description |
 |---|---|
 | **Investment Goals & Strategy** | Dividend goal ($5k/mo by 2036) + portfolio value goal ($2M by 2036) with 8-quarter rolling targets; barbell health with L4 recs; live **Recommended Purchases** panel backed by Buffett screener data, layer drift, dividend yield impact, valuation multiples, value trap flags, and earnings calendar |
-| **Daily Investment Digest** | Single 8 AM email covering: portfolio snapshot, layer allocation vs target (with drift warnings), holdings performance, upcoming earnings/ex-div events, and the judgment health rubric |
+| **Daily Investment Digest** | Single 7 AM email covering: portfolio snapshot, layer allocation vs target (with drift warnings), holdings performance, upcoming earnings/ex-div events, and the judgment health rubric |
 | **Local Dashboard** | Interactive web UI at `http://localhost:5001` with charts, holdings table, and live analysis tools |
 | **Add / Manage Positions** | Add new positions directly from the Holdings UI (ticker, shares, avg cost, layer); reassign any holding to a different layer with full retroactive history rewrite; opening lot auto-created in the Tax Lot Tracker on position add |
 | **Covered Call Analyzer** | Recommends option contracts based on your cost basis, flags blackout windows (earnings, ex-div); three-tier fallback (live bids → ask-proxy → Black-Scholes from historical vol) ensures results even when markets are closed or options are illiquid |
@@ -157,7 +157,7 @@ launchctl kickstart gui/$(id -u)/com.investment.dashboard
 
 ## Daily Investment Digest
 
-One email per day at **8 AM ET**, covering everything in a single HTML digest:
+One email per day at **7 AM ET**, covering everything in a single HTML digest:
 
 | Section | What it shows |
 |---------|---------------|
@@ -170,7 +170,7 @@ One email per day at **8 AM ET**, covering everything in a single HTML digest:
 Runs automatically inside `serve.py` as a background thread — **no separate launchd job required**:
 
 1. Checks if today's digest has already sent (`out/last_run_date.txt`)
-2. If not and it's ≥ 8 AM ET, runs `send_newsletter_main.py` → `generate_dashboard.py`
+2. If not and it's ≥ 7 AM ET, runs `send_newsletter_main.py` → `generate_dashboard.py`
 3. After success, triggers the **data backup** to the private `investment-data` repo
 4. Rechecks every 30 minutes as a safety net
 
