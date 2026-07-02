@@ -16,12 +16,14 @@ OUT_PATH = PROJECT_DIR / "out" / "dashboard.html"
 TZ = ZoneInfo("America/New_York")
 
 LAYER_NAMES = {
-    1: "Structural Ballast",
-    2: "Cash-Flow Engines",
-    3: "Compounders",
-    4: "Convexity / Optionality",
-    5: "Shock Absorbers / Regime Hedges",
+    1: "L1 Structural Ballast",
+    2: "L2 Cash-Flow Engines",
+    3: "L3 Compounders",
+    4: "L4 Convexity",
+    5: "L5 Shock Absorbers",
 }
+# Canonical DB label for each layer number
+LAYER_LABELS = {n: f"Layer {n}: {name}" for n, name in LAYER_NAMES.items()}
 
 def normalize_ticker(t: str) -> str:
     t = str(t).strip().upper().lstrip("$")
@@ -49,18 +51,18 @@ def load_csv_holdings() -> dict:
     return result
 
 LAYER_COLORS = {
-    "Layer 1: Structural Ballast":         "#4A90D9",
-    "Layer 2: Cash-Flow Engines":          "#50C878",
-    "Layer 3: Compounders":                "#F5A623",
-    "Layer 4: Convexity / Optionality":    "#E74C3C",
-    "Layer 5: Shock Absorbers / Regime Hedges": "#9B59B6",
+    "Layer 1: L1 Structural Ballast": "#4A90D9",
+    "Layer 2: L2 Cash-Flow Engines":  "#50C878",
+    "Layer 3: L3 Compounders":        "#F5A623",
+    "Layer 4: L4 Convexity":          "#E74C3C",
+    "Layer 5: L5 Shock Absorbers":    "#9B59B6",
 }
 LAYER_SHORT = {
-    "Layer 1: Structural Ballast":         "L1 Ballast",
-    "Layer 2: Cash-Flow Engines":          "L2 Cash-Flow",
-    "Layer 3: Compounders":                "L3 Compounders",
-    "Layer 4: Convexity / Optionality":    "L4 Convexity",
-    "Layer 5: Shock Absorbers / Regime Hedges": "L5 Hedges",
+    "Layer 1: L1 Structural Ballast": "L1 Structural Ballast",
+    "Layer 2: L2 Cash-Flow Engines":  "L2 Cash-Flow Engines",
+    "Layer 3: L3 Compounders":        "L3 Compounders",
+    "Layer 4: L4 Convexity":          "L4 Convexity",
+    "Layer 5: L5 Shock Absorbers":    "L5 Shock Absorbers",
 }
 
 def money(x):
