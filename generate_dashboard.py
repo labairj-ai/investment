@@ -638,7 +638,8 @@ def build_dashboard(portfolio, layers, holdings):
     <h1>Investment Dashboard</h1>
     <div class="subtitle">{today_date} &nbsp;·&nbsp; {len(today_holdings)} holdings across 5 layers</div>
   </div>
-  <div style="display:flex;align-items:center;gap:8px;">
+  <div style="display:flex;align-items:center;gap:12px;">
+    <button id="refreshBtn" onclick="refreshDashboard()" style="font-size:12px;padding:5px 14px;border:none;border-radius:5px;background:#2d3a55;color:#e2e8f0;cursor:pointer;font-weight:500;">↻ Refresh Data</button>
     <label style="font-size:11px;color:#a0aec0;white-space:nowrap;">Tax Bracket</label>
     <select onchange="onTaxBracketChange(this)" style="font-size:12px;padding:5px 10px;border:none;border-radius:5px;background:#2d3a55;color:#e2e8f0;cursor:pointer;">
       <option value="0">$150k MFJ</option>
@@ -3833,6 +3834,26 @@ function renderCC(d) {{
     </div>
     <p style="font-size:11px;color:#aaa;margin-top:8px;">Top ${{d.recs.length}} contracts by annualized return. Highlighted row = best pick.</p>
     ${{noteHtml}}`;
+}}
+
+async function refreshDashboard() {{
+  const btn = document.getElementById("refreshBtn");
+  btn.textContent = "Refreshing…";
+  btn.disabled = true;
+  try {{
+    const res = await fetch("/api/refresh-dashboard", {{method:"POST"}});
+    if (res.ok) {{
+      btn.textContent = "Done — reloading…";
+      setTimeout(() => window.location.reload(), 800);
+    }} else {{
+      btn.textContent = "↻ Refresh Data";
+      btn.disabled = false;
+      alert("Refresh failed. Check server logs.");
+    }}
+  }} catch(e) {{
+    btn.textContent = "↻ Refresh Data";
+    btn.disabled = false;
+  }}
 }}
 </script>
 </body>

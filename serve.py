@@ -425,6 +425,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._handle_holding_add()
         elif parsed.path == "/api/buffett-scan":
             self._handle_buffett_scan_trigger()
+        elif parsed.path == "/api/refresh-dashboard":
+            self._handle_refresh_dashboard()
         else:
             self.send_response(404)
             self.end_headers()
@@ -1783,6 +1785,23 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         threading.Thread(target=_bg, daemon=True).start()
         self._json({"ok": True, "started": True})
+
+    def _handle_refresh_dashboard(self):
+        """POST /api/refresh-dashboard — regenerate dashboard.html without sending email."""
+        import subprocess
+        VENV_PY = PROJECT_DIR / "venv" / "bin" / "python3"
+        try:
+            result = subprocess.run(
+                [str(VENV_PY), str(PROJECT_DIR / "generate_dashboard.py")],
+                cwd=str(PROJECT_DIR),
+                capture_output=True, text=True, timeout=120,
+            )
+            if result.returncode == 0:
+                self._json({"ok": True})
+            else:
+                self._json_error(500, result.stderr.strip() or "generate_dashboard.py failed")
+        except Exception as e:
+            self._json_error(500, str(e))
 
     def _json(self, data):
         body = json.dumps(data).encode()
