@@ -421,7 +421,6 @@ def build_dashboard(portfolio, layers, holdings):
     canvas {{ max-height: 260px; }}
 
     .table-scroll {{ overflow-x: auto; -webkit-overflow-scrolling: touch; }}
-    .holdings-scroll {{ max-height: 520px; overflow-y: auto; }}
     table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
     th {{ text-align: left; padding: 7px 10px; border-bottom: 2px solid #eee; color: #7f8c8d; font-weight: 600; font-size: .75rem; text-transform: uppercase; white-space: nowrap; background: #fff; }}
     td {{ padding: 7px 10px; border-bottom: 1px solid #f2f4f7; }}
@@ -871,9 +870,9 @@ def build_dashboard(portfolio, layers, holdings):
       </div>
     </details>
 
-    <div class="table-scroll holdings-scroll">
-    <table>
-      <thead style="position:sticky;top:0;z-index:2;"><tr><th>Ticker</th><th>Shares</th><th>Avg Cost</th><th>Price</th><th>Value</th><th>Total Gain</th><th>Daily Δ</th><th>Weight</th><th>Next Earnings</th><th>Layer</th><th>Tax Lots</th></tr></thead>
+    <div class="table-scroll" id="holdings-scroll-wrap">
+    <table id="holdings-table">
+      <thead id="holdings-thead"><tr><th>Ticker</th><th>Shares</th><th>Avg Cost</th><th>Price</th><th>Value</th><th>Total Gain</th><th>Daily Δ</th><th>Weight</th><th>Next Earnings</th><th>Layer</th><th>Tax Lots</th></tr></thead>
       <tbody>{holdings_rows}</tbody>
     </table>
     </div>
@@ -3845,6 +3844,46 @@ function renderCC(d) {{
     <p style="font-size:11px;color:#aaa;margin-top:8px;">Top ${{d.recs.length}} contracts by annualized return. Highlighted row = best pick.</p>
     ${{noteHtml}}`;
 }}
+
+// ── Sticky holdings header ─────────────────────────────────────────────────
+window.addEventListener("load", function() {{
+  const thead = document.getElementById("holdings-thead");
+  const wrap  = document.getElementById("holdings-scroll-wrap");
+  if (!thead || !wrap) return;
+
+  let ghost = null;
+
+  function onScroll() {{
+    const theadRect = thead.getBoundingClientRect();
+    const wrapRect  = wrap.getBoundingClientRect();
+
+    if (theadRect.top < 0 && wrapRect.bottom > 40) {{
+      if (!ghost) {{
+        // Wrap cloned thead in a <table> so it renders correctly as a root element
+        ghost = document.createElement("table");
+        ghost.id = "holdings-thead-ghost";
+        ghost.style.cssText =
+          "position:fixed;top:0;z-index:200;background:#fff;border-collapse:collapse;" +
+          "box-shadow:0 2px 6px rgba(0,0,0,.12);pointer-events:none;";
+        ghost.appendChild(thead.cloneNode(true));
+        // Lock each column to the live header's current width
+        const liveThs  = thead.querySelectorAll("th");
+        const ghostThs = ghost.querySelectorAll("th");
+        liveThs.forEach((th, i) => {{
+          if (ghostThs[i]) ghostThs[i].style.width = th.offsetWidth + "px";
+        }});
+        document.body.appendChild(ghost);
+      }}
+      ghost.style.left  = wrapRect.left + "px";
+      ghost.style.width = wrapRect.width + "px";
+    }} else {{
+      if (ghost) {{ ghost.remove(); ghost = null; }}
+    }}
+  }}
+
+  window.addEventListener("scroll", onScroll, {{ passive: true }});
+  window.addEventListener("resize", onScroll, {{ passive: true }});
+}});
 
 async function refreshDashboard() {{
   const btn = document.getElementById("refreshBtn");
