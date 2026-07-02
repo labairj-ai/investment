@@ -697,7 +697,7 @@ def build_dashboard(portfolio, layers, holdings):
       <!-- Dividend Goal (wide left column) -->
       <div style="background:#f8fffe;border:1px solid #d4edda;border-radius:8px;padding:14px 16px;">
         <div style="font-size:11px;font-weight:700;color:#27ae60;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;">
-          Dividend Goal — $5,000 / mo by 2036
+          Dividend Goal — $2,500 / mo by 2036
         </div>
         <!-- current status row -->
         <div style="display:flex;align-items:center;gap:16px;margin-bottom:10px;">
@@ -714,7 +714,7 @@ def build_dashboard(portfolio, layers, holdings):
             </div>
             <div style="display:flex;justify-content:space-between;font-size:10px;">
               <span id="goal-div-pct" style="color:#27ae60;font-weight:600;">0% of target</span>
-              <span style="color:#aaa;">$5,000/mo by 2036</span>
+              <span style="color:#aaa;">$2,500/mo by 2036</span>
             </div>
           </div>
         </div>
@@ -1499,7 +1499,7 @@ function onTaxBracketChange(sel) {{
 // ── Investment Goals card ──────────────────────────────────────────────────
 function renderGoalsCard() {{
   // ── Dividend goal ──
-  const GOAL_MONTHLY    = 5000;
+  const GOAL_MONTHLY    = 2500;
   const GOAL_PORT       = 2000000;
   const GOAL_YEAR       = 2036;
   const CUR_YEAR        = new Date().getFullYear();
@@ -1533,7 +1533,7 @@ function renderGoalsCard() {{
   const bEl = document.getElementById("goal-div-bar");
   if (bEl) bEl.style.width = pct + "%";
   const pEl = document.getElementById("goal-div-pct");
-  if (pEl) {{ pEl.textContent = pct.toFixed(1) + "% of $5,000/mo target"; pEl.style.color = pct >= 80 ? "#27ae60" : pct >= 40 ? "#e67e22" : "#e74c3c"; }}
+  if (pEl) {{ pEl.textContent = pct.toFixed(1) + "% of $2,500/mo target"; pEl.style.color = pct >= 80 ? "#27ae60" : pct >= 40 ? "#e67e22" : "#e74c3c"; }}
   const gEl = document.getElementById("goal-div-gap");
   if (gEl) gEl.textContent = gap > 0 ? `Gap: ${{fmtM(gap)}} · ${{YEARS_LEFT}} yrs to ${{GOAL_YEAR}}` : `✓ Target reached!`;
   const cEl = document.getElementById("goal-div-cagr");

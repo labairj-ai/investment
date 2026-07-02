@@ -8,7 +8,7 @@ A personal investment tracking system that sends a daily email newsletter, maint
 
 | Feature | Description |
 |---|---|
-| **Investment Goals & Strategy** | Dividend goal ($5k/mo by 2036) + portfolio value goal ($2M by 2036) with 8-quarter rolling targets; barbell health with L4 recs; live **Recommended Purchases** panel backed by Buffett screener data, layer drift, dividend yield impact, valuation multiples, value trap flags, and earnings calendar |
+| **Investment Goals & Strategy** | Dividend goal ($2.5k/mo by 2036) + portfolio value goal ($2M by 2036) with 8-quarter rolling targets; barbell health with L4 recs; live **Recommended Purchases** panel backed by Buffett screener data, layer drift, dividend yield impact, valuation multiples, value trap flags, and earnings calendar |
 | **Daily Investment Digest** | Single 7 AM email covering: portfolio snapshot, layer allocation vs target (with drift warnings), holdings performance, upcoming earnings/ex-div events, and the judgment health rubric |
 | **Local Dashboard** | Interactive web UI at `http://localhost:5001` with charts, holdings table, and live analysis tools |
 | **Add / Manage Positions** | Add new positions directly from the Holdings UI (ticker, shares, avg cost, layer); reassign any holding to a different layer with full retroactive history rewrite; opening lot auto-created in the Tax Lot Tracker on position add |
@@ -196,8 +196,8 @@ venv/bin/python3 send_newsletter_main.py --no-email && venv/bin/python3 generate
 
 Two-column layout: wide left panel for goals, right column for barbell health + investment principles.
 
-**Dividend Goal — $5,000/mo by 2036** (left panel, top)
-- Current monthly gross and after-tax dividend income vs the $5,000/month target (after-tax rate reflects the selected Tax Bracket)
+**Dividend Goal — $2,500/mo by 2036** (left panel, top)
+- Current monthly gross and after-tax dividend income vs the $2,500/month target (after-tax rate reflects the selected Tax Bracket)
 - Progress bar + percentage of goal reached
 - Gap in $/month, years remaining, and required CAGR
 
