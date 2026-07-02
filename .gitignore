@@ -17,10 +17,18 @@ __pycache__/
 
 # Generated outputs
 out/investment.db
+out/investment.db-shm
+out/investment.db-wal
+out/buffett.db
 out/*.log
 out/last_run_date.txt
+out/last_reminder_date.txt
+out/last_screener_date.txt
 out/layer_allocation.png
 out/dashboard.html
 out/launchd.out
 out/launchd.err
 out/wrapper.log
+
+# Claude Code local settings
+.claude/
