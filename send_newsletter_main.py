@@ -335,60 +335,65 @@ def build_html(
                 f"({money(float(best['chg_dollars']))})")
 
     snapshot_html = (
-        f"<table cellpadding='0' cellspacing='0' style='width:100%;'><tr>"
-        f"<td style='padding:0 24px 0 0;'>"
-        f"<div style='font-size:30px;font-weight:700;color:#1a2340;'>{money(total_value)}</div>"
+        f"<div style='margin-bottom:14px;'>"
+        f"<div style='font-size:28px;font-weight:700;color:#1a2340;'>{money(total_value)}</div>"
         f"<div style='font-size:12px;color:#aaa;margin-top:2px;'>Total Portfolio Value</div>"
-        f"</td>"
-        f"<td style='padding:0 24px;border-left:1px solid #e0e7ef;'>"
-        f"<div style='font-size:22px;font-weight:700;color:{chg_color};'>"
+        f"</div>"
+        f"<div style='border-top:1px solid #f0f0f0;padding-top:12px;margin-bottom:14px;'>"
+        f"<div style='font-size:20px;font-weight:700;color:{chg_color};'>"
         f"{signed_pct(total_change_pct)} &nbsp; {money(total_change)}</div>"
         f"<div style='font-size:12px;color:#aaa;margin-top:2px;'>Today · SPY {signed_pct(spy_change_pct)}</div>"
-        f"</td>"
-        f"<td style='padding:0 0 0 24px;border-left:1px solid #e0e7ef;'>"
+        f"</div>"
+        f"<div style='border-top:1px solid #f0f0f0;padding-top:12px;'>"
         f"<div style='font-size:13px;font-weight:600;color:#1a2340;'>{best_txt}</div>"
         f"<div style='font-size:12px;color:#aaa;margin-top:2px;'>Biggest mover</div>"
-        f"</td>"
-        f"</tr></table>"
+        f"</div>"
     )
 
     # ── 2. Layer Allocation vs Target ────────────────────────────────────────
-    layer_rows = []
+    layer_cards = []
     for lnum in range(1, 6):
-        lw   = layer_weights.get(lnum, {})
-        act  = lw.get("weight_pct", 0.0)
-        val  = lw.get("value_yday", 0.0)
-        dchg = lw.get("chg_dollars", 0.0)
-        dpct = lw.get("chg_pct", 0.0)
-        tgt  = targets.get(lnum, 0.0)
+        lw    = layer_weights.get(lnum, {})
+        act   = lw.get("weight_pct", 0.0)
+        val   = lw.get("value_yday", 0.0)
+        dchg  = lw.get("chg_dollars", 0.0)
+        dpct  = lw.get("chg_pct", 0.0)
+        tgt   = targets.get(lnum, 0.0)
         drift = act - tgt
         color = LAYER_COLORS.get(lnum, "#888")
+        chg_c = color_change(dchg)
 
         if abs(drift) <= 2:
-            drift_html = f"<span style='color:#27ae60;font-weight:600;'>✓ {drift:+.1f}pp</span>"
+            drift_label = f"<span style='color:#27ae60;font-size:11px;'>✓ on target</span>"
         elif drift > 0:
-            drift_html = f"<span style='color:#e67e22;font-weight:600;'>▲ {drift:+.1f}pp</span>"
+            drift_label = f"<span style='color:#e67e22;font-size:11px;'>▲ {drift:+.1f}pp over</span>"
         else:
-            drift_html = f"<span style='color:#2980b9;font-weight:600;'>▼ {drift:+.1f}pp</span>"
+            drift_label = f"<span style='color:#2980b9;font-size:11px;'>▼ {drift:+.1f}pp under</span>"
 
-        name_html = (
-            f"<span style='display:inline-block;width:10px;height:10px;border-radius:50%;"
-            f"background:{color};margin-right:6px;vertical-align:middle;'></span>"
-            f"<b>{LAYER_NAMES.get(lnum, f'L{lnum}')}</b>"
+        sep = "border-top:1px solid #f0f0f0;" if lnum > 1 else ""
+        layer_cards.append(
+            f"<div style='{sep}padding:10px 0;'>"
+            f"<div style='display:flex;justify-content:space-between;align-items:center;'>"
+            f"<div>"
+            f"<span style='display:inline-block;width:9px;height:9px;border-radius:50%;"
+            f"background:{color};margin-right:5px;vertical-align:middle;'></span>"
+            f"<b style='font-size:13px;color:#1a2340;'>{LAYER_NAMES.get(lnum, f'L{lnum}')}</b>"
+            f"</div>"
+            f"<div style='text-align:right;'>"
+            f"<span style='font-size:13px;font-weight:700;color:#1a2340;'>{act:.1f}%</span>"
+            f"<span style='font-size:12px;color:#aaa;'> / {tgt:.0f}%</span>"
+            f"&nbsp; {drift_label}"
+            f"</div>"
+            f"</div>"
+            f"<div style='display:flex;justify-content:space-between;margin-top:3px;"
+            f"font-size:12px;color:#888;'>"
+            f"<span>{money(val)}</span>"
+            f"<span style='color:{chg_c};'>{signed_pct(dpct)} ({money(dchg)})</span>"
+            f"</div>"
+            f"</div>"
         )
-        chg_c = color_change(dchg)
-        layer_rows.append([
-            name_html,
-            money(val),
-            f"{act:.1f}% / {tgt:.0f}%",
-            drift_html,
-            f"<span style='color:{chg_c};'>{signed_pct(dpct)} ({money(dchg)})</span>",
-        ])
 
-    alloc_table = _table(
-        ["Layer", "Value", "Actual / Target", "Drift", "Today Δ"],
-        layer_rows,
-    )
+    alloc_table = "".join(layer_cards)
 
     # Drift warning box (if any layers ≥5pp off)
     drift_warning = ""

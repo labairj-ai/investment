@@ -796,18 +796,72 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             missing  = [f for f in required if not body.get(f)]
             if missing:
                 return self._json_error(400, f"Missing: {', '.join(missing)}")
+            ticker     = body["ticker"].upper()
+            new_shares = float(body["shares"])
+            new_cost   = float(body["cost_per_share"])
+
             db   = PROJECT_DIR / "out" / "investment.db"
             conn = sqlite3.connect(str(db), timeout=10)
-            cur  = conn.execute("""
-                INSERT INTO cost_lots (ticker, shares, cost_per_share, purchase_date, notes)
-                VALUES (?, ?, ?, ?, ?)
-            """, (body["ticker"].upper(), float(body["shares"]),
-                  float(body["cost_per_share"]), body["purchase_date"],
-                  body.get("notes", "")))
-            conn.commit()
+            cur  = conn.execute(
+                "INSERT INTO cost_lots (ticker, shares, cost_per_share, purchase_date, notes) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (ticker, new_shares, new_cost, body["purchase_date"], body.get("notes", ""))
+            )
             pos_id = cur.lastrowid
+
+            # Recompute totals from all lots and sync to holdings.csv + holding_day
+            lots = conn.execute(
+                "SELECT shares, cost_per_share FROM cost_lots WHERE ticker=?", (ticker,)
+            ).fetchall()
+            total_shares = sum(r[0] for r in lots)
+            avg_cost     = sum(r[0] * r[1] for r in lots) / total_shares if total_shares else new_cost
+
+            conn.commit()
             conn.close()
-            self._json({"ok": True, "id": pos_id})
+
+            # Update holdings.csv
+            holdings_csv = PROJECT_DIR / "holdings.csv"
+            if holdings_csv.exists():
+                rows, fieldnames = [], None
+                with open(holdings_csv, newline="") as f:
+                    reader = _csv_mod.DictReader(f)
+                    fieldnames = reader.fieldnames
+                    for row in reader:
+                        if row["Stock"].strip().upper() == ticker:
+                            row["Shares"]  = str(total_shares)
+                            row["AvgCost"] = str(round(avg_cost, 4))
+                        rows.append(row)
+                with open(holdings_csv, "w", newline="") as f:
+                    writer = _csv_mod.DictWriter(f, fieldnames=fieldnames)
+                    writer.writeheader()
+                    writer.writerows(rows)
+
+            # Update today's holding_day value (price unchanged, just more shares)
+            db_conn = sqlite3.connect(str(db), timeout=10)
+            today = datetime.date.today().isoformat()
+            row = db_conn.execute(
+                "SELECT price FROM holding_day WHERE ticker=? AND day=?", (ticker, today)
+            ).fetchone()
+            if row:
+                price = row[0]
+                new_value = total_shares * price
+                db_conn.execute(
+                    "UPDATE holding_day SET shares=?, value=? WHERE ticker=? AND day=?",
+                    (total_shares, new_value, ticker, today)
+                )
+                # Recompute weight_pct for all holdings today
+                total_val = db_conn.execute(
+                    "SELECT SUM(value) FROM holding_day WHERE day=?", (today,)
+                ).fetchone()[0] or 0
+                if total_val:
+                    db_conn.execute(
+                        "UPDATE holding_day SET weight_pct=ROUND(value*100.0/?,4) WHERE day=?",
+                        (total_val, today)
+                    )
+                db_conn.commit()
+            db_conn.close()
+
+            self._json({"ok": True, "id": pos_id, "total_shares": total_shares, "avg_cost": round(avg_cost, 4)})
         except Exception as e:
             self._json_error(500, str(e))
 
