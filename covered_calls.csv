@@ -1,0 +1,9 @@
+ticker,contracts,strike,expiry,premium_per_contract,opened_date,notes
+# Add your open covered call positions below.
+# ticker: underlying stock (matches holdings.csv)
+# contracts: number of contracts (each = 100 shares)
+# strike: strike price
+# expiry: expiration date YYYY-MM-DD
+# premium_per_contract: total premium received per contract (not per share)
+# opened_date: date you sold the call YYYY-MM-DD
+# notes: optional

@@ -653,8 +653,8 @@ def build_dashboard(portfolio, layers, holdings):
     </div>
     <div class="kpi">
       <div class="label">Daily Change</div>
-      <div class="value {chg_class_main}">{money(total_chg)}</div>
-      <div class="sub {chg_class_main}">{pct(total_chg_pct)}</div>
+      <div class="value {chg_class_main}" id="kpi-daily-value" data-stock-chg="{round(total_chg, 2)}" data-total-value="{round(total_v, 2)}">{money(total_chg)}</div>
+      <div class="sub {chg_class_main}" id="kpi-daily-pct">{pct(total_chg_pct)}</div>
     </div>
     <div class="kpi">
       <div class="label">SPY Change</div>
@@ -1023,7 +1023,10 @@ def build_dashboard(portfolio, layers, holdings):
   <div class="card" id="cc-tracker-card">
     <h2 style="display:flex;align-items:center;justify-content:space-between;">
       Covered Call Position Tracker
-      <button onclick="loadCCPositions()" style="font-size:11px;padding:4px 12px;background:#f4f6f9;border:1px solid #dde;border-radius:5px;cursor:pointer;color:#555;font-weight:500;">↻ Refresh</button>
+      <span style="display:flex;gap:6px;align-items:center;">
+        <button onclick="importCCFromCSV()" style="font-size:11px;padding:4px 12px;background:#f4f6f9;border:1px solid #dde;border-radius:5px;cursor:pointer;color:#555;font-weight:500;">⬆ Import CSV</button>
+        <button onclick="loadCCPositions()" style="font-size:11px;padding:4px 12px;background:#f4f6f9;border:1px solid #dde;border-radius:5px;cursor:pointer;color:#555;font-weight:500;">↻ Refresh</button>
+      </span>
     </h2>
 
     <!-- Log new position form -->
@@ -3361,6 +3364,27 @@ function renderCCPositions() {{
   const netRealized   = closed.reduce((s,p) => s + (p.net_premium ?? 0), 0);
   const grossRealized = closed.reduce((s,p) => s + p.premium_per_contract * p.contracts * 100, 0);
   const buybackCost   = grossRealized - netRealized;
+  const openMtmTotal  = open.filter(p => p.pnl_total !== null).reduce((s,p) => s + p.pnl_total, 0);
+  const openMtmDay    = open.filter(p => p.pnl_day  !== null).reduce((s,p) => s + p.pnl_day,   0);
+  const hasMtm        = open.some(p => p.current_mark != null);
+
+  // Adjust the daily change KPI to include today's option P&L
+  (function() {{
+    const el  = document.getElementById("kpi-daily-value");
+    const pct = document.getElementById("kpi-daily-pct");
+    if (!el || !hasMtm) return;
+    const stockChg  = parseFloat(el.dataset.stockChg  || 0);
+    const totalVal  = parseFloat(el.dataset.totalValue || 0);
+    const adjChg    = stockChg + openMtmDay;
+    const prevTotal = totalVal - adjChg;
+    const adjPct    = prevTotal > 0 ? adjChg / prevTotal * 100 : 0;
+    el.textContent  = (adjChg >= 0 ? "+" : "") + "$" + Math.abs(Math.round(adjChg)).toLocaleString("en-US");
+    el.style.color  = adjChg >= 0 ? "" : "#e74c3c";
+    if (pct) {{
+      pct.textContent = (adjPct >= 0 ? "+" : "") + adjPct.toFixed(2) + "%";
+      pct.style.color = adjPct >= 0 ? "" : "#e74c3c";
+    }}
+  }})();
 
   function statusBadge(p) {{
     const map = {{
@@ -3394,6 +3418,20 @@ function renderCCPositions() {{
            ${{buyback ? `<div style="font-size:10px;color:#e74c3c;font-weight:400;">−$${{buyback.toFixed(2)}} buyback</div>` : ""}}
          </td>`;
 
+    const markCell = isOpen
+      ? (p.current_mark != null
+          ? `<td style="padding:7px 10px;">$${{p.current_mark.toFixed(2)}}</td>`
+          : `<td style="padding:7px 10px;color:#ccc;font-size:11px;">—</td>`)
+      : `<td style="padding:7px 10px;"></td>`;
+
+    const pnlTotalCell = isOpen
+      ? `<td style="padding:7px 10px;">${{fmtPnl(p.pnl_total)}}</td>`
+      : `<td style="padding:7px 10px;"></td>`;
+
+    const pnlDayCell = isOpen
+      ? `<td style="padding:7px 10px;">${{fmtPnl(p.pnl_day)}}</td>`
+      : `<td style="padding:7px 10px;"></td>`;
+
     const actionCell = isOpen
       ? `<td style="padding:7px 10px;white-space:nowrap;">
            <button onclick="openCCCloseModal(${{p.id}})"
@@ -3410,6 +3448,9 @@ function renderCCPositions() {{
       <td style="padding:7px 10px;">${{p.expiry}} ${{isOpen ? dteTag(p.expiry) : ""}}</td>
       <td style="padding:7px 10px;">$${{p.premium_per_contract.toFixed(2)}}</td>
       <td style="padding:7px 10px;color:#555;">$${{gross.toFixed(2)}}</td>
+      ${{markCell}}
+      ${{pnlTotalCell}}
+      ${{pnlDayCell}}
       ${{netCell}}
       <td style="padding:7px 10px;">${{statusBadge(p)}}</td>
       <td style="padding:7px 10px;font-size:11px;color:#aaa;">${{p.opened_date}}</td>
@@ -3418,33 +3459,53 @@ function renderCCPositions() {{
     </tr>`;
   }};
 
+  const fmtPnl = v => v === null ? "—" : (v >= 0 ? `<span style="color:#27ae60;">+$${{v.toFixed(2)}}</span>` : `<span style="color:#e74c3c;">-$${{Math.abs(v).toFixed(2)}}</span>`);
+
   const summaryHtml = `
     <div style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:14px;padding:12px 16px;background:#f8fafc;border-radius:8px;font-size:13px;">
       <span>Open: <b>${{open.length}}</b></span>
       <span>Open gross premium: <b style="color:#1a6e38;">$${{openGross.toFixed(2)}}</b></span>
+      ${{hasMtm ? `<span>Unrealized P&amp;L: <b>${{fmtPnl(openMtmTotal)}}</b></span>` : ""}}
+      ${{hasMtm ? `<span>Today's option P&amp;L: <b>${{fmtPnl(openMtmDay)}}</b></span>` : ""}}
       <span style="border-left:1px solid #dde;padding-left:16px;">Net realized income: <b style="color:#27ae60;">$${{netRealized.toFixed(2)}}</b></span>
       ${{buybackCost > 0 ? `<span style="color:#aaa;font-size:12px;">($${{grossRealized.toFixed(2)}} gross − $${{buybackCost.toFixed(2)}} buybacks)</span>` : ""}}
     </div>`;
 
-  const th = s => `<th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">${{s}}</th>`;
-  const thead = `<thead><tr style="background:#f4f6f9;">
+  const th  = s => `<th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">${{s}}</th>`;
+  const thG = s => `<th style="padding:7px 10px;text-align:left;font-size:11px;color:#27ae60;text-transform:uppercase;">${{s}}</th>`;
+  const COLS = 14;
+  const thead = `<thead id="cc-tracker-thead"><tr style="background:#f4f6f9;">
     ${{th("Ticker")}}${{th("Contracts")}}${{th("Strike")}}${{th("Expiry/DTE")}}
     ${{th("Prem/Contract")}}${{th("Gross")}}
-    <th style="padding:7px 10px;text-align:left;font-size:11px;color:#27ae60;text-transform:uppercase;">Net Realized</th>
+    ${{th("Mark")}}${{thG("Unrealized P&L")}}${{thG("Today's P&L")}}
+    ${{thG("Net Realized")}}
     ${{th("Status")}}${{th("Opened")}}${{th("Notes")}}${{th("")}}
   </tr></thead>`;
 
   let html = summaryHtml + `<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:13px;">${{thead}}<tbody>`;
   if (open.length) {{
-    html += `<tr><td colspan="11" style="padding:5px 10px;font-size:11px;font-weight:700;color:#1a2340;background:#f0f7ff;">Open Positions</td></tr>`;
+    html += `<tr><td colspan="${{COLS}}" style="padding:5px 10px;font-size:11px;font-weight:700;color:#1a2340;background:#f0f7ff;">Open Positions</td></tr>`;
     html += open.map(makeRow).join("");
   }}
   if (closed.length) {{
-    html += `<tr><td colspan="11" style="padding:5px 10px;font-size:11px;font-weight:700;color:#888;background:#f9f9f9;">Closed / Expired / Assigned</td></tr>`;
+    html += `<tr><td colspan="${{COLS}}" style="padding:5px 10px;font-size:11px;font-weight:700;color:#888;background:#f9f9f9;">Closed / Expired / Assigned</td></tr>`;
     html += closed.map(makeRow).join("");
   }}
   html += `</tbody></table></div>`;
   results.innerHTML = html;
+}}
+
+async function importCCFromCSV() {{
+  const status = document.getElementById("cc-tracker-status");
+  status.textContent = "Importing from covered_calls.csv…";
+  try {{
+    const res  = await fetch("/api/cc-import", {{method:"POST"}});
+    const data = await res.json();
+    if (!data.ok) {{ status.textContent = "Import error: " + data.error; return; }}
+    status.textContent = `✓ Imported ${{data.added}} position(s), ${{data.skipped}} already existed.`;
+    setTimeout(() => {{ status.textContent = ""; }}, 4000);
+    loadCCPositions();
+  }} catch(e) {{ status.textContent = "Error: " + e.message; }}
 }}
 
 async function logCCPosition() {{
@@ -3843,9 +3904,10 @@ function renderCC(d) {{
 window.addEventListener("load", function() {{
   // [theadId, scrollWrapperId or null (use thead's closest table parent)]
   const TABLES = [
-    ["holdings-thead",  "holdings-scroll-wrap"],
-    ["div-thead",       null],
-    ["screener-thead",  null],
+    ["holdings-thead",     "holdings-scroll-wrap"],
+    ["div-thead",          null],
+    ["screener-thead",     null],
+    ["cc-tracker-thead",   null],
   ];
 
   const ghosts = {{}};

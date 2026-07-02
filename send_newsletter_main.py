@@ -92,6 +92,54 @@ def color_change(x: float) -> str:
     return "#27ae60" if x >= 0 else "#e74c3c"
 
 
+# ─── Covered call MTM ─────────────────────────────────────────────────────────
+def fetch_cc_mtm() -> None:
+    """Fetch current option mark prices for open CC positions and update DB."""
+    if not DB_PATH.exists():
+        return
+    conn = sqlite3.connect(str(DB_PATH), timeout=10)
+    conn.row_factory = sqlite3.Row
+    open_pos = conn.execute(
+        "SELECT id, ticker, strike, expiry, current_mark "
+        "FROM cc_positions WHERE status='open'"
+    ).fetchall()
+    conn.close()
+    if not open_pos:
+        return
+
+    updates: list[tuple] = []
+    for row in open_pos:
+        ticker, strike, expiry = row["ticker"], row["strike"], row["expiry"]
+        prev_mark = row["current_mark"]
+        try:
+            tk = yf.Ticker(ticker)
+            if expiry not in tk.options:
+                continue
+            calls = tk.option_chain(expiry).calls
+            match = calls[abs(calls["strike"] - strike) < 0.01]
+            if match.empty:
+                continue
+            r   = match.iloc[0]
+            bid = float(r["bid"])
+            ask = float(r["ask"])
+            mark = (bid + ask) / 2 if (bid > 0 or ask > 0) else float(r["lastPrice"])
+            if mark > 0:
+                updates.append((mark, prev_mark, row["id"]))
+        except Exception:
+            pass
+
+    if updates:
+        conn = sqlite3.connect(str(DB_PATH), timeout=10)
+        for current_mark, prev_mark, pos_id in updates:
+            conn.execute(
+                "UPDATE cc_positions SET current_mark=?, prev_mark=? WHERE id=?",
+                (current_mark, prev_mark, pos_id)
+            )
+        conn.commit()
+        conn.close()
+        print(f"[CC MTM] Updated marks for {len(updates)} open position(s)")
+
+
 # ─── Pricing ──────────────────────────────────────────────────────────────────
 def fetch_last_two_closes(tickers: list[str]) -> pd.DataFrame:
     rows = []
@@ -601,6 +649,12 @@ def main(send_email_flag: bool = True):
     holdings["weight_pct"] = (holdings["value_yday"] / total_value) * 100.0
     store_snapshot(day, total_value, total_change, total_change_pct,
                    spy_change_pct, layers, holdings)
+
+    # ── Covered call mark-to-market ───────────────────────────────────────────
+    try:
+        fetch_cc_mtm()
+    except Exception as e:
+        print(f"[CC MTM] Warning: {e}")
 
     # ── Rubric + flags ────────────────────────────────────────────────────────
     rubric_df, flags = rubric_and_flags(total_change, layers, holdings)

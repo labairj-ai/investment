@@ -164,7 +164,12 @@ def _init_cc_table():
         )
     """)
     # Migrate existing tables that predate these columns
-    for col, typedef in [("close_type", "TEXT"), ("net_premium", "REAL")]:
+    for col, typedef in [
+        ("close_type",    "TEXT"),
+        ("net_premium",   "REAL"),
+        ("current_mark",  "REAL"),
+        ("prev_mark",     "REAL"),
+    ]:
         try:
             conn.execute(f"ALTER TABLE cc_positions ADD COLUMN {col} {typedef}")
         except sqlite3.OperationalError:
@@ -417,6 +422,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/api/cc-positions":
             self._handle_cc_add()
+        elif parsed.path == "/api/cc-import":
+            self._handle_cc_import()
         elif parsed.path == "/api/lots":
             self._handle_lot_add()
         elif parsed.path == "/api/sells":
@@ -740,6 +747,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 "SELECT * FROM cc_positions ORDER BY opened_date DESC, id DESC"
             )]
             conn.close()
+            # Compute mark-to-market P&L for open positions
+            for p in positions:
+                if p["status"] == "open" and p.get("current_mark") is not None:
+                    mark  = p["current_mark"]
+                    prev  = p.get("prev_mark")
+                    c     = p["contracts"]
+                    prem  = p["premium_per_contract"]
+                    p["pnl_total"] = round((prem - mark) * c * 100, 2)
+                    p["pnl_day"]   = round((prev - mark) * c * 100, 2) if prev is not None else None
+                else:
+                    p["pnl_total"] = None
+                    p["pnl_day"]   = None
             auto_expired = [r["id"] for r in past_open]
             self._json({"ok": True, "positions": positions, "auto_expired": auto_expired})
         except Exception as e:
@@ -804,6 +823,43 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._json({"ok": True})
         except Exception as e:
             self._json_error(500, str(e))
+
+    def _handle_cc_import(self):
+        """Import open positions from covered_calls.csv, skipping duplicates."""
+        import csv as _csv
+        csv_path = PROJECT_DIR / "covered_calls.csv"
+        if not csv_path.exists():
+            return self._json_error(404, "covered_calls.csv not found")
+        db = PROJECT_DIR / "out" / "investment.db"
+        conn = sqlite3.connect(str(db), timeout=10)
+        conn.row_factory = sqlite3.Row
+        added = skipped = 0
+        try:
+            with open(csv_path, newline="") as f:
+                for row in _csv.DictReader(filter(lambda l: not l.strip().startswith("#"), f)):
+                    ticker = (row.get("ticker") or "").strip().upper()
+                    if not ticker:
+                        continue
+                    exists = conn.execute(
+                        "SELECT id FROM cc_positions WHERE ticker=? AND strike=? AND expiry=? AND status='open'",
+                        (ticker, float(row["strike"]), row["expiry"].strip())
+                    ).fetchone()
+                    if exists:
+                        skipped += 1
+                        continue
+                    conn.execute(
+                        "INSERT INTO cc_positions "
+                        "(ticker,contracts,strike,expiry,premium_per_contract,opened_date,status,notes) "
+                        "VALUES (?,?,?,?,?,?,'open',?)",
+                        (ticker, int(row["contracts"]), float(row["strike"]),
+                         row["expiry"].strip(), float(row["premium_per_contract"]),
+                         row["opened_date"].strip(), (row.get("notes") or "").strip())
+                    )
+                    added += 1
+            conn.commit()
+        finally:
+            conn.close()
+        self._json({"ok": True, "added": added, "skipped": skipped})
 
     # ── Cost lots ─────────────────────────────────────────────────────────────
     def _handle_lots_get(self, ticker=None):
