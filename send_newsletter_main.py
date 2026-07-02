@@ -112,7 +112,7 @@ def fetch_cc_mtm() -> None:
         ticker, strike, expiry = row["ticker"], row["strike"], row["expiry"]
         prev_mark = row["current_mark"]
         try:
-            tk = yf.Ticker(ticker)
+            tk = yf.Ticker(normalize_ticker(ticker))
             if expiry not in tk.options:
                 continue
             calls = tk.option_chain(expiry).calls

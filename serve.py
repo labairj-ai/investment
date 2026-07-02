@@ -140,6 +140,15 @@ def _load_email_creds():
     return os.getenv("EMAIL_FROM"), os.getenv("EMAIL_APP_PASSWORD"), os.getenv("EMAIL_TO")
 
 
+def _normalize_ticker(t: str) -> str:
+    t = str(t).strip().upper().lstrip("$")
+    if "." in t:
+        left, right = t.split(".", 1)
+        if right in {"A", "B", "C", "D"}:
+            t = f"{left}-{right}"
+    return t
+
+
 # ── CC positions table ────────────────────────────────────────────────────────
 def _init_cc_table():
     db = PROJECT_DIR / "out" / "investment.db"
@@ -779,7 +788,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 INSERT INTO cc_positions
                 (ticker, contracts, strike, expiry, premium_per_contract, opened_date, status, notes)
                 VALUES (?, ?, ?, ?, ?, ?, 'open', ?)
-            """, (body["ticker"].upper(), int(body["contracts"]), float(body["strike"]),
+            """, (_normalize_ticker(body["ticker"]), int(body["contracts"]), float(body["strike"]),
                   body["expiry"], float(body["premium_per_contract"]),
                   body["opened_date"], body.get("notes", "")))
             conn.commit()
@@ -837,7 +846,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         try:
             with open(csv_path, newline="") as f:
                 for row in _csv.DictReader(filter(lambda l: not l.strip().startswith("#"), f)):
-                    ticker = (row.get("ticker") or "").strip().upper()
+                    ticker = _normalize_ticker(row.get("ticker") or "")
                     if not ticker:
                         continue
                     exists = conn.execute(
