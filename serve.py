@@ -1377,12 +1377,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                             pass
                     if not ex_date and last_date:
                         ex_date = last_date
-                    # Discard pay dates that are in the past or before the ex-div date
+                    # Discard pay dates that are in the past, before ex-div, or
+                    # more than 90 days after ex-div (yfinance sometimes returns
+                    # an annual-cycle date from a wrong fiscal year).
                     if pay_date:
                         try:
+                            from datetime import timedelta as _td
                             pay_dt = datetime.strptime(pay_date, "%Y-%m-%d").date()
                             ex_dt  = datetime.strptime(ex_date,  "%Y-%m-%d").date() if ex_date else None
-                            if pay_dt < today or (ex_dt and pay_dt < ex_dt):
+                            if (pay_dt < today
+                                    or (ex_dt and pay_dt < ex_dt)
+                                    or (ex_dt and pay_dt > ex_dt + _td(days=90))):
                                 pay_date = None
                         except Exception:
                             pay_date = None
