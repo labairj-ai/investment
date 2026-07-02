@@ -181,6 +181,12 @@ To run manually at any time:
 venv/bin/python3 send_newsletter_main.py && venv/bin/python3 generate_dashboard.py
 ```
 
+To refresh data without sending the email (same as the dashboard's **↻ Refresh Data** button):
+
+```bash
+venv/bin/python3 send_newsletter_main.py --no-email && venv/bin/python3 generate_dashboard.py
+```
+
 ---
 
 ## Dashboard Features
@@ -190,7 +196,7 @@ venv/bin/python3 send_newsletter_main.py && venv/bin/python3 generate_dashboard.
 Two-column layout: wide left panel for goals, right column for barbell health + investment principles.
 
 **Dividend Goal — $5,000/mo by 2036** (left panel, top)
-- Current monthly gross and after-tax (23.8%) dividend income vs the $5,000/month target
+- Current monthly gross and after-tax dividend income vs the $5,000/month target (after-tax rate reflects the selected Tax Bracket)
 - Progress bar + percentage of goal reached
 - Gap in $/month, years remaining, and required CAGR
 
@@ -229,14 +235,15 @@ Two-column layout: wide left panel for goals, right column for barbell health + 
 - Bottom card shows whether organic growth covers the $2M quarterly portfolio target or new capital is needed this quarter
 
 ### Header
-- **Tax Bracket dropdown** (top right) — toggles between $150k / $300k / $500k / $750k / $1M+ MFJ income scenarios; updates all dividend tax calculations and the after-tax chart line in real time
+- **↻ Refresh Data button** (top right) — fetches live prices from Yahoo Finance, writes today's portfolio snapshot to the DB, then regenerates `dashboard.html`. No email is sent. Takes 30–60 seconds while prices are fetched; the button shows "Refreshing…" and reloads the page automatically on completion.
+- **Tax Bracket dropdown** (top right) — toggles between $150k / $300k / $500k / $750k / $1M+ MFJ income scenarios; updates the after-tax dividend KPI, dividend table tax/net columns, Goals card net income, and the after-tax chart line in real time. Affected elements flash briefly yellow so you can see what changed.
 
 ### KPI Cards (top row)
 - **Portfolio Value** — total market value
 - **Daily Change** — today's P&L vs yesterday's close
 - **SPY Change** — benchmark comparison
 - **Total Gain vs Cost** — unrealized P&L vs your average cost across all holdings
-- **Est. Annual Dividends** — gross annual dividend income; subtitle shows net after-tax
+- **Est. Annual Dividends (After-Tax)** — after-tax annual dividend income at the selected bracket; subtitle shows gross income and portfolio yield. Updates immediately when the Tax Bracket dropdown changes.
 - **Est. Tax Bill** — current year's estimated federal tax (ST + LT); flips to "Final" label in the following year; accounts for stock gains, CC premium income, and any prior-year carryforward amounts
 
 ### Charts
@@ -397,6 +404,16 @@ Select any holding with **100+ shares** and click **Get Recommendations**.
 Auto-loads on page open. Hit **Refresh** to update; cached 1 hour per day.
 
 **Columns:** Ticker | Status | Ex-Div Date | Pay Date | Amount/Share | This Payout | Annual Income | Est. Tax | Net After-Tax | Yield | Yield on Cost
+
+**Status badges:**
+- **UPCOMING** (green) — ex-div date is in the future
+- **PAYMENT DUE** (blue) — ex-div has passed, pay date is still in the future (cash not yet received)
+- **LAST KNOWN** (grey) — both dates are in the past; sorted most-recent-first
+
+**Pay date sourcing:**
+- Individual stocks — from yfinance; dates >90 days after ex-div are discarded (yfinance sometimes returns wrong fiscal-year dates for WMT, GRMN, etc.)
+- ETFs (SCHD, SLYV, IGV, etc.) — scraped from stockanalysis.com dividend history when yfinance has no data
+- Vanguard / Fidelity mutual funds — estimated as ex-date + 1 business day (typical fund practice); shown with a `~` prefix to indicate the value is estimated
 
 **Dividend Lookup**: enter any ticker + share count to see metrics and projected portfolio impact.
 
