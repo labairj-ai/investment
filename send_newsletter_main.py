@@ -100,13 +100,21 @@ def fetch_last_two_closes(tickers: list[str]) -> pd.DataFrame:
         last_err = None
         for attempt in range(1, 4):
             try:
+                fi = yf.Ticker(t).fast_info
+                close_yday = getattr(fi, "last_price", None)
+                close_prev = getattr(fi, "previous_close", None)
+                if close_yday and close_prev:
+                    rows.append((t, float(close_yday), float(close_prev)))
+                    last_err = None
+                    break
+                # fallback: history-based
                 hist = yf.Ticker(t).history(period="10d", interval="1d")
                 s = hist["Close"].dropna()
                 if len(s) >= 2:
                     rows.append((t, float(s.iloc[-1]), float(s.iloc[-2])))
                     last_err = None
                     break
-                last_err = RuntimeError(f"Only {len(s)} closes for {t}")
+                last_err = RuntimeError(f"No price data for {t}")
             except Exception as e:
                 last_err = e
             time.sleep(1.0 * attempt)

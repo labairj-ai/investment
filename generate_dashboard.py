@@ -96,6 +96,9 @@ def rebuild_today_holdings(today_date: str, db_holdings: list[dict], csv_holding
     """
     # ticker -> price from DB (last known close)
     db_prices = {h["ticker"]: h["price"] for h in db_holdings if h["day"] == today_date}
+    # ticker -> pre-computed change from DB (uses fast_info.previous_close, so 1-day accurate)
+    db_changes = {h["ticker"]: (h["change_dollars"], h["change_pct"])
+                  for h in db_holdings if h["day"] == today_date}
 
     rebuilt = []
     for ticker, meta in csv_holdings.items():
@@ -118,23 +121,14 @@ def rebuild_today_holdings(today_date: str, db_holdings: list[dict], csv_holding
             "cost_basis": cost_basis,
         })
 
-    # Derive daily change figures: need prev-day prices from DB
-    prev_prices = {}
-    if db_holdings:
-        days_with_data = sorted(set(h["day"] for h in db_holdings if h["day"] < today_date), reverse=True)
-        if days_with_data:
-            prev_day = days_with_data[0]
-            prev_prices = {h["ticker"]: h["price"] for h in db_holdings if h["day"] == prev_day}
-
     total_value = sum(h["value"] for h in rebuilt)
 
     for h in rebuilt:
-        # Daily change
-        prev_price = prev_prices.get(h["ticker"])
-        if prev_price and prev_price > 0:
-            prev_value = h["shares"] * prev_price
-            h["change_dollars"] = h["value"] - prev_value
-            h["change_pct"] = (h["change_dollars"] / prev_value) * 100.0
+        # Daily change — use stored values (computed with fast_info.previous_close)
+        stored = db_changes.get(h["ticker"])
+        if stored and stored[0] is not None:
+            h["change_dollars"] = stored[0]
+            h["change_pct"]     = stored[1] or 0.0
         else:
             h["change_dollars"] = 0.0
             h["change_pct"] = 0.0
@@ -146,21 +140,19 @@ def rebuild_today_holdings(today_date: str, db_holdings: list[dict], csv_holding
 
         h["weight_pct"] = (h["value"] / total_value * 100.0) if total_value else 0.0
 
-    # Rebuild layers
+    # Rebuild layers by summing per-holding changes
     layer_map: dict[str, dict] = {}
     for h in rebuilt:
         ln = h["layer"]
         if ln not in layer_map:
-            layer_map[ln] = {"layer": ln, "value": 0.0, "prev_value": 0.0, "change_dollars": 0.0}
-        prev_price = prev_prices.get(h["ticker"])
-        layer_map[ln]["value"] += h["value"]
-        if prev_price:
-            layer_map[ln]["prev_value"] += h["shares"] * prev_price
+            layer_map[ln] = {"layer": ln, "value": 0.0, "change_dollars": 0.0}
+        layer_map[ln]["value"]         += h["value"]
+        layer_map[ln]["change_dollars"] += h["change_dollars"]
 
     layers = []
     for ln, data in layer_map.items():
-        pv = data["prev_value"]
-        chg = data["value"] - pv
+        chg = data["change_dollars"]
+        pv  = data["value"] - chg
         layers.append({
             "layer": ln,
             "value": data["value"],
