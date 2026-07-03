@@ -625,6 +625,122 @@ def build_dashboard(portfolio, layers, holdings):
   </div>
 </div>
 
+<!-- ── Tax Loss Harvesting Modal ──────────────────────────────────────────── -->
+<div id="tlh-overlay" onclick="tlhOverlayClick(event)" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:1100;align-items:flex-start;justify-content:center;padding:40px 16px;overflow-y:auto;">
+  <div onclick="event.stopPropagation()" style="background:#fff;border-radius:14px;width:100%;max-width:960px;box-shadow:0 12px 48px rgba(0,0,0,.25);overflow:hidden;">
+
+    <!-- Header -->
+    <div style="background:#1a2340;padding:20px 28px;display:flex;align-items:center;justify-content:space-between;">
+      <div>
+        <div style="color:#fff;font-size:1.1rem;font-weight:700;">✂ Tax Loss Harvesting</div>
+        <div style="color:#8899bb;font-size:12px;margin-top:3px;">Model the tax impact of selling positions · bracket: <span id="tlh-bracket-label">—</span></div>
+      </div>
+      <button onclick="closeTLH()" style="background:rgba(255,255,255,.1);border:none;color:#fff;font-size:18px;width:32px;height:32px;border-radius:50%;cursor:pointer;line-height:32px;text-align:center;">✕</button>
+    </div>
+
+    <!-- Body -->
+    <div style="padding:24px 28px;">
+
+      <!-- Loading / error states -->
+      <div id="tlh-loading" style="text-align:center;padding:40px;color:#888;">Loading positions…</div>
+      <div id="tlh-error"   style="display:none;color:#e74c3c;padding:20px;font-size:13px;"></div>
+
+      <!-- Main content (hidden until loaded) -->
+      <div id="tlh-content" style="display:none;">
+
+        <!-- Positions table -->
+        <div style="font-size:11px;font-weight:700;color:#7f8c8d;text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px;">
+          Positions &nbsp;<span style="font-weight:400;color:#aaa;text-transform:none;">(check to include in harvest model)</span>
+        </div>
+        <div style="overflow-x:auto;margin-bottom:24px;">
+          <table id="tlh-table" style="width:100%;border-collapse:collapse;font-size:13px;">
+            <thead>
+              <tr style="border-bottom:2px solid #e8eaf0;text-align:right;">
+                <th style="text-align:left;padding:8px 6px;color:#7f8c8d;font-weight:600;font-size:11px;text-transform:uppercase;">
+                  <input type="checkbox" id="tlh-check-all" onchange="tlhToggleAll(this.checked)" style="cursor:pointer;"> Ticker
+                </th>
+                <th style="padding:8px 6px;color:#7f8c8d;font-weight:600;font-size:11px;text-transform:uppercase;">Shares</th>
+                <th style="padding:8px 6px;color:#7f8c8d;font-weight:600;font-size:11px;text-transform:uppercase;">Avg Cost</th>
+                <th style="padding:8px 6px;color:#7f8c8d;font-weight:600;font-size:11px;text-transform:uppercase;">Price</th>
+                <th style="padding:8px 6px;color:#7f8c8d;font-weight:600;font-size:11px;text-transform:uppercase;">Mkt Value</th>
+                <th style="padding:8px 6px;color:#7f8c8d;font-weight:600;font-size:11px;text-transform:uppercase;">ST P&L</th>
+                <th style="padding:8px 6px;color:#7f8c8d;font-weight:600;font-size:11px;text-transform:uppercase;">LT P&L</th>
+                <th style="padding:8px 6px;color:#7f8c8d;font-weight:600;font-size:11px;text-transform:uppercase;">Total P&L</th>
+                <th style="padding:8px 6px;color:#7f8c8d;font-weight:600;font-size:11px;text-transform:uppercase;">Lots</th>
+              </tr>
+            </thead>
+            <tbody id="tlh-tbody"></tbody>
+          </table>
+        </div>
+
+        <!-- Summary -->
+        <div style="background:#f4f6fb;border-radius:10px;padding:20px 24px;">
+          <div style="font-size:11px;font-weight:700;color:#7f8c8d;text-transform:uppercase;letter-spacing:.05em;margin-bottom:16px;">Harvest Summary — Selected Positions</div>
+
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:20px;">
+            <!-- Left: Loss / gain buckets -->
+            <div>
+              <div style="font-size:12px;color:#888;margin-bottom:10px;font-weight:600;">What you'd realize</div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+                <div style="background:#fff;border-radius:8px;padding:12px 14px;border-left:3px solid #e74c3c;">
+                  <div style="font-size:10px;color:#aaa;text-transform:uppercase;margin-bottom:4px;">ST Losses</div>
+                  <div id="tlh-st-loss" style="font-size:16px;font-weight:700;color:#e74c3c;">$0</div>
+                </div>
+                <div style="background:#fff;border-radius:8px;padding:12px 14px;border-left:3px solid #e67e22;">
+                  <div style="font-size:10px;color:#aaa;text-transform:uppercase;margin-bottom:4px;">LT Losses</div>
+                  <div id="tlh-lt-loss" style="font-size:16px;font-weight:700;color:#e67e22;">$0</div>
+                </div>
+                <div style="background:#fff;border-radius:8px;padding:12px 14px;border-left:3px solid #27ae60;">
+                  <div style="font-size:10px;color:#aaa;text-transform:uppercase;margin-bottom:4px;">ST Gains</div>
+                  <div id="tlh-st-gain" style="font-size:16px;font-weight:700;color:#27ae60;">$0</div>
+                </div>
+                <div style="background:#fff;border-radius:8px;padding:12px 14px;border-left:3px solid #2980b9;">
+                  <div style="font-size:10px;color:#aaa;text-transform:uppercase;margin-bottom:4px;">LT Gains</div>
+                  <div id="tlh-lt-gain" style="font-size:16px;font-weight:700;color:#2980b9;">$0</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Right: Tax impact -->
+            <div>
+              <div style="font-size:12px;color:#888;margin-bottom:10px;font-weight:600;">Tax impact</div>
+              <div style="background:#fff;border-radius:8px;padding:16px;font-size:13px;line-height:2;">
+                <div style="display:flex;justify-content:space-between;border-bottom:1px solid #f0f0f0;padding-bottom:6px;margin-bottom:6px;">
+                  <span style="color:#666;">Net ST (ordinary rate <span id="tlh-st-rate">—</span>)</span>
+                  <span id="tlh-net-st" style="font-weight:600;">—</span>
+                </div>
+                <div style="display:flex;justify-content:space-between;border-bottom:1px solid #f0f0f0;padding-bottom:6px;margin-bottom:6px;">
+                  <span style="color:#666;">Net LT (qualified rate <span id="tlh-lt-rate">—</span>)</span>
+                  <span id="tlh-net-lt" style="font-weight:600;">—</span>
+                </div>
+                <div id="tlh-ordinary-row" style="display:none;justify-content:space-between;border-bottom:1px solid #f0f0f0;padding-bottom:6px;margin-bottom:6px;">
+                  <span style="color:#666;">Ordinary income offset (≤$3k)</span>
+                  <span id="tlh-ordinary-save" style="font-weight:600;color:#27ae60;"></span>
+                </div>
+                <div id="tlh-carryforward-row" style="display:none;justify-content:space-between;border-bottom:1px solid #f0f0f0;padding-bottom:6px;margin-bottom:6px;">
+                  <span style="color:#666;">Loss carry-forward</span>
+                  <span id="tlh-carryforward" style="font-weight:600;color:#8899bb;"></span>
+                </div>
+                <div style="display:flex;justify-content:space-between;margin-top:4px;">
+                  <span style="font-weight:700;color:#1a2340;">Total Tax Savings</span>
+                  <span id="tlh-total-savings" style="font-weight:700;font-size:16px;color:#27ae60;">$0</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Wash sale warning -->
+          <div id="tlh-wash-warning" style="display:none;background:#fff8e1;border:1px solid #f9a825;border-radius:8px;padding:12px 16px;font-size:12px;color:#795548;">
+            <strong>⚠ Wash Sale Rule:</strong> <span id="tlh-wash-tickers"></span>
+            You cannot repurchase these securities (or substantially identical ones) within 30 days before or after the sale.
+          </div>
+        </div>
+
+      </div><!-- /tlh-content -->
+    </div><!-- /body -->
+  </div>
+</div>
+
 <header>
   <div>
     <h1>Investment Dashboard</h1>
@@ -632,6 +748,7 @@ def build_dashboard(portfolio, layers, holdings):
   </div>
   <div style="display:flex;align-items:center;gap:12px;">
     <button id="refreshBtn" onclick="refreshDashboard()" style="font-size:12px;padding:5px 14px;border:none;border-radius:5px;background:#2d3a55;color:#e2e8f0;cursor:pointer;font-weight:500;">↻ Refresh Data</button>
+    <button onclick="openTLH()" style="font-size:12px;padding:5px 14px;border:none;border-radius:5px;background:#2d3a55;color:#e2e8f0;cursor:pointer;font-weight:500;">✂ Tax Harvesting</button>
     <label style="font-size:11px;color:#a0aec0;white-space:nowrap;">Tax Bracket</label>
     <select onchange="onTaxBracketChange(this)" style="font-size:12px;padding:5px 10px;border:none;border-radius:5px;background:#2d3a55;color:#e2e8f0;cursor:pointer;">
       <option value="0">$150k MFJ</option>
@@ -3975,6 +4092,225 @@ async function refreshDashboard() {{
   }} catch(e) {{
     btn.textContent = "↻ Refresh Data";
     btn.disabled = false;
+  }}
+}}
+
+// ── Tax Loss Harvesting ────────────────────────────────────────────────────
+let _tlhData = null;
+
+function openTLH() {{
+  const overlay = document.getElementById("tlh-overlay");
+  overlay.style.display = "flex";
+  // sync bracket label
+  document.getElementById("tlh-bracket-label").textContent = CURRENT_BRACKET.label;
+  document.getElementById("tlh-st-rate").textContent = ((CURRENT_BRACKET.ordinary + CURRENT_BRACKET.niit) * 100).toFixed(1) + "%";
+  document.getElementById("tlh-lt-rate").textContent = ((CURRENT_BRACKET.qualified + CURRENT_BRACKET.niit) * 100).toFixed(1) + "%";
+  if (_tlhData) {{ tlhRender(_tlhData); return; }}
+  fetch("/api/tlh-analysis")
+    .then(r => r.json())
+    .then(d => {{
+      _tlhData = d;
+      tlhRender(d);
+    }})
+    .catch(e => {{
+      document.getElementById("tlh-loading").style.display = "none";
+      document.getElementById("tlh-error").style.display = "block";
+      document.getElementById("tlh-error").textContent = "Failed to load: " + e;
+    }});
+}}
+
+function closeTLH() {{ document.getElementById("tlh-overlay").style.display = "none"; }}
+function tlhOverlayClick(e) {{ if (e.target === document.getElementById("tlh-overlay")) closeTLH(); }}
+
+function tlhFmt(v) {{
+  const abs = Math.abs(v);
+  const s = "$" + abs.toLocaleString("en-US", {{minimumFractionDigits:0, maximumFractionDigits:0}});
+  return v < 0 ? "-" + s : "+" + s;
+}}
+function tlhMoney(v) {{
+  return "$" + Math.abs(v).toLocaleString("en-US", {{minimumFractionDigits:0, maximumFractionDigits:0}});
+}}
+
+function tlhRender(data) {{
+  document.getElementById("tlh-loading").style.display = "none";
+  document.getElementById("tlh-content").style.display = "block";
+
+  const tbody = document.getElementById("tlh-tbody");
+  tbody.innerHTML = "";
+
+  (data.positions || []).forEach((pos, i) => {{
+    const isLoss = pos.total_pnl < 0;
+    const pnlColor = pos.total_pnl < -0.01 ? "#e74c3c" : pos.total_pnl > 0.01 ? "#27ae60" : "#888";
+
+    // Main position row
+    const tr = document.createElement("tr");
+    tr.style.borderBottom = "1px solid #f0f3f8";
+    tr.style.transition = "background .1s";
+    tr.onmouseenter = () => tr.style.background = "#f8fafd";
+    tr.onmouseleave = () => tr.style.background = "";
+    tr.innerHTML = `
+      <td style="padding:10px 6px;text-align:left;">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+          <input type="checkbox" class="tlh-pos-check" data-idx="${{i}}" onchange="tlhCalc()"
+            ${{isLoss ? "checked" : ""}}
+            style="cursor:pointer;width:14px;height:14px;">
+          <span style="font-weight:700;color:#1a2340;">${{pos.ticker}}</span>
+        </label>
+      </td>
+      <td style="padding:10px 6px;text-align:right;color:#444;">${{pos.total_shares.toLocaleString()}}</td>
+      <td style="padding:10px 6px;text-align:right;color:#444;">$${{pos.avg_cost.toFixed(2)}}</td>
+      <td style="padding:10px 6px;text-align:right;color:#444;">$${{pos.price.toFixed(2)}}</td>
+      <td style="padding:10px 6px;text-align:right;color:#444;">$${{pos.total_value.toLocaleString("en-US",{{maximumFractionDigits:0}})}}</td>
+      <td style="padding:10px 6px;text-align:right;color:${{pos.st_pnl < 0 ? "#e74c3c" : pos.st_pnl > 0 ? "#27ae60" : "#888"}};">${{pos.st_pnl !== 0 ? tlhFmt(pos.st_pnl) : "—"}}</td>
+      <td style="padding:10px 6px;text-align:right;color:${{pos.lt_pnl < 0 ? "#e74c3c" : pos.lt_pnl > 0 ? "#27ae60" : "#888"}};">${{pos.lt_pnl !== 0 ? tlhFmt(pos.lt_pnl) : "—"}}</td>
+      <td style="padding:10px 6px;text-align:right;font-weight:600;color:${{pnlColor}};">${{tlhFmt(pos.total_pnl)}}</td>
+      <td style="padding:10px 6px;text-align:center;">
+        <button onclick="tlhToggleLots(${{i}})" style="font-size:11px;background:#f0f3f8;border:none;border-radius:4px;padding:3px 8px;cursor:pointer;color:#555;" title="Show lots">
+          ${{pos.lots.length}} lot${{pos.lots.length !== 1 ? "s" : ""}} ▾
+        </button>
+      </td>`;
+    tbody.appendChild(tr);
+
+    // Expandable lots sub-rows (hidden by default)
+    const lotsRow = document.createElement("tr");
+    lotsRow.id = `tlh-lots-${{i}}`;
+    lotsRow.style.display = "none";
+    const lotsCell = document.createElement("td");
+    lotsCell.colSpan = 9;
+    lotsCell.style.padding = "0 6px 12px 28px";
+    lotsCell.innerHTML = `<table style="width:100%;font-size:12px;border-collapse:collapse;color:#555;">
+      <tr style="color:#aaa;font-size:10px;text-transform:uppercase;">
+        <th style="padding:4px 6px;text-align:left;">Date</th>
+        <th style="padding:4px 6px;text-align:right;">Days Held</th>
+        <th style="padding:4px 6px;text-align:right;">Type</th>
+        <th style="padding:4px 6px;text-align:right;">Shares</th>
+        <th style="padding:4px 6px;text-align:right;">Cost/sh</th>
+        <th style="padding:4px 6px;text-align:right;">Basis</th>
+        <th style="padding:4px 6px;text-align:right;">Mkt Value</th>
+        <th style="padding:4px 6px;text-align:right;">P&L</th>
+      </tr>
+      ${{pos.lots.map(l => `
+        <tr style="border-top:1px solid #f5f5f5;">
+          <td style="padding:4px 6px;">${{l.purchase_date}}</td>
+          <td style="padding:4px 6px;text-align:right;">${{l.days_held}}</td>
+          <td style="padding:4px 6px;text-align:right;">
+            <span style="background:${{l.is_lt ? "#e8f4e8" : "#fef3e2"}};color:${{l.is_lt ? "#2e7d32" : "#e65100"}};border-radius:3px;padding:1px 6px;font-size:10px;">${{l.is_lt ? "LONG" : "SHORT"}}</span>
+          </td>
+          <td style="padding:4px 6px;text-align:right;">${{l.shares}}</td>
+          <td style="padding:4px 6px;text-align:right;">$${{l.cost_per_share.toFixed(2)}}</td>
+          <td style="padding:4px 6px;text-align:right;">$${{l.cost_basis.toLocaleString("en-US",{{maximumFractionDigits:0}})}}</td>
+          <td style="padding:4px 6px;text-align:right;">$${{l.mkt_value.toLocaleString("en-US",{{maximumFractionDigits:0}})}}</td>
+          <td style="padding:4px 6px;text-align:right;font-weight:600;color:${{l.pnl < 0 ? "#e74c3c" : "#27ae60"}};">${{tlhFmt(l.pnl)}}</td>
+        </tr>`).join("")}}
+    </table>`;
+    lotsRow.appendChild(lotsCell);
+    tbody.appendChild(lotsRow);
+  }});
+
+  tlhCalc();
+}}
+
+function tlhToggleLots(i) {{
+  const row = document.getElementById(`tlh-lots-${{i}}`);
+  if (!row) return;
+  row.style.display = row.style.display === "none" ? "table-row" : "none";
+}}
+
+function tlhToggleAll(checked) {{
+  document.querySelectorAll(".tlh-pos-check").forEach(cb => cb.checked = checked);
+  tlhCalc();
+}}
+
+function tlhCalc() {{
+  if (!_tlhData) return;
+  const positions = _tlhData.positions || [];
+  const checks = document.querySelectorAll(".tlh-pos-check");
+
+  let stLoss = 0, stGain = 0, ltLoss = 0, ltGain = 0;
+  const selectedLossTickers = [];
+
+  checks.forEach((cb, i) => {{
+    if (!cb.checked || i >= positions.length) return;
+    const p = positions[i];
+    if (p.st_pnl < 0) stLoss += Math.abs(p.st_pnl);
+    else stGain += p.st_pnl;
+    if (p.lt_pnl < 0) ltLoss += Math.abs(p.lt_pnl);
+    else ltGain += p.lt_pnl;
+    if (p.total_pnl < 0) selectedLossTickers.push(p.ticker);
+  }});
+
+  // display buckets
+  document.getElementById("tlh-st-loss").textContent = stLoss > 0 ? "-" + tlhMoney(stLoss) : "$0";
+  document.getElementById("tlh-lt-loss").textContent = ltLoss > 0 ? "-" + tlhMoney(ltLoss) : "$0";
+  document.getElementById("tlh-st-gain").textContent = stGain > 0 ? "+" + tlhMoney(stGain) : "$0";
+  document.getElementById("tlh-lt-gain").textContent = ltGain > 0 ? "+" + tlhMoney(ltGain) : "$0";
+
+  // netting per IRS rules:
+  // 1. ST losses offset ST gains first, then LT gains
+  // 2. LT losses offset LT gains first, then ST gains
+  const stOrdRate = CURRENT_BRACKET.ordinary + CURRENT_BRACKET.niit;
+  const ltQualRate = CURRENT_BRACKET.qualified + CURRENT_BRACKET.niit;
+
+  let netST = stGain - stLoss;
+  let netLT = ltGain - ltLoss;
+
+  // cross-netting
+  if (netST < 0 && netLT > 0) {{
+    netLT = Math.max(0, netLT + netST);
+    netST = Math.min(0, netST + (ltGain - ltLoss));
+  }} else if (netLT < 0 && netST > 0) {{
+    netST = Math.max(0, netST + netLT);
+    netLT = Math.min(0, netLT + (stGain - stLoss));
+  }}
+
+  // tax savings = tax you avoid paying on losses that aren't offset by gains
+  const stSavings = netST < 0 ? Math.abs(netST) * stOrdRate : 0;
+  const ltSavings = netLT < 0 ? Math.abs(netLT) * ltQualRate : 0;
+  let totalNetLoss = Math.max(0, -(netST + netLT));
+
+  // ordinary income offset (up to $3,000)
+  const ordOffset = Math.min(3000, Math.max(0, totalNetLoss - Math.abs(Math.min(0, netST)) - Math.abs(Math.min(0, netLT))));
+  const ordSavings = (stSavings > 0 || ltSavings > 0) ? 0 : ordOffset * stOrdRate;
+  const carryForward = Math.max(0, totalNetLoss - 3000);
+
+  const totalSavings = stSavings + ltSavings + ordSavings;
+
+  const fmtNet = v => v === 0 ? "—" : (v > 0 ? "+" : "") + "$" + Math.abs(v).toLocaleString("en-US",{{maximumFractionDigits:0}}) + (v > 0 ? " owed" : " saved");
+
+  document.getElementById("tlh-net-st").textContent = netST === 0 ? "—" :
+    (netST > 0 ? "+" + tlhMoney(netST) + " owed" : "-" + tlhMoney(Math.abs(netST)) + " saved");
+  document.getElementById("tlh-net-st").style.color = netST >= 0 ? "#e74c3c" : "#27ae60";
+
+  document.getElementById("tlh-net-lt").textContent = netLT === 0 ? "—" :
+    (netLT > 0 ? "+" + tlhMoney(netLT) + " owed" : "-" + tlhMoney(Math.abs(netLT)) + " saved");
+  document.getElementById("tlh-net-lt").style.color = netLT >= 0 ? "#e74c3c" : "#27ae60";
+
+  const ordRow = document.getElementById("tlh-ordinary-row");
+  if (ordSavings > 0) {{
+    ordRow.style.display = "flex";
+    document.getElementById("tlh-ordinary-save").textContent = "+" + tlhMoney(ordSavings) + " saved";
+  }} else {{ ordRow.style.display = "none"; }}
+
+  const cfRow = document.getElementById("tlh-carryforward-row");
+  if (carryForward > 0) {{
+    cfRow.style.display = "flex";
+    document.getElementById("tlh-carryforward").textContent = tlhMoney(carryForward) + " → next year";
+  }} else {{ cfRow.style.display = "none"; }}
+
+  document.getElementById("tlh-total-savings").textContent = totalSavings > 0 ? "+" + tlhMoney(totalSavings) : "$0";
+  document.getElementById("tlh-total-savings").style.color = totalSavings > 0 ? "#27ae60" : "#888";
+
+  // wash sale warning
+  const washDiv = document.getElementById("tlh-wash-warning");
+  if (selectedLossTickers.length > 0) {{
+    washDiv.style.display = "block";
+    const today = new Date();
+    const washEnd = new Date(today.getTime() + 30 * 24 * 60 * 60 * 1000);
+    const washDate = washEnd.toLocaleDateString("en-US", {{month:"short",day:"numeric",year:"numeric"}});
+    document.getElementById("tlh-wash-tickers").textContent =
+      selectedLossTickers.join(", ") + " — do not repurchase until " + washDate + ". ";
+  }} else {{
+    washDiv.style.display = "none";
   }}
 }}
 </script>

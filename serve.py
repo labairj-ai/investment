@@ -424,6 +424,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._handle_lots_get(parse_qs(parsed.query).get("ticker", [None])[0])
         elif parsed.path == "/api/sells":
             self._handle_sells_get(parse_qs(parsed.query).get("ticker", [None])[0])
+        elif parsed.path == "/api/tlh-analysis":
+            self._handle_tlh_analysis()
         else:
             super().do_GET()
 
@@ -1850,6 +1852,104 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         threading.Thread(target=_bg, daemon=True).start()
         self._json({"ok": True, "started": True})
+
+    def _handle_tlh_analysis(self):
+        """GET /api/tlh-analysis — unrealized P&L per lot for tax-loss harvesting."""
+        import yfinance as yf
+        from datetime import date, datetime
+
+        db = PROJECT_DIR / "out" / "investment.db"
+        conn = sqlite3.connect(str(db), timeout=10)
+        conn.row_factory = sqlite3.Row
+        lots = conn.execute(
+            "SELECT id, ticker, shares, cost_per_share, purchase_date, notes FROM cost_lots ORDER BY ticker, purchase_date"
+        ).fetchall()
+        conn.close()
+
+        if not lots:
+            self._json({"positions": []})
+            return
+
+        tickers = sorted(set(r[1] for r in lots))
+        today = date.today()
+
+        # fetch current prices
+        prices = {}
+        for t in tickers:
+            try:
+                fi = yf.Ticker(t).fast_info
+                p = getattr(fi, "last_price", None) or getattr(fi, "previous_close", None)
+                if p:
+                    prices[t] = float(p)
+            except Exception:
+                pass
+
+        # build lot-level data, aggregate per ticker
+        positions = {}
+        for lot_id, ticker, shares, cost_per_share, purchase_date, notes in lots:
+            price = prices.get(ticker)
+            if price is None:
+                continue
+
+            acquired = datetime.strptime(purchase_date, "%Y-%m-%d").date()
+            days_held = (today - acquired).days
+            is_lt = days_held >= 365
+
+            cost_basis = shares * cost_per_share
+            mkt_value  = shares * price
+            pnl        = mkt_value - cost_basis
+
+            lot = {
+                "id": lot_id,
+                "shares": shares,
+                "cost_per_share": round(cost_per_share, 4),
+                "purchase_date": purchase_date,
+                "days_held": days_held,
+                "is_lt": is_lt,
+                "cost_basis": round(cost_basis, 2),
+                "mkt_value": round(mkt_value, 2),
+                "pnl": round(pnl, 2),
+                "notes": notes or "",
+            }
+
+            if ticker not in positions:
+                positions[ticker] = {
+                    "ticker": ticker,
+                    "price": round(price, 4),
+                    "total_shares": 0.0,
+                    "total_cost": 0.0,
+                    "total_value": 0.0,
+                    "total_pnl": 0.0,
+                    "st_pnl": 0.0,
+                    "lt_pnl": 0.0,
+                    "lots": [],
+                }
+
+            p = positions[ticker]
+            p["lots"].append(lot)
+            p["total_shares"] += shares
+            p["total_cost"]   += cost_basis
+            p["total_value"]  += mkt_value
+            p["total_pnl"]    += pnl
+            if is_lt:
+                p["lt_pnl"] += pnl
+            else:
+                p["st_pnl"] += pnl
+
+        # round aggregates
+        result = []
+        for p in positions.values():
+            p["total_shares"] = round(p["total_shares"], 4)
+            p["total_cost"]   = round(p["total_cost"], 2)
+            p["total_value"]  = round(p["total_value"], 2)
+            p["total_pnl"]    = round(p["total_pnl"], 2)
+            p["st_pnl"]       = round(p["st_pnl"], 2)
+            p["lt_pnl"]       = round(p["lt_pnl"], 2)
+            p["avg_cost"]     = round(p["total_cost"] / p["total_shares"], 4) if p["total_shares"] else 0
+            result.append(p)
+
+        result.sort(key=lambda x: x["total_pnl"])  # losers first
+        self._json({"positions": result})
 
     def _handle_refresh_dashboard(self):
         """POST /api/refresh-dashboard — fetch fresh prices, update DB, regenerate dashboard (no email)."""
