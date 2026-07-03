@@ -701,8 +701,8 @@ def build_dashboard(portfolio, layers, holdings):
                   <span id="tlh-carryforward" style="font-weight:600;color:#8899bb;"></span>
                 </div>
                 <div style="display:flex;justify-content:space-between;border-bottom:1px solid #f0f0f0;padding-bottom:6px;margin-bottom:6px;">
-                  <span style="font-weight:600;color:#1a2340;">Tax savings from harvest</span>
-                  <span id="tlh-total-savings" style="font-weight:700;font-size:15px;color:#27ae60;">$0</span>
+                  <span style="font-weight:600;color:#1a2340;">Harvest tax impact</span>
+                  <span id="tlh-total-savings" style="font-weight:700;font-size:15px;color:#888;">$0</span>
                 </div>
                 <div style="display:flex;justify-content:space-between;margin-top:4px;">
                   <span style="font-weight:700;color:#1a2340;">Est. tax after harvest</span>
@@ -4265,73 +4265,88 @@ function tlhCalc() {{
   document.getElementById("tlh-st-gain").textContent = stGain > 0 ? "+" + tlhMoney(stGain) : "$0";
   document.getElementById("tlh-lt-gain").textContent = ltGain > 0 ? "+" + tlhMoney(ltGain) : "$0";
 
-  // netting per IRS rules:
-  // 1. ST losses offset ST gains first, then LT gains
-  // 2. LT losses offset LT gains first, then ST gains
-  const stOrdRate = CURRENT_BRACKET.ordinary + CURRENT_BRACKET.niit;
+  // IRS netting: ST losses offset ST gains first, then LT gains; vice versa
+  const stOrdRate  = CURRENT_BRACKET.ordinary + CURRENT_BRACKET.niit;
   const ltQualRate = CURRENT_BRACKET.qualified + CURRENT_BRACKET.niit;
 
   let netST = stGain - stLoss;
   let netLT = ltGain - ltLoss;
 
-  // cross-netting
+  // cross-netting between ST and LT
   if (netST < 0 && netLT > 0) {{
-    netLT = Math.max(0, netLT + netST);
-    netST = Math.min(0, netST + (ltGain - ltLoss));
+    const absorb = Math.min(Math.abs(netST), netLT);
+    netLT -= absorb;
+    netST += absorb;
   }} else if (netLT < 0 && netST > 0) {{
-    netST = Math.max(0, netST + netLT);
-    netLT = Math.min(0, netLT + (stGain - stLoss));
+    const absorb = Math.min(Math.abs(netLT), netST);
+    netST -= absorb;
+    netLT += absorb;
   }}
 
-  // tax savings = tax you avoid paying on losses that aren't offset by gains
-  const stSavings = netST < 0 ? Math.abs(netST) * stOrdRate : 0;
-  const ltSavings = netLT < 0 ? Math.abs(netLT) * ltQualRate : 0;
-  let totalNetLoss = Math.max(0, -(netST + netLT));
+  // tax impact per bucket (positive = owe more, negative = save)
+  const stTaxImpact  = netST * stOrdRate;
+  const ltTaxImpact  = netLT * ltQualRate;
 
-  // ordinary income offset (up to $3,000)
-  const ordOffset = Math.min(3000, Math.max(0, totalNetLoss - Math.abs(Math.min(0, netST)) - Math.abs(Math.min(0, netLT))));
-  const ordSavings = (stSavings > 0 || ltSavings > 0) ? 0 : ordOffset * stOrdRate;
-  const carryForward = Math.max(0, totalNetLoss - 3000);
+  // ordinary income offset: applies only when total net is a loss
+  const overallNetLoss = Math.max(0, -(netST + netLT));
+  const ordOffset      = Math.min(3000, overallNetLoss);
+  const ordBenefit     = ordOffset * stOrdRate;
+  const carryForward   = Math.max(0, overallNetLoss - 3000);
 
-  const totalSavings = stSavings + ltSavings + ordSavings;
+  // net tax impact from this harvest: positive = you'll owe MORE, negative = you'll save
+  const netTaxImpact = stTaxImpact + ltTaxImpact - ordBenefit;
 
-  const fmtNet = v => v === 0 ? "—" : (v > 0 ? "+" : "") + "$" + Math.abs(v).toLocaleString("en-US",{{maximumFractionDigits:0}}) + (v > 0 ? " owed" : " saved");
+  // ── display ──────────────────────────────────────────────────────────────
 
   document.getElementById("tlh-net-st").textContent = netST === 0 ? "—" :
     (netST > 0 ? "+" + tlhMoney(netST) + " owed" : "-" + tlhMoney(Math.abs(netST)) + " saved");
-  document.getElementById("tlh-net-st").style.color = netST >= 0 ? "#e74c3c" : "#27ae60";
+  document.getElementById("tlh-net-st").style.color = netST > 0 ? "#e74c3c" : netST < 0 ? "#27ae60" : "#888";
 
   document.getElementById("tlh-net-lt").textContent = netLT === 0 ? "—" :
     (netLT > 0 ? "+" + tlhMoney(netLT) + " owed" : "-" + tlhMoney(Math.abs(netLT)) + " saved");
-  document.getElementById("tlh-net-lt").style.color = netLT >= 0 ? "#e74c3c" : "#27ae60";
+  document.getElementById("tlh-net-lt").style.color = netLT > 0 ? "#e74c3c" : netLT < 0 ? "#27ae60" : "#888";
 
   const ordRow = document.getElementById("tlh-ordinary-row");
-  if (ordSavings > 0) {{
+  if (ordBenefit > 0.5) {{
     ordRow.style.display = "flex";
-    document.getElementById("tlh-ordinary-save").textContent = "+" + tlhMoney(ordSavings) + " saved";
+    document.getElementById("tlh-ordinary-save").textContent = "-" + tlhMoney(ordBenefit) + " saved";
   }} else {{ ordRow.style.display = "none"; }}
 
   const cfRow = document.getElementById("tlh-carryforward-row");
-  if (carryForward > 0) {{
+  if (carryForward > 0.5) {{
     cfRow.style.display = "flex";
     document.getElementById("tlh-carryforward").textContent = tlhMoney(carryForward) + " → next year";
   }} else {{ cfRow.style.display = "none"; }}
 
-  document.getElementById("tlh-total-savings").textContent = totalSavings > 0 ? "-" + tlhMoney(totalSavings) : "$0";
-  document.getElementById("tlh-total-savings").style.color = totalSavings > 0 ? "#27ae60" : "#888";
+  // "Harvest tax impact" row — bidirectional
+  const impactEl = document.getElementById("tlh-total-savings");
+  if (Math.abs(netTaxImpact) < 0.5) {{
+    impactEl.textContent = "$0";
+    impactEl.style.color = "#888";
+  }} else if (netTaxImpact < 0) {{
+    // net savings
+    impactEl.textContent = "-" + tlhMoney(Math.abs(netTaxImpact));
+    impactEl.style.color = "#27ae60";
+  }} else {{
+    // net additional tax owed
+    impactEl.textContent = "+" + tlhMoney(netTaxImpact);
+    impactEl.style.color = "#e74c3c";
+  }}
 
-  // current tax bill vs after-harvest
+  // current tax bill
   const curTaxEl = document.getElementById("tlh-current-tax");
   if (curTaxEl) {{
-    curTaxEl.textContent = _currentYearTax.totTax > 0
-      ? "$" + Math.round(_currentYearTax.totTax).toLocaleString("en-US") : "$0";
+    curTaxEl.textContent = "$" + Math.round(_currentYearTax.totTax).toLocaleString("en-US");
   }}
-  const afterTax = Math.max(0, _currentYearTax.totTax - totalSavings);
-  const afterEl = document.getElementById("tlh-tax-after");
+
+  // est. tax after harvest
+  const afterTax = Math.max(0, _currentYearTax.totTax + netTaxImpact);
+  const afterEl  = document.getElementById("tlh-tax-after");
   if (afterEl) {{
     afterEl.textContent = "$" + Math.round(afterTax).toLocaleString("en-US");
-    afterEl.style.color = afterTax < _currentYearTax.totTax && afterTax > 0 ? "#e67e22"
-                        : afterTax === 0 ? "#27ae60" : "#c0392b";
+    afterEl.style.color = afterTax > _currentYearTax.totTax ? "#c0392b"   // higher — bad
+                        : afterTax < _currentYearTax.totTax ? "#27ae60"   // lower  — good
+                        : "#888";
   }}
 
   // wash sale warning
