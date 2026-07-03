@@ -143,7 +143,7 @@ def fetch_cc_mtm() -> None:
 
 
 # ─── Pricing ──────────────────────────────────────────────────────────────────
-def _is_market_holiday(check_date: date | None = None) -> bool:
+def _is_market_holiday(check_date=None) -> bool:
     """Return True if check_date (default: today) is a weekend or US market holiday."""
     d = check_date or date.today()
     if d.weekday() >= 5:
