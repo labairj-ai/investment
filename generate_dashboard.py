@@ -756,7 +756,6 @@ def build_dashboard(portfolio, layers, holdings):
   </div>
   <div style="display:flex;align-items:center;gap:12px;">
     <button id="refreshBtn" onclick="refreshDashboard()" style="font-size:12px;padding:5px 14px;border:none;border-radius:5px;background:#2d3a55;color:#e2e8f0;cursor:pointer;font-weight:500;">↻ Refresh Data</button>
-    <button onclick="openTLH()" style="font-size:12px;padding:5px 14px;border:none;border-radius:5px;background:#2d3a55;color:#e2e8f0;cursor:pointer;font-weight:500;">✂ Tax Harvesting</button>
     <label style="font-size:11px;color:#a0aec0;white-space:nowrap;">Tax Bracket</label>
     <select onchange="onTaxBracketChange(this)" style="font-size:12px;padding:5px 10px;border:none;border-radius:5px;background:#2d3a55;color:#e2e8f0;cursor:pointer;">
       <option value="0">$150k MFJ</option>
@@ -1006,6 +1005,7 @@ def build_dashboard(portfolio, layers, holdings):
           <option value="all">All Time</option>
         </select>
         <button onclick="renderRealizedGains()" style="font-size:11px;padding:4px 12px;background:#f4f6f9;border:1px solid #dde;border-radius:5px;cursor:pointer;color:#555;">↻</button>
+        <button onclick="openTLH()" style="font-size:11px;padding:4px 12px;background:#1a2340;border:none;border-radius:5px;cursor:pointer;color:#fff;font-weight:600;">✂ Tax Harvesting</button>
       </div>
     </h2>
 
