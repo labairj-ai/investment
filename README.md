@@ -22,6 +22,7 @@ A personal investment tracking system that sends a daily email newsletter, maint
 | **Tax Lot Tracker** | Lot-level cost basis per holding; modal shows per-lot ST/LT term, unrealized G/L, days to LT conversion |
 | **FIFO Sell Tracker** | Record sales with automatic FIFO lot matching; previews which lots are consumed before confirming; undo support |
 | **Realized Gains & Tax** | Dashboard card showing YTD (or all-time) realized gains split by ST/LT — **includes covered call premium income** — with estimated federal tax at editable bracket rates |
+| **Tax Loss Harvesting** | Interactive modeler (✂ Tax Harvesting button in the Realized Gains card) — shows all open positions with unrealized gains/losses; check any combination to see real-time net tax impact using IRS ST/LT cross-netting rules, the $3k ordinary-income offset, and bracket-aware rates; selecting winners increases the estimated tax, selecting losers lowers it; wash sale warning (30-day window) included |
 | **Private Data Backup** | Daily push of `investment.db`, `holdings.csv`, and `buffett.db` to a separate private GitHub repo |
 
 ---
@@ -152,6 +153,7 @@ launchctl kickstart gui/$(id -u)/com.investment.dashboard
 | `DELETE /api/sells/<id>` | Undo a sale (lots restored from snapshot) |
 | `POST /api/holdings` | Add a new position (appends to CSV, fetches price, seeds DB) |
 | `PATCH /api/holdings/<ticker>` | Reassign a holding's layer (rewrites all history retroactively) |
+| `GET /api/tlh-analysis` | Per-ticker unrealized G/L from `cost_lots`; used by the Tax Harvesting modal |
 
 ---
 
@@ -314,6 +316,31 @@ A dedicated dashboard card (below Holdings) showing the combined tax picture for
 - **Option Premium Income section**: per-position breakdown of gross premium collected, buyback cost (if bought back early), net income, estimated tax, and close type
 
 Estimated tax applies to positive gains only (losses offset within each term bucket). Federal rates only — does not include state taxes.
+
+### Tax Loss Harvesting Modal
+
+Click **✂ Tax Harvesting** in the Realized Gains & Tax card header to open the modeler.
+
+**Harvest Summary panel (top):**
+- Four "What you'd realize" buckets: ST Loss, LT Loss, ST Gain, LT Gain — update as you check/uncheck positions
+- **Tax Impact** section:
+  - *Current est. tax bill* — YTD tax computed from realized gains at your selected bracket
+  - *Net ST* / *Net LT* — post–cross-netting amounts per term, color-coded red (owe) / green (save)
+  - *Ordinary income offset (≤$3k)* — appears only when a net loss qualifies
+  - *Loss carry-forward* — appears when net loss exceeds $3k
+  - *Harvest tax impact* — bidirectional: **+$X more owed** (red) when winners dominate, **-$X saved** (green) when losers dominate
+  - *Est. tax after harvest* — current tax ± harvest impact; goes up if selecting winners, down if selecting losers
+- **Wash sale warning** — flags any position sold within 30 days before or after a substantially identical purchase
+
+**Positions table (bottom):**
+- All open positions with unrealized G/L pulled from `cost_lots` table (lot-level aggregated per ticker)
+- Columns: checkbox, Ticker, ST Gain, ST Loss, LT Gain, LT Loss, Total G/L — sorted losers-first
+- Check any row to include it in the harvest calculation; "Select All Losers" button pre-checks every net-loss position
+
+**IRS netting logic:**
+1. ST losses offset ST gains first; excess ST loss absorbs LT gains
+2. LT losses offset LT gains first; excess LT loss absorbs ST gains
+3. After cross-netting, any remaining net loss offsets up to $3k of ordinary income; the rest carries forward
 
 ### Covered Call Position Tracker
 
