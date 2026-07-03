@@ -648,33 +648,8 @@ def build_dashboard(portfolio, layers, holdings):
       <!-- Main content (hidden until loaded) -->
       <div id="tlh-content" style="display:none;">
 
-        <!-- Positions table -->
-        <div style="font-size:11px;font-weight:700;color:#7f8c8d;text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px;">
-          Positions &nbsp;<span style="font-weight:400;color:#aaa;text-transform:none;">(check to include in harvest model)</span>
-        </div>
-        <div style="overflow-x:auto;margin-bottom:24px;">
-          <table id="tlh-table" style="width:100%;border-collapse:collapse;font-size:13px;">
-            <thead>
-              <tr style="border-bottom:2px solid #e8eaf0;text-align:right;">
-                <th style="text-align:left;padding:8px 6px;color:#7f8c8d;font-weight:600;font-size:11px;text-transform:uppercase;">
-                  <input type="checkbox" id="tlh-check-all" onchange="tlhToggleAll(this.checked)" style="cursor:pointer;"> Ticker
-                </th>
-                <th style="padding:8px 6px;color:#7f8c8d;font-weight:600;font-size:11px;text-transform:uppercase;">Shares</th>
-                <th style="padding:8px 6px;color:#7f8c8d;font-weight:600;font-size:11px;text-transform:uppercase;">Avg Cost</th>
-                <th style="padding:8px 6px;color:#7f8c8d;font-weight:600;font-size:11px;text-transform:uppercase;">Price</th>
-                <th style="padding:8px 6px;color:#7f8c8d;font-weight:600;font-size:11px;text-transform:uppercase;">Mkt Value</th>
-                <th style="padding:8px 6px;color:#7f8c8d;font-weight:600;font-size:11px;text-transform:uppercase;">ST P&L</th>
-                <th style="padding:8px 6px;color:#7f8c8d;font-weight:600;font-size:11px;text-transform:uppercase;">LT P&L</th>
-                <th style="padding:8px 6px;color:#7f8c8d;font-weight:600;font-size:11px;text-transform:uppercase;">Total P&L</th>
-                <th style="padding:8px 6px;color:#7f8c8d;font-weight:600;font-size:11px;text-transform:uppercase;">Lots</th>
-              </tr>
-            </thead>
-            <tbody id="tlh-tbody"></tbody>
-          </table>
-        </div>
-
         <!-- Summary -->
-        <div style="background:#f4f6fb;border-radius:10px;padding:20px 24px;">
+        <div style="background:#f4f6fb;border-radius:10px;padding:20px 24px;margin-bottom:24px;">
           <div style="font-size:11px;font-weight:700;color:#7f8c8d;text-transform:uppercase;letter-spacing:.05em;margin-bottom:16px;">Harvest Summary — Selected Positions</div>
 
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:20px;">
@@ -706,6 +681,10 @@ def build_dashboard(portfolio, layers, holdings):
               <div style="font-size:12px;color:#888;margin-bottom:10px;font-weight:600;">Tax impact</div>
               <div style="background:#fff;border-radius:8px;padding:16px;font-size:13px;line-height:2;">
                 <div style="display:flex;justify-content:space-between;border-bottom:1px solid #f0f0f0;padding-bottom:6px;margin-bottom:6px;">
+                  <span style="color:#666;">Current est. tax bill</span>
+                  <span id="tlh-current-tax" style="font-weight:600;color:#c0392b;">—</span>
+                </div>
+                <div style="display:flex;justify-content:space-between;border-bottom:1px solid #f0f0f0;padding-bottom:6px;margin-bottom:6px;">
                   <span style="color:#666;">Net ST (ordinary rate <span id="tlh-st-rate">—</span>)</span>
                   <span id="tlh-net-st" style="font-weight:600;">—</span>
                 </div>
@@ -721,9 +700,13 @@ def build_dashboard(portfolio, layers, holdings):
                   <span style="color:#666;">Loss carry-forward</span>
                   <span id="tlh-carryforward" style="font-weight:600;color:#8899bb;"></span>
                 </div>
+                <div style="display:flex;justify-content:space-between;border-bottom:1px solid #f0f0f0;padding-bottom:6px;margin-bottom:6px;">
+                  <span style="font-weight:600;color:#1a2340;">Tax savings from harvest</span>
+                  <span id="tlh-total-savings" style="font-weight:700;font-size:15px;color:#27ae60;">$0</span>
+                </div>
                 <div style="display:flex;justify-content:space-between;margin-top:4px;">
-                  <span style="font-weight:700;color:#1a2340;">Total Tax Savings</span>
-                  <span id="tlh-total-savings" style="font-weight:700;font-size:16px;color:#27ae60;">$0</span>
+                  <span style="font-weight:700;color:#1a2340;">Est. tax after harvest</span>
+                  <span id="tlh-tax-after" style="font-weight:700;font-size:16px;color:#c0392b;">—</span>
                 </div>
               </div>
             </div>
@@ -734,6 +717,31 @@ def build_dashboard(portfolio, layers, holdings):
             <strong>⚠ Wash Sale Rule:</strong> <span id="tlh-wash-tickers"></span>
             You cannot repurchase these securities (or substantially identical ones) within 30 days before or after the sale.
           </div>
+        </div>
+
+        <!-- Positions table -->
+        <div style="font-size:11px;font-weight:700;color:#7f8c8d;text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px;">
+          Positions &nbsp;<span style="font-weight:400;color:#aaa;text-transform:none;">(check to include in harvest model)</span>
+        </div>
+        <div style="overflow-x:auto;margin-bottom:24px;">
+          <table id="tlh-table" style="width:100%;border-collapse:collapse;font-size:13px;">
+            <thead>
+              <tr style="border-bottom:2px solid #e8eaf0;text-align:right;">
+                <th style="text-align:left;padding:8px 6px;color:#7f8c8d;font-weight:600;font-size:11px;text-transform:uppercase;">
+                  <input type="checkbox" id="tlh-check-all" onchange="tlhToggleAll(this.checked)" style="cursor:pointer;"> Ticker
+                </th>
+                <th style="padding:8px 6px;color:#7f8c8d;font-weight:600;font-size:11px;text-transform:uppercase;">Shares</th>
+                <th style="padding:8px 6px;color:#7f8c8d;font-weight:600;font-size:11px;text-transform:uppercase;">Avg Cost</th>
+                <th style="padding:8px 6px;color:#7f8c8d;font-weight:600;font-size:11px;text-transform:uppercase;">Price</th>
+                <th style="padding:8px 6px;color:#7f8c8d;font-weight:600;font-size:11px;text-transform:uppercase;">Mkt Value</th>
+                <th style="padding:8px 6px;color:#7f8c8d;font-weight:600;font-size:11px;text-transform:uppercase;">ST P&L</th>
+                <th style="padding:8px 6px;color:#7f8c8d;font-weight:600;font-size:11px;text-transform:uppercase;">LT P&L</th>
+                <th style="padding:8px 6px;color:#7f8c8d;font-weight:600;font-size:11px;text-transform:uppercase;">Total P&L</th>
+                <th style="padding:8px 6px;color:#7f8c8d;font-weight:600;font-size:11px;text-transform:uppercase;">Lots</th>
+              </tr>
+            </thead>
+            <tbody id="tlh-tbody"></tbody>
+          </table>
         </div>
 
       </div><!-- /tlh-content -->
@@ -2910,6 +2918,9 @@ function _updateTaxBillKPI() {{
   const ltTax   = Math.max(0, ltGain) * (ltRate + niit);
   const totTax  = stTax + ltTax;
 
+  _currentYearTax = {{ stGain, ltGain, stTax, ltTax, totTax,
+                       stRate: stRate + niit, ltRate: ltRate + niit }};
+
   const fmt = v => "$" + Math.round(v).toLocaleString("en-US");
 
   const labelEl = document.getElementById("kpi-tax-label");
@@ -4097,14 +4108,23 @@ async function refreshDashboard() {{
 
 // ── Tax Loss Harvesting ────────────────────────────────────────────────────
 let _tlhData = null;
+let _currentYearTax = {{ stGain: 0, ltGain: 0, stTax: 0, ltTax: 0, totTax: 0 }};
 
 function openTLH() {{
   const overlay = document.getElementById("tlh-overlay");
   overlay.style.display = "flex";
-  // sync bracket label
+  // sync bracket label and rates
   document.getElementById("tlh-bracket-label").textContent = CURRENT_BRACKET.label;
   document.getElementById("tlh-st-rate").textContent = ((CURRENT_BRACKET.ordinary + CURRENT_BRACKET.niit) * 100).toFixed(1) + "%";
   document.getElementById("tlh-lt-rate").textContent = ((CURRENT_BRACKET.qualified + CURRENT_BRACKET.niit) * 100).toFixed(1) + "%";
+  // sync current tax bill (recompute so bracket matches)
+  _updateTaxBillKPI();
+  const curTaxEl = document.getElementById("tlh-current-tax");
+  if (curTaxEl) {{
+    curTaxEl.textContent = _currentYearTax.totTax > 0
+      ? "$" + Math.round(_currentYearTax.totTax).toLocaleString("en-US")
+      : "$0";
+  }}
   if (_tlhData) {{ tlhRender(_tlhData); return; }}
   fetch("/api/tlh-analysis")
     .then(r => r.json())
@@ -4297,8 +4317,22 @@ function tlhCalc() {{
     document.getElementById("tlh-carryforward").textContent = tlhMoney(carryForward) + " → next year";
   }} else {{ cfRow.style.display = "none"; }}
 
-  document.getElementById("tlh-total-savings").textContent = totalSavings > 0 ? "+" + tlhMoney(totalSavings) : "$0";
+  document.getElementById("tlh-total-savings").textContent = totalSavings > 0 ? "-" + tlhMoney(totalSavings) : "$0";
   document.getElementById("tlh-total-savings").style.color = totalSavings > 0 ? "#27ae60" : "#888";
+
+  // current tax bill vs after-harvest
+  const curTaxEl = document.getElementById("tlh-current-tax");
+  if (curTaxEl) {{
+    curTaxEl.textContent = _currentYearTax.totTax > 0
+      ? "$" + Math.round(_currentYearTax.totTax).toLocaleString("en-US") : "$0";
+  }}
+  const afterTax = Math.max(0, _currentYearTax.totTax - totalSavings);
+  const afterEl = document.getElementById("tlh-tax-after");
+  if (afterEl) {{
+    afterEl.textContent = "$" + Math.round(afterTax).toLocaleString("en-US");
+    afterEl.style.color = afterTax < _currentYearTax.totTax && afterTax > 0 ? "#e67e22"
+                        : afterTax === 0 ? "#27ae60" : "#c0392b";
+  }}
 
   // wash sale warning
   const washDiv = document.getElementById("tlh-wash-warning");
