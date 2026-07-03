@@ -20,6 +20,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 import yfinance as yf
+from pandas.tseries.holiday import USFederalHolidayCalendar
 
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -142,6 +143,16 @@ def fetch_cc_mtm() -> None:
 
 
 # ─── Pricing ──────────────────────────────────────────────────────────────────
+def _is_market_holiday(check_date: date | None = None) -> bool:
+    """Return True if check_date (default: today) is a weekend or US market holiday."""
+    d = check_date or date.today()
+    if d.weekday() >= 5:
+        return True
+    cal = USFederalHolidayCalendar()
+    holidays = cal.holidays(start=str(d), end=str(d))
+    return len(holidays) > 0
+
+
 def fetch_last_two_closes(tickers: list[str]) -> pd.DataFrame:
     rows = []
     for raw in tickers:
@@ -619,6 +630,14 @@ def main(send_email_flag: bool = True):
 
     b = closes.loc[normalize_ticker(BENCHMARK)]
     spy_change_pct = ((float(b["close_yday"]) - float(b["close_prev"])) / float(b["close_prev"])) * 100.0
+
+    # ── Zero out changes on market holidays / weekends ────────────────────────
+    if _is_market_holiday():
+        holdings["chg_dollars"] = 0.0
+        holdings["chg_pct"]     = 0.0
+        total_change     = 0.0
+        total_change_pct = 0.0
+        spy_change_pct   = 0.0
 
     # ── Layer aggregation ─────────────────────────────────────────────────────
     layers = holdings.groupby("LayerLabel", as_index=False).agg(
