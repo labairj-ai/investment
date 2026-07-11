@@ -29,7 +29,7 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / ".env")
 
 # ─── Config ───────────────────────────────────────────────────────────────────
-PROJECT_DIR      = Path("/Users/ai_lab/Desktop/investment")
+PROJECT_DIR      = Path(__file__).resolve().parent
 HOLDINGS_CSV     = PROJECT_DIR / "holdings.csv"
 LAYER_TARGETS_F  = PROJECT_DIR / "layer_targets.json"
 DB_PATH          = PROJECT_DIR / "out" / "investment.db"

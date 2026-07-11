@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-PROJECT_DIR = Path("/Users/ai_lab/Desktop/investment")
+PROJECT_DIR = Path(__file__).resolve().parent
 DB_PATH = PROJECT_DIR / "out" / "investment.db"
 HOLDINGS_CSV = PROJECT_DIR / "holdings.csv"
 OUT_PATH = PROJECT_DIR / "out" / "dashboard.html"
