@@ -400,6 +400,7 @@ def build_dashboard(portfolio, layers, holdings):
     .kpi-row {{ display: grid; grid-template-columns: repeat(6, 1fr); gap: 14px; }}
     .two-col {{ display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }}
     .three-col {{ display: grid; grid-template-columns: 2fr 1fr; gap: 18px; }}
+    .goals-grid {{ display: grid; grid-template-columns: 1.65fr 1fr; gap: 16px; align-items: start; }}
 
     .card {{ background: #fff; border-radius: 10px; padding: 20px; box-shadow: 0 1px 4px rgba(0,0,0,.07); min-width: 0; }}
     .kpi {{ background: #fff; border-radius: 10px; padding: 16px 20px; box-shadow: 0 1px 4px rgba(0,0,0,.07); min-width: 0; }}
@@ -436,7 +437,7 @@ def build_dashboard(portfolio, layers, holdings):
     }}
     @media (max-width: 900px) {{
       .kpi-row {{ grid-template-columns: repeat(3, 1fr); }}
-      .two-col, .three-col {{ grid-template-columns: 1fr; }}
+      .two-col, .three-col, .goals-grid {{ grid-template-columns: 1fr; }}
       .grid {{ padding: 12px 14px; gap: 12px; }}
       header {{ padding: 14px 16px; }}
     }}
@@ -816,7 +817,7 @@ def build_dashboard(portfolio, layers, holdings):
       <span style="font-size:11px;color:#aaa;font-weight:400;">auto-updates with dividend data</span>
     </h2>
 
-    <div style="display:grid;grid-template-columns:1.65fr 1fr;gap:16px;align-items:start;">
+    <div class="goals-grid">
 
       <!-- Dividend Goal (wide left column) -->
       <div style="background:#f8fffe;border:1px solid #d4edda;border-radius:8px;padding:14px 16px;">
