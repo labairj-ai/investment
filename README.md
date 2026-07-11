@@ -29,7 +29,7 @@ A personal investment tracking system that sends a daily email newsletter, maint
 
 ## Requirements
 
-- macOS (login item auto-start is macOS-specific)
+- macOS or Linux (all scripts derive paths from their own location, so the repo can live anywhere; the launchd auto-start is macOS-specific)
 - Python 3.9+ with a virtual environment
 - A Gmail account with an [App Password](https://myaccount.google.com/apppasswords) enabled
 
@@ -127,6 +127,22 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.investment.dashboard
 launchctl kickstart gui/$(id -u)/com.investment.dashboard
 ```
 
+### LAN access / Raspberry Pi
+
+By default `serve.py` binds to `localhost` and is only reachable from the machine it runs on. To expose the dashboard on your local network (e.g. to view it from a phone), change the bind address at the bottom of `serve.py`:
+
+```python
+server = http.server.HTTPServer(("0.0.0.0", PORT), Handler)
+```
+
+A second instance of this repo runs this way on a Raspberry Pi, where the dashboard is reachable at `http://<pi-ip>:5001` from any device on the LAN. The Pi keeps the `0.0.0.0` bind as a deliberately uncommitted local edit; when pulling updates there, stash it around the pull:
+
+```bash
+git stash push -m 'bind 0.0.0.0' serve.py && git pull --ff-only && git stash pop
+```
+
+Script changes take effect on the next **↻ Refresh Data** without restarting the server (the refresh endpoint spawns the scripts fresh each time); only changes to `serve.py` itself require a restart.
+
 ### API Endpoints
 
 | Endpoint | Description |
@@ -154,6 +170,7 @@ launchctl kickstart gui/$(id -u)/com.investment.dashboard
 | `POST /api/holdings` | Add a new position (appends to CSV, fetches price, seeds DB) |
 | `PATCH /api/holdings/<ticker>` | Reassign a holding's layer (rewrites all history retroactively) |
 | `GET /api/tlh-analysis` | Per-ticker unrealized G/L from `cost_lots`; used by the Tax Harvesting modal |
+| `POST /api/refresh-dashboard` | Fetch fresh prices, update the DB, and regenerate the dashboard without sending email (backs the **↻ Refresh Data** button) |
 
 ---
 
@@ -196,7 +213,7 @@ venv/bin/python3 send_newsletter_main.py --no-email && venv/bin/python3 generate
 
 ### Investment Goals & Strategy Card
 
-Two-column layout: wide left panel for goals, right column for barbell health + investment principles.
+Two-column layout: wide left panel for goals, right column for barbell health + investment principles. On narrow screens (≤900px) the columns stack vertically, like the rest of the dashboard.
 
 **Dividend Goal — $2,500/mo by 2036** (left panel, top)
 - Current monthly gross and after-tax dividend income vs the $2,500/month target (after-tax rate reflects the selected Tax Bracket)
