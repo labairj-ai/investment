@@ -4,6 +4,21 @@ A personal investment tracking system that sends a daily email newsletter, maint
 
 ---
 
+## Deployment
+
+**Production runs on the `optiplex` home server** (Ubuntu 24.04, since 2026-07-12) — this Mac copy is for development.
+
+- Repo on server: `/home/optiplex/investment`, venv rebuilt from `requirements.txt`
+- Dashboard: systemd `investment.service` runs `serve.py` on port 5001 — public at **https://optiplex.tailb97cdb.ts.net/** (Tailscale Funnel)
+- Newsletter: sent by serve.py's built-in scheduler (~7:15 AM ET); `investment-newsletter.timer` runs `run_investment.sh` at 8 AM as a backstop (flag file `out/last_run_date.txt` prevents double sends)
+- Data backup: serve.py's scheduler runs `backup_data.sh` → pushes to `labairj-ai/investment-data` via a write deploy key (`~/.ssh/id_ed25519`, ssh alias `github-data`)
+- Server keeps one intentional uncommitted patch: `serve.py` binds `0.0.0.0` instead of `localhost`
+- Deploy: commit + push here, then on the server `git pull` (origin uses read-only deploy key via alias `github-inv`); restart `investment.service` only if `serve.py` changed
+
+The old launchd agents from the Mac era are archived in `launchd-disabled-on-mac/`.
+
+---
+
 ## What It Does
 
 | Feature | Description |
