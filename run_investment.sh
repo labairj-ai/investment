@@ -1,10 +1,12 @@
 #!/bin/bash
 set -euo pipefail
 
-LOG="/Users/ai_lab/Desktop/investment/out/newsletter.log"
+BASE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+LOG="$BASE/out/newsletter.log"
 TZNAME="America/New_York"
 TODAY="$(TZ=$TZNAME /bin/date +%F)"
-FLAG="/Users/ai_lab/Desktop/investment/out/last_run_date.txt"
+FLAG="$BASE/out/last_run_date.txt"
 
 {
   echo "=== INVESTMENT AUTO $(TZ=$TZNAME /bin/date) ==="
@@ -18,12 +20,12 @@ fi
 
 echo "Sending newsletter for $TODAY..." >> "$LOG" 2>&1
 
-cd /Users/ai_lab/Desktop/investment
-/Users/ai_lab/Desktop/investment/venv/bin/python3 /Users/ai_lab/Desktop/investment/send_newsletter_main.py >> "$LOG" 2>&1
+cd "$BASE"
+"$BASE/venv/bin/python3" "$BASE/send_newsletter_main.py" >> "$LOG" 2>&1
 
 # Mark as sent
 echo "$TODAY" > "$FLAG"
 echo "SENT OK for $TODAY" >> "$LOG" 2>&1
 
-/Users/ai_lab/Desktop/investment/venv/bin/python3 /Users/ai_lab/Desktop/investment/generate_dashboard.py >> "$LOG" 2>&1
+"$BASE/venv/bin/python3" "$BASE/generate_dashboard.py" >> "$LOG" 2>&1
 echo "DASHBOARD OK for $TODAY" >> "$LOG" 2>&1
