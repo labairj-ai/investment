@@ -3626,21 +3626,21 @@ function renderCCPositions() {{
       ? `<td style="padding:7px 10px;">${{fmtPnl(p.pnl_day)}}</td>`
       : `<td style="padding:7px 10px;"></td>`;
 
-    const editBtn = `<button onclick="openCCEditModal(${{p.id}})"
-             style="font-size:10px;padding:3px 8px;background:#f4f6f9;color:#555;border:1px solid #dde;border-radius:4px;cursor:pointer;font-weight:500;margin-left:4px;"
-             title="Edit position">✎</button>`;
     const actionCell = isOpen
-      ? `<td style="padding:7px 10px;white-space:nowrap;">
+      ? `<td style="padding:7px 10px;">
            <button onclick="openCCCloseModal(${{p.id}})"
              style="font-size:10px;padding:3px 10px;background:#1a2340;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600;">
              Close ▾
            </button>
-           ${{editBtn}}
          </td>`
-      : `<td style="padding:7px 10px;font-size:11px;color:#aaa;white-space:nowrap;">${{p.closed_date || ""}} ${{editBtn}}</td>`;
+      : `<td style="padding:7px 10px;font-size:11px;color:#aaa;">${{p.closed_date || ""}}</td>`;
 
     return `<tr style="border-bottom:1px solid #f2f4f7;">
-      <td style="padding:7px 10px;font-weight:700;">${{p.ticker}}</td>
+      <td style="padding:7px 10px;font-weight:700;white-space:nowrap;">
+        ${{p.ticker}}<button onclick="openCCEditModal(${{p.id}})"
+          style="font-size:9px;padding:2px 5px;background:none;color:#bbb;border:1px solid #e0e0e0;border-radius:3px;cursor:pointer;margin-left:5px;vertical-align:middle;"
+          title="Edit position">✎</button>
+      </td>
       <td style="padding:7px 10px;">${{p.contracts}}×</td>
       <td style="padding:7px 10px;">$${{p.strike.toFixed(2)}}</td>
       <td style="padding:7px 10px;">${{p.expiry}} ${{isOpen ? dteTag(p.expiry) : ""}}</td>
