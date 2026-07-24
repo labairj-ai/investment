@@ -169,11 +169,11 @@ Script changes take effect on the next **↻ Refresh Data** without restarting t
 | `GET /api/earnings` | Next earnings dates for all holdings |
 | `GET /api/buffett-winners` | Latest Buffett screener results (includes valuation, first_seen, scan_duration, log_tail) |
 | `POST /api/buffett-scan` | Start a manual screener run (no-op if already running; returns `{ok, reason}`) |
-| `GET /api/buffett-analysis?ticker=KO` | On-demand 13-point Buffett deep-dive for any ticker |
+| `GET /api/buffett-analysis?ticker=KO&mode=annual` | On-demand 13-point Buffett deep-dive; `mode=annual` (default) uses annual filings, `mode=ttm` sums last 4 quarters |
 | `GET /api/cc-positions` | All logged covered call positions; includes computed `pnl_total` and `pnl_day` for open positions with mark data; auto-expires past-expiry open positions |
 | `POST /api/cc-positions` | Log a new covered call position |
 | `POST /api/cc-import` | Import open positions from `covered_calls.csv`; skips duplicates |
-| `PATCH /api/cc-positions/<id>` | Update position status / closing details (computes net_premium server-side) |
+| `PATCH /api/cc-positions/<id>` | Update position status / closing details (computes net_premium server-side); also accepts editable core fields (ticker, contracts, strike, expiry, premium_per_contract, opened_date) to correct typos |
 | `GET /api/lots` | All cost lots across all tickers |
 | `GET /api/lots?ticker=EW` | Lots for a specific ticker |
 | `POST /api/lots` | Add a cost lot |
@@ -346,6 +346,7 @@ A dedicated dashboard card (below Holdings) showing the combined tax picture for
 - **Tax estimator**: editable ST and LT rate inputs (saved in browser localStorage), optional NIIT (3.8%) checkbox, and computed Est. ST Tax / Est. LT Tax / Total Est. Tax
 - **Per-transaction table**: ticker, date, shares, price, total G/L, ST G/L, LT G/L, estimated tax per sell, lot-level detail, notes
 - **Option Premium Income section**: per-position breakdown of gross premium collected, buyback cost (if bought back early), net income, estimated tax, and close type
+- **📋 All Transactions button** — opens a unified pop-out table showing every tax-impacting event in a single view: stock sales (ST/LT split), covered call closes (net premium), and any prior-year ST lump carryforward. Useful for reconciling with your broker's tax forms.
 
 Estimated tax applies to positive gains only (losses offset within each term bucket). Federal rates only — does not include state taxes.
 
@@ -386,6 +387,8 @@ NFLX,1,100,2026-07-31,0.24,2026-06-29,
 
 **Logging:** Use the **+ Log New Position** form — ticker, contracts, strike, expiry, premium/contract, open date.
 
+**Editing a position:** Click the **✎** button next to the ticker on any open or closed row to correct typos or update position details (ticker, contracts, strike, expiry, premium/contract, open date, notes). Changes are written to the DB immediately.
+
 **Mark-to-market columns (open positions):**
 - **Mark** — current option price (bid/ask midpoint from yfinance; fetched on every ↻ Refresh Data)
 - **Unrealized P&L** — total gain/loss on the option position since it was sold: `(premium − mark) × contracts × 100`
@@ -409,6 +412,12 @@ Today's option P&L is also added to the **Daily Change KPI** at the top of the d
 ### Buffett Deep-Dive Analyzer
 
 Type any ticker and click **Analyze** (or press Enter) to run a 13-point Buffett analysis on demand.
+
+**Annual / TTM toggle**: switch between two data modes before analyzing:
+- **Annual** (default) — uses the most recent full fiscal-year filing (`stock.financials`). Best for companies with stable, calendar-year reporting.
+- **TTM** (trailing 12 months) — sums the last 4 quarters from quarterly filings (`stock.quarterly_financials`, `stock.quarterly_cashflow`); balance sheet metrics use the most recent quarter snapshot. Useful for companies mid-fiscal-year or with significant recent trends.
+
+**Source reference**: the period label under the score bar always shows exactly what data is being used — e.g. `FY 2024 annual (fiscal year ended Sep 28, 2024)` or `TTM as of Q2 2025 (ended Mar 29, 2025) · 4Q summed`. A link to the corresponding SEC EDGAR filings (10-K for annual, 10-Q for TTM) appears in the results footer.
 
 **Score bar**: color-coded green (≥10/13 — strong), amber (7–9 — mixed), red (<7 — fails screen), with a one-line verdict.
 
