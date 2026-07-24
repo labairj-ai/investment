@@ -1172,7 +1172,13 @@ def build_dashboard(portfolio, layers, holdings):
   <div class="card" id="buffett-deep-card">
     <h2 style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
       <span>Buffett Deep-Dive Analyzer</span>
-      <div style="display:flex;gap:8px;align-items:center;">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <div style="display:flex;background:#f0f2f5;border-radius:6px;padding:3px;gap:2px;">
+          <button id="deep-mode-btn-annual" onclick="setDeepMode('annual')"
+            style="padding:4px 12px;border:none;border-radius:4px;font-size:12px;font-weight:600;cursor:pointer;background:#1a2340;color:#fff;">Annual</button>
+          <button id="deep-mode-btn-ttm" onclick="setDeepMode('ttm')"
+            style="padding:4px 12px;border:none;border-radius:4px;font-size:12px;font-weight:600;cursor:pointer;background:transparent;color:#888;">TTM</button>
+        </div>
         <input id="deep-ticker-input" placeholder="e.g. AAPL" maxlength="10"
           style="width:100px;padding:5px 10px;border:1px solid #dde;border-radius:5px;font-size:13px;text-transform:uppercase;"
           onkeydown="if(event.key==='Enter')runDeepAnalysis()">
@@ -3462,6 +3468,18 @@ function _renderBuffettTable() {{
 }}
 
 // ── Buffett Deep-Dive Analyzer ────────────────────────────────────────────
+let _deepMode = "annual";
+
+function setDeepMode(mode) {{
+  _deepMode = mode;
+  const btnAnnual = document.getElementById("deep-mode-btn-annual");
+  const btnTTM    = document.getElementById("deep-mode-btn-ttm");
+  const active    = "padding:4px 12px;border:none;border-radius:4px;font-size:12px;font-weight:600;cursor:pointer;background:#1a2340;color:#fff;";
+  const inactive  = "padding:4px 12px;border:none;border-radius:4px;font-size:12px;font-weight:600;cursor:pointer;background:transparent;color:#888;";
+  btnAnnual.style.cssText = mode === "annual" ? active : inactive;
+  btnTTM.style.cssText    = mode === "ttm"    ? active : inactive;
+}}
+
 async function runDeepAnalysis() {{
   const input  = document.getElementById("deep-ticker-input");
   const ticker = (input?.value || "").trim().toUpperCase();
@@ -3470,12 +3488,13 @@ async function runDeepAnalysis() {{
   const status  = document.getElementById("deep-status");
   const summary = document.getElementById("deep-summary");
   const wrap    = document.getElementById("deep-results-wrap");
-  status.textContent  = `Fetching financials for ${{ticker}}…`;
+  const modeLabel = _deepMode === "ttm" ? "TTM (trailing 12 months)" : "annual";
+  status.textContent  = `Fetching ${{modeLabel}} financials for ${{ticker}}…`;
   summary.style.display = "none";
   wrap.innerHTML = "";
 
   try {{
-    const res  = await fetch(`/api/buffett-analysis?ticker=${{encodeURIComponent(ticker)}}`);
+    const res  = await fetch(`/api/buffett-analysis?ticker=${{encodeURIComponent(ticker)}}&mode=${{_deepMode}}`);
     const data = await res.json();
     if (!data.ok) {{ status.textContent = "Error: " + data.error; return; }}
 
@@ -3515,9 +3534,10 @@ async function runDeepAnalysis() {{
       </tr>`;
     }}).join("");
 
+    const edgarType = _deepMode === "ttm" ? "10-Q" : "10-K";
     const srcNote = data.period_label
-      ? `Source: ${{data.period_label}} · via Yahoo Finance (yfinance) · verify at <a href="https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&type=10-K&dateb=&owner=include&count=10&search_text=" target="_blank" style="color:#aaa;">SEC EDGAR</a>`
-      : "Source: Most recent annual filing · via Yahoo Finance";
+      ? `Source: ${{data.period_label}} · via Yahoo Finance (yfinance) · verify at <a href="https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&type=${{edgarType}}&dateb=&owner=include&count=10&search_text=" target="_blank" style="color:#aaa;">SEC EDGAR</a>`
+      : `Source: Most recent ${{_deepMode === "ttm" ? "quarterly" : "annual"}} filing · via Yahoo Finance`;
     wrap.innerHTML = `<div style="overflow-x:auto;">
       <table style="width:100%;border-collapse:collapse;font-size:13px;">
         <thead><tr style="background:#f4f6f9;text-align:left;">

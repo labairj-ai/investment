@@ -1610,6 +1610,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def _handle_buffett_analysis(self, params):
         ticker_symbol = (params.get("ticker", [None])[0] or "").upper().strip()
+        mode = (params.get("mode", ["annual"])[0] or "annual").lower()
         if not ticker_symbol:
             self._json({"ok": False, "error": "ticker required"})
             return
@@ -1617,48 +1618,81 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             import yfinance as yf
             import pandas as pd
 
-            stock        = yf.Ticker(ticker_symbol)
-            income_stmt  = stock.financials
-            balance_sheet = stock.balance_sheet
-            cash_flow    = stock.cashflow
+            stock = yf.Ticker(ticker_symbol)
+
+            if mode == "ttm":
+                income_stmt   = stock.quarterly_financials
+                balance_sheet = stock.quarterly_balance_sheet
+                cash_flow     = stock.quarterly_cashflow
+            else:
+                income_stmt   = stock.financials
+                balance_sheet = stock.balance_sheet
+                cash_flow     = stock.cashflow
 
             if income_stmt.empty:
                 self._json({"ok": False, "error": f"No financial data found for {ticker_symbol}"})
                 return
 
-            def get_val(df, keys, year_idx=0):
+            def get_val(df, keys, col=0):
                 if isinstance(keys, str):
                     keys = [keys]
                 for key in keys:
                     if key in df.index:
                         try:
-                            val = df.iloc[df.index.get_loc(key), year_idx]
-                            if not pd.isna(val):
-                                return float(val)
+                            if col < df.shape[1]:
+                                v = df.iloc[df.index.get_loc(key), col]
+                                if not pd.isna(v):
+                                    return float(v)
                         except Exception:
                             pass
                 return 0.0
 
-            revenue       = get_val(income_stmt,   ["Total Revenue", "Revenue"])
-            gross_profit  = get_val(income_stmt,   ["Gross Profit", "Net Interest Income"])
-            sga           = get_val(income_stmt,   ["Selling General And Administration", "Operating Expense"])
-            rnd           = get_val(income_stmt,   "Research And Development")
-            depreciation  = get_val(cash_flow,     ["DepreciationAndAmortization", "Depreciation"])
+            def get_flow(df, keys):
+                """Annual: col 0. TTM: sum last 4 quarters."""
+                if mode != "ttm":
+                    return get_val(df, keys, 0)
+                if isinstance(keys, str):
+                    keys = [keys]
+                for key in keys:
+                    if key in df.index:
+                        try:
+                            n = min(4, df.shape[1])
+                            vals = [float(df.iloc[df.index.get_loc(key), i])
+                                    for i in range(n)
+                                    if not pd.isna(df.iloc[df.index.get_loc(key), i])]
+                            if vals:
+                                return sum(vals)
+                        except Exception:
+                            pass
+                return 0.0
+
+            # For growth comparisons in TTM mode: compare most recent quarter (col 0)
+            # vs same quarter last year (col 4); fall back to col 1 if < 5 cols available
+            def prior_col(df):
+                if mode == "ttm":
+                    return 4 if df.shape[1] > 4 else (1 if df.shape[1] > 1 else 0)
+                return 1
+
+            revenue         = get_flow(income_stmt, ["Total Revenue", "Revenue"])
+            gross_profit    = get_flow(income_stmt, ["Gross Profit", "Net Interest Income"])
+            sga             = get_flow(income_stmt, ["Selling General And Administration", "Operating Expense"])
+            rnd             = get_flow(income_stmt, "Research And Development")
+            depreciation    = get_flow(cash_flow,  ["DepreciationAndAmortization", "Depreciation"])
             if depreciation == 0:
-                depreciation = get_val(income_stmt, "Reconciled Depreciation")
-            interest_exp  = get_val(income_stmt,   ["Interest Expense", "Interest Expense Non Operating"])
-            op_income     = get_val(income_stmt,   ["Operating Income", "Operating Profit"])
-            net_income    = get_val(income_stmt,   ["Net Income", "Net Income Common Stockholders"])
-            eps_current   = get_val(income_stmt,   "Basic EPS", 0)
-            eps_prev      = get_val(income_stmt,   "Basic EPS", 1)
-            cash          = get_val(balance_sheet, ["Cash And Cash Equivalents", "Cash Financial"])
-            total_debt    = get_val(balance_sheet, ["Total Debt", "Long Term Debt"])
-            equity        = get_val(balance_sheet, ["Stockholders Equity", "Total Equity Gross Minority Interest"])
-            treasury_stock = get_val(balance_sheet, "Treasury Stock")
+                depreciation = get_flow(income_stmt, "Reconciled Depreciation")
+            interest_exp    = get_flow(income_stmt, ["Interest Expense", "Interest Expense Non Operating"])
+            op_income       = get_flow(income_stmt, ["Operating Income", "Operating Profit"])
+            net_income      = get_flow(income_stmt, ["Net Income", "Net Income Common Stockholders"])
+            eps_current     = get_val(income_stmt,   "Basic EPS", 0)
+            eps_prev        = get_val(income_stmt,   "Basic EPS", prior_col(income_stmt))
+            cash            = get_val(balance_sheet, ["Cash And Cash Equivalents", "Cash Financial"])
+            total_debt      = get_val(balance_sheet, ["Total Debt", "Long Term Debt"])
+            equity          = get_val(balance_sheet, ["Stockholders Equity", "Total Equity Gross Minority Interest"])
+            treasury_stock  = get_val(balance_sheet, "Treasury Stock")
             preferred_stock = get_val(balance_sheet, "Preferred Stock")
-            re_cur        = get_val(balance_sheet, "Retained Earnings", 0)
-            re_1          = get_val(balance_sheet, "Retained Earnings", 1)
-            capex         = abs(get_val(cash_flow, ["Capital Expenditure", "Capital Expenditures"]))
+            re_cur          = get_val(balance_sheet, "Retained Earnings", 0)
+            re_1            = get_val(balance_sheet, "Retained Earnings", prior_col(balance_sheet))
+            capex           = abs(get_flow(cash_flow, ["Capital Expenditure", "Capital Expenditures"]))
 
             is_financial = (gross_profit == 0 and revenue > 0)
             results = []
@@ -1737,7 +1771,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             score = sum(1 for r in results if r["Result"] == "PASS")
 
             # Derive a human-readable period label from the most recent filing date.
-            # stock.financials columns are annual fiscal-year-end timestamps.
             period_label = None
             try:
                 col = income_stmt.columns[0]
@@ -1745,15 +1778,20 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 yr = col_dt.year
                 mo = col_dt.strftime("%b")
                 day = col_dt.strftime("%d").lstrip("0")
-                # Distinguish calendar-year vs off-cycle fiscal year
-                if col_dt.month == 12:
-                    period_label = f"FY {yr} annual (Dec {day}, {yr})"
+                if mode == "ttm":
+                    qtr = (col_dt.month - 1) // 3 + 1
+                    period_label = f"TTM as of Q{qtr} {yr} (ended {mo} {day}, {yr})"
+                    n_q = len(income_stmt.columns)
+                    quarters_used = min(4, n_q)
+                    period_label += f" · {quarters_used}Q summed"
                 else:
-                    period_label = f"FY {yr} annual (fiscal year ended {mo} {day}, {yr})"
-                # If multiple years available, note which one is being used
-                n_years = len(income_stmt.columns)
-                if n_years > 1:
-                    period_label += f" · most recent of {n_years} available"
+                    if col_dt.month == 12:
+                        period_label = f"FY {yr} annual (Dec {day}, {yr})"
+                    else:
+                        period_label = f"FY {yr} annual (fiscal year ended {mo} {day}, {yr})"
+                    n_years = len(income_stmt.columns)
+                    if n_years > 1:
+                        period_label += f" · most recent of {n_years} available"
             except Exception:
                 period_label = None
 
