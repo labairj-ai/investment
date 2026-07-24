@@ -651,6 +651,24 @@ def build_dashboard(portfolio, layers, holdings):
   </div>
 </div>
 
+<!-- Unified Tax Transactions Modal -->
+<div id="txn-overlay" onclick="txnOverlayClick(event)"
+  style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:1100;align-items:flex-start;justify-content:center;padding:40px 16px;overflow-y:auto;">
+  <div onclick="event.stopPropagation()"
+    style="background:#fff;border-radius:14px;width:100%;max-width:1000px;box-shadow:0 12px 48px rgba(0,0,0,.25);overflow:hidden;">
+    <div style="background:#1a2340;padding:20px 28px;display:flex;align-items:center;justify-content:space-between;">
+      <div>
+        <div style="color:#fff;font-size:1.1rem;font-weight:700;">📋 All Tax-Impacting Transactions</div>
+        <div id="txn-subtitle" style="color:#8899bb;font-size:12px;margin-top:3px;">—</div>
+      </div>
+      <button onclick="closeTxnModal()" style="background:rgba(255,255,255,.1);border:none;color:#fff;font-size:18px;width:32px;height:32px;border-radius:50%;cursor:pointer;line-height:32px;text-align:center;">✕</button>
+    </div>
+    <div style="padding:24px 28px;">
+      <div id="txn-modal-content"></div>
+    </div>
+  </div>
+</div>
+
 <!-- Layer reassignment modal -->
 <div id="layer-change-overlay" onclick="closeLayerModal(event)"
   style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1000;align-items:center;justify-content:center;">
@@ -1070,6 +1088,7 @@ def build_dashboard(portfolio, layers, holdings):
           <option value="all">All Time</option>
         </select>
         <button onclick="renderRealizedGains()" style="font-size:11px;padding:4px 12px;background:#f4f6f9;border:1px solid #dde;border-radius:5px;cursor:pointer;color:#555;">↻</button>
+        <button onclick="openTxnModal()" style="font-size:11px;padding:4px 12px;background:#f4f6f9;border:1px solid #dde;border-radius:5px;cursor:pointer;color:#555;font-weight:600;">📋 All Transactions</button>
         <button onclick="openTLH()" style="font-size:11px;padding:4px 12px;background:#1a2340;border:none;border-radius:5px;cursor:pointer;color:#fff;font-weight:600;">✂ Tax Harvesting</button>
       </div>
     </h2>
@@ -4261,6 +4280,152 @@ function openTLH() {{
 
 function closeTLH() {{ document.getElementById("tlh-overlay").style.display = "none"; }}
 function tlhOverlayClick(e) {{ if (e.target === document.getElementById("tlh-overlay")) closeTLH(); }}
+
+// ── All Tax Transactions Modal ────────────────────────────────────────────
+function openTxnModal() {{
+  const yearFilter = document.getElementById("gains-year-filter")?.value || "cur";
+  const curYear    = new Date().getFullYear().toString();
+  const stRate     = (parseFloat(document.getElementById("tax-st-rate")?.value) || 35) / 100;
+  const ltRate     = (parseFloat(document.getElementById("tax-lt-rate")?.value) || 20) / 100;
+  const niit       = document.getElementById("tax-niit")?.checked ? 0.038 : 0;
+  const fmt2       = v => "$" + Math.abs(v).toLocaleString("en-US", {{minimumFractionDigits:2, maximumFractionDigits:2}});
+  const fmtGain    = v => (v >= 0 ? "+" : "−") + fmt2(v);
+  const gainColor  = v => v >= 0 ? "#27ae60" : "#e74c3c";
+
+  const PRIOR_ST_2026 = 5288.53;
+  const typeLabels = {{ expired:"EXPIRED", buyback:"BUYBACK", assigned:"ASSIGNED", closed:"CC CLOSE" }};
+  const typeBg     = {{ expired:"background:#fff8e1;color:#8a6d00;border:1px solid #ffe082",
+                        buyback:"background:#f4f6f9;color:#555;border:1px solid #dde",
+                        assigned:"background:#fff0f0;color:#c8102e;border:1px solid #fcc",
+                        closed:"background:#f4f6f9;color:#555;border:1px solid #dde" }};
+
+  // Build unified list
+  const txns = [];
+
+  // 1. Stock sales
+  let sells = Object.values(_allSells).flat();
+  if (yearFilter === "cur") sells = sells.filter(s => s.sell_date?.startsWith(curYear));
+  for (const s of sells) {{
+    const lotStr = (s.fifo_detail || []).map(a =>
+      `${{a.shares}}sh@$${{a.cost_per_share?.toFixed(2)}} ${{a.term}}`).join(" · ");
+    txns.push({{
+      typeBadge: `<span style="background:#eef2ff;color:#3a56d4;border:1px solid #c5d0f5;border-radius:3px;padding:1px 6px;font-size:9px;font-weight:700;">STOCK</span>`,
+      ticker:    s.ticker,
+      date:      s.sell_date || "—",
+      detail:    `${{s.shares_sold?.toLocaleString("en-US",{{maximumFractionDigits:4}})}} sh @ $${{s.sell_price?.toFixed(2)}}`,
+      total:     s.realized_gain || 0,
+      st:        s.st_gain || 0,
+      lt:        s.lt_gain || 0,
+      notes:     lotStr || s.notes || "",
+    }});
+  }}
+
+  // 2. CC closed positions (always short-term ordinary income)
+  const ccClosed = _allCCPositions.filter(p =>
+    p.status !== "open" && p.net_premium != null &&
+    (yearFilter === "all" || p.closed_date?.startsWith(curYear))
+  );
+  for (const p of ccClosed) {{
+    const ct  = p.close_type || "closed";
+    const bg  = typeBg[ct] || typeBg.closed;
+    const lbl = typeLabels[ct] || "CC";
+    txns.push({{
+      typeBadge: `<span style="border-radius:3px;padding:1px 6px;font-size:9px;font-weight:700;${{bg}}">${{lbl}}</span>`,
+      ticker:    p.ticker,
+      date:      p.closed_date || "—",
+      detail:    `${{p.contracts}}× $${{p.strike.toFixed(2)}} call · exp ${{p.expiry}}`,
+      total:     p.net_premium,
+      st:        p.net_premium,  // always ST
+      lt:        0,
+      notes:     p.notes || "",
+    }});
+  }}
+
+  // 3. Prior-year ST lump (current year view only)
+  if (yearFilter === "cur" && PRIOR_ST_2026 > 0) {{
+    txns.push({{
+      typeBadge: `<span style="background:#fff8e1;color:#8a6d00;border:1px solid #ffe082;border-radius:3px;padding:1px 6px;font-size:9px;font-weight:700;">PRIOR ST</span>`,
+      ticker:    "—",
+      date:      "pre-tracker",
+      detail:    "Prior 2026 ST gains (pre-tracker lump)",
+      total:     PRIOR_ST_2026,
+      st:        PRIOR_ST_2026,
+      lt:        0,
+      notes:     "Unvalidated · review source records",
+    }});
+  }}
+
+  // Sort by date desc (pre-tracker sorts last)
+  txns.sort((a, b) => b.date.localeCompare(a.date));
+
+  // Totals
+  const totST   = txns.reduce((s, t) => s + t.st, 0);
+  const totLT   = txns.reduce((s, t) => s + t.lt, 0);
+  const totAll  = txns.reduce((s, t) => s + t.total, 0);
+  const totTax  = Math.max(0, totST) * (stRate + niit) + Math.max(0, totLT) * (ltRate + niit);
+
+  document.getElementById("txn-subtitle").textContent =
+    `${{txns.length}} transaction${{txns.length !== 1 ? "s" : ""}} · ${{yearFilter === "cur" ? curYear : "All Time"}} · ST ${{(stRate*100).toFixed(1)}}%${{niit ? " +3.8% NIIT" : ""}} / LT ${{(ltRate*100).toFixed(1)}}%`;
+
+  if (!txns.length) {{
+    document.getElementById("txn-modal-content").innerHTML =
+      `<div style="padding:40px;text-align:center;color:#aaa;">No transactions recorded${{yearFilter === "cur" ? " for " + curYear : " yet"}}.</div>`;
+    document.getElementById("txn-overlay").style.display = "flex";
+    return;
+  }}
+
+  const rows = txns.map(t => {{
+    const rowST  = Math.max(0, t.st) * (stRate + niit);
+    const rowLT  = Math.max(0, t.lt) * (ltRate + niit);
+    const rowTax = rowST + rowLT;
+    return `<tr style="border-bottom:1px solid #f5f5f5;">
+      <td style="padding:7px 8px;">${{t.typeBadge}}</td>
+      <td style="padding:7px 8px;font-weight:600;">${{t.ticker}}</td>
+      <td style="padding:7px 8px;color:#555;white-space:nowrap;">${{t.date}}</td>
+      <td style="padding:7px 8px;font-size:11px;color:#555;">${{t.detail}}</td>
+      <td style="padding:7px 8px;font-weight:700;color:${{gainColor(t.total)}};">${{fmtGain(t.total)}}</td>
+      <td style="padding:7px 8px;color:${{t.st !== 0 ? gainColor(t.st) : "#ccc"}};">${{t.st !== 0 ? fmtGain(t.st) : "—"}}</td>
+      <td style="padding:7px 8px;color:${{t.lt !== 0 ? gainColor(t.lt) : "#ccc"}};">${{t.lt !== 0 ? fmtGain(t.lt) : "—"}}</td>
+      <td style="padding:7px 8px;color:#c0392b;font-weight:600;">${{rowTax > 0 ? "~" + fmt2(rowTax) : "—"}}</td>
+      <td style="padding:7px 8px;font-size:10px;color:#aaa;max-width:200px;">${{t.notes}}</td>
+    </tr>`;
+  }}).join("");
+
+  const totRow = `<tr style="background:#f4f6f9;font-weight:700;border-top:2px solid #dde;">
+    <td colspan="4" style="padding:8px;font-size:11px;color:#555;">TOTAL · ${{txns.length}} transaction${{txns.length!==1?"s":""}}</td>
+    <td style="padding:8px;color:${{gainColor(totAll)}};">${{fmtGain(totAll)}}</td>
+    <td style="padding:8px;color:${{gainColor(totST)}};">${{fmtGain(totST)}}</td>
+    <td style="padding:8px;color:${{totLT !== 0 ? gainColor(totLT) : "#ccc"}};">${{totLT !== 0 ? fmtGain(totLT) : "—"}}</td>
+    <td style="padding:8px;color:#c0392b;">~${{fmt2(totTax)}}</td>
+    <td style="padding:8px;"></td>
+  </tr>`;
+
+  document.getElementById("txn-modal-content").innerHTML = `
+    <div style="overflow-x:auto;">
+      <table style="width:100%;border-collapse:collapse;font-size:13px;">
+        <thead><tr style="background:#f4f6f9;text-align:left;">
+          <th style="padding:6px 8px;font-size:10px;color:#888;text-transform:uppercase;">Type</th>
+          <th style="padding:6px 8px;font-size:10px;color:#888;text-transform:uppercase;">Ticker</th>
+          <th style="padding:6px 8px;font-size:10px;color:#888;text-transform:uppercase;">Date</th>
+          <th style="padding:6px 8px;font-size:10px;color:#888;text-transform:uppercase;">Detail</th>
+          <th style="padding:6px 8px;font-size:10px;color:#888;text-transform:uppercase;">Total G/L</th>
+          <th style="padding:6px 8px;font-size:10px;color:#888;text-transform:uppercase;">ST</th>
+          <th style="padding:6px 8px;font-size:10px;color:#888;text-transform:uppercase;">LT</th>
+          <th style="padding:6px 8px;font-size:10px;color:#888;text-transform:uppercase;">Est. Tax</th>
+          <th style="padding:6px 8px;font-size:10px;color:#888;text-transform:uppercase;">Notes / Lots</th>
+        </tr></thead>
+        <tbody>${{rows}}${{totRow}}</tbody>
+      </table>
+    </div>
+    <div style="font-size:10px;color:#bbb;margin-top:10px;">
+      Federal only · ST ${{(stRate*100).toFixed(1)}}%${{niit?" +3.8% NIIT":""}} / LT ${{(ltRate*100).toFixed(1)}}%${{niit?" +3.8% NIIT":""}} · does not include state taxes · consult a tax advisor
+    </div>`;
+
+  document.getElementById("txn-overlay").style.display = "flex";
+}}
+
+function closeTxnModal() {{ document.getElementById("txn-overlay").style.display = "none"; }}
+function txnOverlayClick(e) {{ if (e.target === document.getElementById("txn-overlay")) closeTxnModal(); }}
 
 function tlhFmt(v) {{
   const abs = Math.abs(v);
