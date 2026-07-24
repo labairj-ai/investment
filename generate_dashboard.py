@@ -190,6 +190,11 @@ def build_dashboard(portfolio, layers, holdings):
     # When total_value jumps more than price-change alone explains, we close the
     # current sub-period and restart at the post-inflow value, then chain the
     # factors together.  Both series start at 0 % on the first date.
+    #
+    # Guard: if total_change_dollars is < 10% of the actual consecutive-day delta,
+    # the stored value is unreliable (pre-market pricing bug that stored near-zero
+    # changes for exchange-traded holdings). In that case treat the full move as
+    # price-driven so we don't falsely detect a cash-flow reset.
     port_cum    = [0.0]
     _twr_factor = 1.0
     _sub_start  = portfolio[0]["total_value"] if portfolio else 1.0
@@ -197,9 +202,13 @@ def build_dashboard(portfolio, layers, holdings):
         _prev = portfolio[_i - 1]["total_value"]
         _curr = portfolio[_i]["total_value"]
         _pchg = portfolio[_i].get("total_change_dollars", 0) or 0
+        actual_delta = _curr - _prev
         # Skip weekend/holiday duplicates where the newsletter repeats the same row
-        if abs(_curr - _prev) > 1.0:
-            _val_ex_cf = _prev + _pchg          # expected value from prices alone
+        if abs(actual_delta) > 1.0:
+            # Treat stored change as reliable only when it explains ≥10% of the
+            # actual move; otherwise fall back to assuming no cash flow this period.
+            _pchg_reliable = _pchg != 0 and abs(_pchg) >= abs(actual_delta) * 0.10
+            _val_ex_cf = _prev + _pchg if _pchg_reliable else _curr
             _cf        = _curr - _val_ex_cf     # residual = external cash flow
             _threshold = max(1000.0, 0.005 * _prev)
             if abs(_cf) > _threshold:

@@ -154,21 +154,20 @@ def _is_market_holiday(check_date=None) -> bool:
 
 
 def fetch_last_two_closes(tickers: list[str]) -> pd.DataFrame:
+    # Always use history-based closes (not fast_info.last_price).
+    # fast_info.last_price includes pre/post-market trades, so at 7:15 AM ET it
+    # returns the pre-market price for exchange-traded securities while
+    # fast_info.previous_close returns the prior regular-session close — causing
+    # near-zero or identical values for many stocks and a corrupted daily change.
+    # history(interval="1d") only contains completed regular sessions, so
+    # iloc[-1] is always the most recent end-of-day close regardless of time of day.
     rows = []
     for raw in tickers:
         t = normalize_ticker(raw)
         last_err = None
         for attempt in range(1, 4):
             try:
-                fi = yf.Ticker(t).fast_info
-                close_yday = getattr(fi, "last_price", None)
-                close_prev = getattr(fi, "previous_close", None)
-                if close_yday and close_prev:
-                    rows.append((t, float(close_yday), float(close_prev)))
-                    last_err = None
-                    break
-                # fallback: history-based
-                hist = yf.Ticker(t).history(period="10d", interval="1d")
+                hist = yf.Ticker(t).history(period="5d", interval="1d")
                 s = hist["Close"].dropna()
                 if len(s) >= 2:
                     rows.append((t, float(s.iloc[-1]), float(s.iloc[-2])))
