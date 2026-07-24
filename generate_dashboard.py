@@ -1204,6 +1204,7 @@ def build_dashboard(portfolio, layers, holdings):
           <div id="deep-score-bar" style="height:8px;border-radius:4px;transition:width .4s;"></div>
         </div>
         <div id="deep-score-label2" style="font-size:11px;color:#888;margin-top:4px;"></div>
+        <div id="deep-source-label" style="font-size:10px;color:#bbb;margin-top:3px;"></div>
       </div>
     </div>
 
@@ -3493,6 +3494,7 @@ async function runDeepAnalysis() {{
     document.getElementById("deep-score-bar").style.width      = `${{(pct*100).toFixed(0)}}%`;
     document.getElementById("deep-score-bar").style.background = scoreColor;
     document.getElementById("deep-score-label2").textContent   = verdict;
+    document.getElementById("deep-source-label").textContent   = data.period_label ? `📄 ${{data.period_label}}` : "";
     summary.style.display = "flex";
 
     const rows = data.results.map(r => {{
@@ -3513,6 +3515,9 @@ async function runDeepAnalysis() {{
       </tr>`;
     }}).join("");
 
+    const srcNote = data.period_label
+      ? `Source: ${{data.period_label}} · via Yahoo Finance (yfinance) · verify at <a href="https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&type=10-K&dateb=&owner=include&count=10&search_text=" target="_blank" style="color:#aaa;">SEC EDGAR</a>`
+      : "Source: Most recent annual filing · via Yahoo Finance";
     wrap.innerHTML = `<div style="overflow-x:auto;">
       <table style="width:100%;border-collapse:collapse;font-size:13px;">
         <thead><tr style="background:#f4f6f9;text-align:left;">
@@ -3523,7 +3528,8 @@ async function runDeepAnalysis() {{
           <th style="padding:7px 10px;font-size:10px;color:#888;text-transform:uppercase;">Note</th>
         </tr></thead>
         <tbody>${{rows}}</tbody>
-      </table></div>`;
+      </table></div>
+    <div style="font-size:10px;color:#bbb;margin-top:8px;">${{srcNote}}</div>`;
   }} catch(e) {{ status.textContent = "Error: " + e.message; }}
 }}
 

@@ -1735,8 +1735,31 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 price = 0.0
 
             score = sum(1 for r in results if r["Result"] == "PASS")
+
+            # Derive a human-readable period label from the most recent filing date.
+            # stock.financials columns are annual fiscal-year-end timestamps.
+            period_label = None
+            try:
+                col = income_stmt.columns[0]
+                col_dt = pd.Timestamp(col)
+                yr = col_dt.year
+                mo = col_dt.strftime("%b")
+                day = col_dt.strftime("%d").lstrip("0")
+                # Distinguish calendar-year vs off-cycle fiscal year
+                if col_dt.month == 12:
+                    period_label = f"FY {yr} annual (Dec {day}, {yr})"
+                else:
+                    period_label = f"FY {yr} annual (fiscal year ended {mo} {day}, {yr})"
+                # If multiple years available, note which one is being used
+                n_years = len(income_stmt.columns)
+                if n_years > 1:
+                    period_label += f" · most recent of {n_years} available"
+            except Exception:
+                period_label = None
+
             self._json({"ok": True, "ticker": ticker_symbol, "price": price,
-                        "score": score, "max_score": len(results), "results": results})
+                        "score": score, "max_score": len(results), "results": results,
+                        "period_label": period_label})
         except Exception as e:
             self._json_error(500, str(e))
 
