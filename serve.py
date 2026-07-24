@@ -812,6 +812,26 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 if field in body:
                     updates.append(f"{field} = ?")
                     values.append(body[field])
+            # Editable core fields (ticker typo fixes, etc.)
+            if "ticker" in body:
+                from covered_call_rec import normalize_ticker as _nt
+                updates.append("ticker = ?")
+                values.append(_nt(str(body["ticker"]).strip().upper()))
+            if "contracts" in body:
+                updates.append("contracts = ?")
+                values.append(int(body["contracts"]))
+            if "strike" in body:
+                updates.append("strike = ?")
+                values.append(float(body["strike"]))
+            if "expiry" in body:
+                updates.append("expiry = ?")
+                values.append(str(body["expiry"]).strip())
+            if "premium_per_contract" in body:
+                updates.append("premium_per_contract = ?")
+                values.append(float(body["premium_per_contract"]))
+            if "opened_date" in body:
+                updates.append("opened_date = ?")
+                values.append(str(body["opened_date"]).strip())
             # Auto-compute net_premium whenever the position is being closed
             new_status = body.get("status", "")
             if new_status in ("closed", "expired", "assigned"):

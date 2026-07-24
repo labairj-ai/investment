@@ -587,6 +587,60 @@ def build_dashboard(portfolio, layers, holdings):
   </div>
 </div>
 
+<!-- CC Edit Modal -->
+<div id="cc-edit-overlay" onclick="closeCCEditModal(event)"
+  style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1000;align-items:center;justify-content:center;">
+  <div onclick="event.stopPropagation()"
+    style="background:#fff;border-radius:12px;padding:28px 32px;max-width:500px;width:95%;box-shadow:0 8px 40px rgba(0,0,0,.2);position:relative;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;">
+      <h2 style="font-size:1.05rem;font-weight:700;color:#1a2340;margin:0;">Edit Position</h2>
+      <button onclick="closeCCEditModal()" style="background:none;border:none;font-size:20px;cursor:pointer;color:#aaa;padding:4px 8px;">✕</button>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px;">
+      <div>
+        <label style="font-size:10px;color:#aaa;text-transform:uppercase;">Ticker</label>
+        <input id="cc-edit-ticker" type="text" placeholder="AAPL" maxlength="10"
+          style="width:100%;margin-top:4px;padding:7px 10px;border:1px solid #dde;border-radius:6px;font-size:14px;font-weight:700;text-transform:uppercase;box-sizing:border-box;">
+      </div>
+      <div>
+        <label style="font-size:10px;color:#aaa;text-transform:uppercase;">Contracts</label>
+        <input id="cc-edit-contracts" type="number" min="1" step="1"
+          style="width:100%;margin-top:4px;padding:7px 10px;border:1px solid #dde;border-radius:6px;font-size:14px;box-sizing:border-box;">
+      </div>
+      <div>
+        <label style="font-size:10px;color:#aaa;text-transform:uppercase;">Strike ($)</label>
+        <input id="cc-edit-strike" type="number" step="0.01" min="0"
+          style="width:100%;margin-top:4px;padding:7px 10px;border:1px solid #dde;border-radius:6px;font-size:14px;box-sizing:border-box;">
+      </div>
+      <div>
+        <label style="font-size:10px;color:#aaa;text-transform:uppercase;">Expiry</label>
+        <input id="cc-edit-expiry" type="date"
+          style="width:100%;margin-top:4px;padding:7px 10px;border:1px solid #dde;border-radius:6px;font-size:13px;box-sizing:border-box;">
+      </div>
+      <div>
+        <label style="font-size:10px;color:#aaa;text-transform:uppercase;">Premium / Contract ($)</label>
+        <input id="cc-edit-premium" type="number" step="0.01" min="0"
+          style="width:100%;margin-top:4px;padding:7px 10px;border:1px solid #dde;border-radius:6px;font-size:14px;box-sizing:border-box;">
+      </div>
+      <div>
+        <label style="font-size:10px;color:#aaa;text-transform:uppercase;">Opened Date</label>
+        <input id="cc-edit-opened-date" type="date"
+          style="width:100%;margin-top:4px;padding:7px 10px;border:1px solid #dde;border-radius:6px;font-size:13px;box-sizing:border-box;">
+      </div>
+    </div>
+    <div style="margin-bottom:18px;">
+      <label style="font-size:10px;color:#aaa;text-transform:uppercase;">Notes</label>
+      <input id="cc-edit-notes" type="text" placeholder="optional"
+        style="width:100%;margin-top:4px;padding:7px 10px;border:1px solid #dde;border-radius:6px;font-size:13px;box-sizing:border-box;">
+    </div>
+    <button onclick="saveCCEdit()"
+      style="width:100%;padding:10px;background:#1a2340;color:#fff;border:none;border-radius:7px;font-size:14px;font-weight:700;cursor:pointer;">
+      Save Changes
+    </button>
+    <div id="cc-edit-status" style="margin-top:8px;font-size:12px;color:#888;text-align:center;"></div>
+  </div>
+</div>
+
 <!-- Layer reassignment modal -->
 <div id="layer-change-overlay" onclick="closeLayerModal(event)"
   style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1000;align-items:center;justify-content:center;">
@@ -3446,9 +3500,10 @@ async function runDeepAnalysis() {{
 
 // ── CC Position Tracker ───────────────────────────────────────────────────
 // ── CC Position Tracker ───────────────────────────────────────────────────
-let _allCCPositions = [];
+let _allCCPositions  = [];
 let _ccCloseTargetId = null;
 let _ccCloseType     = null;
+let _ccEditTargetId  = null;
 
 async function loadCCPositions() {{
   const status  = document.getElementById("cc-tracker-status");
@@ -3561,14 +3616,18 @@ function renderCCPositions() {{
       ? `<td style="padding:7px 10px;">${{fmtPnl(p.pnl_day)}}</td>`
       : `<td style="padding:7px 10px;"></td>`;
 
+    const editBtn = `<button onclick="openCCEditModal(${{p.id}})"
+             style="font-size:10px;padding:3px 8px;background:#f4f6f9;color:#555;border:1px solid #dde;border-radius:4px;cursor:pointer;font-weight:500;margin-left:4px;"
+             title="Edit position">✎</button>`;
     const actionCell = isOpen
       ? `<td style="padding:7px 10px;white-space:nowrap;">
            <button onclick="openCCCloseModal(${{p.id}})"
              style="font-size:10px;padding:3px 10px;background:#1a2340;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600;">
              Close ▾
            </button>
+           ${{editBtn}}
          </td>`
-      : `<td style="padding:7px 10px;font-size:11px;color:#aaa;">${{p.closed_date || ""}}</td>`;
+      : `<td style="padding:7px 10px;font-size:11px;color:#aaa;white-space:nowrap;">${{p.closed_date || ""}} ${{editBtn}}</td>`;
 
     return `<tr style="border-bottom:1px solid #f2f4f7;">
       <td style="padding:7px 10px;font-weight:700;">${{p.ticker}}</td>
@@ -3707,6 +3766,56 @@ function openCCCloseModal(id) {{
 function closeCCModal(e) {{
   if (!e || e.target === document.getElementById("cc-close-overlay"))
     document.getElementById("cc-close-overlay").style.display = "none";
+}}
+
+// ── CC Edit Modal ─────────────────────────────────────────────────────────
+function openCCEditModal(id) {{
+  _ccEditTargetId = id;
+  const p = _allCCPositions.find(x => x.id === id);
+  if (!p) return;
+  document.getElementById("cc-edit-ticker").value      = p.ticker;
+  document.getElementById("cc-edit-contracts").value   = p.contracts;
+  document.getElementById("cc-edit-strike").value      = p.strike;
+  document.getElementById("cc-edit-expiry").value      = p.expiry;
+  document.getElementById("cc-edit-premium").value     = p.premium_per_contract;
+  document.getElementById("cc-edit-opened-date").value = p.opened_date;
+  document.getElementById("cc-edit-notes").value       = p.notes || "";
+  document.getElementById("cc-edit-status").textContent = "";
+  document.getElementById("cc-edit-overlay").style.display = "flex";
+}}
+
+function closeCCEditModal(e) {{
+  if (!e || e.target === document.getElementById("cc-edit-overlay"))
+    document.getElementById("cc-edit-overlay").style.display = "none";
+}}
+
+async function saveCCEdit() {{
+  const status = document.getElementById("cc-edit-status");
+  const body = {{
+    ticker:               (document.getElementById("cc-edit-ticker").value || "").trim().toUpperCase(),
+    contracts:            parseInt(document.getElementById("cc-edit-contracts").value),
+    strike:               parseFloat(document.getElementById("cc-edit-strike").value),
+    expiry:               document.getElementById("cc-edit-expiry").value,
+    premium_per_contract: parseFloat(document.getElementById("cc-edit-premium").value),
+    opened_date:          document.getElementById("cc-edit-opened-date").value,
+    notes:                document.getElementById("cc-edit-notes").value,
+  }};
+  if (!body.ticker || !body.contracts || !body.strike || !body.expiry ||
+      !body.premium_per_contract || !body.opened_date) {{
+    status.textContent = "⚠ Fill in all required fields.";
+    return;
+  }}
+  status.textContent = "Saving…";
+  try {{
+    const res  = await fetch(`/api/cc-positions/${{_ccEditTargetId}}`, {{
+      method: "PATCH", headers: {{"Content-Type":"application/json"}},
+      body: JSON.stringify(body),
+    }});
+    const data = await res.json();
+    if (!data.ok) {{ status.textContent = "Error: " + data.error; return; }}
+    document.getElementById("cc-edit-overlay").style.display = "none";
+    loadCCPositions();
+  }} catch(e) {{ status.textContent = "Error: " + e.message; }}
 }}
 
 function setCCCloseType(type) {{
