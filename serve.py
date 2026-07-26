@@ -300,7 +300,10 @@ def _run_daily():
     The newsletter itself handles portfolio snapshot, layer drift, earnings/ex-div events,
     and the judgment rubric in a single email.
     """
-    import subprocess
+    import socket, subprocess
+    if socket.gethostname() != "optiplex":
+        print(f"[Scheduler] Not on production host ({socket.gethostname()!r}) — newsletter disabled.")
+        return
     from zoneinfo import ZoneInfo
     from datetime import datetime as _dt
     TZ      = ZoneInfo("America/New_York")
