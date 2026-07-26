@@ -320,16 +320,25 @@ def _run_daily():
     def run():
         with open(LOG, "a") as lf:
             lf.write(f"\n=== SCHEDULER {_dt.now(TZ)} ===\n")
-            for script in ["send_newsletter_main.py", "generate_dashboard.py"]:
-                result = subprocess.run(
-                    [str(VENV_PY), str(PROJECT_DIR / script)],
-                    cwd=str(PROJECT_DIR),
-                    capture_output=True, text=True, timeout=300
-                )
-                lf.write(result.stdout or "")
-                if result.returncode != 0:
-                    lf.write(f"ERROR ({script}): {result.stderr}\n")
-                    return False
+            result = subprocess.run(
+                [str(VENV_PY), str(PROJECT_DIR / "send_newsletter_main.py")],
+                cwd=str(PROJECT_DIR),
+                capture_output=True, text=True, timeout=300
+            )
+            lf.write(result.stdout or "")
+            if result.returncode != 0:
+                lf.write(f"ERROR (send_newsletter_main.py): {result.stderr}\n")
+                return False
+            # Mark sent before dashboard — prevents duplicate email if dashboard fails
+            FLAG.write_text(today)
+            result = subprocess.run(
+                [str(VENV_PY), str(PROJECT_DIR / "generate_dashboard.py")],
+                cwd=str(PROJECT_DIR),
+                capture_output=True, text=True, timeout=300
+            )
+            lf.write(result.stdout or "")
+            if result.returncode != 0:
+                lf.write(f"ERROR (generate_dashboard.py): {result.stderr}\n")
         return True
 
     while True:
@@ -338,7 +347,6 @@ def _run_daily():
         if now.hour >= 7 and not already_ran(today):
             print(f"[Scheduler] Running newsletter for {today}…")
             if run():
-                FLAG.write_text(today)
                 print(f"[Scheduler] Done for {today}.")
                 try:
                     _backup_data()

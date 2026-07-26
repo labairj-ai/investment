@@ -630,13 +630,7 @@ def main(send_email_flag: bool = True):
     b = closes.loc[normalize_ticker(BENCHMARK)]
     spy_change_pct = ((float(b["close_yday"]) - float(b["close_prev"])) / float(b["close_prev"])) * 100.0
 
-    # ── Zero out changes on market holidays / weekends ────────────────────────
-    if _is_market_holiday():
-        holdings["chg_dollars"] = 0.0
-        holdings["chg_pct"]     = 0.0
-        total_change     = 0.0
-        total_change_pct = 0.0
-        spy_change_pct   = 0.0
+
 
     # ── Layer aggregation ─────────────────────────────────────────────────────
     layers = holdings.groupby("LayerLabel", as_index=False).agg(
