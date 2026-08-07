@@ -1319,12 +1319,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 full_text += token
                 _sse("token", {"text": token})
 
-            import re as _re
-            m = _re.search(r'\{.*\}', full_text, _re.DOTALL)
-            if not m:
+            # raw_decode finds the FIRST complete JSON object and stops —
+            # the greedy r'\{.*\}' regex would grab everything up to the
+            # LAST '}' and fail when the model outputs trailing text.
+            try:
+                _dec = json.JSONDecoder()
+                _start = full_text.index('{')
+                insight, _ = _dec.raw_decode(full_text, _start)
+            except (ValueError, json.JSONDecodeError):
                 _sse("error", {"message": "AI returned malformed JSON — try again"})
+                self.wfile.write(b"0\r\n\r\n")
+                self.wfile.flush()
                 return
-            insight = json.loads(m.group(0))
             for field in ("iv_context", "roll_strategy", "timing_advice"):
                 if field in insight:
                     insight[field] = _to_str(insight[field])
@@ -1600,7 +1606,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         intervals = [(divs.index[i] - divs.index[i-1]).days
                                      for i in range(max(1, len(divs)-4), len(divs))]
                         avg_days  = sum(intervals) / len(intervals)
-                        freq      = 4 if avg_days < 100 else (2 if avg_days < 250 else 1)
+                        freq      = (12 if avg_days < 45 else
+                                     6 if avg_days < 75 else
+                                     4 if avg_days < 130 else
+                                     2 if avg_days < 250 else 1)
                         annual_rate = round(float(divs.iloc[-1]) * freq, 4)
             except Exception:
                 pass
@@ -2076,7 +2085,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if scan_running and tickers_scanned > 0 and meta.get("scan_started"):
                 try:
                     started = _dt.strptime(meta["scan_started"], "%Y-%m-%d %H:%M:%S")
-                    elapsed = (_dt.now() - started).total_seconds()
+                    elapsed = max((_dt.now() - started).total_seconds(), 5.0)
                     rate    = tickers_scanned / elapsed
                     if rate > 0:
                         eta_seconds = int((total_tickers - tickers_scanned) / rate)
