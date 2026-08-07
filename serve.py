@@ -1207,9 +1207,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return self._json_error(422, "No qualifying option contracts found to analyze")
             prompt = ai_context(ticker, result, h["shares"], h.get("layer", "?"))
             raw = ollama_client.generate(prompt)
-            # Strip markdown fences that llama3 sometimes adds
-            clean = raw.strip().lstrip("`").lstrip("json").strip("`").strip()
-            insight = json.loads(clean)
+            # Extract the JSON object from whatever the model returns
+            import re as _re
+            m = _re.search(r'\{.*\}', raw, _re.DOTALL)
+            if not m:
+                raise json.JSONDecodeError("no JSON object found", raw, 0)
+            insight = json.loads(m.group(0))
             self._json({"ok": True, "ticker": ticker, "insight": insight, "model": ollama_client.DEFAULT_MODEL})
         except json.JSONDecodeError:
             self._json_error(500, "AI returned malformed JSON — try again")
