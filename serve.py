@@ -40,6 +40,11 @@ _DIV_CACHE_TTL      = 3600
 _EARN_CACHE_TTL     = 3600
 _TIMELINE_CACHE_TTL = 3600
 
+_cc_analyze_cache = {}   # {ticker: {"result": obj, "ts": float}}
+_cc_ai_cache      = {}   # {ticker: {"insight": dict, "model": str, "ts": float}}
+_CC_ANALYZE_TTL   = 300  # 5 minutes — shared between recommendations and AI
+_CC_AI_TTL        = 1800 # 30 minutes — reuse AI insight within a session
+
 # Timestamp until which we report scan_running=True even before the lock
 # file appears — covers the subprocess startup latency (~30-60 s).
 _scan_launching_until = 0.0
@@ -57,6 +62,28 @@ def _cache_set(cache, data):
     cache["data"] = data
     cache["ts"]   = time.time()
     cache["date"] = date.today().isoformat()
+
+
+def _cc_analyze_get(ticker):
+    entry = _cc_analyze_cache.get(ticker)
+    if entry and time.time() - entry["ts"] < _CC_ANALYZE_TTL:
+        return entry["result"]
+    return None
+
+
+def _cc_analyze_set(ticker, result):
+    _cc_analyze_cache[ticker] = {"result": result, "ts": time.time()}
+
+
+def _cc_ai_get(ticker):
+    entry = _cc_ai_cache.get(ticker)
+    if entry and time.time() - entry["ts"] < _CC_AI_TTL:
+        return entry
+    return None
+
+
+def _cc_ai_set(ticker, insight, model):
+    _cc_ai_cache[ticker] = {"insight": insight, "model": model, "ts": time.time()}
 
 
 PORT = 5001
@@ -1145,11 +1172,30 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return self._json_error(404, f"{ticker} not found in holdings")
 
             h      = holdings[ticker]
-            result = analyze(ticker, h["avg_cost"], h["shares"])
+            result = _cc_analyze_get(ticker)
+            if result is None:
+                result = analyze(ticker, h["avg_cost"], h["shares"])
+                if result is not None:
+                    _cc_analyze_set(ticker, result)
 
             if result is None:
                 return self._json({"ok": False, "ticker": ticker,
                                    "error": "No qualifying contracts found in 21–60 DTE window."})
+
+            # Open covered call positions on this ticker (to flag in the UI)
+            open_calls = []
+            try:
+                db = PROJECT_DIR / "out" / "investment.db"
+                conn = sqlite3.connect(str(db), timeout=5)
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    "SELECT strike, expiry FROM cc_positions WHERE ticker=? AND status='open'",
+                    (ticker,)
+                ).fetchall()
+                open_calls = [{"strike": r["strike"], "expiry": r["expiry"]} for r in rows]
+                conn.close()
+            except Exception:
+                pass
 
             recs = []
             for _, row in result["recs"].iterrows():
@@ -1174,6 +1220,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._json({
                 "ok":                True,
                 "ticker":            result["ticker"],
+                "shares":            h["shares"],
                 "current_price":     round(result["current_price"], 2),
                 "avg_cost":          round(result["avg_cost"], 2),
                 "gain_pct":          round(result["gain_pct"], 2),
@@ -1181,7 +1228,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 "strike_floor":      round(result["strike_floor"], 2),
                 "week52_high":       round(result["week52_high"], 2),
                 "week52_high_dt":    result["week52_high_dt"],
+                "hv_rank":           result.get("hv_rank"),
+                "atm_iv":            result.get("atm_iv"),
                 "recs":              recs,
+                "open_calls":        open_calls,
                 "data_mode":         result.get("data_mode", "live"),
                 "dte_extended":      result.get("dte_extended", False),
                 "note":              result.get("note"),
@@ -1217,7 +1267,34 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if ticker not in holdings:
                 return self._json_error(404, f"{ticker} not found in holdings")
             h = holdings[ticker]
-            result = analyze(ticker, h["avg_cost"], h["shares"])
+
+            # Check AI insight cache — send done event immediately if hit
+            cached_ai = _cc_ai_get(ticker)
+            if cached_ai:
+                self.wfile.write(
+                    b"HTTP/1.1 200 OK\r\n"
+                    b"Content-Type: text/event-stream\r\n"
+                    b"Cache-Control: no-cache\r\n"
+                    b"Transfer-Encoding: chunked\r\n"
+                    b"X-Accel-Buffering: no\r\n"
+                    b"Connection: close\r\n"
+                    b"\r\n"
+                )
+                self.wfile.flush()
+                _sse("done", {"ok": True, "ticker": ticker,
+                              "insight": cached_ai["insight"],
+                              "model": cached_ai["model"],
+                              "cached": True})
+                self.wfile.write(b"0\r\n\r\n")
+                self.wfile.flush()
+                return
+
+            # Use cached analyze() result if available; otherwise fetch fresh
+            result = _cc_analyze_get(ticker)
+            if result is None:
+                result = analyze(ticker, h["avg_cost"], h["shares"])
+                if result is not None:
+                    _cc_analyze_set(ticker, result)
             if result is None or result["recs"].empty:
                 return self._json_error(422, "No qualifying option contracts found to analyze")
             prompt = ai_context(ticker, result, h["shares"], h.get("layer", "?"))
@@ -1249,6 +1326,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             for field in ("iv_context", "roll_strategy", "timing_advice"):
                 if field in insight:
                     insight[field] = _to_str(insight[field])
+            _cc_ai_set(ticker, insight, ollama_client.DEFAULT_MODEL)
             _sse("done", {"ok": True, "ticker": ticker, "insight": insight,
                           "model": ollama_client.DEFAULT_MODEL})
             self.wfile.write(b"0\r\n\r\n")

@@ -378,6 +378,71 @@ def _section(title: str, body: str, accent: str = "#1a2340") -> str:
     )
 
 
+def _best_cc_section() -> str:
+    """Return HTML for the best covered call opportunity, or '' if unavailable."""
+    try:
+        from covered_call_rec import analyze, load_holdings as _cc_holdings
+        holdings = _cc_holdings()
+
+        # Exclude tickers that already have an open covered call
+        open_tickers: set = set()
+        try:
+            conn = sqlite3.connect(str(DB_PATH), timeout=5)
+            rows = conn.execute(
+                "SELECT DISTINCT ticker FROM cc_positions WHERE status='open'"
+            ).fetchall()
+            open_tickers = {r[0] for r in rows}
+            conn.close()
+        except Exception:
+            pass
+
+        # Candidates: 100+ shares, no open call — sorted by most contracts first
+        candidates = sorted(
+            [(t, h) for t, h in holdings.items()
+             if h["shares"] >= 100 and t not in open_tickers],
+            key=lambda x: x[1]["shares"], reverse=True,
+        )
+
+        for ticker, info in candidates[:5]:
+            try:
+                result = analyze(ticker, info["avg_cost"], info["shares"])
+                if result is None or result["recs"].empty:
+                    continue
+                clean = result["recs"][~result["recs"]["has_avoid"]]
+                top = clean.iloc[0] if not clean.empty else result["recs"].iloc[0]
+
+                contracts = int(info["shares"] // 100)
+                gross     = float(top["mid"]) * contracts * 100
+                hv_str    = (f" · HV rank {result['hv_rank']:.0f}%"
+                             if result.get("hv_rank") is not None else "")
+                avoid_note = (" <span style='color:#c8102e;font-weight:700;'>📵 AVOID — earnings/ex-div in window</span>"
+                              if bool(top.get("has_avoid")) else "")
+
+                return (
+                    f"<div style='font-size:14px;margin-bottom:10px;'>"
+                    f"<b style='font-size:16px;color:#1a2340;'>{ticker}</b>"
+                    f"&nbsp;·&nbsp;{contracts} contract{'s' if contracts != 1 else ''}"
+                    f"</div>"
+                    f"<div style='display:flex;gap:20px;flex-wrap:wrap;font-size:13px;margin-bottom:10px;'>"
+                    f"<span>Strike <b>${float(top['strike']):.2f}</b></span>"
+                    f"<span>Expiry <b>{top['expiration']}</b> ({int(top['dte'])}d)</span>"
+                    f"<span>Mid <b>${float(top['mid']):.2f}</b></span>"
+                    f"<span>Ann% <b style='color:#1a6e38;'>{float(top['annualized_ret']):.1f}%</b></span>"
+                    f"<span>Gross premium <b>${gross:.0f}</b>{hv_str}</span>"
+                    f"</div>"
+                    f"<div style='font-size:12px;color:#7f8c8d;'>"
+                    f"P/L if called: {float(top['profit_if_called']):+.1f}% vs cost"
+                    f" · Delta: {float(top.get('delta', 0))*100:.1f}%"
+                    f"{avoid_note}"
+                    f"</div>"
+                )
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return ""
+
+
 def build_html(
     report_date: str,
     total_value: float,
@@ -544,6 +609,9 @@ def build_html(
     ]
     if events_html:
         sections.append(_section("⏰ Upcoming Events (Next 3 Days)", events_html, accent="#2980b9"))
+    cc_html = _best_cc_section()
+    if cc_html:
+        sections.append(_section("📞 Top Covered Call Opportunity", cc_html, accent="#6c5ce7"))
     sections.append(_section("🧠 Judgment Health", rubric_table + flags_html))
 
     body = "\n".join(sections)

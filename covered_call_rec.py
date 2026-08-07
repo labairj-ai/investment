@@ -18,12 +18,24 @@ Premium collected is added to effective profit calculation.
 import csv
 import math
 import sys
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import yfinance as yf
 import warnings
 warnings.filterwarnings("ignore")
+
+
+def _yf_retry(fn, retries=2, delay=2.0):
+    for attempt in range(retries + 1):
+        try:
+            return fn()
+        except Exception:
+            if attempt < retries:
+                time.sleep(delay)
+            else:
+                raise
 
 RISK_FREE_RATE = 0.045  # approximate US 10-yr treasury
 
@@ -147,14 +159,14 @@ def analyze(ticker: str, avg_cost: float, shares: float):
     stock = yf.Ticker(ticker)
 
     # Current price: short fetch so it's always today's data
-    price_hist = stock.history(period="2d")
+    price_hist = _yf_retry(lambda: stock.history(period="2d"))
     if price_hist.empty:
         print(f"  [{ticker}] No price data — skipping.")
         return None
     current_price = float(price_hist["Close"].dropna().iloc[-1])
 
     # 52-week high + historical volatility from the same fetch
-    hist = stock.history(period="52wk")
+    hist = _yf_retry(lambda: stock.history(period="52wk"))
     hv_rank = None
     if hist.empty:
         week52_high    = current_price
@@ -180,7 +192,7 @@ def analyze(ticker: str, avg_cost: float, shares: float):
     today = datetime.now().date()
 
     try:
-        all_options = stock.options
+        all_options = _yf_retry(lambda: stock.options)
     except Exception:
         print(f"  [{ticker}] Could not fetch option expirations — skipping.")
         return None
@@ -220,7 +232,7 @@ def analyze(ticker: str, avg_cost: float, shares: float):
             exp_date = datetime.strptime(exp, "%Y-%m-%d").date()
             dte = (exp_date - today).days
             try:
-                calls = stock.option_chain(exp).calls
+                calls = _yf_retry(lambda: stock.option_chain(exp).calls)
             except Exception:
                 continue
 

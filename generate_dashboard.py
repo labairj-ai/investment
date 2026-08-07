@@ -4204,9 +4204,22 @@ async function analyzeCoveredCall() {{
   }}
 }}
 
+function prefillCCLog(ticker, contracts, strike, expiry, premium) {{
+  document.getElementById("cc-log-ticker").value    = ticker;
+  document.getElementById("cc-log-contracts").value = contracts;
+  document.getElementById("cc-log-strike").value    = strike;
+  document.getElementById("cc-log-expiry").value    = expiry;
+  document.getElementById("cc-log-premium").value   = premium.toFixed(2);
+  document.getElementById("cc-log-date").value      = new Date().toISOString().slice(0,10);
+  const details = document.querySelector("#cc-tracker-card details");
+  if (details) details.open = true;
+  document.getElementById("cc-tracker-card").scrollIntoView({{behavior:"smooth"}});
+}}
+
 function renderCC(d) {{
   const fmt  = v => "$" + v.toFixed(2);
   const pct  = v => v.toFixed(1) + "%";
+  const contracts = Math.floor((d.shares || 0) / 100) || 1;
 
   const gainColor = d.gain_pct >= 0 ? "#27ae60" : "#e74c3c";
   const floorNote = d.already_at_target
@@ -4216,6 +4229,15 @@ function renderCC(d) {{
                  : d.current_price >= d.week52_high * 0.80 ? "#e67e22"
                  : "#555";
 
+  let hvHtml = "";
+  if (d.hv_rank != null) {{
+    const hvColor = d.hv_rank >= 70 ? "#27ae60" : d.hv_rank >= 40 ? "#e67e22" : "#e74c3c";
+    const hvLabel = d.hv_rank >= 70 ? "elevated ✓" : d.hv_rank >= 40 ? "moderate" : "compressed";
+    hvHtml = `<span>HV Rank <b style="color:${{hvColor}}">${{d.hv_rank.toFixed(0)}}%</b> <span style="color:#aaa;font-size:11px;">${{hvLabel}}${{d.atm_iv != null ? " · ATM IV " + d.atm_iv.toFixed(1) + "%" : ""}}</span></span>`;
+  }}
+
+  const openStrikesSet = new Set((d.open_calls || []).map(oc => oc.strike + "|" + oc.expiry));
+
   const meta = `
     <div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:14px;font-size:13px;">
       <span>Current <b>${{fmt(d.current_price)}}</b></span>
@@ -4223,6 +4245,7 @@ function renderCC(d) {{
       <span>Gain <b style="color:${{gainColor}}">${{d.gain_pct >= 0 ? "+" : ""}}${{pct(d.gain_pct)}}</b></span>
       <span>52w High <b style="color:${{w52Color}}">${{fmt(d.week52_high)}}</b> <span style="color:#aaa;font-size:11px;">${{d.week52_high_dt}}</span></span>
       <span>Min Strike <b>${{fmt(d.strike_floor)}}</b> <span style="color:#888;font-size:11px;">(${{floorNote}})</span></span>
+      ${{hvHtml}}
     </div>`;
 
   const noteHtml = d.note
@@ -4237,7 +4260,9 @@ function renderCC(d) {{
   }}
 
   const rows = d.recs.map((r, i) => {{
-    const rowBg   = r.has_avoid   ? "background:#fff5f5;"
+    const isLive  = openStrikesSet.has(r.strike + "|" + r.expiration);
+    const rowBg   = isLive        ? "background:#f0fff4;"
+                  : r.has_avoid   ? "background:#fff5f5;"
                   : r.has_caution ? "background:#fffbf0;"
                   : i === 0       ? "background:#f0f7ff;"
                   : "";
@@ -4258,11 +4283,21 @@ function renderCC(d) {{
       return `<div style="font-size:10px;color:${{color}};margin-top:2px;">${{icon}} ${{e.label.replace(/^[📵⚠️\\s]+/, "")}}</div>`;
     }}).join("");
 
+    const liveBadge = isLive
+      ? `<span style="font-size:10px;font-weight:700;color:#27ae60;margin-left:5px;background:#d5f5e3;padding:1px 5px;border-radius:3px;">LIVE</span>`
+      : "";
+    const logBtn = isLive ? "" :
+      `<button onclick="prefillCCLog('${{d.ticker}}', ${{contracts}}, ${{r.strike}}, '${{r.expiration}}', ${{r.mid}})"
+         style="font-size:10px;padding:2px 7px;background:#f0f7ff;border:1px solid #6c5ce7;border-radius:4px;cursor:pointer;color:#6c5ce7;font-weight:600;margin-top:4px;display:block;">
+         Log →
+       </button>`;
+
     return `<tr style="${{rowBg}}border-bottom:1px solid #f2f4f7;">
       <td style="padding:8px 10px;">
-        <span style="font-weight:${{i===0?"700":"400"}}">${{r.expiration}}</span>
+        <span style="font-weight:${{i===0?"700":"400"}}">${{r.expiration}}</span>${{liveBadge}}
         ${{blackout}}
         ${{riskLines}}
+        ${{logBtn}}
       </td>
       <td style="padding:8px 10px;">${{fmt(r.strike)}}</td>
       <td style="padding:8px 10px;color:#7f8c8d;">${{r.dte}}d</td>
