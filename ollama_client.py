@@ -10,7 +10,7 @@ def generate(prompt, model=DEFAULT_MODEL, temperature=0.3):
         "model": model,
         "prompt": prompt,
         "stream": False,
-        "options": {"temperature": temperature},
+        "options": {"temperature": temperature, "num_predict": 1024},
     }).encode()
     req = urllib.request.Request(
         f"{OLLAMA_URL}/api/generate",
