@@ -459,6 +459,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._handle_buffett_analysis(parse_qs(parsed.query))
         elif parsed.path == "/api/cc-ai-analysis":
             self._handle_cc_ai_analysis(parse_qs(parsed.query))
+        elif parsed.path == "/api/cc-evaluate":
+            self._handle_cc_evaluate()
         elif parsed.path == "/api/cc-positions":
             self._handle_cc_positions_get()
         elif parsed.path == "/api/lots":
@@ -1345,6 +1347,51 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.wfile.flush()
             except Exception:
                 pass
+
+    def _handle_cc_evaluate(self):
+        try:
+            from covered_call_rec import evaluate_open_position
+            db_path = Path(__file__).parent / "out" / "investment.db"
+            with sqlite3.connect(db_path) as con:
+                rows = con.execute(
+                    "SELECT id, ticker, contracts, strike, expiry, "
+                    "premium_per_contract, current_mark FROM cc_positions "
+                    "WHERE status='open' ORDER BY expiry"
+                ).fetchall()
+
+            if not rows:
+                return self._json({"ok": True, "evaluations": []})
+
+            evaluations = []
+            for (pos_id, ticker, contracts, strike, expiry,
+                 premium_per_contract, current_mark) in rows:
+                try:
+                    ev = evaluate_open_position(
+                        ticker=ticker,
+                        strike=float(strike),
+                        expiry=expiry,
+                        original_premium=float(premium_per_contract),
+                        current_mark=float(current_mark) if current_mark is not None else None,
+                    )
+                    ev["id"]        = pos_id
+                    ev["ticker"]    = ticker
+                    ev["contracts"] = contracts
+                    ev["strike"]    = float(strike)
+                    ev["expiry"]    = expiry
+                    ev["premium"]   = float(premium_per_contract)
+                    evaluations.append(ev)
+                except Exception as e:
+                    evaluations.append({
+                        "id": pos_id, "ticker": ticker, "contracts": contracts,
+                        "strike": float(strike), "expiry": expiry,
+                        "premium": float(premium_per_contract),
+                        "error": str(e),
+                        "recommendation": "unknown", "reason": str(e),
+                    })
+
+            self._json({"ok": True, "evaluations": evaluations})
+        except Exception as e:
+            self._json_error(500, str(e))
 
     def _handle_dividend_timeline(self):
         try:

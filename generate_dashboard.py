@@ -1251,6 +1251,7 @@ def build_dashboard(portfolio, layers, holdings):
     <h2 style="display:flex;align-items:center;justify-content:space-between;">
       Covered Call Position Tracker
       <span style="display:flex;gap:6px;align-items:center;">
+        <button onclick="evaluateCCPositions()" id="cc-eval-btn" style="font-size:11px;padding:4px 12px;background:#e8f5e9;border:1px solid #a5d6a7;border-radius:5px;cursor:pointer;color:#2e7d32;font-weight:600;">🔄 Evaluate Positions</button>
         <button onclick="importCCFromCSV()" style="font-size:11px;padding:4px 12px;background:#f4f6f9;border:1px solid #dde;border-radius:5px;cursor:pointer;color:#555;font-weight:500;">⬆ Import CSV</button>
         <button onclick="loadCCPositions()" style="font-size:11px;padding:4px 12px;background:#f4f6f9;border:1px solid #dde;border-radius:5px;cursor:pointer;color:#555;font-weight:500;">↻ Refresh</button>
       </span>
@@ -1291,6 +1292,12 @@ def build_dashboard(portfolio, layers, holdings):
     <!-- Positions table -->
     <div id="cc-tracker-status" style="font-size:12px;color:#7f8c8d;">Loading…</div>
     <div id="cc-tracker-results"></div>
+
+    <!-- Evaluate positions panel -->
+    <div id="cc-eval-panel" style="display:none;margin-top:1rem;border:1.5px solid #27ae60;border-radius:8px;padding:1rem;background:#f0fdf4;">
+      <div style="font-weight:700;color:#27ae60;margin-bottom:0.75rem;font-size:14px;">🔄 Position Evaluations</div>
+      <div id="cc-eval-content"></div>
+    </div>
   </div>
 
   <!-- Dividend Timeline Chart -->
@@ -4214,6 +4221,67 @@ function prefillCCLog(ticker, contracts, strike, expiry, premium) {{
   const details = document.querySelector("#cc-tracker-card details");
   if (details) details.open = true;
   document.getElementById("cc-tracker-card").scrollIntoView({{behavior:"smooth"}});
+}}
+
+async function evaluateCCPositions() {{
+  const btn   = document.getElementById("cc-eval-btn");
+  const panel = document.getElementById("cc-eval-panel");
+  const cont  = document.getElementById("cc-eval-content");
+  btn.disabled = true;
+  btn.textContent = "⏳ Evaluating…";
+  panel.style.display = "block";
+  cont.innerHTML = '<div style="font-size:12px;color:#555;">Fetching live data for open positions…</div>';
+  try {{
+    const res  = await fetch("/api/cc-evaluate");
+    const data = await res.json();
+    if (!data.ok) {{
+      cont.innerHTML = `<div style="color:#c0392b;font-size:13px;">Error: ${{data.error || "Unknown error"}}</div>`;
+      return;
+    }}
+    if (!data.evaluations || data.evaluations.length === 0) {{
+      cont.innerHTML = '<div style="font-size:13px;color:#555;">No open positions found.</div>';
+      return;
+    }}
+    const badgeStyle = {{
+      hold:     "background:#e8f5e9;color:#2e7d32;border:1px solid #a5d6a7",
+      roll:     "background:#fff3e0;color:#e65100;border:1px solid #ffcc80",
+      buy_back: "background:#fdecea;color:#c62828;border:1px solid #ef9a9a",
+      unknown:  "background:#f4f6f9;color:#555;border:1px solid #dde",
+    }};
+    const badgeLabel = {{ hold:"HOLD", roll:"ROLL", buy_back:"BUY BACK", unknown:"?" }};
+    const rows = data.evaluations.map(ev => {{
+      const rec    = ev.recommendation || "unknown";
+      const bStyle = badgeStyle[rec] || badgeStyle.unknown;
+      const bLabel = badgeLabel[rec] || rec.toUpperCase();
+      const badge  = `<span style="font-size:11px;font-weight:700;padding:3px 10px;border-radius:12px;${{bStyle}}">${{bLabel}}</span>`;
+      const price  = ev.current_price != null ? `${{ev.current_price.toFixed(2)}}` : "—";
+      const mark   = ev.current_mark  != null ? `${{ev.current_mark.toFixed(2)}}` : "—";
+      const delta  = ev.delta         != null ? `Δ${{(ev.delta*100).toFixed(0)}}%` : "";
+      const dte    = ev.dte           != null ? `${{ev.dte}}d` : "";
+      const pct    = ev.pct_captured  != null ? `${{ev.pct_captured.toFixed(0)}}% cap` : "";
+      const meta   = [price, delta, dte, pct].filter(Boolean).join(" · ");
+      const avoid  = ev.has_avoid ? ' <span style="font-size:10px;color:#c62828;">⚠ event risk</span>' : "";
+      const errMsg = ev.error ? `<div style="font-size:11px;color:#c0392b;margin-top:3px;">${{ev.error}}</div>` : "";
+      return `<div style="display:flex;align-items:flex-start;gap:10px;padding:10px 0;border-bottom:1px solid #d4edda;">
+        <div style="min-width:90px">
+          <span style="font-weight:700;font-size:14px;">${{ev.ticker}}</span>
+          <span style="font-size:11px;color:#777;margin-left:4px;">${{ev.contracts}}× $${{ev.strike}} ${{ev.expiry}}</span>
+          ${{avoid}}
+        </div>
+        <div style="flex:1">
+          <div style="margin-bottom:4px;">${{badge}} <span style="font-size:12px;color:#444;margin-left:6px;">${{ev.reason || ""}}</span></div>
+          <div style="font-size:11px;color:#888;">${{meta}} · mark ${{mark}}</div>
+          ${{errMsg}}
+        </div>
+      </div>`;
+    }}).join("");
+    cont.innerHTML = rows;
+  }} catch(e) {{
+    cont.innerHTML = `<div style="color:#c0392b;font-size:13px;">Error: ${{e.message}}</div>`;
+  }} finally {{
+    btn.disabled = false;
+    btn.textContent = "🔄 Evaluate Positions";
+  }}
 }}
 
 function renderCC(d) {{

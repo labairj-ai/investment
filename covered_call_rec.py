@@ -426,6 +426,112 @@ def print_report(r: dict) -> None:
     print()
 
 
+# ── Open position evaluator ──────────────────────────────────────────────────
+
+def _eval_recommendation(delta, dte, pct_captured, has_avoid, current_price, strike, risk_events):
+    """Return (recommendation, reason) for an open covered call position."""
+
+    # Priority 1: risk event (earnings/ex-div) in window → remove it
+    if has_avoid:
+        label = next((e["label"] for e in risk_events if e["severity"] == "avoid"), "risk event")
+        clean = label.replace("📵 AVOID — ", "").replace("📵 AVOID—", "")
+        return "buy_back", f"Close to remove event risk: {clean}"
+
+    # Priority 2: most of premium captured → cheap to close
+    if pct_captured is not None and pct_captured >= 80:
+        return "buy_back", f"{pct_captured:.0f}% of premium captured — cost to close is minimal"
+
+    # Priority 3: stock has moved through or very near the strike
+    if current_price >= strike:
+        return "roll", f"Stock ${current_price:.2f} is above strike ${strike:.2f} — roll up and out"
+    if current_price >= strike * 0.97:
+        return "roll", f"Stock ${current_price:.2f} within 3% of strike — roll up to protect position"
+
+    # Priority 4: delta too high → assignment likely
+    if delta is not None and delta >= 0.50:
+        return "roll", f"Delta {delta*100:.0f}% — high assignment probability, roll up or out"
+
+    # Priority 5: near expiry with meaningful assignment risk
+    if dte is not None and dte <= 21 and delta is not None and delta >= 0.30:
+        return "roll", f"{dte}d to expiry with {delta*100:.0f}% delta — roll out before assignment risk grows"
+
+    # Priority 6: very near expiry, nearly all captured — close it
+    if dte is not None and dte <= 5 and pct_captured is not None and pct_captured >= 60:
+        return "buy_back", f"{dte}d to expiry, {pct_captured:.0f}% captured — close and redeploy"
+
+    # Otherwise: hold
+    parts = []
+    if delta is not None:
+        parts.append(f"delta {delta*100:.0f}%")
+    if dte is not None:
+        parts.append(f"{dte}d remaining")
+    if pct_captured is not None:
+        parts.append(f"{pct_captured:.0f}% captured")
+    return "hold", "No action needed — " + ", ".join(parts) if parts else "Hold position"
+
+
+def evaluate_open_position(ticker: str, strike: float, expiry: str,
+                            original_premium: float, current_mark) -> dict:
+    """
+    Evaluate an open covered call position against current market data.
+    Returns metrics + recommendation: 'hold' | 'roll' | 'buy_back'.
+    """
+    stock = yf.Ticker(ticker)
+
+    price_hist = _yf_retry(lambda: stock.history(period="2d"))
+    if price_hist.empty:
+        raise ValueError(f"No price data for {ticker}")
+    current_price = float(price_hist["Close"].dropna().iloc[-1])
+
+    today    = datetime.now().date()
+    exp_date = datetime.strptime(expiry, "%Y-%m-%d").date()
+    dte      = (exp_date - today).days
+
+    # Fetch live option data for this specific expiry/strike
+    delta = None
+    live_mark = current_mark  # use stored mark as fallback
+    try:
+        chain = _yf_retry(lambda: stock.option_chain(expiry).calls)
+        # Match by strike; fall back to nearest if exact not found
+        exact = chain[abs(chain["strike"] - strike) < 0.01]
+        row   = exact if not exact.empty else chain.iloc[(chain["strike"] - strike).abs().argsort()[:1]]
+        if not row.empty:
+            bid = float(row["bid"].values[0])
+            ask = float(row["ask"].values[0])
+            if bid > 0 or ask > 0:
+                live_mark = (bid + ask) / 2
+            iv = float(row["impliedVolatility"].values[0])
+            if iv > 0.01 and dte > 0:
+                delta = call_delta(current_price, strike, dte / 365, iv)
+    except Exception:
+        pass
+
+    risk_events = get_risk_events(stock, today, exp_date)
+    has_avoid   = any(e["severity"] == "avoid" for e in risk_events)
+
+    pct_captured = None
+    if live_mark is not None and original_premium > 0:
+        pct_captured = max(0.0, (original_premium - live_mark) / original_premium * 100)
+
+    rec, reason = _eval_recommendation(
+        delta=delta, dte=dte, pct_captured=pct_captured,
+        has_avoid=has_avoid, current_price=current_price,
+        strike=strike, risk_events=risk_events,
+    )
+
+    return {
+        "current_price": round(current_price, 2),
+        "current_mark":  round(live_mark, 2) if live_mark is not None else None,
+        "delta":         round(delta, 3) if delta is not None else None,
+        "dte":           dte,
+        "pct_captured":  round(pct_captured, 1) if pct_captured is not None else None,
+        "risk_events":   risk_events,
+        "has_avoid":     has_avoid,
+        "recommendation": rec,
+        "reason":         reason,
+    }
+
+
 # ── Ollama AI context builder ─────────────────────────────────────────────────
 
 def ai_context(ticker, result, shares, layer):
