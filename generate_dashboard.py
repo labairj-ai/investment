@@ -4262,6 +4262,16 @@ async function evaluateCCPositions() {{
       const meta   = [price, delta, dte, pct].filter(Boolean).join(" · ");
       const avoid  = ev.has_avoid ? ' <span style="font-size:10px;color:#c62828;">⚠ event risk</span>' : "";
       const errMsg = ev.error ? `<div style="font-size:11px;color:#c0392b;margin-top:3px;">${{ev.error}}</div>` : "";
+      let nextHtml = "";
+      if (ev.next_contract) {{
+        const nc  = ev.next_contract;
+        const ncLabel = rec === "roll" ? "Roll into" : "Then write";
+        const ncDelta = nc.delta != null ? ` · Δ${{(nc.delta*100).toFixed(0)}}%` : "";
+        nextHtml = `<div style="margin-top:5px;padding:5px 8px;background:#fffbea;border:1px solid #ffe082;border-radius:5px;font-size:11px;color:#5d4037;">` +
+          `<span style="font-weight:700;">${{ncLabel}}:</span> ` +
+          `$${{nc.strike}} call · ${{nc.expiry}} (${{nc.dte}}d) · mid $${{nc.mid.toFixed(2)}} (${{nc.premium_pct.toFixed(2)}}%${{ncDelta}})` +
+          `</div>`;
+      }}
       return `<div style="display:flex;align-items:flex-start;gap:10px;padding:10px 0;border-bottom:1px solid #d4edda;">
         <div style="min-width:90px">
           <span style="font-weight:700;font-size:14px;">${{ev.ticker}}</span>
@@ -4271,6 +4281,7 @@ async function evaluateCCPositions() {{
         <div style="flex:1">
           <div style="margin-bottom:4px;">${{badge}} <span style="font-size:12px;color:#444;margin-left:6px;">${{ev.reason || ""}}</span></div>
           <div style="font-size:11px;color:#888;">${{meta}} · mark ${{mark}}</div>
+          ${{nextHtml}}
           ${{errMsg}}
         </div>
       </div>`;

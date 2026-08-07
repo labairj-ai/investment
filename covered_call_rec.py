@@ -470,11 +470,65 @@ def _eval_recommendation(delta, dte, pct_captured, has_avoid, current_price, str
     return "hold", "No action needed — " + ", ".join(parts) if parts else "Hold position"
 
 
+def _suggest_next_call(stock, min_strike: float, current_price: float) -> dict | None:
+    """
+    Scan upcoming expiries (14–75 DTE) and return the best call to write next.
+    Targets delta 0.15–0.40 with strike >= min_strike, ranked by premium_pct.
+    """
+    today = datetime.now().date()
+    best  = None
+    try:
+        expirations = _yf_retry(lambda: stock.options)
+        for exp in expirations:
+            exp_date = datetime.strptime(exp, "%Y-%m-%d").date()
+            dte_candidate = (exp_date - today).days
+            if dte_candidate < 14 or dte_candidate > 75:
+                continue
+            try:
+                calls = _yf_retry(lambda: stock.option_chain(exp).calls)
+                calls = calls[calls["strike"] >= min_strike]
+                calls = calls[(calls["bid"] > 0) & (calls["ask"] > 0)]
+                if calls.empty:
+                    continue
+                for _, row in calls.iterrows():
+                    s   = float(row["strike"])
+                    bid = float(row["bid"])
+                    ask = float(row["ask"])
+                    mid = (bid + ask) / 2
+                    iv  = float(row.get("impliedVolatility", 0) or 0)
+                    d   = None
+                    if iv > 0.01 and dte_candidate > 0:
+                        d = call_delta(current_price, s, dte_candidate / 365, iv)
+                    if d is None or not (0.15 <= d <= 0.40):
+                        continue
+                    if mid < 0.20:
+                        continue
+                    score = mid / s * 100  # premium_pct — rank by this
+                    if best is None or score > best["_score"]:
+                        best = {
+                            "expiry":      exp,
+                            "strike":      round(s, 2),
+                            "dte":         dte_candidate,
+                            "mid":         round(mid, 2),
+                            "delta":       round(d, 3),
+                            "premium_pct": round(score, 2),
+                            "_score":      score,
+                        }
+            except Exception:
+                continue
+    except Exception:
+        pass
+    if best:
+        best.pop("_score")
+    return best
+
+
 def evaluate_open_position(ticker: str, strike: float, expiry: str,
                             original_premium: float, current_mark) -> dict:
     """
     Evaluate an open covered call position against current market data.
     Returns metrics + recommendation: 'hold' | 'roll' | 'buy_back'.
+    For roll/buy_back also returns next_contract suggestion.
     """
     stock = yf.Ticker(ticker)
 
@@ -519,16 +573,27 @@ def evaluate_open_position(ticker: str, strike: float, expiry: str,
         strike=strike, risk_events=risk_events,
     )
 
+    # Suggest the next contract to write for actionable recommendations
+    next_contract = None
+    if rec == "roll":
+        # Must roll up to at least the current strike or current price (whichever higher)
+        min_s = max(strike, current_price * 1.01)
+        next_contract = _suggest_next_call(stock, min_s, current_price)
+    elif rec == "buy_back":
+        # After closing, suggest a fresh OTM call (at least 3% above current price)
+        next_contract = _suggest_next_call(stock, current_price * 1.03, current_price)
+
     return {
-        "current_price": round(current_price, 2),
-        "current_mark":  round(live_mark, 2) if live_mark is not None else None,
-        "delta":         round(delta, 3) if delta is not None else None,
-        "dte":           dte,
-        "pct_captured":  round(pct_captured, 1) if pct_captured is not None else None,
-        "risk_events":   risk_events,
-        "has_avoid":     has_avoid,
+        "current_price":  round(current_price, 2),
+        "current_mark":   round(live_mark, 2) if live_mark is not None else None,
+        "delta":          round(delta, 3) if delta is not None else None,
+        "dte":            dte,
+        "pct_captured":   round(pct_captured, 1) if pct_captured is not None else None,
+        "risk_events":    risk_events,
+        "has_avoid":      has_avoid,
         "recommendation": rec,
         "reason":         reason,
+        "next_contract":  next_contract,
     }
 
 
