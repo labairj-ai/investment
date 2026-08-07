@@ -11,14 +11,14 @@ def generate(prompt, model=DEFAULT_MODEL, temperature=0.3):
         "prompt": prompt,
         "stream": False,
         "format": "json",
-        "options": {"temperature": temperature, "num_predict": 2048},
+        "options": {"temperature": temperature, "num_predict": 800},
     }).encode()
     req = urllib.request.Request(
         f"{OLLAMA_URL}/api/generate",
         data=payload,
         headers={"Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(req, timeout=60) as r:
+    with urllib.request.urlopen(req, timeout=180) as r:
         return json.loads(r.read())["response"].strip()
 
 
