@@ -4096,20 +4096,50 @@ function onCCTickerChange(val) {{
 async function getAIAnalysis() {{
   const ticker = document.getElementById("cc-ticker").value;
   if (!ticker) {{ alert("Select a ticker first, then click Get Recommendations to load options data."); return; }}
-  const btn   = document.getElementById("cc-ai-btn");
-  const panel = document.getElementById("cc-ai-panel");
+  const btn     = document.getElementById("cc-ai-btn");
+  const panel   = document.getElementById("cc-ai-panel");
+  const content = document.getElementById("cc-ai-content");
   btn.disabled = true;
   btn.textContent = "⏳ Analyzing…";
-  panel.style.display = "none";
+  panel.style.display = "block";
+  content.innerHTML =
+    `<pre id="cc-ai-stream" style="margin:0;font-size:11px;color:#555;white-space:pre-wrap;` +
+    `word-break:break-word;max-height:220px;overflow-y:auto;background:#f4f4f4;` +
+    `padding:0.6rem;border-radius:5px;line-height:1.5"></pre>`;
+  const streamEl = document.getElementById("cc-ai-stream");
   try {{
-    const res  = await fetch("/api/cc-ai-analysis?ticker=" + ticker);
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "AI analysis failed");
-    renderAIInsights(data);
+    const res = await fetch("/api/cc-ai-analysis?ticker=" + ticker);
+    if (!res.ok) {{
+      const err = await res.json().catch(() => ({{error: res.statusText}}));
+      throw new Error(err.error || "AI analysis failed");
+    }}
+    const reader  = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    while (true) {{
+      const {{ done, value }} = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, {{ stream: true }});
+      const parts = buf.split("\n\n");
+      buf = parts.pop();
+      for (const part of parts) {{
+        const evMatch   = part.match(/^event: (\S+)/m);
+        const dataMatch = part.match(/^data: (.+)/ms);
+        if (!evMatch || !dataMatch) continue;
+        const evName = evMatch[1];
+        const evData = JSON.parse(dataMatch[1]);
+        if (evName === "token") {{
+          streamEl.textContent += evData.text;
+          streamEl.scrollTop = streamEl.scrollHeight;
+        }} else if (evName === "done") {{
+          renderAIInsights(evData);
+        }} else if (evName === "error") {{
+          throw new Error(evData.message);
+        }}
+      }}
+    }}
   }} catch(e) {{
-    document.getElementById("cc-ai-content").innerHTML =
-      `<p style="color:#e74c3c;margin:0">Analysis failed: ${{e.message}}</p>`;
-    panel.style.display = "block";
+    content.innerHTML = `<p style="color:#e74c3c;margin:0">Analysis failed: ${{e.message}}</p>`;
   }} finally {{
     btn.disabled = false;
     btn.textContent = "🤖 AI Analysis";

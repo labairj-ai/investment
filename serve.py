@@ -1196,6 +1196,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self._json_error(400, "Missing ticker parameter")
         if not ollama_client.available():
             return self._json_error(503, "Ollama not available — make sure ollama is running on the server")
+
+        def _sse(event, data):
+            msg = f"event: {event}\ndata: {json.dumps(data)}\n\n"
+            self.wfile.write(msg.encode())
+            self.wfile.flush()
+
+        def _to_str(v):
+            if isinstance(v, str):   return v
+            if isinstance(v, dict):  return " ".join(str(x) for x in v.values())
+            if isinstance(v, list):  return "; ".join(str(x) for x in v)
+            return str(v)
+
         try:
             from covered_call_rec import analyze, load_holdings, ai_context
             holdings = load_holdings()
@@ -1206,30 +1218,38 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if result is None or result["recs"].empty:
                 return self._json_error(422, "No qualifying option contracts found to analyze")
             prompt = ai_context(ticker, result, h["shares"], h.get("layer", "?"))
-            raw = ollama_client.generate(prompt)
-            # Extract the JSON object from whatever the model returns
+
+            # Switch to SSE now that we know we have valid data to stream
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("X-Accel-Buffering", "no")
+            self.end_headers()
+
+            full_text = ""
+            for token in ollama_client.stream_generate(prompt):
+                full_text += token
+                _sse("token", {"text": token})
+
             import re as _re
-            m = _re.search(r'\{.*\}', raw, _re.DOTALL)
+            m = _re.search(r'\{.*\}', full_text, _re.DOTALL)
             if not m:
-                raise json.JSONDecodeError("no JSON object found", raw, 0)
+                _sse("error", {"message": "AI returned malformed JSON — try again"})
+                return
             insight = json.loads(m.group(0))
-            # Normalize any field the model returned as a dict/list instead of a string
-            def _to_str(v):
-                if isinstance(v, str):
-                    return v
-                if isinstance(v, dict):
-                    return " ".join(str(x) for x in v.values())
-                if isinstance(v, list):
-                    return "; ".join(str(x) for x in v)
-                return str(v)
             for field in ("iv_context", "roll_strategy", "timing_advice"):
                 if field in insight:
                     insight[field] = _to_str(insight[field])
-            self._json({"ok": True, "ticker": ticker, "insight": insight, "model": ollama_client.DEFAULT_MODEL})
+            _sse("done", {"ok": True, "ticker": ticker, "insight": insight,
+                          "model": ollama_client.DEFAULT_MODEL})
         except json.JSONDecodeError:
-            self._json_error(500, "AI returned malformed JSON — try again")
+            _sse("error", {"message": "AI returned malformed JSON — try again"})
         except Exception as e:
-            self._json_error(500, str(e))
+            # If SSE headers weren't sent yet, fall back to JSON error
+            try:
+                _sse("error", {"message": str(e)})
+            except Exception:
+                self._json_error(500, str(e))
 
     def _handle_dividend_timeline(self):
         try:
