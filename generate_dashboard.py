@@ -1222,7 +1222,7 @@ def build_dashboard(portfolio, layers, holdings):
   <div class="card" id="cc-card">
     <h2>Covered Call Analyzer</h2>
     <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:14px;">
-      <select id="cc-ticker" style="padding:8px 12px;border:1px solid #dde;border-radius:6px;font-size:13px;background:#fff;color:#2c3e50;min-width:160px;">
+      <select id="cc-ticker" onchange="onCCTickerChange(this.value)" style="padding:8px 12px;border:1px solid #dde;border-radius:6px;font-size:13px;background:#fff;color:#2c3e50;min-width:160px;">
         <option value="">Select a holding…</option>
         {cc_ticker_options}
       </select>
@@ -1230,8 +1230,8 @@ def build_dashboard(portfolio, layers, holdings):
         style="padding:8px 18px;background:#1a2340;color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;">
         Get Recommendations
       </button>
-      <button id="cc-ai-btn" onclick="getAIAnalysis()"
-        style="padding:8px 18px;background:#6c5ce7;color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;">
+      <button id="cc-ai-btn" onclick="getAIAnalysis()" disabled
+        style="padding:8px 18px;background:#b0a8e0;color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:not-allowed;opacity:0.6;">
         🤖 AI Analysis
       </button>
       <span id="cc-status" style="font-size:12px;color:#7f8c8d;"></span>
@@ -4077,6 +4077,22 @@ async function confirmLayerChange() {{
 }}
 
 // ── Covered Call AI Analysis ──────────────────────────────────────────────
+function onCCTickerChange(val) {{
+  const btn = document.getElementById("cc-ai-btn");
+  if (val) {{
+    btn.disabled = false;
+    btn.style.background = "#6c5ce7";
+    btn.style.cursor = "pointer";
+    btn.style.opacity = "1";
+  }} else {{
+    btn.disabled = true;
+    btn.style.background = "#b0a8e0";
+    btn.style.cursor = "not-allowed";
+    btn.style.opacity = "0.6";
+  }}
+  document.getElementById("cc-ai-panel").style.display = "none";
+}}
+
 async function getAIAnalysis() {{
   const ticker = document.getElementById("cc-ticker").value;
   if (!ticker) {{ alert("Select a ticker first, then click Get Recommendations to load options data."); return; }}
