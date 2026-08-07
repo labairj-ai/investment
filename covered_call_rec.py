@@ -101,8 +101,8 @@ def min_strike(current_price: float, avg_cost: float) -> float:
 def get_risk_events(stock: yf.Ticker, today, exp_date) -> list:
     """
     Returns risk events that fall within [today, exp_date]:
-      - AVOID  (earnings): option spans an earnings report
-      - CAUTION (ex-div):  ex-dividend before expiry → early assignment risk
+      - AVOID (earnings): option spans an earnings report
+      - AVOID (ex-div):   ex-dividend before expiry → early assignment risk
     """
     events = []
     try:
@@ -133,9 +133,9 @@ def get_risk_events(stock: yf.Ticker, today, exp_date) -> list:
                 days_to_ex = (raw_ex - today).days
                 events.append({
                     "type":     "ex_div",
-                    "severity": "caution",
+                    "severity": "avoid",
                     "date":     str(raw_ex),
-                    "label":    f"⚠️  CAUTION — ex-div {str(raw_ex)} ({days_to_ex}d away, early assignment risk)",
+                    "label":    f"📵 AVOID — ex-div {str(raw_ex)} ({days_to_ex}d away, early assignment risk)",
                 })
     except Exception:
         pass
@@ -446,8 +446,9 @@ def ai_context(ticker, result, shares, layer):
 
     lines.append("TOP CONTRACTS (sorted by annualized return):")
     for i, (_, row) in enumerate(result["recs"].head(5).iterrows()):
-        risk = " [EARNINGS RISK - AVOID]" if row.get("has_avoid") else ""
-        risk += " [EX-DIV RISK - early assignment possible]" if row.get("has_caution") else ""
+        risk_types = {e["type"] for e in (row.get("risk_events") or [])}
+        risk = " [EARNINGS RISK - AVOID]" if "earnings" in risk_types else ""
+        risk += " [EX-DIV RISK - AVOID, early assignment]" if "ex_div" in risk_types else ""
         spread = float(row['ask']) - float(row['bid'])
         spread_note = f" [WIDE SPREAD ${spread:.2f} — illiquid]" if spread > float(row['mid']) * 0.30 else ""
         lines.append(
