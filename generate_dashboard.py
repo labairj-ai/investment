@@ -4135,7 +4135,10 @@ async function getAIAnalysis() {{
         if (!evMatch || !dataMatch) continue;
         const evName = evMatch[1];
         const evData = JSON.parse(dataMatch[1]);
-        if (evName === "token") {{
+        if (evName === "status") {{
+          streamEl.textContent = evData.message;
+        }} else if (evName === "token") {{
+          if (streamEl.textContent === "Sending to AI…") streamEl.textContent = "";
           streamEl.textContent += evData.text;
           streamEl.scrollTop = streamEl.scrollHeight;
         }} else if (evName === "done") {{

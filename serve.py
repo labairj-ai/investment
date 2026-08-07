@@ -1313,6 +1313,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 b"\r\n"
             )
             self.wfile.flush()
+            # Send an immediate keepalive so Tailscale Funnel doesn't drop the
+            # connection during the 10-60s cold-start while Ollama loads the model.
+            _sse("status", {"message": "Sending to AI…"})
 
             full_text = ""
             for token in ollama_client.stream_generate(prompt):
