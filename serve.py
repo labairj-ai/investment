@@ -1198,8 +1198,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self._json_error(503, "Ollama not available — make sure ollama is running on the server")
 
         def _sse(event, data):
-            msg = f"event: {event}\ndata: {json.dumps(data)}\n\n"
-            self.wfile.write(msg.encode())
+            # Write as an HTTP/1.1 chunk so Tailscale Funnel forwards it immediately
+            # instead of buffering the whole HTTP/1.0 response body.
+            body = f"event: {event}\ndata: {json.dumps(data)}\n\n".encode()
+            chunk = f"{len(body):x}\r\n".encode() + body + b"\r\n"
+            self.wfile.write(chunk)
             self.wfile.flush()
 
         def _to_str(v):
@@ -1219,12 +1222,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return self._json_error(422, "No qualifying option contracts found to analyze")
             prompt = ai_context(ticker, result, h["shares"], h.get("layer", "?"))
 
-            # Switch to SSE now that we know we have valid data to stream
-            self.send_response(200)
-            self.send_header("Content-Type", "text/event-stream")
-            self.send_header("Cache-Control", "no-cache")
-            self.send_header("X-Accel-Buffering", "no")
-            self.end_headers()
+            # Write HTTP/1.1 SSE headers manually so Tailscale Funnel streams
+            # chunks through instead of buffering the HTTP/1.0 body.
+            self.wfile.write(
+                b"HTTP/1.1 200 OK\r\n"
+                b"Content-Type: text/event-stream\r\n"
+                b"Cache-Control: no-cache\r\n"
+                b"Transfer-Encoding: chunked\r\n"
+                b"X-Accel-Buffering: no\r\n"
+                b"Connection: close\r\n"
+                b"\r\n"
+            )
+            self.wfile.flush()
 
             full_text = ""
             for token in ollama_client.stream_generate(prompt):
@@ -1242,14 +1251,22 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     insight[field] = _to_str(insight[field])
             _sse("done", {"ok": True, "ticker": ticker, "insight": insight,
                           "model": ollama_client.DEFAULT_MODEL})
+            self.wfile.write(b"0\r\n\r\n")
+            self.wfile.flush()
         except json.JSONDecodeError:
-            _sse("error", {"message": "AI returned malformed JSON — try again"})
+            try:
+                _sse("error", {"message": "AI returned malformed JSON — try again"})
+                self.wfile.write(b"0\r\n\r\n")
+                self.wfile.flush()
+            except Exception:
+                pass
         except Exception as e:
-            # If SSE headers weren't sent yet, fall back to JSON error
             try:
                 _sse("error", {"message": str(e)})
+                self.wfile.write(b"0\r\n\r\n")
+                self.wfile.flush()
             except Exception:
-                self._json_error(500, str(e))
+                pass
 
     def _handle_dividend_timeline(self):
         try:
