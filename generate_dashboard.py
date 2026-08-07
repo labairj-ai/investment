@@ -4120,7 +4120,7 @@ async function getAIAnalysis() {{
       const {{ done, value }} = await reader.read();
       if (done) break;
       buf += decoder.decode(value, {{ stream: true }});
-      const parts = buf.split("\n\n");
+      const parts = buf.split("\\n\\n");
       buf = parts.pop();
       for (const part of parts) {{
         const evMatch   = part.match(/^event: (\S+)/m);
