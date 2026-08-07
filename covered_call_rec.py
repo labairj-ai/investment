@@ -391,6 +391,46 @@ def print_report(r: dict) -> None:
     print()
 
 
+# ── Ollama AI context builder ─────────────────────────────────────────────────
+
+def ai_context(ticker, result, shares, layer):
+    """Build a structured prompt for Ollama from analyze() output."""
+    lines = [
+        "You are an expert covered call advisor for a retail investor. "
+        "Analyze this position and respond with ONLY a JSON object — no markdown, no explanation.\n",
+        f"POSITION: {ticker} | {shares} shares | Layer {layer} portfolio position",
+        f"Current Price: ${result['current_price']:.2f} | Avg Cost: ${result['avg_cost']:.2f}",
+        f"Unrealized Gain: {result['gain_pct']:.1f}% | Strike Floor (min 10% profit if called): ${result['strike_floor']:.2f}",
+        f"52-Week High: ${result['week52_high']:.2f} | Data Mode: {result.get('data_mode', 'live')}\n",
+        "TOP CONTRACTS (sorted by annualized return):",
+    ]
+    for i, (_, row) in enumerate(result["recs"].head(5).iterrows()):
+        risk = " [EARNINGS RISK - AVOID]" if row.get("has_avoid") else ""
+        risk += " [EX-DIV RISK]" if row.get("has_caution") else ""
+        lines.append(
+            f"  #{i+1}: {row['expiration']} ${float(row['strike']):.2f} strike | "
+            f"DTE:{int(row['dte'])} | Mid:${float(row['mid']):.2f} | "
+            f"Ann.Return:{float(row['annualized_ret']):.1f}% | "
+            f"Delta:{float(row.get('delta', 0)):.2f} | "
+            f"P/L if called:{float(row['profit_if_called']):.1f}%{risk}"
+        )
+    lines.append("""
+Return ONLY this JSON object (no markdown fences, no extra text):
+{
+  "recommendation": {
+    "rank": 1,
+    "strike": 0.00,
+    "expiration": "YYYY-MM-DD",
+    "reasoning": "2-3 sentences explaining why this contract is the best pick given the position"
+  },
+  "iv_context": "1-2 sentences on whether implied volatility is favorable for selling premium right now",
+  "risks": ["specific risk 1", "specific risk 2", "specific risk 3"],
+  "roll_strategy": "Concrete advice on when and how to roll this position if it moves against you",
+  "timing_advice": "Specific advice on optimal entry timing for this contract"
+}""")
+    return "\n".join(lines)
+
+
 # ── main ─────────────────────────────────────────────────────────────────────
 
 def main():

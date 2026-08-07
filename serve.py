@@ -31,6 +31,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
+import ollama_client
 
 _div_cache      = {"data": None, "ts": 0}
 _earn_cache     = {"data": None, "ts": 0}
@@ -429,6 +430,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._handle_buffett_winners()
         elif parsed.path == "/api/buffett-analysis":
             self._handle_buffett_analysis(parse_qs(parsed.query))
+        elif parsed.path == "/api/cc-ai-analysis":
+            self._handle_cc_ai_analysis(parse_qs(parsed.query))
         elif parsed.path == "/api/cc-positions":
             self._handle_cc_positions_get()
         elif parsed.path == "/api/lots":
@@ -1184,6 +1187,32 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 "note":              result.get("note"),
             })
 
+        except Exception as e:
+            self._json_error(500, str(e))
+
+    def _handle_cc_ai_analysis(self, params):
+        ticker = (params.get("ticker", [None])[0] or "").upper().strip()
+        if not ticker:
+            return self._json_error(400, "Missing ticker parameter")
+        if not ollama_client.available():
+            return self._json_error(503, "Ollama not available — make sure ollama is running on the server")
+        try:
+            from covered_call_rec import analyze, load_holdings, ai_context
+            holdings = load_holdings()
+            if ticker not in holdings:
+                return self._json_error(404, f"{ticker} not found in holdings")
+            h = holdings[ticker]
+            result = analyze(ticker, h["avg_cost"], h["shares"])
+            if result is None or result["recs"].empty:
+                return self._json_error(422, "No qualifying option contracts found to analyze")
+            prompt = ai_context(ticker, result, h["shares"], h.get("layer", "?"))
+            raw = ollama_client.generate(prompt)
+            # Strip markdown fences that llama3 sometimes adds
+            clean = raw.strip().lstrip("`").lstrip("json").strip("`").strip()
+            insight = json.loads(clean)
+            self._json({"ok": True, "ticker": ticker, "insight": insight, "model": ollama_client.DEFAULT_MODEL})
+        except json.JSONDecodeError:
+            self._json_error(500, "AI returned malformed JSON — try again")
         except Exception as e:
             self._json_error(500, str(e))
 

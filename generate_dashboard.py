@@ -1230,9 +1230,20 @@ def build_dashboard(portfolio, layers, holdings):
         style="padding:8px 18px;background:#1a2340;color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;">
         Get Recommendations
       </button>
+      <button id="cc-ai-btn" onclick="getAIAnalysis()"
+        style="padding:8px 18px;background:#6c5ce7;color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;">
+        🤖 AI Analysis
+      </button>
       <span id="cc-status" style="font-size:12px;color:#7f8c8d;"></span>
     </div>
     <div id="cc-results"></div>
+    <div id="cc-ai-panel" style="display:none;margin-top:1rem;border:1.5px solid #6c5ce7;border-radius:8px;padding:1rem;background:#f8f7ff;">
+      <div style="font-weight:700;color:#6c5ce7;margin-bottom:0.75rem;font-size:14px;">
+        🤖 AI Analysis
+        <span id="cc-ai-model" style="font-size:11px;background:#e8e5ff;padding:2px 7px;border-radius:4px;color:#6c5ce7;margin-left:0.5rem;font-weight:500;"></span>
+      </div>
+      <div id="cc-ai-content"></div>
+    </div>
   </div>
 
   <!-- Covered Call Position Tracker -->
@@ -4063,6 +4074,58 @@ async function confirmLayerChange() {{
   }} catch(e) {{
     statusEl.textContent = "Error: " + e.message;
   }}
+}}
+
+// ── Covered Call AI Analysis ──────────────────────────────────────────────
+async function getAIAnalysis() {{
+  const ticker = document.getElementById("cc-ticker").value;
+  if (!ticker) {{ alert("Select a ticker first, then click Get Recommendations to load options data."); return; }}
+  const btn   = document.getElementById("cc-ai-btn");
+  const panel = document.getElementById("cc-ai-panel");
+  btn.disabled = true;
+  btn.textContent = "⏳ Analyzing…";
+  panel.style.display = "none";
+  try {{
+    const res  = await fetch("/api/cc-ai-analysis?ticker=" + ticker);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "AI analysis failed");
+    renderAIInsights(data);
+  }} catch(e) {{
+    document.getElementById("cc-ai-content").innerHTML =
+      `<p style="color:#e74c3c;margin:0">Analysis failed: ${{e.message}}</p>`;
+    panel.style.display = "block";
+  }} finally {{
+    btn.disabled = false;
+    btn.textContent = "🤖 AI Analysis";
+  }}
+}}
+
+function renderAIInsights(data) {{
+  const ins = data.insight;
+  const rec = ins.recommendation;
+  // Highlight the recommended row in the existing recs table
+  document.querySelectorAll("#cc-results table tbody tr").forEach(tr => {{
+    const txt = tr.textContent;
+    if (txt.includes(rec.expiration) && txt.includes(String(rec.strike))) {{
+      tr.style.outline = "2.5px solid #6c5ce7";
+      tr.style.outlineOffset = "-2px";
+    }}
+  }});
+  document.getElementById("cc-ai-model").textContent = data.model;
+  const sec = (icon, title, body) =>
+    `<div style="margin-bottom:0.9rem">
+       <div style="font-weight:600;color:#2c3e50;font-size:13px;margin-bottom:0.3rem">${{icon}} ${{title}}</div>
+       <div style="color:#444;font-size:13px;line-height:1.55">${{body}}</div>
+     </div>`;
+  document.getElementById("cc-ai-content").innerHTML =
+    sec("🎯", "Recommendation",
+      `<strong>#${{rec.rank}} — ${{rec.expiration}} $${{rec.strike}} strike</strong><br>${{rec.reasoning}}`) +
+    sec("📊", "IV Context", ins.iv_context) +
+    sec("⚠️", "Risks",
+      `<ul style="margin:0.2rem 0 0 1.1rem;padding:0">${{ins.risks.map(r => `<li>${{r}}</li>`).join("")}}</ul>`) +
+    sec("🔄", "Roll Strategy", ins.roll_strategy) +
+    sec("⏰", "Timing", ins.timing_advice);
+  document.getElementById("cc-ai-panel").style.display = "block";
 }}
 
 // ── Covered Call Analyzer ─────────────────────────────────────────────────
