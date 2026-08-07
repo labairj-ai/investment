@@ -27,7 +27,7 @@ The old launchd agents from the Mac era are archived in `launchd-disabled-on-mac
 | **Daily Investment Digest** | Single 7 AM email covering: portfolio snapshot, layer allocation vs target (with drift warnings), holdings performance, upcoming earnings/ex-div events, and the judgment health rubric |
 | **Local Dashboard** | Interactive web UI at `http://localhost:5001` with charts, holdings table, and live analysis tools |
 | **Add / Manage Positions** | Add new positions directly from the Holdings UI (ticker, shares, avg cost, layer); reassign any holding to a different layer with full retroactive history rewrite; opening lot auto-created in the Tax Lot Tracker on position add |
-| **Covered Call Analyzer** | Recommends option contracts based on your cost basis, flags blackout windows (earnings, ex-div); three-tier fallback (live bids → ask-proxy → Black-Scholes from historical vol) ensures results even when markets are closed or options are illiquid; **🤖 AI Analysis** button sends the top-5 contracts to a local `llama3.2:3b` model on the optiplex for narrative reasoning, IV context, risk flags, roll strategy, and timing advice |
+| **Covered Call Analyzer** | Recommends option contracts based on your cost basis, flags blackout windows (earnings 📵 AVOID, ex-div 📵 AVOID); three-tier fallback (live bids → ask-proxy → Black-Scholes from historical vol) ensures results even when markets are closed or options are illiquid; **🤖 AI Analysis** button sends the top-5 contracts plus HV rank and ATM IV to a local `llama3.1:8b` model on the optiplex for narrative reasoning, IV context, risk flags, roll strategy, and timing advice |
 | **Covered Call Tracker** | Log and track open/closed covered call positions; live mark-to-market option prices (bid/ask mid from yfinance); Unrealized P&L and Today's P&L columns per position; daily change KPI is adjusted mark-to-market; bulk import via `covered_calls.csv`; auto-expires past-expiry positions |
 | **Dividend Tracker** | Dividend dates, tax impact by income bracket, monthly income chart, and ticker lookup tool |
 | **Earnings Calendar** | Next earnings date per holding shown in Layer Summary and Holdings table |
@@ -47,7 +47,7 @@ The old launchd agents from the Mac era are archived in `launchd-disabled-on-mac
 - macOS or Linux (all scripts derive paths from their own location, so the repo can live anywhere; the launchd auto-start is macOS-specific)
 - Python 3.9+ with a virtual environment
 - A Gmail account with an [App Password](https://myaccount.google.com/apppasswords) enabled
-- **Ollama** (for AI Analysis) — must be running on the server with `llama3.2:3b` pulled; optional, the rest of the dashboard works without it
+- **Ollama** (for AI Analysis) — must be running on the server with `llama3.1:8b` pulled (`ollama pull llama3.1:8b`); optional, the rest of the dashboard works without it; ~5GB RAM required for the 8b model
 
 ---
 
@@ -164,7 +164,7 @@ Script changes take effect on the next **↻ Refresh Data** without restarting t
 | Endpoint | Description |
 |---|---|
 | `GET /api/covered-calls?ticker=EW` | Live option chain recommendations |
-| `GET /api/cc-ai-analysis?ticker=EW` | AI narrative for the top-5 contracts: recommendation, IV context, risks, roll strategy, timing (requires `llama3.2:3b` running via Ollama on the server) |
+| `GET /api/cc-ai-analysis?ticker=EW` | AI narrative for the top-5 contracts: recommendation, IV context (HV rank + ATM IV), risks, roll strategy, timing (requires `llama3.1:8b` via Ollama; ~90–120s on CPU) |
 | `GET /api/dividends` | Dividend dates, yields, tax impact for all holdings |
 | `GET /api/dividend-lookup?ticker=VYM&shares=100` | Dividend info for any ticker |
 | `GET /api/dividend-timeline` | Monthly income (Jan–Dec, current year) |
@@ -490,17 +490,17 @@ Select any holding with **100+ shares** and click **Get Recommendations**.
 
 **Columns:** Expiry | Strike | DTE | Bid | Ask | Mid | Prem% | Ann% | P/L if Called | Prob Called | OI
 
-**🤖 AI Analysis** — after loading recommendations, click the purple "🤖 AI Analysis" button to get `llama3.2:3b` narrative insight from the optiplex. Takes ~5–10 seconds on CPU. The AI panel shows:
+**🤖 AI Analysis** — after loading recommendations, click the purple "🤖 AI Analysis" button to get `llama3.1:8b` narrative insight from the optiplex. Takes ~90–120 seconds on CPU (8b model). The AI panel shows:
 
 | Section | What it covers |
 |---|---|
-| 🎯 Recommendation | Which contract to pick and why (3B model reasons over DTE, delta, earnings proximity, annualized return trade-offs) |
-| 📊 IV Context | Whether current implied volatility is favorable for selling premium right now |
-| ⚠️ Risks | Bulleted list of position-specific risks (earnings dates, ex-div windows, momentum) |
-| 🔄 Roll Strategy | Concrete guidance on when and how to roll if the position moves against you |
-| ⏰ Timing | Optimal entry timing advice for the recommended contract |
+| 🎯 Recommendation | Which contract to pick and why — reasons over DTE, delta, earnings/ex-div proximity, annualized return trade-offs, and portfolio layer (L1 = core hold, assignment is painful) |
+| 📊 IV Context | Whether current HV rank (1-year percentile of 21-day historical vol) and ATM implied volatility make this a favorable time to sell premium |
+| ⚠️ Risks | Bulleted list of position-specific risks (earnings, ex-div, wide bid-ask spread, delta too high) |
+| 🔄 Roll Strategy | Concrete roll triggers: delta threshold (e.g. roll if delta > 0.60) or DTE threshold, and whether to roll up/out/both |
+| ⏰ Timing | Optimal entry timing: limit vs. market, time of day, whether to wait for a vol spike |
 
-The recommended contract row is highlighted with a purple outline in the results table above. Requires Ollama running on the optiplex with `llama3.2:3b` pulled (`ollama pull llama3.2:3b`). If Ollama is unavailable, the button returns a graceful error.
+The recommended contract row is highlighted with a purple outline in the results table above. Requires Ollama running on the optiplex with `llama3.1:8b` pulled (`ollama pull llama3.1:8b`). If Ollama is unavailable, the button returns a graceful error.
 
 ### Dividend Tracker
 Auto-loads on page open. Hit **Refresh** to update; cached 1 hour per day.
@@ -576,7 +576,7 @@ investment/
 ├── serve.py                         # HTTP server + all API endpoints + schedulers
 ├── buffett_screener.py              # NYSE Buffett screener — nightly at 2 AM ET
 ├── covered_call_rec.py              # Covered call recommendation + blackout engine + ai_context() prompt builder
-├── ollama_client.py                 # Thin urllib wrapper for Ollama's /api/generate endpoint (llama3.2:3b)
+├── ollama_client.py                 # Thin urllib wrapper for Ollama's /api/generate endpoint (llama3.1:8b, timeout 180s)
 ├── run_investment.sh                # Manual newsletter entry point
 ├── chart.umd.min.js                 # Bundled Chart.js (no CDN dependency)
 ├── favicon.svg                      # Dashboard browser tab icon
