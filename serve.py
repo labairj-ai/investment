@@ -1313,14 +1313,38 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 b"\r\n"
             )
             self.wfile.flush()
-            # Send an immediate keepalive so Tailscale Funnel doesn't drop the
-            # connection during the 10-60s cold-start while Ollama loads the model.
             _sse("status", {"message": "Sending to AI…"})
 
+            # Ollama prompt evaluation can take 30-90s on CPU before the first
+            # token. Run generation in a thread and send keepalive status chunks
+            # every 10s so Tailscale Funnel doesn't drop the idle connection.
+            import queue as _queue
+            _tok_q = _queue.Queue()
+
+            def _generate():
+                try:
+                    for tok in ollama_client.stream_generate(prompt):
+                        _tok_q.put(("token", tok))
+                    _tok_q.put(("done", None))
+                except Exception as exc:
+                    _tok_q.put(("error", str(exc)))
+
+            threading.Thread(target=_generate, daemon=True).start()
+
             full_text = ""
-            for token in ollama_client.stream_generate(prompt):
-                full_text += token
-                _sse("token", {"text": token})
+            while True:
+                try:
+                    kind, val = _tok_q.get(timeout=10)
+                except _queue.Empty:
+                    _sse("status", {"message": "AI is thinking…"})
+                    continue
+                if kind == "token":
+                    full_text += val
+                    _sse("token", {"text": val})
+                elif kind == "done":
+                    break
+                else:
+                    raise Exception(val)
 
             # raw_decode finds the FIRST complete JSON object and stops —
             # the greedy r'\{.*\}' regex would grab everything up to the
