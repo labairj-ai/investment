@@ -1213,6 +1213,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if not m:
                 raise json.JSONDecodeError("no JSON object found", raw, 0)
             insight = json.loads(m.group(0))
+            # Normalize any field the model returned as a dict/list instead of a string
+            def _to_str(v):
+                if isinstance(v, str):
+                    return v
+                if isinstance(v, dict):
+                    return " ".join(str(x) for x in v.values())
+                if isinstance(v, list):
+                    return "; ".join(str(x) for x in v)
+                return str(v)
+            for field in ("iv_context", "roll_strategy", "timing_advice"):
+                if field in insight:
+                    insight[field] = _to_str(insight[field])
             self._json({"ok": True, "ticker": ticker, "insight": insight, "model": ollama_client.DEFAULT_MODEL})
         except json.JSONDecodeError:
             self._json_error(500, "AI returned malformed JSON — try again")

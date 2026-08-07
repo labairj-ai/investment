@@ -468,8 +468,8 @@ Return ONLY this JSON object (no markdown fences, no extra text):
   },
   "iv_context": "1-2 sentences on whether current IV rank makes this a good time to sell premium and whether to size up or wait",
   "risks": ["risk tied to specific contract or position (e.g. earnings, ex-div, low liquidity, delta too high)", "risk 2", "risk 3"],
-  "roll_strategy": "When to roll: specify delta trigger (e.g. roll if delta exceeds 0.60) or DTE trigger (e.g. roll at 21 DTE), and whether to roll up/out/both",
-  "timing_advice": "Specific entry timing advice: sell at open vs. mid-day, use limit at mid or better, and whether to wait for a vol spike"
+  "roll_strategy": "STRING: When to roll — e.g. 'Roll at 21 DTE or if delta exceeds 0.60; roll out one month and up one strike'",
+  "timing_advice": "STRING: Entry timing — e.g. 'Use a limit order at mid-price, place 30 min after open when spreads tighten'"
 }""")
     return "\n".join(lines)
 
