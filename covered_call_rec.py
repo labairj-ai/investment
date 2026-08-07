@@ -173,43 +173,17 @@ def _market_price(stock) -> float | None:
 def analyze(ticker: str, avg_cost: float, shares: float):
     stock = yf.Ticker(ticker)
 
-    # Prefer fast_info.last_price so option-chain strikes and current_price
-    # are always on the same scale (history() can lag split adjustments).
-    live_price = _market_price(stock)
-
-    # History still needed for 52-week high and HV rank
-    price_hist = _yf_retry(lambda: stock.history(period="2d"))
-    if price_hist.empty and live_price is None:
-        print(f"  [{ticker}] No price data — skipping.")
-        return None
-    hist_price = float(price_hist["Close"].dropna().iloc[-1]) if not price_hist.empty else None
-    current_price = live_price if live_price is not None else hist_price
-
-    # Detect likely pre-split avg_cost: history close may still show the old
-    # scale while fast_info already reflects the post-split price.
-    if avg_cost > current_price * 2:
-        split_ratio_guess = round(avg_cost / current_price)
-        return {
-            "ticker":        ticker,
-            "current_price": round(current_price, 2),
-            "avg_cost":      avg_cost,
-            "gain_pct":      0.0,
-            "already_at_target": False,
-            "strike_floor":  0.0,
-            "week52_high":   current_price,
-            "week52_high_dt": "n/a",
-            "hv_rank":       None,
-            "atm_iv":        None,
-            "recs":          __import__("pandas").DataFrame(),  # noqa: PD901
-            "data_mode":     "stale_avgcost",
-            "dte_extended":  False,
-            "note": (
-                f"avg_cost ${avg_cost:.2f} looks like a pre-split price "
-                f"(current price ${current_price:.2f}, ~{split_ratio_guess}:1 ratio). "
-                f"Update holdings.csv with the split-adjusted cost basis "
-                f"(divide avg_cost by {split_ratio_guess}, multiply shares by {split_ratio_guess})."
-            ),
-        }
+    # fast_info.last_price is real-time and always on the same scale as
+    # option-chain strikes — history() can lag split adjustments, causing
+    # the max-strike cap to be calculated against the old pre-split price
+    # and letting far-OTM legacy contracts through.
+    current_price = _market_price(stock)
+    if current_price is None:
+        price_hist = _yf_retry(lambda: stock.history(period="2d"))
+        if price_hist.empty:
+            print(f"  [{ticker}] No price data — skipping.")
+            return None
+        current_price = float(price_hist["Close"].dropna().iloc[-1])
 
     # 52-week high + historical volatility from the same fetch
     hist = _yf_retry(lambda: stock.history(period="52wk"))
