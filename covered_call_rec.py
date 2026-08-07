@@ -155,6 +155,7 @@ def analyze(ticker: str, avg_cost: float, shares: float):
 
     # 52-week high + historical volatility from the same fetch
     hist = stock.history(period="52wk")
+    hv_rank = None
     if hist.empty:
         week52_high    = current_price
         week52_high_dt = "n/a"
@@ -164,6 +165,13 @@ def analyze(ticker: str, avg_cost: float, shares: float):
         week52_high_dt = hist["High"].idxmax().strftime("%Y-%m-%d")
         _ret = hist["Close"].pct_change().dropna()
         hist_vol = float(_ret.std() * math.sqrt(252)) if len(_ret) >= 20 else 0.40
+
+        # HV Rank: where does current 21-day HV sit in its 1-year distribution?
+        hv_rank = None
+        if len(_ret) >= 42:
+            rolling_hv = _ret.rolling(21).std().dropna() * math.sqrt(252)
+            current_21d_hv = float(rolling_hv.iloc[-1])
+            hv_rank = round(float((rolling_hv < current_21d_hv).mean() * 100), 1)
 
     strike_floor = min_strike(current_price, avg_cost)
     gain_pct = (current_price - avg_cost) / avg_cost * 100
@@ -176,6 +184,19 @@ def analyze(ticker: str, avg_cost: float, shares: float):
     except Exception:
         print(f"  [{ticker}] Could not fetch option expirations — skipping.")
         return None
+
+    # ATM IV: nearest-expiry call closest to current price
+    atm_iv = None
+    try:
+        for _exp in all_options[:3]:
+            _chain = stock.option_chain(_exp).calls
+            _atm = _chain.iloc[(_chain["strike"] - current_price).abs().argsort()[:1]]
+            _iv = float(_atm["impliedVolatility"].values[0])
+            if _iv > 0.01:
+                atm_iv = round(_iv * 100, 1)
+                break
+    except Exception:
+        pass
 
     def _get_expirations(max_dte):
         min_exp = today + timedelta(days=MIN_DTE)
@@ -339,6 +360,8 @@ def analyze(ticker: str, avg_cost: float, shares: float):
         "data_mode":         data_mode,
         "dte_extended":      dte_extended,
         "note":              note,
+        "hv_rank":           hv_rank,
+        "atm_iv":            atm_iv,
     }
 
 
@@ -395,24 +418,44 @@ def print_report(r: dict) -> None:
 
 def ai_context(ticker, result, shares, layer):
     """Build a structured prompt for Ollama from analyze() output."""
+    contracts_available = int(shares // 100)
     lines = [
         "You are an expert covered call advisor for a retail investor. "
         "Analyze this position and respond with ONLY a JSON object — no markdown, no explanation.\n",
-        f"POSITION: {ticker} | {shares} shares | Layer {layer} portfolio position",
+        f"POSITION: {ticker} | {shares} shares ({contracts_available} contracts available to sell) | Layer {layer} portfolio position",
+        f"  Layer 1 = core long-term hold (assignment is painful); Layer 2 = growth hold; Layer 3+ = trading/speculative",
         f"Current Price: ${result['current_price']:.2f} | Avg Cost: ${result['avg_cost']:.2f}",
         f"Unrealized Gain: {result['gain_pct']:.1f}% | Strike Floor (min 10% profit if called): ${result['strike_floor']:.2f}",
-        f"52-Week High: ${result['week52_high']:.2f} | Data Mode: {result.get('data_mode', 'live')}\n",
-        "TOP CONTRACTS (sorted by annualized return):",
+        f"52-Week High: ${result['week52_high']:.2f} | Data Mode: {result.get('data_mode', 'live')}",
     ]
+
+    # IV context
+    hv_rank = result.get("hv_rank")
+    atm_iv  = result.get("atm_iv")
+    if hv_rank is not None:
+        if hv_rank >= 70:
+            iv_sentiment = "ELEVATED — strong environment for selling premium"
+        elif hv_rank >= 40:
+            iv_sentiment = "moderate — acceptable for selling premium"
+        else:
+            iv_sentiment = "COMPRESSED — premium income will be thin, consider waiting"
+        lines.append(f"HV Rank (1-year percentile): {hv_rank:.0f}% — {iv_sentiment}")
+    if atm_iv is not None:
+        lines.append(f"ATM Implied Volatility: {atm_iv:.1f}%")
+    lines.append("")
+
+    lines.append("TOP CONTRACTS (sorted by annualized return):")
     for i, (_, row) in enumerate(result["recs"].head(5).iterrows()):
         risk = " [EARNINGS RISK - AVOID]" if row.get("has_avoid") else ""
-        risk += " [EX-DIV RISK]" if row.get("has_caution") else ""
+        risk += " [EX-DIV RISK - early assignment possible]" if row.get("has_caution") else ""
+        spread = float(row['ask']) - float(row['bid'])
+        spread_note = f" [WIDE SPREAD ${spread:.2f} — illiquid]" if spread > float(row['mid']) * 0.30 else ""
         lines.append(
             f"  #{i+1}: {row['expiration']} ${float(row['strike']):.2f} strike | "
-            f"DTE:{int(row['dte'])} | Mid:${float(row['mid']):.2f} | "
+            f"DTE:{int(row['dte'])} | Bid:${float(row['bid']):.2f}/Ask:${float(row['ask']):.2f}/Mid:${float(row['mid']):.2f} | "
             f"Ann.Return:{float(row['annualized_ret']):.1f}% | "
             f"Delta:{float(row.get('delta', 0)):.2f} | "
-            f"P/L if called:{float(row['profit_if_called']):.1f}%{risk}"
+            f"P/L if called:{float(row['profit_if_called']):.1f}%{risk}{spread_note}"
         )
     lines.append("""
 Return ONLY this JSON object (no markdown fences, no extra text):
@@ -421,12 +464,12 @@ Return ONLY this JSON object (no markdown fences, no extra text):
     "rank": 1,
     "strike": 0.00,
     "expiration": "YYYY-MM-DD",
-    "reasoning": "2-3 sentences explaining why this contract is the best pick given the position"
+    "reasoning": "2-3 sentences explaining why this contract is the best pick given position layer, IV environment, and risk events"
   },
-  "iv_context": "1-2 sentences on whether implied volatility is favorable for selling premium right now",
-  "risks": ["specific risk 1", "specific risk 2", "specific risk 3"],
-  "roll_strategy": "Concrete advice on when and how to roll this position if it moves against you",
-  "timing_advice": "Specific advice on optimal entry timing for this contract"
+  "iv_context": "1-2 sentences on whether current IV rank makes this a good time to sell premium and whether to size up or wait",
+  "risks": ["risk tied to specific contract or position (e.g. earnings, ex-div, low liquidity, delta too high)", "risk 2", "risk 3"],
+  "roll_strategy": "When to roll: specify delta trigger (e.g. roll if delta exceeds 0.60) or DTE trigger (e.g. roll at 21 DTE), and whether to roll up/out/both",
+  "timing_advice": "Specific entry timing advice: sell at open vs. mid-day, use limit at mid or better, and whether to wait for a vol spike"
 }""")
     return "\n".join(lines)
 
