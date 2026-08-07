@@ -4330,9 +4330,14 @@ function renderCC(d) {{
   const noteHtml = d.note
     ? `<div style="background:#fff8f0;border:1px solid #f5cba7;border-radius:6px;
                    padding:9px 12px;margin-bottom:12px;font-size:12px;color:#7d5a00;">
-        ${{d.note}}
+        ⚠ ${{d.note}}
        </div>`
     : "";
+
+  // Pre-split avg_cost detected — skip misleading stats, just show the warning
+  if (d.data_mode === "stale_avgcost") {{
+    return noteHtml;
+  }}
 
   if (!d.recs || d.recs.length === 0) {{
     return meta + noteHtml + `<p style="color:#888;font-size:13px;">No qualifying contracts found.</p>`;

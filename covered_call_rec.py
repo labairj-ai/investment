@@ -155,15 +155,61 @@ def get_risk_events(stock: yf.Ticker, today, exp_date) -> list:
     return events
 
 
+def _market_price(stock) -> float | None:
+    """
+    Return the actual current market price (matches option chain strikes).
+    fast_info.last_price is real-time and unadjusted; use it instead of
+    history() which can lag split adjustments and cause scale mismatches.
+    """
+    try:
+        p = float(stock.fast_info.last_price or 0)
+        if p > 0:
+            return p
+    except Exception:
+        pass
+    return None
+
+
 def analyze(ticker: str, avg_cost: float, shares: float):
     stock = yf.Ticker(ticker)
 
-    # Current price: short fetch so it's always today's data
+    # Prefer fast_info.last_price so option-chain strikes and current_price
+    # are always on the same scale (history() can lag split adjustments).
+    live_price = _market_price(stock)
+
+    # History still needed for 52-week high and HV rank
     price_hist = _yf_retry(lambda: stock.history(period="2d"))
-    if price_hist.empty:
+    if price_hist.empty and live_price is None:
         print(f"  [{ticker}] No price data — skipping.")
         return None
-    current_price = float(price_hist["Close"].dropna().iloc[-1])
+    hist_price = float(price_hist["Close"].dropna().iloc[-1]) if not price_hist.empty else None
+    current_price = live_price if live_price is not None else hist_price
+
+    # Detect likely pre-split avg_cost: history close may still show the old
+    # scale while fast_info already reflects the post-split price.
+    if avg_cost > current_price * 2:
+        split_ratio_guess = round(avg_cost / current_price)
+        return {
+            "ticker":        ticker,
+            "current_price": round(current_price, 2),
+            "avg_cost":      avg_cost,
+            "gain_pct":      0.0,
+            "already_at_target": False,
+            "strike_floor":  0.0,
+            "week52_high":   current_price,
+            "week52_high_dt": "n/a",
+            "hv_rank":       None,
+            "atm_iv":        None,
+            "recs":          __import__("pandas").DataFrame(),  # noqa: PD901
+            "data_mode":     "stale_avgcost",
+            "dte_extended":  False,
+            "note": (
+                f"avg_cost ${avg_cost:.2f} looks like a pre-split price "
+                f"(current price ${current_price:.2f}, ~{split_ratio_guess}:1 ratio). "
+                f"Update holdings.csv with the split-adjusted cost basis "
+                f"(divide avg_cost by {split_ratio_guess}, multiply shares by {split_ratio_guess})."
+            ),
+        }
 
     # 52-week high + historical volatility from the same fetch
     hist = _yf_retry(lambda: stock.history(period="52wk"))
@@ -532,10 +578,13 @@ def evaluate_open_position(ticker: str, strike: float, expiry: str,
     """
     stock = yf.Ticker(ticker)
 
-    price_hist = _yf_retry(lambda: stock.history(period="2d"))
-    if price_hist.empty:
-        raise ValueError(f"No price data for {ticker}")
-    current_price = float(price_hist["Close"].dropna().iloc[-1])
+    live_price = _market_price(stock)
+    if live_price is None:
+        price_hist = _yf_retry(lambda: stock.history(period="2d"))
+        if price_hist.empty:
+            raise ValueError(f"No price data for {ticker}")
+        live_price = float(price_hist["Close"].dropna().iloc[-1])
+    current_price = live_price
 
     today    = datetime.now().date()
     exp_date = datetime.strptime(expiry, "%Y-%m-%d").date()
