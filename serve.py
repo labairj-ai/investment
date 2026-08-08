@@ -443,7 +443,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_header("Location", "/out/dashboard.html")
             self.end_headers()
             return
-        if parsed.path == "/api/covered-calls":
+        if parsed.path == "/glossary":
+            self._handle_glossary()
+        elif parsed.path == "/api/covered-calls":
             self._handle_covered_calls(parse_qs(parsed.query))
         elif parsed.path == "/api/dividends":
             self._handle_dividends()
@@ -2338,6 +2340,422 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def log_message(self, *args):
         pass
+
+    def _handle_glossary(self):
+        html = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Investment Dashboard — Glossary</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+         background: #f4f6f9; color: #1a2340; line-height: 1.6; }
+  header { background: #1a2340; color: #fff; padding: 18px 32px;
+           display: flex; align-items: center; justify-content: space-between; }
+  header h1 { font-size: 1.3rem; font-weight: 700; }
+  header a { color: #a0aec0; font-size: 13px; text-decoration: none; }
+  header a:hover { color: #fff; }
+  .container { max-width: 900px; margin: 32px auto; padding: 0 20px 60px; }
+  .intro { background: #fff; border-radius: 10px; padding: 20px 24px;
+           margin-bottom: 28px; border: 1px solid #e8ecf0;
+           font-size: 14px; color: #555; }
+  h2 { font-size: 1rem; font-weight: 700; color: #1a2340; margin: 32px 0 14px;
+       padding-bottom: 6px; border-bottom: 2px solid #e8ecf0; text-transform: uppercase;
+       letter-spacing: 0.05em; }
+  h2.new { border-bottom-color: #6c5ce7; color: #6c5ce7; }
+  .term { background: #fff; border-radius: 8px; border: 1px solid #e8ecf0;
+          padding: 14px 18px; margin-bottom: 10px; }
+  .term.new { border-left: 3px solid #6c5ce7; }
+  .term-name { font-weight: 700; font-size: 14px; color: #1a2340; }
+  .term-name .tag { font-size: 10px; font-weight: 600; background: #6c5ce7;
+                    color: #fff; padding: 1px 6px; border-radius: 3px;
+                    margin-left: 8px; vertical-align: middle; }
+  .term-formula { font-family: "SF Mono", "Fira Code", monospace; font-size: 12px;
+                  background: #f4f6f9; border-radius: 4px; padding: 4px 10px;
+                  margin: 6px 0; display: inline-block; color: #2d3a55; }
+  .term-body { font-size: 13px; color: #444; margin-top: 5px; }
+  .term-body b { color: #1a2340; }
+</style>
+</head>
+<body>
+<header>
+  <h1>📖 Glossary</h1>
+  <a href="/out/dashboard.html">← Back to Dashboard</a>
+</header>
+<div class="container">
+
+<div class="intro">
+  Definitions for every metric and term used in the Investment Dashboard.
+  Terms marked <span style="background:#6c5ce7;color:#fff;font-size:10px;font-weight:600;
+  padding:1px 6px;border-radius:3px;">NEW</span> were added in the V2 covered call engine.
+</div>
+
+<!-- ── OPTIONS & COVERED CALLS ────────────────────────────────── -->
+<h2>Options &amp; Covered Calls — Core Mechanics</h2>
+
+<div class="term">
+  <div class="term-name">Covered Call (Buy-Write)</div>
+  <div class="term-body">Selling a call option against shares you already own. You collect the
+  premium immediately; in exchange you agree to sell your shares at the strike price if the buyer
+  exercises. The strategy trades upside potential for income.</div>
+</div>
+
+<div class="term">
+  <div class="term-name">Strike Price (K)</div>
+  <div class="term-body">The price at which your shares would be <b>called away</b> (sold) if the
+  option is exercised. You choose a strike above the current price to stay out-of-the-money.</div>
+</div>
+
+<div class="term">
+  <div class="term-name">DTE — Days to Expiration</div>
+  <div class="term-body">Calendar days until the option contract expires. The dashboard filters
+  21–60 DTE by default (enough time value without excessive event risk).</div>
+</div>
+
+<div class="term">
+  <div class="term-name">Bid / Ask / Mid</div>
+  <div class="term-body"><b>Bid</b> — highest price a buyer will pay right now.
+  <b>Ask</b> — lowest price a seller will accept. <b>Mid</b> — the mathematical midpoint.
+  Wide bid-ask spreads indicate an illiquid market; the mid is rarely the actual fill price.</div>
+</div>
+
+<div class="term new">
+  <div class="term-name">Exec Premium <span class="tag">NEW</span></div>
+  <div class="term-formula">Exec = Bid + 0.25 × (Ask − Bid)</div>
+  <div class="term-body">Estimated fill price — more realistic than mid for thinly traded options.
+  Uses 25% of the spread above bid, reflecting typical retail execution. All profit, yield, and
+  alpha calculations use Exec Premium, not Mid.</div>
+</div>
+
+<div class="term">
+  <div class="term-name">Premium % (Prem%)</div>
+  <div class="term-formula">Prem% = Exec Premium / Stock Price</div>
+  <div class="term-body">The option income as a percentage of the stock's current value.
+  Useful for comparing contracts across different price stocks.</div>
+</div>
+
+<div class="term">
+  <div class="term-name">Annualized Return (Ann%)</div>
+  <div class="term-formula">Ann% = Prem% × (365 / DTE)</div>
+  <div class="term-body">Premium yield scaled to a full year. <b>Used for comparison only</b> —
+  it assumes you can continuously roll at the same premium, which is unrealistic.
+  The V2 engine ranks by Score, not Ann%, to avoid systematically favouring short-DTE contracts.</div>
+</div>
+
+<div class="term">
+  <div class="term-name">P/L if Called</div>
+  <div class="term-formula">(Strike + Exec Premium − Avg Cost) / Avg Cost</div>
+  <div class="term-body">Your total return on the original investment <b>if assigned</b>.
+  This is the number that matters for profit-floor filtering; premium counts toward the return.</div>
+</div>
+
+<div class="term">
+  <div class="term-name">Assignment</div>
+  <div class="term-body">The option buyer exercises their right to buy your shares at the strike
+  price. For covered calls this typically happens at expiration when the stock closes above the
+  strike, though early assignment is possible for deep ITM contracts near ex-dividend dates.</div>
+</div>
+
+<div class="term">
+  <div class="term-name">ITM / ATM / OTM</div>
+  <div class="term-body"><b>In The Money (ITM)</b> — strike &lt; current price; intrinsic value
+  exists, assignment more likely. <b>At The Money (ATM)</b> — strike ≈ current price; maximum
+  time value. <b>Out of The Money (OTM)</b> — strike &gt; current price; all value is extrinsic;
+  lower assignment risk, lower premium.</div>
+</div>
+
+<div class="term">
+  <div class="term-name">Intrinsic Value</div>
+  <div class="term-formula">max(Stock Price − Strike, 0)</div>
+  <div class="term-body">The in-the-money amount of the option. An OTM call has zero intrinsic
+  value — its entire price is time/extrinsic value.</div>
+</div>
+
+<div class="term">
+  <div class="term-name">Extrinsic Value (Time Value)</div>
+  <div class="term-formula">Option Price − Intrinsic Value</div>
+  <div class="term-body">The portion of the option's price beyond intrinsic value. Decays toward
+  zero at expiration. Relevant for early assignment risk: a holder generally won't exercise early
+  if doing so forfeits meaningful extrinsic value.</div>
+</div>
+
+<div class="term">
+  <div class="term-name">Open Interest (OI)</div>
+  <div class="term-body">Total number of outstanding contracts at this strike/expiry. Higher OI
+  means tighter spreads and easier fills. The dashboard's liquidity score weights OI at 30 points
+  out of 100.</div>
+</div>
+
+<div class="term">
+  <div class="term-name">Roll / Roll Up / Roll Out</div>
+  <div class="term-body"><b>Roll</b> — buy back the current call and sell a new one simultaneously.
+  <b>Roll out</b> — same strike, later expiry (collects more time value).
+  <b>Roll up</b> — higher strike, same or later expiry (raises your cap, often a debit or smaller
+  credit). A roll is evaluated as a new trade: it should only be done when the net position beats
+  both holding and closing outright.</div>
+</div>
+
+<!-- ── V2 ANALYSIS METRICS ────────────────────────────────────── -->
+<h2 class="new">V2 Analysis Metrics</h2>
+
+<div class="term new">
+  <div class="term-name">CC Alpha $ <span class="tag">NEW</span></div>
+  <div class="term-formula">CC Alpha = Exec Premium − E[max(S<sub>T</sub> − K, 0)]</div>
+  <div class="term-body">The <b>expected gain from selling the call versus simply continuing to
+  hold the stock</b>. The second term is the expected upside you give up, calculated under a
+  blended real-world drift (μ) rather than the risk-neutral rate.<br><br>
+  <b>Positive</b> (green) — selling the call adds expected value vs holding.<br>
+  <b>Negative</b> (red) — holding outright has higher expected return; consider doing nothing.</div>
+</div>
+
+<div class="term new">
+  <div class="term-name">Regret % <span class="tag">NEW</span></div>
+  <div class="term-formula">Regret % = P(S<sub>T</sub> &gt; K + Exec Premium)</div>
+  <div class="term-body">Probability that the stock closes above the <b>regret threshold</b>
+  (strike + premium) at expiration — the price above which selling the call leaves you worse off
+  than if you had simply held the shares. <b>This is lower than the assignment probability</b>:
+  you can be assigned and still have made the right call, as long as the stock doesn't run past
+  K + P. Calculated under the real-world drift model.</div>
+</div>
+
+<div class="term new">
+  <div class="term-name">Regret Threshold <span class="tag">NEW</span></div>
+  <div class="term-formula">Regret Threshold = Strike + Exec Premium</div>
+  <div class="term-body">The stock price above which the covered call <b>underperforms a pure
+  hold</b>. Below this level, even if assigned, you captured more value than you gave up.</div>
+</div>
+
+<div class="term new">
+  <div class="term-name">Score (Multi-Factor) <span class="tag">NEW</span></div>
+  <div class="term-formula">Score = 100 × (0.25·A + 0.15·Y + 0.15·V + 0.15·L + 0.15·U + 0.15·R)</div>
+  <div class="term-body">0–100 composite ranking. Each component is a percentile rank across all
+  candidate contracts for this ticker/expiry:
+  <br><b>A</b> — CC Alpha (25%) — the primary signal
+  <br><b>Y</b> — Premium yield (15%)
+  <br><b>V</b> — IV richness (15%) — is the option expensive vs expected realised vol?
+  <br><b>L</b> — Liquidity score (15%) — spread + OI + volume
+  <br><b>U</b> — Upside room (15%) — vol-normalised distance to strike
+  <br><b>R</b> — 1 − Regret risk (15%) — lower regret probability is better</div>
+</div>
+
+<div class="term new">
+  <div class="term-name">Liquidity Score <span class="tag">NEW</span></div>
+  <div class="term-body">0–100 composite measuring how tradeable the contract is:
+  50 pts for bid-ask spread quality (&lt;5% of mid = max points), 30 pts for open interest,
+  20 pts for daily volume. Affects both the Score ranking and the executable premium estimate.</div>
+</div>
+
+<!-- ── PROBABILITY & GREEKS ───────────────────────────────────── -->
+<h2>Probability &amp; Greeks</h2>
+
+<div class="term">
+  <div class="term-name">Delta (Δ) — "Prob Called"</div>
+  <div class="term-formula">Δ = e<sup>−qT</sup> · N(d<sub>1</sub>)</div>
+  <div class="term-body">Rate of change of the option's price per $1 move in the stock. Also widely
+  used as a rough probability of expiring ITM — a 0.25 delta call is often described as "25%
+  probability of assignment." <b>This is an approximation</b>: the true risk-neutral probability is
+  N(d<sub>2</sub>), which is lower than delta.</div>
+</div>
+
+<div class="term new">
+  <div class="term-name">ITM % (Real-World) <span class="tag">NEW</span></div>
+  <div class="term-formula">ITM<sub>real</sub> = N(d<sub>2,μ</sub>) where d<sub>2</sub> uses μ instead of r</div>
+  <div class="term-body">Real-world assignment probability using the stock's estimated drift (μ)
+  rather than the risk-free rate. If μ &lt; r (stock expected to grow less than treasury rates),
+  the real-world ITM probability is lower than the risk-neutral N(d<sub>2</sub>). For a momentum
+  stock with high μ it will be higher. This is the most useful single probability for decision-making.</div>
+</div>
+
+<div class="term new">
+  <div class="term-name">μ — Real-World Drift <span class="tag">NEW</span></div>
+  <div class="term-formula">μ = 0.50·μ<sub>60d</sub> + 0.25·μ<sub>252d</sub> + 0.25·μ<sub>market</sub></div>
+  <div class="term-body">Blended estimate of the stock's expected annual return, used in all
+  real-world probability calculations. Weights recent 60-day momentum most heavily, blends in
+  1-year trend and a 10% long-run market assumption, then caps at ±50% to prevent extreme
+  momentum from dominating. Displayed in the volatility header as <b>μ +X.X%/yr</b>.</div>
+</div>
+
+<div class="term">
+  <div class="term-name">Gamma (Γ)</div>
+  <div class="term-formula">Γ = e<sup>−qT</sup> · φ(d<sub>1</sub>) / (S · σ · √T)</div>
+  <div class="term-body">Rate of change of delta per $1 move in the stock. High gamma (near
+  expiry and near the strike) means delta can shift dramatically on a small stock move.
+  Used in the open position evaluator to flag accelerating assignment risk: a 1% stock move
+  changes delta by approximately Γ × 0.01 × S.</div>
+</div>
+
+<!-- ── VOLATILITY & PRICING ───────────────────────────────────── -->
+<h2>Volatility &amp; Pricing</h2>
+
+<div class="term">
+  <div class="term-name">IV — Implied Volatility</div>
+  <div class="term-body">The market's expectation of future volatility, backed out from current
+  option prices using Black-Scholes. Higher IV = more expensive options = more premium income for
+  sellers. Shown as ATM IV (at-the-money, nearest expiry).</div>
+</div>
+
+<div class="term">
+  <div class="term-name">HV — Historical (Realised) Volatility</div>
+  <div class="term-body">Actual volatility the stock has exhibited, measured from daily price
+  returns and annualised. The dashboard computes HV20 (20-day), HV60 (60-day), HV120 (120-day),
+  and an EWMA variant (exponentially weighted, λ=0.94, weights recent moves more heavily).</div>
+</div>
+
+<div class="term new">
+  <div class="term-name">HV_forecast <span class="tag">NEW</span></div>
+  <div class="term-formula">HV_fc = 0.40·HV20 + 0.35·HV<sub>EWMA</sub> + 0.25·HV60</div>
+  <div class="term-body">Blended forward-looking volatility estimate used as the denominator in
+  IV Richness. Weights recent realised vol more heavily than longer windows.</div>
+</div>
+
+<div class="term">
+  <div class="term-name">HV Rank</div>
+  <div class="term-body">Percentile of today's 21-day realised volatility within its own 1-year
+  distribution. HV Rank 70% means today's vol is higher than 70% of the past year's readings —
+  a better environment for selling premium (options tend to be pricier).</div>
+</div>
+
+<div class="term new">
+  <div class="term-name">IV Richness <span class="tag">NEW</span></div>
+  <div class="term-formula">IV Richness = IV / HV_forecast − 1</div>
+  <div class="term-body">Whether the option is <b>expensive or cheap relative to expected
+  realised volatility</b>. Positive (green, "rich") = option sellers are being overpaid for vol
+  they're unlikely to realise. Negative (red, "cheap") = options are priced below expected
+  realised vol — a less favourable environment for selling. Distinct from HV Rank, which measures
+  realised vol against its own history without reference to what the option is pricing.</div>
+</div>
+
+<div class="term new">
+  <div class="term-name">Expected Move <span class="tag">NEW</span></div>
+  <div class="term-formula">Expected Move = S × IV × √T</div>
+  <div class="term-body">One standard deviation move in the stock over the option's life, in
+  dollar terms. A strike 1.0× the expected move above spot is ~1 sigma OTM. Used to normalise
+  strike distance across stocks with very different volatilities.</div>
+</div>
+
+<!-- ── PORTFOLIO & TAX ────────────────────────────────────────── -->
+<h2>Portfolio &amp; Tax</h2>
+
+<div class="term">
+  <div class="term-name">Layers (L1–L5)</div>
+  <div class="term-body">Portfolio architecture classification:
+  <b>L1 Structural Ballast</b> (index funds, BRK.B) ·
+  <b>L2 Cash-Flow Engines</b> (dividend payers ≥3% yield) ·
+  <b>L3 Compounders</b> (quality growth) ·
+  <b>L4 Convexity / Optionality</b> (high upside, high risk — Taleb barbell 10–15%) ·
+  <b>L5 Shock Absorbers</b> (low-correlation hedges).</div>
+</div>
+
+<div class="term">
+  <div class="term-name">TWR — Time-Weighted Return</div>
+  <div class="term-body">A return calculation that eliminates the distorting effect of cash flows
+  (new money added, positions sold). Each day's return is computed independently and then
+  chain-multiplied. This makes the portfolio chart comparable to SPY regardless of when capital
+  was deployed.</div>
+</div>
+
+<div class="term">
+  <div class="term-name">FIFO — First In, First Out</div>
+  <div class="term-body">When selling shares, the oldest lot (lowest purchase date) is consumed
+  first. IRS default cost basis method. Affects whether a sale is short-term or long-term and
+  which cost basis applies to the gain/loss calculation.</div>
+</div>
+
+<div class="term">
+  <div class="term-name">Tax Lot</div>
+  <div class="term-body">A specific purchase tranche: a date, share count, and cost/share. Each
+  lot ages independently toward long-term status (≥365 days held). The Lots modal shows all lots
+  per holding with their ST/LT badge, unrealized G/L, and days until LT conversion.</div>
+</div>
+
+<div class="term">
+  <div class="term-name">ST / LT — Short-Term / Long-Term Gains</div>
+  <div class="term-body"><b>Short-term</b> — held &lt;1 year; taxed as ordinary income (up to 37%
+  federal). <b>Long-term</b> — held ≥1 year; taxed at lower capital gains rates (0%, 15%, or 20%
+  depending on income). Covered call premium income is always short-term/ordinary income regardless
+  of how long the position was open.</div>
+</div>
+
+<div class="term">
+  <div class="term-name">NIIT — Net Investment Income Tax</div>
+  <div class="term-body">3.8% federal surtax on investment income (dividends, capital gains,
+  option premium) for taxpayers above $200k (single) / $250k (MFJ) MAGI. Applied on top of the
+  regular capital gains or ordinary income rate. Toggle in the Tax Harvesting modal.</div>
+</div>
+
+<div class="term">
+  <div class="term-name">Yield on Cost</div>
+  <div class="term-formula">Yield on Cost = Annual Dividend per Share / Avg Cost per Share</div>
+  <div class="term-body">Dividend yield relative to what <em>you</em> paid, not the current market
+  price. A position bought cheaply years ago may show a much higher yield on cost than the
+  current quoted yield.</div>
+</div>
+
+<div class="term">
+  <div class="term-name">Ex-Dividend Date</div>
+  <div class="term-body">The date you must own shares <b>before</b> to receive the next dividend.
+  Buy on or after this date and you miss the payout. For covered calls, an ex-div date inside
+  the option window creates early assignment risk: a call holder may exercise early to capture
+  the dividend if the dividend exceeds the option's extrinsic value.</div>
+</div>
+
+<!-- ── BUFFETT SCREENER ───────────────────────────────────────── -->
+<h2>Buffett Screener</h2>
+
+<div class="term">
+  <div class="term-name">Gross Margin</div>
+  <div class="term-formula">(Revenue − Cost of Goods Sold) / Revenue</div>
+  <div class="term-body">How much of each revenue dollar remains after direct production costs.
+  Buffett threshold: ≥40%. High gross margins indicate pricing power and durable competitive
+  advantage.</div>
+</div>
+
+<div class="term">
+  <div class="term-name">SG&amp;A / Gross Profit</div>
+  <div class="term-body">Selling, General &amp; Administrative expenses as a fraction of gross
+  profit. Buffett threshold: ≤30%. Companies spending less to maintain revenue tend to have
+  stronger moats.</div>
+</div>
+
+<div class="term">
+  <div class="term-name">Interest / Operating Income</div>
+  <div class="term-body">Debt service burden relative to operating earnings. Buffett threshold:
+  ≤15%. Low ratio = company can service debt comfortably even in a downturn.</div>
+</div>
+
+<div class="term">
+  <div class="term-name">CapEx / Net Income</div>
+  <div class="term-body">Capital expenditure intensity. Buffett threshold: ≤25% (screener uses
+  ≤50% for a wider net). Capital-light businesses generate free cash flow without heavy
+  reinvestment, enabling buybacks and dividends.</div>
+</div>
+
+<div class="term">
+  <div class="term-name">EV / EBITDA</div>
+  <div class="term-body">Enterprise Value divided by Earnings Before Interest, Taxes, Depreciation
+  and Amortisation. Capital-structure neutral valuation multiple. Used in the Buffett Deep-Dive
+  and Recommended Purchases valuation scoring.</div>
+</div>
+
+<div class="term">
+  <div class="term-name">P / FCF</div>
+  <div class="term-body">Price divided by Free Cash Flow per share. FCF = operating cash flow
+  minus capital expenditures — the actual cash the business generates after maintaining its asset
+  base. Often more reliable than P/E for capital-intensive industries.</div>
+</div>
+
+</div><!-- .container -->
+</body>
+</html>"""
+        body = html.encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", len(body))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
 
 
 server = http.server.HTTPServer(("localhost", PORT), Handler)

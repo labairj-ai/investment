@@ -838,6 +838,7 @@ def build_dashboard(portfolio, layers, holdings):
     <div class="subtitle">{today_date} &nbsp;·&nbsp; {len(today_holdings)} holdings across 5 layers</div>
   </div>
   <div style="display:flex;align-items:center;gap:12px;">
+    <a href="/glossary" target="_blank" style="font-size:12px;padding:5px 14px;border:none;border-radius:5px;background:#2d3a55;color:#e2e8f0;cursor:pointer;font-weight:500;text-decoration:none;">📖 Glossary</a>
     <button id="refreshBtn" onclick="refreshDashboard()" style="font-size:12px;padding:5px 14px;border:none;border-radius:5px;background:#2d3a55;color:#e2e8f0;cursor:pointer;font-weight:500;">↻ Refresh Data</button>
     <label style="font-size:11px;color:#a0aec0;white-space:nowrap;">Tax Bracket</label>
     <select onchange="onTaxBracketChange(this)" style="font-size:12px;padding:5px 10px;border:none;border-radius:5px;background:#2d3a55;color:#e2e8f0;cursor:pointer;">
