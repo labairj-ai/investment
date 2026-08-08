@@ -2351,6 +2351,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 <title>Investment Dashboard — Glossary</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -2772,7 +2775,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", len(body))
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate, max-age=0")
+        self.send_header("Pragma", "no-cache")
+        self.send_header("Expires", "0")
         self.end_headers()
         self.wfile.write(body)
 
