@@ -27,7 +27,7 @@ The old launchd agents from the Mac era are archived in `launchd-disabled-on-mac
 | **Daily Investment Digest** | Single 7 AM email covering: portfolio snapshot, layer allocation vs target (with drift warnings), holdings performance, upcoming earnings/ex-div events, and the judgment health rubric |
 | **Local Dashboard** | Interactive web UI at `http://localhost:5001` with charts, holdings table, and live analysis tools |
 | **Add / Manage Positions** | Add new positions directly from the Holdings UI (ticker, shares, avg cost, layer); reassign any holding to a different layer with full retroactive history rewrite; opening lot auto-created in the Tax Lot Tracker on position add |
-| **Covered Call Analyzer** | Ranks contracts by expected incremental value vs simply holding the stock (covered-call alpha), not raw premium yield. Floor uses `K + exec_prem ≥ cost × 1.10` so premium participates. Metrics include: CC Alpha (exec premium − expected upside surrendered under blended real-world drift), Regret % (P(stock > strike + premium)), real-world ITM probability, vol-normalised strike distance, IV richness (IV/HV_forecast − 1), and a 0-100 multi-factor score. Ex-div events use extrinsic/dividend economics; earnings events compare strike distance to straddle-implied move. Three-tier fallback (live bids → ask-proxy → Black-Scholes) ensures results when markets are closed. **🤖 AI Analysis** sends top-5 contracts to a local `llama3.1:8b` model for narrative reasoning |
+| **Covered Call Analyzer** | Ranks contracts by expected incremental value vs simply holding the stock (covered-call alpha), not raw premium yield. Floor uses `K + exec_prem ≥ cost × 1.10` so premium participates. Metrics include: CC Alpha (exec premium − expected upside surrendered under blended real-world drift), Regret % (P(stock > strike + premium)), real-world ITM probability, vol-normalised strike distance, IV richness (IV/HV_forecast − 1), and a 0-100 multi-factor score. Ex-div events use extrinsic/dividend economics; earnings events compare strike distance to straddle-implied move. Three-tier fallback (live bids → ask-proxy → Black-Scholes) ensures results when markets are closed. **🤖 AI Analysis** sends top-5 contracts to a local `qwen2.5:7b` model for narrative reasoning |
 | **Covered Call Tracker** | Log and track open/closed covered call positions; live mark-to-market option prices (bid/ask mid from yfinance); Unrealized P&L and Today's P&L columns per position; daily change KPI is adjusted mark-to-market; bulk import via `covered_calls.csv`; auto-expires past-expiry positions |
 | **Dividend Tracker** | Dividend dates, tax impact by income bracket, monthly income chart, and ticker lookup tool |
 | **Earnings Calendar** | Next earnings date per holding shown in Layer Summary and Holdings table |
@@ -47,7 +47,7 @@ The old launchd agents from the Mac era are archived in `launchd-disabled-on-mac
 - macOS or Linux (all scripts derive paths from their own location, so the repo can live anywhere; the launchd auto-start is macOS-specific)
 - Python 3.9+ with a virtual environment
 - A Gmail account with an [App Password](https://myaccount.google.com/apppasswords) enabled
-- **Ollama** (for AI Analysis) — must be running on the server with `llama3.1:8b` pulled (`ollama pull llama3.1:8b`); optional, the rest of the dashboard works without it; ~5GB RAM required for the 8b model
+- **Ollama** (for AI Analysis) — must be running on the server with `qwen2.5:7b` pulled (`ollama pull qwen2.5:7b`); optional, the rest of the dashboard works without it; ~4.7 GB RAM required
 
 ---
 
@@ -164,7 +164,7 @@ Script changes take effect on the next **↻ Refresh Data** without restarting t
 | Endpoint | Description |
 |---|---|
 | `GET /api/covered-calls?ticker=EW` | Live option chain recommendations |
-| `GET /api/cc-ai-analysis?ticker=EW` | AI narrative for the top-5 contracts: recommendation, IV context (HV rank + ATM IV), risks, roll strategy, timing (requires `llama3.1:8b` via Ollama; ~90–120s on CPU) |
+| `GET /api/cc-ai-analysis?ticker=EW` | AI narrative for the top-5 contracts: recommendation, IV context (HV rank + ATM IV), risks, roll strategy, timing (requires `qwen2.5:7b` via Ollama; ~90–120s on CPU) |
 | `GET /api/dividends` | Dividend dates, yields, tax impact for all holdings |
 | `GET /api/dividend-lookup?ticker=VYM&shares=100` | Dividend info for any ticker |
 | `GET /api/dividend-timeline` | Monthly income (Jan–Dec, current year) |
@@ -505,7 +505,7 @@ Executable fill estimated as `bid + 25% × spread` (not mid).
 
 **DO NOTHING is an explicit candidate** — if the best CC Alpha is negative, the report flags it.
 
-**🤖 AI Analysis** — after loading recommendations, click the purple "🤖 AI Analysis" button to get `llama3.1:8b` narrative insight from the optiplex. Takes ~90–120 seconds on CPU (8b model). The AI panel shows:
+**🤖 AI Analysis** — after loading recommendations, click the purple "🤖 AI Analysis" button to get `qwen2.5:7b` narrative insight from the optiplex. Takes ~90–120 seconds on CPU. The AI panel shows:
 
 | Section | What it covers |
 |---|---|
@@ -516,7 +516,7 @@ Executable fill estimated as `bid + 25% × spread` (not mid).
 | 🔄 Roll Strategy | Roll triggers citing delta, DTE, and CC Alpha decay |
 | ⏰ Timing | Entry timing — limit order, time of day, spread guidance |
 
-Requires Ollama running on the optiplex with `llama3.1:8b` pulled (`ollama pull llama3.1:8b`). If Ollama is unavailable, the button returns a graceful error.
+Requires Ollama running on the optiplex with `qwen2.5:7b` pulled (`ollama pull qwen2.5:7b`). If Ollama is unavailable, the button returns a graceful error.
 
 ### Dividend Tracker
 Auto-loads on page open. Hit **Refresh** to update; cached 1 hour per day.
@@ -596,7 +596,7 @@ investment/
 ├── serve.py                         # HTTP server + all API endpoints + schedulers
 ├── buffett_screener.py              # NYSE Buffett screener — nightly at 2 AM ET
 ├── covered_call_rec.py              # Covered call recommendation + blackout engine + ai_context() prompt builder
-├── ollama_client.py                 # Thin urllib wrapper for Ollama's /api/generate endpoint (llama3.1:8b, timeout 180s)
+├── ollama_client.py                 # Thin urllib wrapper for Ollama's /api/generate endpoint (qwen2.5:7b, timeout 180s)
 ├── run_investment.sh                # Manual newsletter entry point
 ├── chart.umd.min.js                 # Bundled Chart.js (no CDN dependency)
 ├── favicon.svg                      # Dashboard browser tab icon
