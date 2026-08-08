@@ -163,6 +163,7 @@ Script changes take effect on the next **↻ Refresh Data** without restarting t
 
 | Endpoint | Description |
 |---|---|
+| `GET /glossary` | Term definitions for every metric in the UI — options mechanics, V2 CC metrics, volatility, portfolio, tax, and Buffett screener (opens in browser, no auth required) |
 | `GET /api/covered-calls?ticker=EW` | Live option chain recommendations |
 | `GET /api/cc-ai-analysis?ticker=EW` | AI narrative for the top-5 contracts: recommendation, IV context (HV rank + ATM IV), risks, roll strategy, timing (requires `qwen2.5:7b` via Ollama; ~90–120s on CPU) |
 | `GET /api/dividends` | Dividend dates, yields, tax impact for all holdings |
@@ -272,6 +273,7 @@ Two-column layout: wide left panel for goals, right column for barbell health + 
 - Bottom card shows whether organic growth covers the $2M quarterly portfolio target or new capital is needed this quarter
 
 ### Header
+- **📖 Glossary** (top right) — opens `/glossary` in a new tab; plain-English definitions for every term and metric in the UI, with formulas where relevant. V2 metrics (CC Alpha, Regret %, Score, IV Richness, μ, Exec Premium) are highlighted with a purple NEW badge.
 - **↻ Refresh Data button** (top right) — fetches live prices from Yahoo Finance, writes today's portfolio snapshot to the DB, then regenerates `dashboard.html`. No email is sent. Takes 30–60 seconds while prices are fetched; the button shows "Refreshing…" and reloads the page automatically on completion.
 - **Tax Bracket dropdown** (top right) — toggles between $150k / $300k / $500k / $750k / $1M+ MFJ income scenarios; updates the after-tax dividend KPI, dividend table tax/net columns, Goals card net income, and the after-tax chart line in real time. Affected elements flash briefly yellow so you can see what changed.
 
