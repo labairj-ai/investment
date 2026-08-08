@@ -2,7 +2,7 @@ import json
 import urllib.request
 
 OLLAMA_URL = "http://127.0.0.1:11434"
-DEFAULT_MODEL = "llama3.1:8b"
+DEFAULT_MODEL = "qwen2.5:7b"
 
 
 def generate(prompt, model=DEFAULT_MODEL, temperature=0.3):
@@ -11,7 +11,7 @@ def generate(prompt, model=DEFAULT_MODEL, temperature=0.3):
         "prompt": prompt,
         "stream": False,
         "format": "json",
-        "options": {"temperature": temperature, "num_predict": 800},
+        "options": {"temperature": temperature, "num_predict": 1200},
     }).encode()
     req = urllib.request.Request(
         f"{OLLAMA_URL}/api/generate",
@@ -29,7 +29,7 @@ def stream_generate(prompt, model=DEFAULT_MODEL, temperature=0.3):
         "prompt": prompt,
         "stream": True,
         "format": "json",
-        "options": {"temperature": temperature, "num_predict": 800},
+        "options": {"temperature": temperature, "num_predict": 1200},
     }).encode()
     req = urllib.request.Request(
         f"{OLLAMA_URL}/api/generate",
