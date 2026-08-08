@@ -27,7 +27,7 @@ The old launchd agents from the Mac era are archived in `launchd-disabled-on-mac
 | **Daily Investment Digest** | Single 7 AM email covering: portfolio snapshot, layer allocation vs target (with drift warnings), holdings performance, upcoming earnings/ex-div events, and the judgment health rubric |
 | **Local Dashboard** | Interactive web UI at `http://localhost:5001` with charts, holdings table, and live analysis tools |
 | **Add / Manage Positions** | Add new positions directly from the Holdings UI (ticker, shares, avg cost, layer); reassign any holding to a different layer with full retroactive history rewrite; opening lot auto-created in the Tax Lot Tracker on position add |
-| **Covered Call Analyzer** | Ranks contracts by expected incremental value vs simply holding the stock (covered-call alpha), not raw premium yield. Floor uses `K + exec_prem ≥ cost × 1.10` so premium participates. Metrics include: CC Alpha (exec premium − expected upside surrendered under blended real-world drift), Regret % (P(stock > strike + premium)), real-world ITM probability, vol-normalised strike distance, IV richness (IV/HV_forecast − 1), and a 0-100 multi-factor score. Ex-div events use extrinsic/dividend economics; earnings events compare strike distance to straddle-implied move. Three-tier fallback (live bids → ask-proxy → Black-Scholes) ensures results when markets are closed. **🤖 AI Analysis** sends top-5 contracts to a local `qwen2.5:7b` model for narrative reasoning |
+| **Covered Call Analyzer** | Ranks contracts by expected incremental value vs simply holding the stock (covered-call alpha), not raw premium yield. Floor uses `K + exec_prem ≥ cost × 1.10` so premium participates. Metrics include: CC Alpha (exec premium − expected upside surrendered under blended real-world price-return drift μ), Regret % (P(S_T > K + exec_prem)), estimated expiry ITM % (P(S_T > K) under μ), vol-normalised strike distance (z in σ units), IV richness (IV/HV_forecast − 1), expected move (S × IV × √T), and a 0–100 multi-factor score. Ex-div events use extrinsic/dividend economics; expiry-implied move (ATM straddle cost) flags earnings coverage. Three-tier fallback (live bids → ask-proxy → Black-Scholes) ensures results when markets are closed. **🤖 AI Analysis** sends top-5 contracts plus full metric context to a local `qwen2.5:7b` model; every field in the output requires specific numbers cited (CCα $, regret threshold $, IVrich %, HV Pct) |
 | **Covered Call Tracker** | Log and track open/closed covered call positions; live mark-to-market option prices (bid/ask mid from yfinance); Unrealized P&L and Today's P&L columns per position; daily change KPI is adjusted mark-to-market; bulk import via `covered_calls.csv`; auto-expires past-expiry positions |
 | **Dividend Tracker** | Dividend dates, tax impact by income bracket, monthly income chart, and ticker lookup tool |
 | **Earnings Calendar** | Next earnings date per holding shown in Layer Summary and Holdings table |
@@ -165,7 +165,7 @@ Script changes take effect on the next **↻ Refresh Data** without restarting t
 |---|---|
 | `GET /glossary` | Term definitions for every metric in the UI — options mechanics, V2 CC metrics, volatility, portfolio, tax, and Buffett screener (opens in browser, no auth required) |
 | `GET /api/covered-calls?ticker=EW` | Live option chain recommendations |
-| `GET /api/cc-ai-analysis?ticker=EW` | AI narrative for the top-5 contracts: recommendation, IV context (HV rank + ATM IV), risks, roll strategy, timing (requires `qwen2.5:7b` via Ollama; ~90–120s on CPU) |
+| `GET /api/cc-ai-analysis?ticker=EW` | AI narrative for the top-5 contracts with number-grounded analysis: recommendation (citing CCα $, regret threshold $, IVrich %), IV context (HV Pct + ATM IV), no-call case (exact breakeven price), risks (each citing a specific metric), roll strategy, timing (requires `qwen2.5:7b` via Ollama; ~90–120s on CPU) |
 | `GET /api/dividends` | Dividend dates, yields, tax impact for all holdings |
 | `GET /api/dividend-lookup?ticker=VYM&shares=100` | Dividend info for any ticker |
 | `GET /api/dividend-timeline` | Monthly income (Jan–Dec, current year) |
@@ -174,6 +174,7 @@ Script changes take effect on the next **↻ Refresh Data** without restarting t
 | `POST /api/buffett-scan` | Start a manual screener run (no-op if already running; returns `{ok, reason}`) |
 | `GET /api/buffett-analysis?ticker=KO&mode=annual` | On-demand 13-point Buffett deep-dive; `mode=annual` (default) uses annual filings, `mode=ttm` sums last 4 quarters |
 | `GET /api/cc-positions` | All logged covered call positions; includes computed `pnl_total` and `pnl_day` for open positions with mark data; auto-expires past-expiry open positions |
+| `GET /api/cc-evaluate` | Evaluates all open positions: returns `recommendation` (hold/roll/buy_back), `reason`, `pct_captured`, `remaining_extrinsic` $, `remaining_extrinsic_yield` %, `remaining_extrinsic_ann_yield` %/yr, `delta`, `gamma`, `dte`, `risk_events`, and an optional `next_contract` suggestion |
 | `POST /api/cc-positions` | Log a new covered call position |
 | `POST /api/cc-import` | Import open positions from `covered_calls.csv`; skips duplicates |
 | `PATCH /api/cc-positions/<id>` | Update position status / closing details (computes net_premium server-side); also accepts editable core fields (ticker, contracts, strike, expiry, premium_per_contract, opened_date) to correct typos |
@@ -411,7 +412,7 @@ Today's option P&L is also added to the **Daily Change KPI** at the top of the d
 
 **Net P&L column:** Closed positions show actual net realized income, with buyback cost called out in red when applicable. The summary bar shows open gross premium and net realized income separately.
 
-**Tax integration:** CC net premium income always flows into the **Short-Term / Ordinary** KPI tile and the EST. ST Tax calculation — premium income is always taxed as ordinary income regardless of how long the position was open.
+**Tax integration:** CC option gains/losses flow into the **Short-Term / Ordinary** KPI tile when a position expires or is bought back (short-term capital gain/loss per IRS Pub. 550). If a call is exercised/assigned, the premium is added to the proceeds from selling the underlying shares and the resulting stock gain follows the stock's holding period — that event is recorded via the **Assigned** close type which optionally books the stock sale through the FIFO tracker. Qualified-covered-call and straddle rules (IRC §1092) may further affect holding-period treatment; consult a tax advisor.
 
 ### Buffett Deep-Dive Analyzer
 
@@ -491,32 +492,33 @@ Select any holding with **100+ shares** and click **Get Recommendations**.
 `K + exec_premium ≥ max(cost × 1.10, price × 1.00)`
 Executable fill estimated as `bid + 25% × spread` (not mid).
 
-**Columns:** Expiry | Strike | DTE | Bid | Ask | Mid | Prem% | Ann% | P/L if Called | Δ (delta) | Prob Called | OI | **CC Alpha $** | **Regret %** | **Score**
+**Columns:** Expiry | Strike | DTE | Bid | Ask | Mid | Prem% | Ann% | P/L if Called | Δ (delta) | OI | **CC Alpha $** | **Regret %** | **Score**
 
 | Column | What it means |
 |---|---|
-| **CC Alpha $** | exec_prem − E[max(S_T − K, 0)] under blended real-world drift. Positive = CC adds expected value vs holding. Green / orange / red. |
-| **Regret %** | P(S_T > K + exec_prem) — probability the CC underperforms simply holding the stock. Distinct from and lower than assignment probability. |
-| **Score** | 0–100 multi-factor: 25% CC Alpha + 15% each of yield, IV richness (IV/HV_forecast−1), liquidity (spread+OI+volume), vol-normalised upside room, inverse regret risk. |
+| **Δ (delta)** | Rate of option price change per $1 stock move. Widely used as a rough proxy for the probability of expiring ITM — but this is an approximation; the true risk-neutral probability is N(d₂), which is lower. |
+| **CC Alpha $** | exec_prem − E[max(S_T − K, 0)] under blended real-world price-return drift μ. Positive = CC adds expected value vs simply holding. Negative = holding outright has higher expected terminal wealth. |
+| **Regret %** | P(S_T > K + exec_prem) — probability the CC underperforms a pure hold. The stock must clear the *regret threshold* (strike + premium) for holding to have been better. Lower is better for sellers. |
+| **Score** | 0–100 multi-factor ranked across **all eligible contracts across all expirations**: 25% CC Alpha + 15% each of yield, IV richness (IV/HV_forecast−1), liquidity (spread+OI+volume), vol-normalised upside room (z), inverse regret risk. |
 
-**Volatility header:** shows HV Rank, ATM IV, HV_forecast, IV richness, and blended real-world drift (μ). IV richness > 0 means the option is expensive vs expected realised vol — better environment for selling premium.
+**Volatility header:** shows HV Pct (percentile of today's 21-day realized vol within its 1-year distribution), ATM IV, HV_forecast, IV richness (RICH / FAIR / CHEAP), and blended real-world price-return drift (μ). IV richness > 0 means the option is priced above expected realized vol — a better environment for selling premium.
 
 **Event flags:**
-- **Earnings:** strike distance compared to straddle-implied move (not a blanket block)
-- **Ex-div:** extrinsic/dividend ratio — only flags AVOID when dividend ≥ extrinsic (early assignment actually makes economic sense for the holder); OTM contracts downgraded to CAUTION
+- **Earnings:** strike distance compared to expiry-implied move (ATM straddle cost as a fraction of spot — reflects vol over the full expiry period, not just the event itself)
+- **Ex-div:** extrinsic/dividend ratio — only flags AVOID when dividend ≥ extrinsic (early assignment actually makes economic sense for the holder); OTM contracts default to CAUTION; event data is fetched once per expiry, not per contract
 
 **DO NOTHING is an explicit candidate** — if the best CC Alpha is negative, the report flags it.
 
-**🤖 AI Analysis** — after loading recommendations, click the purple "🤖 AI Analysis" button to get `qwen2.5:7b` narrative insight from the optiplex. Takes ~90–120 seconds on CPU. The AI panel shows:
+**🤖 AI Analysis** — after loading recommendations, click the purple "🤖 AI Analysis" button to get `qwen2.5:7b` narrative insight from the optiplex. Takes ~90–120 seconds on CPU. The prompt passes the full metric context (CCα $, regret threshold $, IVrich %, z-strike σ, expected move $, HV Pct, eITM %) with metric definitions and explicit instructions requiring every sentence to cite actual numbers — generic prose without numbers is explicitly prohibited. The AI panel shows:
 
 | Section | What it covers |
 |---|---|
-| 🎯 Recommendation | Which contract has the best CC Alpha vs holding outright, given IV richness, regret probability, and portfolio layer |
-| 📊 IV Context | Whether current HV rank + IV richness make this a good time to sell premium |
-| 🤷 No-Call Case | Whether the evidence supports doing nothing (negative CC Alpha, strong momentum, compressed IV) |
-| ⚠️ Risks | Per-contract risks (earnings coverage, ex-div ratio, wide spread, high regret probability) |
-| 🔄 Roll Strategy | Roll triggers citing delta, DTE, and CC Alpha decay |
-| ⏰ Timing | Entry timing — limit order, time of day, spread guidance |
+| 🎯 Recommendation | Which contract; must state CCα $ amount, what upside is surrendered $, regret threshold $, RegretP %, IVrich %, and how the portfolio layer affects aggressiveness |
+| 📊 IV Context | ATM IV %, HV Pct rank, and IVrich % stated explicitly; plain-language verdict on the premium environment |
+| 🤷 No-Call Case | States CCα of the best contract and the exact stock price the stock must breach for holding to win; references μ momentum |
+| ⚠️ Risks | Each risk cites a specific number: eITM %, delta, spread width, or Liq score |
+| 🔄 Roll Strategy | States specific delta threshold and DTE threshold; explains CCα decay as the economic rationale |
+| ⏰ Timing | States current spread width, recommends limit order relative to exec premium, flags Liq score if below 40 |
 
 Requires Ollama running on the optiplex with `qwen2.5:7b` pulled (`ollama pull qwen2.5:7b`). If Ollama is unavailable, the button returns a graceful error.
 
@@ -578,7 +580,9 @@ venv/bin/python3 covered_call_rec.py EW GRMN WMT # multiple
 venv/bin/python3 covered_call_rec.py              # all holdings ≥100 shares
 ```
 
-Output columns: Expiry · Strike · DTE · Bid · Ask · Exec · Prem% · Ann% · P/L · Delta · ITM% · Regret% · CCα$ · Liq · Score
+Output columns: Expiry · Strike · DTE · Bid · Ask · Exec · Prem% · Ann% · P/L · Delta · eITM% · Regret% · CCα$ · Liq · Score
+
+`eITM%` = estimated probability of expiring in-the-money under real-world price-return drift μ (not assignment probability).
 
 Ranked by multi-factor score; if the best `CCα$` is negative, a DO NOTHING warning is printed.
 
