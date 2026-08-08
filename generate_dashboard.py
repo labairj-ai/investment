@@ -4202,6 +4202,31 @@ function renderAIInsights(data) {{
 }}
 
 // ── Covered Call Analyzer ─────────────────────────────────────────────────
+function setCCSpreadFilter(mode) {{
+  const rows   = document.querySelectorAll('#cc-results .cc-row-wide');
+  const allBtn = document.getElementById('cc-filter-all');
+  const tightBtn = document.getElementById('cc-filter-tight');
+  const noneMsg  = document.getElementById('cc-tight-none');
+
+  rows.forEach(tr => {{ tr.style.display = mode === 'tight' ? 'none' : ''; }});
+
+  if (allBtn) {{
+    allBtn.style.background   = mode === 'all' ? '#6c5ce7' : '#fff';
+    allBtn.style.color        = mode === 'all' ? '#fff'    : '#6c5ce7';
+    allBtn.style.fontWeight   = mode === 'all' ? '700'     : '600';
+  }}
+  if (tightBtn) {{
+    tightBtn.style.background = mode === 'tight' ? '#27ae60' : '#fff';
+    tightBtn.style.color      = mode === 'tight' ? '#fff'    : '#27ae60';
+    tightBtn.style.fontWeight = mode === 'tight' ? '700'     : '600';
+  }}
+  if (noneMsg) {{
+    // Show the "no tight contracts" warning only when in tight mode and all rows are hidden
+    const visibleRows = document.querySelectorAll('#cc-results tbody tr:not([style*="display: none"])');
+    noneMsg.style.display = (mode === 'tight' && visibleRows.length === 0) ? '' : 'none';
+  }}
+}}
+
 async function analyzeCoveredCall() {{
   const ticker = document.getElementById("cc-ticker").value;
   if (!ticker) return;
@@ -4369,13 +4394,18 @@ function renderCC(d) {{
     return meta + noteHtml + `<p style="color:#888;font-size:13px;">No qualifying contracts found.</p>`;
   }}
 
+  const tightCount = d.recs.filter(r => (r.ask - r.bid) <= 0.25).length;
+
   const rows = d.recs.map((r, i) => {{
-    const isLive  = openStrikesSet.has(r.strike + "|" + r.expiration);
-    const rowBg   = isLive        ? "background:#f0fff4;"
-                  : r.has_avoid   ? "background:#fff5f5;"
-                  : r.has_caution ? "background:#fffbf0;"
-                  : i === 0       ? "background:#f0f7ff;"
-                  : "";
+    const spread   = r.ask - r.bid;
+    const isWide   = spread > 0.25;
+    const isLive   = openStrikesSet.has(r.strike + "|" + r.expiration);
+    const rowBg    = isLive        ? "background:#f0fff4;"
+                   : r.has_avoid   ? "background:#fff5f5;"
+                   : r.has_caution ? "background:#fffbf0;"
+                   : i === 0       ? "background:#f0f7ff;"
+                   : "";
+    const spreadColor = spread <= 0.10 ? "#27ae60" : spread <= 0.25 ? "#e67e22" : "#e74c3c";
     const plColor    = r.profit_if_called >= 10 ? "#27ae60" : "#e67e22";
     const alphaColor = r.cc_alpha > 0 ? "#27ae60" : r.cc_alpha < -0.5 ? "#e74c3c" : "#e67e22";
     const regretColor = r.regret_prob < 0.10 ? "#27ae60" : r.regret_prob < 0.20 ? "#e67e22" : "#e74c3c";
@@ -4405,7 +4435,7 @@ function renderCC(d) {{
          Log →
        </button>`;
 
-    return `<tr style="${{rowBg}}border-bottom:1px solid #f2f4f7;">
+    return `<tr class="${{isWide ? "cc-row-wide" : ""}}" style="${{rowBg}}border-bottom:1px solid #f2f4f7;">
       <td style="padding:8px 10px;">
         <span style="font-weight:${{i===0?"700":"400"}}">${{r.expiration}}</span>${{liveBadge}}
         ${{blackout}}
@@ -4416,6 +4446,7 @@ function renderCC(d) {{
       <td style="padding:8px 10px;color:#7f8c8d;">${{r.dte}}d</td>
       <td style="padding:8px 10px;">${{fmt(r.bid)}}</td>
       <td style="padding:8px 10px;">${{fmt(r.ask)}}</td>
+      <td style="padding:8px 10px;font-weight:600;color:${{spreadColor}};">${{fmt(spread)}}</td>
       <td style="padding:8px 10px;font-weight:600;">${{fmt(r.mid)}}</td>
       <td style="padding:8px 10px;">${{pct(r.premium_pct)}}</td>
       <td style="padding:8px 10px;font-weight:700;color:#1a2340;">${{pct(r.annualized_ret)}}</td>
@@ -4428,7 +4459,25 @@ function renderCC(d) {{
     </tr>`;
   }}).join("");
 
-  return meta + `
+  const filterBar = `
+    <div style="display:flex;align-items:center;gap:6px;margin-bottom:10px;flex-wrap:wrap;">
+      <span style="font-size:12px;color:#888;font-weight:600;">Show:</span>
+      <button id="cc-filter-all" onclick="setCCSpreadFilter('all')"
+        style="font-size:12px;padding:4px 12px;border-radius:14px;border:1.5px solid #6c5ce7;
+               background:#6c5ce7;color:#fff;cursor:pointer;font-weight:700;">
+        All (${{d.recs.length}})
+      </button>
+      <button id="cc-filter-tight" onclick="setCCSpreadFilter('tight')"
+        style="font-size:12px;padding:4px 12px;border-radius:14px;border:1.5px solid #27ae60;
+               background:#fff;color:#27ae60;cursor:pointer;font-weight:600;">
+        Tight spread ≤$0.25 (${{tightCount}})
+      </button>
+      <span id="cc-tight-none" style="display:none;font-size:11px;color:#e74c3c;">
+        No contracts meet the tight-spread filter for this ticker.
+      </span>
+    </div>`;
+
+  return meta + filterBar + `
     <div style="overflow-x:auto;">
     <table style="width:100%;border-collapse:collapse;font-size:13px;">
       <thead><tr style="background:#f4f6f9;">
@@ -4437,6 +4486,7 @@ function renderCC(d) {{
         <th style="padding:7px 10px;text-align:left;color:#7f8c8d;font-size:11px;text-transform:uppercase;">DTE</th>
         <th style="padding:7px 10px;text-align:left;color:#7f8c8d;font-size:11px;text-transform:uppercase;">Bid</th>
         <th style="padding:7px 10px;text-align:left;color:#7f8c8d;font-size:11px;text-transform:uppercase;">Ask</th>
+        <th style="padding:7px 10px;text-align:left;color:#7f8c8d;font-size:11px;text-transform:uppercase;" title="Bid-ask spread. Green ≤$0.10, yellow ≤$0.25, red &gt;$0.25.">Spread</th>
         <th style="padding:7px 10px;text-align:left;color:#7f8c8d;font-size:11px;text-transform:uppercase;">Mid</th>
         <th style="padding:7px 10px;text-align:left;color:#7f8c8d;font-size:11px;text-transform:uppercase;">Prem%</th>
         <th style="padding:7px 10px;text-align:left;color:#7f8c8d;font-size:11px;text-transform:uppercase;">Ann%</th>
@@ -4450,7 +4500,7 @@ function renderCC(d) {{
       <tbody>${{rows}}</tbody>
     </table>
     </div>
-    <p style="font-size:11px;color:#aaa;margin-top:8px;">Top ${{d.recs.length}} contracts ranked by multi-factor score (25% CC Alpha · 15% each: yield, IV richness, liquidity, upside room, inverse regret). <b style="color:#6c5ce7">CC Alpha</b> = exec premium − expected upside surrendered. <b style="color:#6c5ce7">Regret %</b> = P(stock closes above strike + premium). Highlighted row = best score.</p>
+    <p style="font-size:11px;color:#aaa;margin-top:8px;">Top ${{d.recs.length}} contracts ranked by multi-factor score (25% CC Alpha · 15% each: yield, IV richness, liquidity, upside room, inverse regret). <b style="color:#6c5ce7">CC Alpha</b> = exec premium − expected upside surrendered. <b style="color:#6c5ce7">Regret %</b> = P(stock closes above strike + premium). Spread color: <b style="color:#27ae60">green</b> ≤$0.10 · <b style="color:#e67e22">yellow</b> ≤$0.25 · <b style="color:#e74c3c">red</b> &gt;$0.25. Highlighted row = best score.</p>
     ${{noteHtml}}`;
 }}
 
