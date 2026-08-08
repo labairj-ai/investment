@@ -1230,9 +1230,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     "regret_prob":      round(_safe_float(row.get("regret_prob")), 3),
                     "regret_threshold": round(_safe_float(row.get("regret_threshold")), 2),
                     "cc_alpha":         round(_safe_float(row.get("cc_alpha")), 3),
+                    "cc_alpha_pct":     round(_safe_float(row.get("cc_alpha_pct")), 5),
                     "iv_richness":      round(_safe_float(row.get("iv_richness")), 3),
                     "liquidity_score":  int(_safe_float(row.get("liquidity_score"))),
                     "score":            round(_safe_float(row.get("score")), 1),
+                    "opp_score":        round(_safe_float(row.get("opp_score")), 1),
                     "risk_events":      list(row.get("risk_events") or []),
                     "has_avoid":        bool(row.get("has_avoid")),
                     "has_caution":      bool(row.get("has_caution")),
@@ -2517,22 +2519,29 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
 <div class="term new">
   <div class="term-name">CC Alpha $ <span class="tag">NEW</span></div>
-  <div class="term-formula">CC Alpha = Exec Premium − E[max(S<sub>T</sub> − K, 0)]</div>
+  <div class="term-formula">CC Alpha ≈ P − E[(S<sub>T</sub> − K)<sup>+</sup>]<br>
+  where E[(S<sub>T</sub> − K)<sup>+</sup>] = S·e<sup>(μ−q)T</sup>·N(d<sub>1,μ</sub>) − K·N(d<sub>2,μ</sub>)<br>
+  d<sub>1,μ</sub> = d<sub>2,μ</sub> + σ√T &nbsp;·&nbsp; σ = eff_IV</div>
   <div class="term-body">The <b>expected gain from selling the call versus simply continuing to
-  hold the stock</b>. The second term is the expected upside you give up, calculated under a
-  blended real-world drift (μ) rather than the risk-neutral rate.<br><br>
+  hold the stock</b>. The expected upside surrender is computed under the real-world lognormal
+  model with drift μ — not the risk-neutral rate. The premium P is collected today; the
+  surrender term occurs at expiration. The formula implicitly assumes r = 0 (i.e., no time-value
+  adjustment to P). For typical 21–60 DTE contracts and a 4–5% risk-free rate the error is
+  &lt;$0.03 on a $3 premium — immaterial in practice.<br><br>
   <b>Positive</b> (green) — selling the call adds expected value vs holding.<br>
   <b>Negative</b> (red) — holding outright has higher expected return; consider doing nothing.</div>
 </div>
 
 <div class="term new">
   <div class="term-name">Regret % <span class="tag">NEW</span></div>
-  <div class="term-formula">Regret % = P(S<sub>T</sub> &gt; K + Exec Premium)</div>
+  <div class="term-formula">Regret % = N(d<sub>2,μ</sub>(B)) &nbsp; where B = K + P<br>
+  d<sub>2,μ</sub>(B) = [ln(S/B) + (μ − q − 0.5σ²)T] / (σ√T)</div>
   <div class="term-body">Probability that the stock closes above the <b>regret threshold</b>
-  (strike + premium) at expiration — the price above which selling the call leaves you worse off
-  than if you had simply held the shares. <b>This is lower than the expiry-ITM probability</b>:
-  the stock can finish above the strike and you still win economically, as long as it doesn't
-  run past K + P. Calculated under the real-world price-return drift model.</div>
+  B = K + P at expiration — the price above which selling the call leaves you worse off than
+  simply holding. Uses the same physical distribution as Estimated Expiry ITM% and CC Alpha
+  (identical μ, q, σ = eff_IV); regret_prob = itm_prob_real(S, K+P, T, σ, μ, q).
+  <b>This is lower than the expiry-ITM probability</b>: the stock can finish above the strike
+  and you still win, as long as it doesn't run past K + P.</div>
 </div>
 
 <div class="term new">
@@ -2545,15 +2554,33 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 <div class="term new">
   <div class="term-name">Score (Multi-Factor) <span class="tag">NEW</span></div>
   <div class="term-formula">Score = 100 × (0.25·A + 0.15·Y + 0.15·V + 0.15·L + 0.15·U + 0.15·R)</div>
-  <div class="term-body">0–100 composite ranking. All inputs are normalised to [0, 1] before
-  weighting. Scored across <b>all candidate contracts for this ticker across all eligible
-  expirations</b> — so a Score of 87 means the same thing regardless of expiration date:
+  <div class="term-body">0–100 composite for <b>within-ticker contract selection</b>. Uses percentile
+  ranks computed across all contracts for this ticker and expiration set, so a 30-DTE 87 and a
+  55-DTE 87 for the same stock are genuinely comparable. All inputs ∈ [0,1] before weighting:
   <br><b>A</b> — CC Alpha (25%) — percentile rank; higher alpha = better
   <br><b>Y</b> — Premium yield (15%) — percentile rank
   <br><b>V</b> — IV richness (15%) — percentile rank (clipped at −1 before ranking)
   <br><b>L</b> — Liquidity score (15%) — <em>absolute</em> normalised (Liq/100), not a percentile
   <br><b>U</b> — Upside room (15%) — percentile rank of vol-normalised distance to strike
-  <br><b>R</b> — 1 − PctRank(Regret%) (15%) — <em>inverse</em> percentile rank so lower regret probability scores higher</div>
+  <br><b>R</b> — 1 − PctRank(Regret%) (15%) — <em>inverse</em> percentile rank so lower regret = higher score
+  <br><br><b>Limitation:</b> because ranks are within-ticker, every stock will produce a contract near 90.
+  Do not compare Score across different tickers. Use <b>Opp Score</b> for cross-ticker comparison.</div>
+</div>
+
+<div class="term new">
+  <div class="term-name">Opp Score (Opportunity Score) <span class="tag">NEW</span></div>
+  <div class="term-formula">OppScore = 100 × (0.30·A + 0.20·Y + 0.20·V + 0.15·L + 0.15·R)<br>
+  using fixed reference scales, not percentile ranks</div>
+  <div class="term-body">Cross-ticker comparable score — MSFT 72 and RIVN 72 represent
+  similar opportunity levels. Uses absolute inputs with fixed reference scales so the score
+  doesn't inflate just because a contract ranks well within a bad option chain:
+  <br><b>A</b> — CC Alpha / S; reference 0–2.5% per contract
+  <br><b>Y</b> — Annualized yield; reference 0–20%/yr
+  <br><b>V</b> — IV richness; reference −50% to +100%
+  <br><b>L</b> — Liquidity score / 100 (absolute)
+  <br><b>R</b> — 1 − (Regret% / 40%); 0–40% regret range
+  <br><br>Pair with Score: <b>Score</b> answers "which contract is best for this stock?";
+  <b>Opp Score</b> answers "which stock currently offers the best covered-call opportunity?"</div>
 </div>
 
 <div class="term new">
@@ -2568,12 +2595,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 <h2>Probability &amp; Greeks</h2>
 
 <div class="term">
-  <div class="term-name">Delta (Δ) — "Prob Called"</div>
+  <div class="term-name">Delta (Δ)</div>
   <div class="term-formula">Δ = e<sup>−qT</sup> · N(d<sub>1</sub>)</div>
-  <div class="term-body">Rate of change of the option's price per $1 move in the stock. Also widely
-  used as a rough probability of expiring ITM — a 0.25 delta call is often described as "25%
-  probability of assignment." <b>This is an approximation</b>: the true risk-neutral probability is
-  N(d<sub>2</sub>), which is typically somewhat lower for ordinary low-dividend equities.</div>
+  <div class="term-body">Rate of change of the option's price per $1 move in the stock.
+  Delta is displayed in the table (e.g., 0.26) as a Greeks measure. It is sometimes cited as
+  a rough assignment-probability estimate ("25-delta call"), but this is an approximation for
+  two reasons: (1) the true risk-neutral ITM probability is N(d<sub>2</sub>), which is somewhat
+  lower than delta for low-dividend equities; (2) neither delta nor N(d<sub>2</sub>) accounts for
+  real-world stock drift. The table shows delta separately from <b>eITM%</b> (the real-world
+  model's ITM estimate) and <b>Regret %</b> for a cleaner probability picture.</div>
 </div>
 
 <div class="term new">
@@ -2642,20 +2672,28 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
 <div class="term new">
   <div class="term-name">IV Richness <span class="tag">NEW</span></div>
-  <div class="term-formula">IV Richness = IV / HV_forecast − 1</div>
-  <div class="term-body">Whether the option is <b>expensive or cheap relative to expected
-  realised volatility</b>. Positive (green, "rich") = option sellers are being overpaid for vol
-  they're unlikely to realise. Negative (red, "cheap") = options are priced below expected
-  realised vol — a less favourable environment for selling. Distinct from HV Percentile, which
-  measures realised vol against its own history without reference to what the option is pricing.</div>
+  <div class="term-formula">IV Richness<sub>K,T</sub> = IV<sub>K,T</sub> / HV_forecast − 1</div>
+  <div class="term-body">Whether the option is <b>expensive or cheap relative to the model's
+  expected realised volatility</b>. Each contract uses its own implied volatility (not the ATM
+  IV from the nearest expiry shown in the header), so a contract can appear rich due to
+  strike-specific skew rather than a broadly elevated vol environment.
+  <br><b>Positive (green, "rich")</b> — market IV exceeds the model's expected realized vol,
+  which is generally more favorable for premium sellers, all else equal. Part of any premium
+  can reflect compensation for jump risk, gap risk, or other tail risks not captured in
+  historical vol.
+  <br><b>Negative (red, "cheap")</b> — options are priced below expected realized vol; a
+  less favorable environment for selling.
+  <br>Distinct from HV Percentile, which measures realized vol vs. its own history.</div>
 </div>
 
 <div class="term new">
   <div class="term-name">Expected Move <span class="tag">NEW</span></div>
   <div class="term-formula">Expected Move = S × IV × √T</div>
-  <div class="term-body">One standard deviation move in the stock over the option's life, in
-  dollar terms. A strike 1.0× the expected move above spot is ~1 sigma OTM. Used to normalise
-  strike distance across stocks with very different volatilities.</div>
+  <div class="term-body">Approximate one-standard-deviation move in the stock over the option's
+  life, in dollar terms (S × IV × √T). This is the standard trader approximation; strictly,
+  volatility applies to log-returns, so the formula slightly understates the true sigma move.
+  A strike 1.0× the expected move above spot is roughly 1-sigma OTM. Used to normalise strike
+  distance across stocks with very different volatilities.</div>
 </div>
 
 <!-- ── PORTFOLIO & TAX ────────────────────────────────────────── -->
@@ -2713,9 +2751,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 <div class="term">
   <div class="term-name">NIIT — Net Investment Income Tax</div>
   <div class="term-body">3.8% federal surtax on investment income (dividends, capital gains,
-  option premium) for taxpayers above $200k (single) / $250k (MFJ) MAGI. Per IRS rules, NIIT
-  applies to the <b>lesser of</b>: (a) total net investment income (NII) or (b) the excess of MAGI
-  over the applicable threshold. Formula: 0.038 × min(NII, max(0, MAGI − Threshold)).
+  net option gains) for taxpayers above $200k (single) / $250k (MFJ) MAGI. NIIT applies to
+  <b>net option gains</b>, not the gross premium collected — losses and offsetting positions
+  reduce the NII base. Per IRS rules, NIIT applies to the <b>lesser of</b>: (a) total net
+  investment income (NII) or (b) the excess of MAGI over the applicable threshold.
+  Formula: 0.038 × min(NII, max(0, MAGI − Threshold)).
   The dashboard applies this lesser-of formula using the representative MAGI for your selected
   bracket. Toggle in the Tax Harvesting modal.</div>
 </div>

@@ -421,8 +421,31 @@ def _market_price(stock) -> float:
 
 # ── Multi-factor scoring ──────────────────────────────────────────────────────
 
+def _compute_opp_score(df) -> "pd.Series":
+    """Cross-ticker comparable opportunity score using fixed absolute reference scales.
+
+    Unlike Score (within-ticker percentile ranks), OppScore means the same thing
+    across different tickers — MSFT 72 vs RIVN 72 are comparable opportunities.
+
+    All inputs mapped to [0,1] before weighting:
+      A  CCα% = cc_alpha / S            0–2.5% per contract → [0,1]
+      Y  Annualized yield               0–20%/yr            → [0,1]
+      V  IV richness                    −50% to +100%       → [0,1]
+      L  Liquidity score                0–100               → [0,1]
+      R  1 − regret_prob / 0.40         0–40% regret        → [0,1]
+
+    Weights: A 30%, Y 20%, V 20%, L 15%, R 15%
+    """
+    A = (df["cc_alpha_pct"] / 0.025).clip(0, 1)
+    Y = (df["annualized_ret"] / 20.0).clip(0, 1)
+    V = ((df["iv_richness"].clip(-0.5, 1.0) + 0.5) / 1.5)
+    L = df["liquidity_score"] / 100.0
+    R = (1.0 - df["regret_prob"] / 0.40).clip(0, 1)
+    return (100 * (0.30*A + 0.20*Y + 0.20*V + 0.15*L + 0.15*R)).round(1)
+
+
 def _compute_scores(df):
-    """Add 'score' column: 0-100 composite, higher = better candidate."""
+    """Add 'score' (within-ticker) and 'opp_score' (cross-ticker) columns."""
     n = len(df)
     if n == 0:
         return df
@@ -438,7 +461,8 @@ def _compute_scores(df):
     R = 1 - pct_rank(df["regret_prob"])                   # 15% — low regret risk
 
     df = df.copy()
-    df["score"] = 100 * (0.25*A + 0.15*Y + 0.15*V + 0.15*L + 0.15*U + 0.15*R)
+    df["score"]     = 100 * (0.25*A + 0.15*Y + 0.15*V + 0.15*L + 0.15*U + 0.15*R)
+    df["opp_score"] = _compute_opp_score(df)
     return df
 
 
@@ -604,6 +628,7 @@ def analyze(ticker: str, avg_cost: float, shares: float):
                     "regret_prob":       round(reg_p, 3),
                     "regret_threshold":  round(K + exec_prem, 2),
                     "cc_alpha":          round(cc_alpha, 3),
+                    "cc_alpha_pct":      round(cc_alpha / current_price, 6),
                     "upside_lost":       round(up_lost, 3),
                     "expected_move":     round(exp_move, 2),
                     "z_strike":          round(z_k, 2),

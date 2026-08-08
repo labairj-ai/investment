@@ -4451,11 +4451,13 @@ function renderCC(d) {{
       <td style="padding:8px 10px;">${{pct(r.premium_pct)}}</td>
       <td style="padding:8px 10px;font-weight:700;color:#1a2340;">${{pct(r.annualized_ret)}}</td>
       <td style="padding:8px 10px;font-weight:700;color:${{plColor}};">+${{pct(r.profit_if_called)}}</td>
-      <td style="padding:8px 10px;font-weight:600;color:${{!r.delta ? '#aaa' : r.delta < 0.2 ? '#27ae60' : r.delta < 0.35 ? '#e67e22' : '#e74c3c'}};">${{r.delta ? (r.delta * 100).toFixed(1) + '%' : '—'}}</td>
+      <td style="padding:8px 10px;color:${{!r.delta ? '#aaa' : r.delta < 0.20 ? '#27ae60' : r.delta < 0.35 ? '#e67e22' : '#e74c3c'}};">${{r.delta ? r.delta.toFixed(2) : '—'}}</td>
+      <td style="padding:8px 10px;color:${{r.itm_prob_real == null ? '#aaa' : r.itm_prob_real < 0.20 ? '#27ae60' : r.itm_prob_real < 0.35 ? '#e67e22' : '#e74c3c'}};">${{r.itm_prob_real != null ? (r.itm_prob_real * 100).toFixed(1) + "%" : "—"}}</td>
       <td style="padding:8px 10px;color:#aaa;font-size:11px;">${{r.open_interest ?? "—"}}</td>
       <td style="padding:8px 10px;font-weight:700;color:${{alphaColor}};">${{r.cc_alpha != null ? (r.cc_alpha >= 0 ? "+" : "") + r.cc_alpha.toFixed(2) : "—"}}</td>
       <td style="padding:8px 10px;font-weight:600;color:${{regretColor}};">${{r.regret_prob != null ? (r.regret_prob * 100).toFixed(1) + "%" : "—"}}</td>
       <td style="padding:8px 10px;font-weight:700;color:${{scoreColor}};">${{r.score != null ? r.score.toFixed(0) : "—"}}</td>
+      <td style="padding:8px 10px;font-weight:700;color:${{r.opp_score == null ? '#aaa' : r.opp_score >= 65 ? '#27ae60' : r.opp_score >= 40 ? '#e67e22' : '#aaa'}};">${{r.opp_score != null ? r.opp_score.toFixed(0) : "—"}}</td>
     </tr>`;
   }}).join("");
 
@@ -4491,16 +4493,18 @@ function renderCC(d) {{
         <th style="padding:7px 10px;text-align:left;color:#7f8c8d;font-size:11px;text-transform:uppercase;">Prem%</th>
         <th style="padding:7px 10px;text-align:left;color:#7f8c8d;font-size:11px;text-transform:uppercase;">Ann%</th>
         <th style="padding:7px 10px;text-align:left;color:#7f8c8d;font-size:11px;text-transform:uppercase;">P/L if Called</th>
-        <th style="padding:7px 10px;text-align:left;color:#7f8c8d;font-size:11px;text-transform:uppercase;">Prob Called</th>
+        <th style="padding:7px 10px;text-align:left;color:#7f8c8d;font-size:11px;text-transform:uppercase;" title="Option delta (rate of price change per $1 stock move). Not an exact assignment probability.">Delta</th>
+        <th style="padding:7px 10px;text-align:left;color:#7f8c8d;font-size:11px;text-transform:uppercase;" title="Estimated probability stock closes above strike at expiry under real-world drift model. Lower = safer for sellers.">eITM%</th>
         <th style="padding:7px 10px;text-align:left;color:#7f8c8d;font-size:11px;text-transform:uppercase;">OI</th>
         <th style="padding:7px 10px;text-align:left;color:#6c5ce7;font-size:11px;text-transform:uppercase;" title="Expected premium minus expected upside surrendered (real-world drift). Positive = CC beats holding.">CC Alpha $</th>
         <th style="padding:7px 10px;text-align:left;color:#6c5ce7;font-size:11px;text-transform:uppercase;" title="P(S_T > K + premium): probability the CC underperforms simply holding the stock.">Regret %</th>
-        <th style="padding:7px 10px;text-align:left;color:#6c5ce7;font-size:11px;text-transform:uppercase;" title="Multi-factor score: 25% CC Alpha + 15% each of yield, IV richness, liquidity, upside room, inverse regret risk.">Score</th>
+        <th style="padding:7px 10px;text-align:left;color:#6c5ce7;font-size:11px;text-transform:uppercase;" title="Multi-factor score within this ticker (25% CC Alpha + 15% each: yield, IV richness, liquidity, upside room, inverse regret). Not comparable across tickers.">Score</th>
+        <th style="padding:7px 10px;text-align:left;color:#e67e22;font-size:11px;text-transform:uppercase;" title="Opportunity Score — cross-ticker comparable. Uses fixed absolute scales (not percentile ranks within this ticker). Compare across your holdings.">OppScore</th>
       </tr></thead>
       <tbody>${{rows}}</tbody>
     </table>
     </div>
-    <p style="font-size:11px;color:#aaa;margin-top:8px;">Top ${{d.recs.length}} contracts ranked by multi-factor score (25% CC Alpha · 15% each: yield, IV richness, liquidity, upside room, inverse regret). <b style="color:#6c5ce7">CC Alpha</b> = exec premium − expected upside surrendered. <b style="color:#6c5ce7">Regret %</b> = P(stock closes above strike + premium). Spread color: <b style="color:#27ae60">green</b> ≤$0.10 · <b style="color:#e67e22">yellow</b> ≤$0.25 · <b style="color:#e74c3c">red</b> &gt;$0.25. Highlighted row = best score.</p>
+    <p style="font-size:11px;color:#aaa;margin-top:8px;">Top ${{d.recs.length}} contracts ranked by <b style="color:#6c5ce7">Score</b> (within-ticker percentile ranks — not comparable across stocks). <b style="color:#e67e22">OppScore</b> uses fixed absolute scales and IS comparable across your holdings. <b style="color:#6c5ce7">CC Alpha</b> = exec premium − expected upside surrendered under real-world drift. <b style="color:#6c5ce7">eITM%</b> = real-world model's estimated probability of expiring above strike (not assignment probability). Spread color: <b style="color:#27ae60">green</b> ≤$0.10 · <b style="color:#e67e22">yellow</b> ≤$0.25 · <b style="color:#e74c3c">red</b> &gt;$0.25. Highlighted row = best Score.</p>
     ${{noteHtml}}`;
 }}
 
