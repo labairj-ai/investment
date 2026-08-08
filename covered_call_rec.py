@@ -11,8 +11,8 @@ Key metrics
 cc_alpha          : exec_premium - E[max(S_T-K, 0)] under blended real-world drift
 regret_threshold  : K + exec_premium  (stock price where CC starts trailing hold)
 regret_prob       : P(S_T > K + exec_premium) under real-world model
-itm_prob_rn       : N(d2)  risk-neutral assignment probability
-itm_prob_real     : real-world assignment probability using blended drift
+itm_prob_rn       : N(d2)  risk-neutral probability of expiring ITM
+itm_prob_real     : estimated probability of expiring ITM under real-world price drift (mu)
 expected_move     : S × IV × sqrt(T)  1-sigma move over option life
 z_strike          : ln(K/S) / (IV×sqrt(T))  vol-normalised distance to strike
 iv_richness       : IV / HV_forecast - 1  (>0 means IV rich vs expected realised)
@@ -134,7 +134,7 @@ def call_extrinsic(S: float, K: float, option_price: float) -> float:
 
 def itm_prob_rn(S: float, K: float, T: float, sigma: float,
                 r: float = RISK_FREE_RATE, q: float = 0.0) -> float:
-    """Risk-neutral assignment probability: N(d2)."""
+    """Risk-neutral probability of expiring ITM: N(d2). Lower than delta (N(d1))."""
     if T <= 0 or sigma <= 0 or S <= 0 or K <= 0:
         return 1.0 if S > K else 0.0
     try:
@@ -146,7 +146,7 @@ def itm_prob_rn(S: float, K: float, T: float, sigma: float,
 
 def itm_prob_real(S: float, K: float, T: float, sigma: float,
                   mu: float = RISK_FREE_RATE, q: float = 0.0) -> float:
-    """Real-world assignment probability using blended drift mu."""
+    """Estimated probability of expiring ITM under real-world price-return drift mu."""
     if T <= 0 or sigma <= 0 or S <= 0 or K <= 0:
         return 1.0 if S > K else 0.0
     try:
@@ -179,7 +179,8 @@ def regret_prob(S: float, K: float, P: float, T: float, sigma: float,
 # ── Volatility model ──────────────────────────────────────────────────────────
 
 def _estimate_drift(ret) -> float:
-    """Blended real-world annualised drift capped at ±50%."""
+    """Blended real-world annualised price-return drift capped at ±50%.
+    ret = Close.pct_change(), so this is price drift (not total return)."""
     n = len(ret)
     values, weights = [], []
     if n >= 60:
@@ -277,8 +278,9 @@ def _clears_profit_floor(K: float, exec_prem: float,
 
 # ── Event model ───────────────────────────────────────────────────────────────
 
-def _earnings_implied_move(stock, current_price: float, today) -> float:
-    """Market-implied earnings move from the nearest short-dated ATM straddle."""
+def _expiry_implied_move(stock, current_price: float, today) -> float:
+    """ATM straddle cost as a fraction of spot for the nearest short-dated expiry.
+    Reflects the market's implied move over the full expiry period, not just earnings."""
     try:
         for exp in (stock.options or []):
             ed = datetime.strptime(exp, "%Y-%m-%d").date()
@@ -322,12 +324,12 @@ def get_risk_events(stock, current_price: float, today, exp_date,
             if not (today < ed_date <= exp_date):
                 continue
             days_to_earn = (ed_date - today).days
-            implied_move = _earnings_implied_move(stock, current_price, today)
+            implied_move = _expiry_implied_move(stock, current_price, today)
             if implied_move and strike:
                 strike_dist = (strike - current_price) / current_price
                 coverage = strike_dist / implied_move if implied_move > 0 else float("inf")
                 move_note = (f" | strike covers {coverage:.0%} of "
-                             f"implied ±{implied_move:.0%} move")
+                             f"expiry-implied ±{implied_move:.0%} move")
             else:
                 move_note = ""
             events.append({
@@ -724,7 +726,7 @@ def print_report(r: dict) -> None:
     print(f"  Best call competes against: DO NOTHING (cc_alpha=0)\n")
 
     print(f"  {'Expiry':<12} {'Strike':>7} {'DTE':>4} {'Bid':>5} {'Ask':>5} {'Exec':>5} "
-          f"{'Prem%':>6} {'Ann%':>6} {'P/L':>6} {'Delta':>6} {'ITM%':>5} "
+          f"{'Prem%':>6} {'Ann%':>6} {'P/L':>6} {'Delta':>6} {'eITM%':>6} "
           f"{'Rgrt%':>6} {'CCα$':>6} {'Liq':>4} {'Scr':>4}")
     print("  " + "-" * 110)
 
@@ -777,10 +779,14 @@ def _eval_open_economics(delta, dte, pct_captured, has_avoid, current_price,
         label = next((e["label"] for e in risk_events if e["severity"] == "avoid"), "risk event")
         return "buy_back", f"Close to remove event risk: {label.replace('📵 AVOID — ', '')}"
 
-    # Compute remaining annualised yield on close debit
+    # Remaining annualised yield — use extrinsic value only.
+    # For OTM calls extrinsic ≈ live_mark; for ITM calls the intrinsic portion
+    # has no time value left to decay, so counting it inflates the yield metric.
     remaining_ann = None
     if live_mark is not None and live_mark > 0 and dte and dte > 0:
-        remaining_ann = (live_mark / current_price) * (365 / dte) * 100
+        intrinsic_val  = max(current_price - strike, 0.0)
+        extrinsic_val  = max(live_mark - intrinsic_val, 0.0)
+        remaining_ann  = (extrinsic_val / current_price) * (365 / dte) * 100
 
     # Priority 2: most of premium captured AND remaining yield is low
     if pct_captured is not None and pct_captured >= 80:
@@ -806,7 +812,7 @@ def _eval_open_economics(delta, dte, pct_captured, has_avoid, current_price,
 
     # Priority 5: delta too high
     if delta is not None and delta >= 0.50:
-        return "roll", f"Delta {delta*100:.0f}% — high assignment probability, roll up or out"
+        return "roll", f"Delta {delta*100:.0f}% — high expiry-ITM probability, roll up or out"
 
     # Priority 6: short DTE, decent capture
     if dte is not None and dte <= 5 and pct_captured is not None and pct_captured >= 60:

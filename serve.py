@@ -2519,9 +2519,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
   <div class="term-formula">Regret % = P(S<sub>T</sub> &gt; K + Exec Premium)</div>
   <div class="term-body">Probability that the stock closes above the <b>regret threshold</b>
   (strike + premium) at expiration — the price above which selling the call leaves you worse off
-  than if you had simply held the shares. <b>This is lower than the assignment probability</b>:
-  you can be assigned and still have made the right call, as long as the stock doesn't run past
-  K + P. Calculated under the real-world drift model.</div>
+  than if you had simply held the shares. <b>This is lower than the expiry-ITM probability</b>:
+  the stock can finish above the strike and you still win economically, as long as it doesn't
+  run past K + P. Calculated under the real-world price-return drift model.</div>
 </div>
 
 <div class="term new">
@@ -2534,8 +2534,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 <div class="term new">
   <div class="term-name">Score (Multi-Factor) <span class="tag">NEW</span></div>
   <div class="term-formula">Score = 100 × (0.25·A + 0.15·Y + 0.15·V + 0.15·L + 0.15·U + 0.15·R)</div>
-  <div class="term-body">0–100 composite ranking. Each component is a percentile rank across all
-  candidate contracts for this ticker/expiry:
+  <div class="term-body">0–100 composite ranking. Each component is a percentile rank across
+  <b>all candidate contracts for this ticker across all eligible expirations</b> — so a Score
+  of 87 means the same thing regardless of expiration date:
   <br><b>A</b> — CC Alpha (25%) — the primary signal
   <br><b>Y</b> — Premium yield (15%)
   <br><b>V</b> — IV richness (15%) — is the option expensive vs expected realised vol?
@@ -2548,7 +2549,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
   <div class="term-name">Liquidity Score <span class="tag">NEW</span></div>
   <div class="term-body">0–100 composite measuring how tradeable the contract is:
   50 pts for bid-ask spread quality (&lt;5% of mid = max points), 30 pts for open interest,
-  20 pts for daily volume. Affects both the Score ranking and the executable premium estimate.</div>
+  20 pts for daily volume. Affects the Score ranking. The Exec Premium formula
+  (Bid + 0.25 × spread) is fixed — liquidity does not change the λ coefficient.</div>
 </div>
 
 <!-- ── PROBABILITY & GREEKS ───────────────────────────────────── -->
@@ -2564,21 +2566,24 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 </div>
 
 <div class="term new">
-  <div class="term-name">ITM % (Real-World) <span class="tag">NEW</span></div>
-  <div class="term-formula">ITM<sub>real</sub> = N(d<sub>2,μ</sub>) where d<sub>2</sub> uses μ instead of r</div>
-  <div class="term-body">Real-world assignment probability using the stock's estimated drift (μ)
-  rather than the risk-free rate. If μ &lt; r (stock expected to grow less than treasury rates),
-  the real-world ITM probability is lower than the risk-neutral N(d<sub>2</sub>). For a momentum
-  stock with high μ it will be higher. This is the most useful single probability for decision-making.</div>
+  <div class="term-name">Estimated Expiry ITM % <span class="tag">NEW</span></div>
+  <div class="term-formula">P(S<sub>T</sub> &gt; K) = N(d<sub>2,μ</sub>) where d<sub>2</sub> uses price-return drift μ instead of r</div>
+  <div class="term-body">Estimated probability that the stock price closes <em>above the strike</em>
+  at expiration under the real-world price-return drift model. This is <b>not the same as
+  assignment probability</b>: American equity calls can be exercised early (particularly around
+  dividends), and an ITM finish doesn't guarantee assignment in all scenarios. Use this as a
+  directional estimate of how likely the strike is breached at expiry. If μ &lt; r, this will
+  be lower than the risk-neutral N(d<sub>2</sub>); for a strong-momentum stock it will be higher.</div>
 </div>
 
 <div class="term new">
   <div class="term-name">μ — Real-World Drift <span class="tag">NEW</span></div>
   <div class="term-formula">μ = 0.50·μ<sub>60d</sub> + 0.25·μ<sub>252d</sub> + 0.25·μ<sub>market</sub></div>
-  <div class="term-body">Blended estimate of the stock's expected annual return, used in all
-  real-world probability calculations. Weights recent 60-day momentum most heavily, blends in
-  1-year trend and a 10% long-run market assumption, then caps at ±50% to prevent extreme
-  momentum from dominating. Displayed in the volatility header as <b>μ +X.X%/yr</b>.</div>
+  <div class="term-body">Blended estimate of the stock's <b>price-return drift</b> (not total
+  return — dividends are excluded because μ is estimated from daily Close price changes).
+  Weights recent 60-day momentum most heavily, blends in 1-year trend and a 10% long-run
+  market assumption, then caps at ±50% to prevent extreme momentum from dominating. Used in
+  all real-world probability and CC Alpha calculations. Displayed as <b>μ +X.X%/yr</b>.</div>
 </div>
 
 <div class="term">
@@ -2615,10 +2620,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 </div>
 
 <div class="term">
-  <div class="term-name">HV Rank</div>
+  <div class="term-name">HV Percentile</div>
   <div class="term-body">Percentile of today's 21-day realised volatility within its own 1-year
-  distribution. HV Rank 70% means today's vol is higher than 70% of the past year's readings —
-  a better environment for selling premium (options tend to be pricier).</div>
+  distribution. <b>HV Pct 70%</b> means today's vol is higher than 70% of the past year's
+  readings — a better environment for selling premium. Note: this is a <em>percentile</em>
+  (fraction of observations below current), not a conventional <em>rank</em>
+  (HV<sub>curr</sub> − HV<sub>min</sub>) / (HV<sub>max</sub> − HV<sub>min</sub>), which
+  can differ substantially when the historical distribution has outliers.</div>
 </div>
 
 <div class="term new">
@@ -2627,8 +2635,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
   <div class="term-body">Whether the option is <b>expensive or cheap relative to expected
   realised volatility</b>. Positive (green, "rich") = option sellers are being overpaid for vol
   they're unlikely to realise. Negative (red, "cheap") = options are priced below expected
-  realised vol — a less favourable environment for selling. Distinct from HV Rank, which measures
-  realised vol against its own history without reference to what the option is pricing.</div>
+  realised vol — a less favourable environment for selling. Distinct from HV Percentile, which
+  measures realised vol against its own history without reference to what the option is pricing.</div>
 </div>
 
 <div class="term new">
@@ -2678,8 +2686,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
   <div class="term-name">ST / LT — Short-Term / Long-Term Gains</div>
   <div class="term-body"><b>Short-term</b> — held &lt;1 year; taxed as ordinary income (up to 37%
   federal). <b>Long-term</b> — held ≥1 year; taxed at lower capital gains rates (0%, 15%, or 20%
-  depending on income). Covered call premium income is always short-term/ordinary income regardless
-  of how long the position was open.</div>
+  depending on income).<br><br>
+  <b>Written equity call tax treatment depends on how the position closes (IRS Pub. 550):</b>
+  If the call <b>expires</b> or is <b>closed (bought back)</b>, the option gain/loss is generally
+  short-term capital gain/loss regardless of how long it was open. If the call is
+  <b>exercised</b>, the premium is added to the proceeds from selling the underlying shares,
+  and the resulting stock gain/loss generally follows the <em>stock's</em> holding period
+  (short- or long-term). Note: qualified-covered-call and straddle rules (IRC §1092) can
+  alter the holding-period treatment of the underlying shares. Consult a tax advisor for
+  your specific situation.</div>
 </div>
 
 <div class="term">

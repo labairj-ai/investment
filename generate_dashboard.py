@@ -4324,7 +4324,7 @@ function renderCC(d) {{
       ivRichHtml = ` · ATM IV ${{d.atm_iv.toFixed(1)}}%`;
     }}
     const muHtml = d.mu != null ? ` · μ ${{d.mu >= 0 ? "+" : ""}}${{(d.mu*100).toFixed(1)}}%/yr` : "";
-    hvHtml = `<span>HV Rank <b style="color:${{hvColor}}">${{d.hv_rank.toFixed(0)}}%</b> <span style="color:#aaa;font-size:11px;">${{hvLabel}}${{ivRichHtml}}${{muHtml}}</span></span>`;
+    hvHtml = `<span>HV Pct <b style="color:${{hvColor}}">${{d.hv_rank.toFixed(0)}}%</b> <span style="color:#aaa;font-size:11px;">${{hvLabel}}${{ivRichHtml}}${{muHtml}}</span></span>`;
   }}
 
   const openStrikesSet = new Set((d.open_calls || []).map(oc => oc.strike + "|" + oc.expiry));
