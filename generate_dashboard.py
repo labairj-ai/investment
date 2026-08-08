@@ -4304,9 +4304,7 @@ function renderCC(d) {{
   const contracts = Math.floor((d.shares || 0) / 100) || 1;
 
   const gainColor = d.gain_pct >= 0 ? "#27ae60" : "#e74c3c";
-  const floorNote = d.already_at_target
-    ? `Already up ${{pct(d.gain_pct)}} — floor = current × 1.10`
-    : `Up ${{pct(d.gain_pct)}} from cost — floor = cost × 1.10`;
+  const floorNote = `K + exec_prem ≥ cost × 1.10 (premium counts toward floor)`;
   const w52Color = d.current_price >= d.week52_high * 0.95 ? "#c8102e"
                  : d.current_price >= d.week52_high * 0.80 ? "#e67e22"
                  : "#555";
@@ -4315,7 +4313,17 @@ function renderCC(d) {{
   if (d.hv_rank != null) {{
     const hvColor = d.hv_rank >= 70 ? "#27ae60" : d.hv_rank >= 40 ? "#e67e22" : "#e74c3c";
     const hvLabel = d.hv_rank >= 70 ? "elevated ✓" : d.hv_rank >= 40 ? "moderate" : "compressed";
-    hvHtml = `<span>HV Rank <b style="color:${{hvColor}}">${{d.hv_rank.toFixed(0)}}%</b> <span style="color:#aaa;font-size:11px;">${{hvLabel}}${{d.atm_iv != null ? " · ATM IV " + d.atm_iv.toFixed(1) + "%" : ""}}</span></span>`;
+    let ivRichHtml = "";
+    if (d.atm_iv != null && d.hv_forecast) {{
+      const rich = (d.atm_iv / 100 / d.hv_forecast - 1) * 100;
+      const rColor = rich > 10 ? "#27ae60" : rich < -5 ? "#e74c3c" : "#888";
+      const rLabel = rich > 10 ? "rich" : rich < -5 ? "cheap" : "fair";
+      ivRichHtml = ` · ATM IV ${{d.atm_iv.toFixed(1)}}% · HVfc ${{(d.hv_forecast*100).toFixed(1)}}% · <b style="color:${{rColor}}">${{rich >= 0 ? "+" : ""}}${{rich.toFixed(1)}}% (${{rLabel}})</b>`;
+    }} else if (d.atm_iv != null) {{
+      ivRichHtml = ` · ATM IV ${{d.atm_iv.toFixed(1)}}%`;
+    }}
+    const muHtml = d.mu != null ? ` · μ ${{d.mu >= 0 ? "+" : ""}}${{(d.mu*100).toFixed(1)}}%/yr` : "";
+    hvHtml = `<span>HV Rank <b style="color:${{hvColor}}">${{d.hv_rank.toFixed(0)}}%</b> <span style="color:#aaa;font-size:11px;">${{hvLabel}}${{ivRichHtml}}${{muHtml}}</span></span>`;
   }}
 
   const openStrikesSet = new Set((d.open_calls || []).map(oc => oc.strike + "|" + oc.expiry));
@@ -4348,7 +4356,10 @@ function renderCC(d) {{
                   : r.has_caution ? "background:#fffbf0;"
                   : i === 0       ? "background:#f0f7ff;"
                   : "";
-    const plColor = r.profit_if_called >= 10 ? "#27ae60" : "#e67e22";
+    const plColor    = r.profit_if_called >= 10 ? "#27ae60" : "#e67e22";
+    const alphaColor = r.cc_alpha > 0 ? "#27ae60" : r.cc_alpha < -0.5 ? "#e74c3c" : "#e67e22";
+    const regretColor = r.regret_prob < 0.10 ? "#27ae60" : r.regret_prob < 0.20 ? "#e67e22" : "#e74c3c";
+    const scoreColor  = r.score >= 70 ? "#27ae60" : r.score >= 45 ? "#e67e22" : "#aaa";
 
     // Blackout badge
     let blackout = "";
@@ -4391,6 +4402,9 @@ function renderCC(d) {{
       <td style="padding:8px 10px;font-weight:700;color:${{plColor}};">+${{pct(r.profit_if_called)}}</td>
       <td style="padding:8px 10px;font-weight:600;color:${{!r.delta ? '#aaa' : r.delta < 0.2 ? '#27ae60' : r.delta < 0.35 ? '#e67e22' : '#e74c3c'}};">${{r.delta ? (r.delta * 100).toFixed(1) + '%' : '—'}}</td>
       <td style="padding:8px 10px;color:#aaa;font-size:11px;">${{r.open_interest ?? "—"}}</td>
+      <td style="padding:8px 10px;font-weight:700;color:${{alphaColor}};">${{r.cc_alpha != null ? (r.cc_alpha >= 0 ? "+" : "") + r.cc_alpha.toFixed(2) : "—"}}</td>
+      <td style="padding:8px 10px;font-weight:600;color:${{regretColor}};">${{r.regret_prob != null ? (r.regret_prob * 100).toFixed(1) + "%" : "—"}}</td>
+      <td style="padding:8px 10px;font-weight:700;color:${{scoreColor}};">${{r.score != null ? r.score.toFixed(0) : "—"}}</td>
     </tr>`;
   }}).join("");
 
@@ -4409,11 +4423,14 @@ function renderCC(d) {{
         <th style="padding:7px 10px;text-align:left;color:#7f8c8d;font-size:11px;text-transform:uppercase;">P/L if Called</th>
         <th style="padding:7px 10px;text-align:left;color:#7f8c8d;font-size:11px;text-transform:uppercase;">Prob Called</th>
         <th style="padding:7px 10px;text-align:left;color:#7f8c8d;font-size:11px;text-transform:uppercase;">OI</th>
+        <th style="padding:7px 10px;text-align:left;color:#6c5ce7;font-size:11px;text-transform:uppercase;" title="Expected premium minus expected upside surrendered (real-world drift). Positive = CC beats holding.">CC Alpha $</th>
+        <th style="padding:7px 10px;text-align:left;color:#6c5ce7;font-size:11px;text-transform:uppercase;" title="P(S_T > K + premium): probability the CC underperforms simply holding the stock.">Regret %</th>
+        <th style="padding:7px 10px;text-align:left;color:#6c5ce7;font-size:11px;text-transform:uppercase;" title="Multi-factor score: 25% CC Alpha + 15% each of yield, IV richness, liquidity, upside room, inverse regret risk.">Score</th>
       </tr></thead>
       <tbody>${{rows}}</tbody>
     </table>
     </div>
-    <p style="font-size:11px;color:#aaa;margin-top:8px;">Top ${{d.recs.length}} contracts by annualized return. Highlighted row = best pick.</p>
+    <p style="font-size:11px;color:#aaa;margin-top:8px;">Top ${{d.recs.length}} contracts ranked by multi-factor score (25% CC Alpha · 15% each: yield, IV richness, liquidity, upside room, inverse regret). <b style="color:#6c5ce7">CC Alpha</b> = exec premium − expected upside surrendered. <b style="color:#6c5ce7">Regret %</b> = P(stock closes above strike + premium). Highlighted row = best score.</p>
     ${{noteHtml}}`;
 }}
 

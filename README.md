@@ -27,7 +27,7 @@ The old launchd agents from the Mac era are archived in `launchd-disabled-on-mac
 | **Daily Investment Digest** | Single 7 AM email covering: portfolio snapshot, layer allocation vs target (with drift warnings), holdings performance, upcoming earnings/ex-div events, and the judgment health rubric |
 | **Local Dashboard** | Interactive web UI at `http://localhost:5001` with charts, holdings table, and live analysis tools |
 | **Add / Manage Positions** | Add new positions directly from the Holdings UI (ticker, shares, avg cost, layer); reassign any holding to a different layer with full retroactive history rewrite; opening lot auto-created in the Tax Lot Tracker on position add |
-| **Covered Call Analyzer** | Recommends option contracts based on your cost basis, flags blackout windows (earnings 📵 AVOID, ex-div 📵 AVOID); three-tier fallback (live bids → ask-proxy → Black-Scholes from historical vol) ensures results even when markets are closed or options are illiquid; **🤖 AI Analysis** button sends the top-5 contracts plus HV rank and ATM IV to a local `llama3.1:8b` model on the optiplex for narrative reasoning, IV context, risk flags, roll strategy, and timing advice |
+| **Covered Call Analyzer** | Ranks contracts by expected incremental value vs simply holding the stock (covered-call alpha), not raw premium yield. Floor uses `K + exec_prem ≥ cost × 1.10` so premium participates. Metrics include: CC Alpha (exec premium − expected upside surrendered under blended real-world drift), Regret % (P(stock > strike + premium)), real-world ITM probability, vol-normalised strike distance, IV richness (IV/HV_forecast − 1), and a 0-100 multi-factor score. Ex-div events use extrinsic/dividend economics; earnings events compare strike distance to straddle-implied move. Three-tier fallback (live bids → ask-proxy → Black-Scholes) ensures results when markets are closed. **🤖 AI Analysis** sends top-5 contracts to a local `llama3.1:8b` model for narrative reasoning |
 | **Covered Call Tracker** | Log and track open/closed covered call positions; live mark-to-market option prices (bid/ask mid from yfinance); Unrealized P&L and Today's P&L columns per position; daily change KPI is adjusted mark-to-market; bulk import via `covered_calls.csv`; auto-expires past-expiry positions |
 | **Dividend Tracker** | Dividend dates, tax impact by income bracket, monthly income chart, and ticker lookup tool |
 | **Earnings Calendar** | Next earnings date per holding shown in Layer Summary and Holdings table |
@@ -483,24 +483,40 @@ venv/bin/python3 buffett_screener.py   # run manually
 ### Covered Call Analyzer
 Select any holding with **100+ shares** and click **Get Recommendations**.
 
-**Strike selection logic:**
-- Stock not yet up 10% from cost → floor = `avg_cost × 1.10`
-- Stock already up ≥10% → floor = `current_price × 1.10`
-- Ceiling: `current_price × 1.50`
+**Central question:** does selling this call provide positive expected value vs simply holding the stock?
 
-**Columns:** Expiry | Strike | DTE | Bid | Ask | Mid | Prem% | Ann% | P/L if Called | Prob Called | OI
+**Profit floor (per contract, premium counts):**
+`K + exec_premium ≥ max(cost × 1.10, price × 1.00)`
+Executable fill estimated as `bid + 25% × spread` (not mid).
+
+**Columns:** Expiry | Strike | DTE | Bid | Ask | Mid | Prem% | Ann% | P/L if Called | Δ (delta) | Prob Called | OI | **CC Alpha $** | **Regret %** | **Score**
+
+| Column | What it means |
+|---|---|
+| **CC Alpha $** | exec_prem − E[max(S_T − K, 0)] under blended real-world drift. Positive = CC adds expected value vs holding. Green / orange / red. |
+| **Regret %** | P(S_T > K + exec_prem) — probability the CC underperforms simply holding the stock. Distinct from and lower than assignment probability. |
+| **Score** | 0–100 multi-factor: 25% CC Alpha + 15% each of yield, IV richness (IV/HV_forecast−1), liquidity (spread+OI+volume), vol-normalised upside room, inverse regret risk. |
+
+**Volatility header:** shows HV Rank, ATM IV, HV_forecast, IV richness, and blended real-world drift (μ). IV richness > 0 means the option is expensive vs expected realised vol — better environment for selling premium.
+
+**Event flags:**
+- **Earnings:** strike distance compared to straddle-implied move (not a blanket block)
+- **Ex-div:** extrinsic/dividend ratio — only flags AVOID when dividend ≥ extrinsic (early assignment actually makes economic sense for the holder); OTM contracts downgraded to CAUTION
+
+**DO NOTHING is an explicit candidate** — if the best CC Alpha is negative, the report flags it.
 
 **🤖 AI Analysis** — after loading recommendations, click the purple "🤖 AI Analysis" button to get `llama3.1:8b` narrative insight from the optiplex. Takes ~90–120 seconds on CPU (8b model). The AI panel shows:
 
 | Section | What it covers |
 |---|---|
-| 🎯 Recommendation | Which contract to pick and why — reasons over DTE, delta, earnings/ex-div proximity, annualized return trade-offs, and portfolio layer (L1 = core hold, assignment is painful) |
-| 📊 IV Context | Whether current HV rank (1-year percentile of 21-day historical vol) and ATM implied volatility make this a favorable time to sell premium |
-| ⚠️ Risks | Bulleted list of position-specific risks (earnings, ex-div, wide bid-ask spread, delta too high) |
-| 🔄 Roll Strategy | Concrete roll triggers: delta threshold (e.g. roll if delta > 0.60) or DTE threshold, and whether to roll up/out/both |
-| ⏰ Timing | Optimal entry timing: limit vs. market, time of day, whether to wait for a vol spike |
+| 🎯 Recommendation | Which contract has the best CC Alpha vs holding outright, given IV richness, regret probability, and portfolio layer |
+| 📊 IV Context | Whether current HV rank + IV richness make this a good time to sell premium |
+| 🤷 No-Call Case | Whether the evidence supports doing nothing (negative CC Alpha, strong momentum, compressed IV) |
+| ⚠️ Risks | Per-contract risks (earnings coverage, ex-div ratio, wide spread, high regret probability) |
+| 🔄 Roll Strategy | Roll triggers citing delta, DTE, and CC Alpha decay |
+| ⏰ Timing | Entry timing — limit order, time of day, spread guidance |
 
-The recommended contract row is highlighted with a purple outline in the results table above. Requires Ollama running on the optiplex with `llama3.1:8b` pulled (`ollama pull llama3.1:8b`). If Ollama is unavailable, the button returns a graceful error.
+Requires Ollama running on the optiplex with `llama3.1:8b` pulled (`ollama pull llama3.1:8b`). If Ollama is unavailable, the button returns a graceful error.
 
 ### Dividend Tracker
 Auto-loads on page open. Hit **Refresh** to update; cached 1 hour per day.
@@ -559,6 +575,10 @@ venv/bin/python3 covered_call_rec.py EW          # single ticker
 venv/bin/python3 covered_call_rec.py EW GRMN WMT # multiple
 venv/bin/python3 covered_call_rec.py              # all holdings ≥100 shares
 ```
+
+Output columns: Expiry · Strike · DTE · Bid · Ask · Exec · Prem% · Ann% · P/L · Delta · ITM% · Regret% · CCα$ · Liq · Score
+
+Ranked by multi-factor score; if the best `CCα$` is negative, a DO NOTHING warning is printed.
 
 ---
 
