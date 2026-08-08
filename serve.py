@@ -287,7 +287,11 @@ def _fifo_allocate(lots, shares_to_sell, sell_price, sell_date):
             break
         purchase_dt = _date.fromisoformat(lot["purchase_date"])
         days_held   = (sell_dt - purchase_dt).days
-        term        = "LT" if days_held >= 365 else "ST"
+        try:
+            lt_cutoff = purchase_dt.replace(year=purchase_dt.year + 1)
+        except ValueError:  # Feb 29 purchase in non-leap target year → Mar 1
+            lt_cutoff = purchase_dt.replace(year=purchase_dt.year + 1, month=3, day=1)
+        term        = "LT" if sell_dt > lt_cutoff else "ST"
         used        = min(lot["shares"], remaining)
         cost_basis  = round(used * lot["cost_per_share"], 6)
         proceeds    = round(used * sell_price, 6)
@@ -2244,7 +2248,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
             acquired = datetime.strptime(purchase_date, "%Y-%m-%d").date()
             days_held = (today - acquired).days
-            is_lt = days_held >= 365
+            is_lt = days_held > 365
 
             cost_basis = shares * cost_per_share
             mkt_value  = shares * price
@@ -2455,7 +2459,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
   <div class="term-name">P/L if Called</div>
   <div class="term-formula">(Strike + Exec Premium − Avg Cost) / Avg Cost</div>
   <div class="term-body">Your total return on the original investment <b>if assigned</b>.
-  This is the number that matters for profit-floor filtering; premium counts toward the return.</div>
+  This is the number that matters for profit-floor filtering; premium counts toward the return.
+  <b>Floor policy</b>: the engine uses your position-level average cost (not individual tax-lot
+  basis). In a FIFO scenario where you hold lots at varying prices, a high-cost lot could be
+  assigned at a loss even when the average-cost floor is satisfied — the dashboard does not
+  model this per-lot edge case.</div>
 </div>
 
 <div class="term">
@@ -2537,15 +2545,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 <div class="term new">
   <div class="term-name">Score (Multi-Factor) <span class="tag">NEW</span></div>
   <div class="term-formula">Score = 100 × (0.25·A + 0.15·Y + 0.15·V + 0.15·L + 0.15·U + 0.15·R)</div>
-  <div class="term-body">0–100 composite ranking. Each component is a percentile rank across
-  <b>all candidate contracts for this ticker across all eligible expirations</b> — so a Score
-  of 87 means the same thing regardless of expiration date:
-  <br><b>A</b> — CC Alpha (25%) — the primary signal
-  <br><b>Y</b> — Premium yield (15%)
-  <br><b>V</b> — IV richness (15%) — is the option expensive vs expected realised vol?
-  <br><b>L</b> — Liquidity score (15%) — spread + OI + volume
-  <br><b>U</b> — Upside room (15%) — vol-normalised distance to strike
-  <br><b>R</b> — 1 − Regret risk (15%) — lower regret probability is better</div>
+  <div class="term-body">0–100 composite ranking. All inputs are normalised to [0, 1] before
+  weighting. Scored across <b>all candidate contracts for this ticker across all eligible
+  expirations</b> — so a Score of 87 means the same thing regardless of expiration date:
+  <br><b>A</b> — CC Alpha (25%) — percentile rank; higher alpha = better
+  <br><b>Y</b> — Premium yield (15%) — percentile rank
+  <br><b>V</b> — IV richness (15%) — percentile rank (clipped at −1 before ranking)
+  <br><b>L</b> — Liquidity score (15%) — <em>absolute</em> normalised (Liq/100), not a percentile
+  <br><b>U</b> — Upside room (15%) — percentile rank of vol-normalised distance to strike
+  <br><b>R</b> — 1 − PctRank(Regret%) (15%) — <em>inverse</em> percentile rank so lower regret probability scores higher</div>
 </div>
 
 <div class="term new">
@@ -2565,28 +2573,28 @@ class Handler(http.server.SimpleHTTPRequestHandler):
   <div class="term-body">Rate of change of the option's price per $1 move in the stock. Also widely
   used as a rough probability of expiring ITM — a 0.25 delta call is often described as "25%
   probability of assignment." <b>This is an approximation</b>: the true risk-neutral probability is
-  N(d<sub>2</sub>), which is lower than delta.</div>
+  N(d<sub>2</sub>), which is typically somewhat lower for ordinary low-dividend equities.</div>
 </div>
 
 <div class="term new">
   <div class="term-name">Estimated Expiry ITM % <span class="tag">NEW</span></div>
-  <div class="term-formula">P(S<sub>T</sub> &gt; K) = N(d<sub>2,μ</sub>) where d<sub>2</sub> uses price-return drift μ instead of r</div>
+  <div class="term-formula">P(S<sub>T</sub> &gt; K) = N(d<sub>2,μ</sub>)<br>d<sub>2,μ</sub> = [ln(S/K) + (μ − q − 0.5σ²)T] / (σ√T),&nbsp; σ = eff_IV (contract IV if &gt; 1%, else HV forecast)</div>
   <div class="term-body">Estimated probability that the stock price closes <em>above the strike</em>
-  at expiration under the real-world price-return drift model. This is <b>not the same as
-  assignment probability</b>: American equity calls can be exercised early (particularly around
-  dividends), and an ITM finish doesn't guarantee assignment in all scenarios. Use this as a
-  directional estimate of how likely the strike is breached at expiry. If μ &lt; r, this will
-  be lower than the risk-neutral N(d<sub>2</sub>); for a strong-momentum stock it will be higher.</div>
+  at expiration under the real-world drift model. This is <b>not the same as assignment
+  probability</b>: American equity calls can be exercised early (particularly around dividends),
+  and an ITM finish doesn't guarantee assignment in all scenarios. Use this as a directional
+  estimate of how likely the strike is breached at expiry. If μ &lt; r, this will be lower than
+  the risk-neutral N(d<sub>2</sub>); for a strong-momentum stock it will be higher.</div>
 </div>
 
 <div class="term new">
   <div class="term-name">μ — Real-World Drift <span class="tag">NEW</span></div>
   <div class="term-formula">μ = 0.50·μ<sub>60d</sub> + 0.25·μ<sub>252d</sub> + 0.25·μ<sub>market</sub></div>
-  <div class="term-body">Blended estimate of the stock's <b>price-return drift</b> (not total
-  return — dividends are excluded because μ is estimated from daily Close price changes).
-  Weights recent 60-day momentum most heavily, blends in 1-year trend and a 10% long-run
-  market assumption, then caps at ±50% to prevent extreme momentum from dominating. Used in
-  all real-world probability and CC Alpha calculations. Displayed as <b>μ +X.X%/yr</b>.</div>
+  <div class="term-body">Blended estimate of the stock's <b>total-return drift</b>, estimated from
+  yfinance dividend-adjusted Close prices (auto_adjust=True). Weights recent 60-day momentum
+  most heavily, blends in 1-year trend and a 10% long-run market assumption, then caps at ±50%
+  to prevent extreme momentum from dominating. In d<sub>2,μ</sub> the dividend yield q is
+  subtracted separately so the formula captures price drift only. Displayed as <b>μ +X.X%/yr</b>.</div>
 </div>
 
 <div class="term">
@@ -2681,15 +2689,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 <div class="term">
   <div class="term-name">Tax Lot</div>
   <div class="term-body">A specific purchase tranche: a date, share count, and cost/share. Each
-  lot ages independently toward long-term status (≥365 days held). The Lots modal shows all lots
-  per holding with their ST/LT badge, unrealized G/L, and days until LT conversion.</div>
+  lot ages independently toward long-term status (held more than one year, per IRS rules).
+  The Lots modal shows all lots per holding with their ST/LT badge, unrealized G/L, and days
+  until LT conversion.</div>
 </div>
 
 <div class="term">
   <div class="term-name">ST / LT — Short-Term / Long-Term Gains</div>
-  <div class="term-body"><b>Short-term</b> — held &lt;1 year; taxed as ordinary income (up to 37%
-  federal). <b>Long-term</b> — held ≥1 year; taxed at lower capital gains rates (0%, 15%, or 20%
-  depending on income).<br><br>
+  <div class="term-body"><b>Short-term</b> — held ≤1 year; taxed as ordinary income (up to 37%
+  federal). <b>Long-term</b> — held <em>more than</em> 1 year (IRS rule: the holding period begins
+  the day <em>after</em> acquisition; sale must occur on a date strictly later than the one-year
+  anniversary); taxed at lower capital gains rates (0%, 15%, or 20% depending on income).<br><br>
   <b>Written equity call tax treatment depends on how the position closes (IRS Pub. 550):</b>
   If the call <b>expires</b> or is <b>closed (bought back)</b>, the option gain/loss is generally
   short-term capital gain/loss regardless of how long it was open. If the call is
@@ -2703,8 +2713,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 <div class="term">
   <div class="term-name">NIIT — Net Investment Income Tax</div>
   <div class="term-body">3.8% federal surtax on investment income (dividends, capital gains,
-  option premium) for taxpayers above $200k (single) / $250k (MFJ) MAGI. Applied on top of the
-  regular capital gains or ordinary income rate. Toggle in the Tax Harvesting modal.</div>
+  option premium) for taxpayers above $200k (single) / $250k (MFJ) MAGI. Per IRS rules, NIIT
+  applies to the <b>lesser of</b>: (a) total net investment income (NII) or (b) the excess of MAGI
+  over the applicable threshold. Formula: 0.038 × min(NII, max(0, MAGI − Threshold)).
+  The dashboard applies this lesser-of formula using the representative MAGI for your selected
+  bracket. Toggle in the Tax Harvesting modal.</div>
 </div>
 
 <div class="term">

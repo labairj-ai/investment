@@ -1493,11 +1493,11 @@ new Chart(document.getElementById("layerBar"), {{
 // 2026 MFJ tax brackets (after ~$30k standard deduction)
 // qualified = cap gains rate + NIIT; ordinary = marginal rate + NIIT
 const TAX_BRACKETS = [
-  {{ label: "$150k household",  qualified: 0.15,  niit: 0.000, ordinary: 0.22 }},
-  {{ label: "$300k household",  qualified: 0.15,  niit: 0.038, ordinary: 0.24 }},
-  {{ label: "$500k household",  qualified: 0.15,  niit: 0.038, ordinary: 0.32 }},
-  {{ label: "$750k household",  qualified: 0.20,  niit: 0.038, ordinary: 0.35 }},
-  {{ label: "$1M+ household",   qualified: 0.20,  niit: 0.038, ordinary: 0.37 }},
+  {{ label: "$150k household",  qualified: 0.15,  niit: 0.000, ordinary: 0.22, magi: 150000 }},
+  {{ label: "$300k household",  qualified: 0.15,  niit: 0.038, ordinary: 0.24, magi: 300000 }},
+  {{ label: "$500k household",  qualified: 0.15,  niit: 0.038, ordinary: 0.32, magi: 500000 }},
+  {{ label: "$750k household",  qualified: 0.20,  niit: 0.038, ordinary: 0.35, magi: 750000 }},
+  {{ label: "$1M+ household",   qualified: 0.20,  niit: 0.038, ordinary: 0.37, magi: 1000000 }},
 ];
 let CURRENT_BRACKET = TAX_BRACKETS[2];  // default $500k
 
@@ -2358,9 +2358,9 @@ function renderAllStltBadges() {{
   for (const [ticker, lots] of Object.entries(_allLots)) {{
     const el = document.getElementById("stlt-" + ticker);
     if (!el || !lots.length) continue;
-    const hasST = lots.some(l => (today - new Date(l.purchase_date + "T00:00:00")) / 86400000 < 365);
-    const hasLT = lots.some(l => (today - new Date(l.purchase_date + "T00:00:00")) / 86400000 >= 365);
-    const stCount = lots.filter(l => (today - new Date(l.purchase_date + "T00:00:00")) / 86400000 < 365).length;
+    const hasST = lots.some(l => (today - new Date(l.purchase_date + "T00:00:00")) / 86400000 <= 365);
+    const hasLT = lots.some(l => (today - new Date(l.purchase_date + "T00:00:00")) / 86400000 > 365);
+    const stCount = lots.filter(l => (today - new Date(l.purchase_date + "T00:00:00")) / 86400000 <= 365).length;
     if (hasST && hasLT) {{
       el.innerHTML = `<span title="Mixed holding: ${{stCount}} short-term lot${{stCount!==1?'s':''}} — click Lots for details"
         style="background:#fff3cd;color:#7d5a00;border:1.5px solid #e6ac00;border-radius:4px;padding:2px 7px;font-weight:700;font-size:9px;letter-spacing:.03em;cursor:default;">
@@ -2419,7 +2419,7 @@ function renderLotsModal() {{
   const rows = lots.map(l => {{
     const purchaseDate = new Date(l.purchase_date + "T00:00:00");
     const daysHeld = Math.floor((today - purchaseDate) / 86400000);
-    const isLT    = daysHeld >= 365;
+    const isLT    = daysHeld > 365;
     const termBadge = isLT
       ? `<span style="background:#f0fff4;color:#27ae60;border:1px solid #ade;border-radius:3px;padding:1px 6px;font-size:10px;font-weight:700;">LT</span>`
       : `<span style="background:#fff0f0;color:#e74c3c;border:1px solid #fcc;border-radius:3px;padding:1px 6px;font-size:10px;font-weight:700;">ST</span>`;
@@ -2428,8 +2428,9 @@ function renderLotsModal() {{
     const lotGain     = lotValue - lotCost;
     const lotGainPct  = lotCost > 0 ? (lotGain / lotCost * 100) : 0;
     const gainColor   = lotGain >= 0 ? "#27ae60" : "#e74c3c";
-    const ltDate      = new Date(purchaseDate); ltDate.setFullYear(ltDate.getFullYear() + 1);
-    const ltStr       = isLT ? "" : `<div style="font-size:10px;color:#aaa;">LT: ${{ltDate.toLocaleDateString("en-US",{{month:"short",day:"numeric",year:"numeric"}})}} (${{365-daysHeld}}d)</div>`;
+    const ltDate      = new Date(purchaseDate); ltDate.setFullYear(ltDate.getFullYear() + 1); ltDate.setDate(ltDate.getDate() + 1);
+    const ltDaysLeft  = Math.ceil((ltDate - today) / 86400000);
+    const ltStr       = isLT ? "" : `<div style="font-size:10px;color:#aaa;">LT eligible: ${{ltDate.toLocaleDateString("en-US",{{month:"short",day:"numeric",year:"numeric"}})}} (${{ltDaysLeft}}d)</div>`;
 
     totalShares += l.shares;
     totalCost   += lotCost;
@@ -2600,7 +2601,7 @@ function _fifoPreviewCalc(lots, sharesToSell, sellPrice, sellDate) {{
     if (remaining <= 0.0001) break;
     const purchaseDt  = new Date(lot.purchase_date + "T00:00:00");
     const daysHeld    = Math.floor((sellDt - purchaseDt) / 86400000);
-    const term        = daysHeld >= 365 ? "LT" : "ST";
+    const term        = daysHeld > 365 ? "LT" : "ST";
     const sharesUsed  = Math.min(lot.shares, remaining);
     const costBasis   = sharesUsed * lot.cost_per_share;
     const proceeds    = sharesUsed * sellPrice;
@@ -2785,9 +2786,10 @@ function _gainColor(v) {{ return v >= 0 ? "#27ae60" : "#e74c3c"; }}
 function renderRealizedGains() {{
   const yearFilter = document.getElementById("gains-year-filter")?.value || "cur";
   const curYear    = new Date().getFullYear().toString();
-  const stRate     = parseFloat(document.getElementById("tax-st-rate")?.value  || 35) / 100;
-  const ltRate     = parseFloat(document.getElementById("tax-lt-rate")?.value  || 20) / 100;
-  const niit       = document.getElementById("tax-niit")?.checked ? 0.038 : 0;
+  const stRate      = parseFloat(document.getElementById("tax-st-rate")?.value  || 35) / 100;
+  const ltRate      = parseFloat(document.getElementById("tax-lt-rate")?.value  || 20) / 100;
+  const niitChecked = document.getElementById("tax-niit")?.checked;
+  const niit        = niitChecked ? 0.038 : 0;  // flat rate for per-row estimates
 
   // Save rates to localStorage
   try {{
@@ -2823,8 +2825,13 @@ function renderRealizedGains() {{
   const totalGain = stockTotal  + ccNetTotal + priorST;
   const hasData   = sells.length > 0 || yearCCClosed.length > 0 || priorST > 0;
 
-  const stTax  = Math.max(0, stGain) * (stRate + niit);
-  const ltTax  = Math.max(0, ltGain) * (ltRate + niit);
+  // Aggregate NIIT uses IRS lesser-of formula: 3.8% × min(NII, max(0, MAGI − $250k threshold))
+  const NIIT_THRESHOLD = 250000;
+  const nii          = Math.max(0, stGain) + Math.max(0, ltGain);
+  const niitBase     = niitChecked ? Math.min(nii, Math.max(0, (CURRENT_BRACKET.magi || 0) - NIIT_THRESHOLD)) : 0;
+  const niitEffRate  = nii > 0 && niitBase > 0 ? (niitBase / nii) * 0.038 : 0;
+  const stTax  = Math.max(0, stGain) * (stRate + niitEffRate);
+  const ltTax  = Math.max(0, ltGain) * (ltRate + niitEffRate);
   const totTax = stTax + ltTax;
 
   // Update top KPI immediately — must happen before any early returns below
@@ -2926,7 +2933,7 @@ function renderRealizedGains() {{
       <tbody>${{rows}}</tbody>
     </table></div>
   <div style="font-size:10px;color:#bbb;margin-top:8px;">
-    Est. Tax = positive gains only · federal rate only · rates: ST ${{(stRate*100).toFixed(1)}}%${{niit?" +3.8% NIIT":""}} / LT ${{(ltRate*100).toFixed(1)}}%${{niit?" +3.8% NIIT":""}}
+    Est. Tax = positive gains only · federal rate only · rates: ST ${{(stRate*100).toFixed(1)}}%${{niitChecked?" +NIIT (lesser-of formula)":""}} / LT ${{(ltRate*100).toFixed(1)}}%${{niitChecked?" +NIIT (lesser-of formula)":""}}
   </div>`;
 
   // ── Option Premium Income (CC) ─── reuses yearCCClosed + ccNetTotal from above
@@ -3024,12 +3031,17 @@ function _updateTaxBillKPI() {{
 
   const stGain  = stockST + ccNet + priorST;
   const ltGain  = stockLT;
-  const stTax   = Math.max(0, stGain) * (stRate + niit);
-  const ltTax   = Math.max(0, ltGain) * (ltRate + niit);
+  const NIIT_THRESHOLD_KPI = 250000;
+  const niiKPI         = Math.max(0, stGain) + Math.max(0, ltGain);
+  const niitCheckedKPI = document.getElementById("tax-niit")?.checked;
+  const niitBaseKPI    = niitCheckedKPI ? Math.min(niiKPI, Math.max(0, (CURRENT_BRACKET.magi || 0) - NIIT_THRESHOLD_KPI)) : 0;
+  const niitEffRateKPI = niiKPI > 0 && niitBaseKPI > 0 ? (niitBaseKPI / niiKPI) * 0.038 : 0;
+  const stTax   = Math.max(0, stGain) * (stRate + niitEffRateKPI);
+  const ltTax   = Math.max(0, ltGain) * (ltRate + niitEffRateKPI);
   const totTax  = stTax + ltTax;
 
   _currentYearTax = {{ stGain, ltGain, stTax, ltTax, totTax,
-                       stRate: stRate + niit, ltRate: ltRate + niit }};
+                       stRate: stRate + niitEffRateKPI, ltRate: ltRate + niitEffRateKPI }};
 
   const fmt = v => "$" + Math.round(v).toLocaleString("en-US");
 

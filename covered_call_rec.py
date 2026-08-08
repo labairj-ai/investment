@@ -179,8 +179,9 @@ def regret_prob(S: float, K: float, P: float, T: float, sigma: float,
 # ── Volatility model ──────────────────────────────────────────────────────────
 
 def _estimate_drift(ret) -> float:
-    """Blended real-world annualised price-return drift capped at ±50%.
-    ret = Close.pct_change(), so this is price drift (not total return)."""
+    """Blended real-world annualised drift from dividend-adjusted Close.pct_change().
+    yfinance auto_adjust=True (default) means returns are total-return drift.
+    Caller must subtract q (annual dividend yield) when computing real-world d2."""
     n = len(ret)
     values, weights = [], []
     if n >= 60:
@@ -475,6 +476,10 @@ def analyze(ticker: str, avg_cost: float, shares: float):
 
     hist_vol = vol_model["hv_forecast"]
     mu       = vol_model["mu"]
+    try:
+        q = float(stock.info.get("dividendYield") or 0.0)
+    except Exception:
+        q = 0.0
     gain_pct = (current_price - avg_cost) / avg_cost * 100
     already_at_target = current_price >= avg_cost * (1 + R_MIN)
     strike_floor      = avg_cost * (1 + R_MIN)   # kept for UI context
@@ -570,9 +575,9 @@ def analyze(ticker: str, avg_cost: float, shares: float):
                 delta_val = call_delta(current_price, K, T, eff_iv)
                 gamma_val = call_gamma(current_price, K, T, eff_iv)
                 itm_rn    = itm_prob_rn(current_price, K, T, eff_iv)
-                itm_real  = itm_prob_real(current_price, K, T, eff_iv, mu)
-                reg_p     = regret_prob(current_price, K, exec_prem, T, eff_iv, mu)
-                up_lost   = expected_upside_lost(current_price, K, T, eff_iv, mu)
+                itm_real  = itm_prob_real(current_price, K, T, eff_iv, mu, q)
+                reg_p     = regret_prob(current_price, K, exec_prem, T, eff_iv, mu, q)
+                up_lost   = expected_upside_lost(current_price, K, T, eff_iv, mu, q)
                 cc_alpha  = exec_prem - up_lost
                 exp_move  = current_price * eff_iv * math.sqrt(T)
                 z_k       = (math.log(K / current_price) / (eff_iv * math.sqrt(T))
