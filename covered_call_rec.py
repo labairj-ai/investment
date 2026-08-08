@@ -700,6 +700,9 @@ def analyze(ticker: str, avg_cost: float, shares: float):
     # Floor-passing contracts ranked by within-ticker score (shown in "All" view)
     recs_df  = all_calls[all_calls["passes_floor"]].sort_values(
                     "score", ascending=False).head(20)
+    # Floor-failing contracts (below-floor accordion in "All" view)
+    floor_fail_df = all_calls[~all_calls["passes_floor"]].sort_values(
+                    "score", ascending=False).head(10)
     # Tight-spread contracts ranked by cross-ticker OppScore (shown in "Tight" view)
     # Includes floor-failing contracts so the user sees what's available regardless
     tight_df = all_calls[all_calls["spread_width"] <= 0.25].sort_values(
@@ -720,6 +723,7 @@ def analyze(ticker: str, avg_cost: float, shares: float):
         "week52_high":       week52_high,
         "week52_high_dt":    week52_high_dt,
         "recs":              recs_df,
+        "floor_fail_recs":   floor_fail_df,
         "tight_recs":        tight_df,
         "data_mode":         data_mode,
         "dte_extended":      dte_extended,

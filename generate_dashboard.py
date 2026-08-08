@@ -4203,30 +4203,48 @@ function renderAIInsights(data) {{
 
 // ── Covered Call Analyzer ─────────────────────────────────────────────────
 function setCCSpreadFilter(mode) {{
-  const allRows   = document.querySelectorAll('#cc-results .cc-row-all');
-  const tightRows = document.querySelectorAll('#cc-results .cc-row-tight');
-  const allBtn    = document.getElementById('cc-filter-all');
-  const tightBtn  = document.getElementById('cc-filter-tight');
-  const noneMsg   = document.getElementById('cc-tight-none');
-  const footerAll   = document.getElementById('cc-footer-all');
-  const footerTight = document.getElementById('cc-footer-tight');
+  const res = document.getElementById('cc-results');
+  if (!res) return;
+  const allRows   = res.querySelectorAll('.cc-row-all');
+  const failRows  = res.querySelectorAll('.cc-row-fail');
+  const tightRows = res.querySelectorAll('.cc-row-tight');
+  const bestRows  = res.querySelectorAll('.cc-row-best');
+  const secHdrs   = res.querySelectorAll('.cc-sec-hdr');
 
   allRows.forEach(tr   => {{ tr.style.display = mode === 'all'   ? '' : 'none'; }});
+  failRows.forEach(tr  => {{ tr.style.display = 'none'; }});
+  secHdrs.forEach(el   => {{ el.style.display = mode === 'all'   ? '' : 'none'; }});
   tightRows.forEach(tr => {{ tr.style.display = mode === 'tight' ? '' : 'none'; }});
+  bestRows.forEach(tr  => {{ tr.style.display = mode === 'best'  ? '' : 'none'; }});
 
-  if (allBtn) {{
-    allBtn.style.background   = mode === 'all' ? '#6c5ce7' : '#fff';
-    allBtn.style.color        = mode === 'all' ? '#fff'    : '#6c5ce7';
-    allBtn.style.fontWeight   = mode === 'all' ? '700'     : '600';
-  }}
-  if (tightBtn) {{
-    tightBtn.style.background = mode === 'tight' ? '#27ae60' : '#fff';
-    tightBtn.style.color      = mode === 'tight' ? '#fff'    : '#27ae60';
-    tightBtn.style.fontWeight = mode === 'tight' ? '700'     : '600';
-  }}
-  if (noneMsg)   {{ noneMsg.style.display   = (mode === 'tight' && tightRows.length === 0) ? '' : 'none'; }}
-  if (footerAll)   {{ footerAll.style.display   = mode === 'all'   ? '' : 'none'; }}
-  if (footerTight) {{ footerTight.style.display = mode === 'tight' ? '' : 'none'; }}
+  const failHdr = document.getElementById('cc-sec-hdr-fail');
+  if (failHdr) {{ const ch = failHdr.querySelector('.cc-chevron'); if (ch) ch.textContent = '▶'; }}
+
+  [['cc-filter-all','#6c5ce7'],['cc-filter-tight','#27ae60'],['cc-filter-best','#1a7ab5']].forEach(([id,color]) => {{
+    const btn = document.getElementById(id);
+    if (!btn) return;
+    const active = id === 'cc-filter-' + mode;
+    btn.style.background = active ? color  : '#fff';
+    btn.style.color      = active ? '#fff' : color;
+    btn.style.fontWeight = active ? '700'  : '600';
+  }});
+
+  ['all','tight','best'].forEach(m => {{
+    const f = document.getElementById('cc-footer-' + m);
+    if (f) f.style.display = m === mode ? '' : 'none';
+  }});
+
+  const nm = document.getElementById('cc-tight-none');
+  if (nm) nm.style.display = (mode === 'tight' && tightRows.length === 0) ? '' : 'none';
+}}
+
+function toggleCCFloorFail() {{
+  const rows = document.querySelectorAll('#cc-results .cc-row-fail');
+  const hdr  = document.getElementById('cc-sec-hdr-fail');
+  const ch   = hdr ? hdr.querySelector('.cc-chevron') : null;
+  const hidden = !rows.length || rows[0].style.display === 'none';
+  rows.forEach(tr => {{ tr.style.display = hidden ? '' : 'none'; }});
+  if (ch) ch.textContent = hidden ? '▼' : '▶';
 }}
 
 async function analyzeCoveredCall() {{
@@ -4392,12 +4410,17 @@ function renderCC(d) {{
        </div>`
     : "";
 
-  const tightRecs  = d.tight_recs || [];
-  const tightCount = tightRecs.length;
-  const hasRecs    = d.recs && d.recs.length > 0;
-  const autoTight  = !hasRecs && tightCount > 0;
+  const tightRecs      = d.tight_recs || [];
+  const tightCount     = tightRecs.length;
+  const floorFailRecs  = d.floor_fail_recs || [];
+  const floorFailCount = floorFailRecs.length;
+  const hasRecs        = d.recs && d.recs.length > 0;
+  const bestRecs       = tightRecs.filter(r => r.passes_floor !== false);
+  const bestCount      = bestRecs.length;
+  const autoMode       = bestCount > 0 ? 'best' : (!hasRecs && tightCount > 0) ? 'tight' : 'all';
+  const autoOpenFail   = !hasRecs && tightCount === 0 && floorFailCount > 0;
 
-  if (!hasRecs && tightCount === 0) {{
+  if (!hasRecs && tightCount === 0 && floorFailCount === 0) {{
     return meta + noteHtml + `<p style="color:#888;font-size:13px;">No qualifying contracts found.</p>`;
   }}
 
@@ -4465,13 +4488,17 @@ function renderCC(d) {{
     </tr>`;
   }}
 
-  // "All" rows: floor-passing contracts, hidden when autoTight starts in tight mode
-  const allRows   = (d.recs || []).map((r, i) => _ccRow(r, i, 'cc-row-all',   autoTight ? 'none' : '')).join('');
-  // "Tight" rows: tight-spread contracts (may include floor-failing), hidden by default unless autoTight
-  const tightRows = tightRecs.map((r, i) => _ccRow(r, i, 'cc-row-tight', autoTight ? '' : 'none')).join('');
+  const allRows   = (d.recs || []).map((r, i) => _ccRow(r, i, 'cc-row-all',   autoMode === 'all'   ? '' : 'none')).join('');
+  const tightRows = tightRecs.map((r, i)       => _ccRow(r, i, 'cc-row-tight', autoMode === 'tight' ? '' : 'none')).join('');
+  const bestRows  = bestRecs.map((r, i)         => _ccRow(r, i, 'cc-row-best',  autoMode === 'best'  ? '' : 'none')).join('');
+  const failRows  = floorFailRecs.map((r, i)   => _ccRow(r, i, 'cc-row-fail',  autoOpenFail         ? '' : 'none')).join('');
 
-  const allBtnStyle   = `font-size:12px;padding:4px 12px;border-radius:14px;border:1.5px solid #6c5ce7;cursor:pointer;font-weight:${{autoTight?'600':'700'}};background:${{autoTight?'#fff':'#6c5ce7'}};color:${{autoTight?'#6c5ce7':'#fff'}};`;
-  const tightBtnStyle = `font-size:12px;padding:4px 12px;border-radius:14px;border:1.5px solid #27ae60;cursor:pointer;font-weight:${{autoTight?'700':'600'}};background:${{autoTight?'#27ae60':'#fff'}};color:${{autoTight?'#fff':'#27ae60'}};`;
+  const _btnStyle = (color, active) =>
+    `font-size:12px;padding:4px 12px;border-radius:14px;border:1.5px solid ${{color}};cursor:pointer;` +
+    `font-weight:${{active?'700':'600'}};background:${{active?color:'#fff'}};color:${{active?'#fff':color}};`;
+  const allBtnStyle   = _btnStyle('#6c5ce7', autoMode === 'all');
+  const tightBtnStyle = _btnStyle('#27ae60', autoMode === 'tight');
+  const bestBtnStyle  = _btnStyle('#1a7ab5', autoMode === 'best');
 
   const filterBar = `
     <div style="display:flex;align-items:center;gap:6px;margin-bottom:10px;flex-wrap:wrap;">
@@ -4482,13 +4509,23 @@ function renderCC(d) {{
       <button id="cc-filter-tight" onclick="setCCSpreadFilter('tight')" style="${{tightBtnStyle}}">
         Tight spread ≤$0.25 (${{tightCount}})
       </button>
-      <span id="cc-tight-none" style="display:${{(autoTight && tightCount===0)?'':'none'}};font-size:11px;color:#e74c3c;">
+      ${{bestCount > 0 ? `<button id="cc-filter-best" onclick="setCCSpreadFilter('best')" style="${{bestBtnStyle}}">Best (${{bestCount}})</button>` : ''}}
+      <span id="cc-tight-none" style="display:${{(autoMode==='tight' && tightCount===0)?'':'none'}};font-size:11px;color:#e74c3c;">
         No tight-spread contracts for this ticker.
       </span>
     </div>`;
 
-  const footerAllStyle   = `display:${{autoTight?'none':''}};`;
-  const footerTightStyle = `display:${{autoTight?'':'none'}};`;
+  const footerAllStyle   = `display:${{autoMode === 'all'   ? '' : 'none'}};`;
+  const footerTightStyle = `display:${{autoMode === 'tight' ? '' : 'none'}};`;
+  const footerBestStyle  = `display:${{autoMode === 'best'  ? '' : 'none'}};`;
+
+  const failChevron = autoOpenFail ? '▼' : '▶';
+  const failHdrHtml = floorFailCount > 0 ? `
+    <tr id="cc-sec-hdr-fail" class="cc-sec-hdr" style="${{autoMode !== 'all' ? 'display:none;' : ''}}background:#f8f8f8;cursor:pointer;" onclick="toggleCCFloorFail()">
+      <td colspan="17" style="padding:6px 10px;font-size:11px;color:#aaa;font-weight:600;">
+        <span class="cc-chevron">${{failChevron}}</span> Below profit floor (${{floorFailCount}})
+      </td>
+    </tr>` : '';
 
   return meta + filterBar + `
     <div style="overflow-x:auto;">
@@ -4512,11 +4549,12 @@ function renderCC(d) {{
         <th style="padding:7px 10px;text-align:left;color:#6c5ce7;font-size:11px;text-transform:uppercase;" title="Multi-factor score within this ticker (25% CC Alpha + 15% each: yield, IV richness, liquidity, upside room, inverse regret). Not comparable across tickers.">Score</th>
         <th style="padding:7px 10px;text-align:left;color:#e67e22;font-size:11px;text-transform:uppercase;" title="Opportunity Score — cross-ticker comparable. Uses fixed absolute scales (not percentile ranks within this ticker). Compare across your holdings.">OppScore</th>
       </tr></thead>
-      <tbody>${{allRows}}${{tightRows}}</tbody>
+      <tbody>${{allRows}}${{failHdrHtml}}${{failRows}}${{tightRows}}${{bestRows}}</tbody>
     </table>
     </div>
     <p id="cc-footer-all" style="font-size:11px;color:#aaa;margin-top:8px;${{footerAllStyle}}">Top ${{(d.recs||[]).length}} contracts ranked by <b style="color:#6c5ce7">Score</b> (within-ticker percentile ranks — not comparable across stocks). <b style="color:#e67e22">OppScore</b> uses fixed absolute scales and IS comparable across your holdings. Spread color: <b style="color:#27ae60">green</b> ≤$0.10 · <b style="color:#e67e22">yellow</b> ≤$0.25 · <b style="color:#e74c3c">red</b> &gt;$0.25. Highlighted row = best Score.</p>
     <p id="cc-footer-tight" style="font-size:11px;color:#aaa;margin-top:8px;${{footerTightStyle}}">Tight-spread contracts (ask−bid ≤$0.25) ranked by <b style="color:#e67e22">OppScore</b> — includes contracts that may not meet the profit floor (<span style="color:#aaa">⚠ below profit floor</span>). Floor = K + exec_prem ≥ max(cost×1.10, price). Spread color: <b style="color:#27ae60">green</b> ≤$0.10 · <b style="color:#e67e22">yellow</b> ≤$0.25.</p>
+    <p id="cc-footer-best" style="font-size:11px;color:#aaa;margin-top:8px;${{footerBestStyle}}">Tight-spread contracts (≤$0.25) that <b>also pass</b> the profit floor, ranked by <b style="color:#e67e22">OppScore</b>. The best of both views — liquid <i>and</i> profitable if called.</p>
     ${{noteHtml}}`;
 }}
 

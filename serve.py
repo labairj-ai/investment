@@ -1248,6 +1248,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 if tight_recs_df is not None and not tight_recs_df.empty
                 else []
             )
+            floor_fail_df = result.get("floor_fail_recs")
+            floor_fail_recs = (
+                [_row_to_dict(row) for _, row in floor_fail_df.iterrows()]
+                if floor_fail_df is not None and not floor_fail_df.empty
+                else []
+            )
 
             vm = result.get("vol_model") or {}
             self._json({
@@ -1266,6 +1272,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 "hv_forecast":       round(vm.get("hv_forecast") or 0, 4) or None,
                 "mu":                round(result.get("mu") or 0, 4) or None,
                 "recs":              recs,
+                "floor_fail_recs":   floor_fail_recs,
                 "tight_recs":        tight_recs,
                 "open_calls":        open_calls,
                 "data_mode":         result.get("data_mode", "live"),
