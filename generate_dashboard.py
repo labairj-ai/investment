@@ -4131,7 +4131,7 @@ async function getAIAnalysis() {{
       const parts = buf.split("\\n\\n");
       buf = parts.pop();
       for (const part of parts) {{
-        const evMatch   = part.match(/^event: (\S+)/m);
+        const evMatch   = part.match(/^event: (\\S+)/m);
         const dataMatch = part.match(/^data: (.+)/ms);
         if (!evMatch || !dataMatch) continue;
         const evName = evMatch[1];

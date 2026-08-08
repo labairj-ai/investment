@@ -452,7 +452,7 @@ def analyze(ticker: str, avg_cost: float, shares: float):
             return None
         current_price = float(price_hist["Close"].dropna().iloc[-1])
 
-    hist = _yf_retry(lambda: stock.history(period="52wk"))
+    hist = _yf_retry(lambda: stock.history(period="2y"))
     if hist.empty:
         week52_high    = current_price
         week52_high_dt = "n/a"
@@ -460,8 +460,9 @@ def analyze(ticker: str, avg_cost: float, shares: float):
                           "hv_ewma": 0.40, "hv_forecast": 0.40, "mu": 0.10}
         hv_rank        = None
     else:
-        week52_high    = float(hist["High"].max())
-        week52_high_dt = hist["High"].idxmax().strftime("%Y-%m-%d")
+        hist52 = hist.iloc[-252:] if len(hist) >= 252 else hist
+        week52_high    = float(hist52["High"].max())
+        week52_high_dt = hist52["High"].idxmax().strftime("%Y-%m-%d")
         vol_model      = compute_vol_model(hist)
         _ret = hist["Close"].pct_change().dropna()
         hv_rank = None
@@ -546,6 +547,8 @@ def analyze(ticker: str, avg_cost: float, shares: float):
                 continue
 
             calls = calls[calls["strike"] <= current_price * MAX_STRIKE_MULTIPLIER].copy()
+            # Fetch calendar/earnings data once per expiry (not per contract).
+            risk_for_exp = get_risk_events(stock, current_price, today, exp_date)
             metrics = []
             for _, row in calls.iterrows():
                 K   = float(row["strike"])
@@ -574,7 +577,7 @@ def analyze(ticker: str, avg_cost: float, shares: float):
                              if eff_iv > 0 and T > 0 else 0.0)
                 iv_rich   = (eff_iv / hist_vol - 1) if hist_vol > 0 else 0.0
                 liq       = _liquidity_score(bid, ask, vol, oi)
-                risk      = get_risk_events(stock, current_price, today, exp_date, K, mid)
+                risk      = risk_for_exp
 
                 metrics.append({
                     "expiration":        exp,
@@ -782,8 +785,9 @@ def _eval_open_economics(delta, dte, pct_captured, has_avoid, current_price,
     # Priority 2: most of premium captured AND remaining yield is low
     if pct_captured is not None and pct_captured >= 80:
         if remaining_ann is None or remaining_ann < 5:
+            remaining_str = f"{remaining_ann:.1f}%" if remaining_ann is not None else "N/A"
             return "buy_back", (f"{pct_captured:.0f}% captured, remaining annualised yield "
-                                f"{remaining_ann:.1f}% — cost to close is minimal")
+                                f"{remaining_str} — cost to close is minimal")
 
     # Priority 3: gamma-aware assignment risk near expiry
     if dte is not None and dte <= 21:

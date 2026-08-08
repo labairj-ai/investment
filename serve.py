@@ -44,6 +44,8 @@ _cc_analyze_cache = {}   # {ticker: {"result": obj, "ts": float}}
 _cc_ai_cache      = {}   # {ticker: {"insight": dict, "model": str, "ts": float}}
 _CC_ANALYZE_TTL   = 300  # 5 minutes — shared between recommendations and AI
 _CC_AI_TTL        = 1800 # 30 minutes — reuse AI insight within a session
+_cc_analyze_lock  = threading.Lock()
+_cc_ai_lock       = threading.Lock()
 
 # Timestamp until which we report scan_running=True even before the lock
 # file appears — covers the subprocess startup latency (~30-60 s).
@@ -65,25 +67,29 @@ def _cache_set(cache, data):
 
 
 def _cc_analyze_get(ticker):
-    entry = _cc_analyze_cache.get(ticker)
-    if entry and time.time() - entry["ts"] < _CC_ANALYZE_TTL:
-        return entry["result"]
+    with _cc_analyze_lock:
+        entry = _cc_analyze_cache.get(ticker)
+        if entry and time.time() - entry["ts"] < _CC_ANALYZE_TTL:
+            return entry["result"]
     return None
 
 
 def _cc_analyze_set(ticker, result):
-    _cc_analyze_cache[ticker] = {"result": result, "ts": time.time()}
+    with _cc_analyze_lock:
+        _cc_analyze_cache[ticker] = {"result": result, "ts": time.time()}
 
 
 def _cc_ai_get(ticker):
-    entry = _cc_ai_cache.get(ticker)
-    if entry and time.time() - entry["ts"] < _CC_AI_TTL:
-        return entry
+    with _cc_ai_lock:
+        entry = _cc_ai_cache.get(ticker)
+        if entry and time.time() - entry["ts"] < _CC_AI_TTL:
+            return entry
     return None
 
 
 def _cc_ai_set(ticker, insight, model):
-    _cc_ai_cache[ticker] = {"insight": insight, "model": model, "ts": time.time()}
+    with _cc_ai_lock:
+        _cc_ai_cache[ticker] = {"insight": insight, "model": model, "ts": time.time()}
 
 
 PORT = 5001
@@ -711,12 +717,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         day_layer[r["layer"]]["change"] += r["change_dollars"]
                         total_val += r["value"]
 
-                    # Update weight_pct for the new holding
-                    for h_row in hrows:
-                        w = (h_row["value"] / total_val * 100) if total_val else 0
+                    # Recompute weight_pct for every holding today in one SQL pass
+                    if total_val:
                         conn.execute(
-                            "UPDATE holding_day SET weight_pct=? WHERE day=? AND ticker=?",
-                            (w, today, ticker)
+                            "UPDATE holding_day SET weight_pct=ROUND(value*100.0/?,4) WHERE day=?",
+                            (total_val, today)
                         )
 
                     # Recompute layer_day for today
@@ -1312,10 +1317,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     _cc_analyze_set(ticker, result)
             if result is None or result["recs"].empty:
                 return self._json_error(422, "No qualifying option contracts found to analyze")
-            prompt = ai_context(ticker, result, h["shares"], h.get("layer", "?"))
-
-            # Write HTTP/1.1 SSE headers manually so Tailscale Funnel streams
-            # chunks through instead of buffering the HTTP/1.0 body.
+            # Write HTTP/1.1 SSE headers before any work that could raise,
+            # so the error path can always send an SSE error event.
             self.wfile.write(
                 b"HTTP/1.1 200 OK\r\n"
                 b"Content-Type: text/event-stream\r\n"
@@ -1326,6 +1329,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 b"\r\n"
             )
             self.wfile.flush()
+            prompt = ai_context(ticker, result, h["shares"], h.get("layer", "?"))
             _sse("status", {"message": "Sending to AI…"})
 
             # Ollama prompt evaluation can take 30-90s on CPU before the first
