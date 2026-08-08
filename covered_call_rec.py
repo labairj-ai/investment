@@ -928,6 +928,17 @@ def evaluate_open_position(ticker: str, strike: float, expiry: str,
     if live_mark is not None and original_premium > 0:
         pct_captured = max(0.0, (original_premium - live_mark) / original_premium * 100)
 
+    # Extrinsic value remaining — only this portion has time-decay value.
+    # Intrinsic (S - K for ITM calls) contributes nothing to decay-based yield.
+    remaining_intrinsic     = max(current_price - strike, 0.0)
+    remaining_extrinsic     = max(live_mark - remaining_intrinsic, 0.0) if live_mark is not None else None
+    remaining_extrinsic_yield     = (remaining_extrinsic / current_price * 100
+                                     if remaining_extrinsic is not None and current_price > 0
+                                     else None)
+    remaining_extrinsic_ann_yield = (remaining_extrinsic_yield * 365 / dte
+                                     if remaining_extrinsic_yield is not None and dte > 0
+                                     else None)
+
     rec, reason = _eval_open_economics(
         delta=delta, dte=dte, pct_captured=pct_captured,
         has_avoid=has_avoid, current_price=current_price,
@@ -943,17 +954,20 @@ def evaluate_open_position(ticker: str, strike: float, expiry: str,
         next_contract = _suggest_next_call(stock, current_price * 1.03, current_price)
 
     return {
-        "current_price":  round(current_price, 2),
-        "current_mark":   round(live_mark, 2) if live_mark is not None else None,
-        "delta":          round(delta, 3) if delta is not None else None,
-        "gamma":          round(gamma, 4) if gamma is not None else None,
-        "dte":            dte,
-        "pct_captured":   round(pct_captured, 1) if pct_captured is not None else None,
-        "risk_events":    risk_events,
-        "has_avoid":      has_avoid,
-        "recommendation": rec,
-        "reason":         reason,
-        "next_contract":  next_contract,
+        "current_price":              round(current_price, 2),
+        "current_mark":               round(live_mark, 2) if live_mark is not None else None,
+        "delta":                      round(delta, 3) if delta is not None else None,
+        "gamma":                      round(gamma, 4) if gamma is not None else None,
+        "dte":                        dte,
+        "pct_captured":               round(pct_captured, 1) if pct_captured is not None else None,
+        "remaining_extrinsic":        round(remaining_extrinsic, 2) if remaining_extrinsic is not None else None,
+        "remaining_extrinsic_yield":  round(remaining_extrinsic_yield, 2) if remaining_extrinsic_yield is not None else None,
+        "remaining_extrinsic_ann_yield": round(remaining_extrinsic_ann_yield, 1) if remaining_extrinsic_ann_yield is not None else None,
+        "risk_events":                risk_events,
+        "has_avoid":                  has_avoid,
+        "recommendation":             rec,
+        "reason":                     reason,
+        "next_contract":              next_contract,
     }
 
 

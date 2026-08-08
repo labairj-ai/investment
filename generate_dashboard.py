@@ -4263,7 +4263,10 @@ async function evaluateCCPositions() {{
       const delta  = ev.delta         != null ? `Δ${{(ev.delta*100).toFixed(0)}}%` : "";
       const dte    = ev.dte           != null ? `${{ev.dte}}d` : "";
       const pct    = ev.pct_captured  != null ? `${{ev.pct_captured.toFixed(0)}}% cap` : "";
-      const meta   = [price, delta, dte, pct].filter(Boolean).join(" · ");
+      const extStr = ev.remaining_extrinsic != null && ev.remaining_extrinsic_ann_yield != null
+        ? `ext ${{ev.remaining_extrinsic.toFixed(2)}} (${{ev.remaining_extrinsic_ann_yield.toFixed(1)}}%/yr)`
+        : "";
+      const meta   = [price, delta, dte, pct, extStr].filter(Boolean).join(" · ");
       const avoid  = ev.has_avoid ? ' <span style="font-size:10px;color:#c62828;">⚠ event risk</span>' : "";
       const errMsg = ev.error ? `<div style="font-size:11px;color:#c0392b;margin-top:3px;">${{ev.error}}</div>` : "";
       let nextHtml = "";
