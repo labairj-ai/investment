@@ -11,7 +11,7 @@ def generate(prompt, model=DEFAULT_MODEL, temperature=0.3):
         "prompt": prompt,
         "stream": False,
         "format": "json",
-        "options": {"temperature": temperature, "num_predict": 1200},
+        "options": {"temperature": temperature, "num_predict": 700},
     }).encode()
     req = urllib.request.Request(
         f"{OLLAMA_URL}/api/generate",
@@ -29,7 +29,7 @@ def stream_generate(prompt, model=DEFAULT_MODEL, temperature=0.3):
         "prompt": prompt,
         "stream": True,
         "format": "json",
-        "options": {"temperature": temperature, "num_predict": 1200},
+        "options": {"temperature": temperature, "num_predict": 700},
     }).encode()
     req = urllib.request.Request(
         f"{OLLAMA_URL}/api/generate",

@@ -1081,7 +1081,7 @@ def ai_context(ticker, result, shares, layer):
         lines.append("")
 
     lines.append("TOP OPTION CONTRACTS to consider (pre-filtered and ranked by our scoring system):")
-    for i, (_, row) in enumerate(result["recs"].head(5).iterrows()):
+    for i, (_, row) in enumerate(result["recs"].head(3).iterrows()):
         exec_p      = float(row.get("exec_premium", row["mid"]))
         spread      = float(row["ask"]) - float(row["bid"])
         itm_pct     = float(row.get("itm_prob_real", 0)) * 100
