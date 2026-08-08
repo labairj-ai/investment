@@ -4504,14 +4504,14 @@ function renderCC(d) {{
     <div style="display:flex;align-items:center;gap:6px;margin-bottom:10px;flex-wrap:wrap;">
       <span style="font-size:12px;color:#888;font-weight:600;">Show:</span>
       <button id="cc-filter-all" onclick="setCCSpreadFilter('all')" style="${{allBtnStyle}}">
-        All (${{(d.recs || []).length}})
+        Qualifying (${{(d.recs || []).length}})
       </button>
       <button id="cc-filter-tight" onclick="setCCSpreadFilter('tight')" style="${{tightBtnStyle}}">
-        Tight spread ≤$0.25 (${{tightCount}})
+        Liquid (${{tightCount}})
       </button>
       ${{bestCount > 0 ? `<button id="cc-filter-best" onclick="setCCSpreadFilter('best')" style="${{bestBtnStyle}}">Best (${{bestCount}})</button>` : ''}}
       <span id="cc-tight-none" style="display:${{(autoMode==='tight' && tightCount===0)?'':'none'}};font-size:11px;color:#e74c3c;">
-        No tight-spread contracts for this ticker.
+        No liquid contracts for this ticker.
       </span>
     </div>`;
 
@@ -4552,9 +4552,9 @@ function renderCC(d) {{
       <tbody>${{allRows}}${{failHdrHtml}}${{failRows}}${{tightRows}}${{bestRows}}</tbody>
     </table>
     </div>
-    <p id="cc-footer-all" style="font-size:11px;color:#aaa;margin-top:8px;${{footerAllStyle}}">Top ${{(d.recs||[]).length}} contracts ranked by <b style="color:#6c5ce7">Score</b> (within-ticker percentile ranks — not comparable across stocks). <b style="color:#e67e22">OppScore</b> uses fixed absolute scales and IS comparable across your holdings. Spread color: <b style="color:#27ae60">green</b> ≤$0.10 · <b style="color:#e67e22">yellow</b> ≤$0.25 · <b style="color:#e74c3c">red</b> &gt;$0.25. Highlighted row = best Score.</p>
-    <p id="cc-footer-tight" style="font-size:11px;color:#aaa;margin-top:8px;${{footerTightStyle}}">Tight-spread contracts (ask−bid ≤$0.25) ranked by <b style="color:#e67e22">OppScore</b> — includes contracts that may not meet the profit floor (<span style="color:#aaa">⚠ below profit floor</span>). Floor = K + exec_prem ≥ max(cost×1.10, price). Spread color: <b style="color:#27ae60">green</b> ≤$0.10 · <b style="color:#e67e22">yellow</b> ≤$0.25.</p>
-    <p id="cc-footer-best" style="font-size:11px;color:#aaa;margin-top:8px;${{footerBestStyle}}">Tight-spread contracts (≤$0.25) that <b>also pass</b> the profit floor, ranked by <b style="color:#e67e22">OppScore</b>. The best of both views — liquid <i>and</i> profitable if called.</p>
+    <p id="cc-footer-all" style="font-size:11px;color:#aaa;margin-top:8px;${{footerAllStyle}}"><b>Qualifying</b> — passes profit floor (K + prem ≥ max(cost×1.10, price)), any spread width. Top ${{(d.recs||[]).length}} ranked by <b style="color:#6c5ce7">Score</b> (within-ticker percentile — not comparable across stocks). Spread color: <b style="color:#27ae60">green</b> ≤$0.10 · <b style="color:#e67e22">yellow</b> ≤$0.25 · <b style="color:#e74c3c">red</b> &gt;$0.25.</p>
+    <p id="cc-footer-tight" style="font-size:11px;color:#aaa;margin-top:8px;${{footerTightStyle}}"><b>Liquid</b> — tight bid-ask spread (≤$0.25), easier to fill at a good price. Ranked by <b style="color:#e67e22">OppScore</b>. May include contracts below the profit floor (marked ⚠).</p>
+    <p id="cc-footer-best" style="font-size:11px;color:#aaa;margin-top:8px;${{footerBestStyle}}"><b>Best</b> — passes profit floor <i>and</i> has a tight spread (≤$0.25). The intersection of Qualifying and Liquid, ranked by <b style="color:#e67e22">OppScore</b>.</p>
     ${{noteHtml}}`;
 }}
 
