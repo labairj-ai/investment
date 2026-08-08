@@ -1,18 +1,31 @@
 #!/usr/bin/env python3
 """
-Covered call recommendation engine.
+Covered call recommendation engine — V2
+
+Central question: does selling this call provide positive expected value versus
+simply continuing to own the stock?  Every contract is ranked by covered-call
+alpha (E[premium - upside surrendered]) rather than raw annualized yield.
+
+Key metrics
+-----------
+cc_alpha          : exec_premium - E[max(S_T-K, 0)] under blended real-world drift
+regret_threshold  : K + exec_premium  (stock price where CC starts trailing hold)
+regret_prob       : P(S_T > K + exec_premium) under real-world model
+itm_prob_rn       : N(d2)  risk-neutral assignment probability
+itm_prob_real     : real-world assignment probability using blended drift
+expected_move     : S × IV × sqrt(T)  1-sigma move over option life
+z_strike          : ln(K/S) / (IV×sqrt(T))  vol-normalised distance to strike
+iv_richness       : IV / HV_forecast - 1  (>0 means IV rich vs expected realised)
+exec_premium      : bid + 0.25×(ask-bid)  estimated fill price
+liquidity_score   : 0-100 composite (spread, OI, volume)
+
+Profit floor (per-contract, premium counts toward floor):
+  K + exec_premium >= max(C × (1 + R_MIN), S × (1 + R_FORWARD))
 
 Usage:
-  python3 covered_call_rec.py EW          # single ticker
-  python3 covered_call_rec.py EW GRMN     # multiple tickers
-  python3 covered_call_rec.py             # all covered-call-eligible holdings
-
-Strike selection logic:
-  - Base minimum: strike >= avg_cost * 1.10  (10% profit if called away)
-  - If stock already up >= 10% from cost:    strike >= current_price * 1.10
-                                             (protect existing gain + another 10%)
-
-Premium collected is added to effective profit calculation.
+  python3 covered_call_rec.py EW
+  python3 covered_call_rec.py EW GRMN
+  python3 covered_call_rec.py           # all holdings
 """
 
 import csv
@@ -27,6 +40,35 @@ import warnings
 warnings.filterwarnings("ignore")
 
 
+# ── Settings ──────────────────────────────────────────────────────────────────
+
+RISK_FREE_RATE = 0.045
+
+R_MIN     = 0.10   # minimum total return on original cost if called
+R_FORWARD = 0.00   # minimum forward return from today's price (0 = income-focused)
+
+EXEC_LAMBDA = 0.25  # fill assumption: bid + λ*(ask-bid)
+
+MIN_DTE          = 21
+MAX_DTE          = 60
+MAX_DTE_EXTENDED = 180
+TOP_N            = 5
+MIN_BID          = 0.05
+MAX_STRIKE_MULTIPLIER = 1.50
+
+# Drift model
+DRIFT_WEIGHT_60D   = 0.50
+DRIFT_WEIGHT_252D  = 0.25
+DRIFT_WEIGHT_MKT   = 0.25
+DRIFT_MKT_LONG_RUN = 0.10
+DRIFT_CAP          = 0.50
+
+PROJECT_DIR  = Path(__file__).parent
+HOLDINGS_CSV = PROJECT_DIR / "holdings.csv"
+
+
+# ── Retry helper ──────────────────────────────────────────────────────────────
+
 def _yf_retry(fn, retries=2, delay=2.0):
     for attempt in range(retries + 1):
         try:
@@ -37,49 +79,310 @@ def _yf_retry(fn, retries=2, delay=2.0):
             else:
                 raise
 
-RISK_FREE_RATE = 0.045  # approximate US 10-yr treasury
 
+# ── Math ─────────────────────────────────────────────────────────────────────
 
 def _norm_cdf(x: float) -> float:
     return 0.5 * (1.0 + math.erf(x / math.sqrt(2)))
 
+def _norm_pdf(x: float) -> float:
+    return math.exp(-0.5 * x * x) / math.sqrt(2 * math.pi)
 
-def call_delta(S: float, K: float, T: float, sigma: float, r: float = RISK_FREE_RATE) -> float:
-    """Black-Scholes delta for a European call. Returns 0 if inputs are invalid."""
+def _bs_d1d2(S, K, T, sigma, r=RISK_FREE_RATE, q=0.0):
+    sq = sigma * math.sqrt(T)
+    d1 = (math.log(S / K) + (r - q + 0.5 * sigma ** 2) * T) / sq
+    return d1, d1 - sq
+
+
+def call_delta(S: float, K: float, T: float, sigma: float,
+               r: float = RISK_FREE_RATE, q: float = 0.0) -> float:
     if T <= 0 or sigma <= 0 or S <= 0 or K <= 0:
         return 0.0
     try:
-        d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
-        return _norm_cdf(d1)
+        d1, _ = _bs_d1d2(S, K, T, sigma, r, q)
+        return math.exp(-q * T) * _norm_cdf(d1)
     except (ValueError, ZeroDivisionError):
         return 0.0
 
 
-def bs_call_price(S: float, K: float, T: float, sigma: float, r: float = RISK_FREE_RATE) -> float:
-    """Black-Scholes fair value for a European call. Returns 0 if inputs are invalid."""
+def call_gamma(S: float, K: float, T: float, sigma: float,
+               r: float = RISK_FREE_RATE, q: float = 0.0) -> float:
+    if T <= 0 or sigma <= 0 or S <= 0 or K <= 0:
+        return 0.0
+    try:
+        d1, _ = _bs_d1d2(S, K, T, sigma, r, q)
+        return math.exp(-q * T) * _norm_pdf(d1) / (S * sigma * math.sqrt(T))
+    except (ValueError, ZeroDivisionError):
+        return 0.0
+
+
+def bs_call_price(S: float, K: float, T: float, sigma: float,
+                  r: float = RISK_FREE_RATE, q: float = 0.0) -> float:
     if T <= 0 or sigma <= 0 or S <= 0 or K <= 0:
         return max(0.0, S - K)
     try:
-        d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
-        d2 = d1 - sigma * math.sqrt(T)
-        return S * _norm_cdf(d1) - K * math.exp(-r * T) * _norm_cdf(d2)
+        d1, d2 = _bs_d1d2(S, K, T, sigma, r, q)
+        return (S * math.exp(-q * T) * _norm_cdf(d1)
+                - K * math.exp(-r * T) * _norm_cdf(d2))
     except (ValueError, ZeroDivisionError):
         return 0.0
 
-PROJECT_DIR = Path(__file__).parent
-HOLDINGS_CSV = PROJECT_DIR / "holdings.csv"
 
-MIN_DTE = 21
-MAX_DTE = 60
-MAX_DTE_EXTENDED = 180  # fallback when standard window is dry
-TOP_N   = 5
-MIN_BID = 0.05   # minimum bid for a "live" market
-# Covered calls beyond 50% above current price have negligible premium;
-# also filters out legacy pre-split contracts with unadjusted strikes
-MAX_STRIKE_MULTIPLIER = 1.50
+def call_extrinsic(S: float, K: float, option_price: float) -> float:
+    return max(0.0, option_price - max(0.0, S - K))
 
 
-# ── helpers ──────────────────────────────────────────────────────────────────
+def itm_prob_rn(S: float, K: float, T: float, sigma: float,
+                r: float = RISK_FREE_RATE, q: float = 0.0) -> float:
+    """Risk-neutral assignment probability: N(d2)."""
+    if T <= 0 or sigma <= 0 or S <= 0 or K <= 0:
+        return 1.0 if S > K else 0.0
+    try:
+        _, d2 = _bs_d1d2(S, K, T, sigma, r, q)
+        return _norm_cdf(d2)
+    except (ValueError, ZeroDivisionError):
+        return 0.0
+
+
+def itm_prob_real(S: float, K: float, T: float, sigma: float,
+                  mu: float = RISK_FREE_RATE, q: float = 0.0) -> float:
+    """Real-world assignment probability using blended drift mu."""
+    if T <= 0 or sigma <= 0 or S <= 0 or K <= 0:
+        return 1.0 if S > K else 0.0
+    try:
+        d2_real = (math.log(S / K) + (mu - q - 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
+        return _norm_cdf(d2_real)
+    except (ValueError, ZeroDivisionError):
+        return 0.0
+
+
+def expected_upside_lost(S: float, K: float, T: float, sigma: float,
+                          mu: float = RISK_FREE_RATE, q: float = 0.0) -> float:
+    """E[max(S_T - K, 0)] under real-world lognormal with drift mu."""
+    if T <= 0 or sigma <= 0 or S <= 0 or K <= 0:
+        return max(0.0, S - K)
+    try:
+        sq = sigma * math.sqrt(T)
+        d1 = (math.log(S / K) + (mu - q + 0.5 * sigma ** 2) * T) / sq
+        d2 = d1 - sq
+        return S * math.exp((mu - q) * T) * _norm_cdf(d1) - K * _norm_cdf(d2)
+    except (ValueError, ZeroDivisionError):
+        return max(0.0, S - K)
+
+
+def regret_prob(S: float, K: float, P: float, T: float, sigma: float,
+                mu: float = RISK_FREE_RATE, q: float = 0.0) -> float:
+    """P(S_T > K + P): probability CC underperforms simply holding the stock."""
+    return itm_prob_real(S, K + P, T, sigma, mu, q)
+
+
+# ── Volatility model ──────────────────────────────────────────────────────────
+
+def _estimate_drift(ret) -> float:
+    """Blended real-world annualised drift capped at ±50%."""
+    n = len(ret)
+    values, weights = [], []
+    if n >= 60:
+        values.append(float(ret.iloc[-60:].mean()  * 252)); weights.append(DRIFT_WEIGHT_60D)
+    if n >= 252:
+        values.append(float(ret.iloc[-252:].mean() * 252)); weights.append(DRIFT_WEIGHT_252D)
+    values.append(DRIFT_MKT_LONG_RUN); weights.append(DRIFT_WEIGHT_MKT)
+    total_w = sum(weights)
+    mu = sum(v * w for v, w in zip(values, weights)) / total_w
+    return max(-DRIFT_CAP, min(DRIFT_CAP, mu))
+
+
+def compute_vol_model(hist_df) -> dict:
+    """HV20/60/120, EWMA, blended forecast, and real-world drift."""
+    ret = hist_df["Close"].pct_change().dropna()
+    n   = len(ret)
+
+    def hv_n(days):
+        return float(ret.iloc[-days:].std() * math.sqrt(252)) if n >= days else None
+
+    hv20  = hv_n(20)
+    hv60  = hv_n(60)
+    hv120 = hv_n(120)
+
+    lam, var = 0.94, float(ret.iloc[0] ** 2) if n > 0 else 0.04
+    for r in ret.iloc[1:]:
+        var = lam * var + (1 - lam) * r ** 2
+    hv_ewma = math.sqrt(var * 252)
+
+    components = [x for x in [hv20, hv_ewma, hv60] if x is not None]
+    w_raw      = [0.40, 0.35, 0.25][:len(components)]
+    total_w    = sum(w_raw)
+    hv_forecast = sum(c * w for c, w in zip(components, w_raw)) / total_w if total_w else 0.30
+
+    return {
+        "hv20":        hv20,
+        "hv60":        hv60,
+        "hv120":       hv120,
+        "hv_ewma":     round(hv_ewma, 4),
+        "hv_forecast": round(hv_forecast, 4),
+        "mu":          _estimate_drift(ret),
+    }
+
+
+# ── Pricing / liquidity model ─────────────────────────────────────────────────
+
+def _exec_premium(bid: float, ask: float) -> float:
+    if bid <= 0 and ask <= 0:
+        return 0.0
+    if bid < MIN_BID:
+        return ask * 0.50
+    return bid + EXEC_LAMBDA * (ask - bid)
+
+
+def _spread_pct(bid: float, ask: float) -> float:
+    mid = (bid + ask) / 2
+    return (ask - bid) / mid if mid > 0 else 1.0
+
+
+def _safe_int(v, default=0) -> int:
+    try:
+        f = float(v)
+        return int(f) if not math.isnan(f) else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _liquidity_score(bid: float, ask: float, volume: int, open_interest: int) -> int:
+    score = 0
+    sp = _spread_pct(bid, ask)
+    if sp < 0.05:   score += 50
+    elif sp < 0.10: score += 40
+    elif sp < 0.20: score += 30
+    elif sp < 0.40: score += 15
+    oi = open_interest or 0
+    if oi >= 1000:  score += 30
+    elif oi >= 500: score += 25
+    elif oi >= 100: score += 20
+    elif oi >= 50:  score += 15
+    elif oi >= 10:  score += 10
+    vol = volume or 0
+    if vol >= 500:  score += 20
+    elif vol >= 100: score += 15
+    elif vol >= 50:  score += 10
+    elif vol >= 10:  score += 5
+    return score
+
+
+def _clears_profit_floor(K: float, exec_prem: float,
+                          avg_cost: float, current_price: float) -> bool:
+    """Premium now participates in the floor: K + P >= max(C×(1+R_MIN), S×(1+R_FORWARD))."""
+    total = K + exec_prem
+    return total >= max(avg_cost * (1 + R_MIN), current_price * (1 + R_FORWARD))
+
+
+# ── Event model ───────────────────────────────────────────────────────────────
+
+def _earnings_implied_move(stock, current_price: float, today) -> float:
+    """Market-implied earnings move from the nearest short-dated ATM straddle."""
+    try:
+        for exp in (stock.options or []):
+            ed = datetime.strptime(exp, "%Y-%m-%d").date()
+            dte_this = (ed - today).days
+            if not (7 <= dte_this <= 35):
+                continue
+            chain = stock.option_chain(exp)
+            calls, puts = chain.calls, chain.puts
+            atm_c = calls.iloc[(calls["strike"] - current_price).abs().argsort()[:1]]
+            atm_p = puts.iloc[(puts["strike"] - current_price).abs().argsort()[:1]]
+            c_mid = (float(atm_c["bid"].values[0]) + float(atm_c["ask"].values[0])) / 2
+            p_mid = (float(atm_p["bid"].values[0]) + float(atm_p["ask"].values[0])) / 2
+            straddle = c_mid + p_mid
+            if straddle > 0.50:
+                return straddle / current_price
+    except Exception:
+        pass
+    return None
+
+
+def get_risk_events(stock, current_price: float, today, exp_date,
+                    strike=None,
+                    option_price=None) -> list:
+    """
+    Returns risk events within [today, exp_date].
+    Ex-div uses extrinsic/dividend economics instead of blanket avoidance.
+    Earnings uses straddle-implied move vs strike distance when available.
+    """
+    events = []
+    try:
+        cal = stock.calendar or {}
+
+        # ── earnings ──────────────────────────────────────────────────────────
+        raw_earnings = cal.get("Earnings Date", [])
+        if not isinstance(raw_earnings, list):
+            raw_earnings = [raw_earnings]
+        for ed in raw_earnings:
+            if ed is None:
+                continue
+            ed_date = ed if hasattr(ed, "year") else datetime.strptime(str(ed), "%Y-%m-%d").date()
+            if not (today < ed_date <= exp_date):
+                continue
+            days_to_earn = (ed_date - today).days
+            implied_move = _earnings_implied_move(stock, current_price, today)
+            if implied_move and strike:
+                strike_dist = (strike - current_price) / current_price
+                coverage = strike_dist / implied_move if implied_move > 0 else float("inf")
+                move_note = (f" | strike covers {coverage:.0%} of "
+                             f"implied ±{implied_move:.0%} move")
+            else:
+                move_note = ""
+            events.append({
+                "type":     "earnings",
+                "severity": "avoid",
+                "date":     str(ed_date),
+                "label":    f"📵 AVOID — earnings {ed_date} ({days_to_earn}d){move_note}",
+            })
+
+        # ── ex-dividend ───────────────────────────────────────────────────────
+        raw_ex = cal.get("Ex-Dividend Date")
+        if raw_ex and hasattr(raw_ex, "year") and today < raw_ex <= exp_date:
+            days_to_ex = (raw_ex - today).days
+            div_amount = None
+            try:
+                div_amount = float(stock.info.get("lastDividendValue") or 0)
+            except Exception:
+                pass
+
+            itm = strike is not None and current_price > strike
+            if itm and option_price and div_amount and div_amount > 0:
+                extrinsic = call_extrinsic(current_price, strike, option_price)
+                ratio = div_amount / extrinsic if extrinsic > 0.01 else float("inf")
+                if ratio >= 1.0:
+                    severity = "avoid"
+                    label = (f"📵 AVOID — ex-div {raw_ex} ({days_to_ex}d) "
+                             f"div ${div_amount:.2f} ≥ extrinsic ${extrinsic:.2f} "
+                             f"— early assignment very likely")
+                elif ratio >= 0.50:
+                    severity = "caution"
+                    label = (f"⚠️ CAUTION — ex-div {raw_ex} ({days_to_ex}d) "
+                             f"div ${div_amount:.2f} vs extrinsic ${extrinsic:.2f} "
+                             f"({ratio:.0%}) — moderate assignment risk")
+                else:
+                    severity = "caution"
+                    label = (f"ℹ️  ex-div {raw_ex} ({days_to_ex}d) "
+                             f"div ${div_amount:.2f} vs extrinsic ${extrinsic:.2f} — low risk")
+            else:
+                severity = "caution"
+                label = f"⚠️ ex-div {raw_ex} ({days_to_ex}d) in window"
+                if div_amount:
+                    label += f" (div ${div_amount:.2f})"
+
+            events.append({
+                "type":     "ex_div",
+                "severity": severity,
+                "date":     str(raw_ex),
+                "label":    label,
+            })
+    except Exception:
+        pass
+    return events
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def normalize_ticker(t: str) -> str:
     t = str(t).strip().upper().lstrip("$")
@@ -103,64 +406,7 @@ def load_holdings() -> dict:
     return result
 
 
-def min_strike(current_price: float, avg_cost: float) -> float:
-    base = avg_cost * 1.10
-    if current_price >= base:
-        return current_price * 1.10
-    return base
-
-
-def get_risk_events(stock: yf.Ticker, today, exp_date) -> list:
-    """
-    Returns risk events that fall within [today, exp_date]:
-      - AVOID (earnings): option spans an earnings report
-      - AVOID (ex-div):   ex-dividend before expiry → early assignment risk
-    """
-    events = []
-    try:
-        cal = stock.calendar or {}
-
-        # ── earnings ──────────────────────────────────────────────────────────
-        raw_earnings = cal.get("Earnings Date", [])
-        if not isinstance(raw_earnings, list):
-            raw_earnings = [raw_earnings]
-        for ed in raw_earnings:
-            if ed is None:
-                continue
-            ed_date = ed if hasattr(ed, "year") else datetime.strptime(str(ed), "%Y-%m-%d").date()
-            if today < ed_date <= exp_date:
-                days_to_earn = (ed_date - today).days
-                days_before_exp = (exp_date - ed_date).days
-                events.append({
-                    "type":     "earnings",
-                    "severity": "avoid",
-                    "date":     str(ed_date),
-                    "label":    f"📵 AVOID — earnings {str(ed_date)} ({days_to_earn}d away, {days_before_exp}d before expiry)",
-                })
-
-        # ── ex-dividend ───────────────────────────────────────────────────────
-        raw_ex = cal.get("Ex-Dividend Date")
-        if raw_ex and hasattr(raw_ex, "year"):
-            if today < raw_ex <= exp_date:
-                days_to_ex = (raw_ex - today).days
-                events.append({
-                    "type":     "ex_div",
-                    "severity": "avoid",
-                    "date":     str(raw_ex),
-                    "label":    f"📵 AVOID — ex-div {str(raw_ex)} ({days_to_ex}d away, early assignment risk)",
-                })
-    except Exception:
-        pass
-
-    return events
-
-
-def _market_price(stock) -> float | None:
-    """
-    Return the actual current market price (matches option chain strikes).
-    fast_info.last_price is real-time and unadjusted; use it instead of
-    history() which can lag split adjustments and cause scale mismatches.
-    """
+def _market_price(stock) -> float:
     try:
         p = float(stock.fast_info.last_price or 0)
         if p > 0:
@@ -170,13 +416,34 @@ def _market_price(stock) -> float | None:
     return None
 
 
+# ── Multi-factor scoring ──────────────────────────────────────────────────────
+
+def _compute_scores(df):
+    """Add 'score' column: 0-100 composite, higher = better candidate."""
+    n = len(df)
+    if n == 0:
+        return df
+
+    def pct_rank(series):
+        return series.rank(pct=True, method="average")
+
+    A = pct_rank(df["cc_alpha"])                          # 25% — core metric
+    Y = pct_rank(df["premium_pct"])                       # 15% — yield
+    V = pct_rank(df["iv_richness"].clip(lower=-1))        # 15% — IV richness
+    L = df["liquidity_score"] / 100.0                     # 15% — liquidity (absolute)
+    U = pct_rank(df["z_strike"])                          # 15% — upside room
+    R = 1 - pct_rank(df["regret_prob"])                   # 15% — low regret risk
+
+    df = df.copy()
+    df["score"] = 100 * (0.25*A + 0.15*Y + 0.15*V + 0.15*L + 0.15*U + 0.15*R)
+    return df
+
+
+# ── Core analyzer ─────────────────────────────────────────────────────────────
+
 def analyze(ticker: str, avg_cost: float, shares: float):
     stock = yf.Ticker(ticker)
 
-    # fast_info.last_price is real-time and always on the same scale as
-    # option-chain strikes — history() can lag split adjustments, causing
-    # the max-strike cap to be calculated against the old pre-split price
-    # and letting far-OTM legacy contracts through.
     current_price = _market_price(stock)
     if current_price is None:
         price_hist = _yf_retry(lambda: stock.history(period="2d"))
@@ -185,29 +452,29 @@ def analyze(ticker: str, avg_cost: float, shares: float):
             return None
         current_price = float(price_hist["Close"].dropna().iloc[-1])
 
-    # 52-week high + historical volatility from the same fetch
     hist = _yf_retry(lambda: stock.history(period="52wk"))
-    hv_rank = None
     if hist.empty:
         week52_high    = current_price
         week52_high_dt = "n/a"
-        hist_vol       = 0.40   # conservative default
+        vol_model      = {"hv20": None, "hv60": None, "hv120": None,
+                          "hv_ewma": 0.40, "hv_forecast": 0.40, "mu": 0.10}
+        hv_rank        = None
     else:
         week52_high    = float(hist["High"].max())
         week52_high_dt = hist["High"].idxmax().strftime("%Y-%m-%d")
+        vol_model      = compute_vol_model(hist)
         _ret = hist["Close"].pct_change().dropna()
-        hist_vol = float(_ret.std() * math.sqrt(252)) if len(_ret) >= 20 else 0.40
-
-        # HV Rank: where does current 21-day HV sit in its 1-year distribution?
         hv_rank = None
         if len(_ret) >= 42:
-            rolling_hv = _ret.rolling(21).std().dropna() * math.sqrt(252)
+            rolling_hv     = _ret.rolling(21).std().dropna() * math.sqrt(252)
             current_21d_hv = float(rolling_hv.iloc[-1])
-            hv_rank = round(float((rolling_hv < current_21d_hv).mean() * 100), 1)
+            hv_rank        = round(float((rolling_hv < current_21d_hv).mean() * 100), 1)
 
-    strike_floor = min_strike(current_price, avg_cost)
+    hist_vol = vol_model["hv_forecast"]
+    mu       = vol_model["mu"]
     gain_pct = (current_price - avg_cost) / avg_cost * 100
-    already_at_target = current_price >= avg_cost * 1.10
+    already_at_target = current_price >= avg_cost * (1 + R_MIN)
+    strike_floor      = avg_cost * (1 + R_MIN)   # kept for UI context
 
     today = datetime.now().date()
 
@@ -217,13 +484,13 @@ def analyze(ticker: str, avg_cost: float, shares: float):
         print(f"  [{ticker}] Could not fetch option expirations — skipping.")
         return None
 
-    # ATM IV: nearest-expiry call closest to current price
+    # ATM IV from nearest expiry
     atm_iv = None
     try:
         for _exp in all_options[:3]:
             _chain = stock.option_chain(_exp).calls
-            _atm = _chain.iloc[(_chain["strike"] - current_price).abs().argsort()[:1]]
-            _iv = float(_atm["impliedVolatility"].values[0])
+            _atm   = _chain.iloc[(_chain["strike"] - current_price).abs().argsort()[:1]]
+            _iv    = float(_atm["impliedVolatility"].values[0])
             if _iv > 0.01:
                 atm_iv = round(_iv * 100, 1)
                 break
@@ -233,19 +500,10 @@ def analyze(ticker: str, avg_cost: float, shares: float):
     def _get_expirations(max_dte):
         min_exp = today + timedelta(days=MIN_DTE)
         max_exp = today + timedelta(days=max_dte)
-        return [
-            e for e in all_options
-            if min_exp <= datetime.strptime(e, "%Y-%m-%d").date() <= max_exp
-        ]
+        return [e for e in all_options
+                if min_exp <= datetime.strptime(e, "%Y-%m-%d").date() <= max_exp]
 
     def _build_rows(expirations, mid_mode):
-        """
-        mid_mode controls how mid price is computed when bids are zero:
-          "live"        – bid >= MIN_BID required
-          "ask_proxy"   – bid=0 ok; use ask * 0.5 as conservative mid
-          "theoretical" – bid=ask=0 ok; use Black-Scholes from IV
-        Returns (rows, note_fragment)
-        """
         import pandas as pd
         rows = []
         for exp in expirations:
@@ -256,9 +514,7 @@ def analyze(ticker: str, avg_cost: float, shares: float):
             except Exception:
                 continue
 
-            max_strike = current_price * MAX_STRIKE_MULTIPLIER
-            calls = calls[calls["strike"] >= strike_floor].copy()
-            calls = calls[calls["strike"] <= max_strike].copy()
+            T = dte / 365
 
             if mid_mode == "live":
                 calls = calls[calls["bid"] >= MIN_BID].copy()
@@ -267,31 +523,20 @@ def analyze(ticker: str, avg_cost: float, shares: float):
                 calls["mid"] = (calls["bid"] + calls["ask"]) / 2
 
             elif mid_mode == "ask_proxy":
-                # bid=0 but ask>0: use ask * 0.5 as conservative estimate
                 calls = calls[calls["ask"] >= MIN_BID * 2].copy()
                 if calls.empty:
                     continue
                 calls["mid"] = calls.apply(
                     lambda r: (r["bid"] + r["ask"]) / 2 if r["bid"] >= MIN_BID
-                              else r["ask"] * 0.50,
-                    axis=1,
-                )
+                              else r["ask"] * 0.50, axis=1)
 
             elif mid_mode == "theoretical":
-                # bid=ask=0: use Black-Scholes with historical vol as IV floor.
-                # yfinance often returns stale/rounded IVs (e.g. 6.25%) when
-                # markets are closed; hist_vol provides a realistic fallback.
-                T_yr = dte / 365
-                def _eff_iv(chain_iv):
+                def _eff_iv_bs(chain_iv):
                     iv = float(chain_iv) if chain_iv and float(chain_iv) > 0.01 else 0.0
-                    return max(iv, hist_vol * 0.80)   # never go below 80% of hist vol
-
+                    return max(iv, hist_vol * 0.80)
                 calls["bs_mid"] = calls.apply(
-                    lambda r: bs_call_price(
-                        current_price, r["strike"], T_yr, _eff_iv(r["impliedVolatility"])
-                    ),
-                    axis=1,
-                )
+                    lambda r: bs_call_price(current_price, r["strike"], T,
+                                            _eff_iv_bs(r["impliedVolatility"])), axis=1)
                 calls = calls[calls["bs_mid"] >= MIN_BID].copy()
                 if calls.empty:
                     continue
@@ -300,53 +545,94 @@ def analyze(ticker: str, avg_cost: float, shares: float):
             if calls.empty:
                 continue
 
-            T = dte / 365
-            calls["dte"]       = dte
-            calls["expiration"] = exp
-            calls["premium_pct"]      = calls["mid"] / current_price * 100
-            calls["annualized_ret"]   = calls["premium_pct"] * (365 / dte)
-            calls["profit_if_called"] = (
-                (calls["strike"] - avg_cost + calls["mid"]) / avg_cost * 100
-            )
-            calls["delta"] = calls.apply(
-                lambda r: call_delta(current_price, r["strike"], T,
-                                     float(r["impliedVolatility"]) if r["impliedVolatility"] > 0 else 0.0),
-                axis=1,
-            )
+            calls = calls[calls["strike"] <= current_price * MAX_STRIKE_MULTIPLIER].copy()
+            metrics = []
+            for _, row in calls.iterrows():
+                K   = float(row["strike"])
+                bid = float(row.get("bid", 0) or 0)
+                ask = float(row.get("ask", 0) or 0)
+                mid = float(row["mid"])
+                iv  = float(row.get("impliedVolatility", 0) or 0)
+                oi  = _safe_int(row.get("openInterest", 0))
+                vol = _safe_int(row.get("volume", 0))
 
-            risk = get_risk_events(stock, today, exp_date)
-            calls["risk_events"] = [risk] * len(calls)
-            calls["has_avoid"]   = any(e["severity"] == "avoid"   for e in risk)
-            calls["has_caution"] = any(e["severity"] == "caution" for e in risk)
-            rows.append(calls)
+                eff_iv    = iv if iv > 0.01 else hist_vol
+                exec_prem = _exec_premium(bid, ask) if mid_mode != "theoretical" else mid
+
+                if not _clears_profit_floor(K, exec_prem, avg_cost, current_price):
+                    continue
+
+                delta_val = call_delta(current_price, K, T, eff_iv)
+                gamma_val = call_gamma(current_price, K, T, eff_iv)
+                itm_rn    = itm_prob_rn(current_price, K, T, eff_iv)
+                itm_real  = itm_prob_real(current_price, K, T, eff_iv, mu)
+                reg_p     = regret_prob(current_price, K, exec_prem, T, eff_iv, mu)
+                up_lost   = expected_upside_lost(current_price, K, T, eff_iv, mu)
+                cc_alpha  = exec_prem - up_lost
+                exp_move  = current_price * eff_iv * math.sqrt(T)
+                z_k       = (math.log(K / current_price) / (eff_iv * math.sqrt(T))
+                             if eff_iv > 0 and T > 0 else 0.0)
+                iv_rich   = (eff_iv / hist_vol - 1) if hist_vol > 0 else 0.0
+                liq       = _liquidity_score(bid, ask, vol, oi)
+                risk      = get_risk_events(stock, current_price, today, exp_date, K, mid)
+
+                metrics.append({
+                    "expiration":        exp,
+                    "strike":            K,
+                    "dte":               dte,
+                    "bid":               bid,
+                    "ask":               ask,
+                    "mid":               mid,
+                    "exec_premium":      round(exec_prem, 2),
+                    "premium_pct":       exec_prem / current_price * 100,
+                    "annualized_ret":    exec_prem / current_price * 100 * (365 / dte),
+                    "profit_if_called":  (K + exec_prem - avg_cost) / avg_cost * 100,
+                    "delta":             round(delta_val, 3),
+                    "gamma":             round(gamma_val, 4),
+                    "itm_prob_rn":       round(itm_rn, 3),
+                    "itm_prob_real":     round(itm_real, 3),
+                    "regret_prob":       round(reg_p, 3),
+                    "regret_threshold":  round(K + exec_prem, 2),
+                    "cc_alpha":          round(cc_alpha, 3),
+                    "upside_lost":       round(up_lost, 3),
+                    "expected_move":     round(exp_move, 2),
+                    "z_strike":          round(z_k, 2),
+                    "iv_richness":       round(iv_rich, 3),
+                    "liquidity_score":   liq,
+                    "openInterest":      oi,
+                    "volume":            vol,
+                    "impliedVolatility": eff_iv,
+                    "risk_events":       risk,
+                    "has_avoid":         any(e["severity"] == "avoid"   for e in risk),
+                    "has_caution":       any(e["severity"] == "caution" for e in risk),
+                })
+
+            if metrics:
+                rows.append(pd.DataFrame(metrics))
         return rows
 
-    # ── Tier 1: standard 21–60 DTE, live bids ─────────────────────────────
-    exps = _get_expirations(MAX_DTE)
-    note = None
+    # ── Tiered data collection ─────────────────────────────────────────────────
+    exps      = _get_expirations(MAX_DTE)
+    note      = None
     data_mode = "live"
     dte_extended = False
 
     rows = _build_rows(exps, "live") if exps else []
 
-    # ── Tier 2: same window, ask-proxy mid (market closed / illiquid) ──────
     if not rows and exps:
         rows = _build_rows(exps, "ask_proxy")
         if rows:
             data_mode = "ask_proxy"
-            note = ("⚠️ No live bids found — market may be closed or options are illiquid. "
-                    "Premiums are estimated at 50% of the ask. Verify before trading.")
+            note = ("⚠️  No live bids — market may be closed or options illiquid. "
+                    "Exec premiums estimated at 50% of ask. Verify before trading.")
 
-    # ── Tier 3: ask-proxy exhausted, try IV-based theoretical prices ───────
     if not rows and exps:
         rows = _build_rows(exps, "theoretical")
         if rows:
             data_mode = "theoretical"
-            note = ("⚠️ No market quotes found (bid=ask=0). Premiums are Black-Scholes "
-                    "estimates from implied volatility — for reference only. "
-                    "Verify with your broker when the market opens.")
+            note = ("⚠️  No market quotes (bid=ask=0). Premiums are Black-Scholes "
+                    "estimates from IV — reference only. Verify when market opens.")
 
-    # ── Tier 4: widen DTE window to 21–90 and retry ────────────────────────
     if not rows:
         exps_ext = _get_expirations(MAX_DTE_EXTENDED)
         new_exps = [e for e in exps_ext if e not in exps]
@@ -354,15 +640,12 @@ def analyze(ticker: str, avg_cost: float, shares: float):
             for mode in ("live", "ask_proxy", "theoretical"):
                 rows = _build_rows(new_exps, mode)
                 if rows:
-                    data_mode = mode
+                    data_mode    = mode
                     dte_extended = True
-                    suffix = {
-                        "live":        "",
-                        "ask_proxy":   " Premiums estimated at 50% of ask.",
-                        "theoretical": " Premiums are Black-Scholes estimates from IV.",
-                    }[mode]
-                    note = (f"No contracts found in standard 21–60 DTE window — "
-                            f"showing 61–{MAX_DTE_EXTENDED} DTE instead.{suffix}")
+                    suffix = {"live": "", "ask_proxy": " Premiums at 50% of ask.",
+                              "theoretical": " Premiums are BS estimates."}[mode]
+                    note = (f"No contracts in standard 21–60 DTE window — "
+                            f"showing 61–{MAX_DTE_EXTENDED} DTE.{suffix}")
                     break
 
     if not exps and not _get_expirations(MAX_DTE_EXTENDED):
@@ -370,13 +653,14 @@ def analyze(ticker: str, avg_cost: float, shares: float):
         return None
 
     if not rows:
-        print(f"  [{ticker}] No qualifying contracts found above ${strike_floor:.2f} "
+        print(f"  [{ticker}] No qualifying contracts above profit floor "
               f"(tried live, ask-proxy, and theoretical modes).")
         return None
 
     import pandas as pd
     all_calls = pd.concat(rows, ignore_index=True)
-    all_calls = all_calls.sort_values("annualized_ret", ascending=False).head(TOP_N)
+    all_calls = _compute_scores(all_calls)
+    all_calls = all_calls.sort_values("score", ascending=False).head(TOP_N)
 
     return {
         "ticker":            ticker,
@@ -394,8 +678,12 @@ def analyze(ticker: str, avg_cost: float, shares: float):
         "note":              note,
         "hv_rank":           hv_rank,
         "atm_iv":            atm_iv,
+        "vol_model":         vol_model,
+        "mu":                mu,
     }
 
+
+# ── Report printer ────────────────────────────────────────────────────────────
 
 def print_report(r: dict) -> None:
     t     = r["ticker"]
@@ -403,83 +691,123 @@ def print_report(r: dict) -> None:
     cost  = r["avg_cost"]
     gain  = r["gain_pct"]
     floor = r["strike_floor"]
+    w52   = r["week52_high"]
+    w52d  = r["week52_high_dt"]
+    mu    = r.get("mu", RISK_FREE_RATE)
+    vm    = r.get("vol_model", {})
 
-    w52  = r["week52_high"]
-    w52d = r["week52_high_dt"]
     print()
-    print("=" * 64)
+    print("=" * 76)
     print(f"  {t}  —  current ${price:.2f}  |  avg cost ${cost:.2f}  |  "
           f"gain {gain:+.1f}%  |  52w high ${w52:.2f} ({w52d})")
 
-    if r["already_at_target"]:
-        print(f"  ✓ Already up ≥10% — floor set to current × 1.10 = ${floor:.2f}")
-    else:
-        pct_to_go = (cost * 1.10 - price) / cost * 100
-        print(f"  ○ Not yet at +10% target — min strike = ${floor:.2f}  "
-              f"({pct_to_go:.1f}% to go)")
+    hv_rank = r.get("hv_rank")
+    atm_iv  = r.get("atm_iv")
+    hv20    = vm.get("hv20")
+    hv_fc   = vm.get("hv_forecast")
+    if atm_iv and hv_fc:
+        iv_rich_pct = (atm_iv / 100 / hv_fc - 1) * 100
+        rich_label  = ("rich" if iv_rich_pct > 10 else
+                       "fair" if iv_rich_pct > -5 else "cheap")
+        print(f"  IV {atm_iv:.1f}%  |  HV20 {hv20*100:.1f}%  |  HV_fc {hv_fc*100:.1f}%  "
+              f"|  IV richness {iv_rich_pct:+.1f}% ({rich_label})"
+              + (f"  |  HV rank {hv_rank:.0f}th pct" if hv_rank is not None else ""))
+    elif hv_rank is not None:
+        print(f"  HV rank: {hv_rank:.0f}th percentile"
+              + (f"  |  ATM IV: {atm_iv:.1f}%" if atm_iv else ""))
 
-    print(f"  Top {len(r['recs'])} contracts  (DTE {MIN_DTE}–{MAX_DTE}, "
-          f"bid ≥ ${MIN_BID})\n")
+    print(f"  Drift (blended real-world μ): {mu*100:+.1f}%/yr  "
+          f"|  Floor: K + exec_prem ≥ max(cost×{1+R_MIN:.2f}, price×{1+R_FORWARD:.2f})")
+    print(f"  Best call competes against: DO NOTHING (cc_alpha=0)\n")
 
-    print(f"  {'Expiry':<12} {'Strike':>7} {'DTE':>4} {'Bid':>6} {'Ask':>6} "
-          f"{'Mid':>6} {'Prem%':>6} {'Ann%':>7} {'P/L if called':>14} {'Prob Called':>12}")
-    print("  " + "-" * 95)
+    print(f"  {'Expiry':<12} {'Strike':>7} {'DTE':>4} {'Bid':>5} {'Ask':>5} {'Exec':>5} "
+          f"{'Prem%':>6} {'Ann%':>6} {'P/L':>6} {'Delta':>6} {'ITM%':>5} "
+          f"{'Rgrt%':>6} {'CCα$':>6} {'Liq':>4} {'Scr':>4}")
+    print("  " + "-" * 110)
 
     for _, row in r["recs"].iterrows():
-        avoid_tag   = " 📵AVOID"   if row.get("has_avoid")   else ""
-        caution_tag = " ⚠️ CAUTION" if row.get("has_caution") else ""
+        avoid_tag   = " 📵" if row.get("has_avoid")   else ""
+        caution_tag = " ⚠️" if row.get("has_caution") else ""
+        cc_alpha    = float(row.get("cc_alpha", 0))
+        alpha_str   = f"{cc_alpha:+.2f}"
         print(
-            f"  {row['expiration']:<12} "
+            f"  {row['expiration']:<12}"
             f"${row['strike']:>6.2f} "
-            f"{int(row['dte']):>4}d "
-            f"${row['bid']:>5.2f} "
-            f"${row['ask']:>5.2f} "
-            f"${row['mid']:>5.2f} "
-            f"{row['premium_pct']:>5.1f}% "
-            f"{row['annualized_ret']:>6.1f}% "
-            f"  {row['profit_if_called']:>+.1f}% vs cost"
-            f"  {row['delta']*100:>5.1f}%"
+            f"{int(row['dte']):>4}d"
+            f" ${float(row['bid']):>4.2f}"
+            f" ${float(row['ask']):>4.2f}"
+            f" ${float(row.get('exec_premium', row['mid'])):>4.2f}"
+            f" {float(row['premium_pct']):>5.1f}%"
+            f" {float(row['annualized_ret']):>5.1f}%"
+            f" {float(row['profit_if_called']):>+5.1f}%"
+            f"  {float(row['delta'])*100:>4.1f}%"
+            f"  {float(row.get('itm_prob_real', row['delta']))*100:>4.1f}%"
+            f"  {float(row.get('regret_prob', 0))*100:>5.1f}%"
+            f"  {alpha_str:>6}"
+            f"  {int(row.get('liquidity_score', 0)):>3}"
+            f" {float(row.get('score', 0)):>4.0f}"
             f"{avoid_tag}{caution_tag}"
         )
         for event in (row.get("risk_events") or []):
             print(f"    {event['label']}")
+
+    # NO CALL comparison
+    best_alpha = float(r["recs"].iloc[0].get("cc_alpha", 0)) if len(r["recs"]) else 0
+    best_exp   = r["recs"].iloc[0].get("expected_move", None) if len(r["recs"]) else None
+    if best_alpha < 0:
+        print(f"\n  *** Best contract has cc_alpha={best_alpha:+.2f}  "
+              f"→  DO NOTHING may be the better choice ***")
     print()
 
 
-# ── Open position evaluator ──────────────────────────────────────────────────
+# ── Open position evaluator ───────────────────────────────────────────────────
 
-def _eval_recommendation(delta, dte, pct_captured, has_avoid, current_price, strike, risk_events):
-    """Return (recommendation, reason) for an open covered call position."""
-
-    # Priority 1: risk event (earnings/ex-div) in window → remove it
+def _eval_open_economics(delta, dte, pct_captured, has_avoid, current_price,
+                          strike, original_premium, live_mark, risk_events,
+                          gamma=None):
+    """
+    Economic comparison: hold vs close vs roll.
+    Returns (recommendation, reason).
+    """
+    # Priority 1: risk event → close to remove it
     if has_avoid:
         label = next((e["label"] for e in risk_events if e["severity"] == "avoid"), "risk event")
-        clean = label.replace("📵 AVOID — ", "").replace("📵 AVOID—", "")
-        return "buy_back", f"Close to remove event risk: {clean}"
+        return "buy_back", f"Close to remove event risk: {label.replace('📵 AVOID — ', '')}"
 
-    # Priority 2: most of premium captured → cheap to close
+    # Compute remaining annualised yield on close debit
+    remaining_ann = None
+    if live_mark is not None and live_mark > 0 and dte and dte > 0:
+        remaining_ann = (live_mark / current_price) * (365 / dte) * 100
+
+    # Priority 2: most of premium captured AND remaining yield is low
     if pct_captured is not None and pct_captured >= 80:
-        return "buy_back", f"{pct_captured:.0f}% of premium captured — cost to close is minimal"
+        if remaining_ann is None or remaining_ann < 5:
+            return "buy_back", (f"{pct_captured:.0f}% captured, remaining annualised yield "
+                                f"{remaining_ann:.1f}% — cost to close is minimal")
 
-    # Priority 3: stock has moved through or very near the strike
+    # Priority 3: gamma-aware assignment risk near expiry
+    if dte is not None and dte <= 21:
+        gamma_delta_1pct = (gamma or 0) * current_price * 0.01
+        if delta is not None and delta >= 0.30:
+            detail = (f", Γ×1%move≈{gamma_delta_1pct:.3f} delta acceleration"
+                      if gamma else "")
+            return "roll", (f"{dte}d left, delta {delta*100:.0f}%{detail} "
+                            f"— assignment risk accelerating, roll out")
+
+    # Priority 4: deep ITM
     if current_price >= strike:
-        return "roll", f"Stock ${current_price:.2f} is above strike ${strike:.2f} — roll up and out"
+        return "roll", f"Stock ${current_price:.2f} above strike ${strike:.2f} — roll up and out"
     if current_price >= strike * 0.97:
-        return "roll", f"Stock ${current_price:.2f} within 3% of strike — roll up to protect position"
+        return "roll", f"Stock within 3% of strike — roll to protect position"
 
-    # Priority 4: delta too high → assignment likely
+    # Priority 5: delta too high
     if delta is not None and delta >= 0.50:
         return "roll", f"Delta {delta*100:.0f}% — high assignment probability, roll up or out"
 
-    # Priority 5: near expiry with meaningful assignment risk
-    if dte is not None and dte <= 21 and delta is not None and delta >= 0.30:
-        return "roll", f"{dte}d to expiry with {delta*100:.0f}% delta — roll out before assignment risk grows"
-
-    # Priority 6: very near expiry, nearly all captured — close it
+    # Priority 6: short DTE, decent capture
     if dte is not None and dte <= 5 and pct_captured is not None and pct_captured >= 60:
-        return "buy_back", f"{dte}d to expiry, {pct_captured:.0f}% captured — close and redeploy"
+        return "buy_back", f"{dte}d left, {pct_captured:.0f}% captured — close and redeploy"
 
-    # Otherwise: hold
     parts = []
     if delta is not None:
         parts.append(f"delta {delta*100:.0f}%")
@@ -487,20 +815,18 @@ def _eval_recommendation(delta, dte, pct_captured, has_avoid, current_price, str
         parts.append(f"{dte}d remaining")
     if pct_captured is not None:
         parts.append(f"{pct_captured:.0f}% captured")
-    return "hold", "No action needed — " + ", ".join(parts) if parts else "Hold position"
+    if remaining_ann is not None:
+        parts.append(f"remaining yield {remaining_ann:.1f}%/yr")
+    return "hold", ("No action needed — " + ", ".join(parts)) if parts else "Hold position"
 
 
-def _suggest_next_call(stock, min_strike: float, current_price: float) -> dict | None:
-    """
-    Scan upcoming expiries (14–75 DTE) and return the best call to write next.
-    Targets delta 0.15–0.40 with strike >= min_strike, ranked by premium_pct.
-    """
+def _suggest_next_call(stock, min_strike: float, current_price: float) -> dict:
     today = datetime.now().date()
     best  = None
     try:
         expirations = _yf_retry(lambda: stock.options)
         for exp in expirations:
-            exp_date = datetime.strptime(exp, "%Y-%m-%d").date()
+            exp_date     = datetime.strptime(exp, "%Y-%m-%d").date()
             dte_candidate = (exp_date - today).days
             if dte_candidate < 14 or dte_candidate > 75:
                 continue
@@ -514,22 +840,23 @@ def _suggest_next_call(stock, min_strike: float, current_price: float) -> dict |
                     s   = float(row["strike"])
                     bid = float(row["bid"])
                     ask = float(row["ask"])
-                    mid = (bid + ask) / 2
                     iv  = float(row.get("impliedVolatility", 0) or 0)
                     d   = None
                     if iv > 0.01 and dte_candidate > 0:
                         d = call_delta(current_price, s, dte_candidate / 365, iv)
                     if d is None or not (0.15 <= d <= 0.40):
                         continue
-                    if mid < 0.20:
+                    exec_prem = _exec_premium(bid, ask)
+                    if exec_prem < 0.20:
                         continue
-                    score = mid / s * 100  # premium_pct — rank by this
+                    score = exec_prem / s * 100
                     if best is None or score > best["_score"]:
                         best = {
                             "expiry":      exp,
                             "strike":      round(s, 2),
                             "dte":         dte_candidate,
-                            "mid":         round(mid, 2),
+                            "mid":         round((bid + ask) / 2, 2),
+                            "exec":        round(exec_prem, 2),
                             "delta":       round(d, 3),
                             "premium_pct": round(score, 2),
                             "_score":      score,
@@ -546,9 +873,9 @@ def _suggest_next_call(stock, min_strike: float, current_price: float) -> dict |
 def evaluate_open_position(ticker: str, strike: float, expiry: str,
                             original_premium: float, current_mark) -> dict:
     """
-    Evaluate an open covered call position against current market data.
+    Evaluate an open covered call using economic comparisons rather than
+    rule-based priority ladders.
     Returns metrics + recommendation: 'hold' | 'roll' | 'buy_back'.
-    For roll/buy_back also returns next_contract suggestion.
     """
     stock = yf.Ticker(ticker)
 
@@ -564,12 +891,11 @@ def evaluate_open_position(ticker: str, strike: float, expiry: str,
     exp_date = datetime.strptime(expiry, "%Y-%m-%d").date()
     dte      = (exp_date - today).days
 
-    # Fetch live option data for this specific expiry/strike
-    delta = None
-    live_mark = current_mark  # use stored mark as fallback
+    delta     = None
+    gamma     = None
+    live_mark = current_mark
     try:
         chain = _yf_retry(lambda: stock.option_chain(expiry).calls)
-        # Match by strike; fall back to nearest if exact not found
         exact = chain[abs(chain["strike"] - strike) < 0.01]
         row   = exact if not exact.empty else chain.iloc[(chain["strike"] - strike).abs().argsort()[:1]]
         if not row.empty:
@@ -579,37 +905,38 @@ def evaluate_open_position(ticker: str, strike: float, expiry: str,
                 live_mark = (bid + ask) / 2
             iv = float(row["impliedVolatility"].values[0])
             if iv > 0.01 and dte > 0:
-                delta = call_delta(current_price, strike, dte / 365, iv)
+                T     = dte / 365
+                delta = call_delta(current_price, strike, T, iv)
+                gamma = call_gamma(current_price, strike, T, iv)
     except Exception:
         pass
 
-    risk_events = get_risk_events(stock, today, exp_date)
+    risk_events = get_risk_events(stock, current_price, today, exp_date, strike, live_mark)
     has_avoid   = any(e["severity"] == "avoid" for e in risk_events)
 
     pct_captured = None
     if live_mark is not None and original_premium > 0:
         pct_captured = max(0.0, (original_premium - live_mark) / original_premium * 100)
 
-    rec, reason = _eval_recommendation(
+    rec, reason = _eval_open_economics(
         delta=delta, dte=dte, pct_captured=pct_captured,
         has_avoid=has_avoid, current_price=current_price,
-        strike=strike, risk_events=risk_events,
+        strike=strike, original_premium=original_premium,
+        live_mark=live_mark, risk_events=risk_events, gamma=gamma,
     )
 
-    # Suggest the next contract to write for actionable recommendations
     next_contract = None
     if rec == "roll":
-        # Must roll up to at least the current strike or current price (whichever higher)
         min_s = max(strike, current_price * 1.01)
         next_contract = _suggest_next_call(stock, min_s, current_price)
     elif rec == "buy_back":
-        # After closing, suggest a fresh OTM call (at least 3% above current price)
         next_contract = _suggest_next_call(stock, current_price * 1.03, current_price)
 
     return {
         "current_price":  round(current_price, 2),
         "current_mark":   round(live_mark, 2) if live_mark is not None else None,
         "delta":          round(delta, 3) if delta is not None else None,
+        "gamma":          round(gamma, 4) if gamma is not None else None,
         "dte":            dte,
         "pct_captured":   round(pct_captured, 1) if pct_captured is not None else None,
         "risk_events":    risk_events,
@@ -623,47 +950,69 @@ def evaluate_open_position(ticker: str, strike: float, expiry: str,
 # ── Ollama AI context builder ─────────────────────────────────────────────────
 
 def ai_context(ticker, result, shares, layer):
-    """Build a structured prompt for Ollama from analyze() output."""
     contracts_available = int(shares // 100)
+    vm    = result.get("vol_model", {})
+    mu    = result.get("mu", RISK_FREE_RATE)
+    hv_fc = vm.get("hv_forecast", 0)
+
     lines = [
         "You are an expert covered call advisor for a retail investor. "
         "Analyze this position and respond with ONLY a JSON object — no markdown, no explanation.\n",
-        f"POSITION: {ticker} | {shares} shares ({contracts_available} contracts available to sell) | Layer {layer} portfolio position",
-        f"  Layer 1 = core long-term hold (assignment is painful); Layer 2 = growth hold; Layer 3+ = trading/speculative",
+        f"POSITION: {ticker} | {shares} shares ({contracts_available} contracts) | Layer {layer}",
+        f"  Layer 1 = core long-term hold; Layer 2 = growth; Layer 3+ = trading/speculative",
         f"Current Price: ${result['current_price']:.2f} | Avg Cost: ${result['avg_cost']:.2f}",
-        f"Unrealized Gain: {result['gain_pct']:.1f}% | Strike Floor (min 10% profit if called): ${result['strike_floor']:.2f}",
+        f"Unrealized Gain: {result['gain_pct']:.1f}%",
+        f"Profit Floor: K + exec_prem >= cost×{1+R_MIN:.2f} (premium counts toward floor)",
         f"52-Week High: ${result['week52_high']:.2f} | Data Mode: {result.get('data_mode', 'live')}",
+        f"Real-world drift estimate (μ): {mu*100:+.1f}%/yr | HV_forecast: {hv_fc*100:.1f}%",
     ]
 
-    # IV context
     hv_rank = result.get("hv_rank")
     atm_iv  = result.get("atm_iv")
     if hv_rank is not None:
         if hv_rank >= 70:
-            iv_sentiment = "ELEVATED — strong environment for selling premium"
+            iv_sent = "ELEVATED — strong environment for selling premium"
         elif hv_rank >= 40:
-            iv_sentiment = "moderate — acceptable for selling premium"
+            iv_sent = "moderate — acceptable for selling premium"
         else:
-            iv_sentiment = "COMPRESSED — premium income will be thin, consider waiting"
-        lines.append(f"HV Rank (1-year percentile): {hv_rank:.0f}% — {iv_sentiment}")
+            iv_sent = "COMPRESSED — premium income thin, consider waiting"
+        lines.append(f"HV Rank: {hv_rank:.0f}% — {iv_sent}")
     if atm_iv is not None:
-        lines.append(f"ATM Implied Volatility: {atm_iv:.1f}%")
+        lines.append(f"ATM IV: {atm_iv:.1f}%"
+                     + (f"  IV richness vs HV: {(atm_iv/100/hv_fc-1)*100:+.1f}%"
+                        if hv_fc > 0 else ""))
     lines.append("")
 
-    lines.append("TOP CONTRACTS (sorted by annualized return):")
+    lines.append("TOP CONTRACTS (ranked by multi-factor score, primary metric = cc_alpha):")
     for i, (_, row) in enumerate(result["recs"].head(5).iterrows()):
-        risk_types = {e["type"] for e in (row.get("risk_events") or [])}
-        risk = " [EARNINGS RISK - AVOID]" if "earnings" in risk_types else ""
-        risk += " [EX-DIV RISK - AVOID, early assignment]" if "ex_div" in risk_types else ""
-        spread = float(row['ask']) - float(row['bid'])
-        spread_note = f" [WIDE SPREAD ${spread:.2f} — illiquid]" if spread > float(row['mid']) * 0.30 else ""
+        risk_types  = {e["type"] for e in (row.get("risk_events") or [])}
+        risk_note   = ""
+        if "earnings" in risk_types:
+            risk_note += " [EARNINGS IN WINDOW — AVOID]"
+        if "ex_div" in risk_types:
+            sev = next((e["severity"] for e in row.get("risk_events", [])
+                        if e["type"] == "ex_div"), "caution")
+            risk_note += f" [EX-DIV ({sev})]"
+        spread = float(row["ask"]) - float(row["bid"])
+        mid    = float(row["mid"])
+        if spread > mid * 0.30:
+            risk_note += f" [WIDE SPREAD ${spread:.2f}]"
         lines.append(
-            f"  #{i+1}: {row['expiration']} ${float(row['strike']):.2f} strike | "
-            f"DTE:{int(row['dte'])} | Bid:${float(row['bid']):.2f}/Ask:${float(row['ask']):.2f}/Mid:${float(row['mid']):.2f} | "
-            f"Ann.Return:{float(row['annualized_ret']):.1f}% | "
+            f"  #{i+1}: {row['expiration']} ${float(row['strike']):.2f} | "
+            f"DTE:{int(row['dte'])} | "
+            f"Exec:${float(row.get('exec_premium', mid)):.2f} "
+            f"(Bid:{float(row['bid']):.2f}/Ask:{float(row['ask']):.2f}) | "
+            f"Ann:{float(row['annualized_ret']):.1f}% | "
             f"Delta:{float(row.get('delta', 0)):.2f} | "
-            f"P/L if called:{float(row['profit_if_called']):.1f}%{risk}{spread_note}"
+            f"ITM_real:{float(row.get('itm_prob_real', 0))*100:.1f}% | "
+            f"RegretP:{float(row.get('regret_prob', 0))*100:.1f}% | "
+            f"CCα:${float(row.get('cc_alpha', 0)):+.2f} | "
+            f"P/L:{float(row['profit_if_called']):.1f}% | "
+            f"Liq:{int(row.get('liquidity_score', 0))} | "
+            f"Score:{float(row.get('score', 0)):.0f}"
+            f"{risk_note}"
         )
+
     lines.append("""
 Return ONLY this JSON object (no markdown fences, no extra text):
 {
@@ -671,27 +1020,26 @@ Return ONLY this JSON object (no markdown fences, no extra text):
     "rank": 1,
     "strike": 0.00,
     "expiration": "YYYY-MM-DD",
-    "reasoning": "2-3 sentences explaining why this contract is the best pick given position layer, IV environment, and risk events"
+    "reasoning": "2-3 sentences: why this contract has the best cc_alpha vs holding outright, given IV richness, regret probability, and position layer"
   },
-  "iv_context": "1-2 sentences on whether current IV rank makes this a good time to sell premium and whether to size up or wait",
-  "risks": ["risk tied to specific contract or position (e.g. earnings, ex-div, low liquidity, delta too high)", "risk 2", "risk 3"],
-  "roll_strategy": "STRING: When to roll — e.g. 'Roll at 21 DTE or if delta exceeds 0.60; roll out one month and up one strike'",
-  "timing_advice": "STRING: Entry timing — e.g. 'Use a limit order at mid-price, place 30 min after open when spreads tighten'"
+  "iv_context": "1-2 sentences on whether current IV makes this a good time to sell premium (use iv_richness and hv_rank)",
+  "no_call_case": "1 sentence: is there a reasonable argument to do nothing (cc_alpha < 0, strong momentum, low IV)?",
+  "risks": ["specific risk tied to this contract", "risk 2", "risk 3"],
+  "roll_strategy": "When to roll — cite delta, DTE, and cc_alpha decay as triggers",
+  "timing_advice": "Entry timing — limit order, time of day, spread width guidance"
 }""")
     return "\n".join(lines)
 
 
-# ── main ─────────────────────────────────────────────────────────────────────
+# ── main ──────────────────────────────────────────────────────────────────────
 
 def main():
     holdings = load_holdings()
-
-    tickers = [t.upper() for t in sys.argv[1:]]
-    if not tickers:
-        tickers = list(holdings.keys())
+    tickers  = [t.upper() for t in sys.argv[1:]] or list(holdings.keys())
 
     print(f"\nCovered Call Recommendations  —  {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-    print(f"Criteria: strike ≥ cost×1.10 (or current×1.10 if already up ≥10%)")
+    print(f"Ranked by: multi-factor score (25% cc_alpha, 15% each yield/IV/liquidity/upside/regret)")
+    print(f"Floor: K + exec_prem >= cost×{1+R_MIN:.2f}  |  exec = bid + {EXEC_LAMBDA:.0%}×spread")
 
     found = False
     for ticker in tickers:
