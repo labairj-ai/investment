@@ -978,79 +978,125 @@ def ai_context(ticker, result, shares, layer):
     vm    = result.get("vol_model", {})
     mu    = result.get("mu", RISK_FREE_RATE)
     hv_fc = vm.get("hv_forecast", 0)
+    hv20  = vm.get("hv20")
+    hv60  = vm.get("hv60")
 
     lines = [
-        "You are an expert covered call advisor for a retail investor. "
-        "Analyze this position and respond with ONLY a JSON object — no markdown, no explanation.\n",
-        f"POSITION: {ticker} | {shares} shares ({contracts_available} contracts) | Layer {layer}",
-        f"  Layer 1 = core long-term hold; Layer 2 = growth; Layer 3+ = trading/speculative",
-        f"Current Price: ${result['current_price']:.2f} | Avg Cost: ${result['avg_cost']:.2f}",
-        f"Unrealized Gain: {result['gain_pct']:.1f}%",
-        f"Profit Floor: K + exec_prem >= cost×{1+R_MIN:.2f} (premium counts toward floor)",
-        f"52-Week High: ${result['week52_high']:.2f} | Data Mode: {result.get('data_mode', 'live')}",
-        f"Real-world drift estimate (μ): {mu*100:+.1f}%/yr | HV_forecast: {hv_fc*100:.1f}%",
+        "You are a quantitative covered-call advisor writing for a financially sophisticated investor. "
+        "Every sentence must cite actual numbers from the data below. "
+        "Generic phrases like 'attractive premium' or 'manageable risk' without numbers are unacceptable. "
+        "Respond with ONLY a JSON object — no markdown fences, no text outside the braces.\n",
+
+        f"POSITION: {ticker} | {shares:.0f} shares | {contracts_available} contracts writable | Layer {layer}",
+        f"  Layer 1=core long-term hold  2=growth/compounder  3+=speculative/trading",
+        f"Current Price: ${result['current_price']:.2f} | Avg Cost: ${result['avg_cost']:.2f}"
+        f" | Unrealized P/L: {result['gain_pct']:+.1f}%",
+        f"52-Week High: ${result['week52_high']:.2f} ({result.get('week52_high_dt','')}) "
+        f"| Profit Floor: ${result['strike_floor']:.2f} (K + exec_prem must clear cost×{1+R_MIN:.2f})",
+        f"",
+        f"VOLATILITY & DRIFT",
+        f"  μ (price-return drift, excl. dividends): {mu*100:+.1f}%/yr",
+        f"  HV_forecast (blended realized vol): {hv_fc*100:.1f}%"
+        + (f"  |  HV20: {hv20*100:.1f}%" if hv20 else "")
+        + (f"  |  HV60: {hv60*100:.1f}%" if hv60 else ""),
     ]
 
     hv_rank = result.get("hv_rank")
     atm_iv  = result.get("atm_iv")
     if hv_rank is not None:
-        if hv_rank >= 70:
-            iv_sent = "ELEVATED — strong environment for selling premium"
-        elif hv_rank >= 40:
-            iv_sent = "moderate — acceptable for selling premium"
-        else:
-            iv_sent = "COMPRESSED — premium income thin, consider waiting"
-        lines.append(f"HV Rank: {hv_rank:.0f}% — {iv_sent}")
-    if atm_iv is not None:
-        lines.append(f"ATM IV: {atm_iv:.1f}%"
-                     + (f"  IV richness vs HV: {(atm_iv/100/hv_fc-1)*100:+.1f}%"
-                        if hv_fc > 0 else ""))
+        hv_label = ("ELEVATED — strong time to sell premium" if hv_rank >= 70
+                    else "moderate" if hv_rank >= 40
+                    else "COMPRESSED — thin premium, consider waiting")
+        lines.append(f"  HV Pct: {hv_rank:.0f}th pct — {hv_label}")
+    if atm_iv is not None and hv_fc > 0:
+        iv_rich_pct = (atm_iv / 100 / hv_fc - 1) * 100
+        rich_label  = ("RICH — sellers overpaid for vol" if iv_rich_pct > 5
+                       else "CHEAP — sellers underpaid for vol" if iv_rich_pct < -5
+                       else "FAIR")
+        lines.append(f"  ATM IV: {atm_iv:.1f}% | IV Richness vs HV_forecast: {iv_rich_pct:+.1f}% ({rich_label})")
+    elif atm_iv is not None:
+        lines.append(f"  ATM IV: {atm_iv:.1f}%")
+
+    lines.append("")
+    lines.append("METRIC DEFINITIONS (use these when writing reasoning):")
+    lines.append("  CCα = exec_premium − E[upside surrendered] under drift μ. Positive means CC beats holding. Negative means hold outright.")
+    lines.append("  RegretP = P(S_T > K + exec_prem) = P(stock runs past your regret threshold). Lower is better for sellers.")
+    lines.append("  eITM% = estimated P(stock > strike at expiry) under drift μ. Higher means more assignment risk.")
+    lines.append("  z = (ln(K/S))/(σ√T): standard deviations strike is OTM. Higher z = strike is further from current price in vol terms.")
+    lines.append("  ExpMove = S×σ×√T: 1-sigma move in dollars over option life.")
+    lines.append("  IVrich = IV/HV_forecast − 1. Positive = option is expensive vs expected realized vol (good for sellers).")
+    lines.append("  Liq = 0-100 liquidity score. Below 40 = execution risk; widen limit order accordingly.")
     lines.append("")
 
-    lines.append("TOP CONTRACTS (ranked by multi-factor score, primary metric = cc_alpha):")
+    best_alpha = float(result["recs"].iloc[0].get("cc_alpha", 0)) if len(result["recs"]) else 0
+    top_row    = result["recs"].iloc[0] if len(result["recs"]) else None
+    if top_row is not None:
+        top_strike    = float(top_row["strike"])
+        top_exec      = float(top_row.get("exec_premium", top_row["mid"]))
+        regret_thresh = top_strike + top_exec
+        lines.append(f"NO-CALL BASELINE: Best CCα = ${best_alpha:+.2f}. "
+                     f"Regret threshold on #1 = ${regret_thresh:.2f} "
+                     f"(stock must close above this for holding to beat the CC).")
+    else:
+        lines.append(f"NO-CALL BASELINE: CCα = ${best_alpha:+.2f}")
+
+    if result.get("note"):
+        lines.append(f"DATA NOTE: {result['note']}")
+    lines.append("")
+
+    lines.append(f"TOP CONTRACTS ranked by Score (25% CCα + 15% each: yield, IV richness, liquidity, upside room, inverse regret):")
     for i, (_, row) in enumerate(result["recs"].head(5).iterrows()):
-        risk_types  = {e["type"] for e in (row.get("risk_events") or [])}
-        risk_note   = ""
-        if "earnings" in risk_types:
-            risk_note += " [EARNINGS IN WINDOW — AVOID]"
-        if "ex_div" in risk_types:
-            sev = next((e["severity"] for e in row.get("risk_events", [])
-                        if e["type"] == "ex_div"), "caution")
-            risk_note += f" [EX-DIV ({sev})]"
-        spread = float(row["ask"]) - float(row["bid"])
-        mid    = float(row["mid"])
+        risk_flags = []
+        for e in (row.get("risk_events") or []):
+            if e["type"] == "earnings":
+                risk_flags.append("EARNINGS-IN-WINDOW")
+            elif e["type"] == "ex_div":
+                risk_flags.append(f"EX-DIV({e['severity']})")
+        spread   = float(row["ask"]) - float(row["bid"])
+        mid      = float(row["mid"])
+        exec_p   = float(row.get("exec_premium", mid))
+        iv_rich  = float(row.get("iv_richness", 0)) * 100
+        z        = float(row.get("z_strike", 0))
+        exp_move = float(row.get("expected_move", 0))
+        regret_k = float(row["strike"]) + exec_p
         if spread > mid * 0.30:
-            risk_note += f" [WIDE SPREAD ${spread:.2f}]"
+            risk_flags.append(f"WIDE-SPREAD(${spread:.2f})")
         lines.append(
-            f"  #{i+1}: {row['expiration']} ${float(row['strike']):.2f} | "
+            f"  #{i+1}: {row['expiration']} ${float(row['strike']):.2f} call | "
             f"DTE:{int(row['dte'])} | "
-            f"Exec:${float(row.get('exec_premium', mid)):.2f} "
-            f"(Bid:{float(row['bid']):.2f}/Ask:{float(row['ask']):.2f}) | "
+            f"Exec:${exec_p:.2f} (Bid:{float(row['bid']):.2f}/Ask:{float(row['ask']):.2f}) | "
             f"Ann:{float(row['annualized_ret']):.1f}% | "
-            f"Delta:{float(row.get('delta', 0)):.2f} | "
-            f"ITM_real:{float(row.get('itm_prob_real', 0))*100:.1f}% | "
-            f"RegretP:{float(row.get('regret_prob', 0))*100:.1f}% | "
             f"CCα:${float(row.get('cc_alpha', 0)):+.2f} | "
-            f"P/L:{float(row['profit_if_called']):.1f}% | "
+            f"RegretP:{float(row.get('regret_prob', 0))*100:.1f}% | "
+            f"RegretThresh:${regret_k:.2f} | "
+            f"eITM:{float(row.get('itm_prob_real', 0))*100:.1f}% | "
+            f"Delta:{float(row.get('delta', 0)):.2f} | "
+            f"z:{z:.2f}σ | "
+            f"ExpMove:${exp_move:.2f} | "
+            f"IVrich:{iv_rich:+.1f}% | "
             f"Liq:{int(row.get('liquidity_score', 0))} | "
             f"Score:{float(row.get('score', 0)):.0f}"
-            f"{risk_note}"
+            + (f" | FLAGS:{','.join(risk_flags)}" if risk_flags else "")
         )
 
     lines.append("""
-Return ONLY this JSON object (no markdown fences, no extra text):
+Respond with ONLY this JSON (no markdown, no text outside the braces):
 {
   "recommendation": {
     "rank": 1,
     "strike": 0.00,
     "expiration": "YYYY-MM-DD",
-    "reasoning": "2-3 sentences: why this contract has the best cc_alpha vs holding outright, given IV richness, regret probability, and position layer"
+    "reasoning": "State the CCα dollar amount and what it means (e.g. 'CCα of +$0.43 means after surrendering $X of expected upside you net $0.43 more than holding'). State RegretP % and the exact regret threshold price. Mention IVrich % and whether the vol environment favors selling. Reference the layer to justify aggressiveness. All numbers must come from the data above."
   },
-  "iv_context": "1-2 sentences on whether current IV makes this a good time to sell premium (use iv_richness and hv_rank)",
-  "no_call_case": "1 sentence: is there a reasonable argument to do nothing (cc_alpha < 0, strong momentum, low IV)?",
-  "risks": ["specific risk tied to this contract", "risk 2", "risk 3"],
-  "roll_strategy": "When to roll — cite delta, DTE, and cc_alpha decay as triggers",
-  "timing_advice": "Entry timing — limit order, time of day, spread width guidance"
+  "iv_context": "State ATM IV %, HV Pct rank, and IVrich %. Explain in plain language whether this is a good or bad premium environment and why, using those exact numbers.",
+  "no_call_case": "State CCα of the best contract. Give the exact stock price that must be breached for holding to win. Is momentum (μ) strong enough to make that a real concern?",
+  "risks": [
+    "Cite a specific number — e.g. eITM%, delta, or spread width — and explain the risk it represents",
+    "Second risk with a specific number",
+    "Third risk with a specific number"
+  ],
+  "roll_strategy": "State specific delta threshold (e.g. 'if delta reaches 0.40') and DTE threshold (e.g. 'with <14d left') that should trigger a roll, and explain in terms of CCα decay why waiting past those points costs money.",
+  "timing_advice": "State the current bid-ask spread width, recommend a limit order price relative to exec premium, and flag any liquidity concern based on the Liq score."
 }""")
     return "\n".join(lines)
 
