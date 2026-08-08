@@ -4184,16 +4184,20 @@ function renderAIInsights(data) {{
   const sec = (icon, title, body) =>
     `<div style="margin-bottom:0.9rem">
        <div style="font-weight:600;color:#2c3e50;font-size:13px;margin-bottom:0.3rem">${{icon}} ${{title}}</div>
-       <div style="color:#444;font-size:13px;line-height:1.55">${{body}}</div>
+       <div style="color:#444;font-size:13px;line-height:1.6">${{body}}</div>
      </div>`;
+  const risks = Array.isArray(ins.risks)
+    ? `<ul style="margin:0.2rem 0 0 1.1rem;padding:0">${{ins.risks.map(r => `<li style="margin-bottom:0.25rem">${{r}}</li>`).join("")}}</ul>`
+    : ins.risks || "";
   document.getElementById("cc-ai-content").innerHTML =
-    sec("🎯", "Recommendation",
-      `<strong>#${{rec.rank}} — ${{rec.expiration}} $${{rec.strike}} strike</strong><br>${{rec.reasoning}}`) +
-    sec("📊", "IV Context", ins.iv_context) +
-    sec("⚠️", "Risks",
-      `<ul style="margin:0.2rem 0 0 1.1rem;padding:0">${{ins.risks.map(r => `<li>${{r}}</li>`).join("")}}</ul>`) +
-    sec("🔄", "Roll Strategy", ins.roll_strategy) +
-    sec("⏰", "Timing", ins.timing_advice);
+    sec("🎯", "My Pick",
+      `<strong>#${{rec.rank}} — ${{rec.expiration}} $${{rec.strike}} call</strong><br>${{rec.summary}}`) +
+    sec("💵", "What You're Agreeing To", ins.the_trade || ins.iv_context || "") +
+    sec("📈", "Market Conditions Right Now", ins.market_conditions || ins.iv_context || "") +
+    sec("⚠️", "What Could Go Wrong", ins.what_could_go_wrong || ins.no_call_case || "") +
+    sec("🔍", "Things to Watch",
+      (risks ? risks + "<br>" : "") + (ins.what_to_watch || ins.roll_strategy || "")) +
+    (ins.timing_advice ? sec("⏰", "Timing", ins.timing_advice) : "");
   document.getElementById("cc-ai-panel").style.display = "block";
 }}
 

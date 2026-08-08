@@ -985,124 +985,118 @@ def ai_context(ticker, result, shares, layer):
     hv_fc = vm.get("hv_forecast", 0)
     hv20  = vm.get("hv20")
     hv60  = vm.get("hv60")
-
-    lines = [
-        "You are a quantitative covered-call advisor writing for a financially sophisticated investor. "
-        "Every sentence must cite actual numbers from the data below. "
-        "Generic phrases like 'attractive premium' or 'manageable risk' without numbers are unacceptable. "
-        "Respond with ONLY a JSON object — no markdown fences, no text outside the braces.\n",
-
-        f"POSITION: {ticker} | {shares:.0f} shares | {contracts_available} contracts writable | Layer {layer}",
-        f"  Layer 1=core long-term hold  2=growth/compounder  3+=speculative/trading",
-        f"Current Price: ${result['current_price']:.2f} | Avg Cost: ${result['avg_cost']:.2f}"
-        f" | Unrealized P/L: {result['gain_pct']:+.1f}%",
-        f"52-Week High: ${result['week52_high']:.2f} ({result.get('week52_high_dt','')}) "
-        f"| Profit Floor: ${result['strike_floor']:.2f} (K + exec_prem must clear cost×{1+R_MIN:.2f})",
-        f"",
-        f"VOLATILITY & DRIFT",
-        f"  μ (price-return drift, excl. dividends): {mu*100:+.1f}%/yr",
-        f"  HV_forecast (blended realized vol): {hv_fc*100:.1f}%"
-        + (f"  |  HV20: {hv20*100:.1f}%" if hv20 else "")
-        + (f"  |  HV60: {hv60*100:.1f}%" if hv60 else ""),
-    ]
-
     hv_rank = result.get("hv_rank")
     atm_iv  = result.get("atm_iv")
-    if hv_rank is not None:
-        hv_label = ("ELEVATED — strong time to sell premium" if hv_rank >= 70
-                    else "moderate" if hv_rank >= 40
-                    else "COMPRESSED — thin premium, consider waiting")
-        lines.append(f"  HV Pct: {hv_rank:.0f}th pct — {hv_label}")
+    price   = result["current_price"]
+    cost    = result["avg_cost"]
+
+    # Pre-translate volatility context into plain English
     if atm_iv is not None and hv_fc > 0:
         iv_rich_pct = (atm_iv / 100 / hv_fc - 1) * 100
-        rich_label  = ("RICH — sellers overpaid for vol" if iv_rich_pct > 5
-                       else "CHEAP — sellers underpaid for vol" if iv_rich_pct < -5
-                       else "FAIR")
-        lines.append(f"  ATM IV: {atm_iv:.1f}% | IV Richness vs HV_forecast: {iv_rich_pct:+.1f}% ({rich_label})")
-    elif atm_iv is not None:
-        lines.append(f"  ATM IV: {atm_iv:.1f}%")
-
-    lines.append("")
-    lines.append("METRIC DEFINITIONS (use these when writing reasoning):")
-    lines.append("  CCα = exec_premium − E[upside surrendered] under drift μ. Positive means CC beats holding. Negative means hold outright.")
-    lines.append("  RegretP = P(S_T > K + exec_prem) = P(stock runs past your regret threshold). Lower is better for sellers.")
-    lines.append("  eITM% = estimated P(stock > strike at expiry) under drift μ. Higher means more assignment risk.")
-    lines.append("  z = (ln(K/S))/(σ√T): standard deviations strike is OTM. Higher z = strike is further from current price in vol terms.")
-    lines.append("  ExpMove = S×σ×√T: 1-sigma move in dollars over option life.")
-    lines.append("  IVrich = IV/HV_forecast − 1. Positive = option is expensive vs expected realized vol (good for sellers).")
-    lines.append("  Liq = 0-100 liquidity score. Below 40 = execution risk; widen limit order accordingly.")
-    lines.append("")
-
-    best_alpha = float(result["recs"].iloc[0].get("cc_alpha", 0)) if len(result["recs"]) else 0
-    top_row    = result["recs"].iloc[0] if len(result["recs"]) else None
-    if top_row is not None:
-        top_strike    = float(top_row["strike"])
-        top_exec      = float(top_row.get("exec_premium", top_row["mid"]))
-        regret_thresh = top_strike + top_exec
-        lines.append(f"NO-CALL BASELINE: Best CCα = ${best_alpha:+.2f}. "
-                     f"Regret threshold on #1 = ${regret_thresh:.2f} "
-                     f"(stock must close above this for holding to beat the CC).")
+        if iv_rich_pct > 10:
+            vol_env = f"options are pricing in {atm_iv:.1f}% volatility but the stock has only been moving at {hv_fc*100:.1f}% — options are expensive right now, which favors selling"
+        elif iv_rich_pct < -10:
+            vol_env = f"options are pricing in {atm_iv:.1f}% volatility but the stock has been moving at {hv_fc*100:.1f}% — options are cheap, sellers are getting squeezed"
+        else:
+            vol_env = f"options are priced at {atm_iv:.1f}% implied volatility, roughly in line with the stock's recent {hv_fc*100:.1f}% realized movement — fair premium environment"
+    elif hv_fc > 0:
+        vol_env = f"stock has been moving at about {hv_fc*100:.1f}% annualized volatility"
+        if hv20 and hv60:
+            vol_env += f" (20-day: {hv20*100:.1f}%, 60-day: {hv60*100:.1f}%)"
     else:
-        lines.append(f"NO-CALL BASELINE: CCα = ${best_alpha:+.2f}")
+        vol_env = "volatility data unavailable"
+
+    if hv_rank is not None:
+        if hv_rank >= 70:
+            vol_env += f"; volatility is at the {hv_rank:.0f}th percentile of its 1-year range — an elevated reading, historically a good time to sell premium"
+        elif hv_rank <= 30:
+            vol_env += f"; volatility is at the {hv_rank:.0f}th percentile of its 1-year range — compressed, premiums are thin"
+        else:
+            vol_env += f"; volatility is at the {hv_rank:.0f}th percentile of its 1-year range — moderate"
+
+    layer_desc = {1: "core long-term hold", 2: "growth/compounder", 3: "speculative/trading"}.get(layer, f"layer {layer}")
+
+    lines = [
+        "You are a knowledgeable friend helping an investor decide whether to sell a covered call. "
+        "Write in plain, conversational English — no Greek letters, no math symbols, no jargon. "
+        "Translate every concept into real-money terms: 'you'd collect $X per share' not 'exec premium'. "
+        "'There is a 20% chance the stock closes above the strike' not 'eITM 0.20'. "
+        "Every sentence must include specific dollar amounts or percentages from the data below. "
+        "Respond with ONLY a JSON object — no markdown fences, no text outside the braces.\n",
+
+        f"STOCK: {ticker} at ${price:.2f} | you own {shares:.0f} shares (avg cost ${cost:.2f}, "
+        f"{result['gain_pct']:+.1f}% unrealized gain) | can sell {contracts_available} contract(s)",
+        f"This is a {layer_desc}. 52-week high: ${result['week52_high']:.2f} ({result.get('week52_high_dt','')}).",
+        f"Minimum acceptable strike: ${result['strike_floor']:.2f} (combined strike + premium must cover your cost with a small buffer).",
+        f"",
+        f"MARKET CONDITIONS: {vol_env}.",
+        f"Stock's estimated trend: {mu*100:+.1f}%/yr (blended from recent price history).",
+        f"",
+    ]
 
     if result.get("note"):
-        lines.append(f"DATA NOTE: {result['note']}")
-    lines.append("")
+        lines.append(f"NOTE: {result['note']}")
+        lines.append("")
 
-    lines.append(f"TOP CONTRACTS ranked by Score (25% CCα + 15% each: yield, IV richness, liquidity, upside room, inverse regret):")
+    lines.append("TOP OPTION CONTRACTS to consider (pre-filtered and ranked by our scoring system):")
     for i, (_, row) in enumerate(result["recs"].head(5).iterrows()):
-        risk_flags = []
+        exec_p      = float(row.get("exec_premium", row["mid"]))
+        spread      = float(row["ask"]) - float(row["bid"])
+        itm_pct     = float(row.get("itm_prob_real", 0)) * 100
+        regret_pct  = float(row.get("regret_prob", 0)) * 100
+        regret_k    = float(row["strike"]) + exec_p
+        alpha       = float(row.get("cc_alpha", 0))
+        exp_move    = float(row.get("expected_move", 0))
+        liq         = int(row.get("liquidity_score", 0))
+        ann         = float(row["annualized_ret"])
+        income_per_contract = exec_p * 100
+
+        flags = []
         for e in (row.get("risk_events") or []):
             if e["type"] == "earnings":
-                risk_flags.append("EARNINGS-IN-WINDOW")
+                flags.append("earnings report falls within this window")
             elif e["type"] == "ex_div":
-                risk_flags.append(f"EX-DIV({e['severity']})")
-        spread   = float(row["ask"]) - float(row["bid"])
-        mid      = float(row["mid"])
-        exec_p   = float(row.get("exec_premium", mid))
-        iv_rich  = float(row.get("iv_richness", 0)) * 100
-        z        = float(row.get("z_strike", 0))
-        exp_move = float(row.get("expected_move", 0))
-        regret_k = float(row["strike"]) + exec_p
-        if spread > mid * 0.30:
-            risk_flags.append(f"WIDE-SPREAD(${spread:.2f})")
+                flags.append(f"ex-dividend date in window ({e['severity']} risk of early assignment)")
+        if spread > exec_p * 0.30:
+            flags.append(f"wide bid-ask spread (${spread:.2f}) — use a limit order")
+        if liq < 40:
+            flags.append(f"thin liquidity (score {liq}/100) — be patient filling this")
+
+        alpha_desc = (f"selling nets you ${alpha:+.2f}/share more than the expected cost of capping your upside"
+                      if alpha > 0
+                      else f"${abs(alpha):.2f}/share of upside you'd be giving up exceeds the premium")
+
         lines.append(
-            f"  #{i+1}: {row['expiration']} ${float(row['strike']):.2f} call | "
-            f"DTE:{int(row['dte'])} | "
-            f"Exec:${exec_p:.2f} (Bid:{float(row['bid']):.2f}/Ask:{float(row['ask']):.2f}) | "
-            f"Ann:{float(row['annualized_ret']):.1f}% | "
-            f"CCα:${float(row.get('cc_alpha', 0)):+.2f} | "
-            f"RegretP:{float(row.get('regret_prob', 0))*100:.1f}% | "
-            f"RegretThresh:${regret_k:.2f} | "
-            f"eITM:{float(row.get('itm_prob_real', 0))*100:.1f}% | "
-            f"Delta:{float(row.get('delta', 0)):.2f} | "
-            f"z:{z:.2f}σ | "
-            f"ExpMove:${exp_move:.2f} | "
-            f"IVrich:{iv_rich:+.1f}% | "
-            f"Liq:{int(row.get('liquidity_score', 0))} | "
-            f"Score:{float(row.get('score', 0)):.0f}"
-            + (f" | FLAGS:{','.join(risk_flags)}" if risk_flags else "")
+            f"\n  Contract #{i+1}: Sell the {row['expiration']} ${float(row['strike']):.2f} call — {int(row['dte'])} days out"
+            f"\n    Collect: ${exec_p:.2f}/share (${income_per_contract:.0f}/contract) — {ann:.1f}%/yr annualized"
+            f"\n    Chance stock closes above strike and you get called away: ~{itm_pct:.0f}%"
+            f"\n    Chance this trade leaves you worse off than just holding: ~{regret_pct:.0f}% (stock would need to close above ${regret_k:.2f})"
+            f"\n    Net edge vs just holding: {alpha_desc}"
+            f"\n    Expected stock move over this window: ~${exp_move:.2f}"
+            f"\n    Bid ${float(row['bid']):.2f} / Ask ${float(row['ask']):.2f} — expected fill ~${exec_p:.2f} | Liquidity: {liq}/100"
+            + (f"\n    FLAGS: {'; '.join(flags)}" if flags else "")
         )
 
-    lines.append("""
-Respond with ONLY this JSON (no markdown, no text outside the braces):
-{
-  "recommendation": {
+    lines.append(f"""
+
+Respond with ONLY this JSON (no markdown, no text outside the braces).
+Write every field in plain English as if explaining to a smart friend — no Greek symbols, no math notation:
+{{
+  "recommendation": {{
     "rank": 1,
     "strike": 0.00,
     "expiration": "YYYY-MM-DD",
-    "reasoning": "State the CCα dollar amount and what it means (e.g. 'CCα of +$0.43 means after surrendering $X of expected upside you net $0.43 more than holding'). State RegretP % and the exact regret threshold price. Mention IVrich % and whether the vol environment favors selling. Reference the layer to justify aggressiveness. All numbers must come from the data above."
-  },
-  "iv_context": "State ATM IV %, HV Pct rank, and IVrich %. Explain in plain language whether this is a good or bad premium environment and why, using those exact numbers.",
-  "no_call_case": "State CCα of the best contract. Give the exact stock price that must be breached for holding to win. Is momentum (μ) strong enough to make that a real concern?",
+    "summary": "One or two sentences: which contract you'd pick and the single most important reason why, in plain dollars and cents."
+  }},
+  "the_trade": "Explain exactly what the investor is agreeing to: what they collect, what they're giving up, and what has to happen for this to work out well. Include the specific dollar amounts. 2-3 sentences.",
+  "market_conditions": "Is this a good or bad time to be selling options on this stock right now? Explain in terms of what the market is paying and whether that's generous or stingy. 2 sentences.",
+  "what_could_go_wrong": "What is the scenario where this trade leaves the investor worse off than just holding? Give the exact stock price that flips the outcome, and your honest read on how likely that is. 2-3 sentences.",
   "risks": [
-    "Cite a specific number — e.g. eITM%, delta, or spread width — and explain the risk it represents",
-    "Second risk with a specific number",
-    "Third risk with a specific number"
+    "One specific, plain-English risk with a dollar amount or percentage",
+    "A second specific risk with a dollar amount or percentage"
   ],
-  "roll_strategy": "State specific delta threshold (e.g. 'if delta reaches 0.40') and DTE threshold (e.g. 'with <14d left') that should trigger a roll, and explain in terms of CCα decay why waiting past those points costs money.",
-  "timing_advice": "State the current bid-ask spread width, recommend a limit order price relative to exec premium, and flag any liquidity concern based on the Liq score."
-}""")
+  "what_to_watch": "What should the investor monitor during the trade? When should they consider buying back the option early or rolling to a new strike? Give a specific price level or time trigger. 2-3 sentences."
+}}""")
     return "\n".join(lines)
 
 
