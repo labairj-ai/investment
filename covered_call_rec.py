@@ -593,8 +593,7 @@ def analyze(ticker: str, avg_cost: float, shares: float):
                 eff_iv    = iv if iv > 0.01 else hist_vol
                 exec_prem = _exec_premium(bid, ask) if mid_mode != "theoretical" else mid
 
-                if not _clears_profit_floor(K, exec_prem, avg_cost, current_price):
-                    continue
+                passes    = _clears_profit_floor(K, exec_prem, avg_cost, current_price)
 
                 delta_val = call_delta(current_price, K, T, eff_iv)
                 gamma_val = call_gamma(current_price, K, T, eff_iv)
@@ -640,6 +639,8 @@ def analyze(ticker: str, avg_cost: float, shares: float):
                     "risk_events":       risk,
                     "has_avoid":         any(e["severity"] == "avoid"   for e in risk),
                     "has_caution":       any(e["severity"] == "caution" for e in risk),
+                    "passes_floor":      passes,
+                    "spread_width":      round(ask - bid, 2),
                 })
 
             if metrics:
@@ -688,14 +689,25 @@ def analyze(ticker: str, avg_cost: float, shares: float):
         return None
 
     if not rows:
-        print(f"  [{ticker}] No qualifying contracts above profit floor "
+        print(f"  [{ticker}] No option contracts found "
               f"(tried live, ask-proxy, and theoretical modes).")
         return None
 
     import pandas as pd
     all_calls = pd.concat(rows, ignore_index=True)
     all_calls = _compute_scores(all_calls)
-    all_calls = all_calls.sort_values("score", ascending=False).head(TOP_N)
+
+    # Floor-passing contracts ranked by within-ticker score (shown in "All" view)
+    recs_df  = all_calls[all_calls["passes_floor"]].sort_values(
+                    "score", ascending=False).head(20)
+    # Tight-spread contracts ranked by cross-ticker OppScore (shown in "Tight" view)
+    # Includes floor-failing contracts so the user sees what's available regardless
+    tight_df = all_calls[all_calls["spread_width"] <= 0.25].sort_values(
+                    "opp_score", ascending=False)
+
+    if recs_df.empty:
+        print(f"  [{ticker}] No contracts meet profit floor — "
+              f"{len(tight_df)} tight-spread contract(s) available in filtered view.")
 
     return {
         "ticker":            ticker,
@@ -707,7 +719,8 @@ def analyze(ticker: str, avg_cost: float, shares: float):
         "strike_floor":      strike_floor,
         "week52_high":       week52_high,
         "week52_high_dt":    week52_high_dt,
-        "recs":              all_calls,
+        "recs":              recs_df,
+        "tight_recs":        tight_df,
         "data_mode":         data_mode,
         "dte_extended":      dte_extended,
         "note":              note,

@@ -1210,9 +1210,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             except Exception:
                 pass
 
-            recs = []
-            for _, row in result["recs"].iterrows():
-                recs.append({
+            def _row_to_dict(row):
+                return {
                     "expiration":       row["expiration"],
                     "strike":           float(row["strike"]),
                     "dte":              int(row["dte"]),
@@ -1238,7 +1237,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     "risk_events":      list(row.get("risk_events") or []),
                     "has_avoid":        bool(row.get("has_avoid")),
                     "has_caution":      bool(row.get("has_caution")),
-                })
+                    "passes_floor":     bool(row.get("passes_floor", True)),
+                    "spread_width":     round(_safe_float(row.get("spread_width")), 2),
+                }
+
+            recs = [_row_to_dict(row) for _, row in result["recs"].iterrows()]
+            tight_recs_df = result.get("tight_recs")
+            tight_recs = (
+                [_row_to_dict(row) for _, row in tight_recs_df.iterrows()]
+                if tight_recs_df is not None and not tight_recs_df.empty
+                else []
+            )
 
             vm = result.get("vol_model") or {}
             self._json({
@@ -1257,6 +1266,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 "hv_forecast":       round(vm.get("hv_forecast") or 0, 4) or None,
                 "mu":                round(result.get("mu") or 0, 4) or None,
                 "recs":              recs,
+                "tight_recs":        tight_recs,
                 "open_calls":        open_calls,
                 "data_mode":         result.get("data_mode", "live"),
                 "dte_extended":      result.get("dte_extended", False),
