@@ -3763,40 +3763,43 @@ function renderCCPositions() {{
     html += `<tr><td colspan="${{COLS}}" style="padding:5px 10px;font-size:11px;font-weight:700;color:#1a2340;background:#f0f7ff;">Open Positions</td></tr>`;
     html += open.map(p => makeRow(p)).join("");
   }}
-  const expiredPos    = closed.filter(p => p.status === "expired");
-  const otherClosed   = closed.filter(p => p.status !== "expired");
-
-  if (otherClosed.length) {{
-    html += `<tr><td colspan="${{COLS}}" style="padding:5px 10px;font-size:11px;font-weight:700;color:#888;background:#f9f9f9;">Closed / Assigned</td></tr>`;
-    html += otherClosed.map(p => makeRow(p)).join("");
-  }}
-
-  if (expiredPos.length) {{
+  function renderClosedAccordion(positions, sectionLabel, ridPrefix, hdrBg, hdrColor, hdrBorder, dateKey) {{
+    if (!positions.length) return;
     const byMonth = {{}};
-    expiredPos.forEach(p => {{
-      const d = new Date(p.expiry + "T00:00:00");
-      const key = d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0");
+    positions.forEach(p => {{
+      const raw = dateKey(p);
+      const d   = raw ? new Date(raw + "T00:00:00") : null;
+      const key = d ? d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") : "unknown";
       if (!byMonth[key]) byMonth[key] = [];
       byMonth[key].push(p);
     }});
     const months = Object.keys(byMonth).sort().reverse();
-    html += `<tr><td colspan="${{COLS}}" style="padding:5px 10px;font-size:11px;font-weight:700;color:#888;background:#f9f9f9;">Expired Worthless</td></tr>`;
+    html += `<tr><td colspan="${{COLS}}" style="padding:5px 10px;font-size:11px;font-weight:700;color:#888;background:#f9f9f9;">${{sectionLabel}}</td></tr>`;
     months.forEach(key => {{
       const [yr, mo] = key.split("-");
-      const label = new Date(parseInt(yr), parseInt(mo)-1, 1).toLocaleDateString("en-US", {{month:"long",year:"numeric"}});
+      const label = yr === "unknown" ? "Unknown Date"
+        : new Date(parseInt(yr), parseInt(mo)-1, 1).toLocaleDateString("en-US", {{month:"long",year:"numeric"}});
       const mp   = byMonth[key];
       const mNet = mp.reduce((s,p) => s + (p.net_premium ?? 0), 0);
-      const rid  = "cc-exp-" + key;
-      html += `<tr style="cursor:pointer;background:#fffdf5;border-bottom:1px solid #ffe082;" onclick="toggleCCMonth('${{rid}}')">
-        <td colspan="${{COLS}}" style="padding:7px 12px;font-size:12px;font-weight:700;color:#8a6d00;">
+      const rid  = ridPrefix + key;
+      html += `<tr style="cursor:pointer;background:${{hdrBg}};border-bottom:1px solid ${{hdrBorder}};" onclick="toggleCCMonth('${{rid}}')">
+        <td colspan="${{COLS}}" style="padding:7px 12px;font-size:12px;font-weight:700;color:${{hdrColor}};">
           <span id="${{rid}}-arrow" style="display:inline-block;margin-right:6px;transition:transform 0.15s;">▶</span>
           ${{label}}
-          <span style="font-weight:400;color:#b89000;margin-left:10px;font-size:11px;">${{mp.length}} position${{mp.length>1?"s":""}} · +$${{mNet.toFixed(2)}} net</span>
+          <span style="font-weight:400;opacity:0.7;margin-left:10px;font-size:11px;">${{mp.length}} position${{mp.length>1?"s":""}} · +$${{mNet.toFixed(2)}} net</span>
         </td>
       </tr>`;
       html += mp.map(p => makeRow(p, rid, true)).join("");
     }});
   }}
+
+  const expiredPos  = closed.filter(p => p.status === "expired");
+  const otherClosed = closed.filter(p => p.status !== "expired");
+
+  renderClosedAccordion(otherClosed, "Closed / Assigned", "cc-cls-",
+    "#f4f6fb", "#555", "#dde", p => p.closed_date || p.expiry);
+  renderClosedAccordion(expiredPos, "Expired Worthless", "cc-exp-",
+    "#fffdf5", "#8a6d00", "#ffe082", p => p.expiry);
   html += `</tbody></table></div>`;
   results.innerHTML = html;
 }}
