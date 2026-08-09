@@ -25,6 +25,7 @@ import sqlite3
 import sys
 import threading
 import time
+import uuid
 import webbrowser
 from concurrent.futures import ThreadPoolExecutor
 from email.mime.multipart import MIMEMultipart
@@ -90,6 +91,42 @@ def _cc_ai_get(ticker):
 def _cc_ai_set(ticker, insight, model):
     with _cc_ai_lock:
         _cc_ai_cache[ticker] = {"insight": insight, "model": model, "ts": time.time()}
+
+
+# ── Analysis job store ────────────────────────────────────────────────────────
+# Jobs run in background threads; browser polls /api/analysis-job/<id> until done.
+# This decouples the HTTP connection lifetime from the analysis duration so phone
+# locks and app switches no longer abort the run.
+_jobs: dict = {}
+_jobs_lock = threading.Lock()
+_JOB_TTL = 600  # expire completed jobs after 10 minutes
+
+
+def _job_create(kind: str) -> str:
+    job_id = uuid.uuid4().hex[:16]
+    with _jobs_lock:
+        _jobs[job_id] = {
+            "status": "running", "kind": kind,
+            "progress": "", "result": None, "error": None, "ts": time.time(),
+        }
+        cutoff = time.time() - _JOB_TTL
+        stale = [k for k, v in _jobs.items() if v["ts"] < cutoff and v["status"] != "running"]
+        for k in stale:
+            del _jobs[k]
+    return job_id
+
+
+def _job_update(job_id: str, **kwargs) -> None:
+    with _jobs_lock:
+        if job_id in _jobs:
+            _jobs[job_id].update(kwargs)
+            _jobs[job_id]["ts"] = time.time()
+
+
+def _job_get(job_id: str):
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        return dict(job) if job else None
 
 
 PORT = 5001
@@ -443,6 +480,249 @@ def _run_screener():
 threading.Thread(target=_run_screener, daemon=True).start()
 
 
+# ── Background analysis runners ───────────────────────────────────────────────
+
+def _run_buffett_job(job_id: str, ticker_symbol: str, mode: str) -> None:
+    """Runs yfinance Buffett analysis in a background thread; writes result to job store."""
+    try:
+        import yfinance as yf
+        import pandas as pd
+
+        _job_update(job_id, progress="Fetching financial data…")
+        stock = yf.Ticker(ticker_symbol)
+
+        if mode == "ttm":
+            income_stmt   = stock.quarterly_financials
+            balance_sheet = stock.quarterly_balance_sheet
+            cash_flow     = stock.quarterly_cashflow
+        else:
+            income_stmt   = stock.financials
+            balance_sheet = stock.balance_sheet
+            cash_flow     = stock.cashflow
+
+        if income_stmt.empty:
+            _job_update(job_id, status="error", error=f"No financial data found for {ticker_symbol}")
+            return
+
+        def get_val(df, keys, col=0):
+            if isinstance(keys, str):
+                keys = [keys]
+            for key in keys:
+                if key in df.index:
+                    try:
+                        if col < df.shape[1]:
+                            v = df.iloc[df.index.get_loc(key), col]
+                            if not pd.isna(v):
+                                return float(v)
+                    except Exception:
+                        pass
+            return 0.0
+
+        def get_flow(df, keys):
+            if mode != "ttm":
+                return get_val(df, keys, 0)
+            if isinstance(keys, str):
+                keys = [keys]
+            for key in keys:
+                if key in df.index:
+                    try:
+                        n = min(4, df.shape[1])
+                        vals = [float(df.iloc[df.index.get_loc(key), i])
+                                for i in range(n)
+                                if not pd.isna(df.iloc[df.index.get_loc(key), i])]
+                        if vals:
+                            return sum(vals)
+                    except Exception:
+                        pass
+            return 0.0
+
+        def prior_col(df):
+            if mode == "ttm":
+                return 4 if df.shape[1] > 4 else (1 if df.shape[1] > 1 else 0)
+            return 1
+
+        _job_update(job_id, progress="Computing Buffett metrics…")
+
+        revenue         = get_flow(income_stmt, ["Total Revenue", "Revenue"])
+        gross_profit    = get_flow(income_stmt, ["Gross Profit", "Net Interest Income"])
+        sga             = get_flow(income_stmt, ["Selling General And Administration", "Operating Expense"])
+        rnd             = get_flow(income_stmt, "Research And Development")
+        depreciation    = get_flow(cash_flow,  ["DepreciationAndAmortization", "Depreciation"])
+        if depreciation == 0:
+            depreciation = get_flow(income_stmt, "Reconciled Depreciation")
+        interest_exp    = get_flow(income_stmt, ["Interest Expense", "Interest Expense Non Operating"])
+        op_income       = get_flow(income_stmt, ["Operating Income", "Operating Profit"])
+        net_income      = get_flow(income_stmt, ["Net Income", "Net Income Common Stockholders"])
+        eps_current     = get_val(income_stmt,   "Basic EPS", 0)
+        eps_prev        = get_val(income_stmt,   "Basic EPS", prior_col(income_stmt))
+        cash            = get_val(balance_sheet, ["Cash And Cash Equivalents", "Cash Financial"])
+        total_debt      = get_val(balance_sheet, ["Total Debt", "Long Term Debt"])
+        equity          = get_val(balance_sheet, ["Stockholders Equity", "Total Equity Gross Minority Interest"])
+        treasury_stock  = get_val(balance_sheet, "Treasury Stock")
+        preferred_stock = get_val(balance_sheet, "Preferred Stock")
+        re_cur          = get_val(balance_sheet, "Retained Earnings", 0)
+        re_1            = get_val(balance_sheet, "Retained Earnings", prior_col(balance_sheet))
+        capex           = abs(get_flow(cash_flow, ["Capital Expenditure", "Capital Expenditures"]))
+
+        is_financial = (gross_profit == 0 and revenue > 0)
+        results = []
+
+        def check(metric, value_str, criteria, passed, note=""):
+            results.append({"Metric": metric, "Value": value_str, "Criteria": criteria,
+                             "Result": "PASS" if passed else "FAIL", "Note": note})
+
+        gm = (gross_profit / revenue) if revenue else 0
+        if is_financial:
+            results.append({"Metric": "Gross Margin", "Value": "N/A", "Criteria": "> 40%",
+                             "Result": "N/A", "Note": "Bank / Insurer"})
+            gp_valid = False
+        else:
+            check("Gross Margin", f"{gm:.1%}", "> 40%", gm > 0.40)
+            gp_valid = gross_profit > 0
+
+        if gp_valid:
+            check("SG&A Margin",         f"{sga/gross_profit:.1%}",         "< 30%", sga/gross_profit < 0.30)
+            check("R&D Margin",          f"{rnd/gross_profit:.1%}",         "< 30%", rnd/gross_profit < 0.30)
+            check("Depreciation Margin", f"{depreciation/gross_profit:.1%}","< 10%", depreciation/gross_profit < 0.10)
+        else:
+            for m in ["SG&A Margin", "R&D Margin", "Depreciation Margin"]:
+                check(m, "Neg/Zero GP", m.split()[0], False)
+
+        if op_income > 0:
+            check("Interest Margin", f"{interest_exp/op_income:.1%}", "< 15%", interest_exp/op_income < 0.15)
+        else:
+            check("Interest Margin", "Neg Op Inc", "< 15%", False, "Op Income negative")
+
+        nm = (net_income / revenue) if revenue else 0
+        check("Net Income Margin", f"{nm:.1%}", "> 20%", nm > 0.20)
+        check("EPS Growth", f"${eps_current:.2f} vs ${eps_prev:.2f}", "Trend Up", eps_current > eps_prev)
+        check("Retained Earnings", "Trending up" if re_cur > re_1 else "Declining", "Growth", re_cur > re_1)
+        check("Cash vs Debt", f"${cash/1e9:.2f}B vs ${total_debt/1e9:.2f}B", "Cash > Debt", cash > total_debt)
+
+        if equity > 0:
+            de = total_debt / equity
+            check("Debt / Equity", f"{de:.2f}", "< 0.80", de < 0.80)
+        else:
+            check("Debt / Equity", "Neg Equity", "< 0.80", False)
+
+        check("Preferred Stock", f"${preferred_stock/1e6:.1f}M" if preferred_stock else "$0", "None", preferred_stock == 0)
+        check("Share Buybacks", f"${treasury_stock/1e6:.1f}M" if treasury_stock else "$0", "Present", treasury_stock != 0)
+
+        if net_income > 0:
+            cm = capex / net_income
+            check("CapEx / Net Income", f"{cm:.1%}", "< 25%", cm < 0.25)
+        else:
+            check("CapEx / Net Income", "Neg Net Inc", "< 25%", False, "Net income negative")
+
+        try:
+            price = float(stock.history(period="1d")["Close"].iloc[-1])
+        except Exception:
+            price = 0.0
+
+        score = sum(1 for r in results if r["Result"] == "PASS")
+
+        period_label = None
+        try:
+            col = income_stmt.columns[0]
+            col_dt = pd.Timestamp(col)
+            yr = col_dt.year
+            mo = col_dt.strftime("%b")
+            day = col_dt.strftime("%d").lstrip("0")
+            if mode == "ttm":
+                qtr = (col_dt.month - 1) // 3 + 1
+                period_label = f"TTM as of Q{qtr} {yr} (ended {mo} {day}, {yr})"
+                n_q = len(income_stmt.columns)
+                quarters_used = min(4, n_q)
+                period_label += f" · {quarters_used}Q summed"
+            else:
+                if col_dt.month == 12:
+                    period_label = f"FY {yr} annual (Dec {day}, {yr})"
+                else:
+                    period_label = f"FY {yr} annual (fiscal year ended {mo} {day}, {yr})"
+                n_years = len(income_stmt.columns)
+                if n_years > 1:
+                    period_label += f" · most recent of {n_years} available"
+        except Exception:
+            period_label = None
+
+        _job_update(job_id, status="done", result={
+            "ok": True, "ticker": ticker_symbol, "price": price,
+            "score": score, "max_score": len(results), "results": results,
+            "period_label": period_label,
+        })
+    except Exception as e:
+        _job_update(job_id, status="error", error=str(e))
+
+
+def _run_cc_ai_job(job_id: str, ticker: str) -> None:
+    """Runs CC AI analysis (Ollama) in a background thread; streams tokens into progress field."""
+    try:
+        if not ollama_client.available():
+            _job_update(job_id, status="error",
+                        error="Ollama not available — make sure ollama is running on the server")
+            return
+
+        from covered_call_rec import analyze, load_holdings, ai_context
+        _job_update(job_id, progress="Loading holdings…")
+        holdings = load_holdings()
+        if ticker not in holdings:
+            _job_update(job_id, status="error", error=f"{ticker} not found in holdings")
+            return
+        h = holdings[ticker]
+
+        cached_ai = _cc_ai_get(ticker)
+        if cached_ai:
+            _job_update(job_id, status="done", result={
+                "ok": True, "ticker": ticker,
+                "insight": cached_ai["insight"], "model": cached_ai["model"], "cached": True,
+            })
+            return
+
+        result = _cc_analyze_get(ticker)
+        if result is None:
+            _job_update(job_id, progress="Fetching option chain…")
+            result = analyze(ticker, h["avg_cost"], h["shares"])
+            if result is not None:
+                _cc_analyze_set(ticker, result)
+        if result is None or result["recs"].empty:
+            _job_update(job_id, status="error", error="No qualifying option contracts found to analyze")
+            return
+
+        prompt = ai_context(ticker, result, h["shares"], h.get("layer", "?"))
+        _job_update(job_id, progress="Sending to AI…")
+
+        full_text = ""
+        for tok in ollama_client.stream_generate(prompt):
+            full_text += tok
+            _job_update(job_id, progress=full_text)
+
+        try:
+            _dec = json.JSONDecoder()
+            _start = full_text.index('{')
+            insight, _ = _dec.raw_decode(full_text, _start)
+        except (ValueError, json.JSONDecodeError):
+            _job_update(job_id, status="error", error="AI returned malformed JSON — try again")
+            return
+
+        def _to_str(v):
+            if isinstance(v, str):   return v
+            if isinstance(v, dict):  return " ".join(str(x) for x in v.values())
+            if isinstance(v, list):  return "; ".join(str(x) for x in v)
+            return str(v)
+
+        for field in ("iv_context", "roll_strategy", "timing_advice"):
+            if field in insight:
+                insight[field] = _to_str(insight[field])
+
+        _cc_ai_set(ticker, insight, ollama_client.DEFAULT_MODEL)
+        _job_update(job_id, status="done", result={
+            "ok": True, "ticker": ticker,
+            "insight": insight, "model": ollama_client.DEFAULT_MODEL,
+        })
+    except Exception as e:
+        _job_update(job_id, status="error", error=str(e))
+
+
 # ── HTTP Handler ──────────────────────────────────────────────────────────────
 class Handler(http.server.SimpleHTTPRequestHandler):
 
@@ -471,6 +751,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._handle_buffett_analysis(parse_qs(parsed.query))
         elif parsed.path == "/api/cc-ai-analysis":
             self._handle_cc_ai_analysis(parse_qs(parsed.query))
+        elif parsed.path.startswith("/api/analysis-job/"):
+            job_id = parsed.path.rstrip("/").split("/")[-1]
+            self._handle_analysis_job_poll(job_id)
         elif parsed.path == "/api/cc-evaluate":
             self._handle_cc_evaluate()
         elif parsed.path == "/api/cc-positions":
@@ -498,6 +781,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._handle_holding_add()
         elif parsed.path == "/api/buffett-scan":
             self._handle_buffett_scan_trigger()
+        elif parsed.path == "/api/analysis-job":
+            self._handle_analysis_job_create()
         elif parsed.path == "/api/refresh-dashboard":
             self._handle_refresh_dashboard()
         else:
@@ -1900,6 +2185,42 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         except Exception as e:
             self._json_error(500, str(e))
+
+    def _handle_analysis_job_create(self):
+        """POST /api/analysis-job  body: {type, ticker, [mode]}"""
+        length = int(self.headers.get("Content-Length", 0))
+        try:
+            body = json.loads(self.rfile.read(length)) if length else {}
+        except json.JSONDecodeError:
+            return self._json_error(400, "Invalid JSON body")
+        kind   = body.get("type", "")
+        ticker = (body.get("ticker") or "").upper().strip()
+        if not ticker:
+            return self._json_error(400, "ticker required")
+        if kind == "buffett":
+            mode   = (body.get("mode") or "annual").lower()
+            job_id = _job_create("buffett")
+            threading.Thread(target=_run_buffett_job, args=(job_id, ticker, mode), daemon=True).start()
+        elif kind == "cc-ai":
+            job_id = _job_create("cc-ai")
+            threading.Thread(target=_run_cc_ai_job, args=(job_id, ticker), daemon=True).start()
+        else:
+            return self._json_error(400, f"Unknown analysis type: {kind!r}")
+        self._json({"ok": True, "job_id": job_id})
+
+    def _handle_analysis_job_poll(self, job_id):
+        """GET /api/analysis-job/<id>"""
+        job = _job_get(job_id)
+        if job is None:
+            return self._json_error(404, "Job not found or expired")
+        self._json({
+            "ok":       True,
+            "status":   job["status"],
+            "kind":     job["kind"],
+            "progress": job["progress"],
+            "result":   job["result"],
+            "error":    job["error"],
+        })
 
     def _handle_buffett_analysis(self, params):
         ticker_symbol = (params.get("ticker", [None])[0] or "").upper().strip()

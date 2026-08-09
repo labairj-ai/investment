@@ -3525,8 +3525,34 @@ async function runDeepAnalysis() {{
   wrap.innerHTML = "";
 
   try {{
-    const res  = await fetch(`/api/buffett-analysis?ticker=${{encodeURIComponent(ticker)}}&mode=${{_deepMode}}`);
-    const data = await res.json();
+    // Start background job — connection drops (phone lock, app switch) won't abort the run
+    const startRes = await fetch("/api/analysis-job", {{
+      method: "POST",
+      headers: {{"Content-Type": "application/json"}},
+      body: JSON.stringify({{type: "buffett", ticker, mode: _deepMode}}),
+    }});
+    const startData = await startRes.json();
+    if (!startData.ok) {{ status.textContent = "Error: " + startData.error; return; }}
+    const jobId = startData.job_id;
+
+    // Poll until done
+    let data = null;
+    while (true) {{
+      await new Promise(r => setTimeout(r, 1500));
+      let poll;
+      try {{
+        const pollRes = await fetch(`/api/analysis-job/${{jobId}}`);
+        poll = await pollRes.json();
+      }} catch (_) {{
+        // network blip — keep trying; the job continues server-side
+        status.textContent = `Reconnecting… (${{ticker}})`;
+        continue;
+      }}
+      if (poll.status === "error") {{ status.textContent = "Error: " + poll.error; return; }}
+      if (poll.progress) status.textContent = poll.progress;
+      if (poll.status === "done") {{ data = poll.result; break; }}
+    }}
+
     if (!data.ok) {{ status.textContent = "Error: " + data.error; return; }}
 
     status.textContent = "";
@@ -4252,37 +4278,46 @@ async function getAIAnalysis() {{
     `padding:0.6rem;border-radius:5px;line-height:1.5"></pre>`;
   const streamEl = document.getElementById("cc-ai-stream");
   try {{
-    const res = await fetch("/api/cc-ai-analysis?ticker=" + ticker);
-    if (!res.ok) {{
-      const err = await res.json().catch(() => ({{error: res.statusText}}));
-      throw new Error(err.error || "AI analysis failed");
+    // Start background job — connection drops won't abort the Ollama run
+    const startRes = await fetch("/api/analysis-job", {{
+      method: "POST",
+      headers: {{"Content-Type": "application/json"}},
+      body: JSON.stringify({{type: "cc-ai", ticker}}),
+    }});
+    if (!startRes.ok) {{
+      const err = await startRes.json().catch(() => ({{error: startRes.statusText}}));
+      throw new Error(err.error || "Failed to start analysis");
     }}
-    const reader  = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buf = "";
+    const startData = await startRes.json();
+    if (!startData.ok) throw new Error(startData.error);
+    const jobId = startData.job_id;
+
+    // Poll — each response includes accumulated Ollama output in `progress`
+    let lastProgress = "";
     while (true) {{
-      const {{ done, value }} = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, {{ stream: true }});
-      const parts = buf.split("\\n\\n");
-      buf = parts.pop();
-      for (const part of parts) {{
-        const evMatch   = part.match(/^event: (\\S+)/m);
-        const dataMatch = part.match(/^data: (.+)/ms);
-        if (!evMatch || !dataMatch) continue;
-        const evName = evMatch[1];
-        const evData = JSON.parse(dataMatch[1]);
-        if (evName === "status") {{
-          streamEl.textContent = evData.message;
-        }} else if (evName === "token") {{
-          if (streamEl.textContent === "Sending to AI…") streamEl.textContent = "";
-          streamEl.textContent += evData.text;
+      await new Promise(r => setTimeout(r, 1000));
+      let poll;
+      try {{
+        const pollRes = await fetch(`/api/analysis-job/${{jobId}}`);
+        poll = await pollRes.json();
+      }} catch (_) {{
+        streamEl.textContent = (lastProgress || "AI is thinking…") + "\n[reconnecting…]";
+        continue;
+      }}
+      if (poll.status === "error") throw new Error(poll.error);
+      if (poll.progress && poll.progress !== lastProgress) {{
+        lastProgress = poll.progress;
+        if (poll.progress === "Sending to AI…") {{
+          streamEl.textContent = poll.progress;
+        }} else {{
+          // Show raw token stream until done event renders the formatted panel
+          streamEl.textContent = poll.progress;
           streamEl.scrollTop = streamEl.scrollHeight;
-        }} else if (evName === "done") {{
-          renderAIInsights(evData);
-        }} else if (evName === "error") {{
-          throw new Error(evData.message);
         }}
+      }}
+      if (poll.status === "done") {{
+        renderAIInsights(poll.result);
+        break;
       }}
     }}
   }} catch(e) {{
