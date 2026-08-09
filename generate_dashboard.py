@@ -4301,7 +4301,7 @@ async function getAIAnalysis() {{
         const pollRes = await fetch(`/api/analysis-job/${{jobId}}`);
         poll = await pollRes.json();
       }} catch (_) {{
-        streamEl.textContent = (lastProgress || "AI is thinking…") + "\n[reconnecting…]";
+        streamEl.textContent = (lastProgress || "AI is thinking…") + "\\n[reconnecting…]";
         continue;
       }}
       if (poll.status === "error") throw new Error(poll.error);
