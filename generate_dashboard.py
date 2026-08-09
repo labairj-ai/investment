@@ -3801,7 +3801,71 @@ function renderCCPositions() {{
   renderClosedAccordion(expiredPos, "Expired Worthless", "cc-exp-",
     "#fffdf5", "#8a6d00", "#ffe082", p => p.expiry);
   html += `</tbody></table></div>`;
+  if (closed.length) {{
+    html = `<canvas id="cc-income-chart" style="max-height:185px;margin-bottom:16px;"></canvas>` + html;
+  }}
   results.innerHTML = html;
+  if (closed.length) {{
+    (function() {{
+      const monthData = {{}};
+      function addToMonth(p, type, raw) {{
+        if (!raw) return;
+        const d = new Date(raw + "T00:00:00");
+        const key = d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0");
+        if (!monthData[key]) monthData[key] = {{expired:0, closed:0}};
+        monthData[key][type] += p.net_premium ?? 0;
+      }}
+      otherClosed.forEach(p => addToMonth(p, "closed", p.closed_date || p.expiry));
+      expiredPos.forEach(p  => addToMonth(p, "expired", p.expiry));
+      const months = Object.keys(monthData).sort();
+      const moNames = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+      const labels = months.map(k => {{
+        const [yr, mo] = k.split("-");
+        return moNames[parseInt(mo)-1] + " '" + yr.slice(2);
+      }});
+      if (window._ccIncomeChart) window._ccIncomeChart.destroy();
+      window._ccIncomeChart = new Chart(document.getElementById("cc-income-chart"), {{
+        type: "bar",
+        data: {{
+          labels,
+          datasets: [
+            {{
+              label: "Expired Worthless",
+              data: months.map(k => monthData[k].expired),
+              backgroundColor: "rgba(255,193,7,0.75)",
+              borderColor: "#f0c000",
+              borderWidth: 1,
+              stack: "income",
+            }},
+            {{
+              label: "Closed / Assigned",
+              data: months.map(k => monthData[k].closed),
+              backgroundColor: "rgba(90,120,190,0.65)",
+              borderColor: "#8aa0d0",
+              borderWidth: 1,
+              stack: "income",
+            }},
+          ],
+        }},
+        options: {{
+          responsive: true,
+          plugins: {{
+            legend: {{position:"bottom", labels:{{font:{{size:11}}}}}},
+            tooltip: {{
+              callbacks: {{
+                label: ctx => ` ${{ctx.dataset.label}}: +$${{ctx.parsed.y.toFixed(2)}}`,
+                footer: items => ` Total: +$${{items.reduce((s,i) => s + i.parsed.y, 0).toFixed(2)}}`,
+              }},
+            }},
+          }},
+          scales: {{
+            x: {{stacked:true, grid:{{display:false}}, ticks:{{font:{{size:11}}}}}},
+            y: {{stacked:true, ticks:{{callback: v => "$" + v, font:{{size:11}}}}, grid:{{color:"#f0f0f0"}}}},
+          }},
+        }},
+      }});
+    }})();
+  }}
 }}
 
 function toggleCCMonth(id) {{
