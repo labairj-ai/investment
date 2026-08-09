@@ -3817,7 +3817,7 @@ function renderCCPositions() {{
       }}
       otherClosed.forEach(p => addToMonth(p, "closed",  p.closed_date || p.expiry, p.net_premium ?? 0));
       expiredPos.forEach(p  => addToMonth(p, "expired", p.expiry,                  p.net_premium ?? 0));
-      open.forEach(p        => addToMonth(p, "pending", p.expiry,                  p.premium_per_contract * p.contracts * 100));
+      open.forEach(p        => addToMonth(p, "pending", p.opened_date,              p.premium_per_contract * p.contracts * 100));
       const months = Object.keys(monthData).sort();
       const moNames = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
       const labels = months.map(k => {{
