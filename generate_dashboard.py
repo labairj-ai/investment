@@ -3801,22 +3801,23 @@ function renderCCPositions() {{
   renderClosedAccordion(expiredPos, "Expired Worthless", "cc-exp-",
     "#fffdf5", "#8a6d00", "#ffe082", p => p.expiry);
   html += `</tbody></table></div>`;
-  if (closed.length) {{
+  if (closed.length || open.length) {{
     html = `<canvas id="cc-income-chart" style="max-height:185px;margin-bottom:16px;"></canvas>` + html;
   }}
   results.innerHTML = html;
-  if (closed.length) {{
+  if (closed.length || open.length) {{
     (function() {{
       const monthData = {{}};
-      function addToMonth(p, type, raw) {{
+      function addToMonth(p, type, raw, amount) {{
         if (!raw) return;
         const d = new Date(raw + "T00:00:00");
         const key = d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0");
-        if (!monthData[key]) monthData[key] = {{expired:0, closed:0}};
-        monthData[key][type] += p.net_premium ?? 0;
+        if (!monthData[key]) monthData[key] = {{expired:0, closed:0, pending:0}};
+        monthData[key][type] += amount;
       }}
-      otherClosed.forEach(p => addToMonth(p, "closed", p.closed_date || p.expiry));
-      expiredPos.forEach(p  => addToMonth(p, "expired", p.expiry));
+      otherClosed.forEach(p => addToMonth(p, "closed",  p.closed_date || p.expiry, p.net_premium ?? 0));
+      expiredPos.forEach(p  => addToMonth(p, "expired", p.expiry,                  p.net_premium ?? 0));
+      open.forEach(p        => addToMonth(p, "pending", p.expiry,                  p.premium_per_contract * p.contracts * 100));
       const months = Object.keys(monthData).sort();
       const moNames = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
       const labels = months.map(k => {{
@@ -3845,6 +3846,14 @@ function renderCCPositions() {{
               borderWidth: 1,
               stack: "income",
             }},
+            {{
+              label: "Pending (Open)",
+              data: months.map(k => monthData[k].pending),
+              backgroundColor: "rgba(120,140,180,0.18)",
+              borderColor: "rgba(90,120,190,0.6)",
+              borderWidth: 2,
+              stack: "income",
+            }},
           ],
         }},
         options: {{
@@ -3853,8 +3862,16 @@ function renderCCPositions() {{
             legend: {{position:"bottom", labels:{{font:{{size:11}}}}}},
             tooltip: {{
               callbacks: {{
-                label: ctx => ` ${{ctx.dataset.label}}: +$${{ctx.parsed.y.toFixed(2)}}`,
-                footer: items => ` Total: +$${{items.reduce((s,i) => s + i.parsed.y, 0).toFixed(2)}}`,
+                label: ctx => {{
+                  const v = ctx.parsed.y;
+                  if (!v) return null;
+                  const prefix = ctx.dataset.label === "Pending (Open)" ? " (gross) " : " ";
+                  return prefix + ctx.dataset.label + ": +$" + v.toFixed(2);
+                }},
+                footer: items => {{
+                  const tot = items.reduce((s,i) => s + i.parsed.y, 0);
+                  return tot ? ` Total: +$${{tot.toFixed(2)}}` : null;
+                }},
               }},
             }},
           }},
