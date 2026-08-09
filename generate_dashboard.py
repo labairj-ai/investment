@@ -3675,7 +3675,7 @@ function renderCCPositions() {{
     return `<span style="color:${{c}};font-weight:600;font-size:11px;">${{d}}d</span>`;
   }}
 
-  const makeRow = p => {{
+  const makeRow = (p, ccMonthId, ccHidden) => {{
     const gross    = p.premium_per_contract * p.contracts * 100;
     const isOpen   = p.status === "open";
     const net      = p.net_premium;
@@ -3711,7 +3711,9 @@ function renderCCPositions() {{
          </td>`
       : `<td style="padding:7px 10px;font-size:11px;color:#aaa;">${{p.closed_date || ""}}</td>`;
 
-    return `<tr style="border-bottom:1px solid #f2f4f7;">
+    const _trExtra = ccMonthId ? ` data-ccmonth="${{ccMonthId}}"` : "";
+    const _hiddenStyle = ccHidden ? "display:none;" : "";
+    return `<tr${{_trExtra}} style="${{_hiddenStyle}}border-bottom:1px solid #f2f4f7;">
       <td style="padding:7px 10px;font-weight:700;white-space:nowrap;">
         ${{p.ticker}}<button onclick="openCCEditModal(${{p.id}})"
           style="font-size:9px;padding:2px 5px;background:none;color:#bbb;border:1px solid #e0e0e0;border-radius:3px;cursor:pointer;margin-left:5px;vertical-align:middle;"
@@ -3759,14 +3761,52 @@ function renderCCPositions() {{
   let html = summaryHtml + `<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:13px;">${{thead}}<tbody>`;
   if (open.length) {{
     html += `<tr><td colspan="${{COLS}}" style="padding:5px 10px;font-size:11px;font-weight:700;color:#1a2340;background:#f0f7ff;">Open Positions</td></tr>`;
-    html += open.map(makeRow).join("");
+    html += open.map(p => makeRow(p)).join("");
   }}
-  if (closed.length) {{
-    html += `<tr><td colspan="${{COLS}}" style="padding:5px 10px;font-size:11px;font-weight:700;color:#888;background:#f9f9f9;">Closed / Expired / Assigned</td></tr>`;
-    html += closed.map(makeRow).join("");
+  const expiredPos    = closed.filter(p => p.status === "expired");
+  const otherClosed   = closed.filter(p => p.status !== "expired");
+
+  if (otherClosed.length) {{
+    html += `<tr><td colspan="${{COLS}}" style="padding:5px 10px;font-size:11px;font-weight:700;color:#888;background:#f9f9f9;">Closed / Assigned</td></tr>`;
+    html += otherClosed.map(p => makeRow(p)).join("");
+  }}
+
+  if (expiredPos.length) {{
+    const byMonth = {{}};
+    expiredPos.forEach(p => {{
+      const d = new Date(p.expiry + "T00:00:00");
+      const key = d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0");
+      if (!byMonth[key]) byMonth[key] = [];
+      byMonth[key].push(p);
+    }});
+    const months = Object.keys(byMonth).sort().reverse();
+    html += `<tr><td colspan="${{COLS}}" style="padding:5px 10px;font-size:11px;font-weight:700;color:#888;background:#f9f9f9;">Expired Worthless</td></tr>`;
+    months.forEach(key => {{
+      const [yr, mo] = key.split("-");
+      const label = new Date(parseInt(yr), parseInt(mo)-1, 1).toLocaleDateString("en-US", {{month:"long",year:"numeric"}});
+      const mp   = byMonth[key];
+      const mNet = mp.reduce((s,p) => s + (p.net_premium ?? 0), 0);
+      const rid  = "cc-exp-" + key;
+      html += `<tr style="cursor:pointer;background:#fffdf5;border-bottom:1px solid #ffe082;" onclick="toggleCCMonth('${{rid}}')">
+        <td colspan="${{COLS}}" style="padding:7px 12px;font-size:12px;font-weight:700;color:#8a6d00;">
+          <span id="${{rid}}-arrow" style="display:inline-block;margin-right:6px;transition:transform 0.15s;">▶</span>
+          ${{label}}
+          <span style="font-weight:400;color:#b89000;margin-left:10px;font-size:11px;">${{mp.length}} position${{mp.length>1?"s":""}} · +$${{mNet.toFixed(2)}} net</span>
+        </td>
+      </tr>`;
+      html += mp.map(p => makeRow(p, rid, true)).join("");
+    }});
   }}
   html += `</tbody></table></div>`;
   results.innerHTML = html;
+}}
+
+function toggleCCMonth(id) {{
+  const rows  = document.querySelectorAll(`[data-ccmonth="${{id}}"]`);
+  const arrow = document.getElementById(id + "-arrow");
+  const isHidden = rows.length && rows[0].style.display === "none";
+  rows.forEach(r => r.style.display = isHidden ? "" : "none");
+  if (arrow) arrow.style.transform = isHidden ? "rotate(90deg)" : "";
 }}
 
 async function importCCFromCSV() {{
