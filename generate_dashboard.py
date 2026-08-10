@@ -917,14 +917,6 @@ def build_dashboard(portfolio, layers, holdings):
     </div>
   </div>
 
-  <!-- Discipline anchor -->
-  <div class="anchor-bar">
-    <div class="anchor-dot"></div>
-    <span>Discipline anchor: today's portfolio behavior was <b style="color:{anchor_color}">{anchor}</b> with no judgment violations requiring action.</span>
-  </div>
-
-  {flags_html}
-
   <!-- Investment Goals & Strategy -->
   <div class="card" id="goals-card">
     <h2 style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
