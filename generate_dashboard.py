@@ -4577,7 +4577,7 @@ function renderCC(d) {{
   const bestRecs       = tightRecs.filter(r => r.passes_floor !== false);
   const bestCount      = bestRecs.length;
   const autoMode       = bestCount > 0 ? 'best' : (!hasRecs && tightCount > 0) ? 'tight' : 'all';
-  const autoOpenFail   = !hasRecs && tightCount === 0 && floorFailCount > 0;
+  const autoOpenFail   = false;
 
   if (!hasRecs && tightCount === 0 && floorFailCount === 0) {{
     return meta + noteHtml + `<p style="color:#888;font-size:13px;">No qualifying contracts found.</p>`;
