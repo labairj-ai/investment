@@ -444,6 +444,8 @@ def build_dashboard(portfolio, layers, holdings):
     .kpi .label {{ font-size: .78rem; color: #7f8c8d; text-transform: uppercase; letter-spacing: .04em; }}
     .kpi .value {{ font-size: 1.5rem; font-weight: 700; margin-top: 4px; }}
     .kpi .sub {{ font-size: .82rem; margin-top: 2px; }}
+    .kpi-link {{ cursor: pointer; transition: box-shadow .15s, transform .15s; }}
+    .kpi-link:hover {{ box-shadow: 0 4px 12px rgba(0,0,0,.13); transform: translateY(-1px); }}
 
     .pos {{ color: #27ae60; }}
     .neg {{ color: #e74c3c; }}
@@ -895,22 +897,22 @@ def build_dashboard(portfolio, layers, holdings):
       <div class="label">SPY Change</div>
       <div class="value {spy_class}">{pct(spy_chg)}</div>
     </div>
-    <div class="kpi">
+    <div class="kpi kpi-link" onclick="document.getElementById('holdings-table').scrollIntoView({{behavior:'smooth',block:'start'}})">
       <div class="label">Total Gain vs Cost</div>
       <div class="value {gain_class_main}">{money(total_gain_dollars)}</div>
       <div class="sub {gain_class_main}">{pct(total_gain_pct)}</div>
     </div>
-    <div class="kpi">
+    <div class="kpi kpi-link" onclick="document.getElementById('div-card').scrollIntoView({{behavior:'smooth',block:'start'}})">
       <div class="label">Est. Annual Dividends (After-Tax)</div>
       <div class="value" id="kpi-div-value" style="color:#27ae60;">—</div>
       <div class="sub" id="kpi-div-yield" style="color:#aaa;"></div>
     </div>
-    <div class="kpi">
+    <div class="kpi kpi-link" onclick="document.getElementById('cc-tracker-card').scrollIntoView({{behavior:'smooth',block:'start'}})">
       <div class="label">CC Income (YTD)</div>
       <div class="value" style="color:{'#27ae60' if cc_ytd > 0 else '#aaa'};">{money(cc_ytd) if cc_ytd else "—"}</div>
       <div class="sub" style="color:#aaa;">{f"Lifetime: {money(cc_lifetime)} · {cc_trade_count} trades" if cc_lifetime else "No closed positions yet"}</div>
     </div>
-    <div class="kpi">
+    <div class="kpi kpi-link" onclick="document.getElementById('realized-gains-card').scrollIntoView({{behavior:'smooth',block:'start'}})">
       <div class="label" id="kpi-tax-label">Est. Tax Bill</div>
       <div class="value" id="kpi-tax-value" style="color:#c0392b;">—</div>
       <div class="sub" id="kpi-tax-sub" style="color:#aaa;font-size:11px;"></div>
