@@ -714,6 +714,16 @@ def _run_cc_ai_job(job_id: str, ticker: str) -> None:
             if field in insight:
                 insight[field] = _to_str(insight[field])
 
+        # Overwrite strike/expiration from actual contract data — the model
+        # often leaves the placeholder value (0.00) in the recommendation object.
+        _rec = insight.get("recommendation", {})
+        _rank = max(0, int(_rec.get("rank", 1)) - 1)
+        if _rank < len(result["recs"]):
+            _row = result["recs"].iloc[_rank]
+            _rec["strike"]     = float(_row["strike"])
+            _rec["expiration"] = str(_row["expiration"])
+            insight["recommendation"] = _rec
+
         _cc_ai_set(ticker, insight, ollama_client.DEFAULT_MODEL)
         _job_update(job_id, status="done", result={
             "ok": True, "ticker": ticker,
@@ -1707,6 +1717,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             for field in ("iv_context", "roll_strategy", "timing_advice"):
                 if field in insight:
                     insight[field] = _to_str(insight[field])
+
+            # Overwrite strike/expiration from actual contract data — the model
+            # often leaves the placeholder value (0.00) in the recommendation object.
+            _rec = insight.get("recommendation", {})
+            _rank = max(0, int(_rec.get("rank", 1)) - 1)
+            if _rank < len(result["recs"]):
+                _row = result["recs"].iloc[_rank]
+                _rec["strike"]     = float(_row["strike"])
+                _rec["expiration"] = str(_row["expiration"])
+                insight["recommendation"] = _rec
+
             _cc_ai_set(ticker, insight, ollama_client.DEFAULT_MODEL)
             _sse("done", {"ok": True, "ticker": ticker, "insight": insight,
                           "model": ollama_client.DEFAULT_MODEL})
