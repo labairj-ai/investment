@@ -276,6 +276,7 @@ Two-column layout: wide left panel for goals, right column for barbell health + 
 ### Header
 - **📖 Glossary** (top right) — opens `/glossary` in a new tab; plain-English definitions for every term and metric in the UI, with formulas where relevant. V2 metrics (CC Alpha, Regret %, Score, IV Richness, μ, Exec Premium) are highlighted with a purple NEW badge.
 - **↻ Refresh Data button** (top right) — fetches live prices from Yahoo Finance, writes today's portfolio snapshot to the DB, then regenerates `dashboard.html`. No email is sent. Takes 30–60 seconds while prices are fetched; the button shows "Refreshing…" and reloads the page automatically on completion.
+- **↺ Force Refresh** (covered call analyzer) — appears after the first successful recommendation load. Bypasses the 5-minute server-side cache and re-fetches the full option chain immediately. Useful at market open when cached pre-market quotes (theoretical/ask-proxy) need to be replaced with live bids.
 - **Tax Bracket dropdown** (top right) — toggles between $150k / $300k / $500k / $750k / $1M+ MFJ income scenarios; updates the after-tax dividend KPI, dividend table tax/net columns, Goals card net income, and the after-tax chart line in real time. Affected elements flash briefly yellow so you can see what changed.
 
 ### KPI Cards (top row)
