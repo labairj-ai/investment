@@ -1255,6 +1255,9 @@ def build_dashboard(portfolio, layers, holdings):
         style="padding:8px 18px;background:#1a2340;color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;">
         Get Recommendations
       </button>
+      <button id="cc-refresh-btn" onclick="analyzeCoveredCall(true)" style="display:none;padding:6px 12px;background:#fff;color:#555;border:1px solid #dde;border-radius:6px;font-size:12px;cursor:pointer;">
+        ↺ Force Refresh
+      </button>
       <button id="cc-ai-btn" onclick="getAIAnalysis()" disabled
         style="padding:8px 18px;background:#b0a8e0;color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:not-allowed;opacity:0.6;">
         🤖 AI Analysis
@@ -4430,32 +4433,37 @@ function toggleCCFloorFail() {{
   if (ch) ch.textContent = hidden ? '▼' : '▶';
 }}
 
-async function analyzeCoveredCall() {{
+async function analyzeCoveredCall(force = false) {{
   const ticker = document.getElementById("cc-ticker").value;
   if (!ticker) return;
-  const status  = document.getElementById("cc-status");
-  const results = document.getElementById("cc-results");
-  const btn     = document.getElementById("cc-btn");
+  const status     = document.getElementById("cc-status");
+  const results    = document.getElementById("cc-results");
+  const btn        = document.getElementById("cc-btn");
+  const refreshBtn = document.getElementById("cc-refresh-btn");
 
-  btn.disabled  = true;
+  btn.disabled = true;
   btn.textContent = "Fetching…";
+  if (refreshBtn) {{ refreshBtn.disabled = true; refreshBtn.textContent = "Refreshing…"; }}
   status.textContent = "";
   results.innerHTML  = "";
 
   try {{
-    const res  = await fetch(`/api/covered-calls?ticker=${{ticker}}`);
+    const url  = `/api/covered-calls?ticker=${{ticker}}${{force ? '&force=1' : ''}}`;
+    const res  = await fetch(url);
     const data = await res.json();
 
     if (!data.ok) {{
       status.textContent = "⚠ " + (data.error || "No results.");
     }} else {{
       results.innerHTML = renderCC(data);
+      if (refreshBtn) refreshBtn.style.display = "";
     }}
   }} catch(e) {{
     status.textContent = "Error: " + e.message;
   }} finally {{
     btn.disabled = false;
     btn.textContent = "Get Recommendations";
+    if (refreshBtn) {{ refreshBtn.disabled = false; refreshBtn.textContent = "↺ Force Refresh"; }}
   }}
 }}
 

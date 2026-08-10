@@ -1469,7 +1469,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if ticker not in holdings:
                 return self._json_error(404, f"{ticker} not found in holdings")
 
-            h      = holdings[ticker]
+            h     = holdings[ticker]
+            force = params.get("force", ["0"])[0] == "1"
+            if force:
+                with _cc_analyze_lock:
+                    _cc_analyze_cache.pop(ticker, None)
             result = _cc_analyze_get(ticker)
             if result is None:
                 result = analyze(ticker, h["avg_cost"], h["shares"])
