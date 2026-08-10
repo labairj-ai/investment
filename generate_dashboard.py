@@ -385,6 +385,33 @@ def build_dashboard(portfolio, layers, holdings):
     total_gain_pct     = (total_gain_dollars / total_cost_basis * 100.0) if total_cost_basis else 0.0
     gain_class_main    = "pos" if total_gain_dollars >= 0 else "neg"
 
+    # ---- CC income KPI ----
+    cc_ytd = 0.0
+    cc_lifetime = 0.0
+    cc_trade_count = 0
+    try:
+        _cc_conn = sqlite3.connect(str(DB_PATH), timeout=5)
+        _cc_conn.row_factory = sqlite3.Row
+        _cur_year = today_date[:4] if today_date else str(datetime.now(TZ).year)
+        _ytd = _cc_conn.execute(
+            """SELECT sum(net_premium) as t FROM cc_positions
+               WHERE status IN ('closed','expired','assigned')
+                 AND net_premium IS NOT NULL
+                 AND COALESCE(closed_date, expiry) LIKE ?""",
+            (f"{_cur_year}%",)
+        ).fetchone()
+        _life = _cc_conn.execute(
+            """SELECT sum(net_premium) as t, count(*) as n FROM cc_positions
+               WHERE status IN ('closed','expired','assigned')
+                 AND net_premium IS NOT NULL"""
+        ).fetchone()
+        _cc_conn.close()
+        cc_ytd        = float(_ytd["t"]  or 0)
+        cc_lifetime   = float(_life["t"] or 0)
+        cc_trade_count = int(_life["n"]  or 0)
+    except Exception:
+        pass
+
     generated_at = datetime.now(TZ).strftime("%A, %B %d, %Y at %I:%M %p ET")
     chg_class_main = "pos" if total_chg >= 0 else "neg"
     spy_class = "pos" if spy_chg >= 0 else "neg"
@@ -407,7 +434,7 @@ def build_dashboard(portfolio, layers, holdings):
     header .subtitle {{ font-size: .85rem; color: #a0aec0; margin-top: 2px; }}
 
     .grid {{ display: grid; gap: 18px; padding: 20px 28px; }}
-    .kpi-row {{ display: grid; grid-template-columns: repeat(6, 1fr); gap: 14px; }}
+    .kpi-row {{ display: grid; grid-template-columns: repeat(7, 1fr); gap: 14px; }}
     .two-col {{ display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }}
     .three-col {{ display: grid; grid-template-columns: 2fr 1fr; gap: 18px; }}
     .goals-grid {{ display: grid; grid-template-columns: 1.65fr 1fr; gap: 16px; align-items: start; }}
@@ -877,6 +904,11 @@ def build_dashboard(portfolio, layers, holdings):
       <div class="label">Est. Annual Dividends (After-Tax)</div>
       <div class="value" id="kpi-div-value" style="color:#27ae60;">—</div>
       <div class="sub" id="kpi-div-yield" style="color:#aaa;"></div>
+    </div>
+    <div class="kpi">
+      <div class="label">CC Income (YTD)</div>
+      <div class="value" style="color:{'#27ae60' if cc_ytd > 0 else '#aaa'};">{money(cc_ytd) if cc_ytd else "—"}</div>
+      <div class="sub" style="color:#aaa;">{f"Lifetime: {money(cc_lifetime)} · {cc_trade_count} trades" if cc_lifetime else "No closed positions yet"}</div>
     </div>
     <div class="kpi">
       <div class="label" id="kpi-tax-label">Est. Tax Bill</div>
