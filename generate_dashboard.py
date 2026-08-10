@@ -4550,6 +4550,34 @@ function renderCC(d) {{
     hvHtml = `<span>HV Pct <b style="color:${{hvColor}}">${{d.hv_rank.toFixed(0)}}%</b> <span style="color:#aaa;font-size:11px;">${{hvLabel}}${{ivRichHtml}}${{muHtml}}</span></span>`;
   }}
 
+  let ivContextHtml = "";
+  if (d.hv_rank != null || (d.atm_iv != null && d.hv_forecast)) {{
+    const ivRich = (d.atm_iv != null && d.hv_forecast)
+      ? (d.atm_iv / 100 / d.hv_forecast - 1) * 100 : null;
+    const sellSignal = (d.hv_rank != null && d.hv_rank >= 60) || (ivRich != null && ivRich > 10);
+    const thinSignal = (d.hv_rank == null || d.hv_rank < 35) && (ivRich == null || ivRich < -5);
+    let sigLabel, sigDetail, sigColor, sigBg;
+    if (sellSignal) {{
+      sigLabel = "Sell environment"; sigBg = "#d4edda"; sigColor = "#155724";
+      sigDetail = "IV elevated vs historical vol — premiums above average";
+    }} else if (thinSignal) {{
+      sigLabel = "Thin premiums"; sigBg = "#f8d7da"; sigColor = "#721c24";
+      sigDetail = "IV compressed below historical vol — consider waiting";
+    }} else {{
+      sigLabel = "Fair environment"; sigBg = "#fff3cd"; sigColor = "#856404";
+      sigDetail = "IV near historical vol — reasonable premiums";
+    }}
+    ivContextHtml = `<div style="font-size:12px;background:${{sigBg}};color:${{sigColor}};border-radius:5px;padding:5px 10px;margin-bottom:8px;"><b>${{sigLabel}}</b> <span style="font-weight:400;">${{sigDetail}}</span></div>`;
+  }}
+
+  let histHtml = "";
+  if (d.cc_history && d.cc_history.count > 0) {{
+    const h = d.cc_history;
+    const netColor = h.total_net >= 0 ? "#155724" : "#721c24";
+    const assignedStr = h.assigned_count > 0 ? ` · ${{h.assigned_count}} assigned` : "";
+    histHtml = `<div style="font-size:12px;color:#555;background:#f4f6f9;border-radius:5px;padding:5px 10px;margin-bottom:8px;">📋 Past ${{h.count}} CC${{h.count > 1 ? "s" : ""}} on ${{d.ticker}}: <b style="color:${{netColor}}">${{h.total_net >= 0 ? "+" : "-"}}$${{Math.abs(h.total_net).toFixed(2)}} net</b>${{assignedStr}}</div>`;
+  }}
+
   const openStrikesSet = new Set((d.open_calls || []).map(oc => oc.strike + "|" + oc.expiry));
 
   const meta = `
@@ -4686,7 +4714,7 @@ function renderCC(d) {{
       </td>
     </tr>` : '';
 
-  return meta + filterBar + `
+  return meta + ivContextHtml + histHtml + filterBar + `
     <div style="overflow-x:auto;">
     <table style="width:100%;border-collapse:collapse;font-size:13px;">
       <thead><tr style="background:#f4f6f9;">

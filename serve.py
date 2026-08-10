@@ -1482,6 +1482,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
             # Open covered call positions on this ticker (to flag in the UI)
             open_calls = []
+            cc_history = None
             try:
                 db = PROJECT_DIR / "out" / "investment.db"
                 conn = sqlite3.connect(str(db), timeout=5)
@@ -1491,6 +1492,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     (ticker,)
                 ).fetchall()
                 open_calls = [{"strike": r["strike"], "expiry": r["expiry"]} for r in rows]
+                hist = conn.execute(
+                    """SELECT count(*) as cnt,
+                              sum(net_premium) as total_net,
+                              sum(case when close_type='assigned' then 1 else 0 end) as assigned_cnt
+                       FROM cc_positions
+                       WHERE ticker=? AND status IN ('closed','expired','assigned')
+                         AND net_premium IS NOT NULL""",
+                    (ticker,)
+                ).fetchone()
+                if hist and hist["cnt"] > 0:
+                    cc_history = {
+                        "count":          hist["cnt"],
+                        "total_net":      round(hist["total_net"] or 0, 2),
+                        "assigned_count": hist["assigned_cnt"] or 0,
+                    }
                 conn.close()
             except Exception:
                 pass
@@ -1560,6 +1576,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 "floor_fail_recs":   floor_fail_recs,
                 "tight_recs":        tight_recs,
                 "open_calls":        open_calls,
+                "cc_history":        cc_history,
                 "data_mode":         result.get("data_mode", "live"),
                 "dte_extended":      result.get("dte_extended", False),
                 "note":              result.get("note"),
