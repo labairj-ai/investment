@@ -5,13 +5,13 @@ OLLAMA_URL = "http://127.0.0.1:11434"
 DEFAULT_MODEL = "qwen2.5:7b"
 
 
-def generate(prompt, model=DEFAULT_MODEL, temperature=0.3):
+def generate(prompt, model=DEFAULT_MODEL, temperature=0.3, num_predict=700):
     payload = json.dumps({
         "model": model,
         "prompt": prompt,
         "stream": False,
         "format": "json",
-        "options": {"temperature": temperature, "num_predict": 700},
+        "options": {"temperature": temperature, "num_predict": num_predict},
     }).encode()
     req = urllib.request.Request(
         f"{OLLAMA_URL}/api/generate",
@@ -22,14 +22,14 @@ def generate(prompt, model=DEFAULT_MODEL, temperature=0.3):
         return json.loads(r.read())["response"].strip()
 
 
-def stream_generate(prompt, model=DEFAULT_MODEL, temperature=0.3):
+def stream_generate(prompt, model=DEFAULT_MODEL, temperature=0.3, num_predict=700):
     """Yield text tokens one at a time as they arrive from Ollama."""
     payload = json.dumps({
         "model": model,
         "prompt": prompt,
         "stream": True,
         "format": "json",
-        "options": {"temperature": temperature, "num_predict": 700},
+        "options": {"temperature": temperature, "num_predict": num_predict},
     }).encode()
     req = urllib.request.Request(
         f"{OLLAMA_URL}/api/generate",

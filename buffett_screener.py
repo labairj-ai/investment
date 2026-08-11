@@ -108,6 +108,9 @@ def _init_db(conn):
         ("buffett_cache",   "value_trap_flags", "TEXT"),
         ("buffett_winners", "exchange",         "TEXT"),
         ("buffett_cache",   "exchange",         "TEXT"),
+        ("buffett_winners", "quality_score",    "INTEGER"),
+        ("buffett_winners", "ai_analysis",      "TEXT"),
+        ("buffett_winners", "ai_analysis_at",   "TEXT"),
     ]
     for table, col, coltype in migrations:
         try:
@@ -439,6 +442,75 @@ def _assign_layer(r):
     return 3, "Quality compounder — long-duration growth"
 
 
+def _score_winner(r) -> int:
+    """Composite 0-100 quality + valuation score for ranking Buffett winners."""
+    score = 0
+    gm   = r.get("gross_margin") or 0
+    nim  = r.get("net_income_margin") or 0
+    pfcf = r.get("p_fcf")
+    pe   = r.get("pe_ratio")
+    ev   = r.get("ev_ebitda")
+    trap = r.get("value_trap_risk") or "low"
+    intr = r.get("interest_margin") or 0
+    capx = r.get("capex_margin") or 0
+    div  = r.get("dividend_yield") or 0
+
+    # Gross margin (moat width)
+    if   gm >= 65: score += 10
+    elif gm >= 55: score += 8
+    elif gm >= 45: score += 5
+    else:          score += 3
+
+    # Net income margin (earnings power)
+    if   nim >= 35: score += 10
+    elif nim >= 25: score += 8
+    else:           score += 5  # always >=20 by screener rule
+
+    # P/FCF attractiveness
+    if   pfcf is None:   score += 3
+    elif pfcf <= 15:     score += 10
+    elif pfcf <= 25:     score += 7
+    elif pfcf <= 35:     score += 4
+    else:                score += 1
+
+    # P/E reasonableness
+    if   pe is None: score += 4
+    elif pe <= 18:   score += 10
+    elif pe <= 25:   score += 7
+    elif pe <= 35:   score += 4
+    else:            score += 1
+
+    # EV/EBITDA
+    if   ev is None: score += 3
+    elif ev <= 12:   score += 8
+    elif ev <= 18:   score += 5
+    else:            score += 2
+
+    # Value trap safety
+    if   trap == "low":    score += 12
+    elif trap == "medium": score += 6
+    # high = 0
+
+    # Interest margin (debt safety — always <=15 by screener)
+    if   intr <= 5:  score += 10
+    elif intr <= 10: score += 7
+    else:            score += 4
+
+    # CapEx efficiency (always <=50 by screener)
+    if   capx <= 20: score += 10
+    elif capx <= 35: score += 6
+    else:            score += 3
+
+    # Dividend bonus
+    if   div >= 0.03:  score += 5
+    elif div >= 0.015: score += 3
+
+    # Cash > debt always true (screener requirement)
+    score += 5
+
+    return min(score, 100)
+
+
 def _send_new_winners_email(new_tickers: list[dict]) -> None:
     """Email a digest of newly qualifying Buffett winners."""
     from dotenv import load_dotenv
@@ -529,9 +601,22 @@ def _flush(conn, results, now_str, scanned_so_far, total_tickers, complete,
         if new_winners:
             _send_new_winners_email(new_winners)
 
+    # Preserve AI analysis across scans (DELETE+INSERT would wipe it otherwise)
+    saved_ai = {}
+    try:
+        for row in conn.execute(
+            "SELECT ticker, ai_analysis, ai_analysis_at FROM buffett_winners "
+            "WHERE ai_analysis IS NOT NULL"
+        ):
+            saved_ai[row[0]] = (row[1], row[2])
+    except Exception:
+        pass
+
     conn.execute("DELETE FROM buffett_winners")
     for w in winners:
         layer_rec, layer_reason = _assign_layer(w)
+        quality_score = _score_winner(w)
+        ai_analysis, ai_analysis_at = saved_ai.get(w["ticker"], (None, None))
         conn.execute("""
             INSERT OR REPLACE INTO buffett_winners
             (ticker, company, price, last_quarter_date,
@@ -541,7 +626,8 @@ def _flush(conn, results, now_str, scanned_so_far, total_tickers, complete,
              sector, industry, dividend_yield, market_cap,
              layer_rec, layer_reason,
              value_trap_risk, value_trap_flags,
-             exchange, scanned_at)
+             exchange, quality_score, ai_analysis, ai_analysis_at,
+             scanned_at)
             VALUES (:ticker, :company, :price, :last_quarter_date,
                     :gross_margin, :sga_margin, :net_income_margin,
                     :interest_margin, :capex_margin, :cash_gt_debt,
@@ -549,9 +635,12 @@ def _flush(conn, results, now_str, scanned_so_far, total_tickers, complete,
                     :sector, :industry, :dividend_yield, :market_cap,
                     :layer_rec, :layer_reason,
                     :value_trap_risk, :value_trap_flags,
-                    :exchange, :scanned_at)
+                    :exchange, :quality_score, :ai_analysis, :ai_analysis_at,
+                    :scanned_at)
         """, {**w, "scanned_at": w.get("scanned_at", now_str),
-              "layer_rec": layer_rec, "layer_reason": layer_reason})
+              "layer_rec": layer_rec, "layer_reason": layer_reason,
+              "quality_score": quality_score,
+              "ai_analysis": ai_analysis, "ai_analysis_at": ai_analysis_at})
 
     if complete:
         conn.execute(

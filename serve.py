@@ -733,6 +733,178 @@ def _run_cc_ai_job(job_id: str, ticker: str) -> None:
         _job_update(job_id, status="error", error=str(e))
 
 
+def _run_buffett_ai_job(job_id: str, ticker: str) -> None:
+    """Generate an AI investment thesis for a Buffett screener winner via Ollama."""
+    try:
+        if not ollama_client.available():
+            _job_update(job_id, status="error",
+                        error="Ollama not available — make sure ollama is running on the server")
+            return
+
+        db = PROJECT_DIR / "out" / "buffett.db"
+        conn = sqlite3.connect(str(db), timeout=10)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT * FROM buffett_winners WHERE ticker = ?", (ticker,)
+        ).fetchone()
+        if row is None:
+            conn.close()
+            _job_update(job_id, status="error",
+                        error=f"{ticker} not found in Buffett winners — run the screener first")
+            return
+        w = dict(row)
+        conn.close()
+
+        import json as _json
+        div_pct = f"{w['dividend_yield']*100:.1f}%" if w.get("dividend_yield") else "None"
+        mcap = w.get("market_cap") or 0
+        mcap_fmt = f"${mcap/1e9:.1f}B" if mcap >= 1e9 else (f"${mcap/1e6:.0f}M" if mcap else "N/A")
+        trap_flags = []
+        try:
+            trap_flags = _json.loads(w.get("value_trap_flags") or "[]")
+        except Exception:
+            pass
+        trap_flags_text = "; ".join(trap_flags) if trap_flags else "none"
+
+        prompt = f"""You are a stock analyst. Analyze this Buffett screener winner. Return ONLY valid JSON, no other text.
+
+{w.get('company', ticker)} ({ticker}) — {w.get('sector', '?')} / {w.get('industry', '?')}
+Price: ${w.get('price', 0):.2f} | Market Cap: {mcap_fmt} | Exchange: {w.get('exchange', '?')}
+Layer assignment: {w.get('layer_rec', '?')} — {w.get('layer_reason', '?')}
+Value Trap Risk: {w.get('value_trap_risk', 'unknown')}
+Trap flags: {trap_flags_text}
+
+Quality Metrics (passed Buffett screen):
+  Gross Margin: {w.get('gross_margin', 0):.1f}%  | Net Income Margin: {w.get('net_income_margin', 0):.1f}%
+  Interest/OpIncome: {w.get('interest_margin', 0):.1f}% | CapEx/NetIncome: {w.get('capex_margin', 0):.1f}%
+  Quality Score: {w.get('quality_score', 'N/A')}/100
+
+Valuation:
+  P/E: {w.get('pe_ratio') or 'N/A'}x | P/FCF: {w.get('p_fcf') or 'N/A'}x | EV/EBITDA: {w.get('ev_ebitda') or 'N/A'}x
+  Dividend Yield: {div_pct}
+
+Return this JSON structure:
+{{
+  "thesis": "<2-sentence investment case for buying this stock now>",
+  "moat_strength": "<strong|moderate|weakening>",
+  "moat_note": "<one sentence on competitive advantage>",
+  "valuation": "<cheap|fair|stretched>",
+  "valuation_note": "<one sentence on P/E and FCF vs quality>",
+  "top_risk": "<single most important risk to the thesis>",
+  "conviction": <integer 1 to 5>,
+  "layer_fit": "<one sentence on why this fits or does not fit layer {w.get('layer_rec', '?')}>"
+}}"""
+
+        _job_update(job_id, progress="Sending to AI…")
+        full_text = ""
+        for tok in ollama_client.stream_generate(prompt, num_predict=700):
+            full_text += tok
+            _job_update(job_id, progress=full_text[:200])
+
+        try:
+            dec = json.JSONDecoder()
+            start = full_text.index("{")
+            analysis, _ = dec.raw_decode(full_text, start)
+        except (ValueError, json.JSONDecodeError):
+            _job_update(job_id, status="error",
+                        error="AI returned malformed JSON — try again")
+            return
+
+        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        conn2 = sqlite3.connect(str(db), timeout=10)
+        try:
+            conn2.execute(
+                "UPDATE buffett_winners SET ai_analysis=?, ai_analysis_at=? WHERE ticker=?",
+                (json.dumps(analysis), now_str, ticker)
+            )
+            conn2.commit()
+        finally:
+            conn2.close()
+
+        _job_update(job_id, status="done", result={"ok": True, "ticker": ticker, "analysis": analysis})
+    except Exception as e:
+        _job_update(job_id, status="error", error=str(e))
+
+
+def _run_buffett_layer_compare_job(job_id: str, layer_num: int) -> None:
+    """Ask Ollama to rank all Buffett winners in a given layer."""
+    try:
+        if not ollama_client.available():
+            _job_update(job_id, status="error",
+                        error="Ollama not available — make sure ollama is running on the server")
+            return
+
+        db = PROJECT_DIR / "out" / "buffett.db"
+        conn = sqlite3.connect(str(db), timeout=10)
+        conn.row_factory = sqlite3.Row
+        rows = [dict(r) for r in conn.execute(
+            "SELECT ticker, company, sector, gross_margin, net_income_margin, "
+            "pe_ratio, p_fcf, ev_ebitda, dividend_yield, quality_score, "
+            "value_trap_risk, layer_reason "
+            "FROM buffett_winners WHERE layer_rec=? ORDER BY quality_score DESC",
+            (layer_num,)
+        )]
+        conn.close()
+
+        if not rows:
+            _job_update(job_id, status="done",
+                        result={"ok": True, "ranked": [], "summary": "No winners in this layer."})
+            return
+
+        layer_names = {1:"Structural Ballast", 2:"Cash-Flow Engine", 3:"Compounder",
+                       4:"Convexity/Optionality", 5:"Shock Absorber"}
+        layer_name = layer_names.get(layer_num, f"Layer {layer_num}")
+
+        stock_lines = []
+        for r in rows:
+            div = f"{r['dividend_yield']*100:.1f}%" if r.get("dividend_yield") else "—"
+            stock_lines.append(
+                f"  {r['ticker']} ({r.get('company','?')}, {r.get('sector','?')}): "
+                f"Score={r.get('quality_score','?')}/100, "
+                f"GrossMargin={r.get('gross_margin',0):.0f}%, "
+                f"NetIncome={r.get('net_income_margin',0):.0f}%, "
+                f"P/E={r.get('pe_ratio') or 'N/A'}, "
+                f"P/FCF={r.get('p_fcf') or 'N/A'}, "
+                f"Div={div}, "
+                f"TrapRisk={r.get('value_trap_risk','?')}"
+            )
+
+        prompt = f"""You are a stock analyst comparing Buffett-quality stocks in Layer {layer_num}: {layer_name}.
+All stocks below passed the Buffett 6-criteria screen (Gross≥40%, SGA≤30%, NetInc≥20%, Interest≤15%, CapEx≤50%, Cash>Debt).
+
+Stocks to rank:
+{chr(10).join(stock_lines)}
+
+Rank them from best to worst investment opportunity for a long-term investor focused on Layer {layer_num} ({layer_name}).
+Return ONLY valid JSON, no other text:
+{{
+  "summary": "<2-sentence overview of this layer's opportunities>",
+  "ranked": [
+    {{"ticker": "X", "rank": 1, "note": "<one sentence why this ranks here>"}},
+    ...
+  ]
+}}"""
+
+        _job_update(job_id, progress="Asking AI to rank…")
+        full_text = ""
+        for tok in ollama_client.stream_generate(prompt, num_predict=1200):
+            full_text += tok
+            _job_update(job_id, progress=full_text[:200])
+
+        try:
+            dec = json.JSONDecoder()
+            start = full_text.index("{")
+            result, _ = dec.raw_decode(full_text, start)
+        except (ValueError, json.JSONDecodeError):
+            _job_update(job_id, status="error",
+                        error="AI returned malformed JSON — try again")
+            return
+
+        _job_update(job_id, status="done", result={"ok": True, "layer": layer_num, **result})
+    except Exception as e:
+        _job_update(job_id, status="error", error=str(e))
+
+
 # ── HTTP Handler ──────────────────────────────────────────────────────────────
 class Handler(http.server.SimpleHTTPRequestHandler):
 
@@ -791,6 +963,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._handle_holding_add()
         elif parsed.path == "/api/buffett-scan":
             self._handle_buffett_scan_trigger()
+        elif parsed.path == "/api/buffett-ai-analyze":
+            self._handle_buffett_ai_analyze()
+        elif parsed.path == "/api/buffett-layer-compare":
+            self._handle_buffett_layer_compare()
         elif parsed.path == "/api/analysis-job":
             self._handle_analysis_job_create()
         elif parsed.path == "/api/refresh-dashboard":
@@ -2495,6 +2671,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
             for w in winners:
                 w["first_seen"] = first_seen.get(w["ticker"])
+                if w.get("ai_analysis"):
+                    try:
+                        w["ai_analysis"] = json.loads(w["ai_analysis"])
+                    except (ValueError, json.JSONDecodeError):
+                        w["ai_analysis"] = None
 
             scan_running = False
             lock = PROJECT_DIR / "out" / "buffett_screener.lock"
@@ -2589,6 +2770,65 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         threading.Thread(target=_bg, daemon=True).start()
         self._json({"ok": True, "started": True})
+
+    def _handle_buffett_ai_analyze(self):
+        """POST /api/buffett-ai-analyze  body: {"ticker": "AAPL"}"""
+        length = int(self.headers.get("Content-Length", 0))
+        try:
+            body = json.loads(self.rfile.read(length)) if length else {}
+        except json.JSONDecodeError:
+            return self._json_error(400, "Invalid JSON body")
+        ticker = (body.get("ticker") or "").upper().strip()
+        if not ticker:
+            return self._json_error(400, "ticker required")
+
+        # Return cached analysis if it's fresh (within 7 days)
+        db = PROJECT_DIR / "out" / "buffett.db"
+        if db.exists():
+            try:
+                conn = sqlite3.connect(str(db), timeout=5)
+                row = conn.execute(
+                    "SELECT ai_analysis, ai_analysis_at FROM buffett_winners "
+                    "WHERE ticker=? AND ai_analysis IS NOT NULL "
+                    "AND ai_analysis_at >= date('now', '-7 days')",
+                    (ticker,)
+                ).fetchone()
+                conn.close()
+                if row:
+                    try:
+                        analysis = json.loads(row[0])
+                        return self._json({"ok": True, "cached": True,
+                                           "ticker": ticker, "analysis": analysis})
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        job_id = _job_create("buffett-ai")
+        threading.Thread(target=_run_buffett_ai_job, args=(job_id, ticker), daemon=True).start()
+        self._json({"ok": True, "job_id": job_id})
+
+    def _handle_buffett_layer_compare(self):
+        """POST /api/buffett-layer-compare  body: {"layer": 2}"""
+        length = int(self.headers.get("Content-Length", 0))
+        try:
+            body = json.loads(self.rfile.read(length)) if length else {}
+        except json.JSONDecodeError:
+            return self._json_error(400, "Invalid JSON body")
+        layer_num = body.get("layer")
+        if layer_num is None:
+            return self._json_error(400, "layer required")
+        try:
+            layer_num = int(layer_num)
+        except (ValueError, TypeError):
+            return self._json_error(400, "layer must be an integer")
+        if layer_num not in (1, 2, 3, 4, 5):
+            return self._json_error(400, "layer must be 1–5")
+
+        job_id = _job_create("buffett-layer-compare")
+        threading.Thread(target=_run_buffett_layer_compare_job,
+                         args=(job_id, layer_num), daemon=True).start()
+        self._json({"ok": True, "job_id": job_id})
 
     def _handle_tlh_analysis(self):
         """GET /api/tlh-analysis — unrealized P&L per lot for tax-loss harvesting."""

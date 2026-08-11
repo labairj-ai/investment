@@ -3102,8 +3102,9 @@ window.addEventListener("load", () => {{ _initTaxRates(); renderRealizedGains();
 let _buffettPollTimer  = null;
 let _startupPollCount  = 0;
 let _buffettAllWinners = [];
-let _bSort    = {{ col: "gross_margin", dir: -1 }};
-let _bFilters = {{ q: "", exchange: "", layer: 0, risk: "" }};
+let _bViewMode = "table";
+let _bSort    = {{ col: "quality_score", dir: -1 }};
+let _bFilters = {{ q: "", exchange: "", layer: 0, risk: "low" }};
 
 // ── Shared helpers (used by table + recommendations) ──────────────────────
 const _bFmtVal = v => (v != null && isFinite(v)) ? v.toFixed(1) + "x" : "—";
@@ -3356,13 +3357,25 @@ async function loadBuffett() {{
 
     // Store for filter/sort re-renders; reset sort to default on fresh load
     _buffettAllWinners = data.winners;
-    _bSort    = {{ col: "gross_margin", dir: -1 }};
-    _bFilters = {{ q: "", exchange: "", layer: 0, risk: "" }};
+    _bViewMode = "table";
+    _bSort    = {{ col: "quality_score", dir: -1 }};
+    _bFilters = {{ q: "", exchange: "", layer: 0, risk: "low" }};
 
     const partialNote = (running || (lastScan && scanned < total * 0.95))
       ? `<span style="color:#e67e22;"> · partial results (${{pct}}% scanned)</span>` : "";
 
-    resultsEl.innerHTML += `<div id="buffett-table-wrap"></div>
+    resultsEl.innerHTML += `
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:10px;">
+        <span style="font-size:11px;color:#888;font-weight:600;">View:</span>
+        <button id="bview-table" onclick="_bSetView('table')"
+          style="padding:3px 10px;border-radius:12px;font-size:11px;font-weight:600;cursor:pointer;
+                 border:1px solid #6c63ff;background:#6c63ff;color:#fff;">Table</button>
+        <button id="bview-layer" onclick="_bSetView('layer')"
+          style="padding:3px 10px;border-radius:12px;font-size:11px;font-weight:600;cursor:pointer;
+                 border:1px solid #dde;background:#f4f6f9;color:#555;">By Layer</button>
+      </div>
+      <div id="buffett-table-wrap"></div>
+      <div id="buffett-layer-view-wrap" style="display:none;"></div>
       <p style="font-size:11px;color:#aaa;margin-top:6px;">
         Green = quality · Blue = valuation · Purple = layer · Red = trap risk${{partialNote}}
       </p>`;
@@ -3435,6 +3448,10 @@ function _renderBuffettTable() {{
       ${{label}}</span>`;
   }};
 
+  const hiddenCount = risk === "low"
+    ? _buffettAllWinners.filter(w => w.value_trap_risk !== "low").length : 0;
+  const hiddenNote = hiddenCount > 0
+    ? `<span style="font-size:10px;color:#aaa;font-style:italic;">${{hiddenCount}} medium/high-risk hidden</span>` : "";
   const matchTxt = rows.length === _buffettAllWinners.length
     ? `${{_buffettAllWinners.length}} stocks`
     : `${{rows.length}} of ${{_buffettAllWinners.length}} stocks`;
@@ -3452,9 +3469,10 @@ function _renderBuffettTable() {{
       <span style="font-size:10px;color:#aaa;font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-left:4px;">Layer</span>
       ${{[1,2,3,4,5].map(n => chip("layer",n,"L"+n,lyr)).join("")}}
       <span style="font-size:10px;color:#aaa;font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-left:4px;">Risk</span>
-      ${{chip("risk","low","Low",risk)}}
-      ${{chip("risk","medium","Med",risk)}}
-      ${{chip("risk","high","High",risk)}}
+      ${{chip("risk","low","✓ Safe",risk)}}
+      ${{chip("risk","","All",risk)}}
+      ${{chip("risk","high","Traps",risk)}}
+      ${{hiddenNote}}
       <span style="margin-left:auto;font-size:11px;color:#aaa;">${{matchTxt}}</span>
     </div>`;
 
@@ -3468,8 +3486,20 @@ function _renderBuffettTable() {{
            background:${{w.exchange==="NYSE"?"#e8f4fd":"#edf7ed"}};
            color:${{w.exchange==="NYSE"?"#1a5276":"#1e8449"}};">${{w.exchange}}</span>` : "";
     const rowBg = i % 2 === 0 ? "#fff" : "#fafbfc";
+    const score = w.quality_score;
+    const scoreColor = score >= 70 ? "#27ae60" : score >= 50 ? "#f39c12" : score != null ? "#c0392b" : "#aaa";
+    const scoreHtml = score != null
+      ? `<span style="font-weight:700;color:${{scoreColor}};font-size:13px;">${{score}}</span><span style="color:#ccc;font-size:10px;">/100</span>`
+      : `<span style="color:#ccc;">—</span>`;
+    const sectorShort = (w.sector || "").slice(0, 14);
+    const divPct = w.dividend_yield ? (w.dividend_yield * 100).toFixed(1) + "%" : "—";
+    const hasAI = w.ai_analysis && !w.ai_analysis.error;
+    const aiBtnLabel = hasAI ? "✓ AI" : "AI ▾";
+    const aiBtnStyle = hasAI
+      ? `background:#eafaf1;border-color:#a9dfbf;color:#1e8449;`
+      : `background:#f4f6f9;border-color:#dde;color:#555;`;
     return `
-      <tr style="background:${{rowBg}};border-bottom:1px solid #f0f2f5;">
+      <tr id="brow-${{w.ticker}}" style="background:${{rowBg}};border-bottom:1px solid #f0f2f5;">
         <td style="padding:8px 10px;font-size:11px;color:#bbb;text-align:center;">${{i+1}}</td>
         <td style="padding:8px 10px;">
           <div style="display:flex;align-items:center;gap:5px;">
@@ -3483,8 +3513,11 @@ function _renderBuffettTable() {{
           </div>
         </td>
         <td style="padding:8px 10px;color:#555;font-size:12px;">${{w.company || "—"}}</td>
+        <td style="padding:8px 6px;text-align:center;">${{scoreHtml}}</td>
         <td style="padding:8px 6px;vertical-align:middle;">${{_bLayerBadge(w.layer_rec, w.layer_reason)}}</td>
         <td style="padding:8px 6px;vertical-align:top;">${{_bTrapBadge(w.value_trap_risk, w.value_trap_flags)}}</td>
+        <td style="padding:8px 10px;color:#555;font-size:11px;max-width:90px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${{w.sector || ""}}">${{sectorShort || "—"}}</td>
+        <td style="padding:8px 10px;color:#8e44ad;">${{divPct}}</td>
         <td style="padding:8px 10px;">${{w.price ? "$" + w.price.toFixed(2) : "—"}}</td>
         <td style="padding:8px 10px;font-weight:700;color:#27ae60;">${{w.gross_margin?.toFixed(1)}}%</td>
         <td style="padding:8px 10px;color:#555;">${{w.sga_margin?.toFixed(1)}}%</td>
@@ -3495,11 +3528,21 @@ function _renderBuffettTable() {{
         <td style="padding:8px 10px;color:#2980b9;">${{w.pe_ratio != null ? w.pe_ratio.toFixed(1) + "x" : "—"}}</td>
         <td style="padding:8px 10px;color:#2980b9;">${{_bFmtVal(w.p_fcf)}}</td>
         <td style="padding:8px 10px;color:#2980b9;">${{_bFmtVal(w.ev_ebitda)}}</td>
+        <td style="padding:6px 8px;text-align:center;">
+          <button id="bai-btn-${{w.ticker}}" onclick="_bAI('${{w.ticker}}')"
+            style="padding:2px 8px;border-radius:8px;font-size:10px;font-weight:600;cursor:pointer;
+                   border:1px solid;${{aiBtnStyle}}">${{aiBtnLabel}}</button>
+        </td>
+      </tr>
+      <tr id="bai-row-${{w.ticker}}" style="display:none;background:#f8fafc;border-bottom:1px solid #e8edf4;">
+        <td colspan="19" style="padding:0;">
+          <div id="bai-content-${{w.ticker}}" style="padding:10px 16px;font-size:12px;"></div>
+        </td>
       </tr>`;
   }}).join("\\n");
 
   const noResults = rows.length === 0
-    ? `<tr><td colspan="15" style="padding:20px;text-align:center;color:#aaa;font-size:12px;">
+    ? `<tr><td colspan="19" style="padding:20px;text-align:center;color:#aaa;font-size:12px;">
          No stocks match the current filters.</td></tr>` : "";
 
   wrap.innerHTML = filterBar + `
@@ -3509,8 +3552,11 @@ function _renderBuffettTable() {{
         <th style="padding:7px 6px;text-align:center;font-size:10px;color:#bbb;width:28px;">#</th>
         ${{thStyle("ticker","Ticker")}}
         ${{thStyle("company","Company")}}
+        ${{thStyle("quality_score","Score","#16a085","center")}}
         ${{thStyle("layer_rec","Layer","#9b59b6")}}
         ${{thStyle("value_trap_risk","Trap Risk","#c0392b")}}
+        ${{thStyle("sector","Sector")}}
+        ${{thStyle("dividend_yield","Div %","#8e44ad")}}
         ${{thStyle("price","Price")}}
         ${{thStyle("gross_margin","Gross %","#27ae60")}}
         ${{thStyle("sga_margin","SG&amp;A %")}}
@@ -3521,10 +3567,279 @@ function _renderBuffettTable() {{
         ${{thStyle("pe_ratio","P/E","#2980b9")}}
         ${{thStyle("p_fcf","P/FCF","#2980b9")}}
         ${{thStyle("ev_ebitda","EV/EBITDA","#2980b9")}}
+        <th style="padding:7px 8px;font-size:10px;color:#aaa;font-weight:600;text-transform:uppercase;">AI</th>
       </tr></thead>
       <tbody>${{tableRows}}${{noResults}}</tbody>
     </table>
     </div>`;
+}}
+
+// ── Buffett: view toggle ──────────────────────────────────────────────────
+function _bSetView(mode) {{
+  _bViewMode = mode;
+  const tWrap = document.getElementById("buffett-table-wrap");
+  const lWrap = document.getElementById("buffett-layer-view-wrap");
+  const tBtn  = document.getElementById("bview-table");
+  const lBtn  = document.getElementById("bview-layer");
+  if (!tWrap || !lWrap) return;
+  const activeStyle = "background:#6c63ff;border-color:#6c63ff;color:#fff;";
+  const inactStyle  = "background:#f4f6f9;border-color:#dde;color:#555;";
+  if (mode === "table") {{
+    tWrap.style.display = "";
+    lWrap.style.display = "none";
+    if (tBtn) tBtn.style.cssText = tBtn.style.cssText.replace(/background:[^;]+;border-color:[^;]+;color:[^;]+;/, activeStyle);
+    if (lBtn) lBtn.style.cssText = lBtn.style.cssText.replace(/background:[^;]+;border-color:[^;]+;color:[^;]+;/, inactStyle);
+  }} else {{
+    tWrap.style.display = "none";
+    lWrap.style.display = "";
+    if (lBtn) lBtn.style.cssText = lBtn.style.cssText.replace(/background:[^;]+;border-color:[^;]+;color:[^;]+;/, activeStyle);
+    if (tBtn) tBtn.style.cssText = tBtn.style.cssText.replace(/background:[^;]+;border-color:[^;]+;color:[^;]+;/, inactStyle);
+    _renderLayerView();
+  }}
+}}
+
+// ── Buffett: per-row AI analysis ──────────────────────────────────────────
+async function _bAI(ticker) {{
+  const btn     = document.getElementById(`bai-btn-${{ticker}}`);
+  const aiRow   = document.getElementById(`bai-row-${{ticker}}`);
+  const content = document.getElementById(`bai-content-${{ticker}}`);
+  if (!btn || !aiRow || !content) return;
+
+  // Toggle if already loaded
+  if (aiRow.style.display !== "none") {{ aiRow.style.display = "none"; return; }}
+
+  // Find winner in memory
+  const w = _buffettAllWinners.find(x => x.ticker === ticker);
+  if (!w) return;
+
+  // Render if AI analysis already cached in memory
+  if (w.ai_analysis && !w.ai_analysis.error) {{
+    content.innerHTML = _bAIPanel(ticker, w.ai_analysis);
+    aiRow.style.display = "";
+    btn.textContent = "✓ AI";
+    btn.style.background = "#eafaf1"; btn.style.borderColor = "#a9dfbf"; btn.style.color = "#1e8449";
+    return;
+  }}
+
+  // Generate via API
+  btn.textContent = "…";
+  btn.disabled = true;
+  try {{
+    const r1 = await fetch("/api/buffett-ai-analyze", {{
+      method: "POST", headers: {{"Content-Type": "application/json"}},
+      body: JSON.stringify({{ticker}})
+    }});
+    const d1 = await r1.json();
+    if (!d1.ok) throw new Error(d1.error || "API error");
+
+    let analysis;
+    if (d1.cached) {{
+      analysis = d1.analysis;
+    }} else {{
+      // Poll job
+      const jobId = d1.job_id;
+      while (true) {{
+        await new Promise(res => setTimeout(res, 2000));
+        const rp = await fetch(`/api/analysis-job/${{jobId}}`);
+        const dp = await rp.json();
+        if (dp.status === "done") {{ analysis = dp.result?.analysis; break; }}
+        if (dp.status === "error") throw new Error(dp.error || "AI error");
+      }}
+    }}
+    if (!analysis) throw new Error("No analysis returned");
+    w.ai_analysis = analysis;
+    content.innerHTML = _bAIPanel(ticker, analysis);
+    aiRow.style.display = "";
+    btn.textContent = "✓ AI";
+    btn.style.background = "#eafaf1"; btn.style.borderColor = "#a9dfbf"; btn.style.color = "#1e8449";
+  }} catch(e) {{
+    content.innerHTML = `<span style="color:#c0392b;font-size:11px;">⚠ ${{e.message}}</span>`;
+    aiRow.style.display = "";
+    btn.textContent = "AI ▾";
+  }} finally {{
+    btn.disabled = false;
+  }}
+}}
+
+function _bAIPanel(ticker, ai) {{
+  const moatColor = ai.moat_strength === "strong" ? "#27ae60" : ai.moat_strength === "moderate" ? "#f39c12" : "#c0392b";
+  const valColor  = ai.valuation === "cheap" ? "#27ae60" : ai.valuation === "fair" ? "#7f8c8d" : "#c0392b";
+  const stars = "⭐".repeat(Math.min(5, Math.max(1, ai.conviction || 3)));
+  const badge = (label, color) =>
+    `<span style="display:inline-block;padding:1px 7px;border-radius:8px;font-size:10px;font-weight:700;
+                  background:${{color}}22;color:${{color}};border:1px solid ${{color}}44;">${{label}}</span>`;
+  return `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;max-width:860px;">
+      <div>
+        <div style="font-weight:600;color:#1a2340;font-size:11px;margin-bottom:3px;">📊 Thesis</div>
+        <div style="color:#333;line-height:1.5;">${{ai.thesis || "—"}}</div>
+      </div>
+      <div>
+        <div style="font-weight:600;color:#1a2340;font-size:11px;margin-bottom:3px;">🏰 Moat</div>
+        <div>${{badge(ai.moat_strength || "?", moatColor)}} <span style="color:#555;">${{ai.moat_note || ""}}</span></div>
+        <div style="margin-top:6px;font-weight:600;color:#1a2340;font-size:11px;">💰 Valuation</div>
+        <div>${{badge(ai.valuation || "?", valColor)}} <span style="color:#555;">${{ai.valuation_note || ""}}</span></div>
+      </div>
+      <div>
+        <div style="font-weight:600;color:#c0392b;font-size:11px;margin-bottom:3px;">⚑ Top Risk</div>
+        <div style="color:#555;">${{ai.top_risk || "—"}}</div>
+      </div>
+      <div>
+        <div style="font-weight:600;color:#1a2340;font-size:11px;margin-bottom:3px;">Conviction ${{stars}}</div>
+        <div style="color:#888;font-size:11px;">${{ai.layer_fit || ""}}</div>
+      </div>
+    </div>`;
+}}
+
+// ── Buffett: layer view ───────────────────────────────────────────────────
+const _bLayerDesc = {{
+  1: "Mega-cap, ultra-stable — your portfolio's shock absorber during crashes",
+  2: "Dividend payers with pricing power — cash flow while you wait",
+  3: "Quality compounders — long-duration growth at a reasonable price",
+  4: "Small-cap & high-growth — nonlinear upside, higher volatility",
+  5: "Energy, defense, utilities — regime hedges against inflation/geopolitical risk",
+}};
+
+function _renderLayerView() {{
+  const wrap = document.getElementById("buffett-layer-view-wrap");
+  if (!wrap) return;
+  const lw      = D.layerWeightsByNum || {{}};
+  const targets  = D.layerTargets     || {{}};
+  let html = "";
+
+  for (let n = 1; n <= 5; n++) {{
+    const meta    = _bLayerMeta[n] || {{}};
+    const winners = _buffettAllWinners.filter(w =>
+      w.layer_rec === n && (!_bFilters.risk || w.value_trap_risk === _bFilters.risk)
+    ).sort((a, b) => (b.quality_score || 0) - (a.quality_score || 0));
+
+    const curPct  = (lw[n]?.weight || 0).toFixed(1);
+    const tgtPct  = targets[n] || 0;
+    const gap     = (parseFloat(curPct) - tgtPct).toFixed(1);
+    const gapHtml = Math.abs(gap) < 1
+      ? `<span style="color:#27ae60;font-weight:700;">✓ On target</span>`
+      : gap < 0
+        ? `<span style="color:#c0392b;font-weight:700;">▼ ${{Math.abs(gap)}}% under</span>`
+        : `<span style="color:#f39c12;font-weight:700;">▲ ${{gap}}% over</span>`;
+
+    const allocationBar = `
+      <div style="display:inline-flex;gap:16px;align-items:center;font-size:11px;
+                  background:#fff;padding:4px 10px;border-radius:6px;border:1px solid #e8edf4;">
+        <span>Current: <b>${{curPct}}%</b></span>
+        <span>Target: <b>${{tgtPct}}%</b></span>
+        ${{gapHtml}}
+        <span style="color:#aaa;">${{winners.length}} winner${{winners.length!==1?"s":""}}</span>
+      </div>`;
+
+    // Mini-table of top 5 winners
+    let miniRows = "";
+    if (winners.length === 0) {{
+      miniRows = `<tr><td colspan="8" style="padding:12px;text-align:center;color:#aaa;font-size:11px;font-style:italic;">
+        No ${{_bFilters.risk ? _bFilters.risk + "-risk " : ""}}screener winners in this layer.</td></tr>`;
+    }} else {{
+      winners.slice(0, 5).forEach((w, idx) => {{
+        const sc = w.quality_score;
+        const scClr = sc >= 70 ? "#27ae60" : sc >= 50 ? "#f39c12" : sc != null ? "#c0392b" : "#aaa";
+        const div = w.dividend_yield ? (w.dividend_yield * 100).toFixed(1) + "%" : "—";
+        const conv = w.ai_analysis && !w.ai_analysis.error
+          ? "⭐".repeat(Math.min(5, Math.max(1, w.ai_analysis.conviction || 3))) : "—";
+        const trBg = idx % 2 === 0 ? "#fff" : "#f9fafb";
+        miniRows += `<tr style="background:${{trBg}};border-bottom:1px solid #f0f2f5;">
+          <td style="padding:6px 8px;font-size:11px;color:#aaa;text-align:center;">${{idx+1}}</td>
+          <td style="padding:6px 8px;font-weight:700;color:#1a2340;">
+            <a href="javascript:void(0)" onclick="_bAI('${{w.ticker}}')" style="color:#1a2340;text-decoration:none;">${{w.ticker}}</a>
+          </td>
+          <td style="padding:6px 8px;color:#555;font-size:11px;max-width:100px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${{w.company || "—"}}</td>
+          <td style="padding:6px 8px;text-align:center;font-weight:700;color:${{scClr}};font-size:12px;">${{sc != null ? sc : "—"}}</td>
+          <td style="padding:6px 8px;color:#27ae60;font-weight:600;">${{w.gross_margin?.toFixed(1)}}%</td>
+          <td style="padding:6px 8px;color:#2980b9;">${{w.pe_ratio != null ? w.pe_ratio.toFixed(1)+"x" : "—"}}</td>
+          <td style="padding:6px 8px;color:#8e44ad;">${{div}}</td>
+          <td style="padding:6px 8px;color:#27ae60;font-size:13px;">${{conv}}</td>
+        </tr>`;
+      }});
+      if (winners.length > 5) {{
+        miniRows += `<tr><td colspan="8" style="padding:4px 8px;text-align:center;font-size:10px;color:#aaa;">
+          + ${{winners.length - 5}} more — switch to Table view to see all</td></tr>`;
+      }}
+    }}
+
+    const compareResultId = `blayer-cmp-${{n}}`;
+    html += `
+      <div style="border:1px solid #e8edf4;border-radius:10px;margin-bottom:16px;overflow:hidden;">
+        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+                    padding:10px 14px;background:${{meta.bg}};color:${{meta.color}};">
+          <span style="font-weight:700;font-size:13px;">${{meta.label}}: ${{_bLayerDesc[n]?.split("—")[0].trim() || "Layer "+n}}</span>
+          ${{allocationBar}}
+        </div>
+        <div style="padding:6px 0;font-size:11px;color:#777;padding-left:14px;padding-top:6px;padding-bottom:4px;
+                    border-bottom:1px solid #f0f2f5;font-style:italic;">${{_bLayerDesc[n] || ""}}</div>
+        <div style="overflow-x:auto;">
+        <table style="width:100%;border-collapse:collapse;font-size:12px;">
+          <thead><tr style="background:#f8fafc;border-bottom:1px solid #e8edf4;">
+            <th style="padding:5px 8px;font-size:10px;color:#bbb;text-align:center;width:24px;">#</th>
+            <th style="padding:5px 8px;font-size:10px;color:#555;text-align:left;">Ticker</th>
+            <th style="padding:5px 8px;font-size:10px;color:#555;text-align:left;">Company</th>
+            <th style="padding:5px 8px;font-size:10px;color:#16a085;text-align:center;">Score</th>
+            <th style="padding:5px 8px;font-size:10px;color:#27ae60;text-align:left;">Gross%</th>
+            <th style="padding:5px 8px;font-size:10px;color:#2980b9;text-align:left;">P/E</th>
+            <th style="padding:5px 8px;font-size:10px;color:#8e44ad;text-align:left;">Div%</th>
+            <th style="padding:5px 8px;font-size:10px;color:#e67e22;text-align:left;">Conviction</th>
+          </tr></thead>
+          <tbody>${{miniRows}}</tbody>
+        </table>
+        </div>
+        ${{winners.length > 0 ? `
+        <div style="padding:8px 14px;border-top:1px solid #f0f2f5;">
+          <button onclick="_bLayerCompare(${{n}})"
+            style="padding:4px 12px;border-radius:8px;font-size:11px;font-weight:600;cursor:pointer;
+                   border:1px solid #6c63ff;background:#f0eeff;color:#6c63ff;">
+            Compare Layer ${{n}} ▸</button>
+          <div id="${{compareResultId}}" style="margin-top:8px;"></div>
+        </div>` : ""}}
+      </div>`;
+  }}
+  wrap.innerHTML = html;
+}}
+
+async function _bLayerCompare(layerNum) {{
+  const resultEl = document.getElementById(`blayer-cmp-${{layerNum}}`);
+  if (!resultEl) return;
+  resultEl.innerHTML = `<span style="color:#aaa;font-size:11px;">🤖 Asking AI to rank…</span>`;
+  try {{
+    const r1 = await fetch("/api/buffett-layer-compare", {{
+      method: "POST", headers: {{"Content-Type": "application/json"}},
+      body: JSON.stringify({{layer: layerNum}})
+    }});
+    const d1 = await r1.json();
+    if (!d1.ok) throw new Error(d1.error || "API error");
+    const jobId = d1.job_id;
+    let result;
+    while (true) {{
+      await new Promise(res => setTimeout(res, 2500));
+      const rp = await fetch(`/api/analysis-job/${{jobId}}`);
+      const dp = await rp.json();
+      if (dp.status === "done") {{ result = dp.result; break; }}
+      if (dp.status === "error") throw new Error(dp.error || "AI error");
+      resultEl.innerHTML = `<span style="color:#aaa;font-size:11px;">🤖 ${{(dp.progress || "").slice(0,80)}}…</span>`;
+    }}
+    if (!result) throw new Error("No result");
+    const ranked = result.ranked || [];
+    const rows = ranked.map(r =>
+      `<div style="padding:4px 0;border-bottom:1px solid #f0f2f5;display:flex;gap:8px;align-items:baseline;">
+        <span style="font-size:11px;color:#aaa;min-width:18px;text-align:right;">${{r.rank}}.</span>
+        <span style="font-weight:700;color:#1a2340;min-width:50px;">${{r.ticker}}</span>
+        <span style="color:#555;font-size:11px;">${{r.note || ""}}</span>
+      </div>`
+    ).join("");
+    resultEl.innerHTML = `
+      <div style="background:#f8fafc;border:1px solid #e8edf4;border-radius:8px;padding:10px 14px;margin-top:4px;">
+        <div style="font-weight:600;color:#1a2340;font-size:11px;margin-bottom:6px;">🤖 AI Layer ${{layerNum}} Ranking</div>
+        ${{result.summary ? `<div style="color:#555;font-size:11px;margin-bottom:8px;font-style:italic;">${{result.summary}}</div>` : ""}}
+        ${{rows || '<div style="color:#aaa;font-size:11px;">No rankings returned.</div>'}}
+      </div>`;
+  }} catch(e) {{
+    resultEl.innerHTML = `<span style="color:#c0392b;font-size:11px;">⚠ ${{e.message}}</span>`;
+  }}
 }}
 
 // ── Buffett Deep-Dive Analyzer ────────────────────────────────────────────
