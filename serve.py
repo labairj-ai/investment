@@ -436,6 +436,113 @@ threading.Thread(target=_run_daily, daemon=True).start()
 
 
 # ── Nightly Buffett screener (2 AM ET) ───────────────────────────────────────
+def _auto_ai_analyze_winners(log_file=None):
+    """After a successful scan, generate AI analysis for any winner missing it or older than 30 days."""
+    import json as _json
+    STALE_DAYS = 30
+    db = PROJECT_DIR / "out" / "buffett.db"
+    if not db.exists():
+        return
+    if not ollama_client.available():
+        msg = "[Screener] Ollama not available — skipping auto AI analysis."
+        print(msg)
+        if log_file:
+            log_file.write(msg + "\n")
+        return
+
+    try:
+        conn = sqlite3.connect(str(db), timeout=30)
+        conn.row_factory = sqlite3.Row
+        winners = [dict(r) for r in conn.execute("SELECT * FROM buffett_winners ORDER BY quality_score DESC")]
+        conn.close()
+    except Exception as e:
+        print(f"[Screener] Auto-AI: DB read error: {e}")
+        return
+
+    cutoff = (datetime.datetime.now() - datetime.timedelta(days=STALE_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+    to_analyze = [
+        w for w in winners
+        if not w.get("ai_analysis") or (w.get("ai_analysis_at") or "") < cutoff
+    ]
+
+    if not to_analyze:
+        print("[Screener] Auto-AI: all winners have fresh analysis, skipping.")
+        return
+
+    print(f"[Screener] Auto-AI: analyzing {len(to_analyze)} winner(s)…")
+    if log_file:
+        log_file.write(f"[Auto-AI] Analyzing {len(to_analyze)} winner(s)…\n")
+
+    for w in to_analyze:
+        ticker = w["ticker"]
+        try:
+            div_pct = f"{w['dividend_yield']:.1f}%" if w.get("dividend_yield") else "None"
+            mcap = w.get("market_cap") or 0
+            mcap_fmt = f"${mcap/1e9:.1f}B" if mcap >= 1e9 else (f"${mcap/1e6:.0f}M" if mcap else "N/A")
+            trap_flags = []
+            try:
+                trap_flags = _json.loads(w.get("value_trap_flags") or "[]")
+            except Exception:
+                pass
+            trap_flags_text = "; ".join(trap_flags) if trap_flags else "none"
+
+            prompt = f"""You are a stock analyst. Analyze this Buffett screener winner. Return ONLY valid JSON, no other text.
+
+{w.get('company', ticker)} ({ticker}) — {w.get('sector', '?')} / {w.get('industry', '?')}
+Price: ${w.get('price', 0):.2f} | Market Cap: {mcap_fmt} | Exchange: {w.get('exchange', '?')}
+Layer assignment: {w.get('layer_rec', '?')} — {w.get('layer_reason', '?')}
+Value Trap Risk: {w.get('value_trap_risk', 'unknown')}
+Trap flags: {trap_flags_text}
+
+Quality Metrics (passed Buffett screen):
+  Gross Margin: {w.get('gross_margin', 0):.1f}%  | Net Income Margin: {w.get('net_income_margin', 0):.1f}%
+  Interest/OpIncome: {w.get('interest_margin', 0):.1f}% | CapEx/NetIncome: {w.get('capex_margin', 0):.1f}%
+  Quality Score: {w.get('quality_score', 'N/A')}/100
+
+Valuation:
+  P/E: {w.get('pe_ratio') or 'N/A'}x | P/FCF: {w.get('p_fcf') or 'N/A'}x | EV/EBITDA: {w.get('ev_ebitda') or 'N/A'}x
+  Dividend Yield: {div_pct}
+
+Return this JSON structure:
+{{
+  "thesis": "<2-sentence investment case for buying this stock now>",
+  "moat_strength": "<strong|moderate|weakening>",
+  "moat_note": "<one sentence on competitive advantage>",
+  "valuation": "<cheap|fair|stretched>",
+  "valuation_note": "<one sentence on P/E and FCF vs quality>",
+  "top_risk": "<single most important risk to the thesis>",
+  "conviction": <integer 1 to 5>,
+  "layer_fit": "<one sentence on why this fits or does not fit layer {w.get('layer_rec', '?')}>"
+}}"""
+
+            full_text = ""
+            for tok in ollama_client.stream_generate(prompt, model="llama3.1:8b", num_predict=700):
+                full_text += tok
+
+            dec = _json.JSONDecoder()
+            start = full_text.index("{")
+            analysis, _ = dec.raw_decode(full_text, start)
+
+            now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            conn2 = sqlite3.connect(str(db), timeout=10)
+            try:
+                conn2.execute(
+                    "UPDATE buffett_winners SET ai_analysis=?, ai_analysis_at=? WHERE ticker=?",
+                    (_json.dumps(analysis), now_str, ticker)
+                )
+                conn2.commit()
+            finally:
+                conn2.close()
+            print(f"[Screener] Auto-AI: {ticker} done (conviction={analysis.get('conviction')})")
+            if log_file:
+                log_file.write(f"[Auto-AI] {ticker}: conviction={analysis.get('conviction')}\n")
+        except Exception as e:
+            print(f"[Screener] Auto-AI: {ticker} failed — {e}")
+            if log_file:
+                log_file.write(f"[Auto-AI] {ticker}: ERROR — {e}\n")
+        time.sleep(1)  # brief pause between Ollama calls
+
+
 def _run_screener():
     """Background thread: runs the Buffett screener once per day at 2 AM ET."""
     import subprocess
@@ -472,6 +579,7 @@ def _run_screener():
                         print(f"[Screener] Failed — check {LOG}")
                     else:
                         print(f"[Screener] Done for {today}.")
+                        _auto_ai_analyze_winners(lf)
             except Exception as exc:
                 print(f"[Screener] Exception: {exc}")
         time.sleep(1800)
@@ -756,7 +864,7 @@ def _run_buffett_ai_job(job_id: str, ticker: str) -> None:
         conn.close()
 
         import json as _json
-        div_pct = f"{w['dividend_yield']*100:.1f}%" if w.get("dividend_yield") else "None"
+        div_pct = f"{w['dividend_yield']:.1f}%" if w.get("dividend_yield") else "None"
         mcap = w.get("market_cap") or 0
         mcap_fmt = f"${mcap/1e9:.1f}B" if mcap >= 1e9 else (f"${mcap/1e6:.0f}M" if mcap else "N/A")
         trap_flags = []
