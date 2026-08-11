@@ -31,7 +31,9 @@ The old launchd agents from the Mac era are archived in `launchd-disabled-on-mac
 | **Covered Call Tracker** | Log and track open/closed covered call positions; live mark-to-market option prices (bid/ask mid from yfinance); Unrealized P&L and Today's P&L columns per position; daily change KPI is adjusted mark-to-market; bulk import via `covered_calls.csv`; auto-expires past-expiry positions |
 | **Dividend Tracker** | Dividend dates, tax impact by income bracket, monthly income chart, and ticker lookup tool |
 | **Earnings Calendar** | Next earnings date per holding shown in Layer Summary and Holdings table |
-| **Buffett Screener** | Nightly scan of ~6,500 NYSE + NASDAQ tickers (deduplicated); surfaces stocks passing all 6 Buffett quality criteria; emails only net-new winners (no repeat notifications for stocks already on the list) |
+| **Buffett Screener** | Nightly scan of ~6,500 NYSE + NASDAQ tickers (deduplicated); surfaces stocks passing all 6 Buffett quality criteria; emails only net-new winners; each winner gets a composite 0–100 **Quality Score** (gross margin, net income, P/FCF, P/E, EV/EBITDA, trap risk, interest, CapEx, dividend); winners table default-sorted by score so best picks rise to top |
+| **Buffett AI Thesis** | On-demand **AI▾** button per winner — sends metrics to local `qwen2.5:7b` (Ollama), returns thesis, moat badge (strong/moderate/weakening), valuation badge (cheap/fair/stretched), top risk, and conviction stars (1–5); result cached 7 days in DB |
+| **Buffett Layer View** | **Table \| By Layer** toggle — layer view shows all 5 panels with current vs target allocation bar, top picks mini-table (score, gross%, P/E, div%, conviction stars), and a **Compare Layer** button that asks Ollama to rank all winners in that layer with a 1-sentence rationale each |
 | **Buffett Deep-Dive** | On-demand 13-point Buffett analysis for any ticker — gross margin, expense margins, EPS trend, balance sheet strength, buybacks, and more |
 | **Layer Drift Alerts** | Inline in the daily digest: orange warning box when any layer drifts ≥5pp from target; subject line flags the count |
 | **Tax Lot Tracker** | Lot-level cost basis per holding; modal shows per-lot ST/LT term, unrealized G/L, days to LT conversion |
@@ -170,9 +172,11 @@ Script changes take effect on the next **↻ Refresh Data** without restarting t
 | `GET /api/dividend-lookup?ticker=VYM&shares=100` | Dividend info for any ticker |
 | `GET /api/dividend-timeline` | Monthly income (Jan–Dec, current year) |
 | `GET /api/earnings` | Next earnings dates for all holdings |
-| `GET /api/buffett-winners` | Latest Buffett screener results (includes valuation, first_seen, scan_duration, log_tail) |
+| `GET /api/buffett-winners` | Latest Buffett screener results (includes `quality_score`, parsed `ai_analysis`, `first_seen`, scan_duration, log_tail) |
 | `POST /api/buffett-scan` | Start a manual screener run (no-op if already running; returns `{ok, reason}`) |
 | `GET /api/buffett-analysis?ticker=KO&mode=annual` | On-demand 13-point Buffett deep-dive; `mode=annual` (default) uses annual filings, `mode=ttm` sums last 4 quarters |
+| `POST /api/buffett-ai-analyze` | Body: `{"ticker":"AAPL"}` — generates AI thesis via Ollama (thesis, moat, valuation, top_risk, conviction 1–5, layer_fit); returns `{cached, analysis}` immediately if fresh, otherwise `{job_id}` to poll via `/api/analysis-job/<id>`; result cached 7 days in DB |
+| `POST /api/buffett-layer-compare` | Body: `{"layer":2}` — Ollama ranks all winners in that layer (ordered by quality score) with a 1-sentence rationale each; returns `{job_id}` to poll; result: `{ranked:[{ticker,rank,note}], summary}` |
 | `GET /api/cc-positions` | All logged covered call positions; includes computed `pnl_total` and `pnl_day` for open positions with mark data; auto-expires past-expiry open positions |
 | `GET /api/cc-evaluate` | Evaluates all open positions: returns `recommendation` (hold/roll/buy_back), `reason`, `pct_captured`, `remaining_extrinsic` $, `remaining_extrinsic_yield` %, `remaining_extrinsic_ann_yield` %/yr, `delta`, `gamma`, `dte`, `risk_events`, and an optional `next_contract` suggestion |
 | `POST /api/cc-positions` | Log a new covered call position |
@@ -474,9 +478,12 @@ The screener runs automatically at **2 AM ET** each night as a background thread
 - **Criteria chips** — the 6 quality filters displayed inline so it's always clear what the screener tests
 - **Partial results** — winners found so far appear in the table even before the scan finishes, with a "partial results (X% scanned)" note
 - **Scan duration** — how long the last completed scan took
+- **Quality Score** — each winner has a 0–100 composite score (gross margin, net income margin, P/FCF, P/E, EV/EBITDA, trap risk, interest margin, CapEx margin, dividend); green ≥70, orange ≥50, red <50; table defaults to score-descending so best picks are always on top
 - **Exchange badge** — each winner shows a color-coded **NYSE** (blue) or **NASDAQ** (green) badge next to the ticker in both the screener table and the Recommended Purchases panel
-- **Filter bar** — above the table: text search (ticker/company/sector), Exchange chips (NYSE/NASDAQ), Layer chips (L1–L5), Risk chips (Low/Med/High); live match count updates instantly with no refetch
-- **Sortable columns** — click any column header to sort ascending/descending; active column highlighted with a purple underline and ▼/▲ arrow; sortable by Ticker, Company, Layer, Trap Risk, Price, Gross %, SG&A %, Net Inc %, Interest %, CapEx %, P/E, P/FCF, EV/EBITDA
+- **Filter bar** — text search (ticker/company/sector), Exchange chips, Layer chips (L1–L5), Risk 3-state toggle: **✓ Safe** (low risk only, default — shows count of hidden medium/high stocks), **All**, **Traps**; live match count; Sector and Div % columns now visible
+- **Sortable columns** — click any column header to sort ascending/descending; sortable by Score, Ticker, Company, Layer, Trap Risk, Sector, Div %, Price, Gross %, SG&A %, Net Inc %, Interest %, CapEx %, P/E, P/FCF, EV/EBITDA
+- **AI▾ button** (per row) — click to generate an on-demand AI investment thesis; expands an inline panel with thesis, moat badge, valuation badge, top risk, conviction stars, and layer fit note; cached 7 days; subsequent clicks toggle the panel open/closed
+- **Table | By Layer** view toggle — layer view shows all 5 panels with current vs. target allocation bar (gap colored red/green), top-5 picks mini-table per layer, and a **Compare Layer ▸** button that asks Ollama to rank all winners in that layer with a 1-sentence rationale each
 - **Log tail panel** — collapsible view of the last 20 lines of `screener.log`, color-coded (red = errors, orange = warnings, blue = section headers)
 
 **Logs:** `out/screener.log`
