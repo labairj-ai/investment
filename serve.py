@@ -797,7 +797,7 @@ Return this JSON structure:
 
         _job_update(job_id, progress="Sending to AI…")
         full_text = ""
-        for tok in ollama_client.stream_generate(prompt, num_predict=700):
+        for tok in ollama_client.stream_generate(prompt, model="llama3.1:8b", num_predict=700):
             full_text += tok
             _job_update(job_id, progress=full_text[:200])
 
@@ -887,7 +887,7 @@ Return ONLY valid JSON, no other text:
 
         _job_update(job_id, progress="Asking AI to rank…")
         full_text = ""
-        for tok in ollama_client.stream_generate(prompt, num_predict=1200):
+        for tok in ollama_client.stream_generate(prompt, model="llama3.1:8b", num_predict=1200):
             full_text += tok
             _job_update(job_id, progress=full_text[:200])
 
