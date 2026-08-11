@@ -32,8 +32,8 @@ The old launchd agents from the Mac era are archived in `launchd-disabled-on-mac
 | **Dividend Tracker** | Dividend dates, tax impact by income bracket, monthly income chart, and ticker lookup tool |
 | **Earnings Calendar** | Next earnings date per holding shown in Layer Summary and Holdings table |
 | **Buffett Screener** | Nightly scan of ~6,500 NYSE + NASDAQ tickers (deduplicated); surfaces stocks passing all 6 Buffett quality criteria; emails only net-new winners; each winner gets a composite 0–100 **Quality Score** (gross margin, net income, P/FCF, P/E, EV/EBITDA, trap risk, interest, CapEx, dividend); winners table default-sorted by score so best picks rise to top |
-| **Buffett AI Thesis** | On-demand **AI▾** button per winner — sends metrics to local `qwen2.5:7b` (Ollama), returns thesis, moat badge (strong/moderate/weakening), valuation badge (cheap/fair/stretched), top risk, and conviction stars (1–5); result cached 7 days in DB |
-| **Buffett Layer View** | **Table \| By Layer** toggle — layer view shows all 5 panels with current vs target allocation bar, top picks mini-table (score, gross%, P/E, div%, conviction stars), and a **Compare Layer** button that asks Ollama to rank all winners in that layer with a 1-sentence rationale each |
+| **Buffett AI Thesis** | On-demand **AI▾** button per winner — sends metrics to local `llama3.1:8b` (Ollama), returns thesis, moat badge (strong/moderate/weakening), valuation badge (cheap/fair/stretched), top risk, and conviction stars (1–5); result cached 7 days in DB |
+| **Buffett Layer View** | **Table \| By Layer** toggle — layer view shows all 5 panels with current vs target allocation bar, top picks mini-table (score, gross%, P/E, div%, conviction stars), and a **Compare Layer** button that asks `llama3.1:8b` to rank all winners in that layer with a 1-sentence rationale each |
 | **Buffett Deep-Dive** | On-demand 13-point Buffett analysis for any ticker — gross margin, expense margins, EPS trend, balance sheet strength, buybacks, and more |
 | **Layer Drift Alerts** | Inline in the daily digest: orange warning box when any layer drifts ≥5pp from target; subject line flags the count |
 | **Tax Lot Tracker** | Lot-level cost basis per holding; modal shows per-lot ST/LT term, unrealized G/L, days to LT conversion |
@@ -49,7 +49,9 @@ The old launchd agents from the Mac era are archived in `launchd-disabled-on-mac
 - macOS or Linux (all scripts derive paths from their own location, so the repo can live anywhere; the launchd auto-start is macOS-specific)
 - Python 3.9+ with a virtual environment
 - A Gmail account with an [App Password](https://myaccount.google.com/apppasswords) enabled
-- **Ollama** (for AI Analysis) — must be running on the server with `qwen2.5:7b` pulled (`ollama pull qwen2.5:7b`); optional, the rest of the dashboard works without it; ~4.7 GB RAM required
+- **Ollama** (for AI Analysis) — must be running on the server with two models pulled; optional, the rest of the dashboard works without it:
+  - `ollama pull qwen2.5:7b` — used by Covered Call AI analysis (~4.7 GB)
+  - `ollama pull llama3.1:8b` — used by Buffett AI thesis + layer compare (~4.9 GB; stronger financial reasoning)
 
 ---
 
@@ -175,8 +177,8 @@ Script changes take effect on the next **↻ Refresh Data** without restarting t
 | `GET /api/buffett-winners` | Latest Buffett screener results (includes `quality_score`, parsed `ai_analysis`, `first_seen`, scan_duration, log_tail) |
 | `POST /api/buffett-scan` | Start a manual screener run (no-op if already running; returns `{ok, reason}`) |
 | `GET /api/buffett-analysis?ticker=KO&mode=annual` | On-demand 13-point Buffett deep-dive; `mode=annual` (default) uses annual filings, `mode=ttm` sums last 4 quarters |
-| `POST /api/buffett-ai-analyze` | Body: `{"ticker":"AAPL"}` — generates AI thesis via Ollama (thesis, moat, valuation, top_risk, conviction 1–5, layer_fit); returns `{cached, analysis}` immediately if fresh, otherwise `{job_id}` to poll via `/api/analysis-job/<id>`; result cached 7 days in DB |
-| `POST /api/buffett-layer-compare` | Body: `{"layer":2}` — Ollama ranks all winners in that layer (ordered by quality score) with a 1-sentence rationale each; returns `{job_id}` to poll; result: `{ranked:[{ticker,rank,note}], summary}` |
+| `POST /api/buffett-ai-analyze` | Body: `{"ticker":"AAPL"}` — generates AI thesis via `llama3.1:8b` (thesis, moat, valuation, top_risk, conviction 1–5, layer_fit); returns `{cached, analysis}` immediately if fresh, otherwise `{job_id}` to poll via `/api/analysis-job/<id>`; result cached 7 days in DB |
+| `POST /api/buffett-layer-compare` | Body: `{"layer":2}` — `llama3.1:8b` ranks all winners in that layer (ordered by quality score) with a 1-sentence rationale each; returns `{job_id}` to poll; result: `{ranked:[{ticker,rank,note}], summary}` |
 | `GET /api/cc-positions` | All logged covered call positions; includes computed `pnl_total` and `pnl_day` for open positions with mark data; auto-expires past-expiry open positions |
 | `GET /api/cc-evaluate` | Evaluates all open positions: returns `recommendation` (hold/roll/buy_back), `reason`, `pct_captured`, `remaining_extrinsic` $, `remaining_extrinsic_yield` %, `remaining_extrinsic_ann_yield` %/yr, `delta`, `gamma`, `dte`, `risk_events`, and an optional `next_contract` suggestion |
 | `POST /api/cc-positions` | Log a new covered call position |
@@ -483,7 +485,7 @@ The screener runs automatically at **2 AM ET** each night as a background thread
 - **Filter bar** — text search (ticker/company/sector), Exchange chips, Layer chips (L1–L5), Risk 3-state toggle: **✓ Safe** (low risk only, default — shows count of hidden medium/high stocks), **All**, **Traps**; live match count; Sector and Div % columns now visible
 - **Sortable columns** — click any column header to sort ascending/descending; sortable by Score, Ticker, Company, Layer, Trap Risk, Sector, Div %, Price, Gross %, SG&A %, Net Inc %, Interest %, CapEx %, P/E, P/FCF, EV/EBITDA
 - **AI▾ button** (per row) — click to generate an on-demand AI investment thesis; expands an inline panel with thesis, moat badge, valuation badge, top risk, conviction stars, and layer fit note; cached 7 days; subsequent clicks toggle the panel open/closed
-- **Table | By Layer** view toggle — layer view shows all 5 panels with current vs. target allocation bar (gap colored red/green), top-5 picks mini-table per layer, and a **Compare Layer ▸** button that asks Ollama to rank all winners in that layer with a 1-sentence rationale each
+- **Table | By Layer** view toggle — layer view shows all 5 panels with current vs. target allocation bar (gap colored red/green), top-5 picks mini-table per layer, and a **Compare Layer ▸** button that asks `llama3.1:8b` to rank all winners in that layer with a 1-sentence rationale each
 - **Log tail panel** — collapsible view of the last 20 lines of `screener.log`, color-coded (red = errors, orange = warnings, blue = section headers)
 
 **Logs:** `out/screener.log`
@@ -522,7 +524,7 @@ Executable fill estimated as `bid + 25% × spread` (not mid).
 
 **DO NOTHING is an explicit candidate** — if the best CC Alpha is negative, the report flags it.
 
-**🤖 AI Analysis** — after loading recommendations, click the purple "🤖 AI Analysis" button to get `qwen2.5:7b` narrative insight from the optiplex. Takes ~90–120 seconds on CPU. The prompt passes the full metric context (CCα $, regret threshold $, IVrich %, z-strike σ, expected move $, HV Pct, eITM %) with metric definitions and explicit instructions requiring every sentence to cite actual numbers — generic prose without numbers is explicitly prohibited. The AI panel shows:
+**🤖 AI Analysis** — after loading recommendations, click the purple "🤖 AI Analysis" button to get `qwen2.5:7b` narrative insight from the optiplex (covered calls use `qwen2.5:7b`; Buffett thesis/layer compare use `llama3.1:8b` for stronger financial reasoning). Takes ~90–120 seconds on CPU. The prompt passes the full metric context (CCα $, regret threshold $, IVrich %, z-strike σ, expected move $, HV Pct, eITM %) with metric definitions and explicit instructions requiring every sentence to cite actual numbers — generic prose without numbers is explicitly prohibited. The AI panel shows:
 
 | Section | What it covers |
 |---|---|
@@ -533,7 +535,7 @@ Executable fill estimated as `bid + 25% × spread` (not mid).
 | 🔄 Roll Strategy | States specific delta threshold and DTE threshold; explains CCα decay as the economic rationale |
 | ⏰ Timing | States current spread width, recommends limit order relative to exec premium, flags Liq score if below 40 |
 
-Requires Ollama running on the optiplex with `qwen2.5:7b` pulled (`ollama pull qwen2.5:7b`). If Ollama is unavailable, the button returns a graceful error.
+Requires Ollama running on the optiplex with `qwen2.5:7b` pulled. If Ollama is unavailable, the button returns a graceful error.
 
 ### Dividend Tracker
 Auto-loads on page open. Hit **Refresh** to update; cached 1 hour per day.
@@ -615,7 +617,7 @@ investment/
 ├── serve.py                         # HTTP server + all API endpoints + schedulers
 ├── buffett_screener.py              # NYSE Buffett screener — nightly at 2 AM ET
 ├── covered_call_rec.py              # Covered call recommendation + blackout engine + ai_context() prompt builder
-├── ollama_client.py                 # Thin urllib wrapper for Ollama's /api/generate endpoint (qwen2.5:7b, timeout 180s)
+├── ollama_client.py                 # Thin urllib wrapper for Ollama's /api/generate endpoint (default qwen2.5:7b; Buffett AI uses llama3.1:8b; timeout 180s)
 ├── run_investment.sh                # Manual newsletter entry point
 ├── chart.umd.min.js                 # Bundled Chart.js (no CDN dependency)
 ├── favicon.svg                      # Dashboard browser tab icon
