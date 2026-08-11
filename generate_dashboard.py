@@ -3494,6 +3494,9 @@ function _renderBuffettTable() {{
     const sectorShort = (w.sector || "").slice(0, 14);
     const divPct = w.dividend_yield ? w.dividend_yield.toFixed(1) + "%" : "—";
     const hasAI = w.ai_analysis && !w.ai_analysis.error;
+    const convHtml = hasAI && w.ai_analysis.conviction
+      ? "⭐".repeat(Math.min(5, Math.max(1, w.ai_analysis.conviction)))
+      : `<span style="color:#ccc;font-size:10px;font-style:italic;">AI▾</span>`;
     const aiBtnLabel = hasAI ? "✓ AI" : "AI ▾";
     const aiBtnStyle = hasAI
       ? `background:#eafaf1;border-color:#a9dfbf;color:#1e8449;`
@@ -3528,6 +3531,7 @@ function _renderBuffettTable() {{
         <td style="padding:8px 10px;color:#2980b9;">${{w.pe_ratio != null ? w.pe_ratio.toFixed(1) + "x" : "—"}}</td>
         <td style="padding:8px 10px;color:#2980b9;">${{_bFmtVal(w.p_fcf)}}</td>
         <td style="padding:8px 10px;color:#2980b9;">${{_bFmtVal(w.ev_ebitda)}}</td>
+        <td id="bconv-${{w.ticker}}" style="padding:6px 8px;text-align:center;white-space:nowrap;">${{convHtml}}</td>
         <td style="padding:6px 8px;text-align:center;">
           <button id="bai-btn-${{w.ticker}}" onclick="_bAI('${{w.ticker}}')"
             style="padding:2px 8px;border-radius:8px;font-size:10px;font-weight:600;cursor:pointer;
@@ -3535,14 +3539,14 @@ function _renderBuffettTable() {{
         </td>
       </tr>
       <tr id="bai-row-${{w.ticker}}" style="display:none;background:#f8fafc;border-bottom:1px solid #e8edf4;">
-        <td colspan="19" style="padding:0;">
+        <td colspan="20" style="padding:0;">
           <div id="bai-content-${{w.ticker}}" style="padding:10px 16px;font-size:12px;"></div>
         </td>
       </tr>`;
   }}).join("\\n");
 
   const noResults = rows.length === 0
-    ? `<tr><td colspan="19" style="padding:20px;text-align:center;color:#aaa;font-size:12px;">
+    ? `<tr><td colspan="20" style="padding:20px;text-align:center;color:#aaa;font-size:12px;">
          No stocks match the current filters.</td></tr>` : "";
 
   wrap.innerHTML = filterBar + `
@@ -3567,6 +3571,7 @@ function _renderBuffettTable() {{
         ${{thStyle("pe_ratio","P/E","#2980b9")}}
         ${{thStyle("p_fcf","P/FCF","#2980b9")}}
         ${{thStyle("ev_ebitda","EV/EBITDA","#2980b9")}}
+        <th style="padding:7px 8px;font-size:10px;color:#e67e22;font-weight:600;text-transform:uppercase;text-align:center;">Conv</th>
         <th style="padding:7px 8px;font-size:10px;color:#aaa;font-weight:600;text-transform:uppercase;">AI</th>
       </tr></thead>
       <tbody>${{tableRows}}${{noResults}}</tbody>
@@ -3652,6 +3657,10 @@ async function _bAI(ticker) {{
     aiRow.style.display = "";
     btn.textContent = "✓ AI";
     btn.style.background = "#eafaf1"; btn.style.borderColor = "#a9dfbf"; btn.style.color = "#1e8449";
+    const convCell = document.getElementById(`bconv-${{ticker}}`);
+    if (convCell && analysis.conviction) {{
+      convCell.textContent = "⭐".repeat(Math.min(5, Math.max(1, analysis.conviction)));
+    }}
   }} catch(e) {{
     content.innerHTML = `<span style="color:#c0392b;font-size:11px;">⚠ ${{e.message}}</span>`;
     aiRow.style.display = "";
