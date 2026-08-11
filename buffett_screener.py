@@ -418,9 +418,10 @@ def _assign_layer(r):
         return 5, "Financial data monopoly — regime hedge"
 
     # ── Layer 2: Cash-Flow Engines ────────────────────────────────────────────
-    if div_yld >= 0.03:
-        return 2, f"Dividend yield {div_yld*100:.1f}% — cash-flow engine"
-    if div_yld >= 0.015 and sector in ("Financial Services", "Real Estate", "Consumer Defensive"):
+    # dividend_yield is stored as percentage (e.g. 4.56 = 4.56%)
+    if div_yld >= 3.0:
+        return 2, f"Dividend yield {div_yld:.1f}% — cash-flow engine"
+    if div_yld >= 1.5 and sector in ("Financial Services", "Real Estate", "Consumer Defensive"):
         return 2, f"Income-oriented {sector.lower()} — cash-flow engine"
 
     # ── Layer 4: Convexity / Optionality ─────────────────────────────────────
@@ -501,9 +502,9 @@ def _score_winner(r) -> int:
     elif capx <= 35: score += 6
     else:            score += 3
 
-    # Dividend bonus
-    if   div >= 0.03:  score += 5
-    elif div >= 0.015: score += 3
+    # Dividend bonus (dividend_yield stored as percentage, e.g. 4.56 = 4.56%)
+    if   div >= 3.0: score += 5
+    elif div >= 1.5: score += 3
 
     # Cash > debt always true (screener requirement)
     score += 5

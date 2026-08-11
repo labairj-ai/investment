@@ -2085,7 +2085,7 @@ async function loadRecommendations(ctx) {{
     if (w.pe_ratio  != null) vals.push(`P/E ${{w.pe_ratio.toFixed(0)}}`);
     if (w.p_fcf     != null) vals.push(`P/FCF ${{w.p_fcf.toFixed(0)}}`);
     if (w.ev_ebitda != null) vals.push(`EV/EBITDA ${{w.ev_ebitda.toFixed(0)}}`);
-    if (w.dividend_yield && w.dividend_yield > 0) vals.push(`Yield ${{(w.dividend_yield*100).toFixed(1)}}%`);
+    if (w.dividend_yield && w.dividend_yield > 0) vals.push(`Yield ${{w.dividend_yield.toFixed(1)}}%`);
     const valStr = vals.length ? `<span style="color:#888;font-size:10px;"> · ${{vals.join(" · ")}}</span>` : "";
 
     const earnWarn = w.earningsFlag != null
@@ -3492,7 +3492,7 @@ function _renderBuffettTable() {{
       ? `<span style="font-weight:700;color:${{scoreColor}};font-size:13px;">${{score}}</span><span style="color:#ccc;font-size:10px;">/100</span>`
       : `<span style="color:#ccc;">—</span>`;
     const sectorShort = (w.sector || "").slice(0, 14);
-    const divPct = w.dividend_yield ? (w.dividend_yield * 100).toFixed(1) + "%" : "—";
+    const divPct = w.dividend_yield ? w.dividend_yield.toFixed(1) + "%" : "—";
     const hasAI = w.ai_analysis && !w.ai_analysis.error;
     const aiBtnLabel = hasAI ? "✓ AI" : "AI ▾";
     const aiBtnStyle = hasAI
@@ -3740,9 +3740,10 @@ function _renderLayerView() {{
       winners.slice(0, 5).forEach((w, idx) => {{
         const sc = w.quality_score;
         const scClr = sc >= 70 ? "#27ae60" : sc >= 50 ? "#f39c12" : sc != null ? "#c0392b" : "#aaa";
-        const div = w.dividend_yield ? (w.dividend_yield * 100).toFixed(1) + "%" : "—";
+        const div = w.dividend_yield ? w.dividend_yield.toFixed(1) + "%" : "—";
         const conv = w.ai_analysis && !w.ai_analysis.error
-          ? "⭐".repeat(Math.min(5, Math.max(1, w.ai_analysis.conviction || 3))) : "—";
+          ? "⭐".repeat(Math.min(5, Math.max(1, w.ai_analysis.conviction || 3)))
+          : `<span style="color:#ccc;font-size:10px;font-style:italic;">AI▾</span>`;
         const trBg = idx % 2 === 0 ? "#fff" : "#f9fafb";
         miniRows += `<tr style="background:${{trBg}};border-bottom:1px solid #f0f2f5;">
           <td style="padding:6px 8px;font-size:11px;color:#aaa;text-align:center;">${{idx+1}}</td>
