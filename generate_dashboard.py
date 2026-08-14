@@ -3776,7 +3776,13 @@ function _renderLayerView() {{
     const meta    = _bLayerMeta[n] || {{}};
     const winners = _buffettAllWinners.filter(w =>
       w.layer_rec === n && (!_bFilters.risk || w.value_trap_risk === _bFilters.risk)
-    ).sort((a, b) => (b.quality_score || 0) - (a.quality_score || 0));
+    ).sort((a, b) => {{
+      const aR = a.ai_layer_rank, bR = b.ai_layer_rank;
+      if (aR != null && bR != null) return aR - bR;
+      if (aR != null) return -1;
+      if (bR != null) return  1;
+      return (b.quality_score || 0) - (a.quality_score || 0);
+    }});
 
     const curPct  = (lw[n]?.weight || 0).toFixed(1);
     const tgtPct  = targets[n] || 0;
@@ -3812,6 +3818,11 @@ function _renderLayerView() {{
           ? "background:#eafaf1;border-color:#a9dfbf;color:#1e8449;"
           : "background:#f8f9ff;border-color:#c5b8f0;color:#6c3fc5;";
         const aiBtnLabel = hasAI ? "✓ AI" : "AI▾";
+        const hasLayerRank = w.ai_layer_rank != null;
+        const rankBadge = hasLayerRank
+          ? `<span style="font-size:9px;color:#6c3fc5;font-weight:700;background:#f0eeff;` +
+            `border-radius:3px;padding:0 3px;margin-right:3px;">🤖${{w.ai_layer_rank}}</span>`
+          : "";
         const trBg = idx % 2 === 0 ? "#fff" : "#f9fafb";
         miniRows += `<tr style="background:${{trBg}};border-bottom:1px solid #f0f2f5;">
           <td style="padding:6px 8px;font-size:11px;color:#aaa;text-align:center;">${{idx+1}}</td>
@@ -3822,7 +3833,7 @@ function _renderLayerView() {{
           <td style="padding:6px 8px;color:#2980b9;">${{w.pe_ratio != null ? w.pe_ratio.toFixed(1)+"x" : "—"}}</td>
           <td style="padding:6px 8px;color:#8e44ad;">${{div}}</td>
           <td style="padding:6px 8px;">
-            <span style="font-size:12px;">${{stars}}</span>
+            ${{rankBadge}}<span style="font-size:12px;">${{stars}}</span>
             <button id="bai-btn-${{w.ticker}}" onclick="_bAI('${{w.ticker}}')"
               style="font-size:9px;padding:1px 6px;border-radius:3px;border:1px solid;cursor:pointer;margin-left:2px;${{aiBtnStyle}}">${{aiBtnLabel}}</button>
           </td>

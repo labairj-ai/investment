@@ -417,6 +417,12 @@ def _run_daily():
             if send_email:
                 # Mark sent before dashboard — prevents duplicate email if dashboard fails
                 FLAG.write_text(today)
+            lf.write("[LayerAI] Running nightly layer rankings…\n")
+            try:
+                _run_layer_ai_rankings()
+                lf.write("[LayerAI] Done.\n")
+            except Exception as _e:
+                lf.write(f"[LayerAI] Error: {_e}\n")
             result = subprocess.run(
                 [str(VENV_PY), str(PROJECT_DIR / "generate_dashboard.py")],
                 cwd=str(PROJECT_DIR),
@@ -859,20 +865,101 @@ def _run_cc_ai_job(job_id: str, ticker: str) -> None:
         _job_update(job_id, status="error", error=str(e))
 
 
+def _run_layer_ai_rankings() -> None:
+    """Run AI layer ranking for all active layers and persist ranks to DB. Called nightly."""
+    db = PROJECT_DIR / "out" / "buffett.db"
+    if not db.exists() or not ollama_client.available():
+        return
+    import csv as _csv
+    try:
+        conn = sqlite3.connect(str(db), timeout=10)
+        conn.row_factory = sqlite3.Row
+        active_layers = [r[0] for r in conn.execute(
+            "SELECT DISTINCT layer_rec FROM buffett_winners WHERE layer_rec IS NOT NULL ORDER BY layer_rec"
+        ).fetchall()]
+        conn.close()
+    except Exception:
+        return
+
+    layer_names = {1: "Structural Ballast", 2: "Cash-Flow Engine", 3: "Compounder",
+                   4: "Convexity/Optionality", 5: "Shock Absorber"}
+
+    for layer_num in active_layers:
+        try:
+            conn = sqlite3.connect(str(db), timeout=10)
+            conn.row_factory = sqlite3.Row
+            rows = [dict(r) for r in conn.execute(
+                "SELECT ticker, company, sector, gross_margin, net_income_margin, "
+                "pe_ratio, p_fcf, ev_ebitda, dividend_yield, quality_score, value_trap_risk "
+                "FROM buffett_winners WHERE layer_rec=? AND value_trap_risk='low' "
+                "ORDER BY quality_score DESC LIMIT 5",
+                (layer_num,)
+            ).fetchall()]
+            conn.close()
+            if not rows:
+                continue
+
+            layer_name = layer_names.get(layer_num, f"Layer {layer_num}")
+            n_stocks = len(rows)
+            stock_lines = []
+            for r in rows:
+                div = f"{r['dividend_yield']*100:.1f}%" if r.get("dividend_yield") else "—"
+                stock_lines.append(
+                    f"  {r['ticker']} ({r.get('company','?')}, {r.get('sector','?')}): "
+                    f"Score={r.get('quality_score','?')}/100, "
+                    f"GrossMargin={r.get('gross_margin',0):.0f}%, "
+                    f"NetIncome={r.get('net_income_margin',0):.0f}%, "
+                    f"P/E={r.get('pe_ratio') or 'N/A'}, P/FCF={r.get('p_fcf') or 'N/A'}, Div={div}"
+                )
+
+            prompt = (
+                f"You are a stock analyst. I am giving you exactly {n_stocks} stocks. "
+                f"Rank ONLY these {n_stocks} stocks from 1 (best) to {n_stocks} (worst) as "
+                f"Layer {layer_num} ({layer_name}) investments. Do not reference any other stocks.\n\n"
+                f"Stocks to rank:\n{chr(10).join(stock_lines)}\n\n"
+                f"Return ONLY valid JSON, no other text. Use rank 1 through {n_stocks} only:\n"
+                f'{{"summary":"<2-sentence overview>","ranked":['
+                f'{{"ticker":"BEST","rank":1,"note":"<why>"}},...]}}'
+            )
+
+            full_text = ""
+            for tok in ollama_client.stream_generate(prompt, model="llama3.1:8b", num_predict=800):
+                full_text += tok
+
+            dec = json.JSONDecoder()
+            start = full_text.index("{")
+            result, _ = dec.raw_decode(full_text, start)
+
+            now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            conn2 = sqlite3.connect(str(db), timeout=10)
+            try:
+                conn2.execute(
+                    "UPDATE buffett_winners SET ai_layer_rank=NULL, ai_layer_rank_at=NULL WHERE layer_rec=?",
+                    (layer_num,)
+                )
+                for entry in result.get("ranked", []):
+                    rank_val = entry.get("rank")
+                    t = (entry.get("ticker") or "").strip()
+                    if t and rank_val is not None:
+                        conn2.execute(
+                            "UPDATE buffett_winners SET ai_layer_rank=?, ai_layer_rank_at=? WHERE ticker=?",
+                            (rank_val, now_str, t)
+                        )
+                conn2.commit()
+            finally:
+                conn2.close()
+            print(f"[LayerAI] Layer {layer_num} ranked {n_stocks} stocks")
+        except Exception as e:
+            print(f"[LayerAI] Layer {layer_num} failed: {e}")
+
+
 def _run_refresh_job(job_id: str) -> None:
-    """Run send_newsletter_main.py --no-email + generate_dashboard.py in a background thread."""
+    """Run send_newsletter_main.py --no-email + AI layer rankings + generate_dashboard.py."""
     import subprocess as _sp
     VENV_PY = PROJECT_DIR / "venv" / "bin" / "python3"
     try:
-        friendly = {
-            "send_newsletter_main.py": "Fetching latest market data…",
-            "generate_dashboard.py":   "Rebuilding dashboard…",
-        }
-        for script, extra_args in [
-            ("send_newsletter_main.py", ["--no-email"]),
-            ("generate_dashboard.py",   []),
-        ]:
-            _job_update(job_id, progress=friendly.get(script, f"Running {script}…"))
+        for script, extra_args in [("send_newsletter_main.py", ["--no-email"])]:
+            _job_update(job_id, progress="Fetching latest market data…")
             result = _sp.run(
                 [str(VENV_PY), str(PROJECT_DIR / script)] + extra_args,
                 cwd=str(PROJECT_DIR), capture_output=True, text=True, timeout=300,
@@ -881,6 +968,20 @@ def _run_refresh_job(job_id: str) -> None:
                 _job_update(job_id, status="error",
                             error=f"{script} failed: {result.stderr.strip()[-300:]}")
                 return
+
+        _job_update(job_id, progress="Running AI layer rankings…")
+        _run_layer_ai_rankings()
+
+        _job_update(job_id, progress="Rebuilding dashboard…")
+        result = _sp.run(
+            [str(VENV_PY), str(PROJECT_DIR / "generate_dashboard.py")],
+            cwd=str(PROJECT_DIR), capture_output=True, text=True, timeout=300,
+        )
+        if result.returncode != 0:
+            _job_update(job_id, status="error",
+                        error=f"generate_dashboard.py failed: {result.stderr.strip()[-300:]}")
+            return
+
         _job_update(job_id, status="done", result={"ok": True})
     except Exception as e:
         _job_update(job_id, status="error", error=str(e))
@@ -1093,6 +1194,27 @@ Return ONLY valid JSON, no other text. Use rank 1 through {n_stocks} only:
             _job_update(job_id, status="error",
                         error="AI returned malformed JSON — try again")
             return
+
+        # Persist AI ranks back to DB
+        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        conn3 = sqlite3.connect(str(db), timeout=10)
+        try:
+            # Clear previous ranks for this layer
+            conn3.execute(
+                "UPDATE buffett_winners SET ai_layer_rank=NULL, ai_layer_rank_at=NULL WHERE layer_rec=?",
+                (layer_num,)
+            )
+            for entry in result.get("ranked", []):
+                rank_val = entry.get("rank")
+                t = entry.get("ticker", "").strip()
+                if t and rank_val is not None:
+                    conn3.execute(
+                        "UPDATE buffett_winners SET ai_layer_rank=?, ai_layer_rank_at=? WHERE ticker=?",
+                        (rank_val, now_str, t)
+                    )
+            conn3.commit()
+        finally:
+            conn3.close()
 
         _job_update(job_id, status="done", result={"ok": True, "layer": layer_num, **result})
     except Exception as e:

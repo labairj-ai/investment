@@ -111,6 +111,8 @@ def _init_db(conn):
         ("buffett_winners", "quality_score",    "INTEGER"),
         ("buffett_winners", "ai_analysis",      "TEXT"),
         ("buffett_winners", "ai_analysis_at",   "TEXT"),
+        ("buffett_winners", "ai_layer_rank",    "INTEGER"),
+        ("buffett_winners", "ai_layer_rank_at", "TEXT"),
     ]
     for table, col, coltype in migrations:
         try:
