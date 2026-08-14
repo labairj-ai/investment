@@ -989,7 +989,7 @@ Return this JSON structure:
         num_predict = 1800 if holdings_meta else 700
         for tok in ollama_client.stream_generate(prompt, model="llama3.1:8b", num_predict=num_predict):
             full_text += tok
-            _job_update(job_id, progress=full_text[:200])
+            _job_update(job_id, progress=full_text)
 
         try:
             dec = json.JSONDecoder()
