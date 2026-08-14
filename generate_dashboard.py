@@ -3627,8 +3627,15 @@ async function _bAI(ticker) {{
   }}
 
   // Generate via API
-  btn.textContent = "…";
+  btn.textContent = "⏳ …";
   btn.disabled = true;
+  // Show the row immediately with a streaming pre so user sees progress
+  content.innerHTML =
+    `<pre id="bai-stream-${{ticker}}" style="margin:0;font-size:11px;color:#555;white-space:pre-wrap;` +
+    `word-break:break-word;max-height:220px;overflow-y:auto;background:#f4f4f4;` +
+    `padding:0.6rem;border-radius:5px;line-height:1.5">Starting AI analysis…</pre>`;
+  aiRow.style.display = "";
+  const streamEl = () => document.getElementById(`bai-stream-${{ticker}}`);
   try {{
     const r1 = await fetch("/api/buffett-ai-analyze", {{
       method: "POST", headers: {{"Content-Type": "application/json"}},
@@ -3641,20 +3648,32 @@ async function _bAI(ticker) {{
     if (d1.cached) {{
       analysis = d1.analysis;
     }} else {{
-      // Poll job
+      // Poll job and stream progress into the pre element
       const jobId = d1.job_id;
+      let lastProgress = "";
       while (true) {{
-        await new Promise(res => setTimeout(res, 2000));
-        const rp = await fetch(`/api/analysis-job/${{jobId}}`);
-        const dp = await rp.json();
-        if (dp.status === "done") {{ analysis = dp.result?.analysis; break; }}
+        await new Promise(res => setTimeout(res, 1000));
+        let dp;
+        try {{
+          const rp = await fetch(`/api/analysis-job/${{jobId}}`);
+          dp = await rp.json();
+        }} catch (_) {{
+          const el = streamEl();
+          if (el) el.textContent = (lastProgress || "AI is thinking…") + "\n[reconnecting…]";
+          continue;
+        }}
         if (dp.status === "error") throw new Error(dp.error || "AI error");
+        if (dp.progress && dp.progress !== lastProgress) {{
+          lastProgress = dp.progress;
+          const el = streamEl();
+          if (el) {{ el.textContent = dp.progress; el.scrollTop = el.scrollHeight; }}
+        }}
+        if (dp.status === "done") {{ analysis = dp.result?.analysis; break; }}
       }}
     }}
     if (!analysis) throw new Error("No analysis returned");
     w.ai_analysis = analysis;
     content.innerHTML = _bAIPanel(ticker, analysis);
-    aiRow.style.display = "";
     btn.textContent = "✓ AI";
     btn.style.background = "#eafaf1"; btn.style.borderColor = "#a9dfbf"; btn.style.color = "#1e8449";
     const convCell = document.getElementById(`bconv-${{ticker}}`);
@@ -3663,7 +3682,6 @@ async function _bAI(ticker) {{
     }}
   }} catch(e) {{
     content.innerHTML = `<span style="color:#c0392b;font-size:11px;">⚠ ${{e.message}}</span>`;
-    aiRow.style.display = "";
     btn.textContent = "AI ▾";
   }} finally {{
     btn.disabled = false;
