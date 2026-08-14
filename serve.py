@@ -971,9 +971,6 @@ def _run_refresh_job(job_id: str) -> None:
                             error=f"{script} failed: {result.stderr.strip()[-300:]}")
                 return
 
-        _job_update(job_id, progress="Running AI layer rankings…")
-        _run_layer_ai_rankings()
-
         _job_update(job_id, progress="Rebuilding dashboard…")
         result = _sp.run(
             [str(VENV_PY), str(PROJECT_DIR / "generate_dashboard.py")],
