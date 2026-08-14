@@ -1032,7 +1032,8 @@ def _run_buffett_layer_compare_job(job_id: str, layer_num: int) -> None:
             "SELECT ticker, company, sector, gross_margin, net_income_margin, "
             "pe_ratio, p_fcf, ev_ebitda, dividend_yield, quality_score, "
             "value_trap_risk, layer_reason "
-            "FROM buffett_winners WHERE layer_rec=? ORDER BY quality_score DESC",
+            "FROM buffett_winners WHERE layer_rec=? AND value_trap_risk='low' "
+            "ORDER BY quality_score DESC LIMIT 5",
             (layer_num,)
         )]
         conn.close()
@@ -1060,8 +1061,8 @@ def _run_buffett_layer_compare_job(job_id: str, layer_num: int) -> None:
                 f"TrapRisk={r.get('value_trap_risk','?')}"
             )
 
-        prompt = f"""You are a stock analyst comparing Buffett-quality stocks in Layer {layer_num}: {layer_name}.
-All stocks below passed the Buffett 6-criteria screen (Gross≥40%, SGA≤30%, NetInc≥20%, Interest≤15%, CapEx≤50%, Cash>Debt).
+        prompt = f"""You are a stock analyst comparing the top {len(rows)} Buffett-quality stocks in Layer {layer_num}: {layer_name}.
+All stocks below passed the Buffett 6-criteria screen (Gross≥40%, SGA≤30%, NetInc≥20%, Interest≤15%, CapEx≤50%, Cash>Debt) and are low value-trap risk, ranked by quality score.
 
 Stocks to rank:
 {chr(10).join(stock_lines)}
