@@ -3637,11 +3637,24 @@ async function _bAI(ticker) {{
   aiRow.style.display = "";
   const streamEl = document.getElementById(`bai-stream-${{ticker}}`);
   try {{
-    const r1 = await fetch("/api/buffett-ai-analyze", {{
-      method: "POST", headers: {{"Content-Type": "application/json"}},
-      body: JSON.stringify({{ticker}})
-    }});
-    const d1 = await r1.json();
+    // Retry the initial POST up to 3 times on transient network errors
+    let r1, d1;
+    for (let attempt = 0; attempt < 3; attempt++) {{
+      try {{
+        if (attempt > 0) {{
+          streamEl.textContent = `Network error — retrying (${{attempt}}/2)…`;
+          await new Promise(res => setTimeout(res, 1500 * attempt));
+        }}
+        r1 = await fetch("/api/buffett-ai-analyze", {{
+          method: "POST", headers: {{"Content-Type": "application/json"}},
+          body: JSON.stringify({{ticker}})
+        }});
+        d1 = await r1.json();
+        break;
+      }} catch(_) {{
+        if (attempt === 2) throw new Error("Network error — server unreachable after 3 attempts");
+      }}
+    }}
     if (!d1.ok) throw new Error(d1.error || "API error");
 
     let analysis;
