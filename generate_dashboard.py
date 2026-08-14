@@ -3532,9 +3532,9 @@ function _renderBuffettTable() {{
         <td style="padding:8px 10px;color:#2980b9;">${{_bFmtVal(w.p_fcf)}}</td>
         <td style="padding:8px 10px;color:#2980b9;">${{_bFmtVal(w.ev_ebitda)}}</td>
         <td id="bconv-${{w.ticker}}" style="padding:6px 8px;text-align:center;white-space:nowrap;">${{convHtml}}</td>
-        <td style="padding:6px 8px;text-align:center;">
-          <button id="bai-btn-${{w.ticker}}" onclick="_bAI('${{w.ticker}}')"
-            style="padding:2px 8px;border-radius:8px;font-size:10px;font-weight:600;cursor:pointer;
+        <td style="padding:10px 12px;text-align:center;cursor:pointer;touch-action:manipulation;" onclick="_bAI('${{w.ticker}}')">
+          <button id="bai-btn-${{w.ticker}}"
+            style="padding:4px 10px;border-radius:8px;font-size:10px;font-weight:600;pointer-events:none;
                    border:1px solid;${{aiBtnStyle}}">${{aiBtnLabel}}</button>
         </td>
       </tr>
@@ -3832,10 +3832,10 @@ function _renderLayerView() {{
           <td style="padding:6px 8px;color:#27ae60;font-weight:600;">${{w.gross_margin?.toFixed(1)}}%</td>
           <td style="padding:6px 8px;color:#2980b9;">${{w.pe_ratio != null ? w.pe_ratio.toFixed(1)+"x" : "—"}}</td>
           <td style="padding:6px 8px;color:#8e44ad;">${{div}}</td>
-          <td style="padding:6px 8px;">
+          <td style="padding:10px 10px;cursor:pointer;touch-action:manipulation;" onclick="_bAI('${{w.ticker}}')">
             ${{rankBadge}}<span style="font-size:12px;">${{stars}}</span>
-            <button id="bai-btn-${{w.ticker}}" onclick="_bAI('${{w.ticker}}')"
-              style="font-size:9px;padding:1px 6px;border-radius:3px;border:1px solid;cursor:pointer;margin-left:2px;${{aiBtnStyle}}">${{aiBtnLabel}}</button>
+            <button id="bai-btn-${{w.ticker}}"
+              style="font-size:10px;padding:4px 8px;border-radius:3px;border:1px solid;pointer-events:none;margin-left:2px;${{aiBtnStyle}}">${{aiBtnLabel}}</button>
           </td>
         </tr>
         <tr id="bai-row-${{w.ticker}}" style="display:none;background:#f8fafc;">
