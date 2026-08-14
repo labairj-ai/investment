@@ -3923,11 +3923,24 @@ async function _bLayerCompare(layerNum) {{
     `padding:0.6rem;border-radius:5px;line-height:1.5">🤖 Asking AI to rank…</pre>`;
   const streamEl = document.getElementById(`blayer-stream-${{layerNum}}`);
   try {{
-    const r1 = await fetch("/api/buffett-layer-compare", {{
-      method: "POST", headers: {{"Content-Type": "application/json"}},
-      body: JSON.stringify({{layer: layerNum}})
-    }});
-    const d1 = await r1.json();
+    // Retry initial POST up to 3 times on transient network errors
+    let r1, d1;
+    for (let attempt = 0; attempt < 3; attempt++) {{
+      try {{
+        if (attempt > 0) {{
+          streamEl.textContent = `Network error — retrying (${{attempt}}/2)…`;
+          await new Promise(res => setTimeout(res, 1500 * attempt));
+        }}
+        r1 = await fetch("/api/buffett-layer-compare", {{
+          method: "POST", headers: {{"Content-Type": "application/json"}},
+          body: JSON.stringify({{layer: layerNum}})
+        }});
+        d1 = await r1.json();
+        break;
+      }} catch(_) {{
+        if (attempt === 2) throw new Error("Network error — server unreachable after 3 attempts");
+      }}
+    }}
     if (!d1.ok) throw new Error(d1.error || "API error");
     const jobId = d1.job_id;
     let lastProgress = "";
