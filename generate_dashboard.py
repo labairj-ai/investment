@@ -3696,7 +3696,7 @@ function _bAIPanel(ticker, ai) {{
     `<span style="display:inline-block;padding:1px 7px;border-radius:8px;font-size:10px;font-weight:700;
                   background:${{color}}22;color:${{color}};border:1px solid ${{color}}44;">${{label}}</span>`;
 
-  const redundantEntries = (ai.redundancy || []).filter(r => r.is_redundant);
+  const redundantEntries = (ai.redundancy || []);
   let redundancyHtml = "";
   if (redundantEntries.length > 0) {{
     const rows = redundantEntries.map(r => {{

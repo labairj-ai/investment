@@ -916,66 +916,40 @@ def _run_buffett_ai_job(job_id: str, ticker: str) -> None:
             pass
         trap_flags_text = "; ".join(trap_flags) if trap_flags else "none"
 
-        # Load holdings and fetch yfinance info for each
-        holdings_context_lines = []
-        holdings_meta = []  # list of dicts for the prompt
+        # Load holdings from CSV — no yfinance fetch needed; the AI knows these tickers
+        holdings_lines = []
         holdings_path = PROJECT_DIR / "holdings.csv"
+        _job_update(job_id, progress="Loading portfolio holdings…")
         if holdings_path.exists():
-            _job_update(job_id, progress="Fetching holdings data…")
-            import yfinance as _yf
             try:
                 with open(str(holdings_path), newline="") as hf:
-                    holding_rows = list(_csv.DictReader(hf))
-                for h in holding_rows:
-                    hticker = (h.get("Stock") or "").strip()
-                    hlayer = h.get("Layer", "?")
-                    if not hticker or hticker == ticker:
-                        continue
-                    try:
-                        hinfo = _yf.Ticker(hticker).info
-                        hsector = hinfo.get("sector") or "?"
-                        hindustry = hinfo.get("industry") or "?"
-                        hcompany = hinfo.get("longName") or hinfo.get("shortName") or hticker
-                        hgm = hinfo.get("grossMargins")
-                        hgm_str = f"{hgm*100:.0f}%" if hgm else "N/A"
-                        hpe = hinfo.get("trailingPE")
-                        hpe_str = f"{hpe:.1f}x" if hpe else "N/A"
-                        hdiv = hinfo.get("dividendYield")
-                        hdiv_str = f"{hdiv*100:.1f}%" if hdiv else "None"
-                        line = (
-                            f"  {hticker} ({hcompany}, {hsector}/{hindustry}, Layer {hlayer}): "
-                            f"GrossMargin={hgm_str}, P/E={hpe_str}, Div={hdiv_str}"
-                        )
-                        holdings_context_lines.append(line)
-                        holdings_meta.append({"ticker": hticker, "company": hcompany,
-                                              "sector": hsector, "industry": hindustry,
-                                              "layer": hlayer})
-                    except Exception:
-                        holdings_context_lines.append(f"  {hticker} (Layer {hlayer}): data unavailable")
-                        holdings_meta.append({"ticker": hticker, "company": hticker,
-                                              "sector": "?", "industry": "?", "layer": hlayer})
+                    for h in _csv.DictReader(hf):
+                        hticker = (h.get("Stock") or "").strip()
+                        hlayer = h.get("Layer", "?")
+                        if hticker and hticker != ticker:
+                            holdings_lines.append(f"  {hticker} (Layer {hlayer})")
             except Exception:
                 pass
 
         holdings_block = ""
         redundancy_schema = ""
-        if holdings_meta:
+        if holdings_lines:
             holdings_block = f"""
-Existing Portfolio Holdings (do NOT include {ticker} itself):
-{chr(10).join(holdings_context_lines)}
+Existing Portfolio Holdings (exclude {ticker} itself — it is the winner being analyzed):
+{chr(10).join(holdings_lines)}
 
-For each holding above, determine if it would be REDUNDANT with {ticker} — meaning they serve the same economic role (same sector, business model, risk exposure, or competitive moat). For ETFs/funds, consider their dominant holdings/exposure.
+Using your knowledge of each ticker above, identify any that are REDUNDANT with {ticker}.
+Redundant = same economic role, sector, business model, or risk exposure.
+ETFs/funds: consider their dominant exposure (e.g. VTSAX = total US market, SCHD = US dividend).
 """
-            holding_tickers_list = ", ".join(f'"{m["ticker"]}"' for m in holdings_meta)
-            redundancy_schema = f""",
+            redundancy_schema = """,
   "redundancy": [
-    {{
-      "ticker": "<one of: {holding_tickers_list}>",
-      "is_redundant": <true|false>,
-      "redundancy_reason": "<one sentence: why they overlap or why they don't>",
-      "winner_superior": <true|false — only meaningful if is_redundant is true>,
-      "superiority_reason": "<one sentence: what makes the winner better or the holding better — or empty string if not redundant>"
-    }}
+    {
+      "ticker": "<ticker of a redundant holding only — omit non-redundant ones>",
+      "redundancy_reason": "<one sentence: what overlaps>",
+      "winner_superior": <true|false>,
+      "superiority_reason": "<one sentence: why winner is better, or why to keep the holding>"
+    }
   ]"""
 
         prompt = f"""You are a stock analyst. Analyze this Buffett screener winner. Return ONLY valid JSON, no other text.
@@ -1009,7 +983,7 @@ Return this JSON structure:
 
         _job_update(job_id, progress="Sending to AI…")
         full_text = ""
-        num_predict = 1800 if holdings_meta else 700
+        num_predict = 2500 if holdings_lines else 700
         for tok in ollama_client.stream_generate(prompt, model="llama3.1:8b", num_predict=num_predict):
             full_text += tok
             _job_update(job_id, progress=full_text)
