@@ -864,11 +864,15 @@ def _run_refresh_job(job_id: str) -> None:
     import subprocess as _sp
     VENV_PY = PROJECT_DIR / "venv" / "bin" / "python3"
     try:
+        friendly = {
+            "send_newsletter_main.py": "Fetching latest market data…",
+            "generate_dashboard.py":   "Rebuilding dashboard…",
+        }
         for script, extra_args in [
             ("send_newsletter_main.py", ["--no-email"]),
             ("generate_dashboard.py",   []),
         ]:
-            _job_update(job_id, progress=f"Running {script}…")
+            _job_update(job_id, progress=friendly.get(script, f"Running {script}…"))
             result = _sp.run(
                 [str(VENV_PY), str(PROJECT_DIR / script)] + extra_args,
                 cwd=str(PROJECT_DIR), capture_output=True, text=True, timeout=300,
