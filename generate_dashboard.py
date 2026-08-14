@@ -3745,6 +3745,11 @@ function _bAIPanel(ticker, ai) {{
 
   return `
     <div style="max-width:860px;">
+      <div style="display:flex;justify-content:flex-end;margin-bottom:6px;">
+        <button onclick="_bAIRerun('${{ticker}}')"
+          style="font-size:10px;padding:3px 10px;border-radius:6px;border:1px solid #dde;
+                 background:#f4f6f9;color:#555;cursor:pointer;touch-action:manipulation;">↻ Re-run</button>
+      </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
         <div>
           <div style="font-weight:600;color:#1a2340;font-size:11px;margin-bottom:3px;">📊 Thesis</div>
@@ -3767,6 +3772,16 @@ function _bAIPanel(ticker, ai) {{
       </div>
       ${{redundancyHtml}}
     </div>`;
+}}
+
+function _bAIRerun(ticker) {{
+  const w = _buffettAllWinners.find(x => x.ticker === ticker);
+  if (w) delete w.ai_analysis;
+  const aiRow = document.getElementById(`bai-row-${{ticker}}`);
+  if (aiRow) aiRow.style.display = "none";
+  const btn = document.getElementById(`bai-btn-${{ticker}}`);
+  if (btn) {{ btn.textContent = "AI ▾"; btn.style.background = "#f4f6f9"; btn.style.borderColor = "#dde"; btn.style.color = "#555"; }}
+  _bAI(ticker);
 }}
 
 // ── Buffett: layer view ───────────────────────────────────────────────────
