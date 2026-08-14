@@ -3594,6 +3594,7 @@ function _bSetView(mode) {{
     lWrap.style.display = "none";
     if (tBtn) tBtn.style.cssText = tBtn.style.cssText.replace(/background:[^;]+;border-color:[^;]+;color:[^;]+;/, activeStyle);
     if (lBtn) lBtn.style.cssText = lBtn.style.cssText.replace(/background:[^;]+;border-color:[^;]+;color:[^;]+;/, inactStyle);
+    _renderBuffettTable();
   }} else {{
     tWrap.style.display = "none";
     lWrap.style.display = "";
