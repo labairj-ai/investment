@@ -6,16 +6,15 @@ A personal investment tracking system that sends a daily email newsletter, maint
 
 ## Deployment
 
-**Production runs on the `optiplex` home server** (Ubuntu 24.04, since 2026-07-12) — this Mac copy is for development.
+The recommended setup is a always-on home server (e.g. a mini PC or Raspberry Pi running Ubuntu) with a systemd service for `serve.py`. The Mac/dev machine is for development only.
 
-- Repo on server: `/home/optiplex/investment`, venv rebuilt from `requirements.txt`
-- Dashboard: systemd `investment.service` runs `serve.py` on port 5001 — public at **https://optiplex.tailb97cdb.ts.net/** (Tailscale Funnel)
-- Newsletter: sent by serve.py's built-in scheduler (~7:15 AM ET); `investment-newsletter.timer` runs `run_investment.sh` at 8 AM as a backstop (flag file `out/last_run_date.txt` prevents double sends)
-- Data backup: serve.py's scheduler runs `backup_data.sh` → pushes to `labairj-ai/investment-data` via a write deploy key (`~/.ssh/id_ed25519`, ssh alias `github-data`)
-- Server keeps one intentional uncommitted patch: `serve.py` binds `0.0.0.0` instead of `localhost`
-- Deploy: commit + push here, then on the server `git pull` (origin uses read-only deploy key via alias `github-inv`); restart `investment.service` only if `serve.py` changed
+- **Server:** clone repo, build venv from `requirements.txt`, run `serve.py` as a systemd service on port 5001
+- **Newsletter:** serve.py's built-in scheduler sends at ~7:15 AM ET; `run_investment.sh` via a systemd timer at 8 AM acts as a backstop (flag file `out/last_run_date.txt` prevents double sends)
+- **LAN / remote access:** by default `serve.py` binds to `localhost`; change to `0.0.0.0` to expose on the LAN; use [Tailscale Funnel](https://tailscale.com/kb/1223/funnel) or a reverse proxy for remote access
+- **Data backup:** `backup_data.sh` pushes DB + CSV to a separate private GitHub repo
+- **Deploy flow:** commit + push on dev machine, `git pull` on server; restart the service only when `serve.py` changes
 
-The old launchd agents from the Mac era are archived in `launchd-disabled-on-mac/`.
+The old macOS launchd agents are archived in `launchd-disabled-on-mac/`.
 
 ---
 
@@ -217,6 +216,9 @@ Runs automatically inside `serve.py` as a background thread — **no separate la
 2. If not and it's ≥ 7 AM ET, runs `send_newsletter_main.py` → `generate_dashboard.py`
 3. After success, triggers the **data backup** to the private `investment-data` repo
 4. Rechecks every 30 minutes as a safety net
+5. At **9:30 PM ET**, runs a no-email price refresh (`--no-email`) to overwrite today's snapshot with actual closing prices and regenerate the dashboard — important for OTC/pink-sheet tickers (e.g. MITSF, ITOCF) that can lag 4–6 hours in yfinance after market close
+
+**OTC price handling:** for tickers whose yfinance history is stale after the 4 PM close (more than one business day behind today), `send_newsletter_main.py` falls back to `fast_info.last_price` — safe for OTC stocks since they have no pre/post-market trading.
 
 **Logs:** `out/newsletter.log`
 
@@ -629,6 +631,7 @@ investment/
     ├── newsletter.log               # Daily digest run log
     ├── screener.log                 # Nightly Buffett screener log
     ├── last_run_date.txt            # Flag — prevents double digest sends
+    ├── last_refresh_date.txt        # Flag — prevents double evening price refreshes
     ├── last_screener_date.txt       # Flag — prevents double screener runs
     └── buffett_screener.lock        # PID lock — prevents concurrent screener instances
 ```
