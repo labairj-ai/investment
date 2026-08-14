@@ -153,6 +153,33 @@ def _is_market_holiday(check_date=None) -> bool:
     return len(holidays) > 0
 
 
+def _stale_after_close(series: pd.Series) -> bool:
+    """True when yfinance history is missing the most recent completed session.
+    OTC/pink-sheet tickers often lag 5-6 hours after market close before yfinance
+    reflects today's close; this triggers the fast_info fallback."""
+    if series.empty:
+        return True
+    now_et = datetime.now(TZ)
+    most_recent = series.index[-1].date()
+    today = now_et.date()
+    # After 4 PM ET, today's session is closed; if yfinance still shows yesterday → stale
+    if now_et.hour >= 16 and most_recent < today:
+        return True
+    # Any time: stale if more than one business day behind today
+    bdays = pd.bdate_range(str(most_recent + timedelta(days=1)), str(today))
+    return len(bdays) > 1
+
+
+def _current_price_via_fast_info(ticker: str):
+    """Fallback for stale yfinance history: fast_info.last_price gives today's actual
+    close for OTC stocks (no pre/post-market trading, so last_price is safe to use)."""
+    try:
+        price = float(yf.Ticker(ticker).fast_info.last_price or 0)
+        return price if price > 0 else None
+    except Exception:
+        return None
+
+
 def fetch_last_two_closes(tickers: list[str]) -> pd.DataFrame:
     # Always use history-based closes (not fast_info.last_price).
     # fast_info.last_price includes pre/post-market trades, so at 7:15 AM ET it
@@ -170,9 +197,23 @@ def fetch_last_two_closes(tickers: list[str]) -> pd.DataFrame:
                 hist = yf.Ticker(t).history(period="5d", interval="1d")
                 s = hist["Close"].dropna()
                 if len(s) >= 2:
+                    if _stale_after_close(s):
+                        # yfinance is lagging (common for OTC/pink-sheet tickers 4-6h after close)
+                        # fast_info.last_price is safe here: OTC stocks have no pre/post-market
+                        current = _current_price_via_fast_info(t)
+                        if current:
+                            rows.append((t, current, float(s.iloc[-1])))
+                            last_err = None
+                            break
                     rows.append((t, float(s.iloc[-1]), float(s.iloc[-2])))
                     last_err = None
                     break
+                elif len(s) == 1 and _stale_after_close(s):
+                    current = _current_price_via_fast_info(t)
+                    if current:
+                        rows.append((t, current, float(s.iloc[-1])))
+                        last_err = None
+                        break
                 last_err = RuntimeError(f"No price data for {t}")
             except Exception as e:
                 last_err = e

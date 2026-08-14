@@ -381,10 +381,11 @@ def _run_daily():
         return
     from zoneinfo import ZoneInfo
     from datetime import datetime as _dt
-    TZ      = ZoneInfo("America/New_York")
-    FLAG    = PROJECT_DIR / "out" / "last_run_date.txt"
-    VENV_PY = PROJECT_DIR / "venv" / "bin" / "python3"
-    LOG     = PROJECT_DIR / "out" / "newsletter.log"
+    TZ           = ZoneInfo("America/New_York")
+    FLAG         = PROJECT_DIR / "out" / "last_run_date.txt"
+    REFRESH_FLAG = PROJECT_DIR / "out" / "last_refresh_date.txt"
+    VENV_PY      = PROJECT_DIR / "venv" / "bin" / "python3"
+    LOG          = PROJECT_DIR / "out" / "newsletter.log"
 
     def already_ran(today):
         try:
@@ -392,11 +393,20 @@ def _run_daily():
         except Exception:
             return False
 
-    def run():
+    def already_refreshed(today):
+        try:
+            return REFRESH_FLAG.read_text().strip() == today
+        except Exception:
+            return False
+
+    def run(send_email=True):
+        cmd = [str(VENV_PY), str(PROJECT_DIR / "send_newsletter_main.py")]
+        if not send_email:
+            cmd.append("--no-email")
         with open(LOG, "a") as lf:
             lf.write(f"\n=== SCHEDULER {_dt.now(TZ)} ===\n")
             result = subprocess.run(
-                [str(VENV_PY), str(PROJECT_DIR / "send_newsletter_main.py")],
+                cmd,
                 cwd=str(PROJECT_DIR),
                 capture_output=True, text=True, timeout=300
             )
@@ -404,8 +414,9 @@ def _run_daily():
             if result.returncode != 0:
                 lf.write(f"ERROR (send_newsletter_main.py): {result.stderr}\n")
                 return False
-            # Mark sent before dashboard — prevents duplicate email if dashboard fails
-            FLAG.write_text(today)
+            if send_email:
+                # Mark sent before dashboard — prevents duplicate email if dashboard fails
+                FLAG.write_text(today)
             result = subprocess.run(
                 [str(VENV_PY), str(PROJECT_DIR / "generate_dashboard.py")],
                 cwd=str(PROJECT_DIR),
@@ -421,7 +432,7 @@ def _run_daily():
         today = now.date().isoformat()
         if now.hour >= 7 and not already_ran(today):
             print(f"[Scheduler] Running newsletter for {today}…")
-            if run():
+            if run(send_email=True):
                 print(f"[Scheduler] Done for {today}.")
                 try:
                     _backup_data()
@@ -429,6 +440,13 @@ def _run_daily():
                     print(f"[Backup] Exception: {exc}")
             else:
                 print(f"[Scheduler] Failed — will retry in 30 min.")
+        elif already_ran(today) and now.hour >= 21 and now.minute >= 30 and not already_refreshed(today):
+            print(f"[Scheduler] Running evening price refresh for {today}…")
+            if run(send_email=False):
+                REFRESH_FLAG.write_text(today)
+                print(f"[Scheduler] Evening refresh done for {today}.")
+            else:
+                print(f"[Scheduler] Evening refresh failed — will retry in 30 min.")
         time.sleep(1800)
 
 
