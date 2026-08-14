@@ -463,7 +463,8 @@ threading.Thread(target=_run_daily, daemon=True).start()
 def _auto_ai_analyze_winners(log_file=None):
     """After a successful scan, generate AI analysis for any winner missing it or older than 30 days."""
     import json as _json
-    STALE_DAYS = 30
+    STALE_DAYS    = 6   # refresh before the 7-day on-demand cache expires
+    NIGHTLY_LIMIT = 20  # cap per run so the job stays under ~75 min on slow hardware
     db = PROJECT_DIR / "out" / "buffett.db"
     if not db.exists():
         return
@@ -484,18 +485,19 @@ def _auto_ai_analyze_winners(log_file=None):
         return
 
     cutoff = (datetime.datetime.now() - datetime.timedelta(days=STALE_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
-    to_analyze = [
+    stale = [
         w for w in winners
         if not w.get("ai_analysis") or (w.get("ai_analysis_at") or "") < cutoff
     ]
+    to_analyze = stale[:NIGHTLY_LIMIT]
 
     if not to_analyze:
         print("[Screener] Auto-AI: all winners have fresh analysis, skipping.")
         return
 
-    print(f"[Screener] Auto-AI: analyzing {len(to_analyze)} winner(s)…")
+    print(f"[Screener] Auto-AI: analyzing {len(to_analyze)}/{len(stale)} stale winner(s) (capped at {NIGHTLY_LIMIT}/night)…")
     if log_file:
-        log_file.write(f"[Auto-AI] Analyzing {len(to_analyze)} winner(s)…\n")
+        log_file.write(f"[Auto-AI] Analyzing {len(to_analyze)}/{len(stale)} stale winner(s)…\n")
 
     for w in to_analyze:
         ticker = w["ticker"]
