@@ -3736,7 +3736,7 @@ function _bAIPanel(ticker, ai) {{
           <tbody>${{rows}}</tbody>
         </table>
       </div>`;
-  }} else if (ai.redundancy && ai.redundancy.length > 0) {{
+  }} else if (Array.isArray(ai.redundancy)) {{
     redundancyHtml = `
       <div style="margin-top:12px;border-top:2px solid #e8edf4;padding-top:8px;">
         <div style="font-size:11px;color:#27ae60;font-weight:600;">✓ No overlap with existing holdings</div>

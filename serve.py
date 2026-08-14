@@ -3115,8 +3115,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 if row:
                     try:
                         analysis = json.loads(row[0])
-                        return self._json({"ok": True, "cached": True,
-                                           "ticker": ticker, "analysis": analysis})
+                        # Only use cache if it has the redundancy field (analyses before
+                        # holdings were wired in lack it and need to be re-run)
+                        if "redundancy" in analysis:
+                            return self._json({"ok": True, "cached": True,
+                                               "ticker": ticker, "analysis": analysis})
                     except Exception:
                         pass
             except Exception:
