@@ -3659,7 +3659,7 @@ async function _bAI(ticker) {{
           dp = await rp.json();
         }} catch (_) {{
           const el = streamEl();
-          if (el) el.textContent = (lastProgress || "AI is thinking…") + "\n[reconnecting…]";
+          if (el) el.textContent = (lastProgress || "AI is thinking…") + "\\n[reconnecting…]";
           continue;
         }}
         if (dp.status === "error") throw new Error(dp.error || "AI error");
