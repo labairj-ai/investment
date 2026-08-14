@@ -1061,19 +1061,21 @@ def _run_buffett_layer_compare_job(job_id: str, layer_num: int) -> None:
                 f"TrapRisk={r.get('value_trap_risk','?')}"
             )
 
-        prompt = f"""You are a stock analyst comparing the top {len(rows)} Buffett-quality stocks in Layer {layer_num}: {layer_name}.
-All stocks below passed the Buffett 6-criteria screen (Gross≥40%, SGA≤30%, NetInc≥20%, Interest≤15%, CapEx≤50%, Cash>Debt) and are low value-trap risk, ranked by quality score.
+        n_stocks = len(rows)
+        prompt = f"""You are a stock analyst. I am giving you exactly {n_stocks} stocks. Rank ONLY these {n_stocks} stocks from 1 (best) to {n_stocks} (worst) as Layer {layer_num} ({layer_name}) investments. Do not reference any other stocks.
+
+Layer {layer_num} — {layer_name}. All passed Buffett 6-criteria screen (Gross≥40%, NetInc≥20%, etc.) and are low value-trap risk.
 
 Stocks to rank:
 {chr(10).join(stock_lines)}
 
-Rank them from best to worst investment opportunity for a long-term investor focused on Layer {layer_num} ({layer_name}).
-Return ONLY valid JSON, no other text:
+Return ONLY valid JSON, no other text. Use rank 1 through {n_stocks} only:
 {{
   "summary": "<2-sentence overview of this layer's opportunities>",
   "ranked": [
-    {{"ticker": "X", "rank": 1, "note": "<one sentence why this ranks here>"}},
-    ...
+    {{"ticker": "BEST_TICKER", "rank": 1, "note": "<one sentence why>"}},
+    {{"ticker": "NEXT_TICKER", "rank": 2, "note": "<one sentence why>"}},
+    ... (exactly {n_stocks} entries, ranks 1 through {n_stocks})
   ]
 }}"""
 

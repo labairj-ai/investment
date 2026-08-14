@@ -3912,10 +3912,10 @@ async function _bLayerCompare(layerNum) {{
       }}
     }}
     if (!result) throw new Error("No result");
-    const ranked = result.ranked || [];
-    const rows = ranked.map(r =>
+    const ranked = (result.ranked || []).sort((a, b) => (a.rank || 0) - (b.rank || 0));
+    const rows = ranked.map((r, i) =>
       `<div style="padding:4px 0;border-bottom:1px solid #f0f2f5;display:flex;gap:8px;align-items:baseline;">
-        <span style="font-size:11px;color:#aaa;min-width:18px;text-align:right;">${{r.rank}}.</span>
+        <span style="font-size:11px;color:#aaa;min-width:18px;text-align:right;">${{i+1}}.</span>
         <span style="font-weight:700;color:#1a2340;min-width:50px;">${{r.ticker}}</span>
         <span style="color:#555;font-size:11px;">${{r.note || ""}}</span>
       </div>`
