@@ -3635,7 +3635,7 @@ async function _bAI(ticker) {{
     `word-break:break-word;max-height:220px;overflow-y:auto;background:#f4f4f4;` +
     `padding:0.6rem;border-radius:5px;line-height:1.5">Starting AI analysis…</pre>`;
   aiRow.style.display = "";
-  const streamEl = () => document.getElementById(`bai-stream-${{ticker}}`);
+  const streamEl = document.getElementById(`bai-stream-${{ticker}}`);
   try {{
     const r1 = await fetch("/api/buffett-ai-analyze", {{
       method: "POST", headers: {{"Content-Type": "application/json"}},
@@ -3658,15 +3658,14 @@ async function _bAI(ticker) {{
           const rp = await fetch(`/api/analysis-job/${{jobId}}`);
           dp = await rp.json();
         }} catch (_) {{
-          const el = streamEl();
-          if (el) el.textContent = (lastProgress || "AI is thinking…") + "\\n[reconnecting…]";
+          streamEl.textContent = (lastProgress || "AI is thinking…") + "\\n[reconnecting…]";
           continue;
         }}
         if (dp.status === "error") throw new Error(dp.error || "AI error");
         if (dp.progress && dp.progress !== lastProgress) {{
           lastProgress = dp.progress;
-          const el = streamEl();
-          if (el) {{ el.textContent = dp.progress; el.scrollTop = el.scrollHeight; }}
+          streamEl.textContent = dp.progress;
+          streamEl.scrollTop = streamEl.scrollHeight;
         }}
         if (dp.status === "done") {{ analysis = dp.result?.analysis; break; }}
       }}
@@ -3807,21 +3806,29 @@ function _renderLayerView() {{
         const sc = w.quality_score;
         const scClr = sc >= 70 ? "#27ae60" : sc >= 50 ? "#f39c12" : sc != null ? "#c0392b" : "#aaa";
         const div = w.dividend_yield ? w.dividend_yield.toFixed(1) + "%" : "—";
-        const conv = w.ai_analysis && !w.ai_analysis.error
-          ? "⭐".repeat(Math.min(5, Math.max(1, w.ai_analysis.conviction || 3)))
-          : `<span style="color:#ccc;font-size:10px;font-style:italic;">AI▾</span>`;
+        const hasAI = w.ai_analysis && !w.ai_analysis.error;
+        const stars = hasAI ? "⭐".repeat(Math.min(5, Math.max(1, w.ai_analysis.conviction || 3))) : "";
+        const aiBtnStyle = hasAI
+          ? "background:#eafaf1;border-color:#a9dfbf;color:#1e8449;"
+          : "background:#f8f9ff;border-color:#c5b8f0;color:#6c3fc5;";
+        const aiBtnLabel = hasAI ? "✓ AI" : "AI▾";
         const trBg = idx % 2 === 0 ? "#fff" : "#f9fafb";
         miniRows += `<tr style="background:${{trBg}};border-bottom:1px solid #f0f2f5;">
           <td style="padding:6px 8px;font-size:11px;color:#aaa;text-align:center;">${{idx+1}}</td>
-          <td style="padding:6px 8px;font-weight:700;color:#1a2340;">
-            <a href="javascript:void(0)" onclick="_bAI('${{w.ticker}}')" style="color:#1a2340;text-decoration:none;">${{w.ticker}}</a>
-          </td>
+          <td style="padding:6px 8px;font-weight:700;color:#1a2340;">${{w.ticker}}</td>
           <td style="padding:6px 8px;color:#555;font-size:11px;max-width:100px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${{w.company || "—"}}</td>
           <td style="padding:6px 8px;text-align:center;font-weight:700;color:${{scClr}};font-size:12px;">${{sc != null ? sc : "—"}}</td>
           <td style="padding:6px 8px;color:#27ae60;font-weight:600;">${{w.gross_margin?.toFixed(1)}}%</td>
           <td style="padding:6px 8px;color:#2980b9;">${{w.pe_ratio != null ? w.pe_ratio.toFixed(1)+"x" : "—"}}</td>
           <td style="padding:6px 8px;color:#8e44ad;">${{div}}</td>
-          <td style="padding:6px 8px;color:#27ae60;font-size:13px;">${{conv}}</td>
+          <td style="padding:6px 8px;">
+            <span style="font-size:12px;">${{stars}}</span>
+            <button id="bai-btn-${{w.ticker}}" onclick="_bAI('${{w.ticker}}')"
+              style="font-size:9px;padding:1px 6px;border-radius:3px;border:1px solid;cursor:pointer;margin-left:2px;${{aiBtnStyle}}">${{aiBtnLabel}}</button>
+          </td>
+        </tr>
+        <tr id="bai-row-${{w.ticker}}" style="display:none;background:#f8fafc;">
+          <td colspan="8"><div id="bai-content-${{w.ticker}}" style="padding:10px 14px;font-size:12px;"></div></td>
         </tr>`;
       }});
       if (winners.length > 5) {{
