@@ -3357,7 +3357,7 @@ async function loadBuffett() {{
 
     // Store for filter/sort re-renders; reset sort to default on fresh load
     _buffettAllWinners = data.winners;
-    _bViewMode = "table";
+    _bViewMode = "layer";
     _bSort    = {{ col: "quality_score", dir: -1 }};
     _bFilters = {{ q: "", exchange: "", layer: 0, risk: "low" }};
 
@@ -3369,17 +3369,17 @@ async function loadBuffett() {{
         <span style="font-size:11px;color:#888;font-weight:600;">View:</span>
         <button id="bview-table" onclick="_bSetView('table')"
           style="padding:3px 10px;border-radius:12px;font-size:11px;font-weight:600;cursor:pointer;
-                 border:1px solid #6c63ff;background:#6c63ff;color:#fff;">Table</button>
+                 border:1px solid #dde;background:#f4f6f9;color:#555;">Table</button>
         <button id="bview-layer" onclick="_bSetView('layer')"
           style="padding:3px 10px;border-radius:12px;font-size:11px;font-weight:600;cursor:pointer;
-                 border:1px solid #dde;background:#f4f6f9;color:#555;">By Layer</button>
+                 border:1px solid #6c63ff;background:#6c63ff;color:#fff;">By Layer</button>
       </div>
-      <div id="buffett-table-wrap"></div>
-      <div id="buffett-layer-view-wrap" style="display:none;"></div>
+      <div id="buffett-table-wrap" style="display:none;"></div>
+      <div id="buffett-layer-view-wrap"></div>
       <p style="font-size:11px;color:#aaa;margin-top:6px;">
         Green = quality · Blue = valuation · Purple = layer · Red = trap risk${{partialNote}}
       </p>`;
-    _renderBuffettTable();
+    _renderLayerView();
 
   }} catch(e) {{
     document.getElementById("buffett-status-bar").innerHTML =
