@@ -1076,7 +1076,7 @@ Return ONLY valid JSON, no other text:
         full_text = ""
         for tok in ollama_client.stream_generate(prompt, model="llama3.1:8b", num_predict=1200):
             full_text += tok
-            _job_update(job_id, progress=full_text[:200])
+            _job_update(job_id, progress=full_text)
 
         try:
             dec = json.JSONDecoder()

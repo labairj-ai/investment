@@ -3878,7 +3878,11 @@ function _renderLayerView() {{
 async function _bLayerCompare(layerNum) {{
   const resultEl = document.getElementById(`blayer-cmp-${{layerNum}}`);
   if (!resultEl) return;
-  resultEl.innerHTML = `<span style="color:#aaa;font-size:11px;">🤖 Asking AI to rank…</span>`;
+  resultEl.innerHTML =
+    `<pre id="blayer-stream-${{layerNum}}" style="margin:0;font-size:11px;color:#555;white-space:pre-wrap;` +
+    `word-break:break-word;max-height:220px;overflow-y:auto;background:#f4f4f4;` +
+    `padding:0.6rem;border-radius:5px;line-height:1.5">🤖 Asking AI to rank…</pre>`;
+  const streamEl = document.getElementById(`blayer-stream-${{layerNum}}`);
   try {{
     const r1 = await fetch("/api/buffett-layer-compare", {{
       method: "POST", headers: {{"Content-Type": "application/json"}},
@@ -3887,14 +3891,25 @@ async function _bLayerCompare(layerNum) {{
     const d1 = await r1.json();
     if (!d1.ok) throw new Error(d1.error || "API error");
     const jobId = d1.job_id;
+    let lastProgress = "";
     let result;
     while (true) {{
-      await new Promise(res => setTimeout(res, 2500));
-      const rp = await fetch(`/api/analysis-job/${{jobId}}`);
-      const dp = await rp.json();
+      await new Promise(res => setTimeout(res, 1000));
+      let dp;
+      try {{
+        const rp = await fetch(`/api/analysis-job/${{jobId}}`);
+        dp = await rp.json();
+      }} catch (_) {{
+        streamEl.textContent = (lastProgress || "🤖 Asking AI to rank…") + "\\n[reconnecting…]";
+        continue;
+      }}
       if (dp.status === "done") {{ result = dp.result; break; }}
       if (dp.status === "error") throw new Error(dp.error || "AI error");
-      resultEl.innerHTML = `<span style="color:#aaa;font-size:11px;">🤖 ${{(dp.progress || "").slice(0,80)}}…</span>`;
+      if (dp.progress && dp.progress !== lastProgress) {{
+        lastProgress = dp.progress;
+        streamEl.textContent = dp.progress;
+        streamEl.scrollTop = streamEl.scrollHeight;
+      }}
     }}
     if (!result) throw new Error("No result");
     const ranked = result.ranked || [];
