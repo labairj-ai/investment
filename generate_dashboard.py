@@ -5227,17 +5227,30 @@ async function refreshDashboard() {{
   btn.disabled = true;
   try {{
     const res = await fetch("/api/refresh-dashboard", {{method:"POST"}});
-    if (res.ok) {{
-      btn.textContent = "Done — reloading…";
-      setTimeout(() => window.location.reload(), 800);
-    }} else {{
-      btn.textContent = "↻ Refresh Data";
-      btn.disabled = false;
-      alert("Refresh failed. Check server logs.");
+    if (!res.ok) throw new Error("start failed");
+    const d = await res.json();
+    if (!d.ok) throw new Error(d.error || "start failed");
+    // Poll the background job so we don't hold the connection open through Tailscale
+    const jobId = d.job_id;
+    while (true) {{
+      await new Promise(r => setTimeout(r, 2000));
+      let poll;
+      try {{
+        const pr = await fetch(`/api/analysis-job/${{jobId}}`);
+        poll = await pr.json();
+      }} catch (_) {{ continue; }}
+      if (poll.progress) btn.textContent = poll.progress.replace("Running ", "").replace("…", "…");
+      if (poll.status === "done") {{
+        btn.textContent = "Done — reloading…";
+        setTimeout(() => window.location.href = window.location.pathname + "?t=" + Date.now(), 800);
+        return;
+      }}
+      if (poll.status === "error") throw new Error(poll.error || "refresh failed");
     }}
   }} catch(e) {{
     btn.textContent = "↻ Refresh Data";
     btn.disabled = false;
+    alert("Refresh failed: " + e.message);
   }}
 }}
 

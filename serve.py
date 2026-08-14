@@ -859,6 +859,29 @@ def _run_cc_ai_job(job_id: str, ticker: str) -> None:
         _job_update(job_id, status="error", error=str(e))
 
 
+def _run_refresh_job(job_id: str) -> None:
+    """Run send_newsletter_main.py --no-email + generate_dashboard.py in a background thread."""
+    import subprocess as _sp
+    VENV_PY = PROJECT_DIR / "venv" / "bin" / "python3"
+    try:
+        for script, extra_args in [
+            ("send_newsletter_main.py", ["--no-email"]),
+            ("generate_dashboard.py",   []),
+        ]:
+            _job_update(job_id, progress=f"Running {script}…")
+            result = _sp.run(
+                [str(VENV_PY), str(PROJECT_DIR / script)] + extra_args,
+                cwd=str(PROJECT_DIR), capture_output=True, text=True, timeout=300,
+            )
+            if result.returncode != 0:
+                _job_update(job_id, status="error",
+                            error=f"{script} failed: {result.stderr.strip()[-300:]}")
+                return
+        _job_update(job_id, status="done", result={"ok": True})
+    except Exception as e:
+        _job_update(job_id, status="error", error=str(e))
+
+
 def _run_buffett_ai_job(job_id: str, ticker: str) -> None:
     """Generate an AI investment thesis for a Buffett screener winner via Ollama."""
     try:
@@ -3119,25 +3142,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self._json({"positions": result})
 
     def _handle_refresh_dashboard(self):
-        """POST /api/refresh-dashboard — fetch fresh prices, update DB, regenerate dashboard (no email)."""
-        import subprocess
-        VENV_PY = PROJECT_DIR / "venv" / "bin" / "python3"
-        try:
-            for script, extra_args in [
-                ("send_newsletter_main.py", ["--no-email"]),
-                ("generate_dashboard.py",   []),
-            ]:
-                result = subprocess.run(
-                    [str(VENV_PY), str(PROJECT_DIR / script)] + extra_args,
-                    cwd=str(PROJECT_DIR),
-                    capture_output=True, text=True, timeout=300,
-                )
-                if result.returncode != 0:
-                    self._json_error(500, f"{script} failed: {result.stderr.strip()}")
-                    return
-            self._json({"ok": True})
-        except Exception as e:
-            self._json_error(500, str(e))
+        """POST /api/refresh-dashboard — fetch fresh prices, update DB, regenerate dashboard (no email).
+        Returns a job_id immediately so the browser can poll rather than holding the connection open."""
+        job_id = _job_create("refresh")
+        threading.Thread(target=_run_refresh_job, args=(job_id,), daemon=True).start()
+        self._json({"ok": True, "job_id": job_id})
 
     def _json(self, data):
         body = json.dumps(data).encode()
