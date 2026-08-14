@@ -3677,26 +3677,65 @@ function _bAIPanel(ticker, ai) {{
   const badge = (label, color) =>
     `<span style="display:inline-block;padding:1px 7px;border-radius:8px;font-size:10px;font-weight:700;
                   background:${{color}}22;color:${{color}};border:1px solid ${{color}}44;">${{label}}</span>`;
+
+  const redundantEntries = (ai.redundancy || []).filter(r => r.is_redundant);
+  let redundancyHtml = "";
+  if (redundantEntries.length > 0) {{
+    const rows = redundantEntries.map(r => {{
+      const supColor = r.winner_superior ? "#27ae60" : "#c0392b";
+      const supLabel = r.winner_superior ? "Winner better" : "Keep holding";
+      return `<tr style="border-bottom:1px solid #e8edf4;">
+        <td style="padding:5px 8px;font-weight:600;color:#1a2340;white-space:nowrap;">${{r.ticker}}</td>
+        <td style="padding:5px 8px;color:#555;font-size:11px;">${{r.redundancy_reason || "—"}}</td>
+        <td style="padding:5px 8px;text-align:center;">${{badge(supLabel, supColor)}}</td>
+        <td style="padding:5px 8px;color:#555;font-size:11px;">${{r.superiority_reason || "—"}}</td>
+      </tr>`;
+    }}).join("");
+    redundancyHtml = `
+      <div style="margin-top:12px;border-top:2px solid #e8edf4;padding-top:10px;">
+        <div style="font-weight:600;color:#1a2340;font-size:11px;margin-bottom:6px;">⚖️ Holdings Overlap (${{redundantEntries.length}} redundant)</div>
+        <table style="width:100%;border-collapse:collapse;font-size:12px;">
+          <thead>
+            <tr style="background:#f5f7fa;">
+              <th style="padding:4px 8px;text-align:left;color:#7f8c8d;font-size:10px;font-weight:600;">Holding</th>
+              <th style="padding:4px 8px;text-align:left;color:#7f8c8d;font-size:10px;font-weight:600;">Why Redundant</th>
+              <th style="padding:4px 8px;text-align:center;color:#7f8c8d;font-size:10px;font-weight:600;">Verdict</th>
+              <th style="padding:4px 8px;text-align:left;color:#7f8c8d;font-size:10px;font-weight:600;">Detail</th>
+            </tr>
+          </thead>
+          <tbody>${{rows}}</tbody>
+        </table>
+      </div>`;
+  }} else if (ai.redundancy && ai.redundancy.length > 0) {{
+    redundancyHtml = `
+      <div style="margin-top:12px;border-top:2px solid #e8edf4;padding-top:8px;">
+        <div style="font-size:11px;color:#27ae60;font-weight:600;">✓ No overlap with existing holdings</div>
+      </div>`;
+  }}
+
   return `
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;max-width:860px;">
-      <div>
-        <div style="font-weight:600;color:#1a2340;font-size:11px;margin-bottom:3px;">📊 Thesis</div>
-        <div style="color:#333;line-height:1.5;">${{ai.thesis || "—"}}</div>
+    <div style="max-width:860px;">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+        <div>
+          <div style="font-weight:600;color:#1a2340;font-size:11px;margin-bottom:3px;">📊 Thesis</div>
+          <div style="color:#333;line-height:1.5;">${{ai.thesis || "—"}}</div>
+        </div>
+        <div>
+          <div style="font-weight:600;color:#1a2340;font-size:11px;margin-bottom:3px;">🏰 Moat</div>
+          <div>${{badge(ai.moat_strength || "?", moatColor)}} <span style="color:#555;">${{ai.moat_note || ""}}</span></div>
+          <div style="margin-top:6px;font-weight:600;color:#1a2340;font-size:11px;">💰 Valuation</div>
+          <div>${{badge(ai.valuation || "?", valColor)}} <span style="color:#555;">${{ai.valuation_note || ""}}</span></div>
+        </div>
+        <div>
+          <div style="font-weight:600;color:#c0392b;font-size:11px;margin-bottom:3px;">⚑ Top Risk</div>
+          <div style="color:#555;">${{ai.top_risk || "—"}}</div>
+        </div>
+        <div>
+          <div style="font-weight:600;color:#1a2340;font-size:11px;margin-bottom:3px;">Conviction ${{stars}}</div>
+          <div style="color:#888;font-size:11px;">${{ai.layer_fit || ""}}</div>
+        </div>
       </div>
-      <div>
-        <div style="font-weight:600;color:#1a2340;font-size:11px;margin-bottom:3px;">🏰 Moat</div>
-        <div>${{badge(ai.moat_strength || "?", moatColor)}} <span style="color:#555;">${{ai.moat_note || ""}}</span></div>
-        <div style="margin-top:6px;font-weight:600;color:#1a2340;font-size:11px;">💰 Valuation</div>
-        <div>${{badge(ai.valuation || "?", valColor)}} <span style="color:#555;">${{ai.valuation_note || ""}}</span></div>
-      </div>
-      <div>
-        <div style="font-weight:600;color:#c0392b;font-size:11px;margin-bottom:3px;">⚑ Top Risk</div>
-        <div style="color:#555;">${{ai.top_risk || "—"}}</div>
-      </div>
-      <div>
-        <div style="font-weight:600;color:#1a2340;font-size:11px;margin-bottom:3px;">Conviction ${{stars}}</div>
-        <div style="color:#888;font-size:11px;">${{ai.layer_fit || ""}}</div>
-      </div>
+      ${{redundancyHtml}}
     </div>`;
 }}
 

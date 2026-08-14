@@ -882,6 +882,7 @@ def _run_buffett_ai_job(job_id: str, ticker: str) -> None:
         conn.close()
 
         import json as _json
+        import csv as _csv
         div_pct = f"{w['dividend_yield']:.1f}%" if w.get("dividend_yield") else "None"
         mcap = w.get("market_cap") or 0
         mcap_fmt = f"${mcap/1e9:.1f}B" if mcap >= 1e9 else (f"${mcap/1e6:.0f}M" if mcap else "N/A")
@@ -891,6 +892,68 @@ def _run_buffett_ai_job(job_id: str, ticker: str) -> None:
         except Exception:
             pass
         trap_flags_text = "; ".join(trap_flags) if trap_flags else "none"
+
+        # Load holdings and fetch yfinance info for each
+        holdings_context_lines = []
+        holdings_meta = []  # list of dicts for the prompt
+        holdings_path = PROJECT_DIR / "holdings.csv"
+        if holdings_path.exists():
+            _job_update(job_id, progress="Fetching holdings data…")
+            import yfinance as _yf
+            try:
+                with open(str(holdings_path), newline="") as hf:
+                    holding_rows = list(_csv.DictReader(hf))
+                for h in holding_rows:
+                    hticker = (h.get("Stock") or "").strip()
+                    hlayer = h.get("Layer", "?")
+                    if not hticker or hticker == ticker:
+                        continue
+                    try:
+                        hinfo = _yf.Ticker(hticker).info
+                        hsector = hinfo.get("sector") or "?"
+                        hindustry = hinfo.get("industry") or "?"
+                        hcompany = hinfo.get("longName") or hinfo.get("shortName") or hticker
+                        hgm = hinfo.get("grossMargins")
+                        hgm_str = f"{hgm*100:.0f}%" if hgm else "N/A"
+                        hpe = hinfo.get("trailingPE")
+                        hpe_str = f"{hpe:.1f}x" if hpe else "N/A"
+                        hdiv = hinfo.get("dividendYield")
+                        hdiv_str = f"{hdiv*100:.1f}%" if hdiv else "None"
+                        line = (
+                            f"  {hticker} ({hcompany}, {hsector}/{hindustry}, Layer {hlayer}): "
+                            f"GrossMargin={hgm_str}, P/E={hpe_str}, Div={hdiv_str}"
+                        )
+                        holdings_context_lines.append(line)
+                        holdings_meta.append({"ticker": hticker, "company": hcompany,
+                                              "sector": hsector, "industry": hindustry,
+                                              "layer": hlayer})
+                    except Exception:
+                        holdings_context_lines.append(f"  {hticker} (Layer {hlayer}): data unavailable")
+                        holdings_meta.append({"ticker": hticker, "company": hticker,
+                                              "sector": "?", "industry": "?", "layer": hlayer})
+            except Exception:
+                pass
+
+        holdings_block = ""
+        redundancy_schema = ""
+        if holdings_meta:
+            holdings_block = f"""
+Existing Portfolio Holdings (do NOT include {ticker} itself):
+{chr(10).join(holdings_context_lines)}
+
+For each holding above, determine if it would be REDUNDANT with {ticker} — meaning they serve the same economic role (same sector, business model, risk exposure, or competitive moat). For ETFs/funds, consider their dominant holdings/exposure.
+"""
+            holding_tickers_list = ", ".join(f'"{m["ticker"]}"' for m in holdings_meta)
+            redundancy_schema = f""",
+  "redundancy": [
+    {{
+      "ticker": "<one of: {holding_tickers_list}>",
+      "is_redundant": <true|false>,
+      "redundancy_reason": "<one sentence: why they overlap or why they don't>",
+      "winner_superior": <true|false — only meaningful if is_redundant is true>,
+      "superiority_reason": "<one sentence: what makes the winner better or the holding better — or empty string if not redundant>"
+    }}
+  ]"""
 
         prompt = f"""You are a stock analyst. Analyze this Buffett screener winner. Return ONLY valid JSON, no other text.
 
@@ -908,7 +971,7 @@ Quality Metrics (passed Buffett screen):
 Valuation:
   P/E: {w.get('pe_ratio') or 'N/A'}x | P/FCF: {w.get('p_fcf') or 'N/A'}x | EV/EBITDA: {w.get('ev_ebitda') or 'N/A'}x
   Dividend Yield: {div_pct}
-
+{holdings_block}
 Return this JSON structure:
 {{
   "thesis": "<2-sentence investment case for buying this stock now>",
@@ -918,12 +981,13 @@ Return this JSON structure:
   "valuation_note": "<one sentence on P/E and FCF vs quality>",
   "top_risk": "<single most important risk to the thesis>",
   "conviction": <integer 1 to 5>,
-  "layer_fit": "<one sentence on why this fits or does not fit layer {w.get('layer_rec', '?')}>"
+  "layer_fit": "<one sentence on why this fits or does not fit layer {w.get('layer_rec', '?')}>"{ redundancy_schema }
 }}"""
 
         _job_update(job_id, progress="Sending to AI…")
         full_text = ""
-        for tok in ollama_client.stream_generate(prompt, model="llama3.1:8b", num_predict=700):
+        num_predict = 1800 if holdings_meta else 700
+        for tok in ollama_client.stream_generate(prompt, model="llama3.1:8b", num_predict=num_predict):
             full_text += tok
             _job_update(job_id, progress=full_text[:200])
 
