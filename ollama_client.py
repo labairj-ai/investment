@@ -1,7 +1,8 @@
 import json
+import os
 import urllib.request
 
-OLLAMA_URL = "http://127.0.0.1:11434"
+OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
 DEFAULT_MODEL = "qwen2.5:7b"
 
 

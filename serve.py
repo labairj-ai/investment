@@ -464,7 +464,7 @@ def _auto_ai_analyze_winners(log_file=None):
     """After a successful scan, generate AI analysis for any winner missing it or older than 30 days."""
     import json as _json
     STALE_DAYS    = 6   # refresh before the 7-day on-demand cache expires
-    NIGHTLY_LIMIT = 20  # cap per run so the job stays under ~75 min on slow hardware
+    NIGHTLY_LIMIT = 50  # Mac mini Metal GPU handles this comfortably before 7:15 AM newsletter
     db = PROJECT_DIR / "out" / "buffett.db"
     if not db.exists():
         return
