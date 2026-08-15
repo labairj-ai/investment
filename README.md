@@ -49,8 +49,9 @@ The old macOS launchd agents are archived in `launchd-disabled-on-mac/`.
 - macOS or Linux (all scripts derive paths from their own location, so the repo can live anywhere; the launchd auto-start is macOS-specific)
 - Python 3.9+ with a virtual environment
 - A Gmail account with an [App Password](https://myaccount.google.com/apppasswords) enabled
-- **Ollama** (for AI Analysis) — must be running on the server with the model pulled; optional, the rest of the dashboard works without it:
-  - `ollama pull phi4:14b` — used by all AI features: Buffett thesis, layer compare, nightly layer rankings, and Covered Call AI (~8.9 GB; strong reasoning + reliable JSON output)
+- **Ollama** (for AI Analysis) — optional; the rest of the dashboard works without it. Can run on the same server or on a separate always-on machine (e.g. a Mac mini with Apple Silicon). The server reads `OLLAMA_URL` from the environment (default `http://127.0.0.1:11434`); set it in the systemd override to point to a remote host. Models needed:
+  - `ollama pull phi4:14b` — Buffett thesis, layer compare, nightly layer rankings (~9.1 GB)
+  - `ollama pull qwen2.5:7b` — Covered Call AI analysis (~4.7 GB)
 
 ---
 
@@ -168,7 +169,7 @@ Script changes take effect on the next **↻ Refresh Data** without restarting t
 |---|---|
 | `GET /glossary` | Term definitions for every metric in the UI — options mechanics, V2 CC metrics, volatility, portfolio, tax, and Buffett screener (opens in browser, no auth required) |
 | `GET /api/covered-calls?ticker=EW` | Live option chain recommendations |
-| `GET /api/cc-ai-analysis?ticker=EW` | AI narrative for the top-5 contracts with number-grounded analysis: recommendation (citing CCα $, regret threshold $, IVrich %), IV context (HV Pct + ATM IV), no-call case (exact breakeven price), risks (each citing a specific metric), roll strategy, timing (requires `qwen2.5:7b` via Ollama; ~90–120s on CPU) |
+| `GET /api/cc-ai-analysis?ticker=EW` | AI narrative for the top-5 contracts with number-grounded analysis: recommendation (citing CCα $, regret threshold $, IVrich %), IV context (HV Pct + ATM IV), no-call case (exact breakeven price), risks (each citing a specific metric), roll strategy, timing (requires `qwen2.5:7b` via Ollama) |
 | `GET /api/dividends` | Dividend dates, yields, tax impact for all holdings |
 | `GET /api/dividend-lookup?ticker=VYM&shares=100` | Dividend info for any ticker |
 | `GET /api/dividend-timeline` | Monthly income (Jan–Dec, current year) |
@@ -526,7 +527,7 @@ Executable fill estimated as `bid + 25% × spread` (not mid).
 
 **DO NOTHING is an explicit candidate** — if the best CC Alpha is negative, the report flags it.
 
-**🤖 AI Analysis** — after loading recommendations, click the purple "🤖 AI Analysis" button to get `phi4:14b` narrative insight from the optiplex. Takes ~90–120 seconds on CPU. The prompt passes the full metric context (CCα $, regret threshold $, IVrich %, z-strike σ, expected move $, HV Pct, eITM %) with metric definitions and explicit instructions requiring every sentence to cite actual numbers — generic prose without numbers is explicitly prohibited. The AI panel shows:
+**🤖 AI Analysis** — after loading recommendations, click the purple "🤖 AI Analysis" button to get `qwen2.5:7b` narrative insight via Ollama. The prompt passes the full metric context (CCα $, regret threshold $, IVrich %, z-strike σ, expected move $, HV Pct, eITM %) with metric definitions and explicit instructions requiring every sentence to cite actual numbers — generic prose without numbers is explicitly prohibited. The AI panel shows:
 
 | Section | What it covers |
 |---|---|
@@ -537,7 +538,7 @@ Executable fill estimated as `bid + 25% × spread` (not mid).
 | 🔄 Roll Strategy | States specific delta threshold and DTE threshold; explains CCα decay as the economic rationale |
 | ⏰ Timing | States current spread width, recommends limit order relative to exec premium, flags Liq score if below 40 |
 
-Requires Ollama running on the optiplex with `phi4:14b` pulled. If Ollama is unavailable, the button returns a graceful error.
+Requires Ollama reachable at `OLLAMA_URL` with `qwen2.5:7b` pulled. If Ollama is unavailable, the button returns a graceful error.
 
 ### Dividend Tracker
 Auto-loads on page open. Hit **Refresh** to update; cached 1 hour per day.
@@ -645,6 +646,7 @@ investment/
 | `EMAIL_FROM` | Gmail address to send from |
 | `EMAIL_APP_PASSWORD` | Gmail App Password (16 chars, no spaces) |
 | `EMAIL_TO` | Recipient email address |
+| `OLLAMA_URL` | Ollama endpoint (default `http://127.0.0.1:11434`); set in the systemd override to point to a remote machine, e.g. `http://100.x.x.x:11434` |
 
 ---
 
