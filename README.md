@@ -215,7 +215,7 @@ Runs automatically inside `serve.py` as a background thread — **no separate la
 
 1. Checks if today's digest has already sent (`out/last_run_date.txt`)
 2. If not and it's ≥ 7 AM ET, runs `send_newsletter_main.py` → `generate_dashboard.py`
-3. After success, triggers the **data backup** to the private `investment-data` repo
+3. After success, triggers the **data backup** to the private backup repo
 4. Rechecks every 30 minutes as a safety net
 5. At **9:30 PM ET**, runs a no-email price refresh (`--no-email`) to overwrite today's snapshot with actual closing prices and regenerate the dashboard — important for OTC/pink-sheet tickers (e.g. MITSF, ITOCF) that can lag 4–6 hours in yfinance after market close
 
@@ -573,7 +573,7 @@ Auto-loads on page open. Hit **Refresh** to update; cached 1 hour per day.
 
 ## Private Data Backup
 
-Financial data (`investment.db`, `holdings.csv`, `buffett.db`) is backed up daily to a **separate private GitHub repo** (`investment-data`) — stays private even if this code repo is made public.
+Financial data (`investment.db`, `holdings.csv`, `buffett.db`) is backed up daily to a **separate private GitHub repo** — stays private even if this code repo is made public.
 
 **Run manually:**
 ```bash
@@ -582,7 +582,7 @@ bash ~/Desktop/investment/backup_data.sh
 
 **Restore on a new machine:**
 ```bash
-git clone https://github.com/labairj-ai/investment-data.git ~/.investment-backup
+git clone https://github.com/<your-username>/investment-data.git ~/.investment-backup
 cp ~/.investment-backup/investment.db ~/Desktop/investment/out/
 cp ~/.investment-backup/holdings.csv  ~/Desktop/investment/
 cp ~/.investment-backup/buffett.db    ~/Desktop/investment/out/
@@ -613,7 +613,7 @@ investment/
 ├── holdings.csv                     # Portfolio positions — Stock, Shares, AvgCost, Layer
 ├── covered_calls.csv                # Bulk-import seed for open covered call positions
 ├── layer_targets.json               # Target layer allocations (used by dashboard + email digest)
-├── backup_data.sh                   # Pushes DB + CSV to private investment-data repo
+├── backup_data.sh                   # Pushes DB + CSV to a private backup repo
 ├── run_server.sh                    # Infinite-loop wrapper around serve.py (used by launchd)
 ├── send_newsletter_main.py          # Fetches prices, sends email, writes DB
 ├── generate_dashboard.py            # Generates out/dashboard.html
@@ -659,7 +659,7 @@ python3 -m venv venv
 venv/bin/pip install pandas yfinance matplotlib python-dotenv
 
 # Restore data backup
-git clone https://github.com/labairj-ai/investment-data.git ~/.investment-backup
+git clone https://github.com/<your-username>/investment-data.git ~/.investment-backup
 cp ~/.investment-backup/investment.db out/
 cp ~/.investment-backup/holdings.csv  .
 cp ~/.investment-backup/buffett.db    out/
