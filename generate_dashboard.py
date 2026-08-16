@@ -3658,19 +3658,18 @@ function _bSetView(mode) {{
   const tBtn  = document.getElementById("bview-table");
   const lBtn  = document.getElementById("bview-layer");
   if (!tWrap || !lWrap) return;
-  const activeStyle = "background:#6c63ff;border-color:#6c63ff;color:#fff;";
-  const inactStyle  = "background:#f4f6f9;border-color:#dde;color:#555;";
+  const btnBase = "padding:3px 10px;border-radius:12px;font-size:11px;font-weight:600;cursor:pointer;border:1px solid;";
   if (mode === "table") {{
     tWrap.style.display = "";
     lWrap.style.display = "none";
-    if (tBtn) tBtn.style.cssText = tBtn.style.cssText.replace(/background:[^;]+;border-color:[^;]+;color:[^;]+;/, activeStyle);
-    if (lBtn) lBtn.style.cssText = lBtn.style.cssText.replace(/background:[^;]+;border-color:[^;]+;color:[^;]+;/, inactStyle);
+    if (tBtn) tBtn.style.cssText = btnBase + "border-color:#6c63ff;background:#6c63ff;color:#fff;";
+    if (lBtn) lBtn.style.cssText = btnBase + "border-color:#dde;background:#f4f6f9;color:#555;";
     _renderBuffettTable();
   }} else {{
     tWrap.style.display = "none";
     lWrap.style.display = "";
-    if (lBtn) lBtn.style.cssText = lBtn.style.cssText.replace(/background:[^;]+;border-color:[^;]+;color:[^;]+;/, activeStyle);
-    if (tBtn) tBtn.style.cssText = tBtn.style.cssText.replace(/background:[^;]+;border-color:[^;]+;color:[^;]+;/, inactStyle);
+    if (lBtn) lBtn.style.cssText = btnBase + "border-color:#6c63ff;background:#6c63ff;color:#fff;";
+    if (tBtn) tBtn.style.cssText = btnBase + "border-color:#dde;background:#f4f6f9;color:#555;";
     _renderLayerView();
   }}
 }}
