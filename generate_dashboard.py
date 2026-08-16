@@ -4216,6 +4216,9 @@ function renderCCPositions() {{
   const netRealized   = closed.reduce((s,p) => s + (p.net_premium ?? 0), 0);
   const grossRealized = closed.reduce((s,p) => s + p.premium_per_contract * p.contracts * 100, 0);
   const buybackCost   = grossRealized - netRealized;
+  const thisYear      = new Date().getFullYear().toString();
+  const ytdClosed     = closed.filter(p => (p.closed_date || p.expiry || "").startsWith(thisYear));
+  const ytdNet        = ytdClosed.reduce((s,p) => s + (p.net_premium ?? 0), 0);
   const openMtmTotal  = open.filter(p => p.pnl_total != null && !isNaN(p.pnl_total)).reduce((s,p) => s + p.pnl_total, 0);
   const openMtmDay    = open.filter(p => p.pnl_day   != null && !isNaN(p.pnl_day)).reduce((s,p)  => s + p.pnl_day,   0);
   const hasMtm        = open.some(p => p.current_mark != null && p.pnl_total != null && !isNaN(p.pnl_total));
@@ -4325,7 +4328,8 @@ function renderCCPositions() {{
       <span>Open gross premium: <b style="color:#1a6e38;">$${{openGross.toFixed(2)}}</b></span>
       ${{hasMtm ? `<span>Unrealized P&amp;L: <b>${{fmtPnl(openMtmTotal)}}</b></span>` : ""}}
       ${{hasMtm ? `<span>Today's option P&amp;L: <b>${{fmtPnl(openMtmDay)}}</b></span>` : ""}}
-      <span style="border-left:1px solid #dde;padding-left:16px;">Net realized income: <b style="color:#27ae60;">$${{netRealized.toFixed(2)}}</b></span>
+      <span style="border-left:1px solid #dde;padding-left:16px;">YTD income: <b style="color:#27ae60;">$${{ytdNet.toFixed(2)}}</b></span>
+      <span style="color:#aaa;font-size:12px;">All-time: $${{netRealized.toFixed(2)}}</span>
       ${{buybackCost > 0 ? `<span style="color:#aaa;font-size:12px;">($${{grossRealized.toFixed(2)}} gross − $${{buybackCost.toFixed(2)}} buybacks)</span>` : ""}}
     </div>`;
 
