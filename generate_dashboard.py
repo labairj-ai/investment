@@ -4401,8 +4401,9 @@ function renderCCPositions() {{
         if (!monthData[key]) monthData[key] = {{expired:0, closed:0, pending:0}};
         monthData[key][type] += amount;
       }}
-      otherClosed.forEach(p => addToMonth(p, "closed",  p.closed_date || p.expiry, p.net_premium ?? 0));
-      expiredPos.forEach(p  => addToMonth(p, "expired", p.expiry,                  p.net_premium ?? 0));
+      const isPreSystem = p => p.notes === "pre-system income entry";
+      otherClosed.filter(p => !isPreSystem(p)).forEach(p => addToMonth(p, "closed",  p.closed_date || p.expiry, p.net_premium ?? 0));
+      expiredPos.filter(p  => !isPreSystem(p)).forEach(p => addToMonth(p, "expired", p.expiry,                  p.net_premium ?? 0));
       open.forEach(p        => addToMonth(p, "pending", p.opened_date,              p.premium_per_contract * p.contracts * 100));
       const months = Object.keys(monthData).sort();
       const moNames = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
