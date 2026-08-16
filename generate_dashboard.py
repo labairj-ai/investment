@@ -1633,6 +1633,29 @@ function card(label, value, color="#2c3e50") {{
 
 let _divData = null;
 
+let _divStatusFilter = new Set(["upcoming", "payment_due"]);
+
+function _divStatusOf(r) {{
+  if (r.declared)    return "upcoming";
+  if (r.pay_pending) return "payment_due";
+  return "last_known";
+}}
+
+function _divChip(key, label, color) {{
+  const on = _divStatusFilter.has(key);
+  return `<span onclick="_divToggleFilter('${{key}}')"
+    style="cursor:pointer;padding:2px 10px;border-radius:10px;font-size:10px;font-weight:600;user-select:none;
+           border:1px solid ${{on ? color : '#dde'}};background:${{on ? color + '18' : '#f4f6f9'}};
+           color:${{on ? color : '#888'}};">
+    ${{label}}</span>`;
+}}
+
+function _divToggleFilter(key) {{
+  if (_divStatusFilter.has(key)) _divStatusFilter.delete(key);
+  else _divStatusFilter.add(key);
+  renderDividendTable();
+}}
+
 function renderDividendTable() {{
   if (!_divData) return;
   const results = document.getElementById("div-results");
@@ -1648,7 +1671,19 @@ function renderDividendTable() {{
     (totalPort > 0 ? "  ·  " + (totalAnnual / totalPort * 100).toFixed(2) + "% yield" : "");
   _flashEl("kpi-div-value");
 
-  const rows = _divData.results.map(r => {{
+  const filterBar = `
+    <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:10px;
+                padding:7px 12px;background:#f8fafc;border:1px solid #e8edf4;border-radius:8px;">
+      <span style="font-size:10px;color:#aaa;font-weight:600;text-transform:uppercase;letter-spacing:.04em;">Show</span>
+      ${{_divChip("upcoming",    "Upcoming",    "#1a6e38")}}
+      ${{_divChip("payment_due", "Payment Due", "#1a56b0")}}
+      ${{_divChip("last_known",  "Last Known",  "#888")}}
+      <span style="margin-left:auto;font-size:11px;color:#aaa;" id="div-filter-count"></span>
+    </div>`;
+
+  const filtered = _divData.results.filter(r => _divStatusFilter.has(_divStatusOf(r)));
+
+  const rows = filtered.map(r => {{
     const taxType   = r.tax_type || "qualified";
     const rate      = effectiveRate(taxType);
     const typeLabel = taxTypeLabel(taxType);
@@ -1703,8 +1738,11 @@ function renderDividendTable() {{
   const qRate = ((b.qualified + b.niit) * 100).toFixed(1);
   const oRate = ((b.ordinary  + b.niit) * 100).toFixed(1);
 
-  results.innerHTML = `
-    <div style="overflow-x:auto;margin-top:10px;">
+  const noRows = filtered.length === 0
+    ? `<tr><td colspan="11" style="padding:16px;text-align:center;color:#aaa;font-size:12px;">No dividends match the selected filters.</td></tr>` : "";
+
+  results.innerHTML = filterBar + `
+    <div style="overflow-x:auto;margin-top:4px;">
     <table style="width:100%;border-collapse:collapse;font-size:13px;">
       <thead id="div-thead"><tr style="background:#f4f6f9;">
         <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Ticker</th>
@@ -1719,13 +1757,18 @@ function renderDividendTable() {{
         <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Yield</th>
         <th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">Yield on Cost</th>
       </tr></thead>
-      <tbody>${{rows}}</tbody>
+      <tbody>${{rows}}${{noRows}}</tbody>
     </table>
     </div>
     <p style="font-size:11px;color:#aaa;margin-top:8px;">
       Tax basis: MFJ ${{b.label.replace(" household","")}} — Qualified ${{qRate}}% (cap gains + NIIT), Ordinary ${{oRate}}% (marginal + NIIT), Municipal = federal exempt.
       As of ${{_divData.as_of}}.
     </p>`;
+
+  const countEl = document.getElementById("div-filter-count");
+  if (countEl) countEl.textContent = filtered.length === _divData.results.length
+    ? `${{_divData.results.length}} holdings`
+    : `${{filtered.length}} of ${{_divData.results.length}} holdings`;
 }}
 
 async function loadDividends() {{
