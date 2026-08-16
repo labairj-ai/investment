@@ -3418,7 +3418,8 @@ function _renderBuffettTable() {{
   }});
 
   // Sort
-  const riskOrder = {{ low:1, medium:2, high:3, null:9, undefined:9 }};
+  const riskOrder  = {{ low:1, medium:2, high:3, null:9, undefined:9 }};
+  const valOrder   = {{ cheap:1, fair:2, stretched:3 }};
   const col = _bSort.col;
   const dir = _bSort.dir;
   rows = rows.slice().sort((a, b) => {{
@@ -3427,6 +3428,11 @@ function _renderBuffettTable() {{
     else if (col === "company")     {{ av = a.company || ""; bv = b.company || ""; }}
     else if (col === "layer_rec")   {{ av = a.layer_rec || 99; bv = b.layer_rec || 99; }}
     else if (col === "value_trap_risk") {{ av = riskOrder[a.value_trap_risk]||9; bv = riskOrder[b.value_trap_risk]||9; }}
+    else if (col === "ai_valuation") {{
+      const aV = (a.ai_analysis && !a.ai_analysis.error) ? a.ai_analysis.valuation : null;
+      const bV = (b.ai_analysis && !b.ai_analysis.error) ? b.ai_analysis.valuation : null;
+      av = valOrder[aV] ?? 9; bv = valOrder[bV] ?? 9;
+    }}
     else {{ av = a[col] ?? (dir > 0 ? Infinity : -Infinity); bv = b[col] ?? (dir > 0 ? Infinity : -Infinity); }}
     if (typeof av === "string") return dir * av.localeCompare(bv);
     return dir * (av - bv);
@@ -3581,7 +3587,7 @@ function _renderBuffettTable() {{
         ${{thStyle("value_trap_risk","Trap Risk","#c0392b")}}
         ${{thStyle("sector","Sector")}}
         ${{thStyle("country","Country")}}
-        <th style="padding:7px 8px;font-size:10px;color:#8e44ad;font-weight:600;text-transform:uppercase;text-align:center;white-space:nowrap;">AI Val</th>
+        ${{thStyle("ai_valuation","AI Val","#8e44ad","center")}}
         ${{thStyle("dividend_yield","Div %","#8e44ad")}}
         ${{thStyle("price","Price")}}
         ${{thStyle("gross_margin","Gross %","#27ae60")}}
