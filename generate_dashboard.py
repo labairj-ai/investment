@@ -3104,7 +3104,7 @@ let _startupPollCount  = 0;
 let _buffettAllWinners = [];
 let _bViewMode = "table";
 let _bSort    = {{ col: "quality_score", dir: -1 }};
-let _bFilters = {{ q: "", exchange: "", layer: 0, risk: "low" }};
+let _bFilters = {{ q: "", exchange: "", layer: 0, risk: "low", valuation: "" }};
 
 // ── Shared helpers (used by table + recommendations) ──────────────────────
 const _bFmtVal = v => (v != null && isFinite(v)) ? v.toFixed(1) + "x" : "—";
@@ -3359,7 +3359,7 @@ async function loadBuffett() {{
     _buffettAllWinners = data.winners;
     _bViewMode = "layer";
     _bSort    = {{ col: "quality_score", dir: -1 }};
-    _bFilters = {{ q: "", exchange: "", layer: 0, risk: "low" }};
+    _bFilters = {{ q: "", exchange: "", layer: 0, risk: "low", valuation: "" }};
 
     const partialNote = (running || (lastScan && scanned < total * 0.95))
       ? `<span style="color:#e67e22;"> · partial results (${{pct}}% scanned)</span>` : "";
@@ -3399,14 +3399,19 @@ function _renderBuffettTable() {{
   const exch = _bFilters.exchange;
   const lyr  = _bFilters.layer;
   const risk = _bFilters.risk;
+  const val  = _bFilters.valuation;
 
   // Filter
   let rows = _buffettAllWinners.filter(w => {{
     if (exch && w.exchange !== exch) return false;
     if (lyr  && w.layer_rec !== lyr) return false;
     if (risk && w.value_trap_risk !== risk) return false;
+    if (val) {{
+      const wVal = (w.ai_analysis && !w.ai_analysis.error) ? w.ai_analysis.valuation : null;
+      if (wVal !== val) return false;
+    }}
     if (q) {{
-      const hay = ((w.ticker||"") + " " + (w.company||"") + " " + (w.sector||"")).toLowerCase();
+      const hay = ((w.ticker||"") + " " + (w.company||"") + " " + (w.sector||"") + " " + (w.country||"")).toLowerCase();
       if (!hay.includes(q)) return false;
     }}
     return true;
@@ -3472,6 +3477,10 @@ function _renderBuffettTable() {{
       ${{chip("risk","low","✓ Safe",risk)}}
       ${{chip("risk","","All",risk)}}
       ${{chip("risk","high","Traps",risk)}}
+      <span style="font-size:10px;color:#aaa;font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-left:4px;">AI Valuation</span>
+      ${{chip("valuation","cheap","Cheap",val)}}
+      ${{chip("valuation","fair","Fair",val)}}
+      ${{chip("valuation","stretched","Stretched",val)}}
       ${{hiddenNote}}
       <span style="margin-left:auto;font-size:11px;color:#aaa;">${{matchTxt}}</span>
     </div>`;
@@ -3501,6 +3510,15 @@ function _renderBuffettTable() {{
     const aiBtnStyle = hasAI
       ? `background:#eafaf1;border-color:#a9dfbf;color:#1e8449;`
       : `background:#f4f6f9;border-color:#dde;color:#555;`;
+    const aiVal = hasAI ? w.ai_analysis.valuation : null;
+    const aiValColor = aiVal === "cheap" ? "#27ae60" : aiVal === "fair" ? "#7f8c8d" : aiVal === "stretched" ? "#c0392b" : null;
+    const aiValHtml = aiValColor
+      ? `<span style="display:inline-block;padding:1px 6px;border-radius:6px;font-size:9px;font-weight:700;
+           background:${{aiValColor}}22;color:${{aiValColor}};border:1px solid ${{aiValColor}}44;">${{aiVal}}</span>`
+      : `<span style="color:#ccc;font-size:10px;">—</span>`;
+    const countryHtml = w.country
+      ? `<span style="font-size:11px;color:#555;">${{w.country}}</span>`
+      : `<span style="color:#ccc;">—</span>`;
     return `
       <tr id="brow-${{w.ticker}}" style="background:${{rowBg}};border-bottom:1px solid #f0f2f5;">
         <td style="padding:8px 10px;font-size:11px;color:#bbb;text-align:center;">${{i+1}}</td>
@@ -3520,6 +3538,8 @@ function _renderBuffettTable() {{
         <td style="padding:8px 6px;vertical-align:middle;">${{_bLayerBadge(w.layer_rec, w.layer_reason)}}</td>
         <td style="padding:8px 6px;vertical-align:top;">${{_bTrapBadge(w.value_trap_risk, w.value_trap_flags)}}</td>
         <td style="padding:8px 10px;color:#555;font-size:11px;max-width:90px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${{w.sector || ""}}">${{sectorShort || "—"}}</td>
+        <td style="padding:8px 10px;white-space:nowrap;">${{countryHtml}}</td>
+        <td style="padding:8px 10px;text-align:center;">${{aiValHtml}}</td>
         <td style="padding:8px 10px;color:#8e44ad;">${{divPct}}</td>
         <td style="padding:8px 10px;">${{w.price ? "$" + w.price.toFixed(2) : "—"}}</td>
         <td style="padding:8px 10px;font-weight:700;color:#27ae60;">${{w.gross_margin?.toFixed(1)}}%</td>
@@ -3539,14 +3559,14 @@ function _renderBuffettTable() {{
         </td>
       </tr>
       <tr id="bai-row-${{w.ticker}}" style="display:none;background:#f8fafc;border-bottom:1px solid #e8edf4;">
-        <td colspan="20" style="padding:0;">
+        <td colspan="22" style="padding:0;">
           <div id="bai-content-${{w.ticker}}" style="padding:10px 16px;font-size:12px;"></div>
         </td>
       </tr>`;
   }}).join("\\n");
 
   const noResults = rows.length === 0
-    ? `<tr><td colspan="20" style="padding:20px;text-align:center;color:#aaa;font-size:12px;">
+    ? `<tr><td colspan="22" style="padding:20px;text-align:center;color:#aaa;font-size:12px;">
          No stocks match the current filters.</td></tr>` : "";
 
   wrap.innerHTML = filterBar + `
@@ -3560,6 +3580,8 @@ function _renderBuffettTable() {{
         ${{thStyle("layer_rec","Layer","#9b59b6")}}
         ${{thStyle("value_trap_risk","Trap Risk","#c0392b")}}
         ${{thStyle("sector","Sector")}}
+        ${{thStyle("country","Country")}}
+        <th style="padding:7px 8px;font-size:10px;color:#8e44ad;font-weight:600;text-transform:uppercase;text-align:center;white-space:nowrap;">AI Val</th>
         ${{thStyle("dividend_yield","Div %","#8e44ad")}}
         ${{thStyle("price","Price")}}
         ${{thStyle("gross_margin","Gross %","#27ae60")}}

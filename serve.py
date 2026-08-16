@@ -464,7 +464,7 @@ def _auto_ai_analyze_winners(log_file=None):
     """After a successful scan, generate AI analysis for any winner missing it or older than 30 days."""
     import json as _json
     STALE_DAYS    = 6   # refresh before the 7-day on-demand cache expires
-    NIGHTLY_LIMIT = 50  # Mac mini Metal GPU handles this comfortably before 7:15 AM newsletter
+    NIGHTLY_LIMIT = 200  # Mac mini Metal GPU handles this comfortably before 7:15 AM newsletter
     db = PROJECT_DIR / "out" / "buffett.db"
     if not db.exists():
         return
@@ -489,6 +489,8 @@ def _auto_ai_analyze_winners(log_file=None):
         w for w in winners
         if not w.get("ai_analysis") or (w.get("ai_analysis_at") or "") < cutoff
     ]
+    # Always process winners with no analysis first, then oldest-refreshed ones
+    stale.sort(key=lambda w: (0 if not w.get("ai_analysis") else 1, -(w.get("quality_score") or 0)))
     to_analyze = stale[:NIGHTLY_LIMIT]
 
     if not to_analyze:
