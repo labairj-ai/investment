@@ -30,8 +30,8 @@ The old macOS launchd agents are archived in `launchd-disabled-on-mac/`.
 | **Covered Call Tracker** | Log and track open/closed covered call positions; live mark-to-market option prices (bid/ask mid from yfinance); Unrealized P&L and Today's P&L columns per position; daily change KPI is adjusted mark-to-market; bulk import via `covered_calls.csv`; auto-expires past-expiry positions |
 | **Dividend Tracker** | Dividend dates, tax impact by income bracket, monthly income chart, and ticker lookup tool |
 | **Earnings Calendar** | Next earnings date per holding shown in Layer Summary and Holdings table |
-| **Buffett Screener** | Nightly scan of ~6,500 NYSE + NASDAQ tickers (deduplicated); surfaces stocks passing all 6 Buffett quality criteria; emails only net-new winners; each winner gets a composite 0–100 **Quality Score** (gross margin, net income, P/FCF, P/E, EV/EBITDA, trap risk, interest, CapEx, dividend); winners table default-sorted by score so best picks rise to top |
-| **Buffett AI Thesis** | On-demand **AI▾** button per winner — sends metrics to local `phi4:14b` (Ollama), returns thesis, moat badge (strong/moderate/weakening), valuation badge (cheap/fair/stretched), top risk, and conviction stars (1–5); result cached 7 days in DB |
+| **Buffett Screener** | Nightly scan of ~6,500 NYSE + NASDAQ tickers (deduplicated); surfaces stocks passing all 6 Buffett quality criteria; emails only net-new winners; each winner gets a composite 0–100 **Quality Score** (gross margin, net income, P/FCF, P/E, EV/EBITDA, trap risk, interest, CapEx, dividend); winners table default-sorted by score so best picks rise to top; includes **Country** (HQ country from yfinance) and **AI Val** columns with filter chips and sort |
+| **Buffett AI Thesis** | On-demand **AI▾** button per winner — sends metrics to local `phi4:14b` (Ollama), returns thesis, moat badge (strong/moderate/weakening), valuation badge (cheap/fair/stretched), top risk, and conviction stars (1–5); result cached 7 days in DB; nightly batch analyzes up to 200 stale winners, prioritizing any with no analysis over ones needing a refresh |
 | **Buffett Layer View** | **Table \| By Layer** toggle — layer view shows all 5 panels with current vs target allocation bar, top picks mini-table (score, gross%, P/E, div%, conviction stars), and a **Compare Layer** button that asks `phi4:14b` to rank all winners in that layer with a 1-sentence rationale each |
 | **Nightly AI Layer Rankings** | After each nightly screener run, `phi4:14b` ranks the top-5 low-risk winners per layer (1–5) and stores `ai_layer_rank` in the DB; the layer view sorts by this rank (falling back to `quality_score`); each card shows a 🤖# badge |
 | **Buffett Deep-Dive** | On-demand 13-point Buffett analysis for any ticker — gross margin, expense margins, EPS trend, balance sheet strength, buybacks, and more |
@@ -485,10 +485,13 @@ The screener runs automatically at **2 AM ET** each night as a background thread
 - **Scan duration** — how long the last completed scan took
 - **Quality Score** — each winner has a 0–100 composite score (gross margin, net income margin, P/FCF, P/E, EV/EBITDA, trap risk, interest margin, CapEx margin, dividend); green ≥70, orange ≥50, red <50; table defaults to score-descending so best picks are always on top
 - **Exchange badge** — each winner shows a color-coded **NYSE** (blue) or **NASDAQ** (green) badge next to the ticker in both the screener table and the Recommended Purchases panel
-- **Filter bar** — text search (ticker/company/sector), Exchange chips, Layer chips (L1–L5), Risk 3-state toggle: **✓ Safe** (low risk only, default — shows count of hidden medium/high stocks), **All**, **Traps**; live match count; Sector and Div % columns now visible
-- **Sortable columns** — click any column header to sort ascending/descending; sortable by Score, Ticker, Company, Layer, Trap Risk, Sector, Div %, Price, Gross %, SG&A %, Net Inc %, Interest %, CapEx %, P/E, P/FCF, EV/EBITDA
+- **Country column** — HQ country from yfinance (e.g. United States, Netherlands, Israel); included in text search; backfilled on existing winners without a full rescan
+- **AI Val column** — color-coded badge showing the AI's valuation verdict: green=cheap, gray=fair, red=stretched; populated once the AI▾ analysis has run for a winner
+- **Filter bar** — text search (ticker/company/sector/country), Exchange chips (NYSE/NASDAQ), Layer chips (L1–L5), Risk toggle (**✓ Safe** / All / Traps), and **AI Valuation** chips (**Cheap** / **Fair** / **Stretched** — filters to only winners where the AI returned that verdict); live match count
+- **Sortable columns** — click any column header to sort ascending/descending; sortable by Score, Ticker, Company, Layer, Trap Risk, Sector, Country, AI Val (cheap→fair→stretched→no analysis), Div %, Price, Gross %, SG&A %, Net Inc %, Interest %, CapEx %, P/E, P/FCF, EV/EBITDA
+- **Table | By Layer** view toggle — buttons correctly reflect the active view; layer view shows all 5 panels with current vs. target allocation bar (gap colored red/green), top-5 picks mini-table per layer sorted by nightly AI rank (🤖# badge), and a **Compare Layer ▸** button
 - **AI▾ button** (per row) — click to generate an on-demand AI investment thesis; the panel opens immediately and streams raw `phi4:14b` tokens live (same scrolling-`<pre>` pattern as the covered call AI). Output includes thesis, moat badge, valuation badge, top risk, conviction stars, and layer fit note. Also compares the winner against **all current holdings**: fetches sector/industry/metrics for each via yfinance, passes them to the AI, and renders a **Holdings Overlap** table showing which holdings are redundant, whether the winner is superior, and why — or a green "No overlap" banner if none are. Result cached 7 days; subsequent clicks toggle the panel open/closed
-- **Table | By Layer** view toggle — layer view shows all 5 panels with current vs. target allocation bar (gap colored red/green), top-5 picks mini-table per layer sorted by nightly AI rank (🤖# badge), and a **Compare Layer ▸** button that asks `phi4:14b` to rank all winners in that layer with a 1-sentence rationale each
+- **Nightly AI analysis** — after each screener run, `phi4:14b` generates a thesis for up to 200 stale winners per night; winners with no analysis at all are always processed before ones that merely need a refresh; results cached 6 days
 - **Log tail panel** — collapsible view of the last 20 lines of `screener.log`, color-coded (red = errors, orange = warnings, blue = section headers)
 
 **Logs:** `out/screener.log`
@@ -545,10 +548,17 @@ Auto-loads on page open. Hit **Refresh** to update; cached 1 hour per day.
 
 **Columns:** Ticker | Status | Ex-Div Date | Pay Date | Amount/Share | This Payout | Annual Income | Est. Tax | Net After-Tax | Yield | Yield on Cost
 
-**Status badges:**
-- **UPCOMING** (green) — ex-div date is in the future
-- **PAYMENT DUE** (blue) — ex-div has passed, pay date is still in the future (cash not yet received)
-- **LAST KNOWN** (grey) — both dates are in the past; sorted most-recent-first
+**Status filter chips** (above the table) — toggle which rows are shown:
+- **Upcoming** (green) — ex-div date declared but not yet passed
+- **Payment Due** (blue) — ex-div passed, pay date is still in the future (cash not yet received)
+- **Last Known** (gray) — historical data only; both dates are in the past
+
+Default on load shows only **Upcoming + Payment Due** (the actionable ones). Click any chip to add or remove that status from the view. The match count updates in real time.
+
+**Status badges** (per row):
+- **UPCOMING** (green)
+- **PAYMENT DUE** (blue)
+- **LAST KNOWN** (grey)
 
 **Pay date sourcing:**
 - Individual stocks — from yfinance; dates >90 days after ex-div are discarded (yfinance sometimes returns wrong fiscal-year dates for WMT, GRMN, etc.)
