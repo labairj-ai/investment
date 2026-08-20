@@ -1081,9 +1081,13 @@ def ai_context(ticker, result, shares, layer):
     lines = [
         "You are a knowledgeable friend helping an investor decide whether to sell a covered call. "
         "Write in plain, conversational English — no Greek letters, no math symbols, no jargon. "
-        "Translate every concept into real-money terms: 'you'd collect $X per share' not 'exec premium'. "
+        "Translate every concept into real-money terms. "
         "'There is a 20% chance the stock closes above the strike' not 'eITM 0.20'. "
         "Every sentence must include specific dollar amounts or percentages from the data below. "
+        "CRITICAL — option contract math: 1 contract = 100 shares. "
+        "The 'income per contract' figure below is already the TOTAL cash collected (exec_price × 100). "
+        "Never multiply it by 100 again. Never say 'or $X for 100 shares' after stating the contract income — "
+        "the contract income IS the income for 100 shares. "
         "Respond with ONLY a JSON object — no markdown fences, no text outside the braces.\n",
 
         f"STOCK: {ticker} at ${price:.2f} | you own {shares:.0f} shares (avg cost ${cost:.2f}, "
@@ -1130,7 +1134,7 @@ def ai_context(ticker, result, shares, layer):
 
         lines.append(
             f"\n  Contract #{i+1}: Sell the {row['expiration']} ${float(row['strike']):.2f} call — {int(row['dte'])} days out"
-            f"\n    Collect: ${exec_p:.2f}/share (${income_per_contract:.0f}/contract) — {ann:.1f}%/yr annualized"
+            f"\n    Collect: ${income_per_contract:.0f} total per contract (${exec_p:.2f}/share × 100 shares) — {ann:.1f}%/yr annualized"
             f"\n    Chance stock closes above strike and you get called away: ~{itm_pct:.0f}%"
             f"\n    Chance this trade leaves you worse off than just holding: ~{regret_pct:.0f}% (stock would need to close above ${regret_k:.2f})"
             f"\n    Net edge vs just holding: {alpha_desc}"
@@ -1150,7 +1154,7 @@ Write every field in plain English as if explaining to a smart friend — no Gre
     "expiration": "YYYY-MM-DD",
     "summary": "One or two sentences: which contract you'd pick and the single most important reason why, in plain dollars and cents."
   }},
-  "the_trade": "Explain exactly what the investor is agreeing to: what they collect, what they're giving up, and what has to happen for this to work out well. Include the specific dollar amounts. 2-3 sentences.",
+  "the_trade": "Explain exactly what the investor is agreeing to: what they collect (state the total contract income once — do NOT re-multiply by 100), what they're giving up, and what has to happen for this to work out well. 2-3 sentences.",
   "market_conditions": "Is this a good or bad time to be selling options on this stock right now? Explain in terms of what the market is paying and whether that's generous or stingy. 2 sentences.",
   "what_could_go_wrong": "What is the scenario where this trade leaves the investor worse off than just holding? Give the exact stock price that flips the outcome, and your honest read on how likely that is. 2-3 sentences.",
   "risks": [
