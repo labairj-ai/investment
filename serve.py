@@ -1224,6 +1224,115 @@ Return ONLY valid JSON, no other text. Use rank 1 through {n_stocks} only:
         _job_update(job_id, status="error", error=str(e))
 
 
+# ── CC Chat helpers ───────────────────────────────────────────────────────────
+
+def _fetch_options_for_chat(ticker: str, expiry: str) -> str:
+    """Fetch live option chain for a specific expiry and return a plain-text block for chat context."""
+    try:
+        import yfinance as yf
+        from covered_call_rec import call_delta, _exec_premium, _liquidity_score, _safe_int
+        from datetime import datetime as _dt
+        stock = yf.Ticker(ticker)
+        try:
+            price = float(stock.fast_info.last_price or 0)
+        except Exception:
+            price = 0.0
+        if price <= 0:
+            hist = stock.history(period="2d")
+            price = float(hist["Close"].dropna().iloc[-1]) if not hist.empty else 0.0
+
+        today = _dt.now().date()
+        exp_date = _dt.strptime(expiry, "%Y-%m-%d").date()
+        dte = (exp_date - today).days
+
+        chain = stock.option_chain(expiry).calls
+        rows = []
+        for _, row in chain.iterrows():
+            K   = float(row.get("strike", 0))
+            bid = float(row.get("bid", 0) or 0)
+            ask = float(row.get("ask", 0) or 0)
+            iv  = float(row.get("impliedVolatility", 0) or 0)
+            oi  = _safe_int(row.get("openInterest", 0))
+            vol = _safe_int(row.get("volume", 0))
+            if K <= 0 or K > price * 1.50:
+                continue
+            if bid <= 0 and ask <= 0:
+                continue
+            exec_p = _exec_premium(bid, ask)
+            if exec_p < 0.05:
+                continue
+            liq = _liquidity_score(bid, ask, vol, oi)
+            T = dte / 365
+            delta = call_delta(price, K, T, iv) if iv > 0.01 and T > 0 else None
+            ann = exec_p / price * 100 * (365 / dte) if dte > 0 else None
+            rows.append((K, bid, ask, exec_p, iv * 100, delta, ann, liq, oi))
+
+        if not rows:
+            return f"\nLIVE DATA — {expiry} ({dte} DTE): No tradable contracts found.\n"
+
+        lines = [f"\nLIVE DATA (fetched on demand) — {expiry} ({dte} DTE) for {ticker} at ${price:.2f}:"]
+        lines.append(f"  {'Strike':>7}  {'Bid':>5}  {'Ask':>5}  {'Exec':>5}  {'IV%':>5}  "
+                     f"{'Delta':>5}  {'Ann%':>6}  {'Liq':>3}  {'OI':>6}")
+        lines.append("  " + "-" * 70)
+        for K, bid, ask, exec_p, iv_pct, delta, ann, liq, oi in rows:
+            d_str = f"{delta*100:.0f}%" if delta is not None else "N/A"
+            a_str = f"{ann:.1f}%" if ann is not None else "N/A"
+            lines.append(f"  ${K:>6.2f}  ${bid:>4.2f}  ${ask:>4.2f}  ${exec_p:>4.2f}"
+                         f"  {iv_pct:>5.1f}%  {d_str:>5}  {a_str:>6}  {liq:>3}  {oi:>6}")
+        lines.append("  (These contracts may not meet the profit floor — weigh the trade-offs.)")
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"\nCould not fetch live data for {expiry}: {exc}\n"
+
+
+def _detect_expiry_from_message(message: str, available_expirations: list) -> "str | None":
+    """Return the best matching expiry date string based on month/date mentions in message."""
+    import re
+    from datetime import datetime as _dt
+    msg = message.lower()
+    month_map = {
+        "january": 1, "jan": 1, "february": 2, "feb": 2,
+        "march": 3, "mar": 3, "april": 4, "apr": 4,
+        "may": 5, "june": 6, "jun": 6, "july": 7, "jul": 7,
+        "august": 8, "aug": 8, "september": 9, "sep": 9, "sept": 9,
+        "october": 10, "oct": 10, "november": 11, "nov": 11,
+        "december": 12, "dec": 12,
+    }
+    found_month = None
+    found_day = None
+    for name, num in sorted(month_map.items(), key=lambda x: -len(x[0])):
+        if re.search(rf'\b{re.escape(name)}\b', msg):
+            found_month = num
+            m = re.search(rf'\b{re.escape(name)}\s+(\d{{1,2}})\b', msg)
+            if m:
+                found_day = int(m.group(1))
+            break
+    if found_month is None:
+        m = re.search(r'\b(\d{1,2})[/-](\d{1,2})\b', msg)
+        if m:
+            found_month = int(m.group(1))
+            found_day = int(m.group(2))
+    if found_month is None:
+        return None
+
+    now = _dt.now()
+    year = now.year
+    if found_month < now.month:
+        year += 1
+    candidates = [
+        e for e in available_expirations
+        if _dt.strptime(e, "%Y-%m-%d").month == found_month
+        and _dt.strptime(e, "%Y-%m-%d").year == year
+    ]
+    if not candidates:
+        return None
+    if found_day:
+        candidates.sort(key=lambda e: abs(_dt.strptime(e, "%Y-%m-%d").day - found_day))
+    else:
+        candidates.sort()
+    return candidates[0]
+
+
 # ── HTTP Handler ──────────────────────────────────────────────────────────────
 class Handler(http.server.SimpleHTTPRequestHandler):
 
@@ -2326,6 +2435,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         )
 
     def _build_chat_context_cc(self, ticker):
+        import yfinance as _yf
         from covered_call_rec import analyze, load_holdings
         holdings = load_holdings()
         if ticker not in holdings:
@@ -2348,10 +2458,20 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             f"Layer: {h['layer']}"
         )
 
+        # Fetch all available expiry dates so the investor can ask about any month
+        all_expirations = []
+        try:
+            all_expirations = list(_yf.Ticker(ticker).options or [])
+        except Exception:
+            pass
+
         if result is None or result["recs"].empty:
+            avail = ", ".join(all_expirations[:20]) if all_expirations else "unknown"
             return base + (
-                "\n\nNote: No qualifying option contracts found at this time. "
-                "Answer general questions about covered call strategy for this position."
+                f"\n\nNote: No qualifying option contracts found in the standard 21–60 DTE window. "
+                f"Answer general questions about covered call strategy for this position.\n"
+                f"All available expiry dates for {ticker}: {avail}\n"
+                f"(Contracts outside the qualifying window can be fetched on demand if the investor asks about a specific month.)"
             )
 
         price = result.get("current_price", 0)
@@ -2364,18 +2484,45 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             f"ATM IV: {result.get('atm_iv', 0):.1f}%  |  HV Rank: {result.get('hv_rank', 'N/A')}"
         )
 
-        recs = result["recs"].head(3)
+        # Qualifying contracts (meet profit floor, standard DTE window)
+        recs = result["recs"].head(5)
         contracts = []
-        for _, row in recs.iterrows():
+        for i, (_, row) in enumerate(recs.iterrows(), 1):
             contracts.append(
-                f"  #{int(row.get('rank', 0))}: ${row['strike']:.2f} strike  "
+                f"  #{i}: ${float(row['strike']):.2f} strike  "
                 f"exp {row['expiration']}  ({int(row['dte'])} DTE)  "
-                f"premium ${row.get('exec_premium', 0):.2f}/share  "
-                f"({row.get('annualized_ret', 0):.1f}% ann.)  "
-                f"P(called away) {row.get('p_itm_rw', 0)*100:.0f}%  "
-                f"regret P {row.get('regret_prob', 0)*100:.0f}%"
+                f"exec ${float(row.get('exec_premium', row.get('mid', 0))):.2f}/share  "
+                f"({float(row.get('annualized_ret', 0)):.1f}% ann.)  "
+                f"P(called away) {float(row.get('itm_prob_real', 0))*100:.0f}%  "
+                f"regret P {float(row.get('regret_prob', 0))*100:.0f}%  "
+                f"cc_alpha ${float(row.get('cc_alpha', 0)):.2f}"
             )
-        base += "\n\nTop Contracts:\n" + "\n".join(contracts)
+        base += "\n\nQualifying Contracts (meet profit floor):\n" + "\n".join(contracts)
+
+        # Non-qualifying contracts — give the investor visibility even if they don't clear the floor
+        floor_fail = result.get("floor_fail_recs")
+        if floor_fail is not None and not floor_fail.empty:
+            ff_lines = []
+            for _, row in floor_fail.head(8).iterrows():
+                ff_lines.append(
+                    f"  ${float(row['strike']):.2f} strike  "
+                    f"exp {row['expiration']}  ({int(row['dte'])} DTE)  "
+                    f"exec ${float(row.get('exec_premium', row.get('mid', 0))):.2f}/share  "
+                    f"({float(row.get('annualized_ret', 0)):.1f}% ann.)"
+                )
+            base += (
+                f"\n\nContracts BELOW profit floor (don't clear cost+buffer, but tradeable if investor accepts lower return):\n"
+                + "\n".join(ff_lines)
+            )
+
+        # List all available expiry dates so user can ask about any month
+        if all_expirations:
+            base += f"\n\nAll available expiry dates for {ticker}: {', '.join(all_expirations[:24])}"
+            base += (
+                f"\nNote: contracts with < 21 DTE or in extended months beyond the standard "
+                f"60-day window are not pre-analyzed. If the investor asks about a specific "
+                f"month or date, live data will be fetched automatically."
+            )
 
         cached_ai = _cc_ai_get(ticker)
         if cached_ai:
@@ -2429,6 +2576,30 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         except Exception as e:
             _chat_active.discard(chat_key)
             return self._json_error(500, f"Context error: {e}")
+
+        # For CC chats: if the user's message references a specific expiry month/date
+        # that isn't already in the system context, fetch it live and inject it.
+        if context_type == "cc":
+            try:
+                import yfinance as _yf2
+                last_user_msg = next(
+                    (m.get("content", "") for m in reversed(messages) if m.get("role") == "user"),
+                    ""
+                )
+                all_exps = list(_yf2.Ticker(context_id).options or [])
+                target_exp = _detect_expiry_from_message(last_user_msg, all_exps)
+                if target_exp:
+                    # Only fetch if we don't already have detailed contract data for this expiry.
+                    # Listing it in "All available expiry dates" doesn't count.
+                    has_detail = (
+                        f"exp {target_exp}" in system_prompt or      # in qualifying/floor-fail rows
+                        f"— {target_exp} (" in system_prompt         # already in a LIVE DATA block
+                    )
+                    if not has_detail:
+                        fetched = _fetch_options_for_chat(context_id, target_exp)
+                        system_prompt += fetched
+            except Exception:
+                pass
 
         self.wfile.write(
             b"HTTP/1.1 200 OK\r\n"
