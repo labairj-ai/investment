@@ -32,6 +32,7 @@ The old macOS launchd agents are archived in `launchd-disabled-on-mac/`.
 | **Earnings Calendar** | Next earnings date per holding shown in Layer Summary and Holdings table |
 | **Buffett Screener** | Nightly scan of ~6,500 NYSE + NASDAQ tickers (deduplicated); surfaces stocks passing all 6 Buffett quality criteria; emails only net-new winners; each winner gets a composite 0–100 **Quality Score** (gross margin, net income, P/FCF, P/E, EV/EBITDA, trap risk, interest, CapEx, dividend); winners table default-sorted by score so best picks rise to top; includes **Country** (HQ country from yfinance) and **AI Val** columns with filter chips and sort |
 | **Buffett AI Thesis** | On-demand **AI▾** button per winner — sends metrics to local `phi4:14b` (Ollama), returns thesis, moat badge (strong/moderate/weakening), valuation badge (cheap/fair/stretched), top risk, and conviction stars (1–5); result cached 7 days in DB; nightly batch analyzes up to 200 stale winners, prioritizing any with no analysis over ones needing a refresh |
+| **Conversational AI Chat** | **💬 Chat** button on every winner AI panel and CC AI analysis — opens a fixed right-side drawer for multi-turn follow-up questions. Powered by `phi4:14b` via Ollama. System prompt is automatically populated with the stock's full metric context (or CC option data) plus the prior AI analysis and your current portfolio holdings. Quick-prompt chips per context (e.g. "Why this conviction level?", "What if the stock drops 5%?"). Chat is ephemeral (session only) and streams tokens in real time. |
 | **Buffett Layer View** | **Table \| By Layer** toggle — layer view shows all 5 panels with current vs target allocation bar, top picks mini-table (score, gross%, P/E, div%, conviction stars), and a **Compare Layer** button that asks `phi4:14b` to rank all winners in that layer with a 1-sentence rationale each |
 | **Nightly AI Layer Rankings** | After each nightly screener run, `phi4:14b` ranks the top-5 low-risk winners per layer (1–5) and stores `ai_layer_rank` in the DB; the layer view sorts by this rank (falling back to `quality_score`); each card shows a 🤖# badge |
 | **Buffett Deep-Dive** | On-demand 13-point Buffett analysis for any ticker — gross margin, expense margins, EPS trend, balance sheet strength, buybacks, and more |
@@ -196,6 +197,7 @@ Script changes take effect on the next **↻ Refresh Data** without restarting t
 | `PATCH /api/holdings/<ticker>` | Reassign a holding's layer (rewrites all history retroactively) |
 | `GET /api/tlh-analysis` | Per-ticker unrealized G/L from `cost_lots`; used by the Tax Harvesting modal |
 | `POST /api/refresh-dashboard` | Fetch fresh prices, update the DB, and regenerate the dashboard without sending email (backs the **↻ Refresh Data** button) |
+| `POST /api/invest-chat` | Streaming SSE endpoint for conversational AI chat. Body: `{context_type: "winner"\|"cc", context_id: ticker, messages: [{role, content}]}`. Builds a system prompt from DB/option data, then streams phi4:14b tokens as `data: {"token":"..."}` events. Concurrency-guarded per ticker (429 if already streaming). |
 
 ---
 
@@ -630,7 +632,7 @@ investment/
 ├── serve.py                         # HTTP server + all API endpoints + schedulers
 ├── buffett_screener.py              # NYSE Buffett screener — nightly at 2 AM ET
 ├── covered_call_rec.py              # Covered call recommendation + blackout engine + ai_context() prompt builder
-├── ollama_client.py                 # Thin urllib wrapper for Ollama's /api/generate endpoint (all AI features use phi4:14b; timeout 180s)
+├── ollama_client.py                 # Thin urllib wrapper for Ollama: generate() for JSON batch, stream_generate() for one-shot SSE, stream_chat() for multi-turn /api/chat (phi4:14b; timeout 180s)
 ├── run_investment.sh                # Manual newsletter entry point
 ├── chart.umd.min.js                 # Bundled Chart.js (no CDN dependency)
 ├── favicon.svg                      # Dashboard browser tab icon
