@@ -3087,6 +3087,23 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         and datetime.strptime(pay_date, "%Y-%m-%d").date() >= today
                     )
 
+                    # If the holding was purchased after the ex-div date, the investor
+                    # does not qualify for this payout — suppress it.
+                    purchase_date = meta.get("purchase_date")
+                    if pay_pending and purchase_date and ex_date:
+                        try:
+                            if purchase_date > ex_date:  # ISO string comparison is safe
+                                pay_pending = False
+                        except Exception:
+                            pass
+                    if is_upcoming and purchase_date and ex_date:
+                        try:
+                            if purchase_date > ex_date:
+                                is_upcoming = False
+                                days_to_ex  = None
+                        except Exception:
+                            pass
+
                     row.update({
                         "ex_div_date":        ex_date,
                         "pay_date":           pay_date,
@@ -3097,7 +3114,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         "yield_on_cost":      yoc,
                         "last_amount":        last_amount,
                         "last_date":          last_date,
-                        "total_payout":       round(last_amount * shares, 2) if last_amount else None,
+                        "total_payout":       round(last_amount * shares, 2) if (last_amount and (is_upcoming or pay_pending)) else None,
                         "annual_income":      round(annual_rate * shares, 2) if annual_rate else None,
                         "days_to_ex":         days_to_ex,
                         "declared":           is_upcoming,

@@ -402,9 +402,10 @@ def load_holdings() -> dict:
         for row in csv.DictReader(f):
             t = normalize_ticker(row["Stock"])
             result[t] = {
-                "shares":   float(row["Shares"]),
-                "avg_cost": float(row["AvgCost"]),
-                "layer":    int(row["Layer"]),
+                "shares":        float(row["Shares"]),
+                "avg_cost":      float(row["AvgCost"]),
+                "layer":         int(row["Layer"]),
+                "purchase_date": (row.get("PurchaseDate") or "").strip() or None,
             }
     return result
 
