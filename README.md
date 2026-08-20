@@ -12,7 +12,7 @@ The recommended setup is a always-on home server (e.g. a mini PC or Raspberry Pi
 - **Newsletter:** serve.py's built-in scheduler sends at ~7:15 AM ET; `run_investment.sh` via a systemd timer at 8 AM acts as a backstop (flag file `out/last_run_date.txt` prevents double sends)
 - **LAN / remote access:** by default `serve.py` binds to `localhost`; change to `0.0.0.0` to expose on the LAN; use [Tailscale Funnel](https://tailscale.com/kb/1223/funnel) or a reverse proxy for remote access
 - **Data backup:** `backup_data.sh` pushes DB + CSV to a separate private GitHub repo
-- **Deploy flow:** commit + push on dev machine, `git pull` on server; restart the service only when `serve.py` changes
+- **Deploy flow:** commit + push on dev machine, `git pull` on server; restart the service only when `serve.py` changes. On startup, `serve.py` automatically regenerates `out/dashboard.html` if `generate_dashboard.py` is newer than the existing file — so changes to the dashboard generator take effect on the next service restart without a manual regeneration step.
 
 The old macOS launchd agents are archived in `launchd-disabled-on-mac/`.
 
@@ -28,11 +28,11 @@ The old macOS launchd agents are archived in `launchd-disabled-on-mac/`.
 | **Add / Manage Positions** | Add new positions directly from the Holdings UI (ticker, shares, avg cost, layer); reassign any holding to a different layer with full retroactive history rewrite; opening lot auto-created in the Tax Lot Tracker on position add |
 | **Covered Call Analyzer** | Ranks contracts by expected incremental value vs simply holding the stock (covered-call alpha), not raw premium yield. Floor uses `K + exec_prem ≥ cost × 1.10` so premium participates. Metrics include: CC Alpha (exec premium − expected upside surrendered under blended real-world price-return drift μ), Regret % (P(S_T > K + exec_prem)), estimated expiry ITM % (P(S_T > K) under μ), vol-normalised strike distance (z in σ units), IV richness (IV/HV_forecast − 1), expected move (S × IV × √T), and a 0–100 multi-factor score. Ex-div events use extrinsic/dividend economics; expiry-implied move (ATM straddle cost) flags earnings coverage. Three-tier fallback (live bids → ask-proxy → Black-Scholes) ensures results when markets are closed. An **IV environment badge** (green/yellow/red) signals whether current premium levels favor selling calls. A **historical CC summary** shows cumulative net income from prior closed positions on the same ticker. **🤖 AI Analysis** sends top-5 contracts plus full metric context to a local `qwen2.5:7b` model; every field in the output requires specific numbers cited (CCα $, regret threshold $, IVrich %, HV Pct) |
 | **Covered Call Tracker** | Log and track open/closed covered call positions; live mark-to-market option prices (bid/ask mid from yfinance); Unrealized P&L and Today's P&L columns per position; daily change KPI is adjusted mark-to-market; bulk import via `covered_calls.csv`; auto-expires past-expiry positions |
-| **Dividend Tracker** | Dividend dates, tax impact by income bracket, monthly income chart, and ticker lookup tool |
+| **Dividend Tracker** | Dividend dates, tax impact by income bracket, monthly income chart, and ticker lookup tool. Respects `PurchaseDate` in `holdings.csv` — if a lot was purchased after the ex-div date, that lot's shares are excluded from the upcoming payout. Supports multiple lots per ticker so partial add-ons after ex-div are handled correctly. |
 | **Earnings Calendar** | Next earnings date per holding shown in Layer Summary and Holdings table |
 | **Buffett Screener** | Nightly scan of ~6,500 NYSE + NASDAQ tickers (deduplicated); surfaces stocks passing all 6 Buffett quality criteria; emails only net-new winners; each winner gets a composite 0–100 **Quality Score** (gross margin, net income, P/FCF, P/E, EV/EBITDA, trap risk, interest, CapEx, dividend); winners table default-sorted by score so best picks rise to top; includes **Country** (HQ country from yfinance) and **AI Val** columns with filter chips and sort |
 | **Buffett AI Thesis** | On-demand **AI▾** button per winner — sends metrics to local `phi4:14b` (Ollama), returns thesis, moat badge (strong/moderate/weakening), valuation badge (cheap/fair/stretched), top risk, and conviction stars (1–5); result cached 7 days in DB; nightly batch analyzes up to 200 stale winners, prioritizing any with no analysis over ones needing a refresh |
-| **Conversational AI Chat** | **💬 Chat** button on every winner AI panel and CC AI analysis — opens a fixed right-side drawer for multi-turn follow-up questions. Powered by `phi4:14b` via Ollama. System prompt is automatically populated with the stock's full metric context (or CC option data) plus the prior AI analysis and your current portfolio holdings. Quick-prompt chips per context (e.g. "Why this conviction level?", "What if the stock drops 5%?"). Chat is ephemeral (session only) and streams tokens in real time. |
+| **Conversational AI Chat** | **💬 Chat** button on every winner AI panel and CC AI analysis — opens a fixed right-side drawer for multi-turn follow-up questions. Powered by `phi4:14b` via Ollama. System prompt is populated with full metric context (or CC option data) plus prior AI analysis and current portfolio holdings. Quick-prompt chips per context (e.g. "Why this conviction level?", "What if the stock drops 5%?"). For CC chats, the system prompt includes all floor-failing contracts and lists every available expiry; if you mention a specific month or date (e.g. "what about August options?"), live option chain data for that expiry is fetched on demand and injected before the AI responds — so you can ask about any contract regardless of whether it passed the profit floor or DTE filter. Chat is ephemeral (session only) and streams tokens in real time. |
 | **Buffett Layer View** | **Table \| By Layer** toggle — layer view shows all 5 panels with current vs target allocation bar, top picks mini-table (score, gross%, P/E, div%, conviction stars), and a **Compare Layer** button that asks `phi4:14b` to rank all winners in that layer with a 1-sentence rationale each |
 | **Nightly AI Layer Rankings** | After each nightly screener run, `phi4:14b` ranks the top-5 low-risk winners per layer (1–5) and stores `ai_layer_rank` in the DB; the layer view sorts by this rank (falling back to `quality_score`); each card shows a 🤖# badge |
 | **Buffett Deep-Dive** | On-demand 13-point Buffett analysis for any ticker — gross margin, expense margins, EPS trend, balance sheet strength, buybacks, and more |
@@ -88,11 +88,22 @@ EMAIL_TO=recipient@gmail.com
 ### 4. Populate `holdings.csv`
 
 ```
-Stock,Shares,AvgCost,Layer
-JOBY,100,9.67,4
-EW,100,85.31,3
-...
+Stock,Shares,AvgCost,Layer,PurchaseDate
+JOBY,100,9.67,4,
+EW,100,85.31,3,
+BP,135,45.1,2,2026-08-20
 ```
+
+`PurchaseDate` (ISO `YYYY-MM-DD`) is optional. Leave it blank for existing holdings. Set it when you buy a stock **after** its ex-dividend date so the dividend tracker knows you don't qualify for that cycle's payout.
+
+**Multiple lots per ticker** are supported — add a second row with the same ticker, new share count, cost basis, and purchase date. `load_holdings()` merges them into one position (summed shares, weighted avg cost) while preserving the individual lots for dividend qualification:
+
+```
+GRMN,45.117,225.53,3,
+GRMN,10,240.00,3,2026-08-18
+```
+
+The original 45 shares receive the next dividend; the 10 add-on shares (bought after ex-div) do not.
 
 You can also add positions directly from the dashboard UI — see [Holdings Management](#holdings-management) below.
 
@@ -567,6 +578,10 @@ Default on load shows only **Upcoming + Payment Due** (the actionable ones). Cli
 - ETFs (SCHD, SLYV, IGV, etc.) — scraped from stockanalysis.com dividend history when yfinance has no data
 - Vanguard / Fidelity mutual funds — estimated as ex-date + 1 business day (typical fund practice); shown with a `~` prefix to indicate the value is estimated
 
+**Purchase-date filtering:** If a holding (or a specific lot within a holding) has a `PurchaseDate` in `holdings.csv` that falls **after** the ex-div date, those shares are excluded from `This Payout`. If zero shares qualify, the row is treated as Last Known (no upcoming/pending badge). This handles two cases:
+- Bought a new position after ex-div — set `PurchaseDate` on the row
+- Added shares to an existing holding after ex-div — add a second row for the same ticker with the add-on shares and purchase date; original shares still qualify
+
 **Dividend Lookup**: enter any ticker + share count to see metrics and projected portfolio impact.
 
 ---
@@ -622,7 +637,7 @@ Ranked by multi-factor score; if the best `CCα$` is negative, a DO NOTHING warn
 
 ```
 investment/
-├── holdings.csv                     # Portfolio positions — Stock, Shares, AvgCost, Layer
+├── holdings.csv                     # Portfolio positions — Stock, Shares, AvgCost, Layer, PurchaseDate (optional; multiple rows per ticker supported for lot tracking)
 ├── covered_calls.csv                # Bulk-import seed for open covered call positions
 ├── layer_targets.json               # Target layer allocations (used by dashboard + email digest)
 ├── backup_data.sh                   # Pushes DB + CSV to a private backup repo
