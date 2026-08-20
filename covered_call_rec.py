@@ -397,16 +397,35 @@ def normalize_ticker(t: str) -> str:
 
 
 def load_holdings() -> dict:
-    result = {}
+    """Load holdings from CSV, merging multiple rows for the same ticker into one entry.
+
+    Multiple rows per ticker are supported for tracking add-on purchases with
+    different PurchaseDates (e.g., shares added after an ex-dividend date).
+    Shares and cost basis are aggregated; individual lots are preserved in
+    the 'lots' list as [(shares, purchase_date)] for dividend qualification logic.
+    """
+    raw: dict = {}
     with open(HOLDINGS_CSV) as f:
         for row in csv.DictReader(f):
             t = normalize_ticker(row["Stock"])
-            result[t] = {
+            raw.setdefault(t, []).append({
                 "shares":        float(row["Shares"]),
                 "avg_cost":      float(row["AvgCost"]),
                 "layer":         int(row["Layer"]),
                 "purchase_date": (row.get("PurchaseDate") or "").strip() or None,
-            }
+            })
+    result = {}
+    for t, lots in raw.items():
+        total_shares = sum(l["shares"] for l in lots)
+        avg_cost     = (sum(l["shares"] * l["avg_cost"] for l in lots) / total_shares
+                        if total_shares else 0.0)
+        result[t] = {
+            "shares":        total_shares,
+            "avg_cost":      avg_cost,
+            "layer":         lots[0]["layer"],
+            "purchase_date": lots[0]["purchase_date"],   # kept for back-compat
+            "lots":          [(l["shares"], l["purchase_date"]) for l in lots],
+        }
     return result
 
 

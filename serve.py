@@ -3087,22 +3087,26 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         and datetime.strptime(pay_date, "%Y-%m-%d").date() >= today
                     )
 
-                    # If the holding was purchased after the ex-div date, the investor
-                    # does not qualify for this payout — suppress it.
-                    purchase_date = meta.get("purchase_date")
-                    if pay_pending and purchase_date and ex_date:
+                    # Compute qualifying shares: only lots purchased on or before
+                    # the ex-div date receive the payout.  Lots with no purchase
+                    # date are assumed to qualify (owned before any tracked ex-div).
+                    lots = meta.get("lots") or [(meta["shares"], meta.get("purchase_date"))]
+                    if ex_date:
                         try:
-                            if purchase_date > ex_date:  # ISO string comparison is safe
-                                pay_pending = False
+                            qualifying_shares = sum(
+                                lot_sh for lot_sh, lot_pd in lots
+                                if not lot_pd or lot_pd <= ex_date
+                            )
                         except Exception:
-                            pass
-                    if is_upcoming and purchase_date and ex_date:
-                        try:
-                            if purchase_date > ex_date:
-                                is_upcoming = False
-                                days_to_ex  = None
-                        except Exception:
-                            pass
+                            qualifying_shares = shares
+                    else:
+                        qualifying_shares = shares
+
+                    # If no shares qualify for this cycle, suppress upcoming/pending flags.
+                    if qualifying_shares <= 0:
+                        pay_pending = False
+                        is_upcoming = False
+                        days_to_ex  = None
 
                     row.update({
                         "ex_div_date":        ex_date,
@@ -3114,7 +3118,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         "yield_on_cost":      yoc,
                         "last_amount":        last_amount,
                         "last_date":          last_date,
-                        "total_payout":       round(last_amount * shares, 2) if (last_amount and (is_upcoming or pay_pending)) else None,
+                        "total_payout":       round(last_amount * qualifying_shares, 2) if (last_amount and (is_upcoming or pay_pending) and qualifying_shares > 0) else None,
                         "annual_income":      round(annual_rate * shares, 2) if annual_rate else None,
                         "days_to_ex":         days_to_ex,
                         "declared":           is_upcoming,
