@@ -6046,7 +6046,7 @@ function tlhCalc() {{
 
   function _icEsc(s) {{
     return (s || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
-      .replace(/\n/g,"<br>");
+      .replace(/\\n/g,"<br>");
   }}
 
   async function _icStream() {{
