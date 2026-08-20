@@ -6113,6 +6113,8 @@ function tlhCalc() {{
       _icStreaming = false;
       document.getElementById("invest-chat-input").disabled = false;
       document.getElementById("invest-chat-send").disabled = false;
+      document.getElementById("invest-chat-chips").querySelectorAll(".ic-chip")
+        .forEach(b => b.disabled = false);
       document.getElementById("invest-chat-input").focus();
     }}
   }}
