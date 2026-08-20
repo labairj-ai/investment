@@ -4180,6 +4180,26 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
 server = http.server.HTTPServer(("localhost", PORT), Handler)
 
+# Regenerate dashboard on startup so changes to generate_dashboard.py take
+# effect immediately after a deploy + service restart.
+def _startup_regen():
+    try:
+        import subprocess as _sp
+        dashboard = PROJECT_DIR / "out" / "dashboard.html"
+        gen_script = PROJECT_DIR / "generate_dashboard.py"
+        if (not dashboard.exists()
+                or gen_script.stat().st_mtime > dashboard.stat().st_mtime):
+            print("[Startup] generate_dashboard.py is newer than dashboard — regenerating…")
+            r = _sp.run([str(VENV_PY), str(gen_script)], capture_output=True, text=True)
+            if r.returncode != 0:
+                print(f"[Startup] Dashboard regen failed: {r.stderr.strip()[-200:]}")
+            else:
+                print("[Startup] Dashboard regenerated.")
+    except Exception as _e:
+        print(f"[Startup] Dashboard regen error: {_e}")
+
+threading.Thread(target=_startup_regen, daemon=True).start()
+
 url = f"http://localhost:{PORT}/out/dashboard.html"
 if sys.stdout.isatty():
     threading.Timer(0.5, lambda: webbrowser.open(url)).start()
