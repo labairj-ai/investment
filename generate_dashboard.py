@@ -485,6 +485,108 @@ def build_dashboard(portfolio, layers, holdings):
       .kpi .value {{ font-size: 1.2rem; }}
     }}
     @keyframes spin {{ from {{ transform: rotate(0deg); }} to {{ transform: rotate(360deg); }} }}
+
+    /* ── Invest Chat Panel ─────────────────────────────────────────────────── */
+    #invest-chat-panel {{
+      position: fixed; right: 0; top: 0; bottom: 0; width: 380px;
+      background: #fff; border-left: 1px solid #dde;
+      display: flex; flex-direction: column; z-index: 1200;
+      box-shadow: -4px 0 24px rgba(0,0,0,.14);
+    }}
+    #invest-chat-header {{
+      display: flex; align-items: center; justify-content: space-between;
+      gap: .75rem; padding: .8rem 1rem;
+      border-bottom: 1px solid #e8edf4; background: #f5f7fa; flex-shrink: 0;
+    }}
+    #invest-chat-header-text {{ display: flex; flex-direction: column; gap: 1px; min-width: 0; }}
+    #invest-chat-label {{
+      font-size: 10px; font-weight: 700; letter-spacing: .08em;
+      text-transform: uppercase; color: #6c5ce7;
+    }}
+    #invest-chat-title {{
+      font-size: 13px; font-weight: 600; color: #1a2340;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }}
+    #invest-chat-header-btns {{ display: flex; align-items: center; gap: .4rem; flex-shrink: 0; }}
+    #invest-chat-clear {{
+      background: none; border: 1px solid #dde; border-radius: 5px;
+      padding: .15rem .5rem; font-size: 11px; color: #7f8c8d; cursor: pointer;
+    }}
+    #invest-chat-clear:hover {{ color: #1a2340; border-color: #aab; }}
+    #invest-chat-close {{
+      background: none; border: none; font-size: 1.4rem; line-height: 1;
+      color: #7f8c8d; cursor: pointer; padding: 0 .2rem;
+    }}
+    #invest-chat-close:hover {{ color: #1a2340; }}
+    #invest-chat-body {{ flex: 1; overflow-y: auto; display: flex; flex-direction: column; }}
+    #invest-chat-empty {{
+      flex: 1; display: flex; align-items: center; justify-content: center;
+      padding: 2rem 1.5rem; text-align: center;
+      color: #7f8c8d; font-size: 13px; line-height: 1.6;
+    }}
+    #invest-chat-messages {{ padding: .75rem; display: flex; flex-direction: column; gap: .6rem; }}
+    .ic-msg {{
+      max-width: 86%; padding: .5rem .75rem; border-radius: 10px;
+      font-size: 13px; line-height: 1.55; white-space: pre-wrap; word-break: break-word;
+    }}
+    .ic-msg-user {{
+      align-self: flex-end; background: #6c5ce7; color: #fff; border-bottom-right-radius: 3px;
+    }}
+    .ic-msg-assistant {{
+      align-self: flex-start; background: #f0f2f8; color: #1a2340; border-bottom-left-radius: 3px;
+    }}
+    .ic-cursor {{
+      display: inline-block; width: 2px; height: .9em;
+      background: #7f8c8d; margin-left: 2px; vertical-align: text-bottom;
+      animation: ic-blink .9s step-end infinite;
+    }}
+    @keyframes ic-blink {{ 0%,100% {{ opacity:1 }} 50% {{ opacity:0 }} }}
+    #invest-chat-error {{
+      font-size: 11px; color: #c0392b; background: #fdf2f2;
+      border: 1px solid #f5c6c6; border-radius: 6px;
+      padding: .4rem .65rem; margin: .5rem .75rem 0;
+    }}
+    #invest-chat-input-area {{
+      border-top: 1px solid #e8edf4; padding: .65rem;
+      display: flex; flex-direction: column; gap: .5rem;
+      flex-shrink: 0; background: #f5f7fa;
+    }}
+    #invest-chat-chips {{ display: flex; flex-wrap: wrap; gap: .35rem; }}
+    .ic-chip {{
+      background: none; border: 1px solid #dde; border-radius: 20px;
+      padding: .25rem .65rem; font-size: 11px; color: #555; cursor: pointer;
+      transition: color .15s, border-color .15s;
+    }}
+    .ic-chip:hover:not(:disabled) {{ color: #6c5ce7; border-color: #6c5ce7; }}
+    .ic-chip:disabled {{ opacity: .5; cursor: default; }}
+    #invest-chat-input-row {{ display: flex; gap: .4rem; align-items: flex-end; }}
+    #invest-chat-input {{
+      flex: 1; border: 1px solid #dde; border-radius: 8px; padding: .45rem .65rem;
+      font-size: 13px; font-family: inherit; background: #fff; color: #1a2340;
+      resize: none; line-height: 1.5;
+    }}
+    #invest-chat-input:focus {{ outline: none; border-color: #6c5ce7; }}
+    #invest-chat-input:disabled {{ opacity: .6; }}
+    #invest-chat-send {{
+      width: 34px; height: 34px; border-radius: 50%; border: none;
+      background: #6c5ce7; color: #fff; font-size: .95rem; font-weight: 700;
+      cursor: pointer; flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+    }}
+    #invest-chat-send:disabled {{ opacity: .4; cursor: default; }}
+    .btn-invest-chat {{
+      background: none; border: 1.5px solid #6c5ce7; color: #6c5ce7;
+      font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 6px;
+      cursor: pointer; transition: background .15s, color .15s; touch-action: manipulation;
+    }}
+    .btn-invest-chat:hover {{ background: #6c5ce7; color: #fff; }}
+    @media (max-width: 600px) {{
+      #invest-chat-panel {{
+        top: auto; left: 0; right: 0; width: 100%; height: 72vh;
+        border-left: none; border-top: 1px solid #dde;
+        border-radius: 14px 14px 0 0;
+        box-shadow: 0 -4px 24px rgba(0,0,0,.15);
+      }}
+    }}
   </style>
 </head>
 <body>
@@ -1268,11 +1370,41 @@ def build_dashboard(portfolio, layers, holdings):
     </div>
     <div id="cc-results"></div>
     <div id="cc-ai-panel" style="display:none;margin-top:1rem;border:1.5px solid #6c5ce7;border-radius:8px;padding:1rem;background:#f8f7ff;">
-      <div style="font-weight:700;color:#6c5ce7;margin-bottom:0.75rem;font-size:14px;">
-        🤖 AI Analysis
-        <span id="cc-ai-model" style="font-size:11px;background:#e8e5ff;padding:2px 7px;border-radius:4px;color:#6c5ce7;margin-left:0.5rem;font-weight:500;"></span>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.75rem;">
+        <div style="font-weight:700;color:#6c5ce7;font-size:14px;">
+          🤖 AI Analysis
+          <span id="cc-ai-model" style="font-size:11px;background:#e8e5ff;padding:2px 7px;border-radius:4px;color:#6c5ce7;margin-left:0.5rem;font-weight:500;"></span>
+        </div>
+        <button class="btn-invest-chat"
+          onclick="openInvestChat('cc',document.getElementById('cc-ticker').value,document.getElementById('cc-ticker').value+' — Covered Call Chat',['Is now a good time to sell?','What if the stock drops 5%?','Explain the regret probability','Should I pick a different strike?'])">💬 Chat</button>
       </div>
       <div id="cc-ai-content"></div>
+    </div>
+  </div>
+
+  <!-- ── AI Chat Panel (fixed right drawer, shared by winner + CC contexts) ── -->
+  <div id="invest-chat-panel" style="display:none;flex-direction:column;">
+    <div id="invest-chat-header">
+      <div id="invest-chat-header-text">
+        <span id="invest-chat-label">AI Chat</span>
+        <span id="invest-chat-title"></span>
+      </div>
+      <div id="invest-chat-header-btns">
+        <button id="invest-chat-clear" onclick="icClear()" style="display:none;">Clear</button>
+        <button id="invest-chat-close" onclick="closeInvestChat()">×</button>
+      </div>
+    </div>
+    <div id="invest-chat-body">
+      <div id="invest-chat-empty">Ask follow-up questions about this analysis.</div>
+      <div id="invest-chat-messages"></div>
+      <div id="invest-chat-error" style="display:none;"></div>
+    </div>
+    <div id="invest-chat-input-area">
+      <div id="invest-chat-chips"></div>
+      <div id="invest-chat-input-row">
+        <textarea id="invest-chat-input" rows="2" placeholder="Ask something… (Enter to send, Shift+Enter for newline)"></textarea>
+        <button id="invest-chat-send" onclick="icSend()" title="Send">↑</button>
+      </div>
     </div>
   </div>
 
@@ -3816,7 +3948,9 @@ function _bAIPanel(ticker, ai) {{
 
   return `
     <div style="max-width:860px;">
-      <div style="display:flex;justify-content:flex-end;margin-bottom:6px;">
+      <div style="display:flex;justify-content:flex-end;gap:6px;margin-bottom:6px;">
+        <button class="btn-invest-chat"
+          onclick="openInvestChat('winner','${{ticker}}','${{ticker}} — Buffett Analysis',['Why this conviction level?','What is the biggest risk?','How does this compare to what I own?','When would you sell?'])">💬 Chat</button>
         <button onclick="_bAIRerun('${{ticker}}')"
           style="font-size:10px;padding:3px 10px;border-radius:6px;border:1px solid #dde;
                  background:#f4f6f9;color:#555;cursor:pointer;touch-action:manipulation;">↻ Re-run</button>
@@ -5806,6 +5940,183 @@ function tlhCalc() {{
     washDiv.style.display = "none";
   }}
 }}
+
+// ── Invest Chat Panel ─────────────────────────────────────────────────────
+(function() {{
+  let _icContext = null;  // {{type, id}}
+  let _icMessages = [];   // {{role, content}}[]
+  let _icStreaming = false;
+  let _icReader = null;
+
+  window.openInvestChat = function(contextType, contextId, title, chips) {{
+    if (!contextId) return;
+    // Close any in-flight stream from previous session
+    if (_icReader) {{ try {{ _icReader.cancel(); }} catch(_) {{}} _icReader = null; }}
+    _icContext = {{type: contextType, id: contextId}};
+    _icMessages = [];
+    _icStreaming = false;
+    document.getElementById("invest-chat-title").textContent = title || contextId;
+    document.getElementById("invest-chat-messages").innerHTML = "";
+    document.getElementById("invest-chat-error").style.display = "none";
+    document.getElementById("invest-chat-empty").style.display = "";
+    document.getElementById("invest-chat-clear").style.display = "none";
+    document.getElementById("invest-chat-input").value = "";
+    document.getElementById("invest-chat-input").disabled = false;
+    document.getElementById("invest-chat-send").disabled = false;
+
+    const chipsEl = document.getElementById("invest-chat-chips");
+    chipsEl.innerHTML = (chips || []).map(c =>
+      `<button class="ic-chip" onclick="icSendText(${{JSON.stringify(c)}})">${{c}}</button>`
+    ).join("");
+
+    const panel = document.getElementById("invest-chat-panel");
+    panel.style.display = "flex";
+
+    const input = document.getElementById("invest-chat-input");
+    setTimeout(() => input.focus(), 80);
+
+    document.addEventListener("keydown", _icEscHandler);
+  }};
+
+  window.closeInvestChat = function() {{
+    if (_icReader) {{ try {{ _icReader.cancel(); }} catch(_) {{}} _icReader = null; }}
+    document.getElementById("invest-chat-panel").style.display = "none";
+    document.removeEventListener("keydown", _icEscHandler);
+  }};
+
+  function _icEscHandler(e) {{
+    if (e.key === "Escape") window.closeInvestChat();
+  }}
+
+  window.icClear = function() {{
+    if (_icReader) {{ try {{ _icReader.cancel(); }} catch(_) {{}} _icReader = null; }}
+    _icMessages = [];
+    _icStreaming = false;
+    document.getElementById("invest-chat-messages").innerHTML = "";
+    document.getElementById("invest-chat-error").style.display = "none";
+    document.getElementById("invest-chat-empty").style.display = "";
+    document.getElementById("invest-chat-clear").style.display = "none";
+    document.getElementById("invest-chat-input").disabled = false;
+    document.getElementById("invest-chat-send").disabled = false;
+    document.getElementById("invest-chat-chips").querySelectorAll(".ic-chip")
+      .forEach(b => b.disabled = false);
+    document.getElementById("invest-chat-input").focus();
+  }};
+
+  window.icSendText = function(text) {{ window.icSend(text); }};
+
+  window.icSend = function(overrideText) {{
+    const input = document.getElementById("invest-chat-input");
+    const text = (overrideText !== undefined ? overrideText : input.value).trim();
+    if (!text || _icStreaming || !_icContext) return;
+
+    document.getElementById("invest-chat-empty").style.display = "none";
+    document.getElementById("invest-chat-clear").style.display = "";
+    document.getElementById("invest-chat-chips").querySelectorAll(".ic-chip")
+      .forEach(b => b.disabled = true);
+
+    _icMessages.push({{role: "user", content: text}});
+    input.value = "";
+    _icRender();
+    _icStream();
+  }};
+
+  document.addEventListener("DOMContentLoaded", function() {{
+    const input = document.getElementById("invest-chat-input");
+    if (input) {{
+      input.addEventListener("keydown", function(e) {{
+        if (e.key === "Enter" && !e.shiftKey) {{
+          e.preventDefault();
+          window.icSend();
+        }}
+      }});
+    }}
+  }});
+
+  function _icRender() {{
+    const wrap = document.getElementById("invest-chat-messages");
+    wrap.innerHTML = _icMessages.map((m, i) => {{
+      const cls = m.role === "user" ? "ic-msg ic-msg-user" : "ic-msg ic-msg-assistant";
+      const cursor = (_icStreaming && i === _icMessages.length - 1 && m.role === "assistant" && !m.content)
+        ? '<span class="ic-cursor"></span>' : "";
+      return `<div class="${{cls}}">${{_icEsc(m.content)}}${{cursor}}</div>`;
+    }}).join("");
+    wrap.scrollTop = wrap.scrollHeight;
+  }}
+
+  function _icEsc(s) {{
+    return (s || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+      .replace(/\n/g,"<br>");
+  }}
+
+  async function _icStream() {{
+    if (!_icContext) return;
+    _icStreaming = true;
+    document.getElementById("invest-chat-input").disabled = true;
+    document.getElementById("invest-chat-send").disabled = true;
+    document.getElementById("invest-chat-error").style.display = "none";
+
+    _icMessages.push({{role: "assistant", content: ""}});
+    _icRender();
+
+    let done = false;
+    try {{
+      const res = await fetch("/api/invest-chat", {{
+        method: "POST",
+        headers: {{"Content-Type": "application/json"}},
+        body: JSON.stringify({{
+          context_type: _icContext.type,
+          context_id:   _icContext.id,
+          messages:     _icMessages.slice(0, -1),  // exclude the empty assistant placeholder
+        }}),
+      }});
+
+      if (!res.ok) {{
+        const err = await res.json().catch(() => ({{error: res.statusText}}));
+        throw new Error(err.error || res.statusText);
+      }}
+
+      const reader = res.body.getReader();
+      _icReader = reader;
+      const dec = new TextDecoder();
+      let buf = "";
+
+      while (!done) {{
+        const {{value, done: streamDone}} = await reader.read();
+        if (streamDone) {{ done = true; break; }}
+        buf += dec.decode(value, {{stream: true}});
+        const lines = buf.split("\n");
+        buf = lines.pop();
+        for (const line of lines) {{
+          if (!line.startsWith("data: ")) continue;
+          const data = JSON.parse(line.slice(6));
+          if (data.token) {{
+            _icMessages[_icMessages.length - 1].content += data.token;
+            _icRender();
+          }}
+          if (data.done) {{ done = true; break; }}
+          if (data.error) {{ throw new Error(data.error); }}
+        }}
+      }}
+    }} catch (err) {{
+      // Remove empty assistant placeholder if nothing was received
+      if (_icMessages.length && _icMessages[_icMessages.length-1].role === "assistant"
+          && !_icMessages[_icMessages.length-1].content) {{
+        _icMessages.pop();
+      }}
+      const errEl = document.getElementById("invest-chat-error");
+      errEl.textContent = err.message;
+      errEl.style.display = "";
+      _icRender();
+    }} finally {{
+      _icReader = null;
+      _icStreaming = false;
+      document.getElementById("invest-chat-input").disabled = false;
+      document.getElementById("invest-chat-send").disabled = false;
+      document.getElementById("invest-chat-input").focus();
+    }}
+  }}
+}})();
 </script>
 </body>
 </html>

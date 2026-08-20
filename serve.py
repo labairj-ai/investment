@@ -101,6 +101,8 @@ _jobs: dict = {}
 _jobs_lock = threading.Lock()
 _JOB_TTL = 600  # expire completed jobs after 10 minutes
 
+_chat_active: set = set()  # tracks in-flight chat streams by "context_type:ticker"
+
 
 def _job_create(kind: str) -> str:
     job_id = uuid.uuid4().hex[:16]
@@ -1288,6 +1290,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._handle_analysis_job_create()
         elif parsed.path == "/api/refresh-dashboard":
             self._handle_refresh_dashboard()
+        elif parsed.path == "/api/invest-chat":
+            self._handle_invest_chat()
         else:
             self.send_response(404)
             self.end_headers()
@@ -2240,6 +2244,248 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.wfile.flush()
             except Exception:
                 pass
+
+    # ── Conversational AI chat ────────────────────────────────────────────────
+
+    def _build_chat_context_winner(self, ticker):
+        import csv as _csv_m, json as _json_m
+        db = PROJECT_DIR / "out" / "buffett.db"
+        with sqlite3.connect(str(db), timeout=10) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT * FROM buffett_winners WHERE ticker = ?", (ticker,)
+            ).fetchone()
+        if row is None:
+            raise ValueError(f"{ticker} not found in Buffett winners — run the screener first")
+        w = dict(row)
+
+        div_pct = f"{w['dividend_yield']:.1f}%" if w.get("dividend_yield") else "N/A"
+        mcap = w.get("market_cap") or 0
+        mcap_fmt = f"${mcap/1e9:.1f}B" if mcap >= 1e9 else (f"${mcap/1e6:.0f}M" if mcap else "N/A")
+        trap_flags = []
+        try:
+            trap_flags = _json_m.loads(w.get("value_trap_flags") or "[]")
+        except Exception:
+            pass
+
+        ai_block = ""
+        if w.get("ai_analysis"):
+            try:
+                ai = _json_m.loads(w["ai_analysis"])
+                ai_block = (
+                    f"\nPrior AI Analysis:\n"
+                    f"  Thesis: {ai.get('thesis', '?')}\n"
+                    f"  Moat: {ai.get('moat_strength', '?')} — {ai.get('moat_note', '')}\n"
+                    f"  Valuation: {ai.get('valuation', '?')} — {ai.get('valuation_note', '')}\n"
+                    f"  Top Risk: {ai.get('top_risk', '?')}\n"
+                    f"  Conviction: {ai.get('conviction', '?')}/5\n"
+                    f"  Layer Fit: {ai.get('layer_fit', '')}"
+                )
+            except Exception:
+                pass
+
+        holdings_lines = []
+        holdings_path = PROJECT_DIR / "holdings.csv"
+        if holdings_path.exists():
+            try:
+                with open(str(holdings_path), newline="") as hf:
+                    for h in _csv_m.DictReader(hf):
+                        hticker = (h.get("Stock") or "").strip()
+                        hlayer = h.get("Layer", "?")
+                        if hticker and hticker != ticker:
+                            holdings_lines.append(f"  {hticker} (Layer {hlayer})")
+            except Exception:
+                pass
+
+        portfolio_block = ""
+        if holdings_lines:
+            portfolio_block = "\nCurrent Portfolio Holdings:\n" + "\n".join(holdings_lines)
+
+        return (
+            f"You are a knowledgeable investment advisor helping an investor understand a stock that "
+            f"passed the Buffett quality screener. Answer conversationally in plain English — no "
+            f"unexplained jargon. Be direct and specific; reference the data below when relevant.\n\n"
+            f"STOCK: {w.get('company', ticker)} ({ticker})\n"
+            f"Sector: {w.get('sector', '?')} / {w.get('industry', '?')}\n"
+            f"Price: ${w.get('price', 0):.2f} | Market Cap: {mcap_fmt} | Exchange: {w.get('exchange', '?')}\n"
+            f"Layer Assignment: {w.get('layer_rec', '?')} — {w.get('layer_reason', '?')}\n"
+            f"Value Trap Risk: {w.get('value_trap_risk', '?')}\n"
+            f"Trap Flags: {'; '.join(trap_flags) if trap_flags else 'none'}\n\n"
+            f"Quality Metrics (all passed Buffett screen):\n"
+            f"  Gross Margin: {w.get('gross_margin', 0):.1f}%\n"
+            f"  Net Income Margin: {w.get('net_income_margin', 0):.1f}%\n"
+            f"  Interest/OpIncome: {w.get('interest_margin', 0):.1f}%\n"
+            f"  CapEx/NetIncome: {w.get('capex_margin', 0):.1f}%\n"
+            f"  Quality Score: {w.get('quality_score', 'N/A')}/100\n\n"
+            f"Valuation:\n"
+            f"  P/E: {w.get('pe_ratio') or 'N/A'}x | P/FCF: {w.get('p_fcf') or 'N/A'}x | "
+            f"EV/EBITDA: {w.get('ev_ebitda') or 'N/A'}x\n"
+            f"  Dividend Yield: {div_pct}"
+            f"{ai_block}"
+            f"{portfolio_block}"
+        )
+
+    def _build_chat_context_cc(self, ticker):
+        from covered_call_rec import analyze, load_holdings
+        holdings = load_holdings()
+        if ticker not in holdings:
+            raise ValueError(f"{ticker} not found in holdings")
+        h = holdings[ticker]
+
+        result = _cc_analyze_get(ticker)
+        if result is None:
+            result = analyze(ticker, h["avg_cost"], h["shares"])
+            if result is not None:
+                _cc_analyze_set(ticker, result)
+
+        base = (
+            f"You are a friendly covered call advisor helping an investor decide whether to sell "
+            f"a covered call. Speak in plain English — explain any finance terms you use. "
+            f"No Greek letters.\n\n"
+            f"TICKER: {ticker}\n"
+            f"Shares Held: {h['shares']:.0f}\n"
+            f"Average Cost: ${h['avg_cost']:.2f}\n"
+            f"Layer: {h['layer']}"
+        )
+
+        if result is None or result["recs"].empty:
+            return base + (
+                "\n\nNote: No qualifying option contracts found at this time. "
+                "Answer general questions about covered call strategy for this position."
+            )
+
+        price = result.get("current_price", 0)
+        gain_pct = result.get("gain_pct", 0)
+        base += (
+            f"\nCurrent Price: ${price:.2f}\n"
+            f"Unrealized Gain: {gain_pct:.1f}%\n"
+            f"Strike Floor (profit threshold): ${result.get('strike_floor', 0):.2f}\n"
+            f"52-Week High: ${result.get('week52_high', 0):.2f}\n"
+            f"ATM IV: {result.get('atm_iv', 0):.1f}%  |  HV Rank: {result.get('hv_rank', 'N/A')}"
+        )
+
+        recs = result["recs"].head(3)
+        contracts = []
+        for _, row in recs.iterrows():
+            contracts.append(
+                f"  #{int(row.get('rank', 0))}: ${row['strike']:.2f} strike  "
+                f"exp {row['expiration']}  ({int(row['dte'])} DTE)  "
+                f"premium ${row.get('exec_premium', 0):.2f}/share  "
+                f"({row.get('annualized_ret', 0):.1f}% ann.)  "
+                f"P(called away) {row.get('p_itm_rw', 0)*100:.0f}%  "
+                f"regret P {row.get('regret_prob', 0)*100:.0f}%"
+            )
+        base += "\n\nTop Contracts:\n" + "\n".join(contracts)
+
+        cached_ai = _cc_ai_get(ticker)
+        if cached_ai:
+            ins = cached_ai.get("insight", {})
+            rec = ins.get("recommendation", {})
+            what_wrong = (ins.get("what_could_go_wrong") or "")[:300]
+            base += (
+                f"\n\nPrior AI Recommendation:\n"
+                f"  Pick: #{rec.get('rank','?')} — {rec.get('expiration','?')} "
+                f"${rec.get('strike','?')} call\n"
+                f"  Summary: {rec.get('summary','?')}\n"
+                f"  Main Risk: {what_wrong}"
+            )
+
+        return base
+
+    def _build_chat_context(self, context_type, context_id):
+        if context_type == "winner":
+            return self._build_chat_context_winner(context_id)
+        elif context_type == "cc":
+            return self._build_chat_context_cc(context_id)
+        raise ValueError(f"Unknown context_type: {context_type}")
+
+    def _handle_invest_chat(self):
+        try:
+            body = self._read_body()
+        except Exception:
+            return self._json_error(400, "Invalid JSON body")
+
+        context_type = body.get("context_type", "")
+        context_id   = (body.get("context_id") or "").upper().strip()
+        messages     = body.get("messages", [])
+
+        if context_type not in ("winner", "cc"):
+            return self._json_error(400, "context_type must be 'winner' or 'cc'")
+        if not context_id:
+            return self._json_error(400, "context_id required")
+        if not messages:
+            return self._json_error(400, "messages array required")
+
+        chat_key = f"{context_type}:{context_id}"
+        if chat_key in _chat_active:
+            return self._json_error(429, "already_streaming — close the other chat first")
+        _chat_active.add(chat_key)
+
+        try:
+            system_prompt = self._build_chat_context(context_type, context_id)
+        except ValueError as e:
+            _chat_active.discard(chat_key)
+            return self._json_error(404, str(e))
+        except Exception as e:
+            _chat_active.discard(chat_key)
+            return self._json_error(500, f"Context error: {e}")
+
+        self.wfile.write(
+            b"HTTP/1.1 200 OK\r\n"
+            b"Content-Type: text/event-stream\r\n"
+            b"Cache-Control: no-cache\r\n"
+            b"Transfer-Encoding: chunked\r\n"
+            b"X-Accel-Buffering: no\r\n"
+            b"Connection: close\r\n"
+            b"\r\n"
+        )
+        self.wfile.flush()
+
+        def _sse(data):
+            body = f"data: {json.dumps(data)}\n\n".encode()
+            chunk = f"{len(body):x}\r\n".encode() + body + b"\r\n"
+            self.wfile.write(chunk)
+            self.wfile.flush()
+
+        import queue as _queue
+        _tok_q = _queue.Queue()
+        full_messages = [{"role": "system", "content": system_prompt}] + messages
+
+        def _generate():
+            try:
+                for tok in ollama_client.stream_chat(full_messages, model="phi4:14b"):
+                    _tok_q.put(("token", tok))
+                _tok_q.put(("done", None))
+            except Exception as exc:
+                _tok_q.put(("error", str(exc)))
+
+        threading.Thread(target=_generate, daemon=True).start()
+
+        try:
+            while True:
+                try:
+                    kind, val = _tok_q.get(timeout=10)
+                except _queue.Empty:
+                    _sse({"status": "thinking"})
+                    continue
+                if kind == "token":
+                    _sse({"token": val})
+                elif kind == "done":
+                    _sse({"done": True})
+                    break
+                else:
+                    _sse({"error": val})
+                    break
+        except Exception:
+            pass
+        finally:
+            _chat_active.discard(chat_key)
+
+        try:
+            self.wfile.write(b"0\r\n\r\n")
+            self.wfile.flush()
+        except Exception:
+            pass
 
     def _handle_cc_evaluate(self):
         try:
