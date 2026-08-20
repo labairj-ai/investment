@@ -5965,9 +5965,14 @@ function tlhCalc() {{
     document.getElementById("invest-chat-send").disabled = false;
 
     const chipsEl = document.getElementById("invest-chat-chips");
-    chipsEl.innerHTML = (chips || []).map(c =>
-      `<button class="ic-chip" onclick="icSendText(${{JSON.stringify(c)}})">${{c}}</button>`
-    ).join("");
+    chipsEl.innerHTML = "";
+    (chips || []).forEach(c => {{
+      const btn = document.createElement("button");
+      btn.className = "ic-chip";
+      btn.textContent = c;
+      btn.addEventListener("click", () => window.icSendText(c));
+      chipsEl.appendChild(btn);
+    }});
 
     const panel = document.getElementById("invest-chat-panel");
     panel.style.display = "flex";
