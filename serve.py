@@ -3481,6 +3481,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
             conn.close()
 
+            # Exclude tickers already owned — they'll reappear if sold
+            try:
+                from covered_call_rec import load_holdings as _lh
+                _owned = set(_lh().keys())
+            except Exception:
+                _owned = set()
+            winners = [w for w in winners if w["ticker"] not in _owned]
+
             for w in winners:
                 w["first_seen"] = first_seen.get(w["ticker"])
                 if w.get("ai_analysis"):
