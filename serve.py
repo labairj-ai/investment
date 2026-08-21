@@ -1226,6 +1226,22 @@ Return ONLY valid JSON, no other text. Use rank 1 through {n_stocks} only:
 
 # ── CC Chat helpers ───────────────────────────────────────────────────────────
 
+def _fetch_ticker_names(tickers: list) -> dict:
+    """Return {ticker: company_name} for a list of tickers via yfinance.
+    Used to ground the AI chat so it cannot hallucinate company names."""
+    import yfinance as _yf2
+    result = {}
+    for t in tickers:
+        try:
+            info = _yf2.Ticker(t).info or {}
+            name = (info.get("longName") or info.get("shortName") or "").strip()
+            if name:
+                result[t] = name
+        except Exception:
+            pass
+    return result
+
+
 def _fetch_options_for_chat(ticker: str, expiry: str) -> str:
     """Fetch live option chain for a specific expiry and return a plain-text block for chat context."""
     try:
@@ -2393,6 +2409,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             except Exception:
                 pass
 
+        # Build a ticker→company name map from buffett_winners (fast, no network call)
+        _ticker_names: dict = {}
+        try:
+            _db2 = PROJECT_DIR / "out" / "buffett.db"
+            with sqlite3.connect(str(_db2), timeout=5) as _c2:
+                for _row2 in _c2.execute("SELECT ticker, company FROM buffett_winners"):
+                    if _row2[1]:
+                        _ticker_names[_row2[0]] = _row2[1]
+        except Exception:
+            pass
+
         holdings_lines = []
         holdings_path = PROJECT_DIR / "holdings.csv"
         if holdings_path.exists():
@@ -2402,13 +2429,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         hticker = (h.get("Stock") or "").strip()
                         hlayer = h.get("Layer", "?")
                         if hticker and hticker != ticker:
-                            holdings_lines.append(f"  {hticker} (Layer {hlayer})")
+                            hname = _ticker_names.get(hticker, "")
+                            label = f"{hticker} — {hname}" if hname else hticker
+                            holdings_lines.append(f"  {label} (Layer {hlayer})")
             except Exception:
                 pass
 
         portfolio_block = ""
         if holdings_lines:
-            portfolio_block = "\nCurrent Portfolio Holdings:\n" + "\n".join(holdings_lines)
+            portfolio_block = (
+                "\nCurrent Portfolio Holdings (ticker — company name — layer):\n"
+                + "\n".join(holdings_lines)
+            )
 
         return (
             f"You are a knowledgeable investment advisor helping an investor understand a stock that "
@@ -2576,6 +2608,31 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         except Exception as e:
             _chat_active.discard(chat_key)
             return self._json_error(500, f"Context error: {e}")
+
+        # For winner chats: detect ticker symbols mentioned across the conversation and
+        # inject verified company names so the model cannot hallucinate what they are.
+        if context_type == "winner":
+            try:
+                import re as _re
+                all_text = " ".join(m.get("content", "") for m in messages)
+                # Match 2-5 uppercase letters (optionally with a hyphen suffix like BRK-B)
+                raw_tickers = _re.findall(r'\b([A-Z]{2,5}(?:-[A-Z])?)\b', all_text)
+                # Filter obvious non-tickers (common English words / units)
+                _skip = {"I", "A", "AN", "THE", "AND", "OR", "VS", "FOR", "TO",
+                         "IN", "OF", "AT", "IS", "IT", "BE", "NO", "IF", "ON",
+                         "AI", "DTE", "OTM", "ITM", "ATM", "IV", "HV", "PE",
+                         "ETF", "FCF", "YTD", "SP", "SPY", "EPS", "USA", "US",
+                         "CEO", "CFO", "IPO", "YOY", "QOQ", "TTM", "LT", "ST"}
+                candidate_tickers = [t for t in set(raw_tickers)
+                                     if t not in _skip and t != context_id.upper()]
+                if candidate_tickers:
+                    names = _fetch_ticker_names(candidate_tickers)
+                    if names:
+                        grounding = "\n\nVERIFIED COMPANY NAMES (from live data — use these exactly, do not substitute):\n"
+                        grounding += "\n".join(f"  {t}: {n}" for t, n in names.items())
+                        system_prompt += grounding
+            except Exception:
+                pass
 
         # For CC chats: if the user's message references a specific expiry month/date
         # that isn't already in the system context, fetch it live and inject it.
