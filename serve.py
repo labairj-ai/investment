@@ -546,7 +546,7 @@ Return this JSON structure:
 }}"""
 
             full_text = ""
-            for tok in ollama_client.stream_generate(prompt, model="phi4:14b", num_predict=700):
+            for tok in ollama_client.stream_generate(prompt, model="llama3.3:70b", num_predict=700):
                 full_text += tok
 
             dec = _json.JSONDecoder()
@@ -929,7 +929,7 @@ def _run_layer_ai_rankings() -> None:
             )
 
             full_text = ""
-            for tok in ollama_client.stream_generate(prompt, model="phi4:14b", num_predict=800):
+            for tok in ollama_client.stream_generate(prompt, model="llama3.3:70b", num_predict=800):
                 full_text += tok
 
             dec = json.JSONDecoder()
@@ -1092,7 +1092,7 @@ Return this JSON structure:
         _job_update(job_id, progress="Sending to AI…")
         full_text = ""
         num_predict = 2500 if holdings_lines else 700
-        for tok in ollama_client.stream_generate(prompt, model="phi4:14b", num_predict=num_predict):
+        for tok in ollama_client.stream_generate(prompt, model="llama3.3:70b", num_predict=num_predict):
             full_text += tok
             _job_update(job_id, progress=full_text)
 
@@ -1185,7 +1185,7 @@ Return ONLY valid JSON, no other text. Use rank 1 through {n_stocks} only:
 
         _job_update(job_id, progress="Asking AI to rank…")
         full_text = ""
-        for tok in ollama_client.stream_generate(prompt, model="phi4:14b", num_predict=1200):
+        for tok in ollama_client.stream_generate(prompt, model="llama3.3:70b", num_predict=1200):
             full_text += tok
             _job_update(job_id, progress=full_text)
 
@@ -2681,7 +2681,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         def _generate():
             try:
-                for tok in ollama_client.stream_chat(full_messages, model="phi4:14b"):
+                for tok in ollama_client.stream_chat(full_messages, model="llama3.3:70b"):
                     _tok_q.put(("token", tok))
                 _tok_q.put(("done", None))
             except Exception as exc:

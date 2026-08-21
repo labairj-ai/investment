@@ -3,7 +3,7 @@ import os
 import urllib.request
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
-DEFAULT_MODEL = "qwen2.5:7b"
+DEFAULT_MODEL = "llama3.3:70b"
 
 
 def generate(prompt, model=DEFAULT_MODEL, temperature=0.3, num_predict=700):
