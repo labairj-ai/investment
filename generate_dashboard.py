@@ -6499,7 +6499,7 @@ function tlhCalc() {{
     const card = document.getElementById('ai-insight-card');
     card.classList.toggle('collapsed');
     localStorage.setItem('aiInsightCollapsed', card.classList.contains('collapsed') ? '1' : '0');
-  }}
+  }};
 
   // Restore collapsed state on load
   (function() {{
@@ -6721,7 +6721,7 @@ function tlhCalc() {{
       sec.classList.toggle('collapsed');
       localStorage.setItem('aiNewsCollapsed', sec.classList.contains('collapsed') ? '1' : '0');
     }}
-  }}
+  }};
 
   (function() {{
     if (localStorage.getItem('aiNewsCollapsed') === '1') {{
