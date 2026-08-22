@@ -667,6 +667,12 @@ def build_dashboard(portfolio, layers, holdings):
       box-shadow: 0 2px 8px rgba(0,0,0,.12); color: #e2e8f0;
     }}
     #ai-insight-card h2 {{ color: #a0aec0; }}
+    #ai-insight-card.collapsed #ai-insight-body {{ display: none; }}
+    #ai-collapse-btn {{
+      background: none; border: none; color: #718096; cursor: pointer;
+      font-size: 16px; padding: 0 4px; line-height: 1; transition: transform .2s;
+    }}
+    #ai-insight-card.collapsed #ai-collapse-btn {{ transform: rotate(-90deg); }}
     .ai-section {{ margin-bottom: 12px; }}
     .ai-section-label {{ font-size: 10px; font-weight: 700; text-transform: uppercase;
       letter-spacing: .08em; color: #718096; margin-bottom: 4px; }}
@@ -1167,7 +1173,10 @@ def build_dashboard(portfolio, layers, holdings):
   <!-- AI Portfolio Insight -->
   <div id="ai-insight-card">
     <h2 style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
-      <span>🧠 AI Portfolio Insight</span>
+      <span style="display:flex;align-items:center;gap:6px;cursor:pointer;" onclick="toggleAiInsight()">
+        <button id="ai-collapse-btn" tabindex="-1">▾</button>
+        🧠 AI Portfolio Insight
+      </span>
       <span>
         <button class="ai-refresh-btn" onclick="loadAiInsight(true)">↻ Refresh</button>
         <button class="ai-refresh-btn" onclick="openPortfolioChat()" style="margin-left:4px;">💬 Chat</button>
@@ -6406,6 +6415,19 @@ function tlhCalc() {{
   }}
 
   // ── AI Insight Panel ──────────────────────────────────────────────────────
+  function toggleAiInsight() {{
+    const card = document.getElementById('ai-insight-card');
+    card.classList.toggle('collapsed');
+    localStorage.setItem('aiInsightCollapsed', card.classList.contains('collapsed') ? '1' : '0');
+  }}
+
+  // Restore collapsed state on load
+  (function() {{
+    if (localStorage.getItem('aiInsightCollapsed') === '1') {{
+      document.getElementById('ai-insight-card').classList.add('collapsed');
+    }}
+  }})();
+
   function _renderAiInsight(ins) {{
     let html = '';
     if (ins.macro_summary) {{
