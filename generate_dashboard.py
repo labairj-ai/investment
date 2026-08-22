@@ -749,6 +749,14 @@ def build_dashboard(portfolio, layers, holdings):
       font-style: italic; margin-top: 4px;
     }}
     .ai-loading {{ color: #718096; font-size: 13px; }}
+    @keyframes ai-spin {{ to {{ transform: rotate(360deg); }} }}
+    .ai-spinner {{
+      display: inline-block; width: 14px; height: 14px;
+      border: 2px solid rgba(113,128,150,.3); border-top-color: #718096;
+      border-radius: 50%; animation: ai-spin .8s linear infinite;
+      vertical-align: middle; margin-right: 7px;
+    }}
+    .ai-loading-wrap {{ display: flex; align-items: center; gap: 6px; color: #718096; font-size: 13px; }}
     .ai-refresh-btn {{
       background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.15);
       color: #a0aec0; border-radius: 5px; padding: 3px 10px; font-size: 11px;
@@ -6532,19 +6540,25 @@ function tlhCalc() {{
 
   let _aiPollTimer = null;
   let _aiPollStart = null;
+  const _aiSpinner = '<span class="ai-spinner"></span>';
+
+  function _aiElapsed() {{
+    return _aiPollStart ? Math.round((Date.now() - _aiPollStart) / 1000) : 0;
+  }}
+
   function _pollAiInsight(attempts) {{
     if (attempts <= 0) {{
       const body = document.getElementById('ai-insight-body');
-      if (body) body.innerHTML = '<span class="ai-loading">Analysis is taking longer than expected — it\'s still running in the background. Click ↻ Refresh to check for the result.</span>';
+      if (body) body.innerHTML = `<div class="ai-loading-wrap">${{_aiSpinner}}<span>Analysis is taking longer than expected — still running in the background. Click ↻ Refresh to check.</span></div>`;
       return;
     }}
     fetch('/api/ai/daily').then(r => r.json()).then(data => {{
       const body = document.getElementById('ai-insight-body');
       if (!body) return;
       if (data.status === 'generating') {{
-        const elapsed = _aiPollStart ? Math.round((Date.now() - _aiPollStart) / 1000) : '?';
-        if (body) body.innerHTML = `<span class="ai-loading">Generating… (${{elapsed}}s elapsed, checking again shortly)</span>`;
-        _aiPollTimer = setTimeout(() => _pollAiInsight(attempts - 1), 10000);
+        const elapsed = _aiElapsed();
+        body.innerHTML = `<div class="ai-loading-wrap">${{_aiSpinner}}<span>Generating… ${{elapsed}}s elapsed</span></div>`;
+        _aiPollTimer = setTimeout(() => _pollAiInsight(attempts - 1), 8000);
         return;
       }}
       if (!data.ok || !data.insight) {{ body.innerHTML = `<span class="ai-loading">Error: ${{data.error || 'no data'}}</span>`; return; }}
@@ -6563,12 +6577,12 @@ function tlhCalc() {{
     if (_aiPollTimer) {{ clearTimeout(_aiPollTimer); _aiPollTimer = null; }}
 
     if (force) {{
-      body.innerHTML = '<span class="ai-loading">Queuing fresh analysis… (~2 min with personalized context)</span>';
+      body.innerHTML = `<div class="ai-loading-wrap">${{_aiSpinner}}<span>Queuing fresh analysis…</span></div>`;
       fetch('/api/ai/daily?force=1').then(r => r.json()).then(data => {{
         if (data.status === 'generating') {{
           _aiPollStart = Date.now();
-          body.innerHTML = '<span class="ai-loading">Generating… (0s elapsed, checking in 20s)</span>';
-          _aiPollTimer = setTimeout(() => _pollAiInsight(15), 20000);
+          body.innerHTML = `<div class="ai-loading-wrap">${{_aiSpinner}}<span>Generating… 0s elapsed</span></div>`;
+          _aiPollTimer = setTimeout(() => _pollAiInsight(20), 8000);
         }}
       }}).catch(e => {{
         body.innerHTML = `<span class="ai-loading">Request failed: ${{e.message}}</span>`;
@@ -6576,11 +6590,14 @@ function tlhCalc() {{
       return;
     }}
 
-    body.innerHTML = '<span class="ai-loading">Loading…</span>';
+    body.innerHTML = `<div class="ai-loading-wrap">${{_aiSpinner}}<span>Loading…</span></div>`;
     fetch('/api/ai/daily').then(r => r.json()).then(data => {{
+      const body = document.getElementById('ai-insight-body');
+      if (!body) return;
       if (data.status === 'generating') {{
-        body.innerHTML = '<span class="ai-loading">Generating… (checking again in 15s)</span>';
-        _aiPollTimer = setTimeout(() => _pollAiInsight(8), 15000);
+        _aiPollStart = Date.now();
+        body.innerHTML = `<div class="ai-loading-wrap">${{_aiSpinner}}<span>Generating… 0s elapsed</span></div>`;
+        _aiPollTimer = setTimeout(() => _pollAiInsight(20), 8000);
         return;
       }}
       if (!data.ok || !data.insight) {{ body.innerHTML = `<span class="ai-loading">Error: ${{data.error || 'no data'}}</span>`; return; }}

@@ -411,6 +411,23 @@ def _build_layer_block(layer_weights: dict, drift_alerts: list[dict]) -> str:
 
 # ── Daily insight ─────────────────────────────────────────────────────────────
 
+def get_cached_insight_today() -> dict | None:
+    """Return today's cached insight from DB, or None if not yet generated."""
+    _init_ai_tables()
+    today = date.today().isoformat()
+    if not DB_PATH.exists():
+        return None
+    try:
+        conn = sqlite3.connect(str(DB_PATH), timeout=5)
+        row = conn.execute("SELECT insight FROM ai_insights WHERE day=?", (today,)).fetchone()
+        conn.close()
+        if row and row[0]:
+            return json.loads(row[0])
+    except Exception:
+        pass
+    return None
+
+
 def generate_daily_insight(force: bool = False) -> dict:
     """
     Generate today's macro-aware portfolio insight.

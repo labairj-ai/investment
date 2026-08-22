@@ -3849,8 +3849,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._json({"ok": True, "status": "generating", "date": today})
             return
 
-        # Non-force: return cached result or trigger a fresh generation synchronously
-        # (only runs if nothing is cached yet today — fast path)
+        # Non-force: serve from cache if available; otherwise kick off background
+        # generation and return status=generating so the client can poll.
         with _ai_insight_lock:
             generating = _ai_insight_generating
 
@@ -3858,11 +3858,30 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._json({"ok": True, "status": "generating", "date": today})
             return
 
-        try:
-            insight = portfolio_ai.generate_daily_insight(force=False)
-            self._json({"ok": True, "insight": insight, "date": today})
-        except Exception as e:
-            self._json_error(500, f"AI daily insight failed: {e}")
+        cached = portfolio_ai.get_cached_insight_today()
+        if cached:
+            self._json({"ok": True, "insight": cached, "date": today})
+            return
+
+        # No cache and not already running — start background generation
+        with _ai_insight_lock:
+            already_running = _ai_insight_generating
+            if not already_running:
+                _ai_insight_generating = True
+
+        if not already_running:
+            def _run_bg():
+                global _ai_insight_generating
+                try:
+                    portfolio_ai.generate_daily_insight(force=False)
+                except Exception as e:
+                    print(f"[AI daily] background generation failed: {e}")
+                finally:
+                    with _ai_insight_lock:
+                        _ai_insight_generating = False
+            threading.Thread(target=_run_bg, daemon=True).start()
+
+        self._json({"ok": True, "status": "generating", "date": today})
 
     def _handle_portfolio_chat(self):
         """POST /api/ai/chat — SSE streaming chat with portfolio + macro context as system prompt.
