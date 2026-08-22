@@ -15,6 +15,12 @@ PROJECT_DIR = Path(__file__).resolve().parent
 DB_PATH     = PROJECT_DIR / "out" / "investment.db"
 CACHE_TTL   = 45 * 86400  # ~45 days — between quarterly earnings releases
 
+# Some tickers need remapping for yfinance
+_YF_ALIAS = {
+    "BRK.B": "BRK-B",
+    "BRK.A": "BRK-A",
+}
+
 _FUND_TICKERS = {
     "VTSAX", "VFIAX", "VVIAX", "VTMGX", "FSPTX", "SLYV", "SCHD",
     "IGV", "GLD", "TLT", "BTC", "BTC-USD", "VBTLX", "VWELX",
@@ -93,7 +99,7 @@ def _fetch_one(ticker):
     import warnings
     warnings.filterwarnings("ignore")
 
-    tk = yf.Ticker(ticker)
+    tk = yf.Ticker(_YF_ALIAS.get(ticker, ticker))
     q_rows, a_rows, estimates = [], [], {}
 
     # ── Quarterly ──────────────────────────────────────────────────────────────
