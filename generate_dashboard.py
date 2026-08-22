@@ -6495,7 +6495,7 @@ function tlhCalc() {{
   }}
 
   // ── AI Insight Panel ──────────────────────────────────────────────────────
-  function toggleAiInsight() {{
+  window.toggleAiInsight = function() {{
     const card = document.getElementById('ai-insight-card');
     card.classList.toggle('collapsed');
     localStorage.setItem('aiInsightCollapsed', card.classList.contains('collapsed') ? '1' : '0');
@@ -6571,7 +6571,7 @@ function tlhCalc() {{
     }});
   }}
 
-  function loadAiInsight(force=false) {{
+  window.loadAiInsight = function(force=false) {{
     const body = document.getElementById('ai-insight-body');
     if (!body) return;
     if (_aiPollTimer) {{ clearTimeout(_aiPollTimer); _aiPollTimer = null; }}
@@ -6715,7 +6715,7 @@ function tlhCalc() {{
   }});
 
   // ── Holdings News ─────────────────────────────────────────────────────────
-  function toggleAiNews() {{
+  window.toggleAiNews = function() {{
     const sec = document.getElementById('ai-news-section');
     if (sec) {{
       sec.classList.toggle('collapsed');
@@ -6743,7 +6743,7 @@ function tlhCalc() {{
     }} catch(e) {{ return ''; }}
   }}
 
-  function loadHoldingNews(force=false) {{
+  window.loadHoldingNews = function(force=false) {{
     const body = document.getElementById('ai-news-body');
     if (!body) return;
     if (force) body.innerHTML = '<span id="ai-news-loading">Refreshing news…</span>';
