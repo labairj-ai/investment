@@ -551,10 +551,10 @@ def build_dashboard(portfolio, layers, holdings):
       .col-hide-sm {{ display: none; }}
       #macro-bar {{ padding: 0 0 10px; }}
       .macro-chip {{ padding: 2px 8px; }}
-      #ai-insight-card {{ padding: 12px 14px; }}
-      #ai-insight-card h2 {{ flex-wrap: wrap; row-gap: 6px; margin-bottom: 10px; }}
-      #ai-insight-card h2 > span:first-child {{ flex: 1 1 auto; min-width: 0; }}
-      #ai-insight-card h2 > span:last-child {{ margin-left: 0; }}
+      #ai-insight-card, #ai-news-card {{ padding: 12px 14px; }}
+      #ai-insight-card h2, #ai-news-card h2 {{ flex-wrap: wrap; row-gap: 6px; margin-bottom: 10px; }}
+      #ai-insight-card h2 > span:first-child, #ai-news-card h2 > span:first-child {{ flex: 1 1 auto; min-width: 0; }}
+      #ai-insight-card h2 > span:last-child, #ai-news-card h2 > span:last-child {{ margin-left: 0; }}
       .ai-news-link {{ font-size: 11px; }}
     }}
     @keyframes spin {{ from {{ transform: rotate(0deg); }} to {{ transform: rotate(360deg); }} }}
@@ -680,21 +680,20 @@ def build_dashboard(portfolio, layers, holdings):
     .macro-bar-loading {{ color: #718096; font-size: 11px; }}
 
     /* ── AI Holdings News sub-section ──────────────────────────────────────── */
-    #ai-news-section {{
-      border-top: 1px solid rgba(255,255,255,.08);
-      margin-top: 14px; padding-top: 12px;
+    /* ── Holdings News Card ─────────────────────────────────────────────────── */
+    #ai-news-card {{
+      background: linear-gradient(135deg, #1a2340 0%, #243050 100%);
+      border-radius: 10px; padding: 18px 22px;
+      box-shadow: 0 2px 8px rgba(0,0,0,.12); color: #e2e8f0;
     }}
-    #ai-news-toggle {{
-      display: flex; align-items: center; gap: 6px; cursor: pointer;
-      font-size: .8rem; font-weight: 700; text-transform: uppercase;
-      letter-spacing: .06em; color: #718096; margin-bottom: 10px; user-select: none;
-    }}
+    #ai-news-card h2 {{ color: #a0aec0; }}
+    #ai-news-card.collapsed #ai-news-body,
+    #ai-news-card.collapsed #ai-news-status {{ display: none; }}
     #ai-news-collapse-btn {{
       background: none; border: none; color: #718096; cursor: pointer;
-      font-size: 14px; padding: 0 2px; line-height: 1; transition: transform .2s;
+      font-size: 16px; padding: 0 4px; line-height: 1; transition: transform .2s;
     }}
-    #ai-news-section.collapsed #ai-news-collapse-btn {{ transform: rotate(-90deg); }}
-    #ai-news-section.collapsed #ai-news-body {{ display: none; }}
+    #ai-news-card.collapsed #ai-news-collapse-btn {{ transform: rotate(-90deg); }}
     .ai-news-ticker {{
       margin-bottom: 10px;
     }}
@@ -734,8 +733,7 @@ def build_dashboard(portfolio, layers, holdings):
     }}
     #ai-insight-card h2 {{ color: #a0aec0; }}
     #ai-insight-card.collapsed #ai-insight-body,
-    #ai-insight-card.collapsed #macro-bar,
-    #ai-insight-card.collapsed #ai-news-section {{ display: none; }}
+    #ai-insight-card.collapsed #macro-bar {{ display: none; }}
     #ai-collapse-btn {{
       background: none; border: none; color: #718096; cursor: pointer;
       font-size: 16px; padding: 0 4px; line-height: 1; transition: transform .2s;
@@ -1255,18 +1253,22 @@ def build_dashboard(portfolio, layers, holdings):
         <button class="ai-refresh-btn" onclick="openPortfolioChat()" style="margin-left:4px;">💬 Chat</button>
       </span>
     </h2>
-    <!-- Macro indicators live inside the AI card -->
     <div id="macro-bar"><span class="macro-bar-loading">Loading indicators…</span></div>
     <div id="ai-insight-body"><span class="ai-loading">Analyzing portfolio…</span></div>
-    <!-- Holdings news sub-section -->
-    <div id="ai-news-section">
-      <div id="ai-news-toggle" onclick="toggleAiNews()">
+  </div>
+
+  <!-- Holdings News -->
+  <div id="ai-news-card">
+    <h2 style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+      <span style="display:flex;align-items:center;gap:6px;cursor:pointer;" onclick="toggleAiNews()">
         <button id="ai-news-collapse-btn" tabindex="-1">▾</button>
         📰 Holdings News
-        <button id="ai-news-refresh" onclick="event.stopPropagation();loadHoldingNews(true)" tabindex="-1">↻</button>
-      </div>
-      <div id="ai-news-body"><span id="ai-news-loading">Loading news…</span></div>
-    </div>
+      </span>
+      <span>
+        <button class="ai-refresh-btn" onclick="loadHoldingNews(true)">↻ Refresh</button>
+      </span>
+    </h2>
+    <div id="ai-news-body"><span id="ai-news-loading">Loading news…</span></div>
   </div>
 
   <!-- KPI row -->
@@ -6505,9 +6507,9 @@ function tlhCalc() {{
     localStorage.setItem('aiInsightCollapsed', card.classList.contains('collapsed') ? '1' : '0');
   }};
 
-  // Restore collapsed state on load
+  // Default collapsed; restore open only if user previously opened it
   (function() {{
-    if (localStorage.getItem('aiInsightCollapsed') === '1') {{
+    if (localStorage.getItem('aiInsightCollapsed') !== '0') {{
       document.getElementById('ai-insight-card').classList.add('collapsed');
     }}
   }})();
@@ -6720,17 +6722,18 @@ function tlhCalc() {{
 
   // ── Holdings News ─────────────────────────────────────────────────────────
   window.toggleAiNews = function() {{
-    const sec = document.getElementById('ai-news-section');
-    if (sec) {{
-      sec.classList.toggle('collapsed');
-      localStorage.setItem('aiNewsCollapsed', sec.classList.contains('collapsed') ? '1' : '0');
+    const card = document.getElementById('ai-news-card');
+    if (card) {{
+      card.classList.toggle('collapsed');
+      localStorage.setItem('aiNewsCollapsed', card.classList.contains('collapsed') ? '1' : '0');
     }}
   }};
 
+  // Default collapsed; restore open only if user previously opened it
   (function() {{
-    if (localStorage.getItem('aiNewsCollapsed') === '1') {{
-      const sec = document.getElementById('ai-news-section');
-      if (sec) sec.classList.add('collapsed');
+    if (localStorage.getItem('aiNewsCollapsed') !== '0') {{
+      const card = document.getElementById('ai-news-card');
+      if (card) card.classList.add('collapsed');
     }}
   }})();
 
