@@ -656,6 +656,7 @@ IMPORTANT — be specific, not generic:
 - For tax timing, reference specific tickers and their lot dates or LT thresholds
 - Acknowledge accumulation patterns where relevant (e.g. SCHD as DRIP position)
 - Do not give generic market commentary — tie every observation to THIS portfolio
+- Use FUNDAMENTAL FINANCIALS (revenue trend, FCF, debt load) to ground risk_flags and rebalancing_take — a company with no debt has different rate sensitivity than one carrying heavy leverage
 
 Return exactly this JSON structure:
 {{
@@ -677,7 +678,7 @@ Return exactly this JSON structure:
     try:
         for tok in ollama_client.stream_generate(
             prompt, model=ollama_client.DEFAULT_MODEL,
-            temperature=0.3, num_predict=2000
+            temperature=0.3, num_predict=4000
         ):
             full_text += tok
     except Exception as e:
@@ -757,16 +758,26 @@ def generate_holding_macro_scores(force: bool = False) -> dict:
     results = dict(existing)
     BATCH = 8
 
+    import financials_fetcher
+
     for i in range(0, len(to_score), BATCH):
         batch = to_score[i:i + BATCH]
         ticker_list = ", ".join(batch)
 
+        fin_parts = []
+        for t in batch:
+            s = financials_fetcher.get_financial_summary(t)
+            if s:
+                fin_parts.append(s)
+        fin_block = ("\nFUNDAMENTAL FINANCIALS (use to calibrate scores — actual debt load, FCF, and revenue trend should inform rate_sensitivity and dollar_sensitivity):\n" + "\n".join(fin_parts)) if fin_parts else ""
+
         prompt = f"""You are a quantitative analyst. Score each ticker on 4 macro risk dimensions from 1-10.
 
 {macro_brief}
+{fin_block}
 
 Scoring definitions (1=low, 10=high):
-- rate_sensitivity: How much does a 50bps rate RISE hurt this position? (10=very hurt, e.g. long-duration bonds, REITs, high-PE growth; 1=immune or benefits, e.g. short-duration, banks)
+- rate_sensitivity: How much does a 50bps rate RISE hurt this position? (10=very hurt, e.g. long-duration bonds, REITs, high-PE growth; 1=immune or benefits, e.g. short-duration, banks) — calibrate using actual debt load from financials if available
 - inflation_hedge: How well does this position benefit from sustained inflation? (10=strong hedge, e.g. gold, commodities, energy, TIPS; 1=hurt by inflation, e.g. fixed-income, long-duration)
 - dollar_sensitivity: How much does a strong dollar hurt this position? (10=very hurt, e.g. multinational exporters, EM exposure; 1=immune or benefits, e.g. US domestic services, importers)
 - geopolitical_risk: How exposed is this position to trade wars, tariffs, or geopolitical disruption? (10=high exposure, e.g. China-exposed tech, global supply chains; 1=low, e.g. domestic utilities, US healthcare)
