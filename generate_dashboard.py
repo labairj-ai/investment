@@ -6437,17 +6437,19 @@ function tlhCalc() {{
   }}
 
   let _aiPollTimer = null;
+  let _aiPollStart = null;
   function _pollAiInsight(attempts) {{
     if (attempts <= 0) {{
       const body = document.getElementById('ai-insight-body');
-      if (body) body.innerHTML = '<span class="ai-loading">Generation timed out — try again later.</span>';
+      if (body) body.innerHTML = '<span class="ai-loading">Analysis is taking longer than expected — it\'s still running in the background. Click ↻ Refresh to check for the result.</span>';
       return;
     }}
     fetch('/api/ai/daily').then(r => r.json()).then(data => {{
       const body = document.getElementById('ai-insight-body');
       if (!body) return;
       if (data.status === 'generating') {{
-        if (body) body.innerHTML = '<span class="ai-loading">Generating… (checking again in 10s)</span>';
+        const elapsed = _aiPollStart ? Math.round((Date.now() - _aiPollStart) / 1000) : '?';
+        if (body) body.innerHTML = `<span class="ai-loading">Generating… (${{elapsed}}s elapsed, checking again shortly)</span>`;
         _aiPollTimer = setTimeout(() => _pollAiInsight(attempts - 1), 10000);
         return;
       }}
@@ -6467,11 +6469,12 @@ function tlhCalc() {{
     if (_aiPollTimer) {{ clearTimeout(_aiPollTimer); _aiPollTimer = null; }}
 
     if (force) {{
-      body.innerHTML = '<span class="ai-loading">Queuing fresh analysis… (will update in ~60 sec)</span>';
+      body.innerHTML = '<span class="ai-loading">Queuing fresh analysis… (~2 min with personalized context)</span>';
       fetch('/api/ai/daily?force=1').then(r => r.json()).then(data => {{
         if (data.status === 'generating') {{
-          body.innerHTML = '<span class="ai-loading">Generating… (checking again in 15s)</span>';
-          _aiPollTimer = setTimeout(() => _pollAiInsight(8), 15000);
+          _aiPollStart = Date.now();
+          body.innerHTML = '<span class="ai-loading">Generating… (0s elapsed, checking in 20s)</span>';
+          _aiPollTimer = setTimeout(() => _pollAiInsight(15), 20000);
         }}
       }}).catch(e => {{
         body.innerHTML = `<span class="ai-loading">Request failed: ${{e.message}}</span>`;
