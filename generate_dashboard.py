@@ -350,23 +350,23 @@ def build_dashboard(portfolio, layers, holdings):
                 _score_dot(geo,  inverted=False)
             )
             score_tip = f"Rate:{rate}/10 · Infl:{infl}/10 · Dollar:{dlr}/10 · Geo:{geo}/10 — {note}"
-            macro_cell = f'<td title="{score_tip}" style="cursor:default;white-space:nowrap;">{dots}</td>'
+            macro_cell = f'<td class="col-hide-sm" title="{score_tip}" style="cursor:default;white-space:nowrap;">{dots}</td>'
         else:
-            macro_cell = '<td style="color:#ccc;font-size:10px;">—</td>'
+            macro_cell = '<td class="col-hide-sm" style="color:#ccc;font-size:10px;">—</td>'
         holdings_rows += f"""<tr>
           <td>{h["ticker"]}</td>
-          <td>{h["shares"]:,.2f}</td>
-          <td>${h["avg_cost"]:,.2f}</td>
+          <td class="col-hide-sm">{h["shares"]:,.2f}</td>
+          <td class="col-hide-sm">${h["avg_cost"]:,.2f}</td>
           <td>${h["price"]:,.2f}</td>
           <td>{money(h["value"])}</td>
           <td class="{gain_class}" style="font-weight:600;">{pct(h["total_gain_pct"])} <span id="stlt-{h["ticker"]}" style="font-size:9px;vertical-align:middle;"></span></td>
           <td class="{daily_class}">{pct(h["change_pct"])}</td>
-          <td>{h["weight_pct"]:.1f}%</td>
-          <td id="earn-{h["ticker"]}" style="font-size:12px;color:#7f8c8d;">—</td>
+          <td class="col-hide-sm">{h["weight_pct"]:.1f}%</td>
+          <td class="col-hide-sm" id="earn-{h["ticker"]}" style="font-size:12px;color:#7f8c8d;">—</td>
           <td><span onclick="openLayerModal('{h["ticker"]}', {h["layer_num"]})"
             style="cursor:pointer;background:{lcolor}18;color:{lcolor};border:1px solid {lcolor}66;border-radius:4px;padding:2px 8px;font-size:10px;font-weight:700;white-space:nowrap;"
             title="Click to reassign layer">L{h["layer_num"]}</span></td>
-          <td><button onclick="openLotsModal('{h["ticker"]}', {h["price"]:.4f})" style="font-size:10px;padding:2px 8px;background:#f4f6f9;border:1px solid #dde;border-radius:4px;cursor:pointer;color:#555;" title="View / edit tax lots">Lots</button></td>
+          <td class="col-hide-sm"><button onclick="openLotsModal('{h["ticker"]}', {h["price"]:.4f})" style="font-size:10px;padding:2px 8px;background:#f4f6f9;border:1px solid #dde;border-radius:4px;cursor:pointer;color:#555;" title="View / edit tax lots">Lots</button></td>
           {macro_cell}
         </tr>\n"""
 
@@ -481,6 +481,7 @@ def build_dashboard(portfolio, layers, holdings):
   <script src="../chart.umd.min.js"></script>
   <style>
     *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
+    html {{ overflow-x: hidden; }}
     body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; background: #f4f6f9; color: #2c3e50; font-size: 14px; overflow-x: hidden; }}
     h1 {{ font-size: 1.4rem; font-weight: 700; }}
     h2 {{ font-size: 1rem; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: #7f8c8d; margin-bottom: 12px; }}
@@ -537,7 +538,19 @@ def build_dashboard(portfolio, layers, holdings):
     }}
     @media (max-width: 600px) {{
       .kpi-row {{ grid-template-columns: repeat(2, 1fr); }}
-      .kpi .value {{ font-size: 1.2rem; }}
+      .kpi {{ padding: 12px 14px; }}
+      .kpi .label {{ font-size: .72rem; }}
+      .kpi .value {{ font-size: 1.1rem; }}
+      .kpi .sub {{ font-size: .78rem; }}
+      .card {{ padding: 14px; }}
+      .grid {{ padding: 8px 10px; gap: 10px; }}
+      header {{ padding: 10px 12px; gap: 6px; }}
+      h1 {{ font-size: 1.1rem; }}
+      h2 {{ font-size: .85rem; margin-bottom: 8px; }}
+      .generated {{ padding: 0 10px 12px; }}
+      .col-hide-sm {{ display: none; }}
+      #macro-bar {{ padding: 6px 12px; }}
+      .macro-chip {{ padding: 2px 8px; }}
     }}
     @keyframes spin {{ from {{ transform: rotate(0deg); }} to {{ transform: rotate(360deg); }} }}
 
@@ -647,7 +660,7 @@ def build_dashboard(portfolio, layers, holdings):
     #macro-bar {{
       background: #1a2340; padding: 8px 28px;
       display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
-      font-size: 12px; color: #a0aec0; min-height: 36px;
+      font-size: 12px; color: #a0aec0; min-height: 36px; overflow: hidden;
     }}
     .macro-chip {{
       background: rgba(255,255,255,.07); border-radius: 6px;
@@ -1149,9 +1162,10 @@ def build_dashboard(portfolio, layers, holdings):
     <h1>Investment Dashboard</h1>
     <div class="subtitle">{today_date} &nbsp;·&nbsp; {len(today_holdings)} holdings across 5 layers</div>
   </div>
-  <div style="display:flex;align-items:center;gap:12px;">
-    <a href="/glossary" target="_blank" style="font-size:12px;padding:5px 14px;border:none;border-radius:5px;background:#2d3a55;color:#e2e8f0;cursor:pointer;font-weight:500;text-decoration:none;">📖 Glossary</a>
-    <button id="refreshBtn" onclick="refreshDashboard()" style="font-size:12px;padding:5px 14px;border:none;border-radius:5px;background:#2d3a55;color:#e2e8f0;cursor:pointer;font-weight:500;">↻ Refresh Data</button>
+  <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end;">
+    <a href="/glossary" target="_blank" style="font-size:12px;padding:5px 12px;border:none;border-radius:5px;background:#2d3a55;color:#e2e8f0;cursor:pointer;font-weight:500;text-decoration:none;white-space:nowrap;">📖 Glossary</a>
+    <button id="refreshBtn" onclick="refreshDashboard()" style="font-size:12px;padding:5px 12px;border:none;border-radius:5px;background:#2d3a55;color:#e2e8f0;cursor:pointer;font-weight:500;white-space:nowrap;">↻ Refresh</button>
+    <div style="display:flex;align-items:center;gap:6px;">
     <label style="font-size:11px;color:#a0aec0;white-space:nowrap;">Tax Bracket</label>
     <select onchange="onTaxBracketChange(this)" style="font-size:12px;padding:5px 10px;border:none;border-radius:5px;background:#2d3a55;color:#e2e8f0;cursor:pointer;">
       <option value="0">$150k MFJ</option>
@@ -1160,6 +1174,7 @@ def build_dashboard(portfolio, layers, holdings):
       <option value="3">$750k MFJ</option>
       <option value="4">$1M+ MFJ</option>
     </select>
+    </div>
   </div>
 </header>
 
@@ -1401,7 +1416,7 @@ def build_dashboard(portfolio, layers, holdings):
 
     <div class="table-scroll" id="holdings-scroll-wrap">
     <table id="holdings-table">
-      <thead id="holdings-thead"><tr><th>Ticker</th><th>Shares</th><th>Avg Cost</th><th>Price</th><th>Value</th><th>Total Gain</th><th>Daily Δ</th><th>Weight</th><th>Next Earnings</th><th>Layer</th><th>Tax Lots</th><th title="Macro risk scores: Rate · Inflation · Dollar · Geo (hover each row for details)">Macro ⓘ</th></tr></thead>
+      <thead id="holdings-thead"><tr><th>Ticker</th><th class="col-hide-sm">Shares</th><th class="col-hide-sm">Avg Cost</th><th>Price</th><th>Value</th><th>Total Gain</th><th>Daily Δ</th><th class="col-hide-sm">Weight</th><th class="col-hide-sm">Next Earnings</th><th>Layer</th><th class="col-hide-sm">Tax Lots</th><th class="col-hide-sm" title="Macro risk scores: Rate · Inflation · Dollar · Geo (hover each row for details)">Macro ⓘ</th></tr></thead>
       <tbody>{holdings_rows}</tbody>
     </table>
     </div>
