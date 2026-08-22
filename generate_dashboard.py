@@ -551,6 +551,10 @@ def build_dashboard(portfolio, layers, holdings):
       .col-hide-sm {{ display: none; }}
       #macro-bar {{ padding: 6px 12px; }}
       .macro-chip {{ padding: 2px 8px; }}
+      #ai-insight-card {{ padding: 12px 14px; }}
+      #ai-insight-card h2 {{ flex-wrap: wrap; row-gap: 6px; margin-bottom: 10px; }}
+      #ai-insight-card h2 > span:first-child {{ flex: 1 1 auto; min-width: 0; }}
+      #ai-insight-card h2 > span:last-child {{ margin-left: 0; }}
     }}
     @keyframes spin {{ from {{ transform: rotate(0deg); }} to {{ transform: rotate(360deg); }} }}
 
