@@ -759,7 +759,7 @@ def _run_financials_refresh():
                         if t:
                             tickers.append(t)
                 tickers = list(dict.fromkeys(tickers))
-                financials_fetcher.fetch_all(tickers, force=True)
+                financials_fetcher.fetch_all(tickers, force=False)
                 FLAG.write_text(_dt.now(TZ).date().isoformat())
                 print("[Financials] Weekly refresh complete.")
             except Exception as e:

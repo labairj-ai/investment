@@ -13,7 +13,7 @@ from pathlib import Path
 
 PROJECT_DIR = Path(__file__).resolve().parent
 DB_PATH     = PROJECT_DIR / "out" / "investment.db"
-CACHE_TTL   = 7 * 86400  # 7 days
+CACHE_TTL   = 45 * 86400  # ~45 days — between quarterly earnings releases
 
 _FUND_TICKERS = {
     "VTSAX", "VFIAX", "VVIAX", "VTMGX", "FSPTX", "SLYV", "SCHD",
