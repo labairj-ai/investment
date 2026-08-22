@@ -48,15 +48,8 @@ PUBLIC_FEEDS = [
      SIMPLE_UA),
 ]
 
-# Subscriber feeds — only used when a DJ session cookie is available
-SUBSCRIBER_FEEDS = [
-    ("WSJ Markets",
-     "https://feeds.wsj.com/wsj/xml/rss/3_7031.xml"),
-    ("WSJ Tech",
-     "https://feeds.wsj.com/wsj/xml/rss/3_7455.xml"),
-    ("Barrons Pro",
-     "https://feeds.wsj.com/wsj/xml/rss/3_7014.xml"),
-]
+# Subscriber feeds — currently inaccessible (feeds.wsj.com has no DNS outside Dow Jones network)
+SUBSCRIBER_FEEDS = []
 
 
 def _parse_rss(xml_bytes, source):
@@ -129,24 +122,38 @@ def _load_company_names(tickers):
 
 # ── Ticker matching ───────────────────────────────────────────────────────────
 
+_FUND_KEYWORDS = {"etf", "fund", "index", "trust", "portfolio", "spdr", "vanguard",
+                   "ishares", "schwab", "invesco", "fidelity", "wisdomtree",
+                   "dimensional", "pimco", "blackrock", "proshares", "direxion",
+                   "state street", "street"}
+# Common single words too generic to use as company-name matchers
+_GENERIC_WORDS = {"state", "national", "american", "global", "united", "first",
+                  "general", "north", "south", "east", "west", "pacific",
+                  "strategic", "total", "core", "small", "large", "growth", "value"}
+
 def _build_matcher(ticker, company_name):
     """
     Return a callable(text) → bool that checks for ticker or company mention.
-    Ticker matched as whole word or cashtag; company name as substring (4+ chars).
+    ETFs/funds only match by ticker symbol; stocks also match by company name.
     """
     patterns = []
 
-    # Ticker symbol: $AAPL, (AAPL), AAPL as word — handle BRK-B, BRK.B, BRKB
     sym = re.escape(ticker.upper())
     sym_flex = sym.replace(r"\-", r"[-./]?").replace(r"\.", r"[-./]?")
     patterns.append(re.compile(
         rf"(?<![A-Za-z\$])\$?{sym_flex}(?![A-Za-z])", re.IGNORECASE
     ))
 
-    # Company name (4+ chars) as substring
-    if company_name and len(company_name) >= 4:
-        # Use first meaningful word (≥4 chars) for substring match
-        words = [w for w in company_name.split() if len(w) >= 4]
+    # Skip company-name matching for ETFs/funds (generic names create false positives)
+    is_fund = False
+    if company_name:
+        name_lower = company_name.lower()
+        is_fund = any(kw in name_lower for kw in _FUND_KEYWORDS)
+
+    if not is_fund and company_name and len(company_name) >= 4:
+        # Only use the first word that's ≥5 chars AND not a generic word
+        words = [w for w in company_name.split()
+                 if len(w) >= 5 and w.lower().rstrip(".,") not in _GENERIC_WORDS]
         if words:
             patterns.append(re.compile(re.escape(words[0]), re.IGNORECASE))
 
