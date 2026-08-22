@@ -353,6 +353,34 @@ def _get_behavior_patterns() -> str:
 
 # ── Prompt builders ───────────────────────────────────────────────────────────
 
+def _get_news_block(holdings: list[dict], max_per_ticker: int = 3) -> str:
+    """Fetch holding-specific news headlines and return a prompt block."""
+    tickers = [str(h.get("Stock", "")).strip().upper() for h in holdings if h.get("Stock")]
+    tickers = list(dict.fromkeys(t for t in tickers if t))
+    if not tickers:
+        return ""
+    try:
+        import news_fetcher
+        result = news_fetcher.fetch(tickers)
+        by_ticker = result.get("by_ticker", {})
+        if not by_ticker:
+            return ""
+        lines = ["RECENT NEWS FOR YOUR HOLDINGS (from WSJ, Barrons, MarketWatch, Yahoo Finance):"]
+        for ticker in tickers:
+            items = by_ticker.get(ticker, [])[:max_per_ticker]
+            if not items:
+                continue
+            lines.append(f"  {ticker}:")
+            for item in items:
+                src = item.get("source", "")
+                title = item.get("title", "")
+                lines.append(f"    - [{src}] {title}")
+        return "\n".join(lines) + "\n"
+    except Exception as e:
+        print(f"[AI] News fetch for prompt failed: {e}")
+        return ""
+
+
 def _build_portfolio_block(holdings: list[dict], prices: dict) -> str:
     lines = ["PORTFOLIO HOLDINGS:"]
     lines.append(f"{'Ticker':<8} {'Layer':<6} {'Value':>10} {'Day%':>7} {'Wt%':>6}")
@@ -427,6 +455,9 @@ def generate_daily_insight(force: bool = False) -> dict:
 
     personal_blocks = "\n\n".join(b for b in [cc_block, lot_block, realized_block, patterns_block] if b)
 
+    # Pull holding-specific news headlines into the prompt
+    news_block = _get_news_block(holdings)
+
     prompt = f"""You are a sophisticated investment advisor analyzing a personal portfolio. Return ONLY valid JSON — no markdown, no extra text.
 
 INVESTMENT FRAMEWORK (5-layer structure):
@@ -439,7 +470,7 @@ INVESTMENT FRAMEWORK (5-layer structure):
 {macro_block}
 
 {personal_blocks}
-
+{news_block}
 IMPORTANT — be specific, not generic:
 - Reference holdings by ticker name (e.g. BRK-B, SCHD, GRMN), not just by layer
 - Connect macro signals to SPECIFIC held positions and their current macro scores

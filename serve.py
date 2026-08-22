@@ -1409,6 +1409,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._handle_macro()
         elif parsed.path == "/api/ai/daily":
             self._handle_ai_daily(parse_qs(parsed.query))
+        elif parsed.path == "/api/holding-news":
+            self._handle_holding_news(parse_qs(parsed.query))
         else:
             super().do_GET()
 
@@ -3791,6 +3793,29 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._json({"ok": True, "macro": public})
         except Exception as e:
             self._json_error(500, f"Macro fetch failed: {e}")
+
+    def _handle_holding_news(self, qs: dict):
+        """GET /api/holding-news — news articles mentioning portfolio holdings."""
+        try:
+            import csv as _csv
+            holdings_path = PROJECT_DIR / "holdings.csv"
+            tickers = []
+            if holdings_path.exists():
+                with open(holdings_path, newline="") as f:
+                    for row in _csv.DictReader(f):
+                        t = str(row.get("Stock", "")).strip().upper()
+                        if t:
+                            tickers.append(t)
+            tickers = list(dict.fromkeys(tickers))  # deduplicate, preserve order
+
+            import news_fetcher
+            force = qs.get("force", ["0"])[0] == "1"
+            result = news_fetcher.fetch(tickers, force=force)
+            self._json({"ok": True,
+                        "by_ticker": result.get("by_ticker", {}),
+                        "fetched_at": result.get("_fetched_at", 0)})
+        except Exception as e:
+            self._json_error(500, f"News fetch failed: {e}")
 
     def _handle_ai_daily(self, qs: dict):
         """GET /api/ai/daily — return today's AI portfolio insight.

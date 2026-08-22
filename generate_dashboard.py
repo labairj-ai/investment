@@ -549,12 +549,13 @@ def build_dashboard(portfolio, layers, holdings):
       h2 {{ font-size: .85rem; margin-bottom: 8px; }}
       .generated {{ padding: 0 10px 12px; }}
       .col-hide-sm {{ display: none; }}
-      #macro-bar {{ padding: 6px 12px; }}
+      #macro-bar {{ padding: 0 0 10px; }}
       .macro-chip {{ padding: 2px 8px; }}
       #ai-insight-card {{ padding: 12px 14px; }}
       #ai-insight-card h2 {{ flex-wrap: wrap; row-gap: 6px; margin-bottom: 10px; }}
       #ai-insight-card h2 > span:first-child {{ flex: 1 1 auto; min-width: 0; }}
       #ai-insight-card h2 > span:last-child {{ margin-left: 0; }}
+      .ai-news-link {{ font-size: 11px; }}
     }}
     @keyframes spin {{ from {{ transform: rotate(0deg); }} to {{ transform: rotate(360deg); }} }}
 
@@ -661,10 +662,11 @@ def build_dashboard(portfolio, layers, holdings):
     }}
 
     /* ── Macro Indicators Bar ─────────────────────────────────────────────── */
+    /* ── Macro bar (now inside AI insight card) ────────────────────────────── */
     #macro-bar {{
-      background: #1a2340; padding: 8px 28px;
-      display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
-      font-size: 12px; color: #a0aec0; min-height: 36px; overflow: hidden;
+      display: flex; align-items: center; gap: 5px; flex-wrap: wrap;
+      font-size: 12px; color: #a0aec0; overflow: hidden;
+      padding: 0 0 14px;
     }}
     .macro-chip {{
       background: rgba(255,255,255,.07); border-radius: 6px;
@@ -677,6 +679,49 @@ def build_dashboard(portfolio, layers, holdings):
     .mc-red {{ color: #fc8181 !important; }}
     .macro-bar-loading {{ color: #718096; font-size: 11px; }}
 
+    /* ── AI Holdings News sub-section ──────────────────────────────────────── */
+    #ai-news-section {{
+      border-top: 1px solid rgba(255,255,255,.08);
+      margin-top: 14px; padding-top: 12px;
+    }}
+    #ai-news-toggle {{
+      display: flex; align-items: center; gap: 6px; cursor: pointer;
+      font-size: .8rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .06em; color: #718096; margin-bottom: 10px; user-select: none;
+    }}
+    #ai-news-collapse-btn {{
+      background: none; border: none; color: #718096; cursor: pointer;
+      font-size: 14px; padding: 0 2px; line-height: 1; transition: transform .2s;
+    }}
+    #ai-news-section.collapsed #ai-news-collapse-btn {{ transform: rotate(-90deg); }}
+    #ai-news-section.collapsed #ai-news-body {{ display: none; }}
+    .ai-news-ticker {{
+      margin-bottom: 10px;
+    }}
+    .ai-news-ticker-label {{
+      font-size: 10px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .08em; color: #a0aec0; margin-bottom: 4px;
+    }}
+    .ai-news-item {{
+      padding: 5px 0; border-bottom: 1px solid rgba(255,255,255,.05);
+      display: flex; align-items: baseline; gap: 6px;
+    }}
+    .ai-news-item:last-child {{ border-bottom: none; }}
+    .ai-news-source {{
+      font-size: 10px; color: #718096; white-space: nowrap; flex-shrink: 0;
+    }}
+    .ai-news-link {{
+      font-size: 12px; color: #c9b8ff; text-decoration: none; line-height: 1.4;
+    }}
+    .ai-news-link:hover {{ color: #e2e8f0; text-decoration: underline; }}
+    #ai-news-loading {{ color: #718096; font-size: 12px; }}
+    #ai-news-refresh {{
+      background: none; border: 1px solid rgba(255,255,255,.15); color: #718096;
+      border-radius: 4px; padding: 2px 8px; font-size: 10px; cursor: pointer;
+      margin-left: auto;
+    }}
+    #ai-news-refresh:hover {{ background: rgba(255,255,255,.08); color: #e2e8f0; }}
+
     /* ── AI Insight Card ─────────────────────────────────────────────────── */
     #ai-insight-card {{
       background: linear-gradient(135deg, #1a2340 0%, #243050 100%);
@@ -684,7 +729,9 @@ def build_dashboard(portfolio, layers, holdings):
       box-shadow: 0 2px 8px rgba(0,0,0,.12); color: #e2e8f0;
     }}
     #ai-insight-card h2 {{ color: #a0aec0; }}
-    #ai-insight-card.collapsed #ai-insight-body {{ display: none; }}
+    #ai-insight-card.collapsed #ai-insight-body,
+    #ai-insight-card.collapsed #macro-bar,
+    #ai-insight-card.collapsed #ai-news-section {{ display: none; }}
     #ai-collapse-btn {{
       background: none; border: none; color: #718096; cursor: pointer;
       font-size: 16px; padding: 0 4px; line-height: 1; transition: transform .2s;
@@ -1182,11 +1229,6 @@ def build_dashboard(portfolio, layers, holdings):
   </div>
 </header>
 
-<!-- Macro Indicators Bar -->
-<div id="macro-bar">
-  <span class="macro-bar-loading">Loading macro indicators…</span>
-</div>
-
 <div class="grid">
 
   <!-- AI Portfolio Insight -->
@@ -1201,7 +1243,18 @@ def build_dashboard(portfolio, layers, holdings):
         <button class="ai-refresh-btn" onclick="openPortfolioChat()" style="margin-left:4px;">💬 Chat</button>
       </span>
     </h2>
+    <!-- Macro indicators live inside the AI card -->
+    <div id="macro-bar"><span class="macro-bar-loading">Loading indicators…</span></div>
     <div id="ai-insight-body"><span class="ai-loading">Analyzing portfolio…</span></div>
+    <!-- Holdings news sub-section -->
+    <div id="ai-news-section">
+      <div id="ai-news-toggle" onclick="toggleAiNews()">
+        <button id="ai-news-collapse-btn" tabindex="-1">▾</button>
+        📰 Holdings News
+        <button id="ai-news-refresh" onclick="event.stopPropagation();loadHoldingNews(true)" tabindex="-1">↻</button>
+      </div>
+      <div id="ai-news-body"><span id="ai-news-loading">Loading news…</span></div>
+    </div>
   </div>
 
   <!-- KPI row -->
@@ -6644,9 +6697,73 @@ function tlhCalc() {{
     if (e.key === 'Enter' && !e.shiftKey) {{ e.preventDefault(); pcSend(); }}
   }});
 
+  // ── Holdings News ─────────────────────────────────────────────────────────
+  function toggleAiNews() {{
+    const sec = document.getElementById('ai-news-section');
+    if (sec) {{
+      sec.classList.toggle('collapsed');
+      localStorage.setItem('aiNewsCollapsed', sec.classList.contains('collapsed') ? '1' : '0');
+    }}
+  }}
+
+  (function() {{
+    if (localStorage.getItem('aiNewsCollapsed') === '1') {{
+      const sec = document.getElementById('ai-news-section');
+      if (sec) sec.classList.add('collapsed');
+    }}
+  }})();
+
+  function _fmtPubDate(s) {{
+    if (!s) return '';
+    try {{
+      const d = new Date(s);
+      const now = new Date();
+      const diffH = Math.round((now - d) / 3600000);
+      if (diffH < 1) return 'just now';
+      if (diffH < 24) return diffH + 'h ago';
+      if (diffH < 48) return 'yesterday';
+      return d.toLocaleDateString('en-US', {{month:'short', day:'numeric'}});
+    }} catch(e) {{ return ''; }}
+  }}
+
+  function loadHoldingNews(force=false) {{
+    const body = document.getElementById('ai-news-body');
+    if (!body) return;
+    if (force) body.innerHTML = '<span id="ai-news-loading">Refreshing news…</span>';
+    const url = force ? '/api/holding-news?force=1' : '/api/holding-news';
+    fetch(url).then(r => r.json()).then(data => {{
+      if (!data.ok) {{ body.innerHTML = '<span id="ai-news-loading">News unavailable</span>'; return; }}
+      const bt = data.by_ticker || {{}};
+      const tickers = Object.keys(bt);
+      if (!tickers.length) {{
+        body.innerHTML = '<span id="ai-news-loading" style="color:#718096;font-size:12px;">No holding-specific news found.</span>';
+        return;
+      }}
+      let html = '';
+      for (const ticker of tickers) {{
+        const items = bt[ticker];
+        if (!items || !items.length) continue;
+        html += `<div class="ai-news-ticker"><div class="ai-news-ticker-label">${{ticker}}</div>`;
+        for (const item of items) {{
+          const age = _fmtPubDate(item.pub_date);
+          const src = item.source ? `<span class="ai-news-source">${{item.source}}${{age ? ' · '+age : ''}}</span>` : '';
+          const link = item.url
+            ? `<a class="ai-news-link" href="${{item.url}}" target="_blank" rel="noopener">${{item.title}}</a>`
+            : `<span class="ai-news-link" style="cursor:default">${{item.title}}</span>`;
+          html += `<div class="ai-news-item">${{src}}${{link}}</div>`;
+        }}
+        html += '</div>';
+      }}
+      body.innerHTML = html || '<span id="ai-news-loading" style="color:#718096;font-size:12px;">No holding-specific news found.</span>';
+    }}).catch(e => {{
+      body.innerHTML = `<span id="ai-news-loading">News fetch failed: ${{e.message}}</span>`;
+    }});
+  }}
+
   // ── Init ─────────────────────────────────────────────────────────────────
   loadMacroBar();
   loadAiInsight(false);
+  loadHoldingNews(false);
 }})();
 </script>
 </body>
