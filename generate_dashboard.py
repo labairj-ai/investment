@@ -3664,7 +3664,12 @@ function _renderBuffettTable() {{
       ${{chip("valuation","stretched","Stretched",val)}}
       ${{hiddenNote}}
       <span style="margin-left:auto;font-size:11px;color:#aaa;">${{matchTxt}}</span>
-    </div>`;
+      ${{lyr ? `<button onclick="_bLayerCompare(${{lyr}})"
+        style="padding:3px 10px;border-radius:8px;font-size:11px;font-weight:600;cursor:pointer;
+               border:1px solid #6c63ff;background:#f0eeff;color:#6c63ff;">
+        Compare L${{lyr}} ▸</button>` : ""}}
+    </div>
+    <div id="btable-compare-result"></div>`;
 
   const tableRows = rows.map((w, i) => {{
     const yf   = `https://finance.yahoo.com/quote/${{w.ticker}}`;
@@ -4120,7 +4125,8 @@ function _renderLayerView() {{
 }}
 
 async function _bLayerCompare(layerNum) {{
-  const resultEl = document.getElementById(`blayer-cmp-${{layerNum}}`);
+  const resultEl = document.getElementById(`blayer-cmp-${{layerNum}}`)
+    || document.getElementById("btable-compare-result");
   if (!resultEl) return;
   resultEl.innerHTML =
     `<pre id="blayer-stream-${{layerNum}}" style="margin:0;font-size:11px;color:#555;white-space:pre-wrap;` +
