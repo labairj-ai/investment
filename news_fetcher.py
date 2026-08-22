@@ -122,19 +122,24 @@ def _load_company_names(tickers):
 
 # ── Ticker matching ───────────────────────────────────────────────────────────
 
-_FUND_KEYWORDS = {"etf", "fund", "index", "trust", "portfolio", "spdr", "vanguard",
-                   "ishares", "schwab", "invesco", "fidelity", "wisdomtree",
-                   "dimensional", "pimco", "blackrock", "proshares", "direxion",
-                   "state street", "street"}
-# Common single words too generic to use as company-name matchers
+_FUND_RE = re.compile(
+    r"\b(etf|fund|index|trust|portfolio|spdr|vanguard|ishares|schwab|invesco|"
+    r"fidelity|wisdomtree|dimensional|pimco|blackrock|proshares|direxion|"
+    r"grayscale|bitcoin)\b",
+    re.IGNORECASE,
+)
+# Words too common to anchor a company-name match
 _GENERIC_WORDS = {"state", "national", "american", "global", "united", "first",
                   "general", "north", "south", "east", "west", "pacific",
-                  "strategic", "total", "core", "small", "large", "growth", "value"}
+                  "strategic", "total", "core", "small", "large", "growth", "value",
+                  "price", "prices", "group", "power", "energy", "digital", "media",
+                  "tech", "capital", "financial", "services", "solutions", "systems",
+                  "health", "valley", "street", "market", "markets", "data", "cloud"}
 
 def _build_matcher(ticker, company_name):
     """
     Return a callable(text) → bool that checks for ticker or company mention.
-    ETFs/funds only match by ticker symbol; stocks also match by company name.
+    ETFs/funds only match by ticker symbol; stocks match by a 2-word name phrase.
     """
     patterns = []
 
@@ -144,18 +149,15 @@ def _build_matcher(ticker, company_name):
         rf"(?<![A-Za-z\$])\$?{sym_flex}(?![A-Za-z])", re.IGNORECASE
     ))
 
-    # Skip company-name matching for ETFs/funds (generic names create false positives)
-    is_fund = False
     if company_name:
-        name_lower = company_name.lower()
-        is_fund = any(kw in name_lower for kw in _FUND_KEYWORDS)
-
-    if not is_fund and company_name and len(company_name) >= 4:
-        # Only use the first word that's ≥5 chars AND not a generic word
-        words = [w for w in company_name.split()
-                 if len(w) >= 5 and w.lower().rstrip(".,") not in _GENERIC_WORDS]
-        if words:
-            patterns.append(re.compile(re.escape(words[0]), re.IGNORECASE))
+        is_fund = bool(_FUND_RE.search(company_name))
+        if not is_fund:
+            # First word ≥5 chars that isn't a common English word
+            words = [w.rstrip(".,") for w in company_name.split()
+                     if len(w.rstrip(".,")) >= 5
+                     and w.lower().rstrip(".,") not in _GENERIC_WORDS]
+            if words:
+                patterns.append(re.compile(re.escape(words[0]), re.IGNORECASE))
 
     def matches(text):
         for pat in patterns:
