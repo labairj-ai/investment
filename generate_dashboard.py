@@ -6432,6 +6432,12 @@ function tlhCalc() {{
       if (ins.tax_timing_note && ins.tax_timing_note.toLowerCase() !== 'no immediate tax flags') {{
         html += `<div class="ai-section"><div class="ai-section-label">Tax / Timing</div><div class="ai-section-body">${{ins.tax_timing_note}}</div></div>`;
       }}
+      if (ins.cc_program_note) {{
+        html += `<div class="ai-section"><div class="ai-section-label">Covered Calls</div><div class="ai-section-body">${{ins.cc_program_note}}</div></div>`;
+      }}
+      if (ins.tax_opportunity && ins.tax_opportunity.toLowerCase() !== 'none this week') {{
+        html += `<div class="ai-section"><div class="ai-section-label">Tax Opportunity</div><div class="ai-section-body">${{ins.tax_opportunity}}</div></div>`;
+      }}
       if (ins.key_question) {{
         html += `<div class="ai-section"><div class="ai-section-label">Key Question This Week</div><div class="ai-key-question">${{ins.key_question}}</div></div>`;
       }}

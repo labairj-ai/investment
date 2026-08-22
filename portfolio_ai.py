@@ -129,9 +129,226 @@ def _get_drift_alerts(layer_weights: dict) -> list[dict]:
 
 def _get_upcoming_events() -> list[dict]:
     """Return earnings / ex-div events from DB within the next 7 days (if stored)."""
-    # The newsletter stores these in earn_alerts/exdiv_alerts but not in DB.
-    # We skip this for now — the AI will note it can't see forward events.
     return []
+
+
+# ── Personal context builders ─────────────────────────────────────────────────
+
+def _get_cc_context() -> str:
+    """Build covered call program summary for prompt injection."""
+    if not DB_PATH.exists():
+        return ""
+    today = date.today()
+
+    conn = sqlite3.connect(str(DB_PATH), timeout=10)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("SELECT * FROM cc_positions ORDER BY opened_date DESC").fetchall()
+    conn.close()
+
+    if not rows:
+        return ""
+
+    open_pos   = [r for r in rows if r["status"] == "open"]
+    closed_pos = [r for r in rows if r["status"] != "open"]
+    cc_tickers = sorted(set(r["ticker"] for r in rows))
+
+    lines = ["COVERED CALL PROGRAM:"]
+    lines.append(f"All-time CC tickers: {', '.join(cc_tickers)}")
+
+    if open_pos:
+        lines.append(f"\nOpen CC positions ({len(open_pos)}):")
+        for r in open_pos:
+            exp_date = date.fromisoformat(r["expiry"])
+            dte = (exp_date - today).days
+            gross = r["premium_per_contract"] * r["contracts"] * 100
+            dte_str = (f"{dte} DTE" if dte >= 0
+                       else f"exp {abs(dte)} days ago — needs status update")
+            mark = r["current_mark"]
+            mark_str = f", mark ${mark:.3f}" if mark is not None else ""
+            lines.append(
+                f"  {r['ticker']:6s} ${r['strike']:.2f} strike, exp {r['expiry']} "
+                f"({dte_str}), ${r['premium_per_contract']:.3f}/contract × "
+                f"{r['contracts']}c = ${gross:.0f} gross{mark_str}"
+            )
+
+    if closed_pos:
+        cutoff = (today - timedelta(days=90)).isoformat()
+        recent = [r for r in closed_pos if (r["opened_date"] or "") >= cutoff]
+        if recent:
+            lines.append(f"\nClosed positions (last 90 days):")
+            for r in recent:
+                net = r["net_premium"] or r["premium_per_contract"] * r["contracts"] * 100
+                ctype = (r["close_type"] or "closed").upper()
+                lines.append(
+                    f"  {r['ticker']:6s} ${r['strike']:.2f} strike, exp {r['expiry']}, "
+                    f"{ctype} — collected ${net:.0f}"
+                )
+
+    total_open  = sum(r["premium_per_contract"] * r["contracts"] * 100 for r in open_pos)
+    total_closed = sum(r["net_premium"] or 0 for r in closed_pos)
+    lines.append(f"\nCC income: ${total_open:.0f} gross in open positions, ${total_closed:.0f} from closed (all-time in DB)")
+    return "\n".join(lines)
+
+
+def _get_lot_context() -> str:
+    """Build cost basis, holding periods, and unrealized P&L for prompt injection."""
+    if not DB_PATH.exists():
+        return ""
+    today = date.today()
+
+    conn = sqlite3.connect(str(DB_PATH), timeout=10)
+    conn.row_factory = sqlite3.Row
+
+    # Per-ticker aggregates from cost_lots
+    summary = conn.execute("""
+        SELECT ticker,
+               COUNT(*)                                    AS lots,
+               SUM(shares)                                 AS total_shares,
+               SUM(shares * cost_per_share) / SUM(shares) AS avg_cost,
+               MIN(purchase_date)                          AS oldest,
+               MAX(purchase_date)                          AS newest
+        FROM cost_lots
+        GROUP BY ticker
+        ORDER BY lots DESC
+    """).fetchall()
+
+    # Current prices
+    latest_day = conn.execute("SELECT MAX(day) FROM holding_day").fetchone()[0]
+    prices: dict = {}
+    if latest_day:
+        for r in conn.execute("SELECT ticker, price FROM holding_day WHERE day=?", (latest_day,)):
+            prices[r["ticker"]] = r["price"]
+    conn.close()
+
+    if not summary:
+        return ""
+
+    lines = ["COST BASIS & HOLDING PERIODS (tax lot analysis):"]
+
+    # Systematic accumulators
+    accumulators = [(r, r["lots"]) for r in summary if r["lots"] >= 10]
+    if accumulators:
+        lines.append("\nSystematic accumulators (10+ lots — DCA/DRIP pattern):")
+        for r, _ in accumulators:
+            oldest_date = date.fromisoformat(r["oldest"])
+            age_mo = (today - oldest_date).days // 30
+            lt_date = oldest_date + timedelta(days=365)
+            lt_note = ("all lots LT eligible" if (today - oldest_date).days >= 365
+                       else f"oldest lot LT on {lt_date}")
+            lines.append(
+                f"  {r['ticker']}: {r['lots']} lots, {r['total_shares']:.0f} shares, "
+                f"oldest {r['oldest']} ({age_mo}mo old), {lt_note}"
+            )
+
+    # Unrealized P&L for all tickers with prices
+    lines.append("\nUnrealized gain/loss by position (avg cost → current price):")
+    rows_with_prices = [
+        r for r in summary if prices.get(r["ticker"]) is not None
+    ]
+    rows_with_prices.sort(key=lambda r: (prices[r["ticker"]] - r["avg_cost"]) / r["avg_cost"], reverse=True)
+    for r in rows_with_prices:
+        curr = prices[r["ticker"]]
+        pct  = (curr - r["avg_cost"]) / r["avg_cost"] * 100
+        oldest_date = date.fromisoformat(r["oldest"])
+        lt_label = "LT" if (today - oldest_date).days >= 365 else "ST"
+        tlh_flag = " ← TLH candidate" if pct < -5 else ""
+        sign = "+" if pct >= 0 else ""
+        lines.append(
+            f"  {r['ticker']:6s} {sign}{pct:.0f}% unrealized "
+            f"(avg ${r['avg_cost']:.2f} → ${curr:.2f}), "
+            f"{r['total_shares']:.0f} shares, oldest lot {r['oldest']} ({lt_label}){tlh_flag}"
+        )
+
+    # Positions crossing LT threshold in next 90 days
+    approaching = []
+    for r in summary:
+        oldest_date = date.fromisoformat(r["oldest"])
+        lt_date = oldest_date + timedelta(days=365)
+        days_to_lt = (lt_date - today).days
+        if 0 < days_to_lt <= 90:
+            approaching.append((r["ticker"], r["oldest"], lt_date, days_to_lt))
+    if approaching:
+        approaching.sort(key=lambda x: x[3])
+        lines.append("\nPositions crossing LT threshold in next 90 days:")
+        for ticker, oldest, lt_date, days in approaching:
+            lines.append(f"  {ticker}: oldest lot {oldest} → LT on {lt_date} ({days} days away)")
+
+    return "\n".join(lines)
+
+
+def _get_realized_context() -> str:
+    """Summarize YTD realized gains from sell_transactions."""
+    if not DB_PATH.exists():
+        return ""
+    try:
+        conn = sqlite3.connect(str(DB_PATH), timeout=10)
+        conn.row_factory = sqlite3.Row
+        count = conn.execute("SELECT COUNT(*) FROM sell_transactions").fetchone()[0]
+        if count == 0:
+            conn.close()
+            return "REALIZED GAINS YTD:\n  No sell transactions recorded — all gains/losses are currently unrealized."
+        year = str(date.today().year)
+        rows = conn.execute(
+            "SELECT * FROM sell_transactions WHERE strftime('%Y', sell_date) = ?", (year,)
+        ).fetchall()
+        conn.close()
+    except Exception:
+        return ""
+
+    if not rows:
+        return f"REALIZED GAINS YTD ({year}):\n  No sales this year."
+
+    st_total = sum(r["st_gain"] or 0 for r in rows)
+    lt_total = sum(r["lt_gain"] or 0 for r in rows)
+    lines = [f"REALIZED GAINS YTD ({year}):"]
+    lines.append(f"  Short-term: ${st_total:+,.0f}")
+    lines.append(f"  Long-term:  ${lt_total:+,.0f}")
+    lines.append(f"  Total:      ${st_total + lt_total:+,.0f}")
+    return "\n".join(lines)
+
+
+def _get_behavior_patterns() -> str:
+    """Derive investor behavior patterns from CC and lot data."""
+    if not DB_PATH.exists():
+        return ""
+
+    conn = sqlite3.connect(str(DB_PATH), timeout=10)
+    conn.row_factory = sqlite3.Row
+
+    cc_rows = conn.execute("SELECT ticker, status FROM cc_positions").fetchall()
+    lot_counts = conn.execute(
+        "SELECT ticker, COUNT(*) as cnt, SUM(shares) as total FROM cost_lots GROUP BY ticker"
+    ).fetchall()
+    conn.close()
+
+    cc_tickers   = sorted(set(r["ticker"] for r in cc_rows))
+    open_cc      = sorted(set(r["ticker"] for r in cc_rows if r["status"] == "open"))
+    expired_ok   = sorted(set(r["ticker"] for r in cc_rows if r["status"] == "expired"))
+    lot_dict     = {r["ticker"]: r["total"] for r in lot_counts}
+    accumulators = [(r["ticker"], r["cnt"], r["total"]) for r in lot_counts if r["cnt"] >= 10]
+    accumulators.sort(key=lambda x: x[1], reverse=True)
+
+    lines = ["OBSERVED INVESTOR BEHAVIOR PATTERNS:"]
+
+    if accumulators:
+        acc_str = ", ".join(f"{t} ({n} lots, {s:.0f} sh)" for t, n, s in accumulators)
+        lines.append(f"- Systematic DCA/accumulator: {acc_str}")
+
+    if cc_tickers:
+        lines.append(f"- Active CC writer on: {', '.join(cc_tickers)}")
+    if open_cc:
+        lines.append(f"  Currently open calls: {', '.join(open_cc)}")
+    if expired_ok:
+        lines.append(f"  Expired worthless (favorable outcomes): {', '.join(set(expired_ok))}")
+
+    # Large holdings not in CC program (100+ shares)
+    non_cc_large = [(t, s) for t, s in lot_dict.items() if t not in cc_tickers and s >= 100]
+    non_cc_large.sort(key=lambda x: x[1], reverse=True)
+    if non_cc_large:
+        nc_str = ", ".join(f"{t} ({s:.0f} sh)" for t, s in non_cc_large)
+        lines.append(f"- CC expansion candidates (100+ shares, no active calls): {nc_str}")
+
+    return "\n".join(lines)
 
 
 # ── Prompt builders ───────────────────────────────────────────────────────────
@@ -201,8 +418,14 @@ def generate_daily_insight(force: bool = False) -> dict:
     portfolio_block = _build_portfolio_block(holdings, prices)
     layer_block     = _build_layer_block(layer_weights, drift_alerts)
     macro_block     = macro.get("formatted_block", "Macro data unavailable.")
+    cc_block        = _get_cc_context()
+    lot_block       = _get_lot_context()
+    realized_block  = _get_realized_context()
+    patterns_block  = _get_behavior_patterns()
 
     framework = "\n".join(f"  {k}: {v}" for k, v in LAYER_NAMES.items())
+
+    personal_blocks = "\n\n".join(b for b in [cc_block, lot_block, realized_block, patterns_block] if b)
 
     prompt = f"""You are a sophisticated investment advisor analyzing a personal portfolio. Return ONLY valid JSON — no markdown, no extra text.
 
@@ -215,27 +438,37 @@ INVESTMENT FRAMEWORK (5-layer structure):
 
 {macro_block}
 
-Analyze the portfolio through a macro lens. Consider how today's rate environment, inflation signals, dollar strength, geopolitical/trade risks, and volatility affect this SPECIFIC portfolio's holdings and layer structure.
+{personal_blocks}
+
+IMPORTANT — be specific, not generic:
+- Reference holdings by ticker name (e.g. BRK-B, SCHD, GRMN), not just by layer
+- Connect macro signals to SPECIFIC held positions and their current macro scores
+- For CC commentary, reference actual open positions by ticker and strike price
+- For tax timing, reference specific tickers and their lot dates or LT thresholds
+- Acknowledge accumulation patterns where relevant (e.g. SCHD as DRIP position)
+- Do not give generic market commentary — tie every observation to THIS portfolio
 
 Return exactly this JSON structure:
 {{
-  "macro_summary": "<2-3 sentence description of today's macro regime and its dominant investment implications>",
-  "portfolio_macro_alignment": "<how well does this portfolio's current layer structure fit the macro environment? mention specific layers and why they are positioned well or poorly>",
+  "macro_summary": "<2-3 sentence description of today's macro regime and its dominant investment implications for this portfolio>",
+  "portfolio_macro_alignment": "<how well does this portfolio fit the macro environment? name specific tickers and layers — well positioned or at risk and why>",
   "risk_flags": [
-    "<specific risk tied to a named holding or layer and a named macro factor>",
-    "<another specific risk — e.g. 'L3 Compounders face headwind from rising real yields'>",
-    "<geopolitical or trade risk affecting specific tickers if applicable>"
+    "<specific risk: name the ticker or layer AND the macro driver — e.g. 'GRMN (L3) faces dollar headwind as strong USD compresses international revenue'>",
+    "<another specific risk referencing actual held names>",
+    "<geopolitical or trade risk naming specific exposed tickers>"
   ],
-  "rebalancing_take": "<given the macro backdrop, is the current drift from targets a problem or actually defensible? be specific about which drifts matter most>",
-  "tax_timing_note": "<any tax-timing consideration worth flagging — e.g. year-end harvesting, holding period milestones, capital gains distributions — or 'No immediate tax flags' if none>",
-  "key_question": "<the single most important portfolio decision the investor should be thinking about this week, framed as a question>"
+  "rebalancing_take": "<given the macro backdrop, is the current layer drift defensible or a problem? name specific drifting layers and whether the macro supports holding that tilt>",
+  "tax_timing_note": "<name specific tickers and lot dates worth acting on — approaching LT thresholds, TLH candidates, or realized gain offsets — or 'No immediate tax flags'>",
+  "key_question": "<the single most important portfolio decision for this week — specific and actionable, not generic>",
+  "cc_program_note": "<observation about the active CC positions — strike selection vs current prices, income generated, which 100+ share holdings could expand the program>",
+  "tax_opportunity": "<specific ticker + lot date combination worth acting on for tax optimization, or 'None this week'>"
 }}"""
 
     full_text = ""
     try:
         for tok in ollama_client.stream_generate(
             prompt, model=ollama_client.DEFAULT_MODEL,
-            temperature=0.3, num_predict=1200
+            temperature=0.3, num_predict=2000
         ):
             full_text += tok
     except Exception as e:
@@ -409,6 +642,12 @@ def build_portfolio_system_prompt() -> str:
                 except Exception:
                     pass
 
+    cc_block       = _get_cc_context()
+    lot_block      = _get_lot_context()
+    realized_block = _get_realized_context()
+    patterns_block = _get_behavior_patterns()
+    personal_blocks = "\n\n".join(b for b in [cc_block, lot_block, realized_block, patterns_block] if b)
+
     framework = "\n".join(f"  {k}: {v}" for k, v in LAYER_NAMES.items())
 
     system = f"""You are a sophisticated investment advisor helping the investor understand and manage their personal portfolio. You have deep knowledge of macro economics, geopolitics, tax strategy, and the portfolio framework below.
@@ -422,12 +661,14 @@ INVESTMENT FRAMEWORK:
 
 {macro.get('formatted_block', 'Macro data unavailable.')}
 {scores_block}
+{personal_blocks}
+
 Rules for your responses:
 - Always ground analysis in THIS specific portfolio — cite actual held tickers and their layers
 - When discussing macro risks, connect them to specific positions the investor holds
-- For tax questions, note that you don't have purchase date / cost-lot data unless told
+- For CC questions, reference actual open positions by ticker and strike price
+- For tax questions, reference actual lot dates and LT thresholds you have above
 - Be direct and actionable; avoid vague generalities
-- When you don't know something (e.g. exact lot dates), say so and explain what data would help
 - Keep responses focused and under ~300 words unless asked to elaborate"""
 
     return system
