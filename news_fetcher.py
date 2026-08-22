@@ -310,7 +310,7 @@ def fetch(tickers, force=False):
     # Build per-ticker matchers
     matchers = {t: _build_matcher(t, company_names.get(t)) for t in tickers}
 
-    # Assign articles to tickers
+    # Assign broad-feed articles to tickers
     by_ticker = {t: [] for t in tickers}
     for a in unique:
         haystack = a.get("title", "") + " " + a.get("_desc", "")
@@ -318,6 +318,26 @@ def fetch(tickers, force=False):
             if len(by_ticker[ticker]) < MAX_PER_TICKER and matches(haystack):
                 by_ticker[ticker].append({k: v for k, v in a.items()
                                           if not k.startswith("_")})
+
+    # Per-ticker Yahoo Finance RSS for stocks that need more coverage
+    name_cache = company_names
+    for ticker in tickers:
+        n = name_cache.get(ticker) or ""
+        is_fund = bool(_FUND_RE.search(n)) if n else False
+        if is_fund:
+            continue  # skip ETFs — their ticker appears naturally in market articles
+        if len(by_ticker[ticker]) >= MAX_PER_TICKER:
+            continue  # already has enough
+        url = ("https://feeds.finance.yahoo.com/rss/2.0/headline"
+               "?s=%s&region=US&lang=en-US" % ticker.replace(".", "-"))
+        ticker_arts = _fetch_feed(url, "Yahoo Finance", SIMPLE_UA)
+        for a in ticker_arts:
+            key = a.get("title", "")[:100].lower()
+            if key and key not in seen and len(by_ticker[ticker]) < MAX_PER_TICKER:
+                seen.add(key)
+                by_ticker[ticker].append({k: v for k, v in a.items()
+                                          if not k.startswith("_")})
+        time.sleep(0.4)  # avoid rate-limiting
 
     # Drop tickers with no news
     by_ticker = {t: items for t, items in by_ticker.items() if items}
