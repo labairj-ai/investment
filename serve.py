@@ -479,6 +479,93 @@ def _run_daily():
 threading.Thread(target=_run_daily, daemon=True).start()
 
 
+# ── Scheduled news refresh (6 AM, 12 PM, 5 PM ET, Mon–Fri) ──────────────────
+
+def _run_news_refresh():
+    """
+    Background thread: refresh holding-news headlines + AI summaries at
+    6 AM, 12 PM, and 5 PM ET on weekdays only.
+    Checks every 10 minutes; each slot fires once per calendar day.
+    """
+    import socket
+    if socket.gethostname() != "optiplex":
+        print(f"[NewsRefresh] Not on production host ({socket.gethostname()!r}) — disabled.")
+        return
+    from zoneinfo import ZoneInfo
+    from datetime import datetime as _dt
+    TZ  = ZoneInfo("America/New_York")
+    LOG = PROJECT_DIR / "out" / "news_refresh.log"
+
+    # (label, target_hour) — fires when now.hour >= target_hour
+    SLOTS = [("06", 6), ("12", 12), ("17", 17)]
+    _done = set()  # {(date_str, label)} already run this server session
+
+    def _do_refresh(label, today):
+        global _news_summary_generating
+        LOG.parent.mkdir(exist_ok=True)
+        print(f"[NewsRefresh] {label}:00 ET refresh starting for {today}…")
+        try:
+            import csv as _csv
+            import news_fetcher
+            import portfolio_ai as _pai
+
+            # Load current tickers from holdings.csv
+            tickers = []
+            csv_path = PROJECT_DIR / "holdings.csv"
+            if csv_path.exists():
+                with open(csv_path, newline="") as f:
+                    for row in _csv.DictReader(f):
+                        t = str(row.get("Stock", "")).strip().upper()
+                        if t:
+                            tickers.append(t)
+            tickers = list(dict.fromkeys(tickers))
+
+            # Step 1: fresh headline + excerpt fetch (force bypasses 30-min cache)
+            news_fetcher.fetch(tickers, force=True)
+
+            # Step 2: AI summaries — respect the lock used by API handlers
+            with _news_summary_lock:
+                already = _news_summary_generating
+                if not already:
+                    _news_summary_generating = True
+
+            if already:
+                print(f"[NewsRefresh] {label}: summary already generating, skipping AI step.")
+            else:
+                try:
+                    _pai.generate_news_summaries(force=True)
+                except Exception as e:
+                    print(f"[NewsRefresh] {label} summary error: {e}")
+                    with open(LOG, "a") as lf:
+                        lf.write(f"[{_dt.now(TZ)}] {label}:00 summary FAILED: {e}\n")
+                finally:
+                    with _news_summary_lock:
+                        _news_summary_generating = False
+
+            with open(LOG, "a") as lf:
+                lf.write(f"[{_dt.now(TZ)}] {label}:00 refresh done — {len(tickers)} tickers\n")
+            print(f"[NewsRefresh] {label}:00 refresh done.")
+        except Exception as exc:
+            print(f"[NewsRefresh] {label} refresh failed: {exc}")
+            with open(LOG, "a") as lf:
+                lf.write(f"[{_dt.now(TZ)}] {label}:00 refresh FAILED: {exc}\n")
+
+    while True:
+        now     = _dt.now(TZ)
+        today   = now.date().isoformat()
+        weekday = now.weekday()  # 0=Mon … 4=Fri, 5=Sat, 6=Sun
+        if weekday < 5:
+            for label, target_hour in SLOTS:
+                key = (today, label)
+                if key not in _done and now.hour >= target_hour:
+                    _done.add(key)
+                    _do_refresh(label, today)
+        time.sleep(600)  # check every 10 minutes
+
+
+threading.Thread(target=_run_news_refresh, daemon=True).start()
+
+
 # ── Nightly Buffett screener (2 AM ET) ───────────────────────────────────────
 def _auto_ai_analyze_winners(log_file=None):
     """After a successful scan, generate AI analysis for any winner missing it or older than 30 days."""
