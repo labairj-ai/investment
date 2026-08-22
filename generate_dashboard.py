@@ -1246,7 +1246,7 @@ def build_dashboard(portfolio, layers, holdings):
     <h2 style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
       <span style="display:flex;align-items:center;gap:6px;cursor:pointer;" onclick="toggleAiInsight()">
         <button id="ai-collapse-btn" tabindex="-1">▾</button>
-        🧠 AI Portfolio Insight
+        AI Portfolio Insight
       </span>
       <span>
         <button class="ai-refresh-btn" onclick="loadAiInsight(true)">↻ Refresh</button>
@@ -1262,7 +1262,7 @@ def build_dashboard(portfolio, layers, holdings):
     <h2 style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
       <span style="display:flex;align-items:center;gap:6px;cursor:pointer;" onclick="toggleAiNews()">
         <button id="ai-news-collapse-btn" tabindex="-1">▾</button>
-        📰 Holdings News
+        Holdings News
       </span>
       <span>
         <button class="ai-refresh-btn" onclick="loadHoldingNews(true)">↻ Refresh</button>
