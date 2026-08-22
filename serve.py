@@ -4484,7 +4484,8 @@ def _startup_regen():
         if (not dashboard.exists()
                 or gen_script.stat().st_mtime > dashboard.stat().st_mtime):
             print("[Startup] generate_dashboard.py is newer than dashboard — regenerating…")
-            r = _sp.run([str(VENV_PY), str(gen_script)], capture_output=True, text=True)
+            _venv_py = PROJECT_DIR / "venv" / "bin" / "python3"
+            r = _sp.run([str(_venv_py), str(gen_script)], capture_output=True, text=True)
             if r.returncode != 0:
                 print(f"[Startup] Dashboard regen failed: {r.stderr.strip()[-200:]}")
             else:
