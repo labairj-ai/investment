@@ -715,6 +715,9 @@ def build_dashboard(portfolio, layers, holdings):
     }}
     .ai-news-link:hover {{ color: #e2e8f0; text-decoration: underline; }}
     #ai-news-loading {{ color: #718096; font-size: 12px; }}
+    .ai-news-summary {{ font-size: 12px; color: #cbd5e0; margin: 4px 0 3px; line-height: 1.5; }}
+    .ai-news-macro {{ font-size: 11px; color: #718096; margin-bottom: 6px; border-left: 2px solid rgba(108,92,231,.4); padding-left: 7px; line-height: 1.4; }}
+    .ai-news-headlines {{ margin-top: 4px; }}
     #ai-news-refresh {{
       background: none; border: 1px solid rgba(255,255,255,.15); color: #718096;
       border-radius: 4px; padding: 2px 8px; font-size: 10px; cursor: pointer;
@@ -6743,39 +6746,76 @@ function tlhCalc() {{
     }} catch(e) {{ return ''; }}
   }}
 
+  let _newsSummaryPollTimer = null;
+
+  function _renderNewsBody(bt, summaries) {{
+    const tickers = Object.keys(bt);
+    if (!tickers.length) {{
+      return '<span id="ai-news-loading" style="color:#718096;font-size:12px;">No holding-specific news found.</span>';
+    }}
+    let html = '';
+    for (const ticker of tickers) {{
+      const items = bt[ticker];
+      if (!items || !items.length) continue;
+      html += `<div class="ai-news-ticker"><div class="ai-news-ticker-label">${{ticker}}</div>`;
+      const s = summaries && summaries[ticker];
+      if (s && s.summary) {{
+        html += `<div class="ai-news-summary">${{s.summary}}</div>`;
+        if (s.macro_angle) html += `<div class="ai-news-macro">📊 ${{s.macro_angle}}</div>`;
+      }}
+      html += '<div class="ai-news-headlines">';
+      for (const item of items) {{
+        const age = _fmtPubDate(item.pub_date);
+        const src = item.source ? `<span class="ai-news-source">${{item.source}}${{age ? ' · '+age : ''}}</span>` : '';
+        const link = item.url
+          ? `<a class="ai-news-link" href="${{item.url}}" target="_blank" rel="noopener">${{item.title}}</a>`
+          : `<span class="ai-news-link" style="cursor:default">${{item.title}}</span>`;
+        html += `<div class="ai-news-item">${{src}}${{link}}</div>`;
+      }}
+      html += '</div></div>';
+    }}
+    return html || '<span id="ai-news-loading" style="color:#718096;font-size:12px;">No holding-specific news found.</span>';
+  }}
+
+  function _pollNewsSummary(bt, attempts) {{
+    if (attempts <= 0) return; // leave headlines visible, summary just won't show
+    fetch('/api/news-summary').then(r => r.json()).then(data => {{
+      if (data.status === 'generating') {{
+        _newsSummaryPollTimer = setTimeout(() => _pollNewsSummary(bt, attempts - 1), 10000);
+        return;
+      }}
+      if (data.ok && data.summaries) {{
+        const body = document.getElementById('ai-news-body');
+        if (body) body.innerHTML = _renderNewsBody(bt, data.summaries);
+      }}
+    }}).catch(() => {{}});
+  }}
+
   window.loadHoldingNews = function(force=false) {{
     const body = document.getElementById('ai-news-body');
     if (!body) return;
-    if (force) body.innerHTML = '<span id="ai-news-loading">Refreshing news…</span>';
-    const url = force ? '/api/holding-news?force=1' : '/api/holding-news';
-    fetch(url).then(r => r.json()).then(data => {{
-      if (!data.ok) {{ body.innerHTML = '<span id="ai-news-loading">News unavailable</span>'; return; }}
-      const bt = data.by_ticker || {{}};
-      const tickers = Object.keys(bt);
-      if (!tickers.length) {{
-        body.innerHTML = '<span id="ai-news-loading" style="color:#718096;font-size:12px;">No holding-specific news found.</span>';
-        return;
+    if (_newsSummaryPollTimer) {{ clearTimeout(_newsSummaryPollTimer); _newsSummaryPollTimer = null; }}
+    if (force) body.innerHTML = `<div class="ai-loading-wrap">${{_aiSpinner}}<span>Refreshing news…</span></div>`;
+
+    const newsUrl    = force ? '/api/holding-news?force=1' : '/api/holding-news';
+    const summaryUrl = force ? '/api/news-summary?force=1' : '/api/news-summary';
+
+    Promise.all([
+      fetch(newsUrl).then(r => r.json()),
+      fetch(summaryUrl).then(r => r.json()),
+    ]).then(([newsData, sumData]) => {{
+      if (!newsData.ok) {{ body.innerHTML = '<span id="ai-news-loading">News unavailable</span>'; return; }}
+      const bt = newsData.by_ticker || {{}};
+      let summaries = (sumData.ok && sumData.summaries) ? sumData.summaries : null;
+      body.innerHTML = _renderNewsBody(bt, summaries);
+      // If summary is still generating, poll for it
+      if (sumData.status === 'generating') {{
+        _newsSummaryPollTimer = setTimeout(() => _pollNewsSummary(bt, 18), 10000);
       }}
-      let html = '';
-      for (const ticker of tickers) {{
-        const items = bt[ticker];
-        if (!items || !items.length) continue;
-        html += `<div class="ai-news-ticker"><div class="ai-news-ticker-label">${{ticker}}</div>`;
-        for (const item of items) {{
-          const age = _fmtPubDate(item.pub_date);
-          const src = item.source ? `<span class="ai-news-source">${{item.source}}${{age ? ' · '+age : ''}}</span>` : '';
-          const link = item.url
-            ? `<a class="ai-news-link" href="${{item.url}}" target="_blank" rel="noopener">${{item.title}}</a>`
-            : `<span class="ai-news-link" style="cursor:default">${{item.title}}</span>`;
-          html += `<div class="ai-news-item">${{src}}${{link}}</div>`;
-        }}
-        html += '</div>';
-      }}
-      body.innerHTML = html || '<span id="ai-news-loading" style="color:#718096;font-size:12px;">No holding-specific news found.</span>';
     }}).catch(e => {{
       body.innerHTML = `<span id="ai-news-loading">News fetch failed: ${{e.message}}</span>`;
     }});
-  }}
+  }};
 
   // ── Init ─────────────────────────────────────────────────────────────────
   loadMacroBar();

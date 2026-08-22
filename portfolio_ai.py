@@ -59,6 +59,11 @@ def _init_ai_tables():
         scores     TEXT,
         updated_at TEXT
     )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS news_summaries (
+        day          TEXT PRIMARY KEY,
+        summaries    TEXT,
+        generated_at TEXT
+    )""")
     conn.commit()
     conn.close()
 
@@ -426,6 +431,114 @@ def get_cached_insight_today() -> dict | None:
     except Exception:
         pass
     return None
+
+
+def get_cached_news_summaries_today() -> dict | None:
+    """Return today's cached per-ticker news summaries from DB, or None."""
+    _init_ai_tables()
+    today = date.today().isoformat()
+    if not DB_PATH.exists():
+        return None
+    try:
+        conn = sqlite3.connect(str(DB_PATH), timeout=5)
+        row = conn.execute("SELECT summaries FROM news_summaries WHERE day=?", (today,)).fetchone()
+        conn.close()
+        if row and row[0]:
+            return json.loads(row[0])
+    except Exception:
+        pass
+    return None
+
+
+def generate_news_summaries(force: bool = False) -> dict:
+    """
+    For each holding that has recent news, generate an AI summary of the
+    headlines plus a macro-angle sentence.  Returns {ticker: {summary, macro_angle}}.
+    Cached in DB by day.
+    """
+    _init_ai_tables()
+    today = date.today().isoformat()
+
+    if not force:
+        cached = get_cached_news_summaries_today()
+        if cached is not None:
+            return cached
+
+    if not ollama_client.available():
+        return {"error": "AI model unavailable — check MLX server"}
+
+    holdings = _load_holdings_csv()
+    tickers = [str(h.get("Stock", "")).strip().upper() for h in holdings if h.get("Stock")]
+    tickers = list(dict.fromkeys(t for t in tickers if t))
+
+    import news_fetcher
+    result = news_fetcher.fetch(tickers)
+    by_ticker = result.get("by_ticker", {})
+    tickers_with_news = {t: items for t, items in by_ticker.items() if items}
+    if not tickers_with_news:
+        return {}
+
+    import macro_context
+    macro = macro_context.fetch()
+    macro_block = macro.get("formatted_block", "Macro data unavailable.")
+
+    news_block = ""
+    for ticker, items in tickers_with_news.items():
+        news_block += f"\n{ticker}:\n"
+        for item in items[:6]:
+            src = item.get("source", "")
+            news_block += f"  [{src}] {item.get('title', '')}\n"
+
+    prompt = f"""You are a financial analyst summarizing recent news for a personal investor's portfolio holdings.
+
+CURRENT MACRO ENVIRONMENT:
+{macro_block}
+
+RECENT NEWS BY HOLDING:
+{news_block}
+
+For each ticker listed above, write:
+1. A concise 2-3 sentence summary of the key news themes — reference specific headlines
+2. 1-2 sentences on how the current macro environment is specifically relevant to this stock
+
+Return ONLY valid JSON — no markdown, no extra text:
+{{
+  "TICKER": {{
+    "summary": "<2-3 sentence news summary referencing actual headlines>",
+    "macro_angle": "<how today's macro environment — rates, VIX, dollar strength, sector trends — directly affects this holding>"
+  }}
+}}
+
+Only include tickers present in the news above. Be specific, not generic."""
+
+    full_text = ""
+    try:
+        for tok in ollama_client.stream_generate(
+            prompt, model=ollama_client.DEFAULT_MODEL,
+            temperature=0.3, num_predict=4000
+        ):
+            full_text += tok
+    except Exception as e:
+        return {"error": f"AI generation failed: {e}"}
+
+    try:
+        dec = json.JSONDecoder()
+        start = full_text.index("{")
+        summaries, _ = dec.raw_decode(full_text, start)
+    except (ValueError, json.JSONDecodeError):
+        return {"error": "AI returned malformed JSON", "raw": full_text[:500]}
+
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if DB_PATH.exists():
+        conn = sqlite3.connect(str(DB_PATH), timeout=10)
+        conn.execute(
+            "INSERT OR REPLACE INTO news_summaries (day, summaries, generated_at) VALUES (?,?,?)",
+            (today, json.dumps(summaries), now_str)
+        )
+        conn.commit()
+        conn.close()
+
+    return summaries
 
 
 def generate_daily_insight(force: bool = False) -> dict:

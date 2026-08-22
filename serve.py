@@ -105,6 +105,9 @@ _chat_active: set = set()  # tracks in-flight chat streams by "context_type:tick
 _ai_insight_lock = threading.Lock()
 _ai_insight_generating = False  # True while background generation is running
 
+_news_summary_lock = threading.Lock()
+_news_summary_generating = False
+
 
 def _job_create(kind: str) -> str:
     job_id = uuid.uuid4().hex[:16]
@@ -1411,6 +1414,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._handle_ai_daily(parse_qs(parsed.query))
         elif parsed.path == "/api/holding-news":
             self._handle_holding_news(parse_qs(parsed.query))
+        elif parsed.path == "/api/news-summary":
+            self._handle_news_summary(parse_qs(parsed.query))
         else:
             super().do_GET()
 
@@ -3816,6 +3821,63 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         "fetched_at": result.get("_fetched_at", 0)})
         except Exception as e:
             self._json_error(500, f"News fetch failed: {e}")
+
+    def _handle_news_summary(self, qs: dict):
+        """GET /api/news-summary — AI-generated per-ticker news summaries + macro angle.
+        ?force=1 triggers regeneration. Returns status='generating' while running."""
+        global _news_summary_generating
+        import portfolio_ai
+
+        force = qs.get("force", ["0"])[0] == "1"
+        today = __import__("datetime").date.today().isoformat()
+
+        if force:
+            with _news_summary_lock:
+                already = _news_summary_generating
+                if not already:
+                    _news_summary_generating = True
+            if not already:
+                def _run():
+                    global _news_summary_generating
+                    try:
+                        portfolio_ai.generate_news_summaries(force=True)
+                    except Exception as e:
+                        print(f"[news-summary] generation failed: {e}")
+                    finally:
+                        with _news_summary_lock:
+                            _news_summary_generating = False
+                threading.Thread(target=_run, daemon=True).start()
+            self._json({"ok": True, "status": "generating", "date": today})
+            return
+
+        with _news_summary_lock:
+            generating = _news_summary_generating
+        if generating:
+            self._json({"ok": True, "status": "generating", "date": today})
+            return
+
+        cached = portfolio_ai.get_cached_news_summaries_today()
+        if cached is not None:
+            self._json({"ok": True, "summaries": cached, "date": today})
+            return
+
+        # No cache — kick off background generation
+        with _news_summary_lock:
+            already = _news_summary_generating
+            if not already:
+                _news_summary_generating = True
+        if not already:
+            def _run_bg():
+                global _news_summary_generating
+                try:
+                    portfolio_ai.generate_news_summaries(force=False)
+                except Exception as e:
+                    print(f"[news-summary] background generation failed: {e}")
+                finally:
+                    with _news_summary_lock:
+                        _news_summary_generating = False
+            threading.Thread(target=_run_bg, daemon=True).start()
+        self._json({"ok": True, "status": "generating", "date": today})
 
     def _handle_ai_daily(self, qs: dict):
         """GET /api/ai/daily — return today's AI portfolio insight.
