@@ -6406,43 +6406,90 @@ function tlhCalc() {{
   }}
 
   // ── AI Insight Panel ──────────────────────────────────────────────────────
+  function _renderAiInsight(ins) {{
+    let html = '';
+    if (ins.macro_summary) {{
+      html += `<div class="ai-section"><div class="ai-section-label">Macro Regime</div><div class="ai-section-body">${{ins.macro_summary}}</div></div>`;
+    }}
+    if (ins.portfolio_macro_alignment) {{
+      html += `<div class="ai-section"><div class="ai-section-label">Portfolio Alignment</div><div class="ai-section-body">${{ins.portfolio_macro_alignment}}</div></div>`;
+    }}
+    if (ins.risk_flags && ins.risk_flags.length) {{
+      const flags = ins.risk_flags.map(f => `<div class="ai-flag">⚠ ${{f}}</div>`).join('');
+      html += `<div class="ai-section"><div class="ai-section-label">Risk Flags</div>${{flags}}</div>`;
+    }}
+    if (ins.rebalancing_take) {{
+      html += `<div class="ai-section"><div class="ai-section-label">Rebalancing</div><div class="ai-section-body">${{ins.rebalancing_take}}</div></div>`;
+    }}
+    if (ins.tax_timing_note && ins.tax_timing_note.toLowerCase() !== 'no immediate tax flags') {{
+      html += `<div class="ai-section"><div class="ai-section-label">Tax / Timing</div><div class="ai-section-body">${{ins.tax_timing_note}}</div></div>`;
+    }}
+    if (ins.cc_program_note) {{
+      html += `<div class="ai-section"><div class="ai-section-label">Covered Calls</div><div class="ai-section-body">${{ins.cc_program_note}}</div></div>`;
+    }}
+    if (ins.tax_opportunity && ins.tax_opportunity.toLowerCase() !== 'none this week') {{
+      html += `<div class="ai-section"><div class="ai-section-label">Tax Opportunity</div><div class="ai-section-body">${{ins.tax_opportunity}}</div></div>`;
+    }}
+    if (ins.key_question) {{
+      html += `<div class="ai-section"><div class="ai-section-label">Key Question This Week</div><div class="ai-key-question">${{ins.key_question}}</div></div>`;
+    }}
+    return html || '<span class="ai-loading">Analysis returned no content.</span>';
+  }}
+
+  let _aiPollTimer = null;
+  function _pollAiInsight(attempts) {{
+    if (attempts <= 0) {{
+      const body = document.getElementById('ai-insight-body');
+      if (body) body.innerHTML = '<span class="ai-loading">Generation timed out — try again later.</span>';
+      return;
+    }}
+    fetch('/api/ai/daily').then(r => r.json()).then(data => {{
+      const body = document.getElementById('ai-insight-body');
+      if (!body) return;
+      if (data.status === 'generating') {{
+        if (body) body.innerHTML = '<span class="ai-loading">Generating… (checking again in 10s)</span>';
+        _aiPollTimer = setTimeout(() => _pollAiInsight(attempts - 1), 10000);
+        return;
+      }}
+      if (!data.ok || !data.insight) {{ body.innerHTML = `<span class="ai-loading">Error: ${{data.error || 'no data'}}</span>`; return; }}
+      const ins = data.insight;
+      if (ins.error) {{ body.innerHTML = `<span class="ai-loading">AI unavailable: ${{ins.error}}</span>`; return; }}
+      body.innerHTML = _renderAiInsight(ins);
+    }}).catch(e => {{
+      const body = document.getElementById('ai-insight-body');
+      if (body) body.innerHTML = `<span class="ai-loading">Could not reach AI: ${{e.message}}</span>`;
+    }});
+  }}
+
   function loadAiInsight(force=false) {{
     const body = document.getElementById('ai-insight-body');
     if (!body) return;
-    body.innerHTML = '<span class="ai-loading">Analyzing portfolio with macro context… (30–60 sec)</span>';
-    const url = force ? '/api/ai/daily?force=1' : '/api/ai/daily';
-    fetch(url).then(r => r.json()).then(data => {{
-      if (!data.ok) {{ body.innerHTML = `<span class="ai-loading">Error: ${{data.error || 'Unknown'}}</span>`; return; }}
+    if (_aiPollTimer) {{ clearTimeout(_aiPollTimer); _aiPollTimer = null; }}
+
+    if (force) {{
+      body.innerHTML = '<span class="ai-loading">Queuing fresh analysis… (will update in ~60 sec)</span>';
+      fetch('/api/ai/daily?force=1').then(r => r.json()).then(data => {{
+        if (data.status === 'generating') {{
+          body.innerHTML = '<span class="ai-loading">Generating… (checking again in 15s)</span>';
+          _aiPollTimer = setTimeout(() => _pollAiInsight(8), 15000);
+        }}
+      }}).catch(e => {{
+        body.innerHTML = `<span class="ai-loading">Request failed: ${{e.message}}</span>`;
+      }});
+      return;
+    }}
+
+    body.innerHTML = '<span class="ai-loading">Loading…</span>';
+    fetch('/api/ai/daily').then(r => r.json()).then(data => {{
+      if (data.status === 'generating') {{
+        body.innerHTML = '<span class="ai-loading">Generating… (checking again in 15s)</span>';
+        _aiPollTimer = setTimeout(() => _pollAiInsight(8), 15000);
+        return;
+      }}
+      if (!data.ok || !data.insight) {{ body.innerHTML = `<span class="ai-loading">Error: ${{data.error || 'no data'}}</span>`; return; }}
       const ins = data.insight;
       if (ins.error) {{ body.innerHTML = `<span class="ai-loading">AI unavailable: ${{ins.error}}</span>`; return; }}
-      let html = '';
-      if (ins.macro_summary) {{
-        html += `<div class="ai-section"><div class="ai-section-label">Macro Regime</div><div class="ai-section-body">${{ins.macro_summary}}</div></div>`;
-      }}
-      if (ins.portfolio_macro_alignment) {{
-        html += `<div class="ai-section"><div class="ai-section-label">Portfolio Alignment</div><div class="ai-section-body">${{ins.portfolio_macro_alignment}}</div></div>`;
-      }}
-      if (ins.risk_flags && ins.risk_flags.length) {{
-        const flags = ins.risk_flags.map(f => `<div class="ai-flag">⚠ ${{f}}</div>`).join('');
-        html += `<div class="ai-section"><div class="ai-section-label">Risk Flags</div>${{flags}}</div>`;
-      }}
-      if (ins.rebalancing_take) {{
-        html += `<div class="ai-section"><div class="ai-section-label">Rebalancing</div><div class="ai-section-body">${{ins.rebalancing_take}}</div></div>`;
-      }}
-      if (ins.tax_timing_note && ins.tax_timing_note.toLowerCase() !== 'no immediate tax flags') {{
-        html += `<div class="ai-section"><div class="ai-section-label">Tax / Timing</div><div class="ai-section-body">${{ins.tax_timing_note}}</div></div>`;
-      }}
-      if (ins.cc_program_note) {{
-        html += `<div class="ai-section"><div class="ai-section-label">Covered Calls</div><div class="ai-section-body">${{ins.cc_program_note}}</div></div>`;
-      }}
-      if (ins.tax_opportunity && ins.tax_opportunity.toLowerCase() !== 'none this week') {{
-        html += `<div class="ai-section"><div class="ai-section-label">Tax Opportunity</div><div class="ai-section-body">${{ins.tax_opportunity}}</div></div>`;
-      }}
-      if (ins.key_question) {{
-        html += `<div class="ai-section"><div class="ai-section-label">Key Question This Week</div><div class="ai-key-question">${{ins.key_question}}</div></div>`;
-      }}
-      if (!html) html = '<span class="ai-loading">Analysis returned no content.</span>';
-      body.innerHTML = html;
+      body.innerHTML = _renderAiInsight(ins);
     }}).catch(e => {{
       body.innerHTML = `<span class="ai-loading">Could not reach AI: ${{e.message}}</span>`;
     }});

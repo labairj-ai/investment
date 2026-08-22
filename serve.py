@@ -102,6 +102,8 @@ _jobs_lock = threading.Lock()
 _JOB_TTL = 600  # expire completed jobs after 10 minutes
 
 _chat_active: set = set()  # tracks in-flight chat streams by "context_type:ticker"
+_ai_insight_lock = threading.Lock()
+_ai_insight_generating = False  # True while background generation is running
 
 
 def _job_create(kind: str) -> str:
@@ -3791,13 +3793,49 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._json_error(500, f"Macro fetch failed: {e}")
 
     def _handle_ai_daily(self, qs: dict):
-        """GET /api/ai/daily — return today's AI portfolio insight (generates if missing).
-        Pass ?force=1 to regenerate even if already cached today."""
+        """GET /api/ai/daily — return today's AI portfolio insight.
+        ?force=1 kicks off background regeneration and returns immediately with
+        status='generating'; client should poll /api/ai/daily (no force) until
+        a real insight arrives."""
+        global _ai_insight_generating
+        import portfolio_ai
+
+        force = qs.get("force", ["0"])[0] == "1"
+        today = __import__("datetime").date.today().isoformat()
+
+        if force:
+            with _ai_insight_lock:
+                already_running = _ai_insight_generating
+                if not already_running:
+                    _ai_insight_generating = True
+
+            if not already_running:
+                def _run():
+                    global _ai_insight_generating
+                    try:
+                        portfolio_ai.generate_daily_insight(force=True)
+                    except Exception as e:
+                        print(f"[AI daily] background generation failed: {e}")
+                    finally:
+                        with _ai_insight_lock:
+                            _ai_insight_generating = False
+                threading.Thread(target=_run, daemon=True).start()
+
+            self._json({"ok": True, "status": "generating", "date": today})
+            return
+
+        # Non-force: return cached result or trigger a fresh generation synchronously
+        # (only runs if nothing is cached yet today — fast path)
+        with _ai_insight_lock:
+            generating = _ai_insight_generating
+
+        if generating:
+            self._json({"ok": True, "status": "generating", "date": today})
+            return
+
         try:
-            import portfolio_ai
-            force = qs.get("force", ["0"])[0] == "1"
-            insight = portfolio_ai.generate_daily_insight(force=force)
-            self._json({"ok": True, "insight": insight, "date": __import__("datetime").date.today().isoformat()})
+            insight = portfolio_ai.generate_daily_insight(force=False)
+            self._json({"ok": True, "insight": insight, "date": today})
         except Exception as e:
             self._json_error(500, f"AI daily insight failed: {e}")
 
@@ -4390,7 +4428,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
 
-server = http.server.HTTPServer(("localhost", PORT), Handler)
+server = http.server.ThreadingHTTPServer(("localhost", PORT), Handler)
 
 # Regenerate dashboard on startup so changes to generate_dashboard.py take
 # effect immediately after a deploy + service restart.
