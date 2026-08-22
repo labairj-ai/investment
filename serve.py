@@ -723,6 +723,53 @@ def _run_screener():
 threading.Thread(target=_run_screener, daemon=True).start()
 
 
+# ── Weekly financials refresh (Sunday 1 AM ET) ───────────────────────────────
+
+def _run_financials_refresh():
+    """Refresh 5-year financial statements + estimates for all stock holdings once a week."""
+    import socket
+    if socket.gethostname() != "optiplex":
+        return
+    import csv as _csv
+    from zoneinfo import ZoneInfo
+    from datetime import datetime as _dt
+    TZ   = ZoneInfo("America/New_York")
+    FLAG = PROJECT_DIR / "out" / "last_financials_refresh.txt"
+
+    def already_ran_this_week():
+        try:
+            from datetime import date as _date, timedelta as _td
+            last = _date.fromisoformat(FLAG.read_text().strip())
+            # Consider "this week" = within 6 days
+            return (_date.today() - last).days < 6
+        except Exception:
+            return False
+
+    while True:
+        now = _dt.now(TZ)
+        if now.weekday() == 6 and now.hour == 1 and not already_ran_this_week():
+            try:
+                print("[Financials] Starting weekly refresh…")
+                import financials_fetcher
+                holdings_path = PROJECT_DIR / "holdings.csv"
+                tickers = []
+                with open(holdings_path, newline="") as f:
+                    for row in _csv.DictReader(f):
+                        t = row.get("Stock", "").strip().upper()
+                        if t:
+                            tickers.append(t)
+                tickers = list(dict.fromkeys(tickers))
+                financials_fetcher.fetch_all(tickers, force=True)
+                FLAG.write_text(_dt.now(TZ).date().isoformat())
+                print("[Financials] Weekly refresh complete.")
+            except Exception as e:
+                print(f"[Financials] Refresh failed: {e}")
+        time.sleep(1800)
+
+
+threading.Thread(target=_run_financials_refresh, daemon=True).start()
+
+
 # ── Background analysis runners ───────────────────────────────────────────────
 
 def _run_buffett_job(job_id: str, ticker_symbol: str, mode: str) -> None:
@@ -1503,6 +1550,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._handle_holding_news(parse_qs(parsed.query))
         elif parsed.path == "/api/news-summary":
             self._handle_news_summary(parse_qs(parsed.query))
+        elif parsed.path == "/api/refresh-financials":
+            self._handle_refresh_financials(parse_qs(parsed.query))
         else:
             super().do_GET()
 
@@ -3965,6 +4014,30 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         _news_summary_generating = False
             threading.Thread(target=_run_bg, daemon=True).start()
         self._json({"ok": True, "status": "generating", "date": today})
+
+    def _handle_refresh_financials(self, qs: dict):
+        """GET /api/refresh-financials — trigger a background financials fetch for all holdings."""
+        import csv as _csv
+        force = qs.get("force", ["0"])[0] == "1"
+
+        def _run():
+            try:
+                import financials_fetcher
+                holdings_path = PROJECT_DIR / "holdings.csv"
+                tickers = []
+                with open(holdings_path, newline="") as f:
+                    for row in _csv.DictReader(f):
+                        t = row.get("Stock", "").strip().upper()
+                        if t:
+                            tickers.append(t)
+                tickers = list(dict.fromkeys(tickers))
+                financials_fetcher.fetch_all(tickers, force=force)
+                print("[Financials] API-triggered refresh complete.")
+            except Exception as e:
+                print(f"[Financials] API refresh failed: {e}")
+
+        threading.Thread(target=_run, daemon=True).start()
+        self._json({"ok": True, "status": "refreshing", "force": force})
 
     def _handle_ai_daily(self, qs: dict):
         """GET /api/ai/daily — return today's AI portfolio insight.

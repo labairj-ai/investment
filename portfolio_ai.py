@@ -486,6 +486,7 @@ def generate_news_summaries(force: bool = False) -> dict:
     macro = macro_context.fetch()
     macro_block = macro.get("formatted_block", "Macro data unavailable.")
 
+    import financials_fetcher
     news_block = ""
     for ticker, items in tickers_with_news.items():
         news_block += f"\n{ticker}:\n"
@@ -498,6 +499,9 @@ def generate_news_summaries(force: bool = False) -> dict:
             detail = body[:700] if body else excerpt[:300] if excerpt else ""
             if detail:
                 news_block += f"    {detail}\n"
+        fin_summary = financials_fetcher.get_financial_summary(ticker)
+        if fin_summary:
+            news_block += fin_summary + "\n"
 
     fed   = macro.get("fed_funds", "N/A")
     tnx   = macro.get("yield_10y", "N/A")
@@ -615,6 +619,22 @@ def generate_daily_insight(force: bool = False) -> dict:
     # Pull holding-specific news headlines into the prompt
     news_block = _get_news_block(holdings)
 
+    # Pull financial fundamentals for stock holdings
+    import financials_fetcher
+    tickers = list(dict.fromkeys(
+        str(h.get("Stock", "")).strip().upper()
+        for h in holdings if h.get("Stock")
+    ))
+    fin_parts = []
+    for t in tickers:
+        s = financials_fetcher.get_financial_summary(t)
+        if s:
+            fin_parts.append(s)
+    financials_block = (
+        "FUNDAMENTAL FINANCIALS (5yr quarterly + annual, forward estimates):\n" +
+        "\n".join(fin_parts)
+    ) if fin_parts else ""
+
     prompt = f"""You are a sophisticated investment advisor analyzing a personal portfolio. Return ONLY valid JSON — no markdown, no extra text.
 
 INVESTMENT FRAMEWORK (5-layer structure):
@@ -627,6 +647,7 @@ INVESTMENT FRAMEWORK (5-layer structure):
 {macro_block}
 
 {personal_blocks}
+{financials_block}
 {news_block}
 IMPORTANT — be specific, not generic:
 - Reference holdings by ticker name (e.g. BRK-B, SCHD, GRMN), not just by layer
