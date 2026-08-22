@@ -480,6 +480,8 @@ def generate_news_summaries(force: bool = False) -> dict:
     if not tickers_with_news:
         return {}
 
+    news_fetcher.enrich_with_bodies(tickers_with_news)
+
     import macro_context
     macro = macro_context.fetch()
     macro_block = macro.get("formatted_block", "Macro data unavailable.")
@@ -488,8 +490,14 @@ def generate_news_summaries(force: bool = False) -> dict:
     for ticker, items in tickers_with_news.items():
         news_block += f"\n{ticker}:\n"
         for item in items[:6]:
-            src = item.get("source", "")
-            news_block += f"  [{src}] {item.get('title', '')}\n"
+            src     = item.get("source", "")
+            title   = item.get("title", "")
+            body    = item.get("body", "")
+            excerpt = item.get("excerpt", "")
+            news_block += f"  [{src}] {title}\n"
+            detail = body[:700] if body else excerpt[:300] if excerpt else ""
+            if detail:
+                news_block += f"    {detail}\n"
 
     fed   = macro.get("fed_funds", "N/A")
     tnx   = macro.get("yield_10y", "N/A")

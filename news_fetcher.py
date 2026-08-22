@@ -58,8 +58,44 @@ PUBLIC_FEEDS = [
      SIMPLE_UA),
 ]
 
-# Subscriber feeds — currently inaccessible (feeds.wsj.com has no DNS outside Dow Jones network)
-SUBSCRIBER_FEEDS = []
+# Subscriber RSS feeds — require DJSESSION cookie; fail silently if unavailable
+SUBSCRIBER_FEEDS = [
+    ("WSJ US Business",  "https://feeds.content.dowjones.io/public/rss/WSJUSBusinessFeed"),
+    ("WSJ Markets",      "https://feeds.content.dowjones.io/public/rss/WSJMarketsFeed"),
+    ("WSJ Tech",         "https://feeds.content.dowjones.io/public/rss/WSJTechnologyFeed"),
+    ("Barrons Stocks",   "https://feeds.content.dowjones.io/public/rss/RSSBarronsStocks"),
+]
+
+# Article body fetching
+MAX_BODY_CHARS = 2500
+BODY_TIMEOUT   = 12
+
+# Selectors tried in order; first match with ≥150 chars of text wins
+_BODY_SELECTORS = [
+    # WSJ / Barrons / MarketWatch
+    "[class*='article-wrap__body']",
+    "[class*='article__body']",
+    "[class*='articleBody']",
+    ".article-content",
+    ".wsj-snippet-body",
+    "section[class*='body']",
+    "div[class*='article-body']",
+    "div[data-type='paragraph']",
+    # CNBC
+    "div.ArticleBody-articleBody",
+    "div[class*='ArticleBody']",
+    # Reuters
+    "div[class*='article-body']",
+    "article[class*='article-body']",
+    # Motley Fool / 247WallSt / generic
+    "div.article-body",
+    "div#article-body",
+    "article",
+    "main",
+]
+
+# DJ domains blocked by Cloudflare bot protection — skip direct HTTP fetching
+_CF_BLOCKED_DOMAINS = ("wsj.com", "barrons.com", "marketwatch.com")
 
 
 def _parse_rss(xml_bytes, source):
@@ -74,7 +110,7 @@ def _parse_rss(xml_bytes, source):
             desc  = re.sub(r"<[^>]+>", " ", desc).strip()
             if title:
                 items.append({"title": title, "url": url, "source": source,
-                              "pub_date": pub, "_desc": desc})
+                              "pub_date": pub, "excerpt": desc})
     except Exception:
         pass
     return items
@@ -84,7 +120,7 @@ def _fetch_feed(url, source, ua, cookie=None):
     try:
         h = {"User-Agent": ua, "Accept": "application/rss+xml, text/xml, */*"}
         if cookie:
-            h["Cookie"] = f"DJSESSION={cookie}"
+            h["Cookie"] = cookie  # full Cookie header string
         req = urllib.request.Request(url, headers=h)
         with urllib.request.urlopen(req, timeout=10) as r:
             return _parse_rss(r.read(), source)
@@ -180,32 +216,60 @@ def _build_matcher(ticker, company_name):
 
 # ── DJ Session auth ───────────────────────────────────────────────────────────
 
-def _get_dj_session():
-    """Return a DJ session cookie string or None."""
+def _get_dj_cookies():
+    """
+    Return a full Cookie header string for DJ properties, or None.
+    Priority: browser-extracted tokens (WSJ_TAC + WSJ_TR) → WSJ_SESSION →
+              cached programmatic login → fresh programmatic login.
+    """
     from dotenv import load_dotenv
     load_dotenv(PROJECT_DIR / ".env")
 
-    # Option A: explicit cookie value in .env
+    parts = []
+
+    # Piano.io subscriber access token — primary gate for subscriber content
+    tac = os.environ.get("WSJ_TAC", "").strip()
+    if tac:
+        parts.append(f"__tac={tac}")
+
+    # Dow Jones user token
+    tr = os.environ.get("WSJ_TR", "").strip()
+    if tr:
+        parts.append(f"TR={tr}")
+
+    # Legacy explicit DJSESSION value
     direct = os.environ.get("WSJ_SESSION", "").strip()
     if direct:
-        return direct
+        parts.append(f"DJSESSION={direct}")
 
-    # Option B: cached cookie from a previous successful login
+    if parts:
+        return "; ".join(parts)
+
+    # Cached session from a previous programmatic login
     if SESSION_FILE.exists():
         try:
             data = json.loads(SESSION_FILE.read_text())
             if time.time() - data.get("_at", 0) < SESSION_TTL:
-                return data.get("cookie") or None
+                cached = data.get("cookie")
+                if cached:
+                    return f"DJSESSION={cached}"
         except Exception:
             pass
 
-    # Option C: programmatic DJ SSO login
+    # Programmatic DJ SSO login (fallback)
     email    = os.environ.get("WSJ_EMAIL", "").strip()
     password = os.environ.get("WSJ_PASSWORD", "").strip()
     if email and password:
-        return _dj_login(email, password)
+        session_cookie = _dj_login(email, password)
+        if session_cookie:
+            return f"DJSESSION={session_cookie}"
 
     return None
+
+
+# Keep legacy alias so any external callers aren't broken
+def _get_dj_session():
+    return _get_dj_cookies()
 
 
 def _dj_login(email, password):
@@ -277,6 +341,70 @@ def _dj_login(email, password):
         return None
 
 
+# ── Article body fetching ─────────────────────────────────────────────────────
+
+def _fetch_article_body(url, cookie=None):
+    """
+    Fetch full article text. Skips DJ domains (Cloudflare-blocked).
+    Returns '' on failure or inaccessible URLs.
+    """
+    if not url:
+        return ""
+    # DJ properties are blocked by Cloudflare bot detection under requests
+    if any(d in url for d in _CF_BLOCKED_DOMAINS):
+        return ""
+    try:
+        import requests
+        from bs4 import BeautifulSoup
+    except ImportError:
+        return ""
+    try:
+        headers = {
+            "User-Agent": CHROME_UA,
+            "Accept": "text/html,application/xhtml+xml,*/*",
+            "Referer": "https://www.google.com/",
+        }
+        if cookie:
+            headers["Cookie"] = cookie
+        resp = requests.get(url, headers=headers, timeout=BODY_TIMEOUT,
+                            allow_redirects=True)
+        if resp.status_code != 200:
+            return ""
+        soup = BeautifulSoup(resp.text, "html.parser")
+        # Remove nav, header, footer, scripts, ads before extracting
+        for tag in soup(["nav", "header", "footer", "script", "style",
+                          "aside", "figure", "noscript"]):
+            tag.decompose()
+        for sel in _BODY_SELECTORS:
+            el = soup.select_one(sel)
+            if el:
+                paras = [p.get_text(" ", strip=True) for p in el.find_all("p")]
+                text  = " ".join(p for p in paras if len(p) > 40)
+                if len(text) > 150:
+                    return text[:MAX_BODY_CHARS]
+    except Exception:
+        pass
+    return ""
+
+
+def enrich_with_bodies(by_ticker, cookie=None, max_per_ticker=3):
+    """
+    Adds 'body' field to the top articles in by_ticker (in-place + returned).
+    Only hits DJ domains. Rate-limited to avoid 429s.
+    """
+    if not cookie:
+        cookie = _get_dj_session()
+    for items in by_ticker.values():
+        for item in items[:max_per_ticker]:
+            if item.get("body"):
+                continue
+            body = _fetch_article_body(item.get("url", ""), cookie)
+            if body:
+                item["body"] = body
+            time.sleep(0.5)
+    return by_ticker
+
+
 # ── Main entry point ──────────────────────────────────────────────────────────
 
 def fetch(tickers, force=False):
@@ -296,7 +424,7 @@ def fetch(tickers, force=False):
         except Exception:
             pass
 
-    dj_cookie = _get_dj_session()
+    dj_cookie = _get_dj_cookies()
     company_names = _load_company_names(tickers)
 
     # Collect articles from all sources
@@ -332,11 +460,10 @@ def fetch(tickers, force=False):
     # Assign broad-feed articles to tickers
     by_ticker = {t: [] for t in tickers}
     for a in unique:
-        haystack = a.get("title", "") + " " + a.get("_desc", "")
+        haystack = a.get("title", "") + " " + a.get("excerpt", "")
         for ticker, matches in matchers.items():
             if len(by_ticker[ticker]) < MAX_PER_TICKER and matches(haystack):
-                by_ticker[ticker].append({k: v for k, v in a.items()
-                                          if not k.startswith("_")})
+                by_ticker[ticker].append({k: v for k, v in a.items()})
 
     # Per-ticker Yahoo Finance RSS for stocks that need more coverage
     name_cache = company_names
@@ -356,8 +483,7 @@ def fetch(tickers, force=False):
             key = a.get("title", "")[:100].lower()
             if key and key not in seen and len(by_ticker[ticker]) < MAX_PER_TICKER:
                 seen.add(key)
-                by_ticker[ticker].append({k: v for k, v in a.items()
-                                          if not k.startswith("_")})
+                by_ticker[ticker].append({k: v for k, v in a.items()})
         time.sleep(0.4)  # avoid rate-limiting
 
     # Drop tickers with no news
