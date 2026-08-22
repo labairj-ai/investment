@@ -6749,7 +6749,23 @@ function tlhCalc() {{
 
   let _newsSummaryPollTimer = null;
 
-  function _renderNewsBody(bt, summaries) {{
+  function _setNewsStatus(msg) {{
+    let el = document.getElementById('ai-news-status');
+    if (!el) {{
+      el = document.createElement('div');
+      el.id = 'ai-news-status';
+      el.style.cssText = 'font-size:11px;color:#718096;margin-bottom:10px;display:flex;align-items:center;gap:6px;';
+      const body = document.getElementById('ai-news-body');
+      if (body) body.parentNode.insertBefore(el, body);
+    }}
+    el.innerHTML = msg;
+  }}
+  function _clearNewsStatus() {{
+    const el = document.getElementById('ai-news-status');
+    if (el) el.remove();
+  }}
+
+  function _renderNewsBody(bt, summaries, generating) {{
     const tickers = Object.keys(bt);
     if (!tickers.length) {{
       return '<span id="ai-news-loading" style="color:#718096;font-size:12px;">No holding-specific news found.</span>';
@@ -6770,30 +6786,38 @@ function tlhCalc() {{
           html += `<div class="ai-news-summary">${{s.summary}}</div>`;
           if (s.macro_angle) html += `<div class="ai-news-macro">📊 ${{s.macro_angle}}</div>`;
         }}
+      }} else if (generating) {{
+        html += `<div style="font-size:11px;color:#4a5568;font-style:italic;padding:2px 0 4px;">Analyzing news…</div>`;
       }}
       html += '</div>';
     }}
     return html || '<span id="ai-news-loading" style="color:#718096;font-size:12px;">No holding-specific news found.</span>';
   }}
 
+  let _newsPollAttempt = 0;
   function _pollNewsSummary(bt, attempts) {{
-    if (attempts <= 0) return; // leave headlines visible, summary just won't show
+    if (attempts <= 0) {{ _clearNewsStatus(); return; }}
+    _newsPollAttempt++;
+    const elapsed = _newsPollAttempt * 10;
+    _setNewsStatus(`${{_aiSpinner}} AI analysis generating — ${{elapsed}}s elapsed, checking again in 10s…`);
     fetch('/api/news-summary').then(r => r.json()).then(data => {{
       if (data.status === 'generating') {{
         _newsSummaryPollTimer = setTimeout(() => _pollNewsSummary(bt, attempts - 1), 10000);
         return;
       }}
+      _clearNewsStatus();
       if (data.ok && data.summaries) {{
         const body = document.getElementById('ai-news-body');
-        if (body) body.innerHTML = _renderNewsBody(bt, data.summaries);
+        if (body) body.innerHTML = _renderNewsBody(bt, data.summaries, false);
       }}
-    }}).catch(() => {{}});
+    }}).catch(() => {{ _clearNewsStatus(); }});
   }}
 
   window.loadHoldingNews = function(force=false) {{
     const body = document.getElementById('ai-news-body');
     if (!body) return;
     if (_newsSummaryPollTimer) {{ clearTimeout(_newsSummaryPollTimer); _newsSummaryPollTimer = null; }}
+    _newsPollAttempt = 0;
     if (force) body.innerHTML = `<div class="ai-loading-wrap">${{_aiSpinner}}<span>Refreshing news…</span></div>`;
 
     const newsUrl    = force ? '/api/holding-news?force=1' : '/api/holding-news';
@@ -6805,11 +6829,14 @@ function tlhCalc() {{
     ]).then(([newsData, sumData]) => {{
       if (!newsData.ok) {{ body.innerHTML = '<span id="ai-news-loading">News unavailable</span>'; return; }}
       const bt = newsData.by_ticker || {{}};
-      let summaries = (sumData.ok && sumData.summaries) ? sumData.summaries : null;
-      body.innerHTML = _renderNewsBody(bt, summaries);
-      // If summary is still generating, poll for it
-      if (sumData.status === 'generating') {{
-        _newsSummaryPollTimer = setTimeout(() => _pollNewsSummary(bt, 18), 10000);
+      const generating = sumData.status === 'generating';
+      const summaries = (sumData.ok && sumData.summaries) ? sumData.summaries : null;
+      body.innerHTML = _renderNewsBody(bt, summaries, generating);
+      if (generating) {{
+        _setNewsStatus(`${{_aiSpinner}} AI analysis generating — will auto-update when ready…`);
+        _newsSummaryPollTimer = setTimeout(() => _pollNewsSummary(bt, 24), 10000);
+      }} else {{
+        _clearNewsStatus();
       }}
     }}).catch(e => {{
       body.innerHTML = `<span id="ai-news-loading">News fetch failed: ${{e.message}}</span>`;
