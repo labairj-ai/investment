@@ -715,9 +715,10 @@ def build_dashboard(portfolio, layers, holdings):
     }}
     .ai-news-link:hover {{ color: #e2e8f0; text-decoration: underline; }}
     #ai-news-loading {{ color: #718096; font-size: 12px; }}
-    .ai-news-summary {{ font-size: 12px; color: #cbd5e0; margin: 4px 0 3px; line-height: 1.5; }}
+    .ai-news-summary {{ font-size: 12px; color: #cbd5e0; margin: 4px 0 6px; line-height: 1.5; }}
     .ai-news-macro {{ font-size: 11px; color: #718096; margin-bottom: 6px; border-left: 2px solid rgba(108,92,231,.4); padding-left: 7px; line-height: 1.4; }}
-    .ai-news-headlines {{ margin-top: 4px; }}
+    .ai-news-factor {{ font-size: 11px; color: #a0b0c8; margin: 3px 0; line-height: 1.5; padding-left: 7px; border-left: 2px solid rgba(255,255,255,.12); }}
+    .ai-news-factor-label {{ font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: #718096; margin-right: 5px; }}
     #ai-news-refresh {{
       background: none; border: 1px solid rgba(255,255,255,.15); color: #718096;
       border-radius: 4px; padding: 2px 8px; font-size: 10px; cursor: pointer;
@@ -6759,9 +6760,16 @@ function tlhCalc() {{
       if (!items || !items.length) continue;
       html += `<div class="ai-news-ticker"><div class="ai-news-ticker-label">${{ticker}}</div>`;
       const s = summaries && summaries[ticker];
-      if (s && s.summary) {{
-        html += `<div class="ai-news-summary">${{s.summary}}</div>`;
-        if (s.macro_angle) html += `<div class="ai-news-macro">📊 ${{s.macro_angle}}</div>`;
+      if (s) {{
+        if (s.news) {{
+          html += `<div class="ai-news-summary">${{s.news}}</div>`;
+          if (s.rates)       html += `<div class="ai-news-factor"><span class="ai-news-factor-label">📈 Rates</span>${{s.rates}}</div>`;
+          if (s.trade)       html += `<div class="ai-news-factor"><span class="ai-news-factor-label">🌐 Trade</span>${{s.trade}}</div>`;
+          if (s.environment) html += `<div class="ai-news-factor"><span class="ai-news-factor-label">🏛 Environment</span>${{s.environment}}</div>`;
+        }} else if (s.summary) {{
+          html += `<div class="ai-news-summary">${{s.summary}}</div>`;
+          if (s.macro_angle) html += `<div class="ai-news-macro">📊 ${{s.macro_angle}}</div>`;
+        }}
       }}
       html += '</div>';
     }}

@@ -28,7 +28,7 @@ SIMPLE_UA = "Mozilla/5.0 (compatible; investment-dashboard/1.0)"
 CHROME_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
              "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
 
-MAX_PER_TICKER = 6
+MAX_PER_TICKER = 10
 
 # Public feeds — no auth required
 PUBLIC_FEEDS = [
@@ -46,6 +46,15 @@ PUBLIC_FEEDS = [
      SIMPLE_UA),
     ("Barrons",
      "https://feeds.content.dowjones.io/public/rss/RSSBarrons",
+     SIMPLE_UA),
+    ("CNBC",
+     "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10001147",
+     CHROME_UA),
+    ("CNBC Investing",
+     "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=15839135",
+     CHROME_UA),
+    ("Reuters Business",
+     "https://feeds.reuters.com/reuters/businessNews",
      SIMPLE_UA),
 ]
 

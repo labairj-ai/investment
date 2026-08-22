@@ -462,7 +462,9 @@ def generate_news_summaries(force: bool = False) -> dict:
     if not force:
         cached = get_cached_news_summaries_today()
         if cached is not None:
-            return cached
+            sample = next((v for v in cached.values() if isinstance(v, dict)), {})
+            if sample.get("rates"):  # new-format cache present
+                return cached
 
     if not ollama_client.available():
         return {"error": "AI model unavailable — check MLX server"}
@@ -489,33 +491,50 @@ def generate_news_summaries(force: bool = False) -> dict:
             src = item.get("source", "")
             news_block += f"  [{src}] {item.get('title', '')}\n"
 
-    prompt = f"""You are a financial analyst summarizing recent news for a personal investor's portfolio holdings.
+    fed   = macro.get("fed_funds", "N/A")
+    tnx   = macro.get("yield_10y", "N/A")
+    cpi   = macro.get("cpi_yoy", "N/A")
+    unemp = macro.get("unemployment", "N/A")
+    vix   = macro.get("vix", "N/A")
+    dol   = macro.get("dollar_interp", "N/A")
+    crv   = macro.get("curve_interp", "N/A")
+
+    prompt = f"""You are a financial analyst synthesizing news and macroeconomic conditions for a personal investor's portfolio.
 
 CURRENT MACRO ENVIRONMENT:
 {macro_block}
 
-RECENT NEWS BY HOLDING:
+KEY NUMBERS FOR YOUR ANALYSIS:
+  Fed Funds Rate: {fed}%  |  10Y Treasury: {tnx}%  |  CPI YoY: {cpi}%
+  Unemployment: {unemp}%  |  VIX: {vix}  |  Dollar: {dol}  |  Yield Curve: {crv}
+
+RECENT NEWS BY HOLDING (last 24 hours):
 {news_block}
 
-For each ticker listed above, write:
-1. A concise 2-3 sentence summary of the key news themes — reference specific headlines
-2. 1-2 sentences on how the current macro environment is specifically relevant to this stock
+For each ticker listed above, provide four components of analysis:
+
+1. "news"  — 2-3 sentence synthesis of the actual headlines. Reference specific events, numbers, or company actions from the news above.
+2. "rates" — How does this specific stock behave when interest rates RISE vs FALL? Consider the company's debt load, valuation multiple, sector (rate-sensitive vs defensive), and whether it benefits from higher yield on cash holdings. Mention the current {tnx}% 10Y yield as context.
+3. "trade" — Sensitivity to tariffs, trade deals, supply chain geography, and USD strength/weakness. Name specific countries, supply chains, or revenue exposure if known. If minimal exposure, say so briefly.
+4. "environment" — How do current conditions (CPI at {cpi}%, unemployment at {unemp}%, this stage of the business cycle, sector tailwinds/headwinds, corporate tax environment) affect this holding's near-term outlook?
 
 Return ONLY valid JSON — no markdown, no extra text:
 {{
   "TICKER": {{
-    "summary": "<2-3 sentence news summary referencing actual headlines>",
-    "macro_angle": "<how today's macro environment — rates, VIX, dollar strength, sector trends — directly affects this holding>"
+    "news": "<2-3 sentence news synthesis referencing specific headlines>",
+    "rates": "<rate sensitivity: what happens when rates rise / fall for this specific stock>",
+    "trade": "<tariff, trade deal, supply chain, and FX sensitivity>",
+    "environment": "<business cycle, inflation, labor market, tax, and sector environment impact>"
   }}
 }}
 
-Only include tickers present in the news above. Be specific, not generic."""
+Only include tickers present in the news above. Be specific and substantive — generic answers are not acceptable."""
 
     full_text = ""
     try:
         for tok in ollama_client.stream_generate(
             prompt, model=ollama_client.DEFAULT_MODEL,
-            temperature=0.3, num_predict=4000
+            temperature=0.3, num_predict=8000
         ):
             full_text += tok
     except Exception as e:
