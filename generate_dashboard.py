@@ -6763,16 +6763,7 @@ function tlhCalc() {{
         html += `<div class="ai-news-summary">${{s.summary}}</div>`;
         if (s.macro_angle) html += `<div class="ai-news-macro">📊 ${{s.macro_angle}}</div>`;
       }}
-      html += '<div class="ai-news-headlines">';
-      for (const item of items) {{
-        const age = _fmtPubDate(item.pub_date);
-        const src = item.source ? `<span class="ai-news-source">${{item.source}}${{age ? ' · '+age : ''}}</span>` : '';
-        const link = item.url
-          ? `<a class="ai-news-link" href="${{item.url}}" target="_blank" rel="noopener">${{item.title}}</a>`
-          : `<span class="ai-news-link" style="cursor:default">${{item.title}}</span>`;
-        html += `<div class="ai-news-item">${{src}}${{link}}</div>`;
-      }}
-      html += '</div></div>';
+      html += '</div>';
     }}
     return html || '<span id="ai-news-loading" style="color:#718096;font-size:12px;">No holding-specific news found.</span>';
   }}

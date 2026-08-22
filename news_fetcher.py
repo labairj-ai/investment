@@ -13,6 +13,7 @@ import re
 import time
 import urllib.request
 import xml.etree.ElementTree as ET
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 
 PROJECT_DIR  = Path(__file__).resolve().parent
@@ -307,6 +308,15 @@ def fetch(tickers, force=False):
             seen.add(key)
             unique.append(a)
 
+    # Keep only articles from the last 24 hours
+    cutoff = time.time() - 86400
+    def _pub_ts(s):
+        try:
+            return parsedate_to_datetime(s).timestamp()
+        except Exception:
+            return 0
+    unique = [a for a in unique if _pub_ts(a.get("pub_date", "")) >= cutoff]
+
     # Build per-ticker matchers
     matchers = {t: _build_matcher(t, company_names.get(t)) for t in tickers}
 
@@ -332,6 +342,8 @@ def fetch(tickers, force=False):
                "?s=%s&region=US&lang=en-US" % ticker.replace(".", "-"))
         ticker_arts = _fetch_feed(url, "Yahoo Finance", SIMPLE_UA)
         for a in ticker_arts:
+            if _pub_ts(a.get("pub_date", "")) < cutoff:
+                continue
             key = a.get("title", "")[:100].lower()
             if key and key not in seen and len(by_ticker[ticker]) < MAX_PER_TICKER:
                 seen.add(key)
