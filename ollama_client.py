@@ -4,7 +4,7 @@ import urllib.request
 
 # Supports both LLM_URL (MLX / any OpenAI-compatible server) and legacy OLLAMA_URL
 LLM_URL = os.environ.get("LLM_URL") or os.environ.get("OLLAMA_URL", "http://127.0.0.1:8080")
-DEFAULT_MODEL = "mlx-community/phi-4-4bit"
+DEFAULT_MODEL = "mlx-community/Llama-3.3-70B-Instruct-4bit"
 
 
 def generate(prompt, model=DEFAULT_MODEL, temperature=0.3, num_predict=700):
