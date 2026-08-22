@@ -165,12 +165,48 @@ def rebuild_today_holdings(today_date: str, db_holdings: list[dict], csv_holding
     return rebuilt, layers, total_value
 
 
+def _load_macro_scores() -> dict:
+    """Return {ticker: {rate_sensitivity, inflation_hedge, dollar_sensitivity, geopolitical_risk, note}} from DB."""
+    if not DB_PATH.exists():
+        return {}
+    try:
+        conn = sqlite3.connect(str(DB_PATH), timeout=5)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("SELECT ticker, scores FROM holding_macro_scores").fetchall()
+        conn.close()
+        result = {}
+        for r in rows:
+            try:
+                result[r["ticker"]] = json.loads(r["scores"])
+            except Exception:
+                pass
+        return result
+    except Exception:
+        return {}
+
+
+def _score_dot(score, inverted=False) -> str:
+    """Return a colored dot HTML element for a macro score (1-10)."""
+    if score is None:
+        color = "#ccc"
+    elif inverted:  # inflation hedge: higher = better (green)
+        if score >= 7:   color = "#27ae60"
+        elif score >= 4: color = "#e67e22"
+        else:            color = "#aaa"
+    else:  # rate/dollar/geo: higher = worse (red)
+        if score >= 7:   color = "#e74c3c"
+        elif score >= 4: color = "#e67e22"
+        else:            color = "#27ae60"
+    return f'<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:{color};margin:0 1px;"></span>'
+
+
 def build_dashboard(portfolio, layers, holdings):
     today = portfolio[-1] if portfolio else {}
     today_date = today.get("day", "")
 
     csv_holdings = load_csv_holdings()
     today_holdings, today_layers, total_value_csv = rebuild_today_holdings(today_date, holdings, csv_holdings)
+    macro_scores = _load_macro_scores()
 
     today_holdings_sorted = sorted(today_holdings, key=lambda h: (h["layer"], -h["value"]))
 
@@ -295,10 +331,28 @@ def build_dashboard(portfolio, layers, holdings):
     for h in today_holdings_sorted:
         if h["layer"] != prev_layer:
             lcolor = LAYER_COLORS.get(h["layer"], "#999")
-            holdings_rows += f'<tr class="layer-header"><td colspan="11" style="background:{lcolor}22;border-left:4px solid {lcolor};padding:6px 10px;font-weight:600;color:#333">{h["layer"]}</td></tr>\n'
+            holdings_rows += f'<tr class="layer-header"><td colspan="12" style="background:{lcolor}22;border-left:4px solid {lcolor};padding:6px 10px;font-weight:600;color:#333">{h["layer"]}</td></tr>\n'
             prev_layer = h["layer"]
         daily_class = "pos" if h["change_pct"] >= 0 else "neg"
         gain_class  = "pos" if h["total_gain_pct"] >= 0 else "neg"
+        # Macro scores cell
+        ticker_scores = macro_scores.get(h["ticker"], {})
+        if ticker_scores:
+            rate = ticker_scores.get("rate_sensitivity")
+            infl = ticker_scores.get("inflation_hedge")
+            dlr  = ticker_scores.get("dollar_sensitivity")
+            geo  = ticker_scores.get("geopolitical_risk")
+            note = ticker_scores.get("note", "")
+            dots = (
+                _score_dot(rate, inverted=False) +
+                _score_dot(infl, inverted=True)  +
+                _score_dot(dlr,  inverted=False) +
+                _score_dot(geo,  inverted=False)
+            )
+            score_tip = f"Rate:{rate}/10 · Infl:{infl}/10 · Dollar:{dlr}/10 · Geo:{geo}/10 — {note}"
+            macro_cell = f'<td title="{score_tip}" style="cursor:default;white-space:nowrap;">{dots}</td>'
+        else:
+            macro_cell = '<td style="color:#ccc;font-size:10px;">—</td>'
         holdings_rows += f"""<tr>
           <td>{h["ticker"]}</td>
           <td>{h["shares"]:,.2f}</td>
@@ -313,6 +367,7 @@ def build_dashboard(portfolio, layers, holdings):
             style="cursor:pointer;background:{lcolor}18;color:{lcolor};border:1px solid {lcolor}66;border-radius:4px;padding:2px 8px;font-size:10px;font-weight:700;white-space:nowrap;"
             title="Click to reassign layer">L{h["layer_num"]}</span></td>
           <td><button onclick="openLotsModal('{h["ticker"]}', {h["price"]:.4f})" style="font-size:10px;padding:2px 8px;background:#f4f6f9;border:1px solid #dde;border-radius:4px;cursor:pointer;color:#555;" title="View / edit tax lots">Lots</button></td>
+          {macro_cell}
         </tr>\n"""
 
     # ---- layer summary rows ----
@@ -586,6 +641,126 @@ def build_dashboard(portfolio, layers, holdings):
         border-radius: 14px 14px 0 0;
         box-shadow: 0 -4px 24px rgba(0,0,0,.15);
       }}
+    }}
+
+    /* ── Macro Indicators Bar ─────────────────────────────────────────────── */
+    #macro-bar {{
+      background: #1a2340; padding: 8px 28px;
+      display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+      font-size: 12px; color: #a0aec0; min-height: 36px;
+    }}
+    .macro-chip {{
+      background: rgba(255,255,255,.07); border-radius: 6px;
+      padding: 3px 10px; white-space: nowrap; display: flex; align-items: center; gap: 5px;
+    }}
+    .macro-chip .mc-label {{ color: #718096; font-size: 10px; text-transform: uppercase; letter-spacing: .05em; }}
+    .macro-chip .mc-val {{ color: #e2e8f0; font-weight: 600; }}
+    .mc-green {{ color: #68d391 !important; }}
+    .mc-yellow {{ color: #f6e05e !important; }}
+    .mc-red {{ color: #fc8181 !important; }}
+    .macro-bar-loading {{ color: #718096; font-size: 11px; }}
+
+    /* ── AI Insight Card ─────────────────────────────────────────────────── */
+    #ai-insight-card {{
+      background: linear-gradient(135deg, #1a2340 0%, #243050 100%);
+      border-radius: 10px; padding: 18px 22px;
+      box-shadow: 0 2px 8px rgba(0,0,0,.12); color: #e2e8f0;
+    }}
+    #ai-insight-card h2 {{ color: #a0aec0; }}
+    .ai-section {{ margin-bottom: 12px; }}
+    .ai-section-label {{ font-size: 10px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .08em; color: #718096; margin-bottom: 4px; }}
+    .ai-section-body {{ font-size: 13px; line-height: 1.6; color: #e2e8f0; }}
+    .ai-flag {{ background: rgba(252,129,74,.15); border-left: 3px solid #fc814a;
+      padding: 5px 10px; margin-bottom: 4px; border-radius: 4px; font-size: 12px; color: #fbd38d; }}
+    .ai-key-question {{
+      background: rgba(108,92,231,.18); border: 1px solid rgba(108,92,231,.4);
+      border-radius: 8px; padding: 10px 14px; font-size: 13px; color: #c9b8ff;
+      font-style: italic; margin-top: 4px;
+    }}
+    .ai-loading {{ color: #718096; font-size: 13px; }}
+    .ai-refresh-btn {{
+      background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.15);
+      color: #a0aec0; border-radius: 5px; padding: 3px 10px; font-size: 11px;
+      cursor: pointer; margin-left: 8px;
+    }}
+    .ai-refresh-btn:hover {{ background: rgba(255,255,255,.15); color: #e2e8f0; }}
+
+    /* ── Portfolio Chat FAB + Drawer ─────────────────────────────────────── */
+    #pc-fab {{
+      position: fixed; bottom: 24px; right: 24px; z-index: 1100;
+      width: 52px; height: 52px; border-radius: 50%;
+      background: #1a2340; color: #fff; border: none;
+      font-size: 22px; cursor: pointer; box-shadow: 0 4px 16px rgba(0,0,0,.25);
+      display: flex; align-items: center; justify-content: center;
+      transition: background .2s, transform .15s;
+    }}
+    #pc-fab:hover {{ background: #243050; transform: scale(1.07); }}
+    #pc-drawer {{
+      display: none; flex-direction: column;
+      position: fixed; right: 0; top: 0; bottom: 0; width: 420px;
+      background: #fff; border-left: 1px solid #dde;
+      z-index: 1150; box-shadow: -4px 0 24px rgba(0,0,0,.14);
+    }}
+    #pc-header {{
+      display: flex; align-items: center; justify-content: space-between;
+      padding: .8rem 1rem; border-bottom: 1px solid #e8edf4;
+      background: #1a2340; color: #e2e8f0; flex-shrink: 0;
+    }}
+    #pc-header-label {{ font-size: 10px; font-weight: 700; letter-spacing: .08em;
+      text-transform: uppercase; color: #718096; }}
+    #pc-header-title {{ font-size: 13px; font-weight: 600; }}
+    #pc-close {{
+      background: none; border: none; font-size: 1.4rem; color: #a0aec0;
+      cursor: pointer; padding: 0 .2rem; line-height: 1;
+    }}
+    #pc-close:hover {{ color: #fff; }}
+    #pc-body {{ flex: 1; overflow-y: auto; display: flex; flex-direction: column; }}
+    #pc-empty {{
+      flex: 1; display: flex; align-items: center; justify-content: center;
+      padding: 2rem; text-align: center; color: #7f8c8d; font-size: 13px; line-height: 1.6;
+    }}
+    #pc-messages {{ padding: .75rem; display: flex; flex-direction: column; gap: .6rem; }}
+    .pc-msg {{
+      max-width: 88%; padding: .5rem .75rem; border-radius: 10px;
+      font-size: 13px; line-height: 1.55; white-space: pre-wrap; word-break: break-word;
+    }}
+    .pc-msg-user {{ align-self: flex-end; background: #1a2340; color: #e2e8f0; border-bottom-right-radius: 3px; }}
+    .pc-msg-ai {{ align-self: flex-start; background: #f0f2f8; color: #1a2340; border-bottom-left-radius: 3px; }}
+    #pc-input-area {{
+      border-top: 1px solid #e8edf4; padding: .65rem;
+      display: flex; flex-direction: column; gap: .5rem;
+      flex-shrink: 0; background: #f5f7fa;
+    }}
+    #pc-chips {{ display: flex; flex-wrap: wrap; gap: .35rem; }}
+    .pc-chip {{
+      background: none; border: 1px solid #dde; border-radius: 20px;
+      padding: .25rem .65rem; font-size: 11px; color: #555; cursor: pointer;
+    }}
+    .pc-chip:hover:not(:disabled) {{ color: #1a2340; border-color: #1a2340; }}
+    .pc-chip:disabled {{ opacity: .5; cursor: default; }}
+    #pc-input-row {{ display: flex; gap: .4rem; align-items: flex-end; }}
+    #pc-input {{
+      flex: 1; border: 1px solid #dde; border-radius: 8px; padding: .45rem .65rem;
+      font-size: 13px; font-family: inherit; background: #fff; resize: none; line-height: 1.5;
+    }}
+    #pc-input:focus {{ outline: none; border-color: #1a2340; }}
+    #pc-send {{
+      width: 34px; height: 34px; border-radius: 50%; border: none;
+      background: #1a2340; color: #fff; font-size: .95rem; font-weight: 700;
+      cursor: pointer; flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+    }}
+    #pc-send:disabled {{ opacity: .4; cursor: default; }}
+    #pc-error {{
+      font-size: 11px; color: #c0392b; background: #fdf2f2;
+      border: 1px solid #f5c6c6; border-radius: 6px;
+      padding: .4rem .65rem; margin: .5rem .75rem 0;
+    }}
+    @media (max-width: 600px) {{
+      #pc-drawer {{ left: 0; width: 100%; top: auto; height: 72vh;
+        border-left: none; border-top: 1px solid #dde;
+        border-radius: 14px 14px 0 0; }}
+      #pc-fab {{ bottom: 16px; right: 16px; }}
     }}
   </style>
 </head>
@@ -982,7 +1157,24 @@ def build_dashboard(portfolio, layers, holdings):
   </div>
 </header>
 
+<!-- Macro Indicators Bar -->
+<div id="macro-bar">
+  <span class="macro-bar-loading">Loading macro indicators…</span>
+</div>
+
 <div class="grid">
+
+  <!-- AI Portfolio Insight -->
+  <div id="ai-insight-card">
+    <h2 style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+      <span>🧠 AI Portfolio Insight</span>
+      <span>
+        <button class="ai-refresh-btn" onclick="loadAiInsight(true)">↻ Refresh</button>
+        <button class="ai-refresh-btn" onclick="openPortfolioChat()" style="margin-left:4px;">💬 Chat</button>
+      </span>
+    </h2>
+    <div id="ai-insight-body"><span class="ai-loading">Analyzing portfolio…</span></div>
+  </div>
 
   <!-- KPI row -->
   <div class="kpi-row">
@@ -1200,7 +1392,7 @@ def build_dashboard(portfolio, layers, holdings):
 
     <div class="table-scroll" id="holdings-scroll-wrap">
     <table id="holdings-table">
-      <thead id="holdings-thead"><tr><th>Ticker</th><th>Shares</th><th>Avg Cost</th><th>Price</th><th>Value</th><th>Total Gain</th><th>Daily Δ</th><th>Weight</th><th>Next Earnings</th><th>Layer</th><th>Tax Lots</th></tr></thead>
+      <thead id="holdings-thead"><tr><th>Ticker</th><th>Shares</th><th>Avg Cost</th><th>Price</th><th>Value</th><th>Total Gain</th><th>Daily Δ</th><th>Weight</th><th>Next Earnings</th><th>Layer</th><th>Tax Lots</th><th title="Macro risk scores: Rate · Inflation · Dollar · Geo (hover each row for details)">Macro ⓘ</th></tr></thead>
       <tbody>{holdings_rows}</tbody>
     </table>
     </div>
@@ -6129,6 +6321,235 @@ function tlhCalc() {{
       document.getElementById("invest-chat-input").focus();
     }}
   }}
+}})();
+</script>
+
+<!-- Portfolio Chat FAB -->
+<button id="pc-fab" onclick="openPortfolioChat()" title="Ask AI about your portfolio">💬</button>
+
+<!-- Portfolio Chat Drawer -->
+<div id="pc-drawer">
+  <div id="pc-header">
+    <div>
+      <div id="pc-header-label">AI Portfolio Advisor</div>
+      <div id="pc-header-title">Ask about your portfolio</div>
+    </div>
+    <div style="display:flex;align-items:center;gap:.4rem;">
+      <button onclick="pcClear()" id="pc-clear-btn"
+        style="background:none;border:1px solid #4a5568;border-radius:5px;padding:.15rem .5rem;font-size:11px;color:#718096;cursor:pointer;display:none;">Clear</button>
+      <button id="pc-close" onclick="closePortfolioChat()">×</button>
+    </div>
+  </div>
+  <div id="pc-body">
+    <div id="pc-empty">Ask anything about your portfolio — macro risks, rebalancing, tax strategy, position analysis.</div>
+    <div id="pc-messages"></div>
+    <div id="pc-error" style="display:none;"></div>
+  </div>
+  <div id="pc-input-area">
+    <div id="pc-chips">
+      <button class="pc-chip" onclick="pcChip(this)">What's my tariff exposure?</button>
+      <button class="pc-chip" onclick="pcChip(this)">Which layer hurts most if rates rise?</button>
+      <button class="pc-chip" onclick="pcChip(this)">Tax-loss harvesting opportunities?</button>
+      <button class="pc-chip" onclick="pcChip(this)">Is the current drift defensible?</button>
+    </div>
+    <div id="pc-input-row">
+      <textarea id="pc-input" rows="2" placeholder="Ask about your portfolio… (Enter to send)"></textarea>
+      <button id="pc-send" onclick="pcSend()">↑</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function() {{
+  // ── Macro Bar ─────────────────────────────────────────────────────────────
+  function fmtSign(v, dec=2) {{
+    if (v == null) return 'N/A';
+    return (v >= 0 ? '+' : '') + v.toFixed(dec) + '%';
+  }}
+  function chipColor(val, thresholds, invert=false) {{
+    if (val == null) return '';
+    const [lo, hi] = thresholds;
+    if (invert) {{ return val <= lo ? 'mc-red' : val <= hi ? 'mc-yellow' : 'mc-green'; }}
+    return val >= hi ? 'mc-red' : val >= lo ? 'mc-yellow' : 'mc-green';
+  }}
+  function macroChip(label, val, cls='') {{
+    return `<div class="macro-chip"><span class="mc-label">${{label}}</span><span class="mc-val ${{cls}}">${{val}}</span></div>`;
+  }}
+
+  function loadMacroBar() {{
+    fetch('/api/macro').then(r => r.json()).then(data => {{
+      if (!data.ok) return;
+      const m = data.macro;
+      const bar = document.getElementById('macro-bar');
+      if (!bar) return;
+      const vixColor = m.vix == null ? '' : m.vix >= 25 ? 'mc-red' : m.vix >= 18 ? 'mc-yellow' : 'mc-green';
+      const spreadColor = m.spread_bps == null ? '' : m.spread_bps < -50 ? 'mc-red' : m.spread_bps < 0 ? 'mc-yellow' : 'mc-green';
+      const cpiColor = m.cpi_yoy == null ? '' : m.cpi_yoy >= 4 ? 'mc-red' : m.cpi_yoy >= 2.5 ? 'mc-yellow' : 'mc-green';
+      const gldColor = m.gld_chg == null ? '' : Math.abs(m.gld_chg) < 0.3 ? '' : m.gld_chg > 0 ? 'mc-yellow' : '';
+      const dxColor  = m.uup_chg == null ? '' : Math.abs(m.uup_chg) < 0.3 ? '' : m.uup_chg > 0 ? 'mc-yellow' : 'mc-green';
+      let chips = '';
+      chips += macroChip('VIX', m.vix != null ? m.vix.toFixed(1) : 'N/A', vixColor);
+      if (m.yield_10y != null) chips += macroChip('10Y', m.yield_10y.toFixed(2)+'%');
+      if (m.spread_bps != null) chips += macroChip('Spread', m.spread_bps.toFixed(0)+'bps', spreadColor);
+      if (m.fed_funds  != null) chips += macroChip('Fed', m.fed_funds.toFixed(2)+'%');
+      if (m.cpi_yoy    != null) chips += macroChip('CPI', m.cpi_yoy.toFixed(1)+'% YoY', cpiColor);
+      chips += macroChip('GLD', fmtSign(m.gld_chg), gldColor);
+      chips += macroChip('DXY', fmtSign(m.uup_chg), dxColor);
+      if (m.unemployment != null) chips += macroChip('Unemp', m.unemployment.toFixed(1)+'%');
+      if (m.vix_interp)    chips += `<span style="font-size:11px;color:#718096;margin-left:4px;">· ${{m.vix_interp}}</span>`;
+      if (m.curve_interp)  chips += `<span style="font-size:11px;color:#718096;margin-left:4px;">· ${{m.curve_interp}}</span>`;
+      bar.innerHTML = chips;
+    }}).catch(() => {{
+      const bar = document.getElementById('macro-bar');
+      if (bar) bar.innerHTML = '<span class="macro-bar-loading">Macro data unavailable</span>';
+    }});
+  }}
+
+  // ── AI Insight Panel ──────────────────────────────────────────────────────
+  function loadAiInsight(force=false) {{
+    const body = document.getElementById('ai-insight-body');
+    if (!body) return;
+    body.innerHTML = '<span class="ai-loading">Analyzing portfolio with macro context… (30–60 sec)</span>';
+    const url = force ? '/api/ai/daily?force=1' : '/api/ai/daily';
+    fetch(url).then(r => r.json()).then(data => {{
+      if (!data.ok) {{ body.innerHTML = `<span class="ai-loading">Error: ${{data.error || 'Unknown'}}</span>`; return; }}
+      const ins = data.insight;
+      if (ins.error) {{ body.innerHTML = `<span class="ai-loading">AI unavailable: ${{ins.error}}</span>`; return; }}
+      let html = '';
+      if (ins.macro_summary) {{
+        html += `<div class="ai-section"><div class="ai-section-label">Macro Regime</div><div class="ai-section-body">${{ins.macro_summary}}</div></div>`;
+      }}
+      if (ins.portfolio_macro_alignment) {{
+        html += `<div class="ai-section"><div class="ai-section-label">Portfolio Alignment</div><div class="ai-section-body">${{ins.portfolio_macro_alignment}}</div></div>`;
+      }}
+      if (ins.risk_flags && ins.risk_flags.length) {{
+        const flags = ins.risk_flags.map(f => `<div class="ai-flag">⚠ ${{f}}</div>`).join('');
+        html += `<div class="ai-section"><div class="ai-section-label">Risk Flags</div>${{flags}}</div>`;
+      }}
+      if (ins.rebalancing_take) {{
+        html += `<div class="ai-section"><div class="ai-section-label">Rebalancing</div><div class="ai-section-body">${{ins.rebalancing_take}}</div></div>`;
+      }}
+      if (ins.tax_timing_note && ins.tax_timing_note.toLowerCase() !== 'no immediate tax flags') {{
+        html += `<div class="ai-section"><div class="ai-section-label">Tax / Timing</div><div class="ai-section-body">${{ins.tax_timing_note}}</div></div>`;
+      }}
+      if (ins.key_question) {{
+        html += `<div class="ai-section"><div class="ai-section-label">Key Question This Week</div><div class="ai-key-question">${{ins.key_question}}</div></div>`;
+      }}
+      if (!html) html = '<span class="ai-loading">Analysis returned no content.</span>';
+      body.innerHTML = html;
+    }}).catch(e => {{
+      body.innerHTML = `<span class="ai-loading">Could not reach AI: ${{e.message}}</span>`;
+    }});
+  }}
+
+  // ── Portfolio Chat ────────────────────────────────────────────────────────
+  let pcMessages = [];
+  let pcStreaming = false;
+
+  window.openPortfolioChat = function() {{
+    document.getElementById('pc-drawer').style.display = 'flex';
+    document.getElementById('pc-fab').style.display = 'none';
+    document.getElementById('pc-input').focus();
+  }};
+  window.closePortfolioChat = function() {{
+    document.getElementById('pc-drawer').style.display = 'none';
+    document.getElementById('pc-fab').style.display = 'flex';
+  }};
+  window.pcClear = function() {{
+    pcMessages = [];
+    document.getElementById('pc-messages').innerHTML = '';
+    document.getElementById('pc-empty').style.display = 'flex';
+    document.getElementById('pc-clear-btn').style.display = 'none';
+    document.getElementById('pc-error').style.display = 'none';
+  }};
+  window.pcChip = function(btn) {{
+    if (pcStreaming) return;
+    document.getElementById('pc-input').value = btn.textContent.trim();
+    pcSend();
+  }};
+
+  function pcScrollBottom() {{
+    const body = document.getElementById('pc-body');
+    if (body) body.scrollTop = body.scrollHeight;
+  }}
+  function pcAddMsg(role, text) {{
+    const msgs = document.getElementById('pc-messages');
+    const div = document.createElement('div');
+    div.className = 'pc-msg ' + (role === 'user' ? 'pc-msg-user' : 'pc-msg-ai');
+    div.textContent = text;
+    if (role === 'assistant') div.dataset.streaming = '1';
+    msgs.appendChild(div);
+    document.getElementById('pc-empty').style.display = 'none';
+    document.getElementById('pc-clear-btn').style.display = '';
+    pcScrollBottom();
+    return div;
+  }}
+
+  window.pcSend = function() {{
+    if (pcStreaming) return;
+    const inp = document.getElementById('pc-input');
+    const text = inp.value.trim();
+    if (!text) return;
+    inp.value = '';
+    pcMessages.push({{ role: 'user', content: text }});
+    pcAddMsg('user', text);
+    const aiDiv = pcAddMsg('assistant', '…');
+    document.getElementById('pc-error').style.display = 'none';
+    pcStreaming = true;
+    document.getElementById('pc-send').disabled = true;
+    document.querySelectorAll('.pc-chip').forEach(b => b.disabled = true);
+
+    fetch('/api/ai/chat', {{
+      method: 'POST',
+      headers: {{ 'Content-Type': 'application/json' }},
+      body: JSON.stringify({{ messages: pcMessages }}),
+    }}).then(resp => {{
+      const reader = resp.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '', fullText = '';
+      function pump() {{
+        return reader.read().then(({{ done, value }}) => {{
+          if (done) {{ finishPc(aiDiv, fullText); return; }}
+          buf += dec.decode(value, {{ stream: true }});
+          const parts = buf.split('\\n\\n');
+          buf = parts.pop();
+          for (const part of parts) {{
+            if (!part.startsWith('data: ')) continue;
+            try {{
+              const evt = JSON.parse(part.slice(6));
+              if (evt.token) {{ fullText += evt.token; aiDiv.textContent = fullText; pcScrollBottom(); }}
+              else if (evt.status === 'done') {{ finishPc(aiDiv, fullText); return; }}
+              else if (evt.error) {{ pcShowError(evt.error); finishPc(aiDiv, fullText); return; }}
+            }} catch(e) {{}}
+          }}
+          return pump();
+        }});
+      }}
+      pump().catch(e => {{ pcShowError(e.message); finishPc(aiDiv, fullText); }});
+    }}).catch(e => {{ pcShowError(e.message); finishPc(aiDiv, ''); }});
+  }};
+
+  function finishPc(div, text) {{
+    if (text) {{ div.textContent = text; pcMessages.push({{ role: 'assistant', content: text }}); }}
+    else if (div.textContent === '…') div.textContent = '(no response)';
+    pcStreaming = false;
+    document.getElementById('pc-send').disabled = false;
+    document.querySelectorAll('.pc-chip').forEach(b => b.disabled = false);
+    pcScrollBottom();
+  }}
+  function pcShowError(msg) {{
+    const err = document.getElementById('pc-error');
+    err.textContent = 'Error: ' + msg;
+    err.style.display = 'block';
+  }}
+
+  document.getElementById('pc-input').addEventListener('keydown', function(e) {{
+    if (e.key === 'Enter' && !e.shiftKey) {{ e.preventDefault(); pcSend(); }}
+  }});
+
+  // ── Init ─────────────────────────────────────────────────────────────────
+  loadMacroBar();
+  loadAiInsight(false);
 }})();
 </script>
 </body>

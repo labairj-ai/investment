@@ -425,6 +425,19 @@ def _run_daily():
                 lf.write("[LayerAI] Done.\n")
             except Exception as _e:
                 lf.write(f"[LayerAI] Error: {_e}\n")
+            lf.write("[PortfolioAI] Generating daily insight + macro scores…\n")
+            try:
+                import portfolio_ai as _pai
+                _pai._init_ai_tables()
+                _insight = _pai.generate_daily_insight(force=True)
+                if "error" not in _insight:
+                    lf.write("[PortfolioAI] Daily insight done.\n")
+                else:
+                    lf.write(f"[PortfolioAI] Insight error: {_insight.get('error')}\n")
+                _pai.generate_holding_macro_scores(force=False)
+                lf.write("[PortfolioAI] Macro scores done.\n")
+            except Exception as _e:
+                lf.write(f"[PortfolioAI] Error: {_e}\n")
             result = subprocess.run(
                 [str(VENV_PY), str(PROJECT_DIR / "generate_dashboard.py")],
                 cwd=str(PROJECT_DIR),
@@ -1390,6 +1403,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._handle_sells_get(parse_qs(parsed.query).get("ticker", [None])[0])
         elif parsed.path == "/api/tlh-analysis":
             self._handle_tlh_analysis()
+        elif parsed.path == "/api/macro":
+            self._handle_macro()
+        elif parsed.path == "/api/ai/daily":
+            self._handle_ai_daily(parse_qs(parsed.query))
         else:
             super().do_GET()
 
@@ -1417,6 +1434,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._handle_refresh_dashboard()
         elif parsed.path == "/api/invest-chat":
             self._handle_invest_chat()
+        elif parsed.path == "/api/ai/chat":
+            self._handle_portfolio_chat()
         else:
             self.send_response(404)
             self.end_headers()
@@ -3757,6 +3776,113 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         job_id = _job_create("refresh")
         threading.Thread(target=_run_refresh_job, args=(job_id,), daemon=True).start()
         self._json({"ok": True, "job_id": job_id})
+
+    # ── Macro + Portfolio AI endpoints ────────────────────────────────────────
+
+    def _handle_macro(self):
+        """GET /api/macro — return cached macro context JSON (fetches if stale)."""
+        try:
+            import macro_context
+            ctx = macro_context.fetch()
+            # Strip internal fields before sending
+            public = {k: v for k, v in ctx.items() if not k.startswith("_")}
+            self._json({"ok": True, "macro": public})
+        except Exception as e:
+            self._json_error(500, f"Macro fetch failed: {e}")
+
+    def _handle_ai_daily(self, qs: dict):
+        """GET /api/ai/daily — return today's AI portfolio insight (generates if missing).
+        Pass ?force=1 to regenerate even if already cached today."""
+        try:
+            import portfolio_ai
+            force = qs.get("force", ["0"])[0] == "1"
+            insight = portfolio_ai.generate_daily_insight(force=force)
+            self._json({"ok": True, "insight": insight, "date": __import__("datetime").date.today().isoformat()})
+        except Exception as e:
+            self._json_error(500, f"AI daily insight failed: {e}")
+
+    def _handle_portfolio_chat(self):
+        """POST /api/ai/chat — SSE streaming chat with portfolio + macro context as system prompt.
+        Body: {"messages": [{"role": "user", "content": "..."}]}"""
+        try:
+            body = self._read_body()
+        except Exception:
+            return self._json_error(400, "Invalid JSON body")
+
+        messages = body.get("messages", [])
+        if not messages:
+            return self._json_error(400, "messages array required")
+
+        chat_key = "portfolio:global"
+        if chat_key in _chat_active:
+            return self._json_error(429, "already_streaming — close the other chat first")
+        _chat_active.add(chat_key)
+
+        try:
+            import portfolio_ai
+            system_prompt = portfolio_ai.build_portfolio_system_prompt()
+        except Exception as e:
+            _chat_active.discard(chat_key)
+            return self._json_error(500, f"Context build failed: {e}")
+
+        self.wfile.write(
+            b"HTTP/1.1 200 OK\r\n"
+            b"Content-Type: text/event-stream\r\n"
+            b"Cache-Control: no-cache\r\n"
+            b"Transfer-Encoding: chunked\r\n"
+            b"X-Accel-Buffering: no\r\n"
+            b"Connection: close\r\n"
+            b"\r\n"
+        )
+        self.wfile.flush()
+
+        def _sse(data):
+            payload = f"data: {json.dumps(data)}\n\n".encode()
+            chunk = f"{len(payload):x}\r\n".encode() + payload + b"\r\n"
+            self.wfile.write(chunk)
+            self.wfile.flush()
+
+        import queue as _queue
+        _tok_q = _queue.Queue()
+        full_messages = [{"role": "system", "content": system_prompt}] + messages
+
+        def _generate():
+            try:
+                for tok in ollama_client.stream_chat(
+                    full_messages, model=ollama_client.DEFAULT_MODEL,
+                    temperature=0.4, num_predict=1200
+                ):
+                    _tok_q.put(("token", tok))
+                _tok_q.put(("done", None))
+            except Exception as exc:
+                _tok_q.put(("error", str(exc)))
+
+        threading.Thread(target=_generate, daemon=True).start()
+
+        try:
+            while True:
+                try:
+                    kind, val = _tok_q.get(timeout=10)
+                except _queue.Empty:
+                    _sse({"status": "thinking"})
+                    continue
+                if kind == "token":
+                    _sse({"token": val})
+                elif kind == "done":
+                    _sse({"status": "done"})
+                    break
+                elif kind == "error":
+                    _sse({"error": val})
+                    break
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            _chat_active.discard(chat_key)
+            try:
+                self.wfile.write(b"0\r\n\r\n")
+                self.wfile.flush()
+            except Exception:
+                pass
 
     def _json(self, data):
         body = json.dumps(data).encode()
