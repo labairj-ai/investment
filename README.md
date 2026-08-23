@@ -2,8 +2,9 @@
 
 A personal investment tracking system that sends a daily email newsletter, maintains a local web dashboard, and provides covered call, dividend, tax, Buffett analysis, and AI portfolio intelligence tools. Prices are pulled from Yahoo Finance; email is sent via Gmail SMTP.
 
-**Two AI systems run in parallel:**
-- **Portfolio AI** (`portfolio_ai.py`) — `Llama-3.3-70B-Instruct-4bit` via MLX on Mac Studio (port 8080); daily macro-aware insight card, per-holding macro risk scores with per-dimension reasoning, portfolio chat. Knows your actual CC positions, cost lots, holding ages, and behavioral patterns.
+**Three AI systems share a canonical macro framework (`MACRO_DIMS`):**
+- **Weekly Macro Scorer** (`portfolio_ai.py --scores`) — `Llama-3.3-70B-Instruct-4bit` via MLX; scores each holding 1–10 on four macro dimensions (rate sensitivity, inflation hedge, dollar sensitivity, geopolitical risk) every Saturday at 1 AM ET using a consistent 50bps rate-move basis. These scores are the ground-truth baseline used by all downstream AI systems.
+- **Daily Portfolio Intelligence** (`portfolio_ai.py`) — same MLX model; per-ticker news summaries (6 AM / 12 PM / 5 PM) and a daily insight card. Both prompts are pre-loaded with the weekly macro scores so analysis is grounded in the established baseline rather than independently re-derived from scratch.
 - **Screener/CC AI** (`ollama_client.py`) — `llama3.3:70b` via Ollama; Buffett thesis, layer compare, covered call analysis, and stock chat.
 
 ---
@@ -31,7 +32,7 @@ The old macOS launchd agents are archived in `launchd-disabled-on-mac/`.
 | **Official Legislative Tracker** | Pulls up to 15 market-relevant bills from the **Congress.gov API** (official government record) on a 6-hour cache. Bills are filtered by market-relevant title keywords (tax, tariff, energy, healthcare, defense, tech, trade, finance, etc.); floor-active stages (Floor vote, Passed chamber, Signed, Vetoed) are always included regardless of topic. House/Senate companion bills are deduplicated. Official CRS (Congressional Research Service) nonpartisan summaries are fetched for up to 8 bills per refresh. Editorial outlets (Politico, The Hill, Roll Call) are kept as secondary context but clearly labeled. Rendered in the macro context block and fed into all AI prompts with explicit instruction to weight the official record over editorial framing. Requires `CONGRESS_API_KEY` (free at [api.congress.gov/sign-up](https://api.congress.gov/sign-up/)). |
 | **Macro Context Bar** | Persistent top-of-dashboard bar showing live VIX, 10Y yield, 3M yield, 10Y–3M spread (with curve interpretation), CPI YoY, TLT move, GLD move, UUP (dollar), today's top financial headlines, and active bills under review. Data sourced from yfinance proxy instruments + FRED API (30-min cache) + Congress.gov API (6-hour cache). |
 | **Portfolio Chat** | Floating 💬 button opens a full-height chat drawer with portfolio + macro + CC + lot context baked into the system prompt. The AI knows which CC positions are open (ticker, strike, DTE), every cost lot's age and LT eligibility, unrealized P&L per position, and your accumulation patterns. Powered by `phi-4-4bit` via MLX; streams tokens in real time. Quick-prompt chips for common questions. |
-| **Per-Holding Macro Scores** | Each holding is scored 1–10 on four macro risk dimensions: rate sensitivity, inflation hedge, dollar sensitivity, geopolitical risk. Scores appear as colored dots in the holdings table; **click the dots** to expand an inline detail panel showing each dimension's score, a per-dimension reason, and an SVG sparkline trend line over historical scoring runs. Scored one ticker at a time by `Llama-3.3-70B-Instruct-4bit` via MLX; runs automatically every **Saturday at 1 AM ET** via systemd timer (`investment-scores.timer`). Score history is stored in `holding_macro_scores_history` so trends accumulate week-over-week. |
+| **Per-Holding Macro Scores** | Each holding is scored 1–10 on four canonical macro dimensions defined in `MACRO_DIMS` (the single source of truth for all AI systems): **rate sensitivity** (hurt by +50bps 10Y rise), **inflation hedge** (benefits from sustained >3% CPI), **dollar sensitivity** (hurt by strengthening USD), **geopolitical risk** (tariff/trade/sanctions exposure). Scores appear as colored dots in the holdings table; **click the dots** to expand an inline detail panel showing each dimension's score, a per-dimension reason, and an SVG sparkline trend line over historical scoring runs. Scored one ticker at a time by `Llama-3.3-70B-Instruct-4bit` via MLX; runs automatically every **Saturday at 1 AM ET** via systemd timer (`investment-scores.timer`). Score history is stored in `holding_macro_scores_history` so trends accumulate week-over-week. Scores older than 5 days (`SCORE_STALE_DAYS`) are flagged with ⚠ in all downstream AI prompts. |
 | **Investment Goals & Strategy** | Dividend goal ($2.5k/mo by 2036) + portfolio value goal ($2M by 2036) with 8-quarter rolling targets; barbell health with L4 recs; live **Recommended Purchases** panel backed by Buffett screener data, layer drift, dividend yield impact, valuation multiples, value trap flags, and earnings calendar |
 | **Daily Investment Digest** | Single 7 AM email covering: portfolio snapshot, layer allocation vs target (with drift warnings), holdings performance, upcoming earnings/ex-div events, and the judgment health rubric |
 | **Local Dashboard** | Interactive web UI at `http://localhost:5001` with charts, holdings table, and live analysis tools |
@@ -289,27 +290,50 @@ venv/bin/python3 send_newsletter_main.py --no-email && venv/bin/python3 generate
 
 Data sourced from yfinance proxy instruments (`TLT`, `GLD`, `^VIX`, `UUP`, `^TNX`, `^IRX`) + FRED API (`FEDFUNDS`, `CPIAUCSL`, `T10Y2Y`, `UNRATE`). Cached 30 minutes in `out/macro_cache.json`.
 
-**AI Insight Card** — collapsible accordion at the top of the dashboard grid, defaults closed. Powered by `phi-4-4bit` via MLX. The prompt contains:
+**AI Insight Card** — collapsible accordion at the top of the dashboard grid, defaults closed. Powered by `Llama-3.3-70B-Instruct-4bit` via MLX. The prompt contains:
 - Full portfolio holdings with prices, daily moves, and weights
 - Layer weights vs targets with drift alerts
 - Live macro context (same data as the macro bar)
+- **Portfolio macro dimension scores** — the weekly `MACRO_DIMS` scores for every holding, formatted as a compact block with per-dimension reasons; risk flags are explicitly instructed to cross-reference scores (e.g., "if a ticker scores 7–10 on rate_sensitivity and the 10Y is rising, flag it with the score and mechanism")
+- **Today's news findings** — if the per-ticker news summaries have already run today, their `_outlook` output (top risk, top opportunity, tax watch, action items, per-ticker highlights) is injected so the insight synthesizes both datasets rather than deriving from raw headlines alone
+- **Official legislative record** — Congress.gov bills (labeled authoritative) and editorial media (labeled secondary); `legislative_watch` output explicitly instructed to weight the official record
 - Your active CC positions with DTE, strikes, and premium collected
 - Cost lot analysis: avg cost vs current price, unrealized P&L, LT eligibility dates, TLH candidates
 - Realized gains YTD from sell transactions
 - Observed behavioral patterns: DCA accumulator tickers, CC program history, CC expansion candidates
 
-Output fields:
+Output fields (9-field JSON):
 
 | Field | What it shows |
 |---|---|
 | **Macro Regime** | 2–3 sentences on today's macro environment and its implications for this portfolio |
 | **Portfolio Alignment** | How well the current layer structure fits the macro — names specific tickers |
-| **Risk Flags** | Specific risks by ticker and macro driver (not generic commentary) |
+| **Risk Flags** | Specific risks by ticker and macro driver, cross-referenced to `MACRO_DIMS` scores (cites score and mechanism) |
 | **Rebalancing** | Whether current layer drift is defensible given the macro backdrop |
 | **Tax / Timing** | Specific lot dates, LT thresholds, or TLH candidates worth acting on |
 | **Covered Calls** | Open position assessment — strikes vs current prices, income generated, expansion candidates |
 | **Tax Opportunity** | Specific ticker + lot date worth acting on, or "None this week" |
+| **Legislative Watch** | Any bill in the official Congress.gov record creating material risk or opportunity for specific holdings; names bill ID and current stage |
 | **Key Question** | The single most actionable portfolio question for the week |
+
+**AI Signal Chain** — the three AI systems form a sequential signal pipeline. Each system grounds itself in the previous system's output rather than deriving macro risk independently:
+
+```
+Weekly Scorer (Sat 1AM)
+  → MACRO_DIMS scores stored in DB (rate/inflation/dollar/geo, 1–10, with per-dim reasons)
+
+News Summaries (6AM / 12PM / 5PM)
+  → Loads scores via _get_macro_scores_block()
+  → Rate sensitivity analysis uses score as baseline; 7–10 score = flag materially
+  → Trade/dollar analysis uses dollar_sensitivity + geopolitical_risk scores
+
+Daily Insight (once/day, after news)
+  → Loads scores via _get_macro_scores_block()
+  → Loads today's news _outlook findings if summaries already ran
+  → Risk flags must cross-reference score+mechanism; legislative_watch uses official record
+```
+
+**Policy:** any future change to how a macro dimension is defined or scored must update `MACRO_DIMS` in `portfolio_ai.py` first. All three prompts derive their definitions from `MACRO_DIMS` at runtime — no hardcoded definitions anywhere else.
 
 **↻ Refresh button** on the AI card triggers async regeneration: the server immediately kicks off a background thread and returns `status: generating`; the dashboard shows a loading state and polls every 10 seconds until the new insight is ready. This prevents the 60–90s generation time from blocking the server or timing out through any proxy.
 
@@ -324,7 +348,17 @@ Subscriber access for DJ properties is configured via `WSJ_TAC` and `WSJ_TR` in 
 - An SVG sparkline trend line embedded in each card showing score history across past weekly runs
 - An overall summary note and the count of scoring runs accumulated
 
-Scored one ticker at a time by `Llama-3.3-70B-Instruct-4bit` via MLX on Mac Studio. Runs automatically every **Saturday at 1 AM ET** via `investment-scores.timer` (systemd). History is stored in `holding_macro_scores_history`; sparklines appear as soon as 2+ runs have accumulated. Click the dots again to collapse. `OLLAMA_KEEP_ALIVE=0` is set in the Ollama plist on Mac Studio so `llava:13b` (used by other services) unloads immediately and doesn't compete for unified memory during the ~10-minute scoring run.
+Scored one ticker at a time by `Llama-3.3-70B-Instruct-4bit` via MLX on Mac Studio. Runs automatically every **Saturday at 1 AM ET** via `investment-scores.timer` (systemd). History is stored in `holding_macro_scores_history`; sparklines appear as soon as 2+ runs have accumulated. Click the dots again to collapse.
+
+**Macro Dimensions (`MACRO_DIMS`)** — the canonical definitions used in every AI prompt; all future scoring and analysis must adhere to these exact definitions:
+- `rate_sensitivity` — how much does a +50bps rise in the 10Y Treasury yield hurt this position? (10=very hurt: long-duration bonds, high-PE growth, REITs; 1=immune or benefits: short-duration cash, banks with floating-rate assets)
+- `inflation_hedge` — how well does this position benefit from sustained inflation above 3%? (10=strong hedge: commodities, energy, TIPS, real assets; 1=hurt by inflation)
+- `dollar_sensitivity` — how much does a strengthening US dollar hurt this position? (10=very hurt: large EM/foreign revenue, commodity exporters; 1=benefits or immune: US-domestic revenue)
+- `geopolitical_risk` — how exposed is this position to trade wars, tariffs, sanctions, or geopolitical disruption? (10=highly exposed: China supply chain, defense contractors, global commodities; 1=isolated)
+
+**Score staleness:** scores older than 5 days (`SCORE_STALE_DAYS = 5`) receive a ⚠ annotation in all AI prompts so downstream systems know to treat them with lower confidence after a macro shift.
+
+`OLLAMA_KEEP_ALIVE=0` is set in the Ollama plist on Mac Studio so `llava:13b` (used by other services) unloads immediately and doesn't compete for unified memory during the ~10-minute scoring run.
 
 **Portfolio Chat Drawer** — floating 💬 button (bottom-right) opens a full-height panel. The system prompt includes everything above (holdings, layers, macro, CC positions, cost lots, realized gains, behavioral patterns), so the model can answer questions like "What CC positions do I have open?", "Which holdings are approaching LT threshold?", or "Should I expand my covered call program?" with specific, grounded answers. Quick-prompt chips for common questions. Streams tokens in real time.
 
@@ -723,8 +757,8 @@ investment/
 ├── serve.py                         # HTTP server + all API endpoints + schedulers
 ├── buffett_screener.py              # NYSE Buffett screener — nightly at 2 AM ET
 ├── covered_call_rec.py              # Covered call recommendation + blackout engine + ai_context() prompt builder
-├── macro_context.py                 # Macro data fetcher: yfinance proxies (TLT/GLD/VIX/UUP/TNX/IRX) + FRED API (FEDFUNDS/CPI/T10Y2Y/UNRATE) + RSS headlines; 30-min cache in out/macro_cache.json
-├── portfolio_ai.py                  # Portfolio AI engine: daily insight, per-holding macro scores (weekly, Sat 1am ET), portfolio chat; uses Llama-3.3-70B-Instruct-4bit via MLX (LLM_URL); scores include per-dimension {score, reason}; history stored in holding_macro_scores_history
+├── macro_context.py                 # Macro data fetcher: yfinance proxies (TLT/GLD/VIX/UUP/TNX/IRX) + FRED API (FEDFUNDS/CPI/T10Y2Y/UNRATE) + RSS headlines; Congress.gov API for official bill tracking + CRS summaries (6-hr cache in out/bills_cache.json); 30-min macro cache in out/macro_cache.json
+├── portfolio_ai.py                  # Portfolio AI engine: MACRO_DIMS canonical framework; weekly macro scores (Sat 1am ET via systemd); per-ticker news summaries (6am/12pm/5pm); daily insight card; portfolio chat; _get_macro_scores_block() injects scores into all prompts; uses Llama-3.3-70B-Instruct-4bit via MLX; score history in holding_macro_scores_history
 ├── news_fetcher.py                  # Holdings news: fetches from WSJ/Barrons/MarketWatch/Yahoo/CNBC/Reuters RSS; DJ subscriber auth via WSJ_TAC+WSJ_TR in .env; full article body fetching for non-CF-protected sites; 30-min cache in out/news_cache.json
 ├── ollama_client.py                 # Thin urllib wrapper for OpenAI-compatible APIs: generate() for JSON batch, stream_generate() for one-shot SSE, stream_chat() for multi-turn; reads LLM_URL from environment (supports both Ollama and MLX endpoints)
 ├── run_investment.sh                # Manual newsletter entry point
@@ -736,6 +770,7 @@ investment/
     ├── buffett.db                   # SQLite: Buffett screener cache, winners, history
     ├── dashboard.html               # Generated dashboard (served by serve.py)
     ├── macro_cache.json             # 30-min macro context cache (yfinance + FRED + headlines)
+    ├── bills_cache.json             # 6-hour Congress.gov bills cache (official bill record + CRS summaries)
     ├── news_cache.json              # Holdings news cache (30-min TTL)
     ├── newsletter.log               # Daily digest run log
     ├── macro_scores.log             # Weekly macro scoring run log (Sat 1am ET)

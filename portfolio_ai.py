@@ -145,11 +145,13 @@ def _score_reason(dim_data) -> str:
     return ""
 
 
-def _get_macro_scores_block(tickers=None):
+def _get_macro_scores_block(tickers=None, compact=False, reason_max=120):
     """
     Load macro scores from DB and return (scores_dict, formatted_block_for_prompt).
     Scores older than SCORE_STALE_DAYS get a staleness annotation.
     tickers: if given, only include those tickers in the block.
+    compact: if True, omit per-dimension reasons (much smaller output, use for news prompts).
+    reason_max: max chars per reason line when compact=False.
     """
     if not DB_PATH.exists():
         return {}, ""
@@ -187,20 +189,19 @@ def _get_macro_scores_block(tickers=None):
     ]
     for t, data in scores.items():
         scored_at = data["_scored_at"]
-        stale_note = (f"  ⚠ scored {scored_at} — may not reflect current macro" if data["_stale"]
-                      else f"  scored {scored_at}")
+        stale_note = (f"  ⚠ scored {scored_at}" if data["_stale"] else f"  scored {scored_at}")
         row = "  ".join(
             f"{dim[:4]}={_score_val(data.get(dim)) or '?'}"
             for dim in SCORE_DIMS
         )
         lines.append(f"  {t} [{row}]{stale_note}")
-        for dim in SCORE_DIMS:
-            sv   = _score_val(data.get(dim))
-            sr   = _score_reason(data.get(dim))
-            if sv is not None and sr:
-                lines.append(f"    {MACRO_DIMS[dim]['short']}: {sv}/10 — {sr}")
-        if data.get("note"):
-            lines.append(f"    Overall: {data['note']}")
+        if not compact:
+            for dim in SCORE_DIMS:
+                sv = _score_val(data.get(dim))
+                sr = _score_reason(data.get(dim))
+                if sv is not None and sr:
+                    sr_trunc = sr[:reason_max] + "…" if len(sr) > reason_max else sr
+                    lines.append(f"    {MACRO_DIMS[dim]['short']}: {sv}/10 — {sr_trunc}")
     return scores, "\n".join(lines)
 
 
@@ -636,9 +637,9 @@ def generate_news_summaries(force: bool = False) -> dict:
     macro = macro_context.fetch()
     macro_block = macro.get("formatted_block", "Macro data unavailable.")
 
-    # Load macro scores for newsworthy tickers — used to ground the analysis
+    # Load macro scores for newsworthy tickers — compact (no per-dim reasons) to stay within context budget
     news_tickers = list(tickers_with_news.keys())
-    _, scores_block = _get_macro_scores_block(tickers=news_tickers)
+    _, scores_block = _get_macro_scores_block(tickers=news_tickers, compact=True)
 
     import financials_fetcher
     news_block = ""
@@ -883,8 +884,8 @@ def generate_daily_insight(force: bool = False) -> dict:
 
     personal_blocks = "\n\n".join(b for b in [cc_block, lot_block, realized_block, patterns_block] if b)
 
-    # Load macro dimension scores for all holdings — ground the insight in weekly scoring
-    _, macro_scores_block = _get_macro_scores_block()
+    # Load macro dimension scores — truncate per-dim reasons to keep prompt within context budget
+    _, macro_scores_block = _get_macro_scores_block(reason_max=100)
 
     # Pull holding-specific news headlines into the prompt
     news_block = _get_news_block(holdings)
