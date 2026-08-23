@@ -200,6 +200,42 @@ def _score_dot(score, inverted=False) -> str:
     return f'<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:{color};margin:0 1px;"></span>'
 
 
+def _extract_score(val):
+    """Return int score from {score: N, reason: ...} dict or plain int/None."""
+    if isinstance(val, dict):
+        return val.get('score')
+    return val
+
+
+def _extract_reason(val):
+    """Return reason string from {score: N, reason: ...} dict, or ''."""
+    if isinstance(val, dict):
+        return val.get('reason', '')
+    return ''
+
+
+def _dim_panel(label, val, inverted=False, no_reason_fallback=''):
+    """Build the HTML card for one macro dimension in the expanded detail panel."""
+    score = _extract_score(val)
+    reason = _extract_reason(val) or no_reason_fallback
+    if score is None:
+        color = '#ccc'
+    elif inverted:
+        color = '#27ae60' if score >= 7 else ('#e67e22' if score >= 4 else '#aaa')
+    else:
+        color = '#e74c3c' if score >= 7 else ('#e67e22' if score >= 4 else '#27ae60')
+    score_disp = f"{score}/10" if score is not None else "—"
+    return (
+        f'<div style="background:#fff;border-radius:6px;padding:8px 10px;border-left:3px solid {color};">'
+        f'<div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:3px;">'
+        f'<span style="font-size:11px;font-weight:600;color:#4a5568;">{label}</span>'
+        f'<span style="font-size:13px;font-weight:700;color:{color};">{score_disp}</span>'
+        f'</div>'
+        f'<div style="font-size:11px;color:#718096;line-height:1.4;">{reason or "&nbsp;"}</div>'
+        f'</div>'
+    )
+
+
 def build_dashboard(portfolio, layers, holdings):
     today = portfolio[-1] if portfolio else {}
     today_date = today.get("day", "")
@@ -337,22 +373,47 @@ def build_dashboard(portfolio, layers, holdings):
         gain_class  = "pos" if h["total_gain_pct"] >= 0 else "neg"
         # Macro scores cell
         ticker_scores = macro_scores.get(h["ticker"], {})
+        safe_id = h["ticker"].replace(".", "_")
         if ticker_scores:
             rate = ticker_scores.get("rate_sensitivity")
             infl = ticker_scores.get("inflation_hedge")
             dlr  = ticker_scores.get("dollar_sensitivity")
             geo  = ticker_scores.get("geopolitical_risk")
             note = ticker_scores.get("note", "")
+            rate_v = _extract_score(rate)
+            infl_v = _extract_score(infl)
+            dlr_v  = _extract_score(dlr)
+            geo_v  = _extract_score(geo)
             dots = (
-                _score_dot(rate, inverted=False) +
-                _score_dot(infl, inverted=True)  +
-                _score_dot(dlr,  inverted=False) +
-                _score_dot(geo,  inverted=False)
+                _score_dot(rate_v, inverted=False) +
+                _score_dot(infl_v, inverted=True)  +
+                _score_dot(dlr_v,  inverted=False) +
+                _score_dot(geo_v,  inverted=False)
             )
-            score_tip = f"Rate:{rate}/10 · Infl:{infl}/10 · Dollar:{dlr}/10 · Geo:{geo}/10 — {note}"
-            macro_cell = f'<td class="col-hide-sm" title="{score_tip}" style="cursor:default;white-space:nowrap;">{dots}</td>'
+            macro_cell = (
+                f'<td class="col-hide-sm" onclick="toggleMacroDetail(\'{safe_id}\')" '
+                f'style="cursor:pointer;white-space:nowrap;" title="Click for details">{dots}</td>'
+            )
+            # Build detail expand row
+            detail_html = (
+                _dim_panel("Rate Sensitivity", rate, inverted=False) +
+                _dim_panel("Inflation Hedge", infl, inverted=True) +
+                _dim_panel("Dollar Sensitivity", dlr, inverted=False) +
+                _dim_panel("Geopolitical Risk", geo, inverted=False)
+            )
+            note_html = f'<div style="font-size:11px;color:#718096;border-top:1px solid #e2e8f0;padding-top:6px;margin-top:2px;line-height:1.4;"><strong>Summary:</strong> {note}</div>' if note else ''
+            detail_row = (
+                f'<tr class="macro-detail-row" id="macro-detail-{safe_id}" style="display:none;">'
+                f'<td colspan="12" style="padding:0;">'
+                f'<div style="padding:12px 16px;background:#f8f9fa;border-bottom:1px solid #e2e8f0;">'
+                f'<div style="font-size:10px;font-weight:700;color:#a0aec0;letter-spacing:.07em;text-transform:uppercase;margin-bottom:8px;">Macro Risk — {h["ticker"]}</div>'
+                f'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">{detail_html}</div>'
+                f'{note_html}'
+                f'</div></td></tr>\n'
+            )
         else:
             macro_cell = '<td class="col-hide-sm" style="color:#ccc;font-size:10px;">—</td>'
+            detail_row = ''
         holdings_rows += f"""<tr>
           <td>{h["ticker"]}</td>
           <td class="col-hide-sm">{h["shares"]:,.2f}</td>
@@ -368,7 +429,7 @@ def build_dashboard(portfolio, layers, holdings):
             title="Click to reassign layer">L{h["layer_num"]}</span></td>
           <td class="col-hide-sm"><button onclick="openLotsModal('{h["ticker"]}', {h["price"]:.4f})" style="font-size:10px;padding:2px 8px;background:#f4f6f9;border:1px solid #dde;border-radius:4px;cursor:pointer;color:#555;" title="View / edit tax lots">Lots</button></td>
           {macro_cell}
-        </tr>\n"""
+        </tr>\n""" + detail_row
 
     # ---- layer summary rows ----
     layer_rows = ""
@@ -6417,6 +6478,11 @@ function tlhCalc() {{
     }}
   }}
 }})();
+
+function toggleMacroDetail(safeId) {{
+  var row = document.getElementById('macro-detail-' + safeId);
+  if (row) row.style.display = (row.style.display === 'none') ? 'table-row' : 'none';
+}}
 </script>
 
 <!-- Portfolio Chat FAB -->

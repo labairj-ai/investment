@@ -416,7 +416,7 @@ def _build_layer_block(layer_weights: dict, drift_alerts: list[dict]) -> str:
 
 # ── Daily insight ─────────────────────────────────────────────────────────────
 
-def get_cached_insight_today() -> dict | None:
+def get_cached_insight_today():
     """Return today's cached insight from DB, or None if not yet generated."""
     _init_ai_tables()
     today = date.today().isoformat()
@@ -433,7 +433,7 @@ def get_cached_insight_today() -> dict | None:
     return None
 
 
-def get_cached_news_summaries_today() -> dict | None:
+def get_cached_news_summaries_today():
     """Return today's cached per-ticker news summaries from DB, or None."""
     _init_ai_tables()
     today = date.today().isoformat()
@@ -756,49 +756,54 @@ def generate_holding_macro_scores(force: bool = False) -> dict:
     )
 
     results = dict(existing)
-    BATCH = 8
-
-    import financials_fetcher
+    BATCH = 1
 
     for i in range(0, len(to_score), BATCH):
         batch = to_score[i:i + BATCH]
         ticker_list = ", ".join(batch)
 
-        fin_parts = []
-        for t in batch:
-            s = financials_fetcher.get_financial_summary(t)
-            if s:
-                fin_parts.append(s)
-        fin_block = ("\nFUNDAMENTAL FINANCIALS (use to calibrate scores — actual debt load, FCF, and revenue trend should inform rate_sensitivity and dollar_sensitivity):\n" + "\n".join(fin_parts)) if fin_parts else ""
-
-        prompt = f"""You are a quantitative analyst. Score each ticker on 4 macro risk dimensions from 1-10.
+        prompt = f"""You are a quantitative analyst. Score each ticker on 4 macro risk dimensions from 1-10, with a specific reason for each score.
 
 {macro_brief}
-{fin_block}
 
 Scoring definitions (1=low, 10=high):
-- rate_sensitivity: How much does a 50bps rate RISE hurt this position? (10=very hurt, e.g. long-duration bonds, REITs, high-PE growth; 1=immune or benefits, e.g. short-duration, banks) — calibrate using actual debt load from financials if available
+- rate_sensitivity: How much does a 50bps rate RISE hurt this position? (10=very hurt, e.g. long-duration bonds, REITs, high-PE growth; 1=immune or benefits, e.g. short-duration, banks)
 - inflation_hedge: How well does this position benefit from sustained inflation? (10=strong hedge, e.g. gold, commodities, energy, TIPS; 1=hurt by inflation, e.g. fixed-income, long-duration)
 - dollar_sensitivity: How much does a strong dollar hurt this position? (10=very hurt, e.g. multinational exporters, EM exposure; 1=immune or benefits, e.g. US domestic services, importers)
 - geopolitical_risk: How exposed is this position to trade wars, tariffs, or geopolitical disruption? (10=high exposure, e.g. China-exposed tech, global supply chains; 1=low, e.g. domestic utilities, US healthcare)
 
 Tickers to score: {ticker_list}
 
-Return ONLY valid JSON:
+Return ONLY valid JSON. Each dimension must include a score AND a one-sentence reason explaining specifically why that score applies to this ticker:
 {{
-  "TICKER1": {{"rate_sensitivity": <1-10>, "inflation_hedge": <1-10>, "dollar_sensitivity": <1-10>, "geopolitical_risk": <1-10>, "note": "<one sentence summary>"}},
-  "TICKER2": {{"rate_sensitivity": <1-10>, "inflation_hedge": <1-10>, "dollar_sensitivity": <1-10>, "geopolitical_risk": <1-10>, "note": "<one sentence summary>"}}
+  "TICKER1": {{
+    "rate_sensitivity": {{"score": <1-10>, "reason": "<why this specific score for this ticker>"}},
+    "inflation_hedge": {{"score": <1-10>, "reason": "<why this specific score for this ticker>"}},
+    "dollar_sensitivity": {{"score": <1-10>, "reason": "<why this specific score for this ticker>"}},
+    "geopolitical_risk": {{"score": <1-10>, "reason": "<why this specific score for this ticker>"}},
+    "note": "<one sentence overall summary>"
+  }}
 }}"""
+
+        # Wait for server to be ready before each batch (it may have restarted)
+        for _attempt in range(30):
+            if ollama_client.available():
+                break
+            time.sleep(5)
+        else:
+            print(f"[MacroScores] Server not ready for batch {i//BATCH+1}, skipping")
+            continue
 
         full_text = ""
         try:
             for tok in ollama_client.stream_generate(
                 prompt, model=ollama_client.DEFAULT_MODEL,
-                temperature=0.2, num_predict=900
+                temperature=0.2, num_predict=1600
             ):
                 full_text += tok
         except Exception as e:
             print(f"[MacroScores] Batch {i//BATCH+1} failed: {e}")
+            time.sleep(20)  # server likely restarted; give it time to reload
             continue
 
         try:
@@ -807,6 +812,7 @@ Return ONLY valid JSON:
             batch_result, _ = dec.raw_decode(full_text, start)
         except (ValueError, json.JSONDecodeError):
             print(f"[MacroScores] Batch {i//BATCH+1} returned malformed JSON")
+            time.sleep(20)  # server may have crashed during generation
             continue
 
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -824,7 +830,7 @@ Return ONLY valid JSON:
             conn.close()
 
         print(f"[MacroScores] Scored {len(batch_result)} tickers in batch {i//BATCH+1}")
-        time.sleep(1)
+        time.sleep(25)  # give server time to recover before next batch
 
     return results
 
@@ -911,7 +917,13 @@ if __name__ == "__main__":
         for ticker, s in sorted(scores.items()):
             print(f"\n{ticker}:")
             for dim in SCORE_DIMS:
-                print(f"  {SCORE_LABELS[dim]}: {s.get(dim, '?')}/10")
+                raw = s.get(dim, '?')
+                score = raw.get('score', '?') if isinstance(raw, dict) else raw
+                reason = raw.get('reason', '') if isinstance(raw, dict) else ''
+                line = f"  {SCORE_LABELS[dim]}: {score}/10"
+                if reason:
+                    line += f" — {reason}"
+                print(line)
             print(f"  Note: {s.get('note', '')}")
     else:
         print("Generating daily portfolio insight…")
