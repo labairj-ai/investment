@@ -43,13 +43,54 @@ LAYER_NAMES = {
     5: "L5 Shock Absorbers (portfolio hedges, ~8% target — gold, cash, inverse ETFs)",
 }
 
-SCORE_DIMS = ["rate_sensitivity", "inflation_hedge", "dollar_sensitivity", "geopolitical_risk"]
-SCORE_LABELS = {
-    "rate_sensitivity":  "Rate (hurt by rising rates)",
-    "inflation_hedge":   "Inflation hedge (benefits from inflation)",
-    "dollar_sensitivity":"Dollar (hurt by strong dollar)",
-    "geopolitical_risk": "Geopolitical / trade risk",
+# ── Canonical macro framework ─────────────────────────────────────────────────
+# Single source of truth for all three scoring systems: macro scores, news
+# analysis, and portfolio insight. All prompts derive language from here.
+MACRO_DIMS = {
+    "rate_sensitivity": {
+        "label":      "Rate Sensitivity",
+        "short":      "Hurt by rising rates",
+        "direction":  "risk",
+        "prompt_def": (
+            "How much does a +50bps rise in the 10Y Treasury yield hurt this position? "
+            "(10=very hurt: long-duration bonds, high-PE growth, REITs, leveraged balance sheets; "
+            "1=immune or benefits: short-duration cash, banks, financials with floating-rate assets)"
+        ),
+    },
+    "inflation_hedge": {
+        "label":      "Inflation Hedge",
+        "short":      "Benefits from sustained inflation",
+        "direction":  "benefit",
+        "prompt_def": (
+            "How well does this position benefit from sustained inflation above 3%? "
+            "(10=strong hedge: gold, commodities, energy, TIPS, real assets, pricing-power franchises; "
+            "1=hurt: fixed income, long-duration, consumer discretionary with margin pressure)"
+        ),
+    },
+    "dollar_sensitivity": {
+        "label":      "Dollar Sensitivity",
+        "short":      "Hurt by strong dollar",
+        "direction":  "risk",
+        "prompt_def": (
+            "How much does a strengthening US dollar hurt this position? "
+            "(10=very hurt: multinational exporters with large overseas revenue, EM exposure, "
+            "USD-priced commodity producers; 1=immune or benefits: domestic services, US importers)"
+        ),
+    },
+    "geopolitical_risk": {
+        "label":      "Geopolitical / Trade Risk",
+        "short":      "Trade/geopolitical exposure",
+        "direction":  "risk",
+        "prompt_def": (
+            "How exposed is this position to trade wars, tariffs, sanctions, or geopolitical disruption? "
+            "(10=high: China-exposed tech, global supply chains, defense-adjacent, foreign revenue dependent; "
+            "1=low: domestic utilities, US healthcare services, domestically sourced businesses)"
+        ),
+    },
 }
+SCORE_STALE_DAYS = 5          # scores older than this get a staleness warning in prompts
+SCORE_DIMS   = list(MACRO_DIMS.keys())                      # backwards compat
+SCORE_LABELS = {k: v["short"] for k, v in MACRO_DIMS.items()}  # backwards compat
 
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
@@ -82,6 +123,85 @@ def _init_ai_tables():
     )""")
     conn.commit()
     conn.close()
+
+
+def _score_val(dim_data):
+    """Extract integer score from {score, reason} dict or bare int. Returns int or None."""
+    if isinstance(dim_data, dict):
+        v = dim_data.get("score")
+    elif isinstance(dim_data, (int, float)):
+        v = dim_data
+    else:
+        return None
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _score_reason(dim_data) -> str:
+    if isinstance(dim_data, dict):
+        return str(dim_data.get("reason", ""))
+    return ""
+
+
+def _get_macro_scores_block(tickers=None):
+    """
+    Load macro scores from DB and return (scores_dict, formatted_block_for_prompt).
+    Scores older than SCORE_STALE_DAYS get a staleness annotation.
+    tickers: if given, only include those tickers in the block.
+    """
+    if not DB_PATH.exists():
+        return {}, ""
+    try:
+        conn = sqlite3.connect(str(DB_PATH), timeout=5)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT ticker, scores, updated_at FROM holding_macro_scores"
+        ).fetchall()
+        conn.close()
+    except Exception:
+        return {}, ""
+
+    stale_cutoff = (datetime.now() - timedelta(days=SCORE_STALE_DAYS)).strftime("%Y-%m-%d")
+    scores: dict = {}
+    for r in rows:
+        t = _normalize_ticker(r["ticker"])
+        if tickers and t not in tickers:
+            continue
+        try:
+            data = json.loads(r["scores"])
+            scored_at = (r["updated_at"] or "")[:10]
+            data["_scored_at"] = scored_at
+            data["_stale"]     = scored_at < stale_cutoff
+            scores[t] = data
+        except Exception:
+            pass
+
+    if not scores:
+        return {}, ""
+
+    lines = [
+        "PORTFOLIO MACRO DIMENSION SCORES (weekly AI scoring; 50bps rate-move basis; 1=low risk, 10=high):",
+        "  Dimensions: Rate Sensitivity | Inflation Hedge | Dollar Sensitivity | Geopolitical/Trade Risk",
+    ]
+    for t, data in scores.items():
+        scored_at = data["_scored_at"]
+        stale_note = (f"  ⚠ scored {scored_at} — may not reflect current macro" if data["_stale"]
+                      else f"  scored {scored_at}")
+        row = "  ".join(
+            f"{dim[:4]}={_score_val(data.get(dim)) or '?'}"
+            for dim in SCORE_DIMS
+        )
+        lines.append(f"  {t} [{row}]{stale_note}")
+        for dim in SCORE_DIMS:
+            sv   = _score_val(data.get(dim))
+            sr   = _score_reason(data.get(dim))
+            if sv is not None and sr:
+                lines.append(f"    {MACRO_DIMS[dim]['short']}: {sv}/10 — {sr}")
+        if data.get("note"):
+            lines.append(f"    Overall: {data['note']}")
+    return scores, "\n".join(lines)
 
 
 def _load_holdings_csv() -> list[dict]:
@@ -516,6 +636,10 @@ def generate_news_summaries(force: bool = False) -> dict:
     macro = macro_context.fetch()
     macro_block = macro.get("formatted_block", "Macro data unavailable.")
 
+    # Load macro scores for newsworthy tickers — used to ground the analysis
+    news_tickers = list(tickers_with_news.keys())
+    _, scores_block = _get_macro_scores_block(tickers=news_tickers)
+
     import financials_fetcher
     news_block = ""
     for ticker, items in tickers_with_news.items():
@@ -578,6 +702,8 @@ KEY NUMBERS:
   Fed Funds Rate: {fed}%  |  10Y Treasury: {tnx}%  |  CPI YoY: {cpi}%
   Unemployment: {unemp}%  |  VIX: {vix}  |  Dollar: {dol}  |  Yield Curve: {crv}
 
+{scores_block}
+
 RECENT NEWS BY HOLDING (last 24 hours):
 {news_block}
 
@@ -590,8 +716,8 @@ LEGISLATIVE MEDIA COVERAGE (secondary; editorial sources may reflect political b
 For each ticker in the news above, provide these components:
 
 1. "news" — 2-3 sentences on what actually happened. Reference specific numbers, events, or company actions. No vague summaries.
-2. "rates" — Concrete impact of the current {tnx}% yield on THIS stock's valuation and debt. Does a move up or down 50bps help or hurt, and by how much does it matter given the current level?
-3. "trade" — Specific tariff/FX exposure: name the countries, supply chains, or revenue streams at risk. If genuinely minimal, say "minimal direct exposure."
+2. "rates" — Use MACRO SCORES rate_sensitivity as your baseline (a score of 7-10 means a +50bps rise materially hurts this position; 1-3 means it is largely immune). Explain the concrete mechanism at the current {tnx}% 10Y yield. Be consistent with the score unless today's news presents new evidence (e.g. a debt refinancing, changed business mix).
+3. "trade" — Use MACRO SCORES dollar_sensitivity and geopolitical_risk as your baseline. Name specific countries, supply chains, or revenue streams at risk. Be consistent with the scores unless today's news presents new tariff/FX developments.
 4. "environment" — Current headwinds or tailwinds for this specific business: margin trends, consumer/enterprise spending backdrop, regulatory posture, sector cycle.
 5. "leg_risk" — ONLY include if a specific bill from the OFFICIAL RECORD creates a headwind for this holding. Name the bill by ID and title, the mechanism (cost burden, pricing pressure, regulation tightening), and its current stage. Omit if not applicable.
 6. "leg_opp" — ONLY include if a specific bill from the OFFICIAL RECORD is a tailwind for this holding. Name the bill by ID and title, the mechanism (subsidy, deregulation, favorable ruling), and its current stage. Omit if not applicable.
@@ -757,6 +883,9 @@ def generate_daily_insight(force: bool = False) -> dict:
 
     personal_blocks = "\n\n".join(b for b in [cc_block, lot_block, realized_block, patterns_block] if b)
 
+    # Load macro dimension scores for all holdings — ground the insight in weekly scoring
+    _, macro_scores_block = _get_macro_scores_block()
+
     # Pull holding-specific news headlines into the prompt
     news_block = _get_news_block(holdings)
 
@@ -820,6 +949,7 @@ INVESTMENT FRAMEWORK (5-layer structure):
 
 {personal_blocks}
 {financials_block}
+{macro_scores_block}
 {news_block}
 {news_findings_block}
 IMPORTANT — be specific, not generic:
@@ -836,9 +966,9 @@ Return exactly this JSON structure:
   "macro_summary": "<2-3 sentence description of today's macro regime and its dominant investment implications for this portfolio>",
   "portfolio_macro_alignment": "<how well does this portfolio fit the macro environment? name specific tickers and layers — well positioned or at risk and why>",
   "risk_flags": [
-    "<specific risk: name the ticker or layer AND the macro driver — e.g. 'GRMN (L3) faces dollar headwind as strong USD compresses international revenue'>",
-    "<another specific risk referencing actual held names>",
-    "<geopolitical or trade risk naming specific exposed tickers>"
+    "<Cross-reference MACRO SCORES: if a ticker scores 7-10 on rate_sensitivity and the 10Y is rising, flag it with the score and mechanism — e.g. 'GRMN rate_sensitivity=7: a +50bps move at 4.7% further compresses its growth multiple'>",
+    "<Cross-reference MACRO SCORES: if dollar_sensitivity or geopolitical_risk is 7-10 and current conditions are adverse, flag the specific ticker and revenue/supply chain at risk>",
+    "<Any risk NOT captured by the weekly scores — news-driven, legislative, or structural change that the scores predate>"
   ],
   "rebalancing_take": "<given the macro backdrop, is the current layer drift defensible or a problem? name specific drifting layers and whether the macro supports holding that tilt>",
   "tax_timing_note": "<name specific tickers and lot dates worth acting on — approaching LT thresholds, TLH candidates, or realized gain offsets — or 'No immediate tax flags'>",
@@ -936,15 +1066,16 @@ def generate_holding_macro_scores(force: bool = False) -> dict:
         batch = to_score[i:i + BATCH]
         ticker_list = ", ".join(batch)
 
+        dim_defs = "\n".join(
+            f"- {dim}: {meta['prompt_def']}"
+            for dim, meta in MACRO_DIMS.items()
+        )
         prompt = f"""You are a quantitative analyst. Score each ticker on 4 macro risk dimensions from 1-10, with a specific reason for each score.
 
 {macro_brief}
 
 Scoring definitions (1=low, 10=high):
-- rate_sensitivity: How much does a 50bps rate RISE hurt this position? (10=very hurt, e.g. long-duration bonds, REITs, high-PE growth; 1=immune or benefits, e.g. short-duration, banks)
-- inflation_hedge: How well does this position benefit from sustained inflation? (10=strong hedge, e.g. gold, commodities, energy, TIPS; 1=hurt by inflation, e.g. fixed-income, long-duration)
-- dollar_sensitivity: How much does a strong dollar hurt this position? (10=very hurt, e.g. multinational exporters, EM exposure; 1=immune or benefits, e.g. US domestic services, importers)
-- geopolitical_risk: How exposed is this position to trade wars, tariffs, or geopolitical disruption? (10=high exposure, e.g. China-exposed tech, global supply chains; 1=low, e.g. domestic utilities, US healthcare)
+{dim_defs}
 
 Tickers to score: {ticker_list}
 
