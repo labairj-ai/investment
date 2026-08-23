@@ -35,7 +35,11 @@ _LEG_RULE = (
     "If the connection requires inference or analogy (e.g. a healthcare bill affecting a "
     "streaming company; an energy bill affecting a retailer; a defense bill affecting a "
     "consumer brand), it does NOT qualify — omit the field entirely or write null. "
-    "Do not manufacture connections to fill the field."
+    "Do not manufacture connections to fill the field. "
+    "DOMAIN CROSS-CHECK: Each bill in the BILLS UNDER REVIEW section is annotated with "
+    "[domains: ...]. Each ticker in the TICKER PROFILES section lists its domains. "
+    "If a bill's domains and a ticker's domains share NO overlap, there is no direct "
+    "connection — skip that bill for that ticker and write null."
 )
 
 
@@ -129,6 +133,74 @@ MACRO_DIMS = {
 SCORE_STALE_DAYS = 5          # scores older than this get a staleness warning in prompts
 SCORE_DIMS   = list(MACRO_DIMS.keys())                      # backwards compat
 SCORE_LABELS = {k: v["short"] for k, v in MACRO_DIMS.items()}  # backwards compat
+
+# ── Holding profiles ─────────────────────────────────────────────────────────
+# Per-ticker description and legislative domain list.  Used to cross-check bill
+# domains against holding domains before the model writes leg_risk/leg_opp/tax_angle.
+# Funds (is_fund=True) are passive vehicles — only connect to tax_capital_gains /
+# tax_corporate; they have no direct operational regulatory exposure.
+HOLDING_PROFILES = {
+    # Layer 1 — Structural Ballast
+    "VTSAX":  {"desc": "Vanguard Total Stock Market Index Fund (passive broad market)",  "domains": ["tax_capital_gains", "tax_corporate"], "is_fund": True},
+    "VFIAX":  {"desc": "Vanguard 500 Index Fund (passive S&P 500)",                      "domains": ["tax_capital_gains", "tax_corporate"], "is_fund": True},
+    "VTMGX":  {"desc": "Vanguard Developed Markets Index Fund (passive international)",  "domains": ["tax_capital_gains", "trade"],         "is_fund": True},
+    "BRK-B":  {"desc": "Berkshire Hathaway — diversified holding company: insurance, energy (BNSF/utilities), financial services, consumer brands",
+               "domains": ["financial", "energy", "trade", "consumer", "tax_corporate", "environment"]},
+    # Layer 2 — Cash-Flow Engines
+    "SCHD":   {"desc": "Schwab U.S. Dividend Equity ETF (passive dividend-focused)",     "domains": ["tax_capital_gains", "tax_corporate"], "is_fund": True},
+    "BP":     {"desc": "BP — integrated oil & gas company, global energy operations",
+               "domains": ["energy", "environment", "trade", "tax_corporate"]},
+    # Layer 3 — Compounders
+    "FSPTX":  {"desc": "Fidelity Select Technology Portfolio (active tech fund)",        "domains": ["technology", "tax_capital_gains"], "is_fund": True},
+    "STZ":    {"desc": "Constellation Brands — beer, wine, and spirits producer; significant Mexico import operations",
+               "domains": ["food_ag", "consumer", "trade", "tax_corporate"]},
+    "SNA":    {"desc": "Snap-on Tools — industrial tools and equipment manufacturer",
+               "domains": ["labor", "trade", "tax_corporate"]},
+    "SLYV":   {"desc": "SPDR S&P 600 Small-Cap Value ETF (passive small-cap value)",    "domains": ["tax_capital_gains", "tax_corporate"], "is_fund": True},
+    "GRMN":   {"desc": "Garmin — GPS navigation, aviation avionics, wearables, marine electronics",
+               "domains": ["technology", "aviation", "consumer", "trade"]},
+    "EW":     {"desc": "Edwards Lifesciences — structural heart valves and hemodynamic monitoring (medical devices)",
+               "domains": ["healthcare", "tax_corporate"]},
+    "ITW":    {"desc": "Illinois Tool Works — diversified industrial manufacturer: automotive, construction, food equipment",
+               "domains": ["trade", "labor", "environment", "tax_corporate"]},
+    "NFLX":   {"desc": "Netflix — streaming entertainment subscription service",
+               "domains": ["telecom", "technology", "consumer", "tax_corporate"]},
+    "WMT":    {"desc": "Walmart — retail and grocery chain; large China import sourcing; major employer",
+               "domains": ["consumer", "trade", "labor", "food_ag", "tax_corporate"]},
+    # Layer 4 — Convexity / Optionality
+    "JOBY":   {"desc": "Joby Aviation — electric air taxi (eVTOL) manufacturer, FAA certification in progress",
+               "domains": ["aviation", "energy", "environment", "technology", "tax_corporate"]},
+    "IGV":    {"desc": "iShares Expanded Tech-Software ETF (passive software-sector)",  "domains": ["technology", "tax_capital_gains"], "is_fund": True},
+    "BTC":    {"desc": "Bitcoin — decentralized cryptocurrency",
+               "domains": ["crypto", "financial", "tax_capital_gains"]},
+    "DSGX":   {"desc": "Descartes Systems — logistics and supply chain software platform",
+               "domains": ["technology", "transportation", "trade", "tax_corporate"]},
+    # Layer 5 — Shock Absorbers
+    "ITOCF":  {"desc": "Itochu Corp — Japanese trading conglomerate: food, textiles, energy, finance",
+               "domains": ["trade", "food_ag", "energy", "financial"]},
+    "MITSF":  {"desc": "Mitsubishi Corp — Japanese conglomerate: energy, materials, finance, infrastructure",
+               "domains": ["trade", "energy", "financial", "environment"]},
+    "UNP":    {"desc": "Union Pacific — Class I freight railroad, major cross-country rail network",
+               "domains": ["transportation", "trade", "labor", "environment", "tax_corporate"]},
+    "MCO":    {"desc": "Moody's — credit rating agency and financial data/analytics provider",
+               "domains": ["financial", "ratings_advisory", "tax_corporate"]},
+    "NOC":    {"desc": "Northrop Grumman — defense contractor, aerospace and nuclear systems",
+               "domains": ["defense", "aviation", "tax_corporate"]},
+}
+
+
+def _holding_profile_block(tickers: list) -> str:
+    """Format a TICKER PROFILES section for AI prompts listing each ticker's desc and domains."""
+    lines = ["TICKER PROFILES (use domains to evaluate legislative relevance):"]
+    for t in tickers:
+        profile = HOLDING_PROFILES.get(t) or HOLDING_PROFILES.get(t.replace(".", "-"))
+        if profile:
+            domain_str = ", ".join(profile["domains"])
+            fund_note  = " (passive fund — only tax/budget bills apply)" if profile.get("is_fund") else ""
+            lines.append(f"  {t}: {profile['desc']}{fund_note} [domains: {domain_str}]")
+        else:
+            lines.append(f"  {t}: (no profile — evaluate on company fundamentals)")
+    return "\n".join(lines)
 
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
@@ -707,11 +779,12 @@ def generate_news_summaries(force: bool = False) -> dict:
     if official_bills:
         off_lines = []
         for b in official_bills[:12]:
-            id_str = f"[{b.get('bill_id', '')}] " if b.get("bill_id") else ""
-            stage  = f" — Stage: {b['stage']}" if b.get("stage") else ""
-            dt     = (b.get("action_date") or b.get("introduced") or "")[:10]
-            date_s = f" ({dt})" if dt else ""
-            off_lines.append(f"  {id_str}{b['title']}{stage}{date_s}")
+            id_str   = f"[{b.get('bill_id', '')}] " if b.get("bill_id") else ""
+            stage    = f" — Stage: {b['stage']}" if b.get("stage") else ""
+            dt       = (b.get("action_date") or b.get("introduced") or "")[:10]
+            date_s   = f" ({dt})" if dt else ""
+            domain_s = f" [domains: {', '.join(b['domains'])}]" if b.get("domains") else ""
+            off_lines.append(f"  {id_str}{b['title']}{domain_s}{stage}{date_s}")
             if b.get("summary"):
                 off_lines.append(f"    CRS Summary: {b['summary'][:350]}")
             if b.get("latest_action") and b.get("stage") in (
@@ -721,6 +794,8 @@ def generate_news_summaries(force: bool = False) -> dict:
         official_block = "\n".join(off_lines)
     else:
         official_block = "  No official bill data available."
+
+    profiles_block = _holding_profile_block(list(tickers_with_news.keys()))
 
     media_block = (
         "\n".join(f"  - {b['title']}" for b in media_coverage[:6])
@@ -758,6 +833,8 @@ For each ticker in the news above, provide these components:
 5. "leg_risk" — Apply the LEGISLATIVE CONNECTION RULE below. If a bill directly burdens this company's business (regulation, cost, pricing pressure), name it by ID, explain the mechanism, and give its stage. Otherwise omit.
 6. "leg_opp" — Apply the LEGISLATIVE CONNECTION RULE below. If a bill directly benefits this company (subsidy, deregulation, new demand), name it by ID, explain the mechanism, and give its stage. Otherwise omit.
 7. "tax_angle" — ONLY if a bill directly changes the tax treatment of this holding (capital gains rates, corporate tax, sector-specific credits). Name the bill by ID. Omit if not applicable.
+
+{profiles_block}
 
 {_LEG_RULE}
 
@@ -971,6 +1048,8 @@ def generate_daily_insight(force: bool = False) -> dict:
         "\n".join(fin_parts)
     ) if fin_parts else ""
 
+    insight_profiles_block = _holding_profile_block(tickers)
+
     prompt = f"""You are a sophisticated investment advisor analyzing a personal portfolio. Return ONLY valid JSON — no markdown, no extra text.
 
 INVESTMENT FRAMEWORK (5-layer structure):
@@ -1012,6 +1091,8 @@ Return exactly this JSON structure:
   "tax_opportunity": "<specific ticker + lot date combination worth acting on for tax optimization, or 'None this week'>",
   "legislative_watch": "<apply the LEGISLATIVE CONNECTION RULE: only name a bill if it has a direct one-step impact on a specific held ticker's actual industry or business. Name the bill by ID, the holding, the mechanism, and the stage. If no bill qualifies, write 'No material legislation this week'>"
 }}
+
+{insight_profiles_block}
 
 {_LEG_RULE}"""
 

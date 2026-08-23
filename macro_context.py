@@ -63,6 +63,28 @@ _MARKET_TITLE_RE = re.compile(
 )
 _FLOOR_ACTIVE_STAGES = {"Floor vote", "Floor-bound", "Passed chamber", "Signed into law", "Vetoed"}
 
+# Domain keyword lookup — used to classify bills into legislative domains
+_BILL_DOMAIN_KEYWORDS = {
+    "healthcare":        ["medicare", "medicaid", "health", "hospital", "pharma", "drug", "medical", "fda", "insur", "prescription", "clinical", "patient", "nursing", "physician", "hhs"],
+    "energy":            ["energy", "oil", "gas", "electric", "grid", "renewable", "solar", "wind", "carbon", "nuclear", "lng", "petroleum", "utility", "utilities", "fuel", "pipeline"],
+    "environment":       ["environment", "epa", "climate", "pollution", "nepa", "clean air", "clean water", "conservation", "superfund", "greenhouse"],
+    "financial":         ["bank", "banking", "financial", "credit", "lending", "federal reserve", "fdic", "capital requirement", "securities", "investment adviser", "broker", "wall street"],
+    "crypto":            ["crypto", "digital asset", "blockchain", "stablecoin", "bitcoin", "virtual currency", "cryptocurrency", "defi", "web3"],
+    "technology":        ["technology", "artificial intelligence", "semiconductor", "chip", "cyber", "software", "data privacy", "tech company", "algorithm", "platform", "big tech"],
+    "telecom":           ["broadband", "internet", "spectrum", "fcc", "telecom", "streaming", "net neutrality", "cable", "wireless", "5g", "communications"],
+    "defense":           ["defense", "military", "armed forces", "dod", "national security", "intelligence", "ndaa", "weapon", "pentagon", "missile", "procurement"],
+    "aviation":          ["aviation", "faa", "aircraft", "air traffic", "evtol", "urban air", "drone", "airline", "airport", "helicopter", "flight"],
+    "transportation":    ["railroad", "trucking", "transport", "highway", "transit", "bridge", "port", "freight", "logistics", "rail "],
+    "trade":             ["tariff", "import", "export", "sanction", "customs", "foreign invest", "cfius", "wto", "trade agreement", "duty", "quota", "offshore"],
+    "consumer":          ["consumer", "retail", "product safety", "cpsc", "advertising", "antitrust", "marketplace", "ecommerce"],
+    "labor":             ["labor", "employ", "wage", "worker", "union", "workforce", "osha", "minimum wage", "overtime"],
+    "real_estate":       ["housing", "mortgage", "real estate", "hud", "reit", "rental", "zoning", "affordable housing"],
+    "food_ag":           ["agriculture", "food", "farm", "crop", "usda", "livestock", "pesticide", "fertilizer", "dietary", "nutrition", "meat", "dairy"],
+    "tax_corporate":     ["tax", "fiscal", "budget", "appropriat", "deficit", "revenue", "r&d credit", "depreciation", "corporate rate", "deduction", "reconciliat", "irs"],
+    "tax_capital_gains": ["capital gain", "investment income", "carried interest", "step-up basis", "estate tax", "wealth tax", "dividend tax"],
+    "ratings_advisory":  ["credit rating", "financial advisor", "fiduciary", "rating agency", "investment adviser"],
+}
+
 # Editorial sources — secondary context only; note potential political framing bias
 LEGISLATIVE_MEDIA_URLS = [
     "https://rss.politico.com/congress.xml",
@@ -324,6 +346,16 @@ def _normalize_bill_title(title: str) -> str:
     return re.sub(r"\W+", " ", t).lower().strip()
 
 
+def _classify_bill_domains(title: str, summary: str = "") -> list:
+    """Return list of matching legislative domain names for a bill based on title+summary keywords."""
+    text = (title + " " + summary).lower()
+    matched = []
+    for domain, keywords in _BILL_DOMAIN_KEYWORDS.items():
+        if any(kw in text for kw in keywords):
+            matched.append(domain)
+    return matched
+
+
 def _fetch_congress_api_bills(api_key: str, days_back: int = 30, max_bills: int = 40) -> list:
     """Fetch recently active bills from Congress.gov official API.
     Filters to market-relevant titles; always includes floor-active stages.
@@ -403,6 +435,9 @@ def _fetch_congress_api_bills(api_key: str, days_back: int = 30, max_bills: int 
             entry.pop("bnum",  None)
             entry.pop("cgnum", None)
 
+    for entry in filtered:
+        entry["domains"] = _classify_bill_domains(entry["title"], entry.get("summary", ""))
+
     return filtered
 
 
@@ -432,6 +467,7 @@ def _fetch_govtrack_bills(max_items: int = 10) -> list:
                     "url":           item.findtext("link", "").strip(),
                     "summary":       desc[:500] if desc else "",
                     "source":        "GovTrack",
+                    "domains":       _classify_bill_domains(title, desc[:500] if desc else ""),
                 })
                 if len(bills) >= max_items:
                     return bills
@@ -607,11 +643,12 @@ def _format_block(ctx: dict) -> str:
     if ctx.get("official_bills"):
         lines += ["", "BILLS UNDER REVIEW — OFFICIAL RECORD:"]
         for b in ctx["official_bills"][:12]:
-            id_str = f"[{b['bill_id']}] " if b.get("bill_id") else ""
-            stage  = f" — {b['stage']}" if b.get("stage") else ""
-            dt     = (b.get("action_date") or b.get("introduced") or "")[:10]
-            date_s = f" ({dt})" if dt else ""
-            lines.append(f"  {id_str}{b['title']}{stage}{date_s}")
+            id_str   = f"[{b['bill_id']}] " if b.get("bill_id") else ""
+            stage    = f" — {b['stage']}" if b.get("stage") else ""
+            dt       = (b.get("action_date") or b.get("introduced") or "")[:10]
+            date_s   = f" ({dt})" if dt else ""
+            domain_s = f" [domains: {', '.join(b['domains'])}]" if b.get("domains") else ""
+            lines.append(f"  {id_str}{b['title']}{domain_s}{stage}{date_s}")
             if b.get("summary"):
                 lines.append(f"    CRS Summary: {b['summary'][:300]}")
             if b.get("latest_action") and b.get("stage") in (
