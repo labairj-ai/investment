@@ -177,7 +177,7 @@ def _load_macro_scores() -> dict:
         result = {}
         for r in rows:
             try:
-                result[r["ticker"]] = json.loads(r["scores"])
+                result[normalize_ticker(r["ticker"])] = json.loads(r["scores"])
             except Exception:
                 pass
         return result
@@ -202,7 +202,7 @@ def _load_macro_score_history(limit=60) -> dict:
         result = {}
         for r in rows:
             try:
-                result.setdefault(r["ticker"], []).append(json.loads(r["scores"]))
+                result.setdefault(normalize_ticker(r["ticker"]), []).append(json.loads(r["scores"]))
             except Exception:
                 pass
         return {t: entries[-limit:] for t, entries in result.items()}

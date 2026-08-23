@@ -12,6 +12,16 @@ import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+
+def _normalize_ticker(t: str) -> str:
+    """Mirror generate_dashboard.normalize_ticker: BRK.B → BRK-B."""
+    t = str(t).strip().upper()
+    if "." in t:
+        left, right = t.split(".", 1)
+        if right in {"A", "B", "C", "D"}:
+            return f"{left}-{right}"
+    return t
+
 # Load .env before ollama_client reads LLM_URL at import time
 _PROJECT_DIR_EARLY = Path(__file__).resolve().parent
 try:
@@ -760,7 +770,7 @@ def generate_holding_macro_scores(force: bool = False) -> dict:
     if not holdings:
         return {}
 
-    tickers = [str(h.get("Stock", "")).strip().upper() for h in holdings if h.get("Stock")]
+    tickers = [_normalize_ticker(h.get("Stock", "")) for h in holdings if h.get("Stock")]
     tickers = list(dict.fromkeys(t for t in tickers if t))
 
     # Load existing scores from DB
@@ -774,7 +784,7 @@ def generate_holding_macro_scores(force: bool = False) -> dict:
         for r in rows:
             if r["updated_at"] and r["updated_at"][:10] >= cutoff:
                 try:
-                    existing[r["ticker"]] = json.loads(r["scores"])
+                    existing[_normalize_ticker(r["ticker"])] = json.loads(r["scores"])
                 except Exception:
                     pass
 
@@ -856,7 +866,7 @@ Return ONLY valid JSON. Each dimension must include a score AND a one-sentence r
         if DB_PATH.exists():
             conn = sqlite3.connect(str(DB_PATH), timeout=10)
             for ticker, scores in batch_result.items():
-                ticker = ticker.strip().upper()
+                ticker = _normalize_ticker(ticker)
                 if ticker in tickers:
                     scores_json = json.dumps(scores)
                     conn.execute(
