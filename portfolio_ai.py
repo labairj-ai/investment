@@ -656,35 +656,23 @@ Be specific. Name the legislation, the holding, or the metric. No generic statem
         _cache_sentinel(err)
         return {"error": err, "raw": full_text[:500]}
 
-    # Call 2: portfolio-level outlook — non-streaming JSON mode for reliable output
+    # Call 2: portfolio-level outlook
     try:
         outlook_raw = ollama_client.generate(
             outlook_prompt, model=ollama_client.DEFAULT_MODEL,
             temperature=0.2, num_predict=600
         )
-        print(f"[news-summary] _outlook raw: {outlook_raw[:200]}", flush=True)
-        outlook_obj = json.loads(outlook_raw) if isinstance(outlook_raw, str) else outlook_raw
+        _dec = json.JSONDecoder()
+        _start = outlook_raw.index("{")
+        outlook_obj, _ = _dec.raw_decode(outlook_raw, _start)
         summaries["_outlook"] = outlook_obj
-        print(f"[news-summary] _outlook parsed keys: {list(outlook_obj.keys())}", flush=True)
     except Exception as e:
-        print(f"[news-summary] _outlook call failed: {e}", flush=True)
         summaries["_outlook"] = {
             "top_risk": "Unable to generate outlook — check AI server.",
             "top_opportunity": None,
             "tax_watch": None,
             "action_items": [],
         }
-
-    # DEBUG: capture summaries state before DB write
-    try:
-        import pathlib as _pl
-        _pl.Path("/tmp/news_debug_service.json").write_text(
-            json.dumps({"keys": list(summaries.keys()), "has_outlook": "_outlook" in summaries,
-                        "outlook_type": type(summaries.get("_outlook")).__name__,
-                        "outlook": summaries.get("_outlook")}, indent=2)
-        )
-    except Exception:
-        pass
 
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if DB_PATH.exists():
