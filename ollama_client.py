@@ -1,10 +1,14 @@
 import json
 import os
+import re
 import urllib.request
 
 # Supports both LLM_URL (MLX / any OpenAI-compatible server) and legacy OLLAMA_URL
 LLM_URL = os.environ.get("LLM_URL") or os.environ.get("OLLAMA_URL", "http://127.0.0.1:8080")
 DEFAULT_MODEL = "mlx-community/Llama-3.3-70B-Instruct-4bit"
+
+# mlx_lm 0.29.1 doesn't strip Llama 3 special tokens from output
+_SPECIAL_TOKENS = re.compile(r'<\|[^|>]+\|>')
 
 
 def generate(prompt, model=DEFAULT_MODEL, temperature=0.3, num_predict=700):
@@ -22,7 +26,8 @@ def generate(prompt, model=DEFAULT_MODEL, temperature=0.3, num_predict=700):
         headers={"Content-Type": "application/json"},
     )
     with urllib.request.urlopen(req, timeout=180) as r:
-        return json.loads(r.read())["choices"][0]["message"]["content"].strip()
+        content = json.loads(r.read())["choices"][0]["message"]["content"]
+        return _SPECIAL_TOKENS.sub('', content).strip()
 
 
 def stream_generate(prompt, model=DEFAULT_MODEL, temperature=0.3, num_predict=700):
@@ -47,6 +52,7 @@ def stream_generate(prompt, model=DEFAULT_MODEL, temperature=0.3, num_predict=70
             if line.startswith(b"data: "):
                 chunk = json.loads(line[6:])
                 token = chunk["choices"][0]["delta"].get("content", "")
+                token = _SPECIAL_TOKENS.sub('', token)
                 if token:
                     yield token
 
@@ -73,13 +79,14 @@ def stream_chat(messages, model=DEFAULT_MODEL, temperature=0.4, num_predict=1000
             if line.startswith(b"data: "):
                 chunk = json.loads(line[6:])
                 token = chunk["choices"][0]["delta"].get("content", "")
+                token = _SPECIAL_TOKENS.sub('', token)
                 if token:
                     yield token
 
 
 def available(model=DEFAULT_MODEL):
     try:
-        with urllib.request.urlopen(f"{LLM_URL}/v1/models", timeout=2) as r:
+        with urllib.request.urlopen(f"{LLM_URL}/v1/models", timeout=10) as r:
             return r.status == 200
     except Exception:
         return False
