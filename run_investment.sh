@@ -19,7 +19,6 @@ if [ -f "$FLAG" ] && [ "$(cat $FLAG)" = "$TODAY" ]; then
 fi
 
 echo "Sending newsletter for $TODAY..." >> "$LOG" 2>&1
-
 cd "$BASE"
 "$BASE/venv/bin/python3" "$BASE/send_newsletter_main.py" >> "$LOG" 2>&1
 
