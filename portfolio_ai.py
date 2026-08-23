@@ -656,21 +656,20 @@ Be specific. Name the legislation, the holding, or the metric. No generic statem
         _cache_sentinel(err)
         return {"error": err, "raw": full_text[:500]}
 
-    # Call 2: portfolio-level outlook (short focused prompt, ~400 tokens)
+    # Call 2: portfolio-level outlook — non-streaming JSON mode for reliable output
     try:
-        outlook_text = ""
-        for tok in ollama_client.stream_generate(
+        outlook_raw = ollama_client.generate(
             outlook_prompt, model=ollama_client.DEFAULT_MODEL,
             temperature=0.2, num_predict=600
-        ):
-            outlook_text += tok
-        dec2 = json.JSONDecoder()
-        start2 = outlook_text.index("{")
-        outlook_obj, _ = dec2.raw_decode(outlook_text, start2)
+        )
+        print(f"[news-summary] _outlook raw: {outlook_raw[:200]}", flush=True)
+        outlook_obj = json.loads(outlook_raw) if isinstance(outlook_raw, str) else outlook_raw
         summaries["_outlook"] = outlook_obj
-    except Exception:
+        print(f"[news-summary] _outlook parsed keys: {list(outlook_obj.keys())}", flush=True)
+    except Exception as e:
+        print(f"[news-summary] _outlook call failed: {e}", flush=True)
         summaries["_outlook"] = {
-            "top_risk": "Unable to generate — check AI server.",
+            "top_risk": "Unable to generate outlook — check AI server.",
             "top_opportunity": None,
             "tax_watch": None,
             "action_items": [],
