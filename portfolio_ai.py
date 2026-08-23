@@ -875,12 +875,14 @@ BILLS UNDER REVIEW — OFFICIAL RECORD (weight heavily; source: Congress.gov):
 LEGISLATIVE MEDIA COVERAGE (secondary context only — editorial framing):
 {media_block}
 
-HOLDINGS WITH NEWS TODAY: {", ".join(tickers_with_news.keys())}
+{profiles_block}
+
+{_LEG_RULE}
 
 Return ONLY this JSON object with exactly these four keys:
 {{
   "top_risk": "<one sentence: the single most urgent legislative or macro risk facing this portfolio this week>",
-  "top_opportunity": "<one sentence: the clearest legislative or macro tailwind for any holding this week>",
+  "top_opportunity": "<one sentence: the clearest legislative or macro tailwind for any holding this week — only cite a bill if its domains overlap the holding's domains per TICKER PROFILES>",
   "tax_watch": "<one sentence: any pending tax legislation relevant to these holdings, or null if none>",
   "action_items": ["<action verb + specific action>", "<action verb + specific action>", "<action verb + specific action>"]
 }}
