@@ -281,6 +281,86 @@ def _dim_score_color(score, inverted):
     return '#e74c3c' if score >= 7 else ('#e67e22' if score >= 4 else '#27ae60')
 
 
+def _compute_macro_composite(scores_dict):
+    """Roll up 4 macro dimension scores (1–10) into a single 0–100 health score.
+    Higher = better macro health. Risk dims are inverted; benefit dims kept as-is."""
+    DIMS = [
+        ("rate_sensitivity",   False),  # risk: invert
+        ("inflation_hedge",    True),   # benefit: keep
+        ("dollar_sensitivity", False),  # risk: invert
+        ("geopolitical_risk",  False),  # risk: invert
+    ]
+    parts = []
+    for dim, is_benefit in DIMS:
+        score = _extract_score(scores_dict.get(dim))
+        if score is None:
+            return None
+        parts.append((score - 1) / 9 if is_benefit else (10 - score) / 9)
+    return round(sum(parts) / len(parts) * 100)
+
+
+def _composite_color(score) -> str:
+    if score is None:
+        return '#aaa'
+    if score >= 70:
+        return '#27ae60'
+    if score >= 45:
+        return '#e67e22'
+    return '#e74c3c'
+
+
+def _composite_badge(score) -> str:
+    """Inline HTML badge for a composite macro health score (0–100)."""
+    if score is None:
+        return '<span style="font-size:10px;color:#aaa;margin-left:5px;">—</span>'
+    color = _composite_color(score)
+    return f'<span style="font-size:11px;font-weight:700;color:{color};margin-left:5px;">{score}</span>'
+
+
+def _portfolio_health_chip(score) -> str:
+    """Static HTML chip showing the portfolio-level macro health score."""
+    if score is None:
+        return ''
+    color = _composite_color(score)
+    label = 'Strong' if score >= 70 else ('Moderate' if score >= 45 else 'Stressed')
+    return (
+        f'<div style="display:flex;align-items:center;gap:10px;margin:4px 0 14px;'
+        f'padding:8px 12px;background:{color}10;border-radius:8px;border:1px solid {color}30;">'
+        f'<span style="font-size:12px;color:#718096;font-weight:500;">Portfolio Macro Health</span>'
+        f'<span style="font-size:22px;font-weight:800;color:{color};line-height:1;">{score}</span>'
+        f'<span style="font-size:11px;color:{color};font-weight:600;">/100</span>'
+        f'<span style="font-size:11px;color:#a0aec0;margin-left:2px;">· {label} · value-weighted composite</span>'
+        f'</div>'
+    )
+
+
+def _compute_portfolio_macro_health(holdings_sorted, macro_scores) -> dict:
+    """Compute value-weighted composite macro health score for portfolio and each layer.
+    Returns {"portfolio": int|None, "layers": {layer_name: int|None}}."""
+    port_value = 0.0
+    port_wsum = 0.0
+    layer_buckets: dict = {}
+    for h in holdings_sorted:
+        scores = macro_scores.get(h["ticker"], {})
+        composite = _compute_macro_composite(scores)
+        if composite is None:
+            continue
+        v = h.get("value", 0.0)
+        port_value += v
+        port_wsum += composite * v
+        layer = h["layer"]
+        if layer not in layer_buckets:
+            layer_buckets[layer] = [0.0, 0.0]
+        layer_buckets[layer][0] += v
+        layer_buckets[layer][1] += composite * v
+    portfolio = round(port_wsum / port_value) if port_value > 0 else None
+    layers = {
+        name: round(vals[1] / vals[0]) if vals[0] > 0 else None
+        for name, vals in layer_buckets.items()
+    }
+    return {"portfolio": portfolio, "layers": layers}
+
+
 def _dim_panel(label, val, inverted=False, no_reason_fallback='', sparkline=''):
     """Build the HTML card for one macro dimension in the expanded detail panel."""
     score = _extract_score(val)
@@ -309,6 +389,7 @@ def build_dashboard(portfolio, layers, holdings):
     macro_history = _load_macro_score_history()
 
     today_holdings_sorted = sorted(today_holdings, key=lambda h: (h["layer"], -h["value"]))
+    portfolio_health = _compute_portfolio_macro_health(today_holdings_sorted, macro_scores)
 
     total_v = total_value_csv
     total_chg = sum(h["change_dollars"] for h in today_holdings)
@@ -431,7 +512,12 @@ def build_dashboard(portfolio, layers, holdings):
     for h in today_holdings_sorted:
         if h["layer"] != prev_layer:
             lcolor = LAYER_COLORS.get(h["layer"], "#999")
-            holdings_rows += f'<tr class="layer-header"><td colspan="12" style="background:{lcolor}22;border-left:4px solid {lcolor};padding:6px 10px;font-weight:600;color:#333">{h["layer"]}</td></tr>\n'
+            layer_composite = portfolio_health["layers"].get(h["layer"])
+            layer_health_html = (
+                f'<span style="float:right;font-size:11px;font-weight:400;color:#718096;">'
+                f'Macro Health {_composite_badge(layer_composite)}</span>'
+            )
+            holdings_rows += f'<tr class="layer-header"><td colspan="12" style="background:{lcolor}22;border-left:4px solid {lcolor};padding:6px 10px;font-weight:600;color:#333">{h["layer"]}{layer_health_html}</td></tr>\n'
             prev_layer = h["layer"]
         daily_class = "pos" if h["change_pct"] >= 0 else "neg"
         gain_class  = "pos" if h["total_gain_pct"] >= 0 else "neg"
@@ -454,9 +540,11 @@ def build_dashboard(portfolio, layers, holdings):
                 _score_dot(dlr_v,  inverted=False) +
                 _score_dot(geo_v,  inverted=False)
             )
+            composite_score = _compute_macro_composite(ticker_scores)
             macro_cell = (
                 f'<td class="col-hide-sm" onclick="toggleMacroDetail(\'{safe_id}\')" '
-                f'style="cursor:pointer;white-space:nowrap;" title="Click for details">{dots}</td>'
+                f'style="cursor:pointer;white-space:nowrap;" title="Macro Health: {composite_score if composite_score is not None else "—"}/100 · Click for details">'
+                f'{dots}{_composite_badge(composite_score)}</td>'
             )
             # Build sparklines from history
             ticker_hist = macro_history.get(h["ticker"], [])
@@ -1578,6 +1666,7 @@ def build_dashboard(portfolio, layers, holdings):
   <!-- Holdings table -->
   <div class="card">
     <h2>Holdings — {today_date}</h2>
+    {_portfolio_health_chip(portfolio_health["portfolio"])}
 
     <!-- Add position form -->
     <details style="margin-bottom:16px;">
