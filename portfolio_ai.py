@@ -64,6 +64,12 @@ def _init_ai_tables():
         summaries    TEXT,
         generated_at TEXT
     )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS holding_macro_scores_history (
+        id        INTEGER PRIMARY KEY AUTOINCREMENT,
+        ticker    TEXT NOT NULL,
+        scores    TEXT NOT NULL,
+        scored_at TEXT NOT NULL
+    )""")
     conn.commit()
     conn.close()
 
@@ -821,9 +827,14 @@ Return ONLY valid JSON. Each dimension must include a score AND a one-sentence r
             for ticker, scores in batch_result.items():
                 ticker = ticker.strip().upper()
                 if ticker in tickers:
+                    scores_json = json.dumps(scores)
                     conn.execute(
                         "INSERT OR REPLACE INTO holding_macro_scores (ticker, scores, updated_at) VALUES (?,?,?)",
-                        (ticker, json.dumps(scores), now_str)
+                        (ticker, scores_json, now_str)
+                    )
+                    conn.execute(
+                        "INSERT INTO holding_macro_scores_history (ticker, scores, scored_at) VALUES (?,?,?)",
+                        (ticker, scores_json, now_str)
                     )
                     results[ticker] = scores
             conn.commit()

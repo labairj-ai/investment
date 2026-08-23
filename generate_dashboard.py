@@ -185,6 +185,42 @@ def _load_macro_scores() -> dict:
         return {}
 
 
+def _load_macro_score_history(limit=60) -> dict:
+    """Return {ticker: [scores_dict, ...]} ordered oldest-first, up to `limit` entries each."""
+    if not DB_PATH.exists():
+        return {}
+    try:
+        conn = sqlite3.connect(str(DB_PATH), timeout=5)
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute(
+                "SELECT ticker, scores, scored_at FROM holding_macro_scores_history ORDER BY scored_at ASC"
+            ).fetchall()
+        except Exception:
+            rows = []
+        conn.close()
+        result = {}
+        for r in rows:
+            try:
+                result.setdefault(r["ticker"], []).append(json.loads(r["scores"]))
+            except Exception:
+                pass
+        return {t: entries[-limit:] for t, entries in result.items()}
+    except Exception:
+        return {}
+
+
+def _historical_dim_scores(history, dim):
+    """Extract list of int scores for `dim` from a ticker's history list."""
+    out = []
+    for entry in history:
+        raw = entry.get(dim)
+        val = raw.get('score') if isinstance(raw, dict) else raw
+        if isinstance(val, int):
+            out.append(val)
+    return out
+
+
 def _score_dot(score, inverted=False) -> str:
     """Return a colored dot HTML element for a macro score (1-10)."""
     if score is None:
@@ -214,22 +250,49 @@ def _extract_reason(val):
     return ''
 
 
-def _dim_panel(label, val, inverted=False, no_reason_fallback=''):
+def _sparkline_svg(scores, color):
+    """Return inline SVG sparkline for a list of score ints (oldest→newest), or ''."""
+    clean = [s for s in scores if isinstance(s, (int, float))]
+    if len(clean) < 2:
+        return ''
+    w, h = 64, 18
+    n = len(clean)
+    def pt(i, s):
+        x = round(i / (n - 1) * w, 1)
+        y = round(h - max(0, min(1, (s - 1) / 9)) * h, 1)
+        return f"{x},{y}"
+    pts = ' '.join(pt(i, s) for i, s in enumerate(clean))
+    last_x, last_y = pt(n - 1, clean[-1]).split(',')
+    return (
+        f'<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}" '
+        f'style="display:inline-block;vertical-align:middle;flex-shrink:0;" title="{len(clean)} scoring runs">'
+        f'<polyline points="{pts}" fill="none" stroke="{color}" stroke-width="1.5" '
+        f'stroke-linejoin="round" stroke-linecap="round" opacity="0.7"/>'
+        f'<circle cx="{last_x}" cy="{last_y}" r="2" fill="{color}"/>'
+        f'</svg>'
+    )
+
+
+def _dim_score_color(score, inverted):
+    if score is None:
+        return '#ccc'
+    if inverted:
+        return '#27ae60' if score >= 7 else ('#e67e22' if score >= 4 else '#aaa')
+    return '#e74c3c' if score >= 7 else ('#e67e22' if score >= 4 else '#27ae60')
+
+
+def _dim_panel(label, val, inverted=False, no_reason_fallback='', sparkline=''):
     """Build the HTML card for one macro dimension in the expanded detail panel."""
     score = _extract_score(val)
     reason = _extract_reason(val) or no_reason_fallback
-    if score is None:
-        color = '#ccc'
-    elif inverted:
-        color = '#27ae60' if score >= 7 else ('#e67e22' if score >= 4 else '#aaa')
-    else:
-        color = '#e74c3c' if score >= 7 else ('#e67e22' if score >= 4 else '#27ae60')
+    color = _dim_score_color(score, inverted)
     score_disp = f"{score}/10" if score is not None else "—"
     return (
         f'<div style="background:#fff;border-radius:6px;padding:8px 10px;border-left:3px solid {color};">'
-        f'<div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:3px;">'
-        f'<span style="font-size:11px;font-weight:600;color:#4a5568;">{label}</span>'
-        f'<span style="font-size:13px;font-weight:700;color:{color};">{score_disp}</span>'
+        f'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:3px;gap:6px;">'
+        f'<span style="font-size:11px;font-weight:600;color:#4a5568;flex:1;">{label}</span>'
+        f'{sparkline}'
+        f'<span style="font-size:13px;font-weight:700;color:{color};white-space:nowrap;">{score_disp}</span>'
         f'</div>'
         f'<div style="font-size:11px;color:#718096;line-height:1.4;">{reason or "&nbsp;"}</div>'
         f'</div>'
@@ -243,6 +306,7 @@ def build_dashboard(portfolio, layers, holdings):
     csv_holdings = load_csv_holdings()
     today_holdings, today_layers, total_value_csv = rebuild_today_holdings(today_date, holdings, csv_holdings)
     macro_scores = _load_macro_scores()
+    macro_history = _load_macro_score_history()
 
     today_holdings_sorted = sorted(today_holdings, key=lambda h: (h["layer"], -h["value"]))
 
@@ -394,19 +458,27 @@ def build_dashboard(portfolio, layers, holdings):
                 f'<td class="col-hide-sm" onclick="toggleMacroDetail(\'{safe_id}\')" '
                 f'style="cursor:pointer;white-space:nowrap;" title="Click for details">{dots}</td>'
             )
+            # Build sparklines from history
+            ticker_hist = macro_history.get(h["ticker"], [])
+            rate_sp = _sparkline_svg(_historical_dim_scores(ticker_hist, "rate_sensitivity"),  _dim_score_color(rate_v, False))
+            infl_sp = _sparkline_svg(_historical_dim_scores(ticker_hist, "inflation_hedge"),   _dim_score_color(infl_v, True))
+            dlr_sp  = _sparkline_svg(_historical_dim_scores(ticker_hist, "dollar_sensitivity"),_dim_score_color(dlr_v,  False))
+            geo_sp  = _sparkline_svg(_historical_dim_scores(ticker_hist, "geopolitical_risk"), _dim_score_color(geo_v,  False))
             # Build detail expand row
             detail_html = (
-                _dim_panel("Rate Sensitivity", rate, inverted=False) +
-                _dim_panel("Inflation Hedge", infl, inverted=True) +
-                _dim_panel("Dollar Sensitivity", dlr, inverted=False) +
-                _dim_panel("Geopolitical Risk", geo, inverted=False)
+                _dim_panel("Rate Sensitivity", rate, inverted=False, sparkline=rate_sp) +
+                _dim_panel("Inflation Hedge",  infl, inverted=True,  sparkline=infl_sp) +
+                _dim_panel("Dollar Sensitivity",dlr,  inverted=False, sparkline=dlr_sp) +
+                _dim_panel("Geopolitical Risk", geo,  inverted=False, sparkline=geo_sp)
             )
+            run_count = len(ticker_hist)
+            history_note = f' · {run_count} scoring run{"s" if run_count != 1 else ""}' if run_count else ''
             note_html = f'<div style="font-size:11px;color:#718096;border-top:1px solid #e2e8f0;padding-top:6px;margin-top:2px;line-height:1.4;"><strong>Summary:</strong> {note}</div>' if note else ''
             detail_row = (
                 f'<tr class="macro-detail-row" id="macro-detail-{safe_id}" style="display:none;">'
                 f'<td colspan="12" style="padding:0;">'
                 f'<div style="padding:12px 16px;background:#f8f9fa;border-bottom:1px solid #e2e8f0;">'
-                f'<div style="font-size:10px;font-weight:700;color:#a0aec0;letter-spacing:.07em;text-transform:uppercase;margin-bottom:8px;">Macro Risk — {h["ticker"]}</div>'
+                f'<div style="font-size:10px;font-weight:700;color:#a0aec0;letter-spacing:.07em;text-transform:uppercase;margin-bottom:8px;">Macro Risk — {h["ticker"]}{history_note}</div>'
                 f'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">{detail_html}</div>'
                 f'{note_html}'
                 f'</div></td></tr>\n'
