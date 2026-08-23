@@ -23,6 +23,22 @@ def _normalize_ticker(t: str) -> str:
     return t
 
 
+# ── Legislative connection rule ────────────────────────────────────────────────
+# Single source of truth — injected verbatim into every AI prompt that involves
+# legislative risk/opportunity assessment. Enforces a one-step direct connection:
+# the bill must target this company's actual industry, products, or supply chain.
+_LEG_RULE = (
+    "LEGISLATIVE CONNECTION RULE (applies to all leg_risk, leg_opp, tax_angle, and "
+    "legislative_watch fields): A bill qualifies ONLY if the connection is one direct "
+    "logical step — the bill explicitly regulates, taxes, subsidizes, or creates demand "
+    "for THIS company's actual business. Test: 'bill targets X → this company does X.' "
+    "If the connection requires inference or analogy (e.g. a healthcare bill affecting a "
+    "streaming company; an energy bill affecting a retailer; a defense bill affecting a "
+    "consumer brand), it does NOT qualify — omit the field entirely or write null. "
+    "Do not manufacture connections to fill the field."
+)
+
+
 def _extract_json(text: str):
     """
     Robustly extract the first complete JSON object from raw LLM output.
@@ -739,9 +755,11 @@ For each ticker in the news above, provide these components:
 2. "rates" — Use MACRO SCORES rate_sensitivity as your baseline (a score of 7-10 means a +50bps rise materially hurts this position; 1-3 means it is largely immune). Explain the concrete mechanism at the current {tnx}% 10Y yield. Be consistent with the score unless today's news presents new evidence (e.g. a debt refinancing, changed business mix).
 3. "trade" — Use MACRO SCORES dollar_sensitivity and geopolitical_risk as your baseline. Name specific countries, supply chains, or revenue streams at risk. Be consistent with the scores unless today's news presents new tariff/FX developments.
 4. "environment" — Current headwinds or tailwinds for this specific business: margin trends, consumer/enterprise spending backdrop, regulatory posture, sector cycle.
-5. "leg_risk" — ONLY include if a bill from the OFFICIAL RECORD directly regulates, taxes, or burdens THIS COMPANY'S actual business (its industry, products, supply chain, or customers). The connection must be one logical step: bill targets X → this company does X. Do NOT include bills where the connection requires inference or analogy (e.g. a healthcare bill is not a risk to a streaming company; a defense bill is not a risk to a retailer). If no direct connection exists, omit entirely.
-6. "leg_opp" — ONLY include if a bill from the OFFICIAL RECORD directly subsidizes, deregulates, or creates demand for THIS COMPANY'S actual products or services. Same one-step rule: bill does X → this company sells X. Do NOT manufacture connections (e.g. a healthcare transparency bill does not create demand for health-related streaming content). If no direct connection exists, omit entirely.
-7. "tax_angle" — ONLY include if a bill in the OFFICIAL RECORD directly affects the tax treatment of this holding (capital gains rates, corporate tax changes, pass-through treatment, sector-specific tax credits). Name the bill by ID. Omit if not applicable.
+5. "leg_risk" — Apply the LEGISLATIVE CONNECTION RULE below. If a bill directly burdens this company's business (regulation, cost, pricing pressure), name it by ID, explain the mechanism, and give its stage. Otherwise omit.
+6. "leg_opp" — Apply the LEGISLATIVE CONNECTION RULE below. If a bill directly benefits this company (subsidy, deregulation, new demand), name it by ID, explain the mechanism, and give its stage. Otherwise omit.
+7. "tax_angle" — ONLY if a bill directly changes the tax treatment of this holding (capital gains rates, corporate tax, sector-specific credits). Name the bill by ID. Omit if not applicable.
+
+{_LEG_RULE}
 
 Also provide a top-level "_outlook" object (not per-ticker) with four keys:
 - "top_risk": The single most urgent legislative or macro risk to the portfolio right now. One sentence, specific.
@@ -985,15 +1003,17 @@ Return exactly this JSON structure:
   "risk_flags": [
     "<Cross-reference MACRO SCORES: if a ticker scores 7-10 on rate_sensitivity and the 10Y is rising, flag it with the score and mechanism — e.g. 'GRMN rate_sensitivity=7: a +50bps move at 4.7% further compresses its growth multiple'>",
     "<Cross-reference MACRO SCORES: if dollar_sensitivity or geopolitical_risk is 7-10 and current conditions are adverse, flag the specific ticker and revenue/supply chain at risk>",
-    "<Any risk NOT captured by the weekly scores — news-driven, legislative, or structural change that the scores predate>"
+    "<Any risk NOT captured by the weekly scores — news-driven, legislative (direct one-step connection only per the LEGISLATIVE CONNECTION RULE), or structural change that the scores predate>"
   ],
   "rebalancing_take": "<given the macro backdrop, is the current layer drift defensible or a problem? name specific drifting layers and whether the macro supports holding that tilt>",
   "tax_timing_note": "<name specific tickers and lot dates worth acting on — approaching LT thresholds, TLH candidates, or realized gain offsets — or 'No immediate tax flags'>",
   "key_question": "<the single most important portfolio decision for this week — specific and actionable, not generic>",
   "cc_program_note": "<observation about the active CC positions — strike selection vs current prices, income generated, which 100+ share holdings could expand the program>",
   "tax_opportunity": "<specific ticker + lot date combination worth acting on for tax optimization, or 'None this week'>",
-  "legislative_watch": "<if any bill in the OFFICIAL RECORD (from the macro context) creates material risk or opportunity for specific holdings, name the bill by ID and stage, the mechanism, and the ticker most affected — or 'No material legislation this week'>"
-}}"""
+  "legislative_watch": "<apply the LEGISLATIVE CONNECTION RULE: only name a bill if it has a direct one-step impact on a specific held ticker's actual industry or business. Name the bill by ID, the holding, the mechanism, and the stage. If no bill qualifies, write 'No material legislation this week'>"
+}}
+
+{_LEG_RULE}"""
 
     full_text = ""
     try:
