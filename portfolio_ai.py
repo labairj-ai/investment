@@ -599,7 +599,26 @@ Return ONLY valid JSON — no markdown, no extra text. START with "_outlook" bef
   }}
 }}
 
-IMPORTANT: "_outlook" must appear first in the JSON. Only include tickers with news. Only include leg_risk, leg_opp, tax_angle when specifically applicable. Be direct and use concrete numbers — vague analysis is not useful."""
+Only include tickers with news. Only include leg_risk, leg_opp, tax_angle when specifically applicable. Be direct and use concrete numbers — vague analysis is not useful."""
+
+    outlook_prompt = f"""You are a portfolio risk analyst. Given the context below, produce a concise portfolio-level action briefing in JSON.
+
+MACRO: Fed={fed}%, 10Y={tnx}%, CPI={cpi}%, VIX={vix}, Dollar={dol}, Curve={crv}
+
+RECENT LEGISLATIVE/POLITICAL HEADLINES:
+{legislative_block}
+
+HOLDINGS WITH NEWS TODAY: {", ".join(tickers_with_news.keys())}
+
+Return ONLY this JSON object with exactly these four keys:
+{{
+  "top_risk": "<one sentence: the single most urgent legislative or macro risk facing this portfolio this week>",
+  "top_opportunity": "<one sentence: the clearest legislative or macro tailwind for any holding this week>",
+  "tax_watch": "<one sentence: any pending tax legislation relevant to these holdings, or null if none>",
+  "action_items": ["<action verb + specific action>", "<action verb + specific action>", "<action verb + specific action>"]
+}}
+
+Be specific. Name the legislation, the holding, or the metric. No generic statements."""
 
     def _cache_sentinel(error_msg):
         now_s = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -615,6 +634,7 @@ IMPORTANT: "_outlook" must appear first in the JSON. Only include tickers with n
             except Exception:
                 pass
 
+    # Call 1: per-ticker summaries
     full_text = ""
     try:
         for tok in ollama_client.stream_generate(
@@ -635,6 +655,26 @@ IMPORTANT: "_outlook" must appear first in the JSON. Only include tickers with n
         err = "AI returned malformed JSON"
         _cache_sentinel(err)
         return {"error": err, "raw": full_text[:500]}
+
+    # Call 2: portfolio-level outlook (short focused prompt, ~400 tokens)
+    try:
+        outlook_text = ""
+        for tok in ollama_client.stream_generate(
+            outlook_prompt, model=ollama_client.DEFAULT_MODEL,
+            temperature=0.2, num_predict=600
+        ):
+            outlook_text += tok
+        dec2 = json.JSONDecoder()
+        start2 = outlook_text.index("{")
+        outlook_obj, _ = dec2.raw_decode(outlook_text, start2)
+        summaries["_outlook"] = outlook_obj
+    except Exception:
+        summaries["_outlook"] = {
+            "top_risk": "Unable to generate — check AI server.",
+            "top_opportunity": None,
+            "tax_watch": None,
+            "action_items": [],
+        }
 
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if DB_PATH.exists():
