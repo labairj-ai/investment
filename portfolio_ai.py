@@ -641,22 +641,19 @@ def generate_news_summaries(force: bool = False) -> dict:
     news_tickers = list(tickers_with_news.keys())
     _, scores_block = _get_macro_scores_block(tickers=news_tickers, compact=True)
 
-    import financials_fetcher
+    # Keep news content lean to stay within 8192-token context window
     news_block = ""
     for ticker, items in tickers_with_news.items():
         news_block += f"\n{ticker}:\n"
-        for item in items[:6]:
+        for item in items[:4]:
             src     = item.get("source", "")
             title   = item.get("title", "")
             body    = item.get("body", "")
             excerpt = item.get("excerpt", "")
             news_block += f"  [{src}] {title}\n"
-            detail = body[:700] if body else excerpt[:300] if excerpt else ""
+            detail = body[:150] if body else excerpt[:100] if excerpt else ""
             if detail:
                 news_block += f"    {detail}\n"
-        fin_summary = financials_fetcher.get_financial_summary(ticker)
-        if fin_summary:
-            news_block += fin_summary + "\n"
 
     fed   = macro.get("fed_funds", "N/A")
     tnx   = macro.get("yield_10y", "N/A")
@@ -792,7 +789,7 @@ Be specific. Name the legislation, the holding, or the metric. No generic statem
     try:
         for tok in ollama_client.stream_generate(
             prompt, model=ollama_client.DEFAULT_MODEL,
-            temperature=0.3, num_predict=5500
+            temperature=0.3, num_predict=6000
         ):
             full_text += tok
     except Exception as e:
