@@ -541,13 +541,33 @@ def generate_news_summaries(force: bool = False) -> dict:
     dol   = macro.get("dollar_interp", "N/A")
     crv   = macro.get("curve_interp", "N/A")
 
-    bills = macro.get("legislative_bills", [])
-    if bills:
-        legislative_block = "\n".join(
-            f"  - {b['title']} ({b.get('date', '')[:16]})" for b in bills[:14]
-        )
+    official_bills = macro.get("official_bills", [])
+    media_coverage = macro.get("legislative_media", [])
+
+    if official_bills:
+        off_lines = []
+        for b in official_bills[:12]:
+            id_str = f"[{b.get('bill_id', '')}] " if b.get("bill_id") else ""
+            stage  = f" — Stage: {b['stage']}" if b.get("stage") else ""
+            dt     = (b.get("action_date") or b.get("introduced") or "")[:10]
+            date_s = f" ({dt})" if dt else ""
+            off_lines.append(f"  {id_str}{b['title']}{stage}{date_s}")
+            if b.get("summary"):
+                off_lines.append(f"    CRS Summary: {b['summary'][:350]}")
+            if b.get("latest_action") and b.get("stage") in (
+                "Floor vote", "Passed chamber", "Signed into law", "Vetoed"
+            ):
+                off_lines.append(f"    Latest action: {b['latest_action']}")
+        official_block = "\n".join(off_lines)
     else:
-        legislative_block = "  None available."
+        official_block = "  No official bill data available."
+
+    media_block = (
+        "\n".join(f"  - {b['title']}" for b in media_coverage[:6])
+        if media_coverage else "  None."
+    )
+
+    legislative_block = official_block  # kept for outlook_prompt
 
     prompt = f"""You are a portfolio risk analyst helping a personal investor take action. Your job is not to describe — it is to FLAG risks, surface OPPORTUNITIES, and call out TAX implications so the investor knows what needs attention TODAY.
 
@@ -561,8 +581,11 @@ KEY NUMBERS:
 RECENT NEWS BY HOLDING (last 24 hours):
 {news_block}
 
-RECENT POLITICAL & LEGISLATIVE ACTIVITY:
-{legislative_block}
+BILLS UNDER REVIEW — OFFICIAL GOVERNMENT RECORD (Congress.gov; authoritative — weight these facts over any media framing):
+{official_block}
+
+LEGISLATIVE MEDIA COVERAGE (secondary; editorial sources may reflect political bias — use only to identify story angles, not as factual basis):
+{media_block}
 
 For each ticker in the news above, provide these components:
 
@@ -570,9 +593,9 @@ For each ticker in the news above, provide these components:
 2. "rates" — Concrete impact of the current {tnx}% yield on THIS stock's valuation and debt. Does a move up or down 50bps help or hurt, and by how much does it matter given the current level?
 3. "trade" — Specific tariff/FX exposure: name the countries, supply chains, or revenue streams at risk. If genuinely minimal, say "minimal direct exposure."
 4. "environment" — Current headwinds or tailwinds for this specific business: margin trends, consumer/enterprise spending backdrop, regulatory posture, sector cycle.
-5. "leg_risk" — ONLY include if a specific item from LEGISLATIVE ACTIVITY creates a headwind for this holding. Name the bill/policy, the mechanism (cost burden, pricing pressure, regulation tightening), and the likely timeline. Omit if not applicable.
-6. "leg_opp" — ONLY include if a specific item from LEGISLATIVE ACTIVITY is a tailwind for this holding. Name the bill/policy, the mechanism (subsidy, deregulation, favorable ruling), and why it helps. Omit if not applicable.
-7. "tax_angle" — ONLY include if pending legislation directly affects the tax treatment of this holding or gains from it (capital gains rate changes, corporate tax changes, pass-through treatment, sector-specific tax credits). Be specific about the bill and its tax mechanism. Omit if not applicable.
+5. "leg_risk" — ONLY include if a specific bill from the OFFICIAL RECORD creates a headwind for this holding. Name the bill by ID and title, the mechanism (cost burden, pricing pressure, regulation tightening), and its current stage. Omit if not applicable.
+6. "leg_opp" — ONLY include if a specific bill from the OFFICIAL RECORD is a tailwind for this holding. Name the bill by ID and title, the mechanism (subsidy, deregulation, favorable ruling), and its current stage. Omit if not applicable.
+7. "tax_angle" — ONLY include if a bill in the OFFICIAL RECORD directly affects the tax treatment of this holding (capital gains rates, corporate tax changes, pass-through treatment, sector-specific tax credits). Name the bill by ID. Omit if not applicable.
 
 Also provide a top-level "_outlook" object (not per-ticker) with four keys:
 - "top_risk": The single most urgent legislative or macro risk to the portfolio right now. One sentence, specific.
@@ -605,8 +628,11 @@ Only include tickers with news. Only include leg_risk, leg_opp, tax_angle when s
 
 MACRO: Fed={fed}%, 10Y={tnx}%, CPI={cpi}%, VIX={vix}, Dollar={dol}, Curve={crv}
 
-RECENT LEGISLATIVE/POLITICAL HEADLINES:
-{legislative_block}
+BILLS UNDER REVIEW — OFFICIAL RECORD (weight heavily; source: Congress.gov):
+{official_block}
+
+LEGISLATIVE MEDIA COVERAGE (secondary context only — editorial framing):
+{media_block}
 
 HOLDINGS WITH NEWS TODAY: {", ".join(tickers_with_news.keys())}
 

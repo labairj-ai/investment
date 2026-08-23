@@ -6,10 +6,11 @@ Results cached in out/macro_cache.json with a 30-minute TTL.
 """
 import json
 import os
+import re
 import time
 import urllib.request
 import xml.etree.ElementTree as ET
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -20,15 +21,36 @@ TZ = ZoneInfo("America/New_York")
 
 FRED_BASE = "https://api.stlouisfed.org/fred/series/observations"
 
+CONGRESS_API_BASE = "https://api.congress.gov/v3"
+BILLS_CACHE_PATH  = PROJECT_DIR / "out" / "bills_cache.json"
+BILLS_CACHE_TTL   = 6 * 3600  # 6 hours — bill status changes slowly
+
+_BILL_TYPE_DISPLAY = {
+    "hr": "H.R.", "s": "S.", "hjres": "H.J.Res.", "sjres": "S.J.Res.",
+    "hconres": "H.Con.Res.", "sconres": "S.Con.Res.", "hres": "H.Res.", "sres": "S.Res.",
+}
+_BILL_TYPE_PATH = {
+    "hr": "house-bill", "s": "senate-bill",
+    "hjres": "house-joint-resolution", "sjres": "senate-joint-resolution",
+    "hconres": "house-concurrent-resolution", "sconres": "senate-concurrent-resolution",
+    "hres": "house-resolution", "sres": "senate-resolution",
+}
+
 RSS_URLS = [
     "https://feeds.finance.yahoo.com/rss/2.0/headline?region=US&lang=en-US",
     "https://feeds.a.dj.com/rss/RSSMarketsMain.xml",
 ]
 
-LEGISLATIVE_RSS_URLS = [
-    "https://rss.politico.com/congress.xml",          # Politico Capitol Hill coverage
-    "https://thehill.com/homenews/senate/feed/",      # The Hill Senate
-    "https://rollcall.com/feed/",                     # Roll Call Congress
+GOVTRACK_RSS_URLS = [
+    ("introduced", "https://www.govtrack.us/congress/bills/browse?status=introduced&format=rss"),
+    ("floor_vote", "https://www.govtrack.us/congress/bills/browse?status=vote&format=rss"),
+]
+
+# Editorial sources — secondary context only; note potential political framing bias
+LEGISLATIVE_MEDIA_URLS = [
+    "https://rss.politico.com/congress.xml",
+    "https://thehill.com/homenews/senate/feed/",
+    "https://rollcall.com/feed/",
 ]
 
 
@@ -236,35 +258,163 @@ def _fetch_headlines(max_items: int = 7) -> list[str]:
     return headlines
 
 
-def _fetch_legislative_bills(max_items: int = 12) -> list:
-    """Fetch recent US legislative activity from Congress.gov and Roll Call RSS feeds.
-    Returns list of {title, date, link} dicts ordered by source priority."""
+def _bill_stage(action_text: str) -> str:
+    t = action_text.lower()
+    if any(w in t for w in ["signed by president", "became public law", "enacted", "public law"]):
+        return "Signed into law"
+    if "vetoed" in t:
+        return "Vetoed"
+    if any(w in t for w in ["passed senate", "passed house", "senate agreed", "house agreed"]):
+        return "Passed chamber"
+    if any(w in t for w in ["roll call", "on passage", "on motion", "yeas and nays",
+                             "failed of passage", "cloture"]):
+        return "Floor vote"
+    if any(w in t for w in ["placed on calendar", "calendar", "rule providing"]):
+        return "Floor-bound"
+    if any(w in t for w in ["markup", "reported", "ordered to be reported"]):
+        return "Committee markup"
+    if any(w in t for w in ["referred", "committee", "hearing", "subcommittee"]):
+        return "In committee"
+    if "introduced" in t:
+        return "Introduced"
+    return "Active"
+
+
+def _fetch_crs_summary(congress: int, bill_type: str, number: str, api_key: str) -> str:
+    """Fetch most recent CRS summary from Congress.gov API. Returns plain text ≤600 chars."""
+    url = (
+        f"{CONGRESS_API_BASE}/bill/{congress}/{bill_type.lower()}/{number}/summaries"
+        f"?api_key={api_key}"
+    )
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "investment-ai/1.0"})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            data = json.loads(r.read())
+        summaries = data.get("summaries", [])
+        if summaries:
+            text = summaries[-1].get("text", "")
+            text = re.sub(r"<[^>]+>", " ", text)
+            text = re.sub(r"\s+", " ", text).strip()
+            return text[:600]
+    except Exception:
+        pass
+    return ""
+
+
+def _fetch_congress_api_bills(api_key: str, days_back: int = 14, max_bills: int = 20) -> list:
+    """Fetch recently active bills from Congress.gov official API with CRS summaries.
+    Summaries fetched only for bills flagged hasSummary=true, capped at 8 to limit latency."""
+    if not api_key:
+        return []
+    from_date = (date.today() - timedelta(days=days_back)).isoformat() + "T00:00:00Z"
+    url = (
+        f"{CONGRESS_API_BASE}/bill"
+        f"?fromDateTime={from_date}"
+        f"&sort=updateDate+desc"
+        f"&limit={max_bills}"
+        f"&api_key={api_key}"
+    )
     bills = []
-    seen_titles = set()
-    for url in LEGISLATIVE_RSS_URLS:
-        if len(bills) >= max_items:
-            break
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "investment-ai/1.0"})
+        with urllib.request.urlopen(req, timeout=12) as r:
+            data = json.loads(r.read())
+        congress_num = (date.today().year - 1789) // 2 + 1
+        summary_count = 0
+        for b in data.get("bills", []):
+            btype  = b.get("type", "").lower()
+            bnum   = str(b.get("number", ""))
+            action = b.get("latestAction", {})
+            action_text = action.get("text", "")
+            display_id  = f"{_BILL_TYPE_DISPLAY.get(btype, btype.upper())} {bnum}".strip()
+            cgnum  = b.get("congress", congress_num)
+            path   = _BILL_TYPE_PATH.get(btype, btype)
+            last2  = cgnum % 100
+            last1  = cgnum % 10
+            suffix = "th" if last2 in range(11, 14) else {1: "st", 2: "nd", 3: "rd"}.get(last1, "th")
+            human_url = f"https://www.congress.gov/bill/{cgnum}{suffix}-congress/{path}/{bnum}"
+            entry = {
+                "bill_id":       display_id,
+                "title":         b.get("title", ""),
+                "introduced":    b.get("introducedDate", ""),
+                "latest_action": action_text,
+                "action_date":   action.get("actionDate", ""),
+                "stage":         _bill_stage(action_text),
+                "url":           human_url,
+                "summary":       "",
+                "source":        "Congress.gov",
+            }
+            if b.get("hasSummary") and summary_count < 8:
+                entry["summary"] = _fetch_crs_summary(cgnum, btype, bnum, api_key)
+                summary_count += 1
+                time.sleep(0.2)
+            bills.append(entry)
+    except Exception:
+        pass
+    return bills
+
+
+def _fetch_govtrack_bills(max_items: int = 10) -> list:
+    """Non-partisan fallback: recently introduced and floor-vote bills from GovTrack."""
+    bills = []
+    seen  = set()
+    for stage_label, url in GOVTRACK_RSS_URLS:
         try:
-            req = urllib.request.Request(
-                url,
-                headers={"User-Agent": "Mozilla/5.0 investment-ai/1.0"}
-            )
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 investment-ai/1.0"})
             with urllib.request.urlopen(req, timeout=10) as r:
-                xml_bytes = r.read()
-            root = ET.fromstring(xml_bytes)
+                root = ET.fromstring(r.read())
             for item in root.findall(".//item"):
                 title = item.findtext("title", "").strip()
-                if not title or title in seen_titles:
+                if not title or title in seen:
                     continue
-                pub_date = item.findtext("pubDate", "").strip()
-                link = item.findtext("link", "").strip()
-                seen_titles.add(title)
-                bills.append({"title": title, "date": pub_date, "link": link})
+                seen.add(title)
+                desc = item.findtext("description", "").strip()
+                desc = re.sub(r"<[^>]+>", " ", desc).strip()
+                bills.append({
+                    "bill_id":       "",
+                    "title":         title,
+                    "introduced":    "",
+                    "latest_action": "",
+                    "action_date":   item.findtext("pubDate", "").strip()[:16],
+                    "stage":         "Floor vote" if stage_label == "floor_vote" else "Introduced",
+                    "url":           item.findtext("link", "").strip(),
+                    "summary":       desc[:500] if desc else "",
+                    "source":        "GovTrack",
+                })
                 if len(bills) >= max_items:
-                    break
+                    return bills
         except Exception:
             continue
     return bills
+
+
+def _fetch_legislative_media(max_items: int = 8) -> list:
+    """Legislative headlines from editorial sources (Politico, The Hill, Roll Call).
+    Secondary context only — reflects editorial framing, not official record."""
+    items = []
+    seen  = set()
+    for url in LEGISLATIVE_MEDIA_URLS:
+        if len(items) >= max_items:
+            break
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 investment-ai/1.0"})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                root = ET.fromstring(r.read())
+            for item in root.findall(".//item"):
+                title = item.findtext("title", "").strip()
+                if not title or title in seen:
+                    continue
+                seen.add(title)
+                items.append({
+                    "title": title,
+                    "date":  item.findtext("pubDate", "").strip(),
+                    "link":  item.findtext("link", "").strip(),
+                })
+                if len(items) >= max_items:
+                    break
+        except Exception:
+            continue
+    return items
 
 
 # ── Main assembler ────────────────────────────────────────────────────────────
@@ -282,12 +432,35 @@ def fetch(force: bool = False) -> dict:
 
     from dotenv import load_dotenv
     load_dotenv(PROJECT_DIR / ".env")
-    fred_key = os.environ.get("FRED_API_KEY", "")
+    fred_key     = os.environ.get("FRED_API_KEY", "")
+    congress_key = os.environ.get("CONGRESS_API_KEY", "")
 
-    yf_data = _fetch_yf_proxies()
-    fred    = _fetch_fred_indicators(fred_key)
+    yf_data   = _fetch_yf_proxies()
+    fred      = _fetch_fred_indicators(fred_key)
     headlines = _fetch_headlines()
-    legislative_bills = _fetch_legislative_bills()
+
+    # Official bill data — separate 6-hour cache so summary fetches don't slow every macro refresh
+    official_bills = []
+    bills_cached   = False
+    if not force and BILLS_CACHE_PATH.exists():
+        try:
+            bc = json.loads(BILLS_CACHE_PATH.read_text())
+            if time.time() - bc.get("_fetched_at", 0) < BILLS_CACHE_TTL:
+                official_bills = bc.get("bills", [])
+                bills_cached   = True
+        except Exception:
+            pass
+    if not bills_cached:
+        if congress_key:
+            official_bills = _fetch_congress_api_bills(congress_key)
+        if not official_bills:
+            official_bills = _fetch_govtrack_bills()
+        BILLS_CACHE_PATH.parent.mkdir(exist_ok=True)
+        BILLS_CACHE_PATH.write_text(
+            json.dumps({"bills": official_bills, "_fetched_at": time.time()}, indent=2)
+        )
+
+    media_coverage = _fetch_legislative_media()
 
     vix_price = yf_data.get("vix", {}).get("price")
     vix_chg   = yf_data.get("vix", {}).get("chg_pct")
@@ -329,8 +502,12 @@ def fetch(force: bool = False) -> dict:
         "unemployment":  fred.get("unemployment"),
         # Headlines
         "headlines":          headlines,
-        # Legislative activity
-        "legislative_bills":  legislative_bills,
+        # Official bill record (Congress.gov API or GovTrack fallback)
+        "official_bills":     official_bills,
+        # Editorial media coverage (secondary context)
+        "legislative_media":  media_coverage,
+        # Backwards compat alias
+        "legislative_bills":  official_bills or media_coverage,
         # Cache metadata
         "_fetched_at":   time.time(),
     }
@@ -375,11 +552,25 @@ def _format_block(ctx: dict) -> str:
         for i, h in enumerate(ctx["headlines"], 1):
             lines.append(f"  {i}. {h}")
 
-    if ctx.get("legislative_bills"):
-        lines += ["", "RECENT US LEGISLATIVE ACTIVITY:"]
-        for i, b in enumerate(ctx["legislative_bills"], 1):
-            date_str = f" ({b['date'][:16]})" if b.get("date") else ""
-            lines.append(f"  {i}. {b['title']}{date_str}")
+    if ctx.get("official_bills"):
+        lines += ["", "BILLS UNDER REVIEW — OFFICIAL RECORD:"]
+        for b in ctx["official_bills"][:12]:
+            id_str = f"[{b['bill_id']}] " if b.get("bill_id") else ""
+            stage  = f" — {b['stage']}" if b.get("stage") else ""
+            dt     = (b.get("action_date") or b.get("introduced") or "")[:10]
+            date_s = f" ({dt})" if dt else ""
+            lines.append(f"  {id_str}{b['title']}{stage}{date_s}")
+            if b.get("summary"):
+                lines.append(f"    CRS Summary: {b['summary'][:300]}")
+            if b.get("latest_action") and b.get("stage") in (
+                "Floor vote", "Passed chamber", "Signed into law", "Vetoed"
+            ):
+                lines.append(f"    Action: {b['latest_action']}")
+
+    if ctx.get("legislative_media"):
+        lines += ["", "LEGISLATIVE MEDIA COVERAGE (editorial — secondary):"]
+        for b in ctx["legislative_media"][:6]:
+            lines.append(f"  - {b['title']}")
 
     return "\n".join(lines)
 
