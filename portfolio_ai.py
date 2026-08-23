@@ -675,6 +675,17 @@ Be specific. Name the legislation, the holding, or the metric. No generic statem
             "action_items": [],
         }
 
+    # DEBUG: capture summaries state before DB write
+    try:
+        import pathlib as _pl
+        _pl.Path("/tmp/news_debug_service.json").write_text(
+            json.dumps({"keys": list(summaries.keys()), "has_outlook": "_outlook" in summaries,
+                        "outlook_type": type(summaries.get("_outlook")).__name__,
+                        "outlook": summaries.get("_outlook")}, indent=2)
+        )
+    except Exception:
+        pass
+
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if DB_PATH.exists():
         conn = sqlite3.connect(str(DB_PATH), timeout=10)
