@@ -948,6 +948,9 @@ def build_dashboard(portfolio, layers, holdings):
     @media (max-width: 600px) {{ .macro-mobile-hint {{ display: inline; }} }}
     .ai-news-factor {{ font-size: 11px; color: #a0b0c8; margin: 3px 0; line-height: 1.5; padding-left: 7px; border-left: 2px solid rgba(255,255,255,.12); }}
     .ai-news-factor-label {{ font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: #718096; margin-right: 5px; }}
+    .legislative-outlook-banner {{ background: #2d1f4e; border-left: 3px solid #7c3aed; border-radius: 6px; padding: 10px 12px; margin-bottom: 14px; }}
+    .legislative-outlook-label {{ font-size: 10px; font-weight: 700; color: #a78bfa; text-transform: uppercase; letter-spacing: .07em; }}
+    .legislative-outlook-body {{ font-size: 12px; color: #c4b5fd; margin-top: 5px; line-height: 1.5; }}
     #ai-news-refresh {{
       background: none; border: 1px solid rgba(255,255,255,.15); color: #718096;
       border-radius: 4px; padding: 2px 8px; font-size: 10px; cursor: pointer;
@@ -7010,6 +7013,9 @@ function toggleMacroDetail(safeId) {{
       return '<span id="ai-news-loading" style="color:#718096;font-size:12px;">No holding-specific news found.</span>';
     }}
     let html = '';
+    if (summaries && summaries._legislative_outlook) {{
+      html += `<div class="legislative-outlook-banner"><span class="legislative-outlook-label">⚖ Legislative Watch</span><div class="legislative-outlook-body">${{summaries._legislative_outlook}}</div></div>`;
+    }}
     for (const ticker of tickers) {{
       const items = bt[ticker];
       if (!items || !items.length) continue;
@@ -7021,6 +7027,7 @@ function toggleMacroDetail(safeId) {{
           if (s.rates)       html += `<div class="ai-news-factor"><span class="ai-news-factor-label">📈 Rates</span>${{s.rates}}</div>`;
           if (s.trade)       html += `<div class="ai-news-factor"><span class="ai-news-factor-label">🌐 Trade</span>${{s.trade}}</div>`;
           if (s.environment) html += `<div class="ai-news-factor"><span class="ai-news-factor-label">🏛 Environment</span>${{s.environment}}</div>`;
+          if (s.legislation) html += `<div class="ai-news-factor"><span class="ai-news-factor-label">⚖ Legislation</span>${{s.legislation}}</div>`;
         }} else if (s.summary) {{
           html += `<div class="ai-news-summary">${{s.summary}}</div>`;
           if (s.macro_angle) html += `<div class="ai-news-macro">📊 ${{s.macro_angle}}</div>`;

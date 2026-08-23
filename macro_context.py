@@ -25,6 +25,12 @@ RSS_URLS = [
     "https://feeds.a.dj.com/rss/RSSMarketsMain.xml",
 ]
 
+LEGISLATIVE_RSS_URLS = [
+    "https://www.congress.gov/rss/bill-introduced.xml",
+    "https://www.congress.gov/rss/bill-voted.xml",
+    "https://rollcall.com/feed/",
+]
+
 
 def _safe_float(v, default=None):
     try:
@@ -230,6 +236,37 @@ def _fetch_headlines(max_items: int = 7) -> list[str]:
     return headlines
 
 
+def _fetch_legislative_bills(max_items: int = 12) -> list:
+    """Fetch recent US legislative activity from Congress.gov and Roll Call RSS feeds.
+    Returns list of {title, date, link} dicts ordered by source priority."""
+    bills = []
+    seen_titles = set()
+    for url in LEGISLATIVE_RSS_URLS:
+        if len(bills) >= max_items:
+            break
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": "Mozilla/5.0 investment-ai/1.0"}
+            )
+            with urllib.request.urlopen(req, timeout=10) as r:
+                xml_bytes = r.read()
+            root = ET.fromstring(xml_bytes)
+            for item in root.findall(".//item"):
+                title = item.findtext("title", "").strip()
+                if not title or title in seen_titles:
+                    continue
+                pub_date = item.findtext("pubDate", "").strip()
+                link = item.findtext("link", "").strip()
+                seen_titles.add(title)
+                bills.append({"title": title, "date": pub_date, "link": link})
+                if len(bills) >= max_items:
+                    break
+        except Exception:
+            continue
+    return bills
+
+
 # ── Main assembler ────────────────────────────────────────────────────────────
 
 def fetch(force: bool = False) -> dict:
@@ -250,6 +287,7 @@ def fetch(force: bool = False) -> dict:
     yf_data = _fetch_yf_proxies()
     fred    = _fetch_fred_indicators(fred_key)
     headlines = _fetch_headlines()
+    legislative_bills = _fetch_legislative_bills()
 
     vix_price = yf_data.get("vix", {}).get("price")
     vix_chg   = yf_data.get("vix", {}).get("chg_pct")
@@ -290,7 +328,9 @@ def fetch(force: bool = False) -> dict:
         "cpi_yoy":       fred.get("cpi_yoy"),
         "unemployment":  fred.get("unemployment"),
         # Headlines
-        "headlines":     headlines,
+        "headlines":          headlines,
+        # Legislative activity
+        "legislative_bills":  legislative_bills,
         # Cache metadata
         "_fetched_at":   time.time(),
     }
@@ -334,6 +374,12 @@ def _format_block(ctx: dict) -> str:
         lines += ["", "TODAY'S TOP FINANCIAL HEADLINES:"]
         for i, h in enumerate(ctx["headlines"], 1):
             lines.append(f"  {i}. {h}")
+
+    if ctx.get("legislative_bills"):
+        lines += ["", "RECENT US LEGISLATIVE ACTIVITY:"]
+        for i, b in enumerate(ctx["legislative_bills"], 1):
+            date_str = f" ({b['date'][:16]})" if b.get("date") else ""
+            lines.append(f"  {i}. {b['title']}{date_str}")
 
     return "\n".join(lines)
 

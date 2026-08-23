@@ -540,6 +540,14 @@ def generate_news_summaries(force: bool = False) -> dict:
     dol   = macro.get("dollar_interp", "N/A")
     crv   = macro.get("curve_interp", "N/A")
 
+    bills = macro.get("legislative_bills", [])
+    if bills:
+        legislative_block = "\n".join(
+            f"  - {b['title']} ({b.get('date', '')[:16]})" for b in bills[:12]
+        )
+    else:
+        legislative_block = "  None available."
+
     prompt = f"""You are a financial analyst synthesizing news and macroeconomic conditions for a personal investor's portfolio.
 
 CURRENT MACRO ENVIRONMENT:
@@ -552,12 +560,18 @@ KEY NUMBERS FOR YOUR ANALYSIS:
 RECENT NEWS BY HOLDING (last 24 hours):
 {news_block}
 
-For each ticker listed above, provide four components of analysis:
+RECENT US LEGISLATIVE ACTIVITY:
+{legislative_block}
+
+For each ticker listed above, provide five components of analysis:
 
 1. "news"  — 2-3 sentence synthesis of the actual headlines. Reference specific events, numbers, or company actions from the news above.
 2. "rates" — How does this specific stock behave when interest rates RISE vs FALL? Consider the company's debt load, valuation multiple, sector (rate-sensitive vs defensive), and whether it benefits from higher yield on cash holdings. Mention the current {tnx}% 10Y yield as context.
 3. "trade" — Sensitivity to tariffs, trade deals, supply chain geography, and USD strength/weakness. Name specific countries, supply chains, or revenue exposure if known. If minimal exposure, say so briefly.
 4. "environment" — How do current conditions (CPI at {cpi}%, unemployment at {unemp}%, this stage of the business cycle, sector tailwinds/headwinds, corporate tax environment) affect this holding's near-term outlook?
+5. "legislation" — Only include this key if one or more bills from the LEGISLATIVE ACTIVITY list above directly affects this holding's sector or business. Name the specific bill/policy and its mechanism (regulation, cost burden, subsidy, pricing power, etc.). Omit this key entirely if no listed legislation is relevant.
+
+Also provide a top-level "_legislative_outlook" key (not per-ticker): 1-2 sentences naming the most market-relevant piece of legislation from the list above and its broad sector/market impact. If none of the listed items are market-relevant, write "No market-moving legislation in current feed."
 
 Return ONLY valid JSON — no markdown, no extra text:
 {{
@@ -565,8 +579,10 @@ Return ONLY valid JSON — no markdown, no extra text:
     "news": "<2-3 sentence news synthesis referencing specific headlines>",
     "rates": "<rate sensitivity: what happens when rates rise / fall for this specific stock>",
     "trade": "<tariff, trade deal, supply chain, and FX sensitivity>",
-    "environment": "<business cycle, inflation, labor market, tax, and sector environment impact>"
-  }}
+    "environment": "<business cycle, inflation, labor market, tax, and sector environment impact>",
+    "legislation": "<only if directly relevant — name the bill and impact mechanism>"
+  }},
+  "_legislative_outlook": "<1-2 sentences on the most market-relevant bill from the feed, or note if none>"
 }}
 
 Only include tickers present in the news above. Be specific and substantive — generic answers are not acceptable."""
