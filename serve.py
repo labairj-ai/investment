@@ -3994,6 +3994,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         cached = portfolio_ai.get_cached_news_summaries_today()
         if cached is not None:
+            if cached.get("_failed"):
+                self._json({"ok": False, "error": cached.get("_error", "Generation failed"), "date": today})
+                return
             self._json({"ok": True, "summaries": cached, "date": today})
             return
 

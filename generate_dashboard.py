@@ -6937,7 +6937,10 @@ function toggleMacroDetail(safeId) {{
 
   let _newsPollAttempt = 0;
   function _pollNewsSummary(bt, attempts) {{
-    if (attempts <= 0) {{ _clearNewsStatus(); return; }}
+    if (attempts <= 0) {{
+      _setNewsStatus('AI analysis is taking longer than expected — reload to check status.');
+      return;
+    }}
     _newsPollAttempt++;
     const elapsed = _newsPollAttempt * 10;
     _setNewsStatus(`${{_aiSpinner}} AI analysis generating — ${{elapsed}}s elapsed, checking again in 10s…`);
@@ -6950,6 +6953,8 @@ function toggleMacroDetail(safeId) {{
       if (data.ok && data.summaries) {{
         const body = document.getElementById('ai-news-body');
         if (body) body.innerHTML = _renderNewsBody(bt, data.summaries, false);
+      }} else if (!data.ok && data.error) {{
+        _setNewsStatus(`AI analysis failed: ${{data.error}}`);
       }}
     }}).catch(() => {{ _clearNewsStatus(); }});
   }}
@@ -6975,7 +6980,7 @@ function toggleMacroDetail(safeId) {{
       body.innerHTML = _renderNewsBody(bt, summaries, generating);
       if (generating) {{
         _setNewsStatus(`${{_aiSpinner}} AI analysis generating — will auto-update when ready…`);
-        _newsSummaryPollTimer = setTimeout(() => _pollNewsSummary(bt, 24), 10000);
+        _newsSummaryPollTimer = setTimeout(() => _pollNewsSummary(bt, 48), 10000);
       }} else {{
         _clearNewsStatus();
       }}

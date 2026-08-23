@@ -440,17 +440,30 @@ def get_cached_insight_today():
 
 
 def get_cached_news_summaries_today():
-    """Return today's cached per-ticker news summaries from DB, or None."""
+    """Return today's cached per-ticker news summaries from DB, or None.
+    Returns None for error sentinels older than 30 minutes (allowing a retry)."""
     _init_ai_tables()
     today = date.today().isoformat()
     if not DB_PATH.exists():
         return None
     try:
         conn = sqlite3.connect(str(DB_PATH), timeout=5)
-        row = conn.execute("SELECT summaries FROM news_summaries WHERE day=?", (today,)).fetchone()
+        row = conn.execute(
+            "SELECT summaries, generated_at FROM news_summaries WHERE day=?", (today,)
+        ).fetchone()
         conn.close()
         if row and row[0]:
-            return json.loads(row[0])
+            data = json.loads(row[0])
+            if data.get("_failed"):
+                # Allow retry after 30-minute cooldown
+                try:
+                    gen_ts = datetime.strptime(row[1], "%Y-%m-%d %H:%M:%S")
+                    if (datetime.now() - gen_ts).total_seconds() < 1800:
+                        return data  # still in cooldown — block retry
+                except Exception:
+                    pass
+                return None  # cooldown expired — allow fresh attempt
+            return data
     except Exception:
         pass
     return None
@@ -548,22 +561,40 @@ Return ONLY valid JSON — no markdown, no extra text:
 
 Only include tickers present in the news above. Be specific and substantive — generic answers are not acceptable."""
 
+    def _cache_sentinel(error_msg):
+        now_s = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        if DB_PATH.exists():
+            try:
+                c = sqlite3.connect(str(DB_PATH), timeout=10)
+                c.execute(
+                    "INSERT OR REPLACE INTO news_summaries (day, summaries, generated_at) VALUES (?,?,?)",
+                    (today, json.dumps({"_failed": True, "_error": error_msg}), now_s)
+                )
+                c.commit()
+                c.close()
+            except Exception:
+                pass
+
     full_text = ""
     try:
         for tok in ollama_client.stream_generate(
             prompt, model=ollama_client.DEFAULT_MODEL,
-            temperature=0.3, num_predict=8000
+            temperature=0.3, num_predict=3500
         ):
             full_text += tok
     except Exception as e:
-        return {"error": f"AI generation failed: {e}"}
+        err = f"AI generation failed: {e}"
+        _cache_sentinel(err)
+        return {"error": err}
 
     try:
         dec = json.JSONDecoder()
         start = full_text.index("{")
         summaries, _ = dec.raw_decode(full_text, start)
     except (ValueError, json.JSONDecodeError):
-        return {"error": "AI returned malformed JSON", "raw": full_text[:500]}
+        err = "AI returned malformed JSON"
+        _cache_sentinel(err)
+        return {"error": err, "raw": full_text[:500]}
 
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if DB_PATH.exists():
