@@ -948,9 +948,32 @@ def build_dashboard(portfolio, layers, holdings):
     @media (max-width: 600px) {{ .macro-mobile-hint {{ display: inline; }} }}
     .ai-news-factor {{ font-size: 11px; color: #a0b0c8; margin: 3px 0; line-height: 1.5; padding-left: 7px; border-left: 2px solid rgba(255,255,255,.12); }}
     .ai-news-factor-label {{ font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: #718096; margin-right: 5px; }}
-    .legislative-outlook-banner {{ background: #2d1f4e; border-left: 3px solid #7c3aed; border-radius: 6px; padding: 10px 12px; margin-bottom: 14px; }}
+    .legislative-outlook-banner {{ background: #1e1535; border-left: 3px solid #7c3aed; border-radius: 6px; padding: 12px 14px; margin-bottom: 16px; }}
     .legislative-outlook-label {{ font-size: 10px; font-weight: 700; color: #a78bfa; text-transform: uppercase; letter-spacing: .07em; }}
     .legislative-outlook-body {{ font-size: 12px; color: #c4b5fd; margin-top: 5px; line-height: 1.5; }}
+    .news-outlook-panel {{ display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }}
+    @media (max-width: 600px) {{ .news-outlook-panel {{ grid-template-columns: 1fr; }} }}
+    .news-outlook-cell {{ border-radius: 5px; padding: 8px 10px; }}
+    .news-outlook-cell-label {{ font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 4px; }}
+    .news-outlook-cell-body {{ font-size: 11px; line-height: 1.5; }}
+    .news-outlook-risk {{ background: #2d1515; border-left: 3px solid #e74c3c; }}
+    .news-outlook-risk .news-outlook-cell-label {{ color: #fc8181; }}
+    .news-outlook-risk .news-outlook-cell-body {{ color: #feb2b2; }}
+    .news-outlook-opp {{ background: #14291a; border-left: 3px solid #27ae60; }}
+    .news-outlook-opp .news-outlook-cell-label {{ color: #68d391; }}
+    .news-outlook-opp .news-outlook-cell-body {{ color: #9ae6b4; }}
+    .news-outlook-tax {{ background: #1e1535; border-left: 3px solid #9f7aea; }}
+    .news-outlook-tax .news-outlook-cell-label {{ color: #b794f4; }}
+    .news-outlook-tax .news-outlook-cell-body {{ color: #d6bcfa; }}
+    .news-action-list {{ border-top: 1px solid rgba(255,255,255,.08); padding-top: 8px; margin-top: 4px; }}
+    .news-action-list-label {{ font-size: 10px; font-weight: 700; color: #a78bfa; text-transform: uppercase; letter-spacing: .07em; margin-bottom: 6px; }}
+    .news-action-item {{ font-size: 11px; color: #e2e8f0; line-height: 1.6; padding: 2px 0; }}
+    .ai-news-leg-risk {{ border-left-color: rgba(231,76,60,.4) !important; }}
+    .ai-news-leg-risk .ai-news-factor-label {{ color: #fc8181 !important; }}
+    .ai-news-leg-opp {{ border-left-color: rgba(39,174,96,.4) !important; }}
+    .ai-news-leg-opp .ai-news-factor-label {{ color: #68d391 !important; }}
+    .ai-news-tax {{ border-left-color: rgba(159,122,234,.4) !important; }}
+    .ai-news-tax .ai-news-factor-label {{ color: #b794f4 !important; }}
     #ai-news-refresh {{
       background: none; border: 1px solid rgba(255,255,255,.15); color: #718096;
       border-radius: 4px; padding: 2px 8px; font-size: 10px; cursor: pointer;
@@ -7013,9 +7036,34 @@ function toggleMacroDetail(safeId) {{
       return '<span id="ai-news-loading" style="color:#718096;font-size:12px;">No holding-specific news found.</span>';
     }}
     let html = '';
-    if (summaries && summaries._legislative_outlook) {{
+
+    // Portfolio-level action/outlook panel
+    const outlook = summaries && summaries._outlook;
+    if (outlook) {{
+      let panelHtml = '<div class="news-outlook-panel">';
+      if (outlook.top_risk) {{
+        panelHtml += `<div class="news-outlook-cell news-outlook-risk"><div class="news-outlook-cell-label">🔴 Top Risk</div><div class="news-outlook-cell-body">${{outlook.top_risk}}</div></div>`;
+      }}
+      if (outlook.top_opportunity) {{
+        panelHtml += `<div class="news-outlook-cell news-outlook-opp"><div class="news-outlook-cell-label">🟢 Opportunity</div><div class="news-outlook-cell-body">${{outlook.top_opportunity}}</div></div>`;
+      }}
+      if (outlook.tax_watch) {{
+        panelHtml += `<div class="news-outlook-cell news-outlook-tax"><div class="news-outlook-cell-label">⚖ Tax Watch</div><div class="news-outlook-cell-body">${{outlook.tax_watch}}</div></div>`;
+      }}
+      panelHtml += '</div>';
+      if (outlook.action_items && outlook.action_items.length) {{
+        panelHtml += '<div class="news-action-list"><div class="news-action-list-label">📋 Action Items</div>';
+        for (const item of outlook.action_items) {{
+          panelHtml += `<div class="news-action-item">▸ ${{item}}</div>`;
+        }}
+        panelHtml += '</div>';
+      }}
+      html += `<div class="legislative-outlook-banner">${{panelHtml}}</div>`;
+    }} else if (summaries && summaries._legislative_outlook) {{
+      // backward-compat: old string format
       html += `<div class="legislative-outlook-banner"><span class="legislative-outlook-label">⚖ Legislative Watch</span><div class="legislative-outlook-body">${{summaries._legislative_outlook}}</div></div>`;
     }}
+
     for (const ticker of tickers) {{
       const items = bt[ticker];
       if (!items || !items.length) continue;
@@ -7027,13 +7075,17 @@ function toggleMacroDetail(safeId) {{
           if (s.rates)       html += `<div class="ai-news-factor"><span class="ai-news-factor-label">📈 Rates</span>${{s.rates}}</div>`;
           if (s.trade)       html += `<div class="ai-news-factor"><span class="ai-news-factor-label">🌐 Trade</span>${{s.trade}}</div>`;
           if (s.environment) html += `<div class="ai-news-factor"><span class="ai-news-factor-label">🏛 Environment</span>${{s.environment}}</div>`;
-          if (s.legislation) html += `<div class="ai-news-factor"><span class="ai-news-factor-label">⚖ Legislation</span>${{s.legislation}}</div>`;
+          if (s.leg_risk)    html += `<div class="ai-news-factor ai-news-leg-risk"><span class="ai-news-factor-label">🔴 Legislative Risk</span>${{s.leg_risk}}</div>`;
+          if (s.leg_opp)     html += `<div class="ai-news-factor ai-news-leg-opp"><span class="ai-news-factor-label">🟢 Legislative Opp</span>${{s.leg_opp}}</div>`;
+          if (s.tax_angle)   html += `<div class="ai-news-factor ai-news-tax"><span class="ai-news-factor-label">⚖ Tax Angle</span>${{s.tax_angle}}</div>`;
+          // backward-compat: old single legislation key
+          if (s.legislation && !s.leg_risk && !s.leg_opp) html += `<div class="ai-news-factor"><span class="ai-news-factor-label">⚖ Legislation</span>${{s.legislation}}</div>`;
         }} else if (s.summary) {{
           html += `<div class="ai-news-summary">${{s.summary}}</div>`;
           if (s.macro_angle) html += `<div class="ai-news-macro">📊 ${{s.macro_angle}}</div>`;
         }}
       }} else if (generating) {{
-        html += `<div style="font-size:11px;color:#4a5568;font-style:italic;padding:2px 0 4px;">Analyzing news…</div>`;
+        html += `<div style="font-size:11px;color:#4a5568;font-style:italic;padding:2px 0 4px;">Analyzing…</div>`;
       }}
       html += '</div>';
     }}

@@ -492,7 +492,8 @@ def generate_news_summaries(force: bool = False) -> dict:
         cached = get_cached_news_summaries_today()
         if cached is not None:
             sample = next((v for v in cached.values() if isinstance(v, dict)), {})
-            if sample.get("rates"):  # new-format cache present
+            # Accept cache only if it has the current schema (news + rates + _outlook at portfolio level)
+            if sample.get("rates") and cached.get("_outlook"):
                 return cached
 
     if not ollama_client.available():
@@ -543,49 +544,62 @@ def generate_news_summaries(force: bool = False) -> dict:
     bills = macro.get("legislative_bills", [])
     if bills:
         legislative_block = "\n".join(
-            f"  - {b['title']} ({b.get('date', '')[:16]})" for b in bills[:12]
+            f"  - {b['title']} ({b.get('date', '')[:16]})" for b in bills[:14]
         )
     else:
         legislative_block = "  None available."
 
-    prompt = f"""You are a financial analyst synthesizing news and macroeconomic conditions for a personal investor's portfolio.
+    prompt = f"""You are a portfolio risk analyst helping a personal investor take action. Your job is not to describe — it is to FLAG risks, surface OPPORTUNITIES, and call out TAX implications so the investor knows what needs attention TODAY.
 
 CURRENT MACRO ENVIRONMENT:
 {macro_block}
 
-KEY NUMBERS FOR YOUR ANALYSIS:
+KEY NUMBERS:
   Fed Funds Rate: {fed}%  |  10Y Treasury: {tnx}%  |  CPI YoY: {cpi}%
   Unemployment: {unemp}%  |  VIX: {vix}  |  Dollar: {dol}  |  Yield Curve: {crv}
 
 RECENT NEWS BY HOLDING (last 24 hours):
 {news_block}
 
-RECENT US LEGISLATIVE ACTIVITY:
+RECENT POLITICAL & LEGISLATIVE ACTIVITY:
 {legislative_block}
 
-For each ticker listed above, provide five components of analysis:
+For each ticker in the news above, provide these components:
 
-1. "news"  — 2-3 sentence synthesis of the actual headlines. Reference specific events, numbers, or company actions from the news above.
-2. "rates" — How does this specific stock behave when interest rates RISE vs FALL? Consider the company's debt load, valuation multiple, sector (rate-sensitive vs defensive), and whether it benefits from higher yield on cash holdings. Mention the current {tnx}% 10Y yield as context.
-3. "trade" — Sensitivity to tariffs, trade deals, supply chain geography, and USD strength/weakness. Name specific countries, supply chains, or revenue exposure if known. If minimal exposure, say so briefly.
-4. "environment" — How do current conditions (CPI at {cpi}%, unemployment at {unemp}%, this stage of the business cycle, sector tailwinds/headwinds, corporate tax environment) affect this holding's near-term outlook?
-5. "legislation" — Only include this key if one or more bills from the LEGISLATIVE ACTIVITY list above directly affects this holding's sector or business. Name the specific bill/policy and its mechanism (regulation, cost burden, subsidy, pricing power, etc.). Omit this key entirely if no listed legislation is relevant.
+1. "news" — 2-3 sentences on what actually happened. Reference specific numbers, events, or company actions. No vague summaries.
+2. "rates" — Concrete impact of the current {tnx}% yield on THIS stock's valuation and debt. Does a move up or down 50bps help or hurt, and by how much does it matter given the current level?
+3. "trade" — Specific tariff/FX exposure: name the countries, supply chains, or revenue streams at risk. If genuinely minimal, say "minimal direct exposure."
+4. "environment" — Current headwinds or tailwinds for this specific business: margin trends, consumer/enterprise spending backdrop, regulatory posture, sector cycle.
+5. "leg_risk" — ONLY include if a specific item from LEGISLATIVE ACTIVITY creates a headwind for this holding. Name the bill/policy, the mechanism (cost burden, pricing pressure, regulation tightening), and the likely timeline. Omit if not applicable.
+6. "leg_opp" — ONLY include if a specific item from LEGISLATIVE ACTIVITY is a tailwind for this holding. Name the bill/policy, the mechanism (subsidy, deregulation, favorable ruling), and why it helps. Omit if not applicable.
+7. "tax_angle" — ONLY include if pending legislation directly affects the tax treatment of this holding or gains from it (capital gains rate changes, corporate tax changes, pass-through treatment, sector-specific tax credits). Be specific about the bill and its tax mechanism. Omit if not applicable.
 
-Also provide a top-level "_legislative_outlook" key (not per-ticker): 1-2 sentences naming the most market-relevant piece of legislation from the list above and its broad sector/market impact. If none of the listed items are market-relevant, write "No market-moving legislation in current feed."
+Also provide a top-level "_outlook" object (not per-ticker) with four keys:
+- "top_risk": The single most urgent legislative or macro risk to the portfolio right now. One sentence, specific.
+- "top_opportunity": The single clearest legislative or macro tailwind. One sentence, specific.
+- "tax_watch": Any pending legislation that could affect the investor's tax bill on current positions (capital gains rates, wash-sale rules, SALT cap changes, corporate rates). If none, write null.
+- "action_items": A JSON array of 2-4 specific, actionable things the investor should do or watch this week. Each item is one sentence starting with an action verb (Review, Consider, Watch, Monitor, Avoid).
 
 Return ONLY valid JSON — no markdown, no extra text:
 {{
   "TICKER": {{
-    "news": "<2-3 sentence news synthesis referencing specific headlines>",
-    "rates": "<rate sensitivity: what happens when rates rise / fall for this specific stock>",
-    "trade": "<tariff, trade deal, supply chain, and FX sensitivity>",
-    "environment": "<business cycle, inflation, labor market, tax, and sector environment impact>",
-    "legislation": "<only if directly relevant — name the bill and impact mechanism>"
+    "news": "...",
+    "rates": "...",
+    "trade": "...",
+    "environment": "...",
+    "leg_risk": "...",
+    "leg_opp": "...",
+    "tax_angle": "..."
   }},
-  "_legislative_outlook": "<1-2 sentences on the most market-relevant bill from the feed, or note if none>"
+  "_outlook": {{
+    "top_risk": "...",
+    "top_opportunity": "...",
+    "tax_watch": "...",
+    "action_items": ["...", "..."]
+  }}
 }}
 
-Only include tickers present in the news above. Be specific and substantive — generic answers are not acceptable."""
+Only include tickers with news. Only include leg_risk, leg_opp, tax_angle when specifically applicable. Be direct and actionable — vague analysis is not useful."""
 
     def _cache_sentinel(error_msg):
         now_s = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

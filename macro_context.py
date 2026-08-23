@@ -26,9 +26,9 @@ RSS_URLS = [
 ]
 
 LEGISLATIVE_RSS_URLS = [
-    "https://www.congress.gov/rss/bill-introduced.xml",
-    "https://www.congress.gov/rss/bill-voted.xml",
-    "https://rollcall.com/feed/",
+    "https://rss.politico.com/congress.xml",          # Politico Capitol Hill coverage
+    "https://thehill.com/homenews/senate/feed/",      # The Hill Senate
+    "https://rollcall.com/feed/",                     # Roll Call Congress
 ]
 
 
