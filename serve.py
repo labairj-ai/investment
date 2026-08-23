@@ -430,9 +430,27 @@ def _run_daily():
                 lf.write("[LayerAI] Done.\n")
             except Exception as _e:
                 lf.write(f"[LayerAI] Error: {_e}\n")
+            lf.write("[NewsRefresh] Fetching news summaries before insight…\n")
+            try:
+                import csv as _csv
+                import news_fetcher as _nf
+                import portfolio_ai as _pai
+                _tickers = []
+                _csv_path = PROJECT_DIR / "holdings.csv"
+                if _csv_path.exists():
+                    with open(_csv_path, newline="") as _f:
+                        for _row in _csv.DictReader(_f):
+                            _t = str(_row.get("Stock", "")).strip().upper()
+                            if _t:
+                                _tickers.append(_t)
+                _tickers = list(dict.fromkeys(_tickers))
+                _nf.fetch(_tickers, force=True)
+                _pai.generate_news_summaries(force=True)
+                lf.write("[NewsRefresh] News summaries done.\n")
+            except Exception as _e:
+                lf.write(f"[NewsRefresh] Failed (insight will run without news findings): {_e}\n")
             lf.write("[PortfolioAI] Generating daily insight + macro scores…\n")
             try:
-                import portfolio_ai as _pai
                 _pai._init_ai_tables()
                 _insight = _pai.generate_daily_insight(force=True)
                 if "error" not in _insight:

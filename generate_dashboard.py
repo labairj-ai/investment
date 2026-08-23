@@ -1497,6 +1497,20 @@ def build_dashboard(portfolio, layers, holdings):
 
 <div class="grid">
 
+  <!-- Holdings News -->
+  <div id="ai-news-card">
+    <h2 style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+      <span style="display:flex;align-items:center;gap:6px;cursor:pointer;" onclick="toggleAiNews()">
+        <button id="ai-news-collapse-btn" tabindex="-1">▾</button>
+        Holdings News
+      </span>
+      <span>
+        <button class="ai-refresh-btn" onclick="loadHoldingNews(true)">↻ Refresh</button>
+      </span>
+    </h2>
+    <div id="ai-news-body"><span id="ai-news-loading">Loading news…</span></div>
+  </div>
+
   <!-- AI Portfolio Insight -->
   <div id="ai-insight-card">
     <h2 style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
@@ -1510,21 +1524,8 @@ def build_dashboard(portfolio, layers, holdings):
       </span>
     </h2>
     <div id="macro-bar"><span class="macro-bar-loading">Loading indicators…</span></div>
+    <div style="font-size:11px;color:#718096;margin-bottom:10px;font-style:italic;">Refresh Holdings News first to include today's findings in the analysis.</div>
     <div id="ai-insight-body"><span class="ai-loading">Analyzing portfolio…</span></div>
-  </div>
-
-  <!-- Holdings News -->
-  <div id="ai-news-card">
-    <h2 style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
-      <span style="display:flex;align-items:center;gap:6px;cursor:pointer;" onclick="toggleAiNews()">
-        <button id="ai-news-collapse-btn" tabindex="-1">▾</button>
-        Holdings News
-      </span>
-      <span>
-        <button class="ai-refresh-btn" onclick="loadHoldingNews(true)">↻ Refresh</button>
-      </span>
-    </h2>
-    <div id="ai-news-body"><span id="ai-news-loading">Loading news…</span></div>
   </div>
 
   <!-- KPI row -->
