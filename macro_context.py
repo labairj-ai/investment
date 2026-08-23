@@ -46,6 +46,23 @@ GOVTRACK_RSS_URLS = [
     ("floor_vote", "https://www.govtrack.us/congress/bills/browse?status=vote&format=rss"),
 ]
 
+# Keyword filter: bill titles must match to be included (unless floor-active stage)
+_MARKET_TITLE_RE = re.compile(
+    r"\b(tax|taxat|tariff|trade|fiscal|budget|appropriat|deficit|debt|revenue|spending"
+    r"|reconciliat|finance|financial|bank|banking|credit|securit|invest|retirement"
+    r"|401|IRA|pension|annuit"
+    r"|energy|oil|gas|electric|grid|renewable|solar|wind|carbon|climate|nuclear|LNG|emission"
+    r"|health|healthcare|pharma|drug|Medicare|Medicaid|hospital|FDA|insur"
+    r"|defense|military|NDAA|intelligence|armed forces|DoD|national security"
+    r"|tech|technology|artificial intelligence|semiconductor|chip|cyber|digital|broadband|internet"
+    r"|import|export|sanction|customs|foreign invest|CFIUS"
+    r"|labor|employ|wage|worker|union|workforce"
+    r"|housing|mortgage|real estate|HUD|infrastructure|transport|flood|disaster"
+    r"|agriculture|food|farm|crop)\b",
+    re.IGNORECASE
+)
+_FLOOR_ACTIVE_STAGES = {"Floor vote", "Floor-bound", "Passed chamber", "Signed into law", "Vetoed"}
+
 # Editorial sources — secondary context only; note potential political framing bias
 LEGISLATIVE_MEDIA_URLS = [
     "https://rss.politico.com/congress.xml",
@@ -301,9 +318,17 @@ def _fetch_crs_summary(congress: int, bill_type: str, number: str, api_key: str)
     return ""
 
 
-def _fetch_congress_api_bills(api_key: str, days_back: int = 14, max_bills: int = 20) -> list:
-    """Fetch recently active bills from Congress.gov official API with CRS summaries.
-    Summaries fetched only for bills flagged hasSummary=true, capped at 8 to limit latency."""
+def _normalize_bill_title(title: str) -> str:
+    """Normalize for deduplication — strips year/act suffix, lowercases, collapses whitespace."""
+    t = re.sub(r"\s+act\b.*", "", title, flags=re.IGNORECASE).strip()
+    return re.sub(r"\W+", " ", t).lower().strip()
+
+
+def _fetch_congress_api_bills(api_key: str, days_back: int = 30, max_bills: int = 40) -> list:
+    """Fetch recently active bills from Congress.gov official API.
+    Filters to market-relevant titles; always includes floor-active stages.
+    Deduplicates House/Senate companion bills. Returns up to 15 bills.
+    CRS summaries fetched for up to 8 bills with hasSummary=true."""
     if not api_key:
         return []
     from_date = (date.today() - timedelta(days=days_back)).isoformat() + "T00:00:00Z"
@@ -314,13 +339,12 @@ def _fetch_congress_api_bills(api_key: str, days_back: int = 14, max_bills: int 
         f"&limit={max_bills}"
         f"&api_key={api_key}"
     )
-    bills = []
+    raw = []
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "investment-ai/1.0"})
         with urllib.request.urlopen(req, timeout=12) as r:
             data = json.loads(r.read())
         congress_num = (date.today().year - 1789) // 2 + 1
-        summary_count = 0
         for b in data.get("bills", []):
             btype  = b.get("type", "").lower()
             bnum   = str(b.get("number", ""))
@@ -333,7 +357,7 @@ def _fetch_congress_api_bills(api_key: str, days_back: int = 14, max_bills: int 
             last1  = cgnum % 10
             suffix = "th" if last2 in range(11, 14) else {1: "st", 2: "nd", 3: "rd"}.get(last1, "th")
             human_url = f"https://www.congress.gov/bill/{cgnum}{suffix}-congress/{path}/{bnum}"
-            entry = {
+            raw.append({
                 "bill_id":       display_id,
                 "title":         b.get("title", ""),
                 "introduced":    b.get("introducedDate", ""),
@@ -343,15 +367,43 @@ def _fetch_congress_api_bills(api_key: str, days_back: int = 14, max_bills: int 
                 "url":           human_url,
                 "summary":       "",
                 "source":        "Congress.gov",
-            }
-            if b.get("hasSummary") and summary_count < 8:
-                entry["summary"] = _fetch_crs_summary(cgnum, btype, bnum, api_key)
-                summary_count += 1
-                time.sleep(0.2)
-            bills.append(entry)
+                "has_summary":   bool(b.get("hasSummary")),
+                "btype": btype, "bnum": bnum, "cgnum": cgnum,
+            })
     except Exception:
         pass
-    return bills
+
+    # Filter: keep floor-active stages always; committee bills only if market-relevant title
+    # Deduplicate companion bills by normalized title (keep first encountered)
+    seen_titles: set = set()
+    filtered = []
+    for entry in raw:
+        nt = _normalize_bill_title(entry["title"])
+        if nt in seen_titles:
+            continue
+        seen_titles.add(nt)
+        if (entry["stage"] in _FLOOR_ACTIVE_STAGES
+                or _MARKET_TITLE_RE.search(entry["title"])):
+            filtered.append(entry)
+        if len(filtered) >= 15:
+            break
+
+    # Fetch CRS summaries for top eligible bills (cap at 8 to limit latency)
+    summary_count = 0
+    for entry in filtered:
+        if entry.pop("has_summary", False) and summary_count < 8:
+            btype = entry.pop("btype", "")
+            bnum  = entry.pop("bnum",  "")
+            cgnum = entry.pop("cgnum", "")
+            entry["summary"] = _fetch_crs_summary(cgnum, btype, bnum, api_key)
+            summary_count += 1
+            time.sleep(0.2)
+        else:
+            entry.pop("btype", None)
+            entry.pop("bnum",  None)
+            entry.pop("cgnum", None)
+
+    return filtered
 
 
 def _fetch_govtrack_bills(max_items: int = 10) -> list:

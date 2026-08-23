@@ -6800,6 +6800,9 @@ function toggleMacroDetail(safeId) {{
     if (ins.tax_opportunity && ins.tax_opportunity.toLowerCase() !== 'none this week') {{
       html += `<div class="ai-section"><div class="ai-section-label">Tax Opportunity</div><div class="ai-section-body">${{ins.tax_opportunity}}</div></div>`;
     }}
+    if (ins.legislative_watch && ins.legislative_watch.toLowerCase() !== 'no material legislation this week') {{
+      html += `<div class="ai-section"><div class="ai-section-label">⚖ Legislative Watch</div><div class="ai-section-body">${{ins.legislative_watch}}</div></div>`;
+    }}
     if (ins.key_question) {{
       html += `<div class="ai-section"><div class="ai-section-label">Key Question This Week</div><div class="ai-key-question">${{ins.key_question}}</div></div>`;
     }}

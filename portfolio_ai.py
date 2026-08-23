@@ -760,6 +760,37 @@ def generate_daily_insight(force: bool = False) -> dict:
     # Pull holding-specific news headlines into the prompt
     news_block = _get_news_block(holdings)
 
+    # If today's news summaries (per-ticker AI analysis) are already cached, surface their
+    # findings so the insight AI can synthesize them rather than re-derive from raw headlines
+    news_findings_block = ""
+    news_summaries = get_cached_news_summaries_today()
+    if news_summaries and not news_summaries.get("_failed"):
+        ol = news_summaries.get("_outlook") or {}
+        lines = ["TODAY'S HOLDING NEWS ANALYSIS (pre-computed findings — integrate these):"]
+        if ol.get("top_risk"):
+            lines.append(f"  Top risk flagged: {ol['top_risk']}")
+        if ol.get("top_opportunity"):
+            lines.append(f"  Top opportunity: {ol['top_opportunity']}")
+        if ol.get("tax_watch"):
+            lines.append(f"  Tax watch: {ol['tax_watch']}")
+        if ol.get("action_items"):
+            lines.append("  Flagged action items:")
+            for item in ol["action_items"]:
+                lines.append(f"    - {item}")
+        per_ticker = [(k, v) for k, v in news_summaries.items()
+                      if isinstance(v, dict) and not k.startswith("_")]
+        if per_ticker:
+            lines.append("  Per-ticker highlights:")
+            for ticker, d in per_ticker:
+                snippet = (d.get("news") or "")[:130]
+                if snippet:
+                    lines.append(f"    {ticker}: {snippet}")
+                if d.get("leg_risk"):
+                    lines.append(f"      Legislative risk: {d['leg_risk'][:120]}")
+                if d.get("leg_opp"):
+                    lines.append(f"      Legislative opp: {d['leg_opp'][:120]}")
+        news_findings_block = "\n".join(lines) + "\n"
+
     # Pull financial fundamentals for stock holdings
     import financials_fetcher
     tickers = list(dict.fromkeys(
@@ -790,6 +821,7 @@ INVESTMENT FRAMEWORK (5-layer structure):
 {personal_blocks}
 {financials_block}
 {news_block}
+{news_findings_block}
 IMPORTANT — be specific, not generic:
 - Reference holdings by ticker name (e.g. BRK-B, SCHD, GRMN), not just by layer
 - Connect macro signals to SPECIFIC held positions and their current macro scores
@@ -812,7 +844,8 @@ Return exactly this JSON structure:
   "tax_timing_note": "<name specific tickers and lot dates worth acting on — approaching LT thresholds, TLH candidates, or realized gain offsets — or 'No immediate tax flags'>",
   "key_question": "<the single most important portfolio decision for this week — specific and actionable, not generic>",
   "cc_program_note": "<observation about the active CC positions — strike selection vs current prices, income generated, which 100+ share holdings could expand the program>",
-  "tax_opportunity": "<specific ticker + lot date combination worth acting on for tax optimization, or 'None this week'>"
+  "tax_opportunity": "<specific ticker + lot date combination worth acting on for tax optimization, or 'None this week'>",
+  "legislative_watch": "<if any bill in the OFFICIAL RECORD (from the macro context) creates material risk or opportunity for specific holdings, name the bill by ID and stage, the mechanism, and the ticker most affected — or 'No material legislation this week'>"
 }}"""
 
     full_text = ""
