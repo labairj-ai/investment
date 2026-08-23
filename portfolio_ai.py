@@ -492,8 +492,8 @@ def generate_news_summaries(force: bool = False) -> dict:
         cached = get_cached_news_summaries_today()
         if cached is not None:
             sample = next((v for v in cached.values() if isinstance(v, dict)), {})
-            # Accept cache only if it has the current schema (news + rates + _outlook at portfolio level)
-            if sample.get("rates") and cached.get("_outlook"):
+            # Accept cache only if it has current schema: per-ticker rates + portfolio _outlook
+            if sample.get("rates") and isinstance(cached.get("_outlook"), dict):
                 return cached
 
     if not ollama_client.available():
@@ -580,8 +580,14 @@ Also provide a top-level "_outlook" object (not per-ticker) with four keys:
 - "tax_watch": Any pending legislation that could affect the investor's tax bill on current positions (capital gains rates, wash-sale rules, SALT cap changes, corporate rates). If none, write null.
 - "action_items": A JSON array of 2-4 specific, actionable things the investor should do or watch this week. Each item is one sentence starting with an action verb (Review, Consider, Watch, Monitor, Avoid).
 
-Return ONLY valid JSON — no markdown, no extra text:
+Return ONLY valid JSON — no markdown, no extra text. START with "_outlook" before any tickers:
 {{
+  "_outlook": {{
+    "top_risk": "...",
+    "top_opportunity": "...",
+    "tax_watch": "... or null",
+    "action_items": ["...", "..."]
+  }},
   "TICKER": {{
     "news": "...",
     "rates": "...",
@@ -590,16 +596,10 @@ Return ONLY valid JSON — no markdown, no extra text:
     "leg_risk": "...",
     "leg_opp": "...",
     "tax_angle": "..."
-  }},
-  "_outlook": {{
-    "top_risk": "...",
-    "top_opportunity": "...",
-    "tax_watch": "...",
-    "action_items": ["...", "..."]
   }}
 }}
 
-Only include tickers with news. Only include leg_risk, leg_opp, tax_angle when specifically applicable. Be direct and actionable — vague analysis is not useful."""
+IMPORTANT: "_outlook" must appear first in the JSON. Only include tickers with news. Only include leg_risk, leg_opp, tax_angle when specifically applicable. Be direct and use concrete numbers — vague analysis is not useful."""
 
     def _cache_sentinel(error_msg):
         now_s = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -619,7 +619,7 @@ Only include tickers with news. Only include leg_risk, leg_opp, tax_angle when s
     try:
         for tok in ollama_client.stream_generate(
             prompt, model=ollama_client.DEFAULT_MODEL,
-            temperature=0.3, num_predict=3500
+            temperature=0.3, num_predict=5500
         ):
             full_text += tok
     except Exception as e:
