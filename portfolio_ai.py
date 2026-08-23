@@ -22,6 +22,28 @@ def _normalize_ticker(t: str) -> str:
             return f"{left}-{right}"
     return t
 
+
+def _extract_json(text: str):
+    """
+    Robustly extract the first complete JSON object from raw LLM output.
+    Handles code fences (```json...```) and preamble text before the JSON.
+    Tries each '{' position in order until one yields valid JSON.
+    Returns the parsed object, or None if nothing parses.
+    """
+    import re
+    # Strip common code-fence wrappers
+    text = re.sub(r"^```(?:json)?\s*\n?", "", text.strip())
+    text = re.sub(r"\n?```\s*$", "", text.strip())
+    dec = json.JSONDecoder()
+    for i, ch in enumerate(text):
+        if ch == "{":
+            try:
+                obj, _ = dec.raw_decode(text, i)
+                return obj
+            except (ValueError, json.JSONDecodeError):
+                continue
+    return None
+
 # Load .env before ollama_client reads LLM_URL at import time
 _PROJECT_DIR_EARLY = Path(__file__).resolve().parent
 try:
@@ -797,12 +819,10 @@ Be specific. Name the legislation, the holding, or the metric. No generic statem
         _cache_sentinel(err)
         return {"error": err}
 
-    try:
-        dec = json.JSONDecoder()
-        start = full_text.index("{")
-        summaries, _ = dec.raw_decode(full_text, start)
-    except (ValueError, json.JSONDecodeError):
+    summaries = _extract_json(full_text)
+    if summaries is None:
         err = "AI returned malformed JSON"
+        print(f"[NewsSummaries] Parse failed. Raw output (first 600): {full_text[:600]!r}")
         _cache_sentinel(err)
         return {"error": err, "raw": full_text[:500]}
 
@@ -812,10 +832,9 @@ Be specific. Name the legislation, the holding, or the metric. No generic statem
             outlook_prompt, model=ollama_client.DEFAULT_MODEL,
             temperature=0.2, num_predict=600
         )
-        _dec = json.JSONDecoder()
-        _start = outlook_raw.index("{")
-        outlook_obj, _ = _dec.raw_decode(outlook_raw, _start)
-        summaries["_outlook"] = outlook_obj
+        outlook_obj = _extract_json(outlook_raw)
+        if outlook_obj:
+            summaries["_outlook"] = outlook_obj
     except Exception as e:
         summaries["_outlook"] = {
             "top_risk": "Unable to generate outlook — check AI server.",
@@ -986,11 +1005,9 @@ Return exactly this JSON structure:
     except Exception as e:
         return {"error": f"AI generation failed: {e}"}
 
-    try:
-        dec = json.JSONDecoder()
-        start = full_text.index("{")
-        insight, _ = dec.raw_decode(full_text, start)
-    except (ValueError, json.JSONDecodeError):
+    insight = _extract_json(full_text)
+    if insight is None:
+        print(f"[DailyInsight] Parse failed. Raw output (first 600): {full_text[:600]!r}")
         return {"error": "AI returned malformed JSON", "raw": full_text[:500]}
 
     # Persist to DB
@@ -1109,12 +1126,9 @@ Return ONLY valid JSON. Each dimension must include a score AND a one-sentence r
             time.sleep(20)  # server likely restarted; give it time to reload
             continue
 
-        try:
-            dec = json.JSONDecoder()
-            start = full_text.index("{")
-            batch_result, _ = dec.raw_decode(full_text, start)
-        except (ValueError, json.JSONDecodeError):
-            print(f"[MacroScores] Batch {i//BATCH+1} returned malformed JSON")
+        batch_result = _extract_json(full_text)
+        if batch_result is None:
+            print(f"[MacroScores] Batch {i//BATCH+1} malformed JSON. Raw (first 400): {full_text[:400]!r}")
             time.sleep(20)  # server may have crashed during generation
             continue
 
