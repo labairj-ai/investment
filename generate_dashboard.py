@@ -486,8 +486,15 @@ def build_dashboard(portfolio, layers, holdings):
         else:
             macro_cell = '<td class="col-hide-sm" style="color:#ccc;font-size:10px;">—</td>'
             detail_row = ''
+        if ticker_scores:
+            ticker_cell = (
+                f'<td onclick="toggleMacroDetail(\'{safe_id}\')" style="cursor:pointer;" title="Tap for macro details">'
+                f'{h["ticker"]}<span class="macro-mobile-hint">ⓘ</span></td>'
+            )
+        else:
+            ticker_cell = f'<td>{h["ticker"]}</td>'
         holdings_rows += f"""<tr>
-          <td>{h["ticker"]}</td>
+          {ticker_cell}
           <td class="col-hide-sm">{h["shares"]:,.2f}</td>
           <td class="col-hide-sm">${h["avg_cost"]:,.2f}</td>
           <td>${h["price"]:,.2f}</td>
@@ -849,6 +856,8 @@ def build_dashboard(portfolio, layers, holdings):
     #ai-news-loading {{ color: #718096; font-size: 12px; }}
     .ai-news-summary {{ font-size: 12px; color: #cbd5e0; margin: 4px 0 6px; line-height: 1.5; }}
     .ai-news-macro {{ font-size: 11px; color: #718096; margin-bottom: 6px; border-left: 2px solid rgba(108,92,231,.4); padding-left: 7px; line-height: 1.4; }}
+    .macro-mobile-hint {{ display: none; font-size: 9px; color: #718096; vertical-align: middle; margin-left: 3px; }}
+    @media (max-width: 600px) {{ .macro-mobile-hint {{ display: inline; }} }}
     .ai-news-factor {{ font-size: 11px; color: #a0b0c8; margin: 3px 0; line-height: 1.5; padding-left: 7px; border-left: 2px solid rgba(255,255,255,.12); }}
     .ai-news-factor-label {{ font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: #718096; margin-right: 5px; }}
     #ai-news-refresh {{
