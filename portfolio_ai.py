@@ -1086,7 +1086,7 @@ Return exactly this JSON structure:
     try:
         for tok in ollama_client.stream_generate(
             prompt, model=ollama_client.DEFAULT_MODEL,
-            temperature=0.3, num_predict=4000
+            temperature=0.3, num_predict=1200
         ):
             full_text += tok
     except Exception as e:
