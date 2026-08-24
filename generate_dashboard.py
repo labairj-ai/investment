@@ -7085,27 +7085,27 @@ function toggleMacroDetail(safeId) {{
     for (const ticker of tickers) {{
       const items = bt[ticker];
       if (!items || !items.length) continue;
-      html += `<div class="ai-news-ticker"><div class="ai-news-ticker-label">${{ticker}}</div>`;
       const s = summaries && summaries[ticker];
+      let tickerHtml = '';
       if (s) {{
         if (s.news) {{
-          html += `<div class="ai-news-summary">${{s.news}}</div>`;
-          if (s.rates)       html += `<div class="ai-news-factor"><span class="ai-news-factor-label">📈 Rates</span>${{s.rates}}</div>`;
-          if (s.trade)       html += `<div class="ai-news-factor"><span class="ai-news-factor-label">🌐 Trade</span>${{s.trade}}</div>`;
-          if (s.environment) html += `<div class="ai-news-factor"><span class="ai-news-factor-label">🏛 Environment</span>${{s.environment}}</div>`;
-          if (s.leg_risk)    html += `<div class="ai-news-factor ai-news-leg-risk"><span class="ai-news-factor-label">🔴 Legislative Risk</span>${{s.leg_risk}}</div>`;
-          if (s.leg_opp)     html += `<div class="ai-news-factor ai-news-leg-opp"><span class="ai-news-factor-label">🟢 Legislative Opp</span>${{s.leg_opp}}</div>`;
-          if (s.tax_angle)   html += `<div class="ai-news-factor ai-news-tax"><span class="ai-news-factor-label">⚖ Tax Angle</span>${{s.tax_angle}}</div>`;
+          tickerHtml += `<div class="ai-news-summary">${{s.news}}</div>`;
+          if (s.rates)       tickerHtml += `<div class="ai-news-factor"><span class="ai-news-factor-label">📈 Rates</span>${{s.rates}}</div>`;
+          if (s.trade)       tickerHtml += `<div class="ai-news-factor"><span class="ai-news-factor-label">🌐 Trade</span>${{s.trade}}</div>`;
+          if (s.environment) tickerHtml += `<div class="ai-news-factor"><span class="ai-news-factor-label">🏛 Environment</span>${{s.environment}}</div>`;
+          if (s.leg_risk)    tickerHtml += `<div class="ai-news-factor ai-news-leg-risk"><span class="ai-news-factor-label">🔴 Legislative Risk</span>${{s.leg_risk}}</div>`;
+          if (s.leg_opp)     tickerHtml += `<div class="ai-news-factor ai-news-leg-opp"><span class="ai-news-factor-label">🟢 Legislative Opp</span>${{s.leg_opp}}</div>`;
+          if (s.tax_angle)   tickerHtml += `<div class="ai-news-factor ai-news-tax"><span class="ai-news-factor-label">⚖ Tax Angle</span>${{s.tax_angle}}</div>`;
           // backward-compat: old single legislation key
-          if (s.legislation && !s.leg_risk && !s.leg_opp) html += `<div class="ai-news-factor"><span class="ai-news-factor-label">⚖ Legislation</span>${{s.legislation}}</div>`;
+          if (s.legislation && !s.leg_risk && !s.leg_opp) tickerHtml += `<div class="ai-news-factor"><span class="ai-news-factor-label">⚖ Legislation</span>${{s.legislation}}</div>`;
         }} else if (s.summary) {{
-          html += `<div class="ai-news-summary">${{s.summary}}</div>`;
-          if (s.macro_angle) html += `<div class="ai-news-macro">📊 ${{s.macro_angle}}</div>`;
+          tickerHtml += `<div class="ai-news-summary">${{s.summary}}</div>`;
+          if (s.macro_angle) tickerHtml += `<div class="ai-news-macro">📊 ${{s.macro_angle}}</div>`;
         }}
       }} else if (generating) {{
-        html += `<div style="font-size:11px;color:#4a5568;font-style:italic;padding:2px 0 4px;">Analyzing…</div>`;
+        tickerHtml += `<div style="font-size:11px;color:#4a5568;font-style:italic;padding:2px 0 4px;">Analyzing…</div>`;
       }}
-      html += '</div>';
+      if (tickerHtml) html += `<div class="ai-news-ticker"><div class="ai-news-ticker-label">${{ticker}}</div>${{tickerHtml}}</div>`;
     }}
     return html || '<span id="ai-news-loading" style="color:#718096;font-size:12px;">No holding-specific news found.</span>';
   }}
