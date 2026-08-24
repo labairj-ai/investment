@@ -1289,6 +1289,10 @@ def build_dashboard(portfolio, layers, holdings):
       style="width:100%;padding:10px;background:#1a2340;color:#fff;border:none;border-radius:7px;font-size:14px;font-weight:700;cursor:pointer;">
       Save Changes
     </button>
+    <button onclick="deleteCCPosition()"
+      style="width:100%;margin-top:8px;padding:9px;background:#fff;color:#e74c3c;border:1px solid #fcc;border-radius:7px;font-size:13px;font-weight:600;cursor:pointer;">
+      Delete Position
+    </button>
     <div id="cc-edit-status" style="margin-top:8px;font-size:12px;color:#888;text-align:center;"></div>
   </div>
 </div>
@@ -5176,6 +5180,21 @@ async function saveCCEdit() {{
       method: "PATCH", headers: {{"Content-Type":"application/json"}},
       body: JSON.stringify(body),
     }});
+    const data = await res.json();
+    if (!data.ok) {{ status.textContent = "Error: " + data.error; return; }}
+    document.getElementById("cc-edit-overlay").style.display = "none";
+    loadCCPositions();
+  }} catch(e) {{ status.textContent = "Error: " + e.message; }}
+}}
+
+async function deleteCCPosition() {{
+  const status = document.getElementById("cc-edit-status");
+  const p = _allCCPositions.find(x => x.id === _ccEditTargetId);
+  const label = p ? `${{p.ticker}} $${{p.strike}} ${{p.expiry}}` : "this position";
+  if (!confirm(`Delete ${{label}}? This cannot be undone.`)) return;
+  status.textContent = "Deleting…";
+  try {{
+    const res  = await fetch(`/api/cc-positions/${{_ccEditTargetId}}`, {{ method: "DELETE" }});
     const data = await res.json();
     if (!data.ok) {{ status.textContent = "Error: " + data.error; return; }}
     document.getElementById("cc-edit-overlay").style.display = "none";

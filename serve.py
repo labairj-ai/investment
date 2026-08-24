@@ -1610,6 +1610,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._handle_lot_delete(int(parts[3]))
         elif len(parts) == 4 and parts[1] == "api" and parts[2] == "sells" and parts[3].isdigit():
             self._handle_sell_undo(int(parts[3]))
+        elif len(parts) == 4 and parts[1] == "api" and parts[2] == "cc-positions" and parts[3].isdigit():
+            self._handle_cc_delete(int(parts[3]))
         else:
             self.send_response(404)
             self.end_headers()
@@ -2004,6 +2006,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             conn.execute(f"UPDATE cc_positions SET {', '.join(updates)} WHERE id = ?", values)
             conn.commit()
             conn.close()
+            self._json({"ok": True})
+        except Exception as e:
+            self._json_error(500, str(e))
+
+    def _handle_cc_delete(self, pos_id: int):
+        try:
+            db   = PROJECT_DIR / "out" / "investment.db"
+            conn = sqlite3.connect(str(db), timeout=10)
+            try:
+                conn.execute("DELETE FROM cc_positions WHERE id = ?", (pos_id,))
+                conn.commit()
+            finally:
+                conn.close()
             self._json({"ok": True})
         except Exception as e:
             self._json_error(500, str(e))
