@@ -1837,11 +1837,6 @@ def build_dashboard(portfolio, layers, holdings):
       </div>
       <div style="font-size:10px;color:#bbb;margin-top:8px;">Federal only · does not include state taxes · consult a tax advisor</div>
     </div>
-
-    <!-- Per-transaction table -->
-    <div id="gains-table-wrap">
-      <div style="font-size:13px;color:#aaa;">No sales recorded yet. Use the Lots modal on any holding to record a sale.</div>
-    </div>
   </div>
 
   <!-- Buffett Deep-Dive Analyzer -->
@@ -3632,60 +3627,6 @@ function renderRealizedGains() {{
   const estTotEl = document.getElementById("tax-est-total");
   if (estTotEl) {{ estTotEl.textContent = hasData ? fmt2(totTax) : "—"; estTotEl.style.color = totTax > 0 ? "#c0392b" : "#888"; }}
 
-  // Per-transaction table
-  const wrap = document.getElementById("gains-table-wrap");
-  if (!wrap) return;
-  if (!sells.length) {{
-    wrap.innerHTML = `<div style="font-size:13px;color:#aaa;">No sales recorded${{yearFilter==="cur"?" for "+curYear:" yet"}}. Use the <b>Lots</b> modal on any holding to record a sale.</div>`;
-    return;
-  }}
-
-  const rows = sells.map(s => {{
-    const gc  = _gainColor(s.realized_gain || 0);
-    const stc = (s.st_gain || 0) !== 0 ? _gainColor(s.st_gain) : "#aaa";
-    const ltc = (s.lt_gain || 0) !== 0 ? _gainColor(s.lt_gain) : "#aaa";
-    const stTaxRow = Math.max(0, s.st_gain || 0) * (stRate + niit);
-    const ltTaxRow = Math.max(0, s.lt_gain || 0) * (ltRate + niit);
-    const totTaxRow = stTaxRow + ltTaxRow;
-    const detail = (s.fifo_detail || []).map(a => {{
-      const badge = a.term === "LT"
-        ? `<span style="background:#f0fff4;color:#27ae60;border:1px solid #ade;border-radius:3px;padding:0 4px;font-size:9px;font-weight:700;">LT</span>`
-        : `<span style="background:#fff0f0;color:#e74c3c;border:1px solid #fcc;border-radius:3px;padding:0 4px;font-size:9px;font-weight:700;">ST</span>`;
-      return `${{a.shares}}sh@$${{a.cost_per_share?.toFixed(2)}} ${{badge}}`;
-    }}).join(" · ");
-    return `<tr style="border-bottom:1px solid #f5f5f5;">
-      <td style="padding:7px 8px;font-weight:600;">${{s.ticker}}</td>
-      <td style="padding:7px 8px;color:#555;">${{s.sell_date}}</td>
-      <td style="padding:7px 8px;">${{s.shares_sold?.toLocaleString("en-US",{{maximumFractionDigits:4}})}}</td>
-      <td style="padding:7px 8px;">$${{s.sell_price?.toFixed(2)}}</td>
-      <td style="padding:7px 8px;font-weight:700;color:${{gc}};">${{_fmtGain(s.realized_gain||0)}}</td>
-      <td style="padding:7px 8px;color:${{stc}};">${{(s.st_gain||0)!==0?_fmtGain(s.st_gain):"—"}}</td>
-      <td style="padding:7px 8px;color:${{ltc}};">${{(s.lt_gain||0)!==0?_fmtGain(s.lt_gain):"—"}}</td>
-      <td style="padding:7px 8px;color:#c0392b;font-weight:600;">${{totTaxRow>0?"~"+fmt2(totTaxRow):"—"}}</td>
-      <td style="padding:7px 8px;font-size:11px;color:#aaa;">${{detail}}</td>
-      <td style="padding:7px 8px;font-size:11px;color:#aaa;">${{s.notes||""}}</td>
-    </tr>`;
-  }}).join("");
-
-  wrap.innerHTML = `<div style="overflow-x:auto;margin-top:4px;">
-    <table style="width:100%;border-collapse:collapse;font-size:13px;">
-      <thead><tr style="background:#f4f6f9;text-align:left;">
-        <th style="padding:6px 8px;font-size:10px;color:#888;text-transform:uppercase;">Ticker</th>
-        <th style="padding:6px 8px;font-size:10px;color:#888;text-transform:uppercase;">Date</th>
-        <th style="padding:6px 8px;font-size:10px;color:#888;text-transform:uppercase;">Shares</th>
-        <th style="padding:6px 8px;font-size:10px;color:#888;text-transform:uppercase;">Price</th>
-        <th style="padding:6px 8px;font-size:10px;color:#888;text-transform:uppercase;">Total G/L</th>
-        <th style="padding:6px 8px;font-size:10px;color:#888;text-transform:uppercase;">ST G/L</th>
-        <th style="padding:6px 8px;font-size:10px;color:#888;text-transform:uppercase;">LT G/L</th>
-        <th style="padding:6px 8px;font-size:10px;color:#888;text-transform:uppercase;">Est. Tax</th>
-        <th style="padding:6px 8px;font-size:10px;color:#888;text-transform:uppercase;">Lot Detail</th>
-        <th style="padding:6px 8px;font-size:10px;color:#888;text-transform:uppercase;">Notes</th>
-      </tr></thead>
-      <tbody>${{rows}}</tbody>
-    </table></div>
-  <div style="font-size:10px;color:#bbb;margin-top:8px;">
-    Est. Tax = positive gains only · federal rate only · rates: ST ${{(stRate*100).toFixed(1)}}%${{niitChecked?" +NIIT (lesser-of formula)":""}} / LT ${{(ltRate*100).toFixed(1)}}%${{niitChecked?" +NIIT (lesser-of formula)":""}}
-  </div>`;
 
 }}
 
