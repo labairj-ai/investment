@@ -35,7 +35,11 @@ _LEG_RULE = (
     "If the connection requires inference or analogy (e.g. a healthcare bill affecting a "
     "streaming company; an energy bill affecting a retailer; a defense bill affecting a "
     "consumer brand), it does NOT qualify — omit the field entirely or write null. "
-    "Do not manufacture connections to fill the field."
+    "Do not manufacture connections to fill the field. "
+    "DOMAIN CROSS-CHECK: Each bill in the BILLS UNDER REVIEW section is annotated with "
+    "[domains: ...]. Each ticker in the TICKER PROFILES section lists its domains. "
+    "If a bill's domains and a ticker's domains share NO overlap, there is no direct "
+    "connection — skip that bill for that ticker and write null."
 )
 
 
@@ -129,6 +133,104 @@ MACRO_DIMS = {
 SCORE_STALE_DAYS = 5          # scores older than this get a staleness warning in prompts
 SCORE_DIMS   = list(MACRO_DIMS.keys())                      # backwards compat
 SCORE_LABELS = {k: v["short"] for k, v in MACRO_DIMS.items()}  # backwards compat
+
+# ── Holding profiles ─────────────────────────────────────────────────────────
+# Per-ticker description and legislative domain list.  Used to cross-check bill
+# domains against holding domains before the model writes leg_risk/leg_opp/tax_angle.
+# Funds (is_fund=True) are passive vehicles — only connect to tax_capital_gains /
+# tax_corporate; they have no direct operational regulatory exposure.
+HOLDING_PROFILES = {
+    # Layer 1 — Structural Ballast
+    "VTSAX":  {"desc": "Vanguard Total Stock Market Index Fund (passive broad market)",  "domains": ["tax_capital_gains", "tax_corporate"], "is_fund": True},
+    "VFIAX":  {"desc": "Vanguard 500 Index Fund (passive S&P 500)",                      "domains": ["tax_capital_gains", "tax_corporate"], "is_fund": True},
+    "VTMGX":  {"desc": "Vanguard Developed Markets Index Fund (passive international)",  "domains": ["tax_capital_gains", "trade"],         "is_fund": True},
+    "BRK-B":  {"desc": "Berkshire Hathaway — diversified holding company: insurance, energy (BNSF/utilities), financial services, consumer brands",
+               "domains": ["financial", "energy", "trade", "consumer", "tax_corporate", "environment"]},
+    # Layer 2 — Cash-Flow Engines
+    "SCHD":   {"desc": "Schwab U.S. Dividend Equity ETF (passive dividend-focused)",     "domains": ["tax_capital_gains", "tax_corporate"], "is_fund": True},
+    "BP":     {"desc": "BP — integrated oil & gas company, global energy operations",
+               "domains": ["energy", "environment", "trade", "tax_corporate"]},
+    # Layer 3 — Compounders
+    "FSPTX":  {"desc": "Fidelity Select Technology Portfolio (active tech fund)",        "domains": ["technology", "tax_capital_gains"], "is_fund": True},
+    "STZ":    {"desc": "Constellation Brands — beer, wine, and spirits producer; significant Mexico import operations",
+               "domains": ["food_ag", "consumer", "trade", "tax_corporate"]},
+    "SNA":    {"desc": "Snap-on Tools — industrial tools and equipment manufacturer",
+               "domains": ["labor", "trade", "tax_corporate"]},
+    "SLYV":   {"desc": "SPDR S&P 600 Small-Cap Value ETF (passive small-cap value)",    "domains": ["tax_capital_gains", "tax_corporate"], "is_fund": True},
+    "GRMN":   {"desc": "Garmin — GPS navigation, aviation avionics, wearables, marine electronics",
+               "domains": ["technology", "aviation", "consumer", "trade"]},
+    "EW":     {"desc": "Edwards Lifesciences — structural heart valves and hemodynamic monitoring (medical devices)",
+               "domains": ["healthcare", "tax_corporate"]},
+    "ITW":    {"desc": "Illinois Tool Works — diversified industrial manufacturer: automotive, construction, food equipment",
+               "domains": ["trade", "labor", "environment", "tax_corporate"]},
+    "NFLX":   {"desc": "Netflix — streaming entertainment subscription service",
+               "domains": ["telecom", "technology", "consumer", "tax_corporate"]},
+    "WMT":    {"desc": "Walmart — retail and grocery chain; large China import sourcing; major employer",
+               "domains": ["consumer", "trade", "labor", "food_ag", "tax_corporate"]},
+    # Layer 4 — Convexity / Optionality
+    "JOBY":   {"desc": "Joby Aviation — electric air taxi (eVTOL) manufacturer, FAA certification in progress",
+               "domains": ["aviation", "energy", "environment", "technology", "tax_corporate"]},
+    "IGV":    {"desc": "iShares Expanded Tech-Software ETF (passive software-sector)",  "domains": ["technology", "tax_capital_gains"], "is_fund": True},
+    "BTC":    {"desc": "Bitcoin — decentralized cryptocurrency",
+               "domains": ["crypto", "financial", "tax_capital_gains"]},
+    "DSGX":   {"desc": "Descartes Systems — logistics and supply chain software platform",
+               "domains": ["technology", "transportation", "trade", "tax_corporate"]},
+    # Layer 5 — Shock Absorbers
+    "ITOCF":  {"desc": "Itochu Corp — Japanese trading conglomerate: food, textiles, energy, finance",
+               "domains": ["trade", "food_ag", "energy", "financial"]},
+    "MITSF":  {"desc": "Mitsubishi Corp — Japanese conglomerate: energy, materials, finance, infrastructure",
+               "domains": ["trade", "energy", "financial", "environment"]},
+    "UNP":    {"desc": "Union Pacific — Class I freight railroad, major cross-country rail network",
+               "domains": ["transportation", "trade", "labor", "environment", "tax_corporate"]},
+    "MCO":    {"desc": "Moody's — credit rating agency and financial data/analytics provider",
+               "domains": ["financial", "ratings_advisory", "tax_corporate"]},
+    "NOC":    {"desc": "Northrop Grumman — defense contractor, aerospace and nuclear systems",
+               "domains": ["defense", "aviation", "tax_corporate"]},
+}
+
+
+_TAX_CATCHALL = {"tax_corporate", "tax_capital_gains"}
+
+def _bills_with_holdings(bills: list, tickers: list) -> str:
+    """Format bills annotated with pre-computed portfolio matches.
+    Each bill line shows exactly which holdings are directly affected.
+    Bills marked 'No holdings affected' are irrelevant to this portfolio.
+
+    Matching uses primary domains only (strips tax_corporate/tax_capital_gains
+    when other domains exist) to prevent every budget bill from matching all stocks."""
+    lines = ["BILLS UNDER REVIEW — OFFICIAL RECORD (Congress.gov):"]
+    for b in bills[:12]:
+        bill_domains = set(b.get("domains", []))
+        id_str   = f"[{b.get('bill_id', '')}] " if b.get("bill_id") else ""
+        stage    = f" — {b['stage']}" if b.get("stage") else ""
+        domain_s = f" [domains: {', '.join(sorted(bill_domains))}]" if bill_domains else ""
+        # Strip generic tax catch-all domains when primary domains exist
+        primary = bill_domains - _TAX_CATCHALL
+        match_against = primary if primary else bill_domains
+        matched = []
+        for t in tickers:
+            p = HOLDING_PROFILES.get(t) or HOLDING_PROFILES.get(t.replace(".", "-"))
+            if p and (match_against & set(p["domains"])):
+                matched.append(t)
+        match_s = f" → Portfolio match: {', '.join(matched)}" if matched else " → No holdings affected"
+        lines.append(f"  {id_str}{b['title']}{domain_s}{stage}{match_s}")
+        if b.get("summary") and matched:
+            lines.append(f"    CRS: {b['summary'][:200]}")
+    return "\n".join(lines)
+
+
+def _holding_profile_block(tickers: list) -> str:
+    """Format a TICKER PROFILES section for AI prompts listing each ticker's desc and domains."""
+    lines = ["TICKER PROFILES (use domains to evaluate legislative relevance):"]
+    for t in tickers:
+        profile = HOLDING_PROFILES.get(t) or HOLDING_PROFILES.get(t.replace(".", "-"))
+        if profile:
+            domain_str = ", ".join(profile["domains"])
+            fund_note  = " (passive fund — only tax/budget bills apply)" if profile.get("is_fund") else ""
+            lines.append(f"  {t}: {profile['desc']}{fund_note} [domains: {domain_str}]")
+        else:
+            lines.append(f"  {t}: (no profile — evaluate on company fundamentals)")
+    return "\n".join(lines)
 
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
@@ -592,29 +694,31 @@ def _build_layer_block(layer_weights: dict, drift_alerts: list[dict]) -> str:
 # ── Daily insight ─────────────────────────────────────────────────────────────
 
 def get_cached_insight_today():
-    """Return today's cached insight from DB, or None if not yet generated."""
+    """Return (insight_dict, generated_at_str) for today, or (None, None)."""
     _init_ai_tables()
     today = date.today().isoformat()
     if not DB_PATH.exists():
-        return None
+        return None, None
     try:
         conn = sqlite3.connect(str(DB_PATH), timeout=5)
-        row = conn.execute("SELECT insight FROM ai_insights WHERE day=?", (today,)).fetchone()
+        row = conn.execute(
+            "SELECT insight, generated_at FROM ai_insights WHERE day=?", (today,)
+        ).fetchone()
         conn.close()
         if row and row[0]:
-            return json.loads(row[0])
+            return json.loads(row[0]), (row[1] or "")
     except Exception:
         pass
-    return None
+    return None, None
 
 
 def get_cached_news_summaries_today():
-    """Return today's cached per-ticker news summaries from DB, or None.
-    Returns None for error sentinels older than 30 minutes (allowing a retry)."""
+    """Return (data, generated_at_str) for today's cached per-ticker news summaries, or (None, None).
+    Returns (sentinel, generated_at) during error cooldown so caller can distinguish."""
     _init_ai_tables()
     today = date.today().isoformat()
     if not DB_PATH.exists():
-        return None
+        return None, None
     try:
         conn = sqlite3.connect(str(DB_PATH), timeout=5)
         row = conn.execute(
@@ -623,19 +727,20 @@ def get_cached_news_summaries_today():
         conn.close()
         if row and row[0]:
             data = json.loads(row[0])
+            generated_at = row[1] or ""
             if data.get("_failed"):
                 # Allow retry after 30-minute cooldown
                 try:
-                    gen_ts = datetime.strptime(row[1], "%Y-%m-%d %H:%M:%S")
+                    gen_ts = datetime.strptime(generated_at, "%Y-%m-%d %H:%M:%S")
                     if (datetime.now() - gen_ts).total_seconds() < 1800:
-                        return data  # still in cooldown — block retry
+                        return data, generated_at  # still in cooldown — block retry
                 except Exception:
                     pass
-                return None  # cooldown expired — allow fresh attempt
-            return data
+                return None, None  # cooldown expired — allow fresh attempt
+            return data, generated_at
     except Exception:
         pass
-    return None
+    return None, None
 
 
 def generate_news_summaries(force: bool = False) -> dict:
@@ -648,11 +753,11 @@ def generate_news_summaries(force: bool = False) -> dict:
     today = date.today().isoformat()
 
     if not force:
-        cached = get_cached_news_summaries_today()
+        cached, _ = get_cached_news_summaries_today()
         if cached is not None:
             sample = next((v for v in cached.values() if isinstance(v, dict)), {})
-            # Accept cache only if it has current schema: per-ticker rates + portfolio _outlook
-            if sample.get("rates") and isinstance(cached.get("_outlook"), dict):
+            # Accept cache only if it has current schema: per-ticker news + portfolio _outlook
+            if sample.get("news") and isinstance(cached.get("_outlook"), dict):
                 return cached
 
     if not ollama_client.available():
@@ -707,11 +812,12 @@ def generate_news_summaries(force: bool = False) -> dict:
     if official_bills:
         off_lines = []
         for b in official_bills[:12]:
-            id_str = f"[{b.get('bill_id', '')}] " if b.get("bill_id") else ""
-            stage  = f" — Stage: {b['stage']}" if b.get("stage") else ""
-            dt     = (b.get("action_date") or b.get("introduced") or "")[:10]
-            date_s = f" ({dt})" if dt else ""
-            off_lines.append(f"  {id_str}{b['title']}{stage}{date_s}")
+            id_str   = f"[{b.get('bill_id', '')}] " if b.get("bill_id") else ""
+            stage    = f" — Stage: {b['stage']}" if b.get("stage") else ""
+            dt       = (b.get("action_date") or b.get("introduced") or "")[:10]
+            date_s   = f" ({dt})" if dt else ""
+            domain_s = f" [domains: {', '.join(b['domains'])}]" if b.get("domains") else ""
+            off_lines.append(f"  {id_str}{b['title']}{domain_s}{stage}{date_s}")
             if b.get("summary"):
                 off_lines.append(f"    CRS Summary: {b['summary'][:350]}")
             if b.get("latest_action") and b.get("stage") in (
@@ -721,6 +827,11 @@ def generate_news_summaries(force: bool = False) -> dict:
         official_block = "\n".join(off_lines)
     else:
         official_block = "  No official bill data available."
+
+    all_portfolio_tickers = [str(h.get("Stock", "")).strip().upper() for h in holdings if h.get("Stock")]
+    all_portfolio_tickers = list(dict.fromkeys(t for t in all_portfolio_tickers if t))
+    profiles_block = _holding_profile_block(list(tickers_with_news.keys()))
+    bills_holdings_block = _bills_with_holdings(official_bills, all_portfolio_tickers)
 
     media_block = (
         "\n".join(f"  - {b['title']}" for b in media_coverage[:6])
@@ -752,12 +863,14 @@ LEGISLATIVE MEDIA COVERAGE (secondary; editorial sources may reflect political b
 For each ticker in the news above, provide these components:
 
 1. "news" — 2-3 sentences on what actually happened. Reference specific numbers, events, or company actions. No vague summaries.
-2. "rates" — Use MACRO SCORES rate_sensitivity as your baseline (a score of 7-10 means a +50bps rise materially hurts this position; 1-3 means it is largely immune). Explain the concrete mechanism at the current {tnx}% 10Y yield. Be consistent with the score unless today's news presents new evidence (e.g. a debt refinancing, changed business mix).
-3. "trade" — Use MACRO SCORES dollar_sensitivity and geopolitical_risk as your baseline. Name specific countries, supply chains, or revenue streams at risk. Be consistent with the scores unless today's news presents new tariff/FX developments.
-4. "environment" — Current headwinds or tailwinds for this specific business: margin trends, consumer/enterprise spending backdrop, regulatory posture, sector cycle.
+2. "rates" — CONDITIONAL: only include if MACRO SCORES rate_sensitivity is 7 or higher AND the current rate level creates a concrete near-term risk (e.g., refinancing pressure, spread widening, valuation compression on a high-multiple stock). A low score means the company is rate-insensitive — do not fill this field just to explain immunity. Omit entirely for scores 1-6 unless today's news changes the picture.
+3. "trade" — CONDITIONAL: only include if this company has direct material exposure to active tariff, FX, or trade policy changes in the current news cycle (e.g., specific China tariff hitting a core product line, dollar move affecting a major revenue stream). Omit if the company has minimal international/trade exposure or if nothing has changed.
+4. "environment" — CONDITIONAL: only include if there is a material current headwind or tailwind that should affect a near-term decision (e.g., accelerating margin compression, cycle inflection, significant regulatory shift underway). Omit if macro conditions for this company are neutral or unchanged.
 5. "leg_risk" — Apply the LEGISLATIVE CONNECTION RULE below. If a bill directly burdens this company's business (regulation, cost, pricing pressure), name it by ID, explain the mechanism, and give its stage. Otherwise omit.
 6. "leg_opp" — Apply the LEGISLATIVE CONNECTION RULE below. If a bill directly benefits this company (subsidy, deregulation, new demand), name it by ID, explain the mechanism, and give its stage. Otherwise omit.
 7. "tax_angle" — ONLY if a bill directly changes the tax treatment of this holding (capital gains rates, corporate tax, sector-specific credits). Name the bill by ID. Omit if not applicable.
+
+{profiles_block}
 
 {_LEG_RULE}
 
@@ -777,12 +890,12 @@ Return ONLY valid JSON — no markdown, no extra text. START with "_outlook" bef
   }},
   "TICKER": {{
     "news": "...",
-    "rates": "...",
-    "trade": "...",
-    "environment": "...",
-    "leg_risk": "...",
-    "leg_opp": "...",
-    "tax_angle": "..."
+    "rates": "(omit if rate_sensitivity < 7 and no new rate catalyst)",
+    "trade": "(omit if no material trade/FX exposure or development)",
+    "environment": "(omit if macro conditions for this name are neutral)",
+    "leg_risk": "(omit if not applicable)",
+    "leg_opp": "(omit if not applicable)",
+    "tax_angle": "(omit if not applicable)"
   }}
 }}
 
@@ -792,23 +905,19 @@ Only include tickers with news. Only include leg_risk, leg_opp, tax_angle when s
 
 MACRO: Fed={fed}%, 10Y={tnx}%, CPI={cpi}%, VIX={vix}, Dollar={dol}, Curve={crv}
 
-BILLS UNDER REVIEW — OFFICIAL RECORD (weight heavily; source: Congress.gov):
-{official_block}
+{bills_holdings_block}
 
-LEGISLATIVE MEDIA COVERAGE (secondary context only — editorial framing):
-{media_block}
-
-HOLDINGS WITH NEWS TODAY: {", ".join(tickers_with_news.keys())}
+Each bill above is pre-annotated with "Portfolio match: TICKER" showing which holdings are directly affected. Bills marked "No holdings affected" are irrelevant to this portfolio — do not cite them.
 
 Return ONLY this JSON object with exactly these four keys:
 {{
-  "top_risk": "<one sentence: the single most urgent legislative or macro risk facing this portfolio this week>",
-  "top_opportunity": "<one sentence: the clearest legislative or macro tailwind for any holding this week>",
-  "tax_watch": "<one sentence: any pending tax legislation relevant to these holdings, or null if none>",
+  "top_risk": "<one sentence: the single most urgent macro or legislative risk — for legislation, only cite bills that show a Portfolio match above>",
+  "top_opportunity": "<one sentence: the clearest macro or legislative tailwind — for legislation, only cite bills that show a Portfolio match above; name the specific matching ticker>",
+  "tax_watch": "<one sentence: any pending tax legislation relevant to these holdings per the Portfolio match annotations, or null if none>",
   "action_items": ["<action verb + specific action>", "<action verb + specific action>", "<action verb + specific action>"]
 }}
 
-Be specific. Name the legislation, the holding, or the metric. No generic statements."""
+Be specific. Name the legislation by ID and the matching holding. No generic statements."""
 
     def _cache_sentinel(error_msg):
         now_s = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -918,8 +1027,9 @@ def generate_daily_insight(force: bool = False) -> dict:
 
     personal_blocks = "\n\n".join(b for b in [cc_block, lot_block, realized_block, patterns_block] if b)
 
-    # Load macro dimension scores — truncate per-dim reasons to keep prompt within context budget
-    _, macro_scores_block = _get_macro_scores_block(reason_max=100)
+    # Compact scores (no per-dim reasons) — full-reason block is 4,000+ tokens and exceeds
+    # the 8,192-token context limit when combined with other insight blocks.
+    _, macro_scores_block = _get_macro_scores_block(compact=True)
 
     # Pull holding-specific news headlines into the prompt
     news_block = _get_news_block(holdings)
@@ -927,7 +1037,7 @@ def generate_daily_insight(force: bool = False) -> dict:
     # If today's news summaries (per-ticker AI analysis) are already cached, surface their
     # findings so the insight AI can synthesize them rather than re-derive from raw headlines
     news_findings_block = ""
-    news_summaries = get_cached_news_summaries_today()
+    news_summaries, _ = get_cached_news_summaries_today()
     if news_summaries and not news_summaries.get("_failed"):
         ol = news_summaries.get("_outlook") or {}
         lines = ["TODAY'S HOLDING NEWS ANALYSIS (pre-computed findings — integrate these):"]
@@ -955,21 +1065,10 @@ def generate_daily_insight(force: bool = False) -> dict:
                     lines.append(f"      Legislative opp: {d['leg_opp'][:120]}")
         news_findings_block = "\n".join(lines) + "\n"
 
-    # Pull financial fundamentals for stock holdings
-    import financials_fetcher
     tickers = list(dict.fromkeys(
         str(h.get("Stock", "")).strip().upper()
         for h in holdings if h.get("Stock")
     ))
-    fin_parts = []
-    for t in tickers:
-        s = financials_fetcher.get_financial_summary(t)
-        if s:
-            fin_parts.append(s)
-    financials_block = (
-        "FUNDAMENTAL FINANCIALS (5yr quarterly + annual, forward estimates):\n" +
-        "\n".join(fin_parts)
-    ) if fin_parts else ""
 
     prompt = f"""You are a sophisticated investment advisor analyzing a personal portfolio. Return ONLY valid JSON — no markdown, no extra text.
 
@@ -983,7 +1082,6 @@ INVESTMENT FRAMEWORK (5-layer structure):
 {macro_block}
 
 {personal_blocks}
-{financials_block}
 {macro_scores_block}
 {news_block}
 {news_findings_block}
@@ -994,7 +1092,6 @@ IMPORTANT — be specific, not generic:
 - For tax timing, reference specific tickers and their lot dates or LT thresholds
 - Acknowledge accumulation patterns where relevant (e.g. SCHD as DRIP position)
 - Do not give generic market commentary — tie every observation to THIS portfolio
-- Use FUNDAMENTAL FINANCIALS (revenue trend, FCF, debt load) to ground risk_flags and rebalancing_take — a company with no debt has different rate sensitivity than one carrying heavy leverage
 
 Return exactly this JSON structure:
 {{
@@ -1019,7 +1116,7 @@ Return exactly this JSON structure:
     try:
         for tok in ollama_client.stream_generate(
             prompt, model=ollama_client.DEFAULT_MODEL,
-            temperature=0.3, num_predict=4000
+            temperature=0.3, num_predict=1200
         ):
             full_text += tok
     except Exception as e:

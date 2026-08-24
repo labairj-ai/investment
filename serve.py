@@ -4010,12 +4010,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._json({"ok": True, "status": "generating", "date": today})
             return
 
-        cached = portfolio_ai.get_cached_news_summaries_today()
+        cached, generated_at = portfolio_ai.get_cached_news_summaries_today()
         if cached is not None:
             if cached.get("_failed"):
                 self._json({"ok": False, "error": cached.get("_error", "Generation failed"), "date": today})
                 return
-            self._json({"ok": True, "summaries": cached, "date": today})
+            self._json({"ok": True, "summaries": cached, "date": today, "generated_at": generated_at})
             return
 
         # No cache — kick off background generation
@@ -4101,9 +4101,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._json({"ok": True, "status": "generating", "date": today})
             return
 
-        cached = portfolio_ai.get_cached_insight_today()
+        cached, generated_at = portfolio_ai.get_cached_insight_today()
         if cached:
-            self._json({"ok": True, "insight": cached, "date": today})
+            self._json({"ok": True, "insight": cached, "date": today, "generated_at": generated_at})
             return
 
         # No cache and not already running — start background generation

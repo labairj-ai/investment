@@ -1503,6 +1503,7 @@ def build_dashboard(portfolio, layers, holdings):
       <span style="display:flex;align-items:center;gap:6px;cursor:pointer;" onclick="toggleAiNews()">
         <button id="ai-news-collapse-btn" tabindex="-1">▾</button>
         Holdings News
+        <span id="ai-news-timestamp" style="font-size:10px;font-weight:400;color:#718096;font-style:italic;"></span>
       </span>
       <span>
         <button class="ai-refresh-btn" onclick="loadHoldingNews(true)">↻ Refresh</button>
@@ -1517,6 +1518,7 @@ def build_dashboard(portfolio, layers, holdings):
       <span style="display:flex;align-items:center;gap:6px;cursor:pointer;" onclick="toggleAiInsight()">
         <button id="ai-collapse-btn" tabindex="-1">▾</button>
         AI Portfolio Insight
+        <span id="ai-insight-timestamp" style="font-size:10px;font-weight:400;color:#718096;font-style:italic;"></span>
       </span>
       <span>
         <button class="ai-refresh-btn" onclick="loadAiInsight(true)">↻ Refresh</button>
@@ -6810,6 +6812,14 @@ function toggleMacroDetail(safeId) {{
     return html || '<span class="ai-loading">Analysis returned no content.</span>';
   }}
 
+  function _fmtTimestamp(ts) {{
+    if (!ts) return '';
+    try {{
+      const d = new Date(ts.replace(' ', 'T'));
+      return 'generated ' + d.toLocaleTimeString([], {{hour:'numeric', minute:'2-digit'}});
+    }} catch(e) {{ return ''; }}
+  }}
+
   let _aiPollTimer = null;
   let _aiPollStart = null;
   const _aiSpinner = '<span class="ai-spinner"></span>';
@@ -6837,6 +6847,8 @@ function toggleMacroDetail(safeId) {{
       const ins = data.insight;
       if (ins.error) {{ body.innerHTML = `<span class="ai-loading">AI unavailable: ${{ins.error}}</span>`; return; }}
       body.innerHTML = _renderAiInsight(ins);
+      const ts = document.getElementById('ai-insight-timestamp');
+      if (ts) ts.textContent = _fmtTimestamp(data.generated_at);
     }}).catch(e => {{
       const body = document.getElementById('ai-insight-body');
       if (body) body.innerHTML = `<span class="ai-loading">Could not reach AI: ${{e.message}}</span>`;
@@ -6876,6 +6888,8 @@ function toggleMacroDetail(safeId) {{
       const ins = data.insight;
       if (ins.error) {{ body.innerHTML = `<span class="ai-loading">AI unavailable: ${{ins.error}}</span>`; return; }}
       body.innerHTML = _renderAiInsight(ins);
+      const ts = document.getElementById('ai-insight-timestamp');
+      if (ts) ts.textContent = _fmtTimestamp(data.generated_at);
     }}).catch(e => {{
       body.innerHTML = `<span class="ai-loading">Could not reach AI: ${{e.message}}</span>`;
     }});
@@ -7114,6 +7128,8 @@ function toggleMacroDetail(safeId) {{
       if (data.ok && data.summaries) {{
         const body = document.getElementById('ai-news-body');
         if (body) body.innerHTML = _renderNewsBody(bt, data.summaries, false);
+        const ts = document.getElementById('ai-news-timestamp');
+        if (ts) ts.textContent = _fmtTimestamp(data.generated_at);
       }} else if (!data.ok && data.error) {{
         _setNewsStatus(`AI analysis failed: ${{data.error}}`);
       }}
@@ -7144,6 +7160,8 @@ function toggleMacroDetail(safeId) {{
         _newsSummaryPollTimer = setTimeout(() => _pollNewsSummary(bt, 48), 10000);
       }} else {{
         _clearNewsStatus();
+        const ts = document.getElementById('ai-news-timestamp');
+        if (ts && sumData.generated_at) ts.textContent = _fmtTimestamp(sumData.generated_at);
       }}
     }}).catch(e => {{
       body.innerHTML = `<span id="ai-news-loading">News fetch failed: ${{e.message}}</span>`;
