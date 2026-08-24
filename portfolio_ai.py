@@ -997,8 +997,9 @@ def generate_daily_insight(force: bool = False) -> dict:
 
     personal_blocks = "\n\n".join(b for b in [cc_block, lot_block, realized_block, patterns_block] if b)
 
-    # Load macro dimension scores — truncate per-dim reasons to keep prompt within context budget
-    _, macro_scores_block = _get_macro_scores_block(reason_max=100)
+    # Compact scores (no per-dim reasons) — full-reason block is 4,000+ tokens and exceeds
+    # the 8,192-token context limit when combined with other insight blocks.
+    _, macro_scores_block = _get_macro_scores_block(compact=True)
 
     # Pull holding-specific news headlines into the prompt
     news_block = _get_news_block(holdings)
@@ -1034,21 +1035,10 @@ def generate_daily_insight(force: bool = False) -> dict:
                     lines.append(f"      Legislative opp: {d['leg_opp'][:120]}")
         news_findings_block = "\n".join(lines) + "\n"
 
-    # Pull financial fundamentals for stock holdings
-    import financials_fetcher
     tickers = list(dict.fromkeys(
         str(h.get("Stock", "")).strip().upper()
         for h in holdings if h.get("Stock")
     ))
-    fin_parts = []
-    for t in tickers:
-        s = financials_fetcher.get_financial_summary(t)
-        if s:
-            fin_parts.append(s)
-    financials_block = (
-        "FUNDAMENTAL FINANCIALS (5yr quarterly + annual, forward estimates):\n" +
-        "\n".join(fin_parts)
-    ) if fin_parts else ""
 
     prompt = f"""You are a sophisticated investment advisor analyzing a personal portfolio. Return ONLY valid JSON — no markdown, no extra text.
 
@@ -1062,7 +1052,6 @@ INVESTMENT FRAMEWORK (5-layer structure):
 {macro_block}
 
 {personal_blocks}
-{financials_block}
 {macro_scores_block}
 {news_block}
 {news_findings_block}
@@ -1073,7 +1062,6 @@ IMPORTANT — be specific, not generic:
 - For tax timing, reference specific tickers and their lot dates or LT thresholds
 - Acknowledge accumulation patterns where relevant (e.g. SCHD as DRIP position)
 - Do not give generic market commentary — tie every observation to THIS portfolio
-- Use FUNDAMENTAL FINANCIALS (revenue trend, FCF, debt load) to ground risk_flags and rebalancing_take — a company with no debt has different rate sensitivity than one carrying heavy leverage
 
 Return exactly this JSON structure:
 {{
