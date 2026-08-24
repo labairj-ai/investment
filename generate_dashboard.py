@@ -3687,68 +3687,6 @@ function renderRealizedGains() {{
     Est. Tax = positive gains only · federal rate only · rates: ST ${{(stRate*100).toFixed(1)}}%${{niitChecked?" +NIIT (lesser-of formula)":""}} / LT ${{(ltRate*100).toFixed(1)}}%${{niitChecked?" +NIIT (lesser-of formula)":""}}
   </div>`;
 
-  // ── Option Premium Income (CC) ─── reuses yearCCClosed + ccNetTotal from above
-  const ccTax = Math.max(0, ccNetTotal) * (stRate + niit);
-
-  if (yearCCClosed.length) {{
-    const ccRows = yearCCClosed
-      .slice().sort((a,b) => b.closed_date.localeCompare(a.closed_date))
-      .map(p => {{
-        const gross  = p.premium_per_contract * p.contracts * 100;
-        const buyback = p.closed_price != null ? p.closed_price * p.contracts * 100 : 0;
-        const net    = p.net_premium || 0;
-        const gc     = net >= 0 ? "#27ae60" : "#e74c3c";
-        const typeMap = {{ expired: "Expired", buyback: "Buy Back", assigned: "Assigned" }};
-        const badge = {{
-          expired:  "background:#fff8e1;color:#8a6d00;border:1px solid #ffe082",
-          buyback:  "background:#f4f6f9;color:#555;border:1px solid #dde",
-          assigned: "background:#fff0f0;color:#c8102e;border:1px solid #fcc",
-        }}[p.close_type] || "background:#f4f4f4;color:#888;border:1px solid #eee";
-        return `<tr style="border-bottom:1px solid #f5f5f5;">
-          <td style="padding:6px 8px;font-weight:600;">${{p.ticker}}</td>
-          <td style="padding:6px 8px;">$${{p.strike.toFixed(2)}} call</td>
-          <td style="padding:6px 8px;">${{p.expiry}}</td>
-          <td style="padding:6px 8px;">${{p.contracts}}×</td>
-          <td style="padding:6px 8px;">$${{p.premium_per_contract.toFixed(2)}}</td>
-          <td style="padding:6px 8px;color:#555;">$${{gross.toFixed(2)}}</td>
-          <td style="padding:6px 8px;color:#e74c3c;">${{buyback > 0 ? "−$"+buyback.toFixed(2) : "—"}}</td>
-          <td style="padding:6px 8px;font-weight:700;color:${{gc}};">${{net>=0?"+":""}}$${{Math.abs(net).toFixed(2)}}</td>
-          <td style="padding:6px 8px;color:#c0392b;">~$${{(Math.max(0,net)*(stRate+niit)).toFixed(2)}}</td>
-          <td style="padding:6px 8px;"><span style="border-radius:4px;padding:1px 7px;font-size:10px;font-weight:700;${{badge}}">${{typeMap[p.close_type]||p.status}}</span></td>
-          <td style="padding:6px 8px;color:#aaa;font-size:11px;">${{p.closed_date||""}}</td>
-        </tr>`;
-      }}).join("");
-
-    wrap.innerHTML += `
-      <div style="margin-top:20px;padding-top:16px;border-top:2px solid #f0f0f0;">
-        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px;">
-          <div style="font-size:11px;font-weight:700;color:#7f8c8d;text-transform:uppercase;letter-spacing:.05em;">
-            Option Premium Income (Short-Term Ordinary)
-          </div>
-          <div style="display:flex;gap:16px;font-size:13px;">
-            <span>Net Income: <b style="color:#27ae60;">${{ccNetTotal>=0?"+":""}}$${{Math.abs(ccNetTotal).toFixed(2)}}</b></span>
-            <span>Est. Tax (ST ${{(stRate*100).toFixed(0)}}%${{niit?"+3.8%":""}}): <b style="color:#c0392b;">~$${{ccTax.toFixed(2)}}</b></span>
-          </div>
-        </div>
-        <div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:12px;">
-          <thead><tr style="background:#f4f6f9;">
-            <th style="padding:5px 8px;text-align:left;font-size:10px;color:#888;text-transform:uppercase;">Ticker</th>
-            <th style="padding:5px 8px;text-align:left;font-size:10px;color:#888;text-transform:uppercase;">Strike</th>
-            <th style="padding:5px 8px;text-align:left;font-size:10px;color:#888;text-transform:uppercase;">Expiry</th>
-            <th style="padding:5px 8px;text-align:left;font-size:10px;color:#888;text-transform:uppercase;">Contracts</th>
-            <th style="padding:5px 8px;text-align:left;font-size:10px;color:#888;text-transform:uppercase;">Prem/Contract</th>
-            <th style="padding:5px 8px;text-align:left;font-size:10px;color:#888;text-transform:uppercase;">Gross</th>
-            <th style="padding:5px 8px;text-align:left;font-size:10px;color:#888;text-transform:uppercase;">Buyback Cost</th>
-            <th style="padding:5px 8px;text-align:left;font-size:10px;color:#27ae60;text-transform:uppercase;">Net Income</th>
-            <th style="padding:5px 8px;text-align:left;font-size:10px;color:#c0392b;text-transform:uppercase;">Est. Tax</th>
-            <th style="padding:5px 8px;text-align:left;font-size:10px;color:#888;text-transform:uppercase;">Close Type</th>
-            <th style="padding:5px 8px;text-align:left;font-size:10px;color:#888;text-transform:uppercase;">Closed</th>
-          </tr></thead>
-          <tbody>${{ccRows}}</tbody>
-        </table></div>
-        <div style="font-size:10px;color:#bbb;margin-top:6px;">CC premium income is always short-term ordinary income and is included in the Short-Term KPI and tax estimate above. When assigned, the stock capital gain/loss is tracked separately via the FIFO sell tracker.</div>
-      </div>`;
-  }}
 }}
 
 function _updateTaxBillKPI() {{
