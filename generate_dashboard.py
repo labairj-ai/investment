@@ -4931,14 +4931,16 @@ function renderCCPositions() {{
       const [yr, mo] = key.split("-");
       const label = yr === "unknown" ? "Unknown Date"
         : new Date(parseInt(yr), parseInt(mo)-1, 1).toLocaleDateString("en-US", {{month:"long",year:"numeric"}});
-      const mp   = byMonth[key];
-      const mNet = mp.reduce((s,p) => s + (p.net_premium ?? 0), 0);
+      const mp     = byMonth[key];
+      const mGross = mp.reduce((s,p) => s + p.premium_per_contract * p.contracts * 100, 0);
+      const mNet   = mp.reduce((s,p) => s + (p.net_premium ?? 0), 0);
       const rid  = ridPrefix + key;
+      const netDiff = mNet !== mGross ? ` · <span style="opacity:0.6;">$${mNet.toFixed(2)} net</span>` : "";
       html += `<tr style="cursor:pointer;background:${{hdrBg}};border-bottom:1px solid ${{hdrBorder}};" onclick="toggleCCMonth('${{rid}}')">
         <td colspan="${{COLS}}" style="padding:7px 12px;font-size:12px;font-weight:700;color:${{hdrColor}};">
           <span id="${{rid}}-arrow" style="display:inline-block;margin-right:6px;transition:transform 0.15s;">▶</span>
           ${{label}}
-          <span style="font-weight:400;opacity:0.7;margin-left:10px;font-size:11px;">${{mp.length}} position${{mp.length>1?"s":""}} · +$${{mNet.toFixed(2)}} net</span>
+          <span style="font-weight:400;opacity:0.7;margin-left:10px;font-size:11px;">${{mp.length}} position${{mp.length>1?"s":""}} · +$${{mGross.toFixed(2)}} collected${{netDiff}}</span>
         </td>
       </tr>`;
       html += mp.map(p => makeRow(p, rid, true)).join("");
