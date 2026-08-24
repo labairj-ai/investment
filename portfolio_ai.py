@@ -953,6 +953,16 @@ Be specific. Name the legislation by ID and the matching holding. No generic sta
         _cache_sentinel(err)
         return {"error": err, "raw": full_text[:500]}
 
+    # Strip fields where the AI echoed the placeholder "omit" text instead of omitting the field
+    _OMIT_FIELDS = {"rates", "trade", "environment", "leg_risk", "leg_opp", "tax_angle"}
+    for ticker_data in summaries.values():
+        if not isinstance(ticker_data, dict):
+            continue
+        for field in _OMIT_FIELDS:
+            val = ticker_data.get(field)
+            if isinstance(val, str) and (val.lower().startswith("omit") or val.lower().startswith("(omit")):
+                del ticker_data[field]
+
     # Call 2: portfolio-level outlook
     try:
         outlook_raw = ollama_client.generate(
