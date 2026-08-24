@@ -7060,11 +7060,37 @@ function toggleMacroDetail(safeId) {{
     }}).catch(() => {{ _clearNewsStatus(); }});
   }}
 
+  const _NEWS_CACHE_KEY = 'inv_holding_news_' + new Date().toISOString().slice(0,10);
+
+  function _saveNewsCache(html, timestamp) {{
+    try {{
+      // Clear any previous day's cache entries
+      Object.keys(localStorage).filter(k => k.startsWith('inv_holding_news_') && k !== _NEWS_CACHE_KEY)
+        .forEach(k => localStorage.removeItem(k));
+      localStorage.setItem(_NEWS_CACHE_KEY, JSON.stringify({{ html, timestamp }}));
+    }} catch(e) {{}}
+  }}
+
   window.loadHoldingNews = function(force=false) {{
     const body = document.getElementById('ai-news-body');
     if (!body) return;
     if (_newsSummaryPollTimer) {{ clearTimeout(_newsSummaryPollTimer); _newsSummaryPollTimer = null; }}
     _newsPollAttempt = 0;
+
+    // Serve from localStorage cache on non-forced loads
+    if (!force) {{
+      try {{
+        const cached = localStorage.getItem(_NEWS_CACHE_KEY);
+        if (cached) {{
+          const {{ html, timestamp }} = JSON.parse(cached);
+          body.innerHTML = html;
+          const ts = document.getElementById('ai-news-timestamp');
+          if (ts && timestamp) ts.textContent = _fmtTimestamp(timestamp) + ' (cached)';
+          return;
+        }}
+      }} catch(e) {{}}
+    }}
+
     if (force) body.innerHTML = `<div class="ai-loading-wrap">${{_aiSpinner}}<span>Refreshing news…</span></div>`;
 
     const newsUrl    = force ? '/api/holding-news?force=1' : '/api/holding-news';
@@ -7078,7 +7104,8 @@ function toggleMacroDetail(safeId) {{
       const bt = newsData.by_ticker || {{}};
       const generating = sumData.status === 'generating';
       const summaries = (sumData.ok && sumData.summaries) ? sumData.summaries : null;
-      body.innerHTML = _renderNewsBody(bt, summaries, generating);
+      const html = _renderNewsBody(bt, summaries, generating);
+      body.innerHTML = html;
       if (generating) {{
         _setNewsStatus(`${{_aiSpinner}} AI analysis generating — will auto-update when ready…`);
         _newsSummaryPollTimer = setTimeout(() => _pollNewsSummary(bt, 48), 10000);
@@ -7086,6 +7113,7 @@ function toggleMacroDetail(safeId) {{
         _clearNewsStatus();
         const ts = document.getElementById('ai-news-timestamp');
         if (ts && sumData.generated_at) ts.textContent = _fmtTimestamp(sumData.generated_at);
+        _saveNewsCache(html, sumData.generated_at);
       }}
     }}).catch(e => {{
       body.innerHTML = `<span id="ai-news-loading">News fetch failed: ${{e.message}}</span>`;
