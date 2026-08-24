@@ -1050,8 +1050,6 @@ def generate_daily_insight(force: bool = False) -> dict:
         "\n".join(fin_parts)
     ) if fin_parts else ""
 
-    insight_profiles_block = _holding_profile_block(tickers)
-
     prompt = f"""You are a sophisticated investment advisor analyzing a personal portfolio. Return ONLY valid JSON — no markdown, no extra text.
 
 INVESTMENT FRAMEWORK (5-layer structure):
@@ -1093,8 +1091,6 @@ Return exactly this JSON structure:
   "tax_opportunity": "<specific ticker + lot date combination worth acting on for tax optimization, or 'None this week'>",
   "legislative_watch": "<apply the LEGISLATIVE CONNECTION RULE: only name a bill if it has a direct one-step impact on a specific held ticker's actual industry or business. Name the bill by ID, the holding, the mechanism, and the stage. If no bill qualifies, write 'No material legislation this week'>"
 }}
-
-{insight_profiles_block}
 
 {_LEG_RULE}"""
 
