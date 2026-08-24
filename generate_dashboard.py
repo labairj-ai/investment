@@ -4939,7 +4939,7 @@ function renderCCPositions() {{
       const mGross = mp.reduce((s,p) => s + p.premium_per_contract * p.contracts * 100, 0);
       const mNet   = mp.reduce((s,p) => s + (p.net_premium ?? 0), 0);
       const rid  = ridPrefix + key;
-      const netDiff = mNet !== mGross ? ` · <span style="opacity:0.6;">$${mNet.toFixed(2)} net</span>` : "";
+      const netDiff = mNet !== mGross ? ` · <span style="opacity:0.6;">$${{mNet.toFixed(2)}} net</span>` : "";
       html += `<tr style="cursor:pointer;background:${{hdrBg}};border-bottom:1px solid ${{hdrBorder}};" onclick="toggleCCMonth('${{rid}}')">
         <td colspan="${{COLS}}" style="padding:7px 12px;font-size:12px;font-weight:700;color:${{hdrColor}};">
           <span id="${{rid}}-arrow" style="display:inline-block;margin-right:6px;transition:transform 0.15s;">▶</span>
