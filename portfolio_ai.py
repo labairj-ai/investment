@@ -189,6 +189,36 @@ HOLDING_PROFILES = {
 }
 
 
+_TAX_CATCHALL = {"tax_corporate", "tax_capital_gains"}
+
+def _bills_with_holdings(bills: list, tickers: list) -> str:
+    """Format bills annotated with pre-computed portfolio matches.
+    Each bill line shows exactly which holdings are directly affected.
+    Bills marked 'No holdings affected' are irrelevant to this portfolio.
+
+    Matching uses primary domains only (strips tax_corporate/tax_capital_gains
+    when other domains exist) to prevent every budget bill from matching all stocks."""
+    lines = ["BILLS UNDER REVIEW — OFFICIAL RECORD (Congress.gov):"]
+    for b in bills[:12]:
+        bill_domains = set(b.get("domains", []))
+        id_str   = f"[{b.get('bill_id', '')}] " if b.get("bill_id") else ""
+        stage    = f" — {b['stage']}" if b.get("stage") else ""
+        domain_s = f" [domains: {', '.join(sorted(bill_domains))}]" if bill_domains else ""
+        # Strip generic tax catch-all domains when primary domains exist
+        primary = bill_domains - _TAX_CATCHALL
+        match_against = primary if primary else bill_domains
+        matched = []
+        for t in tickers:
+            p = HOLDING_PROFILES.get(t) or HOLDING_PROFILES.get(t.replace(".", "-"))
+            if p and (match_against & set(p["domains"])):
+                matched.append(t)
+        match_s = f" → Portfolio match: {', '.join(matched)}" if matched else " → No holdings affected"
+        lines.append(f"  {id_str}{b['title']}{domain_s}{stage}{match_s}")
+        if b.get("summary") and matched:
+            lines.append(f"    CRS: {b['summary'][:200]}")
+    return "\n".join(lines)
+
+
 def _holding_profile_block(tickers: list) -> str:
     """Format a TICKER PROFILES section for AI prompts listing each ticker's desc and domains."""
     lines = ["TICKER PROFILES (use domains to evaluate legislative relevance):"]
@@ -795,7 +825,10 @@ def generate_news_summaries(force: bool = False) -> dict:
     else:
         official_block = "  No official bill data available."
 
+    all_portfolio_tickers = [str(h.get("Stock", "")).strip().upper() for h in holdings if h.get("Stock")]
+    all_portfolio_tickers = list(dict.fromkeys(t for t in all_portfolio_tickers if t))
     profiles_block = _holding_profile_block(list(tickers_with_news.keys()))
+    bills_holdings_block = _bills_with_holdings(official_bills, all_portfolio_tickers)
 
     media_block = (
         "\n".join(f"  - {b['title']}" for b in media_coverage[:6])
@@ -869,25 +902,19 @@ Only include tickers with news. Only include leg_risk, leg_opp, tax_angle when s
 
 MACRO: Fed={fed}%, 10Y={tnx}%, CPI={cpi}%, VIX={vix}, Dollar={dol}, Curve={crv}
 
-BILLS UNDER REVIEW — OFFICIAL RECORD (weight heavily; source: Congress.gov):
-{official_block}
+{bills_holdings_block}
 
-LEGISLATIVE MEDIA COVERAGE (secondary context only — editorial framing):
-{media_block}
-
-{profiles_block}
-
-{_LEG_RULE}
+Each bill above is pre-annotated with "Portfolio match: TICKER" showing which holdings are directly affected. Bills marked "No holdings affected" are irrelevant to this portfolio — do not cite them.
 
 Return ONLY this JSON object with exactly these four keys:
 {{
-  "top_risk": "<one sentence: the single most urgent legislative or macro risk facing this portfolio this week>",
-  "top_opportunity": "<one sentence: the clearest legislative or macro tailwind for any holding this week — only cite a bill if its domains overlap the holding's domains per TICKER PROFILES>",
-  "tax_watch": "<one sentence: any pending tax legislation relevant to these holdings, or null if none>",
+  "top_risk": "<one sentence: the single most urgent macro or legislative risk — for legislation, only cite bills that show a Portfolio match above>",
+  "top_opportunity": "<one sentence: the clearest macro or legislative tailwind — for legislation, only cite bills that show a Portfolio match above; name the specific matching ticker>",
+  "tax_watch": "<one sentence: any pending tax legislation relevant to these holdings per the Portfolio match annotations, or null if none>",
   "action_items": ["<action verb + specific action>", "<action verb + specific action>", "<action verb + specific action>"]
 }}
 
-Be specific. Name the legislation, the holding, or the metric. No generic statements."""
+Be specific. Name the legislation by ID and the matching holding. No generic statements."""
 
     def _cache_sentinel(error_msg):
         now_s = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
