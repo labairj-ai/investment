@@ -4983,6 +4983,29 @@ function renderCCPositions() {{
         const [yr, mo] = k.split("-");
         return moNames[parseInt(mo)-1] + " '" + yr.slice(2);
       }});
+      const _ccTotalLabelPlugin = {{
+        id: "ccTotalLabels",
+        afterDatasetsDraw(chart) {{
+          const {{ ctx, data, scales }} = chart;
+          const totals = data.labels.map((_, i) =>
+            chart.data.datasets.reduce((s, ds) => s + (ds.data[i] || 0), 0)
+          );
+          ctx.save();
+          ctx.font = "bold 10px sans-serif";
+          ctx.fillStyle = "#555";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "bottom";
+          data.labels.forEach((_, i) => {{
+            const tot = totals[i];
+            if (!tot) return;
+            const meta = chart.getDatasetMeta(chart.data.datasets.length - 1);
+            const bar  = meta.data[i];
+            if (!bar) return;
+            ctx.fillText("$" + tot.toFixed(0), bar.x, scales.y.getPixelForValue(tot) - 2);
+          }});
+          ctx.restore();
+        }},
+      }};
       if (window._ccIncomeChart) window._ccIncomeChart.destroy();
       window._ccIncomeChart = new Chart(document.getElementById("cc-income-chart"), {{
         type: "bar",
@@ -5015,6 +5038,7 @@ function renderCCPositions() {{
             }},
           ],
         }},
+        plugins: [_ccTotalLabelPlugin],
         options: {{
           responsive: true,
           plugins: {{
@@ -5036,7 +5060,7 @@ function renderCCPositions() {{
           }},
           scales: {{
             x: {{stacked:true, grid:{{display:false}}, ticks:{{font:{{size:11}}}}}},
-            y: {{stacked:true, ticks:{{callback: v => "$" + v, font:{{size:11}}}}, grid:{{color:"#f0f0f0"}}}},
+            y: {{stacked:true, ticks:{{callback: v => "$" + v, font:{{size:11}}}}, grid:{{color:"#f0f0f0"}}, afterFit: s => {{ s.paddingTop = 18; }}}},
           }},
         }},
       }});
