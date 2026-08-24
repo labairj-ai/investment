@@ -7060,7 +7060,14 @@ function toggleMacroDetail(safeId) {{
     }}).catch(() => {{ _clearNewsStatus(); }});
   }}
 
-  const _NEWS_CACHE_KEY = 'inv_holding_news_' + new Date().toISOString().slice(0,10);
+  function _newsSlotKey() {{
+    // Key includes current ET slot so cache auto-invalidates at 6am/12pm/5pm ET
+    const etHour = parseInt(new Date().toLocaleString('en-US', {{ hour: 'numeric', hour12: false, timeZone: 'America/New_York' }}));
+    const etDate = new Date().toLocaleDateString('en-CA', {{ timeZone: 'America/New_York' }});
+    const slot = etHour >= 17 ? '17' : etHour >= 12 ? '12' : etHour >= 6 ? '06' : '00';
+    return 'inv_holding_news_' + etDate + '_' + slot;
+  }}
+  const _NEWS_CACHE_KEY = _newsSlotKey();
 
   function _saveNewsCache(html, timestamp) {{
     try {{
