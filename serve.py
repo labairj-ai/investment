@@ -2797,64 +2797,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self._json_error(429, "already_streaming — close the other chat first")
         _chat_active.add(chat_key)
 
-        try:
-            system_prompt = self._build_chat_context(context_type, context_id)
-        except ValueError as e:
-            _chat_active.discard(chat_key)
-            return self._json_error(404, str(e))
-        except Exception as e:
-            _chat_active.discard(chat_key)
-            return self._json_error(500, f"Context error: {e}")
-
-        # For winner chats: detect ticker symbols mentioned across the conversation and
-        # inject verified company names so the model cannot hallucinate what they are.
-        if context_type == "winner":
-            try:
-                import re as _re
-                all_text = " ".join(m.get("content", "") for m in messages)
-                # Match 2-5 uppercase letters (optionally with a hyphen suffix like BRK-B)
-                raw_tickers = _re.findall(r'\b([A-Z]{2,5}(?:-[A-Z])?)\b', all_text)
-                # Filter obvious non-tickers (common English words / units)
-                _skip = {"I", "A", "AN", "THE", "AND", "OR", "VS", "FOR", "TO",
-                         "IN", "OF", "AT", "IS", "IT", "BE", "NO", "IF", "ON",
-                         "AI", "DTE", "OTM", "ITM", "ATM", "IV", "HV", "PE",
-                         "ETF", "FCF", "YTD", "SP", "SPY", "EPS", "USA", "US",
-                         "CEO", "CFO", "IPO", "YOY", "QOQ", "TTM", "LT", "ST"}
-                candidate_tickers = [t for t in set(raw_tickers)
-                                     if t not in _skip and t != context_id.upper()]
-                if candidate_tickers:
-                    names = _fetch_ticker_names(candidate_tickers)
-                    if names:
-                        grounding = "\n\nVERIFIED COMPANY NAMES (from live data — use these exactly, do not substitute):\n"
-                        grounding += "\n".join(f"  {t}: {n}" for t, n in names.items())
-                        system_prompt += grounding
-            except Exception:
-                pass
-
-        # For CC chats: if the user's message references a specific expiry month/date
-        # that isn't already in the system context, fetch it live and inject it.
-        if context_type == "cc":
-            try:
-                import yfinance as _yf2
-                last_user_msg = next(
-                    (m.get("content", "") for m in reversed(messages) if m.get("role") == "user"),
-                    ""
-                )
-                all_exps = list(_yf2.Ticker(context_id).options or [])
-                target_exp = _detect_expiry_from_message(last_user_msg, all_exps)
-                if target_exp:
-                    # Only fetch if we don't already have detailed contract data for this expiry.
-                    # Listing it in "All available expiry dates" doesn't count.
-                    has_detail = (
-                        f"exp {target_exp}" in system_prompt or      # in qualifying/floor-fail rows
-                        f"— {target_exp} (" in system_prompt         # already in a LIVE DATA block
-                    )
-                    if not has_detail:
-                        fetched = _fetch_options_for_chat(context_id, target_exp)
-                        system_prompt += fetched
-            except Exception:
-                pass
-
+        # Write SSE headers immediately — before any blocking yfinance/AI calls —
+        # so the browser doesn't see a hang waiting for the response to start.
         self.wfile.write(
             b"HTTP/1.1 200 OK\r\n"
             b"Content-Type: text/event-stream\r\n"
@@ -2867,26 +2811,94 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.wfile.flush()
 
         def _sse(data):
-            body = f"data: {json.dumps(data)}\n\n".encode()
-            chunk = f"{len(body):x}\r\n".encode() + body + b"\r\n"
+            body_bytes = f"data: {json.dumps(data)}\n\n".encode()
+            chunk = f"{len(body_bytes):x}\r\n".encode() + body_bytes + b"\r\n"
             self.wfile.write(chunk)
             self.wfile.flush()
 
-        import queue as _queue
-        _tok_q = _queue.Queue()
-        full_messages = [{"role": "system", "content": system_prompt}] + messages
-
-        def _generate():
-            try:
-                for tok in ollama_client.stream_chat(full_messages, model=ollama_client.DEFAULT_MODEL):
-                    _tok_q.put(("token", tok))
-                _tok_q.put(("done", None))
-            except Exception as exc:
-                _tok_q.put(("error", str(exc)))
-
-        threading.Thread(target=_generate, daemon=True).start()
-
         try:
+            _sse({"status": "thinking"})
+
+            try:
+                system_prompt = self._build_chat_context(context_type, context_id)
+            except ValueError as e:
+                _sse({"error": str(e)})
+                return
+            except Exception as e:
+                _sse({"error": f"Context error: {e}"})
+                return
+
+            # For winner chats: detect ticker symbols mentioned across the conversation and
+            # inject verified company names so the model cannot hallucinate what they are.
+            if context_type == "winner":
+                try:
+                    import re as _re
+                    all_text = " ".join(m.get("content", "") for m in messages)
+                    # Match 2-5 uppercase letters (optionally with a hyphen suffix like BRK-B)
+                    raw_tickers = _re.findall(r'\b([A-Z]{2,5}(?:-[A-Z])?)\b', all_text)
+                    # Filter obvious non-tickers (common English words / units)
+                    _skip = {"I", "A", "AN", "THE", "AND", "OR", "VS", "FOR", "TO",
+                             "IN", "OF", "AT", "IS", "IT", "BE", "NO", "IF", "ON",
+                             "AI", "DTE", "OTM", "ITM", "ATM", "IV", "HV", "PE",
+                             "ETF", "FCF", "YTD", "SP", "SPY", "EPS", "USA", "US",
+                             "CEO", "CFO", "IPO", "YOY", "QOQ", "TTM", "LT", "ST"}
+                    candidate_tickers = [t for t in set(raw_tickers)
+                                         if t not in _skip and t != context_id.upper()]
+                    if candidate_tickers:
+                        names = _fetch_ticker_names(candidate_tickers)
+                        if names:
+                            grounding = "\n\nVERIFIED COMPANY NAMES (from live data — use these exactly, do not substitute):\n"
+                            grounding += "\n".join(f"  {t}: {n}" for t, n in names.items())
+                            system_prompt += grounding
+                except Exception:
+                    pass
+
+            # For CC chats: if the user's message references a specific expiry month/date
+            # that isn't already in the system context, fetch it live and inject it.
+            # Reuse the expiration list already embedded in the system prompt to avoid a
+            # duplicate yfinance network call.
+            if context_type == "cc":
+                try:
+                    import re as _re2
+                    last_user_msg = next(
+                        (m.get("content", "") for m in reversed(messages) if m.get("role") == "user"),
+                        ""
+                    )
+                    _exp_m = _re2.search(
+                        r'All available expiry dates for \S+: ([0-9,\- ]+)', system_prompt
+                    )
+                    all_exps = (
+                        [x.strip() for x in _exp_m.group(1).split(',') if x.strip()]
+                        if _exp_m else []
+                    )
+                    target_exp = _detect_expiry_from_message(last_user_msg, all_exps)
+                    if target_exp:
+                        # Only fetch if we don't already have detailed contract data for this expiry.
+                        # Listing it in "All available expiry dates" doesn't count.
+                        has_detail = (
+                            f"exp {target_exp}" in system_prompt or      # in qualifying/floor-fail rows
+                            f"— {target_exp} (" in system_prompt         # already in a LIVE DATA block
+                        )
+                        if not has_detail:
+                            fetched = _fetch_options_for_chat(context_id, target_exp)
+                            system_prompt += fetched
+                except Exception:
+                    pass
+
+            import queue as _queue
+            _tok_q = _queue.Queue()
+            full_messages = [{"role": "system", "content": system_prompt}] + messages
+
+            def _generate():
+                try:
+                    for tok in ollama_client.stream_chat(full_messages, model=ollama_client.DEFAULT_MODEL):
+                        _tok_q.put(("token", tok))
+                    _tok_q.put(("done", None))
+                except Exception as exc:
+                    _tok_q.put(("error", str(exc)))
+
+            threading.Thread(target=_generate, daemon=True).start()
+
             while True:
                 try:
                     kind, val = _tok_q.get(timeout=10)
@@ -2905,12 +2917,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             pass
         finally:
             _chat_active.discard(chat_key)
-
-        try:
-            self.wfile.write(b"0\r\n\r\n")
-            self.wfile.flush()
-        except Exception:
-            pass
+            try:
+                self.wfile.write(b"0\r\n\r\n")
+                self.wfile.flush()
+            except Exception:
+                pass
 
     def _handle_cc_evaluate(self):
         try:
@@ -4165,26 +4176,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             _chat_active.discard(chat_key)
             return self._json_error(500, f"Context build failed: {e}")
 
-        self.wfile.write(
-            b"HTTP/1.1 200 OK\r\n"
-            b"Content-Type: text/event-stream\r\n"
-            b"Cache-Control: no-cache\r\n"
-            b"Transfer-Encoding: chunked\r\n"
-            b"X-Accel-Buffering: no\r\n"
-            b"Connection: close\r\n"
-            b"\r\n"
-        )
-        self.wfile.flush()
+        import queue as _queue
+        _tok_q = _queue.Queue()
+        full_messages = [{"role": "system", "content": system_prompt}] + messages
 
         def _sse(data):
             payload = f"data: {json.dumps(data)}\n\n".encode()
             chunk = f"{len(payload):x}\r\n".encode() + payload + b"\r\n"
             self.wfile.write(chunk)
             self.wfile.flush()
-
-        import queue as _queue
-        _tok_q = _queue.Queue()
-        full_messages = [{"role": "system", "content": system_prompt}] + messages
 
         def _generate():
             try:
@@ -4197,9 +4197,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             except Exception as exc:
                 _tok_q.put(("error", str(exc)))
 
-        threading.Thread(target=_generate, daemon=True).start()
-
         try:
+            self.wfile.write(
+                b"HTTP/1.1 200 OK\r\n"
+                b"Content-Type: text/event-stream\r\n"
+                b"Cache-Control: no-cache\r\n"
+                b"Transfer-Encoding: chunked\r\n"
+                b"X-Accel-Buffering: no\r\n"
+                b"Connection: close\r\n"
+                b"\r\n"
+            )
+            self.wfile.flush()
+            threading.Thread(target=_generate, daemon=True).start()
             while True:
                 try:
                     kind, val = _tok_q.get(timeout=10)
