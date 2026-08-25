@@ -1028,21 +1028,17 @@ def generate_daily_insight(force: bool = False) -> dict:
     portfolio_block = _build_portfolio_block(holdings, prices)
     layer_block     = _build_layer_block(layer_weights, drift_alerts)
     macro_block     = macro.get("formatted_block", "Macro data unavailable.")
-    cc_block        = _get_cc_context()
     lot_block       = _get_lot_context()
     realized_block  = _get_realized_context()
     patterns_block  = _get_behavior_patterns()
 
     framework = "\n".join(f"  {k}: {v}" for k, v in LAYER_NAMES.items())
 
-    personal_blocks = "\n\n".join(b for b in [cc_block, lot_block, realized_block, patterns_block] if b)
+    personal_blocks = "\n\n".join(b for b in [lot_block, realized_block, patterns_block] if b)
 
     # Compact scores (no per-dim reasons) — full-reason block is 4,000+ tokens and exceeds
     # the 8,192-token context limit when combined with other insight blocks.
     _, macro_scores_block = _get_macro_scores_block(compact=True)
-
-    # Pull holding-specific news headlines into the prompt
-    news_block = _get_news_block(holdings)
 
     # If today's news summaries (per-ticker AI analysis) are already cached, surface their
     # findings so the insight AI can synthesize them rather than re-derive from raw headlines
@@ -1093,7 +1089,6 @@ INVESTMENT FRAMEWORK (5-layer structure):
 
 {personal_blocks}
 {macro_scores_block}
-{news_block}
 {news_findings_block}
 IMPORTANT — be specific, not generic:
 - Reference holdings by ticker name (e.g. BRK-B, SCHD, GRMN), not just by layer
