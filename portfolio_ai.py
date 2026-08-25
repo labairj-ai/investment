@@ -1098,7 +1098,6 @@ INVESTMENT FRAMEWORK (5-layer structure):
 IMPORTANT — be specific, not generic:
 - Reference holdings by ticker name (e.g. BRK-B, SCHD, GRMN), not just by layer
 - Connect macro signals to SPECIFIC held positions and their current macro scores
-- For CC commentary, reference actual open positions by ticker and strike price
 - For tax timing, reference specific tickers and their lot dates or LT thresholds
 - Acknowledge accumulation patterns where relevant (e.g. SCHD as DRIP position)
 - Do not give generic market commentary — tie every observation to THIS portfolio
@@ -1106,16 +1105,13 @@ IMPORTANT — be specific, not generic:
 Return exactly this JSON structure:
 {{
   "macro_summary": "<2-3 sentence description of today's macro regime and its dominant investment implications for this portfolio>",
-  "portfolio_macro_alignment": "<how well does this portfolio fit the macro environment? name specific tickers and layers — well positioned or at risk and why>",
   "risk_flags": [
-    "<Cross-reference MACRO SCORES: if a ticker scores 7-10 on rate_sensitivity and the 10Y is rising, flag it with the score and mechanism — e.g. 'GRMN rate_sensitivity=7: a +50bps move at 4.7% further compresses its growth multiple'>",
-    "<Cross-reference MACRO SCORES: if dollar_sensitivity or geopolitical_risk is 7-10 and current conditions are adverse, flag the specific ticker and revenue/supply chain at risk>",
-    "<Any risk NOT captured by the weekly scores — news-driven, legislative (direct one-step connection only per the LEGISLATIVE CONNECTION RULE), or structural change that the scores predate>"
+    "<specific held ticker + macro score dimension + current macro reading + mechanism, e.g. 'GRMN rate_sensitivity=7: 10Y at 4.7% compresses growth multiple'>",
+    "<specific held ticker + adverse macro condition, e.g. 'NOC dollar_sensitivity=8: strong dollar pressures overseas defense contract margins'>",
+    "<any news-driven or structural risk not captured by scores — ticker-specific and concrete>"
   ],
-  "rebalancing_take": "<given the macro backdrop, is the current layer drift defensible or a problem? name specific drifting layers and whether the macro supports holding that tilt>",
   "tax_timing_note": "<name specific tickers and lot dates worth acting on — approaching LT thresholds, TLH candidates, or realized gain offsets — or 'No immediate tax flags'>",
   "key_question": "<the single most important portfolio decision for this week — specific and actionable, not generic>",
-  "cc_program_note": "<observation about the active CC positions — strike selection vs current prices, income generated, which 100+ share holdings could expand the program>",
   "tax_opportunity": "<specific ticker + lot date combination worth acting on for tax optimization, or 'None this week'>",
   "legislative_watch": "<apply the LEGISLATIVE CONNECTION RULE: only name a bill if it has a direct one-step impact on a specific held ticker's actual industry or business. Name the bill by ID, the holding, the mechanism, and the stage. If no bill qualifies, write 'No material legislation this week'>"
 }}
@@ -1296,26 +1292,8 @@ def build_portfolio_system_prompt() -> str:
     layer_weights = _get_layer_weights_from_db()
     drift_alerts  = _get_drift_alerts(layer_weights)
 
-    # Load macro scores for context
-    scores_block = ""
-    if DB_PATH.exists():
-        conn = sqlite3.connect(str(DB_PATH), timeout=10)
-        conn.row_factory = sqlite3.Row
-        score_rows = conn.execute("SELECT ticker, scores FROM holding_macro_scores").fetchall()
-        conn.close()
-        if score_rows:
-            scores_block = "\nMACRO RISK SCORES (1-10 scale, higher = more exposed):\n"
-            for r in score_rows:
-                try:
-                    s = json.loads(r["scores"])
-                    scores_block += (
-                        f"  {r['ticker']}: rate={s.get('rate_sensitivity','?')} "
-                        f"inflation={s.get('inflation_hedge','?')} "
-                        f"dollar={s.get('dollar_sensitivity','?')} "
-                        f"geo={s.get('geopolitical_risk','?')} — {s.get('note','')}\n"
-                    )
-                except Exception:
-                    pass
+    # Load macro scores for context (compact=True omits per-dim reasons to keep prompt short)
+    _, scores_block = _get_macro_scores_block(compact=True)
 
     cc_block       = _get_cc_context()
     lot_block      = _get_lot_context()

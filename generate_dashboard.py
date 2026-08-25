@@ -6708,21 +6708,12 @@ function toggleMacroDetail(safeId) {{
     if (ins.macro_summary) {{
       html += `<div class="ai-section"><div class="ai-section-label">Macro Regime</div><div class="ai-section-body">${{ins.macro_summary}}</div></div>`;
     }}
-    if (ins.portfolio_macro_alignment) {{
-      html += `<div class="ai-section"><div class="ai-section-label">Portfolio Alignment</div><div class="ai-section-body">${{ins.portfolio_macro_alignment}}</div></div>`;
-    }}
     if (ins.risk_flags && ins.risk_flags.length) {{
       const flags = ins.risk_flags.map(f => `<div class="ai-flag">⚠ ${{f}}</div>`).join('');
       html += `<div class="ai-section"><div class="ai-section-label">Risk Flags</div>${{flags}}</div>`;
     }}
-    if (ins.rebalancing_take) {{
-      html += `<div class="ai-section"><div class="ai-section-label">Rebalancing</div><div class="ai-section-body">${{ins.rebalancing_take}}</div></div>`;
-    }}
     if (ins.tax_timing_note && ins.tax_timing_note.toLowerCase() !== 'no immediate tax flags') {{
       html += `<div class="ai-section"><div class="ai-section-label">Tax / Timing</div><div class="ai-section-body">${{ins.tax_timing_note}}</div></div>`;
-    }}
-    if (ins.cc_program_note) {{
-      html += `<div class="ai-section"><div class="ai-section-label">Covered Calls</div><div class="ai-section-body">${{ins.cc_program_note}}</div></div>`;
     }}
     if (ins.tax_opportunity && ins.tax_opportunity.toLowerCase() !== 'none this week') {{
       html += `<div class="ai-section"><div class="ai-section-label">Tax Opportunity</div><div class="ai-section-body">${{ins.tax_opportunity}}</div></div>`;
@@ -6881,6 +6872,7 @@ function toggleMacroDetail(safeId) {{
       headers: {{ 'Content-Type': 'application/json' }},
       body: JSON.stringify({{ messages: pcMessages }}),
     }}).then(resp => {{
+      if (resp.status === 429) {{ pcShowError('AI advisor is busy — try again in a moment.'); finishPc(aiDiv, ''); return; }}
       const reader = resp.body.getReader();
       const dec = new TextDecoder();
       let buf = '', fullText = '';
