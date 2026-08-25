@@ -6744,17 +6744,15 @@ function toggleMacroDetail(safeId) {{
   }}
 
   function _pollAiInsight(attempts) {{
-    if (attempts <= 0) {{
-      const body = document.getElementById('ai-insight-body');
-      if (body) body.innerHTML = `<div class="ai-loading-wrap">${{_aiSpinner}}<span>Analysis is taking longer than expected — still running in the background. Click ↻ Refresh to check.</span></div>`;
-      return;
-    }}
     fetch('/api/ai/daily').then(r => r.json()).then(data => {{
       const body = document.getElementById('ai-insight-body');
       if (!body) return;
       if (data.status === 'generating') {{
         const elapsed = _aiElapsed();
-        body.innerHTML = `<div class="ai-loading-wrap">${{_aiSpinner}}<span>Generating… ${{elapsed}}s elapsed</span></div>`;
+        const msg = elapsed > 160
+          ? `Still generating… ${{elapsed}}s elapsed (70B model takes 3-5 min)`
+          : `Generating… ${{elapsed}}s elapsed`;
+        body.innerHTML = `<div class="ai-loading-wrap">${{_aiSpinner}}<span>${{msg}}</span></div>`;
         _aiPollTimer = setTimeout(() => _pollAiInsight(attempts - 1), 8000);
         return;
       }}
@@ -6781,7 +6779,7 @@ function toggleMacroDetail(safeId) {{
         if (data.status === 'generating') {{
           _aiPollStart = Date.now();
           body.innerHTML = `<div class="ai-loading-wrap">${{_aiSpinner}}<span>Generating… 0s elapsed</span></div>`;
-          _aiPollTimer = setTimeout(() => _pollAiInsight(20), 8000);
+          _aiPollTimer = setTimeout(() => _pollAiInsight(45), 8000);
         }}
       }}).catch(e => {{
         body.innerHTML = `<span class="ai-loading">Request failed: ${{e.message}}</span>`;
@@ -6796,7 +6794,7 @@ function toggleMacroDetail(safeId) {{
       if (data.status === 'generating') {{
         _aiPollStart = Date.now();
         body.innerHTML = `<div class="ai-loading-wrap">${{_aiSpinner}}<span>Generating… 0s elapsed</span></div>`;
-        _aiPollTimer = setTimeout(() => _pollAiInsight(20), 8000);
+        _aiPollTimer = setTimeout(() => _pollAiInsight(45), 8000);
         return;
       }}
       if (!data.ok || !data.insight) {{ body.innerHTML = `<span class="ai-loading">Error: ${{data.error || 'no data'}}</span>`; return; }}
