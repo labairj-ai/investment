@@ -59,6 +59,7 @@ def stream_generate(prompt, model=DEFAULT_MODEL, temperature=0.3, num_predict=70
 
 def stream_chat(messages, model=DEFAULT_MODEL, temperature=0.4, num_predict=1000):
     """Multi-turn conversational chat — yields text tokens. messages = [{role, content}, ...]"""
+    import time as _time
     payload = json.dumps({
         "model": model,
         "messages": messages,
@@ -71,7 +72,22 @@ def stream_chat(messages, model=DEFAULT_MODEL, temperature=0.4, num_predict=1000
         data=payload,
         headers={"Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(req, timeout=180) as r:
+    # Retry on transient connection errors (mlx_lm.server briefly refuses during inference)
+    last_exc = None
+    conn = None
+    for attempt in range(3):
+        try:
+            conn = urllib.request.urlopen(req, timeout=180)
+            break
+        except urllib.error.URLError as e:
+            last_exc = e
+            if "Connection refused" in str(e) and attempt < 2:
+                _time.sleep(2 ** attempt)
+            else:
+                raise
+    if conn is None:
+        raise last_exc
+    with conn as r:
         for line in r:
             line = line.strip()
             if not line or line == b"data: [DONE]":
