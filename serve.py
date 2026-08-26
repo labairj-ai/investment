@@ -2748,9 +2748,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if all_expirations:
             base += f"\n\nAll available expiry dates for {ticker}: {', '.join(all_expirations[:24])}"
             base += (
-                f"\nNote: contracts with < 21 DTE or in extended months beyond the standard "
-                f"60-day window are not pre-analyzed. If the investor asks about a specific "
-                f"month or date, live data will be fetched automatically."
+                f"\nIMPORTANT: You CANNOT fetch data yourself. Contracts outside the pre-analyzed "
+                f"window are only available if a LIVE DATA block appears below in this prompt. "
+                f"If no LIVE DATA block exists for a requested expiry, say you don't have it and "
+                f"ask the investor to specify a date so live data can be loaded. NEVER invent, "
+                f"estimate, or guess option prices, premiums, probabilities, or annualized returns."
             )
 
         cached_ai = _cc_ai_get(ticker)
@@ -2853,13 +2855,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 except Exception:
                     pass
 
-            # For CC chats: if the user's message references a specific expiry month/date
-            # that isn't already in the system context, fetch it live and inject it.
+            # For CC chats: fetch live option chain data for expiries the user asks about.
             # Reuse the expiration list already embedded in the system prompt to avoid a
             # duplicate yfinance network call.
             if context_type == "cc":
                 try:
                     import re as _re2
+                    from datetime import datetime as _dt2, timedelta as _td2
                     last_user_msg = next(
                         (m.get("content", "") for m in reversed(messages) if m.get("role") == "user"),
                         ""
@@ -2871,17 +2873,43 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         [x.strip() for x in _exp_m.group(1).split(',') if x.strip()]
                         if _exp_m else []
                     )
-                    target_exp = _detect_expiry_from_message(last_user_msg, all_exps)
-                    if target_exp:
-                        # Only fetch if we don't already have detailed contract data for this expiry.
-                        # Listing it in "All available expiry dates" doesn't count.
-                        has_detail = (
-                            f"exp {target_exp}" in system_prompt or      # in qualifying/floor-fail rows
-                            f"— {target_exp} (" in system_prompt         # already in a LIVE DATA block
-                        )
-                        if not has_detail:
-                            fetched = _fetch_options_for_chat(context_id, target_exp)
-                            system_prompt += fetched
+
+                    def _already_has(exp):
+                        return (f"exp {exp}" in system_prompt or f"— {exp} (" in system_prompt)
+
+                    # Detect "shorter duration / near term / next N weeks" requests —
+                    # fetch all expiries within the implied window that aren't already loaded.
+                    msg_lower = last_user_msg.lower()
+                    _near_term_words = ("shorter", "short duration", "near term", "near-term",
+                                        "near expir", "next few", "next 1", "next 2", "next 3",
+                                        "next 4", "1 week", "2 week", "3 week", "4 week",
+                                        "this week", "coming week")
+                    is_near_term_req = any(w in msg_lower for w in _near_term_words)
+
+                    # Also detect "next N weeks" / "next N days" for a specific window
+                    _window_days = 0
+                    _wk_m = _re2.search(r'next\s+(\d+)\s+week', msg_lower)
+                    _dy_m = _re2.search(r'next\s+(\d+)\s+day', msg_lower)
+                    if _wk_m:
+                        _window_days = int(_wk_m.group(1)) * 7
+                    elif _dy_m:
+                        _window_days = int(_dy_m.group(1))
+                    elif is_near_term_req:
+                        _window_days = 35  # default: ~5 weeks for generic "shorter" requests
+
+                    if _window_days > 0 and all_exps:
+                        cutoff = _dt2.now().date() + _td2(days=_window_days)
+                        to_fetch = [
+                            e for e in all_exps
+                            if _dt2.strptime(e, "%Y-%m-%d").date() <= cutoff and not _already_has(e)
+                        ]
+                        for exp in to_fetch[:6]:  # cap at 6 expiries to avoid huge prompts
+                            system_prompt += _fetch_options_for_chat(context_id, exp)
+                    else:
+                        # Fall back to single-expiry detection by month name / date mention
+                        target_exp = _detect_expiry_from_message(last_user_msg, all_exps)
+                        if target_exp and not _already_has(target_exp):
+                            system_prompt += _fetch_options_for_chat(context_id, target_exp)
                 except Exception:
                     pass
 
