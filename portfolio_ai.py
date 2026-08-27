@@ -1113,13 +1113,15 @@ Return exactly this JSON structure:
 
 {_LEG_RULE}"""
 
-    full_text = ""
+    # Use non-streaming generate() so reasoning tokens are kept separate from the
+    # JSON answer. stream_generate(enable_thinking=True) yields both reasoning and
+    # content tokens into one string, causing _extract_json to match JSON-like
+    # fragments in the reasoning chain-of-thought and return garbage.
     try:
-        for tok in ollama_client.stream_generate(
+        full_text = ollama_client.generate(
             prompt, model=ollama_client.DEFAULT_MODEL,
             temperature=0.3, num_predict=2500, enable_thinking=True
-        ):
-            full_text += tok
+        )
     except Exception as e:
         return {"error": f"AI generation failed: {e}"}
 
