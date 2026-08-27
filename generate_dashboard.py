@@ -6703,26 +6703,30 @@ function toggleMacroDetail(safeId) {{
     }}
   }})();
 
+  function _esc(s) {{
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }}
+
   function _renderAiInsight(ins) {{
     let html = '';
     if (ins.macro_summary) {{
-      html += `<div class="ai-section"><div class="ai-section-label">Macro Regime</div><div class="ai-section-body">${{ins.macro_summary}}</div></div>`;
+      html += `<div class="ai-section"><div class="ai-section-label">Macro Regime</div><div class="ai-section-body">${{_esc(ins.macro_summary)}}</div></div>`;
     }}
     if (ins.risk_flags && ins.risk_flags.length) {{
-      const flags = ins.risk_flags.map(f => `<div class="ai-flag">⚠ ${{f}}</div>`).join('');
+      const flags = ins.risk_flags.map(f => `<div class="ai-flag">⚠ ${{_esc(f)}}</div>`).join('');
       html += `<div class="ai-section"><div class="ai-section-label">Risk Flags</div>${{flags}}</div>`;
     }}
     if (ins.tax_timing_note && ins.tax_timing_note.toLowerCase() !== 'no immediate tax flags') {{
-      html += `<div class="ai-section"><div class="ai-section-label">Tax / Timing</div><div class="ai-section-body">${{ins.tax_timing_note}}</div></div>`;
+      html += `<div class="ai-section"><div class="ai-section-label">Tax / Timing</div><div class="ai-section-body">${{_esc(ins.tax_timing_note)}}</div></div>`;
     }}
     if (ins.tax_opportunity && ins.tax_opportunity.toLowerCase() !== 'none this week') {{
-      html += `<div class="ai-section"><div class="ai-section-label">Tax Opportunity</div><div class="ai-section-body">${{ins.tax_opportunity}}</div></div>`;
+      html += `<div class="ai-section"><div class="ai-section-label">Tax Opportunity</div><div class="ai-section-body">${{_esc(ins.tax_opportunity)}}</div></div>`;
     }}
     if (ins.legislative_watch && ins.legislative_watch.toLowerCase() !== 'no material legislation this week') {{
-      html += `<div class="ai-section"><div class="ai-section-label">⚖ Legislative Watch</div><div class="ai-section-body">${{ins.legislative_watch}}</div></div>`;
+      html += `<div class="ai-section"><div class="ai-section-label">⚖ Legislative Watch</div><div class="ai-section-body">${{_esc(ins.legislative_watch)}}</div></div>`;
     }}
     if (ins.key_question) {{
-      html += `<div class="ai-section"><div class="ai-section-label">Key Question This Week</div><div class="ai-key-question">${{ins.key_question}}</div></div>`;
+      html += `<div class="ai-section"><div class="ai-section-label">Key Question This Week</div><div class="ai-key-question">${{_esc(ins.key_question)}}</div></div>`;
     }}
     return html || '<span class="ai-loading">Analysis returned no content.</span>';
   }}

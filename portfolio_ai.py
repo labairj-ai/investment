@@ -1133,9 +1133,9 @@ Return exactly this JSON structure:
 {{
   "macro_summary": "<2-3 sentence description of today's macro regime and its dominant investment implications for this portfolio>",
   "risk_flags": [
-    "<specific held ticker + macro score dimension + current macro reading + mechanism, e.g. 'GRMN rate_sensitivity=7: 10Y at 4.7% compresses growth multiple'>",
-    "<specific held ticker + adverse macro condition, e.g. 'NOC dollar_sensitivity=8: strong dollar pressures overseas defense contract margins'>",
-    "<any news-driven or structural risk not captured by scores — ticker-specific and concrete>"
+    "<held ticker: plain-English risk in one sentence — e.g. 'GRMN: 10Y yield at 4.7% compresses its growth multiple (rate sensitivity 7/10)'>",
+    "<held ticker: plain-English risk in one sentence — e.g. 'NOC: strong dollar pressures overseas defense contract margins (dollar sensitivity 8/10)'>",
+    "<held ticker: news-driven or structural risk not captured by scores — concrete and specific>"
   ],
   "tax_timing_note": "<name specific tickers and lot dates worth acting on — approaching LT thresholds, TLH candidates, or realized gain offsets — or 'No immediate tax flags'>",
   "key_question": "<the single most important portfolio decision for this week — specific and actionable, not generic>",
