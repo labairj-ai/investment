@@ -560,6 +560,24 @@ def _run_news_refresh():
                     with _news_summary_lock:
                         _news_summary_generating = False
 
+            # Step 3: after morning news summaries, generate the daily portfolio insight
+            if label == "06":
+                print(f"[NewsRefresh] 06: generating daily portfolio insight…")
+                try:
+                    _insight = _pai.generate_daily_insight(force=False)
+                    if "error" in _insight:
+                        print(f"[NewsRefresh] 06: insight error: {_insight['error']}")
+                        with open(LOG, "a") as lf:
+                            lf.write(f"[{_dt.now(TZ)}] 06:00 insight FAILED: {_insight['error']}\n")
+                    else:
+                        print(f"[NewsRefresh] 06: daily portfolio insight done.")
+                        with open(LOG, "a") as lf:
+                            lf.write(f"[{_dt.now(TZ)}] 06:00 insight done.\n")
+                except Exception as _e:
+                    print(f"[NewsRefresh] 06: insight exception: {_e}")
+                    with open(LOG, "a") as lf:
+                        lf.write(f"[{_dt.now(TZ)}] 06:00 insight EXCEPTION: {_e}\n")
+
             with open(LOG, "a") as lf:
                 lf.write(f"[{_dt.now(TZ)}] {label}:00 refresh done — {len(tickers)} tickers\n")
             print(f"[NewsRefresh] {label}:00 refresh done.")

@@ -6750,7 +6750,7 @@ function toggleMacroDetail(safeId) {{
       if (data.status === 'generating') {{
         const elapsed = _aiElapsed();
         const msg = elapsed > 160
-          ? `Still generating… ${{elapsed}}s elapsed (70B model takes 3-5 min)`
+          ? `Still generating… ${{elapsed}}s elapsed (35B MoE model takes 1-2 min)`
           : `Generating… ${{elapsed}}s elapsed`;
         body.innerHTML = `<div class="ai-loading-wrap">${{_aiSpinner}}<span>${{msg}}</span></div>`;
         _aiPollTimer = setTimeout(() => _pollAiInsight(attempts - 1), 8000);
