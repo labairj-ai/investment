@@ -64,6 +64,35 @@ def _extract_json(text: str):
                 continue
     return None
 
+
+def _extract_last_json(text: str, required_keys=None):
+    """Return the LAST valid JSON object in text that contains all required_keys.
+
+    Qwen3 thinking models write JSON sketches with '...' placeholders early in
+    their reasoning chain, then write the real filled-in answer later. Scanning
+    from the end (keeping the last match) picks up the real answer and ignores
+    the reasoning drafts. required_keys filters out nested objects inside the
+    answer (e.g. array elements) that don't have the top-level schema keys.
+    """
+    import re
+    text = re.sub(r"^```(?:json)?\s*\n?", "", text.strip())
+    text = re.sub(r"\n?```\s*$", "", text.strip())
+    dec = json.JSONDecoder()
+    last_obj = None
+    for i, ch in enumerate(text):
+        if ch != "{":
+            continue
+        try:
+            obj, _ = dec.raw_decode(text, i)
+            if not isinstance(obj, dict):
+                continue
+            if required_keys and not all(k in obj for k in required_keys):
+                continue
+            last_obj = obj
+        except (ValueError, json.JSONDecodeError):
+            continue
+    return last_obj
+
 # Load .env before ollama_client reads LLM_URL at import time
 _PROJECT_DIR_EARLY = Path(__file__).resolve().parent
 try:
@@ -969,10 +998,10 @@ Be specific. Name the legislation by ID and the matching holding. No generic sta
         for tok in ollama_client.stream_generate(
             outlook_prompt, model=ollama_client.DEFAULT_MODEL,
             temperature=0.2, num_predict=4000,
-            enable_thinking=True, content_only=True
+            enable_thinking=True
         ):
             outlook_raw += tok
-        outlook_obj = _extract_json(outlook_raw)
+        outlook_obj = _extract_last_json(outlook_raw, required_keys=["top_risk"])
         if outlook_obj:
             summaries["_outlook"] = outlook_obj
     except Exception as e:
@@ -1116,22 +1145,22 @@ Return exactly this JSON structure:
 
 {_LEG_RULE}"""
 
-    # stream_generate with content_only=True: skip delta.reasoning tokens so only
-    # the actual JSON answer accumulates in full_text. Non-streaming generate()
-    # cannot be used here because the non-streaming API puts everything in
-    # message.reasoning (content empty) when the budget runs out mid-thinking.
+    # Collect both reasoning and content tokens: Qwen3 thinking models sometimes
+    # put the final answer in delta.reasoning tail (content stays empty when the
+    # budget runs out). _extract_last_json then picks the LAST valid JSON with
+    # the expected schema keys, skipping reasoning sketches with "..." placeholders.
     full_text = ""
     try:
         for tok in ollama_client.stream_generate(
             prompt, model=ollama_client.DEFAULT_MODEL,
             temperature=0.3, num_predict=4000,
-            enable_thinking=True, content_only=True
+            enable_thinking=True
         ):
             full_text += tok
     except Exception as e:
         return {"error": f"AI generation failed: {e}"}
 
-    insight = _extract_json(full_text)
+    insight = _extract_last_json(full_text, required_keys=["macro_summary", "risk_flags"])
     if insight is None:
         print(f"[DailyInsight] Parse failed. Raw output (first 600): {full_text[:600]!r}")
         return {"error": "AI returned malformed JSON", "raw": full_text[:500]}
