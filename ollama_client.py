@@ -94,7 +94,10 @@ def stream_chat(messages, model=DEFAULT_MODEL, temperature=0.4, num_predict=1000
                 continue
             if line.startswith(b"data: "):
                 chunk = json.loads(line[6:])
-                token = chunk["choices"][0]["delta"].get("content", "")
+                delta = chunk["choices"][0]["delta"]
+                # Qwen3 thinking models emit reasoning tokens before content tokens;
+                # yield both so chat shows the thinking process then the answer.
+                token = delta.get("content") or delta.get("reasoning", "")
                 token = _SPECIAL_TOKENS.sub('', token)
                 if token:
                     yield token
