@@ -5,9 +5,9 @@ import urllib.request
 
 # Supports both LLM_URL (MLX / any OpenAI-compatible server) and legacy OLLAMA_URL
 LLM_URL = os.environ.get("LLM_URL") or os.environ.get("OLLAMA_URL", "http://127.0.0.1:8080")
-DEFAULT_MODEL = "mlx-community/Llama-3.3-70B-Instruct-4bit"
+DEFAULT_MODEL = "mlx-community/Qwen3.6-35B-A3B-4bit"
 
-# mlx_lm 0.29.1 doesn't strip Llama 3 special tokens from output
+# mlx_lm may not strip model special tokens from output
 _SPECIAL_TOKENS = re.compile(r'<\|[^|>]+\|>')
 
 
