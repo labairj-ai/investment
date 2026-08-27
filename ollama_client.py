@@ -35,8 +35,14 @@ def generate(prompt, model=DEFAULT_MODEL, temperature=0.3, num_predict=700, enab
         return _SPECIAL_TOKENS.sub('', content).strip()
 
 
-def stream_generate(prompt, model=DEFAULT_MODEL, temperature=0.3, num_predict=700, enable_thinking=False):
-    """Yield text tokens one at a time as they arrive."""
+def stream_generate(prompt, model=DEFAULT_MODEL, temperature=0.3, num_predict=700,
+                    enable_thinking=False, content_only=False):
+    """Yield text tokens one at a time as they arrive.
+
+    content_only=True: skip delta.reasoning tokens and yield only delta.content.
+    Use this when accumulating output for JSON parsing — reasoning tokens contain
+    prose and JSON-like sketches that break _extract_json.
+    """
     payload = json.dumps({
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
@@ -58,9 +64,11 @@ def stream_generate(prompt, model=DEFAULT_MODEL, temperature=0.3, num_predict=70
             if line.startswith(b"data: "):
                 chunk = json.loads(line[6:])
                 delta = chunk["choices"][0]["delta"]
-                # Qwen3 thinking models emit reasoning tokens before content tokens;
-                # yield both so callers receive output even during the thinking phase.
-                token = delta.get("content") or delta.get("reasoning", "")
+                if content_only:
+                    token = delta.get("content", "")
+                else:
+                    # Yield both reasoning and content so callers see thinking + answer.
+                    token = delta.get("content") or delta.get("reasoning", "")
                 token = _SPECIAL_TOKENS.sub('', token)
                 if token:
                     yield token

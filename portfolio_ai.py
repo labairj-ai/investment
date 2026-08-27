@@ -965,10 +965,13 @@ Be specific. Name the legislation by ID and the matching holding. No generic sta
 
     # Call 2: portfolio-level outlook
     try:
-        outlook_raw = ollama_client.generate(
+        outlook_raw = ""
+        for tok in ollama_client.stream_generate(
             outlook_prompt, model=ollama_client.DEFAULT_MODEL,
-            temperature=0.2, num_predict=4000, enable_thinking=True
-        )
+            temperature=0.2, num_predict=4000,
+            enable_thinking=True, content_only=True
+        ):
+            outlook_raw += tok
         outlook_obj = _extract_json(outlook_raw)
         if outlook_obj:
             summaries["_outlook"] = outlook_obj
@@ -1113,15 +1116,18 @@ Return exactly this JSON structure:
 
 {_LEG_RULE}"""
 
-    # Use non-streaming generate() so reasoning tokens are kept separate from the
-    # JSON answer. stream_generate(enable_thinking=True) yields both reasoning and
-    # content tokens into one string, causing _extract_json to match JSON-like
-    # fragments in the reasoning chain-of-thought and return garbage.
+    # stream_generate with content_only=True: skip delta.reasoning tokens so only
+    # the actual JSON answer accumulates in full_text. Non-streaming generate()
+    # cannot be used here because the non-streaming API puts everything in
+    # message.reasoning (content empty) when the budget runs out mid-thinking.
+    full_text = ""
     try:
-        full_text = ollama_client.generate(
+        for tok in ollama_client.stream_generate(
             prompt, model=ollama_client.DEFAULT_MODEL,
-            temperature=0.3, num_predict=4000, enable_thinking=True
-        )
+            temperature=0.3, num_predict=4000,
+            enable_thinking=True, content_only=True
+        ):
+            full_text += tok
     except Exception as e:
         return {"error": f"AI generation failed: {e}"}
 
