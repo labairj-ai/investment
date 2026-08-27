@@ -26,7 +26,11 @@ def generate(prompt, model=DEFAULT_MODEL, temperature=0.3, num_predict=700):
         headers={"Content-Type": "application/json"},
     )
     with urllib.request.urlopen(req, timeout=180) as r:
-        content = json.loads(r.read())["choices"][0]["message"]["content"]
+        msg = json.loads(r.read())["choices"][0]["message"]
+        # Qwen3 thinking models put chain-of-thought in "reasoning" and the answer
+        # in "content"; if the token budget ran out during reasoning, content is
+        # absent — fall back to reasoning so callers get something to parse.
+        content = msg.get("content") or msg.get("reasoning", "") or ""
         return _SPECIAL_TOKENS.sub('', content).strip()
 
 
@@ -51,7 +55,10 @@ def stream_generate(prompt, model=DEFAULT_MODEL, temperature=0.3, num_predict=70
                 continue
             if line.startswith(b"data: "):
                 chunk = json.loads(line[6:])
-                token = chunk["choices"][0]["delta"].get("content", "")
+                delta = chunk["choices"][0]["delta"]
+                # Qwen3 thinking models emit reasoning tokens before content tokens;
+                # yield both so callers receive output even during the thinking phase.
+                token = delta.get("content") or delta.get("reasoning", "")
                 token = _SPECIAL_TOKENS.sub('', token)
                 if token:
                     yield token
