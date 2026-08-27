@@ -4218,7 +4218,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             try:
                 for tok in ollama_client.stream_chat(
                     full_messages, model=ollama_client.DEFAULT_MODEL,
-                    temperature=0.4, num_predict=1200
+                    temperature=0.4, num_predict=3500
                 ):
                     _tok_q.put(("token", tok))
                 _tok_q.put(("done", None))
