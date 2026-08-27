@@ -65,8 +65,20 @@ def _extract_json(text: str):
     return None
 
 
+def _is_placeholder_json(obj: dict) -> bool:
+    """Return True if all string values in obj are '...' (reasoning sketch, not real output)."""
+    vals = []
+    for v in obj.values():
+        if isinstance(v, str):
+            vals.append(v.strip())
+        elif isinstance(v, list) and v:
+            vals.extend(str(x).strip() for x in v[:3])
+    return bool(vals) and all(v == "..." for v in vals)
+
+
 def _extract_last_json(text: str, required_keys=None):
-    """Return the LAST valid JSON object in text that contains all required_keys.
+    """Return the LAST valid JSON object in text that contains all required_keys
+    and does not consist entirely of '...' placeholder values.
 
     Qwen3 thinking models write JSON sketches with '...' placeholders early in
     their reasoning chain, then write the real filled-in answer later. Scanning
@@ -87,6 +99,8 @@ def _extract_last_json(text: str, required_keys=None):
             if not isinstance(obj, dict):
                 continue
             if required_keys and not all(k in obj for k in required_keys):
+                continue
+            if _is_placeholder_json(obj):
                 continue
             last_obj = obj
         except (ValueError, json.JSONDecodeError):
@@ -1153,7 +1167,7 @@ Return exactly this JSON structure:
     try:
         for tok in ollama_client.stream_generate(
             prompt, model=ollama_client.DEFAULT_MODEL,
-            temperature=0.3, num_predict=4000,
+            temperature=0.3, num_predict=8000,
             enable_thinking=True
         ):
             full_text += tok
