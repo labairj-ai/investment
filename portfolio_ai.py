@@ -967,7 +967,7 @@ Be specific. Name the legislation by ID and the matching holding. No generic sta
     try:
         outlook_raw = ollama_client.generate(
             outlook_prompt, model=ollama_client.DEFAULT_MODEL,
-            temperature=0.2, num_predict=2500
+            temperature=0.2, num_predict=800
         )
         outlook_obj = _extract_json(outlook_raw)
         if outlook_obj:

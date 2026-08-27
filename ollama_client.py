@@ -19,6 +19,7 @@ def generate(prompt, model=DEFAULT_MODEL, temperature=0.3, num_predict=700):
         "temperature": temperature,
         "stream": False,
         "response_format": {"type": "json_object"},
+        "chat_template_kwargs": {"enable_thinking": False},
     }).encode()
     req = urllib.request.Request(
         f"{LLM_URL}/v1/chat/completions",
@@ -42,6 +43,7 @@ def stream_generate(prompt, model=DEFAULT_MODEL, temperature=0.3, num_predict=70
         "max_tokens": num_predict,
         "temperature": temperature,
         "stream": True,
+        "chat_template_kwargs": {"enable_thinking": False},
     }).encode()
     req = urllib.request.Request(
         f"{LLM_URL}/v1/chat/completions",
