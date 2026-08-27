@@ -11,7 +11,7 @@ DEFAULT_MODEL = "mlx-community/Qwen3.6-35B-A3B-4bit"
 _SPECIAL_TOKENS = re.compile(r'<\|[^|>]+\|>')
 
 
-def generate(prompt, model=DEFAULT_MODEL, temperature=0.3, num_predict=700):
+def generate(prompt, model=DEFAULT_MODEL, temperature=0.3, num_predict=700, enable_thinking=False):
     payload = json.dumps({
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
@@ -19,7 +19,7 @@ def generate(prompt, model=DEFAULT_MODEL, temperature=0.3, num_predict=700):
         "temperature": temperature,
         "stream": False,
         "response_format": {"type": "json_object"},
-        "chat_template_kwargs": {"enable_thinking": False},
+        "chat_template_kwargs": {"enable_thinking": enable_thinking},
     }).encode()
     req = urllib.request.Request(
         f"{LLM_URL}/v1/chat/completions",
@@ -35,7 +35,7 @@ def generate(prompt, model=DEFAULT_MODEL, temperature=0.3, num_predict=700):
         return _SPECIAL_TOKENS.sub('', content).strip()
 
 
-def stream_generate(prompt, model=DEFAULT_MODEL, temperature=0.3, num_predict=700):
+def stream_generate(prompt, model=DEFAULT_MODEL, temperature=0.3, num_predict=700, enable_thinking=False):
     """Yield text tokens one at a time as they arrive."""
     payload = json.dumps({
         "model": model,
@@ -43,7 +43,7 @@ def stream_generate(prompt, model=DEFAULT_MODEL, temperature=0.3, num_predict=70
         "max_tokens": num_predict,
         "temperature": temperature,
         "stream": True,
-        "chat_template_kwargs": {"enable_thinking": False},
+        "chat_template_kwargs": {"enable_thinking": enable_thinking},
     }).encode()
     req = urllib.request.Request(
         f"{LLM_URL}/v1/chat/completions",

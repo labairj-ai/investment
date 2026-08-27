@@ -967,7 +967,7 @@ Be specific. Name the legislation by ID and the matching holding. No generic sta
     try:
         outlook_raw = ollama_client.generate(
             outlook_prompt, model=ollama_client.DEFAULT_MODEL,
-            temperature=0.2, num_predict=800
+            temperature=0.2, num_predict=2500, enable_thinking=True
         )
         outlook_obj = _extract_json(outlook_raw)
         if outlook_obj:
@@ -1117,7 +1117,7 @@ Return exactly this JSON structure:
     try:
         for tok in ollama_client.stream_generate(
             prompt, model=ollama_client.DEFAULT_MODEL,
-            temperature=0.3, num_predict=1200
+            temperature=0.3, num_predict=2500, enable_thinking=True
         ):
             full_text += tok
     except Exception as e:
