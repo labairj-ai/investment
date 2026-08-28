@@ -182,6 +182,32 @@ _GENERIC_WORDS = {"state", "national", "american", "global", "united", "first",
                   "tech", "capital", "financial", "services", "solutions", "systems",
                   "health", "valley", "street", "market", "markets", "data", "cloud"}
 
+_PAREN_TICKER_RE = re.compile(r'(.{0,60}?)\(([A-Z]{1,5})\)', re.IGNORECASE)
+
+def _parenthetical_mismatch(title, ticker, company_name):
+    """
+    Return True if the title contains (TICKER) but the company name immediately
+    before the parenthetical belongs to a different company.
+    E.g. "Itaú Unibanco (VLY) ..." should not match VLY / Valley National.
+    """
+    sym = ticker.upper()
+    for m in _PAREN_TICKER_RE.finditer(title):
+        if m.group(2).upper() != sym:
+            continue
+        prefix = m.group(1).strip()
+        if not prefix or not company_name:
+            return False
+        company_words = [w.lower().rstrip(".,") for w in company_name.split()
+                         if len(w.rstrip(".,")) >= 4
+                         and w.lower().rstrip(".,") not in _GENERIC_WORDS]
+        if not company_words:
+            return False
+        prefix_lower = prefix.lower()
+        if not any(w in prefix_lower for w in company_words):
+            return True
+    return False
+
+
 def _build_matcher(ticker, company_name):
     """
     Return a callable(text) → bool that checks for ticker or company mention.
@@ -206,6 +232,8 @@ def _build_matcher(ticker, company_name):
                 patterns.append(re.compile(re.escape(words[0]), re.IGNORECASE))
 
     def matches(text):
+        if _parenthetical_mismatch(text, ticker, company_name):
+            return False
         for pat in patterns:
             if pat.search(text):
                 return True
@@ -477,8 +505,12 @@ def fetch(tickers, force=False):
         url = ("https://feeds.finance.yahoo.com/rss/2.0/headline"
                "?s=%s&region=US&lang=en-US" % ticker.replace(".", "-"))
         ticker_arts = _fetch_feed(url, "Yahoo Finance", SIMPLE_UA)
+        matcher = matchers[ticker]
         for a in ticker_arts:
             if _pub_ts(a.get("pub_date", "")) < cutoff:
+                continue
+            haystack = a.get("title", "") + " " + a.get("excerpt", "")
+            if not matcher(haystack):
                 continue
             key = a.get("title", "")[:100].lower()
             if key and key not in seen and len(by_ticker[ticker]) < MAX_PER_TICKER:
