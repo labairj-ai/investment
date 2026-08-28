@@ -4931,7 +4931,7 @@ function renderCCPositions() {{
     }});
     const months = Object.keys(byMonth).sort().reverse();
     html += `<tr><td colspan="${{COLS}}" style="padding:5px 10px;font-size:11px;font-weight:700;color:#888;background:#f9f9f9;">${{sectionLabel}}</td></tr>`;
-    months.forEach(key => {{
+    months.forEach((key, idx) => {{
       const [yr, mo] = key.split("-");
       const label = yr === "unknown" ? "Unknown Date"
         : new Date(parseInt(yr), parseInt(mo)-1, 1).toLocaleDateString("en-US", {{month:"long",year:"numeric"}});
@@ -4940,14 +4940,16 @@ function renderCCPositions() {{
       const mNet   = mp.reduce((s,p) => s + (p.net_premium ?? 0), 0);
       const rid  = ridPrefix + key;
       const netDiff = mNet !== mGross ? ` · <span style="opacity:0.6;">$${{mNet.toFixed(2)}} net</span>` : "";
+      const isLatest = idx === 0;
+      const arrowStyle = isLatest ? "display:inline-block;margin-right:6px;transition:transform 0.15s;transform:rotate(90deg);" : "display:inline-block;margin-right:6px;transition:transform 0.15s;";
       html += `<tr style="cursor:pointer;background:${{hdrBg}};border-bottom:1px solid ${{hdrBorder}};" onclick="toggleCCMonth('${{rid}}')">
         <td colspan="${{COLS}}" style="padding:7px 12px;font-size:12px;font-weight:700;color:${{hdrColor}};">
-          <span id="${{rid}}-arrow" style="display:inline-block;margin-right:6px;transition:transform 0.15s;">▶</span>
+          <span id="${{rid}}-arrow" style="${{arrowStyle}}">▶</span>
           ${{label}}
           <span style="font-weight:400;opacity:0.7;margin-left:10px;font-size:11px;">${{mp.length}} position${{mp.length>1?"s":""}} · +$${{mGross.toFixed(2)}} collected${{netDiff}}</span>
         </td>
       </tr>`;
-      html += mp.map(p => makeRow(p, rid, true)).join("");
+      html += mp.map(p => makeRow(p, rid, !isLatest)).join("");
     }});
   }}
 
@@ -7008,14 +7010,15 @@ function toggleMacroDetail(safeId) {{
       if (s) {{
         if (s.news) {{
           tickerHtml += `<div class="ai-news-summary">${{s.news}}</div>`;
-          if (s.rates)       tickerHtml += `<div class="ai-news-factor"><span class="ai-news-factor-label">📈 Rates</span>${{s.rates}}</div>`;
-          if (s.trade)       tickerHtml += `<div class="ai-news-factor"><span class="ai-news-factor-label">🌐 Trade</span>${{s.trade}}</div>`;
-          if (s.environment) tickerHtml += `<div class="ai-news-factor"><span class="ai-news-factor-label">🏛 Environment</span>${{s.environment}}</div>`;
-          if (s.leg_risk)    tickerHtml += `<div class="ai-news-factor ai-news-leg-risk"><span class="ai-news-factor-label">🔴 Legislative Risk</span>${{s.leg_risk}}</div>`;
-          if (s.leg_opp)     tickerHtml += `<div class="ai-news-factor ai-news-leg-opp"><span class="ai-news-factor-label">🟢 Legislative Opp</span>${{s.leg_opp}}</div>`;
-          if (s.tax_angle)   tickerHtml += `<div class="ai-news-factor ai-news-tax"><span class="ai-news-factor-label">⚖ Tax Angle</span>${{s.tax_angle}}</div>`;
+          const _v = x => x && x !== 'null' && x !== 'None' ? x : null;
+          if (_v(s.rates))       tickerHtml += `<div class="ai-news-factor"><span class="ai-news-factor-label">📈 Rates</span>${{_v(s.rates)}}</div>`;
+          if (_v(s.trade))       tickerHtml += `<div class="ai-news-factor"><span class="ai-news-factor-label">🌐 Trade</span>${{_v(s.trade)}}</div>`;
+          if (_v(s.environment)) tickerHtml += `<div class="ai-news-factor"><span class="ai-news-factor-label">🏛 Environment</span>${{_v(s.environment)}}</div>`;
+          if (_v(s.leg_risk))    tickerHtml += `<div class="ai-news-factor ai-news-leg-risk"><span class="ai-news-factor-label">🔴 Legislative Risk</span>${{_v(s.leg_risk)}}</div>`;
+          if (_v(s.leg_opp))     tickerHtml += `<div class="ai-news-factor ai-news-leg-opp"><span class="ai-news-factor-label">🟢 Legislative Opp</span>${{_v(s.leg_opp)}}</div>`;
+          if (_v(s.tax_angle))   tickerHtml += `<div class="ai-news-factor ai-news-tax"><span class="ai-news-factor-label">⚖ Tax Angle</span>${{_v(s.tax_angle)}}</div>`;
           // backward-compat: old single legislation key
-          if (s.legislation && !s.leg_risk && !s.leg_opp) tickerHtml += `<div class="ai-news-factor"><span class="ai-news-factor-label">⚖ Legislation</span>${{s.legislation}}</div>`;
+          if (_v(s.legislation) && !_v(s.leg_risk) && !_v(s.leg_opp)) tickerHtml += `<div class="ai-news-factor"><span class="ai-news-factor-label">⚖ Legislation</span>${{_v(s.legislation)}}</div>`;
         }} else if (s.summary) {{
           tickerHtml += `<div class="ai-news-summary">${{s.summary}}</div>`;
           if (s.macro_angle) tickerHtml += `<div class="ai-news-macro">📊 ${{s.macro_angle}}</div>`;
