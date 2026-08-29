@@ -1096,6 +1096,11 @@ def build_dashboard(portfolio, layers, holdings):
     h2 {{ font-size: 1rem; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: #7f8c8d; margin-bottom: 12px; }}
 
     header {{ background: #1a2340; color: #fff; padding: 18px 28px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }}
+    #dash-tab-nav {{ background:#1a2340;padding:0 24px;display:flex;gap:2px;border-bottom:2px solid #2d3a55; }}
+    .dash-tab-btn {{ background:none;border:none;color:#a0aec0;font-size:13px;font-weight:600;padding:10px 18px;cursor:pointer;border-bottom:3px solid transparent;margin-bottom:-2px;transition:color .15s,border-color .15s; }}
+    .dash-tab-btn:hover {{ color:#e2e8f0; }}
+    .dash-tab-btn.active {{ color:#fff;border-bottom-color:#4fa3e0; }}
+    .dash-tab-content {{ display:block; }}
     header .subtitle {{ font-size: .85rem; color: #a0aec0; margin-top: 2px; }}
 
     .grid {{ display: grid; gap: 18px; padding: 20px 28px; }}
@@ -1880,6 +1885,12 @@ def build_dashboard(portfolio, layers, holdings):
   </div>
 </header>
 
+<nav id="dash-tab-nav">
+  <button class="dash-tab-btn active" id="tab-btn-portfolio" onclick="showDashTab('portfolio')">Portfolio</button>
+  <button class="dash-tab-btn" id="tab-btn-macro" onclick="showDashTab('macro')">📊 Macro Risk</button>
+</nav>
+
+<div id="tab-portfolio" class="dash-tab-content">
 <div class="grid">
 
   <!-- Holdings News -->
@@ -2138,8 +2149,6 @@ def build_dashboard(portfolio, layers, holdings):
     </div>
     <p style="font-size:11px;color:#aaa;margin-top:8px;">ST = short-term (&lt;1yr) · LT = long-term (≥1yr) — derived from your tax lots. Click <b>Lots</b> to add or view purchase history.</p>
   </div>
-
-  {macro_risk_section}
 
   <!-- Realized Gains & Tax Estimate -->
   <div class="card" id="realized-gains-card">
@@ -2487,8 +2496,14 @@ def build_dashboard(portfolio, layers, holdings):
   </div>
 
 </div>
-
 <div class="generated">Generated {generated_at}</div>
+</div><!-- end tab-portfolio -->
+
+<div id="tab-macro" class="dash-tab-content" style="display:none;">
+  <div style="max-width:1400px;margin:0 auto;padding:16px 24px;">
+    {macro_risk_section}
+  </div>
+</div>
 
 <script>
 const D = {chart_data};
@@ -6991,6 +7006,21 @@ function toggleMacroDetail(safeId) {{
   var row = document.getElementById('macro-detail-' + safeId);
   if (row) row.style.display = (row.style.display === 'none') ? 'table-row' : 'none';
 }}
+
+function showDashTab(name) {{
+  document.querySelectorAll('.dash-tab-content').forEach(function(el) {{ el.style.display = 'none'; }});
+  document.querySelectorAll('.dash-tab-btn').forEach(function(el) {{ el.classList.remove('active'); }});
+  var content = document.getElementById('tab-' + name);
+  var btn = document.getElementById('tab-btn-' + name);
+  if (content) content.style.display = 'block';
+  if (btn) btn.classList.add('active');
+  try {{ localStorage.setItem('dashTab', name); }} catch(e) {{}}
+}}
+(function() {{
+  var saved = '';
+  try {{ saved = localStorage.getItem('dashTab') || ''; }} catch(e) {{}}
+  if (saved && document.getElementById('tab-' + saved)) showDashTab(saved);
+}})();
 </script>
 
 <!-- Portfolio Chat FAB -->
