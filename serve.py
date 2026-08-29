@@ -509,7 +509,7 @@ def _run_daily():
         # Macro scores: always run Saturday at 1 AM ET regardless of newsletter flag
         if now.weekday() == 5 and now.hour >= 1 and not already_macro_scored(today):
             run_macro_scores(today)
-        elif already_ran(today) and now.hour >= 21 and now.minute >= 30 and not already_refreshed(today):
+        elif already_ran(today) and now.hour >= 17 and not already_refreshed(today):
             print(f"[Scheduler] Running evening price refresh for {today}…")
             if run(send_email=False):
                 REFRESH_FLAG.write_text(today)
