@@ -1881,7 +1881,6 @@ def build_dashboard(portfolio, layers, holdings):
     <div class="subtitle">{today_date} &nbsp;·&nbsp; {len(today_holdings)} holdings across 5 layers</div>
   </div>
   <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end;">
-    <button onclick="showDashTab('glossary')" style="font-size:12px;padding:5px 12px;border:none;border-radius:5px;background:#2d3a55;color:#e2e8f0;cursor:pointer;font-weight:500;white-space:nowrap;">📖 Glossary</button>
     <button id="refreshBtn" onclick="refreshDashboard()" style="font-size:12px;padding:5px 12px;border:none;border-radius:5px;background:#2d3a55;color:#e2e8f0;cursor:pointer;font-weight:500;white-space:nowrap;">↻ Refresh</button>
     <div style="display:flex;align-items:center;gap:6px;">
     <label style="font-size:11px;color:#a0aec0;white-space:nowrap;">Tax Bracket</label>
