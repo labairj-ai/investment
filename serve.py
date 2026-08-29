@@ -391,6 +391,7 @@ def _run_daily():
     TZ                = ZoneInfo("America/New_York")
     FLAG              = PROJECT_DIR / "out" / "last_run_date.txt"
     REFRESH_FLAG      = PROJECT_DIR / "out" / "last_refresh_date.txt"
+    REFRESH_5PM_FLAG  = PROJECT_DIR / "out" / "last_refresh_5pm_date.txt"
     MACRO_SCORE_FLAG  = PROJECT_DIR / "out" / "last_macro_score_date.txt"
     VENV_PY           = PROJECT_DIR / "venv" / "bin" / "python3"
     LOG               = PROJECT_DIR / "out" / "newsletter.log"
@@ -404,6 +405,12 @@ def _run_daily():
     def already_refreshed(today):
         try:
             return REFRESH_FLAG.read_text().strip() == today
+        except Exception:
+            return False
+
+    def already_refreshed_5pm(today):
+        try:
+            return REFRESH_5PM_FLAG.read_text().strip() == today
         except Exception:
             return False
 
@@ -509,13 +516,20 @@ def _run_daily():
         # Macro scores: always run Saturday at 1 AM ET regardless of newsletter flag
         if now.weekday() == 5 and now.hour >= 1 and not already_macro_scored(today):
             run_macro_scores(today)
-        elif already_ran(today) and now.hour >= 17 and not already_refreshed(today):
-            print(f"[Scheduler] Running evening price refresh for {today}…")
+        elif already_ran(today) and now.hour >= 17 and not already_refreshed_5pm(today):
+            print(f"[Scheduler] Running 5 PM price refresh for {today}…")
+            if run(send_email=False):
+                REFRESH_5PM_FLAG.write_text(today)
+                print(f"[Scheduler] 5 PM refresh done for {today}.")
+            else:
+                print(f"[Scheduler] 5 PM refresh failed — will retry in 30 min.")
+        elif already_ran(today) and now.hour >= 21 and now.minute >= 30 and not already_refreshed(today):
+            print(f"[Scheduler] Running 9:30 PM OTC price refresh for {today}…")
             if run(send_email=False):
                 REFRESH_FLAG.write_text(today)
-                print(f"[Scheduler] Evening refresh done for {today}.")
+                print(f"[Scheduler] 9:30 PM refresh done for {today}.")
             else:
-                print(f"[Scheduler] Evening refresh failed — will retry in 30 min.")
+                print(f"[Scheduler] 9:30 PM refresh failed — will retry in 30 min.")
         time.sleep(1800)
 
 
