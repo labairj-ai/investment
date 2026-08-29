@@ -388,11 +388,12 @@ def _run_daily():
         return
     from zoneinfo import ZoneInfo
     from datetime import datetime as _dt
-    TZ           = ZoneInfo("America/New_York")
-    FLAG         = PROJECT_DIR / "out" / "last_run_date.txt"
-    REFRESH_FLAG = PROJECT_DIR / "out" / "last_refresh_date.txt"
-    VENV_PY      = PROJECT_DIR / "venv" / "bin" / "python3"
-    LOG          = PROJECT_DIR / "out" / "newsletter.log"
+    TZ                = ZoneInfo("America/New_York")
+    FLAG              = PROJECT_DIR / "out" / "last_run_date.txt"
+    REFRESH_FLAG      = PROJECT_DIR / "out" / "last_refresh_date.txt"
+    MACRO_SCORE_FLAG  = PROJECT_DIR / "out" / "last_macro_score_date.txt"
+    VENV_PY           = PROJECT_DIR / "venv" / "bin" / "python3"
+    LOG               = PROJECT_DIR / "out" / "newsletter.log"
 
     def already_ran(today):
         try:
@@ -405,6 +406,27 @@ def _run_daily():
             return REFRESH_FLAG.read_text().strip() == today
         except Exception:
             return False
+
+    def already_macro_scored(today):
+        try:
+            return MACRO_SCORE_FLAG.read_text().strip() == today
+        except Exception:
+            return False
+
+    def run_macro_scores(today):
+        import portfolio_ai as _pai
+        with open(LOG, "a") as lf:
+            lf.write(f"\n=== MACRO SCORES {_dt.now(TZ)} ===\n")
+            lf.write("[PortfolioAI] Running Saturday macro scores for holdings…\n")
+            try:
+                _pai._init_ai_tables()
+                _pai.generate_holding_macro_scores(force=True)
+                MACRO_SCORE_FLAG.write_text(today)
+                lf.write("[PortfolioAI] Macro scores done.\n")
+                print(f"[Scheduler] Macro scores done for {today}.")
+            except Exception as _e:
+                lf.write(f"[PortfolioAI] Macro scores error: {_e}\n")
+                print(f"[Scheduler] Macro scores failed: {_e}")
 
     def run(send_email=True):
         cmd = [str(VENV_PY), str(PROJECT_DIR / "send_newsletter_main.py")]
@@ -484,6 +506,9 @@ def _run_daily():
                     print(f"[Backup] Exception: {exc}")
             else:
                 print(f"[Scheduler] Failed — will retry in 30 min.")
+        # Macro scores: always run on Saturday morning regardless of newsletter flag
+        if now.weekday() == 5 and now.hour >= 7 and not already_macro_scored(today):
+            run_macro_scores(today)
         elif already_ran(today) and now.hour >= 21 and now.minute >= 30 and not already_refreshed(today):
             print(f"[Scheduler] Running evening price refresh for {today}…")
             if run(send_email=False):
@@ -4785,7 +4810,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
 
-server = http.server.ThreadingHTTPServer(("localhost", PORT), Handler)
+server = http.server.ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
 
 # Regenerate dashboard on startup so changes to generate_dashboard.py take
 # effect immediately after a deploy + service restart.
