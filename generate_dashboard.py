@@ -186,7 +186,7 @@ def _load_macro_scores() -> dict:
 
 
 def _load_macro_score_history(limit=60) -> dict:
-    """Return {ticker: [scores_dict, ...]} ordered oldest-first, up to `limit` entries each."""
+    """Return {ticker: [{"scores": dict, "date": "YYYY-MM-DD"}, ...]} oldest-first."""
     if not DB_PATH.exists():
         return {}
     try:
@@ -202,7 +202,10 @@ def _load_macro_score_history(limit=60) -> dict:
         result = {}
         for r in rows:
             try:
-                result.setdefault(normalize_ticker(r["ticker"]), []).append(json.loads(r["scores"]))
+                result.setdefault(normalize_ticker(r["ticker"]), []).append({
+                    "scores": json.loads(r["scores"]),
+                    "date":   r["scored_at"][:10],
+                })
             except Exception:
                 pass
         return {t: entries[-limit:] for t, entries in result.items()}
@@ -211,10 +214,11 @@ def _load_macro_score_history(limit=60) -> dict:
 
 
 def _historical_dim_scores(history, dim):
-    """Extract list of int scores for `dim` from a ticker's history list."""
+    """Extract list of int scores for `dim` from a ticker's history list (new {scores, date} or legacy dict)."""
     out = []
     for entry in history:
-        raw = entry.get(dim)
+        scores = entry.get("scores", entry) if isinstance(entry, dict) and "scores" in entry else entry
+        raw = scores.get(dim)
         val = raw.get('score') if isinstance(raw, dict) else raw
         if isinstance(val, int):
             out.append(val)
@@ -250,25 +254,27 @@ def _extract_reason(val):
     return ''
 
 
-def _sparkline_svg(scores, color):
+def _sparkline_svg(scores, color, w=64, h=18):
     """Return inline SVG sparkline for a list of score ints (oldest→newest), or ''."""
     clean = [s for s in scores if isinstance(s, (int, float))]
     if len(clean) < 2:
         return ''
-    w, h = 64, 18
     n = len(clean)
+    pad = 3
     def pt(i, s):
-        x = round(i / (n - 1) * w, 1)
-        y = round(h - max(0, min(1, (s - 1) / 9)) * h, 1)
+        x = round(pad + i / (n - 1) * (w - 2 * pad), 1)
+        y = round(h - pad - max(0, min(1, (s - 1) / 9)) * (h - 2 * pad), 1)
         return f"{x},{y}"
     pts = ' '.join(pt(i, s) for i, s in enumerate(clean))
     last_x, last_y = pt(n - 1, clean[-1]).split(',')
+    dot_r = max(2, round(w / 32))
+    sw = max(1.5, round(w / 42, 1))
     return (
         f'<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}" '
         f'style="display:inline-block;vertical-align:middle;flex-shrink:0;" title="{len(clean)} scoring runs">'
-        f'<polyline points="{pts}" fill="none" stroke="{color}" stroke-width="1.5" '
-        f'stroke-linejoin="round" stroke-linecap="round" opacity="0.7"/>'
-        f'<circle cx="{last_x}" cy="{last_y}" r="2" fill="{color}"/>'
+        f'<polyline points="{pts}" fill="none" stroke="{color}" stroke-width="{sw}" '
+        f'stroke-linejoin="round" stroke-linecap="round" opacity="0.8"/>'
+        f'<circle cx="{last_x}" cy="{last_y}" r="{dot_r}" fill="{color}"/>'
         f'</svg>'
     )
 
@@ -361,22 +367,393 @@ def _compute_portfolio_macro_health(holdings_sorted, macro_scores) -> dict:
     return {"portfolio": portfolio, "layers": layers}
 
 
-def _dim_panel(label, val, inverted=False, no_reason_fallback='', sparkline=''):
+def _dim_panel(label, val, inverted=False, no_reason_fallback='', sparkline='', dim_delta=None):
     """Build the HTML card for one macro dimension in the expanded detail panel."""
     score = _extract_score(val)
     reason = _extract_reason(val) or no_reason_fallback
     color = _dim_score_color(score, inverted)
     score_disp = f"{score}/10" if score is not None else "—"
+    delta_html = ''
+    if dim_delta is not None and dim_delta != 0:
+        better = (dim_delta < 0) if not inverted else (dim_delta > 0)
+        dc = '#27ae60' if better else '#e74c3c'
+        arrow = '▲' if dim_delta > 0 else '▼'
+        delta_html = f'<span style="font-size:10px;color:{dc};margin-left:4px;">{arrow}{abs(dim_delta)}</span>'
     return (
-        f'<div style="background:#fff;border-radius:6px;padding:8px 10px;border-left:3px solid {color};">'
-        f'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:3px;gap:6px;">'
+        f'<div style="background:#fff;border-radius:6px;padding:10px 12px;border-left:3px solid {color};">'
+        f'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:5px;gap:6px;">'
         f'<span style="font-size:11px;font-weight:600;color:#4a5568;flex:1;">{label}</span>'
         f'{sparkline}'
-        f'<span style="font-size:13px;font-weight:700;color:{color};white-space:nowrap;">{score_disp}</span>'
+        f'<span style="font-size:14px;font-weight:700;color:{color};white-space:nowrap;">{score_disp}{delta_html}</span>'
         f'</div>'
         f'<div style="font-size:11px;color:#718096;line-height:1.4;">{reason or "&nbsp;"}</div>'
         f'</div>'
     )
+
+
+def _wow_delta_badge(delta) -> str:
+    if delta is None or delta == 0:
+        return ''
+    if delta > 0:
+        return f'<span style="font-size:10px;color:#27ae60;font-weight:600;margin-left:4px;">▲{delta}</span>'
+    return f'<span style="font-size:10px;color:#e74c3c;font-weight:600;margin-left:4px;">▼{abs(delta)}</span>'
+
+
+def _heatmap_cell(score, inverted, delta=None) -> str:
+    """One heatmap table cell: colored score chip + WoW arrow."""
+    if score is None:
+        return '<td style="text-align:center;color:#ccc;font-size:11px;">—</td>'
+    color = _dim_score_color(score, inverted)
+    delta_html = ''
+    if delta is not None and delta != 0:
+        better = (delta < 0) if not inverted else (delta > 0)
+        dc = '#27ae60' if better else '#e74c3c'
+        arrow = '▲' if delta > 0 else '▼'
+        delta_html = f'<span style="color:{dc};font-size:9px;margin-left:2px;">{arrow}{abs(delta)}</span>'
+    return (
+        f'<td style="text-align:center;padding:6px 4px;">'
+        f'<span style="display:inline-block;background:{color}18;color:{color};'
+        f'border:1px solid {color}44;border-radius:4px;padding:2px 6px;font-size:11px;font-weight:700;">'
+        f'{score}</span>{delta_html}</td>'
+    )
+
+
+def _compute_wow_deltas(macro_scores, macro_history) -> dict:
+    """Return {ticker: {"composite": delta, dim: delta, ...}} comparing last 2 scoring runs."""
+    result = {}
+    for ticker, history in macro_history.items():
+        if len(history) < 2:
+            continue
+        prev_scores = history[-2].get("scores", history[-2]) if isinstance(history[-2], dict) else history[-2]
+        curr_scores = macro_scores.get(ticker, {})
+        deltas = {}
+        prev_c = _compute_macro_composite(prev_scores)
+        curr_c = _compute_macro_composite(curr_scores)
+        if prev_c is not None and curr_c is not None:
+            deltas["composite"] = curr_c - prev_c
+        for dim in ("rate_sensitivity", "inflation_hedge", "dollar_sensitivity", "geopolitical_risk"):
+            pv = _extract_score(prev_scores.get(dim))
+            cv = _extract_score(curr_scores.get(dim))
+            if pv is not None and cv is not None:
+                deltas[dim] = cv - pv
+        result[ticker] = deltas
+    return result
+
+
+def _build_macro_trend_data(macro_history, today_holdings_sorted) -> dict:
+    """Compute weekly portfolio & layer composite scores for the trend chart."""
+    all_dates = sorted(set(
+        e["date"] for entries in macro_history.values() for e in entries
+        if isinstance(e, dict) and "date" in e
+    ))
+    if not all_dates:
+        return {"dates": [], "portfolio": [], "layers": {}}
+
+    ticker_date_scores: dict = {}
+    for ticker, entries in macro_history.items():
+        ticker_date_scores[ticker] = {
+            e["date"]: e["scores"] for e in entries
+            if isinstance(e, dict) and "date" in e
+        }
+
+    port_series: list = []
+    layer_series: dict = {d: {} for d in all_dates}
+
+    for date in all_dates:
+        pv = pw = 0.0
+        lbuckets: dict = {}
+        for h in today_holdings_sorted:
+            scores = ticker_date_scores.get(h["ticker"], {}).get(date)
+            if not scores:
+                continue
+            c = _compute_macro_composite(scores)
+            if c is None:
+                continue
+            v = h.get("value", 0.0)
+            pv += v; pw += c * v
+            lb = lbuckets.setdefault(h["layer"], [0.0, 0.0])
+            lb[0] += v; lb[1] += c * v
+        port_series.append(round(pw / pv) if pv > 0 else None)
+        for ln, (lv, lw) in lbuckets.items():
+            layer_series[date][ln] = round(lw / lv) if lv > 0 else None
+
+    all_layers = sorted(set(ln for ds in layer_series.values() for ln in ds))
+    layer_datasets = {
+        ln: [layer_series[d].get(ln) for d in all_dates]
+        for ln in all_layers
+    }
+    return {"dates": all_dates, "portfolio": port_series, "layers": layer_datasets}
+
+
+def _build_macro_risk_section(macro_scores, macro_history, wow_deltas,
+                               trend_data, today_holdings_sorted, portfolio_health) -> str:
+    """Build the full standalone MACRO RISK DASHBOARD section HTML."""
+    if not macro_scores:
+        return ''
+
+    # Scoring run info
+    all_dates = trend_data.get("dates", [])
+    run_count  = len(all_dates)
+    last_date  = all_dates[-1] if all_dates else "—"
+
+    # ── Portfolio health trend chart ──────────────────────────────────────────
+    port_health = portfolio_health.get("portfolio")
+    ph_color    = _composite_color(port_health)
+
+    trend_dates_js = json.dumps(all_dates)
+    trend_port_js  = json.dumps(trend_data.get("portfolio", []))
+
+    layer_ds_js_parts = []
+    for ln, vals in trend_data.get("layers", {}).items():
+        lc = LAYER_COLORS.get(ln, "#999")
+        short = LAYER_SHORT.get(ln, ln)
+        layer_ds_js_parts.append(
+            f'{{"label":{json.dumps(short)},"data":{json.dumps(vals)},'
+            f'"borderColor":{json.dumps(lc)},"backgroundColor":{json.dumps(lc+"33")},'
+            f'"borderDash":[4,3],"borderWidth":1.5,"pointRadius":3,"tension":0.3,"fill":false}}'
+        )
+    layer_ds_js = "[" + ",".join(layer_ds_js_parts) + "]"
+
+    # WoW summary badges (portfolio + layers)
+    port_delta = None
+    if len(trend_data.get("portfolio", [])) >= 2:
+        p = trend_data["portfolio"]
+        if p[-1] is not None and p[-2] is not None:
+            port_delta = p[-1] - p[-2]
+
+    layer_wow_html = ""
+    for ln, vals in trend_data.get("layers", {}).items():
+        if len(vals) >= 2 and vals[-1] is not None and vals[-2] is not None:
+            ld = vals[-1] - vals[-2]
+            lc = LAYER_COLORS.get(ln, "#999")
+            short = LAYER_SHORT.get(ln, ln)
+            dc = '#27ae60' if ld >= 0 else '#e74c3c'
+            arr = '▲' if ld > 0 else ('▼' if ld < 0 else '=')
+            layer_wow_html += (
+                f'<div style="display:flex;align-items:center;gap:6px;padding:4px 0;'
+                f'border-bottom:1px solid #f0f0f0;">'
+                f'<span style="font-size:11px;color:#718096;min-width:110px;">{short}</span>'
+                f'<span style="font-size:13px;font-weight:700;color:{_composite_color(vals[-1])};">{vals[-1]}</span>'
+                f'<span style="font-size:11px;color:{dc};font-weight:600;">{arr}{abs(ld) if ld else ""}</span>'
+                f'</div>'
+            )
+
+    trend_section = f'''
+    <div style="display:grid;grid-template-columns:1fr 220px;gap:16px;margin-bottom:20px;align-items:start;">
+      <div>
+        <div style="font-size:11px;font-weight:600;color:#a0aec0;text-transform:uppercase;
+                    letter-spacing:.07em;margin-bottom:8px;">Portfolio Composite — Weekly Trend</div>
+        <canvas id="macroTrendChart" height="120"
+                style="max-height:140px;border-radius:8px;background:#f8f9fa;padding:8px;"></canvas>
+      </div>
+      <div style="background:#f8f9fa;border-radius:8px;padding:12px 14px;">
+        <div style="font-size:10px;font-weight:700;color:#a0aec0;text-transform:uppercase;
+                    letter-spacing:.07em;margin-bottom:8px;">Week-over-Week</div>
+        <div style="display:flex;align-items:center;gap:8px;padding:6px 0;
+                    border-bottom:1px solid #e2e8f0;margin-bottom:6px;">
+          <span style="font-size:12px;color:#718096;font-weight:600;min-width:110px;">Portfolio</span>
+          <span style="font-size:16px;font-weight:800;color:{ph_color};">{port_health if port_health is not None else "—"}</span>
+          {'<span style="font-size:12px;font-weight:700;color:' + ('#27ae60' if (port_delta or 0) >= 0 else '#e74c3c') + ';">' + ('▲' if (port_delta or 0) > 0 else '▼' if (port_delta or 0) < 0 else '') + str(abs(port_delta) if port_delta else '') + '</span>' if port_delta is not None else ''}
+        </div>
+        {layer_wow_html}
+      </div>
+    </div>
+    <script>
+    (function(){{
+      var ctx = document.getElementById('macroTrendChart');
+      if (!ctx || typeof Chart === 'undefined') return;
+      var layerDs = {layer_ds_js};
+      new Chart(ctx, {{
+        type: 'line',
+        data: {{
+          labels: {trend_dates_js},
+          datasets: [{{
+            label: 'Portfolio',
+            data: {trend_port_js},
+            borderColor: '#1a2340',
+            backgroundColor: '#1a234022',
+            borderWidth: 2.5,
+            pointRadius: 4,
+            tension: 0.3,
+            fill: false,
+          }}].concat(layerDs),
+        }},
+        options: {{
+          responsive: true,
+          maintainAspectRatio: true,
+          plugins: {{
+            legend: {{ display: true, position: 'top', labels: {{ font: {{ size: 10 }}, boxWidth: 12, padding: 8 }} }},
+            tooltip: {{ callbacks: {{ label: function(ctx) {{ return ctx.dataset.label + ': ' + ctx.parsed.y; }} }} }},
+          }},
+          scales: {{
+            y: {{ min: 0, max: 100, ticks: {{ stepSize: 25, font: {{ size: 10 }} }},
+                  grid: {{ color: '#f0f0f0' }} }},
+            x: {{ ticks: {{ font: {{ size: 10 }} }}, grid: {{ display: false }} }},
+          }},
+        }},
+      }});
+    }})();
+    </script>'''
+
+    # ── Dimension heatmap ─────────────────────────────────────────────────────
+    DIMS = [
+        ("rate_sensitivity",   "Rate",      False),
+        ("inflation_hedge",    "Inflation", True),
+        ("dollar_sensitivity", "Dollar",    False),
+        ("geopolitical_risk",  "Geo",       False),
+    ]
+    tickers_sorted = sorted(
+        [h["ticker"] for h in today_holdings_sorted if h["ticker"] in macro_scores],
+        key=lambda t: -((_compute_macro_composite(macro_scores[t]) or 0))
+    )
+    heatmap_rows = ""
+    for ticker in tickers_sorted:
+        scores = macro_scores[ticker]
+        deltas = wow_deltas.get(ticker, {})
+        comp = _compute_macro_composite(scores)
+        comp_delta = deltas.get("composite")
+        comp_color = _composite_color(comp)
+        comp_delta_html = ''
+        if comp_delta:
+            dc = '#27ae60' if comp_delta > 0 else '#e74c3c'
+            arr = '▲' if comp_delta > 0 else '▼'
+            comp_delta_html = f'<span style="font-size:9px;color:{dc};margin-left:2px;">{arr}{abs(comp_delta)}</span>'
+        dim_cells = ""
+        for dim, _, inv in DIMS:
+            dim_cells += _heatmap_cell(_extract_score(scores.get(dim)), inv, deltas.get(dim))
+
+        heatmap_rows += (
+            f'<tr style="border-bottom:1px solid #f4f4f4;">'
+            f'<td style="padding:5px 8px;font-weight:600;font-size:12px;color:#1a2340;white-space:nowrap;">{ticker}</td>'
+            f'{dim_cells}'
+            f'<td style="text-align:center;padding:5px 8px;">'
+            f'<span style="font-size:13px;font-weight:800;color:{comp_color};">'
+            f'{comp if comp is not None else "—"}</span>{comp_delta_html}</td>'
+            f'</tr>\n'
+        )
+
+    dim_header_cells = "".join(
+        f'<th style="text-align:center;padding:6px 4px;font-size:10px;font-weight:700;'
+        f'color:#718096;white-space:nowrap;">{label}<br>'
+        f'<span style="font-weight:400;color:#a0aec0;font-size:9px;">{"benefit" if inv else "risk"}</span></th>'
+        for _, label, inv in DIMS
+    )
+    heatmap_section = f'''
+    <div style="margin-bottom:20px;">
+      <div style="font-size:11px;font-weight:600;color:#a0aec0;text-transform:uppercase;
+                  letter-spacing:.07em;margin-bottom:8px;">Dimension Heatmap — All Holdings</div>
+      <div style="overflow-x:auto;">
+      <table style="width:100%;border-collapse:collapse;font-size:12px;">
+        <thead>
+          <tr style="border-bottom:2px solid #e2e8f0;">
+            <th style="text-align:left;padding:6px 8px;font-size:10px;font-weight:700;color:#718096;">Ticker</th>
+            {dim_header_cells}
+            <th style="text-align:center;padding:6px 4px;font-size:10px;font-weight:700;color:#718096;">Health<br><span style="font-weight:400;color:#a0aec0;font-size:9px;">0–100</span></th>
+          </tr>
+        </thead>
+        <tbody>{heatmap_rows}</tbody>
+      </table>
+      </div>
+      <div style="font-size:10px;color:#a0aec0;margin-top:6px;">
+        Rate, Dollar, Geo: lower score = better (green). Inflation: higher score = better (green). ▲▼ = change from prior run.
+      </div>
+    </div>'''
+
+    # ── Per-ticker cards ──────────────────────────────────────────────────────
+    DIM_CFG = [
+        ("rate_sensitivity",   "Rate Sensitivity", False),
+        ("inflation_hedge",    "Inflation Hedge",  True),
+        ("dollar_sensitivity", "Dollar Sensitivity", False),
+        ("geopolitical_risk",  "Geopolitical Risk",  False),
+    ]
+    cards_html = ""
+    for h in today_holdings_sorted:
+        ticker = h["ticker"]
+        scores = macro_scores.get(ticker)
+        if not scores:
+            continue
+        comp = _compute_macro_composite(scores)
+        comp_color = _composite_color(comp)
+        comp_delta = wow_deltas.get(ticker, {}).get("composite")
+        comp_delta_html = _wow_delta_badge(comp_delta)
+        ticker_hist = macro_history.get(ticker, [])
+
+        bars_html = ""
+        for dim, label, inv in DIM_CFG:
+            sv = _extract_score(scores.get(dim))
+            if sv is None:
+                continue
+            dim_color = _dim_score_color(sv, inv)
+            fill_pct = round(sv / 10 * 100)
+            # sparkline for this dim
+            sp = _sparkline_svg(_historical_dim_scores(ticker_hist, dim), dim_color, w=80, h=22)
+            dim_delta = wow_deltas.get(ticker, {}).get(dim)
+            ddelta_html = ''
+            if dim_delta is not None and dim_delta != 0:
+                better = (dim_delta < 0) if not inv else (dim_delta > 0)
+                dc = '#27ae60' if better else '#e74c3c'
+                arr = '▲' if dim_delta > 0 else '▼'
+                ddelta_html = f'<span style="font-size:9px;color:{dc};">{arr}{abs(dim_delta)}</span>'
+            bars_html += (
+                f'<div style="margin-bottom:6px;">'
+                f'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:2px;">'
+                f'<span style="font-size:9px;color:#718096;">{label}</span>'
+                f'<div style="display:flex;align-items:center;gap:4px;">'
+                f'{sp}'
+                f'<span style="font-size:10px;font-weight:700;color:{dim_color};">{sv}/10</span>'
+                f'{ddelta_html}'
+                f'</div>'
+                f'</div>'
+                f'<div style="height:5px;background:#e8ecf0;border-radius:3px;overflow:hidden;">'
+                f'<div style="width:{fill_pct}%;height:100%;background:{dim_color};border-radius:3px;'
+                f'opacity:0.85;transition:width .3s;"></div>'
+                f'</div>'
+                f'</div>'
+            )
+
+        layer_num = h.get("layer_num", "")
+        lcolor = LAYER_COLORS.get(h["layer"], "#999")
+        cards_html += (
+            f'<div style="background:#fff;border-radius:10px;padding:14px 16px;'
+            f'border:1px solid #e8ecf0;border-top:3px solid {comp_color};">'
+            f'<div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:10px;">'
+            f'<div>'
+            f'<div style="font-size:16px;font-weight:800;color:#1a2340;">{ticker}</div>'
+            f'<span style="background:{lcolor}18;color:{lcolor};border:1px solid {lcolor}55;'
+            f'border-radius:3px;padding:1px 6px;font-size:9px;font-weight:700;">L{layer_num}</span>'
+            f'</div>'
+            f'<div style="text-align:right;">'
+            f'<div style="font-size:28px;font-weight:900;color:{comp_color};line-height:1;">'
+            f'{comp if comp is not None else "—"}</div>'
+            f'<div style="font-size:10px;color:#a0aec0;">/100{comp_delta_html}</div>'
+            f'</div>'
+            f'</div>'
+            f'{bars_html}'
+            f'</div>'
+        )
+
+    if run_count > 0:
+        scored_label = f'Last scored {last_date} · {run_count} week{"s" if run_count != 1 else ""} of history'
+    else:
+        scored_label = 'No scoring data yet'
+
+    return f'''
+  <!-- Macro Risk Dashboard -->
+  <div class="card" id="macro-risk-card">
+    <h2 style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+      <span>Macro Risk Dashboard</span>
+      <span style="font-size:12px;font-weight:400;color:#a0aec0;">{scored_label}</span>
+    </h2>
+    {trend_section}
+    {heatmap_section}
+    <div>
+      <div style="font-size:11px;font-weight:600;color:#a0aec0;text-transform:uppercase;
+                  letter-spacing:.07em;margin-bottom:10px;">Per-Holding Detail</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;">
+        {cards_html}
+      </div>
+    </div>
+  </div>'''
 
 
 def build_dashboard(portfolio, layers, holdings):
@@ -390,6 +767,12 @@ def build_dashboard(portfolio, layers, holdings):
 
     today_holdings_sorted = sorted(today_holdings, key=lambda h: (h["layer"], -h["value"]))
     portfolio_health = _compute_portfolio_macro_health(today_holdings_sorted, macro_scores)
+    wow_deltas  = _compute_wow_deltas(macro_scores, macro_history)
+    trend_data  = _build_macro_trend_data(macro_history, today_holdings_sorted)
+    macro_risk_section = _build_macro_risk_section(
+        macro_scores, macro_history, wow_deltas, trend_data,
+        today_holdings_sorted, portfolio_health,
+    )
 
     total_v = total_value_csv
     total_chg = sum(h["change_dollars"] for h in today_holdings)
@@ -534,33 +917,31 @@ def build_dashboard(portfolio, layers, holdings):
             infl_v = _extract_score(infl)
             dlr_v  = _extract_score(dlr)
             geo_v  = _extract_score(geo)
-            dots = (
-                _score_dot(rate_v, inverted=False) +
-                _score_dot(infl_v, inverted=True)  +
-                _score_dot(dlr_v,  inverted=False) +
-                _score_dot(geo_v,  inverted=False)
-            )
             composite_score = _compute_macro_composite(ticker_scores)
+            ticker_wow = wow_deltas.get(h["ticker"], {})
+            comp_delta = ticker_wow.get("composite")
+            wow_html = _wow_delta_badge(comp_delta)
             macro_cell = (
                 f'<td class="col-hide-sm" onclick="toggleMacroDetail(\'{safe_id}\')" '
                 f'style="cursor:pointer;white-space:nowrap;" title="Macro Health: {composite_score if composite_score is not None else "—"}/100 · Click for details">'
-                f'{dots}{_composite_badge(composite_score)}</td>'
+                f'{_composite_badge(composite_score)}{wow_html}</td>'
             )
-            # Build sparklines from history
+            # Build sparklines from history (larger for expand panel)
             ticker_hist = macro_history.get(h["ticker"], [])
-            rate_sp = _sparkline_svg(_historical_dim_scores(ticker_hist, "rate_sensitivity"),  _dim_score_color(rate_v, False))
-            infl_sp = _sparkline_svg(_historical_dim_scores(ticker_hist, "inflation_hedge"),   _dim_score_color(infl_v, True))
-            dlr_sp  = _sparkline_svg(_historical_dim_scores(ticker_hist, "dollar_sensitivity"),_dim_score_color(dlr_v,  False))
-            geo_sp  = _sparkline_svg(_historical_dim_scores(ticker_hist, "geopolitical_risk"), _dim_score_color(geo_v,  False))
-            # Build detail expand row
+            rate_sp = _sparkline_svg(_historical_dim_scores(ticker_hist, "rate_sensitivity"),  _dim_score_color(rate_v, False), w=100, h=24)
+            infl_sp = _sparkline_svg(_historical_dim_scores(ticker_hist, "inflation_hedge"),   _dim_score_color(infl_v, True),  w=100, h=24)
+            dlr_sp  = _sparkline_svg(_historical_dim_scores(ticker_hist, "dollar_sensitivity"),_dim_score_color(dlr_v,  False), w=100, h=24)
+            geo_sp  = _sparkline_svg(_historical_dim_scores(ticker_hist, "geopolitical_risk"), _dim_score_color(geo_v,  False), w=100, h=24)
+            # Build detail expand row (with per-dim WoW deltas)
+            ticker_wow = wow_deltas.get(h["ticker"], {})
             detail_html = (
-                _dim_panel("Rate Sensitivity", rate, inverted=False, sparkline=rate_sp) +
-                _dim_panel("Inflation Hedge",  infl, inverted=True,  sparkline=infl_sp) +
-                _dim_panel("Dollar Sensitivity",dlr,  inverted=False, sparkline=dlr_sp) +
-                _dim_panel("Geopolitical Risk", geo,  inverted=False, sparkline=geo_sp)
+                _dim_panel("Rate Sensitivity",  rate, inverted=False, sparkline=rate_sp, dim_delta=ticker_wow.get("rate_sensitivity")) +
+                _dim_panel("Inflation Hedge",   infl, inverted=True,  sparkline=infl_sp, dim_delta=ticker_wow.get("inflation_hedge")) +
+                _dim_panel("Dollar Sensitivity", dlr,  inverted=False, sparkline=dlr_sp, dim_delta=ticker_wow.get("dollar_sensitivity")) +
+                _dim_panel("Geopolitical Risk",  geo,  inverted=False, sparkline=geo_sp, dim_delta=ticker_wow.get("geopolitical_risk"))
             )
             run_count = len(ticker_hist)
-            history_note = f' · {run_count} scoring run{"s" if run_count != 1 else ""}' if run_count else ''
+            history_note = f' · {run_count} week{"s" if run_count != 1 else ""} of history' if run_count else ''
             note_html = f'<div style="font-size:11px;color:#718096;border-top:1px solid #e2e8f0;padding-top:6px;margin-top:2px;line-height:1.4;"><strong>Summary:</strong> {note}</div>' if note else ''
             detail_row = (
                 f'<tr class="macro-detail-row" id="macro-detail-{safe_id}" style="display:none;">'
@@ -1757,6 +2138,8 @@ def build_dashboard(portfolio, layers, holdings):
     </div>
     <p style="font-size:11px;color:#aaa;margin-top:8px;">ST = short-term (&lt;1yr) · LT = long-term (≥1yr) — derived from your tax lots. Click <b>Lots</b> to add or view purchase history.</p>
   </div>
+
+  {macro_risk_section}
 
   <!-- Realized Gains & Tax Estimate -->
   <div class="card" id="realized-gains-card">
