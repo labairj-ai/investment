@@ -165,9 +165,12 @@ def _stale_after_close(series: pd.Series) -> bool:
     # After 4 PM ET, today's session is closed; if yfinance still shows yesterday → stale
     if now_et.hour >= 16 and most_recent < today:
         return True
-    # Any time: stale if more than one business day behind today
+    # On weekends the market is closed, so any business-day gap means a completed
+    # session is missing (e.g. Saturday morning and Friday's close isn't in history yet).
+    # On weekdays a 1-day gap is likely today's in-progress session — don't treat as stale.
     bdays = pd.bdate_range(str(most_recent + timedelta(days=1)), str(today))
-    return len(bdays) > 1
+    threshold = 0 if today.weekday() >= 5 else 1
+    return len(bdays) > threshold
 
 
 def _current_price_via_fast_info(ticker: str):
