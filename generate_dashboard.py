@@ -581,9 +581,17 @@ def _build_macro_risk_section(macro_scores, macro_history, wow_deltas,
         options: {{
           responsive: true,
           maintainAspectRatio: true,
+          interaction: {{ mode: 'index', intersect: false }},
           plugins: {{
             legend: {{ display: true, position: 'top', labels: {{ font: {{ size: 10 }}, boxWidth: 12, padding: 8 }} }},
-            tooltip: {{ callbacks: {{ label: function(ctx) {{ return ctx.dataset.label + ': ' + ctx.parsed.y; }} }} }},
+            tooltip: {{
+              callbacks: {{
+                label: function(ctx) {{
+                  var v = ctx.parsed.y;
+                  return ctx.dataset.label + ': ' + (v !== null && v !== undefined ? v : '—');
+                }}
+              }}
+            }},
           }},
           scales: {{
             y: {{ min: 0, max: 100, ticks: {{ stepSize: 25, font: {{ size: 10 }} }},
