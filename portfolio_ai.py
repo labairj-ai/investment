@@ -1455,7 +1455,8 @@ def generate_macro_score_summary(current_scores: dict, macro: dict) -> None:
                 sign = "+" if dc["delta"] > 0 else ""
                 changes_block += f"    {dc['dim']}: {dc['prev']} → {dc['curr']} ({sign}{dc['delta']})"
                 if dc["reason"]:
-                    changes_block += f" — {dc['reason']}"
+                    reason_short = dc["reason"][:80] + ("…" if len(dc["reason"]) > 80 else "")
+                    changes_block += f" — {reason_short}"
                 changes_block += "\n"
             if item.get("note"):
                 changes_block += f"    Overall: {item['note']}\n"

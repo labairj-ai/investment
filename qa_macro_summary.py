@@ -5,6 +5,7 @@ Runs on the optiplex against the live DB; dry-run (no DB write).
 Validates: prompt template, AI response, token adequacy, JSON parse, DB round-trip.
 """
 import json
+import os
 import sqlite3
 import sys
 from pathlib import Path
@@ -14,10 +15,19 @@ PROJECT_DIR = Path(__file__).resolve().parent
 DB_PATH = PROJECT_DIR / "out" / "investment.db"
 sys.path.insert(0, str(PROJECT_DIR))
 
+# Load .env and fall back to the known MLX server URL if not set
+try:
+    from dotenv import load_dotenv
+    load_dotenv(PROJECT_DIR / ".env")
+except ImportError:
+    pass
+if not os.environ.get("LLM_URL") and not os.environ.get("OLLAMA_URL"):
+    os.environ["LLM_URL"] = "http://100.73.128.40:8080"
+
 import ollama_client
 from portfolio_ai import (
     _load_holdings_csv, _normalize_ticker, _score_val, _score_reason,
-    _extract_last_json, LAYER_NAMES, MACRO_DIMS,
+    _extract_last_json, _init_ai_tables, LAYER_NAMES, MACRO_DIMS,
 )
 
 PASS = "\033[32mPASS\033[0m"
@@ -25,6 +35,9 @@ FAIL = "\033[31mFAIL\033[0m"
 WARN = "\033[33mWARN\033[0m"
 
 results = []
+
+# Ensure tables exist (idempotent)
+_init_ai_tables()
 
 def check(label, ok, detail=""):
     tag = PASS if ok else FAIL
@@ -166,7 +179,8 @@ for layer_num in sorted(layer_changes.keys()):
             sign = "+" if dc["delta"] > 0 else ""
             changes_block += f"    {dc['dim']}: {dc['prev']} → {dc['curr']} ({sign}{dc['delta']})"
             if dc["reason"]:
-                changes_block += f" — {dc['reason']}"
+                r = dc["reason"][:80] + ("…" if len(dc["reason"]) > 80 else "")
+                changes_block += f" — {r}"
             changes_block += "\n"
         if item.get("note"):
             changes_block += f"    Overall: {item['note']}\n"
