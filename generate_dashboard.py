@@ -213,6 +213,35 @@ def _load_macro_score_history(limit=60) -> dict:
         return {}
 
 
+def _load_macro_summary() -> dict | None:
+    """Load the most recent AI-generated macro score summary from DB."""
+    if not DB_PATH.exists():
+        return None
+    try:
+        conn = sqlite3.connect(str(DB_PATH), timeout=5)
+        conn.row_factory = sqlite3.Row
+        try:
+            row = conn.execute(
+                "SELECT summary_json, created_at FROM macro_score_summaries ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        except Exception:
+            row = None
+        conn.close()
+        if not row:
+            return None
+        data = json.loads(row["summary_json"])
+        data["_created_at"] = row["created_at"][:10]
+        return data
+    except Exception:
+        return None
+
+
+# Map layer number (int) → full layer key string used in LAYER_COLORS/LAYER_SHORT
+_LAYER_NUM_TO_KEY = {
+    int(k.split()[1].rstrip(":")): k for k in LAYER_COLORS
+}
+
+
 def _historical_dim_scores(history, dim):
     """Extract list of int scores for `dim` from a ticker's history list (new {scores, date} or legacy dict)."""
     out = []
@@ -603,6 +632,49 @@ def _build_macro_risk_section(macro_scores, macro_history, wow_deltas,
     }})();
     </script>'''
 
+    # ── Weekly AI summary ─────────────────────────────────────────────────────
+    macro_summary   = _load_macro_summary()
+    summary_section = ""
+    if macro_summary:
+        port_text    = macro_summary.get("portfolio", "")
+        layers_text  = macro_summary.get("layers", {})
+        scored_date  = macro_summary.get("scored_date") or macro_summary.get("_created_at", "")
+        scored_count = macro_summary.get("scored_count", "")
+
+        layer_rows_html = ""
+        for layer_num in range(1, 6):
+            text = layers_text.get(str(layer_num), "")
+            if not text:
+                continue
+            layer_key = _LAYER_NUM_TO_KEY.get(layer_num)
+            if not layer_key:
+                continue
+            lcolor = LAYER_COLORS.get(layer_key, "#999")
+            lshort = LAYER_SHORT.get(layer_key, f"L{layer_num}")
+            layer_rows_html += (
+                f'<div style="display:flex;gap:10px;padding:8px 0;border-bottom:1px solid #f0f0f0;">'
+                f'<div style="flex:0 0 auto;padding-top:2px;">'
+                f'<span style="background:{lcolor}20;color:{lcolor};border:1px solid {lcolor}55;'
+                f'border-radius:4px;padding:1px 6px;font-size:9px;font-weight:700;white-space:nowrap;">{lshort}</span>'
+                f'</div>'
+                f'<p style="margin:0;font-size:12px;color:#4a5568;line-height:1.55;">{text}</p>'
+                f'</div>'
+            )
+
+        count_label = f" · {scored_count} holdings" if scored_count else ""
+        summary_section = f'''
+    <div style="background:#f8fafc;border-radius:10px;border:1px solid #e2e8f0;
+                padding:14px 16px;margin-bottom:20px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+        <div style="font-size:11px;font-weight:600;color:#a0aec0;text-transform:uppercase;letter-spacing:.07em;">
+          Weekly AI Summary
+        </div>
+        <span style="font-size:10px;color:#a0aec0;">{scored_date}{count_label}</span>
+      </div>
+      {f'<p style="margin:0 0 10px;font-size:13px;font-weight:600;color:#2d3748;line-height:1.5;">{port_text}</p>' if port_text else ""}
+      {layer_rows_html}
+    </div>'''
+
     # ── Dimension heatmap ─────────────────────────────────────────────────────
     DIMS = [
         ("rate_sensitivity",   "Rate",      False),
@@ -789,6 +861,7 @@ def _build_macro_risk_section(macro_scores, macro_history, wow_deltas,
       <span style="font-size:12px;font-weight:400;color:#a0aec0;">{scored_label}</span>
     </h2>
     {trend_section}
+    {summary_section}
     {heatmap_section}
     <div>
       <div style="font-size:11px;font-weight:600;color:#a0aec0;text-transform:uppercase;

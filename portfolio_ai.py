@@ -304,6 +304,11 @@ def _init_ai_tables():
         scores    TEXT NOT NULL,
         scored_at TEXT NOT NULL
     )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS macro_score_summaries (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        summary_json TEXT NOT NULL,
+        created_at   TEXT NOT NULL
+    )""")
     conn.commit()
     conn.close()
 
@@ -1323,7 +1328,202 @@ Return ONLY valid JSON. Each dimension must include a score AND a one-sentence r
         print(f"[MacroScores] Scored {len(batch_result)} tickers in batch {i//BATCH+1}")
         time.sleep(25)  # give server time to recover before next batch
 
+    if to_score and results:
+        generate_macro_score_summary(results, macro)
+
     return results
+
+
+def generate_macro_score_summary(current_scores: dict, macro: dict) -> None:
+    """
+    After a scoring run, generate a per-layer AI narrative explaining what changed
+    in the scores and why, based on the macro environment. Stores to DB.
+    """
+    if not DB_PATH.exists() or not current_scores:
+        return
+    if not ollama_client.available():
+        return
+
+    # ── Load previous scores (second-most-recent history entry per ticker) ──────
+    prev_scores: dict = {}
+    try:
+        conn = sqlite3.connect(str(DB_PATH), timeout=10)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT ticker, scores FROM holding_macro_scores_history "
+            "ORDER BY ticker, scored_at DESC"
+        ).fetchall()
+        conn.close()
+        ticker_runs: dict = {}
+        for r in rows:
+            ticker_runs.setdefault(r["ticker"], []).append(r["scores"])
+        for t, score_list in ticker_runs.items():
+            if len(score_list) >= 2:
+                try:
+                    prev_scores[t] = json.loads(score_list[1])
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    def _composite(scores: dict):
+        DIMS = [
+            ("rate_sensitivity",   False),
+            ("inflation_hedge",    True),
+            ("dollar_sensitivity", False),
+            ("geopolitical_risk",  False),
+        ]
+        normalized = []
+        for dim, inv in DIMS:
+            sv = _score_val(scores.get(dim))
+            if sv is None:
+                continue
+            normalized.append(sv * 10 if inv else (11 - sv) * 10)
+        return round(sum(normalized) / len(normalized)) if normalized else None
+
+    # ── Load holdings to map ticker → layer number ───────────────────────────
+    holdings_csv = _load_holdings_csv()
+    ticker_layer: dict = {}
+    for h in holdings_csv:
+        t = _normalize_ticker(h.get("Stock", ""))
+        if t:
+            try:
+                ticker_layer[t] = int(h.get("Layer", 0))
+            except (TypeError, ValueError):
+                pass
+
+    # ── Group deltas by layer ────────────────────────────────────────────────
+    layer_changes: dict = {}
+    for ticker, scores in current_scores.items():
+        layer_num = ticker_layer.get(ticker)
+        if not layer_num:
+            continue
+        curr_c = _composite(scores)
+        prev_s = prev_scores.get(ticker, {})
+        prev_c = _composite(prev_s) if prev_s else None
+        delta_c = (curr_c - prev_c) if (curr_c is not None and prev_c is not None) else None
+
+        dim_changes = []
+        for dim in ("rate_sensitivity", "inflation_hedge", "dollar_sensitivity", "geopolitical_risk"):
+            cv = _score_val(scores.get(dim))
+            pv = _score_val(prev_s.get(dim)) if prev_s else None
+            if cv is not None and pv is not None and cv != pv:
+                dim_changes.append({
+                    "dim":    dim,
+                    "prev":   pv,
+                    "curr":   cv,
+                    "delta":  cv - pv,
+                    "reason": _score_reason(scores.get(dim)),
+                })
+
+        layer_changes.setdefault(layer_num, []).append({
+            "ticker":          ticker,
+            "curr_composite":  curr_c,
+            "prev_composite":  prev_c,
+            "delta_composite": delta_c,
+            "dim_changes":     dim_changes,
+            "note":            scores.get("note", ""),
+        })
+
+    if not layer_changes:
+        return
+
+    # ── Build prompt ─────────────────────────────────────────────────────────
+    macro_brief = (
+        f"VIX={macro.get('vix','N/A')} ({macro.get('vix_interp','')}), "
+        f"10Y={macro.get('yield_10y','N/A')}%, "
+        f"Spread={macro.get('spread_bps','N/A')}bps ({macro.get('curve_interp','')}), "
+        f"CPI={macro.get('cpi_yoy','N/A')}% YoY, "
+        f"Dollar: {macro.get('dollar_interp','N/A')}, "
+        f"Gold: {macro.get('gld_interp','N/A')}"
+    )
+
+    changes_block = ""
+    for layer_num in sorted(layer_changes.keys()):
+        layer_label = LAYER_NAMES.get(layer_num, f"L{layer_num}")
+        changes_block += f"\nLayer {layer_num} — {layer_label}:\n"
+        for item in layer_changes[layer_num]:
+            prev_str = str(item["prev_composite"]) if item["prev_composite"] is not None else "—"
+            delta_str = ""
+            if item["delta_composite"] is not None:
+                sign = "+" if item["delta_composite"] > 0 else ""
+                delta_str = f" ({sign}{item['delta_composite']} vs last week)"
+            elif item["prev_composite"] is None:
+                delta_str = " (first score)"
+            changes_block += f"  {item['ticker']}: composite {prev_str} → {item['curr_composite']}{delta_str}\n"
+            for dc in item["dim_changes"]:
+                sign = "+" if dc["delta"] > 0 else ""
+                changes_block += f"    {dc['dim']}: {dc['prev']} → {dc['curr']} ({sign}{dc['delta']})"
+                if dc["reason"]:
+                    changes_block += f" — {dc['reason']}"
+                changes_block += "\n"
+            if item.get("note"):
+                changes_block += f"    Overall: {item['note']}\n"
+
+    layer_keys_json = ", ".join(f'"{n}"' for n in sorted(layer_changes.keys()))
+    prompt = f"""You are a macro risk analyst reviewing weekly scoring updates for a layered investment portfolio.
+
+MACRO ENVIRONMENT THIS WEEK:
+{macro_brief}
+
+SCORE CHANGES THIS RUN (composite is 0-100, higher = healthier; dimensions are 1-10):
+{changes_block}
+
+Write a concise weekly macro risk summary. For each layer listed, write 2-3 sentences covering: what changed in the scores, which holdings drove the change, and how the macro environment explains it. Also write 1-2 sentences summarizing the overall portfolio direction.
+
+Return ONLY valid JSON, no extra text:
+{{
+  "portfolio": "<1-2 sentences on overall portfolio macro health direction>",
+  "layers": {{
+    {layer_keys_json.replace('"', '').replace(',', ': "<2-3 sentences>",').strip('"').rstrip(',')}
+  }}
+}}
+
+Use this exact JSON format with integer string keys for layers (e.g. "1", "2").
+"""
+
+    full_text = ""
+    for _attempt in range(3):
+        if ollama_client.available():
+            break
+        time.sleep(5)
+    else:
+        print("[MacroSummary] Server not ready, skipping summary.")
+        return
+
+    try:
+        for tok in ollama_client.stream_generate(
+            prompt, model=ollama_client.DEFAULT_MODEL,
+            temperature=0.3, num_predict=1500
+        ):
+            full_text += tok
+    except Exception as e:
+        print(f"[MacroSummary] AI call failed: {e}")
+        return
+
+    result = _extract_last_json(full_text, required_keys=["portfolio", "layers"])
+    if not result:
+        print(f"[MacroSummary] Could not parse response. Raw (first 300): {full_text[:300]!r}")
+        return
+
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    payload = {
+        "portfolio":    result.get("portfolio", ""),
+        "layers":       result.get("layers", {}),
+        "scored_date":  date.today().isoformat(),
+        "scored_count": sum(len(v) for v in layer_changes.values()),
+    }
+    try:
+        conn = sqlite3.connect(str(DB_PATH), timeout=10)
+        conn.execute(
+            "INSERT INTO macro_score_summaries (summary_json, created_at) VALUES (?,?)",
+            (json.dumps(payload), now_str)
+        )
+        conn.commit()
+        conn.close()
+        print(f"[MacroSummary] Summary stored ({payload['scored_count']} holdings scored).")
+    except Exception as e:
+        print(f"[MacroSummary] DB write failed: {e}")
 
 
 # ── Portfolio chat ────────────────────────────────────────────────────────────
