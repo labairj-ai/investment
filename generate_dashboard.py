@@ -2,6 +2,7 @@
 """Generate a self-contained HTML investment dashboard from investment.db."""
 
 import csv
+import html as _html
 import json
 import os
 import sqlite3
@@ -651,18 +652,24 @@ def _build_macro_risk_section(macro_scores, macro_history, wow_deltas,
                 continue
             lcolor = LAYER_COLORS.get(layer_key, "#999")
             lshort = LAYER_SHORT.get(layer_key, f"L{layer_num}")
+            safe_text = _html.escape(text)
             layer_rows_html += (
                 f'<div style="display:flex;gap:10px;padding:8px 0;border-bottom:1px solid #f0f0f0;">'
                 f'<div style="flex:0 0 auto;padding-top:2px;">'
                 f'<span style="background:{lcolor}20;color:{lcolor};border:1px solid {lcolor}55;'
                 f'border-radius:4px;padding:1px 6px;font-size:9px;font-weight:700;white-space:nowrap;">{lshort}</span>'
                 f'</div>'
-                f'<p style="margin:0;font-size:12px;color:#4a5568;line-height:1.55;">{text}</p>'
+                f'<p style="margin:0;font-size:12px;color:#4a5568;line-height:1.55;">{safe_text}</p>'
                 f'</div>'
             )
 
-        count_label = f" · {scored_count} holdings" if scored_count else ""
-        summary_section = f'''
+        if not port_text and not layer_rows_html:
+            macro_summary = None  # nothing to render
+
+        if macro_summary:
+            safe_port = _html.escape(port_text) if port_text else ""
+            count_label = f" · {scored_count} holdings" if scored_count else ""
+            summary_section = f'''
     <div style="background:#f8fafc;border-radius:10px;border:1px solid #e2e8f0;
                 padding:14px 16px;margin-bottom:20px;">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
@@ -671,7 +678,7 @@ def _build_macro_risk_section(macro_scores, macro_history, wow_deltas,
         </div>
         <span style="font-size:10px;color:#a0aec0;">{scored_date}{count_label}</span>
       </div>
-      {f'<p style="margin:0 0 10px;font-size:13px;font-weight:600;color:#2d3748;line-height:1.5;">{port_text}</p>' if port_text else ""}
+      {f'<p style="margin:0 0 10px;font-size:13px;font-weight:600;color:#2d3748;line-height:1.5;">{safe_port}</p>' if safe_port else ""}
       {layer_rows_html}
     </div>'''
 
