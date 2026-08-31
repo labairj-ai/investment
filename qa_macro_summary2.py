@@ -390,8 +390,7 @@ try:
               "raw & should become &amp;")
         check("angle brackets escaped (&lt;/&gt;)",      "&lt;" in html_content and "&gt;" in html_content,
               "raw <> should become &lt;&gt;")
-        check("raw <strong> NOT injected into HTML",     "<strong>" not in html_content or
-              html_content.count("<strong>") == html_content.count("Weekly AI Summary"))
+        check("AI <strong> escaped to &lt;strong&gt; in HTML", "&lt;strong&gt;" in html_content)
         check("scored_date appears in HTML",             "2026-08-31" in html_content)
         check("27 holdings label appears",               "27 holdings" in html_content)
     else:
