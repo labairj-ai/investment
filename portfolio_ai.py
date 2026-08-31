@@ -1460,7 +1460,9 @@ def generate_macro_score_summary(current_scores: dict, macro: dict) -> None:
             if item.get("note"):
                 changes_block += f"    Overall: {item['note']}\n"
 
-    layer_keys_json = ", ".join(f'"{n}"' for n in sorted(layer_changes.keys()))
+    layer_json_template = ",\n    ".join(
+        f'"{n}": "<2-3 sentences for layer {n}>"' for n in sorted(layer_changes.keys())
+    )
     prompt = f"""You are a macro risk analyst reviewing weekly scoring updates for a layered investment portfolio.
 
 MACRO ENVIRONMENT THIS WEEK:
@@ -1475,11 +1477,9 @@ Return ONLY valid JSON, no extra text:
 {{
   "portfolio": "<1-2 sentences on overall portfolio macro health direction>",
   "layers": {{
-    {layer_keys_json.replace('"', '').replace(',', ': "<2-3 sentences>",').strip('"').rstrip(',')}
+    {layer_json_template}
   }}
 }}
-
-Use this exact JSON format with integer string keys for layers (e.g. "1", "2").
 """
 
     full_text = ""
@@ -1494,7 +1494,7 @@ Use this exact JSON format with integer string keys for layers (e.g. "1", "2").
     try:
         for tok in ollama_client.stream_generate(
             prompt, model=ollama_client.DEFAULT_MODEL,
-            temperature=0.3, num_predict=1500
+            temperature=0.3, num_predict=2500
         ):
             full_text += tok
     except Exception as e:
