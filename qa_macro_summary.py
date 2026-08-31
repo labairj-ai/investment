@@ -208,7 +208,7 @@ Return ONLY valid JSON, no extra text:
 
 prompt_tokens_est = len(prompt.split())
 print(f"    Prompt word count (≈tokens): {prompt_tokens_est}")
-check("prompt under 2000 words (fits context)", prompt_tokens_est < 2000, f"{prompt_tokens_est} words")
+check("prompt under 5000 words (fits Qwen3 32K ctx)", prompt_tokens_est < 5000, f"{prompt_tokens_est} words")
 expected_output_words = 50 + len(layer_changes) * 60  # portfolio + per-layer sentences
 print(f"    Expected output ≈ {expected_output_words} content words")
 print(f"    num_predict=2500 (includes Qwen3 reasoning chain ~500-1000 tokens)")
