@@ -678,67 +678,101 @@ def _build_macro_risk_section(macro_scores, macro_history, wow_deltas,
         [h for h in today_holdings_sorted if macro_scores.get(h["ticker"])],
         key=lambda h: (h["layer"], -((_compute_macro_composite(macro_scores[h["ticker"]]) or 0)))
     )
-    cards_html = ""
-    for h in cards_sorted:
-        ticker = h["ticker"]
-        scores = macro_scores.get(ticker)
-        comp = _compute_macro_composite(scores)
-        comp_color = _composite_color(comp)
-        comp_delta = wow_deltas.get(ticker, {}).get("composite")
-        comp_delta_html = _wow_delta_badge(comp_delta)
-        ticker_hist = macro_history.get(ticker, [])
 
-        bars_html = ""
-        for dim, label, inv in DIM_CFG:
-            sv = _extract_score(scores.get(dim))
-            if sv is None:
-                continue
-            dim_color = _dim_score_color(sv, inv)
-            fill_pct = round(sv / 10 * 100)
-            # sparkline for this dim
-            sp = _sparkline_svg(_historical_dim_scores(ticker_hist, dim), dim_color, w=80, h=22)
-            dim_delta = wow_deltas.get(ticker, {}).get(dim)
-            ddelta_html = ''
-            if dim_delta is not None and dim_delta != 0:
-                better = (dim_delta < 0) if not inv else (dim_delta > 0)
-                dc = '#27ae60' if better else '#e74c3c'
-                arr = '▲' if dim_delta > 0 else '▼'
-                ddelta_html = f'<span style="font-size:9px;color:{dc};">{arr}{abs(dim_delta)}</span>'
-            bars_html += (
-                f'<div style="margin-bottom:6px;">'
-                f'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:2px;">'
-                f'<span style="font-size:9px;color:#718096;">{label}</span>'
-                f'<div style="display:flex;align-items:center;gap:4px;">'
-                f'{sp}'
-                f'<span style="font-size:10px;font-weight:700;color:{dim_color};">{sv}/10</span>'
-                f'{ddelta_html}'
+    # Group into per-layer sections
+    layer_sections_html = ""
+    seen_layers = []
+    layer_groups = {}
+    for h in cards_sorted:
+        lk = h["layer"]
+        if lk not in layer_groups:
+            layer_groups[lk] = []
+            seen_layers.append(lk)
+        layer_groups[lk].append(h)
+
+    for layer_key in seen_layers:
+        holdings_in_layer = layer_groups[layer_key]
+        lcolor  = LAYER_COLORS.get(layer_key, "#999")
+        lshort  = LAYER_SHORT.get(layer_key, layer_key)
+        l_scores = [s for s in
+                    [_compute_macro_composite(macro_scores[h["ticker"]]) for h in holdings_in_layer]
+                    if s is not None]
+        layer_avg       = round(sum(l_scores) / len(l_scores)) if l_scores else None
+        layer_avg_color = _composite_color(layer_avg)
+        avg_html = (
+            f'<span style="font-size:13px;font-weight:700;color:{layer_avg_color};">{layer_avg}</span>'
+            f'<span style="font-size:10px;color:#a0aec0;margin-left:2px;">avg</span>'
+        ) if layer_avg is not None else ''
+
+        layer_cards_html = ""
+        for h in holdings_in_layer:
+            ticker    = h["ticker"]
+            scores    = macro_scores.get(ticker)
+            comp      = _compute_macro_composite(scores)
+            comp_color = _composite_color(comp)
+            comp_delta = wow_deltas.get(ticker, {}).get("composite")
+            comp_delta_html = _wow_delta_badge(comp_delta)
+            ticker_hist = macro_history.get(ticker, [])
+
+            dim_cells_html = ""
+            for dim, label, inv in DIM_CFG:
+                sv = _extract_score(scores.get(dim))
+                if sv is None:
+                    dim_cells_html += '<div></div>'
+                    continue
+                dim_color = _dim_score_color(sv, inv)
+                fill_pct  = round(sv / 10 * 100)
+                sp = _sparkline_svg(_historical_dim_scores(ticker_hist, dim), dim_color, w=60, h=18)
+                dim_delta = wow_deltas.get(ticker, {}).get(dim)
+                ddelta_html = ''
+                if dim_delta is not None and dim_delta != 0:
+                    better = (dim_delta < 0) if not inv else (dim_delta > 0)
+                    dc  = '#27ae60' if better else '#e74c3c'
+                    arr = '▲' if dim_delta > 0 else '▼'
+                    ddelta_html = f'<span style="font-size:8px;color:{dc};">{arr}{abs(dim_delta)}</span>'
+                dim_cells_html += (
+                    f'<div style="background:#f8f9fa;border-radius:6px;padding:5px 7px;">'
+                    f'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:3px;">'
+                    f'<span style="font-size:9px;color:#718096;font-weight:600;">{label}</span>'
+                    f'<div style="display:flex;align-items:center;gap:3px;">'
+                    f'{sp}'
+                    f'<span style="font-size:10px;font-weight:700;color:{dim_color};">{sv}/10</span>'
+                    f'{ddelta_html}'
+                    f'</div>'
+                    f'</div>'
+                    f'<div style="height:4px;background:#e2e8f0;border-radius:2px;overflow:hidden;">'
+                    f'<div style="width:{fill_pct}%;height:100%;background:{dim_color};border-radius:2px;opacity:0.85;"></div>'
+                    f'</div>'
+                    f'</div>'
+                )
+
+            layer_cards_html += (
+                f'<div style="background:#fff;border-radius:10px;border:1px solid #e8ecf0;'
+                f'border-left:4px solid {comp_color};overflow:hidden;">'
+                f'<div style="display:flex;align-items:center;gap:10px;padding:10px 12px 8px;">'
+                f'<div style="font-size:15px;font-weight:800;color:#1a2340;flex:1;">{ticker}</div>'
+                f'<div style="text-align:right;white-space:nowrap;">'
+                f'<span style="font-size:22px;font-weight:900;color:{comp_color};line-height:1;">'
+                f'{comp if comp is not None else "—"}</span>'
+                f'<span style="font-size:10px;color:#a0aec0;">/100{comp_delta_html}</span>'
                 f'</div>'
                 f'</div>'
-                f'<div style="height:5px;background:#e8ecf0;border-radius:3px;overflow:hidden;">'
-                f'<div style="width:{fill_pct}%;height:100%;background:{dim_color};border-radius:3px;'
-                f'opacity:0.85;transition:width .3s;"></div>'
+                f'<div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;padding:0 8px 8px;">'
+                f'{dim_cells_html}'
                 f'</div>'
                 f'</div>'
             )
 
-        layer_num = h.get("layer_num", "")
-        lcolor = LAYER_COLORS.get(h["layer"], "#999")
-        cards_html += (
-            f'<div style="background:#fff;border-radius:10px;padding:14px 16px;'
-            f'border:1px solid #e8ecf0;border-top:3px solid {comp_color};">'
-            f'<div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:10px;">'
-            f'<div>'
-            f'<div style="font-size:16px;font-weight:800;color:#1a2340;">{ticker}</div>'
-            f'<span style="background:{lcolor}18;color:{lcolor};border:1px solid {lcolor}55;'
-            f'border-radius:3px;padding:1px 6px;font-size:9px;font-weight:700;">L{layer_num}</span>'
+        layer_sections_html += (
+            f'<div style="margin-bottom:24px;">'
+            f'<div style="display:flex;align-items:center;gap:10px;padding:7px 12px;'
+            f'background:{lcolor}15;border-radius:7px;border-left:4px solid {lcolor};margin-bottom:10px;">'
+            f'<span style="font-size:12px;font-weight:700;color:{lcolor};">{lshort}</span>'
+            f'<div style="margin-left:auto;">{avg_html}</div>'
             f'</div>'
-            f'<div style="text-align:right;">'
-            f'<div style="font-size:28px;font-weight:900;color:{comp_color};line-height:1;">'
-            f'{comp if comp is not None else "—"}</div>'
-            f'<div style="font-size:10px;color:#a0aec0;">/100{comp_delta_html}</div>'
+            f'<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:8px;">'
+            f'{layer_cards_html}'
             f'</div>'
-            f'</div>'
-            f'{bars_html}'
             f'</div>'
         )
 
@@ -758,10 +792,8 @@ def _build_macro_risk_section(macro_scores, macro_history, wow_deltas,
     {heatmap_section}
     <div>
       <div style="font-size:11px;font-weight:600;color:#a0aec0;text-transform:uppercase;
-                  letter-spacing:.07em;margin-bottom:10px;">Per-Holding Detail</div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;">
-        {cards_html}
-      </div>
+                  letter-spacing:.07em;margin-bottom:12px;">Per-Holding Detail</div>
+      {layer_sections_html}
     </div>
   </div>'''
 
