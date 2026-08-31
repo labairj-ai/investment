@@ -2,10 +2,10 @@
 
 A personal investment tracking system that sends a daily email newsletter, maintains a local web dashboard, and provides covered call, dividend, tax, Buffett analysis, and AI portfolio intelligence tools. Prices are pulled from Yahoo Finance; email is sent via Gmail SMTP.
 
-**Three AI systems share a canonical macro framework (`MACRO_DIMS`):**
-- **Weekly Macro Scorer** (`portfolio_ai.py --scores`) — `Qwen3.6-35B-A3B-4bit` via MLX; scores each holding 1–10 on four macro dimensions (rate sensitivity, inflation hedge, dollar sensitivity, geopolitical risk) every Saturday at 1 AM ET using a consistent 50bps rate-move basis. These scores are the ground-truth baseline used by all downstream AI systems.
-- **Daily Portfolio Intelligence** (`portfolio_ai.py`) — same MLX model; per-ticker news summaries (6 AM / 12 PM / 5 PM) and a daily insight card. Both prompts are pre-loaded with the weekly macro scores so analysis is grounded in the established baseline rather than independently re-derived from scratch.
-- **Screener/CC AI** (`ollama_client.py`) — `llama3.3:70b` via Ollama; Buffett thesis, layer compare, covered call analysis, and stock chat.
+**All AI features use a single model and endpoint** — `Qwen3.6-35B-A3B-4bit` (MoE, ~3B active params) via MLX on an Apple Silicon machine, accessed through an OpenAI-compatible HTTP API (`LLM_URL`). Three logical pipelines share a canonical macro framework (`MACRO_DIMS`):
+- **Weekly Macro Scorer** (`portfolio_ai.py`) — scores each holding 1–10 on four macro dimensions (rate sensitivity, inflation hedge, dollar sensitivity, geopolitical risk) every Saturday at 1 AM ET using a consistent 50bps rate-move basis. After scoring, generates an AI narrative summary of week-over-week score changes, stored in `macro_score_summaries` and displayed in the Macro Risk tab. These scores are the ground-truth baseline used by all downstream AI systems.
+- **Daily Portfolio Intelligence** (`portfolio_ai.py`) — per-ticker news summaries (6 AM / 12 PM / 5 PM) and a daily insight card. Both prompts are pre-loaded with the weekly macro scores so analysis is grounded in the established baseline rather than independently re-derived from scratch.
+- **Screener/CC AI** (`ollama_client.py`) — Buffett thesis, layer compare, covered call analysis, and stock chat; same `Qwen3.6-35B-A3B-4bit` model, thinking disabled for these structured/mechanical calls.
 
 ---
 
@@ -33,7 +33,7 @@ The old macOS launchd agents are archived in `launchd-disabled-on-mac/`.
 | **Macro Context Bar** | Persistent top-of-dashboard bar showing live VIX, 10Y yield, 3M yield, 10Y–3M spread (with curve interpretation), CPI YoY, TLT move, GLD move, UUP (dollar), today's top financial headlines, and active bills under review. Data sourced from yfinance proxy instruments + FRED API (30-min cache) + Congress.gov API (6-hour cache). |
 | **Portfolio Chat** | Floating 💬 button opens a full-height chat drawer with portfolio + macro + CC + lot context baked into the system prompt. The AI knows which CC positions are open (ticker, strike, DTE), every cost lot's age and LT eligibility, unrealized P&L per position, and your accumulation patterns. Powered by `Qwen3.6-35B-A3B-4bit` via MLX (thinking mode always on for chat); streams tokens in real time. Quick-prompt chips for common questions. |
 | **Per-Holding Macro Scores** | Each holding is scored 1–10 on four canonical macro dimensions defined in `MACRO_DIMS` (the single source of truth for all AI systems): **rate sensitivity** (hurt by +50bps 10Y rise), **inflation hedge** (benefits from sustained >3% CPI), **dollar sensitivity** (hurt by strengthening USD), **geopolitical risk** (tariff/trade/sanctions exposure). Scores appear in the holdings table (composite score + week-over-week delta badge); **click the row** to expand an inline detail panel showing per-dimension scores, reasons, and SVG sparkline trend lines. Scored one ticker at a time by `Qwen3.6-35B-A3B-4bit` via MLX; runs automatically every **Saturday at 1 AM ET** via serve.py's built-in scheduler (independent flag file `out/last_macro_score_date.txt` ensures it fires regardless of whether the newsletter backstop has already set `last_run_date.txt`). Score history is stored in `holding_macro_scores_history` so trends accumulate week-over-week. Scores older than 5 days (`SCORE_STALE_DAYS`) are flagged with ⚠ in all downstream AI prompts. |
-| **Macro Risk Tab** | Dedicated dashboard tab (📊 Macro Risk) with a portfolio-level composite trend chart (weekly history), a week-over-week panel showing all 5 layers with delta badges, a dimension heatmap (all tickers × all macro dimensions in a color-coded grid with WoW deltas), and per-ticker score cards with inline sparklines. Populated from `holding_macro_scores` and `holding_macro_scores_history` tables; shows "N weeks of history" as data accumulates. |
+| **Macro Risk Tab** | Dedicated dashboard tab (📊 Macro Risk) with a portfolio-level composite trend chart (weekly history), a week-over-week panel showing all 5 layers with delta badges, a dimension heatmap (all tickers × all macro dimensions in a color-coded grid with WoW deltas), per-ticker score cards with inline sparklines, and a **Weekly AI Summary** card. The summary is generated after each Saturday scoring run — `Qwen3.6-35B-A3B-4bit` writes 2–3 sentences per layer explaining what changed in composite scores, which holdings drove the change, and how the macro environment explains it, plus a portfolio-level overview sentence. Stored in `macro_score_summaries`; displayed until the next Saturday run replaces it. Populated from `holding_macro_scores` and `holding_macro_scores_history` tables; shows "N weeks of history" as data accumulates. |
 | **Investment Goals & Strategy** | Dividend goal ($2.5k/mo by 2036) + portfolio value goal ($2M by 2036) with 8-quarter rolling targets; barbell health with L4 recs; live **Recommended Purchases** panel backed by Buffett screener data, layer drift, dividend yield impact, valuation multiples, value trap flags, and earnings calendar |
 | **Daily Investment Digest** | Single 7 AM email covering: portfolio snapshot, layer allocation vs target (with drift warnings), holdings performance, upcoming earnings/ex-div events, and the judgment health rubric |
 | **Local Dashboard** | Interactive web UI at `http://localhost:5001` with charts, holdings table, and live analysis tools |
@@ -62,9 +62,7 @@ The old macOS launchd agents are archived in `launchd-disabled-on-mac/`.
 - macOS or Linux (all scripts derive paths from their own location, so the repo can live anywhere; the launchd auto-start is macOS-specific)
 - Python 3.9+ with a virtual environment
 - A Gmail account with an [App Password](https://myaccount.google.com/apppasswords) enabled
-- **Ollama** (for screener/CC AI) — optional; the rest of the dashboard works without it. Can run on the same server or on a separate always-on machine (e.g. a Mac Studio with Apple Silicon). The server reads `OLLAMA_URL` from the environment (default `http://127.0.0.1:11434`); set it in the systemd override to point to a remote host. Model needed:
-  - `ollama pull llama3.3:70b` — Buffett thesis, layer compare, nightly rankings, covered call analysis, stock chat (~40 GB; requires a machine with ≥48 GB unified memory)
-- **MLX** (for portfolio AI) — optional; portfolio insight, macro scores, and portfolio chat require an MLX-compatible endpoint. Point `LLM_URL` in `.env` at an MLX server running `Qwen3.6-35B-A3B-4bit` (or any OpenAI-compatible API). On Apple Silicon with ≥48 GB unified memory: `mlx_lm.server --model mlx-community/Qwen3.6-35B-A3B-4bit --port 8080 --host 0.0.0.0`. Requires **mlx-lm ≥ 0.31.3** and **Python ≥ 3.10** (the `qwen3_5_moe` model class is absent in earlier versions); install via [Miniconda](https://docs.conda.io/en/latest/miniconda.html) if the system Python is too old. The server reads `LLM_URL` from the environment; if absent, portfolio AI features gracefully degrade to "AI unavailable". **Thinking mode:** judgment calls (portfolio outlook, daily insight) run with thinking enabled for higher-quality synthesis; mechanical structured calls (JSON scoring, news parsing) disable thinking for speed. The split is handled automatically in `portfolio_ai.py` — no configuration needed.
+- **MLX** (for all AI features) — optional; all AI features (portfolio insight, macro scores, Buffett thesis, covered call analysis, portfolio chat) require an MLX-compatible endpoint at `LLM_URL`. On Apple Silicon with ≥48 GB unified memory: `mlx_lm.server --model mlx-community/Qwen3.6-35B-A3B-4bit --port 8080 --host 0.0.0.0`. Requires **mlx-lm ≥ 0.31.3** and **Python ≥ 3.10** (the `qwen3_5_moe` model class is absent in earlier versions); install via [Miniconda](https://docs.conda.io/en/latest/miniconda.html) if the system Python is too old. If `LLM_URL` is absent, all AI features gracefully degrade to "AI unavailable." **Thinking mode:** judgment calls (portfolio outlook, daily insight, chat) run with thinking enabled for higher-quality synthesis; mechanical structured calls (JSON scoring, news parsing, Buffett analysis) disable thinking for speed. The split is handled automatically — no configuration needed.
 
 ---
 
@@ -342,10 +340,12 @@ Daily Insight (once/day, after news)
 
 | Call | Thinking | Rationale |
 |---|---|---|
-| Portfolio outlook / Daily insight | **On** | Judgment synthesis — reasoning tokens are the model's advantage over smaller models |
+| Portfolio outlook / Daily insight | **On** | Judgment synthesis — reasoning tokens are the model's advantage |
+| Portfolio chat | **On** | Conversational reasoning — model should think before answering |
+| Weekly macro score summary | Off | Structured JSON with layer-by-layer text — format constraints over reasoning |
 | Per-ticker news summaries | Off | Mechanical JSON extraction — speed matters, reasoning adds nothing |
 | MacroScores (1–10 scoring) | Off | Structured scoring — deterministic, not a judgment call |
-| Portfolio chat | **On** | Conversational reasoning — model should think before answering questions |
+| Buffett thesis / CC analysis / Chat | Off | Structured output or conversational Q&A with fixed schema |
 
 With thinking off, Qwen3.6 behaves as an ~3B-active-parameter model (MoE routing). Leaving it off for judgment calls would be a quality downgrade relative to the prior Llama 70B. The `enable_thinking` parameter on `generate()` and `stream_generate()` in `ollama_client.py` controls this; it maps to `chat_template_kwargs: {"enable_thinking": ...}` in the mlx-lm HTTP API. Token budgets for thinking-on calls are sized at 2,500 (batch) or 3,500 (chat) to accommodate reasoning before the answer.
 
@@ -781,15 +781,15 @@ investment/
 ├── buffett_screener.py              # NYSE Buffett screener — nightly at 2 AM ET
 ├── covered_call_rec.py              # Covered call recommendation + blackout engine + ai_context() prompt builder
 ├── macro_context.py                 # Macro data fetcher: yfinance proxies (TLT/GLD/VIX/UUP/TNX/IRX) + FRED API (FEDFUNDS/CPI/T10Y2Y/UNRATE) + RSS headlines; Congress.gov API for official bill tracking + CRS summaries (6-hr cache in out/bills_cache.json); 30-min macro cache in out/macro_cache.json
-├── portfolio_ai.py                  # Portfolio AI engine: MACRO_DIMS canonical framework; weekly macro scores (Sat 1am ET via systemd); per-ticker news summaries (6am/12pm/5pm); daily insight card; portfolio chat; _get_macro_scores_block() injects scores into all prompts; uses Qwen3.6-35B-A3B-4bit via MLX (thinking on for judgment calls, off for mechanical); score history in holding_macro_scores_history
+├── portfolio_ai.py                  # Portfolio AI engine: MACRO_DIMS canonical framework; weekly macro scores (Sat 1am ET) + AI narrative summary of score changes stored in macro_score_summaries; per-ticker news summaries (6am/12pm/5pm); daily insight card; portfolio chat; _get_macro_scores_block() injects scores into all prompts; uses Qwen3.6-35B-A3B-4bit via MLX (thinking on for judgment calls, off for mechanical); score history in holding_macro_scores_history
 ├── news_fetcher.py                  # Holdings news: fetches from WSJ/Barrons/MarketWatch/Yahoo/CNBC/Reuters RSS; DJ subscriber auth via WSJ_TAC+WSJ_TR in .env; full article body fetching for non-CF-protected sites; 30-min cache in out/news_cache.json
-├── ollama_client.py                 # Thin urllib wrapper for OpenAI-compatible APIs: generate(enable_thinking=False) for JSON batch, stream_generate(enable_thinking=False) for SSE, stream_chat() for multi-turn (thinking always on); reads LLM_URL from environment; handles Qwen3 delta.reasoning tokens
+├── ollama_client.py                 # Thin urllib wrapper for OpenAI-compatible APIs: generate(enable_thinking=False) for JSON batch, stream_generate(enable_thinking=False) for SSE, stream_chat() for multi-turn (thinking always on); resolves LLM_URL lazily at call time (falls back to OLLAMA_URL); handles Qwen3 delta.reasoning tokens
 ├── run_investment.sh                # Manual newsletter entry point
 ├── chart.umd.min.js                 # Bundled Chart.js (no CDN dependency)
 ├── favicon.svg                      # Dashboard browser tab icon
 ├── .env                             # ⚠ Not committed — email credentials
 └── out/
-    ├── investment.db                # SQLite: price history, cc_positions, cost_lots, sell_transactions
+    ├── investment.db                # SQLite: price history, cc_positions, cost_lots, sell_transactions, holding_macro_scores, holding_macro_scores_history, macro_score_summaries
     ├── buffett.db                   # SQLite: Buffett screener cache, winners, history
     ├── dashboard.html               # Generated dashboard (served by serve.py)
     ├── macro_cache.json             # 30-min macro context cache (yfinance + FRED + headlines)
@@ -815,8 +815,8 @@ investment/
 | `EMAIL_FROM` | Gmail address to send from |
 | `EMAIL_APP_PASSWORD` | Gmail App Password (16 chars, no spaces) |
 | `EMAIL_TO` | Recipient email address |
-| `OLLAMA_URL` | Ollama endpoint for screener/CC AI (default `http://127.0.0.1:11434`); set in the systemd override to point to a remote machine, e.g. `http://100.x.x.x:11434`. Model: `llama3.3:70b`. |
-| `LLM_URL` | MLX (or any OpenAI-compatible) endpoint for portfolio AI (default: none — features degrade gracefully). Example: `http://100.73.128.40:8080`. Read at `ollama_client` import time — must be set in `.env` before the module is imported. |
+| `LLM_URL` | MLX (or any OpenAI-compatible) endpoint for all AI features (default: none — features degrade gracefully). Example: `http://100.73.128.40:8080`. Resolved lazily at call time so setting this in `.env` or a systemd override works regardless of import order. |
+| `OLLAMA_URL` | Legacy fallback for `LLM_URL`; checked only if `LLM_URL` is unset. Can be used if you still have an Ollama server running the same model. |
 | `FRED_API_KEY` | FRED API key for economic indicators (Fed Funds, CPI, yield spread, unemployment). Free at [fred.stlouisfed.org](https://fred.stlouisfed.org/docs/api/api_key.html). If absent, macro bar shows yfinance-only data. |
 | `CONGRESS_API_KEY` | Congress.gov API key for official bill tracking and CRS summaries. Free at [api.congress.gov/sign-up](https://api.congress.gov/sign-up/). If absent, falls back to GovTrack RSS (no summaries). |
 | `WSJ_TAC` | Piano.io subscriber access JWT for WSJ/Barrons/MarketWatch. Extract from Chrome DevTools: Application → Cookies → wsj.com → `__tac`. Expires ~13 months after login. Enables subscriber-level RSS feed access. |
