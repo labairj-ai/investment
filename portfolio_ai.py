@@ -1495,7 +1495,7 @@ Return ONLY valid JSON, no extra text:
     try:
         for tok in ollama_client.stream_generate(
             prompt, model=ollama_client.DEFAULT_MODEL,
-            temperature=0.3, num_predict=2500
+            temperature=0.3, num_predict=8000
         ):
             full_text += tok
     except Exception as e:

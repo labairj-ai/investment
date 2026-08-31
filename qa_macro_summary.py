@@ -211,9 +211,9 @@ print(f"    Prompt word count (≈tokens): {prompt_tokens_est}")
 check("prompt under 5000 words (fits Qwen3 32K ctx)", prompt_tokens_est < 5000, f"{prompt_tokens_est} words")
 expected_output_words = 50 + len(layer_changes) * 60  # portfolio + per-layer sentences
 print(f"    Expected output ≈ {expected_output_words} content words")
-print(f"    num_predict=2500 (includes Qwen3 reasoning chain ~500-1000 tokens)")
-check("num_predict=2500 likely sufficient", 2500 >= expected_output_words * 2 + 1000,
-      f"content≈{expected_output_words} + reasoning≈1000 < 2500")
+print(f"    num_predict=8000 (includes Qwen3 reasoning chain ~500-1000 tokens)")
+check("num_predict=8000 likely sufficient", 8000 >= expected_output_words * 2 + 1000,
+      f"content≈{expected_output_words} + reasoning≈1000 < 8000")
 
 # ── 6. AI call (live) ─────────────────────────────────────────────────────────
 print("\n── 6. AI call (live) ───────────────────────────────────────────────────")
@@ -226,7 +226,7 @@ if ollama_client.available():
     try:
         for tok in ollama_client.stream_generate(
             prompt, model=ollama_client.DEFAULT_MODEL,
-            temperature=0.3, num_predict=2500
+            temperature=0.3, num_predict=8000
         ):
             full_text += tok
             token_count += 1
