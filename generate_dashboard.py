@@ -674,12 +674,14 @@ def _build_macro_risk_section(macro_scores, macro_history, wow_deltas,
         ("dollar_sensitivity", "Dollar Sensitivity", False),
         ("geopolitical_risk",  "Geopolitical Risk",  False),
     ]
+    cards_sorted = sorted(
+        [h for h in today_holdings_sorted if macro_scores.get(h["ticker"])],
+        key=lambda h: (h["layer"], -((_compute_macro_composite(macro_scores[h["ticker"]]) or 0)))
+    )
     cards_html = ""
-    for h in today_holdings_sorted:
+    for h in cards_sorted:
         ticker = h["ticker"]
         scores = macro_scores.get(ticker)
-        if not scores:
-            continue
         comp = _compute_macro_composite(scores)
         comp_color = _composite_color(comp)
         comp_delta = wow_deltas.get(ticker, {}).get("composite")
