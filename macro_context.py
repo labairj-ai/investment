@@ -247,7 +247,7 @@ def _fetch_fred_indicators(api_key: str) -> dict:
             # YoY = (recent / year_ago - 1) * 100
             recent = _safe_float(obs[0]["value"])
             year_ago = _safe_float(obs[12]["value"])
-            if recent and year_ago:
+            if recent is not None and year_ago is not None:
                 result["cpi_yoy"] = round((recent / year_ago - 1) * 100, 2)
     except Exception:
         pass
@@ -561,7 +561,7 @@ def fetch(force: bool = False) -> dict:
 
     # FRED T10Y2Y is in percent; if missing, derive from yfinance yields
     spread_pct = fred.get("spread_10y2y")
-    if spread_pct is None and tnx and irx:
+    if spread_pct is None and tnx is not None and irx is not None:
         spread_pct = round(tnx - irx, 3)
     spread_bps = round(spread_pct * 100, 0) if spread_pct is not None else None
 

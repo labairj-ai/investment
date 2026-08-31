@@ -40,6 +40,7 @@ _timeline_cache = {"data": None, "ts": 0}
 _DIV_CACHE_TTL      = 3600
 _EARN_CACHE_TTL     = 3600
 _TIMELINE_CACHE_TTL = 3600
+_data_cache_lock = threading.Lock()  # guards _div/_earn/_timeline caches
 
 _cc_analyze_cache = {}   # {ticker: {"result": obj, "ts": float}}
 _cc_ai_cache      = {}   # {ticker: {"insight": dict, "model": str, "ts": float}}
@@ -54,17 +55,19 @@ _scan_launching_until = 0.0
 
 
 def _cache_valid(cache, ttl):
-    if not cache["data"] or (time.time() - cache["ts"]) > ttl:
-        return False
-    from datetime import date
-    return cache.get("date") == date.today().isoformat()
+    with _data_cache_lock:
+        if cache["data"] is None or (time.time() - cache["ts"]) > ttl:
+            return False
+        from datetime import date
+        return cache.get("date") == date.today().isoformat()
 
 
 def _cache_set(cache, data):
-    from datetime import date
-    cache["data"] = data
-    cache["ts"]   = time.time()
-    cache["date"] = date.today().isoformat()
+    with _data_cache_lock:
+        from datetime import date
+        cache["data"] = data
+        cache["ts"]   = time.time()
+        cache["date"] = date.today().isoformat()
 
 
 def _cc_analyze_get(ticker):
@@ -730,7 +733,10 @@ Return this JSON structure:
                 full_text += tok
 
             dec = _json.JSONDecoder()
-            start = full_text.index("{")
+            try:
+                start = full_text.index("{")
+            except ValueError:
+                raise ValueError(f"LLM returned no JSON object. Output: {full_text[:200]!r}")
             analysis, _ = dec.raw_decode(full_text, start)
 
             now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -1628,6 +1634,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         elif parsed.path == "/api/refresh-financials":
             self._handle_refresh_financials(parse_qs(parsed.query))
         else:
+            # Restrict static file fallback to safe extensions only — prevents
+            # serving .env, .py, .db, .csv, and other sensitive project files.
+            _safe_exts = ('.ico', '.png', '.jpg', '.gif', '.svg', '.css', '.js', '.woff', '.woff2')
+            if not any(parsed.path.lower().endswith(e) for e in _safe_exts):
+                self.send_response(404)
+                self.end_headers()
+                return
             super().do_GET()
 
     def do_POST(self):
@@ -1685,7 +1698,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
 
     def _read_body(self):
-        length = int(self.headers.get("Content-Length", 0))
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+        except (TypeError, ValueError):
+            length = 0
         return json.loads(self.rfile.read(length)) if length else {}
 
     # ── Holdings layer reassignment ───────────────────────────────────────────
@@ -2256,7 +2272,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def _handle_sell_add(self):
         try:
             import json as _json
-            length = int(self.headers.get("Content-Length", 0))
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+            except (TypeError, ValueError):
+                length = 0
             data   = _json.loads(self.rfile.read(length))
             ticker      = (data.get("ticker") or "").upper().strip()
             shares_sold = float(data.get("shares_sold", 0))
@@ -3511,7 +3530,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def _handle_analysis_job_create(self):
         """POST /api/analysis-job  body: {type, ticker, [mode]}"""
-        length = int(self.headers.get("Content-Length", 0))
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+        except (TypeError, ValueError):
+            length = 0
         try:
             body = json.loads(self.rfile.read(length)) if length else {}
         except json.JSONDecodeError:
@@ -3828,12 +3850,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 except Exception:
                     pass
 
-            # Last 20 lines of screener log for the UI error/status panel
+            # Last 20 lines of screener log for the UI error/status panel.
+            # Strip Python traceback lines to avoid leaking file paths to the browser.
             log_tail = []
             try:
                 log_path = PROJECT_DIR / "out" / "screener.log"
                 if log_path.exists():
-                    log_tail = log_path.read_text(errors="replace").splitlines()[-20:]
+                    _tb_prefixes = ("Traceback (", "  File ", "    ", "During handling")
+                    all_lines = log_path.read_text(errors="replace").splitlines()
+                    log_tail = [
+                        ln for ln in all_lines[-40:]
+                        if not any(ln.startswith(p) for p in _tb_prefixes)
+                    ][-20:]
             except Exception:
                 pass
 
@@ -3886,7 +3914,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def _handle_buffett_ai_analyze(self):
         """POST /api/buffett-ai-analyze  body: {"ticker": "AAPL"}"""
-        length = int(self.headers.get("Content-Length", 0))
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+        except (TypeError, ValueError):
+            length = 0
         try:
             body = json.loads(self.rfile.read(length)) if length else {}
         except json.JSONDecodeError:
@@ -3926,7 +3957,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def _handle_buffett_layer_compare(self):
         """POST /api/buffett-layer-compare  body: {"layer": 2}"""
-        length = int(self.headers.get("Content-Length", 0))
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+        except (TypeError, ValueError):
+            length = 0
         try:
             body = json.loads(self.rfile.read(length)) if length else {}
         except json.JSONDecodeError:
@@ -4334,6 +4368,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", len(body))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(body)
 

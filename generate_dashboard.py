@@ -691,7 +691,7 @@ def _build_macro_risk_section(macro_scores, macro_history, wow_deltas,
     ]
     tickers_sorted = sorted(
         [h["ticker"] for h in today_holdings_sorted if h["ticker"] in macro_scores],
-        key=lambda t: -((_compute_macro_composite(macro_scores[t]) or 0))
+        key=lambda t: -((_compute_macro_composite(macro_scores[t]) or -1))
     )
     heatmap_rows = ""
     for ticker in tickers_sorted:
@@ -755,21 +755,16 @@ def _build_macro_risk_section(macro_scores, macro_history, wow_deltas,
     ]
     cards_sorted = sorted(
         [h for h in today_holdings_sorted if macro_scores.get(h["ticker"])],
-        key=lambda h: (h["layer"], -((_compute_macro_composite(macro_scores[h["ticker"]]) or 0)))
+        key=lambda h: (h["layer"], -((_compute_macro_composite(macro_scores[h["ticker"]]) or -1)))
     )
 
-    # Group into per-layer sections
+    # Group into per-layer sections (dict preserves insertion order, Python 3.7+)
     layer_sections_html = ""
-    seen_layers = []
-    layer_groups = {}
+    layer_groups: dict = {}
     for h in cards_sorted:
-        lk = h["layer"]
-        if lk not in layer_groups:
-            layer_groups[lk] = []
-            seen_layers.append(lk)
-        layer_groups[lk].append(h)
+        layer_groups.setdefault(h["layer"], []).append(h)
 
-    for layer_key in seen_layers:
+    for layer_key in layer_groups:
         holdings_in_layer = layer_groups[layer_key]
         lcolor  = LAYER_COLORS.get(layer_key, "#999")
         lshort  = LAYER_SHORT.get(layer_key, layer_key)

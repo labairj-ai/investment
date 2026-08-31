@@ -3,9 +3,12 @@ import os
 import re
 import urllib.request
 
-# Supports both LLM_URL (MLX / any OpenAI-compatible server) and legacy OLLAMA_URL
-LLM_URL = os.environ.get("LLM_URL") or os.environ.get("OLLAMA_URL", "http://127.0.0.1:8080")
 DEFAULT_MODEL = "mlx-community/Qwen3.6-35B-A3B-4bit"
+
+
+def _get_llm_url() -> str:
+    """Resolve at call time so that env vars set after import (e.g. from .env) take effect."""
+    return os.environ.get("LLM_URL") or os.environ.get("OLLAMA_URL", "http://127.0.0.1:8080")
 
 # mlx_lm may not strip model special tokens from output
 _SPECIAL_TOKENS = re.compile(r'<\|[^|>]+\|>')
@@ -22,7 +25,7 @@ def generate(prompt, model=DEFAULT_MODEL, temperature=0.3, num_predict=700, enab
         "chat_template_kwargs": {"enable_thinking": enable_thinking},
     }).encode()
     req = urllib.request.Request(
-        f"{LLM_URL}/v1/chat/completions",
+        f"{_get_llm_url()}/v1/chat/completions",
         data=payload,
         headers={"Content-Type": "application/json"},
     )
@@ -52,7 +55,7 @@ def stream_generate(prompt, model=DEFAULT_MODEL, temperature=0.3, num_predict=70
         "chat_template_kwargs": {"enable_thinking": enable_thinking},
     }).encode()
     req = urllib.request.Request(
-        f"{LLM_URL}/v1/chat/completions",
+        f"{_get_llm_url()}/v1/chat/completions",
         data=payload,
         headers={"Content-Type": "application/json"},
     )
@@ -85,7 +88,7 @@ def stream_chat(messages, model=DEFAULT_MODEL, temperature=0.4, num_predict=1000
         "stream": True,
     }).encode()
     req = urllib.request.Request(
-        f"{LLM_URL}/v1/chat/completions",
+        f"{_get_llm_url()}/v1/chat/completions",
         data=payload,
         headers={"Content-Type": "application/json"},
     )
@@ -122,7 +125,7 @@ def stream_chat(messages, model=DEFAULT_MODEL, temperature=0.4, num_predict=1000
 
 def available(model=DEFAULT_MODEL):
     try:
-        with urllib.request.urlopen(f"{LLM_URL}/v1/models", timeout=10) as r:
+        with urllib.request.urlopen(f"{_get_llm_url()}/v1/models", timeout=10) as r:
             return r.status == 200
     except Exception:
         return False

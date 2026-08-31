@@ -309,6 +309,14 @@ def _init_ai_tables():
         summary_json TEXT NOT NULL,
         created_at   TEXT NOT NULL
     )""")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_hmsh_ticker_scored "
+        "ON holding_macro_scores_history (ticker, scored_at DESC)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_mss_created "
+        "ON macro_score_summaries (created_at DESC)"
+    )
     conn.commit()
     conn.close()
 
@@ -1367,19 +1375,20 @@ def generate_macro_score_summary(current_scores: dict, macro: dict) -> None:
         pass
 
     def _composite(scores: dict):
+        # Must match _compute_macro_composite in generate_dashboard.py exactly
         DIMS = [
             ("rate_sensitivity",   False),
             ("inflation_hedge",    True),
             ("dollar_sensitivity", False),
             ("geopolitical_risk",  False),
         ]
-        normalized = []
-        for dim, inv in DIMS:
+        parts = []
+        for dim, is_benefit in DIMS:
             sv = _score_val(scores.get(dim))
             if sv is None:
                 continue
-            normalized.append(sv * 10 if inv else (11 - sv) * 10)
-        return round(sum(normalized) / len(normalized)) if normalized else None
+            parts.append((sv - 1) / 9 if is_benefit else (10 - sv) / 9)
+        return round(sum(parts) / len(parts) * 100) if parts else None
 
     # ── Load holdings to map ticker → layer number ───────────────────────────
     holdings_csv = _load_holdings_csv()
@@ -1399,14 +1408,14 @@ def generate_macro_score_summary(current_scores: dict, macro: dict) -> None:
         if not layer_num:
             continue
         curr_c = _composite(scores)
-        prev_s = prev_scores.get(ticker, {})
-        prev_c = _composite(prev_s) if prev_s else None
+        prev_s = prev_scores.get(ticker)
+        prev_c = _composite(prev_s) if prev_s is not None else None
         delta_c = (curr_c - prev_c) if (curr_c is not None and prev_c is not None) else None
 
         dim_changes = []
         for dim in ("rate_sensitivity", "inflation_hedge", "dollar_sensitivity", "geopolitical_risk"):
             cv = _score_val(scores.get(dim))
-            pv = _score_val(prev_s.get(dim)) if prev_s else None
+            pv = _score_val(prev_s.get(dim)) if prev_s is not None else None
             if cv is not None and pv is not None and cv != pv:
                 dim_changes.append({
                     "dim":    dim,
@@ -1514,6 +1523,7 @@ Return ONLY valid JSON, no extra text:
         "scored_date":  date.today().isoformat(),
         "scored_count": sum(len(v) for v in layer_changes.values()),
     }
+    conn = None
     try:
         conn = sqlite3.connect(str(DB_PATH), timeout=10)
         conn.execute(
@@ -1521,10 +1531,12 @@ Return ONLY valid JSON, no extra text:
             (json.dumps(payload), now_str)
         )
         conn.commit()
-        conn.close()
         print(f"[MacroSummary] Summary stored ({payload['scored_count']} holdings scored).")
     except Exception as e:
         print(f"[MacroSummary] DB write failed: {e}")
+    finally:
+        if conn:
+            conn.close()
 
 
 # ── Portfolio chat ────────────────────────────────────────────────────────────
