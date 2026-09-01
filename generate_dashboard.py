@@ -796,7 +796,7 @@ def _build_macro_risk_section(macro_scores, macro_history, wow_deltas,
                     continue
                 dim_color = _dim_score_color(sv, inv)
                 fill_pct  = round(sv / 10 * 100)
-                sp = _sparkline_svg(_historical_dim_scores(ticker_hist, dim), dim_color, w=60, h=18)
+                sp = _sparkline_svg(_historical_dim_scores(ticker_hist, dim), dim_color, w=40, h=16)
                 dim_delta = wow_deltas.get(ticker, {}).get(dim)
                 ddelta_html = ''
                 if dim_delta is not None and dim_delta != 0:
@@ -805,12 +805,12 @@ def _build_macro_risk_section(macro_scores, macro_history, wow_deltas,
                     arr = '▲' if dim_delta > 0 else '▼'
                     ddelta_html = f'<span style="font-size:8px;color:{dc};">{arr}{abs(dim_delta)}</span>'
                 dim_cells_html += (
-                    f'<div style="background:#f8f9fa;border-radius:6px;padding:5px 7px;">'
-                    f'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:3px;">'
-                    f'<span style="font-size:9px;color:#718096;font-weight:600;">{label}</span>'
-                    f'<div style="display:flex;align-items:center;gap:3px;">'
+                    f'<div style="background:#f8f9fa;border-radius:6px;padding:5px 7px;min-width:0;overflow:hidden;">'
+                    f'<div style="display:flex;align-items:center;gap:3px;margin-bottom:3px;">'
+                    f'<span style="font-size:9px;color:#718096;font-weight:600;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{label}</span>'
+                    f'<div style="display:flex;align-items:center;gap:2px;flex-shrink:0;">'
                     f'{sp}'
-                    f'<span style="font-size:10px;font-weight:700;color:{dim_color};">{sv}/10</span>'
+                    f'<span style="font-size:10px;font-weight:700;color:{dim_color};white-space:nowrap;">{sv}/10</span>'
                     f'{ddelta_html}'
                     f'</div>'
                     f'</div>'
