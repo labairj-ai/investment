@@ -5709,6 +5709,13 @@ async function logCCPosition() {{
     const data = await res.json();
     if (!data.ok) {{ status.textContent = "Error: " + data.error; return; }}
     status.textContent = "✓ Logged!";
+    document.getElementById("cc-log-ticker").value    = "";
+    document.getElementById("cc-log-contracts").value = "";
+    document.getElementById("cc-log-strike").value    = "";
+    document.getElementById("cc-log-expiry").value    = "";
+    document.getElementById("cc-log-premium").value   = "";
+    document.getElementById("cc-log-notes").value     = "";
+    document.getElementById("cc-log-date").value      = new Date().toISOString().slice(0,10);
     setTimeout(() => {{ status.textContent = ""; }}, 2000);
     loadCCPositions();
   }} catch(e) {{ status.textContent = "Error: " + e.message; }}
@@ -5940,7 +5947,10 @@ async function confirmCCClose() {{
   }}
 }}
 
-window.addEventListener("load", loadCCPositions);
+window.addEventListener("load", function() {{
+  loadCCPositions();
+  document.getElementById("cc-log-date").value = new Date().toISOString().slice(0,10);
+}});
 
 // ── Layer Reassignment ────────────────────────────────────────────────────
 const _LAYER_COLORS = {{
