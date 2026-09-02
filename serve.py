@@ -1636,7 +1636,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         else:
             # Restrict static file fallback to safe extensions only — prevents
             # serving .env, .py, .db, .csv, and other sensitive project files.
-            _safe_exts = ('.ico', '.png', '.jpg', '.gif', '.svg', '.css', '.js', '.woff', '.woff2')
+            _safe_exts = ('.html', '.ico', '.png', '.jpg', '.gif', '.svg', '.css', '.js', '.woff', '.woff2')
             if not any(parsed.path.lower().endswith(e) for e in _safe_exts):
                 self.send_response(404)
                 self.end_headers()
