@@ -2185,10 +2185,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             conn.commit()
             conn.close()
 
-            # Update holdings.csv
+            # Update holdings.csv — update existing row or insert if ticker absent
             holdings_csv = PROJECT_DIR / "holdings.csv"
             if holdings_csv.exists():
-                rows, fieldnames = [], None
+                rows, fieldnames, found = [], None, False
                 with open(holdings_csv, newline="") as f:
                     reader = _csv_mod.DictReader(f)
                     fieldnames = reader.fieldnames
@@ -2196,7 +2196,33 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         if row["Stock"].strip().upper() == ticker:
                             row["Shares"]  = str(total_shares)
                             row["AvgCost"] = str(round(avg_cost, 4))
+                            found = True
                         rows.append(row)
+                if not found:
+                    # Ticker was absent (e.g. closed then re-bought via lot form) — insert it
+                    layer_row = conn_layer = None
+                    try:
+                        conn_layer = sqlite3.connect(str(db), timeout=10)
+                        layer_row = conn_layer.execute(
+                            "SELECT layer FROM holding_day WHERE ticker=? ORDER BY day DESC LIMIT 1", (ticker,)
+                        ).fetchone()
+                    except Exception:
+                        pass
+                    finally:
+                        if conn_layer:
+                            conn_layer.close()
+                    layer_num = 3  # default to Layer 3 (Core Compounders) if unknown
+                    if layer_row:
+                        # layer stored as "Layer N: ..." — extract N
+                        import re as _re
+                        m = _re.search(r"Layer (\d)", layer_row[0])
+                        if m:
+                            layer_num = int(m.group(1))
+                    new_row = {"Stock": ticker, "Shares": str(total_shares),
+                               "AvgCost": str(round(avg_cost, 4)), "Layer": str(layer_num)}
+                    if fieldnames and "PurchaseDate" in fieldnames:
+                        new_row["PurchaseDate"] = body.get("purchase_date", "")
+                    rows.append(new_row)
                 with open(holdings_csv, "w", newline="") as f:
                     writer = _csv_mod.DictWriter(f, fieldnames=fieldnames)
                     writer.writeheader()
