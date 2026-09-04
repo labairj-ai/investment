@@ -182,10 +182,10 @@ def _next_business_day(d, offset=1):
 
 def _sa_lookup_pay_date(sa_map: dict, ex_date: str) -> str | None:
     """Return SA pay date for ex_date, tolerating a ±1-day offset (Yahoo vs SA often disagree)."""
-    from datetime import timedelta
+    from datetime import datetime as _dt, timedelta
     if ex_date in sa_map:
         return sa_map[ex_date]
-    ex_dt = datetime.strptime(ex_date, "%Y-%m-%d").date()
+    ex_dt = _dt.strptime(ex_date, "%Y-%m-%d").date()
     for delta in (-1, 1):
         key = (ex_dt + timedelta(days=delta)).strftime("%Y-%m-%d")
         if key in sa_map:
