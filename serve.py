@@ -180,23 +180,43 @@ def _next_business_day(d, offset=1):
     return result
 
 
+def _sa_lookup_pay_date(sa_map: dict, ex_date: str) -> str | None:
+    """Return SA pay date for ex_date, tolerating a ±1-day offset (Yahoo vs SA often disagree)."""
+    from datetime import timedelta
+    if ex_date in sa_map:
+        return sa_map[ex_date]
+    ex_dt = datetime.strptime(ex_date, "%Y-%m-%d").date()
+    for delta in (-1, 1):
+        key = (ex_dt + timedelta(days=delta)).strftime("%Y-%m-%d")
+        if key in sa_map:
+            return sa_map[key]
+    return None
+
+
 def _fetch_sa_pay_date(ticker):
-    """Scrape stockanalysis.com ETF dividend history and return {ex_date: pay_date} for recent entries."""
+    """Scrape stockanalysis.com dividend history and return {ex_date: pay_date}.
+    Tries the stocks URL first, falls back to the ETF URL."""
     import urllib.request, re
-    try:
-        url = f"https://stockanalysis.com/etf/{ticker.lower()}/dividend/"
-        req = urllib.request.Request(url, headers={
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-            "Accept": "*/*",
-        })
-        with urllib.request.urlopen(req, timeout=8) as resp:
-            html = resp.read().decode()
-        mapping = {}
-        for m in re.finditer(r'\{dt:"(\d{4}-\d{2}-\d{2})"[^}]+pay:"(\d{4}-\d{2}-\d{2})"', html):
-            mapping[m.group(1)] = m.group(2)
-        return mapping
-    except Exception:
-        return {}
+    slug = ticker.lower()
+    for url in (
+        f"https://stockanalysis.com/stocks/{slug}/dividend/",
+        f"https://stockanalysis.com/etf/{slug}/dividend/",
+    ):
+        try:
+            req = urllib.request.Request(url, headers={
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+                "Accept": "*/*",
+            })
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                html = resp.read().decode()
+            mapping = {}
+            for m in re.finditer(r'\{dt:"(\d{4}-\d{2}-\d{2})"[^}]+pay:"(\d{4}-\d{2}-\d{2})"', html):
+                mapping[m.group(1)] = m.group(2)
+            if mapping:
+                return mapping
+        except Exception:
+            pass
+    return {}
 
 
 # Tickers that are mutual funds with no public pay-date API.
@@ -3333,6 +3353,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         pay_date = None
                 except Exception:
                     pay_date = None
+            # Prefer stockanalysis.com pay date over yfinance (Yahoo is often 1 day early)
+            if ex_date:
+                try:
+                    from datetime import timedelta as _td
+                    sa_map = _fetch_sa_pay_date(ticker)
+                    candidate = _sa_lookup_pay_date(sa_map, ex_date)
+                    if candidate:
+                        ex_dt  = datetime.strptime(ex_date, "%Y-%m-%d").date()
+                        pay_dt = datetime.strptime(candidate, "%Y-%m-%d").date()
+                        if ex_dt <= pay_dt <= ex_dt + _td(days=90):
+                            pay_date = candidate
+                except Exception:
+                    pass
 
             days_to_ex  = (datetime.strptime(ex_date, "%Y-%m-%d").date() - today).days if ex_date else None
             is_upcoming = days_to_ex is not None and days_to_ex >= 0
@@ -3443,23 +3476,27 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         except Exception:
                             pay_date = None
 
-                    # Supplemental pay date lookup when yfinance has none
-                    if not pay_date and ex_date:
+                    # Supplemental pay date lookup — always prefer stockanalysis.com
+                    # over yfinance when SA has data for this ex-date, since Yahoo
+                    # Finance consistently returns pay dates that are 1 day early.
+                    if ex_date:
                         from datetime import timedelta as _td
                         ex_dt = datetime.strptime(ex_date, "%Y-%m-%d").date()
                         if ticker in _MUTUAL_FUND_TICKERS:
-                            # Vanguard/Fidelity funds pay on or 1 business day after ex-div
-                            pay_date = _next_business_day(ex_dt, 1).strftime("%Y-%m-%d")
-                            pay_date_estimated = True
+                            if not pay_date:
+                                # Vanguard/Fidelity funds pay on or 1 business day after ex-div
+                                pay_date = _next_business_day(ex_dt, 1).strftime("%Y-%m-%d")
+                                pay_date_estimated = True
                         else:
-                            # Try stockanalysis.com for ETFs
+                            # Try stockanalysis.com (stocks + ETFs) — overrides yfinance when found
                             try:
                                 sa_map = _fetch_sa_pay_date(ticker)
-                                if ex_date in sa_map:
-                                    candidate = sa_map[ex_date]
+                                candidate = _sa_lookup_pay_date(sa_map, ex_date)
+                                if candidate:
                                     pay_dt = datetime.strptime(candidate, "%Y-%m-%d").date()
                                     if ex_dt <= pay_dt <= ex_dt + _td(days=90):
                                         pay_date = candidate
+                                        pay_date_estimated = False
                             except Exception:
                                 pass
 
