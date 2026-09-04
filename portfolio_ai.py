@@ -121,10 +121,10 @@ PROJECT_DIR = Path(__file__).resolve().parent
 DB_PATH = PROJECT_DIR / "out" / "investment.db"
 
 LAYER_NAMES = {
-    1: "L1 Structural Ballast (stability anchor, ~25% target — broad index, bonds)",
-    2: "L2 Cash-Flow Engines (income generators, ~20% target — dividend stocks, REITs)",
-    3: "L3 Compounders (growth compounders, ~35% target — quality growth businesses)",
-    4: "L4 Convexity (high-upside asymmetric bets, ~12% target — concentrated growth/speculative)",
+    1: "L1 Structural Ballast (stability anchor, ~35% target — broad index, bonds)",
+    2: "L2 Cash-Flow Engines (income generators, ~22% target — dividend stocks, REITs)",
+    3: "L3 Compounders (growth compounders, ~30% target — quality growth businesses)",
+    4: "L4 Convexity (high-upside asymmetric bets, ~10% target — concentrated growth/speculative)",
     5: "L5 Shock Absorbers (portfolio hedges, ~8% target — gold, cash, inverse ETFs)",
 }
 
@@ -443,10 +443,10 @@ def _get_holding_prices_from_db() -> dict:
 def _get_drift_alerts(layer_weights: dict) -> list[dict]:
     """Return layers with drift >= 5pp from targets."""
     TARGETS = {
-        "Layer 1: L1 Structural Ballast": 25.0,
-        "Layer 2: L2 Cash-Flow Engines":  20.0,
-        "Layer 3: L3 Compounders":        35.0,
-        "Layer 4: L4 Convexity":          12.0,
+        "Layer 1: L1 Structural Ballast": 35.0,
+        "Layer 2: L2 Cash-Flow Engines":  22.0,
+        "Layer 3: L3 Compounders":        30.0,
+        "Layer 4: L4 Convexity":          10.0,
         "Layer 5: L5 Shock Absorbers":     8.0,
     }
     alerts = []
