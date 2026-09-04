@@ -2485,6 +2485,12 @@ def build_dashboard(portfolio, layers, holdings):
       </span>
     </h2>
 
+    <!-- Evaluate positions panel -->
+    <div id="cc-eval-panel" style="display:none;margin-bottom:1rem;border:1.5px solid #27ae60;border-radius:8px;padding:1rem;background:#f0fdf4;">
+      <div style="font-weight:700;color:#27ae60;margin-bottom:0.75rem;font-size:14px;">🔄 Position Evaluations</div>
+      <div id="cc-eval-content"></div>
+    </div>
+
     <!-- Log new position form -->
     <details style="margin-bottom:16px;">
       <summary style="cursor:pointer;font-size:12px;font-weight:600;color:#7f8c8d;text-transform:uppercase;letter-spacing:.05em;padding:6px 0;">
@@ -2521,11 +2527,6 @@ def build_dashboard(portfolio, layers, holdings):
     <div id="cc-tracker-status" style="font-size:12px;color:#7f8c8d;">Loading…</div>
     <div id="cc-tracker-results"></div>
 
-    <!-- Evaluate positions panel -->
-    <div id="cc-eval-panel" style="display:none;margin-top:1rem;border:1.5px solid #27ae60;border-radius:8px;padding:1rem;background:#f0fdf4;">
-      <div style="font-weight:700;color:#27ae60;margin-bottom:0.75rem;font-size:14px;">🔄 Position Evaluations</div>
-      <div id="cc-eval-content"></div>
-    </div>
   </div>
 
   <!-- Dividend Timeline Chart -->
