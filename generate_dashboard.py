@@ -7652,10 +7652,20 @@ function _renderDQCard(r) {{
       ${{r.rationale ? `<div style="font-size:12px;color:#90cdf4;margin-bottom:6px;line-height:1.5;"><span style="color:#63b3ed;font-size:10px;text-transform:uppercase;letter-spacing:.05em;font-weight:700;">Rec</span>&nbsp; ${{r.action}} — ${{r.rationale}}</div>` : ''}}
       ${{ccRow}}
       <div style="margin-top:7px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">${{verdictBadge}}${{objection}}</div>
-      <div style="margin-top:10px;display:flex;gap:7px;">
+      <div id="dq-btns-${{r.id}}" style="margin-top:10px;display:flex;gap:7px;">
         <button onclick="dqDecide(${{r.id}},'accepted')"  style="flex:1;padding:5px;font-size:11px;font-weight:600;background:#1e3a2f;color:#68d391;border:1px solid #276749;border-radius:5px;cursor:pointer;">&#10003; Accept</button>
         <button onclick="dqDecide(${{r.id}},'rejected')"  style="flex:1;padding:5px;font-size:11px;font-weight:600;background:#3d1515;color:#fc8181;border:1px solid #9b2c2c;border-radius:5px;cursor:pointer;">&#10007; Reject</button>
-        <button onclick="dqDecide(${{r.id}},'deferred')"  style="flex:1;padding:5px;font-size:11px;font-weight:600;background:rgba(255,255,255,.07);color:#8ba4d4;border:1px solid rgba(255,255,255,.15);border-radius:5px;cursor:pointer;">&#8635; Defer</button>
+        <button onclick="dqDefer(${{r.id}})"              style="flex:1;padding:5px;font-size:11px;font-weight:600;background:rgba(255,255,255,.07);color:#8ba4d4;border:1px solid rgba(255,255,255,.15);border-radius:5px;cursor:pointer;">&#8635; Defer</button>
+      </div>
+      <div id="dq-defer-${{r.id}}" style="display:none;margin-top:10px;background:rgba(139,164,212,.08);border:1px solid rgba(139,164,212,.2);border-radius:6px;padding:8px 10px;">
+        <div style="font-size:10px;color:#8ba4d4;font-weight:600;text-transform:uppercase;letter-spacing:.06em;margin-bottom:7px;">Why defer?</div>
+        <div style="display:flex;flex-wrap:wrap;gap:5px;">
+          <button onclick="dqDecide(${{r.id}},'deferred','NO_CASH')"    style="padding:4px 9px;font-size:11px;background:rgba(255,255,255,.06);color:#cbd5e0;border:1px solid rgba(255,255,255,.15);border-radius:4px;cursor:pointer;">No cash</button>
+          <button onclick="dqDecide(${{r.id}},'deferred','WAITING')"    style="padding:4px 9px;font-size:11px;background:rgba(255,255,255,.06);color:#cbd5e0;border:1px solid rgba(255,255,255,.15);border-radius:4px;cursor:pointer;">Better entry</button>
+          <button onclick="dqDecide(${{r.id}},'deferred','SIZING')"     style="padding:4px 9px;font-size:11px;background:rgba(255,255,255,.06);color:#cbd5e0;border:1px solid rgba(255,255,255,.15);border-radius:4px;cursor:pointer;">Position sizing</button>
+          <button onclick="dqDecide(${{r.id}},'deferred','OTHER')"      style="padding:4px 9px;font-size:11px;background:rgba(255,255,255,.06);color:#cbd5e0;border:1px solid rgba(255,255,255,.15);border-radius:4px;cursor:pointer;">Other</button>
+          <button onclick="dqCancelDefer(${{r.id}})"                    style="padding:4px 9px;font-size:11px;background:none;color:#718096;border:1px solid rgba(255,255,255,.08);border-radius:4px;cursor:pointer;">Cancel</button>
+        </div>
       </div>
     </div>`;
 }}
@@ -7680,13 +7690,23 @@ function _renderDecisionQueue(recs) {{
   // Footer is populated by loadDecisionQueue after coverage fetch
 }}
 
-function dqDecide(recId, decision) {{
+function dqDefer(recId) {{
+  document.getElementById('dq-btns-' + recId).style.display = 'none';
+  document.getElementById('dq-defer-' + recId).style.display = 'block';
+}}
+
+function dqCancelDefer(recId) {{
+  document.getElementById('dq-defer-' + recId).style.display = 'none';
+  document.getElementById('dq-btns-' + recId).style.display = 'flex';
+}}
+
+function dqDecide(recId, decision, reasonCode) {{
   const card = document.getElementById('dq-card-' + recId);
   if (card) {{ card.style.opacity = '0.4'; card.style.pointerEvents = 'none'; }}
   fetch('/api/agents/recommendations/' + recId + '/decision', {{
     method: 'POST',
     headers: {{'Content-Type': 'application/json'}},
-    body: JSON.stringify({{decision}})
+    body: JSON.stringify({{decision, reason_code: reasonCode || 'OTHER'}})
   }}).then(r => r.json()).then(() => {{
     loadDecisionQueue();
   }}).catch(() => {{
