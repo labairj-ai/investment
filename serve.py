@@ -1677,6 +1677,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._handle_refresh_financials(parse_qs(parsed.query))
         elif parsed.path == "/api/candidates":
             self._handle_candidates_get()
+        elif parsed.path == "/api/recommendations":
+            self._handle_recommendations_get()
         elif parsed.path.startswith("/api/agents/"):
             self._handle_agents_get(parsed)
         elif parsed.path.startswith("/api/theses/"):
@@ -4558,6 +4560,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         try:
             agent_db.set_candidate_status(ticker, new_status)
             self._json({"ok": True, "ticker": ticker, "status": new_status})
+        except Exception as e:
+            self._json_error(500, str(e))
+
+    # ── Decision Queue endpoint ───────────────────────────────────────────────
+
+    def _handle_recommendations_get(self):
+        """Return open recommendations with critic verdicts attached."""
+        try:
+            recs = agent_db.list_recommendations(status="open")
+            self._json({"ok": True, "recommendations": recs})
         except Exception as e:
             self._json_error(500, str(e))
 

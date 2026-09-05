@@ -1043,12 +1043,13 @@ def list_recommendations(status: str = "open") -> list[dict]:
     for row in rows:
         rec = dict(row)
         critic = conn.execute(
-            "SELECT verdict, confidence_adjustment FROM critic_reviews "
+            "SELECT verdict, confidence_adjustment, strongest_objection FROM critic_reviews "
             "WHERE recommendation_id=? ORDER BY created_at DESC LIMIT 1",
             (row["id"],),
         ).fetchone()
         rec["critic_verdict"] = critic["verdict"] if critic else None
         rec["critic_confidence_adjustment"] = critic["confidence_adjustment"] if critic else None
+        rec["critic_objection"] = critic["strongest_objection"] if critic else None
         recs.append(rec)
     conn.close()
     return recs
@@ -1065,6 +1066,47 @@ def close_recommendation(rec_id: int, status: str) -> bool:
     conn.commit()
     conn.close()
     return cur.rowcount > 0
+
+
+def update_recommendation(
+    rec_id: int,
+    confidence: int | None = None,
+    status: str | None = None,
+) -> None:
+    """Patch confidence and/or status on an existing recommendation (used by Critic)."""
+    if confidence is None and status is None:
+        return
+    conn = _connect()
+    if confidence is not None and status is not None:
+        conn.execute(
+            "UPDATE recommendations SET confidence=?, status=? WHERE id=?",
+            (confidence, status, rec_id),
+        )
+    elif confidence is not None:
+        conn.execute(
+            "UPDATE recommendations SET confidence=? WHERE id=?",
+            (confidence, rec_id),
+        )
+    else:
+        conn.execute(
+            "UPDATE recommendations SET status=? WHERE id=?",
+            (status, rec_id),
+        )
+    conn.commit()
+    conn.close()
+
+
+def list_open_unreviewed_recommendations() -> list[dict]:
+    """Return open recommendations that have not yet received a critic review."""
+    conn = _connect()
+    rows = conn.execute(
+        """SELECT r.* FROM recommendations r
+           LEFT JOIN critic_reviews cr ON cr.recommendation_id = r.id
+           WHERE r.status = 'open' AND cr.id IS NULL
+           ORDER BY r.created_at ASC""",
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 
 def get_recent_runs(agent_type: str, ticker: str | None = None, limit: int = 10) -> list[dict]:

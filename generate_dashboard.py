@@ -2759,6 +2759,17 @@ def build_dashboard(portfolio, layers, holdings):
     </div>
   </div>
 
+  <!-- Decision Queue -->
+  <div class="card" id="dq-card">
+    <h2 style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+      Decision Queue
+      <button onclick="loadDecisionQueue()" style="font-size:11px;padding:4px 10px;background:#f4f6f9;border:1px solid #dde;border-radius:5px;cursor:pointer;color:#555;">↻</button>
+    </h2>
+    <div id="dq-wrap">
+      <div style="font-size:12px;color:#a0aec0;text-align:center;padding:20px;">Loading…</div>
+    </div>
+  </div>
+
   <!-- Candidate Universe -->
   <div class="card" id="candidate-card">
     <h2 style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
@@ -7512,6 +7523,58 @@ function candidateAction(ticker, action) {{
 
 // Auto-load candidates on page ready
 document.addEventListener('DOMContentLoaded', loadCandidates);
+
+// ── Decision Queue ─────────────────────────────────────────────────────────────
+const _DQ_VERDICT_STYLE = {{
+  APPROVE:               'background:#e6f4ea;color:#276749;border:1px solid #b7dfc4;',
+  APPROVE_WITH_CAUTION:  'background:#fffbea;color:#7b5a00;border:1px solid #f0d070;',
+  CHALLENGE:             'background:#fff3e0;color:#8a4500;border:1px solid #f0a060;',
+  VETO:                  'background:#fde8e8;color:#9b1c1c;border:1px solid #f5a0a0;',
+}};
+
+function _renderDecisionQueue(recs) {{
+  const wrap = document.getElementById('dq-wrap');
+  if (!wrap) return;
+  if (!recs || recs.length === 0) {{
+    wrap.innerHTML = '<div style="font-size:12px;color:#a0aec0;text-align:center;padding:20px;">No open recommendations — run the agents to generate findings.</div>';
+    return;
+  }}
+  const rows = recs.map(r => {{
+    const verdict  = r.critic_verdict || null;
+    const objection = r.critic_objection || '';
+    const verdictBadge = verdict
+      ? `<span style="font-size:10px;padding:2px 7px;border-radius:10px;font-weight:600;${{_DQ_VERDICT_STYLE[verdict] || ''}}">{{verdict}}</span>`.replace('{{verdict}}', verdict.replace('_', ' '))
+      : '<span style="font-size:10px;color:#a0aec0;">Pending</span>';
+    const conf = (r.confidence != null) ? r.confidence : '—';
+    return `<tr style="border-top:1px solid #f0f0f0;">
+      <td style="padding:7px 8px;font-weight:600;font-size:13px;">${{r.ticker || '—'}}</td>
+      <td style="padding:7px 8px;font-size:12px;color:#4a5568;">${{r.action}}</td>
+      <td style="padding:7px 8px;font-size:12px;text-align:center;">${{r.recommendation_score}}</td>
+      <td style="padding:7px 8px;font-size:12px;text-align:center;">${{conf}}</td>
+      <td style="padding:7px 8px;">${{verdictBadge}}</td>
+      <td style="padding:7px 8px;font-size:11px;color:#718096;max-width:280px;">${{objection || '<span style="color:#c0c0c0;">—</span>'}}</td>
+    </tr>`;
+  }}).join('');
+  wrap.innerHTML = `<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;">
+    <thead><tr style="background:#f8f9fa;">
+      <th style="text-align:left;padding:5px 8px;color:#718096;font-weight:600;text-transform:uppercase;font-size:10px;">Ticker</th>
+      <th style="text-align:left;padding:5px 8px;color:#718096;font-weight:600;text-transform:uppercase;font-size:10px;">Action</th>
+      <th style="text-align:center;padding:5px 8px;color:#718096;font-weight:600;text-transform:uppercase;font-size:10px;">Score</th>
+      <th style="text-align:center;padding:5px 8px;color:#718096;font-weight:600;text-transform:uppercase;font-size:10px;">Confidence</th>
+      <th style="text-align:left;padding:5px 8px;color:#718096;font-weight:600;text-transform:uppercase;font-size:10px;">Critic</th>
+      <th style="text-align:left;padding:5px 8px;color:#718096;font-weight:600;text-transform:uppercase;font-size:10px;">Strongest Objection</th>
+    </tr></thead>
+    <tbody>${{rows}}</tbody>
+  </table></div>`;
+}}
+
+function loadDecisionQueue() {{
+  fetch('/api/recommendations').then(r => r.json()).then(d => {{
+    if (d.ok) _renderDecisionQueue(d.recommendations);
+  }}).catch(() => {{}});
+}}
+
+document.addEventListener('DOMContentLoaded', loadDecisionQueue);
 
 function showDashTab(name) {{
   document.querySelectorAll('.dash-tab-content').forEach(function(el) {{ el.style.display = 'none'; }});
