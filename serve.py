@@ -929,6 +929,71 @@ def _run_outcome_evaluator():
 threading.Thread(target=_run_outcome_evaluator, daemon=True).start()
 
 
+# ── Weekly thesis monitor (Saturday 7 AM ET) ──────────────────────────────────
+
+def _run_thesis_monitor_weekly():
+    """Run thesis monitor for all holdings on Saturday at 7 AM ET."""
+    import socket
+    if socket.gethostname() != "optiplex":
+        return
+    from zoneinfo import ZoneInfo
+    from datetime import datetime as _dt
+    TZ   = ZoneInfo("America/New_York")
+    FLAG = PROJECT_DIR / "out" / "last_thesis_monitor.txt"
+
+    def _already_ran():
+        try:
+            from datetime import date as _date
+            last = _date.fromisoformat(FLAG.read_text().strip())
+            return (_date.today() - last).days < 6
+        except Exception:
+            return False
+
+    while True:
+        now = _dt.now(TZ)
+        if now.weekday() == 5 and now.hour == 7 and not _already_ran():
+            try:
+                import csv as _csv
+                from agents.contracts import PortfolioSnapshot, HoldingSnapshot, AgentContext
+                from agents.thesis_agent import run_thesis_monitor
+
+                holdings_csv = PROJECT_DIR / "holdings.csv"
+                holdings = []
+                if holdings_csv.exists():
+                    with open(holdings_csv) as f:
+                        for row in _csv.DictReader(f):
+                            t = (row.get("Stock") or "").strip().upper()
+                            if t:
+                                holdings.append(HoldingSnapshot(
+                                    ticker=t,
+                                    layer=int(row.get("Layer") or 0),
+                                    shares=0, avg_cost=0, current_price=0,
+                                    market_value=0, weight_pct=0,
+                                ))
+
+                snapshot = PortfolioSnapshot(
+                    date=_dt.now(TZ).date().isoformat(),
+                    total_value=0, holdings=holdings,
+                    layer_weights={}, macro_scores={}, generated_at=time.time(),
+                )
+                run_id = agent_db.insert_agent_run(
+                    agent_type="thesis_monitor", scope="portfolio"
+                )
+                ctx = AgentContext(
+                    run_id=run_id, snapshot=snapshot, trigger_type="scheduled"
+                )
+                run_thesis_monitor(ctx)
+                agent_db.finish_agent_run(run_id, status="done")
+                FLAG.write_text(_dt.now(TZ).date().isoformat())
+                print(f"[ThesisMonitor] Weekly scheduled run complete — {len(holdings)} holdings.")
+            except Exception as e:
+                print(f"[ThesisMonitor] Scheduled run failed: {e}")
+        time.sleep(1800)
+
+
+threading.Thread(target=_run_thesis_monitor_weekly, daemon=True).start()
+
+
 # ── Background analysis runners ───────────────────────────────────────────────
 
 def _run_buffett_job(job_id: str, ticker_symbol: str, mode: str) -> None:
