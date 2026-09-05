@@ -560,6 +560,11 @@ def get_thesis_history(ticker: str) -> list[dict]:
 def approve_thesis(ticker: str, final_draft_json: str) -> int:
     """Activate the current DRAFT, superseding any prior ACTIVE thesis."""
     conn = _connect()
+    # Record the current max approved version before superseding
+    prior_max = conn.execute(
+        "SELECT MAX(version) FROM investment_theses WHERE ticker=? AND status='ACTIVE'",
+        (ticker,),
+    ).fetchone()[0] or 0
     # Supersede old active thesis if one exists
     conn.execute(
         "UPDATE investment_theses SET status='SUPERSEDED', closed_at=? "
@@ -575,12 +580,7 @@ def approve_thesis(ticker: str, final_draft_json: str) -> int:
     if not draft:
         conn.close()
         raise ValueError(f"No DRAFT thesis found for {ticker}")
-    # Compute next version
-    max_ver = conn.execute(
-        "SELECT MAX(version) FROM investment_theses WHERE ticker=?",
-        (ticker,),
-    ).fetchone()[0] or 0
-    new_version = max_ver  # draft may already be the max; just activate it
+    new_version = prior_max + 1
     now = time.time()
     conn.execute(
         """UPDATE investment_theses
