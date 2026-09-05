@@ -9,7 +9,8 @@ from .contracts import (
 from .orchestrator import run_agents, register_agent
 from .triggers import TriggerEvent, detect_triggers
 from .confidence import calculate_confidence
-from . import thesis_agent  # registers thesis_monitor handler at import time
+from . import thesis_agent        # registers thesis_monitor handler at import time
+from . import covered_call_agent  # registers covered_call handler at import time
 
 __all__ = [
     "HoldingSnapshot",

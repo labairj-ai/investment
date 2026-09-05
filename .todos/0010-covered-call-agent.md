@@ -1,7 +1,7 @@
 # Build Covered Call Agent (Phase 2)
 
 - **ID:** 0010
-- **Status:** backlog
+- **Status:** in-progress
 - **Created:** 2026-09-05
 - **Priority:** normal
 - **Depends:** 0005, 0006, 0007, 0008
