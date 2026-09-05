@@ -46,5 +46,15 @@
     "drift_threshold_pct": 5.0,
     "layer_gross_dom_pct": 50.0,
     "holding_gross_dom_pct": 25.0
+  },
+  "triggers": {
+    "price_move_z_threshold": 2.0,
+    "nav_impact_threshold_pct": 0.35,
+    "macro_score_change_threshold": 2,
+    "cc_mgmt_dte": 21,
+    "tax_lot_lt_window_days_min": 30,
+    "tax_lot_lt_window_days_max": 45,
+    "tax_loss_min_dollars": 500.0,
+    "layer_underweight_days": 3
   }
 }

@@ -33,6 +33,16 @@ DRIFT_THRESHOLD: float = _risk["drift_threshold_pct"]
 LAYER_GROSS_DOM: float = _risk["layer_gross_dom_pct"]
 HOLDING_GROSS_DOM: float = _risk["holding_gross_dom_pct"]
 
+_trig = _cfg.get("triggers", {})
+TRIGGER_PRICE_MOVE_Z: float = _trig.get("price_move_z_threshold", 2.0)
+TRIGGER_NAV_IMPACT_PCT: float = _trig.get("nav_impact_threshold_pct", 0.35)
+TRIGGER_MACRO_SCORE_CHANGE: int = _trig.get("macro_score_change_threshold", 2)
+TRIGGER_CC_MGMT_DTE: int = _trig.get("cc_mgmt_dte", 21)
+TRIGGER_TAX_LT_WINDOW_MIN: int = _trig.get("tax_lot_lt_window_days_min", 30)
+TRIGGER_TAX_LT_WINDOW_MAX: int = _trig.get("tax_lot_lt_window_days_max", 45)
+TRIGGER_TAX_LOSS_MIN: float = _trig.get("tax_loss_min_dollars", 500.0)
+TRIGGER_LAYER_UNDERWEIGHT_DAYS: int = _trig.get("layer_underweight_days", 3)
+
 
 def validate_config() -> None:
     """Raise ConfigurationError if strategy.json contains invalid values."""
