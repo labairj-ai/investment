@@ -6,8 +6,10 @@ is computed deterministically — the LLM adds prose, not numbers.
 
 Returns [] (no trade recommendations). All output goes to agent_findings.
 """
+import csv
 import math
 import time
+from pathlib import Path
 
 import agent_db
 import ollama_client
@@ -49,8 +51,20 @@ _SYSTEM = (
 
 # --- Data helpers -------------------------------------------------------------
 
+def _current_holdings_tickers() -> set[str]:
+    """Return the set of tickers currently in holdings.csv."""
+    holdings_csv = Path(agent_db.DB_PATH).parent.parent / "holdings.csv"
+    if not holdings_csv.exists():
+        return set()
+    with open(holdings_csv) as f:
+        return {row["Stock"].strip().upper() for row in csv.DictReader(f) if row.get("Stock")}
+
+
 def _latest_holding_rows() -> list[dict]:
-    """Return the most recent holding_day row for every ticker."""
+    """Return the most recent holding_day row, filtered to current holdings only."""
+    current = _current_holdings_tickers()
+    if not current:
+        return []
     conn = agent_db._connect()
     rows = conn.execute(
         """SELECT h.day, h.ticker, h.layer, h.change_pct, h.weight_pct, h.value
@@ -62,7 +76,7 @@ def _latest_holding_rows() -> list[dict]:
            ) latest ON h.ticker = latest.ticker AND h.day = latest.max_day"""
     ).fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    return [dict(r) for r in rows if r["ticker"] in current]
 
 
 def _latest_layer_rows() -> list[dict]:
