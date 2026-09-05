@@ -354,11 +354,10 @@ def run_thesis_monitor(ctx: AgentContext) -> list[Recommendation]:
             print(f"[thesis_monitor] LLM refinement failed for {ticker}: {e}")
             llm_out = {}
 
-        reason_by_name = {
-            item["pillar_name"]: item["reason"]
-            for item in llm_out.get("pillar_reasons", [])
-            if item.get("pillar_name")
-        }
+        reason_by_name = {}
+        for item in llm_out.get("pillar_reasons", []):
+            if isinstance(item, dict) and item.get("pillar_name"):
+                reason_by_name[item["pillar_name"]] = item.get("reason", "")
         overall_summary = llm_out.get("overall_summary", "")
 
         # ── Write pillar statuses to DB ───────────────────────────────────
