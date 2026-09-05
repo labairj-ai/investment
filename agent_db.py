@@ -475,7 +475,8 @@ def get_thesis_full(ticker: str) -> dict | None:
     """Return the most recent thesis (any status) with parsed JSON fields and DB pillars."""
     conn = _connect()
     row = conn.execute(
-        "SELECT * FROM investment_theses WHERE ticker=? ORDER BY version DESC LIMIT 1",
+        "SELECT * FROM investment_theses WHERE ticker=? "
+        "ORDER BY CASE WHEN status='DRAFT' THEN 1 ELSE 0 END DESC, id DESC LIMIT 1",
         (ticker,),
     ).fetchone()
     if not row:
