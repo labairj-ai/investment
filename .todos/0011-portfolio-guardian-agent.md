@@ -52,3 +52,5 @@ HV20 data: check if already stored in DB from existing scoring pipeline; if not,
 - [ ] Finding severity is calculated deterministically (from Z, impact, drift magnitude) — LLM doesn't invent the number
 - [ ] `suggested_action` is constrained to REVIEW in schema validation
 - [ ] Finding persisted to `agent_findings` table
+- [ ] QA evaluation conducted: functionality verified working, no regressions introduced
+

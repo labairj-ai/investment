@@ -30,3 +30,5 @@ The current `generate()` function requests JSON via `response_format: {type: jso
 - [ ] At least one existing structured call in `portfolio_ai.py` is migrated to use it as a proof of concept
 - [ ] Malformed JSON response triggers retry and logs a warning, not a crash
 - [ ] All retries exhausted → raises `StructuredOutputError` with the raw response included for debugging
+- [ ] QA evaluation conducted: functionality verified working, no regressions introduced
+

@@ -60,3 +60,5 @@ This data feeds the Preference Learner (0027) to improve future thresholds.
 - [ ] `notification_events` table records outcome and time_to_action when user acts
 - [ ] "Stock down 4%" alone does not produce URGENT or ATTENTION level
 - [ ] Urgency thresholds readable from `strategy_config` (configurable without code change)
+- [ ] QA evaluation conducted: functionality verified working, no regressions introduced
+

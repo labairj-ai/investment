@@ -42,6 +42,10 @@ argument-hint: [item ID, slug, or nothing to see the list first]
    boxes, and append an `## Outcome` section: what actually changed, and anything the
    next item should know. Leave the file in `.todos/` — the history is the point.
 
+   The Done-when list always includes a QA checkbox. Do not mark the item done until
+   a QA evaluation has been explicitly conducted: verify that new functionality works
+   correctly and that no regressions have been introduced in existing behaviour.
+
    If some boxes are met and others aren't, do not mark it done. Report which remain.
 
 If new work surfaces that isn't part of this item, do not scope-creep into it.

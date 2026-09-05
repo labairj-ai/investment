@@ -65,3 +65,5 @@ Apply: `final_confidence = min(original_confidence + confidence_adjustment, cap_
 - [ ] VETO from either deterministic or LLM path suppresses recommendation from Decision Queue
 - [ ] `critic_reviews` row written for every recommendation that reaches the Critic
 - [ ] Critic's `strongest_objection` is surfaced in the Decision Queue UI card
+- [ ] QA evaluation conducted: functionality verified working, no regressions introduced
+

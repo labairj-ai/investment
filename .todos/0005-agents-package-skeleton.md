@@ -37,3 +37,5 @@ LLM semaphore lives in `orchestrator.py`: `_llm_semaphore = threading.Semaphore(
 - [ ] `confidence.py` `calculate_confidence()` returns a value in 0–100 for a sample input
 - [ ] `orchestrator.py` `run_agents()` exists and accepts the right signature (even if it's a stub that calls nothing yet)
 - [ ] `agent_db.py` wraps the tables from 0004
+- [ ] QA evaluation conducted: functionality verified working, no regressions introduced
+

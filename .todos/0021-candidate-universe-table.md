@@ -58,3 +58,5 @@ The Opportunity Hunter (0014) currently assumes Buffett screener winners are the
 - [ ] Manual add via UI triggers full analysis pipeline
 - [ ] Rejected candidates stay in table with status=rejected (not re-surfaced)
 - [ ] `GET /api/candidates` returns active candidates with current scores
+- [ ] QA evaluation conducted: functionality verified working, no regressions introduced
+

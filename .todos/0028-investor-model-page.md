@@ -77,3 +77,5 @@ Shows all hard strategy rules from `strategy_config` with current values. No edi
 - [ ] Suppressed preferences no longer influence any recommendation presentation
 - [ ] Hard rules section renders current `strategy_config` values as read-only
 - [ ] Page handles empty state gracefully: "Not enough decisions yet to infer preferences. Keep using the Decision Queue."
+- [ ] QA evaluation conducted: functionality verified working, no regressions introduced
+

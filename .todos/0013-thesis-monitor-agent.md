@@ -63,3 +63,5 @@ Overall statuses: `INTACT`, `MONITOR`, `REVIEW`, `DETERIORATING`, `VIOLATED`.
 - [ ] LLM evaluates qualitative claims and returns per-claim status
 - [ ] `REVIEW`+ status generates a recommendation in the Decision Queue
 - [ ] `thesis_claims.current_status` and `last_evaluated_at` updated after each run
+- [ ] QA evaluation conducted: functionality verified working, no regressions introduced
+

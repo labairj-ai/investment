@@ -56,3 +56,5 @@ This panel is informational only — it does not generate new recommendations.
 - [ ] 12-month summary card shows counts (generated/accepted/rejected/deferred)
 - [ ] Detail table shows each past recommendation with decision and reason_code
 - [ ] CC outcomes correctly calculate premium captured vs upside surrendered
+- [ ] QA evaluation conducted: functionality verified working, no regressions introduced
+

@@ -30,3 +30,5 @@ The Mac Studio MLX endpoint runs one model at a time. If multiple agents fire co
 - [ ] `run_agents()` acquires semaphore per LLM call, not per agent (so data collection still parallelizes)
 - [ ] Two concurrent `POST /api/agents/run` requests don't cause two simultaneous model calls
 - [ ] Log lines show semaphore acquire/release timing
+- [ ] QA evaluation conducted: functionality verified working, no regressions introduced
+

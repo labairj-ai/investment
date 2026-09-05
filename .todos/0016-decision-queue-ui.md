@@ -54,3 +54,5 @@ Implementation: add to `generate_dashboard.py` as a new section rendered before 
 - [ ] Empty queue shows "No items require attention" — not an error state
 - [ ] CC cards show strike, expiration, CC alpha, regret %, IV richness
 - [ ] Priority formula implemented and cards sorted correctly
+- [ ] QA evaluation conducted: functionality verified working, no regressions introduced
+

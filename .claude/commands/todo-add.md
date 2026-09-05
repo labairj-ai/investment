@@ -61,6 +61,7 @@ question about the approach, write it down as a question rather than resolving i
 ## Done when
 
 - [ ] <Observable acceptance criterion>
+- [ ] QA evaluation conducted: functionality verified working, no regressions introduced
 ```
 
 ## Field notes

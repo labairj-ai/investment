@@ -72,3 +72,5 @@ These are policy. The system observes that the user consistently accepts somethi
 - [ ] Minimum 5 decisions required before a preference affects any recommendation
 - [ ] `GET /api/preferences` returns current learned preferences with confidence and sample_size
 - [ ] Decision Queue card shows Preference Fit score and note when fit is low
+- [ ] QA evaluation conducted: functionality verified working, no regressions introduced
+

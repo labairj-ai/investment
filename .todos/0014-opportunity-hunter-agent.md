@@ -53,3 +53,5 @@ Output:
 - [ ] Output action is `RESEARCH`, not `BUY`
 - [ ] Recommendation includes which layer the candidate would fill and current layer deficit
 - [ ] Agent handles case where no Buffett screener winners exist (no recommendation, no LLM call)
+- [ ] QA evaluation conducted: functionality verified working, no regressions introduced
+

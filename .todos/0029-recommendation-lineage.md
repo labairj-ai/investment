@@ -58,3 +58,5 @@ Each entry shows: date, action, confidence, user decision (if any), primary reas
 - [ ] `GET /api/agents/recommendations/{ticker}/lineage` returns ordered chain
 - [ ] Timeline UI renders per-ticker lineage with action, date, confidence, user decision, reason
 - [ ] Escalating trend (≥ 3 recommendations showing increasing severity) detected and surfaced as a note on the current recommendation
+- [ ] QA evaluation conducted: functionality verified working, no regressions introduced
+

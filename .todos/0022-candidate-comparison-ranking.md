@@ -50,3 +50,5 @@ All components scored 0–100 and weighted (weights configurable in `strategy_co
 - [ ] LLM receives ≤ 3 candidates (top-ranked by composite score)
 - [ ] Single RESEARCH recommendation produced naming the top candidate
 - [ ] Table sortable by any column in the UI
+- [ ] QA evaluation conducted: functionality verified working, no regressions introduced
+

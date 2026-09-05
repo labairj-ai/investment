@@ -35,3 +35,5 @@ All tables use INTEGER PRIMARY KEY with created_at REAL (Unix timestamp).
 - [ ] `agent_db.py` has helper functions for insert/query on each table
 - [ ] `serve.py` calls migration at startup so the optiplex DB is updated on next pull + restart
 - [ ] Manual inspection of `investment.db` shows all tables present with correct columns
+- [ ] QA evaluation conducted: functionality verified working, no regressions introduced
+

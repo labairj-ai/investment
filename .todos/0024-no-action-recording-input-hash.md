@@ -57,3 +57,5 @@ Clicking it expands a table of all HOLD/NO_ACTION findings from the latest orche
 - [ ] Material change (price, thesis, macro, earnings) causes new row even within 24h
 - [ ] `GET /api/agents/coverage` returns per-ticker, per-agent-type coverage status
 - [ ] Decision Queue footer shows count of NO_ACTION evaluations from latest run
+- [ ] QA evaluation conducted: functionality verified working, no regressions introduced
+

@@ -78,3 +78,5 @@ invalidating_event: "EARNINGS_OCCURRED"
 - [ ] Violated dependency marks recommendation `status=superseded` with reason string
 - [ ] Superseded recommendations trigger re-evaluation for the same ticker/agent
 - [ ] Dashboard shows "Expired: [reason]" on superseded recommendations in history
+- [ ] QA evaluation conducted: functionality verified working, no regressions introduced
+

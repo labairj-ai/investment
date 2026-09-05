@@ -58,3 +58,5 @@ What fraction of the conclusion is supported by deterministic rules vs. qualitat
 - [ ] All 7 confidence caps applied correctly (caps are applied after formula)
 - [ ] Unit test with a fully-populated bundle returns > 80; sparse bundle with theoretical option data returns ≤ 45
 - [ ] No LLM calls in `confidence.py`
+- [ ] QA evaluation conducted: functionality verified working, no regressions introduced
+

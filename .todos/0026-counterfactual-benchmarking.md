@@ -62,3 +62,5 @@ All horizons stored separately in `recommendation_outcomes` (add `horizon` colum
 - [ ] CC outcomes correctly calculate premium-captured vs upside-surrendered
 - [ ] Aggregated stats (AgentAlpha_vs_Hold, AgentAlpha_vs_SPY, UserOverrideAlpha) computable per agent_type and rationale_class
 - [ ] Decision Journal shows at least one aggregated stat when ≥ 5 matured outcomes exist
+- [ ] QA evaluation conducted: functionality verified working, no regressions introduced
+

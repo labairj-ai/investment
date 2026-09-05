@@ -58,3 +58,5 @@ Missing cost basis → VETO (handled by Critic deterministic gate in 0012).
 - [ ] Missing cost basis triggers VETO before LLM call
 - [ ] Wash sale 30-day window flagged in recommendation when applicable
 - [ ] `WAIT` recommendations include exact days until LT status
+- [ ] QA evaluation conducted: functionality verified working, no regressions introduced
+

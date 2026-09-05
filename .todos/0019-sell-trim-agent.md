@@ -67,3 +67,5 @@ TaxFriction calculated from actual tax lots (ST vs LT rate, lot-by-lot). A good 
 - [ ] Price-as-reason is structurally impossible: agent is gated by trigger_type, not price move alone
 - [ ] HOLD and NO_ACTION stored with input hash (per 0024 dedup logic)
 - [ ] Rationale class stored on `recommendations` row for later outcome analysis
+- [ ] QA evaluation conducted: functionality verified working, no regressions introduced
+
