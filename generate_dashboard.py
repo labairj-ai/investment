@@ -7456,7 +7456,7 @@ function _renderCandidateTable(candidates) {{
   var wrap = document.getElementById('candidate-table-wrap');
   if (!wrap) return;
   if (!candidates || candidates.length === 0) {{
-    wrap.innerHTML = '<div style="font-size:12px;color:#a0aec0;text-align:center;padding:20px;">No candidates tracked yet — use \'+ Track Candidate\' above or run the Buffett screener.</div>';
+    wrap.innerHTML = '<div style="font-size:12px;color:#a0aec0;text-align:center;padding:20px;">No candidates tracked yet — use the + Track Candidate form above or run the Buffett screener.</div>';
     return;
   }}
   var rows = candidates.map(c => {{
