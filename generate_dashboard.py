@@ -1033,7 +1033,7 @@ def build_dashboard(portfolio, layers, holdings):
                 f'<span style="float:right;font-size:11px;font-weight:400;color:#718096;">'
                 f'Macro Health {_composite_badge(layer_composite)}</span>'
             )
-            holdings_rows += f'<tr class="layer-header"><td colspan="12" style="background:{lcolor}22;border-left:4px solid {lcolor};padding:6px 10px;font-weight:600;color:#333">{h["layer"]}{layer_health_html}</td></tr>\n'
+            holdings_rows += f'<tr class="layer-header"><td colspan="13" style="background:{lcolor}22;border-left:4px solid {lcolor};padding:6px 10px;font-weight:600;color:#333">{h["layer"]}{layer_health_html}</td></tr>\n'
             prev_layer = h["layer"]
         daily_class = "pos" if h["change_pct"] >= 0 else "neg"
         gain_class  = "pos" if h["total_gain_pct"] >= 0 else "neg"
@@ -1078,7 +1078,7 @@ def build_dashboard(portfolio, layers, holdings):
             note_html = f'<div style="font-size:11px;color:#718096;border-top:1px solid #e2e8f0;padding-top:6px;margin-top:2px;line-height:1.4;"><strong>Summary:</strong> {note}</div>' if note else ''
             detail_row = (
                 f'<tr class="macro-detail-row" id="macro-detail-{safe_id}" style="display:none;">'
-                f'<td colspan="12" style="padding:0;">'
+                f'<td colspan="13" style="padding:0;">'
                 f'<div style="padding:12px 16px;background:#f8f9fa;border-bottom:1px solid #e2e8f0;">'
                 f'<div style="font-size:10px;font-weight:700;color:#a0aec0;letter-spacing:.07em;text-transform:uppercase;margin-bottom:8px;">Macro Risk — {h["ticker"]}{history_note}</div>'
                 f'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">{detail_html}</div>'
@@ -7321,7 +7321,7 @@ function _thesisIntakeFormHtml(err, prefill) {{
   const periods = ['< 1 year', '1–3 years', '3–5 years', '5+ years', 'Indefinite'];
   const roleOpts = roles.map(r => `<option${{prefill.role===r?' selected':''}}>${{r}}</option>`).join('');
   const periodOpts = periods.map(p => `<option${{prefill.period===p?' selected':''}}>${{p}}</option>`).join('');
-  const conds = (prefill.conditions || ['','']).join('\n');
+  const conds = (prefill.conditions || ['','']).join('\\n');
   return `
     ${{err ? `<div style="color:#e74c3c;margin-bottom:12px;font-size:13px;">${{err}}</div>` : ''}}
     <div style="display:grid;gap:14px;">
