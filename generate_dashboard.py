@@ -7456,7 +7456,7 @@ async function submitThesisIntake() {{
     why:        document.getElementById('ti-why').value.trim(),
     role:       document.getElementById('ti-role').value,
     period:     document.getElementById('ti-period').value,
-    conditions: document.getElementById('ti-conditions').value.split('\n').map(s=>s.trim()).filter(Boolean),
+    conditions: document.getElementById('ti-conditions').value.split('\\n').map(s=>s.trim()).filter(Boolean),
     sell:       document.getElementById('ti-sell').value.trim(),
     trim:       document.getElementById('ti-trim').value.trim(),
     conviction: parseInt(document.getElementById('ti-conviction').value)||3,
