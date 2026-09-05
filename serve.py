@@ -1686,6 +1686,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self._handle_thesis_job_poll(job_id or "")
             elif len(parts) == 5 and parts[4] == "history": # /api/theses/<ticker>/history
                 self._handle_thesis_history(parts[3].upper())
+            elif len(parts) == 5 and parts[4] == "health":  # /api/theses/<ticker>/health
+                self._handle_thesis_health(parts[3].upper())
             else:
                 self.send_response(404)
                 self.end_headers()
@@ -4488,6 +4490,42 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 proposals = [r for r in recs if r.get("action") == "THESIS_CHANGE_PROPOSAL"]
                 thesis["open_proposals"] = proposals
             self._json({"ok": True, "thesis": thesis})
+        except Exception as e:
+            self._json_error(500, str(e))
+
+    def _handle_thesis_health(self, ticker: str):
+        """Return thesis health summary: composite score, per-pillar breakdown."""
+        try:
+            t = agent_db.get_thesis(ticker)
+            if not t or t.get("status") != "ACTIVE":
+                self._json({"ok": True, "thesis": None})
+                return
+            pillars = t.get("pillars", [])
+            last_evaluated = max(
+                (p["last_evaluated_at"] for p in pillars if p.get("last_evaluated_at")),
+                default=None,
+            )
+            self._json({
+                "ok": True,
+                "thesis": {
+                    "ticker": ticker,
+                    "thesis_status": t.get("status"),
+                    "health_score": t.get("health_score"),
+                    "has_critical_violation": t.get("has_critical_violation", False),
+                    "last_evaluated_at": last_evaluated,
+                    "pillars": [
+                        {
+                            "name": p.get("name"),
+                            "importance": p.get("importance"),
+                            "status": p.get("status"),
+                            "score": p.get("score"),
+                            "reason": p.get("reason"),
+                            "critical": bool(p.get("critical")),
+                        }
+                        for p in pillars
+                    ],
+                },
+            })
         except Exception as e:
             self._json_error(500, str(e))
 

@@ -415,19 +415,155 @@ def _dim_panel(label, val, inverted=False, no_reason_fallback='', sparkline='', 
     )
 
 
-def _thesis_badge(ticker: str, thesis_status_map: dict) -> str:
-    status = thesis_status_map.get(ticker)
-    if status == "ACTIVE":
-        color, label, title = "#27ae60", "Thesis ✓", "View active thesis"
-    elif status == "DRAFT":
-        color, label, title = "#e67e22", "Thesis…", "Review thesis draft"
+_PILLAR_STATUS_COLORS = {
+    "STRONG":  "#27ae60",
+    "HEALTHY": "#2ecc71",
+    "WATCH":   "#f39c12",
+    "WARNING": "#e67e22",
+    "VIOLATED": "#e74c3c",
+    "UNKNOWN": "#a0aec0",
+}
+
+
+def _thesis_badge(ticker: str, thesis_data_map: dict) -> str:
+    t = thesis_data_map.get(ticker)
+    if not t:
+        return (
+            f'<button onclick="openThesisModal(\'{ticker}\')" '
+            f'style="font-size:10px;padding:2px 8px;background:#a0aec018;border:1px solid #a0aec066;'
+            f'border-radius:4px;cursor:pointer;color:#a0aec0;font-weight:600;" '
+            f'title="Create investment thesis">Thesis +</button>'
+        )
+    status = t.get("status")
+    if status == "DRAFT":
+        return (
+            f'<button onclick="openThesisModal(\'{ticker}\')" '
+            f'style="font-size:10px;padding:2px 8px;background:#e67e2218;border:1px solid #e67e2266;'
+            f'border-radius:4px;cursor:pointer;color:#e67e22;font-weight:600;" '
+            f'title="Review thesis draft">Thesis…</button>'
+        )
+    if status != "ACTIVE":
+        return (
+            f'<button onclick="openThesisModal(\'{ticker}\')" '
+            f'style="font-size:10px;padding:2px 8px;background:#a0aec018;border:1px solid #a0aec066;'
+            f'border-radius:4px;cursor:pointer;color:#a0aec0;font-weight:600;" '
+            f'title="Create investment thesis">Thesis +</button>'
+        )
+    health = t.get("health_score")
+    critical = t.get("has_critical_violation", False)
+    if critical:
+        color, icon = "#e74c3c", "!"
+    elif health is None:
+        color, icon = "#27ae60", "✓"
+    elif health >= 80:
+        color, icon = "#27ae60", "✓"
+    elif health >= 60:
+        color, icon = "#f39c12", "⚠"
     else:
-        color, label, title = "#a0aec0", "Thesis +", "Create investment thesis"
+        color, icon = "#e74c3c", "!"
+    score_str = f" {health:.0f}" if health is not None else ""
+    safe_id = ticker.replace(".", "_").replace("-", "_")
     return (
-        f'<button onclick="openThesisModal(\'{ticker}\')" '
+        f'<button onclick="toggleThesisHealth(\'{safe_id}\')" '
         f'style="font-size:10px;padding:2px 8px;background:{color}18;border:1px solid {color}66;'
         f'border-radius:4px;cursor:pointer;color:{color};font-weight:600;" '
-        f'title="{title}">{label}</button>'
+        f'title="Toggle thesis health">Thesis {icon}{score_str}</button>'
+    )
+
+
+def _thesis_health_detail_row(ticker: str, t: dict | None) -> str:
+    """Hidden expand row with thesis pillar health, toggled by toggleThesisHealth()."""
+    if not t or t.get("status") != "ACTIVE":
+        return ""
+    safe_id = ticker.replace(".", "_").replace("-", "_")
+    pillars = t.get("pillars", [])
+    health = t.get("health_score")
+    critical = t.get("has_critical_violation", False)
+
+    last_eval = max(
+        (p["last_evaluated_at"] for p in pillars if p.get("last_evaluated_at")),
+        default=None,
+    )
+    if last_eval:
+        try:
+            age = datetime.now() - datetime.fromtimestamp(float(last_eval))
+            h = int(age.total_seconds() // 3600)
+            age_str = f"{h}h ago" if h >= 1 else "< 1h ago"
+            if h >= 48:
+                age_str = f"{h // 24}d ago"
+        except Exception:
+            age_str = ""
+    else:
+        age_str = ""
+
+    if health is not None:
+        hcol = "#27ae60" if health >= 80 else ("#f39c12" if health >= 60 else "#e74c3c")
+        health_html = (
+            f'<span style="font-size:18px;font-weight:700;color:{hcol};">{health:.0f}</span>'
+            f'<span style="font-size:11px;color:#718096;">/100</span>'
+        )
+    else:
+        health_html = '<span style="font-size:12px;color:#a0aec0;">Not scored</span>'
+
+    age_html = (
+        f'<span style="font-size:10px;color:#a0aec0;margin-left:8px;">evaluated {age_str}</span>'
+        if age_str else ""
+    )
+
+    banner = ""
+    if critical:
+        banner = (
+            '<div style="background:#fef2f2;border:1px solid #e74c3c;border-radius:4px;'
+            'padding:6px 12px;margin-bottom:8px;color:#c0392b;font-weight:700;font-size:12px;">'
+            '⚠ CRITICAL PILLAR VIOLATED — review thesis immediately</div>'
+        )
+
+    if pillars:
+        pillar_rows = ""
+        for p in pillars:
+            st = p.get("status") or "UNKNOWN"
+            col = _PILLAR_STATUS_COLORS.get(st, "#a0aec0")
+            name = p.get("name", "")
+            imp = p.get("importance", 0)
+            reason = (p.get("reason") or "")[:150]
+            crit_mark = " ⚑" if p.get("critical") else ""
+            reason_html = (
+                f'<div style="font-size:11px;color:#555;margin-top:2px;padding-left:14px;">{reason}</div>'
+                if reason else ""
+            )
+            pillar_rows += (
+                f'<div style="padding:5px 0;border-bottom:1px solid #f0f0f0;">'
+                f'<span style="color:{col};font-size:14px;vertical-align:middle;margin-right:4px;">●</span>'
+                f'<span style="font-weight:600;font-size:12px;">{name}{crit_mark}</span>'
+                f'<span style="font-size:11px;color:#718096;margin-left:6px;">{imp}%</span>'
+                f'<span style="font-size:10px;font-weight:600;color:{col};margin-left:8px;'
+                f'background:{col}18;border:1px solid {col}44;border-radius:3px;padding:1px 5px;">'
+                f'{st}</span>'
+                f'{reason_html}'
+                f'</div>'
+            )
+    else:
+        pillar_rows = (
+            '<div style="font-size:11px;color:#a0aec0;padding:4px 0;">'
+            'No pillars evaluated yet — run thesis monitor agent.</div>'
+        )
+
+    return (
+        f'<tr class="thesis-health-row" id="thesis-health-{safe_id}" style="display:none;">'
+        f'<td colspan="13" style="padding:0;">'
+        f'<div style="padding:12px 16px;background:#f6fffe;border-bottom:1px solid #e2e8f0;">'
+        f'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">'
+        f'<div style="font-size:10px;font-weight:700;color:#a0aec0;letter-spacing:.07em;text-transform:uppercase;">'
+        f'Investment Thesis — {ticker}</div>'
+        f'<div style="display:flex;align-items:center;">'
+        f'{health_html}{age_html}'
+        f'<button onclick="openThesisModal(\'{ticker}\')" '
+        f'style="margin-left:12px;font-size:10px;padding:2px 8px;background:#f4f6f9;'
+        f'border:1px solid #dde;border-radius:4px;cursor:pointer;color:#555;">View / Edit →</button>'
+        f'</div></div>'
+        f'{banner}'
+        f'{pillar_rows}'
+        f'</div></td></tr>\n'
     )
 
 
@@ -895,12 +1031,12 @@ def build_dashboard(portfolio, layers, holdings):
     today_holdings_sorted = sorted(today_holdings, key=lambda h: (h["layer"], -h["value"]))
     portfolio_health = _compute_portfolio_macro_health(today_holdings_sorted, macro_scores)
 
-    # Load thesis status for all held tickers (status only; full data loaded on demand via API)
-    thesis_status_map: dict[str, str] = {}
+    # Load thesis data for all held tickers (health score + pillars for inline cards)
+    thesis_data_map: dict[str, dict] = {}
     for h in today_holdings_sorted:
         t = agent_db.get_thesis(h["ticker"])
         if t:
-            thesis_status_map[h["ticker"]] = t.get("status", "DRAFT")
+            thesis_data_map[h["ticker"]] = t
     wow_deltas  = _compute_wow_deltas(macro_scores, macro_history)
     trend_data  = _build_macro_trend_data(macro_history, today_holdings_sorted)
     macro_risk_section = _build_macro_risk_section(
@@ -1110,9 +1246,9 @@ def build_dashboard(portfolio, layers, holdings):
             style="cursor:pointer;background:{lcolor}18;color:{lcolor};border:1px solid {lcolor}66;border-radius:4px;padding:2px 8px;font-size:10px;font-weight:700;white-space:nowrap;"
             title="Click to reassign layer">L{h["layer_num"]}</span></td>
           <td class="col-hide-sm"><button onclick="openLotsModal('{h["ticker"]}', {h["price"]:.4f})" style="font-size:10px;padding:2px 8px;background:#f4f6f9;border:1px solid #dde;border-radius:4px;cursor:pointer;color:#555;" title="View / edit tax lots">Lots</button></td>
-          <td class="col-hide-sm">{_thesis_badge(h["ticker"], thesis_status_map)}</td>
+          <td class="col-hide-sm">{_thesis_badge(h["ticker"], thesis_data_map)}</td>
           {macro_cell}
-        </tr>\n""" + detail_row
+        </tr>\n""" + _thesis_health_detail_row(h["ticker"], thesis_data_map.get(h["ticker"])) + detail_row
 
     # ---- layer summary rows ----
     layer_rows = ""
@@ -7239,6 +7375,11 @@ function tlhCalc() {{
 
 function toggleMacroDetail(safeId) {{
   var row = document.getElementById('macro-detail-' + safeId);
+  if (row) row.style.display = (row.style.display === 'none') ? 'table-row' : 'none';
+}}
+
+function toggleThesisHealth(safeId) {{
+  var row = document.getElementById('thesis-health-' + safeId);
   if (row) row.style.display = (row.style.display === 'none') ? 'table-row' : 'none';
 }}
 

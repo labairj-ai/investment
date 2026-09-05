@@ -1,7 +1,7 @@
 # Add Thesis Health Cards to Holdings Dashboard
 
 - **ID:** 0034
-- **Status:** backlog
+- **Status:** in-progress
 - **Created:** 2026-09-05
 - **Priority:** normal
 - **Depends:** 0030, 0033

@@ -714,6 +714,41 @@ def _get_news_block(holdings: list[dict], max_per_ticker: int = 3) -> str:
         return ""
 
 
+def _build_thesis_health_block(holdings: list[dict]) -> str:
+    """Summarise active thesis health for all holdings that have evaluated pillars."""
+    try:
+        import agent_db as _adb
+        lines: list[str] = []
+        for h in holdings:
+            ticker = str(h.get("Stock", "")).strip().upper()
+            if not ticker:
+                continue
+            t = _adb.get_thesis(ticker)
+            if not t or t.get("status") != "ACTIVE":
+                continue
+            pillars = t.get("pillars", [])
+            scored = [p for p in pillars if p.get("score") is not None]
+            if not scored:
+                continue
+            health = t.get("health_score")
+            violated = [p["name"] for p in pillars if p.get("status") == "VIOLATED"]
+            warning  = [p["name"] for p in pillars if p.get("status") == "WARNING"]
+            line = f"  {ticker}: health={health:.0f}/100" if health is not None else f"  {ticker}: health=?"
+            if violated:
+                line += f"  VIOLATED=[{', '.join(violated)}]"
+            if warning:
+                line += f"  WARNING=[{', '.join(warning)}]"
+            lines.append(line)
+        if not lines:
+            return ""
+        return (
+            "INVESTMENT THESIS HEALTH (from thesis monitor agent — flag violations in risk_flags):\n"
+            + "\n".join(lines) + "\n"
+        )
+    except Exception:
+        return ""
+
+
 def _build_portfolio_block(holdings: list[dict], prices: dict) -> str:
     lines = ["PORTFOLIO HOLDINGS:"]
     lines.append(f"{'Ticker':<8} {'Layer':<6} {'Value':>10} {'Day%':>7} {'Wt%':>6}")
@@ -1079,12 +1114,13 @@ def generate_daily_insight(force: bool = False) -> dict:
     layer_weights = _get_layer_weights_from_db()
     drift_alerts  = _get_drift_alerts(layer_weights)
 
-    portfolio_block = _build_portfolio_block(holdings, prices)
-    layer_block     = _build_layer_block(layer_weights, drift_alerts)
-    macro_block     = macro.get("formatted_block", "Macro data unavailable.")
-    lot_block       = _get_lot_context()
-    realized_block  = _get_realized_context()
-    patterns_block  = _get_behavior_patterns()
+    portfolio_block      = _build_portfolio_block(holdings, prices)
+    layer_block          = _build_layer_block(layer_weights, drift_alerts)
+    macro_block          = macro.get("formatted_block", "Macro data unavailable.")
+    lot_block            = _get_lot_context()
+    realized_block       = _get_realized_context()
+    patterns_block       = _get_behavior_patterns()
+    thesis_health_block  = _build_thesis_health_block(holdings)
 
     framework = "\n".join(f"  {k}: {v}" for k, v in _LAYER_NAMES_LONG.items())
 
@@ -1143,6 +1179,7 @@ INVESTMENT FRAMEWORK (5-layer structure):
 
 {personal_blocks}
 {macro_scores_block}
+{thesis_health_block}
 {news_findings_block}
 IMPORTANT — be specific, not generic:
 - Reference holdings by ticker name (e.g. BRK-B, SCHD, GRMN), not just by layer
