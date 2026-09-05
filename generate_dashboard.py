@@ -7261,6 +7261,7 @@ function showDashTab(name) {{
 let _thesisTicker = null;
 let _thesisDraftJobId = null;
 let _thesisDraftJobTimer = null;
+let _thesisCurrentIntake = null;
 
 async function openThesisModal(ticker) {{
   _thesisTicker = ticker;
@@ -7309,6 +7310,7 @@ function _renderThesisModal(thesis) {{
     const draft    = thesis.draft_json  || {{}};
     const intake   = thesis.intake_json || {{}};
     const proposals = thesis.open_proposals || [];
+    _thesisCurrentIntake = intake;
     body.innerHTML = _thesisActiveHtml(draft, intake, proposals);
     return;
   }}
@@ -7447,7 +7449,15 @@ function _thesisActiveHtml(draft, intake, proposals) {{
     proposalHtml += '</div>';
   }}
   const whyHtml = intake.why ? `<div style="margin-bottom:14px;padding:12px;background:#f4f6f9;border-radius:8px;font-size:13px;color:#555;line-height:1.5;"><b>Why I own this:</b> ${{intake.why}}</div>` : '';
-  return `${{whyHtml}}${{claimsHtml}}${{proposalHtml}}`;
+  const reviseBtn = `<div style="margin-top:18px;text-align:right;"><button onclick="reviseThesis()" style="background:#fff;color:#1a2340;border:1px solid #bbc;border-radius:6px;padding:8px 18px;font-size:12px;font-weight:600;cursor:pointer;">Revise Thesis</button></div>`;
+  return `${{whyHtml}}${{claimsHtml}}${{proposalHtml}}${{reviseBtn}}`;
+}}
+
+function reviseThesis() {{
+  const body = document.getElementById('thesis-modal-body');
+  const sub  = document.getElementById('thesis-modal-subtitle');
+  sub.textContent = 'Revising — update your thesis and regenerate';
+  body.innerHTML  = _thesisIntakeFormHtml('', _thesisCurrentIntake || {{}});
 }}
 
 async function submitThesisIntake() {{
