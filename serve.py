@@ -1675,6 +1675,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._handle_news_summary(parse_qs(parsed.query))
         elif parsed.path == "/api/refresh-financials":
             self._handle_refresh_financials(parse_qs(parsed.query))
+        elif parsed.path == "/api/candidates":
+            self._handle_candidates_get()
         elif parsed.path.startswith("/api/agents/"):
             self._handle_agents_get(parsed)
         elif parsed.path.startswith("/api/theses/"):
@@ -1727,6 +1729,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._handle_invest_chat()
         elif parsed.path == "/api/ai/chat":
             self._handle_portfolio_chat()
+        elif parsed.path == "/api/candidates":
+            self._handle_candidates_post()
+        elif parsed.path.startswith("/api/candidates/"):
+            parts = parsed.path.rstrip("/").split("/")          # ['','api','candidates',ticker,action]
+            if len(parts) == 5 and parts[4] == "reject":
+                self._handle_candidate_action(parts[3].upper(), "rejected")
+            elif len(parts) == 5 and parts[4] == "watch":
+                self._handle_candidate_action(parts[3].upper(), "watch")
+            else:
+                self.send_response(404); self.end_headers()
         elif parsed.path.startswith("/api/agents/"):
             self._handle_agents_post(parsed)
         elif parsed.path.startswith("/api/theses/"):
@@ -4478,6 +4490,76 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.wfile.flush()
             except Exception:
                 pass
+
+    # ── Candidate universe endpoints ─────────────────────────────────────────
+
+    def _handle_candidates_get(self):
+        try:
+            import csv as _csv
+            candidates = agent_db.get_candidates(include_rejected=False)
+            # Auto-sync owned status from holdings.csv
+            try:
+                held = []
+                csv_path = PROJECT_DIR / "holdings.csv"
+                if csv_path.exists():
+                    with open(csv_path, newline="") as f:
+                        for row in _csv.DictReader(f):
+                            t = str(row.get("Stock", "")).strip().upper()
+                            if t:
+                                held.append(t)
+                agent_db.sync_owned_candidates(held)
+                candidates = agent_db.get_candidates(include_rejected=False)
+            except Exception:
+                pass
+            self._json({"ok": True, "candidates": candidates})
+        except Exception as e:
+            self._json_error(500, str(e))
+
+    def _handle_candidates_post(self):
+        """Add a manual candidate and kick off the analysis pipeline async."""
+        try:
+            body = json.loads(self.rfile.read(
+                int(self.headers.get("Content-Length", 0))
+            ))
+        except Exception:
+            return self._json_error(400, "invalid JSON body")
+
+        ticker = str(body.get("ticker", "")).strip().upper()
+        notes  = body.get("notes") or None
+        if not ticker:
+            return self._json_error(400, "ticker required")
+
+        agent_db.upsert_candidate(ticker=ticker, source="MANUAL", notes=notes)
+
+        def _bg():
+            try:
+                import financials_fetcher
+                financials_fetcher.fetch_all([ticker], force=True)
+            except Exception as e:
+                print(f"[Candidates] financials fetch failed for {ticker}: {e}")
+            # Kick opportunity hunter if registered (no-ops if not yet built)
+            try:
+                import agents.orchestrator as orch
+                from agents.contracts import PortfolioSnapshot
+                snapshot = PortfolioSnapshot(
+                    date="", total_value=0, holdings=[],
+                    layer_weights={}, macro_scores={}, generated_at=0,
+                )
+                orch.run_agents(snapshot, triggered_agents=["opportunity_hunter"])
+                agent_db.mark_candidate_evaluated(ticker)
+            except Exception:
+                pass
+
+        import threading
+        threading.Thread(target=_bg, daemon=True).start()
+        self._json({"ok": True, "ticker": ticker, "status": "active"})
+
+    def _handle_candidate_action(self, ticker: str, new_status: str):
+        try:
+            agent_db.set_candidate_status(ticker, new_status)
+            self._json({"ok": True, "ticker": ticker, "status": new_status})
+        except Exception as e:
+            self._json_error(500, str(e))
 
     # ── Thesis intake endpoints ───────────────────────────────────────────────
 

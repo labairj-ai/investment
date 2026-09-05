@@ -2434,6 +2434,35 @@ def build_dashboard(portfolio, layers, holdings):
       </div>
     </details>
 
+    <!-- Track Candidate form -->
+    <details style="margin-bottom:16px;">
+      <summary style="cursor:pointer;font-size:12px;font-weight:600;color:#7f8c8d;text-transform:uppercase;letter-spacing:.05em;padding:6px 0;">
+        + Track Candidate
+      </summary>
+      <div style="margin-top:12px;padding:14px 16px;background:#f8fafc;border-radius:8px;border:1px solid #eee;">
+        <div style="font-size:11px;color:#888;margin-bottom:10px;line-height:1.5;">
+          Add any ticker to the candidate universe. Fundamentals will be fetched automatically and the opportunity pipeline runs when available.
+        </div>
+        <div style="display:flex;align-items:flex-end;gap:10px;flex-wrap:wrap;">
+          <div>
+            <label style="font-size:10px;color:#aaa;text-transform:uppercase;">Ticker</label>
+            <input id="cand-ticker" placeholder="e.g. INCY" maxlength="12" autocomplete="off"
+              style="display:block;margin-top:3px;padding:6px 10px;border:1px solid #dde;border-radius:5px;font-size:13px;text-transform:uppercase;width:110px;">
+          </div>
+          <div style="flex:1;min-width:160px;">
+            <label style="font-size:10px;color:#aaa;text-transform:uppercase;">Why interested? (optional)</label>
+            <input id="cand-notes" placeholder="e.g. strong moat, undervalued" autocomplete="off"
+              style="display:block;margin-top:3px;padding:6px 10px;border:1px solid #dde;border-radius:5px;font-size:13px;width:100%;">
+          </div>
+          <button onclick="addCandidate()"
+            style="padding:7px 18px;background:#1a2340;color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap;">
+            Track
+          </button>
+          <span id="cand-status" style="font-size:12px;color:#7f8c8d;"></span>
+        </div>
+      </div>
+    </details>
+
     <div class="table-scroll" id="holdings-scroll-wrap">
     <table id="holdings-table">
       <thead id="holdings-thead"><tr><th>Ticker</th><th class="col-hide-sm">Shares</th><th class="col-hide-sm">Avg Cost</th><th>Price</th><th>Value</th><th>Total Gain</th><th>Daily Δ</th><th class="col-hide-sm">Weight</th><th class="col-hide-sm">Next Earnings</th><th>Layer</th><th class="col-hide-sm">Tax Lots</th><th class="col-hide-sm">Thesis</th><th class="col-hide-sm" title="Macro risk scores: Rate · Inflation · Dollar · Geo (hover each row for details)">Macro ⓘ</th></tr></thead>
@@ -2727,6 +2756,17 @@ def build_dashboard(portfolio, layers, holdings):
         <span id="lookup-status" style="font-size:12px;color:#7f8c8d;"></span>
       </div>
       <div id="lookup-results" style="margin-top:14px;"></div>
+    </div>
+  </div>
+
+  <!-- Candidate Universe -->
+  <div class="card" id="candidate-card">
+    <h2 style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+      Candidate Universe
+      <button onclick="loadCandidates()" style="font-size:11px;padding:4px 10px;background:#f4f6f9;border:1px solid #dde;border-radius:5px;cursor:pointer;color:#555;">↻</button>
+    </h2>
+    <div id="candidate-table-wrap">
+      <div style="font-size:12px;color:#a0aec0;text-align:center;padding:20px;">Loading…</div>
     </div>
   </div>
 
@@ -7382,6 +7422,96 @@ function toggleThesisHealth(safeId) {{
   var row = document.getElementById('thesis-health-' + safeId);
   if (row) row.style.display = (row.style.display === 'none') ? 'table-row' : 'none';
 }}
+
+// ── Candidate Universe ────────────────────────────────────────────────────────
+function addCandidate() {{
+  var ticker = (document.getElementById('cand-ticker')?.value || '').trim().toUpperCase();
+  var notes  = (document.getElementById('cand-notes')?.value  || '').trim() || null;
+  var status = document.getElementById('cand-status');
+  if (!ticker) {{ document.getElementById('cand-ticker')?.focus(); return; }}
+  if (status) status.textContent = 'Tracking…';
+  fetch('/api/candidates', {{
+    method: 'POST',
+    headers: {{'Content-Type': 'application/json'}},
+    body: JSON.stringify({{ticker, notes}}),
+  }})
+    .then(r => r.json())
+    .then(d => {{
+      if (status) status.textContent = d.ok ? `✓ ${{ticker}} added — fundamentals fetching in background` : `Error: ${{d.error}}`;
+      if (d.ok) {{
+        document.getElementById('cand-ticker').value = '';
+        document.getElementById('cand-notes').value  = '';
+        loadCandidates();
+      }}
+    }})
+    .catch(() => {{ if (status) status.textContent = 'Request failed'; }});
+}}
+
+const _CAND_STATUS_COLOR = {{
+  active:'#27ae60', watch:'#f39c12', owned:'#3498db', rejected:'#e74c3c'
+}};
+const _CAND_SOURCE_LABEL = {{ BUFFETT:'Buffett', MANUAL:'Manual' }};
+
+function _renderCandidateTable(candidates) {{
+  var wrap = document.getElementById('candidate-table-wrap');
+  if (!wrap) return;
+  if (!candidates || candidates.length === 0) {{
+    wrap.innerHTML = '<div style="font-size:12px;color:#a0aec0;text-align:center;padding:20px;">No candidates tracked yet — use \'+ Track Candidate\' above or run the Buffett screener.</div>';
+    return;
+  }}
+  var rows = candidates.map(c => {{
+    var sc = c.buffett_score != null ? Math.round(c.buffett_score) : '—';
+    var col = _CAND_STATUS_COLOR[c.status] || '#999';
+    var srcLbl = _CAND_SOURCE_LABEL[c.source] || c.source;
+    var evalLbl = c.last_evaluated ? (function(){{
+      var age = (Date.now()/1000 - c.last_evaluated) / 3600;
+      return age < 1 ? '< 1h ago' : age < 48 ? Math.round(age) + 'h ago' : Math.round(age/24) + 'd ago';
+    }})() : '—';
+    var watchBtn = c.status !== 'watch' && c.status !== 'owned' && c.status !== 'rejected'
+      ? `<button onclick="candidateAction('${{c.ticker}}','watch')" style="font-size:10px;padding:1px 7px;border:1px solid #dde;border-radius:3px;cursor:pointer;background:#fff;color:#555;margin-right:4px;">Watch</button>` : '';
+    var rejectBtn = c.status !== 'rejected'
+      ? `<button onclick="candidateAction('${{c.ticker}}','reject')" style="font-size:10px;padding:1px 7px;border:1px solid #e74c3c44;border-radius:3px;cursor:pointer;background:#fff;color:#e74c3c;">Reject</button>` : '';
+    return `<tr>
+      <td style="font-weight:600;font-size:13px;padding:6px 8px;">${{c.ticker}}</td>
+      <td style="font-size:11px;color:#718096;padding:6px 8px;">${{srcLbl}}</td>
+      <td style="font-size:12px;font-weight:700;padding:6px 8px;">${{sc}}</td>
+      <td style="padding:6px 8px;">
+        <span style="font-size:10px;font-weight:700;color:${{col}};background:${{col}}18;border:1px solid ${{col}}44;border-radius:3px;padding:1px 6px;text-transform:uppercase;">${{c.status}}</span>
+      </td>
+      <td style="font-size:11px;color:#718096;padding:6px 8px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${{c.notes || ''}}</td>
+      <td style="font-size:11px;color:#a0aec0;padding:6px 8px;">${{evalLbl}}</td>
+      <td style="padding:6px 8px;white-space:nowrap;">${{watchBtn}}${{rejectBtn}}</td>
+    </tr>`;
+  }}).join('');
+  wrap.innerHTML = `<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:12px;">
+    <thead><tr style="border-bottom:2px solid #e2e8f0;">
+      <th style="text-align:left;padding:5px 8px;color:#718096;font-weight:600;text-transform:uppercase;font-size:10px;">Ticker</th>
+      <th style="text-align:left;padding:5px 8px;color:#718096;font-weight:600;text-transform:uppercase;font-size:10px;">Source</th>
+      <th style="text-align:left;padding:5px 8px;color:#718096;font-weight:600;text-transform:uppercase;font-size:10px;">Score</th>
+      <th style="text-align:left;padding:5px 8px;color:#718096;font-weight:600;text-transform:uppercase;font-size:10px;">Status</th>
+      <th style="text-align:left;padding:5px 8px;color:#718096;font-weight:600;text-transform:uppercase;font-size:10px;">Notes</th>
+      <th style="text-align:left;padding:5px 8px;color:#718096;font-weight:600;text-transform:uppercase;font-size:10px;">Evaluated</th>
+      <th></th>
+    </tr></thead>
+    <tbody>${{rows}}</tbody>
+  </table></div>`;
+}}
+
+function loadCandidates() {{
+  fetch('/api/candidates').then(r => r.json()).then(d => {{
+    if (d.ok) _renderCandidateTable(d.candidates);
+  }}).catch(() => {{}});
+}}
+
+function candidateAction(ticker, action) {{
+  fetch('/api/candidates/' + ticker + '/' + action, {{method:'POST'}})
+    .then(r => r.json())
+    .then(d => {{ if (d.ok) loadCandidates(); }})
+    .catch(() => {{}});
+}}
+
+// Auto-load candidates on page ready
+document.addEventListener('DOMContentLoaded', loadCandidates);
 
 function showDashTab(name) {{
   document.querySelectorAll('.dash-tab-content').forEach(function(el) {{ el.style.display = 'none'; }});

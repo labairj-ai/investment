@@ -1,7 +1,7 @@
 # Add Candidate Universe Table and Manual Candidate UI
 
 - **ID:** 0021
-- **Status:** backlog
+- **Status:** in-progress
 - **Created:** 2026-09-05
 - **Priority:** normal
 - **Depends:** 0004, 0005, 0008

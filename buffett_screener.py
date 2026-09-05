@@ -675,6 +675,18 @@ def _flush(conn, results, now_str, scanned_so_far, total_tickers, complete,
     )
     conn.commit()
 
+    # Mirror winners into candidate_universe so the user can track/reject/watch them
+    try:
+        import agent_db as _adb
+        for w in winners:
+            _adb.upsert_candidate(
+                ticker=w["ticker"],
+                source="BUFFETT",
+                buffett_score=_score_winner(w),
+            )
+    except Exception as _ce:
+        print(f"[Buffett] candidate_universe upsert failed: {_ce}")
+
 
 def _acquire_lock():
     """Return True if we got the lock, False if another instance is running."""

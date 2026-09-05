@@ -204,6 +204,16 @@ def migrate() -> None:
 
         CREATE INDEX IF NOT EXISTS idx_outcomes_rec
             ON recommendation_outcomes (recommendation_id);
+
+        CREATE TABLE IF NOT EXISTS candidate_universe (
+            ticker         TEXT PRIMARY KEY,
+            source         TEXT NOT NULL DEFAULT 'MANUAL',
+            added_at       REAL NOT NULL,
+            buffett_score  REAL,
+            status         TEXT NOT NULL DEFAULT 'active',
+            notes          TEXT,
+            last_evaluated REAL
+        );
     """)
     conn.commit()
 
@@ -865,6 +875,104 @@ def get_active_thesis(ticker: str) -> dict | None:
     conn.close()
     result["pillars"] = [dict(p) for p in pillars]
     return result
+
+
+# ── Candidate universe ────────────────────────────────────────────────────────
+
+def upsert_candidate(
+    ticker: str,
+    source: str = "MANUAL",
+    buffett_score: float | None = None,
+    status: str = "active",
+    notes: str | None = None,
+) -> None:
+    """Insert or update a candidate. Never overwrites `rejected` status on BUFFETT upserts."""
+    conn = _connect()
+    existing = conn.execute(
+        "SELECT status FROM candidate_universe WHERE ticker=?", (ticker,)
+    ).fetchone()
+    if existing:
+        current_status = existing[0]
+        # BUFFETT upserts: preserve rejected/owned/watch — only refresh score + source
+        if source == "BUFFETT":
+            conn.execute(
+                """UPDATE candidate_universe
+                   SET source=?, buffett_score=?, added_at=CASE WHEN added_at IS NULL THEN ? ELSE added_at END
+                   WHERE ticker=? AND status NOT IN ('rejected')""",
+                (source, buffett_score, time.time(), ticker),
+            )
+        else:
+            # MANUAL re-add: refresh everything, keep existing rejected note if desired
+            conn.execute(
+                """UPDATE candidate_universe
+                   SET source=?, status=?, notes=COALESCE(?, notes), added_at=?
+                   WHERE ticker=?""",
+                (source, status, notes, time.time(), ticker),
+            )
+    else:
+        conn.execute(
+            """INSERT INTO candidate_universe (ticker, source, added_at, buffett_score, status, notes)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (ticker, source, time.time(), buffett_score, status, notes),
+        )
+    conn.commit()
+    conn.close()
+
+
+def set_candidate_status(ticker: str, status: str, notes: str | None = None) -> None:
+    conn = _connect()
+    conn.execute(
+        "UPDATE candidate_universe SET status=?, notes=COALESCE(?, notes) WHERE ticker=?",
+        (status, notes, ticker),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_candidates(include_rejected: bool = False) -> list[dict]:
+    """Return candidates ordered by buffett_score DESC, added_at DESC."""
+    conn = _connect()
+    if include_rejected:
+        rows = conn.execute(
+            "SELECT * FROM candidate_universe ORDER BY buffett_score DESC NULLS LAST, added_at DESC"
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM candidate_universe WHERE status != 'rejected' "
+            "ORDER BY buffett_score DESC NULLS LAST, added_at DESC"
+        ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def sync_owned_candidates(holdings_tickers: list[str]) -> None:
+    """Set status=owned for held tickers; revert previously-owned-but-sold back to active."""
+    held = set(t.upper() for t in holdings_tickers)
+    conn = _connect()
+    # Mark held tickers as owned
+    for ticker in held:
+        conn.execute(
+            "UPDATE candidate_universe SET status='owned' WHERE ticker=? AND status != 'rejected'",
+            (ticker,),
+        )
+    # Revert previously owned tickers no longer in holdings back to active
+    conn.execute(
+        f"UPDATE candidate_universe SET status='active' WHERE status='owned' "
+        f"AND ticker NOT IN ({','.join('?' for _ in held)})",
+        list(held) if held else [],
+    )
+    conn.commit()
+    conn.close()
+
+
+def mark_candidate_evaluated(ticker: str) -> None:
+    conn = _connect()
+    conn.execute(
+        "UPDATE candidate_universe SET last_evaluated=? WHERE ticker=?",
+        (time.time(), ticker),
+    )
+    conn.commit()
+    conn.close()
 
 
 def list_runs(agent_type: str | None = None, limit: int = 20) -> list[dict]:
