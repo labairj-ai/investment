@@ -1487,7 +1487,6 @@ Return ONLY valid JSON, no extra text:
 }}
 """
 
-    full_text = ""
     for _attempt in range(3):
         if ollama_client.available():
             break
@@ -1497,18 +1496,16 @@ Return ONLY valid JSON, no extra text:
         return
 
     try:
-        for tok in ollama_client.stream_generate(
-            prompt, model=ollama_client.DEFAULT_MODEL,
-            temperature=0.3, num_predict=8000
-        ):
-            full_text += tok
-    except Exception as e:
+        result = ollama_client.generate_structured(
+            prompt,
+            schema={"portfolio": "", "layers": {}},
+            model=ollama_client.DEFAULT_MODEL,
+            temperature=0.3,
+            num_predict=8000,
+            retries=2,
+        )
+    except ollama_client.StructuredOutputError as e:
         print(f"[MacroSummary] AI call failed: {e}")
-        return
-
-    result = _extract_last_json(full_text, required_keys=["portfolio", "layers"])
-    if not result:
-        print(f"[MacroSummary] Could not parse response. Raw (first 300): {full_text[:300]!r}")
         return
 
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

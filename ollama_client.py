@@ -1,9 +1,29 @@
+import hashlib
 import json
 import os
 import re
+import time
 import urllib.request
 
 DEFAULT_MODEL = "mlx-community/Qwen3.6-35B-A3B-4bit"
+
+
+class StructuredOutputError(RuntimeError):
+    """Raised when generate_structured() exhausts all retries without valid output."""
+    def __init__(self, message: str, raw: str = ""):
+        super().__init__(message)
+        self.raw = raw
+
+
+def _validate_schema(obj: dict, schema: dict, path: str = "") -> list[str]:
+    """Return a list of missing-key error strings. Schema values are ignored — only keys matter."""
+    errors = []
+    for key, val in schema.items():
+        if key not in obj:
+            errors.append(f"missing key '{path}{key}'")
+        elif isinstance(val, dict) and isinstance(obj.get(key), dict):
+            errors.extend(_validate_schema(obj[key], val, path=f"{path}{key}."))
+    return errors
 
 
 def _get_llm_url() -> str:
@@ -36,6 +56,87 @@ def generate(prompt, model=DEFAULT_MODEL, temperature=0.3, num_predict=700, enab
         # absent — fall back to reasoning so callers get something to parse.
         content = msg.get("content") or msg.get("reasoning", "") or ""
         return _SPECIAL_TOKENS.sub('', content).strip()
+
+
+def generate_structured(
+    prompt: str,
+    schema: dict,
+    model: str = DEFAULT_MODEL,
+    temperature: float = 0.2,
+    num_predict: int = 1000,
+    thinking: bool = False,
+    retries: int = 2,
+) -> dict:
+    """Call the LLM in JSON mode, validate against schema, retry on failure.
+
+    schema: dict whose keys (recursively) must appear in the response.
+            Values are ignored — they document expected shape but are not type-checked.
+
+    Returns the parsed dict. Raises StructuredOutputError if all attempts fail.
+    Metadata (model, prompt_hash, latency_s, attempt) is printed on retry/failure
+    so it's visible in service logs without callers needing to handle it.
+    """
+    prompt_hash = hashlib.sha1(prompt.encode()).hexdigest()[:8]
+    payload_base = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": num_predict,
+        "temperature": temperature,
+        "stream": False,
+        "response_format": {"type": "json_object"},
+        "chat_template_kwargs": {"enable_thinking": thinking},
+    }
+    last_raw = ""
+    for attempt in range(retries + 1):
+        t0 = time.monotonic()
+        try:
+            payload = json.dumps(payload_base).encode()
+            req = urllib.request.Request(
+                f"{_get_llm_url()}/v1/chat/completions",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=180) as r:
+                msg = json.loads(r.read())["choices"][0]["message"]
+                content = msg.get("content") or msg.get("reasoning", "") or ""
+                last_raw = _SPECIAL_TOKENS.sub('', content).strip()
+        except Exception as e:
+            latency = time.monotonic() - t0
+            print(f"[generate_structured] prompt={prompt_hash} attempt={attempt+1} "
+                  f"network error after {latency:.1f}s: {e}")
+            if attempt < retries:
+                time.sleep(2 ** attempt)
+            continue
+
+        latency = time.monotonic() - t0
+        try:
+            result = json.loads(last_raw)
+        except json.JSONDecodeError:
+            print(f"[generate_structured] prompt={prompt_hash} attempt={attempt+1} "
+                  f"latency={latency:.1f}s — JSON parse failed. "
+                  f"Raw (first 200): {last_raw[:200]!r}")
+            if attempt < retries:
+                time.sleep(2 ** attempt)
+            continue
+
+        errors = _validate_schema(result, schema)
+        if errors:
+            print(f"[generate_structured] prompt={prompt_hash} attempt={attempt+1} "
+                  f"latency={latency:.1f}s — schema mismatch: {errors}")
+            if attempt < retries:
+                time.sleep(2 ** attempt)
+            continue
+
+        if attempt > 0:
+            print(f"[generate_structured] prompt={prompt_hash} succeeded on attempt {attempt+1} "
+                  f"latency={latency:.1f}s")
+        return result
+
+    raise StructuredOutputError(
+        f"generate_structured failed after {retries+1} attempts "
+        f"(prompt={prompt_hash}). Raw tail: {last_raw[-300:]!r}",
+        raw=last_raw,
+    )
 
 
 def stream_generate(prompt, model=DEFAULT_MODEL, temperature=0.3, num_predict=700,
