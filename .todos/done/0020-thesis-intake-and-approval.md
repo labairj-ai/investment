@@ -97,5 +97,13 @@ The basic thesis data model (0013) stores theses but has no defined path for cre
 
 **Schema note:** intake + draft are stored as JSON blobs (`intake_json`, `draft_json`). 0030 migrates claims into the relational pillar/metrics/rules tables — these blobs are the source of truth until then.
 
+**Post-merge bugs found and fixed (browser QA):**
+Three bugs were introduced and not caught before the initial commit:
+1. `join('\n')` in Python f-string — inserted a raw newline into the JS string literal, breaking the entire script block. Fixed: `join('\\n')`.
+2. `split('\n')` in same f-string — same class of bug, killed all JS. Fixed: `split('\\n')`.
+3. `colspan="12"` in layer header and macro detail rows — adding the Thesis column made 13 columns, causing visual misalignment. Fixed: both occurrences → `colspan="13"`.
+
+**Browser QA (actual):** Completed after bug fixes. Verified: no console errors, Lots modal opens correctly, Thesis modal opens (intake form state for new tickers), Layer Allocation / Dividends / Tax Estimate all render, colspan=13 on all layer rows.
+
 **Next items unblocked by 0020:** 0019 (Sell/Trim Agent), 0031 (Thesis AI Proposal Engine), 0032 (Thesis Intake UI Full Schema).
 
