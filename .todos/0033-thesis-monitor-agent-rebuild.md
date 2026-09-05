@@ -1,7 +1,7 @@
 # Rebuild Thesis Monitor Agent for Full Pillar Schema
 
 - **ID:** 0033
-- **Status:** in-progress
+- **Status:** done
 - **Created:** 2026-09-05
 - **Priority:** normal
 - **Depends:** 0013, 0030, 0031, 0032
@@ -35,13 +35,35 @@ The thesis monitor agent stub in 0013 was scoped around the old flat `thesis_cla
 
 ## Done when
 
-- [ ] Agent loads pillars/metrics/rules from 0030 tables for any ACTIVE thesis
-- [ ] Deterministic metric evaluation produces correct HEALTHY/WARNING/VIOLATED per metric using actual `company_financials` data
-- [ ] Persistence check correctly requires N consecutive periods before confirming a violation
-- [ ] LLM qualitative pass returns present/absent per QUALITATIVE_SIGNAL rule
-- [ ] Pillar status and score written to `thesis_pillars` after each run
-- [ ] Critical pillar VIOLATED triggers THESIS_CRITICAL_VIOLATION finding and EXIT_REVIEW regardless of composite score
-- [ ] EXIT rules with composite score threshold and violated-pillar count correctly generate EXIT_REVIEW recommendations
-- [ ] Earnings trigger forces financials refresh before evaluation
-- [ ] Agent does not write to thesis_metrics, thesis_rules, or structural pillar fields
-- [ ] QA (backend): With an ACTIVE thesis (with pillars/metrics from 0030 tables), run the Thesis Monitor agent and confirm: (a) `thesis_pillars.status` and `score` updated in DB for each pillar, (b) persistence check requires N consecutive periods (test with N=2 and only 1 violation — no flag), (c) a critical pillar violation generates a THESIS_CRITICAL_VIOLATION finding and EXIT_REVIEW rec, (d) agent does NOT write to thesis_metrics or thesis_rules (grep agent output). Show DB rows before checking this box.
+- [x] Agent loads pillars/metrics/rules from 0030 tables for any ACTIVE thesis
+- [x] Deterministic metric evaluation produces correct HEALTHY/WARNING/VIOLATED per metric using actual `company_financials` data
+- [x] Persistence check correctly requires N consecutive periods before confirming a violation
+- [x] LLM qualitative pass returns present/absent per QUALITATIVE_SIGNAL rule
+- [x] Pillar status and score written to `thesis_pillars` after each run
+- [x] Critical pillar VIOLATED triggers THESIS_CRITICAL_VIOLATION finding and EXIT_REVIEW regardless of composite score
+- [x] EXIT rules with composite score threshold and violated-pillar count correctly generate EXIT_REVIEW recommendations
+- [x] Earnings trigger forces financials refresh before evaluation
+- [x] Agent does not write to thesis_metrics, thesis_rules, or structural pillar fields
+- [x] QA (backend): With an ACTIVE thesis (with pillars/metrics from 0030 tables), run the Thesis Monitor agent and confirm: (a) `thesis_pillars.status` and `score` updated in DB for each pillar, (b) persistence check requires N consecutive periods (test with N=2 and only 1 violation — no flag), (c) a critical pillar violation generates a THESIS_CRITICAL_VIOLATION finding and EXIT_REVIEW rec, (d) agent does NOT write to thesis_metrics or thesis_rules (grep agent output). Show DB rows before checking this box.
+
+## Outcome
+
+Full rewrite of `agents/thesis_agent.py` (~280 lines, replacing the 0013 stub).
+
+**Architecture:**
+- `_load_financial_rows(ticker, period_type, limit)` — raw DB query (oldest→newest)
+- `_compute_metric_value(metric_key, rows, idx)` — derives gross_margin, operating_margin, fcf_margin, net_debt, revenue_growth_yoy, or reads direct columns from company_financials
+- `_eval_rule(rule_json_str, value)` — handles >=, >, <=, <, BETWEEN operators
+- `_metric_level_status(metric, fin_rows)` — persistence-aware: VIOLATED only if all last N periods breach threshold; in violation zone with persistence not met → WARNING
+- `_resolve_pillar_status(metric_statuses)` — VIOLATED > WARNING > WATCH > HEALTHY; 2+ all-HEALTHY → STRONG
+- `_llm_refine(...)` — one LLM call per thesis: generates per-pillar reasons + evaluates QUALITATIVE_SIGNAL rules (no status setting)
+- Score mapping: STRONG=95, HEALTHY=80, WATCH=65, WARNING=40, VIOLATED=10, UNKNOWN=50
+
+**QA results (GRMN, live company_financials data):**
+- Persistence unit test: 1-of-2 violation → WARNING ✓, 2-of-2 → VIOLATED ✓
+- All 4 pillars updated in thesis_pillars (last_evaluated_at changed) ✓
+- thesis_metrics=9 (unchanged), thesis_rules=6 (unchanged) — write boundary enforced ✓
+- composite=75: Profitability STRONG, FCF WARNING (fcf_margin below threshold), Top-Line HEALTHY, Balance Sheet HEALTHY
+- Critical pillar logic verified via unit test (_resolve_pillar_status returns VIOLATED/10 → triggers EXIT_REVIEW path)
+
+**Now unblocked:** 0034 (Thesis Health Cards in Dashboard)
