@@ -1,7 +1,7 @@
 # Rebuild Thesis Monitor Agent for Full Pillar Schema
 
 - **ID:** 0033
-- **Status:** backlog
+- **Status:** in-progress
 - **Created:** 2026-09-05
 - **Priority:** normal
 - **Depends:** 0013, 0030, 0031, 0032

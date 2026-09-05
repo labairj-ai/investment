@@ -1,138 +1,299 @@
-"""Thesis Monitor Agent — evaluates investment thesis pillars against current data.
+"""Thesis Monitor Agent — evaluates investment thesis pillars deterministically,
+then uses LLM for qualitative signals and human-readable reasons.
 
-Runs for every holding that has an ACTIVE thesis. For each thesis:
-- Fetches current financial data (force-refreshes when triggered by earnings)
-- Calls LLM to evaluate each pillar against current conditions and thresholds
-- Updates thesis_pillars.status, score, confidence, last_evaluated_at
-- Creates a REVIEW_THESIS recommendation when overall status is REVIEW or worse
+Evaluation flow per active thesis:
+  1. Load pillars + metrics + rules from DB
+  2. Force-refresh financials on earnings trigger
+  3. Deterministic metric pass: apply healthy/warning/violation rules against
+     company_financials; enforce persistence requirement
+  4. LLM pass: generate per-pillar reasons + evaluate QUALITATIVE_SIGNAL rules
+  5. Write pillar statuses to thesis_pillars (status, score, confidence, reason)
+  6. Critical pillar check → THESIS_CRITICAL_VIOLATION finding + EXIT_REVIEW rec
+  7. Composite score + rule evaluation → EXIT / TRIM / BUY recommendations
+
+Write boundary: only writes to thesis_pillars and agent_findings/recommendations.
+Never writes to thesis_metrics, thesis_rules, or structural pillar fields.
 """
 import json
+import sqlite3
+from pathlib import Path
 
-import financials_fetcher
 import agent_db
+import financials_fetcher
 import ollama_client
-from .contracts import AgentContext, EvidenceBundle, Recommendation
 from .confidence import calculate_confidence
+from .contracts import AgentContext, EvidenceBundle, Recommendation
 from .orchestrator import register_agent
 
+_DB = Path(__file__).resolve().parent.parent / "out" / "investment.db"
 
-_VALID_PILLAR_STATUSES = {"INTACT", "WEAKENED", "VIOLATED"}
+# ── Status vocabulary ──────────────────────────────────────────────────────────
 
-# Maps overall thesis status to recommendation priority
-_PRIORITY = {"REVIEW": "normal", "DETERIORATING": "high", "VIOLATED": "urgent"}
+_STATUS_SCORE: dict[str, float] = {
+    "STRONG":   95.0,
+    "HEALTHY":  80.0,
+    "WATCH":    65.0,
+    "WARNING":  40.0,
+    "VIOLATED": 10.0,
+    "UNKNOWN":  50.0,
+}
 
-# Numeric rank for computing recommendation_score
-_STATUS_RANK = {"INTACT": 0, "MONITOR": 1, "REVIEW": 2, "DETERIORATING": 3, "VIOLATED": 4}
+# Composite thresholds for EXIT / TRIM / ADD rule evaluation
+_EXIT_THRESHOLD = 50.0
+_TRIM_THRESHOLD = 65.0
+_ADD_THRESHOLD  = 80.0
 
-_EVAL_SCHEMA = {
-    "pillar_evaluations": [
-        {
-            "pillar_name": "",
-            "status": "INTACT",
-            "score": 75,
-            "confidence": 70,
-            "reason": "",
-        }
+
+# ── Financial data helpers ─────────────────────────────────────────────────────
+
+def _load_financial_rows(ticker: str, period_type: str = "Q", limit: int = 10) -> list[dict]:
+    """Return last `limit` company_financials rows, oldest→newest."""
+    if not _DB.exists():
+        return []
+    try:
+        conn = sqlite3.connect(str(_DB), timeout=5)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM company_financials "
+            "WHERE ticker=? AND period_type=? ORDER BY period_end DESC LIMIT ?",
+            (ticker, period_type, limit),
+        ).fetchall()
+        conn.close()
+        return [dict(r) for r in reversed(rows)]
+    except Exception:
+        return []
+
+
+def _pct(v: float | None) -> float | None:
+    return v * 100 if v is not None else None
+
+
+def _safe_div(a, b) -> float | None:
+    if a is None or b is None or b == 0:
+        return None
+    return a / b
+
+
+def _compute_metric_value(metric_key: str, rows: list[dict], idx: int) -> float | None:
+    """Compute a derived or direct metric for rows[idx], using prior rows for YoY."""
+    if not rows or not (0 <= idx < len(rows)):
+        return None
+    r = rows[idx]
+
+    if metric_key == "gross_margin":
+        return _pct(_safe_div(r.get("gross_profit"), r.get("revenue")))
+    if metric_key == "operating_margin":
+        return _pct(_safe_div(r.get("operating_income"), r.get("revenue")))
+    if metric_key == "net_margin":
+        return _pct(_safe_div(r.get("net_income"), r.get("revenue")))
+    if metric_key == "fcf_margin":
+        return _pct(_safe_div(r.get("free_cash_flow"), r.get("revenue")))
+    if metric_key == "net_debt":
+        td   = r.get("total_debt")
+        cash = r.get("cash")
+        return (td - cash) if td is not None and cash is not None else None
+    if metric_key == "revenue_growth_yoy":
+        # Compare to the row 4 quarters earlier (same quarter prior year)
+        if idx >= 4:
+            prev = rows[idx - 4].get("revenue")
+            curr = r.get("revenue")
+            return _pct(_safe_div((curr - prev) if curr is not None and prev is not None else None, prev))
+        return None
+    # Direct columns
+    direct = ("revenue", "gross_profit", "operating_income", "net_income",
+               "free_cash_flow", "total_debt", "cash", "total_equity", "eps_diluted")
+    if metric_key in direct:
+        return r.get(metric_key)
+    return None
+
+
+# ── Rule evaluation ────────────────────────────────────────────────────────────
+
+def _eval_rule(rule_json_str: str | None, value: float | None) -> bool | None:
+    """Evaluate a stored rule JSON against a value.
+
+    Returns True (condition met), False (not met), None (can't evaluate).
+    """
+    if not rule_json_str or value is None:
+        return None
+    try:
+        rule = json.loads(rule_json_str)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    op = rule.get("operator", "")
+    if op == ">=":
+        return value >= rule["value"]
+    if op == ">":
+        return value > rule["value"]
+    if op == "<=":
+        return value <= rule["value"]
+    if op == "<":
+        return value < rule["value"]
+    if op in ("==", "="):
+        return value == rule["value"]
+    if op == "BETWEEN":
+        return rule["min"] <= value <= rule["max"]
+    return None
+
+
+def _metric_level_status(metric: dict, fin_rows: list[dict]) -> tuple[str, float | None]:
+    """Evaluate one thesis_metric against financial rows with persistence check.
+
+    Returns (status, current_value) where status ∈ {HEALTHY, WARNING, VIOLATED, WATCH, UNKNOWN}.
+
+    Persistence rule:
+      - If current period is in violation zone AND persistence_periods > 1:
+        - VIOLATED only if ALL of the last N periods are violated
+        - Otherwise WARNING (elevated — in violation zone but not confirmed)
+      - Healthy is checked before warning to avoid boundary issues.
+    """
+    persistence = int(metric.get("persistence_periods") or 1)
+    n = len(fin_rows)
+    if n == 0:
+        return "UNKNOWN", None
+
+    values = [_compute_metric_value(metric["metric_key"], fin_rows, i) for i in range(n)]
+    current_value = values[-1] if values else None
+
+    if current_value is None:
+        return "UNKNOWN", None
+
+    violation_rule = metric.get("violation_rule_json")
+    warning_rule   = metric.get("warning_rule_json")
+    healthy_rule   = metric.get("healthy_rule_json")
+
+    current_violates = (_eval_rule(violation_rule, current_value) is True)
+
+    if current_violates:
+        if persistence > 1:
+            recent = values[-persistence:]
+            known  = [v for v in recent if v is not None]
+            if len(known) >= persistence and all(_eval_rule(violation_rule, v) for v in known):
+                return "VIOLATED", current_value
+            # In violation zone but persistence not confirmed — elevated warning
+            return "WARNING", current_value
+        return "VIOLATED", current_value
+
+    # Check healthy before warning to handle threshold boundaries correctly
+    if _eval_rule(healthy_rule, current_value) is True:
+        return "HEALTHY", current_value
+
+    if _eval_rule(warning_rule, current_value) is True:
+        return "WARNING", current_value
+
+    return "WATCH", current_value
+
+
+def _resolve_pillar_status(metric_statuses: list[str]) -> tuple[str, float]:
+    """Combine per-metric statuses into a pillar status + score.
+
+    Worst metric wins: VIOLATED > WARNING > WATCH > HEALTHY > STRONG.
+    STRONG requires ≥2 all-HEALTHY metrics.
+    """
+    if not metric_statuses or all(s == "UNKNOWN" for s in metric_statuses):
+        return "UNKNOWN", _STATUS_SCORE["UNKNOWN"]
+    known = [s for s in metric_statuses if s != "UNKNOWN"]
+    if not known:
+        return "UNKNOWN", _STATUS_SCORE["UNKNOWN"]
+    if "VIOLATED" in known:
+        return "VIOLATED", _STATUS_SCORE["VIOLATED"]
+    if "WARNING" in known:
+        return "WARNING", _STATUS_SCORE["WARNING"]
+    if "WATCH" in known:
+        return "WATCH", _STATUS_SCORE["WATCH"]
+    # All HEALTHY or better
+    if len(known) >= 2:
+        return "STRONG", _STATUS_SCORE["STRONG"]
+    return "HEALTHY", _STATUS_SCORE["HEALTHY"]
+
+
+# ── LLM refinement ─────────────────────────────────────────────────────────────
+
+_LLM_SYSTEM = (
+    "You are an investment analyst writing concise pillar evaluation summaries. "
+    "You receive deterministic metric evaluation results and must write a clear "
+    "1-2 sentence reason for each pillar's status, referencing actual numbers. "
+    "If QUALITATIVE_SIGNAL rules are listed, evaluate whether each signal is "
+    "present or absent. Do NOT change statuses — only write reasons and evaluate signals."
+)
+
+_LLM_SCHEMA = {
+    "pillar_reasons": [
+        {"pillar_name": "", "reason": ""}
+    ],
+    "qualitative_signals": [
+        {"signal_name": "", "present": False, "confidence": 60, "note": ""}
     ],
     "overall_summary": "",
 }
 
-_SYSTEM = """You are an investment analyst evaluating whether a holding's investment thesis
-remains intact. You receive the thesis pillars with defined metrics and thresholds, plus
-current financial data.
 
-For each pillar assign:
-  status: INTACT (condition holds), WEAKENED (showing strain but not broken),
-          or VIOLATED (condition clearly falsified)
-  score: 0–100 (100 = fully intact, 0 = completely violated)
-  confidence: 0–100 (based on data quality and recency; lower if data is missing)
-  reason: 1–2 sentences referencing actual numbers where available
-
-Return valid JSON matching the schema exactly. Use the exact pillar_name strings provided.
-"""
-
-
-def _format_pillar(pillar: dict, metrics: list[dict]) -> str:
-    lines = [
-        f"Pillar: {pillar['name']} "
-        f"(importance: {pillar['importance']:.0f}%, "
-        f"critical: {bool(pillar.get('critical'))})"
-    ]
-    if pillar.get("description"):
-        lines.append(f"  Description: {pillar['description']}")
-    for m in metrics:
-        lines.append(f"  Metric: {m['metric_key']} (direction: {m['direction']})")
-        for level in ("healthy", "warning", "violation"):
-            rule = m.get(f"{level}_rule_json")
-            if rule:
-                lines.append(f"    {level.title()}: {rule}")
-        if m.get("persistence_periods", 1) > 1:
-            lines.append(f"    Persistence required: {m['persistence_periods']} periods")
-    return "\n".join(lines)
-
-
-def _llm_evaluate(ticker: str, thesis: dict, pillars: list[dict], metrics_by_pillar: dict) -> dict:
-    """One LLM call evaluates all pillars for a single thesis."""
-    financial_context = financials_fetcher.get_financial_summary(ticker)
-    if not financial_context:
-        financial_context = f"No financial data currently available for {ticker}."
-
-    pillar_blocks = "\n\n".join(
-        _format_pillar(p, metrics_by_pillar.get(p["id"], [])) for p in pillars
+def _llm_refine(
+    ticker: str,
+    thesis: dict,
+    pillar_eval_data: list[dict],
+    fin_summary: str,
+    qualitative_rules: list[dict],
+) -> dict:
+    """One LLM call per thesis: generates per-pillar reasons + qualitative signal eval."""
+    pillar_blocks = "\n".join(
+        f"  {pd['name']} → {pd['det_status']} | {pd['metrics_detail']}"
+        for pd in pillar_eval_data
     )
+    qual_block = ""
+    if qualitative_rules:
+        qual_block = "\n\nQUALITATIVE SIGNALS to evaluate:\n" + "\n".join(
+            f"  - {r.get('signal_name', 'signal')}: {r.get('description', r.get('condition', ''))}"
+            for r in qualitative_rules
+        )
 
-    prompt = f"""{_SYSTEM}
-
-Ticker: {ticker}
-Thesis summary: {thesis.get('summary', '(no summary)')}
-Conviction: {thesis.get('conviction', 'N/A')}/5
-Portfolio role: {thesis.get('portfolio_role', 'N/A')}
-
-PILLARS:
-{pillar_blocks}
-
-CURRENT FINANCIAL DATA:
-{financial_context}
-
-Return JSON with "pillar_evaluations" (one entry per pillar using exact pillar_name) and "overall_summary"."""
-
+    prompt = (
+        f"{_LLM_SYSTEM}\n\n"
+        f"Ticker: {ticker}\n"
+        f"Thesis: {thesis.get('thesis_summary') or thesis.get('summary', '(no summary)')}\n\n"
+        f"DETERMINISTIC PILLAR RESULTS:\n{pillar_blocks}\n\n"
+        f"FINANCIAL CONTEXT:\n{fin_summary or '(no financial data available)'}"
+        f"{qual_block}\n\n"
+        "Return JSON with pillar_reasons (one entry per pillar, exact pillar_name), "
+        "qualitative_signals (empty list if none given), and overall_summary."
+    )
     return ollama_client.generate_structured(
         prompt=prompt,
-        schema=_EVAL_SCHEMA,
+        schema=_LLM_SCHEMA,
         model="mlx-community/Qwen3.6-35B-A3B-4bit",
         temperature=0.2,
-        num_predict=2000,
+        num_predict=1500,
         thinking=False,
         retries=2,
     )
 
 
-def _derive_overall_status(pillars: list[dict]) -> str:
-    """Deterministically derive overall thesis status from per-pillar statuses."""
-    if any(p.get("critical") and p.get("status") == "VIOLATED" for p in pillars):
-        return "VIOLATED"
-    if any(p.get("status") == "VIOLATED" for p in pillars):
-        return "DETERIORATING"
-    if any(p.get("critical") and p.get("status") == "WEAKENED" for p in pillars):
-        return "REVIEW"
-    if any(p.get("status") == "WEAKENED" for p in pillars):
-        return "MONITOR"
-    return "INTACT"
+# ── Evidence builder ───────────────────────────────────────────────────────────
 
+def _evidence(fin_rows: list[dict]) -> EvidenceBundle:
+    quarters = len(fin_rows)
+    return EvidenceBundle(
+        has_price=True,
+        financial_quarters=quarters,
+        has_strategy_metadata=True,
+        has_recent_fundamentals=(quarters >= 2),
+        source_quality="official_filing" if quarters >= 2 else "secondary_commentary",
+    )
+
+
+# ── Main agent entry point ─────────────────────────────────────────────────────
 
 def run_thesis_monitor(ctx: AgentContext) -> list[Recommendation]:
     recommendations: list[Recommendation] = []
     snapshot = ctx.snapshot
 
-    # Earnings trigger: bypass the 45-day financials cache for the affected ticker
+    # Earnings trigger: bypass financials cache
     if ctx.trigger_type == "earnings" and ctx.ticker:
-        print(f"[thesis_monitor] Earnings trigger for {ctx.ticker} — bypassing 45-day cache")
+        print(f"[thesis_monitor] Earnings trigger for {ctx.ticker} — bypassing cache")
         financials_fetcher.fetch_all([ctx.ticker], force=True)
 
-    # Scope: specific ticker (earnings trigger) or all holdings (daily sweep)
     tickers = (
-        [ctx.ticker]
-        if ctx.ticker
+        [ctx.ticker] if ctx.ticker
         else [h.ticker for h in snapshot.holdings]
     )
 
@@ -145,86 +306,214 @@ def run_thesis_monitor(ctx: AgentContext) -> list[Recommendation]:
         if not pillars:
             continue
 
-        metrics_by_pillar = {
-            p["id"]: agent_db.get_thesis_metrics(p["id"]) for p in pillars
-        }
+        thesis_id = thesis["id"]
+        metrics_by_pillar = {p["id"]: agent_db.get_thesis_metrics(p["id"]) for p in pillars}
+        rules = agent_db.get_thesis_rules(thesis_id)
+
+        # Load quarterly rows (8 = 2 years, enough for YoY with persistence up to 4)
+        fin_rows = _load_financial_rows(ticker, period_type="Q", limit=8)
+
+        # ── Deterministic metric evaluation ───────────────────────────────
+        pillar_eval_data: list[dict] = []
+
+        for pillar in pillars:
+            metrics = metrics_by_pillar.get(pillar["id"], [])
+            metric_statuses: list[str] = []
+            metrics_detail_parts: list[str] = []
+
+            for m in metrics:
+                status, value = _metric_level_status(m, fin_rows)
+                metric_statuses.append(status)
+                val_str = f"{value:.2f}" if value is not None else "N/A"
+                metrics_detail_parts.append(f"{m['metric_key']}={val_str}[{status}]")
+
+            det_status, det_score = _resolve_pillar_status(metric_statuses)
+            pillar_eval_data.append({
+                "id":            pillar["id"],
+                "name":          pillar["name"],
+                "critical":      bool(pillar.get("critical")),
+                "importance":    float(pillar.get("importance") or 0),
+                "det_status":    det_status,
+                "det_score":     det_score,
+                "metrics_detail": "; ".join(metrics_detail_parts) or "(no quantitative metrics)",
+            })
+
+        # ── LLM refinement: reasons + qualitative signals ─────────────────
+        fin_summary = financials_fetcher.get_financial_summary(ticker)
+        qualitative_rules = []
+        for r in rules:
+            if r["rule_type"] == "QUALITATIVE_SIGNAL":
+                try:
+                    qualitative_rules.append(json.loads(r["rule_json"]))
+                except (json.JSONDecodeError, TypeError):
+                    pass
 
         try:
-            result = _llm_evaluate(ticker, thesis, pillars, metrics_by_pillar)
+            llm_out = _llm_refine(ticker, thesis, pillar_eval_data, fin_summary, qualitative_rules)
         except Exception as e:
-            print(f"[thesis_monitor] LLM eval failed for {ticker}: {e}")
+            print(f"[thesis_monitor] LLM refinement failed for {ticker}: {e}")
+            llm_out = {}
+
+        reason_by_name = {
+            item["pillar_name"]: item["reason"]
+            for item in llm_out.get("pillar_reasons", [])
+            if item.get("pillar_name")
+        }
+        overall_summary = llm_out.get("overall_summary", "")
+
+        # ── Write pillar statuses to DB ───────────────────────────────────
+        updated_pillars: list[dict] = []
+        for pd in pillar_eval_data:
+            reason = reason_by_name.get(pd["name"]) or pd["metrics_detail"]
+            confidence = 80.0 if fin_rows else 35.0
+            agent_db.update_pillar_status(
+                pd["id"],
+                pd["det_status"],
+                pd["det_score"],
+                confidence,
+                reason,
+            )
+            updated_pillars.append({**pd, "confidence": confidence})
+            print(
+                f"[thesis_monitor] {ticker}/{pd['name']}: "
+                f"{pd['det_status']} score={pd['det_score']:.0f}"
+            )
+
+        # ── Composite health score ────────────────────────────────────────
+        total_weight = sum(p["importance"] for p in updated_pillars)
+        composite = (
+            sum(p["importance"] * p["det_score"] for p in updated_pillars) / total_weight
+            if total_weight > 0 else 50.0
+        )
+
+        any_violated = any(p["det_status"] == "VIOLATED" for p in updated_pillars)
+        any_warning  = any(p["det_status"] in ("WARNING", "WATCH") for p in updated_pillars)
+
+        # ── Critical pillar check → EXIT_REVIEW immediately ───────────────
+        critical_violated = [
+            p for p in updated_pillars if p["critical"] and p["det_status"] == "VIOLATED"
+        ]
+        if critical_violated:
+            names = ", ".join(p["name"] for p in critical_violated)
+            print(f"[thesis_monitor] {ticker}: CRITICAL VIOLATION — {names}")
             agent_db.insert_finding(
                 run_id=ctx.run_id,
-                finding_type="thesis_eval_error",
-                summary=f"LLM evaluation failed for {ticker}: {e}",
+                finding_type="THESIS_CRITICAL_VIOLATION",
                 ticker=ticker,
-                severity=0,
-                confidence=0,
+                summary=(
+                    f"{ticker}: critical pillar(s) VIOLATED — {names}. "
+                    f"Composite: {composite:.0f}. {overall_summary}"
+                ),
+                severity=90,
+                confidence=85,
             )
-            continue
+            recommendations.append(Recommendation(
+                ticker=ticker,
+                action="EXIT_REVIEW",
+                recommendation_score=90,
+                confidence=calculate_confidence(_evidence(fin_rows)),
+                priority="urgent",
+                why_now=f"Critical thesis pillar VIOLATED: {names}",
+                rationale=f"Composite health score {composite:.0f}/100. {overall_summary}",
+                counter_case="Verify metric data quality — may reflect a one-time item.",
+                action_payload={
+                    "thesis_id":        thesis_id,
+                    "critical_violated": [p["name"] for p in critical_violated],
+                    "composite_score":  round(composite, 1),
+                    "trigger":          "critical_pillar_violation",
+                },
+            ))
 
-        eval_by_name = {e["pillar_name"]: e for e in result.get("pillar_evaluations", [])}
-
-        updated_pillars = []
-        for pillar in pillars:
-            ev = eval_by_name.get(pillar["name"], {})
-            status = ev.get("status", "INTACT")
-            if status not in _VALID_PILLAR_STATUSES:
-                status = "INTACT"
-            score = float(ev.get("score", 75))
-            confidence = float(ev.get("confidence", 50))
-            reason = ev.get("reason", "")
-
-            agent_db.update_pillar_status(pillar["id"], status, score, confidence, reason)
-            updated_pillars.append({**pillar, "status": status, "score": score, "confidence": confidence})
-
-        overall = _derive_overall_status(updated_pillars)
-        overall_summary = result.get("overall_summary", "")
-
+        # ── Overall thesis finding (always emitted) ───────────────────────
+        severity = 80 if any_violated else (50 if any_warning else 20)
         agent_db.insert_finding(
             run_id=ctx.run_id,
             finding_type="thesis_evaluation",
-            summary=f"{ticker} thesis status: {overall}. {overall_summary}",
             ticker=ticker,
-            severity=_STATUS_RANK.get(overall, 0) * 25,
-            confidence=70,
+            summary=f"{ticker} thesis composite health: {composite:.0f}/100. {overall_summary}",
+            severity=severity,
+            confidence=80 if fin_rows else 40,
         )
-        print(f"[thesis_monitor] {ticker}: {overall} — {overall_summary[:80]}")
+        print(f"[thesis_monitor] {ticker}: composite={composite:.0f} — {overall_summary[:80]}")
 
-        if overall not in _PRIORITY:
-            continue
+        # ── EXIT rule (non-critical path, composite < threshold) ──────────
+        exit_rules = [r for r in rules if r["rule_type"] == "EXIT"]
+        if not critical_violated and composite < _EXIT_THRESHOLD:
+            rule_cond = _rule_condition(exit_rules)
+            recommendations.append(Recommendation(
+                ticker=ticker,
+                action="EXIT_REVIEW",
+                recommendation_score=75,
+                confidence=calculate_confidence(_evidence(fin_rows)),
+                priority="high",
+                why_now=f"Composite thesis health {composite:.0f}/100 below exit threshold ({_EXIT_THRESHOLD:.0f}).",
+                rationale=rule_cond or overall_summary,
+                counter_case="Confirm metrics are not distorted by one-time items before exiting.",
+                action_payload={
+                    "thesis_id":       thesis_id,
+                    "composite_score": round(composite, 1),
+                    "trigger":         "low_composite_score",
+                    "violated_pillars": [p["name"] for p in updated_pillars if p["det_status"] == "VIOLATED"],
+                },
+            ))
 
-        weak = [p for p in updated_pillars if p.get("status") in ("WEAKENED", "VIOLATED")]
-        evidence = EvidenceBundle(
-            has_price=True,
-            financial_quarters=4,
-            has_strategy_metadata=True,
-            has_recent_fundamentals=True,
-            source_quality="primary_corporate",
-        )
-        recommendations.append(Recommendation(
-            ticker=ticker,
-            action="REVIEW_THESIS",
-            recommendation_score=_STATUS_RANK[overall] * 25,
-            confidence=calculate_confidence(evidence),
-            priority=_PRIORITY[overall],
-            why_now=f"Thesis evaluation: {overall}. {overall_summary}",
-            rationale=(
-                "Affected pillars: "
-                + ", ".join(f"{p['name']} ({p['status']})" for p in weak)
-            ),
-            counter_case="Monitor closely — one or more thesis pillars showing strain.",
-            action_payload={
-                "thesis_id": thesis["id"],
-                "overall_status": overall,
-                "pillar_statuses": [
-                    {"name": p["name"], "status": p.get("status"), "score": p.get("score")}
-                    for p in updated_pillars
-                ],
-            },
-        ))
+        # ── TRIM rule (composite in distress band with violations) ─────────
+        trim_rules = [r for r in rules if r["rule_type"] == "TRIM"]
+        if _EXIT_THRESHOLD <= composite < _TRIM_THRESHOLD and any_violated:
+            rule_cond = _rule_condition(trim_rules)
+            recommendations.append(Recommendation(
+                ticker=ticker,
+                action="TRIM",
+                recommendation_score=60,
+                confidence=calculate_confidence(_evidence(fin_rows)),
+                priority="normal",
+                why_now=(
+                    f"Composite health {composite:.0f}/100 with pillar violation(s) — "
+                    "trimming may reduce risk while monitoring recovery."
+                ),
+                rationale=rule_cond or overall_summary,
+                counter_case="Monitor for thesis recovery before trimming.",
+                action_payload={
+                    "thesis_id":       thesis_id,
+                    "composite_score": round(composite, 1),
+                    "trigger":         "trim_rule",
+                },
+            ))
+
+        # ── ADD rule (all clear, composite strong) ────────────────────────
+        add_rules = [r for r in rules if r["rule_type"] == "ADD"]
+        if composite >= _ADD_THRESHOLD and not any_violated and not any_warning:
+            rule_cond = _rule_condition(add_rules)
+            recommendations.append(Recommendation(
+                ticker=ticker,
+                action="BUY",
+                recommendation_score=70,
+                confidence=calculate_confidence(_evidence(fin_rows)),
+                priority="normal",
+                why_now=(
+                    f"All thesis pillars HEALTHY/STRONG (composite {composite:.0f}/100) — "
+                    "ADD conditions met."
+                ),
+                rationale=rule_cond or overall_summary,
+                counter_case="Check position sizing — may already be at target weight.",
+                action_payload={
+                    "thesis_id":       thesis_id,
+                    "composite_score": round(composite, 1),
+                    "trigger":         "add_rule",
+                },
+            ))
 
     return recommendations
+
+
+def _rule_condition(rules: list[dict]) -> str:
+    """Extract human-readable condition text from the first matching rule."""
+    if not rules:
+        return ""
+    try:
+        return json.loads(rules[0]["rule_json"]).get("condition", "")
+    except (json.JSONDecodeError, TypeError, KeyError):
+        return ""
 
 
 register_agent("thesis_monitor", run_thesis_monitor)
