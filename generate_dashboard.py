@@ -7360,14 +7360,10 @@ function _thesisIntakeFormHtml(err, prefill) {{
           <select id="ti-period" style="width:100%;margin-top:4px;padding:8px;border:1px solid #dde;border-radius:6px;font-size:13px;">${{periodOpts}}</select>
         </div>
       </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
         <div>
           <label style="font-size:11px;font-weight:600;color:#555;text-transform:uppercase;letter-spacing:.04em;">Conviction (1–5)</label>
           <input id="ti-conviction" type="number" min="1" max="5" value="${{prefill.conviction||3}}" style="width:100%;margin-top:4px;padding:8px;border:1px solid #dde;border-radius:6px;font-size:13px;box-sizing:border-box;"/>
-        </div>
-        <div>
-          <label style="font-size:11px;font-weight:600;color:#555;text-transform:uppercase;letter-spacing:.04em;">Target %</label>
-          <input id="ti-targetpct" type="number" min="0" max="100" step="0.5" value="${{prefill.target_pct||prefill.target_weight_pct||''}}" style="width:100%;margin-top:4px;padding:8px;border:1px solid #dde;border-radius:6px;font-size:13px;box-sizing:border-box;" placeholder="e.g. 4"/>
         </div>
         <div>
           <label style="font-size:11px;font-weight:600;color:#555;text-transform:uppercase;letter-spacing:.04em;">Max %</label>
@@ -7560,7 +7556,6 @@ async function submitThesisIntake() {{
     sell:       document.getElementById('ti-sell').value.trim(),
     trim:       document.getElementById('ti-trim').value.trim(),
     conviction: parseInt(document.getElementById('ti-conviction').value)||3,
-    target_pct: parseFloat(document.getElementById('ti-targetpct').value)||null,
     max_pct:    parseFloat(document.getElementById('ti-maxpct').value)||10,
     special:    document.getElementById('ti-special').value.trim(),
   }};

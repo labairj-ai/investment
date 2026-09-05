@@ -529,13 +529,12 @@ def update_thesis_metadata(thesis_id: int, intake: dict) -> None:
     conn.execute(
         """UPDATE investment_theses
            SET portfolio_role=?, holding_period=?, conviction=?,
-               target_weight_pct=?, max_weight_pct=?, thesis_summary=?
+               max_weight_pct=?, thesis_summary=?
            WHERE id=?""",
         (
             _ROLE_MAP.get(intake.get("role", ""), intake.get("role")),
             _PERIOD_MAP.get(intake.get("period", ""), intake.get("period")),
             intake.get("conviction"),
-            intake.get("target_pct"),
             intake.get("max_pct"),
             intake.get("why"),
             thesis_id,
