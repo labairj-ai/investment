@@ -53,7 +53,7 @@ The old macOS launchd agents are archived in `launchd-disabled-on-mac/`.
 | **FIFO Sell Tracker** | Record sales with automatic FIFO lot matching; previews which lots are consumed before confirming; undo support |
 | **Realized Gains & Tax** | Dashboard card showing YTD (or all-time) realized gains split by ST/LT — **includes covered call premium income** — with estimated federal tax at editable bracket rates |
 | **Tax Loss Harvesting** | Interactive modeler (✂ Tax Harvesting button in the Realized Gains card) — shows all open positions with unrealized gains/losses; check any combination to see real-time net tax impact using IRS ST/LT cross-netting rules, the $3k ordinary-income offset, and bracket-aware rates; selecting winners increases the estimated tax, selecting losers lowers it; wash sale warning (30-day window) included |
-| **Investment Thesis** | Per-holding thesis intake form, AI-drafted claims, and user approval workflow. Click **Thesis +** on any holding to open the modal. Three states: (1) **Intake form** — describe why you own it, portfolio role, expected holding period, key conditions, sell/trim triggers, conviction (1–5), and max position %. (2) **AI Draft review** — system fetches real financials for the ticker via `financials_fetcher.py` and calls `Qwen3.6-35B-A3B-4bit` to draft 3–6 structured claims, each with importance weight (sum to 100), and per-measurement `healthy`/`warning`/`violation` thresholds grounded in actual historical ranges, not generic benchmarks. Drafts are stored in `investment_theses` with `status=DRAFT` — not active yet. (3) **Active thesis view** — once approved, shows claim list, importance weights, and any pending change proposals. Approval sets `status=ACTIVE`, `version=1`, `approved_by=USER`. Agents cannot modify an active thesis directly — they must file a `THESIS_CHANGE_PROPOSAL` recommendation in the Decision Queue (Accept/Reject UI). Accepting increments the version and records the change. Thesis data is backed up daily to the private data repo as `theses.json` (human-readable, no SQLite client required to recover). |
+| **Investment Thesis** | Per-holding thesis intake form, AI-drafted pillars, and user approval workflow. Click **Thesis +** on any holding to open the modal. Three states: (1) **Intake form** — describe why you own it, portfolio role, expected holding period, key conditions, sell/trim triggers, conviction (1–5), and max position %. (2) **AI Draft review** — fetches real financials via `financials_fetcher.py` and calls `Qwen3.6-35B-A3B-4bit` to draft 3–6 structured **pillars**, each with importance weight (sum to 100), optional `critical` flag, and per-metric `healthy`/`warning`/`violation` thresholds grounded in actual historical ranges. Pillars are stored in `thesis_pillars`; metrics (with persistence requirements) in `thesis_metrics`; sell/trim/add rules in `thesis_rules`. (3) **Active thesis view** — once approved, shows pillars with importance and critical flags, plus any pending change proposals. Approval sets `status=ACTIVE`, `version=N`, `approved_by=USER`; prior ACTIVE version is flipped to `SUPERSEDED`. Agents cannot modify an active thesis directly — they must file a `THESIS_CHANGE_PROPOSAL` recommendation in the Decision Queue. **Thesis Monitor Agent** (`agents/thesis_agent.py`) evaluates each pillar daily via LLM (one call per thesis, all pillars at once), updates `thesis_pillars.status/score/confidence/last_evaluated_at`, and creates a `REVIEW_THESIS` recommendation at normal/high/urgent priority when overall status reaches REVIEW/DETERIORATING/VIOLATED. When triggered by an earnings event, it force-refreshes financials (bypasses the 45-day cache) before evaluating. Thesis data is backed up daily to the private data repo as `theses.json`. |
 | **Private Data Backup** | Daily push of `investment.db`, `holdings.csv`, `buffett.db`, and `theses.json` to a separate private GitHub repo. Runs at 8 PM ET every day (independent of the newsletter), and also after each scheduled Saturday refresh. `theses.json` exports all thesis data as expanded, readable JSON — `intake_json`/`draft_json` blobs unpacked, claims nested under each thesis — so the repo is usable after an optiplex wipe without a SQLite client. |
 
 ---
@@ -240,6 +240,12 @@ Script changes take effect on the next **↻ Refresh Data** without restarting t
 | `PUT /api/theses/<ticker>/draft` | Save user edits to a DRAFT thesis. Body: `{draft_json: {...}}`. |
 | `POST /api/theses/<ticker>/approve` | Approve a DRAFT thesis. Sets `status=ACTIVE`, `version=N`, `approved_by=USER`. Any prior ACTIVE thesis for the ticker is flipped to `SUPERSEDED`. |
 | `POST /api/theses/<ticker>/accept-proposal` | Accept a `THESIS_CHANGE_PROPOSAL` from the Decision Queue. Body: `{recommendation_id: N}`. Increments thesis version and applies the proposed change to `draft_json`. |
+| `GET /api/agents/recommendations?status=open` | Returns open agent recommendations sorted by priority desc. Each row includes critic verdict and confidence score. `status` can be `open`, `closed`, or `all`. |
+| `GET /api/agents/recommendations/<id>` | Full detail for one recommendation: finding, evidence, critic review, action payload. |
+| `POST /api/agents/recommendations/<id>/decision` | Body: `{decision, reason_code, notes}`. Writes to `user_decisions`, flips recommendation status to `closed`. Returns updated recommendation. |
+| `GET /api/agents/runs` | Recent agent run history (agent_type, trigger, status, started_at, finished_at). |
+| `GET /api/agents/runs/<id>` | Full run detail including `input_snapshot_json` and all findings. |
+| `POST /api/agents/run` | Body: `{agent_type, ticker?}`. Triggers an on-demand agent run in a background thread. Returns `{run_id}` immediately; poll `/api/agents/runs/<id>` for completion. |
 
 ---
 
@@ -798,7 +804,7 @@ investment/
 ├── send_newsletter_main.py          # Fetches prices, sends email, writes DB
 ├── generate_dashboard.py            # Generates out/dashboard.html
 ├── serve.py                         # HTTP server + all API endpoints + schedulers
-├── agent_db.py                      # SQLite CRUD layer for all agent tables: investment_theses, thesis_claims, agent_findings, recommendations, user_decisions, company_financials, holding_day; also migrate() for schema versioning
+├── agent_db.py                      # SQLite CRUD layer for all agent tables; migrate() for schema versioning; key helpers: get_active_thesis(), update_pillar_status(), insert_recommendation(), insert_finding(), list_runs(), get_run_full(), list_recommendations(), close_recommendation()
 ├── financials_fetcher.py            # Fetches and caches fundamental financial data per ticker (revenue, margins, FCF, etc.) for use by agents and thesis drafting
 ├── buffett_screener.py              # NYSE Buffett screener — nightly at 2 AM ET
 ├── covered_call_rec.py              # Covered call recommendation + blackout engine + ai_context() prompt builder
@@ -811,9 +817,15 @@ investment/
 ├── favicon.svg                      # Dashboard browser tab icon
 ├── .env                             # ⚠ Not committed — email credentials
 ├── agents/
-│   └── thesis_intake.py             # draft_thesis(ticker, intake) → structured claim dict; fetches real financials, calls Qwen3.6 with thinking disabled, normalises importance sum to 100
+│   ├── __init__.py                  # Package init; imports all agent modules so handlers register at startup
+│   ├── contracts.py                 # Shared dataclasses: EvidenceBundle, PortfolioSnapshot, HoldingSnapshot, AgentContext, AgentFinding, Recommendation, CriticReview
+│   ├── orchestrator.py              # run_agents(snapshot, triggered_agents) — acquires LLM semaphore, runs agents in canonical order, writes results to agent_db; register_agent() for handler registration
+│   ├── triggers.py                  # detect_triggers(snapshot) — pure function mapping portfolio state to TriggerEvent list (layer_drift → portfolio_guardian, cc_eligible → covered_call, thesis_daily → thesis_monitor, portfolio_scope → briefing)
+│   ├── confidence.py                # calculate_confidence(EvidenceBundle) → int 0–100; formula: 0.30*D + 0.20*F + 0.20*S + 0.15*A + 0.15*R; applies 7 post-formula caps; no LLM calls
+│   ├── thesis_intake.py             # draft_thesis(ticker, intake) → structured pillar dict; fetches real financials, calls Qwen3.6 with thinking disabled, normalises importance sum to 100
+│   └── thesis_agent.py              # Thesis Monitor Agent: evaluates all ACTIVE thesis pillars via LLM (one call per thesis), updates thesis_pillars.status/score/confidence/last_evaluated_at, creates REVIEW_THESIS recommendations for REVIEW/DETERIORATING/VIOLATED status; force-refreshes financials on earnings trigger
 └── out/
-    ├── investment.db                # SQLite: price history, investment_theses, thesis_claims, cc_positions, cost_lots, sell_transactions, holding_macro_scores, holding_macro_scores_history, macro_score_summaries, recommendations, agent_findings
+    ├── investment.db                # SQLite: price history, investment_theses, thesis_pillars, thesis_metrics, thesis_rules, thesis_claims (legacy), cc_positions, cost_lots, sell_transactions, holding_macro_scores, holding_macro_scores_history, macro_score_summaries, agent_runs, agent_findings, recommendations, critic_reviews, user_decisions, recommendation_outcomes, company_financials, company_estimates
     ├── buffett.db                   # SQLite: Buffett screener cache, winners, history
     ├── dashboard.html               # Generated dashboard (served by serve.py)
     ├── macro_cache.json             # 30-min macro context cache (yfinance + FRED + headlines)
