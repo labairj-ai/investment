@@ -1,6 +1,11 @@
 """Single source of truth for strategy constants. All other modules import from here."""
 import json
+import os
 from pathlib import Path
+
+
+class ConfigurationError(RuntimeError):
+    pass
 
 _cfg = json.loads((Path(__file__).parent / "config" / "strategy.json").read_text())
 
@@ -27,3 +32,56 @@ _risk = _cfg["risk"]
 DRIFT_THRESHOLD: float = _risk["drift_threshold_pct"]
 LAYER_GROSS_DOM: float = _risk["layer_gross_dom_pct"]
 HOLDING_GROSS_DOM: float = _risk["holding_gross_dom_pct"]
+
+
+def validate_config() -> None:
+    """Raise ConfigurationError if strategy.json contains invalid values."""
+    errors = []
+
+    # Layer targets must sum to 100
+    target_sum = sum(LAYER_TARGETS.values())
+    if abs(target_sum - 100.0) > 0.01:
+        errors.append(
+            f"Layer targets sum to {target_sum:.4f}% — must be 100.0% "
+            f"(layers: {LAYER_TARGETS})"
+        )
+
+    # Each target must be positive
+    for n, t in LAYER_TARGETS.items():
+        if t <= 0:
+            errors.append(f"Layer {n} target_pct must be positive, got {t}")
+
+    # All 5 layers must be defined
+    for n in range(1, 6):
+        if n not in LAYER_TARGETS:
+            errors.append(f"Layer {n} is missing from config")
+
+    # CC DTE ordering
+    if CC_MIN_DTE >= CC_MAX_DTE:
+        errors.append(
+            f"CC min_dte ({CC_MIN_DTE}) must be less than max_dte ({CC_MAX_DTE})"
+        )
+    if CC_MAX_DTE >= CC_MAX_DTE_EXTENDED:
+        errors.append(
+            f"CC max_dte ({CC_MAX_DTE}) must be less than extended_max_dte ({CC_MAX_DTE_EXTENDED})"
+        )
+
+    # CC r_min must be a sensible fraction
+    if not (0 < CC_R_MIN < 1):
+        errors.append(f"CC r_min must be in (0, 1), got {CC_R_MIN}")
+
+    # Risk thresholds must be positive
+    if DRIFT_THRESHOLD <= 0:
+        errors.append(f"drift_threshold_pct must be positive, got {DRIFT_THRESHOLD}")
+    if LAYER_GROSS_DOM <= 0:
+        errors.append(f"layer_gross_dom_pct must be positive, got {LAYER_GROSS_DOM}")
+    if HOLDING_GROSS_DOM <= 0:
+        errors.append(f"holding_gross_dom_pct must be positive, got {HOLDING_GROSS_DOM}")
+
+    if errors:
+        msg = "strategy.json is invalid:\n" + "\n".join(f"  • {e}" for e in errors)
+        raise ConfigurationError(msg)
+
+
+if not os.environ.get("SKIP_CONFIG_VALIDATION"):
+    validate_config()
