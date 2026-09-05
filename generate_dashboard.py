@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import agent_db
 from strategy_config import LAYER_NAMES, LAYER_LABELS, LAYER_TARGETS
 
 PROJECT_DIR = Path(__file__).resolve().parent
@@ -410,6 +411,22 @@ def _dim_panel(label, val, inverted=False, no_reason_fallback='', sparkline='', 
         f'</div>'
         f'<div style="font-size:11px;color:#718096;line-height:1.4;">{reason or "&nbsp;"}</div>'
         f'</div>'
+    )
+
+
+def _thesis_badge(ticker: str, thesis_status_map: dict) -> str:
+    status = thesis_status_map.get(ticker)
+    if status == "ACTIVE":
+        color, label, title = "#27ae60", "Thesis ✓", "View active thesis"
+    elif status == "DRAFT":
+        color, label, title = "#e67e22", "Thesis…", "Review thesis draft"
+    else:
+        color, label, title = "#a0aec0", "Thesis +", "Create investment thesis"
+    return (
+        f'<button onclick="openThesisModal(\'{ticker}\')" '
+        f'style="font-size:10px;padding:2px 8px;background:{color}18;border:1px solid {color}66;'
+        f'border-radius:4px;cursor:pointer;color:{color};font-weight:600;" '
+        f'title="{title}">{label}</button>'
     )
 
 
@@ -876,6 +893,13 @@ def build_dashboard(portfolio, layers, holdings):
 
     today_holdings_sorted = sorted(today_holdings, key=lambda h: (h["layer"], -h["value"]))
     portfolio_health = _compute_portfolio_macro_health(today_holdings_sorted, macro_scores)
+
+    # Load thesis status for all held tickers (status only; full data loaded on demand via API)
+    thesis_status_map: dict[str, str] = {}
+    for h in today_holdings_sorted:
+        t = agent_db.get_thesis(h["ticker"])
+        if t:
+            thesis_status_map[h["ticker"]] = t.get("status", "DRAFT")
     wow_deltas  = _compute_wow_deltas(macro_scores, macro_history)
     trend_data  = _build_macro_trend_data(macro_history, today_holdings_sorted)
     macro_risk_section = _build_macro_risk_section(
@@ -1085,6 +1109,7 @@ def build_dashboard(portfolio, layers, holdings):
             style="cursor:pointer;background:{lcolor}18;color:{lcolor};border:1px solid {lcolor}66;border-radius:4px;padding:2px 8px;font-size:10px;font-weight:700;white-space:nowrap;"
             title="Click to reassign layer">L{h["layer_num"]}</span></td>
           <td class="col-hide-sm"><button onclick="openLotsModal('{h["ticker"]}', {h["price"]:.4f})" style="font-size:10px;padding:2px 8px;background:#f4f6f9;border:1px solid #dde;border-radius:4px;cursor:pointer;color:#555;" title="View / edit tax lots">Lots</button></td>
+          <td class="col-hide-sm">{_thesis_badge(h["ticker"], thesis_status_map)}</td>
           {macro_cell}
         </tr>\n""" + detail_row
 
@@ -1602,6 +1627,22 @@ def build_dashboard(portfolio, layers, holdings):
   </style>
 </head>
 <body>
+
+<!-- ── Investment Thesis Modal ────────────────────────────────────────────── -->
+<div id="thesis-modal-overlay" onclick="closeThesisModal(event)" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1100;align-items:flex-start;justify-content:center;overflow-y:auto;padding:32px 16px;">
+  <div onclick="event.stopPropagation()" style="background:#fff;border-radius:12px;max-width:760px;width:100%;box-shadow:0 8px 40px rgba(0,0,0,.25);position:relative;">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:20px 24px 0;">
+      <div>
+        <h2 id="thesis-modal-title" style="font-size:1.1rem;font-weight:700;color:#1a2340;margin:0;text-transform:none;letter-spacing:0;">Investment Thesis</h2>
+        <div id="thesis-modal-subtitle" style="font-size:12px;color:#7f8c8d;margin-top:2px;"></div>
+      </div>
+      <button onclick="closeThesisModal()" style="background:none;border:none;font-size:20px;cursor:pointer;color:#aaa;padding:4px 8px;">✕</button>
+    </div>
+    <div id="thesis-modal-body" style="padding:20px 24px 24px;">
+      <!-- Populated by JS -->
+    </div>
+  </div>
+</div>
 
 <!-- ── Tax Lots Modal ─────────────────────────────────────────────────────── -->
 <div id="lots-modal-overlay" onclick="closeLots(event)" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1000;align-items:center;justify-content:center;">
@@ -2258,7 +2299,7 @@ def build_dashboard(portfolio, layers, holdings):
 
     <div class="table-scroll" id="holdings-scroll-wrap">
     <table id="holdings-table">
-      <thead id="holdings-thead"><tr><th>Ticker</th><th class="col-hide-sm">Shares</th><th class="col-hide-sm">Avg Cost</th><th>Price</th><th>Value</th><th>Total Gain</th><th>Daily Δ</th><th class="col-hide-sm">Weight</th><th class="col-hide-sm">Next Earnings</th><th>Layer</th><th class="col-hide-sm">Tax Lots</th><th class="col-hide-sm" title="Macro risk scores: Rate · Inflation · Dollar · Geo (hover each row for details)">Macro ⓘ</th></tr></thead>
+      <thead id="holdings-thead"><tr><th>Ticker</th><th class="col-hide-sm">Shares</th><th class="col-hide-sm">Avg Cost</th><th>Price</th><th>Value</th><th>Total Gain</th><th>Daily Δ</th><th class="col-hide-sm">Weight</th><th class="col-hide-sm">Next Earnings</th><th>Layer</th><th class="col-hide-sm">Tax Lots</th><th class="col-hide-sm">Thesis</th><th class="col-hide-sm" title="Macro risk scores: Rate · Inflation · Dollar · Geo (hover each row for details)">Macro ⓘ</th></tr></thead>
       <tbody>{holdings_rows}</tbody>
     </table>
     </div>
@@ -7214,6 +7255,312 @@ function showDashTab(name) {{
   try {{ saved = localStorage.getItem('dashTab') || ''; }} catch(e) {{}}
   if (saved && document.getElementById('tab-' + saved)) showDashTab(saved);
 }})();
+
+// ── Investment Thesis Modal ───────────────────────────────────────────────────
+let _thesisTicker = null;
+let _thesisDraftJobId = null;
+let _thesisDraftJobTimer = null;
+
+async function openThesisModal(ticker) {{
+  _thesisTicker = ticker;
+  const overlay = document.getElementById('thesis-modal-overlay');
+  const title   = document.getElementById('thesis-modal-title');
+  const sub     = document.getElementById('thesis-modal-subtitle');
+  const body    = document.getElementById('thesis-modal-body');
+  title.textContent = ticker + ' — Investment Thesis';
+  sub.textContent   = 'Loading…';
+  body.innerHTML    = '<div style="text-align:center;padding:40px;color:#aaa;">Loading…</div>';
+  overlay.style.display = 'flex';
+  try {{
+    const r = await fetch('/api/theses/' + ticker);
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error);
+    _renderThesisModal(d.thesis);
+  }} catch(e) {{
+    body.innerHTML = `<div style="color:#e74c3c;padding:20px;">Error: ${{e.message}}</div>`;
+  }}
+}}
+
+function closeThesisModal(e) {{
+  if (!e || e.target === document.getElementById('thesis-modal-overlay')) {{
+    document.getElementById('thesis-modal-overlay').style.display = 'none';
+    if (_thesisDraftJobTimer) {{ clearInterval(_thesisDraftJobTimer); _thesisDraftJobTimer = null; }}
+  }}
+}}
+
+function _renderThesisModal(thesis) {{
+  const sub  = document.getElementById('thesis-modal-subtitle');
+  const body = document.getElementById('thesis-modal-body');
+  if (!thesis) {{
+    sub.textContent = 'No thesis yet — complete the form below';
+    body.innerHTML  = _thesisIntakeFormHtml('', {{}});
+    return;
+  }}
+  if (thesis.status === 'DRAFT') {{
+    sub.textContent = 'Draft — review and approve to activate';
+    const draft  = thesis.draft_json  || {{}};
+    const intake = thesis.intake_json || {{}};
+    body.innerHTML = _thesisDraftReviewHtml(draft, intake);
+    return;
+  }}
+  if (thesis.status === 'ACTIVE') {{
+    sub.textContent = `Active · v${{thesis.version}} · Approved by ${{thesis.approved_by || 'USER'}}`;
+    const draft    = thesis.draft_json  || {{}};
+    const intake   = thesis.intake_json || {{}};
+    const proposals = thesis.open_proposals || [];
+    body.innerHTML = _thesisActiveHtml(draft, intake, proposals);
+    return;
+  }}
+  // Fallback for SUPERSEDED etc.
+  sub.textContent = thesis.status;
+  body.innerHTML  = _thesisIntakeFormHtml('', thesis.intake_json || {{}});
+}}
+
+function _thesisIntakeFormHtml(err, prefill) {{
+  const roles = ['Core', 'Income', 'Growth', 'Speculative', 'Tactical'];
+  const periods = ['< 1 year', '1–3 years', '3–5 years', '5+ years', 'Indefinite'];
+  const roleOpts = roles.map(r => `<option${{prefill.role===r?' selected':''}}>${{r}}</option>`).join('');
+  const periodOpts = periods.map(p => `<option${{prefill.period===p?' selected':''}}>${{p}}</option>`).join('');
+  const conds = (prefill.conditions || ['','']).join('\n');
+  return `
+    ${{err ? `<div style="color:#e74c3c;margin-bottom:12px;font-size:13px;">${{err}}</div>` : ''}}
+    <div style="display:grid;gap:14px;">
+      <div>
+        <label style="font-size:11px;font-weight:600;color:#555;text-transform:uppercase;letter-spacing:.04em;">Why do I own this?</label>
+        <textarea id="ti-why" rows="3" style="width:100%;margin-top:4px;padding:8px;border:1px solid #dde;border-radius:6px;font-size:13px;resize:vertical;box-sizing:border-box;">${{prefill.why||''}}</textarea>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <div>
+          <label style="font-size:11px;font-weight:600;color:#555;text-transform:uppercase;letter-spacing:.04em;">Portfolio role</label>
+          <select id="ti-role" style="width:100%;margin-top:4px;padding:8px;border:1px solid #dde;border-radius:6px;font-size:13px;">${{roleOpts}}</select>
+        </div>
+        <div>
+          <label style="font-size:11px;font-weight:600;color:#555;text-transform:uppercase;letter-spacing:.04em;">Expected holding period</label>
+          <select id="ti-period" style="width:100%;margin-top:4px;padding:8px;border:1px solid #dde;border-radius:6px;font-size:13px;">${{periodOpts}}</select>
+        </div>
+      </div>
+      <div>
+        <label style="font-size:11px;font-weight:600;color:#555;text-transform:uppercase;letter-spacing:.04em;">Key thesis conditions (one per line, 3–5)</label>
+        <textarea id="ti-conditions" rows="4" placeholder="Revenue growth remains strong&#10;Competitive moat is intact&#10;Management executes on capital allocation" style="width:100%;margin-top:4px;padding:8px;border:1px solid #dde;border-radius:6px;font-size:13px;resize:vertical;box-sizing:border-box;">${{conds}}</textarea>
+      </div>
+      <div>
+        <label style="font-size:11px;font-weight:600;color:#555;text-transform:uppercase;letter-spacing:.04em;">What would make me sell?</label>
+        <textarea id="ti-sell" rows="2" style="width:100%;margin-top:4px;padding:8px;border:1px solid #dde;border-radius:6px;font-size:13px;resize:vertical;box-sizing:border-box;">${{prefill.sell||''}}</textarea>
+      </div>
+      <div>
+        <label style="font-size:11px;font-weight:600;color:#555;text-transform:uppercase;letter-spacing:.04em;">What would make me trim?</label>
+        <textarea id="ti-trim" rows="2" style="width:100%;margin-top:4px;padding:8px;border:1px solid #dde;border-radius:6px;font-size:13px;resize:vertical;box-sizing:border-box;">${{prefill.trim||''}}</textarea>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <div>
+          <label style="font-size:11px;font-weight:600;color:#555;text-transform:uppercase;letter-spacing:.04em;">Conviction (1–5)</label>
+          <input id="ti-conviction" type="number" min="1" max="5" value="${{prefill.conviction||3}}" style="width:100%;margin-top:4px;padding:8px;border:1px solid #dde;border-radius:6px;font-size:13px;box-sizing:border-box;"/>
+        </div>
+        <div>
+          <label style="font-size:11px;font-weight:600;color:#555;text-transform:uppercase;letter-spacing:.04em;">Max position %</label>
+          <input id="ti-maxpct" type="number" min="0" max="100" step="0.5" value="${{prefill.max_pct||10}}" style="width:100%;margin-top:4px;padding:8px;border:1px solid #dde;border-radius:6px;font-size:13px;box-sizing:border-box;"/>
+        </div>
+      </div>
+      <div>
+        <label style="font-size:11px;font-weight:600;color:#555;text-transform:uppercase;letter-spacing:.04em;">Special considerations</label>
+        <textarea id="ti-special" rows="2" placeholder="e.g. Prefer CC-friendly, long-term tax treatment" style="width:100%;margin-top:4px;padding:8px;border:1px solid #dde;border-radius:6px;font-size:13px;resize:vertical;box-sizing:border-box;">${{prefill.special||''}}</textarea>
+      </div>
+      <div style="text-align:right;margin-top:4px;">
+        <button onclick="submitThesisIntake()" style="background:#1a2340;color:#fff;border:none;border-radius:6px;padding:10px 22px;font-size:13px;font-weight:600;cursor:pointer;">
+          Generate AI Draft →
+        </button>
+      </div>
+      <div id="thesis-intake-status" style="font-size:12px;color:#888;text-align:center;"></div>
+    </div>`;
+}}
+
+function _thesisDraftReviewHtml(draft, intake) {{
+  const claims = draft.claims || [];
+  let claimsHtml = '';
+  claims.forEach((c, i) => {{
+    const measurements = (c.measurements || []).map(m => `
+      <tr>
+        <td style="padding:4px 8px;font-size:12px;color:#555;">${{m.metric||''}}</td>
+        <td style="padding:4px 8px;font-size:12px;color:#27ae60;">${{m.healthy||''}}</td>
+        <td style="padding:4px 8px;font-size:12px;color:#e67e22;">${{m.warning||''}}</td>
+        <td style="padding:4px 8px;font-size:12px;color:#e74c3c;">${{m.violation||''}}</td>
+        <td style="padding:4px 8px;font-size:12px;color:#888;">${{m.persistence||''}}</td>
+      </tr>`).join('');
+    claimsHtml += `
+      <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:14px;margin-bottom:12px;">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
+          <span style="background:#1a2340;color:#fff;border-radius:4px;padding:2px 8px;font-size:10px;font-weight:700;">${{c.importance||0}}%</span>
+          <input class="thesis-claim-text" data-idx="${{i}}" value="${{(c.claim||'').replace(/"/g,'&quot;')}}"
+            style="flex:1;padding:6px;border:1px solid #dde;border-radius:4px;font-size:13px;font-weight:600;color:#1a2340;" />
+        </div>
+        <table style="width:100%;border-collapse:collapse;">
+          <thead><tr>
+            <th style="text-align:left;padding:4px 8px;font-size:10px;color:#888;font-weight:600;text-transform:uppercase;">Metric</th>
+            <th style="text-align:left;padding:4px 8px;font-size:10px;color:#27ae60;font-weight:600;text-transform:uppercase;">Healthy</th>
+            <th style="text-align:left;padding:4px 8px;font-size:10px;color:#e67e22;font-weight:600;text-transform:uppercase;">Warning</th>
+            <th style="text-align:left;padding:4px 8px;font-size:10px;color:#e74c3c;font-weight:600;text-transform:uppercase;">Violation</th>
+            <th style="text-align:left;padding:4px 8px;font-size:10px;color:#888;font-weight:600;text-transform:uppercase;">Persistence</th>
+          </tr></thead>
+          <tbody>${{measurements}}</tbody>
+        </table>
+        <div style="margin-top:8px;font-size:11px;color:#888;">Click claim title to edit</div>
+      </div>`;
+  }});
+  return `
+    <div style="margin-bottom:14px;padding:12px;background:#fffbf0;border:1px solid #f0e0a0;border-radius:8px;font-size:13px;color:#7a6000;">
+      📋 AI-generated draft based on your rationale + financial history. Review each claim, then approve.
+    </div>
+    ${{claimsHtml}}
+    <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:8px;">
+      <button onclick="editThesisIntake()" style="padding:9px 18px;border:1px solid #dde;border-radius:6px;background:#f4f6f9;font-size:13px;cursor:pointer;color:#555;">← Edit Rationale</button>
+      <button onclick="approveThesis()" style="padding:9px 20px;border:none;border-radius:6px;background:#27ae60;color:#fff;font-size:13px;font-weight:600;cursor:pointer;">Approve Thesis ✓</button>
+    </div>
+    <div id="thesis-approve-status" style="font-size:12px;color:#888;text-align:center;margin-top:8px;"></div>`;
+}}
+
+function _thesisActiveHtml(draft, intake, proposals) {{
+  const claims = draft.claims || [];
+  let claimsHtml = claims.map(c => `
+    <div style="padding:10px 12px;border-left:3px solid #27ae60;background:#f6fff8;border-radius:0 6px 6px 0;margin-bottom:8px;">
+      <div style="display:flex;align-items:center;gap:8px;">
+        <span style="background:#27ae60;color:#fff;border-radius:4px;padding:1px 7px;font-size:10px;font-weight:700;">${{c.importance||0}}%</span>
+        <span style="font-size:13px;font-weight:600;color:#1a2340;">${{c.claim||''}}</span>
+      </div>
+    </div>`).join('');
+  let proposalHtml = '';
+  if (proposals.length > 0) {{
+    proposalHtml = `<div style="margin-top:18px;"><div style="font-size:11px;font-weight:700;color:#e67e22;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;">Pending Change Proposals</div>`;
+    proposals.forEach(p => {{
+      let payload = {{}};
+      try {{ payload = JSON.parse(p.action_payload_json||'{{}}'); }} catch(e) {{}}
+      proposalHtml += `
+        <div style="background:#fff8f0;border:1px solid #f0c070;border-radius:8px;padding:12px;margin-bottom:8px;">
+          <div style="font-size:13px;font-weight:600;color:#1a2340;margin-bottom:4px;">${{payload.claim_summary||'Claim change'}}</div>
+          <div style="font-size:12px;color:#555;margin-bottom:8px;">${{payload.reason||''}}</div>
+          <div style="display:flex;gap:8px;">
+            <button onclick="acceptThesisProposal(${{p.id}})" style="padding:6px 14px;border:none;border-radius:5px;background:#27ae60;color:#fff;font-size:12px;cursor:pointer;font-weight:600;">Accept</button>
+            <button onclick="rejectThesisProposal(${{p.id}})" style="padding:6px 14px;border:1px solid #dde;border-radius:5px;background:#fff;color:#555;font-size:12px;cursor:pointer;">Reject</button>
+          </div>
+        </div>`;
+    }});
+    proposalHtml += '</div>';
+  }}
+  const whyHtml = intake.why ? `<div style="margin-bottom:14px;padding:12px;background:#f4f6f9;border-radius:8px;font-size:13px;color:#555;line-height:1.5;"><b>Why I own this:</b> ${{intake.why}}</div>` : '';
+  return `${{whyHtml}}${{claimsHtml}}${{proposalHtml}}`;
+}}
+
+async function submitThesisIntake() {{
+  const statusEl = document.getElementById('thesis-intake-status');
+  const intake = {{
+    why:        document.getElementById('ti-why').value.trim(),
+    role:       document.getElementById('ti-role').value,
+    period:     document.getElementById('ti-period').value,
+    conditions: document.getElementById('ti-conditions').value.split('\n').map(s=>s.trim()).filter(Boolean),
+    sell:       document.getElementById('ti-sell').value.trim(),
+    trim:       document.getElementById('ti-trim').value.trim(),
+    conviction: parseInt(document.getElementById('ti-conviction').value)||3,
+    max_pct:    parseFloat(document.getElementById('ti-maxpct').value)||10,
+    special:    document.getElementById('ti-special').value.trim(),
+  }};
+  if (!intake.why) {{ statusEl.textContent = 'Please describe why you own this.'; return; }}
+  statusEl.innerHTML = '⏳ Generating AI draft — this takes 30–60 seconds…';
+  try {{
+    const r = await fetch('/api/theses/' + _thesisTicker + '/draft', {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{intake}}),
+    }});
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error);
+    _thesisDraftJobId = d.job_id;
+    _pollThesisJob();
+  }} catch(e) {{
+    statusEl.textContent = 'Error: ' + e.message;
+  }}
+}}
+
+function _pollThesisJob() {{
+  const statusEl = document.getElementById('thesis-intake-status');
+  if (!statusEl) return;
+  _thesisDraftJobTimer = setInterval(async () => {{
+    try {{
+      const r = await fetch('/api/theses/' + _thesisTicker + '/job?id=' + _thesisDraftJobId);
+      const d = await r.json();
+      if (d.status === 'done') {{
+        clearInterval(_thesisDraftJobTimer);
+        _thesisDraftJobTimer = null;
+        if (!d.ok) {{
+          statusEl.textContent = 'AI draft failed: ' + (d.error||'unknown error');
+          return;
+        }}
+        // Reload thesis from DB (now has DRAFT status)
+        const r2 = await fetch('/api/theses/' + _thesisTicker);
+        const d2 = await r2.json();
+        _renderThesisModal(d2.thesis);
+        document.getElementById('thesis-modal-subtitle').textContent = 'Draft generated — review and approve';
+      }}
+    }} catch(e) {{
+      clearInterval(_thesisDraftJobTimer);
+      statusEl.textContent = 'Poll error: ' + e.message;
+    }}
+  }}, 3000);
+}}
+
+async function approveThesis() {{
+  const statusEl = document.getElementById('thesis-approve-status');
+  statusEl.textContent = 'Approving…';
+  // Collect any inline edits to claim text
+  const claimInputs = document.querySelectorAll('.thesis-claim-text');
+  const lastDraftR = await fetch('/api/theses/' + _thesisTicker);
+  const lastDraftD = await lastDraftR.json();
+  const draft = (lastDraftD.thesis && lastDraftD.thesis.draft_json) || {{}};
+  const claims = draft.claims || [];
+  claimInputs.forEach((inp, i) => {{ if (claims[i]) claims[i].claim = inp.value; }});
+  draft.claims = claims;
+  try {{
+    const r = await fetch('/api/theses/' + _thesisTicker + '/approve', {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{draft}}),
+    }});
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error);
+    statusEl.innerHTML = '<span style="color:#27ae60;">✓ Thesis approved and active.</span>';
+    setTimeout(() => openThesisModal(_thesisTicker), 1000);
+  }} catch(e) {{
+    statusEl.textContent = 'Error: ' + e.message;
+  }}
+}}
+
+function editThesisIntake() {{
+  fetch('/api/theses/' + _thesisTicker).then(r=>r.json()).then(d => {{
+    const intake = (d.thesis && d.thesis.intake_json) || {{}};
+    document.getElementById('thesis-modal-body').innerHTML = _thesisIntakeFormHtml('', intake);
+    document.getElementById('thesis-modal-subtitle').textContent = 'Edit your rationale and regenerate';
+  }});
+}}
+
+async function acceptThesisProposal(recId) {{
+  try {{
+    const r = await fetch('/api/theses/' + _thesisTicker + '/accept-proposal', {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{recommendation_id: recId}}),
+    }});
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error||'failed');
+    openThesisModal(_thesisTicker);
+  }} catch(e) {{
+    alert('Error accepting proposal: ' + e.message);
+  }}
+}}
+
+async function rejectThesisProposal(recId) {{
+  try {{
+    await fetch('/api/recommendations/' + recId + '/reject', {{method: 'POST'}});
+  }} catch(e) {{}}
+  openThesisModal(_thesisTicker);
+}}
 </script>
 
 <!-- Portfolio Chat FAB -->

@@ -1,7 +1,7 @@
 # Build Thesis Intake Form, AI Draft, and Approval Workflow (Phase 2)
 
 - **ID:** 0020
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-05
 - **Priority:** high
 - **Depends:** 0004, 0003
@@ -76,12 +76,26 @@ The basic thesis data model (0013) stores theses but has no defined path for cre
 
 ## Done when
 
-- [ ] Thesis intake form renders in dashboard for any held ticker
-- [ ] AI draft is generated from intake + real financial data (not generic)
-- [ ] Draft is editable inline before approval
-- [ ] Approved thesis writes `status=ACTIVE`, `version=1`, `approved_by=USER` to DB
-- [ ] Thesis Agent cannot write directly to `thesis_claims` for active theses — only via THESIS_CHANGE_PROPOSAL
-- [ ] THESIS_CHANGE_PROPOSAL creates a Decision Queue recommendation with Accept/Reject
-- [ ] Accepting a proposal increments thesis version and records change
-- [ ] QA evaluation conducted: functionality verified working, no regressions introduced
+- [x] Thesis intake form renders in dashboard for any held ticker
+- [x] AI draft is generated from intake + real financial data (not generic)
+- [x] Draft is editable inline before approval
+- [x] Approved thesis writes `status=ACTIVE`, `version=1`, `approved_by=USER` to DB
+- [x] Thesis Agent cannot write directly to `thesis_claims` for active theses — only via THESIS_CHANGE_PROPOSAL
+- [x] THESIS_CHANGE_PROPOSAL creates a Decision Queue recommendation with Accept/Reject
+- [x] Accepting a proposal increments thesis version and records change
+- [x] QA evaluation conducted: functionality verified working, no regressions introduced
+
+## Outcome
+
+**Files changed:**
+- `agent_db.py` — added `approved_by`, `intake_json`, `draft_json` columns to `investment_theses` via safe ALTER TABLE; added `save_thesis_draft`, `get_thesis_full`, `approve_thesis`, `create_thesis_change_proposal`, `accept_thesis_change_proposal` helpers
+- `agents/thesis_intake.py` (new) — `draft_thesis(ticker, intake)` calls `financials_fetcher.get_financial_summary()` + `ollama_client.generate_structured()` with structured claim schema; normalises importance sum to 100
+- `serve.py` — added `do_PUT` method; added `/api/theses/<ticker>` (GET), `/api/theses/<ticker>/draft` (POST async job + GET job poll), `/api/theses/<ticker>/draft` (PUT), `/api/theses/<ticker>/approve` (POST), `/api/theses/<ticker>/accept-proposal` (POST); `_thesis_jobs` dict for async draft tracking
+- `generate_dashboard.py` — imports `agent_db`; loads `thesis_status_map` for all holdings; adds `_thesis_badge()` helper; adds "Thesis" column to holdings table header and rows; adds thesis modal HTML (3-state: intake form / draft review / active + proposals); adds ~250 lines of JS (openThesisModal, submitThesisIntake, approveThesis, acceptThesisProposal, polling loop)
+
+**Guard enforcement:** `save_thesis_draft` only matches `status='DRAFT'` rows — ACTIVE theses are never touched. Agents must call `create_thesis_change_proposal` which writes to `recommendations` (action='THESIS_CHANGE_PROPOSAL'), which surfaces in the modal Accept/Reject UI.
+
+**Schema note:** intake + draft are stored as JSON blobs (`intake_json`, `draft_json`). 0030 migrates claims into the relational pillar/metrics/rules tables — these blobs are the source of truth until then.
+
+**Next items unblocked by 0020:** 0019 (Sell/Trim Agent), 0031 (Thesis AI Proposal Engine), 0032 (Thesis Intake UI Full Schema).
 

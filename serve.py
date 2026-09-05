@@ -106,6 +106,8 @@ _jobs: dict = {}
 _jobs_lock = threading.Lock()
 _JOB_TTL = 600  # expire completed jobs after 10 minutes
 
+_thesis_jobs: dict = {}    # job_id -> {status, draft?, error?} for async thesis drafting
+
 _chat_active: set = set()  # tracks in-flight chat streams by "context_type:ticker"
 _ai_insight_lock = threading.Lock()
 _ai_insight_generating = False  # True while background generation is running
@@ -1656,6 +1658,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._handle_news_summary(parse_qs(parsed.query))
         elif parsed.path == "/api/refresh-financials":
             self._handle_refresh_financials(parse_qs(parsed.query))
+        elif parsed.path.startswith("/api/theses/"):
+            parts = parsed.path.rstrip("/").split("/")
+            if len(parts) == 4:                          # /api/theses/<ticker>
+                self._handle_thesis_get(parts[3].upper())
+            elif len(parts) == 5 and parts[4] == "job": # /api/theses/<ticker>/job?id=...
+                job_id = parse_qs(parsed.query).get("id", [None])[0]
+                self._handle_thesis_job_poll(job_id or "")
+            else:
+                self.send_response(404)
+                self.end_headers()
         else:
             # Restrict static file fallback to safe extensions only — prevents
             # serving .env, .py, .db, .csv, and other sensitive project files.
@@ -1692,6 +1704,30 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._handle_invest_chat()
         elif parsed.path == "/api/ai/chat":
             self._handle_portfolio_chat()
+        elif parsed.path.startswith("/api/theses/"):
+            parts = parsed.path.rstrip("/").split("/")
+            if len(parts) == 5 and parts[4] == "draft":     # /api/theses/<t>/draft
+                self._handle_thesis_draft_post(parts[3].upper())
+            elif len(parts) == 5 and parts[4] == "approve": # /api/theses/<t>/approve
+                self._handle_thesis_approve(parts[3].upper())
+            elif len(parts) == 5 and parts[4] == "accept-proposal":
+                self._handle_thesis_accept_proposal()
+            else:
+                self.send_response(404)
+                self.end_headers()
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def do_PUT(self):
+        parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/theses/"):
+            parts = parsed.path.rstrip("/").split("/")
+            if len(parts) == 5 and parts[4] == "draft":     # PUT /api/theses/<t>/draft
+                self._handle_thesis_draft_put(parts[3].upper())
+            else:
+                self.send_response(404)
+                self.end_headers()
         else:
             self.send_response(404)
             self.end_headers()
@@ -4417,6 +4453,122 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.wfile.flush()
             except Exception:
                 pass
+
+    # ── Thesis intake endpoints ───────────────────────────────────────────────
+
+    def _handle_thesis_get(self, ticker: str):
+        try:
+            thesis = agent_db.get_thesis_full(ticker)
+            if thesis:
+                # Surface open change proposals for this ticker
+                recs = agent_db.get_open_recommendations(ticker)
+                proposals = [r for r in recs if r.get("action") == "THESIS_CHANGE_PROPOSAL"]
+                thesis["open_proposals"] = proposals
+            self._json({"ok": True, "thesis": thesis})
+        except Exception as e:
+            self._json_error(500, str(e))
+
+    def _handle_thesis_draft_post(self, ticker: str):
+        """Trigger AI drafting from the user's intake form data."""
+        try:
+            body = self._read_body()
+        except Exception:
+            return self._json_error(400, "Invalid JSON body")
+        intake = body.get("intake")
+        if not intake:
+            return self._json_error(400, "intake field required")
+
+        def _run():
+            try:
+                from agents.thesis_intake import draft_thesis
+                draft = draft_thesis(ticker, intake)
+                import agent_db as _adb
+                _adb.save_thesis_draft(
+                    ticker=ticker,
+                    intake_json=json.dumps(intake),
+                    draft_json=json.dumps(draft),
+                )
+                return {"ok": True, "draft": draft}
+            except Exception as exc:
+                return {"ok": False, "error": str(exc)}
+
+        # Run in background thread; respond with job token
+        import threading, uuid
+        job_id = str(uuid.uuid4())
+        _thesis_jobs[job_id] = {"status": "running", "ticker": ticker}
+
+        def _worker():
+            result = _run()
+            _thesis_jobs[job_id].update({"status": "done", **result})
+
+        threading.Thread(target=_worker, daemon=True).start()
+        self._json({"ok": True, "job_id": job_id})
+
+    def _handle_thesis_draft_put(self, ticker: str):
+        """Save the user-edited draft (before approval)."""
+        try:
+            body = self._read_body()
+        except Exception:
+            return self._json_error(400, "Invalid JSON body")
+        intake = body.get("intake", {})
+        draft  = body.get("draft", {})
+        if not draft:
+            return self._json_error(400, "draft field required")
+        try:
+            agent_db.save_thesis_draft(
+                ticker=ticker,
+                intake_json=json.dumps(intake),
+                draft_json=json.dumps(draft),
+            )
+            self._json({"ok": True})
+        except Exception as e:
+            self._json_error(500, str(e))
+
+    def _handle_thesis_approve(self, ticker: str):
+        """Activate the current draft as the authoritative thesis."""
+        try:
+            body = self._read_body()
+        except Exception:
+            return self._json_error(400, "Invalid JSON body")
+        draft = body.get("draft")
+        if draft is None:
+            # Approve whatever is in the DB
+            thesis = agent_db.get_thesis_full(ticker)
+            if not thesis or thesis.get("status") != "DRAFT":
+                return self._json_error(400, "No DRAFT thesis found for this ticker")
+            raw_draft = thesis.get("draft_json") or {}
+            final_draft_json = json.dumps(raw_draft) if isinstance(raw_draft, dict) else str(raw_draft)
+        else:
+            final_draft_json = json.dumps(draft)
+        try:
+            thesis_id = agent_db.approve_thesis(ticker, final_draft_json)
+            self._json({"ok": True, "thesis_id": thesis_id})
+        except ValueError as e:
+            self._json_error(400, str(e))
+        except Exception as e:
+            self._json_error(500, str(e))
+
+    def _handle_thesis_accept_proposal(self):
+        """Accept a THESIS_CHANGE_PROPOSAL recommendation."""
+        try:
+            body = self._read_body()
+        except Exception:
+            return self._json_error(400, "Invalid JSON body")
+        rec_id = body.get("recommendation_id")
+        if not rec_id:
+            return self._json_error(400, "recommendation_id required")
+        try:
+            ok = agent_db.accept_thesis_change_proposal(int(rec_id))
+            self._json({"ok": ok})
+        except Exception as e:
+            self._json_error(500, str(e))
+
+    def _handle_thesis_job_poll(self, job_id: str):
+        """Poll status of an async thesis draft job."""
+        result = _thesis_jobs.get(job_id)
+        if result is None:
+            return self._json_error(404, "job not found")
+        self._json(result)
 
     def _json(self, data):
         body = json.dumps(data).encode()

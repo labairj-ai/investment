@@ -163,6 +163,20 @@ def migrate() -> None:
             ON recommendation_outcomes (recommendation_id);
     """)
     conn.commit()
+
+    # Add columns introduced after the initial schema (safe to re-run)
+    _new_cols = [
+        ("investment_theses", "approved_by",  "TEXT"),
+        ("investment_theses", "intake_json",  "TEXT"),
+        ("investment_theses", "draft_json",   "TEXT"),
+    ]
+    for table, col, col_type in _new_cols:
+        try:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass  # column already exists
+
     conn.close()
 
 
@@ -375,6 +389,181 @@ def insert_outcome(
     conn.commit()
     conn.close()
     return outcome_id
+
+
+# ── Thesis intake helpers ─────────────────────────────────────────────────────
+
+def save_thesis_draft(ticker: str, intake_json: str, draft_json: str) -> int:
+    """Insert or replace the DRAFT thesis for ticker. Only one DRAFT per ticker."""
+    conn = _connect()
+    existing = conn.execute(
+        "SELECT id FROM investment_theses WHERE ticker=? AND status='DRAFT' "
+        "ORDER BY version DESC LIMIT 1",
+        (ticker,),
+    ).fetchone()
+    if existing:
+        conn.execute(
+            "UPDATE investment_theses SET intake_json=?, draft_json=?, summary=? WHERE id=?",
+            (intake_json, draft_json, f"Draft thesis for {ticker}", existing["id"]),
+        )
+        thesis_id = existing["id"]
+    else:
+        cur = conn.execute(
+            """INSERT INTO investment_theses
+               (ticker, version, summary, status, intake_json, draft_json, created_at)
+               VALUES (?,?,?,?,?,?,?)""",
+            (ticker, 1, f"Draft thesis for {ticker}", "DRAFT",
+             intake_json, draft_json, time.time()),
+        )
+        thesis_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return thesis_id
+
+
+def get_thesis_full(ticker: str) -> dict | None:
+    """Return the most recent thesis (any status) with intake_json and draft_json."""
+    conn = _connect()
+    row = conn.execute(
+        "SELECT * FROM investment_theses WHERE ticker=? ORDER BY version DESC LIMIT 1",
+        (ticker,),
+    ).fetchone()
+    conn.close()
+    if not row:
+        return None
+    result = dict(row)
+    # Parse JSON blobs if present
+    for field in ("intake_json", "draft_json"):
+        raw = result.get(field)
+        if raw:
+            try:
+                result[field] = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                pass
+    return result
+
+
+def approve_thesis(ticker: str, final_draft_json: str) -> int:
+    """Activate the current DRAFT, superseding any prior ACTIVE thesis."""
+    conn = _connect()
+    # Supersede old active thesis if one exists
+    conn.execute(
+        "UPDATE investment_theses SET status='SUPERSEDED', closed_at=? "
+        "WHERE ticker=? AND status='ACTIVE'",
+        (time.time(), ticker),
+    )
+    # Find the draft
+    draft = conn.execute(
+        "SELECT id, version FROM investment_theses WHERE ticker=? AND status='DRAFT' "
+        "ORDER BY version DESC LIMIT 1",
+        (ticker,),
+    ).fetchone()
+    if not draft:
+        conn.close()
+        raise ValueError(f"No DRAFT thesis found for {ticker}")
+    # Compute next version
+    max_ver = conn.execute(
+        "SELECT MAX(version) FROM investment_theses WHERE ticker=?",
+        (ticker,),
+    ).fetchone()[0] or 0
+    new_version = max_ver  # draft may already be the max; just activate it
+    now = time.time()
+    conn.execute(
+        """UPDATE investment_theses
+           SET status='ACTIVE', approved_by='USER', approved_at=?,
+               version=?, draft_json=?, summary=?
+           WHERE id=?""",
+        (now, new_version, final_draft_json,
+         f"Active thesis for {ticker} (v{new_version})", draft["id"]),
+    )
+    conn.commit()
+    conn.close()
+    return draft["id"]
+
+
+def create_thesis_change_proposal(
+    ticker: str,
+    claim_summary: str,
+    proposed_change: dict,
+    reason: str,
+) -> int:
+    """Create a THESIS_CHANGE_PROPOSAL recommendation. Agents must call this instead
+    of writing directly to thesis_claims for ACTIVE theses."""
+    payload = {
+        "claim_summary": claim_summary,
+        "proposed_change": proposed_change,
+        "reason": reason,
+    }
+    return insert_recommendation(
+        ticker=ticker,
+        action="THESIS_CHANGE_PROPOSAL",
+        action_payload=payload,
+        priority="normal",
+        why_now=reason,
+        rationale=f"Proposed change to claim: {claim_summary}",
+    )
+
+
+def accept_thesis_change_proposal(recommendation_id: int) -> bool:
+    """Apply a THESIS_CHANGE_PROPOSAL: update draft_json, increment version, record decision."""
+    conn = _connect()
+    rec = conn.execute(
+        "SELECT * FROM recommendations WHERE id=? AND action='THESIS_CHANGE_PROPOSAL'",
+        (recommendation_id,),
+    ).fetchone()
+    if not rec:
+        conn.close()
+        return False
+    payload = json.loads(rec["action_payload_json"] or "{}")
+    ticker = rec["ticker"]
+
+    # Load active thesis
+    thesis = conn.execute(
+        "SELECT * FROM investment_theses WHERE ticker=? AND status='ACTIVE' "
+        "ORDER BY version DESC LIMIT 1",
+        (ticker,),
+    ).fetchone()
+    if not thesis:
+        conn.close()
+        return False
+
+    # Apply the change (proposed_change replaces the draft_json with updated claims)
+    current_draft = json.loads(thesis["draft_json"] or "{}")
+    proposed = payload.get("proposed_change", {})
+    if "claims" in proposed:
+        current_draft["claims"] = proposed["claims"]
+    elif "claim_index" in proposed and "new_claim" in proposed:
+        claims = current_draft.get("claims", [])
+        idx = proposed["claim_index"]
+        if 0 <= idx < len(claims):
+            claims[idx] = proposed["new_claim"]
+        current_draft["claims"] = claims
+
+    new_version = thesis["version"] + 1
+    now = time.time()
+    conn.execute(
+        """UPDATE investment_theses
+           SET draft_json=?, version=?, summary=?
+           WHERE id=?""",
+        (json.dumps(current_draft), new_version,
+         f"Active thesis for {ticker} (v{new_version})", thesis["id"]),
+    )
+    # Close the recommendation
+    conn.execute(
+        "UPDATE recommendations SET status='closed' WHERE id=?",
+        (recommendation_id,),
+    )
+    # Record user decision
+    conn.execute(
+        """INSERT INTO user_decisions
+           (recommendation_id, decision, reason_code, notes, decided_at)
+           VALUES (?,?,?,?,?)""",
+        (recommendation_id, "ACCEPT", "USER_APPROVED_THESIS_CHANGE",
+         payload.get("reason"), now),
+    )
+    conn.commit()
+    conn.close()
+    return True
 
 
 # ── Query helpers ─────────────────────────────────────────────────────────────
