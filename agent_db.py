@@ -3,6 +3,8 @@
 All agent tables live in the same investment.db used by the rest of the app.
 Call migrate() once at startup — it is idempotent and safe to re-run.
 """
+from __future__ import annotations
+
 import json
 import sqlite3
 import time

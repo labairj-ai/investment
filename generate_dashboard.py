@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Generate a self-contained HTML investment dashboard from investment.db."""
+from __future__ import annotations
 
 import csv
 import html as _html
