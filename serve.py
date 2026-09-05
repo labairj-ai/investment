@@ -1675,6 +1675,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._handle_news_summary(parse_qs(parsed.query))
         elif parsed.path == "/api/refresh-financials":
             self._handle_refresh_financials(parse_qs(parsed.query))
+        elif parsed.path.startswith("/api/agents/"):
+            self._handle_agents_get(parsed)
         elif parsed.path.startswith("/api/theses/"):
             parts = parsed.path.rstrip("/").split("/")
             if len(parts) == 4:                               # /api/theses/<ticker>
@@ -1723,6 +1725,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._handle_invest_chat()
         elif parsed.path == "/api/ai/chat":
             self._handle_portfolio_chat()
+        elif parsed.path.startswith("/api/agents/"):
+            self._handle_agents_post(parsed)
         elif parsed.path.startswith("/api/theses/"):
             parts = parsed.path.rstrip("/").split("/")
             if len(parts) == 5 and parts[4] == "draft":     # /api/theses/<t>/draft
@@ -4626,6 +4630,117 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if result is None:
             return self._json_error(404, "job not found")
         self._json(result)
+
+    # ── /api/agents/* ─────────────────────────────────────────────────────────
+
+    def _handle_agents_get(self, parsed):
+        """Route GET /api/agents/* requests."""
+        from urllib.parse import parse_qs
+        parts = parsed.path.rstrip("/").split("/")
+        # /api/agents/recommendations
+        if len(parts) == 4 and parts[3] == "recommendations":
+            qs = parse_qs(parsed.query)
+            status = qs.get("status", ["open"])[0]
+            recs = agent_db.list_recommendations(status=status)
+            return self._json({"ok": True, "recommendations": recs})
+        # /api/agents/recommendations/{id}
+        if len(parts) == 5 and parts[3] == "recommendations" and parts[4].isdigit():
+            rec = agent_db.get_recommendation_full(int(parts[4]))
+            if not rec:
+                return self._json_error(404, "Recommendation not found")
+            return self._json({"ok": True, "recommendation": rec})
+        # /api/agents/runs
+        if len(parts) == 4 and parts[3] == "runs":
+            qs = parse_qs(parsed.query)
+            agent_type = qs.get("agent_type", [None])[0]
+            limit = int(qs.get("limit", ["20"])[0])
+            runs = agent_db.list_runs(agent_type=agent_type, limit=limit)
+            return self._json({"ok": True, "runs": runs})
+        # /api/agents/runs/{id}
+        if len(parts) == 5 and parts[3] == "runs" and parts[4].isdigit():
+            run = agent_db.get_run_full(int(parts[4]))
+            if not run:
+                return self._json_error(404, "Run not found")
+            return self._json({"ok": True, "run": run})
+        self._json_error(404, "Not found")
+
+    def _handle_agents_post(self, parsed):
+        """Route POST /api/agents/* requests."""
+        parts = parsed.path.rstrip("/").split("/")
+        # /api/agents/recommendations/{id}/decision
+        if (len(parts) == 6 and parts[3] == "recommendations"
+                and parts[4].isdigit() and parts[5] == "decision"):
+            return self._handle_agent_decision(int(parts[4]))
+        # /api/agents/run
+        if len(parts) == 4 and parts[3] == "run":
+            return self._handle_agent_run_trigger()
+        self._json_error(404, "Not found")
+
+    def _handle_agent_decision(self, rec_id: int):
+        """POST /api/agents/recommendations/{id}/decision"""
+        try:
+            body = self._read_body()
+        except Exception:
+            return self._json_error(400, "Invalid JSON body")
+        decision = body.get("decision", "").strip()
+        if not decision:
+            return self._json_error(400, "decision field required")
+        reason_code = body.get("reason_code", "OTHER")
+        notes = body.get("notes")
+
+        # Write user decision record
+        try:
+            agent_db.insert_user_decision(
+                recommendation_id=rec_id,
+                decision=decision,
+                reason_code=reason_code,
+                notes=notes,
+            )
+        except Exception as e:
+            return self._json_error(500, str(e))
+
+        # Flip recommendation status to the decision value
+        found = agent_db.close_recommendation(rec_id, status=decision)
+        if not found:
+            return self._json_error(404, "Recommendation not found")
+
+        rec = agent_db.get_recommendation_full(rec_id)
+        self._json({"ok": True, "recommendation": rec})
+
+    def _handle_agent_run_trigger(self):
+        """POST /api/agents/run — start an on-demand agent run in a background thread."""
+        try:
+            body = self._read_body()
+        except Exception:
+            return self._json_error(400, "Invalid JSON body")
+        agent_type = body.get("agent_type", "").strip()
+        if not agent_type:
+            return self._json_error(400, "agent_type field required")
+        ticker = body.get("ticker")
+
+        run_id = agent_db.insert_agent_run(
+            agent_type=agent_type,
+            scope="ticker" if ticker else "portfolio",
+            ticker=ticker,
+            trigger_type="on_demand",
+        )
+
+        def _worker():
+            try:
+                import agents.orchestrator as orch
+                # Build a minimal snapshot — real agents will be wired in later
+                from agents.contracts import PortfolioSnapshot
+                snapshot = PortfolioSnapshot(
+                    date="", total_value=0, holdings=[],
+                    layer_weights={}, macro_scores={}, generated_at=0,
+                )
+                orch.run_agents(snapshot, triggered_agents=[agent_type])
+            except Exception as e:
+                agent_db.finish_agent_run(run_id, status="error", error=str(e))
+
+        import threading
+        threading.Thread(target=_worker, daemon=True).start()
+        self._json({"ok": True, "run_id": run_id})
 
     def _json(self, data):
         body = json.dumps(data).encode()

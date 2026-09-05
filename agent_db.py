@@ -846,6 +846,98 @@ def get_thesis(ticker: str) -> dict | None:
     return result
 
 
+def list_runs(agent_type: str | None = None, limit: int = 20) -> list[dict]:
+    """Return recent agent runs, optionally filtered by agent_type."""
+    conn = _connect()
+    if agent_type:
+        rows = conn.execute(
+            "SELECT id, agent_type, scope, ticker, trigger_type, status, "
+            "started_at, finished_at, error FROM agent_runs "
+            "WHERE agent_type=? ORDER BY started_at DESC LIMIT ?",
+            (agent_type, limit),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT id, agent_type, scope, ticker, trigger_type, status, "
+            "started_at, finished_at, error FROM agent_runs "
+            "ORDER BY started_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_run_full(run_id: int) -> dict | None:
+    """Return a run row plus all its findings."""
+    conn = _connect()
+    row = conn.execute("SELECT * FROM agent_runs WHERE id=?", (run_id,)).fetchone()
+    if not row:
+        conn.close()
+        return None
+    result = dict(row)
+    findings = conn.execute(
+        "SELECT * FROM agent_findings WHERE run_id=? ORDER BY id",
+        (run_id,),
+    ).fetchall()
+    conn.close()
+    result["findings"] = [dict(f) for f in findings]
+    return result
+
+
+def get_recommendation_full(rec_id: int) -> dict | None:
+    """Return a recommendation row with its latest critic review attached."""
+    conn = _connect()
+    row = conn.execute("SELECT * FROM recommendations WHERE id=?", (rec_id,)).fetchone()
+    if not row:
+        conn.close()
+        return None
+    result = dict(row)
+    critic = conn.execute(
+        "SELECT * FROM critic_reviews WHERE recommendation_id=? "
+        "ORDER BY created_at DESC LIMIT 1",
+        (rec_id,),
+    ).fetchone()
+    result["critic_review"] = dict(critic) if critic else None
+    conn.close()
+    return result
+
+
+def list_recommendations(status: str = "open") -> list[dict]:
+    """Return recommendations filtered by status, with critic verdict attached."""
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT * FROM recommendations WHERE status=? "
+        "ORDER BY recommendation_score DESC, created_at DESC",
+        (status,),
+    ).fetchall()
+    recs = []
+    for row in rows:
+        rec = dict(row)
+        critic = conn.execute(
+            "SELECT verdict, confidence_adjustment FROM critic_reviews "
+            "WHERE recommendation_id=? ORDER BY created_at DESC LIMIT 1",
+            (row["id"],),
+        ).fetchone()
+        rec["critic_verdict"] = critic["verdict"] if critic else None
+        rec["critic_confidence_adjustment"] = critic["confidence_adjustment"] if critic else None
+        recs.append(rec)
+    conn.close()
+    return recs
+
+
+def close_recommendation(rec_id: int, status: str) -> bool:
+    """Set recommendation status (e.g. 'accepted', 'rejected', 'deferred').
+    Returns False if the recommendation doesn't exist."""
+    conn = _connect()
+    cur = conn.execute(
+        "UPDATE recommendations SET status=? WHERE id=?",
+        (status, rec_id),
+    )
+    conn.commit()
+    conn.close()
+    return cur.rowcount > 0
+
+
 def get_recent_runs(agent_type: str, ticker: str | None = None, limit: int = 10) -> list[dict]:
     conn = _connect()
     if ticker:
