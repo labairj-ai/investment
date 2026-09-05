@@ -1,7 +1,7 @@
 # Build Covered Call Agent (Phase 2)
 
 - **ID:** 0010
-- **Status:** in-progress
+- **Status:** done
 - **Created:** 2026-09-05
 - **Priority:** normal
 - **Depends:** 0005, 0006, 0007, 0008
@@ -40,11 +40,28 @@ This eliminates the current bug where `serve.py` overwrites strike/expiration po
 
 ## Done when
 
-- [ ] Agent runs for an eligible holding and produces a `Recommendation` object
-- [ ] LLM output contains only `contract_id`, `why`, `main_tradeoff`, `no_call_case` — no financial numbers
-- [ ] AVOID-event holdings are vetoed before LLM call
-- [ ] Contract with theoretical pricing receives confidence ≤ 45
-- [ ] Recommendation persisted to `recommendations` table with full `action_payload_json`
-- [ ] Existing manual CC flow from the dashboard still works (agent is additive, not replacement)
-- [ ] QA (backend + browser regression): (a) Run the CC agent for one eligible holding and confirm a Recommendation row appears in the DB with full action_payload_json. (b) Open the dashboard in a browser: verify the existing manual CC flow still works (contract selector, submit button, modal). Check JS console shows zero errors. Do NOT check this box without completing the live browser regression check.
+- [x] Agent runs for an eligible holding and produces a `Recommendation` object
+- [x] LLM output contains only `contract_id`, `why`, `main_tradeoff`, `no_call_case` — no financial numbers
+- [x] AVOID-event holdings are vetoed before LLM call
+- [x] Contract with theoretical pricing receives confidence ≤ 45
+- [x] Recommendation persisted to `recommendations` table with full `action_payload_json`
+- [x] Existing manual CC flow from the dashboard still works (agent is additive, not replacement)
+- [x] QA (backend + browser regression): (a) Run the CC agent for one eligible holding and confirm a Recommendation row appears in the DB with full action_payload_json. (b) Open the dashboard in a browser: verify the existing manual CC flow still works (contract selector, submit button, modal). Check JS console shows zero errors. Do NOT check this box without completing the live browser regression check.
+
+## Outcome
+
+`agents/covered_call_agent.py` created (~270 lines). Thin wrapper around `covered_call_rec.analyze()`.
+
+Key design decisions:
+- `covered_call_rec` import is lazy (inside `_analyze_ticker`) so module-level import works across Python versions
+- AVOID gate is deterministic: all floor-passing contracts AVOID → veto before LLM, `cc_avoid_veto` finding inserted
+- Stable contract IDs: `TICKER:YYYYMMDD:STRIKE` (e.g. `SCHD:20261016:33`)
+- LLM receives only IDs + pre-computed scores; outputs `{action, contract_id, why, main_tradeoff, no_call_case}`
+- Python resolves `contract_id` → DataFrame row — LLM never outputs financial values
+- EvidenceBundle wired to `data_mode`: theoretical→≤45, ask_proxy→≤70, live→≤95
+- NO_CALL and AVOID veto outcomes recorded as `agent_findings`, not recommendations
+
+QA (optiplex, Python 3.12, live market data):
+- SCHD: SELL_CC `SCHD:20261016:33`, confidence=72 (live), priority=high — persisted to recommendations with full payload
+- Browser: SCHD loaded in CC Analyzer (16 qualifying contracts), Log → functional, zero JS console errors
 
