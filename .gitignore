@@ -31,4 +31,4 @@ out/launchd.err
 out/wrapper.log
 
 # Claude Code local settings
-.claude/
+.claude/settings.local.json
