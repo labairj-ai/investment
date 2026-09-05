@@ -931,15 +931,15 @@ threading.Thread(target=_run_outcome_evaluator, daemon=True).start()
 
 # ── Weekly thesis monitor (Saturday 7 AM ET) ──────────────────────────────────
 
-def _run_thesis_monitor_weekly():
-    """Run thesis monitor for all holdings on Saturday at 7 AM ET."""
+def _run_saturday_sweep():
+    """Run thesis monitor + tax agent for all holdings on Saturday at 7 AM ET."""
     import socket
     if socket.gethostname() != "optiplex":
         return
     from zoneinfo import ZoneInfo
     from datetime import datetime as _dt
     TZ   = ZoneInfo("America/New_York")
-    FLAG = PROJECT_DIR / "out" / "last_thesis_monitor.txt"
+    FLAG = PROJECT_DIR / "out" / "last_saturday_sweep.txt"
 
     def _already_ran():
         try:
@@ -976,6 +976,7 @@ def _run_thesis_monitor_weekly():
                     total_value=0, holdings=holdings,
                     layer_weights={}, macro_scores={}, generated_at=time.time(),
                 )
+                # --- thesis monitor ---
                 run_id = agent_db.insert_agent_run(
                     agent_type="thesis_monitor", scope="portfolio"
                 )
@@ -984,14 +985,62 @@ def _run_thesis_monitor_weekly():
                 )
                 run_thesis_monitor(ctx)
                 agent_db.finish_agent_run(run_id, status="done")
+                print(f"[SaturdaySweep] thesis_monitor complete — {len(holdings)} holdings.")
+
+                # --- tax agent (needs current prices for TLH loss calc) ---
+                try:
+                    from agents.tax_agent import run_tax_agent as _run_tax
+                    db_path = PROJECT_DIR / "out" / "investment.db"
+                    _conn = __import__("sqlite3").connect(str(db_path), timeout=10)
+                    _conn.row_factory = __import__("sqlite3").Row
+                    today_str = _dt.now(TZ).date().isoformat()
+                    price_rows = _conn.execute(
+                        "SELECT ticker, value FROM holding_day WHERE day=? ORDER BY ticker",
+                        (today_str,)
+                    ).fetchall()
+                    _conn.close()
+                    price_map = {r["ticker"]: r["value"] for r in price_rows}
+
+                    # Rebuild snapshot with real prices
+                    tax_holdings = []
+                    for h in holdings:
+                        p = price_map.get(h.ticker, 0.0)
+                        tax_holdings.append(HoldingSnapshot(
+                            ticker=h.ticker, layer=h.layer,
+                            shares=0, avg_cost=0,
+                            current_price=p, market_value=0, weight_pct=0,
+                        ))
+                    tax_snapshot = PortfolioSnapshot(
+                        date=today_str, total_value=0, holdings=tax_holdings,
+                        layer_weights={}, macro_scores={}, generated_at=time.time(),
+                    )
+                    tax_run_id = agent_db.insert_agent_run(agent_type="tax", scope="portfolio")
+                    tax_ctx = AgentContext(
+                        run_id=tax_run_id, snapshot=tax_snapshot, trigger_type="scheduled"
+                    )
+                    tax_recs = _run_tax(tax_ctx)
+                    for rec in tax_recs:
+                        agent_db.insert_recommendation(
+                            ticker=rec.ticker, action=rec.action, run_id=tax_run_id,
+                            action_payload=rec.action_payload,
+                            recommendation_score=rec.recommendation_score,
+                            confidence=rec.confidence, priority=rec.priority,
+                            why_now=rec.why_now, rationale=rec.rationale,
+                            counter_case=rec.counter_case, no_action_case=rec.no_action_case,
+                        )
+                    agent_db.finish_agent_run(tax_run_id, status="done")
+                    print(f"[SaturdaySweep] tax_agent complete — {len(tax_recs)} recommendations.")
+                except Exception as e:
+                    print(f"[SaturdaySweep] tax_agent failed: {e}")
+
                 FLAG.write_text(_dt.now(TZ).date().isoformat())
-                print(f"[ThesisMonitor] Weekly scheduled run complete — {len(holdings)} holdings.")
+                print(f"[SaturdaySweep] Weekly sweep complete.")
             except Exception as e:
-                print(f"[ThesisMonitor] Scheduled run failed: {e}")
+                print(f"[SaturdaySweep] Scheduled run failed: {e}")
         time.sleep(1800)
 
 
-threading.Thread(target=_run_thesis_monitor_weekly, daemon=True).start()
+threading.Thread(target=_run_saturday_sweep, daemon=True).start()
 
 
 # ── Background analysis runners ───────────────────────────────────────────────
