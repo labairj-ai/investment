@@ -34,6 +34,7 @@ from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 import ollama_client
 import strategy_config  # validates config/strategy.json at import; raises ConfigurationError on bad config
+import agent_db
 
 _div_cache      = {"data": None, "ts": 0}
 _earn_cache     = {"data": None, "ts": 0}
@@ -290,6 +291,7 @@ def _init_cc_table():
 
 
 _init_cc_table()
+agent_db.migrate()
 
 
 # ── Cost-lot tracking table ───────────────────────────────────────────────────
