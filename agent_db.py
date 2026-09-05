@@ -846,6 +846,27 @@ def get_thesis(ticker: str) -> dict | None:
     return result
 
 
+def get_active_thesis(ticker: str) -> dict | None:
+    """Return the ACTIVE thesis for a ticker with pillars, or None."""
+    conn = _connect()
+    row = conn.execute(
+        "SELECT * FROM investment_theses WHERE ticker=? AND status='ACTIVE' "
+        "ORDER BY version DESC LIMIT 1",
+        (ticker,),
+    ).fetchone()
+    if not row:
+        conn.close()
+        return None
+    result = dict(row)
+    pillars = conn.execute(
+        "SELECT * FROM thesis_pillars WHERE thesis_id=? ORDER BY importance DESC",
+        (row["id"],),
+    ).fetchall()
+    conn.close()
+    result["pillars"] = [dict(p) for p in pillars]
+    return result
+
+
 def list_runs(agent_type: str | None = None, limit: int = 20) -> list[dict]:
     """Return recent agent runs, optionally filtered by agent_type."""
     conn = _connect()

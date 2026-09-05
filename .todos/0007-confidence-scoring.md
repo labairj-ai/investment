@@ -1,7 +1,7 @@
 # Build Deterministic Confidence Scoring System
 
 - **ID:** 0007
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-05
 - **Priority:** normal
 - **Depends:** 0005
@@ -51,12 +51,29 @@ What fraction of the conclusion is supported by deterministic rules vs. qualitat
 
 `agents/confidence.py`, `agents/contracts.py` (EvidenceBundle type), all agent files (pass evidence in)
 
+## Outcome
+
+`EvidenceBundle` dataclass added to `contracts.py` (47 fields across D/F/S/A/R components plus cap flags). `confidence.py` rewritten with five private helpers and `calculate_confidence(evidence: EvidenceBundle) -> int`.
+
+QA scores (all assertions passed):
+- Fully-populated bundle (D=100, F=82, S=100, A=100, R=90): raw=95.0 → **final=95** (>80 ✓)
+- Sparse + theoretical pricing (D=15, F=63, S=40, A=50, R=10): raw=34.1 → **final=34** (≤45 ✓, capped by theoretical pricing)
+- Cap 1 (live option + good liquidity): raw=98.7 → **95**
+- Cap 2 (ask proxy): raw=98.5 → **70**
+- Cap 3 (theoretical pricing): raw=79.5 → **45**
+- Cap 4 (single news source): raw=97.8 → **60**
+- Cap 5 (missing recent fundamentals): raw=97.8 → **65**
+- Cap 6 (critic CHALLENGE): raw=97.8 → **60**
+- Cap 7 (missing cost basis, tax rec): raw=94.8 → **40**; confirmed cap does NOT fire for non-tax recs (score=95)
+
+Design note: cap 7 gates on `is_tax_rec=True` — without this guard every holding-level rec lacking cost basis (common for ETFs/index funds) would be capped at 40.
+
 ## Done when
 
-- [ ] `calculate_confidence()` accepts an `EvidenceBundle` and returns int 0–100
-- [ ] All 5 components (D, F, S, A, R) implemented
-- [ ] All 7 confidence caps applied correctly (caps are applied after formula)
-- [ ] Unit test with a fully-populated bundle returns > 80; sparse bundle with theoretical option data returns ≤ 45
-- [ ] No LLM calls in `confidence.py`
-- [ ] QA (backend): Call `calculate_confidence()` with (a) a fully-populated EvidenceBundle and confirm score > 80, and (b) a sparse bundle with theoretical option data and confirm score ≤ 45. Verify all 7 caps apply correctly with a test case that hits each cap. Log actual computed scores before checking this box — do NOT check based on reading the code.
+- [x] `calculate_confidence()` accepts an `EvidenceBundle` and returns int 0–100
+- [x] All 5 components (D, F, S, A, R) implemented
+- [x] All 7 confidence caps applied correctly (caps are applied after formula)
+- [x] Unit test with a fully-populated bundle returns > 80; sparse bundle with theoretical option data returns ≤ 45
+- [x] No LLM calls in `confidence.py`
+- [x] QA (backend): Call `calculate_confidence()` with (a) a fully-populated EvidenceBundle and confirm score > 80, and (b) a sparse bundle with theoretical option data and confirm score ≤ 45. Verify all 7 caps apply correctly with a test case that hits each cap. Log actual computed scores before checking this box — do NOT check based on reading the code.
 

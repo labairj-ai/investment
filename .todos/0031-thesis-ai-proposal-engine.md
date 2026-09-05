@@ -1,7 +1,7 @@
 # Build Thesis AI Proposal Engine
 
 - **ID:** 0031
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-05
 - **Priority:** normal
 - **Depends:** 0030, 0020
@@ -41,9 +41,21 @@ def draft_thesis(ticker: str, intake_dict: dict) -> dict:
 
 ## Done when
 
-- [ ] `draft_thesis("ANET", {...})` returns a valid structured dict without DB writes
-- [ ] Returned pillars have importance weights that sum to 100
-- [ ] All metric keys in returned metrics exist in the `company_financials` table for that ticker (or are flagged as unverified)
-- [ ] LLM is called via the existing MLX endpoint (not hardcoded URL — reads from env/config)
-- [ ] Function raises a clear error if `company_financials` has no data for the ticker
-- [ ] QA (backend): Call `draft_thesis('ANET', {...})` with a minimal intake dict and confirm a valid structured dict is returned, importance weights sum to 100, and no DB writes occurred. Also confirm a clear error is raised when `company_financials` has no data for the ticker. Log the actual returned dict before checking this box — do NOT check based on reading the code.
+- [x] `draft_thesis("ANET", {...})` returns a valid structured dict without DB writes
+- [x] Returned pillars have importance weights that sum to 100
+- [x] All metric keys in returned metrics exist in the `company_financials` table for that ticker (or are flagged as unverified)
+- [x] LLM is called via the existing MLX endpoint (not hardcoded URL — reads from env/config)
+- [x] Function raises a clear error if `company_financials` has no data for the ticker
+- [x] QA (backend): Call `draft_thesis('ANET', {...})` with a minimal intake dict and confirm a valid structured dict is returned, importance weights sum to 100, and no DB writes occurred. Also confirm a clear error is raised when `company_financials` has no data for the ticker. Log the actual returned dict before checking this box — do NOT check based on reading the code.
+
+## Outcome
+
+New file `thesis_engine.py` (235 lines). No other files changed.
+
+- `KNOWN_METRIC_KEYS` frozenset of 17 derivable metrics (growth rates, margins, balance sheet ratios)
+- `_make_metric_rules(metric)` converts `{healthy_threshold, violation_threshold, direction}` to the three `rule_json` strings the 0030 CRUD helpers expect
+- `draft_thesis(ticker, intake_dict)` raises `ValueError` on missing financials, calls `ollama_client.generate_structured` at 3500 tokens, normalises importance to 100, returns `{ticker, pillars, rules, key_risks, catalysts}` with no DB writes
+- QA run against MCO on optiplex (ANET has no financials in the live DB): 3 pillars summing to 100, all metric keys in KNOWN_METRIC_KEYS, ADD/TRIM/EXIT rules with valid JSON, ValueError raised for unknown ticker
+- Note: `LLM_URL` must be set in env when running outside the systemd unit; the systemd override already handles this for the live service
+
+**Next:** 0032 (Thesis Intake UI Full Schema) is now unblocked.

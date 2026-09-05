@@ -1,7 +1,7 @@
 # Migrate Thesis DB to Full Pillar/Metrics/Rules Schema
 
 - **ID:** 0030
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-05
 - **Priority:** high
 - **Depends:** none
@@ -73,9 +73,21 @@ Keep `thesis_claims` as-is for backward compat. Add indexes on thesis_pillars(th
 
 ## Done when
 
-- [ ] `migrate()` runs cleanly on the local dev DB and on the optiplex live DB without data loss
-- [ ] `investment_theses` has all new columns (verified via `PRAGMA table_info`)
-- [ ] `thesis_pillars`, `thesis_metrics`, `thesis_rules` tables exist with correct columns and FKs
-- [ ] All new CRUD helpers exist and are importable without error
-- [ ] `get_thesis()` returns pillar list and computed thesis health when pillars exist
-- [ ] QA (backend): Run `migrate()` against the local dev DB and confirm via `PRAGMA table_info(investment_theses)` that all new columns exist. Confirm `thesis_pillars`, `thesis_metrics`, `thesis_rules` tables exist with correct columns. Import `agent_db` and call each new CRUD helper without error. Then run `migrate()` again to confirm idempotency (no crash on second run). Show PRAGMA output before checking this box.
+- [x] `migrate()` runs cleanly on the local dev DB and on the optiplex live DB without data loss
+- [x] `investment_theses` has all new columns (verified via `PRAGMA table_info`)
+- [x] `thesis_pillars`, `thesis_metrics`, `thesis_rules` tables exist with correct columns and FKs
+- [x] All new CRUD helpers exist and are importable without error
+- [x] `get_thesis()` returns pillar list and computed thesis health when pillars exist
+- [x] QA (backend): Run `migrate()` against the local dev DB and confirm via `PRAGMA table_info(investment_theses)` that all new columns exist. Confirm `thesis_pillars`, `thesis_metrics`, `thesis_rules` tables exist with correct columns. Import `agent_db` and call each new CRUD helper without error. Then run `migrate()` again to confirm idempotency (no crash on second run). Show PRAGMA output before checking this box.
+
+## Outcome
+
+`agent_db.py` extended with 189 net new lines. All changes are additive and idempotent:
+
+- `investment_theses` gained 7 columns via the `_new_cols` ALTER TABLE loop: `portfolio_role`, `thesis_summary`, `holding_period`, `conviction`, `target_weight_pct`, `max_weight_pct`, `closed_reason`
+- `thesis_pillars`, `thesis_metrics`, `thesis_rules` created in the main `executescript` block with correct FK references and 3 new indexes
+- 7 new CRUD helpers added between the existing query helpers and `get_thesis()`
+- `get_thesis()` now attaches `pillars` list, computes `health_score` (weighted avg of scored pillar scores), and sets `has_critical_violation` flag
+- Migrated and verified on both local dev DB and live optiplex DB; idempotency confirmed (two consecutive `migrate()` calls, no crash)
+
+**Next:** 0031 (Thesis AI Proposal Engine) and 0032 (Thesis Intake UI Full Schema) are now unblocked.

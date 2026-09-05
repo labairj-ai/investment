@@ -63,6 +63,15 @@ def detect_triggers(snapshot: PortfolioSnapshot) -> list[TriggerEvent]:
                 },
             ))
 
+    # ── Thesis monitoring (daily portfolio sweep) ─────────────────────────────
+    triggers.append(TriggerEvent(
+        trigger_type="portfolio_scope",
+        agent_type="thesis_monitor",
+        trigger_key="thesis_daily",
+        ticker=None,
+        context={"total_value": snapshot.total_value},
+    ))
+
     # ── Portfolio-scope daily briefing (always fires) ─────────────────────────
     triggers.append(TriggerEvent(
         trigger_type="portfolio_scope",

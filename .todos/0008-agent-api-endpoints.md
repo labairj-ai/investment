@@ -1,7 +1,7 @@
 # Add Agent REST API Endpoints to serve.py
 
 - **ID:** 0008
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-05
 - **Priority:** normal
 - **Depends:** 0004, 0005
@@ -29,9 +29,9 @@ All endpoints return JSON. Authentication is whatever `serve.py` currently uses 
 
 ## Done when
 
-- [ ] All 6 endpoints exist and return valid JSON
-- [ ] `POST /api/agents/recommendations/{id}/decision` correctly writes to `user_decisions` and flips recommendation status
-- [ ] `POST /api/agents/run` queues a run without blocking the HTTP response
-- [ ] `GET /api/agents/recommendations?status=open` returns empty array (not 500) when no recommendations exist yet
-- [ ] QA (API): `curl` or `httpx` each of the 6 endpoints and confirm valid JSON responses. Specifically: `GET /api/agents/recommendations?status=open` must return `[]` (not 500) when no recs exist; `POST /api/agents/recommendations/{id}/decision` must flip status in DB. Show actual response bodies before checking this box.
+- [x] All 6 endpoints exist and return valid JSON
+- [x] `POST /api/agents/recommendations/{id}/decision` correctly writes to `user_decisions` and flips recommendation status
+- [x] `POST /api/agents/run` queues a run without blocking the HTTP response
+- [x] `GET /api/agents/recommendations?status=open` returns empty array (not 500) when no recommendations exist yet
+- [x] QA (API): `curl` or `httpx` each of the 6 endpoints and confirm valid JSON responses. Specifically: `GET /api/agents/recommendations?status=open` must return `[]` (not 500) when no recs exist; `POST /api/agents/recommendations/{id}/decision` must flip status in DB. Show actual response bodies before checking this box.
 

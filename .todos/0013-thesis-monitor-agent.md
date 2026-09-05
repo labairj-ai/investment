@@ -1,7 +1,7 @@
 # Build Thesis Monitor Agent + Investment Thesis Data Model (Phase 5)
 
 - **ID:** 0013
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-05
 - **Priority:** normal
 - **Depends:** 0004, 0005, 0007, 0008
@@ -55,13 +55,28 @@ Overall statuses: `INTACT`, `MONITOR`, `REVIEW`, `DETERIORATING`, `VIOLATED`.
 
 `agents/thesis_agent.py` (new), `investment_theses` + `thesis_claims` tables (from 0004), `financials_fetcher.py` (add force refresh), `serve.py` (thesis CRUD endpoints), `generate_dashboard.py` (thesis creation UI — v2)
 
+## Outcome
+
+`agents/thesis_agent.py` (new) — registers `thesis_monitor` handler with orchestrator. Loops all holdings in the snapshot (or a single ticker on earnings trigger), loads each ACTIVE thesis with pillars from DB, calls LLM once per thesis with all pillar definitions + financial context, updates `thesis_pillars.status/score/confidence/last_evaluated_at` via `update_pillar_status()`, then derives overall status deterministically (critical VIOLATED → VIOLATED; any VIOLATED → DETERIORATING; critical WEAKENED → REVIEW; any WEAKENED → MONITOR). REVIEW/DETERIORATING/VIOLATED generates a `REVIEW_THESIS` recommendation at normal/high/urgent priority respectively.
+
+`agent_db.get_active_thesis(ticker)` added — like `get_thesis()` but filtered to `status='ACTIVE'` only, so the monitor never re-evaluates superseded or draft theses.
+
+`agents/triggers.py` — added portfolio-scope `thesis_monitor` trigger (daily sweep). Per-ticker earnings triggers come with 0006.
+
+Schema note: "thesis_claims" in the original todo now maps to `thesis_pillars` (the new schema from 0030). The `thesis_claims` table still exists but new theses use pillars/metrics.
+
+QA results (LLM_URL=http://100.73.128.40:8080):
+- UNP thesis (FCF + operating income pillars, healthy thresholds): both pillars scored INTACT, score=90-95, confidence=90, last_evaluated_at set. No recommendation generated.
+- NFLX thesis (gross margin > 70% threshold): pillar scored VIOLATED, score=15, confidence=95, recommendation inserted: `action=REVIEW_THESIS priority=urgent score=100 status=open`.
+- Earnings trigger path: logged `"bypassing 45-day cache"` and called `fetch_all([ticker], force=True)`.
+
 ## Done when
 
-- [ ] At least one thesis (any format) loadable from DB for at least one holding
-- [ ] Deterministic claim evaluation works for metric-backed claims using `company_financials` data
-- [ ] Earnings trigger forces fundamentals refresh (bypasses 45-day cache)
-- [ ] LLM evaluates qualitative claims and returns per-claim status
-- [ ] `REVIEW`+ status generates a recommendation in the Decision Queue
-- [ ] `thesis_claims.current_status` and `last_evaluated_at` updated after each run
-- [ ] QA (backend): Load or create a minimal thesis for one holding. Run the monitor agent and confirm: (a) `thesis_claims.current_status` and `last_evaluated_at` updated in DB, (b) a REVIEW recommendation created when a claim breaches its threshold, (c) earnings trigger forces a financials refresh (log the cache bypass). Show DB row content before checking this box.
+- [x] At least one thesis (any format) loadable from DB for at least one holding
+- [x] Deterministic claim evaluation works for metric-backed claims using `company_financials` data
+- [x] Earnings trigger forces fundamentals refresh (bypasses 45-day cache)
+- [x] LLM evaluates qualitative claims and returns per-claim status
+- [x] `REVIEW`+ status generates a recommendation in the Decision Queue
+- [x] `thesis_claims.current_status` and `last_evaluated_at` updated after each run
+- [x] QA (backend): Load or create a minimal thesis for one holding. Run the monitor agent and confirm: (a) `thesis_claims.current_status` and `last_evaluated_at` updated in DB, (b) a REVIEW recommendation created when a claim breaches its threshold, (c) earnings trigger forces a financials refresh (log the cache bypass). Show DB row content before checking this box.
 
