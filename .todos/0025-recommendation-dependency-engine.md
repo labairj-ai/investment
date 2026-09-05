@@ -78,5 +78,5 @@ invalidating_event: "EARNINGS_OCCURRED"
 - [ ] Violated dependency marks recommendation `status=superseded` with reason string
 - [ ] Superseded recommendations trigger re-evaluation for the same ticker/agent
 - [ ] Dashboard shows "Expired: [reason]" on superseded recommendations in history
-- [ ] QA evaluation conducted: functionality verified working, no regressions introduced
+- [ ] Browser QA (mandatory — do not skip): Create a recommendation with a known dependency (e.g., price-based), then change the triggering data to violate that dependency. Open the dashboard in a browser and verify: (a) zero JS console errors, (b) the recommendation shows 'Expired: [reason]' in the history view, (c) a new recommendation was triggered for the same ticker/agent. Do NOT check this box without completing live browser testing.
 

@@ -57,5 +57,5 @@ Clicking it expands a table of all HOLD/NO_ACTION findings from the latest orche
 - [ ] Material change (price, thesis, macro, earnings) causes new row even within 24h
 - [ ] `GET /api/agents/coverage` returns per-ticker, per-agent-type coverage status
 - [ ] Decision Queue footer shows count of NO_ACTION evaluations from latest run
-- [ ] QA evaluation conducted: functionality verified working, no regressions introduced
+- [ ] Browser QA (mandatory — do not skip): Run agents, then open the dashboard in a browser and verify: (a) zero JS console errors, (b) Decision Queue footer shows 'N positions reviewed' count matching NO_ACTION rows in DB, (c) running agents again with identical state within 24h updates timestamp only — no duplicate rows (check DB directly). Do NOT check this box without completing live browser testing.
 

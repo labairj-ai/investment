@@ -50,5 +50,5 @@ All components scored 0–100 and weighted (weights configurable in `strategy_co
 - [ ] LLM receives ≤ 3 candidates (top-ranked by composite score)
 - [ ] Single RESEARCH recommendation produced naming the top candidate
 - [ ] Table sortable by any column in the UI
-- [ ] QA evaluation conducted: functionality verified working, no regressions introduced
+- [ ] Browser QA (mandatory — do not skip): With ≥ 2 active candidates in the universe, open the dashboard in a browser and verify: (a) zero JS console errors, (b) comparison table renders with all 6 score columns, (c) table is sortable by clicking column headers, (d) a single RESEARCH recommendation names the top-ranked candidate. Do NOT check this box without completing live browser testing.
 

@@ -58,5 +58,5 @@ The Opportunity Hunter (0014) currently assumes Buffett screener winners are the
 - [ ] Manual add via UI triggers full analysis pipeline
 - [ ] Rejected candidates stay in table with status=rejected (not re-surfaced)
 - [ ] `GET /api/candidates` returns active candidates with current scores
-- [ ] QA evaluation conducted: functionality verified working, no regressions introduced
+- [ ] Browser QA (mandatory — do not skip): Open the dashboard in a browser and verify: (a) zero JS console errors, (b) manual 'Add candidate' UI triggers the full analysis pipeline (confirm DB row with `active` status), (c) Buffett screener winners appear in the table after a screener run, (d) `owned` tickers show correct status. Do NOT check this box without completing live browser testing.
 

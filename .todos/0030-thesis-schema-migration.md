@@ -78,3 +78,4 @@ Keep `thesis_claims` as-is for backward compat. Add indexes on thesis_pillars(th
 - [ ] `thesis_pillars`, `thesis_metrics`, `thesis_rules` tables exist with correct columns and FKs
 - [ ] All new CRUD helpers exist and are importable without error
 - [ ] `get_thesis()` returns pillar list and computed thesis health when pillars exist
+- [ ] QA (backend): Run `migrate()` against the local dev DB and confirm via `PRAGMA table_info(investment_theses)` that all new columns exist. Confirm `thesis_pillars`, `thesis_metrics`, `thesis_rules` tables exist with correct columns. Import `agent_db` and call each new CRUD helper without error. Then run `migrate()` again to confirm idempotency (no crash on second run). Show PRAGMA output before checking this box.

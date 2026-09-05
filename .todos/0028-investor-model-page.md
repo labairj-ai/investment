@@ -77,5 +77,5 @@ Shows all hard strategy rules from `strategy_config` with current values. No edi
 - [ ] Suppressed preferences no longer influence any recommendation presentation
 - [ ] Hard rules section renders current `strategy_config` values as read-only
 - [ ] Page handles empty state gracefully: "Not enough decisions yet to infer preferences. Keep using the Decision Queue."
-- [ ] QA evaluation conducted: functionality verified working, no regressions introduced
+- [ ] Browser QA (mandatory — do not skip): Open the Investor Model page in a browser and verify: (a) zero JS console errors, (b) preferences render tiered by confidence with evidence counts, (c) [Correct] / [Incorrect] / [Don't use this] buttons call the API and update state without page reload, (d) suppressing a preference removes it from subsequent recommendation scoring (verify via a new rec), (e) empty state shows the correct 'Not enough decisions yet' message. Do NOT check this box without completing live browser testing.
 

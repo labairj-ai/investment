@@ -46,3 +46,4 @@ def draft_thesis(ticker: str, intake_dict: dict) -> dict:
 - [ ] All metric keys in returned metrics exist in the `company_financials` table for that ticker (or are flagged as unverified)
 - [ ] LLM is called via the existing MLX endpoint (not hardcoded URL — reads from env/config)
 - [ ] Function raises a clear error if `company_financials` has no data for the ticker
+- [ ] QA (backend): Call `draft_thesis('ANET', {...})` with a minimal intake dict and confirm a valid structured dict is returned, importance weights sum to 100, and no DB writes occurred. Also confirm a clear error is raised when `company_financials` has no data for the ticker. Log the actual returned dict before checking this box — do NOT check based on reading the code.

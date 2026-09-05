@@ -56,5 +56,5 @@ This panel is informational only — it does not generate new recommendations.
 - [ ] 12-month summary card shows counts (generated/accepted/rejected/deferred)
 - [ ] Detail table shows each past recommendation with decision and reason_code
 - [ ] CC outcomes correctly calculate premium captured vs upside surrendered
-- [ ] QA evaluation conducted: functionality verified working, no regressions introduced
+- [ ] Browser QA (mandatory — do not skip): Run the outcome evaluator manually for at least one matured recommendation. Open the dashboard in a browser and verify: (a) zero JS console errors, (b) Decision Journal panel renders (even if mostly empty), (c) 12-month summary card shows correct counts, (d) detail table row visible for the matured recommendation with correct actual_return. Do NOT check this box without completing live browser testing.
 

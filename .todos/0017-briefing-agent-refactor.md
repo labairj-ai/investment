@@ -56,5 +56,5 @@ Rewrite the briefing agent to be a synthesis layer, not a research layer.
 - [ ] Briefing references specific ticker findings by name ("Guardian flagged GRMN at 2.3σ...")
 - [ ] If no agent findings exist today, briefing gracefully notes "no material findings"
 - [ ] Existing AI Insight panel in dashboard renders the new briefing without layout changes
-- [ ] QA evaluation conducted: functionality verified working, no regressions introduced
+- [ ] Browser QA (mandatory — do not skip): After refactor, trigger a daily briefing via `GET /api/ai/daily` and confirm valid content returned. Open the dashboard in a browser and verify: (a) zero JS console errors, (b) AI Insight panel renders the new briefing without layout changes, (c) briefing text references specific ticker findings by name (not just raw prices). Also log token counts of old vs new prompt to confirm measurable reduction. Do NOT check this box without completing live browser testing.
 

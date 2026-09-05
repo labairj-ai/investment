@@ -46,5 +46,5 @@ This eliminates the current bug where `serve.py` overwrites strike/expiration po
 - [ ] Contract with theoretical pricing receives confidence ≤ 45
 - [ ] Recommendation persisted to `recommendations` table with full `action_payload_json`
 - [ ] Existing manual CC flow from the dashboard still works (agent is additive, not replacement)
-- [ ] QA evaluation conducted: functionality verified working, no regressions introduced
+- [ ] QA (backend + browser regression): (a) Run the CC agent for one eligible holding and confirm a Recommendation row appears in the DB with full action_payload_json. (b) Open the dashboard in a browser: verify the existing manual CC flow still works (contract selector, submit button, modal). Check JS console shows zero errors. Do NOT check this box without completing the live browser regression check.
 

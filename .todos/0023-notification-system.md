@@ -60,5 +60,5 @@ This data feeds the Preference Learner (0027) to improve future thresholds.
 - [ ] `notification_events` table records outcome and time_to_action when user acts
 - [ ] "Stock down 4%" alone does not produce URGENT or ATTENTION level
 - [ ] Urgency thresholds readable from `strategy_config` (configurable without code change)
-- [ ] QA evaluation conducted: functionality verified working, no regressions introduced
+- [ ] Browser QA (mandatory — do not skip): Trigger a recommendation at each urgency level. Open the dashboard in a browser and verify: (a) zero JS console errors, (b) ATTENTION items appear at the top of the Decision Queue with visual distinction, (c) URGENT triggers a Gmail send (check inbox). Confirm a 4% price drop alone does NOT produce URGENT or ATTENTION. Do NOT check this box without completing live browser testing.
 

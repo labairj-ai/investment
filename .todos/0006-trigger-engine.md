@@ -37,5 +37,5 @@ The trigger engine runs after every data refresh (before agents). If no triggers
 - [ ] Trigger events include: agent_type, ticker, trigger_type, trigger_key, trigger_value
 - [ ] Results are logged so it's auditable why each agent ran
 - [ ] Thresholds are configurable via `strategy_config`, not hardcoded
-- [ ] QA evaluation conducted: functionality verified working, no regressions introduced
+- [ ] QA (backend): Call `detect_triggers()` with a synthetic snapshot that crosses at least one known threshold (e.g., position NAV impact > 0.35%, layer drift ≥ 5pp). Confirm the returned trigger list matches expected types and includes agent_type, ticker, trigger_type, trigger_key, trigger_value. Log actual output before checking this box — do NOT check based on reading the code.
 

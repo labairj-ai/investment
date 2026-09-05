@@ -44,3 +44,4 @@ The thesis monitor agent stub in 0013 was scoped around the old flat `thesis_cla
 - [ ] EXIT rules with composite score threshold and violated-pillar count correctly generate EXIT_REVIEW recommendations
 - [ ] Earnings trigger forces financials refresh before evaluation
 - [ ] Agent does not write to thesis_metrics, thesis_rules, or structural pillar fields
+- [ ] QA (backend): With an ACTIVE thesis (with pillars/metrics from 0030 tables), run the Thesis Monitor agent and confirm: (a) `thesis_pillars.status` and `score` updated in DB for each pillar, (b) persistence check requires N consecutive periods (test with N=2 and only 1 violation — no flag), (c) a critical pillar violation generates a THESIS_CRITICAL_VIOLATION finding and EXIT_REVIEW rec, (d) agent does NOT write to thesis_metrics or thesis_rules (grep agent output). Show DB rows before checking this box.

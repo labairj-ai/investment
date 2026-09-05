@@ -72,5 +72,5 @@ These are policy. The system observes that the user consistently accepts somethi
 - [ ] Minimum 5 decisions required before a preference affects any recommendation
 - [ ] `GET /api/preferences` returns current learned preferences with confidence and sample_size
 - [ ] Decision Queue card shows Preference Fit score and note when fit is low
-- [ ] QA evaluation conducted: functionality verified working, no regressions introduced
+- [ ] Browser QA (mandatory — do not skip): Record ≥ 5 decisions, then run the preference learner. Open the dashboard Decision Queue in a browser and verify: (a) zero JS console errors, (b) a recommendation card shows a Preference Fit score and note when fit is low, (c) hard rules in strategy_config are unchanged (grep to verify). Do NOT check this box without completing live browser testing.
 

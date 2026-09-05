@@ -62,5 +62,5 @@ All horizons stored separately in `recommendation_outcomes` (add `horizon` colum
 - [ ] CC outcomes correctly calculate premium-captured vs upside-surrendered
 - [ ] Aggregated stats (AgentAlpha_vs_Hold, AgentAlpha_vs_SPY, UserOverrideAlpha) computable per agent_type and rationale_class
 - [ ] Decision Journal shows at least one aggregated stat when ≥ 5 matured outcomes exist
-- [ ] QA evaluation conducted: functionality verified working, no regressions introduced
+- [ ] Browser QA (mandatory — do not skip): With ≥ 5 matured recommendations, run the outcome evaluator and open the dashboard Decision Journal in a browser. Verify: (a) zero JS console errors, (b) at least one aggregated stat (AgentAlpha_vs_Hold, AgentAlpha_vs_SPY, or UserOverrideAlpha) renders, (c) `recommendation_outcomes` rows have correct actual_return values (verify one manually against holding_day prices). Do NOT check this box without completing live browser testing.
 

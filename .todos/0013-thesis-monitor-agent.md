@@ -63,5 +63,5 @@ Overall statuses: `INTACT`, `MONITOR`, `REVIEW`, `DETERIORATING`, `VIOLATED`.
 - [ ] LLM evaluates qualitative claims and returns per-claim status
 - [ ] `REVIEW`+ status generates a recommendation in the Decision Queue
 - [ ] `thesis_claims.current_status` and `last_evaluated_at` updated after each run
-- [ ] QA evaluation conducted: functionality verified working, no regressions introduced
+- [ ] QA (backend): Load or create a minimal thesis for one holding. Run the monitor agent and confirm: (a) `thesis_claims.current_status` and `last_evaluated_at` updated in DB, (b) a REVIEW recommendation created when a claim breaches its threshold, (c) earnings trigger forces a financials refresh (log the cache bypass). Show DB row content before checking this box.
 

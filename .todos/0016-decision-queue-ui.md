@@ -54,5 +54,5 @@ Implementation: add to `generate_dashboard.py` as a new section rendered before 
 - [ ] Empty queue shows "No items require attention" — not an error state
 - [ ] CC cards show strike, expiration, CC alpha, regret %, IV richness
 - [ ] Priority formula implemented and cards sorted correctly
-- [ ] QA evaluation conducted: functionality verified working, no regressions introduced
+- [ ] Browser QA (mandatory — do not skip): Trigger a dashboard refresh so at least one open recommendation exists. Open the dashboard in a browser and verify: (a) zero JS console errors, (b) Decision Queue renders above AI Insight with correct card fields (type, ticker, confidence, why-now, critic verdict), (c) Accept/Reject/Defer update card state without page reload, (d) 'No action: N positions reviewed' footer present, (e) empty queue shows 'No items require attention' (not an error). Do NOT check this box without completing live browser testing.
 

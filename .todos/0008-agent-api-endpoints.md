@@ -33,5 +33,5 @@ All endpoints return JSON. Authentication is whatever `serve.py` currently uses 
 - [ ] `POST /api/agents/recommendations/{id}/decision` correctly writes to `user_decisions` and flips recommendation status
 - [ ] `POST /api/agents/run` queues a run without blocking the HTTP response
 - [ ] `GET /api/agents/recommendations?status=open` returns empty array (not 500) when no recommendations exist yet
-- [ ] QA evaluation conducted: functionality verified working, no regressions introduced
+- [ ] QA (API): `curl` or `httpx` each of the 6 endpoints and confirm valid JSON responses. Specifically: `GET /api/agents/recommendations?status=open` must return `[]` (not 500) when no recs exist; `POST /api/agents/recommendations/{id}/decision` must flip status in DB. Show actual response bodies before checking this box.
 

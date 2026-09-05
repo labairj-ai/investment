@@ -52,5 +52,5 @@ HV20 data: check if already stored in DB from existing scoring pipeline; if not,
 - [ ] Finding severity is calculated deterministically (from Z, impact, drift magnitude) — LLM doesn't invent the number
 - [ ] `suggested_action` is constrained to REVIEW in schema validation
 - [ ] Finding persisted to `agent_findings` table
-- [ ] QA evaluation conducted: functionality verified working, no regressions introduced
+- [ ] QA (backend): Run the Guardian agent against real portfolio data and confirm: (a) all 4 deterministic checks ran without LLM call for calm positions, (b) a finding row appears in `agent_findings` for any holding that crossed a threshold, (c) severity was calculated deterministically (not assigned by LLM). Log the finding row content before checking this box.
 

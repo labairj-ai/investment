@@ -45,3 +45,4 @@ The thesis intake form and approval flow in 0020 were designed around the old fl
 - [ ] Approve endpoint writes all four tables (investment_theses, thesis_pillars, thesis_metrics, thesis_rules) correctly
 - [ ] Approving a second time creates version 2 and marks version 1 SUPERSEDED
 - [ ] `GET /api/theses/{ticker}/history` returns all versions
+- [ ] Browser QA (mandatory — do not skip): Open the dashboard in a browser, click a Thesis button for a held ticker, and exercise the full intake → draft → approve flow: (a) zero JS console errors, (b) intake form shows all new fields (portfolio_role, holding_period, conviction, target/max weight), (c) draft renders each pillar card with metrics, (d) critical pillar checkbox visible and saves to DB, (e) approve writes all four tables (verify via `PRAGMA table_info` or DB query), (f) approving a second time creates version 2 and marks version 1 SUPERSEDED. Do NOT check this box without completing live browser testing.

@@ -38,3 +38,4 @@ After 0033 runs, `thesis_pillars.status`, `.score`, and `.reason` are populated 
 - [ ] CRITICAL VIOLATION banner appears when a critical pillar is VIOLATED
 - [ ] Holdings with no ACTIVE thesis show a "Create Thesis" link
 - [ ] Daily briefing prompt includes thesis health data for holdings that have an ACTIVE thesis
+- [ ] Browser QA (mandatory — do not skip): With an ACTIVE thesis that has evaluated pillars, open the dashboard in a browser and verify: (a) zero JS console errors, (b) each holding with an ACTIVE thesis shows the thesis status badge and composite health score, (c) pillar list is collapsible and uses correct colour-coded status icons, (d) CRITICAL VIOLATION banner appears when a critical pillar is VIOLATED, (e) holdings with no ACTIVE thesis show a 'Create Thesis' link, (f) daily briefing prompt includes thesis health data (check via `GET /api/ai/daily` response). Do NOT check this box without completing live browser testing.

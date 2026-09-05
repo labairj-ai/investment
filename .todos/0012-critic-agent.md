@@ -65,5 +65,5 @@ Apply: `final_confidence = min(original_confidence + confidence_adjustment, cap_
 - [ ] VETO from either deterministic or LLM path suppresses recommendation from Decision Queue
 - [ ] `critic_reviews` row written for every recommendation that reaches the Critic
 - [ ] Critic's `strongest_objection` is surfaced in the Decision Queue UI card
-- [ ] QA evaluation conducted: functionality verified working, no regressions introduced
+- [ ] QA (backend + browser): (a) Create a test recommendation and run the Critic against it; confirm a `critic_reviews` row is written with all 4 verdict fields. Verify VETO suppresses the rec from the queue, CHALLENGE caps confidence at 60. (b) Browser: open the dashboard Decision Queue and confirm `strongest_objection` text renders on the card. Check JS console shows zero errors. Do NOT check this box without the live browser check.
 

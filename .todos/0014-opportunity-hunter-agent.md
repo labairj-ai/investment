@@ -53,5 +53,5 @@ Output:
 - [ ] Output action is `RESEARCH`, not `BUY`
 - [ ] Recommendation includes which layer the candidate would fill and current layer deficit
 - [ ] Agent handles case where no Buffett screener winners exist (no recommendation, no LLM call)
-- [ ] QA evaluation conducted: functionality verified working, no regressions introduced
+- [ ] QA (backend): Run the Opportunity Hunter with ≥ 1 Buffett screener winner in the candidate universe. Confirm: (a) LLM received ≤ 3 candidates, (b) output action is `RESEARCH` (not BUY), (c) recommendation names which layer the candidate fills. Also confirm no recommendation and no LLM call when no screener winners exist. Log both cases before checking this box.
 
