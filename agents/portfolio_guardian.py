@@ -12,8 +12,11 @@ import time
 import agent_db
 import ollama_client
 from strategy_config import (
-    LAYER_TARGETS, LAYER_NAMES, DRIFT_THRESHOLD, HOLDING_GROSS_DOM,
+    LAYER_TARGETS, LAYER_NAMES, LAYER_LABELS, DRIFT_THRESHOLD, HOLDING_GROSS_DOM,
 )
+
+# Reverse map: "Layer 1: L1 Structural Ballast" -> 1
+_LABEL_TO_INT: dict[str, int] = {v: k for k, v in LAYER_LABELS.items()}
 from .contracts import AgentContext, Recommendation
 from .orchestrator import register_agent
 
@@ -192,16 +195,17 @@ def run_portfolio_guardian(ctx: AgentContext) -> list[Recommendation]:
     # ── 1. Layer drift ────────────────────────────────────────────────────────
     layer_rows = _latest_layer_rows()
     for row in layer_rows:
-        layer_num  = row["layer"]
-        weight_pct = row["weight_pct"]
-        target     = LAYER_TARGETS.get(layer_num)
+        layer_label = row["layer"]
+        layer_num   = _LABEL_TO_INT.get(layer_label)
+        weight_pct  = row["weight_pct"]
+        target      = LAYER_TARGETS.get(layer_num) if layer_num else None
         if target is None:
             continue
         drift = weight_pct - target
         if abs(drift) < DRIFT_THRESHOLD:
             continue
         severity = _layer_severity(drift)
-        layer_name = LAYER_NAMES.get(layer_num, f"Layer {layer_num}")
+        layer_name = LAYER_NAMES.get(layer_num, layer_label)
         direction  = "over" if drift > 0 else "under"
         summary = (
             f"{layer_name}: {direction}weight by {abs(drift):.1f}pp "
