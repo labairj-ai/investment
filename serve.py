@@ -4931,6 +4931,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if not run:
                 return self._json_error(404, "Run not found")
             return self._json({"ok": True, "run": run})
+        # /api/agents/coverage
+        if len(parts) == 4 and parts[3] == "coverage":
+            return self._json({"ok": True, **agent_db.get_coverage()})
         self._json_error(404, "Not found")
 
     def _handle_agents_post(self, parsed):
@@ -4997,13 +5000,59 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         def _worker():
             try:
                 import agents.orchestrator as orch
-                # Build a minimal snapshot — real agents will be wired in later
-                from agents.contracts import PortfolioSnapshot
+                from agents.contracts import PortfolioSnapshot, HoldingSnapshot
+                from datetime import date as _date
+                import csv as _csv
+
+                # Build snapshot with current holdings so NO_ACTION recording works
+                holdings = []
+                holdings_csv = PROJECT_DIR / "holdings.csv"
+                prices = {}
+                try:
+                    conn = agent_db._connect()
+                    day = conn.execute("SELECT MAX(day) FROM holding_day").fetchone()[0]
+                    if day:
+                        for r in conn.execute(
+                            "SELECT ticker, weight_pct, value, layer, change_pct "
+                            "FROM holding_day WHERE day=?", (day,)
+                        ).fetchall():
+                            prices[r["ticker"]] = {
+                                "weight_pct": r["weight_pct"] or 0,
+                                "value": r["value"] or 0,
+                                "layer": r["layer"],
+                            }
+                    conn.close()
+                except Exception:
+                    pass
+
+                if holdings_csv.exists():
+                    with open(holdings_csv) as f:
+                        total_val = sum(p["value"] for p in prices.values()) or 1
+                        for row in _csv.DictReader(f):
+                            t = (row.get("Stock") or "").strip().upper()
+                            if not t:
+                                continue
+                            p = prices.get(t, {})
+                            holdings.append(HoldingSnapshot(
+                                ticker=t,
+                                layer=int(row.get("Layer") or 0),
+                                shares=float(row.get("Shares") or 0),
+                                avg_cost=float(row.get("AvgCost") or 0),
+                                current_price=p.get("value", 0) / max(float(row.get("Shares") or 1), 0.001),
+                                market_value=p.get("value", 0),
+                                weight_pct=p.get("weight_pct", 0),
+                            ))
+
                 snapshot = PortfolioSnapshot(
-                    date="", total_value=0, holdings=[],
-                    layer_weights={}, macro_scores={}, generated_at=0,
+                    date=str(_date.today()),
+                    total_value=sum(h.market_value for h in holdings),
+                    holdings=holdings,
+                    layer_weights={},
+                    macro_scores={},
+                    generated_at=time.time(),
                 )
                 orch.run_agents(snapshot, triggered_agents=[agent_type])
+                agent_db.finish_agent_run(run_id, status="done")
             except Exception as e:
                 agent_db.finish_agent_run(run_id, status="error", error=str(e))
 

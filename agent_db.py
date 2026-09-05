@@ -229,6 +229,9 @@ def migrate() -> None:
         ("investment_theses", "target_weight_pct", "REAL"),
         ("investment_theses", "max_weight_pct",    "REAL"),
         ("investment_theses", "closed_reason",     "TEXT"),
+        # 0024 — NO_ACTION deduplication
+        ("recommendations",   "input_hash",        "TEXT"),
+        ("recommendations",   "updated_at",        "REAL"),
     ]
     for table, col, col_type in _new_cols:
         try:
@@ -324,23 +327,173 @@ def insert_recommendation(
     counter_case: str | None = None,
     no_action_case: str | None = None,
     valid_until: float | None = None,
+    input_hash: str | None = None,
 ) -> int:
+    now = time.time()
     conn = _connect()
     cur = conn.execute(
         """INSERT INTO recommendations
            (run_id, ticker, action, action_payload_json, recommendation_score,
             confidence, priority, why_now, rationale, counter_case,
-            no_action_case, status, valid_until, created_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            no_action_case, status, valid_until, input_hash, updated_at, created_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (run_id, ticker, action,
          json.dumps(action_payload) if action_payload else None,
          recommendation_score, confidence, priority, why_now, rationale,
-         counter_case, no_action_case, "open", valid_until, time.time()),
+         counter_case, no_action_case, "open", valid_until,
+         input_hash, now, now),
     )
     rec_id = cur.lastrowid
     conn.commit()
     conn.close()
     return rec_id
+
+
+def compute_input_hash(
+    ticker: str,
+    agent_type: str,
+    price: float,
+    thesis_version: int,
+    latest_quarter: str,
+) -> str:
+    """Deterministic 16-char hash of the evaluation state for deduplication.
+
+    Price is bucketed in ~2% bands (log1p spacing) so minor tick movements
+    don't invalidate the hash. Thesis version and earnings quarter changes
+    always produce a new hash regardless of the 24h window.
+    """
+    import hashlib, math
+    bucket = round(math.log(max(price, 0.001)) / math.log(1.02)) if price > 0 else 0
+    raw = f"{ticker}|{agent_type}|{bucket}|{thesis_version}|{latest_quarter}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
+def _get_thesis_version_for_hash(ticker: str) -> int:
+    conn = _connect()
+    row = conn.execute(
+        "SELECT version FROM investment_theses WHERE ticker=? AND status='active' "
+        "ORDER BY id DESC LIMIT 1",
+        (ticker,),
+    ).fetchone()
+    conn.close()
+    return row[0] if row else 0
+
+
+def _get_latest_quarter_for_hash(ticker: str) -> str:
+    conn = _connect()
+    row = conn.execute(
+        "SELECT MAX(day) FROM holding_day WHERE ticker=?", (ticker,)
+    ).fetchone()
+    conn.close()
+    return str(row[0]) if row and row[0] else ""
+
+
+def upsert_no_action(
+    ticker: str,
+    agent_type: str,
+    run_id: int,
+    input_hash: str,
+    why_now: str | None = None,
+) -> int:
+    """Insert a NO_ACTION recommendation, or update updated_at if identical state
+    was already recorded within the last 24 hours.
+
+    Returns the recommendation id (new or existing).
+    """
+    conn = _connect()
+    now = time.time()
+    cutoff = now - 86400  # 24 h window
+
+    row = conn.execute(
+        """SELECT id FROM recommendations
+           WHERE ticker=? AND action='NO_ACTION' AND input_hash=?
+             AND COALESCE(updated_at, created_at) > ?
+           ORDER BY created_at DESC LIMIT 1""",
+        (ticker, input_hash, cutoff),
+    ).fetchone()
+
+    if row:
+        conn.execute(
+            "UPDATE recommendations SET updated_at=? WHERE id=?", (now, row[0])
+        )
+        conn.commit()
+        conn.close()
+        return row[0]
+
+    # New distinct-state record
+    cur = conn.execute(
+        """INSERT INTO recommendations
+           (run_id, ticker, action, recommendation_score, confidence, priority,
+            why_now, rationale, status, input_hash, updated_at, created_at)
+           VALUES (?,?,'NO_ACTION',50,70,'low',?,?,'no_action',?,?,?)""",
+        (
+            run_id, ticker,
+            why_now or f"Evaluated by {agent_type} — no action required.",
+            f"{agent_type}: all checks passed.",
+            input_hash, now, now,
+        ),
+    )
+    rec_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return rec_id
+
+
+def get_coverage() -> dict:
+    """Per-ticker, per-agent-type last evaluation status.
+
+    Returns:
+        tickers: list of {ticker, agent_type, last_eval_ts, last_action,
+                          days_since_eval, coverage_gap}
+        no_action_count_24h: distinct tickers with a NO_ACTION in the last 24h
+        coverage_gap_count:  tickers with no evaluation in > 7 days
+    """
+    conn = _connect()
+    conn.row_factory = sqlite3.Row
+    now = time.time()
+
+    rows = conn.execute(
+        """SELECT r.ticker,
+                  ar.agent_type,
+                  MAX(COALESCE(r.updated_at, r.created_at)) AS last_eval_ts,
+                  r.action AS last_action
+           FROM recommendations r
+           JOIN agent_runs ar ON r.run_id = ar.id
+           GROUP BY r.ticker, ar.agent_type
+           ORDER BY r.ticker, ar.agent_type""",
+    ).fetchall()
+
+    no_action_24h = conn.execute(
+        """SELECT COUNT(DISTINCT ticker) AS cnt
+           FROM recommendations
+           WHERE action='NO_ACTION'
+             AND COALESCE(updated_at, created_at) > ?""",
+        (now - 86400,),
+    ).fetchone()["cnt"]
+
+    conn.close()
+
+    tickers = []
+    gap_count = 0
+    for r in rows:
+        days = (now - r["last_eval_ts"]) / 86400 if r["last_eval_ts"] else None
+        gap = days is not None and days > 7
+        if gap:
+            gap_count += 1
+        tickers.append({
+            "ticker":         r["ticker"],
+            "agent_type":     r["agent_type"],
+            "last_eval_ts":   r["last_eval_ts"],
+            "last_action":    r["last_action"],
+            "days_since_eval": round(days, 1) if days is not None else None,
+            "coverage_gap":   gap,
+        })
+
+    return {
+        "tickers":             tickers,
+        "no_action_count_24h": no_action_24h,
+        "coverage_gap_count":  gap_count,
+    }
 
 
 def insert_critic_review(

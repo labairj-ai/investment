@@ -7677,11 +7677,7 @@ function _renderDecisionQueue(recs) {{
   if (decBtn) decBtn.textContent = open.length > 0 ? `Decisions (${{open.length}})` : 'Decisions';
   const decDdBtn = document.getElementById('tab-dd-btn-decisions');
   if (decDdBtn) decDdBtn.textContent = open.length > 0 ? `Decisions (${{open.length}})` : 'Decisions';
-  const totalPos = (typeof DQ_TOTAL_POSITIONS !== 'undefined') ? DQ_TOTAL_POSITIONS : 0;
-  if (noAct && totalPos > 0) {{
-    noAct.style.display = 'block';
-    noAct.textContent   = `No action: ${{Math.max(0, totalPos - open.length)}} of ${{totalPos}} positions reviewed`;
-  }}
+  // Footer is populated by loadDecisionQueue after coverage fetch
 }}
 
 function dqDecide(recId, decision) {{
@@ -7699,8 +7695,16 @@ function dqDecide(recId, decision) {{
 }}
 
 function loadDecisionQueue() {{
-  fetch('/api/agents/recommendations?status=open').then(r => r.json()).then(d => {{
-    if (d.ok) _renderDecisionQueue(d.recommendations);
+  Promise.all([
+    fetch('/api/agents/recommendations?status=open').then(r => r.json()),
+    fetch('/api/agents/coverage').then(r => r.json()).catch(() => ({{}})),
+  ]).then(([recData, covData]) => {{
+    if (recData.ok) _renderDecisionQueue(recData.recommendations);
+    const noAct  = document.getElementById('dq-no-action');
+    if (noAct && covData.no_action_count_24h != null) {{
+      noAct.style.display = 'block';
+      noAct.textContent   = `No action: ${{covData.no_action_count_24h}} position${{covData.no_action_count_24h === 1 ? '' : 's'}} reviewed in last 24h`;
+    }}
   }}).catch(() => {{}});
 }}
 

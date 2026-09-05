@@ -58,6 +58,38 @@ def _install_llm_semaphore() -> None:
 _install_llm_semaphore()
 
 
+# Agents that iterate over portfolio holdings — NO_ACTION recorded for
+# any holding they evaluated but did not flag.
+_HOLDING_SCOPE_AGENTS = {"portfolio_guardian", "thesis_monitor", "covered_call"}
+
+
+def _record_no_actions(
+    agent_type: str,
+    snapshot: PortfolioSnapshot,
+    recommended_tickers: set[str],
+    run_id: int,
+) -> None:
+    """Write NO_ACTION rows for holdings the agent evaluated but did not flag."""
+    import agent_db
+
+    for holding in snapshot.holdings:
+        if holding.ticker in recommended_tickers:
+            continue
+        thesis_ver = agent_db._get_thesis_version_for_hash(holding.ticker)
+        latest_q   = agent_db._get_latest_quarter_for_hash(holding.ticker)
+        h = agent_db.compute_input_hash(
+            holding.ticker, agent_type,
+            holding.current_price or 0,
+            thesis_ver, latest_q,
+        )
+        agent_db.upsert_no_action(
+            ticker=holding.ticker,
+            agent_type=agent_type,
+            run_id=run_id,
+            input_hash=h,
+        )
+
+
 # Canonical execution order — Critic runs after producers; Briefing runs last
 AGENT_ORDER = [
     "portfolio_guardian",
@@ -110,6 +142,11 @@ def run_agents(
                 trigger_type="orchestrated",
             )
             agent_recs: list[Recommendation] = handler(ctx)
+
+            # Auto-record NO_ACTION for holdings not flagged by this agent
+            if agent_type in _HOLDING_SCOPE_AGENTS and snapshot.holdings:
+                recommended = {r.ticker for r in agent_recs}
+                _record_no_actions(agent_type, snapshot, recommended, run_id)
 
             for rec in agent_recs:
                 agent_db.insert_recommendation(
