@@ -53,7 +53,8 @@ The old macOS launchd agents are archived in `launchd-disabled-on-mac/`.
 | **FIFO Sell Tracker** | Record sales with automatic FIFO lot matching; previews which lots are consumed before confirming; undo support |
 | **Realized Gains & Tax** | Dashboard card showing YTD (or all-time) realized gains split by ST/LT — **includes covered call premium income** — with estimated federal tax at editable bracket rates |
 | **Tax Loss Harvesting** | Interactive modeler (✂ Tax Harvesting button in the Realized Gains card) — shows all open positions with unrealized gains/losses; check any combination to see real-time net tax impact using IRS ST/LT cross-netting rules, the $3k ordinary-income offset, and bracket-aware rates; selecting winners increases the estimated tax, selecting losers lowers it; wash sale warning (30-day window) included |
-| **Private Data Backup** | Daily push of `investment.db`, `holdings.csv`, and `buffett.db` to a separate private GitHub repo |
+| **Investment Thesis** | Per-holding thesis intake form, AI-drafted claims, and user approval workflow. Click **Thesis +** on any holding to open the modal. Three states: (1) **Intake form** — describe why you own it, portfolio role, expected holding period, key conditions, sell/trim triggers, conviction (1–5), and max position %. (2) **AI Draft review** — system fetches real financials for the ticker via `financials_fetcher.py` and calls `Qwen3.6-35B-A3B-4bit` to draft 3–6 structured claims, each with importance weight (sum to 100), and per-measurement `healthy`/`warning`/`violation` thresholds grounded in actual historical ranges, not generic benchmarks. Drafts are stored in `investment_theses` with `status=DRAFT` — not active yet. (3) **Active thesis view** — once approved, shows claim list, importance weights, and any pending change proposals. Approval sets `status=ACTIVE`, `version=1`, `approved_by=USER`. Agents cannot modify an active thesis directly — they must file a `THESIS_CHANGE_PROPOSAL` recommendation in the Decision Queue (Accept/Reject UI). Accepting increments the version and records the change. Thesis data is backed up daily to the private data repo as `theses.json` (human-readable, no SQLite client required to recover). |
+| **Private Data Backup** | Daily push of `investment.db`, `holdings.csv`, `buffett.db`, and `theses.json` to a separate private GitHub repo. Runs at 8 PM ET every day (independent of the newsletter), and also after each scheduled Saturday refresh. `theses.json` exports all thesis data as expanded, readable JSON — `intake_json`/`draft_json` blobs unpacked, claims nested under each thesis — so the repo is usable after an optiplex wipe without a SQLite client. |
 
 ---
 
@@ -233,6 +234,12 @@ Script changes take effect on the next **↻ Refresh Data** without restarting t
 | `GET /api/tlh-analysis` | Per-ticker unrealized G/L from `cost_lots`; used by the Tax Harvesting modal |
 | `POST /api/refresh-dashboard` | Fetch fresh prices, update the DB, and regenerate the dashboard without sending email (backs the **↻ Refresh Data** button) |
 | `POST /api/invest-chat` | Streaming SSE endpoint for conversational AI chat. Body: `{context_type: "winner"\|"cc", context_id: ticker, messages: [{role, content}]}`. Builds a system prompt from DB/option data, then streams llama3.3:70b tokens as `data: {"token":"..."}` events. Concurrency-guarded per ticker (429 if already streaming). |
+| `GET /api/theses/<ticker>` | Current thesis for a holding. Returns the most recent `investment_theses` row (any status) with `intake_json` and `draft_json` parsed, plus any open `THESIS_CHANGE_PROPOSAL` recommendations. |
+| `POST /api/theses/<ticker>/draft` | Start an async AI thesis draft. Body: `{intake: {...}}`. Kicks off a background thread that fetches real financials and calls `Qwen3.6-35B-A3B-4bit` to draft 3–6 structured claims. Returns `{job_id}` immediately; poll `/api/theses/<ticker>/draft?job_id=<id>` until `status: done`. |
+| `GET /api/theses/<ticker>/draft?job_id=<id>` | Poll a draft job. Returns `{status: pending\|done\|error}` plus `draft` when done. |
+| `PUT /api/theses/<ticker>/draft` | Save user edits to a DRAFT thesis. Body: `{draft_json: {...}}`. |
+| `POST /api/theses/<ticker>/approve` | Approve a DRAFT thesis. Sets `status=ACTIVE`, `version=N`, `approved_by=USER`. Any prior ACTIVE thesis for the ticker is flipped to `SUPERSEDED`. |
+| `POST /api/theses/<ticker>/accept-proposal` | Accept a `THESIS_CHANGE_PROPOSAL` from the Decision Queue. Body: `{recommendation_id: N}`. Increments thesis version and applies the proposed change to `draft_json`. |
 
 ---
 
@@ -252,9 +259,11 @@ Runs automatically inside `serve.py` as a background thread — **no separate la
 
 1. Checks if today's digest has already sent (`out/last_run_date.txt`)
 2. If not and it's ≥ 7 AM ET, runs `send_newsletter_main.py` → `generate_dashboard.py`
-3. After success, triggers the **data backup** to the private backup repo
+3. After success, triggers a **data backup** to the private backup repo
 4. Rechecks every 30 minutes as a safety net
-5. At **9:30 PM ET**, runs a no-email price refresh (`--no-email`) to overwrite today's snapshot with actual closing prices and regenerate the dashboard — important for OTC/pink-sheet tickers (e.g. MITSF, ITOCF) that can lag 4–6 hours in yfinance after market close
+5. At **5 PM ET**, runs a no-email price refresh and triggers another backup
+6. At **9:30 PM ET**, runs a final OTC price refresh (overwriting today's snapshot with actual closing prices for tickers like MITSF, ITOCF that can lag 4–6 hours in yfinance) and triggers a final backup
+7. **Every day at 8 PM ET** regardless of whether the newsletter ran — catches weekday changes (manual lot edits, thesis saves, holdings updates)
 
 **OTC price handling:** for tickers whose yfinance history is stale after the 4 PM close (more than one business day behind today), `send_newsletter_main.py` falls back to `fast_info.last_price` — safe for OTC stocks since they have no pre/post-market trading.
 
@@ -456,13 +465,14 @@ Columns: **Layer | Value | Weight | Δ$ | Δ% | Next Earnings**
 Next Earnings shows the soonest reporting ticker per layer, color-coded red ≤7 days, orange ≤21 days, green further out.
 
 ### Holdings Table
-Columns: **Ticker | Shares | Avg Cost | Price | Value | Total Gain | Daily Δ | Weight | Next Earnings | Layer | Tax Lots**
+Columns: **Ticker | Shares | Avg Cost | Price | Value | Total Gain | Daily Δ | Weight | Next Earnings | Layer | Lots | Thesis**
 
 Column headers are **sticky** — they float at the top of the viewport as you scroll down the page (applies to Holdings, Dividend, Buffett Screener, and CC Tracker tables).
 
 - Total Gain shows true return vs cost basis, with **ST** / **LT** / **⚠ MIXED** tax badge derived from your cost lots
 - **Layer badge** (L1–L5, color-coded) — click to reassign the holding to a different layer; history is rewritten retroactively so no artificial spike appears in the weight chart
 - **Lots** button opens the lot tracker modal
+- **Thesis** badge — shows the active thesis status (`DRAFT` / `ACTIVE` / `UNDER_REVIEW` / `BROKEN`) or a **Thesis +** button to create one. Click to open the thesis modal (intake → draft → approve flow).
 
 ### Holdings Management
 
@@ -733,7 +743,16 @@ Default on load shows only **Upcoming + Payment Due** (the actionable ones). Cli
 
 ## Private Data Backup
 
-Financial data (`investment.db`, `holdings.csv`, `buffett.db`) is backed up daily to a **separate private GitHub repo** — stays private even if this code repo is made public.
+Financial data is backed up to a **separate private GitHub repo** — stays private even if this code repo is made public. Backed up files:
+
+| File | What it contains |
+|---|---|
+| `investment.db` | Portfolio history, theses, lots, CC positions, macro scores |
+| `holdings.csv` | Current positions |
+| `buffett.db` | Buffett screener cache and winner history |
+| `theses.json` | All thesis data as expanded, readable JSON — `intake_json`/`draft_json` unpacked, claims nested under each thesis. Usable without a SQLite client. |
+
+**Schedule:** runs after each Saturday newsletter (7 AM), after the 5 PM Saturday refresh, after the 9:30 PM Saturday OTC refresh, and independently every day at 8 PM ET (catches weekday changes: lot edits, thesis saves, manual holdings updates). Flag file `out/last_backup_date.txt` prevents double-running on the same day.
 
 **Run manually:**
 ```bash
@@ -746,6 +765,7 @@ git clone https://github.com/<your-username>/investment-data.git ~/.investment-b
 cp ~/.investment-backup/investment.db ~/Desktop/investment/out/
 cp ~/.investment-backup/holdings.csv  ~/Desktop/investment/
 cp ~/.investment-backup/buffett.db    ~/Desktop/investment/out/
+# theses.json is human-readable reference; the DB contains the authoritative live data
 ```
 
 ---
@@ -773,11 +793,13 @@ investment/
 ├── holdings.csv                     # Portfolio positions — Stock, Shares, AvgCost, Layer, PurchaseDate (optional; multiple rows per ticker supported for lot tracking)
 ├── covered_calls.csv                # Bulk-import seed for open covered call positions
 ├── layer_targets.json               # Target layer allocations (used by dashboard + email digest)
-├── backup_data.sh                   # Pushes DB + CSV to a private backup repo
+├── backup_data.sh                   # Pushes DB + CSV + theses.json to a private backup repo; runs daily at 8 PM ET + after every Saturday refresh
 ├── run_server.sh                    # Infinite-loop wrapper around serve.py (used by launchd)
 ├── send_newsletter_main.py          # Fetches prices, sends email, writes DB
 ├── generate_dashboard.py            # Generates out/dashboard.html
 ├── serve.py                         # HTTP server + all API endpoints + schedulers
+├── agent_db.py                      # SQLite CRUD layer for all agent tables: investment_theses, thesis_claims, agent_findings, recommendations, user_decisions, company_financials, holding_day; also migrate() for schema versioning
+├── financials_fetcher.py            # Fetches and caches fundamental financial data per ticker (revenue, margins, FCF, etc.) for use by agents and thesis drafting
 ├── buffett_screener.py              # NYSE Buffett screener — nightly at 2 AM ET
 ├── covered_call_rec.py              # Covered call recommendation + blackout engine + ai_context() prompt builder
 ├── macro_context.py                 # Macro data fetcher: yfinance proxies (TLT/GLD/VIX/UUP/TNX/IRX) + FRED API (FEDFUNDS/CPI/T10Y2Y/UNRATE) + RSS headlines; Congress.gov API for official bill tracking + CRS summaries (6-hr cache in out/bills_cache.json); 30-min macro cache in out/macro_cache.json
@@ -788,8 +810,10 @@ investment/
 ├── chart.umd.min.js                 # Bundled Chart.js (no CDN dependency)
 ├── favicon.svg                      # Dashboard browser tab icon
 ├── .env                             # ⚠ Not committed — email credentials
+├── agents/
+│   └── thesis_intake.py             # draft_thesis(ticker, intake) → structured claim dict; fetches real financials, calls Qwen3.6 with thinking disabled, normalises importance sum to 100
 └── out/
-    ├── investment.db                # SQLite: price history, cc_positions, cost_lots, sell_transactions, holding_macro_scores, holding_macro_scores_history, macro_score_summaries
+    ├── investment.db                # SQLite: price history, investment_theses, thesis_claims, cc_positions, cost_lots, sell_transactions, holding_macro_scores, holding_macro_scores_history, macro_score_summaries, recommendations, agent_findings
     ├── buffett.db                   # SQLite: Buffett screener cache, winners, history
     ├── dashboard.html               # Generated dashboard (served by serve.py)
     ├── macro_cache.json             # 30-min macro context cache (yfinance + FRED + headlines)
@@ -802,6 +826,8 @@ investment/
     ├── last_run_date.txt            # Flag — prevents double digest sends
     ├── last_macro_score_date.txt    # Flag — prevents double Saturday macro scoring runs (independent of last_run_date.txt)
     ├── last_refresh_date.txt        # Flag — prevents double evening price refreshes
+    ├── last_refresh_5pm_date.txt    # Flag — prevents double 5 PM Saturday refreshes
+    ├── last_backup_date.txt         # Flag — prevents double backup runs on the same day
     ├── last_screener_date.txt       # Flag — prevents double screener runs
     └── buffett_screener.lock        # PID lock — prevents concurrent screener instances
 ```
@@ -837,6 +863,7 @@ git clone https://github.com/<your-username>/investment-data.git ~/.investment-b
 cp ~/.investment-backup/investment.db out/
 cp ~/.investment-backup/holdings.csv  .
 cp ~/.investment-backup/buffett.db    out/
+# theses.json is human-readable reference; investment.db contains the live thesis data
 
 # Create .env with credentials (see Setup above)
 
