@@ -26,12 +26,16 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from dotenv import load_dotenv
 
+from strategy_config import (
+    LAYER_NAMES, LAYER_COLORS, LAYER_TARGETS,
+    DRIFT_THRESHOLD, LAYER_GROSS_DOM, HOLDING_GROSS_DOM,
+)
+
 load_dotenv(Path(__file__).parent / ".env")
 
 # ─── Config ───────────────────────────────────────────────────────────────────
 PROJECT_DIR      = Path(__file__).resolve().parent
 HOLDINGS_CSV     = PROJECT_DIR / "holdings.csv"
-LAYER_TARGETS_F  = PROJECT_DIR / "layer_targets.json"
 DB_PATH          = PROJECT_DIR / "out" / "investment.db"
 OUT_DIR          = PROJECT_DIR / "out"
 OUT_DIR.mkdir(exist_ok=True)
@@ -42,27 +46,7 @@ TO_EMAILS        = [os.getenv("EMAIL_TO", "robertjsherman1@gmail.com")]
 
 BENCHMARK        = "SPY"
 TZ               = ZoneInfo("America/New_York")
-DRIFT_THRESHOLD  = 5.0
 EVENTS_WINDOW    = 3   # days ahead for earnings / ex-div alerts
-
-LAYER_NAMES = {
-    1: "L1 Structural Ballast",
-    2: "L2 Cash-Flow Engines",
-    3: "L3 Compounders",
-    4: "L4 Convexity",
-    5: "L5 Shock Absorbers",
-}
-LAYER_COLORS = {
-    1: "#4A90D9",
-    2: "#27ae60",
-    3: "#e67e22",
-    4: "#7c3aed",
-    5: "#9B59B6",
-}
-LAYER_TARGETS_DEFAULT = {1: 25.0, 2: 20.0, 3: 35.0, 4: 12.0, 5: 8.0}
-
-LAYER_GROSS_DOM   = 50.0
-HOLDING_GROSS_DOM = 25.0
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -279,17 +263,9 @@ def fetch_calendar_events(tickers: list[str]) -> tuple[list, list]:
 
 
 # ─── Layer drift ──────────────────────────────────────────────────────────────
-def load_layer_targets() -> dict[int, float]:
-    try:
-        raw = json.loads(LAYER_TARGETS_F.read_text())
-        return {int(k): float(v) for k, v in raw.items()}
-    except Exception:
-        return LAYER_TARGETS_DEFAULT.copy()
-
-
 def compute_drift(layer_weights: dict) -> list[dict]:
     """Returns layers with abs(drift) >= DRIFT_THRESHOLD, sorted by abs drift desc."""
-    targets = load_layer_targets()
+    targets = LAYER_TARGETS
     drifts = []
     for lnum in range(1, 6):
         target  = targets.get(lnum, 0)
@@ -502,7 +478,7 @@ def build_html(
     flags: list[str],
 ) -> str:
 
-    targets = load_layer_targets()
+    targets = LAYER_TARGETS
     chg_color = color_change(total_change)
 
     # ── 1. Snapshot ──────────────────────────────────────────────────────────
@@ -681,7 +657,7 @@ def build_html(
     <div style="font-size:11px;color:#aaa;text-align:center;padding:0 0 12px;">
       Discipline anchor: today's behavior was <b style="color:#555;">{anchor}</b>
       with no judgment violations requiring action. &nbsp;·&nbsp;
-      Layer targets in <code>layer_targets.json</code>
+      Layer targets in <code>config/strategy.json</code>
     </div>
 
   </div>

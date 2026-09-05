@@ -12,6 +12,10 @@ import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+from strategy_config import (
+    LAYER_NAMES, LAYER_LABELS, LAYER_TARGETS, LAYER_DESCRIPTIONS, DRIFT_THRESHOLD,
+)
+
 
 def _normalize_ticker(t: str) -> str:
     """Mirror generate_dashboard.normalize_ticker: BRK.B → BRK-B."""
@@ -120,12 +124,9 @@ import ollama_client
 PROJECT_DIR = Path(__file__).resolve().parent
 DB_PATH = PROJECT_DIR / "out" / "investment.db"
 
-LAYER_NAMES = {
-    1: "L1 Structural Ballast (stability anchor, ~33% target — broad index, bonds)",
-    2: "L2 Cash-Flow Engines (income generators, ~20% target — dividend stocks, REITs)",
-    3: "L3 Compounders (growth compounders, ~29% target — quality growth businesses)",
-    4: "L4 Convexity (high-upside asymmetric bets, ~10% target — concentrated growth/speculative)",
-    5: "L5 Shock Absorbers (portfolio hedges, ~8% target — gold, cash, inverse ETFs)",
+_LAYER_NAMES_LONG = {
+    n: f"{LAYER_NAMES[n]} ({LAYER_DESCRIPTIONS[n]})"
+    for n in LAYER_NAMES
 }
 
 # ── Canonical macro framework ─────────────────────────────────────────────────
@@ -442,20 +443,14 @@ def _get_holding_prices_from_db() -> dict:
 
 def _get_drift_alerts(layer_weights: dict) -> list[dict]:
     """Return layers with drift >= 5pp from targets."""
-    TARGETS = {
-        "Layer 1: L1 Structural Ballast": 33.0,
-        "Layer 2: L2 Cash-Flow Engines":  20.0,
-        "Layer 3: L3 Compounders":        29.0,
-        "Layer 4: L4 Convexity":          10.0,
-        "Layer 5: L5 Shock Absorbers":     8.0,
-    }
+    _targets_by_label = {LAYER_LABELS[n]: LAYER_TARGETS[n] for n in LAYER_TARGETS}
     alerts = []
     for layer_label, data in layer_weights.items():
-        target = TARGETS.get(layer_label)
+        target = _targets_by_label.get(layer_label)
         if target is None:
             continue
         drift = data["weight_pct"] - target
-        if abs(drift) >= 5.0:
+        if abs(drift) >= DRIFT_THRESHOLD:
             alerts.append({
                 "layer": layer_label,
                 "current": round(data["weight_pct"], 1),
@@ -1091,7 +1086,7 @@ def generate_daily_insight(force: bool = False) -> dict:
     realized_block  = _get_realized_context()
     patterns_block  = _get_behavior_patterns()
 
-    framework = "\n".join(f"  {k}: {v}" for k, v in LAYER_NAMES.items())
+    framework = "\n".join(f"  {k}: {v}" for k, v in _LAYER_NAMES_LONG.items())
 
     personal_blocks = "\n\n".join(b for b in [lot_block, realized_block, patterns_block] if b)
 
@@ -1560,7 +1555,7 @@ def build_portfolio_system_prompt() -> str:
     patterns_block = _get_behavior_patterns()
     personal_blocks = "\n\n".join(b for b in [cc_block, lot_block, realized_block, patterns_block] if b)
 
-    framework = "\n".join(f"  {k}: {v}" for k, v in LAYER_NAMES.items())
+    framework = "\n".join(f"  {k}: {v}" for k, v in _LAYER_NAMES_LONG.items())
 
     system = f"""You are a sophisticated investment advisor helping the investor understand and manage their personal portfolio. You have deep knowledge of macro economics, geopolitics, tax strategy, and the portfolio framework below.
 

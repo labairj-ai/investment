@@ -1,0 +1,50 @@
+{
+  "layers": {
+    "1": {
+      "name": "L1 Structural Ballast",
+      "description": "stability anchor, ~33% target — broad index, bonds",
+      "target_pct": 33.0,
+      "color": "#4A90D9"
+    },
+    "2": {
+      "name": "L2 Cash-Flow Engines",
+      "description": "income generators, ~20% target — dividend stocks, REITs",
+      "target_pct": 20.0,
+      "color": "#27ae60"
+    },
+    "3": {
+      "name": "L3 Compounders",
+      "description": "growth compounders, ~29% target — quality growth businesses",
+      "target_pct": 29.0,
+      "color": "#e67e22"
+    },
+    "4": {
+      "name": "L4 Convexity",
+      "description": "high-upside asymmetric bets, ~10% target — concentrated growth/speculative",
+      "target_pct": 10.0,
+      "color": "#7c3aed"
+    },
+    "5": {
+      "name": "L5 Shock Absorbers",
+      "description": "portfolio hedges, ~8% target — gold, cash, inverse ETFs",
+      "target_pct": 8.0,
+      "color": "#9B59B6"
+    }
+  },
+  "covered_calls": {
+    "min_dte": 21,
+    "max_dte": 60,
+    "extended_max_dte": 180,
+    "r_min": 0.10,
+    "r_forward": 0.00,
+    "exec_lambda": 0.25,
+    "min_bid": 0.05,
+    "top_n": 5,
+    "max_strike_multiplier": 1.50
+  },
+  "risk": {
+    "drift_threshold_pct": 5.0,
+    "layer_gross_dom_pct": 50.0,
+    "holding_gross_dom_pct": 25.0
+  }
+}

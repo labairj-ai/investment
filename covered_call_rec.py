@@ -39,22 +39,21 @@ import yfinance as yf
 import warnings
 warnings.filterwarnings("ignore")
 
+from strategy_config import (
+    CC_MIN_DTE as MIN_DTE,
+    CC_MAX_DTE as MAX_DTE,
+    CC_MAX_DTE_EXTENDED as MAX_DTE_EXTENDED,
+    CC_R_MIN as R_MIN,
+    CC_R_FORWARD as R_FORWARD,
+    CC_EXEC_LAMBDA as EXEC_LAMBDA,
+    CC_MIN_BID as MIN_BID,
+    CC_TOP_N as TOP_N,
+    CC_MAX_STRIKE_MULTIPLIER as MAX_STRIKE_MULTIPLIER,
+)
 
 # ── Settings ──────────────────────────────────────────────────────────────────
 
 RISK_FREE_RATE = 0.045
-
-R_MIN     = 0.10   # minimum total return on original cost if called
-R_FORWARD = 0.00   # minimum forward return from today's price (0 = income-focused)
-
-EXEC_LAMBDA = 0.25  # fill assumption: bid + λ*(ask-bid)
-
-MIN_DTE          = 21
-MAX_DTE          = 60
-MAX_DTE_EXTENDED = 180
-TOP_N            = 5
-MIN_BID          = 0.05
-MAX_STRIKE_MULTIPLIER = 1.50
 
 # Drift model
 DRIFT_WEIGHT_60D   = 0.50

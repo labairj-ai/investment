@@ -10,21 +10,13 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from strategy_config import LAYER_NAMES, LAYER_LABELS, LAYER_TARGETS
+
 PROJECT_DIR = Path(__file__).resolve().parent
 DB_PATH = PROJECT_DIR / "out" / "investment.db"
 HOLDINGS_CSV = PROJECT_DIR / "holdings.csv"
 OUT_PATH = PROJECT_DIR / "out" / "dashboard.html"
 TZ = ZoneInfo("America/New_York")
-
-LAYER_NAMES = {
-    1: "L1 Structural Ballast",
-    2: "L2 Cash-Flow Engines",
-    3: "L3 Compounders",
-    4: "L4 Convexity",
-    5: "L5 Shock Absorbers",
-}
-# Canonical DB label for each layer number
-LAYER_LABELS = {n: f"Layer {n}: {name}" for n, name in LAYER_NAMES.items()}
 
 def normalize_ticker(t: str) -> str:
     t = str(t).strip().upper().lstrip("$")
@@ -1125,12 +1117,7 @@ def build_dashboard(portfolio, layers, holdings):
         for h in today_holdings if h.get("layer_num") == 4
     ]
 
-    _lt_path = os.path.join(os.path.dirname(__file__), "layer_targets.json")
-    try:
-        with open(_lt_path) as _f:
-            layer_targets_data = {int(k): v for k, v in json.load(_f).items()}
-    except Exception:
-        layer_targets_data = {}
+    layer_targets_data = LAYER_TARGETS
 
     chart_data = json.dumps({
         "dates": port_dates,
