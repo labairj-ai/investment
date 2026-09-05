@@ -1,7 +1,7 @@
 # Add generate_structured() Wrapper to ollama_client.py
 
 - **ID:** 0003
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-05
 - **Priority:** high
 - **Depends:** none
@@ -24,11 +24,24 @@ The current `generate()` function requests JSON via `response_format: {type: jso
 
 `ollama_client.py`, all agent files (once written), `portfolio_ai.py` (existing structured calls)
 
+## Outcome
+
+Added to `ollama_client.py`:
+- `StructuredOutputError(RuntimeError)` — carries `.raw` attribute with the last model response for debugging
+- `_validate_schema(obj, schema, path)` — recursive key-presence checker; schema values are documentation only, not type constraints
+- `generate_structured(prompt, schema, model, temperature, num_predict, thinking, retries)` — non-streaming, `response_format: json_object`, parse → validate → retry with exponential backoff (`2**attempt` seconds); logs prompt SHA1 hash, attempt number, and latency on every retry or failure; raises `StructuredOutputError` after all retries exhausted
+
+Migrated `generate_macro_score_summary()` in `portfolio_ai.py`: replaced the `stream_generate()` accumulate-then-`_extract_last_json()` pattern with a single `generate_structured()` call using `schema={"portfolio": "", "layers": {}}`. Removed the orphaned `full_text = ""` variable.
+
+QA verified with mocks: bad-JSON-then-good retries and succeeds; all-bad raises `StructuredOutputError` with the raw tail attached; valid response returns immediately.
+
+For next items: agents should call `generate_structured()` for all machine-to-machine JSON payloads. `stream_generate()` remains the right choice for human-facing streaming chat (where latency matters and the output doesn't need to be machine-parsed). The remaining `stream_generate()` + `_extract_json()` patterns in `portfolio_ai.py` (news summaries, macro score batches) are candidates for future migration but were intentionally left — they are large variable-schema outputs where the batch key is the ticker symbol, making a fixed schema impractical without a per-ticker wrapper.
+
 ## Done when
 
-- [ ] `generate_structured()` exists in `ollama_client.py` with JSON mode + validation + retry
-- [ ] At least one existing structured call in `portfolio_ai.py` is migrated to use it as a proof of concept
-- [ ] Malformed JSON response triggers retry and logs a warning, not a crash
-- [ ] All retries exhausted → raises `StructuredOutputError` with the raw response included for debugging
-- [ ] QA evaluation conducted: functionality verified working, no regressions introduced
+- [x] `generate_structured()` exists in `ollama_client.py` with JSON mode + validation + retry
+- [x] At least one existing structured call in `portfolio_ai.py` is migrated to use it as a proof of concept
+- [x] Malformed JSON response triggers retry and logs a warning, not a crash
+- [x] All retries exhausted → raises `StructuredOutputError` with the raw response included for debugging
+- [x] QA evaluation conducted: functionality verified working, no regressions introduced
 

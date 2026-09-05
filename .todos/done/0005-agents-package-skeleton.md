@@ -1,7 +1,7 @@
 # Create agents/ Package Skeleton with Shared Contracts
 
 - **ID:** 0005
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-05
 - **Priority:** high
 - **Depends:** 0004
@@ -31,11 +31,23 @@ LLM semaphore lives in `orchestrator.py`: `_llm_semaphore = threading.Semaphore(
 
 ## Done when
 
-- [ ] `agents/` package importable with no errors
-- [ ] `contracts.py` defines all shared dataclasses with type annotations
-- [ ] `triggers.py` `detect_triggers()` runs against a mock snapshot and returns a list (even if empty)
-- [ ] `confidence.py` `calculate_confidence()` returns a value in 0–100 for a sample input
-- [ ] `orchestrator.py` `run_agents()` exists and accepts the right signature (even if it's a stub that calls nothing yet)
-- [ ] `agent_db.py` wraps the tables from 0004
-- [ ] QA evaluation conducted: functionality verified working, no regressions introduced
+- [x] `agents/` package importable with no errors
+- [x] `contracts.py` defines all shared dataclasses with type annotations
+- [x] `triggers.py` `detect_triggers()` runs against a mock snapshot and returns a list (even if empty)
+- [x] `confidence.py` `calculate_confidence()` returns a value in 0–100 for a sample input
+- [x] `orchestrator.py` `run_agents()` exists and accepts the right signature (even if it's a stub that calls nothing yet)
+- [x] `agent_db.py` wraps the tables from 0004
+- [x] QA evaluation conducted: functionality verified working, no regressions introduced
+
+## Outcome
+
+Created `agents/` package with five files:
+
+- `contracts.py` — 6 dataclasses (HoldingSnapshot, PortfolioSnapshot, AgentContext, AgentFinding, Recommendation, CriticReview) with full type annotations
+- `triggers.py` — TriggerEvent dataclass + `detect_triggers()`: fires layer_drift→portfolio_guardian, cc_eligible→covered_call, portfolio_scope→briefing; verified L1+L5 drift + 2 CC + 1 daily trigger from a mock snapshot
+- `confidence.py` — `calculate_confidence()` D+F+S+A+R composite; cap to 60 when price/holdings missing, cap to 70 when rule_support < 0.5; all cap assertions passed
+- `orchestrator.py` — `_llm_semaphore = threading.Semaphore(1)`, `AGENT_ORDER`, `register_agent()`, `run_agents()` wired to agent_db; returns [] when no handlers registered
+- `__init__.py` — re-exports all 11 public names via `__all__`
+
+agent_db.py was created in 0004 and is already in place. No existing files were modified by this todo. Items 0006, 0007, 0008, 0009, and 0020 are now unblocked.
 
