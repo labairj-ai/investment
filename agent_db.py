@@ -158,6 +158,47 @@ def migrate() -> None:
         CREATE INDEX IF NOT EXISTS idx_thesis_claims_thesis
             ON thesis_claims (thesis_id);
 
+        CREATE TABLE IF NOT EXISTS thesis_pillars (
+            id                INTEGER PRIMARY KEY,
+            thesis_id         INTEGER NOT NULL REFERENCES investment_theses(id),
+            name              TEXT    NOT NULL,
+            description       TEXT,
+            importance        REAL    NOT NULL,
+            critical          INTEGER NOT NULL DEFAULT 0,
+            status            TEXT    NOT NULL DEFAULT 'UNKNOWN',
+            score             REAL,
+            confidence        REAL,
+            last_evaluated_at REAL,
+            reason            TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS thesis_metrics (
+            id                  INTEGER PRIMARY KEY,
+            pillar_id           INTEGER NOT NULL REFERENCES thesis_pillars(id),
+            metric_key          TEXT    NOT NULL,
+            direction           TEXT    NOT NULL,
+            healthy_rule_json   TEXT,
+            warning_rule_json   TEXT,
+            violation_rule_json TEXT,
+            persistence_periods INTEGER NOT NULL DEFAULT 1
+        );
+
+        CREATE TABLE IF NOT EXISTS thesis_rules (
+            id        INTEGER PRIMARY KEY,
+            thesis_id INTEGER NOT NULL REFERENCES investment_theses(id),
+            rule_type TEXT    NOT NULL,
+            rule_json TEXT    NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_thesis_pillars_thesis
+            ON thesis_pillars (thesis_id);
+
+        CREATE INDEX IF NOT EXISTS idx_thesis_metrics_pillar
+            ON thesis_metrics (pillar_id);
+
+        CREATE INDEX IF NOT EXISTS idx_thesis_rules_thesis_type
+            ON thesis_rules (thesis_id, rule_type);
+
         CREATE INDEX IF NOT EXISTS idx_decisions_rec
             ON user_decisions (recommendation_id);
 
@@ -168,9 +209,16 @@ def migrate() -> None:
 
     # Add columns introduced after the initial schema (safe to re-run)
     _new_cols = [
-        ("investment_theses", "approved_by",  "TEXT"),
-        ("investment_theses", "intake_json",  "TEXT"),
-        ("investment_theses", "draft_json",   "TEXT"),
+        ("investment_theses", "approved_by",      "TEXT"),
+        ("investment_theses", "intake_json",       "TEXT"),
+        ("investment_theses", "draft_json",        "TEXT"),
+        ("investment_theses", "portfolio_role",    "TEXT"),
+        ("investment_theses", "thesis_summary",    "TEXT"),
+        ("investment_theses", "holding_period",    "TEXT"),
+        ("investment_theses", "conviction",        "INTEGER"),
+        ("investment_theses", "target_weight_pct", "REAL"),
+        ("investment_theses", "max_weight_pct",    "REAL"),
+        ("investment_theses", "closed_reason",     "TEXT"),
     ]
     for table, col, col_type in _new_cols:
         try:
@@ -587,6 +635,120 @@ def get_open_recommendations(ticker: str | None = None) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def insert_thesis_pillar(
+    thesis_id: int,
+    name: str,
+    importance: float,
+    *,
+    description: str | None = None,
+    critical: bool = False,
+) -> int:
+    conn = _connect()
+    cur = conn.execute(
+        """INSERT INTO thesis_pillars
+           (thesis_id, name, description, importance, critical)
+           VALUES (?,?,?,?,?)""",
+        (thesis_id, name, description, importance, int(critical)),
+    )
+    conn.commit()
+    pillar_id = cur.lastrowid
+    conn.close()
+    return pillar_id
+
+
+def insert_thesis_metric(
+    pillar_id: int,
+    metric_key: str,
+    direction: str,
+    *,
+    healthy_rule_json: str | None = None,
+    warning_rule_json: str | None = None,
+    violation_rule_json: str | None = None,
+    persistence_periods: int = 1,
+) -> int:
+    conn = _connect()
+    cur = conn.execute(
+        """INSERT INTO thesis_metrics
+           (pillar_id, metric_key, direction,
+            healthy_rule_json, warning_rule_json, violation_rule_json,
+            persistence_periods)
+           VALUES (?,?,?,?,?,?,?)""",
+        (pillar_id, metric_key, direction,
+         healthy_rule_json, warning_rule_json, violation_rule_json,
+         persistence_periods),
+    )
+    conn.commit()
+    metric_id = cur.lastrowid
+    conn.close()
+    return metric_id
+
+
+def insert_thesis_rule(thesis_id: int, rule_type: str, rule_json: str) -> int:
+    conn = _connect()
+    cur = conn.execute(
+        "INSERT INTO thesis_rules (thesis_id, rule_type, rule_json) VALUES (?,?,?)",
+        (thesis_id, rule_type, rule_json),
+    )
+    conn.commit()
+    rule_id = cur.lastrowid
+    conn.close()
+    return rule_id
+
+
+def update_pillar_status(
+    pillar_id: int,
+    status: str,
+    score: float | None,
+    confidence: float | None,
+    reason: str | None,
+) -> None:
+    conn = _connect()
+    conn.execute(
+        """UPDATE thesis_pillars
+           SET status=?, score=?, confidence=?, reason=?, last_evaluated_at=?
+           WHERE id=?""",
+        (status, score, confidence, reason, time.time(), pillar_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_thesis_pillars(thesis_id: int) -> list[dict]:
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT * FROM thesis_pillars WHERE thesis_id=? ORDER BY importance DESC",
+        (thesis_id,),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_thesis_metrics(pillar_id: int) -> list[dict]:
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT * FROM thesis_metrics WHERE pillar_id=?",
+        (pillar_id,),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_thesis_rules(thesis_id: int, rule_type: str | None = None) -> list[dict]:
+    conn = _connect()
+    if rule_type:
+        rows = conn.execute(
+            "SELECT * FROM thesis_rules WHERE thesis_id=? AND rule_type=?",
+            (thesis_id, rule_type),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM thesis_rules WHERE thesis_id=?",
+            (thesis_id,),
+        ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 def get_thesis(ticker: str) -> dict | None:
     conn = _connect()
     row = conn.execute(
@@ -594,8 +756,31 @@ def get_thesis(ticker: str) -> dict | None:
         "ORDER BY version DESC LIMIT 1",
         (ticker,),
     ).fetchone()
+    if not row:
+        conn.close()
+        return None
+    result = dict(row)
+
+    pillars = conn.execute(
+        "SELECT * FROM thesis_pillars WHERE thesis_id=? ORDER BY importance DESC",
+        (row["id"],),
+    ).fetchall()
     conn.close()
-    return dict(row) if row else None
+
+    result["pillars"] = [dict(p) for p in pillars]
+
+    scored = [p for p in pillars if p["score"] is not None]
+    if scored:
+        total_weight = sum(p["importance"] for p in scored)
+        if total_weight > 0:
+            result["health_score"] = round(
+                sum(p["importance"] * p["score"] for p in scored) / total_weight, 1
+            )
+    result["has_critical_violation"] = any(
+        p["critical"] and p["status"] == "VIOLATED" for p in pillars
+    )
+
+    return result
 
 
 def get_recent_runs(agent_type: str, ticker: str | None = None, limit: int = 10) -> list[dict]:
