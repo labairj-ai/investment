@@ -893,6 +893,42 @@ def _run_financials_refresh():
 threading.Thread(target=_run_financials_refresh, daemon=True).start()
 
 
+# ── Weekly outcome evaluator (Sunday 2 AM ET) ────────────────────────────────
+
+def _run_outcome_evaluator():
+    """Evaluate matured recommendations once a week on Sunday at 2 AM ET."""
+    import socket
+    if socket.gethostname() != "optiplex":
+        return
+    from zoneinfo import ZoneInfo
+    from datetime import datetime as _dt
+    TZ   = ZoneInfo("America/New_York")
+    FLAG = PROJECT_DIR / "out" / "last_outcome_eval.txt"
+
+    def already_ran_this_week():
+        try:
+            from datetime import date as _date
+            last = _date.fromisoformat(FLAG.read_text().strip())
+            return (_date.today() - last).days < 6
+        except Exception:
+            return False
+
+    while True:
+        now = _dt.now(TZ)
+        if now.weekday() == 6 and now.hour == 2 and not already_ran_this_week():
+            try:
+                from agents.outcome_evaluator import evaluate_matured_recommendations
+                n = evaluate_matured_recommendations()
+                FLAG.write_text(_dt.now(TZ).date().isoformat())
+                print(f"[OutcomeEval] Evaluated {n} matured recommendation(s).")
+            except Exception as e:
+                print(f"[OutcomeEval] Failed: {e}")
+        time.sleep(1800)
+
+
+threading.Thread(target=_run_outcome_evaluator, daemon=True).start()
+
+
 # ── Background analysis runners ───────────────────────────────────────────────
 
 def _run_buffett_job(job_id: str, ticker_symbol: str, mode: str) -> None:
@@ -4709,8 +4745,39 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 intake = json.loads(intake) if intake else {}
             agent_db.update_thesis_metadata(thesis_id, intake)
 
+            import re as _re
+            def _infer_direction(key):
+                return "LOWER_IS_BETTER" if any(x in str(key).lower() for x in ["debt","expense","loss","churn","burn"]) else "HIGHER_IS_BETTER"
+            def _parse_persistence(s):
+                m2 = _re.search(r'\d+', str(s or "1"))
+                return int(m2.group()) if m2 else 1
             draft_dict = json.loads(final_draft_json) if isinstance(final_draft_json, str) else final_draft_json
-            for pillar in (draft_dict.get("pillars") or []):
+            # Support both new pillars format and legacy claims format
+            pillars_src = draft_dict.get("pillars") or []
+            if not pillars_src:
+                for claim in (draft_dict.get("claims") or []):
+                    text = claim.get("claim", "")
+                    name = text[:70].rstrip()
+                    if len(text) > 70 and " " in name:
+                        name = name[:name.rfind(" ")]
+                    pillars_src.append({
+                        "name": name,
+                        "description": text,
+                        "importance": claim.get("importance", 20),
+                        "critical": False,
+                        "metrics": [
+                            {
+                                "metric_key": m.get("metric", ""),
+                                "direction": _infer_direction(m.get("metric", "")),
+                                "healthy_rule_json": m.get("healthy", ""),
+                                "warning_rule_json": m.get("warning", ""),
+                                "violation_rule_json": m.get("violation", ""),
+                                "persistence_periods": _parse_persistence(m.get("persistence", "1")),
+                            }
+                            for m in (claim.get("measurements") or []) if m.get("metric")
+                        ],
+                    })
+            for pillar in pillars_src:
                 pid = agent_db.insert_thesis_pillar(
                     thesis_id, pillar.get("name", ""),
                     float(pillar.get("importance", 0)),
@@ -4781,6 +4848,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if not rec:
                 return self._json_error(404, "Recommendation not found")
             return self._json({"ok": True, "recommendation": rec})
+        # /api/agents/journal
+        if len(parts) == 4 and parts[3] == "journal":
+            entries = agent_db.list_journal_entries()
+            summary = agent_db.journal_summary()
+            return self._json({"ok": True, "entries": entries, "summary": summary})
         # /api/agents/runs
         if len(parts) == 4 and parts[3] == "runs":
             qs = parse_qs(parsed.query)

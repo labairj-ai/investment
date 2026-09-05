@@ -596,6 +596,7 @@ def analyze(ticker: str, avg_cost: float, shares: float):
             if calls.empty:
                 continue
 
+            calls = calls[calls["strike"] >  current_price].copy()  # OTM only
             calls = calls[calls["strike"] <= current_price * MAX_STRIKE_MULTIPLIER].copy()
             # Fetch calendar/earnings data once per expiry (not per contract).
             risk_for_exp = get_risk_events(stock, current_price, today, exp_date)

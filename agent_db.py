@@ -451,6 +451,55 @@ def insert_outcome(
     return outcome_id
 
 
+def journal_summary() -> dict:
+    """Aggregate counts by recommendation status + opportunity cost stats."""
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT status, COUNT(*) as cnt FROM recommendations GROUP BY status"
+    ).fetchall()
+    counts = {r["status"]: r["cnt"] for r in rows}
+    total = conn.execute("SELECT COUNT(*) FROM recommendations").fetchone()[0]
+
+    opp = conn.execute(
+        """SELECT COUNT(*) as n,
+                  AVG(opportunity_cost) as avg_opp,
+                  SUM(opportunity_cost) as total_opp
+           FROM recommendation_outcomes
+           WHERE opportunity_cost IS NOT NULL"""
+    ).fetchone()
+    conn.close()
+    return {
+        "total_generated": total,
+        "by_status": counts,
+        "outcomes_evaluated": opp["n"] or 0,
+        "avg_opportunity_cost": opp["avg_opp"],
+        "total_opportunity_cost": opp["total_opp"],
+    }
+
+
+def list_journal_entries(limit: int = 200) -> list[dict]:
+    """Return closed recommendations joined with user_decisions and outcomes."""
+    conn = _connect()
+    rows = conn.execute(
+        """SELECT
+               r.id, r.ticker, r.action, r.status, r.created_at,
+               r.recommendation_score, r.confidence, r.why_now,
+               r.action_payload_json,
+               ud.decision, ud.reason_code, ud.notes as decision_notes, ud.decided_at,
+               ro.actual_return, ro.recommended_path_return, ro.opportunity_cost,
+               ro.notes as outcome_notes
+           FROM recommendations r
+           LEFT JOIN user_decisions ud ON ud.recommendation_id = r.id
+           LEFT JOIN recommendation_outcomes ro ON ro.recommendation_id = r.id
+           WHERE r.status IN ('accepted','rejected','deferred','vetoed')
+           ORDER BY COALESCE(ud.decided_at, r.created_at) DESC
+           LIMIT ?""",
+        (limit,),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 # ── Thesis intake helpers ─────────────────────────────────────────────────────
 
 def save_thesis_draft(ticker: str, intake_json: str, draft_json: str) -> int:

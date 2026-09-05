@@ -451,10 +451,12 @@ def _thesis_badge(ticker: str, thesis_data_map: dict) -> str:
         )
     health = t.get("health_score")
     critical = t.get("has_critical_violation", False)
-    if critical:
+    pillars = t.get("pillars", [])
+    any_violated = any(p.get("status") == "VIOLATED" for p in pillars)
+    if critical or any_violated:
         color, icon = "#e74c3c", "!"
     elif health is None:
-        color, icon = "#27ae60", "✓"
+        color, icon = "#a0aec0", "?"
     elif health >= 80:
         color, icon = "#27ae60", "✓"
     elif health >= 60:
@@ -525,7 +527,7 @@ def _thesis_health_detail_row(ticker: str, t: dict | None) -> str:
             col = _PILLAR_STATUS_COLORS.get(st, "#a0aec0")
             name = p.get("name", "")
             imp = p.get("importance", 0)
-            reason = (p.get("reason") or "")[:150]
+            reason = p.get("reason") or ""
             crit_mark = " ⚑" if p.get("critical") else ""
             reason_html = (
                 f'<div style="font-size:11px;color:#555;margin-top:2px;padding-left:14px;">{reason}</div>'
@@ -1362,11 +1364,23 @@ def build_dashboard(portfolio, layers, holdings):
     h2 {{ font-size: 1rem; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: #7f8c8d; margin-bottom: 12px; }}
 
     header {{ background: #1a2340; color: #fff; padding: 18px 28px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }}
-    #dash-tab-nav {{ background:#1a2340;padding:0 24px;display:flex;gap:2px;border-bottom:2px solid #2d3a55; }}
+    #dash-tab-nav {{ background:#1a2340;padding:0 24px;display:flex;gap:2px;border-bottom:2px solid #2d3a55;position:relative; }}
     .dash-tab-btn {{ background:none;border:none;color:#a0aec0;font-size:13px;font-weight:600;padding:10px 18px;cursor:pointer;border-bottom:3px solid transparent;margin-bottom:-2px;transition:color .15s,border-color .15s; }}
     .dash-tab-btn:hover {{ color:#e2e8f0; }}
     .dash-tab-btn.active {{ color:#fff;border-bottom-color:#4fa3e0; }}
     .dash-tab-content {{ display:block; }}
+    #nav-hamburger {{ display:none;margin-left:auto;background:none;border:none;color:#a0aec0;font-size:22px;padding:8px 4px;cursor:pointer;line-height:1; }}
+    #nav-dropdown {{ display:none;position:absolute;top:100%;left:0;right:0;background:#1a2340;border-top:1px solid #2d3a55;z-index:200;flex-direction:column; }}
+    #nav-dropdown.open {{ display:flex; }}
+    .nav-dd-btn {{ background:none;border:none;border-bottom:1px solid #2d3a55;color:#a0aec0;font-size:14px;font-weight:600;padding:13px 24px;cursor:pointer;text-align:left; }}
+    .nav-dd-btn:hover,.nav-dd-btn.active {{ color:#fff;background:rgba(255,255,255,.05); }}
+    #dash-footer {{ text-align:center;padding:28px 24px 20px;font-size:12px;color:#a0aec0;border-top:1px solid #e2e8f0;margin-top:8px; }}
+    #dash-footer a {{ color:#4fa3e0;text-decoration:none; }}
+    #dash-footer a:hover {{ text-decoration:underline; }}
+    @media (max-width: 600px) {{
+      .dash-tab-btn {{ display:none; }}
+      #nav-hamburger {{ display:block; }}
+    }}
     header .subtitle {{ font-size: .85rem; color: #a0aec0; margin-top: 2px; }}
     .gloss-container {{ max-width:860px;margin:32px auto;padding:0 20px 60px; }}
     .gloss-intro {{ background:#fff;border-radius:10px;padding:16px 20px;margin-bottom:24px;border:1px solid #e8ecf0;font-size:13px;color:#555; }}
@@ -1760,6 +1774,10 @@ def build_dashboard(portfolio, layers, holdings):
         border-left: none; border-top: 1px solid #dde;
         border-radius: 14px 14px 0 0; }}
       #pc-fab {{ bottom: 16px; right: 16px; }}
+      #dq-section {{ padding: 14px 14px; }}
+      #dj-section {{ padding: 14px 14px; }}
+      #dj-summary-strip {{ gap: 6px; }}
+      #dj-summary-strip > div {{ padding: 4px 8px; }}
     }}
   </style>
 </head>
@@ -2179,8 +2197,15 @@ def build_dashboard(portfolio, layers, holdings):
 
 <nav id="dash-tab-nav">
   <button class="dash-tab-btn active" id="tab-btn-portfolio" onclick="showDashTab('portfolio')">Portfolio</button>
+  <button class="dash-tab-btn" id="tab-btn-decisions" onclick="showDashTab('decisions')">Decisions</button>
   <button class="dash-tab-btn" id="tab-btn-macro" onclick="showDashTab('macro')">📊 Macro Risk</button>
-  <button class="dash-tab-btn" id="tab-btn-glossary" onclick="showDashTab('glossary')">📖 Glossary</button>
+  <button id="nav-hamburger" onclick="toggleNavMenu(event)" aria-label="Menu">&#9776;</button>
+  <div id="nav-dropdown">
+    <button class="nav-dd-btn" id="tab-dd-btn-portfolio" onclick="showDashTab('portfolio');closeNavMenu()">Portfolio</button>
+    <button class="nav-dd-btn" id="tab-dd-btn-decisions" onclick="showDashTab('decisions');closeNavMenu()">Decisions</button>
+    <button class="nav-dd-btn" id="tab-dd-btn-macro" onclick="showDashTab('macro');closeNavMenu()">📊 Macro Risk</button>
+    <button class="nav-dd-btn" id="tab-dd-btn-glossary" onclick="showDashTab('glossary');closeNavMenu()">📖 Glossary</button>
+  </div>
 </nav>
 
 <div id="tab-portfolio" class="dash-tab-content">
@@ -2759,17 +2784,6 @@ def build_dashboard(portfolio, layers, holdings):
     </div>
   </div>
 
-  <!-- Decision Queue -->
-  <div class="card" id="dq-card">
-    <h2 style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
-      Decision Queue
-      <button onclick="loadDecisionQueue()" style="font-size:11px;padding:4px 10px;background:#f4f6f9;border:1px solid #dde;border-radius:5px;cursor:pointer;color:#555;">↻</button>
-    </h2>
-    <div id="dq-wrap">
-      <div style="font-size:12px;color:#a0aec0;text-align:center;padding:20px;">Loading…</div>
-    </div>
-  </div>
-
   <!-- Candidate Universe -->
   <div class="card" id="candidate-card">
     <h2 style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
@@ -2917,8 +2931,46 @@ def build_dashboard(portfolio, layers, holdings):
   </div><!-- .gloss-container -->
 </div>
 
+<div id="tab-decisions" class="dash-tab-content" style="display:none;">
+  <div style="max-width:900px;margin:0 auto;padding:20px 24px;display:flex;flex-direction:column;gap:18px;">
+
+    <!-- Portfolio Decision Queue -->
+    <div id="dq-section" style="background:linear-gradient(135deg,#1a2340 0%,#243050 100%);border-radius:10px;padding:18px 22px;box-shadow:0 2px 8px rgba(0,0,0,.12);color:#e2e8f0;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+        <div>
+          <span style="font-size:11px;font-weight:700;letter-spacing:0.08em;color:#8ba4d4;text-transform:uppercase;">Portfolio Decision Queue</span>
+          <span id="dq-header-count" style="margin-left:8px;font-size:11px;color:#718096;"></span>
+        </div>
+        <button onclick="loadDecisionQueue()" style="font-size:11px;padding:3px 9px;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.15);border-radius:5px;cursor:pointer;color:#8ba4d4;">↻</button>
+      </div>
+      <div id="dq-cards"></div>
+      <div id="dq-no-action" style="display:none;font-size:11px;color:#718096;text-align:center;padding:8px 0 2px;border-top:1px solid rgba(255,255,255,0.07);margin-top:10px;"></div>
+    </div>
+
+    <!-- Decision Journal -->
+    <div id="dj-section" style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:18px 22px;box-shadow:0 1px 4px rgba(0,0,0,.06);">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+        <div>
+          <span style="font-size:12px;font-weight:700;letter-spacing:0.07em;color:#2d3748;text-transform:uppercase;">Decision Journal</span>
+          <span id="dj-summary-line" style="margin-left:10px;font-size:11px;color:#718096;"></span>
+        </div>
+        <button onclick="loadDecisionJournal()" style="font-size:11px;padding:3px 9px;background:#f7f8fa;border:1px solid #dde;border-radius:5px;cursor:pointer;color:#555;">↻</button>
+      </div>
+      <div id="dj-summary-strip" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;"></div>
+      <div id="dj-table-wrap"></div>
+    </div>
+
+  </div>
+</div>
+
+<footer id="dash-footer">
+  <a href="#" onclick="showDashTab('glossary');return false;">📖 Glossary</a>
+  &nbsp;&middot;&nbsp; Investment Dashboard
+</footer>
+
 <script>
 const D = {chart_data};
+const DQ_TOTAL_POSITIONS = {len(today_holdings)};
 
 // Cumulative return chart
 new Chart(document.getElementById("cumChart"), {{
@@ -7525,66 +7577,265 @@ function candidateAction(ticker, action) {{
 document.addEventListener('DOMContentLoaded', loadCandidates);
 
 // ── Decision Queue ─────────────────────────────────────────────────────────────
-const _DQ_VERDICT_STYLE = {{
-  APPROVE:               'background:#e6f4ea;color:#276749;border:1px solid #b7dfc4;',
-  APPROVE_WITH_CAUTION:  'background:#fffbea;color:#7b5a00;border:1px solid #f0d070;',
-  CHALLENGE:             'background:#fff3e0;color:#8a4500;border:1px solid #f0a060;',
-  VETO:                  'background:#fde8e8;color:#9b1c1c;border:1px solid #f5a0a0;',
+const _DQ_BADGE = {{
+  SELL_CC:     'COVERED CALL',
+  TAX_HARVEST: 'TAX',
+  TAX_SELL:    'TAX',
+  REVIEW:      'THESIS REVIEW',
+  REBALANCE:   'REBALANCE',
+  ALLOCATE:    'ALLOCATE',
+  TRIM:        'RISK',
 }};
 
-function _renderDecisionQueue(recs) {{
-  const wrap = document.getElementById('dq-wrap');
-  if (!wrap) return;
-  if (!recs || recs.length === 0) {{
-    wrap.innerHTML = '<div style="font-size:12px;color:#a0aec0;text-align:center;padding:20px;">No open recommendations — run the agents to generate findings.</div>';
-    return;
+const _DQ_BADGE_COLOR = {{
+  'COVERED CALL':  'background:#1e3a2f;color:#68d391;border:1px solid #276749;',
+  'TAX':           'background:#2d1f45;color:#d6bcfa;border:1px solid #6b46c1;',
+  'THESIS REVIEW': 'background:#1e2d40;color:#90cdf4;border:1px solid #2c5282;',
+  'REBALANCE':     'background:#3d2c10;color:#f6ad55;border:1px solid #c05621;',
+  'ALLOCATE':      'background:#3d2c10;color:#f6ad55;border:1px solid #c05621;',
+  'RISK':          'background:#3d1515;color:#fc8181;border:1px solid #9b2c2c;',
+}};
+
+const _DQ_VERDICT_COLOR = {{
+  APPROVE:               'background:#1e3a2f;color:#68d391;border:1px solid #276749;',
+  APPROVE_WITH_CAUTION:  'background:#3d3010;color:#f6e05e;border:1px solid #b7791f;',
+  CHALLENGE:             'background:#3d2010;color:#f6ad55;border:1px solid #c05621;',
+  VETO:                  'background:#3d1515;color:#fc8181;border:1px solid #9b2c2c;',
+}};
+
+function _dqPriority(r) {{
+  const I  = r.recommendation_score || 0;
+  const C  = r.confidence || 0;
+  const sfMap = {{high:100, medium:65, low:35}};
+  const SF = sfMap[r.priority] || 50;
+  const uMap = {{SELL_CC:80, TAX_HARVEST:85, TAX_SELL:85, TRIM:75, REBALANCE:70, ALLOCATE:70, REVIEW:50}};
+  const U  = uMap[r.action] || 55;
+  return Math.round(0.35*I + 0.25*U + 0.25*C + 0.15*SF);
+}}
+
+function _renderDQCard(r) {{
+  const badge   = _DQ_BADGE[r.action] || r.action;
+  const badgeSt = _DQ_BADGE_COLOR[badge] || 'background:#2d3748;color:#a0aec0;border:1px solid #4a5568;';
+  const pri     = _dqPriority(r);
+  const conf    = r.confidence != null ? r.confidence + '%' : '—';
+  const verdict = r.critic_verdict || null;
+  const verdictBadge = verdict
+    ? `<span style="font-size:10px;padding:1px 6px;border-radius:8px;font-weight:600;${{_DQ_VERDICT_COLOR[verdict] || ''}}">${{verdict.replace(/_/g,' ')}}</span>`
+    : '<span style="font-size:10px;color:#718096;">Pending review</span>';
+  const objection = r.critic_objection
+    ? `<div style="margin-top:5px;padding:5px 8px;background:rgba(0,0,0,.2);border-radius:5px;font-size:11px;color:#a0aec0;font-style:italic;">&ldquo;${{r.critic_objection}}&rdquo;</div>`
+    : '';
+  let ccRow = '';
+  if (r.action === 'SELL_CC' && r.action_payload_json) {{
+    let pl = {{}};
+    try {{ pl = JSON.parse(r.action_payload_json); }} catch(e) {{}}
+    const parts = [];
+    if (pl.strike)           parts.push(`Strike $${{pl.strike}}`);
+    if (pl.expiration)       parts.push(`Exp ${{pl.expiration}}`);
+    else if (pl.dte != null) {{ const d = new Date(); d.setDate(d.getDate() + pl.dte); parts.push(`Exp ${{d.toISOString().slice(0,10)}} (${{pl.dte}} DTE)`); }}
+    if (pl.cc_alpha != null) parts.push(`Alpha ${{pl.cc_alpha > 0 ? '+' : ''}}${{Number(pl.cc_alpha).toFixed(2)}}%`);
+    if (pl.regret_pct != null) parts.push(`Regret ${{Number(pl.regret_pct).toFixed(1)}}%`);
+    if (pl.iv_richness)      parts.push(`IV ${{pl.iv_richness}}`);
+    if (parts.length) ccRow = `<div style="margin-top:5px;font-size:11px;color:#68d391;display:flex;gap:12px;flex-wrap:wrap;">${{parts.map(p=>`<span>${{p}}</span>`).join('')}}</div>`;
   }}
-  const rows = recs.map(r => {{
-    const verdict  = r.critic_verdict || null;
-    const objection = r.critic_objection || '';
-    const verdictBadge = verdict
-      ? `<span style="font-size:10px;padding:2px 7px;border-radius:10px;font-weight:600;${{_DQ_VERDICT_STYLE[verdict] || ''}}">{{verdict}}</span>`.replace('{{verdict}}', verdict.replace('_', ' '))
-      : '<span style="font-size:10px;color:#a0aec0;">Pending</span>';
-    const conf = (r.confidence != null) ? r.confidence : '—';
-    return `<tr style="border-top:1px solid #f0f0f0;">
-      <td style="padding:7px 8px;font-weight:600;font-size:13px;">${{r.ticker || '—'}}</td>
-      <td style="padding:7px 8px;font-size:12px;color:#4a5568;">${{r.action}}</td>
-      <td style="padding:7px 8px;font-size:12px;text-align:center;">${{r.recommendation_score}}</td>
-      <td style="padding:7px 8px;font-size:12px;text-align:center;">${{conf}}</td>
-      <td style="padding:7px 8px;">${{verdictBadge}}</td>
-      <td style="padding:7px 8px;font-size:11px;color:#718096;max-width:280px;">${{objection || '<span style="color:#c0c0c0;">—</span>'}}</td>
-    </tr>`;
-  }}).join('');
-  wrap.innerHTML = `<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;">
-    <thead><tr style="background:#f8f9fa;">
-      <th style="text-align:left;padding:5px 8px;color:#718096;font-weight:600;text-transform:uppercase;font-size:10px;">Ticker</th>
-      <th style="text-align:left;padding:5px 8px;color:#718096;font-weight:600;text-transform:uppercase;font-size:10px;">Action</th>
-      <th style="text-align:center;padding:5px 8px;color:#718096;font-weight:600;text-transform:uppercase;font-size:10px;">Score</th>
-      <th style="text-align:center;padding:5px 8px;color:#718096;font-weight:600;text-transform:uppercase;font-size:10px;">Confidence</th>
-      <th style="text-align:left;padding:5px 8px;color:#718096;font-weight:600;text-transform:uppercase;font-size:10px;">Critic</th>
-      <th style="text-align:left;padding:5px 8px;color:#718096;font-weight:600;text-transform:uppercase;font-size:10px;">Strongest Objection</th>
-    </tr></thead>
-    <tbody>${{rows}}</tbody>
-  </table></div>`;
+  return `
+    <div id="dq-card-${{r.id}}" style="background:rgba(0,0,0,.2);border-radius:8px;padding:13px 15px;margin-bottom:10px;border:1px solid rgba(255,255,255,.07);">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:8px;">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+          <span style="font-size:10px;padding:1px 7px;border-radius:8px;font-weight:700;letter-spacing:.04em;${{badgeSt}}">${{badge}}</span>
+          <span style="font-size:15px;font-weight:700;color:#e2e8f0;">${{r.ticker || '—'}}</span>
+          <span style="font-size:11px;color:#718096;">${{conf}} confidence</span>
+        </div>
+        <span style="font-size:10px;color:#718096;white-space:nowrap;padding-top:2px;">Priority ${{pri}}</span>
+      </div>
+      ${{r.why_now ? `<div style="font-size:12px;color:#a0aec0;margin-bottom:6px;line-height:1.5;">${{r.why_now}}</div>` : ''}}
+      ${{r.rationale ? `<div style="font-size:12px;color:#90cdf4;margin-bottom:6px;line-height:1.5;"><span style="color:#63b3ed;font-size:10px;text-transform:uppercase;letter-spacing:.05em;font-weight:700;">Rec</span>&nbsp; ${{r.action}} — ${{r.rationale}}</div>` : ''}}
+      ${{ccRow}}
+      <div style="margin-top:7px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">${{verdictBadge}}${{objection}}</div>
+      <div style="margin-top:10px;display:flex;gap:7px;">
+        <button onclick="dqDecide(${{r.id}},'accepted')"  style="flex:1;padding:5px;font-size:11px;font-weight:600;background:#1e3a2f;color:#68d391;border:1px solid #276749;border-radius:5px;cursor:pointer;">&#10003; Accept</button>
+        <button onclick="dqDecide(${{r.id}},'rejected')"  style="flex:1;padding:5px;font-size:11px;font-weight:600;background:#3d1515;color:#fc8181;border:1px solid #9b2c2c;border-radius:5px;cursor:pointer;">&#10007; Reject</button>
+        <button onclick="dqDecide(${{r.id}},'deferred')"  style="flex:1;padding:5px;font-size:11px;font-weight:600;background:rgba(255,255,255,.07);color:#8ba4d4;border:1px solid rgba(255,255,255,.15);border-radius:5px;cursor:pointer;">&#8635; Defer</button>
+      </div>
+    </div>`;
+}}
+
+function _renderDecisionQueue(recs) {{
+  const cards  = document.getElementById('dq-cards');
+  const noAct  = document.getElementById('dq-no-action');
+  const hdrCnt = document.getElementById('dq-header-count');
+  if (!cards) return;
+  const open = (recs || []).filter(r => r.status === 'open');
+  open.sort((a, b) => _dqPriority(b) - _dqPriority(a));
+  if (open.length === 0) {{
+    cards.innerHTML = '<div style="font-size:12px;color:#718096;text-align:center;padding:16px 0;">No items require attention right now.</div>';
+  }} else {{
+    cards.innerHTML = open.map(_renderDQCard).join('');
+  }}
+  if (hdrCnt) hdrCnt.textContent = open.length > 0 ? `${{open.length}} open` : '';
+  const decBtn = document.getElementById('tab-btn-decisions');
+  if (decBtn) decBtn.textContent = open.length > 0 ? `Decisions (${{open.length}})` : 'Decisions';
+  const decDdBtn = document.getElementById('tab-dd-btn-decisions');
+  if (decDdBtn) decDdBtn.textContent = open.length > 0 ? `Decisions (${{open.length}})` : 'Decisions';
+  const totalPos = (typeof DQ_TOTAL_POSITIONS !== 'undefined') ? DQ_TOTAL_POSITIONS : 0;
+  if (noAct && totalPos > 0) {{
+    noAct.style.display = 'block';
+    noAct.textContent   = `No action: ${{Math.max(0, totalPos - open.length)}} of ${{totalPos}} positions reviewed`;
+  }}
+}}
+
+function dqDecide(recId, decision) {{
+  const card = document.getElementById('dq-card-' + recId);
+  if (card) {{ card.style.opacity = '0.4'; card.style.pointerEvents = 'none'; }}
+  fetch('/api/agents/recommendations/' + recId + '/decision', {{
+    method: 'POST',
+    headers: {{'Content-Type': 'application/json'}},
+    body: JSON.stringify({{decision}})
+  }}).then(r => r.json()).then(() => {{
+    loadDecisionQueue();
+  }}).catch(() => {{
+    if (card) {{ card.style.opacity = '1'; card.style.pointerEvents = ''; }}
+  }});
 }}
 
 function loadDecisionQueue() {{
-  fetch('/api/recommendations').then(r => r.json()).then(d => {{
+  fetch('/api/agents/recommendations?status=open').then(r => r.json()).then(d => {{
     if (d.ok) _renderDecisionQueue(d.recommendations);
   }}).catch(() => {{}});
 }}
 
-document.addEventListener('DOMContentLoaded', loadDecisionQueue);
+document.addEventListener('DOMContentLoaded', () => {{ loadDecisionQueue(); }});
+setInterval(loadDecisionQueue, 60000);
+
+// ── Decision Journal ───────────────────────────────────────────────────────────
+const _DJ_STATUS_COLOR = {{
+  accepted: 'background:#e6f4ea;color:#276749;border:1px solid #b7dfc4;',
+  rejected: 'background:#fde8e8;color:#9b1c1c;border:1px solid #f5a0a0;',
+  deferred: 'background:#f0f4ff;color:#3b5bdb;border:1px solid #bac8ff;',
+  vetoed:   'background:#fff3e0;color:#8a4500;border:1px solid #f0a060;',
+}};
+
+const _DJ_ACTION_LABEL = {{
+  SELL_CC:     'Covered Call',
+  TAX_HARVEST: 'Tax Harvest',
+  TAX_SELL:    'Tax Sell',
+  REVIEW:      'Thesis Review',
+  REBALANCE:   'Rebalance',
+  TRIM:        'Trim',
+  ALLOCATE:    'Allocate',
+}};
+
+function _djFmt(val, isPercent) {{
+  if (val == null) return '<span style="color:#ccc;">—</span>';
+  if (isPercent) {{
+    const pct = (val * 100).toFixed(1);
+    const color = val >= 0 ? '#276749' : '#9b1c1c';
+    return `<span style="color:${{color}};font-weight:600;">${{val >= 0 ? '+' : ''}}${{pct}}%</span>`;
+  }}
+  return val;
+}}
+
+function _renderDJSummary(summary) {{
+  const strip = document.getElementById('dj-summary-strip');
+  const line  = document.getElementById('dj-summary-line');
+  if (!strip) return;
+  const s = summary || {{}};
+  const by = s.by_status || {{}};
+  const chips = [
+    ['Generated', s.total_generated || 0, '#4a5568'],
+    ['Accepted',  by.accepted  || 0, '#276749'],
+    ['Rejected',  by.rejected  || 0, '#9b1c1c'],
+    ['Deferred',  by.deferred  || 0, '#3b5bdb'],
+    ['Vetoed',    by.vetoed    || 0, '#8a4500'],
+  ];
+  strip.innerHTML = chips.map(([label, n, color]) =>
+    `<div style="padding:5px 12px;border-radius:16px;background:#f7f8fa;border:1px solid #e2e8f0;">
+       <span style="font-size:10px;color:#718096;text-transform:uppercase;letter-spacing:.05em;">${{label}}</span>
+       <span style="font-size:14px;font-weight:700;color:${{color}};margin-left:6px;">${{n}}</span>
+     </div>`
+  ).join('');
+  if (line) {{
+    const n = s.outcomes_evaluated || 0;
+    const opp = s.avg_opportunity_cost;
+    line.textContent = n > 0
+      ? `${{n}} outcome${{n !== 1 ? 's' : ''}} evaluated · avg opportunity cost ${{opp != null ? ((opp*100).toFixed(1)+'%') : '—'}}`
+      : 'No outcomes evaluated yet — check back after 14 days';
+  }}
+}}
+
+function _renderDJTable(entries) {{
+  const wrap = document.getElementById('dj-table-wrap');
+  if (!wrap) return;
+  if (!entries || entries.length === 0) {{
+    wrap.innerHTML = '<div style="font-size:12px;color:#a0aec0;text-align:center;padding:16px 0;">No closed recommendations yet — decisions made in the queue will appear here.</div>';
+    return;
+  }}
+  const rows = entries.map(e => {{
+    const statusBadge = `<span style="font-size:10px;padding:1px 7px;border-radius:8px;font-weight:600;${{_DJ_STATUS_COLOR[e.status] || ''}}">${{e.status}}</span>`;
+    const action = _DJ_ACTION_LABEL[e.action] || e.action;
+    const date = e.decided_at
+      ? new Date(e.decided_at * 1000).toLocaleDateString('en-US', {{month:'short', day:'numeric', year:'numeric'}})
+      : new Date(e.created_at * 1000).toLocaleDateString('en-US', {{month:'short', day:'numeric', year:'numeric'}});
+    const reason = e.reason_code && e.reason_code !== 'OTHER' ? e.reason_code : '';
+    return `<tr style="border-top:1px solid #f0f4f8;">
+      <td style="padding:7px 8px;font-weight:600;font-size:13px;">${{e.ticker || '—'}}</td>
+      <td class="col-hide-sm" style="padding:7px 8px;font-size:11px;color:#4a5568;">${{action}}</td>
+      <td style="padding:7px 8px;">${{statusBadge}}</td>
+      <td class="col-hide-sm" style="padding:7px 8px;font-size:11px;color:#718096;">${{reason}}</td>
+      <td class="col-hide-sm" style="padding:7px 8px;font-size:11px;color:#718096;">${{date}}</td>
+      <td style="padding:7px 8px;font-size:12px;text-align:right;">${{_djFmt(e.actual_return, true)}}</td>
+      <td class="col-hide-sm" style="padding:7px 8px;font-size:12px;text-align:right;">${{_djFmt(e.opportunity_cost, true)}}</td>
+    </tr>`;
+  }}).join('');
+  wrap.innerHTML = `<div style="overflow-x:auto;">
+    <table style="width:100%;border-collapse:collapse;">
+      <thead><tr style="background:#f7f8fa;">
+        <th style="text-align:left;padding:5px 8px;color:#718096;font-weight:600;font-size:10px;text-transform:uppercase;">Ticker</th>
+        <th class="col-hide-sm" style="text-align:left;padding:5px 8px;color:#718096;font-weight:600;font-size:10px;text-transform:uppercase;">Type</th>
+        <th style="text-align:left;padding:5px 8px;color:#718096;font-weight:600;font-size:10px;text-transform:uppercase;">Decision</th>
+        <th class="col-hide-sm" style="text-align:left;padding:5px 8px;color:#718096;font-weight:600;font-size:10px;text-transform:uppercase;">Reason</th>
+        <th class="col-hide-sm" style="text-align:left;padding:5px 8px;color:#718096;font-weight:600;font-size:10px;text-transform:uppercase;">Date</th>
+        <th style="text-align:right;padding:5px 8px;color:#718096;font-weight:600;font-size:10px;text-transform:uppercase;">Return</th>
+        <th class="col-hide-sm" style="text-align:right;padding:5px 8px;color:#718096;font-weight:600;font-size:10px;text-transform:uppercase;">Opp. Cost</th>
+      </tr></thead>
+      <tbody>${{rows}}</tbody>
+    </table>
+  </div>`;
+}}
+
+function loadDecisionJournal() {{
+  fetch('/api/agents/journal').then(r => r.json()).then(d => {{
+    if (d.ok) {{
+      _renderDJSummary(d.summary);
+      _renderDJTable(d.entries);
+    }}
+  }}).catch(() => {{}});
+}}
+
+document.addEventListener('DOMContentLoaded', () => {{ loadDecisionJournal(); }});
 
 function showDashTab(name) {{
   document.querySelectorAll('.dash-tab-content').forEach(function(el) {{ el.style.display = 'none'; }});
   document.querySelectorAll('.dash-tab-btn').forEach(function(el) {{ el.classList.remove('active'); }});
+  document.querySelectorAll('.nav-dd-btn').forEach(function(el) {{ el.classList.remove('active'); }});
   var content = document.getElementById('tab-' + name);
-  var btn = document.getElementById('tab-btn-' + name);
+  var btn     = document.getElementById('tab-btn-' + name);
+  var ddBtn   = document.getElementById('tab-dd-btn-' + name);
   if (content) content.style.display = 'block';
-  if (btn) btn.classList.add('active');
+  if (btn)   btn.classList.add('active');
+  if (ddBtn) ddBtn.classList.add('active');
   try {{ localStorage.setItem('dashTab', name); }} catch(e) {{}}
 }}
+function toggleNavMenu(e) {{
+  e.stopPropagation();
+  document.getElementById('nav-dropdown').classList.toggle('open');
+}}
+function closeNavMenu() {{
+  document.getElementById('nav-dropdown').classList.remove('open');
+}}
+document.addEventListener('click', function(e) {{
+  if (!e.target.closest('#dash-tab-nav')) closeNavMenu();
+}});
 (function() {{
   var saved = '';
   try {{ saved = localStorage.getItem('dashTab') || ''; }} catch(e) {{}}

@@ -1,7 +1,7 @@
 # Add Decision Queue UI to Dashboard (Phase 7)
 
 - **ID:** 0016
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-05
 - **Priority:** normal
 - **Depends:** 0008, 0010, 0011, 0012
@@ -47,12 +47,35 @@ Implementation: add to `generate_dashboard.py` as a new section rendered before 
 
 ## Done when
 
-- [ ] Decision Queue section renders above AI Insight
-- [ ] Cards display finding type, ticker, confidence, why-now, recommendation, critic verdict
-- [ ] Accept/Reject/Defer buttons call the API and update card state without page reload
-- [ ] "No action: N positions reviewed" footer present
-- [ ] Empty queue shows "No items require attention" — not an error state
-- [ ] CC cards show strike, expiration, CC alpha, regret %, IV richness
-- [ ] Priority formula implemented and cards sorted correctly
-- [ ] Browser QA (mandatory — do not skip): Trigger a dashboard refresh so at least one open recommendation exists. Open the dashboard in a browser and verify: (a) zero JS console errors, (b) Decision Queue renders above AI Insight with correct card fields (type, ticker, confidence, why-now, critic verdict), (c) Accept/Reject/Defer update card state without page reload, (d) 'No action: N positions reviewed' footer present, (e) empty queue shows 'No items require attention' (not an error). Do NOT check this box without completing live browser testing.
+- [x] Decision Queue section renders above AI Insight
+- [x] Cards display finding type, ticker, confidence, why-now, recommendation, critic verdict
+- [x] Accept/Reject/Defer buttons call the API and update card state without page reload
+- [x] "No action: N positions reviewed" footer present
+- [x] Empty queue shows "No items require attention" — not an error state
+- [x] CC cards show strike, expiration, CC alpha, regret %, IV richness
+- [x] Priority formula implemented and cards sorted correctly
+- [x] Browser QA (mandatory — do not skip): Trigger a dashboard refresh so at least one open recommendation exists. Open the dashboard in a browser and verify: (a) zero JS console errors, (b) Decision Queue renders above AI Insight with correct card fields (type, ticker, confidence, why-now, critic verdict), (c) Accept/Reject/Defer update card state without page reload, (d) 'No action: N positions reviewed' footer present, (e) empty queue shows 'No items require attention' (not an error). Do NOT check this box without completing live browser testing.
 
+## Outcome
+
+New "PORTFOLIO DECISION QUEUE" dark-card section renders between Holdings News and AI Portfolio Insight.
+
+**What was built:**
+- `_dqPriority(r)` — deterministic priority formula `0.35*I + 0.25*U + 0.25*C + 0.15*SF` with urgency map per action type
+- `_renderDQCard(r)` — full card: badge (COVERED CALL / TAX / THESIS REVIEW / REBALANCE / RISK), ticker, confidence %, priority score, why-now text, Rec line, CC-specific row (strike/expiry/alpha/regret/IV), critic verdict badge + objection quote, Accept/Reject/Defer buttons
+- `_renderDecisionQueue(recs)` — filters to `status=open`, sorts by priority desc, updates header count, updates "No action: N of M positions reviewed" footer
+- `dqDecide(recId, decision)` — `POST /api/agents/recommendations/{id}/decision`, card fades to 0.4 opacity while pending, reloads queue on success
+- `loadDecisionQueue()` — polls `/api/agents/recommendations?status=open`, auto-poll every 60s
+- `const DQ_TOTAL_POSITIONS = {len(today_holdings)};` injected at chart_data site for accurate footer count
+
+**Removed:** simple DQ card that was above Candidate Universe from 0012 scope.
+
+**Browser QA results (2026-09-05):**
+- Zero JS console errors on fresh load ✓
+- SCHD (Priority 87) sorted above WMT (Priority 64) ✓
+- CC cards show Strike/Exp/Alpha/Regret/IV row ✓
+- APPROVE WITH CAUTION badge + objection quote renders ✓
+- Defer on WMT (id=4): card collapsed, count updated 2→1, footer updated 25→26 of 27 reviewed, without page reload ✓
+- AI Portfolio Insight section renders immediately below DQ ✓
+
+**Unblocks:** 0017 (Portfolio Guardian notifications), 0019 (Sell/Trim Agent).

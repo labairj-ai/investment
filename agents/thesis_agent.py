@@ -80,59 +80,102 @@ def _compute_metric_value(metric_key: str, rows: list[dict], idx: int) -> float 
         return None
     r = rows[idx]
 
-    if metric_key == "gross_margin":
+    # Aliases — normalise variant keys to canonical form
+    _ALIASES = {
+        "cash_and_equivalents":  "cash",
+        "revenue_yoy":           "revenue_growth_yoy",
+        "revenue_growth":        "revenue_growth_yoy",
+        "fcf":                   "free_cash_flow",
+        "free_cash_flow_annual": "free_cash_flow",
+        "operating_margin_pct":  "operating_margin",
+        "annual_fcf":            "free_cash_flow",
+    }
+    key = _ALIASES.get(metric_key, metric_key)
+
+    # Billion-scaled FCF: "annual_fcf_usd_b" → free_cash_flow / 1e9
+    if metric_key == "annual_fcf_usd_b":
+        raw = r.get("free_cash_flow")
+        return raw / 1e9 if raw is not None else None
+
+    if key == "gross_margin":
         return _pct(_safe_div(r.get("gross_profit"), r.get("revenue")))
-    if metric_key == "operating_margin":
+    if key == "operating_margin":
         return _pct(_safe_div(r.get("operating_income"), r.get("revenue")))
-    if metric_key == "net_margin":
+    if key == "net_margin":
         return _pct(_safe_div(r.get("net_income"), r.get("revenue")))
-    if metric_key == "fcf_margin":
+    if key == "fcf_margin":
         return _pct(_safe_div(r.get("free_cash_flow"), r.get("revenue")))
-    if metric_key == "net_debt":
+    if key == "net_debt":
         td   = r.get("total_debt")
         cash = r.get("cash")
         return (td - cash) if td is not None and cash is not None else None
-    if metric_key == "revenue_growth_yoy":
-        # Compare to the row 4 quarters earlier (same quarter prior year)
+    if key == "debt_to_equity":
+        return _safe_div(r.get("total_debt"), r.get("total_equity"))
+    if key == "fcf_to_net_income_ratio":
+        return _safe_div(r.get("free_cash_flow"), r.get("net_income"))
+    if key == "revenue_growth_yoy":
         if idx >= 4:
             prev = rows[idx - 4].get("revenue")
             curr = r.get("revenue")
             return _pct(_safe_div((curr - prev) if curr is not None and prev is not None else None, prev))
         return None
+    if key == "net_income_yoy":
+        if idx >= 4:
+            prev = rows[idx - 4].get("net_income")
+            curr = r.get("net_income")
+            return _pct(_safe_div((curr - prev) if curr is not None and prev is not None else None, prev))
+        return None
     # Direct columns
     direct = ("revenue", "gross_profit", "operating_income", "net_income",
                "free_cash_flow", "total_debt", "cash", "total_equity", "eps_diluted")
-    if metric_key in direct:
-        return r.get(metric_key)
+    if key in direct:
+        return r.get(key)
     return None
 
 
 # ── Rule evaluation ────────────────────────────────────────────────────────────
 
 def _eval_rule(rule_json_str: str | None, value: float | None) -> bool | None:
-    """Evaluate a stored rule JSON against a value.
+    """Evaluate a stored rule against a value.
+
+    Accepts two formats:
+      - JSON object: {"operator": ">=", "value": 5.0} or {"operator": "BETWEEN", "min": 60, "max": 70}
+      - Plain text (legacy claims format): "> 5.0%", ">= 4.2", "60% - 70%", "< 2.0%"
 
     Returns True (condition met), False (not met), None (can't evaluate).
     """
+    import re as _re
     if not rule_json_str or value is None:
         return None
+    # Try JSON format first
     try:
         rule = json.loads(rule_json_str)
-    except (json.JSONDecodeError, TypeError):
+        op = rule.get("operator", "")
+        if op == ">=":    return value >= rule["value"]
+        if op == ">":     return value > rule["value"]
+        if op == "<=":    return value <= rule["value"]
+        if op == "<":     return value < rule["value"]
+        if op in ("==", "="): return value == rule["value"]
+        if op == "BETWEEN": return rule["min"] <= value <= rule["max"]
         return None
-    op = rule.get("operator", "")
-    if op == ">=":
-        return value >= rule["value"]
-    if op == ">":
-        return value > rule["value"]
-    if op == "<=":
-        return value <= rule["value"]
-    if op == "<":
-        return value < rule["value"]
-    if op in ("==", "="):
-        return value == rule["value"]
-    if op == "BETWEEN":
-        return rule["min"] <= value <= rule["max"]
+    except (json.JSONDecodeError, TypeError, KeyError):
+        pass
+    # Fallback: parse plain-text rules like "> 5.0%", "60% - 70%", ">= 4.2"
+    s = rule_json_str.strip()
+    # BETWEEN: "60-70%" or "60% - 70%" or "60 - 70"
+    between = _re.match(r'^([\d.]+)\s*%?\s*[-–]\s*([\d.]+)', s)
+    if between:
+        lo, hi = float(between.group(1)), float(between.group(2))
+        return lo <= value <= hi
+    # Operator + number (optional % sign and trailing text)
+    m = _re.match(r'^([><=!]{1,2})\s*([\d.]+)', s)
+    if m:
+        op, num = m.group(1), float(m.group(2))
+        if op == ">":     return value > num
+        if op == ">=":    return value >= num
+        if op == "<":     return value < num
+        if op == "<=":    return value <= num
+        if op in ("==", "="): return value == num
     return None
 
 

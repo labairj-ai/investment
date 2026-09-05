@@ -11,9 +11,11 @@ Pipeline:
 
 Returns [] — Critic produces no new recommendations of its own.
 """
+import csv
 import json
 import zoneinfo
 from datetime import datetime, timezone
+from pathlib import Path
 
 import agent_db
 import ollama_client
@@ -86,6 +88,36 @@ def _payload(rec: dict) -> dict:
         return {}
 
 
+def _holding_current_price(ticker: str) -> float | None:
+    """Return the most recent price for ticker from holding_day, or None."""
+    try:
+        conn = agent_db._connect()
+        row = conn.execute(
+            "SELECT price FROM holding_day WHERE ticker=? ORDER BY day DESC LIMIT 1",
+            (ticker,),
+        ).fetchone()
+        conn.close()
+        return float(row["price"]) if row else None
+    except Exception:
+        return None
+
+
+def _holdings_avg_cost(ticker: str) -> float | None:
+    """Return avg cost per share from holdings.csv for ticker, or None if not found."""
+    holdings_csv = Path(agent_db.DB_PATH).parent.parent / "holdings.csv"
+    if not holdings_csv.exists():
+        return None
+    try:
+        with open(holdings_csv) as f:
+            for row in csv.DictReader(f):
+                if row.get("Stock", "").strip().upper() == ticker.upper():
+                    raw = row.get("AvgCost", "").strip()
+                    return float(raw) if raw else None
+    except Exception:
+        return None
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Deterministic vetoes (no LLM)
 # ---------------------------------------------------------------------------
@@ -128,6 +160,28 @@ def _deterministic_veto(rec: dict) -> tuple[bool, str]:
             "Option pricing is theoretical (no live market quote) — "
             "trade is not immediately actionable"
         )
+
+    # Veto 5a: CC strike is ITM (below current price) — near-certain assignment
+    if action == "SELL_CC":
+        strike = payload.get("strike")
+        if strike is not None:
+            current_price = _holding_current_price(ticker)
+            if current_price is not None and float(strike) < current_price:
+                return True, (
+                    f"Strike ${strike} is below the current price of ${current_price:.2f} "
+                    f"(delta {payload.get('delta', '?')}) — ITM call has near-certain assignment risk"
+                )
+
+    # Veto 5b: CC strike below cost basis — guaranteed loss if assigned
+    if action == "SELL_CC":
+        strike = payload.get("strike")
+        if strike is not None:
+            avg_cost = _holdings_avg_cost(ticker)
+            if avg_cost is not None and float(strike) < avg_cost:
+                return True, (
+                    f"Strike ${strike} is below your cost basis of ${avg_cost:.2f} — "
+                    "assignment would lock in a realized loss on this position"
+                )
 
     # Veto 5: Stale price data during market hours
     if action in _PRICE_SENSITIVE_ACTIONS and _is_market_hours():

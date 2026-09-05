@@ -13,6 +13,7 @@ from . import thesis_agent          # registers thesis_monitor handler at import
 from . import covered_call_agent    # registers covered_call handler at import time
 from . import portfolio_guardian    # registers portfolio_guardian handler at import time
 from . import critic_agent          # registers critic handler at import time
+from . import outcome_evaluator     # registers outcome_evaluator handler at import time
 
 __all__ = [
     "HoldingSnapshot",
