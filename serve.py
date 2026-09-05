@@ -1677,11 +1677,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._handle_refresh_financials(parse_qs(parsed.query))
         elif parsed.path.startswith("/api/theses/"):
             parts = parsed.path.rstrip("/").split("/")
-            if len(parts) == 4:                          # /api/theses/<ticker>
+            if len(parts) == 4:                               # /api/theses/<ticker>
                 self._handle_thesis_get(parts[3].upper())
-            elif len(parts) == 5 and parts[4] == "job": # /api/theses/<ticker>/job?id=...
+            elif len(parts) == 5 and parts[4] == "job":     # /api/theses/<ticker>/job?id=...
                 job_id = parse_qs(parsed.query).get("id", [None])[0]
                 self._handle_thesis_job_poll(job_id or "")
+            elif len(parts) == 5 and parts[4] == "history": # /api/theses/<ticker>/history
+                self._handle_thesis_history(parts[3].upper())
             else:
                 self.send_response(404)
                 self.end_headers()
@@ -4497,8 +4499,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         def _run():
             try:
-                from agents.thesis_intake import draft_thesis
-                draft = draft_thesis(ticker, intake)
+                import thesis_engine
+                draft = thesis_engine.draft_thesis(ticker, intake)
                 import agent_db as _adb
                 _adb.save_thesis_draft(
                     ticker=ticker,
@@ -4549,19 +4551,57 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self._json_error(400, "Invalid JSON body")
         draft = body.get("draft")
         if draft is None:
-            # Approve whatever is in the DB
             thesis = agent_db.get_thesis_full(ticker)
             if not thesis or thesis.get("status") != "DRAFT":
                 return self._json_error(400, "No DRAFT thesis found for this ticker")
             raw_draft = thesis.get("draft_json") or {}
-            final_draft_json = json.dumps(raw_draft) if isinstance(raw_draft, dict) else str(raw_draft)
+            final_draft_json = json.dumps(raw_draft) if isinstance(raw_draft, dict) else str(raw_draft or "{}")
         else:
-            final_draft_json = json.dumps(draft)
+            final_draft_json = json.dumps(draft) if isinstance(draft, dict) else str(draft)
         try:
             thesis_id = agent_db.approve_thesis(ticker, final_draft_json)
-            self._json({"ok": True, "thesis_id": thesis_id})
         except ValueError as e:
-            self._json_error(400, str(e))
+            return self._json_error(400, str(e))
+        except Exception as e:
+            return self._json_error(500, str(e))
+
+        # Write metadata columns and supplementary tables
+        try:
+            active = agent_db.get_thesis_full(ticker)
+            intake = (active.get("intake_json") or {}) if active else {}
+            if isinstance(intake, str):
+                intake = json.loads(intake) if intake else {}
+            agent_db.update_thesis_metadata(thesis_id, intake)
+
+            draft_dict = json.loads(final_draft_json) if isinstance(final_draft_json, str) else final_draft_json
+            for pillar in (draft_dict.get("pillars") or []):
+                pid = agent_db.insert_thesis_pillar(
+                    thesis_id, pillar.get("name", ""),
+                    float(pillar.get("importance", 0)),
+                    description=pillar.get("description"),
+                    critical=bool(pillar.get("critical", False)),
+                )
+                for m in (pillar.get("metrics") or []):
+                    agent_db.insert_thesis_metric(
+                        pid, m.get("metric_key", ""), m.get("direction", "HIGHER_IS_BETTER"),
+                        healthy_rule_json=m.get("healthy_rule_json"),
+                        warning_rule_json=m.get("warning_rule_json"),
+                        violation_rule_json=m.get("violation_rule_json"),
+                        persistence_periods=int(m.get("persistence_periods", 1)),
+                    )
+            for rule in (draft_dict.get("rules") or []):
+                agent_db.insert_thesis_rule(
+                    thesis_id, rule.get("rule_type", ""), rule.get("rule_json", "{}")
+                )
+        except Exception as e:
+            print(f"[thesis_approve] post-approval writes failed for {ticker}: {e}")
+
+        self._json({"ok": True, "thesis_id": thesis_id})
+
+    def _handle_thesis_history(self, ticker: str):
+        try:
+            history = agent_db.get_thesis_history(ticker)
+            self._json({"ok": True, "history": history})
         except Exception as e:
             self._json_error(500, str(e))
 

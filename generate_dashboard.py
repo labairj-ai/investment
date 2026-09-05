@@ -7307,11 +7307,12 @@ function _renderThesisModal(thesis) {{
   }}
   if (thesis.status === 'ACTIVE') {{
     sub.textContent = `Active · v${{thesis.version}} · Approved by ${{thesis.approved_by || 'USER'}}`;
-    const draft    = thesis.draft_json  || {{}};
-    const intake   = thesis.intake_json || {{}};
+    const draft     = thesis.draft_json    || {{}};
+    const intake    = thesis.intake_json   || {{}};
     const proposals = thesis.open_proposals || [];
+    const dbPillars = thesis.db_pillars    || [];
     _thesisCurrentIntake = intake;
-    body.innerHTML = _thesisActiveHtml(draft, intake, proposals);
+    body.innerHTML = _thesisActiveHtml(draft, intake, proposals, dbPillars);
     return;
   }}
   // Fallback for SUPERSEDED etc.
@@ -7320,10 +7321,27 @@ function _renderThesisModal(thesis) {{
 }}
 
 function _thesisIntakeFormHtml(err, prefill) {{
-  const roles = ['Core', 'Income', 'Growth', 'Speculative', 'Tactical'];
-  const periods = ['< 1 year', '1–3 years', '3–5 years', '5+ years', 'Indefinite'];
-  const roleOpts = roles.map(r => `<option${{prefill.role===r?' selected':''}}>${{r}}</option>`).join('');
-  const periodOpts = periods.map(p => `<option${{prefill.period===p?' selected':''}}>${{p}}</option>`).join('');
+  const roles = [
+    ['STRUCTURAL_BALLAST', 'Structural Ballast'],
+    ['CASH_FLOW',          'Cash Flow Engine'],
+    ['QUALITY_GROWTH',     'Quality Compounder'],
+    ['ASYMMETRIC',         'Asymmetric Bet'],
+    ['TACTICAL',           'Tactical Position'],
+  ];
+  const periods = [
+    ['<1_YEAR',      '< 1 Year'],
+    ['1_3_YEARS',    '1–3 Years'],
+    ['3_5_YEARS',    '3–5 Years'],
+    ['5_PLUS_YEARS', '5+ Years'],
+    ['INDEFINITE',   'Indefinite'],
+  ];
+  // Support legacy plain-text values stored in older intake_json
+  const _roleNorm = {{ Core:'STRUCTURAL_BALLAST', Income:'CASH_FLOW', Growth:'QUALITY_GROWTH', Speculative:'ASYMMETRIC', Tactical:'TACTICAL' }};
+  const _periodNorm = {{ '< 1 year':'<1_YEAR', '1–3 years':'1_3_YEARS', '3–5 years':'3_5_YEARS', '5+ years':'5_PLUS_YEARS', Indefinite:'INDEFINITE' }};
+  const selRole   = _roleNorm[prefill.role]   || prefill.role   || '';
+  const selPeriod = _periodNorm[prefill.period] || prefill.period || '';
+  const roleOpts   = roles.map(([v,l])   => `<option value="${{v}}"${{selRole===v?' selected':''}}>${{l}}</option>`).join('');
+  const periodOpts = periods.map(([v,l]) => `<option value="${{v}}"${{selPeriod===v?' selected':''}}>${{l}}</option>`).join('');
   const conds = (prefill.conditions || ['','']).join('\\n');
   return `
     ${{err ? `<div style="color:#e74c3c;margin-bottom:12px;font-size:13px;">${{err}}</div>` : ''}}
@@ -7338,8 +7356,22 @@ function _thesisIntakeFormHtml(err, prefill) {{
           <select id="ti-role" style="width:100%;margin-top:4px;padding:8px;border:1px solid #dde;border-radius:6px;font-size:13px;">${{roleOpts}}</select>
         </div>
         <div>
-          <label style="font-size:11px;font-weight:600;color:#555;text-transform:uppercase;letter-spacing:.04em;">Expected holding period</label>
+          <label style="font-size:11px;font-weight:600;color:#555;text-transform:uppercase;letter-spacing:.04em;">Holding period</label>
           <select id="ti-period" style="width:100%;margin-top:4px;padding:8px;border:1px solid #dde;border-radius:6px;font-size:13px;">${{periodOpts}}</select>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">
+        <div>
+          <label style="font-size:11px;font-weight:600;color:#555;text-transform:uppercase;letter-spacing:.04em;">Conviction (1–5)</label>
+          <input id="ti-conviction" type="number" min="1" max="5" value="${{prefill.conviction||3}}" style="width:100%;margin-top:4px;padding:8px;border:1px solid #dde;border-radius:6px;font-size:13px;box-sizing:border-box;"/>
+        </div>
+        <div>
+          <label style="font-size:11px;font-weight:600;color:#555;text-transform:uppercase;letter-spacing:.04em;">Target %</label>
+          <input id="ti-targetpct" type="number" min="0" max="100" step="0.5" value="${{prefill.target_pct||prefill.target_weight_pct||''}}" style="width:100%;margin-top:4px;padding:8px;border:1px solid #dde;border-radius:6px;font-size:13px;box-sizing:border-box;" placeholder="e.g. 4"/>
+        </div>
+        <div>
+          <label style="font-size:11px;font-weight:600;color:#555;text-transform:uppercase;letter-spacing:.04em;">Max %</label>
+          <input id="ti-maxpct" type="number" min="0" max="100" step="0.5" value="${{prefill.max_pct||prefill.max_weight_pct||10}}" style="width:100%;margin-top:4px;padding:8px;border:1px solid #dde;border-radius:6px;font-size:13px;box-sizing:border-box;"/>
         </div>
       </div>
       <div>
@@ -7354,16 +7386,6 @@ function _thesisIntakeFormHtml(err, prefill) {{
         <label style="font-size:11px;font-weight:600;color:#555;text-transform:uppercase;letter-spacing:.04em;">What would make me trim?</label>
         <textarea id="ti-trim" rows="2" style="width:100%;margin-top:4px;padding:8px;border:1px solid #dde;border-radius:6px;font-size:13px;resize:vertical;box-sizing:border-box;">${{prefill.trim||''}}</textarea>
       </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
-        <div>
-          <label style="font-size:11px;font-weight:600;color:#555;text-transform:uppercase;letter-spacing:.04em;">Conviction (1–5)</label>
-          <input id="ti-conviction" type="number" min="1" max="5" value="${{prefill.conviction||3}}" style="width:100%;margin-top:4px;padding:8px;border:1px solid #dde;border-radius:6px;font-size:13px;box-sizing:border-box;"/>
-        </div>
-        <div>
-          <label style="font-size:11px;font-weight:600;color:#555;text-transform:uppercase;letter-spacing:.04em;">Max position %</label>
-          <input id="ti-maxpct" type="number" min="0" max="100" step="0.5" value="${{prefill.max_pct||10}}" style="width:100%;margin-top:4px;padding:8px;border:1px solid #dde;border-radius:6px;font-size:13px;box-sizing:border-box;"/>
-        </div>
-      </div>
       <div>
         <label style="font-size:11px;font-weight:600;color:#555;text-transform:uppercase;letter-spacing:.04em;">Special considerations</label>
         <textarea id="ti-special" rows="2" placeholder="e.g. Prefer CC-friendly, long-term tax treatment" style="width:100%;margin-top:4px;padding:8px;border:1px solid #dde;border-radius:6px;font-size:13px;resize:vertical;box-sizing:border-box;">${{prefill.special||''}}</textarea>
@@ -7377,59 +7399,126 @@ function _thesisIntakeFormHtml(err, prefill) {{
     </div>`;
 }}
 
+function _fmtRule(ruleJson) {{
+  try {{
+    const r = JSON.parse(ruleJson || '{{}}');
+    if (r.operator === 'BETWEEN') return `${{r.min}}–${{r.max}}`;
+    return `${{r.operator}} ${{r.value ?? ''}}`;
+  }} catch(e) {{ return ruleJson || '—'; }}
+}}
+
 function _thesisDraftReviewHtml(draft, intake) {{
-  const claims = draft.claims || [];
-  let claimsHtml = '';
-  claims.forEach((c, i) => {{
-    const measurements = (c.measurements || []).map(m => `
-      <tr>
-        <td style="padding:4px 8px;font-size:12px;color:#555;">${{m.metric||''}}</td>
-        <td style="padding:4px 8px;font-size:12px;color:#27ae60;">${{m.healthy||''}}</td>
-        <td style="padding:4px 8px;font-size:12px;color:#e67e22;">${{m.warning||''}}</td>
-        <td style="padding:4px 8px;font-size:12px;color:#e74c3c;">${{m.violation||''}}</td>
-        <td style="padding:4px 8px;font-size:12px;color:#888;">${{m.persistence||''}}</td>
-      </tr>`).join('');
-    claimsHtml += `
+  const pillars   = draft.pillars   || [];
+  const rules     = draft.rules     || [];
+  const keyRisks  = draft.key_risks || [];
+  const catalysts = draft.catalysts || [];
+
+  let pillarsHtml = '';
+  pillars.forEach((p, i) => {{
+    const metricsRows = (p.metrics || []).map(m => {{
+      const unv = m.unverified ? ' <span style="color:#e67e22;font-size:9px;vertical-align:super;">⚠</span>' : '';
+      return `<tr>
+        <td style="padding:4px 8px;font-size:11px;font-family:monospace;color:#1a2340;">${{m.metric_key||''}}${{unv}}</td>
+        <td style="padding:4px 8px;font-size:11px;color:#27ae60;">${{_fmtRule(m.healthy_rule_json)}}</td>
+        <td style="padding:4px 8px;font-size:11px;color:#e67e22;">${{_fmtRule(m.warning_rule_json)}}</td>
+        <td style="padding:4px 8px;font-size:11px;color:#e74c3c;">${{_fmtRule(m.violation_rule_json)}}</td>
+        <td style="padding:4px 8px;font-size:11px;color:#888;">${{m.persistence_periods||1}}q</td>
+      </tr>`;
+    }}).join('');
+    pillarsHtml += `
       <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:14px;margin-bottom:12px;">
-        <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
-          <span style="background:#1a2340;color:#fff;border-radius:4px;padding:2px 8px;font-size:10px;font-weight:700;">${{c.importance||0}}%</span>
-          <input class="thesis-claim-text" data-idx="${{i}}" value="${{(c.claim||'').replace(/"/g,'&quot;')}}"
-            style="flex:1;padding:6px;border:1px solid #dde;border-radius:4px;font-size:13px;font-weight:600;color:#1a2340;" />
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+          <span style="background:#1a2340;color:#fff;border-radius:4px;padding:2px 8px;font-size:10px;font-weight:700;">${{p.importance||0}}%</span>
+          <span style="font-size:14px;font-weight:700;color:#1a2340;flex:1;">${{p.name||''}}</span>
+          <label style="font-size:11px;color:#888;display:flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap;">
+            <input type="checkbox" class="pillar-critical-cb" data-idx="${{i}}" ${{p.critical?'checked':''}}/>
+            Critical
+          </label>
         </div>
-        <table style="width:100%;border-collapse:collapse;">
+        ${{p.description ? `<div style="font-size:12px;color:#666;margin-bottom:10px;line-height:1.4;">${{p.description}}</div>` : ''}}
+        ${{metricsRows ? `<table style="width:100%;border-collapse:collapse;">
           <thead><tr>
             <th style="text-align:left;padding:4px 8px;font-size:10px;color:#888;font-weight:600;text-transform:uppercase;">Metric</th>
             <th style="text-align:left;padding:4px 8px;font-size:10px;color:#27ae60;font-weight:600;text-transform:uppercase;">Healthy</th>
             <th style="text-align:left;padding:4px 8px;font-size:10px;color:#e67e22;font-weight:600;text-transform:uppercase;">Warning</th>
             <th style="text-align:left;padding:4px 8px;font-size:10px;color:#e74c3c;font-weight:600;text-transform:uppercase;">Violation</th>
-            <th style="text-align:left;padding:4px 8px;font-size:10px;color:#888;font-weight:600;text-transform:uppercase;">Persistence</th>
+            <th style="text-align:left;padding:4px 8px;font-size:10px;color:#888;font-weight:600;text-transform:uppercase;">Persist.</th>
           </tr></thead>
-          <tbody>${{measurements}}</tbody>
-        </table>
-        <div style="margin-top:8px;font-size:11px;color:#888;">Click claim title to edit</div>
+          <tbody>${{metricsRows}}</tbody>
+        </table>` : ''}}
       </div>`;
   }});
+
+  let rulesHtml = '';
+  if (rules.length) {{
+    rulesHtml = `<div style="margin-top:12px;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;">
+      <div style="background:#f4f6f9;padding:7px 14px;font-size:10px;font-weight:700;color:#555;text-transform:uppercase;letter-spacing:.04em;">Rules</div>`;
+    rules.forEach(r => {{
+      let cond = r.rule_json;
+      try {{ cond = JSON.parse(r.rule_json).condition || r.rule_json; }} catch(e) {{}}
+      rulesHtml += `<div style="padding:7px 14px;border-top:1px solid #f0f0f0;font-size:12px;color:#444;">
+        <span style="background:#eef2ff;border-radius:3px;padding:1px 6px;font-size:10px;font-weight:700;color:#3456;margin-right:6px;">${{r.rule_type}}</span>${{cond}}
+      </div>`;
+    }});
+    rulesHtml += '</div>';
+  }}
+
+  const risksHtml = keyRisks.length ? `<div style="margin-top:12px;">
+    <div style="font-size:10px;font-weight:700;color:#e74c3c;text-transform:uppercase;letter-spacing:.04em;margin-bottom:5px;">Key Risks</div>
+    ${{keyRisks.map(r=>`<div style="font-size:12px;color:#555;padding:2px 0 2px 10px;border-left:2px solid #f0c0c0;">${{r}}</div>`).join('')}}
+  </div>` : '';
+
+  const catalystsHtml = catalysts.length ? `<div style="margin-top:12px;">
+    <div style="font-size:10px;font-weight:700;color:#27ae60;text-transform:uppercase;letter-spacing:.04em;margin-bottom:5px;">Catalysts</div>
+    ${{catalysts.map(c=>`<div style="font-size:12px;color:#555;padding:2px 0 2px 10px;border-left:2px solid #b0e0c0;">${{c}}</div>`).join('')}}
+  </div>` : '';
+
   return `
-    <div style="margin-bottom:14px;padding:12px;background:#fffbf0;border:1px solid #f0e0a0;border-radius:8px;font-size:13px;color:#7a6000;">
-      📋 AI-generated draft based on your rationale + financial history. Review each claim, then approve.
+    <div style="margin-bottom:14px;padding:10px 14px;background:#fffbf0;border:1px solid #f0e0a0;border-radius:8px;font-size:13px;color:#7a6000;">
+      AI-generated draft — review each pillar, toggle Critical if a violation alone should alert, then approve.
     </div>
-    ${{claimsHtml}}
-    <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:8px;">
+    ${{pillarsHtml}}${{rulesHtml}}${{risksHtml}}${{catalystsHtml}}
+    <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px;">
       <button onclick="editThesisIntake()" style="padding:9px 18px;border:1px solid #dde;border-radius:6px;background:#f4f6f9;font-size:13px;cursor:pointer;color:#555;">← Edit Rationale</button>
       <button onclick="approveThesis()" style="padding:9px 20px;border:none;border-radius:6px;background:#27ae60;color:#fff;font-size:13px;font-weight:600;cursor:pointer;">Approve Thesis ✓</button>
     </div>
     <div id="thesis-approve-status" style="font-size:12px;color:#888;text-align:center;margin-top:8px;"></div>`;
 }}
 
-function _thesisActiveHtml(draft, intake, proposals) {{
-  const claims = draft.claims || [];
-  let claimsHtml = claims.map(c => `
-    <div style="padding:10px 12px;border-left:3px solid #27ae60;background:#f6fff8;border-radius:0 6px 6px 0;margin-bottom:8px;">
+function _thesisActiveHtml(draft, intake, proposals, dbPillars) {{
+  const _statusColor = {{ STRONG:'#27ae60', HEALTHY:'#27ae60', WATCH:'#e67e22', WARNING:'#e67e22', VIOLATED:'#e74c3c', UNKNOWN:'#aaa' }};
+
+  // Prefer DB pillar rows (evaluated health); fall back to draft.pillars (AI proposal)
+  const displayPillars = (dbPillars && dbPillars.length > 0) ? dbPillars : (draft.pillars || []);
+  const usingDb = dbPillars && dbPillars.length > 0;
+
+  let pillarsHtml = displayPillars.map(p => {{
+    const sc = _statusColor[p.status] || '#aaa';
+    const critMark = p.critical ? ' <span style="color:#e74c3c;font-size:10px;">●</span>' : '';
+    const statusBadge = usingDb ? `<span style="font-size:10px;font-weight:700;color:${{sc}};margin-left:6px;">${{p.status||'UNKNOWN'}}</span>` : '';
+    const desc = p.description ? `<div style="font-size:12px;color:#777;margin-top:3px;line-height:1.4;">${{p.description}}</div>` : '';
+    return `<div style="padding:10px 12px;border-left:3px solid ${{sc}};background:#f8fafc;border-radius:0 6px 6px 0;margin-bottom:8px;">
       <div style="display:flex;align-items:center;gap:8px;">
-        <span style="background:#27ae60;color:#fff;border-radius:4px;padding:1px 7px;font-size:10px;font-weight:700;">${{c.importance||0}}%</span>
-        <span style="font-size:13px;font-weight:600;color:#1a2340;">${{c.claim||''}}</span>
+        <span style="background:#1a2340;color:#fff;border-radius:4px;padding:1px 7px;font-size:10px;font-weight:700;">${{p.importance||0}}%</span>
+        <span style="font-size:13px;font-weight:600;color:#1a2340;flex:1;">${{p.name||''}}${{critMark}}</span>
+        ${{statusBadge}}
       </div>
-    </div>`).join('');
+      ${{desc}}
+    </div>`;
+  }}).join('');
+
+  // Fallback: old flat claims (legacy theses)
+  if (!pillarsHtml) {{
+    const claims = draft.claims || [];
+    pillarsHtml = claims.map(c => `
+      <div style="padding:10px 12px;border-left:3px solid #27ae60;background:#f6fff8;border-radius:0 6px 6px 0;margin-bottom:8px;">
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span style="background:#27ae60;color:#fff;border-radius:4px;padding:1px 7px;font-size:10px;font-weight:700;">${{c.importance||0}}%</span>
+          <span style="font-size:13px;font-weight:600;color:#1a2340;">${{c.claim||''}}</span>
+        </div>
+      </div>`).join('');
+  }}
+
   let proposalHtml = '';
   if (proposals.length > 0) {{
     proposalHtml = `<div style="margin-top:18px;"><div style="font-size:11px;font-weight:700;color:#e67e22;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;">Pending Change Proposals</div>`;
@@ -7438,7 +7527,7 @@ function _thesisActiveHtml(draft, intake, proposals) {{
       try {{ payload = JSON.parse(p.action_payload_json||'{{}}'); }} catch(e) {{}}
       proposalHtml += `
         <div style="background:#fff8f0;border:1px solid #f0c070;border-radius:8px;padding:12px;margin-bottom:8px;">
-          <div style="font-size:13px;font-weight:600;color:#1a2340;margin-bottom:4px;">${{payload.claim_summary||'Claim change'}}</div>
+          <div style="font-size:13px;font-weight:600;color:#1a2340;margin-bottom:4px;">${{payload.claim_summary||'Proposal'}}</div>
           <div style="font-size:12px;color:#555;margin-bottom:8px;">${{payload.reason||''}}</div>
           <div style="display:flex;gap:8px;">
             <button onclick="acceptThesisProposal(${{p.id}})" style="padding:6px 14px;border:none;border-radius:5px;background:#27ae60;color:#fff;font-size:12px;cursor:pointer;font-weight:600;">Accept</button>
@@ -7448,9 +7537,10 @@ function _thesisActiveHtml(draft, intake, proposals) {{
     }});
     proposalHtml += '</div>';
   }}
+
   const whyHtml = intake.why ? `<div style="margin-bottom:14px;padding:12px;background:#f4f6f9;border-radius:8px;font-size:13px;color:#555;line-height:1.5;"><b>Why I own this:</b> ${{intake.why}}</div>` : '';
   const reviseBtn = `<div style="margin-top:18px;text-align:right;"><button onclick="reviseThesis()" style="background:#fff;color:#1a2340;border:1px solid #bbc;border-radius:6px;padding:8px 18px;font-size:12px;font-weight:600;cursor:pointer;">Revise Thesis</button></div>`;
-  return `${{whyHtml}}${{claimsHtml}}${{proposalHtml}}${{reviseBtn}}`;
+  return `${{whyHtml}}${{pillarsHtml}}${{proposalHtml}}${{reviseBtn}}`;
 }}
 
 function reviseThesis() {{
@@ -7470,6 +7560,7 @@ async function submitThesisIntake() {{
     sell:       document.getElementById('ti-sell').value.trim(),
     trim:       document.getElementById('ti-trim').value.trim(),
     conviction: parseInt(document.getElementById('ti-conviction').value)||3,
+    target_pct: parseFloat(document.getElementById('ti-targetpct').value)||null,
     max_pct:    parseFloat(document.getElementById('ti-maxpct').value)||10,
     special:    document.getElementById('ti-special').value.trim(),
   }};
@@ -7520,14 +7611,22 @@ function _pollThesisJob() {{
 async function approveThesis() {{
   const statusEl = document.getElementById('thesis-approve-status');
   statusEl.textContent = 'Approving…';
-  // Collect any inline edits to claim text
-  const claimInputs = document.querySelectorAll('.thesis-claim-text');
   const lastDraftR = await fetch('/api/theses/' + _thesisTicker);
   const lastDraftD = await lastDraftR.json();
   const draft = (lastDraftD.thesis && lastDraftD.thesis.draft_json) || {{}};
+
+  // Collect critical checkbox states from the review UI
+  const critChecks = document.querySelectorAll('.pillar-critical-cb');
+  const pillars = draft.pillars || [];
+  critChecks.forEach((cb, i) => {{ if (pillars[i]) pillars[i].critical = cb.checked; }});
+  draft.pillars = pillars;
+
+  // Legacy: collect inline claim edits for old-schema theses
+  const claimInputs = document.querySelectorAll('.thesis-claim-text');
   const claims = draft.claims || [];
   claimInputs.forEach((inp, i) => {{ if (claims[i]) claims[i].claim = inp.value; }});
   draft.claims = claims;
+
   try {{
     const r = await fetch('/api/theses/' + _thesisTicker + '/approve', {{
       method: 'POST',

@@ -472,17 +472,16 @@ def save_thesis_draft(ticker: str, intake_json: str, draft_json: str) -> int:
 
 
 def get_thesis_full(ticker: str) -> dict | None:
-    """Return the most recent thesis (any status) with intake_json and draft_json."""
+    """Return the most recent thesis (any status) with parsed JSON fields and DB pillars."""
     conn = _connect()
     row = conn.execute(
         "SELECT * FROM investment_theses WHERE ticker=? ORDER BY version DESC LIMIT 1",
         (ticker,),
     ).fetchone()
-    conn.close()
     if not row:
+        conn.close()
         return None
     result = dict(row)
-    # Parse JSON blobs if present
     for field in ("intake_json", "draft_json"):
         raw = result.get(field)
         if raw:
@@ -490,7 +489,71 @@ def get_thesis_full(ticker: str) -> dict | None:
                 result[field] = json.loads(raw)
             except (json.JSONDecodeError, TypeError):
                 pass
+    db_pillars = conn.execute(
+        "SELECT * FROM thesis_pillars WHERE thesis_id=? ORDER BY importance DESC",
+        (row["id"],),
+    ).fetchall()
+    conn.close()
+    result["db_pillars"] = [dict(p) for p in db_pillars]
     return result
+
+
+def update_thesis_metadata(thesis_id: int, intake: dict) -> None:
+    """Write intake-derived columns onto an approved investment_theses row."""
+    _ROLE_MAP = {
+        "STRUCTURAL_BALLAST": "STRUCTURAL_BALLAST",
+        "CASH_FLOW":          "CASH_FLOW",
+        "QUALITY_GROWTH":     "QUALITY_GROWTH",
+        "ASYMMETRIC":         "ASYMMETRIC",
+        "TACTICAL":           "TACTICAL",
+        "Core":        "STRUCTURAL_BALLAST",
+        "Income":      "CASH_FLOW",
+        "Growth":      "QUALITY_GROWTH",
+        "Speculative": "ASYMMETRIC",
+        "Tactical":    "TACTICAL",
+    }
+    _PERIOD_MAP = {
+        "<1_YEAR":      "<1_YEAR",
+        "1_3_YEARS":    "1_3_YEARS",
+        "3_5_YEARS":    "3_5_YEARS",
+        "5_PLUS_YEARS": "5_PLUS_YEARS",
+        "INDEFINITE":   "INDEFINITE",
+        "< 1 year":   "<1_YEAR",
+        "1–3 years":  "1_3_YEARS",
+        "3–5 years":  "3_5_YEARS",
+        "5+ years":   "5_PLUS_YEARS",
+        "Indefinite": "INDEFINITE",
+    }
+    conn = _connect()
+    conn.execute(
+        """UPDATE investment_theses
+           SET portfolio_role=?, holding_period=?, conviction=?,
+               target_weight_pct=?, max_weight_pct=?, thesis_summary=?
+           WHERE id=?""",
+        (
+            _ROLE_MAP.get(intake.get("role", ""), intake.get("role")),
+            _PERIOD_MAP.get(intake.get("period", ""), intake.get("period")),
+            intake.get("conviction"),
+            intake.get("target_pct"),
+            intake.get("max_pct"),
+            intake.get("why"),
+            thesis_id,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_thesis_history(ticker: str) -> list[dict]:
+    """Return all thesis versions for a ticker, newest first."""
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT id, version, status, approved_at, closed_at, approved_by, summary "
+        "FROM investment_theses WHERE ticker=? ORDER BY version DESC",
+        (ticker,),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 
 def approve_thesis(ticker: str, final_draft_json: str) -> int:
