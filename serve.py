@@ -421,6 +421,7 @@ def _run_daily():
     REFRESH_FLAG      = PROJECT_DIR / "out" / "last_refresh_date.txt"
     REFRESH_5PM_FLAG  = PROJECT_DIR / "out" / "last_refresh_5pm_date.txt"
     MACRO_SCORE_FLAG  = PROJECT_DIR / "out" / "last_macro_score_date.txt"
+    BACKUP_FLAG       = PROJECT_DIR / "out" / "last_backup_date.txt"
     VENV_PY           = PROJECT_DIR / "venv" / "bin" / "python3"
     LOG               = PROJECT_DIR / "out" / "newsletter.log"
 
@@ -447,6 +448,19 @@ def _run_daily():
             return MACRO_SCORE_FLAG.read_text().strip() == today
         except Exception:
             return False
+
+    def already_backed_up(today):
+        try:
+            return BACKUP_FLAG.read_text().strip() == today
+        except Exception:
+            return False
+
+    def do_backup(today):
+        try:
+            _backup_data()
+            BACKUP_FLAG.write_text(today)
+        except Exception as exc:
+            print(f"[Backup] Exception: {exc}")
 
     def run_macro_scores(today):
         import portfolio_ai as _pai
@@ -535,10 +549,7 @@ def _run_daily():
             print(f"[Scheduler] Running newsletter for {today}…")
             if run(send_email=True):
                 print(f"[Scheduler] Done for {today}.")
-                try:
-                    _backup_data()
-                except Exception as exc:
-                    print(f"[Backup] Exception: {exc}")
+                do_backup(today)
             else:
                 print(f"[Scheduler] Failed — will retry in 30 min.")
         # Macro scores: always run Saturday at 1 AM ET regardless of newsletter flag
@@ -549,6 +560,7 @@ def _run_daily():
             if run(send_email=False):
                 REFRESH_5PM_FLAG.write_text(today)
                 print(f"[Scheduler] 5 PM refresh done for {today}.")
+                do_backup(today)
             else:
                 print(f"[Scheduler] 5 PM refresh failed — will retry in 30 min.")
         elif already_ran(today) and now.hour >= 21 and now.minute >= 30 and not already_refreshed(today):
@@ -556,8 +568,13 @@ def _run_daily():
             if run(send_email=False):
                 REFRESH_FLAG.write_text(today)
                 print(f"[Scheduler] 9:30 PM refresh done for {today}.")
+                do_backup(today)
             else:
                 print(f"[Scheduler] 9:30 PM refresh failed — will retry in 30 min.")
+        # Daily backup — runs once per day at 8 PM ET regardless of newsletter/refresh
+        # Catches weekday data changes (manual lot edits, thesis saves, etc.)
+        if now.hour >= 20 and not already_backed_up(today):
+            do_backup(today)
         time.sleep(1800)
 
 
