@@ -55,6 +55,7 @@
     "tax_lot_lt_window_days_min": 30,
     "tax_lot_lt_window_days_max": 45,
     "tax_loss_min_dollars": 500.0,
+    "st_tax_rate": 0.37,
     "layer_underweight_days": 3
   }
 }

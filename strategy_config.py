@@ -42,6 +42,7 @@ TRIGGER_TAX_LT_WINDOW_MIN: int = _trig.get("tax_lot_lt_window_days_min", 30)
 TRIGGER_TAX_LT_WINDOW_MAX: int = _trig.get("tax_lot_lt_window_days_max", 45)
 TRIGGER_TAX_LOSS_MIN: float = _trig.get("tax_loss_min_dollars", 500.0)
 TRIGGER_LAYER_UNDERWEIGHT_DAYS: int = _trig.get("layer_underweight_days", 3)
+TAX_ST_RATE: float = _trig.get("st_tax_rate", 0.37)
 
 
 def validate_config() -> None:

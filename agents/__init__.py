@@ -15,6 +15,7 @@ from . import portfolio_guardian    # registers portfolio_guardian handler at im
 from . import critic_agent          # registers critic handler at import time
 from . import outcome_evaluator     # registers outcome_evaluator handler at import time
 from . import opportunity_agent     # registers opportunity_hunter handler at import time
+from . import tax_agent             # registers tax handler at import time
 
 __all__ = [
     "HoldingSnapshot",

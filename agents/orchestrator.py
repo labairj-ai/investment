@@ -60,7 +60,7 @@ _install_llm_semaphore()
 
 # Agents that iterate over portfolio holdings — NO_ACTION recorded for
 # any holding they evaluated but did not flag.
-_HOLDING_SCOPE_AGENTS = {"portfolio_guardian", "thesis_monitor", "covered_call"}
+_HOLDING_SCOPE_AGENTS = {"portfolio_guardian", "thesis_monitor", "covered_call", "tax"}
 
 
 def _record_no_actions(
