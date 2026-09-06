@@ -8544,28 +8544,56 @@ function showDashTab(name) {{
 }}
 
 // ── Agent status badge ────────────────────────────────────────────────────────
-var _agentStatusTimer = null;
+var _agentStatusTimer   = null;
+var _agentTickTimer     = null;
+var _agentStatusData    = null;
+
+function _fmtDur(s) {{
+  if (s < 60) return s + 's';
+  return Math.floor(s / 60) + 'm ' + (s % 60) + 's';
+}}
+
+function _renderAgentBadge() {{
+  var badge = document.getElementById('agent-status-badge');
+  if (!badge || !_agentStatusData) return;
+  var d = _agentStatusData;
+  if (d.running) {{
+    var names = (d.agents || []).join(', ') || 'agents';
+    var extra = '';
+    if (d.running_since) {{
+      var elapsed = Math.floor(Date.now() / 1000 - d.running_since);
+      var totalEst = (d.agents || []).reduce(function(sum, a) {{
+        return sum + (d.avg_durations && d.avg_durations[a] ? d.avg_durations[a] : 90);
+      }}, 0);
+      var remaining = Math.max(0, totalEst - elapsed);
+      extra = ' &middot; ' + _fmtDur(elapsed);
+      if (remaining > 5) extra += ' &middot; ~' + _fmtDur(remaining) + ' left';
+    }}
+    badge.innerHTML = '<span style="display:inline-flex;align-items:center;gap:5px;">'
+      + '<span style="width:7px;height:7px;border-radius:50%;background:#f6ad55;'
+      + 'display:inline-block;animation:agent-pulse 1.2s ease-in-out infinite;"></span>'
+      + '<span style="color:#f6ad55;">&#9889; ' + names + ' running' + extra + '</span></span>';
+  }} else {{
+    if (_agentTickTimer) {{ clearInterval(_agentTickTimer); _agentTickTimer = null; }}
+    var ts = d.last_completed_at;
+    if (ts) {{
+      var dt = new Date(ts * 1000);
+      var hm = dt.toLocaleTimeString([], {{hour:'2-digit', minute:'2-digit'}});
+      badge.innerHTML = '<span style="color:#68d391;">&#10003; ' + hm + '</span>';
+    }} else {{
+      badge.innerHTML = '';
+    }}
+  }}
+}}
+
 function _pollAgentStatus() {{
   fetch('/api/agent-status')
     .then(function(r) {{ return r.json(); }})
     .then(function(d) {{
-      var badge = document.getElementById('agent-status-badge');
-      if (!badge) return;
-      if (d.running) {{
-        var names = (d.agents || []).join(', ') || 'agents';
-        badge.innerHTML = '<span style="display:inline-flex;align-items:center;gap:5px;">'
-          + '<span style="width:7px;height:7px;border-radius:50%;background:#f6ad55;'
-          + 'display:inline-block;animation:agent-pulse 1.2s ease-in-out infinite;"></span>'
-          + '<span style="color:#f6ad55;">&#9889; ' + names + ' running…</span></span>';
-      }} else {{
-        var ts = d.last_completed_at;
-        if (ts) {{
-          var dt = new Date(ts * 1000);
-          var hm = dt.toLocaleTimeString([], {{hour:'2-digit', minute:'2-digit'}});
-          badge.innerHTML = '<span style="color:#68d391;">&#10003; ' + hm + '</span>';
-        }} else {{
-          badge.innerHTML = '';
-        }}
+      _agentStatusData = d;
+      _renderAgentBadge();
+      if (d.running && !_agentTickTimer) {{
+        _agentTickTimer = setInterval(_renderAgentBadge, 1000);
       }}
     }})
     .catch(function() {{}});
@@ -8577,6 +8605,8 @@ function _startAgentStatusPolling() {{
 }}
 function _stopAgentStatusPolling() {{
   if (_agentStatusTimer) {{ clearInterval(_agentStatusTimer); _agentStatusTimer = null; }}
+  if (_agentTickTimer)   {{ clearInterval(_agentTickTimer);   _agentTickTimer   = null; }}
+  _agentStatusData = null;
 }}
 function toggleNavMenu(e) {{
   e.stopPropagation();

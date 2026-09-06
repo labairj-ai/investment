@@ -4958,14 +4958,41 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             last_row = conn.execute(
                 "SELECT MAX(finished_at) AS ts FROM agent_runs WHERE status='done'"
             ).fetchone()
+
+            running_since = None
+            avg_durations = {}
+            if running_rows:
+                rs = conn.execute(
+                    "SELECT MIN(started_at) AS ts FROM agent_runs "
+                    "WHERE status='running' AND started_at >= ?",
+                    (cutoff,),
+                ).fetchone()
+                running_since = rs["ts"] if rs else None
+
+                agent_types = [r["agent_type"] for r in running_rows]
+                placeholders = ",".join("?" * len(agent_types))
+                dur_rows = conn.execute(
+                    f"SELECT agent_type, AVG(finished_at - started_at) AS avg_dur "
+                    f"FROM agent_runs WHERE status='done' AND agent_type IN ({placeholders}) "
+                    f"GROUP BY agent_type",
+                    agent_types,
+                ).fetchall()
+                avg_durations = {
+                    r["agent_type"]: round(r["avg_dur"])
+                    for r in dur_rows if r["avg_dur"]
+                }
+
             conn.close()
             self._json({
                 "running": len(running_rows) > 0,
                 "agents": [r["agent_type"] for r in running_rows],
+                "running_since": running_since,
+                "avg_durations": avg_durations,
                 "last_completed_at": last_row["ts"] if last_row else None,
             })
         except Exception as e:
-            self._json({"running": False, "agents": [], "last_completed_at": None})
+            self._json({"running": False, "agents": [], "running_since": None,
+                        "avg_durations": {}, "last_completed_at": None})
 
     # ── Decision Queue endpoint ───────────────────────────────────────────────
 
