@@ -588,6 +588,11 @@ def _run_daily():
                 lf.write("[PortfolioAI] Macro scores done.\n")
             except Exception as _e:
                 lf.write(f"[PortfolioAI] Error: {_e}\n")
+            lf.write("[triggers] Running agent pipeline…\n")
+            try:
+                _run_agent_pipeline(log_path=LOG)
+            except Exception as _ae:
+                lf.write(f"[triggers] Agent pipeline error: {_ae}\n")
             result = subprocess.run(
                 [str(VENV_PY), str(PROJECT_DIR / "generate_dashboard.py")],
                 cwd=str(PROJECT_DIR),
@@ -992,6 +997,157 @@ def _run_outcome_evaluator():
 threading.Thread(target=_run_outcome_evaluator, daemon=True).start()
 
 
+# ── Agent pipeline helpers ────────────────────────────────────────────────────
+
+def build_portfolio_snapshot():
+    """Build a fully-populated PortfolioSnapshot from the latest DB data.
+
+    Reads holding_day for prices/weights, holdings.csv for shares/avg_cost,
+    layer_day for layer weights, and holding_macro_scores for macro scores.
+    Returns a PortfolioSnapshot with real data; fields default to 0 if DB is
+    not yet populated for today (retry logic lives in the caller).
+    """
+    import csv as _csv2
+    from agents.contracts import PortfolioSnapshot, HoldingSnapshot
+    from strategy_config import LAYER_LABELS
+
+    db = PROJECT_DIR / "out" / "investment.db"
+
+    # holdings.csv: source of truth for shares and avg_cost
+    csv_map: dict = {}
+    csv_path = PROJECT_DIR / "holdings.csv"
+    if csv_path.exists():
+        with open(csv_path, newline="") as _f:
+            for row in _csv2.DictReader(_f):
+                t = (row.get("Stock") or "").strip().upper()
+                if t:
+                    try:
+                        csv_map[t] = {
+                            "shares": float(row.get("Shares") or 0),
+                            "avg_cost": float(row.get("AvgCost") or 0),
+                            "layer": int(row.get("Layer") or 0),
+                        }
+                    except (ValueError, TypeError):
+                        pass
+
+    price_map: dict = {}
+    total_value = 0.0
+    layer_weights: dict = {}
+    macro_scores: dict = {}
+
+    if db.exists():
+        _conn = sqlite3.connect(str(db), timeout=10)
+        _conn.row_factory = sqlite3.Row
+        try:
+            # holding_day: latest prices, market values, weight_pct
+            _hday = _conn.execute("SELECT MAX(day) FROM holding_day").fetchone()[0]
+            if _hday:
+                for r in _conn.execute(
+                    "SELECT ticker, price, value, weight_pct FROM holding_day WHERE day=?",
+                    (_hday,),
+                ):
+                    price_map[r["ticker"]] = {
+                        "price": r["price"] or 0.0,
+                        "value": r["value"] or 0.0,
+                        "weight_pct": r["weight_pct"] or 0.0,
+                    }
+                prow = _conn.execute(
+                    "SELECT total_value FROM portfolio_day WHERE day=?", (_hday,)
+                ).fetchone()
+                if prow:
+                    total_value = prow["total_value"] or 0.0
+
+            # layer_day: {layer_number: weight_pct}
+            _lday = _conn.execute("SELECT MAX(day) FROM layer_day").fetchone()[0]
+            if _lday:
+                _label_to_num = {v: k for k, v in LAYER_LABELS.items()}
+                for r in _conn.execute(
+                    "SELECT layer, weight_pct FROM layer_day WHERE day=?", (_lday,)
+                ):
+                    num = _label_to_num.get(r["layer"])
+                    if num is not None:
+                        layer_weights[num] = r["weight_pct"] or 0.0
+
+            # holding_macro_scores: {ticker: parsed scores dict}
+            for r in _conn.execute(
+                "SELECT ticker, scores FROM holding_macro_scores"
+            ):
+                try:
+                    macro_scores[r["ticker"]] = json.loads(r["scores"])
+                except Exception:
+                    pass
+        finally:
+            _conn.close()
+
+    holdings = []
+    for ticker, info in csv_map.items():
+        pdata = price_map.get(ticker, {})
+        holdings.append(HoldingSnapshot(
+            ticker=ticker,
+            layer=info["layer"],
+            shares=info["shares"],
+            avg_cost=info["avg_cost"],
+            current_price=pdata.get("price", 0.0),
+            market_value=pdata.get("value", 0.0),
+            weight_pct=pdata.get("weight_pct", 0.0),
+        ))
+
+    from datetime import date as _date2
+    return PortfolioSnapshot(
+        date=_date2.today().isoformat(),
+        total_value=total_value,
+        holdings=holdings,
+        layer_weights=layer_weights,
+        macro_scores=macro_scores,
+        generated_at=time.time(),
+    )
+
+
+def _run_agent_pipeline(log_path=None) -> None:
+    """Build snapshot → detect triggers → run agents → dispatch notifications.
+
+    Writes [triggers] and [Orchestrator] lines to stdout and optionally to
+    log_path (a Path or str) so they appear in newsletter.log.
+    Non-fatal: exceptions are caught and logged; caller continues normally.
+    """
+    def _log(msg):
+        print(msg)
+        if log_path:
+            try:
+                with open(log_path, "a") as _lf:
+                    _lf.write(msg + "\n")
+            except Exception:
+                pass
+
+    try:
+        snapshot = build_portfolio_snapshot()
+        n_holdings = len(snapshot.holdings)
+        n_priced = sum(1 for h in snapshot.holdings if h.current_price > 0)
+        _log(
+            f"[triggers] Snapshot: {n_holdings} holdings, {n_priced} priced, "
+            f"total_value={snapshot.total_value:.0f}"
+        )
+
+        from agents.triggers import detect_triggers
+        events = detect_triggers(snapshot)
+        triggered = list({e.agent_type for e in events})
+        _log(f"[triggers] {len(events)} events → agents: {triggered}")
+
+        if triggered:
+            from agents.orchestrator import run_agents
+            recs = run_agents(snapshot, triggered)
+            _log(f"[Orchestrator] {len(recs)} recommendation(s) generated.")
+        else:
+            _log("[Orchestrator] No agents triggered.")
+
+        try:
+            _dispatch_urgent_notifications()
+        except Exception as _ne:
+            _log(f"[Notifications] dispatch failed: {_ne}")
+    except Exception as _e:
+        _log(f"[AgentPipeline] Failed: {_e}")
+
+
 # ── Weekly thesis monitor (Saturday 7 AM ET) ──────────────────────────────────
 
 def _run_saturday_sweep():
@@ -1016,87 +1172,24 @@ def _run_saturday_sweep():
         now = _dt.now(TZ)
         if now.weekday() == 5 and now.hour == 7 and not _already_ran():
             try:
-                import csv as _csv
-                from agents.contracts import PortfolioSnapshot, HoldingSnapshot, AgentContext
-                from agents.thesis_agent import run_thesis_monitor
-
-                holdings_csv = PROJECT_DIR / "holdings.csv"
-                holdings = []
-                if holdings_csv.exists():
-                    with open(holdings_csv) as f:
-                        for row in _csv.DictReader(f):
-                            t = (row.get("Stock") or "").strip().upper()
-                            if t:
-                                holdings.append(HoldingSnapshot(
-                                    ticker=t,
-                                    layer=int(row.get("Layer") or 0),
-                                    shares=0, avg_cost=0, current_price=0,
-                                    market_value=0, weight_pct=0,
-                                ))
-
-                snapshot = PortfolioSnapshot(
-                    date=_dt.now(TZ).date().isoformat(),
-                    total_value=0, holdings=holdings,
-                    layer_weights={}, macro_scores={}, generated_at=time.time(),
+                # Guard: ensure today's prices are loaded before running agents.
+                # send_newsletter_main.py (kicked off by _run_daily at the same time)
+                # writes holding_day rows; if they aren't there yet, skip and retry
+                # at the next 30-minute tick (still hour==7).
+                today_str = _dt.now(TZ).date().isoformat()
+                _gc = sqlite3.connect(
+                    str(PROJECT_DIR / "out" / "investment.db"), timeout=5
                 )
-                # --- thesis monitor ---
-                run_id = agent_db.insert_agent_run(
-                    agent_type="thesis_monitor", scope="portfolio"
-                )
-                ctx = AgentContext(
-                    run_id=run_id, snapshot=snapshot, trigger_type="scheduled"
-                )
-                run_thesis_monitor(ctx)
-                agent_db.finish_agent_run(run_id, status="done")
-                print(f"[SaturdaySweep] thesis_monitor complete — {len(holdings)} holdings.")
+                _has = _gc.execute(
+                    "SELECT 1 FROM holding_day WHERE day=? LIMIT 1", (today_str,)
+                ).fetchone()
+                _gc.close()
+                if not _has:
+                    print("[SaturdaySweep] No holding_day data for today yet — will retry.")
+                    time.sleep(1800)
+                    continue
 
-                # --- tax agent (needs current prices for TLH loss calc) ---
-                try:
-                    from agents.tax_agent import run_tax_agent as _run_tax
-                    db_path = PROJECT_DIR / "out" / "investment.db"
-                    _conn = __import__("sqlite3").connect(str(db_path), timeout=10)
-                    _conn.row_factory = __import__("sqlite3").Row
-                    today_str = _dt.now(TZ).date().isoformat()
-                    price_rows = _conn.execute(
-                        "SELECT ticker, value FROM holding_day WHERE day=? ORDER BY ticker",
-                        (today_str,)
-                    ).fetchall()
-                    _conn.close()
-                    price_map = {r["ticker"]: r["value"] for r in price_rows}
-
-                    # Rebuild snapshot with real prices
-                    tax_holdings = []
-                    for h in holdings:
-                        p = price_map.get(h.ticker, 0.0)
-                        tax_holdings.append(HoldingSnapshot(
-                            ticker=h.ticker, layer=h.layer,
-                            shares=0, avg_cost=0,
-                            current_price=p, market_value=0, weight_pct=0,
-                        ))
-                    tax_snapshot = PortfolioSnapshot(
-                        date=today_str, total_value=0, holdings=tax_holdings,
-                        layer_weights={}, macro_scores={}, generated_at=time.time(),
-                    )
-                    tax_run_id = agent_db.insert_agent_run(agent_type="tax", scope="portfolio")
-                    tax_ctx = AgentContext(
-                        run_id=tax_run_id, snapshot=tax_snapshot, trigger_type="scheduled"
-                    )
-                    tax_recs = _run_tax(tax_ctx)
-                    for rec in tax_recs:
-                        _rid = agent_db.insert_recommendation(
-                            ticker=rec.ticker, action=rec.action, run_id=tax_run_id,
-                            action_payload=rec.action_payload,
-                            recommendation_score=rec.recommendation_score,
-                            confidence=rec.confidence, priority=rec.priority,
-                            why_now=rec.why_now, rationale=rec.rationale,
-                            counter_case=rec.counter_case, no_action_case=rec.no_action_case,
-                        )
-                        if rec.dependencies:
-                            agent_db.write_dependencies(_rid, rec.dependencies)
-                    agent_db.finish_agent_run(tax_run_id, status="done")
-                    print(f"[SaturdaySweep] tax_agent complete — {len(tax_recs)} recommendations.")
-                except Exception as e:
-                    print(f"[SaturdaySweep] tax_agent failed: {e}")
+                _run_agent_pipeline()
 
                 try:
                     from agents.dependency_checker import check_all_dependencies
@@ -1104,13 +1197,8 @@ def _run_saturday_sweep():
                 except Exception as e:
                     print(f"[SaturdaySweep] dep checker failed: {e}")
 
-                try:
-                    _dispatch_urgent_notifications()
-                except Exception as e:
-                    print(f"[SaturdaySweep] notification dispatch failed: {e}")
-
-                FLAG.write_text(_dt.now(TZ).date().isoformat())
-                print(f"[SaturdaySweep] Weekly sweep complete.")
+                FLAG.write_text(today_str)
+                print("[SaturdaySweep] Weekly sweep complete.")
             except Exception as e:
                 print(f"[SaturdaySweep] Scheduled run failed: {e}")
         time.sleep(1800)
@@ -1475,6 +1563,12 @@ def _run_refresh_job(job_id: str) -> None:
                 _job_update(job_id, status="error",
                             error=f"{script} failed: {result.stderr.strip()[-300:]}")
                 return
+
+        _job_update(job_id, progress="Running agent analysis…")
+        try:
+            _run_agent_pipeline()
+        except Exception as _ape:
+            print(f"[RefreshJob] agent pipeline error: {_ape}")
 
         _job_update(job_id, progress="Rebuilding dashboard…")
         result = _sp.run(
