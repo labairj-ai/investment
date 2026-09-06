@@ -33,3 +33,6 @@ The Sell/Trim agent's T-score (`_score_T()`) — which carries 40% of `SellStren
 - [ ] Critical pillar violation produces T ≥ 90 in the sell score
 - [ ] No `thesis_claims` query remains in `sell_trim_agent.py`
 - [ ] Existing tests (if any) updated; manually verify on a ticker with a known pillar violation
+- [ ] **Backend QA:** run the feature on production optiplex and confirm expected DB changes appear in `investment.db`
+- [ ] **Frontend QA:** dashboard loads without errors; affected UI sections render correctly; no JS console errors; no broken API endpoints
+- [ ] **No service regression:** investment service still running; all existing API routes respond correctly after the change

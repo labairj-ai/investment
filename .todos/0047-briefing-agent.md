@@ -43,3 +43,6 @@
 - [ ] Briefing output references agent-produced findings, not raw portfolio data
 - [ ] Dashboard displays the briefing summary
 - [ ] `generate_daily_insight()` is no longer called from the scheduled refresh path
+- [ ] **Backend QA:** run the feature on production optiplex and confirm expected DB changes appear in `investment.db`
+- [ ] **Frontend QA:** dashboard loads without errors; affected UI sections render correctly; no JS console errors; no broken API endpoints
+- [ ] **No service regression:** investment service still running; all existing API routes respond correctly after the change

@@ -33,3 +33,6 @@ The preference learner (0027) tracks acceptance rates, preferred CC delta/DTE, a
 - [ ] `valuation_tolerance` preference field computed and stored
 - [ ] Learned preferences confirmed to have no path to overriding hard strategy rules
 - [ ] Old `min()` threshold logic removed
+- [ ] **Backend QA:** run the feature on production optiplex and confirm expected DB changes appear in `investment.db`
+- [ ] **Frontend QA:** dashboard loads without errors; affected UI sections render correctly; no JS console errors; no broken API endpoints
+- [ ] **No service regression:** investment service still running; all existing API routes respond correctly after the change

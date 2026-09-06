@@ -33,3 +33,6 @@ In `outcome_evaluator.py`, `actual_r` is set to `hold_r` (the stock's return fro
 - [ ] `UserOverrideAlpha` for a rejected recommendation still equals `actual_r - agent_r` (hold_r - agent_r)
 - [ ] `actual_is_estimated` flag present in outcome rows where no execution record exists
 - [ ] At least one end-to-end test: accept a mock EXIT, verify `actual_r ≠ hold_r` in outcome row
+- [ ] **Backend QA:** run the feature on production optiplex and confirm expected DB changes appear in `investment.db`
+- [ ] **Frontend QA:** dashboard loads without errors; affected UI sections render correctly; no JS console errors; no broken API endpoints
+- [ ] **No service regression:** investment service still running; all existing API routes respond correctly after the change

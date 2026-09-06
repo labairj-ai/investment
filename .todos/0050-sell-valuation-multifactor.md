@@ -33,3 +33,6 @@ For each sub-factor, compute a 0–100 score; weight and sum. Fall back graceful
 - [ ] Analyst target alone cannot push V above 35 (capped contribution)
 - [ ] A stock at 90th percentile historical P/E produces V ≥ 70 even with bullish analyst target
 - [ ] Falls back gracefully if historical P/E data unavailable (uses available factors, re-normalizes weights)
+- [ ] **Backend QA:** run the feature on production optiplex and confirm expected DB changes appear in `investment.db`
+- [ ] **Frontend QA:** dashboard loads without errors; affected UI sections render correctly; no JS console errors; no broken API endpoints
+- [ ] **No service regression:** investment service still running; all existing API routes respond correctly after the change

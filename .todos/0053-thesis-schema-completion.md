@@ -32,3 +32,6 @@ The thesis engine (0030–0033) generates pillars, weights, thresholds, and pers
 - [ ] `thesis_risks` and `thesis_catalysts` tables exist and are populated for each thesis
 - [ ] `investment_theses` has a `review_triggers` field
 - [ ] Thesis intake UI shows risks and catalysts as structured lists (not raw JSON)
+- [ ] **Backend QA:** run the feature on production optiplex and confirm expected DB changes appear in `investment.db`
+- [ ] **Frontend QA:** dashboard loads without errors; affected UI sections render correctly; no JS console errors; no broken API endpoints
+- [ ] **No service regression:** investment service still running; all existing API routes respond correctly after the change

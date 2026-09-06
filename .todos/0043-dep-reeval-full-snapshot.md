@@ -27,3 +27,6 @@ When `_trigger_reeval()` in `dependency_checker.py` fires after a recommendation
 - [ ] Re-evaluated Sell/Trim recommendations have correct `weight_pct` and `avg_cost` in `action_payload`
 - [ ] Re-evaluated CC recommendations have correct `market_value` for the ticker
 - [ ] No `shares=0` holding snapshot reaches an agent during a re-eval cycle
+- [ ] **Backend QA:** run the feature on production optiplex and confirm expected DB changes appear in `investment.db`
+- [ ] **Frontend QA:** dashboard loads without errors; affected UI sections render correctly; no JS console errors; no broken API endpoints
+- [ ] **No service regression:** investment service still running; all existing API routes respond correctly after the change

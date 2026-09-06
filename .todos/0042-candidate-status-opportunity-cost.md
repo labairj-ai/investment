@@ -32,3 +32,6 @@ The Sell/Trim agent's O-score (`_score_O()`) queries `candidate_universe WHERE s
 - [ ] Canonical status constants are defined in one place and imported where needed
 - [ ] Running `_score_O()` against the live DB returns at least the expected Buffett-winner candidates
 - [ ] O-score is non-zero for a holding when strong candidates exist in the universe
+- [ ] **Backend QA:** run the feature on production optiplex and confirm expected DB changes appear in `investment.db`
+- [ ] **Frontend QA:** dashboard loads without errors; affected UI sections render correctly; no JS console errors; no broken API endpoints
+- [ ] **No service regression:** investment service still running; all existing API routes respond correctly after the change

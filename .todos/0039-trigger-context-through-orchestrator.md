@@ -33,3 +33,6 @@
 - [ ] `AgentContext.trigger_type` reflects the actual trigger (not always `"orchestrated"`)
 - [ ] CC agent correctly identifies `cc_eligible` vs `cc_mgmt_dte` events from context
 - [ ] All call sites updated; no bare string lists passed to `run_agents()`
+- [ ] **Backend QA:** run the feature on production optiplex and confirm expected DB changes appear in `investment.db`
+- [ ] **Frontend QA:** dashboard loads without errors; affected UI sections render correctly; no JS console errors; no broken API endpoints
+- [ ] **No service regression:** investment service still running; all existing API routes respond correctly after the change

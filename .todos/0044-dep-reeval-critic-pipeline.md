@@ -27,3 +27,6 @@
 - [ ] Re-evaluated recommendations have Critic review records in the DB
 - [ ] No `orch._registry.get()` direct-call pattern remains in `dependency_checker.py`
 - [ ] Manual `insert_recommendation()` removed from `_trigger_reeval()`
+- [ ] **Backend QA:** run the feature on production optiplex and confirm expected DB changes appear in `investment.db`
+- [ ] **Frontend QA:** dashboard loads without errors; affected UI sections render correctly; no JS console errors; no broken API endpoints
+- [ ] **No service regression:** investment service still running; all existing API routes respond correctly after the change

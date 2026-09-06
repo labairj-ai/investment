@@ -28,3 +28,6 @@
 - [ ] Manually calling `run_agents(snapshot, ["sell_trim"])` produces recommendations (not a silent skip)
 - [ ] Calling `run_agents(snapshot, ["nonexistent_agent"])` raises `RuntimeError`
 - [ ] All agents in `AGENT_ORDER` have a corresponding import in `__init__.py`
+- [ ] **Backend QA:** run the feature on production optiplex and confirm expected DB changes appear in `investment.db`
+- [ ] **Frontend QA:** dashboard loads without errors; affected UI sections render correctly; no JS console errors; no broken API endpoints
+- [ ] **No service regression:** investment service still running; all existing API routes respond correctly after the change

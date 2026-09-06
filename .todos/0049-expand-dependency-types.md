@@ -40,3 +40,6 @@ Each new type needs:
 - [ ] Sell recommendations include POSITION_WEIGHT dependency; superseded when weight changes >2pp
 - [ ] `check_all_dependencies()` handles all new types without error
 - [ ] Tested: manually alter a macro score and confirm relevant Guardian rec is superseded
+- [ ] **Backend QA:** run the feature on production optiplex and confirm expected DB changes appear in `investment.db`
+- [ ] **Frontend QA:** dashboard loads without errors; affected UI sections render correctly; no JS console errors; no broken API endpoints
+- [ ] **No service regression:** investment service still running; all existing API routes respond correctly after the change

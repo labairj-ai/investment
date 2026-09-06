@@ -34,6 +34,9 @@
 - [x] Saturday sweep no longer calls `run_thesis_monitor` / `run_tax_agent` directly
 - [x] `newsletter.log` on optiplex shows `[triggers]` and `[Orchestrator]` lines after each scheduled refresh
 - [x] No partial `PortfolioSnapshot` (shares=0, market_value=0) reaches any agent during a scheduled run
+- [x] **Backend QA:** trigger `/api/refresh` on production optiplex, confirm `agent_runs` and `recommendations` rows written to `investment.db` for this session
+- [x] **Frontend QA:** dashboard loads, Portfolio tab renders, Decisions tab + Decision Queue shows current recs, no JS errors, no broken endpoints
+- [x] **No service regression:** investment service still running after reload; all existing API routes respond correctly (dividends, earnings, covered-calls, cc-positions)
 
 ## Outcome
 

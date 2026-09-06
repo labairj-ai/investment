@@ -31,3 +31,6 @@ Two mathematical issues in `tax_agent.py`: (1) For a lot approaching long-term s
 - [ ] LT lots with unrealized losses appear in TLH recommendations
 - [ ] Recommendation text distinguishes ST vs LT loss and explains netting benefit accurately
 - [ ] A lot at 95% of LT status with $10k gain: avoidable-tax shown as ~$1,700 (10k × 17pp), not $3,700 (10k × 37%)
+- [ ] **Backend QA:** run the feature on production optiplex and confirm expected DB changes appear in `investment.db`
+- [ ] **Frontend QA:** dashboard loads without errors; affected UI sections render correctly; no JS console errors; no broken API endpoints
+- [ ] **No service regression:** investment service still running; all existing API routes respond correctly after the change

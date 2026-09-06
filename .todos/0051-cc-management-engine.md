@@ -37,3 +37,6 @@ The Trigger Engine fires `cc_mgmt_dte` events when an open CC position approache
 - [ ] BUY_TO_CLOSE recommended when extrinsic value has decayed to <20% of premium
 - [ ] Management path does not run when trigger is `cc_eligible` (new call path)
 - [ ] LLM rationale reflects the deterministic decision, not an independent assessment
+- [ ] **Backend QA:** run the feature on production optiplex and confirm expected DB changes appear in `investment.db`
+- [ ] **Frontend QA:** dashboard loads without errors; affected UI sections render correctly; no JS console errors; no broken API endpoints
+- [ ] **No service regression:** investment service still running; all existing API routes respond correctly after the change

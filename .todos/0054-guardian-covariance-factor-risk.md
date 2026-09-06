@@ -34,3 +34,6 @@ Portfolio Guardian currently checks position concentration, NAV impact, volatili
 - [ ] Marginal risk contribution computed; at least one finding in DB for a test portfolio
 - [ ] All new calculations use only `holding_day` price history (no external API calls)
 - [ ] `numpy` (or equivalent) available in the venv and `requirements.txt`
+- [ ] **Backend QA:** run the feature on production optiplex and confirm expected DB changes appear in `investment.db`
+- [ ] **Frontend QA:** dashboard loads without errors; affected UI sections render correctly; no JS console errors; no broken API endpoints
+- [ ] **No service regression:** investment service still running; all existing API routes respond correctly after the change

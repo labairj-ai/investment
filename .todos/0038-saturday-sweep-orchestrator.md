@@ -30,3 +30,6 @@
 - [ ] After the sweep runs, `agent_runs` table shows all triggered agent types (not just thesis + tax)
 - [ ] Critic runs are present in `agent_runs` after Saturday sweep (recommendations went through pipeline)
 - [ ] `newsletter.log` shows `[triggers]` lines during Saturday sweep
+- [ ] **Backend QA:** run the feature on production optiplex and confirm expected DB changes appear in `investment.db`
+- [ ] **Frontend QA:** dashboard loads without errors; affected UI sections render correctly; no JS console errors; no broken API endpoints
+- [ ] **No service regression:** investment service still running; all existing API routes respond correctly after the change

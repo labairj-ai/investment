@@ -29,3 +29,6 @@
 - [ ] A manually added ticker that scores above threshold produces a recommendation
 - [ ] `source` field is preserved: manually added tickers show `MANUAL`, Buffett winners show `BUFFETT`
 - [ ] No duplicate scoring for a ticker that appears in both Buffett winners and manual candidates
+- [ ] **Backend QA:** run the feature on production optiplex and confirm expected DB changes appear in `investment.db`
+- [ ] **Frontend QA:** dashboard loads without errors; affected UI sections render correctly; no JS console errors; no broken API endpoints
+- [ ] **No service regression:** investment service still running; all existing API routes respond correctly after the change

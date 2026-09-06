@@ -31,3 +31,6 @@ The CC outcome evaluator calculates something close to `premium_yield - upside_s
 - [ ] `cc_strategy_return` equals `(min(S_T, K) - entry + premium) / entry` for an above-strike expiry
 - [ ] SPY comparison uses `cc_strategy_return` as the reference
 - [ ] Dashboard CC performance section (if it exists) displays incremental alpha separately from strategy return
+- [ ] **Backend QA:** run the feature on production optiplex and confirm expected DB changes appear in `investment.db`
+- [ ] **Frontend QA:** dashboard loads without errors; affected UI sections render correctly; no JS console errors; no broken API endpoints
+- [ ] **No service regression:** investment service still running; all existing API routes respond correctly after the change

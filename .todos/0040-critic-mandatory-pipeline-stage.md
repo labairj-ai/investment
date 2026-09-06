@@ -32,3 +32,6 @@ The Critic agent is listed in `AGENT_ORDER` and has a good deterministic safety 
 - [ ] Saturday sweep recommendations show Critic review records in the DB
 - [ ] `"critic"` does not appear in any `TriggerEvent.agent_type`
 - [ ] Critic veto (REJECT) prevents a recommendation from appearing in the Decision Queue
+- [ ] **Backend QA:** run the feature on production optiplex and confirm expected DB changes appear in `investment.db`
+- [ ] **Frontend QA:** dashboard loads without errors; affected UI sections render correctly; no JS console errors; no broken API endpoints
+- [ ] **No service regression:** investment service still running; all existing API routes respond correctly after the change

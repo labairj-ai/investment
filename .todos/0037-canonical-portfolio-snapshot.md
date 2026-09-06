@@ -31,3 +31,6 @@ Every entry point that needs a `PortfolioSnapshot` builds its own partial versio
 - [ ] `_trigger_reeval()` uses it — no more `shares=0` snapshots during re-eval
 - [ ] Saturday sweep uses it — no more manually-assembled partial snapshots
 - [ ] Unit-testable: can be called in isolation and returns a valid `PortfolioSnapshot`
+- [ ] **Backend QA:** run the feature on production optiplex and confirm expected DB changes appear in `investment.db`
+- [ ] **Frontend QA:** dashboard loads without errors; affected UI sections render correctly; no JS console errors; no broken API endpoints
+- [ ] **No service regression:** investment service still running; all existing API routes respond correctly after the change
