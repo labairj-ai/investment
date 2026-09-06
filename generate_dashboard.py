@@ -2221,13 +2221,11 @@ def build_dashboard(portfolio, layers, holdings):
   <button class="dash-tab-btn active" id="tab-btn-portfolio" onclick="showDashTab('portfolio')">Portfolio</button>
   <button class="dash-tab-btn" id="tab-btn-decisions" onclick="showDashTab('decisions')">Decisions</button>
   <button class="dash-tab-btn" id="tab-btn-macro" onclick="showDashTab('macro')">📊 Macro Risk</button>
-  <button class="dash-tab-btn" id="tab-btn-investor" onclick="showDashTab('investor')">🧠 Investor Model</button>
   <button id="nav-hamburger" onclick="toggleNavMenu(event)" aria-label="Menu">&#9776;</button>
   <div id="nav-dropdown">
     <button class="nav-dd-btn" id="tab-dd-btn-portfolio" onclick="showDashTab('portfolio');closeNavMenu()">Portfolio</button>
     <button class="nav-dd-btn" id="tab-dd-btn-decisions" onclick="showDashTab('decisions');closeNavMenu()">Decisions</button>
     <button class="nav-dd-btn" id="tab-dd-btn-macro" onclick="showDashTab('macro');closeNavMenu()">📊 Macro Risk</button>
-    <button class="nav-dd-btn" id="tab-dd-btn-investor" onclick="showDashTab('investor');closeNavMenu()">🧠 Investor Model</button>
     <button class="nav-dd-btn" id="tab-dd-btn-glossary" onclick="showDashTab('glossary');closeNavMenu()">📖 Glossary</button>
   </div>
 </nav>
@@ -2974,6 +2972,19 @@ def build_dashboard(portfolio, layers, holdings):
       <div id="dj-table-wrap"></div>
     </div>
 
+    <!-- Investor Model (collapsible) -->
+    <div class="card" id="im-section">
+      <div style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none;" onclick="toggleInvestorModel()">
+        <span style="font-size:12px;font-weight:700;letter-spacing:0.07em;color:#2d3748;text-transform:uppercase;">🧠 Investor Model</span>
+        <span id="im-toggle-icon" style="font-size:12px;color:#718096;">&#9656; expand</span>
+      </div>
+      <div id="im-body" style="display:none;margin-top:14px;">
+        <div style="font-size:13px;color:#718096;margin-bottom:16px;">Your inferred investment preferences — based on decisions you have made. Confirm, correct, or suppress each one.</div>
+        <div id="im-prefs-wrap"></div>
+        <div id="im-rules-wrap" style="margin-top:32px;"></div>
+      </div>
+    </div>
+
     <!-- Candidate Comparison -->
     <div class="card" id="candidate-comparison-card" style="display:none;">
       <h2 style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
@@ -2998,23 +3009,6 @@ def build_dashboard(portfolio, layers, holdings):
         <div style="font-size:12px;color:#a0aec0;text-align:center;padding:20px;">Loading…</div>
       </div>
     </div>
-
-  </div>
-</div>
-
-<div id="tab-investor" class="dash-tab-content" style="display:none;">
-  <div style="max-width:800px;margin:0 auto;padding:24px;">
-
-    <div style="margin-bottom:24px;">
-      <div style="font-size:20px;font-weight:700;color:#1a2340;margin-bottom:4px;">🧠 Investor Model</div>
-      <div style="font-size:13px;color:#718096;">Your inferred investment preferences — based on decisions you have made. Confirm, correct, or suppress each one.</div>
-    </div>
-
-    <!-- Learned preferences section -->
-    <div id="im-prefs-wrap"></div>
-
-    <!-- Hard rules section -->
-    <div id="im-rules-wrap" style="margin-top:32px;"></div>
 
   </div>
 </div>
@@ -8346,6 +8340,17 @@ function imSendFeedback(btn) {{
   .catch(function() {{ btn.textContent = 'Error'; }});
 }}
 
+var _imLoaded = false;
+function toggleInvestorModel() {{
+  var body = document.getElementById('im-body');
+  var icon = document.getElementById('im-toggle-icon');
+  if (!body) return;
+  var opening = body.style.display === 'none';
+  body.style.display = opening ? 'block' : 'none';
+  if (icon) icon.innerHTML = opening ? '&#9662; collapse' : '&#9656; expand';
+  if (opening && !_imLoaded) {{ _imLoaded = true; loadInvestorModel(); }}
+}}
+
 function loadInvestorModel() {{
   var wrap = document.getElementById('im-prefs-wrap');
   if (!wrap) return;
@@ -8465,7 +8470,6 @@ function showDashTab(name) {{
   if (btn)   btn.classList.add('active');
   if (ddBtn) ddBtn.classList.add('active');
   try {{ localStorage.setItem('dashTab', name); }} catch(e) {{}}
-  if (name === 'investor') loadInvestorModel();
 }}
 function toggleNavMenu(e) {{
   e.stopPropagation();
