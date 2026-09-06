@@ -90,26 +90,16 @@ def _get_open_cc_position(ticker: str) -> dict | None:
         return None
 
 
-_ROLL_SYSTEM = """You are an investment analyst evaluating a covered call roll decision.
-An existing covered call is near expiration. Decide whether to:
-  ROLL_CC  — close the existing position and open a new one at the suggested strike/expiry
-  CLOSE_CC — let the position expire (or buy it back) without rolling
+_MGMT_SYSTEM = """You are an investment analyst writing rationale for a covered call management decision.
+The action has already been determined by a rule-based engine. Your role is to explain
+why this action is correct using the specific metrics provided. Do NOT override the action.
 
 Return JSON with these exact fields:
-  action       : "ROLL_CC" or "CLOSE_CC"
-  contract_id  : exact roll target contract ID string (null if CLOSE_CC)
-  why          : 2-3 sentences on the roll rationale, referencing specific metrics
-  roll_tradeoff: 1-2 sentences on the key risk of rolling vs. not rolling
-  close_case   : 1-2 sentences on why letting expire/closing without a roll may be better
+  why          : 2-3 sentences explaining why this action is appropriate, citing key metrics
+  counter_case : 1-2 sentences on what could go wrong or argue against this action
 """
 
-_ROLL_SCHEMA = {
-    "action": "ROLL_CC",
-    "contract_id": "TICKER:YYYYMMDD:STRIKE",
-    "why": "",
-    "roll_tradeoff": "",
-    "close_case": "",
-}
+_MGMT_SCHEMA = {"why": "", "counter_case": ""}
 
 
 def _make_contract_id(ticker: str, expiration: str, strike: float) -> str:
@@ -187,202 +177,185 @@ def _build_evidence(result: dict, candidates: list[dict]) -> EvidenceBundle:
     )
 
 
+def _decide_mgmt_action(
+    *,
+    current_price: float,
+    strike: float,
+    dte: int,
+    pct_captured: float | None,
+    has_avoid: bool,
+    delta: float | None,
+) -> str:
+    """Deterministic 6-way CC management decision. Priority order is intentional."""
+    is_itm     = current_price >= strike
+    near_money = current_price >= strike * 0.97
+    deeply_itm = current_price >= strike * 1.05
+    cap        = pct_captured or 0.0
+
+    if has_avoid:
+        return "ROLL_OUT"          # earnings/risk event — must extend past it
+    if deeply_itm and dte <= 14:
+        return "ALLOW_ASSIGNMENT"  # profitable exit, stock called away cleanly
+    if cap >= 80:
+        return "BUY_TO_CLOSE"      # negligible extrinsic left, lock in profit
+    if dte <= 7 and not is_itm:
+        return "HOLD_CALL"         # expires worthless in days, cost to close not worth it
+    if is_itm or near_money:
+        return "ROLL_UP_AND_OUT"   # near/at/above strike — defensive roll needed
+    if delta is not None and delta >= 0.30:
+        return "ROLL_UP"           # delta elevated, raise strike at same expiry
+    return "HOLD_CALL"             # well OTM, let theta work
+
+
 def _analyze_roll(ctx: AgentContext, ticker: str, position: dict) -> list[Recommendation]:
-    """Roll analysis for a ticker with an existing open CC near expiration."""
+    """Management engine for existing CC positions triggered by cc_mgmt_dte."""
     snapshot = ctx.snapshot
     holding = next((h for h in snapshot.holdings if h.ticker == ticker), None)
     if holding is None:
-        print(f"[covered_call] {ticker}: not in snapshot, cannot roll")
+        print(f"[covered_call] {ticker}: not in snapshot, cannot manage")
         return []
 
     existing_strike  = float(position["strike"])
     existing_expiry  = position["expiry"]
-    existing_dte     = position["dte"]
     existing_premium = float(position["premium_per_contract"])
-    current_mark     = float(position.get("current_mark") or 0.0)
+    stored_mark      = float(position.get("current_mark") or 0.0)
     contracts        = int(position["contracts"])
-    pnl              = round((existing_premium - current_mark) * contracts * 100, 2)
 
-    print(f"[covered_call] {ticker}: roll analysis — existing {existing_strike} "
-          f"exp {existing_expiry} ({existing_dte} DTE), mark={current_mark:.2f}, P&L={pnl:+.2f}")
+    print(f"[covered_call] {ticker}: mgmt — strike={existing_strike} exp={existing_expiry}")
 
     import covered_call_rec
-    result = covered_call_rec.analyze(ticker, holding.avg_cost, holding.shares)
-    if result is None:
-        print(f"[covered_call] {ticker}: analyze() returned None, skipping roll")
-        return []
-
-    recs_df = result.get("recs")
-    if recs_df is None or recs_df.empty:
-        print(f"[covered_call] {ticker}: no contracts available for roll")
-        return []
-
-    # Roll candidates: passes floor, no AVOID, DTE >= 30, strike >= existing strike
-    roll_eligible = recs_df[
-        recs_df["passes_floor"] &
-        ~recs_df["has_avoid"] &
-        (recs_df["dte"] >= 30) &
-        (recs_df["strike"].astype(float) >= existing_strike)
-    ].copy()
-
-    if roll_eligible.empty:
-        print(f"[covered_call] {ticker}: no eligible roll targets (DTE>=30, strike>={existing_strike})")
-        agent_db.insert_finding(
-            run_id=ctx.run_id,
-            finding_type="cc_no_roll_targets",
+    try:
+        eval_result = covered_call_rec.evaluate_open_position(
             ticker=ticker,
-            summary=(f"{ticker}: CC approaching expiry ({existing_dte} DTE) but no eligible "
-                     f"roll targets found (strike≥{existing_strike}, DTE≥30)"),
-            severity=40,
-            confidence=80,
+            strike=existing_strike,
+            expiry=existing_expiry,
+            original_premium=existing_premium,
+            current_mark=stored_mark,
         )
+    except Exception as e:
+        print(f"[covered_call] {ticker}: evaluate_open_position failed: {e}")
         return []
 
-    roll_eligible = roll_eligible.sort_values("score", ascending=False).head(5)
+    current_price = eval_result["current_price"]
+    current_mark  = eval_result["current_mark"] if eval_result["current_mark"] is not None else stored_mark
+    dte           = eval_result["dte"]
+    pct_captured  = eval_result["pct_captured"]
+    has_avoid     = eval_result["has_avoid"]
+    delta         = eval_result["delta"]
+    risk_events   = eval_result["risk_events"]
+    remaining_ext = eval_result.get("remaining_extrinsic")
+    pnl           = round((existing_premium - current_mark) * contracts * 100, 2)
 
-    candidates: list[dict] = []
-    id_to_row: dict[str, dict] = {}
-    for _, row in roll_eligible.iterrows():
-        cid = _make_contract_id(ticker, str(row["expiration"]), float(row["strike"]))
-        id_to_row[cid] = row.to_dict()
-        net_credit = round(float(row["exec_premium"]) - current_mark, 2)
-        candidates.append({
-            "id": cid,
-            "expiration": row["expiration"],
-            "dte": int(row["dte"]),
-            "strike": float(row["strike"]),
-            "exec_premium": round(float(row["exec_premium"]), 2),
-            "net_credit": net_credit,
-            "cc_alpha": round(float(row["cc_alpha"]), 4),
-            "regret_prob": round(float(row["regret_prob"]), 3),
-            "delta": round(float(row["delta"]), 3),
-            "score": round(float(row["score"]), 2),
-            "has_caution": bool(row.get("has_caution", False)),
-        })
-
-    data_mode = result.get("data_mode", "theoretical")
-    contract_lines = "\n".join(
-        f"  {c['id']}: DTE={c['dte']}, strike=${c['strike']:.2f}, "
-        f"new_premium=${c['exec_premium']:.2f}, net_credit=${c['net_credit']:+.2f}/share, "
-        f"cc_alpha={c['cc_alpha']:.4f}, regret_prob={c['regret_prob']:.1%}, delta={c['delta']:.3f}"
-        + (" [CAUTION event]" if c["has_caution"] else "")
-        for c in candidates
+    action = _decide_mgmt_action(
+        current_price=current_price,
+        strike=existing_strike,
+        dte=dte,
+        pct_captured=pct_captured,
+        has_avoid=has_avoid,
+        delta=delta,
     )
+
+    avoid_labels = [e["label"] for e in risk_events if e["severity"] == "avoid"]
+    metrics_lines = [
+        f"Ticker: {ticker}  Shares: {holding.shares:.0f}  Avg cost: ${holding.avg_cost:.2f}",
+        f"Position: strike=${existing_strike:.2f}  expiry={existing_expiry}  DTE={dte}",
+        f"Original premium: ${existing_premium:.2f}/share  Current mark: ${current_mark:.2f}/share",
+        f"P&L to date: ${pnl:+.2f} total  Premium captured: {f'{pct_captured:.0f}%' if pct_captured is not None else 'N/A'}",
+        f"Current price: ${current_price:.2f}  Delta: {f'{delta:.3f}' if delta is not None else 'N/A'}",
+        f"Remaining extrinsic: ${remaining_ext:.2f}" if remaining_ext is not None else "Remaining extrinsic: N/A",
+    ]
+    if avoid_labels:
+        metrics_lines.append(f"Risk events: {'; '.join(avoid_labels)}")
+    metrics_summary = "\n".join(metrics_lines)
 
     prompt = (
-        f"{_ROLL_SYSTEM}\n\n"
-        f"Ticker: {ticker}  Shares: {holding.shares:.0f}  "
-        f"Avg cost: ${holding.avg_cost:.2f}  Data mode: {data_mode}\n\n"
-        f"Existing position:\n"
-        f"  Strike: ${existing_strike:.2f}  Expiry: {existing_expiry}  DTE: {existing_dte}\n"
-        f"  Original premium: ${existing_premium:.2f}/share  "
-        f"  Current mark: ${current_mark:.2f}/share  P&L: ${pnl:+.2f} total\n\n"
-        f"Roll candidates (AVOID removed, DTE≥30, strike≥existing, sorted by score):\n"
-        f"{contract_lines}\n\n"
-        "Select the best roll target, or CLOSE_CC if rolling doesn't make sense. "
-        "Return JSON matching the schema exactly."
+        f"{_MGMT_SYSTEM}\n\n"
+        f"Determined action: {action}\n\n"
+        f"{metrics_summary}\n\n"
+        "Explain why this action is correct given these metrics. Return JSON."
     )
 
+    why = f"Rule engine selected {action}: {eval_result.get('reason', '')}"
+    counter_case = "Monitor position for adverse price moves before acting."
     try:
         llm_out = ollama_client.generate_structured(
             prompt=prompt,
-            schema=_ROLL_SCHEMA,
+            schema=_MGMT_SCHEMA,
             model="mlx-community/Qwen3.6-35B-A3B-4bit",
             temperature=0.2,
-            num_predict=800,
+            num_predict=600,
             thinking=False,
             retries=2,
         )
+        if llm_out and isinstance(llm_out, dict):
+            why          = llm_out.get("why", why)
+            counter_case = llm_out.get("counter_case", counter_case)
     except Exception as e:
-        print(f"[covered_call] {ticker}: roll LLM call failed: {e}")
-        return []
-
-    if not llm_out or not isinstance(llm_out, dict):
-        print(f"[covered_call] {ticker}: roll LLM returned invalid output")
-        return []
-
-    action     = llm_out.get("action", "CLOSE_CC")
-    contract_id = llm_out.get("contract_id")
-    why        = llm_out.get("why", "")
-    roll_trade = llm_out.get("roll_tradeoff", "")
-    close_case = llm_out.get("close_case", "")
-
-    if action == "CLOSE_CC" or not contract_id:
-        print(f"[covered_call] {ticker}: LLM recommends CLOSE_CC (no roll)")
-        agent_db.insert_finding(
-            run_id=ctx.run_id,
-            finding_type="cc_close_recommended",
-            ticker=ticker,
-            summary=f"{ticker}: roll analysis complete — LLM recommends closing without roll: {why}",
-            severity=30,
-            confidence=65,
-        )
-        return []
-
-    row = id_to_row.get(contract_id)
-    if row is None:
-        print(f"[covered_call] {ticker}: roll LLM selected unknown contract_id={contract_id!r}")
-        return []
-
-    roll_premium = round(float(row["exec_premium"]), 2)
-    net_credit   = round(roll_premium - current_mark, 2)
-    roll_dte     = int(row["dte"])
+        print(f"[covered_call] {ticker}: mgmt LLM rationale failed: {e} — using rule reason")
 
     financial_line = (
-        f"Roll {existing_strike} {existing_expiry} → ${float(row['strike']):.2f} {row['expiration']} "
-        f"({roll_dte} DTE). "
-        f"Existing P&L: ${pnl:+.2f}. "
-        f"Net credit: ${net_credit:+.2f}/share (${net_credit * contracts * 100:+.2f} total). "
-        f"Data mode: {data_mode}."
+        f"{action}: {ticker} ${existing_strike:.2f} exp {existing_expiry} ({dte} DTE). "
+        f"P&L: ${pnl:+.2f}. "
+        f"Premium captured: {f'{pct_captured:.0f}%' if pct_captured is not None else 'N/A'}. "
+        f"Current price: ${current_price:.2f}."
     )
     why_now = financial_line + " " + why
 
-    action_payload = {
-        # Existing position
-        "existing_strike":  existing_strike,
-        "existing_expiry":  existing_expiry,
-        "existing_dte":     existing_dte,
-        "existing_premium": existing_premium,
-        "current_mark":     current_mark,
-        "existing_pnl":     pnl,
-        "contracts":        contracts,
-        # Roll target
-        "roll_contract_id": contract_id,
-        "roll_expiry":      str(row["expiration"]),
-        "roll_strike":      float(row["strike"]),
-        "roll_dte":         roll_dte,
-        "roll_premium":     roll_premium,
-        "net_credit":       net_credit,
-        "cc_alpha":         round(float(row["cc_alpha"]), 4),
-        "regret_prob":      round(float(row["regret_prob"]), 3),
-        "delta":            round(float(row["delta"]), 3),
-        "data_mode":        data_mode,
-        "has_caution":      bool(row.get("has_caution", False)),
+    if action == "ROLL_OUT" and has_avoid:
+        priority = "urgent"
+    elif action in ("ALLOW_ASSIGNMENT", "BUY_TO_CLOSE", "ROLL_UP_AND_OUT") and dte <= 14:
+        priority = "high"
+    elif action == "HOLD_CALL":
+        priority = "low"
+    else:
+        priority = "normal"
+
+    rec_scores = {
+        "HOLD_CALL": 40, "BUY_TO_CLOSE": 70, "ROLL_OUT": 65,
+        "ROLL_UP": 55, "ROLL_UP_AND_OUT": 60, "ALLOW_ASSIGNMENT": 60,
     }
 
-    rec_score = min(100, max(40, round(50 + float(row["cc_alpha"]) * 1000)))
-    priority  = "high" if existing_dte <= 10 else "normal"
+    action_payload = {
+        "mgmt_action":       action,
+        "decision_reason":   eval_result.get("reason", ""),
+        "existing_strike":   existing_strike,
+        "existing_expiry":   existing_expiry,
+        "existing_dte":      dte,
+        "existing_premium":  existing_premium,
+        "current_mark":      current_mark,
+        "current_price":     current_price,
+        "pct_captured":      pct_captured,
+        "pnl":               pnl,
+        "contracts":         contracts,
+        "has_avoid":         has_avoid,
+        "delta":             delta,
+        "remaining_extrinsic": remaining_ext,
+    }
 
     rec = Recommendation(
         ticker=ticker,
-        action="ROLL_CC",
-        recommendation_score=rec_score,
-        confidence=65,
+        action=action,
+        recommendation_score=rec_scores.get(action, 50),
+        confidence=70 if delta is not None else 55,
         priority=priority,
         why_now=why_now,
-        rationale=roll_trade,
-        counter_case=close_case,
-        no_action_case=close_case,
+        rationale=why,
+        counter_case=counter_case,
+        no_action_case=(
+            "Allow position to run to expiry and reassess at that time."
+            if action == "HOLD_CALL" else
+            f"Instead of {action}, hold the position and reassess closer to expiration."
+        ),
         action_payload=action_payload,
         dependencies=[{
             "dependency_type": "PRICE",
             "dependency_key": ticker,
-            "original_value": holding.current_price,
+            "original_value": current_price,
             "tolerance": 0.03,
             "invalidating_event": "PRICE_THRESHOLD",
         }],
     )
-    print(f"[covered_call] {ticker}: ROLL_CC → {contract_id} net_credit={net_credit:+.2f}")
+    print(f"[covered_call] {ticker}: mgmt → {action} (DTE={dte}, captured={pct_captured}%)")
     return [rec]
 
 

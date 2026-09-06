@@ -62,16 +62,22 @@
     "urgent_threshold": 0.72,
     "attention_threshold": 0.30,
     "severity": {
-      "EXIT":      1.0,
-      "TRIM":      1.0,
-      "ROLL_CC":   0.8,
-      "SELL_CC":   0.7,
-      "CLOSE_CC":  0.6,
-      "BUY":       0.5,
-      "REVIEW":    0.5,
-      "REBALANCE": 0.3,
-      "ALLOCATE":  0.3,
-      "NO_ACTION": 0.0
+      "EXIT":             1.0,
+      "TRIM":             1.0,
+      "ROLL_CC":          0.8,
+      "ROLL_OUT":         0.75,
+      "ROLL_UP_AND_OUT":  0.75,
+      "ROLL_UP":          0.7,
+      "SELL_CC":          0.7,
+      "BUY_TO_CLOSE":     0.7,
+      "CLOSE_CC":         0.6,
+      "ALLOW_ASSIGNMENT": 0.6,
+      "BUY":              0.5,
+      "REVIEW":           0.5,
+      "REBALANCE":        0.3,
+      "ALLOCATE":         0.3,
+      "HOLD_CALL":        0.1,
+      "NO_ACTION":        0.0
     }
   }
 }
