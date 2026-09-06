@@ -223,31 +223,161 @@ def _score_F(ticker: str, current_price: float) -> tuple[int, str]:
 
 
 def _score_V(ticker: str, current_price: float) -> tuple[int, str]:
-    """V = valuation risk (0–100). 15% weight."""
+    """V = valuation risk composite (0–100). 15% weight.
+
+    Weighted composite: 0.30*H + 0.25*G + 0.20*FCF + 0.15*E + 0.10*C
+      H   — trailing P/E absolute level (0–100)
+      G   — PEG / growth-adjusted valuation (0–100)
+      FCF — FCF quality trend (0–100)
+      E   — analyst recommendation sentiment (0–100)
+      C   — analyst price target vs current price (0–100, capped contribution)
+
+    Falls back gracefully: if a factor has no data, exclude it and re-normalize.
+    """
     if current_price <= 0:
         return 25, "no price"
+
     conn = _connect()
     if not conn:
         return 25, "no data"
+
+    quarters = conn.execute(
+        """SELECT eps_diluted, free_cash_flow, period_end
+           FROM company_financials
+           WHERE ticker = ? AND period_type = 'Q'
+           ORDER BY period_end DESC LIMIT 8""",
+        (ticker,),
+    ).fetchall()
     est = conn.execute(
-        "SELECT price_target FROM company_estimates "
-        "WHERE ticker = ? ORDER BY fetched_at DESC LIMIT 1",
+        "SELECT price_target, recommendation, next_yr_eps_est, curr_yr_eps_est "
+        "FROM company_estimates WHERE ticker = ? ORDER BY fetched_at DESC LIMIT 1",
         (ticker,),
     ).fetchone()
     conn.close()
-    if not est or not est["price_target"]:
-        return 25, "no analyst price target"
-    pt = est["price_target"]
-    upside = (pt - current_price) / current_price
-    if upside < -0.20:
-        return 85, f"PT ${pt:.0f} is {abs(upside)*100:.0f}% below current"
-    if upside < -0.10:
-        return 60, f"PT ${pt:.0f} is {abs(upside)*100:.0f}% below current"
-    if upside < -0.03:
-        return 35, f"PT ${pt:.0f} slightly below current"
-    if upside < 0.05:
-        return 20, f"PT ${pt:.0f} near current"
-    return 10, f"PT ${pt:.0f} ({upside*100:.0f}% upside)"
+
+    factors: dict[str, float] = {}
+    notes: list[str] = []
+
+    # H — trailing P/E (TTM EPS from last 4 quarters)
+    if quarters:
+        ttm_eps = sum(
+            float(q["eps_diluted"]) for q in quarters[:4]
+            if q["eps_diluted"] is not None
+        )
+        if ttm_eps > 0:
+            pe = current_price / ttm_eps
+            if pe > 50:
+                factors["H"] = 85.0
+                notes.append(f"P/E={pe:.0f}x (very expensive)")
+            elif pe > 35:
+                factors["H"] = 70.0
+                notes.append(f"P/E={pe:.0f}x (expensive)")
+            elif pe > 25:
+                factors["H"] = 45.0
+                notes.append(f"P/E={pe:.0f}x (elevated)")
+            elif pe > 15:
+                factors["H"] = 20.0
+                notes.append(f"P/E={pe:.0f}x (fair)")
+            else:
+                factors["H"] = 5.0
+                notes.append(f"P/E={pe:.0f}x (cheap)")
+        elif ttm_eps < 0:
+            factors["H"] = 55.0
+            notes.append("negative TTM EPS")
+
+    # G — growth-adjusted (PEG using forward EPS growth from estimates)
+    if est and est["next_yr_eps_est"] and est["curr_yr_eps_est"]:
+        try:
+            curr_e = float(est["curr_yr_eps_est"])
+            next_e = float(est["next_yr_eps_est"])
+            if curr_e > 0 and next_e > curr_e:
+                growth_pct = ((next_e - curr_e) / curr_e) * 100
+                if quarters and "H" in factors:
+                    ttm_eps2 = sum(
+                        float(q["eps_diluted"]) for q in quarters[:4]
+                        if q["eps_diluted"] is not None
+                    )
+                    pe2 = current_price / ttm_eps2 if ttm_eps2 > 0 else None
+                    if pe2 and growth_pct > 0:
+                        peg = pe2 / growth_pct
+                        if peg > 3:
+                            factors["G"] = 80.0
+                            notes.append(f"PEG={peg:.1f} (overvalued)")
+                        elif peg > 2:
+                            factors["G"] = 55.0
+                            notes.append(f"PEG={peg:.1f} (stretched)")
+                        elif peg > 1:
+                            factors["G"] = 30.0
+                            notes.append(f"PEG={peg:.1f} (fair)")
+                        else:
+                            factors["G"] = 10.0
+                            notes.append(f"PEG={peg:.1f} (growth bargain)")
+            elif curr_e > 0 and next_e <= curr_e:
+                factors["G"] = 65.0
+                notes.append("EPS expected to decline/flat YoY")
+        except (TypeError, ValueError):
+            pass
+
+    # FCF — free cash flow quality (last 4 quarters)
+    if quarters:
+        fcf_vals = [
+            float(q["free_cash_flow"]) for q in quarters[:4]
+            if q["free_cash_flow"] is not None
+        ]
+        if fcf_vals:
+            latest_fcf = fcf_vals[0]
+            if latest_fcf < 0:
+                factors["FCF"] = 75.0
+                notes.append("negative FCF")
+            elif len(fcf_vals) >= 2 and fcf_vals[0] < fcf_vals[-1] * 0.7:
+                factors["FCF"] = 50.0
+                notes.append("FCF declining")
+            elif latest_fcf >= 0:
+                factors["FCF"] = 12.0
+                notes.append("FCF positive")
+
+    # E — analyst recommendation sentiment
+    if est and est["recommendation"]:
+        rec_str = (est["recommendation"] or "").lower()
+        if any(x in rec_str for x in ("strong sell", "strong_sell")):
+            factors["E"] = 90.0
+            notes.append("analyst: strong sell")
+        elif "sell" in rec_str or "underperform" in rec_str or "underweight" in rec_str:
+            factors["E"] = 65.0
+            notes.append(f"analyst: {est['recommendation']}")
+        elif "hold" in rec_str or "neutral" in rec_str or "equal" in rec_str:
+            factors["E"] = 35.0
+        elif "buy" in rec_str or "outperform" in rec_str or "overweight" in rec_str:
+            factors["E"] = 12.0
+        elif "strong buy" in rec_str:
+            factors["E"] = 5.0
+
+    # C — consensus price target (capped contribution: max raw score 85, weight only 0.10)
+    if est and est["price_target"] and current_price > 0:
+        pt = float(est["price_target"])
+        upside = (pt - current_price) / current_price
+        if upside < -0.20:
+            factors["C"] = 85.0
+            notes.append(f"PT ${pt:.0f} ({upside*100:.0f}%)")
+        elif upside < -0.10:
+            factors["C"] = 60.0
+        elif upside < -0.03:
+            factors["C"] = 35.0
+        elif upside < 0.05:
+            factors["C"] = 20.0
+        else:
+            factors["C"] = 8.0
+
+    if not factors:
+        return 25, "insufficient data"
+
+    # Weighted composite with re-normalization for missing factors
+    weights = {"H": 0.30, "G": 0.25, "FCF": 0.20, "E": 0.15, "C": 0.10}
+    total_w = sum(weights[k] for k in factors)
+    composite = sum(factors[k] * weights[k] for k in factors) / total_w
+
+    note_str = "; ".join(notes) if notes else "multi-factor V"
+    return min(100, max(0, round(composite))), note_str
 
 
 def _score_P(ticker: str, weight_pct: float) -> tuple[int, str]:

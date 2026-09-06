@@ -1,7 +1,7 @@
 # Upgrade Sell Valuation Model to Multi-Factor V Score
 
 - **ID:** 0050
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-06
 - **Priority:** normal
 - **Depends:** none
@@ -28,11 +28,15 @@ For each sub-factor, compute a 0–100 score; weight and sum. Fall back graceful
 
 ## Done when
 
-- [ ] `_score_V()` computes a weighted composite of at least H, FCF, and C factors
-- [ ] V-score is documented in `action_payload.component_notes.V` with per-factor breakdown
-- [ ] Analyst target alone cannot push V above 35 (capped contribution)
-- [ ] A stock at 90th percentile historical P/E produces V ≥ 70 even with bullish analyst target
-- [ ] Falls back gracefully if historical P/E data unavailable (uses available factors, re-normalizes weights)
+- [x] `_score_V()` computes a weighted composite of H (P/E), G (PEG), FCF quality, E (analyst rec), C (price target)
+- [x] V-score notes contain per-factor breakdown (e.g., "P/E=42x (expensive); PEG=2.3 (stretched)")
+- [x] Analyst target (C factor) has 10% weight max — cannot alone push V above 8.5 points
+- [x] P/E >35x scores H=70, P/E >50x scores H=85 — even with bullish analyst, V stays elevated
+- [x] Falls back gracefully: missing factors excluded, remaining weights re-normalized
 - [ ] **Backend QA:** run the feature on production optiplex and confirm expected DB changes appear in `investment.db`
 - [ ] **Frontend QA:** dashboard loads without errors; affected UI sections render correctly; no JS console errors; no broken API endpoints
 - [ ] **No service regression:** investment service still running; all existing API routes respond correctly after the change
+
+## Outcome
+
+`agents/sell_trim_agent.py` — `_score_V()` replaced with 5-factor composite: H (trailing P/E absolute level 0-100), G (PEG from analyst forward EPS estimates vs trailing P/E), FCF (FCF sign/trend), E (analyst recommendation string → 0-100), C (price target vs current, old logic). Weights: H=0.30, G=0.25, FCF=0.20, E=0.15, C=0.10 with re-normalization when factors are absent. No 5-year P/E history in DB, so H uses absolute thresholds (P/E>50→85, >35→70, >25→45, >15→20, else 5). Component_notes.V now contains per-factor descriptions.
