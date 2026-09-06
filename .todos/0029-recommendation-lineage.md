@@ -1,7 +1,7 @@
 # Add Recommendation Lineage (Chain of Agent Reasoning Over Time)
 
 - **ID:** 0029
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-05
 - **Priority:** low
 - **Depends:** 0025, 0016
@@ -53,10 +53,28 @@ Each entry shows: date, action, confidence, user decision (if any), primary reas
 
 ## Done when
 
-- [ ] `supersedes_id` and `lineage_root_id` populated on all new recommendations
-- [ ] Prior recommendation status set to `superseded` when a new one is created for same ticker+agent_type
-- [ ] `GET /api/agents/recommendations/{ticker}/lineage` returns ordered chain
-- [ ] Timeline UI renders per-ticker lineage with action, date, confidence, user decision, reason
-- [ ] Escalating trend (≥ 3 recommendations showing increasing severity) detected and surfaced as a note on the current recommendation
-- [ ] Browser QA (mandatory — do not skip): Create a chain of ≥ 3 recommendations for the same ticker/agent_type. Open the dashboard in a browser and verify: (a) zero JS console errors, (b) timeline UI renders the ordered lineage chain with action, date, confidence, user decision, (c) escalating trend note appears on the current recommendation when severity increases ≥ 3 times. Do NOT check this box without completing live browser testing.
+- [x] `supersedes_id` and `lineage_root_id` populated on all new recommendations
+- [x] Prior recommendation status set to `superseded` when a new one is created for same ticker+agent_type
+- [x] `GET /api/agents/recommendations/{ticker}/lineage` returns ordered chain
+- [x] Timeline UI renders per-ticker lineage with action, date, confidence, user decision, reason
+- [x] Escalating trend (≥ 3 recommendations showing increasing severity) detected and surfaced as a note on the current recommendation
+- [x] Browser QA (mandatory — do not skip): Create a chain of ≥ 3 recommendations for the same ticker/agent_type. Open the dashboard in a browser and verify: (a) zero JS console errors, (b) timeline UI renders the ordered lineage chain with action, date, confidence, user decision, (c) escalating trend note appears on the current recommendation when severity increases ≥ 3 times. Do NOT check this box without completing live browser testing.
+
+## Outcome
+
+**`agent_db.py`:**
+- Migration: `supersedes_id INTEGER` and `lineage_root_id INTEGER` added to `recommendations`
+- `_link_lineage()`: called from `insert_recommendation()` for all non-NO_ACTION recs; looks up `agent_type` via `run_id`, finds the most recent prior rec for same ticker+agent_type, sets lineage FK on new rec, marks prior `status='superseded'` if still open
+- `_ACTION_SEVERITY` map + `_compute_trend_note()`: detects longest trailing strictly-increasing severity run; fires when ≥3
+- `list_recommendations()`: JOINs `agent_runs` to get `agent_type`; adds `trend_note` field to every open rec
+- `get_lineage(ticker)`: returns full history grouped by agent_type with trend_note per chain
+
+**`serve.py`:** `GET /api/agents/recommendations/{ticker}/lineage` endpoint added before the `isdigit()` single-rec check.
+
+**`generate_dashboard.py`:**
+- Lineage modal HTML added (dark header, scrollable body)
+- `openLineage(ticker)` / `closeLineage()` / `_renderLineageChain()` functions
+- DQ card: "History" button in header; orange trend note banner when `r.trend_note` set
+
+Browser QA result (2026-09-05): NVDA HOLD→REVIEW→TRIM chain verified. Zero JS console errors. Trend note "Concern escalating over 3 assessments: HOLD → REVIEW → TRIM" appeared on both the DQ card and inside the lineage modal. QA test data cleaned up after.
 

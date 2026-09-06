@@ -263,6 +263,9 @@ def migrate() -> None:
         ("recommendations",   "superseded_reason", "TEXT"),
         # 0019 — sell/trim rationale class
         ("recommendations",   "rationale_class",   "TEXT"),
+        # 0029 — recommendation lineage
+        ("recommendations",   "supersedes_id",     "INTEGER"),
+        ("recommendations",   "lineage_root_id",   "INTEGER"),
     ]
     for table, col, col_type in _new_cols:
         try:
@@ -378,8 +381,42 @@ def insert_recommendation(
     )
     rec_id = cur.lastrowid
     conn.commit()
+    if action != "NO_ACTION" and run_id is not None:
+        _link_lineage(conn, rec_id, ticker, run_id)
+        conn.commit()
     conn.close()
     return rec_id
+
+
+def _link_lineage(conn: "sqlite3.Connection", rec_id: int, ticker: str, run_id: int) -> None:
+    """Set supersedes_id/lineage_root_id on rec_id and mark the prior rec superseded."""
+    run_row = conn.execute(
+        "SELECT agent_type FROM agent_runs WHERE id=?", (run_id,)
+    ).fetchone()
+    if not run_row:
+        return
+    agent_type = run_row["agent_type"]
+    prior = conn.execute(
+        """SELECT r.id, r.lineage_root_id, r.status
+           FROM recommendations r
+           JOIN agent_runs ar ON ar.id = r.run_id
+           WHERE r.ticker=? AND ar.agent_type=? AND r.action != 'NO_ACTION'
+             AND r.id != ?
+           ORDER BY r.created_at DESC LIMIT 1""",
+        (ticker, agent_type, rec_id),
+    ).fetchone()
+    if not prior:
+        return
+    root_id = prior["lineage_root_id"] or prior["id"]
+    conn.execute(
+        "UPDATE recommendations SET supersedes_id=?, lineage_root_id=? WHERE id=?",
+        (prior["id"], root_id, rec_id),
+    )
+    if prior["status"] == "open":
+        conn.execute(
+            "UPDATE recommendations SET status='superseded', updated_at=? WHERE id=?",
+            (time.time(), prior["id"]),
+        )
 
 
 def compute_input_hash(
@@ -1413,12 +1450,50 @@ def get_recommendation_full(rec_id: int) -> dict | None:
     return result
 
 
+_ACTION_SEVERITY: dict[str, int] = {
+    "NO_ACTION": 0, "HOLD": 1, "REVIEW": 2,
+    "TRIM": 3, "EXIT": 4, "ALLOCATE": 1,
+    "REBALANCE": 2, "SELL_CC": 2,
+    "TAX_HARVEST": 2, "TAX_SELL": 3,
+}
+
+
+def _compute_trend_note(conn: "sqlite3.Connection", ticker: str, agent_type: str) -> str | None:
+    """Return an escalating-trend note if the last ≥3 recs show strictly increasing severity."""
+    rows = conn.execute(
+        """SELECT r.action FROM recommendations r
+           JOIN agent_runs ar ON ar.id = r.run_id
+           WHERE r.ticker=? AND ar.agent_type=? AND r.action != 'NO_ACTION'
+           ORDER BY r.created_at DESC LIMIT 4""",
+        (ticker, agent_type),
+    ).fetchall()
+    if len(rows) < 3:
+        return None
+    # rows are newest-first; reverse to get chronological order for the last 3+
+    actions_asc = [r["action"] for r in reversed(rows)]
+    severities = [_ACTION_SEVERITY.get(a, 0) for a in actions_asc]
+    # Find longest trailing strictly-increasing run
+    run = 1
+    for i in range(len(severities) - 1, 0, -1):
+        if severities[i] > severities[i - 1]:
+            run += 1
+        else:
+            break
+    if run < 3:
+        return None
+    chain = " → ".join(actions_asc[-run:])
+    return f"Concern escalating over {run} assessments: {chain}"
+
+
 def list_recommendations(status: str = "open") -> list[dict]:
-    """Return recommendations filtered by status, with critic verdict attached."""
+    """Return recommendations filtered by status, with critic verdict and trend note attached."""
     conn = _connect()
     rows = conn.execute(
-        "SELECT * FROM recommendations WHERE status=? "
-        "ORDER BY recommendation_score DESC, created_at DESC",
+        """SELECT r.*, ar.agent_type
+           FROM recommendations r
+           LEFT JOIN agent_runs ar ON ar.id = r.run_id
+           WHERE r.status=?
+           ORDER BY r.recommendation_score DESC, r.created_at DESC""",
         (status,),
     ).fetchall()
     recs = []
@@ -1432,9 +1507,69 @@ def list_recommendations(status: str = "open") -> list[dict]:
         rec["critic_verdict"] = critic["verdict"] if critic else None
         rec["critic_confidence_adjustment"] = critic["confidence_adjustment"] if critic else None
         rec["critic_objection"] = critic["strongest_objection"] if critic else None
+        if status == "open" and rec.get("agent_type"):
+            rec["trend_note"] = _compute_trend_note(conn, row["ticker"], rec["agent_type"])
+        else:
+            rec["trend_note"] = None
         recs.append(rec)
     conn.close()
     return recs
+
+
+def get_lineage(ticker: str) -> dict:
+    """Return the full recommendation history for a ticker, grouped by agent_type.
+
+    Each chain is sorted oldest-first and includes user decisions and critic verdicts.
+    A trend_note is attached when ≥3 consecutive assessments show escalating severity.
+    """
+    conn = _connect()
+    rows = conn.execute(
+        """SELECT r.id, r.action, r.recommendation_score, r.confidence,
+                  r.why_now, r.rationale, r.rationale_class, r.status,
+                  r.supersedes_id, r.lineage_root_id, r.created_at,
+                  ar.agent_type,
+                  ud.decision, ud.decided_at, ud.notes AS decision_notes,
+                  cr.verdict AS critic_verdict
+           FROM recommendations r
+           LEFT JOIN agent_runs ar ON ar.id = r.run_id
+           LEFT JOIN user_decisions ud ON ud.recommendation_id = r.id
+           LEFT JOIN critic_reviews cr ON cr.recommendation_id = r.id
+           WHERE r.ticker=? AND r.action != 'NO_ACTION'
+           ORDER BY r.created_at ASC""",
+        (ticker,),
+    ).fetchall()
+
+    by_agent: dict[str, list[dict]] = {}
+    for row in rows:
+        agent = row["agent_type"] or "unknown"
+        by_agent.setdefault(agent, []).append({
+            "id":             row["id"],
+            "action":         row["action"],
+            "score":          row["recommendation_score"],
+            "confidence":     row["confidence"],
+            "why_now":        row["why_now"],
+            "rationale":      row["rationale"],
+            "rationale_class": row["rationale_class"],
+            "status":         row["status"],
+            "supersedes_id":  row["supersedes_id"],
+            "created_at":     row["created_at"],
+            "user_decision":  row["decision"],
+            "decided_at":     row["decided_at"],
+            "decision_notes": row["decision_notes"],
+            "critic_verdict": row["critic_verdict"],
+        })
+
+    chains = []
+    for agent_type, entries in by_agent.items():
+        trend_note = _compute_trend_note(conn, ticker, agent_type)
+        chains.append({
+            "agent_type": agent_type,
+            "entries":    entries,
+            "trend_note": trend_note,
+        })
+    chains.sort(key=lambda c: c["entries"][-1]["created_at"] if c["entries"] else 0, reverse=True)
+    conn.close()
+    return {"ticker": ticker, "chains": chains}
 
 
 def close_recommendation(rec_id: int, status: str) -> bool:

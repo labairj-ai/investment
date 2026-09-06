@@ -5010,6 +5010,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             status = qs.get("status", ["open"])[0]
             recs = agent_db.list_recommendations(status=status)
             return self._json({"ok": True, "recommendations": recs})
+        # /api/agents/recommendations/{ticker}/lineage
+        if (len(parts) == 6 and parts[3] == "recommendations"
+                and parts[5] == "lineage"):
+            data = agent_db.get_lineage(parts[4])
+            return self._json({"ok": True, **data})
         # /api/agents/recommendations/{id}
         if len(parts) == 5 and parts[3] == "recommendations" and parts[4].isdigit():
             rec = agent_db.get_recommendation_full(int(parts[4]))

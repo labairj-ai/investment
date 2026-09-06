@@ -2175,6 +2175,20 @@ def build_dashboard(portfolio, layers, holdings):
   </div>
 </div>
 
+<!-- Lineage Modal -->
+<div id="lineage-overlay" onclick="closeLineage(event)" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:1100;align-items:flex-start;justify-content:center;padding:40px 16px;overflow-y:auto;">
+  <div onclick="event.stopPropagation()" style="background:#fff;border-radius:14px;width:100%;max-width:820px;box-shadow:0 12px 48px rgba(0,0,0,.25);overflow:hidden;">
+    <div style="background:#1a2340;padding:18px 24px;display:flex;align-items:center;justify-content:space-between;">
+      <div>
+        <div id="lineage-title" style="color:#fff;font-size:1.05rem;font-weight:700;">Recommendation History</div>
+        <div id="lineage-subtitle" style="color:#8899bb;font-size:12px;margin-top:2px;"></div>
+      </div>
+      <button onclick="closeLineage()" style="background:rgba(255,255,255,.1);border:none;color:#fff;font-size:18px;width:32px;height:32px;border-radius:50%;cursor:pointer;line-height:32px;text-align:center;">✕</button>
+    </div>
+    <div id="lineage-body" style="padding:20px 24px 24px;max-height:70vh;overflow-y:auto;"></div>
+  </div>
+</div>
+
 <header>
   <div>
     <h1>Investment Dashboard</h1>
@@ -7818,6 +7832,9 @@ function _renderDQCard(r) {{
     if (pl.iv_richness)      parts.push(`IV ${{pl.iv_richness}}`);
     if (parts.length) ccRow = `<div style="margin-top:5px;font-size:11px;color:#68d391;display:flex;gap:12px;flex-wrap:wrap;">${{parts.map(p=>`<span>${{p}}</span>`).join('')}}</div>`;
   }}
+  const trendNote = r.trend_note
+    ? `<div style="margin-bottom:8px;padding:5px 9px;background:rgba(237,137,54,.12);border:1px solid rgba(237,137,54,.35);border-radius:5px;font-size:11px;color:#ed8936;">&#9650; ${{r.trend_note}}</div>`
+    : '';
   return `
     <div id="dq-card-${{r.id}}" style="background:rgba(0,0,0,.2);border-radius:8px;padding:13px 15px;margin-bottom:10px;border:1px solid rgba(255,255,255,.07);">
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:8px;">
@@ -7826,8 +7843,12 @@ function _renderDQCard(r) {{
           <span style="font-size:15px;font-weight:700;color:#e2e8f0;">${{r.ticker || '—'}}</span>
           <span style="font-size:11px;color:#718096;">${{conf}} confidence</span>
         </div>
-        <span style="font-size:10px;color:#718096;white-space:nowrap;padding-top:2px;">Priority ${{pri}}</span>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <button onclick="openLineage('${{r.ticker}}')" style="font-size:10px;padding:2px 8px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.15);border-radius:4px;cursor:pointer;color:#8ba4d4;">History</button>
+          <span style="font-size:10px;color:#718096;white-space:nowrap;">Priority ${{pri}}</span>
+        </div>
       </div>
+      ${{trendNote}}
       ${{r.why_now ? `<div style="font-size:12px;color:#a0aec0;margin-bottom:6px;line-height:1.5;">${{r.why_now}}</div>` : ''}}
       ${{r.rationale ? `<div style="font-size:12px;color:#90cdf4;margin-bottom:6px;line-height:1.5;"><span style="color:#63b3ed;font-size:10px;text-transform:uppercase;letter-spacing:.05em;font-weight:700;">Rec</span>&nbsp; ${{r.action}} — ${{r.rationale}}</div>` : ''}}
       ${{ccRow}}
@@ -7910,6 +7931,97 @@ function loadDecisionQueue() {{
 
 document.addEventListener('DOMContentLoaded', () => {{ loadDecisionQueue(); }});
 setInterval(loadDecisionQueue, 60000);
+
+// ── Recommendation Lineage ────────────────────────────────────────────────────
+const _LIN_ACTION_COLOR = {{
+  HOLD:     'background:#e6f4ea;color:#276749;',
+  REVIEW:   'background:#f0f4ff;color:#3b5bdb;',
+  TRIM:     'background:#fff3e0;color:#8a4500;',
+  EXIT:     'background:#fde8e8;color:#9b1c1c;',
+  NO_ACTION:'background:#f7f8fa;color:#718096;',
+}};
+const _LIN_DECISION_COLOR = {{
+  accepted:  'color:#276749;font-weight:600;',
+  rejected:  'color:#9b1c1c;font-weight:600;',
+  deferred:  'color:#3b5bdb;font-weight:600;',
+  superseded:'color:#553c9a;',
+}};
+
+function _fmtDate(ts) {{
+  if (!ts) return '—';
+  const d = new Date(ts * 1000);
+  return d.toLocaleDateString('en-US', {{month:'short', day:'numeric', year:'2-digit'}});
+}}
+
+function _renderLineageChain(chain) {{
+  if (!chain.entries || chain.entries.length === 0) return '';
+  const trendBanner = chain.trend_note
+    ? `<div style="margin-bottom:10px;padding:7px 10px;background:#fff3e0;border:1px solid #f0a060;border-radius:6px;font-size:12px;color:#8a4500;">&#9650; ${{chain.trend_note}}</div>`
+    : '';
+  const rows = chain.entries.map((e, i) => {{
+    const isLast = i === chain.entries.length - 1;
+    const actionSt = _LIN_ACTION_COLOR[e.action] || 'background:#f7f8fa;color:#4a5568;';
+    const actionBadge = `<span style="font-size:10px;padding:1px 7px;border-radius:8px;font-weight:700;${{actionSt}}">${{e.action}}</span>`;
+    const verdict = e.critic_verdict
+      ? `<span style="font-size:10px;color:#718096;margin-left:6px;">Critic: ${{e.critic_verdict}}</span>` : '';
+    const decLabel = e.user_decision
+      ? `<span style="font-size:11px;${{_LIN_DECISION_COLOR[e.user_decision] || ''}}">${{e.user_decision}}</span>` : '';
+    const rowBg = isLast ? 'background:#f0f7ff;' : (i % 2 === 0 ? 'background:#fafafa;' : 'background:#fff;');
+    return `<tr style="${{rowBg}}border-bottom:1px solid #eee;">
+      <td style="padding:8px 10px;font-size:12px;color:#4a5568;white-space:nowrap;">${{_fmtDate(e.created_at)}}</td>
+      <td style="padding:8px 10px;">${{actionBadge}}${{verdict}}</td>
+      <td style="padding:8px 10px;font-size:11px;color:#718096;">${{e.confidence != null ? e.confidence+'%' : '—'}}</td>
+      <td style="padding:8px 10px;">${{decLabel || '<span style="font-size:11px;color:#ccc;">—</span>'}}</td>
+      <td style="padding:8px 10px;font-size:11px;color:#718096;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${{(e.why_now||'').replace(/"/g,'&quot;')}}">${{e.why_now || e.rationale_class || '—'}}</td>
+    </tr>`;
+  }}).join('');
+  const agentLabel = chain.agent_type.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase());
+  return `
+    <div style="margin-bottom:20px;">
+      <div style="font-size:11px;font-weight:700;color:#4a5568;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;">${{agentLabel}}</div>
+      ${{trendBanner}}
+      <table style="width:100%;border-collapse:collapse;border:1px solid #eee;border-radius:6px;overflow:hidden;">
+        <thead><tr style="background:#f7f8fa;">
+          <th style="padding:7px 10px;font-size:10px;color:#718096;text-align:left;font-weight:600;text-transform:uppercase;letter-spacing:.05em;">Date</th>
+          <th style="padding:7px 10px;font-size:10px;color:#718096;text-align:left;font-weight:600;text-transform:uppercase;letter-spacing:.05em;">Action</th>
+          <th style="padding:7px 10px;font-size:10px;color:#718096;text-align:left;font-weight:600;text-transform:uppercase;letter-spacing:.05em;">Confidence</th>
+          <th style="padding:7px 10px;font-size:10px;color:#718096;text-align:left;font-weight:600;text-transform:uppercase;letter-spacing:.05em;">Decision</th>
+          <th style="padding:7px 10px;font-size:10px;color:#718096;text-align:left;font-weight:600;text-transform:uppercase;letter-spacing:.05em;">Reason</th>
+        </tr></thead>
+        <tbody>${{rows}}</tbody>
+      </table>
+    </div>`;
+}}
+
+function openLineage(ticker) {{
+  const overlay = document.getElementById('lineage-overlay');
+  const body    = document.getElementById('lineage-body');
+  const title   = document.getElementById('lineage-title');
+  const subtitle= document.getElementById('lineage-subtitle');
+  if (!overlay) return;
+  title.textContent   = ticker + ' — Recommendation History';
+  subtitle.textContent= 'Loading…';
+  body.innerHTML      = '<div style="text-align:center;padding:24px;color:#718096;font-size:13px;">Loading lineage…</div>';
+  overlay.style.display = 'flex';
+  fetch('/api/agents/recommendations/' + ticker + '/lineage')
+    .then(r => r.json())
+    .then(data => {{
+      if (!data.ok || !data.chains || data.chains.length === 0) {{
+        body.innerHTML = '<div style="color:#718096;font-size:13px;padding:12px 0;">No recommendation history found for ' + ticker + '.</div>';
+        subtitle.textContent = 'No history';
+        return;
+      }}
+      const total = data.chains.reduce((s, c) => s + c.entries.length, 0);
+      subtitle.textContent = total + ' assessment' + (total === 1 ? '' : 's') + ' across ' + data.chains.length + ' agent' + (data.chains.length === 1 ? '' : 's');
+      body.innerHTML = data.chains.map(_renderLineageChain).join('');
+    }})
+    .catch(() => {{ body.innerHTML = '<div style="color:#9b1c1c;font-size:13px;padding:12px 0;">Failed to load lineage.</div>'; }});
+}}
+
+function closeLineage(e) {{
+  if (e && e.target !== document.getElementById('lineage-overlay')) return;
+  document.getElementById('lineage-overlay').style.display = 'none';
+}}
 
 // ── Decision Journal ───────────────────────────────────────────────────────────
 const _DJ_STATUS_COLOR = {{
