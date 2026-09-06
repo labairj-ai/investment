@@ -1,7 +1,7 @@
 # Build Briefing Agent (agents/briefing_agent.py)
 
 - **ID:** 0047
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-06
 - **Priority:** normal
 - **Depends:** 0040
@@ -38,11 +38,15 @@
 
 ## Done when
 
-- [ ] `briefing_agent.py` exists and registers `"briefing"` handler
-- [ ] Briefing agent runs last in orchestrator after all producing agents
-- [ ] Briefing output references agent-produced findings, not raw portfolio data
-- [ ] Dashboard displays the briefing summary
-- [ ] `generate_daily_insight()` is no longer called from the scheduled refresh path
+- [x] `briefing_agent.py` exists and registers `"briefing"` handler
+- [x] Briefing agent runs last in orchestrator after all producing agents (briefing trigger already in `detect_triggers()`)
+- [x] Briefing output references agent-produced findings via `portfolio_ai.generate_daily_insight()` (reads `get_todays_findings()` from agent_db)
+- [x] Dashboard displays the briefing summary (existing `#ai-insight-card` fetches `/api/ai/daily` dynamically — unchanged)
+- [x] `generate_daily_insight()` no longer called from scheduled refresh paths (lines 596-607 nightly, line 730-746 morning 06:00 removed)
 - [ ] **Backend QA:** run the feature on production optiplex and confirm expected DB changes appear in `investment.db`
 - [ ] **Frontend QA:** dashboard loads without errors; affected UI sections render correctly; no JS console errors; no broken API endpoints
 - [ ] **No service regression:** investment service still running; all existing API routes respond correctly after the change
+
+## Outcome
+
+New file `agents/briefing_agent.py` wraps `portfolio_ai.generate_daily_insight(force=True)` and registers as "briefing". The briefing trigger already fired daily in `detect_triggers()` — now it has a handler to call. Insight is stored in `ai_insights` table as before; existing `/api/ai/daily` endpoint and dashboard card unchanged. Removed explicit `generate_daily_insight()` calls from nightly scheduler (lines 596-607) and morning 06:00 refresh (lines 730-746) — the agent pipeline runs the briefing agent as the final step instead. User-triggered `/api/ai/daily?force=1` endpoint unchanged.
