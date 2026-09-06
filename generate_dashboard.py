@@ -7577,9 +7577,12 @@ function _toggleCandHistory(ticker) {{
   if (!cell || cell.dataset.loaded) return;
   cell.dataset.loaded = '1';
   cell.innerHTML = '<span style="font-size:11px;color:#a0aec0;">Loading…</span>';
-  fetch('/api/candidates/' + ticker + '/history').then(r => r.json()).then(d => {{
-    if (!d.ok || !d.history || d.history.length === 0) {{
-      cell.innerHTML = '<span style="font-size:11px;color:#a0aec0;">No history recorded.</span>';
+  fetch('/api/candidates/' + ticker + '/history').then(r => {{
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json();
+  }}).then(d => {{
+    if (!d.history || d.history.length === 0) {{
+      cell.innerHTML = '<span style="font-size:11px;color:#a0aec0;">No status changes recorded yet.</span>';
       return;
     }}
     var items = d.history.map(h => {{

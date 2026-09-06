@@ -1905,6 +1905,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._handle_candidates_comparison()
         elif parsed.path == "/api/candidates":
             self._handle_candidates_get()
+        elif parsed.path.startswith("/api/candidates/"):
+            parts = parsed.path.rstrip("/").split("/")
+            if len(parts) == 5 and parts[4] == "history":
+                self._handle_candidate_history(parts[3].upper())
+            else:
+                self.send_response(404); self.end_headers()
         elif parsed.path == "/api/recommendations":
             self._handle_recommendations_get()
         elif parsed.path == "/api/preferences":
