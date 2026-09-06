@@ -1,0 +1,45 @@
+# Build Briefing Agent (agents/briefing_agent.py)
+
+- **ID:** 0047
+- **Status:** backlog
+- **Created:** 2026-09-06
+- **Priority:** normal
+- **Depends:** 0040
+
+## Problem
+
+`AGENT_ORDER` in `orchestrator.py` includes `"briefing"` as the final stage, but `agents/briefing_agent.py` does not exist and there is no import for it in `agents/__init__.py`. `serve.py` still calls `portfolio_ai.generate_daily_insight()` during both the scheduled refresh and morning news workflow — a raw AI dump of portfolio data, not a synthesized summary of what the agents found. The intended architecture is: specialist agents produce findings → Critic reviews → Briefing Agent synthesizes into a concise action-oriented summary. That final synthesis step is missing.
+
+## Proposed approach
+
+- Create `agents/briefing_agent.py` that:
+  - Reads the current run's recommendations from `agent_db` (not raw portfolio data)
+  - Groups findings by priority: items requiring attention, items reviewed with no action
+  - Calls the LLM with **only** the structured agent findings as input (not raw holdings/prices)
+  - Returns a `Recommendation` with `action="BRIEFING"` containing the synthesized text
+- Example output format:
+  ```
+  3 items require attention:
+    ANET — Thesis Watch (thesis_monitor)
+    EW   — Covered Call Opportunity (covered_call)
+    SCHD — Layer allocation gap (opportunity_hunter)
+
+  18 other holdings reviewed; no material action indicated.
+  ```
+- Register as `"briefing"` agent; add import to `agents/__init__.py`.
+- Deprecate (but don't delete yet) `portfolio_ai.generate_daily_insight()` calls in `serve.py` — replace with briefing agent output surfaced in dashboard and newsletter.
+
+## Touches
+
+- New file: `agents/briefing_agent.py`
+- `agents/__init__.py` (add import)
+- `serve.py` (replace `generate_daily_insight()` calls with briefing agent output)
+- `generate_dashboard.py` (surface briefing summary in dashboard)
+
+## Done when
+
+- [ ] `briefing_agent.py` exists and registers `"briefing"` handler
+- [ ] Briefing agent runs last in orchestrator after all producing agents
+- [ ] Briefing output references agent-produced findings, not raw portfolio data
+- [ ] Dashboard displays the briefing summary
+- [ ] `generate_daily_insight()` is no longer called from the scheduled refresh path
