@@ -219,7 +219,7 @@ def run_agents(
             continue
         handler = _registry.get(agent_type)
         if handler is None:
-            continue
+            raise RuntimeError(f"Triggered agent {agent_type!r} has no registered handler")
         recs = _run_single_agent(agent_type, handler, snapshot, events=events_by_agent[agent_type])
         recommendations.extend(recs)
         producers_ran.append(agent_type)

@@ -16,6 +16,7 @@ from . import critic_agent          # registers critic handler at import time
 from . import outcome_evaluator     # registers outcome_evaluator handler at import time
 from . import opportunity_agent     # registers opportunity_hunter handler at import time
 from . import tax_agent             # registers tax handler at import time
+from . import sell_trim_agent       # registers sell_trim handler at import time
 
 __all__ = [
     "HoldingSnapshot",
@@ -29,4 +30,5 @@ __all__ = [
     "TriggerEvent",
     "detect_triggers",
     "calculate_confidence",
+    "sell_trim_agent",
 ]
