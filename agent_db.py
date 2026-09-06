@@ -12,6 +12,13 @@ from pathlib import Path
 
 DB_PATH = Path(__file__).resolve().parent / "out" / "investment.db"
 
+# ── Canonical candidate_universe status values ────────────────────────────────
+CAND_ACTIVE   = "active"
+CAND_WATCH    = "watch"
+CAND_OWNED    = "owned"
+CAND_REJECTED = "rejected"
+CAND_OPPORTUNITY_STATUSES = (CAND_ACTIVE, CAND_WATCH)  # statuses counted as alternatives
+
 
 def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(str(DB_PATH), timeout=10)

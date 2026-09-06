@@ -17,6 +17,7 @@ import sqlite3
 from pathlib import Path
 
 import agent_db
+from agent_db import CAND_OPPORTUNITY_STATUSES
 import ollama_client
 from agents.confidence import calculate_confidence as score_evidence
 from agents.contracts import AgentContext, EvidenceBundle, Recommendation
@@ -283,9 +284,11 @@ def _score_O(ticker: str) -> tuple[int, str]:
     conn = _connect()
     if not conn:
         return 10, "no data"
+    placeholders = ",".join("?" for _ in CAND_OPPORTUNITY_STATUSES)
     candidates = conn.execute(
-        "SELECT ticker, buffett_score FROM candidate_universe "
-        "WHERE status = 'tracking' ORDER BY buffett_score DESC LIMIT 5",
+        f"SELECT ticker, buffett_score FROM candidate_universe "
+        f"WHERE status IN ({placeholders}) ORDER BY buffett_score DESC LIMIT 5",
+        CAND_OPPORTUNITY_STATUSES,
     ).fetchall()
     holding_row = conn.execute(
         "SELECT buffett_score FROM candidate_universe WHERE ticker = ?", (ticker,)
