@@ -588,11 +588,6 @@ def _run_daily():
                 lf.write("[PortfolioAI] Macro scores done.\n")
             except Exception as _e:
                 lf.write(f"[PortfolioAI] Error: {_e}\n")
-            lf.write("[triggers] Running agent pipeline…\n")
-            try:
-                _run_agent_pipeline(log_path=LOG)
-            except Exception as _ae:
-                lf.write(f"[triggers] Agent pipeline error: {_ae}\n")
             result = subprocess.run(
                 [str(VENV_PY), str(PROJECT_DIR / "generate_dashboard.py")],
                 cwd=str(PROJECT_DIR),
@@ -608,6 +603,13 @@ def _run_daily():
                 lf.write(f"[DepChecker] {n} recommendation(s) superseded.\n")
             except Exception as _e:
                 lf.write(f"[DepChecker] Error: {_e}\n")
+            # Agent pipeline runs after dashboard is rebuilt so values are
+            # immediately visible without waiting for LLM inference.
+            lf.write("[triggers] Running agent pipeline…\n")
+            try:
+                _run_agent_pipeline(log_path=LOG)
+            except Exception as _ae:
+                lf.write(f"[triggers] Agent pipeline error: {_ae}\n")
         return True
 
     while True:
@@ -1564,12 +1566,6 @@ def _run_refresh_job(job_id: str) -> None:
                             error=f"{script} failed: {result.stderr.strip()[-300:]}")
                 return
 
-        _job_update(job_id, progress="Running agent analysis…")
-        try:
-            _run_agent_pipeline()
-        except Exception as _ape:
-            print(f"[RefreshJob] agent pipeline error: {_ape}")
-
         _job_update(job_id, progress="Rebuilding dashboard…")
         result = _sp.run(
             [str(VENV_PY), str(PROJECT_DIR / "generate_dashboard.py")],
@@ -1581,6 +1577,13 @@ def _run_refresh_job(job_id: str) -> None:
             return
 
         _job_update(job_id, status="done", result={"ok": True})
+
+        # Agent pipeline runs after dashboard is rebuilt so holdings values
+        # are immediately visible without waiting for LLM inference.
+        try:
+            _run_agent_pipeline()
+        except Exception as _ape:
+            print(f"[RefreshJob] agent pipeline error: {_ape}")
     except Exception as e:
         _job_update(job_id, status="error", error=str(e))
 
