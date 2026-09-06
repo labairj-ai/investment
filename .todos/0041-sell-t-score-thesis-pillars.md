@@ -1,7 +1,7 @@
 # Fix Sell/Trim T-Score to Use thesis_pillars Instead of thesis_claims
 
 - **ID:** 0041
-- **Status:** backlog
+- **Status:** in-progress
 - **Created:** 2026-09-06
 - **Priority:** high
 - **Depends:** none

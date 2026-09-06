@@ -70,11 +70,68 @@ def _dominant_rationale(T: int, F: int, V: int, P: int, O: int) -> str:
 
 # ── Component scorers (all deterministic, no LLM) ────────────────────────────
 
+_PILLAR_STATUS_SCORE: dict[str, float] = {
+    "STRONG":   95.0,
+    "HEALTHY":  80.0,
+    "WATCH":    65.0,
+    "WARNING":  40.0,
+    "VIOLATED": 10.0,
+    "UNKNOWN":  50.0,
+}
+
+
 def _score_T(ticker: str) -> tuple[int, list[dict]]:
-    """T = thesis deterioration (0–100). 40% weight in SellStrength."""
+    """T = thesis deterioration (0–100). 40% weight in SellStrength.
+
+    Reads thesis_pillars (modern system). Falls back to thesis_claims only
+    when no pillar rows exist, so legacy data still contributes a signal.
+    T-score matches the composite health the Thesis Monitor would report.
+    """
     conn = _connect()
     if not conn:
         return 0, []
+
+    # ── Modern path: thesis_pillars ────────────────────────────────────────
+    pillars = conn.execute(
+        """SELECT tp.name, tp.status, tp.score, tp.importance, tp.critical
+           FROM thesis_pillars tp
+           JOIN investment_theses it ON it.id = tp.thesis_id
+           WHERE it.ticker = ? AND it.status = 'ACTIVE'
+           ORDER BY tp.importance DESC""",
+        (ticker,),
+    ).fetchall()
+
+    if pillars:
+        conn.close()
+        total_w = sum(p["importance"] for p in pillars) or 1.0
+        composite = sum(
+            p["importance"] * (
+                p["score"] if p["score"] is not None
+                else _PILLAR_STATUS_SCORE.get(p["status"], 50.0)
+            )
+            for p in pillars
+        ) / total_w
+
+        T = max(0, min(100, round(100 - composite)))
+
+        critical_violated = [p for p in pillars if p["critical"] and p["status"] == "VIOLATED"]
+        all_violated      = [p for p in pillars if p["status"] == "VIOLATED"]
+        any_warning       = any(p["status"] in ("WARNING", "WATCH") for p in pillars)
+
+        if critical_violated:
+            T = max(T, 90)
+        elif len(all_violated) >= 2:
+            T = max(T, 75)
+        elif any_warning and not all_violated:
+            T = min(T, 50)
+
+        detail = [
+            {"claim": p["name"], "status": p["status"], "weight": p["importance"]}
+            for p in pillars if p["status"] in ("VIOLATED", "WARNING", "WATCH")
+        ]
+        return T, detail
+
+    # ── Legacy fallback: thesis_claims ─────────────────────────────────────
     rows = conn.execute(
         """SELECT tc.claim, tc.claim_type, tc.weight, tc.current_status
            FROM thesis_claims tc
@@ -87,11 +144,11 @@ def _score_T(ticker: str) -> tuple[int, list[dict]]:
         return 0, []
     violated = [r for r in rows if r["current_status"] == "violated"]
     weakened = [r for r in rows if r["current_status"] == "weakened"]
-    total_w = sum(r["weight"] for r in rows) or 1.0
-    viol_w  = sum(r["weight"] for r in violated)
-    weak_w  = sum(r["weight"] for r in weakened)
-    score   = min(100, int((viol_w * 1.0 + weak_w * 0.4) / total_w * 100))
-    detail  = [
+    total_w  = sum(r["weight"] for r in rows) or 1.0
+    viol_w   = sum(r["weight"] for r in violated)
+    weak_w   = sum(r["weight"] for r in weakened)
+    score    = min(100, int((viol_w * 1.0 + weak_w * 0.4) / total_w * 100))
+    detail   = [
         {"claim": r["claim"], "status": r["current_status"], "weight": r["weight"]}
         for r in violated + weakened
     ]
