@@ -1846,6 +1846,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._handle_candidates_get()
         elif parsed.path == "/api/recommendations":
             self._handle_recommendations_get()
+        elif parsed.path == "/api/preferences":
+            self._handle_preferences_get()
         elif parsed.path.startswith("/api/agents/"):
             self._handle_agents_get(parsed)
         elif parsed.path.startswith("/api/theses/"):
@@ -5000,6 +5002,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     # ── /api/agents/* ─────────────────────────────────────────────────────────
 
+    def _handle_preferences_get(self):
+        """GET /api/preferences — return all learned soft preferences."""
+        prefs = agent_db.get_learned_preferences()
+        return self._json({"ok": True, "preferences": prefs, "count": len(prefs)})
+
     def _handle_agents_get(self, parsed):
         """Route GET /api/agents/* requests."""
         from urllib.parse import parse_qs
@@ -5078,6 +5085,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             )
         except Exception as e:
             return self._json_error(500, str(e))
+
+        # Recalculate soft preferences in background (non-blocking)
+        def _run_learner():
+            try:
+                from agents.preference_learner import run_preference_learner
+                run_preference_learner()
+            except Exception as _e:
+                print(f"[PrefLearner] error: {_e}")
+        threading.Thread(target=_run_learner, daemon=True).start()
 
         # Flip recommendation status to the decision value
         found = agent_db.close_recommendation(rec_id, status=decision)

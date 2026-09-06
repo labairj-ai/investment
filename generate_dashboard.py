@@ -7836,6 +7836,15 @@ function _renderDQCard(r) {{
   const trendNote = r.trend_note
     ? `<div style="margin-bottom:8px;padding:5px 9px;background:rgba(237,137,54,.12);border:1px solid rgba(237,137,54,.35);border-radius:5px;font-size:11px;color:#ed8936;">&#9650; ${{r.trend_note}}</div>`
     : '';
+  let prefFitBadge = '';
+  if (r.preference_fit != null) {{
+    const pf = r.preference_fit;
+    const pfColor = pf < 40 ? '#fc8181' : pf >= 75 ? '#68d391' : '#a0aec0';
+    const pfBg    = pf < 40 ? 'rgba(245,101,101,.10)' : pf >= 75 ? 'rgba(72,187,120,.10)' : 'rgba(160,174,192,.08)';
+    const pfBorder= pf < 40 ? 'rgba(245,101,101,.3)' : pf >= 75 ? 'rgba(72,187,120,.3)' : 'rgba(160,174,192,.2)';
+    const pfNote  = r.preference_note ? ` — ${{r.preference_note}}` : '';
+    prefFitBadge = `<div style="margin-bottom:8px;padding:5px 9px;background:${{pfBg}};border:1px solid ${{pfBorder}};border-radius:5px;font-size:11px;color:${{pfColor}};display:flex;align-items:center;gap:6px;"><span style="font-weight:700;">Pref Fit ${{pf}}</span><span style="color:#718096;">${{pfNote}}</span></div>`;
+  }}
   return `
     <div id="dq-card-${{r.id}}" style="background:rgba(0,0,0,.2);border-radius:8px;padding:13px 15px;margin-bottom:10px;border:1px solid rgba(255,255,255,.07);">
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:8px;">
@@ -7850,6 +7859,7 @@ function _renderDQCard(r) {{
         </div>
       </div>
       ${{trendNote}}
+      ${{prefFitBadge}}
       ${{r.why_now ? `<div style="font-size:12px;color:#a0aec0;margin-bottom:6px;line-height:1.5;">${{r.why_now}}</div>` : ''}}
       ${{r.rationale ? `<div style="font-size:12px;color:#90cdf4;margin-bottom:6px;line-height:1.5;"><span style="color:#63b3ed;font-size:10px;text-transform:uppercase;letter-spacing:.05em;font-weight:700;">Rec</span>&nbsp; ${{r.action}} — ${{r.rationale}}</div>` : ''}}
       ${{ccRow}}

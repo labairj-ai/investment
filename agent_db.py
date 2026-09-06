@@ -246,6 +246,18 @@ def migrate() -> None:
 
         CREATE INDEX IF NOT EXISTS idx_rec_deps_rec
             ON recommendation_dependencies (recommendation_id);
+
+        CREATE TABLE IF NOT EXISTS learned_preferences (
+            id              INTEGER PRIMARY KEY,
+            preference_key  TEXT    NOT NULL UNIQUE,
+            scope           TEXT    NOT NULL DEFAULT 'global',
+            value           REAL    NOT NULL,
+            confidence      REAL    NOT NULL DEFAULT 0,
+            sample_size     INTEGER NOT NULL DEFAULT 0,
+            first_observed  TEXT    NOT NULL,
+            last_updated    TEXT    NOT NULL,
+            evidence_json   TEXT
+        );
     """)
     conn.commit()
 
@@ -1593,7 +1605,7 @@ def _compute_trend_note(conn: "sqlite3.Connection", ticker: str, agent_type: str
 
 
 def list_recommendations(status: str = "open") -> list[dict]:
-    """Return recommendations filtered by status, with critic verdict and trend note attached."""
+    """Return recommendations filtered by status, with critic verdict, trend note, and preference fit."""
     conn = _connect()
     rows = conn.execute(
         """SELECT r.*, ar.agent_type
@@ -1603,6 +1615,11 @@ def list_recommendations(status: str = "open") -> list[dict]:
            ORDER BY r.recommendation_score DESC, r.created_at DESC""",
         (status,),
     ).fetchall()
+
+    # Load preferences once for the whole batch
+    pref_rows = conn.execute("SELECT * FROM learned_preferences").fetchall()
+    prefs = {r["preference_key"]: dict(r) for r in pref_rows}
+
     recs = []
     for row in rows:
         rec = dict(row)
@@ -1618,6 +1635,9 @@ def list_recommendations(status: str = "open") -> list[dict]:
             rec["trend_note"] = _compute_trend_note(conn, row["ticker"], rec["agent_type"])
         else:
             rec["trend_note"] = None
+        fit, pref_note = _compute_preference_fit(rec, prefs)
+        rec["preference_fit"] = fit
+        rec["preference_note"] = pref_note
         recs.append(rec)
     conn.close()
     return recs
@@ -1690,6 +1710,114 @@ def close_recommendation(rec_id: int, status: str) -> bool:
     conn.commit()
     conn.close()
     return cur.rowcount > 0
+
+
+# ── Preference learner DB helpers ─────────────────────────────────────────────
+
+_MIN_PREF_SAMPLE = 5
+
+
+def upsert_learned_preference(
+    key: str,
+    value: float,
+    scope: str = "global",
+    sample_size: int = 0,
+    evidence: dict | None = None,
+) -> None:
+    """Insert or update a learned preference row."""
+    import json as _json
+    from datetime import date as _date
+    today = _date.today().isoformat()
+    confidence = 100.0 * sample_size / (sample_size + 10)
+    evidence_json = _json.dumps(evidence) if evidence else None
+    conn = _connect()
+    conn.execute(
+        """INSERT INTO learned_preferences
+               (preference_key, scope, value, confidence, sample_size,
+                first_observed, last_updated, evidence_json)
+           VALUES (?,?,?,?,?,?,?,?)
+           ON CONFLICT(preference_key) DO UPDATE SET
+               scope=excluded.scope,
+               value=excluded.value,
+               confidence=excluded.confidence,
+               sample_size=excluded.sample_size,
+               last_updated=excluded.last_updated,
+               evidence_json=excluded.evidence_json""",
+        (key, scope, value, confidence, sample_size, today, today, evidence_json),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_learned_preferences() -> list[dict]:
+    """Return all learned preference rows as dicts."""
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT * FROM learned_preferences ORDER BY preference_key"
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def _compute_preference_fit(
+    rec: dict,
+    prefs: dict[str, dict],
+) -> tuple[int | None, str | None]:
+    """Return (fit_score 0-100, note) given a rec and learned preferences dict.
+
+    Returns (None, None) when the action has fewer than _MIN_PREF_SAMPLE decisions —
+    no preference shown until we have enough data.
+    Fit does NOT modify recommendation_score, confidence, or any evidence column.
+    """
+    import json as _json
+    action = rec.get("action")
+    rate_key = f"action_acceptance_rate.{action}"
+    rate_pref = prefs.get(rate_key)
+    if rate_pref is None or rate_pref["sample_size"] < _MIN_PREF_SAMPLE:
+        return None, None
+
+    base_fit = int(float(rate_pref["value"]) * 100)
+    fit = base_fit
+
+    if action == "SELL_CC":
+        try:
+            pl = _json.loads(rec.get("action_payload_json") or "{}") or {}
+            adjustments: list[int] = []
+            delta_pref = prefs.get("cc.preferred_delta")
+            if (delta_pref and pl.get("delta") is not None
+                    and delta_pref["sample_size"] >= _MIN_PREF_SAMPLE):
+                dev = abs(float(pl["delta"]) - float(delta_pref["value"])) / max(abs(float(delta_pref["value"])), 0.01)
+                adjustments.append(max(0, 100 - int(dev * 200)))
+            dte_pref = prefs.get("cc.preferred_dte")
+            if (dte_pref and pl.get("dte") is not None
+                    and dte_pref["sample_size"] >= _MIN_PREF_SAMPLE):
+                dev = abs(float(pl["dte"]) - float(dte_pref["value"])) / max(abs(float(dte_pref["value"])), 1.0)
+                adjustments.append(max(0, 100 - int(dev * 100)))
+            if adjustments:
+                spec_fit = int(sum(adjustments) / len(adjustments))
+                fit = int(0.5 * base_fit + 0.5 * spec_fit)
+        except Exception:
+            pass
+    elif action in ("TRIM", "EXIT"):
+        threshold_pref = prefs.get("sell.score_threshold")
+        if threshold_pref and threshold_pref["sample_size"] >= _MIN_PREF_SAMPLE:
+            score = rec.get("recommendation_score") or 50
+            sell_fit = 80 if float(score) >= float(threshold_pref["value"]) else 30
+            fit = int(0.5 * base_fit + 0.5 * sell_fit)
+
+    fit = max(0, min(100, fit))
+
+    note: str | None = None
+    if fit < 40:
+        action_label = action.replace("_", " ").title()
+        note = (
+            f"Low preference fit ({fit}) — you've historically accepted "
+            f"{base_fit}% of {action_label} recommendations"
+        )
+    elif fit >= 75:
+        note = f"Preference fit {fit} — consistent with your decision history"
+
+    return fit, note
 
 
 def update_recommendation(

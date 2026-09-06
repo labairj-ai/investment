@@ -1,7 +1,7 @@
 # Build Preference Learner
 
 - **ID:** 0027
-- **Status:** backlog
+- **Status:** in-progress
 - **Created:** 2026-09-05
 - **Priority:** low
 - **Depends:** 0018, 0024, 0026
