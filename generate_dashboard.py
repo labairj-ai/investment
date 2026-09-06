@@ -7947,11 +7947,12 @@ function _renderDJSummary(summary) {{
   const s = summary || {{}};
   const by = s.by_status || {{}};
   const chips = [
-    ['Generated', s.total_generated || 0, '#4a5568'],
-    ['Accepted',  by.accepted  || 0, '#276749'],
-    ['Rejected',  by.rejected  || 0, '#9b1c1c'],
-    ['Deferred',  by.deferred  || 0, '#3b5bdb'],
-    ['Vetoed',    by.vetoed    || 0, '#8a4500'],
+    ['Generated',  s.total_generated   || 0, '#4a5568'],
+    ['Accepted',   by.accepted         || 0, '#276749'],
+    ['Rejected',   by.rejected         || 0, '#9b1c1c'],
+    ['Deferred',   by.deferred         || 0, '#3b5bdb'],
+    ['Vetoed',     by.vetoed           || 0, '#8a4500'],
+    ['Superseded', by.superseded       || 0, '#553c9a'],
   ];
   strip.innerHTML = chips.map(([label, n, color]) =>
     `<div style="padding:5px 12px;border-radius:16px;background:#f7f8fa;border:1px solid #e2e8f0;">
