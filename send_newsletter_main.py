@@ -771,8 +771,25 @@ def main(send_email_flag: bool = True):
     # ── DB snapshot ───────────────────────────────────────────────────────────
     day = datetime.now(TZ).strftime("%Y-%m-%d")
     holdings["weight_pct"] = (holdings["value_yday"] / total_value) * 100.0
-    store_snapshot(day, total_value, total_change, total_change_pct,
-                   spy_change_pct, layers, holdings)
+
+    # Market closed today — the fetched "change" is the last trading session's move,
+    # not today's.  Store 0 so historical charts stay accurate.
+    _today_date = datetime.now(TZ).date()
+    if _is_market_holiday(_today_date):
+        _store_chg     = 0.0
+        _store_chg_pct = 0.0
+        _store_spy     = 0.0
+        holdings["chg_dollars"] = 0.0
+        holdings["chg_pct"]     = 0.0
+        layers["chg_dollars"]   = 0.0
+        layers["chg_pct"]       = 0.0
+    else:
+        _store_chg     = total_change
+        _store_chg_pct = total_change_pct
+        _store_spy     = spy_change_pct
+
+    store_snapshot(day, total_value, _store_chg, _store_chg_pct,
+                   _store_spy, layers, holdings)
 
     # ── Covered call mark-to-market ───────────────────────────────────────────
     try:
