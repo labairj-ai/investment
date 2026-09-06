@@ -1825,6 +1825,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._handle_news_summary(parse_qs(parsed.query))
         elif parsed.path == "/api/refresh-financials":
             self._handle_refresh_financials(parse_qs(parsed.query))
+        elif parsed.path == "/api/candidates/comparison":
+            self._handle_candidates_comparison()
         elif parsed.path == "/api/candidates":
             self._handle_candidates_get()
         elif parsed.path == "/api/recommendations":
@@ -4664,6 +4666,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             except Exception:
                 pass
             self._json({"ok": True, "candidates": candidates})
+        except Exception as e:
+            self._json_error(500, str(e))
+
+    def _handle_candidates_comparison(self):
+        """GET /api/candidates/comparison — score and rank active candidates."""
+        try:
+            from agents.opportunity_agent import score_for_comparison
+            candidates = agent_db.get_candidates(include_rejected=False)
+            result = score_for_comparison(candidates)
+            self._json({"ok": True, **result})
         except Exception as e:
             self._json_error(500, str(e))
 

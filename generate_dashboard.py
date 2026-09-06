@@ -2784,6 +2784,20 @@ def build_dashboard(portfolio, layers, holdings):
     </div>
   </div>
 
+  <!-- Candidate Comparison -->
+  <div class="card" id="candidate-comparison-card" style="display:none;">
+    <h2 style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
+      Candidate Comparison
+      <button onclick="loadCandidateComparison()" style="font-size:11px;padding:4px 10px;background:#f4f6f9;border:1px solid #dde;border-radius:5px;cursor:pointer;color:#555;">↻</button>
+    </h2>
+    <div style="font-size:11px;color:#718096;margin-bottom:12px;">Relative ranking across active candidates — click any column to sort.</div>
+    <div id="candidate-comparison-wrap">
+      <div style="font-size:12px;color:#a0aec0;text-align:center;padding:20px;">Loading…</div>
+    </div>
+    <div id="candidate-comparison-rec" style="display:none;margin-top:14px;padding:12px 14px;background:#f0f6ff;border:1px solid #bee3f8;border-radius:8px;">
+    </div>
+  </div>
+
   <!-- Candidate Universe -->
   <div class="card" id="candidate-card">
     <h2 style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
@@ -7566,6 +7580,108 @@ function loadCandidates() {{
   }}).catch(() => {{}});
 }}
 
+// ── Candidate Comparison ──────────────────────────────────────────────────────
+
+var _cmpData = [];  // current sorted dataset
+var _cmpSortCol = '_composite6';
+var _cmpSortDir = -1;  // -1 = desc
+
+var _CMP_COLS = [
+  {{key:'rank',        label:'#',          title:'Overall rank'}},
+  {{key:'ticker',      label:'Ticker',     title:'Ticker'}},
+  {{key:'_q',         label:'Quality',    title:'Buffett quality score (0-100)'}},
+  {{key:'_v',         label:'Valuation',  title:'PE / P-FCF / EV-EBITDA composite (lower multiples = higher score)'}},
+  {{key:'_pf',        label:'Fit',        title:'Portfolio fit: layer deficit bonus + sector overlap penalty'}},
+  {{key:'_c',         label:'Catalyst',   title:'Catalyst / setup: value-trap risk, AI conviction, scan recency'}},
+  {{key:'_risk',      label:'Safety',     title:'Safety score (higher = lower risk): value-trap risk + quality stability'}},
+  {{key:'_ec',        label:'Evidence',   title:'Evidence confidence: data freshness and completeness'}},
+  {{key:'_composite6',label:'Composite',  title:'Weighted composite (Q25 V20 Fit20 Cat15 Safety10 Ev10)'}},
+  {{key:'sector',     label:'Sector',     title:'Sector from Buffett screener'}},
+];
+
+function _cmpSort(col) {{
+  if (_cmpSortCol === col) {{ _cmpSortDir *= -1; }}
+  else {{ _cmpSortCol = col; _cmpSortDir = col === 'ticker' || col === 'sector' ? 1 : -1; }}
+  _cmpData.sort((a, b) => {{
+    var av = a[col], bv = b[col];
+    if (typeof av === 'string') return _cmpSortDir * av.localeCompare(bv);
+    return _cmpSortDir * ((av || 0) - (bv || 0));
+  }});
+  _renderComparisonTable(_cmpData);
+}}
+
+function _scoreBar(val, max) {{
+  var pct = Math.round(Math.min(100, Math.max(0, val || 0)));
+  var col = pct >= 70 ? '#38a169' : pct >= 50 ? '#d69e2e' : '#e53e3e';
+  return `<div style="display:flex;align-items:center;gap:5px;">
+    <div style="width:40px;height:6px;background:#e2e8f0;border-radius:3px;overflow:hidden;">
+      <div style="width:${{pct}}%;height:100%;background:${{col}};border-radius:3px;"></div>
+    </div>
+    <span style="font-size:11px;font-weight:600;color:${{col}};">${{pct}}</span>
+  </div>`;
+}}
+
+function _renderComparisonTable(data) {{
+  var wrap = document.getElementById('candidate-comparison-wrap');
+  if (!wrap) return;
+  var thStyle = 'text-align:left;padding:5px 8px;color:#718096;font-weight:600;font-size:10px;text-transform:uppercase;cursor:pointer;white-space:nowrap;user-select:none;';
+  var ths = _CMP_COLS.map(col => {{
+    var arrow = _cmpSortCol === col.key ? (_cmpSortDir < 0 ? ' ▼' : ' ▲') : '';
+    return `<th title="${{col.title}}" style="${{thStyle}}" onclick="_cmpSort('${{col.key}}')">${{col.label}}${{arrow}}</th>`;
+  }}).join('');
+
+  var rows = data.map((c, idx) => {{
+    var bg = idx === 0 ? 'background:#f0fff4;' : '';
+    var cells = _CMP_COLS.map(col => {{
+      var v = c[col.key];
+      if (col.key === 'rank') return `<td style="padding:6px 8px;font-weight:700;color:#718096;">${{v}}</td>`;
+      if (col.key === 'ticker') return `<td style="padding:6px 8px;font-weight:700;font-size:13px;${{idx===0?'color:#276749;':''}}">${{v}}${{idx===0?' 🏆':''}}</td>`;
+      if (col.key === 'sector') return `<td style="padding:6px 8px;font-size:11px;color:#718096;">${{v || '—'}}</td>`;
+      if (['_q','_v','_pf','_c','_risk','_ec','_composite6'].includes(col.key))
+        return `<td style="padding:4px 8px;">${{_scoreBar(v, 100)}}</td>`;
+      return `<td style="padding:6px 8px;font-size:12px;">${{v != null ? v : '—'}}</td>`;
+    }}).join('');
+    return `<tr style="${{bg}}border-bottom:1px solid #e2e8f0;">${{cells}}</tr>`;
+  }}).join('');
+
+  wrap.innerHTML = `<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;">
+    <thead><tr style="border-bottom:2px solid #e2e8f0;">${{ths}}</tr></thead>
+    <tbody>${{rows}}</tbody>
+  </table></div>`;
+}}
+
+function loadCandidateComparison() {{
+  fetch('/api/candidates/comparison').then(r => r.json()).then(d => {{
+    var card = document.getElementById('candidate-comparison-card');
+    if (!d.ok || !d.comparison_available) {{
+      if (card) card.style.display = 'none';
+      return;
+    }}
+    if (card) card.style.display = 'block';
+    _cmpData = d.candidates || [];
+    _cmpSortCol = '_composite6';
+    _cmpSortDir = -1;
+    _renderComparisonTable(_cmpData);
+
+    var recEl = document.getElementById('candidate-comparison-rec');
+    var rec = d.recommendation;
+    if (recEl && rec && rec.ticker) {{
+      recEl.style.display = 'block';
+      recEl.innerHTML = `
+        <div style="font-size:11px;color:#2b6cb0;font-weight:700;text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px;">&#128269; Research Pick</div>
+        <div style="font-size:13px;font-weight:700;color:#1a365d;margin-bottom:4px;">${{rec.ticker}} — ${{rec.why || ''}}</div>
+        <div style="font-size:12px;color:#2d3748;line-height:1.5;">${{rec.portfolio_rationale || ''}}</div>
+        ${{rec.main_risk ? `<div style="font-size:11px;color:#744210;margin-top:6px;">&#9888; ${{rec.main_risk}}</div>` : ''}}
+      `;
+    }} else if (recEl) {{
+      recEl.style.display = 'none';
+    }}
+  }}).catch(() => {{
+    var card = document.getElementById('candidate-comparison-card');
+    if (card) card.style.display = 'none';
+  }});
+}}
+
 function candidateAction(ticker, action) {{
   fetch('/api/candidates/' + ticker + '/' + action, {{method:'POST'}})
     .then(r => r.json())
@@ -7574,7 +7690,10 @@ function candidateAction(ticker, action) {{
 }}
 
 // Auto-load candidates on page ready
-document.addEventListener('DOMContentLoaded', loadCandidates);
+document.addEventListener('DOMContentLoaded', function() {{
+  loadCandidates();
+  loadCandidateComparison();
+}});
 
 // ── Decision Queue ─────────────────────────────────────────────────────────────
 const _DQ_BADGE = {{

@@ -239,8 +239,32 @@ def _score_evidence(w: dict) -> float:
     return float(calculate_confidence(b))
 
 
+def _score_risk(w: dict) -> float:
+    """Risk safety score — higher = safer. 0-100."""
+    score = 60.0
+    trap = (w.get("value_trap_risk") or "").lower()
+    if trap == "low":
+        score += 25.0
+    elif trap == "high":
+        score -= 25.0
+    q = w.get("quality_score")
+    if q is not None:
+        if q >= 75:
+            score += 10.0
+        elif q < 50:
+            score -= 10.0
+    pe = w.get("pe_ratio")
+    if pe is not None and pe > 40:
+        score -= 10.0
+    return max(0.0, min(100.0, score))
+
+
 def _composite(q: float, v: float, pf: float, c: float, ec: float) -> int:
     return round(0.30 * q + 0.25 * v + 0.20 * pf + 0.15 * c + 0.10 * ec)
+
+
+def _composite_6(q: float, v: float, pf: float, c: float, r: float, ec: float) -> int:
+    return round(0.25 * q + 0.20 * v + 0.20 * pf + 0.15 * c + 0.10 * r + 0.10 * ec)
 
 
 # ---------------------------------------------------------------------------
@@ -464,6 +488,146 @@ def run_opportunity_hunter(ctx: AgentContext) -> list[Recommendation]:
         f"deficit={layer_deficit:+.1f}pp)"
     )
     return [rec]
+
+
+# ---------------------------------------------------------------------------
+# Candidate comparison (public API — called by serve.py)
+# ---------------------------------------------------------------------------
+
+_CMP_LLM_SCHEMA = {
+    "action": "",
+    "ticker": "",
+    "why": "",
+    "portfolio_rationale": "",
+    "main_risk": "",
+}
+
+
+def _llm_compare(candidates: list[dict], layer_weights: dict[int, float]) -> dict | None:
+    layer_lines = [
+        f"  L{n} {LAYER_NAMES[n]}: {layer_weights.get(n, 0):.1f}% (target {LAYER_TARGETS[n]:.1f}%)"
+        for n in sorted(LAYER_NAMES)
+    ]
+    cand_lines = [
+        f"  {c['ticker']}: composite={c['_composite6']} | "
+        f"Q={c['_q']} V={c['_v']} Fit={c['_pf']} Cat={c['_c']} Risk={c['_risk']} Ev={c['_ec']} "
+        f"| sector={c.get('sector','?')} layer_rec={c.get('layer_rec','?')}"
+        for c in candidates
+    ]
+    prompt = (
+        "You are a portfolio construction analyst. The investor follows a Buffett-style "
+        "quality-at-value framework with 5 portfolio layers.\n\n"
+        f"CURRENT LAYER WEIGHTS:\n" + "\n".join(layer_lines) + "\n\n"
+        f"CANDIDATES (pre-scored — do not recalculate):\n" + "\n".join(cand_lines) + "\n\n"
+        "Select the single best candidate for RESEARCH. Explain why it improves this "
+        "specific portfolio right now. Return JSON:\n"
+        '{"action":"RESEARCH","ticker":"<TICKER>",'
+        '"why":"<1-2 sentences why it fits now>",'
+        '"portfolio_rationale":"<2-3 sentences on portfolio-level benefit>",'
+        '"main_risk":"<top risk, 1-2 sentences>"}'
+    )
+    try:
+        out = ollama_client.generate_structured(
+            prompt=prompt,
+            schema=_CMP_LLM_SCHEMA,
+            model="mlx-community/Qwen3.6-35B-A3B-4bit",
+            temperature=0.2,
+            num_predict=600,
+            thinking=False,
+            retries=2,
+        )
+        if isinstance(out, dict) and out.get("action") == "RESEARCH" and out.get("ticker"):
+            return out
+    except Exception as e:
+        print(f"[comparison] LLM failed: {e}")
+    return None
+
+
+def score_for_comparison(db_candidates: list[dict]) -> dict:
+    """Score and rank active/watch candidates for the comparison table.
+
+    db_candidates: rows from candidate_universe.
+    Returns dict with keys: comparison_available, candidates (scored+ranked), recommendation.
+    """
+    winners = _get_buffett_winners()
+    winner_map = {w["ticker"]: w for w in winners}
+    held = _get_current_tickers()
+    layer_weights = _get_layer_weights()
+
+    eligible = [c for c in db_candidates if c.get("status") in ("active", "watch")]
+    if len(eligible) < 2:
+        return {"comparison_available": False, "candidates": [], "recommendation": None}
+
+    scored: list[dict] = []
+    for cand in eligible:
+        ticker = cand["ticker"]
+        w = dict(winner_map.get(ticker) or {})
+        if not w:
+            w = {"ticker": ticker, "quality_score": cand.get("buffett_score")}
+
+        q            = _score_quality(w)
+        v            = _score_valuation(w)
+        pf, pf_meta  = _score_portfolio_fit(w, held, layer_weights)
+        c            = _score_catalyst(w)
+        r            = _score_risk(w)
+        ec           = _score_evidence(w)
+        composite    = _composite_6(q, v, pf, c, r, ec)
+
+        scored.append({
+            "ticker":          ticker,
+            "source":          cand.get("source", "MANUAL"),
+            "status":          cand.get("status"),
+            "notes":           cand.get("notes") or "",
+            "sector":          w.get("sector") or "—",
+            "layer_rec":       w.get("layer_rec"),
+            "value_trap_risk": w.get("value_trap_risk"),
+            "_q":          round(q),
+            "_v":          round(v),
+            "_pf":         round(pf),
+            "_c":          round(c),
+            "_risk":       round(r),
+            "_ec":         round(ec),
+            "_composite6": composite,
+        })
+
+    scored.sort(key=lambda x: x["_composite6"], reverse=True)
+    for i, s in enumerate(scored):
+        s["rank"] = i + 1
+
+    # LLM picks among top 3 — deterministic fallback if unavailable
+    top3 = scored[:3]
+    llm = _llm_compare(top3, layer_weights)
+    if llm:
+        rec_ticker = llm["ticker"].upper().strip()
+        rec = llm
+    else:
+        best = scored[0]
+        rec_ticker = best["ticker"]
+        layer_name = LAYER_NAMES.get(best.get("layer_rec"), "?")
+        rec = {
+            "action": "RESEARCH",
+            "ticker": rec_ticker,
+            "why": (
+                f"{rec_ticker} ranks #1 by composite score ({best['_composite6']}) "
+                f"across all {len(scored)} candidates."
+            ),
+            "portfolio_rationale": (
+                f"Sector: {best['sector']}. "
+                f"Layer recommendation: {layer_name}. "
+                f"Quality {best['_q']}/100 · Valuation {best['_v']}/100 · "
+                f"Portfolio Fit {best['_pf']}/100."
+            ),
+            "main_risk": (
+                f"Value-trap risk: {best.get('value_trap_risk') or 'unknown'}. "
+                "Conduct full due diligence before deploying capital."
+            ),
+        }
+
+    return {
+        "comparison_available": True,
+        "candidates": scored,
+        "recommendation": rec,
+    }
 
 
 register_agent("opportunity_hunter", run_opportunity_hunter)
