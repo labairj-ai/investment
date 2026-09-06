@@ -1886,8 +1886,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         elif parsed.path == "/api/candidates":
             self._handle_candidates_post()
         elif parsed.path.startswith("/api/candidates/"):
-            parts = parsed.path.rstrip("/").split("/")          # ['','api','candidates',ticker,action]
-            if len(parts) == 5 and parts[4] == "reject":
+            parts = parsed.path.rstrip("/").split("/")          # ['','api','candidates',ticker,action or 'history']
+            if len(parts) == 5 and parts[4] == "history":
+                self._handle_candidate_history(parts[3].upper())
+            elif len(parts) == 5 and parts[4] == "reject":
                 self._handle_candidate_action(parts[3].upper(), "rejected")
             elif len(parts) == 5 and parts[4] == "watch":
                 self._handle_candidate_action(parts[3].upper(), "watch")
@@ -4708,7 +4710,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if not ticker:
             return self._json_error(400, "ticker required")
 
-        agent_db.upsert_candidate(ticker=ticker, source="MANUAL", notes=notes)
+        agent_db.upsert_candidate(ticker=ticker, source="MANUAL", notes=notes, actor="user", reason="manual add")
 
         def _bg():
             try:
@@ -4735,8 +4737,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def _handle_candidate_action(self, ticker: str, new_status: str):
         try:
-            agent_db.set_candidate_status(ticker, new_status)
+            body   = self._read_body()
+            reason = body.get("reason") or None
+            notes  = body.get("notes") or None
+            agent_db.set_candidate_status(ticker, new_status, notes=notes, actor="user", reason=reason)
             self._json({"ok": True, "ticker": ticker, "status": new_status})
+        except Exception as e:
+            self._json_error(500, str(e))
+
+    def _handle_candidate_history(self, ticker: str):
+        try:
+            history = agent_db.get_candidate_history(ticker)
+            self._json({"ok": True, "ticker": ticker, "history": history})
         except Exception as e:
             self._json_error(500, str(e))
 

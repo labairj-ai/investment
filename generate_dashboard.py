@@ -7529,6 +7529,55 @@ const _CAND_STATUS_COLOR = {{
 }};
 const _CAND_SOURCE_LABEL = {{ BUFFETT:'Buffett', MANUAL:'Manual' }};
 
+function _candHistId(ticker) {{ return 'cand-hist-' + ticker.replace(/[^A-Z0-9]/g,'_'); }}
+
+function _toggleCandHistory(ticker) {{
+  var rowId = _candHistId(ticker);
+  var row = document.getElementById(rowId);
+  if (!row) return;
+  if (row.style.display !== 'none') {{ row.style.display = 'none'; return; }}
+  row.style.display = '';
+  var cell = row.querySelector('td');
+  if (!cell || cell.dataset.loaded) return;
+  cell.dataset.loaded = '1';
+  cell.innerHTML = '<span style="font-size:11px;color:#a0aec0;">Loading…</span>';
+  fetch('/api/candidates/' + ticker + '/history').then(r => r.json()).then(d => {{
+    if (!d.ok || !d.history || d.history.length === 0) {{
+      cell.innerHTML = '<span style="font-size:11px;color:#a0aec0;">No history recorded.</span>';
+      return;
+    }}
+    var items = d.history.map(h => {{
+      var dt = new Date(h.decided_at * 1000).toLocaleDateString('en-US', {{month:'short',day:'numeric',year:'numeric'}});
+      var arrow = h.old_status ? `<span style="color:#a0aec0;">${{h.old_status}}</span> → ` : '';
+      var col = _CAND_STATUS_COLOR[h.new_status] || '#999';
+      return `<div style="display:flex;gap:8px;align-items:baseline;padding:3px 0;border-bottom:1px solid #f0f4f8;">
+        <span style="font-size:10px;color:#a0aec0;min-width:80px;">${{dt}}</span>
+        <span style="font-size:11px;">${{arrow}}<span style="font-weight:700;color:${{col}};">${{h.new_status}}</span></span>
+        ${{h.actor !== 'user' ? `<span style="font-size:10px;color:#a0aec0;">(agent)</span>` : ''}}
+        ${{h.reason ? `<span style="font-size:10px;color:#718096;">· ${{h.reason}}</span>` : ''}}
+        ${{h.notes ? `<span style="font-size:10px;color:#718096;font-style:italic;">"${{h.notes}}"</span>` : ''}}
+      </div>`;
+    }}).join('');
+    cell.innerHTML = `<div style="padding:6px 0;">${{items}}</div>`;
+  }}).catch(() => {{ cell.innerHTML = '<span style="font-size:11px;color:#e74c3c;">Failed to load history.</span>'; }});
+}}
+
+function _showRejectPrompt(ticker) {{
+  var promptId = 'cand-reject-prompt-' + ticker.replace(/[^A-Z0-9]/g,'_');
+  var existing = document.getElementById(promptId);
+  if (existing) {{ existing.remove(); return; }}
+  var row = document.getElementById('cand-row-' + ticker.replace(/[^A-Z0-9]/g,'_'));
+  if (!row) {{ candidateAction(ticker, 'reject', null); return; }}
+  var td = row.lastElementChild;
+  var div = document.createElement('div');
+  div.id = promptId;
+  div.style.cssText = 'margin-top:4px;display:flex;gap:4px;align-items:center;flex-wrap:wrap;';
+  div.innerHTML = `<input id="cand-rej-reason-${{ticker}}" placeholder="Reason (optional)" style="font-size:11px;padding:3px 6px;border:1px solid #dde;border-radius:4px;width:150px;">
+    <button onclick="candidateAction('${{ticker}}','reject',document.getElementById('cand-rej-reason-${{ticker}}').value)" style="font-size:10px;padding:2px 8px;background:#e74c3c;color:#fff;border:none;border-radius:3px;cursor:pointer;">Confirm</button>
+    <button onclick="document.getElementById('${{promptId}}').remove()" style="font-size:10px;padding:2px 6px;background:#f7f8fa;border:1px solid #dde;border-radius:3px;cursor:pointer;">✕</button>`;
+  td.appendChild(div);
+}}
+
 function _renderCandidateTable(candidates) {{
   var wrap = document.getElementById('candidate-table-wrap');
   if (!wrap) return;
@@ -7544,11 +7593,17 @@ function _renderCandidateTable(candidates) {{
       var age = (Date.now()/1000 - c.last_evaluated) / 3600;
       return age < 1 ? '< 1h ago' : age < 48 ? Math.round(age) + 'h ago' : Math.round(age/24) + 'd ago';
     }})() : '—';
+    var rowId = 'cand-row-' + c.ticker.replace(/[^A-Z0-9]/g,'_');
+    var histRowId = _candHistId(c.ticker);
     var watchBtn = c.status !== 'watch' && c.status !== 'owned' && c.status !== 'rejected'
-      ? `<button onclick="candidateAction('${{c.ticker}}','watch')" style="font-size:10px;padding:1px 7px;border:1px solid #dde;border-radius:3px;cursor:pointer;background:#fff;color:#555;margin-right:4px;">Watch</button>` : '';
+      ? `<button onclick="candidateAction('${{c.ticker}}','watch',null)" style="font-size:10px;padding:1px 7px;border:1px solid #dde;border-radius:3px;cursor:pointer;background:#fff;color:#555;margin-right:4px;">Watch</button>` : '';
     var rejectBtn = c.status !== 'rejected'
-      ? `<button onclick="candidateAction('${{c.ticker}}','reject')" style="font-size:10px;padding:1px 7px;border:1px solid #e74c3c44;border-radius:3px;cursor:pointer;background:#fff;color:#e74c3c;">Reject</button>` : '';
-    return `<tr>
+      ? `<button onclick="_showRejectPrompt('${{c.ticker}}')" style="font-size:10px;padding:1px 7px;border:1px solid #e74c3c44;border-radius:3px;cursor:pointer;background:#fff;color:#e74c3c;margin-right:4px;">Reject</button>` : '';
+    var histBtn = `<button onclick="_toggleCandHistory('${{c.ticker}}')" title="Decision history" style="font-size:10px;padding:1px 7px;border:1px solid #dde;border-radius:3px;cursor:pointer;background:#f7f8fa;color:#555;">📋</button>`;
+    var histRow = `<tr id="${{histRowId}}" style="display:none;background:#fafbff;">
+      <td colspan="8" style="padding:6px 16px 10px;border-bottom:1px solid #e2e8f0;"></td>
+    </tr>`;
+    return `<tr id="${{rowId}}" style="border-bottom:1px solid #f0f4f8;">
       <td style="font-weight:600;font-size:13px;padding:6px 8px;">${{c.ticker}}</td>
       <td style="font-size:11px;color:#718096;padding:6px 8px;">${{srcLbl}}</td>
       <td style="font-size:12px;font-weight:700;padding:6px 8px;">${{sc}}</td>
@@ -7557,8 +7612,8 @@ function _renderCandidateTable(candidates) {{
       </td>
       <td style="font-size:11px;color:#718096;padding:6px 8px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${{c.notes || ''}}</td>
       <td style="font-size:11px;color:#a0aec0;padding:6px 8px;">${{evalLbl}}</td>
-      <td style="padding:6px 8px;white-space:nowrap;">${{watchBtn}}${{rejectBtn}}</td>
-    </tr>`;
+      <td style="padding:6px 8px;white-space:nowrap;">${{watchBtn}}${{rejectBtn}}${{histBtn}}</td>
+    </tr>${{histRow}}`;
   }}).join('');
   wrap.innerHTML = `<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:12px;">
     <thead><tr style="border-bottom:2px solid #e2e8f0;">
@@ -7682,9 +7737,15 @@ function loadCandidateComparison() {{
   }});
 }}
 
-function candidateAction(ticker, action) {{
-  fetch('/api/candidates/' + ticker + '/' + action, {{method:'POST'}})
-    .then(r => r.json())
+function candidateAction(ticker, action, reason) {{
+  var promptId = 'cand-reject-prompt-' + ticker.replace(/[^A-Z0-9]/g,'_');
+  var el = document.getElementById(promptId);
+  if (el) el.remove();
+  fetch('/api/candidates/' + ticker + '/' + action, {{
+    method: 'POST',
+    headers: {{'Content-Type':'application/json'}},
+    body: JSON.stringify({{reason: reason || null}})
+  }}).then(r => r.json())
     .then(d => {{ if (d.ok) loadCandidates(); }})
     .catch(() => {{}});
 }}

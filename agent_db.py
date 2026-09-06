@@ -214,6 +214,20 @@ def migrate() -> None:
             notes          TEXT,
             last_evaluated REAL
         );
+
+        CREATE TABLE IF NOT EXISTS candidate_decisions (
+            id          INTEGER PRIMARY KEY,
+            ticker      TEXT    NOT NULL,
+            old_status  TEXT,
+            new_status  TEXT    NOT NULL,
+            actor       TEXT    NOT NULL DEFAULT 'user',
+            reason      TEXT,
+            notes       TEXT,
+            decided_at  REAL    NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_candidate_decisions_ticker
+            ON candidate_decisions (ticker, decided_at DESC);
     """)
     conn.commit()
 
@@ -1105,21 +1119,52 @@ def get_active_thesis(ticker: str) -> dict | None:
 
 # ── Candidate universe ────────────────────────────────────────────────────────
 
+def log_candidate_decision(
+    ticker: str,
+    new_status: str,
+    old_status: str | None = None,
+    actor: str = "user",
+    reason: str | None = None,
+    notes: str | None = None,
+) -> None:
+    conn = _connect()
+    conn.execute(
+        """INSERT INTO candidate_decisions
+               (ticker, old_status, new_status, actor, reason, notes, decided_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (ticker, old_status, new_status, actor, reason, notes, time.time()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_candidate_history(ticker: str) -> list[dict]:
+    conn = _connect()
+    rows = conn.execute(
+        """SELECT id, ticker, old_status, new_status, actor, reason, notes, decided_at
+           FROM candidate_decisions WHERE ticker=? ORDER BY decided_at DESC""",
+        (ticker,),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 def upsert_candidate(
     ticker: str,
     source: str = "MANUAL",
     buffett_score: float | None = None,
     status: str = "active",
     notes: str | None = None,
+    actor: str = "agent",
+    reason: str | None = None,
 ) -> None:
     """Insert or update a candidate. Never overwrites `rejected` status on BUFFETT upserts."""
     conn = _connect()
     existing = conn.execute(
         "SELECT status FROM candidate_universe WHERE ticker=?", (ticker,)
     ).fetchone()
+    old_status = existing[0] if existing else None
     if existing:
-        current_status = existing[0]
-        # BUFFETT upserts: preserve rejected/owned/watch — only refresh score + source
         if source == "BUFFETT":
             conn.execute(
                 """UPDATE candidate_universe
@@ -1128,7 +1173,6 @@ def upsert_candidate(
                 (source, buffett_score, time.time(), ticker),
             )
         else:
-            # MANUAL re-add: refresh everything, keep existing rejected note if desired
             conn.execute(
                 """UPDATE candidate_universe
                    SET source=?, status=?, notes=COALESCE(?, notes), added_at=?
@@ -1143,16 +1187,36 @@ def upsert_candidate(
         )
     conn.commit()
     conn.close()
+    effective_status = status if (not existing or source != "BUFFETT") else old_status
+    if old_status != effective_status or old_status is None:
+        log_candidate_decision(
+            ticker=ticker, new_status=effective_status, old_status=old_status,
+            actor=actor, reason=reason or source, notes=notes,
+        )
 
 
-def set_candidate_status(ticker: str, status: str, notes: str | None = None) -> None:
+def set_candidate_status(
+    ticker: str,
+    status: str,
+    notes: str | None = None,
+    actor: str = "user",
+    reason: str | None = None,
+) -> None:
     conn = _connect()
+    row = conn.execute(
+        "SELECT status FROM candidate_universe WHERE ticker=?", (ticker,)
+    ).fetchone()
+    old_status = row[0] if row else None
     conn.execute(
         "UPDATE candidate_universe SET status=?, notes=COALESCE(?, notes) WHERE ticker=?",
         (status, notes, ticker),
     )
     conn.commit()
     conn.close()
+    log_candidate_decision(
+        ticker=ticker, new_status=status, old_status=old_status,
+        actor=actor, reason=reason, notes=notes,
+    )
 
 
 def get_candidates(include_rejected: bool = False) -> list[dict]:
