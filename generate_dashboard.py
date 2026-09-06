@@ -2784,31 +2784,6 @@ def build_dashboard(portfolio, layers, holdings):
     </div>
   </div>
 
-  <!-- Candidate Comparison -->
-  <div class="card" id="candidate-comparison-card" style="display:none;">
-    <h2 style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
-      Candidate Comparison
-      <button onclick="loadCandidateComparison()" style="font-size:11px;padding:4px 10px;background:#f4f6f9;border:1px solid #dde;border-radius:5px;cursor:pointer;color:#555;">↻</button>
-    </h2>
-    <div style="font-size:11px;color:#718096;margin-bottom:12px;">Relative ranking across active candidates — click any column to sort.</div>
-    <div id="candidate-comparison-wrap">
-      <div style="font-size:12px;color:#a0aec0;text-align:center;padding:20px;">Loading…</div>
-    </div>
-    <div id="candidate-comparison-rec" style="display:none;margin-top:14px;padding:12px 14px;background:#f0f6ff;border:1px solid #bee3f8;border-radius:8px;">
-    </div>
-  </div>
-
-  <!-- Candidate Universe -->
-  <div class="card" id="candidate-card">
-    <h2 style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
-      Candidate Universe
-      <button onclick="loadCandidates()" style="font-size:11px;padding:4px 10px;background:#f4f6f9;border:1px solid #dde;border-radius:5px;cursor:pointer;color:#555;">↻</button>
-    </h2>
-    <div id="candidate-table-wrap">
-      <div style="font-size:12px;color:#a0aec0;text-align:center;padding:20px;">Loading…</div>
-    </div>
-  </div>
-
   <!-- Buffett Screener -->
   <div class="card" id="buffett-card">
     <h2 style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
@@ -2972,6 +2947,31 @@ def build_dashboard(portfolio, layers, holdings):
       </div>
       <div id="dj-summary-strip" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;"></div>
       <div id="dj-table-wrap"></div>
+    </div>
+
+    <!-- Candidate Comparison -->
+    <div class="card" id="candidate-comparison-card" style="display:none;">
+      <h2 style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
+        Candidate Comparison
+        <button onclick="loadCandidateComparison()" style="font-size:11px;padding:4px 10px;background:#f4f6f9;border:1px solid #dde;border-radius:5px;cursor:pointer;color:#555;">↻</button>
+      </h2>
+      <div style="font-size:11px;color:#718096;margin-bottom:12px;">Relative ranking across active candidates — click any column to sort.</div>
+      <div id="candidate-comparison-wrap">
+        <div style="font-size:12px;color:#a0aec0;text-align:center;padding:20px;">Loading…</div>
+      </div>
+      <div id="candidate-comparison-rec" style="display:none;margin-top:14px;padding:12px 14px;background:#f0f6ff;border:1px solid #bee3f8;border-radius:8px;">
+      </div>
+    </div>
+
+    <!-- Candidate Universe -->
+    <div class="card" id="candidate-card">
+      <h2 style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+        Candidate Universe
+        <button onclick="loadCandidates()" style="font-size:11px;padding:4px 10px;background:#f4f6f9;border:1px solid #dde;border-radius:5px;cursor:pointer;color:#555;">↻</button>
+      </h2>
+      <div id="candidate-table-wrap">
+        <div style="font-size:12px;color:#a0aec0;text-align:center;padding:20px;">Loading…</div>
+      </div>
     </div>
 
   </div>
