@@ -12,7 +12,12 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import agent_db
+from portfolio_ai import HOLDING_PROFILES
 from strategy_config import LAYER_NAMES, LAYER_LABELS, LAYER_TARGETS
+
+_FUND_TICKERS: frozenset[str] = frozenset(
+    t for t, v in HOLDING_PROFILES.items() if v.get("is_fund")
+)
 
 PROJECT_DIR = Path(__file__).resolve().parent
 DB_PATH = PROJECT_DIR / "out" / "investment.db"
@@ -426,6 +431,14 @@ _PILLAR_STATUS_COLORS = {
 
 
 def _thesis_badge(ticker: str, thesis_data_map: dict) -> str:
+    if ticker in _FUND_TICKERS:
+        desc = HOLDING_PROFILES.get(ticker, {}).get("desc", "Passive fund / ETF")
+        short_desc = desc.split("(")[1].rstrip(")") if "(" in desc else "passive fund"
+        return (
+            f'<span style="font-size:10px;padding:2px 8px;background:#edf2f7;border:1px solid #cbd5e0;'
+            f'border-radius:4px;color:#718096;font-weight:600;" '
+            f'title="{short_desc} — no individual thesis">Fund</span>'
+        )
     t = thesis_data_map.get(ticker)
     if not t:
         return (
@@ -475,6 +488,8 @@ def _thesis_badge(ticker: str, thesis_data_map: dict) -> str:
 
 def _thesis_health_detail_row(ticker: str, t: dict | None) -> str:
     """Hidden expand row with thesis pillar health, toggled by toggleThesisHealth()."""
+    if ticker in _FUND_TICKERS:
+        return ""
     if not t or t.get("status") != "ACTIVE":
         return ""
     safe_id = ticker.replace(".", "_").replace("-", "_")
@@ -529,6 +544,7 @@ def _thesis_health_detail_row(ticker: str, t: dict | None) -> str:
             imp = p.get("importance", 0)
             reason = p.get("reason") or ""
             crit_mark = " ⚑" if p.get("critical") else ""
+            display_st = "Not evaluated" if st == "UNKNOWN" else st
             reason_html = (
                 f'<div style="font-size:11px;color:#555;margin-top:2px;padding-left:14px;">{reason}</div>'
                 if reason else ""
@@ -540,7 +556,7 @@ def _thesis_health_detail_row(ticker: str, t: dict | None) -> str:
                 f'<span style="font-size:11px;color:#718096;margin-left:6px;">{imp}%</span>'
                 f'<span style="font-size:10px;font-weight:600;color:{col};margin-left:8px;'
                 f'background:{col}18;border:1px solid {col}44;border-radius:3px;padding:1px 5px;">'
-                f'{st}</span>'
+                f'{display_st}</span>'
                 f'{reason_html}'
                 f'</div>'
             )

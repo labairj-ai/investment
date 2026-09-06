@@ -47,21 +47,35 @@ _ADD_THRESHOLD  = 80.0
 # ── Financial data helpers ─────────────────────────────────────────────────────
 
 def _load_financial_rows(ticker: str, period_type: str = "Q", limit: int = 10) -> list[dict]:
-    """Return last `limit` company_financials rows, oldest→newest."""
+    """Return last `limit` company_financials rows, oldest→newest.
+
+    Tries the canonical ticker first, then the alternate dot/hyphen form so that
+    BRK-B (thesis/holding format) matches BRK.B (yfinance storage format).
+    """
     if not _DB.exists():
         return []
-    try:
-        conn = sqlite3.connect(str(_DB), timeout=5)
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            "SELECT * FROM company_financials "
-            "WHERE ticker=? AND period_type=? ORDER BY period_end DESC LIMIT ?",
-            (ticker, period_type, limit),
-        ).fetchall()
-        conn.close()
-        return [dict(r) for r in reversed(rows)]
-    except Exception:
-        return []
+
+    def _fetch(t: str) -> list[dict]:
+        try:
+            conn = sqlite3.connect(str(_DB), timeout=5)
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT * FROM company_financials "
+                "WHERE ticker=? AND period_type=? ORDER BY period_end DESC LIMIT ?",
+                (t, period_type, limit),
+            ).fetchall()
+            conn.close()
+            return [dict(r) for r in reversed(rows)]
+        except Exception:
+            return []
+
+    rows = _fetch(ticker)
+    if not rows:
+        # Try alternate format: BRK-B ↔ BRK.B
+        alt = ticker.replace("-", ".") if "-" in ticker else ticker.replace(".", "-")
+        if alt != ticker:
+            rows = _fetch(alt)
+    return rows
 
 
 def _pct(v: float | None) -> float | None:

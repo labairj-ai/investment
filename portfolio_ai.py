@@ -219,6 +219,7 @@ HOLDING_PROFILES = {
                "domains": ["crypto", "financial", "tax_capital_gains"]},
     "DSGX":   {"desc": "Descartes Systems — logistics and supply chain software platform",
                "domains": ["technology", "transportation", "trade", "tax_corporate"]},
+    "VVIAX":  {"desc": "Vanguard Value Index Fund Admiral (passive large-cap value index)", "domains": ["tax_capital_gains", "tax_corporate"], "is_fund": True},
     # Layer 5 — Shock Absorbers
     "ITOCF":  {"desc": "Itochu Corp — Japanese trading conglomerate: food, textiles, energy, finance",
                "domains": ["trade", "food_ag", "energy", "financial"]},
