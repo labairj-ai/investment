@@ -7866,8 +7866,18 @@ function _renderDQCard(r) {{
     const pfNote  = r.preference_note ? ` — ${{r.preference_note}}` : '';
     prefFitBadge = `<div style="margin-bottom:8px;padding:5px 9px;background:${{pfBg}};border:1px solid ${{pfBorder}};border-radius:5px;font-size:11px;color:${{pfColor}};display:flex;align-items:center;gap:6px;"><span style="font-weight:700;">Pref Fit ${{pf}}</span><span style="color:#718096;">${{pfNote}}</span></div>`;
   }}
+  const urgLvl  = r.urgency_level || 'INFORMATIONAL';
+  const urgBorder = urgLvl === 'URGENT'    ? '2px solid #e53e3e'
+                  : urgLvl === 'ATTENTION' ? '2px solid #c05621'
+                  : '1px solid rgba(255,255,255,.07)';
+  const urgBanner = urgLvl === 'URGENT'
+    ? '<div style="font-size:10px;font-weight:700;letter-spacing:.08em;color:#fc8181;text-transform:uppercase;margin-bottom:8px;display:flex;align-items:center;gap:5px;">&#9889; URGENT &mdash; Act required</div>'
+    : urgLvl === 'ATTENTION'
+    ? '<div style="font-size:10px;font-weight:700;letter-spacing:.08em;color:#f6ad55;text-transform:uppercase;margin-bottom:8px;">&#8679; ATTENTION</div>'
+    : '';
   return `
-    <div id="dq-card-${{r.id}}" style="background:rgba(0,0,0,.2);border-radius:8px;padding:13px 15px;margin-bottom:10px;border:1px solid rgba(255,255,255,.07);">
+    <div id="dq-card-${{r.id}}" style="background:rgba(0,0,0,.2);border-radius:8px;padding:13px 15px;margin-bottom:10px;border:${{urgBorder}};">
+      ${{urgBanner}}
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:8px;">
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
           <span style="font-size:10px;padding:1px 7px;border-radius:8px;font-weight:700;letter-spacing:.04em;${{badgeSt}}">${{badge}}</span>
@@ -7909,7 +7919,11 @@ function _renderDecisionQueue(recs) {{
   const hdrCnt = document.getElementById('dq-header-count');
   if (!cards) return;
   const open = (recs || []).filter(r => r.status === 'open');
-  open.sort((a, b) => _dqPriority(b) - _dqPriority(a));
+  const _urgOrd = {{ URGENT: 2, ATTENTION: 1, INFORMATIONAL: 0 }};
+  open.sort((a, b) => {{
+    const ud = (_urgOrd[b.urgency_level] ?? 0) - (_urgOrd[a.urgency_level] ?? 0);
+    return ud !== 0 ? ud : _dqPriority(b) - _dqPriority(a);
+  }});
   if (open.length === 0) {{
     cards.innerHTML = '<div style="font-size:12px;color:#718096;text-align:center;padding:16px 0;">No items require attention right now.</div>';
   }} else {{

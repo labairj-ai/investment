@@ -266,6 +266,18 @@ def migrate() -> None:
             suppressed      INTEGER NOT NULL DEFAULT 0,
             feedback_at     TEXT    NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS notification_events (
+            id                INTEGER PRIMARY KEY,
+            recommendation_id INTEGER NOT NULL REFERENCES recommendations(id),
+            level             TEXT    NOT NULL,
+            sent_at           REAL    NOT NULL,
+            outcome           TEXT,
+            time_to_action    REAL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_notif_events_rec
+            ON notification_events (recommendation_id);
     """)
     conn.commit()
 
@@ -296,6 +308,8 @@ def migrate() -> None:
         ("recommendation_outcomes",  "hold_return",             "REAL"),
         # 0028 — investor model
         ("learned_preferences",      "suppressed",              "INTEGER"),
+        # 0023 — notification system
+        ("recommendations",          "urgency_level",           "TEXT"),
     ]
     for table, col, col_type in _new_cols:
         try:
@@ -378,6 +392,86 @@ def insert_finding(
     return finding_id
 
 
+def compute_urgency_level(
+    action: str,
+    recommendation_score: int = 50,
+    valid_until: float | None = None,
+) -> str:
+    """Return URGENT / ATTENTION / INFORMATIONAL using the deterministic urgency formula.
+
+    Urgency = TimeSensitivity × (score/100) × DecisionSeverity
+    Thresholds and severity weights come from strategy_config (strategy.json).
+    """
+    if action == "NO_ACTION":
+        return "INFORMATIONAL"
+    try:
+        from strategy_config import (
+            URGENCY_URGENT_THRESHOLD,
+            URGENCY_ATTENTION_THRESHOLD,
+            URGENCY_SEVERITY,
+        )
+    except Exception:
+        return "INFORMATIONAL"
+
+    sev = URGENCY_SEVERITY.get(action, 0.3)
+
+    if valid_until:
+        days_left = (valid_until - time.time()) / 86400.0
+        if days_left <= 1:
+            ts = 1.0
+        elif days_left <= 3:
+            ts = 0.7
+        elif days_left <= 7:
+            ts = 0.4
+        else:
+            ts = 0.2
+    else:
+        ts = 0.2
+
+    mat = min(1.0, max(0.0, (recommendation_score or 50) / 100.0))
+    urgency = ts * mat * sev
+
+    if urgency >= URGENCY_URGENT_THRESHOLD:
+        return "URGENT"
+    elif urgency >= URGENCY_ATTENTION_THRESHOLD:
+        return "ATTENTION"
+    return "INFORMATIONAL"
+
+
+def record_notification_event(
+    rec_id: int,
+    level: str,
+    outcome: str | None = None,
+    time_to_action: float | None = None,
+) -> None:
+    conn = _connect()
+    conn.execute(
+        """INSERT INTO notification_events (recommendation_id, level, sent_at, outcome, time_to_action)
+           VALUES (?, ?, ?, ?, ?)""",
+        (rec_id, level, time.time(), outcome, time_to_action),
+    )
+    conn.commit()
+    conn.close()
+
+
+def close_notification_event(rec_id: int, outcome: str, decided_at: float) -> None:
+    """Mark the most recent pending notification event for a rec as acted_on."""
+    conn = _connect()
+    row = conn.execute(
+        """SELECT id, sent_at FROM notification_events
+           WHERE recommendation_id=? AND outcome IS NULL
+           ORDER BY sent_at DESC LIMIT 1""",
+        (rec_id,),
+    ).fetchone()
+    if row:
+        conn.execute(
+            "UPDATE notification_events SET outcome=?, time_to_action=? WHERE id=?",
+            (outcome, decided_at - row["sent_at"], row["id"]),
+        )
+        conn.commit()
+    conn.close()
+
+
 def insert_recommendation(
     ticker: str,
     action: str,
@@ -395,19 +489,20 @@ def insert_recommendation(
     rationale_class: str | None = None,
 ) -> int:
     now = time.time()
+    urgency = compute_urgency_level(action, recommendation_score, valid_until)
     conn = _connect()
     cur = conn.execute(
         """INSERT INTO recommendations
            (run_id, ticker, action, action_payload_json, recommendation_score,
             confidence, priority, why_now, rationale, counter_case,
             no_action_case, status, valid_until, input_hash, updated_at,
-            created_at, rationale_class)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            created_at, rationale_class, urgency_level)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (run_id, ticker, action,
          json.dumps(action_payload) if action_payload else None,
          recommendation_score, confidence, priority, why_now, rationale,
          counter_case, no_action_case, "open", valid_until,
-         input_hash, now, now, rationale_class),
+         input_hash, now, now, rationale_class, urgency),
     )
     rec_id = cur.lastrowid
     conn.commit()

@@ -1,7 +1,7 @@
 # Build 3-Level Notification System with Engagement Tracking
 
 - **ID:** 0023
-- **Status:** backlog
+- **Status:** in-progress
 - **Created:** 2026-09-05
 - **Priority:** low
 - **Depends:** 0016, 0027

@@ -245,6 +245,62 @@ def _load_email_creds():
     return os.getenv("EMAIL_FROM"), os.getenv("EMAIL_APP_PASSWORD"), os.getenv("EMAIL_TO")
 
 
+def _render_urgent_email(rec: dict) -> str:
+    action  = rec.get("action", "ACTION")
+    ticker  = rec.get("ticker", "—")
+    why_now = rec.get("why_now") or ""
+    rat     = rec.get("rationale") or ""
+    score   = rec.get("recommendation_score", "—")
+    return f"""<html><body style="font-family:sans-serif;background:#0d1117;color:#e2e8f0;padding:24px;">
+<div style="max-width:560px;margin:0 auto;background:#1a2340;border-radius:10px;padding:24px;border:2px solid #e53e3e;">
+  <div style="font-size:11px;font-weight:700;letter-spacing:.1em;color:#fc8181;text-transform:uppercase;margin-bottom:8px;">⚡ Urgent Action Required</div>
+  <div style="font-size:22px;font-weight:700;color:#fff;margin-bottom:4px;">{action} — {ticker}</div>
+  <div style="font-size:12px;color:#718096;margin-bottom:16px;">Recommendation score: {score}</div>
+  {f'<p style="font-size:14px;color:#a0aec0;margin-bottom:12px;">{why_now}</p>' if why_now else ""}
+  {f'<p style="font-size:13px;color:#90cdf4;">{rat}</p>' if rat else ""}
+  <hr style="border-color:#2d3748;margin:20px 0;">
+  <div style="font-size:11px;color:#718096;">Log in to the Investment Dashboard to act on this recommendation.</div>
+</div></body></html>"""
+
+
+def _dispatch_urgent_notifications() -> None:
+    """Send email for URGENT open recommendations not yet notified. Idempotent."""
+    try:
+        conn = agent_db._connect()
+        urgent = conn.execute(
+            """SELECT r.id, r.ticker, r.action, r.why_now, r.rationale, r.recommendation_score
+               FROM recommendations r
+               WHERE r.status='open' AND r.urgency_level='URGENT'
+                 AND NOT EXISTS (
+                     SELECT 1 FROM notification_events ne
+                     WHERE ne.recommendation_id = r.id AND ne.level='URGENT'
+                 )
+               ORDER BY r.created_at DESC""",
+        ).fetchall()
+        conn.close()
+    except Exception as e:
+        print(f"[Notifications] DB query failed: {e}")
+        return
+
+    if not urgent:
+        return
+
+    email_from, app_pw, email_to = _load_email_creds()
+    if not all([email_from, app_pw, email_to]):
+        print(f"[Notifications] {len(urgent)} URGENT rec(s) found but email not configured")
+        return
+
+    for row in urgent:
+        rec = dict(row)
+        try:
+            subject = f"[URGENT] {rec['action']} — {rec['ticker']}"
+            _send_email(email_from, app_pw, email_to, subject, _render_urgent_email(rec))
+            agent_db.record_notification_event(rec["id"], "URGENT")
+            print(f"[Notifications] URGENT email sent for rec {rec['id']} ({rec['ticker']})")
+        except Exception as e:
+            print(f"[Notifications] email failed for rec {rec['id']}: {e}")
+
+
 def _normalize_ticker(t: str) -> str:
     t = str(t).strip().upper().lstrip("$")
     if "." in t:
@@ -1047,6 +1103,11 @@ def _run_saturday_sweep():
                     check_all_dependencies()
                 except Exception as e:
                     print(f"[SaturdaySweep] dep checker failed: {e}")
+
+                try:
+                    _dispatch_urgent_notifications()
+                except Exception as e:
+                    print(f"[SaturdaySweep] notification dispatch failed: {e}")
 
                 FLAG.write_text(_dt.now(TZ).date().isoformat())
                 print(f"[SaturdaySweep] Weekly sweep complete.")
@@ -5139,6 +5200,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             )
         except Exception as e:
             return self._json_error(500, str(e))
+
+        # Record notification engagement outcome
+        try:
+            agent_db.close_notification_event(rec_id, outcome="acted_on", decided_at=time.time())
+        except Exception:
+            pass
 
         # Recalculate soft preferences in background (non-blocking)
         def _run_learner():

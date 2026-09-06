@@ -45,6 +45,12 @@ TRIGGER_LAYER_UNDERWEIGHT_DAYS: int = _trig.get("layer_underweight_days", 3)
 TAX_ST_RATE: float = _trig.get("st_tax_rate", 0.37)
 
 
+_urg = _cfg.get("urgency", {})
+URGENCY_URGENT_THRESHOLD: float = _urg.get("urgent_threshold", 0.72)
+URGENCY_ATTENTION_THRESHOLD: float = _urg.get("attention_threshold", 0.30)
+URGENCY_SEVERITY: dict[str, float] = _urg.get("severity", {})
+
+
 def validate_config() -> None:
     """Raise ConfigurationError if strategy.json contains invalid values."""
     errors = []

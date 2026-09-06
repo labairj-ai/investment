@@ -57,5 +57,19 @@
     "tax_loss_min_dollars": 500.0,
     "st_tax_rate": 0.37,
     "layer_underweight_days": 3
+  },
+  "urgency": {
+    "urgent_threshold": 0.72,
+    "attention_threshold": 0.30,
+    "severity": {
+      "EXIT":      1.0,
+      "TRIM":      1.0,
+      "SELL_CC":   0.7,
+      "BUY":       0.5,
+      "REVIEW":    0.5,
+      "REBALANCE": 0.3,
+      "ALLOCATE":  0.3,
+      "NO_ACTION": 0.0
+    }
   }
 }
