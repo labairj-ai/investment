@@ -2960,6 +2960,7 @@ def build_dashboard(portfolio, layers, holdings):
         <button onclick="loadDecisionJournal()" style="font-size:11px;padding:3px 9px;background:#f7f8fa;border:1px solid #dde;border-radius:5px;cursor:pointer;color:#555;">↻</button>
       </div>
       <div id="dj-summary-strip" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;"></div>
+      <div id="dj-alpha-stats" style="display:none;margin-bottom:14px;"></div>
       <div id="dj-table-wrap"></div>
     </div>
 
@@ -8052,6 +8053,13 @@ function _djFmt(val, isPercent) {{
   return val;
 }}
 
+function _fmtAlpha(v) {{
+  if (v == null) return '<span style="color:#aaa;">—</span>';
+  const pct = (v * 100).toFixed(2);
+  const col = v > 0 ? '#276749' : v < 0 ? '#9b1c1c' : '#4a5568';
+  return `<span style="color:${{col}};font-weight:700;">${{v >= 0 ? '+' : ''}}${{pct}}%</span>`;
+}}
+
 function _renderDJSummary(summary) {{
   const strip = document.getElementById('dj-summary-strip');
   const line  = document.getElementById('dj-summary-line');
@@ -8072,11 +8080,33 @@ function _renderDJSummary(summary) {{
        <span style="font-size:14px;font-weight:700;color:${{color}};margin-left:6px;">${{n}}</span>
      </div>`
   ).join('');
+
+  const alphaEl = document.getElementById('dj-alpha-stats');
+  const alpha   = s.alpha_stats;
+  if (alphaEl) {{
+    if (alpha && alpha.total_rows >= 5) {{
+      alphaEl.style.display = 'block';
+      alphaEl.innerHTML = `
+        <div style="margin-top:12px;padding:10px 14px;background:#f7f9ff;border:1px solid #dde3f5;border-radius:8px;">
+          <div style="font-size:10px;font-weight:700;color:#4a5568;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;">
+            Agent Performance — ${{alpha.total_rows}} matured horizon${{alpha.total_rows===1?'':'s'}}
+          </div>
+          <div style="display:flex;gap:20px;flex-wrap:wrap;font-size:12px;">
+            <div><span style="color:#718096;">vs Hold&nbsp;</span>${{_fmtAlpha(alpha.agent_alpha_vs_hold)}}</div>
+            <div><span style="color:#718096;">vs SPY&nbsp;</span>${{_fmtAlpha(alpha.agent_alpha_vs_spy)}}</div>
+            <div><span style="color:#718096;">Override Alpha&nbsp;</span>${{_fmtAlpha(alpha.user_override_alpha)}}</div>
+          </div>
+        </div>`;
+    }} else {{
+      alphaEl.style.display = 'none';
+    }}
+  }}
+
   if (line) {{
-    const n = s.outcomes_evaluated || 0;
+    const n   = s.matured_horizon_rows || s.outcomes_evaluated || 0;
     const opp = s.avg_opportunity_cost;
     line.textContent = n > 0
-      ? `${{n}} outcome${{n !== 1 ? 's' : ''}} evaluated · avg opportunity cost ${{opp != null ? ((opp*100).toFixed(1)+'%') : '—'}}`
+      ? `${{n}} matured horizon${{n !== 1 ? 's' : ''}} evaluated`
       : 'No outcomes evaluated yet — check back after 14 days';
   }}
 }}

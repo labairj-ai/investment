@@ -1,7 +1,7 @@
 # Build Multi-Scenario Counterfactual Benchmarking
 
 - **ID:** 0026
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-05
 - **Priority:** low
 - **Depends:** 0018, 0004
@@ -55,12 +55,37 @@ All horizons stored separately in `recommendation_outcomes` (add `horizon` colum
 
 ## Done when
 
-- [ ] SPY daily prices fetched and stored alongside portfolio prices
-- [ ] Four scenario returns calculated for each matured horizon
-- [ ] `recommendation_outcomes` stores one row per (recommendation, horizon)
-- [ ] Horizons only populated after they've actually elapsed (no extrapolation)
-- [ ] CC outcomes correctly calculate premium-captured vs upside-surrendered
-- [ ] Aggregated stats (AgentAlpha_vs_Hold, AgentAlpha_vs_SPY, UserOverrideAlpha) computable per agent_type and rationale_class
-- [ ] Decision Journal shows at least one aggregated stat when ≥ 5 matured outcomes exist
-- [ ] Browser QA (mandatory — do not skip): With ≥ 5 matured recommendations, run the outcome evaluator and open the dashboard Decision Journal in a browser. Verify: (a) zero JS console errors, (b) at least one aggregated stat (AgentAlpha_vs_Hold, AgentAlpha_vs_SPY, or UserOverrideAlpha) renders, (c) `recommendation_outcomes` rows have correct actual_return values (verify one manually against holding_day prices). Do NOT check this box without completing live browser testing.
+- [x] SPY daily prices fetched and stored alongside portfolio prices
+- [x] Four scenario returns calculated for each matured horizon
+- [x] `recommendation_outcomes` stores one row per (recommendation, horizon)
+- [x] Horizons only populated after they've actually elapsed (no extrapolation)
+- [x] CC outcomes correctly calculate premium-captured vs upside-surrendered
+- [x] Aggregated stats (AgentAlpha_vs_Hold, AgentAlpha_vs_SPY, UserOverrideAlpha) computable per agent_type and rationale_class
+- [x] Decision Journal shows at least one aggregated stat when ≥ 5 matured outcomes exist
+- [x] Browser QA (mandatory — do not skip): With ≥ 5 matured recommendations, run the outcome evaluator and open the dashboard Decision Journal in a browser. Verify: (a) zero JS console errors, (b) at least one aggregated stat (AgentAlpha_vs_Hold, AgentAlpha_vs_SPY, or UserOverrideAlpha) renders, (c) `recommendation_outcomes` rows have correct actual_return values (verify one manually against holding_day prices). Do NOT check this box without completing live browser testing.
+
+## Outcome
+
+**`agent_db.py`:**
+- `spy_prices(day TEXT PRIMARY KEY, price REAL)` table added to schema
+- Migration: `horizon TEXT` + `hold_return REAL` added to `recommendation_outcomes`
+- `insert_outcome()` extended with `horizon` and `hold_return` params
+- `upsert_spy_price()` / `get_spy_prices()` helpers for SPY cache
+- `get_outcome_alpha_stats()`: returns `agent_alpha_vs_hold` (B−C), `agent_alpha_vs_spy` (B−D), `user_override_alpha` (A−B) overall and per agent_type; requires ≥1 row with all non-null components
+- `journal_summary()` includes `matured_horizon_rows` count and `alpha_stats` (populated when ≥5 matured rows)
+
+**`agents/outcome_evaluator.py`** (full rewrite):
+- Equity horizons: `1w` `1m` `3m` `6m` `12m` — written only after elapsed
+- CC horizons: `at_expiry` `30d_post` `90d_post` — uses expiry from `action_payload_json`
+- SPY batch-fetched from yfinance, cached in `spy_prices`; yfinance installed in optiplex venv
+- Column mapping: `actual_return`=A (ticker hold), `recommended_path_return`=B (EXIT→0, CC→premium±upside, else hold), `hold_return`=C, `benchmark_return`=D
+- `_already_evaluated(rec_id, horizon)` guards per-horizon to prevent double-writes
+- `min_age_days` param on `evaluate_matured_recommendations()` for testing override
+
+**`generate_dashboard.py`:**
+- `dj-alpha-stats` div added after summary strip
+- `_fmtAlpha()` helper with green/red coloring
+- `_renderDJSummary()` renders alpha panel when `alpha_stats.total_rows >= 5`
+
+Browser QA result (2026-09-05): 8 QA horizon rows written across ANET/BRK-B/BTC/EW. BRK-B 1w hold_return=0.018289 verified exactly against holding_day prices (entry $498.66 → $507.78). Alpha panel "AGENT PERFORMANCE — 8 MATURED HORIZONS: vs Hold +0.00% vs SPY -0.99% Override Alpha +0.00%" rendered correctly. Zero JS console errors. QA data cleaned up after.
 

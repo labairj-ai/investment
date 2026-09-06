@@ -134,6 +134,11 @@ def migrate() -> None:
             notes                   TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS spy_prices (
+            day   TEXT PRIMARY KEY,
+            price REAL NOT NULL
+        );
+
         CREATE INDEX IF NOT EXISTS idx_agent_runs_type_ticker
             ON agent_runs (agent_type, ticker, started_at DESC);
 
@@ -264,8 +269,11 @@ def migrate() -> None:
         # 0019 — sell/trim rationale class
         ("recommendations",   "rationale_class",   "TEXT"),
         # 0029 — recommendation lineage
-        ("recommendations",   "supersedes_id",     "INTEGER"),
-        ("recommendations",   "lineage_root_id",   "INTEGER"),
+        ("recommendations",          "supersedes_id",          "INTEGER"),
+        ("recommendations",          "lineage_root_id",         "INTEGER"),
+        # 0026 — counterfactual benchmarking
+        ("recommendation_outcomes",  "horizon",                 "TEXT"),
+        ("recommendation_outcomes",  "hold_return",             "REAL"),
     ]
     for table, col, col_type in _new_cols:
         try:
@@ -658,15 +666,17 @@ def insert_outcome(
     recommended_path_return: float | None = None,
     opportunity_cost: float | None = None,
     notes: str | None = None,
+    horizon: str | None = None,
+    hold_return: float | None = None,
 ) -> int:
     conn = _connect()
     cur = conn.execute(
         """INSERT INTO recommendation_outcomes
            (recommendation_id, evaluation_date, benchmark_return, actual_return,
-            recommended_path_return, opportunity_cost, notes)
-           VALUES (?,?,?,?,?,?,?)""",
+            recommended_path_return, opportunity_cost, notes, horizon, hold_return)
+           VALUES (?,?,?,?,?,?,?,?,?)""",
         (recommendation_id, time.time(), benchmark_return, actual_return,
-         recommended_path_return, opportunity_cost, notes),
+         recommended_path_return, opportunity_cost, notes, horizon, hold_return),
     )
     outcome_id = cur.lastrowid
     conn.commit()
@@ -674,8 +684,97 @@ def insert_outcome(
     return outcome_id
 
 
+def upsert_spy_price(day: str, price: float) -> None:
+    conn = _connect()
+    conn.execute(
+        "INSERT OR REPLACE INTO spy_prices (day, price) VALUES (?,?)",
+        (day, price),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_spy_prices(days: list[str]) -> dict[str, float]:
+    """Return {date_str: price} for the requested dates that are stored."""
+    if not days:
+        return {}
+    conn = _connect()
+    placeholders = ",".join("?" * len(days))
+    rows = conn.execute(
+        f"SELECT day, price FROM spy_prices WHERE day IN ({placeholders})", days
+    ).fetchall()
+    conn.close()
+    return {r["day"]: r["price"] for r in rows}
+
+
+def get_outcome_alpha_stats() -> dict:
+    """Aggregate agent alpha statistics across all matured outcome rows.
+
+    Returns per-agent-type means for:
+      agent_alpha_vs_hold  = recommended_path_return - hold_return   (B - C)
+      agent_alpha_vs_spy   = recommended_path_return - benchmark_return (B - D)
+      user_override_alpha  = actual_return - recommended_path_return  (A - B)
+
+    Only rows where all three component returns are non-null are included.
+    Groups: overall + per agent_type. Requires ≥ 1 matured horizon row.
+    """
+    conn = _connect()
+    rows = conn.execute(
+        """SELECT ar.agent_type, r.rationale_class,
+                  ro.actual_return          AS a,
+                  ro.recommended_path_return AS b,
+                  ro.hold_return             AS c,
+                  ro.benchmark_return        AS d
+           FROM recommendation_outcomes ro
+           JOIN recommendations r  ON r.id  = ro.recommendation_id
+           LEFT JOIN agent_runs ar ON ar.id = r.run_id
+           WHERE ro.horizon IS NOT NULL
+             AND ro.recommended_path_return IS NOT NULL
+             AND ro.hold_return             IS NOT NULL
+             AND ro.benchmark_return        IS NOT NULL""",
+    ).fetchall()
+    conn.close()
+
+    def _mean(vals):
+        clean = [v for v in vals if v is not None]
+        return round(sum(clean) / len(clean), 4) if clean else None
+
+    by_agent: dict[str, dict] = {}
+    all_vs_hold, all_vs_spy, all_override = [], [], []
+
+    for r in rows:
+        b, c, d, a = r["b"], r["c"], r["d"], r["a"]
+        vs_hold  = b - c if b is not None and c is not None else None
+        vs_spy   = b - d if b is not None and d is not None else None
+        override = a - b if a is not None and b is not None else None
+        agent    = r["agent_type"] or "unknown"
+        entry    = by_agent.setdefault(agent, {"vs_hold": [], "vs_spy": [], "override": [], "n": 0})
+        entry["n"] += 1
+        if vs_hold  is not None: entry["vs_hold"].append(vs_hold);   all_vs_hold.append(vs_hold)
+        if vs_spy   is not None: entry["vs_spy"].append(vs_spy);     all_vs_spy.append(vs_spy)
+        if override is not None: entry["override"].append(override); all_override.append(override)
+
+    by_agent_out = {
+        agent: {
+            "n":                   v["n"],
+            "agent_alpha_vs_hold": _mean(v["vs_hold"]),
+            "agent_alpha_vs_spy":  _mean(v["vs_spy"]),
+            "user_override_alpha": _mean(v["override"]),
+        }
+        for agent, v in by_agent.items()
+    }
+
+    return {
+        "total_rows":          len(rows),
+        "agent_alpha_vs_hold": _mean(all_vs_hold),
+        "agent_alpha_vs_spy":  _mean(all_vs_spy),
+        "user_override_alpha": _mean(all_override),
+        "by_agent_type":       by_agent_out,
+    }
+
+
 def journal_summary() -> dict:
-    """Aggregate counts by recommendation status + opportunity cost stats."""
+    """Aggregate counts by recommendation status + outcome alpha stats."""
     conn = _connect()
     rows = conn.execute(
         "SELECT status, COUNT(*) as cnt FROM recommendations GROUP BY status"
@@ -690,13 +789,21 @@ def journal_summary() -> dict:
            FROM recommendation_outcomes
            WHERE opportunity_cost IS NOT NULL"""
     ).fetchone()
+    matured_n = conn.execute(
+        "SELECT COUNT(*) FROM recommendation_outcomes WHERE horizon IS NOT NULL"
+    ).fetchone()[0]
     conn.close()
+
+    alpha_stats = get_outcome_alpha_stats() if matured_n >= 5 else None
+
     return {
-        "total_generated": total,
-        "by_status": counts,
-        "outcomes_evaluated": opp["n"] or 0,
+        "total_generated":      total,
+        "by_status":            counts,
+        "outcomes_evaluated":   opp["n"] or 0,
         "avg_opportunity_cost": opp["avg_opp"],
         "total_opportunity_cost": opp["total_opp"],
+        "matured_horizon_rows": matured_n,
+        "alpha_stats":          alpha_stats,
     }
 
 
