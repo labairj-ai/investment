@@ -45,7 +45,14 @@
   "risk": {
     "drift_threshold_pct": 5.0,
     "layer_gross_dom_pct": 50.0,
-    "holding_gross_dom_pct": 25.0
+    "holding_gross_dom_pct": 25.0,
+    "sector_concentration_pct": 35.0,
+    "portfolio_beta_high": 1.4,
+    "portfolio_beta_low": 0.6,
+    "risk_contribution_multiple": 2.0,
+    "correlation_cluster_threshold": 0.75,
+    "correlation_cluster_min_size": 3,
+    "covariance_lookback_days": 60
   },
   "triggers": {
     "price_move_z_threshold": 2.0,

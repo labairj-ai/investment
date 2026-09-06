@@ -32,6 +32,13 @@ _risk = _cfg["risk"]
 DRIFT_THRESHOLD: float = _risk["drift_threshold_pct"]
 LAYER_GROSS_DOM: float = _risk["layer_gross_dom_pct"]
 HOLDING_GROSS_DOM: float = _risk["holding_gross_dom_pct"]
+SECTOR_CONCENTRATION_PCT: float = _risk.get("sector_concentration_pct", 35.0)
+PORTFOLIO_BETA_HIGH: float = _risk.get("portfolio_beta_high", 1.4)
+PORTFOLIO_BETA_LOW: float = _risk.get("portfolio_beta_low", 0.6)
+RISK_CONTRIBUTION_MULTIPLE: float = _risk.get("risk_contribution_multiple", 2.0)
+CORRELATION_CLUSTER_THRESHOLD: float = _risk.get("correlation_cluster_threshold", 0.75)
+CORRELATION_CLUSTER_MIN_SIZE: int = int(_risk.get("correlation_cluster_min_size", 3))
+COVARIANCE_LOOKBACK_DAYS: int = int(_risk.get("covariance_lookback_days", 60))
 
 _trig = _cfg.get("triggers", {})
 TRIGGER_PRICE_MOVE_Z: float = _trig.get("price_move_z_threshold", 2.0)

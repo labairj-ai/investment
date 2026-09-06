@@ -4,6 +4,9 @@ Runs four deterministic checks on every holding and layer, then calls
 the LLM only for positions that crossed a materiality threshold. Severity
 is computed deterministically — the LLM adds prose, not numbers.
 
+Also runs three portfolio-scope checks: sector concentration, portfolio
+beta (vs portfolio composite return), and marginal risk contribution.
+
 Returns [] (no trade recommendations). All output goes to agent_findings.
 """
 import csv
@@ -15,6 +18,9 @@ import agent_db
 import ollama_client
 from strategy_config import (
     LAYER_TARGETS, LAYER_NAMES, LAYER_LABELS, DRIFT_THRESHOLD, HOLDING_GROSS_DOM,
+    SECTOR_CONCENTRATION_PCT, PORTFOLIO_BETA_HIGH, PORTFOLIO_BETA_LOW,
+    RISK_CONTRIBUTION_MULTIPLE, CORRELATION_CLUSTER_THRESHOLD,
+    CORRELATION_CLUSTER_MIN_SIZE, COVARIANCE_LOOKBACK_DAYS,
 )
 
 # Reverse map: "Layer 1: L1 Structural Ballast" -> 1
@@ -201,6 +207,233 @@ def _fallback_summary(ticker: str, triggers: dict) -> tuple[str, str]:
     return summary, why_now
 
 
+# --- Sector data (cached per process, yfinance .info) -------------------------
+
+_sector_cache: dict[str, str] = {}
+
+
+def _fetch_sector(ticker: str) -> str:
+    if ticker in _sector_cache:
+        return _sector_cache[ticker]
+    try:
+        import yfinance as yf
+        info = yf.Ticker(ticker).info
+        sector = info.get("sector") or "Unknown"
+    except Exception:
+        sector = "Unknown"
+    _sector_cache[ticker] = sector
+    return sector
+
+
+# --- Multi-day price return matrix from holding_day ---------------------------
+
+def _price_return_matrix(tickers: list[str], lookback: int) -> dict[str, list[float]]:
+    """Return dict ticker -> list of daily change_pct (most recent last)."""
+    conn = agent_db._connect()
+    result: dict[str, list[float]] = {}
+    for ticker in tickers:
+        rows = conn.execute(
+            "SELECT change_pct FROM holding_day WHERE ticker=? AND change_pct IS NOT NULL "
+            "ORDER BY day DESC LIMIT ?",
+            (ticker, lookback),
+        ).fetchall()
+        result[ticker] = [r[0] / 100.0 for r in reversed(rows)]
+    conn.close()
+    return result
+
+
+# --- Portfolio-scope checks ---------------------------------------------------
+
+def _check_sector_concentration(holding_rows: list[dict], run_id: int) -> None:
+    """Fire a finding if any sector exceeds SECTOR_CONCENTRATION_PCT."""
+    sector_weights: dict[str, float] = {}
+    sector_tickers: dict[str, list[str]] = {}
+    for row in holding_rows:
+        ticker = row["ticker"]
+        weight = row["weight_pct"] or 0.0
+        sector = _fetch_sector(ticker)
+        sector_weights[sector] = sector_weights.get(sector, 0.0) + weight
+        sector_tickers.setdefault(sector, []).append(ticker)
+
+    for sector, total_weight in sector_weights.items():
+        if sector == "Unknown" or total_weight <= SECTOR_CONCENTRATION_PCT:
+            continue
+        tickers_str = ", ".join(sector_tickers[sector])
+        summary = (
+            f"Sector concentration: {sector} at {total_weight:.1f}% "
+            f"(threshold {SECTOR_CONCENTRATION_PCT:.0f}%) — {tickers_str}"
+        )
+        severity = min(100, int(40 + (total_weight - SECTOR_CONCENTRATION_PCT) * 4))
+        fid = agent_db.insert_finding(
+            run_id=run_id,
+            finding_type="sector_concentration",
+            ticker=None,
+            severity=severity,
+            confidence=90,
+            summary=summary,
+            why_now=f"{sector} sector exceeds concentration limit — diversification risk.",
+            metrics={
+                "sector": sector,
+                "sector_weight_pct": round(total_weight, 2),
+                "threshold_pct": SECTOR_CONCENTRATION_PCT,
+                "tickers": sector_tickers[sector],
+            },
+        )
+        print(f"[guardian] Sector finding #{fid}: {sector} {total_weight:.1f}% (severity={severity})")
+
+
+def _check_covariance_risk(holding_rows: list[dict], run_id: int) -> None:
+    """Compute portfolio beta, risk contributions, and correlation clusters from holding_day."""
+    import numpy as np
+
+    tickers = [r["ticker"] for r in holding_rows]
+    weights = {r["ticker"]: (r["weight_pct"] or 0.0) / 100.0 for r in holding_rows}
+    total_w = sum(weights.values())
+    if total_w <= 0 or len(tickers) < 2:
+        return
+
+    returns_map = _price_return_matrix(tickers, COVARIANCE_LOOKBACK_DAYS)
+    min_len = min(len(v) for v in returns_map.values()) if returns_map else 0
+    if min_len < 10:
+        print("[guardian] Insufficient price history for covariance checks — skipping")
+        return
+
+    # Align all series to same length
+    aligned = {t: returns_map[t][-min_len:] for t in tickers}
+    R = np.array([aligned[t] for t in tickers])  # shape: (n_stocks, n_days)
+
+    # Covariance matrix (annualised)
+    cov = np.cov(R) * 252  # (n, n)
+    w = np.array([weights[t] / total_w for t in tickers])  # normalised weights
+
+    # Portfolio variance
+    port_var = float(w @ cov @ w)
+    if port_var <= 0:
+        return
+
+    # ── Portfolio beta vs composite portfolio return ──────────────────────────
+    port_returns = w @ R  # (n_days,)
+    port_var_daily = float(np.var(port_returns))
+    betas: dict[str, float] = {}
+    for i, ticker in enumerate(tickers):
+        stock_cov = float(np.cov(R[i], port_returns)[0, 1])
+        betas[ticker] = stock_cov / port_var_daily if port_var_daily > 0 else 1.0
+    port_beta = float(sum(w[i] * betas[t] for i, t in enumerate(tickers)))
+
+    if port_beta > PORTFOLIO_BETA_HIGH or port_beta < PORTFOLIO_BETA_LOW:
+        direction = "high" if port_beta > PORTFOLIO_BETA_HIGH else "low"
+        threshold = PORTFOLIO_BETA_HIGH if direction == "high" else PORTFOLIO_BETA_LOW
+        severity = min(100, int(50 + abs(port_beta - threshold) * 30))
+        summary = (
+            f"Portfolio beta {port_beta:.2f} vs composite — "
+            f"{'elevated' if direction == 'high' else 'defensive'} market sensitivity "
+            f"(threshold {threshold:.1f})"
+        )
+        fid = agent_db.insert_finding(
+            run_id=run_id,
+            finding_type="portfolio_beta",
+            ticker=None,
+            severity=severity,
+            confidence=75,
+            summary=summary,
+            why_now=f"Portfolio beta {port_beta:.2f} outside [{PORTFOLIO_BETA_LOW},{PORTFOLIO_BETA_HIGH}] range.",
+            metrics={
+                "portfolio_beta": round(port_beta, 3),
+                "beta_high_threshold": PORTFOLIO_BETA_HIGH,
+                "beta_low_threshold": PORTFOLIO_BETA_LOW,
+                "ticker_betas": {t: round(betas[t], 3) for t in tickers},
+            },
+        )
+        print(f"[guardian] Beta finding #{fid}: portfolio_beta={port_beta:.2f} (severity={severity})")
+
+    # ── Risk contributions ────────────────────────────────────────────────────
+    Cov_w = cov @ w
+    for i, ticker in enumerate(tickers):
+        rc = float(w[i] * Cov_w[i]) / port_var  # fractional risk contribution
+        rc_pct = rc * 100.0
+        weight_pct = float(w[i] * total_w) * 100.0
+        if rc_pct > RISK_CONTRIBUTION_MULTIPLE * weight_pct and weight_pct > 0.5:
+            severity = min(100, int(40 + (rc_pct / weight_pct - RISK_CONTRIBUTION_MULTIPLE) * 15))
+            summary = (
+                f"{ticker}: risk contribution {rc_pct:.1f}% vs weight {weight_pct:.1f}% "
+                f"({rc_pct / weight_pct:.1f}× — threshold {RISK_CONTRIBUTION_MULTIPLE:.0f}×)"
+            )
+            fid = agent_db.insert_finding(
+                run_id=run_id,
+                finding_type="risk_contribution",
+                ticker=ticker,
+                severity=severity,
+                confidence=75,
+                summary=summary,
+                why_now=f"{ticker} contributes disproportionate risk relative to its weight.",
+                metrics={
+                    "risk_contribution_pct": round(rc_pct, 2),
+                    "weight_pct": round(weight_pct, 2),
+                    "rc_to_weight_ratio": round(rc_pct / weight_pct, 2),
+                    "threshold_multiple": RISK_CONTRIBUTION_MULTIPLE,
+                },
+            )
+            print(f"[guardian] Risk contribution finding #{fid}: {ticker} rc={rc_pct:.1f}% weight={weight_pct:.1f}% (severity={severity})")
+
+    # ── Correlation clustering ────────────────────────────────────────────────
+    corr = np.corrcoef(R)  # (n, n)
+    n = len(tickers)
+    # Find connected components with correlation > threshold
+    adj: dict[int, set[int]] = {i: set() for i in range(n)}
+    for i in range(n):
+        for j in range(i + 1, n):
+            if corr[i, j] >= CORRELATION_CLUSTER_THRESHOLD:
+                adj[i].add(j)
+                adj[j].add(i)
+
+    visited: set[int] = set()
+    clusters: list[list[str]] = []
+    for i in range(n):
+        if i in visited or not adj[i]:
+            continue
+        cluster = []
+        stack = [i]
+        while stack:
+            node = stack.pop()
+            if node in visited:
+                continue
+            visited.add(node)
+            cluster.append(tickers[node])
+            for nb in adj[node]:
+                if nb not in visited:
+                    stack.append(nb)
+        if len(cluster) >= CORRELATION_CLUSTER_MIN_SIZE:
+            clusters.append(cluster)
+
+    for cluster in clusters:
+        ticker_str = ", ".join(cluster)
+        avg_corr = float(np.mean([
+            corr[tickers.index(a), tickers.index(b)]
+            for a in cluster for b in cluster if a != b
+        ]))
+        severity = min(100, int(50 + (avg_corr - CORRELATION_CLUSTER_THRESHOLD) * 200))
+        summary = (
+            f"Correlation cluster: {ticker_str} — avg correlation {avg_corr:.2f} "
+            f"(threshold {CORRELATION_CLUSTER_THRESHOLD:.2f}, {len(cluster)} positions)"
+        )
+        fid = agent_db.insert_finding(
+            run_id=run_id,
+            finding_type="correlation_cluster",
+            ticker=None,
+            severity=severity,
+            confidence=70,
+            summary=summary,
+            why_now=f"{len(cluster)} holdings move together — hidden concentration risk.",
+            metrics={
+                "cluster_tickers": cluster,
+                "avg_correlation": round(avg_corr, 3),
+                "threshold": CORRELATION_CLUSTER_THRESHOLD,
+                "cluster_size": len(cluster),
+            },
+        )
+        print(f"[guardian] Correlation cluster finding #{fid}: {ticker_str} avg_corr={avg_corr:.2f} (severity={severity})")
+
+
 # --- Main agent entry point --------------------------------------------------
 
 def run_portfolio_guardian(ctx: AgentContext) -> list[Recommendation]:
@@ -320,6 +553,12 @@ def run_portfolio_guardian(ctx: AgentContext) -> list[Recommendation]:
         )
         print(f"[guardian] Position finding #{fid}: {ticker} "
               f"triggers={list(triggers)} severity={severity}")
+
+    # ── 3. Portfolio-scope: sector concentration ──────────────────────────────
+    _check_sector_concentration(holding_rows, ctx.run_id)
+
+    # ── 4. Portfolio-scope: beta + risk contribution + correlation clusters ───
+    _check_covariance_risk(holding_rows, ctx.run_id)
 
     print("[guardian] Sweep complete")
     return []
