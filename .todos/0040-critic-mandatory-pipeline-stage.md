@@ -1,7 +1,7 @@
 # Make Critic a Mandatory Pipeline Stage After Every Producing Agent
 
 - **ID:** 0040
-- **Status:** backlog
+- **Status:** in-progress
 - **Created:** 2026-09-06
 - **Priority:** high
 - **Depends:** none
