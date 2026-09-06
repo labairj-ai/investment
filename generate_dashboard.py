@@ -1803,6 +1803,28 @@ def build_dashboard(portfolio, layers, holdings):
       #dj-summary-strip {{ gap: 6px; }}
       #dj-summary-strip > div {{ padding: 4px 8px; }}
     }}
+  .cmp-col-tip {{
+    display: none;
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    z-index: 200;
+    min-width: 220px;
+    background: #1a202c;
+    color: #e2e8f0;
+    font-size: 11px;
+    font-weight: 400;
+    line-height: 1.6;
+    text-transform: none;
+    letter-spacing: 0;
+    padding: 10px 12px;
+    border-radius: 6px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.35);
+    pointer-events: none;
+    white-space: normal;
+    cursor: default;
+  }}
+  th:hover .cmp-col-tip {{ display: block; }}
   </style>
 </head>
 <body>
@@ -7697,16 +7719,23 @@ var _cmpSortCol = '_composite6';
 var _cmpSortDir = -1;  // -1 = desc
 
 var _CMP_COLS = [
-  {{key:'rank',        label:'#',          title:'Overall rank'}},
-  {{key:'ticker',      label:'Ticker',     title:'Ticker'}},
-  {{key:'_q',         label:'Quality',    title:'Buffett quality score (0-100)'}},
-  {{key:'_v',         label:'Valuation',  title:'PE / P-FCF / EV-EBITDA composite (lower multiples = higher score)'}},
-  {{key:'_pf',        label:'Fit',        title:'Portfolio fit: layer deficit bonus + sector overlap penalty'}},
-  {{key:'_c',         label:'Catalyst',   title:'Catalyst / setup: value-trap risk, AI conviction, scan recency'}},
-  {{key:'_risk',      label:'Safety',     title:'Safety score (higher = lower risk): value-trap risk + quality stability'}},
-  {{key:'_ec',        label:'Evidence',   title:'Evidence confidence: data freshness and completeness'}},
-  {{key:'_composite6',label:'Composite',  title:'Weighted composite (Q25 V20 Fit20 Cat15 Safety10 Ev10)'}},
-  {{key:'sector',     label:'Sector',     title:'Sector from Buffett screener'}},
+  {{key:'rank',        label:'#',          title:'Overall rank', tooltip:''}},
+  {{key:'ticker',      label:'Ticker',     title:'Ticker',       tooltip:''}},
+  {{key:'_q',         label:'Quality',    title:'Quality (25% of composite)',
+    tooltip:'<b>Quality</b> — 25% of composite<br>Raw Buffett screener quality score (0–100).<br>Measures business durability: ROE, ROA,<br>gross margins, earnings consistency,<br>and debt/equity over 5–10 years.<br><span style="color:#a0aec0;font-size:10px;">Higher = better business quality</span>'}},
+  {{key:'_v',         label:'Valuation',  title:'Valuation (20% of composite)',
+    tooltip:'<b>Valuation</b> — 20% of composite<br>Average of three sub-scores:<br>· P/E: ≤18→100 · ≤25→80 · ≤35→60 · else→30<br>· P/FCF: ≤15→100 · ≤25→80 · ≤35→60 · else→25<br>· EV/EBITDA: ≤12→100 · ≤18→75 · ≤25→55 · else→25<br><span style="color:#a0aec0;font-size:10px;">Higher = cheaper / better value</span>'}},
+  {{key:'_pf',        label:'Fit',        title:'Portfolio Fit (20% of composite)',
+    tooltip:'<b>Portfolio Fit</b> — 20% of composite<br>Starts at 50. Adjustments:<br>· Layer underweight bonus: up to +30<br>&nbsp;&nbsp;(5pp deficit → +20, 7.5pp → +30)<br>· Sector overlap penalty: −10 per holding<br>&nbsp;&nbsp;in same sector (above 1), max −30<br>· Already held: score = 0<br><span style="color:#a0aec0;font-size:10px;">Higher = better addition to current portfolio</span>'}},
+  {{key:'_c',         label:'Catalyst',   title:'Catalyst (15% of composite)',
+    tooltip:'<b>Catalyst</b> — 15% of composite<br>Starts at 50. Adjustments:<br>· Value-trap risk: low→+15 · high→−20<br>· AI conviction (1–5): ≥4→+15 · ≥3→+5<br>· Scan recency: ≤7 days→+10 · ≤30 days→+5<br><span style="color:#a0aec0;font-size:10px;">Higher = stronger setup / lower trap risk</span>'}},
+  {{key:'_risk',      label:'Safety',     title:'Safety (10% of composite)',
+    tooltip:'<b>Safety</b> — 10% of composite<br>Starts at 60. Adjustments:<br>· Value-trap risk: low→+25 · high→−25<br>· Quality score: ≥75→+10 · &lt;50→−10<br>· P/E &gt;40→−10<br><span style="color:#a0aec0;font-size:10px;">Higher = lower risk / more defensive</span>'}},
+  {{key:'_ec',        label:'Evidence',   title:'Evidence (10% of composite)',
+    tooltip:'<b>Evidence</b> — 10% of composite<br>Data confidence score:<br>· Price data available<br>· Financial quarters on record<br>· AI analysis present<br>· Scan recency (freshness decay)<br><span style="color:#a0aec0;font-size:10px;">Higher = more complete, fresher data</span>'}},
+  {{key:'_composite6',label:'Composite',  title:'Weighted composite score',
+    tooltip:'<b>Composite</b> — weighted total<br>Q×25% + V×20% + Fit×20%<br>+ Catalyst×15% + Safety×10% + Evidence×10%<br><span style="color:#a0aec0;font-size:10px;">Primary ranking score</span>'}},
+  {{key:'sector',     label:'Sector',     title:'Sector from Buffett screener', tooltip:''}},
 ];
 
 function _cmpSort(col) {{
@@ -7734,10 +7763,13 @@ function _scoreBar(val, max) {{
 function _renderComparisonTable(data) {{
   var wrap = document.getElementById('candidate-comparison-wrap');
   if (!wrap) return;
-  var thStyle = 'text-align:left;padding:5px 8px;color:#718096;font-weight:600;font-size:10px;text-transform:uppercase;cursor:pointer;white-space:nowrap;user-select:none;';
+  var thStyle = 'text-align:left;padding:5px 8px;color:#718096;font-weight:600;font-size:10px;text-transform:uppercase;cursor:pointer;white-space:nowrap;user-select:none;position:relative;';
   var ths = _CMP_COLS.map(col => {{
     var arrow = _cmpSortCol === col.key ? (_cmpSortDir < 0 ? ' ▼' : ' ▲') : '';
-    return `<th title="${{col.title}}" style="${{thStyle}}" onclick="_cmpSort('${{col.key}}')">${{col.label}}${{arrow}}</th>`;
+    var tip = col.tooltip
+      ? `<div class="cmp-col-tip">${{col.tooltip}}</div>`
+      : '';
+    return `<th title="${{col.title}}" style="${{thStyle}}" onclick="_cmpSort('${{col.key}}')">${{col.label}}${{arrow}}${{tip}}</th>`;
   }}).join('');
 
   var rows = data.map((c, idx) => {{
