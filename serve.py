@@ -1848,6 +1848,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._handle_recommendations_get()
         elif parsed.path == "/api/preferences":
             self._handle_preferences_get()
+        elif parsed.path == "/api/strategy-config":
+            self._handle_strategy_config_get()
         elif parsed.path.startswith("/api/agents/"):
             self._handle_agents_get(parsed)
         elif parsed.path.startswith("/api/theses/"):
@@ -1910,6 +1912,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self._handle_candidate_action(parts[3].upper(), "rejected")
             elif len(parts) == 5 and parts[4] == "watch":
                 self._handle_candidate_action(parts[3].upper(), "watch")
+            else:
+                self.send_response(404); self.end_headers()
+        elif parsed.path.startswith("/api/preferences/"):
+            parts = parsed.path.rstrip("/").split("/")
+            if len(parts) == 5 and parts[4] == "feedback" and parts[3].isdigit():
+                self._handle_preference_feedback(int(parts[3]))
             else:
                 self.send_response(404); self.end_headers()
         elif parsed.path.startswith("/api/agents/"):
@@ -5006,6 +5014,52 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         """GET /api/preferences — return all learned soft preferences."""
         prefs = agent_db.get_learned_preferences()
         return self._json({"ok": True, "preferences": prefs, "count": len(prefs)})
+
+    def _handle_preference_feedback(self, pref_id: int):
+        """POST /api/preferences/{id}/feedback — record user feedback on a learned preference."""
+        body = self._read_body()
+        outcome   = body.get("outcome")    # "confirmed" | "rejected" | None
+        suppressed = bool(body.get("suppressed", False))
+        if not outcome and not suppressed:
+            return self._json_error(400, "Provide 'outcome' or 'suppressed'")
+        try:
+            agent_db.record_preference_feedback(pref_id, outcome, suppressed)
+        except Exception as e:
+            return self._json_error(500, str(e))
+        return self._json({"ok": True, "pref_id": pref_id, "outcome": outcome, "suppressed": suppressed})
+
+    def _handle_strategy_config_get(self):
+        """GET /api/strategy-config — return key hard-rule constants for the Investor Model page."""
+        cfg = {
+            "layers": {
+                str(n): {"name": strategy_config.LAYER_NAMES[n], "target_pct": strategy_config.LAYER_TARGETS[n]}
+                for n in sorted(strategy_config.LAYER_TARGETS)
+            },
+            "covered_calls": {
+                "min_dte": strategy_config.CC_MIN_DTE,
+                "max_dte": strategy_config.CC_MAX_DTE,
+                "extended_max_dte": strategy_config.CC_MAX_DTE_EXTENDED,
+                "min_bid": strategy_config.CC_MIN_BID,
+                "r_min": strategy_config.CC_R_MIN,
+                "top_n": strategy_config.CC_TOP_N,
+            },
+            "risk": {
+                "drift_threshold_pct": strategy_config.DRIFT_THRESHOLD,
+                "layer_gross_dom_pct": strategy_config.LAYER_GROSS_DOM,
+                "holding_gross_dom_pct": strategy_config.HOLDING_GROSS_DOM,
+            },
+            "triggers": {
+                "price_move_z": strategy_config.TRIGGER_PRICE_MOVE_Z,
+                "nav_impact_pct": strategy_config.TRIGGER_NAV_IMPACT_PCT,
+                "macro_score_change": strategy_config.TRIGGER_MACRO_SCORE_CHANGE,
+                "cc_mgmt_dte": strategy_config.TRIGGER_CC_MGMT_DTE,
+                "tax_lt_window_min": strategy_config.TRIGGER_TAX_LT_WINDOW_MIN,
+                "tax_lt_window_max": strategy_config.TRIGGER_TAX_LT_WINDOW_MAX,
+                "tax_loss_min": strategy_config.TRIGGER_TAX_LOSS_MIN,
+                "st_tax_rate": strategy_config.TAX_ST_RATE,
+            },
+        }
+        return self._json({"ok": True, "config": cfg})
 
     def _handle_agents_get(self, parsed):
         """Route GET /api/agents/* requests."""

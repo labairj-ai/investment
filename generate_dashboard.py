@@ -1374,6 +1374,14 @@ def build_dashboard(portfolio, layers, holdings):
     #nav-dropdown.open {{ display:flex; }}
     .nav-dd-btn {{ background:none;border:none;border-bottom:1px solid #2d3a55;color:#a0aec0;font-size:14px;font-weight:600;padding:13px 24px;cursor:pointer;text-align:left; }}
     .nav-dd-btn:hover,.nav-dd-btn.active {{ color:#fff;background:rgba(255,255,255,.05); }}
+    .im-fb-btn {{ font-size:11px;padding:4px 10px;border-radius:5px;cursor:pointer;border:1px solid;font-weight:600;transition:opacity .1s; }}
+    .im-fb-btn:disabled {{ cursor:not-allowed; }}
+    .im-fb-confirm {{ background:#f0fff4;color:#276749;border-color:#9ae6b4; }}
+    .im-fb-confirm:hover:not(:disabled) {{ background:#c6f6d5; }}
+    .im-fb-reject {{ background:#fff5f5;color:#c53030;border-color:#fc8181; }}
+    .im-fb-reject:hover:not(:disabled) {{ background:#fed7d7; }}
+    .im-fb-suppress {{ background:#f7f8fa;color:#4a5568;border-color:#cbd5e0; }}
+    .im-fb-suppress:hover:not(:disabled) {{ background:#e2e8f0; }}
     #dash-footer {{ text-align:center;padding:28px 24px 20px;font-size:12px;color:#a0aec0;border-top:1px solid #e2e8f0;margin-top:8px; }}
     #dash-footer a {{ color:#4fa3e0;text-decoration:none; }}
     #dash-footer a:hover {{ text-decoration:underline; }}
@@ -2213,11 +2221,13 @@ def build_dashboard(portfolio, layers, holdings):
   <button class="dash-tab-btn active" id="tab-btn-portfolio" onclick="showDashTab('portfolio')">Portfolio</button>
   <button class="dash-tab-btn" id="tab-btn-decisions" onclick="showDashTab('decisions')">Decisions</button>
   <button class="dash-tab-btn" id="tab-btn-macro" onclick="showDashTab('macro')">📊 Macro Risk</button>
+  <button class="dash-tab-btn" id="tab-btn-investor" onclick="showDashTab('investor')">🧠 Investor Model</button>
   <button id="nav-hamburger" onclick="toggleNavMenu(event)" aria-label="Menu">&#9776;</button>
   <div id="nav-dropdown">
     <button class="nav-dd-btn" id="tab-dd-btn-portfolio" onclick="showDashTab('portfolio');closeNavMenu()">Portfolio</button>
     <button class="nav-dd-btn" id="tab-dd-btn-decisions" onclick="showDashTab('decisions');closeNavMenu()">Decisions</button>
     <button class="nav-dd-btn" id="tab-dd-btn-macro" onclick="showDashTab('macro');closeNavMenu()">📊 Macro Risk</button>
+    <button class="nav-dd-btn" id="tab-dd-btn-investor" onclick="showDashTab('investor');closeNavMenu()">🧠 Investor Model</button>
     <button class="nav-dd-btn" id="tab-dd-btn-glossary" onclick="showDashTab('glossary');closeNavMenu()">📖 Glossary</button>
   </div>
 </nav>
@@ -2988,6 +2998,23 @@ def build_dashboard(portfolio, layers, holdings):
         <div style="font-size:12px;color:#a0aec0;text-align:center;padding:20px;">Loading…</div>
       </div>
     </div>
+
+  </div>
+</div>
+
+<div id="tab-investor" class="dash-tab-content" style="display:none;">
+  <div style="max-width:800px;margin:0 auto;padding:24px;">
+
+    <div style="margin-bottom:24px;">
+      <div style="font-size:20px;font-weight:700;color:#1a2340;margin-bottom:4px;">🧠 Investor Model</div>
+      <div style="font-size:13px;color:#718096;">Your inferred investment preferences — based on decisions you have made. Confirm, correct, or suppress each one.</div>
+    </div>
+
+    <!-- Learned preferences section -->
+    <div id="im-prefs-wrap"></div>
+
+    <!-- Hard rules section -->
+    <div id="im-rules-wrap" style="margin-top:32px;"></div>
 
   </div>
 </div>
@@ -8233,6 +8260,200 @@ function loadDecisionJournal() {{
 
 document.addEventListener('DOMContentLoaded', () => {{ loadDecisionJournal(); }});
 
+// ── Investor Model Tab ───────────────────────────────────────────────────────
+
+const IM_PREF_LABELS = {{
+  'action_acceptance_rate.BUY':    {{ label: 'Buy recommendation acceptance', fmt: v => (v*100).toFixed(0)+'%', desc: 'Rate at which you accept BUY recommendations' }},
+  'action_acceptance_rate.SELL_CC':{{ label: 'Covered Call acceptance rate',  fmt: v => (v*100).toFixed(0)+'%', desc: 'Rate at which you accept SELL_CC (covered call) recommendations' }},
+  'action_acceptance_rate.TRIM':   {{ label: 'Trim acceptance rate',           fmt: v => (v*100).toFixed(0)+'%', desc: 'Rate at which you accept TRIM recommendations' }},
+  'action_acceptance_rate.EXIT':   {{ label: 'Exit/Sell acceptance rate',      fmt: v => (v*100).toFixed(0)+'%', desc: 'Rate at which you accept EXIT recommendations' }},
+  'cc.preferred_delta':            {{ label: 'Preferred CC option delta',       fmt: v => parseFloat(v).toFixed(3), desc: 'Your typical delta for covered call contracts (lower = more OTM, less assignment risk)' }},
+  'cc.preferred_dte':              {{ label: 'Preferred CC days-to-expiry',     fmt: v => parseFloat(v).toFixed(0)+' days', desc: 'Your preferred days-to-expiration when selling covered calls' }},
+  'sell.score_threshold':          {{ label: 'Sell/Trim score floor',           fmt: v => 'score ≥ '+parseFloat(v).toFixed(0), desc: 'Lowest recommendation score at which you have accepted a trim or exit' }},
+}};
+
+function _imTier(confidence) {{
+  if (confidence >= 80) return {{ label: 'HIGH CONFIDENCE', color: '#276749', bg: '#f0fff4', border: '#9ae6b4' }};
+  if (confidence >= 50) return {{ label: 'MODERATE CONFIDENCE', color: '#744210', bg: '#fffbeb', border: '#f6e05e' }};
+  return {{ label: 'EARLY OBSERVATION', color: '#744210', bg: '#fff8f0', border: '#fbd38d' }};
+}}
+
+function _imValueStr(p) {{
+  var meta = IM_PREF_LABELS[p.preference_key];
+  return meta ? meta.fmt(p.value) : String(p.value);
+}}
+
+function _imLabelStr(p) {{
+  var meta = IM_PREF_LABELS[p.preference_key];
+  return meta ? meta.label : p.preference_key;
+}}
+
+function _imDescStr(p) {{
+  var meta = IM_PREF_LABELS[p.preference_key];
+  return meta ? meta.desc : '';
+}}
+
+function _imNarrativeStr(p) {{
+  var key = p.preference_key;
+  var v = parseFloat(p.value);
+  if (key.startsWith('action_acceptance_rate.')) {{
+    var action = key.split('.').slice(1).join('.').replace('_', ' ');
+    if (v >= 0.75) return 'You readily accept ' + action + ' recommendations (' + (v*100).toFixed(0) + '% acceptance rate).';
+    if (v >= 0.4)  return 'You are selective about ' + action + ' recommendations (' + (v*100).toFixed(0) + '% acceptance rate).';
+    return 'You rarely accept ' + action + ' recommendations (' + (v*100).toFixed(0) + '% acceptance rate).';
+  }}
+  if (key === 'cc.preferred_delta') return 'You tend to sell covered calls at delta ' + v.toFixed(3) + '.';
+  if (key === 'cc.preferred_dte')   return 'You prefer covered calls with roughly ' + v.toFixed(0) + ' days to expiration.';
+  if (key === 'sell.score_threshold') return 'The lowest recommendation score at which you have accepted a trim or exit is ' + v.toFixed(0) + '.';
+  return '';
+}}
+
+function _imFeedbackBtn(pref_id, label, payload, colorClass) {{
+  return '<button class="im-fb-btn im-fb-' + colorClass + '" '
+    + 'data-pref-id="' + pref_id + '" '
+    + "data-payload='" + JSON.stringify(payload) + "' "
+    + 'onclick="imSendFeedback(this)">' + label + '</button>';
+}}
+
+function imSendFeedback(btn) {{
+  var prefId = parseInt(btn.dataset.prefId);
+  var payload = JSON.parse(btn.dataset.payload);
+  var card = btn.closest('.im-pref-card');
+  var btns = card.querySelectorAll('.im-fb-btn');
+  btns.forEach(function(b) {{ b.disabled = true; b.style.opacity = '0.5'; }});
+  btn.textContent = '...';
+  fetch('/api/preferences/' + prefId + '/feedback', {{
+    method: 'POST',
+    headers: {{ 'Content-Type': 'application/json' }},
+    body: JSON.stringify(payload),
+  }})
+  .then(function(r) {{ return r.json(); }})
+  .then(function(data) {{
+    if (!data.ok) {{ btn.textContent = 'Error'; return; }}
+    var feedbackDiv = card.querySelector('.im-feedback-confirm');
+    if (feedbackDiv) {{
+      var msg = payload.suppressed ? 'Suppressed — this preference will no longer influence recommendations.'
+              : payload.outcome === 'confirmed' ? 'Confirmed — noted, this will carry more weight.'
+              : 'Marked incorrect — influence reset to neutral.';
+      feedbackDiv.textContent = msg;
+      feedbackDiv.style.display = 'block';
+    }}
+    // If suppressed, fade the card after a short delay
+    if (payload.suppressed) {{
+      setTimeout(function() {{ card.style.opacity = '0.4'; }}, 800);
+    }}
+  }})
+  .catch(function() {{ btn.textContent = 'Error'; }});
+}}
+
+function loadInvestorModel() {{
+  var wrap = document.getElementById('im-prefs-wrap');
+  if (!wrap) return;
+  wrap.innerHTML = '<div style="color:#aaa;font-size:13px;padding:16px 0;">Loading...</div>';
+
+  Promise.all([
+    fetch('/api/preferences').then(function(r) {{ return r.json(); }}),
+    fetch('/api/strategy-config').then(function(r) {{ return r.json(); }}),
+  ]).then(function(results) {{
+    var prefData = results[0];
+    var cfgData  = results[1];
+
+    // ── Preferences section ──────────────────────────────────────────────────
+    var prefs = (prefData.preferences || []).filter(function(p) {{ return !p.suppressed; }});
+
+    if (!prefs.length) {{
+      wrap.innerHTML = '<div style="background:#f7f8fa;border:1px solid #e2e8f0;border-radius:8px;padding:32px 24px;text-align:center;color:#718096;font-size:14px;">'
+        + 'Not enough decisions yet to infer preferences. Keep using the Decision Queue.'
+        + '</div>';
+    }} else {{
+      var tiers = [
+        {{ minConf: 80, prefs: prefs.filter(function(p) {{ return p.confidence >= 80; }}) }},
+        {{ minConf: 50, prefs: prefs.filter(function(p) {{ return p.confidence >= 50 && p.confidence < 80; }}) }},
+        {{ minConf: 0,  prefs: prefs.filter(function(p) {{ return p.confidence < 50; }}) }},
+      ];
+      var html = '';
+      tiers.forEach(function(tier) {{
+        if (!tier.prefs.length) return;
+        var t = _imTier(tier.minConf || (tier.prefs[0] && tier.prefs[0].confidence) || 0);
+        var tierLabel = tier.minConf >= 80 ? 'HIGH CONFIDENCE (≥ 80%)' : tier.minConf >= 50 ? 'MODERATE CONFIDENCE (50–79%)' : 'EARLY OBSERVATION (< 50%)';
+        t = _imTier(tier.minConf >= 80 ? 80 : tier.minConf >= 50 ? 60 : 30);
+        html += '<div style="margin-bottom:24px;">';
+        html += '<div style="font-size:10px;font-weight:700;letter-spacing:.1em;color:' + t.color + ';text-transform:uppercase;margin-bottom:10px;">' + tierLabel + '</div>';
+        tier.prefs.forEach(function(p) {{
+          html += '<div class="im-pref-card" style="background:' + t.bg + ';border:1px solid ' + t.border + ';border-radius:8px;padding:16px 18px;margin-bottom:10px;">';
+          html += '<div style="font-size:13px;font-weight:600;color:#2d3748;margin-bottom:4px;">' + _imLabelStr(p) + '</div>';
+          html += '<div style="font-size:14px;font-weight:700;color:' + t.color + ';margin-bottom:6px;">' + _imValueStr(p) + '</div>';
+          html += '<div style="font-size:12px;color:#4a5568;margin-bottom:8px;">' + _imNarrativeStr(p) + '</div>';
+          html += '<div style="font-size:11px;color:#718096;margin-bottom:12px;">Evidence: ' + p.sample_size + ' decision' + (p.sample_size !== 1 ? 's' : '') + ' &nbsp;&middot;&nbsp; Confidence: ' + Math.round(p.confidence) + '%</div>';
+          html += '<div style="display:flex;gap:8px;flex-wrap:wrap;">';
+          html += _imFeedbackBtn(p.id, '✓ Correct',          {{ outcome: 'confirmed' }},         'confirm');
+          html += _imFeedbackBtn(p.id, '✗ Incorrect',        {{ outcome: 'rejected' }},           'reject');
+          html += _imFeedbackBtn(p.id, "⊘ Don't use this", {{ suppressed: true }},              'suppress');
+          html += '</div>';
+          html += '<div class="im-feedback-confirm" style="display:none;margin-top:8px;font-size:12px;color:#276749;font-style:italic;"></div>';
+          html += '</div>';
+        }});
+        html += '</div>';
+      }});
+      wrap.innerHTML = html;
+    }}
+
+    // ── Hard rules section ───────────────────────────────────────────────────
+    var rulesWrap = document.getElementById('im-rules-wrap');
+    if (!rulesWrap || !cfgData.ok) return;
+    var cfg = cfgData.config;
+    var rhtml = '<div style="background:#f7f8fa;border:1px solid #e2e8f0;border-radius:8px;padding:18px 20px;">';
+    rhtml += '<div style="font-size:13px;font-weight:700;color:#2d3748;margin-bottom:4px;">Hard Rules — Fixed Strategy Configuration</div>';
+    rhtml += '<div style="font-size:11px;color:#718096;margin-bottom:16px;">These rules are fixed and require manual configuration to change.</div>';
+
+    rhtml += '<div style="font-size:11px;font-weight:700;color:#4a5568;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;">Portfolio Layers</div>';
+    rhtml += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:6px;margin-bottom:16px;">';
+    Object.keys(cfg.layers || {{}}).forEach(function(n) {{
+      var l = cfg.layers[n];
+      rhtml += '<div style="background:#fff;border:1px solid #e2e8f0;border-radius:6px;padding:8px 10px;">'
+        + '<div style="font-size:11px;font-weight:600;color:#2d3748;">L' + n + ': ' + l.name + '</div>'
+        + '<div style="font-size:12px;color:#4a5568;margin-top:2px;">Target: ' + l.target_pct + '%</div>'
+        + '</div>';
+    }});
+    rhtml += '</div>';
+
+    var cc = cfg.covered_calls || {{}};
+    var risk = cfg.risk || {{}};
+    var trig = cfg.triggers || {{}};
+    var rows = [
+      ['CC DTE window', cc.min_dte + '–' + cc.max_dte + ' days (ext: ' + cc.extended_max_dte + ')'],
+      ['CC min bid', '$' + cc.min_bid],
+      ['CC min return floor (r_min)', (cc.r_min*100).toFixed(1) + '%'],
+      ['CC top-N candidates', cc.top_n],
+      ['Layer drift threshold', risk.drift_threshold_pct + 'pp'],
+      ['Layer gross dom cap', risk.layer_gross_dom_pct + '%'],
+      ['Position gross dom cap', risk.holding_gross_dom_pct + '%'],
+      ['Price-move trigger (Z)', trig.price_move_z + 'σ'],
+      ['NAV impact trigger', trig.nav_impact_pct + '%'],
+      ['Macro score change trigger', trig.macro_score_change + ' pts'],
+      ['CC mgmt trigger (DTE)', trig.cc_mgmt_dte + ' days'],
+      ['Tax LT window', trig.tax_lt_window_min + '–' + trig.tax_lt_window_max + ' days'],
+      ['Tax loss min', '$' + trig.tax_loss_min],
+      ['ST tax rate', (trig.st_tax_rate*100).toFixed(0) + '%'],
+    ];
+    rhtml += '<div style="font-size:11px;font-weight:700;color:#4a5568;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;">Strategy Parameters</div>';
+    rhtml += '<table style="width:100%;border-collapse:collapse;font-size:12px;">';
+    rows.forEach(function(row, i) {{
+      rhtml += '<tr style="background:' + (i%2===0?'#fff':'#f7f8fa') + ';">'
+        + '<td style="padding:5px 8px;color:#4a5568;border-bottom:1px solid #e2e8f0;">' + row[0] + '</td>'
+        + '<td style="padding:5px 8px;font-weight:600;color:#2d3748;border-bottom:1px solid #e2e8f0;text-align:right;">' + row[1] + '</td>'
+        + '</tr>';
+    }});
+    rhtml += '</table>';
+    rhtml += '</div>';
+    rulesWrap.innerHTML = rhtml;
+
+  }}).catch(function(err) {{
+    var wrap = document.getElementById('im-prefs-wrap');
+    if (wrap) wrap.innerHTML = '<div style="color:#c53030;font-size:13px;padding:16px 0;">Failed to load investor model: ' + err + '</div>';
+  }});
+}}
+
 function showDashTab(name) {{
   document.querySelectorAll('.dash-tab-content').forEach(function(el) {{ el.style.display = 'none'; }});
   document.querySelectorAll('.dash-tab-btn').forEach(function(el) {{ el.classList.remove('active'); }});
@@ -8244,6 +8465,7 @@ function showDashTab(name) {{
   if (btn)   btn.classList.add('active');
   if (ddBtn) ddBtn.classList.add('active');
   try {{ localStorage.setItem('dashTab', name); }} catch(e) {{}}
+  if (name === 'investor') loadInvestorModel();
 }}
 function toggleNavMenu(e) {{
   e.stopPropagation();

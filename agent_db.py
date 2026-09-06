@@ -258,6 +258,14 @@ def migrate() -> None:
             last_updated    TEXT    NOT NULL,
             evidence_json   TEXT
         );
+
+        CREATE TABLE IF NOT EXISTS preference_feedback (
+            id              INTEGER PRIMARY KEY,
+            preference_id   INTEGER NOT NULL REFERENCES learned_preferences(id),
+            outcome         TEXT,
+            suppressed      INTEGER NOT NULL DEFAULT 0,
+            feedback_at     TEXT    NOT NULL
+        );
     """)
     conn.commit()
 
@@ -286,6 +294,8 @@ def migrate() -> None:
         # 0026 — counterfactual benchmarking
         ("recommendation_outcomes",  "horizon",                 "TEXT"),
         ("recommendation_outcomes",  "hold_return",             "REAL"),
+        # 0028 — investor model
+        ("learned_preferences",      "suppressed",              "INTEGER"),
     ]
     for table, col, col_type in _new_cols:
         try:
@@ -1617,7 +1627,7 @@ def list_recommendations(status: str = "open") -> list[dict]:
     ).fetchall()
 
     # Load preferences once for the whole batch
-    pref_rows = conn.execute("SELECT * FROM learned_preferences").fetchall()
+    pref_rows = conn.execute("SELECT * FROM learned_preferences WHERE COALESCE(suppressed, 0) = 0").fetchall()
     prefs = {r["preference_key"]: dict(r) for r in pref_rows}
 
     recs = []
@@ -1750,13 +1760,35 @@ def upsert_learned_preference(
 
 
 def get_learned_preferences() -> list[dict]:
-    """Return all learned preference rows as dicts."""
+    """Return all learned preference rows as dicts (including suppressed, for the UI)."""
     conn = _connect()
     rows = conn.execute(
-        "SELECT * FROM learned_preferences ORDER BY preference_key"
+        "SELECT * FROM learned_preferences ORDER BY confidence DESC, preference_key"
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def record_preference_feedback(
+    pref_id: int,
+    outcome: str | None,
+    suppressed: bool = False,
+) -> None:
+    """Write a feedback row and optionally set suppressed on the preference."""
+    from datetime import datetime as _dt
+    conn = _connect()
+    conn.execute(
+        """INSERT INTO preference_feedback (preference_id, outcome, suppressed, feedback_at)
+           VALUES (?, ?, ?, ?)""",
+        (pref_id, outcome, 1 if suppressed else 0, _dt.utcnow().isoformat()),
+    )
+    if suppressed:
+        conn.execute(
+            "UPDATE learned_preferences SET suppressed = 1 WHERE id = ?",
+            (pref_id,),
+        )
+    conn.commit()
+    conn.close()
 
 
 def _compute_preference_fit(
