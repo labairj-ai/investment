@@ -589,7 +589,19 @@ def _analyze_ticker(ctx: AgentContext, ticker: str) -> list[Recommendation]:
 def run_covered_call_agent(ctx: AgentContext) -> list[Recommendation]:
     recommendations: list[Recommendation] = []
 
-    if ctx.ticker:
+    if ctx.trigger_events:
+        for event in ctx.trigger_events:
+            if not event.ticker:
+                continue
+            if event.trigger_type == "cc_mgmt_dte":
+                position = _get_open_cc_position(event.ticker)
+                if position:
+                    recommendations.extend(_analyze_roll(ctx, event.ticker, position))
+                else:
+                    print(f"[covered_call] {event.ticker}: cc_mgmt_dte but no open position found, skipping roll")
+            else:
+                recommendations.extend(_analyze_ticker(ctx, event.ticker))
+    elif ctx.ticker:
         recommendations.extend(_analyze_ticker(ctx, ctx.ticker))
     else:
         # Fallback: scan all eligible holdings (shouldn't normally be needed

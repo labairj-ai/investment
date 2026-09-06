@@ -119,12 +119,16 @@ def _run_single_agent(
     agent_type: str,
     handler,
     snapshot: PortfolioSnapshot,
+    events: list | None = None,
     trigger_type: str = "orchestrated",
     ticker: str | None = None,
 ) -> list["Recommendation"]:
     """Run one agent, write results to DB, return its Recommendation list."""
     import agent_db
     from .contracts import AgentContext
+
+    agent_events = events or []
+    primary_trigger = agent_events[0].trigger_type if agent_events else trigger_type
 
     run_id = agent_db.insert_agent_run(
         agent_type=agent_type, scope="portfolio", ticker=ticker,
@@ -133,8 +137,9 @@ def _run_single_agent(
         ctx = AgentContext(
             run_id=run_id,
             snapshot=snapshot,
-            trigger_type=trigger_type,
+            trigger_type=primary_trigger,
             ticker=ticker,
+            trigger_events=agent_events,
         )
         agent_recs: list[Recommendation] = handler(ctx)
 
@@ -179,36 +184,43 @@ def _run_single_agent(
 
 def run_agents(
     snapshot: PortfolioSnapshot,
-    triggered_agents: list[str],
+    events: list,  # list[TriggerEvent]
 ) -> list[Recommendation]:
     """Run triggered producer agents then automatically run Critic on their output.
 
     Pipeline:
-      1. Run all producers (agents in AGENT_ORDER) that appear in triggered_agents.
-         "critic" and "briefing" are silently ignored in triggered_agents — they are
+      1. Run all producers (agents in AGENT_ORDER) that have triggering events.
+         "critic" and "briefing" events are silently ignored — they are
          post-processing stages, not peer agents.
       2. After producers finish, auto-run Critic if it is registered and there are
          any open unreviewed recommendations in the DB.
-      3. Run Briefing last, only if "briefing" appears in triggered_agents.
+      3. Run Briefing last, only if a "briefing" event is present.
 
+    Each agent receives the full list of TriggerEvents for its type via
+    AgentContext.trigger_events, so it knows exactly why it was called.
     LLM calls are serialised by the semaphore installed at module level.
     """
     import agent_db
+    from collections import defaultdict
 
     _stage_set = set(_PIPELINE_STAGES)
-    run_briefing = "briefing" in triggered_agents
-    producer_triggers = set(triggered_agents) - _stage_set
+
+    events_by_agent: dict[str, list] = defaultdict(list)
+    for event in events:
+        events_by_agent[event.agent_type].append(event)
+
+    run_briefing = "briefing" in events_by_agent
 
     recommendations: list[Recommendation] = []
     producers_ran: list[str] = []
 
     for agent_type in AGENT_ORDER:
-        if agent_type not in producer_triggers:
+        if agent_type not in events_by_agent:
             continue
         handler = _registry.get(agent_type)
         if handler is None:
             continue
-        recs = _run_single_agent(agent_type, handler, snapshot)
+        recs = _run_single_agent(agent_type, handler, snapshot, events=events_by_agent[agent_type])
         recommendations.extend(recs)
         producers_ran.append(agent_type)
 

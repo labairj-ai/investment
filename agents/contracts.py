@@ -74,6 +74,7 @@ class AgentContext:
     trigger_type: str
     trigger_key: str | None = None
     ticker: str | None = None        # None for portfolio-scope agents
+    trigger_events: list = field(default_factory=list)  # list[TriggerEvent]
 
 
 @dataclass

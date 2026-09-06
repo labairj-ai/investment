@@ -1053,9 +1053,9 @@ def _run_agent_pipeline(log_path=None) -> None:
         triggered = list({e.agent_type for e in events})
         _log(f"[triggers] {len(events)} events → agents: {triggered}")
 
-        if triggered:
+        if events:
             from agents.orchestrator import run_agents
-            recs = run_agents(snapshot, triggered)
+            recs = run_agents(snapshot, events)
             _log(f"[Orchestrator] {len(recs)} recommendation(s) generated.")
         else:
             _log("[Orchestrator] No agents triggered.")
@@ -4830,8 +4830,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # Kick opportunity hunter if registered (no-ops if not yet built)
             try:
                 import agents.orchestrator as orch
+                from agents.triggers import TriggerEvent
                 snapshot = build_portfolio_snapshot()
-                orch.run_agents(snapshot, triggered_agents=["opportunity_hunter"])
+                orch.run_agents(snapshot, [TriggerEvent(trigger_type="on_demand", agent_type="opportunity_hunter", ticker=ticker)])
                 agent_db.mark_candidate_evaluated(ticker)
             except Exception:
                 pass
@@ -5315,9 +5316,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         def _worker():
             try:
                 import agents.orchestrator as orch
+                from agents.triggers import TriggerEvent
 
                 snapshot = build_portfolio_snapshot()
-                orch.run_agents(snapshot, triggered_agents=[agent_type])
+                orch.run_agents(snapshot, [TriggerEvent(trigger_type="on_demand", agent_type=agent_type, ticker=ticker)])
                 agent_db.finish_agent_run(run_id, status="done")
             except Exception as e:
                 agent_db.finish_agent_run(run_id, status="error", error=str(e))
