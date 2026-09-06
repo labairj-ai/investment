@@ -1487,6 +1487,81 @@ def list_open_unreviewed_recommendations() -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def get_todays_findings() -> dict:
+    """Return today's agent findings and all open recommendations for briefing synthesis.
+
+    Returns:
+        {
+          "findings": {agent_type: [{"ticker", "finding_type", "severity",
+                                     "confidence", "summary", "why_now"}, ...]},
+          "recommendations": [{"ticker", "action", "score", "confidence",
+                                "priority", "agent_type", "why_now", "rationale",
+                                "counter_case", "critic_verdict",
+                                "critic_objection", "critic_confidence_adj"}, ...]
+        }
+    """
+    import time as _time
+    from datetime import date as _date
+    today_start = _time.mktime(_date.today().timetuple())
+    today_end = today_start + 86400
+
+    conn = _connect()
+
+    finding_rows = conn.execute(
+        """SELECT af.ticker, af.finding_type, af.severity, af.confidence,
+                  af.summary, af.why_now, ar.agent_type
+           FROM agent_findings af
+           JOIN agent_runs ar ON ar.id = af.run_id
+           WHERE af.created_at >= ? AND af.created_at < ?
+           ORDER BY af.severity DESC, af.created_at DESC""",
+        (today_start, today_end),
+    ).fetchall()
+
+    findings: dict = {}
+    for r in finding_rows:
+        agent = r["agent_type"] or "unknown"
+        findings.setdefault(agent, []).append({
+            "ticker": r["ticker"],
+            "finding_type": r["finding_type"],
+            "severity": r["severity"],
+            "confidence": r["confidence"],
+            "summary": r["summary"],
+            "why_now": r["why_now"],
+        })
+
+    rec_rows = conn.execute(
+        """SELECT r.ticker, r.action, r.recommendation_score, r.confidence,
+                  r.priority, r.why_now, r.rationale, r.counter_case,
+                  ar.agent_type,
+                  cr.verdict, cr.confidence_adjustment, cr.strongest_objection
+           FROM recommendations r
+           LEFT JOIN agent_runs ar ON ar.id = r.run_id
+           LEFT JOIN critic_reviews cr ON cr.recommendation_id = r.id
+           WHERE r.status = 'open'
+           ORDER BY r.recommendation_score DESC, r.created_at DESC""",
+    ).fetchall()
+    conn.close()
+
+    recs = []
+    for r in rec_rows:
+        recs.append({
+            "ticker": r["ticker"],
+            "action": r["action"],
+            "score": r["recommendation_score"],
+            "confidence": r["confidence"],
+            "priority": r["priority"],
+            "agent_type": r["agent_type"],
+            "why_now": r["why_now"],
+            "rationale": r["rationale"],
+            "counter_case": r["counter_case"],
+            "critic_verdict": r["verdict"],
+            "critic_objection": r["strongest_objection"],
+            "critic_confidence_adj": r["confidence_adjustment"],
+        })
+
+    return {"findings": findings, "recommendations": recs}
+
+
 def get_recent_runs(agent_type: str, ticker: str | None = None, limit: int = 10) -> list[dict]:
     conn = _connect()
     if ticker:

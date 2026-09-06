@@ -1084,7 +1084,7 @@ Be specific. Name the legislation by ID and the matching holding. No generic sta
 
 def generate_daily_insight(force: bool = False) -> dict:
     """
-    Generate today's macro-aware portfolio insight.
+    Generate today's portfolio briefing by synthesizing specialist agent findings.
     Returns the insight dict. Stores in DB. Uses cached result if already run today.
     """
     _init_ai_tables()
@@ -1107,102 +1107,132 @@ def generate_daily_insight(force: bool = False) -> dict:
         return {"error": "AI model unavailable — check MLX server"}
 
     import macro_context
+    import agent_db as _adb
     macro = macro_context.fetch()
+    macro_block = macro.get("formatted_block", "Macro data unavailable.")
 
-    holdings = _load_holdings_csv()
-    prices   = _get_holding_prices_from_db()
+    # Portfolio summary: total value + layer weights with drift
+    prices        = _get_holding_prices_from_db()
     layer_weights = _get_layer_weights_from_db()
     drift_alerts  = _get_drift_alerts(layer_weights)
+    total_value   = sum(v.get("value", 0) or 0 for v in prices.values())
 
-    portfolio_block      = _build_portfolio_block(holdings, prices)
-    layer_block          = _build_layer_block(layer_weights, drift_alerts)
-    macro_block          = macro.get("formatted_block", "Macro data unavailable.")
-    lot_block            = _get_lot_context()
-    realized_block       = _get_realized_context()
-    patterns_block       = _get_behavior_patterns()
-    thesis_health_block  = _build_thesis_health_block(holdings)
+    layer_lines = ["PORTFOLIO SUMMARY:"]
+    if total_value:
+        layer_lines.append(f"  Total value: ${total_value:,.0f}")
+    for label, data in sorted(layer_weights.items()):
+        wt  = data.get("weight_pct", 0)
+        chg = data.get("chg_pct", 0)
+        layer_lines.append(f"  {label}: {wt:.1f}% actual ({chg:+.1f}% today)")
+    if drift_alerts:
+        layer_lines.append("  Drift alerts (≥5pp from target):")
+        for d in drift_alerts:
+            layer_lines.append(
+                f"    {d['layer']}: {d['current']:.1f}% vs {d['target']:.0f}% target ({d['drift']:+.1f}pp)"
+            )
+    portfolio_summary_block = "\n".join(layer_lines)
 
-    framework = "\n".join(f"  {k}: {v}" for k, v in _LAYER_NAMES_LONG.items())
+    # Specialist agent findings (today's runs) + open recommendations
+    agent_data = _adb.get_todays_findings()
+    findings_by_agent = agent_data["findings"]
+    open_recs = agent_data["recommendations"]
 
-    personal_blocks = "\n\n".join(b for b in [lot_block, realized_block, patterns_block] if b)
+    findings_lines = ["SPECIALIST AGENT FINDINGS (today):"]
+    if findings_by_agent:
+        for agent_type, flist in sorted(findings_by_agent.items()):
+            for f in flist:
+                ticker_tag = f"[{f['ticker']}] " if f["ticker"] else ""
+                sev = f["severity"]
+                summary = (f["summary"] or "")[:200]
+                why = (f["why_now"] or "")[:120]
+                why_part = f" | {why}" if why else ""
+                findings_lines.append(
+                    f"  {agent_type}: {ticker_tag}{f['finding_type']} sev={sev} — {summary}{why_part}"
+                )
+    else:
+        findings_lines.append("  No specialist findings recorded for today.")
 
-    # Compact scores (no per-dim reasons) — full-reason block is 4,000+ tokens and exceeds
-    # the 8,192-token context limit when combined with other insight blocks.
-    _, macro_scores_block = _get_macro_scores_block(compact=True)
+    recs_lines = [f"\nOPEN RECOMMENDATIONS ({len(open_recs)} total):"]
+    if open_recs:
+        for r in open_recs[:20]:  # cap to avoid prompt bloat
+            ticker = r["ticker"]
+            action = r["action"]
+            score  = r["score"]
+            conf   = r["confidence"]
+            pri    = r["priority"]
+            agent  = r["agent_type"] or "?"
+            why    = (r["why_now"] or "")[:160]
+            rationale = (r["rationale"] or "")[:160]
+            critic_v = r["critic_verdict"] or ""
+            critic_o = (r["critic_objection"] or "")[:100]
+            critic_part = f" | critic: {critic_v}" + (f" — {critic_o}" if critic_o else "") if critic_v else ""
+            recs_lines.append(
+                f"  [{ticker}] {action} | score={score} conf={conf} pri={pri} | {agent}{critic_part}"
+            )
+            if why:
+                recs_lines.append(f"    why: {why}")
+            if rationale and rationale != why:
+                recs_lines.append(f"    rationale: {rationale}")
+    else:
+        recs_lines.append("  No open recommendations.")
 
-    # If today's news summaries (per-ticker AI analysis) are already cached, surface their
-    # findings so the insight AI can synthesize them rather than re-derive from raw headlines
-    news_findings_block = ""
+    # News outlook summary (pre-computed — compact, no per-ticker details)
+    news_block = ""
     news_summaries, _ = get_cached_news_summaries_today()
     if news_summaries and not news_summaries.get("_failed"):
         ol = news_summaries.get("_outlook") or {}
-        lines = ["TODAY'S HOLDING NEWS ANALYSIS (pre-computed findings — integrate these):"]
+        news_lines = ["NEWS OUTLOOK (pre-computed highlights):"]
         if ol.get("top_risk"):
-            lines.append(f"  Top risk flagged: {ol['top_risk']}")
+            news_lines.append(f"  Top risk: {ol['top_risk']}")
         if ol.get("top_opportunity"):
-            lines.append(f"  Top opportunity: {ol['top_opportunity']}")
+            news_lines.append(f"  Top opportunity: {ol['top_opportunity']}")
         if ol.get("tax_watch"):
-            lines.append(f"  Tax watch: {ol['tax_watch']}")
+            news_lines.append(f"  Tax watch: {ol['tax_watch']}")
         if ol.get("action_items"):
-            lines.append("  Flagged action items:")
-            for item in ol["action_items"]:
-                lines.append(f"    - {item}")
-        per_ticker = [(k, v) for k, v in news_summaries.items()
-                      if isinstance(v, dict) and not k.startswith("_")]
-        if per_ticker:
-            lines.append("  Per-ticker highlights:")
-            for ticker, d in per_ticker:
-                snippet = (d.get("news") or "")[:130]
-                if snippet:
-                    lines.append(f"    {ticker}: {snippet}")
-                if d.get("leg_risk"):
-                    lines.append(f"      Legislative risk: {d['leg_risk'][:120]}")
-                if d.get("leg_opp"):
-                    lines.append(f"      Legislative opp: {d['leg_opp'][:120]}")
-        news_findings_block = "\n".join(lines) + "\n"
+            for item in (ol["action_items"] or [])[:4]:
+                news_lines.append(f"  - {item}")
+        if len(news_lines) > 1:
+            news_block = "\n".join(news_lines) + "\n\n"
 
-    tickers = list(dict.fromkeys(
-        str(h.get("Stock", "")).strip().upper()
-        for h in holdings if h.get("Stock")
-    ))
+    specialist_block = "\n".join(findings_lines) + "\n" + "\n".join(recs_lines)
 
-    prompt = f"""You are a sophisticated investment advisor analyzing a personal portfolio. Return ONLY valid JSON — no markdown, no extra text.
-
-INVESTMENT FRAMEWORK (5-layer structure):
-{framework}
-
-{portfolio_block}
-
-{layer_block}
+    prompt = f"""You are a sophisticated investment advisor writing a daily portfolio briefing. Your job is to SYNTHESIZE the specialist agent findings below — not re-analyze the portfolio from scratch. Return ONLY valid JSON — no markdown, no extra text.
 
 {macro_block}
 
-{personal_blocks}
-{macro_scores_block}
-{thesis_health_block}
-{news_findings_block}
-IMPORTANT — be specific, not generic:
-- Reference holdings by ticker name (e.g. BRK-B, SCHD, GRMN), not just by layer
-- Connect macro signals to SPECIFIC held positions and their current macro scores
-- For tax timing, reference specific tickers and their lot dates or LT thresholds
-- Acknowledge accumulation patterns where relevant (e.g. SCHD as DRIP position)
-- Do not give generic market commentary — tie every observation to THIS portfolio
+{portfolio_summary_block}
+
+{specialist_block}
+
+{news_block}INSTRUCTIONS:
+- Open with the most important issue flagged by specialist agents today
+- Reference agents by name: "Guardian flagged GRMN...", "CC Agent recommends...", "Critic approved/rejected..."
+- If critic reviewed a recommendation, include the verdict and key objection in risk_flags
+- For tax_timing_note and tax_opportunity: use agent findings if available; otherwise note "No agent tax findings today"
+- If no material findings exist, say so concisely ("No material specialist findings today — routine monitoring only")
+- Do not invent risks not grounded in the findings above
+- Do not give generic market commentary — tie every observation to specific tickers from the findings
 
 Return exactly this JSON structure:
 {{
-  "macro_summary": "<2-3 sentence description of today's macro regime and its dominant investment implications for this portfolio>",
+  "macro_summary": "<2-3 sentence description of today's macro regime and its most relevant implication for this specific portfolio based on layer weights and any flagged drift>",
   "risk_flags": [
-    "<held ticker: plain-English risk in one sentence — e.g. 'GRMN: 10Y yield at 4.7% compresses its growth multiple (rate sensitivity 7/10)'>",
-    "<held ticker: plain-English risk in one sentence — e.g. 'NOC: strong dollar pressures overseas defense contract margins (dollar sensitivity 8/10)'>",
-    "<held ticker: news-driven or structural risk not captured by scores — concrete and specific>"
+    "<agent name + ticker: specific risk from findings — e.g. 'Guardian flagged GRMN: 10Y yield at 4.7% compresses its growth multiple'>",
+    "<agent name + ticker: recommendation with critic verdict if reviewed — e.g. 'CC Agent: SELL_CC on EW (score=78) — Critic APPROVED'>",
+    "<additional finding or 'No further material risks flagged'>"
   ],
-  "tax_timing_note": "<name specific tickers and lot dates worth acting on — approaching LT thresholds, TLH candidates, or realized gain offsets — or 'No immediate tax flags'>",
-  "key_question": "<the single most important portfolio decision for this week — specific and actionable, not generic>",
-  "tax_opportunity": "<specific ticker + lot date combination worth acting on for tax optimization, or 'None this week'>",
+  "tax_timing_note": "<tax agent findings if any, or 'No agent tax findings today'>",
+  "key_question": "<the single most important portfolio decision surfaced by today's agent findings — specific and actionable>",
+  "tax_opportunity": "<specific ticker from tax agent findings, or 'None this week'>",
   "legislative_watch": "<apply the LEGISLATIVE CONNECTION RULE: only name a bill if it has a direct one-step impact on a specific held ticker's actual industry or business. Name the bill by ID, the holding, the mechanism, and the stage. If no bill qualifies, write 'No material legislation this week'>"
 }}
 
 {_LEG_RULE}"""
+
+    # Log estimated prompt size vs old approach for token reduction verification
+    est_tokens = len(prompt) // 4
+    print(f"[DailyInsight] New prompt ~{est_tokens} tokens "
+          f"({len(findings_by_agent)} agent types, {len(open_recs)} recs)")
 
     # Collect both reasoning and content tokens: Qwen3 thinking models sometimes
     # put the final answer in delta.reasoning tail (content stays empty when the
