@@ -1,7 +1,7 @@
 # Build Canonical build_portfolio_snapshot() Function
 
 - **ID:** 0037
-- **Status:** backlog
+- **Status:** in-progress
 - **Created:** 2026-09-06
 - **Priority:** high
 - **Depends:** none

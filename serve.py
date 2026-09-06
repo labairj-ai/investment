@@ -351,6 +351,23 @@ def _init_cc_table():
 _init_cc_table()
 agent_db.migrate()
 
+# Mark any agent_runs left in 'running' state as failed — they were killed by a
+# previous service restart and will never complete on their own.
+def _cleanup_stale_runs() -> None:
+    import time as _t
+    conn = agent_db._connect()
+    cur = conn.execute(
+        "UPDATE agent_runs SET status='error', error='Process killed (service restart)', "
+        "finished_at=? WHERE status='running'",
+        (_t.time(),),
+    )
+    if cur.rowcount:
+        print(f"[Startup] Cleaned up {cur.rowcount} stale agent_run(s) left in 'running' state.")
+    conn.commit()
+    conn.close()
+
+_cleanup_stale_runs()
+
 
 # ── Cost-lot tracking table ───────────────────────────────────────────────────
 def _init_lots_table():
@@ -617,7 +634,7 @@ def _run_daily():
         today = now.date().isoformat()
         if now.weekday() == 5 and now.hour >= 7 and not already_ran(today):
             print(f"[Scheduler] Running newsletter for {today}…")
-            if run(send_email=True):
+            if run(send_email=False):
                 print(f"[Scheduler] Done for {today}.")
                 do_backup(today)
             else:
@@ -1002,107 +1019,8 @@ threading.Thread(target=_run_outcome_evaluator, daemon=True).start()
 # ── Agent pipeline helpers ────────────────────────────────────────────────────
 
 def build_portfolio_snapshot():
-    """Build a fully-populated PortfolioSnapshot from the latest DB data.
-
-    Reads holding_day for prices/weights, holdings.csv for shares/avg_cost,
-    layer_day for layer weights, and holding_macro_scores for macro scores.
-    Returns a PortfolioSnapshot with real data; fields default to 0 if DB is
-    not yet populated for today (retry logic lives in the caller).
-    """
-    import csv as _csv2
-    from agents.contracts import PortfolioSnapshot, HoldingSnapshot
-    from strategy_config import LAYER_LABELS
-
-    db = PROJECT_DIR / "out" / "investment.db"
-
-    # holdings.csv: source of truth for shares and avg_cost
-    csv_map: dict = {}
-    csv_path = PROJECT_DIR / "holdings.csv"
-    if csv_path.exists():
-        with open(csv_path, newline="") as _f:
-            for row in _csv2.DictReader(_f):
-                t = (row.get("Stock") or "").strip().upper()
-                if t:
-                    try:
-                        csv_map[t] = {
-                            "shares": float(row.get("Shares") or 0),
-                            "avg_cost": float(row.get("AvgCost") or 0),
-                            "layer": int(row.get("Layer") or 0),
-                        }
-                    except (ValueError, TypeError):
-                        pass
-
-    price_map: dict = {}
-    total_value = 0.0
-    layer_weights: dict = {}
-    macro_scores: dict = {}
-
-    if db.exists():
-        _conn = sqlite3.connect(str(db), timeout=10)
-        _conn.row_factory = sqlite3.Row
-        try:
-            # holding_day: latest prices, market values, weight_pct
-            _hday = _conn.execute("SELECT MAX(day) FROM holding_day").fetchone()[0]
-            if _hday:
-                for r in _conn.execute(
-                    "SELECT ticker, price, value, weight_pct FROM holding_day WHERE day=?",
-                    (_hday,),
-                ):
-                    price_map[r["ticker"]] = {
-                        "price": r["price"] or 0.0,
-                        "value": r["value"] or 0.0,
-                        "weight_pct": r["weight_pct"] or 0.0,
-                    }
-                prow = _conn.execute(
-                    "SELECT total_value FROM portfolio_day WHERE day=?", (_hday,)
-                ).fetchone()
-                if prow:
-                    total_value = prow["total_value"] or 0.0
-
-            # layer_day: {layer_number: weight_pct}
-            _lday = _conn.execute("SELECT MAX(day) FROM layer_day").fetchone()[0]
-            if _lday:
-                _label_to_num = {v: k for k, v in LAYER_LABELS.items()}
-                for r in _conn.execute(
-                    "SELECT layer, weight_pct FROM layer_day WHERE day=?", (_lday,)
-                ):
-                    num = _label_to_num.get(r["layer"])
-                    if num is not None:
-                        layer_weights[num] = r["weight_pct"] or 0.0
-
-            # holding_macro_scores: {ticker: parsed scores dict}
-            for r in _conn.execute(
-                "SELECT ticker, scores FROM holding_macro_scores"
-            ):
-                try:
-                    macro_scores[r["ticker"]] = json.loads(r["scores"])
-                except Exception:
-                    pass
-        finally:
-            _conn.close()
-
-    holdings = []
-    for ticker, info in csv_map.items():
-        pdata = price_map.get(ticker, {})
-        holdings.append(HoldingSnapshot(
-            ticker=ticker,
-            layer=info["layer"],
-            shares=info["shares"],
-            avg_cost=info["avg_cost"],
-            current_price=pdata.get("price", 0.0),
-            market_value=pdata.get("value", 0.0),
-            weight_pct=pdata.get("weight_pct", 0.0),
-        ))
-
-    from datetime import date as _date2
-    return PortfolioSnapshot(
-        date=_date2.today().isoformat(),
-        total_value=total_value,
-        holdings=holdings,
-        layer_weights=layer_weights,
-        macro_scores=macro_scores,
-        generated_at=time.time(),
-    )
+    from agents.snapshot import build_portfolio_snapshot as _build
+    return _build()
 
 
 def _run_agent_pipeline(log_path=None) -> None:
@@ -4912,11 +4830,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # Kick opportunity hunter if registered (no-ops if not yet built)
             try:
                 import agents.orchestrator as orch
-                from agents.contracts import PortfolioSnapshot
-                snapshot = PortfolioSnapshot(
-                    date="", total_value=0, holdings=[],
-                    layer_weights={}, macro_scores={}, generated_at=0,
-                )
+                snapshot = build_portfolio_snapshot()
                 orch.run_agents(snapshot, triggered_agents=["opportunity_hunter"])
                 agent_db.mark_candidate_evaluated(ticker)
             except Exception:
@@ -5401,57 +5315,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         def _worker():
             try:
                 import agents.orchestrator as orch
-                from agents.contracts import PortfolioSnapshot, HoldingSnapshot
-                from datetime import date as _date
-                import csv as _csv
 
-                # Build snapshot with current holdings so NO_ACTION recording works
-                holdings = []
-                holdings_csv = PROJECT_DIR / "holdings.csv"
-                prices = {}
-                try:
-                    conn = agent_db._connect()
-                    day = conn.execute("SELECT MAX(day) FROM holding_day").fetchone()[0]
-                    if day:
-                        for r in conn.execute(
-                            "SELECT ticker, weight_pct, value, layer, change_pct "
-                            "FROM holding_day WHERE day=?", (day,)
-                        ).fetchall():
-                            prices[r["ticker"]] = {
-                                "weight_pct": r["weight_pct"] or 0,
-                                "value": r["value"] or 0,
-                                "layer": r["layer"],
-                            }
-                    conn.close()
-                except Exception:
-                    pass
-
-                if holdings_csv.exists():
-                    with open(holdings_csv) as f:
-                        total_val = sum(p["value"] for p in prices.values()) or 1
-                        for row in _csv.DictReader(f):
-                            t = (row.get("Stock") or "").strip().upper()
-                            if not t:
-                                continue
-                            p = prices.get(t, {})
-                            holdings.append(HoldingSnapshot(
-                                ticker=t,
-                                layer=int(row.get("Layer") or 0),
-                                shares=float(row.get("Shares") or 0),
-                                avg_cost=float(row.get("AvgCost") or 0),
-                                current_price=p.get("value", 0) / max(float(row.get("Shares") or 1), 0.001),
-                                market_value=p.get("value", 0),
-                                weight_pct=p.get("weight_pct", 0),
-                            ))
-
-                snapshot = PortfolioSnapshot(
-                    date=str(_date.today()),
-                    total_value=sum(h.market_value for h in holdings),
-                    holdings=holdings,
-                    layer_weights={},
-                    macro_scores={},
-                    generated_at=time.time(),
-                )
+                snapshot = build_portfolio_snapshot()
                 orch.run_agents(snapshot, triggered_agents=[agent_type])
                 agent_db.finish_agent_run(run_id, status="done")
             except Exception as e:

@@ -85,42 +85,11 @@ def _check_thesis_version(dep: dict, versions: dict[str, int]) -> str | None:
 def _trigger_reeval(ticker: str, agent_type: str) -> None:
     """Fire the original agent for this ticker via the orchestrator."""
     try:
-        import csv as _csv
-        from agents.contracts import PortfolioSnapshot, HoldingSnapshot, AgentContext
+        from agents.contracts import AgentContext
+        from agents.snapshot import build_portfolio_snapshot
         import agents.orchestrator as orch
 
-        holdings_csv = PROJECT_DIR / "holdings.csv"
-        holdings = []
-        if holdings_csv.exists():
-            with open(holdings_csv) as f:
-                for row in _csv.DictReader(f):
-                    t = (row.get("Stock") or "").strip().upper()
-                    if t:
-                        holdings.append(HoldingSnapshot(
-                            ticker=t,
-                            layer=int(row.get("Layer") or 0),
-                            shares=0, avg_cost=0, current_price=0,
-                            market_value=0, weight_pct=0,
-                        ))
-
-        # Inject prices from holding_day
-        prices = _latest_prices()
-        holdings = [
-            HoldingSnapshot(
-                ticker=h.ticker, layer=h.layer,
-                shares=0, avg_cost=0,
-                current_price=prices.get(h.ticker, 0.0),
-                market_value=0, weight_pct=0,
-            )
-            for h in holdings
-        ]
-
-        snapshot = PortfolioSnapshot(
-            date=str(time.strftime("%Y-%m-%d")),
-            total_value=0, holdings=holdings,
-            layer_weights={}, macro_scores={},
-            generated_at=time.time(),
-        )
+        snapshot = build_portfolio_snapshot()
         run_id = agent_db.insert_agent_run(
             agent_type=agent_type, scope="portfolio", ticker=ticker,
             trigger_type="dep_superseded",
