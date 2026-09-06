@@ -162,6 +162,8 @@ def run_agents(
                     counter_case=rec.counter_case,
                     no_action_case=rec.no_action_case,
                     valid_until=rec.valid_until,
+                    rationale_class=rec.rationale_class,
+                    input_hash=rec.input_hash,
                 )
                 if rec.dependencies:
                     agent_db.write_dependencies(rec_id, rec.dependencies)

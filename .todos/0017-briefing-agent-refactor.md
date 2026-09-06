@@ -1,7 +1,7 @@
 # Refactor Daily Briefing Agent to Consume Specialist Findings
 
 - **ID:** 0017
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-05
 - **Priority:** normal
 - **Depends:** 0010, 0011, 0012, 0013, 0014, 0015
@@ -48,13 +48,22 @@ Rewrite the briefing agent to be a synthesis layer, not a research layer.
 
 `portfolio_ai.py` (generate_daily_insight function), `agent_db.py` (read findings for today's run), `serve.py` (briefing triggered after orchestrator completes), `generate_dashboard.py` (AI Insight panel unchanged)
 
+## Outcome
+
+- `agent_db.get_todays_findings()` added: returns today's `agent_findings` rows grouped by agent_type + all open recommendations with critic verdicts.
+- `generate_daily_insight()` rewritten: drops 7 raw data blocks (holdings table, layer block, lot context, realized context, behavior patterns, macro scores, thesis health); replaces with specialist findings block + compact portfolio summary (total value + layer weights) + macro block + news outlook summary (4 lines, no per-ticker).
+- Token reduction: **74%** on data blocks (2,825 → 746 tokens; full prompt ~60–80% smaller).
+- Briefing now cites agent findings by name: "JOBY: Thesis health 54/100 violated (gross margins below 45% threshold)" came directly from `thesis_monitor` agent finding.
+- Output JSON schema unchanged — dashboard renders identically.
+- QA (2026-09-05 22:00 ET): force=1 generated fresh briefing in ~75s, zero JS errors, panel rendered, specific tickers referenced (GRMN, NOC, JOBY, SNA, ITW, VVIAX, STZ).
+
 ## Done when
 
-- [ ] Briefing prompt contains specialist findings, not raw holdings/prices
-- [ ] Token count of briefing prompt measurably smaller than current (log both)
-- [ ] `GET /api/ai/daily` still returns valid briefing content
-- [ ] Briefing references specific ticker findings by name ("Guardian flagged GRMN at 2.3σ...")
-- [ ] If no agent findings exist today, briefing gracefully notes "no material findings"
-- [ ] Existing AI Insight panel in dashboard renders the new briefing without layout changes
-- [ ] Browser QA (mandatory — do not skip): After refactor, trigger a daily briefing via `GET /api/ai/daily` and confirm valid content returned. Open the dashboard in a browser and verify: (a) zero JS console errors, (b) AI Insight panel renders the new briefing without layout changes, (c) briefing text references specific ticker findings by name (not just raw prices). Also log token counts of old vs new prompt to confirm measurable reduction. Do NOT check this box without completing live browser testing.
+- [x] Briefing prompt contains specialist findings, not raw holdings/prices
+- [x] Token count of briefing prompt measurably smaller than current (log both)
+- [x] `GET /api/ai/daily` still returns valid briefing content
+- [x] Briefing references specific ticker findings by name ("Guardian flagged GRMN at 2.3σ...")
+- [x] If no agent findings exist today, briefing gracefully notes "no material findings"
+- [x] Existing AI Insight panel in dashboard renders the new briefing without layout changes
+- [x] Browser QA (mandatory — do not skip): After refactor, trigger a daily briefing via `GET /api/ai/daily` and confirm valid content returned. Open the dashboard in a browser and verify: (a) zero JS console errors, (b) AI Insight panel renders the new briefing without layout changes, (c) briefing text references specific ticker findings by name (not just raw prices). Also log token counts of old vs new prompt to confirm measurable reduction. Do NOT check this box without completing live browser testing.
 

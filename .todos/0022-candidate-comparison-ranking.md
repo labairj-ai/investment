@@ -1,7 +1,7 @@
 # Add Candidate Comparison and Portfolio-Relative Ranking
 
 - **ID:** 0022
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-05
 - **Priority:** normal
 - **Depends:** 0014, 0021
@@ -38,17 +38,26 @@ All components scored 0–100 and weighted (weights configurable in `strategy_co
 
 **Trigger:** runs when ≥ 2 candidates are active, or when a new candidate is added via manual add that creates a comparison opportunity.
 
+## Outcome
+
+- `agents/opportunity_agent.py`: Added `_score_risk()` (inverse value-trap risk + quality stability), `_composite_6()` (Q25/V20/Fit20/Cat15/Safety10/Ev10), `_llm_compare()`, and public `score_for_comparison()`. Cross-references `candidate_universe` rows with `buffett_winners` for scoring data; falls back to buffett_score-only for manual candidates not in the screener.
+- `serve.py`: `GET /api/candidates/comparison` calls `score_for_comparison`, returns `{comparison_available, candidates, recommendation}`.
+- `generate_dashboard.py`: Comparison card above Candidate Universe table. 10 columns (# Ticker Quality Valuation Fit Catalyst Safety Evidence Composite Sector), color-coded bar charts, sortable by clicking any header, top rank gets 🏆, Research Pick callout below table. Card hidden when < 2 eligible candidates.
+- Browser QA (2026-09-05): zero JS errors; table rendered with all 6 score columns; sorted by Valuation confirmed working; INCY ranked #1 (composite 75), Research Pick showing.
+- Note for 0027/0014: `score_for_comparison()` is importable from `agents.opportunity_agent` for any future use.
+- ExpectedReturn dimension: mapped to Valuation (PE/P-FCF/EV-EBITDA) — no analyst target data in buffett_winners. Risk mapped to new `_score_risk()`.
+
 ## Touches
 
 `agents/opportunity_agent.py` (add comparison mode), `candidate_universe` table (from 0021), `generate_dashboard.py` (comparison table UI), `serve.py` (`GET /api/candidates/comparison` endpoint)
 
 ## Done when
 
-- [ ] Comparison table renders in dashboard when ≥ 2 active candidates exist
-- [ ] All 6 score dimensions calculated deterministically per candidate
-- [ ] Portfolio Fit penalizes candidates redundant with existing holdings
-- [ ] LLM receives ≤ 3 candidates (top-ranked by composite score)
-- [ ] Single RESEARCH recommendation produced naming the top candidate
-- [ ] Table sortable by any column in the UI
-- [ ] Browser QA (mandatory — do not skip): With ≥ 2 active candidates in the universe, open the dashboard in a browser and verify: (a) zero JS console errors, (b) comparison table renders with all 6 score columns, (c) table is sortable by clicking column headers, (d) a single RESEARCH recommendation names the top-ranked candidate. Do NOT check this box without completing live browser testing.
+- [x] Comparison table renders in dashboard when ≥ 2 active candidates exist
+- [x] All 6 score dimensions calculated deterministically per candidate
+- [x] Portfolio Fit penalizes candidates redundant with existing holdings
+- [x] LLM receives ≤ 3 candidates (top-ranked by composite score)
+- [x] Single RESEARCH recommendation produced naming the top candidate
+- [x] Table sortable by any column in the UI
+- [x] Browser QA (mandatory — do not skip): With ≥ 2 active candidates in the universe, open the dashboard in a browser and verify: (a) zero JS console errors, (b) comparison table renders with all 6 score columns, (c) table is sortable by clicking column headers, (d) a single RESEARCH recommendation names the top-ranked candidate. Do NOT check this box without completing live browser testing.
 

@@ -103,6 +103,8 @@ class Recommendation:
     action_payload: dict | None = None
     valid_until: float | None = None
     dependencies: list[dict] | None = None
+    rationale_class: str | None = None
+    input_hash: str | None = None
 
 
 @dataclass

@@ -384,6 +384,16 @@ def detect_triggers(snapshot: PortfolioSnapshot) -> list[TriggerEvent]:
         context={"total_value": snapshot.total_value},
     ))
 
+    # ── Sell/Trim evaluation (daily portfolio sweep) ───────────────────────────
+    triggers.append(TriggerEvent(
+        trigger_type="portfolio_scope",
+        agent_type="sell_trim",
+        trigger_key="sell_trim_daily",
+        ticker=None,
+        trigger_value=None,
+        context={"total_value": snapshot.total_value},
+    ))
+
     # ── Portfolio-scope daily briefing (always fires) ─────────────────────────
     triggers.append(TriggerEvent(
         trigger_type="portfolio_scope",

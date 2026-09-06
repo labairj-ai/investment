@@ -1,7 +1,7 @@
 # Build Sell/Trim Agent (Phase 5)
 
 - **ID:** 0019
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-05
 - **Priority:** normal
 - **Depends:** 0005, 0006, 0007, 0012, 0020
@@ -60,12 +60,34 @@ TaxFriction calculated from actual tax lots (ST vs LT rate, lot-by-lot). A good 
 
 ## Done when
 
-- [ ] All 5 output actions implemented and schema-validated
-- [ ] SellStrength calculated deterministically from T, F, V, P, O components before LLM call
-- [ ] Tax calculation is separate from SellStrength — does not inflate or suppress the investment score
-- [ ] TRIM and EXIT recommendations include a `primary_rationale` from the 7 rationale classes
-- [ ] Price-as-reason is structurally impossible: agent is gated by trigger_type, not price move alone
-- [ ] HOLD and NO_ACTION stored with input hash (per 0024 dedup logic)
-- [ ] Rationale class stored on `recommendations` row for later outcome analysis
-- [ ] QA (backend): Run the Sell/Trim agent for a holding with a known over-concentration (position > max_weight_pct). Confirm: (a) SellStrength computed deterministically before LLM call (log the components T, F, V, P, O), (b) tax calculation does not change the SellStrength value, (c) a TRIM or EXIT recommendation row written to DB with rationale_class set. Log the recommendation row before checking this box.
+- [x] All 5 output actions implemented and schema-validated
+- [x] SellStrength calculated deterministically from T, F, V, P, O components before LLM call
+- [x] Tax calculation is separate from SellStrength — does not inflate or suppress the investment score
+- [x] TRIM and EXIT recommendations include a `primary_rationale` from the 7 rationale classes
+- [x] Price-as-reason is structurally impossible: agent is gated by trigger_type, not price move alone
+- [x] HOLD and NO_ACTION stored with input hash (per 0024 dedup logic)
+- [x] Rationale class stored on `recommendations` row for later outcome analysis
+- [x] QA (backend): Run the Sell/Trim agent for a holding with a known over-concentration (position > max_weight_pct). Confirm: (a) SellStrength computed deterministically before LLM call (log the components T, F, V, P, O), (b) tax calculation does not change the SellStrength value, (c) a TRIM or EXIT recommendation row written to DB with rationale_class set. Log the recommendation row before checking this box.
+
+## Outcome
+
+`agents/sell_trim_agent.py` — new 210-line agent implementing the full 5-component SellStrength formula (`0.40*T + 0.20*F + 0.15*V + 0.15*P + 0.10*O`). Registered via `register_agent("sell_trim", _run)`, fires daily as a `portfolio_scope` trigger from `triggers.py`.
+
+Supporting changes:
+- `agent_db.py`: added `rationale_class` column migration + `insert_recommendation()` parameter
+- `agents/contracts.py`: added `rationale_class` and `input_hash` to `Recommendation` dataclass
+- `agents/orchestrator.py`: passes both new fields through; `sell_trim` in `AGENT_ORDER` between `tax` and `critic`
+- `agents/triggers.py`: daily `portfolio_scope` trigger for `sell_trim`
+
+QA result on optiplex (2026-09-05):
+```
+[SellTrim] BRK-B: ss=58  T=100 F=0 V=25 P=90 O=10  weight=23.9%
+action=TRIM  score=63  rationale_class=PORTFOLIO_CONCENTRATION
+[PASS] SellStrength=58.2 matches formula (58.2), tax not included
+[PASS] rationale_class stored; action is actionable (not HOLD/NO_ACTION)
+```
+
+Tax note included in payload but not in ss: `Est. tax on full exit: $599 (53 LT sh, 47 ST sh); net gain after tax $2,345`.
+
+Three bugs fixed during development: wrong import name (`score_evidence` → `calculate_confidence`), LLM connection fallback, and flat dict schema (not JSON Schema spec) required by `generate_structured`.
 

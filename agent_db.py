@@ -261,6 +261,8 @@ def migrate() -> None:
         ("recommendations",   "updated_at",        "REAL"),
         # 0025 — dependency engine
         ("recommendations",   "superseded_reason", "TEXT"),
+        # 0019 — sell/trim rationale class
+        ("recommendations",   "rationale_class",   "TEXT"),
     ]
     for table, col, col_type in _new_cols:
         try:
@@ -357,6 +359,7 @@ def insert_recommendation(
     no_action_case: str | None = None,
     valid_until: float | None = None,
     input_hash: str | None = None,
+    rationale_class: str | None = None,
 ) -> int:
     now = time.time()
     conn = _connect()
@@ -364,13 +367,14 @@ def insert_recommendation(
         """INSERT INTO recommendations
            (run_id, ticker, action, action_payload_json, recommendation_score,
             confidence, priority, why_now, rationale, counter_case,
-            no_action_case, status, valid_until, input_hash, updated_at, created_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            no_action_case, status, valid_until, input_hash, updated_at,
+            created_at, rationale_class)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (run_id, ticker, action,
          json.dumps(action_payload) if action_payload else None,
          recommendation_score, confidence, priority, why_now, rationale,
          counter_case, no_action_case, "open", valid_until,
-         input_hash, now, now),
+         input_hash, now, now, rationale_class),
     )
     rec_id = cur.lastrowid
     conn.commit()
