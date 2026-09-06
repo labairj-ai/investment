@@ -48,12 +48,15 @@ _CC_MIN_SHARES = 100
 
 
 def _has_open_cc(ticker: str) -> bool:
-    """Return True if an open covered call position exists for this ticker."""
+    """Return True if an open covered call position exists for this ticker.
+    Checks both the raw ticker and the dot→dash normalized form (BRK.B ↔ BRK-B).
+    """
+    alt = ticker.replace(".", "-") if "." in ticker else ticker.replace("-", ".")
     try:
         conn = sqlite3.connect(str(_DB), timeout=5)
         row = conn.execute(
-            "SELECT 1 FROM cc_positions WHERE ticker=? AND status='open' LIMIT 1",
-            (ticker,),
+            "SELECT 1 FROM cc_positions WHERE ticker IN (?,?) AND status='open' LIMIT 1",
+            (ticker, alt),
         ).fetchone()
         conn.close()
         return row is not None
@@ -144,8 +147,10 @@ def _analyze_ticker(ctx: AgentContext, ticker: str) -> list[Recommendation]:
         print(f"[covered_call] {ticker}: not found in snapshot — skipping")
         return []
 
-    if ctx.trigger_type == "cc_eligible" and _has_open_cc(ticker):
-        print(f"[covered_call] {ticker}: open CC exists — skipping")
+    if _has_open_cc(ticker):
+        # Open position exists — a ROLL analysis is a separate flow (todo 0057).
+        # Never recommend a new SELL_CC over an existing open position.
+        print(f"[covered_call] {ticker}: open CC exists — skipping new SELL_CC")
         return []
 
     print(f"[covered_call] Analyzing {ticker} "
@@ -287,6 +292,21 @@ def _analyze_ticker(ctx: AgentContext, ticker: str) -> list[Recommendation]:
         "score": round(float(row["score"]), 2),
         "candidates_evaluated": len(candidates),
     }
+
+    # Financial summary — prepended to why_now so it appears first in the card
+    contracts   = action_payload["contracts"]
+    ep          = action_payload["exec_premium"]
+    cur_price   = action_payload["current_price"] or holding.avg_cost
+    dte         = action_payload["dte"]
+    total_income   = round(ep * contracts * 100, 2)
+    breakeven      = round(cur_price - ep, 2)
+    annual_pct     = round((ep / cur_price) * (365 / dte) * 100, 1) if cur_price and dte else 0
+    financial_line = (
+        f"Income: ${total_income:,.0f} ({contracts} contract{'s' if contracts != 1 else ''} "
+        f"× ${ep:.2f} premium). Break-even: ${breakeven:.2f}. "
+        f"Annualized: {annual_pct:.1f}%."
+    )
+    why = financial_line + " " + why
 
     # Rough recommendation score: anchor at 50, boost by cc_alpha magnitude
     cc_alpha = action_payload["cc_alpha"]

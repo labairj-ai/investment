@@ -149,6 +149,13 @@ def run_agents(
                 _record_no_actions(agent_type, snapshot, recommended, run_id)
 
             for rec in agent_recs:
+                # Cooldown: skip if user decided on same ticker+action within 5 days,
+                # regardless of which agent produced it.
+                if rec.ticker and rec.action not in ("NO_ACTION", "NO_CALL"):
+                    if agent_db.has_recent_user_decision(rec.ticker, rec.action, cooldown_days=5):
+                        print(f"[Orchestrator] {agent_type}/{rec.ticker}/{rec.action}: "
+                              f"cooldown — user decided within 5 days, skipping")
+                        continue
                 rec_id = agent_db.insert_recommendation(
                     ticker=rec.ticker,
                     action=rec.action,

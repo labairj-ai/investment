@@ -2063,6 +2063,26 @@ def get_todays_findings() -> dict:
     return {"findings": findings, "recommendations": recs}
 
 
+def has_recent_user_decision(ticker: str, action: str, cooldown_days: int = 5) -> bool:
+    """Return True if the user acted on a recommendation for this ticker+action
+    within the last cooldown_days days, regardless of which agent produced it.
+    Used to suppress re-recommendations when the user already decided and market
+    conditions haven't materially changed (dependency invalidation handles that).
+    """
+    conn = _connect()
+    cutoff = time.time() - cooldown_days * 86400
+    row = conn.execute(
+        """SELECT ud.id
+           FROM user_decisions ud
+           JOIN recommendations r ON r.id = ud.recommendation_id
+           WHERE r.ticker = ? AND r.action = ? AND ud.decided_at >= ?
+           LIMIT 1""",
+        (ticker, action, cutoff),
+    ).fetchone()
+    conn.close()
+    return row is not None
+
+
 def get_recent_runs(agent_type: str, ticker: str | None = None, limit: int = 10) -> list[dict]:
     conn = _connect()
     if ticker:
