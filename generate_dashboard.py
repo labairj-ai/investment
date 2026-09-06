@@ -1487,6 +1487,7 @@ def build_dashboard(portfolio, layers, holdings):
       .ai-news-link {{ font-size: 11px; }}
     }}
     @keyframes spin {{ from {{ transform: rotate(0deg); }} to {{ transform: rotate(360deg); }} }}
+    @keyframes agent-pulse {{ 0%,100% {{ opacity:1 }} 50% {{ opacity:0.35 }} }}
 
     /* ── Invest Chat Panel ─────────────────────────────────────────────────── */
     #invest-chat-panel {{
@@ -2990,7 +2991,10 @@ def build_dashboard(portfolio, layers, holdings):
           <span style="font-size:11px;font-weight:700;letter-spacing:0.08em;color:#8ba4d4;text-transform:uppercase;">Portfolio Decision Queue</span>
           <span id="dq-header-count" style="margin-left:8px;font-size:11px;color:#718096;"></span>
         </div>
-        <button onclick="loadDecisionQueue()" style="font-size:11px;padding:3px 9px;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.15);border-radius:5px;cursor:pointer;color:#8ba4d4;">↻</button>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span id="agent-status-badge" style="font-size:11px;"></span>
+          <button onclick="loadDecisionQueue()" style="font-size:11px;padding:3px 9px;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.15);border-radius:5px;cursor:pointer;color:#8ba4d4;">↻</button>
+        </div>
       </div>
       <div id="dq-cards"></div>
       <div id="dq-no-action" style="display:none;font-size:11px;color:#718096;text-align:center;padding:8px 0 2px;border-top:1px solid rgba(255,255,255,0.07);margin-top:10px;"></div>
@@ -8535,6 +8539,44 @@ function showDashTab(name) {{
   if (btn)   btn.classList.add('active');
   if (ddBtn) ddBtn.classList.add('active');
   try {{ localStorage.setItem('dashTab', name); }} catch(e) {{}}
+  if (name === 'decisions') {{ _startAgentStatusPolling(); }}
+  else {{ _stopAgentStatusPolling(); }}
+}}
+
+// ── Agent status badge ────────────────────────────────────────────────────────
+var _agentStatusTimer = null;
+function _pollAgentStatus() {{
+  fetch('/api/agent-status')
+    .then(function(r) {{ return r.json(); }})
+    .then(function(d) {{
+      var badge = document.getElementById('agent-status-badge');
+      if (!badge) return;
+      if (d.running) {{
+        var names = (d.agents || []).join(', ') || 'agents';
+        badge.innerHTML = '<span style="display:inline-flex;align-items:center;gap:5px;">'
+          + '<span style="width:7px;height:7px;border-radius:50%;background:#f6ad55;'
+          + 'display:inline-block;animation:agent-pulse 1.2s ease-in-out infinite;"></span>'
+          + '<span style="color:#f6ad55;">&#9889; ' + names + ' running…</span></span>';
+      }} else {{
+        var ts = d.last_completed_at;
+        if (ts) {{
+          var dt = new Date(ts * 1000);
+          var hm = dt.toLocaleTimeString([], {{hour:'2-digit', minute:'2-digit'}});
+          badge.innerHTML = '<span style="color:#68d391;">&#10003; ' + hm + '</span>';
+        }} else {{
+          badge.innerHTML = '';
+        }}
+      }}
+    }})
+    .catch(function() {{}});
+}}
+function _startAgentStatusPolling() {{
+  _pollAgentStatus();
+  if (_agentStatusTimer) clearInterval(_agentStatusTimer);
+  _agentStatusTimer = setInterval(_pollAgentStatus, 5000);
+}}
+function _stopAgentStatusPolling() {{
+  if (_agentStatusTimer) {{ clearInterval(_agentStatusTimer); _agentStatusTimer = null; }}
 }}
 function toggleNavMenu(e) {{
   e.stopPropagation();

@@ -2008,6 +2008,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self._handle_candidate_history(parts[3].upper())
             else:
                 self.send_response(404); self.end_headers()
+        elif parsed.path == "/api/agent-status":
+            self._handle_agent_status()
         elif parsed.path == "/api/recommendations":
             self._handle_recommendations_get()
         elif parsed.path == "/api/preferences":
@@ -4940,6 +4942,30 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._json({"ok": True, "ticker": ticker, "history": history})
         except Exception as e:
             self._json_error(500, str(e))
+
+    # ── Agent status endpoint ─────────────────────────────────────────────────
+
+    def _handle_agent_status(self):
+        """GET /api/agent-status — running agents + last completed sweep timestamp."""
+        try:
+            conn = agent_db._connect()
+            cutoff = time.time() - 7200  # ignore stale "running" rows older than 2 h
+            running_rows = conn.execute(
+                "SELECT DISTINCT agent_type FROM agent_runs "
+                "WHERE status='running' AND started_at >= ? ORDER BY id DESC",
+                (cutoff,),
+            ).fetchall()
+            last_row = conn.execute(
+                "SELECT MAX(finished_at) AS ts FROM agent_runs WHERE status='done'"
+            ).fetchone()
+            conn.close()
+            self._json({
+                "running": len(running_rows) > 0,
+                "agents": [r["agent_type"] for r in running_rows],
+                "last_completed_at": last_row["ts"] if last_row else None,
+            })
+        except Exception as e:
+            self._json({"running": False, "agents": [], "last_completed_at": None})
 
     # ── Decision Queue endpoint ───────────────────────────────────────────────
 
