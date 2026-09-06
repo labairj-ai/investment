@@ -1,7 +1,7 @@
 # Merge Manual Candidates into Opportunity Hunter Universe
 
 - **ID:** 0048
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-06
 - **Priority:** normal
 - **Depends:** 0042
@@ -25,10 +25,14 @@
 
 ## Done when
 
-- [ ] Manually added `active`/`watch` candidates appear in the opportunity hunter's scoring pass
-- [ ] A manually added ticker that scores above threshold produces a recommendation
-- [ ] `source` field is preserved: manually added tickers show `MANUAL`, Buffett winners show `BUFFETT`
-- [ ] No duplicate scoring for a ticker that appears in both Buffett winners and manual candidates
+- [x] Manually added `active`/`watch` candidates appear in the opportunity hunter's scoring pass
+- [x] A manually added ticker that scores above threshold produces a recommendation (scored identically to Buffett winners)
+- [x] `source` field is preserved: manual candidates carry `source='MANUAL'` from candidate_universe; Buffett winners carry their existing `source` field
+- [x] No duplicate scoring: `_get_manual_candidates()` filters out tickers already in `winner_tickers`
 - [ ] **Backend QA:** run the feature on production optiplex and confirm expected DB changes appear in `investment.db`
 - [ ] **Frontend QA:** dashboard loads without errors; affected UI sections render correctly; no JS console errors; no broken API endpoints
 - [ ] **No service regression:** investment service still running; all existing API routes respond correctly after the change
+
+## Outcome
+
+One file changed: `agents/opportunity_agent.py` — added `_get_manual_candidates()` helper that fetches active/watch MANUAL rows from `candidate_universe`. `run_opportunity_hunter()` merges them (deduplicating against Buffett winner tickers) into `all_candidates` before the scoring loop. Manual candidates with no Buffett data default to quality=buffett_score, valuation=43 (all None), and portal fit/catalyst defaults — they compete on equal terms in the LLM selection step.

@@ -88,6 +88,23 @@ def _get_buffett_winners() -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def _get_manual_candidates() -> list[dict]:
+    """Return active/watch manual candidates from candidate_universe not in Buffett DB."""
+    from agent_db import CAND_OPPORTUNITY_STATUSES
+    conn = agent_db._connect()
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        f"SELECT ticker, source, buffett_score, status FROM candidate_universe "
+        f"WHERE source = 'MANUAL' AND status IN ({','.join('?' for _ in CAND_OPPORTUNITY_STATUSES)})",
+        CAND_OPPORTUNITY_STATUSES,
+    ).fetchall()
+    conn.close()
+    return [
+        {"ticker": r["ticker"], "source": "MANUAL", "quality_score": r["buffett_score"]}
+        for r in rows
+    ]
+
+
 def _get_current_tickers() -> set[str]:
     holdings_csv = Path(agent_db.DB_PATH).parent.parent / "holdings.csv"
     if not holdings_csv.exists():
@@ -380,16 +397,25 @@ def run_opportunity_hunter(ctx: AgentContext) -> list[Recommendation]:
     print("[opportunity] Starting Opportunity Hunter sweep")
 
     winners = _get_buffett_winners()
-    if not winners:
-        print("[opportunity] No Buffett winners in DB — no recommendation")
+    winner_tickers = {w["ticker"] for w in winners}
+
+    # Merge manual active/watch candidates that aren't already in Buffett winners
+    manual = [m for m in _get_manual_candidates() if m["ticker"] not in winner_tickers]
+    if manual:
+        print(f"[opportunity] Adding {len(manual)} manual candidate(s): "
+              + ", ".join(m["ticker"] for m in manual))
+    all_candidates = winners + manual
+
+    if not all_candidates:
+        print("[opportunity] No candidates in DB — no recommendation")
         return []
 
     held = _get_current_tickers()
     layer_weights = _get_layer_weights()
 
-    # Score every unowned winner
+    # Score every unowned candidate
     scored: list[dict] = []
-    for w in winners:
+    for w in all_candidates:
         if w["ticker"] in held:
             continue
         q  = _score_quality(w)
@@ -408,7 +434,7 @@ def run_opportunity_hunter(ctx: AgentContext) -> list[Recommendation]:
         scored.append(w)
 
     if not scored:
-        print("[opportunity] All Buffett winners are already held — no recommendation")
+        print("[opportunity] All candidates are already held — no recommendation")
         return []
 
     scored.sort(key=lambda x: x["_composite"], reverse=True)
