@@ -1110,11 +1110,19 @@ def build_dashboard(portfolio, layers, holdings):
             _l["change_dollars"] = 0.0
             _l["change_pct"] = 0.0
 
-    # ---- portfolio history chart data ----
-    port_dates = [r["day"] for r in portfolio]
-    port_values = [r["total_value"] for r in portfolio]
-    port_chg_pct = [r["total_change_pct"] for r in portfolio]
-    spy_chg_pct = [r["spy_change_pct"] for r in portfolio]
+    # ---- portfolio history chart data (trading days only) ----
+    # Weekend and holiday rows exist in portfolio_day (the newsletter runs daily)
+    # but SPY has no data on those days, so exclude them from all chart series.
+    import datetime as _dt_mod
+    _chart_rows = [
+        r for r in portfolio
+        if not _is_market_holiday(_dt_mod.date.fromisoformat(r["day"]))
+    ]
+
+    port_dates   = [r["day"]              for r in _chart_rows]
+    port_values  = [r["total_value"]      for r in _chart_rows]
+    port_chg_pct = [r["total_change_pct"] for r in _chart_rows]
+    spy_chg_pct  = [r["spy_change_pct"]   for r in _chart_rows]
 
     # Time-weighted return — capital additions (new money) don't inflate the %.
     # When total_value jumps more than price-change alone explains, we close the
@@ -1129,13 +1137,12 @@ def build_dashboard(portfolio, layers, holdings):
     #     moves (~1-3%) are not mistaken for cash flows, but large injections still are.
     port_cum    = [0.0]
     _twr_factor = 1.0
-    _sub_start  = portfolio[0]["total_value"] if portfolio else 1.0
-    for _i in range(1, len(portfolio)):
-        _prev = portfolio[_i - 1]["total_value"]
-        _curr = portfolio[_i]["total_value"]
-        _pchg = portfolio[_i].get("total_change_dollars", 0) or 0
+    _sub_start  = _chart_rows[0]["total_value"] if _chart_rows else 1.0
+    for _i in range(1, len(_chart_rows)):
+        _prev = _chart_rows[_i - 1]["total_value"]
+        _curr = _chart_rows[_i]["total_value"]
+        _pchg = _chart_rows[_i].get("total_change_dollars", 0) or 0
         actual_delta = _curr - _prev
-        # Skip weekend/holiday duplicates where the newsletter repeats the same row
         if abs(actual_delta) > 1.0:
             _val_ex_cf    = _prev + _pchg
             _cf           = _curr - _val_ex_cf
@@ -1152,7 +1159,7 @@ def build_dashboard(portfolio, layers, holdings):
     # SPY normalized to 0 % on first date, properly compounded
     spy_cum = [0.0]
     _spy_f  = 1.0
-    for _r in portfolio[1:]:
+    for _r in _chart_rows[1:]:
         _spy_f *= 1.0 + (_r.get("spy_change_pct", 0) or 0) / 100.0
         spy_cum.append(round((_spy_f - 1) * 100, 4))
 
