@@ -127,10 +127,33 @@ def fetch_cc_mtm() -> None:
 
 
 # ─── Pricing ──────────────────────────────────────────────────────────────────
+def _good_friday(year: int) -> date:
+    """Compute Good Friday (Friday before Easter) for the given year."""
+    # Anonymous Gregorian algorithm
+    a = year % 19
+    b, c = divmod(year, 100)
+    d2, e = divmod(b, 4)
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d2 - g + 15) % 30
+    i, k = divmod(c, 4)
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month = (h + l - 7 * m + 114) // 31
+    day2 = ((h + l - 7 * m + 114) % 31) + 1
+    easter = date(year, month, day2)
+    return easter - __import__("datetime").timedelta(days=2)
+
+
 def _is_market_holiday(check_date=None) -> bool:
-    """Return True if check_date (default: today) is a weekend or US market holiday."""
+    """Return True if check_date (default: today) is a weekend or US market holiday.
+    Covers US federal holidays (via USFederalHolidayCalendar) plus NYSE-specific
+    closures: Good Friday (not a federal holiday but NYSE always closes).
+    """
     d = check_date or date.today()
     if d.weekday() >= 5:
+        return True
+    if d == _good_friday(d.year):
         return True
     cal = USFederalHolidayCalendar()
     holidays = cal.holidays(start=str(d), end=str(d))

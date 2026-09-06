@@ -17,8 +17,27 @@ from portfolio_ai import HOLDING_PROFILES
 from strategy_config import LAYER_NAMES, LAYER_LABELS, LAYER_TARGETS
 
 
+def _good_friday(year: int):
+    a = year % 19
+    b, c = divmod(year, 100)
+    d2, e = divmod(b, 4)
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d2 - g + 15) % 30
+    i, k = divmod(c, 4)
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month = (h + l - 7 * m + 114) // 31
+    day2 = ((h + l - 7 * m + 114) % 31) + 1
+    import datetime as _dt
+    easter = _dt.date(year, month, day2)
+    return easter - _dt.timedelta(days=2)
+
+
 def _is_market_holiday(d) -> bool:
     if d.weekday() >= 5:
+        return True
+    if d == _good_friday(d.year):
         return True
     cal = USFederalHolidayCalendar()
     return len(cal.holidays(start=str(d), end=str(d))) > 0
