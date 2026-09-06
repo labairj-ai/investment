@@ -1,7 +1,7 @@
 # Fix CC Outcome Math: Store Strategy Return and Incremental Alpha Separately
 
 - **ID:** 0046
-- **Status:** backlog
+- **Status:** in-progress
 - **Created:** 2026-09-06
 - **Priority:** normal
 - **Depends:** none

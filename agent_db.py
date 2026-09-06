@@ -315,6 +315,9 @@ def migrate() -> None:
         ("recommendation_outcomes",  "hold_return",             "REAL"),
         # 0045 — actual_r reflects decision, not always hold
         ("recommendation_outcomes",  "actual_is_estimated",     "INTEGER"),
+        # 0046 — CC strategy return and incremental alpha stored separately
+        ("recommendation_outcomes",  "cc_strategy_return",      "REAL"),
+        ("recommendation_outcomes",  "cc_incremental_alpha",    "REAL"),
         # 0028 — investor model
         ("learned_preferences",      "suppressed",              "INTEGER"),
         # 0023 — notification system
@@ -795,17 +798,19 @@ def insert_outcome(
     horizon: str | None = None,
     hold_return: float | None = None,
     actual_is_estimated: int | None = None,
+    cc_strategy_return: float | None = None,
+    cc_incremental_alpha: float | None = None,
 ) -> int:
     conn = _connect()
     cur = conn.execute(
         """INSERT INTO recommendation_outcomes
            (recommendation_id, evaluation_date, benchmark_return, actual_return,
             recommended_path_return, opportunity_cost, notes, horizon, hold_return,
-            actual_is_estimated)
-           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            actual_is_estimated, cc_strategy_return, cc_incremental_alpha)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
         (recommendation_id, time.time(), benchmark_return, actual_return,
          recommended_path_return, opportunity_cost, notes, horizon, hold_return,
-         actual_is_estimated),
+         actual_is_estimated, cc_strategy_return, cc_incremental_alpha),
     )
     outcome_id = cur.lastrowid
     conn.commit()

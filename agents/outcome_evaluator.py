@@ -131,11 +131,13 @@ def _compute_scenarios(
     pl: dict,
     entry_price: float,
     decision: str | None = None,
-) -> tuple[float | None, float | None, float | None, float | None, bool]:
-    """Return (actual_r, agent_r, hold_r, spy_r, actual_is_estimated) for one horizon.
+) -> tuple[float | None, float | None, float | None, float | None, bool,
+           float | None, float | None]:
+    """Return (actual_r, agent_r, hold_r, spy_r, actual_is_estimated,
+               cc_strategy_return, cc_incremental_alpha) for one horizon.
 
     Scenario A — actual_return           : decision-adjusted return (see branching below)
-    Scenario B — recommended_path_return : agent-specific (see below)
+    Scenario B — recommended_path_return : cc_strategy_return for CC, else agent-specific
     Scenario C — hold_return             : ticker return entry→horizon (always)
     Scenario D — benchmark_return        : SPY return entry→horizon
     """
@@ -160,30 +162,34 @@ def _compute_scenarios(
         actual_r = hold_r
         actual_is_estimated = True
 
-    # Scenario B: agent recommended path
+    # Scenario B: agent recommended path; CC gets two sub-fields
+    cc_strategy_return:   float | None = None
+    cc_incremental_alpha: float | None = None
+
     if action in EXIT_ACTIONS:
         # Agent said sell/exit → no exposure after rec date → return = 0
         agent_r = 0.0
     elif action == "SELL_CC":
-        # Income from premium; if stock called away, opportunity cost is upside surrendered
         exec_premium = pl.get("exec_premium") or pl.get("premium")
         strike       = pl.get("strike")
-        if exec_premium and entry_price:
-            premium_yield = float(exec_premium) / entry_price
-            # If stock above strike at horizon, upside surrendered
-            if h_price is not None and strike is not None and h_price > float(strike):
-                upside_surrendered = (h_price - float(strike)) / entry_price
-                agent_r = premium_yield - upside_surrendered
-            else:
-                agent_r = premium_yield
+        if exec_premium and entry_price and h_price is not None:
+            premium      = float(exec_premium)
+            k            = float(strike) if strike is not None else None
+            # Total CC strategy return: (min(S_T, K) - S_0 + premium) / S_0
+            effective_exit = min(h_price, k) if k is not None else h_price
+            cc_strategy_return   = (effective_exit - entry_price + premium) / entry_price
+            cc_incremental_alpha = cc_strategy_return - hold_r if hold_r is not None else None
+            agent_r              = cc_strategy_return
+        elif exec_premium and entry_price:
+            # No horizon price yet — just premium yield (at-expiry will have it)
+            agent_r = float(exec_premium) / entry_price
         else:
             agent_r = hold_r  # fallback: no premium data
     else:
-        # HOLD / REVIEW / TRIM / ALLOCATE / REBALANCE: agent recommendation is to
-        # maintain or adjust but not fully exit — treat as holding for comparison
+        # HOLD / REVIEW / TRIM / ALLOCATE / REBALANCE
         agent_r = hold_r
 
-    return actual_r, agent_r, hold_r, spy_r, actual_is_estimated
+    return actual_r, agent_r, hold_r, spy_r, actual_is_estimated, cc_strategy_return, cc_incremental_alpha
 
 
 # ── CC horizon helpers ────────────────────────────────────────────────────────
@@ -267,7 +273,8 @@ def evaluate_matured_recommendations(min_age_days: int = MIN_AGE_DAYS) -> int:
             if _already_evaluated(rec["id"], horizon_label):
                 continue
 
-            actual_r, agent_r, hold_r, spy_r, actual_is_estimated = _compute_scenarios(
+            actual_r, agent_r, hold_r, spy_r, actual_is_estimated, \
+                cc_strategy_return, cc_incremental_alpha = _compute_scenarios(
                 ticker, action, entry_date, h_date, pl, entry_price,
                 decision=rec.get("decision"),
             )
@@ -292,6 +299,8 @@ def evaluate_matured_recommendations(min_age_days: int = MIN_AGE_DAYS) -> int:
                 horizon=horizon_label,
                 notes=notes,
                 actual_is_estimated=int(actual_is_estimated),
+                cc_strategy_return=round(cc_strategy_return, 6) if cc_strategy_return is not None else None,
+                cc_incremental_alpha=round(cc_incremental_alpha, 6) if cc_incremental_alpha is not None else None,
             )
             written += 1
             print(
