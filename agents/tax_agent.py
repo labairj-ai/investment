@@ -16,7 +16,7 @@ from pathlib import Path
 import agent_db
 import ollama_client
 from strategy_config import (
-    TAX_ST_RATE,
+    TAX_ST_RATE, TAX_LT_RATE,
     TRIGGER_TAX_LT_WINDOW_MIN,
     TRIGGER_TAX_LT_WINDOW_MAX,
     TRIGGER_TAX_LOSS_MIN,
@@ -105,20 +105,22 @@ _HARVEST_SCHEMA = {
 def _llm_wait_narrative(
     ticker: str, days_to_lt: int, shares: float,
     current_price: float, unrealized_gain: float,
-    st_tax_cost: float, lt_date: str,
+    avoidable_tax: float, lt_date: str,
 ) -> dict:
     prompt = (
         f"TAX TIMING ANALYSIS — {ticker}\n\n"
         f"This lot reaches long-term capital gains status in {days_to_lt} days ({lt_date}).\n"
         f"Shares: {shares:.4g} | Current price: ${current_price:.2f}\n"
         f"Unrealized gain: ${unrealized_gain:+,.0f}\n"
-        f"ST tax cost if sold today (at {TAX_ST_RATE:.0%} rate): ${st_tax_cost:,.0f}\n\n"
+        f"Selling now vs waiting: ST rate {TAX_ST_RATE:.0%} → LT rate {TAX_LT_RATE:.0%}. "
+        f"Incremental tax saved by waiting: ${avoidable_tax:,.0f} "
+        f"(gain × {TAX_ST_RATE - TAX_LT_RATE:.0%} rate differential).\n\n"
         "Write a concise tax-timing summary. All dollar amounts above are final — do NOT "
         "recalculate or contradict them. Answer:\n"
         '{"summary":"<1-2 sentences: what the situation is and why waiting is the right move>",'
         '"action_risk":"<what could go wrong if the investor waits — e.g. stock drops, position '
         'expires worthless, opportunity cost>",'
-        '"no_action_case":"<strongest reason to sell now despite the ST tax hit, 1 sentence>"}'
+        '"no_action_case":"<strongest reason to sell now despite the tax hit, 1 sentence>"}'
     )
     try:
         out = ollama_client.generate_structured(
@@ -137,10 +139,11 @@ def _llm_wait_narrative(
     return {
         "summary": (
             f"{ticker} lot reaches LT status in {days_to_lt} days ({lt_date}). "
-            f"Selling before then incurs ${st_tax_cost:,.0f} in avoidable ST tax."
+            f"Waiting saves ${avoidable_tax:,.0f} in incremental tax "
+            f"(ST {TAX_ST_RATE:.0%} → LT {TAX_LT_RATE:.0%} on ${unrealized_gain:+,.0f} gain)."
         ),
         "action_risk": "Position could decline before the LT crossover date, reducing the gain being protected.",
-        "no_action_case": "If you have an urgent need for liquidity or conviction has changed, the ST tax may be acceptable.",
+        "no_action_case": "If you have an urgent need for liquidity or conviction has changed, the rate differential may be acceptable.",
     }
 
 
@@ -149,13 +152,19 @@ def _llm_harvest_narrative(
     current_price: float, cost_basis: float,
     ytd_st_gains: float, tlh_benefit: float,
     wash_sale_start: str, wash_sale_end: str,
+    lot_type: str = "ST",
 ) -> dict:
+    rate_note = (
+        f"ST loss (offsets ST gains at {TAX_ST_RATE:.0%})"
+        if lot_type == "ST"
+        else f"LT loss (offsets LT gains at {TAX_LT_RATE:.0%}; excess offsets ST gains)"
+    )
     prompt = (
         f"TAX LOSS HARVEST ANALYSIS — {ticker}\n\n"
         f"Shares: {shares:.4g} | Cost basis: ${cost_basis:.2f} | Current price: ${current_price:.2f}\n"
-        f"Unrealized loss: ${unrealized_loss:,.0f}\n"
+        f"Unrealized loss: ${unrealized_loss:,.0f} ({rate_note})\n"
         f"YTD realized ST gains to offset: ${ytd_st_gains:,.0f}\n"
-        f"Estimated tax savings from harvesting (at {TAX_ST_RATE:.0%}): ${tlh_benefit:,.0f}\n"
+        f"Estimated tax savings from harvesting: ${tlh_benefit:,.0f}\n"
         f"Wash sale window: {wash_sale_start} to {wash_sale_end} "
         f"(do not buy substantially identical securities in this range)\n\n"
         "Write a concise tax-loss harvesting summary. All dollar amounts above are final — do NOT "
@@ -178,10 +187,11 @@ def _llm_harvest_narrative(
             return out
     except Exception as e:
         print(f"[tax] LLM HARVEST narrative failed: {e}")
+    offset_note = "ST gains" if lot_type == "ST" else "LT gains (LT loss netting)"
     return {
         "summary": (
-            f"{ticker} has an unrealized loss of ${abs(unrealized_loss):,.0f} that can offset "
-            f"${ytd_st_gains:,.0f} in YTD ST gains, saving ~${tlh_benefit:,.0f} in taxes."
+            f"{ticker} has an unrealized {lot_type} loss of ${abs(unrealized_loss):,.0f} that can offset "
+            f"{offset_note}, saving ~${tlh_benefit:,.0f} in taxes."
         ),
         "action_risk": (
             f"Wash sale rule: avoid buying {ticker} or substantially identical securities "
@@ -251,7 +261,9 @@ def _check_lt_crossover(
             current_price = cost  # fallback: assume flat, gain = 0
 
         unrealized_gain = (current_price - cost) * shares
-        st_tax_cost = max(unrealized_gain, 0) * TAX_ST_RATE
+        # Avoidable tax = only the rate DIFFERENTIAL; selling at LT still pays LT tax
+        avoidable_tax = max(unrealized_gain, 0) * (TAX_ST_RATE - TAX_LT_RATE)
+        st_tax_cost = max(unrealized_gain, 0) * TAX_ST_RATE  # retained for payload transparency
 
         narrative = _llm_wait_narrative(
             ticker=ticker,
@@ -259,7 +271,7 @@ def _check_lt_crossover(
             shares=shares,
             current_price=current_price,
             unrealized_gain=unrealized_gain,
-            st_tax_cost=st_tax_cost,
+            avoidable_tax=avoidable_tax,
             lt_date=lt_date_str,
         )
 
@@ -273,7 +285,8 @@ def _check_lt_crossover(
             why_now=(
                 f"LT crossover in {days_to_lt} days ({lt_date_str}). "
                 f"Unrealized gain: ${unrealized_gain:+,.0f}. "
-                f"ST tax cost if sold now: ${st_tax_cost:,.0f}."
+                f"Incremental tax saved by waiting: ${avoidable_tax:,.0f} "
+                f"(ST {TAX_ST_RATE:.0%} → LT {TAX_LT_RATE:.0%} rate differential)."
             ),
             rationale=narrative["summary"],
             counter_case=narrative["action_risk"],
@@ -287,8 +300,10 @@ def _check_lt_crossover(
                 "cost_per_share": cost,
                 "current_price": current_price,
                 "unrealized_gain": round(unrealized_gain, 2),
+                "avoidable_tax": round(avoidable_tax, 2),
                 "st_tax_cost": round(st_tax_cost, 2),
                 "st_tax_rate": TAX_ST_RATE,
+                "lt_tax_rate": TAX_LT_RATE,
             },
             dependencies=[{
                 "dependency_type": "PRICE",
@@ -308,7 +323,7 @@ def _check_tlh(
     today: datetime.date,
     ytd_st_gains: float,
 ) -> list[Recommendation]:
-    """Return HARVEST recs for ST lots with offsettable losses."""
+    """Return HARVEST recs for ST and LT lots with offsettable losses."""
     if ytd_st_gains <= 0:
         return []  # nothing to offset
 
@@ -331,8 +346,6 @@ def _check_tlh(
             except (ValueError, TypeError):
                 continue
             days_held = (today - purchase).days
-            if days_held >= 365:
-                continue  # already LT — different tax treatment
 
             if not lot.get("cost_per_share"):
                 continue  # missing basis, skip
@@ -340,7 +353,8 @@ def _check_tlh(
             loss = (current_price - lot["cost_per_share"]) * lot["shares"]
             if loss < worst_loss:
                 worst_loss = loss
-                worst_lot = {**lot, "_days_held": days_held}
+                lot_type = "LT" if days_held >= 365 else "ST"
+                worst_lot = {**lot, "_days_held": days_held, "_lot_type": lot_type}
 
         if worst_lot is None or worst_loss >= -TRIGGER_TAX_LOSS_MIN:
             continue
@@ -348,7 +362,11 @@ def _check_tlh(
         unrealized_loss = worst_loss  # negative number
         shares = worst_lot["shares"]
         cost = worst_lot["cost_per_share"]
-        tlh_benefit = abs(unrealized_loss) * TAX_ST_RATE
+        lot_type = worst_lot["_lot_type"]
+
+        # LT losses offset LT gains first (at LT rate); ST losses offset ST gains (at ST rate)
+        benefit_rate = TAX_LT_RATE if lot_type == "LT" else TAX_ST_RATE
+        tlh_benefit = abs(unrealized_loss) * benefit_rate
 
         # Wash sale window: 30 days before and after potential sale date (today)
         ws_start = (today - datetime.timedelta(days=30)).isoformat()
@@ -364,8 +382,10 @@ def _check_tlh(
             tlh_benefit=tlh_benefit,
             wash_sale_start=ws_start,
             wash_sale_end=ws_end,
+            lot_type=lot_type,
         )
 
+        loss_label = f"unrealized {lot_type} loss"
         score = min(85, 50 + int(tlh_benefit / 100))
         recs.append(Recommendation(
             ticker=ticker,
@@ -374,8 +394,9 @@ def _check_tlh(
             confidence=80,
             priority="normal",
             why_now=(
-                f"Unrealized ST loss of ${abs(unrealized_loss):,.0f} can offset "
-                f"${ytd_st_gains:,.0f} YTD ST gains — estimated tax savings: ${tlh_benefit:,.0f}."
+                f"{loss_label.capitalize()} of ${abs(unrealized_loss):,.0f} can offset "
+                f"${ytd_st_gains:,.0f} YTD gains — estimated tax savings: ${tlh_benefit:,.0f} "
+                f"(at {benefit_rate:.0%} {lot_type} rate)."
             ),
             rationale=narrative["summary"],
             counter_case=narrative["action_risk"],
@@ -384,13 +405,16 @@ def _check_tlh(
                 "lot_id": worst_lot["id"],
                 "purchase_date": worst_lot["purchase_date"],
                 "days_held": worst_lot["_days_held"],
+                "lot_type": lot_type,
                 "shares": shares,
                 "cost_per_share": cost,
                 "current_price": current_price,
                 "unrealized_loss": round(unrealized_loss, 2),
                 "ytd_st_gains": round(ytd_st_gains, 2),
                 "tlh_benefit": round(tlh_benefit, 2),
+                "benefit_rate": benefit_rate,
                 "st_tax_rate": TAX_ST_RATE,
+                "lt_tax_rate": TAX_LT_RATE,
                 "wash_sale_window_start": ws_start,
                 "wash_sale_window_end": ws_end,
             },
