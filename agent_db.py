@@ -211,6 +211,28 @@ def migrate() -> None:
         CREATE INDEX IF NOT EXISTS idx_thesis_rules_thesis_type
             ON thesis_rules (thesis_id, rule_type);
 
+        CREATE TABLE IF NOT EXISTS thesis_risks (
+            id           INTEGER PRIMARY KEY,
+            thesis_id    INTEGER NOT NULL REFERENCES investment_theses(id),
+            description  TEXT    NOT NULL,
+            severity     TEXT    NOT NULL DEFAULT 'MEDIUM',
+            time_horizon TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS thesis_catalysts (
+            id           INTEGER PRIMARY KEY,
+            thesis_id    INTEGER NOT NULL REFERENCES investment_theses(id),
+            description  TEXT    NOT NULL,
+            importance   TEXT    NOT NULL DEFAULT 'MEDIUM',
+            time_horizon TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_thesis_risks_thesis
+            ON thesis_risks (thesis_id);
+
+        CREATE INDEX IF NOT EXISTS idx_thesis_catalysts_thesis
+            ON thesis_catalysts (thesis_id);
+
         CREATE INDEX IF NOT EXISTS idx_decisions_rec
             ON user_decisions (recommendation_id);
 
@@ -320,6 +342,8 @@ def migrate() -> None:
         ("recommendation_outcomes",  "cc_incremental_alpha",    "REAL"),
         # 0052 — per-thesis CC policy
         ("investment_theses",        "cc_policy",               "TEXT"),
+        # 0053 — review triggers
+        ("investment_theses",        "review_triggers",         "TEXT"),
         # 0028 — investor model
         ("learned_preferences",      "suppressed",              "INTEGER"),
         # 0023 — notification system
@@ -1116,8 +1140,18 @@ def get_thesis_full(ticker: str) -> dict | None:
         "SELECT * FROM thesis_pillars WHERE thesis_id=? ORDER BY importance DESC",
         (row["id"],),
     ).fetchall()
+    db_risks = conn.execute(
+        "SELECT * FROM thesis_risks WHERE thesis_id=? ORDER BY id",
+        (row["id"],),
+    ).fetchall()
+    db_catalysts = conn.execute(
+        "SELECT * FROM thesis_catalysts WHERE thesis_id=? ORDER BY id",
+        (row["id"],),
+    ).fetchall()
     conn.close()
     result["db_pillars"] = [dict(p) for p in db_pillars]
+    result["db_risks"] = [dict(r) for r in db_risks]
+    result["db_catalysts"] = [dict(c) for c in db_catalysts]
     return result
 
 
@@ -1378,6 +1412,36 @@ def insert_thesis_rule(thesis_id: int, rule_type: str, rule_json: str) -> int:
     rule_id = cur.lastrowid
     conn.close()
     return rule_id
+
+
+def insert_thesis_risk(
+    thesis_id: int, description: str,
+    severity: str = "MEDIUM", time_horizon: str | None = None,
+) -> int:
+    conn = _connect()
+    cur = conn.execute(
+        "INSERT INTO thesis_risks (thesis_id, description, severity, time_horizon) VALUES (?,?,?,?)",
+        (thesis_id, description, severity, time_horizon),
+    )
+    conn.commit()
+    rid = cur.lastrowid
+    conn.close()
+    return rid
+
+
+def insert_thesis_catalyst(
+    thesis_id: int, description: str,
+    importance: str = "MEDIUM", time_horizon: str | None = None,
+) -> int:
+    conn = _connect()
+    cur = conn.execute(
+        "INSERT INTO thesis_catalysts (thesis_id, description, importance, time_horizon) VALUES (?,?,?,?)",
+        (thesis_id, description, importance, time_horizon),
+    )
+    conn.commit()
+    cid = cur.lastrowid
+    conn.close()
+    return cid
 
 
 def update_pillar_status(

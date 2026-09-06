@@ -5086,6 +5086,44 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 agent_db.insert_thesis_rule(
                     thesis_id, rule.get("rule_type", ""), rule.get("rule_json", "{}")
                 )
+            for risk in (draft_dict.get("key_risks") or []):
+                if isinstance(risk, str):
+                    agent_db.insert_thesis_risk(thesis_id, risk)
+                elif isinstance(risk, dict) and risk.get("description"):
+                    agent_db.insert_thesis_risk(
+                        thesis_id, risk["description"],
+                        severity=risk.get("severity", "MEDIUM"),
+                        time_horizon=risk.get("time_horizon"),
+                    )
+            for catalyst in (draft_dict.get("catalysts") or []):
+                if isinstance(catalyst, str):
+                    agent_db.insert_thesis_catalyst(thesis_id, catalyst)
+                elif isinstance(catalyst, dict) and catalyst.get("description"):
+                    agent_db.insert_thesis_catalyst(
+                        thesis_id, catalyst["description"],
+                        importance=catalyst.get("importance", "MEDIUM"),
+                        time_horizon=catalyst.get("time_horizon"),
+                    )
+            for sig in (draft_dict.get("qualitative_signals") or []):
+                if isinstance(sig, dict) and sig.get("description"):
+                    agent_db.insert_thesis_rule(
+                        thesis_id, "QUALITATIVE_SIGNAL",
+                        json.dumps({
+                            "signal_name": sig.get("description", "")[:60],
+                            "description": sig.get("description", ""),
+                            "source": sig.get("source", ""),
+                            "direction": sig.get("direction", "positive"),
+                        }),
+                    )
+            review_triggers = draft_dict.get("review_triggers") or []
+            if review_triggers:
+                _conn = agent_db._connect()
+                _conn.execute(
+                    "UPDATE investment_theses SET review_triggers=? WHERE id=?",
+                    (json.dumps(review_triggers), thesis_id),
+                )
+                _conn.commit()
+                _conn.close()
         except Exception as e:
             print(f"[thesis_approve] post-approval writes failed for {ticker}: {e}")
 

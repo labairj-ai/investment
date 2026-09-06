@@ -44,6 +44,8 @@ _LLM_SCHEMA: dict = {
     "exit_condition": "",
     "key_risks": [],
     "catalysts": [],
+    "qualitative_signals": [],
+    "review_triggers": [],
 }
 
 _SYSTEM_PROMPT = """\
@@ -68,7 +70,11 @@ Rules:
   (LOWER_IS_BETTER) that defines a healthy reading.
 - violation_threshold: the value that defines a confirmed violation.
 - add_condition, trim_condition, exit_condition: concise, actionable prose.
-- key_risks: 2-4 specific risks. catalysts: 2-3 specific upcoming milestones.
+- key_risks: 2-4 specific risks with severity (HIGH/MEDIUM/LOW) and time_horizon (near/medium/long).
+- catalysts: 2-3 upcoming milestones with importance (HIGH/MEDIUM/LOW) and time_horizon.
+- qualitative_signals: 1-3 non-numeric signals to monitor (management tone, channel checks, news).
+  Each signal: description (str), source (news/management/channel/macro), direction (positive/negative).
+- review_triggers: 2-4 specific events that should force a full thesis re-evaluation. Plain strings.
 - Return valid JSON exactly matching the requested schema.\
 """
 
@@ -167,8 +173,21 @@ Return JSON matching exactly this schema:
   "add_condition": "Describe when to add more shares",
   "trim_condition": "Describe when to trim the position",
   "exit_condition": "Describe what triggers a full exit",
-  "key_risks": ["Risk 1", "Risk 2"],
-  "catalysts": ["Catalyst 1", "Catalyst 2"]
+  "key_risks": [
+    {{"description": "Risk 1", "severity": "HIGH", "time_horizon": "near"}},
+    {{"description": "Risk 2", "severity": "MEDIUM", "time_horizon": "medium"}}
+  ],
+  "catalysts": [
+    {{"description": "Catalyst 1", "importance": "HIGH", "time_horizon": "near"}},
+    {{"description": "Catalyst 2", "importance": "MEDIUM", "time_horizon": "medium"}}
+  ],
+  "qualitative_signals": [
+    {{"description": "Management tone on calls", "source": "management", "direction": "positive"}}
+  ],
+  "review_triggers": [
+    "Revenue miss >10% for two consecutive quarters",
+    "Management team change at CEO or CFO level"
+  ]
 }}"""
 
     raw = ollama_client.generate_structured(
@@ -226,10 +245,38 @@ Return JSON matching exactly this schema:
                 "rule_json": json.dumps({"condition": cond}),
             })
 
+    def _norm_risks(items):
+        out = []
+        for item in (items or []):
+            if isinstance(item, str):
+                out.append({"description": item, "severity": "MEDIUM", "time_horizon": None})
+            elif isinstance(item, dict):
+                out.append({
+                    "description": item.get("description", ""),
+                    "severity": item.get("severity", "MEDIUM").upper(),
+                    "time_horizon": item.get("time_horizon"),
+                })
+        return out
+
+    def _norm_catalysts(items):
+        out = []
+        for item in (items or []):
+            if isinstance(item, str):
+                out.append({"description": item, "importance": "MEDIUM", "time_horizon": None})
+            elif isinstance(item, dict):
+                out.append({
+                    "description": item.get("description", ""),
+                    "importance": item.get("importance", "MEDIUM").upper(),
+                    "time_horizon": item.get("time_horizon"),
+                })
+        return out
+
     return {
-        "ticker":     ticker,
-        "pillars":    out_pillars,
-        "rules":      rules,
-        "key_risks":  list(raw.get("key_risks") or []),
-        "catalysts":  list(raw.get("catalysts") or []),
+        "ticker":              ticker,
+        "pillars":             out_pillars,
+        "rules":               rules,
+        "key_risks":           _norm_risks(raw.get("key_risks")),
+        "catalysts":           _norm_catalysts(raw.get("catalysts")),
+        "qualitative_signals": list(raw.get("qualitative_signals") or []),
+        "review_triggers":     list(raw.get("review_triggers") or []),
     }

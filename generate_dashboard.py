@@ -8772,9 +8772,11 @@ function _renderThesisModal(thesis) {{
     const draft     = thesis.draft_json    || {{}};
     const intake    = thesis.intake_json   || {{}};
     const proposals = thesis.open_proposals || [];
-    const dbPillars = thesis.db_pillars    || [];
+    const dbPillars   = thesis.db_pillars   || [];
+    const dbRisks     = thesis.db_risks     || [];
+    const dbCatalysts = thesis.db_catalysts || [];
     _thesisCurrentIntake = intake;
-    body.innerHTML = _thesisActiveHtml(draft, intake, proposals, dbPillars);
+    body.innerHTML = _thesisActiveHtml(draft, intake, proposals, dbPillars, dbRisks, dbCatalysts);
     return;
   }}
   // Fallback for SUPERSEDED etc.
@@ -8921,14 +8923,27 @@ function _thesisDraftReviewHtml(draft, intake) {{
     rulesHtml += '</div>';
   }}
 
+  function _riskText(r) {{ return typeof r === 'string' ? r : (r.description || ''); }}
+  function _riskBadge(r) {{
+    const sev = typeof r === 'object' ? (r.severity||'') : '';
+    const col = {{HIGH:'#e74c3c',MEDIUM:'#e67e22',LOW:'#888'}}[sev] || '';
+    return sev ? `<span style="font-size:9px;font-weight:700;color:${{col}};margin-left:6px;vertical-align:middle;">${{sev}}</span>` : '';
+  }}
+  function _catalystText(c) {{ return typeof c === 'string' ? c : (c.description || ''); }}
+  function _catalystBadge(c) {{
+    const imp = typeof c === 'object' ? (c.importance||'') : '';
+    const col = {{HIGH:'#27ae60',MEDIUM:'#e67e22',LOW:'#888'}}[imp] || '';
+    return imp ? `<span style="font-size:9px;font-weight:700;color:${{col}};margin-left:6px;vertical-align:middle;">${{imp}}</span>` : '';
+  }}
+
   const risksHtml = keyRisks.length ? `<div style="margin-top:12px;">
     <div style="font-size:10px;font-weight:700;color:#e74c3c;text-transform:uppercase;letter-spacing:.04em;margin-bottom:5px;">Key Risks</div>
-    ${{keyRisks.map(r=>`<div style="font-size:12px;color:#555;padding:2px 0 2px 10px;border-left:2px solid #f0c0c0;">${{r}}</div>`).join('')}}
+    ${{keyRisks.map(r=>`<div style="font-size:12px;color:#555;padding:2px 0 2px 10px;border-left:2px solid #f0c0c0;">${{_riskText(r)}}${{_riskBadge(r)}}</div>`).join('')}}
   </div>` : '';
 
   const catalystsHtml = catalysts.length ? `<div style="margin-top:12px;">
     <div style="font-size:10px;font-weight:700;color:#27ae60;text-transform:uppercase;letter-spacing:.04em;margin-bottom:5px;">Catalysts</div>
-    ${{catalysts.map(c=>`<div style="font-size:12px;color:#555;padding:2px 0 2px 10px;border-left:2px solid #b0e0c0;">${{c}}</div>`).join('')}}
+    ${{catalysts.map(c=>`<div style="font-size:12px;color:#555;padding:2px 0 2px 10px;border-left:2px solid #b0e0c0;">${{_catalystText(c)}}${{_catalystBadge(c)}}</div>`).join('')}}
   </div>` : '';
 
   return `
@@ -8943,7 +8958,7 @@ function _thesisDraftReviewHtml(draft, intake) {{
     <div id="thesis-approve-status" style="font-size:12px;color:#888;text-align:center;margin-top:8px;"></div>`;
 }}
 
-function _thesisActiveHtml(draft, intake, proposals, dbPillars) {{
+function _thesisActiveHtml(draft, intake, proposals, dbPillars, dbRisks, dbCatalysts) {{
   const _statusColor = {{ STRONG:'#27ae60', HEALTHY:'#27ae60', WATCH:'#e67e22', WARNING:'#e67e22', VIOLATED:'#e74c3c', UNKNOWN:'#aaa' }};
 
   // Prefer DB pillar rows (evaluated health); fall back to draft.pillars (AI proposal)
@@ -8997,8 +9012,25 @@ function _thesisActiveHtml(draft, intake, proposals, dbPillars) {{
   }}
 
   const whyHtml = intake.why ? `<div style="margin-bottom:14px;padding:12px;background:#f4f6f9;border-radius:8px;font-size:13px;color:#555;line-height:1.5;"><b>Why I own this:</b> ${{intake.why}}</div>` : '';
+
+  const sevColor = {{HIGH:'#e74c3c',MEDIUM:'#e67e22',LOW:'#888'}};
+  const impColor = {{HIGH:'#27ae60',MEDIUM:'#e67e22',LOW:'#888'}};
+  const dbRisksHtml = (dbRisks||[]).length ? `<div style="margin-top:14px;border:1px solid #f0e0e0;border-radius:8px;overflow:hidden;">
+    <div style="background:#fdf0f0;padding:6px 12px;font-size:10px;font-weight:700;color:#e74c3c;text-transform:uppercase;letter-spacing:.04em;">Key Risks</div>
+    ${{(dbRisks||[]).map(r=>`<div style="padding:6px 12px;border-top:1px solid #fce;font-size:12px;color:#444;display:flex;align-items:baseline;gap:8px;">
+      <span style="flex:1;">${{r.description||''}}</span>
+      ${{r.severity?`<span style="font-size:9px;font-weight:700;color:${{sevColor[r.severity]||'#888'}};white-space:nowrap;">${{r.severity}}</span>`:''}}</div>`).join('')}}
+  </div>` : '';
+
+  const dbCatalystsHtml = (dbCatalysts||[]).length ? `<div style="margin-top:10px;border:1px solid #d0eed0;border-radius:8px;overflow:hidden;">
+    <div style="background:#f0fdf4;padding:6px 12px;font-size:10px;font-weight:700;color:#27ae60;text-transform:uppercase;letter-spacing:.04em;">Catalysts</div>
+    ${{(dbCatalysts||[]).map(c=>`<div style="padding:6px 12px;border-top:1px solid #cec;font-size:12px;color:#444;display:flex;align-items:baseline;gap:8px;">
+      <span style="flex:1;">${{c.description||''}}</span>
+      ${{c.importance?`<span style="font-size:9px;font-weight:700;color:${{impColor[c.importance]||'#888'}};white-space:nowrap;">${{c.importance}}</span>`:''}}</div>`).join('')}}
+  </div>` : '';
+
   const reviseBtn = `<div style="margin-top:18px;text-align:right;"><button onclick="reviseThesis()" style="background:#fff;color:#1a2340;border:1px solid #bbc;border-radius:6px;padding:8px 18px;font-size:12px;font-weight:600;cursor:pointer;">Revise Thesis</button></div>`;
-  return `${{whyHtml}}${{pillarsHtml}}${{proposalHtml}}${{reviseBtn}}`;
+  return `${{whyHtml}}${{pillarsHtml}}${{dbRisksHtml}}${{dbCatalystsHtml}}${{proposalHtml}}${{reviseBtn}}`;
 }}
 
 function reviseThesis() {{
