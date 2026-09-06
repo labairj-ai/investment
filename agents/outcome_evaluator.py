@@ -130,10 +130,11 @@ def _compute_scenarios(
     horizon_date: str,
     pl: dict,
     entry_price: float,
-) -> tuple[float | None, float | None, float | None, float | None]:
-    """Return (actual_r, agent_r, hold_r, spy_r) for one horizon.
+    decision: str | None = None,
+) -> tuple[float | None, float | None, float | None, float | None, bool]:
+    """Return (actual_r, agent_r, hold_r, spy_r, actual_is_estimated) for one horizon.
 
-    Scenario A — actual_return           : ticker return entry→horizon
+    Scenario A — actual_return           : decision-adjusted return (see branching below)
     Scenario B — recommended_path_return : agent-specific (see below)
     Scenario C — hold_return             : ticker return entry→horizon (always)
     Scenario D — benchmark_return        : SPY return entry→horizon
@@ -145,9 +146,19 @@ def _compute_scenarios(
     hold_r = (h_price - entry_price) / entry_price if h_price is not None else None
     spy_r  = (spy_h  - spy_entry)   / spy_entry   if (spy_entry and spy_h) else None
 
-    # Scenario A: same as hold for equity (user held or acted, but we track what the
-    # stock did — the decision-level comparison is captured by UserOverrideAlpha = A − B)
-    actual_r = hold_r
+    # Scenario A: branch on what the user actually chose to do.
+    # accepted EXIT  → user sold, no exposure after rec date → actual_r = 0
+    # rejected (any) → user held regardless → actual_r = hold_r, no estimation needed
+    # anything else  → we don't have execution records yet → fall back to hold_r, flag estimated
+    if decision == "accepted" and action in EXIT_ACTIONS:
+        actual_r = 0.0
+        actual_is_estimated = False
+    elif decision == "rejected":
+        actual_r = hold_r
+        actual_is_estimated = False
+    else:
+        actual_r = hold_r
+        actual_is_estimated = True
 
     # Scenario B: agent recommended path
     if action in EXIT_ACTIONS:
@@ -172,7 +183,7 @@ def _compute_scenarios(
         # maintain or adjust but not fully exit — treat as holding for comparison
         agent_r = hold_r
 
-    return actual_r, agent_r, hold_r, spy_r
+    return actual_r, agent_r, hold_r, spy_r, actual_is_estimated
 
 
 # ── CC horizon helpers ────────────────────────────────────────────────────────
@@ -205,8 +216,10 @@ def evaluate_matured_recommendations(min_age_days: int = MIN_AGE_DAYS) -> int:
 
     conn = agent_db._connect()
     recs = conn.execute(
-        """SELECT r.id, r.ticker, r.action, r.created_at, r.action_payload_json
+        """SELECT r.id, r.ticker, r.action, r.created_at, r.action_payload_json,
+                  ud.decision
            FROM recommendations r
+           LEFT JOIN user_decisions ud ON ud.recommendation_id = r.id
            WHERE r.status IN ('accepted', 'rejected')
              AND r.created_at <= ?
              AND r.action != 'NO_ACTION'""",
@@ -254,8 +267,9 @@ def evaluate_matured_recommendations(min_age_days: int = MIN_AGE_DAYS) -> int:
             if _already_evaluated(rec["id"], horizon_label):
                 continue
 
-            actual_r, agent_r, hold_r, spy_r = _compute_scenarios(
-                ticker, action, entry_date, h_date, pl, entry_price
+            actual_r, agent_r, hold_r, spy_r, actual_is_estimated = _compute_scenarios(
+                ticker, action, entry_date, h_date, pl, entry_price,
+                decision=rec.get("decision"),
             )
 
             # opportunity_cost: positive = user override outperformed agent rec
@@ -277,6 +291,7 @@ def evaluate_matured_recommendations(min_age_days: int = MIN_AGE_DAYS) -> int:
                 hold_return=round(hold_r, 6) if hold_r is not None else None,
                 horizon=horizon_label,
                 notes=notes,
+                actual_is_estimated=int(actual_is_estimated),
             )
             written += 1
             print(

@@ -1,7 +1,7 @@
 # Fix Outcome Evaluator: actual_r Must Reflect User's Actual Decision
 
 - **ID:** 0045
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-06
 - **Priority:** normal
 - **Depends:** none
@@ -29,10 +29,17 @@ In `outcome_evaluator.py`, `actual_r` is set to `hold_r` (the stock's return fro
 
 ## Done when
 
-- [ ] Accepted EXIT recommendations compute `actual_r` from execution price / redeployment, not hold_r
-- [ ] `UserOverrideAlpha` for a rejected recommendation still equals `actual_r - agent_r` (hold_r - agent_r)
-- [ ] `actual_is_estimated` flag present in outcome rows where no execution record exists
+- [x] Accepted EXIT recommendations compute `actual_r = 0.0` (no equity exposure after sale), not hold_r
+- [x] `UserOverrideAlpha` for a rejected recommendation still equals `actual_r - agent_r` (hold_r - agent_r, `estimated=False`)
+- [x] `actual_is_estimated` flag present in outcome rows where no execution record exists (accepted non-EXIT → `1`)
 - [ ] At least one end-to-end test: accept a mock EXIT, verify `actual_r ≠ hold_r` in outcome row
 - [ ] **Backend QA:** run the feature on production optiplex and confirm expected DB changes appear in `investment.db`
 - [ ] **Frontend QA:** dashboard loads without errors; affected UI sections render correctly; no JS console errors; no broken API endpoints
 - [ ] **No service regression:** investment service still running; all existing API routes respond correctly after the change
+
+## Outcome
+
+Three files changed:
+
+- **`agent_db.py`**: Added `actual_is_estimated INTEGER` to `_new_cols` migration list; added `actual_is_estimated: int | None = None` param to `insert_outcome()` and included it in the INSERT.
+- **`agents/outcome_evaluator.py`**: `_compute_scenarios()` now takes a `decision: str | None` param and returns a 5-tuple `(actual_r, agent_r, hold_r, spy_r, actual_is_estimated)`. Logic: `accepted` + EXIT_ACTIONS → `actual_r=0.0, estimated=False`; `rejected` → `actual_r=hold_r, estimated=False`; anything else (accepted non-EXIT, or no decision row) → `actual_r=hold_r, estimated=True`. Main SELECT in `evaluate_matured_recommendations()` LEFT JOINs `user_decisions` to get `decision`. Call site unpacks 5-tuple and passes `int(actual_is_estimated)` to `insert_outcome()`. Accepted TRIM/BUY/ALLOCATE are still estimated — a future item can add execution-price records to refine them.

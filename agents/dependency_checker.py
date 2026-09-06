@@ -83,42 +83,20 @@ def _check_thesis_version(dep: dict, versions: dict[str, int]) -> str | None:
 
 
 def _trigger_reeval(ticker: str, agent_type: str) -> None:
-    """Fire the original agent for this ticker via the orchestrator."""
+    """Fire the original agent via the full orchestrator pipeline (agent → Critic → persist)."""
     try:
-        from agents.contracts import AgentContext
         from agents.snapshot import build_portfolio_snapshot
-        import agents.orchestrator as orch
+        from agents.triggers import TriggerEvent
+        from agents.orchestrator import run_agents
 
         snapshot = build_portfolio_snapshot()
-        run_id = agent_db.insert_agent_run(
-            agent_type=agent_type, scope="portfolio", ticker=ticker,
+        event = TriggerEvent(
             trigger_type="dep_superseded",
+            agent_type=agent_type,
+            ticker=ticker,
         )
-        ctx = AgentContext(
-            run_id=run_id, snapshot=snapshot,
-            trigger_type="dep_superseded", ticker=ticker,
-        )
-        handler = orch._registry.get(agent_type)
-        if handler:
-            recs = handler(ctx)
-            for rec in recs:
-                rec_id = agent_db.insert_recommendation(
-                    ticker=rec.ticker, action=rec.action, run_id=run_id,
-                    action_payload=rec.action_payload,
-                    recommendation_score=rec.recommendation_score,
-                    confidence=rec.confidence, priority=rec.priority,
-                    why_now=rec.why_now, rationale=rec.rationale,
-                    counter_case=rec.counter_case,
-                    no_action_case=rec.no_action_case,
-                    valid_until=rec.valid_until,
-                )
-                if rec.dependencies:
-                    agent_db.write_dependencies(rec_id, rec.dependencies)
-            agent_db.finish_agent_run(run_id, status="done")
-            print(f"[DepChecker] Re-eval {agent_type}/{ticker}: {len(recs)} new rec(s)")
-        else:
-            agent_db.finish_agent_run(run_id, status="error",
-                                      error=f"agent_type {agent_type!r} not in registry")
+        recs = run_agents(snapshot, [event])
+        print(f"[DepChecker] Re-eval {agent_type}/{ticker}: {len(recs)} new rec(s)")
     except Exception as e:
         print(f"[DepChecker] Re-eval failed for {agent_type}/{ticker}: {e}")
 

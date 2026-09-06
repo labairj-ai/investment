@@ -313,6 +313,8 @@ def migrate() -> None:
         # 0026 — counterfactual benchmarking
         ("recommendation_outcomes",  "horizon",                 "TEXT"),
         ("recommendation_outcomes",  "hold_return",             "REAL"),
+        # 0045 — actual_r reflects decision, not always hold
+        ("recommendation_outcomes",  "actual_is_estimated",     "INTEGER"),
         # 0028 — investor model
         ("learned_preferences",      "suppressed",              "INTEGER"),
         # 0023 — notification system
@@ -792,15 +794,18 @@ def insert_outcome(
     notes: str | None = None,
     horizon: str | None = None,
     hold_return: float | None = None,
+    actual_is_estimated: int | None = None,
 ) -> int:
     conn = _connect()
     cur = conn.execute(
         """INSERT INTO recommendation_outcomes
            (recommendation_id, evaluation_date, benchmark_return, actual_return,
-            recommended_path_return, opportunity_cost, notes, horizon, hold_return)
-           VALUES (?,?,?,?,?,?,?,?,?)""",
+            recommended_path_return, opportunity_cost, notes, horizon, hold_return,
+            actual_is_estimated)
+           VALUES (?,?,?,?,?,?,?,?,?,?)""",
         (recommendation_id, time.time(), benchmark_return, actual_return,
-         recommended_path_return, opportunity_cost, notes, horizon, hold_return),
+         recommended_path_return, opportunity_cost, notes, horizon, hold_return,
+         actual_is_estimated),
     )
     outcome_id = cur.lastrowid
     conn.commit()
