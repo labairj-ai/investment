@@ -318,6 +318,8 @@ def migrate() -> None:
         # 0046 — CC strategy return and incremental alpha stored separately
         ("recommendation_outcomes",  "cc_strategy_return",      "REAL"),
         ("recommendation_outcomes",  "cc_incremental_alpha",    "REAL"),
+        # 0052 — per-thesis CC policy
+        ("investment_theses",        "cc_policy",               "TEXT"),
         # 0028 — investor model
         ("learned_preferences",      "suppressed",              "INTEGER"),
         # 0023 — notification system

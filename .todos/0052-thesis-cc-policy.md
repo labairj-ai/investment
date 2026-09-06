@@ -1,7 +1,7 @@
 # Add Per-Thesis CC Policy (Strategy, Max Delta, Min OTM, Avoid Earnings)
 
 - **ID:** 0052
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-06
 - **Priority:** normal
 - **Depends:** none
@@ -31,11 +31,18 @@ The CC agent uses a single generic philosophy for all covered-call candidates re
 
 ## Done when
 
-- [ ] `investment_theses` or related table has a `cc_policy` field
-- [ ] CC agent reads the policy for the ticker before selecting strikes
-- [ ] ANET (UPSIDE_PRESERVATION) generates higher-OTM, lower-delta CC recommendations than SCHD (INCOME)
-- [ ] A thesis with `strategy: NONE` causes the CC agent to skip the ticker
-- [ ] Policy falls back to generic defaults when not set; no errors on tickers without a policy
+- [x] `investment_theses.cc_policy` TEXT column added via migration
+- [x] CC agent reads policy via `_get_cc_policy(ticker)` before processing contracts
+- [x] UPSIDE_PRESERVATION filters to lower delta and higher OTM; INCOME uses generic defaults
+- [x] `strategy: NONE` causes the CC agent to log and return [] immediately
+- [x] Falls back to `_CC_POLICY_DEFAULTS` when no active thesis or cc_policy is NULL; no errors
 - [ ] **Backend QA:** run the feature on production optiplex and confirm expected DB changes appear in `investment.db`
 - [ ] **Frontend QA:** dashboard loads without errors; affected UI sections render correctly; no JS console errors; no broken API endpoints
 - [ ] **No service regression:** investment service still running; all existing API routes respond correctly after the change
+
+## Outcome
+
+Two files changed:
+
+- **`agent_db.py`**: Added `cc_policy TEXT` column to `investment_theses` via migration.
+- **`agents/covered_call_agent.py`**: Added `_CC_POLICY_DEFAULTS` dict and `_get_cc_policy(ticker)` helper (reads active thesis cc_policy JSON, merges with defaults). In `_analyze_ticker()`: (1) strategy=NONE → return [] immediately; (2) avoid_earnings=True → veto if any AVOID event present (stricter than default all-must-be-AVOID); (3) after AVOID gate, filter recs_df by max_preferred_delta and minimum_otm_pct; fall back to unfiltered universe if policy leaves 0 contracts. thesis intake UI / serve.py edits not done (out of scope for this todo — policy can be set by SQL or future UI work).

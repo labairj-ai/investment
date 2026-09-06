@@ -102,6 +102,36 @@ Return JSON with these exact fields:
 _MGMT_SCHEMA = {"why": "", "counter_case": ""}
 
 
+_CC_POLICY_DEFAULTS: dict = {
+    "strategy":           "INCOME",   # INCOME | UPSIDE_PRESERVATION | NONE
+    "max_preferred_delta": 0.30,
+    "minimum_otm_pct":     0.03,       # fraction, e.g. 0.03 = 3% OTM
+    "avoid_earnings":      False,
+    "preferred_dte_min":   None,
+    "preferred_dte_max":   None,
+}
+
+
+def _get_cc_policy(ticker: str) -> dict:
+    """Return cc_policy dict for ticker, merged with defaults."""
+    import json as _json
+    try:
+        conn = sqlite3.connect(str(_DB), timeout=5)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT cc_policy FROM investment_theses "
+            "WHERE ticker=? AND status='active' ORDER BY version DESC LIMIT 1",
+            (ticker,),
+        ).fetchone()
+        conn.close()
+        if row and row["cc_policy"]:
+            stored = _json.loads(row["cc_policy"])
+            return {**_CC_POLICY_DEFAULTS, **stored}
+    except Exception:
+        pass
+    return dict(_CC_POLICY_DEFAULTS)
+
+
 def _make_contract_id(ticker: str, expiration: str, strike: float) -> str:
     """Build a stable contract ID: TICKER:YYYYMMDD:STRIKE."""
     date_part = expiration.replace("-", "")  # "2026-10-16" → "20261016"
@@ -367,6 +397,12 @@ def _analyze_ticker(ctx: AgentContext, ticker: str) -> list[Recommendation]:
         print(f"[covered_call] {ticker}: not found in snapshot — skipping")
         return []
 
+    policy = _get_cc_policy(ticker)
+
+    if policy["strategy"] == "NONE":
+        print(f"[covered_call] {ticker}: thesis cc_policy=NONE — CC writing not permitted")
+        return []
+
     if _has_open_cc(ticker):
         position = _get_open_cc_position(ticker)
         if position is None:
@@ -388,6 +424,14 @@ def _analyze_ticker(ctx: AgentContext, ticker: str) -> list[Recommendation]:
         print(f"[covered_call] {ticker}: no contracts from analyze()")
         return []
 
+    # Policy: avoid_earnings — veto entire ticker if any AVOID event risk
+    current_price_for_otm = holding.current_price or holding.avg_cost
+    if policy["avoid_earnings"]:
+        floor_passing_all = recs_df[recs_df["passes_floor"]]
+        if not floor_passing_all.empty and floor_passing_all["has_avoid"].any():
+            print(f"[covered_call] {ticker}: VETOED by policy avoid_earnings — AVOID event present")
+            return []
+
     # Deterministic AVOID gate — veto entire ticker if all floor-passing contracts are AVOID
     floor_passing = recs_df[recs_df["passes_floor"]]
     if not floor_passing.empty and floor_passing["has_avoid"].all():
@@ -402,6 +446,24 @@ def _analyze_ticker(ctx: AgentContext, ticker: str) -> list[Recommendation]:
             confidence=90,
         )
         return []
+
+    # Apply per-thesis policy filters to narrow the candidate universe
+    policy_filtered = recs_df.copy()
+    max_delta = policy["max_preferred_delta"]
+    if max_delta is not None:
+        policy_filtered = policy_filtered[policy_filtered["delta"] <= max_delta]
+    min_otm = policy["minimum_otm_pct"]
+    if min_otm is not None and current_price_for_otm > 0:
+        min_strike = current_price_for_otm * (1 + min_otm)
+        policy_filtered = policy_filtered[policy_filtered["strike"] >= min_strike]
+    if not policy_filtered.empty:
+        recs_df = policy_filtered
+        print(f"[covered_call] {ticker}: policy={policy['strategy']} "
+              f"delta<={max_delta} OTM>={min_otm*100:.0f}% → "
+              f"{len(recs_df)} contract(s) remain")
+    else:
+        print(f"[covered_call] {ticker}: policy filters left 0 contracts — "
+              f"falling back to unfiltered universe")
 
     candidates, id_to_row = _build_candidates(ticker, recs_df)
     if not candidates:
