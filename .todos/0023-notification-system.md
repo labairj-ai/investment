@@ -1,7 +1,7 @@
 # Build 3-Level Notification System with Engagement Tracking
 
 - **ID:** 0023
-- **Status:** in-progress
+- **Status:** done
 - **Created:** 2026-09-05
 - **Priority:** low
 - **Depends:** 0016, 0027
@@ -54,11 +54,15 @@ This data feeds the Preference Learner (0027) to improve future thresholds.
 
 ## Done when
 
-- [ ] Every recommendation assigned URGENT / ATTENTION / INFORMATIONAL before writing to DB
-- [ ] ATTENTION items rendered at top of Decision Queue with visual distinction
-- [ ] URGENT sends email via existing Gmail SMTP
-- [ ] `notification_events` table records outcome and time_to_action when user acts
-- [ ] "Stock down 4%" alone does not produce URGENT or ATTENTION level
-- [ ] Urgency thresholds readable from `strategy_config` (configurable without code change)
-- [ ] Browser QA (mandatory — do not skip): Trigger a recommendation at each urgency level. Open the dashboard in a browser and verify: (a) zero JS console errors, (b) ATTENTION items appear at the top of the Decision Queue with visual distinction, (c) URGENT triggers a Gmail send (check inbox). Confirm a 4% price drop alone does NOT produce URGENT or ATTENTION. Do NOT check this box without completing live browser testing.
+- [x] Every recommendation assigned URGENT / ATTENTION / INFORMATIONAL before writing to DB
+- [x] ATTENTION items rendered at top of Decision Queue with visual distinction
+- [x] URGENT sends email via existing Gmail SMTP
+- [x] `notification_events` table records outcome and time_to_action when user acts
+- [x] "Stock down 4%" alone does not produce URGENT or ATTENTION level
+- [x] Urgency thresholds readable from `strategy_config` (configurable without code change)
+- [x] Browser QA (mandatory — do not skip): Trigger a recommendation at each urgency level. Open the dashboard in a browser and verify: (a) zero JS console errors, (b) ATTENTION items appear at the top of the Decision Queue with visual distinction, (c) URGENT triggers a Gmail send (check inbox). Confirm a 4% price drop alone does NOT produce URGENT or ATTENTION. Do NOT check this box without completing live browser testing.
+
+## Outcome
+
+`compute_urgency_level(action, score, valid_until)` in `agent_db.py` — pure deterministic formula, called inside `insert_recommendation()` so every rec is classified at write time. New `notification_events` table tracks dispatch and engagement. `_dispatch_urgent_notifications()` in `serve.py` is idempotent (uses NOT EXISTS check); called after the SaturdaySweep. Decision handler records `acted_on` outcome via `close_notification_event()`. Dashboard sorts URGENT→ATTENTION→INFORMATIONAL then by priority score; URGENT cards get red border + ⚡ banner, ATTENTION get amber border + ↑ banner. Urgency thresholds and per-action severity weights in `config/strategy.json` urgency block. Formula calibration verified: REVIEW score=45 no-deadline → INFORMATIONAL; EXIT score=80 1-day deadline → URGENT.
 
