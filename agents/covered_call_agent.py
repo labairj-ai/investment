@@ -64,6 +64,54 @@ def _has_open_cc(ticker: str) -> bool:
         return False
 
 
+def _get_open_cc_position(ticker: str) -> dict | None:
+    """Return the most recent open cc_positions row for ticker, with DTE added."""
+    from datetime import date as _date
+    alt = ticker.replace(".", "-") if "." in ticker else ticker.replace("-", ".")
+    try:
+        conn = sqlite3.connect(str(_DB), timeout=5)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT * FROM cc_positions WHERE ticker IN (?,?) AND status='open' "
+            "ORDER BY id DESC LIMIT 1",
+            (ticker, alt),
+        ).fetchone()
+        conn.close()
+        if row is None:
+            return None
+        pos = dict(row)
+        try:
+            exp = _date.fromisoformat(pos["expiry"])
+            pos["dte"] = (exp - _date.today()).days
+        except Exception:
+            pos["dte"] = 0
+        return pos
+    except Exception:
+        return None
+
+
+_ROLL_SYSTEM = """You are an investment analyst evaluating a covered call roll decision.
+An existing covered call is near expiration. Decide whether to:
+  ROLL_CC  — close the existing position and open a new one at the suggested strike/expiry
+  CLOSE_CC — let the position expire (or buy it back) without rolling
+
+Return JSON with these exact fields:
+  action       : "ROLL_CC" or "CLOSE_CC"
+  contract_id  : exact roll target contract ID string (null if CLOSE_CC)
+  why          : 2-3 sentences on the roll rationale, referencing specific metrics
+  roll_tradeoff: 1-2 sentences on the key risk of rolling vs. not rolling
+  close_case   : 1-2 sentences on why letting expire/closing without a roll may be better
+"""
+
+_ROLL_SCHEMA = {
+    "action": "ROLL_CC",
+    "contract_id": "TICKER:YYYYMMDD:STRIKE",
+    "why": "",
+    "roll_tradeoff": "",
+    "close_case": "",
+}
+
+
 def _make_contract_id(ticker: str, expiration: str, strike: float) -> str:
     """Build a stable contract ID: TICKER:YYYYMMDD:STRIKE."""
     date_part = expiration.replace("-", "")  # "2026-10-16" → "20261016"
@@ -139,6 +187,205 @@ def _build_evidence(result: dict, candidates: list[dict]) -> EvidenceBundle:
     )
 
 
+def _analyze_roll(ctx: AgentContext, ticker: str, position: dict) -> list[Recommendation]:
+    """Roll analysis for a ticker with an existing open CC near expiration."""
+    snapshot = ctx.snapshot
+    holding = next((h for h in snapshot.holdings if h.ticker == ticker), None)
+    if holding is None:
+        print(f"[covered_call] {ticker}: not in snapshot, cannot roll")
+        return []
+
+    existing_strike  = float(position["strike"])
+    existing_expiry  = position["expiry"]
+    existing_dte     = position["dte"]
+    existing_premium = float(position["premium_per_contract"])
+    current_mark     = float(position.get("current_mark") or 0.0)
+    contracts        = int(position["contracts"])
+    pnl              = round((existing_premium - current_mark) * contracts * 100, 2)
+
+    print(f"[covered_call] {ticker}: roll analysis — existing {existing_strike} "
+          f"exp {existing_expiry} ({existing_dte} DTE), mark={current_mark:.2f}, P&L={pnl:+.2f}")
+
+    import covered_call_rec
+    result = covered_call_rec.analyze(ticker, holding.avg_cost, holding.shares)
+    if result is None:
+        print(f"[covered_call] {ticker}: analyze() returned None, skipping roll")
+        return []
+
+    recs_df = result.get("recs")
+    if recs_df is None or recs_df.empty:
+        print(f"[covered_call] {ticker}: no contracts available for roll")
+        return []
+
+    # Roll candidates: passes floor, no AVOID, DTE >= 30, strike >= existing strike
+    roll_eligible = recs_df[
+        recs_df["passes_floor"] &
+        ~recs_df["has_avoid"] &
+        (recs_df["dte"] >= 30) &
+        (recs_df["strike"].astype(float) >= existing_strike)
+    ].copy()
+
+    if roll_eligible.empty:
+        print(f"[covered_call] {ticker}: no eligible roll targets (DTE>=30, strike>={existing_strike})")
+        agent_db.insert_finding(
+            run_id=ctx.run_id,
+            finding_type="cc_no_roll_targets",
+            ticker=ticker,
+            summary=(f"{ticker}: CC approaching expiry ({existing_dte} DTE) but no eligible "
+                     f"roll targets found (strike≥{existing_strike}, DTE≥30)"),
+            severity=40,
+            confidence=80,
+        )
+        return []
+
+    roll_eligible = roll_eligible.sort_values("score", ascending=False).head(5)
+
+    candidates: list[dict] = []
+    id_to_row: dict[str, dict] = {}
+    for _, row in roll_eligible.iterrows():
+        cid = _make_contract_id(ticker, str(row["expiration"]), float(row["strike"]))
+        id_to_row[cid] = row.to_dict()
+        net_credit = round(float(row["exec_premium"]) - current_mark, 2)
+        candidates.append({
+            "id": cid,
+            "expiration": row["expiration"],
+            "dte": int(row["dte"]),
+            "strike": float(row["strike"]),
+            "exec_premium": round(float(row["exec_premium"]), 2),
+            "net_credit": net_credit,
+            "cc_alpha": round(float(row["cc_alpha"]), 4),
+            "regret_prob": round(float(row["regret_prob"]), 3),
+            "delta": round(float(row["delta"]), 3),
+            "score": round(float(row["score"]), 2),
+            "has_caution": bool(row.get("has_caution", False)),
+        })
+
+    data_mode = result.get("data_mode", "theoretical")
+    contract_lines = "\n".join(
+        f"  {c['id']}: DTE={c['dte']}, strike=${c['strike']:.2f}, "
+        f"new_premium=${c['exec_premium']:.2f}, net_credit=${c['net_credit']:+.2f}/share, "
+        f"cc_alpha={c['cc_alpha']:.4f}, regret_prob={c['regret_prob']:.1%}, delta={c['delta']:.3f}"
+        + (" [CAUTION event]" if c["has_caution"] else "")
+        for c in candidates
+    )
+
+    prompt = (
+        f"{_ROLL_SYSTEM}\n\n"
+        f"Ticker: {ticker}  Shares: {holding.shares:.0f}  "
+        f"Avg cost: ${holding.avg_cost:.2f}  Data mode: {data_mode}\n\n"
+        f"Existing position:\n"
+        f"  Strike: ${existing_strike:.2f}  Expiry: {existing_expiry}  DTE: {existing_dte}\n"
+        f"  Original premium: ${existing_premium:.2f}/share  "
+        f"  Current mark: ${current_mark:.2f}/share  P&L: ${pnl:+.2f} total\n\n"
+        f"Roll candidates (AVOID removed, DTE≥30, strike≥existing, sorted by score):\n"
+        f"{contract_lines}\n\n"
+        "Select the best roll target, or CLOSE_CC if rolling doesn't make sense. "
+        "Return JSON matching the schema exactly."
+    )
+
+    try:
+        llm_out = ollama_client.generate_structured(
+            prompt=prompt,
+            schema=_ROLL_SCHEMA,
+            model="mlx-community/Qwen3.6-35B-A3B-4bit",
+            temperature=0.2,
+            num_predict=800,
+            thinking=False,
+            retries=2,
+        )
+    except Exception as e:
+        print(f"[covered_call] {ticker}: roll LLM call failed: {e}")
+        return []
+
+    if not llm_out or not isinstance(llm_out, dict):
+        print(f"[covered_call] {ticker}: roll LLM returned invalid output")
+        return []
+
+    action     = llm_out.get("action", "CLOSE_CC")
+    contract_id = llm_out.get("contract_id")
+    why        = llm_out.get("why", "")
+    roll_trade = llm_out.get("roll_tradeoff", "")
+    close_case = llm_out.get("close_case", "")
+
+    if action == "CLOSE_CC" or not contract_id:
+        print(f"[covered_call] {ticker}: LLM recommends CLOSE_CC (no roll)")
+        agent_db.insert_finding(
+            run_id=ctx.run_id,
+            finding_type="cc_close_recommended",
+            ticker=ticker,
+            summary=f"{ticker}: roll analysis complete — LLM recommends closing without roll: {why}",
+            severity=30,
+            confidence=65,
+        )
+        return []
+
+    row = id_to_row.get(contract_id)
+    if row is None:
+        print(f"[covered_call] {ticker}: roll LLM selected unknown contract_id={contract_id!r}")
+        return []
+
+    roll_premium = round(float(row["exec_premium"]), 2)
+    net_credit   = round(roll_premium - current_mark, 2)
+    roll_dte     = int(row["dte"])
+
+    financial_line = (
+        f"Roll {existing_strike} {existing_expiry} → ${float(row['strike']):.2f} {row['expiration']} "
+        f"({roll_dte} DTE). "
+        f"Existing P&L: ${pnl:+.2f}. "
+        f"Net credit: ${net_credit:+.2f}/share (${net_credit * contracts * 100:+.2f} total). "
+        f"Data mode: {data_mode}."
+    )
+    why_now = financial_line + " " + why
+
+    action_payload = {
+        # Existing position
+        "existing_strike":  existing_strike,
+        "existing_expiry":  existing_expiry,
+        "existing_dte":     existing_dte,
+        "existing_premium": existing_premium,
+        "current_mark":     current_mark,
+        "existing_pnl":     pnl,
+        "contracts":        contracts,
+        # Roll target
+        "roll_contract_id": contract_id,
+        "roll_expiry":      str(row["expiration"]),
+        "roll_strike":      float(row["strike"]),
+        "roll_dte":         roll_dte,
+        "roll_premium":     roll_premium,
+        "net_credit":       net_credit,
+        "cc_alpha":         round(float(row["cc_alpha"]), 4),
+        "regret_prob":      round(float(row["regret_prob"]), 3),
+        "delta":            round(float(row["delta"]), 3),
+        "data_mode":        data_mode,
+        "has_caution":      bool(row.get("has_caution", False)),
+    }
+
+    rec_score = min(100, max(40, round(50 + float(row["cc_alpha"]) * 1000)))
+    priority  = "high" if existing_dte <= 10 else "normal"
+
+    rec = Recommendation(
+        ticker=ticker,
+        action="ROLL_CC",
+        recommendation_score=rec_score,
+        confidence=65,
+        priority=priority,
+        why_now=why_now,
+        rationale=roll_trade,
+        counter_case=close_case,
+        no_action_case=close_case,
+        action_payload=action_payload,
+        dependencies=[{
+            "dependency_type": "PRICE",
+            "dependency_key": ticker,
+            "original_value": holding.current_price,
+            "tolerance": 0.03,
+            "invalidating_event": "PRICE_THRESHOLD",
+        }],
+    )
+    print(f"[covered_call] {ticker}: ROLL_CC → {contract_id} net_credit={net_credit:+.2f}")
+    return [rec]
+
+
 def _analyze_ticker(ctx: AgentContext, ticker: str) -> list[Recommendation]:
     """Full pipeline for one ticker. Returns 0 or 1 Recommendation."""
     snapshot = ctx.snapshot
@@ -148,10 +395,11 @@ def _analyze_ticker(ctx: AgentContext, ticker: str) -> list[Recommendation]:
         return []
 
     if _has_open_cc(ticker):
-        # Open position exists — a ROLL analysis is a separate flow (todo 0057).
-        # Never recommend a new SELL_CC over an existing open position.
-        print(f"[covered_call] {ticker}: open CC exists — skipping new SELL_CC")
-        return []
+        position = _get_open_cc_position(ticker)
+        if position is None:
+            print(f"[covered_call] {ticker}: open CC exists but position unreadable — skipping")
+            return []
+        return _analyze_roll(ctx, ticker, position)
 
     print(f"[covered_call] Analyzing {ticker} "
           f"({holding.shares:.0f} shares @ avg ${holding.avg_cost:.2f})")

@@ -1110,38 +1110,25 @@ def build_dashboard(portfolio, layers, holdings):
             _l["change_dollars"] = 0.0
             _l["change_pct"] = 0.0
 
-    # ---- portfolio history chart data (trading days only) ----
-    # Weekend and holiday rows exist in portfolio_day (the newsletter runs daily)
-    # but SPY has no data on those days, so exclude them from all chart series.
+    # ---- portfolio history chart data ----
+    # TWR is computed over ALL rows (including weekends/holidays) so that
+    # intermediate price snapshots bridge multi-day gaps correctly — without
+    # them the algorithm sees large unexplained jumps and misclassifies
+    # genuine market returns as capital flows.  Weekend spy_change_pct values
+    # were zeroed at write time (send_newsletter_main.py) so compounding them
+    # contributes exactly 1.0 (no inflation).  The display is then subsampled
+    # to trading days only for a clean chart x-axis.
     import datetime as _dt_mod
-    _chart_rows = [
-        r for r in portfolio
-        if not _is_market_holiday(_dt_mod.date.fromisoformat(r["day"]))
-    ]
 
-    port_dates   = [r["day"]              for r in _chart_rows]
-    port_values  = [r["total_value"]      for r in _chart_rows]
-    port_chg_pct = [r["total_change_pct"] for r in _chart_rows]
-    spy_chg_pct  = [r["spy_change_pct"]   for r in _chart_rows]
-
-    # Time-weighted return — capital additions (new money) don't inflate the %.
-    # When total_value jumps more than price-change alone explains, we close the
-    # current sub-period and restart at the post-inflow value, then chain the
-    # factors together.  Both series start at 0 % on the first date.
-    #
-    # Two-threshold strategy handles corrupted historical rows where the newsletter
-    # fetched pre-market prices and stored near-zero total_change_dollars even
-    # though total_value actually moved (the real 1-day market return):
-    #   • Reliable _pchg (explains ≥10% of actual delta): original $1k / 0.5% threshold.
-    #   • Unreliable _pchg (<10%): raise threshold to $10k / 5% so normal market
-    #     moves (~1-3%) are not mistaken for cash flows, but large injections still are.
-    port_cum    = [0.0]
+    # Step 1: TWR over all rows.
+    _twr_cum_by_day: dict[str, float] = {}
     _twr_factor = 1.0
-    _sub_start  = _chart_rows[0]["total_value"] if _chart_rows else 1.0
-    for _i in range(1, len(_chart_rows)):
-        _prev = _chart_rows[_i - 1]["total_value"]
-        _curr = _chart_rows[_i]["total_value"]
-        _pchg = _chart_rows[_i].get("total_change_dollars", 0) or 0
+    _sub_start  = portfolio[0]["total_value"] if portfolio else 1.0
+    _twr_cum_by_day[portfolio[0]["day"]] = 0.0
+    for _i in range(1, len(portfolio)):
+        _prev = portfolio[_i - 1]["total_value"]
+        _curr = portfolio[_i]["total_value"]
+        _pchg = portfolio[_i].get("total_change_dollars", 0) or 0
         actual_delta = _curr - _prev
         if abs(actual_delta) > 1.0:
             _val_ex_cf    = _prev + _pchg
@@ -1154,14 +1141,47 @@ def build_dashboard(portfolio, layers, holdings):
                     _twr_factor *= _val_ex_cf / _sub_start
                 _sub_start = _curr
         _within = (_curr / _sub_start) if _sub_start else 1.0
-        port_cum.append(round((_twr_factor * _within - 1) * 100, 4))
+        _twr_cum_by_day[portfolio[_i]["day"]] = round((_twr_factor * _within - 1) * 100, 4)
 
-    # SPY normalized to 0 % on first date, properly compounded
-    spy_cum = [0.0]
-    _spy_f  = 1.0
-    for _r in _chart_rows[1:]:
-        _spy_f *= 1.0 + (_r.get("spy_change_pct", 0) or 0) / 100.0
-        spy_cum.append(round((_spy_f - 1) * 100, 4))
+    # Step 2: SPY cumulative — fetch actual unadjusted closing prices so the
+    # result is cross-checkable against any financial source and immune to
+    # newsletter gaps (which would lose daily changes during outages).
+    # Formula: (spy_close[date] / spy_close[start_date] - 1) × 100.
+    _spy_start_day = portfolio[0]["day"] if portfolio else None
+    _spy_prices: dict[str, float] = {}
+    if _spy_start_day:
+        try:
+            import yfinance as _yf
+            _spy_end = str(_dt_mod.date.fromisoformat(_spy_start_day)
+                           + _dt_mod.timedelta(days=300))
+            _spy_hist = _yf.Ticker("SPY").history(
+                start=_spy_start_day, end=_spy_end, auto_adjust=False
+            )
+            for _ts, _px in _spy_hist["Close"].items():
+                _spy_prices[str(_ts.date())] = float(_px)
+        except Exception:
+            pass
+
+    _spy_start_px = _spy_prices.get(_spy_start_day, 0.0)
+
+    # Step 3: Subsample to trading days for display.
+    _chart_rows = [
+        r for r in portfolio
+        if not _is_market_holiday(_dt_mod.date.fromisoformat(r["day"]))
+    ]
+    port_dates   = [r["day"]              for r in _chart_rows]
+    port_values  = [r["total_value"]      for r in _chart_rows]
+    port_chg_pct = [r["total_change_pct"] for r in _chart_rows]
+    spy_chg_pct  = [r["spy_change_pct"]   for r in _chart_rows]
+    port_cum     = [_twr_cum_by_day.get(r["day"], 0.0) for r in _chart_rows]
+
+    spy_cum: list[float] = []
+    _spy_last = 0.0
+    for _r in _chart_rows:
+        _px = _spy_prices.get(_r["day"])
+        if _px and _spy_start_px:
+            _spy_last = round((_px / _spy_start_px - 1) * 100, 4)
+        spy_cum.append(_spy_last)
 
     # ---- layer weight history ----
     all_layer_names = sorted(set(l["layer"] for l in layers))
@@ -7898,6 +7918,8 @@ document.addEventListener('DOMContentLoaded', function() {{
 
 // ── Decision Queue ─────────────────────────────────────────────────────────────
 const _DQ_BADGE = {{
+  ROLL_CC:     'ROLL CC',
+  CLOSE_CC:    'CLOSE CC',
   SELL_CC:     'COVERED CALL',
   TAX_HARVEST: 'TAX',
   TAX_SELL:    'TAX',
@@ -7928,7 +7950,7 @@ function _dqPriority(r) {{
   const C  = r.confidence || 0;
   const sfMap = {{high:100, medium:65, low:35}};
   const SF = sfMap[r.priority] || 50;
-  const uMap = {{SELL_CC:80, TAX_HARVEST:85, TAX_SELL:85, TRIM:75, REBALANCE:70, ALLOCATE:70, REVIEW:50}};
+  const uMap = {{ROLL_CC:85, CLOSE_CC:75, SELL_CC:80, TAX_HARVEST:85, TAX_SELL:85, TRIM:75, REBALANCE:70, ALLOCATE:70, REVIEW:50}};
   const U  = uMap[r.action] || 55;
   return Math.round(0.35*I + 0.25*U + 0.25*C + 0.15*SF);
 }}
@@ -7957,6 +7979,28 @@ function _renderDQCard(r) {{
     if (pl.regret_pct != null) parts.push(`Regret ${{Number(pl.regret_pct).toFixed(1)}}%`);
     if (pl.iv_richness)      parts.push(`IV ${{pl.iv_richness}}`);
     if (parts.length) ccRow = `<div style="margin-top:5px;font-size:11px;color:#68d391;display:flex;gap:12px;flex-wrap:wrap;">${{parts.map(p=>`<span>${{p}}</span>`).join('')}}</div>`;
+  }} else if ((r.action === 'ROLL_CC' || r.action === 'CLOSE_CC') && r.action_payload_json) {{
+    let pl = {{}};
+    try {{ pl = JSON.parse(r.action_payload_json); }} catch(e) {{}}
+    const existParts = [];
+    if (pl.existing_strike) existParts.push(`Current: $${{pl.existing_strike}}`);
+    if (pl.existing_expiry) existParts.push(`Exp ${{pl.existing_expiry}}`);
+    if (pl.existing_dte != null) existParts.push(`${{pl.existing_dte}} DTE`);
+    if (pl.existing_pnl != null) {{
+      const sign = pl.existing_pnl >= 0 ? '+' : '';
+      existParts.push(`P&L ${{sign}}$${{Number(pl.existing_pnl).toFixed(0)}}`);
+    }}
+    const rollParts = [];
+    if (pl.roll_strike) rollParts.push(`Roll → $${{pl.roll_strike}}`);
+    if (pl.roll_expiry) rollParts.push(`Exp ${{pl.roll_expiry}}`);
+    if (pl.roll_dte != null) rollParts.push(`${{pl.roll_dte}} DTE`);
+    if (pl.net_credit != null) {{
+      const nc = pl.net_credit >= 0 ? `+$${{Number(pl.net_credit).toFixed(2)}}` : `-$${{Math.abs(pl.net_credit).toFixed(2)}}`;
+      rollParts.push(`Net ${{nc}}/share`);
+    }}
+    const existRow = existParts.length ? `<div style="font-size:11px;color:#fc8181;display:flex;gap:10px;flex-wrap:wrap;">${{existParts.map(p=>`<span>${{p}}</span>`).join('')}}</div>` : '';
+    const rollRow  = rollParts.length  ? `<div style="font-size:11px;color:#68d391;display:flex;gap:10px;flex-wrap:wrap;">${{rollParts.map(p=>`<span>${{p}}</span>`).join('')}}</div>` : '';
+    if (existRow || rollRow) ccRow = `<div style="margin-top:5px;display:flex;flex-direction:column;gap:3px;">${{existRow}}${{rollRow}}</div>`;
   }}
   const trendNote = r.trend_note
     ? `<div style="margin-bottom:8px;padding:5px 9px;background:rgba(237,137,54,.12);border:1px solid rgba(237,137,54,.35);border-radius:5px;font-size:11px;color:#ed8936;">&#9650; ${{r.trend_note}}</div>`
@@ -8183,6 +8227,8 @@ const _DJ_STATUS_COLOR = {{
 }};
 
 const _DJ_ACTION_LABEL = {{
+  ROLL_CC:     'Roll CC',
+  CLOSE_CC:    'Close CC',
   SELL_CC:     'Covered Call',
   TAX_HARVEST: 'Tax Harvest',
   TAX_SELL:    'Tax Sell',

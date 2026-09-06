@@ -64,7 +64,9 @@
     "severity": {
       "EXIT":      1.0,
       "TRIM":      1.0,
+      "ROLL_CC":   0.8,
       "SELL_CC":   0.7,
+      "CLOSE_CC":  0.6,
       "BUY":       0.5,
       "REVIEW":    0.5,
       "REBALANCE": 0.3,
