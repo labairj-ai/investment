@@ -1943,6 +1943,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._handle_cc_update(int(parts[3]))
         elif len(parts) == 4 and parts[1] == "api" and parts[2] == "holdings":
             self._handle_holding_layer_update(parts[3].upper())
+        elif len(parts) == 5 and parts[1] == "api" and parts[2] == "agents" and parts[3] == "journal" and parts[4].isdigit():
+            self._handle_journal_edit(int(parts[4]))
         else:
             self.send_response(404)
             self.end_headers()
@@ -2275,6 +2277,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             pos_id = cur.lastrowid
             conn.close()
             self._json({"ok": True, "id": pos_id})
+        except Exception as e:
+            self._json_error(500, str(e))
+
+    def _handle_journal_edit(self, rec_id: int):
+        try:
+            body        = self._read_body()
+            notes       = body.get("notes")       # None = don't change
+            reason_code = body.get("reason_code") # None = don't change
+            ok = agent_db.update_journal_entry(rec_id, notes, reason_code)
+            if ok:
+                self._json({"ok": True})
+            else:
+                self._json_error(404, "No user_decision row for that recommendation")
         except Exception as e:
             self._json_error(500, str(e))
 

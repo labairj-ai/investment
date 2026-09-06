@@ -7906,6 +7906,30 @@ function _renderDJSummary(summary) {{
   }}
 }}
 
+const _DJ_REASON_OPTS = ['NO_CASH','WAITING','SIZING','OTHER'];
+
+function _djSaveEdit(recId) {{
+  const rc   = document.getElementById(`dj-rc-${{recId}}`);
+  const nt   = document.getElementById(`dj-nt-${{recId}}`);
+  const btn  = document.getElementById(`dj-save-${{recId}}`);
+  if (!rc || !nt) return;
+  btn.disabled = true; btn.textContent = 'Saving…';
+  fetch(`/api/agents/journal/${{recId}}`, {{
+    method: 'PATCH',
+    headers: {{'Content-Type':'application/json'}},
+    body: JSON.stringify({{reason_code: rc.value, notes: nt.value.trim() || null}})
+  }}).then(r => r.json()).then(d => {{
+    if (d.ok) {{ loadDecisionJournal(); }}
+    else {{ btn.disabled = false; btn.textContent = 'Save'; alert(d.error || 'Save failed'); }}
+  }}).catch(() => {{ btn.disabled = false; btn.textContent = 'Save'; }});
+}}
+
+function _djToggleEdit(recId) {{
+  const row = document.getElementById(`dj-edit-row-${{recId}}`);
+  if (!row) return;
+  row.style.display = row.style.display === 'none' ? '' : 'none';
+}}
+
 function _renderDJTable(entries) {{
   const wrap = document.getElementById('dj-table-wrap');
   if (!wrap) return;
@@ -7920,6 +7944,32 @@ function _renderDJTable(entries) {{
       ? new Date(e.decided_at * 1000).toLocaleDateString('en-US', {{month:'short', day:'numeric', year:'numeric'}})
       : new Date(e.created_at * 1000).toLocaleDateString('en-US', {{month:'short', day:'numeric', year:'numeric'}});
     const reason = e.reason_code && e.reason_code !== 'OTHER' ? e.reason_code : '';
+    const rcOpts = _DJ_REASON_OPTS.map(o =>
+      `<option value="${{o}}"${{o === (e.reason_code||'OTHER') ? ' selected' : ''}}>${{o}}</option>`
+    ).join('');
+    const editRow = e.decision ? `
+      <tr id="dj-edit-row-${{e.id}}" style="display:none;background:#fafbff;border-top:none;">
+        <td colspan="8" style="padding:8px 12px;">
+          <div style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap;">
+            <div>
+              <div style="font-size:10px;color:#718096;margin-bottom:3px;text-transform:uppercase;letter-spacing:.05em;">Reason</div>
+              <select id="dj-rc-${{e.id}}" style="font-size:12px;padding:4px 7px;border:1px solid #dde;border-radius:5px;background:#fff;">${{rcOpts}}</select>
+            </div>
+            <div style="flex:1;min-width:180px;">
+              <div style="font-size:10px;color:#718096;margin-bottom:3px;text-transform:uppercase;letter-spacing:.05em;">Notes</div>
+              <textarea id="dj-nt-${{e.id}}" rows="2" style="width:100%;font-size:12px;padding:4px 7px;border:1px solid #dde;border-radius:5px;resize:vertical;font-family:inherit;">${{(e.decision_notes||'').replace(/</g,'&lt;')}}</textarea>
+            </div>
+            <div style="align-self:flex-end;display:flex;gap:6px;">
+              <button id="dj-save-${{e.id}}" onclick="_djSaveEdit(${{e.id}})" style="font-size:11px;padding:5px 12px;background:#3b5bdb;color:#fff;border:none;border-radius:5px;cursor:pointer;">Save</button>
+              <button onclick="_djToggleEdit(${{e.id}})" style="font-size:11px;padding:5px 10px;background:#f7f8fa;border:1px solid #dde;border-radius:5px;cursor:pointer;color:#555;">Cancel</button>
+            </div>
+          </div>
+          ${{e.decision_notes ? `<div style="font-size:11px;color:#718096;margin-top:6px;">Current note: <em>${{e.decision_notes}}</em></div>` : ''}}
+        </td>
+      </tr>` : '';
+    const editBtn = e.decision
+      ? `<button onclick="_djToggleEdit(${{e.id}})" title="Edit" style="font-size:11px;padding:2px 7px;background:#f7f8fa;border:1px solid #dde;border-radius:4px;cursor:pointer;color:#555;line-height:1.4;">✎</button>`
+      : '';
     return `<tr style="border-top:1px solid #f0f4f8;">
       <td style="padding:7px 8px;font-weight:600;font-size:13px;">${{e.ticker || '—'}}</td>
       <td class="col-hide-sm" style="padding:7px 8px;font-size:11px;color:#4a5568;">${{action}}</td>
@@ -7928,7 +7978,8 @@ function _renderDJTable(entries) {{
       <td class="col-hide-sm" style="padding:7px 8px;font-size:11px;color:#718096;">${{date}}</td>
       <td style="padding:7px 8px;font-size:12px;text-align:right;">${{_djFmt(e.actual_return, true)}}</td>
       <td class="col-hide-sm" style="padding:7px 8px;font-size:12px;text-align:right;">${{_djFmt(e.opportunity_cost, true)}}</td>
-    </tr>`;
+      <td style="padding:7px 4px;text-align:center;">${{editBtn}}</td>
+    </tr>${{editRow}}`;
   }}).join('');
   wrap.innerHTML = `<div style="overflow-x:auto;">
     <table style="width:100%;border-collapse:collapse;">
@@ -7940,6 +7991,7 @@ function _renderDJTable(entries) {{
         <th class="col-hide-sm" style="text-align:left;padding:5px 8px;color:#718096;font-weight:600;font-size:10px;text-transform:uppercase;">Date</th>
         <th style="text-align:right;padding:5px 8px;color:#718096;font-weight:600;font-size:10px;text-transform:uppercase;">Return</th>
         <th class="col-hide-sm" style="text-align:right;padding:5px 8px;color:#718096;font-weight:600;font-size:10px;text-transform:uppercase;">Opp. Cost</th>
+        <th style="padding:5px 4px;"></th>
       </tr></thead>
       <tbody>${{rows}}</tbody>
     </table>

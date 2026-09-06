@@ -630,6 +630,30 @@ def journal_summary() -> dict:
     }
 
 
+def update_journal_entry(rec_id: int, notes: str | None, reason_code: str | None) -> bool:
+    conn = _connect()
+    row = conn.execute(
+        "SELECT id FROM user_decisions WHERE recommendation_id=?", (rec_id,)
+    ).fetchone()
+    if not row:
+        conn.close()
+        return False
+    updates, vals = [], []
+    if notes is not None:
+        updates.append("notes=?"); vals.append(notes or None)
+    if reason_code is not None:
+        updates.append("reason_code=?"); vals.append(reason_code)
+    if updates:
+        vals.append(rec_id)
+        conn.execute(
+            f"UPDATE user_decisions SET {', '.join(updates)} WHERE recommendation_id=?",
+            vals,
+        )
+        conn.commit()
+    conn.close()
+    return True
+
+
 def list_journal_entries(limit: int = 200) -> list[dict]:
     """Return closed recommendations joined with user_decisions and outcomes."""
     conn = _connect()
