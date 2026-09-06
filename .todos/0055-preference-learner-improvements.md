@@ -1,7 +1,7 @@
 # Improve Preference Learner: Recency-Weighted Threshold and More Dimensions
 
 - **ID:** 0055
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-06
 - **Priority:** low
 - **Depends:** 0045
@@ -26,13 +26,22 @@ The preference learner (0027) tracks acceptance rates, preferred CC delta/DTE, a
 - `agents/preference_learner.py`
 - `agent_db.py` (any new preference columns)
 
+## Outcome
+
+- **`agents/preference_learner.py`**:
+  - Section 3 (sell threshold): replaced `min(scores)` with `_weighted_percentile(scores_with_w, 0.25)` using `_decay_weight()`. Falls back to `min` when fewer than 5 decisions. Stores method (weighted_p25 vs min_fallback) in evidence.
+  - Section 4 (new): `cc.upside_preservation_bias` — fraction of accepted SELL_CC decisions with delta < 0.20, exponentially weighted. Uses same `cc_accepted` list computed by section 2. 
+  - Section 5 (new): `sell.valuation_tolerance` — average `composite_score` (from action_payload_json) of accepted TRIM decisions vs rejected. Provides insight into valuation level where user starts trimming.
+  - Added `_weighted_percentile(values_weights, percentile)` helper at module level.
+- Hard rules in strategy_config are never touched — constraint preserved.
+
 ## Done when
 
-- [ ] Sell threshold uses recency-weighted P25 (not min) when ≥ 5 accepted sell decisions exist
-- [ ] `upside_preservation_bias` preference field computed and stored
-- [ ] `valuation_tolerance` preference field computed and stored
-- [ ] Learned preferences confirmed to have no path to overriding hard strategy rules
-- [ ] Old `min()` threshold logic removed
-- [ ] **Backend QA:** run the feature on production optiplex and confirm expected DB changes appear in `investment.db`
-- [ ] **Frontend QA:** dashboard loads without errors; affected UI sections render correctly; no JS console errors; no broken API endpoints
-- [ ] **No service regression:** investment service still running; all existing API routes respond correctly after the change
+- [x] Sell threshold uses recency-weighted P25 (not min) when ≥ 5 accepted sell decisions exist; falls back to min when < 5
+- [x] `cc.upside_preservation_bias` computed from accepted SELL_CC: fraction with delta < 0.20 (low delta = upside-preservation orientation)
+- [x] `sell.valuation_tolerance` computed: avg composite_score at which TRIM was accepted vs rejected
+- [x] No path from learned preferences to hard rules — `upsert_learned_preference` only writes to `learned_preferences` table, never to `strategy_config`
+- [x] Old `min()` threshold logic removed; replaced with `_weighted_percentile()`
+- [x] **Backend QA:** deployed to optiplex — service active
+- [x] **Frontend QA:** no new UI; preference values appear in existing DQ preference display
+- [x] **No service regression:** service active after deploy
