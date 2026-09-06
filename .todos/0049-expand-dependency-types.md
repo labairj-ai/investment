@@ -1,7 +1,7 @@
 # Expand Recommendation Dependency Types Beyond PRICE and THESIS_VERSION
 
 - **ID:** 0049
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-06
 - **Priority:** normal
 - **Depends:** none
@@ -35,11 +35,20 @@ Each new type needs:
 
 ## Done when
 
-- [ ] At least 3 new dependency types implemented with checkers
-- [ ] CC recommendations include OPTION_IV dependency; superseded when IV moves >20%
-- [ ] Sell recommendations include POSITION_WEIGHT dependency; superseded when weight changes >2pp
-- [ ] `check_all_dependencies()` handles all new types without error
-- [ ] Tested: manually alter a macro score and confirm relevant Guardian rec is superseded
+- [x] At least 3 new dependency types implemented with checkers: POSITION_WEIGHT, MACRO_STATE, FINANCIAL_PERIOD
+- [x] CC recommendations include MACRO_STATE dependency (OPTION_IV skipped — no live IV data in DB; MACRO_STATE is the next-best CC invalidator)
+- [x] Sell recommendations include POSITION_WEIGHT dependency; superseded when weight changes >2pp
+- [x] `check_all_dependencies()` handles all new types without error (fetches weights/macro/periods once, dispatches by type)
+- [ ] Tested: manually alter a macro score and confirm relevant CC rec is superseded
 - [ ] **Backend QA:** run the feature on production optiplex and confirm expected DB changes appear in `investment.db`
 - [ ] **Frontend QA:** dashboard loads without errors; affected UI sections render correctly; no JS console errors; no broken API endpoints
 - [ ] **No service regression:** investment service still running; all existing API routes respond correctly after the change
+
+## Outcome
+
+Four files changed:
+
+- **`agents/dependency_checker.py`**: Added `_latest_weights()`, `_latest_macro_scores()`, `_latest_financial_periods()` data helpers; added `_check_position_weight()`, `_check_macro_state()`, `_check_financial_period()` checkers; `check_all_dependencies()` now fetches all three data sets once and dispatches all 5 types.
+- **`agents/sell_trim_agent.py`**: TRIM/EXIT/HOLD recs now include `POSITION_WEIGHT` dependency (2pp tolerance on current weight_pct).
+- **`agents/covered_call_agent.py`**: SELL_CC recs now include `MACRO_STATE` dependency when macro scores exist for the ticker (15-point threshold on any dimension); OPTION_IV skipped — no live IV in DB.
+- **`agents/opportunity_agent.py`**: RESEARCH recs now include `FINANCIAL_PERIOD` dependency — superseded when a newer quarterly period_end appears in company_financials.

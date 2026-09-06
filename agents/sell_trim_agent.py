@@ -546,6 +546,13 @@ def _run(ctx: AgentContext) -> list[Recommendation]:
                 "what_would_cause_exit": result.get("what_would_cause_exit"),
             },
             input_hash=input_hash,
+            dependencies=[{
+                "dependency_type": "POSITION_WEIGHT",
+                "dependency_key": ticker,
+                "original_value": str(weight_pct),
+                "tolerance": 2.0,
+                "invalidating_event": "WEIGHT_SHIFT",
+            }],
         )
         recs.append(rec)
 

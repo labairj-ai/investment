@@ -493,6 +493,26 @@ def run_opportunity_hunter(ctx: AgentContext) -> list[Recommendation]:
         has_recent_fundamentals=True,
     ))
 
+    # Build FINANCIAL_PERIOD dependency: supersede when new quarterly data arrives
+    fin_period_dep = None
+    try:
+        fp_conn = agent_db._connect()
+        fp_row = fp_conn.execute(
+            "SELECT MAX(period_end) AS period_end FROM company_financials WHERE ticker=?",
+            (selected["ticker"],)
+        ).fetchone()
+        fp_conn.close()
+        if fp_row and fp_row["period_end"]:
+            fin_period_dep = {
+                "dependency_type": "FINANCIAL_PERIOD",
+                "dependency_key": selected["ticker"],
+                "original_value": fp_row["period_end"],
+                "tolerance": None,
+                "invalidating_event": "NEW_FINANCIALS",
+            }
+    except Exception:
+        pass
+
     rec = Recommendation(
         ticker=selected["ticker"],
         action="RESEARCH",
@@ -505,6 +525,7 @@ def run_opportunity_hunter(ctx: AgentContext) -> list[Recommendation]:
         no_action_case=result.get("no_action_case"),
         action_payload=action_payload,
         valid_until=time.time() + 7 * 86400,
+        dependencies=[fin_period_dep] if fin_period_dep else None,
     )
 
     print(

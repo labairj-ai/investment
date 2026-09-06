@@ -534,6 +534,7 @@ def _analyze_ticker(ctx: AgentContext, ticker: str) -> list[Recommendation]:
     rec_score = min(100, max(0, round(50 + cc_alpha * 1000)))
     priority = "high" if data_mode == "live" and cc_alpha > 0.002 else "normal"
 
+    import json as _json
     price_dep = {
         "dependency_type": "PRICE",
         "dependency_key": ticker,
@@ -541,6 +542,19 @@ def _analyze_ticker(ctx: AgentContext, ticker: str) -> list[Recommendation]:
         "tolerance": 0.02,
         "invalidating_event": "PRICE_THRESHOLD",
     }
+    deps = [price_dep]
+    macro_scores = (ctx.snapshot.macro_scores or {}).get(ticker)
+    if macro_scores:
+        deps.append({
+            "dependency_type": "MACRO_STATE",
+            "dependency_key": ticker,
+            "original_value": _json.dumps({
+                k: v for k, v in macro_scores.items()
+                if isinstance(v, (int, float))
+            }),
+            "tolerance": 15.0,
+            "invalidating_event": "MACRO_SHIFT",
+        })
     rec = Recommendation(
         ticker=ticker,
         action="SELL_CC",
@@ -552,7 +566,7 @@ def _analyze_ticker(ctx: AgentContext, ticker: str) -> list[Recommendation]:
         counter_case=no_call_case,
         no_action_case=no_call_case,
         action_payload=action_payload,
-        dependencies=[price_dep],
+        dependencies=deps,
     )
     print(f"[covered_call] {ticker}: SELL_CC {contract_id} "
           f"confidence={confidence} score={rec_score}")

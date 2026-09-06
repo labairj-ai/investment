@@ -7,6 +7,7 @@ premise has been invalidated. Superseded recs trigger re-evaluation
 via the orchestrator for the same ticker + agent.
 """
 
+import json
 import time
 import sqlite3
 from pathlib import Path
@@ -82,6 +83,102 @@ def _check_thesis_version(dep: dict, versions: dict[str, int]) -> str | None:
     return None
 
 
+def _latest_weights() -> dict[str, float]:
+    """Return {ticker: weight_pct} from the most recent holding_day rows."""
+    conn = sqlite3.connect(str(DB_PATH), timeout=10)
+    conn.row_factory = sqlite3.Row
+    day = conn.execute("SELECT MAX(day) FROM holding_day").fetchone()[0]
+    if not day:
+        conn.close()
+        return {}
+    rows = conn.execute(
+        "SELECT ticker, weight_pct FROM holding_day WHERE day=?", (day,)
+    ).fetchall()
+    conn.close()
+    return {r["ticker"]: float(r["weight_pct"]) for r in rows if r["weight_pct"] is not None}
+
+
+def _latest_macro_scores() -> dict[str, dict]:
+    """Return {ticker: scores_dict} from holding_macro_scores."""
+    conn = agent_db._connect()
+    rows = conn.execute("SELECT ticker, scores FROM holding_macro_scores").fetchall()
+    conn.close()
+    result = {}
+    for r in rows:
+        try:
+            result[r["ticker"]] = json.loads(r["scores"]) if r["scores"] else {}
+        except Exception:
+            pass
+    return result
+
+
+def _latest_financial_periods() -> dict[str, str]:
+    """Return {ticker: newest period_end} from company_financials."""
+    conn = agent_db._connect()
+    rows = conn.execute(
+        "SELECT ticker, MAX(period_end) as period_end FROM company_financials GROUP BY ticker"
+    ).fetchall()
+    conn.close()
+    return {r["ticker"]: r["period_end"] for r in rows if r["period_end"]}
+
+
+def _check_position_weight(dep: dict, weights: dict[str, float]) -> str | None:
+    ticker = dep["dependency_key"]
+    current = weights.get(ticker)
+    if current is None:
+        return None
+    try:
+        original = float(dep["original_value"])
+    except (TypeError, ValueError):
+        return None
+    tolerance = dep.get("tolerance") or 2.0
+    diff_pp = abs(current - original)
+    if diff_pp > tolerance:
+        direction = "increased" if current > original else "decreased"
+        return (
+            f"Portfolio weight {direction} by {diff_pp:.1f}pp "
+            f"(was {original:.1f}%, now {current:.1f}%; tolerance ±{tolerance:.1f}pp)"
+        )
+    return None
+
+
+def _check_macro_state(dep: dict, macro: dict[str, dict]) -> str | None:
+    ticker = dep["dependency_key"]
+    current_scores = macro.get(ticker)
+    if not current_scores:
+        return None
+    try:
+        original_scores = json.loads(dep["original_value"]) if dep["original_value"] else {}
+    except Exception:
+        return None
+    tolerance = dep.get("tolerance") or 15.0
+    violations = []
+    for dim, orig_val in original_scores.items():
+        curr_val = current_scores.get(dim)
+        if curr_val is None or orig_val is None:
+            continue
+        try:
+            diff = abs(float(curr_val) - float(orig_val))
+        except (TypeError, ValueError):
+            continue
+        if diff > tolerance:
+            violations.append(f"{dim} shifted {diff:.0f}pts (was {orig_val}, now {curr_val})")
+    if violations:
+        return f"Macro state changed: {'; '.join(violations)}"
+    return None
+
+
+def _check_financial_period(dep: dict, periods: dict[str, str]) -> str | None:
+    ticker = dep["dependency_key"]
+    newest = periods.get(ticker)
+    if not newest:
+        return None
+    original = dep.get("original_value") or ""
+    if newest > original:
+        return f"New financial period available (was {original!r}, now {newest!r})"
+    return None
+
+
 def _trigger_reeval(ticker: str, agent_type: str) -> None:
     """Fire the original agent via the full orchestrator pipeline (agent → Critic → persist)."""
     try:
@@ -111,8 +208,11 @@ def check_all_dependencies() -> int:
     if not recs:
         return 0
 
-    prices = _latest_prices()
+    prices   = _latest_prices()
     versions = _latest_thesis_versions()
+    weights  = _latest_weights()
+    macro    = _latest_macro_scores()
+    periods  = _latest_financial_periods()
 
     superseded_count = 0
     reeval_queue: list[tuple[str, str]] = []  # (ticker, agent_type)
@@ -129,6 +229,12 @@ def check_all_dependencies() -> int:
                 reason = _check_price(dep, prices)
             elif dtype == "THESIS_VERSION":
                 reason = _check_thesis_version(dep, versions)
+            elif dtype == "POSITION_WEIGHT":
+                reason = _check_position_weight(dep, weights)
+            elif dtype == "MACRO_STATE":
+                reason = _check_macro_state(dep, macro)
+            elif dtype == "FINANCIAL_PERIOD":
+                reason = _check_financial_period(dep, periods)
             else:
                 reason = None
             if reason:
