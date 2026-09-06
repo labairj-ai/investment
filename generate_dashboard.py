@@ -12,8 +12,16 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import agent_db
+from pandas.tseries.holiday import USFederalHolidayCalendar
 from portfolio_ai import HOLDING_PROFILES
 from strategy_config import LAYER_NAMES, LAYER_LABELS, LAYER_TARGETS
+
+
+def _is_market_holiday(d) -> bool:
+    if d.weekday() >= 5:
+        return True
+    cal = USFederalHolidayCalendar()
+    return len(cal.holidays(start=str(d), end=str(d))) > 0
 
 _FUND_TICKERS: frozenset[str] = frozenset(
     t for t, v in HOLDING_PROFILES.items() if v.get("is_fund")
@@ -1067,6 +1075,21 @@ def build_dashboard(portfolio, layers, holdings):
     prev_total = total_v - total_chg
     total_chg_pct = (total_chg / prev_total * 100.0) if prev_total else 0.0
     spy_chg = today.get("spy_change_pct", 0)
+
+    # Market-closed days (weekends + US holidays): no price movement occurred today,
+    # so daily change should be $0 / 0%.  The stored change_dollars reflects the last
+    # trading session's move, not today's — clear it for display purposes only.
+    _today_dt = datetime.now(ZoneInfo("America/New_York")).date()
+    if _today_dt.weekday() >= 5 or _is_market_holiday(_today_dt):
+        total_chg = 0.0
+        total_chg_pct = 0.0
+        spy_chg = 0.0
+        for _h in today_holdings:
+            _h["change_dollars"] = 0.0
+            _h["change_pct"] = 0.0
+        for _l in today_layers:
+            _l["change_dollars"] = 0.0
+            _l["change_pct"] = 0.0
 
     # ---- portfolio history chart data ----
     port_dates = [r["day"] for r in portfolio]
