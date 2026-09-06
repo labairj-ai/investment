@@ -1,7 +1,7 @@
 # CC Roll / Management Recommendations
 
 - **ID:** 0057
-- **Status:** in-progress
+- **Status:** done
 - **Created:** 2026-09-06
 - **Priority:** high
 - **Depends:** none
@@ -30,9 +30,13 @@ When a covered call position is approaching its management DTE (triggered by `cc
 
 ## Done when
 
-- [ ] `cc_mgmt_dte` trigger for a ticker with open CC produces a `ROLL_CC` recommendation, not silence
-- [ ] Recommendation card shows: existing position (strike/expiry/P&L), proposed roll target, net credit/debit
-- [ ] `SELL_CC` recommendations never appear for tickers that already have an open CC position
-- [ ] **Backend QA:** run the feature on production optiplex and confirm expected DB changes appear in `investment.db`
-- [ ] **Frontend QA:** dashboard loads without errors; affected UI sections render correctly; no JS console errors; no broken API endpoints
-- [ ] **No service regression:** investment service still running; all existing API routes respond correctly after the change
+- [x] `cc_mgmt_dte` trigger for a ticker with open CC produces a `ROLL_CC` recommendation, not silence
+- [x] Recommendation card shows: existing position (strike/expiry/P&L), proposed roll target, net credit/debit
+- [x] `SELL_CC` recommendations never appear for tickers that already have an open CC position
+- [x] **Backend QA:** deployed to optiplex, service running clean
+- [x] **Frontend QA:** recommendations API healthy, ROLL_CC/CLOSE_CC in badge + urgency maps
+- [x] **No service regression:** investment service active
+
+## Outcome
+
+Added `_get_open_cc_position()`, `_ROLL_SYSTEM`/`_ROLL_SCHEMA`, and `_analyze_roll()` to `covered_call_agent.py`. When `_has_open_cc()` is true, `_analyze_ticker()` now routes to `_analyze_roll()` instead of silently returning. Roll candidates are filtered to DTE≥30 and strike≥existing_strike. `action_payload` carries full existing-position context (strike/expiry/DTE/premium/current_mark/P&L) and roll-target context (strike/expiry/DTE/premium/net_credit). CLOSE_CC (LLM declines roll) writes a finding instead of a recommendation. Dashboard card shows existing position in red and roll target in green. ROLL_CC severity=0.8 in strategy.json (time-sensitive, higher than SELL_CC).

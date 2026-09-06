@@ -1,7 +1,7 @@
 # Register sell_trim_agent and Harden Orchestrator Registry
 
 - **ID:** 0036
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-06
 - **Priority:** high
 - **Depends:** none
@@ -24,10 +24,17 @@
 
 ## Done when
 
-- [ ] `from agents import sell_trim_agent` succeeds and `_registry["sell_trim"]` is populated at startup
-- [ ] Manually calling `run_agents(snapshot, ["sell_trim"])` produces recommendations (not a silent skip)
-- [ ] Calling `run_agents(snapshot, ["nonexistent_agent"])` raises `RuntimeError`
-- [ ] All agents in `AGENT_ORDER` have a corresponding import in `__init__.py`
-- [ ] **Backend QA:** run the feature on production optiplex and confirm expected DB changes appear in `investment.db`
-- [ ] **Frontend QA:** dashboard loads without errors; affected UI sections render correctly; no JS console errors; no broken API endpoints
-- [ ] **No service regression:** investment service still running; all existing API routes respond correctly after the change
+- [x] `from agents import sell_trim_agent` succeeds and `_registry["sell_trim"]` is populated at startup
+- [x] Manually calling `run_agents(snapshot, ["sell_trim"])` produces recommendations (not a silent skip)
+- [x] Calling `run_agents(snapshot, ["nonexistent_agent"])` raises `RuntimeError` (note: API is now `list[TriggerEvent]` since 0039; verified by temporarily removing handler from registry)
+- [x] All agents in `AGENT_ORDER` have a corresponding import in `__init__.py`
+- [x] **Backend QA:** run the feature on production optiplex and confirm expected DB changes appear in `investment.db`
+- [x] **Frontend QA:** dashboard loads without errors; affected UI sections render correctly; no JS console errors; no broken API endpoints
+- [x] **No service regression:** investment service still running; all existing API routes respond correctly after the change
+
+## Outcome
+
+Two files changed:
+
+- **`agents/__init__.py`**: Added `from . import sell_trim_agent` (with `"sell_trim_agent"` in `__all__`). The module now loads at package import time, executing `register_agent("sell_trim", _run)`. All 6 agents in `AGENT_ORDER` are now registered.
+- **`agents/orchestrator.py`**: `if handler is None: continue` → `raise RuntimeError(f"Triggered agent {agent_type!r} has no registered handler")`. Any future agent that fires a trigger without being registered will now crash loudly instead of silently dropping its work.

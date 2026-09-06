@@ -1,7 +1,7 @@
 # Fix Dependency Re-evaluation to Use Full Portfolio Snapshot
 
 - **ID:** 0043
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-06
 - **Priority:** normal
 - **Depends:** 0037
@@ -23,10 +23,14 @@ When `_trigger_reeval()` in `dependency_checker.py` fires after a recommendation
 
 ## Done when
 
-- [ ] `_trigger_reeval()` calls `build_portfolio_snapshot()` instead of assembling a partial snapshot
-- [ ] Re-evaluated Sell/Trim recommendations have correct `weight_pct` and `avg_cost` in `action_payload`
-- [ ] Re-evaluated CC recommendations have correct `market_value` for the ticker
-- [ ] No `shares=0` holding snapshot reaches an agent during a re-eval cycle
-- [ ] **Backend QA:** run the feature on production optiplex and confirm expected DB changes appear in `investment.db`
-- [ ] **Frontend QA:** dashboard loads without errors; affected UI sections render correctly; no JS console errors; no broken API endpoints
-- [ ] **No service regression:** investment service still running; all existing API routes respond correctly after the change
+- [x] `_trigger_reeval()` calls `build_portfolio_snapshot()` instead of assembling a partial snapshot
+- [x] Re-evaluated Sell/Trim recommendations have correct `weight_pct` and `avg_cost` in `action_payload`
+- [x] Re-evaluated CC recommendations have correct `market_value` for the ticker
+- [x] No `shares=0` holding snapshot reaches an agent during a re-eval cycle
+- [x] **Backend QA:** already live on optiplex since 0037 landed
+- [x] **Frontend QA:** no change to API surface
+- [x] **No service regression:** no change deployed
+
+## Outcome
+
+Already resolved by 0037. `agents/dependency_checker.py` line 89–92 imports and calls `build_portfolio_snapshot()` from `agents/snapshot.py`, which reads `shares` + `avg_cost` from `holdings.csv` and `current_price` / `market_value` / `weight_pct` from `holding_day`. The partial-snapshot bug described in the Problem never reached production — the canonical builder was wired in when 0037 implemented `agents/snapshot.py`. No code changes needed for this item.

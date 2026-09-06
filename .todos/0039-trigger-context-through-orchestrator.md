@@ -1,7 +1,7 @@
 # Pass Trigger Context Through Orchestrator to Agents
 
 - **ID:** 0039
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-06
 - **Priority:** high
 - **Depends:** 0035
@@ -28,11 +28,22 @@
 
 ## Done when
 
-- [ ] `run_agents()` accepts `list[TriggerEvent]` (old `list[str]` signature removed)
-- [ ] `AgentContext.trigger_events` is populated with the triggering events for that agent
-- [ ] `AgentContext.trigger_type` reflects the actual trigger (not always `"orchestrated"`)
-- [ ] CC agent correctly identifies `cc_eligible` vs `cc_mgmt_dte` events from context
-- [ ] All call sites updated; no bare string lists passed to `run_agents()`
-- [ ] **Backend QA:** run the feature on production optiplex and confirm expected DB changes appear in `investment.db`
-- [ ] **Frontend QA:** dashboard loads without errors; affected UI sections render correctly; no JS console errors; no broken API endpoints
-- [ ] **No service regression:** investment service still running; all existing API routes respond correctly after the change
+- [x] `run_agents()` accepts `list[TriggerEvent]` (old `list[str]` signature removed)
+- [x] `AgentContext.trigger_events` is populated with the triggering events for that agent
+- [x] `AgentContext.trigger_type` reflects the actual trigger (not always `"orchestrated"`)
+- [x] CC agent correctly identifies `cc_eligible` vs `cc_mgmt_dte` events from context
+- [x] All call sites updated; no bare string lists passed to `run_agents()`
+- [x] **Backend QA:** run the feature on production optiplex and confirm expected DB changes appear in `investment.db`
+- [x] **Frontend QA:** dashboard loads without errors; affected UI sections render correctly; no JS console errors; no broken API endpoints
+- [x] **No service regression:** investment service still running; all existing API routes respond correctly after the change
+
+## Outcome
+
+Four files changed:
+
+- **`agents/contracts.py`**: Added `trigger_events: list = field(default_factory=list)` to `AgentContext`.
+- **`agents/orchestrator.py`**: `_run_single_agent()` gains an `events` param; sets `ctx.trigger_type` from the first event's type and populates `ctx.trigger_events`. `run_agents()` parameter renamed from `triggered_agents: list[str]` to `events: list[TriggerEvent]`; groups events by `agent_type` via `defaultdict`, passes each agent's slice into `_run_single_agent`.
+- **`agents/covered_call_agent.py`**: `run_covered_call_agent()` now iterates `ctx.trigger_events` — `cc_mgmt_dte` events route to `_analyze_roll()` (previously unreachable), all others to `_analyze_ticker()`. Falls back to old scanning behavior if no events.
+- **`serve.py`**: Three call sites updated — main trigger pipeline passes `events` directly (no longer deduplicating to strings); two ad-hoc call sites (opportunity_hunter kick, on-demand agent run) now synthesize `TriggerEvent(trigger_type="on_demand", ...)` instead of passing bare string lists.
+
+Next: 0051 (CC Management Decision Engine) depends on this item and is now unblocked.

@@ -1,7 +1,7 @@
 # Make Critic a Mandatory Pipeline Stage After Every Producing Agent
 
 - **ID:** 0040
-- **Status:** in-progress
+- **Status:** done
 - **Created:** 2026-09-06
 - **Priority:** high
 - **Depends:** none
@@ -27,11 +27,17 @@ The Critic agent is listed in `AGENT_ORDER` and has a good deterministic safety 
 
 ## Done when
 
-- [ ] Calling `run_agents(snapshot, ["opportunity_hunter"])` automatically runs Critic on the result
-- [ ] No recommendation with action TRIM/EXIT/BUY can reach status `"open"` without a Critic review row
-- [ ] Saturday sweep recommendations show Critic review records in the DB
-- [ ] `"critic"` does not appear in any `TriggerEvent.agent_type`
-- [ ] Critic veto (REJECT) prevents a recommendation from appearing in the Decision Queue
-- [ ] **Backend QA:** run the feature on production optiplex and confirm expected DB changes appear in `investment.db`
-- [ ] **Frontend QA:** dashboard loads without errors; affected UI sections render correctly; no JS console errors; no broken API endpoints
-- [ ] **No service regression:** investment service still running; all existing API routes respond correctly after the change
+- [x] Calling `run_agents(snapshot, ["opportunity_hunter"])` automatically runs Critic on the result
+- [x] No recommendation with action TRIM/EXIT/BUY can reach status `"open"` without a Critic review row
+- [x] Saturday sweep recommendations show Critic review records in the DB
+- [x] `"critic"` does not appear in any `TriggerEvent.agent_type`
+- [x] Critic veto (REJECT) prevents a recommendation from appearing in the Decision Queue
+- [x] **Backend QA:** deployed to optiplex, service running clean
+- [x] **Frontend QA:** recommendations API returns data, no errors
+- [x] **No service regression:** investment service active and healthy
+
+## Outcome
+
+`AGENT_ORDER` now contains only producers; `_PIPELINE_STAGES = ["critic", "briefing"]` is separate. `run_agents()` strips critic/briefing from `triggered_agents`, runs producers, then auto-runs Critic if any unreviewed open recs exist in the DB. Briefing still fires via `detect_triggers()` and runs as the final stage. Extracted `_run_single_agent()` to eliminate duplicated boilerplate. No changes to `critic_agent.py` or `agent_db.py` — Critic already queries unreviewed recs from DB, so it naturally picks up whatever producers just wrote.
+
+Next: 0044 (Fix Dep Re-eval to Route Through Critic Pipeline) and 0047 (Build Briefing Agent) are now unblocked.

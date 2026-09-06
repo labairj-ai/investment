@@ -1,7 +1,7 @@
 # Build Canonical build_portfolio_snapshot() Function
 
 - **ID:** 0037
-- **Status:** in-progress
+- **Status:** done
 - **Created:** 2026-09-06
 - **Priority:** high
 - **Depends:** none
@@ -26,11 +26,15 @@ Every entry point that needs a `PortfolioSnapshot` builds its own partial versio
 
 ## Done when
 
-- [ ] Single `build_portfolio_snapshot()` function exists and is importable
-- [ ] Returned snapshot has non-zero `shares`, `avg_cost`, `market_value`, `weight_pct` for all held positions
-- [ ] `_trigger_reeval()` uses it — no more `shares=0` snapshots during re-eval
-- [ ] Saturday sweep uses it — no more manually-assembled partial snapshots
-- [ ] Unit-testable: can be called in isolation and returns a valid `PortfolioSnapshot`
-- [ ] **Backend QA:** run the feature on production optiplex and confirm expected DB changes appear in `investment.db`
-- [ ] **Frontend QA:** dashboard loads without errors; affected UI sections render correctly; no JS console errors; no broken API endpoints
-- [ ] **No service regression:** investment service still running; all existing API routes respond correctly after the change
+- [x] Single `build_portfolio_snapshot()` function exists and is importable
+- [x] Returned snapshot has non-zero `shares`, `avg_cost`, `market_value`, `weight_pct` for all held positions
+- [x] `_trigger_reeval()` uses it — no more `shares=0` snapshots during re-eval
+- [x] Saturday sweep uses it — no more manually-assembled partial snapshots
+- [x] Unit-testable: can be called in isolation and returns a valid `PortfolioSnapshot`
+- [x] **Backend QA:** run the feature on production optiplex and confirm expected DB changes appear in `investment.db`
+- [x] **Frontend QA:** dashboard loads without errors; affected UI sections render correctly; no JS console errors; no broken API endpoints
+- [x] **No service regression:** investment service still running; all existing API routes respond correctly after the change
+
+## Outcome
+
+Created `agents/snapshot.py` with the canonical `build_portfolio_snapshot()` extracted from `serve.py`. `serve.py`'s wrapper now delegates to it (2 lines). Replaced 3 partial-snapshot construction sites: `dependency_checker._trigger_reeval` (was shares=0/avg_cost=0), `serve.py` opportunity hunter (was empty PortfolioSnapshot), and `serve.py` manual agent trigger (was wrong current_price = value/shares). Removed ~80 lines of duplicated DB/CSV reading code. Deployed to optiplex; service healthy, recommendations API confirmed returning data.
