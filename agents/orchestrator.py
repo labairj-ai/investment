@@ -149,7 +149,7 @@ def run_agents(
                 _record_no_actions(agent_type, snapshot, recommended, run_id)
 
             for rec in agent_recs:
-                agent_db.insert_recommendation(
+                rec_id = agent_db.insert_recommendation(
                     ticker=rec.ticker,
                     action=rec.action,
                     run_id=run_id,
@@ -163,6 +163,8 @@ def run_agents(
                     no_action_case=rec.no_action_case,
                     valid_until=rec.valid_until,
                 )
+                if rec.dependencies:
+                    agent_db.write_dependencies(rec_id, rec.dependencies)
             recommendations.extend(agent_recs)
             agent_db.finish_agent_run(run_id, status="done")
         except Exception as e:

@@ -464,6 +464,13 @@ def run_thesis_monitor(ctx: AgentContext) -> list[Recommendation]:
                     "composite_score":  round(composite, 1),
                     "trigger":          "critical_pillar_violation",
                 },
+                dependencies=[{
+                    "dependency_type": "THESIS_VERSION",
+                    "dependency_key": ticker,
+                    "original_value": thesis.get("version", 1),
+                    "tolerance": 0,
+                    "invalidating_event": "THESIS_CHANGED",
+                }],
             ))
 
         # ── Overall thesis finding (always emitted) ───────────────────────
@@ -497,6 +504,13 @@ def run_thesis_monitor(ctx: AgentContext) -> list[Recommendation]:
                     "trigger":         "low_composite_score",
                     "violated_pillars": [p["name"] for p in updated_pillars if p["det_status"] == "VIOLATED"],
                 },
+                dependencies=[{
+                    "dependency_type": "THESIS_VERSION",
+                    "dependency_key": ticker,
+                    "original_value": thesis.get("version", 1),
+                    "tolerance": 0,
+                    "invalidating_event": "THESIS_CHANGED",
+                }],
             ))
 
         # ── TRIM rule (composite in distress band with violations) ─────────
@@ -520,6 +534,13 @@ def run_thesis_monitor(ctx: AgentContext) -> list[Recommendation]:
                     "composite_score": round(composite, 1),
                     "trigger":         "trim_rule",
                 },
+                dependencies=[{
+                    "dependency_type": "THESIS_VERSION",
+                    "dependency_key": ticker,
+                    "original_value": thesis.get("version", 1),
+                    "tolerance": 0,
+                    "invalidating_event": "THESIS_CHANGED",
+                }],
             ))
 
         # ── ADD rule (all clear, composite strong) ────────────────────────
@@ -543,6 +564,13 @@ def run_thesis_monitor(ctx: AgentContext) -> list[Recommendation]:
                     "composite_score": round(composite, 1),
                     "trigger":         "add_rule",
                 },
+                dependencies=[{
+                    "dependency_type": "THESIS_VERSION",
+                    "dependency_key": ticker,
+                    "original_value": thesis.get("version", 1),
+                    "tolerance": 0,
+                    "invalidating_event": "THESIS_CHANGED",
+                }],
             ))
 
     return recommendations

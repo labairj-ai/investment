@@ -540,6 +540,13 @@ def _run_daily():
             lf.write(result.stdout or "")
             if result.returncode != 0:
                 lf.write(f"ERROR (generate_dashboard.py): {result.stderr}\n")
+            lf.write("[DepChecker] Checking recommendation dependencies…\n")
+            try:
+                from agents.dependency_checker import check_all_dependencies
+                n = check_all_dependencies()
+                lf.write(f"[DepChecker] {n} recommendation(s) superseded.\n")
+            except Exception as _e:
+                lf.write(f"[DepChecker] Error: {_e}\n")
         return True
 
     while True:
@@ -1020,7 +1027,7 @@ def _run_saturday_sweep():
                     )
                     tax_recs = _run_tax(tax_ctx)
                     for rec in tax_recs:
-                        agent_db.insert_recommendation(
+                        _rid = agent_db.insert_recommendation(
                             ticker=rec.ticker, action=rec.action, run_id=tax_run_id,
                             action_payload=rec.action_payload,
                             recommendation_score=rec.recommendation_score,
@@ -1028,10 +1035,18 @@ def _run_saturday_sweep():
                             why_now=rec.why_now, rationale=rec.rationale,
                             counter_case=rec.counter_case, no_action_case=rec.no_action_case,
                         )
+                        if rec.dependencies:
+                            agent_db.write_dependencies(_rid, rec.dependencies)
                     agent_db.finish_agent_run(tax_run_id, status="done")
                     print(f"[SaturdaySweep] tax_agent complete — {len(tax_recs)} recommendations.")
                 except Exception as e:
                     print(f"[SaturdaySweep] tax_agent failed: {e}")
+
+                try:
+                    from agents.dependency_checker import check_all_dependencies
+                    check_all_dependencies()
+                except Exception as e:
+                    print(f"[SaturdaySweep] dep checker failed: {e}")
 
                 FLAG.write_text(_dt.now(TZ).date().isoformat())
                 print(f"[SaturdaySweep] Weekly sweep complete.")

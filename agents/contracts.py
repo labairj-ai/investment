@@ -102,6 +102,7 @@ class Recommendation:
     no_action_case: str | None = None
     action_payload: dict | None = None
     valid_until: float | None = None
+    dependencies: list[dict] | None = None
 
 
 @dataclass

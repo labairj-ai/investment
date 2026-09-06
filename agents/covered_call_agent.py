@@ -277,6 +277,7 @@ def _analyze_ticker(ctx: AgentContext, ticker: str) -> list[Recommendation]:
         "shares": int(holding.shares),
         "contracts": int(holding.shares // 100),
         "avg_cost": holding.avg_cost,
+        "current_price": holding.current_price,
         "data_mode": data_mode,
         "hv_rank": hv_rank,
         "atm_iv": atm_iv,
@@ -292,6 +293,13 @@ def _analyze_ticker(ctx: AgentContext, ticker: str) -> list[Recommendation]:
     rec_score = min(100, max(0, round(50 + cc_alpha * 1000)))
     priority = "high" if data_mode == "live" and cc_alpha > 0.002 else "normal"
 
+    price_dep = {
+        "dependency_type": "PRICE",
+        "dependency_key": ticker,
+        "original_value": holding.current_price,
+        "tolerance": 0.02,
+        "invalidating_event": "PRICE_THRESHOLD",
+    }
     rec = Recommendation(
         ticker=ticker,
         action="SELL_CC",
@@ -303,6 +311,7 @@ def _analyze_ticker(ctx: AgentContext, ticker: str) -> list[Recommendation]:
         counter_case=no_call_case,
         no_action_case=no_call_case,
         action_payload=action_payload,
+        dependencies=[price_dep],
     )
     print(f"[covered_call] {ticker}: SELL_CC {contract_id} "
           f"confidence={confidence} score={rec_score}")

@@ -228,6 +228,19 @@ def migrate() -> None:
 
         CREATE INDEX IF NOT EXISTS idx_candidate_decisions_ticker
             ON candidate_decisions (ticker, decided_at DESC);
+
+        CREATE TABLE IF NOT EXISTS recommendation_dependencies (
+            id                  INTEGER PRIMARY KEY,
+            recommendation_id   INTEGER NOT NULL REFERENCES recommendations(id),
+            dependency_type     TEXT    NOT NULL,
+            dependency_key      TEXT    NOT NULL,
+            original_value      TEXT,
+            tolerance           REAL,
+            invalidating_event  TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_rec_deps_rec
+            ON recommendation_dependencies (recommendation_id);
     """)
     conn.commit()
 
@@ -246,6 +259,8 @@ def migrate() -> None:
         # 0024 — NO_ACTION deduplication
         ("recommendations",   "input_hash",        "TEXT"),
         ("recommendations",   "updated_at",        "REAL"),
+        # 0025 — dependency engine
+        ("recommendations",   "superseded_reason", "TEXT"),
     ]
     for table, col, col_type in _new_cols:
         try:
@@ -675,20 +690,93 @@ def list_journal_entries(limit: int = 200) -> list[dict]:
         """SELECT
                r.id, r.ticker, r.action, r.status, r.created_at,
                r.recommendation_score, r.confidence, r.why_now,
-               r.action_payload_json,
+               r.action_payload_json, r.superseded_reason,
                ud.decision, ud.reason_code, ud.notes as decision_notes, ud.decided_at,
                ro.actual_return, ro.recommended_path_return, ro.opportunity_cost,
                ro.notes as outcome_notes
            FROM recommendations r
            LEFT JOIN user_decisions ud ON ud.recommendation_id = r.id
            LEFT JOIN recommendation_outcomes ro ON ro.recommendation_id = r.id
-           WHERE r.status IN ('accepted','rejected','deferred','vetoed')
+           WHERE r.status IN ('accepted','rejected','deferred','vetoed','superseded')
            ORDER BY COALESCE(ud.decided_at, r.created_at) DESC
            LIMIT ?""",
         (limit,),
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+# ── Dependency engine ─────────────────────────────────────────────────────────
+
+def write_dependencies(rec_id: int, deps: list[dict]) -> None:
+    if not deps:
+        return
+    conn = _connect()
+    for d in deps:
+        conn.execute(
+            """INSERT INTO recommendation_dependencies
+               (recommendation_id, dependency_type, dependency_key,
+                original_value, tolerance, invalidating_event)
+               VALUES (?,?,?,?,?,?)""",
+            (rec_id,
+             d["dependency_type"],
+             d["dependency_key"],
+             str(d["original_value"]) if d.get("original_value") is not None else None,
+             d.get("tolerance"),
+             d.get("invalidating_event")),
+        )
+    conn.commit()
+    conn.close()
+
+
+def supersede_recommendation(rec_id: int, reason: str) -> None:
+    conn = _connect()
+    conn.execute(
+        "UPDATE recommendations SET status='superseded', superseded_reason=?, updated_at=? WHERE id=?",
+        (reason, time.time(), rec_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_open_recs_with_deps() -> list[dict]:
+    """Return open recommendations that have at least one dependency row."""
+    conn = _connect()
+    rows = conn.execute(
+        """SELECT
+               r.id, r.ticker, r.action, r.created_at,
+               ar.agent_type,
+               d.id as dep_id, d.dependency_type, d.dependency_key,
+               d.original_value, d.tolerance, d.invalidating_event
+           FROM recommendations r
+           JOIN recommendation_dependencies d ON d.recommendation_id = r.id
+           LEFT JOIN agent_runs ar ON ar.id = r.run_id
+           WHERE r.status = 'open'
+           ORDER BY r.id, d.id""",
+    ).fetchall()
+    conn.close()
+    # Group by rec_id
+    recs: dict[int, dict] = {}
+    for row in rows:
+        rid = row["id"]
+        if rid not in recs:
+            recs[rid] = {
+                "id": rid,
+                "ticker": row["ticker"],
+                "action": row["action"],
+                "created_at": row["created_at"],
+                "agent_type": row["agent_type"],
+                "deps": [],
+            }
+        recs[rid]["deps"].append({
+            "dep_id": row["dep_id"],
+            "dependency_type": row["dependency_type"],
+            "dependency_key": row["dependency_key"],
+            "original_value": row["original_value"],
+            "tolerance": row["tolerance"],
+            "invalidating_event": row["invalidating_event"],
+        })
+    return list(recs.values())
 
 
 # ── Thesis intake helpers ─────────────────────────────────────────────────────

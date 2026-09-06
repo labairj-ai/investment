@@ -7913,10 +7913,11 @@ setInterval(loadDecisionQueue, 60000);
 
 // ── Decision Journal ───────────────────────────────────────────────────────────
 const _DJ_STATUS_COLOR = {{
-  accepted: 'background:#e6f4ea;color:#276749;border:1px solid #b7dfc4;',
-  rejected: 'background:#fde8e8;color:#9b1c1c;border:1px solid #f5a0a0;',
-  deferred: 'background:#f0f4ff;color:#3b5bdb;border:1px solid #bac8ff;',
-  vetoed:   'background:#fff3e0;color:#8a4500;border:1px solid #f0a060;',
+  accepted:   'background:#e6f4ea;color:#276749;border:1px solid #b7dfc4;',
+  rejected:   'background:#fde8e8;color:#9b1c1c;border:1px solid #f5a0a0;',
+  deferred:   'background:#f0f4ff;color:#3b5bdb;border:1px solid #bac8ff;',
+  vetoed:     'background:#fff3e0;color:#8a4500;border:1px solid #f0a060;',
+  superseded: 'background:#f3f0ff;color:#553c9a;border:1px solid #d6bcfa;',
 }};
 
 const _DJ_ACTION_LABEL = {{
@@ -8004,10 +8005,19 @@ function _renderDJTable(entries) {{
     const date = e.decided_at
       ? new Date(e.decided_at * 1000).toLocaleDateString('en-US', {{month:'short', day:'numeric', year:'numeric'}})
       : new Date(e.created_at * 1000).toLocaleDateString('en-US', {{month:'short', day:'numeric', year:'numeric'}});
-    const reason = e.reason_code && e.reason_code !== 'OTHER' ? e.reason_code : '';
+    const reason = e.status === 'superseded'
+      ? (e.superseded_reason || 'premise changed')
+      : (e.reason_code && e.reason_code !== 'OTHER' ? e.reason_code : '');
     const rcOpts = _DJ_REASON_OPTS.map(o =>
       `<option value="${{o}}"${{o === (e.reason_code||'OTHER') ? ' selected' : ''}}>${{o}}</option>`
     ).join('');
+    const supersededNote = e.status === 'superseded' && e.superseded_reason
+      ? `<tr style="background:#faf8ff;border-top:none;">
+           <td colspan="8" style="padding:2px 14px 8px;font-size:10px;color:#6b46c1;font-style:italic;">
+             Expired: ${{e.superseded_reason}}
+           </td>
+         </tr>`
+      : '';
     const editRow = e.decision ? `
       <tr id="dj-edit-row-${{e.id}}" style="display:none;background:#fafbff;border-top:none;">
         <td colspan="8" style="padding:8px 12px;">
@@ -8040,7 +8050,7 @@ function _renderDJTable(entries) {{
       <td style="padding:7px 8px;font-size:12px;text-align:right;">${{_djFmt(e.actual_return, true)}}</td>
       <td class="col-hide-sm" style="padding:7px 8px;font-size:12px;text-align:right;">${{_djFmt(e.opportunity_cost, true)}}</td>
       <td style="padding:7px 4px;text-align:center;">${{editBtn}}</td>
-    </tr>${{editRow}}`;
+    </tr>${{supersededNote}}${{editRow}}`;
   }}).join('');
   wrap.innerHTML = `<div style="overflow-x:auto;">
     <table style="width:100%;border-collapse:collapse;">

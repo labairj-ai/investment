@@ -290,6 +290,13 @@ def _check_lt_crossover(
                 "st_tax_cost": round(st_tax_cost, 2),
                 "st_tax_rate": TAX_ST_RATE,
             },
+            dependencies=[{
+                "dependency_type": "PRICE",
+                "dependency_key": ticker,
+                "original_value": current_price,
+                "tolerance": 0.05,
+                "invalidating_event": "PRICE_THRESHOLD",
+            }],
         ))
 
     return recs
@@ -387,6 +394,14 @@ def _check_tlh(
                 "wash_sale_window_start": ws_start,
                 "wash_sale_window_end": ws_end,
             },
+            # If price recovers 4% the loss shrinks enough to re-evaluate
+            dependencies=[{
+                "dependency_type": "PRICE",
+                "dependency_key": ticker,
+                "original_value": current_price,
+                "tolerance": 0.04,
+                "invalidating_event": "PRICE_THRESHOLD",
+            }],
         ))
 
     return recs
