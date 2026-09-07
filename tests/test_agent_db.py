@@ -57,6 +57,7 @@ def test_get_executions_for_ticker_with_since(mem_db, monkeypatch):
 
 
 def test_insert_agent_run_with_audit_fields(mem_db, monkeypatch):
+    import json
     import agent_db
     monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
 
@@ -69,7 +70,12 @@ def test_insert_agent_run_with_audit_fields(mem_db, monkeypatch):
         model="mlx-community/Qwen3.6-35B-A3B-4bit",
         prompt_version="sell_trim_v2",
         input_hash="abc123def456",
-        input_snapshot={"ticker": "ANET", "price": 180.0},
+        input_snapshot={
+            "ticker": "ANET",
+            "price": 180.0,
+            "thesis_version": 2,
+            "financial_period": "2026-06-30",
+        },
     )
     assert run_id > 0
 
@@ -83,3 +89,8 @@ def test_insert_agent_run_with_audit_fields(mem_db, monkeypatch):
     assert row["prompt_version"] == "sell_trim_v2"
     assert row["input_hash"] == "abc123def456"
     assert row["input_snapshot_json"] is not None
+
+    # 0078: verify manifest has thesis_version and financial_period fields
+    snap = json.loads(row["input_snapshot_json"])
+    assert snap.get("thesis_version") == 2
+    assert snap.get("financial_period") == "2026-06-30"

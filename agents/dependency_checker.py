@@ -250,7 +250,16 @@ def _check_earnings_date(dep: dict, periods: dict[str, str]) -> str | None:
     Falls back to FINANCIAL_PERIOD logic if no original_value is set.
     """
     ticker = dep["dependency_key"]
-    earnings_str = dep.get("original_value") or ""
+    # 0075: prefer authoritative earnings_dates table over the heuristic original_value
+    stored_row = agent_db.get_latest_earnings_date(ticker)
+    if stored_row:
+        earnings_str = stored_row["event_date"]
+        confidence = stored_row.get("confidence", "estimated")
+        # Tighter window for authoritative dates (7d), wider for heuristic (14d)
+        imminence_days = 7 if confidence == "provider_estimated" else 14
+    else:
+        earnings_str = dep.get("original_value") or ""
+        imminence_days = 7
     if not earnings_str:
         # Fall back: new period available?
         newest = periods.get(ticker)
@@ -263,7 +272,7 @@ def _check_earnings_date(dep: dict, periods: dict[str, str]) -> str | None:
     days_to = (earnings_date - today).days
     if today > earnings_date:
         return f"Estimated earnings date {earnings_str} has passed — new data expected"
-    if days_to <= 7:
+    if days_to <= imminence_days:
         return f"Earnings imminent in {days_to} day(s) ({earnings_str}) — re-evaluate"
     # Also check if a newer period already landed
     newest = periods.get(ticker)

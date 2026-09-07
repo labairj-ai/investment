@@ -165,15 +165,41 @@ def test_event_calendar_stub_returns_none(mem_db):
 def test_earnings_date_safe():
     far_future = (date.today() + timedelta(days=30)).isoformat()
     dep = {"dependency_key": "ANET", "original_value": far_future}
-    assert _check_earnings_date(dep, {"ANET": "2026-06-30"}) is None
+    from unittest.mock import patch
+    import agent_db
+    with patch.object(agent_db, "get_latest_earnings_date", return_value=None):
+        assert _check_earnings_date(dep, {"ANET": "2026-06-30"}) is None
 
 
 def test_earnings_date_passed():
     past = (date.today() - timedelta(days=5)).isoformat()
     dep = {"dependency_key": "ANET", "original_value": past}
-    reason = _check_earnings_date(dep, {})
+    from unittest.mock import patch
+    import agent_db
+    with patch.object(agent_db, "get_latest_earnings_date", return_value=None):
+        reason = _check_earnings_date(dep, {})
     assert reason is not None
     assert "passed" in reason.lower()
+
+
+def test_earnings_date_authoritative_supersedes(mem_db):
+    """0075: seeded earnings_dates row supersedes when date is imminent."""
+    import agent_db
+    imminent = (date.today() + timedelta(days=3)).isoformat()
+    agent_db.upsert_earnings_date("ANET", imminent, confirmed_by="yfinance", confidence="provider_estimated")
+    dep = {"dependency_key": "ANET", "original_value": (date.today() + timedelta(days=60)).isoformat()}
+    reason = _check_earnings_date(dep, {})
+    assert reason is not None
+    assert "imminent" in reason.lower()
+
+
+def test_earnings_date_fallback_to_heuristic(mem_db):
+    """0075: when no earnings_dates row, falls back to heuristic original_value."""
+    far_future = (date.today() + timedelta(days=60)).isoformat()
+    dep = {"dependency_key": "ANET", "original_value": far_future}
+    # No earnings_dates seeded — get_latest_earnings_date returns None
+    result = _check_earnings_date(dep, {})
+    assert result is None  # 60 days out, no supersession
 
 
 # ── FAIL-SAFE for unknown types ───────────────────────────────────────────────
