@@ -35,21 +35,11 @@ _TAX_ACTIONS             = {"TAX_SELL", "TAX_HARVEST"}
 _ALLOC_ACTIONS           = {"REBALANCE", "ALLOCATE"}
 
 _CRITIC_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "verdict": {
-            "type": "string",
-            "enum": ["APPROVE", "APPROVE_WITH_CAUTION", "CHALLENGE", "VETO"],
-        },
-        "strongest_objection": {"type": "string"},
-        "missing_evidence":    {"type": "array", "items": {"type": "string"}},
-        "counter_case":        {"type": "string"},
-        "confidence_adjustment": {"type": "integer"},
-    },
-    "required": [
-        "verdict", "strongest_objection", "missing_evidence",
-        "counter_case", "confidence_adjustment",
-    ],
+    "verdict": "",
+    "strongest_objection": "",
+    "missing_evidence": [],
+    "counter_case": "",
+    "confidence_adjustment": 0,
 }
 
 _SYSTEM = (
