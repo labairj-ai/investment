@@ -240,17 +240,17 @@ def _run_single_agent(
             inserted.append(rec)
 
         agent_db.finish_agent_run(run_id, status="done")
-        return inserted
+        return inserted, run_id
     except Exception as e:
         agent_db.finish_agent_run(run_id, status="error", error=str(e))
         print(f"[Orchestrator] {agent_type} failed: {e}")
-        return []
+        return [], run_id
 
 
 def run_agents(
     snapshot: PortfolioSnapshot,
     events: list,  # list[TriggerEvent]
-) -> list[Recommendation]:
+) -> tuple[list[Recommendation], list[int]]:
     """Run triggered producer agents then automatically run Critic on their output.
 
     Pipeline:
@@ -264,6 +264,8 @@ def run_agents(
     Each agent receives the full list of TriggerEvents for its type via
     AgentContext.trigger_events, so it knows exactly why it was called.
     LLM calls are serialised by the semaphore installed at module level.
+
+    Returns (recommendations, all_run_ids) — 0079: orchestrator owns run ID.
     """
     import agent_db
     from collections import defaultdict
@@ -277,6 +279,7 @@ def run_agents(
     run_briefing = "briefing" in events_by_agent
 
     recommendations: list[Recommendation] = []
+    all_run_ids: list[int] = []
     producers_ran: list[str] = []
 
     for agent_type in AGENT_ORDER:
@@ -285,7 +288,8 @@ def run_agents(
         handler = _registry.get(agent_type)
         if handler is None:
             raise RuntimeError(f"Triggered agent {agent_type!r} has no registered handler")
-        recs = _run_single_agent(agent_type, handler, snapshot, events=events_by_agent[agent_type])
+        recs, run_id = _run_single_agent(agent_type, handler, snapshot, events=events_by_agent[agent_type])
+        all_run_ids.append(run_id)
         recommendations.extend(recs)
         producers_ran.append(agent_type)
 
@@ -296,12 +300,14 @@ def run_agents(
             unreviewed = agent_db.list_open_unreviewed_recommendations()
             if unreviewed:
                 print(f"[Orchestrator] Auto-running critic on {len(unreviewed)} unreviewed rec(s)")
-                _run_single_agent("critic", critic_handler, snapshot)
+                _, critic_run_id = _run_single_agent("critic", critic_handler, snapshot)
+                all_run_ids.append(critic_run_id)
 
     # Briefing runs last, only when explicitly triggered.
     if run_briefing:
         briefing_handler = _registry.get("briefing")
         if briefing_handler:
-            _run_single_agent("briefing", briefing_handler, snapshot)
+            _, briefing_run_id = _run_single_agent("briefing", briefing_handler, snapshot)
+            all_run_ids.append(briefing_run_id)
 
-    return recommendations
+    return recommendations, all_run_ids

@@ -1036,7 +1036,7 @@ def _run_agent_pipeline(log_path=None) -> None:
 
         if events:
             from agents.orchestrator import run_agents
-            recs = run_agents(snapshot, events)
+            recs, _run_ids = run_agents(snapshot, events)
             _log(f"[Orchestrator] {len(recs)} recommendation(s) generated.")
         else:
             _log("[Orchestrator] No agents triggered.")
@@ -4813,7 +4813,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 import agents.orchestrator as orch
                 from agents.triggers import TriggerEvent
                 snapshot = build_portfolio_snapshot()
-                orch.run_agents(snapshot, [TriggerEvent(trigger_type="on_demand", agent_type="opportunity_hunter", ticker=ticker)])
+                orch.run_agents(snapshot, [TriggerEvent(trigger_type="on_demand", agent_type="opportunity_hunter", ticker=ticker)])  # returns (recs, run_ids)
                 agent_db.mark_candidate_evaluated(ticker)
             except Exception:
                 pass
@@ -5408,7 +5408,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         })
 
     def _handle_agent_run_trigger(self):
-        """POST /api/agents/run — start an on-demand agent run in a background thread."""
+        """POST /api/agents/run — start an on-demand agent run in a background thread.
+
+        0079: orchestrator owns run IDs; this endpoint no longer pre-creates a
+        wrapper agent_runs row. The run_ids returned by run_agents() are used directly.
+        """
         try:
             body = self._read_body()
         except Exception:
@@ -5418,12 +5422,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self._json_error(400, "agent_type field required")
         ticker = body.get("ticker")
 
-        run_id = agent_db.insert_agent_run(
-            agent_type=agent_type,
-            scope="ticker" if ticker else "portfolio",
-            ticker=ticker,
-            trigger_type="on_demand",
-        )
+        # Shared result container for the background thread
+        _result: dict = {}
 
         def _worker():
             try:
@@ -5431,14 +5431,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 from agents.triggers import TriggerEvent
 
                 snapshot = build_portfolio_snapshot()
-                orch.run_agents(snapshot, [TriggerEvent(trigger_type="on_demand", agent_type=agent_type, ticker=ticker)])
-                agent_db.finish_agent_run(run_id, status="done")
+                recs, run_ids = orch.run_agents(
+                    snapshot,
+                    [TriggerEvent(trigger_type="on_demand", agent_type=agent_type, ticker=ticker)],
+                )
+                _result["run_ids"] = run_ids
+                _result["recommendation_count"] = len(recs)
             except Exception as e:
-                agent_db.finish_agent_run(run_id, status="error", error=str(e))
+                _result["error"] = str(e)
+                print(f"[AgentRun] on-demand {agent_type} failed: {e}")
 
         import threading
         threading.Thread(target=_worker, daemon=True).start()
-        self._json({"ok": True, "run_id": run_id})
+        self._json({"ok": True, "status": "started", "agent_type": agent_type, "ticker": ticker})
 
     def _json(self, data):
         body = json.dumps(data).encode()

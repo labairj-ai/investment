@@ -385,7 +385,7 @@ def _trigger_reeval(ticker: str, agent_type: str) -> None:
             agent_type=agent_type,
             ticker=ticker,
         )
-        recs = run_agents(snapshot, [event])
+        recs, _run_ids = run_agents(snapshot, [event])
         print(f"[DepChecker] Re-eval {agent_type}/{ticker}: {len(recs)} new rec(s)")
     except Exception as e:
         print(f"[DepChecker] Re-eval failed for {agent_type}/{ticker}: {e}")
