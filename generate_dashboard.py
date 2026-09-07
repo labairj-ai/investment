@@ -61,21 +61,22 @@ def normalize_ticker(t: str) -> str:
     return t
 
 def load_csv_holdings() -> dict:
-    """Return {ticker: {shares, avg_cost, layer_label}} from holdings.csv — always current."""
-    result = {}
-    with open(HOLDINGS_CSV, newline="") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            ticker      = normalize_ticker(row["Stock"])
-            layer_num   = int(str(row["Layer"]).strip())
-            layer_label = f"Layer {layer_num}: {LAYER_NAMES[layer_num]}"
-            result[ticker] = {
-                "shares":    float(row["Shares"]),
-                "avg_cost":  float(row["AvgCost"]),
-                "layer":     layer_label,
-                "layer_num": layer_num,
-            }
-    return result
+    """Return {ticker: {shares, avg_cost, layer_label}} from holdings.csv — always current.
+
+    Uses portfolio_positions.load_positions() so multi-lot tickers are correctly
+    aggregated with weighted-average cost instead of the last-row-wins bug.
+    """
+    from portfolio_positions import load_positions
+    positions = load_positions(HOLDINGS_CSV)
+    return {
+        ticker: {
+            "shares":    pos.shares,
+            "avg_cost":  pos.avg_cost,
+            "layer":     pos.layer_label,
+            "layer_num": pos.layer,
+        }
+        for ticker, pos in positions.items()
+    }
 
 LAYER_COLORS = {
     "Layer 1: L1 Structural Ballast": "#4A90D9",

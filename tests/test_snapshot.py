@@ -83,3 +83,80 @@ def test_snapshot_has_price_as_of_field(sample_snapshot):
     # price_as_of can differ from the snapshot date (weekend scenario)
     assert sample_snapshot.price_as_of == "2026-09-05"  # Friday
     assert sample_snapshot.date == "2026-09-06"          # Saturday
+
+# ── 0085: canonical portfolio_positions tests ─────────────────────────────────
+
+import csv as _csv_mod
+import tempfile
+
+
+def _write_csv(rows: list[dict], path: Path) -> None:
+    with open(path, "w", newline="") as f:
+        writer = _csv_mod.DictWriter(f, fieldnames=["Stock", "Shares", "AvgCost", "Layer"])
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def test_portfolio_positions_single_lot(tmp_path):
+    from portfolio_positions import load_positions
+    csv = tmp_path / "holdings.csv"
+    _write_csv([{"Stock": "ANET", "Shares": 100, "AvgCost": 150.00, "Layer": 3}], csv)
+    positions = load_positions(csv)
+    assert "ANET" in positions
+    assert positions["ANET"].shares == 100.0
+    assert positions["ANET"].avg_cost == 150.0
+    assert positions["ANET"].layer == 3
+
+
+def test_portfolio_positions_multi_lot_weighted_average(tmp_path):
+    """Multi-lot tickers must produce weighted-average cost, not last-row cost."""
+    from portfolio_positions import load_positions
+    csv = tmp_path / "holdings.csv"
+    _write_csv([
+        {"Stock": "ANET", "Shares": 50, "AvgCost": 110.00, "Layer": 3},
+        {"Stock": "ANET", "Shares": 70, "AvgCost": 145.00, "Layer": 3},
+    ], csv)
+    positions = load_positions(csv)
+    pos = positions["ANET"]
+    assert pos.shares == 120.0
+    expected_avg = (50 * 110 + 70 * 145) / 120
+    assert abs(pos.avg_cost - expected_avg) < 0.01
+    assert len(pos.lots) == 2
+
+
+def test_portfolio_positions_lots_preserved(tmp_path):
+    """Individual lots are accessible via Position.lots."""
+    from portfolio_positions import load_positions, get_lots
+    csv = tmp_path / "holdings.csv"
+    _write_csv([
+        {"Stock": "BRK.B", "Shares": 20, "AvgCost": 300.00, "Layer": 1},
+        {"Stock": "BRK.B", "Shares": 30, "AvgCost": 340.00, "Layer": 1},
+    ], csv)
+    lots = get_lots("BRK.B", csv)
+    assert len(lots) == 2
+    assert sum(l.shares for l in lots) == 50.0
+
+
+def test_portfolio_positions_get_position_not_held(tmp_path):
+    from portfolio_positions import get_position
+    csv = tmp_path / "holdings.csv"
+    _write_csv([{"Stock": "AAPL", "Shares": 10, "AvgCost": 150, "Layer": 3}], csv)
+    assert get_position("MSFT", csv) is None
+
+
+def test_generate_dashboard_uses_weighted_average(tmp_path, monkeypatch):
+    """generate_dashboard.load_csv_holdings() must aggregate multi-lot tickers."""
+    sys.path.insert(0, str(ROOT))
+    import generate_dashboard as gd
+    # Patch HOLDINGS_CSV to a temp file
+    csv_path = tmp_path / "holdings.csv"
+    _write_csv([
+        {"Stock": "ANET", "Shares": 50, "AvgCost": 110.00, "Layer": 3},
+        {"Stock": "ANET", "Shares": 70, "AvgCost": 145.00, "Layer": 3},
+    ], csv_path)
+    monkeypatch.setattr(gd, "HOLDINGS_CSV", csv_path)
+    holdings = gd.load_csv_holdings()
+    assert "ANET" in holdings
+    assert holdings["ANET"]["shares"] == 120.0
+    expected_avg = (50 * 110 + 70 * 145) / 120
+    assert abs(holdings["ANET"]["avg_cost"] - expected_avg) < 0.01

@@ -21,8 +21,8 @@ def build_portfolio_snapshot():
     Returns a PortfolioSnapshot with real data; fields default to 0 if DB is
     not yet populated for today (retry logic lives in the caller).
     """
-    import csv as _csv
     from agents.contracts import PortfolioSnapshot, HoldingSnapshot
+    from portfolio_positions import load_positions
     from strategy_config import LAYER_LABELS
 
     db = PROJECT_DIR / "out" / "investment.db"
@@ -30,29 +30,8 @@ def build_portfolio_snapshot():
     csv_map: dict = {}
     csv_path = PROJECT_DIR / "holdings.csv"
     if csv_path.exists():
-        with open(csv_path, newline="") as _f:
-            for row in _csv.DictReader(_f):
-                t = (row.get("Stock") or "").strip().upper()
-                if t:
-                    try:
-                        shares   = float(row.get("Shares") or 0)
-                        avg_cost = float(row.get("AvgCost") or 0)
-                        layer    = int(row.get("Layer") or 0)
-                        if t in csv_map:
-                            ex = csv_map[t]
-                            total = ex["shares"] + shares
-                            if total > 0:
-                                weighted = (ex["shares"] * ex["avg_cost"] + shares * avg_cost) / total
-                            else:
-                                weighted = 0.0
-                            if ex["layer"] != layer:
-                                print(f"[Snapshot] WARNING: {t} has lots in different layers "
-                                      f"({ex['layer']} vs {layer}), keeping first")
-                            csv_map[t] = {"shares": total, "avg_cost": weighted, "layer": ex["layer"]}
-                        else:
-                            csv_map[t] = {"shares": shares, "avg_cost": avg_cost, "layer": layer}
-                    except (ValueError, TypeError):
-                        pass
+        for ticker, pos in load_positions(csv_path).items():
+            csv_map[ticker] = {"shares": pos.shares, "avg_cost": pos.avg_cost, "layer": pos.layer}
 
     price_map: dict = {}
     total_value = 0.0

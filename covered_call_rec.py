@@ -397,34 +397,22 @@ def normalize_ticker(t: str) -> str:
 
 
 def load_holdings() -> dict:
-    """Load holdings from CSV, merging multiple rows for the same ticker into one entry.
+    """Load holdings from CSV using the canonical position loader.
 
-    Multiple rows per ticker are supported for tracking add-on purchases with
-    different PurchaseDates (e.g., shares added after an ex-dividend date).
-    Shares and cost basis are aggregated; individual lots are preserved in
-    the 'lots' list as [(shares, purchase_date)] for dividend qualification logic.
+    Returns {ticker: {shares, avg_cost, layer, purchase_date, lots}} where
+    multi-lot tickers are correctly aggregated with weighted-average cost.
+    The 'lots' list preserves individual (shares, purchase_date) pairs for
+    dividend qualification logic.
     """
-    raw: dict = {}
-    with open(HOLDINGS_CSV) as f:
-        for row in csv.DictReader(f):
-            t = normalize_ticker(row["Stock"])
-            raw.setdefault(t, []).append({
-                "shares":        float(row["Shares"]),
-                "avg_cost":      float(row["AvgCost"]),
-                "layer":         int(row["Layer"]),
-                "purchase_date": (row.get("PurchaseDate") or "").strip() or None,
-            })
+    from portfolio_positions import load_positions
     result = {}
-    for t, lots in raw.items():
-        total_shares = sum(l["shares"] for l in lots)
-        avg_cost     = (sum(l["shares"] * l["avg_cost"] for l in lots) / total_shares
-                        if total_shares else 0.0)
-        result[t] = {
-            "shares":        total_shares,
-            "avg_cost":      avg_cost,
-            "layer":         lots[0]["layer"],
-            "purchase_date": lots[0]["purchase_date"],   # kept for back-compat
-            "lots":          [(l["shares"], l["purchase_date"]) for l in lots],
+    for ticker, pos in load_positions(HOLDINGS_CSV).items():
+        result[ticker] = {
+            "shares":        pos.shares,
+            "avg_cost":      pos.avg_cost,
+            "layer":         pos.layer,
+            "purchase_date": pos.lots[0].purchase_date if pos.lots else None,
+            "lots":          [(l.shares, l.purchase_date) for l in pos.lots],
         }
     return result
 
