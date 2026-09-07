@@ -689,7 +689,7 @@ def build_html(
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
-def main(send_email_flag: bool = True):
+def main(send_email_flag: bool = False):
     if not HOLDINGS_CSV.exists():
         raise FileNotFoundError(f"Missing holdings CSV at {HOLDINGS_CSV}")
     if send_email_flag and (not EMAIL_FROM or not EMAIL_APP_PW):
