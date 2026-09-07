@@ -997,3 +997,309 @@ def test_sell_cc_expired_lifecycle_uses_uncapped_formula(mem_db):
             f"30d_post actual_r should use uncapped formula {expected_post_r:.4f}, "
             f"got {post['actual_return']}"
         )
+
+
+# ── 0120: Audit manifest reference IDs ───────────────────────────────────────
+
+def test_strategy_config_hash_is_stable_and_nonempty():
+    """strategy_config.get_hash() returns a stable 12-char hex string."""
+    import strategy_config
+    h1 = strategy_config.get_hash()
+    h2 = strategy_config.get_hash()
+    assert isinstance(h1, str), "Strategy config hash must be a string"
+    assert len(h1) == 12, f"Expected 12-char hash, got: {h1!r}"
+    assert all(c in "0123456789abcdef" for c in h1), f"Hash must be lowercase hex: {h1!r}"
+    assert h1 == h2, "Strategy config hash must be stable across calls"
+
+
+def test_audit_snapshot_includes_reference_ids(mem_db):
+    """agent_runs.input_snapshot_json stores strategy_config_hash and reference ID fields."""
+    import agent_db, json, strategy_config
+
+    cfg_hash = strategy_config.get_hash()
+    snap = {
+        "ticker": "ANET",
+        "price": 180.0,
+        "strategy_config_hash": cfg_hash,
+        "option_snapshot_id": None,
+        "earnings_event_id": None,
+        "financial_snapshot_hash": None,
+    }
+    run_id = agent_db.insert_agent_run(
+        agent_type="covered_call",
+        scope="ticker",
+        ticker="ANET",
+        trigger_type="price_move",
+        trigger_key="ANET",
+        model="test-model",
+        prompt_version="v1",
+        input_hash="abc123",
+        input_snapshot=snap,
+    )
+
+    conn = agent_db._connect()
+    row = conn.execute(
+        "SELECT input_snapshot_json FROM agent_runs WHERE id=?", (run_id,)
+    ).fetchone()
+    conn.close()
+
+    assert row is not None
+    stored = json.loads(row["input_snapshot_json"])
+    assert "strategy_config_hash" in stored, "strategy_config_hash must be in input_snapshot_json"
+    assert stored["strategy_config_hash"] == cfg_hash
+    assert "option_snapshot_id" in stored
+    assert "earnings_event_id" in stored
+    assert "financial_snapshot_hash" in stored
+
+
+# ── 0124: Missing lifecycle tests ─────────────────────────────────────────────
+
+def _seed_cc_positions_table(conn):
+    """Create cc_positions table (normally created by serve.py, not agent_db.migrate)."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS cc_positions (
+            id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticker               TEXT NOT NULL,
+            contracts            INTEGER NOT NULL,
+            strike               REAL NOT NULL,
+            expiry               TEXT NOT NULL,
+            premium_per_contract REAL NOT NULL,
+            opened_date          TEXT NOT NULL,
+            status               TEXT NOT NULL DEFAULT 'open',
+            closed_date          TEXT,
+            closed_price         REAL,
+            close_type           TEXT,
+            net_premium          REAL,
+            notes                TEXT
+        )
+    """)
+    conn.commit()
+
+
+def test_trim_two_fills_lifecycle_uses_vwap(mem_db):
+    """Two-fill TRIM: evaluate_matured_recommendations uses VWAP exec_price and two-component actual_r."""
+    import agent_db
+    from agents.outcome_evaluator import evaluate_matured_recommendations
+
+    conn = _open_conn(mem_db)
+
+    entry_price = 180.0
+    f1_price, f1_qty = 185.0, 30.0
+    f2_price, f2_qty = 188.0, 20.0
+    pos_shares = 100.0
+    vwap = (f1_price * f1_qty + f2_price * f2_qty) / (f1_qty + f2_qty)
+    f_total = (f1_qty + f2_qty) / pos_shares  # 0.50
+
+    entry_ts = time.time() - 100 * 86400
+    entry_date = (date.today() - timedelta(days=100)).isoformat()
+    h1m_date = (date.today() - timedelta(days=70)).isoformat()
+    exec_date = (date.today() - timedelta(days=99)).isoformat()
+
+    rec_id = _seed_rec(conn, ticker="ANET", action="TRIM", created_at=entry_ts,
+                       status="accepted", payload={"trim_fraction": 0.5})
+    conn.execute(
+        "INSERT INTO user_decisions (recommendation_id, decision, reason_code, decided_at) "
+        "VALUES (?, 'accepted', 'OTHER', ?)", (rec_id, time.time()),
+    )
+    conn.execute(
+        """INSERT INTO executed_actions
+           (ticker, action, execution_date, execution_price, quantity,
+            position_shares_before, recommendation_id, source)
+           VALUES ('ANET', 'TRIM', ?, ?, ?, ?, ?, 'manual')""",
+        (exec_date, f1_price, f1_qty, pos_shares, rec_id),
+    )
+    conn.execute(
+        """INSERT INTO executed_actions
+           (ticker, action, execution_date, execution_price, quantity,
+            position_shares_before, recommendation_id, source)
+           VALUES ('ANET', 'TRIM', ?, ?, ?, NULL, ?, 'manual')""",
+        (exec_date, f2_price, f2_qty, rec_id),
+    )
+    conn.commit()
+
+    horizon_price = 200.0
+    _seed_price(conn, "ANET", entry_date, entry_price)
+    _seed_price(conn, "ANET", h1m_date, horizon_price)
+    _seed_spy(conn, entry_date, 450.0)
+    _seed_spy(conn, h1m_date, 465.0)
+    conn.close()
+
+    with patch("agents.outcome_evaluator._ensure_spy_prices"):
+        written = evaluate_matured_recommendations(min_age_days=1)
+
+    assert written > 0
+
+    conn2 = _open_conn(mem_db)
+    rows = {
+        r["horizon"]: dict(r)
+        for r in conn2.execute(
+            "SELECT * FROM recommendation_outcomes WHERE recommendation_id=?", (rec_id,)
+        ).fetchall()
+    }
+    conn2.close()
+
+    assert "1m" in rows, f"Expected '1m' horizon row, got: {list(rows.keys())}"
+    row = rows["1m"]
+
+    hold_r = (horizon_price - entry_price) / entry_price
+    exec_gain = (vwap / entry_price) - 1
+    expected_actual = f_total * exec_gain + (1 - f_total) * hold_r
+
+    assert row["actual_return"] is not None, "TRIM with execution should produce non-null actual_r"
+    assert row["actual_is_estimated"] == 0
+    assert abs(row["actual_return"] - expected_actual) < 0.0001, (
+        f"VWAP two-component formula: expected {expected_actual:.6f}, got {row['actual_return']:.6f}"
+    )
+
+
+def test_sell_cc_execute_creates_position_atomically(mem_db):
+    """SELL_CC record_execution_transaction creates executed_actions + cc_positions atomically."""
+    import agent_db
+
+    conn = _open_conn(mem_db)
+    _seed_cc_positions_table(conn)
+    rec_id = _seed_rec(conn, ticker="ANET", action="SELL_CC", status="accepted")
+    conn.close()
+
+    body = {
+        "strike": 200.0, "expiration": "2026-11-21", "premium": 3.5,
+        "contracts": 1, "execution_price": 3.5,
+    }
+    result = agent_db.record_execution_transaction(
+        rec_id, "ANET", "SELL_CC", "2026-09-07", body,
+    )
+
+    assert result["exec_id"] is not None
+    assert result["cc_pos_id"] is not None
+
+    conn2 = _open_conn(mem_db)
+    ea_count = conn2.execute(
+        "SELECT COUNT(*) FROM executed_actions WHERE recommendation_id=?", (rec_id,)
+    ).fetchone()[0]
+    cc_count = conn2.execute(
+        "SELECT COUNT(*) FROM cc_positions WHERE ticker='ANET' AND status='open'"
+    ).fetchone()[0]
+    conn2.close()
+
+    assert ea_count == 1, "executed_actions row must exist after SELL_CC execute"
+    assert cc_count == 1, "cc_positions row must be created atomically with executed_actions"
+
+
+def test_sell_cc_execute_rollback_on_cc_positions_failure(mem_db):
+    """SELL_CC execute: if cc_positions insert fails, executed_actions is also rolled back."""
+    import agent_db
+    from unittest.mock import patch as _patch
+
+    conn = _open_conn(mem_db)
+    _seed_cc_positions_table(conn)
+    rec_id = _seed_rec(conn, ticker="MSFT", action="SELL_CC", status="accepted")
+    conn.close()
+
+    body = {
+        "strike": 420.0, "expiration": "2026-11-21", "premium": 5.0,
+        "contracts": 1, "execution_price": 5.0,
+    }
+
+    with _patch.object(agent_db, "_insert_cc_pos_conn", side_effect=Exception("injected failure")):
+        with pytest.raises(Exception, match="injected failure"):
+            agent_db.record_execution_transaction(rec_id, "MSFT", "SELL_CC", "2026-09-07", body)
+
+    conn2 = _open_conn(mem_db)
+    ea_count = conn2.execute(
+        "SELECT COUNT(*) FROM executed_actions WHERE recommendation_id=?", (rec_id,)
+    ).fetchone()[0]
+    conn2.close()
+
+    assert ea_count == 0, "executed_actions must be rolled back when cc_positions insert fails"
+
+
+def test_roll_leg2_failure_rolls_back_leg1(mem_db):
+    """ROLL: if leg-2 (STO) _insert_ea_conn fails, leg-1 (BTC) is also rolled back."""
+    import agent_db
+    from unittest.mock import patch as _patch
+
+    conn = _open_conn(mem_db)
+    _seed_cc_positions_table(conn)
+    rec_id = _seed_rec(conn, ticker="ANET", action="ROLL_OUT", status="accepted")
+    conn.close()
+
+    body = {
+        "existing_strike": 190.0, "existing_expiration": "2026-10-17",
+        "new_strike": 200.0, "new_expiration": "2026-11-21",
+        "btc_price": 2.0, "sto_premium": 3.5, "contracts": 1,
+    }
+
+    call_count = [0]
+    orig_insert = agent_db._insert_ea_conn
+
+    def fail_on_second(conn_, *args, **kwargs):
+        call_count[0] += 1
+        if call_count[0] >= 2:
+            raise Exception("injected leg-2 failure")
+        return orig_insert(conn_, *args, **kwargs)
+
+    with _patch.object(agent_db, "_insert_ea_conn", side_effect=fail_on_second):
+        with pytest.raises(Exception, match="injected leg-2 failure"):
+            agent_db.record_execution_transaction(rec_id, "ANET", "ROLL_OUT", "2026-09-07", body)
+
+    conn2 = _open_conn(mem_db)
+    ea_count = conn2.execute(
+        "SELECT COUNT(*) FROM executed_actions WHERE recommendation_id=?", (rec_id,)
+    ).fetchone()[0]
+    conn2.close()
+
+    assert ea_count == 0, "Leg-1 BTC insert must be rolled back when leg-2 STO insert fails"
+
+
+def test_btc_management_rec_evaluated_at_maturity(mem_db):
+    """BUY_TO_CLOSE rec aged past horizon → evaluate_matured_recommendations writes outcome row."""
+    import agent_db
+    from agents.outcome_evaluator import evaluate_matured_recommendations
+
+    conn = _open_conn(mem_db)
+
+    entry_price = 180.0
+    btc_mark = 2.5
+    horizon_price = 190.0
+    entry_ts = time.time() - 100 * 86400
+    entry_date = (date.today() - timedelta(days=100)).isoformat()
+    h1m_date = (date.today() - timedelta(days=70)).isoformat()
+
+    rec_id = _seed_rec(conn, ticker="NVDA", action="BUY_TO_CLOSE", created_at=entry_ts,
+                       status="accepted", payload={"btc_price": btc_mark})
+    conn.execute(
+        "INSERT INTO user_decisions (recommendation_id, decision, reason_code, decided_at) "
+        "VALUES (?, 'accepted', 'OTHER', ?)", (rec_id, time.time()),
+    )
+    conn.commit()
+
+    _seed_price(conn, "NVDA", entry_date, entry_price)
+    _seed_price(conn, "NVDA", h1m_date, horizon_price)
+    _seed_spy(conn, entry_date, 450.0)
+    _seed_spy(conn, h1m_date, 460.0)
+    conn.close()
+
+    with patch("agents.outcome_evaluator._ensure_spy_prices"):
+        written = evaluate_matured_recommendations(min_age_days=1)
+
+    assert written > 0, "Expected at least one outcome row to be written"
+
+    conn2 = _open_conn(mem_db)
+    rows = {
+        r["horizon"]: dict(r)
+        for r in conn2.execute(
+            "SELECT * FROM recommendation_outcomes WHERE recommendation_id=?", (rec_id,)
+        ).fetchall()
+    }
+    conn2.close()
+
+    assert "1m" in rows, f"Expected '1m' horizon row for BUY_TO_CLOSE, got: {list(rows.keys())}"
+    row = rows["1m"]
+
+    # From MTM baseline: agent_r = hold_r (close at mark = zero net on option leg)
+    hold_r = (horizon_price - entry_price) / entry_price
+    assert row["recommended_path_return"] is not None
+    assert abs(row["recommended_path_return"] - hold_r) < 0.0001, (
+        f"BUY_TO_CLOSE agent_r should equal hold_r={hold_r:.4f}, "
+        f"got {row['recommended_path_return']:.4f}"
+    )

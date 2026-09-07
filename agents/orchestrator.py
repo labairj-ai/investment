@@ -16,7 +16,18 @@ Individual agent implementations are wired in as they are built (0006–0015).
 import threading
 import time as _time
 
+import strategy_config as _strategy_config
 from strategy_config import LAYER_TARGETS
+
+# Computed once per process — strategy.json doesn't change at runtime
+_STRATEGY_CONFIG_HASH: str | None = None
+
+
+def _get_strategy_config_hash() -> str:
+    global _STRATEGY_CONFIG_HASH
+    if _STRATEGY_CONFIG_HASH is None:
+        _STRATEGY_CONFIG_HASH = _strategy_config.get_hash()
+    return _STRATEGY_CONFIG_HASH
 from .contracts import PortfolioSnapshot, Recommendation
 
 # One model inference at a time across all agents and threads.
@@ -293,9 +304,11 @@ def _run_single_agent(
             ticker, agent_type, _price, _thesis_ver, _latest_q, extras=_extras
         )
 
-    # 0078: richer input manifest for reproducibility audit
+    # 0078/0120: richer input manifest for reproducibility audit
     _input_snap: dict | None = None
     if _holding:
+        _opt_snap = agent_db.get_latest_option_snapshot(ticker)
+        _earn_row = agent_db.get_latest_earnings_date(ticker)
         _input_snap = {
             "ticker": ticker,
             "price": _holding.current_price,
@@ -308,6 +321,11 @@ def _run_single_agent(
             "financials_as_of": getattr(snapshot, "financials_as_of", None),
             "prompt_version": _prompt_ver,
             "model": ollama_client.get_model_id(),
+            # 0120: reference IDs for audit trail reproducibility
+            "option_snapshot_id": _opt_snap.get("id") if _opt_snap else None,
+            "earnings_event_id": _earn_row.get("id") if _earn_row else None,
+            "strategy_config_hash": _get_strategy_config_hash(),
+            "financial_snapshot_hash": agent_db.get_latest_financial_snapshot_hash(ticker),
         }
     else:
         _input_snap = {
@@ -318,6 +336,8 @@ def _run_single_agent(
             "financials_as_of": getattr(snapshot, "financials_as_of", None),
             "prompt_version": _prompt_ver,
             "model": ollama_client.get_model_id(),
+            # 0120: strategy config hash included even for portfolio-scope runs
+            "strategy_config_hash": _get_strategy_config_hash(),
         }
 
     run_id = agent_db.insert_agent_run(

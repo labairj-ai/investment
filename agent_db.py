@@ -3359,6 +3359,35 @@ def get_valuation_ratio_history(ticker: str, ratio: str) -> list[float]:
     return [float(r[0]) for r in rows]
 
 
+def get_latest_financial_snapshot_hash(ticker: str) -> str | None:
+    """12-char sha256 of the latest quarterly company_financials row for ticker.
+
+    Used as a reproducibility fingerprint in agent run audit manifests.
+    Returns None when no data exists for this ticker.
+    """
+    import hashlib
+    import json as _json
+    conn = _connect()
+    try:
+        row = conn.execute(
+            """SELECT period_end, revenue, operating_income, net_income, eps_diluted,
+                      free_cash_flow, total_debt, cash, shares_outstanding, shares_period_end
+               FROM company_financials
+               WHERE ticker=? AND period_type='Q'
+               ORDER BY period_end DESC LIMIT 1""",
+            (ticker,),
+        ).fetchone()
+    except Exception:
+        return None
+    finally:
+        conn.close()
+    if not row:
+        return None
+    data = {k: row[k] for k in row.keys()}
+    canonical = _json.dumps(data, sort_keys=True, default=str)
+    return hashlib.sha256(canonical.encode()).hexdigest()[:12]
+
+
 def get_latest_valuation_metric(ticker: str) -> dict | None:
     """Return the most recent historical_valuation_metrics row for ticker."""
     conn = _connect()

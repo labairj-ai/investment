@@ -108,5 +108,12 @@ def validate_config() -> None:
         raise ConfigurationError(msg)
 
 
+def get_hash() -> str:
+    """12-char sha256 of the raw strategy.json file content — stable within a deploy."""
+    import hashlib
+    raw = (Path(__file__).parent / "config" / "strategy.json").read_bytes()
+    return hashlib.sha256(raw).hexdigest()[:12]
+
+
 if not os.environ.get("SKIP_CONFIG_VALIDATION"):
     validate_config()

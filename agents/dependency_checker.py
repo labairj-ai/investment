@@ -442,6 +442,8 @@ _KNOWN_DEPENDENCY_TYPES = frozenset({
     "EVENT_CALENDAR", "OPTION_LIQUIDITY", "ESTIMATE_REVISION",
     "CC_POSITION_STATE", "OPTION_MARK",
 })
+# Public alias so tests can import it without the leading underscore
+KNOWN_DEP_TYPES = _KNOWN_DEPENDENCY_TYPES
 
 
 def _trigger_reeval(ticker: str, agent_type: str) -> None:

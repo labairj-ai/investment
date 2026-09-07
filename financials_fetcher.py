@@ -425,7 +425,7 @@ def compute_valuation_metrics(ticker: str, conn=None) -> int:
         print(f"[valuation] {ticker} price history failed: {e}")
         return 0
 
-    def _nearest_price(target_date: str) -> float | None:
+    def _nearest_price(target_date: str):
         """Return closing price on or up to 5 trading days before target_date."""
         for delta in range(6):
             from datetime import date, timedelta
@@ -449,7 +449,7 @@ def compute_valuation_metrics(ticker: str, conn=None) -> int:
         if price is None or price <= 0:
             continue
 
-        def _sum(col: str) -> float | None:
+        def _sum(col: str):
             vals = [float(r[col]) for r in window if r[col] is not None]
             return sum(vals) if len(vals) == 4 else None
 
