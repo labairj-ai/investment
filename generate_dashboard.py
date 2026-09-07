@@ -3705,6 +3705,7 @@ function renderGoalsCard() {{
 
     allocEl.innerHTML = rows || `<div style="color:#aaa;">No portfolio data</div>`;
   }}
+}}
 
 
 // Auto-load dividends on page open
