@@ -2848,3 +2848,98 @@ def get_open_cc_for_ticker(ticker: str) -> dict | None:
         return None
     finally:
         conn.close()
+
+
+# ── Execution aggregation (0091) ──────────────────────────────────────────────
+
+class ExecutionSummary:
+    """Aggregated view of one or more executed_actions fills for a single recommendation."""
+    __slots__ = (
+        "action", "total_quantity", "weighted_avg_price",
+        "total_contracts", "weighted_avg_premium", "total_premium_cash",
+        "execution_fraction", "first_execution_date", "execution_date",
+        "strike",
+    )
+
+    def __init__(self, action: str):
+        self.action              = action
+        self.total_quantity      = 0.0
+        self.weighted_avg_price  = 0.0
+        self.total_contracts     = 0
+        self.weighted_avg_premium = 0.0
+        self.total_premium_cash  = 0.0
+        self.execution_fraction  = None
+        self.first_execution_date = None
+        self.execution_date      = None
+        self.strike              = None
+
+    def get(self, key: str, default=None):
+        """Dict-like access so _compute_scenarios can treat this like exec_rec."""
+        resolved = _EXEC_SUMMARY_ALIASES.get(key, key)
+        return getattr(self, resolved, default)
+
+    def __getitem__(self, key: str):
+        val = self.get(key)
+        if val is None:
+            raise KeyError(key)
+        return val
+
+
+_EXEC_SUMMARY_ALIASES = {
+    "execution_price":    "weighted_avg_price",
+    "premium":            "weighted_avg_premium",
+    "contracts":          "total_contracts",
+    "quantity":           "total_quantity",
+    "strike":             "strike",
+}
+
+
+def aggregate_executions(executions: list[dict], action: str) -> "ExecutionSummary | None":
+    """Aggregate multiple fill rows into a single ExecutionSummary.
+
+    For stock actions (EXIT, TRIM, ALLOCATE): quantity-weighted average price.
+    For CC actions (SELL_CC): contract-weighted average premium.
+    Returns None when executions is empty.
+    """
+    if not executions:
+        return None
+
+    summary = ExecutionSummary(action)
+    is_cc = action == "SELL_CC"
+
+    if is_cc:
+        total_contracts = 0
+        premium_cash    = 0.0
+        for fill in executions:
+            c   = float(fill.get("contracts") or 0)
+            p   = float(fill.get("premium") or fill.get("execution_price") or 0)
+            total_contracts += c
+            premium_cash    += c * 100 * p
+        summary.total_contracts      = int(total_contracts)
+        summary.total_premium_cash   = premium_cash
+        summary.weighted_avg_premium = (premium_cash / (total_contracts * 100)
+                                        if total_contracts > 0 else 0.0)
+        summary.weighted_avg_price   = summary.weighted_avg_premium  # alias for _compute_scenarios
+    else:
+        total_qty = sum(float(f.get("quantity") or 0) for f in executions)
+        wsum      = sum(float(f.get("quantity") or 0) * float(f.get("execution_price") or 0)
+                        for f in executions)
+        summary.total_quantity     = total_qty
+        summary.weighted_avg_price = (wsum / total_qty) if total_qty > 0 else 0.0
+
+        # execution_fraction from first fill, or recompute from position_shares_before
+        first = executions[0]
+        ef = first.get("execution_fraction")
+        if ef is not None:
+            summary.execution_fraction = float(ef)
+        elif first.get("position_shares_before") and total_qty:
+            summary.execution_fraction = min(1.0, total_qty / float(first["position_shares_before"]))
+
+    dates = sorted(
+        f["execution_date"] for f in executions if f.get("execution_date")
+    )
+    summary.first_execution_date = dates[0] if dates else None
+    summary.execution_date       = dates[-1] if dates else None
+    summary.strike = executions[0].get("strike") if executions else None
+
+    return summary

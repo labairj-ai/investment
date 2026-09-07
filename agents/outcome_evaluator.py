@@ -339,11 +339,9 @@ def evaluate_matured_recommendations(min_age_days: int = MIN_AGE_DAYS) -> int:
                 for label, days in EQUITY_HORIZONS
             ]
 
-        # Fetch executions once per rec (0070: wire executed_actions)
+        # 0091: aggregate all fills into a single ExecutionSummary (replaces executions[0])
         executions = agent_db.get_executions_for_rec(rec["id"])
-        # For simplicity in first pass, use executions[0] only.
-        # TODO(multi-fill TRIM): blend actual returns weighted by quantity across all fills.
-        exec_rec = executions[0] if executions else None
+        exec_rec = agent_db.aggregate_executions(executions, action)
 
         for horizon_label, h_date in horizons_to_eval:
             if h_date > today:

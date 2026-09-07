@@ -178,3 +178,64 @@ def test_sell_cc_with_exec_rec_computes_actual_from_premium_and_strike():
     # (cc_ret uses pl.premium=2.5 and pl.strike=195.0)
     assert cc_ret is not None
     assert abs(actual - cc_ret) > 0.001, "CC actual should differ from strategy return when exec differs"
+
+
+# ── 0091: multi-fill execution aggregation ────────────────────────────────────
+
+def test_aggregate_executions_stock_weighted_avg():
+    """Two TRIM fills: weighted avg price and total_quantity are correct."""
+    import agent_db
+    fills = [
+        {"action": "TRIM", "quantity": 30.0, "execution_price": 155.0,
+         "execution_date": "2026-09-01", "position_shares_before": 100.0,
+         "execution_fraction": None, "strike": None, "premium": None, "contracts": None},
+        {"action": "TRIM", "quantity": 20.0, "execution_price": 158.0,
+         "execution_date": "2026-09-05", "position_shares_before": None,
+         "execution_fraction": None, "strike": None, "premium": None, "contracts": None},
+    ]
+    summary = agent_db.aggregate_executions(fills, "TRIM")
+    assert summary is not None
+    assert abs(summary.total_quantity - 50.0) < 0.001
+    expected_price = (30 * 155 + 20 * 158) / 50
+    assert abs(summary.weighted_avg_price - expected_price) < 0.01
+    assert summary.get("execution_price") == summary.weighted_avg_price
+    assert summary.execution_date == "2026-09-05"
+    assert summary.first_execution_date == "2026-09-01"
+
+
+def test_aggregate_executions_cc_premium_weighted():
+    """Two SELL_CC fills: weighted avg premium and total_premium_cash."""
+    import agent_db
+    fills = [
+        {"action": "SELL_CC", "contracts": 1, "premium": 3.50, "execution_price": 3.50,
+         "execution_date": "2026-09-01", "quantity": None, "strike": 175.0,
+         "position_shares_before": None, "execution_fraction": None},
+        {"action": "SELL_CC", "contracts": 1, "premium": 3.80, "execution_price": 3.80,
+         "execution_date": "2026-09-01", "quantity": None, "strike": 175.0,
+         "position_shares_before": None, "execution_fraction": None},
+    ]
+    summary = agent_db.aggregate_executions(fills, "SELL_CC")
+    assert summary is not None
+    assert summary.total_contracts == 2
+    expected_premium = (3.50 + 3.80) / 2
+    assert abs(summary.weighted_avg_premium - expected_premium) < 0.01
+    expected_cash = 2 * 100 * expected_premium
+    assert abs(summary.total_premium_cash - expected_cash) < 0.01
+    assert summary.strike == 175.0
+
+
+def test_aggregate_executions_empty_returns_none():
+    import agent_db
+    assert agent_db.aggregate_executions([], "TRIM") is None
+
+
+def test_aggregate_executions_execution_fraction_computed(agent_db_module=None):
+    """When no explicit execution_fraction, compute from position_shares_before."""
+    import agent_db
+    fills = [
+        {"action": "TRIM", "quantity": 30.0, "execution_price": 155.0,
+         "execution_date": "2026-09-01", "position_shares_before": 100.0,
+         "execution_fraction": None, "strike": None, "premium": None, "contracts": None},
+    ]
+    summary = agent_db.aggregate_executions(fills, "TRIM")
+    assert abs(summary.execution_fraction - 0.30) < 0.001
