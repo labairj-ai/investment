@@ -91,7 +91,7 @@ def run_briefing_agent(ctx: AgentContext) -> list[Recommendation]:
 
     date_str = _date.today().isoformat()
 
-    findings      = agent_db.get_todays_findings(window_hours=24)
+    findings      = agent_db.get_recent_findings(window_hours=24)
     recs          = agent_db.get_todays_recommendations(window_hours=24)
     critic_summary = agent_db.get_todays_critic_summary(window_hours=24)
 

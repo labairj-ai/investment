@@ -2429,7 +2429,7 @@ def get_executions_for_ticker(ticker: str, since_date: str | None = None) -> lis
 
 # ── Briefing synthesis helpers ────────────────────────────────────────────────
 
-def get_todays_findings(window_hours: int = 24) -> list[dict]:
+def get_recent_findings(window_hours: int = 24) -> list[dict]:
     """Return agent findings created in the last window_hours, grouped with metadata."""
     cutoff = time.time() - window_hours * 3600
     conn = _connect()
