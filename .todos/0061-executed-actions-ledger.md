@@ -1,7 +1,7 @@
 # Executed Actions Ledger
 
 - **ID:** 0061
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-06
 - **Priority:** P0
 - **Depends:** none

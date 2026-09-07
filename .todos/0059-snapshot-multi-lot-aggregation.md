@@ -1,7 +1,7 @@
 # Snapshot: Fix Multi-Lot Aggregation Bug
 
 - **ID:** 0059
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-06
 - **Priority:** P0
 - **Depends:** none

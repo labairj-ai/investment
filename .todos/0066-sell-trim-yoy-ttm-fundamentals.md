@@ -1,7 +1,7 @@
 # Sell/Trim: YoY and TTM Fundamental Comparisons
 
 - **ID:** 0066
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-06
 - **Priority:** P1
 - **Depends:** none

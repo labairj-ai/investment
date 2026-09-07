@@ -1,7 +1,7 @@
 # Thesis: First-Class Valuation Framework
 
 - **ID:** 0068
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-06
 - **Priority:** P2
 - **Depends:** 0067

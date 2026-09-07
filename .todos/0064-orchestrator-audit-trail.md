@@ -1,7 +1,7 @@
 # Orchestrator: Populate Audit Trail in agent_runs
 
 - **ID:** 0064
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-06
 - **Priority:** P1
 - **Depends:** none

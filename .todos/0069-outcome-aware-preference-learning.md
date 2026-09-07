@@ -1,7 +1,7 @@
 # Outcome-Aware Preference Learning: Separate Decision Quality Model
 
 - **ID:** 0069
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-06
 - **Priority:** P2
 - **Depends:** 0061, 0063

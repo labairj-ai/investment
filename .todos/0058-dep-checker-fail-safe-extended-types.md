@@ -1,7 +1,7 @@
 # Dependency Checker: Fail-Safe for Unknown Types + Extended Type Coverage
 
 - **ID:** 0058
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-06
 - **Priority:** P0
 - **Depends:** none

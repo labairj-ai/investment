@@ -1,7 +1,7 @@
 # Automated Test Suite + CI
 
 - **ID:** 0065
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-06
 - **Priority:** P1
 - **Depends:** 0059, 0060

@@ -1,7 +1,7 @@
 # Briefing Agent: Synthesize Agent Findings + Critic Verdicts
 
 - **ID:** 0062
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-06
 - **Priority:** P1
 - **Depends:** none

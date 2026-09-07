@@ -1,7 +1,7 @@
 # Outcome Evaluator: Correct Modeling for TRIM, ALLOCATE, REBALANCE
 
 - **ID:** 0063
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-06
 - **Priority:** P1
 - **Depends:** 0061
