@@ -152,26 +152,44 @@ def _compute_scenarios(
 
     # Scenario A: branch on what the user actually chose to do.
     # Execution record present  → use actual execution price and date (most accurate)
-    # accepted EXIT (no record) → user sold at entry price on rec date → actual_r = 0
+    # accepted EXIT (no record) → actual_r = None, estimated = True (0071: no longer 0.0)
     # rejected (any)            → user held regardless → actual_r = hold_r
     # anything else             → we don't have execution records → fall back, flag estimated
     exec_rec = kwargs.get("exec_rec")  # optional: first executed_action row for this rec
-    if exec_rec and exec_rec.get("execution_price") and exec_rec.get("execution_date"):
+
+    # CC-specific actual-return path (0073): must come BEFORE generic exec_rec branch
+    if action == "SELL_CC" and exec_rec and exec_rec.get("execution_price") and exec_rec.get("strike"):
+        actual_premium = float(exec_rec["execution_price"])  # premium per share
+        actual_strike  = float(exec_rec["strike"])
+        if h_price is not None and entry_price:
+            actual_exit = min(h_price, actual_strike)
+            actual_r = (actual_exit - entry_price + actual_premium) / entry_price
+            actual_is_estimated = False
+        else:
+            actual_r = actual_premium / entry_price if entry_price else None
+            actual_is_estimated = False
+    elif exec_rec and exec_rec.get("execution_price") and exec_rec.get("execution_date"):
         exec_price = float(exec_rec["execution_price"])
         exec_date  = exec_rec["execution_date"]
-        h_exec = _ticker_price_at(ticker, exec_date) if exec_date > entry_date else exec_price
         # For EXIT-type: user sold at execution_price, no further exposure
         if action in EXIT_ACTIONS:
             actual_r = (exec_price - entry_price) / entry_price if entry_price else None
         else:
-            # For TRIM: they held (1-f) at execution_price entry, sold f at exec_price
-            f = float(exec_rec.get("quantity") or 0) / float(exec_rec.get("total_shares") or 1) \
-                if exec_rec.get("total_shares") else 0.5
+            # For TRIM: use execution_fraction if stored (0072), else quantity/position_shares_before,
+            # else fall back to 0.5.
+            frac = exec_rec.get("execution_fraction")
+            if frac is not None:
+                f = float(frac)
+            elif exec_rec.get("position_shares_before") and exec_rec.get("quantity"):
+                f = float(exec_rec["quantity"]) / float(exec_rec["position_shares_before"])
+            else:
+                f = 0.5
             actual_r = (1 - f) * hold_r if hold_r is not None else None
         actual_is_estimated = False
     elif decision == "accepted" and action in EXIT_ACTIONS:
-        actual_r = 0.0
-        actual_is_estimated = False
+        # 0071: without exec_rec, we cannot confirm the return — flag as estimated
+        actual_r = None
+        actual_is_estimated = True
     elif decision == "rejected":
         actual_r = hold_r
         actual_is_estimated = False
@@ -321,6 +339,12 @@ def evaluate_matured_recommendations(min_age_days: int = MIN_AGE_DAYS) -> int:
                 for label, days in EQUITY_HORIZONS
             ]
 
+        # Fetch executions once per rec (0070: wire executed_actions)
+        executions = agent_db.get_executions_for_rec(rec["id"])
+        # For simplicity in first pass, use executions[0] only.
+        # TODO(multi-fill TRIM): blend actual returns weighted by quantity across all fills.
+        exec_rec = executions[0] if executions else None
+
         for horizon_label, h_date in horizons_to_eval:
             if h_date > today:
                 continue  # not elapsed yet
@@ -331,6 +355,7 @@ def evaluate_matured_recommendations(min_age_days: int = MIN_AGE_DAYS) -> int:
                 cc_strategy_return, cc_incremental_alpha = _compute_scenarios(
                 ticker, action, entry_date, h_date, pl, entry_price,
                 decision=rec.get("decision"),
+                exec_rec=exec_rec,
             )
 
             # opportunity_cost: positive = user override outperformed agent rec

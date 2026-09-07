@@ -99,6 +99,7 @@ def test_rejected_exit_equals_hold():
 
 
 def test_accepted_exit_actual_zero():
+    """0071: accepted EXIT without exec_rec → actual_r=None, estimated=True."""
     prices = {"ANET": 200.0, "ANET@2026-01-01": 180.0, "SPY": 500.0, "SPY@2026-01-01": 450.0}
     p1, p2 = _mock_prices(prices)
     with p1, p2:
@@ -106,5 +107,74 @@ def test_accepted_exit_actual_zero():
             "ANET", "EXIT", "2026-01-01", "2026-04-01",
             {}, 180.0, decision="accepted",
         )
-    assert actual == 0.0
+    # 0071: without exec_rec, we cannot confirm the return — it should be estimated
+    assert actual is None
+    assert estimated is True
+
+
+def test_accepted_exit_with_execution_uses_exec_price():
+    """0070: accepted EXIT with exec_rec → actual_r computed from execution_price."""
+    prices = {"ANET": 200.0, "ANET@2026-01-01": 180.0, "SPY": 500.0, "SPY@2026-01-01": 450.0}
+    p1, p2 = _mock_prices(prices)
+    exec_rec = {
+        "execution_price": 190.0,
+        "execution_date": "2026-01-05",
+        "quantity": 50.0,
+    }
+    with p1, p2:
+        actual, agent, hold, spy, estimated, cc_ret, cc_alpha = _compute_scenarios(
+            "ANET", "EXIT", "2026-01-01", "2026-04-01",
+            {}, 180.0, decision="accepted",
+            exec_rec=exec_rec,
+        )
+    expected_actual = (190.0 - 180.0) / 180.0
+    assert abs(actual - expected_actual) < 0.001
     assert not estimated
+
+
+def test_trim_with_execution_fraction():
+    """0072: TRIM with exec_rec.execution_fraction uses that fraction."""
+    prices = {"ANET": 200.0, "ANET@2026-01-01": 180.0, "SPY": 500.0, "SPY@2026-01-01": 450.0}
+    p1, p2 = _mock_prices(prices)
+    exec_rec = {
+        "execution_price": 185.0,
+        "execution_date": "2026-01-03",
+        "quantity": 30.0,
+        "execution_fraction": 0.3,
+    }
+    with p1, p2:
+        actual, agent, hold, spy, estimated, cc_ret, cc_alpha = _compute_scenarios(
+            "ANET", "TRIM", "2026-01-01", "2026-04-01",
+            {"trim_fraction": 0.5}, 180.0, decision="accepted",
+            exec_rec=exec_rec,
+        )
+    hold_r = (200.0 - 180.0) / 180.0
+    expected_actual = (1 - 0.3) * hold_r
+    assert abs(actual - expected_actual) < 0.001
+    assert not estimated
+
+
+def test_sell_cc_with_exec_rec_computes_actual_from_premium_and_strike():
+    """0073: SELL_CC with exec_rec computes actual_r from real premium+strike."""
+    prices = {"ANET": 185.0, "ANET@2026-01-01": 180.0, "SPY": 500.0, "SPY@2026-01-01": 450.0}
+    p1, p2 = _mock_prices(prices)
+    exec_rec = {
+        "execution_price": 3.0,   # premium per share
+        "execution_date": "2026-01-02",
+        "strike": 190.0,
+    }
+    with p1, p2:
+        actual, agent, hold, spy, estimated, cc_ret, cc_alpha = _compute_scenarios(
+            "ANET", "SELL_CC", "2026-01-01", "2026-04-01",
+            {"premium": 2.5, "strike": 195.0}, 180.0, decision="accepted",
+            exec_rec=exec_rec,
+        )
+    # actual_exit = min(185.0, 190.0) = 185.0
+    # actual_r = (185.0 - 180.0 + 3.0) / 180.0
+    expected_actual = (min(185.0, 190.0) - 180.0 + 3.0) / 180.0
+    assert abs(actual - expected_actual) < 0.001
+    assert not estimated
+    # Verify it differs from the payload-based cc_strategy_return
+    # (cc_ret uses pl.premium=2.5 and pl.strike=195.0)
+    assert cc_ret is not None
+    assert abs(actual - cc_ret) > 0.001, "CC actual should differ from strategy return when exec differs"
