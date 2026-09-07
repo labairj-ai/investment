@@ -365,6 +365,33 @@ def _analyze_roll(ctx: AgentContext, ticker: str, position: dict) -> list[Recomm
         "remaining_extrinsic": remaining_ext,
     }
 
+    # 0129: per-rec evidence references for management actions.
+    try:
+        import strategy_config as _sc_mgmt
+        _mgmt_snap = agent_db.get_latest_option_snapshot(ticker, existing_strike, existing_expiry)
+        _mgmt_earn = agent_db.get_latest_earnings_date(ticker)
+        action_payload["selected_option_snapshot_id"] = _mgmt_snap.get("id") if _mgmt_snap else None
+        action_payload["alternative_snapshot_ids"]    = []
+        action_payload["earnings_event_id"]           = _mgmt_earn.get("id") if _mgmt_earn else None
+        action_payload["strategy_config_hash"]        = _sc_mgmt.get_hash()
+        action_payload["financial_snapshot_hash"]     = agent_db.get_latest_financial_snapshot_hash(ticker)
+    except Exception:
+        pass
+
+    # 0130: inherit trade_chain_id from the originating SELL_CC rec for this position.
+    _mgmt_chain_id: str | None = None
+    _mgmt_parent_id: int | None = None
+    try:
+        _origin = agent_db.get_sell_cc_rec_for_position(ticker, existing_strike, existing_expiry)
+        if _origin:
+            _mgmt_chain_id = _origin.get("trade_chain_id")
+            _mgmt_parent_id = _origin.get("id")
+        # Fallback: derive chain_id deterministically if origin rec lacks one
+        if not _mgmt_chain_id:
+            _mgmt_chain_id = f"cc-{ticker}-{int(float(existing_strike))}-{existing_expiry}"
+    except Exception:
+        pass
+
     rec = Recommendation(
         ticker=ticker,
         action=action,
@@ -384,6 +411,8 @@ def _analyze_roll(ctx: AgentContext, ticker: str, position: dict) -> list[Recomm
             ticker, current_price, existing_strike, existing_expiry, current_mark,
             current_iv=_mgmt_iv_at_rec(ticker, existing_strike, existing_expiry),
         ),
+        trade_chain_id=_mgmt_chain_id,
+        parent_cc_rec_id=_mgmt_parent_id,
     )
     print(f"[covered_call] {ticker}: mgmt → {action} (DTE={dte}, captured={pct_captured}%)")
     return [rec]
@@ -669,9 +698,13 @@ def _analyze_ticker(ctx: AgentContext, ticker: str) -> list[Recommendation]:
     priority = "high" if data_mode == "live" and cc_alpha > 0.002 else "normal"
 
     import json as _json
-    # 0087: persist option quote snapshots for the selected contract + top candidates
+    # 0087/0129: persist option quote snapshots for selected contract + top candidates.
+    # Capture the returned IDs so they can be stored on the recommendation itself.
+    _selected_snap_id: int | None = None
+    _alt_snap_ids: list[int] = []
     try:
-        for _cand_row in list(id_to_row.get(c["id"], {}) for c in candidates[:3]):
+        for _cand in candidates[:5]:
+            _cand_row = id_to_row.get(_cand["id"], {})
             if not _cand_row:
                 continue
             _bid = float(_cand_row.get("bid", 0) or 0)
@@ -679,7 +712,7 @@ def _analyze_ticker(ctx: AgentContext, ticker: str) -> list[Recommendation]:
             _iv  = float(_cand_row.get("impliedVolatility", 0) or 0)
             _sp  = float(_cand_row.get("spread_width", 0) or 0)
             _sp_pct = (_sp / _ask) if _ask > 0 else None
-            agent_db.upsert_option_quote_snapshot(
+            _snap_id = agent_db.upsert_option_quote_snapshot(
                 ticker=ticker,
                 strike=float(_cand_row["strike"]),
                 expiration=str(_cand_row["expiration"]),
@@ -688,8 +721,25 @@ def _analyze_ticker(ctx: AgentContext, ticker: str) -> list[Recommendation]:
                 ask=_ask if _ask > 0 else None,
                 spread_pct=round(_sp_pct, 4) if _sp_pct is not None else None,
             )
+            if _cand["id"] == contract_id:
+                _selected_snap_id = _snap_id
+            else:
+                _alt_snap_ids.append(_snap_id)
     except Exception as _snap_e:
         print(f"[covered_call] {ticker}: option snapshot write failed: {_snap_e}")
+
+    # 0129: enrich payload with per-rec evidence references (precise option snapshot IDs,
+    # earnings event, strategy and financial hashes). Enables replay/audit of exact inputs.
+    try:
+        import strategy_config as _sc
+        _earn_ev = agent_db.get_latest_earnings_date(ticker)
+        action_payload["selected_option_snapshot_id"] = _selected_snap_id
+        action_payload["alternative_snapshot_ids"]    = _alt_snap_ids
+        action_payload["earnings_event_id"]           = _earn_ev.get("id") if _earn_ev else None
+        action_payload["strategy_config_hash"]        = _sc.get_hash()
+        action_payload["financial_snapshot_hash"]     = agent_db.get_latest_financial_snapshot_hash(ticker)
+    except Exception as _ev_e:
+        print(f"[covered_call] {ticker}: evidence payload enrichment failed: {_ev_e}")
 
     # 0090: build full dependency set for SELL_CC recommendations
     _strike     = float(row["strike"])
@@ -773,6 +823,12 @@ def _analyze_ticker(ctx: AgentContext, ticker: str) -> list[Recommendation]:
             "tolerance": 15.0,
             "invalidating_event": "MACRO_SHIFT",
         })
+    # 0130: generate a deterministic trade_chain_id for this CC lifecycle.
+    # All subsequent management recs for this position will inherit this chain ID.
+    _expiry_str = action_payload.get("expiration", "")
+    _strike_int = int(float(action_payload.get("strike", 0)))
+    _tc_id = f"cc-{ticker}-{_strike_int}-{_expiry_str}"
+
     rec = Recommendation(
         ticker=ticker,
         action="SELL_CC",
@@ -785,6 +841,7 @@ def _analyze_ticker(ctx: AgentContext, ticker: str) -> list[Recommendation]:
         no_action_case=no_call_case,
         action_payload=action_payload,
         dependencies=deps,
+        trade_chain_id=_tc_id,
     )
     print(f"[covered_call] {ticker}: SELL_CC {contract_id} "
           f"confidence={confidence} score={rec_score}")

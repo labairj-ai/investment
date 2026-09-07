@@ -387,6 +387,8 @@ def _run_single_agent(
                 valid_until=rec.valid_until,
                 rationale_class=rec.rationale_class,
                 input_hash=rec.input_hash,
+                trade_chain_id=rec.trade_chain_id,
+                parent_cc_rec_id=rec.parent_cc_rec_id,
             )
             if rec.dependencies:
                 agent_db.write_dependencies(rec_id, rec.dependencies)

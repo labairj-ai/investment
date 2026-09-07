@@ -3,11 +3,13 @@ from __future__ import annotations
 from datetime import datetime as _dt
 from typing import Optional
 
-# Required fields by action type (0107)
+# Required fields by action type (0107 / 0132)
 _REQUIRED_FIELDS: dict[str, list[str]] = {
     "EXIT":             ["execution_date", "quantity", "execution_price"],
     "TRIM":             ["execution_date", "quantity", "execution_price"],
     "ALLOCATE":         ["execution_date", "quantity", "execution_price"],
+    "BUY":              ["execution_date", "quantity", "execution_price"],
+    "HARVEST":          ["execution_date", "quantity", "execution_price"],
     "SELL_CC":          ["execution_date", "contracts", "strike", "premium", "expiration"],
     "BUY_TO_CLOSE":     ["execution_date", "execution_price"],
     "ALLOW_ASSIGNMENT": ["execution_date"],

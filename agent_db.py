@@ -460,6 +460,9 @@ def migrate() -> None:
         ("company_financials",           "shares_period_end",   "REAL"),
         # 0128 — outcome formula version tag; 1=baseline, 2=NAV-corrected CC management
         ("recommendation_outcomes",      "outcome_math_version", "INTEGER"),
+        # 0130 — CC trade chain: link SELL_CC → management recs for same physical position
+        ("recommendations",              "trade_chain_id",       "TEXT"),
+        ("recommendations",              "parent_cc_rec_id",     "INTEGER"),
     ]
     for table, col, col_type in _new_cols:
         try:
@@ -687,6 +690,8 @@ def insert_recommendation(
     valid_until: float | None = None,
     input_hash: str | None = None,
     rationale_class: str | None = None,
+    trade_chain_id: str | None = None,
+    parent_cc_rec_id: int | None = None,
 ) -> int:
     now = time.time()
     urgency = compute_urgency_level(action, recommendation_score, valid_until)
@@ -696,13 +701,14 @@ def insert_recommendation(
            (run_id, ticker, action, action_payload_json, recommendation_score,
             confidence, priority, why_now, rationale, counter_case,
             no_action_case, status, valid_until, input_hash, updated_at,
-            created_at, rationale_class, urgency_level)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            created_at, rationale_class, urgency_level, trade_chain_id, parent_cc_rec_id)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (run_id, ticker, action,
          json.dumps(action_payload) if action_payload else None,
          recommendation_score, confidence, priority, why_now, rationale,
          counter_case, no_action_case, "open", valid_until,
-         input_hash, now, now, rationale_class, urgency),
+         input_hash, now, now, rationale_class, urgency,
+         trade_chain_id, parent_cc_rec_id),
     )
     rec_id = cur.lastrowid
     conn.commit()
@@ -3607,3 +3613,64 @@ def aggregate_executions(executions: list[dict], action: str) -> "ExecutionSumma
     summary.strike = executions[0].get("strike") if executions else None
 
     return summary
+
+
+# ── 0130: CC trade-chain helpers ──────────────────────────────────────────────
+
+def get_sell_cc_rec_for_position(
+    ticker: str,
+    strike: float | None = None,
+    expiry: str | None = None,
+) -> dict | None:
+    """Return the most recent accepted SELL_CC recommendation for a given CC position.
+
+    Used by CC management agents to find the originating rec so they can inherit
+    its trade_chain_id and set parent_cc_rec_id.
+    """
+    conn = _connect()
+    try:
+        if strike is not None and expiry is not None:
+            row = conn.execute(
+                """SELECT r.id, r.trade_chain_id, r.action_payload_json, r.created_at
+                   FROM recommendations r
+                   LEFT JOIN user_decisions ud ON ud.recommendation_id = r.id
+                   WHERE r.ticker=? AND r.action='SELL_CC'
+                     AND json_extract(r.action_payload_json, '$.strike')=?
+                     AND json_extract(r.action_payload_json, '$.expiration')=?
+                     AND r.status IN ('accepted', 'open')
+                   ORDER BY r.created_at DESC LIMIT 1""",
+                (ticker, strike, expiry),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                """SELECT r.id, r.trade_chain_id, r.action_payload_json, r.created_at
+                   FROM recommendations r
+                   WHERE r.ticker=? AND r.action='SELL_CC'
+                     AND r.status IN ('accepted', 'open')
+                   ORDER BY r.created_at DESC LIMIT 1""",
+                (ticker,),
+            ).fetchone()
+        return dict(row) if row else None
+    except Exception:
+        return None
+    finally:
+        conn.close()
+
+
+def get_trade_chain(chain_id: str) -> list[dict]:
+    """Return all recommendations belonging to a trade chain, ordered by creation time."""
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            """SELECT r.id, r.ticker, r.action, r.trade_chain_id, r.parent_cc_rec_id,
+                      r.status, r.created_at, r.action_payload_json
+               FROM recommendations r
+               WHERE r.trade_chain_id=?
+               ORDER BY r.created_at ASC""",
+            (chain_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
+    finally:
+        conn.close()

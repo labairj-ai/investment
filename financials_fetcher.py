@@ -201,6 +201,10 @@ def _fetch_one(ticker):
 
 def fetch_all(tickers, company_names=None, force=False):
     """Fetch and store financials for all stock tickers. Skips funds."""
+    # 0131: run agent_db migrations before _init_tables() so that all columns
+    # added by migrations (e.g. shares_period_end) exist regardless of DB age.
+    import agent_db as _adb
+    _adb.migrate()
     _init_tables()
     company_names = company_names or {}
     stock_tickers = [t for t in tickers if not _is_fund(t, company_names)]
