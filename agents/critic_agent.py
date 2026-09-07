@@ -220,11 +220,13 @@ def _llm_critique(rec: dict) -> dict | None:
             prompt += f"  Key payload fields: {json.dumps(payload_summary)}\n"
 
     prompt += (
-        "\nReturn JSON matching the schema exactly. "
-        "confidence_adjustment must be an integer in [-20, +5]. "
-        "strongest_objection: the single most important concern (1 sentence). "
-        "missing_evidence: list of facts that would change the verdict. "
-        "counter_case: best argument against acting on this recommendation."
+        "\nReturn a flat JSON object with EXACTLY these top-level keys:\n"
+        '  "verdict": one of APPROVE, APPROVE_WITH_CAUTION, CHALLENGE, VETO\n'
+        '  "strongest_objection": string — the single most important concern (1 sentence)\n'
+        '  "missing_evidence": array of strings — facts that would change the verdict\n'
+        '  "counter_case": string — best argument against acting on this recommendation\n'
+        '  "confidence_adjustment": integer in [-20, +5]\n'
+        "No other keys. No nesting. No markdown."
     )
 
     try:
