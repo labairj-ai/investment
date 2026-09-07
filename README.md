@@ -36,7 +36,7 @@ The old macOS launchd agents are archived in `launchd-disabled-on-mac/`.
 | **Portfolio Chat** | Floating 💬 button opens a full-height chat drawer with portfolio + macro + CC + lot context baked into the system prompt. The AI knows which CC positions are open (ticker, strike, DTE), every cost lot's age and LT eligibility, unrealized P&L per position, and your accumulation patterns. Powered by `Qwen3.6-35B-A3B-4bit` via MLX (thinking mode always on for chat); streams tokens in real time. Quick-prompt chips for common questions. |
 | **Per-Holding Macro Scores** | Each holding is scored 1–10 on four canonical macro dimensions defined in `MACRO_DIMS` (the single source of truth for all AI systems): **rate sensitivity** (hurt by +50bps 10Y rise), **inflation hedge** (benefits from sustained >3% CPI), **dollar sensitivity** (hurt by strengthening USD), **geopolitical risk** (tariff/trade/sanctions exposure). Scores appear in the holdings table (composite score + week-over-week delta badge); **click the row** to expand an inline detail panel showing per-dimension scores, reasons, and SVG sparkline trend lines. Scored one ticker at a time by `Qwen3.6-35B-A3B-4bit` via MLX; runs automatically every **Saturday at 1 AM ET** via serve.py's built-in scheduler (independent flag file `out/last_macro_score_date.txt` ensures it fires regardless of whether the newsletter backstop has already set `last_run_date.txt`). Score history is stored in `holding_macro_scores_history` so trends accumulate week-over-week. Scores older than 5 days (`SCORE_STALE_DAYS`) are flagged with ⚠ in all downstream AI prompts. |
 | **Macro Risk Tab** | Dedicated dashboard tab (📊 Macro Risk) with a portfolio-level composite trend chart (weekly history), a week-over-week panel showing all 5 layers with delta badges, a dimension heatmap (all tickers × all macro dimensions in a color-coded grid with WoW deltas), per-ticker score cards with inline sparklines, and a **Weekly AI Summary** card. The summary is generated after each Saturday scoring run — `Qwen3.6-35B-A3B-4bit` writes 2–3 sentences per layer explaining what changed in composite scores, which holdings drove the change, and how the macro environment explains it, plus a portfolio-level overview sentence. Stored in `macro_score_summaries`; displayed until the next Saturday run replaces it. Populated from `holding_macro_scores` and `holding_macro_scores_history` tables; shows "N weeks of history" as data accumulates. |
-| **Investment Goals & Strategy** | Dividend goal ($2.5k/mo by 2036) + portfolio value goal ($2M by 2036) with 8-quarter rolling targets; barbell health with L4 recs; live **Recommended Purchases** panel backed by Buffett screener data, layer drift, dividend yield impact, valuation multiples, value trap flags, and earnings calendar |
+| **Investment Goals & Strategy** | Dividend goal ($2.5k/mo by 2036) + portfolio value goal ($2M by 2036) with 8-quarter rolling targets; barbell health with L4 recs; Layer Allocation vs Target panel showing current vs target weight per layer |
 | **Daily Investment Digest** | Single 7 AM email covering: portfolio snapshot, layer allocation vs target (with drift warnings), holdings performance, upcoming earnings/ex-div events, and the judgment health rubric |
 | **Local Dashboard** | Interactive web UI at `http://localhost:5001` with charts, holdings table, and live analysis tools |
 | **Add / Manage Positions** | Add new positions directly from the Holdings UI (ticker, shares, avg cost, layer); reassign any holding to a different layer with full retroactive history rewrite; opening lot auto-created in the Tax Lot Tracker on position add |
@@ -445,15 +445,6 @@ Two-column layout: wide left panel for goals, right column for barbell health + 
 | L4 | Convexity | 10% |
 | L5 | Shock Absorbers | 8% |
 
-**Recommended Purchases** (right column, bottom)
-- Live recommendation engine that fetches `/api/buffett-winners` and `/api/earnings` on every page load
-- Filters the Buffett screener's passing universe to exclude stocks already held and any with high value-trap risk
-- Scores remaining candidates by risk level (low › medium › unknown) and valuation (penalizes P/E > 40, EV/EBITDA > 25, P/FCF > 35)
-- Groups recommendations by layer, matched to whichever layers are most underweight vs `layer_targets.json` targets
-- Each pick shows: risk badge (✓ Low / ⚠ Med / ? Unrated), P/E · P/FCF · EV/EBITDA · dividend yield, screener's layer assignment reason, and any active value trap flags (e.g. *gross margin compressing 2 yrs in a row*)
-- Earnings warning (⚠ earnings in Nd) for any pick with an earnings date within 14 days
-- L2 Cash-Flow Engine section shows estimated monthly income from deploying the layer gap at current portfolio yield
-- Bottom card shows whether organic growth covers the $2M quarterly portfolio target or new capital is needed this quarter
 
 ### Dashboard Tabs
 
@@ -668,7 +659,7 @@ The screener runs automatically at **2 AM ET** each night as a background thread
 - **Partial results** — winners found so far appear in the table even before the scan finishes, with a "partial results (X% scanned)" note
 - **Scan duration** — how long the last completed scan took
 - **Quality Score** — each winner has a 0–100 composite score (gross margin, net income margin, P/FCF, P/E, EV/EBITDA, trap risk, interest margin, CapEx margin, dividend); green ≥70, orange ≥50, red <50; table defaults to score-descending so best picks are always on top
-- **Exchange badge** — each winner shows a color-coded **NYSE** (blue) or **NASDAQ** (green) badge next to the ticker in both the screener table and the Recommended Purchases panel
+- **Exchange badge** — each winner shows a color-coded **NYSE** (blue) or **NASDAQ** (green) badge next to the ticker in the screener table
 - **Country column** — HQ country from yfinance (e.g. United States, Netherlands, Israel); included in text search; backfilled on existing winners without a full rescan
 - **AI Val column** — color-coded badge showing the AI's valuation verdict: green=cheap, gray=fair, red=stretched; populated once the AI▾ analysis has run for a winner
 - **Filter bar** — text search (ticker/company/sector/country), Exchange chips (NYSE/NASDAQ), Layer chips (L1–L5), Risk toggle (**✓ Safe** / All / Traps), and **AI Valuation** chips (**Cheap** / **Fair** / **Stretched** — filters to only winners where the AI returned that verdict); live match count
