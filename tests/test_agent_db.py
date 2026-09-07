@@ -153,3 +153,36 @@ def test_dependency_without_metadata_still_works(mem_db):
     assert recs[0]["deps"][0]["dependency_type"] == "PRICE"
     # No metadata keys injected beyond the base fields
     assert "strike" not in recs[0]["deps"][0]
+
+
+# ── 0087: option quote snapshot writer ───────────────────────────────────────
+
+def test_upsert_option_quote_snapshot_creates_row(mem_db):
+    """upsert_option_quote_snapshot stores a row and retrieval works."""
+    import agent_db
+    agent_db.upsert_option_quote_snapshot(
+        ticker="ANET",
+        strike=175.0,
+        expiration="2026-10-16",
+        iv=0.48,
+        bid=3.20,
+        ask=3.40,
+        spread_pct=0.059,
+    )
+    snap = agent_db.get_latest_option_snapshot("ANET", 175.0, "2026-10-16")
+    assert snap is not None
+    assert abs(float(snap["iv"]) - 0.48) < 0.001
+    assert abs(float(snap["bid"]) - 3.20) < 0.001
+    assert abs(float(snap["spread_pct"]) - 0.059) < 0.001
+
+
+def test_upsert_option_quote_snapshot_updates_on_conflict(mem_db):
+    """Two upserts for same contract produce two time-series rows; get_latest returns newest."""
+    import agent_db, time as _time
+    agent_db.upsert_option_quote_snapshot("ANET", 175.0, "2026-10-16", iv=0.48, bid=3.20, ask=3.40, spread_pct=0.059)
+    _time.sleep(0.01)
+    agent_db.upsert_option_quote_snapshot("ANET", 175.0, "2026-10-16", iv=0.32, bid=2.10, ask=2.30, spread_pct=0.095)
+    snap = agent_db.get_latest_option_snapshot("ANET", 175.0, "2026-10-16")
+    assert snap is not None
+    # get_latest should return most recent (iv=0.32)
+    assert abs(float(snap["iv"]) - 0.32) < 0.001

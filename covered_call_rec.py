@@ -721,6 +721,27 @@ def analyze(ticker: str, avg_cost: float, shares: float):
         print(f"  [{ticker}] No contracts meet profit floor — "
               f"{len(tight_df)} tight-spread contract(s) available in filtered view.")
 
+    # 0087: persist option quote snapshots for top 3 contracts + open positions
+    try:
+        import agent_db as _adb
+        for _, _row in recs_df.head(3).iterrows():
+            _bid  = float(_row.get("bid", 0) or 0)
+            _ask  = float(_row.get("ask", 0) or 0)
+            _iv   = float(_row.get("impliedVolatility", 0) or 0)
+            _sp   = float(_row.get("spread_width", 0) or 0)
+            _sp_pct = (_sp / _ask) if _ask > 0 else None
+            _adb.upsert_option_quote_snapshot(
+                ticker=ticker,
+                strike=float(_row["strike"]),
+                expiration=str(_row["expiration"]),
+                iv=_iv if _iv > 0 else None,
+                bid=_bid if _bid > 0 else None,
+                ask=_ask if _ask > 0 else None,
+                spread_pct=round(_sp_pct, 4) if _sp_pct is not None else None,
+            )
+    except Exception as _e:
+        print(f"  [{ticker}] option snapshot write failed: {_e}")
+
     return {
         "ticker":            ticker,
         "current_price":     current_price,

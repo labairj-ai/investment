@@ -1,7 +1,7 @@
 # Option Quote Snapshot Writer
 
 - **ID:** 0087
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-06
 - **Priority:** normal
 - **Depends:** 0086

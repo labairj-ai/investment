@@ -600,6 +600,28 @@ def _analyze_ticker(ctx: AgentContext, ticker: str) -> list[Recommendation]:
     priority = "high" if data_mode == "live" and cc_alpha > 0.002 else "normal"
 
     import json as _json
+    # 0087: persist option quote snapshots for the selected contract + top candidates
+    try:
+        for _cand_row in list(id_to_row.get(c["id"], {}) for c in candidates[:3]):
+            if not _cand_row:
+                continue
+            _bid = float(_cand_row.get("bid", 0) or 0)
+            _ask = float(_cand_row.get("ask", 0) or 0)
+            _iv  = float(_cand_row.get("impliedVolatility", 0) or 0)
+            _sp  = float(_cand_row.get("spread_width", 0) or 0)
+            _sp_pct = (_sp / _ask) if _ask > 0 else None
+            agent_db.upsert_option_quote_snapshot(
+                ticker=ticker,
+                strike=float(_cand_row["strike"]),
+                expiration=str(_cand_row["expiration"]),
+                iv=_iv if _iv > 0 else None,
+                bid=_bid if _bid > 0 else None,
+                ask=_ask if _ask > 0 else None,
+                spread_pct=round(_sp_pct, 4) if _sp_pct is not None else None,
+            )
+    except Exception as _snap_e:
+        print(f"[covered_call] {ticker}: option snapshot write failed: {_snap_e}")
+
     price_dep = {
         "dependency_type": "PRICE",
         "dependency_key": ticker,
