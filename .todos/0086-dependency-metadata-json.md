@@ -1,7 +1,7 @@
 # Dependency Metadata JSON Column
 
 - **ID:** 0086
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-06
 - **Priority:** high
 - **Depends:** none

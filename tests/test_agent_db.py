@@ -94,3 +94,62 @@ def test_insert_agent_run_with_audit_fields(mem_db, monkeypatch):
     snap = json.loads(row["input_snapshot_json"])
     assert snap.get("thesis_version") == 2
     assert snap.get("financial_period") == "2026-06-30"
+
+
+# ── 0086: dependency metadata_json round-trip ────────────────────────────────
+
+def test_dependency_metadata_persists_and_merges(mem_db):
+    """write_dependencies() persists metadata; get_open_recs_with_deps() merges it."""
+    import agent_db
+    # Create a minimal run + recommendation
+    run_id = agent_db.insert_agent_run("covered_call")
+    rec_id = agent_db.insert_recommendation(
+        run_id=run_id, ticker="ANET", action="SELL_CC",
+        recommendation_score=60, confidence=70, priority="normal",
+        why_now="IV is high", rationale="test", counter_case="", no_action_case="",
+    )
+    # Write a dependency with metadata
+    agent_db.write_dependencies(rec_id, [
+        {
+            "dependency_type": "OPTION_IV",
+            "dependency_key": "ANET",
+            "original_value": "0.48",
+            "tolerance": 0.20,
+            "invalidating_event": None,
+            "metadata": {"strike": 175, "expiration": "2026-10-16", "threshold": 0.20},
+        }
+    ])
+    recs = agent_db.get_open_recs_with_deps()
+    assert len(recs) == 1
+    deps = recs[0]["deps"]
+    assert len(deps) == 1
+    dep = deps[0]
+    # metadata fields should be merged into the dep dict
+    assert dep["dependency_type"] == "OPTION_IV"
+    assert dep.get("strike") == 175
+    assert dep.get("expiration") == "2026-10-16"
+    assert dep.get("threshold") == 0.20
+
+
+def test_dependency_without_metadata_still_works(mem_db):
+    """Deps without a 'metadata' key should not break write or read."""
+    import agent_db
+    run_id = agent_db.insert_agent_run("sell_trim")
+    rec_id = agent_db.insert_recommendation(
+        run_id=run_id, ticker="BRK.B", action="HOLD",
+        recommendation_score=20, confidence=60, priority="low",
+        why_now="", rationale="", counter_case="", no_action_case="",
+    )
+    agent_db.write_dependencies(rec_id, [
+        {
+            "dependency_type": "PRICE",
+            "dependency_key": "BRK.B",
+            "original_value": "420.0",
+            "tolerance": 0.05,
+            "invalidating_event": "PRICE_THRESHOLD",
+        }
+    ])
+    recs = agent_db.get_open_recs_with_deps()
+    assert recs[0]["deps"][0]["dependency_type"] == "PRICE"
+    # No metadata keys injected beyond the base fields
+    assert "strike" not in recs[0]["deps"][0]

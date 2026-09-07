@@ -444,6 +444,8 @@ def migrate() -> None:
         ("executed_actions",         "position_shares_before",  "REAL"),
         ("executed_actions",         "position_shares_after",   "REAL"),
         ("executed_actions",         "execution_fraction",      "REAL"),
+        # 0086 — contract/estimate/event-specific dependency context
+        ("recommendation_dependencies", "dependency_metadata_json", "TEXT"),
     ]
     for table, col, col_type in _new_cols:
         try:
@@ -1144,17 +1146,20 @@ def write_dependencies(rec_id: int, deps: list[dict]) -> None:
         return
     conn = _connect()
     for d in deps:
+        metadata = d.get("metadata")
         conn.execute(
             """INSERT INTO recommendation_dependencies
                (recommendation_id, dependency_type, dependency_key,
-                original_value, tolerance, invalidating_event)
-               VALUES (?,?,?,?,?,?)""",
+                original_value, tolerance, invalidating_event,
+                dependency_metadata_json)
+               VALUES (?,?,?,?,?,?,?)""",
             (rec_id,
              d["dependency_type"],
              d["dependency_key"],
              str(d["original_value"]) if d.get("original_value") is not None else None,
              d.get("tolerance"),
-             d.get("invalidating_event")),
+             d.get("invalidating_event"),
+             json.dumps(metadata) if metadata else None),
         )
     conn.commit()
     conn.close()
@@ -1178,7 +1183,8 @@ def get_open_recs_with_deps() -> list[dict]:
                r.id, r.ticker, r.action, r.created_at,
                ar.agent_type,
                d.id as dep_id, d.dependency_type, d.dependency_key,
-               d.original_value, d.tolerance, d.invalidating_event
+               d.original_value, d.tolerance, d.invalidating_event,
+               d.dependency_metadata_json
            FROM recommendations r
            JOIN recommendation_dependencies d ON d.recommendation_id = r.id
            LEFT JOIN agent_runs ar ON ar.id = r.run_id
@@ -1199,14 +1205,21 @@ def get_open_recs_with_deps() -> list[dict]:
                 "agent_type": row["agent_type"],
                 "deps": [],
             }
-        recs[rid]["deps"].append({
+        dep: dict = {
             "dep_id": row["dep_id"],
             "dependency_type": row["dependency_type"],
             "dependency_key": row["dependency_key"],
             "original_value": row["original_value"],
             "tolerance": row["tolerance"],
             "invalidating_event": row["invalidating_event"],
-        })
+        }
+        # 0086: merge metadata fields so checkers can call dep.get("strike") etc.
+        if row["dependency_metadata_json"]:
+            try:
+                dep.update(json.loads(row["dependency_metadata_json"]))
+            except Exception:
+                pass
+        recs[rid]["deps"].append(dep)
     return list(recs.values())
 
 
