@@ -454,6 +454,10 @@ def migrate() -> None:
         ("executed_actions",         "execution_group_id",      "INTEGER"),
         # 0102 — actual diluted shares outstanding per period
         ("historical_valuation_metrics", "shares_outstanding",  "REAL"),
+        # 0106 — CC post-expiry assignment state ("assigned" | "expired")
+        ("recommendation_outcomes",      "cc_assignment_state", "TEXT"),
+        # 0111 — period-end shares for accurate market-cap computation
+        ("company_financials",           "shares_period_end",   "REAL"),
     ]
     for table, col, col_type in _new_cols:
         try:
@@ -481,6 +485,36 @@ def migrate() -> None:
         conn.commit()
     except sqlite3.OperationalError:
         pass
+
+    # 0109: migrate ev_ebitda → ev_ebit in investment_theses.valuation_framework JSON
+    try:
+        rows = conn.execute(
+            "SELECT id, valuation_framework FROM investment_theses "
+            "WHERE valuation_framework LIKE '%ev_ebitda%'"
+        ).fetchall()
+        import json as _json_mod
+        for row in rows:
+            try:
+                vf = _json_mod.loads(row["valuation_framework"])
+                changed = False
+                if vf.get("primary_metric") == "ev_ebitda":
+                    vf["primary_metric"] = "ev_ebit"
+                    changed = True
+                if "secondary_metrics" in vf:
+                    new_sm = ["ev_ebit" if m == "ev_ebitda" else m for m in vf["secondary_metrics"]]
+                    if new_sm != vf["secondary_metrics"]:
+                        vf["secondary_metrics"] = new_sm
+                        changed = True
+                if changed:
+                    conn.execute(
+                        "UPDATE investment_theses SET valuation_framework=? WHERE id=?",
+                        (_json_mod.dumps(vf), row["id"]),
+                    )
+            except Exception:
+                pass
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # investment_theses table may not exist yet
 
     conn.close()
 
@@ -979,22 +1013,66 @@ def insert_outcome(
     actual_is_estimated: int | None = None,
     cc_strategy_return: float | None = None,
     cc_incremental_alpha: float | None = None,
+    cc_assignment_state: str | None = None,
 ) -> int:
     conn = _connect()
     cur = conn.execute(
         """INSERT INTO recommendation_outcomes
            (recommendation_id, evaluation_date, benchmark_return, actual_return,
             recommended_path_return, opportunity_cost, notes, horizon, hold_return,
-            actual_is_estimated, cc_strategy_return, cc_incremental_alpha)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            actual_is_estimated, cc_strategy_return, cc_incremental_alpha,
+            cc_assignment_state)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (recommendation_id, time.time(), benchmark_return, actual_return,
          recommended_path_return, opportunity_cost, notes, horizon, hold_return,
-         actual_is_estimated, cc_strategy_return, cc_incremental_alpha),
+         actual_is_estimated, cc_strategy_return, cc_incremental_alpha,
+         cc_assignment_state),
     )
     outcome_id = cur.lastrowid
     conn.commit()
     conn.close()
     return outcome_id
+
+
+def get_lt_lots_count(ticker: str) -> int:
+    """Count open cost_lots held >= 365 days as of today (0108).
+
+    Returns 0 if cost_lots table doesn't exist or has no LT lots for ticker.
+    """
+    from datetime import date as _date, timedelta
+    lt_threshold = (_date.today() - timedelta(days=365)).isoformat()
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM cost_lots WHERE ticker=? AND purchase_date<=?",
+            (ticker, lt_threshold),
+        ).fetchone()
+        return int(row[0]) if row else 0
+    except Exception:
+        return 0
+    finally:
+        conn.close()
+
+
+def get_ytd_realized_gain(ticker: str) -> float:
+    """Sum realized_gain from sell_transactions YTD for ticker (0108).
+
+    Returns 0.0 if sell_transactions table doesn't exist or no YTD sales.
+    """
+    from datetime import date as _date
+    ytd_start = _date.today().replace(month=1, day=1).isoformat()
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(realized_gain), 0.0) FROM sell_transactions "
+            "WHERE ticker=? AND sell_date>=? AND realized_gain IS NOT NULL",
+            (ticker, ytd_start),
+        ).fetchone()
+        return float(row[0]) if row else 0.0
+    except Exception:
+        return 0.0
+    finally:
+        conn.close()
 
 
 def upsert_spy_price(day: str, price: float) -> None:
@@ -1154,7 +1232,10 @@ def list_journal_entries(limit: int = 200) -> list[dict]:
                r.action_payload_json, r.superseded_reason,
                ud.decision, ud.reason_code, ud.notes as decision_notes, ud.decided_at,
                ro.actual_return, ro.recommended_path_return, ro.opportunity_cost,
-               ro.notes as outcome_notes
+               ro.notes as outcome_notes,
+               (SELECT cc_assignment_state FROM recommendation_outcomes
+                WHERE recommendation_id = r.id AND horizon = 'at_expiry' LIMIT 1
+               ) as cc_assignment_state
            FROM recommendations r
            LEFT JOIN user_decisions ud ON ud.recommendation_id = r.id
            LEFT JOIN recommendation_outcomes ro ON ro.recommendation_id = r.id
@@ -2350,6 +2431,267 @@ def get_recent_runs(agent_type: str, ticker: str | None = None, limit: int = 10)
 
 # ── Executed actions ledger ───────────────────────────────────────────────────
 
+_INSERT_EA_SQL = """INSERT INTO executed_actions
+   (recommendation_id, ticker, action, quantity, execution_price,
+    execution_date, fees, strike, expiration, premium, contracts,
+    tax_lot_ids, notes, source, created_at,
+    position_shares_before, position_shares_after, execution_fraction,
+    fill_id)
+   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"""
+
+
+def _insert_ea_conn(
+    conn,
+    ticker: str,
+    action: str,
+    execution_date: str,
+    recommendation_id=None,
+    quantity=None,
+    execution_price=None,
+    fees: float = 0.0,
+    strike=None,
+    expiration=None,
+    premium=None,
+    contracts=None,
+    tax_lot_ids=None,
+    notes=None,
+    source: str = "manual",
+    position_shares_before=None,
+    position_shares_after=None,
+    execution_fraction=None,
+    fill_id=None,
+) -> int:
+    cur = conn.execute(
+        _INSERT_EA_SQL,
+        (recommendation_id, ticker, action, quantity, execution_price,
+         execution_date, fees, strike, expiration, premium, contracts,
+         json.dumps(tax_lot_ids) if tax_lot_ids else None,
+         notes, source, time.time(),
+         position_shares_before, position_shares_after, execution_fraction,
+         fill_id),
+    )
+    return cur.lastrowid
+
+
+def _insert_cc_pos_conn(
+    conn,
+    ticker: str,
+    strike: float,
+    expiry: str,
+    premium_per_contract: float,
+    contracts: int,
+    execution_date: str,
+    source: str = "agent_execution",
+) -> int | None:
+    existing = conn.execute(
+        "SELECT id FROM cc_positions WHERE ticker=? AND strike=? AND expiry=? AND status='open'",
+        (ticker, strike, expiry),
+    ).fetchone()
+    if existing:
+        return None
+    cur = conn.execute(
+        """INSERT INTO cc_positions
+           (ticker, contracts, strike, expiry, premium_per_contract,
+            opened_date, status, notes)
+           VALUES (?, ?, ?, ?, ?, ?, 'open', ?)""",
+        (ticker, contracts or 1, strike, expiry, premium_per_contract,
+         execution_date, f"created by {source}"),
+    )
+    return cur.lastrowid
+
+
+def _close_cc_pos_conn(
+    conn,
+    ticker: str,
+    strike,
+    expiry,
+    close_date: str,
+    close_price,
+    close_type: str = "BTC",
+    new_status: str = "closed",
+) -> int | None:
+    if strike is not None and expiry:
+        row = conn.execute(
+            "SELECT id FROM cc_positions WHERE ticker=? AND strike=? AND expiry=? AND status='open'",
+            (ticker, strike, expiry),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT id FROM cc_positions WHERE ticker=? AND status='open' ORDER BY opened_date DESC LIMIT 1",
+            (ticker,),
+        ).fetchone()
+    if not row:
+        return None
+    pos_id = row["id"]
+    conn.execute(
+        "UPDATE cc_positions SET status=?, closed_date=?, closed_price=?, close_type=? WHERE id=?",
+        (new_status, close_date, close_price, close_type, pos_id),
+    )
+    return pos_id
+
+
+def record_execution_transaction(
+    rec_id: int,
+    ticker: str,
+    action: str,
+    exec_date: str,
+    body: dict,
+    fill_id: str | None = None,
+) -> dict:
+    """Record a recommendation execution atomically (0104).
+
+    All writes — executed_actions rows, execution_group_id linking, and
+    cc_positions inserts/updates — happen inside a single BEGIN IMMEDIATE /
+    COMMIT.  Any exception triggers a full ROLLBACK so the DB never ends up
+    in a partial state (e.g. executed_action present but cc_positions absent).
+
+    Returns {"exec_id": int, "exec_id_sto": int | None, "cc_pos_id": int | None}.
+    """
+    _is_roll = action in ("ROLL_OUT", "ROLL_UP", "ROLL_UP_AND_OUT")
+
+    conn = _connect()
+    conn.isolation_level = None  # manual transaction control
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+
+        result: dict = {"exec_id": None, "exec_id_sto": None, "cc_pos_id": None}
+
+        if _is_roll:
+            btc_price   = float(body.get("btc_price") or body.get("execution_price") or 0)
+            sto_premium = float(body.get("sto_premium") or body.get("premium") or 0)
+            new_strike  = body.get("new_strike") or body.get("strike")
+            new_expiry  = body.get("new_expiration") or body.get("expiration")
+            old_strike  = body.get("existing_strike") or body.get("strike")
+            old_expiry  = body.get("existing_expiration") or body.get("expiration")
+            _contracts  = int(body.get("contracts") or 1)
+            _fees_half  = float(body.get("fees") or 0) / 2
+
+            btc_id = _insert_ea_conn(
+                conn, ticker=ticker, action="BUY_TO_CLOSE",
+                execution_date=exec_date, recommendation_id=rec_id,
+                execution_price=btc_price, contracts=_contracts,
+                strike=old_strike, expiration=old_expiry, fees=_fees_half,
+                notes=f"Roll BTC leg (rec {rec_id})",
+                source=body.get("source", "manual"), fill_id=fill_id,
+            )
+            sto_id = _insert_ea_conn(
+                conn, ticker=ticker, action="SELL_CC",
+                execution_date=exec_date, recommendation_id=rec_id,
+                execution_price=sto_premium, contracts=_contracts,
+                strike=new_strike, expiration=new_expiry,
+                premium=sto_premium, fees=_fees_half,
+                notes=f"Roll STO leg (rec {rec_id})",
+                source=body.get("source", "manual"),
+            )
+            conn.execute(
+                "UPDATE executed_actions SET execution_group_id=? WHERE id IN (?,?)",
+                (btc_id, btc_id, sto_id),
+            )
+            if old_strike and old_expiry:
+                _close_cc_pos_conn(
+                    conn, ticker, float(old_strike), str(old_expiry),
+                    exec_date, btc_price, "ROLL", "closed",
+                )
+            if new_strike and new_expiry:
+                pos_id = _insert_cc_pos_conn(
+                    conn, ticker, float(new_strike), str(new_expiry),
+                    sto_premium, _contracts, exec_date,
+                )
+                result["cc_pos_id"] = pos_id
+            result["exec_id"] = btc_id
+            result["exec_id_sto"] = sto_id
+
+        elif action == "SELL_CC":
+            exec_id = _insert_ea_conn(
+                conn, ticker=ticker, action=action,
+                execution_date=exec_date, recommendation_id=rec_id,
+                execution_price=body.get("execution_price"),
+                quantity=body.get("quantity"),
+                fees=float(body.get("fees") or 0),
+                strike=body.get("strike"),
+                expiration=body.get("expiration"),
+                premium=body.get("premium"),
+                contracts=body.get("contracts"),
+                notes=body.get("notes"),
+                source=body.get("source", "manual"),
+                position_shares_before=body.get("position_shares_before"),
+                position_shares_after=body.get("position_shares_after"),
+                execution_fraction=body.get("execution_fraction"),
+                fill_id=fill_id,
+            )
+            _strike  = body.get("strike")
+            _expiry  = body.get("expiration")
+            _premium = body.get("premium") or body.get("execution_price")
+            _contr   = int(body.get("contracts") or 1)
+            if _strike and _expiry and _premium is not None:
+                pos_id = _insert_cc_pos_conn(
+                    conn, ticker, float(_strike), str(_expiry),
+                    float(_premium), _contr, exec_date,
+                )
+                result["cc_pos_id"] = pos_id
+            result["exec_id"] = exec_id
+
+        elif action in ("BUY_TO_CLOSE", "ALLOW_ASSIGNMENT"):
+            exec_id = _insert_ea_conn(
+                conn, ticker=ticker, action=action,
+                execution_date=exec_date, recommendation_id=rec_id,
+                execution_price=body.get("execution_price"),
+                fees=float(body.get("fees") or 0),
+                strike=body.get("strike"),
+                expiration=body.get("expiration"),
+                contracts=body.get("contracts"),
+                notes=body.get("notes"),
+                source=body.get("source", "manual"),
+                fill_id=fill_id,
+            )
+            _strike = body.get("strike")
+            _expiry = body.get("expiration")
+            _cprice = body.get("execution_price")
+            new_status = "assigned" if action == "ALLOW_ASSIGNMENT" else "closed"
+            close_type = "ASSIGN" if action == "ALLOW_ASSIGNMENT" else "BTC"
+            _close_cc_pos_conn(
+                conn, ticker,
+                float(_strike) if _strike else None,
+                str(_expiry)   if _expiry  else None,
+                exec_date,
+                float(_cprice) if _cprice is not None else None,
+                close_type, new_status,
+            )
+            result["exec_id"] = exec_id
+
+        else:
+            exec_id = _insert_ea_conn(
+                conn, ticker=ticker, action=action,
+                execution_date=exec_date, recommendation_id=rec_id,
+                quantity=body.get("quantity"),
+                execution_price=body.get("execution_price"),
+                fees=float(body.get("fees") or 0),
+                strike=body.get("strike"),
+                expiration=body.get("expiration"),
+                premium=body.get("premium"),
+                contracts=body.get("contracts"),
+                notes=body.get("notes"),
+                source=body.get("source", "manual"),
+                position_shares_before=body.get("position_shares_before"),
+                position_shares_after=body.get("position_shares_after"),
+                execution_fraction=body.get("execution_fraction"),
+                fill_id=fill_id,
+            )
+            result["exec_id"] = exec_id
+
+        conn.execute("COMMIT")
+        return result
+
+    except Exception:
+        try:
+            conn.execute("ROLLBACK")
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
+
+
 def insert_executed_action(
     ticker: str,
     action: str,
@@ -2371,22 +2713,16 @@ def insert_executed_action(
     fill_id: str | None = None,
 ) -> int:
     conn = _connect()
-    cur = conn.execute(
-        """INSERT INTO executed_actions
-           (recommendation_id, ticker, action, quantity, execution_price,
-            execution_date, fees, strike, expiration, premium, contracts,
-            tax_lot_ids, notes, source, created_at,
-            position_shares_before, position_shares_after, execution_fraction,
-            fill_id)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (recommendation_id, ticker, action, quantity, execution_price,
-         execution_date, fees, strike, expiration, premium, contracts,
-         json.dumps(tax_lot_ids) if tax_lot_ids else None,
-         notes, source, time.time(),
-         position_shares_before, position_shares_after, execution_fraction,
-         fill_id),
+    _id = _insert_ea_conn(
+        conn, ticker=ticker, action=action, execution_date=execution_date,
+        recommendation_id=recommendation_id, quantity=quantity,
+        execution_price=execution_price, fees=fees, strike=strike,
+        expiration=expiration, premium=premium, contracts=contracts,
+        tax_lot_ids=tax_lot_ids, notes=notes, source=source,
+        position_shares_before=position_shares_before,
+        position_shares_after=position_shares_after,
+        execution_fraction=execution_fraction, fill_id=fill_id,
     )
-    _id = cur.lastrowid
     conn.commit()
     conn.close()
     return _id
@@ -2403,27 +2739,15 @@ def insert_cc_position_from_execution(
 ) -> int | None:
     """INSERT a cc_positions row for a SELL_CC execution (0098).
 
-    Returns the new row id, or None if a duplicate open position already exists
-    (same ticker/strike/expiry with status='open') — callers log a warning.
+    Returns the new row id, or None if a duplicate open position already exists.
+    Use record_execution_transaction() for atomic multi-write paths (0104).
     """
     conn = _connect()
-    existing = conn.execute(
-        "SELECT id FROM cc_positions WHERE ticker=? AND strike=? AND expiry=? AND status='open'",
-        (ticker, strike, expiry),
-    ).fetchone()
-    if existing:
-        conn.close()
-        return None  # duplicate — caller should log warning
-    cur = conn.execute(
-        """INSERT INTO cc_positions
-           (ticker, contracts, strike, expiry, premium_per_contract,
-            opened_date, status, notes)
-           VALUES (?, ?, ?, ?, ?, ?, 'open', ?)""",
-        (ticker, contracts or 1, strike, expiry, premium_per_contract,
-         execution_date, f"created by {source}"),
+    new_id = _insert_cc_pos_conn(
+        conn, ticker, strike, expiry, premium_per_contract, contracts, execution_date, source,
     )
-    new_id = cur.lastrowid
-    conn.commit()
+    if new_id is not None:
+        conn.commit()
     conn.close()
     return new_id
 
@@ -2440,30 +2764,12 @@ def close_cc_position_from_execution(
     """UPDATE the matching open cc_positions row to closed/assigned (0098).
 
     Returns the id of the updated row, or None if no matching open position found.
+    Use record_execution_transaction() for atomic multi-write paths (0104).
     """
     conn = _connect()
-    # Prefer exact strike+expiry match; fall back to most-recently-opened for ticker
-    if strike is not None and expiry:
-        row = conn.execute(
-            "SELECT id FROM cc_positions WHERE ticker=? AND strike=? AND expiry=? AND status='open'",
-            (ticker, strike, expiry),
-        ).fetchone()
-    else:
-        row = conn.execute(
-            "SELECT id FROM cc_positions WHERE ticker=? AND status='open' ORDER BY opened_date DESC LIMIT 1",
-            (ticker,),
-        ).fetchone()
-    if not row:
-        conn.close()
-        return None
-    pos_id = row["id"]
-    conn.execute(
-        """UPDATE cc_positions
-           SET status=?, closed_date=?, closed_price=?, close_type=?
-           WHERE id=?""",
-        (new_status, close_date, close_price, close_type, pos_id),
-    )
-    conn.commit()
+    pos_id = _close_cc_pos_conn(conn, ticker, strike, expiry, close_date, close_price, close_type, new_status)
+    if pos_id is not None:
+        conn.commit()
     conn.close()
     return pos_id
 

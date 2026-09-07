@@ -3,6 +3,8 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
@@ -521,3 +523,294 @@ def test_ev_ebit_proxy_column_exists_in_schema(mem_db):
     conn.close()
     assert row is not None
     assert abs(float(row["ev_ebit_proxy"]) - 18.5) < 0.01
+
+
+# ── 0111: shares_period_end migration ────────────────────────────────────────
+
+def _init_company_financials_table(mem_db):
+    """Create company_financials table (normally done by financials_fetcher.init_db)."""
+    conn = _sqlite3.connect(str(mem_db), timeout=10)
+    conn.row_factory = _sqlite3.Row
+    conn.execute("""CREATE TABLE IF NOT EXISTS company_financials (
+        ticker          TEXT NOT NULL,
+        period_type     TEXT NOT NULL,
+        period_end      TEXT NOT NULL,
+        revenue         REAL,
+        gross_profit    REAL,
+        operating_income REAL,
+        net_income      REAL,
+        eps_diluted     REAL,
+        free_cash_flow  REAL,
+        total_debt      REAL,
+        cash            REAL,
+        total_equity    REAL,
+        shares_outstanding REAL,
+        fetched_at      TEXT,
+        PRIMARY KEY (ticker, period_type, period_end)
+    )""")
+    conn.commit()
+    conn.close()
+
+
+def test_shares_period_end_column_exists_after_migration(mem_db):
+    """company_financials must have shares_period_end after agent_db migration (0111)."""
+    import agent_db
+    _init_company_financials_table(mem_db)
+    # Re-run migrate() now that company_financials exists — should add the column
+    agent_db.migrate()
+    conn = agent_db._connect()
+    info = conn.execute("PRAGMA table_info(company_financials)").fetchall()
+    cols = [r["name"] for r in info]
+    conn.close()
+    assert "shares_period_end" in cols, "shares_period_end column missing from company_financials"
+
+
+# ── 0104: record_execution_transaction atomicity ──────────────────────────────
+
+def test_record_execution_transaction_sell_cc_atomic(mem_db):
+    """SELL_CC: executed_actions + cc_positions written atomically."""
+    import agent_db
+    _create_cc_positions_table(mem_db)
+
+    tx = agent_db.record_execution_transaction(
+        rec_id=None, ticker="ANET", action="SELL_CC",
+        exec_date="2026-09-10",
+        body={"strike": "185.0", "expiration": "2026-10-18",
+              "premium": "3.50", "contracts": 1,
+              "execution_price": "3.50"},
+    )
+    conn = agent_db._connect()
+    ea = conn.execute("SELECT * FROM executed_actions WHERE id=?", (tx["exec_id"],)).fetchone()
+    cp = conn.execute("SELECT * FROM cc_positions WHERE status='open' AND ticker='ANET'").fetchone()
+    conn.close()
+    assert ea is not None
+    assert cp is not None
+    assert abs(float(cp["strike"]) - 185.0) < 0.01
+    assert tx["cc_pos_id"] is not None
+
+
+def test_record_execution_transaction_sell_cc_rollback_on_error(mem_db, monkeypatch):
+    """If cc_positions insert fails, executed_actions is also rolled back."""
+    import agent_db
+    _create_cc_positions_table(mem_db)
+
+    original_insert = agent_db._insert_cc_pos_conn
+
+    def _raise_cc(*a, **kw):
+        raise RuntimeError("simulated cc_positions failure")
+
+    monkeypatch.setattr(agent_db, "_insert_cc_pos_conn", _raise_cc)
+
+    with pytest.raises(RuntimeError):
+        agent_db.record_execution_transaction(
+            rec_id=None, ticker="ANET", action="SELL_CC",
+            exec_date="2026-09-10",
+            body={"strike": "185.0", "expiration": "2026-10-18",
+                  "premium": "3.50", "contracts": 1,
+                  "execution_price": "3.50"},
+        )
+
+    conn = agent_db._connect()
+    count = conn.execute("SELECT COUNT(*) FROM executed_actions WHERE ticker='ANET'").fetchone()[0]
+    conn.close()
+    assert count == 0, "executed_actions must be empty after rollback"
+
+
+def test_record_execution_transaction_roll_atomic(mem_db, monkeypatch):
+    """ROLL: both legs + group link + cc_positions updated atomically."""
+    import agent_db
+    _create_cc_positions_table(mem_db)
+
+    # Seed an existing open cc_position to close
+    conn = agent_db._connect()
+    conn.execute(
+        "INSERT INTO cc_positions (ticker,contracts,strike,expiry,premium_per_contract,opened_date,status,notes)"
+        " VALUES ('ANET',1,180.0,'2026-09-20',3.00,'2026-08-01','open','existing')"
+    )
+    conn.commit()
+    conn.close()
+
+    tx = agent_db.record_execution_transaction(
+        rec_id=None, ticker="ANET", action="ROLL_OUT",
+        exec_date="2026-09-15",
+        body={
+            "btc_price": "1.50", "sto_premium": "3.00",
+            "existing_strike": "180.0", "existing_expiration": "2026-09-20",
+            "new_strike": "185.0", "new_expiration": "2026-10-18",
+            "contracts": 1,
+        },
+    )
+
+    conn = agent_db._connect()
+    legs = conn.execute(
+        "SELECT * FROM executed_actions WHERE execution_group_id=?",
+        (tx["exec_id"],),
+    ).fetchall()
+    old_pos = conn.execute(
+        "SELECT status FROM cc_positions WHERE strike=180.0 AND ticker='ANET'"
+    ).fetchone()
+    new_pos = conn.execute(
+        "SELECT status FROM cc_positions WHERE strike=185.0 AND ticker='ANET'"
+    ).fetchone()
+    conn.close()
+
+    assert len(legs) == 2, f"Expected 2 linked legs, got {len(legs)}"
+    assert old_pos and old_pos["status"] == "closed"
+    assert new_pos and new_pos["status"] == "open"
+    assert tx["exec_id_sto"] is not None
+
+
+def test_record_execution_transaction_roll_rollback_on_sto_failure(mem_db, monkeypatch):
+    """If STO insert fails during ROLL, BTC leg is also rolled back."""
+    import agent_db
+    _create_cc_positions_table(mem_db)
+
+    call_count = {"n": 0}
+    original = agent_db._insert_ea_conn
+
+    def _fail_second(*a, **kw):
+        call_count["n"] += 1
+        if call_count["n"] == 2:
+            raise RuntimeError("simulated STO insert failure")
+        return original(*a, **kw)
+
+    monkeypatch.setattr(agent_db, "_insert_ea_conn", _fail_second)
+
+    with pytest.raises(RuntimeError):
+        agent_db.record_execution_transaction(
+            rec_id=None, ticker="ANET", action="ROLL_OUT",
+            exec_date="2026-09-15",
+            body={
+                "btc_price": "1.50", "sto_premium": "3.00",
+                "new_strike": "185.0", "new_expiration": "2026-10-18",
+                "contracts": 1,
+            },
+        )
+
+    conn = agent_db._connect()
+    count = conn.execute("SELECT COUNT(*) FROM executed_actions WHERE ticker='ANET'").fetchone()[0]
+    conn.close()
+    assert count == 0, "BTC leg must be rolled back when STO insert fails"
+
+
+# ── 0108: get_lt_lots_count and get_ytd_realized_gain helpers ─────────────────
+
+import sqlite3 as _sqlite3
+
+
+def _init_cost_lots_table(mem_db):
+    """Create cost_lots table (normally done by serve.py at startup)."""
+    conn = _sqlite3.connect(str(mem_db), timeout=10)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS cost_lots (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticker         TEXT    NOT NULL,
+            shares         REAL    NOT NULL,
+            cost_per_share REAL    NOT NULL,
+            purchase_date  TEXT    NOT NULL,
+            notes          TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+
+def _init_sell_transactions_table(mem_db):
+    """Create sell_transactions table (normally done by serve.py at startup)."""
+    conn = _sqlite3.connect(str(mem_db), timeout=10)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS sell_transactions (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticker        TEXT    NOT NULL,
+            shares_sold   REAL    NOT NULL,
+            sell_price    REAL    NOT NULL,
+            sell_date     TEXT    NOT NULL,
+            realized_gain REAL,
+            st_gain       REAL,
+            lt_gain       REAL,
+            fifo_detail   TEXT,
+            notes         TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+
+def test_get_lt_lots_count_returns_only_365_plus_lots(mem_db):
+    """get_lt_lots_count counts lots with purchase_date <= today - 365 days."""
+    import agent_db
+    _init_cost_lots_table(mem_db)
+    conn = agent_db._connect()
+    # Two old lots (LT) and one recent lot (ST)
+    conn.execute("INSERT INTO cost_lots (ticker,shares,cost_per_share,purchase_date) VALUES (?,?,?,?)",
+                 ("ANET", 50, 150.0, "2024-01-01"))  # old → LT
+    conn.execute("INSERT INTO cost_lots (ticker,shares,cost_per_share,purchase_date) VALUES (?,?,?,?)",
+                 ("ANET", 30, 160.0, "2024-06-01"))  # old → LT
+    conn.execute("INSERT INTO cost_lots (ticker,shares,cost_per_share,purchase_date) VALUES (?,?,?,?)",
+                 ("ANET", 20, 200.0, "2026-08-01"))  # recent → ST
+    conn.commit()
+    conn.close()
+    count = agent_db.get_lt_lots_count("ANET")
+    assert count == 2, f"Expected 2 LT lots, got {count}"
+
+
+def test_get_lt_lots_count_no_lots_returns_zero(mem_db):
+    """get_lt_lots_count returns 0 when table exists but no LT lots."""
+    import agent_db
+    _init_cost_lots_table(mem_db)
+    count = agent_db.get_lt_lots_count("ANET")
+    assert count == 0
+
+
+def test_get_lt_lots_count_missing_table_returns_zero(mem_db):
+    """get_lt_lots_count returns 0 gracefully when table doesn't exist."""
+    import agent_db
+    count = agent_db.get_lt_lots_count("ANET")
+    assert count == 0
+
+
+def test_get_ytd_realized_gain_sums_correctly(mem_db):
+    """get_ytd_realized_gain sums realized_gain for YTD rows only."""
+    import agent_db
+    from datetime import date as _date
+    _init_sell_transactions_table(mem_db)
+    conn = agent_db._connect()
+    ytd_start = _date.today().replace(month=1, day=1).isoformat()
+    conn.execute(
+        "INSERT INTO sell_transactions (ticker,shares_sold,sell_price,sell_date,realized_gain) VALUES (?,?,?,?,?)",
+        ("ANET", 10, 200.0, ytd_start, 500.0),  # YTD, gain=500
+    )
+    conn.execute(
+        "INSERT INTO sell_transactions (ticker,shares_sold,sell_price,sell_date,realized_gain) VALUES (?,?,?,?,?)",
+        ("ANET", 5, 200.0, "2025-12-31", 300.0),  # prior year, excluded
+    )
+    conn.commit()
+    conn.close()
+    gain = agent_db.get_ytd_realized_gain("ANET")
+    assert abs(gain - 500.0) < 0.01, f"Expected 500.0 YTD gain, got {gain}"
+
+
+def test_get_ytd_realized_gain_reflects_basis_not_full_price(mem_db):
+    """0108: gain reflects (sale_price - basis) × qty, not full sale price."""
+    import agent_db
+    from datetime import date as _date
+    _init_sell_transactions_table(mem_db)
+    ytd_start = _date.today().replace(month=1, day=1).isoformat()
+    conn = agent_db._connect()
+    # Sell 10 shares at $150, basis $140 → realized_gain = $100 (not $1500)
+    conn.execute(
+        "INSERT INTO sell_transactions (ticker,shares_sold,sell_price,sell_date,realized_gain) VALUES (?,?,?,?,?)",
+        ("ANET", 10, 150.0, ytd_start, 100.0),
+    )
+    conn.commit()
+    conn.close()
+    gain = agent_db.get_ytd_realized_gain("ANET")
+    assert abs(gain - 100.0) < 0.01
+    assert gain < 1500.0, "Gain should reflect basis, not full sale price"
+
+
+def test_get_ytd_realized_gain_missing_table_returns_zero(mem_db):
+    """get_ytd_realized_gain returns 0 gracefully when table doesn't exist."""
+    import agent_db
+    gain = agent_db.get_ytd_realized_gain("ANET")
+    assert gain == 0.0

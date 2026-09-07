@@ -109,7 +109,7 @@ def _compute_no_action_state_extras(
     minor intraday moves from generating spurious new rows.
     """
     import agent_db
-    from datetime import date as _date, timedelta
+    from datetime import date as _date
 
     result: dict = {}
     today = _date.today()
@@ -146,24 +146,10 @@ def _compute_no_action_state_extras(
             result["earnings_bucket"] = "unknown"
 
     elif agent_type == "tax":
-        # Count lots that became long-term in the past 30 days
-        executions = agent_db.get_executions_for_ticker(ticker)
-        lt_threshold = today - timedelta(days=365)
-        lt_window_start = lt_threshold - timedelta(days=30)
-        lt_lots = [
-            e for e in executions
-            if e.get("execution_date") and
-            lt_window_start.isoformat() <= e["execution_date"] <= lt_threshold.isoformat()
-        ]
-        result["lt_lots_count"] = len(lt_lots)
-        # YTD realized gains bucket (nearest $500)
-        ytd_start = today.replace(month=1, day=1).isoformat()
-        ytd_execs = agent_db.get_executions_for_ticker(ticker, since_date=ytd_start)
-        ytd_gain = sum(
-            (float(e.get("execution_price") or 0) - float(e.get("avg_cost") or 0))
-            * float(e.get("quantity") or 0)
-            for e in ytd_execs
-        )
+        # 0108: use cost_lots (not executed_actions) for LT lot count
+        result["lt_lots_count"] = agent_db.get_lt_lots_count(ticker)
+        # 0108: use sell_transactions.realized_gain (includes real basis) for YTD gains
+        ytd_gain = agent_db.get_ytd_realized_gain(ticker)
         result["realized_gain_bucket"] = int(round(ytd_gain / 500) * 500)
 
     elif agent_type == "portfolio_guardian":

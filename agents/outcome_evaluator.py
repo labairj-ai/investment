@@ -38,6 +38,10 @@ EQUITY_HORIZONS: list[tuple[str, int]] = [
 ]
 
 CC_ACTIONS = {"SELL_CC"}
+CC_MANAGEMENT_ACTIONS = {"BUY_TO_CLOSE", "ROLL_OUT", "ROLL_UP", "ROLL_UP_AND_OUT",
+                         "ALLOW_ASSIGNMENT", "HOLD_CALL"}
+# CC management actions that use CC horizons (at_expiry/30d/90d) vs equity horizons
+_CC_MGMT_CC_HORIZONS = {"ALLOW_ASSIGNMENT", "ROLL_OUT", "ROLL_UP", "ROLL_UP_AND_OUT"}
 EQUITY_ACTIONS = {"HOLD", "REVIEW", "TRIM", "EXIT", "ALLOCATE", "REBALANCE",
                   "TAX_HARVEST", "TAX_SELL", "NO_ACTION"}
 
@@ -192,6 +196,74 @@ def _compute_actual_rebalance(
     return (1 - fraction) * from_gain, True
 
 
+# ── CC management outcome models (0105) ──────────────────────────────────────
+
+def _compute_cc_management_returns(
+    action: str,
+    pl: dict,
+    entry_price: float,
+    h_price: float | None,
+    exec_rec=None,
+    horizon_label: str = "",
+) -> tuple[float | None, float | None, bool]:
+    """Returns (actual_r, agent_r, actual_is_estimated) for CC management actions.
+
+    entry_price  : stock price at the CC management recommendation date
+    h_price      : stock price at the horizon date
+    exec_rec     : aggregated execution record (may be None)
+    horizon_label: used for ALLOW_ASSIGNMENT post-assignment horizons
+    """
+    hold_r = (h_price - entry_price) / entry_price if (h_price is not None and entry_price) else None
+
+    if action == "BUY_TO_CLOSE":
+        orig_premium = float(pl.get("original_premium") or pl.get("premium") or 0.0)
+        btc_mark = float(pl.get("btc_price") or pl.get("btc_mark") or 0.0)
+        agent_net = orig_premium - btc_mark
+        agent_r = (hold_r + agent_net / entry_price) if (hold_r is not None and entry_price) else None
+        if exec_rec and exec_rec.get("execution_price"):
+            btc_exec = float(exec_rec["execution_price"])
+            net = orig_premium - btc_exec
+            actual_r = (hold_r + net / entry_price) if (hold_r is not None and entry_price) else None
+            return actual_r, agent_r, actual_r is None
+        return hold_r, agent_r, True  # no exec: stock return known, net premium unknown
+
+    elif action == "ALLOW_ASSIGNMENT":
+        orig_premium = float(pl.get("original_premium") or pl.get("premium") or 0.0)
+        k = float(pl.get("strike") or 0.0)
+        if k and entry_price:
+            assignment_r = (k - entry_price + orig_premium) / entry_price
+            if "post" in horizon_label:
+                # Post-assignment: proceeds sit in cash, no further price exposure
+                return 0.0, 0.0, False
+            return assignment_r, assignment_r, False
+        return hold_r, hold_r, True
+
+    elif action in {"ROLL_OUT", "ROLL_UP", "ROLL_UP_AND_OUT"}:
+        btc_mark = float(pl.get("btc_price") or pl.get("btc_mark") or 0.0)
+        sto_mark = float(pl.get("sto_premium") or pl.get("new_premium") or 0.0)
+        agent_net = sto_mark - btc_mark
+        agent_r = (hold_r + agent_net / entry_price) if (hold_r is not None and entry_price) else None
+        if exec_rec and exec_rec.get("execution_price"):
+            btc_exec = float(exec_rec["execution_price"])
+            sto_exec = float(exec_rec.get("sto_premium") or sto_mark)
+            net = sto_exec - btc_exec
+            actual_r = (hold_r + net / entry_price) if (hold_r is not None and entry_price) else None
+            return actual_r, agent_r, actual_r is None
+        return hold_r, agent_r, True
+
+    elif action == "HOLD_CALL":
+        # Actual: hold unchanged, stock return applies
+        # Agent_r: counterfactual BTC at rec-date mark — stock holds but you paid btc_mark
+        btc_mark = float(pl.get("btc_mark") or pl.get("btc_price") or 0.0)
+        if entry_price and btc_mark > 0 and hold_r is not None:
+            agent_r = hold_r - btc_mark / entry_price
+        else:
+            agent_r = hold_r
+        return hold_r, agent_r, hold_r is None
+
+    return hold_r, hold_r, True
+
+
 # ── Scenario return computation ───────────────────────────────────────────────
 
 def _compute_scenarios(
@@ -227,14 +299,40 @@ def _compute_scenarios(
     # anything else             → we don't have execution records → fall back, flag estimated
     exec_rec = kwargs.get("exec_rec")  # optional: first executed_action row for this rec
 
-    # CC-specific actual-return path (0073): must come BEFORE generic exec_rec branch
+    # CC management actions: dedicated outcome models (0105)
+    if action in CC_MANAGEMENT_ACTIONS:
+        actual_r, agent_r, actual_is_estimated = _compute_cc_management_returns(
+            action, pl, entry_price, h_price,
+            exec_rec=exec_rec,
+            horizon_label=kwargs.get("horizon_label", ""),
+        )
+        return actual_r, agent_r, hold_r, spy_r, actual_is_estimated, None, None
+
+    # CC-specific actual-return path (0073/0106): must come BEFORE generic exec_rec branch
+    horizon_label  = kwargs.get("horizon_label", "")
+    cc_expiry_date = kwargs.get("cc_expiry_date")
     if action == "SELL_CC" and exec_rec and exec_rec.get("execution_price") and exec_rec.get("strike"):
         actual_premium = float(exec_rec["execution_price"])  # premium per share
         actual_strike  = float(exec_rec["strike"])
         if h_price is not None and entry_price:
-            actual_exit = min(h_price, actual_strike)
-            actual_r = (actual_exit - entry_price + actual_premium) / entry_price
-            actual_is_estimated = False
+            # 0106: post-expiry horizons must respect assignment state
+            if "post" in horizon_label and cc_expiry_date:
+                s_exp = _ticker_price_at(ticker, cc_expiry_date)
+                if s_exp is not None:
+                    if s_exp > actual_strike:
+                        actual_r = 0.0  # assigned at expiry → cash thereafter
+                    else:
+                        # call expired worthless → investor holds uncapped stock
+                        actual_r = (h_price - entry_price + actual_premium) / entry_price
+                    actual_is_estimated = False
+                else:
+                    actual_exit = min(h_price, actual_strike)
+                    actual_r = (actual_exit - entry_price + actual_premium) / entry_price
+                    actual_is_estimated = False
+            else:
+                actual_exit = min(h_price, actual_strike)
+                actual_r = (actual_exit - entry_price + actual_premium) / entry_price
+                actual_is_estimated = False
         else:
             actual_r = actual_premium / entry_price if entry_price else None
             actual_is_estimated = False
@@ -276,13 +374,29 @@ def _compute_scenarios(
         exec_premium = pl.get("exec_premium") or pl.get("premium")
         strike       = pl.get("strike")
         if exec_premium and entry_price and h_price is not None:
-            premium      = float(exec_premium)
-            k            = float(strike) if strike is not None else None
-            # Total CC strategy return: (min(S_T, K) - S_0 + premium) / S_0
-            effective_exit = min(h_price, k) if k is not None else h_price
-            cc_strategy_return   = (effective_exit - entry_price + premium) / entry_price
-            cc_incremental_alpha = cc_strategy_return - hold_r if hold_r is not None else None
-            agent_r              = cc_strategy_return
+            premium = float(exec_premium)
+            k       = float(strike) if strike is not None else None
+            # 0106: post-expiry horizons branch on assignment state
+            if "post" in horizon_label and cc_expiry_date and k is not None:
+                s_exp = _ticker_price_at(ticker, cc_expiry_date)
+                if s_exp is not None:
+                    if s_exp > k:
+                        cc_strategy_return = 0.0  # assigned → cash, no further exposure
+                    else:
+                        cc_strategy_return = (h_price - entry_price + premium) / entry_price
+                    cc_incremental_alpha = cc_strategy_return - hold_r if hold_r is not None else None
+                    agent_r = cc_strategy_return
+                else:
+                    effective_exit = min(h_price, k)
+                    cc_strategy_return   = (effective_exit - entry_price + premium) / entry_price
+                    cc_incremental_alpha = cc_strategy_return - hold_r if hold_r is not None else None
+                    agent_r              = cc_strategy_return
+            else:
+                # at_expiry or no expiry data: standard formula
+                effective_exit = min(h_price, k) if k is not None else h_price
+                cc_strategy_return   = (effective_exit - entry_price + premium) / entry_price
+                cc_incremental_alpha = cc_strategy_return - hold_r if hold_r is not None else None
+                agent_r              = cc_strategy_return
         elif exec_premium and entry_price:
             # No horizon price yet — just premium yield (at-expiry will have it)
             agent_r = float(exec_premium) / entry_price
@@ -383,6 +497,17 @@ def evaluate_matured_recommendations(min_age_days: int = MIN_AGE_DAYS) -> int:
             pl = _payload(rec)
             for _, h_date in _cc_horizons(pl, entry_date):
                 all_dates.add(h_date)
+        elif rec["action"] in CC_MANAGEMENT_ACTIONS:
+            pl = _payload(rec)
+            if rec["action"] in _CC_MGMT_CC_HORIZONS:
+                exp_key = "new_expiration" if rec["action"].startswith("ROLL") else "expiration"
+                pl_exp = pl.get(exp_key) or pl.get("expiry") or pl.get("expiration")
+                if pl_exp:
+                    for _, h_date in _cc_horizons({"expiration": pl_exp}, entry_date):
+                        all_dates.add(h_date)
+            else:
+                for _, days in EQUITY_HORIZONS[:3]:
+                    all_dates.add(_horizon_date(entry_date, days))
         else:
             for _, days in EQUITY_HORIZONS:
                 all_dates.add(_horizon_date(entry_date, days))
@@ -401,6 +526,16 @@ def evaluate_matured_recommendations(min_age_days: int = MIN_AGE_DAYS) -> int:
 
         if action in CC_ACTIONS:
             horizons_to_eval = _cc_horizons(pl, entry_date)
+        elif action in CC_MANAGEMENT_ACTIONS:
+            if action in _CC_MGMT_CC_HORIZONS:
+                exp_key = "new_expiration" if action.startswith("ROLL") else "expiration"
+                pl_exp = pl.get(exp_key) or pl.get("expiry") or pl.get("expiration")
+                horizons_to_eval = _cc_horizons({"expiration": pl_exp}, entry_date) if pl_exp else []
+            else:
+                horizons_to_eval = [
+                    (label, _horizon_date(entry_date, days))
+                    for label, days in EQUITY_HORIZONS[:3]
+                ]
         else:
             horizons_to_eval = [
                 (label, _horizon_date(entry_date, days))
@@ -410,6 +545,11 @@ def evaluate_matured_recommendations(min_age_days: int = MIN_AGE_DAYS) -> int:
         # 0091: aggregate all fills into a single ExecutionSummary (replaces executions[0])
         executions = agent_db.get_executions_for_rec(rec["id"])
         exec_rec = agent_db.aggregate_executions(executions, action)
+
+        # 0106: for CC actions, extract the expiry date once for post-expiry branching
+        cc_expiry_date: str | None = None
+        if action in CC_ACTIONS:
+            cc_expiry_date = pl.get("expiration") or pl.get("expiry")
 
         for horizon_label, h_date in horizons_to_eval:
             if h_date > today:
@@ -422,7 +562,21 @@ def evaluate_matured_recommendations(min_age_days: int = MIN_AGE_DAYS) -> int:
                 ticker, action, entry_date, h_date, pl, entry_price,
                 decision=rec.get("decision"),
                 exec_rec=exec_rec,
+                horizon_label=horizon_label,
+                cc_expiry_date=cc_expiry_date,
             )
+
+            # 0106: determine cc_assignment_state for all CC horizon rows
+            cc_assignment_state: str | None = None
+            if action in CC_ACTIONS:
+                k_val = float(pl.get("strike") or (exec_rec.get("strike") if exec_rec else None) or 0.0)
+                if k_val:
+                    if horizon_label == "at_expiry" and h_price is not None:
+                        cc_assignment_state = "assigned" if h_price > k_val else "expired"
+                    elif "post" in horizon_label and cc_expiry_date:
+                        s_exp = _ticker_price_at(ticker, cc_expiry_date)
+                        if s_exp is not None:
+                            cc_assignment_state = "assigned" if s_exp > k_val else "expired"
 
             # opportunity_cost: positive = user override outperformed agent rec
             opp_cost = None
@@ -446,6 +600,7 @@ def evaluate_matured_recommendations(min_age_days: int = MIN_AGE_DAYS) -> int:
                 actual_is_estimated=int(actual_is_estimated),
                 cc_strategy_return=round(cc_strategy_return, 6) if cc_strategy_return is not None else None,
                 cc_incremental_alpha=round(cc_incremental_alpha, 6) if cc_incremental_alpha is not None else None,
+                cc_assignment_state=cc_assignment_state,
             )
             written += 1
             print(

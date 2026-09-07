@@ -123,6 +123,9 @@ def _fetch_one(ticker):
             ni  = _df_get(qf,  col, "Net Income")
             eps = _df_get(qf,  col, "Diluted EPS", "Basic EPS")
             shr = _df_get(qf,  col, "Diluted Average Shares", "Basic Average Shares")
+            # 0111: period-end shares from balance sheet (more accurate for market-cap)
+            shr_end = _df_get(qbs, col, "Ordinary Shares Number",
+                              "Share Issued", "Common Stock")
             dbt = _df_get(qbs, col, "Total Debt", "Long Term Debt")
             csh = _df_get(qbs, col, "Cash And Cash Equivalents",
                           "Cash Cash Equivalents And Short Term Investments", "Cash")
@@ -135,8 +138,8 @@ def _fetch_one(ticker):
 
             q_rows.append(dict(period_end=period_end, revenue=rev, gross_profit=gp,
                                operating_income=oi, net_income=ni, eps_diluted=eps,
-                               shares_outstanding=shr, free_cash_flow=fcf,
-                               total_debt=dbt, cash=csh, total_equity=eq))
+                               shares_outstanding=shr, shares_period_end=shr_end,
+                               free_cash_flow=fcf, total_debt=dbt, cash=csh, total_equity=eq))
     except Exception as e:
         print(f"[financials] {ticker} quarterly: {e}")
 
@@ -154,6 +157,9 @@ def _fetch_one(ticker):
             ni  = _df_get(af,   col, "Net Income")
             eps = _df_get(af,   col, "Diluted EPS", "Basic EPS")
             shr = _df_get(af,   col, "Diluted Average Shares", "Basic Average Shares")
+            # 0111: period-end shares from annual balance sheet
+            shr_end = _df_get(abs_, col, "Ordinary Shares Number",
+                              "Share Issued", "Common Stock")
             dbt = _df_get(abs_, col, "Total Debt", "Long Term Debt")
             csh = _df_get(abs_, col, "Cash And Cash Equivalents",
                           "Cash Cash Equivalents And Short Term Investments", "Cash")
@@ -166,8 +172,8 @@ def _fetch_one(ticker):
 
             a_rows.append(dict(period_end=period_end, revenue=rev, gross_profit=gp,
                                operating_income=oi, net_income=ni, eps_diluted=eps,
-                               shares_outstanding=shr, free_cash_flow=fcf,
-                               total_debt=dbt, cash=csh, total_equity=eq))
+                               shares_outstanding=shr, shares_period_end=shr_end,
+                               free_cash_flow=fcf, total_debt=dbt, cash=csh, total_equity=eq))
     except Exception as e:
         print(f"[financials] {ticker} annual: {e}")
 
@@ -224,23 +230,23 @@ def fetch_all(tickers, company_names=None, force=False):
             for r in q_rows:
                 conn.execute("""INSERT OR REPLACE INTO company_financials
                     (ticker,period_type,period_end,revenue,gross_profit,operating_income,
-                     net_income,eps_diluted,shares_outstanding,
+                     net_income,eps_diluted,shares_outstanding,shares_period_end,
                      free_cash_flow,total_debt,cash,total_equity,fetched_at)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (ticker, "Q", r["period_end"], r["revenue"], r["gross_profit"],
                      r["operating_income"], r["net_income"], r["eps_diluted"],
-                     r.get("shares_outstanding"),
+                     r.get("shares_outstanding"), r.get("shares_period_end"),
                      r["free_cash_flow"], r["total_debt"], r["cash"], r["total_equity"], now_str))
 
             for r in a_rows:
                 conn.execute("""INSERT OR REPLACE INTO company_financials
                     (ticker,period_type,period_end,revenue,gross_profit,operating_income,
-                     net_income,eps_diluted,shares_outstanding,
+                     net_income,eps_diluted,shares_outstanding,shares_period_end,
                      free_cash_flow,total_debt,cash,total_equity,fetched_at)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (ticker, "A", r["period_end"], r["revenue"], r["gross_profit"],
                      r["operating_income"], r["net_income"], r["eps_diluted"],
-                     r.get("shares_outstanding"),
+                     r.get("shares_outstanding"), r.get("shares_period_end"),
                      r["free_cash_flow"], r["total_debt"], r["cash"], r["total_equity"], now_str))
 
             conn.execute("""INSERT OR REPLACE INTO company_estimates
@@ -388,7 +394,8 @@ def compute_valuation_metrics(ticker: str, conn=None) -> int:
 
     rows = conn.execute(
         """SELECT period_end, revenue, operating_income, net_income,
-                  eps_diluted, shares_outstanding, free_cash_flow, total_debt, cash
+                  eps_diluted, shares_outstanding, shares_period_end,
+                  free_cash_flow, total_debt, cash
            FROM company_financials
            WHERE ticker=? AND period_type='Q'
            ORDER BY period_end ASC""",
@@ -451,11 +458,15 @@ def compute_valuation_metrics(ticker: str, conn=None) -> int:
         ttm_fcf        = _sum("free_cash_flow")
         ttm_eps        = _sum("eps_diluted")
 
-        # 0102: prefer stored diluted shares; fall back to net_income/EPS with warning
+        # 0111: prefer period-end shares for market-cap; fall back to diluted average, then derive
         cur = rows_list[i]
         shares = None
-        if cur["shares_outstanding"] is not None:
+        if cur["shares_period_end"] is not None:
+            shares = float(cur["shares_period_end"])
+        elif cur["shares_outstanding"] is not None:
             shares = float(cur["shares_outstanding"])
+            print(f"[ValuationHistory] NOTE: using diluted avg shares for {ticker} "
+                  f"{period_end} — shares_period_end not in DB")
         elif cur["eps_diluted"] and abs(float(cur["eps_diluted"])) > 0.001 and cur["net_income"] is not None:
             shares = float(cur["net_income"]) / float(cur["eps_diluted"])
             print(f"[ValuationHistory] WARNING: using derived share count for {ticker} "

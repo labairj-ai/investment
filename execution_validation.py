@@ -1,5 +1,20 @@
-"""Action-specific validation for POST /api/agents/recommendations/{id}/execute (0092)."""
+"""Action-specific validation for POST /api/agents/recommendations/{id}/execute (0092/0107)."""
+from __future__ import annotations
 from datetime import datetime as _dt
+from typing import Optional
+
+# Required fields by action type (0107)
+_REQUIRED_FIELDS: dict[str, list[str]] = {
+    "EXIT":             ["execution_date", "quantity", "execution_price"],
+    "TRIM":             ["execution_date", "quantity", "execution_price"],
+    "ALLOCATE":         ["execution_date", "quantity", "execution_price"],
+    "SELL_CC":          ["execution_date", "contracts", "strike", "premium", "expiration"],
+    "BUY_TO_CLOSE":     ["execution_date", "execution_price"],
+    "ALLOW_ASSIGNMENT": ["execution_date"],
+    "ROLL_OUT":         ["execution_date"],   # btc_price/sto_premium checked separately
+    "ROLL_UP":          ["execution_date"],
+    "ROLL_UP_AND_OUT":  ["execution_date"],
+}
 
 
 def validate_execution_body(
@@ -7,6 +22,7 @@ def validate_execution_body(
     body: dict,
     rec: dict,
     today,  # datetime.date
+    server_pos_before: Optional[float] = None,  # 0107: loaded from holdings.csv server-side
 ) -> "tuple[int, str] | None":
     """Return (http_code, message) on validation failure, or None on success."""
 
@@ -29,6 +45,14 @@ def validate_execution_body(
             f"execution_date {execution_date} cannot be before recommendation date {rec_date.isoformat()}",
         )
 
+    # 0107: enforce required fields per action type
+    required = _REQUIRED_FIELDS.get(action, [])
+    for field in required:
+        if field == "execution_date":
+            continue  # already checked above
+        if not body.get(field) and body.get(field) != 0:
+            return (400, f"{field} is required for {action}")
+
     quantity           = body.get("quantity")
     execution_price    = body.get("execution_price")
     execution_fraction = body.get("execution_fraction")
@@ -36,14 +60,16 @@ def validate_execution_body(
     strike             = body.get("strike")
     premium            = body.get("premium")
     expiration         = body.get("expiration")
-    pos_before         = body.get("position_shares_before")
+
+    # 0107: use server-side position size; ignore client-supplied position_shares_before
+    pos_before = server_pos_before
 
     if action in ("EXIT", "TRIM", "ALLOCATE"):
         if quantity is not None and float(quantity) <= 0:
             return (400, "quantity must be > 0")
         if execution_price is not None and float(execution_price) <= 0:
             return (400, "execution_price must be > 0")
-        if pos_before is not None and quantity is not None and float(quantity) > float(pos_before):
+        if pos_before is not None and quantity is not None and float(quantity) > pos_before:
             return (400, "quantity cannot exceed position_shares_before")
         if execution_fraction is not None:
             ef = float(execution_fraction)
@@ -65,17 +91,15 @@ def validate_execution_body(
             except ValueError:
                 return (400, "expiration must be YYYY-MM-DD")
         if contracts is not None and pos_before is not None:
-            covered_shares = float(pos_before)
-            if int(contracts) * 100 > covered_shares:
+            if int(contracts) * 100 > pos_before:
                 return (
                     400,
-                    f"contracts*100 ({int(contracts)*100}) exceeds covered shares ({covered_shares:.0f})",
+                    f"contracts*100 ({int(contracts)*100}) exceeds covered shares ({pos_before:.0f})",
                 )
 
     elif action in ("ROLL_OUT", "ROLL_UP", "ROLL_UP_AND_OUT"):
-        # 0101: multi-leg roll — validate both legs are present
-        btc_price  = body.get("btc_price")   # debit paid to close existing
-        sto_premium = body.get("sto_premium") # premium received for new leg
+        btc_price  = body.get("btc_price")
+        sto_premium = body.get("sto_premium")
         new_strike  = body.get("new_strike")
         new_expiry  = body.get("new_expiration")
         if btc_price is None and execution_price is None:
@@ -86,11 +110,5 @@ def validate_execution_body(
             return (400, "new_strike (or strike) required for roll STO leg")
         if new_expiry is None and expiration is None:
             return (400, "new_expiration (or expiration) required for roll STO leg")
-        # Net credit check: STO premium should exceed BTC debit (warn, don't block)
-        _btc = float(btc_price or execution_price or 0)
-        _sto = float(sto_premium or premium or 0)
-        if _sto < _btc:
-            # Allow with warning — user may accept a net debit roll
-            pass
 
     return None

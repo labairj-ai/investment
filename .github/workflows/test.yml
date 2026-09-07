@@ -17,7 +17,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install pytest yfinance
+        run: pip install pytest yfinance requests
 
       - name: Run tests
         run: pytest tests/ -v --tb=short

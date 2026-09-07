@@ -101,9 +101,10 @@ def test_ratio_metric_map_does_not_contain_raw_fundamentals():
 
 
 def test_ratio_metric_map_covers_key_metrics():
-    """Key thesis primary_metric values must be in the map."""
-    for m in ("ev_fcf", "ev_ebitda", "ps", "p_fcf", "ev_revenue", "pe"):
+    """Key thesis primary_metric values must be in the map (0109: ev_ebitda renamed ev_ebit)."""
+    for m in ("ev_fcf", "ev_ebit", "ps", "p_fcf", "ev_revenue", "pe"):
         assert m in _RATIO_METRIC_MAP, f"'{m}' missing from _RATIO_METRIC_MAP"
+    assert "ev_ebitda" not in _RATIO_METRIC_MAP, "ev_ebitda should not be in map (0109)"
 
 
 def test_valuation_percentile_rising_ratio_not_max():

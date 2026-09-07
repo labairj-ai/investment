@@ -5367,8 +5367,22 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         ticker = rec["ticker"]
         action = rec["action"]
 
+        # 0107: load canonical position size server-side for coverage validation
         from datetime import date as _date
-        err = _validate_execution_body(action, body, rec, _date.today())
+        from portfolio_positions import load_positions as _load_positions
+        _positions = _load_positions(PROJECT_DIR / "holdings.csv")
+        _pos = _positions.get(ticker.upper())
+        if _pos is None:
+            # Normalize ticker (BRK-B → BRK.B lookup) — try without dashes
+            _pos = _positions.get(ticker.replace("-", ".").upper())
+        server_pos_before: float | None = _pos.shares if _pos else None
+
+        # For SELL_CC: if ticker not in holdings, reject with 422
+        if action in ("EXIT", "TRIM", "SELL_CC") and server_pos_before is None:
+            return self._json_error(422, f"{ticker} not found in holdings.csv — cannot verify position size")
+
+        err = _validate_execution_body(action, body, rec, _date.today(),
+                                       server_pos_before=server_pos_before)
         if err:
             code, msg = err
             return self._json_error(code, msg)
@@ -5384,129 +5398,23 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 )
 
         exec_date = body.get("execution_date", "").strip()
-        _is_roll = action in ("ROLL_OUT", "ROLL_UP", "ROLL_UP_AND_OUT")
 
+        # 0107: inject canonical position_shares_before so transaction uses server-side value
+        if server_pos_before is not None:
+            body = {**body, "position_shares_before": server_pos_before}
+
+        # 0104: all writes (executed_actions + cc_positions + group linking) in one transaction
         try:
-            if _is_roll:
-                # 0101: two-leg execution — BTC leg then STO leg, linked by execution_group_id
-                btc_price  = float(body.get("btc_price") or body.get("execution_price") or 0)
-                sto_premium = float(body.get("sto_premium") or body.get("premium") or 0)
-                new_strike  = body.get("new_strike") or body.get("strike")
-                new_expiry  = body.get("new_expiration") or body.get("expiration")
-                old_strike  = body.get("existing_strike") or body.get("strike")
-                old_expiry  = body.get("existing_expiration") or body.get("expiration")
-                _contracts  = int(body.get("contracts") or 1)
-                # BTC leg
-                exec_id = agent_db.insert_executed_action(
-                    ticker=ticker, action="BUY_TO_CLOSE",
-                    execution_date=exec_date, recommendation_id=rec_id,
-                    execution_price=btc_price, contracts=_contracts,
-                    strike=old_strike, expiration=old_expiry,
-                    fees=float(body.get("fees") or 0) / 2,
-                    notes=f"Roll BTC leg (group for rec {rec_id})",
-                    source=body.get("source", "manual"), fill_id=fill_id,
-                )
-                # STO leg — link to BTC via execution_group_id
-                exec_id_sto = agent_db.insert_executed_action(
-                    ticker=ticker, action="SELL_CC",
-                    execution_date=exec_date, recommendation_id=rec_id,
-                    execution_price=sto_premium, contracts=_contracts,
-                    strike=new_strike, expiration=new_expiry,
-                    premium=sto_premium,
-                    fees=float(body.get("fees") or 0) / 2,
-                    notes=f"Roll STO leg (group for rec {rec_id})",
-                    source=body.get("source", "manual"),
-                )
-                # Link both legs via execution_group_id (use BTC exec_id as the group)
-                _conn_grp = agent_db._connect()
-                _conn_grp.execute(
-                    "UPDATE executed_actions SET execution_group_id=? WHERE id IN (?,?)",
-                    (exec_id, exec_id, exec_id_sto),
-                )
-                _conn_grp.commit()
-                _conn_grp.close()
-            else:
-                exec_id = agent_db.insert_executed_action(
-                    ticker=ticker,
-                    action=action,
-                    execution_date=exec_date,
-                    recommendation_id=rec_id,
-                    quantity=body.get("quantity"),
-                    execution_price=body.get("execution_price"),
-                    fees=float(body.get("fees") or 0),
-                    strike=body.get("strike"),
-                    expiration=body.get("expiration"),
-                    premium=body.get("premium"),
-                    contracts=body.get("contracts"),
-                    notes=body.get("notes"),
-                    source=body.get("source", "manual"),
-                    position_shares_before=body.get("position_shares_before"),
-                    position_shares_after=body.get("position_shares_after"),
-                    execution_fraction=body.get("execution_fraction"),
-                    fill_id=fill_id,
-                )
+            tx = agent_db.record_execution_transaction(
+                rec_id=rec_id, ticker=ticker, action=action,
+                exec_date=exec_date, body=body, fill_id=fill_id,
+            )
         except Exception as e:
             return self._json_error(500, str(e))
 
-        # 0098/0101: sync cc_positions for CC-related actions
-        try:
-            _strike = body.get("strike")
-            _expiry = body.get("expiration")
-            _premium = body.get("premium") or body.get("execution_price")
-            _contracts = int(body.get("contracts") or 1)
-            if action == "SELL_CC":
-                if _strike and _expiry and _premium is not None:
-                    pos_id = agent_db.insert_cc_position_from_execution(
-                        ticker=ticker,
-                        strike=float(_strike),
-                        expiry=str(_expiry),
-                        premium_per_contract=float(_premium),
-                        contracts=_contracts,
-                        execution_date=exec_date,
-                    )
-                    if pos_id is None:
-                        print(f"[Execute] SELL_CC {ticker}: duplicate open cc_position for "
-                              f"strike={_strike} expiry={_expiry} — skipped position insert")
-            elif action in ("BUY_TO_CLOSE", "ALLOW_ASSIGNMENT"):
-                new_status = "assigned" if action == "ALLOW_ASSIGNMENT" else "closed"
-                close_type = "ASSIGN" if action == "ALLOW_ASSIGNMENT" else "BTC"
-                agent_db.close_cc_position_from_execution(
-                    ticker=ticker,
-                    strike=float(_strike) if _strike else None,
-                    expiry=str(_expiry) if _expiry else None,
-                    close_date=exec_date,
-                    close_price=float(_premium) if _premium is not None else None,
-                    close_type=close_type,
-                    new_status=new_status,
-                )
-            elif _is_roll:
-                # 0101: close old leg, open new leg atomically
-                old_strike = body.get("existing_strike") or body.get("strike")
-                old_expiry = body.get("existing_expiration") or body.get("expiration")
-                new_strike = body.get("new_strike") or body.get("strike")
-                new_expiry = body.get("new_expiration") or body.get("expiration")
-                btc_price  = float(body.get("btc_price") or body.get("execution_price") or 0)
-                sto_premium = float(body.get("sto_premium") or body.get("premium") or 0)
-                if old_strike and old_expiry:
-                    agent_db.close_cc_position_from_execution(
-                        ticker=ticker,
-                        strike=float(old_strike), expiry=str(old_expiry),
-                        close_date=exec_date, close_price=btc_price,
-                        close_type="ROLL", new_status="closed",
-                    )
-                if new_strike and new_expiry:
-                    pos_id = agent_db.insert_cc_position_from_execution(
-                        ticker=ticker,
-                        strike=float(new_strike), expiry=str(new_expiry),
-                        premium_per_contract=sto_premium, contracts=_contracts,
-                        execution_date=exec_date,
-                    )
-                    if pos_id is None:
-                        print(f"[Execute] ROLL {ticker}: new cc_position already exists for "
-                              f"strike={new_strike} expiry={new_expiry}")
-        except Exception as _cc_e:
-            # Log but don't fail the execution — the executed_action row is already committed
-            print(f"[Execute] cc_positions sync failed for {ticker}/{action}: {_cc_e}")
+        exec_id = tx["exec_id"]
+        if tx.get("cc_pos_id") is None and action == "SELL_CC":
+            print(f"[Execute] SELL_CC {ticker}: duplicate open cc_position — position insert skipped")
 
         self._json({
             "ok": True,

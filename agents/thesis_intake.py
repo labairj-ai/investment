@@ -95,7 +95,7 @@ Produce 3–6 measurable claims with thresholds derived from the financial histo
 All importance values must sum to exactly 100.
 
 Also produce a valuation_framework that captures how this specific company should be valued:
-- primary_metric: the most meaningful multiple for this business (forward_pe, ev_fcf, ps, ev_ebitda, etc.)
+- primary_metric: the most meaningful multiple for this business (forward_pe, ev_fcf, ps, ev_ebit, etc.) — use ev_ebit not ev_ebitda
 - secondary_metrics: 1-2 supporting metrics (list of strings)
 - historical_period_years: how many years of history to use (5 is standard)
 - attractive_threshold: primary_metric value below which the stock is attractively valued

@@ -8173,7 +8173,11 @@ function _renderDJTable(entries) {{
       <td style="padding:7px 8px;">${{statusBadge}}</td>
       <td class="col-hide-sm" style="padding:7px 8px;font-size:11px;color:#718096;">${{reason}}</td>
       <td class="col-hide-sm" style="padding:7px 8px;font-size:11px;color:#718096;">${{date}}</td>
-      <td style="padding:7px 8px;font-size:12px;text-align:right;">${{_djFmt(e.actual_return, true)}}</td>
+      <td style="padding:7px 8px;font-size:12px;text-align:right;">
+        ${{e.cc_assignment_state === 'assigned'
+          ? `<span style="font-size:10px;color:#7c3aed;font-weight:600;background:#f3f0ff;padding:1px 5px;border-radius:3px;" title="Option was assigned at expiry">Assigned</span> ${{_djFmt(e.actual_return, true)}}`
+          : _djFmt(e.actual_return, true)}}
+      </td>
       <td class="col-hide-sm" style="padding:7px 8px;font-size:12px;text-align:right;">${{_djFmt(e.opportunity_cost, true)}}</td>
       <td style="padding:7px 4px;text-align:center;">${{editBtn}}</td>
     </tr>${{supersededNote}}${{editRow}}`;

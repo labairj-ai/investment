@@ -246,3 +246,187 @@ def test_aggregate_executions_execution_fraction_computed(agent_db_module=None):
     ]
     summary = agent_db.aggregate_executions(fills, "TRIM")
     assert abs(summary.execution_fraction - 0.30) < 0.001
+
+
+# ── 0105: CC management outcome models ───────────────────────────────────────
+
+from agents.outcome_evaluator import _compute_cc_management_returns
+
+
+def test_btc_with_exec_rec_uses_actual_btc_price():
+    """BUY_TO_CLOSE: actual_r uses execution_price, not pl btc_mark."""
+    entry_price = 180.0
+    h_price = 200.0
+    hold_r = (h_price - entry_price) / entry_price
+    orig_premium = 4.0
+    btc_mark = 2.5   # rec-date mark
+    btc_exec = 2.0   # actual fill
+    pl = {"original_premium": orig_premium, "btc_price": btc_mark}
+    exec_rec = {"execution_price": btc_exec, "execution_date": "2026-09-05"}
+    actual_r, agent_r, estimated = _compute_cc_management_returns(
+        "BUY_TO_CLOSE", pl, entry_price, h_price, exec_rec=exec_rec,
+    )
+    expected_actual = hold_r + (orig_premium - btc_exec) / entry_price
+    expected_agent  = hold_r + (orig_premium - btc_mark) / entry_price
+    assert abs(actual_r - expected_actual) < 0.0001
+    assert abs(agent_r - expected_agent) < 0.0001
+    assert not estimated
+
+
+def test_btc_no_exec_rec_falls_back_to_hold_r():
+    """BUY_TO_CLOSE without exec_rec: actual_r = hold_r, estimated=True."""
+    entry_price = 180.0
+    h_price = 200.0
+    hold_r = (h_price - entry_price) / entry_price
+    pl = {"original_premium": 4.0, "btc_price": 2.5}
+    actual_r, agent_r, estimated = _compute_cc_management_returns(
+        "BUY_TO_CLOSE", pl, entry_price, h_price, exec_rec=None,
+    )
+    assert abs(actual_r - hold_r) < 0.0001
+    assert estimated
+
+
+def test_allow_assignment_at_expiry_uses_strike_formula():
+    """ALLOW_ASSIGNMENT at_expiry: actual_r = (K - S0 + premium) / S0."""
+    entry_price = 175.0
+    k = 185.0
+    premium = 3.0
+    pl = {"strike": k, "premium": premium}
+    actual_r, agent_r, estimated = _compute_cc_management_returns(
+        "ALLOW_ASSIGNMENT", pl, entry_price, h_price=190.0, horizon_label="at_expiry",
+    )
+    expected = (k - entry_price + premium) / entry_price
+    assert abs(actual_r - expected) < 0.0001
+    assert abs(agent_r - expected) < 0.0001
+    assert not estimated
+
+
+def test_allow_assignment_post_horizons_return_zero():
+    """ALLOW_ASSIGNMENT 30d/90d post: actual_r = agent_r = 0 (cash, no exposure)."""
+    pl = {"strike": 185.0, "premium": 3.0}
+    for label in ("30d_post", "90d_post"):
+        actual_r, agent_r, estimated = _compute_cc_management_returns(
+            "ALLOW_ASSIGNMENT", pl, 175.0, h_price=200.0, horizon_label=label,
+        )
+        assert actual_r == 0.0
+        assert agent_r == 0.0
+        assert not estimated
+
+
+def test_roll_out_uses_sto_minus_btc_net():
+    """ROLL_OUT: actual_r = hold_r + (sto_exec - btc_exec) / entry_price."""
+    entry_price = 180.0
+    h_price = 200.0
+    hold_r = (h_price - entry_price) / entry_price
+    btc_mark = 2.0
+    sto_mark = 4.0
+    btc_exec = 1.80
+    sto_exec = 4.20
+    pl = {"btc_price": btc_mark, "sto_premium": sto_mark}
+    exec_rec = {"execution_price": btc_exec, "sto_premium": sto_exec,
+                "execution_date": "2026-09-10"}
+    actual_r, agent_r, estimated = _compute_cc_management_returns(
+        "ROLL_OUT", pl, entry_price, h_price, exec_rec=exec_rec,
+    )
+    expected_actual = hold_r + (sto_exec - btc_exec) / entry_price
+    expected_agent  = hold_r + (sto_mark - btc_mark) / entry_price
+    assert abs(actual_r - expected_actual) < 0.0001
+    assert abs(agent_r - expected_agent) < 0.0001
+    assert not estimated
+
+
+def test_hold_call_actual_equals_hold_r():
+    """HOLD_CALL: actual_r = hold_r; agent_r = hold_r - btc_mark / entry_price."""
+    entry_price = 180.0
+    h_price = 200.0
+    hold_r = (h_price - entry_price) / entry_price
+    btc_mark = 1.50
+    pl = {"btc_mark": btc_mark}
+    actual_r, agent_r, estimated = _compute_cc_management_returns(
+        "HOLD_CALL", pl, entry_price, h_price,
+    )
+    assert abs(actual_r - hold_r) < 0.0001
+    expected_agent = hold_r - btc_mark / entry_price
+    assert abs(agent_r - expected_agent) < 0.0001
+    assert not estimated
+
+
+# ── 0106: CC post-expiry state-transition math ────────────────────────────────
+
+def test_sell_cc_assigned_path_post_horizons_return_zero():
+    """0106: when S_exp > K, 30d/90d post actual_r = 0 (assigned, cash, no exposure)."""
+    prices = {
+        "ANET": 220.0,           # S at 30d post
+        "ANET@2026-01-01": 180.0,  # entry
+        "ANET@2026-03-21": 200.0,  # S_exp > K=190 → assigned
+        "SPY": 500.0, "SPY@2026-01-01": 450.0,
+    }
+    p1, p2 = _mock_prices(prices)
+    exec_rec = {
+        "execution_price": 3.0,  # premium
+        "execution_date": "2026-01-02",
+        "strike": 190.0,
+    }
+    with p1, p2:
+        actual_r, agent_r, hold_r, spy_r, estimated, cc_ret, cc_alpha = _compute_scenarios(
+            "ANET", "SELL_CC", "2026-01-01", "2026-04-20",  # 30d post date
+            {"premium": 3.0, "strike": "190.0"}, 180.0, decision="accepted",
+            exec_rec=exec_rec,
+            horizon_label="30d_post",
+            cc_expiry_date="2026-03-21",
+        )
+    assert actual_r == 0.0, f"Assigned call 30d_post should return 0.0, got {actual_r}"
+    assert cc_ret == 0.0, f"CC strategy return should be 0.0 post-assignment, got {cc_ret}"
+    assert not estimated
+
+
+def test_sell_cc_expired_path_post_horizons_no_strike_cap():
+    """0106: when S_exp <= K, 30d_post actual_r = (S_30 - S0 + premium) / S0 (no cap)."""
+    prices = {
+        "ANET": 230.0,              # S at 30d post — above K
+        "ANET@2026-01-01": 180.0,   # entry
+        "ANET@2026-03-21": 185.0,   # S_exp <= K=190 → expired worthless
+        "SPY": 500.0, "SPY@2026-01-01": 450.0,
+    }
+    p1, p2 = _mock_prices(prices)
+    exec_rec = {
+        "execution_price": 3.0,
+        "execution_date": "2026-01-02",
+        "strike": 190.0,
+    }
+    with p1, p2:
+        actual_r, agent_r, hold_r, spy_r, estimated, cc_ret, cc_alpha = _compute_scenarios(
+            "ANET", "SELL_CC", "2026-01-01", "2026-04-20",
+            {"premium": 3.0, "strike": "190.0"}, 180.0, decision="accepted",
+            exec_rec=exec_rec,
+            horizon_label="30d_post",
+            cc_expiry_date="2026-03-21",
+        )
+    # Call expired worthless → investor holds uncapped stock
+    expected_actual = (230.0 - 180.0 + 3.0) / 180.0
+    assert abs(actual_r - expected_actual) < 0.0001, (
+        f"Expired call 30d_post should use uncapped formula, got {actual_r:.4f}"
+    )
+    assert not estimated
+
+
+def test_sell_cc_at_expiry_always_uses_min_formula():
+    """0106: at_expiry horizon always uses min(S_exp, K) regardless of assignment."""
+    prices = {
+        "ANET": 200.0,
+        "ANET@2026-01-01": 180.0,
+        "SPY": 500.0, "SPY@2026-01-01": 450.0,
+    }
+    p1, p2 = _mock_prices(prices)
+    exec_rec = {"execution_price": 3.0, "execution_date": "2026-01-02", "strike": 190.0}
+    with p1, p2:
+        actual_r, agent_r, hold_r, spy_r, estimated, cc_ret, cc_alpha = _compute_scenarios(
+            "ANET", "SELL_CC", "2026-01-01", "2026-03-21",
+            {"premium": 3.0, "strike": "190.0"}, 180.0, decision="accepted",
+            exec_rec=exec_rec,
+            horizon_label="at_expiry",
+            cc_expiry_date="2026-03-21",
+        )
+    # at_expiry: S=200 > K=190 → min(200, 190)=190
+    expected_actual = (190.0 - 180.0 + 3.0) / 180.0
+    assert abs(actual_r - expected_actual) < 0.0001
