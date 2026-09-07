@@ -233,8 +233,8 @@ def _compute_cc_management_returns(
         if k and entry_price:
             assignment_r = (k - entry_price + orig_premium) / entry_price
             if "post" in horizon_label:
-                # Post-assignment: proceeds sit in cash, no further price exposure
-                return 0.0, 0.0, False
+                # Locked at assignment return; cash earns 0 additional return post-assignment
+                return assignment_r, assignment_r, False
             return assignment_r, assignment_r, False
         return hold_r, hold_r, True
 
@@ -320,7 +320,8 @@ def _compute_scenarios(
                 s_exp = _ticker_price_at(ticker, cc_expiry_date)
                 if s_exp is not None:
                     if s_exp > actual_strike:
-                        actual_r = 0.0  # assigned at expiry → cash thereafter
+                        # Locked at assignment return; cash sits idle post-assignment
+                        actual_r = (actual_strike - entry_price + actual_premium) / entry_price
                     else:
                         # call expired worthless → investor holds uncapped stock
                         actual_r = (h_price - entry_price + actual_premium) / entry_price
@@ -381,7 +382,8 @@ def _compute_scenarios(
                 s_exp = _ticker_price_at(ticker, cc_expiry_date)
                 if s_exp is not None:
                     if s_exp > k:
-                        cc_strategy_return = 0.0  # assigned → cash, no further exposure
+                        # Locked at assignment return; cash sits idle post-assignment
+                        cc_strategy_return = (k - entry_price + premium) / entry_price
                     else:
                         cc_strategy_return = (h_price - entry_price + premium) / entry_price
                     cc_incremental_alpha = cc_strategy_return - hold_r if hold_r is not None else None
@@ -571,8 +573,10 @@ def evaluate_matured_recommendations(min_age_days: int = MIN_AGE_DAYS) -> int:
             if action in CC_ACTIONS:
                 k_val = float(pl.get("strike") or (exec_rec.get("strike") if exec_rec else None) or 0.0)
                 if k_val:
-                    if horizon_label == "at_expiry" and h_price is not None:
-                        cc_assignment_state = "assigned" if h_price > k_val else "expired"
+                    if horizon_label == "at_expiry":
+                        s_at_expiry = _ticker_price_at(ticker, h_date)
+                        if s_at_expiry is not None:
+                            cc_assignment_state = "assigned" if s_at_expiry > k_val else "expired"
                     elif "post" in horizon_label and cc_expiry_date:
                         s_exp = _ticker_price_at(ticker, cc_expiry_date)
                         if s_exp is not None:

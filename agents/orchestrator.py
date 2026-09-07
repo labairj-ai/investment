@@ -146,11 +146,16 @@ def _compute_no_action_state_extras(
             result["earnings_bucket"] = "unknown"
 
     elif agent_type == "tax":
-        # 0108: use cost_lots (not executed_actions) for LT lot count
-        result["lt_lots_count"] = agent_db.get_lt_lots_count(ticker)
-        # 0108: use sell_transactions.realized_gain (includes real basis) for YTD gains
-        ytd_gain = agent_db.get_ytd_realized_gain(ticker)
-        result["realized_gain_bucket"] = int(round(ytd_gain / 500) * 500)
+        # 0115: full lot + realized-gain picture for Tax NO_ACTION hash
+        result["lt_lots_count"]    = agent_db.get_lt_lots_count(ticker)
+        result["st_lots_count"]    = agent_db.get_st_lots_count(ticker)
+        result["near_lt_count"]    = agent_db.get_near_lt_lots_count(ticker)
+        ytd_st = agent_db.get_ytd_st_realized_gain(ticker)
+        ytd_lt = agent_db.get_ytd_lt_realized_gain(ticker)
+        result["ytd_st_gain_bucket"] = int(round(ytd_st / 500) * 500)
+        result["ytd_lt_gain_bucket"] = int(round(ytd_lt / 500) * 500)
+        unrealized = agent_db.get_unrealized_gain(ticker)
+        result["unrealized_gain_bucket"] = int(round(unrealized / 500) * 500)
 
     elif agent_type == "portfolio_guardian":
         # Max single-position weight bucket (nearest 0.5%)

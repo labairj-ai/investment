@@ -6,6 +6,7 @@ and outcome evaluation using the mem_db and mock_llm fixtures.
 
 All 8+ scenarios use the in-memory DB with real migrate() and real agent_db helpers.
 """
+import json
 import sys
 import time
 from datetime import date, timedelta
@@ -20,13 +21,13 @@ sys.path.insert(0, str(ROOT))
 
 # ── Seed helpers ───────────────────────────────────────────────────────────────
 
-def _seed_rec(conn, ticker="ANET", action="HOLD", created_at=None, status="open"):
+def _seed_rec(conn, ticker="ANET", action="HOLD", created_at=None, status="open", payload=None):
     ts = created_at or (time.time() - 100 * 86400)  # 100 days ago by default
     conn.execute(
         """INSERT INTO recommendations
-           (ticker, action, recommendation_score, confidence, priority, status, created_at)
-           VALUES (?, ?, 50, 60, 'normal', ?, ?)""",
-        (ticker, action, status, ts),
+           (ticker, action, recommendation_score, confidence, priority, status, created_at, action_payload_json)
+           VALUES (?, ?, 50, 60, 'normal', ?, ?, ?)""",
+        (ticker, action, status, ts, json.dumps(payload) if payload else None),
     )
     conn.commit()
     return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
@@ -675,3 +676,140 @@ def test_decision_quality_excludes_trim_allocate_rebalance(mem_db):
     for action in ("TRIM", "ALLOCATE", "REBALANCE"):
         note = get_decision_quality_note("sell_trim", action)
         assert note == "", f"Expected empty note for {action}, got: {note!r}"
+
+
+# ── 0117: CC assignment end-to-end via evaluate_matured_recommendations ───────
+
+def _seed_exec(conn, rec_id, ticker, action, exec_date, premium, strike, expiration):
+    """Insert an executed_actions row for a SELL_CC."""
+    conn.execute(
+        """INSERT INTO executed_actions
+           (ticker, action, execution_date, execution_price, strike, expiration, premium,
+            contracts, recommendation_id, source)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, 'manual')""",
+        (ticker, action, exec_date, premium, strike, expiration, premium, rec_id),
+    )
+    conn.commit()
+
+
+def test_sell_cc_assigned_lifecycle_locks_at_assignment_return(mem_db):
+    """0117: SELL_CC assigned at expiry → 30d_post actual_r == locked assignment return, not 0."""
+    import agent_db
+    from agents.outcome_evaluator import evaluate_matured_recommendations
+
+    conn = _open_conn(mem_db)
+
+    entry_price = 180.0
+    strike = 190.0
+    premium = 3.0
+    # Dates: entry 200 days ago, expiry 140 days ago, 30d_post 110 days ago
+    entry_date   = (date.today() - timedelta(days=200)).isoformat()
+    expiry_date  = (date.today() - timedelta(days=140)).isoformat()
+    post30_date  = (date.today() - timedelta(days=110)).isoformat()
+    exec_date    = (date.today() - timedelta(days=199)).isoformat()
+    entry_ts     = time.time() - 200 * 86400
+
+    rec_id = _seed_rec(conn, ticker="ANET", action="SELL_CC", created_at=entry_ts, status="accepted",
+                       payload={"expiration": expiry_date, "strike": strike, "premium": premium})
+    conn.execute(
+        "INSERT INTO user_decisions (recommendation_id, decision, reason_code, decided_at) VALUES (?,?,?,?)",
+        (rec_id, "accepted", "OTHER", time.time()),
+    )
+    conn.commit()
+
+    _seed_exec(conn, rec_id, "ANET", "SELL_CC", exec_date, premium, strike, expiry_date)
+
+    # Prices: entry; S_exp > K (assigned); 30d_post price irrelevant once assigned
+    _seed_price(conn, "ANET", entry_date, entry_price)
+    _seed_price(conn, "ANET", expiry_date, 200.0)   # S_exp=200 > K=190 → assigned
+    _seed_price(conn, "ANET", post30_date, 210.0)   # irrelevant; cash is locked
+    _seed_spy(conn, entry_date, 450.0)
+    _seed_spy(conn, expiry_date, 470.0)
+    _seed_spy(conn, post30_date, 480.0)
+    conn.close()
+
+    expected_assign_r = (strike - entry_price + premium) / entry_price
+
+    with patch("agents.outcome_evaluator._ensure_spy_prices"):
+        written = evaluate_matured_recommendations(min_age_days=1)
+
+    assert written > 0
+
+    conn2 = _open_conn(mem_db)
+    rows = {
+        r["horizon"]: dict(r)
+        for r in conn2.execute(
+            "SELECT * FROM recommendation_outcomes WHERE recommendation_id=?", (rec_id,)
+        ).fetchall()
+    }
+    conn2.close()
+
+    assert "at_expiry" in rows, "at_expiry horizon must be written"
+    assert rows["at_expiry"]["cc_assignment_state"] == "assigned"
+
+    if "30d_post" in rows:
+        post = rows["30d_post"]
+        assert abs(post["actual_return"] - expected_assign_r) < 0.0001, (
+            f"30d_post actual_r should lock at {expected_assign_r:.4f} (assignment return), "
+            f"got {post['actual_return']}"
+        )
+
+
+def test_sell_cc_expired_lifecycle_uses_uncapped_formula(mem_db):
+    """0117: SELL_CC expired at expiry → 30d_post actual_r uses (S30 - S0 + premium) / S0."""
+    import agent_db
+    from agents.outcome_evaluator import evaluate_matured_recommendations
+
+    conn = _open_conn(mem_db)
+
+    entry_price = 180.0
+    strike = 190.0
+    premium = 3.0
+    entry_date   = (date.today() - timedelta(days=200)).isoformat()
+    expiry_date  = (date.today() - timedelta(days=140)).isoformat()
+    post30_date  = (date.today() - timedelta(days=110)).isoformat()
+    exec_date    = (date.today() - timedelta(days=199)).isoformat()
+    entry_ts     = time.time() - 200 * 86400
+
+    rec_id = _seed_rec(conn, ticker="JOBY", action="SELL_CC", created_at=entry_ts, status="accepted",
+                       payload={"expiration": expiry_date, "strike": strike, "premium": premium})
+    conn.execute(
+        "INSERT INTO user_decisions (recommendation_id, decision, reason_code, decided_at) VALUES (?,?,?,?)",
+        (rec_id, "accepted", "OTHER", time.time()),
+    )
+    conn.commit()
+
+    _seed_exec(conn, rec_id, "JOBY", "SELL_CC", exec_date, premium, strike, expiry_date)
+
+    post30_price = 210.0
+    _seed_price(conn, "JOBY", entry_date, entry_price)
+    _seed_price(conn, "JOBY", expiry_date, 185.0)   # S_exp=185 < K=190 → expired worthless
+    _seed_price(conn, "JOBY", post30_date, post30_price)
+    _seed_spy(conn, entry_date, 450.0)
+    _seed_spy(conn, expiry_date, 460.0)
+    _seed_spy(conn, post30_date, 465.0)
+    conn.close()
+
+    expected_post_r = (post30_price - entry_price + premium) / entry_price
+
+    with patch("agents.outcome_evaluator._ensure_spy_prices"):
+        evaluate_matured_recommendations(min_age_days=1)
+
+    conn2 = _open_conn(mem_db)
+    rows = {
+        r["horizon"]: dict(r)
+        for r in conn2.execute(
+            "SELECT * FROM recommendation_outcomes WHERE recommendation_id=?", (rec_id,)
+        ).fetchall()
+    }
+    conn2.close()
+
+    assert "at_expiry" in rows
+    assert rows["at_expiry"]["cc_assignment_state"] == "expired"
+
+    if "30d_post" in rows:
+        post = rows["30d_post"]
+        assert abs(post["actual_return"] - expected_post_r) < 0.0001, (
+            f"30d_post actual_r should use uncapped formula {expected_post_r:.4f}, "
+            f"got {post['actual_return']}"
+        )

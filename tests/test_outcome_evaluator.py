@@ -301,15 +301,21 @@ def test_allow_assignment_at_expiry_uses_strike_formula():
     assert not estimated
 
 
-def test_allow_assignment_post_horizons_return_zero():
-    """ALLOW_ASSIGNMENT 30d/90d post: actual_r = agent_r = 0 (cash, no exposure)."""
-    pl = {"strike": 185.0, "premium": 3.0}
+def test_allow_assignment_post_horizons_return_locked_at_assignment():
+    """0113: ALLOW_ASSIGNMENT 30d/90d post returns locked assignment return, not 0.0."""
+    entry_price = 175.0
+    k = 185.0
+    premium = 3.0
+    pl = {"strike": k, "premium": premium}
+    expected = (k - entry_price + premium) / entry_price
     for label in ("30d_post", "90d_post"):
         actual_r, agent_r, estimated = _compute_cc_management_returns(
-            "ALLOW_ASSIGNMENT", pl, 175.0, h_price=200.0, horizon_label=label,
+            "ALLOW_ASSIGNMENT", pl, entry_price, h_price=200.0, horizon_label=label,
         )
-        assert actual_r == 0.0
-        assert agent_r == 0.0
+        assert abs(actual_r - expected) < 0.0001, (
+            f"Post-assignment return should be locked at {expected:.4f}, got {actual_r}"
+        )
+        assert abs(agent_r - expected) < 0.0001
         assert not estimated
 
 
@@ -353,30 +359,38 @@ def test_hold_call_actual_equals_hold_r():
 
 # ── 0106: CC post-expiry state-transition math ────────────────────────────────
 
-def test_sell_cc_assigned_path_post_horizons_return_zero():
-    """0106: when S_exp > K, 30d/90d post actual_r = 0 (assigned, cash, no exposure)."""
+def test_sell_cc_assigned_path_post_horizons_locked_at_assignment():
+    """0113: when S_exp > K, 30d/90d post actual_r is locked at assignment return, not 0."""
+    entry_price = 180.0
+    k = 190.0
+    premium = 3.0
     prices = {
-        "ANET": 220.0,           # S at 30d post
-        "ANET@2026-01-01": 180.0,  # entry
+        "ANET": 220.0,              # S at 30d post — irrelevant once assigned
+        "ANET@2026-01-01": entry_price,
         "ANET@2026-03-21": 200.0,  # S_exp > K=190 → assigned
         "SPY": 500.0, "SPY@2026-01-01": 450.0,
     }
     p1, p2 = _mock_prices(prices)
     exec_rec = {
-        "execution_price": 3.0,  # premium
+        "execution_price": premium,
         "execution_date": "2026-01-02",
-        "strike": 190.0,
+        "strike": k,
     }
+    expected_assign = (k - entry_price + premium) / entry_price
     with p1, p2:
         actual_r, agent_r, hold_r, spy_r, estimated, cc_ret, cc_alpha = _compute_scenarios(
-            "ANET", "SELL_CC", "2026-01-01", "2026-04-20",  # 30d post date
-            {"premium": 3.0, "strike": "190.0"}, 180.0, decision="accepted",
+            "ANET", "SELL_CC", "2026-01-01", "2026-04-20",
+            {"premium": premium, "strike": str(k)}, entry_price, decision="accepted",
             exec_rec=exec_rec,
             horizon_label="30d_post",
             cc_expiry_date="2026-03-21",
         )
-    assert actual_r == 0.0, f"Assigned call 30d_post should return 0.0, got {actual_r}"
-    assert cc_ret == 0.0, f"CC strategy return should be 0.0 post-assignment, got {cc_ret}"
+    assert abs(actual_r - expected_assign) < 0.0001, (
+        f"Assigned call 30d_post should lock at {expected_assign:.4f}, got {actual_r}"
+    )
+    assert abs(cc_ret - expected_assign) < 0.0001, (
+        f"CC strategy return should lock at {expected_assign:.4f}, got {cc_ret}"
+    )
     assert not estimated
 
 

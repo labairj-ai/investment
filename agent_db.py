@@ -1075,6 +1075,120 @@ def get_ytd_realized_gain(ticker: str) -> float:
         conn.close()
 
 
+def get_st_lots_count(ticker: str) -> int:
+    """Count open cost_lots held < 365 days as of today (0115).
+
+    Returns 0 if cost_lots table doesn't exist or no ST lots for ticker.
+    """
+    from datetime import date as _date, timedelta
+    lt_threshold = (_date.today() - timedelta(days=365)).isoformat()
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM cost_lots WHERE ticker=? AND purchase_date>?",
+            (ticker, lt_threshold),
+        ).fetchone()
+        return int(row[0]) if row else 0
+    except Exception:
+        return 0
+    finally:
+        conn.close()
+
+
+def get_near_lt_lots_count(ticker: str, within_days: int = 45) -> int:
+    """Count ST lots that will cross the LT threshold within `within_days` days (0115).
+
+    These are lots with purchase_date in (today-365d, today-365d+within_days].
+    """
+    from datetime import date as _date, timedelta
+    today = _date.today()
+    lt_date = today - timedelta(days=365)
+    near_date = lt_date + timedelta(days=within_days)
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM cost_lots WHERE ticker=? AND purchase_date>? AND purchase_date<=?",
+            (ticker, lt_date.isoformat(), near_date.isoformat()),
+        ).fetchone()
+        return int(row[0]) if row else 0
+    except Exception:
+        return 0
+    finally:
+        conn.close()
+
+
+def get_ytd_st_realized_gain(ticker: str) -> float:
+    """Sum st_gain from sell_transactions YTD for ticker (0115).
+
+    Returns 0.0 if table absent or no YTD ST sales.
+    """
+    from datetime import date as _date
+    ytd_start = _date.today().replace(month=1, day=1).isoformat()
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(st_gain), 0.0) FROM sell_transactions "
+            "WHERE ticker=? AND sell_date>=?",
+            (ticker, ytd_start),
+        ).fetchone()
+        return float(row[0]) if row else 0.0
+    except Exception:
+        return 0.0
+    finally:
+        conn.close()
+
+
+def get_ytd_lt_realized_gain(ticker: str) -> float:
+    """Sum lt_gain from sell_transactions YTD for ticker (0115).
+
+    Returns 0.0 if table absent or no YTD LT sales.
+    """
+    from datetime import date as _date
+    ytd_start = _date.today().replace(month=1, day=1).isoformat()
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(lt_gain), 0.0) FROM sell_transactions "
+            "WHERE ticker=? AND sell_date>=?",
+            (ticker, ytd_start),
+        ).fetchone()
+        return float(row[0]) if row else 0.0
+    except Exception:
+        return 0.0
+    finally:
+        conn.close()
+
+
+def get_unrealized_gain(ticker: str) -> float:
+    """Compute total unrealized gain (negative = unrealized loss) for ticker (0115).
+
+    Uses cost_lots.cost_per_share vs the latest holding_day price.
+    Returns 0.0 if either table is absent or no lots exist.
+    """
+    conn = _connect()
+    try:
+        price_row = conn.execute(
+            "SELECT price FROM holding_day WHERE ticker=? ORDER BY day DESC LIMIT 1",
+            (ticker,),
+        ).fetchone()
+        if not price_row:
+            return 0.0
+        current_price = float(price_row["price"])
+        lots = conn.execute(
+            "SELECT shares, cost_per_share FROM cost_lots WHERE ticker=?",
+            (ticker,),
+        ).fetchall()
+        return sum(
+            float(lot["shares"]) * (current_price - float(lot["cost_per_share"]))
+            for lot in lots
+            if lot["cost_per_share"] is not None
+        )
+    except Exception:
+        return 0.0
+    finally:
+        conn.close()
+
+
 def upsert_spy_price(day: str, price: float) -> None:
     conn = _connect()
     conn.execute(
@@ -3147,10 +3261,11 @@ def upsert_valuation_metric(
 def get_valuation_ratio_history(ticker: str, ratio: str) -> list[float]:
     """Return non-None historical values for `ratio` column, newest first.
 
-    `ratio` must be one of: pe, ps, ev_revenue, ev_ebitda, ev_ebit_proxy, ev_fcf, p_fcf.
+    `ratio` must be one of: pe, ps, ev_revenue, ev_ebit_proxy, ev_fcf, p_fcf.
+    ev_ebitda is deprecated (0118) — use ev_ebit_proxy; returns [] if passed.
     Only returns positive values (negative ratios are uninformative for percentile ranking).
     """
-    _valid = {"pe", "ps", "ev_revenue", "ev_ebitda", "ev_ebit_proxy", "ev_fcf", "p_fcf"}
+    _valid = {"pe", "ps", "ev_revenue", "ev_ebit_proxy", "ev_fcf", "p_fcf"}
     if ratio not in _valid:
         return []
     conn = _connect()

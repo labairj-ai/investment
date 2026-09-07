@@ -383,6 +383,7 @@ def _score_V(ticker: str, current_price: float) -> tuple[int, str]:
     _primary_metric = (thesis_val_framework.get("primary_metric") or "").lower().strip()
     _ratio_col      = _RATIO_METRIC_MAP.get(_primary_metric)
     _used_primary   = False
+    _curr_ratio: float | None = None
 
     if _ratio_col and _ratio_col != "pe":
         import agent_db as _adb
@@ -462,20 +463,28 @@ def _score_V(ticker: str, current_price: float) -> tuple[int, str]:
             factors["H"] = 55.0
             notes.append("negative TTM EPS")
 
-    # Thesis valuation framework override: extreme_threshold check
+    # Thesis valuation framework override: extreme_threshold check (0116)
+    # Route through the primary_metric ratio when one is set; fall back to P/E otherwise.
     extreme = thesis_val_framework.get("extreme_threshold")
     if extreme and "H" in factors:
         try:
             extreme_f = float(extreme)
-            ttm_eps_check = sum(
-                float(q["eps_diluted"]) for q in quarters[:4]
-                if q["eps_diluted"] is not None
-            )
-            if ttm_eps_check > 0:
-                pe_check = current_price / ttm_eps_check
-                if pe_check > extreme_f:
+            if _used_primary and _curr_ratio is not None:
+                # Compare against the actual primary metric (e.g. EV/FCF, not P/E)
+                if _curr_ratio > extreme_f:
                     factors["H"] = max(factors.get("H", 0), 85.0)
-                    notes.append(f"above thesis extreme threshold ({extreme_f}x)")
+                    notes.append(f"above thesis extreme threshold ({extreme_f}x {_primary_metric})")
+            else:
+                # No primary metric set — fall back to P/E check
+                ttm_eps_check = sum(
+                    float(q["eps_diluted"]) for q in quarters[:4]
+                    if q["eps_diluted"] is not None
+                )
+                if ttm_eps_check > 0:
+                    pe_check = current_price / ttm_eps_check
+                    if pe_check > extreme_f:
+                        factors["H"] = max(factors.get("H", 0), 85.0)
+                        notes.append(f"above thesis extreme threshold ({extreme_f}x P/E)")
         except (TypeError, ValueError):
             pass
 
