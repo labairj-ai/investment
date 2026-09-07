@@ -437,6 +437,86 @@ def test_cc_no_action_hash_changes_when_open_cc_opens(mem_db):
     assert extras_with_cc["open_cc"] == 1
 
 
+# ── 0123: CC NO_ACTION hash includes CC policy fingerprint ────────────────────
+
+def _seed_cc_thesis(conn, ticker, delta=0.30, strategy="INCOME"):
+    """Insert a minimal active thesis row with a cc_policy blob."""
+    cc_policy = json.dumps({"strategy": strategy, "max_preferred_delta": delta,
+                            "minimum_otm_pct": 0.03, "avoid_earnings": False,
+                            "preferred_dte_min": None, "preferred_dte_max": None})
+    conn.execute(
+        """INSERT OR REPLACE INTO investment_theses
+           (ticker, status, version, summary, created_at, intake_json, cc_policy)
+           VALUES (?, 'active', 1, 'test thesis', ?, '{}', ?)""",
+        (ticker, time.time(), cc_policy),
+    )
+    conn.commit()
+
+
+def test_cc_policy_hash_changes_when_delta_changes(mem_db):
+    """cc_policy_hash differs after max_preferred_delta changes in the thesis."""
+    import agent_db
+    from agents.orchestrator import _compute_no_action_state_extras
+
+    conn = _open_conn(mem_db)
+    _seed_cc_thesis(conn, "ANET", delta=0.30)
+    conn.close()
+
+    holding = _make_holding("ANET")
+    snapshot = _make_snapshot([holding])
+    extras_30 = _compute_no_action_state_extras("covered_call", "ANET", snapshot, holding)
+
+    # Update delta in thesis
+    conn = _open_conn(mem_db)
+    conn.execute(
+        "UPDATE investment_theses SET cc_policy=? WHERE ticker=?",
+        (json.dumps({"strategy": "INCOME", "max_preferred_delta": 0.20,
+                     "minimum_otm_pct": 0.03, "avoid_earnings": False,
+                     "preferred_dte_min": None, "preferred_dte_max": None}), "ANET"),
+    )
+    conn.commit()
+    conn.close()
+
+    extras_20 = _compute_no_action_state_extras("covered_call", "ANET", snapshot, holding)
+
+    assert "cc_policy_hash" in extras_30
+    assert "cc_policy_hash" in extras_20
+    assert extras_30["cc_policy_hash"] != extras_20["cc_policy_hash"], (
+        "cc_policy_hash must change when max_preferred_delta changes"
+    )
+
+
+def test_cc_policy_hash_stable_when_policy_unchanged(mem_db):
+    """cc_policy_hash is identical across two calls with no policy change."""
+    import agent_db
+    from agents.orchestrator import _compute_no_action_state_extras
+
+    conn = _open_conn(mem_db)
+    _seed_cc_thesis(conn, "ANET", delta=0.25, strategy="UPSIDE_PRESERVATION")
+    conn.close()
+
+    holding = _make_holding("ANET")
+    snapshot = _make_snapshot([holding])
+    extras_a = _compute_no_action_state_extras("covered_call", "ANET", snapshot, holding)
+    extras_b = _compute_no_action_state_extras("covered_call", "ANET", snapshot, holding)
+
+    assert extras_a["cc_policy_hash"] == extras_b["cc_policy_hash"]
+
+
+def test_cc_policy_hash_stable_when_no_thesis(mem_db):
+    """cc_policy_hash is non-empty and stable when no thesis exists (uses defaults)."""
+    from agents.orchestrator import _compute_no_action_state_extras
+
+    holding = _make_holding("NVDA")
+    snapshot = _make_snapshot([holding])
+    extras_a = _compute_no_action_state_extras("covered_call", "NVDA", snapshot, holding)
+    extras_b = _compute_no_action_state_extras("covered_call", "NVDA", snapshot, holding)
+
+    assert "cc_policy_hash" in extras_a
+    assert len(extras_a["cc_policy_hash"]) == 12
+    assert extras_a["cc_policy_hash"] == extras_b["cc_policy_hash"]
+
+
 def test_guardian_hash_changes_when_max_weight_crosses_bucket(mem_db):
     """max_weight_bucket in guardian extras reflects nearest-0.5% bucketing."""
     from agents.orchestrator import _compute_no_action_state_extras

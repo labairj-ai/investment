@@ -144,6 +144,8 @@ def _compute_no_action_state_extras(
             result["earnings_bucket"] = "outside_contract"
         else:
             result["earnings_bucket"] = "unknown"
+        # 0123: fingerprint of CC policy fields that drive candidate selection
+        result["cc_policy_hash"] = agent_db.get_cc_policy_hash(ticker)
 
     elif agent_type == "tax":
         # 0115: full lot + realized-gain picture for Tax NO_ACTION hash

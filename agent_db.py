@@ -1191,6 +1191,52 @@ def get_ticker_realized_vol(ticker: str, lookback: int = 25) -> float | None:
     return math.sqrt(variance) * math.sqrt(252)   # annualized
 
 
+# Keys that materially affect CC candidate selection — changes to any of these
+# should invalidate a stale CC NO_ACTION row.
+_CC_POLICY_HASH_KEYS = (
+    "strategy", "max_preferred_delta", "minimum_otm_pct",
+    "avoid_earnings", "preferred_dte_min", "preferred_dte_max",
+)
+_CC_POLICY_DEFAULTS_FOR_HASH: dict = {
+    "strategy": "INCOME", "max_preferred_delta": 0.30,
+    "minimum_otm_pct": 0.03, "avoid_earnings": False,
+    "preferred_dte_min": None, "preferred_dte_max": None,
+}
+
+
+def get_cc_policy_hash(ticker: str) -> str:
+    """Return a 12-char fingerprint of the CC policy fields that affect candidate selection (0123).
+
+    Queries investment_theses for the active thesis cc_policy blob, extracts the
+    6 material fields, and returns a truncated sha256.  Falls back to a hash of
+    the defaults when no thesis or cc_policy exists, so the value is always stable
+    and never raises.
+    """
+    import hashlib
+    import json as _json
+
+    policy = dict(_CC_POLICY_DEFAULTS_FOR_HASH)
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT cc_policy FROM investment_theses "
+            "WHERE ticker=? AND status='active' ORDER BY version DESC LIMIT 1",
+            (ticker,),
+        ).fetchone()
+        if row and row["cc_policy"]:
+            stored = _json.loads(row["cc_policy"])
+            for k in _CC_POLICY_HASH_KEYS:
+                if k in stored:
+                    policy[k] = stored[k]
+    except Exception:
+        pass
+    finally:
+        conn.close()
+
+    canonical = _json.dumps({k: policy[k] for k in _CC_POLICY_HASH_KEYS}, sort_keys=True)
+    return hashlib.sha256(canonical.encode()).hexdigest()[:12]
+
+
 def get_unrealized_gain(ticker: str) -> float:
     """Compute total unrealized gain (negative = unrealized loss) for ticker (0115).
 
