@@ -11,7 +11,8 @@ from agents.dependency_checker import (
     _check_macro_state, _check_financial_period,
     _check_option_iv, _check_option_expiration, _check_earnings_date,
     _check_event_calendar, _check_option_liquidity, _check_estimate_revision,
-    _check_cc_position_state, _check_option_mark, _KNOWN_DEPENDENCY_TYPES,
+    _check_cc_position_state, _check_option_mark, _check_option_iv_true,
+    _KNOWN_DEPENDENCY_TYPES,
 )
 
 
@@ -353,3 +354,65 @@ def test_option_mark_outside_tolerance(monkeypatch):
 def test_option_mark_in_known_dependency_types():
     """OPTION_MARK must be in _KNOWN_DEPENDENCY_TYPES and handled in dispatch."""
     assert "OPTION_MARK" in _KNOWN_DEPENDENCY_TYPES
+
+
+# ── 0122: THESIS_VERSION original_value=None is a dead check ─────────────────
+
+def test_thesis_version_none_original_value_returns_none():
+    """original_value=None → int() raises TypeError → checker returns None (the bug)."""
+    dep = {"dependency_key": "ANET", "original_value": None}
+    # Checker must return None when original_value can't be parsed
+    assert _check_thesis_version(dep, {"ANET": 3}) is None
+
+
+def test_thesis_version_fires_when_original_value_is_set():
+    """original_value='1' and current version is 2 → checker fires (the fix works)."""
+    dep = {"dependency_key": "ANET", "original_value": "1"}
+    reason = _check_thesis_version(dep, {"ANET": 2})
+    assert reason is not None
+    assert "v1" in reason and "v2" in reason
+
+
+def test_thesis_version_no_change_returns_none():
+    """Same version → no supersession."""
+    dep = {"dependency_key": "ANET", "original_value": "3"}
+    assert _check_thesis_version(dep, {"ANET": 3}) is None
+
+
+# ── 0122: OPTION_IV original_value=None in management deps is a dead check ───
+
+def test_option_iv_true_none_original_value_returns_none(monkeypatch):
+    """original_value=None → stored_iv falsy → checker returns None (the bug)."""
+    import agent_db
+    monkeypatch.setattr(agent_db, "get_latest_option_snapshot",
+                        lambda *a, **kw: {"iv": 0.20})
+    dep = {"dependency_key": "ANET", "original_value": None}
+    assert _check_option_iv_true(dep, None) is None
+
+
+def test_option_iv_true_fires_on_large_drop(monkeypatch):
+    """original_value='0.45', current IV is 0.20 → >20% drop → checker fires."""
+    import agent_db
+    monkeypatch.setattr(agent_db, "get_latest_option_snapshot",
+                        lambda *a, **kw: {"iv": 0.20})
+    dep = {"dependency_key": "ANET", "original_value": "0.45", "threshold": 0.20}
+    reason = _check_option_iv_true(dep, None)
+    assert reason is not None
+    assert "IV" in reason or "iv" in reason.lower()
+
+
+def test_option_iv_true_no_supersession_on_small_drop(monkeypatch):
+    """IV dropped only 10% (< 20% threshold) → no supersession."""
+    import agent_db
+    monkeypatch.setattr(agent_db, "get_latest_option_snapshot",
+                        lambda *a, **kw: {"iv": 0.41})
+    dep = {"dependency_key": "ANET", "original_value": "0.45", "threshold": 0.20}
+    assert _check_option_iv_true(dep, None) is None
+
+
+def test_option_iv_true_no_snapshot_returns_none(monkeypatch):
+    """No option snapshot data → returns None (no spurious supersession)."""
+    import agent_db
+    monkeypatch.setattr(agent_db, "get_latest_option_snapshot", lambda *a, **kw: None)
+    dep = {"dependency_key": "ANET", "original_value": "0.45"}
+    assert _check_option_iv_true(dep, None) is None

@@ -380,10 +380,25 @@ def _analyze_roll(ctx: AgentContext, ticker: str, position: dict) -> list[Recomm
             f"Instead of {action}, hold the position and reassess closer to expiration."
         ),
         action_payload=action_payload,
-        dependencies=_build_mgmt_deps(ticker, current_price, existing_strike, existing_expiry, current_mark),
+        dependencies=_build_mgmt_deps(
+            ticker, current_price, existing_strike, existing_expiry, current_mark,
+            current_iv=_mgmt_iv_at_rec(ticker, existing_strike, existing_expiry),
+        ),
     )
     print(f"[covered_call] {ticker}: mgmt → {action} (DTE={dte}, captured={pct_captured}%)")
     return [rec]
+
+
+def _mgmt_iv_at_rec(ticker: str, strike: float, expiry: str) -> float | None:
+    """Fetch current IV from the latest option snapshot for this contract."""
+    try:
+        snap = agent_db.get_latest_option_snapshot(ticker, strike, expiry)
+        if snap:
+            iv = snap.get("iv")
+            return float(iv) if iv and float(iv) > 0 else None
+    except Exception:
+        pass
+    return None
 
 
 def _build_mgmt_deps(
@@ -392,6 +407,7 @@ def _build_mgmt_deps(
     strike: float,
     expiry: str,
     current_mark: float,
+    current_iv: float | None = None,
 ) -> list[dict]:
     """Build dependency list for CC management recommendations (0095)."""
     deps = [
@@ -420,8 +436,8 @@ def _build_mgmt_deps(
         {
             "dependency_type": "OPTION_IV",
             "dependency_key": ticker,
-            "original_value": None,
-            "tolerance": None,
+            "original_value": str(round(current_iv, 4)) if current_iv else None,
+            "tolerance": 0.15,
             "invalidating_event": "IV_SHIFT",
             "metadata": {"strike": strike, "expiration": expiry, "threshold": 0.15},
         },
@@ -726,7 +742,7 @@ def _analyze_ticker(ctx: AgentContext, ticker: str) -> list[Recommendation]:
         {
             "dependency_type": "THESIS_VERSION",
             "dependency_key": ticker,
-            "original_value": None,
+            "original_value": str(agent_db._get_thesis_version_for_hash(ticker) or ""),
             "tolerance": None,
             "invalidating_event": "THESIS_UPDATED",
         },
