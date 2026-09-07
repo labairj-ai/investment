@@ -37,6 +37,24 @@ _NO_ACTION_THRESHOLD = 10   # ss below this → upsert_no_action, skip LLM
 
 _DEFAULT_MAX_WEIGHT_PCT = 10.0   # used when thesis has no max_weight_pct set
 
+# 0083: Map thesis valuation_framework.primary_metric → company_financials column.
+# When a thesis specifies a primary_metric that matches a key here, _score_V()
+# fetches historical values from that column and uses it for the percentile
+# ranking instead of the default P/E (price_to_earnings) fallback.
+# Metrics not in this map fall back to the existing P/E-based scoring path.
+METRIC_COLUMN_MAP: dict[str, str] = {
+    "pe":            "price_to_earnings",
+    "forward_pe":    "price_to_earnings",   # best proxy available in stored data
+    "trailing_pe":   "price_to_earnings",
+    "ev_fcf":        "free_cash_flow",      # EV/FCF — use FCF for ranking
+    "p_fcf":         "free_cash_flow",
+    "ps":            "revenue",             # P/S — revenue as proxy
+    "price_to_sales":"revenue",
+    "ev_ebitda":     "operating_income",    # EBITDA proxy: operating_income
+    "ev_revenue":    "revenue",
+    "gross_margin":  "gross_profit",        # gross margin quality
+}
+
 
 def _connect() -> sqlite3.Connection | None:
     if not _DB.exists():
@@ -361,8 +379,53 @@ def _score_V(ticker: str, current_price: float) -> tuple[int, str]:
     notes: list[str] = []
     v_method = "absolute"
 
+    # 0083: Route valuation engine by thesis primary_metric.
+    # When the thesis specifies a primary_metric that maps to a DB column,
+    # use that column's historical distribution for percentile ranking instead
+    # of defaulting to P/E.  attractive_threshold / fair_value_high from the
+    # framework are used for an absolute check alongside the percentile path.
+    _primary_metric = (thesis_val_framework.get("primary_metric") or "").lower().strip()
+    _primary_col    = METRIC_COLUMN_MAP.get(_primary_metric)
+    _used_primary   = False  # set True when primary_metric path fires
+
+    if _primary_col and quarters and _primary_col != "price_to_earnings":
+        # Fetch raw column values from the stored quarters
+        _hist_vals = [
+            float(q[_primary_col]) for q in quarters
+            if q[_primary_col] is not None
+        ]
+        _curr_val = _hist_vals[0] if _hist_vals else None
+
+        if _curr_val is not None and len(_hist_vals) >= 4:
+            pct = _valuation_percentile(_curr_val, _hist_vals)
+            if pct is not None:
+                v_method = f"primary_metric_{_primary_metric}_pct{pct:.0f}"
+                factors["H"] = _v_score_from_percentile(pct)
+                notes.append(
+                    f"{_primary_metric}={_curr_val:.1f} ({pct:.0f}th pct of history)"
+                )
+                _used_primary = True
+
+        # attractive_threshold: if current value < threshold → cheap (score down)
+        _attractive = thesis_val_framework.get("attractive_threshold")
+        _fvh        = thesis_val_framework.get("fair_value_high")
+        if _curr_val is not None:
+            if _attractive and float(_attractive) > 0 and _curr_val < float(_attractive):
+                # Attractive — reduce existing H score if too high
+                factors["H"] = min(factors.get("H", 25.0), 15.0)
+                notes.append(
+                    f"{_primary_metric} below attractive threshold ({float(_attractive):.1f})"
+                )
+            elif _fvh and float(_fvh) > 0 and _curr_val > float(_fvh):
+                # Above fair value high → expensive
+                factors["H"] = max(factors.get("H", 55.0), 70.0)
+                notes.append(
+                    f"{_primary_metric} above fair-value-high ({float(_fvh):.1f})"
+                )
+
     # H — trailing P/E with historical percentile when available
-    if quarters:
+    # Skip when primary_metric routing already set the H factor.
+    if quarters and not _used_primary:
         ttm_eps = sum(
             float(q["eps_diluted"]) for q in quarters[:4]
             if q["eps_diluted"] is not None
