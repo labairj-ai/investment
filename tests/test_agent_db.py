@@ -225,3 +225,38 @@ def test_upsert_earnings_date_creates_row(mem_db):
     assert row is not None
     assert row["event_date"] == "2026-10-28"
     assert row["confirmed_by"] == "yfinance"
+
+
+# ── 0089: estimate history writer ────────────────────────────────────────────
+
+def test_append_estimate_history_first_value_always_appended(mem_db):
+    """First estimate value is always stored regardless of materiality."""
+    import agent_db
+    appended = agent_db.append_estimate_history("ANET", "+1y", "EPS", 8.50)
+    assert appended is True
+    rows = agent_db.get_estimate_history("ANET", "+1y", "EPS")
+    assert len(rows) == 1
+    assert abs(rows[0]["estimate_value"] - 8.50) < 0.001
+
+
+def test_append_estimate_history_skips_small_change(mem_db):
+    """Estimate change < 2% within 30 days is skipped."""
+    import agent_db
+    agent_db.append_estimate_history("ANET", "+1y", "EPS", 8.50)
+    # 0.5% change — below materiality threshold
+    appended = agent_db.append_estimate_history("ANET", "+1y", "EPS", 8.54)
+    assert appended is False
+    rows = agent_db.get_estimate_history("ANET", "+1y", "EPS")
+    assert len(rows) == 1
+
+
+def test_append_estimate_history_records_material_change(mem_db):
+    """Estimate change ≥ 2% is always recorded regardless of time elapsed."""
+    import agent_db
+    agent_db.append_estimate_history("ANET", "+1y", "EPS", 8.50)
+    # 5.9% change — above materiality threshold
+    appended = agent_db.append_estimate_history("ANET", "+1y", "EPS", 9.00)
+    assert appended is True
+    rows = agent_db.get_estimate_history("ANET", "+1y", "EPS")
+    assert len(rows) == 2
+    assert abs(rows[0]["estimate_value"] - 9.00) < 0.001  # newest first

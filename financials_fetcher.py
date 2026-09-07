@@ -253,6 +253,12 @@ def fetch_all(tickers, company_names=None, force=False):
                 _write_earnings_and_events(ticker)
             except Exception as e:
                 print(f"[financials] {ticker} earnings/event write FAILED: {e}")
+
+            # 0089: append estimate history when estimates changed materially
+            try:
+                _write_estimate_history(ticker, estimates)
+            except Exception as e:
+                print(f"[financials] {ticker} estimate history write FAILED: {e}")
         except Exception as e:
             print(f"[financials] {ticker} FAILED: {e}")
 
@@ -260,6 +266,32 @@ def fetch_all(tickers, company_names=None, force=False):
 
     conn.close()
     print("[financials] Done.")
+
+
+def _write_estimate_history(ticker: str, estimates: dict) -> None:
+    """Append forward EPS, revenue, and price target to estimate_history when materially changed.
+
+    Called from fetch_all() after estimates are fetched. Uses append_estimate_history()
+    which enforces: >2% change OR >30 days elapsed before adding a new row.
+    """
+    import agent_db
+
+    _EST_FIELDS = [
+        ("curr_yr_eps_est",  "EPS",    "0y"),
+        ("next_yr_eps_est",  "EPS",    "+1y"),
+        ("next_q_eps_est",   "EPS",    "+1q"),
+        ("next_q_rev_est",   "Revenue", "+1q"),
+        ("price_target",     "PriceTarget", "current"),
+    ]
+    for field, est_type, period in _EST_FIELDS:
+        val = estimates.get(field)
+        if val is None:
+            continue
+        try:
+            fval = float(val)
+            agent_db.append_estimate_history(ticker, period, est_type, fval)
+        except (TypeError, ValueError):
+            pass
 
 
 def _write_earnings_and_events(ticker: str) -> None:

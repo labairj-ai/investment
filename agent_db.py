@@ -2760,3 +2760,69 @@ def get_latest_valuation_metric(ticker: str) -> dict | None:
     ).fetchone()
     conn.close()
     return dict(row) if row else None
+
+
+# ── Estimate history (0089) ───────────────────────────────────────────────────
+
+def append_estimate_history(
+    ticker: str,
+    period: str,
+    estimate_type: str,
+    estimate_value: float,
+    *,
+    materiality_threshold: float = 0.02,
+    min_days_between: int = 30,
+) -> bool:
+    """Append a row to estimate_history only when the estimate changed materially
+    or enough time has elapsed since the last stored row.
+
+    Returns True if a row was appended, False if skipped (no material change).
+    """
+    conn = _connect()
+    if not conn:
+        return False
+    latest = conn.execute(
+        """SELECT estimate_value, captured_at FROM estimate_history
+           WHERE ticker=? AND period=? AND estimate_type=?
+           ORDER BY captured_at DESC LIMIT 1""",
+        (ticker, period, estimate_type),
+    ).fetchone()
+
+    now = time.time()
+    if latest:
+        last_val = float(latest["estimate_value"]) if latest["estimate_value"] is not None else None
+        last_ts  = float(latest["captured_at"])
+        days_since = (now - last_ts) / 86400.0
+
+        if last_val is not None and abs(last_val) > 0:
+            pct_change = abs(estimate_value - last_val) / abs(last_val)
+            if pct_change < materiality_threshold and days_since < min_days_between:
+                conn.close()
+                return False
+        elif days_since < min_days_between:
+            conn.close()
+            return False
+
+    conn.execute(
+        """INSERT INTO estimate_history (ticker, period, estimate_type, estimate_value, captured_at)
+           VALUES (?,?,?,?,?)""",
+        (ticker, period, estimate_type, estimate_value, now),
+    )
+    conn.commit()
+    conn.close()
+    return True
+
+
+def get_estimate_history(ticker: str, period: str, estimate_type: str) -> list[dict]:
+    """Return estimate_history rows for (ticker, period, estimate_type), newest first."""
+    conn = _connect()
+    if not conn:
+        return []
+    rows = conn.execute(
+        """SELECT * FROM estimate_history
+           WHERE ticker=? AND period=? AND estimate_type=?
+           ORDER BY captured_at DESC""",
+        (ticker, period, estimate_type),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
