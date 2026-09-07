@@ -1,7 +1,7 @@
 # Earnings and Event Calendar Writer
 
 - **ID:** 0088
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-06
 - **Priority:** normal
 - **Depends:** 0086

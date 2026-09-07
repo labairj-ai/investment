@@ -247,6 +247,12 @@ def fetch_all(tickers, company_names=None, force=False):
                 compute_valuation_metrics(ticker, conn=conn)
             except Exception as e:
                 print(f"[financials] {ticker} valuation metrics FAILED: {e}")
+
+            # 0088: persist earnings dates and ex-dividend events
+            try:
+                _write_earnings_and_events(ticker)
+            except Exception as e:
+                print(f"[financials] {ticker} earnings/event write FAILED: {e}")
         except Exception as e:
             print(f"[financials] {ticker} FAILED: {e}")
 
@@ -254,6 +260,65 @@ def fetch_all(tickers, company_names=None, force=False):
 
     conn.close()
     print("[financials] Done.")
+
+
+def _write_earnings_and_events(ticker: str) -> None:
+    """Persist earnings date and ex-dividend event from yfinance into the DB.
+
+    Called automatically from fetch_all() after financials are stored.
+    """
+    import yfinance as yf
+    import agent_db
+
+    tk = yf.Ticker(_YF_ALIAS.get(ticker, ticker))
+
+    # Earnings date via calendar
+    try:
+        cal = tk.calendar
+        if cal is not None and hasattr(cal, "get"):
+            earnings_date = cal.get("Earnings Date")
+            if earnings_date:
+                if hasattr(earnings_date, "__iter__") and not isinstance(earnings_date, str):
+                    earnings_date = list(earnings_date)[0]
+                date_str = str(earnings_date)[:10]
+                agent_db.upsert_earnings_date(
+                    ticker, date_str,
+                    confirmed_by="yfinance",
+                    confidence="provider_estimated",
+                    source="yfinance.calendar",
+                )
+                agent_db.upsert_event_calendar(
+                    ticker=ticker,
+                    event_type="EARNINGS",
+                    event_date=date_str,
+                    confidence="provider_estimated",
+                    source="yfinance.calendar",
+                )
+    except Exception as e:
+        print(f"[financials] {ticker} earnings date: {e}")
+
+    # Ex-dividend date via info
+    try:
+        info = tk.info or {}
+        ex_div_ts = info.get("exDividendDate")
+        if ex_div_ts:
+            from datetime import date as _date, timezone as _tz
+            import datetime as _dt_mod
+            try:
+                ex_div_date = _dt_mod.datetime.fromtimestamp(
+                    int(ex_div_ts), tz=_tz.utc
+                ).date().isoformat()
+                agent_db.upsert_event_calendar(
+                    ticker=ticker,
+                    event_type="EX_DIVIDEND",
+                    event_date=ex_div_date,
+                    confidence="provider_estimated",
+                    source="yfinance.info",
+                )
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"[financials] {ticker} ex-div date: {e}")
 
 
 def compute_valuation_metrics(ticker: str, conn=None) -> int:

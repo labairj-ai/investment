@@ -454,6 +454,16 @@ def migrate() -> None:
         except sqlite3.OperationalError:
             pass  # column already exists
 
+    # 0088: unique index on event_calendar for idempotent upserts
+    try:
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_event_calendar_unique "
+            "ON event_calendar (ticker, event_type, event_date)"
+        )
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
     conn.close()
 
 

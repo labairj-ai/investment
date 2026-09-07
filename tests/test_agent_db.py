@@ -186,3 +186,42 @@ def test_upsert_option_quote_snapshot_updates_on_conflict(mem_db):
     assert snap is not None
     # get_latest should return most recent (iv=0.32)
     assert abs(float(snap["iv"]) - 0.32) < 0.001
+
+
+# ── 0088: earnings/event writer ───────────────────────────────────────────────
+
+def test_upsert_event_calendar_creates_row(mem_db):
+    """upsert_event_calendar stores an earnings event row."""
+    import agent_db
+    agent_db.upsert_event_calendar(
+        ticker="ANET",
+        event_type="EARNINGS",
+        event_date="2026-10-28",
+        confidence="provider_estimated",
+        source="yfinance.calendar",
+    )
+    events = agent_db.get_events_for_ticker("ANET", event_type="EARNINGS")
+    assert len(events) == 1
+    assert events[0]["event_date"] == "2026-10-28"
+    assert events[0]["confidence"] == "provider_estimated"
+
+
+def test_upsert_event_calendar_deduplicates(mem_db):
+    """Same (ticker, event_type, event_date) upserts, not duplicates."""
+    import agent_db
+    agent_db.upsert_event_calendar("ANET", "EARNINGS", "2026-10-28", confidence="estimated")
+    agent_db.upsert_event_calendar("ANET", "EARNINGS", "2026-10-28", confidence="provider_estimated")
+    events = agent_db.get_events_for_ticker("ANET", event_type="EARNINGS")
+    assert len(events) == 1
+    assert events[0]["confidence"] == "provider_estimated"
+
+
+def test_upsert_earnings_date_creates_row(mem_db):
+    """upsert_earnings_date stores an earnings_dates row."""
+    import agent_db
+    agent_db.upsert_earnings_date("ANET", "2026-10-28", confirmed_by="yfinance",
+                                   confidence="provider_estimated", source="yfinance.calendar")
+    row = agent_db.get_latest_earnings_date("ANET")
+    assert row is not None
+    assert row["event_date"] == "2026-10-28"
+    assert row["confirmed_by"] == "yfinance"
