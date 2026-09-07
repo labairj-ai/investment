@@ -55,7 +55,7 @@ def load_positions(csv_path: Path | None = None) -> dict[str, Position]:
     Multi-lot tickers are merged with weighted-average cost. The layer is taken
     from the first lot for that ticker (a warning is printed on mismatch).
     """
-    path = csv_path or HOLDINGS_CSV
+    path = Path(csv_path) if csv_path else HOLDINGS_CSV
     if not path.exists():
         return {}
 

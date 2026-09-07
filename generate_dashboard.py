@@ -7956,7 +7956,7 @@ function _renderLineageChain(chain) {{
       <td style="padding:8px 10px;font-size:11px;color:#718096;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${{(e.why_now||'').replace(/"/g,'&quot;')}}">${{e.why_now || e.rationale_class || '—'}}</td>
     </tr>`;
   }}).join('');
-  const agentLabel = chain.agent_type.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase());
+  const agentLabel = chain.agent_type.replace(/_/g,' ').replace(/\b[a-z]/g,c=>c.toUpperCase());
   return `
     <div style="margin-bottom:20px;">
       <div style="font-size:11px;font-weight:700;color:#4a5568;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;">${{agentLabel}}</div>
