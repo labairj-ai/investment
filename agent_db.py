@@ -1159,6 +1159,38 @@ def get_ytd_lt_realized_gain(ticker: str) -> float:
         conn.close()
 
 
+def get_ticker_realized_vol(ticker: str, lookback: int = 25) -> float | None:
+    """Return 20-day annualized realized volatility for ticker (0119).
+
+    Queries the most recent `lookback` rows from holding_day, computes
+    daily simple returns, and annualizes (× sqrt(252)).  Returns None
+    when fewer than 20 prices are available or the table is absent.
+    """
+    import math
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT price FROM holding_day WHERE ticker=? AND price > 0 "
+            "ORDER BY day DESC LIMIT ?",
+            (ticker, lookback),
+        ).fetchall()
+    except Exception:
+        return None
+    finally:
+        conn.close()
+
+    prices = [float(r["price"]) for r in rows if r["price"]]
+    if len(prices) < 21:
+        return None
+
+    # Use the 20 most-recent prices (first entry is most recent)
+    prices = prices[:21]
+    returns = [(prices[i] - prices[i + 1]) / prices[i + 1] for i in range(20)]
+    mean_r = sum(returns) / 20
+    variance = sum((r - mean_r) ** 2 for r in returns) / 20
+    return math.sqrt(variance) * math.sqrt(252)   # annualized
+
+
 def get_unrealized_gain(ticker: str) -> float:
     """Compute total unrealized gain (negative = unrealized loss) for ticker (0115).
 

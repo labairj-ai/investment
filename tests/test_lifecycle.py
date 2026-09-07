@@ -485,6 +485,110 @@ def test_unknown_agent_returns_empty_extras(mem_db):
     assert extras == {}
 
 
+# ── 0119: Guardian vol_bucket and risk_contrib_bucket ─────────────────────────
+
+def _seed_price_series(conn, ticker, base_price, daily_move, n_days=22):
+    """Seed n_days of holding_day rows with alternating +/-daily_move prices."""
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS holding_day
+           (ticker TEXT, day TEXT, price REAL, value REAL, weight_pct REAL, shares REAL,
+            PRIMARY KEY (ticker, day))"""
+    )
+    price = base_price
+    for i in range(n_days):
+        day = (date.today() - timedelta(days=n_days - i)).isoformat()
+        price = base_price + (daily_move if i % 2 == 0 else -daily_move)
+        conn.execute(
+            "INSERT OR REPLACE INTO holding_day (ticker, day, price, value, weight_pct, shares) "
+            "VALUES (?, ?, ?, ?, 15.0, 100)",
+            (ticker, day, price, price * 100),
+        )
+    conn.commit()
+
+
+def test_guardian_vol_bucket_unknown_when_insufficient_history(mem_db):
+    """vol_bucket is 'unknown' when fewer than 21 holding_day rows exist."""
+    import agent_db
+    from agents.orchestrator import _compute_no_action_state_extras
+
+    conn = _open_conn(mem_db)
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS holding_day
+           (ticker TEXT, day TEXT, price REAL, value REAL, weight_pct REAL, shares REAL,
+            PRIMARY KEY (ticker, day))"""
+    )
+    for i in range(5):
+        day = (date.today() - timedelta(days=5 - i)).isoformat()
+        conn.execute(
+            "INSERT OR REPLACE INTO holding_day (ticker, day, price, value, weight_pct, shares) "
+            "VALUES ('ANET', ?, 300.0, 30000.0, 15.0, 100)",
+            (day,),
+        )
+    conn.commit()
+    conn.close()
+
+    holding = _make_holding("ANET", weight_pct=15.0)
+    snapshot = _make_snapshot([holding])
+    extras = _compute_no_action_state_extras("portfolio_guardian", "ANET", snapshot, holding)
+
+    assert extras["vol_bucket"] == "unknown"
+    assert extras["risk_contrib_bucket"] == "unknown"
+
+
+def test_guardian_vol_bucket_changes_when_vol_crosses_bucket(mem_db):
+    """Guardian NO_ACTION hash changes when realized vol crosses a 5% bucket boundary."""
+    import agent_db
+    from agents.orchestrator import _compute_no_action_state_extras
+
+    conn = _open_conn(mem_db)
+
+    # Low-vol series: prices oscillate ±0.50 around 300 → daily move ≈ 0.17% → annualized ≈ 2.7%
+    _seed_price_series(conn, "LOW", base_price=300.0, daily_move=0.5, n_days=22)
+    # High-vol series: prices oscillate ±6 around 300 → daily move ≈ 2% → annualized ≈ 32%
+    _seed_price_series(conn, "HIGH", base_price=300.0, daily_move=6.0, n_days=22)
+    conn.close()
+
+    holding_lo = _make_holding("LOW", weight_pct=15.0)
+    snap_lo = _make_snapshot([holding_lo])
+    extras_lo = _compute_no_action_state_extras("portfolio_guardian", "LOW", snap_lo, holding_lo)
+
+    holding_hi = _make_holding("HIGH", weight_pct=15.0)
+    snap_hi = _make_snapshot([holding_hi])
+    extras_hi = _compute_no_action_state_extras("portfolio_guardian", "HIGH", snap_hi, holding_hi)
+
+    assert extras_lo["vol_bucket"] != "unknown"
+    assert extras_hi["vol_bucket"] != "unknown"
+    assert extras_lo["vol_bucket"] != extras_hi["vol_bucket"], (
+        f"vol_bucket should differ: low={extras_lo['vol_bucket']} high={extras_hi['vol_bucket']}"
+    )
+    assert extras_lo["risk_contrib_bucket"] != extras_hi["risk_contrib_bucket"]
+
+
+def test_guardian_risk_contrib_reflects_weight_and_vol(mem_db):
+    """risk_contrib_bucket scales with both weight and vol."""
+    import agent_db
+    from agents.orchestrator import _compute_no_action_state_extras
+
+    conn = _open_conn(mem_db)
+    _seed_price_series(conn, "ANET", base_price=300.0, daily_move=6.0, n_days=22)
+    conn.close()
+
+    holding_small = _make_holding("ANET", weight_pct=5.0)
+    snap_small = _make_snapshot([holding_small])
+    extras_small = _compute_no_action_state_extras("portfolio_guardian", "ANET", snap_small, holding_small)
+
+    holding_large = _make_holding("ANET", weight_pct=20.0)
+    snap_large = _make_snapshot([holding_large])
+    extras_large = _compute_no_action_state_extras("portfolio_guardian", "ANET", snap_large, holding_large)
+
+    assert extras_small["risk_contrib_bucket"] != "unknown"
+    assert extras_large["risk_contrib_bucket"] != "unknown"
+    # Larger weight → higher risk contribution
+    assert extras_large["risk_contrib_bucket"] > extras_small["risk_contrib_bucket"], (
+        f"small={extras_small['risk_contrib_bucket']} large={extras_large['risk_contrib_bucket']}"
+    )
+
+
 # ── 0099: TRIM/ALLOCATE accepted-not-executed → actual_r = NULL ───────────────
 
 def test_trim_accepted_without_execution_is_null(mem_db):

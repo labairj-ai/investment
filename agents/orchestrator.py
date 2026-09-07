@@ -169,6 +169,17 @@ def _compute_no_action_state_extras(
             for layer, target in LAYER_TARGETS.items()
         )
         result["layer_drift_flag"] = 1 if has_drift else 0
+        # 0119: per-position realized vol bucket (annualized, nearest 5%) and
+        # simplified risk-contribution bucket (weight × vol, nearest 0.5pp).
+        ann_vol = agent_db.get_ticker_realized_vol(ticker)
+        if ann_vol is None:
+            result["vol_bucket"]         = "unknown"
+            result["risk_contrib_bucket"] = "unknown"
+        else:
+            result["vol_bucket"] = round(ann_vol * 100 / 5) * 5   # e.g. 25 for 24.7%
+            weight_frac = (holding.weight_pct or 0.0) / 100.0
+            risk_contrib = weight_frac * ann_vol * 100             # as a percentage
+            result["risk_contrib_bucket"] = round(risk_contrib * 2) / 2  # nearest 0.5pp
 
     return result
 
