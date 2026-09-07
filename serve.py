@@ -5278,15 +5278,31 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self._handle_agent_run_trigger()
         self._json_error(404, "Not found")
 
+    # 0077 — valid decision values
+    _VALID_DECISIONS = frozenset({"accepted", "rejected", "deferred"})
+
     def _handle_agent_decision(self, rec_id: int):
         """POST /api/agents/recommendations/{id}/decision"""
         try:
             body = self._read_body()
         except Exception:
             return self._json_error(400, "Invalid JSON body")
-        decision = body.get("decision", "").strip()
-        if not decision:
-            return self._json_error(400, "decision field required")
+        decision = body.get("decision", "").lower().strip()
+        # 0077: validate decision value
+        if decision not in self._VALID_DECISIONS:
+            return self._send_json(
+                {"ok": False, "error": f"Invalid decision. Must be one of: {sorted(self._VALID_DECISIONS)}"},
+                status=400,
+            )
+
+        # 0077: check recommendation exists and is open
+        rec_check = agent_db.get_recommendation_by_id(rec_id)
+        if not rec_check or rec_check.get("status") != "open":
+            return self._send_json(
+                {"ok": False, "error": "Recommendation not found or already closed"},
+                status=400,
+            )
+
         reason_code = body.get("reason_code", "OTHER")
         notes = body.get("notes")
 
@@ -5325,17 +5341,41 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self._json({"ok": True, "recommendation": rec})
 
     def _handle_agent_execute(self, rec_id: int):
-        """POST /api/agents/recommendations/{id}/execute — record that a recommendation was executed."""
+        """POST /api/agents/recommendations/{id}/execute — record that a recommendation was executed.
+
+        0076: ticker and action are derived from the recommendation row; body values are ignored.
+        0072: accepts position_shares_before, position_shares_after, execution_fraction.
+        """
         try:
             body = self._read_body()
         except Exception:
             return self._json_error(400, "Invalid JSON body")
 
-        ticker = (body.get("ticker") or "").strip().upper()
-        action = (body.get("action") or "").strip().upper()
+        # 0076: fetch the recommendation and derive ticker/action from it
+        rec = agent_db.get_recommendation_by_id(rec_id)
+        if not rec:
+            return self._send_json({"ok": False, "error": "recommendation not found"}, status=404)
+
+        ticker = rec["ticker"]
+        action = rec["action"]
+
         execution_date = (body.get("execution_date") or "").strip()
-        if not ticker or not action or not execution_date:
-            return self._json_error(400, "ticker, action, and execution_date are required")
+        if not execution_date:
+            return self._json_error(400, "execution_date is required")
+
+        # 0076: validate execution_date is a valid date and not before the recommendation
+        from datetime import datetime as _dt
+        try:
+            exec_dt = _dt.strptime(execution_date, "%Y-%m-%d").date()
+        except ValueError:
+            return self._json_error(400, "execution_date must be YYYY-MM-DD")
+
+        rec_date = _dt.utcfromtimestamp(rec["created_at"]).date()
+        if exec_dt < rec_date:
+            return self._json_error(
+                400,
+                f"execution_date {execution_date} cannot be before recommendation date {rec_date.isoformat()}"
+            )
 
         try:
             exec_id = agent_db.insert_executed_action(
@@ -5352,11 +5392,20 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 contracts=body.get("contracts"),
                 notes=body.get("notes"),
                 source=body.get("source", "manual"),
+                position_shares_before=body.get("position_shares_before"),
+                position_shares_after=body.get("position_shares_after"),
+                execution_fraction=body.get("execution_fraction"),
             )
         except Exception as e:
             return self._json_error(500, str(e))
 
-        self._json({"ok": True, "executed_action_id": exec_id, "recommendation_id": rec_id})
+        self._json({
+            "ok": True,
+            "executed_action_id": exec_id,
+            "recommendation_id": rec_id,
+            "ticker": ticker,
+            "action": action,
+        })
 
     def _handle_agent_run_trigger(self):
         """POST /api/agents/run — start an on-demand agent run in a background thread."""
@@ -5394,6 +5443,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def _json(self, data):
         body = json.dumps(data).encode()
         self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", len(body))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_json(self, data, status: int = 200):
+        """Send JSON response with a custom HTTP status code."""
+        body = json.dumps(data).encode()
+        self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", len(body))
         self.send_header("Cache-Control", "no-store")

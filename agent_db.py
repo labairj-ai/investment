@@ -375,6 +375,10 @@ def migrate() -> None:
         ("learned_preferences",      "suppressed",              "INTEGER"),
         # 0023 — notification system
         ("recommendations",          "urgency_level",           "TEXT"),
+        # 0072 — position size fields for executed_actions
+        ("executed_actions",         "position_shares_before",  "REAL"),
+        ("executed_actions",         "position_shares_after",   "REAL"),
+        ("executed_actions",         "execution_fraction",      "REAL"),
     ]
     for table, col, col_type in _new_cols:
         try:
@@ -2228,18 +2232,23 @@ def insert_executed_action(
     tax_lot_ids: list | None = None,
     notes: str | None = None,
     source: str = "manual",
+    position_shares_before: float | None = None,
+    position_shares_after: float | None = None,
+    execution_fraction: float | None = None,
 ) -> int:
     conn = _connect()
     cur = conn.execute(
         """INSERT INTO executed_actions
            (recommendation_id, ticker, action, quantity, execution_price,
             execution_date, fees, strike, expiration, premium, contracts,
-            tax_lot_ids, notes, source, created_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            tax_lot_ids, notes, source, created_at,
+            position_shares_before, position_shares_after, execution_fraction)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (recommendation_id, ticker, action, quantity, execution_price,
          execution_date, fees, strike, expiration, premium, contracts,
          json.dumps(tax_lot_ids) if tax_lot_ids else None,
-         notes, source, time.time()),
+         notes, source, time.time(),
+         position_shares_before, position_shares_after, execution_fraction),
     )
     _id = cur.lastrowid
     conn.commit()
@@ -2369,3 +2378,13 @@ def get_outcome_statistics_by_category(
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def get_recommendation_by_id(rec_id: int) -> dict | None:
+    """Return a single recommendation row as a dict, or None if not found."""
+    conn = _connect()
+    row = conn.execute(
+        "SELECT * FROM recommendations WHERE id=?", (rec_id,)
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
