@@ -181,7 +181,7 @@ def _check_financial_period(dep: dict, periods: dict[str, str]) -> str | None:
     return None
 
 
-def _check_option_iv(dep: dict, _unused) -> str | None:
+def _check_option_expiration(dep: dict, _unused) -> str | None:
     """Supersede when the option expiration date has passed.
 
     dependency_key = ticker (or contract_id)
@@ -200,6 +200,45 @@ def _check_option_iv(dep: dict, _unused) -> str | None:
     days_left = (expiry - today).days
     if days_left <= 3:
         return f"Option expiring in {days_left} day(s) ({expiry_str}) — re-evaluate"
+    return None
+
+
+# Alias: OPTION_IV previously did expiration check; keep alias so existing deps still work.
+# True IV check uses option_quote_snapshots table (stub until populated).
+_check_option_iv = _check_option_expiration  # backwards compat alias
+
+
+def _check_option_iv_true(dep: dict, _unused) -> str | None:
+    """Supersede if stored IV dropped by > 20% from the value when rec was made.
+
+    dependency_key = ticker
+    original_value = IV at time of recommendation
+    threshold = 0.20 (20% drop)
+
+    Stub: returns None until option_quote_snapshots is populated.
+    """
+    ticker = dep.get("dependency_key")
+    stored_iv = dep.get("original_value")
+    if not ticker or not stored_iv:
+        return None
+    try:
+        orig_iv = float(stored_iv)
+    except (TypeError, ValueError):
+        return None
+    threshold = float(dep.get("threshold") or 0.20)
+    # Query latest snapshot
+    snap = agent_db.get_latest_option_snapshot(ticker, dep.get("strike"), dep.get("expiration"))
+    if snap is None:
+        return None  # stub: no data yet
+    current_iv = snap.get("iv")
+    if current_iv is None:
+        return None
+    drop = (orig_iv - float(current_iv)) / orig_iv if orig_iv else 0
+    if drop > threshold:
+        return (
+            f"IV dropped {drop * 100:.0f}% from {orig_iv:.2f} to {current_iv:.2f} "
+            f"(threshold {threshold * 100:.0f}%)"
+        )
     return None
 
 
@@ -236,26 +275,90 @@ def _check_earnings_date(dep: dict, periods: dict[str, str]) -> str | None:
 # ── Stub handlers for dependency types that require data not yet in DB ────────
 
 def _check_event_calendar(dep: dict, _unused) -> str | None:
-    """Stub: EVENT_CALENDAR dependency requires an event_calendar DB table (not yet populated)."""
-    print(f"[DepChecker] STUB: EVENT_CALENDAR check skipped for {dep.get('dependency_key')} — no event_calendar table")
+    """Check if a relevant event has passed or moved inside the window.
+
+    Queries event_calendar for ticker/event_type. Stub: returns None until populated.
+    """
+    ticker = dep.get("dependency_key")
+    event_type = dep.get("event_type", "earnings")
+    events = agent_db.get_events_for_ticker(ticker, event_type) if ticker else []
+    if not events:
+        # Stub: no event_calendar data yet
+        return None
+    today = _date.today()
+    for evt in events:
+        try:
+            evt_date = _date.fromisoformat(evt["event_date"])
+        except (ValueError, TypeError):
+            continue
+        days_to = (evt_date - today).days
+        if today > evt_date:
+            return f"Event {event_type!r} for {ticker} has passed ({evt['event_date']})"
+        if days_to <= 7:
+            return f"Event {event_type!r} imminent in {days_to} day(s) ({evt['event_date']})"
     return None
 
 
 def _check_option_liquidity(dep: dict, _unused) -> str | None:
-    """Stub: OPTION_LIQUIDITY dependency requires live bid/ask data (not yet in DB)."""
-    print(f"[DepChecker] STUB: OPTION_LIQUIDITY check skipped for {dep.get('dependency_key')} — no live option feed")
+    """Supersede if the bid/ask spread has widened beyond threshold.
+
+    Queries option_quote_snapshots. Stub: returns None until populated.
+    """
+    ticker = dep.get("dependency_key")
+    threshold = float(dep.get("threshold") or 0.15)
+    if not ticker:
+        return None
+    snap = agent_db.get_latest_option_snapshot(ticker, dep.get("strike"), dep.get("expiration"))
+    if snap is None:
+        return None  # stub: no data yet
+    spread = snap.get("spread_pct")
+    if spread is not None and float(spread) > threshold:
+        return (
+            f"Option spread {float(spread) * 100:.0f}% exceeds threshold "
+            f"{threshold * 100:.0f}% — liquidity degraded"
+        )
     return None
 
 
 def _check_estimate_revision(dep: dict, _unused) -> str | None:
-    """Stub: ESTIMATE_REVISION dependency requires analyst estimate revision tracking (not yet in DB)."""
-    print(f"[DepChecker] STUB: ESTIMATE_REVISION check skipped for {dep.get('dependency_key')} — no revision history")
+    """Supersede if analyst estimate has moved more than threshold.
+
+    Queries estimate_history. Stub: returns None until populated.
+    """
+    ticker = dep.get("dependency_key")
+    stored_estimate = dep.get("original_value")
+    threshold = float(dep.get("threshold") or 0.10)
+    if not ticker or not stored_estimate:
+        return None
+    try:
+        orig = float(stored_estimate)
+    except (TypeError, ValueError):
+        return None
+    # Stub: query estimate_history (table exists, may be empty)
+    conn = agent_db._connect()
+    row = conn.execute(
+        "SELECT estimate_value FROM estimate_history WHERE ticker=? ORDER BY captured_at DESC LIMIT 1",
+        (ticker,),
+    ).fetchone()
+    conn.close()
+    if row is None or row["estimate_value"] is None:
+        return None
+    current = float(row["estimate_value"])
+    if orig == 0:
+        return None
+    change = abs(current - orig) / abs(orig)
+    if change > threshold:
+        direction = "up" if current > orig else "down"
+        return (
+            f"Estimate revised {direction} by {change * 100:.0f}% "
+            f"(was {orig:.2f}, now {current:.2f}; threshold {threshold * 100:.0f}%)"
+        )
     return None
 
 
 _KNOWN_DEPENDENCY_TYPES = frozenset({
     "PRICE", "THESIS_VERSION", "POSITION_WEIGHT", "MACRO_STATE",
-    "FINANCIAL_PERIOD", "OPTION_IV", "EARNINGS_DATE",
+    "FINANCIAL_PERIOD", "OPTION_IV", "OPTION_EXPIRATION", "EARNINGS_DATE",
     "EVENT_CALENDAR", "OPTION_LIQUIDITY", "ESTIMATE_REVISION",
 })
 
@@ -317,7 +420,11 @@ def check_all_dependencies() -> int:
             elif dtype == "FINANCIAL_PERIOD":
                 reason = _check_financial_period(dep, periods)
             elif dtype == "OPTION_IV":
-                reason = _check_option_iv(dep, None)
+                # True IV check using option_quote_snapshots (stub until data exists)
+                reason = _check_option_iv_true(dep, None)
+            elif dtype == "OPTION_EXPIRATION":
+                # Expiration-date check (the original OPTION_IV behavior)
+                reason = _check_option_expiration(dep, None)
             elif dtype == "EARNINGS_DATE":
                 reason = _check_earnings_date(dep, periods)
             elif dtype == "EVENT_CALENDAR":

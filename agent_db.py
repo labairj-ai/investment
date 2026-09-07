@@ -332,6 +332,50 @@ def migrate() -> None:
 
         CREATE INDEX IF NOT EXISTS idx_executed_actions_ticker
             ON executed_actions (ticker, execution_date DESC);
+
+        -- 0074 — option/event/estimate dependency data sources
+        CREATE TABLE IF NOT EXISTS option_quote_snapshots (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticker      TEXT    NOT NULL,
+            strike      REAL,
+            expiration  TEXT,
+            iv          REAL,
+            bid         REAL,
+            ask         REAL,
+            spread_pct  REAL,
+            captured_at REAL    NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS event_calendar (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticker      TEXT    NOT NULL,
+            event_type  TEXT    NOT NULL,
+            event_date  TEXT    NOT NULL,
+            confidence  TEXT    NOT NULL DEFAULT 'estimated',
+            source      TEXT,
+            created_at  REAL    NOT NULL DEFAULT (unixepoch())
+        );
+
+        CREATE TABLE IF NOT EXISTS estimate_history (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticker          TEXT    NOT NULL,
+            period          TEXT    NOT NULL,
+            estimate_type   TEXT    NOT NULL,
+            estimate_value  REAL,
+            captured_at     REAL    NOT NULL DEFAULT (unixepoch())
+        );
+
+        -- 0075 — authoritative earnings dates
+        CREATE TABLE IF NOT EXISTS earnings_dates (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticker       TEXT    NOT NULL,
+            event_date   TEXT    NOT NULL,
+            confirmed_by TEXT    NOT NULL DEFAULT 'heuristic',
+            confidence   TEXT    NOT NULL DEFAULT 'estimated',
+            source       TEXT,
+            created_at   REAL    NOT NULL DEFAULT (unixepoch()),
+            UNIQUE(ticker, event_date)
+        );
     """)
     conn.commit()
 
@@ -2388,3 +2432,169 @@ def get_recommendation_by_id(rec_id: int) -> dict | None:
     ).fetchone()
     conn.close()
     return dict(row) if row else None
+
+
+# ── Option quote snapshot helpers (0074) ─────────────────────────────────────
+
+def upsert_option_quote_snapshot(
+    ticker: str,
+    strike: float | None,
+    expiration: str | None,
+    iv: float | None,
+    bid: float | None,
+    ask: float | None,
+    spread_pct: float | None,
+) -> int:
+    """Insert a new option quote snapshot row (each row is a point-in-time capture)."""
+    conn = _connect()
+    cur = conn.execute(
+        """INSERT INTO option_quote_snapshots
+           (ticker, strike, expiration, iv, bid, ask, spread_pct, captured_at)
+           VALUES (?,?,?,?,?,?,?,?)""",
+        (ticker, strike, expiration, iv, bid, ask, spread_pct, time.time()),
+    )
+    snap_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return snap_id
+
+
+def get_latest_option_snapshot(
+    ticker: str,
+    strike: float | None = None,
+    expiration: str | None = None,
+) -> dict | None:
+    """Return the most recent option_quote_snapshots row for ticker/strike/expiry."""
+    conn = _connect()
+    if strike is not None and expiration is not None:
+        row = conn.execute(
+            """SELECT * FROM option_quote_snapshots
+               WHERE ticker=? AND strike=? AND expiration=?
+               ORDER BY captured_at DESC LIMIT 1""",
+            (ticker, strike, expiration),
+        ).fetchone()
+    elif strike is not None:
+        row = conn.execute(
+            """SELECT * FROM option_quote_snapshots
+               WHERE ticker=? AND strike=?
+               ORDER BY captured_at DESC LIMIT 1""",
+            (ticker, strike),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            """SELECT * FROM option_quote_snapshots
+               WHERE ticker=?
+               ORDER BY captured_at DESC LIMIT 1""",
+            (ticker,),
+        ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+# ── Event calendar helpers (0074) ─────────────────────────────────────────────
+
+def upsert_event_calendar(
+    ticker: str,
+    event_type: str,
+    event_date: str,
+    confidence: str = "estimated",
+    source: str | None = None,
+) -> int:
+    """Insert or update an event_calendar row (upsert by ticker+event_type+event_date)."""
+    conn = _connect()
+    cur = conn.execute(
+        """INSERT INTO event_calendar (ticker, event_type, event_date, confidence, source, created_at)
+           VALUES (?,?,?,?,?,?)
+           ON CONFLICT DO UPDATE SET confidence=excluded.confidence, source=excluded.source""",
+        (ticker, event_type, event_date, confidence, source, time.time()),
+    )
+    evt_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return evt_id
+
+
+def get_events_for_ticker(ticker: str, event_type: str | None = None) -> list[dict]:
+    """Return event_calendar rows for a ticker, optionally filtered by event_type."""
+    conn = _connect()
+    if event_type:
+        rows = conn.execute(
+            "SELECT * FROM event_calendar WHERE ticker=? AND event_type=? ORDER BY event_date ASC",
+            (ticker, event_type),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM event_calendar WHERE ticker=? ORDER BY event_date ASC",
+            (ticker,),
+        ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+# ── Earnings dates helpers (0075) ─────────────────────────────────────────────
+
+def upsert_earnings_date(
+    ticker: str,
+    event_date: str,
+    confirmed_by: str = "heuristic",
+    confidence: str = "estimated",
+    source: str | None = None,
+) -> int:
+    """Upsert an earnings_dates row (unique on ticker+event_date)."""
+    conn = _connect()
+    cur = conn.execute(
+        """INSERT INTO earnings_dates (ticker, event_date, confirmed_by, confidence, source, created_at)
+           VALUES (?,?,?,?,?,?)
+           ON CONFLICT(ticker, event_date) DO UPDATE SET
+               confirmed_by=excluded.confirmed_by,
+               confidence=excluded.confidence,
+               source=excluded.source""",
+        (ticker, event_date, confirmed_by, confidence, source, time.time()),
+    )
+    row_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return row_id
+
+
+def get_latest_earnings_date(ticker: str) -> dict | None:
+    """Return the most recent future earnings_dates row for ticker, or None."""
+    from datetime import date as _dt
+    today = _dt.today().isoformat()
+    conn = _connect()
+    row = conn.execute(
+        """SELECT * FROM earnings_dates
+           WHERE ticker=? AND event_date >= ?
+           ORDER BY event_date ASC LIMIT 1""",
+        (ticker, today),
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def refresh_earnings_dates(ticker: str) -> bool:
+    """Fetch earnings date from yfinance and store with confidence='provider_estimated'.
+
+    Returns True if a date was found and stored, False otherwise.
+    """
+    try:
+        import yfinance as yf
+        cal = yf.Ticker(ticker).calendar
+        # cal is a dict or DataFrame depending on yfinance version
+        if cal is not None and hasattr(cal, "get"):
+            earnings_date = cal.get("Earnings Date")
+            if earnings_date:
+                # Handle both single date and list
+                if hasattr(earnings_date, "__iter__") and not isinstance(earnings_date, str):
+                    earnings_date = list(earnings_date)[0]
+                date_str = str(earnings_date)[:10]
+                upsert_earnings_date(
+                    ticker, date_str,
+                    confirmed_by="yfinance",
+                    confidence="provider_estimated",
+                    source="yfinance.calendar",
+                )
+                return True
+    except Exception as e:
+        print(f"[EarningsDates] {ticker}: {e}")
+    return False

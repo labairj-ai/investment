@@ -9,7 +9,8 @@ sys.path.insert(0, str(ROOT))
 from agents.dependency_checker import (
     _check_price, _check_thesis_version, _check_position_weight,
     _check_macro_state, _check_financial_period,
-    _check_option_iv, _check_earnings_date,
+    _check_option_iv, _check_option_expiration, _check_earnings_date,
+    _check_event_calendar, _check_option_liquidity, _check_estimate_revision,
     _KNOWN_DEPENDENCY_TYPES,
 )
 
@@ -89,7 +90,7 @@ def test_financial_period_new_quarter():
     assert "2026-09-30" in reason
 
 
-# ── OPTION_IV ────────────────────────────────────────────────────────────────
+# ── OPTION_IV (backwards compat alias → expiration check) ────────────────────
 
 def test_option_iv_not_expired():
     future = (date.today() + timedelta(days=30)).isoformat()
@@ -110,6 +111,53 @@ def test_option_iv_expiring_soon():
     dep = {"dependency_key": "ANET", "original_value": soon}
     reason = _check_option_iv(dep, None)
     assert reason is not None  # 2 days left → supersede
+
+
+# ── OPTION_EXPIRATION (renamed from OPTION_IV) ────────────────────────────────
+
+def test_option_expiration_not_expired():
+    future = (date.today() + timedelta(days=14)).isoformat()
+    dep = {"dependency_key": "ANET", "original_value": future}
+    assert _check_option_expiration(dep, None) is None
+
+
+def test_option_expiration_expired():
+    past = (date.today() - timedelta(days=1)).isoformat()
+    dep = {"dependency_key": "ANET", "original_value": past}
+    reason = _check_option_expiration(dep, None)
+    assert reason is not None
+    assert "expired" in reason.lower()
+
+
+# ── OPTION_LIQUIDITY stub ─────────────────────────────────────────────────────
+
+def test_option_liquidity_stub_returns_none():
+    """Without option_quote_snapshots data, stub returns None (no supersession)."""
+    dep = {"dependency_key": "ANET", "threshold": 0.15}
+    # Patch get_latest_option_snapshot to return None (no data)
+    from unittest.mock import patch
+    import agent_db
+    with patch.object(agent_db, "get_latest_option_snapshot", return_value=None):
+        result = _check_option_liquidity(dep, None)
+    assert result is None
+
+
+# ── ESTIMATE_REVISION stub ────────────────────────────────────────────────────
+
+def test_estimate_revision_stub_returns_none(mem_db):
+    """Without estimate_history data, stub returns None (no supersession)."""
+    dep = {"dependency_key": "ANET", "original_value": "5.00", "threshold": 0.10}
+    result = _check_estimate_revision(dep, None)
+    assert result is None
+
+
+# ── EVENT_CALENDAR stub ───────────────────────────────────────────────────────
+
+def test_event_calendar_stub_returns_none(mem_db):
+    """Without event_calendar data, stub returns None (no supersession)."""
+    dep = {"dependency_key": "ANET", "event_type": "earnings"}
+    result = _check_event_calendar(dep, None)
+    assert result is None
 
 
 # ── EARNINGS_DATE ─────────────────────────────────────────────────────────────
@@ -133,6 +181,10 @@ def test_earnings_date_passed():
 def test_unknown_dependency_types_are_not_in_known_set():
     assert "BANANA" not in _KNOWN_DEPENDENCY_TYPES
     assert "CUSTOM_SIGNAL" not in _KNOWN_DEPENDENCY_TYPES
+
+
+def test_option_expiration_in_known_dependency_types():
+    assert "OPTION_EXPIRATION" in _KNOWN_DEPENDENCY_TYPES
 
 
 def test_all_known_types_have_handlers():
