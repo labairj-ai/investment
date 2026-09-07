@@ -63,6 +63,36 @@ _install_llm_semaphore()
 # any holding they evaluated but did not flag.
 _HOLDING_SCOPE_AGENTS = {"portfolio_guardian", "thesis_monitor", "covered_call", "tax"}
 
+# 0082: Agent-specific extra fields included in the no-action hash so that
+# configuration changes (score thresholds, share minimums, etc.) invalidate
+# a previously-stored NO_ACTION even when price/thesis/quarter are unchanged.
+# Values must be JSON-scalar (str, int, float).  Add a key here whenever a
+# module-level constant materially affects whether an agent fires.
+_AGENT_HASH_EXTRAS: dict[str, dict[str, object]] = {
+    "covered_call": {
+        "cc_eligible_layers": "1,2,3",   # _CC_ELIGIBLE_LAYERS
+        "cc_min_shares": 100,             # _CC_MIN_SHARES
+    },
+    "sell_trim": {
+        "no_action_threshold": 10,        # _NO_ACTION_THRESHOLD
+        "prompt_version": "sell_trim_v2", # _PROMPT_VERSION
+    },
+    "portfolio_guardian": {
+        "impact_threshold_pp": 0.35,      # _IMPACT_THRESHOLD_PP
+        "z_threshold": 2.0,               # _Z_THRESHOLD
+        "prompt_version": "portfolio_guardian_v1",
+    },
+    "opportunity_hunter": {
+        "prompt_version": "opportunity_hunter_v1",
+    },
+    "thesis_monitor": {
+        "prompt_version": "thesis_monitor_v1",
+    },
+    "tax": {
+        "prompt_version": "tax_v1",
+    },
+}
+
 
 def _record_no_actions(
     agent_type: str,
@@ -73,15 +103,19 @@ def _record_no_actions(
     """Write NO_ACTION rows for holdings the agent evaluated but did not flag."""
     import agent_db
 
+    # 0082: include agent-specific config extras in the hash
+    extras = _AGENT_HASH_EXTRAS.get(agent_type)
+
     for holding in snapshot.holdings:
         if holding.ticker in recommended_tickers:
             continue
         thesis_ver = agent_db._get_thesis_version_for_hash(holding.ticker)
         latest_q   = agent_db._get_latest_quarter_for_hash(holding.ticker)
-        h = agent_db.compute_input_hash(
+        h = agent_db.compute_agent_hash(
             holding.ticker, agent_type,
             holding.current_price or 0,
             thesis_ver, latest_q,
+            extras=extras,
         )
         agent_db.upsert_no_action(
             ticker=holding.ticker,
@@ -151,6 +185,7 @@ def _run_single_agent(
         _prompt_ver = None
 
     # Per-ticker input hash for deduplication audit
+    # 0082: mix in agent-specific config extras so config changes invalidate cached NO_ACTION
     _input_hash: str | None = None
     _thesis_ver: int = 0
     _latest_q: str = ""
@@ -158,7 +193,10 @@ def _run_single_agent(
         _thesis_ver = agent_db._get_thesis_version_for_hash(ticker)
         _latest_q   = agent_db._get_latest_quarter_for_hash(ticker)
         _price      = _holding.current_price if _holding else 0
-        _input_hash = agent_db.compute_input_hash(ticker, agent_type, _price, _thesis_ver, _latest_q)
+        _extras     = _AGENT_HASH_EXTRAS.get(agent_type)
+        _input_hash = agent_db.compute_agent_hash(
+            ticker, agent_type, _price, _thesis_ver, _latest_q, extras=_extras
+        )
 
     # 0078: richer input manifest for reproducibility audit
     _input_snap: dict | None = None

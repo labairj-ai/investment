@@ -676,6 +676,33 @@ def compute_input_hash(
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
+def compute_agent_hash(
+    ticker: str,
+    agent_type: str,
+    price: float,
+    thesis_version: int,
+    latest_quarter: str,
+    extras: dict | None = None,
+) -> str:
+    """Extended version of compute_input_hash that mixes in agent-specific extras.
+
+    0082: Certain agents have internal thresholds/config that change how they
+    evaluate a position (e.g. covered_call min-shares, sell_trim score
+    threshold, portfolio_guardian impact threshold). When those values change
+    the no-action decision may change too, so they should invalidate the hash.
+
+    ``extras`` is a plain dict of str→scalar values whose sorted key=value
+    pairs are appended to the raw string before hashing.
+    """
+    import hashlib, math
+    bucket = round(math.log(max(price, 0.001)) / math.log(1.02)) if price > 0 else 0
+    raw = f"{ticker}|{agent_type}|{bucket}|{thesis_version}|{latest_quarter}"
+    if extras:
+        extra_str = "|".join(f"{k}={v}" for k, v in sorted(extras.items()))
+        raw = f"{raw}|{extra_str}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
 def _get_thesis_version_for_hash(ticker: str) -> int:
     conn = _connect()
     row = conn.execute(
