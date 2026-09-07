@@ -1,7 +1,7 @@
 # Validate Allowed Decision States on Decision Endpoint
 
 - **ID:** 0077
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-06
 - **Priority:** normal
 - **Depends:** none

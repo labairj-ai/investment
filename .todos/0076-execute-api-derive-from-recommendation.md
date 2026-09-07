@@ -1,7 +1,7 @@
 # Derive ticker/action from Recommendation in Execute API
 
 - **ID:** 0076
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-06
 - **Priority:** normal
 - **Depends:** none

@@ -1,7 +1,7 @@
 # Model Actual CC Execution Outcome Separate from Recommended Path
 
 - **ID:** 0073
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-06
 - **Priority:** normal
 - **Depends:** 0070

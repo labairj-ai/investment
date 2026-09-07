@@ -1,7 +1,7 @@
 # Add Position Size Fields to executed_actions for Trim Fraction
 
 - **ID:** 0072
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-06
 - **Priority:** normal
 - **Depends:** 0070

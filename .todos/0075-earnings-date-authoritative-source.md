@@ -1,7 +1,7 @@
 # Replace Heuristic Earnings Date with Authoritative Source
 
 - **ID:** 0075
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-06
 - **Priority:** normal
 - **Depends:** 0074

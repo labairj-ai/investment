@@ -1,7 +1,7 @@
 # Add End-to-End Lifecycle Integration Tests
 
 - **ID:** 0081
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-06
 - **Priority:** normal
 - **Depends:** 0070, 0071, 0072

@@ -1,7 +1,7 @@
 # Wire executed_actions Into Outcome Evaluator
 
 - **ID:** 0070
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-06
 - **Priority:** high
 - **Depends:** none

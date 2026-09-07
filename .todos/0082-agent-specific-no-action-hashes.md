@@ -1,7 +1,7 @@
 # Make NO ACTION Input Hashes Agent-Specific
 
 - **ID:** 0082
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-06
 - **Priority:** low
 - **Depends:** none

@@ -1,7 +1,7 @@
 # Fix Accepted EXIT Without Execution to Not Claim 0% Return
 
 - **ID:** 0071
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-06
 - **Priority:** high
 - **Depends:** 0070

@@ -1,7 +1,7 @@
 # Add Real Confidence Intervals to Decision Quality Model
 
 - **ID:** 0080
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-06
 - **Priority:** normal
 - **Depends:** 0070, 0071

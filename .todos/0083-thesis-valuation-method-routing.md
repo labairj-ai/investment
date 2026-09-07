@@ -1,7 +1,7 @@
 # Route Valuation Engine by Thesis Primary Metric
 
 - **ID:** 0083
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-06
 - **Priority:** low
 - **Depends:** none

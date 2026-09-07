@@ -1,7 +1,7 @@
 # Let Orchestrator Own the agent_runs Row for On-Demand Runs
 
 - **ID:** 0079
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-06
 - **Priority:** normal
 - **Depends:** none

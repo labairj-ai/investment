@@ -1,7 +1,7 @@
 # Persist Richer Input Manifest for Agent Run Reproducibility
 
 - **ID:** 0078
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-06
 - **Priority:** normal
 - **Depends:** none
