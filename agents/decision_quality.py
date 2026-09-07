@@ -30,6 +30,11 @@ import agent_db
 _MIN_SAMPLES = 10       # minimum matured outcomes before surfacing any note
 _CI_THRESHOLD = 0.02    # minimum |agent_edge| to be actionable (2%)
 
+# 0103: actual-return math for these actions was corrected. Exclude from DQ until
+# enough post-fix non-estimated outcomes accumulate so stale pre-fix rows don't
+# corrupt the agent_edge signal. Lift per-action when history is trustworthy.
+_EXCLUDE_FROM_DQ: frozenset[str] = frozenset({"TRIM", "ALLOCATE", "REBALANCE"})
+
 
 def compute_quality_stats() -> list[dict]:
     """Compute per-(agent_type, action, rationale_class) outcome statistics.
@@ -103,6 +108,9 @@ def get_decision_quality_note(
             matches = specific
 
     if not matches:
+        return ""
+
+    if action in _EXCLUDE_FROM_DQ:
         return ""
 
     # Use the match with most samples

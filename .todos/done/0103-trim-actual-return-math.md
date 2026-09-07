@@ -1,7 +1,7 @@
 # Correct Executed-TRIM Actual-Return Math and Split Action Branches
 
 - **ID:** 0103
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-07
 - **Priority:** high
 - **Depends:** none

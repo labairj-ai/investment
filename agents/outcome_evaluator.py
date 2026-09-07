@@ -125,6 +125,73 @@ def _payload(rec: dict) -> dict:
         return {}
 
 
+# ── Actual-return helpers per action type (0103) ─────────────────────────────
+
+def _compute_actual_trim(
+    exec_rec: dict,
+    entry_price: float,
+    hold_r: float | None,
+) -> tuple[float | None, bool]:
+    """Two-component TRIM actual return.
+
+    actual_r = f*(exec_price/entry_price - 1) + (1-f)*hold_r
+
+    The sold fraction earns the gain from entry to execution price; the retained
+    fraction earns the full hold return to the horizon date.
+    """
+    if hold_r is None:
+        return None, False
+    exec_price = float(exec_rec["execution_price"])
+    frac = exec_rec.get("execution_fraction")
+    if frac is not None:
+        f = float(frac)
+    elif exec_rec.get("position_shares_before") and exec_rec.get("quantity"):
+        f = float(exec_rec["quantity"]) / float(exec_rec["position_shares_before"])
+    else:
+        f = 0.5
+    exec_gain = (exec_price / entry_price) - 1 if entry_price else 0.0
+    return f * exec_gain + (1 - f) * hold_r, False
+
+
+def _compute_actual_allocate(
+    exec_rec: dict,
+    h_price: float | None,
+) -> tuple[float | None, bool]:
+    """ALLOCATE actual return: exec_price is the cost basis; return to horizon price."""
+    exec_price = float(exec_rec["execution_price"])
+    if h_price is None or exec_price <= 0:
+        return None, True
+    return (h_price - exec_price) / exec_price, False
+
+
+def _compute_actual_rebalance(
+    exec_rec: dict,
+    entry_price: float,
+    pl: dict,
+    horizon_date: str,
+) -> tuple[float | None, bool]:
+    """REBALANCE actual return: from-ticker sold at exec_price; to-ticker from exec_date.
+
+    The from-ticker gain is exact (exec_price vs entry_price). The to-ticker
+    purchase price is approximated as the exec_date price (same day as the sale).
+    estimated=True when to-ticker price is unavailable.
+    """
+    exec_price = float(exec_rec["execution_price"])
+    fraction = float(pl.get("fraction") or 0.5)
+    from_gain = (exec_price / entry_price) - 1 if entry_price else 0.0
+
+    to_ticker = pl.get("to_ticker")
+    if to_ticker:
+        exec_date = exec_rec.get("execution_date")
+        to_entry = _ticker_price_at(to_ticker, exec_date) if exec_date else None
+        to_h = _ticker_price_at(to_ticker, horizon_date)
+        if to_entry and to_h and to_entry > 0:
+            to_r = (to_h - to_entry) / to_entry
+            return (1 - fraction) * from_gain + fraction * to_r, False
+
+    return (1 - fraction) * from_gain, True
+
+
 # ── Scenario return computation ───────────────────────────────────────────────
 
 def _compute_scenarios(
@@ -173,22 +240,20 @@ def _compute_scenarios(
             actual_is_estimated = False
     elif exec_rec and exec_rec.get("execution_price") and exec_rec.get("execution_date"):
         exec_price = float(exec_rec["execution_price"])
-        exec_date  = exec_rec["execution_date"]
-        # For EXIT-type: user sold at execution_price, no further exposure
+        # Route by action to dedicated actual-return helpers (0103)
         if action in EXIT_ACTIONS:
             actual_r = (exec_price - entry_price) / entry_price if entry_price else None
+            actual_is_estimated = False
+        elif action == "TRIM":
+            actual_r, actual_is_estimated = _compute_actual_trim(exec_rec, entry_price, hold_r)
+        elif action == "ALLOCATE":
+            actual_r, actual_is_estimated = _compute_actual_allocate(exec_rec, h_price)
+        elif action == "REBALANCE":
+            actual_r, actual_is_estimated = _compute_actual_rebalance(
+                exec_rec, entry_price, pl, horizon_date)
         else:
-            # For TRIM: use execution_fraction if stored (0072), else quantity/position_shares_before,
-            # else fall back to 0.5.
-            frac = exec_rec.get("execution_fraction")
-            if frac is not None:
-                f = float(frac)
-            elif exec_rec.get("position_shares_before") and exec_rec.get("quantity"):
-                f = float(exec_rec["quantity"]) / float(exec_rec["position_shares_before"])
-            else:
-                f = 0.5
-            actual_r = (1 - f) * hold_r if hold_r is not None else None
-        actual_is_estimated = False
+            actual_r = hold_r
+            actual_is_estimated = True
     elif decision == "accepted" and action in _ACCEPTED_NO_EXEC_NULL:
         # 0071/0099: accepted but no execution record — cannot confirm actual return
         actual_r = None

@@ -115,17 +115,19 @@ def test_hold_rejected_actual_equals_hold(mem_db):
 # ── Scenario 2: TRIM with execution_fraction ──────────────────────────────────
 
 def test_trim_with_execution_uses_fraction(mem_db):
-    """TRIM accepted + executed_action with execution_fraction → actual uses that fraction."""
+    """TRIM accepted + exec_rec → two-component actual_r (0103): sold fraction earns exec gain."""
     import agent_db
     from agents.outcome_evaluator import _compute_scenarios
 
     entry_price = 180.0
     horizon_price = 200.0
+    exec_price = 185.0
+    f = 0.25
     exec_rec = {
-        "execution_price": 185.0,
+        "execution_price": exec_price,
         "execution_date": "2026-01-03",
         "quantity": 30.0,
-        "execution_fraction": 0.25,  # trimmed 25%
+        "execution_fraction": f,
     }
 
     prices = {
@@ -145,8 +147,13 @@ def test_trim_with_execution_uses_fraction(mem_db):
         )
 
     hold_r = (horizon_price - entry_price) / entry_price
-    expected_actual = (1 - 0.25) * hold_r
-    assert abs(actual - expected_actual) < 0.001
+    exec_gain = (exec_price / entry_price) - 1
+    # 0103: two-component formula — sold fraction earns exec_gain, retained earns hold_r
+    expected_actual = f * exec_gain + (1 - f) * hold_r
+    assert abs(actual - expected_actual) < 0.0001, (
+        f"TRIM actual_r={actual:.6f}, expected {expected_actual:.6f}. "
+        "Formula: f*exec_gain + (1-f)*hold_r (0103)"
+    )
     assert not estimated
 
 
@@ -519,16 +526,18 @@ def test_allocate_accepted_without_execution_is_null(mem_db):
 
 
 def test_trim_accepted_with_execution_uses_fraction(mem_db):
-    """TRIM accepted WITH exec_rec still uses execution_fraction, not NULL (regression guard)."""
+    """TRIM with exec_rec: actual_r is non-null, non-estimated, and uses two-component formula (0103)."""
     from agents.outcome_evaluator import _compute_scenarios
 
     entry_price = 180.0
     horizon_price = 200.0
+    exec_price = 185.0
+    f = 0.25
     exec_rec = {
-        "execution_price": 185.0,
+        "execution_price": exec_price,
         "execution_date": "2026-01-03",
         "quantity": 30.0,
-        "execution_fraction": 0.25,
+        "execution_fraction": f,
     }
     prices = {"ANET": horizon_price, "ANET@2026-01-01": entry_price, "SPY": 500.0, "SPY@2026-01-01": 450.0}
 
@@ -543,3 +552,126 @@ def test_trim_accepted_with_execution_uses_fraction(mem_db):
 
     assert actual is not None, "TRIM with execution should produce a real actual_r, not NULL"
     assert not estimated
+    hold_r = (horizon_price - entry_price) / entry_price
+    exec_gain = (exec_price / entry_price) - 1
+    expected = f * exec_gain + (1 - f) * hold_r
+    assert abs(actual - expected) < 0.0001, f"Expected {expected:.6f}, got {actual:.6f}"
+
+
+# ── 0103: _compute_actual_trim unit tests ─────────────────────────────────────
+
+def test_compute_actual_trim_two_component_formula(mem_db):
+    """_compute_actual_trim returns f*exec_gain + (1-f)*hold_r."""
+    from agents.outcome_evaluator import _compute_actual_trim
+    exec_rec = {"execution_price": 190.0, "execution_fraction": 0.30}
+    entry_price = 180.0
+    hold_r = (200.0 - 180.0) / 180.0  # 11.11%
+    actual, estimated = _compute_actual_trim(exec_rec, entry_price, hold_r)
+    exec_gain = (190.0 / 180.0) - 1   # 5.56%
+    expected = 0.30 * exec_gain + 0.70 * hold_r
+    assert abs(actual - expected) < 1e-9
+    assert not estimated
+
+
+def test_compute_actual_trim_hold_r_none_returns_none(mem_db):
+    """_compute_actual_trim returns (None, False) when hold_r is unavailable."""
+    from agents.outcome_evaluator import _compute_actual_trim
+    exec_rec = {"execution_price": 190.0, "execution_fraction": 0.25}
+    actual, estimated = _compute_actual_trim(exec_rec, 180.0, None)
+    assert actual is None
+    assert not estimated
+
+
+def test_compute_actual_trim_derives_fraction_from_quantity(mem_db):
+    """_compute_actual_trim falls back to quantity/position_shares_before for fraction."""
+    from agents.outcome_evaluator import _compute_actual_trim
+    exec_rec = {
+        "execution_price": 190.0,
+        "quantity": 25.0,
+        "position_shares_before": 100.0,
+    }
+    hold_r = 0.10
+    actual, _ = _compute_actual_trim(exec_rec, 180.0, hold_r)
+    f = 25.0 / 100.0  # 0.25
+    exec_gain = (190.0 / 180.0) - 1
+    expected = f * exec_gain + (1 - f) * hold_r
+    assert abs(actual - expected) < 1e-9
+
+
+# ── 0103: _compute_actual_allocate unit tests ─────────────────────────────────
+
+def test_compute_actual_allocate_uses_exec_price_as_basis(mem_db):
+    """_compute_actual_allocate returns (h_price - exec_price) / exec_price."""
+    from agents.outcome_evaluator import _compute_actual_allocate
+    exec_rec = {"execution_price": 95.0, "execution_date": "2026-01-05"}
+    actual, estimated = _compute_actual_allocate(exec_rec, 110.0)
+    expected = (110.0 - 95.0) / 95.0
+    assert abs(actual - expected) < 1e-9
+    assert not estimated
+
+
+def test_compute_actual_allocate_no_horizon_price_returns_none(mem_db):
+    """_compute_actual_allocate returns (None, True) when horizon price is unavailable."""
+    from agents.outcome_evaluator import _compute_actual_allocate
+    exec_rec = {"execution_price": 95.0, "execution_date": "2026-01-05"}
+    actual, estimated = _compute_actual_allocate(exec_rec, None)
+    assert actual is None
+    assert estimated
+
+
+# ── 0103: _compute_actual_rebalance unit tests ────────────────────────────────
+
+def test_compute_actual_rebalance_blends_from_and_to_return(mem_db):
+    """_compute_actual_rebalance blends from-ticker gain + to-ticker return."""
+    from agents.outcome_evaluator import _compute_actual_rebalance
+    import agents.outcome_evaluator as oe
+
+    exec_rec = {"execution_price": 200.0, "execution_date": "2026-01-10"}
+    entry_price = 190.0
+    pl = {"to_ticker": "VTI", "fraction": 0.40}
+    prices = {
+        ("VTI", "2026-01-10"): 130.0,   # to-ticker exec_date price
+        ("VTI", "2026-04-01"): 143.0,   # to-ticker horizon price
+    }
+
+    with patch.object(oe, "_ticker_price_at", side_effect=lambda t, d: prices.get((t, d))):
+        actual, estimated = _compute_actual_rebalance(exec_rec, entry_price, pl, "2026-04-01")
+
+    from_gain = (200.0 / 190.0) - 1
+    to_r = (143.0 - 130.0) / 130.0
+    expected = (1 - 0.40) * from_gain + 0.40 * to_r
+    assert abs(actual - expected) < 1e-9
+    assert not estimated
+
+
+def test_compute_actual_rebalance_no_to_ticker_returns_from_gain(mem_db):
+    """_compute_actual_rebalance with no to_ticker returns from-gain only, estimated=True."""
+    from agents.outcome_evaluator import _compute_actual_rebalance
+    import agents.outcome_evaluator as oe
+
+    exec_rec = {"execution_price": 200.0, "execution_date": "2026-01-10"}
+    entry_price = 190.0
+    pl = {"fraction": 0.50}  # no to_ticker
+
+    with patch.object(oe, "_ticker_price_at", return_value=None):
+        actual, estimated = _compute_actual_rebalance(exec_rec, entry_price, pl, "2026-04-01")
+
+    from_gain = (200.0 / 190.0) - 1
+    expected = (1 - 0.50) * from_gain
+    assert abs(actual - expected) < 1e-9
+    assert estimated
+
+
+# ── 0103: Decision Quality exclusion gate ─────────────────────────────────────
+
+def test_decision_quality_excludes_trim_allocate_rebalance(mem_db):
+    """get_decision_quality_note returns '' for TRIM/ALLOCATE/REBALANCE regardless of data."""
+    from agents.decision_quality import get_decision_quality_note, _EXCLUDE_FROM_DQ
+
+    assert "TRIM" in _EXCLUDE_FROM_DQ
+    assert "ALLOCATE" in _EXCLUDE_FROM_DQ
+    assert "REBALANCE" in _EXCLUDE_FROM_DQ
+
+    for action in ("TRIM", "ALLOCATE", "REBALANCE"):
+        note = get_decision_quality_note("sell_trim", action)
+        assert note == "", f"Expected empty note for {action}, got: {note!r}"

@@ -133,24 +133,31 @@ def test_accepted_exit_with_execution_uses_exec_price():
 
 
 def test_trim_with_execution_fraction():
-    """0072: TRIM with exec_rec.execution_fraction uses that fraction."""
+    """0103: TRIM with exec_rec uses two-component formula: f*exec_gain + (1-f)*hold_r."""
     prices = {"ANET": 200.0, "ANET@2026-01-01": 180.0, "SPY": 500.0, "SPY@2026-01-01": 450.0}
     p1, p2 = _mock_prices(prices)
+    entry_price = 180.0
+    exec_price = 185.0
+    f = 0.3
     exec_rec = {
-        "execution_price": 185.0,
+        "execution_price": exec_price,
         "execution_date": "2026-01-03",
         "quantity": 30.0,
-        "execution_fraction": 0.3,
+        "execution_fraction": f,
     }
     with p1, p2:
         actual, agent, hold, spy, estimated, cc_ret, cc_alpha = _compute_scenarios(
             "ANET", "TRIM", "2026-01-01", "2026-04-01",
-            {"trim_fraction": 0.5}, 180.0, decision="accepted",
+            {"trim_fraction": 0.5}, entry_price, decision="accepted",
             exec_rec=exec_rec,
         )
-    hold_r = (200.0 - 180.0) / 180.0
-    expected_actual = (1 - 0.3) * hold_r
-    assert abs(actual - expected_actual) < 0.001
+    hold_r = (200.0 - entry_price) / entry_price
+    exec_gain = (exec_price / entry_price) - 1
+    expected_actual = f * exec_gain + (1 - f) * hold_r
+    assert abs(actual - expected_actual) < 0.0001, (
+        f"actual={actual:.6f}, expected={expected_actual:.6f}. "
+        "Formula: f*exec_gain + (1-f)*hold_r (0103)"
+    )
     assert not estimated
 
 
