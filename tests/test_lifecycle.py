@@ -347,3 +347,126 @@ def test_sell_cc_actual_from_exec_rec_differs_from_strategy_return(mem_db):
     # cc_ret is the agent recommendation path (uses payload premium/strike)
     assert cc_ret is not None
     assert abs(actual - cc_ret) > 0.001  # they should differ
+
+
+# ── 0093: Dynamic NO_ACTION state hashes ──────────────────────────────────────
+
+def _make_holding(ticker="ANET", shares=100, price=300.0, weight_pct=15.0):
+    from agents.contracts import HoldingSnapshot
+    return HoldingSnapshot(
+        ticker=ticker, layer=2, shares=shares, avg_cost=200.0,
+        current_price=price, market_value=shares * price, weight_pct=weight_pct,
+    )
+
+
+def _make_snapshot(holdings=None, layer_weights=None):
+    from agents.contracts import PortfolioSnapshot
+    h = holdings or [_make_holding()]
+    return PortfolioSnapshot(
+        date="2026-09-06", total_value=100_000.0, holdings=h,
+        layer_weights=layer_weights or {1: 50.0, 2: 30.0, 3: 20.0},
+        macro_scores={}, generated_at=time.time(),
+        price_as_of="2026-09-05", portfolio_as_of="2026-09-05",
+    )
+
+
+def test_cc_no_action_hash_changes_when_iv_bucket_changes(mem_db):
+    """Changing IV from ~45% to ~10% produces different NO_ACTION hashes."""
+    import agent_db
+    from agents.orchestrator import _compute_no_action_state_extras
+
+    holding = _make_holding("ANET")
+    snapshot = _make_snapshot([holding])
+
+    # Seed option snapshot with high IV
+    agent_db.upsert_option_quote_snapshot(
+        "ANET", strike=310.0, expiration="2026-10-17",
+        iv=0.45, bid=3.0, ask=3.2, spread_pct=0.062,
+    )
+    extras_high = _compute_no_action_state_extras("covered_call", "ANET", snapshot, holding)
+
+    # Replace snapshot with low IV
+    agent_db.upsert_option_quote_snapshot(
+        "ANET", strike=310.0, expiration="2026-10-17",
+        iv=0.12, bid=0.5, ask=0.55, spread_pct=0.09,
+    )
+    extras_low = _compute_no_action_state_extras("covered_call", "ANET", snapshot, holding)
+
+    assert extras_high["iv_bucket"] != extras_low["iv_bucket"]
+    assert extras_high["iv_bucket"] == 45   # 0.45 * 100 / 5 → 45
+    assert extras_low["iv_bucket"]  == 10   # 0.12 * 100 / 5 → 10 (rounds to nearest 5)
+
+
+def test_cc_no_action_hash_changes_when_open_cc_opens(mem_db):
+    """Open CC flag differs between no open CC and an existing open CC."""
+    import agent_db
+    from agents.orchestrator import _compute_no_action_state_extras
+
+    holding = _make_holding("MSFT")
+    snapshot = _make_snapshot([holding])
+
+    # No CC exists yet
+    extras_no_cc = _compute_no_action_state_extras("covered_call", "MSFT", snapshot, holding)
+    assert extras_no_cc["open_cc"] == 0
+
+    # Seed an open CC (cc_positions table lives in serve.py's init_db; create it here)
+    _conn = agent_db._connect()
+    _conn.execute(
+        """CREATE TABLE IF NOT EXISTS cc_positions (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               ticker TEXT NOT NULL, contracts INTEGER NOT NULL, strike REAL NOT NULL,
+               expiry TEXT NOT NULL, premium_per_contract REAL NOT NULL,
+               opened_date TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'open')"""
+    )
+    _conn.execute(
+        """INSERT INTO cc_positions (ticker, strike, expiry, premium_per_contract, contracts, status, opened_date)
+           VALUES ('MSFT', 400.0, '2026-10-17', 2.5, 1, 'open', '2026-09-01')""",
+    )
+    _conn.commit()
+    _conn.close()
+
+    extras_with_cc = _compute_no_action_state_extras("covered_call", "MSFT", snapshot, holding)
+    assert extras_with_cc["open_cc"] == 1
+
+
+def test_guardian_hash_changes_when_max_weight_crosses_bucket(mem_db):
+    """max_weight_bucket in guardian extras reflects nearest-0.5% bucketing."""
+    from agents.orchestrator import _compute_no_action_state_extras
+
+    holding_lo = _make_holding("ANET", weight_pct=19.8)
+    snap_lo = _make_snapshot([holding_lo], layer_weights={1: 50.0, 2: 30.0, 3: 19.8})
+    extras_lo = _compute_no_action_state_extras("portfolio_guardian", "ANET", snap_lo, holding_lo)
+
+    holding_hi = _make_holding("ANET", weight_pct=23.1)
+    snap_hi = _make_snapshot([holding_hi], layer_weights={1: 50.0, 2: 30.0, 3: 23.1})
+    extras_hi = _compute_no_action_state_extras("portfolio_guardian", "ANET", snap_hi, holding_hi)
+
+    assert extras_lo["max_weight_bucket"] != extras_hi["max_weight_bucket"]
+    assert extras_lo["max_weight_bucket"] == 20.0  # 19.8 → rounds to 20.0 (nearest 0.5)
+    assert extras_hi["max_weight_bucket"] == 23.0  # 23.1 → rounds to 23.0
+
+
+def test_guardian_layer_drift_flag(mem_db):
+    """layer_drift_flag is 1 when a layer exceeds target+5%."""
+    from agents.orchestrator import _compute_no_action_state_extras
+
+    holding = _make_holding("ANET")
+    # Layer 3 target=20%, actual=27% → drift=True
+    snap_drift = _make_snapshot([holding], layer_weights={1: 50.0, 2: 23.0, 3: 27.0})
+    extras_drift = _compute_no_action_state_extras("portfolio_guardian", "ANET", snap_drift, holding)
+    assert extras_drift["layer_drift_flag"] == 1
+
+    # Within tolerance
+    snap_ok = _make_snapshot([holding], layer_weights={1: 50.0, 2: 30.0, 3: 20.0})
+    extras_ok = _compute_no_action_state_extras("portfolio_guardian", "ANET", snap_ok, holding)
+    assert extras_ok["layer_drift_flag"] == 0
+
+
+def test_unknown_agent_returns_empty_extras(mem_db):
+    """Unknown agent types return an empty dict (no crash)."""
+    from agents.orchestrator import _compute_no_action_state_extras
+
+    holding = _make_holding("ANET")
+    snapshot = _make_snapshot([holding])
+    extras = _compute_no_action_state_extras("thesis_monitor", "ANET", snapshot, holding)
+    assert extras == {}

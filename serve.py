@@ -1846,6 +1846,8 @@ def _detect_expiry_from_message(message: str, available_expirations: list) -> "s
     return candidates[0]
 
 
+from execution_validation import validate_execution_body as _validate_execution_body
+
 # ── HTTP Handler ──────────────────────────────────────────────────────────────
 class Handler(http.server.SimpleHTTPRequestHandler):
 
@@ -5345,43 +5347,47 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         0076: ticker and action are derived from the recommendation row; body values are ignored.
         0072: accepts position_shares_before, position_shares_after, execution_fraction.
+        0092: action-specific field validation + fill_id idempotency key.
         """
         try:
             body = self._read_body()
         except Exception:
             return self._json_error(400, "Invalid JSON body")
 
-        # 0076: fetch the recommendation and derive ticker/action from it
         rec = agent_db.get_recommendation_by_id(rec_id)
         if not rec:
             return self._send_json({"ok": False, "error": "recommendation not found"}, status=404)
 
+        if rec.get("status") != "accepted":
+            return self._send_json(
+                {"ok": False, "error": f"recommendation status is '{rec.get('status')}'; must be 'accepted'"},
+                status=409,
+            )
+
         ticker = rec["ticker"]
         action = rec["action"]
 
-        execution_date = (body.get("execution_date") or "").strip()
-        if not execution_date:
-            return self._json_error(400, "execution_date is required")
+        from datetime import date as _date
+        err = _validate_execution_body(action, body, rec, _date.today())
+        if err:
+            code, msg = err
+            return self._json_error(code, msg)
 
-        # 0076: validate execution_date is a valid date and not before the recommendation
-        from datetime import datetime as _dt
-        try:
-            exec_dt = _dt.strptime(execution_date, "%Y-%m-%d").date()
-        except ValueError:
-            return self._json_error(400, "execution_date must be YYYY-MM-DD")
-
-        rec_date = _dt.utcfromtimestamp(rec["created_at"]).date()
-        if exec_dt < rec_date:
-            return self._json_error(
-                400,
-                f"execution_date {execution_date} cannot be before recommendation date {rec_date.isoformat()}"
-            )
+        fill_id = (body.get("fill_id") or "").strip() or None
+        if fill_id:
+            existing = agent_db.get_executed_action_by_fill_id(fill_id)
+            if existing:
+                return self._send_json(
+                    {"ok": True, "executed_action_id": existing["id"],
+                     "recommendation_id": rec_id, "duplicate": True},
+                    status=409,
+                )
 
         try:
             exec_id = agent_db.insert_executed_action(
                 ticker=ticker,
                 action=action,
-                execution_date=execution_date,
+                execution_date=body.get("execution_date", "").strip(),
                 recommendation_id=rec_id,
                 quantity=body.get("quantity"),
                 execution_price=body.get("execution_price"),
@@ -5395,6 +5401,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 position_shares_before=body.get("position_shares_before"),
                 position_shares_after=body.get("position_shares_after"),
                 execution_fraction=body.get("execution_fraction"),
+                fill_id=fill_id,
             )
         except Exception as e:
             return self._json_error(500, str(e))

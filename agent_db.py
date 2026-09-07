@@ -446,6 +446,8 @@ def migrate() -> None:
         ("executed_actions",         "execution_fraction",      "REAL"),
         # 0086 — contract/estimate/event-specific dependency context
         ("recommendation_dependencies", "dependency_metadata_json", "TEXT"),
+        # 0092 — idempotency key for execution submissions
+        ("executed_actions",         "fill_id",                 "TEXT"),
     ]
     for table, col, col_type in _new_cols:
         try:
@@ -453,6 +455,16 @@ def migrate() -> None:
             conn.commit()
         except sqlite3.OperationalError:
             pass  # column already exists
+
+    # 0092: unique index on executed_actions.fill_id
+    try:
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_executed_actions_fill_id "
+            "ON executed_actions (fill_id) WHERE fill_id IS NOT NULL"
+        )
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
 
     # 0088: unique index on event_calendar for idempotent upserts
     try:
@@ -2350,6 +2362,7 @@ def insert_executed_action(
     position_shares_before: float | None = None,
     position_shares_after: float | None = None,
     execution_fraction: float | None = None,
+    fill_id: str | None = None,
 ) -> int:
     conn = _connect()
     cur = conn.execute(
@@ -2357,18 +2370,29 @@ def insert_executed_action(
            (recommendation_id, ticker, action, quantity, execution_price,
             execution_date, fees, strike, expiration, premium, contracts,
             tax_lot_ids, notes, source, created_at,
-            position_shares_before, position_shares_after, execution_fraction)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            position_shares_before, position_shares_after, execution_fraction,
+            fill_id)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (recommendation_id, ticker, action, quantity, execution_price,
          execution_date, fees, strike, expiration, premium, contracts,
          json.dumps(tax_lot_ids) if tax_lot_ids else None,
          notes, source, time.time(),
-         position_shares_before, position_shares_after, execution_fraction),
+         position_shares_before, position_shares_after, execution_fraction,
+         fill_id),
     )
     _id = cur.lastrowid
     conn.commit()
     conn.close()
     return _id
+
+
+def get_executed_action_by_fill_id(fill_id: str) -> dict | None:
+    conn = _connect()
+    row = conn.execute(
+        "SELECT * FROM executed_actions WHERE fill_id=?", (fill_id,)
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
 
 
 def get_executions_for_rec(recommendation_id: int | None) -> list[dict]:

@@ -260,3 +260,68 @@ def test_append_estimate_history_records_material_change(mem_db):
     rows = agent_db.get_estimate_history("ANET", "+1y", "EPS")
     assert len(rows) == 2
     assert abs(rows[0]["estimate_value"] - 9.00) < 0.001  # newest first
+
+
+# --- 0092: fill_id idempotency ---
+
+def test_fill_id_stored_and_retrievable(mem_db):
+    """fill_id is persisted and queryable by get_executed_action_by_fill_id."""
+    import agent_db
+    exec_id = agent_db.insert_executed_action(
+        ticker="MSFT",
+        action="TRIM",
+        execution_date="2026-09-06",
+        quantity=10.0,
+        execution_price=420.0,
+        fill_id="broker-fill-001",
+    )
+    row = agent_db.get_executed_action_by_fill_id("broker-fill-001")
+    assert row is not None
+    assert row["id"] == exec_id
+    assert row["ticker"] == "MSFT"
+
+
+def test_fill_id_none_returns_none(mem_db):
+    """get_executed_action_by_fill_id returns None when no match exists."""
+    import agent_db
+    assert agent_db.get_executed_action_by_fill_id("does-not-exist") is None
+
+
+def test_fill_id_unique_index_prevents_duplicate(mem_db):
+    """Inserting the same fill_id twice raises an integrity error."""
+    import agent_db
+    import sqlite3
+    agent_db.insert_executed_action(
+        ticker="ANET",
+        action="EXIT",
+        execution_date="2026-09-06",
+        quantity=50.0,
+        execution_price=300.0,
+        fill_id="dup-fill-42",
+    )
+    try:
+        agent_db.insert_executed_action(
+            ticker="ANET",
+            action="EXIT",
+            execution_date="2026-09-06",
+            quantity=50.0,
+            execution_price=300.0,
+            fill_id="dup-fill-42",
+        )
+        assert False, "Expected IntegrityError on duplicate fill_id"
+    except sqlite3.IntegrityError:
+        pass
+
+
+def test_null_fill_ids_are_not_unique_constrained(mem_db):
+    """Multiple rows with fill_id=None are allowed (partial unique index)."""
+    import agent_db
+    id1 = agent_db.insert_executed_action(
+        ticker="BRK-B", action="TRIM", execution_date="2026-09-06",
+        quantity=5.0, execution_price=350.0, fill_id=None,
+    )
+    id2 = agent_db.insert_executed_action(
+        ticker="BRK-B", action="TRIM", execution_date="2026-09-06",
+        quantity=5.0, execution_price=352.0, fill_id=None,
+    )
+    assert id1 != id2

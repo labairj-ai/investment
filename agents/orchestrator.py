@@ -94,6 +94,94 @@ _AGENT_HASH_EXTRAS: dict[str, dict[str, object]] = {
 }
 
 
+def _compute_no_action_state_extras(
+    agent_type: str,
+    ticker: str,
+    snapshot: PortfolioSnapshot,
+    holding,
+) -> dict:
+    """Return bucketed observable state for the given agent + ticker.
+
+    These extras are mixed into the NO_ACTION hash (0093) so that meaningful
+    market-state changes (e.g. IV collapse, lot crossing LT threshold) produce
+    a new row even when config and price are unchanged.  Bucketing prevents
+    minor intraday moves from generating spurious new rows.
+    """
+    import agent_db
+    from datetime import date as _date, timedelta
+
+    result: dict = {}
+    today = _date.today()
+
+    if agent_type == "covered_call":
+        snap = agent_db.get_latest_option_snapshot(ticker)
+        if snap:
+            iv = snap.get("iv") or 0.0
+            spread = snap.get("spread_pct") or 0.0
+            result["iv_bucket"]     = round(iv * 100 / 5) * 5    # nearest 5% of IV
+            result["spread_bucket"] = round(spread * 100 / 2) * 2 # nearest 2% of spread
+        # open CC flag
+        open_cc = agent_db.get_open_cc_for_ticker(ticker)
+        result["open_cc"] = 1 if open_cc else 0
+        # shares bucket (nearest 50)
+        shares = holding.shares or 0
+        result["shares_bucket"] = int(round(shares / 50) * 50)
+        # earnings proximity relative to any current open CC
+        earnings_row = agent_db.get_latest_earnings_date(ticker)
+        if earnings_row and open_cc:
+            exp_str = open_cc.get("expiration_date") or open_cc.get("expiration")
+            if exp_str:
+                try:
+                    exp_dt = _date.fromisoformat(str(exp_str))
+                    earn_dt = _date.fromisoformat(str(earnings_row["event_date"]))
+                    result["earnings_bucket"] = "inside_contract" if earn_dt <= exp_dt else "outside_contract"
+                except (ValueError, TypeError):
+                    result["earnings_bucket"] = "unknown"
+            else:
+                result["earnings_bucket"] = "unknown"
+        elif earnings_row:
+            result["earnings_bucket"] = "outside_contract"
+        else:
+            result["earnings_bucket"] = "unknown"
+
+    elif agent_type == "tax":
+        # Count lots that became long-term in the past 30 days
+        executions = agent_db.get_executions_for_ticker(ticker)
+        lt_threshold = today - timedelta(days=365)
+        lt_window_start = lt_threshold - timedelta(days=30)
+        lt_lots = [
+            e for e in executions
+            if e.get("execution_date") and
+            lt_window_start.isoformat() <= e["execution_date"] <= lt_threshold.isoformat()
+        ]
+        result["lt_lots_count"] = len(lt_lots)
+        # YTD realized gains bucket (nearest $500)
+        ytd_start = today.replace(month=1, day=1).isoformat()
+        ytd_execs = agent_db.get_executions_for_ticker(ticker, since_date=ytd_start)
+        ytd_gain = sum(
+            (float(e.get("execution_price") or 0) - float(e.get("avg_cost") or 0))
+            * float(e.get("quantity") or 0)
+            for e in ytd_execs
+        )
+        result["realized_gain_bucket"] = int(round(ytd_gain / 500) * 500)
+
+    elif agent_type == "portfolio_guardian":
+        # Max single-position weight bucket (nearest 0.5%)
+        weights = [h.weight_pct for h in snapshot.holdings if h.weight_pct is not None]
+        max_weight = max(weights) if weights else 0.0
+        result["max_weight_bucket"] = round(max_weight * 2) / 2  # nearest 0.5%
+        # Layer drift: any layer > target + 5%?
+        layer_weights = snapshot.layer_weights or {}
+        _LAYER_TARGETS = {1: 50.0, 2: 30.0, 3: 20.0}
+        has_drift = any(
+            layer_weights.get(layer, 0) > target + 5.0
+            for layer, target in _LAYER_TARGETS.items()
+        )
+        result["layer_drift_flag"] = 1 if has_drift else 0
+
+    return result
+
+
 def _record_no_actions(
     agent_type: str,
     snapshot: PortfolioSnapshot,
@@ -104,13 +192,16 @@ def _record_no_actions(
     import agent_db
 
     # 0082: include agent-specific config extras in the hash
-    extras = _AGENT_HASH_EXTRAS.get(agent_type)
+    base_extras = _AGENT_HASH_EXTRAS.get(agent_type) or {}
 
     for holding in snapshot.holdings:
         if holding.ticker in recommended_tickers:
             continue
         thesis_ver = agent_db._get_thesis_version_for_hash(holding.ticker)
         latest_q   = agent_db._get_latest_quarter_for_hash(holding.ticker)
+        # 0093: merge observable bucketed state into the hash extras
+        state_extras = _compute_no_action_state_extras(agent_type, holding.ticker, snapshot, holding)
+        extras = {**base_extras, **state_extras} if state_extras else (base_extras or None)
         h = agent_db.compute_agent_hash(
             holding.ticker, agent_type,
             holding.current_price or 0,
