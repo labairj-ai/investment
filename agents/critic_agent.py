@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Critic Agent — adversarial review pass for all agent recommendations.
 
 Pipeline:

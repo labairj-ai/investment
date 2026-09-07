@@ -224,6 +224,11 @@ def stream_chat(messages, model=DEFAULT_MODEL, temperature=0.4, num_predict=1000
                     yield token
 
 
+def get_model_id() -> str:
+    """Return the configured model identifier for audit logging."""
+    return DEFAULT_MODEL
+
+
 def available(model=DEFAULT_MODEL):
     try:
         with urllib.request.urlopen(f"{_get_llm_url()}/v1/models", timeout=10) as r:

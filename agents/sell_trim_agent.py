@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Sell/Trim Agent — evaluates every held position on a disposition framework.
 
 SellStrength = 0.40*T + 0.20*F + 0.15*V + 0.15*P + 0.10*O
@@ -24,6 +25,8 @@ from agents.contracts import AgentContext, EvidenceBundle, Recommendation
 from agents.orchestrator import register_agent
 
 _DB = Path(__file__).resolve().parent.parent / "out" / "investment.db"
+
+_PROMPT_VERSION = "sell_trim_v2"
 
 _RATIONALE_CLASSES = frozenset({
     "THESIS_BREAK", "FUNDAMENTAL_DETERIORATION", "VALUATION",
@@ -156,8 +159,32 @@ def _score_T(ticker: str) -> tuple[int, list[dict]]:
     return score, detail
 
 
+def _ttm(values: list) -> float | None:
+    """Sum of last 4 non-None values (trailing twelve months)."""
+    vals = [float(v) for v in values if v is not None]
+    if len(vals) >= 4:
+        return sum(vals[:4])
+    return None
+
+
+def _yoy_growth(values: list) -> float | None:
+    """YoY growth: (Q[-1] - Q[-5]) / |Q[-5]|. Requires at least 5 periods."""
+    vals = [v for v in values if v is not None]
+    if len(vals) < 5:
+        return None
+    newest, year_ago = vals[0], vals[4]
+    if abs(year_ago) < 1e-6:
+        return None
+    return (newest - year_ago) / abs(year_ago)
+
+
 def _score_F(ticker: str, current_price: float) -> tuple[int, str]:
-    """F = fundamental deterioration (0–100). 20% weight."""
+    """F = fundamental deterioration (0–100). 20% weight.
+
+    Uses YoY comparisons (same quarter prior year) when ≥5 periods available.
+    Falls back to QoQ when < 5 periods. TTM revenue vs prior TTM is always computed
+    when ≥8 periods available.
+    """
     conn = _connect()
     if not conn:
         return 0, "no data"
@@ -166,7 +193,7 @@ def _score_F(ticker: str, current_price: float) -> tuple[int, str]:
                   eps_diluted, period_end
            FROM company_financials
            WHERE ticker = ? AND period_type = 'Q'
-           ORDER BY period_end DESC LIMIT 4""",
+           ORDER BY period_end DESC LIMIT 9""",
         (ticker,),
     ).fetchall()
     est = conn.execute(
@@ -179,36 +206,71 @@ def _score_F(ticker: str, current_price: float) -> tuple[int, str]:
     if not quarters:
         return 0, "no financials"
 
+    n = len(quarters)
+    comparison_type = "YoY" if n >= 5 else "QoQ_fallback"
     score = 0
     notes: list[str] = []
-    newest = quarters[0]
-    oldest = quarters[-1]
 
-    # Revenue trend (newest vs oldest available quarter)
-    if oldest["revenue"] and abs(oldest["revenue"]) > 0:
-        rev_chg = (newest["revenue"] - oldest["revenue"]) / abs(oldest["revenue"])
+    revenues   = [q["revenue"]       for q in quarters]
+    gp_vals    = [q["gross_profit"]  for q in quarters]
+    fcf_vals   = [q["free_cash_flow"] for q in quarters]
+
+    if comparison_type == "YoY":
+        rev_chg = _yoy_growth(revenues)
+    else:
+        rev_chg = ((revenues[0] - revenues[-1]) / abs(revenues[-1])
+                   if revenues[-1] and abs(revenues[-1]) > 0 else None)
+
+    if rev_chg is not None:
         if rev_chg < -0.05:
             score += 35
-            notes.append(f"revenue {rev_chg*100:.0f}%")
+            notes.append(f"revenue {rev_chg*100:.0f}% {comparison_type}")
         elif rev_chg < 0:
             score += 15
-            notes.append("revenue flat/declining")
+            notes.append(f"revenue flat/declining ({comparison_type})")
 
-    # Gross margin trend
-    if (oldest["gross_profit"] and oldest["revenue"]
-            and newest["gross_profit"] and newest["revenue"]):
-        gm_old = oldest["gross_profit"] / oldest["revenue"]
-        gm_new = newest["gross_profit"] / newest["revenue"]
-        diff   = gm_new - gm_old
-        if diff < -0.03:
-            score += 30
-            notes.append(f"margin {diff*100:.1f}pp")
-        elif diff < 0:
-            score += 10
-            notes.append("slight margin erosion")
+    # TTM revenue vs prior TTM (when ≥8 quarters)
+    if n >= 8:
+        ttm_now  = _ttm(revenues[:4])
+        ttm_prev = _ttm(revenues[4:8])
+        if ttm_now is not None and ttm_prev is not None and abs(ttm_prev) > 0:
+            ttm_chg = (ttm_now - ttm_prev) / abs(ttm_prev)
+            if ttm_chg < -0.05 and "revenue" not in " ".join(notes):
+                score += 20
+                notes.append(f"TTM revenue {ttm_chg*100:.0f}% YoY")
 
-    # Free cash flow
-    if newest["free_cash_flow"] is not None and newest["free_cash_flow"] < 0:
+    # Gross margin trend (YoY when available)
+    if n >= 5:
+        # Compare newest quarter margin vs same quarter prior year
+        rev0, gp0 = revenues[0], gp_vals[0]
+        rev4, gp4 = revenues[4], gp_vals[4]
+        if rev0 and gp0 is not None and rev4 and gp4 is not None:
+            gm_new = gp0 / rev0
+            gm_old = gp4 / rev4
+            diff   = gm_new - gm_old
+            if diff < -0.03:
+                score += 30
+                notes.append(f"margin {diff*100:.1f}pp YoY")
+            elif diff < 0:
+                score += 10
+                notes.append("slight margin erosion (YoY)")
+    elif len(quarters) >= 2:
+        newest, oldest = quarters[0], quarters[-1]
+        if (oldest["gross_profit"] and oldest["revenue"]
+                and newest["gross_profit"] and newest["revenue"]):
+            gm_old = oldest["gross_profit"] / oldest["revenue"]
+            gm_new = newest["gross_profit"] / newest["revenue"]
+            diff   = gm_new - gm_old
+            if diff < -0.03:
+                score += 30
+                notes.append(f"margin {diff*100:.1f}pp (QoQ)")
+            elif diff < 0:
+                score += 10
+                notes.append("slight margin erosion (QoQ)")
+
+    # Free cash flow — most recent quarter
+    newest_fcf = fcf_vals[0] if fcf_vals else None
+    if newest_fcf is not None and newest_fcf < 0:
         score += 15
         notes.append("negative FCF")
 
@@ -219,14 +281,40 @@ def _score_F(ticker: str, current_price: float) -> tuple[int, str]:
             score += 15
             notes.append(f"PT {upside*100:.0f}% below price")
 
-    return min(100, score), "; ".join(notes) or "no material deterioration"
+    note_str = "; ".join(notes) or f"no material deterioration ({comparison_type})"
+    return min(100, score), note_str
+
+
+def _valuation_percentile(current_pe: float, historical: list[float]) -> float | None:
+    """Rank current_pe within the ticker's own historical P/E distribution (0–100 percentile).
+
+    Requires at least 4 historical values. Returns None when insufficient history.
+    """
+    if len(historical) < 4:
+        return None
+    below = sum(1 for h in historical if h < current_pe)
+    return (below / len(historical)) * 100.0
+
+
+def _v_score_from_percentile(pct: float) -> float:
+    """Map historical percentile to a V component score (0–100)."""
+    if pct > 90:
+        return 90.0
+    if pct > 75:
+        return 70.0
+    if pct > 50:
+        return 45.0
+    if pct > 25:
+        return 20.0
+    return 5.0
 
 
 def _score_V(ticker: str, current_price: float) -> tuple[int, str]:
     """V = valuation risk composite (0–100). 15% weight.
 
-    Weighted composite: 0.30*H + 0.25*G + 0.20*FCF + 0.15*E + 0.10*C
-      H   — trailing P/E absolute level (0–100)
+    Primary: historical P/E percentile (company vs own 5-year history) when ≥4 periods.
+    Secondary weighted composite: 0.30*H + 0.25*G + 0.20*FCF + 0.15*E + 0.10*C
+      H   — trailing P/E (historical percentile if available, else absolute)
       G   — PEG / growth-adjusted valuation (0–100)
       FCF — FCF quality trend (0–100)
       E   — analyst recommendation sentiment (0–100)
@@ -242,12 +330,26 @@ def _score_V(ticker: str, current_price: float) -> tuple[int, str]:
         return 25, "no data"
 
     quarters = conn.execute(
-        """SELECT eps_diluted, free_cash_flow, period_end
+        """SELECT eps_diluted, free_cash_flow, price_to_earnings, period_end
            FROM company_financials
            WHERE ticker = ? AND period_type = 'Q'
-           ORDER BY period_end DESC LIMIT 8""",
+           ORDER BY period_end DESC LIMIT 20""",
         (ticker,),
     ).fetchall()
+
+    # Read thesis valuation framework for extreme_threshold override
+    thesis_val_framework: dict = {}
+    try:
+        vf_row = conn.execute(
+            "SELECT valuation_framework FROM investment_theses "
+            "WHERE ticker=? AND status='ACTIVE' ORDER BY version DESC LIMIT 1",
+            (ticker,),
+        ).fetchone()
+        if vf_row and vf_row["valuation_framework"]:
+            import json as _json
+            thesis_val_framework = _json.loads(vf_row["valuation_framework"]) or {}
+    except Exception:
+        pass
     est = conn.execute(
         "SELECT price_target, recommendation, next_yr_eps_est, curr_yr_eps_est "
         "FROM company_estimates WHERE ticker = ? ORDER BY fetched_at DESC LIMIT 1",
@@ -257,8 +359,9 @@ def _score_V(ticker: str, current_price: float) -> tuple[int, str]:
 
     factors: dict[str, float] = {}
     notes: list[str] = []
+    v_method = "absolute"
 
-    # H — trailing P/E (TTM EPS from last 4 quarters)
+    # H — trailing P/E with historical percentile when available
     if quarters:
         ttm_eps = sum(
             float(q["eps_diluted"]) for q in quarters[:4]
@@ -266,24 +369,63 @@ def _score_V(ticker: str, current_price: float) -> tuple[int, str]:
         )
         if ttm_eps > 0:
             pe = current_price / ttm_eps
-            if pe > 50:
-                factors["H"] = 85.0
-                notes.append(f"P/E={pe:.0f}x (very expensive)")
-            elif pe > 35:
-                factors["H"] = 70.0
-                notes.append(f"P/E={pe:.0f}x (expensive)")
-            elif pe > 25:
-                factors["H"] = 45.0
-                notes.append(f"P/E={pe:.0f}x (elevated)")
-            elif pe > 15:
-                factors["H"] = 20.0
-                notes.append(f"P/E={pe:.0f}x (fair)")
+
+            # Try historical percentile using stored price_to_earnings values
+            hist_pe = [float(q["price_to_earnings"]) for q in quarters
+                       if q["price_to_earnings"] is not None and float(q["price_to_earnings"]) > 0]
+            pct = _valuation_percentile(pe, hist_pe)
+
+            if pct is not None:
+                v_method = f"percentile_{pct:.0f}th"
+                factors["H"] = _v_score_from_percentile(pct)
+                if pct > 90:
+                    notes.append(f"P/E={pe:.0f}x ({pct:.0f}th pct of 5yr history — extreme)")
+                elif pct > 75:
+                    notes.append(f"P/E={pe:.0f}x ({pct:.0f}th pct — expensive)")
+                elif pct > 50:
+                    notes.append(f"P/E={pe:.0f}x ({pct:.0f}th pct — elevated)")
+                elif pct > 25:
+                    notes.append(f"P/E={pe:.0f}x ({pct:.0f}th pct — fair)")
+                else:
+                    notes.append(f"P/E={pe:.0f}x ({pct:.0f}th pct — cheap vs history)")
             else:
-                factors["H"] = 5.0
-                notes.append(f"P/E={pe:.0f}x (cheap)")
+                # Absolute fallback when < 4 historical periods
+                v_method = "absolute_fallback"
+                if pe > 50:
+                    factors["H"] = 85.0
+                    notes.append(f"P/E={pe:.0f}x (very expensive, abs)")
+                elif pe > 35:
+                    factors["H"] = 70.0
+                    notes.append(f"P/E={pe:.0f}x (expensive, abs)")
+                elif pe > 25:
+                    factors["H"] = 45.0
+                    notes.append(f"P/E={pe:.0f}x (elevated, abs)")
+                elif pe > 15:
+                    factors["H"] = 20.0
+                    notes.append(f"P/E={pe:.0f}x (fair, abs)")
+                else:
+                    factors["H"] = 5.0
+                    notes.append(f"P/E={pe:.0f}x (cheap, abs)")
         elif ttm_eps < 0:
             factors["H"] = 55.0
             notes.append("negative TTM EPS")
+
+    # Thesis valuation framework override: extreme_threshold check
+    extreme = thesis_val_framework.get("extreme_threshold")
+    if extreme and "H" in factors:
+        try:
+            extreme_f = float(extreme)
+            ttm_eps_check = sum(
+                float(q["eps_diluted"]) for q in quarters[:4]
+                if q["eps_diluted"] is not None
+            )
+            if ttm_eps_check > 0:
+                pe_check = current_price / ttm_eps_check
+                if pe_check > extreme_f:
+                    factors["H"] = max(factors.get("H", 0), 85.0)
+                    notes.append(f"above thesis extreme threshold ({extreme_f}x)")
+        except (TypeError, ValueError):
+            pass
 
     # G — growth-adjusted (PEG using forward EPS growth from estimates)
     if est and est["next_yr_eps_est"] and est["curr_yr_eps_est"]:
@@ -376,7 +518,7 @@ def _score_V(ticker: str, current_price: float) -> tuple[int, str]:
     total_w = sum(weights[k] for k in factors)
     composite = sum(factors[k] * weights[k] for k in factors) / total_w
 
-    note_str = "; ".join(notes) if notes else "multi-factor V"
+    note_str = "; ".join(notes) if notes else f"multi-factor V ({v_method})"
     return min(100, max(0, round(composite))), note_str
 
 
@@ -498,11 +640,14 @@ def _call_llm(
     f_note: str, v_note: str, p_note: str, o_note: str,
     tax_note: str,
     suggested_action: str,
+    decision_quality_note: str = "",
 ) -> dict | None:
     claim_lines = "\n".join(
         f"  [{d['status'].upper()}] {d['claim']} (weight={d['weight']:.1f})"
         for d in t_detail[:5]
     ) or "  no claims in deteriorated state"
+
+    dq_section = f"\nHISTORICAL DECISION QUALITY NOTE: {decision_quality_note}" if decision_quality_note else ""
 
     prompt = f"""You are a sell/trim analyst. A deterministic scoring model evaluated {ticker}.
 Write the rationale — do NOT invent or change the scores.
@@ -513,7 +658,7 @@ SELL STRENGTH: {ss:.0f}/100 → suggested action: {suggested_action}
   F (fundamentals, 20%): {F}/100 — {f_note}
   V (valuation, 15%):    {V}/100 — {v_note}
   P (concentration, 15%): {P}/100 — {p_note}
-  O (opportunity, 10%):  {O}/100 — {o_note}
+  O (opportunity, 10%):  {O}/100 — {o_note}{dq_section}
 
 TAX NOTE (separate — never changes the action): {tax_note}
 
@@ -599,11 +744,20 @@ def _run(ctx: AgentContext) -> list[Recommendation]:
         tax = _tax_note(ticker, current_price)
 
         # ── LLM rationale ────────────────────────────────────────────────────
+        # Include decision quality note if significant historical pattern exists
+        dq_note = ""
+        try:
+            from agents.decision_quality import get_decision_quality_note
+            dq_note = get_decision_quality_note("sell_trim", suggested)
+        except Exception:
+            pass
+
         try:
             result = _call_llm(
                 ticker, ss, T, F, V, P, O,
                 t_detail, f_note, v_note, p_note, o_note,
                 tax, suggested,
+                decision_quality_note=dq_note,
             )
         except Exception as _llm_err:
             print(f"[SellTrim] LLM failed for {ticker}: {_llm_err}")
@@ -667,6 +821,7 @@ def _run(ctx: AgentContext) -> list[Recommendation]:
             rationale_class=primary_rationale,
             action_payload={
                 "sell_strength": ss,
+                "trim_fraction": 0.5 if action == "TRIM" else None,
                 "components": {"T": T, "F": F, "V": V, "P": P, "O": O},
                 "component_notes": {
                     "T": [d["claim"] for d in t_detail[:3]],

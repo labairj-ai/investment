@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Covered Call Agent — proactively scans CC-eligible holdings and surfaces best contracts.
 
 Triggered by:
@@ -42,6 +43,8 @@ _SCHEMA = {
     "main_tradeoff": "",
     "no_call_case": "",
 }
+
+_PROMPT_VERSION = "covered_call_v1"
 
 _CC_ELIGIBLE_LAYERS = {1, 2, 3}
 _CC_MIN_SHARES = 100

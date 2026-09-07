@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Deterministic trigger detection — no LLM calls.
 
 detect_triggers() maps portfolio state to which agents should run and why.

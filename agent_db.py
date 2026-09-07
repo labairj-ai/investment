@@ -307,6 +307,31 @@ def migrate() -> None:
 
         CREATE INDEX IF NOT EXISTS idx_notif_events_rec
             ON notification_events (recommendation_id);
+
+        CREATE TABLE IF NOT EXISTS executed_actions (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            recommendation_id INTEGER REFERENCES recommendations(id),
+            ticker            TEXT    NOT NULL,
+            action            TEXT    NOT NULL,
+            quantity          REAL,
+            execution_price   REAL,
+            execution_date    TEXT    NOT NULL,
+            fees              REAL    NOT NULL DEFAULT 0,
+            strike            REAL,
+            expiration        TEXT,
+            premium           REAL,
+            contracts         INTEGER,
+            tax_lot_ids       TEXT,
+            notes             TEXT,
+            source            TEXT    NOT NULL DEFAULT 'manual',
+            created_at        REAL    NOT NULL DEFAULT (unixepoch())
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_executed_actions_rec
+            ON executed_actions (recommendation_id);
+
+        CREATE INDEX IF NOT EXISTS idx_executed_actions_ticker
+            ON executed_actions (ticker, execution_date DESC);
     """)
     conn.commit()
 
@@ -344,6 +369,8 @@ def migrate() -> None:
         ("investment_theses",        "cc_policy",               "TEXT"),
         # 0053 — review triggers
         ("investment_theses",        "review_triggers",         "TEXT"),
+        # 0068 — per-thesis valuation framework
+        ("investment_theses",        "valuation_framework",     "TEXT"),
         # 0028 — investor model
         ("learned_preferences",      "suppressed",              "INTEGER"),
         # 0023 — notification system
@@ -2180,5 +2207,165 @@ def get_recent_runs(agent_type: str, ticker: str | None = None, limit: int = 10)
             "ORDER BY started_at DESC LIMIT ?",
             (agent_type, limit),
         ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+# ── Executed actions ledger ───────────────────────────────────────────────────
+
+def insert_executed_action(
+    ticker: str,
+    action: str,
+    execution_date: str,
+    recommendation_id: int | None = None,
+    quantity: float | None = None,
+    execution_price: float | None = None,
+    fees: float = 0.0,
+    strike: float | None = None,
+    expiration: str | None = None,
+    premium: float | None = None,
+    contracts: int | None = None,
+    tax_lot_ids: list | None = None,
+    notes: str | None = None,
+    source: str = "manual",
+) -> int:
+    conn = _connect()
+    cur = conn.execute(
+        """INSERT INTO executed_actions
+           (recommendation_id, ticker, action, quantity, execution_price,
+            execution_date, fees, strike, expiration, premium, contracts,
+            tax_lot_ids, notes, source, created_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (recommendation_id, ticker, action, quantity, execution_price,
+         execution_date, fees, strike, expiration, premium, contracts,
+         json.dumps(tax_lot_ids) if tax_lot_ids else None,
+         notes, source, time.time()),
+    )
+    _id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return _id
+
+
+def get_executions_for_rec(recommendation_id: int | None) -> list[dict]:
+    conn = _connect()
+    if recommendation_id is None:
+        rows = conn.execute(
+            "SELECT * FROM executed_actions WHERE recommendation_id IS NULL ORDER BY execution_date ASC",
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM executed_actions WHERE recommendation_id=? ORDER BY execution_date ASC",
+            (recommendation_id,),
+        ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_executions_for_ticker(ticker: str, since_date: str | None = None) -> list[dict]:
+    conn = _connect()
+    if since_date:
+        rows = conn.execute(
+            "SELECT * FROM executed_actions WHERE ticker=? AND execution_date >= ? "
+            "ORDER BY execution_date DESC",
+            (ticker, since_date),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM executed_actions WHERE ticker=? ORDER BY execution_date DESC",
+            (ticker,),
+        ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+# ── Briefing synthesis helpers ────────────────────────────────────────────────
+
+def get_todays_findings(window_hours: int = 24) -> list[dict]:
+    """Return agent findings created in the last window_hours, grouped with metadata."""
+    cutoff = time.time() - window_hours * 3600
+    conn = _connect()
+    rows = conn.execute(
+        """SELECT af.id, af.ticker, af.finding_type, af.severity, af.confidence,
+                  af.summary, af.why_now, af.created_at, ar.agent_type
+           FROM agent_findings af
+           JOIN agent_runs ar ON ar.id = af.run_id
+           WHERE af.created_at >= ?
+           ORDER BY af.severity DESC, af.created_at DESC""",
+        (cutoff,),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_todays_recommendations(window_hours: int = 24) -> list[dict]:
+    """Return recommendations created in the last window_hours (non-NO_ACTION)."""
+    cutoff = time.time() - window_hours * 3600
+    conn = _connect()
+    rows = conn.execute(
+        """SELECT r.id, r.ticker, r.action, r.recommendation_score, r.confidence,
+                  r.priority, r.rationale, r.why_now, r.status, r.created_at,
+                  r.rationale_class, ar.agent_type,
+                  cr.verdict as critic_verdict
+           FROM recommendations r
+           JOIN agent_runs ar ON ar.id = r.run_id
+           LEFT JOIN critic_reviews cr ON cr.recommendation_id = r.id
+           WHERE r.created_at >= ?
+             AND r.action NOT IN ('NO_ACTION', 'NO_CALL', 'BRIEFING')
+           ORDER BY r.recommendation_score DESC, r.created_at DESC""",
+        (cutoff,),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_todays_critic_summary(window_hours: int = 24) -> dict:
+    """Return counts of Critic verdicts for recommendations in the last window_hours."""
+    cutoff = time.time() - window_hours * 3600
+    conn = _connect()
+    rows = conn.execute(
+        """SELECT cr.verdict, COUNT(*) as n
+           FROM critic_reviews cr
+           JOIN recommendations r ON r.id = cr.recommendation_id
+           WHERE cr.created_at >= ?
+           GROUP BY cr.verdict""",
+        (cutoff,),
+    ).fetchall()
+    conn.close()
+    return {r["verdict"]: r["n"] for r in rows}
+
+
+# ── Decision quality model helpers ───────────────────────────────────────────
+
+def get_outcome_statistics_by_category(
+    min_samples: int = 10,
+    min_horizon_days: int = 90,
+) -> list[dict]:
+    """Return per-(agent_type, action, rationale_class) outcome stats from matured recommendations.
+
+    Only includes categories with >= min_samples outcomes at >= min_horizon_days horizon.
+    Used by the Decision Quality Model (separate from PreferenceLearner).
+    """
+    conn = _connect()
+    rows = conn.execute(
+        """SELECT ar.agent_type, r.action, r.rationale_class,
+                  COUNT(*) as n,
+                  AVG(ro.actual_return) as avg_actual,
+                  AVG(ro.recommended_path_return) as avg_agent,
+                  AVG(ro.hold_return) as avg_hold,
+                  AVG(ro.benchmark_return) as avg_spy,
+                  AVG(ro.actual_return - ro.recommended_path_return) as avg_user_override_alpha,
+                  SUM(CASE WHEN ud.decision='accepted' THEN 1 ELSE 0 END) as n_accepted,
+                  SUM(CASE WHEN ud.decision='rejected' THEN 1 ELSE 0 END) as n_rejected
+           FROM recommendation_outcomes ro
+           JOIN recommendations r ON r.id = ro.recommendation_id
+           JOIN agent_runs ar ON ar.id = r.run_id
+           LEFT JOIN user_decisions ud ON ud.recommendation_id = r.id
+           WHERE ro.actual_is_estimated = 0
+             AND ro.horizon IN ('3m', '6m', '12m')
+           GROUP BY ar.agent_type, r.action, r.rationale_class
+           HAVING COUNT(*) >= ?""",
+        (min_samples,),
+    ).fetchall()
     conn.close()
     return [dict(r) for r in rows]

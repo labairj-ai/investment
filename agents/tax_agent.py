@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Tax Agent — proactive lot-level tax timing and loss-harvest recommendations.
 
 Runs as a portfolio-scope agent. Self-scans all cost lots rather than relying

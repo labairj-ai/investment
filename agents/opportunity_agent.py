@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Opportunity Hunter Agent (Phase 6).
 
 Reads Buffett screener winners, scores each for portfolio fit, and
@@ -28,6 +29,8 @@ from .orchestrator import register_agent
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
+
+_PROMPT_VERSION = "opportunity_hunter_v1"
 
 _BUFFETT_DB = Path(agent_db.DB_PATH).parent / "buffett.db"
 _MAX_CANDIDATES = 3          # candidates passed to the LLM

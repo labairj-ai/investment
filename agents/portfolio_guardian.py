@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Portfolio Guardian Agent (Phase 3).
 
 Runs four deterministic checks on every holding and layer, then calls
@@ -27,6 +28,8 @@ from strategy_config import (
 _LABEL_TO_INT: dict[str, int] = {v: k for k, v in LAYER_LABELS.items()}
 from .contracts import AgentContext, Recommendation
 from .orchestrator import register_agent
+
+_PROMPT_VERSION = "portfolio_guardian_v1"
 
 # --- Thresholds ----------------------------------------------------------------
 _IMPACT_THRESHOLD_PP = 0.35   # portfolio NAV pp: weight_pct * |change_pct| / 100

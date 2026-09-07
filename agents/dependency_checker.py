@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Dependency checker — runs after each price refresh.
 
@@ -10,6 +11,7 @@ via the orchestrator for the same ticker + agent.
 import json
 import time
 import sqlite3
+from datetime import date as _date
 from pathlib import Path
 
 import agent_db
@@ -179,6 +181,85 @@ def _check_financial_period(dep: dict, periods: dict[str, str]) -> str | None:
     return None
 
 
+def _check_option_iv(dep: dict, _unused) -> str | None:
+    """Supersede when the option expiration date has passed.
+
+    dependency_key = ticker (or contract_id)
+    original_value = option expiration date as YYYY-MM-DD ISO string
+    """
+    expiry_str = dep.get("original_value") or ""
+    if not expiry_str:
+        return None
+    try:
+        expiry = _date.fromisoformat(expiry_str)
+    except ValueError:
+        return None
+    today = _date.today()
+    if today >= expiry:
+        return f"Option expired on {expiry_str}"
+    days_left = (expiry - today).days
+    if days_left <= 3:
+        return f"Option expiring in {days_left} day(s) ({expiry_str}) — re-evaluate"
+    return None
+
+
+def _check_earnings_date(dep: dict, periods: dict[str, str]) -> str | None:
+    """Supersede when estimated earnings have passed or are within 7 days.
+
+    dependency_key = ticker
+    original_value = estimated earnings date (period_end + 45 days at rec creation)
+    Falls back to FINANCIAL_PERIOD logic if no original_value is set.
+    """
+    ticker = dep["dependency_key"]
+    earnings_str = dep.get("original_value") or ""
+    if not earnings_str:
+        # Fall back: new period available?
+        newest = periods.get(ticker)
+        return f"New financial period available ({newest!r})" if newest else None
+    try:
+        earnings_date = _date.fromisoformat(earnings_str)
+    except ValueError:
+        return None
+    today = _date.today()
+    days_to = (earnings_date - today).days
+    if today > earnings_date:
+        return f"Estimated earnings date {earnings_str} has passed — new data expected"
+    if days_to <= 7:
+        return f"Earnings imminent in {days_to} day(s) ({earnings_str}) — re-evaluate"
+    # Also check if a newer period already landed
+    newest = periods.get(ticker)
+    if newest and newest > earnings_str[:10]:
+        return f"New financial period available (earnings date was {earnings_str})"
+    return None
+
+
+# ── Stub handlers for dependency types that require data not yet in DB ────────
+
+def _check_event_calendar(dep: dict, _unused) -> str | None:
+    """Stub: EVENT_CALENDAR dependency requires an event_calendar DB table (not yet populated)."""
+    print(f"[DepChecker] STUB: EVENT_CALENDAR check skipped for {dep.get('dependency_key')} — no event_calendar table")
+    return None
+
+
+def _check_option_liquidity(dep: dict, _unused) -> str | None:
+    """Stub: OPTION_LIQUIDITY dependency requires live bid/ask data (not yet in DB)."""
+    print(f"[DepChecker] STUB: OPTION_LIQUIDITY check skipped for {dep.get('dependency_key')} — no live option feed")
+    return None
+
+
+def _check_estimate_revision(dep: dict, _unused) -> str | None:
+    """Stub: ESTIMATE_REVISION dependency requires analyst estimate revision tracking (not yet in DB)."""
+    print(f"[DepChecker] STUB: ESTIMATE_REVISION check skipped for {dep.get('dependency_key')} — no revision history")
+    return None
+
+
+_KNOWN_DEPENDENCY_TYPES = frozenset({
+    "PRICE", "THESIS_VERSION", "POSITION_WEIGHT", "MACRO_STATE",
+    "FINANCIAL_PERIOD", "OPTION_IV", "EARNINGS_DATE",
+    "EVENT_CALENDAR", "OPTION_LIQUIDITY", "ESTIMATE_REVISION",
+})
+
+
 def _trigger_reeval(ticker: str, agent_type: str) -> None:
     """Fire the original agent via the full orchestrator pipeline (agent → Critic → persist)."""
     try:
@@ -235,8 +316,21 @@ def check_all_dependencies() -> int:
                 reason = _check_macro_state(dep, macro)
             elif dtype == "FINANCIAL_PERIOD":
                 reason = _check_financial_period(dep, periods)
+            elif dtype == "OPTION_IV":
+                reason = _check_option_iv(dep, None)
+            elif dtype == "EARNINGS_DATE":
+                reason = _check_earnings_date(dep, periods)
+            elif dtype == "EVENT_CALENDAR":
+                reason = _check_event_calendar(dep, None)
+            elif dtype == "OPTION_LIQUIDITY":
+                reason = _check_option_liquidity(dep, None)
+            elif dtype == "ESTIMATE_REVISION":
+                reason = _check_estimate_revision(dep, None)
             else:
-                reason = None
+                # Unknown dependency type: fail-safe — supersede rather than silently assume valid.
+                reason = (f"Unknown dependency type {dtype!r}: cannot validate — "
+                          "superseding to force re-evaluation")
+                print(f"[DepChecker] WARNING: rec {rec_id} has unrecognised dependency type {dtype!r}")
             if reason:
                 violated_reasons.append(reason)
 

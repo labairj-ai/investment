@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Outcome Evaluator — multi-scenario counterfactual benchmarking.
 
 For each accepted/rejected recommendation, writes one row per evaluation horizon
@@ -131,6 +132,7 @@ def _compute_scenarios(
     pl: dict,
     entry_price: float,
     decision: str | None = None,
+    **kwargs,
 ) -> tuple[float | None, float | None, float | None, float | None, bool,
            float | None, float | None]:
     """Return (actual_r, agent_r, hold_r, spy_r, actual_is_estimated,
@@ -149,10 +151,25 @@ def _compute_scenarios(
     spy_r  = (spy_h  - spy_entry)   / spy_entry   if (spy_entry and spy_h) else None
 
     # Scenario A: branch on what the user actually chose to do.
-    # accepted EXIT  → user sold, no exposure after rec date → actual_r = 0
-    # rejected (any) → user held regardless → actual_r = hold_r, no estimation needed
-    # anything else  → we don't have execution records yet → fall back to hold_r, flag estimated
-    if decision == "accepted" and action in EXIT_ACTIONS:
+    # Execution record present  → use actual execution price and date (most accurate)
+    # accepted EXIT (no record) → user sold at entry price on rec date → actual_r = 0
+    # rejected (any)            → user held regardless → actual_r = hold_r
+    # anything else             → we don't have execution records → fall back, flag estimated
+    exec_rec = kwargs.get("exec_rec")  # optional: first executed_action row for this rec
+    if exec_rec and exec_rec.get("execution_price") and exec_rec.get("execution_date"):
+        exec_price = float(exec_rec["execution_price"])
+        exec_date  = exec_rec["execution_date"]
+        h_exec = _ticker_price_at(ticker, exec_date) if exec_date > entry_date else exec_price
+        # For EXIT-type: user sold at execution_price, no further exposure
+        if action in EXIT_ACTIONS:
+            actual_r = (exec_price - entry_price) / entry_price if entry_price else None
+        else:
+            # For TRIM: they held (1-f) at execution_price entry, sold f at exec_price
+            f = float(exec_rec.get("quantity") or 0) / float(exec_rec.get("total_shares") or 1) \
+                if exec_rec.get("total_shares") else 0.5
+            actual_r = (1 - f) * hold_r if hold_r is not None else None
+        actual_is_estimated = False
+    elif decision == "accepted" and action in EXIT_ACTIONS:
         actual_r = 0.0
         actual_is_estimated = False
     elif decision == "rejected":
@@ -185,8 +202,45 @@ def _compute_scenarios(
             agent_r = float(exec_premium) / entry_price
         else:
             agent_r = hold_r  # fallback: no premium data
+    elif action == "TRIM":
+        f = float(pl.get("trim_fraction") or 0.5)
+        replacement = pl.get("replacement_ticker")
+        if replacement and h_price is not None:
+            repl_entry = _ticker_price_at(replacement, entry_date)
+            repl_h     = _ticker_price_at(replacement, horizon_date)
+            if repl_entry and repl_h and repl_entry > 0:
+                repl_r = (repl_h - repl_entry) / repl_entry
+                agent_r = (1 - f) * hold_r + f * repl_r if hold_r is not None else None
+            else:
+                agent_r = (1 - f) * hold_r if hold_r is not None else None
+        elif hold_r is not None:
+            agent_r = (1 - f) * hold_r  # trimmed portion goes to cash (return = 0)
+        else:
+            agent_r = None
+    elif action == "ALLOCATE":
+        alloc_ticker = pl.get("ticker") or ticker
+        alloc_entry = _ticker_price_at(alloc_ticker, entry_date)
+        alloc_h     = _ticker_price_at(alloc_ticker, horizon_date)
+        if alloc_entry and alloc_h and alloc_entry > 0:
+            agent_r = (alloc_h - alloc_entry) / alloc_entry
+        else:
+            agent_r = None
+    elif action == "REBALANCE":
+        from_ticker = pl.get("from_ticker") or ticker
+        to_ticker   = pl.get("to_ticker")
+        fraction    = float(pl.get("fraction") or 0.5)
+        if to_ticker and h_price is not None:
+            to_entry = _ticker_price_at(to_ticker, entry_date)
+            to_h     = _ticker_price_at(to_ticker, horizon_date)
+            to_r = (to_h - to_entry) / to_entry if (to_entry and to_h and to_entry > 0) else None
+            if to_r is not None and hold_r is not None:
+                agent_r = (1 - fraction) * hold_r + fraction * to_r
+            else:
+                agent_r = None
+        else:
+            agent_r = None
     else:
-        # HOLD / REVIEW / TRIM / ALLOCATE / REBALANCE
+        # HOLD / REVIEW — recommended path = hold unchanged
         agent_r = hold_r
 
     return actual_r, agent_r, hold_r, spy_r, actual_is_estimated, cc_strategy_return, cc_incremental_alpha

@@ -24,7 +24,18 @@ _DRAFT_SCHEMA = {
                 }
             ],
         }
-    ]
+    ],
+    "valuation_framework": {
+        "primary_metric": "",
+        "secondary_metrics": [],
+        "historical_period_years": 5,
+        "attractive_threshold": 0,
+        "fair_value_low": 0,
+        "fair_value_high": 0,
+        "extreme_threshold": 0,
+        "growth_adjustment_method": "",
+        "rationale": "",
+    },
 }
 
 _SYSTEM_PROMPT = """You are an investment analyst helping a private investor document
@@ -82,7 +93,19 @@ COMPANY FINANCIAL DATA:
 
 Produce 3–6 measurable claims with thresholds derived from the financial history above.
 All importance values must sum to exactly 100.
-Return JSON matching the schema: {{"claims": [{{"claim": "...", "importance": N, "measurements": [{{"metric": "...", "healthy": "...", "warning": "...", "violation": "...", "persistence": "..."}}]}}]}}"""
+
+Also produce a valuation_framework that captures how this specific company should be valued:
+- primary_metric: the most meaningful multiple for this business (forward_pe, ev_fcf, ps, ev_ebitda, etc.)
+- secondary_metrics: 1-2 supporting metrics (list of strings)
+- historical_period_years: how many years of history to use (5 is standard)
+- attractive_threshold: primary_metric value below which the stock is attractively valued
+- fair_value_low / fair_value_high: range representing fair value
+- extreme_threshold: primary_metric value above which the stock is extremely expensive
+- growth_adjustment_method: "peg", "ev_growth", or "" if not applicable
+- rationale: one sentence explaining why this metric suits this business
+
+Return JSON matching this schema exactly:
+{{"claims": [{{"claim": "...", "importance": N, "measurements": [{{"metric": "...", "healthy": "...", "warning": "...", "violation": "...", "persistence": "..."}}]}}], "valuation_framework": {{"primary_metric": "...", "secondary_metrics": [], "historical_period_years": 5, "attractive_threshold": 0, "fair_value_low": 0, "fair_value_high": 0, "extreme_threshold": 0, "growth_adjustment_method": "", "rationale": "..."}}}}"""
 
     full_prompt = _SYSTEM_PROMPT + "\n\n" + prompt
     result = ollama_client.generate_structured(

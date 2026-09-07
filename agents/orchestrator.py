@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Agent orchestrator.
 
 run_agents() is the single entry point for a full agent sweep. It:
@@ -127,11 +128,61 @@ def _run_single_agent(
     import agent_db
     from .contracts import AgentContext
 
+    import ollama_client
+
     agent_events = events or []
-    primary_trigger = agent_events[0].trigger_type if agent_events else trigger_type
+    primary_event = agent_events[0] if agent_events else None
+    primary_trigger = primary_event.trigger_type if primary_event else trigger_type
+    primary_key = primary_event.trigger_key if primary_event else ticker
+
+    # Compact snapshot for audit trail (per-ticker when available, else portfolio summary)
+    _holding = next((h for h in snapshot.holdings if h.ticker == ticker), None) if ticker else None
+    _input_snap: dict | None = None
+    if _holding:
+        _input_snap = {
+            "ticker": ticker,
+            "price": _holding.current_price,
+            "shares": _holding.shares,
+            "weight_pct": _holding.weight_pct,
+            "price_as_of": getattr(snapshot, "price_as_of", None),
+        }
+    else:
+        _input_snap = {
+            "total_value": snapshot.total_value,
+            "n_holdings": len(snapshot.holdings),
+            "price_as_of": getattr(snapshot, "price_as_of", None),
+        }
+
+    # Per-ticker input hash for deduplication audit
+    _input_hash: str | None = None
+    if ticker:
+        _thesis_ver = agent_db._get_thesis_version_for_hash(ticker)
+        _latest_q   = agent_db._get_latest_quarter_for_hash(ticker)
+        _price      = _holding.current_price if _holding else 0
+        _input_hash = agent_db.compute_input_hash(ticker, agent_type, _price, _thesis_ver, _latest_q)
+
+    # Pull prompt_version from the handler module if it defines _PROMPT_VERSION
+    _prompt_ver: str | None = getattr(handler, "__module__", None)
+    try:
+        import importlib, sys
+        mod = sys.modules.get(_prompt_ver or "")
+        if mod:
+            _prompt_ver = getattr(mod, "_PROMPT_VERSION", None)
+        else:
+            _prompt_ver = None
+    except Exception:
+        _prompt_ver = None
 
     run_id = agent_db.insert_agent_run(
-        agent_type=agent_type, scope="portfolio", ticker=ticker,
+        agent_type=agent_type,
+        scope="ticker" if ticker else "portfolio",
+        ticker=ticker,
+        trigger_type=primary_trigger,
+        trigger_key=primary_key,
+        model=ollama_client.get_model_id(),
+        prompt_version=_prompt_ver,
+        input_hash=_input_hash,
+        input_snapshot=_input_snap,
     )
     try:
         ctx = AgentContext(

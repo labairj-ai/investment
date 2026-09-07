@@ -1,4 +1,5 @@
 """Shared types that cross agent boundaries. No business logic here."""
+from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -59,12 +60,18 @@ class HoldingSnapshot:
 
 @dataclass
 class PortfolioSnapshot:
-    date: str                        # ISO date YYYY-MM-DD
+    date: str                        # ISO date YYYY-MM-DD (wall-clock day snapshot was built)
     total_value: float
     holdings: list[HoldingSnapshot]
     layer_weights: dict[int, float]  # layer_num -> weight_pct
     macro_scores: dict[str, Any]     # ticker -> score dict
-    generated_at: float              # unix timestamp
+    generated_at: float              # unix timestamp when snapshot was built
+    # Per-source freshness timestamps — may differ from `date` on weekends/holidays
+    price_as_of: str | None = None         # MAX(day) from holding_day
+    portfolio_as_of: str | None = None     # MAX(day) from portfolio_day
+    layer_as_of: str | None = None         # MAX(day) from layer_day
+    macro_as_of: str | None = None         # MAX(updated_at) from holding_macro_scores
+    financials_as_of: str | None = None    # MAX(period_end) across company_financials
 
 
 @dataclass

@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Canonical portfolio snapshot builder.
 
@@ -34,11 +35,22 @@ def build_portfolio_snapshot():
                 t = (row.get("Stock") or "").strip().upper()
                 if t:
                     try:
-                        csv_map[t] = {
-                            "shares": float(row.get("Shares") or 0),
-                            "avg_cost": float(row.get("AvgCost") or 0),
-                            "layer": int(row.get("Layer") or 0),
-                        }
+                        shares   = float(row.get("Shares") or 0)
+                        avg_cost = float(row.get("AvgCost") or 0)
+                        layer    = int(row.get("Layer") or 0)
+                        if t in csv_map:
+                            ex = csv_map[t]
+                            total = ex["shares"] + shares
+                            if total > 0:
+                                weighted = (ex["shares"] * ex["avg_cost"] + shares * avg_cost) / total
+                            else:
+                                weighted = 0.0
+                            if ex["layer"] != layer:
+                                print(f"[Snapshot] WARNING: {t} has lots in different layers "
+                                      f"({ex['layer']} vs {layer}), keeping first")
+                            csv_map[t] = {"shares": total, "avg_cost": weighted, "layer": ex["layer"]}
+                        else:
+                            csv_map[t] = {"shares": shares, "avg_cost": avg_cost, "layer": layer}
                     except (ValueError, TypeError):
                         pass
 
@@ -46,6 +58,11 @@ def build_portfolio_snapshot():
     total_value = 0.0
     layer_weights: dict = {}
     macro_scores: dict = {}
+    price_as_of: str | None = None
+    portfolio_as_of: str | None = None
+    layer_as_of: str | None = None
+    macro_as_of: str | None = None
+    financials_as_of: str | None = None
 
     if db.exists():
         _conn = sqlite3.connect(str(db), timeout=10)
@@ -53,6 +70,7 @@ def build_portfolio_snapshot():
         try:
             _hday = _conn.execute("SELECT MAX(day) FROM holding_day").fetchone()[0]
             if _hday:
+                price_as_of = _hday
                 for r in _conn.execute(
                     "SELECT ticker, price, value, weight_pct FROM holding_day WHERE day=?",
                     (_hday,),
@@ -67,9 +85,11 @@ def build_portfolio_snapshot():
                 ).fetchone()
                 if prow:
                     total_value = prow["total_value"] or 0.0
+                    portfolio_as_of = _hday
 
             _lday = _conn.execute("SELECT MAX(day) FROM layer_day").fetchone()[0]
             if _lday:
+                layer_as_of = _lday
                 _label_to_num = {v: k for k, v in LAYER_LABELS.items()}
                 for r in _conn.execute(
                     "SELECT layer, weight_pct FROM layer_day WHERE day=?", (_lday,)
@@ -85,6 +105,21 @@ def build_portfolio_snapshot():
                     macro_scores[r["ticker"]] = json.loads(r["scores"])
                 except Exception:
                     pass
+
+            _macro_row = _conn.execute(
+                "SELECT MAX(updated_at) as mu FROM holding_macro_scores"
+            ).fetchone()
+            if _macro_row and _macro_row["mu"]:
+                macro_as_of = str(_macro_row["mu"])[:10]
+
+            try:
+                _fin_row = _conn.execute(
+                    "SELECT MAX(period_end) as mp FROM company_financials"
+                ).fetchone()
+                if _fin_row and _fin_row["mp"]:
+                    financials_as_of = _fin_row["mp"]
+            except Exception:
+                pass
         finally:
             _conn.close()
 
@@ -109,4 +144,9 @@ def build_portfolio_snapshot():
         layer_weights=layer_weights,
         macro_scores=macro_scores,
         generated_at=time.time(),
+        price_as_of=price_as_of,
+        portfolio_as_of=portfolio_as_of,
+        layer_as_of=layer_as_of,
+        macro_as_of=macro_as_of,
+        financials_as_of=financials_as_of,
     )

@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Thesis Monitor Agent — evaluates investment thesis pillars deterministically,
 then uses LLM for qualitative signals and human-readable reasons.
 

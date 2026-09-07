@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 Investment dashboard server.
 Serves static files at http://localhost:5001 and handles:
@@ -5116,14 +5117,20 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         }),
                     )
             review_triggers = draft_dict.get("review_triggers") or []
+            val_framework   = draft_dict.get("valuation_framework")
+            _conn = agent_db._connect()
             if review_triggers:
-                _conn = agent_db._connect()
                 _conn.execute(
                     "UPDATE investment_theses SET review_triggers=? WHERE id=?",
                     (json.dumps(review_triggers), thesis_id),
                 )
-                _conn.commit()
-                _conn.close()
+            if val_framework:
+                _conn.execute(
+                    "UPDATE investment_theses SET valuation_framework=? WHERE id=?",
+                    (json.dumps(val_framework) if isinstance(val_framework, dict) else val_framework, thesis_id),
+                )
+            _conn.commit()
+            _conn.close()
         except Exception as e:
             print(f"[thesis_approve] post-approval writes failed for {ticker}: {e}")
 
@@ -5262,6 +5269,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if (len(parts) == 6 and parts[3] == "recommendations"
                 and parts[4].isdigit() and parts[5] == "decision"):
             return self._handle_agent_decision(int(parts[4]))
+        # /api/agents/recommendations/{id}/execute
+        if (len(parts) == 6 and parts[3] == "recommendations"
+                and parts[4].isdigit() and parts[5] == "execute"):
+            return self._handle_agent_execute(int(parts[4]))
         # /api/agents/run
         if len(parts) == 4 and parts[3] == "run":
             return self._handle_agent_run_trigger()
@@ -5312,6 +5323,40 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         rec = agent_db.get_recommendation_full(rec_id)
         self._json({"ok": True, "recommendation": rec})
+
+    def _handle_agent_execute(self, rec_id: int):
+        """POST /api/agents/recommendations/{id}/execute — record that a recommendation was executed."""
+        try:
+            body = self._read_body()
+        except Exception:
+            return self._json_error(400, "Invalid JSON body")
+
+        ticker = (body.get("ticker") or "").strip().upper()
+        action = (body.get("action") or "").strip().upper()
+        execution_date = (body.get("execution_date") or "").strip()
+        if not ticker or not action or not execution_date:
+            return self._json_error(400, "ticker, action, and execution_date are required")
+
+        try:
+            exec_id = agent_db.insert_executed_action(
+                ticker=ticker,
+                action=action,
+                execution_date=execution_date,
+                recommendation_id=rec_id,
+                quantity=body.get("quantity"),
+                execution_price=body.get("execution_price"),
+                fees=float(body.get("fees") or 0),
+                strike=body.get("strike"),
+                expiration=body.get("expiration"),
+                premium=body.get("premium"),
+                contracts=body.get("contracts"),
+                notes=body.get("notes"),
+                source=body.get("source", "manual"),
+            )
+        except Exception as e:
+            return self._json_error(500, str(e))
+
+        self._json({"ok": True, "executed_action_id": exec_id, "recommendation_id": rec_id})
 
     def _handle_agent_run_trigger(self):
         """POST /api/agents/run — start an on-demand agent run in a background thread."""
