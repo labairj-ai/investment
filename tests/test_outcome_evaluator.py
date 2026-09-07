@@ -254,22 +254,22 @@ from agents.outcome_evaluator import _compute_cc_management_returns
 
 
 def test_btc_with_exec_rec_uses_actual_btc_price():
-    """BUY_TO_CLOSE: actual_r uses execution_price, not pl btc_mark."""
+    """BUY_TO_CLOSE: MTM baseline — agent_r=hold_r (close at mark); actual_r adjusts for slippage."""
     entry_price = 180.0
     h_price = 200.0
     hold_r = (h_price - entry_price) / entry_price
-    orig_premium = 4.0
-    btc_mark = 2.5   # rec-date mark
-    btc_exec = 2.0   # actual fill
-    pl = {"original_premium": orig_premium, "btc_price": btc_mark}
+    btc_mark = 2.5   # rec-date mark (MTM basis)
+    btc_exec = 2.0   # actual fill (cheaper than mark → positive slippage)
+    pl = {"btc_price": btc_mark}
     exec_rec = {"execution_price": btc_exec, "execution_date": "2026-09-05"}
     actual_r, agent_r, estimated = _compute_cc_management_returns(
         "BUY_TO_CLOSE", pl, entry_price, h_price, exec_rec=exec_rec,
     )
-    expected_actual = hold_r + (orig_premium - btc_exec) / entry_price
-    expected_agent  = hold_r + (orig_premium - btc_mark) / entry_price
-    assert abs(actual_r - expected_actual) < 0.0001
-    assert abs(agent_r - expected_agent) < 0.0001
+    # agent_r: closed at mark → net option P&L from MTM = 0 → just stock return
+    assert abs(agent_r - hold_r) < 0.0001, f"BTC agent_r should equal hold_r, got {agent_r}"
+    # actual_r: saved (btc_mark - btc_exec) vs mark → stock return plus slippage gain
+    expected_actual = hold_r + (btc_mark - btc_exec) / entry_price
+    assert abs(actual_r - expected_actual) < 0.0001, f"actual_r={actual_r:.6f} vs expected={expected_actual:.6f}"
     assert not estimated
 
 
@@ -287,27 +287,25 @@ def test_btc_no_exec_rec_falls_back_to_hold_r():
 
 
 def test_allow_assignment_at_expiry_uses_strike_formula():
-    """ALLOW_ASSIGNMENT at_expiry: actual_r = (K - S0 + premium) / S0."""
+    """ALLOW_ASSIGNMENT at_expiry: actual_r = (K - S_rec) / S_rec — no SELL_CC premium."""
     entry_price = 175.0
     k = 185.0
-    premium = 3.0
-    pl = {"strike": k, "premium": premium}
+    pl = {"strike": k, "premium": 3.0}  # premium present but must NOT be included
     actual_r, agent_r, estimated = _compute_cc_management_returns(
         "ALLOW_ASSIGNMENT", pl, entry_price, h_price=190.0, horizon_label="at_expiry",
     )
-    expected = (k - entry_price + premium) / entry_price
-    assert abs(actual_r - expected) < 0.0001
+    expected = (k - entry_price) / entry_price
+    assert abs(actual_r - expected) < 0.0001, f"actual_r={actual_r:.6f}, expected={expected:.6f}"
     assert abs(agent_r - expected) < 0.0001
     assert not estimated
 
 
 def test_allow_assignment_post_horizons_return_locked_at_assignment():
-    """0113: ALLOW_ASSIGNMENT 30d/90d post returns locked assignment return, not 0.0."""
+    """ALLOW_ASSIGNMENT 30d/90d post: locked at (K - S_rec) / S_rec, no SELL_CC premium."""
     entry_price = 175.0
     k = 185.0
-    premium = 3.0
-    pl = {"strike": k, "premium": premium}
-    expected = (k - entry_price + premium) / entry_price
+    pl = {"strike": k, "premium": 3.0}
+    expected = (k - entry_price) / entry_price
     for label in ("30d_post", "90d_post"):
         actual_r, agent_r, estimated = _compute_cc_management_returns(
             "ALLOW_ASSIGNMENT", pl, entry_price, h_price=200.0, horizon_label=label,
@@ -320,7 +318,7 @@ def test_allow_assignment_post_horizons_return_locked_at_assignment():
 
 
 def test_roll_out_uses_sto_minus_btc_net():
-    """ROLL_OUT: actual_r = hold_r + (sto_exec - btc_exec) / entry_price."""
+    """ROLL_OUT fallback (no new_strike): actual_r = hold_r + (sto_exec - btc_exec) / entry."""
     entry_price = 180.0
     h_price = 200.0
     hold_r = (h_price - entry_price) / entry_price
@@ -328,7 +326,7 @@ def test_roll_out_uses_sto_minus_btc_net():
     sto_mark = 4.0
     btc_exec = 1.80
     sto_exec = 4.20
-    pl = {"btc_price": btc_mark, "sto_premium": sto_mark}
+    pl = {"btc_price": btc_mark, "sto_premium": sto_mark}  # no new_strike → fallback path
     exec_rec = {"execution_price": btc_exec, "sto_premium": sto_exec,
                 "execution_date": "2026-09-10"}
     actual_r, agent_r, estimated = _compute_cc_management_returns(
@@ -338,6 +336,96 @@ def test_roll_out_uses_sto_minus_btc_net():
     expected_agent  = hold_r + (sto_mark - btc_mark) / entry_price
     assert abs(actual_r - expected_actual) < 0.0001
     assert abs(agent_r - expected_agent) < 0.0001
+    assert not estimated
+
+
+# ── 0114: ROLL at_expiry and post-horizon assignment branching ────────────────
+
+def test_roll_at_expiry_capped_at_new_strike_when_assigned():
+    """ROLL at_expiry: when stock > new_strike, return capped — not uncapped hold_r."""
+    entry_price = 180.0
+    new_strike = 195.0
+    h_price = 210.0     # stock at new_expiry > new_strike → assigned
+    hold_r = (h_price - entry_price) / entry_price
+    btc_mark, sto_mark = 3.0, 4.5
+    btc_exec, sto_exec = 2.8, 4.6
+    pl = {"new_strike": new_strike, "btc_price": btc_mark, "sto_premium": sto_mark}
+    exec_rec = {"execution_price": btc_exec, "sto_premium": sto_exec,
+                "execution_date": "2026-09-01"}
+    actual_r, agent_r, estimated = _compute_cc_management_returns(
+        "ROLL_OUT", pl, entry_price, h_price, exec_rec=exec_rec,
+        horizon_label="at_expiry",
+    )
+    net_credit = sto_exec - btc_exec
+    expected_actual = (new_strike - entry_price) / entry_price + net_credit / entry_price
+    expected_agent  = (new_strike - entry_price) / entry_price + (sto_mark - btc_mark) / entry_price
+    assert abs(actual_r - expected_actual) < 0.0001, f"actual_r={actual_r:.6f} expected={expected_actual:.6f}"
+    assert abs(agent_r - expected_agent) < 0.0001
+    assert actual_r < hold_r + net_credit / entry_price, "Assigned path must be capped below uncapped"
+    assert not estimated
+
+
+def test_roll_at_expiry_uncapped_when_expired():
+    """ROLL at_expiry: when stock <= new_strike, return uses actual stock price (uncapped)."""
+    entry_price = 180.0
+    new_strike = 195.0
+    h_price = 188.0     # stock at new_expiry < new_strike → expired worthless
+    hold_r = (h_price - entry_price) / entry_price
+    btc_mark, sto_mark = 3.0, 4.5
+    btc_exec, sto_exec = 3.1, 4.4
+    pl = {"new_strike": new_strike, "btc_price": btc_mark, "sto_premium": sto_mark}
+    exec_rec = {"execution_price": btc_exec, "sto_premium": sto_exec,
+                "execution_date": "2026-09-01"}
+    actual_r, agent_r, estimated = _compute_cc_management_returns(
+        "ROLL_OUT", pl, entry_price, h_price, exec_rec=exec_rec,
+        horizon_label="at_expiry",
+    )
+    net_credit = sto_exec - btc_exec
+    expected_actual = hold_r + net_credit / entry_price
+    assert abs(actual_r - expected_actual) < 0.0001, f"Expired path should be uncapped: {actual_r:.6f}"
+    assert not estimated
+
+
+def test_roll_post_horizon_locks_at_assignment_when_assigned():
+    """ROLL 30d_post: when new_expiry_price > new_strike, return locked at assignment level."""
+    entry_price = 180.0
+    new_strike = 195.0
+    new_expiry_price = 205.0   # stock at new_expiry > new_strike → assigned
+    h_price = 215.0            # stock at 30d post (irrelevant once assigned)
+    btc_mark, sto_mark = 3.0, 4.5
+    btc_exec, sto_exec = 2.8, 4.6
+    pl = {"new_strike": new_strike, "btc_price": btc_mark, "sto_premium": sto_mark}
+    exec_rec = {"execution_price": btc_exec, "sto_premium": sto_exec,
+                "execution_date": "2026-09-01"}
+    actual_r, agent_r, estimated = _compute_cc_management_returns(
+        "ROLL_OUT", pl, entry_price, h_price, exec_rec=exec_rec,
+        horizon_label="30d_post", new_expiry_price=new_expiry_price,
+    )
+    net_credit = sto_exec - btc_exec
+    expected_actual = (new_strike - entry_price) / entry_price + net_credit / entry_price
+    assert abs(actual_r - expected_actual) < 0.0001, f"Post-assignment should lock: {actual_r:.6f}"
+    assert not estimated
+
+
+def test_roll_post_horizon_uses_hold_r_when_expired():
+    """ROLL 30d_post: when new_expiry_price <= new_strike, stock continues to post-horizon."""
+    entry_price = 180.0
+    new_strike = 195.0
+    new_expiry_price = 190.0   # stock at new_expiry < new_strike → expired
+    h_price = 205.0            # stock at 30d post — now above strike (no cap since expired)
+    hold_r = (h_price - entry_price) / entry_price
+    btc_mark, sto_mark = 3.0, 4.5
+    btc_exec, sto_exec = 2.9, 4.5
+    pl = {"new_strike": new_strike, "btc_price": btc_mark, "sto_premium": sto_mark}
+    exec_rec = {"execution_price": btc_exec, "sto_premium": sto_exec,
+                "execution_date": "2026-09-01"}
+    actual_r, agent_r, estimated = _compute_cc_management_returns(
+        "ROLL_OUT", pl, entry_price, h_price, exec_rec=exec_rec,
+        horizon_label="30d_post", new_expiry_price=new_expiry_price,
+    )
+    net_credit = sto_exec - btc_exec
+    expected_actual = hold_r + net_credit / entry_price
+    assert abs(actual_r - expected_actual) < 0.0001, f"Expired path at 30d_post: {actual_r:.6f}"
     assert not estimated
 
 

@@ -205,51 +205,83 @@ def _compute_cc_management_returns(
     h_price: float | None,
     exec_rec=None,
     horizon_label: str = "",
+    new_expiry_price: float | None = None,
 ) -> tuple[float | None, float | None, bool]:
     """Returns (actual_r, agent_r, actual_is_estimated) for CC management actions.
 
-    entry_price  : stock price at the CC management recommendation date
-    h_price      : stock price at the horizon date
-    exec_rec     : aggregated execution record (may be None)
-    horizon_label: used for ALLOW_ASSIGNMENT post-assignment horizons
+    entry_price     : stock price at the CC management recommendation date (MTM basis)
+    h_price         : stock price at the horizon date
+    exec_rec        : aggregated execution record (may be None)
+    horizon_label   : "at_expiry", "30d_post", "90d_post" etc.
+    new_expiry_price: for ROLL post-horizons, stock price at the new expiry date
+                      (pre-fetched by caller to avoid DB access in this helper)
     """
     hold_r = (h_price - entry_price) / entry_price if (h_price is not None and entry_price) else None
 
     if action == "BUY_TO_CLOSE":
-        orig_premium = float(pl.get("original_premium") or pl.get("premium") or 0.0)
+        # MTM baseline: the current cost to close is btc_mark; closing at mark → net=0 on option
         btc_mark = float(pl.get("btc_price") or pl.get("btc_mark") or 0.0)
-        agent_net = orig_premium - btc_mark
-        agent_r = (hold_r + agent_net / entry_price) if (hold_r is not None and entry_price) else None
+        # agent_r: close at recommended mark → stock return only (option leg nets zero from MTM)
+        agent_r = hold_r
         if exec_rec and exec_rec.get("execution_price"):
             btc_exec = float(exec_rec["execution_price"])
-            net = orig_premium - btc_exec
+            # Positive when executed below mark (saved money vs MTM)
+            net = btc_mark - btc_exec
             actual_r = (hold_r + net / entry_price) if (hold_r is not None and entry_price) else None
             return actual_r, agent_r, actual_r is None
-        return hold_r, agent_r, True  # no exec: stock return known, net premium unknown
+        return hold_r, agent_r, True  # no exec: stock return known, option cost unknown
 
     elif action == "ALLOW_ASSIGNMENT":
-        orig_premium = float(pl.get("original_premium") or pl.get("premium") or 0.0)
+        # MTM baseline: evaluate management decision from current stock price (S_rec).
+        # Original SELL_CC premium already credited in the SELL_CC outcome row — exclude here.
         k = float(pl.get("strike") or 0.0)
         if k and entry_price:
-            assignment_r = (k - entry_price + orig_premium) / entry_price
-            if "post" in horizon_label:
-                # Locked at assignment return; cash earns 0 additional return post-assignment
-                return assignment_r, assignment_r, False
+            assignment_r = (k - entry_price) / entry_price
             return assignment_r, assignment_r, False
         return hold_r, hold_r, True
 
     elif action in {"ROLL_OUT", "ROLL_UP", "ROLL_UP_AND_OUT"}:
+        new_strike = float(pl.get("new_strike") or pl.get("strike") or 0.0)
         btc_mark = float(pl.get("btc_price") or pl.get("btc_mark") or 0.0)
         sto_mark = float(pl.get("sto_premium") or pl.get("new_premium") or 0.0)
         agent_net = sto_mark - btc_mark
-        agent_r = (hold_r + agent_net / entry_price) if (hold_r is not None and entry_price) else None
+
         if exec_rec and exec_rec.get("execution_price"):
             btc_exec = float(exec_rec["execution_price"])
             sto_exec = float(exec_rec.get("sto_premium") or sto_mark)
-            net = sto_exec - btc_exec
-            actual_r = (hold_r + net / entry_price) if (hold_r is not None and entry_price) else None
-            return actual_r, agent_r, actual_r is None
-        return hold_r, agent_r, True
+            net_credit = sto_exec - btc_exec
+        else:
+            net_credit = None
+
+        if new_strike and h_price is not None and entry_price:
+            # Determine stock base return, capping at new_strike if assigned
+            if "post" in horizon_label:
+                # Use pre-fetched new_expiry_price to determine assignment state
+                if new_expiry_price is not None and new_expiry_price > new_strike:
+                    # Assigned at new expiry: lock at assignment level from MTM basis
+                    base_r = (new_strike - entry_price) / entry_price
+                else:
+                    # Expired or unknown: stock continues to horizon
+                    base_r = hold_r
+            else:
+                # at_expiry: h_date IS new_expiry, h_price IS S at new_expiry
+                if h_price > new_strike:
+                    base_r = (new_strike - entry_price) / entry_price
+                else:
+                    base_r = hold_r
+
+            agent_r = (base_r + agent_net / entry_price) if base_r is not None else None
+            if net_credit is not None:
+                actual_r = (base_r + net_credit / entry_price) if base_r is not None else None
+                return actual_r, agent_r, actual_r is None
+            return hold_r, agent_r, True
+        else:
+            # Fallback when new_strike absent: net-credit formula only
+            agent_r = (hold_r + agent_net / entry_price) if (hold_r is not None and entry_price) else None
+            if net_credit is not None:
+                actual_r = (hold_r + net_credit / entry_price) if hold_r is not None else None
+                return actual_r, agent_r, actual_r is None
+            return hold_r, agent_r, True
 
     elif action == "HOLD_CALL":
         # Actual: hold unchanged, stock return applies
@@ -301,10 +333,19 @@ def _compute_scenarios(
 
     # CC management actions: dedicated outcome models (0105)
     if action in CC_MANAGEMENT_ACTIONS:
+        horizon_label = kwargs.get("horizon_label", "")
+        # For ROLL post-horizons, pre-fetch the stock price at the new expiry date so
+        # _compute_cc_management_returns can determine assignment state without DB access.
+        new_expiry_price: float | None = None
+        if action in {"ROLL_OUT", "ROLL_UP", "ROLL_UP_AND_OUT"} and "post" in horizon_label:
+            new_expiry = pl.get("new_expiration") or pl.get("new_expiry")
+            if new_expiry:
+                new_expiry_price = _ticker_price_at(ticker, new_expiry)
         actual_r, agent_r, actual_is_estimated = _compute_cc_management_returns(
             action, pl, entry_price, h_price,
             exec_rec=exec_rec,
-            horizon_label=kwargs.get("horizon_label", ""),
+            horizon_label=horizon_label,
+            new_expiry_price=new_expiry_price,
         )
         return actual_r, agent_r, hold_r, spy_r, actual_is_estimated, None, None
 
