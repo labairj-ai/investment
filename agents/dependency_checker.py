@@ -365,10 +365,29 @@ def _check_estimate_revision(dep: dict, _unused) -> str | None:
     return None
 
 
+def _check_cc_position_state(dep: dict, _unused) -> str | None:
+    """Supersede if an open CC position was opened or closed since the recommendation.
+
+    original_value: "open" if an open CC existed when rec was made, "none" if not.
+    Fires when the current state differs (position opened externally, or closed).
+    """
+    ticker = dep.get("dependency_key")
+    original_state = dep.get("original_value") or "none"
+    if not ticker:
+        return None
+    current_cc = agent_db.get_open_cc_for_ticker(ticker)
+    current_state = "open" if current_cc else "none"
+    if current_state != original_state:
+        return (f"CC position state changed: was '{original_state}', "
+                f"now '{current_state}'")
+    return None
+
+
 _KNOWN_DEPENDENCY_TYPES = frozenset({
     "PRICE", "THESIS_VERSION", "POSITION_WEIGHT", "MACRO_STATE",
     "FINANCIAL_PERIOD", "OPTION_IV", "OPTION_EXPIRATION", "EARNINGS_DATE",
     "EVENT_CALENDAR", "OPTION_LIQUIDITY", "ESTIMATE_REVISION",
+    "CC_POSITION_STATE",
 })
 
 
@@ -442,6 +461,8 @@ def check_all_dependencies() -> int:
                 reason = _check_option_liquidity(dep, None)
             elif dtype == "ESTIMATE_REVISION":
                 reason = _check_estimate_revision(dep, None)
+            elif dtype == "CC_POSITION_STATE":
+                reason = _check_cc_position_state(dep, None)
             else:
                 # Unknown dependency type: fail-safe — supersede rather than silently assume valid.
                 reason = (f"Unknown dependency type {dtype!r}: cannot validate — "

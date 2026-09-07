@@ -2826,3 +2826,25 @@ def get_estimate_history(ticker: str, period: str, estimate_type: str) -> list[d
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def get_open_cc_for_ticker(ticker: str) -> dict | None:
+    """Return the most recent open CC position for a ticker, or None if none exists.
+
+    Queries the cc_positions table (maintained by serve.py). Returns None when
+    the table doesn't exist yet (e.g., in test environments).
+    """
+    conn = _connect()
+    if not conn:
+        return None
+    try:
+        row = conn.execute(
+            "SELECT * FROM cc_positions WHERE ticker=? AND status='open' "
+            "ORDER BY opened_date DESC LIMIT 1",
+            (ticker,),
+        ).fetchone()
+        return dict(row) if row else None
+    except Exception:
+        return None
+    finally:
+        conn.close()

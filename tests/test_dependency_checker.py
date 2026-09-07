@@ -11,7 +11,7 @@ from agents.dependency_checker import (
     _check_macro_state, _check_financial_period,
     _check_option_iv, _check_option_expiration, _check_earnings_date,
     _check_event_calendar, _check_option_liquidity, _check_estimate_revision,
-    _KNOWN_DEPENDENCY_TYPES,
+    _check_cc_position_state, _KNOWN_DEPENDENCY_TYPES,
 )
 
 
@@ -221,3 +221,38 @@ def test_all_known_types_have_handlers():
     for dtype in _KNOWN_DEPENDENCY_TYPES:
         assert f'"{dtype}"' in source or f"'{dtype}'" in source, \
             f"Dependency type {dtype!r} not handled in check_all_dependencies"
+
+
+# ── 0090: CC_POSITION_STATE ───────────────────────────────────────────────────
+
+def test_cc_position_state_no_change_returns_none(monkeypatch):
+    """No supersession when CC position state is unchanged."""
+    import agent_db as _adb
+    monkeypatch.setattr(_adb, "get_open_cc_for_ticker", lambda ticker: None)
+    dep = {"dependency_key": "ANET", "original_value": "none"}
+    assert _check_cc_position_state(dep, None) is None
+
+
+def test_cc_position_state_opened_triggers_supersession(monkeypatch):
+    """Supersede when a CC was opened after rec was made (original=none, now=open)."""
+    import agent_db as _adb
+    monkeypatch.setattr(_adb, "get_open_cc_for_ticker",
+                        lambda ticker: {"id": 1, "ticker": "ANET", "status": "open"})
+    dep = {"dependency_key": "ANET", "original_value": "none"}
+    result = _check_cc_position_state(dep, None)
+    assert result is not None
+    assert "state changed" in result.lower()
+
+
+def test_cc_position_state_closed_triggers_supersession(monkeypatch):
+    """Supersede when the CC was open at rec time but is now closed."""
+    import agent_db as _adb
+    monkeypatch.setattr(_adb, "get_open_cc_for_ticker", lambda ticker: None)
+    dep = {"dependency_key": "ANET", "original_value": "open"}
+    result = _check_cc_position_state(dep, None)
+    assert result is not None
+
+
+def test_cc_position_state_in_known_types():
+    """CC_POSITION_STATE must be in _KNOWN_DEPENDENCY_TYPES."""
+    assert "CC_POSITION_STATE" in _KNOWN_DEPENDENCY_TYPES

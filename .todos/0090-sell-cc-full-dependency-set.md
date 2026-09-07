@@ -1,7 +1,7 @@
 # SELL_CC Full Dependency Set
 
 - **ID:** 0090
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-06
 - **Priority:** normal
 - **Depends:** 0086, 0087, 0088

@@ -622,14 +622,76 @@ def _analyze_ticker(ctx: AgentContext, ticker: str) -> list[Recommendation]:
     except Exception as _snap_e:
         print(f"[covered_call] {ticker}: option snapshot write failed: {_snap_e}")
 
-    price_dep = {
-        "dependency_type": "PRICE",
-        "dependency_key": ticker,
-        "original_value": holding.current_price,
-        "tolerance": 0.02,
-        "invalidating_event": "PRICE_THRESHOLD",
-    }
-    deps = [price_dep]
+    # 0090: build full dependency set for SELL_CC recommendations
+    _strike     = float(row["strike"])
+    _expiration = str(row["expiration"])
+    _iv_at_rec  = float(row.get("impliedVolatility", 0) or 0)
+    _spread_at_rec = float(row.get("spread_width", 0) or 0)
+    _ask_at_rec    = float(row.get("ask", 0) or 0)
+    _spread_pct_at_rec = (_spread_at_rec / _ask_at_rec) if _ask_at_rec > 0 else None
+
+    deps: list[dict] = [
+        {
+            "dependency_type": "PRICE",
+            "dependency_key": ticker,
+            "original_value": holding.current_price,
+            "tolerance": 0.02,
+            "invalidating_event": "PRICE_THRESHOLD",
+        },
+        {
+            "dependency_type": "OPTION_IV",
+            "dependency_key": ticker,
+            "original_value": str(round(_iv_at_rec, 4)),
+            "tolerance": 0.20,
+            "invalidating_event": "IV_SHIFT",
+            "metadata": {"strike": _strike, "expiration": _expiration, "threshold": 0.20},
+        },
+        {
+            "dependency_type": "OPTION_LIQUIDITY",
+            "dependency_key": ticker,
+            "original_value": str(round(_spread_pct_at_rec, 4)) if _spread_pct_at_rec else None,
+            "tolerance": 0.15,
+            "invalidating_event": "SPREAD_WIDE",
+            "metadata": {"strike": _strike, "expiration": _expiration, "threshold": 0.15},
+        },
+        {
+            "dependency_type": "OPTION_EXPIRATION",
+            "dependency_key": ticker,
+            "original_value": _expiration,
+            "tolerance": None,
+            "invalidating_event": "NEAR_EXPIRY",
+            "metadata": {"strike": _strike, "expiration": _expiration},
+        },
+        {
+            "dependency_type": "EARNINGS_DATE",
+            "dependency_key": ticker,
+            "original_value": None,
+            "tolerance": None,
+            "invalidating_event": "EARNINGS_IN_WINDOW",
+            "metadata": {"event_type": "EARNINGS", "expiration": _expiration},
+        },
+        {
+            "dependency_type": "THESIS_VERSION",
+            "dependency_key": ticker,
+            "original_value": None,
+            "tolerance": None,
+            "invalidating_event": "THESIS_UPDATED",
+        },
+    ]
+
+    # CC_POSITION_STATE: snapshot whether an open CC position exists right now
+    try:
+        _open_cc = agent_db.get_open_cc_for_ticker(ticker)
+        deps.append({
+            "dependency_type": "CC_POSITION_STATE",
+            "dependency_key": ticker,
+            "original_value": "open" if _open_cc else "none",
+            "tolerance": None,
+            "invalidating_event": "CC_STATE_CHANGED",
+        })
+    except Exception:
+        pass
+
     macro_scores = (ctx.snapshot.macro_scores or {}).get(ticker)
     if macro_scores:
         deps.append({
