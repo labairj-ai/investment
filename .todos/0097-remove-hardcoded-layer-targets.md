@@ -1,6 +1,6 @@
 # Remove Hard-Coded Layer Targets from NO ACTION Hashing
 
-- **ID:** 0004
+- **ID:** 0097
 - **Status:** backlog
 - **Created:** 2026-09-07
 - **Priority:** normal

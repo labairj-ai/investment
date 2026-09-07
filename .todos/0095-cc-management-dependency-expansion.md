@@ -1,6 +1,6 @@
 # Expand CC Management Recommendation Dependencies
 
-- **ID:** 0002
+- **ID:** 0095
 - **Status:** backlog
 - **Created:** 2026-09-07
 - **Priority:** high

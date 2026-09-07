@@ -1,6 +1,6 @@
 # Atomic CC Execution ↔ cc_positions Sync
 
-- **ID:** 0005
+- **ID:** 0098
 - **Status:** backlog
 - **Created:** 2026-09-07
 - **Priority:** high
