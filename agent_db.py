@@ -2409,12 +2409,21 @@ def get_outcome_statistics_by_category(
                   AVG(ro.benchmark_return) as avg_spy,
                   AVG(ro.actual_return - ro.recommended_path_return) as avg_user_override_alpha,
                   SUM(CASE WHEN ud.decision='accepted' THEN 1 ELSE 0 END) as n_accepted,
-                  SUM(CASE WHEN ud.decision='rejected' THEN 1 ELSE 0 END) as n_rejected
+                  SUM(CASE WHEN ud.decision='rejected' THEN 1 ELSE 0 END) as n_rejected,
+                  -- 0080: agent_edge variance for CI computation
+                  -- SQLite has no STDEV; use VAR = E[X^2] - E[X]^2 where X = agent - hold
+                  AVG((ro.recommended_path_return - ro.hold_return) *
+                      (ro.recommended_path_return - ro.hold_return)) -
+                  (AVG(ro.recommended_path_return - ro.hold_return) *
+                   AVG(ro.recommended_path_return - ro.hold_return))
+                  AS agent_edge_variance
            FROM recommendation_outcomes ro
            JOIN recommendations r ON r.id = ro.recommendation_id
            JOIN agent_runs ar ON ar.id = r.run_id
            LEFT JOIN user_decisions ud ON ud.recommendation_id = r.id
            WHERE ro.actual_is_estimated = 0
+             AND ro.recommended_path_return IS NOT NULL
+             AND ro.hold_return IS NOT NULL
              AND ro.horizon IN ('3m', '6m', '12m')
            GROUP BY ar.agent_type, r.action, r.rationale_class
            HAVING COUNT(*) >= ?""",

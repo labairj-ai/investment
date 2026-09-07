@@ -38,7 +38,8 @@ def compute_quality_stats() -> list[dict]:
       agent_type, action, rationale_class,
       n, avg_actual, avg_agent, avg_hold, avg_spy,
       avg_user_override_alpha, n_accepted, n_rejected,
-      agent_edge (avg_agent - avg_hold, agent rec vs just holding)
+      agent_edge (avg_agent - avg_hold, agent rec vs just holding),
+      agent_edge_variance, ci_lower, ci_upper (0080: 95% confidence interval)
 
     Only includes categories with n >= _MIN_SAMPLES non-estimated outcomes.
     """
@@ -48,9 +49,20 @@ def compute_quality_stats() -> list[dict]:
         agent_edge = None
         if r.get("avg_agent") is not None and r.get("avg_hold") is not None:
             agent_edge = r["avg_agent"] - r["avg_hold"]
+
+        # 0080: compute variance and 95% CI from stored variance column
+        n = r.get("n") or 1
+        variance = r.get("agent_edge_variance") or 0.0
+        std = math.sqrt(max(float(variance), 0.0))
+        ci_half = 1.96 * std / math.sqrt(n) if n > 1 else float("inf")
+        ci_lower = agent_edge - ci_half if agent_edge is not None else None
+        ci_upper = agent_edge + ci_half if agent_edge is not None else None
+
         result.append({
             **r,
             "agent_edge": agent_edge,
+            "ci_lower": ci_lower,
+            "ci_upper": ci_upper,
         })
     return result
 
@@ -73,6 +85,7 @@ def get_decision_quality_note(
     - Fewer than _MIN_SAMPLES outcomes exist for this category
     - The agent_edge is below _CI_THRESHOLD (not material)
     - Outcome data is not yet trustworthy (estimated outcomes dominate)
+    - 0080: The 95% CI crosses zero (statistically indistinguishable from zero)
 
     The note is purely informational — the LLM prompt instructions should make
     clear it does not change the action or confidence.
@@ -102,6 +115,13 @@ def get_decision_quality_note(
 
     if edge is None or abs(edge) < _CI_THRESHOLD:
         return ""
+
+    # 0080: require CI does not cross zero (must be statistically clear)
+    ci_lower = best.get("ci_lower", float("-inf"))
+    ci_upper = best.get("ci_upper", float("inf"))
+    if ci_lower is not None and ci_upper is not None:
+        if ci_lower < 0 < ci_upper:
+            return ""  # CI crosses zero — statistically indistinguishable from zero
 
     direction = "outperformed" if edge > 0 else "underperformed"
     pct = abs(edge * 100)
