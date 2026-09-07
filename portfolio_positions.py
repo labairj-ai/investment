@@ -23,7 +23,13 @@ _TICKER_ALIASES: dict[str, str] = {"BRK/B": "BRK.B", "BRK/A": "BRK.A"}
 
 def _normalize(ticker: str) -> str:
     t = ticker.strip().upper()
-    return _TICKER_ALIASES.get(t, t)
+    t = _TICKER_ALIASES.get(t, t)
+    # BRK.B → BRK-B (Yahoo dot-format share class → dash format used in DB)
+    if "." in t:
+        left, right = t.split(".", 1)
+        if right in {"A", "B", "C", "D"}:
+            t = f"{left}-{right}"
+    return t
 
 
 @dataclass
