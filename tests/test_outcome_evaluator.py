@@ -254,101 +254,131 @@ from agents.outcome_evaluator import _compute_cc_management_returns
 
 
 def test_btc_with_exec_rec_uses_actual_btc_price():
-    """BUY_TO_CLOSE: MTM baseline — agent_r=hold_r (close at mark); actual_r adjusts for slippage."""
+    """0125: BUY_TO_CLOSE — agent_r=stock-return-on-nav; actual_r adds slippage vs mark."""
     entry_price = 180.0
     h_price = 200.0
-    hold_r = (h_price - entry_price) / entry_price
-    btc_mark = 2.5   # rec-date mark (MTM basis)
+    btc_mark = 2.5   # C_rec: rec-date call mark (MTM basis)
     btc_exec = 2.0   # actual fill (cheaper than mark → positive slippage)
+    nav = entry_price - btc_mark  # 177.5
+    hold_r_nav = (h_price - entry_price) / nav
     pl = {"btc_price": btc_mark}
     exec_rec = {"execution_price": btc_exec, "execution_date": "2026-09-05"}
     actual_r, agent_r, estimated = _compute_cc_management_returns(
         "BUY_TO_CLOSE", pl, entry_price, h_price, exec_rec=exec_rec,
     )
-    # agent_r: closed at mark → net option P&L from MTM = 0 → just stock return
-    assert abs(agent_r - hold_r) < 0.0001, f"BTC agent_r should equal hold_r, got {agent_r}"
-    # actual_r: saved (btc_mark - btc_exec) vs mark → stock return plus slippage gain
-    expected_actual = hold_r + (btc_mark - btc_exec) / entry_price
+    # agent_r: close at mark → option P&L from MTM = 0 → just stock-on-nav
+    assert abs(agent_r - hold_r_nav) < 0.0001, f"BTC agent_r should equal hold_r_nav={hold_r_nav:.6f}, got {agent_r}"
+    # actual_r: saved (btc_mark - btc_exec) / nav
+    expected_actual = hold_r_nav + (btc_mark - btc_exec) / nav
     assert abs(actual_r - expected_actual) < 0.0001, f"actual_r={actual_r:.6f} vs expected={expected_actual:.6f}"
     assert not estimated
 
 
-def test_btc_no_exec_rec_falls_back_to_hold_r():
-    """BUY_TO_CLOSE without exec_rec: actual_r = hold_r, estimated=True."""
+def test_btc_no_exec_rec_falls_back_to_hold_r_nav():
+    """0125: BUY_TO_CLOSE without exec_rec: actual_r = stock-on-nav, estimated=True."""
     entry_price = 180.0
     h_price = 200.0
-    hold_r = (h_price - entry_price) / entry_price
-    pl = {"original_premium": 4.0, "btc_price": 2.5}
+    btc_mark = 2.5
+    nav = entry_price - btc_mark  # 177.5
+    hold_r_nav = (h_price - entry_price) / nav
+    pl = {"btc_price": btc_mark}
     actual_r, agent_r, estimated = _compute_cc_management_returns(
         "BUY_TO_CLOSE", pl, entry_price, h_price, exec_rec=None,
     )
-    assert abs(actual_r - hold_r) < 0.0001
+    assert abs(actual_r - hold_r_nav) < 0.0001, f"actual_r={actual_r:.6f}, expected={hold_r_nav:.6f}"
     assert estimated
 
 
-def test_allow_assignment_at_expiry_uses_strike_formula():
-    """ALLOW_ASSIGNMENT at_expiry: actual_r = (K - S_rec) / S_rec — no SELL_CC premium."""
+def test_allow_assignment_at_expiry_assigned_uses_nav_formula():
+    """0125/0127: ALLOW_ASSIGNMENT assigned (S_exp > K): (min(S,K) - S_rec + C_rec) / nav."""
     entry_price = 175.0
     k = 185.0
-    pl = {"strike": k, "premium": 3.0}  # premium present but must NOT be included
+    btc_mark = 2.0
+    nav = entry_price - btc_mark   # 173.0
+    h_price = 192.0  # > K → assigned
+    pl = {"strike": k, "btc_mark": btc_mark}
     actual_r, agent_r, estimated = _compute_cc_management_returns(
-        "ALLOW_ASSIGNMENT", pl, entry_price, h_price=190.0, horizon_label="at_expiry",
+        "ALLOW_ASSIGNMENT", pl, entry_price, h_price, horizon_label="at_expiry",
     )
-    expected = (k - entry_price) / entry_price
+    expected = (min(h_price, k) - entry_price + btc_mark) / nav
     assert abs(actual_r - expected) < 0.0001, f"actual_r={actual_r:.6f}, expected={expected:.6f}"
     assert abs(agent_r - expected) < 0.0001
     assert not estimated
 
 
-def test_allow_assignment_post_horizons_return_locked_at_assignment():
-    """ALLOW_ASSIGNMENT 30d/90d post: locked at (K - S_rec) / S_rec, no SELL_CC premium."""
+def test_allow_assignment_at_expiry_otm_uses_nav_formula():
+    """0127: ALLOW_ASSIGNMENT OTM (S_exp ≤ K): call expires worthless, investor keeps shares."""
     entry_price = 175.0
     k = 185.0
-    pl = {"strike": k, "premium": 3.0}
-    expected = (k - entry_price) / entry_price
+    btc_mark = 2.0
+    nav = entry_price - btc_mark   # 173.0
+    h_price = 170.0  # < K → OTM, no assignment
+    pl = {"strike": k, "btc_mark": btc_mark}
+    actual_r, agent_r, estimated = _compute_cc_management_returns(
+        "ALLOW_ASSIGNMENT", pl, entry_price, h_price, horizon_label="at_expiry",
+    )
+    expected = (min(h_price, k) - entry_price + btc_mark) / nav   # (170-175+2)/173
+    assert abs(actual_r - expected) < 0.0001, f"actual_r={actual_r:.6f}, expected={expected:.6f}"
+    assert not estimated
+
+
+def test_allow_assignment_post_horizons_lock_at_expiry_value():
+    """0127: ALLOW_ASSIGNMENT 30d/90d post: locked using new_expiry_price (assigned branch)."""
+    entry_price = 175.0
+    k = 185.0
+    btc_mark = 2.0
+    nav = entry_price - btc_mark   # 173.0
+    new_expiry_price = 195.0  # > K → assigned
+    h_price = 205.0           # post-horizon (irrelevant once locked)
+    pl = {"strike": k, "btc_mark": btc_mark}
+    expected = (min(new_expiry_price, k) - entry_price + btc_mark) / nav  # (185-175+2)/173
     for label in ("30d_post", "90d_post"):
         actual_r, agent_r, estimated = _compute_cc_management_returns(
-            "ALLOW_ASSIGNMENT", pl, entry_price, h_price=200.0, horizon_label=label,
+            "ALLOW_ASSIGNMENT", pl, entry_price, h_price,
+            horizon_label=label, new_expiry_price=new_expiry_price,
         )
         assert abs(actual_r - expected) < 0.0001, (
-            f"Post-assignment return should be locked at {expected:.4f}, got {actual_r}"
+            f"[{label}] locked at {expected:.4f}, got {actual_r:.4f}"
         )
         assert abs(agent_r - expected) < 0.0001
         assert not estimated
 
 
 def test_roll_out_uses_sto_minus_btc_net():
-    """ROLL_OUT fallback (no new_strike): actual_r = hold_r + (sto_exec - btc_exec) / entry."""
+    """0125: ROLL_OUT fallback (no new_strike): returns normalized by nav = entry - btc_mark."""
     entry_price = 180.0
     h_price = 200.0
-    hold_r = (h_price - entry_price) / entry_price
     btc_mark = 2.0
     sto_mark = 4.0
     btc_exec = 1.80
     sto_exec = 4.20
+    nav = entry_price - btc_mark  # 178.0
+    hold_r_nav = (h_price - entry_price) / nav
     pl = {"btc_price": btc_mark, "sto_premium": sto_mark}  # no new_strike → fallback path
     exec_rec = {"execution_price": btc_exec, "sto_premium": sto_exec,
                 "execution_date": "2026-09-10"}
     actual_r, agent_r, estimated = _compute_cc_management_returns(
         "ROLL_OUT", pl, entry_price, h_price, exec_rec=exec_rec,
     )
-    expected_actual = hold_r + (sto_exec - btc_exec) / entry_price
-    expected_agent  = hold_r + (sto_mark - btc_mark) / entry_price
-    assert abs(actual_r - expected_actual) < 0.0001
+    expected_actual = hold_r_nav + (sto_exec - btc_exec) / nav
+    expected_agent  = hold_r_nav + (sto_mark - btc_mark) / nav
+    assert abs(actual_r - expected_actual) < 0.0001, f"actual={actual_r:.6f}, expected={expected_actual:.6f}"
     assert abs(agent_r - expected_agent) < 0.0001
     assert not estimated
 
 
-# ── 0114: ROLL at_expiry and post-horizon assignment branching ────────────────
+# ── 0114 / 0125: ROLL at_expiry and post-horizon assignment branching ─────────
 
 def test_roll_at_expiry_capped_at_new_strike_when_assigned():
-    """ROLL at_expiry: when stock > new_strike, return capped — not uncapped hold_r."""
+    """0125: ROLL at_expiry assigned — capped at new_strike, normalized by nav."""
     entry_price = 180.0
     new_strike = 195.0
-    h_price = 210.0     # stock at new_expiry > new_strike → assigned
-    hold_r = (h_price - entry_price) / entry_price
+    h_price = 210.0     # > new_strike → assigned
     btc_mark, sto_mark = 3.0, 4.5
     btc_exec, sto_exec = 2.8, 4.6
+    nav = entry_price - btc_mark  # 177.0
+    net_credit = sto_exec - btc_exec   # 1.8
+    hold_r_nav = (h_price - entry_price) / nav
     pl = {"new_strike": new_strike, "btc_price": btc_mark, "sto_premium": sto_mark}
     exec_rec = {"execution_price": btc_exec, "sto_premium": sto_exec,
                 "execution_date": "2026-09-01"}
@@ -356,23 +386,24 @@ def test_roll_at_expiry_capped_at_new_strike_when_assigned():
         "ROLL_OUT", pl, entry_price, h_price, exec_rec=exec_rec,
         horizon_label="at_expiry",
     )
-    net_credit = sto_exec - btc_exec
-    expected_actual = (new_strike - entry_price) / entry_price + net_credit / entry_price
-    expected_agent  = (new_strike - entry_price) / entry_price + (sto_mark - btc_mark) / entry_price
+    expected_actual = (new_strike - entry_price) / nav + net_credit / nav
+    expected_agent  = (new_strike - entry_price) / nav + (sto_mark - btc_mark) / nav
     assert abs(actual_r - expected_actual) < 0.0001, f"actual_r={actual_r:.6f} expected={expected_actual:.6f}"
     assert abs(agent_r - expected_agent) < 0.0001
-    assert actual_r < hold_r + net_credit / entry_price, "Assigned path must be capped below uncapped"
+    assert actual_r < hold_r_nav + net_credit / nav, "Assigned path must be capped below uncapped"
     assert not estimated
 
 
 def test_roll_at_expiry_uncapped_when_expired():
-    """ROLL at_expiry: when stock <= new_strike, return uses actual stock price (uncapped)."""
+    """0125: ROLL at_expiry OTM — stock return uncapped, normalized by nav."""
     entry_price = 180.0
     new_strike = 195.0
-    h_price = 188.0     # stock at new_expiry < new_strike → expired worthless
-    hold_r = (h_price - entry_price) / entry_price
+    h_price = 188.0     # < new_strike → expired worthless
     btc_mark, sto_mark = 3.0, 4.5
     btc_exec, sto_exec = 3.1, 4.4
+    nav = entry_price - btc_mark  # 177.0
+    net_credit = sto_exec - btc_exec   # 1.3
+    hold_r_nav = (h_price - entry_price) / nav
     pl = {"new_strike": new_strike, "btc_price": btc_mark, "sto_premium": sto_mark}
     exec_rec = {"execution_price": btc_exec, "sto_premium": sto_exec,
                 "execution_date": "2026-09-01"}
@@ -380,20 +411,21 @@ def test_roll_at_expiry_uncapped_when_expired():
         "ROLL_OUT", pl, entry_price, h_price, exec_rec=exec_rec,
         horizon_label="at_expiry",
     )
-    net_credit = sto_exec - btc_exec
-    expected_actual = hold_r + net_credit / entry_price
-    assert abs(actual_r - expected_actual) < 0.0001, f"Expired path should be uncapped: {actual_r:.6f}"
+    expected_actual = hold_r_nav + net_credit / nav
+    assert abs(actual_r - expected_actual) < 0.0001, f"Expired path uncapped: {actual_r:.6f}"
     assert not estimated
 
 
 def test_roll_post_horizon_locks_at_assignment_when_assigned():
-    """ROLL 30d_post: when new_expiry_price > new_strike, return locked at assignment level."""
+    """0125: ROLL 30d_post assigned — locked at assignment level, normalized by nav."""
     entry_price = 180.0
     new_strike = 195.0
-    new_expiry_price = 205.0   # stock at new_expiry > new_strike → assigned
-    h_price = 215.0            # stock at 30d post (irrelevant once assigned)
+    new_expiry_price = 205.0
+    h_price = 215.0
     btc_mark, sto_mark = 3.0, 4.5
     btc_exec, sto_exec = 2.8, 4.6
+    nav = entry_price - btc_mark  # 177.0
+    net_credit = sto_exec - btc_exec  # 1.8
     pl = {"new_strike": new_strike, "btc_price": btc_mark, "sto_premium": sto_mark}
     exec_rec = {"execution_price": btc_exec, "sto_premium": sto_exec,
                 "execution_date": "2026-09-01"}
@@ -401,21 +433,22 @@ def test_roll_post_horizon_locks_at_assignment_when_assigned():
         "ROLL_OUT", pl, entry_price, h_price, exec_rec=exec_rec,
         horizon_label="30d_post", new_expiry_price=new_expiry_price,
     )
-    net_credit = sto_exec - btc_exec
-    expected_actual = (new_strike - entry_price) / entry_price + net_credit / entry_price
+    expected_actual = (new_strike - entry_price) / nav + net_credit / nav
     assert abs(actual_r - expected_actual) < 0.0001, f"Post-assignment should lock: {actual_r:.6f}"
     assert not estimated
 
 
 def test_roll_post_horizon_uses_hold_r_when_expired():
-    """ROLL 30d_post: when new_expiry_price <= new_strike, stock continues to post-horizon."""
+    """0125: ROLL 30d_post OTM — stock continues to post-horizon, normalized by nav."""
     entry_price = 180.0
     new_strike = 195.0
-    new_expiry_price = 190.0   # stock at new_expiry < new_strike → expired
-    h_price = 205.0            # stock at 30d post — now above strike (no cap since expired)
-    hold_r = (h_price - entry_price) / entry_price
+    new_expiry_price = 190.0   # < new_strike → expired
+    h_price = 205.0
     btc_mark, sto_mark = 3.0, 4.5
     btc_exec, sto_exec = 2.9, 4.5
+    nav = entry_price - btc_mark  # 177.0
+    net_credit = sto_exec - btc_exec  # 1.6
+    hold_r_nav = (h_price - entry_price) / nav
     pl = {"new_strike": new_strike, "btc_price": btc_mark, "sto_premium": sto_mark}
     exec_rec = {"execution_price": btc_exec, "sto_premium": sto_exec,
                 "execution_date": "2026-09-01"}
@@ -423,26 +456,64 @@ def test_roll_post_horizon_uses_hold_r_when_expired():
         "ROLL_OUT", pl, entry_price, h_price, exec_rec=exec_rec,
         horizon_label="30d_post", new_expiry_price=new_expiry_price,
     )
-    net_credit = sto_exec - btc_exec
-    expected_actual = hold_r + net_credit / entry_price
+    expected_actual = hold_r_nav + net_credit / nav
     assert abs(actual_r - expected_actual) < 0.0001, f"Expired path at 30d_post: {actual_r:.6f}"
     assert not estimated
 
 
-def test_hold_call_actual_equals_hold_r():
-    """HOLD_CALL: actual_r = hold_r; agent_r = hold_r - btc_mark / entry_price."""
+# ── 0126: HOLD_CALL terminal-payoff economics ─────────────────────────────────
+
+def test_hold_call_at_expiry_assigned():
+    """0126: HOLD_CALL at_expiry assigned — (min(S_exp,K) - S_rec + C_rec) / nav."""
     entry_price = 180.0
-    h_price = 200.0
-    hold_r = (h_price - entry_price) / entry_price
-    btc_mark = 1.50
-    pl = {"btc_mark": btc_mark}
+    k = 185.0
+    btc_mark = 2.0   # C_rec
+    nav = entry_price - btc_mark  # 178.0
+    h_price = 195.0  # > K → assigned at K
+    pl = {"strike": k, "btc_mark": btc_mark, "expiration": "2026-12-20"}
     actual_r, agent_r, estimated = _compute_cc_management_returns(
-        "HOLD_CALL", pl, entry_price, h_price,
+        "HOLD_CALL", pl, entry_price, h_price, horizon_label="at_expiry",
     )
-    assert abs(actual_r - hold_r) < 0.0001
-    expected_agent = hold_r - btc_mark / entry_price
-    assert abs(agent_r - expected_agent) < 0.0001
+    expected = (min(h_price, k) - entry_price + btc_mark) / nav  # (185-180+2)/178
+    assert abs(actual_r - expected) < 0.0001, f"actual_r={actual_r:.6f}, expected={expected:.6f}"
+    assert abs(agent_r - expected) < 0.0001, "agent_r should equal actual_r (rec was followed)"
     assert not estimated
+
+
+def test_hold_call_at_expiry_otm():
+    """0126: HOLD_CALL at_expiry OTM — call expires worthless, investor keeps shares."""
+    entry_price = 180.0
+    k = 185.0
+    btc_mark = 2.0
+    nav = entry_price - btc_mark  # 178.0
+    h_price = 175.0  # < K → OTM, investor keeps shares at depressed price
+    pl = {"strike": k, "btc_mark": btc_mark}
+    actual_r, agent_r, estimated = _compute_cc_management_returns(
+        "HOLD_CALL", pl, entry_price, h_price, horizon_label="at_expiry",
+    )
+    expected = (min(h_price, k) - entry_price + btc_mark) / nav  # (175-180+2)/178
+    assert abs(actual_r - expected) < 0.0001
+    assert not estimated
+
+
+def test_hold_call_post_horizon_locks_at_expiry_value():
+    """0126: HOLD_CALL post-horizons lock at at-expiry value using new_expiry_price."""
+    entry_price = 180.0
+    k = 185.0
+    btc_mark = 2.0
+    nav = entry_price - btc_mark  # 178.0
+    new_expiry_price = 195.0  # S at expiry > K → assigned
+    h_price = 210.0            # post-horizon price (irrelevant once locked)
+    pl = {"strike": k, "btc_mark": btc_mark}
+    expected = (min(new_expiry_price, k) - entry_price + btc_mark) / nav  # (185-180+2)/178
+    for label in ("30d_post", "90d_post"):
+        actual_r, agent_r, estimated = _compute_cc_management_returns(
+            "HOLD_CALL", pl, entry_price, h_price,
+            horizon_label=label, new_expiry_price=new_expiry_price,
+        )
+        assert abs(actual_r - expected) < 0.0001, f"[{label}] expected={expected:.4f} got={actual_r:.4f}"
+        assert abs(agent_r - expected) < 0.0001
+        assert not estimated
 
 
 # ── 0106: CC post-expiry state-transition math ────────────────────────────────

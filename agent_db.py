@@ -458,6 +458,8 @@ def migrate() -> None:
         ("recommendation_outcomes",      "cc_assignment_state", "TEXT"),
         # 0111 — period-end shares for accurate market-cap computation
         ("company_financials",           "shares_period_end",   "REAL"),
+        # 0128 — outcome formula version tag; 1=baseline, 2=NAV-corrected CC management
+        ("recommendation_outcomes",      "outcome_math_version", "INTEGER"),
     ]
     for table, col, col_type in _new_cols:
         try:
@@ -1014,6 +1016,7 @@ def insert_outcome(
     cc_strategy_return: float | None = None,
     cc_incremental_alpha: float | None = None,
     cc_assignment_state: str | None = None,
+    outcome_math_version: int | None = None,
 ) -> int:
     conn = _connect()
     cur = conn.execute(
@@ -1021,12 +1024,12 @@ def insert_outcome(
            (recommendation_id, evaluation_date, benchmark_return, actual_return,
             recommended_path_return, opportunity_cost, notes, horizon, hold_return,
             actual_is_estimated, cc_strategy_return, cc_incremental_alpha,
-            cc_assignment_state)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            cc_assignment_state, outcome_math_version)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (recommendation_id, time.time(), benchmark_return, actual_return,
          recommended_path_return, opportunity_cost, notes, horizon, hold_return,
          actual_is_estimated, cc_strategy_return, cc_incremental_alpha,
-         cc_assignment_state),
+         cc_assignment_state, outcome_math_version),
     )
     outcome_id = cur.lastrowid
     conn.commit()

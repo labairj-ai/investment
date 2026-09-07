@@ -1296,10 +1296,12 @@ def test_btc_management_rec_evaluated_at_maturity(mem_db):
     assert "1m" in rows, f"Expected '1m' horizon row for BUY_TO_CLOSE, got: {list(rows.keys())}"
     row = rows["1m"]
 
-    # From MTM baseline: agent_r = hold_r (close at mark = zero net on option leg)
-    hold_r = (horizon_price - entry_price) / entry_price
+    # 0125: BUY_TO_CLOSE agent_r = stock return normalised by nav = S_rec - C_rec.
+    # Closing at the rec-date mark nets zero on the option leg → just stock-on-nav.
+    nav = entry_price - btc_mark   # 177.5
+    hold_r_nav = (horizon_price - entry_price) / nav
     assert row["recommended_path_return"] is not None
-    assert abs(row["recommended_path_return"] - hold_r) < 0.0001, (
-        f"BUY_TO_CLOSE agent_r should equal hold_r={hold_r:.4f}, "
+    assert abs(row["recommended_path_return"] - hold_r_nav) < 0.0001, (
+        f"BUY_TO_CLOSE agent_r should equal hold_r_nav={hold_r_nav:.4f}, "
         f"got {row['recommended_path_return']:.4f}"
     )
