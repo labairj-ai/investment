@@ -1,7 +1,7 @@
 # TRIM/ALLOCATE Accepted-Not-Executed Outcome Should Be NULL
 
 - **ID:** 0099
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-07
 - **Priority:** normal
 - **Depends:** 0094

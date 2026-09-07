@@ -332,7 +332,8 @@ def _check_option_liquidity(dep: dict, _unused) -> str | None:
 def _check_estimate_revision(dep: dict, _unused) -> str | None:
     """Supersede if analyst estimate has moved more than threshold.
 
-    Queries estimate_history. Stub: returns None until populated.
+    Filters by estimate_type + period when present in dep metadata (0096).
+    Falls back to unfiltered latest-row query for legacy deps without those fields.
     """
     ticker = dep.get("dependency_key")
     stored_estimate = dep.get("original_value")
@@ -343,13 +344,28 @@ def _check_estimate_revision(dep: dict, _unused) -> str | None:
         orig = float(stored_estimate)
     except (TypeError, ValueError):
         return None
-    # Stub: query estimate_history (table exists, may be empty)
+
+    estimate_type = dep.get("estimate_type")
+    period = dep.get("period")
+
     conn = agent_db._connect()
-    row = conn.execute(
-        "SELECT estimate_value FROM estimate_history WHERE ticker=? ORDER BY captured_at DESC LIMIT 1",
-        (ticker,),
-    ).fetchone()
+    if estimate_type and period:
+        row = conn.execute(
+            """SELECT estimate_value FROM estimate_history
+               WHERE ticker=? AND estimate_type=? AND period=?
+               ORDER BY captured_at DESC LIMIT 1""",
+            (ticker, estimate_type, period),
+        ).fetchone()
+    else:
+        # Legacy behaviour: no type/period filter; log a warning
+        print(f"[DepChecker] WARNING: ESTIMATE_REVISION dep for {ticker} has no "
+              f"estimate_type/period — using unfiltered latest row (may be wrong type)")
+        row = conn.execute(
+            "SELECT estimate_value FROM estimate_history WHERE ticker=? ORDER BY captured_at DESC LIMIT 1",
+            (ticker,),
+        ).fetchone()
     conn.close()
+
     if row is None or row["estimate_value"] is None:
         return None
     current = float(row["estimate_value"])
@@ -358,9 +374,46 @@ def _check_estimate_revision(dep: dict, _unused) -> str | None:
     change = abs(current - orig) / abs(orig)
     if change > threshold:
         direction = "up" if current > orig else "down"
+        type_label = f" {estimate_type}/{period}" if estimate_type and period else ""
         return (
-            f"Estimate revised {direction} by {change * 100:.0f}% "
+            f"Estimate{type_label} revised {direction} by {change * 100:.0f}% "
             f"(was {orig:.2f}, now {current:.2f}; threshold {threshold * 100:.0f}%)"
+        )
+    return None
+
+
+def _check_option_mark(dep: dict, _unused) -> str | None:
+    """Supersede if option mark has moved >= 20% from the value when rec was made (0095).
+
+    dependency_key = ticker
+    original_value = mark at time of recommendation
+    tolerance = 0.20 (default)
+    """
+    ticker = dep.get("dependency_key")
+    stored_mark = dep.get("original_value")
+    if not ticker or not stored_mark:
+        return None
+    try:
+        orig_mark = float(stored_mark)
+    except (TypeError, ValueError):
+        return None
+    threshold = float(dep.get("tolerance") or 0.20)
+    snap = agent_db.get_latest_option_snapshot(ticker, dep.get("strike"), dep.get("expiration"))
+    if snap is None:
+        return None  # no current quote data available
+    current_bid = snap.get("bid")
+    current_ask = snap.get("ask")
+    if current_bid is None or current_ask is None:
+        return None
+    current_mark = (float(current_bid) + float(current_ask)) / 2.0
+    if orig_mark == 0:
+        return None
+    change = abs(current_mark - orig_mark) / orig_mark
+    if change > threshold:
+        direction = "up" if current_mark > orig_mark else "down"
+        return (
+            f"Option mark moved {direction} {change * 100:.0f}% "
+            f"(was ${orig_mark:.2f}, now ${current_mark:.2f}; threshold {threshold * 100:.0f}%)"
         )
     return None
 
@@ -387,7 +440,7 @@ _KNOWN_DEPENDENCY_TYPES = frozenset({
     "PRICE", "THESIS_VERSION", "POSITION_WEIGHT", "MACRO_STATE",
     "FINANCIAL_PERIOD", "OPTION_IV", "OPTION_EXPIRATION", "EARNINGS_DATE",
     "EVENT_CALENDAR", "OPTION_LIQUIDITY", "ESTIMATE_REVISION",
-    "CC_POSITION_STATE",
+    "CC_POSITION_STATE", "OPTION_MARK",
 })
 
 
@@ -463,6 +516,8 @@ def check_all_dependencies() -> int:
                 reason = _check_estimate_revision(dep, None)
             elif dtype == "CC_POSITION_STATE":
                 reason = _check_cc_position_state(dep, None)
+            elif dtype == "OPTION_MARK":
+                reason = _check_option_mark(dep, None)
             else:
                 # Unknown dependency type: fail-safe — supersede rather than silently assume valid.
                 reason = (f"Unknown dependency type {dtype!r}: cannot validate — "

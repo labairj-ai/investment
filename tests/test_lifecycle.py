@@ -447,17 +447,22 @@ def test_guardian_hash_changes_when_max_weight_crosses_bucket(mem_db):
 
 
 def test_guardian_layer_drift_flag(mem_db):
-    """layer_drift_flag is 1 when a layer exceeds target+5%."""
-    from agents.orchestrator import _compute_no_action_state_extras
+    """layer_drift_flag is 1 when a layer exceeds target+5% per strategy_config.LAYER_TARGETS."""
+    from agents.orchestrator import _compute_no_action_state_extras, LAYER_TARGETS
 
     holding = _make_holding("ANET")
-    # Layer 3 target=20%, actual=27% → drift=True
-    snap_drift = _make_snapshot([holding], layer_weights={1: 50.0, 2: 23.0, 3: 27.0})
+
+    # Build a snapshot where one layer clearly exceeds target+5 using real targets
+    # Use layer with smallest index that has a target; force it 6pp over target
+    first_layer, first_target = min(LAYER_TARGETS.items())
+    drift_weights = {k: v for k, v in LAYER_TARGETS.items()}
+    drift_weights[first_layer] = first_target + 6.0  # clearly over target+5
+    snap_drift = _make_snapshot([holding], layer_weights=drift_weights)
     extras_drift = _compute_no_action_state_extras("portfolio_guardian", "ANET", snap_drift, holding)
     assert extras_drift["layer_drift_flag"] == 1
 
-    # Within tolerance
-    snap_ok = _make_snapshot([holding], layer_weights={1: 50.0, 2: 30.0, 3: 20.0})
+    # Within tolerance: use exact targets
+    snap_ok = _make_snapshot([holding], layer_weights={k: v for k, v in LAYER_TARGETS.items()})
     extras_ok = _compute_no_action_state_extras("portfolio_guardian", "ANET", snap_ok, holding)
     assert extras_ok["layer_drift_flag"] == 0
 
@@ -470,3 +475,71 @@ def test_unknown_agent_returns_empty_extras(mem_db):
     snapshot = _make_snapshot([holding])
     extras = _compute_no_action_state_extras("thesis_monitor", "ANET", snapshot, holding)
     assert extras == {}
+
+
+# ── 0099: TRIM/ALLOCATE accepted-not-executed → actual_r = NULL ───────────────
+
+def test_trim_accepted_without_execution_is_null(mem_db):
+    """TRIM accepted but no exec_rec → actual_r=None, actual_is_estimated=True (0099)."""
+    from agents.outcome_evaluator import _compute_scenarios
+
+    prices = {"ANET": 200.0, "ANET@2026-01-01": 180.0, "SPY": 510.0, "SPY@2026-01-01": 455.0}
+
+    import agents.outcome_evaluator as oe
+    with patch.object(oe, "_ticker_price_at", side_effect=lambda t, d: prices.get(f"{t}@{d}") or prices.get(t)), \
+         patch.object(oe, "_spy_price_at", side_effect=lambda d: prices.get(f"SPY@{d}") or prices.get("SPY")):
+        actual, agent, hold, spy, estimated, _, _ = _compute_scenarios(
+            "ANET", "TRIM", "2026-01-01", "2026-04-01",
+            {"trim_fraction": 0.5}, 180.0, decision="accepted",
+        )
+
+    assert actual is None, (
+        f"TRIM accepted-without-exec should produce actual_r=None, got {actual}. "
+        "Fix in outcome_evaluator.py _ACCEPTED_NO_EXEC_NULL (see 0099)"
+    )
+    assert estimated is True
+
+
+def test_allocate_accepted_without_execution_is_null(mem_db):
+    """ALLOCATE accepted but no exec_rec → actual_r=None, actual_is_estimated=True (0099)."""
+    from agents.outcome_evaluator import _compute_scenarios
+
+    prices = {"ANET": 200.0, "ANET@2026-01-01": 180.0, "SPY": 510.0, "SPY@2026-01-01": 455.0}
+
+    import agents.outcome_evaluator as oe
+    with patch.object(oe, "_ticker_price_at", side_effect=lambda t, d: prices.get(f"{t}@{d}") or prices.get(t)), \
+         patch.object(oe, "_spy_price_at", side_effect=lambda d: prices.get(f"SPY@{d}") or prices.get("SPY")):
+        actual, agent, hold, spy, estimated, _, _ = _compute_scenarios(
+            "ANET", "ALLOCATE", "2026-01-01", "2026-04-01",
+            {}, 180.0, decision="accepted",
+        )
+
+    assert actual is None
+    assert estimated is True
+
+
+def test_trim_accepted_with_execution_uses_fraction(mem_db):
+    """TRIM accepted WITH exec_rec still uses execution_fraction, not NULL (regression guard)."""
+    from agents.outcome_evaluator import _compute_scenarios
+
+    entry_price = 180.0
+    horizon_price = 200.0
+    exec_rec = {
+        "execution_price": 185.0,
+        "execution_date": "2026-01-03",
+        "quantity": 30.0,
+        "execution_fraction": 0.25,
+    }
+    prices = {"ANET": horizon_price, "ANET@2026-01-01": entry_price, "SPY": 500.0, "SPY@2026-01-01": 450.0}
+
+    import agents.outcome_evaluator as oe
+    with patch.object(oe, "_ticker_price_at", side_effect=lambda t, d: prices.get(f"{t}@{d}") or prices.get(t)), \
+         patch.object(oe, "_spy_price_at", side_effect=lambda d: prices.get(f"SPY@{d}") or prices.get("SPY")):
+        actual, _, _, _, estimated, _, _ = _compute_scenarios(
+            "ANET", "TRIM", "2026-01-01", "2026-04-01",
+            {"trim_fraction": 0.5}, entry_price, decision="accepted",
+            exec_rec=exec_rec,
+        )
+
+    assert actual is not None, "TRIM with execution should produce a real actual_r, not NULL"
+    assert not estimated

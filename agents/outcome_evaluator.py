@@ -44,6 +44,9 @@ EQUITY_ACTIONS = {"HOLD", "REVIEW", "TRIM", "EXIT", "ALLOCATE", "REBALANCE",
 # Actions where the agent recommendation means "exit position" (B = 0)
 EXIT_ACTIONS = {"EXIT", "TAX_SELL"}
 
+# Actions where accepted-but-not-executed means we cannot estimate the return
+_ACCEPTED_NO_EXEC_NULL = {*EXIT_ACTIONS, "TRIM", "ALLOCATE", "REBALANCE"}
+
 
 # ── Price helpers ─────────────────────────────────────────────────────────────
 
@@ -186,8 +189,8 @@ def _compute_scenarios(
                 f = 0.5
             actual_r = (1 - f) * hold_r if hold_r is not None else None
         actual_is_estimated = False
-    elif decision == "accepted" and action in EXIT_ACTIONS:
-        # 0071: without exec_rec, we cannot confirm the return — flag as estimated
+    elif decision == "accepted" and action in _ACCEPTED_NO_EXEC_NULL:
+        # 0071/0099: accepted but no execution record — cannot confirm actual return
         actual_r = None
         actual_is_estimated = True
     elif decision == "rejected":

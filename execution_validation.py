@@ -72,4 +72,25 @@ def validate_execution_body(
                     f"contracts*100 ({int(contracts)*100}) exceeds covered shares ({covered_shares:.0f})",
                 )
 
+    elif action in ("ROLL_OUT", "ROLL_UP", "ROLL_UP_AND_OUT"):
+        # 0101: multi-leg roll — validate both legs are present
+        btc_price  = body.get("btc_price")   # debit paid to close existing
+        sto_premium = body.get("sto_premium") # premium received for new leg
+        new_strike  = body.get("new_strike")
+        new_expiry  = body.get("new_expiration")
+        if btc_price is None and execution_price is None:
+            return (400, "btc_price (or execution_price) required for roll BTC leg")
+        if sto_premium is None and premium is None:
+            return (400, "sto_premium (or premium) required for roll STO leg")
+        if new_strike is None and strike is None:
+            return (400, "new_strike (or strike) required for roll STO leg")
+        if new_expiry is None and expiration is None:
+            return (400, "new_expiration (or expiration) required for roll STO leg")
+        # Net credit check: STO premium should exceed BTC debit (warn, don't block)
+        _btc = float(btc_price or execution_price or 0)
+        _sto = float(sto_premium or premium or 0)
+        if _sto < _btc:
+            # Allow with warning — user may accept a net debit roll
+            pass
+
     return None

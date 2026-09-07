@@ -1,7 +1,7 @@
 # Store Actual Historical Diluted Share Counts
 
 - **ID:** 0102
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-07
 - **Priority:** low
 - **Depends:** none

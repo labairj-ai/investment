@@ -1,7 +1,7 @@
 # Replace EBIT Proxy with True EBITDA in EV/EBITDA History
 
 - **ID:** 0100
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-07
 - **Priority:** normal
 - **Depends:** none

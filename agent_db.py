@@ -448,6 +448,12 @@ def migrate() -> None:
         ("recommendation_dependencies", "dependency_metadata_json", "TEXT"),
         # 0092 — idempotency key for execution submissions
         ("executed_actions",         "fill_id",                 "TEXT"),
+        # 0100 — correctly-labeled EV/EBIT proxy (operating_income, not true EBITDA)
+        ("historical_valuation_metrics", "ev_ebit_proxy",       "REAL"),
+        # 0101 — multi-leg execution group linkage
+        ("executed_actions",         "execution_group_id",      "INTEGER"),
+        # 0102 — actual diluted shares outstanding per period
+        ("historical_valuation_metrics", "shares_outstanding",  "REAL"),
     ]
     for table, col, col_type in _new_cols:
         try:
@@ -2386,6 +2392,82 @@ def insert_executed_action(
     return _id
 
 
+def insert_cc_position_from_execution(
+    ticker: str,
+    strike: float,
+    expiry: str,
+    premium_per_contract: float,
+    contracts: int,
+    execution_date: str,
+    source: str = "agent_execution",
+) -> int | None:
+    """INSERT a cc_positions row for a SELL_CC execution (0098).
+
+    Returns the new row id, or None if a duplicate open position already exists
+    (same ticker/strike/expiry with status='open') — callers log a warning.
+    """
+    conn = _connect()
+    existing = conn.execute(
+        "SELECT id FROM cc_positions WHERE ticker=? AND strike=? AND expiry=? AND status='open'",
+        (ticker, strike, expiry),
+    ).fetchone()
+    if existing:
+        conn.close()
+        return None  # duplicate — caller should log warning
+    cur = conn.execute(
+        """INSERT INTO cc_positions
+           (ticker, contracts, strike, expiry, premium_per_contract,
+            opened_date, status, notes)
+           VALUES (?, ?, ?, ?, ?, ?, 'open', ?)""",
+        (ticker, contracts or 1, strike, expiry, premium_per_contract,
+         execution_date, f"created by {source}"),
+    )
+    new_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return new_id
+
+
+def close_cc_position_from_execution(
+    ticker: str,
+    strike: float | None,
+    expiry: str | None,
+    close_date: str,
+    close_price: float | None,
+    close_type: str = "BTC",
+    new_status: str = "closed",
+) -> int | None:
+    """UPDATE the matching open cc_positions row to closed/assigned (0098).
+
+    Returns the id of the updated row, or None if no matching open position found.
+    """
+    conn = _connect()
+    # Prefer exact strike+expiry match; fall back to most-recently-opened for ticker
+    if strike is not None and expiry:
+        row = conn.execute(
+            "SELECT id FROM cc_positions WHERE ticker=? AND strike=? AND expiry=? AND status='open'",
+            (ticker, strike, expiry),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT id FROM cc_positions WHERE ticker=? AND status='open' ORDER BY opened_date DESC LIMIT 1",
+            (ticker,),
+        ).fetchone()
+    if not row:
+        conn.close()
+        return None
+    pos_id = row["id"]
+    conn.execute(
+        """UPDATE cc_positions
+           SET status=?, closed_date=?, closed_price=?, close_type=?
+           WHERE id=?""",
+        (new_status, close_date, close_price, close_type, pos_id),
+    )
+    conn.commit()
+    conn.close()
+    return pos_id
+
+
 def get_executed_action_by_fill_id(fill_id: str) -> dict | None:
     conn = _connect()
     row = conn.execute(
@@ -2722,6 +2804,8 @@ def upsert_valuation_metric(
     ev_ebitda: float | None = None,
     ev_fcf: float | None = None,
     p_fcf: float | None = None,
+    ev_ebit_proxy: float | None = None,
+    shares_outstanding: float | None = None,
 ) -> None:
     """Insert or replace a valuation ratio row for (ticker, period_end)."""
     conn = _connect()
@@ -2729,8 +2813,9 @@ def upsert_valuation_metric(
         """INSERT INTO historical_valuation_metrics
            (ticker, period_end, market_cap, enterprise_value,
             ttm_revenue, ttm_ebitda, ttm_fcf, ttm_eps,
-            pe, ps, ev_revenue, ev_ebitda, ev_fcf, p_fcf, computed_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            pe, ps, ev_revenue, ev_ebitda, ev_fcf, p_fcf,
+            ev_ebit_proxy, shares_outstanding, computed_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(ticker, period_end) DO UPDATE SET
                market_cap=excluded.market_cap,
                enterprise_value=excluded.enterprise_value,
@@ -2741,11 +2826,13 @@ def upsert_valuation_metric(
                pe=excluded.pe, ps=excluded.ps,
                ev_revenue=excluded.ev_revenue, ev_ebitda=excluded.ev_ebitda,
                ev_fcf=excluded.ev_fcf, p_fcf=excluded.p_fcf,
+               ev_ebit_proxy=excluded.ev_ebit_proxy,
+               shares_outstanding=excluded.shares_outstanding,
                computed_at=excluded.computed_at""",
         (ticker, period_end, market_cap, enterprise_value,
          ttm_revenue, ttm_ebitda, ttm_fcf, ttm_eps,
          pe, ps, ev_revenue, ev_ebitda, ev_fcf, p_fcf,
-         time.time()),
+         ev_ebit_proxy, shares_outstanding, time.time()),
     )
     conn.commit()
     conn.close()
@@ -2754,10 +2841,10 @@ def upsert_valuation_metric(
 def get_valuation_ratio_history(ticker: str, ratio: str) -> list[float]:
     """Return non-None historical values for `ratio` column, newest first.
 
-    `ratio` must be one of: pe, ps, ev_revenue, ev_ebitda, ev_fcf, p_fcf.
+    `ratio` must be one of: pe, ps, ev_revenue, ev_ebitda, ev_ebit_proxy, ev_fcf, p_fcf.
     Only returns positive values (negative ratios are uninformative for percentile ranking).
     """
-    _valid = {"pe", "ps", "ev_revenue", "ev_ebitda", "ev_fcf", "p_fcf"}
+    _valid = {"pe", "ps", "ev_revenue", "ev_ebitda", "ev_ebit_proxy", "ev_fcf", "p_fcf"}
     if ratio not in _valid:
         return []
     conn = _connect()
@@ -2882,7 +2969,7 @@ class ExecutionSummary:
         "action", "total_quantity", "weighted_avg_price",
         "total_contracts", "weighted_avg_premium", "total_premium_cash",
         "execution_fraction", "first_execution_date", "execution_date",
-        "strike",
+        "strike", "execution_price", "expiration",
     )
 
     def __init__(self, action: str):
@@ -2896,6 +2983,8 @@ class ExecutionSummary:
         self.first_execution_date = None
         self.execution_date      = None
         self.strike              = None
+        self.execution_price     = None
+        self.expiration          = None
 
     def get(self, key: str, default=None):
         """Dict-like access so _compute_scenarios can treat this like exec_rec."""
@@ -2915,6 +3004,7 @@ _EXEC_SUMMARY_ALIASES = {
     "contracts":          "total_contracts",
     "quantity":           "total_quantity",
     "strike":             "strike",
+    "expiration":         "expiration",
 }
 
 
@@ -2923,6 +3013,7 @@ def aggregate_executions(executions: list[dict], action: str) -> "ExecutionSumma
 
     For stock actions (EXIT, TRIM, ALLOCATE): quantity-weighted average price.
     For CC actions (SELL_CC): contract-weighted average premium.
+    For ROLL actions (0101): two-leg BTC+STO → net credit = STO premium − BTC debit.
     Returns None when executions is empty.
     """
     if not executions:
@@ -2930,6 +3021,24 @@ def aggregate_executions(executions: list[dict], action: str) -> "ExecutionSumma
 
     summary = ExecutionSummary(action)
     is_cc = action == "SELL_CC"
+
+    # 0101: rolls are stored as 2 linked rows (BUY_TO_CLOSE + SELL_CC)
+    if action in ("ROLL_OUT", "ROLL_UP", "ROLL_UP_AND_OUT"):
+        btc_legs = [e for e in executions if e.get("action") == "BUY_TO_CLOSE"]
+        sto_legs = [e for e in executions if e.get("action") == "SELL_CC"]
+        btc_debit   = sum(float(e.get("execution_price") or 0) for e in btc_legs)
+        sto_premium = sum(float(e.get("premium") or e.get("execution_price") or 0) for e in sto_legs)
+        summary.weighted_avg_price = sto_premium - btc_debit  # net credit (positive = credit)
+        summary.execution_price    = summary.weighted_avg_price
+        if sto_legs:
+            summary.strike = sto_legs[0].get("strike")
+            summary.expiration = sto_legs[0].get("expiration")
+        dates = sorted(
+            e["execution_date"] for e in executions if e.get("execution_date")
+        )
+        summary.first_execution_date = dates[0] if dates else None
+        summary.execution_date       = dates[-1] if dates else None
+        return summary
 
     if is_cc:
         total_contracts = 0

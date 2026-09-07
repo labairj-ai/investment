@@ -16,6 +16,7 @@ Individual agent implementations are wired in as they are built (0006–0015).
 import threading
 import time as _time
 
+from strategy_config import LAYER_TARGETS
 from .contracts import PortfolioSnapshot, Recommendation
 
 # One model inference at a time across all agents and threads.
@@ -172,10 +173,9 @@ def _compute_no_action_state_extras(
         result["max_weight_bucket"] = round(max_weight * 2) / 2  # nearest 0.5%
         # Layer drift: any layer > target + 5%?
         layer_weights = snapshot.layer_weights or {}
-        _LAYER_TARGETS = {1: 50.0, 2: 30.0, 3: 20.0}
         has_drift = any(
             layer_weights.get(layer, 0) > target + 5.0
-            for layer, target in _LAYER_TARGETS.items()
+            for layer, target in LAYER_TARGETS.items()
         )
         result["layer_drift_flag"] = 1 if has_drift else 0
 

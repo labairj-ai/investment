@@ -1,7 +1,7 @@
 # Add Full Lifecycle and Regression Integration Tests
 
 - **ID:** 0094
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-07
 - **Priority:** high
 - **Depends:** none

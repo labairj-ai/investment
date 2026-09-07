@@ -380,16 +380,69 @@ def _analyze_roll(ctx: AgentContext, ticker: str, position: dict) -> list[Recomm
             f"Instead of {action}, hold the position and reassess closer to expiration."
         ),
         action_payload=action_payload,
-        dependencies=[{
+        dependencies=_build_mgmt_deps(ticker, current_price, existing_strike, existing_expiry, current_mark),
+    )
+    print(f"[covered_call] {ticker}: mgmt → {action} (DTE={dte}, captured={pct_captured}%)")
+    return [rec]
+
+
+def _build_mgmt_deps(
+    ticker: str,
+    current_price: float,
+    strike: float,
+    expiry: str,
+    current_mark: float,
+) -> list[dict]:
+    """Build dependency list for CC management recommendations (0095)."""
+    deps = [
+        {
             "dependency_type": "PRICE",
             "dependency_key": ticker,
             "original_value": current_price,
             "tolerance": 0.03,
             "invalidating_event": "PRICE_THRESHOLD",
-        }],
-    )
-    print(f"[covered_call] {ticker}: mgmt → {action} (DTE={dte}, captured={pct_captured}%)")
-    return [rec]
+        },
+        {
+            "dependency_type": "CC_POSITION_STATE",
+            "dependency_key": ticker,
+            "original_value": "open",  # management rec always assumes an open position
+            "tolerance": None,
+            "invalidating_event": "CC_STATE_CHANGED",
+        },
+        {
+            "dependency_type": "OPTION_MARK",
+            "dependency_key": ticker,
+            "original_value": str(round(current_mark, 4)) if current_mark is not None else None,
+            "tolerance": 0.20,
+            "invalidating_event": "MARK_MOVE",
+            "metadata": {"strike": strike, "expiration": expiry, "threshold": 0.20},
+        },
+        {
+            "dependency_type": "OPTION_IV",
+            "dependency_key": ticker,
+            "original_value": None,
+            "tolerance": None,
+            "invalidating_event": "IV_SHIFT",
+            "metadata": {"strike": strike, "expiration": expiry, "threshold": 0.15},
+        },
+        {
+            "dependency_type": "OPTION_EXPIRATION",
+            "dependency_key": ticker,
+            "original_value": expiry,
+            "tolerance": None,
+            "invalidating_event": "NEAR_EXPIRY",
+            "metadata": {"strike": strike, "expiration": expiry},
+        },
+        {
+            "dependency_type": "EARNINGS_DATE",
+            "dependency_key": ticker,
+            "original_value": None,
+            "tolerance": None,
+            "invalidating_event": "EARNINGS_IN_WINDOW",
+            "metadata": {"event_type": "EARNINGS", "expiration": expiry},
+        },
+    ]
+    return deps
 
 
 def _analyze_ticker(ctx: AgentContext, ticker: str) -> list[Recommendation]:

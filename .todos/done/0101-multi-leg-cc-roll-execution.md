@@ -1,7 +1,7 @@
 # Multi-Leg Execution Model for CC Rolls
 
 - **ID:** 0101
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-07
 - **Priority:** low
 - **Depends:** 0098

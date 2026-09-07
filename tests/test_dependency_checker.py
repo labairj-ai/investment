@@ -11,7 +11,7 @@ from agents.dependency_checker import (
     _check_macro_state, _check_financial_period,
     _check_option_iv, _check_option_expiration, _check_earnings_date,
     _check_event_calendar, _check_option_liquidity, _check_estimate_revision,
-    _check_cc_position_state, _KNOWN_DEPENDENCY_TYPES,
+    _check_cc_position_state, _check_option_mark, _KNOWN_DEPENDENCY_TYPES,
 )
 
 
@@ -256,3 +256,100 @@ def test_cc_position_state_closed_triggers_supersession(monkeypatch):
 def test_cc_position_state_in_known_types():
     """CC_POSITION_STATE must be in _KNOWN_DEPENDENCY_TYPES."""
     assert "CC_POSITION_STATE" in _KNOWN_DEPENDENCY_TYPES
+
+
+# ── 0096: ESTIMATE_REVISION type + period filtering ──────────────────────────
+
+def test_estimate_revision_filters_by_type_and_period(mem_db):
+    """FY2027 EPS dep is NOT superseded when a different estimate type changes (0096)."""
+    import agent_db
+    # Seed a FY2027 EPS estimate at $8.50
+    agent_db.append_estimate_history("ANET", "FY2027", "EPS", 8.50)
+    # Seed a different estimate (Q3 Revenue) that has changed a lot
+    agent_db.append_estimate_history("ANET", "Q3", "REVENUE", 1_000_000.0)
+    agent_db.append_estimate_history("ANET", "Q3", "REVENUE", 800_000.0)  # 20% drop
+
+    # Dependency based on FY2027 EPS — should NOT be superseded by Q3 revenue change
+    dep = {
+        "dependency_key": "ANET",
+        "original_value": "8.50",
+        "threshold": 0.10,
+        "estimate_type": "EPS",
+        "period": "FY2027",
+    }
+    result = _check_estimate_revision(dep, None)
+    assert result is None, (
+        f"FY2027 EPS dep incorrectly superseded by Q3/REVENUE change: {result}"
+    )
+
+
+def test_estimate_revision_triggers_on_correct_type_and_period(mem_db):
+    """FY2027 EPS dep IS superseded when FY2027 EPS itself moves > threshold (0096)."""
+    import agent_db
+    agent_db.append_estimate_history("ANET", "FY2027", "EPS", 8.50)
+    agent_db.append_estimate_history("ANET", "FY2027", "EPS", 9.50)  # ~11.7% up
+
+    dep = {
+        "dependency_key": "ANET",
+        "original_value": "8.50",
+        "threshold": 0.10,
+        "estimate_type": "EPS",
+        "period": "FY2027",
+    }
+    result = _check_estimate_revision(dep, None)
+    assert result is not None
+    assert "EPS/FY2027" in result
+
+
+def test_estimate_revision_legacy_fallback_no_crash(mem_db):
+    """Legacy dep without estimate_type/period falls back gracefully (no exception)."""
+    import agent_db
+    agent_db.append_estimate_history("ANET", "FY2026", "EPS", 7.00)
+
+    dep = {
+        "dependency_key": "ANET",
+        "original_value": "7.00",
+        "threshold": 0.10,
+        # No estimate_type or period — legacy format
+    }
+    # Should not raise; returns None (estimate unchanged) or a reason if moved > threshold
+    result = _check_estimate_revision(dep, None)
+    # The latest row is FY2026/EPS at 7.00 — no change → None
+    assert result is None
+
+
+# ── 0095: OPTION_MARK dependency handler ─────────────────────────────────────
+
+def test_option_mark_no_data_returns_none(monkeypatch):
+    """Without option_quote_snapshots data, returns None (no supersession)."""
+    import agent_db
+    monkeypatch.setattr(agent_db, "get_latest_option_snapshot", lambda *a, **kw: None)
+    dep = {"dependency_key": "ANET", "original_value": "3.00", "tolerance": 0.20}
+    assert _check_option_mark(dep, None) is None
+
+
+def test_option_mark_within_tolerance(monkeypatch):
+    """Mark moved 15% (within 20% threshold) → no supersession."""
+    import agent_db
+    monkeypatch.setattr(agent_db, "get_latest_option_snapshot",
+                        lambda *a, **kw: {"bid": 3.30, "ask": 3.50, "iv": 0.45})
+    dep = {"dependency_key": "ANET", "original_value": "3.00", "tolerance": 0.20}
+    # mid = (3.30+3.50)/2 = 3.40 → 13.3% move < 20%
+    assert _check_option_mark(dep, None) is None
+
+
+def test_option_mark_outside_tolerance(monkeypatch):
+    """Mark moved 25% (> 20% threshold) → supersede."""
+    import agent_db
+    monkeypatch.setattr(agent_db, "get_latest_option_snapshot",
+                        lambda *a, **kw: {"bid": 3.65, "ask": 3.85, "iv": 0.55})
+    dep = {"dependency_key": "ANET", "original_value": "3.00", "tolerance": 0.20}
+    # mid = (3.65+3.85)/2 = 3.75 → 25% move > 20%
+    result = _check_option_mark(dep, None)
+    assert result is not None
+    assert "25%" in result or "mark" in result.lower()
+
+
+def test_option_mark_in_known_dependency_types():
+    """OPTION_MARK must be in _KNOWN_DEPENDENCY_TYPES and handled in dispatch."""
+    assert "OPTION_MARK" in _KNOWN_DEPENDENCY_TYPES

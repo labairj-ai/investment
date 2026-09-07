@@ -1,7 +1,7 @@
 # Remove Hard-Coded Layer Targets from NO ACTION Hashing
 
 - **ID:** 0097
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-07
 - **Priority:** normal
 - **Depends:** none

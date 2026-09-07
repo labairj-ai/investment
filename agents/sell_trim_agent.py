@@ -47,7 +47,7 @@ _RATIO_METRIC_MAP: dict[str, str] = {
     "trailing_pe":   "pe",
     "ps":            "ps",
     "price_to_sales":"ps",
-    "ev_ebitda":     "ev_ebitda",
+    "ev_ebitda":     "ev_ebit_proxy",  # 0100: stored as ev_ebit_proxy (operating_income, not true EBITDA)
     "ev_fcf":        "ev_fcf",
     "p_fcf":         "p_fcf",
     "ev_revenue":    "ev_revenue",

@@ -1,7 +1,7 @@
 # Filter Estimate Revision Dependencies by Type and Period
 
 - **ID:** 0096
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-07
 - **Priority:** high
 - **Depends:** none

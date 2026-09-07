@@ -37,21 +37,28 @@ def _init_tables():
         return
     conn = sqlite3.connect(str(DB_PATH), timeout=10)
     conn.execute("""CREATE TABLE IF NOT EXISTS company_financials (
-        ticker           TEXT,
-        period_type      TEXT,
-        period_end       TEXT,
-        revenue          REAL,
-        gross_profit     REAL,
-        operating_income REAL,
-        net_income       REAL,
-        eps_diluted      REAL,
-        free_cash_flow   REAL,
-        total_debt       REAL,
-        cash             REAL,
-        total_equity     REAL,
-        fetched_at       TEXT,
+        ticker              TEXT,
+        period_type         TEXT,
+        period_end          TEXT,
+        revenue             REAL,
+        gross_profit        REAL,
+        operating_income    REAL,
+        net_income          REAL,
+        eps_diluted         REAL,
+        free_cash_flow      REAL,
+        total_debt          REAL,
+        cash                REAL,
+        total_equity        REAL,
+        shares_outstanding  REAL,
+        fetched_at          TEXT,
         PRIMARY KEY (ticker, period_type, period_end)
     )""")
+    # Migration: add shares_outstanding to existing tables
+    try:
+        conn.execute("ALTER TABLE company_financials ADD COLUMN shares_outstanding REAL")
+        conn.commit()
+    except Exception:
+        pass  # column already exists
     conn.execute("""CREATE TABLE IF NOT EXISTS company_estimates (
         ticker          TEXT PRIMARY KEY,
         next_q_eps_est  REAL,
@@ -115,6 +122,7 @@ def _fetch_one(ticker):
             oi  = _df_get(qf,  col, "Operating Income", "EBIT")
             ni  = _df_get(qf,  col, "Net Income")
             eps = _df_get(qf,  col, "Diluted EPS", "Basic EPS")
+            shr = _df_get(qf,  col, "Diluted Average Shares", "Basic Average Shares")
             dbt = _df_get(qbs, col, "Total Debt", "Long Term Debt")
             csh = _df_get(qbs, col, "Cash And Cash Equivalents",
                           "Cash Cash Equivalents And Short Term Investments", "Cash")
@@ -127,8 +135,8 @@ def _fetch_one(ticker):
 
             q_rows.append(dict(period_end=period_end, revenue=rev, gross_profit=gp,
                                operating_income=oi, net_income=ni, eps_diluted=eps,
-                               free_cash_flow=fcf, total_debt=dbt, cash=csh,
-                               total_equity=eq))
+                               shares_outstanding=shr, free_cash_flow=fcf,
+                               total_debt=dbt, cash=csh, total_equity=eq))
     except Exception as e:
         print(f"[financials] {ticker} quarterly: {e}")
 
@@ -145,6 +153,7 @@ def _fetch_one(ticker):
             oi  = _df_get(af,   col, "Operating Income", "EBIT")
             ni  = _df_get(af,   col, "Net Income")
             eps = _df_get(af,   col, "Diluted EPS", "Basic EPS")
+            shr = _df_get(af,   col, "Diluted Average Shares", "Basic Average Shares")
             dbt = _df_get(abs_, col, "Total Debt", "Long Term Debt")
             csh = _df_get(abs_, col, "Cash And Cash Equivalents",
                           "Cash Cash Equivalents And Short Term Investments", "Cash")
@@ -157,8 +166,8 @@ def _fetch_one(ticker):
 
             a_rows.append(dict(period_end=period_end, revenue=rev, gross_profit=gp,
                                operating_income=oi, net_income=ni, eps_diluted=eps,
-                               free_cash_flow=fcf, total_debt=dbt, cash=csh,
-                               total_equity=eq))
+                               shares_outstanding=shr, free_cash_flow=fcf,
+                               total_debt=dbt, cash=csh, total_equity=eq))
     except Exception as e:
         print(f"[financials] {ticker} annual: {e}")
 
@@ -215,19 +224,23 @@ def fetch_all(tickers, company_names=None, force=False):
             for r in q_rows:
                 conn.execute("""INSERT OR REPLACE INTO company_financials
                     (ticker,period_type,period_end,revenue,gross_profit,operating_income,
-                     net_income,eps_diluted,free_cash_flow,total_debt,cash,total_equity,fetched_at)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                     net_income,eps_diluted,shares_outstanding,
+                     free_cash_flow,total_debt,cash,total_equity,fetched_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (ticker, "Q", r["period_end"], r["revenue"], r["gross_profit"],
                      r["operating_income"], r["net_income"], r["eps_diluted"],
+                     r.get("shares_outstanding"),
                      r["free_cash_flow"], r["total_debt"], r["cash"], r["total_equity"], now_str))
 
             for r in a_rows:
                 conn.execute("""INSERT OR REPLACE INTO company_financials
                     (ticker,period_type,period_end,revenue,gross_profit,operating_income,
-                     net_income,eps_diluted,free_cash_flow,total_debt,cash,total_equity,fetched_at)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                     net_income,eps_diluted,shares_outstanding,
+                     free_cash_flow,total_debt,cash,total_equity,fetched_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (ticker, "A", r["period_end"], r["revenue"], r["gross_profit"],
                      r["operating_income"], r["net_income"], r["eps_diluted"],
+                     r.get("shares_outstanding"),
                      r["free_cash_flow"], r["total_debt"], r["cash"], r["total_equity"], now_str))
 
             conn.execute("""INSERT OR REPLACE INTO company_estimates
@@ -375,7 +388,7 @@ def compute_valuation_metrics(ticker: str, conn=None) -> int:
 
     rows = conn.execute(
         """SELECT period_end, revenue, operating_income, net_income,
-                  eps_diluted, free_cash_flow, total_debt, cash
+                  eps_diluted, shares_outstanding, free_cash_flow, total_debt, cash
            FROM company_financials
            WHERE ticker=? AND period_type='Q'
            ORDER BY period_end ASC""",
@@ -433,16 +446,20 @@ def compute_valuation_metrics(ticker: str, conn=None) -> int:
             vals = [float(r[col]) for r in window if r[col] is not None]
             return sum(vals) if len(vals) == 4 else None
 
-        ttm_revenue  = _sum("revenue")
-        ttm_ebitda   = _sum("operating_income")   # operating_income as EBITDA proxy
-        ttm_fcf      = _sum("free_cash_flow")
-        ttm_eps      = _sum("eps_diluted")
+        ttm_revenue    = _sum("revenue")
+        ttm_ebit_proxy = _sum("operating_income")  # 0100: operating_income is EBIT, not EBITDA
+        ttm_fcf        = _sum("free_cash_flow")
+        ttm_eps        = _sum("eps_diluted")
 
-        # Derive shares outstanding from most recent quarter (net_income / eps_diluted)
+        # 0102: prefer stored diluted shares; fall back to net_income/EPS with warning
         cur = rows_list[i]
         shares = None
-        if cur["eps_diluted"] and abs(float(cur["eps_diluted"])) > 0.001 and cur["net_income"] is not None:
+        if cur["shares_outstanding"] is not None:
+            shares = float(cur["shares_outstanding"])
+        elif cur["eps_diluted"] and abs(float(cur["eps_diluted"])) > 0.001 and cur["net_income"] is not None:
             shares = float(cur["net_income"]) / float(cur["eps_diluted"])
+            print(f"[ValuationHistory] WARNING: using derived share count for {ticker} "
+                  f"{period_end} (net_income/EPS={shares:.0f}) — diluted shares not in DB")
 
         market_cap = price * shares if shares and shares > 0 else None
 
@@ -463,15 +480,17 @@ def compute_valuation_metrics(ticker: str, conn=None) -> int:
             market_cap=market_cap,
             enterprise_value=ev,
             ttm_revenue=ttm_revenue,
-            ttm_ebitda=ttm_ebitda,
+            ttm_ebitda=ttm_ebit_proxy,   # stored in legacy col for compat; see ev_ebit_proxy
             ttm_fcf=ttm_fcf,
             ttm_eps=ttm_eps,
             pe=_ratio(price, ttm_eps) if ttm_eps and ttm_eps > 0 else None,
             ps=_ratio(market_cap, ttm_revenue) if ttm_revenue and ttm_revenue > 0 else None,
             ev_revenue=_ratio(ev, ttm_revenue) if ttm_revenue and ttm_revenue > 0 else None,
-            ev_ebitda=_ratio(ev, ttm_ebitda) if ttm_ebitda and ttm_ebitda > 0 else None,
+            ev_ebitda=_ratio(ev, ttm_ebit_proxy) if ttm_ebit_proxy and ttm_ebit_proxy > 0 else None,
             ev_fcf=_ratio(ev, ttm_fcf) if ttm_fcf and ttm_fcf > 0 else None,
             p_fcf=_ratio(market_cap, ttm_fcf) if ttm_fcf and ttm_fcf > 0 else None,
+            ev_ebit_proxy=_ratio(ev, ttm_ebit_proxy) if ttm_ebit_proxy and ttm_ebit_proxy > 0 else None,
+            shares_outstanding=shares,
         )
         upserted += 1
 
