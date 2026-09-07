@@ -376,6 +376,27 @@ def migrate() -> None:
             created_at   REAL    NOT NULL DEFAULT (unixepoch()),
             UNIQUE(ticker, event_date)
         );
+
+        -- 0084 — true historical valuation ratio time series
+        CREATE TABLE IF NOT EXISTS historical_valuation_metrics (
+            id                INTEGER PRIMARY KEY,
+            ticker            TEXT    NOT NULL,
+            period_end        TEXT    NOT NULL,
+            market_cap        REAL,
+            enterprise_value  REAL,
+            ttm_revenue       REAL,
+            ttm_ebitda        REAL,
+            ttm_fcf           REAL,
+            ttm_eps           REAL,
+            pe                REAL,
+            ps                REAL,
+            ev_revenue        REAL,
+            ev_ebitda         REAL,
+            ev_fcf            REAL,
+            p_fcf             REAL,
+            computed_at       REAL    NOT NULL DEFAULT (unixepoch()),
+            UNIQUE(ticker, period_end)
+        );
     """)
     conn.commit()
 
@@ -2634,3 +2655,85 @@ def refresh_earnings_dates(ticker: str) -> bool:
     except Exception as e:
         print(f"[EarningsDates] {ticker}: {e}")
     return False
+
+
+# ── Historical valuation metrics (0084) ──────────────────────────────────────
+
+def upsert_valuation_metric(
+    ticker: str,
+    period_end: str,
+    *,
+    market_cap: float | None = None,
+    enterprise_value: float | None = None,
+    ttm_revenue: float | None = None,
+    ttm_ebitda: float | None = None,
+    ttm_fcf: float | None = None,
+    ttm_eps: float | None = None,
+    pe: float | None = None,
+    ps: float | None = None,
+    ev_revenue: float | None = None,
+    ev_ebitda: float | None = None,
+    ev_fcf: float | None = None,
+    p_fcf: float | None = None,
+) -> None:
+    """Insert or replace a valuation ratio row for (ticker, period_end)."""
+    conn = _connect()
+    conn.execute(
+        """INSERT INTO historical_valuation_metrics
+           (ticker, period_end, market_cap, enterprise_value,
+            ttm_revenue, ttm_ebitda, ttm_fcf, ttm_eps,
+            pe, ps, ev_revenue, ev_ebitda, ev_fcf, p_fcf, computed_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+           ON CONFLICT(ticker, period_end) DO UPDATE SET
+               market_cap=excluded.market_cap,
+               enterprise_value=excluded.enterprise_value,
+               ttm_revenue=excluded.ttm_revenue,
+               ttm_ebitda=excluded.ttm_ebitda,
+               ttm_fcf=excluded.ttm_fcf,
+               ttm_eps=excluded.ttm_eps,
+               pe=excluded.pe, ps=excluded.ps,
+               ev_revenue=excluded.ev_revenue, ev_ebitda=excluded.ev_ebitda,
+               ev_fcf=excluded.ev_fcf, p_fcf=excluded.p_fcf,
+               computed_at=excluded.computed_at""",
+        (ticker, period_end, market_cap, enterprise_value,
+         ttm_revenue, ttm_ebitda, ttm_fcf, ttm_eps,
+         pe, ps, ev_revenue, ev_ebitda, ev_fcf, p_fcf,
+         time.time()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_valuation_ratio_history(ticker: str, ratio: str) -> list[float]:
+    """Return non-None historical values for `ratio` column, newest first.
+
+    `ratio` must be one of: pe, ps, ev_revenue, ev_ebitda, ev_fcf, p_fcf.
+    Only returns positive values (negative ratios are uninformative for percentile ranking).
+    """
+    _valid = {"pe", "ps", "ev_revenue", "ev_ebitda", "ev_fcf", "p_fcf"}
+    if ratio not in _valid:
+        return []
+    conn = _connect()
+    if not conn:
+        return []
+    rows = conn.execute(
+        f"SELECT {ratio} FROM historical_valuation_metrics "
+        f"WHERE ticker=? AND {ratio} IS NOT NULL AND {ratio} > 0 "
+        f"ORDER BY period_end DESC",
+        (ticker,),
+    ).fetchall()
+    conn.close()
+    return [float(r[0]) for r in rows]
+
+
+def get_latest_valuation_metric(ticker: str) -> dict | None:
+    """Return the most recent historical_valuation_metrics row for ticker."""
+    conn = _connect()
+    if not conn:
+        return None
+    row = conn.execute(
+        "SELECT * FROM historical_valuation_metrics WHERE ticker=? ORDER BY period_end DESC LIMIT 1",
+        (ticker,),
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None

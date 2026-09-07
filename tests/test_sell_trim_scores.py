@@ -5,7 +5,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from agents.sell_trim_agent import _action_from_strength, _dominant_rationale
+from agents.sell_trim_agent import (
+    _action_from_strength, _dominant_rationale,
+    _valuation_percentile, _v_score_from_percentile, _RATIO_METRIC_MAP,
+)
 
 
 def test_action_below_threshold():
@@ -82,3 +85,52 @@ def test_critical_thesis_pillar_violated_forces_exit():
     # With T=90 and some F,V,P: full EXIT scenario
     ss2 = 0.40 * 90 + 0.20 * 80 + 0.15 * 70 + 0.15 * 50 + 0.10 * 30
     assert _action_from_strength(ss2) == "EXIT"
+
+
+# ── 0084: true valuation ratio tests ─────────────────────────────────────────
+
+def test_ratio_metric_map_does_not_contain_raw_fundamentals():
+    """_RATIO_METRIC_MAP must map to ratio columns, not raw fundamental columns."""
+    invalid_cols = {"free_cash_flow", "revenue", "operating_income", "gross_profit",
+                    "net_income", "eps_diluted", "price_to_earnings"}
+    for metric, col in _RATIO_METRIC_MAP.items():
+        assert col not in invalid_cols, (
+            f"primary_metric '{metric}' maps to raw fundamental '{col}' — "
+            "should map to a valuation ratio column like 'ev_fcf', 'ps', etc."
+        )
+
+
+def test_ratio_metric_map_covers_key_metrics():
+    """Key thesis primary_metric values must be in the map."""
+    for m in ("ev_fcf", "ev_ebitda", "ps", "p_fcf", "ev_revenue", "pe"):
+        assert m in _RATIO_METRIC_MAP, f"'{m}' missing from _RATIO_METRIC_MAP"
+
+
+def test_valuation_percentile_rising_ratio_not_max():
+    """If a ratio rose from 10x to 20x, current 20x is at 100th pct.
+
+    This is correct for a valuation ratio: higher ratio = more expensive.
+    (Unlike raw FCF where higher FCF ≠ more expensive.)
+    """
+    history = [10.0, 12.0, 14.0, 16.0, 18.0]  # oldest-to-newest in history list
+    current = 20.0
+    pct = _valuation_percentile(current, history)
+    assert pct == 100.0, f"Expected 100th pct, got {pct}"
+    score = _v_score_from_percentile(pct)
+    assert score >= 70, f"High percentile ratio should yield high V score, got {score}"
+
+
+def test_valuation_percentile_low_ratio_cheap():
+    """A ratio at the bottom of history should yield a low V score (not expensive)."""
+    history = [20.0, 25.0, 30.0, 35.0, 40.0]
+    current = 5.0
+    pct = _valuation_percentile(current, history)
+    assert pct == 0.0
+    score = _v_score_from_percentile(pct)
+    assert score <= 10, f"Low pct ratio should yield low V score, got {score}"
+
+
+def test_valuation_percentile_requires_min_4_periods():
+    """Fewer than 4 historical ratio values → None (no percentile)."""
+    assert _valuation_percentile(25.0, [20.0, 22.0]) is None
+    assert _valuation_percentile(25.0, []) is None

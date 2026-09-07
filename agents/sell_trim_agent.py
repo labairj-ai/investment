@@ -37,22 +37,20 @@ _NO_ACTION_THRESHOLD = 10   # ss below this → upsert_no_action, skip LLM
 
 _DEFAULT_MAX_WEIGHT_PCT = 10.0   # used when thesis has no max_weight_pct set
 
-# 0083: Map thesis valuation_framework.primary_metric → company_financials column.
-# When a thesis specifies a primary_metric that matches a key here, _score_V()
-# fetches historical values from that column and uses it for the percentile
-# ranking instead of the default P/E (price_to_earnings) fallback.
-# Metrics not in this map fall back to the existing P/E-based scoring path.
-METRIC_COLUMN_MAP: dict[str, str] = {
-    "pe":            "price_to_earnings",
-    "forward_pe":    "price_to_earnings",   # best proxy available in stored data
-    "trailing_pe":   "price_to_earnings",
-    "ev_fcf":        "free_cash_flow",      # EV/FCF — use FCF for ranking
-    "p_fcf":         "free_cash_flow",
-    "ps":            "revenue",             # P/S — revenue as proxy
-    "price_to_sales":"revenue",
-    "ev_ebitda":     "operating_income",    # EBITDA proxy: operating_income
-    "ev_revenue":    "revenue",
-    "gross_margin":  "gross_profit",        # gross margin quality
+# 0084: Map thesis valuation_framework.primary_metric → column in
+# historical_valuation_metrics. These are actual computed ratios (e.g. EV/FCF),
+# not raw fundamentals. Only ratios that can be reliably computed from stored
+# quarterly data + price history are supported; others fall back to P/E.
+_RATIO_METRIC_MAP: dict[str, str] = {
+    "pe":            "pe",
+    "forward_pe":    "pe",
+    "trailing_pe":   "pe",
+    "ps":            "ps",
+    "price_to_sales":"ps",
+    "ev_ebitda":     "ev_ebitda",
+    "ev_fcf":        "ev_fcf",
+    "p_fcf":         "p_fcf",
+    "ev_revenue":    "ev_revenue",
 }
 
 
@@ -379,52 +377,39 @@ def _score_V(ticker: str, current_price: float) -> tuple[int, str]:
     notes: list[str] = []
     v_method = "absolute"
 
-    # 0083: Route valuation engine by thesis primary_metric.
-    # When the thesis specifies a primary_metric that maps to a DB column,
-    # use that column's historical distribution for percentile ranking instead
-    # of defaulting to P/E.  attractive_threshold / fair_value_high from the
-    # framework are used for an absolute check alongside the percentile path.
+    # 0084: Route valuation engine by thesis primary_metric using true ratio history.
+    # _RATIO_METRIC_MAP maps thesis primary_metric → column in historical_valuation_metrics.
+    # The percentile is computed on actual ratios (e.g. EV/FCF), not raw fundamentals.
     _primary_metric = (thesis_val_framework.get("primary_metric") or "").lower().strip()
-    _primary_col    = METRIC_COLUMN_MAP.get(_primary_metric)
-    _used_primary   = False  # set True when primary_metric path fires
+    _ratio_col      = _RATIO_METRIC_MAP.get(_primary_metric)
+    _used_primary   = False
 
-    if _primary_col and quarters and _primary_col != "price_to_earnings":
-        # Fetch raw column values from the stored quarters
-        _hist_vals = [
-            float(q[_primary_col]) for q in quarters
-            if q[_primary_col] is not None
-        ]
-        _curr_val = _hist_vals[0] if _hist_vals else None
+    if _ratio_col and _ratio_col != "pe":
+        import agent_db as _adb
+        _hist_ratios = _adb.get_valuation_ratio_history(ticker, _ratio_col)
+        _latest_row  = _adb.get_latest_valuation_metric(ticker)
+        _curr_ratio  = float(_latest_row[_ratio_col]) if _latest_row and _latest_row.get(_ratio_col) else None
 
-        if _curr_val is not None and len(_hist_vals) >= 4:
-            pct = _valuation_percentile(_curr_val, _hist_vals)
+        if _curr_ratio is not None and len(_hist_ratios) >= 4:
+            pct = _valuation_percentile(_curr_ratio, _hist_ratios)
             if pct is not None:
-                v_method = f"primary_metric_{_primary_metric}_pct{pct:.0f}"
+                v_method = f"{_primary_metric}_ratio_pct{pct:.0f}"
                 factors["H"] = _v_score_from_percentile(pct)
-                notes.append(
-                    f"{_primary_metric}={_curr_val:.1f} ({pct:.0f}th pct of history)"
-                )
+                notes.append(f"{_primary_metric}={_curr_ratio:.1f}x ({pct:.0f}th pct of ratio history)")
                 _used_primary = True
 
-        # attractive_threshold: if current value < threshold → cheap (score down)
         _attractive = thesis_val_framework.get("attractive_threshold")
         _fvh        = thesis_val_framework.get("fair_value_high")
-        if _curr_val is not None:
-            if _attractive and float(_attractive) > 0 and _curr_val < float(_attractive):
-                # Attractive — reduce existing H score if too high
+        if _curr_ratio is not None:
+            if _attractive and float(_attractive) > 0 and _curr_ratio < float(_attractive):
                 factors["H"] = min(factors.get("H", 25.0), 15.0)
-                notes.append(
-                    f"{_primary_metric} below attractive threshold ({float(_attractive):.1f})"
-                )
-            elif _fvh and float(_fvh) > 0 and _curr_val > float(_fvh):
-                # Above fair value high → expensive
+                notes.append(f"{_primary_metric} below attractive threshold ({float(_attractive):.1f}x)")
+            elif _fvh and float(_fvh) > 0 and _curr_ratio > float(_fvh):
                 factors["H"] = max(factors.get("H", 55.0), 70.0)
-                notes.append(
-                    f"{_primary_metric} above fair-value-high ({float(_fvh):.1f})"
-                )
+                notes.append(f"{_primary_metric} above fair-value-high ({float(_fvh):.1f}x)")
 
-    # H — trailing P/E with historical percentile when available
-    # Skip when primary_metric routing already set the H factor.
+    # H — P/E with historical percentile from ratio table (falls back to absolute)
+    # Also used when primary_metric is "pe" / "forward_pe" / "trailing_pe".
     if quarters and not _used_primary:
         ttm_eps = sum(
             float(q["eps_diluted"]) for q in quarters[:4]
@@ -433,9 +418,13 @@ def _score_V(ticker: str, current_price: float) -> tuple[int, str]:
         if ttm_eps > 0:
             pe = current_price / ttm_eps
 
-            # Try historical percentile using stored price_to_earnings values
-            hist_pe = [float(q["price_to_earnings"]) for q in quarters
-                       if q["price_to_earnings"] is not None and float(q["price_to_earnings"]) > 0]
+            # Prefer true ratio history from historical_valuation_metrics
+            import agent_db as _adb
+            hist_pe = _adb.get_valuation_ratio_history(ticker, "pe")
+            if len(hist_pe) < 4:
+                # Fall back to stored price_to_earnings column values
+                hist_pe = [float(q["price_to_earnings"]) for q in quarters
+                           if q["price_to_earnings"] is not None and float(q["price_to_earnings"]) > 0]
             pct = _valuation_percentile(pe, hist_pe)
 
             if pct is not None:

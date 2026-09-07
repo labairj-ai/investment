@@ -241,6 +241,12 @@ def fetch_all(tickers, company_names=None, force=False):
                  now_str))
 
             conn.commit()
+
+            # 0084: compute true valuation ratios from price history + TTM fundamentals
+            try:
+                compute_valuation_metrics(ticker, conn=conn)
+            except Exception as e:
+                print(f"[financials] {ticker} valuation metrics FAILED: {e}")
         except Exception as e:
             print(f"[financials] {ticker} FAILED: {e}")
 
@@ -248,6 +254,131 @@ def fetch_all(tickers, company_names=None, force=False):
 
     conn.close()
     print("[financials] Done.")
+
+
+def compute_valuation_metrics(ticker: str, conn=None) -> int:
+    """Compute and store historical valuation ratios for ticker.
+
+    Reads quarterly financials already in the DB, fetches daily price history
+    from yfinance, derives TTM fundamentals via rolling 4-quarter sums, and
+    computes true ratios (P/E, P/S, EV/EBITDA, EV/FCF, P/FCF, EV/Revenue).
+
+    Returns the number of period rows upserted.
+    """
+    import yfinance as yf
+    import agent_db
+
+    close_conn = False
+    if conn is None:
+        if not DB_PATH.exists():
+            return 0
+        conn = sqlite3.connect(str(DB_PATH), timeout=30)
+        conn.row_factory = sqlite3.Row
+        close_conn = True
+
+    rows = conn.execute(
+        """SELECT period_end, revenue, operating_income, net_income,
+                  eps_diluted, free_cash_flow, total_debt, cash
+           FROM company_financials
+           WHERE ticker=? AND period_type='Q'
+           ORDER BY period_end ASC""",
+        (ticker,),
+    ).fetchall()
+
+    if close_conn:
+        conn.close()
+
+    if len(rows) < 4:
+        return 0
+
+    # Fetch price history for the date range
+    start_date = rows[0]["period_end"]
+    try:
+        hist = yf.Ticker(_YF_ALIAS.get(ticker, ticker)).history(
+            start=start_date, auto_adjust=True
+        )
+        if hist.empty:
+            return 0
+        # Build date → close price lookup
+        price_by_date: dict[str, float] = {}
+        for idx, row_h in hist.iterrows():
+            date_str = idx.strftime("%Y-%m-%d") if hasattr(idx, "strftime") else str(idx)[:10]
+            price_by_date[date_str] = float(row_h["Close"])
+    except Exception as e:
+        print(f"[valuation] {ticker} price history failed: {e}")
+        return 0
+
+    def _nearest_price(target_date: str) -> float | None:
+        """Return closing price on or up to 5 trading days before target_date."""
+        for delta in range(6):
+            from datetime import date, timedelta
+            try:
+                d = date.fromisoformat(target_date) - timedelta(days=delta)
+                s = d.isoformat()
+                if s in price_by_date:
+                    return price_by_date[s]
+            except Exception:
+                pass
+        return None
+
+    upserted = 0
+    rows_list = list(rows)
+
+    for i in range(3, len(rows_list)):
+        period_end = rows_list[i]["period_end"]
+        window = rows_list[i - 3 : i + 1]  # 4 quarters ending at period_end
+
+        price = _nearest_price(period_end)
+        if price is None or price <= 0:
+            continue
+
+        def _sum(col: str) -> float | None:
+            vals = [float(r[col]) for r in window if r[col] is not None]
+            return sum(vals) if len(vals) == 4 else None
+
+        ttm_revenue  = _sum("revenue")
+        ttm_ebitda   = _sum("operating_income")   # operating_income as EBITDA proxy
+        ttm_fcf      = _sum("free_cash_flow")
+        ttm_eps      = _sum("eps_diluted")
+
+        # Derive shares outstanding from most recent quarter (net_income / eps_diluted)
+        cur = rows_list[i]
+        shares = None
+        if cur["eps_diluted"] and abs(float(cur["eps_diluted"])) > 0.001 and cur["net_income"] is not None:
+            shares = float(cur["net_income"]) / float(cur["eps_diluted"])
+
+        market_cap = price * shares if shares and shares > 0 else None
+
+        total_debt = cur["total_debt"]
+        cash       = cur["cash"]
+        ev = None
+        if market_cap and total_debt is not None and cash is not None:
+            ev = market_cap + float(total_debt) - float(cash)
+
+        def _ratio(num, denom):
+            if num is None or denom is None or denom == 0:
+                return None
+            r = num / denom
+            return r if r > 0 else None
+
+        agent_db.upsert_valuation_metric(
+            ticker, period_end,
+            market_cap=market_cap,
+            enterprise_value=ev,
+            ttm_revenue=ttm_revenue,
+            ttm_ebitda=ttm_ebitda,
+            ttm_fcf=ttm_fcf,
+            ttm_eps=ttm_eps,
+            pe=_ratio(price, ttm_eps) if ttm_eps and ttm_eps > 0 else None,
+            ps=_ratio(market_cap, ttm_revenue) if ttm_revenue and ttm_revenue > 0 else None,
+            ev_revenue=_ratio(ev, ttm_revenue) if ttm_revenue and ttm_revenue > 0 else None,
+            ev_ebitda=_ratio(ev, ttm_ebitda) if ttm_ebitda and ttm_ebitda > 0 else None,
+            ev_fcf=_ratio(ev, ttm_fcf) if ttm_fcf and ttm_fcf > 0 else None,
+            p_fcf=_ratio(market_cap, ttm_fcf) if ttm_fcf and ttm_fcf > 0 else None,
+        )
+        upserted += 1
+
+    return upserted
 
 
 # ── Formatted summary for AI prompts ─────────────────────────────────────────

@@ -1,7 +1,7 @@
 # True Historical Valuation Ratios
 
 - **ID:** 0084
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-06
 - **Priority:** high
 - **Depends:** none
