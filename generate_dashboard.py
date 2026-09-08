@@ -8118,6 +8118,15 @@ function _djToggleEdit(recId) {{
   row.style.display = row.style.display === 'none' ? '' : 'none';
 }}
 
+function _djToggleDay(uid) {{
+  const body = document.getElementById(uid);
+  const chev = document.getElementById(uid + '-chev');
+  if (!body) return;
+  const opening = body.style.display === 'none';
+  body.style.display = opening ? '' : 'none';
+  if (chev) chev.textContent = opening ? '▲' : '▼';
+}}
+
 function _renderDJTable(entries) {{
   const wrap = document.getElementById('dj-table-wrap');
   if (!wrap) return;
@@ -8125,78 +8134,102 @@ function _renderDJTable(entries) {{
     wrap.innerHTML = '<div style="font-size:12px;color:#a0aec0;text-align:center;padding:16px 0;">No closed recommendations yet — decisions made in the queue will appear here.</div>';
     return;
   }}
-  const rows = entries.map(e => {{
-    const statusBadge = `<span style="font-size:10px;padding:1px 7px;border-radius:8px;font-weight:600;${{_DJ_STATUS_COLOR[e.status] || ''}}">${{e.status}}</span>`;
-    const action = _DJ_ACTION_LABEL[e.action] || e.action;
-    const date = e.decided_at
-      ? new Date(e.decided_at * 1000).toLocaleDateString('en-US', {{month:'short', day:'numeric', year:'numeric'}})
-      : new Date(e.created_at * 1000).toLocaleDateString('en-US', {{month:'short', day:'numeric', year:'numeric'}});
-    const reason = e.status === 'superseded'
-      ? (e.superseded_reason || 'premise changed')
-      : (e.reason_code && e.reason_code !== 'OTHER' ? e.reason_code : '');
-    const rcOpts = _DJ_REASON_OPTS.map(o =>
-      `<option value="${{o}}"${{o === (e.reason_code||'OTHER') ? ' selected' : ''}}>${{o}}</option>`
-    ).join('');
-    const supersededNote = e.status === 'superseded' && e.superseded_reason
-      ? `<tr style="background:#faf8ff;border-top:none;">
-           <td colspan="8" style="padding:2px 14px 8px;font-size:10px;color:#6b46c1;font-style:italic;">
-             Expired: ${{e.superseded_reason}}
-           </td>
-         </tr>`
-      : '';
-    const editRow = e.decision ? `
-      <tr id="dj-edit-row-${{e.id}}" style="display:none;background:#fafbff;border-top:none;">
-        <td colspan="8" style="padding:8px 12px;">
-          <div style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap;">
-            <div>
-              <div style="font-size:10px;color:#718096;margin-bottom:3px;text-transform:uppercase;letter-spacing:.05em;">Reason</div>
-              <select id="dj-rc-${{e.id}}" style="font-size:12px;padding:4px 7px;border:1px solid #dde;border-radius:5px;background:#fff;">${{rcOpts}}</select>
+
+  // Group entries by day (decided_at preferred, fall back to created_at)
+  const groups = [];
+  const groupMap = {{}};
+  entries.forEach(e => {{
+    const ts = (e.decided_at || e.created_at) * 1000;
+    const dateKey = new Date(ts).toLocaleDateString('en-US', {{month:'short', day:'numeric', year:'numeric'}});
+    if (!groupMap[dateKey]) {{ groupMap[dateKey] = []; groups.push(dateKey); }}
+    groupMap[dateKey].push(e);
+  }});
+
+  function renderRows(dayEntries) {{
+    return dayEntries.map(e => {{
+      const statusBadge = `<span style="font-size:10px;padding:1px 7px;border-radius:8px;font-weight:600;${{_DJ_STATUS_COLOR[e.status] || ''}}">${{e.status}}</span>`;
+      const action = _DJ_ACTION_LABEL[e.action] || e.action;
+      const reason = e.status === 'superseded'
+        ? (e.superseded_reason || 'premise changed')
+        : (e.reason_code && e.reason_code !== 'OTHER' ? e.reason_code : '');
+      const rcOpts = _DJ_REASON_OPTS.map(o =>
+        `<option value="${{o}}"${{o === (e.reason_code||'OTHER') ? ' selected' : ''}}>${{o}}</option>`
+      ).join('');
+      const supersededNote = e.status === 'superseded' && e.superseded_reason
+        ? `<tr style="background:#faf8ff;border-top:none;">
+             <td colspan="7" style="padding:2px 14px 8px;font-size:10px;color:#6b46c1;font-style:italic;">
+               Expired: ${{e.superseded_reason}}
+             </td>
+           </tr>`
+        : '';
+      const editRow = e.decision ? `
+        <tr id="dj-edit-row-${{e.id}}" style="display:none;background:#fafbff;border-top:none;">
+          <td colspan="7" style="padding:8px 12px;">
+            <div style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap;">
+              <div>
+                <div style="font-size:10px;color:#718096;margin-bottom:3px;text-transform:uppercase;letter-spacing:.05em;">Reason</div>
+                <select id="dj-rc-${{e.id}}" style="font-size:12px;padding:4px 7px;border:1px solid #dde;border-radius:5px;background:#fff;">${{rcOpts}}</select>
+              </div>
+              <div style="flex:1;min-width:180px;">
+                <div style="font-size:10px;color:#718096;margin-bottom:3px;text-transform:uppercase;letter-spacing:.05em;">Notes</div>
+                <textarea id="dj-nt-${{e.id}}" rows="2" style="width:100%;font-size:12px;padding:4px 7px;border:1px solid #dde;border-radius:5px;resize:vertical;font-family:inherit;">${{(e.decision_notes||'').replace(/</g,'&lt;')}}</textarea>
+              </div>
+              <div style="align-self:flex-end;display:flex;gap:6px;">
+                <button id="dj-save-${{e.id}}" onclick="_djSaveEdit(${{e.id}})" style="font-size:11px;padding:5px 12px;background:#3b5bdb;color:#fff;border:none;border-radius:5px;cursor:pointer;">Save</button>
+                <button onclick="_djToggleEdit(${{e.id}})" style="font-size:11px;padding:5px 10px;background:#f7f8fa;border:1px solid #dde;border-radius:5px;cursor:pointer;color:#555;">Cancel</button>
+              </div>
             </div>
-            <div style="flex:1;min-width:180px;">
-              <div style="font-size:10px;color:#718096;margin-bottom:3px;text-transform:uppercase;letter-spacing:.05em;">Notes</div>
-              <textarea id="dj-nt-${{e.id}}" rows="2" style="width:100%;font-size:12px;padding:4px 7px;border:1px solid #dde;border-radius:5px;resize:vertical;font-family:inherit;">${{(e.decision_notes||'').replace(/</g,'&lt;')}}</textarea>
-            </div>
-            <div style="align-self:flex-end;display:flex;gap:6px;">
-              <button id="dj-save-${{e.id}}" onclick="_djSaveEdit(${{e.id}})" style="font-size:11px;padding:5px 12px;background:#3b5bdb;color:#fff;border:none;border-radius:5px;cursor:pointer;">Save</button>
-              <button onclick="_djToggleEdit(${{e.id}})" style="font-size:11px;padding:5px 10px;background:#f7f8fa;border:1px solid #dde;border-radius:5px;cursor:pointer;color:#555;">Cancel</button>
-            </div>
-          </div>
-          ${{e.decision_notes ? `<div style="font-size:11px;color:#718096;margin-top:6px;">Current note: <em>${{e.decision_notes}}</em></div>` : ''}}
+            ${{e.decision_notes ? `<div style="font-size:11px;color:#718096;margin-top:6px;">Current note: <em>${{e.decision_notes}}</em></div>` : ''}}
+          </td>
+        </tr>` : '';
+      const editBtn = e.decision
+        ? `<button onclick="_djToggleEdit(${{e.id}})" title="Edit" style="font-size:11px;padding:2px 7px;background:#f7f8fa;border:1px solid #dde;border-radius:4px;cursor:pointer;color:#555;line-height:1.4;">✎</button>`
+        : '';
+      return `<tr style="border-top:1px solid #f0f4f8;">
+        <td style="padding:7px 8px;font-weight:600;font-size:13px;">${{e.ticker || '—'}}</td>
+        <td class="col-hide-sm" style="padding:7px 8px;font-size:11px;color:#4a5568;">${{action}}</td>
+        <td style="padding:7px 8px;">${{statusBadge}}</td>
+        <td class="col-hide-sm" style="padding:7px 8px;font-size:11px;color:#718096;">${{reason}}</td>
+        <td style="padding:7px 8px;font-size:12px;text-align:right;">
+          ${{e.cc_assignment_state === 'assigned'
+            ? `<span style="font-size:10px;color:#7c3aed;font-weight:600;background:#f3f0ff;padding:1px 5px;border-radius:3px;" title="Option was assigned at expiry">Assigned</span> ${{_djFmt(e.actual_return, true)}}`
+            : _djFmt(e.actual_return, true)}}
         </td>
-      </tr>` : '';
-    const editBtn = e.decision
-      ? `<button onclick="_djToggleEdit(${{e.id}})" title="Edit" style="font-size:11px;padding:2px 7px;background:#f7f8fa;border:1px solid #dde;border-radius:4px;cursor:pointer;color:#555;line-height:1.4;">✎</button>`
-      : '';
-    return `<tr style="border-top:1px solid #f0f4f8;">
-      <td style="padding:7px 8px;font-weight:600;font-size:13px;">${{e.ticker || '—'}}</td>
-      <td class="col-hide-sm" style="padding:7px 8px;font-size:11px;color:#4a5568;">${{action}}</td>
-      <td style="padding:7px 8px;">${{statusBadge}}</td>
-      <td class="col-hide-sm" style="padding:7px 8px;font-size:11px;color:#718096;">${{reason}}</td>
-      <td class="col-hide-sm" style="padding:7px 8px;font-size:11px;color:#718096;">${{date}}</td>
-      <td style="padding:7px 8px;font-size:12px;text-align:right;">
-        ${{e.cc_assignment_state === 'assigned'
-          ? `<span style="font-size:10px;color:#7c3aed;font-weight:600;background:#f3f0ff;padding:1px 5px;border-radius:3px;" title="Option was assigned at expiry">Assigned</span> ${{_djFmt(e.actual_return, true)}}`
-          : _djFmt(e.actual_return, true)}}
-      </td>
-      <td class="col-hide-sm" style="padding:7px 8px;font-size:12px;text-align:right;">${{_djFmt(e.opportunity_cost, true)}}</td>
-      <td style="padding:7px 4px;text-align:center;">${{editBtn}}</td>
-    </tr>${{supersededNote}}${{editRow}}`;
+        <td class="col-hide-sm" style="padding:7px 8px;font-size:12px;text-align:right;">${{_djFmt(e.opportunity_cost, true)}}</td>
+        <td style="padding:7px 4px;text-align:center;">${{editBtn}}</td>
+      </tr>${{supersededNote}}${{editRow}}`;
+    }}).join('');
+  }}
+
+  wrap.innerHTML = groups.map((dateKey, idx) => {{
+    const dayEntries = groupMap[dateKey];
+    const isOpen = idx === 0;
+    const uid = 'dj-day-' + dateKey.replace(/[^a-z0-9]/gi, '-');
+    const table = `<div style="overflow-x:auto;">
+      <table style="width:100%;border-collapse:collapse;">
+        <thead><tr style="background:#f7f8fa;">
+          <th style="text-align:left;padding:5px 8px;color:#718096;font-weight:600;font-size:10px;text-transform:uppercase;">Ticker</th>
+          <th class="col-hide-sm" style="text-align:left;padding:5px 8px;color:#718096;font-weight:600;font-size:10px;text-transform:uppercase;">Type</th>
+          <th style="text-align:left;padding:5px 8px;color:#718096;font-weight:600;font-size:10px;text-transform:uppercase;">Decision</th>
+          <th class="col-hide-sm" style="text-align:left;padding:5px 8px;color:#718096;font-weight:600;font-size:10px;text-transform:uppercase;">Reason</th>
+          <th style="text-align:right;padding:5px 8px;color:#718096;font-weight:600;font-size:10px;text-transform:uppercase;">Return</th>
+          <th class="col-hide-sm" style="text-align:right;padding:5px 8px;color:#718096;font-weight:600;font-size:10px;text-transform:uppercase;">Opp. Cost</th>
+          <th style="padding:5px 4px;"></th>
+        </tr></thead>
+        <tbody>${{renderRows(dayEntries)}}</tbody>
+      </table>
+    </div>`;
+    return `<div style="border:1px solid #e2e8f0;border-radius:8px;margin-bottom:6px;overflow:hidden;">
+      <button onclick="_djToggleDay('${{uid}}')" style="width:100%;display:flex;align-items:center;justify-content:space-between;padding:9px 14px;background:${{isOpen ? '#f0f4ff' : '#f7f8fa'}};border:none;cursor:pointer;text-align:left;">
+        <span style="font-size:13px;font-weight:600;color:#2d3748;">${{dateKey}}</span>
+        <span style="display:flex;align-items:center;gap:10px;">
+          <span style="font-size:11px;color:#718096;">${{dayEntries.length}} decision${{dayEntries.length === 1 ? '' : 's'}}</span>
+          <span id="${{uid}}-chev" style="font-size:11px;color:#a0aec0;">${{isOpen ? '▲' : '▼'}}</span>
+        </span>
+      </button>
+      <div id="${{uid}}" style="display:${{isOpen ? '' : 'none'}};">${{table}}</div>
+    </div>`;
   }}).join('');
-  wrap.innerHTML = `<div style="overflow-x:auto;">
-    <table style="width:100%;border-collapse:collapse;">
-      <thead><tr style="background:#f7f8fa;">
-        <th style="text-align:left;padding:5px 8px;color:#718096;font-weight:600;font-size:10px;text-transform:uppercase;">Ticker</th>
-        <th class="col-hide-sm" style="text-align:left;padding:5px 8px;color:#718096;font-weight:600;font-size:10px;text-transform:uppercase;">Type</th>
-        <th style="text-align:left;padding:5px 8px;color:#718096;font-weight:600;font-size:10px;text-transform:uppercase;">Decision</th>
-        <th class="col-hide-sm" style="text-align:left;padding:5px 8px;color:#718096;font-weight:600;font-size:10px;text-transform:uppercase;">Reason</th>
-        <th class="col-hide-sm" style="text-align:left;padding:5px 8px;color:#718096;font-weight:600;font-size:10px;text-transform:uppercase;">Date</th>
-        <th style="text-align:right;padding:5px 8px;color:#718096;font-weight:600;font-size:10px;text-transform:uppercase;">Return</th>
-        <th class="col-hide-sm" style="text-align:right;padding:5px 8px;color:#718096;font-weight:600;font-size:10px;text-transform:uppercase;">Opp. Cost</th>
-        <th style="padding:5px 4px;"></th>
-      </tr></thead>
-      <tbody>${{rows}}</tbody>
-    </table>
-  </div>`;
 }}
 
 function loadDecisionJournal() {{
