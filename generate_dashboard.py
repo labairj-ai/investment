@@ -8465,8 +8465,9 @@ function _renderAgentBadge() {{
     var ts = d.last_completed_at;
     if (ts) {{
       var dt = new Date(ts * 1000);
+      var dateStr = dt.toLocaleDateString([], {{month:'short', day:'numeric'}});
       var hm = dt.toLocaleTimeString([], {{hour:'2-digit', minute:'2-digit'}});
-      badge.innerHTML = '<span style="color:#68d391;">&#10003; ' + hm + '</span>';
+      badge.innerHTML = '<span style="color:#68d391;">&#10003; ' + dateStr + ', ' + hm + '</span>';
     }} else {{
       badge.innerHTML = '';
     }}
