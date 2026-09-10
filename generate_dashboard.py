@@ -1896,6 +1896,11 @@ def build_dashboard(portfolio, layers, holdings):
     cursor: default;
   }}
   th:hover .cmp-col-tip {{ display: block; }}
+  @media (max-width: 600px) {{
+    .dj-col-type {{ display: none !important; }}
+    .dj-col-ret  {{ display: none !important; }}
+    .dj-col-opp  {{ display: none !important; }}
+  }}
   </style>
 </head>
 <body>
@@ -8220,11 +8225,11 @@ function _renderDJCard(e, isMuted) {{
   return `<div data-dj-status="${{e.status}}">
     <div style="${{opacity}}display:flex;align-items:center;gap:10px;padding:7px 12px 7px 9px;background:${{bg}};border-left:3px solid ${{border}};border-bottom:1px solid #f0f4f8;">
       <div style="min-width:50px;font-size:13px;font-weight:700;color:${{tickerColor}};">${{e.ticker || '—'}}</div>
-      <div style="width:90px;font-size:11px;color:#4a5568;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${{action}}</div>
+      <div class="dj-col-type" style="width:90px;font-size:11px;color:#4a5568;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${{action}}</div>
       <div style="min-width:82px;">${{badge}}</div>
       <div style="flex:1;font-size:11px;color:#718096;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${{reason}}${{notes}}</div>
-      <div style="min-width:55px;text-align:right;font-size:12px;">${{retHtml}}</div>
-      <div style="min-width:55px;text-align:right;font-size:12px;">${{_djFmt(e.opportunity_cost, true)}}</div>
+      <div class="dj-col-ret" style="min-width:55px;text-align:right;font-size:12px;">${{retHtml}}</div>
+      <div class="dj-col-opp" style="min-width:55px;text-align:right;font-size:12px;">${{_djFmt(e.opportunity_cost, true)}}</div>
       <div style="display:flex;gap:4px;justify-content:flex-end;">${{recBtn}}${{editBtn}}</div>
     </div>
     ${{recPanel}}
@@ -8278,11 +8283,11 @@ function _renderDJTable(entries) {{
   // Column header strip (sits inside each day body)
   const colHeader = '<div style="display:flex;align-items:center;gap:10px;padding:5px 12px;background:#f7f8fa;border-bottom:1px solid #e2e8f0;">'
     + '<div style="min-width:50px;font-size:10px;color:#a0aec0;font-weight:600;text-transform:uppercase;letter-spacing:.05em;">Ticker</div>'
-    + '<div style="width:90px;font-size:10px;color:#a0aec0;font-weight:600;text-transform:uppercase;letter-spacing:.05em;">Type</div>'
+    + '<div class="dj-col-type" style="width:90px;font-size:10px;color:#a0aec0;font-weight:600;text-transform:uppercase;letter-spacing:.05em;">Type</div>'
     + '<div style="min-width:82px;font-size:10px;color:#a0aec0;font-weight:600;text-transform:uppercase;letter-spacing:.05em;">Decision</div>'
     + '<div style="flex:1;font-size:10px;color:#a0aec0;font-weight:600;text-transform:uppercase;letter-spacing:.05em;">Reason / Notes</div>'
-    + '<div style="min-width:55px;text-align:right;font-size:10px;color:#a0aec0;font-weight:600;text-transform:uppercase;letter-spacing:.05em;">Return</div>'
-    + '<div style="min-width:55px;text-align:right;font-size:10px;color:#a0aec0;font-weight:600;text-transform:uppercase;letter-spacing:.05em;">Opp.</div>'
+    + '<div class="dj-col-ret" style="min-width:55px;text-align:right;font-size:10px;color:#a0aec0;font-weight:600;text-transform:uppercase;letter-spacing:.05em;">Return</div>'
+    + '<div class="dj-col-opp" style="min-width:55px;text-align:right;font-size:10px;color:#a0aec0;font-weight:600;text-transform:uppercase;letter-spacing:.05em;">Opp.</div>'
     + '<div style="min-width:28px;"></div>'
     + '</div>';
 
