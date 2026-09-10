@@ -1430,6 +1430,7 @@ def list_journal_entries(limit: int = 200) -> list[dict]:
         """SELECT
                r.id, r.ticker, r.action, r.status, r.created_at,
                r.recommendation_score, r.confidence, r.why_now,
+               r.rationale, r.counter_case,
                r.action_payload_json, r.superseded_reason,
                ud.decision, ud.reason_code, ud.notes as decision_notes, ud.decided_at,
                ro.actual_return, ro.recommended_path_return, ro.opportunity_cost,

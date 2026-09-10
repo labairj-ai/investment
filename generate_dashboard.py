@@ -8129,6 +8129,15 @@ function _djToggleEdit(recId) {{
   panel.style.display = panel.style.display === 'none' ? '' : 'none';
 }}
 
+function _djToggleRec(recId) {{
+  const panel = document.getElementById('dj-rec-' + recId);
+  if (!panel) return;
+  const btn = document.getElementById('dj-rec-btn-' + recId);
+  const open = panel.style.display === 'none';
+  panel.style.display = open ? '' : 'none';
+  if (btn) btn.textContent = open ? 'Rec ▲' : 'Rec ▼';
+}}
+
 function _djSetFilter(status) {{
   _djActiveFilter = status;
   if (_djEntries) _renderDJTable(_djEntries);
@@ -8175,6 +8184,10 @@ function _renderDJCard(e, isMuted) {{
   const editBtn = e.decision
     ? `<button onclick="_djToggleEdit(${{e.id}})" title="Edit" style="font-size:11px;padding:2px 7px;background:#f7f8fa;border:1px solid #dde;border-radius:4px;cursor:pointer;color:#555;line-height:1.4;">✎</button>`
     : '';
+  const hasRec = e.rationale || e.why_now || e.counter_case;
+  const recBtn = hasRec
+    ? `<button id="dj-rec-btn-${{e.id}}" onclick="_djToggleRec(${{e.id}})" title="View original recommendation" style="font-size:11px;padding:2px 7px;background:#f7f8fa;border:1px solid #dde;border-radius:4px;cursor:pointer;color:#555;line-height:1.4;">Rec ▼</button>`
+    : '';
   const rcOpts = _DJ_REASON_OPTS.map(o =>
     `<option value="${{o}}"${{o === (e.reason_code||'OTHER') ? ' selected' : ''}}>${{o}}</option>`
   ).join('');
@@ -8195,6 +8208,12 @@ function _renderDJCard(e, isMuted) {{
         </div>
       </div>
     </div>` : '';
+  const recPanel = hasRec ? `
+    <div id="dj-rec-${{e.id}}" style="display:none;padding:12px 14px;background:#f8faff;border-left:3px solid ${{border}};border-bottom:1px solid #e8edf5;">
+      ${{e.why_now ? `<div style="margin-bottom:9px;"><div style="font-size:10px;color:#718096;font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px;">Why Now</div><div style="font-size:12px;color:#4a5568;line-height:1.55;">${{e.why_now}}</div></div>` : ''}}
+      ${{e.rationale ? `<div style="margin-bottom:9px;"><div style="font-size:10px;color:#718096;font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px;">Rationale</div><div style="font-size:12px;color:#4a5568;line-height:1.55;">${{e.rationale}}</div></div>` : ''}}
+      ${{e.counter_case ? `<div><div style="font-size:10px;color:#9b1c1c;font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px;">Counter-Case</div><div style="font-size:12px;color:#744210;line-height:1.55;">${{e.counter_case}}</div></div>` : ''}}
+    </div>` : '';
   const bg          = isMuted ? '#faf8ff' : '#fff';
   const tickerColor = isMuted ? '#9e9eb8' : '#1a202c';
   const opacity     = isMuted ? 'opacity:.75;' : '';
@@ -8206,8 +8225,9 @@ function _renderDJCard(e, isMuted) {{
       <div style="flex:1;font-size:11px;color:#718096;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${{reason}}${{notes}}</div>
       <div style="min-width:55px;text-align:right;font-size:12px;">${{retHtml}}</div>
       <div style="min-width:55px;text-align:right;font-size:12px;">${{_djFmt(e.opportunity_cost, true)}}</div>
-      <div style="min-width:28px;text-align:center;">${{editBtn}}</div>
+      <div style="display:flex;gap:4px;justify-content:flex-end;">${{recBtn}}${{editBtn}}</div>
     </div>
+    ${{recPanel}}
     ${{editPanel}}
   </div>`;
 }}
