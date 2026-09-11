@@ -1,7 +1,7 @@
 """Tests for _validate_execution_body (serve.py, 0092/0107)."""
+import calendar
 import sys
-import time
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -9,10 +9,11 @@ sys.path.insert(0, str(ROOT))
 
 from execution_validation import validate_execution_body as _validate_execution_body
 
-TODAY = date(2026, 9, 6)
+TODAY = date.today()
 
-def _rec(action="TRIM", status="accepted", created_days_ago=5):
-    created_at = time.time() - created_days_ago * 86400
+def _rec(action="TRIM", status="accepted", created_days_ago=10):
+    rec_date = TODAY - timedelta(days=created_days_ago)
+    created_at = float(calendar.timegm(rec_date.timetuple()))
     return {"action": action, "status": status, "created_at": created_at, "ticker": "ANET"}
 
 
