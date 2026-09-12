@@ -1,7 +1,7 @@
 # Add Hard EXIT Trigger for Critical Pillar Violation
 
 - **ID:** 0143
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-11
 - **Priority:** high
 - **Depends:** none

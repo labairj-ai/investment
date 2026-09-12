@@ -1,7 +1,7 @@
 # Tax-Aware TRIM vs EXIT: Delay Exit for Near-LT Positions
 
 - **ID:** 0144
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-11
 - **Priority:** normal
 - **Depends:** none

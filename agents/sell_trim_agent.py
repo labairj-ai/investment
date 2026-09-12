@@ -64,6 +64,12 @@ def _connect() -> sqlite3.Connection | None:
 
 # ── Action from SellStrength ──────────────────────────────────────────────────
 
+def _trim_fraction_from_strength(ss: float) -> float:
+    """Scale TRIM fraction 0.25→0.75 across the TRIM band (48–67)."""
+    raw = 0.25 + (ss - 48) / 20.0 * 0.50
+    return round(max(0.20, min(0.75, raw)) / 0.05) * 0.05
+
+
 def _action_from_strength(ss: float) -> str:
     if ss < _NO_ACTION_THRESHOLD:
         return "NO_ACTION"
@@ -100,16 +106,16 @@ _PILLAR_STATUS_SCORE: dict[str, float] = {
 }
 
 
-def _score_T(ticker: str) -> tuple[int, list[dict]]:
+def _score_T(ticker: str) -> tuple[int, list[dict], bool]:
     """T = thesis deterioration (0–100). 40% weight in SellStrength.
 
-    Reads thesis_pillars (modern system). Falls back to thesis_claims only
-    when no pillar rows exist, so legacy data still contributes a signal.
-    T-score matches the composite health the Thesis Monitor would report.
+    Returns (T, detail, critical_pillar_violated).
+    critical_pillar_violated=True when any pillar marked critical=True has
+    status VIOLATED — used by _run() to force a hard EXIT.
     """
     conn = _connect()
     if not conn:
-        return 0, []
+        return 0, [], False
 
     # ── Modern path: thesis_pillars ────────────────────────────────────────
     pillars = conn.execute(
@@ -149,7 +155,7 @@ def _score_T(ticker: str) -> tuple[int, list[dict]]:
             {"claim": p["name"], "status": p["status"], "weight": p["importance"]}
             for p in pillars if p["status"] in ("VIOLATED", "WARNING", "WATCH")
         ]
-        return T, detail
+        return T, detail, bool(critical_violated)
 
     # ── Legacy fallback: thesis_claims ─────────────────────────────────────
     rows = conn.execute(
@@ -161,7 +167,7 @@ def _score_T(ticker: str) -> tuple[int, list[dict]]:
     ).fetchall()
     conn.close()
     if not rows:
-        return 0, []
+        return 0, [], False
     violated = [r for r in rows if r["current_status"] == "violated"]
     weakened = [r for r in rows if r["current_status"] == "weakened"]
     total_w  = sum(r["weight"] for r in rows) or 1.0
@@ -172,7 +178,7 @@ def _score_T(ticker: str) -> tuple[int, list[dict]]:
         {"claim": r["claim"], "status": r["current_status"], "weight": r["weight"]}
         for r in violated + weakened
     ]
-    return score, detail
+    return score, detail, False
 
 
 def _ttm(values: list) -> float | None:
@@ -238,8 +244,14 @@ def _score_F(ticker: str, current_price: float) -> tuple[int, str]:
                    if revenues[-1] and abs(revenues[-1]) > 0 else None)
 
     if rev_chg is not None:
-        if rev_chg < -0.05:
-            score += 35
+        if rev_chg < -0.20:
+            score += 40
+            notes.append(f"revenue {rev_chg*100:.0f}% {comparison_type} (severe)")
+        elif rev_chg < -0.10:
+            score += 30
+            notes.append(f"revenue {rev_chg*100:.0f}% {comparison_type} (significant)")
+        elif rev_chg < -0.05:
+            score += 20
             notes.append(f"revenue {rev_chg*100:.0f}% {comparison_type}")
         elif rev_chg < 0:
             score += 15
@@ -264,8 +276,14 @@ def _score_F(ticker: str, current_price: float) -> tuple[int, str]:
             gm_new = gp0 / rev0
             gm_old = gp4 / rev4
             diff   = gm_new - gm_old
-            if diff < -0.03:
+            if diff < -0.10:
+                score += 40
+                notes.append(f"margin {diff*100:.1f}pp YoY (severe)")
+            elif diff < -0.05:
                 score += 30
+                notes.append(f"margin {diff*100:.1f}pp YoY (significant)")
+            elif diff < -0.03:
+                score += 20
                 notes.append(f"margin {diff*100:.1f}pp YoY")
             elif diff < 0:
                 score += 10
@@ -277,18 +295,37 @@ def _score_F(ticker: str, current_price: float) -> tuple[int, str]:
             gm_old = oldest["gross_profit"] / oldest["revenue"]
             gm_new = newest["gross_profit"] / newest["revenue"]
             diff   = gm_new - gm_old
-            if diff < -0.03:
+            if diff < -0.10:
+                score += 40
+                notes.append(f"margin {diff*100:.1f}pp (QoQ severe)")
+            elif diff < -0.05:
                 score += 30
+                notes.append(f"margin {diff*100:.1f}pp (QoQ significant)")
+            elif diff < -0.03:
+                score += 20
                 notes.append(f"margin {diff*100:.1f}pp (QoQ)")
             elif diff < 0:
                 score += 10
                 notes.append("slight margin erosion (QoQ)")
 
-    # Free cash flow — most recent quarter
+    # Free cash flow — most recent quarter, severity-scaled by FCF/Revenue burn rate
     newest_fcf = fcf_vals[0] if fcf_vals else None
+    newest_rev = revenues[0] if revenues else None
     if newest_fcf is not None and newest_fcf < 0:
-        score += 15
-        notes.append("negative FCF")
+        if newest_rev and abs(newest_rev) > 0:
+            burn_rate = newest_fcf / abs(newest_rev)
+            if burn_rate < -0.15:
+                score += 30
+                notes.append(f"heavy FCF burn ({burn_rate*100:.0f}% of rev)")
+            elif burn_rate < -0.05:
+                score += 20
+                notes.append(f"negative FCF ({burn_rate*100:.0f}% of rev)")
+            else:
+                score += 10
+                notes.append("light negative FCF")
+        else:
+            score += 10
+            notes.append("negative FCF")
 
     # Analyst price target vs current price
     if est and est["price_target"] and current_price > 0:
@@ -702,6 +739,8 @@ def _call_llm(
     tax_note: str,
     suggested_action: str,
     decision_quality_note: str = "",
+    critical_pillar_violated: bool = False,
+    trim_fraction: float | None = None,
 ) -> dict | None:
     claim_lines = "\n".join(
         f"  [{d['status'].upper()}] {d['claim']} (weight={d['weight']:.1f})"
@@ -709,11 +748,19 @@ def _call_llm(
     ) or "  no claims in deteriorated state"
 
     dq_section = f"\nHISTORICAL DECISION QUALITY NOTE: {decision_quality_note}" if decision_quality_note else ""
+    hard_exit_note = (
+        "\nHARD EXIT TRIGGER: A critical investment pillar is VIOLATED. "
+        "Action is EXIT regardless of composite score."
+    ) if critical_pillar_violated else ""
+    trim_note = (
+        f"\nTRIM FRACTION: {trim_fraction:.0%} of position "
+        f"(scaled {ss:.0f}/100 in 48–67 TRIM band)"
+    ) if (suggested_action == "TRIM" and trim_fraction is not None) else ""
 
     prompt = f"""You are a sell/trim analyst. A deterministic scoring model evaluated {ticker}.
 Write the rationale — do NOT invent or change the scores.
 
-SELL STRENGTH: {ss:.0f}/100 → suggested action: {suggested_action}
+SELL STRENGTH: {ss:.0f}/100 → suggested action: {suggested_action}{trim_note}
   T (thesis, 40%):      {T}/100
 {claim_lines}
   F (fundamentals, 20%): {F}/100 — {f_note}
@@ -722,7 +769,7 @@ SELL STRENGTH: {ss:.0f}/100 → suggested action: {suggested_action}
   O (opportunity, 10%):  {O}/100 — {o_note}{dq_section}
 
 TAX NOTE (separate — never changes the action): {tax_note}
-
+{hard_exit_note}
 Rules:
 - action must be HOLD, REVIEW, TRIM, or EXIT (not NO_ACTION)
 - primary_rationale from: THESIS_BREAK, FUNDAMENTAL_DETERIORATION, VALUATION, \
@@ -772,7 +819,7 @@ def _run(ctx: AgentContext) -> list[Recommendation]:
         current_price = holding.current_price
 
         # ── Deterministic scoring (logged before any LLM call) ───────────────
-        T, t_detail = _score_T(ticker)
+        T, t_detail, critical_pillar_violated = _score_T(ticker)
         F, f_note   = _score_F(ticker, current_price)
         V, v_note   = _score_V(ticker, current_price)
         P, p_note   = _score_P(ticker, weight_pct)
@@ -784,10 +831,12 @@ def _run(ctx: AgentContext) -> list[Recommendation]:
             f"[SellTrim] {ticker}: ss={ss:.0f}  "
             f"T={T} F={F} V={V} P={P} O={O}  "
             f"weight={weight_pct:.1f}%"
+            + (" [CRITICAL PILLAR VIOLATED → hard EXIT]" if critical_pillar_violated else "")
         )
 
         # ── Gate: below threshold → NO_ACTION without LLM ───────────────────
-        if ss < _NO_ACTION_THRESHOLD:
+        # Critical pillar violation bypasses the gate — always proceeds to EXIT.
+        if ss < _NO_ACTION_THRESHOLD and not critical_pillar_violated:
             thesis_ver = agent_db._get_thesis_version_for_hash(ticker)
             latest_q   = agent_db._get_latest_quarter_for_hash(ticker)
             h = agent_db.compute_input_hash(
@@ -801,8 +850,15 @@ def _run(ctx: AgentContext) -> list[Recommendation]:
 
         suggested = _action_from_strength(ss)
 
+        # ── Hard EXIT for critical pillar violation ───────────────────────────
+        if critical_pillar_violated:
+            suggested = "EXIT"
+
         # ── Tax calculation (separate; does not affect ss) ───────────────────
         tax = _tax_note(ticker, current_price)
+
+        # ── Pre-compute scaled trim fraction ─────────────────────────────────
+        trim_fraction = _trim_fraction_from_strength(ss) if suggested == "TRIM" else None
 
         # ── LLM rationale ────────────────────────────────────────────────────
         # Include decision quality note if significant historical pattern exists
@@ -819,6 +875,8 @@ def _run(ctx: AgentContext) -> list[Recommendation]:
                 t_detail, f_note, v_note, p_note, o_note,
                 tax, suggested,
                 decision_quality_note=dq_note,
+                critical_pillar_violated=critical_pillar_violated,
+                trim_fraction=trim_fraction,
             )
         except Exception as _llm_err:
             print(f"[SellTrim] LLM failed for {ticker}: {_llm_err}")
@@ -839,6 +897,26 @@ def _run(ctx: AgentContext) -> list[Recommendation]:
         action = result.get("action", suggested)
         if action not in {"HOLD", "REVIEW", "TRIM", "EXIT"}:
             action = suggested
+
+        # Hard EXIT override: critical pillar violation cannot be downgraded by the LLM
+        if critical_pillar_violated:
+            action = "EXIT"
+
+        # ── Tax-deferral override: EXIT → TRIM for near-LT positions ─────────
+        tax_deferral_override = False
+        days_to_lt_crossover = None
+        if action == "EXIT" and not critical_pillar_violated:
+            try:
+                near_lt = agent_db.get_near_lt_lots_count(ticker, within_days=45)
+                unreal  = agent_db.get_unrealized_gain(ticker)
+                if near_lt > 0 and unreal > 10_000:
+                    action = "TRIM"
+                    trim_fraction = _trim_fraction_from_strength(min(ss, 67))
+                    tax_deferral_override = True
+                    # estimate days to LT crossover from the near-LT lot count
+                    days_to_lt_crossover = 45
+            except Exception:
+                pass
 
         primary_rationale = result.get("primary_rationale", "RISK_CHANGE")
         if primary_rationale not in _RATIONALE_CLASSES:
@@ -882,7 +960,7 @@ def _run(ctx: AgentContext) -> list[Recommendation]:
             rationale_class=primary_rationale,
             action_payload={
                 "sell_strength": ss,
-                "trim_fraction": 0.5 if action == "TRIM" else None,
+                "trim_fraction": trim_fraction if action == "TRIM" else None,
                 "components": {"T": T, "F": F, "V": V, "P": P, "O": O},
                 "component_notes": {
                     "T": [d["claim"] for d in t_detail[:3]],
@@ -890,6 +968,9 @@ def _run(ctx: AgentContext) -> list[Recommendation]:
                 },
                 "tax_note": tax,
                 "what_would_cause_exit": result.get("what_would_cause_exit"),
+                "critical_pillar_violated": critical_pillar_violated if critical_pillar_violated else None,
+                "tax_deferral_override": True if tax_deferral_override else None,
+                "days_to_lt_crossover": days_to_lt_crossover,
             },
             input_hash=input_hash,
             dependencies=[{

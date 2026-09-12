@@ -1,7 +1,7 @@
 # Scale TRIM Fraction with SellStrength
 
 - **ID:** 0142
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-11
 - **Priority:** normal
 - **Depends:** none

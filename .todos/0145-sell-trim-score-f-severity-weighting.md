@@ -1,7 +1,7 @@
 # Scale _score_F() by Deterioration Magnitude
 
 - **ID:** 0145
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-11
 - **Priority:** normal
 - **Depends:** none
