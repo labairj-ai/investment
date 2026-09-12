@@ -408,6 +408,10 @@ def migrate() -> None:
     """)
     conn.commit()
 
+    # 0190/0215 — trade engine tables must exist BEFORE _new_cols ALTER TABLE loop
+    # so that B0 columns land on the right tables on fresh installs
+    _migrate_trade_engine(conn)
+
     # Add columns introduced after the initial schema (safe to re-run)
     _new_cols = [
         ("investment_theses", "approved_by",      "TEXT"),
@@ -488,6 +492,15 @@ def migrate() -> None:
         ("risk_decisions",     "account_cash_at_eval", "REAL"),
         ("risk_decisions",     "account_nav_at_eval",  "REAL"),
         ("orders",             "market_data_status",   "TEXT"),
+        # 0209 — explicit order expiry timestamp
+        ("orders",             "expires_at",           "TEXT"),
+        # 0214 — account snapshot enrichment
+        ("account_snapshots",  "gross_exposure",       "REAL"),
+        ("account_snapshots",  "reserved_cash",        "REAL"),
+        ("account_snapshots",  "open_order_notional",  "REAL"),
+        ("account_snapshots",  "realized_pnl_today",   "REAL"),
+        ("account_snapshots",  "unrealized_pnl",       "REAL"),
+        ("account_snapshots",  "snapshot_reason",      "TEXT"),
     ]
     for table, col, col_type in _new_cols:
         try:
@@ -563,9 +576,6 @@ def migrate() -> None:
     except sqlite3.OperationalError:
         pass
 
-    # 0190 — trade engine tables (shadow execution)
-    _migrate_trade_engine(conn)
-
     conn.close()
 
 
@@ -635,7 +645,8 @@ def _migrate_trade_engine(conn: sqlite3.Connection) -> None:
             submitted_at    TEXT,
             updated_at      TEXT,
             fill_qty        REAL DEFAULT 0,
-            fill_cash       REAL DEFAULT 0
+            fill_cash       REAL DEFAULT 0,
+            expires_at      TEXT
         );
 
         CREATE TABLE IF NOT EXISTS fills (

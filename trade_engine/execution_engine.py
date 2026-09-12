@@ -34,9 +34,14 @@ def _now_utc() -> datetime:
 
 
 def _get_quote(symbol: str) -> Optional[Quote]:
-    """Fetch live bid/ask from yfinance. Returns None on any failure (0200)."""
+    """Fetch live bid/ask from yfinance. Returns None on any failure (0200).
+
+    Populates market_timestamp from yfinance when available; bid <= ask sanity
+    check is enforced in attempt_fill, not here (0213).
+    """
     try:
         import yfinance as yf
+        retrieved_at = _now_utc().isoformat()
         ticker = yf.Ticker(symbol)
         info = ticker.fast_info
         bid = float(getattr(info, "bid", None) or 0)
@@ -47,7 +52,22 @@ def _get_quote(symbol: str) -> Optional[Quote]:
         if ask <= 0:
             ask = last
         if bid > 0 and ask > 0:
-            return Quote(bid=bid, ask=ask, timestamp=_now_utc().isoformat())
+            # Attempt to get exchange-side timestamp (not always available)
+            market_ts = None
+            try:
+                rmt = getattr(info, "regular_market_time", None)
+                if rmt:
+                    from datetime import datetime as _dt
+                    market_ts = _dt.fromtimestamp(float(rmt), tz=timezone.utc).isoformat()
+            except Exception:
+                pass
+            return Quote(
+                bid=bid, ask=ask,
+                timestamp=retrieved_at,
+                market_timestamp=market_ts,
+                retrieved_at=retrieved_at,
+                source="yfinance",
+            )
     except Exception:
         pass
     return None
@@ -123,6 +143,61 @@ def _refresh_market_prices(account_id: str, conn: sqlite3.Connection) -> None:
                SET market_price=?, market_value=qty*?, price_as_of=?
                WHERE account_id=? AND symbol=?""",
             (mid, market_value_per_unit, quote.timestamp, account_id, symbol),
+        )
+    conn.commit()
+
+
+def _write_account_snapshot(
+    account_id: str, conn: sqlite3.Connection, reason: str = "cycle"
+) -> None:
+    """Write a point-in-time account snapshot to account_snapshots (0214)."""
+    from .risk_engine import _open_buy_notional as _obn
+    acct = conn.execute(
+        "SELECT current_cash FROM trading_accounts WHERE account_id=?",
+        (account_id,),
+    ).fetchone()
+    if not acct:
+        return
+    cash = float(acct["current_cash"] or 0)
+    pos_rows = conn.execute(
+        "SELECT qty, avg_cost, market_value FROM position_snapshots WHERE account_id=?",
+        (account_id,),
+    ).fetchall()
+    gross_exposure = 0.0
+    unrealized_pnl = 0.0
+    for r in pos_rows:
+        mv = r["market_value"] if "market_value" in r.keys() and r["market_value"] is not None else None
+        cost = float(r["qty"] or 0) * float(r["avg_cost"] or 0)
+        val = float(mv) if mv is not None else cost
+        gross_exposure += val
+        unrealized_pnl += val - cost
+    nav = cash + gross_exposure
+    open_order_notional = _obn(account_id, conn)
+    reserved_cash = open_order_notional
+    buying_power = max(0.0, cash - reserved_cash)
+    realized_pnl_today_row = conn.execute(
+        """SELECT COALESCE(SUM(realized_pnl), 0) AS t
+           FROM fills WHERE account_id=? AND DATE(filled_at)=DATE('now')""",
+        (account_id,),
+    ).fetchone()
+    realized_pnl_today = float(realized_pnl_today_row["t"] or 0)
+    snapshot_at = _now_utc().isoformat()
+    try:
+        conn.execute(
+            """INSERT INTO account_snapshots
+               (account_id, cash, nav, buying_power, snapshot_at,
+                gross_exposure, reserved_cash, open_order_notional,
+                realized_pnl_today, unrealized_pnl, snapshot_reason)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (account_id, cash, nav, buying_power, snapshot_at,
+             gross_exposure, reserved_cash, open_order_notional,
+             realized_pnl_today, unrealized_pnl, reason),
+        )
+    except Exception:
+        # Fallback: base 4-column insert for schemas without the new columns
+        conn.execute(
+            "INSERT INTO account_snapshots (account_id, cash, nav, buying_power, snapshot_at) VALUES (?,?,?,?,?)",
+            (account_id, cash, nav, buying_power, snapshot_at),
         )
     conn.commit()
 
@@ -254,16 +329,9 @@ def process_new_intents(account_id: str, conn: sqlite3.Connection) -> list[Execu
 def process_open_orders(account_id: str, conn: sqlite3.Connection) -> list[Fill]:
     """Re-attempt fills on all WORKING/PARTIALLY_FILLED orders (0199).
 
-    Also refreshes mark-to-market prices and updates nav_high_water (0201).
+    MtM refresh is done by run_execution_cycle() before this is called (0210).
     Syncs intent status when orders reach terminal states.
     """
-    # Refresh MtM prices for all positions
-    try:
-        _refresh_market_prices(account_id, conn)
-        _update_nav_high_water(account_id, conn)
-    except Exception as exc:
-        _log.warning("MtM refresh failed for %s: %s", account_id, exc)
-
     open_rows = conn.execute(
         """SELECT o.order_id, o.intent_id
            FROM orders o
@@ -314,12 +382,46 @@ def process_open_orders(account_id: str, conn: sqlite3.Connection) -> list[Fill]
 
 
 def run_execution_cycle(account_id: str, conn: sqlite3.Connection) -> dict:
-    """Full execution cycle: process new intents then retry open orders (0199)."""
+    """Full execution cycle: refresh MtM → risk on fresh state → fill retry (0199, 0210).
+
+    Order:
+    1. _refresh_market_prices   — fresh MtM before any risk evaluation
+    2. _update_nav_high_water   — update peak NAV
+    3. _write_account_snapshot  — pre-cycle state
+    4. process_new_intents      — PENDING intents evaluated against fresh marks
+    5. count working_orders     — snapshot open-order count before retry
+    6. process_open_orders      — retry open orders (no re-refresh inside)
+    7. _write_account_snapshot  — post-cycle state
+    """
+    try:
+        _refresh_market_prices(account_id, conn)
+        _update_nav_high_water(account_id, conn)
+    except Exception as exc:
+        _log.warning("MtM refresh failed for %s: %s", account_id, exc)
+
+    try:
+        _write_account_snapshot(account_id, conn, "pre_cycle")
+    except Exception as exc:
+        _log.warning("pre-cycle snapshot failed: %s", exc)
+
     new_results = process_new_intents(account_id, conn)
+
+    working_orders_checked = conn.execute(
+        "SELECT COUNT(*) FROM orders WHERE account_id=? AND state IN ('WORKING','PARTIALLY_FILLED')",
+        (account_id,),
+    ).fetchone()[0]
+
     retry_fills = process_open_orders(account_id, conn)
+
+    try:
+        _write_account_snapshot(account_id, conn, "post_cycle")
+    except Exception as exc:
+        _log.warning("post-cycle snapshot failed: %s", exc)
+
     return {
         "new_intents_processed": len(new_results),
         "open_orders_fills": len(retry_fills),
+        "working_orders_checked": working_orders_checked,
         "results": [r.to_dict() for r in new_results],
     }
 

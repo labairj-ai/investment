@@ -5623,16 +5623,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._send_json({"ok": False, "error": str(e)}, 500)
 
     def _handle_trade_engine_run(self):
-        """POST /api/trade-engine/run — process all PENDING intents for AGENTIC_SHADOW_01."""
+        """POST /api/trade-engine/run — full execution cycle for AGENTIC_SHADOW_01 (0216)."""
         try:
-            from trade_engine.execution_engine import run_pending_intents
+            from trade_engine.execution_engine import run_execution_cycle
             conn = self._shadow_conn()
-            results = run_pending_intents("AGENTIC_SHADOW_01", conn)
+            summary = run_execution_cycle("AGENTIC_SHADOW_01", conn)
             conn.close()
             self._json({
                 "ok": True,
-                "processed": len(results),
-                "results": [r.to_dict() for r in results],
+                "new_intents_processed": summary["new_intents_processed"],
+                "working_orders_checked": summary.get("working_orders_checked", 0),
+                "fills": summary.get("open_orders_fills", 0),
+                "results": summary.get("results", []),
             })
         except Exception as e:
             self._send_json({"ok": False, "error": str(e)}, 500)

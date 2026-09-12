@@ -28,7 +28,7 @@ _NYSE_HOLIDAYS: frozenset[date] = frozenset([
     date(2027, 7, 5),   # Independence Day (observed, Jul 4 is Sun)
     date(2027, 9, 6),   # Labor Day
     date(2027, 11, 25), # Thanksgiving
-    date(2027, 12, 27), # Christmas (observed, Dec 25 is Sat)
+    date(2027, 12, 24), # Christmas (observed, Dec 25 is Sat → Friday Dec 24 closed)
     # 2028
     date(2028, 1, 17),  # MLK Day
     date(2028, 2, 21),  # Presidents Day
@@ -46,7 +46,8 @@ _EARLY_CLOSE_DAYS: frozenset[date] = frozenset([
     date(2026, 11, 27), # Day after Thanksgiving 2026
     date(2026, 12, 24), # Christmas Eve 2026
     date(2027, 11, 26), # Day after Thanksgiving 2027
-    date(2027, 12, 24), # Christmas Eve 2027
+    # Dec 24 2027 is now a holiday (Christmas observed) — removed from early-close
+    date(2028, 7, 3),   # Day before Independence Day 2028 (1 PM early close — NYSE listed)
     date(2028, 11, 24), # Day after Thanksgiving 2028
     date(2028, 12, 24), # Christmas Eve 2028 (Sun — exchange will be closed but just in case)
 ])

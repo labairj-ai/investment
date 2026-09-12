@@ -284,6 +284,7 @@ class Order:
     updated_at: Optional[str] = None
     fill_qty: float = 0.0
     fill_cash: float = 0.0
+    expires_at: Optional[str] = None
 
     def transition(self, new_state: OrderState) -> None:
         allowed = _VALID_TRANSITIONS.get(self.state, set())
@@ -312,6 +313,7 @@ class Order:
             "updated_at": self.updated_at,
             "fill_qty": self.fill_qty,
             "fill_cash": self.fill_cash,
+            "expires_at": self.expires_at,
         }
 
     @classmethod
@@ -334,6 +336,7 @@ class Order:
             updated_at=row["updated_at"],
             fill_qty=float(row["fill_qty"] or 0),
             fill_cash=float(row["fill_cash"] or 0),
+            expires_at=row["expires_at"] if "expires_at" in row.keys() else None,
         )
 
 

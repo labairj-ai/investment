@@ -77,7 +77,8 @@ def _make_conn() -> sqlite3.Connection:
             time_in_force TEXT DEFAULT 'DAY',
             broker_order_id TEXT, submitted_at TEXT, updated_at TEXT,
             fill_qty REAL DEFAULT 0, fill_cash REAL DEFAULT 0,
-            market_data_status TEXT
+            market_data_status TEXT,
+            expires_at TEXT
         );
         CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_intent_id ON orders (intent_id);
         CREATE TABLE IF NOT EXISTS fills (
@@ -88,7 +89,9 @@ def _make_conn() -> sqlite3.Connection:
         );
         CREATE TABLE IF NOT EXISTS account_snapshots (
             snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT, account_id TEXT,
-            cash REAL, nav REAL, buying_power REAL, snapshot_at TEXT
+            cash REAL, nav REAL, buying_power REAL, snapshot_at TEXT,
+            gross_exposure REAL, reserved_cash REAL, open_order_notional REAL,
+            realized_pnl_today REAL, unrealized_pnl REAL, snapshot_reason TEXT
         );
         CREATE TABLE IF NOT EXISTS position_snapshots (
             id INTEGER PRIMARY KEY AUTOINCREMENT, account_id TEXT, symbol TEXT,
@@ -574,6 +577,12 @@ class TestRiskEngine:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TestShadowBroker:
+    @pytest.fixture(autouse=True)
+    def _market_open(self):
+        """Patch is_market_open → True so fill tests pass at any wall-clock time (0209)."""
+        with patch.object(market_calendar, "is_market_open", return_value=True):
+            yield
+
     def _make_order(self, conn, side=Side.BUY, qty=10.0, limit=100.0,
                     tif=TimeInForce.GTC) -> Order:
         """Default GTC so tests are not sensitive to current wall-clock time."""
@@ -697,6 +706,11 @@ class TestShadowBroker:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TestConservationInvariants:
+    @pytest.fixture(autouse=True)
+    def _market_open(self):
+        with patch.object(market_calendar, "is_market_open", return_value=True):
+            yield
+
     def test_cash_conservation_after_multiple_fills(self):
         """starting_capital + sells - buys - fees == current_cash after N fills."""
         conn = _make_conn()
@@ -863,6 +877,11 @@ class TestIntentBuilder:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TestExecutionEngine:
+    @pytest.fixture(autouse=True)
+    def _market_open(self):
+        with patch.object(market_calendar, "is_market_open", return_value=True):
+            yield
+
     def _setup_accepted_rec(self, conn) -> int:
         cur = conn.execute(
             "INSERT INTO recommendations (ticker, action, action_payload_json, status, created_at) VALUES (?,?,?,?,?)",
@@ -1199,6 +1218,11 @@ class TestRiskEngineRules14to18:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TestExecutionSafety:
+    @pytest.fixture(autouse=True)
+    def _market_open(self):
+        """Default market-open patch; calendar-specific tests use inner overrides."""
+        with patch.object(market_calendar, "is_market_open", return_value=True):
+            yield
 
     # ── 0200: fail-closed on missing quote ───────────────────────────────────
 
@@ -1219,26 +1243,60 @@ class TestExecutionSafety:
         assert order_row["state"] == "WORKING"
         assert order_row["market_data_status"] == "unavailable"
 
-    # ── 0203: market calendar — DAY orders expire outside session ────────────
+    # ── 0209: order lifecycle — session gate + explicit expiry ───────────────
 
-    def test_day_order_expires_when_market_closed(self):
-        """DAY order → attempt_fill when market is closed → EXPIRED, returns None."""
+    def test_day_order_stays_working_when_market_closed_before_expiry(self):
+        """DAY order with future expires_at + closed market → WORKING (not EXPIRED). 0209."""
         conn = _make_conn()
         intent = _make_intent(quantity=1.0, limit_price=100.0, time_in_force=TimeInForce.DAY)
         _insert_intent(conn, intent)
         broker = ShadowBroker(conn)
         order = broker.submit_order(intent)
         assert order.state == OrderState.WORKING
+        # expires_at was set to next market close (future) by submit_order
+        assert order.expires_at is not None
 
         with patch.object(market_calendar, "is_market_open", return_value=False):
             fill = broker.attempt_fill(order, Quote(bid=99.0, ask=100.0, timestamp="t"))
 
         assert fill is None
         updated = broker.get_order(order.order_id)
+        # Session gate returns None without expiring — order stays WORKING
+        assert updated.state == OrderState.WORKING
+
+    def test_day_order_expires_when_past_valid_until(self):
+        """DAY order whose expires_at is in the past → EXPIRED on attempt_fill. 0209."""
+        conn = _make_conn()
+        intent = _make_intent(quantity=1.0, limit_price=100.0, time_in_force=TimeInForce.DAY)
+        _insert_intent(conn, intent)
+        broker = ShadowBroker(conn)
+        order = broker.submit_order(intent)
+        # Simulate clock advancing past expiry
+        conn.execute("UPDATE orders SET expires_at=? WHERE order_id=?",
+                     (_past_iso(minutes=5), order.order_id))
+        conn.commit()
+        order = broker.get_order(order.order_id)
+
+        fill = broker.attempt_fill(order, Quote(bid=99.0, ask=100.0, timestamp="t"))
+
+        assert fill is None
+        updated = broker.get_order(order.order_id)
         assert updated.state == OrderState.EXPIRED
 
-    def test_gtc_order_fills_regardless_of_market_time(self):
-        """GTC order → attempt_fill ignores market hours, fills on price."""
+    def test_day_order_fills_when_market_open(self):
+        """DAY order, market open, crossing quote → fills. 0209."""
+        conn = _make_conn()
+        intent = _make_intent(quantity=1.0, limit_price=100.0, time_in_force=TimeInForce.DAY)
+        _insert_intent(conn, intent)
+        broker = ShadowBroker(conn)
+        order = broker.submit_order(intent)
+        # Market open autouse provides True; expires_at is future from submit_order
+        fill = broker.attempt_fill(order, Quote(bid=99.0, ask=100.0, timestamp="t"))
+        assert fill is not None
+        assert fill.price == 100.0
+
+    def test_gtc_order_stays_working_when_market_closed(self):
+        """GTC order → session gate returns None without expiring when market closed. 0209."""
         conn = _make_conn()
         intent = _make_intent(quantity=1.0, limit_price=100.0, time_in_force=TimeInForce.GTC)
         _insert_intent(conn, intent)
@@ -1248,34 +1306,57 @@ class TestExecutionSafety:
         with patch.object(market_calendar, "is_market_open", return_value=False):
             fill = broker.attempt_fill(order, Quote(bid=99.0, ask=100.0, timestamp="t"))
 
+        assert fill is None
+        updated = broker.get_order(order.order_id)
+        assert updated.state == OrderState.WORKING
+
+    def test_gtc_order_fills_when_market_open(self):
+        """GTC order → fills during market hours on crossing quote. 0209."""
+        conn = _make_conn()
+        intent = _make_intent(quantity=1.0, limit_price=100.0, time_in_force=TimeInForce.GTC)
+        _insert_intent(conn, intent)
+        broker = ShadowBroker(conn)
+        order = broker.submit_order(intent)
+        # Autouse patches is_market_open → True
+        fill = broker.attempt_fill(order, Quote(bid=99.0, ask=100.0, timestamp="t"))
         assert fill is not None
 
-    def test_market_calendar_blocks_saturday(self):
-        """is_market_open() returns False on a Saturday."""
-        from datetime import date as _date
-        saturday = datetime(2026, 9, 12, 14, 0, 0, tzinfo=timezone.utc)  # 2026-09-12 is Saturday
-        # Verify directly
-        assert not market_calendar.is_trading_day(_date(2026, 9, 12))
-        assert not market_calendar.is_market_open(saturday)
+    def test_submit_order_sets_expires_at_for_day(self):
+        """submit_order populates expires_at (= next session close) for DAY orders. 0209."""
+        conn = _make_conn()
+        intent = _make_intent(quantity=1.0, limit_price=100.0, time_in_force=TimeInForce.DAY)
+        _insert_intent(conn, intent)
+        broker = ShadowBroker(conn)
+        order = broker.submit_order(intent)
+        assert order.expires_at is not None
+        # Must be in the future
+        from datetime import datetime as _dt, timezone as _tz
+        assert order.expires_at > _dt.now(_tz.utc).isoformat()
 
-    def test_market_calendar_blocks_nyse_holiday(self):
-        """is_market_open() returns False on NYSE holidays."""
-        from datetime import date as _date
-        xmas = datetime(2026, 12, 25, 12, 0, 0, tzinfo=timezone.utc)
-        assert not market_calendar.is_trading_day(_date(2026, 12, 25))
-        assert not market_calendar.is_market_open(xmas)
+    def test_submit_order_sets_expires_at_for_gtc(self):
+        """submit_order sets expires_at = intent.valid_until for GTC orders. 0209."""
+        conn = _make_conn()
+        intent = _make_intent(quantity=1.0, limit_price=100.0, time_in_force=TimeInForce.GTC)
+        _insert_intent(conn, intent)
+        broker = ShadowBroker(conn)
+        order = broker.submit_order(intent)
+        assert order.expires_at == intent.valid_until
 
-    def test_market_calendar_open_during_session(self):
-        """is_market_open() returns True on a trading day at 2 PM ET."""
-        try:
-            import zoneinfo
-            et = zoneinfo.ZoneInfo("America/New_York")
-        except Exception:
-            return  # skip if zoneinfo unavailable
-        # 2026-09-14 is Monday
-        trading_dt = datetime(2026, 9, 14, 14, 0, 0, tzinfo=et)
-        assert market_calendar.is_trading_day(trading_dt.date())
-        assert market_calendar.is_market_open(trading_dt)
+    def test_quote_with_bad_bid_ask_not_filled(self):
+        """Zero or inverted bid/ask rejected by attempt_fill sanity check. 0213."""
+        conn = _make_conn()
+        intent = _make_intent(quantity=1.0, limit_price=100.0, time_in_force=TimeInForce.GTC)
+        _insert_intent(conn, intent)
+        broker = ShadowBroker(conn)
+        order = broker.submit_order(intent)
+        # Zero bid
+        assert broker.attempt_fill(order, Quote(bid=0.0, ask=100.0, timestamp="t")) is None
+        # Inverted (bid > ask)
+        assert broker.attempt_fill(order, Quote(bid=101.0, ask=99.0, timestamp="t")) is None
+        # Both zero
+        assert broker.attempt_fill(order, Quote(bid=0.0, ask=0.0, timestamp="t")) is None
+        # Order should still be WORKING
+        assert broker.get_order(order.order_id).state == OrderState.WORKING
 
     # ── 0199: WORKING order retried on next cycle ─────────────────────────────
 
@@ -1529,3 +1610,396 @@ class TestExecutionSafety:
         account = _make_account(cash=9000.0)
         nav = _risk_nav(account, conn)
         assert nav == pytest.approx(10000.0)  # 9000 + 10*100
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 11. Market calendar correctness (0212)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestMarketCalendar:
+    """Real calendar tests — no is_market_open patch so actual logic is tested."""
+
+    def test_blocks_saturday(self):
+        """is_market_open() returns False on a Saturday."""
+        from datetime import date as _date
+        saturday = datetime(2026, 9, 12, 14, 0, 0, tzinfo=timezone.utc)
+        assert not market_calendar.is_trading_day(_date(2026, 9, 12))
+        assert not market_calendar.is_market_open(saturday)
+
+    def test_blocks_nyse_holiday(self):
+        """is_market_open() returns False on NYSE holidays."""
+        from datetime import date as _date
+        xmas = datetime(2026, 12, 25, 12, 0, 0, tzinfo=timezone.utc)
+        assert not market_calendar.is_trading_day(_date(2026, 12, 25))
+        assert not market_calendar.is_market_open(xmas)
+
+    def test_open_during_session(self):
+        """is_market_open() returns True on a trading day at 2 PM ET."""
+        try:
+            import zoneinfo
+            et = zoneinfo.ZoneInfo("America/New_York")
+        except Exception:
+            return
+        trading_dt = datetime(2026, 9, 14, 14, 0, 0, tzinfo=et)
+        assert market_calendar.is_trading_day(trading_dt.date())
+        assert market_calendar.is_market_open(trading_dt)
+
+    def test_dec24_2027_is_holiday(self):
+        """Dec 24 2027 is Christmas observed (Fri) — NYSE closed. 0212."""
+        from datetime import date as _date
+        assert not market_calendar.is_trading_day(_date(2027, 12, 24))
+
+    def test_dec27_2027_is_trading_day(self):
+        """Dec 27 2027 (Mon) is a regular trading day — removed from holidays. 0212."""
+        from datetime import date as _date
+        assert market_calendar.is_trading_day(_date(2027, 12, 27))
+
+    def test_jul3_2028_is_early_close(self):
+        """July 3 2028 is a trading day with 1 PM early close, not a holiday. 0212."""
+        from datetime import date as _date, time as _time
+        d = _date(2028, 7, 3)
+        assert market_calendar.is_trading_day(d)
+        assert market_calendar.session_close_time(d) == _time(13, 0)
+
+    def test_dec24_2027_not_in_early_close(self):
+        """Dec 24 2027 is a holiday (not early-close), so session_close_time returns normal. 0212."""
+        from datetime import date as _date, time as _time
+        # The day is a full closure holiday; not applicable as early close
+        # session_close_time returns early-close only for early-close days
+        assert _date(2027, 12, 24) not in market_calendar._EARLY_CLOSE_DAYS
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 12. Open-order reservation accounting (0211)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestReservationAccounting:
+    """Tests that open WORKING orders are reserved against risk limits (0211)."""
+
+    def _seed_working_buy(self, conn, qty=10.0, limit=100.0, symbol="ANET") -> str:
+        order_id = str(uuid.uuid4())
+        intent_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            """INSERT INTO trade_intents (intent_id, account_id, instrument_type,
+               symbol, side, quantity, order_type, limit_price, time_in_force,
+               created_at, status, valid_until)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (intent_id, "AGENTIC_SHADOW_01", "EQUITY", symbol, "BUY",
+             qty, "LIMIT", limit, "GTC", now, "APPROVED", _future_iso()),
+        )
+        conn.execute(
+            """INSERT INTO orders (order_id, intent_id, account_id, symbol, side,
+               quantity, contracts, order_type, limit_price, state, time_in_force,
+               submitted_at, updated_at, fill_qty, fill_cash)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (order_id, intent_id, "AGENTIC_SHADOW_01", symbol, "BUY",
+             qty, None, "LIMIT", limit, "WORKING", "GTC", now, now, 0.0, 0.0),
+        )
+        conn.commit()
+        return order_id
+
+    def test_open_buy_notional_counts_working_order(self):
+        """_open_buy_notional sums committed cash from WORKING buy orders. 0211."""
+        from trade_engine.risk_engine import _open_buy_notional
+        conn = _make_conn()
+        self._seed_working_buy(conn, qty=5.0, limit=100.0)  # $500
+        assert _open_buy_notional("AGENTIC_SHADOW_01", conn) == pytest.approx(500.0)
+
+    def test_open_buy_notional_per_symbol(self):
+        """_open_buy_notional with symbol filter is symbol-specific. 0211."""
+        from trade_engine.risk_engine import _open_buy_notional
+        conn = _make_conn()
+        self._seed_working_buy(conn, qty=5.0, limit=100.0, symbol="ANET")   # $500
+        self._seed_working_buy(conn, qty=10.0, limit=50.0, symbol="MSFT")   # $500
+        assert _open_buy_notional("AGENTIC_SHADOW_01", conn, "ANET") == pytest.approx(500.0)
+        assert _open_buy_notional("AGENTIC_SHADOW_01", conn, "MSFT") == pytest.approx(500.0)
+        assert _open_buy_notional("AGENTIC_SHADOW_01", conn) == pytest.approx(1000.0)
+
+    def test_sufficient_cash_blocks_when_open_orders_exhaust_cash(self):
+        """Rule 7: WORKING buy order commits cash; new intent can't exceed available. 0211."""
+        conn = _make_conn()
+        # Commit $9500 of the $10000 to an open buy order; only $500 left
+        self._seed_working_buy(conn, qty=95.0, limit=100.0)
+        intent = _make_intent(quantity=6.0, limit_price=100.0)  # needs $600 > $500 avail
+        _insert_intent(conn, intent)
+        dec = risk_engine.evaluate(intent, _make_policy(), _make_account(cash=10000.0), conn, strict_all=True)
+        check = next(c for c in dec.checks if c.rule == "SUFFICIENT_CASH")
+        assert check.result == RuleResult.FAIL
+
+    def test_sell_quantity_covered_deducts_open_sell_orders(self):
+        """Rule 12: open WORKING sell orders reduce available qty. 0211."""
+        conn = _make_conn()
+        conn.execute(
+            "INSERT INTO position_snapshots (account_id, symbol, qty, avg_cost, instrument_type, as_of) VALUES (?,?,?,?,?,?)",
+            ("AGENTIC_SHADOW_01", "ANET", 10.0, 100.0, "EQUITY", "2026-01-01"),
+        )
+        now = datetime.now(timezone.utc).isoformat()
+        sell_intent_id = str(uuid.uuid4())
+        sell_order_id = str(uuid.uuid4())
+        conn.execute(
+            """INSERT INTO trade_intents (intent_id, account_id, instrument_type,
+               symbol, side, quantity, order_type, limit_price, time_in_force,
+               created_at, status, valid_until)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (sell_intent_id, "AGENTIC_SHADOW_01", "EQUITY", "ANET", "SELL",
+             8.0, "LIMIT", 110.0, "GTC", now, "APPROVED", _future_iso()),
+        )
+        conn.execute(
+            """INSERT INTO orders (order_id, intent_id, account_id, symbol, side,
+               quantity, contracts, order_type, limit_price, state, time_in_force,
+               submitted_at, updated_at, fill_qty, fill_cash)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (sell_order_id, sell_intent_id, "AGENTIC_SHADOW_01", "ANET", "SELL",
+             8.0, None, "LIMIT", 110.0, "WORKING", "GTC", now, now, 0.0, 0.0),
+        )
+        conn.commit()
+        # Position=10, open sell=8 → available=2; trying to sell 5 should fail
+        intent = _make_intent(side=Side.SELL, quantity=5.0, limit_price=110.0)
+        _insert_intent(conn, intent)
+        dec = risk_engine.evaluate(intent, _make_policy(), _make_account(cash=9000.0), conn, strict_all=True)
+        check = next(c for c in dec.checks if c.rule == "SELL_QUANTITY_COVERED")
+        assert check.result == RuleResult.FAIL
+        assert check.before == pytest.approx(2.0)  # available qty
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 13. Migration ordering (0215)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestMigrationOrdering:
+    """Tests that trade engine tables get B0 columns even on a fresh database (0215)."""
+
+    def test_fresh_db_has_expires_at_on_orders(self):
+        """_migrate_trade_engine on empty DB → orders.expires_at column exists. 0215."""
+        import agent_db
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        agent_db._migrate_trade_engine(conn)
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(orders)").fetchall()}
+        assert "expires_at" in cols
+
+    def test_fresh_db_has_base_trade_engine_columns(self):
+        """All core orders columns exist after _migrate_trade_engine. 0215."""
+        import agent_db
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        agent_db._migrate_trade_engine(conn)
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(orders)").fetchall()}
+        for c in ("order_id", "intent_id", "state", "limit_price", "fill_qty", "expires_at"):
+            assert c in cols, f"Missing column: {c}"
+
+    def test_migrate_trade_engine_twice_idempotent(self):
+        """Calling _migrate_trade_engine twice raises no error. 0215."""
+        import agent_db
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        agent_db._migrate_trade_engine(conn)
+        agent_db._migrate_trade_engine(conn)  # must not raise
+
+    def test_agentic_shadow_01_seeded_after_migrate(self):
+        """AGENTIC_SHADOW_01 exists with $10k after _migrate_trade_engine. 0215."""
+        import agent_db
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        agent_db._migrate_trade_engine(conn)
+        row = conn.execute(
+            "SELECT * FROM trading_accounts WHERE account_id='AGENTIC_SHADOW_01'"
+        ).fetchone()
+        assert row is not None
+        assert float(row["starting_capital"]) == pytest.approx(10000.0)
+
+    def test_account_snapshots_schema_in_new_cols(self):
+        """account_snapshots new columns can be written after migration. 0215."""
+        import agent_db
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        agent_db._migrate_trade_engine(conn)
+        # Apply _new_cols manually to simulate full migration
+        new_snapshot_cols = [
+            ("account_snapshots", "gross_exposure",      "REAL"),
+            ("account_snapshots", "reserved_cash",       "REAL"),
+            ("account_snapshots", "open_order_notional", "REAL"),
+            ("account_snapshots", "realized_pnl_today",  "REAL"),
+            ("account_snapshots", "unrealized_pnl",      "REAL"),
+            ("account_snapshots", "snapshot_reason",     "TEXT"),
+        ]
+        for table, col, col_type in new_snapshot_cols:
+            try:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
+                conn.commit()
+            except sqlite3.OperationalError:
+                pass
+        # Should be able to insert with new columns
+        conn.execute(
+            """INSERT INTO account_snapshots
+               (account_id, cash, nav, buying_power, snapshot_at, snapshot_reason)
+               VALUES (?,?,?,?,?,?)""",
+            ("AGENTIC_SHADOW_01", 10000, 10000, 10000, "2026-01-01T00:00:00+00:00", "test"),
+        )
+        row = conn.execute("SELECT snapshot_reason FROM account_snapshots").fetchone()
+        assert row["snapshot_reason"] == "test"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 14. Execution cycle return dict + serve.py (0216)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestExecutionCycleReturn:
+    @pytest.fixture(autouse=True)
+    def _market_open(self):
+        with patch.object(market_calendar, "is_market_open", return_value=True):
+            yield
+
+    def test_run_execution_cycle_returns_working_orders_checked(self):
+        """run_execution_cycle includes working_orders_checked in return dict. 0216."""
+        conn = _make_conn()
+        with patch.object(execution_engine, "_refresh_market_prices"), \
+             patch.object(execution_engine, "_update_nav_high_water"), \
+             patch.object(execution_engine, "_write_account_snapshot"):
+            summary = execution_engine.run_execution_cycle("AGENTIC_SHADOW_01", conn)
+        assert "working_orders_checked" in summary
+        assert "new_intents_processed" in summary
+        assert "open_orders_fills" in summary
+        assert isinstance(summary["working_orders_checked"], int)
+
+    def test_run_execution_cycle_counts_open_orders(self):
+        """working_orders_checked reflects actual open order count. 0216."""
+        conn = _make_conn()
+        # Seed 2 WORKING orders
+        for _ in range(2):
+            intent = _make_intent()
+            _insert_intent(conn, intent)
+            now = datetime.now(timezone.utc).isoformat()
+            conn.execute(
+                """INSERT INTO orders (order_id, intent_id, account_id, symbol, side,
+                   quantity, contracts, order_type, limit_price, state, time_in_force,
+                   submitted_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (str(uuid.uuid4()), intent.intent_id, "AGENTIC_SHADOW_01", "ANET",
+                 "BUY", 1.0, None, "LIMIT", 100.0, "WORKING", "GTC", now, now),
+            )
+        conn.commit()
+
+        with patch.object(execution_engine, "_refresh_market_prices"), \
+             patch.object(execution_engine, "_update_nav_high_water"), \
+             patch.object(execution_engine, "_write_account_snapshot"), \
+             patch.object(execution_engine, "_get_quote", return_value=None):
+            summary = execution_engine.run_execution_cycle("AGENTIC_SHADOW_01", conn)
+        assert summary["working_orders_checked"] == 2
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 15. Policy field enforcement audit (0217)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestPolicyEnforcement:
+    def test_min_limit_price_rejects_penny_stock(self):
+        """Rule 19 MIN_LIMIT_PRICE: limit_price below minimum → FAIL. 0217."""
+        conn = _make_conn()
+        intent = _make_intent(quantity=1.0, limit_price=0.005)  # $0.005 < $0.01 min
+        _insert_intent(conn, intent)
+        dec = risk_engine.evaluate(intent, _make_policy(), _make_account(), conn, strict_all=True)
+        check = next(c for c in dec.checks if c.rule == "MIN_LIMIT_PRICE")
+        assert check.result == RuleResult.FAIL
+
+    def test_min_limit_price_passes_normal_stock(self):
+        """Rule 19 MIN_LIMIT_PRICE: normal limit_price → PASS. 0217."""
+        conn = _make_conn()
+        intent = _make_intent(quantity=1.0, limit_price=100.0)
+        _insert_intent(conn, intent)
+        dec = risk_engine.evaluate(intent, _make_policy(), _make_account(), conn, strict_all=True)
+        check = next(c for c in dec.checks if c.rule == "MIN_LIMIT_PRICE")
+        assert check.result == RuleResult.PASS
+
+    def test_policy_min_limit_price_accessor(self):
+        """TradingPolicy.min_limit_price() reads from execution.min_limit_price. 0217."""
+        policy = _make_policy()
+        assert policy.min_limit_price() == pytest.approx(0.01)
+
+    def test_policy_fields_enforced_or_documented(self):
+        """All leaf keys in trading_policy.json are enforced or listed as reserved. 0217."""
+        import json as _json
+        policy_path = ROOT / "config" / "trading_policy.json"
+        if not policy_path.exists():
+            pytest.skip("trading_policy.json not found")
+        data = _json.loads(policy_path.read_text())
+
+        ENFORCED = {
+            "policy_version", "account_id",
+            "starting_capital", "minimum_cash_pct", "minimum_cash_abs",
+            "buy_allowed", "sell_allowed", "shorting_allowed",
+            "max_single_position_pct", "max_new_position_pct",
+            "covered_calls_allowed", "naked_options_allowed", "max_contracts_per_symbol",
+            "market_orders_allowed", "max_orders_per_day", "max_daily_notional_pct",
+            "max_slippage_pct", "min_limit_price",
+            "max_drawdown_pct", "max_daily_loss_pct",
+            "trading_enabled", "halt_on_data_stale_minutes",
+        }
+        RESERVED = {
+            "max_weekly_loss_pct",
+            "halt_on_position_mismatch",
+            "halt_on_daily_loss_pct",
+            "cash_secured_puts_allowed",  # options strategy — not yet implemented
+        }
+
+        def leaf_keys(d):
+            for k, v in d.items():
+                if isinstance(v, dict):
+                    yield from leaf_keys(v)
+                else:
+                    yield k
+
+        unknown = set(leaf_keys(data)) - ENFORCED - RESERVED
+        assert not unknown, f"Policy fields need enforcement or reserved entry: {unknown}"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 16. Account snapshots (0214)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestAccountSnapshots:
+    @pytest.fixture(autouse=True)
+    def _market_open(self):
+        with patch.object(market_calendar, "is_market_open", return_value=True):
+            yield
+
+    def test_account_snapshot_fields_populated(self):
+        """_write_account_snapshot writes cash, nav, and snapshot_reason. 0214."""
+        conn = _make_conn()
+        execution_engine._write_account_snapshot("AGENTIC_SHADOW_01", conn, "test")
+        row = conn.execute(
+            "SELECT * FROM account_snapshots WHERE account_id='AGENTIC_SHADOW_01'"
+        ).fetchone()
+        assert row is not None
+        assert float(row["cash"]) == pytest.approx(10000.0)
+        assert row["snapshot_reason"] == "test"
+
+    def test_run_cycle_writes_pre_and_post_snapshots(self):
+        """run_execution_cycle writes pre_cycle and post_cycle snapshots. 0214."""
+        conn = _make_conn()
+        with patch.object(execution_engine, "_refresh_market_prices"), \
+             patch.object(execution_engine, "_update_nav_high_water"), \
+             patch.object(execution_engine, "_get_quote", return_value=None):
+            execution_engine.run_execution_cycle("AGENTIC_SHADOW_01", conn)
+        rows = conn.execute(
+            "SELECT snapshot_reason FROM account_snapshots WHERE account_id='AGENTIC_SHADOW_01'"
+        ).fetchall()
+        reasons = {r["snapshot_reason"] for r in rows}
+        assert "pre_cycle" in reasons
+        assert "post_cycle" in reasons
+
+    def test_snapshot_with_position_computes_gross_exposure(self):
+        """gross_exposure = sum of position market values in the snapshot. 0214."""
+        conn = _make_conn()
+        conn.execute(
+            """INSERT INTO position_snapshots
+               (account_id, symbol, qty, avg_cost, instrument_type, as_of, market_price, market_value)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            ("AGENTIC_SHADOW_01", "ANET", 10.0, 100.0, "EQUITY", "2026-01-01", 150.0, 1500.0),
+        )
+        conn.execute("UPDATE trading_accounts SET current_cash=8500 WHERE account_id='AGENTIC_SHADOW_01'")
+        conn.commit()
+        execution_engine._write_account_snapshot("AGENTIC_SHADOW_01", conn, "test")
+        row = conn.execute("SELECT gross_exposure, nav FROM account_snapshots").fetchone()
+        assert float(row["gross_exposure"]) == pytest.approx(1500.0)
+        assert float(row["nav"]) == pytest.approx(10000.0)  # 8500 cash + 1500 pos

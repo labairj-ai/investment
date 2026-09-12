@@ -65,6 +65,9 @@ class TradingPolicy:
         return int(self.options.get("max_contracts_per_symbol", 1))
 
     # ── execution ─────────────────────────────────────────────────────────────
+    def min_limit_price(self) -> float:
+        return float(self.execution.get("min_limit_price", 0.01))
+
     def market_orders_allowed(self) -> bool:
         return bool(self.execution.get("market_orders_allowed", False))
 

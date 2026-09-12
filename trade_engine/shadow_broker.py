@@ -23,6 +23,9 @@ class Quote(NamedTuple):
     bid: float
     ask: float
     timestamp: str
+    market_timestamp: Optional[str] = None  # when exchange last published this quote
+    retrieved_at: Optional[str] = None       # when we fetched it
+    source: str = "yfinance"
 
 
 def _now_utc() -> datetime:
@@ -40,21 +43,26 @@ class ShadowBroker:
 
         Uses INSERT OR IGNORE backed by a unique index on intent_id (0206).
         Always re-queries after insert so the canonical DB row is returned.
+        Sets expires_at: DAY orders expire at next session close; GTC uses intent.valid_until (0209).
         """
         now = _now_utc().isoformat()
         order_id = str(uuid.uuid4())
+        if intent.time_in_force == TimeInForce.DAY:
+            expires_at = market_calendar.next_market_close().isoformat()
+        else:
+            expires_at = intent.valid_until
         self._conn.execute(
             """INSERT OR IGNORE INTO orders
                (order_id, intent_id, account_id, symbol, side, quantity,
                 contracts, order_type, limit_price, state, time_in_force,
-                submitted_at, updated_at, fill_qty, fill_cash)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                submitted_at, updated_at, fill_qty, fill_cash, expires_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 order_id, intent.intent_id, intent.account_id, intent.symbol,
                 intent.side.value, intent.quantity, intent.contracts,
                 intent.order_type.value, intent.limit_price,
                 OrderState.SUBMITTED.value, intent.time_in_force.value,
-                now, now, 0.0, 0.0,
+                now, now, 0.0, 0.0, expires_at,
             ),
         )
         self._conn.commit()
@@ -74,16 +82,27 @@ class ShadowBroker:
     # ── Fill simulation ───────────────────────────────────────────────────────
 
     def attempt_fill(self, order: Order, quote: Quote) -> Optional[Fill]:
-        """Simulate a fill. Returns Fill on success, None if price conditions not met.
+        """Simulate a fill. Returns Fill on success, None if price/session conditions not met.
 
-        DAY orders expire if market is not open (uses market_calendar — 0203).
+        Expiry check: expires_at in the past → EXPIRED (for all TIF). (0209)
+        Session gate: no fills outside regular trading session for any TIF. (0209)
+        Quote sanity: bid > 0, ask > 0, bid <= ask. (0213)
         """
         if order.state not in (OrderState.WORKING, OrderState.PARTIALLY_FILLED):
             return None
 
-        # Expire DAY orders when market is not open
-        if order.time_in_force == TimeInForce.DAY and not market_calendar.is_market_open():
+        # Quote sanity checks: reject clearly bad quotes (0213)
+        if quote.bid <= 0 or quote.ask <= 0 or quote.bid > quote.ask:
+            return None
+
+        # Expiry check (0209): explicit expires_at timestamp takes precedence over TIF name
+        now_iso = _now_utc().isoformat()
+        if order.expires_at and now_iso >= order.expires_at:
             self._transition_order(order, OrderState.EXPIRED)
+            return None
+
+        # Session gate (0209): all TIF respect regular session; remain WORKING outside hours
+        if not market_calendar.is_market_open():
             return None
 
         # Market orders are rejected (policy should have caught this, but guard again)

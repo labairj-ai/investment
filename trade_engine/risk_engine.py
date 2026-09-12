@@ -94,6 +94,34 @@ def _daily_notional(account_id: str, conn: sqlite3.Connection) -> float:
     return float(row["t"] or 0) if row else 0.0
 
 
+def _open_buy_notional(
+    account_id: str, conn: sqlite3.Connection, symbol: Optional[str] = None
+) -> float:
+    """Sum of remaining committed cash for open BUY/BUY_TO_CLOSE orders (0211)."""
+    sql = """SELECT SUM((COALESCE(quantity,0) - COALESCE(fill_qty,0)) * COALESCE(limit_price,0)) AS t
+             FROM orders
+             WHERE account_id=? AND state IN ('WORKING','PARTIALLY_FILLED')
+               AND side IN ('BUY','BUY_TO_CLOSE')"""
+    if symbol:
+        row = conn.execute(sql + " AND symbol=?", (account_id, symbol)).fetchone()
+    else:
+        row = conn.execute(sql, (account_id,)).fetchone()
+    return float(row["t"] or 0) if row else 0.0
+
+
+def _open_sell_qty(account_id: str, symbol: str, conn: sqlite3.Connection) -> float:
+    """Remaining qty committed to open SELL/SELL_TO_OPEN orders for a symbol (0211)."""
+    row = conn.execute(
+        """SELECT SUM(COALESCE(quantity,0) - COALESCE(fill_qty,0)) AS t
+           FROM orders
+           WHERE account_id=? AND symbol=?
+             AND state IN ('WORKING','PARTIALLY_FILLED')
+             AND side IN ('SELL','SELL_TO_OPEN')""",
+        (account_id, symbol),
+    ).fetchone()
+    return float(row["t"] or 0) if row else 0.0
+
+
 def _open_contracts(account_id: str, symbol: str, conn: sqlite3.Connection) -> int:
     row = conn.execute(
         """SELECT COALESCE(SUM(f.qty),0) as total
@@ -123,7 +151,7 @@ def evaluate(
     conn: sqlite3.Connection,
     strict_all: bool = False,
 ) -> RiskDecision:
-    """Run all 18 pre-trade risk checks. Fail-fast unless strict_all=True."""
+    """Run all 19 pre-trade risk checks. Fail-fast unless strict_all=True."""
     checks: list[RuleCheck] = []
     rejected = False
 
@@ -226,7 +254,9 @@ def evaluate(
 
     # ── 7. SUFFICIENT_CASH ────────────────────────────────────────────────────
     if intent.side in (Side.BUY, Side.BUY_TO_CLOSE):
-        cash_after = account.current_cash - trade_cost
+        reserved = _open_buy_notional(account.account_id, conn)
+        available_cash = account.current_cash - reserved
+        cash_after = available_cash - trade_cost
         min_cash = max(
             policy.min_cash_pct() / 100.0 * nav,
             policy.min_cash_abs(),
@@ -235,9 +265,9 @@ def evaluate(
             rule="SUFFICIENT_CASH",
             result=_PASS if cash_after >= min_cash else _FAIL,
             limit=round(min_cash, 2),
-            before=round(account.current_cash, 2),
+            before=round(available_cash, 2),
             after=round(cash_after, 2),
-            reason=None if cash_after >= min_cash else f"cash after trade ${cash_after:.2f} < minimum ${min_cash:.2f}",
+            reason=None if cash_after >= min_cash else f"available cash after trade ${cash_after:.2f} < minimum ${min_cash:.2f} (${reserved:.2f} reserved by open orders)",
         ))
         if not ok and not strict_all:
             return _finalize(intent.intent_id, checks, conn, policy, account, nav)
@@ -246,8 +276,9 @@ def evaluate(
 
     # ── 8. MAX_POSITION_WEIGHT ────────────────────────────────────────────────
     if intent.side == Side.BUY and nav > 0:
+        open_buy_sym = _open_buy_notional(account.account_id, conn, intent.symbol)
         weight_before = current_pos_value / nav * 100
-        weight_after = (current_pos_value + trade_cost) / nav * 100
+        weight_after = (current_pos_value + open_buy_sym + trade_cost) / nav * 100
         limit = policy.max_single_position_pct()
         ok = add(RuleCheck(
             rule="MAX_POSITION_WEIGHT",
@@ -281,7 +312,9 @@ def evaluate(
 
     # ── 10. MAX_DAILY_NOTIONAL ────────────────────────────────────────────────
     if nav > 0:
-        daily_notional_before = _daily_notional(account.account_id, conn)
+        filled_notional = _daily_notional(account.account_id, conn)
+        open_notional = _open_buy_notional(account.account_id, conn)
+        daily_notional_before = filled_notional + open_notional
         daily_notional_after = daily_notional_before + trade_cost
         limit_notional = policy.max_daily_notional_pct() / 100.0 * nav
         ok = add(RuleCheck(
@@ -291,7 +324,7 @@ def evaluate(
             before=round(daily_notional_before, 2),
             after=round(daily_notional_after, 2),
             reason=None if daily_notional_after <= limit_notional
-                else f"daily notional ${daily_notional_after:.0f} > limit ${limit_notional:.0f}",
+                else f"daily notional ${daily_notional_after:.0f} > limit ${limit_notional:.0f} (includes ${open_notional:.0f} in open orders)",
         ))
         if not ok and not strict_all:
             return _finalize(intent.intent_id, checks, conn, policy, account, nav)
@@ -315,14 +348,16 @@ def evaluate(
 
     # ── 12. SELL_QUANTITY_COVERED ─────────────────────────────────────────────
     if intent.side in (Side.SELL, Side.BUY_TO_CLOSE):
-        covered = current_pos_qty >= trade_qty
+        pending_sells = _open_sell_qty(account.account_id, intent.symbol, conn)
+        available_qty = current_pos_qty - pending_sells
+        covered = available_qty >= trade_qty
         ok = add(RuleCheck(
             rule="SELL_QUANTITY_COVERED",
             result=_PASS if covered else _FAIL,
             limit=trade_qty,
-            before=current_pos_qty,
-            after=current_pos_qty - trade_qty if covered else None,
-            reason=None if covered else f"position {current_pos_qty} < sell qty {trade_qty}",
+            before=available_qty,
+            after=available_qty - trade_qty if covered else None,
+            reason=None if covered else f"available qty {available_qty} < sell qty {trade_qty} ({pending_sells} already committed to open sell orders)",
         ))
         if not ok and not strict_all:
             return _finalize(intent.intent_id, checks, conn, policy, account, nav)
@@ -444,7 +479,7 @@ def evaluate(
     peak = float(peak) if peak else account.starting_capital
     drawdown_pct = max(0.0, (peak - nav) / peak * 100) if peak > 0 else 0.0
     limit_dd = policy.max_drawdown_pct()
-    add(RuleCheck(
+    ok = add(RuleCheck(
         rule="MAX_DRAWDOWN",
         result=_PASS if drawdown_pct <= limit_dd else _FAIL,
         limit=limit_dd,
@@ -452,6 +487,24 @@ def evaluate(
         reason=None if drawdown_pct <= limit_dd
             else f"drawdown {drawdown_pct:.1f}% > limit {limit_dd}%",
     ))
+    if not ok and not strict_all:
+        return _finalize(intent.intent_id, checks, conn, policy, account, nav)
+
+    # ── 19. MIN_LIMIT_PRICE ──────────────────────────────────────────────────
+    # Prevents penny-stock or near-zero limit prices that may indicate data errors (0217)
+    if intent.limit_price is not None:
+        min_lim = policy.min_limit_price()
+        above_min = intent.limit_price >= min_lim
+        add(RuleCheck(
+            rule="MIN_LIMIT_PRICE",
+            result=_PASS if above_min else _FAIL,
+            limit=min_lim,
+            before=intent.limit_price,
+            reason=None if above_min
+                else f"limit_price ${intent.limit_price:.4f} < minimum ${min_lim:.4f}",
+        ))
+    else:
+        add(RuleCheck(rule="MIN_LIMIT_PRICE", result=_SKIP, reason="no limit_price on intent"))
 
     return _finalize(intent.intent_id, checks, conn, policy, account, nav)
 
