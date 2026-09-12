@@ -894,46 +894,34 @@ def _lot_tax_friction(
     """Compute avoidable tax cost using strike-based FIFO lot analysis (0157, 0158, 0159).
 
     Returns (avoidable_tax_dollars, reason_string).
-    Walks lots oldest-first (FIFO), stops at shares_to_assign, uses assignment_price
-    (the strike) not the current market price to compute gains.
+    Uses canonical FIFO lot selection (agent_db.select_fifo_lots) and IRS-correct
+    LT/ST calendar arithmetic (tax_utils). Only the shares actually assigned
+    (contracts × 100) are analyzed; lot gains use assignment_price (the strike).
     """
-    from datetime import date as _date, timedelta as _td
+    from datetime import date as _date
+    from tax_utils import is_long_term as _is_lt, days_until_lt as _days_lt
     try:
         import agent_db as _adb_tax
-        conn = _adb_tax._connect()
-        lots = conn.execute(
-            "SELECT shares, cost_per_share, purchase_date "
-            "FROM cost_lots WHERE ticker=? ORDER BY purchase_date ASC",
-            (ticker,),
-        ).fetchall()
-        conn.close()
-        if not lots:
+        fifo_lots = _adb_tax.select_fifo_lots(ticker, shares_to_assign)
+        if not fifo_lots:
             return 0.0, ""
 
-        today         = _date.today()
-        lt_cutoff     = today - _td(days=365)
-        remaining     = float(shares_to_assign)
-        st_gain       = 0.0
+        today = _date.today()
+        st_gain = 0.0
         soonest_lt_days: "int | None" = None
 
-        for lot in lots:
-            if remaining <= 0:
-                break
-            lot_shares    = float(lot["shares"])
-            cost_per      = float(lot["cost_per_share"])
+        for lot in fifo_lots:
             purchase_date = _date.fromisoformat(lot["purchase_date"])
-            allocated     = min(lot_shares, remaining)
-            remaining    -= allocated
-
-            gain = allocated * (assignment_price - cost_per)
+            allocated     = lot["allocated"]
+            gain = allocated * (assignment_price - lot["cost_per_share"])
             if gain <= 0:
-                continue  # loss lot — no tax friction on gains
+                continue  # loss lot — no friction on gains
 
-            if purchase_date > lt_cutoff:
+            if not _is_lt(purchase_date, today):
                 st_gain += gain
-                days_remaining = (_td(days=365) - (today - purchase_date)).days
-                if soonest_lt_days is None or days_remaining < soonest_lt_days:
-                    soonest_lt_days = days_remaining
+                d = _days_lt(purchase_date, today)
+                if soonest_lt_days is None or d < soonest_lt_days:
+                    soonest_lt_days = d
 
         if st_gain <= 0 or soonest_lt_days is None:
             return 0.0, ""

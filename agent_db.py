@@ -1051,20 +1051,57 @@ def insert_outcome(
     return outcome_id
 
 
-def get_lt_lots_count(ticker: str) -> int:
-    """Count open cost_lots held >= 365 days as of today (0108).
+def select_fifo_lots(ticker: str, shares_to_select: float) -> list[dict]:
+    """Return lots consumed oldest-first (FIFO) up to shares_to_select (0167).
 
-    Returns 0 if cost_lots table doesn't exist or has no LT lots for ticker.
+    Each dict: id, purchase_date, cost_per_share, shares (original), allocated.
+    Stops once shares_to_select is satisfied; partial lots are supported.
     """
-    from datetime import date as _date, timedelta
-    lt_threshold = (_date.today() - timedelta(days=365)).isoformat()
     conn = _connect()
     try:
-        row = conn.execute(
-            "SELECT COUNT(*) FROM cost_lots WHERE ticker=? AND purchase_date<=?",
-            (ticker, lt_threshold),
-        ).fetchone()
-        return int(row[0]) if row else 0
+        rows = conn.execute(
+            "SELECT id, shares, cost_per_share, purchase_date "
+            "FROM cost_lots WHERE ticker=? ORDER BY purchase_date ASC",
+            (ticker,),
+        ).fetchall()
+    except Exception:
+        return []
+    finally:
+        conn.close()
+
+    result = []
+    remaining = float(shares_to_select)
+    for row in rows:
+        if remaining <= 0:
+            break
+        allocated = min(float(row["shares"]), remaining)
+        remaining -= allocated
+        result.append({
+            "id":             row["id"],
+            "purchase_date":  row["purchase_date"],
+            "cost_per_share": float(row["cost_per_share"]),
+            "shares":         float(row["shares"]),
+            "allocated":      allocated,
+        })
+    return result
+
+
+def get_lt_lots_count(ticker: str) -> int:
+    """Count open cost_lots that are long-term as of today (0108, 0166).
+
+    Uses canonical IRS calendar rule: held MORE than one year (day after acquisition).
+    Returns 0 if cost_lots table doesn't exist or has no LT lots for ticker.
+    """
+    from datetime import date as _date
+    from tax_utils import is_long_term as _is_lt
+    today = _date.today()
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT purchase_date FROM cost_lots WHERE ticker=?",
+            (ticker,),
+        ).fetchall()
+        return sum(1 for r in rows if _is_lt(_date.fromisoformat(r["purchase_date"]), today))
     except Exception:
         return 0
     finally:
@@ -1093,19 +1130,21 @@ def get_ytd_realized_gain(ticker: str) -> float:
 
 
 def get_st_lots_count(ticker: str) -> int:
-    """Count open cost_lots held < 365 days as of today (0115).
+    """Count open cost_lots that are short-term as of today (0115, 0166).
 
+    Uses canonical IRS calendar rule (NOT timedelta(365)).
     Returns 0 if cost_lots table doesn't exist or no ST lots for ticker.
     """
-    from datetime import date as _date, timedelta
-    lt_threshold = (_date.today() - timedelta(days=365)).isoformat()
+    from datetime import date as _date
+    from tax_utils import is_long_term as _is_lt
+    today = _date.today()
     conn = _connect()
     try:
-        row = conn.execute(
-            "SELECT COUNT(*) FROM cost_lots WHERE ticker=? AND purchase_date>?",
-            (ticker, lt_threshold),
-        ).fetchone()
-        return int(row[0]) if row else 0
+        rows = conn.execute(
+            "SELECT purchase_date FROM cost_lots WHERE ticker=?",
+            (ticker,),
+        ).fetchall()
+        return sum(1 for r in rows if not _is_lt(_date.fromisoformat(r["purchase_date"]), today))
     except Exception:
         return 0
     finally:
@@ -1113,21 +1152,28 @@ def get_st_lots_count(ticker: str) -> int:
 
 
 def get_near_lt_lots_count(ticker: str, within_days: int = 45) -> int:
-    """Count ST lots that will cross the LT threshold within `within_days` days (0115).
+    """Count ST lots crossing the LT threshold within within_days days (0115, 0166).
 
-    These are lots with purchase_date in (today-365d, today-365d+within_days].
+    Uses canonical IRS calendar rule so Feb-29 lots are handled correctly.
     """
-    from datetime import date as _date, timedelta
+    from datetime import date as _date
+    from tax_utils import is_long_term as _is_lt, days_until_lt as _days_lt
     today = _date.today()
-    lt_date = today - timedelta(days=365)
-    near_date = lt_date + timedelta(days=within_days)
     conn = _connect()
     try:
-        row = conn.execute(
-            "SELECT COUNT(*) FROM cost_lots WHERE ticker=? AND purchase_date>? AND purchase_date<=?",
-            (ticker, lt_date.isoformat(), near_date.isoformat()),
-        ).fetchone()
-        return int(row[0]) if row else 0
+        rows = conn.execute(
+            "SELECT purchase_date FROM cost_lots WHERE ticker=?",
+            (ticker,),
+        ).fetchall()
+        count = 0
+        for r in rows:
+            pd = _date.fromisoformat(r["purchase_date"])
+            if _is_lt(pd, today):
+                continue  # already LT
+            d = _days_lt(pd, today)
+            if 0 < d <= within_days:
+                count += 1
+        return count
     except Exception:
         return 0
     finally:

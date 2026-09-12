@@ -566,8 +566,9 @@ def _get_lot_context() -> str:
         for r, _ in accumulators:
             oldest_date = date.fromisoformat(r["oldest"])
             age_mo = (today - oldest_date).days // 30
-            lt_date = oldest_date + timedelta(days=365)
-            lt_note = ("all lots LT eligible" if (today - oldest_date).days >= 365
+            from tax_utils import lt_threshold as _lt_thr, is_long_term as _is_lt
+            lt_date = _lt_thr(oldest_date)
+            lt_note = ("all lots LT eligible" if _is_lt(oldest_date, today)
                        else f"oldest lot LT on {lt_date}")
             lines.append(
                 f"  {r['ticker']}: {r['lots']} lots, {r['total_shares']:.0f} shares, "
@@ -584,7 +585,8 @@ def _get_lot_context() -> str:
         curr = prices[r["ticker"]]
         pct  = (curr - r["avg_cost"]) / r["avg_cost"] * 100
         oldest_date = date.fromisoformat(r["oldest"])
-        lt_label = "LT" if (today - oldest_date).days >= 365 else "ST"
+        from tax_utils import is_long_term as _is_lt
+        lt_label = "LT" if _is_lt(oldest_date, today) else "ST"
         tlh_flag = " ← TLH candidate" if pct < -5 else ""
         sign = "+" if pct >= 0 else ""
         lines.append(
@@ -597,8 +599,9 @@ def _get_lot_context() -> str:
     approaching = []
     for r in summary:
         oldest_date = date.fromisoformat(r["oldest"])
-        lt_date = oldest_date + timedelta(days=365)
-        days_to_lt = (lt_date - today).days
+        from tax_utils import lt_threshold as _lt_thr, days_until_lt as _days_lt
+        lt_date = _lt_thr(oldest_date)
+        days_to_lt = _days_lt(oldest_date, today)
         if 0 < days_to_lt <= 90:
             approaching.append((r["ticker"], r["oldest"], lt_date, days_to_lt))
     if approaching:

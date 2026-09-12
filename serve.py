@@ -431,13 +431,10 @@ def _fifo_allocate(lots, shares_to_sell, sell_price, sell_date):
     for lot in lots:
         if remaining <= 1e-6:
             break
+        from tax_utils import is_long_term as _is_lt
         purchase_dt = _date.fromisoformat(lot["purchase_date"])
         days_held   = (sell_dt - purchase_dt).days
-        try:
-            lt_cutoff = purchase_dt.replace(year=purchase_dt.year + 1)
-        except ValueError:  # Feb 29 purchase in non-leap target year → Mar 1
-            lt_cutoff = purchase_dt.replace(year=purchase_dt.year + 1, month=3, day=1)
-        term        = "LT" if sell_dt > lt_cutoff else "ST"
+        term        = "LT" if _is_lt(purchase_dt, sell_dt) else "ST"
         used        = min(lot["shares"], remaining)
         cost_basis  = round(used * lot["cost_per_share"], 6)
         proceeds    = round(used * sell_price, 6)

@@ -305,8 +305,9 @@ def detect_triggers(snapshot: PortfolioSnapshot) -> list[TriggerEvent]:
                 purchase = datetime.date.fromisoformat(lot["purchase_date"])
             except (ValueError, TypeError):
                 continue
-            lt_date = purchase + datetime.timedelta(days=365)
-            days_to_lt = (lt_date - today).days
+            from tax_utils import lt_threshold as _lt_thr, days_until_lt as _days_lt
+            lt_date = _lt_thr(purchase)
+            days_to_lt = _days_lt(purchase, today)
             if TRIGGER_TAX_LT_WINDOW_MIN <= days_to_lt <= TRIGGER_TAX_LT_WINDOW_MAX:
                 triggers.append(TriggerEvent(
                     trigger_type="tax_lt_crossover",
