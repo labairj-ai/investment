@@ -844,67 +844,128 @@ def print_report(r: dict) -> None:
 
 # ── Open position evaluator ───────────────────────────────────────────────────
 
-def _eval_open_economics(delta, dte, pct_captured, has_avoid, current_price,
-                          strike, original_premium, live_mark, risk_events,
-                          gamma=None):
+def _check_assignment_eligible(
+    *,
+    ticker: str,
+    current_price: float,
+    strike: float,
+    dte: int,
+    delta,
+    remaining_extrinsic,
+    has_avoid: bool,
+    policy: dict,
+) -> "tuple[bool, str]":
+    """Inner eligibility checks for ALLOW_ASSIGNMENT (shared by evaluate_cc_management_state)."""
+    # Gate 1: ITM probability via delta proxy
+    itm_threshold = 0.90 if has_avoid else 0.80
+    if delta is None or delta < itm_threshold:
+        return False, f"delta {(delta or 0):.2f} below ITM threshold {itm_threshold:.2f}"
+
+    # Gate 2: minimal extrinsic remaining
+    if remaining_extrinsic is not None and current_price > 0:
+        ext_pct = remaining_extrinsic / current_price
+        if ext_pct >= 0.01:
+            return False, f"extrinsic {remaining_extrinsic:.2f} ({ext_pct:.1%}) still substantial"
+
+    # Gate 3: acceptable assignment floor — compare STRIKE (0151), not current_price
+    min_price = policy.get("acceptable_assignment_min_price")
+    if min_price is not None:
+        try:
+            if strike < float(min_price):
+                return False, (
+                    f"strike {strike:.2f} below acceptable assignment floor {float(min_price):.2f}"
+                )
+        except (TypeError, ValueError):
+            pass
+
+    # Gate 4: ST tax concern (soft — blocks only when unrealised gain is large)
+    try:
+        import agent_db as _adb_ccr
+        lt_count = _adb_ccr.get_lt_lots_count(ticker)
+        if lt_count == 0:
+            unrealised = _adb_ccr.get_unrealized_gain(ticker)
+            if unrealised > 5_000:
+                return False, (
+                    f"ST gain concern: no LT lots, unrealised gain ${unrealised:.0f} — roll to defer"
+                )
+    except Exception:
+        pass
+
+    return True, "assignment eligible: ITM probability sufficient, extrinsic near zero"
+
+
+def evaluate_cc_management_state(
+    *,
+    ticker: str,
+    current_price: float,
+    strike: float,
+    dte: int,
+    delta=None,
+    pct_captured=None,
+    has_avoid: bool = False,
+    remaining_extrinsic=None,
+    risk_events=None,
+    policy=None,
+) -> "tuple[str, str]":
+    """Single canonical CC management decision function (0152).
+
+    Returns (action, reason) where action is one of:
+      BUY_TO_CLOSE | ALLOW_ASSIGNMENT | ROLL_OUT | ROLL_UP_AND_OUT | ROLL_UP | HOLD_CALL
+
+    Both the agent (_analyze_roll) and the dashboard (evaluate_open_position) route
+    through here so advice is always consistent regardless of call path.
     """
-    Economic comparison: hold vs close vs roll.
-    Returns (recommendation, reason).
-    """
-    # Priority 1: risk event → close to remove it
+    _policy = policy or {}
+    is_itm     = current_price >= strike
+    near_money = current_price >= strike * 0.97
+    cap        = pct_captured or 0.0
+
+    # Step 1: premium mostly captured → close
+    if cap >= 80:
+        return "BUY_TO_CLOSE", f"{cap:.0f}% premium captured — cost to close is minimal, redeploy"
+
+    # Step 2: assignment eligibility
+    _assign_ok, _assign_reason = _check_assignment_eligible(
+        ticker=ticker,
+        current_price=current_price,
+        strike=strike,
+        dte=dte,
+        delta=delta,
+        remaining_extrinsic=remaining_extrinsic,
+        has_avoid=has_avoid,
+        policy=_policy,
+    )
+    if _assign_ok:
+        return "ALLOW_ASSIGNMENT", _assign_reason
+
+    # Step 3: risk event → roll past it
     if has_avoid:
-        label = next((e["label"] for e in risk_events if e["severity"] == "avoid"), "risk event")
-        return "buy_back", f"Close to remove event risk: {label.replace('📵 AVOID — ', '')}"
+        _evts = risk_events or []
+        label = next((e["label"] for e in _evts if e["severity"] == "avoid"), "risk event")
+        return "ROLL_OUT", f"Risk event approaching — extend past: {label.replace('📵 AVOID — ', '')}"
 
-    # Remaining annualised yield — use extrinsic value only.
-    # For OTM calls extrinsic ≈ live_mark; for ITM calls the intrinsic portion
-    # has no time value left to decay, so counting it inflates the yield metric.
-    remaining_ann = None
-    if live_mark is not None and live_mark > 0 and dte and dte > 0:
-        intrinsic_val  = max(current_price - strike, 0.0)
-        extrinsic_val  = max(live_mark - intrinsic_val, 0.0)
-        remaining_ann  = (extrinsic_val / current_price) * (365 / dte) * 100
+    # Step 4: expires worthless very soon → hold
+    if dte is not None and dte <= 7 and not is_itm:
+        return "HOLD_CALL", f"Expires worthless in {dte} days — hold"
 
-    # Priority 2: most of premium captured AND remaining yield is low
-    if pct_captured is not None and pct_captured >= 80:
-        if remaining_ann is None or remaining_ann < 5:
-            remaining_str = f"{remaining_ann:.1f}%" if remaining_ann is not None else "N/A"
-            return "buy_back", (f"{pct_captured:.0f}% captured, remaining annualised yield "
-                                f"{remaining_str} — cost to close is minimal")
+    # Step 5: deep ITM (delta ≥ 0.70) near expiry → roll up and out
+    if delta is not None and delta >= 0.70 and dte is not None and dte <= 21:
+        return "ROLL_UP_AND_OUT", (
+            f"Deep ITM (delta {delta:.2f}) with {dte}d left — roll up and out"
+        )
 
-    # Priority 3: gamma-aware assignment risk near expiry
-    if dte is not None and dte <= 21:
-        gamma_delta_1pct = (gamma or 0) * current_price * 0.01
-        if delta is not None and delta >= 0.30:
-            detail = (f", Γ×1%move≈{gamma_delta_1pct:.3f} delta acceleration"
-                      if gamma else "")
-            return "roll", (f"{dte}d left, delta {delta*100:.0f}%{detail} "
-                            f"— assignment risk accelerating, roll out")
+    # Step 6: any ITM/near-money → defensive roll up and out
+    if is_itm or near_money:
+        return "ROLL_UP_AND_OUT", (
+            f"Stock ${current_price:.2f} {'above' if is_itm else 'within 3% of'} "
+            f"strike ${strike:.2f} — roll up and out"
+        )
 
-    # Priority 4: deep ITM
-    if current_price >= strike:
-        return "roll", f"Stock ${current_price:.2f} above strike ${strike:.2f} — roll up and out"
-    if current_price >= strike * 0.97:
-        return "roll", f"Stock within 3% of strike — roll to protect position"
+    # Step 7: elevated delta → raise strike
+    if delta is not None and delta >= 0.30:
+        return "ROLL_UP", f"Delta {delta:.2f} elevated — raise strike to reduce assignment risk"
 
-    # Priority 5: delta too high
-    if delta is not None and delta >= 0.50:
-        return "roll", f"Delta {delta*100:.0f}% — high expiry-ITM probability, roll up or out"
-
-    # Priority 6: short DTE, decent capture
-    if dte is not None and dte <= 5 and pct_captured is not None and pct_captured >= 60:
-        return "buy_back", f"{dte}d left, {pct_captured:.0f}% captured — close and redeploy"
-
-    parts = []
-    if delta is not None:
-        parts.append(f"delta {delta*100:.0f}%")
-    if dte is not None:
-        parts.append(f"{dte}d remaining")
-    if pct_captured is not None:
-        parts.append(f"{pct_captured:.0f}% captured")
-    if remaining_ann is not None:
-        parts.append(f"remaining yield {remaining_ann:.1f}%/yr")
-    return "hold", ("No action needed — " + ", ".join(parts)) if parts else "Hold position"
+    return "HOLD_CALL", "Position well OTM — let theta decay work"
 
 
 def _suggest_next_call(
@@ -1094,37 +1155,51 @@ def evaluate_open_position(ticker: str, strike: float, expiry: str,
                                      if remaining_extrinsic_yield is not None and dte > 0
                                      else None)
 
-    rec, reason = _eval_open_economics(
-        delta=delta, dte=dte, pct_captured=pct_captured,
-        has_avoid=has_avoid, current_price=current_price,
-        strike=strike, original_premium=original_premium,
-        live_mark=live_mark, risk_events=risk_events, gamma=gamma,
+    # 0152: single canonical management decision — replaces _eval_open_economics
+    action, reason = evaluate_cc_management_state(
+        ticker=ticker,
+        current_price=current_price,
+        strike=strike,
+        dte=dte,
+        delta=delta,
+        pct_captured=pct_captured,
+        has_avoid=has_avoid,
+        remaining_extrinsic=remaining_extrinsic,
+        risk_events=risk_events,
+        policy=None,   # no per-ticker policy in the dashboard path; agent passes policy
     )
 
+    _ROLL_ACTIONS = {"ROLL_OUT", "ROLL_UP", "ROLL_UP_AND_OUT"}
     next_contract = None
     _existing_mark = live_mark if live_mark is not None else 0.0
-    if rec == "roll":
-        min_s = max(strike, current_price * 1.01)
-        # Deep/near-ITM always needs a higher strike, so treat as ROLL_UP_AND_OUT
-        next_contract = _suggest_next_call(
-            stock, min_s, current_price,
-            hv_forecast=hv_forecast,
-            mu=mu_drift,
-            existing_call_mark=_existing_mark,
-            roll_type="ROLL_UP_AND_OUT",
-            existing_expiry_date=exp_date,
-        )
-    elif rec == "buy_back":
-        # has_avoid → ROLL_OUT (suggest clearing the event); else generic fresh CC
-        _rt = "ROLL_OUT" if has_avoid else None
+    if action in _ROLL_ACTIONS:
+        if action == "ROLL_OUT":
+            next_contract = _suggest_next_call(
+                stock, current_price * 1.03, current_price,
+                hv_forecast=hv_forecast,
+                mu=mu_drift,
+                existing_call_mark=_existing_mark,
+                roll_type="ROLL_OUT",
+                risk_event_date=_risk_event_date,
+                existing_expiry_date=exp_date,
+            )
+        else:
+            min_s = max(strike, current_price * 1.01)
+            next_contract = _suggest_next_call(
+                stock, min_s, current_price,
+                hv_forecast=hv_forecast,
+                mu=mu_drift,
+                existing_call_mark=_existing_mark,
+                roll_type=action,
+                existing_expiry_date=exp_date,
+            )
+    elif action == "BUY_TO_CLOSE":
+        # Suggest a fresh replacement call after closing
         next_contract = _suggest_next_call(
             stock, current_price * 1.03, current_price,
             hv_forecast=hv_forecast,
             mu=mu_drift,
             existing_call_mark=_existing_mark,
-            roll_type=_rt,
-            risk_event_date=_risk_event_date,
-            existing_expiry_date=exp_date,
         )
 
     return {
@@ -1139,7 +1214,7 @@ def evaluate_open_position(ticker: str, strike: float, expiry: str,
         "remaining_extrinsic_ann_yield": round(remaining_extrinsic_ann_yield, 1) if remaining_extrinsic_ann_yield is not None else None,
         "risk_events":                risk_events,
         "has_avoid":                  has_avoid,
-        "recommendation":             rec,
+        "recommendation":             action,   # 0152: canonical action string
         "reason":                     reason,
         "next_contract":              next_contract,
     }

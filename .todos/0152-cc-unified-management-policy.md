@@ -1,7 +1,7 @@
 # Unify Duplicate CC Management Decision Engines
 
 - **ID:** 0152
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-11
 - **Priority:** high
 - **Depends:** 0151
@@ -38,8 +38,8 @@ Create a single canonical function evaluate_cc_management_state(ticker, position
 
 ## Done when
 
-- [ ] Single `evaluate_cc_management_state()` is the only CC management decision point
-- [ ] `covered_call_rec.py` no longer contains a management action hierarchy
-- [ ] Dashboard and agent both call the same function path
-- [ ] Deeply-ITM + event risk produces the same action regardless of call path
-- [ ] Existing tests pass; new determinism tests added
+- [x] Single `evaluate_cc_management_state()` is the only CC management decision point
+- [x] `covered_call_rec.py` no longer contains a management action hierarchy
+- [x] Dashboard and agent both call the same function path
+- [x] Deeply-ITM + event risk produces the same action regardless of call path
+- [x] Existing tests pass; new determinism tests added

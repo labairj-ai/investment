@@ -6472,12 +6472,21 @@ async function evaluateCCPositions() {{
       return;
     }}
     const badgeStyle = {{
-      hold:     "background:#e8f5e9;color:#2e7d32;border:1px solid #a5d6a7",
-      roll:     "background:#fff3e0;color:#e65100;border:1px solid #ffcc80",
-      buy_back: "background:#fdecea;color:#c62828;border:1px solid #ef9a9a",
-      unknown:  "background:#f4f6f9;color:#555;border:1px solid #dde",
+      // 0152 canonical actions
+      HOLD_CALL:        "background:#e8f5e9;color:#2e7d32;border:1px solid #a5d6a7",
+      BUY_TO_CLOSE:     "background:#fdecea;color:#c62828;border:1px solid #ef9a9a",
+      ROLL_OUT:         "background:#fff3e0;color:#e65100;border:1px solid #ffcc80",
+      ROLL_UP:          "background:#fff8e1;color:#f57f17;border:1px solid #ffe082",
+      ROLL_UP_AND_OUT:  "background:#fbe9e7;color:#bf360c;border:1px solid #ffab91",
+      ALLOW_ASSIGNMENT: "background:#e3f2fd;color:#1565c0;border:1px solid #90caf9",
+      unknown:          "background:#f4f6f9;color:#555;border:1px solid #dde",
     }};
-    const badgeLabel = {{ hold:"HOLD", roll:"ROLL", buy_back:"BUY BACK", unknown:"?" }};
+    const badgeLabel = {{
+      HOLD_CALL:"HOLD", BUY_TO_CLOSE:"BUY BACK",
+      ROLL_OUT:"ROLL OUT", ROLL_UP:"ROLL UP", ROLL_UP_AND_OUT:"ROLL UP+OUT",
+      ALLOW_ASSIGNMENT:"ASSIGN",
+      unknown:"?",
+    }};
     const rows = data.evaluations.map(ev => {{
       const rec    = ev.recommendation || "unknown";
       const bStyle = badgeStyle[rec] || badgeStyle.unknown;
@@ -6497,7 +6506,7 @@ async function evaluateCCPositions() {{
       let nextHtml = "";
       if (ev.next_contract) {{
         const nc  = ev.next_contract;
-        const ncLabel = rec === "roll" ? "Roll into" : "Then write";
+        const ncLabel = rec.startsWith("ROLL") ? "Roll into" : "Then write";
         const ncDelta = nc.delta != null ? ` · Δ${{(nc.delta*100).toFixed(0)}}%` : "";
         nextHtml = `<div style="margin-top:5px;padding:5px 8px;background:#fffbea;border:1px solid #ffe082;border-radius:5px;font-size:11px;color:#5d4037;">` +
           `<span style="font-weight:700;">${{ncLabel}}:</span> ` +

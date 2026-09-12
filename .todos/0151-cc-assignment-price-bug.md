@@ -1,7 +1,7 @@
 # Fix CC Assignment Floor Compares Strike, Not Current Price
 
 - **ID:** 0151
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-11
 - **Priority:** high
 - **Depends:** none
@@ -50,7 +50,7 @@ Update associated tests in `tests/test_covered_call_agent.py` to use a scenario 
 
 ## Done when
 
-- [ ] Gate compares `strike` (not `current_price`) against `acceptable_assignment_min_price`
-- [ ] Test: current_price=205, strike=180, floor=190 → rejected (was incorrectly accepted)
-- [ ] Test: current_price=205, strike=195, floor=190 → accepted
-- [ ] Existing tests pass
+- [x] Gate compares `strike` (not `current_price`) against `acceptable_assignment_min_price`
+- [x] Test: current_price=205, strike=180, floor=190 → rejected (was incorrectly accepted)
+- [x] Test: current_price=205, strike=195, floor=190 → accepted
+- [x] Existing tests pass
