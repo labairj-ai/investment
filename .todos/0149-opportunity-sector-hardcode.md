@@ -1,7 +1,7 @@
 # Opportunity Agent: Remove Hardcoded _HOLDING_SECTORS Dict
 
 - **ID:** 0149
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-11
 - **Priority:** normal
 - **Depends:** 0148
@@ -30,6 +30,6 @@ Add `_MIN_COMPOSITE = 45` gate before emitting. If `scored[0]["_composite"] < _M
 
 ## Done when
 
-- [ ] `_HOLDING_SECTORS` dict is removed; sector lookup reads from DB
-- [ ] Composite < 45 → no RESEARCH recommendation emitted
-- [ ] Existing tests pass
+- [x] `_HOLDING_SECTORS` dict is removed; sector lookup reads from DB
+- [x] Composite < 45 → no RESEARCH recommendation emitted
+- [x] Existing tests pass

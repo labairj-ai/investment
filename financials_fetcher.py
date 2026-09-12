@@ -183,6 +183,17 @@ def _fetch_one(ticker):
         estimates["price_target"]   = _safe(info.get("targetMeanPrice"))
         estimates["recommendation"] = info.get("recommendationKey", "")
 
+        # Cache sector/industry/country for guardian and opportunity agents
+        try:
+            import agent_db as _adb_ff
+            _sec = info.get("sector")
+            _ind = info.get("industry")
+            _ctr = info.get("country")
+            if _sec:
+                _adb_ff.upsert_ticker_metadata(ticker, sector=_sec, industry=_ind, country=_ctr)
+        except Exception:
+            pass
+
         ee = tk.earnings_estimate
         if ee is not None and not ee.empty:
             for label, key in (("+1q", "next_q_eps_est"), ("0y", "curr_yr_eps_est"),

@@ -37,34 +37,6 @@ _MAX_CANDIDATES = 3          # candidates passed to the LLM
 _LAYER_DEFICIT_THRESHOLD = 5.0  # pp underweight before PF bonus kicks in
 _MIN_COMPOSITE = 45          # minimum composite score to emit a RESEARCH rec
 
-# Sector labels for current holdings.
-# ETFs / broad funds → None (excluded from sector overlap penalty).
-# Update when holdings change — unknown tickers default to None (no penalty).
-_HOLDING_SECTORS: dict[str, str | None] = {
-    "BRK-B":  "Financial Services",
-    "TROW":   "Financial Services",
-    "VLY":    "Financial Services",
-    "MCO":    "Financial Services",
-    "BP":     "Energy",
-    "GRMN":   "Technology",
-    "DSGX":   "Technology",
-    "NFLX":   "Communication Services",
-    "EW":     "Healthcare",
-    "ITW":    "Industrials",
-    "SNA":    "Industrials",
-    "NOC":    "Industrials",
-    "UNP":    "Industrials",
-    "MITSF":  "Industrials",
-    "ITOCF":  "Industrials",
-    "WMT":    "Consumer Defensive",
-    "STZ":    "Consumer Defensive",
-    "JOBY":   "Industrials",
-    # Broad funds — no sector overlap
-    "SCHD": None, "VFIAX": None, "VTSAX": None, "VTMGX": None,
-    "VVIAX": None, "FSPTX": None, "SLYV": None, "IGV": None,
-    "BTC": None,
-}
-
 _LLM_SCHEMA = {
     "action": "",
     "ticker": "",
@@ -136,6 +108,13 @@ def _get_layer_weights() -> dict[int, float]:
 # Scoring components (all return 0-100)
 # ---------------------------------------------------------------------------
 
+def _get_holding_sectors(held: set[str]) -> dict[str, str | None]:
+    result: dict[str, str | None] = {}
+    for t in held:
+        result[t] = agent_db.get_ticker_sector(t)
+    return result
+
+
 def _score_quality(w: dict) -> float:
     q = w.get("quality_score")
     return float(q) if q is not None else 50.0
@@ -168,7 +147,8 @@ def _score_valuation(w: dict) -> float:
 
 
 def _score_portfolio_fit(
-    w: dict, held: set[str], layer_weights: dict[int, float]
+    w: dict, held: set[str], layer_weights: dict[int, float],
+    holding_sectors: dict | None = None,
 ) -> tuple[float, dict]:
     """Returns (score 0-100, metadata dict for rationale)."""
     score = 50.0
@@ -195,7 +175,7 @@ def _score_portfolio_fit(
     if sector:
         overlap = sum(
             1 for t in held
-            if _HOLDING_SECTORS.get(t) == sector
+            if (holding_sectors or {}).get(t) == sector
         )
         if overlap >= 2:
             penalty = min(30.0, (overlap - 1) * 10)
@@ -416,6 +396,7 @@ def run_opportunity_hunter(ctx: AgentContext) -> list[Recommendation]:
 
     held = _get_current_tickers()
     layer_weights = _get_layer_weights()
+    holding_sectors = _get_holding_sectors(held)
 
     # Score every unowned candidate
     scored: list[dict] = []
@@ -424,7 +405,7 @@ def run_opportunity_hunter(ctx: AgentContext) -> list[Recommendation]:
             continue
         q  = _score_quality(w)
         v  = _score_valuation(w)
-        pf, pf_meta = _score_portfolio_fit(w, held, layer_weights)
+        pf, pf_meta = _score_portfolio_fit(w, held, layer_weights, holding_sectors)
         c  = _score_catalyst(w)
         ec = _score_evidence(w)
         w = dict(w)

@@ -397,6 +397,14 @@ def migrate() -> None:
             computed_at       REAL    NOT NULL DEFAULT (unixepoch()),
             UNIQUE(ticker, period_end)
         );
+
+        CREATE TABLE IF NOT EXISTS ticker_metadata (
+            ticker       TEXT    PRIMARY KEY,
+            sector       TEXT,
+            industry     TEXT,
+            country      TEXT,
+            fetched_at   REAL    NOT NULL DEFAULT (unixepoch())
+        );
     """)
     conn.commit()
 
@@ -3396,6 +3404,53 @@ def get_latest_financial_snapshot_hash(ticker: str) -> str | None:
     data = {k: row[k] for k in row.keys()}
     canonical = _json.dumps(data, sort_keys=True, default=str)
     return hashlib.sha256(canonical.encode()).hexdigest()[:12]
+
+
+def get_ticker_sector(ticker: str, max_age_days: int = 7) -> str | None:
+    """Return cached sector for ticker when fresher than max_age_days, else None."""
+    conn = _connect()
+    if not conn:
+        return None
+    try:
+        row = conn.execute(
+            "SELECT sector, fetched_at FROM ticker_metadata WHERE ticker=?", (ticker,)
+        ).fetchone()
+        if not row or row["sector"] is None:
+            return None
+        import time as _time
+        age_days = (_time.time() - row["fetched_at"]) / 86400.0
+        return row["sector"] if age_days <= max_age_days else None
+    except Exception:
+        return None
+    finally:
+        conn.close()
+
+
+def upsert_ticker_metadata(
+    ticker: str,
+    sector: str | None = None,
+    industry: str | None = None,
+    country: str | None = None,
+) -> None:
+    """Insert or update ticker_metadata. Silently ignores missing table."""
+    import time as _time
+    conn = _connect()
+    if not conn:
+        return
+    try:
+        conn.execute(
+            """INSERT INTO ticker_metadata (ticker, sector, industry, country, fetched_at)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(ticker) DO UPDATE SET
+                   sector=excluded.sector, industry=excluded.industry,
+                   country=excluded.country, fetched_at=excluded.fetched_at""",
+            (ticker, sector, industry, country, _time.time()),
+        )
+        conn.commit()
+    except Exception:
+        pass
+    finally:
+        conn.close()
 
 
 def get_latest_valuation_metric(ticker: str) -> dict | None:

@@ -1,7 +1,7 @@
 # Portfolio Guardian: Cache Sector Classifications in DB
 
 - **ID:** 0148
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-11
 - **Priority:** normal
 - **Depends:** none
@@ -34,6 +34,6 @@ This prevents silent sector-check suppression on every service restart or API hi
 
 ## Done when
 
-- [ ] `_fetch_sector()` returns last-known sector from DB when yfinance call fails
-- [ ] Sector data is refreshed no more than once every 7 days per ticker
-- [ ] Existing tests pass
+- [x] `_fetch_sector()` returns last-known sector from DB when yfinance call fails
+- [x] Sector data is refreshed no more than once every 7 days per ticker
+- [x] Existing tests pass

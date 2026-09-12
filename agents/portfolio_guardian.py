@@ -218,10 +218,22 @@ _sector_cache: dict[str, str] = {}
 def _fetch_sector(ticker: str) -> str:
     if ticker in _sector_cache:
         return _sector_cache[ticker]
+
+    # Check DB cache first (populated by financials_fetcher; fresh within 7 days)
+    db_sector = agent_db.get_ticker_sector(ticker, max_age_days=7)
+    if db_sector:
+        _sector_cache[ticker] = db_sector
+        return db_sector
+
+    # Live yfinance fallback; writes result to DB for future runs
     try:
         import yfinance as yf
         info = yf.Ticker(ticker).info
-        sector = info.get("sector") or "Unknown"
+        sector   = info.get("sector") or "Unknown"
+        industry = info.get("industry")
+        country  = info.get("country")
+        if sector != "Unknown":
+            agent_db.upsert_ticker_metadata(ticker, sector=sector, industry=industry, country=country)
     except Exception:
         sector = "Unknown"
     _sector_cache[ticker] = sector
