@@ -528,9 +528,15 @@ def run_thesis_monitor(ctx: AgentContext) -> list[Recommendation]:
                 }],
             ))
 
-        # ── TRIM rule (composite in distress band with violations) ─────────
+        # ── TRIM rule (composite in distress band, significant violations) ──
+        # Gate: >20% of thesis importance weight must be in violated pillars
+        # to avoid TRIM on low-importance supporting-pillar violations.
+        violated_weight = sum(
+            p["importance"] for p in updated_pillars if p["det_status"] == "VIOLATED"
+        )
+        violated_fraction = violated_weight / total_weight if total_weight > 0 else 0.0
         trim_rules = [r for r in rules if r["rule_type"] == "TRIM"]
-        if _EXIT_THRESHOLD <= composite < _TRIM_THRESHOLD and any_violated:
+        if _EXIT_THRESHOLD <= composite < _TRIM_THRESHOLD and violated_fraction > 0.20:
             rule_cond = _rule_condition(trim_rules)
             recommendations.append(Recommendation(
                 ticker=ticker,
@@ -539,15 +545,16 @@ def run_thesis_monitor(ctx: AgentContext) -> list[Recommendation]:
                 confidence=calculate_confidence(_evidence(fin_rows)),
                 priority="normal",
                 why_now=(
-                    f"Composite health {composite:.0f}/100 with pillar violation(s) — "
-                    "trimming may reduce risk while monitoring recovery."
+                    f"Composite health {composite:.0f}/100; "
+                    f"{violated_fraction*100:.0f}% of thesis weight in violated pillars."
                 ),
                 rationale=rule_cond or overall_summary,
                 counter_case="Monitor for thesis recovery before trimming.",
                 action_payload={
-                    "thesis_id":       thesis_id,
-                    "composite_score": round(composite, 1),
-                    "trigger":         "trim_rule",
+                    "thesis_id":              thesis_id,
+                    "composite_score":        round(composite, 1),
+                    "violated_weight_fraction": round(violated_fraction, 2),
+                    "trigger":                "trim_rule",
                 },
                 dependencies=[{
                     "dependency_type": "THESIS_VERSION",
@@ -559,9 +566,46 @@ def run_thesis_monitor(ctx: AgentContext) -> list[Recommendation]:
             ))
 
         # ── ADD rule (all clear, composite strong) ────────────────────────
+        # Valuation gate: do not emit BUY when current P/E exceeds extreme_threshold.
         add_rules = [r for r in rules if r["rule_type"] == "ADD"]
         if composite >= _ADD_THRESHOLD and not any_violated and not any_warning:
             rule_cond = _rule_condition(add_rules)
+
+            # Resolve extreme_threshold from thesis valuation_framework
+            _extreme_threshold: float | None = None
+            _valuation_unverified = False
+            try:
+                vf_str = thesis.get("valuation_framework") or "{}"
+                vf = json.loads(vf_str) if isinstance(vf_str, str) else (vf_str or {})
+                _extreme_threshold = float(vf.get("extreme_threshold") or 0) or None
+            except Exception:
+                pass
+
+            _latest_vm = agent_db.get_latest_valuation_metric(ticker)
+            _current_pe = (_latest_vm or {}).get("pe") if _latest_vm else None
+
+            if _current_pe is None:
+                _valuation_unverified = True
+            elif _extreme_threshold and _current_pe > _extreme_threshold:
+                # Overvalued relative to thesis extreme — skip BUY
+                print(
+                    f"[thesis_monitor] {ticker}: ADD suppressed — "
+                    f"P/E {_current_pe:.1f} > extreme_threshold {_extreme_threshold:.1f}"
+                )
+                agent_db.insert_finding(
+                    run_id=ctx.run_id,
+                    finding_type="thesis_evaluation",
+                    ticker=ticker,
+                    summary=(
+                        f"{ticker} thesis healthy (composite {composite:.0f}/100) but "
+                        f"P/E {_current_pe:.1f} exceeds extreme threshold {_extreme_threshold:.1f} "
+                        "— ADD suppressed."
+                    ),
+                    severity=20,
+                    confidence=70,
+                )
+                continue  # skip the BUY rec for this ticker, continue the loop
+
             recommendations.append(Recommendation(
                 ticker=ticker,
                 action="BUY",
@@ -575,9 +619,10 @@ def run_thesis_monitor(ctx: AgentContext) -> list[Recommendation]:
                 rationale=rule_cond or overall_summary,
                 counter_case="Check position sizing — may already be at target weight.",
                 action_payload={
-                    "thesis_id":       thesis_id,
-                    "composite_score": round(composite, 1),
-                    "trigger":         "add_rule",
+                    "thesis_id":          thesis_id,
+                    "composite_score":    round(composite, 1),
+                    "trigger":            "add_rule",
+                    "valuation_unverified": True if _valuation_unverified else None,
                 },
                 dependencies=[{
                     "dependency_type": "THESIS_VERSION",
