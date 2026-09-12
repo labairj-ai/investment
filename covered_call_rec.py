@@ -33,7 +33,7 @@ import csv
 import math
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import yfinance as yf
@@ -852,6 +852,19 @@ def print_report(r: dict) -> None:
 # ── ManagementPolicyContext (0162) ───────────────────────────────────────────
 
 @dataclass
+class TaxFrictionDetail:
+    """Structured result from _lot_tax_friction() (0169).
+
+    Carries both the scalar used by gates and the per-lot breakdown for the dashboard.
+    """
+    total_friction: float
+    reason: str
+    available: bool = True   # False when lot data could not be fetched (0171)
+    lot_schedule: list = _dc_field(default_factory=list)
+    # Each lot_schedule entry: {purchase_date, allocated_shares, lt_date, friction_contribution}
+
+
+@dataclass
 class ManagementPolicyContext:
     """Pre-assembled inputs for evaluate_cc_management_state() — pure, no DB calls needed.
 
@@ -884,61 +897,82 @@ class ManagementPolicyContext:
     # Tax friction (pre-computed by caller via _lot_tax_friction())
     assignment_tax_friction: float = 0.0
     tax_friction_reason: str = ""
+    tax_friction_available: bool = True          # False → data error, fail closed (0171)
+    tax_friction_detail: "TaxFrictionDetail | None" = None   # per-lot breakdown (0169)
+
+    # Call expiry date — used to classify lots at disposal time, not today (0168)
+    expiry_date: "date | None" = None
 
 
 def _lot_tax_friction(
     ticker: str,
-    assignment_price: float,   # = strike, not current market price (0157)
-    shares_to_assign: int,     # contracts × 100 (0158)
-) -> "tuple[float, str]":
-    """Compute avoidable tax cost using strike-based FIFO lot analysis (0157, 0158, 0159).
+    assignment_price: float,            # = strike, not current market price (0157)
+    shares_to_assign: int,              # contracts × 100 (0158)
+    disposal_date: "date | None" = None,  # when assignment happens (0168); defaults to today
+) -> "TaxFrictionDetail":
+    """Compute avoidable tax cost using strike-based FIFO lot analysis (0157–0159, 0168–0171).
 
-    Returns (avoidable_tax_dollars, reason_string).
-    Uses canonical FIFO lot selection (agent_db.select_fifo_lots) and IRS-correct
-    LT/ST calendar arithmetic (tax_utils). Only the shares actually assigned
-    (contracts × 100) are analyzed; lot gains use assignment_price (the strike).
+    Returns TaxFrictionDetail with total_friction, reason, availability flag, and per-lot
+    schedule (0169). disposal_date should be the call's expiry so lots that cross the LT
+    threshold before assignment are not mis-classified as short-term (0168).
+    Empty lot list signals a data error — available=False so Gate 4 fails closed (0171).
     """
-    from datetime import date as _date
-    from tax_utils import is_long_term as _is_lt, days_until_lt as _days_lt
+    from tax_utils import is_long_term as _is_lt, days_until_lt as _days_lt, lt_threshold as _lt_thresh
     try:
         import agent_db as _adb_tax
         fifo_lots = _adb_tax.select_fifo_lots(ticker, shares_to_assign)
         if not fifo_lots:
-            return 0.0, ""
+            return TaxFrictionDetail(total_friction=0.0, reason="no lots found", available=False)
 
-        today = _date.today()
+        disposal = disposal_date if disposal_date is not None else date.today()
         st_gain = 0.0
         soonest_lt_days: "int | None" = None
+        lot_schedule: list = []
 
         for lot in fifo_lots:
-            purchase_date = _date.fromisoformat(lot["purchase_date"])
+            purchase_date = date.fromisoformat(lot["purchase_date"])
             allocated     = lot["allocated"]
             gain = allocated * (assignment_price - lot["cost_per_share"])
-            if gain <= 0:
-                continue  # loss lot — no friction on gains
+            lt_date = _lt_thresh(purchase_date)
+            is_lt = _is_lt(purchase_date, disposal)
+            friction_contribution = 0.0
 
-            if not _is_lt(purchase_date, today):
+            if gain > 0 and not is_lt:
                 st_gain += gain
-                d = _days_lt(purchase_date, today)
+                d = _days_lt(purchase_date, disposal)
                 if soonest_lt_days is None or d < soonest_lt_days:
                     soonest_lt_days = d
+                friction_contribution = gain * (TAX_ST_RATE - TAX_LT_RATE)
+
+            lot_schedule.append({
+                "purchase_date": lot["purchase_date"],
+                "allocated_shares": allocated,
+                "lt_date": lt_date.isoformat(),
+                "friction_contribution": round(friction_contribution, 2),
+            })
 
         if st_gain <= 0 or soonest_lt_days is None:
-            return 0.0, ""
+            return TaxFrictionDetail(total_friction=0.0, reason="", available=True, lot_schedule=lot_schedule)
 
         avoidable_tax = st_gain * (TAX_ST_RATE - TAX_LT_RATE)
         if avoidable_tax < CC_ASSIGNMENT_TAX_FRICTION_THRESHOLD:
-            return 0.0, ""
+            return TaxFrictionDetail(total_friction=0.0, reason="", available=True, lot_schedule=lot_schedule)
 
         if soonest_lt_days > 90:
-            return 0.0, ""  # LT crossover too far away to justify deferral
+            return TaxFrictionDetail(total_friction=0.0, reason="", available=True, lot_schedule=lot_schedule)
 
-        return avoidable_tax, (
+        reason = (
             f"ST tax friction: ${avoidable_tax:,.0f} avoidable tax on ${st_gain:,.0f} "
             f"ST gain at strike; nearest LT crossover in {soonest_lt_days}d — roll to defer"
         )
+        return TaxFrictionDetail(
+            total_friction=avoidable_tax,
+            reason=reason,
+            available=True,
+            lot_schedule=lot_schedule,
+        )
     except Exception:
-        return 0.0, ""
+        return TaxFrictionDetail(total_friction=0.0, reason="", available=True)
 
 
 def _check_assignment_eligible(ctx: "ManagementPolicyContext") -> "tuple[bool, str]":
@@ -962,7 +996,9 @@ def _check_assignment_eligible(ctx: "ManagementPolicyContext") -> "tuple[bool, s
                 f"{ctx.assignment_price_floor:.2f}"
             )
 
-    # Gate 4: lot-specific tax friction (0157, 0158) — pre-computed by caller
+    # Gate 4: lot-specific tax friction (0157, 0158, 0171) — pre-computed by caller
+    if not ctx.tax_friction_available:
+        return False, "tax_data_unavailable: lot data missing, cannot assess friction"
     if ctx.assignment_tax_friction > 0 and ctx.tax_friction_reason:
         return False, ctx.tax_friction_reason
 
@@ -985,13 +1021,14 @@ def _check_assignment_eligible(ctx: "ManagementPolicyContext") -> "tuple[bool, s
             )
 
     if asgn_policy.get("only_if_overweight", False):
-        # 0160: use live snapshot weight, not stale holding_day
-        if ctx.current_weight_pct is not None and ctx.max_position_pct is not None:
-            if ctx.current_weight_pct <= ctx.max_position_pct:
-                return False, (
-                    f"not overweight ({ctx.current_weight_pct:.1f}% vs "
-                    f"{ctx.max_position_pct:.1f}% max) — assignment would reduce below target"
-                )
+        # 0160: use live snapshot weight; 0170: None = data unavailable → fail closed
+        if ctx.current_weight_pct is None:
+            return False, "weight_data_unavailable: cannot assess overweight status"
+        if ctx.max_position_pct is not None and ctx.current_weight_pct <= ctx.max_position_pct:
+            return False, (
+                f"not overweight ({ctx.current_weight_pct:.1f}% vs "
+                f"{ctx.max_position_pct:.1f}% max) — assignment would reduce below target"
+            )
 
     return True, "assignment eligible: ITM probability sufficient, extrinsic near zero"
 
@@ -1009,11 +1046,16 @@ def _build_mgmt_context_from_db(
     risk_events=None,
     policy=None,
     contracts: int = 1,
+    expiry: "str | None" = None,         # ISO date string; used as disposal_date (0168)
+    live_price: "float | None" = None,   # override current_price with fresh quote (0172)
 ) -> "ManagementPolicyContext":
     """Backward-compat shim: assembles ManagementPolicyContext from DB for the dashboard path.
 
     The agent path skips this and assembles the context from live snapshot data instead.
+    Pass expiry so tax friction uses the call's disposal date, not today (0168).
+    Pass live_price to override the stale DB price with a fresh market quote (0172).
     """
+    effective_price = live_price if live_price is not None else current_price
     _policy      = policy or {}
     asgn_policy  = _policy.get("assignment_policy") or {}
     price_floor  = _policy.get("acceptable_assignment_min_price")
@@ -1023,8 +1065,16 @@ def _build_mgmt_context_from_db(
     except (TypeError, ValueError):
         price_floor = None
 
-    # Tax friction (0157, 0158)
-    tax_friction, tax_reason = _lot_tax_friction(ticker, strike, contracts * 100)
+    # Parse expiry string to date for disposal_date (0168)
+    _expiry_date: "date | None" = None
+    if expiry:
+        try:
+            _expiry_date = date.fromisoformat(expiry)
+        except (TypeError, ValueError):
+            pass
+
+    # Tax friction (0157, 0158, 0168, 0169, 0171)
+    _tax_detail = _lot_tax_friction(ticker, strike, contracts * 100, disposal_date=_expiry_date)
 
     # Thesis fields (pre-fetch for gate 5 / 0161)
     conviction   = None
@@ -1070,7 +1120,7 @@ def _build_mgmt_context_from_db(
 
     return ManagementPolicyContext(
         ticker=ticker,
-        current_price=current_price,
+        current_price=effective_price,
         strike=strike,
         dte=dte,
         delta=delta,
@@ -1085,8 +1135,11 @@ def _build_mgmt_context_from_db(
         max_position_pct=max_pct,
         conviction=conviction,
         thesis_health=thesis_health,
-        assignment_tax_friction=tax_friction,
-        tax_friction_reason=tax_reason,
+        assignment_tax_friction=_tax_detail.total_friction,
+        tax_friction_reason=_tax_detail.reason,
+        tax_friction_available=_tax_detail.available,
+        tax_friction_detail=_tax_detail,
+        expiry_date=_expiry_date,
     )
 
 
@@ -1142,6 +1195,38 @@ def evaluate_cc_management_state(ctx: "ManagementPolicyContext") -> "tuple[str, 
         return "ROLL_UP", f"Delta {ctx.delta:.2f} elevated — raise strike to reduce assignment risk"
 
     return "HOLD_CALL", "Position well OTM — let theta decay work"
+
+
+def evaluate_cc_roll_chain(
+    ctx: "ManagementPolicyContext",
+    candidate_contexts: "list[ManagementPolicyContext]",
+    max_hops: int = 3,
+) -> "list[tuple[str, str, ManagementPolicyContext]]":
+    """Resolve a multi-hop roll chain — pure, no DB calls (0173).
+
+    Starting from ctx, evaluates each subsequent candidate context until an
+    ALLOW_ASSIGNMENT or non-ROLL action is reached, or max_hops is exhausted.
+    The caller must pre-assemble candidate_contexts (one per potential roll target)
+    so this function stays pure.
+
+    Returns a list of (action, reason, ctx) for each hop evaluated, including
+    the initial position. The final entry is the terminal action.
+    """
+    _roll_prefixes = ("ROLL_OUT", "ROLL_UP_AND_OUT", "ROLL_UP")
+    chain: list = []
+    current = ctx
+    for i, candidate in enumerate(candidate_contexts):
+        if i >= max_hops:
+            break
+        action, reason = evaluate_cc_management_state(current)
+        chain.append((action, reason, current))
+        if not any(action.startswith(p) for p in _roll_prefixes):
+            return chain
+        current = candidate
+    # Evaluate terminal hop
+    action, reason = evaluate_cc_management_state(current)
+    chain.append((action, reason, current))
+    return chain
 
 
 def _remaining_call_alpha(

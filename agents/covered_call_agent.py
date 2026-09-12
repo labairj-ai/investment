@@ -270,9 +270,15 @@ def _analyze_roll(ctx: AgentContext, ticker: str, position: dict) -> list[Recomm
     except (TypeError, ValueError):
         price_floor = None
 
-    # Tax friction — use strike as assignment price, actual contract count (0157, 0158)
-    _tax_friction, _tax_reason = covered_call_rec._lot_tax_friction(
-        ticker, existing_strike, contracts * 100
+    # Tax friction — use strike + call expiry as disposal date (0157, 0158, 0168, 0169, 0171)
+    _expiry_date_parsed: "date | None" = None
+    try:
+        from datetime import date as _date
+        _expiry_date_parsed = _date.fromisoformat(existing_expiry)
+    except (TypeError, ValueError):
+        pass
+    _tax_detail = covered_call_rec._lot_tax_friction(
+        ticker, existing_strike, contracts * 100, disposal_date=_expiry_date_parsed
     )
 
     # Thesis state — pre-fetch for gate 5 (0161 fail-safe: None = unavailable)
@@ -319,8 +325,11 @@ def _analyze_roll(ctx: AgentContext, ticker: str, position: dict) -> list[Recomm
         max_position_pct=_max_pos_pct,
         conviction=_conviction,
         thesis_health=_thesis_health,
-        assignment_tax_friction=_tax_friction,
-        tax_friction_reason=_tax_reason,
+        assignment_tax_friction=_tax_detail.total_friction,
+        tax_friction_reason=_tax_detail.reason,
+        tax_friction_available=_tax_detail.available,
+        tax_friction_detail=_tax_detail,
+        expiry_date=_expiry_date_parsed,
     )
     action, _mgmt_action_reason = covered_call_rec.evaluate_cc_management_state(_mgmt_ctx)
     print(f"[covered_call] {ticker}: evaluate_cc_management_state → {action} — {_mgmt_action_reason}")

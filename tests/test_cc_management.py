@@ -1,4 +1,4 @@
-"""Tests for the unified CC management engine (0151, 0152, 0157–0162)."""
+"""Tests for the unified CC management engine (0151, 0152, 0157–0162, 0168–0173)."""
 import sys
 import sqlite3
 from pathlib import Path
@@ -9,7 +9,9 @@ sys.path.insert(0, str(ROOT))
 
 from covered_call_rec import (
     ManagementPolicyContext,
+    TaxFrictionDetail,
     evaluate_cc_management_state,
+    evaluate_cc_roll_chain,
     _check_assignment_eligible,
     _lot_tax_friction,
 )
@@ -39,6 +41,9 @@ def _ctx(**kwargs) -> ManagementPolicyContext:
         thesis_health=None,
         assignment_tax_friction=0.0,
         tax_friction_reason="",
+        tax_friction_available=True,
+        tax_friction_detail=None,
+        expiry_date=None,
     )
     defaults.update(kwargs)
     return ManagementPolicyContext(**defaults)
@@ -123,12 +128,13 @@ def test_lot_tax_friction_uses_strike_not_market_price(tmp_path, monkeypatch):
     _insert_lot(db_path, "ANET", shares=100, cost=100.0, days_ago=330)
     _patch_db(monkeypatch, db_path)
 
-    friction, reason = _lot_tax_friction("ANET", assignment_price=180.0, shares_to_assign=100)
+    detail = _lot_tax_friction("ANET", assignment_price=180.0, shares_to_assign=100)
 
-    assert friction > 0, f"Expected friction>0 for large ST gain, got {friction}"
-    assert "8,000" in reason, (
-        f"Reason should show $8,000 ST gain (strike-based, not market-based), got: {reason}"
+    assert detail.total_friction > 0, f"Expected friction>0 for large ST gain, got {detail.total_friction}"
+    assert "8,000" in detail.reason, (
+        f"Reason should show $8,000 ST gain (strike-based, not market-based), got: {detail.reason}"
     )
+    assert detail.available is True
 
 
 def test_lot_tax_friction_strike_near_basis_no_friction(tmp_path, monkeypatch):
@@ -142,19 +148,21 @@ def test_lot_tax_friction_strike_near_basis_no_friction(tmp_path, monkeypatch):
     _insert_lot(db_path, "ANET", shares=100, cost=150.0, days_ago=330)
     _patch_db(monkeypatch, db_path)
 
-    friction, _ = _lot_tax_friction("ANET", assignment_price=155.0, shares_to_assign=100)
+    detail = _lot_tax_friction("ANET", assignment_price=155.0, shares_to_assign=100)
 
-    assert friction == 0.0, (
+    assert detail.total_friction == 0.0, (
         "Gain $500 → avoidable $85 should be below $500 threshold; "
         "if code wrongly used market price it would trigger"
     )
 
 
-def test_lot_tax_friction_no_lots_returns_zero(tmp_path, monkeypatch):
+def test_lot_tax_friction_no_lots_unavailable(tmp_path, monkeypatch):
+    """0171: empty lot list → available=False (data error, not zero friction)."""
     db_path = _make_db(tmp_path)
     _patch_db(monkeypatch, db_path)
-    friction, reason = _lot_tax_friction("NONE", assignment_price=200.0, shares_to_assign=100)
-    assert friction == 0.0
+    detail = _lot_tax_friction("NONE", assignment_price=200.0, shares_to_assign=100)
+    assert detail.total_friction == 0.0
+    assert detail.available is False, "Empty lots must set available=False (data error)"
 
 
 def test_lot_tax_friction_lt_crossover_too_far_no_friction(tmp_path, monkeypatch):
@@ -162,8 +170,8 @@ def test_lot_tax_friction_lt_crossover_too_far_no_friction(tmp_path, monkeypatch
     db_path = _make_db(tmp_path)
     _insert_lot(db_path, "TEST", shares=100, cost=100.0, days_ago=180)  # 185 days to LT crossover
     _patch_db(monkeypatch, db_path)
-    friction, _ = _lot_tax_friction("TEST", assignment_price=300.0, shares_to_assign=100)
-    assert friction == 0.0, "LT crossover 185 days away should suppress friction"
+    detail = _lot_tax_friction("TEST", assignment_price=300.0, shares_to_assign=100)
+    assert detail.total_friction == 0.0, "LT crossover 185 days away should suppress friction"
 
 
 # ── 0158: FIFO lot selection stops at shares_to_assign ────────────────────────
@@ -179,8 +187,8 @@ def test_lot_tax_friction_fifo_stops_at_shares_to_assign(tmp_path, monkeypatch):
     _insert_lot(db_path, "TEST", shares=100, cost=100.0, days_ago=330)  # ST, not reached
     _patch_db(monkeypatch, db_path)
 
-    friction, _ = _lot_tax_friction("TEST", assignment_price=150.0, shares_to_assign=100)
-    assert friction == 0.0, "FIFO delivers 100 LT shares; ST lot unreached → no friction"
+    detail = _lot_tax_friction("TEST", assignment_price=150.0, shares_to_assign=100)
+    assert detail.total_friction == 0.0, "FIFO delivers 100 LT shares; ST lot unreached → no friction"
 
 
 def test_lot_tax_friction_fifo_two_contracts_reaches_st_lot(tmp_path, monkeypatch):
@@ -194,10 +202,10 @@ def test_lot_tax_friction_fifo_two_contracts_reaches_st_lot(tmp_path, monkeypatc
     _insert_lot(db_path, "TEST", shares=200, cost=100.0, days_ago=330)  # ST, 35 days to crossover
     _patch_db(monkeypatch, db_path)
 
-    friction, reason = _lot_tax_friction("TEST", assignment_price=170.0, shares_to_assign=200)
-    assert friction > 0, (
+    detail = _lot_tax_friction("TEST", assignment_price=170.0, shares_to_assign=200)
+    assert detail.total_friction > 0, (
         f"2 contracts exhaust LT then draw 100 ST; gain $7,000 → avoidable $1,190 > threshold. "
-        f"Got {friction}"
+        f"Got {detail.total_friction}"
     )
 
 
@@ -294,15 +302,16 @@ def test_overweight_gate_overweight_allows():
     assert ok, "13.5% > 10% max → overweight → allow"
 
 
-def test_overweight_gate_no_snapshot_skips():
-    """0160: current_weight_pct=None (no snapshot) → gate skipped → allow."""
-    ok, _ = _check_assignment_eligible(_ctx(
+def test_overweight_gate_no_snapshot_fails_closed():
+    """0170: only_if_overweight=True + current_weight_pct=None → fail closed (data unavailable)."""
+    ok, reason = _check_assignment_eligible(_ctx(
         delta=0.92, remaining_extrinsic=0.10,
         assignment_policy={"only_if_overweight": True},
         current_weight_pct=None,
         max_position_pct=10.0,
     ))
-    assert ok, "Missing snapshot → gate skipped → allow"
+    assert not ok, "Missing weight data must block assignment — unknown risk should fail closed"
+    assert "unavailable" in reason.lower()
 
 
 # ── 0152: evaluate_cc_management_state unified hierarchy ─────────────────────
@@ -389,3 +398,121 @@ def test_tax_friction_in_context_blocks_assignment():
     ))
     assert not ok, "Pre-computed tax friction should block"
     assert "750" in reason
+
+
+# ── 0168: disposal_date = expiry, not today ────────────────────────────────────
+
+def test_lot_lt_before_expiry_no_friction(tmp_path, monkeypatch):
+    """0168: lot crossing LT threshold before call expiry → classified LT at disposal → no friction.
+
+    Today: Sep 12. Lot goes LT in 13 days (Sep 25). Expiry: Oct 16 (34 days out).
+    At disposal (Oct 16) the lot is already LT → no avoidable friction.
+    """
+    db_path = _make_db(tmp_path)
+    # 352 days old → LT on day 366 = 14 days from today; expiry is 34 days out → LT at disposal
+    _insert_lot(db_path, "EXP", shares=100, cost=100.0, days_ago=352)
+    _patch_db(monkeypatch, db_path)
+
+    expiry = (date.today() + timedelta(days=34)).isoformat()
+    detail = _lot_tax_friction("EXP", assignment_price=300.0, shares_to_assign=100,
+                               disposal_date=date.fromisoformat(expiry))
+    assert detail.total_friction == 0.0, (
+        f"Lot LT at expiry date → no friction, got {detail.total_friction}"
+    )
+
+
+def test_lot_lt_after_expiry_has_friction(tmp_path, monkeypatch):
+    """0168: lot not yet LT at call expiry → still ST at disposal → friction reported.
+
+    Lot goes LT in 50 days; expiry is only 20 days out → lot is still ST at disposal.
+    """
+    db_path = _make_db(tmp_path)
+    # 315 days old → LT in 51 days; expiry 20 days out → still ST at expiry
+    _insert_lot(db_path, "EXP2", shares=100, cost=100.0, days_ago=315)
+    _patch_db(monkeypatch, db_path)
+
+    expiry = (date.today() + timedelta(days=20)).isoformat()
+    detail = _lot_tax_friction("EXP2", assignment_price=300.0, shares_to_assign=100,
+                               disposal_date=date.fromisoformat(expiry))
+    assert detail.total_friction > 0, (
+        f"Lot still ST at expiry → friction expected, got {detail.total_friction}"
+    )
+
+
+# ── 0169: per-lot schedule ─────────────────────────────────────────────────────
+
+def test_lot_schedule_populated(tmp_path, monkeypatch):
+    """0169: TaxFrictionDetail.lot_schedule has one entry per FIFO lot consumed."""
+    db_path = _make_db(tmp_path)
+    _insert_lot(db_path, "SCHED", shares=100, cost=100.0, days_ago=400)  # LT
+    _insert_lot(db_path, "SCHED", shares=100, cost=100.0, days_ago=330)  # ST
+    _patch_db(monkeypatch, db_path)
+
+    detail = _lot_tax_friction("SCHED", assignment_price=200.0, shares_to_assign=200)
+    assert len(detail.lot_schedule) == 2, f"Expected 2 lot entries, got {len(detail.lot_schedule)}"
+    lt_entry = detail.lot_schedule[0]
+    st_entry = detail.lot_schedule[1]
+    assert lt_entry["friction_contribution"] == 0.0, "LT lot contributes no friction"
+    assert st_entry["friction_contribution"] > 0.0, "ST lot contributes friction"
+    assert "lt_date" in lt_entry
+    assert "allocated_shares" in lt_entry
+
+
+# ── 0171: tax data failure gate ────────────────────────────────────────────────
+
+def test_gate4_tax_data_unavailable_blocks_assignment(tmp_path, monkeypatch):
+    """0171: tax_friction_available=False → Gate 4 blocks assignment."""
+    ok, reason = _check_assignment_eligible(_ctx(
+        delta=0.92, remaining_extrinsic=0.10,
+        assignment_tax_friction=0.0,
+        tax_friction_reason="",
+        tax_friction_available=False,
+    ))
+    assert not ok, "tax_data_unavailable must block assignment"
+    assert "unavailable" in reason.lower()
+
+
+def test_gate4_lt_lots_zero_friction_allows_assignment(tmp_path, monkeypatch):
+    """0171: all LT lots → friction=0.0, available=True → Gate 4 passes."""
+    db_path = _make_db(tmp_path)
+    _insert_lot(db_path, "LT_ONLY", shares=100, cost=100.0, days_ago=400)
+    _patch_db(monkeypatch, db_path)
+
+    detail = _lot_tax_friction("LT_ONLY", assignment_price=200.0, shares_to_assign=100)
+    assert detail.total_friction == 0.0
+    assert detail.available is True
+
+    ok, reason = _check_assignment_eligible(_ctx(
+        delta=0.92, remaining_extrinsic=0.10,
+        assignment_tax_friction=detail.total_friction,
+        tax_friction_reason=detail.reason,
+        tax_friction_available=detail.available,
+    ))
+    assert ok, f"LT lots → no friction → Gate 4 should pass: {reason}"
+
+
+# ── 0173: roll chain resolution ───────────────────────────────────────────────
+
+def test_roll_chain_terminates_at_allow_assignment():
+    """0173: chain [ROLL, ALLOW_ASSIGNMENT] with two-hop candidates."""
+    # First ctx → ROLL_UP (elevated delta, OTM)
+    ctx0 = _ctx(current_price=162.0, strike=170.0, dte=30,
+                delta=0.35, pct_captured=45.0, remaining_extrinsic=2.0)
+    # Second ctx (roll target) → ALLOW_ASSIGNMENT (deep ITM, near-zero extrinsic)
+    ctx1 = _ctx(current_price=190.0, strike=180.0, dte=5,
+                delta=0.88, pct_captured=70.0, remaining_extrinsic=0.30)
+
+    chain = evaluate_cc_roll_chain(ctx0, candidate_contexts=[ctx1], max_hops=2)
+    assert len(chain) >= 2, f"Expected at least 2 hops, got {len(chain)}"
+    assert chain[0][0] == "ROLL_UP", f"First hop should be ROLL_UP, got {chain[0][0]}"
+    assert chain[-1][0] == "ALLOW_ASSIGNMENT", f"Last hop should be ALLOW_ASSIGNMENT, got {chain[-1][0]}"
+
+
+def test_roll_chain_respects_max_hops():
+    """0173: chain stops at max_hops even if all hops are ROLL."""
+    roll_ctx = _ctx(current_price=162.0, strike=170.0, dte=30,
+                    delta=0.35, pct_captured=45.0, remaining_extrinsic=2.0)
+    candidates = [roll_ctx, roll_ctx]  # both are ROLL
+
+    chain = evaluate_cc_roll_chain(roll_ctx, candidate_contexts=candidates, max_hops=1)
+    assert len(chain) <= 2, f"max_hops=1 should limit chain to 2 entries (initial + 1 hop)"
