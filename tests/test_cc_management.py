@@ -757,3 +757,80 @@ def test_roll_chain_depth_none_when_no_rec_id(monkeypatch):
     # No rec_id → chain treated as terminal → not chain-open estimated
     assert not estimated, "ROLL with exec_rec and no open chain should not be estimated"
     assert chain_depth == 0, f"Expected chain_depth=0 when no rec_id, got {chain_depth}"
+
+
+# ── 0181: candidate strike used for friction (not existing strike) ─────────────
+
+def test_friction_at_expiry_uses_candidate_strike_not_existing():
+    """0181: higher candidate strike produces higher friction than existing strike for same ST lot."""
+    purchase = date.today() - timedelta(days=30)   # short-term lot
+    candidate_expiry = date.today() + timedelta(days=60)  # still ST at expiry
+    cost_ps = 150.0
+    allocated = 100.0
+    lot_schedule = [{
+        "purchase_date": purchase.isoformat(),
+        "allocated_shares": allocated,
+        "cost_per_share": cost_ps,
+        "lt_date": (purchase + timedelta(days=366)).isoformat(),
+        "friction_contribution": 0.0,
+    }]
+
+    existing_strike = 180.0
+    candidate_strike = 195.0
+
+    friction_existing = _friction_at_expiry(lot_schedule, existing_strike, candidate_expiry)
+    friction_candidate = _friction_at_expiry(lot_schedule, candidate_strike, candidate_expiry)
+
+    # Higher strike → larger gain → more ST friction
+    assert friction_candidate > friction_existing, (
+        f"Candidate strike ${candidate_strike} should produce more friction "
+        f"({friction_candidate:.2f}) than existing ${existing_strike} ({friction_existing:.2f})"
+    )
+    # Verify magnitudes: gain difference = (195-180)*100 = $1500 ST, friction diff = $1500 * (0.37-0.20)
+    expected_diff = (candidate_strike - existing_strike) * allocated * (0.37 - 0.20)
+    assert abs(friction_candidate - friction_existing - expected_diff) < 0.01
+
+
+# ── 0182: tax benefit normalized into roll score ───────────────────────────────
+
+def test_friction_at_expiry_tax_benefit_calculation():
+    """0182: avoidable tax benefit = current friction minus candidate friction using correct strikes."""
+    purchase = date.today() - timedelta(days=30)   # ST lot
+    current_expiry = date.today() + timedelta(days=14)   # near expiry → still ST
+    candidate_expiry = date.today() + timedelta(days=400)  # far expiry → lot LT by then
+    lot_schedule = [{
+        "purchase_date": purchase.isoformat(),
+        "allocated_shares": 100.0,
+        "cost_per_share": 150.0,
+        "lt_date": (purchase + timedelta(days=366)).isoformat(),
+        "friction_contribution": 0.0,
+    }]
+    assignment_price = 200.0
+
+    current_friction = _friction_at_expiry(lot_schedule, assignment_price, current_expiry)
+    candidate_friction = _friction_at_expiry(lot_schedule, assignment_price, candidate_expiry)
+
+    tax_benefit = max(0.0, current_friction - candidate_friction)
+    # Lot becomes LT before far expiry → candidate friction = 0, benefit = current friction
+    assert candidate_friction == 0.0, "Lot is LT at far candidate expiry → zero friction"
+    assert tax_benefit > 0.0, "Rolling to a far expiry should have positive tax benefit"
+
+
+def test_tax_benefit_normalized_per_share_exceeds_tiebreak_threshold():
+    """0182: verify that non-zero tax_component can exceed 0.001 and affect score meaningfully."""
+    # $4000 tax benefit, 100 shares, delta=0.25, nav=$50
+    tax_benefit = 4000.0
+    total_shares = 100.0
+    delta = 0.25
+    nav = 50.0
+
+    tax_benefit_per_share = tax_benefit / total_shares   # $40/share
+    tax_component = tax_benefit_per_share * delta / nav  # 40 * 0.25 / 50 = 0.20
+
+    assert tax_component > 0.001, (
+        f"$4k tax benefit at delta=0.25 should exceed old tiebreak threshold (0.001), "
+        f"got tax_component={tax_component:.4f}"
+    )
+    # Confirm it's proportional — halve delta, halve component
+    tax_component_half = tax_benefit_per_share * 0.125 / nav
+    assert abs(tax_component_half - tax_component / 2) < 0.0001

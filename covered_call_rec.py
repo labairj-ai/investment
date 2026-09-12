@@ -1399,17 +1399,21 @@ def _suggest_next_call(
                         _existing_alpha = existing_call_mark - _old_exp_payoff
                     else:
                         _existing_alpha = existing_call_mark
-                    score = (cc_alpha - _existing_alpha) / nav if nav > 0.01 else cc_alpha - _existing_alpha
-
-                    # 0179: tax-benefit tiebreaker — prefer candidates that clear more LT dates
+                    # 0181: use candidate strike s (not existing assignment_price) for friction calc
+                    # 0182: normalize tax benefit to per-share prob-weighted units, add to score
                     tax_benefit = 0.0
-                    if lot_schedule and assignment_price is not None:
-                        roll_friction = _friction_at_expiry(lot_schedule, assignment_price, exp_date)
+                    tax_component = 0.0
+                    if lot_schedule:
+                        roll_friction = _friction_at_expiry(lot_schedule, s, exp_date)  # 0181: s not assignment_price
                         tax_benefit = max(0.0, current_tax_friction - roll_friction)
+                        if tax_benefit > 0.0 and nav > 0.01:
+                            total_shares = sum(float(e.get("allocated_shares", 0)) for e in lot_schedule) or 1.0
+                            tax_benefit_per_share = tax_benefit / total_shares
+                            tax_component = tax_benefit_per_share * d / nav  # d ≈ assignment prob
 
-                    if best is None or score > best["_score"] or (
-                        abs(score - best["_score"]) < 0.001 and tax_benefit > best.get("_tax_benefit", 0.0)
-                    ):
+                    score = (cc_alpha - _existing_alpha) / nav + tax_component if nav > 0.01 else cc_alpha - _existing_alpha
+
+                    if best is None or score > best["_score"]:
                         best = {
                             "expiry":              exp,
                             "strike":              round(s, 2),
@@ -1421,7 +1425,6 @@ def _suggest_next_call(
                             "cc_alpha":            round(cc_alpha, 3),
                             "tax_benefit_at_expiry": round(tax_benefit, 2),
                             "_score":              score,
-                            "_tax_benefit":        tax_benefit,
                         }
             except Exception:
                 continue
@@ -1429,7 +1432,6 @@ def _suggest_next_call(
         pass
     if best:
         best.pop("_score", None)
-        best.pop("_tax_benefit", None)
     return best
 
 
