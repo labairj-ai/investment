@@ -34,6 +34,6 @@ Each audit session: read the agent end-to-end, compare logic against investing f
 - [x] Covered Call agent audit complete and all findings captured as backlog items (0138, 0139)
 - [x] Sell/Trim agent audit complete and findings captured (0141 done; 0142-0145 created)
 - [x] Thesis agent audit complete and findings captured (0146 HIGH: ADD rec valuation gate; 0147: TRIM importance-weighted gate)
-- [ ] Portfolio Guardian agent audit complete and findings captured
-- [ ] Opportunity agent audit complete and findings captured
-- [ ] Tax agent audit complete and findings captured
+- [x] Portfolio Guardian agent audit complete and findings captured (0148: sector cache)
+- [x] Opportunity agent audit complete and findings captured (0149: sector hardcode + min composite gate)
+- [x] Tax agent audit complete and findings captured (0150 HIGH: LT loss/LT gain harvest gap)

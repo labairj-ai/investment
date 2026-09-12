@@ -80,6 +80,23 @@ def _ytd_st_gains(year: str) -> float:
         return 0.0
 
 
+def _ytd_lt_gains(year: str) -> float:
+    """YTD long-term realized gains from sell_transactions."""
+    if not _DB.exists():
+        return 0.0
+    try:
+        conn = _connect()
+        rows = conn.execute(
+            "SELECT lt_gain FROM sell_transactions "
+            "WHERE strftime('%Y', sell_date) = ?", (year,)
+        ).fetchall()
+        conn.close()
+        return sum(r["lt_gain"] or 0.0 for r in rows)
+    except Exception as e:
+        print(f"[tax] YTD LT gains query error: {e}")
+        return 0.0
+
+
 # ── LLM schema ────────────────────────────────────────────────────────────────
 
 _WAIT_SCHEMA = {
@@ -323,9 +340,14 @@ def _check_tlh(
     price_map: dict[str, float],
     today: datetime.date,
     ytd_st_gains: float,
+    ytd_lt_gains: float = 0.0,
 ) -> list[Recommendation]:
-    """Return HARVEST recs for ST and LT lots with offsettable losses."""
-    if ytd_st_gains <= 0:
+    """Return HARVEST recs for ST and LT lots with offsettable losses.
+
+    LT losses offset LT gains first (TAX_LT_RATE); ST losses offset ST gains.
+    Skips only when there are neither ST nor LT realized gains to offset.
+    """
+    if ytd_st_gains + ytd_lt_gains <= 0:
         return []  # nothing to offset
 
     recs: list[Recommendation] = []
@@ -365,9 +387,15 @@ def _check_tlh(
         cost = worst_lot["cost_per_share"]
         lot_type = worst_lot["_lot_type"]
 
-        # LT losses offset LT gains first (at LT rate); ST losses offset ST gains (at ST rate)
+        # LT losses offset LT gains first (at LT rate); ST losses offset ST gains (at ST rate).
+        # Skip if no gains of the relevant type exist.
+        if lot_type == "LT" and ytd_lt_gains <= 0:
+            continue
+        if lot_type == "ST" and ytd_st_gains <= 0:
+            continue
         benefit_rate = TAX_LT_RATE if lot_type == "LT" else TAX_ST_RATE
-        tlh_benefit = abs(unrealized_loss) * benefit_rate
+        available_gains = ytd_lt_gains if lot_type == "LT" else ytd_st_gains
+        tlh_benefit = min(abs(unrealized_loss), available_gains) * benefit_rate
 
         # Wash sale window: 30 days before and after potential sale date (today)
         ws_start = (today - datetime.timedelta(days=30)).isoformat()
@@ -443,10 +471,11 @@ def run_tax_agent(ctx: AgentContext) -> list[Recommendation]:
     today = datetime.date.today()
     year = str(today.year)
     ytd_st_gains = _ytd_st_gains(year)
+    ytd_lt_gains = _ytd_lt_gains(year)
 
     recs: list[Recommendation] = []
     recs.extend(_check_lt_crossover(all_lots, price_map, today))
-    recs.extend(_check_tlh(all_lots, price_map, today, ytd_st_gains))
+    recs.extend(_check_tlh(all_lots, price_map, today, ytd_st_gains, ytd_lt_gains))
     return recs
 
 

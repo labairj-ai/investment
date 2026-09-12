@@ -35,6 +35,7 @@ _PROMPT_VERSION = "opportunity_hunter_v1"
 _BUFFETT_DB = Path(agent_db.DB_PATH).parent / "buffett.db"
 _MAX_CANDIDATES = 3          # candidates passed to the LLM
 _LAYER_DEFICIT_THRESHOLD = 5.0  # pp underweight before PF bonus kicks in
+_MIN_COMPOSITE = 45          # minimum composite score to emit a RESEARCH rec
 
 # Sector labels for current holdings.
 # ETFs / broad funds → None (excluded from sector overlap penalty).
@@ -447,6 +448,14 @@ def run_opportunity_hunter(ctx: AgentContext) -> list[Recommendation]:
         f"[opportunity] {len(scored)} unowned candidates scored; "
         f"top {len(top)}: " + ", ".join(f"{c['ticker']}={c['_composite']}" for c in top)
     )
+
+    if not top or top[0]["_composite"] < _MIN_COMPOSITE:
+        print(
+            f"[opportunity] Top candidate composite "
+            f"{'none' if not top else top[0]['_composite']} "
+            f"below minimum threshold {_MIN_COMPOSITE} — no recommendation"
+        )
+        return []
 
     # LLM selects the best among top candidates
     llm = _llm_select(top, layer_weights)
