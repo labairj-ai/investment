@@ -3,23 +3,31 @@
 - **ID:** 0138
 - **Status:** backlog
 - **Created:** 2026-09-11
-- **Priority:** normal
+- **Priority:** high
 - **Depends:** none
 
 ## Problem
 
-`_suggest_next_call()` in `covered_call_rec.py` (line ~939) ranks candidate roll contracts by `exec_prem / strike * 100` (a raw yield proxy) rather than `cc_alpha` (premium minus expected upside surrendered). This is inconsistent with the main `analyze()` pipeline. A contract with high yield and negative `cc_alpha` can surface as the top roll suggestion even though the main screener would reject it.
+`_suggest_next_call()` in `covered_call_rec.py` (line ~939) ranks candidate roll contracts by `exec_prem / strike * 100` (a raw yield proxy). This answers the wrong question. The real economic question is: "Is replacing the existing short call with this new contract worth more than simply buying back the existing one?" A contract with high yield but low cc_alpha relative to the existing call's remaining value creates negative incremental value even though raw yield looks attractive.
 
-Additionally, the function uses a fixed 14-75 DTE window regardless of roll type: ROLL_OUT needs expiry past the risk event date; ROLL_UP should prefer the existing expiry cycle; ROLL_UP_AND_OUT needs a later expiry than the current one as a hard floor. The suggestion is displayed on the dashboard as the recommended roll target.
+Additionally, the function uses a fixed 14-75 DTE window regardless of roll type. The roll-type expiry constraints are preferences instead of hard filters: a ROLL_OUT that doesn't clear the risk event date and a ROLL_UP_AND_OUT that doesn't push out expiry both defeat the purpose of the roll action.
 
 ## Proposed approach
 
-- Add `cc_alpha` computation to `_suggest_next_call()` (pass in `hv_forecast` as a parameter) and replace `score = exec_prem / s * 100` with cc_alpha.
-- Accept a `roll_type` parameter and optional `risk_event_date` / `existing_expiry` to drive the expiry filter:
-  - `roll_out`: expiry must be > risk_event_date (or > existing_expiry if no event date known)
-  - `roll_up`: prefer contracts near existing expiry
-  - `roll_up_and_out`: expiry must be strictly > existing_expiry
-- Wire the `roll_type` from `_analyze_roll()` (which already knows the action) through to the call site.
+Replace the yield proxy with **incremental roll alpha**:
+```
+incremental_roll_alpha = (new_cc_alpha - existing_short_call_remaining_value) / NAV
+```
+- `new_cc_alpha` = `exec_prem - E[max(S_T - K, 0)]` under real-world drift (same formula as `analyze()`)
+- `existing_short_call_remaining_value` = `current_mark` from action_payload (already present)
+- `NAV` = `entry_price - btc_mark` (already computed in `_analyze_roll()`, pass through)
+
+**Hard eligibility rules per roll type** — contracts that fail are excluded entirely, not softly penalized:
+- `ROLL_OUT`: candidate expiry MUST be > risk_event_date; if no risk event, MUST be > existing_expiry
+- `ROLL_UP`: candidate expiry MUST be within ±1 cycle of existing expiry
+- `ROLL_UP_AND_OUT`: candidate expiry MUST be strictly > existing_expiry
+
+Wire `roll_type`, `nav`, `current_mark` (existing call), and `risk_event_date` / `existing_expiry` from `_analyze_roll()` into `_suggest_next_call()`. Keep the existing `cc_alpha > 0` minimum bar as a hard gate — never suggest a negative-alpha replacement.
 
 ## Touches
 
@@ -28,7 +36,8 @@ Additionally, the function uses a fixed 14-75 DTE window regardless of roll type
 
 ## Done when
 
-- [ ] `_suggest_next_call()` accepts `roll_type` and ranks by cc_alpha
-- [ ] ROLL_OUT suggestions always clear the risk event date
-- [ ] ROLL_UP suggestions prefer the existing expiry cycle
-- [ ] Existing tests pass; spot-check live ticker yields cc_alpha-positive suggestion
+- [ ] `_suggest_next_call()` ranks by incremental roll alpha `(new_cc_alpha - existing_call_mark) / NAV`
+- [ ] ROLL_OUT candidates that don't clear risk event date are hard-rejected (not just ranked lower)
+- [ ] ROLL_UP candidates outside ±1 cycle of existing expiry are hard-rejected
+- [ ] ROLL_UP_AND_OUT candidates with expiry ≤ existing expiry are hard-rejected
+- [ ] Existing tests pass; spot-check live ticker yields positive incremental alpha suggestion
