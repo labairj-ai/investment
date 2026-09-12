@@ -1,7 +1,7 @@
 # Correct Incremental Roll Alpha: Compare vs Remaining Old-Call Alpha
 
 - **ID:** 0153
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-11
 - **Priority:** normal
 - **Depends:** none
@@ -51,7 +51,7 @@ Normalize by NAV for a percentage figure. Reject candidates where incremental_al
 
 ## Done when
 
-- [ ] `_remaining_call_alpha()` computes expected future value of existing call under real-world drift
-- [ ] `incremental_alpha = new_cc_alpha - existing_alpha` (negative existing_alpha makes rolling more attractive)
-- [ ] Deep-ITM old call (expected payoff > mark) scenario now correctly favors a roll
-- [ ] Existing tests pass
+- [x] `_remaining_call_alpha()` computes expected future value of existing call under real-world drift
+- [x] `incremental_alpha = new_cc_alpha - existing_alpha` (negative existing_alpha makes rolling more attractive)
+- [x] Deep-ITM old call (expected payoff > mark) scenario now correctly favors a roll
+- [x] Existing tests pass

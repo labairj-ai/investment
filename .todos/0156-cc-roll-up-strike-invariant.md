@@ -1,7 +1,7 @@
 # Add Explicit Strike-Up Invariant to ROLL_UP and ROLL_UP_AND_OUT
 
 - **ID:** 0156
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-11
 - **Priority:** normal
 - **Depends:** none
@@ -41,7 +41,7 @@ Update callers in `covered_call_agent.py` / `_analyze_roll()` to pass `existing_
 
 ## Done when
 
-- [ ] `_suggest_next_call()` accepts `existing_strike` parameter
-- [ ] ROLL_UP / ROLL_UP_AND_OUT with a candidate strike <= existing_strike is filtered out
-- [ ] Caller passes existing_strike from the open position payload
-- [ ] Existing tests pass
+- [x] `_suggest_next_call()` accepts `existing_strike` parameter
+- [x] ROLL_UP / ROLL_UP_AND_OUT with a candidate strike <= existing_strike is filtered out
+- [x] Caller passes existing_strike from the open position payload
+- [x] Existing tests pass

@@ -1,7 +1,7 @@
 # Add Thesis/Portfolio Eligibility Gate to ALLOW_ASSIGNMENT
 
 - **ID:** 0154
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-11
 - **Priority:** normal
 - **Depends:** 0151
@@ -49,8 +49,8 @@ The thesis intake UI (or manual edit) should expose these fields so the investor
 
 ## Done when
 
-- [ ] `assignment_policy.allowed = false` in cc_policy blocks all assignment recommendations for that ticker
-- [ ] High-conviction healthy position with `preserve_high_conviction = true` is protected from assignment
-- [ ] `only_if_overweight = true` allows assignment only when position exceeds max_position_pct
-- [ ] All new fields default to permissive (no behavior change for existing theses without assignment_policy)
-- [ ] Existing tests pass
+- [x] `assignment_policy.allowed = false` in cc_policy blocks all assignment recommendations for that ticker
+- [x] High-conviction healthy position with `preserve_high_conviction = true` is protected from assignment
+- [x] `only_if_overweight = true` allows assignment only when position exceeds max_position_pct
+- [x] All new fields default to permissive (no behavior change for existing theses without assignment_policy)
+- [x] Existing tests pass

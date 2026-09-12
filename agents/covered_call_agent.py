@@ -112,7 +112,16 @@ _CC_POLICY_DEFAULTS: dict = {
     "avoid_earnings":                 False,
     "preferred_dte_min":              None,
     "preferred_dte_max":              None,
-    "acceptable_assignment_min_price": None,       # floor price for ALLOW_ASSIGNMENT (0139)
+    "acceptable_assignment_min_price": None,       # floor price for ALLOW_ASSIGNMENT (0151)
+    # 0154: thesis/portfolio eligibility gate for ALLOW_ASSIGNMENT.
+    # All fields default permissive so existing theses without assignment_policy are unchanged.
+    "assignment_policy": {
+        "allowed":                         True,
+        "only_if_overweight":              False,
+        "min_thesis_health_for_preservation": 80,
+        "preserve_high_conviction":        False,
+        "min_conviction_to_preserve":      4,
+    },
 }
 
 

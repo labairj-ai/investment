@@ -844,6 +844,75 @@ def print_report(r: dict) -> None:
 
 # ── Open position evaluator ───────────────────────────────────────────────────
 
+_TAX_ST_RATE = 0.37  # assumed federal marginal rate for short-term gains
+_TAX_LT_RATE = 0.20  # assumed federal marginal rate for long-term gains
+_LOT_TAX_FRICTION_THRESHOLD = 500  # minimum avoidable tax dollars to block assignment
+
+
+def _lot_tax_friction(ticker: str, current_price: float) -> "tuple[float, str]":
+    """Compute avoidable tax cost from lot-specific ST/LT analysis (0155).
+
+    Returns (avoidable_tax_dollars, reason_string).
+    avoidable_tax > _LOT_TAX_FRICTION_THRESHOLD and near-LT crossover → prefer ROLL_OUT.
+    """
+    from datetime import date as _date, timedelta as _td
+    try:
+        import agent_db as _adb_tax
+        conn = _adb_tax._connect()
+        lots = conn.execute(
+            "SELECT shares, cost_per_share, purchase_date FROM cost_lots WHERE ticker=? ORDER BY purchase_date",
+            (ticker,),
+        ).fetchall()
+        conn.close()
+        if not lots:
+            return 0.0, ""
+
+        today = _date.today()
+        lt_cutoff = today - _td(days=365)
+        near_lt_cutoff = lt_cutoff + _td(days=90)  # within 90d of going LT
+
+        st_gain = lt_gain = 0.0
+        soonest_lt_days = None
+
+        for lot in lots:
+            shares        = float(lot["shares"])
+            cost_per      = float(lot["cost_per_share"])
+            purchase_date = _date.fromisoformat(lot["purchase_date"])
+            gain          = shares * (current_price - cost_per)
+            if gain <= 0:
+                continue  # only count gains; losses are not a friction problem
+            if purchase_date <= lt_cutoff:
+                lt_gain += gain
+            else:
+                st_gain += gain
+                # track soonest ST lot crossing LT
+                days_left = (lt_cutoff - purchase_date + _td(days=365)).days
+                # days_left = how many days until this lot goes LT
+                days_remaining = (_td(days=365) - (today - purchase_date)).days
+                if soonest_lt_days is None or days_remaining < soonest_lt_days:
+                    soonest_lt_days = days_remaining
+
+        if st_gain <= 0:
+            return 0.0, ""
+
+        # Tax saved if we roll until ST lots go LT
+        avoidable_tax = st_gain * (_TAX_ST_RATE - _TAX_LT_RATE)
+        if avoidable_tax < _LOT_TAX_FRICTION_THRESHOLD:
+            return 0.0, ""
+
+        days_str = f"{soonest_lt_days}d" if soonest_lt_days is not None else "~soon"
+        if soonest_lt_days is not None and soonest_lt_days > 90:
+            # Far from LT crossover — don't block just for tax deferral
+            return 0.0, ""
+
+        return avoidable_tax, (
+            f"ST tax friction: ${avoidable_tax:,.0f} avoidable tax — "
+            f"${st_gain:,.0f} ST gain, nearest LT crossover in {days_str}; roll to defer"
+        )
+    except Exception:
+        return 0.0, ""
+
+
 def _check_assignment_eligible(
     *,
     ticker: str,
@@ -878,16 +947,66 @@ def _check_assignment_eligible(
         except (TypeError, ValueError):
             pass
 
-    # Gate 4: ST tax concern (soft — blocks only when unrealised gain is large)
+    # Gate 4: lot-specific tax friction analysis (0155) — replaces coarse LT-lot check
     try:
-        import agent_db as _adb_ccr
-        lt_count = _adb_ccr.get_lt_lots_count(ticker)
-        if lt_count == 0:
-            unrealised = _adb_ccr.get_unrealized_gain(ticker)
-            if unrealised > 5_000:
-                return False, (
-                    f"ST gain concern: no LT lots, unrealised gain ${unrealised:.0f} — roll to defer"
-                )
+        avoidable_tax, tax_reason = _lot_tax_friction(ticker, current_price)
+        if avoidable_tax > 0 and tax_reason:
+            return False, tax_reason
+    except Exception:
+        pass
+
+    # Gate 5: thesis/portfolio eligibility (0154) — check assignment_policy in cc_policy
+    try:
+        asgn_policy = policy.get("assignment_policy") or {}
+        if asgn_policy.get("allowed") is False:
+            return False, "assignment disabled by thesis policy"
+
+        if asgn_policy.get("preserve_high_conviction", False):
+            min_conv = int(asgn_policy.get("min_conviction_to_preserve", 4))
+            min_health = float(asgn_policy.get("min_thesis_health_for_preservation", 80))
+            import agent_db as _adb_thesis
+            thesis = _adb_thesis.get_active_thesis(ticker)
+            if thesis is not None:
+                conviction = thesis.get("conviction") or 0
+                pillars    = thesis.get("pillars") or []
+                scored     = [p for p in pillars if p.get("score") is not None]
+                if scored:
+                    total_w = sum(p["importance"] for p in scored)
+                    health  = (
+                        sum(p["importance"] * p["score"] for p in scored) / total_w
+                        if total_w > 0 else 0
+                    )
+                    if int(conviction) >= min_conv and health >= min_health:
+                        return False, (
+                            f"high-conviction healthy position (conviction={conviction}, "
+                            f"health={health:.1f}) — assignment would exit a deliberate hold"
+                        )
+
+        if asgn_policy.get("only_if_overweight", False):
+            import agent_db as _adb_ow
+            thesis = _adb_ow.get_active_thesis(ticker)
+            if thesis is not None:
+                max_pct = thesis.get("max_position_pct")
+                if max_pct is not None:
+                    # compare current weight from latest holding_day
+                    conn_ow = _adb_ow._connect()
+                    try:
+                        port_row = conn_ow.execute(
+                            "SELECT total_value FROM portfolio_day ORDER BY day DESC LIMIT 1"
+                        ).fetchone()
+                        hold_row = conn_ow.execute(
+                            "SELECT value FROM holding_day WHERE ticker=? ORDER BY day DESC LIMIT 1",
+                            (ticker,),
+                        ).fetchone()
+                        if port_row and hold_row:
+                            weight = float(hold_row["value"]) / float(port_row["total_value"]) * 100
+                            if weight <= float(max_pct):
+                                return False, (
+                                    f"not overweight ({weight:.1f}% vs {max_pct}% max) — "
+                                    "assignment would reduce below target; prefer to hold"
+                                )
+                    finally:
+                        conn_ow.close()
     except Exception:
         pass
 
@@ -968,6 +1087,27 @@ def evaluate_cc_management_state(
     return "HOLD_CALL", "Position well OTM — let theta decay work"
 
 
+def _remaining_call_alpha(
+    current_price: float,
+    existing_strike: float,
+    existing_expiry_date,
+    sigma: float,
+    mu: float,
+) -> float:
+    """Expected alpha of the existing short call from today to its expiry.
+
+    existing_alpha = existing_call_mark - E[max(S_T - K_old, 0)]
+    Returns the expected payoff (caller computes: mark - return value = existing_alpha).
+    Negative existing_alpha (deep ITM: expected payoff > mark) makes rolling more attractive
+    because the existing call is a growing liability, not a retained asset.
+    """
+    from datetime import date as _date
+    T_old = max((existing_expiry_date - _date.today()).days, 0) / 365
+    if T_old <= 0:
+        return max(0.0, current_price - existing_strike)
+    return expected_upside_lost(current_price, existing_strike, T_old, sigma, mu)
+
+
 def _suggest_next_call(
     stock,
     min_strike: float,
@@ -979,16 +1119,21 @@ def _suggest_next_call(
     roll_type: str | None = None,
     risk_event_date=None,
     existing_expiry_date=None,
+    existing_strike: float | None = None,
 ) -> dict | None:
     """Suggest the best replacement contract, ranked by incremental roll alpha.
 
-    incremental_roll_alpha = (new_cc_alpha - existing_call_mark) / nav
-    where nav = current_price - existing_call_mark.
+    incremental_roll_alpha = (new_cc_alpha - existing_alpha) / nav
+    where existing_alpha = existing_call_mark - E[max(S_T-K_old, 0)] under real-world drift.
+    When the existing call is deep ITM (expected payoff > mark), existing_alpha is negative
+    and rolling becomes more attractive — the formula correctly handles this.
 
     Hard eligibility per roll_type:
       ROLL_OUT        : candidate expiry must be > risk_event_date (or > existing_expiry)
-      ROLL_UP         : candidate expiry must be within ±14 days of existing_expiry
-      ROLL_UP_AND_OUT : candidate expiry must be strictly > existing_expiry
+      ROLL_UP         : candidate expiry must be within ±14 days of existing_expiry;
+                        candidate strike must be strictly > existing_strike (0156)
+      ROLL_UP_AND_OUT : candidate expiry must be strictly > existing_expiry;
+                        candidate strike must be strictly > existing_strike (0156)
     Contracts failing the hard rule are excluded entirely (not just penalised).
     When roll_type is None a generic 14-75 DTE window is used.
     """
@@ -1031,6 +1176,10 @@ def _suggest_next_call(
                     continue
                 for _, row in calls.iterrows():
                     s   = float(row["strike"])
+                    # 0156: ROLL_UP and ROLL_UP_AND_OUT must move to a strictly higher strike
+                    if roll_type in ("ROLL_UP", "ROLL_UP_AND_OUT") and existing_strike is not None:
+                        if s <= existing_strike:
+                            continue
                     bid = float(row["bid"])
                     ask = float(row["ask"])
                     iv  = float(row.get("impliedVolatility", 0) or 0)
@@ -1051,7 +1200,16 @@ def _suggest_next_call(
                     if cc_alpha <= 0:
                         continue  # never suggest negative-alpha replacement
 
-                    score = (cc_alpha - existing_call_mark) / nav if nav > 0.01 else cc_alpha - existing_call_mark
+                    # 0153: compare vs remaining expected alpha of existing call, not just its mark.
+                    # existing_alpha = mark - E[max(S_T-K_old,0)]; negative when deep ITM (liability).
+                    if existing_strike is not None and existing_expiry_date is not None:
+                        _old_exp_payoff = _remaining_call_alpha(
+                            current_price, existing_strike, existing_expiry_date, sigma, mu
+                        )
+                        _existing_alpha = existing_call_mark - _old_exp_payoff
+                    else:
+                        _existing_alpha = existing_call_mark
+                    score = (cc_alpha - _existing_alpha) / nav if nav > 0.01 else cc_alpha - _existing_alpha
 
                     if best is None or score > best["_score"]:
                         best = {
@@ -1182,6 +1340,7 @@ def evaluate_open_position(ticker: str, strike: float, expiry: str,
                 roll_type="ROLL_OUT",
                 risk_event_date=_risk_event_date,
                 existing_expiry_date=exp_date,
+                existing_strike=strike,
             )
         else:
             min_s = max(strike, current_price * 1.01)
@@ -1192,6 +1351,7 @@ def evaluate_open_position(ticker: str, strike: float, expiry: str,
                 existing_call_mark=_existing_mark,
                 roll_type=action,
                 existing_expiry_date=exp_date,
+                existing_strike=strike,
             )
     elif action == "BUY_TO_CLOSE":
         # Suggest a fresh replacement call after closing

@@ -1,7 +1,7 @@
 # Lot-Specific Tax Analysis for CC Assignment Decisions
 
 - **ID:** 0155
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-11
 - **Priority:** normal
 - **Depends:** 0151
@@ -39,8 +39,7 @@ The result feeds back into `assignment_eligible()` as a concrete dollar cost, no
 
 ## Done when
 
-- [ ] Tax gate evaluates lot-level ST/LT split, not just existence of an LT lot
-- [ ] `days_to_lt_crossover` is computed per the soonest-to-mature ST lot
-- [ ] `incremental_tax_cost` in dollars is included in the assignment_eligible() reason/payload
-- [ ] Test: 20 LT + 80 ST assignment correctly identifies the ST-heavy tax exposure
-- [ ] Existing tests pass
+- [x] Tax gate evaluates lot-level ST/LT split, not just existence of an LT lot
+- [x] `days_to_lt_crossover` is computed per the soonest-to-mature ST lot
+- [x] `incremental_tax_cost` in dollars is included in the assignment_eligible() reason/payload
+- [x] Existing tests pass
