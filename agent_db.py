@@ -3675,3 +3675,24 @@ def get_trade_chain(chain_id: str) -> list[dict]:
         return []
     finally:
         conn.close()
+
+
+def has_chain_child(rec_id: int) -> bool:
+    """Return True if any recommendation in the DB has parent_cc_rec_id == rec_id.
+
+    Used by the outcome evaluator to avoid marking a ROLL outcome as confirmed
+    when the replacement call was subsequently acted upon (rolled again, BTC'd,
+    etc.) — in that case the at-expiry computation assumes hold-to-expiry and
+    is wrong, so the outcome stays estimated.
+    """
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT id FROM recommendations WHERE parent_cc_rec_id = ? LIMIT 1",
+            (rec_id,),
+        ).fetchone()
+        return row is not None
+    except Exception:
+        return False
+    finally:
+        conn.close()

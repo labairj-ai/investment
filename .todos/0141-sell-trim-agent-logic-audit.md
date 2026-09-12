@@ -1,7 +1,7 @@
 # Sell/Trim Agent Logic Audit
 
 - **ID:** 0141
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-11
 - **Priority:** normal
 - **Depends:** none

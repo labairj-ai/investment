@@ -106,12 +106,13 @@ _MGMT_SCHEMA = {"why": "", "counter_case": ""}
 
 
 _CC_POLICY_DEFAULTS: dict = {
-    "strategy":           "INCOME",   # INCOME | UPSIDE_PRESERVATION | NONE
-    "max_preferred_delta": 0.30,
-    "minimum_otm_pct":     0.03,       # fraction, e.g. 0.03 = 3% OTM
-    "avoid_earnings":      False,
-    "preferred_dte_min":   None,
-    "preferred_dte_max":   None,
+    "strategy":                       "INCOME",   # INCOME | UPSIDE_PRESERVATION | NONE
+    "max_preferred_delta":             0.30,
+    "minimum_otm_pct":                0.03,       # fraction, e.g. 0.03 = 3% OTM
+    "avoid_earnings":                 False,
+    "preferred_dte_min":              None,
+    "preferred_dte_max":              None,
+    "acceptable_assignment_min_price": None,       # floor price for ALLOW_ASSIGNMENT (0139)
 }
 
 
@@ -210,6 +211,64 @@ def _build_evidence(result: dict, candidates: list[dict]) -> EvidenceBundle:
     )
 
 
+def assignment_eligible(
+    ticker: str,
+    current_price: float,
+    strike: float,
+    dte: int,
+    delta: float | None,
+    remaining_extrinsic: float | None,
+    has_avoid: bool,
+    policy: dict,
+) -> tuple[bool, str]:
+    """Determine whether allowing assignment is appropriate for the current position.
+
+    Gate 1 — ITM probability:  delta >= 0.90 when a risk event is present (raising the
+                                bar since the event adds uncertainty), else >= 0.80.
+    Gate 2 — Extrinsic value:  remaining extrinsic < 1% of stock price.
+    Gate 3 — Acceptable price: if cc_policy.acceptable_assignment_min_price is set, the
+                                current stock price must be at or above that floor.
+    Gate 4 — Tax lot check:    if the position has zero long-term lots AND unrealised
+                                gain is large (> $5,000), prefer rolling to defer the
+                                short-term gain.
+    """
+    # Gate 1: ITM probability via delta proxy
+    itm_threshold = 0.90 if has_avoid else 0.80
+    if delta is None or delta < itm_threshold:
+        return False, f"delta {(delta or 0):.2f} below ITM threshold {itm_threshold:.2f}"
+
+    # Gate 2: minimal extrinsic remaining
+    if remaining_extrinsic is not None and current_price > 0:
+        ext_pct = remaining_extrinsic / current_price
+        if ext_pct >= 0.01:
+            return False, f"extrinsic {remaining_extrinsic:.2f} ({ext_pct:.1%}) still substantial"
+
+    # Gate 3: cc_policy floor price
+    min_price = policy.get("acceptable_assignment_min_price")
+    if min_price is not None:
+        try:
+            if current_price < float(min_price):
+                return False, (
+                    f"price {current_price:.2f} below policy floor {float(min_price):.2f}"
+                )
+        except (TypeError, ValueError):
+            pass
+
+    # Gate 4: ST tax concern (soft — blocks only when unrealised gain is large)
+    try:
+        lt_count = agent_db.get_lt_lots_count(ticker)
+        if lt_count == 0:
+            unrealised = agent_db.get_unrealized_gain(ticker)
+            if unrealised > 5_000:
+                return False, (
+                    f"ST gain concern: no LT lots, unrealised gain ${unrealised:.0f} — roll to defer"
+                )
+    except Exception:
+        pass
+
+    return True, "assignment eligible: ITM probability sufficient, extrinsic near zero"
+
+
 def _decide_mgmt_action(
     *,
     current_price: float,
@@ -219,20 +278,21 @@ def _decide_mgmt_action(
     has_avoid: bool,
     delta: float | None,
 ) -> str:
-    """Deterministic 6-way CC management decision. Priority order is intentional."""
+    """CC management decision after assignment_eligible() has already been checked.
+
+    ALLOW_ASSIGNMENT is not returned here — _analyze_roll() calls assignment_eligible()
+    first and short-circuits to ALLOW_ASSIGNMENT before invoking this function.
+    """
     is_itm     = current_price >= strike
     near_money = current_price >= strike * 0.97
-    deeply_itm = current_price >= strike * 1.05
     cap        = pct_captured or 0.0
 
     if has_avoid:
-        return "ROLL_OUT"          # earnings/risk event — must extend past it
-    if deeply_itm and dte <= 14:
-        return "ALLOW_ASSIGNMENT"  # profitable exit, stock called away cleanly
+        return "ROLL_OUT"          # risk event — must extend past it
     if cap >= 80:
         return "BUY_TO_CLOSE"      # negligible extrinsic left, lock in profit
     if dte <= 7 and not is_itm:
-        return "HOLD_CALL"         # expires worthless in days, cost to close not worth it
+        return "HOLD_CALL"         # expires worthless in days
     if is_itm or near_money:
         return "ROLL_UP_AND_OUT"   # near/at/above strike — defensive roll needed
     if delta is not None and delta >= 0.30:
@@ -279,14 +339,29 @@ def _analyze_roll(ctx: AgentContext, ticker: str, position: dict) -> list[Recomm
     remaining_ext = eval_result.get("remaining_extrinsic")
     pnl           = round((existing_premium - current_mark) * contracts * 100, 2)
 
-    action = _decide_mgmt_action(
+    policy = _get_cc_policy(ticker)
+    assign_ok, assign_reason = assignment_eligible(
+        ticker=ticker,
         current_price=current_price,
         strike=existing_strike,
         dte=dte,
-        pct_captured=pct_captured,
-        has_avoid=has_avoid,
         delta=delta,
+        remaining_extrinsic=remaining_ext,
+        has_avoid=has_avoid,
+        policy=policy,
     )
+    if assign_ok:
+        action = "ALLOW_ASSIGNMENT"
+        print(f"[covered_call] {ticker}: assignment_eligible — {assign_reason}")
+    else:
+        action = _decide_mgmt_action(
+            current_price=current_price,
+            strike=existing_strike,
+            dte=dte,
+            pct_captured=pct_captured,
+            has_avoid=has_avoid,
+            delta=delta,
+        )
 
     avoid_labels = [e["label"] for e in risk_events if e["severity"] == "avoid"]
     metrics_lines = [

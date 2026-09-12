@@ -1,7 +1,7 @@
 # Fix ALLOW_ASSIGNMENT Logic in CC Management Engine via assignment_eligible()
 
 - **ID:** 0139
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-11
 - **Priority:** normal
 - **Depends:** none

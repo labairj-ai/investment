@@ -1,7 +1,7 @@
 # Fix Roll Outcome estimated Flag for Open Trade Chains
 
 - **ID:** 0140
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-11
 - **Priority:** normal
 - **Depends:** none

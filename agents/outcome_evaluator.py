@@ -213,6 +213,7 @@ def _compute_cc_management_returns(
     horizon_label: str = "",
     new_expiry_price: float | None = None,
     net_nav: float | None = None,
+    rec_id: int | None = None,
 ) -> tuple[float | None, float | None, bool]:
     """Returns (actual_r, agent_r, actual_is_estimated) for CC management actions.
 
@@ -297,7 +298,11 @@ def _compute_cc_management_returns(
             agent_r = (base_r + agent_net / nav) if base_r is not None else None
             if net_credit is not None:
                 actual_r = (base_r + net_credit / nav) if base_r is not None else None
-                return actual_r, agent_r, actual_r is None
+                # 0140: if the replacement call was subsequently acted upon (rolled again,
+                # BTC'd early) the at-expiry formula assumed hold-to-expiry — keep estimated
+                # until the full chain resolves.
+                chain_open = (rec_id is not None and agent_db.has_chain_child(rec_id))
+                return actual_r, agent_r, chain_open or (actual_r is None)
             return hold_r, agent_r, True
         else:
             # Fallback when new_strike absent: net-credit vs mark only
@@ -373,6 +378,7 @@ def _compute_scenarios(
             horizon_label=horizon_label,
             new_expiry_price=new_expiry_price,
             net_nav=net_nav_val,
+            rec_id=kwargs.get("rec_id"),
         )
         return actual_r, agent_r, hold_r, spy_r, actual_is_estimated, None, None
 
@@ -634,6 +640,7 @@ def evaluate_matured_recommendations(min_age_days: int = MIN_AGE_DAYS) -> int:
                 exec_rec=exec_rec,
                 horizon_label=horizon_label,
                 cc_expiry_date=cc_expiry_date,
+                rec_id=rec["id"],
             )
 
             # 0106: determine cc_assignment_state for all CC horizon rows

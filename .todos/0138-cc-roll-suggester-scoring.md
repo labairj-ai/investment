@@ -1,7 +1,7 @@
 # Fix Roll Suggester to Rank by cc_alpha and Match Roll Type
 
 - **ID:** 0138
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-11
 - **Priority:** high
 - **Depends:** none

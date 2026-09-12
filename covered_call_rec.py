@@ -907,16 +907,61 @@ def _eval_open_economics(delta, dte, pct_captured, has_avoid, current_price,
     return "hold", ("No action needed — " + ", ".join(parts)) if parts else "Hold position"
 
 
-def _suggest_next_call(stock, min_strike: float, current_price: float) -> dict:
+def _suggest_next_call(
+    stock,
+    min_strike: float,
+    current_price: float,
+    *,
+    hv_forecast: float = 0.30,
+    mu: float = RISK_FREE_RATE,
+    existing_call_mark: float = 0.0,
+    roll_type: str | None = None,
+    risk_event_date=None,
+    existing_expiry_date=None,
+) -> dict | None:
+    """Suggest the best replacement contract, ranked by incremental roll alpha.
+
+    incremental_roll_alpha = (new_cc_alpha - existing_call_mark) / nav
+    where nav = current_price - existing_call_mark.
+
+    Hard eligibility per roll_type:
+      ROLL_OUT        : candidate expiry must be > risk_event_date (or > existing_expiry)
+      ROLL_UP         : candidate expiry must be within ±14 days of existing_expiry
+      ROLL_UP_AND_OUT : candidate expiry must be strictly > existing_expiry
+    Contracts failing the hard rule are excluded entirely (not just penalised).
+    When roll_type is None a generic 14-75 DTE window is used.
+    """
     today = datetime.now().date()
+    nav   = current_price - existing_call_mark
     best  = None
     try:
         expirations = _yf_retry(lambda: stock.options)
         for exp in expirations:
-            exp_date     = datetime.strptime(exp, "%Y-%m-%d").date()
+            exp_date      = datetime.strptime(exp, "%Y-%m-%d").date()
             dte_candidate = (exp_date - today).days
-            if dte_candidate < 14 or dte_candidate > 75:
+
+            # ── Hard eligibility by roll type ────────────────────────────────
+            if roll_type == "ROLL_OUT":
+                ref = risk_event_date or existing_expiry_date
+                if ref and exp_date <= ref:
+                    continue  # must clear the risk event
+                if dte_candidate < 7:
+                    continue
+            elif roll_type == "ROLL_UP" and existing_expiry_date:
+                if abs((exp_date - existing_expiry_date).days) > 14:
+                    continue  # must stay in same expiry cycle
+            elif roll_type == "ROLL_UP_AND_OUT":
+                if existing_expiry_date and exp_date <= existing_expiry_date:
+                    continue  # must push out expiry
+                if dte_candidate < 7:
+                    continue
+            else:
+                if dte_candidate < 14 or dte_candidate > 75:
+                    continue
+
+            if dte_candidate > 180:  # cap at ~6 months regardless of roll type
                 continue
+
             try:
                 calls = _yf_retry(lambda: stock.option_chain(exp).calls)
                 calls = calls[calls["strike"] >= min_strike]
@@ -936,7 +981,17 @@ def _suggest_next_call(stock, min_strike: float, current_price: float) -> dict:
                     exec_prem = _exec_premium(bid, ask)
                     if exec_prem < 0.20:
                         continue
-                    score = exec_prem / s * 100
+
+                    # ── Incremental roll alpha ────────────────────────────────
+                    T        = dte_candidate / 365
+                    sigma    = iv if iv > 0.01 else hv_forecast
+                    up_lost  = expected_upside_lost(current_price, s, T, sigma, mu, 0.0)
+                    cc_alpha = exec_prem - up_lost
+                    if cc_alpha <= 0:
+                        continue  # never suggest negative-alpha replacement
+
+                    score = (cc_alpha - existing_call_mark) / nav if nav > 0.01 else cc_alpha - existing_call_mark
+
                     if best is None or score > best["_score"]:
                         best = {
                             "expiry":      exp,
@@ -945,7 +1000,8 @@ def _suggest_next_call(stock, min_strike: float, current_price: float) -> dict:
                             "mid":         round((bid + ask) / 2, 2),
                             "exec":        round(exec_prem, 2),
                             "delta":       round(d, 3),
-                            "premium_pct": round(score, 2),
+                            "premium_pct": round(exec_prem / s * 100, 2),
+                            "cc_alpha":    round(cc_alpha, 3),
                             "_score":      score,
                         }
             except Exception:
@@ -978,6 +1034,18 @@ def evaluate_open_position(ticker: str, strike: float, expiry: str,
     exp_date = datetime.strptime(expiry, "%Y-%m-%d").date()
     dte      = (exp_date - today).days
 
+    # Vol model for incremental roll alpha scoring in _suggest_next_call
+    hv_forecast = 0.30
+    mu_drift    = RISK_FREE_RATE
+    try:
+        _hist_full = _yf_retry(lambda: stock.history(period="1y"))
+        if not _hist_full.empty:
+            _vm      = compute_vol_model(_hist_full)
+            hv_forecast = _vm.get("hv_forecast", 0.30)
+            mu_drift    = _vm.get("mu", RISK_FREE_RATE)
+    except Exception:
+        pass
+
     delta     = None
     gamma     = None
     live_mark = current_mark
@@ -1000,6 +1068,16 @@ def evaluate_open_position(ticker: str, strike: float, expiry: str,
 
     risk_events = get_risk_events(stock, current_price, today, exp_date, strike, live_mark)
     has_avoid   = any(e["severity"] == "avoid" for e in risk_events)
+
+    # Earliest avoid-event date (used as ROLL_OUT expiry floor)
+    _risk_event_date = None
+    for _e in risk_events:
+        if _e.get("severity") == "avoid":
+            try:
+                _risk_event_date = datetime.strptime(_e["date"], "%Y-%m-%d").date()
+                break
+            except Exception:
+                pass
 
     pct_captured = None
     if live_mark is not None and original_premium > 0:
@@ -1024,11 +1102,30 @@ def evaluate_open_position(ticker: str, strike: float, expiry: str,
     )
 
     next_contract = None
+    _existing_mark = live_mark if live_mark is not None else 0.0
     if rec == "roll":
         min_s = max(strike, current_price * 1.01)
-        next_contract = _suggest_next_call(stock, min_s, current_price)
+        # Deep/near-ITM always needs a higher strike, so treat as ROLL_UP_AND_OUT
+        next_contract = _suggest_next_call(
+            stock, min_s, current_price,
+            hv_forecast=hv_forecast,
+            mu=mu_drift,
+            existing_call_mark=_existing_mark,
+            roll_type="ROLL_UP_AND_OUT",
+            existing_expiry_date=exp_date,
+        )
     elif rec == "buy_back":
-        next_contract = _suggest_next_call(stock, current_price * 1.03, current_price)
+        # has_avoid → ROLL_OUT (suggest clearing the event); else generic fresh CC
+        _rt = "ROLL_OUT" if has_avoid else None
+        next_contract = _suggest_next_call(
+            stock, current_price * 1.03, current_price,
+            hv_forecast=hv_forecast,
+            mu=mu_drift,
+            existing_call_mark=_existing_mark,
+            roll_type=_rt,
+            risk_event_date=_risk_event_date,
+            existing_expiry_date=exp_date,
+        )
 
     return {
         "current_price":              round(current_price, 2),

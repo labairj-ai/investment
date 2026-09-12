@@ -32,7 +32,7 @@ Each audit session: read the agent end-to-end, compare logic against investing f
 ## Done when
 
 - [x] Covered Call agent audit complete and all findings captured as backlog items (0138, 0139)
-- [ ] Sell/Trim agent audit complete and findings captured (0141 created)
+- [x] Sell/Trim agent audit complete and findings captured (0141 done; 0142-0145 created)
 - [ ] Thesis agent audit complete and findings captured
 - [ ] Portfolio Guardian agent audit complete and findings captured
 - [ ] Opportunity agent audit complete and findings captured
