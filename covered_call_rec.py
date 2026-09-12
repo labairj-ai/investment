@@ -1118,20 +1118,46 @@ def _build_mgmt_context_from_db(
     except Exception:
         pass
 
-    # Portfolio weight — 0184: use live price × cost_lots shares for numerator;
-    # falls back to stale holding_day value when cost_lots has no rows for ticker.
-    # Denominator is portfolio_day.total_value (EOD, best available aggregate).
+    # Portfolio weight — 0184+0186: live numerator (cost_lots shares × effective_price);
+    # live-ish denominator rebuilt from cost_lots × latest per-ticker price (live for
+    # current ticker, EOD for others). Falls back to portfolio_day.total_value when
+    # cost_lots is empty.
     current_weight_pct = None
     try:
         import agent_db as _adb_w
         conn_w = _adb_w._connect()
         try:
-            port_row = conn_w.execute(
-                "SELECT total_value FROM portfolio_day ORDER BY day DESC LIMIT 1"
-            ).fetchone()
-            if port_row and float(port_row["total_value"]) > 0:
-                port_total = float(port_row["total_value"])
-                # Try cost_lots for share count — gives live-numerator weight
+            # 0186: rebuild denominator from cost_lots × per-ticker price
+            ticker_rows = conn_w.execute(
+                "SELECT DISTINCT ticker FROM cost_lots"
+            ).fetchall()
+            port_total = 0.0
+            for _tr in ticker_rows:
+                _t = _tr["ticker"]
+                _sh = conn_w.execute(
+                    "SELECT SUM(shares) AS s FROM cost_lots WHERE ticker=?", (_t,)
+                ).fetchone()
+                if not _sh or not _sh["s"]:
+                    continue
+                if _t == ticker:
+                    port_total += float(_sh["s"]) * effective_price
+                else:
+                    _pr = conn_w.execute(
+                        "SELECT price FROM holding_day WHERE ticker=? ORDER BY day DESC LIMIT 1",
+                        (_t,),
+                    ).fetchone()
+                    if _pr and _pr["price"]:
+                        port_total += float(_sh["s"]) * float(_pr["price"])
+
+            if port_total <= 0:
+                # Fallback: portfolio_day snapshot
+                _pt_row = conn_w.execute(
+                    "SELECT total_value FROM portfolio_day ORDER BY day DESC LIMIT 1"
+                ).fetchone()
+                if _pt_row and _pt_row["total_value"]:
+                    port_total = float(_pt_row["total_value"])
+
+            if port_total > 0:
                 shares_row = conn_w.execute(
                     "SELECT SUM(shares) AS total_shares FROM cost_lots WHERE ticker=?",
                     (ticker,),
@@ -1140,7 +1166,6 @@ def _build_mgmt_context_from_db(
                     live_value = float(shares_row["total_shares"]) * effective_price
                     current_weight_pct = live_value / port_total * 100
                 else:
-                    # Fallback: stale holding_day position value
                     hold_row = conn_w.execute(
                         "SELECT value FROM holding_day WHERE ticker=? ORDER BY day DESC LIMIT 1",
                         (ticker,),
@@ -1415,6 +1440,7 @@ def _suggest_next_call(
                         _existing_alpha = existing_call_mark
                     # 0181: use candidate strike s (not existing assignment_price) for friction calc
                     # 0182: normalize tax benefit to per-share prob-weighted units, add to score
+                    # 0187: use real-world ITM probability instead of risk-neutral delta
                     tax_benefit = 0.0
                     tax_component = 0.0
                     if lot_schedule:
@@ -1423,7 +1449,8 @@ def _suggest_next_call(
                         if tax_benefit > 0.0 and nav > 0.01:
                             total_shares = sum(float(e.get("allocated_shares", 0)) for e in lot_schedule) or 1.0
                             tax_benefit_per_share = tax_benefit / total_shares
-                            tax_component = tax_benefit_per_share * d / nav  # d ≈ assignment prob
+                            rw_prob = itm_prob_real(current_price, s, T, sigma, mu)  # 0187: real-world measure
+                            tax_component = tax_benefit_per_share * rw_prob / nav
 
                     score = (cc_alpha - _existing_alpha) / nav + tax_component if nav > 0.01 else cc_alpha - _existing_alpha
 

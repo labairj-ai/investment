@@ -63,28 +63,44 @@ def test_dominant_rationale_fundamental():
 
 
 def test_sell_strength_formula():
-    """Verify the SellStrength formula: 0.40T + 0.20F + 0.15V + 0.15P + 0.10O."""
+    """Verify the SellStrength formula: 0.40T + 0.20F + 0.15V + 0.10P + 0.15O (0188 weights)."""
     T, F, V, P, O = 80, 60, 40, 50, 20
-    expected = round(0.40 * T + 0.20 * F + 0.15 * V + 0.15 * P + 0.10 * O, 1)
-    # 32 + 12 + 6 + 7.5 + 2 = 59.5
-    assert expected == 59.5
-    assert _action_from_strength(59.5) == "TRIM"
+    expected = round(0.40 * T + 0.20 * F + 0.15 * V + 0.10 * P + 0.15 * O, 1)
+    # 32 + 12 + 6 + 5 + 3 = 58.0
+    assert expected == 58.0
+    assert _action_from_strength(58.0) == "TRIM"
 
 
 def test_critical_thesis_pillar_violated_forces_exit():
-    """T=90+ from a critical pillar violated → action = EXIT regardless of other scores."""
-    # With T=90, others=0: ss = 0.40*90 = 36 → REVIEW, but T enforces T≥90 rule
-    # The T=90 floor is enforced in _score_T via critical_violated check,
-    # so this test validates that T=90 + formula → EXIT-eligible action.
-    ss = 0.40 * 90 + 0.20 * 0 + 0.15 * 0 + 0.15 * 0 + 0.10 * 0
-    # ss=36 → REVIEW (T alone doesn't hit EXIT threshold)
-    # The design is: T≥90 → ss≥36 → min REVIEW, usually TRIM/EXIT when combined
-    # Full EXIT requires ss≥68, which needs additional factors. T alone → REVIEW at minimum.
+    """T=90+ from a critical pillar violated → action = EXIT when other signals present."""
+    # With T=90, others=0: ss = 0.40*90 = 36 → REVIEW (T alone doesn't hit EXIT threshold)
+    ss = 0.40 * 90 + 0.20 * 0 + 0.15 * 0 + 0.10 * 0 + 0.15 * 0
     assert ss == 36.0
     assert _action_from_strength(ss) == "REVIEW"
-    # With T=90 and some F,V,P: full EXIT scenario
-    ss2 = 0.40 * 90 + 0.20 * 80 + 0.15 * 70 + 0.15 * 50 + 0.10 * 30
+    # With T=90 and some F,V,P (0188 weights)
+    ss2 = 0.40 * 90 + 0.20 * 80 + 0.15 * 70 + 0.10 * 50 + 0.15 * 30
+    # 36 + 16 + 10.5 + 5 + 4.5 = 72.0
+    assert ss2 == 72.0
     assert _action_from_strength(ss2) == "EXIT"
+
+
+def test_action_from_strength_conviction_adjusted():
+    """0188: high-conviction positions require higher ss to EXIT."""
+    # conviction=5: EXIT threshold = min(80, 68 + 5*(5-3)) = 78
+    assert _action_from_strength(70, conviction=5) == "TRIM"
+    assert _action_from_strength(78, conviction=5) == "EXIT"
+    # conviction=1: EXIT threshold = max(55, 68 + 5*(1-3)) = 58
+    assert _action_from_strength(58, conviction=1) == "EXIT"
+    assert _action_from_strength(57, conviction=1) == "TRIM"
+    # default conviction=3 preserves existing boundary
+    assert _action_from_strength(68) == "EXIT"
+    assert _action_from_strength(67) == "TRIM"
+
+
+def test_dominant_rationale_opportunity_updated_weight():
+    """0188: O at 15% weight — O=100 dominates when T/F/V/P are zero."""
+    dominant = _dominant_rationale(T=0, F=0, V=0, P=0, O=100)
+    assert dominant == "CAPITAL_REALLOCATION"
 
 
 # ── 0084: true valuation ratio tests ─────────────────────────────────────────

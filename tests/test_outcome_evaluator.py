@@ -506,9 +506,9 @@ def test_roll_completed_btc_child_uses_uncapped_stock_return():
             "id": 99, "action": "BUY_TO_CLOSE",
             "payload": {"btc_price": terminal_btc_exec}, "exec_rec": None,
         }),
-        # 0183: _resolve_chain now reads raw executions for terminal BTC cost
+        # 0183: _resolve_chain uses aggregate_executions for terminal BTC (0185: needs contracts)
         patch.object(agent_db, "get_executions_for_rec", return_value=[
-            {"execution_price": terminal_btc_exec, "action": "BUY_TO_CLOSE"},
+            {"execution_price": terminal_btc_exec, "action": "BUY_TO_CLOSE", "contracts": 1},
         ]),
     ):
         actual_r, agent_r, estimated, _ = _compute_cc_management_returns(

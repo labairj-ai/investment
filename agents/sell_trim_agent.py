@@ -1,15 +1,27 @@
 from __future__ import annotations
 """Sell/Trim Agent — evaluates every held position on a disposition framework.
 
-SellStrength = 0.40*T + 0.20*F + 0.15*V + 0.15*P + 0.10*O
+SellStrength = 0.40*T + 0.20*F + 0.15*V + 0.10*P + 0.15*O
+
+Weights revised in 0188: O raised 0.10→0.15 (opportunity cost matters as much
+as concentration), P lowered 0.15→0.10. All other weights unchanged.
 
 All five components are computed deterministically from DB reads before any
 LLM call. The LLM receives the scores and writes rationale; it never invents
 them. Price movement is not a component — the agent is gated by trigger_type
 (portfolio_scope), so a price move alone cannot produce a sell recommendation.
 
+EXIT threshold is conviction-adjusted (0188): EXIT_THRESHOLD = clamp(68 + 5*(conviction-3), 55, 80).
+Conviction=3 → 68 (default). Higher conviction requires stronger signal to exit.
+
 Tax friction is computed separately and stored in action_payload; it does not
 modify SellStrength.
+
+Post-scoring deterministic overrides (0189):
+  1. Valuation-only TRIM floor: V≥80 + T≤20 + O≥50 + P≥50 → at least TRIM
+  2. TRIM fraction floor from concentration: P≥55 → 0.33, P≥75 → 0.50
+  3. Critical pillar bypass: violation + other signal (F>20/V>50/P>50/O>40) → EXIT;
+     violation alone → REVIEW with critical_pillar_violated flag (0188 graduated response)
 """
 
 import datetime
@@ -36,6 +48,16 @@ _RATIONALE_CLASSES = frozenset({
 _NO_ACTION_THRESHOLD = 10   # ss below this → upsert_no_action, skip LLM
 
 _DEFAULT_MAX_WEIGHT_PCT = 10.0   # used when thesis has no max_weight_pct set
+
+# 0188: F revenue deterioration thresholds (configurable — tune without code changes)
+_F_REV_SEVERE_THRESHOLD = -0.20   # >20% YoY decline → severe
+_F_REV_SIGNIF_THRESHOLD = -0.10   # >10% YoY decline → significant
+_F_REV_MILD_THRESHOLD   = -0.05   # >5%  YoY decline → mild
+# corresponding scores
+_F_REV_SEVERE_SCORE = 40
+_F_REV_SIGNIF_SCORE = 30
+_F_REV_MILD_SCORE   = 20
+_F_REV_FLAT_SCORE   = 15
 
 # 0084: Map thesis valuation_framework.primary_metric → column in
 # historical_valuation_metrics. These are actual computed ratios (e.g. EV/FCF),
@@ -65,31 +87,38 @@ def _connect() -> sqlite3.Connection | None:
 # ── Action from SellStrength ──────────────────────────────────────────────────
 
 def _trim_fraction_from_strength(ss: float) -> float:
-    """Scale TRIM fraction 0.25→0.75 across the TRIM band (48–67)."""
+    """Scale TRIM fraction 0.25→0.75 across the TRIM band (48→exit_threshold)."""
     raw = 0.25 + (ss - 48) / 20.0 * 0.50
     return round(max(0.20, min(0.75, raw)) / 0.05) * 0.05
 
 
-def _action_from_strength(ss: float) -> str:
+def _action_from_strength(ss: float, conviction: int = 3) -> str:
+    """Map SellStrength to a preliminary action.
+
+    EXIT threshold is conviction-adjusted (0188):
+      EXIT_THRESHOLD = clamp(68 + 5*(conviction-3), 55, 80)
+    Default conviction=3 preserves existing EXIT at ss≥68.
+    """
     if ss < _NO_ACTION_THRESHOLD:
         return "NO_ACTION"
     if ss < 28:
         return "HOLD"
     if ss < 48:
         return "REVIEW"
-    if ss < 68:
+    exit_threshold = max(55, min(80, 68 + 5 * (conviction - 3)))
+    if ss < exit_threshold:
         return "TRIM"
     return "EXIT"
 
 
 def _dominant_rationale(T: int, F: int, V: int, P: int, O: int) -> str:
-    """Return rationale class for the highest-weighted component."""
+    """Return rationale class for the highest-weighted component (0188 weights)."""
     weighted = [
         (0.40 * T, "THESIS_BREAK"),
         (0.20 * F, "FUNDAMENTAL_DETERIORATION"),
         (0.15 * V, "VALUATION"),
-        (0.15 * P, "PORTFOLIO_CONCENTRATION"),
-        (0.10 * O, "CAPITAL_REALLOCATION"),
+        (0.10 * P, "PORTFOLIO_CONCENTRATION"),
+        (0.15 * O, "CAPITAL_REALLOCATION"),
     ]
     return max(weighted, key=lambda x: x[0])[1]
 
@@ -244,17 +273,17 @@ def _score_F(ticker: str, current_price: float) -> tuple[int, str]:
                    if revenues[-1] and abs(revenues[-1]) > 0 else None)
 
     if rev_chg is not None:
-        if rev_chg < -0.20:
-            score += 40
+        if rev_chg < _F_REV_SEVERE_THRESHOLD:
+            score += _F_REV_SEVERE_SCORE
             notes.append(f"revenue {rev_chg*100:.0f}% {comparison_type} (severe)")
-        elif rev_chg < -0.10:
-            score += 30
+        elif rev_chg < _F_REV_SIGNIF_THRESHOLD:
+            score += _F_REV_SIGNIF_SCORE
             notes.append(f"revenue {rev_chg*100:.0f}% {comparison_type} (significant)")
-        elif rev_chg < -0.05:
-            score += 20
+        elif rev_chg < _F_REV_MILD_THRESHOLD:
+            score += _F_REV_MILD_SCORE
             notes.append(f"revenue {rev_chg*100:.0f}% {comparison_type}")
         elif rev_chg < 0:
-            score += 15
+            score += _F_REV_FLAT_SCORE
             notes.append(f"revenue flat/declining ({comparison_type})")
 
     # TTM revenue vs prior TTM (when ≥8 quarters)
@@ -761,12 +790,12 @@ def _call_llm(
 Write the rationale — do NOT invent or change the scores.
 
 SELL STRENGTH: {ss:.0f}/100 → suggested action: {suggested_action}{trim_note}
-  T (thesis, 40%):      {T}/100
+  T (thesis, 40%):        {T}/100
 {claim_lines}
-  F (fundamentals, 20%): {F}/100 — {f_note}
-  V (valuation, 15%):    {V}/100 — {v_note}
-  P (concentration, 15%): {P}/100 — {p_note}
-  O (opportunity, 10%):  {O}/100 — {o_note}{dq_section}
+  F (fundamentals, 20%):  {F}/100 — {f_note}
+  V (valuation, 15%):     {V}/100 — {v_note}
+  P (concentration, 10%): {P}/100 — {p_note}
+  O (opportunity, 15%):   {O}/100 — {o_note}{dq_section}
 
 TAX NOTE (separate — never changes the action): {tax_note}
 {hard_exit_note}
@@ -825,17 +854,27 @@ def _run(ctx: AgentContext) -> list[Recommendation]:
         P, p_note   = _score_P(ticker, weight_pct)
         O, o_note   = _score_O(ticker)
 
-        ss = round(0.40 * T + 0.20 * F + 0.15 * V + 0.15 * P + 0.10 * O, 1)
+        # 0188: updated weights (O raised 0.10→0.15, P lowered 0.15→0.10)
+        ss = round(0.40 * T + 0.20 * F + 0.15 * V + 0.10 * P + 0.15 * O, 1)
+
+        # 0188: pull conviction for conviction-adjusted EXIT threshold
+        _conviction = 3
+        try:
+            _thesis = agent_db.get_active_thesis(ticker)
+            if _thesis and _thesis.get("conviction") is not None:
+                _conviction = int(_thesis["conviction"])
+        except Exception:
+            pass
 
         print(
             f"[SellTrim] {ticker}: ss={ss:.0f}  "
-            f"T={T} F={F} V={V} P={P} O={O}  "
+            f"T={T} F={F} V={V} P={P} O={O}  conviction={_conviction}  "
             f"weight={weight_pct:.1f}%"
-            + (" [CRITICAL PILLAR VIOLATED → hard EXIT]" if critical_pillar_violated else "")
+            + (" [CRITICAL PILLAR VIOLATED]" if critical_pillar_violated else "")
         )
 
         # ── Gate: below threshold → NO_ACTION without LLM ───────────────────
-        # Critical pillar violation bypasses the gate — always proceeds to EXIT.
+        # Critical pillar violation bypasses the gate — always proceeds to recommendation.
         if ss < _NO_ACTION_THRESHOLD and not critical_pillar_violated:
             thesis_ver = agent_db._get_thesis_version_for_hash(ticker)
             latest_q   = agent_db._get_latest_quarter_for_hash(ticker)
@@ -848,17 +887,35 @@ def _run(ctx: AgentContext) -> list[Recommendation]:
             )
             continue
 
-        suggested = _action_from_strength(ss)
+        # 0188: conviction-adjusted EXIT threshold
+        suggested = _action_from_strength(ss, conviction=_conviction)
 
-        # ── Hard EXIT for critical pillar violation ───────────────────────────
+        # 0188: graduated critical pillar bypass — EXIT only when other signals confirm;
+        # violation alone (thesis only) → REVIEW so analyst can assess severity.
+        _other_signal = (F > 20 or V > 50 or P > 50 or O > 40)
         if critical_pillar_violated:
-            suggested = "EXIT"
+            if _other_signal:
+                suggested = "EXIT"
+            elif suggested not in ("TRIM", "EXIT"):
+                suggested = "REVIEW"  # enforce minimum REVIEW for pillar violation
+
+        # 0189: valuation-only TRIM floor — extreme valuation + intact thesis + alternatives
+        # → at least TRIM even when composite ss is low (V dominates but T, F are fine).
+        if V >= 80 and T <= 20 and O >= 50 and P >= 50 and suggested == "REVIEW":
+            suggested = "TRIM"
 
         # ── Tax calculation (separate; does not affect ss) ───────────────────
         tax = _tax_note(ticker, current_price)
 
         # ── Pre-compute scaled trim fraction ─────────────────────────────────
         trim_fraction = _trim_fraction_from_strength(ss) if suggested == "TRIM" else None
+
+        # 0189: concentration floor on trim fraction (independent of ss)
+        if suggested == "TRIM" and trim_fraction is not None:
+            if P >= 75:    # 2× overweight
+                trim_fraction = max(trim_fraction, 0.50)
+            elif P >= 55:  # 1.5× overweight
+                trim_fraction = max(trim_fraction, 0.33)
 
         # ── LLM rationale ────────────────────────────────────────────────────
         # Include decision quality note if significant historical pattern exists
@@ -898,9 +955,26 @@ def _run(ctx: AgentContext) -> list[Recommendation]:
         if action not in {"HOLD", "REVIEW", "TRIM", "EXIT"}:
             action = suggested
 
-        # Hard EXIT override: critical pillar violation cannot be downgraded by the LLM
+        # 0188: graduated critical pillar override — LLM cannot downgrade below REVIEW;
+        # when other signals also present, hard-enforce EXIT.
         if critical_pillar_violated:
-            action = "EXIT"
+            if _other_signal:
+                action = "EXIT"
+            elif action == "HOLD":
+                action = "REVIEW"  # minimum REVIEW for pillar violation
+
+        # 0189: re-apply valuation TRIM floor after LLM (LLM cannot downgrade below TRIM)
+        if V >= 80 and T <= 20 and O >= 50 and P >= 50 and action == "REVIEW":
+            action = "TRIM"
+            if trim_fraction is None:
+                trim_fraction = 0.25
+
+        # 0189: re-apply concentration floor after LLM
+        if action == "TRIM" and trim_fraction is not None:
+            if P >= 75:
+                trim_fraction = max(trim_fraction, 0.50)
+            elif P >= 55:
+                trim_fraction = max(trim_fraction, 0.33)
 
         # ── Tax-deferral override: EXIT → TRIM for near-LT positions ─────────
         tax_deferral_override = False

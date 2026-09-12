@@ -3680,18 +3680,51 @@ def aggregate_executions(executions: list[dict], action: str) -> "ExecutionSumma
     is_cc = action == "SELL_CC"
 
     # 0101: rolls are stored as 2 linked rows (BUY_TO_CLOSE + SELL_CC)
+    # 0185: contract-weighted legs + fee deduction
     if action in ("ROLL_OUT", "ROLL_UP", "ROLL_UP_AND_OUT"):
         btc_legs = [e for e in executions if e.get("action") == "BUY_TO_CLOSE"]
         sto_legs = [e for e in executions if e.get("action") == "SELL_CC"]
-        btc_debit   = sum(float(e.get("execution_price") or 0) for e in btc_legs)
-        sto_premium = sum(float(e.get("premium") or e.get("execution_price") or 0) for e in sto_legs)
-        summary.weighted_avg_price = sto_premium - btc_debit  # net credit (positive = credit)
-        summary.execution_price    = summary.weighted_avg_price
+        btc_cash = sum(
+            float(e.get("execution_price") or 0) * int(e.get("contracts") or 0)
+            for e in btc_legs
+        ) * 100
+        sto_cash = sum(
+            float(e.get("premium") or e.get("execution_price") or 0) * int(e.get("contracts") or 0)
+            for e in sto_legs
+        ) * 100
+        total_contracts = max(
+            sum(int(e.get("contracts") or 0) for e in btc_legs),
+            sum(int(e.get("contracts") or 0) for e in sto_legs),
+            1,
+        )
+        total_fees = sum(float(e.get("fees") or 0) for e in executions)
+        net_cash = sto_cash - btc_cash - total_fees
+        summary.execution_price    = net_cash / (total_contracts * 100)
+        summary.weighted_avg_price = summary.execution_price
+        summary.total_contracts    = int(total_contracts)
         if sto_legs:
             summary.strike = sto_legs[0].get("strike")
             summary.expiration = sto_legs[0].get("expiration")
         dates = sorted(
             e["execution_date"] for e in executions if e.get("execution_date")
+        )
+        summary.first_execution_date = dates[0] if dates else None
+        summary.execution_date       = dates[-1] if dates else None
+        return summary
+
+    # 0185: BUY_TO_CLOSE — contract-weighted average per-share cost
+    if action == "BUY_TO_CLOSE":
+        total_contracts = sum(int(e.get("contracts") or 0) for e in executions)
+        btc_cash = sum(
+            float(e.get("execution_price") or 0) * int(e.get("contracts") or 0)
+            for e in executions
+        ) * 100
+        if total_contracts > 0:
+            summary.weighted_avg_price = btc_cash / (total_contracts * 100)
+            summary.execution_price    = summary.weighted_avg_price
+        summary.total_contracts = int(total_contracts)
+        dates = sorted(
+            f["execution_date"] for f in executions if f.get("execution_date")
         )
         summary.first_execution_date = dates[0] if dates else None
         summary.execution_date       = dates[-1] if dates else None

@@ -318,13 +318,11 @@ def _compute_cc_management_returns(
                                       accumulated_extra + hop_net, has_missing_exec)
 
             elif child_action == "BUY_TO_CLOSE":
-                # Terminal BTC — aggregate_executions() doesn't handle BTC per-share price
-                # correctly (no quantity field), so read raw executions directly.
+                # Terminal BTC — 0185: use aggregate_executions for contract-weighted avg
                 raw_execs = agent_db.get_executions_for_rec(child["id"])
-                btc_prices = [float(e["execution_price"]) for e in raw_execs
-                              if e.get("execution_price") is not None]
-                if btc_prices:
-                    terminal_btc = sum(btc_prices) / len(btc_prices)  # avg per-share cost
+                btc_summary = agent_db.aggregate_executions(raw_execs, "BUY_TO_CLOSE")
+                if btc_summary and btc_summary.get("execution_price"):
+                    terminal_btc = float(btc_summary.get("execution_price"))
                     extra = accumulated_extra - terminal_btc
                 else:
                     extra = accumulated_extra
