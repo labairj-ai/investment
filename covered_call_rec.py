@@ -920,9 +920,20 @@ def _lot_tax_friction(
     from tax_utils import is_long_term as _is_lt, days_until_lt as _days_lt, lt_threshold as _lt_thresh
     try:
         import agent_db as _adb_tax
-        fifo_lots = _adb_tax.select_fifo_lots(ticker, shares_to_assign)
+        fifo_result = _adb_tax.select_fifo_lots(ticker, shares_to_assign)
+        fifo_lots = fifo_result["lots"]
+
         if not fifo_lots:
             return TaxFrictionDetail(total_friction=0.0, reason="no lots found", available=False)
+
+        # 0176: incomplete lot coverage understates friction — treat as data error
+        if not fifo_result["complete"]:
+            covered = fifo_result["shares_selected"]
+            return TaxFrictionDetail(
+                total_friction=0.0,
+                reason=f"incomplete lot coverage: {covered:.0f}/{shares_to_assign} shares in cost_lots",
+                available=False,
+            )
 
         disposal = disposal_date if disposal_date is not None else date.today()
         st_gain = 0.0
@@ -932,7 +943,8 @@ def _lot_tax_friction(
         for lot in fifo_lots:
             purchase_date = date.fromisoformat(lot["purchase_date"])
             allocated     = lot["allocated"]
-            gain = allocated * (assignment_price - lot["cost_per_share"])
+            cost_ps       = lot["cost_per_share"]
+            gain = allocated * (assignment_price - cost_ps)
             lt_date = _lt_thresh(purchase_date)
             is_lt = _is_lt(purchase_date, disposal)
             friction_contribution = 0.0
@@ -947,6 +959,7 @@ def _lot_tax_friction(
             lot_schedule.append({
                 "purchase_date": lot["purchase_date"],
                 "allocated_shares": allocated,
+                "cost_per_share": cost_ps,          # 0178: needed for roll-expiry friction calc
                 "lt_date": lt_date.isoformat(),
                 "friction_contribution": round(friction_contribution, 2),
             })
@@ -971,8 +984,13 @@ def _lot_tax_friction(
             available=True,
             lot_schedule=lot_schedule,
         )
-    except Exception:
-        return TaxFrictionDetail(total_friction=0.0, reason="", available=True)
+    except Exception as exc:
+        # 0175: any exception (DB failure, missing table, import error) must fail closed
+        return TaxFrictionDetail(
+            total_friction=0.0,
+            reason=f"tax lot data unavailable: {type(exc).__name__}",
+            available=False,
+        )
 
 
 def _check_assignment_eligible(ctx: "ManagementPolicyContext") -> "tuple[bool, str]":
@@ -1021,10 +1039,12 @@ def _check_assignment_eligible(ctx: "ManagementPolicyContext") -> "tuple[bool, s
             )
 
     if asgn_policy.get("only_if_overweight", False):
-        # 0160: use live snapshot weight; 0170: None = data unavailable → fail closed
+        # 0160/0170/0177: both values required; either missing → fail closed
         if ctx.current_weight_pct is None:
             return False, "weight_data_unavailable: cannot assess overweight status"
-        if ctx.max_position_pct is not None and ctx.current_weight_pct <= ctx.max_position_pct:
+        if ctx.max_position_pct is None:
+            return False, "max_position_pct_unavailable: cannot assess overweight status"
+        if ctx.current_weight_pct <= ctx.max_position_pct:
             return False, (
                 f"not overweight ({ctx.current_weight_pct:.1f}% vs "
                 f"{ctx.max_position_pct:.1f}% max) — assignment would reduce below target"
@@ -1250,6 +1270,31 @@ def _remaining_call_alpha(
     return expected_upside_lost(current_price, existing_strike, T_old, sigma, mu)
 
 
+def _friction_at_expiry(
+    lot_schedule: "list[dict]",
+    assignment_price: float,
+    candidate_expiry: "date",
+) -> float:
+    """Return avoidable tax dollars if assignment occurs at candidate_expiry (0178).
+
+    Uses lot_schedule entries produced by _lot_tax_friction() — requires cost_per_share
+    to be present in each entry (added in 0178). Returns 0.0 on missing data.
+    """
+    from tax_utils import is_long_term as _is_lt
+    st_gain = 0.0
+    for entry in lot_schedule:
+        try:
+            purchase_date = date.fromisoformat(entry["purchase_date"])
+            allocated     = float(entry["allocated_shares"])
+            cost_ps       = float(entry["cost_per_share"])
+            gain = allocated * (assignment_price - cost_ps)
+            if gain > 0 and not _is_lt(purchase_date, candidate_expiry):
+                st_gain += gain
+        except (KeyError, ValueError):
+            continue
+    return st_gain * (TAX_ST_RATE - TAX_LT_RATE)
+
+
 def _suggest_next_call(
     stock,
     min_strike: float,
@@ -1262,6 +1307,9 @@ def _suggest_next_call(
     risk_event_date=None,
     existing_expiry_date=None,
     existing_strike: float | None = None,
+    lot_schedule: "list[dict] | None" = None,   # 0179: per-lot friction schedule
+    current_tax_friction: float = 0.0,          # 0179: friction at current expiry
+    assignment_price: "float | None" = None,    # 0179: strike used for tax gain calc
 ) -> dict | None:
     """Suggest the best replacement contract, ranked by incremental roll alpha.
 
@@ -1353,33 +1401,46 @@ def _suggest_next_call(
                         _existing_alpha = existing_call_mark
                     score = (cc_alpha - _existing_alpha) / nav if nav > 0.01 else cc_alpha - _existing_alpha
 
-                    if best is None or score > best["_score"]:
+                    # 0179: tax-benefit tiebreaker — prefer candidates that clear more LT dates
+                    tax_benefit = 0.0
+                    if lot_schedule and assignment_price is not None:
+                        roll_friction = _friction_at_expiry(lot_schedule, assignment_price, exp_date)
+                        tax_benefit = max(0.0, current_tax_friction - roll_friction)
+
+                    if best is None or score > best["_score"] or (
+                        abs(score - best["_score"]) < 0.001 and tax_benefit > best.get("_tax_benefit", 0.0)
+                    ):
                         best = {
-                            "expiry":      exp,
-                            "strike":      round(s, 2),
-                            "dte":         dte_candidate,
-                            "mid":         round((bid + ask) / 2, 2),
-                            "exec":        round(exec_prem, 2),
-                            "delta":       round(d, 3),
-                            "premium_pct": round(exec_prem / s * 100, 2),
-                            "cc_alpha":    round(cc_alpha, 3),
-                            "_score":      score,
+                            "expiry":              exp,
+                            "strike":              round(s, 2),
+                            "dte":                 dte_candidate,
+                            "mid":                 round((bid + ask) / 2, 2),
+                            "exec":                round(exec_prem, 2),
+                            "delta":               round(d, 3),
+                            "premium_pct":         round(exec_prem / s * 100, 2),
+                            "cc_alpha":            round(cc_alpha, 3),
+                            "tax_benefit_at_expiry": round(tax_benefit, 2),
+                            "_score":              score,
+                            "_tax_benefit":        tax_benefit,
                         }
             except Exception:
                 continue
     except Exception:
         pass
     if best:
-        best.pop("_score")
+        best.pop("_score", None)
+        best.pop("_tax_benefit", None)
     return best
 
 
 def evaluate_open_position(ticker: str, strike: float, expiry: str,
-                            original_premium: float, current_mark) -> dict:
+                            original_premium: float, current_mark,
+                            contracts: int = 1) -> dict:
     """
     Evaluate an open covered call using economic comparisons rather than
     rule-based priority ladders.
     Returns metrics + recommendation: 'hold' | 'roll' | 'buy_back'.
+    Pass contracts so tax friction is computed for the actual position size (0174).
     """
     stock = yf.Ticker(ticker)
 
@@ -1455,7 +1516,26 @@ def evaluate_open_position(ticker: str, strike: float, expiry: str,
                                      if remaining_extrinsic_yield is not None and dte > 0
                                      else None)
 
-    # 0152/0162: build context from DB (dashboard path — no live snapshot available)
+    # 0174: load per-ticker CC policy so dashboard applies same assignment gates as agent
+    _policy: dict = {}
+    try:
+        import json as _json
+        import agent_db as _adb_dash
+        _conn_p = _adb_dash._connect()
+        try:
+            _prow = _conn_p.execute(
+                "SELECT cc_policy FROM investment_theses "
+                "WHERE ticker=? AND status='active' ORDER BY version DESC LIMIT 1",
+                (ticker,),
+            ).fetchone()
+            if _prow and _prow["cc_policy"]:
+                _policy = _json.loads(_prow["cc_policy"])
+        finally:
+            _conn_p.close()
+    except Exception:
+        pass
+
+    # 0152/0162/0174: build context from DB — now passes expiry, contracts, and policy
     _mgmt_ctx = _build_mgmt_context_from_db(
         ticker=ticker,
         current_price=current_price,
@@ -1466,9 +1546,18 @@ def evaluate_open_position(ticker: str, strike: float, expiry: str,
         has_avoid=has_avoid,
         remaining_extrinsic=remaining_extrinsic,
         risk_events=risk_events,
-        policy=None,  # no per-ticker policy in dashboard path; agent passes policy
+        policy=_policy,
+        contracts=contracts,
+        expiry=expiry,
     )
     action, reason = evaluate_cc_management_state(_mgmt_ctx)
+
+    # 0178/0179: extract lot schedule for tax-benefit roll ranking
+    _lot_sched = (
+        _mgmt_ctx.tax_friction_detail.lot_schedule
+        if _mgmt_ctx.tax_friction_detail else []
+    )
+    _current_friction = _mgmt_ctx.assignment_tax_friction
 
     _ROLL_ACTIONS = {"ROLL_OUT", "ROLL_UP", "ROLL_UP_AND_OUT"}
     next_contract = None
@@ -1484,6 +1573,9 @@ def evaluate_open_position(ticker: str, strike: float, expiry: str,
                 risk_event_date=_risk_event_date,
                 existing_expiry_date=exp_date,
                 existing_strike=strike,
+                lot_schedule=_lot_sched,
+                current_tax_friction=_current_friction,
+                assignment_price=strike,
             )
         else:
             min_s = max(strike, current_price * 1.01)
@@ -1495,6 +1587,9 @@ def evaluate_open_position(ticker: str, strike: float, expiry: str,
                 roll_type=action,
                 existing_expiry_date=exp_date,
                 existing_strike=strike,
+                lot_schedule=_lot_sched,
+                current_tax_friction=_current_friction,
+                assignment_price=strike,
             )
     elif action == "BUY_TO_CLOSE":
         # Suggest a fresh replacement call after closing

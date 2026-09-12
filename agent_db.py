@@ -471,6 +471,8 @@ def migrate() -> None:
         # 0130 — CC trade chain: link SELL_CC → management recs for same physical position
         ("recommendations",              "trade_chain_id",       "TEXT"),
         ("recommendations",              "parent_cc_rec_id",     "INTEGER"),
+        # 0180 — roll chain depth for recursive attribution in outcome evaluator
+        ("recommendation_outcomes",      "roll_chain_depth",     "INTEGER"),
     ]
     for table, col, col_type in _new_cols:
         try:
@@ -1031,6 +1033,7 @@ def insert_outcome(
     cc_incremental_alpha: float | None = None,
     cc_assignment_state: str | None = None,
     outcome_math_version: int | None = None,
+    roll_chain_depth: int | None = None,
 ) -> int:
     conn = _connect()
     cur = conn.execute(
@@ -1038,12 +1041,12 @@ def insert_outcome(
            (recommendation_id, evaluation_date, benchmark_return, actual_return,
             recommended_path_return, opportunity_cost, notes, horizon, hold_return,
             actual_is_estimated, cc_strategy_return, cc_incremental_alpha,
-            cc_assignment_state, outcome_math_version)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            cc_assignment_state, outcome_math_version, roll_chain_depth)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (recommendation_id, time.time(), benchmark_return, actual_return,
          recommended_path_return, opportunity_cost, notes, horizon, hold_return,
          actual_is_estimated, cc_strategy_return, cc_incremental_alpha,
-         cc_assignment_state, outcome_math_version),
+         cc_assignment_state, outcome_math_version, roll_chain_depth),
     )
     outcome_id = cur.lastrowid
     conn.commit()
@@ -1051,11 +1054,18 @@ def insert_outcome(
     return outcome_id
 
 
-def select_fifo_lots(ticker: str, shares_to_select: float) -> list[dict]:
-    """Return lots consumed oldest-first (FIFO) up to shares_to_select (0167).
+def select_fifo_lots(ticker: str, shares_to_select: float) -> dict:
+    """Return FIFO lot selection result (0167, 0176).
 
-    Each dict: id, purchase_date, cost_per_share, shares (original), allocated.
-    Stops once shares_to_select is satisfied; partial lots are supported.
+    Returns a dict:
+      lots             — list of consumed lots (id, purchase_date, cost_per_share,
+                         shares, allocated), oldest-first
+      shares_requested — the requested share count
+      shares_selected  — actual shares covered by the returned lots
+      complete         — True iff shares_selected >= shares_requested (within 0.01)
+
+    Callers must check complete=False and treat incomplete coverage as a data error
+    (partial lots understate tax friction).
     """
     conn = _connect()
     try:
@@ -1065,7 +1075,8 @@ def select_fifo_lots(ticker: str, shares_to_select: float) -> list[dict]:
             (ticker,),
         ).fetchall()
     except Exception:
-        return []
+        return {"lots": [], "shares_requested": shares_to_select,
+                "shares_selected": 0.0, "complete": False}
     finally:
         conn.close()
 
@@ -1083,7 +1094,14 @@ def select_fifo_lots(ticker: str, shares_to_select: float) -> list[dict]:
             "shares":         float(row["shares"]),
             "allocated":      allocated,
         })
-    return result
+    shares_selected = float(shares_to_select) - max(remaining, 0.0)
+    complete = remaining <= 0.01  # allow float rounding
+    return {
+        "lots":             result,
+        "shares_requested": float(shares_to_select),
+        "shares_selected":  shares_selected,
+        "complete":         complete,
+    }
 
 
 def get_lt_lots_count(ticker: str) -> int:

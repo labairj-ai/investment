@@ -3433,6 +3433,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         expiry=expiry,
                         original_premium=float(premium_per_contract),
                         current_mark=float(current_mark) if current_mark is not None else None,
+                        contracts=int(contracts) if contracts else 1,
                     )
                     ev["id"]        = pos_id
                     ev["ticker"]    = ticker

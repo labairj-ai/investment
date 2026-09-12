@@ -1,4 +1,4 @@
-"""Tests for the unified CC management engine (0151, 0152, 0157–0162, 0168–0173)."""
+"""Tests for the unified CC management engine (0151, 0152, 0157–0162, 0168–0173, 0174–0180)."""
 import sys
 import sqlite3
 from pathlib import Path
@@ -14,6 +14,7 @@ from covered_call_rec import (
     evaluate_cc_roll_chain,
     _check_assignment_eligible,
     _lot_tax_friction,
+    _friction_at_expiry,
 )
 import agent_db as _adb
 
@@ -516,3 +517,243 @@ def test_roll_chain_respects_max_hops():
 
     chain = evaluate_cc_roll_chain(roll_ctx, candidate_contexts=candidates, max_hops=1)
     assert len(chain) <= 2, f"max_hops=1 should limit chain to 2 entries (initial + 1 hop)"
+
+
+# ── 0175: tax exceptions fail closed ──────────────────────────────────────────
+
+def test_tax_exception_returns_available_false(monkeypatch, tmp_path):
+    """0175: any DB exception during lot lookup must set available=False (fail closed)."""
+    db_path = _make_db(tmp_path)
+    _patch_db(monkeypatch, db_path)
+
+    def _broken_connect():
+        raise RuntimeError("DB unavailable")
+
+    monkeypatch.setattr(_adb, "_connect", _broken_connect)
+    detail = _lot_tax_friction("FAIL", assignment_price=100.0, shares_to_assign=100)
+    assert detail.available is False
+    assert "unavailable" in detail.reason.lower() or "RuntimeError" in detail.reason
+
+
+def test_tax_exception_does_not_return_available_true(monkeypatch):
+    """0175: DB error must never silently return available=True with zero friction."""
+    import covered_call_rec as _ccr
+    original = _adb.select_fifo_lots
+
+    def _raise(*args, **kwargs):
+        raise ValueError("simulated failure")
+
+    monkeypatch.setattr(_adb, "select_fifo_lots", _raise)
+    detail = _lot_tax_friction("BOOM", assignment_price=200.0, shares_to_assign=100)
+    assert detail.available is False, "exception path must not return available=True"
+    monkeypatch.setattr(_adb, "select_fifo_lots", original)
+
+
+# ── 0176: incomplete FIFO lot coverage returns available=False ─────────────────
+
+def test_incomplete_lot_coverage_fails_closed(monkeypatch, tmp_path):
+    """0176: when lots only cover 50/100 shares, available=False and gate 4 blocks."""
+    db_path = _make_db(tmp_path)
+    conn = sqlite3.connect(str(db_path))
+    d = (date.today() - timedelta(days=400)).isoformat()  # LT lot
+    conn.execute(
+        "INSERT INTO cost_lots (ticker, shares, cost_per_share, purchase_date) VALUES (?,?,?,?)",
+        ("PARTIAL", 50.0, 100.0, d),
+    )
+    conn.commit()
+    conn.close()
+    _patch_db(monkeypatch, db_path)
+
+    detail = _lot_tax_friction("PARTIAL", assignment_price=150.0, shares_to_assign=100)
+    assert detail.available is False
+    assert "incomplete" in detail.reason.lower()
+
+    ok, reason = _check_assignment_eligible(_ctx(
+        delta=0.90, remaining_extrinsic=0.10,
+        assignment_tax_friction=detail.total_friction,
+        tax_friction_reason=detail.reason,
+        tax_friction_available=detail.available,
+    ))
+    assert not ok, f"incomplete coverage should block gate 4: {reason}"
+
+
+# ── 0177: only_if_overweight fails closed when max_position_pct=None ──────────
+
+def test_only_if_overweight_max_position_pct_none_blocks():
+    """0177: max_position_pct=None with only_if_overweight=True → not eligible."""
+    ok, reason = _check_assignment_eligible(_ctx(
+        delta=0.92, remaining_extrinsic=0.10,
+        assignment_policy={"only_if_overweight": True},
+        current_weight_pct=15.0,
+        max_position_pct=None,          # threshold unknown → fail closed
+    ))
+    assert not ok
+    assert "max_position_pct_unavailable" in reason
+
+
+def test_only_if_overweight_current_weight_none_blocks():
+    """0177: current_weight_pct=None with only_if_overweight=True → not eligible."""
+    ok, reason = _check_assignment_eligible(_ctx(
+        delta=0.92, remaining_extrinsic=0.10,
+        assignment_policy={"only_if_overweight": True},
+        current_weight_pct=None,
+        max_position_pct=10.0,
+    ))
+    assert not ok
+    assert "weight_data_unavailable" in reason
+
+
+# ── 0178: _friction_at_expiry computes avoidable tax at a candidate roll expiry ─
+
+def test_friction_at_expiry_st_lot_returns_nonzero():
+    """0178: a short-term lot at candidate_expiry produces positive avoidable tax."""
+    assignment_price = 200.0
+    cost_ps = 150.0
+    allocated = 100.0
+    # purchase 30 days ago — will still be ST at 60-day candidate expiry
+    purchase = date.today() - timedelta(days=30)
+    candidate_expiry = date.today() + timedelta(days=60)
+    lot_schedule = [{
+        "purchase_date": purchase.isoformat(),
+        "allocated_shares": allocated,
+        "cost_per_share": cost_ps,
+        "lt_date": (purchase + timedelta(days=366)).isoformat(),
+        "friction_contribution": 0.0,
+    }]
+    avoidable = _friction_at_expiry(lot_schedule, assignment_price, candidate_expiry)
+    expected = allocated * (assignment_price - cost_ps) * (0.37 - 0.20)
+    assert abs(avoidable - expected) < 0.01, f"avoidable={avoidable:.2f}, expected={expected:.2f}"
+
+
+def test_friction_at_expiry_lt_lot_returns_zero():
+    """0178: a lot that is already LT at candidate_expiry has no avoidable tax."""
+    # purchase 400 days ago — already LT at any near-term expiry
+    purchase = date.today() - timedelta(days=400)
+    candidate_expiry = date.today() + timedelta(days=30)
+    lot_schedule = [{
+        "purchase_date": purchase.isoformat(),
+        "allocated_shares": 100.0,
+        "cost_per_share": 150.0,
+        "lt_date": (purchase + timedelta(days=366)).isoformat(),
+        "friction_contribution": 0.0,
+    }]
+    avoidable = _friction_at_expiry(lot_schedule, 200.0, candidate_expiry)
+    assert avoidable == 0.0, f"LT lot should have zero avoidable friction, got {avoidable}"
+
+
+def test_friction_at_expiry_lot_becomes_lt_before_expiry():
+    """0178: lot that crosses LT threshold before candidate_expiry → zero friction."""
+    # purchase 340 days ago → LT at 366 days → candidate expiry in 30 days = day 370 → LT
+    purchase = date.today() - timedelta(days=340)
+    candidate_expiry = date.today() + timedelta(days=30)  # day 370 since purchase → LT
+    lot_schedule = [{
+        "purchase_date": purchase.isoformat(),
+        "allocated_shares": 100.0,
+        "cost_per_share": 150.0,
+        "lt_date": (purchase + timedelta(days=366)).isoformat(),
+        "friction_contribution": 0.0,
+    }]
+    avoidable = _friction_at_expiry(lot_schedule, 200.0, candidate_expiry)
+    assert avoidable == 0.0, f"Lot LT before expiry should have zero friction, got {avoidable}"
+
+
+def test_lot_schedule_contains_cost_per_share(monkeypatch, tmp_path):
+    """0178: _lot_tax_friction must include cost_per_share in each lot_schedule entry."""
+    db_path = _make_db(tmp_path)
+    conn = sqlite3.connect(str(db_path))
+    d = (date.today() - timedelta(days=30)).isoformat()
+    conn.execute(
+        "INSERT INTO cost_lots (ticker, shares, cost_per_share, purchase_date) VALUES (?,?,?,?)",
+        ("CPX", 100.0, 120.0, d),
+    )
+    conn.commit()
+    conn.close()
+    _patch_db(monkeypatch, db_path)
+
+    detail = _lot_tax_friction("CPX", assignment_price=180.0, shares_to_assign=100)
+    assert detail.lot_schedule, "lot_schedule should be populated"
+    entry = detail.lot_schedule[0]
+    assert "cost_per_share" in entry, "lot_schedule entry must have cost_per_share for _friction_at_expiry"
+    assert abs(entry["cost_per_share"] - 120.0) < 0.01
+
+
+# ── 0179: tax benefit tiebreaker in roll candidate ranking ────────────────────
+
+def test_friction_at_expiry_result_is_positive_when_st():
+    """0179: avoidable friction is positive for ST lots, zero for LT — used as tiebreaker signal."""
+    purchase_st = date.today() - timedelta(days=30)
+    purchase_lt = date.today() - timedelta(days=400)
+    near_expiry = date.today() + timedelta(days=30)
+    far_expiry = date.today() + timedelta(days=400)
+
+    lot = [{
+        "purchase_date": purchase_st.isoformat(),
+        "allocated_shares": 100.0,
+        "cost_per_share": 100.0,
+        "lt_date": (purchase_st + timedelta(days=366)).isoformat(),
+        "friction_contribution": 0.0,
+    }]
+
+    # Near expiry: lot is still ST → avoidable friction
+    near_friction = _friction_at_expiry(lot, 200.0, near_expiry)
+    assert near_friction > 0.0, "ST lot at near expiry must produce positive friction"
+
+    lot_lt = [{
+        "purchase_date": purchase_lt.isoformat(),
+        "allocated_shares": 100.0,
+        "cost_per_share": 100.0,
+        "lt_date": (purchase_lt + timedelta(days=366)).isoformat(),
+        "friction_contribution": 0.0,
+    }]
+    lt_friction = _friction_at_expiry(lot_lt, 200.0, near_expiry)
+    assert lt_friction == 0.0, "LT lot must produce zero friction at any expiry"
+
+
+# ── 0180: outcome evaluator recursive roll chain ──────────────────────────────
+
+def test_roll_chain_depth_none_for_btc(monkeypatch):
+    """0180: BUY_TO_CLOSE outcome produces roll_chain_depth=None."""
+    from unittest.mock import patch
+    import agents.outcome_evaluator as oe
+
+    prices = {
+        "TEST@2026-01-01": 100.0,
+        "TEST@2026-04-01": 110.0,
+        "SPY@2026-01-01": 500.0,
+        "SPY@2026-04-01": 510.0,
+    }
+    pl = {"btc_price": 2.0, "btc_mark": 2.0}
+
+    with patch.object(oe, "_ticker_price_at", side_effect=lambda t, d: prices.get(f"{t}@{d}")), \
+         patch.object(oe, "_spy_price_at", side_effect=lambda d: prices.get(f"SPY@{d}")):
+        *_, roll_depth = oe._compute_scenarios(
+            "TEST", "BUY_TO_CLOSE", "2026-01-01", "2026-04-01",
+            pl, 100.0,
+        )
+    assert roll_depth is None, f"BUY_TO_CLOSE should have roll_chain_depth=None, got {roll_depth}"
+
+
+def test_roll_chain_depth_none_when_no_rec_id(monkeypatch):
+    """0180: ROLL without a rec_id (no DB) sets chain_depth=0, estimated follows exec availability."""
+    from unittest.mock import patch
+    import agents.outcome_evaluator as oe
+
+    prices = {
+        "TEST@2026-01-01": 100.0,
+        "TEST@2026-06-20": 115.0,
+        "SPY@2026-01-01": 500.0,
+        "SPY@2026-06-20": 510.0,
+    }
+    pl = {"btc_price": 2.0, "sto_premium": 4.0, "new_strike": 110.0}
+    exec_rec = {"execution_price": 1.80, "sto_premium": 4.20, "execution_date": "2026-01-03"}
+
+    with patch.object(oe, "_ticker_price_at", side_effect=lambda t, d: prices.get(f"{t}@{d}")), \
+         patch.object(oe, "_spy_price_at", side_effect=lambda d: prices.get(f"SPY@{d}")), \
+         patch.object(oe._adb if hasattr(oe, "_adb") else oe, "has_chain_child", return_value=False, create=True):
+        actual_r, agent_r, _, _, estimated, _, _, chain_depth = oe._compute_scenarios(
+            "TEST", "ROLL_OUT", "2026-01-01", "2026-06-20",
+            pl, 100.0, exec_rec=exec_rec,
+        )
+    # No rec_id → chain treated as terminal → not chain-open estimated
+    assert not estimated, "ROLL with exec_rec and no open chain should not be estimated"
+    assert chain_depth == 0, f"Expected chain_depth=0 when no rec_id, got {chain_depth}"

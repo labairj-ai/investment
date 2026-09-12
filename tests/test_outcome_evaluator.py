@@ -30,7 +30,7 @@ def test_hold_scenario():
     prices = {"ANET": 200.0, "ANET@2026-01-01": 180.0, "SPY": 500.0, "SPY@2026-01-01": 450.0}
     p1, p2 = _mock_prices(prices)
     with p1, p2:
-        actual, agent, hold, spy, estimated, cc_ret, cc_alpha = _compute_scenarios(
+        actual, agent, hold, spy, estimated, cc_ret, cc_alpha, _ = _compute_scenarios(
             "ANET", "HOLD", "2026-01-01", "2026-04-01",
             {}, 180.0, decision="accepted",
         )
@@ -43,7 +43,7 @@ def test_trim_scenario_no_replacement():
     prices = {"ANET": 200.0, "ANET@2026-01-01": 180.0, "SPY": 500.0, "SPY@2026-01-01": 450.0}
     p1, p2 = _mock_prices(prices)
     with p1, p2:
-        actual, agent, hold, spy, estimated, cc_ret, cc_alpha = _compute_scenarios(
+        actual, agent, hold, spy, estimated, cc_ret, cc_alpha, _ = _compute_scenarios(
             "ANET", "TRIM", "2026-01-01", "2026-04-01",
             {"trim_fraction": 0.4}, 180.0, decision="accepted",
         )
@@ -61,7 +61,7 @@ def test_trim_scenario_with_replacement():
     }
     p1, p2 = _mock_prices(prices)
     with p1, p2:
-        actual, agent, hold, spy, estimated, cc_ret, cc_alpha = _compute_scenarios(
+        actual, agent, hold, spy, estimated, cc_ret, cc_alpha, _ = _compute_scenarios(
             "ANET", "TRIM", "2026-01-01", "2026-04-01",
             {"trim_fraction": 0.5, "replacement_ticker": "SCHD"}, 180.0, decision="accepted",
         )
@@ -78,7 +78,7 @@ def test_allocate_scenario():
     }
     p1, p2 = _mock_prices(prices)
     with p1, p2:
-        actual, agent, hold, spy, estimated, cc_ret, cc_alpha = _compute_scenarios(
+        actual, agent, hold, spy, estimated, cc_ret, cc_alpha, _ = _compute_scenarios(
             "NFLX", "ALLOCATE", "2026-01-01", "2026-04-01",
             {"ticker": "NFLX"}, 700.0, decision="accepted",
         )
@@ -90,7 +90,7 @@ def test_rejected_exit_equals_hold():
     prices = {"ANET": 200.0, "ANET@2026-01-01": 180.0, "SPY": 500.0, "SPY@2026-01-01": 450.0}
     p1, p2 = _mock_prices(prices)
     with p1, p2:
-        actual, agent, hold, spy, estimated, cc_ret, cc_alpha = _compute_scenarios(
+        actual, agent, hold, spy, estimated, cc_ret, cc_alpha, _ = _compute_scenarios(
             "ANET", "EXIT", "2026-01-01", "2026-04-01",
             {}, 180.0, decision="rejected",
         )
@@ -103,7 +103,7 @@ def test_accepted_exit_actual_zero():
     prices = {"ANET": 200.0, "ANET@2026-01-01": 180.0, "SPY": 500.0, "SPY@2026-01-01": 450.0}
     p1, p2 = _mock_prices(prices)
     with p1, p2:
-        actual, agent, hold, spy, estimated, cc_ret, cc_alpha = _compute_scenarios(
+        actual, agent, hold, spy, estimated, cc_ret, cc_alpha, _ = _compute_scenarios(
             "ANET", "EXIT", "2026-01-01", "2026-04-01",
             {}, 180.0, decision="accepted",
         )
@@ -122,7 +122,7 @@ def test_accepted_exit_with_execution_uses_exec_price():
         "quantity": 50.0,
     }
     with p1, p2:
-        actual, agent, hold, spy, estimated, cc_ret, cc_alpha = _compute_scenarios(
+        actual, agent, hold, spy, estimated, cc_ret, cc_alpha, _ = _compute_scenarios(
             "ANET", "EXIT", "2026-01-01", "2026-04-01",
             {}, 180.0, decision="accepted",
             exec_rec=exec_rec,
@@ -146,7 +146,7 @@ def test_trim_with_execution_fraction():
         "execution_fraction": f,
     }
     with p1, p2:
-        actual, agent, hold, spy, estimated, cc_ret, cc_alpha = _compute_scenarios(
+        actual, agent, hold, spy, estimated, cc_ret, cc_alpha, _ = _compute_scenarios(
             "ANET", "TRIM", "2026-01-01", "2026-04-01",
             {"trim_fraction": 0.5}, entry_price, decision="accepted",
             exec_rec=exec_rec,
@@ -171,7 +171,7 @@ def test_sell_cc_with_exec_rec_computes_actual_from_premium_and_strike():
         "strike": 190.0,
     }
     with p1, p2:
-        actual, agent, hold, spy, estimated, cc_ret, cc_alpha = _compute_scenarios(
+        actual, agent, hold, spy, estimated, cc_ret, cc_alpha, _ = _compute_scenarios(
             "ANET", "SELL_CC", "2026-01-01", "2026-04-01",
             {"premium": 2.5, "strike": 195.0}, 180.0, decision="accepted",
             exec_rec=exec_rec,
@@ -263,7 +263,7 @@ def test_btc_with_exec_rec_uses_actual_btc_price():
     hold_r_nav = (h_price - entry_price) / nav
     pl = {"btc_price": btc_mark}
     exec_rec = {"execution_price": btc_exec, "execution_date": "2026-09-05"}
-    actual_r, agent_r, estimated = _compute_cc_management_returns(
+    actual_r, agent_r, estimated, _ = _compute_cc_management_returns(
         "BUY_TO_CLOSE", pl, entry_price, h_price, exec_rec=exec_rec,
     )
     # agent_r: close at mark → option P&L from MTM = 0 → just stock-on-nav
@@ -282,7 +282,7 @@ def test_btc_no_exec_rec_falls_back_to_hold_r_nav():
     nav = entry_price - btc_mark  # 177.5
     hold_r_nav = (h_price - entry_price) / nav
     pl = {"btc_price": btc_mark}
-    actual_r, agent_r, estimated = _compute_cc_management_returns(
+    actual_r, agent_r, estimated, _ = _compute_cc_management_returns(
         "BUY_TO_CLOSE", pl, entry_price, h_price, exec_rec=None,
     )
     assert abs(actual_r - hold_r_nav) < 0.0001, f"actual_r={actual_r:.6f}, expected={hold_r_nav:.6f}"
@@ -297,7 +297,7 @@ def test_allow_assignment_at_expiry_assigned_uses_nav_formula():
     nav = entry_price - btc_mark   # 173.0
     h_price = 192.0  # > K → assigned
     pl = {"strike": k, "btc_mark": btc_mark}
-    actual_r, agent_r, estimated = _compute_cc_management_returns(
+    actual_r, agent_r, estimated, _ = _compute_cc_management_returns(
         "ALLOW_ASSIGNMENT", pl, entry_price, h_price, horizon_label="at_expiry",
     )
     expected = (min(h_price, k) - entry_price + btc_mark) / nav
@@ -314,7 +314,7 @@ def test_allow_assignment_at_expiry_otm_uses_nav_formula():
     nav = entry_price - btc_mark   # 173.0
     h_price = 170.0  # < K → OTM, no assignment
     pl = {"strike": k, "btc_mark": btc_mark}
-    actual_r, agent_r, estimated = _compute_cc_management_returns(
+    actual_r, agent_r, estimated, _ = _compute_cc_management_returns(
         "ALLOW_ASSIGNMENT", pl, entry_price, h_price, horizon_label="at_expiry",
     )
     expected = (min(h_price, k) - entry_price + btc_mark) / nav   # (170-175+2)/173
@@ -333,7 +333,7 @@ def test_allow_assignment_post_horizons_lock_at_expiry_value():
     pl = {"strike": k, "btc_mark": btc_mark}
     expected = (min(new_expiry_price, k) - entry_price + btc_mark) / nav  # (185-175+2)/173
     for label in ("30d_post", "90d_post"):
-        actual_r, agent_r, estimated = _compute_cc_management_returns(
+        actual_r, agent_r, estimated, _ = _compute_cc_management_returns(
             "ALLOW_ASSIGNMENT", pl, entry_price, h_price,
             horizon_label=label, new_expiry_price=new_expiry_price,
         )
@@ -357,7 +357,7 @@ def test_roll_out_uses_sto_minus_btc_net():
     pl = {"btc_price": btc_mark, "sto_premium": sto_mark}  # no new_strike → fallback path
     exec_rec = {"execution_price": btc_exec, "sto_premium": sto_exec,
                 "execution_date": "2026-09-10"}
-    actual_r, agent_r, estimated = _compute_cc_management_returns(
+    actual_r, agent_r, estimated, _ = _compute_cc_management_returns(
         "ROLL_OUT", pl, entry_price, h_price, exec_rec=exec_rec,
     )
     expected_actual = hold_r_nav + (sto_exec - btc_exec) / nav
@@ -382,7 +382,7 @@ def test_roll_at_expiry_capped_at_new_strike_when_assigned():
     pl = {"new_strike": new_strike, "btc_price": btc_mark, "sto_premium": sto_mark}
     exec_rec = {"execution_price": btc_exec, "sto_premium": sto_exec,
                 "execution_date": "2026-09-01"}
-    actual_r, agent_r, estimated = _compute_cc_management_returns(
+    actual_r, agent_r, estimated, _ = _compute_cc_management_returns(
         "ROLL_OUT", pl, entry_price, h_price, exec_rec=exec_rec,
         horizon_label="at_expiry",
     )
@@ -407,7 +407,7 @@ def test_roll_at_expiry_uncapped_when_expired():
     pl = {"new_strike": new_strike, "btc_price": btc_mark, "sto_premium": sto_mark}
     exec_rec = {"execution_price": btc_exec, "sto_premium": sto_exec,
                 "execution_date": "2026-09-01"}
-    actual_r, agent_r, estimated = _compute_cc_management_returns(
+    actual_r, agent_r, estimated, _ = _compute_cc_management_returns(
         "ROLL_OUT", pl, entry_price, h_price, exec_rec=exec_rec,
         horizon_label="at_expiry",
     )
@@ -429,7 +429,7 @@ def test_roll_post_horizon_locks_at_assignment_when_assigned():
     pl = {"new_strike": new_strike, "btc_price": btc_mark, "sto_premium": sto_mark}
     exec_rec = {"execution_price": btc_exec, "sto_premium": sto_exec,
                 "execution_date": "2026-09-01"}
-    actual_r, agent_r, estimated = _compute_cc_management_returns(
+    actual_r, agent_r, estimated, _ = _compute_cc_management_returns(
         "ROLL_OUT", pl, entry_price, h_price, exec_rec=exec_rec,
         horizon_label="30d_post", new_expiry_price=new_expiry_price,
     )
@@ -452,7 +452,7 @@ def test_roll_post_horizon_uses_hold_r_when_expired():
     pl = {"new_strike": new_strike, "btc_price": btc_mark, "sto_premium": sto_mark}
     exec_rec = {"execution_price": btc_exec, "sto_premium": sto_exec,
                 "execution_date": "2026-09-01"}
-    actual_r, agent_r, estimated = _compute_cc_management_returns(
+    actual_r, agent_r, estimated, _ = _compute_cc_management_returns(
         "ROLL_OUT", pl, entry_price, h_price, exec_rec=exec_rec,
         horizon_label="30d_post", new_expiry_price=new_expiry_price,
     )
@@ -479,7 +479,7 @@ def test_roll_open_chain_child_stays_estimated():
         patch.object(agent_db, "has_chain_child", return_value=True),
         patch.object(agent_db, "get_completed_chain_child", return_value=None),
     ):
-        actual_r, agent_r, estimated = _compute_cc_management_returns(
+        actual_r, agent_r, estimated, _ = _compute_cc_management_returns(
             "ROLL_OUT", pl, entry_price, h_price, exec_rec=exec_rec,
             horizon_label="at_expiry", rec_id=42,
         )
@@ -506,7 +506,7 @@ def test_roll_completed_btc_child_uses_uncapped_stock_return():
             "payload": {"btc_price": 1.0}, "exec_rec": None,
         }),
     ):
-        actual_r, agent_r, estimated = _compute_cc_management_returns(
+        actual_r, agent_r, estimated, _ = _compute_cc_management_returns(
             "ROLL_OUT", pl, entry_price, h_price, exec_rec=exec_rec,
             horizon_label="at_expiry", rec_id=42,
         )
@@ -535,7 +535,7 @@ def test_roll_completed_assignment_child_caps_at_child_strike():
             "payload": {"strike": child_strike}, "exec_rec": None,
         }),
     ):
-        actual_r, agent_r, estimated = _compute_cc_management_returns(
+        actual_r, agent_r, estimated, _ = _compute_cc_management_returns(
             "ROLL_OUT", pl, entry_price, h_price, exec_rec=exec_rec,
             horizon_label="at_expiry", rec_id=42,
         )
@@ -561,7 +561,7 @@ def test_roll_multi_hop_child_stays_estimated():
             "payload": {"new_strike": 200.0}, "exec_rec": None,
         }),
     ):
-        actual_r, agent_r, estimated = _compute_cc_management_returns(
+        actual_r, agent_r, estimated, _ = _compute_cc_management_returns(
             "ROLL_OUT", pl, entry_price, h_price, exec_rec=exec_rec,
             horizon_label="at_expiry", rec_id=42,
         )
@@ -578,7 +578,7 @@ def test_hold_call_at_expiry_assigned():
     nav = entry_price - btc_mark  # 178.0
     h_price = 195.0  # > K → assigned at K
     pl = {"strike": k, "btc_mark": btc_mark, "expiration": "2026-12-20"}
-    actual_r, agent_r, estimated = _compute_cc_management_returns(
+    actual_r, agent_r, estimated, _ = _compute_cc_management_returns(
         "HOLD_CALL", pl, entry_price, h_price, horizon_label="at_expiry",
     )
     expected = (min(h_price, k) - entry_price + btc_mark) / nav  # (185-180+2)/178
@@ -595,7 +595,7 @@ def test_hold_call_at_expiry_otm():
     nav = entry_price - btc_mark  # 178.0
     h_price = 175.0  # < K → OTM, investor keeps shares at depressed price
     pl = {"strike": k, "btc_mark": btc_mark}
-    actual_r, agent_r, estimated = _compute_cc_management_returns(
+    actual_r, agent_r, estimated, _ = _compute_cc_management_returns(
         "HOLD_CALL", pl, entry_price, h_price, horizon_label="at_expiry",
     )
     expected = (min(h_price, k) - entry_price + btc_mark) / nav  # (175-180+2)/178
@@ -614,7 +614,7 @@ def test_hold_call_post_horizon_locks_at_expiry_value():
     pl = {"strike": k, "btc_mark": btc_mark}
     expected = (min(new_expiry_price, k) - entry_price + btc_mark) / nav  # (185-180+2)/178
     for label in ("30d_post", "90d_post"):
-        actual_r, agent_r, estimated = _compute_cc_management_returns(
+        actual_r, agent_r, estimated, _ = _compute_cc_management_returns(
             "HOLD_CALL", pl, entry_price, h_price,
             horizon_label=label, new_expiry_price=new_expiry_price,
         )
@@ -644,7 +644,7 @@ def test_sell_cc_assigned_path_post_horizons_locked_at_assignment():
     }
     expected_assign = (k - entry_price + premium) / entry_price
     with p1, p2:
-        actual_r, agent_r, hold_r, spy_r, estimated, cc_ret, cc_alpha = _compute_scenarios(
+        actual_r, agent_r, hold_r, spy_r, estimated, cc_ret, cc_alpha, _ = _compute_scenarios(
             "ANET", "SELL_CC", "2026-01-01", "2026-04-20",
             {"premium": premium, "strike": str(k)}, entry_price, decision="accepted",
             exec_rec=exec_rec,
@@ -675,7 +675,7 @@ def test_sell_cc_expired_path_post_horizons_no_strike_cap():
         "strike": 190.0,
     }
     with p1, p2:
-        actual_r, agent_r, hold_r, spy_r, estimated, cc_ret, cc_alpha = _compute_scenarios(
+        actual_r, agent_r, hold_r, spy_r, estimated, cc_ret, cc_alpha, _ = _compute_scenarios(
             "ANET", "SELL_CC", "2026-01-01", "2026-04-20",
             {"premium": 3.0, "strike": "190.0"}, 180.0, decision="accepted",
             exec_rec=exec_rec,
@@ -700,7 +700,7 @@ def test_sell_cc_at_expiry_always_uses_min_formula():
     p1, p2 = _mock_prices(prices)
     exec_rec = {"execution_price": 3.0, "execution_date": "2026-01-02", "strike": 190.0}
     with p1, p2:
-        actual_r, agent_r, hold_r, spy_r, estimated, cc_ret, cc_alpha = _compute_scenarios(
+        actual_r, agent_r, hold_r, spy_r, estimated, cc_ret, cc_alpha, _ = _compute_scenarios(
             "ANET", "SELL_CC", "2026-01-01", "2026-03-21",
             {"premium": 3.0, "strike": "190.0"}, 180.0, decision="accepted",
             exec_rec=exec_rec,

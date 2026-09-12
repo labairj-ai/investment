@@ -214,8 +214,10 @@ def _compute_cc_management_returns(
     new_expiry_price: float | None = None,
     net_nav: float | None = None,
     rec_id: int | None = None,
-) -> tuple[float | None, float | None, bool]:
-    """Returns (actual_r, agent_r, actual_is_estimated) for CC management actions.
+) -> "tuple[float | None, float | None, bool, int | None]":
+    """Returns (actual_r, agent_r, actual_is_estimated, roll_chain_depth) for CC management actions.
+
+    roll_chain_depth is None for non-ROLL actions; ≥1 for ROLL actions that resolved a chain.
 
     entry_price     : stock price at the CC management recommendation date (S_rec)
     h_price         : stock price at the horizon date
@@ -248,8 +250,8 @@ def _compute_cc_management_returns(
             btc_exec = float(exec_rec["execution_price"])
             net = btc_mark - btc_exec
             actual_r = (hold_r + net / nav) if (hold_r is not None and nav) else None
-            return actual_r, agent_r, actual_r is None
-        return hold_r, agent_r, True
+            return actual_r, agent_r, actual_r is None, None
+        return hold_r, agent_r, True, None
 
     elif action in {"HOLD_CALL", "ALLOW_ASSIGNMENT"}:
         # 0126/0127: both actions mean "hold the covered position to expiry".
@@ -268,8 +270,8 @@ def _compute_cc_management_returns(
                 s_exp = h_price  # at_expiry: h_price IS S_exp
             if s_exp is not None:
                 actual_r = (min(s_exp, K) - entry_price + C_rec) / nav
-                return actual_r, actual_r, False
-        return hold_r, hold_r, hold_r is None
+                return actual_r, actual_r, False, None
+        return hold_r, hold_r, hold_r is None, None
 
     elif action in {"ROLL_OUT", "ROLL_UP", "ROLL_UP_AND_OUT"}:
         new_strike = float(pl.get("new_strike") or pl.get("strike") or 0.0)
@@ -284,14 +286,25 @@ def _compute_cc_management_returns(
         else:
             net_credit = None
 
-        # 0136: check chain state — open child stays estimated; completed child
-        # provides the actual terminal state for the replacement call.
-        chain_open  = (rec_id is not None and agent_db.has_chain_child(rec_id))
-        chain_child = (
-            agent_db.get_completed_chain_child(rec_id)
-            if (rec_id is not None and not chain_open)
-            else None
-        )
+        # 0136/0180: walk chain to terminal node — recursively resolve multi-hop rolls
+        def _resolve_chain(start_rec_id, depth=0, max_depth=10):
+            """Return (terminal_child, chain_is_open, depth) by walking parent_cc_rec_id chain."""
+            if start_rec_id is None:
+                return None, False, depth  # no DB context — treat as terminal, no chain
+            if depth >= max_depth:
+                return None, True, depth
+            if agent_db.has_chain_child(start_rec_id):
+                return None, True, depth  # open child — chain not yet closed
+            child = agent_db.get_completed_chain_child(start_rec_id)
+            if child is None:
+                return None, False, depth  # no child — this is the terminal node itself
+            child_action = child["action"]
+            if child_action in {"ROLL_OUT", "ROLL_UP", "ROLL_UP_AND_OUT"}:
+                # Recurse into the next hop
+                return _resolve_chain(child["id"], depth + 1, max_depth)
+            return child, False, depth + 1
+
+        terminal_child, chain_open, chain_depth = _resolve_chain(rec_id)
 
         if new_strike and h_price is not None and nav:
             # Base stock return: default to at-expiry cap formula.
@@ -304,40 +317,34 @@ def _compute_cc_management_returns(
                 # at_expiry: h_price IS stock at new_expiry
                 base_r = (new_strike - entry_price) / nav if h_price > new_strike else hold_r
 
-            # 0136: when a completed chain child exists, revise base_r to reflect
-            # what actually happened to the replacement call.
-            if chain_child:
-                child_action = chain_child["action"]
+            # 0136/0180: when a fully-resolved terminal child exists, revise base_r.
+            if terminal_child and not chain_open:
+                child_action = terminal_child["action"]
                 if child_action == "BUY_TO_CLOSE":
-                    # Replacement call was bought back — position unencumbered; uncapped stock return.
                     base_r = hold_r
                 elif child_action == "ALLOW_ASSIGNMENT":
-                    # Replacement call was assigned; stock capped at child's strike (may differ from new_strike).
                     child_strike = float(
-                        chain_child["payload"].get("strike") or
-                        chain_child["payload"].get("new_strike") or
+                        terminal_child["payload"].get("strike") or
+                        terminal_child["payload"].get("new_strike") or
                         new_strike
                     )
                     if child_strike and nav:
                         base_r = (child_strike - entry_price) / nav if (h_price is not None and h_price > child_strike) else hold_r
-                elif child_action in {"ROLL_OUT", "ROLL_UP", "ROLL_UP_AND_OUT"}:
-                    # Multi-hop roll — chain not yet fully resolved; keep estimated.
-                    chain_open = True
 
             agent_r = (base_r + agent_net / nav) if base_r is not None else None
             if net_credit is not None:
                 actual_r = (base_r + net_credit / nav) if base_r is not None else None
-                return actual_r, agent_r, chain_open or (actual_r is None)
-            return hold_r, agent_r, True
+                return actual_r, agent_r, chain_open or (actual_r is None), chain_depth
+            return hold_r, agent_r, True, chain_depth
         else:
             # Fallback when new_strike absent: net-credit vs mark only
             agent_r = (hold_r + agent_net / nav) if (hold_r is not None and nav) else None
             if net_credit is not None:
                 actual_r = (hold_r + net_credit / nav) if hold_r is not None else None
-                return actual_r, agent_r, chain_open or (actual_r is None)
-            return hold_r, agent_r, True
+                return actual_r, agent_r, chain_open or (actual_r is None), chain_depth
+            return hold_r, agent_r, True, chain_depth
 
-    return hold_r, hold_r, True
+    return hold_r, hold_r, True, None
 
 
 # ── Scenario return computation ───────────────────────────────────────────────
@@ -352,9 +359,9 @@ def _compute_scenarios(
     decision: str | None = None,
     **kwargs,
 ) -> tuple[float | None, float | None, float | None, float | None, bool,
-           float | None, float | None]:
+           float | None, float | None, int | None]:
     """Return (actual_r, agent_r, hold_r, spy_r, actual_is_estimated,
-               cc_strategy_return, cc_incremental_alpha) for one horizon.
+               cc_strategy_return, cc_incremental_alpha, roll_chain_depth) for one horizon.
 
     Scenario A — actual_return           : decision-adjusted return (see branching below)
     Scenario B — recommended_path_return : cc_strategy_return for CC, else agent-specific
@@ -397,7 +404,7 @@ def _compute_scenarios(
             if _expiry_key:
                 new_expiry_price = _ticker_price_at(ticker, _expiry_key)
 
-        actual_r, agent_r, actual_is_estimated = _compute_cc_management_returns(
+        actual_r, agent_r, actual_is_estimated, _roll_chain_depth = _compute_cc_management_returns(
             action, pl, entry_price, h_price,
             exec_rec=exec_rec,
             horizon_label=horizon_label,
@@ -405,7 +412,7 @@ def _compute_scenarios(
             net_nav=net_nav_val,
             rec_id=kwargs.get("rec_id"),
         )
-        return actual_r, agent_r, hold_r, spy_r, actual_is_estimated, None, None
+        return actual_r, agent_r, hold_r, spy_r, actual_is_estimated, None, None, _roll_chain_depth
 
     # CC-specific actual-return path (0073/0106): must come BEFORE generic exec_rec branch
     horizon_label  = kwargs.get("horizon_label", "")
@@ -544,7 +551,7 @@ def _compute_scenarios(
         # HOLD / REVIEW — recommended path = hold unchanged
         agent_r = hold_r
 
-    return actual_r, agent_r, hold_r, spy_r, actual_is_estimated, cc_strategy_return, cc_incremental_alpha
+    return actual_r, agent_r, hold_r, spy_r, actual_is_estimated, cc_strategy_return, cc_incremental_alpha, None
 
 
 # ── CC horizon helpers ────────────────────────────────────────────────────────
@@ -659,7 +666,7 @@ def evaluate_matured_recommendations(min_age_days: int = MIN_AGE_DAYS) -> int:
                 continue
 
             actual_r, agent_r, hold_r, spy_r, actual_is_estimated, \
-                cc_strategy_return, cc_incremental_alpha = _compute_scenarios(
+                cc_strategy_return, cc_incremental_alpha, _roll_chain_depth = _compute_scenarios(
                 ticker, action, entry_date, h_date, pl, entry_price,
                 decision=rec.get("decision"),
                 exec_rec=exec_rec,
@@ -713,6 +720,7 @@ def evaluate_matured_recommendations(min_age_days: int = MIN_AGE_DAYS) -> int:
                 cc_incremental_alpha=round(cc_incremental_alpha, 6) if cc_incremental_alpha is not None else None,
                 cc_assignment_state=cc_assignment_state,
                 outcome_math_version=omv,
+                roll_chain_depth=_roll_chain_depth,
             )
             written += 1
             print(

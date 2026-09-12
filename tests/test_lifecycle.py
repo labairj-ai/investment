@@ -102,7 +102,7 @@ def test_hold_rejected_actual_equals_hold(mem_db):
     import agents.outcome_evaluator as oe
     with patch.object(oe, "_ticker_price_at", side_effect=fake_ticker_price), \
          patch.object(oe, "_spy_price_at", side_effect=fake_spy_price):
-        actual, agent, hold, spy, estimated, _, _ = _compute_scenarios(
+        actual, agent, hold, spy, estimated, _, _, _ = _compute_scenarios(
             "ANET", "HOLD", "2026-01-01", "2026-04-01",
             {}, entry_price, decision="rejected",
         )
@@ -141,7 +141,7 @@ def test_trim_with_execution_uses_fraction(mem_db):
     import agents.outcome_evaluator as oe
     with patch.object(oe, "_ticker_price_at", side_effect=lambda t, d: prices.get(f"{t}@{d}") or prices.get(t)), \
          patch.object(oe, "_spy_price_at", side_effect=lambda d: prices.get(f"SPY@{d}") or prices.get("SPY")):
-        actual, agent, hold, spy, estimated, _, _ = _compute_scenarios(
+        actual, agent, hold, spy, estimated, _, _, _ = _compute_scenarios(
             "ANET", "TRIM", "2026-01-01", "2026-04-01",
             {"trim_fraction": 0.5}, entry_price, decision="accepted",
             exec_rec=exec_rec,
@@ -180,7 +180,7 @@ def test_exit_accepted_with_execution(mem_db):
     import agents.outcome_evaluator as oe
     with patch.object(oe, "_ticker_price_at", side_effect=lambda t, d: prices.get(f"{t}@{d}") or prices.get(t)), \
          patch.object(oe, "_spy_price_at", side_effect=lambda d: prices.get(f"SPY@{d}") or prices.get("SPY")):
-        actual, agent, hold, spy, estimated, _, _ = _compute_scenarios(
+        actual, agent, hold, spy, estimated, _, _, _ = _compute_scenarios(
             "ANET", "EXIT", "2026-01-01", "2026-04-01",
             {}, entry_price, decision="accepted",
             exec_rec=exec_rec,
@@ -202,7 +202,7 @@ def test_exit_accepted_without_execution(mem_db):
     import agents.outcome_evaluator as oe
     with patch.object(oe, "_ticker_price_at", side_effect=lambda t, d: prices.get(f"{t}@{d}") or prices.get(t)), \
          patch.object(oe, "_spy_price_at", side_effect=lambda d: prices.get(f"SPY@{d}") or prices.get("SPY")):
-        actual, agent, hold, spy, estimated, _, _ = _compute_scenarios(
+        actual, agent, hold, spy, estimated, _, _, _ = _compute_scenarios(
             "ANET", "EXIT", "2026-01-01", "2026-04-01",
             {}, 180.0, decision="accepted",
         )
@@ -224,7 +224,7 @@ def test_exit_rejected_actual_equals_hold(mem_db):
     import agents.outcome_evaluator as oe
     with patch.object(oe, "_ticker_price_at", side_effect=lambda t, d: prices.get(f"{t}@{d}") or prices.get(t)), \
          patch.object(oe, "_spy_price_at", side_effect=lambda d: prices.get(f"SPY@{d}") or prices.get("SPY")):
-        actual, agent, hold, spy, estimated, _, _ = _compute_scenarios(
+        actual, agent, hold, spy, estimated, _, _, _ = _compute_scenarios(
             "ANET", "EXIT", "2026-01-01", "2026-04-01",
             {}, entry_price, decision="rejected",
         )
@@ -341,7 +341,7 @@ def test_sell_cc_actual_from_exec_rec_differs_from_strategy_return(mem_db):
     import agents.outcome_evaluator as oe
     with patch.object(oe, "_ticker_price_at", side_effect=lambda t, d: prices.get(f"{t}@{d}") or prices.get(t)), \
          patch.object(oe, "_spy_price_at", side_effect=lambda d: prices.get(f"SPY@{d}") or prices.get("SPY")):
-        actual, agent, hold, spy, estimated, cc_ret, cc_alpha = _compute_scenarios(
+        actual, agent, hold, spy, estimated, cc_ret, cc_alpha, _ = _compute_scenarios(
             "ANET", "SELL_CC", "2026-01-01", "2026-04-01",
             {"premium": 2.5, "strike": 195.0},  # payload values (different)
             entry_price, decision="accepted",
@@ -680,7 +680,7 @@ def test_trim_accepted_without_execution_is_null(mem_db):
     import agents.outcome_evaluator as oe
     with patch.object(oe, "_ticker_price_at", side_effect=lambda t, d: prices.get(f"{t}@{d}") or prices.get(t)), \
          patch.object(oe, "_spy_price_at", side_effect=lambda d: prices.get(f"SPY@{d}") or prices.get("SPY")):
-        actual, agent, hold, spy, estimated, _, _ = _compute_scenarios(
+        actual, agent, hold, spy, estimated, _, _, _ = _compute_scenarios(
             "ANET", "TRIM", "2026-01-01", "2026-04-01",
             {"trim_fraction": 0.5}, 180.0, decision="accepted",
         )
@@ -701,7 +701,7 @@ def test_allocate_accepted_without_execution_is_null(mem_db):
     import agents.outcome_evaluator as oe
     with patch.object(oe, "_ticker_price_at", side_effect=lambda t, d: prices.get(f"{t}@{d}") or prices.get(t)), \
          patch.object(oe, "_spy_price_at", side_effect=lambda d: prices.get(f"SPY@{d}") or prices.get("SPY")):
-        actual, agent, hold, spy, estimated, _, _ = _compute_scenarios(
+        actual, agent, hold, spy, estimated, _, _, _ = _compute_scenarios(
             "ANET", "ALLOCATE", "2026-01-01", "2026-04-01",
             {}, 180.0, decision="accepted",
         )
@@ -729,7 +729,7 @@ def test_trim_accepted_with_execution_uses_fraction(mem_db):
     import agents.outcome_evaluator as oe
     with patch.object(oe, "_ticker_price_at", side_effect=lambda t, d: prices.get(f"{t}@{d}") or prices.get(t)), \
          patch.object(oe, "_spy_price_at", side_effect=lambda d: prices.get(f"SPY@{d}") or prices.get("SPY")):
-        actual, _, _, _, estimated, _, _ = _compute_scenarios(
+        actual, _, _, _, estimated, _, _, _ = _compute_scenarios(
             "ANET", "TRIM", "2026-01-01", "2026-04-01",
             {"trim_fraction": 0.5}, entry_price, decision="accepted",
             exec_rec=exec_rec,
