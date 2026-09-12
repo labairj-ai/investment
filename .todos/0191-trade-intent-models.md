@@ -1,7 +1,7 @@
 # TradingAccount + TradeIntent + Supporting Models
 
 - **ID:** 0191
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-12
 - **Priority:** high
 - **Depends:** 0190

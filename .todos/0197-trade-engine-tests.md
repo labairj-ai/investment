@@ -1,7 +1,7 @@
 # Trade Engine Test Suite: Conservation, Idempotency, Edge Cases
 
 - **ID:** 0197
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-12
 - **Priority:** high
 - **Depends:** 0193, 0194, 0195, 0196

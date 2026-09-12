@@ -1,7 +1,7 @@
 # TradingPolicy: config/trading_policy.json + Policy Loader
 
 - **ID:** 0192
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-12
 - **Priority:** high
 - **Depends:** 0191

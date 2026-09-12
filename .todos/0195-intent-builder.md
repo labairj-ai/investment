@@ -1,7 +1,7 @@
 # Intent Builder: Recommendation → TradeIntent for BUY/TRIM/EXIT
 
 - **ID:** 0195
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-12
 - **Priority:** high
 - **Depends:** 0191, 0192

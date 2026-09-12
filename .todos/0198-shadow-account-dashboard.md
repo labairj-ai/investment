@@ -1,7 +1,7 @@
 # Shadow Account Dashboard Panel
 
 - **ID:** 0198
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-12
 - **Priority:** normal
 - **Depends:** 0196

@@ -1,0 +1,46 @@
+{
+  "policy_version": "1.0",
+  "account_id": "AGENTIC_SHADOW_01",
+
+  "capital": {
+    "starting_capital": 10000,
+    "minimum_cash_pct": 10,
+    "minimum_cash_abs": 500
+  },
+
+  "equities": {
+    "buy_allowed": true,
+    "sell_allowed": true,
+    "shorting_allowed": false,
+    "max_single_position_pct": 10,
+    "max_new_position_pct": 5
+  },
+
+  "options": {
+    "covered_calls_allowed": true,
+    "cash_secured_puts_allowed": false,
+    "naked_options_allowed": false,
+    "max_contracts_per_symbol": 1
+  },
+
+  "execution": {
+    "market_orders_allowed": false,
+    "max_orders_per_day": 5,
+    "max_daily_notional_pct": 20,
+    "max_slippage_pct": 1.0,
+    "min_limit_price": 0.01
+  },
+
+  "risk": {
+    "max_drawdown_pct": 10,
+    "max_daily_loss_pct": 3,
+    "max_weekly_loss_pct": 7
+  },
+
+  "circuit_breakers": {
+    "trading_enabled": true,
+    "halt_on_position_mismatch": true,
+    "halt_on_data_stale_minutes": 60,
+    "halt_on_daily_loss_pct": 3
+  }
+}

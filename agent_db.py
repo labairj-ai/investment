@@ -531,7 +531,126 @@ def migrate() -> None:
     except sqlite3.OperationalError:
         pass  # investment_theses table may not exist yet
 
+    # 0190 — trade engine tables (shadow execution)
+    _migrate_trade_engine(conn)
+
     conn.close()
+
+
+# ── Trade engine schema (0190) ────────────────────────────────────────────────
+
+def _migrate_trade_engine(conn: sqlite3.Connection) -> None:
+    """Create trade engine tables and seed AGENTIC_SHADOW_01. Safe to re-run."""
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS trading_accounts (
+            account_id       TEXT PRIMARY KEY,
+            name             TEXT,
+            mode             TEXT,
+            starting_capital REAL,
+            current_cash     REAL,
+            broker           TEXT,
+            trading_enabled  INTEGER DEFAULT 1,
+            policy_version   TEXT,
+            created_at       TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS trade_intents (
+            intent_id             TEXT PRIMARY KEY,
+            account_id            TEXT REFERENCES trading_accounts(account_id),
+            recommendation_id     INTEGER REFERENCES recommendations(id),
+            agent_run_id          INTEGER,
+            instrument_type       TEXT,
+            symbol                TEXT,
+            side                  TEXT,
+            quantity              REAL,
+            contracts             INTEGER,
+            option_type           TEXT,
+            strike                REAL,
+            expiration            TEXT,
+            order_type            TEXT,
+            limit_price           REAL,
+            time_in_force         TEXT,
+            strategy              TEXT,
+            thesis_version        INTEGER,
+            strategy_config_hash  TEXT,
+            portfolio_snapshot_id TEXT,
+            valid_until           TEXT,
+            created_at            TEXT,
+            status                TEXT DEFAULT 'PENDING'
+        );
+
+        CREATE TABLE IF NOT EXISTS risk_decisions (
+            decision_id  INTEGER PRIMARY KEY AUTOINCREMENT,
+            intent_id    TEXT REFERENCES trade_intents(intent_id),
+            decision     TEXT,
+            checks_json  TEXT,
+            evaluated_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS orders (
+            order_id        TEXT PRIMARY KEY,
+            intent_id       TEXT REFERENCES trade_intents(intent_id),
+            account_id      TEXT,
+            symbol          TEXT,
+            side            TEXT,
+            quantity        REAL,
+            contracts       INTEGER,
+            order_type      TEXT,
+            limit_price     REAL,
+            state           TEXT DEFAULT 'PENDING',
+            time_in_force   TEXT DEFAULT 'DAY',
+            broker_order_id TEXT,
+            submitted_at    TEXT,
+            updated_at      TEXT,
+            fill_qty        REAL DEFAULT 0,
+            fill_cash       REAL DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS fills (
+            fill_id     TEXT PRIMARY KEY,
+            order_id    TEXT REFERENCES orders(order_id),
+            account_id  TEXT,
+            symbol      TEXT,
+            side        TEXT,
+            qty         REAL,
+            price       REAL,
+            fee         REAL DEFAULT 0,
+            fill_source TEXT,
+            filled_at   TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS account_snapshots (
+            snapshot_id  INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id   TEXT,
+            cash         REAL,
+            nav          REAL,
+            buying_power REAL,
+            snapshot_at  TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS position_snapshots (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id      TEXT,
+            symbol          TEXT,
+            qty             REAL,
+            avg_cost        REAL,
+            instrument_type TEXT,
+            as_of           TEXT
+        );
+    """)
+
+    # Seed AGENTIC_SHADOW_01 if not present
+    from datetime import datetime as _dt, timezone as _tz
+    conn.execute(
+        """INSERT OR IGNORE INTO trading_accounts
+           (account_id, name, mode, starting_capital, current_cash,
+            broker, trading_enabled, policy_version, created_at)
+           VALUES (?,?,?,?,?,?,?,?,?)""",
+        ("AGENTIC_SHADOW_01", "Agentic Shadow Account", "shadow",
+         10000.0, 10000.0, None, 1, "1.0",
+         _dt.now(_tz.utc).isoformat()),
+    )
+    conn.commit()
 
 
 # ── Insert helpers ────────────────────────────────────────────────────────────

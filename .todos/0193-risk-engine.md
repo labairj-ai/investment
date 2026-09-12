@@ -1,7 +1,7 @@
 # Independent Pre-Trade Risk Engine
 
 - **ID:** 0193
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-12
 - **Priority:** high
 - **Depends:** 0191, 0192

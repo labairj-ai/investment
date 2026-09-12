@@ -1930,6 +1930,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             else:
                 self.send_response(404)
                 self.end_headers()
+        # ── 0198 Shadow account endpoints ─────────────────────────────────────
+        elif parsed.path == "/api/shadow/account":
+            self._handle_shadow_account()
+        elif parsed.path == "/api/shadow/intents":
+            limit = int(parse_qs(parsed.query).get("limit", ["20"])[0])
+            self._handle_shadow_intents(limit)
+        elif parsed.path == "/api/shadow/fills":
+            limit = int(parse_qs(parsed.query).get("limit", ["20"])[0])
+            self._handle_shadow_fills(limit)
+        elif parsed.path.startswith("/api/shadow/risk/"):
+            intent_id = parsed.path.split("/api/shadow/risk/", 1)[1]
+            self._handle_shadow_risk(intent_id)
         else:
             # Restrict static file fallback to safe extensions only — prevents
             # serving .env, .py, .db, .csv, and other sensitive project files.
@@ -1962,6 +1974,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._handle_analysis_job_create()
         elif parsed.path == "/api/refresh-dashboard":
             self._handle_refresh_dashboard()
+        elif parsed.path == "/api/trade-engine/run":
+            self._handle_trade_engine_run()
         elif parsed.path == "/api/invest-chat":
             self._handle_invest_chat()
         elif parsed.path == "/api/ai/chat":
@@ -5459,6 +5473,169 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         import threading
         threading.Thread(target=_worker, daemon=True).start()
         self._json({"ok": True, "status": "started", "agent_type": agent_type, "ticker": ticker})
+
+    # ── 0198 Shadow account handlers ──────────────────────────────────────────
+
+    def _shadow_conn(self):
+        import sqlite3 as _sqlite3
+        from pathlib import Path as _Path
+        _db = _Path(__file__).resolve().parent / "out" / "investment.db"
+        conn = _sqlite3.connect(str(_db), timeout=5)
+        conn.row_factory = _sqlite3.Row
+        return conn
+
+    def _handle_shadow_account(self):
+        try:
+            conn = self._shadow_conn()
+            row = conn.execute(
+                "SELECT * FROM trading_accounts WHERE account_id='AGENTIC_SHADOW_01'"
+            ).fetchone()
+            if not row:
+                return self._send_json({"ok": False, "error": "shadow account not found"}, 404)
+            positions = conn.execute(
+                "SELECT symbol, qty, avg_cost, instrument_type FROM position_snapshots WHERE account_id='AGENTIC_SHADOW_01'"
+            ).fetchall()
+            pos_value = sum(float(r["qty"] or 0) * float(r["avg_cost"] or 0) for r in positions)
+            nav = float(row["current_cash"] or 0) + pos_value
+            conn.close()
+            self._json({
+                "ok": True,
+                "account_id": row["account_id"],
+                "name": row["name"],
+                "mode": row["mode"],
+                "starting_capital": float(row["starting_capital"] or 0),
+                "current_cash": float(row["current_cash"] or 0),
+                "nav": round(nav, 2),
+                "position_count": len(positions),
+                "trading_enabled": bool(row["trading_enabled"]),
+                "policy_version": row["policy_version"],
+                "positions": [
+                    {"symbol": r["symbol"], "qty": float(r["qty"] or 0),
+                     "avg_cost": float(r["avg_cost"] or 0),
+                     "value": round(float(r["qty"] or 0) * float(r["avg_cost"] or 0), 2)}
+                    for r in positions
+                ],
+            })
+        except Exception as e:
+            self._send_json({"ok": False, "error": str(e)}, 500)
+
+    def _handle_shadow_intents(self, limit: int = 20):
+        try:
+            conn = self._shadow_conn()
+            rows = conn.execute(
+                """SELECT ti.intent_id, ti.symbol, ti.side, ti.quantity, ti.limit_price,
+                          ti.status, ti.created_at, ti.valid_until,
+                          rd.decision, rd.checks_json
+                   FROM trade_intents ti
+                   LEFT JOIN risk_decisions rd ON rd.intent_id=ti.intent_id
+                   WHERE ti.account_id='AGENTIC_SHADOW_01'
+                   ORDER BY ti.created_at DESC LIMIT ?""",
+                (limit,),
+            ).fetchall()
+            import json as _json
+            intents = []
+            for r in rows:
+                checks = []
+                if r["checks_json"]:
+                    try:
+                        checks = _json.loads(r["checks_json"])
+                    except Exception:
+                        pass
+                failed = [c for c in checks if c.get("result") == "FAIL"]
+                passed_count = sum(1 for c in checks if c.get("result") == "PASS")
+                intents.append({
+                    "intent_id": r["intent_id"],
+                    "symbol": r["symbol"],
+                    "side": r["side"],
+                    "quantity": r["quantity"],
+                    "limit_price": r["limit_price"],
+                    "status": r["status"],
+                    "created_at": r["created_at"],
+                    "risk_decision": r["decision"],
+                    "checks_passed": passed_count,
+                    "checks_failed": len(failed),
+                    "fail_reason": failed[0].get("reason") if failed else None,
+                })
+            conn.close()
+            self._json({"ok": True, "intents": intents})
+        except Exception as e:
+            self._send_json({"ok": False, "error": str(e)}, 500)
+
+    def _handle_shadow_fills(self, limit: int = 20):
+        try:
+            conn = self._shadow_conn()
+            rows = conn.execute(
+                """SELECT f.fill_id, f.symbol, f.side, f.qty, f.price, f.fee,
+                          f.fill_source, f.filled_at, ti.recommendation_id
+                   FROM fills f
+                   JOIN orders o ON f.order_id=o.order_id
+                   JOIN trade_intents ti ON o.intent_id=ti.intent_id
+                   WHERE f.account_id='AGENTIC_SHADOW_01'
+                   ORDER BY f.filled_at DESC LIMIT ?""",
+                (limit,),
+            ).fetchall()
+            conn.close()
+            self._json({
+                "ok": True,
+                "fills": [
+                    {
+                        "fill_id": r["fill_id"],
+                        "symbol": r["symbol"],
+                        "side": r["side"],
+                        "qty": r["qty"],
+                        "price": r["price"],
+                        "fee": r["fee"],
+                        "fill_source": r["fill_source"],
+                        "filled_at": r["filled_at"],
+                        "recommendation_id": r["recommendation_id"],
+                    }
+                    for r in rows
+                ],
+            })
+        except Exception as e:
+            self._send_json({"ok": False, "error": str(e)}, 500)
+
+    def _handle_shadow_risk(self, intent_id: str):
+        try:
+            conn = self._shadow_conn()
+            row = conn.execute(
+                "SELECT * FROM risk_decisions WHERE intent_id=? ORDER BY decision_id DESC LIMIT 1",
+                (intent_id,),
+            ).fetchone()
+            conn.close()
+            if not row:
+                return self._send_json({"ok": False, "error": "no risk decision found"}, 404)
+            import json as _json
+            checks = []
+            if row["checks_json"]:
+                try:
+                    checks = _json.loads(row["checks_json"])
+                except Exception:
+                    pass
+            self._json({
+                "ok": True,
+                "intent_id": row["intent_id"],
+                "decision": row["decision"],
+                "evaluated_at": row["evaluated_at"],
+                "checks": checks,
+            })
+        except Exception as e:
+            self._send_json({"ok": False, "error": str(e)}, 500)
+
+    def _handle_trade_engine_run(self):
+        """POST /api/trade-engine/run — process all PENDING intents for AGENTIC_SHADOW_01."""
+        try:
+            from trade_engine.execution_engine import run_pending_intents
+            conn = self._shadow_conn()
+            results = run_pending_intents("AGENTIC_SHADOW_01", conn)
+            conn.close()
+            self._json({
+                "ok": True,
+                "processed": len(results),
+                "results": [r.to_dict() for r in results],
+            })
+        except Exception as e:
+            self._send_json({"ok": False, "error": str(e)}, 500)
 
     def _json(self, data):
         body = json.dumps(data).encode()

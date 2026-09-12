@@ -1,7 +1,7 @@
 # Trade Engine DB Schema: New Tables for Shadow Execution
 
 - **ID:** 0190
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-12
 - **Priority:** high
 - **Depends:** none

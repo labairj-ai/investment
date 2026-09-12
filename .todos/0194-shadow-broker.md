@@ -1,7 +1,7 @@
 # ShadowBroker: Simulated Order Lifecycle + Fill Engine
 
 - **ID:** 0194
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-12
 - **Priority:** high
 - **Depends:** 0191, 0192, 0193

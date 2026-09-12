@@ -2335,11 +2335,13 @@ def build_dashboard(portfolio, layers, holdings):
   <button class="dash-tab-btn active" id="tab-btn-portfolio" onclick="showDashTab('portfolio')">Portfolio</button>
   <button class="dash-tab-btn" id="tab-btn-decisions" onclick="showDashTab('decisions')">Decisions</button>
   <button class="dash-tab-btn" id="tab-btn-macro" onclick="showDashTab('macro')">📊 Macro Risk</button>
+  <button class="dash-tab-btn" id="tab-btn-shadow" onclick="showDashTab('shadow');loadShadowPanel()">🤖 Shadow</button>
   <button id="nav-hamburger" onclick="toggleNavMenu(event)" aria-label="Menu">&#9776;</button>
   <div id="nav-dropdown">
     <button class="nav-dd-btn" id="tab-dd-btn-portfolio" onclick="showDashTab('portfolio');closeNavMenu()">Portfolio</button>
     <button class="nav-dd-btn" id="tab-dd-btn-decisions" onclick="showDashTab('decisions');closeNavMenu()">Decisions</button>
     <button class="nav-dd-btn" id="tab-dd-btn-macro" onclick="showDashTab('macro');closeNavMenu()">📊 Macro Risk</button>
+    <button class="nav-dd-btn" id="tab-dd-btn-shadow" onclick="showDashTab('shadow');loadShadowPanel();closeNavMenu()">🤖 Shadow</button>
     <button class="nav-dd-btn" id="tab-dd-btn-glossary" onclick="showDashTab('glossary');closeNavMenu()">📖 Glossary</button>
   </div>
 </nav>
@@ -3045,6 +3047,42 @@ def build_dashboard(portfolio, layers, holdings):
 
   </div><!-- .gloss-container -->
 </div>
+
+<div id="tab-shadow" class="dash-tab-content" style="display:none;">
+  <div style="max-width:960px;margin:0 auto;padding:20px 24px;display:flex;flex-direction:column;gap:18px;">
+
+    <!-- Account summary -->
+    <div id="shadow-account-card" style="background:linear-gradient(135deg,#1a2340 0%,#243050 100%);border-radius:10px;padding:18px 22px;box-shadow:0 2px 8px rgba(0,0,0,.12);color:#e2e8f0;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+        <span style="font-size:11px;font-weight:700;letter-spacing:0.08em;color:#8ba4d4;text-transform:uppercase;">Agentic Shadow Account</span>
+        <span style="font-size:10px;background:#2d4a7a;color:#90cdf4;padding:3px 10px;border-radius:12px;font-weight:700;letter-spacing:0.06em;">SHADOW MODE</span>
+      </div>
+      <div id="shadow-account-body" style="color:#a0aec0;font-size:13px;">Loading…</div>
+    </div>
+
+    <!-- Recent intents -->
+    <div style="background:#fff;border-radius:10px;padding:18px 22px;box-shadow:0 1px 4px rgba(0,0,0,.07);">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+        <h2 style="margin:0;">Recent Intents</h2>
+        <button onclick="loadShadowPanel()" style="font-size:11px;padding:4px 12px;background:#ebf8ff;color:#2b6cb0;border:1px solid #bee3f8;border-radius:6px;cursor:pointer;">Refresh</button>
+      </div>
+      <div id="shadow-intents-body" style="color:#718096;font-size:13px;">Loading…</div>
+    </div>
+
+    <!-- Open positions -->
+    <div style="background:#fff;border-radius:10px;padding:18px 22px;box-shadow:0 1px 4px rgba(0,0,0,.07);">
+      <h2 style="margin-bottom:12px;">Positions</h2>
+      <div id="shadow-positions-body" style="color:#718096;font-size:13px;">Loading…</div>
+    </div>
+
+    <!-- Recent fills -->
+    <div style="background:#fff;border-radius:10px;padding:18px 22px;box-shadow:0 1px 4px rgba(0,0,0,.07);">
+      <h2 style="margin-bottom:12px;">Recent Fills</h2>
+      <div id="shadow-fills-body" style="color:#718096;font-size:13px;">Loading…</div>
+    </div>
+
+  </div>
+</div><!-- end tab-shadow -->
 
 <div id="tab-decisions" class="dash-tab-content" style="display:none;">
   <div style="max-width:900px;margin:0 auto;padding:20px 24px;display:flex;flex-direction:column;gap:18px;">
@@ -8596,6 +8634,103 @@ function showDashTab(name) {{
   try {{ localStorage.setItem('dashTab', name); }} catch(e) {{}}
   if (name === 'decisions') {{ _startAgentStatusPolling(); }}
   else {{ _stopAgentStatusPolling(); }}
+}}
+
+function loadShadowPanel() {{
+  var acctEl = document.getElementById('shadow-account-body');
+  var intEl  = document.getElementById('shadow-intents-body');
+  var posEl  = document.getElementById('shadow-positions-body');
+  var fillEl = document.getElementById('shadow-fills-body');
+
+  Promise.all([
+    fetch('/api/shadow/account').then(r => r.json()),
+    fetch('/api/shadow/intents?limit=20').then(r => r.json()),
+    fetch('/api/shadow/fills?limit=20').then(r => r.json()),
+  ]).then(function([acct, intents, fills]) {{
+    // Account summary
+    if (acct.ok) {{
+      var pnl = acct.nav - acct.starting_capital;
+      var pnlPct = acct.starting_capital > 0 ? (pnl / acct.starting_capital * 100).toFixed(2) : '0.00';
+      var pnlColor = pnl >= 0 ? '#38a169' : '#e53e3e';
+      acctEl.innerHTML = '<div style="display:flex;gap:32px;flex-wrap:wrap;">' +
+        '<div><div style="font-size:10px;color:#8ba4d4;text-transform:uppercase;margin-bottom:2px;">NAV</div><div style="font-size:22px;font-weight:700;color:#fff;">$' + acct.nav.toLocaleString('en-US', {{minimumFractionDigits:2, maximumFractionDigits:2}}) + '</div></div>' +
+        '<div><div style="font-size:10px;color:#8ba4d4;text-transform:uppercase;margin-bottom:2px;">Cash</div><div style="font-size:22px;font-weight:700;color:#fff;">$' + acct.current_cash.toLocaleString('en-US', {{minimumFractionDigits:2, maximumFractionDigits:2}}) + '</div></div>' +
+        '<div><div style="font-size:10px;color:#8ba4d4;text-transform:uppercase;margin-bottom:2px;">P&amp;L</div><div style="font-size:22px;font-weight:700;color:' + pnlColor + ';">' + (pnl >= 0 ? '+' : '') + '$' + pnl.toFixed(2) + ' (' + (pnl >= 0 ? '+' : '') + pnlPct + '%)</div></div>' +
+        '<div><div style="font-size:10px;color:#8ba4d4;text-transform:uppercase;margin-bottom:2px;">Positions</div><div style="font-size:22px;font-weight:700;color:#fff;">' + acct.position_count + '</div></div>' +
+        '</div>';
+
+      // Positions table
+      if (acct.positions && acct.positions.length > 0) {{
+        var rows = acct.positions.map(function(p) {{
+          return '<tr><td style="padding:6px 8px;font-weight:600;">' + p.symbol + '</td>' +
+            '<td style="padding:6px 8px;">' + p.qty + ' sh</td>' +
+            '<td style="padding:6px 8px;">$' + p.avg_cost.toFixed(2) + '</td>' +
+            '<td style="padding:6px 8px;font-weight:600;">$' + p.value.toLocaleString('en-US', {{minimumFractionDigits:2, maximumFractionDigits:2}}) + '</td></tr>';
+        }}).join('');
+        posEl.innerHTML = '<table style="width:100%;border-collapse:collapse;font-size:13px;">' +
+          '<thead><tr style="color:#718096;font-size:11px;text-transform:uppercase;">' +
+          '<th style="padding:6px 8px;text-align:left;">Symbol</th><th style="padding:6px 8px;text-align:left;">Shares</th>' +
+          '<th style="padding:6px 8px;text-align:left;">Avg Cost</th><th style="padding:6px 8px;text-align:left;">Value</th></tr></thead>' +
+          '<tbody>' + rows + '</tbody></table>';
+      }} else {{
+        posEl.innerHTML = '<span style="color:#a0aec0;font-style:italic;">No positions — account has not traded yet.</span>';
+      }}
+    }} else {{
+      acctEl.innerHTML = '<span style="color:#fc8181;">Error: ' + (acct.error || 'unknown') + '</span>';
+      posEl.innerHTML = '';
+    }}
+
+    // Intents
+    if (intents.ok && intents.intents.length > 0) {{
+      var irows = intents.intents.map(function(i) {{
+        var statusColor = {{FILLED:'#38a169', APPROVED:'#3182ce', REJECTED:'#e53e3e', PENDING:'#d69e2e', EXPIRED:'#718096'}}[i.status] || '#718096';
+        var dt = i.created_at ? i.created_at.slice(0, 16).replace('T', ' ') : '';
+        var risk = i.risk_decision === 'APPROVED'
+          ? '<span style="color:#38a169;">✓ ' + i.checks_passed + ' checks passed</span>'
+          : (i.risk_decision === 'REJECTED'
+            ? '<span style="color:#e53e3e;">✗ ' + (i.fail_reason || 'rejected') + '</span>'
+            : '<span style="color:#718096;">—</span>');
+        return '<tr style="border-top:1px solid #edf2f7;">' +
+          '<td style="padding:7px 8px;font-size:11px;color:#718096;">' + dt + '</td>' +
+          '<td style="padding:7px 8px;font-weight:600;">' + i.symbol + '</td>' +
+          '<td style="padding:7px 8px;">' + i.side + ' ' + (i.quantity || '') + ' @ $' + (i.limit_price || '').toFixed(2) + '</td>' +
+          '<td style="padding:7px 8px;"><span style="color:' + statusColor + ';font-weight:700;">' + i.status + '</span></td>' +
+          '<td style="padding:7px 8px;font-size:11px;">' + risk + '</td></tr>';
+      }}).join('');
+      intEl.innerHTML = '<table style="width:100%;border-collapse:collapse;font-size:13px;">' +
+        '<thead><tr style="color:#718096;font-size:11px;text-transform:uppercase;">' +
+        '<th style="padding:6px 8px;text-align:left;">Date</th><th style="padding:6px 8px;text-align:left;">Symbol</th>' +
+        '<th style="padding:6px 8px;text-align:left;">Order</th><th style="padding:6px 8px;text-align:left;">Status</th>' +
+        '<th style="padding:6px 8px;text-align:left;">Risk</th></tr></thead>' +
+        '<tbody>' + irows + '</tbody></table>';
+    }} else {{
+      intEl.innerHTML = '<span style="color:#a0aec0;font-style:italic;">No intents yet — run the trade engine to generate activity.</span>';
+    }}
+
+    // Fills
+    if (fills.ok && fills.fills.length > 0) {{
+      var frows = fills.fills.map(function(f) {{
+        var dt = f.filled_at ? f.filled_at.slice(0, 16).replace('T', ' ') : '';
+        var sideColor = f.side === 'BUY' ? '#3182ce' : '#e53e3e';
+        return '<tr style="border-top:1px solid #edf2f7;">' +
+          '<td style="padding:7px 8px;font-size:11px;color:#718096;">' + dt + '</td>' +
+          '<td style="padding:7px 8px;font-weight:600;">' + f.symbol + '</td>' +
+          '<td style="padding:7px 8px;color:' + sideColor + ';font-weight:700;">' + f.side + '</td>' +
+          '<td style="padding:7px 8px;">' + f.qty + ' sh @ $' + f.price.toFixed(2) + '</td>' +
+          '<td style="padding:7px 8px;font-size:11px;color:#718096;">' + (f.recommendation_id ? 'rec #' + f.recommendation_id : '—') + '</td></tr>';
+      }}).join('');
+      fillEl.innerHTML = '<table style="width:100%;border-collapse:collapse;font-size:13px;">' +
+        '<thead><tr style="color:#718096;font-size:11px;text-transform:uppercase;">' +
+        '<th style="padding:6px 8px;text-align:left;">Date</th><th style="padding:6px 8px;text-align:left;">Symbol</th>' +
+        '<th style="padding:6px 8px;text-align:left;">Side</th><th style="padding:6px 8px;text-align:left;">Execution</th>' +
+        '<th style="padding:6px 8px;text-align:left;">Rec</th></tr></thead>' +
+        '<tbody>' + frows + '</tbody></table>';
+    }} else {{
+      fillEl.innerHTML = '<span style="color:#a0aec0;font-style:italic;">No fills yet.</span>';
+    }}
+  }}).catch(function(e) {{
+    if (acctEl) acctEl.innerHTML = '<span style="color:#fc8181;">Failed to load: ' + e.message + '</span>';
+  }});
 }}
 
 // ── Agent status badge ────────────────────────────────────────────────────────
