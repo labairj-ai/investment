@@ -40,6 +40,8 @@ import yfinance as yf
 import warnings
 warnings.filterwarnings("ignore")
 
+from dataclasses import dataclass, field as _dc_field
+
 from strategy_config import (
     CC_MIN_DTE as MIN_DTE,
     CC_MAX_DTE as MAX_DTE,
@@ -50,6 +52,9 @@ from strategy_config import (
     CC_MIN_BID as MIN_BID,
     CC_TOP_N as TOP_N,
     CC_MAX_STRIKE_MULTIPLIER as MAX_STRIKE_MULTIPLIER,
+    TAX_ST_RATE,
+    TAX_LT_RATE,
+    CC_ASSIGNMENT_TAX_FRICTION_THRESHOLD,
 )
 
 # ── Settings ──────────────────────────────────────────────────────────────────
@@ -844,189 +849,261 @@ def print_report(r: dict) -> None:
 
 # ── Open position evaluator ───────────────────────────────────────────────────
 
-_TAX_ST_RATE = 0.37  # assumed federal marginal rate for short-term gains
-_TAX_LT_RATE = 0.20  # assumed federal marginal rate for long-term gains
-_LOT_TAX_FRICTION_THRESHOLD = 500  # minimum avoidable tax dollars to block assignment
+# ── ManagementPolicyContext (0162) ───────────────────────────────────────────
+
+@dataclass
+class ManagementPolicyContext:
+    """Pre-assembled inputs for evaluate_cc_management_state() — pure, no DB calls needed.
+
+    The agent (_analyze_roll) assembles this from live sources before calling the engine.
+    The dashboard path uses _build_mgmt_context_from_db() as a backward-compat shim.
+    """
+    ticker: str
+    current_price: float
+    strike: float
+    dte: int
+    delta: "float | None" = None
+    remaining_extrinsic: "float | None" = None
+    pct_captured: "float | None" = None
+    has_avoid: bool = False
+    risk_events: list = _dc_field(default_factory=list)
+    contracts: int = 1
+
+    # From cc_policy
+    assignment_price_floor: "float | None" = None
+    assignment_policy: dict = _dc_field(default_factory=dict)
+
+    # Live portfolio state (from AgentContext.snapshot; None = not provided → gate skipped)
+    current_weight_pct: "float | None" = None
+    max_position_pct: "float | None" = None
+
+    # Thesis state (pre-fetched; None = unavailable → conservative gate behaviour)
+    conviction: "int | None" = None
+    thesis_health: "float | None" = None
+
+    # Tax friction (pre-computed by caller via _lot_tax_friction())
+    assignment_tax_friction: float = 0.0
+    tax_friction_reason: str = ""
 
 
-def _lot_tax_friction(ticker: str, current_price: float) -> "tuple[float, str]":
-    """Compute avoidable tax cost from lot-specific ST/LT analysis (0155).
+def _lot_tax_friction(
+    ticker: str,
+    assignment_price: float,   # = strike, not current market price (0157)
+    shares_to_assign: int,     # contracts × 100 (0158)
+) -> "tuple[float, str]":
+    """Compute avoidable tax cost using strike-based FIFO lot analysis (0157, 0158, 0159).
 
     Returns (avoidable_tax_dollars, reason_string).
-    avoidable_tax > _LOT_TAX_FRICTION_THRESHOLD and near-LT crossover → prefer ROLL_OUT.
+    Walks lots oldest-first (FIFO), stops at shares_to_assign, uses assignment_price
+    (the strike) not the current market price to compute gains.
     """
     from datetime import date as _date, timedelta as _td
     try:
         import agent_db as _adb_tax
         conn = _adb_tax._connect()
         lots = conn.execute(
-            "SELECT shares, cost_per_share, purchase_date FROM cost_lots WHERE ticker=? ORDER BY purchase_date",
+            "SELECT shares, cost_per_share, purchase_date "
+            "FROM cost_lots WHERE ticker=? ORDER BY purchase_date ASC",
             (ticker,),
         ).fetchall()
         conn.close()
         if not lots:
             return 0.0, ""
 
-        today = _date.today()
-        lt_cutoff = today - _td(days=365)
-        near_lt_cutoff = lt_cutoff + _td(days=90)  # within 90d of going LT
-
-        st_gain = lt_gain = 0.0
-        soonest_lt_days = None
+        today         = _date.today()
+        lt_cutoff     = today - _td(days=365)
+        remaining     = float(shares_to_assign)
+        st_gain       = 0.0
+        soonest_lt_days: "int | None" = None
 
         for lot in lots:
-            shares        = float(lot["shares"])
+            if remaining <= 0:
+                break
+            lot_shares    = float(lot["shares"])
             cost_per      = float(lot["cost_per_share"])
             purchase_date = _date.fromisoformat(lot["purchase_date"])
-            gain          = shares * (current_price - cost_per)
+            allocated     = min(lot_shares, remaining)
+            remaining    -= allocated
+
+            gain = allocated * (assignment_price - cost_per)
             if gain <= 0:
-                continue  # only count gains; losses are not a friction problem
-            if purchase_date <= lt_cutoff:
-                lt_gain += gain
-            else:
+                continue  # loss lot — no tax friction on gains
+
+            if purchase_date > lt_cutoff:
                 st_gain += gain
-                # track soonest ST lot crossing LT
-                days_left = (lt_cutoff - purchase_date + _td(days=365)).days
-                # days_left = how many days until this lot goes LT
                 days_remaining = (_td(days=365) - (today - purchase_date)).days
                 if soonest_lt_days is None or days_remaining < soonest_lt_days:
                     soonest_lt_days = days_remaining
 
-        if st_gain <= 0:
+        if st_gain <= 0 or soonest_lt_days is None:
             return 0.0, ""
 
-        # Tax saved if we roll until ST lots go LT
-        avoidable_tax = st_gain * (_TAX_ST_RATE - _TAX_LT_RATE)
-        if avoidable_tax < _LOT_TAX_FRICTION_THRESHOLD:
+        avoidable_tax = st_gain * (TAX_ST_RATE - TAX_LT_RATE)
+        if avoidable_tax < CC_ASSIGNMENT_TAX_FRICTION_THRESHOLD:
             return 0.0, ""
 
-        days_str = f"{soonest_lt_days}d" if soonest_lt_days is not None else "~soon"
-        if soonest_lt_days is not None and soonest_lt_days > 90:
-            # Far from LT crossover — don't block just for tax deferral
-            return 0.0, ""
+        if soonest_lt_days > 90:
+            return 0.0, ""  # LT crossover too far away to justify deferral
 
         return avoidable_tax, (
-            f"ST tax friction: ${avoidable_tax:,.0f} avoidable tax — "
-            f"${st_gain:,.0f} ST gain, nearest LT crossover in {days_str}; roll to defer"
+            f"ST tax friction: ${avoidable_tax:,.0f} avoidable tax on ${st_gain:,.0f} "
+            f"ST gain at strike; nearest LT crossover in {soonest_lt_days}d — roll to defer"
         )
     except Exception:
         return 0.0, ""
 
 
-def _check_assignment_eligible(
-    *,
-    ticker: str,
-    current_price: float,
-    strike: float,
-    dte: int,
-    delta,
-    remaining_extrinsic,
-    has_avoid: bool,
-    policy: dict,
-) -> "tuple[bool, str]":
-    """Inner eligibility checks for ALLOW_ASSIGNMENT (shared by evaluate_cc_management_state)."""
+def _check_assignment_eligible(ctx: "ManagementPolicyContext") -> "tuple[bool, str]":
+    """Pure gate checks for ALLOW_ASSIGNMENT. All inputs come from ctx — no DB calls."""
     # Gate 1: ITM probability via delta proxy
-    itm_threshold = 0.90 if has_avoid else 0.80
-    if delta is None or delta < itm_threshold:
-        return False, f"delta {(delta or 0):.2f} below ITM threshold {itm_threshold:.2f}"
+    itm_threshold = 0.90 if ctx.has_avoid else 0.80
+    if ctx.delta is None or ctx.delta < itm_threshold:
+        return False, f"delta {(ctx.delta or 0):.2f} below ITM threshold {itm_threshold:.2f}"
 
     # Gate 2: minimal extrinsic remaining
-    if remaining_extrinsic is not None and current_price > 0:
-        ext_pct = remaining_extrinsic / current_price
+    if ctx.remaining_extrinsic is not None and ctx.current_price > 0:
+        ext_pct = ctx.remaining_extrinsic / ctx.current_price
         if ext_pct >= 0.01:
-            return False, f"extrinsic {remaining_extrinsic:.2f} ({ext_pct:.1%}) still substantial"
+            return False, f"extrinsic {ctx.remaining_extrinsic:.2f} ({ext_pct:.1%}) still substantial"
 
     # Gate 3: acceptable assignment floor — compare STRIKE (0151), not current_price
-    min_price = policy.get("acceptable_assignment_min_price")
-    if min_price is not None:
-        try:
-            if strike < float(min_price):
+    if ctx.assignment_price_floor is not None:
+        if ctx.strike < ctx.assignment_price_floor:
+            return False, (
+                f"strike {ctx.strike:.2f} below acceptable assignment floor "
+                f"{ctx.assignment_price_floor:.2f}"
+            )
+
+    # Gate 4: lot-specific tax friction (0157, 0158) — pre-computed by caller
+    if ctx.assignment_tax_friction > 0 and ctx.tax_friction_reason:
+        return False, ctx.tax_friction_reason
+
+    # Gate 5: thesis/portfolio eligibility (0154) — pre-fetched by caller
+    asgn_policy = ctx.assignment_policy or {}
+
+    if asgn_policy.get("allowed") is False:
+        return False, "assignment disabled by thesis policy"
+
+    if asgn_policy.get("preserve_high_conviction", False):
+        min_conv   = int(asgn_policy.get("min_conviction_to_preserve", 4))
+        min_health = float(asgn_policy.get("min_thesis_health_for_preservation", 80))
+        # 0161: fail-safe — unavailable thesis data → conservative (block assignment)
+        if ctx.conviction is None or ctx.thesis_health is None:
+            return False, "preserve_high_conviction: thesis health unavailable — deferring to ROLL"
+        if ctx.conviction >= min_conv and ctx.thesis_health >= min_health:
+            return False, (
+                f"high-conviction healthy position (conviction={ctx.conviction}, "
+                f"health={ctx.thesis_health:.1f}) — assignment would exit a deliberate hold"
+            )
+
+    if asgn_policy.get("only_if_overweight", False):
+        # 0160: use live snapshot weight, not stale holding_day
+        if ctx.current_weight_pct is not None and ctx.max_position_pct is not None:
+            if ctx.current_weight_pct <= ctx.max_position_pct:
                 return False, (
-                    f"strike {strike:.2f} below acceptable assignment floor {float(min_price):.2f}"
+                    f"not overweight ({ctx.current_weight_pct:.1f}% vs "
+                    f"{ctx.max_position_pct:.1f}% max) — assignment would reduce below target"
                 )
-        except (TypeError, ValueError):
-            pass
-
-    # Gate 4: lot-specific tax friction analysis (0155) — replaces coarse LT-lot check
-    try:
-        avoidable_tax, tax_reason = _lot_tax_friction(ticker, current_price)
-        if avoidable_tax > 0 and tax_reason:
-            return False, tax_reason
-    except Exception:
-        pass
-
-    # Gate 5: thesis/portfolio eligibility (0154) — check assignment_policy in cc_policy
-    try:
-        asgn_policy = policy.get("assignment_policy") or {}
-        if asgn_policy.get("allowed") is False:
-            return False, "assignment disabled by thesis policy"
-
-        if asgn_policy.get("preserve_high_conviction", False):
-            min_conv = int(asgn_policy.get("min_conviction_to_preserve", 4))
-            min_health = float(asgn_policy.get("min_thesis_health_for_preservation", 80))
-            import agent_db as _adb_thesis
-            thesis = _adb_thesis.get_active_thesis(ticker)
-            if thesis is not None:
-                conviction = thesis.get("conviction") or 0
-                pillars    = thesis.get("pillars") or []
-                scored     = [p for p in pillars if p.get("score") is not None]
-                if scored:
-                    total_w = sum(p["importance"] for p in scored)
-                    health  = (
-                        sum(p["importance"] * p["score"] for p in scored) / total_w
-                        if total_w > 0 else 0
-                    )
-                    if int(conviction) >= min_conv and health >= min_health:
-                        return False, (
-                            f"high-conviction healthy position (conviction={conviction}, "
-                            f"health={health:.1f}) — assignment would exit a deliberate hold"
-                        )
-
-        if asgn_policy.get("only_if_overweight", False):
-            import agent_db as _adb_ow
-            thesis = _adb_ow.get_active_thesis(ticker)
-            if thesis is not None:
-                max_pct = thesis.get("max_position_pct")
-                if max_pct is not None:
-                    # compare current weight from latest holding_day
-                    conn_ow = _adb_ow._connect()
-                    try:
-                        port_row = conn_ow.execute(
-                            "SELECT total_value FROM portfolio_day ORDER BY day DESC LIMIT 1"
-                        ).fetchone()
-                        hold_row = conn_ow.execute(
-                            "SELECT value FROM holding_day WHERE ticker=? ORDER BY day DESC LIMIT 1",
-                            (ticker,),
-                        ).fetchone()
-                        if port_row and hold_row:
-                            weight = float(hold_row["value"]) / float(port_row["total_value"]) * 100
-                            if weight <= float(max_pct):
-                                return False, (
-                                    f"not overweight ({weight:.1f}% vs {max_pct}% max) — "
-                                    "assignment would reduce below target; prefer to hold"
-                                )
-                    finally:
-                        conn_ow.close()
-    except Exception:
-        pass
 
     return True, "assignment eligible: ITM probability sufficient, extrinsic near zero"
 
 
-def evaluate_cc_management_state(
-    *,
+def _build_mgmt_context_from_db(
     ticker: str,
     current_price: float,
     strike: float,
     dte: int,
+    *,
     delta=None,
     pct_captured=None,
     has_avoid: bool = False,
     remaining_extrinsic=None,
     risk_events=None,
     policy=None,
-) -> "tuple[str, str]":
-    """Single canonical CC management decision function (0152).
+    contracts: int = 1,
+) -> "ManagementPolicyContext":
+    """Backward-compat shim: assembles ManagementPolicyContext from DB for the dashboard path.
+
+    The agent path skips this and assembles the context from live snapshot data instead.
+    """
+    _policy      = policy or {}
+    asgn_policy  = _policy.get("assignment_policy") or {}
+    price_floor  = _policy.get("acceptable_assignment_min_price")
+    try:
+        if price_floor is not None:
+            price_floor = float(price_floor)
+    except (TypeError, ValueError):
+        price_floor = None
+
+    # Tax friction (0157, 0158)
+    tax_friction, tax_reason = _lot_tax_friction(ticker, strike, contracts * 100)
+
+    # Thesis fields (pre-fetch for gate 5 / 0161)
+    conviction   = None
+    thesis_health = None
+    max_pct       = None
+    try:
+        import agent_db as _adb_ctx
+        thesis = _adb_ctx.get_active_thesis(ticker)
+        if thesis is not None:
+            conviction = thesis.get("conviction")
+            if conviction is not None:
+                conviction = int(conviction)
+            max_pct_raw = thesis.get("max_position_pct")
+            max_pct = float(max_pct_raw) if max_pct_raw is not None else None
+            pillars = thesis.get("pillars") or []
+            scored  = [p for p in pillars if p.get("score") is not None]
+            if scored:
+                total_w = sum(p["importance"] for p in scored)
+                if total_w > 0:
+                    thesis_health = sum(p["importance"] * p["score"] for p in scored) / total_w
+    except Exception:
+        pass
+
+    # Portfolio weight — fall back to stale holding_day for the dashboard path
+    current_weight_pct = None
+    try:
+        import agent_db as _adb_w
+        conn_w = _adb_w._connect()
+        try:
+            port_row = conn_w.execute(
+                "SELECT total_value FROM portfolio_day ORDER BY day DESC LIMIT 1"
+            ).fetchone()
+            hold_row = conn_w.execute(
+                "SELECT value FROM holding_day WHERE ticker=? ORDER BY day DESC LIMIT 1",
+                (ticker,),
+            ).fetchone()
+            if port_row and hold_row and float(port_row["total_value"]) > 0:
+                current_weight_pct = float(hold_row["value"]) / float(port_row["total_value"]) * 100
+        finally:
+            conn_w.close()
+    except Exception:
+        pass
+
+    return ManagementPolicyContext(
+        ticker=ticker,
+        current_price=current_price,
+        strike=strike,
+        dte=dte,
+        delta=delta,
+        remaining_extrinsic=remaining_extrinsic,
+        pct_captured=pct_captured,
+        has_avoid=has_avoid,
+        risk_events=risk_events or [],
+        contracts=contracts,
+        assignment_price_floor=price_floor,
+        assignment_policy=asgn_policy,
+        current_weight_pct=current_weight_pct,
+        max_position_pct=max_pct,
+        conviction=conviction,
+        thesis_health=thesis_health,
+        assignment_tax_friction=tax_friction,
+        tax_friction_reason=tax_reason,
+    )
+
+
+def evaluate_cc_management_state(ctx: "ManagementPolicyContext") -> "tuple[str, str]":
+    """Single canonical CC management decision function — pure, no DB calls (0152, 0162).
 
     Returns (action, reason) where action is one of:
       BUY_TO_CLOSE | ALLOW_ASSIGNMENT | ROLL_OUT | ROLL_UP_AND_OUT | ROLL_UP | HOLD_CALL
@@ -1034,55 +1111,47 @@ def evaluate_cc_management_state(
     Both the agent (_analyze_roll) and the dashboard (evaluate_open_position) route
     through here so advice is always consistent regardless of call path.
     """
-    _policy = policy or {}
-    is_itm     = current_price >= strike
-    near_money = current_price >= strike * 0.97
-    cap        = pct_captured or 0.0
+    is_itm     = ctx.current_price >= ctx.strike
+    near_money = ctx.current_price >= ctx.strike * 0.97
+    cap        = ctx.pct_captured or 0.0
 
     # Step 1: premium mostly captured → close
     if cap >= 80:
         return "BUY_TO_CLOSE", f"{cap:.0f}% premium captured — cost to close is minimal, redeploy"
 
     # Step 2: assignment eligibility
-    _assign_ok, _assign_reason = _check_assignment_eligible(
-        ticker=ticker,
-        current_price=current_price,
-        strike=strike,
-        dte=dte,
-        delta=delta,
-        remaining_extrinsic=remaining_extrinsic,
-        has_avoid=has_avoid,
-        policy=_policy,
-    )
+    _assign_ok, _assign_reason = _check_assignment_eligible(ctx)
     if _assign_ok:
         return "ALLOW_ASSIGNMENT", _assign_reason
 
     # Step 3: risk event → roll past it
-    if has_avoid:
-        _evts = risk_events or []
-        label = next((e["label"] for e in _evts if e["severity"] == "avoid"), "risk event")
+    if ctx.has_avoid:
+        label = next(
+            (e["label"] for e in ctx.risk_events if e["severity"] == "avoid"),
+            "risk event",
+        )
         return "ROLL_OUT", f"Risk event approaching — extend past: {label.replace('📵 AVOID — ', '')}"
 
     # Step 4: expires worthless very soon → hold
-    if dte is not None and dte <= 7 and not is_itm:
-        return "HOLD_CALL", f"Expires worthless in {dte} days — hold"
+    if ctx.dte is not None and ctx.dte <= 7 and not is_itm:
+        return "HOLD_CALL", f"Expires worthless in {ctx.dte} days — hold"
 
     # Step 5: deep ITM (delta ≥ 0.70) near expiry → roll up and out
-    if delta is not None and delta >= 0.70 and dte is not None and dte <= 21:
+    if ctx.delta is not None and ctx.delta >= 0.70 and ctx.dte is not None and ctx.dte <= 21:
         return "ROLL_UP_AND_OUT", (
-            f"Deep ITM (delta {delta:.2f}) with {dte}d left — roll up and out"
+            f"Deep ITM (delta {ctx.delta:.2f}) with {ctx.dte}d left — roll up and out"
         )
 
     # Step 6: any ITM/near-money → defensive roll up and out
     if is_itm or near_money:
         return "ROLL_UP_AND_OUT", (
-            f"Stock ${current_price:.2f} {'above' if is_itm else 'within 3% of'} "
-            f"strike ${strike:.2f} — roll up and out"
+            f"Stock ${ctx.current_price:.2f} {'above' if is_itm else 'within 3% of'} "
+            f"strike ${ctx.strike:.2f} — roll up and out"
         )
 
     # Step 7: elevated delta → raise strike
-    if delta is not None and delta >= 0.30:
-        return "ROLL_UP", f"Delta {delta:.2f} elevated — raise strike to reduce assignment risk"
+    if ctx.delta is not None and ctx.delta >= 0.30:
+        return "ROLL_UP", f"Delta {ctx.delta:.2f} elevated — raise strike to reduce assignment risk"
 
     return "HOLD_CALL", "Position well OTM — let theta decay work"
 
@@ -1313,8 +1382,8 @@ def evaluate_open_position(ticker: str, strike: float, expiry: str,
                                      if remaining_extrinsic_yield is not None and dte > 0
                                      else None)
 
-    # 0152: single canonical management decision — replaces _eval_open_economics
-    action, reason = evaluate_cc_management_state(
+    # 0152/0162: build context from DB (dashboard path — no live snapshot available)
+    _mgmt_ctx = _build_mgmt_context_from_db(
         ticker=ticker,
         current_price=current_price,
         strike=strike,
@@ -1324,8 +1393,9 @@ def evaluate_open_position(ticker: str, strike: float, expiry: str,
         has_avoid=has_avoid,
         remaining_extrinsic=remaining_extrinsic,
         risk_events=risk_events,
-        policy=None,   # no per-ticker policy in the dashboard path; agent passes policy
+        policy=None,  # no per-ticker policy in dashboard path; agent passes policy
     )
+    action, reason = evaluate_cc_management_state(_mgmt_ctx)
 
     _ROLL_ACTIONS = {"ROLL_OUT", "ROLL_UP", "ROLL_UP_AND_OUT"}
     next_contract = None

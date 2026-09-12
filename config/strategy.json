@@ -64,6 +64,7 @@
     "tax_loss_min_dollars": 500.0,
     "st_tax_rate": 0.37,
     "lt_tax_rate": 0.20,
+    "cc_assignment_tax_friction_threshold": 500,
     "layer_underweight_days": 3
   },
   "urgency": {

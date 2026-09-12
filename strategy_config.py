@@ -51,6 +51,7 @@ TRIGGER_TAX_LOSS_MIN: float = _trig.get("tax_loss_min_dollars", 500.0)
 TRIGGER_LAYER_UNDERWEIGHT_DAYS: int = _trig.get("layer_underweight_days", 3)
 TAX_ST_RATE: float = _trig.get("st_tax_rate", 0.37)
 TAX_LT_RATE: float = _trig.get("lt_tax_rate", 0.20)
+CC_ASSIGNMENT_TAX_FRICTION_THRESHOLD: float = _trig.get("cc_assignment_tax_friction_threshold", 500.0)
 
 
 _urg = _cfg.get("urgency", {})

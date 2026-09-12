@@ -8761,12 +8761,20 @@ function _thesisIntakeFormHtml(err, prefill) {{
     ['INDEFINITE',   'Indefinite'],
   ];
   // Support legacy plain-text values stored in older intake_json
+  const ccPolicies = [
+    ['ALLOW_DEFAULT',      'Allow assignment (default)'],
+    ['PRESERVE_CONVICTION','Preserve if high-conviction & thesis healthy'],
+    ['ONLY_IF_OVERWEIGHT', 'Only if position is overweight'],
+    ['NEVER_ASSIGN',       'Never assign'],
+  ];
   const _roleNorm = {{ Core:'STRUCTURAL_BALLAST', Income:'CASH_FLOW', Growth:'QUALITY_GROWTH', Speculative:'ASYMMETRIC', Tactical:'TACTICAL' }};
   const _periodNorm = {{ '< 1 year':'<1_YEAR', '1–3 years':'1_3_YEARS', '3–5 years':'3_5_YEARS', '5+ years':'5_PLUS_YEARS', Indefinite:'INDEFINITE' }};
-  const selRole   = _roleNorm[prefill.role]   || prefill.role   || '';
-  const selPeriod = _periodNorm[prefill.period] || prefill.period || '';
-  const roleOpts   = roles.map(([v,l])   => `<option value="${{v}}"${{selRole===v?' selected':''}}>${{l}}</option>`).join('');
-  const periodOpts = periods.map(([v,l]) => `<option value="${{v}}"${{selPeriod===v?' selected':''}}>${{l}}</option>`).join('');
+  const selRole     = _roleNorm[prefill.role]   || prefill.role   || '';
+  const selPeriod   = _periodNorm[prefill.period] || prefill.period || '';
+  const selCCPolicy = prefill.cc_assignment_policy || 'ALLOW_DEFAULT';
+  const roleOpts     = roles.map(([v,l])     => `<option value="${{v}}"${{selRole===v?' selected':''}}>${{l}}</option>`).join('');
+  const periodOpts   = periods.map(([v,l])   => `<option value="${{v}}"${{selPeriod===v?' selected':''}}>${{l}}</option>`).join('');
+  const ccPolicyOpts = ccPolicies.map(([v,l]) => `<option value="${{v}}"${{selCCPolicy===v?' selected':''}}>${{l}}</option>`).join('');
   const conds = (prefill.conditions || ['','']).join('\\n');
   return `
     ${{err ? `<div style="color:#e74c3c;margin-bottom:12px;font-size:13px;">${{err}}</div>` : ''}}
@@ -8794,6 +8802,10 @@ function _thesisIntakeFormHtml(err, prefill) {{
           <label style="font-size:11px;font-weight:600;color:#555;text-transform:uppercase;letter-spacing:.04em;">Max %</label>
           <input id="ti-maxpct" type="number" min="0" max="100" step="0.5" value="${{prefill.max_pct||prefill.max_weight_pct||10}}" style="width:100%;margin-top:4px;padding:8px;border:1px solid #dde;border-radius:6px;font-size:13px;box-sizing:border-box;"/>
         </div>
+      </div>
+      <div>
+        <label style="font-size:11px;font-weight:600;color:#555;text-transform:uppercase;letter-spacing:.04em;">CC Assignment Policy</label>
+        <select id="ti-cc-policy" style="width:100%;margin-top:4px;padding:8px;border:1px solid #dde;border-radius:6px;font-size:13px;">${{ccPolicyOpts}}</select>
       </div>
       <div>
         <label style="font-size:11px;font-weight:600;color:#555;text-transform:uppercase;letter-spacing:.04em;">Key thesis conditions (one per line, 3–5)</label>
@@ -9004,15 +9016,16 @@ function reviseThesis() {{
 async function submitThesisIntake() {{
   const statusEl = document.getElementById('thesis-intake-status');
   const intake = {{
-    why:        document.getElementById('ti-why').value.trim(),
-    role:       document.getElementById('ti-role').value,
-    period:     document.getElementById('ti-period').value,
-    conditions: document.getElementById('ti-conditions').value.split('\\n').map(s=>s.trim()).filter(Boolean),
-    sell:       document.getElementById('ti-sell').value.trim(),
-    trim:       document.getElementById('ti-trim').value.trim(),
-    conviction: parseInt(document.getElementById('ti-conviction').value)||3,
-    max_pct:    parseFloat(document.getElementById('ti-maxpct').value)||10,
-    special:    document.getElementById('ti-special').value.trim(),
+    why:                  document.getElementById('ti-why').value.trim(),
+    role:                 document.getElementById('ti-role').value,
+    period:               document.getElementById('ti-period').value,
+    conditions:           document.getElementById('ti-conditions').value.split('\\n').map(s=>s.trim()).filter(Boolean),
+    sell:                 document.getElementById('ti-sell').value.trim(),
+    trim:                 document.getElementById('ti-trim').value.trim(),
+    conviction:           parseInt(document.getElementById('ti-conviction').value)||3,
+    max_pct:              parseFloat(document.getElementById('ti-maxpct').value)||10,
+    special:              document.getElementById('ti-special').value.trim(),
+    cc_assignment_policy: document.getElementById('ti-cc-policy').value,
   }};
   if (!intake.why) {{ statusEl.textContent = 'Please describe why you own this.'; return; }}
   statusEl.innerHTML = '⏳ Generating AI draft — this takes 30–60 seconds…';

@@ -261,20 +261,68 @@ def _analyze_roll(ctx: AgentContext, ticker: str, position: dict) -> list[Recomm
     remaining_ext = eval_result.get("remaining_extrinsic")
     pnl           = round((existing_premium - current_mark) * contracts * 100, 2)
 
-    # 0152: single canonical management decision (replaces assignment_eligible + _decide_mgmt_action)
-    policy = _get_cc_policy(ticker)
-    action, _mgmt_action_reason = covered_call_rec.evaluate_cc_management_state(
+    # 0152/0162: assemble ManagementPolicyContext from live snapshot + DB pre-fetches
+    policy       = _get_cc_policy(ticker)
+    asgn_policy  = policy.get("assignment_policy") or {}
+    price_floor  = policy.get("acceptable_assignment_min_price")
+    try:
+        price_floor = float(price_floor) if price_floor is not None else None
+    except (TypeError, ValueError):
+        price_floor = None
+
+    # Tax friction — use strike as assignment price, actual contract count (0157, 0158)
+    _tax_friction, _tax_reason = covered_call_rec._lot_tax_friction(
+        ticker, existing_strike, contracts * 100
+    )
+
+    # Thesis state — pre-fetch for gate 5 (0161 fail-safe: None = unavailable)
+    _conviction    = None
+    _thesis_health = None
+    _max_pos_pct   = None
+    try:
+        _thesis = agent_db.get_active_thesis(ticker)
+        if _thesis is not None:
+            _conviction = _thesis.get("conviction")
+            if _conviction is not None:
+                _conviction = int(_conviction)
+            _max_pos_raw = _thesis.get("max_position_pct")
+            _max_pos_pct = float(_max_pos_raw) if _max_pos_raw is not None else None
+            _pillars = _thesis.get("pillars") or []
+            _scored  = [p for p in _pillars if p.get("score") is not None]
+            if _scored:
+                _tw = sum(p["importance"] for p in _scored)
+                if _tw > 0:
+                    _thesis_health = sum(p["importance"] * p["score"] for p in _scored) / _tw
+    except Exception:
+        pass
+
+    # Live portfolio weight from snapshot (0160) — avoids stale holding_day
+    _live_weight = None
+    _snap_holding = next((h for h in snapshot.holdings if h.ticker == ticker), None)
+    if _snap_holding is not None:
+        _live_weight = _snap_holding.weight_pct
+
+    _mgmt_ctx = covered_call_rec.ManagementPolicyContext(
         ticker=ticker,
         current_price=current_price,
         strike=existing_strike,
         dte=dte,
         delta=delta,
+        remaining_extrinsic=remaining_ext,
         pct_captured=pct_captured,
         has_avoid=has_avoid,
-        remaining_extrinsic=remaining_ext,
         risk_events=risk_events,
-        policy=policy,
+        contracts=contracts,
+        assignment_price_floor=price_floor,
+        assignment_policy=asgn_policy,
+        current_weight_pct=_live_weight,
+        max_position_pct=_max_pos_pct,
+        conviction=_conviction,
+        thesis_health=_thesis_health,
+        assignment_tax_friction=_tax_friction,
+        tax_friction_reason=_tax_reason,
     )
+    action, _mgmt_action_reason = covered_call_rec.evaluate_cc_management_state(_mgmt_ctx)
     print(f"[covered_call] {ticker}: evaluate_cc_management_state → {action} — {_mgmt_action_reason}")
 
     avoid_labels = [e["label"] for e in risk_events if e["severity"] == "avoid"]
