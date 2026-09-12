@@ -473,6 +473,21 @@ def migrate() -> None:
         ("recommendations",              "parent_cc_rec_id",     "INTEGER"),
         # 0180 — roll chain depth for recursive attribution in outcome evaluator
         ("recommendation_outcomes",      "roll_chain_depth",     "INTEGER"),
+        # 0199-0208 — trade engine hardening
+        ("fills",              "cost_basis",           "REAL"),
+        ("fills",              "realized_pnl",         "REAL"),
+        ("fills",              "realized_pnl_pct",     "REAL"),
+        ("position_snapshots", "market_price",         "REAL"),
+        ("position_snapshots", "market_value",         "REAL"),
+        ("position_snapshots", "price_as_of",          "TEXT"),
+        ("trading_accounts",   "nav_high_water",       "REAL"),
+        ("trade_intents",      "policy_hash",          "TEXT"),
+        ("risk_decisions",     "uuid_id",              "TEXT"),
+        ("risk_decisions",     "policy_version",       "TEXT"),
+        ("risk_decisions",     "policy_hash",          "TEXT"),
+        ("risk_decisions",     "account_cash_at_eval", "REAL"),
+        ("risk_decisions",     "account_nav_at_eval",  "REAL"),
+        ("orders",             "market_data_status",   "TEXT"),
     ]
     for table, col, col_type in _new_cols:
         try:
@@ -530,6 +545,23 @@ def migrate() -> None:
         conn.commit()
     except sqlite3.OperationalError:
         pass  # investment_theses table may not exist yet
+
+    # 0206 — unique indexes for trade engine idempotency
+    try:
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_intent_id ON orders (intent_id)"
+        )
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_positions_account_symbol "
+            "ON position_snapshots (account_id, symbol)"
+        )
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
 
     # 0190 — trade engine tables (shadow execution)
     _migrate_trade_engine(conn)

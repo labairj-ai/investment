@@ -16,6 +16,7 @@ from .models import (
     TimeInForce,
     TradeIntent,
 )
+from . import market_calendar
 
 
 class Quote(NamedTuple):
@@ -24,22 +25,8 @@ class Quote(NamedTuple):
     timestamp: str
 
 
-_MARKET_CLOSE_HOUR_ET = 16  # 4:00 PM ET
-
-
 def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
-
-
-def _is_after_market_close() -> bool:
-    """True when current ET time is at or past 16:00 (DAY order expiry)."""
-    try:
-        import zoneinfo
-        et = datetime.now(zoneinfo.ZoneInfo("America/New_York"))
-    except Exception:
-        # fallback: approximate via UTC-4/UTC-5
-        et = _now_utc()
-    return et.hour >= _MARKET_CLOSE_HOUR_ET
 
 
 class ShadowBroker:
@@ -49,53 +36,39 @@ class ShadowBroker:
     # ── Order submission ──────────────────────────────────────────────────────
 
     def submit_order(self, intent: TradeIntent) -> Order:
-        """Create order row in SUBMITTED state (idempotency checkpoint).
+        """Create order row in SUBMITTED→WORKING state (idempotent).
 
-        Returns the existing order if one already exists for this intent_id
-        (crash-restart safety — no double-submission).
+        Uses INSERT OR IGNORE backed by a unique index on intent_id (0206).
+        Always re-queries after insert so the canonical DB row is returned.
         """
-        existing = self._conn.execute(
-            "SELECT * FROM orders WHERE intent_id=?", (intent.intent_id,)
-        ).fetchone()
-        if existing:
-            return Order.from_db_row(existing)
-
         now = _now_utc().isoformat()
-        order = Order(
-            order_id=str(uuid.uuid4()),
-            intent_id=intent.intent_id,
-            account_id=intent.account_id,
-            symbol=intent.symbol,
-            side=intent.side,
-            quantity=intent.quantity,
-            contracts=intent.contracts,
-            order_type=intent.order_type,
-            limit_price=intent.limit_price,
-            state=OrderState.SUBMITTED,
-            time_in_force=intent.time_in_force,
-            submitted_at=now,
-            updated_at=now,
-        )
-        d = order.to_db_dict()
+        order_id = str(uuid.uuid4())
         self._conn.execute(
-            """INSERT INTO orders
+            """INSERT OR IGNORE INTO orders
                (order_id, intent_id, account_id, symbol, side, quantity,
                 contracts, order_type, limit_price, state, time_in_force,
                 submitted_at, updated_at, fill_qty, fill_cash)
-               VALUES (:order_id, :intent_id, :account_id, :symbol, :side, :quantity,
-                :contracts, :order_type, :limit_price, :state, :time_in_force,
-                :submitted_at, :updated_at, :fill_qty, :fill_cash)""",
-            d,
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                order_id, intent.intent_id, intent.account_id, intent.symbol,
+                intent.side.value, intent.quantity, intent.contracts,
+                intent.order_type.value, intent.limit_price,
+                OrderState.SUBMITTED.value, intent.time_in_force.value,
+                now, now, 0.0, 0.0,
+            ),
         )
         self._conn.commit()
 
-        # SUBMITTED → WORKING immediately (shadow broker has no async submit)
-        order.transition(OrderState.WORKING)
-        self._conn.execute(
-            "UPDATE orders SET state=?, updated_at=? WHERE order_id=?",
-            (order.state.value, order.updated_at, order.order_id),
-        )
-        self._conn.commit()
+        # Always re-query: returns either the row we just inserted or a pre-existing one
+        row = self._conn.execute(
+            "SELECT * FROM orders WHERE intent_id=?", (intent.intent_id,)
+        ).fetchone()
+        order = Order.from_db_row(row)
+
+        # Advance SUBMITTED → WORKING if not already past that state
+        if order.state == OrderState.SUBMITTED:
+            self._transition_order(order, OrderState.WORKING)
+
         return order
 
     # ── Fill simulation ───────────────────────────────────────────────────────
@@ -103,13 +76,13 @@ class ShadowBroker:
     def attempt_fill(self, order: Order, quote: Quote) -> Optional[Fill]:
         """Simulate a fill. Returns Fill on success, None if price conditions not met.
 
-        For DAY orders, auto-expires if market is closed.
+        DAY orders expire if market is not open (uses market_calendar — 0203).
         """
         if order.state not in (OrderState.WORKING, OrderState.PARTIALLY_FILLED):
             return None
 
-        # Expire DAY orders after market close
-        if order.time_in_force == TimeInForce.DAY and _is_after_market_close():
+        # Expire DAY orders when market is not open
+        if order.time_in_force == TimeInForce.DAY and not market_calendar.is_market_open():
             self._transition_order(order, OrderState.EXPIRED)
             return None
 
@@ -149,17 +122,15 @@ class ShadowBroker:
         side = order.side
         lim = order.limit_price
         if side in (Side.BUY, Side.BUY_TO_CLOSE):
-            # Fills when ask <= limit; at ask (more realistic than limit)
             if quote.ask <= lim:
                 return quote.ask
         elif side in (Side.SELL, Side.SELL_TO_OPEN):
-            # Fills when bid >= limit; at bid
             if quote.bid >= lim:
                 return quote.bid
         return None
 
     def _apply_fill(self, order: Order, fill: Fill) -> None:
-        """Write fill and update positions + cash atomically."""
+        """Write fill and update positions + cash atomically, capturing realized P&L (0202)."""
         # Idempotency: skip if fill_id already exists
         existing = self._conn.execute(
             "SELECT fill_id FROM fills WHERE fill_id=?", (fill.fill_id,)
@@ -167,17 +138,40 @@ class ShadowBroker:
         if existing:
             return
 
-        cash_delta = fill.cash_impact()
         is_buy = fill.side in (Side.BUY, Side.BUY_TO_CLOSE)
+        is_sell = not is_buy
 
-        # Write fill
+        # ── Capture realized P&L before position mutation (0202) ─────────────
+        cost_basis = 0.0
+        realized_pnl = 0.0
+        realized_pnl_pct = 0.0
+        if is_sell:
+            pos_row = self._conn.execute(
+                "SELECT qty, avg_cost FROM position_snapshots WHERE account_id=? AND symbol=?",
+                (fill.account_id, fill.symbol),
+            ).fetchone()
+            if pos_row:
+                avg_cost = float(pos_row["avg_cost"] or 0)
+                cost_basis = fill.qty * avg_cost
+                proceeds = fill.qty * fill.price - fill.fee
+                realized_pnl = proceeds - cost_basis
+                realized_pnl_pct = (realized_pnl / cost_basis * 100) if cost_basis else 0.0
+
+        cash_delta = fill.cash_impact()
+
+        # Write fill with realized P&L
         self._conn.execute(
-            """INSERT INTO fills (fill_id, order_id, account_id, symbol, side,
-               qty, price, fee, fill_source, filled_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
-            (fill.fill_id, fill.order_id, fill.account_id, fill.symbol,
-             fill.side.value, fill.qty, fill.price, fill.fee,
-             fill.fill_source, fill.filled_at),
+            """INSERT INTO fills
+               (fill_id, order_id, account_id, symbol, side,
+                qty, price, fee, fill_source, filled_at,
+                cost_basis, realized_pnl, realized_pnl_pct)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                fill.fill_id, fill.order_id, fill.account_id, fill.symbol,
+                fill.side.value, fill.qty, fill.price, fill.fee,
+                fill.fill_source, fill.filled_at,
+                cost_basis, realized_pnl, realized_pnl_pct,
+            ),
         )
 
         # Update order fill_qty / fill_cash / state
@@ -193,7 +187,7 @@ class ShadowBroker:
              order.updated_at, order.order_id),
         )
 
-        # Update position_snapshots
+        # Update position_snapshots with conflict handling for unique constraint (0206)
         existing_pos = self._conn.execute(
             "SELECT qty, avg_cost FROM position_snapshots WHERE account_id=? AND symbol=?",
             (fill.account_id, fill.symbol),
@@ -220,12 +214,32 @@ class ShadowBroker:
                     (new_qty, new_avg, fill.filled_at, fill.account_id, fill.symbol),
                 )
         elif is_buy:
+            # INSERT OR IGNORE then UPDATE to handle the unique(account_id, symbol) constraint
             self._conn.execute(
-                """INSERT INTO position_snapshots
+                """INSERT OR IGNORE INTO position_snapshots
                    (account_id, symbol, qty, avg_cost, instrument_type, as_of)
                    VALUES (?,?,?,?,?,?)""",
-                (fill.account_id, fill.symbol, fill.qty, fill.price,
-                 "EQUITY", fill.filled_at),
+                (fill.account_id, fill.symbol, fill.qty, fill.price, "EQUITY", fill.filled_at),
+            )
+            # If another process beat us, UPDATE to accumulate
+            self._conn.execute(
+                """UPDATE position_snapshots
+                   SET qty = qty + ?,
+                       avg_cost = (qty * avg_cost + ? * ?) / (qty + ?),
+                       as_of = ?
+                   WHERE account_id=? AND symbol=? AND qty != ?""",
+                (
+                    fill.qty,
+                    (self._conn.execute(
+                        "SELECT qty FROM position_snapshots WHERE account_id=? AND symbol=?",
+                        (fill.account_id, fill.symbol),
+                    ).fetchone() or {"qty": fill.qty})["qty"],
+                    fill.price,
+                    fill.qty,
+                    fill.filled_at,
+                    fill.account_id, fill.symbol,
+                    fill.qty,  # don't update if we just inserted (qty == fill.qty)
+                ),
             )
 
         # Update account cash
@@ -301,10 +315,12 @@ class ShadowBroker:
             qty = float(f["qty"] or 0)
             price = float(f["price"] or 0)
             fee = float(f["fee"] or 0)
+            is_option_leg = f["side"] in ("SELL_TO_OPEN", "BUY_TO_CLOSE")
+            multiplier = 100 if is_option_leg else 1
             if f["side"] in ("SELL", "SELL_TO_OPEN"):
-                computed_cash += qty * price - fee
+                computed_cash += qty * price * multiplier - fee
             else:
-                computed_cash -= qty * price + fee
+                computed_cash -= qty * price * multiplier + fee
 
         diff = abs(computed_cash - current)
         return {

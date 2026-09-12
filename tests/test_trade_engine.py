@@ -37,6 +37,7 @@ from trade_engine import risk_engine
 from trade_engine.shadow_broker import Quote, ShadowBroker
 from trade_engine import intent_builder
 from trade_engine import execution_engine
+from trade_engine import market_calendar
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -51,7 +52,8 @@ def _make_conn() -> sqlite3.Connection:
         CREATE TABLE IF NOT EXISTS trading_accounts (
             account_id TEXT PRIMARY KEY, name TEXT, mode TEXT,
             starting_capital REAL, current_cash REAL, broker TEXT,
-            trading_enabled INTEGER DEFAULT 1, policy_version TEXT, created_at TEXT
+            trading_enabled INTEGER DEFAULT 1, policy_version TEXT, created_at TEXT,
+            nav_high_water REAL
         );
         CREATE TABLE IF NOT EXISTS trade_intents (
             intent_id TEXT PRIMARY KEY, account_id TEXT, recommendation_id INTEGER,
@@ -59,12 +61,14 @@ def _make_conn() -> sqlite3.Connection:
             quantity REAL, contracts INTEGER, option_type TEXT, strike REAL,
             expiration TEXT, order_type TEXT, limit_price REAL, time_in_force TEXT,
             strategy TEXT, thesis_version INTEGER, strategy_config_hash TEXT,
-            portfolio_snapshot_id TEXT, valid_until TEXT, created_at TEXT,
+            portfolio_snapshot_id TEXT, policy_hash TEXT, valid_until TEXT, created_at TEXT,
             status TEXT DEFAULT 'PENDING'
         );
         CREATE TABLE IF NOT EXISTS risk_decisions (
             decision_id INTEGER PRIMARY KEY AUTOINCREMENT, intent_id TEXT,
-            decision TEXT, checks_json TEXT, evaluated_at TEXT
+            decision TEXT, checks_json TEXT, evaluated_at TEXT,
+            uuid_id TEXT, policy_version TEXT, policy_hash TEXT,
+            account_cash_at_eval REAL, account_nav_at_eval REAL
         );
         CREATE TABLE IF NOT EXISTS orders (
             order_id TEXT PRIMARY KEY, intent_id TEXT, account_id TEXT,
@@ -72,12 +76,15 @@ def _make_conn() -> sqlite3.Connection:
             order_type TEXT, limit_price REAL, state TEXT DEFAULT 'PENDING',
             time_in_force TEXT DEFAULT 'DAY',
             broker_order_id TEXT, submitted_at TEXT, updated_at TEXT,
-            fill_qty REAL DEFAULT 0, fill_cash REAL DEFAULT 0
+            fill_qty REAL DEFAULT 0, fill_cash REAL DEFAULT 0,
+            market_data_status TEXT
         );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_intent_id ON orders (intent_id);
         CREATE TABLE IF NOT EXISTS fills (
             fill_id TEXT PRIMARY KEY, order_id TEXT, account_id TEXT,
             symbol TEXT, side TEXT, qty REAL, price REAL, fee REAL DEFAULT 0,
-            fill_source TEXT, filled_at TEXT
+            fill_source TEXT, filled_at TEXT,
+            cost_basis REAL DEFAULT 0, realized_pnl REAL, realized_pnl_pct REAL
         );
         CREATE TABLE IF NOT EXISTS account_snapshots (
             snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT, account_id TEXT,
@@ -85,8 +92,11 @@ def _make_conn() -> sqlite3.Connection:
         );
         CREATE TABLE IF NOT EXISTS position_snapshots (
             id INTEGER PRIMARY KEY AUTOINCREMENT, account_id TEXT, symbol TEXT,
-            qty REAL, avg_cost REAL, instrument_type TEXT, as_of TEXT
+            qty REAL, avg_cost REAL, instrument_type TEXT, as_of TEXT,
+            market_price REAL, market_value REAL, price_as_of TEXT
         );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_positions_account_symbol
+            ON position_snapshots (account_id, symbol);
         CREATE TABLE IF NOT EXISTS option_quote_snapshots (
             id INTEGER PRIMARY KEY AUTOINCREMENT, ticker TEXT, strike REAL,
             expiration TEXT, iv REAL, bid REAL, ask REAL, spread_pct REAL,
@@ -203,10 +213,11 @@ def _make_intent(**kwargs) -> TradeIntent:
         expiration=None,
         order_type=OrderType.LIMIT,
         limit_price=100.0,
-        time_in_force=TimeInForce.DAY,
+        time_in_force=TimeInForce.GTC,
         strategy="test",
         thesis_version=None,
         strategy_config_hash=None,
+        policy_hash=None,
         valid_until=_future_iso(),
         created_at=datetime.now(timezone.utc).isoformat(),
         status=IntentStatus.PENDING,
@@ -503,7 +514,7 @@ class TestRiskEngine:
         for _ in range(5):
             conn.execute(
                 "INSERT INTO orders (order_id, intent_id, account_id, symbol, side, quantity, contracts, order_type, limit_price, state, time_in_force, submitted_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (str(uuid.uuid4()), "x", "AGENTIC_SHADOW_01", "X", "BUY", 1, None, "LIMIT", 100.0, "FILLED", "DAY", today, today)
+                (str(uuid.uuid4()), str(uuid.uuid4()), "AGENTIC_SHADOW_01", "X", "BUY", 1, None, "LIMIT", 100.0, "FILLED", "DAY", today, today)
             )
         conn.commit()
         intent = _make_intent()
@@ -563,8 +574,11 @@ class TestRiskEngine:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TestShadowBroker:
-    def _make_order(self, conn, side=Side.BUY, qty=10.0, limit=100.0) -> Order:
-        intent = _make_intent(side=side, quantity=qty, limit_price=limit)
+    def _make_order(self, conn, side=Side.BUY, qty=10.0, limit=100.0,
+                    tif=TimeInForce.GTC) -> Order:
+        """Default GTC so tests are not sensitive to current wall-clock time."""
+        intent = _make_intent(side=side, quantity=qty, limit_price=limit,
+                              time_in_force=tif)
         _insert_intent(conn, intent)
         broker = ShadowBroker(conn)
         return broker.submit_order(intent)
@@ -977,7 +991,8 @@ class TestExecutionEngine:
 
         mock_quote = Quote(bid=99.0, ask=101.0, timestamp="t")  # ask == limit (101.0)
         with patch.object(execution_engine, "load_policy", return_value=policy), \
-             patch.object(execution_engine, "_get_quote", return_value=mock_quote):
+             patch.object(execution_engine, "_get_quote", return_value=mock_quote), \
+             patch.object(market_calendar, "is_market_open", return_value=True):
             result = execution_engine.process_intent(built_intent.intent_id, conn)
 
         assert result.decision == "APPROVED"
@@ -1019,3 +1034,498 @@ class TestDBSchema:
         assert row["current_cash"] == 10000.0
         assert row["mode"] == "shadow"
         assert row["trading_enabled"] == 1
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 9. Risk engine rules 14-18 (0208)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _make_option_intent(**kwargs) -> TradeIntent:
+    defaults = dict(
+        intent_id=str(uuid.uuid4()),
+        account_id="AGENTIC_SHADOW_01",
+        recommendation_id=None,
+        agent_run_id=None,
+        instrument_type=InstrumentType.OPTION,
+        symbol="ANET",
+        side=Side.SELL_TO_OPEN,
+        quantity=None,
+        contracts=1,
+        option_type="CALL",
+        strike=160.0,
+        expiration="2027-01-21",
+        order_type=OrderType.LIMIT,
+        limit_price=3.20,
+        time_in_force=TimeInForce.GTC,
+        strategy="test_cc",
+        thesis_version=None,
+        strategy_config_hash=None,
+        policy_hash=None,
+        valid_until=_future_iso(),
+        created_at=datetime.now(timezone.utc).isoformat(),
+        status=IntentStatus.PENDING,
+    )
+    defaults.update(kwargs)
+    return TradeIntent(**defaults)
+
+
+class TestRiskEngineRules14to18:
+    """Dedicated tests for rules 14-18 (were untested in initial suite). 0208."""
+
+    def _seed_underlying(self, conn, qty=100.0):
+        conn.execute(
+            "INSERT OR IGNORE INTO position_snapshots (account_id, symbol, qty, avg_cost, instrument_type, as_of) VALUES (?,?,?,?,?,?)",
+            ("AGENTIC_SHADOW_01", "ANET", qty, 140.0, "EQUITY", "2026-01-01"),
+        )
+        conn.commit()
+
+    # ── 14. MAX_CONTRACTS_PER_SYMBOL ─────────────────────────────────────────
+
+    def test_max_contracts_per_symbol_at_limit_rejects(self):
+        """open=1 contract, limit=1, requesting 1 more → 1+1>1 → FAIL."""
+        conn = _make_conn()
+        self._seed_underlying(conn)
+        # Simulate 1 open contract via a SELL_TO_OPEN fill
+        conn.execute(
+            """INSERT INTO orders (order_id, intent_id, account_id, symbol, side, quantity, contracts,
+               order_type, limit_price, state, time_in_force, submitted_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (str(uuid.uuid4()), str(uuid.uuid4()), "AGENTIC_SHADOW_01", "ANET",
+             "SELL_TO_OPEN", None, 1, "LIMIT", 3.20, "FILLED", "GTC",
+             "2026-01-01T00:00:00+00:00", "2026-01-01T00:00:00+00:00"),
+        )
+        order_id = conn.execute("SELECT order_id FROM orders ORDER BY rowid DESC LIMIT 1").fetchone()["order_id"]
+        conn.execute(
+            "INSERT INTO fills (fill_id, order_id, account_id, symbol, side, qty, price, fee, fill_source, filled_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (str(uuid.uuid4()), order_id, "AGENTIC_SHADOW_01", "ANET", "SELL_TO_OPEN", 1, 3.20, 0, "shadow", "2026-01-01T00:00:00+00:00"),
+        )
+        conn.commit()
+        intent = _make_option_intent(contracts=1)
+        _insert_intent(conn, intent)
+        dec = risk_engine.evaluate(intent, _make_policy(), _make_account(cash=9800.0), conn, strict_all=True)
+        check = next(c for c in dec.checks if c.rule == "MAX_CONTRACTS_PER_SYMBOL")
+        assert check.result == RuleResult.FAIL
+
+    def test_max_contracts_off_by_one_fixed(self):
+        """open=0, requesting 2, limit=1 → 0+2>1 → FAIL (was passing before fix). 0205."""
+        conn = _make_conn()
+        self._seed_underlying(conn, qty=200.0)
+        intent = _make_option_intent(contracts=2)
+        _insert_intent(conn, intent)
+        dec = risk_engine.evaluate(intent, _make_policy(), _make_account(cash=9800.0), conn, strict_all=True)
+        check = next(c for c in dec.checks if c.rule == "MAX_CONTRACTS_PER_SYMBOL")
+        assert check.result == RuleResult.FAIL
+        assert check.after == 2.0
+
+    # ── 15. DATA_FRESHNESS ────────────────────────────────────────────────────
+
+    def test_data_freshness_stale_quote_rejects(self):
+        """Option quote older than halt_on_data_stale_minutes → FAIL."""
+        conn = _make_conn()
+        self._seed_underlying(conn)
+        import time as _time
+        stale_ts = _time.time() - (61 * 60)  # 61 minutes ago
+        conn.execute(
+            "INSERT INTO option_quote_snapshots (ticker, strike, expiration, iv, bid, ask, spread_pct, captured_at) VALUES (?,?,?,?,?,?,?,?)",
+            ("ANET", 160.0, "2027-01-21", 0.30, 3.10, 3.30, 0.06, stale_ts),
+        )
+        conn.commit()
+        intent = _make_option_intent()
+        _insert_intent(conn, intent)
+        dec = risk_engine.evaluate(intent, _make_policy(), _make_account(cash=9800.0), conn, strict_all=True)
+        check = next(c for c in dec.checks if c.rule == "DATA_FRESHNESS")
+        assert check.result == RuleResult.FAIL
+
+    # ── 16. NO_EARNINGS_CONFLICT ──────────────────────────────────────────────
+
+    def test_no_earnings_conflict_rejects(self):
+        """Earnings event between today and expiry → FAIL."""
+        conn = _make_conn()
+        self._seed_underlying(conn)
+        conn.execute(
+            "INSERT INTO event_calendar (ticker, event_type, event_date) VALUES (?,?,?)",
+            ("ANET", "earnings", "2026-10-15"),
+        )
+        conn.commit()
+        intent = _make_option_intent(expiration="2026-11-21")
+        _insert_intent(conn, intent)
+        dec = risk_engine.evaluate(intent, _make_policy(), _make_account(cash=9800.0), conn, strict_all=True)
+        check = next(c for c in dec.checks if c.rule == "NO_EARNINGS_CONFLICT")
+        assert check.result == RuleResult.FAIL
+
+    # ── 17. MAX_DAILY_LOSS ────────────────────────────────────────────────────
+
+    def test_max_daily_loss_rejects(self):
+        """Insert sell fills with realized_pnl summing to > limit → FAIL. 0202."""
+        conn = _make_conn()
+        today = datetime.now(timezone.utc).isoformat()
+        # Insert a loss fill directly: $320 loss > $300 limit (3% of $10k)
+        conn.execute(
+            """INSERT INTO fills (fill_id, order_id, account_id, symbol, side, qty, price,
+               fee, fill_source, filled_at, cost_basis, realized_pnl, realized_pnl_pct)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (str(uuid.uuid4()), str(uuid.uuid4()), "AGENTIC_SHADOW_01", "ANET",
+             "SELL", 10, 68.0, 0, "shadow", today, 1000.0, -320.0, -32.0),
+        )
+        conn.commit()
+        intent = _make_intent()
+        _insert_intent(conn, intent)
+        dec = risk_engine.evaluate(intent, _make_policy(), _make_account(), conn, strict_all=True)
+        check = next(c for c in dec.checks if c.rule == "MAX_DAILY_LOSS")
+        assert check.result == RuleResult.FAIL
+        assert check.before >= 300.0
+
+    # ── 18. MAX_DRAWDOWN ─────────────────────────────────────────────────────
+
+    def test_max_drawdown_rejects(self):
+        """nav_high_water=$10000, current nav=$8900 → 11% drawdown > 10% limit → FAIL. 0201."""
+        conn = _make_conn()
+        # Set nav_high_water high
+        conn.execute(
+            "UPDATE trading_accounts SET nav_high_water=10000, current_cash=8900 WHERE account_id='AGENTIC_SHADOW_01'"
+        )
+        conn.commit()
+        intent = _make_intent()
+        _insert_intent(conn, intent)
+        account = _make_account(cash=8900.0)
+        dec = risk_engine.evaluate(intent, _make_policy(), account, conn, strict_all=True)
+        check = next(c for c in dec.checks if c.rule == "MAX_DRAWDOWN")
+        assert check.result == RuleResult.FAIL
+        assert check.before > 10.0
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 10. Execution safety behaviors (0199-0208)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestExecutionSafety:
+
+    # ── 0200: fail-closed on missing quote ───────────────────────────────────
+
+    def test_no_fill_when_quote_unavailable(self):
+        """_get_quote returns None → order stays WORKING, no fill, market_data_status set."""
+        conn = _make_conn()
+        intent = _make_intent(quantity=1.0, limit_price=100.0)
+        _insert_intent(conn, intent)
+        with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
+             patch.object(execution_engine, "_get_quote", return_value=None):
+            result = execution_engine.process_intent(intent.intent_id, conn)
+        assert result.decision == "APPROVED"
+        assert result.fill is None
+        order_row = conn.execute(
+            "SELECT state, market_data_status FROM orders WHERE intent_id=?",
+            (intent.intent_id,),
+        ).fetchone()
+        assert order_row["state"] == "WORKING"
+        assert order_row["market_data_status"] == "unavailable"
+
+    # ── 0203: market calendar — DAY orders expire outside session ────────────
+
+    def test_day_order_expires_when_market_closed(self):
+        """DAY order → attempt_fill when market is closed → EXPIRED, returns None."""
+        conn = _make_conn()
+        intent = _make_intent(quantity=1.0, limit_price=100.0, time_in_force=TimeInForce.DAY)
+        _insert_intent(conn, intent)
+        broker = ShadowBroker(conn)
+        order = broker.submit_order(intent)
+        assert order.state == OrderState.WORKING
+
+        with patch.object(market_calendar, "is_market_open", return_value=False):
+            fill = broker.attempt_fill(order, Quote(bid=99.0, ask=100.0, timestamp="t"))
+
+        assert fill is None
+        updated = broker.get_order(order.order_id)
+        assert updated.state == OrderState.EXPIRED
+
+    def test_gtc_order_fills_regardless_of_market_time(self):
+        """GTC order → attempt_fill ignores market hours, fills on price."""
+        conn = _make_conn()
+        intent = _make_intent(quantity=1.0, limit_price=100.0, time_in_force=TimeInForce.GTC)
+        _insert_intent(conn, intent)
+        broker = ShadowBroker(conn)
+        order = broker.submit_order(intent)
+
+        with patch.object(market_calendar, "is_market_open", return_value=False):
+            fill = broker.attempt_fill(order, Quote(bid=99.0, ask=100.0, timestamp="t"))
+
+        assert fill is not None
+
+    def test_market_calendar_blocks_saturday(self):
+        """is_market_open() returns False on a Saturday."""
+        from datetime import date as _date
+        saturday = datetime(2026, 9, 12, 14, 0, 0, tzinfo=timezone.utc)  # 2026-09-12 is Saturday
+        # Verify directly
+        assert not market_calendar.is_trading_day(_date(2026, 9, 12))
+        assert not market_calendar.is_market_open(saturday)
+
+    def test_market_calendar_blocks_nyse_holiday(self):
+        """is_market_open() returns False on NYSE holidays."""
+        from datetime import date as _date
+        xmas = datetime(2026, 12, 25, 12, 0, 0, tzinfo=timezone.utc)
+        assert not market_calendar.is_trading_day(_date(2026, 12, 25))
+        assert not market_calendar.is_market_open(xmas)
+
+    def test_market_calendar_open_during_session(self):
+        """is_market_open() returns True on a trading day at 2 PM ET."""
+        try:
+            import zoneinfo
+            et = zoneinfo.ZoneInfo("America/New_York")
+        except Exception:
+            return  # skip if zoneinfo unavailable
+        # 2026-09-14 is Monday
+        trading_dt = datetime(2026, 9, 14, 14, 0, 0, tzinfo=et)
+        assert market_calendar.is_trading_day(trading_dt.date())
+        assert market_calendar.is_market_open(trading_dt)
+
+    # ── 0199: WORKING order retried on next cycle ─────────────────────────────
+
+    def test_working_order_retried_on_next_cycle(self):
+        """Cycle 1: quote misses limit → WORKING. Cycle 2: quote crosses → FILLED."""
+        conn = _make_conn()
+        intent = _make_intent(quantity=1.0, limit_price=100.0, time_in_force=TimeInForce.GTC)
+        _insert_intent(conn, intent)
+
+        miss_quote = Quote(bid=98.0, ask=101.5, timestamp="t")  # ask 101.5 > limit 100 → no fill
+        hit_quote = Quote(bid=99.0, ask=100.0, timestamp="t")   # ask 100.0 == limit 100 → fill
+
+        with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
+             patch.object(execution_engine, "_get_quote", return_value=miss_quote):
+            result1 = execution_engine.process_intent(intent.intent_id, conn)
+
+        assert result1.fill is None
+        order_id = result1.order_id
+        assert conn.execute("SELECT state FROM orders WHERE order_id=?", (order_id,)).fetchone()["state"] == "WORKING"
+
+        # Cycle 2: retry open orders
+        with patch.object(execution_engine, "_get_quote", return_value=hit_quote):
+            fills = execution_engine.process_open_orders("AGENTIC_SHADOW_01", conn)
+
+        assert len(fills) == 1
+        assert conn.execute("SELECT state FROM orders WHERE order_id=?", (order_id,)).fetchone()["state"] == "FILLED"
+        intent_status = conn.execute("SELECT status FROM trade_intents WHERE intent_id=?", (intent.intent_id,)).fetchone()["status"]
+        assert intent_status == "FILLED"
+
+    # ── 0202: realized P&L captured at fill time ─────────────────────────────
+
+    def test_fill_captures_realized_pnl_on_sell(self):
+        """Sell fill writes cost_basis and realized_pnl before position mutation. 0202."""
+        conn = _make_conn()
+        broker = ShadowBroker(conn)
+        # Setup position: 10 shares @ $100
+        conn.execute(
+            "INSERT INTO position_snapshots (account_id, symbol, qty, avg_cost, instrument_type, as_of) VALUES (?,?,?,?,?,?)",
+            ("AGENTIC_SHADOW_01", "ANET", 10.0, 100.0, "EQUITY", "2026-01-01"),
+        )
+        conn.commit()
+        sell_intent = _make_intent(side=Side.SELL, quantity=5.0, limit_price=119.0)
+        _insert_intent(conn, sell_intent)
+        order = broker.submit_order(sell_intent)
+        fill = broker.attempt_fill(order, Quote(bid=120.0, ask=121.0, timestamp="t"))
+        assert fill is not None
+
+        fill_row = conn.execute("SELECT * FROM fills WHERE fill_id=?", (fill.fill_id,)).fetchone()
+        assert fill_row["cost_basis"] == pytest.approx(500.0)    # 5 * $100
+        assert fill_row["realized_pnl"] == pytest.approx(100.0)  # 5*120 - 500 = 100
+        assert fill_row["realized_pnl_pct"] == pytest.approx(20.0)
+
+    def test_fill_pnl_negative_on_loss(self):
+        """Loss scenario: realized_pnl < 0."""
+        conn = _make_conn()
+        broker = ShadowBroker(conn)
+        conn.execute(
+            "INSERT INTO position_snapshots (account_id, symbol, qty, avg_cost, instrument_type, as_of) VALUES (?,?,?,?,?,?)",
+            ("AGENTIC_SHADOW_01", "ANET", 10.0, 100.0, "EQUITY", "2026-01-01"),
+        )
+        conn.commit()
+        sell_intent = _make_intent(side=Side.SELL, quantity=10.0, limit_price=68.0)
+        _insert_intent(conn, sell_intent)
+        order = broker.submit_order(sell_intent)
+        fill = broker.attempt_fill(order, Quote(bid=68.0, ask=69.0, timestamp="t"))
+        assert fill is not None
+
+        fill_row = conn.execute("SELECT * FROM fills WHERE fill_id=?", (fill.fill_id,)).fetchone()
+        assert fill_row["realized_pnl"] == pytest.approx(-320.0)  # 10*68 - 10*100 = -320
+        assert fill_row["realized_pnl_pct"] == pytest.approx(-32.0)
+
+    def test_full_exit_at_loss_daily_loss_circuit_fires(self):
+        """Buy 10@100, sell all 10@68, position deleted; MAX_DAILY_LOSS still fires. 0202."""
+        conn = _make_conn()
+        broker = ShadowBroker(conn)
+        # Buy
+        buy_intent = _make_intent(quantity=10.0, limit_price=100.0)
+        _insert_intent(conn, buy_intent)
+        buy_order = broker.submit_order(buy_intent)
+        broker.attempt_fill(buy_order, Quote(bid=99.0, ask=100.0, timestamp="t"))
+
+        # Sell all
+        sell_intent = _make_intent(side=Side.SELL, quantity=10.0, limit_price=68.0)
+        _insert_intent(conn, sell_intent)
+        sell_order = broker.submit_order(sell_intent)
+        broker.attempt_fill(sell_order, Quote(bid=68.0, ask=69.0, timestamp="t"))
+
+        # Position should be deleted
+        pos = conn.execute(
+            "SELECT qty FROM position_snapshots WHERE account_id='AGENTIC_SHADOW_01' AND symbol='ANET'"
+        ).fetchone()
+        assert pos is None
+
+        # Next BUY intent: MAX_DAILY_LOSS should FAIL (loss=$320 > $300 limit)
+        next_intent = _make_intent(quantity=1.0, limit_price=50.0)
+        _insert_intent(conn, next_intent)
+        dec = risk_engine.evaluate(next_intent, _make_policy(), _make_account(), conn, strict_all=True)
+        check = next(c for c in dec.checks if c.rule == "MAX_DAILY_LOSS")
+        assert check.result == RuleResult.FAIL
+
+    # ── 0201: concentration uses market value ─────────────────────────────────
+
+    def test_concentration_uses_market_value(self):
+        """After price doubles, market-value concentration fires before adding more. 0201."""
+        conn = _make_conn()
+        # Position: 10 shares, avg_cost=$100, market_value updated to $110 each
+        conn.execute(
+            """INSERT INTO position_snapshots
+               (account_id, symbol, qty, avg_cost, instrument_type, as_of, market_price, market_value)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            ("AGENTIC_SHADOW_01", "ANET", 10.0, 100.0, "EQUITY", "2026-01-01", 110.0, 1100.0),
+        )
+        # Cash after buying 10@100 = $9000; NAV = $9000 + $1100 = $10100
+        conn.execute("UPDATE trading_accounts SET current_cash=9000 WHERE account_id='AGENTIC_SHADOW_01'")
+        conn.commit()
+
+        # Try to add 5 more @ $110 → trade_cost=550; weight_after = (1100+550)/10100 = 16.3% > 10%
+        intent = _make_intent(quantity=5.0, limit_price=110.0)
+        _insert_intent(conn, intent)
+        dec = risk_engine.evaluate(intent, _make_policy(), _make_account(cash=9000.0), conn, strict_all=True)
+        check = next(c for c in dec.checks if c.rule == "MAX_POSITION_WEIGHT")
+        assert check.result == RuleResult.FAIL
+
+    # ── 0205: options multiplier ──────────────────────────────────────────────
+
+    def test_options_cash_impact_multiplier(self):
+        """SELL_TO_OPEN fill applies 100× multiplier: 1 contract @ $3.20 → $320. 0205."""
+        fill = Fill(
+            fill_id="x", order_id="o", account_id="a", symbol="ANET",
+            side=Side.SELL_TO_OPEN, qty=1.0, price=3.20, fee=0.0,
+            fill_source="shadow", filled_at="t",
+        )
+        assert fill.cash_impact() == pytest.approx(320.0)
+
+    def test_equity_cash_impact_no_multiplier(self):
+        """Regular SELL fill: no multiplier applied."""
+        fill = Fill(
+            fill_id="x", order_id="o", account_id="a", symbol="ANET",
+            side=Side.SELL, qty=10.0, price=120.0, fee=0.0,
+            fill_source="shadow", filled_at="t",
+        )
+        assert fill.cash_impact() == pytest.approx(1200.0)
+
+    # ── 0205: MAX_CONTRACTS off-by-one ────────────────────────────────────────
+
+    def test_two_contract_intent_limit_one_rejects(self):
+        """open=0, requesting 2, policy limit=1 → FAIL (off-by-one fix). 0205."""
+        conn = _make_conn()
+        conn.execute(
+            "INSERT INTO position_snapshots (account_id, symbol, qty, avg_cost, instrument_type, as_of) VALUES (?,?,?,?,?,?)",
+            ("AGENTIC_SHADOW_01", "ANET", 200.0, 140.0, "EQUITY", "2026-01-01"),
+        )
+        conn.commit()
+        intent = _make_option_intent(contracts=2)
+        _insert_intent(conn, intent)
+        dec = risk_engine.evaluate(intent, _make_policy(), _make_account(cash=9800.0), conn, strict_all=True)
+        check = next(c for c in dec.checks if c.rule == "MAX_CONTRACTS_PER_SYMBOL")
+        assert check.result == RuleResult.FAIL
+
+    # ── 0206: unique order constraint ─────────────────────────────────────────
+
+    def test_concurrent_order_creation_one_row(self):
+        """Two submit_order() calls for same intent → exactly one orders row. 0206."""
+        conn = _make_conn()
+        intent = _make_intent()
+        _insert_intent(conn, intent)
+        broker = ShadowBroker(conn)
+        o1 = broker.submit_order(intent)
+        o2 = broker.submit_order(intent)
+        assert o1.order_id == o2.order_id
+        count = conn.execute("SELECT COUNT(*) FROM orders WHERE intent_id=?", (intent.intent_id,)).fetchone()[0]
+        assert count == 1
+
+    # ── 0204: risk decision provenance ───────────────────────────────────────
+
+    def test_risk_decision_has_provenance(self):
+        """Risk decision row stores uuid_id, policy_hash, and account state. 0204."""
+        conn = _make_conn()
+        intent = _make_intent()
+        _insert_intent(conn, intent)
+        policy = _make_policy()
+        dec = risk_engine.evaluate(intent, policy, _make_account(), conn)
+        row = conn.execute(
+            "SELECT * FROM risk_decisions WHERE intent_id=?", (intent.intent_id,)
+        ).fetchone()
+        assert row is not None
+        assert row["uuid_id"] == dec.decision_id
+        assert row["policy_version"] == "1.0"
+        assert row["policy_hash"] is not None
+        assert row["account_cash_at_eval"] == pytest.approx(10000.0)
+        assert row["account_nav_at_eval"] is not None
+
+    # ── 0207: recommendation-driven sizing ───────────────────────────────────
+
+    def test_target_weight_pct_sizing(self):
+        """rec with target_weight_pct=2.5 → intent sized at 2.5%, not at 5% max. 0207."""
+        conn = _make_conn()
+        cur = conn.execute(
+            "INSERT INTO recommendations (ticker, action, action_payload_json, status, created_at) VALUES (?,?,?,?,?)",
+            ("ANET", "BUY", json.dumps({"price": 100.0, "target_weight_pct": 2.5}), "accepted", 0),
+        )
+        conn.commit()
+        rec_id = cur.lastrowid
+        policy = _make_policy()
+        intent = intent_builder.build_intent(rec_id, "AGENTIC_SHADOW_01", policy, conn)
+        assert intent is not None
+        # NAV=$10k, target=2.5% → $250 / limit_price=101 → qty=2
+        assert intent.quantity == 2.0
+        # Contrast: without target_weight_pct, qty would be floor(500/101)=4
+
+    def test_explicit_quantity_sizing(self):
+        """rec with quantity=7 → intent uses exactly 7 shares regardless of weight. 0207."""
+        conn = _make_conn()
+        cur = conn.execute(
+            "INSERT INTO recommendations (ticker, action, action_payload_json, status, created_at) VALUES (?,?,?,?,?)",
+            ("ANET", "BUY", json.dumps({"price": 100.0, "quantity": 7}), "accepted", 0),
+        )
+        conn.commit()
+        rec_id = cur.lastrowid
+        intent = intent_builder.build_intent(rec_id, "AGENTIC_SHADOW_01", _make_policy(), conn)
+        assert intent is not None
+        assert intent.quantity == 7.0
+
+    # ── 0201: mark-to-market NAV ─────────────────────────────────────────────
+
+    def test_nav_uses_market_value_when_available(self):
+        """_nav() uses market_value column; falls back to avg_cost when NULL. 0201."""
+        conn = _make_conn()
+        # Position with market_value set (higher than cost basis)
+        conn.execute(
+            """INSERT INTO position_snapshots
+               (account_id, symbol, qty, avg_cost, instrument_type, as_of, market_price, market_value)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            ("AGENTIC_SHADOW_01", "ANET", 10.0, 100.0, "EQUITY", "2026-01-01", 150.0, 1500.0),
+        )
+        conn.commit()
+        from trade_engine.risk_engine import _nav as _risk_nav
+        account = _make_account(cash=9000.0)
+        nav = _risk_nav(account, conn)
+        assert nav == pytest.approx(10500.0)  # 9000 + 1500
+
+    def test_nav_falls_back_to_cost_basis(self):
+        """_nav() uses avg_cost×qty when market_value is NULL. 0201."""
+        conn = _make_conn()
+        conn.execute(
+            "INSERT INTO position_snapshots (account_id, symbol, qty, avg_cost, instrument_type, as_of) VALUES (?,?,?,?,?,?)",
+            ("AGENTIC_SHADOW_01", "ANET", 10.0, 100.0, "EQUITY", "2026-01-01"),
+        )
+        conn.commit()
+        from trade_engine.risk_engine import _nav as _risk_nav
+        account = _make_account(cash=9000.0)
+        nav = _risk_nav(account, conn)
+        assert nav == pytest.approx(10000.0)  # 9000 + 10*100

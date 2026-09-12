@@ -81,6 +81,31 @@ class RuleResult(str, Enum):
     SKIP = "SKIP"
 
 
+@dataclass(frozen=True)
+class Instrument:
+    """Durable instrument identity, especially for options (0205)."""
+    instrument_type: InstrumentType
+    symbol: str
+    option_type: Optional[str] = None   # 'CALL' | 'PUT'
+    expiration: Optional[str] = None    # ISO date string
+    strike: Optional[float] = None
+    multiplier: int = 1                 # 100 for equity options
+    contract_symbol: Optional[str] = None  # OCC symbol if available
+
+    @classmethod
+    def equity(cls, symbol: str) -> "Instrument":
+        return cls(instrument_type=InstrumentType.EQUITY, symbol=symbol, multiplier=1)
+
+    @classmethod
+    def option(cls, symbol: str, option_type: str, expiration: str, strike: float,
+               contract_symbol: Optional[str] = None) -> "Instrument":
+        return cls(
+            instrument_type=InstrumentType.OPTION, symbol=symbol,
+            option_type=option_type, expiration=expiration, strike=strike,
+            multiplier=100, contract_symbol=contract_symbol,
+        )
+
+
 class InvalidStateTransition(Exception):
     pass
 
@@ -133,6 +158,7 @@ class TradeIntent:
     strategy: str
     thesis_version: Optional[int]
     strategy_config_hash: Optional[str]
+    policy_hash: Optional[str]
     valid_until: str
     created_at: str
     status: IntentStatus = IntentStatus.PENDING
@@ -168,6 +194,7 @@ class TradeIntent:
             "strategy": self.strategy,
             "thesis_version": self.thesis_version,
             "strategy_config_hash": self.strategy_config_hash,
+            "policy_hash": self.policy_hash,
             "valid_until": self.valid_until,
             "created_at": self.created_at,
             "status": self.status.value,
@@ -194,6 +221,7 @@ class TradeIntent:
             strategy=row["strategy"] or "",
             thesis_version=row["thesis_version"],
             strategy_config_hash=row["strategy_config_hash"],
+            policy_hash=row["policy_hash"] if "policy_hash" in row.keys() else None,
             valid_until=row["valid_until"],
             created_at=row["created_at"],
             status=IntentStatus(row["status"]),
@@ -321,11 +349,18 @@ class Fill:
     fee: float
     fill_source: str
     filled_at: str
+    cost_basis: float = 0.0        # avg_cost × qty at fill time (sells only) — 0202
+    realized_pnl: float = 0.0      # proceeds − cost_basis; negative = loss — 0202
+    realized_pnl_pct: float = 0.0  # realized_pnl / cost_basis × 100 — 0202
 
     def cash_impact(self) -> float:
-        """Positive = cash received (sell); negative = cash paid (buy)."""
+        """Positive = cash received (sell); negative = cash paid (buy).
+        Options (SELL_TO_OPEN / BUY_TO_CLOSE) apply the standard 100× multiplier (0205).
+        """
+        is_option_leg = self.side in (Side.SELL_TO_OPEN, Side.BUY_TO_CLOSE)
+        multiplier = 100 if is_option_leg else 1
         sign = 1.0 if self.side in (Side.SELL, Side.SELL_TO_OPEN) else -1.0
-        return sign * (self.qty * self.price) - self.fee
+        return sign * (self.qty * self.price * multiplier) - self.fee
 
     def to_dict(self) -> dict:
         return {
@@ -339,10 +374,14 @@ class Fill:
             "fee": self.fee,
             "fill_source": self.fill_source,
             "filled_at": self.filled_at,
+            "cost_basis": self.cost_basis,
+            "realized_pnl": self.realized_pnl,
+            "realized_pnl_pct": self.realized_pnl_pct,
         }
 
     @classmethod
     def from_db_row(cls, row) -> "Fill":
+        keys = row.keys()
         return cls(
             fill_id=row["fill_id"],
             order_id=row["order_id"],
@@ -354,6 +393,9 @@ class Fill:
             fee=float(row["fee"] or 0),
             fill_source=row["fill_source"] or "shadow",
             filled_at=row["filled_at"],
+            cost_basis=float(row["cost_basis"] or 0) if "cost_basis" in keys else 0.0,
+            realized_pnl=float(row["realized_pnl"] or 0) if "realized_pnl" in keys else 0.0,
+            realized_pnl_pct=float(row["realized_pnl_pct"] or 0) if "realized_pnl_pct" in keys else 0.0,
         )
 
 

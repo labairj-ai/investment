@@ -39,11 +39,18 @@ def _today_str() -> str:
 
 
 def _nav(account: TradingAccount, conn: sqlite3.Connection) -> float:
+    """NAV = cash + sum of position market values; falls back to cost if no market price (0201)."""
     rows = conn.execute(
-        "SELECT symbol, qty, avg_cost FROM position_snapshots WHERE account_id=?",
+        "SELECT qty, avg_cost, market_value FROM position_snapshots WHERE account_id=?",
         (account.account_id,),
     ).fetchall()
-    pos_value = sum(float(r["qty"] or 0) * float(r["avg_cost"] or 0) for r in rows)
+    pos_value = 0.0
+    for r in rows:
+        mv = r["market_value"] if "market_value" in r.keys() else None
+        if mv is not None:
+            pos_value += float(mv)
+        else:
+            pos_value += float(r["qty"] or 0) * float(r["avg_cost"] or 0)
     return account.current_cash + pos_value
 
 
@@ -56,12 +63,16 @@ def _position_qty(account_id: str, symbol: str, conn: sqlite3.Connection) -> flo
 
 
 def _position_value(account_id: str, symbol: str, conn: sqlite3.Connection) -> float:
+    """Return market value of symbol position; falls back to cost basis (0201)."""
     row = conn.execute(
-        "SELECT qty, avg_cost FROM position_snapshots WHERE account_id=? AND symbol=?",
+        "SELECT qty, avg_cost, market_value FROM position_snapshots WHERE account_id=? AND symbol=?",
         (account_id, symbol),
     ).fetchone()
     if not row:
         return 0.0
+    mv = row["market_value"] if "market_value" in row.keys() else None
+    if mv is not None:
+        return float(mv)
     return float(row["qty"] or 0) * float(row["avg_cost"] or 0)
 
 
@@ -92,7 +103,6 @@ def _open_contracts(account_id: str, symbol: str, conn: sqlite3.Connection) -> i
              AND f.side='SELL_TO_OPEN'""",
         (account_id, symbol),
     ).fetchone()
-    # subtract closed contracts
     closed = conn.execute(
         """SELECT COALESCE(SUM(f.qty),0) as total
            FROM fills f
@@ -120,8 +130,6 @@ def evaluate(
     def add(check: RuleCheck) -> bool:
         nonlocal rejected
         checks.append(check)
-        if check.result == _FAIL and not strict_all:
-            rejected = True
         if check.result == _FAIL:
             rejected = True
         return check.result != _FAIL
@@ -140,7 +148,7 @@ def evaluate(
         reason=None if policy.trading_enabled() else "circuit_breakers.trading_enabled is false",
     ))
     if not ok and not strict_all:
-        return _finalize(intent.intent_id, checks, conn)
+        return _finalize(intent.intent_id, checks, conn, policy, account, nav)
 
     # ── 2. VALID_ACCOUNT ──────────────────────────────────────────────────────
     acct_row = conn.execute(
@@ -153,7 +161,7 @@ def evaluate(
         reason=None if acct_row else f"account {account.account_id!r} not found or disabled",
     ))
     if not ok and not strict_all:
-        return _finalize(intent.intent_id, checks, conn)
+        return _finalize(intent.intent_id, checks, conn, policy, account, nav)
 
     # ── 3. INTENT_NOT_EXPIRED ─────────────────────────────────────────────────
     expired = intent.is_expired()
@@ -163,7 +171,7 @@ def evaluate(
         reason=f"valid_until={intent.valid_until} is in the past" if expired else None,
     ))
     if not ok and not strict_all:
-        return _finalize(intent.intent_id, checks, conn)
+        return _finalize(intent.intent_id, checks, conn, policy, account, nav)
 
     # ── 4. NO_DUPLICATE_INTENT ────────────────────────────────────────────────
     if intent.recommendation_id is not None:
@@ -179,7 +187,7 @@ def evaluate(
             reason=f"recommendation {intent.recommendation_id} already has intent {dup['intent_id']}" if dup else None,
         ))
         if not ok and not strict_all:
-            return _finalize(intent.intent_id, checks, conn)
+            return _finalize(intent.intent_id, checks, conn, policy, account, nav)
     else:
         add(RuleCheck(rule="NO_DUPLICATE_INTENT", result=_SKIP, reason="no recommendation_id"))
 
@@ -197,15 +205,13 @@ def evaluate(
         if intent.side == Side.SELL_TO_OPEN and not policy.covered_calls_allowed():
             allowed = False
             reason_ia = "options.covered_calls_allowed is false"
-        elif intent.side == Side.SELL_TO_OPEN and policy.naked_options_allowed() is False:
-            pass  # covered calls allowed — naked check is separate rule
     ok = add(RuleCheck(
         rule="INSTRUMENT_ALLOWED",
         result=_PASS if allowed else _FAIL,
         reason=reason_ia,
     ))
     if not ok and not strict_all:
-        return _finalize(intent.intent_id, checks, conn)
+        return _finalize(intent.intent_id, checks, conn, policy, account, nav)
 
     # ── 6. NO_MARKET_ORDER ────────────────────────────────────────────────────
     is_market = intent.order_type == OrderType.MARKET
@@ -216,7 +222,7 @@ def evaluate(
         reason="MARKET orders are not permitted by policy" if (is_market and not market_allowed) else None,
     ))
     if not ok and not strict_all:
-        return _finalize(intent.intent_id, checks, conn)
+        return _finalize(intent.intent_id, checks, conn, policy, account, nav)
 
     # ── 7. SUFFICIENT_CASH ────────────────────────────────────────────────────
     if intent.side in (Side.BUY, Side.BUY_TO_CLOSE):
@@ -225,8 +231,6 @@ def evaluate(
             policy.min_cash_pct() / 100.0 * nav,
             policy.min_cash_abs(),
         )
-        cash_pct_before = account.current_cash / nav * 100 if nav > 0 else 0
-        cash_pct_after = cash_after / nav * 100 if nav > 0 else 0
         ok = add(RuleCheck(
             rule="SUFFICIENT_CASH",
             result=_PASS if cash_after >= min_cash else _FAIL,
@@ -236,7 +240,7 @@ def evaluate(
             reason=None if cash_after >= min_cash else f"cash after trade ${cash_after:.2f} < minimum ${min_cash:.2f}",
         ))
         if not ok and not strict_all:
-            return _finalize(intent.intent_id, checks, conn)
+            return _finalize(intent.intent_id, checks, conn, policy, account, nav)
     else:
         add(RuleCheck(rule="SUFFICIENT_CASH", result=_SKIP, reason="sell order does not require cash"))
 
@@ -254,7 +258,7 @@ def evaluate(
             reason=None if weight_after <= limit else f"position weight {weight_after:.1f}% > limit {limit}%",
         ))
         if not ok and not strict_all:
-            return _finalize(intent.intent_id, checks, conn)
+            return _finalize(intent.intent_id, checks, conn, policy, account, nav)
     else:
         add(RuleCheck(rule="MAX_POSITION_WEIGHT", result=_SKIP, reason="not a BUY or nav=0"))
 
@@ -271,7 +275,7 @@ def evaluate(
             reason=None if new_weight <= limit else f"new position weight {new_weight:.1f}% > limit {limit}%",
         ))
         if not ok and not strict_all:
-            return _finalize(intent.intent_id, checks, conn)
+            return _finalize(intent.intent_id, checks, conn, policy, account, nav)
     else:
         add(RuleCheck(rule="MAX_NEW_POSITION_WEIGHT", result=_SKIP, reason="not a new position or not a BUY"))
 
@@ -290,7 +294,7 @@ def evaluate(
                 else f"daily notional ${daily_notional_after:.0f} > limit ${limit_notional:.0f}",
         ))
         if not ok and not strict_all:
-            return _finalize(intent.intent_id, checks, conn)
+            return _finalize(intent.intent_id, checks, conn, policy, account, nav)
     else:
         add(RuleCheck(rule="MAX_DAILY_NOTIONAL", result=_SKIP, reason="nav=0"))
 
@@ -307,7 +311,7 @@ def evaluate(
             else f"orders today {orders_today} >= limit {limit_orders}",
     ))
     if not ok and not strict_all:
-        return _finalize(intent.intent_id, checks, conn)
+        return _finalize(intent.intent_id, checks, conn, policy, account, nav)
 
     # ── 12. SELL_QUANTITY_COVERED ─────────────────────────────────────────────
     if intent.side in (Side.SELL, Side.BUY_TO_CLOSE):
@@ -321,7 +325,7 @@ def evaluate(
             reason=None if covered else f"position {current_pos_qty} < sell qty {trade_qty}",
         ))
         if not ok and not strict_all:
-            return _finalize(intent.intent_id, checks, conn)
+            return _finalize(intent.intent_id, checks, conn, policy, account, nav)
     else:
         add(RuleCheck(rule="SELL_QUANTITY_COVERED", result=_SKIP, reason="not a sell order"))
 
@@ -339,24 +343,27 @@ def evaluate(
                 else f"underlying shares {underlying_qty} < required {required} for {contracts} contract(s)",
         ))
         if not ok and not strict_all:
-            return _finalize(intent.intent_id, checks, conn)
+            return _finalize(intent.intent_id, checks, conn, policy, account, nav)
     else:
         add(RuleCheck(rule="NO_NAKED_OPTIONS", result=_SKIP, reason="not SELL_TO_OPEN"))
 
     # ── 14. MAX_CONTRACTS_PER_SYMBOL ─────────────────────────────────────────
     if intent.instrument_type == InstrumentType.OPTION and intent.side == Side.SELL_TO_OPEN:
         open_c = _open_contracts(account.account_id, intent.symbol, conn)
+        requested_c = intent.contracts or 1
         limit_c = policy.max_contracts_per_symbol()
+        # Fix: open_c + requested_c <= limit_c (was: open_c < limit_c — 0205)
         ok = add(RuleCheck(
             rule="MAX_CONTRACTS_PER_SYMBOL",
-            result=_PASS if open_c < limit_c else _FAIL,
+            result=_PASS if (open_c + requested_c) <= limit_c else _FAIL,
             limit=float(limit_c),
             before=float(open_c),
-            after=float(open_c + (intent.contracts or 1)),
-            reason=None if open_c < limit_c else f"open contracts {open_c} >= limit {limit_c}",
+            after=float(open_c + requested_c),
+            reason=None if (open_c + requested_c) <= limit_c
+                else f"open+requested contracts {open_c}+{requested_c} > limit {limit_c}",
         ))
         if not ok and not strict_all:
-            return _finalize(intent.intent_id, checks, conn)
+            return _finalize(intent.intent_id, checks, conn, policy, account, nav)
     else:
         add(RuleCheck(rule="MAX_CONTRACTS_PER_SYMBOL", result=_SKIP, reason="not an option sell"))
 
@@ -399,26 +406,20 @@ def evaluate(
             reason=f"earnings event on {earnings['event_date']} before expiry {intent.expiration}" if earnings else None,
         ))
         if not ok and not strict_all:
-            return _finalize(intent.intent_id, checks, conn)
+            return _finalize(intent.intent_id, checks, conn, policy, account, nav)
     else:
         add(RuleCheck(rule="NO_EARNINGS_CONFLICT", result=_SKIP, reason="equity or no expiration"))
 
     # ── 17. MAX_DAILY_LOSS ────────────────────────────────────────────────────
+    # Use realized_pnl from fills when available; safe to ignore NULL rows (0202)
     today = _today_str()
-    sell_fills_today = conn.execute(
-        """SELECT f.qty, f.price, f.fee, ps.avg_cost
-           FROM fills f
-           LEFT JOIN position_snapshots ps ON ps.account_id=f.account_id AND ps.symbol=f.symbol
-           WHERE f.account_id=? AND DATE(f.filled_at)=? AND f.side IN ('SELL','BUY_TO_CLOSE')""",
+    loss_row = conn.execute(
+        """SELECT COALESCE(SUM(-realized_pnl), 0) as total_loss
+           FROM fills
+           WHERE account_id=? AND DATE(filled_at)=? AND realized_pnl < 0""",
         (account.account_id, today),
-    ).fetchall()
-    daily_loss = 0.0
-    for sf in sell_fills_today:
-        avg_cost = float(sf["avg_cost"] or 0)
-        proceeds = float(sf["qty"] or 0) * float(sf["price"] or 0) - float(sf["fee"] or 0)
-        cost_basis = float(sf["qty"] or 0) * avg_cost
-        if proceeds < cost_basis:
-            daily_loss += cost_basis - proceeds
+    ).fetchone()
+    daily_loss = float(loss_row["total_loss"] or 0)
     max_daily_loss_abs = policy.max_daily_loss_pct() / 100.0 * account.starting_capital
     ok = add(RuleCheck(
         rule="MAX_DAILY_LOSS",
@@ -429,10 +430,18 @@ def evaluate(
             else f"daily loss ${daily_loss:.2f} >= limit ${max_daily_loss_abs:.2f}",
     ))
     if not ok and not strict_all:
-        return _finalize(intent.intent_id, checks, conn)
+        return _finalize(intent.intent_id, checks, conn, policy, account, nav)
 
     # ── 18. MAX_DRAWDOWN ─────────────────────────────────────────────────────
-    peak = account.starting_capital
+    # Use nav_high_water from trading_accounts when available; else fall back to starting_capital (0201)
+    acct_row = conn.execute(
+        "SELECT nav_high_water FROM trading_accounts WHERE account_id=?",
+        (account.account_id,),
+    ).fetchone()
+    peak = None
+    if acct_row and "nav_high_water" in acct_row.keys():
+        peak = acct_row["nav_high_water"]
+    peak = float(peak) if peak else account.starting_capital
     drawdown_pct = max(0.0, (peak - nav) / peak * 100) if peak > 0 else 0.0
     limit_dd = policy.max_drawdown_pct()
     add(RuleCheck(
@@ -444,19 +453,39 @@ def evaluate(
             else f"drawdown {drawdown_pct:.1f}% > limit {limit_dd}%",
     ))
 
-    return _finalize(intent.intent_id, checks, conn)
+    return _finalize(intent.intent_id, checks, conn, policy, account, nav)
 
 
-def _finalize(intent_id: str, checks: list[RuleCheck], conn: sqlite3.Connection) -> RiskDecision:
+def _finalize(
+    intent_id: str,
+    checks: list[RuleCheck],
+    conn: sqlite3.Connection,
+    policy: Optional[TradingPolicy] = None,
+    account: Optional[TradingAccount] = None,
+    nav: Optional[float] = None,
+) -> RiskDecision:
+    """Persist risk decision with provenance and return RiskDecision (0204)."""
     any_fail = any(c.result == _FAIL for c in checks)
     decision = "REJECTED" if any_fail else "APPROVED"
     evaluated_at = datetime.now(timezone.utc).isoformat()
     decision_id = str(uuid.uuid4())
 
+    policy_version = policy.policy_version if policy else None
+    policy_hash = policy.policy_hash() if policy else None
+    account_cash = account.current_cash if account else None
+    account_nav = nav
+
     conn.execute(
-        """INSERT INTO risk_decisions (intent_id, decision, checks_json, evaluated_at)
-           VALUES (?, ?, ?, ?)""",
-        (intent_id, decision, json.dumps([c.to_dict() for c in checks]), evaluated_at),
+        """INSERT INTO risk_decisions
+           (intent_id, decision, checks_json, evaluated_at,
+            uuid_id, policy_version, policy_hash, account_cash_at_eval, account_nav_at_eval)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            intent_id, decision,
+            json.dumps([c.to_dict() for c in checks]),
+            evaluated_at, decision_id,
+            policy_version, policy_hash, account_cash, account_nav,
+        ),
     )
     conn.commit()
 

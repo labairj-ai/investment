@@ -8,7 +8,7 @@ import json
 import math
 import sqlite3
 import uuid
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Optional
 
 from .models import (
@@ -20,43 +20,19 @@ from .models import (
     TradeIntent,
 )
 from .policy import TradingPolicy
+from . import market_calendar
 
 _SUPPORTED_ACTIONS = {"BUY", "TRIM", "EXIT"}
-_MARKET_CLOSE = time(16, 0)  # 4:00 PM ET
 
 
 def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _next_market_close_utc() -> str:
-    """Return ISO datetime for today's 4:00 PM ET (or tomorrow's if past close)."""
-    try:
-        import zoneinfo
-        et_tz = zoneinfo.ZoneInfo("America/New_York")
-        now_et = datetime.now(et_tz)
-    except Exception:
-        # Fallback: assume UTC-4
-        now_et = _now_utc().replace(tzinfo=None) - timedelta(hours=4)
-        et_tz = timezone(timedelta(hours=-4))
-
-    close_et = datetime.combine(now_et.date(), _MARKET_CLOSE)
-    if hasattr(et_tz, "key"):
-        close_aware = close_et.replace(tzinfo=et_tz)
-    else:
-        close_aware = close_et.replace(tzinfo=et_tz)
-
-    if now_et.time() >= _MARKET_CLOSE:
-        # already past close — use next business day
-        close_aware = close_aware + timedelta(days=1)
-
-    return close_aware.isoformat()
-
-
 def _get_account_state(
     account_id: str, symbol: str, conn: sqlite3.Connection
 ) -> tuple[float, float, float]:
-    """Return (current_cash, position_qty, nav_approx)."""
+    """Return (current_cash, position_qty, nav_approx using market value when available)."""
     cash_row = conn.execute(
         "SELECT current_cash FROM trading_accounts WHERE account_id=?",
         (account_id,),
@@ -70,17 +46,23 @@ def _get_account_state(
     pos_qty = float(pos_row["qty"]) if pos_row else 0.0
 
     all_pos = conn.execute(
-        "SELECT qty, avg_cost FROM position_snapshots WHERE account_id=?",
+        "SELECT qty, avg_cost, market_value FROM position_snapshots WHERE account_id=?",
         (account_id,),
     ).fetchall()
-    pos_value = sum(float(r["qty"] or 0) * float(r["avg_cost"] or 0) for r in all_pos)
+    pos_value = 0.0
+    for r in all_pos:
+        mv = r["market_value"] if "market_value" in r.keys() else None
+        if mv is not None:
+            pos_value += float(mv)
+        else:
+            pos_value += float(r["qty"] or 0) * float(r["avg_cost"] or 0)
     nav = cash + pos_value
 
     return cash, pos_qty, nav
 
 
 def _get_strategy_config_hash() -> Optional[str]:
-    """Return the strategy.json hash if available (mirrors existing convention)."""
+    """Return the strategy.json hash if available."""
     try:
         from pathlib import Path
         import hashlib
@@ -101,6 +83,9 @@ def build_intent(
 
     Returns existing intent if already built (idempotent).
     Returns None if recommendation is not executable for this account.
+
+    Sizing (0207): reads target_weight_pct or quantity from action_payload_json when present.
+    Falls back to max_new_position_pct when neither is set (backward-compatible).
     """
     # Idempotency: return existing PENDING intent for this rec/account
     existing = conn.execute(
@@ -138,19 +123,27 @@ def build_intent(
     # ── Sizing ────────────────────────────────────────────────────────────────
     limit_price = float(payload.get("price") or payload.get("limit_price") or 0)
     if limit_price <= 0:
-        return None  # no price information
+        return None
 
     if action == "BUY":
-        target_weight = min(
-            policy.max_new_position_pct(),
-            policy.max_single_position_pct(),
-        )
-        target_dollars = nav * target_weight / 100.0
         side = Side.BUY
-        # Size using slippage-adjusted limit so the risk engine cost check passes
         buy_lim = limit_price * (1 + policy.max_slippage_pct() / 100)
         limit_price = round(buy_lim, 2)
-        quantity = math.floor(target_dollars / limit_price)
+
+        # 0207: agent-proposed sizing; fallback to policy max only when absent
+        if payload.get("quantity") and int(payload["quantity"]) >= 1:
+            quantity = int(payload["quantity"])
+        elif payload.get("target_weight_pct") and float(payload["target_weight_pct"]) > 0:
+            target_dollars = nav * float(payload["target_weight_pct"]) / 100.0
+            quantity = math.floor(target_dollars / limit_price)
+        else:
+            target_weight = min(
+                policy.max_new_position_pct(),
+                policy.max_single_position_pct(),
+            )
+            target_dollars = nav * target_weight / 100.0
+            quantity = math.floor(target_dollars / limit_price)
+
         if quantity < 1:
             return None
 
@@ -185,6 +178,9 @@ def build_intent(
         thesis_version = thesis_row["id"]
 
     now = _now_utc().isoformat()
+    # Use market_calendar for valid_until so weekends/holidays are skipped (0203)
+    valid_until = market_calendar.next_market_close().isoformat()
+
     intent = TradeIntent(
         intent_id=str(uuid.uuid4()),
         account_id=account_id,
@@ -204,7 +200,8 @@ def build_intent(
         strategy="shadow_equity",
         thesis_version=thesis_version,
         strategy_config_hash=_get_strategy_config_hash(),
-        valid_until=_next_market_close_utc(),
+        policy_hash=policy.policy_hash(),  # 0204
+        valid_until=valid_until,
         created_at=now,
         status=IntentStatus.PENDING,
     )
