@@ -286,25 +286,57 @@ def _compute_cc_management_returns(
         else:
             net_credit = None
 
-        # 0136/0180: walk chain to terminal node — recursively resolve multi-hop rolls
-        def _resolve_chain(start_rec_id, depth=0, max_depth=10):
-            """Return (terminal_child, chain_is_open, depth) by walking parent_cc_rec_id chain."""
+        # 0136/0180/0183: walk chain, accumulate every hop's option cash flows
+        def _resolve_chain(start_rec_id, depth=0, max_depth=10,
+                           accumulated_extra=0.0, has_missing_exec=False):
+            """Return (terminal_child, chain_open, depth, extra_credit, any_missing_exec).
+
+            extra_credit: per-share net option cash flow from all hops AFTER the root.
+            has_missing_exec: True if any hop lacks a confirmed execution (→ estimated).
+            """
             if start_rec_id is None:
-                return None, False, depth  # no DB context — treat as terminal, no chain
+                return None, False, depth, accumulated_extra, has_missing_exec
             if depth >= max_depth:
-                return None, True, depth
+                return None, True, depth, accumulated_extra, has_missing_exec
             if agent_db.has_chain_child(start_rec_id):
-                return None, True, depth  # open child — chain not yet closed
+                return None, True, depth, accumulated_extra, has_missing_exec
             child = agent_db.get_completed_chain_child(start_rec_id)
             if child is None:
-                return None, False, depth  # no child — this is the terminal node itself
+                return None, False, depth, accumulated_extra, has_missing_exec
             child_action = child["action"]
-            if child_action in {"ROLL_OUT", "ROLL_UP", "ROLL_UP_AND_OUT"}:
-                # Recurse into the next hop
-                return _resolve_chain(child["id"], depth + 1, max_depth)
-            return child, False, depth + 1
+            child_exec = child.get("exec_rec")
 
-        terminal_child, chain_open, chain_depth = _resolve_chain(rec_id)
+            if child_action in {"ROLL_OUT", "ROLL_UP", "ROLL_UP_AND_OUT"}:
+                # Intermediate roll hop — exec_rec for ROLL uses ROLL branch in
+                # aggregate_executions(), so execution_price = net STO-BTC per share.
+                if child_exec and child_exec.get("execution_price"):
+                    hop_net = float(child_exec["execution_price"])
+                else:
+                    hop_net = 0.0
+                    has_missing_exec = True
+                return _resolve_chain(child["id"], depth + 1, max_depth,
+                                      accumulated_extra + hop_net, has_missing_exec)
+
+            elif child_action == "BUY_TO_CLOSE":
+                # Terminal BTC — aggregate_executions() doesn't handle BTC per-share price
+                # correctly (no quantity field), so read raw executions directly.
+                raw_execs = agent_db.get_executions_for_rec(child["id"])
+                btc_prices = [float(e["execution_price"]) for e in raw_execs
+                              if e.get("execution_price") is not None]
+                if btc_prices:
+                    terminal_btc = sum(btc_prices) / len(btc_prices)  # avg per-share cost
+                    extra = accumulated_extra - terminal_btc
+                else:
+                    extra = accumulated_extra
+                    has_missing_exec = True
+                return child, False, depth + 1, extra, has_missing_exec
+
+            else:
+                # ALLOW_ASSIGNMENT or other terminal — no option cash flow at termination
+                return child, False, depth + 1, accumulated_extra, has_missing_exec
+
+        terminal_child, chain_open, chain_depth, extra_credit, chain_has_missing_exec = \
+            _resolve_chain(rec_id)
 
         if new_strike and h_price is not None and nav:
             # Base stock return: default to at-expiry cap formula.
@@ -333,15 +365,19 @@ def _compute_cc_management_returns(
 
             agent_r = (base_r + agent_net / nav) if base_r is not None else None
             if net_credit is not None:
-                actual_r = (base_r + net_credit / nav) if base_r is not None else None
-                return actual_r, agent_r, chain_open or (actual_r is None), chain_depth
+                full_net = net_credit + extra_credit   # 0183: include all subsequent hops
+                actual_r = (base_r + full_net / nav) if base_r is not None else None
+                is_estimated = chain_open or chain_has_missing_exec or (actual_r is None)
+                return actual_r, agent_r, is_estimated, chain_depth
             return hold_r, agent_r, True, chain_depth
         else:
             # Fallback when new_strike absent: net-credit vs mark only
             agent_r = (hold_r + agent_net / nav) if (hold_r is not None and nav) else None
             if net_credit is not None:
-                actual_r = (hold_r + net_credit / nav) if hold_r is not None else None
-                return actual_r, agent_r, chain_open or (actual_r is None), chain_depth
+                full_net = net_credit + extra_credit   # 0183: include all subsequent hops
+                actual_r = (hold_r + full_net / nav) if hold_r is not None else None
+                is_estimated = chain_open or chain_has_missing_exec or (actual_r is None)
+                return actual_r, agent_r, is_estimated, chain_depth
             return hold_r, agent_r, True, chain_depth
 
     return hold_r, hold_r, True, None

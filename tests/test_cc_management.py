@@ -834,3 +834,158 @@ def test_tax_benefit_normalized_per_share_exceeds_tiebreak_threshold():
     # Confirm it's proportional — halve delta, halve component
     tax_component_half = tax_benefit_per_share * 0.125 / nav
     assert abs(tax_component_half - tax_component / 2) < 0.0001
+
+
+# ── 0183: recursive roll chain economic attribution ───────────────────────────
+
+def test_resolve_chain_accumulates_intermediate_roll_credit():
+    """0183: ROLL → ROLL → BTC chain accumulates both intermediate credits minus terminal BTC cost."""
+    from unittest.mock import patch
+    import agents.outcome_evaluator as oe
+    import agent_db
+
+    entry_price = 180.0
+    new_strike = 190.0
+    h_price = 185.0  # below new_strike → not assigned → hold_r used
+    btc_mark, sto_mark = 3.0, 5.0
+    btc_exec, sto_exec = 2.5, 5.2     # root roll: net_credit = 2.7/share
+    nav = entry_price - btc_mark       # 177.0
+    hold_r = (h_price - entry_price) / nav
+
+    # Intermediate ROLL hop: net STO-BTC = +2.0/share (plain dict so get() and [] both work)
+    hop2_net = 2.0
+    hop2_exec = {"execution_price": hop2_net}
+
+    # Terminal BTC: costs 1.5/share to close
+    terminal_btc_price = 1.5
+
+    pl = {"new_strike": new_strike, "btc_price": btc_mark, "sto_premium": sto_mark}
+    exec_rec = {"execution_price": btc_exec, "sto_premium": sto_exec}
+
+    call_count = [0]
+
+    def fake_has_chain_child(rec_id):
+        return False
+
+    def fake_get_completed_chain_child(rec_id):
+        call_count[0] += 1
+        if call_count[0] == 1:  # first child is another ROLL
+            return {"id": 200, "action": "ROLL_OUT", "payload": {}, "exec_rec": hop2_exec}
+        return {  # second child is terminal BTC
+            "id": 201, "action": "BUY_TO_CLOSE",
+            "payload": {"btc_price": terminal_btc_price}, "exec_rec": None,
+        }
+
+    def fake_get_executions_for_rec(rec_id):
+        if rec_id == 201:
+            return [{"execution_price": terminal_btc_price, "action": "BUY_TO_CLOSE"}]
+        return []
+
+    with patch.object(agent_db, "has_chain_child", side_effect=fake_has_chain_child), \
+         patch.object(agent_db, "get_completed_chain_child", side_effect=fake_get_completed_chain_child), \
+         patch.object(agent_db, "get_executions_for_rec", side_effect=fake_get_executions_for_rec):
+        actual_r, agent_r, estimated, chain_depth = oe._compute_cc_management_returns(
+            "ROLL_OUT", pl, entry_price, h_price, exec_rec=exec_rec,
+            horizon_label="at_expiry", rec_id=100,
+        )
+
+    root_net = sto_exec - btc_exec   # 2.7
+    full_net = root_net + hop2_net - terminal_btc_price  # 2.7 + 2.0 - 1.5 = 3.2
+    # h_price < new_strike → base_r = hold_r
+    expected_actual = hold_r + full_net / nav
+    assert abs(actual_r - expected_actual) < 0.0001, (
+        f"Multi-hop chain: actual_r={actual_r:.6f}, expected={expected_actual:.6f}"
+    )
+    assert not estimated, "Chain with all exec records should not be estimated"
+    assert chain_depth == 2, f"Two hops after root → chain_depth=2, got {chain_depth}"
+
+
+def test_resolve_chain_estimated_when_intermediate_hop_missing_exec():
+    """0183: chain stays estimated when any intermediate ROLL hop has no exec_rec."""
+    from unittest.mock import patch
+    import agents.outcome_evaluator as oe
+    import agent_db
+
+    entry_price = 180.0
+    new_strike = 190.0
+    h_price = 185.0
+    btc_mark, sto_mark = 3.0, 5.0
+    btc_exec, sto_exec = 2.5, 5.2
+    nav = entry_price - btc_mark
+
+    # Intermediate hop with no exec_rec → chain should be estimated
+    hop2_exec = {}  # no execution_price key
+
+    pl = {"new_strike": new_strike, "btc_price": btc_mark, "sto_premium": sto_mark}
+    exec_rec = {"execution_price": btc_exec, "sto_premium": sto_exec}
+    call_count = [0]
+
+    def fake_get_completed_chain_child(rec_id):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return {"id": 200, "action": "ROLL_OUT", "payload": {}, "exec_rec": hop2_exec}
+        return {"id": 201, "action": "BUY_TO_CLOSE", "payload": {}, "exec_rec": None}
+
+    with patch.object(agent_db, "has_chain_child", return_value=False), \
+         patch.object(agent_db, "get_completed_chain_child", side_effect=fake_get_completed_chain_child), \
+         patch.object(agent_db, "get_executions_for_rec", return_value=[
+             {"execution_price": 1.5, "action": "BUY_TO_CLOSE"}
+         ]):
+        _, _, estimated, _ = oe._compute_cc_management_returns(
+            "ROLL_OUT", pl, entry_price, h_price, exec_rec=exec_rec,
+            horizon_label="at_expiry", rec_id=100,
+        )
+
+    assert estimated, "Missing exec on intermediate hop must keep chain estimated"
+
+
+# ── 0184: dashboard weight uses live price × cost_lots shares ─────────────────
+
+def test_dashboard_weight_uses_cost_lots_shares_and_live_price(monkeypatch, tmp_path):
+    """0184: _build_mgmt_context_from_db uses cost_lots shares × live price for weight numerator."""
+    # Set up DB with cost_lots (100 shares at $120 cost) and stale holding_day ($11,000 value)
+    db_path = tmp_path / "test.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        "CREATE TABLE cost_lots "
+        "(id INTEGER PRIMARY KEY, ticker TEXT, shares REAL, cost_per_share REAL, purchase_date TEXT)"
+    )
+    conn.execute(
+        "CREATE TABLE portfolio_day (day TEXT, total_value REAL)"
+    )
+    conn.execute(
+        "CREATE TABLE holding_day (ticker TEXT, day TEXT, value REAL, price REAL)"
+    )
+    # 100 shares of LIVE at live price $130 → live value = $13,000
+    conn.execute(
+        "INSERT INTO cost_lots VALUES (1, 'LIVE', 100.0, 120.0, '2025-01-01')"
+    )
+    # Stale portfolio_day: total = $100,000
+    conn.execute("INSERT INTO portfolio_day VALUES ('2026-09-10', 100000.0)")
+    # Stale holding_day: value = $11,000 (stale closing price was $110)
+    conn.execute("INSERT INTO holding_day VALUES ('LIVE', '2026-09-10', 11000.0, 110.0)")
+    conn.commit()
+    conn.close()
+
+    def _connect():
+        c = sqlite3.connect(str(db_path))
+        c.row_factory = sqlite3.Row
+        return c
+
+    import agent_db as _adb
+    monkeypatch.setattr(_adb, "_connect", _connect)
+
+    # Patch away the parts of _build_mgmt_context_from_db that need full DB setup
+    from covered_call_rec import _build_mgmt_context_from_db
+    ctx = _build_mgmt_context_from_db(
+        "LIVE", current_price=130.0, strike=140.0, dte=30,
+        live_price=130.0,
+    )
+
+    # Live numerator: 100 shares × $130 = $13,000 / $100,000 = 13.0%
+    # Stale numerator: $11,000 / $100,000 = 11.0%
+    assert ctx.current_weight_pct is not None
+    assert abs(ctx.current_weight_pct - 13.0) < 0.01, (
+        f"Expected 13.0% (live), got {ctx.current_weight_pct:.2f}% "
+        f"(stale would be 11.0%)"
+    )

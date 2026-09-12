@@ -1118,7 +1118,9 @@ def _build_mgmt_context_from_db(
     except Exception:
         pass
 
-    # Portfolio weight — fall back to stale holding_day for the dashboard path
+    # Portfolio weight — 0184: use live price × cost_lots shares for numerator;
+    # falls back to stale holding_day value when cost_lots has no rows for ticker.
+    # Denominator is portfolio_day.total_value (EOD, best available aggregate).
     current_weight_pct = None
     try:
         import agent_db as _adb_w
@@ -1127,12 +1129,24 @@ def _build_mgmt_context_from_db(
             port_row = conn_w.execute(
                 "SELECT total_value FROM portfolio_day ORDER BY day DESC LIMIT 1"
             ).fetchone()
-            hold_row = conn_w.execute(
-                "SELECT value FROM holding_day WHERE ticker=? ORDER BY day DESC LIMIT 1",
-                (ticker,),
-            ).fetchone()
-            if port_row and hold_row and float(port_row["total_value"]) > 0:
-                current_weight_pct = float(hold_row["value"]) / float(port_row["total_value"]) * 100
+            if port_row and float(port_row["total_value"]) > 0:
+                port_total = float(port_row["total_value"])
+                # Try cost_lots for share count — gives live-numerator weight
+                shares_row = conn_w.execute(
+                    "SELECT SUM(shares) AS total_shares FROM cost_lots WHERE ticker=?",
+                    (ticker,),
+                ).fetchone()
+                if shares_row and shares_row["total_shares"]:
+                    live_value = float(shares_row["total_shares"]) * effective_price
+                    current_weight_pct = live_value / port_total * 100
+                else:
+                    # Fallback: stale holding_day position value
+                    hold_row = conn_w.execute(
+                        "SELECT value FROM holding_day WHERE ticker=? ORDER BY day DESC LIMIT 1",
+                        (ticker,),
+                    ).fetchone()
+                    if hold_row:
+                        current_weight_pct = float(hold_row["value"]) / port_total * 100
         finally:
             conn_w.close()
     except Exception:

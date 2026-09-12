@@ -498,20 +498,26 @@ def test_roll_completed_btc_child_uses_uncapped_stock_return():
     hold_r_nav = (h_price - entry_price) / nav
     pl = {"new_strike": new_strike, "btc_price": btc_mark, "sto_premium": sto_mark}
     exec_rec = {"execution_price": btc_exec, "sto_premium": sto_exec}
+    terminal_btc_exec = 1.0   # cost to close the new call at terminal BTC
     import agent_db
     with (
         patch.object(agent_db, "has_chain_child", return_value=False),
         patch.object(agent_db, "get_completed_chain_child", return_value={
             "id": 99, "action": "BUY_TO_CLOSE",
-            "payload": {"btc_price": 1.0}, "exec_rec": None,
+            "payload": {"btc_price": terminal_btc_exec}, "exec_rec": None,
         }),
+        # 0183: _resolve_chain now reads raw executions for terminal BTC cost
+        patch.object(agent_db, "get_executions_for_rec", return_value=[
+            {"execution_price": terminal_btc_exec, "action": "BUY_TO_CLOSE"},
+        ]),
     ):
         actual_r, agent_r, estimated, _ = _compute_cc_management_returns(
             "ROLL_OUT", pl, entry_price, h_price, exec_rec=exec_rec,
             horizon_label="at_expiry", rec_id=42,
         )
-    expected_actual = hold_r_nav + net_credit / nav  # uncapped
-    assert abs(actual_r - expected_actual) < 0.0001, f"BTC child must use uncapped hold_r: {actual_r:.6f}"
+    # 0183: full_net = root net_credit - terminal BTC cost
+    expected_actual = hold_r_nav + (net_credit - terminal_btc_exec) / nav
+    assert abs(actual_r - expected_actual) < 0.0001, f"BTC child: actual_r={actual_r:.6f}, expected={expected_actual:.6f}"
     assert not estimated
 
 
