@@ -3733,21 +3733,56 @@ def get_trade_chain(chain_id: str) -> list[dict]:
 
 
 def has_chain_child(rec_id: int) -> bool:
-    """Return True if any recommendation in the DB has parent_cc_rec_id == rec_id.
+    """Return True if an OPEN child recommendation exists for this rec.
 
-    Used by the outcome evaluator to avoid marking a ROLL outcome as confirmed
-    when the replacement call was subsequently acted upon (rolled again, BTC'd,
-    etc.) — in that case the at-expiry computation assumes hold-to-expiry and
-    is wrong, so the outcome stays estimated.
+    An "open" child means the replacement call's management action is still
+    pending (status = 'open'). If the child has been acted upon (accepted,
+    assigned, closed, etc.) the chain is resolved and this returns False so
+    the outcome evaluator can use the actual terminal data.
     """
     conn = _connect()
     try:
         row = conn.execute(
-            "SELECT id FROM recommendations WHERE parent_cc_rec_id = ? LIMIT 1",
+            "SELECT id FROM recommendations WHERE parent_cc_rec_id = ? AND status = 'open' LIMIT 1",
             (rec_id,),
         ).fetchone()
         return row is not None
     except Exception:
         return False
+    finally:
+        conn.close()
+
+
+def get_completed_chain_child(rec_id: int) -> dict | None:
+    """Return the completed child recommendation for a ROLL rec, if one exists.
+
+    Looks for a child where parent_cc_rec_id == rec_id and the child is in a
+    terminal state (not 'open'). Returns a dict with keys: id, action,
+    action_payload_json (parsed dict), exec_rec (aggregated execution or None).
+    Returns None when no completed child exists.
+    """
+    conn = _connect()
+    try:
+        row = conn.execute(
+            """SELECT id, action, action_payload_json
+               FROM recommendations
+               WHERE parent_cc_rec_id = ? AND status != 'open'
+               ORDER BY created_at DESC LIMIT 1""",
+            (rec_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        import json as _json
+        payload = _json.loads(row["action_payload_json"] or "{}") if row["action_payload_json"] else {}
+        executions = get_executions_for_rec(row["id"])
+        exec_rec = aggregate_executions(executions, row["action"])
+        return {
+            "id": row["id"],
+            "action": row["action"],
+            "payload": payload,
+            "exec_rec": exec_rec,
+        }
+    except Exception:
+        return None
     finally:
         conn.close()

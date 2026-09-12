@@ -1,7 +1,7 @@
 # Implement Multi-Hop Trade-State Chain Evaluation for Rolls
 
 - **ID:** 0136
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-11
 - **Priority:** normal
 - **Depends:** none
@@ -29,7 +29,7 @@ Open questions:
 
 ## Done when
 
-- [ ] A two-hop chain (SELL_CC → ROLL → BTC) produces a roll outcome that reflects the actual BTC price, not a hold-to-expiry assumption
-- [ ] An open chain (roll with no subsequent action yet) still produces an estimated outcome without error
-- [ ] `python -m pytest tests/test_outcome_evaluator.py -v` passes including new chain tests
-- [ ] `python -m pytest tests/` passes with no regressions
+- [x] A two-hop chain (SELL_CC → ROLL → BTC) produces a roll outcome that reflects the actual BTC price, not a hold-to-expiry assumption
+- [x] An open chain (roll with no subsequent action yet) still produces an estimated outcome without error
+- [x] `python -m pytest tests/test_outcome_evaluator.py -v` passes including new chain tests
+- [x] `python -m pytest tests/` passes with no regressions

@@ -461,6 +461,113 @@ def test_roll_post_horizon_uses_hold_r_when_expired():
     assert not estimated
 
 
+# ── 0136: multi-hop chain evaluation ──────────────────────────────────────────
+
+def test_roll_open_chain_child_stays_estimated():
+    """0140/0136: open child (replacement call still pending) keeps outcome estimated."""
+    entry_price = 180.0
+    new_strike = 195.0
+    h_price = 205.0  # > new_strike → would normally cap
+    btc_mark, sto_mark = 3.0, 4.5
+    btc_exec, sto_exec = 2.8, 4.6
+    nav = entry_price - btc_mark
+    pl = {"new_strike": new_strike, "btc_price": btc_mark, "sto_premium": sto_mark}
+    exec_rec = {"execution_price": btc_exec, "sto_premium": sto_exec}
+    import agents.outcome_evaluator as oe
+    import agent_db
+    with (
+        patch.object(agent_db, "has_chain_child", return_value=True),
+        patch.object(agent_db, "get_completed_chain_child", return_value=None),
+    ):
+        actual_r, agent_r, estimated = _compute_cc_management_returns(
+            "ROLL_OUT", pl, entry_price, h_price, exec_rec=exec_rec,
+            horizon_label="at_expiry", rec_id=42,
+        )
+    assert estimated, "Open chain child must keep outcome estimated"
+
+
+def test_roll_completed_btc_child_uses_uncapped_stock_return():
+    """0136: BTC child — replacement call bought back, stock return is uncapped."""
+    entry_price = 180.0
+    new_strike = 195.0
+    h_price = 210.0  # > new_strike, but call was BTC'd so stock is uncapped
+    btc_mark, sto_mark = 3.0, 4.5
+    btc_exec, sto_exec = 2.8, 4.6
+    nav = entry_price - btc_mark  # 177.0
+    net_credit = sto_exec - btc_exec  # 1.8
+    hold_r_nav = (h_price - entry_price) / nav
+    pl = {"new_strike": new_strike, "btc_price": btc_mark, "sto_premium": sto_mark}
+    exec_rec = {"execution_price": btc_exec, "sto_premium": sto_exec}
+    import agent_db
+    with (
+        patch.object(agent_db, "has_chain_child", return_value=False),
+        patch.object(agent_db, "get_completed_chain_child", return_value={
+            "id": 99, "action": "BUY_TO_CLOSE",
+            "payload": {"btc_price": 1.0}, "exec_rec": None,
+        }),
+    ):
+        actual_r, agent_r, estimated = _compute_cc_management_returns(
+            "ROLL_OUT", pl, entry_price, h_price, exec_rec=exec_rec,
+            horizon_label="at_expiry", rec_id=42,
+        )
+    expected_actual = hold_r_nav + net_credit / nav  # uncapped
+    assert abs(actual_r - expected_actual) < 0.0001, f"BTC child must use uncapped hold_r: {actual_r:.6f}"
+    assert not estimated
+
+
+def test_roll_completed_assignment_child_caps_at_child_strike():
+    """0136: ALLOW_ASSIGNMENT child — stock capped at child strike, not new_strike."""
+    entry_price = 180.0
+    new_strike = 195.0   # original roll strike
+    child_strike = 198.0  # assignment happened at a slightly different strike
+    h_price = 215.0  # > both strikes
+    btc_mark, sto_mark = 3.0, 4.5
+    btc_exec, sto_exec = 2.8, 4.6
+    nav = entry_price - btc_mark  # 177.0
+    net_credit = sto_exec - btc_exec  # 1.8
+    pl = {"new_strike": new_strike, "btc_price": btc_mark, "sto_premium": sto_mark}
+    exec_rec = {"execution_price": btc_exec, "sto_premium": sto_exec}
+    import agent_db
+    with (
+        patch.object(agent_db, "has_chain_child", return_value=False),
+        patch.object(agent_db, "get_completed_chain_child", return_value={
+            "id": 99, "action": "ALLOW_ASSIGNMENT",
+            "payload": {"strike": child_strike}, "exec_rec": None,
+        }),
+    ):
+        actual_r, agent_r, estimated = _compute_cc_management_returns(
+            "ROLL_OUT", pl, entry_price, h_price, exec_rec=exec_rec,
+            horizon_label="at_expiry", rec_id=42,
+        )
+    expected_actual = (child_strike - entry_price) / nav + net_credit / nav
+    assert abs(actual_r - expected_actual) < 0.0001, f"Assignment child caps at child_strike: {actual_r:.6f}"
+    assert not estimated
+
+
+def test_roll_multi_hop_child_stays_estimated():
+    """0136: another ROLL child (multi-hop) keeps outcome estimated."""
+    entry_price = 180.0
+    new_strike = 195.0
+    h_price = 205.0
+    btc_mark, sto_mark = 3.0, 4.5
+    btc_exec, sto_exec = 2.8, 4.6
+    pl = {"new_strike": new_strike, "btc_price": btc_mark, "sto_premium": sto_mark}
+    exec_rec = {"execution_price": btc_exec, "sto_premium": sto_exec}
+    import agent_db
+    with (
+        patch.object(agent_db, "has_chain_child", return_value=False),
+        patch.object(agent_db, "get_completed_chain_child", return_value={
+            "id": 99, "action": "ROLL_OUT",
+            "payload": {"new_strike": 200.0}, "exec_rec": None,
+        }),
+    ):
+        actual_r, agent_r, estimated = _compute_cc_management_returns(
+            "ROLL_OUT", pl, entry_price, h_price, exec_rec=exec_rec,
+            horizon_label="at_expiry", rec_id=42,
+        )
+    assert estimated, "Multi-hop ROLL child must keep outcome estimated"
+
+
 # ── 0126: HOLD_CALL terminal-payoff economics ─────────────────────────────────
 
 def test_hold_call_at_expiry_assigned():

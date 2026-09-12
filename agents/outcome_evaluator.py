@@ -284,8 +284,17 @@ def _compute_cc_management_returns(
         else:
             net_credit = None
 
+        # 0136: check chain state — open child stays estimated; completed child
+        # provides the actual terminal state for the replacement call.
+        chain_open  = (rec_id is not None and agent_db.has_chain_child(rec_id))
+        chain_child = (
+            agent_db.get_completed_chain_child(rec_id)
+            if (rec_id is not None and not chain_open)
+            else None
+        )
+
         if new_strike and h_price is not None and nav:
-            # Base stock return, capped at new_strike when assigned
+            # Base stock return: default to at-expiry cap formula.
             if "post" in horizon_label:
                 if new_expiry_price is not None and new_expiry_price > new_strike:
                     base_r = (new_strike - entry_price) / nav
@@ -295,13 +304,29 @@ def _compute_cc_management_returns(
                 # at_expiry: h_price IS stock at new_expiry
                 base_r = (new_strike - entry_price) / nav if h_price > new_strike else hold_r
 
+            # 0136: when a completed chain child exists, revise base_r to reflect
+            # what actually happened to the replacement call.
+            if chain_child:
+                child_action = chain_child["action"]
+                if child_action == "BUY_TO_CLOSE":
+                    # Replacement call was bought back — position unencumbered; uncapped stock return.
+                    base_r = hold_r
+                elif child_action == "ALLOW_ASSIGNMENT":
+                    # Replacement call was assigned; stock capped at child's strike (may differ from new_strike).
+                    child_strike = float(
+                        chain_child["payload"].get("strike") or
+                        chain_child["payload"].get("new_strike") or
+                        new_strike
+                    )
+                    if child_strike and nav:
+                        base_r = (child_strike - entry_price) / nav if (h_price is not None and h_price > child_strike) else hold_r
+                elif child_action in {"ROLL_OUT", "ROLL_UP", "ROLL_UP_AND_OUT"}:
+                    # Multi-hop roll — chain not yet fully resolved; keep estimated.
+                    chain_open = True
+
             agent_r = (base_r + agent_net / nav) if base_r is not None else None
             if net_credit is not None:
                 actual_r = (base_r + net_credit / nav) if base_r is not None else None
-                # 0140: if the replacement call was subsequently acted upon (rolled again,
-                # BTC'd early) the at-expiry formula assumed hold-to-expiry — keep estimated
-                # until the full chain resolves.
-                chain_open = (rec_id is not None and agent_db.has_chain_child(rec_id))
                 return actual_r, agent_r, chain_open or (actual_r is None)
             return hold_r, agent_r, True
         else:
@@ -309,7 +334,7 @@ def _compute_cc_management_returns(
             agent_r = (hold_r + agent_net / nav) if (hold_r is not None and nav) else None
             if net_credit is not None:
                 actual_r = (hold_r + net_credit / nav) if hold_r is not None else None
-                return actual_r, agent_r, actual_r is None
+                return actual_r, agent_r, chain_open or (actual_r is None)
             return hold_r, agent_r, True
 
     return hold_r, hold_r, True
