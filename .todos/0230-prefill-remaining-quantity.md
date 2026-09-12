@@ -1,7 +1,7 @@
 # PRE_FILL Risk Must Evaluate Remaining Quantity, Not Original Order Quantity
 
 - **ID:** 0230
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-12
 - **Priority:** high
 - **Depends:** 0229
@@ -28,8 +28,8 @@ A partial SELL is especially problematic: 40 remaining shares will be evaluated 
 
 ## Done when
 
-- [ ] `evaluate()` accepts `remaining_quantity` and uses it for quantity-sensitive rules
-- [ ] `process_open_orders()` passes `remaining_quantity = order.quantity - order.fill_qty`
-- [ ] Partial BUY PRE_FILL uses remaining qty for cash and position-weight checks
-- [ ] Partial SELL PRE_FILL uses remaining qty for sell-coverage check
-- [ ] Tests for both BUY and SELL partial-fill risk scenarios pass
+- [x] `evaluate()` accepts `remaining_quantity` and uses it for quantity-sensitive rules
+- [x] `process_open_orders()` passes `remaining_quantity = order.quantity - order.fill_qty`
+- [x] Partial BUY PRE_FILL uses remaining qty for cash and position-weight checks
+- [x] Partial SELL PRE_FILL uses remaining qty for sell-coverage check
+- [x] Tests for both BUY and SELL partial-fill risk scenarios pass

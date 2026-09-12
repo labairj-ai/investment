@@ -1,7 +1,7 @@
 # Treat Unpriced Positions as Stale, Not Safe
 
 - **ID:** 0228
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-12
 - **Priority:** high
 - **Depends:** none
@@ -29,8 +29,8 @@ Also: `run_execution_cycle()` does not return the `market_state` field that todo
 
 ## Done when
 
-- [ ] Held position with `market_price IS NULL` triggers `RISK_STATE_STALE` and blocks new intent authorization
-- [ ] Held position with `market_price` set and fresh `price_as_of` passes the stale check
-- [ ] `run_execution_cycle()` return dict includes `market_state: "fresh" | "stale"`
-- [ ] Reversed test passes (unpriced IS stale)
-- [ ] All existing tests updated and passing
+- [x] Held position with `market_price IS NULL` triggers `RISK_STATE_STALE` and blocks new intent authorization
+- [x] Held position with `market_price` set and fresh `price_as_of` passes the stale check
+- [x] `run_execution_cycle()` return dict includes `market_state: "fresh" | "stale"`
+- [x] Reversed test passes (unpriced IS stale)
+- [x] All existing tests updated and passing

@@ -1,7 +1,7 @@
 # Quote Freshness Must Use Market Observation Time, Not Retrieval Time
 
 - **ID:** 0232
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-12
 - **Priority:** normal
 - **Depends:** none
@@ -27,7 +27,7 @@
 
 ## Done when
 
-- [ ] `_is_quote_fresh()` returns False when `market_timestamp` is stale, even if `retrieved_at` is recent
-- [ ] `_is_quote_fresh()` returns False when either timestamp is missing or unparseable (no fail-open)
-- [ ] `_refresh_market_prices()` writes `price_as_of = market_timestamp` when available
-- [ ] Tests covering stale observation time, missing timestamps, and fresh timestamps all pass
+- [x] `_is_quote_fresh()` returns False when `market_timestamp` is stale, even if `retrieved_at` is recent
+- [x] `_is_quote_fresh()` returns False when either timestamp is missing or unparseable (no fail-open)
+- [x] `_refresh_market_prices()` writes `price_as_of = market_timestamp` when available
+- [x] Tests covering stale observation time, missing timestamps, and fresh timestamps all pass

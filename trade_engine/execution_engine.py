@@ -30,6 +30,10 @@ from .market_data import _get_quote, _get_executable_quote, _get_mark_price
 _log = logging.getLogger(__name__)
 
 
+class PolicyUnavailable(RuntimeError):
+    """Trading policy cannot be loaded; cycle must halt fail-closed (0227)."""
+
+
 def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -87,24 +91,40 @@ def _write_executed_action(fill: Fill, intent: TradeIntent, conn: sqlite3.Connec
 
 
 def _is_quote_fresh(quote: Quote, stale_minutes: int) -> bool:
-    """Return True if quote.retrieved_at is within stale_minutes of now (0222)."""
+    """Return True only when quote timestamps confirm fresh market data (0222, 0232).
+
+    Checks market_timestamp first (when exchange last observed the price). Falls back
+    to retrieved_at only when market_timestamp is absent. Missing or unparseable
+    timestamps return False — fail closed rather than assuming freshness.
+    """
+    now_ts = _now_utc().timestamp()
+    if quote.market_timestamp:
+        try:
+            mt_ts = datetime.fromisoformat(
+                quote.market_timestamp.replace("Z", "+00:00")
+            ).timestamp()
+            if (now_ts - mt_ts) / 60 > stale_minutes:
+                return False  # market observation is too old
+        except Exception:
+            return False  # unparseable market_timestamp → fail closed (0232)
+    # Require retrieved_at; absent means no provenance → fail closed (0232)
     if not quote.retrieved_at:
-        return True  # no timestamp — assume fresh (legacy quotes)
+        return False
     try:
-        ts = datetime.fromisoformat(
+        rt_ts = datetime.fromisoformat(
             quote.retrieved_at.replace("Z", "+00:00")
         ).timestamp()
-        age_minutes = (_now_utc().timestamp() - ts) / 60
-        return age_minutes <= stale_minutes
+        return (now_ts - rt_ts) / 60 <= stale_minutes
     except Exception:
-        return True
+        return False
 
 
 def _refresh_market_prices(account_id: str, conn: sqlite3.Connection) -> None:
-    """Update market_price/market_value on position_snapshots using mark price (0201, 0222).
+    """Update market_price/market_value on position_snapshots using mark price (0201, 0222, 0232).
 
-    Uses _get_mark_price() which allows last-price fallback — suitable for marking
-    but NOT for execution. Silently skips symbols where price is unavailable.
+    Uses _get_quote() which allows last-price fallback — suitable for marking but NOT execution.
+    Writes price_as_of = market_timestamp (when market observed the price) when available,
+    otherwise falls back to retrieved_at. Silently skips symbols where price is unavailable.
     """
     rows = conn.execute(
         "SELECT symbol FROM position_snapshots WHERE account_id=?",
@@ -112,15 +132,17 @@ def _refresh_market_prices(account_id: str, conn: sqlite3.Connection) -> None:
     ).fetchall()
     for row in rows:
         symbol = row["symbol"]
-        mid = _get_mark_price(symbol)
-        if mid is None:
+        quote = _get_quote(symbol)
+        if not quote:
             continue
-        retrieved_at = _now_utc().isoformat()
+        mid = (quote.bid + quote.ask) / 2.0
+        # price_as_of = when market last observed this price, not when we fetched it (0232)
+        price_as_of = quote.market_timestamp or quote.retrieved_at or _now_utc().isoformat()
         conn.execute(
             """UPDATE position_snapshots
                SET market_price=?, market_value=qty*?, price_as_of=?
                WHERE account_id=? AND symbol=?""",
-            (mid, mid, retrieved_at, account_id, symbol),
+            (mid, mid, price_as_of, account_id, symbol),
         )
     conn.commit()
 
@@ -130,10 +152,11 @@ def _check_portfolio_mark_freshness(
     conn: sqlite3.Connection,
     stale_minutes: int,
 ) -> tuple[bool, list[str]]:
-    """Check whether all held positions have fresh market price marks (0221).
+    """Check whether all held positions have fresh market price marks (0221, 0228).
 
-    Returns (is_fresh, stale_symbols). Any NULL price_as_of or mark older than
-    stale_minutes is considered stale. Called before authorizing new intents.
+    Returns (is_fresh, stale_symbols). Unknown price is not safer than stale:
+    any position with market_price IS NULL, price_as_of missing, or mark older
+    than stale_minutes is considered stale. Called before authorizing new intents.
     """
     rows = conn.execute(
         "SELECT symbol, market_price, price_as_of FROM position_snapshots WHERE account_id=?",
@@ -145,7 +168,8 @@ def _check_portfolio_mark_freshness(
         keys = r.keys()
         market_price = r["market_price"] if "market_price" in keys else None
         if market_price is None:
-            continue  # never refreshed — unpriced, not stale
+            stale.append(r["symbol"])  # unpriced = unknown = block (0228)
+            continue
         price_as_of = r["price_as_of"] if "price_as_of" in keys else None
         if not price_as_of:
             stale.append(r["symbol"])
@@ -163,7 +187,7 @@ def _write_account_snapshot(
     account_id: str, conn: sqlite3.Connection, reason: str = "cycle"
 ) -> None:
     """Write a point-in-time account snapshot to account_snapshots (0214)."""
-    from .risk_engine import _open_buy_notional as _obn
+    from .risk_engine import _open_buy_notional as _obn, _open_sell_notional as _osn
     acct = conn.execute(
         "SELECT current_cash FROM trading_accounts WHERE account_id=?",
         (account_id,),
@@ -184,8 +208,10 @@ def _write_account_snapshot(
         gross_exposure += val
         unrealized_pnl += val - cost
     nav = cash + gross_exposure
-    open_order_notional = _obn(account_id, conn)
-    reserved_cash = open_order_notional
+    # reserved_cash = buy-side only (sells don't consume cash)
+    # open_order_notional = gross outstanding (buy + sell) for exposure visibility (0233)
+    reserved_cash = _obn(account_id, conn)
+    open_order_notional = reserved_cash + _osn(account_id, conn)
     buying_power = max(0.0, cash - reserved_cash)
     realized_pnl_today_row = conn.execute(
         """SELECT COALESCE(SUM(realized_pnl), 0) AS t
@@ -368,9 +394,9 @@ def process_open_orders(
     try:
         policy = load_policy(account_id)
         stale_minutes = policy.halt_on_data_stale_minutes()
-    except Exception:
-        policy = None
-        stale_minutes = 60
+    except Exception as exc:
+        # No policy = no authority = no fills (0227)
+        raise PolicyUnavailable(f"Cannot load policy for {account_id!r}: {exc}") from exc
 
     for row in open_rows:
         order = broker.get_order(row["order_id"])
@@ -383,20 +409,22 @@ def process_open_orders(
             continue
         intent = TradeIntent.from_db_row(intent_row)
 
-        # ── Pre-fill risk revalidation (0220) ─────────────────────────────────
-        if policy:
-            account = _load_account(account_id, conn)
-            if account:
-                pre_fill_decision = risk_evaluate(
-                    intent, policy, account, conn,
-                    exclude_order_id=order.order_id,
-                    phase="PRE_FILL",
-                )
-                if pre_fill_decision.decision == "REJECTED":
-                    broker._transition_order(order, OrderState.CANCELLED)
-                    _sync_intent_from_order(order, row["intent_id"], conn)
-                    pre_fill_rejections += 1
-                    continue
+        # ── Pre-fill risk revalidation (0220, 0229, 0230) ─────────────────────
+        account = _load_account(account_id, conn)
+        if account:
+            # 0230: evaluate only the remaining unfilled quantity
+            remaining_qty = (order.quantity or 0.0) - (order.fill_qty or 0.0)
+            pre_fill_decision = risk_evaluate(
+                intent, policy, account, conn,
+                exclude_order_id=order.order_id,
+                phase="PRE_FILL",
+                remaining_quantity=max(0.0, remaining_qty),
+            )
+            if pre_fill_decision.decision == "REJECTED":
+                broker._transition_order(order, OrderState.CANCELLED)
+                _sync_intent_from_order(order, row["intent_id"], conn)
+                pre_fill_rejections += 1
+                continue
 
         quote = _get_executable_quote(order.symbol)
         if not quote:
@@ -449,13 +477,28 @@ def run_execution_cycle(account_id: str, conn: sqlite3.Connection) -> dict:
     6. process_open_orders      — retry open orders with pre-fill risk revalidation (0220)
     7. _write_account_snapshot  — post-cycle state
     """
+    _HALTED_BASE = {
+        "execution_state": "HALTED",
+        "new_intents_processed": 0,
+        "new_intents_blocked": True,
+        "stale_symbols": [],
+        "market_state": "unknown",
+        "new_orders_created": 0,
+        "fills_on_submission": 0,
+        "risk_rejections": 0,
+        "working_orders_checked": 0,
+        "fills_on_retry": 0,
+        "total_fills": 0,
+        "orders_expired": 0,
+        "results": [],
+    }
+
     try:
         policy = load_policy(account_id)
         stale_minutes = policy.halt_on_data_stale_minutes()
     except Exception as exc:
-        _log.warning("Cannot load policy for %s: %s", account_id, exc)
-        policy = None
-        stale_minutes = 60
+        _log.error("POLICY_UNAVAILABLE for %s: %s — halting cycle fail-closed", account_id, exc)
+        return {**_HALTED_BASE, "halt_reason": "POLICY_UNAVAILABLE"}
 
     try:
         _refresh_market_prices(account_id, conn)
@@ -488,7 +531,11 @@ def run_execution_cycle(account_id: str, conn: sqlite3.Connection) -> dict:
         (account_id,),
     ).fetchone()[0]
 
-    retry_fills, pre_fill_rejections, orders_expired_retry = process_open_orders(account_id, conn)
+    try:
+        retry_fills, pre_fill_rejections, orders_expired_retry = process_open_orders(account_id, conn)
+    except PolicyUnavailable as exc:
+        _log.error("POLICY_UNAVAILABLE in fill retry for %s: %s — working orders untouched", account_id, exc)
+        retry_fills, pre_fill_rejections, orders_expired_retry = [], 0, 0
 
     try:
         _write_account_snapshot(account_id, conn, "post_cycle")
@@ -497,11 +544,14 @@ def run_execution_cycle(account_id: str, conn: sqlite3.Connection) -> dict:
 
     fills_on_submission = sum(1 for r in new_results if r.fill is not None)
     risk_rejections_new = sum(1 for r in new_results if r.decision == "REJECTED")
+    market_state = "stale" if new_intents_blocked else "fresh"
 
     return {
+        "execution_state": "OK",
         "new_intents_processed": len(new_results),
         "new_intents_blocked": new_intents_blocked,
         "stale_symbols": stale_symbols,
+        "market_state": market_state,
         "new_orders_created": sum(1 for r in new_results if r.order_id is not None),
         "fills_on_submission": fills_on_submission,
         "risk_rejections": risk_rejections_new + pre_fill_rejections,

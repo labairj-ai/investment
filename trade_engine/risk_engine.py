@@ -192,12 +192,12 @@ def _stale_position_symbols(
     conn: sqlite3.Connection,
     stale_minutes: int,
 ) -> list[str]:
-    """Return symbols with stale market price marks (0221).
+    """Return symbols with stale or missing market price marks (0221, 0228).
 
-    A position is stale only when market_price HAS been set (at least one refresh ran)
-    but price_as_of is missing or older than stale_minutes. Positions that have never
-    been marked (market_price IS NULL) are considered unpriced, not stale — they exist
-    in new accounts where no refresh cycle has run yet.
+    Unknown price is not safer than stale price.  Hierarchy:
+      fresh (market_price set, price_as_of within limit) → usable
+      stale (market_price set, price_as_of old/missing)  → block
+      unpriced (market_price IS NULL)                     → block (0228)
     """
     rows = conn.execute(
         "SELECT symbol, market_price, price_as_of FROM position_snapshots WHERE account_id=?",
@@ -209,7 +209,8 @@ def _stale_position_symbols(
         keys = r.keys()
         market_price = r["market_price"] if "market_price" in keys else None
         if market_price is None:
-            continue  # never refreshed — unpriced, not stale
+            stale.append(r["symbol"])  # unpriced = unknown = block authorization (0228)
+            continue
         price_as_of = r["price_as_of"] if "price_as_of" in keys else None
         if not price_as_of:
             stale.append(r["symbol"])
@@ -231,14 +232,28 @@ def evaluate(
     strict_all: bool = False,
     exclude_order_id: Optional[str] = None,
     phase: str = "PRE_ORDER",
+    remaining_quantity: Optional[float] = None,
 ) -> RiskDecision:
     """Run all pre-trade risk checks. Fail-fast unless strict_all=True.
+
+    Rule classification (0229):
+      ADMISSION (PRE_ORDER only — SKIP in PRE_FILL, order already consumed the slot):
+        MAX_ORDERS_PER_DAY, NO_DUPLICATE_INTENT
+      CONTINUOUS (checked in both PRE_ORDER and PRE_FILL):
+        RISK_STATE_STALE, TRADING_ENABLED, VALID_ACCOUNT, INTENT_NOT_EXPIRED,
+        INSTRUMENT_ALLOWED, NO_MARKET_ORDER, SUFFICIENT_CASH, MAX_POSITION_WEIGHT,
+        MAX_NEW_POSITION_WEIGHT, MAX_DAILY_NOTIONAL, SELL_QUANTITY_COVERED,
+        NO_NAKED_OPTIONS, MAX_CONTRACTS_PER_SYMBOL, DATA_FRESHNESS,
+        NO_EARNINGS_CONFLICT, MAX_DAILY_LOSS, MAX_DRAWDOWN, MIN_LIMIT_PRICE
 
     exclude_order_id: when re-evaluating an existing WORKING order (phase='PRE_FILL'),
         pass the order's ID to exclude its own reservation from notional/qty helpers,
         preventing double-counting (0220).
     phase: 'PRE_ORDER' (first approval) or 'PRE_FILL' (retry fill revalidation). Persisted
         to risk_decisions.phase for audit (0220).
+    remaining_quantity: for PRE_FILL on partially-filled orders, the qty still to be filled
+        (order.quantity - order.fill_qty). Used for trade_qty/trade_cost calculations so
+        rules evaluate the actual remaining exposure, not the original order size (0230).
     """
     checks: list[RuleCheck] = []
     rejected = False
@@ -266,8 +281,9 @@ def evaluate(
     nav = _nav(account, conn)
     current_pos_qty = _position_qty(account.account_id, intent.symbol, conn)
     current_pos_value = _position_value(account.account_id, intent.symbol, conn)
-    trade_qty = intent.quantity or 0.0
-    trade_cost = trade_qty * intent.limit_price
+    # 0230: use remaining_quantity for PRE_FILL on partial orders
+    trade_qty = remaining_quantity if remaining_quantity is not None else (intent.quantity or 0.0)
+    trade_cost = trade_qty * (intent.limit_price or 0.0)
 
     # ── 1. TRADING_ENABLED ────────────────────────────────────────────────────
     ok = add(RuleCheck(
@@ -435,19 +451,27 @@ def evaluate(
         add(RuleCheck(rule="MAX_DAILY_NOTIONAL", result=_SKIP, reason="nav=0"))
 
     # ── 11. MAX_ORDERS_PER_DAY ────────────────────────────────────────────────
-    orders_today = _daily_orders_count(account.account_id, conn)
-    limit_orders = policy.max_orders_per_day()
-    ok = add(RuleCheck(
-        rule="MAX_ORDERS_PER_DAY",
-        result=_PASS if orders_today < limit_orders else _FAIL,
-        limit=float(limit_orders),
-        before=float(orders_today),
-        after=float(orders_today + 1),
-        reason=None if orders_today < limit_orders
-            else f"orders today {orders_today} >= limit {limit_orders}",
-    ))
-    if not ok and not strict_all:
-        return _finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
+    # ADMISSION rule: order already consumed its slot at PRE_ORDER; skip in PRE_FILL (0229)
+    if phase == "PRE_FILL":
+        add(RuleCheck(
+            rule="MAX_ORDERS_PER_DAY",
+            result=_SKIP,
+            reason="admission rule; order counted at submission (PRE_FILL phase)",
+        ))
+    else:
+        orders_today = _daily_orders_count(account.account_id, conn)
+        limit_orders = policy.max_orders_per_day()
+        ok = add(RuleCheck(
+            rule="MAX_ORDERS_PER_DAY",
+            result=_PASS if orders_today < limit_orders else _FAIL,
+            limit=float(limit_orders),
+            before=float(orders_today),
+            after=float(orders_today + 1),
+            reason=None if orders_today < limit_orders
+                else f"orders today {orders_today} >= limit {limit_orders}",
+        ))
+        if not ok and not strict_all:
+            return _finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
 
     # ── 12. SELL_QUANTITY_COVERED ─────────────────────────────────────────────
     if intent.side in (Side.SELL, Side.BUY_TO_CLOSE):

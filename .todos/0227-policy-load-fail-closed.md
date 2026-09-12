@@ -1,7 +1,7 @@
 # Fail Closed When Trading Policy Cannot Be Loaded
 
 - **ID:** 0227
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-12
 - **Priority:** high
 - **Depends:** none
@@ -24,8 +24,8 @@
 
 ## Done when
 
-- [ ] `process_open_orders()` returns immediately (no fills) when `load_policy()` raises
-- [ ] `process_intent()` returns a HALTED/REJECTED result when `load_policy()` raises
-- [ ] `run_execution_cycle()` includes `execution_state="HALTED"` and `halt_reason="POLICY_UNAVAILABLE"` in return dict
-- [ ] No WORKING order changes state due to a policy load failure
-- [ ] Tests confirm all of the above
+- [x] `process_open_orders()` returns immediately (no fills) when `load_policy()` raises
+- [x] `process_intent()` returns a HALTED/REJECTED result when `load_policy()` raises
+- [x] `run_execution_cycle()` includes `execution_state="HALTED"` and `halt_reason="POLICY_UNAVAILABLE"` in return dict
+- [x] No WORKING order changes state due to a policy load failure
+- [x] Tests confirm all of the above

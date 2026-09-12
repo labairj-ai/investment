@@ -1,7 +1,7 @@
 # Make PRE_FILL Risk Rules Phase-Aware
 
 - **ID:** 0229
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-12
 - **Priority:** high
 - **Depends:** none
@@ -27,7 +27,7 @@ Admission rules (one-time gates) and continuous rules (re-checked on every cycle
 
 ## Done when
 
-- [ ] `MAX_ORDERS_PER_DAY` returns SKIP during `PRE_FILL` phase
-- [ ] The 5th-order-of-5 scenario passes PRE_FILL without self-rejection
-- [ ] All 19 rules documented as admission / continuous / fill-time in code comments
-- [ ] Tests confirm the self-rejection scenario is eliminated
+- [x] `MAX_ORDERS_PER_DAY` returns SKIP during `PRE_FILL` phase
+- [x] The 5th-order-of-5 scenario passes PRE_FILL without self-rejection
+- [x] All 19 rules documented as admission / continuous / fill-time in code comments
+- [x] Tests confirm the self-rejection scenario is eliminated

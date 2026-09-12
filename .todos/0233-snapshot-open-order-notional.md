@@ -1,7 +1,7 @@
 # Account Snapshot open_order_notional Must Include Open SELL Notional
 
 - **ID:** 0233
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-12
 - **Priority:** normal
 - **Depends:** none
@@ -26,7 +26,7 @@
 
 ## Done when
 
-- [ ] `open_order_notional` in `account_snapshots` = `open_buy_notional + open_sell_notional`
-- [ ] `reserved_cash` in `account_snapshots` = `open_buy_notional` only (buy-side, unchanged)
-- [ ] `buying_power` still computed as `cash - reserved_cash` (unchanged)
-- [ ] Tests confirm both fields for an account holding BUY and SELL working orders
+- [x] `open_order_notional` in `account_snapshots` = `open_buy_notional + open_sell_notional`
+- [x] `reserved_cash` in `account_snapshots` = `open_buy_notional` only (buy-side, unchanged)
+- [x] `buying_power` still computed as `cash - reserved_cash` (unchanged)
+- [x] Tests confirm both fields for an account holding BUY and SELL working orders

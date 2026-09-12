@@ -1,7 +1,7 @@
 # Keep Portfolio Marks Coherent After Each Fill in Same Cycle
 
 - **ID:** 0231
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-12
 - **Priority:** normal
 - **Depends:** none
@@ -25,7 +25,7 @@
 
 ## Done when
 
-- [ ] After a BUY fill on an existing position, `market_value = new_qty × existing market_price`
-- [ ] After a BUY fill creating a new position, `market_price = fill.price`, `market_value = qty × fill.price`, `price_as_of = fill.filled_at`
-- [ ] After a SELL fill, `market_value` is recomputed for the remaining qty (or row deleted if qty ≤ 0)
-- [ ] Tests confirm a second intent in the same cycle sees the updated exposure
+- [x] After a BUY fill on an existing position, `market_value = new_qty × existing market_price`
+- [x] After a BUY fill creating a new position, `market_price = fill.price`, `market_value = qty × fill.price`, `price_as_of = fill.filled_at`
+- [x] After a SELL fill, `market_value` is recomputed for the remaining qty (or row deleted if qty ≤ 0)
+- [x] Tests confirm a second intent in the same cycle sees the updated exposure

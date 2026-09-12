@@ -215,13 +215,14 @@ class ShadowBroker:
 
         # Update position_snapshots with conflict handling for unique constraint (0206)
         existing_pos = self._conn.execute(
-            "SELECT qty, avg_cost FROM position_snapshots WHERE account_id=? AND symbol=?",
+            "SELECT qty, avg_cost, market_price, price_as_of FROM position_snapshots WHERE account_id=? AND symbol=?",
             (fill.account_id, fill.symbol),
         ).fetchone()
 
         if existing_pos:
             old_qty = float(existing_pos["qty"])
             old_avg = float(existing_pos["avg_cost"])
+            old_market_price = float(existing_pos["market_price"]) if existing_pos["market_price"] is not None else None
             if is_buy:
                 new_qty = old_qty + fill.qty
                 new_avg = (old_qty * old_avg + fill.qty * fill.price) / new_qty if new_qty > 0 else 0.0
@@ -234,18 +235,27 @@ class ShadowBroker:
                     (fill.account_id, fill.symbol),
                 )
             else:
+                # 0231: keep market_value coherent — use existing mark if available, else fill price
+                mark = old_market_price if old_market_price is not None else fill.price
+                new_market_value = new_qty * mark
+                price_as_of = fill.filled_at if old_market_price is None else existing_pos["price_as_of"]
                 self._conn.execute(
-                    """UPDATE position_snapshots SET qty=?, avg_cost=?, as_of=?
+                    """UPDATE position_snapshots
+                       SET qty=?, avg_cost=?, as_of=?, market_price=?, market_value=?, price_as_of=?
                        WHERE account_id=? AND symbol=?""",
-                    (new_qty, new_avg, fill.filled_at, fill.account_id, fill.symbol),
+                    (new_qty, new_avg, fill.filled_at,
+                     mark, new_market_value, price_as_of,
+                     fill.account_id, fill.symbol),
                 )
         elif is_buy:
-            # INSERT OR IGNORE then UPDATE to handle the unique(account_id, symbol) constraint
+            # 0231: new position — use fill price as initial mark so same-cycle intents see exposure
             self._conn.execute(
                 """INSERT OR IGNORE INTO position_snapshots
-                   (account_id, symbol, qty, avg_cost, instrument_type, as_of)
-                   VALUES (?,?,?,?,?,?)""",
-                (fill.account_id, fill.symbol, fill.qty, fill.price, "EQUITY", fill.filled_at),
+                   (account_id, symbol, qty, avg_cost, instrument_type, as_of,
+                    market_price, market_value, price_as_of)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                (fill.account_id, fill.symbol, fill.qty, fill.price, "EQUITY", fill.filled_at,
+                 fill.price, fill.qty * fill.price, fill.filled_at),
             )
             # If another process beat us, UPDATE to accumulate
             self._conn.execute(
