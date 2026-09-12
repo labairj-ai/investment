@@ -19,7 +19,7 @@ class BrokerAdapter(ABC):
     """Broker-agnostic interface for order management and market data."""
 
     @abstractmethod
-    def get_account(self) -> TradingAccount: ...
+    def get_account(self, account_id: str) -> TradingAccount: ...
 
     @abstractmethod
     def get_positions(self, account_id: str) -> list: ...
@@ -43,7 +43,7 @@ class BrokerAdapter(ABC):
     def get_order(self, order_id: str) -> Optional[Order]: ...
 
     @abstractmethod
-    def get_fills(self, since: Optional[str] = None) -> list[Fill]: ...
+    def get_fills(self, account_id: str, since: Optional[str] = None) -> list[Fill]: ...
 
 
 class ShadowBrokerAdapter(BrokerAdapter):
@@ -54,14 +54,19 @@ class ShadowBrokerAdapter(BrokerAdapter):
     concrete type — enabling parallel paper/live execution in the future.
     """
 
-    def __init__(self, conn) -> None:
-        import sqlite3
+    def __init__(self, conn, account_id: str) -> None:
         from .shadow_broker import ShadowBroker
         self._broker = ShadowBroker(conn)
         self._conn = conn
+        self.account_id = account_id
 
-    def get_account(self) -> TradingAccount:
-        raise NotImplementedError("B1: load from trading_accounts via account_id")
+    def get_account(self, account_id: str) -> TradingAccount:
+        row = self._conn.execute(
+            "SELECT * FROM trading_accounts WHERE account_id=?", (account_id,)
+        ).fetchone()
+        if not row:
+            raise ValueError(f"Account {account_id!r} not found")
+        return TradingAccount.from_db_row(row)
 
     def get_positions(self, account_id: str) -> list:
         return list(self._broker.get_positions(account_id).items())
@@ -74,8 +79,8 @@ class ShadowBrokerAdapter(BrokerAdapter):
         return [Order.from_db_row(r) for r in rows]
 
     def get_quote(self, symbol: str) -> Optional[Quote]:
-        from .execution_engine import _get_quote
-        return _get_quote(symbol)
+        from .market_data import _get_executable_quote
+        return _get_executable_quote(symbol)
 
     def submit_order(self, intent: TradeIntent) -> Order:
         return self._broker.submit_order(intent)
@@ -89,12 +94,15 @@ class ShadowBrokerAdapter(BrokerAdapter):
     def get_order(self, order_id: str) -> Optional[Order]:
         return self._broker.get_order(order_id)
 
-    def get_fills(self, since: Optional[str] = None) -> list[Fill]:
+    def get_fills(self, account_id: str, since: Optional[str] = None) -> list[Fill]:
         if since:
             rows = self._conn.execute(
                 "SELECT * FROM fills WHERE account_id=? AND filled_at >= ?",
-                (self._conn, since),
+                (account_id, since),
             ).fetchall()
         else:
-            rows = self._conn.execute("SELECT * FROM fills").fetchall()
+            rows = self._conn.execute(
+                "SELECT * FROM fills WHERE account_id=?",
+                (account_id,),
+            ).fetchall()
         return [Fill.from_db_row(r) for r in rows]

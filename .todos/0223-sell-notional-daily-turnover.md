@@ -1,7 +1,7 @@
 # Include Open SELL Notional in Daily Turnover Reservation
 
 - **ID:** 0223
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-12
 - **Priority:** normal
 - **Depends:** none

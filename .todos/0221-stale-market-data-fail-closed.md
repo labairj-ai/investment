@@ -1,7 +1,7 @@
 # Make Stale Market Data Fail Closed on New Order Authorization
 
 - **ID:** 0221
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-12
 - **Priority:** high
 - **Depends:** none

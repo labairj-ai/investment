@@ -1,7 +1,7 @@
 # Fix Partial Fill Quantity: Use Remaining Qty, Not Original Order Qty
 
 - **ID:** 0224
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-12
 - **Priority:** normal
 - **Depends:** none

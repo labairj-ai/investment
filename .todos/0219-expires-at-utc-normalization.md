@@ -1,7 +1,7 @@
 # Fix expires_at UTC Normalization in DAY Order Expiry Comparison
 
 - **ID:** 0219
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-12
 - **Priority:** high
 - **Depends:** none

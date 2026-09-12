@@ -1,7 +1,7 @@
 # Separate ExecutableQuote from MarkPrice; Enforce Quote Freshness Before Fill
 
 - **ID:** 0222
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-12
 - **Priority:** normal
 - **Depends:** none

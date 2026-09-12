@@ -501,6 +501,8 @@ def migrate() -> None:
         ("account_snapshots",  "realized_pnl_today",   "REAL"),
         ("account_snapshots",  "unrealized_pnl",       "REAL"),
         ("account_snapshots",  "snapshot_reason",      "TEXT"),
+        # 0220 — pre-fill risk revalidation phase tracking
+        ("risk_decisions",     "phase",                "TEXT"),
     ]
     for table, col, col_type in _new_cols:
         try:

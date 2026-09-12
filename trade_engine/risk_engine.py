@@ -95,30 +95,73 @@ def _daily_notional(account_id: str, conn: sqlite3.Connection) -> float:
 
 
 def _open_buy_notional(
-    account_id: str, conn: sqlite3.Connection, symbol: Optional[str] = None
+    account_id: str,
+    conn: sqlite3.Connection,
+    symbol: Optional[str] = None,
+    exclude_order_id: Optional[str] = None,
 ) -> float:
-    """Sum of remaining committed cash for open BUY/BUY_TO_CLOSE orders (0211)."""
+    """Sum of remaining committed cash for open BUY/BUY_TO_CLOSE orders (0211).
+
+    exclude_order_id: exclude this order from the sum to avoid double-counting
+    when re-evaluating an order's own reservation (0220).
+    """
     sql = """SELECT SUM((COALESCE(quantity,0) - COALESCE(fill_qty,0)) * COALESCE(limit_price,0)) AS t
              FROM orders
              WHERE account_id=? AND state IN ('WORKING','PARTIALLY_FILLED')
                AND side IN ('BUY','BUY_TO_CLOSE')"""
+    params: list = [account_id]
     if symbol:
-        row = conn.execute(sql + " AND symbol=?", (account_id, symbol)).fetchone()
-    else:
-        row = conn.execute(sql, (account_id,)).fetchone()
+        sql += " AND symbol=?"
+        params.append(symbol)
+    if exclude_order_id:
+        sql += " AND order_id != ?"
+        params.append(exclude_order_id)
+    row = conn.execute(sql, params).fetchone()
     return float(row["t"] or 0) if row else 0.0
 
 
-def _open_sell_qty(account_id: str, symbol: str, conn: sqlite3.Connection) -> float:
-    """Remaining qty committed to open SELL/SELL_TO_OPEN orders for a symbol (0211)."""
-    row = conn.execute(
-        """SELECT SUM(COALESCE(quantity,0) - COALESCE(fill_qty,0)) AS t
-           FROM orders
-           WHERE account_id=? AND symbol=?
-             AND state IN ('WORKING','PARTIALLY_FILLED')
-             AND side IN ('SELL','SELL_TO_OPEN')""",
-        (account_id, symbol),
-    ).fetchone()
+def _open_sell_qty(
+    account_id: str,
+    symbol: str,
+    conn: sqlite3.Connection,
+    exclude_order_id: Optional[str] = None,
+) -> float:
+    """Remaining qty committed to open SELL/SELL_TO_OPEN orders for a symbol (0211).
+
+    exclude_order_id: exclude this order to avoid double-counting (0220).
+    """
+    sql = """SELECT SUM(COALESCE(quantity,0) - COALESCE(fill_qty,0)) AS t
+             FROM orders
+             WHERE account_id=? AND symbol=?
+               AND state IN ('WORKING','PARTIALLY_FILLED')
+               AND side IN ('SELL','SELL_TO_OPEN')"""
+    params: list = [account_id, symbol]
+    if exclude_order_id:
+        sql += " AND order_id != ?"
+        params.append(exclude_order_id)
+    row = conn.execute(sql, params).fetchone()
+    return float(row["t"] or 0) if row else 0.0
+
+
+def _open_sell_notional(
+    account_id: str,
+    conn: sqlite3.Connection,
+    exclude_order_id: Optional[str] = None,
+) -> float:
+    """Sum of remaining gross notional for open SELL/SELL_TO_OPEN orders (0223).
+
+    Included in MAX_DAILY_NOTIONAL so total daily turnover (buy + sell) is capped.
+    exclude_order_id: exclude this order to avoid double-counting (0220).
+    """
+    sql = """SELECT SUM((COALESCE(quantity,0) - COALESCE(fill_qty,0)) * COALESCE(limit_price,0)) AS t
+             FROM orders
+             WHERE account_id=? AND state IN ('WORKING','PARTIALLY_FILLED')
+               AND side IN ('SELL','SELL_TO_OPEN')"""
+    params: list = [account_id]
+    if exclude_order_id:
+        sql += " AND order_id != ?"
+        params.append(exclude_order_id)
+    row = conn.execute(sql, params).fetchone()
     return float(row["t"] or 0) if row else 0.0
 
 
@@ -144,14 +187,59 @@ def _open_contracts(account_id: str, symbol: str, conn: sqlite3.Connection) -> i
     return max(0, int(open_qty - closed_qty))
 
 
+def _stale_position_symbols(
+    account_id: str,
+    conn: sqlite3.Connection,
+    stale_minutes: int,
+) -> list[str]:
+    """Return symbols with stale market price marks (0221).
+
+    A position is stale only when market_price HAS been set (at least one refresh ran)
+    but price_as_of is missing or older than stale_minutes. Positions that have never
+    been marked (market_price IS NULL) are considered unpriced, not stale — they exist
+    in new accounts where no refresh cycle has run yet.
+    """
+    rows = conn.execute(
+        "SELECT symbol, market_price, price_as_of FROM position_snapshots WHERE account_id=?",
+        (account_id,),
+    ).fetchall()
+    now_ts = _now_utc().timestamp()
+    stale: list[str] = []
+    for r in rows:
+        keys = r.keys()
+        market_price = r["market_price"] if "market_price" in keys else None
+        if market_price is None:
+            continue  # never refreshed — unpriced, not stale
+        price_as_of = r["price_as_of"] if "price_as_of" in keys else None
+        if not price_as_of:
+            stale.append(r["symbol"])
+            continue
+        try:
+            ts = datetime.fromisoformat(price_as_of.replace("Z", "+00:00")).timestamp()
+            if (now_ts - ts) / 60 > stale_minutes:
+                stale.append(r["symbol"])
+        except Exception:
+            stale.append(r["symbol"])
+    return stale
+
+
 def evaluate(
     intent: TradeIntent,
     policy: TradingPolicy,
     account: TradingAccount,
     conn: sqlite3.Connection,
     strict_all: bool = False,
+    exclude_order_id: Optional[str] = None,
+    phase: str = "PRE_ORDER",
 ) -> RiskDecision:
-    """Run all 19 pre-trade risk checks. Fail-fast unless strict_all=True."""
+    """Run all pre-trade risk checks. Fail-fast unless strict_all=True.
+
+    exclude_order_id: when re-evaluating an existing WORKING order (phase='PRE_FILL'),
+        pass the order's ID to exclude its own reservation from notional/qty helpers,
+        preventing double-counting (0220).
+    phase: 'PRE_ORDER' (first approval) or 'PRE_FILL' (retry fill revalidation). Persisted
+        to risk_decisions.phase for audit (0220).
+    """
     checks: list[RuleCheck] = []
     rejected = False
 
@@ -161,6 +249,18 @@ def evaluate(
         if check.result == _FAIL:
             rejected = True
         return check.result != _FAIL
+
+    # ── 0. RISK_STATE_STALE ── fail-closed if any position mark is stale (0221) ─
+    if account.account_id:
+        stale_minutes = policy.halt_on_data_stale_minutes()
+        stale_symbols = _stale_position_symbols(account.account_id, conn, stale_minutes)
+        if stale_symbols:
+            add(RuleCheck(
+                rule="RISK_STATE_STALE",
+                result=_FAIL,
+                reason=f"stale market price for positions: {stale_symbols} (limit {stale_minutes} min)",
+            ))
+            return _finalize(intent.intent_id, checks, conn, policy, account, _nav(account, conn), phase=phase)
 
     # Precompute shared values
     nav = _nav(account, conn)
@@ -176,7 +276,7 @@ def evaluate(
         reason=None if policy.trading_enabled() else "circuit_breakers.trading_enabled is false",
     ))
     if not ok and not strict_all:
-        return _finalize(intent.intent_id, checks, conn, policy, account, nav)
+        return _finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
 
     # ── 2. VALID_ACCOUNT ──────────────────────────────────────────────────────
     acct_row = conn.execute(
@@ -189,7 +289,7 @@ def evaluate(
         reason=None if acct_row else f"account {account.account_id!r} not found or disabled",
     ))
     if not ok and not strict_all:
-        return _finalize(intent.intent_id, checks, conn, policy, account, nav)
+        return _finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
 
     # ── 3. INTENT_NOT_EXPIRED ─────────────────────────────────────────────────
     expired = intent.is_expired()
@@ -199,7 +299,7 @@ def evaluate(
         reason=f"valid_until={intent.valid_until} is in the past" if expired else None,
     ))
     if not ok and not strict_all:
-        return _finalize(intent.intent_id, checks, conn, policy, account, nav)
+        return _finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
 
     # ── 4. NO_DUPLICATE_INTENT ────────────────────────────────────────────────
     if intent.recommendation_id is not None:
@@ -215,7 +315,7 @@ def evaluate(
             reason=f"recommendation {intent.recommendation_id} already has intent {dup['intent_id']}" if dup else None,
         ))
         if not ok and not strict_all:
-            return _finalize(intent.intent_id, checks, conn, policy, account, nav)
+            return _finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
     else:
         add(RuleCheck(rule="NO_DUPLICATE_INTENT", result=_SKIP, reason="no recommendation_id"))
 
@@ -239,7 +339,7 @@ def evaluate(
         reason=reason_ia,
     ))
     if not ok and not strict_all:
-        return _finalize(intent.intent_id, checks, conn, policy, account, nav)
+        return _finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
 
     # ── 6. NO_MARKET_ORDER ────────────────────────────────────────────────────
     is_market = intent.order_type == OrderType.MARKET
@@ -250,11 +350,11 @@ def evaluate(
         reason="MARKET orders are not permitted by policy" if (is_market and not market_allowed) else None,
     ))
     if not ok and not strict_all:
-        return _finalize(intent.intent_id, checks, conn, policy, account, nav)
+        return _finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
 
     # ── 7. SUFFICIENT_CASH ────────────────────────────────────────────────────
     if intent.side in (Side.BUY, Side.BUY_TO_CLOSE):
-        reserved = _open_buy_notional(account.account_id, conn)
+        reserved = _open_buy_notional(account.account_id, conn, exclude_order_id=exclude_order_id)
         available_cash = account.current_cash - reserved
         cash_after = available_cash - trade_cost
         min_cash = max(
@@ -270,13 +370,13 @@ def evaluate(
             reason=None if cash_after >= min_cash else f"available cash after trade ${cash_after:.2f} < minimum ${min_cash:.2f} (${reserved:.2f} reserved by open orders)",
         ))
         if not ok and not strict_all:
-            return _finalize(intent.intent_id, checks, conn, policy, account, nav)
+            return _finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
     else:
         add(RuleCheck(rule="SUFFICIENT_CASH", result=_SKIP, reason="sell order does not require cash"))
 
     # ── 8. MAX_POSITION_WEIGHT ────────────────────────────────────────────────
     if intent.side == Side.BUY and nav > 0:
-        open_buy_sym = _open_buy_notional(account.account_id, conn, intent.symbol)
+        open_buy_sym = _open_buy_notional(account.account_id, conn, intent.symbol, exclude_order_id=exclude_order_id)
         weight_before = current_pos_value / nav * 100
         weight_after = (current_pos_value + open_buy_sym + trade_cost) / nav * 100
         limit = policy.max_single_position_pct()
@@ -289,7 +389,7 @@ def evaluate(
             reason=None if weight_after <= limit else f"position weight {weight_after:.1f}% > limit {limit}%",
         ))
         if not ok and not strict_all:
-            return _finalize(intent.intent_id, checks, conn, policy, account, nav)
+            return _finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
     else:
         add(RuleCheck(rule="MAX_POSITION_WEIGHT", result=_SKIP, reason="not a BUY or nav=0"))
 
@@ -306,14 +406,17 @@ def evaluate(
             reason=None if new_weight <= limit else f"new position weight {new_weight:.1f}% > limit {limit}%",
         ))
         if not ok and not strict_all:
-            return _finalize(intent.intent_id, checks, conn, policy, account, nav)
+            return _finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
     else:
         add(RuleCheck(rule="MAX_NEW_POSITION_WEIGHT", result=_SKIP, reason="not a new position or not a BUY"))
 
     # ── 10. MAX_DAILY_NOTIONAL ────────────────────────────────────────────────
+    # Includes both open BUY and open SELL notional for total turnover cap (0223)
     if nav > 0:
         filled_notional = _daily_notional(account.account_id, conn)
-        open_notional = _open_buy_notional(account.account_id, conn)
+        open_buy = _open_buy_notional(account.account_id, conn, exclude_order_id=exclude_order_id)
+        open_sell = _open_sell_notional(account.account_id, conn, exclude_order_id=exclude_order_id)
+        open_notional = open_buy + open_sell
         daily_notional_before = filled_notional + open_notional
         daily_notional_after = daily_notional_before + trade_cost
         limit_notional = policy.max_daily_notional_pct() / 100.0 * nav
@@ -327,7 +430,7 @@ def evaluate(
                 else f"daily notional ${daily_notional_after:.0f} > limit ${limit_notional:.0f} (includes ${open_notional:.0f} in open orders)",
         ))
         if not ok and not strict_all:
-            return _finalize(intent.intent_id, checks, conn, policy, account, nav)
+            return _finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
     else:
         add(RuleCheck(rule="MAX_DAILY_NOTIONAL", result=_SKIP, reason="nav=0"))
 
@@ -344,11 +447,11 @@ def evaluate(
             else f"orders today {orders_today} >= limit {limit_orders}",
     ))
     if not ok and not strict_all:
-        return _finalize(intent.intent_id, checks, conn, policy, account, nav)
+        return _finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
 
     # ── 12. SELL_QUANTITY_COVERED ─────────────────────────────────────────────
     if intent.side in (Side.SELL, Side.BUY_TO_CLOSE):
-        pending_sells = _open_sell_qty(account.account_id, intent.symbol, conn)
+        pending_sells = _open_sell_qty(account.account_id, intent.symbol, conn, exclude_order_id=exclude_order_id)
         available_qty = current_pos_qty - pending_sells
         covered = available_qty >= trade_qty
         ok = add(RuleCheck(
@@ -360,7 +463,7 @@ def evaluate(
             reason=None if covered else f"available qty {available_qty} < sell qty {trade_qty} ({pending_sells} already committed to open sell orders)",
         ))
         if not ok and not strict_all:
-            return _finalize(intent.intent_id, checks, conn, policy, account, nav)
+            return _finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
     else:
         add(RuleCheck(rule="SELL_QUANTITY_COVERED", result=_SKIP, reason="not a sell order"))
 
@@ -378,7 +481,7 @@ def evaluate(
                 else f"underlying shares {underlying_qty} < required {required} for {contracts} contract(s)",
         ))
         if not ok and not strict_all:
-            return _finalize(intent.intent_id, checks, conn, policy, account, nav)
+            return _finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
     else:
         add(RuleCheck(rule="NO_NAKED_OPTIONS", result=_SKIP, reason="not SELL_TO_OPEN"))
 
@@ -387,7 +490,6 @@ def evaluate(
         open_c = _open_contracts(account.account_id, intent.symbol, conn)
         requested_c = intent.contracts or 1
         limit_c = policy.max_contracts_per_symbol()
-        # Fix: open_c + requested_c <= limit_c (was: open_c < limit_c — 0205)
         ok = add(RuleCheck(
             rule="MAX_CONTRACTS_PER_SYMBOL",
             result=_PASS if (open_c + requested_c) <= limit_c else _FAIL,
@@ -398,13 +500,14 @@ def evaluate(
                 else f"open+requested contracts {open_c}+{requested_c} > limit {limit_c}",
         ))
         if not ok and not strict_all:
-            return _finalize(intent.intent_id, checks, conn, policy, account, nav)
+            return _finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
     else:
         add(RuleCheck(rule="MAX_CONTRACTS_PER_SYMBOL", result=_SKIP, reason="not an option sell"))
 
     # ── 15. DATA_FRESHNESS ────────────────────────────────────────────────────
+    # Options: check option_quote_snapshots age. Equities: check position price_as_of (0222).
+    stale_minutes = policy.halt_on_data_stale_minutes()
     if intent.instrument_type == InstrumentType.OPTION:
-        stale_minutes = policy.halt_on_data_stale_minutes()
         row = conn.execute(
             """SELECT captured_at FROM option_quote_snapshots
                WHERE ticker=? AND strike=? AND expiration=?
@@ -424,7 +527,29 @@ def evaluate(
         else:
             add(RuleCheck(rule="DATA_FRESHNESS", result=_SKIP, reason="no option quote on file"))
     else:
-        add(RuleCheck(rule="DATA_FRESHNESS", result=_SKIP, reason="equity — no quote freshness tracking"))
+        # Equity: check price_as_of on the position if held (0222)
+        pos_row = conn.execute(
+            "SELECT price_as_of FROM position_snapshots WHERE account_id=? AND symbol=?",
+            (account.account_id, intent.symbol),
+        ).fetchone()
+        if pos_row and pos_row["price_as_of"]:
+            try:
+                price_ts = datetime.fromisoformat(
+                    pos_row["price_as_of"].replace("Z", "+00:00")
+                ).timestamp()
+                age_minutes = (_now_utc().timestamp() - price_ts) / 60
+                fresh = age_minutes <= stale_minutes
+                add(RuleCheck(
+                    rule="DATA_FRESHNESS",
+                    result=_PASS if fresh else _FAIL,
+                    limit=float(stale_minutes),
+                    before=round(age_minutes, 1),
+                    reason=None if fresh else f"equity mark is {age_minutes:.0f} min old > limit {stale_minutes} min",
+                ))
+            except Exception:
+                add(RuleCheck(rule="DATA_FRESHNESS", result=_SKIP, reason="could not parse price_as_of"))
+        else:
+            add(RuleCheck(rule="DATA_FRESHNESS", result=_SKIP, reason="no equity mark on file (new position)"))
 
     # ── 16. NO_EARNINGS_CONFLICT ──────────────────────────────────────────────
     if intent.instrument_type == InstrumentType.OPTION and intent.expiration:
@@ -441,12 +566,11 @@ def evaluate(
             reason=f"earnings event on {earnings['event_date']} before expiry {intent.expiration}" if earnings else None,
         ))
         if not ok and not strict_all:
-            return _finalize(intent.intent_id, checks, conn, policy, account, nav)
+            return _finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
     else:
         add(RuleCheck(rule="NO_EARNINGS_CONFLICT", result=_SKIP, reason="equity or no expiration"))
 
     # ── 17. MAX_DAILY_LOSS ────────────────────────────────────────────────────
-    # Use realized_pnl from fills when available; safe to ignore NULL rows (0202)
     today = _today_str()
     loss_row = conn.execute(
         """SELECT COALESCE(SUM(-realized_pnl), 0) as total_loss
@@ -465,10 +589,9 @@ def evaluate(
             else f"daily loss ${daily_loss:.2f} >= limit ${max_daily_loss_abs:.2f}",
     ))
     if not ok and not strict_all:
-        return _finalize(intent.intent_id, checks, conn, policy, account, nav)
+        return _finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
 
     # ── 18. MAX_DRAWDOWN ─────────────────────────────────────────────────────
-    # Use nav_high_water from trading_accounts when available; else fall back to starting_capital (0201)
     acct_row = conn.execute(
         "SELECT nav_high_water FROM trading_accounts WHERE account_id=?",
         (account.account_id,),
@@ -488,10 +611,9 @@ def evaluate(
             else f"drawdown {drawdown_pct:.1f}% > limit {limit_dd}%",
     ))
     if not ok and not strict_all:
-        return _finalize(intent.intent_id, checks, conn, policy, account, nav)
+        return _finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
 
     # ── 19. MIN_LIMIT_PRICE ──────────────────────────────────────────────────
-    # Prevents penny-stock or near-zero limit prices that may indicate data errors (0217)
     if intent.limit_price is not None:
         min_lim = policy.min_limit_price()
         above_min = intent.limit_price >= min_lim
@@ -506,7 +628,7 @@ def evaluate(
     else:
         add(RuleCheck(rule="MIN_LIMIT_PRICE", result=_SKIP, reason="no limit_price on intent"))
 
-    return _finalize(intent.intent_id, checks, conn, policy, account, nav)
+    return _finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
 
 
 def _finalize(
@@ -516,6 +638,7 @@ def _finalize(
     policy: Optional[TradingPolicy] = None,
     account: Optional[TradingAccount] = None,
     nav: Optional[float] = None,
+    phase: str = "PRE_ORDER",
 ) -> RiskDecision:
     """Persist risk decision with provenance and return RiskDecision (0204)."""
     any_fail = any(c.result == _FAIL for c in checks)
@@ -528,18 +651,35 @@ def _finalize(
     account_cash = account.current_cash if account else None
     account_nav = nav
 
-    conn.execute(
-        """INSERT INTO risk_decisions
-           (intent_id, decision, checks_json, evaluated_at,
-            uuid_id, policy_version, policy_hash, account_cash_at_eval, account_nav_at_eval)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (
-            intent_id, decision,
-            json.dumps([c.to_dict() for c in checks]),
-            evaluated_at, decision_id,
-            policy_version, policy_hash, account_cash, account_nav,
-        ),
-    )
+    try:
+        conn.execute(
+            """INSERT INTO risk_decisions
+               (intent_id, decision, checks_json, evaluated_at,
+                uuid_id, policy_version, policy_hash, account_cash_at_eval, account_nav_at_eval,
+                phase)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                intent_id, decision,
+                json.dumps([c.to_dict() for c in checks]),
+                evaluated_at, decision_id,
+                policy_version, policy_hash, account_cash, account_nav,
+                phase,
+            ),
+        )
+    except Exception:
+        # Fallback for schemas without the phase column yet
+        conn.execute(
+            """INSERT INTO risk_decisions
+               (intent_id, decision, checks_json, evaluated_at,
+                uuid_id, policy_version, policy_hash, account_cash_at_eval, account_nav_at_eval)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                intent_id, decision,
+                json.dumps([c.to_dict() for c in checks]),
+                evaluated_at, decision_id,
+                policy_version, policy_hash, account_cash, account_nav,
+            ),
+        )
     conn.commit()
 
     return RiskDecision(

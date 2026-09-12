@@ -48,7 +48,8 @@ class ShadowBroker:
         now = _now_utc().isoformat()
         order_id = str(uuid.uuid4())
         if intent.time_in_force == TimeInForce.DAY:
-            expires_at = market_calendar.next_market_close().isoformat()
+            # Normalize to UTC so expiry comparisons are timezone-safe (0219)
+            expires_at = market_calendar.next_market_close().astimezone(timezone.utc).isoformat()
         else:
             expires_at = intent.valid_until
         self._conn.execute(
@@ -95,11 +96,14 @@ class ShadowBroker:
         if quote.bid <= 0 or quote.ask <= 0 or quote.bid > quote.ask:
             return None
 
-        # Expiry check (0209): explicit expires_at timestamp takes precedence over TIF name
-        now_iso = _now_utc().isoformat()
-        if order.expires_at and now_iso >= order.expires_at:
-            self._transition_order(order, OrderState.EXPIRED)
-            return None
+        # Expiry check (0219): parse to aware datetimes — never compare ISO strings across TZs
+        if order.expires_at:
+            expiry = datetime.fromisoformat(
+                order.expires_at.replace("Z", "+00:00")
+            ).astimezone(timezone.utc)
+            if _now_utc() >= expiry:
+                self._transition_order(order, OrderState.EXPIRED)
+                return None
 
         # Session gate (0209): all TIF respect regular session; remain WORKING outside hours
         if not market_calendar.is_market_open():
@@ -115,7 +119,8 @@ class ShadowBroker:
         if fill_price is None:
             return None
 
-        qty = order.quantity or 0.0
+        # Fill only the remaining (unfilled) quantity (0224)
+        qty = (order.quantity or 0.0) - (order.fill_qty or 0.0)
         if qty <= 0:
             return None
 
@@ -193,12 +198,14 @@ class ShadowBroker:
             ),
         )
 
-        # Update order fill_qty / fill_cash / state
+        # Update order fill_qty / fill_cash / state (0224)
         new_fill_qty = order.fill_qty + fill.qty
         new_fill_cash = order.fill_cash + fill.qty * fill.price
         order.fill_qty = new_fill_qty
         order.fill_cash = new_fill_cash
-        self._transition_order(order, OrderState.FILLED, commit=False)
+        total_qty = order.quantity or 0.0
+        new_state = OrderState.FILLED if new_fill_qty >= total_qty else OrderState.PARTIALLY_FILLED
+        self._transition_order(order, new_state, commit=False)
         self._conn.execute(
             """UPDATE orders SET fill_qty=?, fill_cash=?, state=?, updated_at=?
                WHERE order_id=?""",

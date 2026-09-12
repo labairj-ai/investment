@@ -1,7 +1,7 @@
 # Fix BrokerAdapter Contract: Circular Import, get_fills Bug, account_id
 
 - **ID:** 0225
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-12
 - **Priority:** normal
 - **Depends:** none

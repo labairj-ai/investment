@@ -1,7 +1,7 @@
 # Add Pre-Fill Risk Revalidation Before Every Fill Retry
 
 - **ID:** 0220
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-12
 - **Priority:** high
 - **Depends:** none

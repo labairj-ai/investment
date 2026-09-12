@@ -5632,8 +5632,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._json({
                 "ok": True,
                 "new_intents_processed": summary["new_intents_processed"],
+                "new_intents_blocked": summary.get("new_intents_blocked", False),
+                "stale_symbols": summary.get("stale_symbols", []),
+                "new_orders_created": summary.get("new_orders_created", 0),
+                "fills_on_submission": summary.get("fills_on_submission", 0),
+                "risk_rejections": summary.get("risk_rejections", 0),
                 "working_orders_checked": summary.get("working_orders_checked", 0),
-                "fills": summary.get("open_orders_fills", 0),
+                "fills_on_retry": summary.get("fills_on_retry", 0),
+                "total_fills": summary.get("total_fills", 0),
+                "orders_expired": summary.get("orders_expired", 0),
                 "results": summary.get("results", []),
             })
         except Exception as e:

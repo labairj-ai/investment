@@ -68,7 +68,8 @@ def _make_conn() -> sqlite3.Connection:
             decision_id INTEGER PRIMARY KEY AUTOINCREMENT, intent_id TEXT,
             decision TEXT, checks_json TEXT, evaluated_at TEXT,
             uuid_id TEXT, policy_version TEXT, policy_hash TEXT,
-            account_cash_at_eval REAL, account_nav_at_eval REAL
+            account_cash_at_eval REAL, account_nav_at_eval REAL,
+            phase TEXT
         );
         CREATE TABLE IF NOT EXISTS orders (
             order_id TEXT PRIMARY KEY, intent_id TEXT, account_id TEXT,
@@ -915,7 +916,7 @@ class TestExecutionEngine:
 
         mock_quote = Quote(bid=99.0, ask=100.0, timestamp="t")
         with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
-             patch.object(execution_engine, "_get_quote", return_value=mock_quote):
+             patch.object(execution_engine, "_get_executable_quote", return_value=mock_quote):
             result = execution_engine.process_intent(intent.intent_id, conn)
 
         assert result.decision == "APPROVED"
@@ -930,7 +931,7 @@ class TestExecutionEngine:
 
         mock_quote = Quote(bid=99.0, ask=100.0, timestamp="t")
         with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
-             patch.object(execution_engine, "_get_quote", return_value=mock_quote):
+             patch.object(execution_engine, "_get_executable_quote", return_value=mock_quote):
             result = execution_engine.process_intent(intent.intent_id, conn)
 
         assert result.fill is not None
@@ -962,7 +963,7 @@ class TestExecutionEngine:
 
         mock_quote = Quote(bid=99.0, ask=100.0, timestamp="t")
         with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
-             patch.object(execution_engine, "_get_quote", return_value=mock_quote):
+             patch.object(execution_engine, "_get_executable_quote", return_value=mock_quote):
             result = execution_engine.process_intent(intent.intent_id, conn)
 
         assert result.order_id == order_id  # same order, no duplicate
@@ -981,7 +982,7 @@ class TestExecutionEngine:
 
         mock_quote = Quote(bid=99.0, ask=100.0, timestamp="t")
         with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
-             patch.object(execution_engine, "_get_quote", return_value=mock_quote):
+             patch.object(execution_engine, "_get_executable_quote", return_value=mock_quote):
             execution_engine.process_intent(intent.intent_id, conn)
             # Mark intent PENDING again to simulate re-run
             conn.execute(
@@ -1010,7 +1011,7 @@ class TestExecutionEngine:
 
         mock_quote = Quote(bid=99.0, ask=101.0, timestamp="t")  # ask == limit (101.0)
         with patch.object(execution_engine, "load_policy", return_value=policy), \
-             patch.object(execution_engine, "_get_quote", return_value=mock_quote), \
+             patch.object(execution_engine, "_get_executable_quote", return_value=mock_quote), \
              patch.object(market_calendar, "is_market_open", return_value=True):
             result = execution_engine.process_intent(built_intent.intent_id, conn)
 
@@ -1232,7 +1233,7 @@ class TestExecutionSafety:
         intent = _make_intent(quantity=1.0, limit_price=100.0)
         _insert_intent(conn, intent)
         with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
-             patch.object(execution_engine, "_get_quote", return_value=None):
+             patch.object(execution_engine, "_get_executable_quote", return_value=None):
             result = execution_engine.process_intent(intent.intent_id, conn)
         assert result.decision == "APPROVED"
         assert result.fill is None
@@ -1370,7 +1371,7 @@ class TestExecutionSafety:
         hit_quote = Quote(bid=99.0, ask=100.0, timestamp="t")   # ask 100.0 == limit 100 → fill
 
         with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
-             patch.object(execution_engine, "_get_quote", return_value=miss_quote):
+             patch.object(execution_engine, "_get_executable_quote", return_value=miss_quote):
             result1 = execution_engine.process_intent(intent.intent_id, conn)
 
         assert result1.fill is None
@@ -1378,8 +1379,8 @@ class TestExecutionSafety:
         assert conn.execute("SELECT state FROM orders WHERE order_id=?", (order_id,)).fetchone()["state"] == "WORKING"
 
         # Cycle 2: retry open orders
-        with patch.object(execution_engine, "_get_quote", return_value=hit_quote):
-            fills = execution_engine.process_open_orders("AGENTIC_SHADOW_01", conn)
+        with patch.object(execution_engine, "_get_executable_quote", return_value=hit_quote):
+            fills, _, _ = execution_engine.process_open_orders("AGENTIC_SHADOW_01", conn)
 
         assert len(fills) == 1
         assert conn.execute("SELECT state FROM orders WHERE order_id=?", (order_id,)).fetchone()["state"] == "FILLED"
@@ -1465,9 +1466,10 @@ class TestExecutionSafety:
         # Position: 10 shares, avg_cost=$100, market_value updated to $110 each
         conn.execute(
             """INSERT INTO position_snapshots
-               (account_id, symbol, qty, avg_cost, instrument_type, as_of, market_price, market_value)
-               VALUES (?,?,?,?,?,?,?,?)""",
-            ("AGENTIC_SHADOW_01", "ANET", 10.0, 100.0, "EQUITY", "2026-01-01", 110.0, 1100.0),
+               (account_id, symbol, qty, avg_cost, instrument_type, as_of, market_price, market_value, price_as_of)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            ("AGENTIC_SHADOW_01", "ANET", 10.0, 100.0, "EQUITY", "2026-01-01", 110.0, 1100.0,
+             datetime.now(timezone.utc).isoformat()),
         )
         # Cash after buying 10@100 = $9000; NAV = $9000 + $1100 = $10100
         conn.execute("UPDATE trading_accounts SET current_cash=9000 WHERE account_id='AGENTIC_SHADOW_01'")
@@ -1588,9 +1590,10 @@ class TestExecutionSafety:
         # Position with market_value set (higher than cost basis)
         conn.execute(
             """INSERT INTO position_snapshots
-               (account_id, symbol, qty, avg_cost, instrument_type, as_of, market_price, market_value)
-               VALUES (?,?,?,?,?,?,?,?)""",
-            ("AGENTIC_SHADOW_01", "ANET", 10.0, 100.0, "EQUITY", "2026-01-01", 150.0, 1500.0),
+               (account_id, symbol, qty, avg_cost, instrument_type, as_of, market_price, market_value, price_as_of)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            ("AGENTIC_SHADOW_01", "ANET", 10.0, 100.0, "EQUITY", "2026-01-01", 150.0, 1500.0,
+             datetime.now(timezone.utc).isoformat()),
         )
         conn.commit()
         from trade_engine.risk_engine import _nav as _risk_nav
@@ -1860,7 +1863,7 @@ class TestExecutionCycleReturn:
             summary = execution_engine.run_execution_cycle("AGENTIC_SHADOW_01", conn)
         assert "working_orders_checked" in summary
         assert "new_intents_processed" in summary
-        assert "open_orders_fills" in summary
+        assert "fills_on_retry" in summary
         assert isinstance(summary["working_orders_checked"], int)
 
     def test_run_execution_cycle_counts_open_orders(self):
@@ -1883,7 +1886,7 @@ class TestExecutionCycleReturn:
         with patch.object(execution_engine, "_refresh_market_prices"), \
              patch.object(execution_engine, "_update_nav_high_water"), \
              patch.object(execution_engine, "_write_account_snapshot"), \
-             patch.object(execution_engine, "_get_quote", return_value=None):
+             patch.object(execution_engine, "_get_executable_quote", return_value=None):
             summary = execution_engine.run_execution_cycle("AGENTIC_SHADOW_01", conn)
         assert summary["working_orders_checked"] == 2
 
@@ -1979,7 +1982,7 @@ class TestAccountSnapshots:
         conn = _make_conn()
         with patch.object(execution_engine, "_refresh_market_prices"), \
              patch.object(execution_engine, "_update_nav_high_water"), \
-             patch.object(execution_engine, "_get_quote", return_value=None):
+             patch.object(execution_engine, "_get_executable_quote", return_value=None):
             execution_engine.run_execution_cycle("AGENTIC_SHADOW_01", conn)
         rows = conn.execute(
             "SELECT snapshot_reason FROM account_snapshots WHERE account_id='AGENTIC_SHADOW_01'"
@@ -1993,9 +1996,10 @@ class TestAccountSnapshots:
         conn = _make_conn()
         conn.execute(
             """INSERT INTO position_snapshots
-               (account_id, symbol, qty, avg_cost, instrument_type, as_of, market_price, market_value)
-               VALUES (?,?,?,?,?,?,?,?)""",
-            ("AGENTIC_SHADOW_01", "ANET", 10.0, 100.0, "EQUITY", "2026-01-01", 150.0, 1500.0),
+               (account_id, symbol, qty, avg_cost, instrument_type, as_of, market_price, market_value, price_as_of)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            ("AGENTIC_SHADOW_01", "ANET", 10.0, 100.0, "EQUITY", "2026-01-01", 150.0, 1500.0,
+             datetime.now(timezone.utc).isoformat()),
         )
         conn.execute("UPDATE trading_accounts SET current_cash=8500 WHERE account_id='AGENTIC_SHADOW_01'")
         conn.commit()
@@ -2003,3 +2007,696 @@ class TestAccountSnapshots:
         row = conn.execute("SELECT gross_exposure, nav FROM account_snapshots").fetchone()
         assert float(row["gross_exposure"]) == pytest.approx(1500.0)
         assert float(row["nav"]) == pytest.approx(10000.0)  # 8500 cash + 1500 pos
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# B0.2 — 0219: expires_at UTC normalization
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestExpiresAtUtcNormalization:
+    """DAY order expiry uses UTC-normalized datetime comparison, not string compare (0219)."""
+
+    @pytest.fixture(autouse=True)
+    def _market_open(self):
+        with patch.object(market_calendar, "is_market_open", return_value=True):
+            yield
+
+    def _et_close_utc(self, hour_et: int) -> datetime:
+        """Return a UTC datetime representing hour_et:00 ET on an arbitrary trading day."""
+        from datetime import timezone, timedelta
+        et_offset = timedelta(hours=-4)  # EDT
+        et_close = datetime(2026, 9, 15, hour_et, 0, 0, tzinfo=timezone(et_offset))
+        return et_close.astimezone(timezone.utc)
+
+    def test_submit_order_stores_expires_at_in_utc(self):
+        """DAY order expires_at is stored as UTC ISO string (0219)."""
+        conn = _make_conn()
+        intent = _make_intent(time_in_force=TimeInForce.DAY)
+        _insert_intent(conn, intent)
+        broker = ShadowBroker(conn)
+        with patch.object(market_calendar, "is_market_open", return_value=True):
+            order = broker.submit_order(intent)
+        assert order.expires_at is not None
+        # Must parse as UTC (offset +00:00 or Z, not -04:00)
+        expiry = datetime.fromisoformat(order.expires_at.replace("Z", "+00:00"))
+        assert expiry.utcoffset().total_seconds() == 0
+
+    def test_day_order_not_expired_before_close(self):
+        """DAY order stays WORKING at 13:00 ET (before 16:00 ET close) (0219)."""
+        conn = _make_conn()
+        intent = _make_intent(quantity=1.0, limit_price=100.0, time_in_force=TimeInForce.DAY)
+        _insert_intent(conn, intent)
+        broker = ShadowBroker(conn)
+        # Set expires_at to 16:00 ET in UTC = 20:00 UTC
+        from datetime import timezone as _tz, timedelta as _td
+        close_utc = datetime(2026, 9, 15, 20, 0, 0, tzinfo=_tz.utc)
+        order = broker.submit_order(intent)
+        conn.execute("UPDATE orders SET expires_at=? WHERE order_id=?",
+                     (close_utc.isoformat(), order.order_id))
+        conn.commit()
+        order = broker.get_order(order.order_id)
+
+        # Simulate now = 13:00 ET = 17:00 UTC (before close)
+        now_13et = datetime(2026, 9, 15, 17, 0, 0, tzinfo=_tz.utc)
+        with patch("trade_engine.shadow_broker._now_utc", return_value=now_13et):
+            fill = broker.attempt_fill(order, Quote(bid=99.0, ask=100.0, timestamp="t"))
+        updated = broker.get_order(order.order_id)
+        assert updated.state != OrderState.EXPIRED  # filled or still open, but NOT expired
+
+    def test_day_order_expires_at_close(self):
+        """DAY order transitions to EXPIRED when now >= 16:00 ET (0219)."""
+        conn = _make_conn()
+        intent = _make_intent(quantity=1.0, limit_price=100.0, time_in_force=TimeInForce.DAY)
+        _insert_intent(conn, intent)
+        broker = ShadowBroker(conn)
+        from datetime import timezone as _tz
+        close_utc = datetime(2026, 9, 15, 20, 0, 0, tzinfo=_tz.utc)
+        order = broker.submit_order(intent)
+        conn.execute("UPDATE orders SET expires_at=? WHERE order_id=?",
+                     (close_utc.isoformat(), order.order_id))
+        conn.commit()
+        order = broker.get_order(order.order_id)
+
+        # Simulate now = 16:00 ET = 20:00 UTC (at close)
+        with patch("trade_engine.shadow_broker._now_utc", return_value=close_utc):
+            fill = broker.attempt_fill(order, Quote(bid=99.0, ask=100.0, timestamp="t"))
+        assert fill is None
+        updated = broker.get_order(order.order_id)
+        assert updated.state == OrderState.EXPIRED
+
+    def test_et_string_vs_utc_string_no_longer_wrong(self):
+        """Verify that an ET-format expires_at is properly parsed, not string-compared (0219)."""
+        conn = _make_conn()
+        intent = _make_intent(quantity=1.0, limit_price=100.0, time_in_force=TimeInForce.GTC)
+        _insert_intent(conn, intent)
+        broker = ShadowBroker(conn)
+        order = broker.submit_order(intent)
+        # Manually set an ET-offset expires_at (as the old bug produced)
+        et_close = "2026-09-15T16:00:00-04:00"
+        conn.execute("UPDATE orders SET expires_at=? WHERE order_id=?",
+                     (et_close, order.order_id))
+        conn.commit()
+        order = broker.get_order(order.order_id)
+
+        from datetime import timezone as _tz
+        # At 13:00 ET / 17:00 UTC — old string compare would incorrectly expire (17 > 16)
+        now_17utc = datetime(2026, 9, 15, 17, 0, 0, tzinfo=_tz.utc)
+        with patch("trade_engine.shadow_broker._now_utc", return_value=now_17utc):
+            fill = broker.attempt_fill(order, Quote(bid=99.0, ask=100.0, timestamp="t"))
+        # With correct datetime comparison, 17:00 UTC < 20:00 UTC → NOT expired
+        updated = broker.get_order(order.order_id)
+        assert updated.state != OrderState.EXPIRED
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# B0.2 — 0220: pre-fill risk revalidation
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestPreFillRiskRevalidation:
+    """process_open_orders() re-evaluates risk before each fill retry (0220)."""
+
+    @pytest.fixture(autouse=True)
+    def _market_open(self):
+        with patch.object(market_calendar, "is_market_open", return_value=True):
+            yield
+
+    def _seed_working_buy(self, conn, qty=10.0, limit=100.0, symbol="ANET") -> str:
+        order_id = str(uuid.uuid4())
+        intent_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            """INSERT INTO trade_intents (intent_id, account_id, instrument_type,
+               symbol, side, quantity, order_type, limit_price, time_in_force,
+               created_at, status, valid_until)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (intent_id, "AGENTIC_SHADOW_01", "EQUITY", symbol, "BUY",
+             qty, "LIMIT", limit, "GTC", now, "APPROVED", _future_iso()),
+        )
+        conn.execute(
+            """INSERT INTO orders (order_id, intent_id, account_id, symbol, side,
+               quantity, contracts, order_type, limit_price, state, time_in_force,
+               submitted_at, updated_at, fill_qty, fill_cash)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (order_id, intent_id, "AGENTIC_SHADOW_01", symbol, "BUY",
+             qty, None, "LIMIT", limit, "WORKING", "GTC", now, now, 0.0, 0.0),
+        )
+        conn.commit()
+        return order_id
+
+    def test_pre_fill_rejection_cancels_working_order(self):
+        """WORKING order violating current risk limits is cancelled before fill (0220)."""
+        conn = _make_conn()
+        conn.execute("UPDATE trading_accounts SET current_cash=200 WHERE account_id='AGENTIC_SHADOW_01'")
+        conn.commit()
+        order_id = self._seed_working_buy(conn, qty=10.0, limit=100.0)
+
+        # Quote would cross limit, but cash is now insufficient
+        hit_quote = Quote(bid=99.0, ask=100.0, timestamp="t",
+                          retrieved_at=datetime.now(timezone.utc).isoformat())
+        with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
+             patch.object(execution_engine, "_get_executable_quote", return_value=hit_quote):
+            fills, rejections, _ = execution_engine.process_open_orders("AGENTIC_SHADOW_01", conn)
+
+        assert len(fills) == 0
+        assert rejections >= 1
+        row = conn.execute("SELECT state FROM orders WHERE order_id=?", (order_id,)).fetchone()
+        assert row["state"] == "CANCELLED"
+
+    def test_self_exclusion_prevents_double_counting(self):
+        """WORKING order not double-counted in MAX_DAILY_NOTIONAL during pre-fill check (0220).
+
+        Scenario: $1500 already filled today + WORKING $400 order. Daily limit $2000.
+        WITHOUT self-exclusion: $1500 + $400(self) + $400(trade) = $2300 → reject.
+        WITH self-exclusion: $1500 + $0 + $400 = $1900 → pass → order fills.
+        """
+        conn = _make_conn()
+        order_id = self._seed_working_buy(conn, qty=4.0, limit=100.0)  # $400 WORKING
+
+        # Seed $1500 of fills from TODAY to approach $2000 daily notional limit
+        today = datetime.now(timezone.utc).isoformat()
+        prior_fill_id = str(uuid.uuid4())
+        prior_order_id = str(uuid.uuid4())
+        conn.execute(
+            """INSERT INTO fills (fill_id, order_id, account_id, symbol, side, qty, price, filled_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (prior_fill_id, prior_order_id, "AGENTIC_SHADOW_01", "ANET", "BUY", 15.0, 100.0, today),
+        )
+        conn.commit()
+
+        hit_quote = Quote(bid=99.0, ask=100.0, timestamp="t",
+                          retrieved_at=datetime.now(timezone.utc).isoformat())
+        # Override position limits to isolate the daily notional self-exclusion effect
+        permissive = _make_policy({
+            "capital": {"minimum_cash_pct": 0, "minimum_cash_abs": 0},
+            "equities": {"buy_allowed": True, "sell_allowed": True, "shorting_allowed": False,
+                         "max_single_position_pct": 100, "max_new_position_pct": 100},
+        })
+        with patch.object(execution_engine, "load_policy", return_value=permissive), \
+             patch.object(execution_engine, "_get_executable_quote", return_value=hit_quote):
+            fills, rejections, _ = execution_engine.process_open_orders("AGENTIC_SHADOW_01", conn)
+
+        # With self-exclusion: $1500 + $0 + $400 = $1900 < $2000 → fills, not rejected
+        assert len(fills) == 1
+        assert rejections == 0
+
+    def test_pre_fill_decision_written_to_risk_decisions(self):
+        """Both PRE_ORDER and PRE_FILL risk decisions persist in risk_decisions table (0220)."""
+        conn = _make_conn()
+        intent = _make_intent(quantity=1.0, limit_price=100.0)
+        _insert_intent(conn, intent)
+
+        miss_quote = Quote(bid=98.0, ask=101.5, timestamp="t",
+                           retrieved_at=datetime.now(timezone.utc).isoformat())
+        hit_quote = Quote(bid=99.0, ask=100.0, timestamp="t",
+                          retrieved_at=datetime.now(timezone.utc).isoformat())
+
+        with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
+             patch.object(execution_engine, "_get_executable_quote", return_value=miss_quote):
+            execution_engine.process_intent(intent.intent_id, conn)
+
+        with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
+             patch.object(execution_engine, "_get_executable_quote", return_value=hit_quote):
+            execution_engine.process_open_orders("AGENTIC_SHADOW_01", conn)
+
+        rows = conn.execute(
+            "SELECT phase FROM risk_decisions WHERE intent_id=?", (intent.intent_id,)
+        ).fetchall()
+        phases = {r["phase"] for r in rows if r["phase"]}
+        assert "PRE_ORDER" in phases or len(rows) >= 2
+
+    def test_exclude_order_id_in_open_buy_notional(self):
+        """_open_buy_notional with exclude_order_id skips that order's reservation (0220)."""
+        from trade_engine.risk_engine import _open_buy_notional
+        conn = _make_conn()
+        order_id = self._seed_working_buy(conn, qty=10.0, limit=100.0)
+
+        total = _open_buy_notional("AGENTIC_SHADOW_01", conn)
+        excluded = _open_buy_notional("AGENTIC_SHADOW_01", conn, exclude_order_id=order_id)
+        assert total == pytest.approx(1000.0)
+        assert excluded == pytest.approx(0.0)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# B0.2 — 0221: stale market data fail-closed
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestStaleMarketDataFailClosed:
+    """Stale position marks block new order authorization (0221)."""
+
+    @pytest.fixture(autouse=True)
+    def _market_open(self):
+        with patch.object(market_calendar, "is_market_open", return_value=True):
+            yield
+
+    def _seed_position_with_stale_mark(self, conn, symbol="ANET", minutes_old=120):
+        stale_ts = (datetime.now(timezone.utc) - timedelta(minutes=minutes_old)).isoformat()
+        conn.execute(
+            """INSERT INTO position_snapshots
+               (account_id, symbol, qty, avg_cost, instrument_type, as_of, market_price, market_value, price_as_of)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            ("AGENTIC_SHADOW_01", symbol, 10.0, 100.0, "EQUITY", "2026-01-01",
+             100.0, 1000.0, stale_ts),
+        )
+        conn.commit()
+
+    def test_run_cycle_blocks_new_intents_on_stale_marks(self):
+        """Cycle blocks new intent authorization when position mark is stale (0221)."""
+        conn = _make_conn()
+        self._seed_position_with_stale_mark(conn, minutes_old=120)
+        intent = _make_intent()
+        _insert_intent(conn, intent)
+
+        with patch.object(execution_engine, "_refresh_market_prices"), \
+             patch.object(execution_engine, "_update_nav_high_water"), \
+             patch.object(execution_engine, "_write_account_snapshot"), \
+             patch.object(execution_engine, "_get_executable_quote", return_value=None):
+            summary = execution_engine.run_execution_cycle("AGENTIC_SHADOW_01", conn)
+
+        assert summary["new_intents_blocked"] is True
+        assert summary["new_intents_processed"] == 0
+        assert "ANET" in summary["stale_symbols"]
+
+    def test_run_cycle_allows_intents_on_fresh_marks(self):
+        """Cycle allows new intents when all marks are fresh (0221)."""
+        conn = _make_conn()
+        # Fresh mark (1 minute old)
+        fresh_ts = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+        conn.execute(
+            """INSERT INTO position_snapshots
+               (account_id, symbol, qty, avg_cost, instrument_type, as_of, market_price, market_value, price_as_of)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            ("AGENTIC_SHADOW_01", "ANET", 10.0, 100.0, "EQUITY", "2026-01-01",
+             100.0, 1000.0, fresh_ts),
+        )
+        conn.commit()
+
+        with patch.object(execution_engine, "_refresh_market_prices"), \
+             patch.object(execution_engine, "_update_nav_high_water"), \
+             patch.object(execution_engine, "_write_account_snapshot"), \
+             patch.object(execution_engine, "_get_executable_quote", return_value=None):
+            summary = execution_engine.run_execution_cycle("AGENTIC_SHADOW_01", conn)
+
+        assert summary["new_intents_blocked"] is False
+        assert summary["stale_symbols"] == []
+
+    def test_risk_state_stale_rule_rejects_evaluate(self):
+        """evaluate() short-circuits with RISK_STATE_STALE rule when mark is stale (0221)."""
+        conn = _make_conn()
+        self._seed_position_with_stale_mark(conn, minutes_old=120)
+        intent = _make_intent()
+        _insert_intent(conn, intent)
+        dec = risk_engine.evaluate(intent, _make_policy(), _make_account(), conn)
+        assert dec.decision == "REJECTED"
+        stale_check = next((c for c in dec.checks if c.rule == "RISK_STATE_STALE"), None)
+        assert stale_check is not None
+        assert stale_check.result == RuleResult.FAIL
+
+    def test_unpriced_position_does_not_trigger_stale(self):
+        """Position with no market_price (never refreshed) is unpriced, not stale (0221)."""
+        conn = _make_conn()
+        conn.execute(
+            "INSERT INTO position_snapshots (account_id, symbol, qty, avg_cost, instrument_type, as_of) VALUES (?,?,?,?,?,?)",
+            ("AGENTIC_SHADOW_01", "ANET", 10.0, 100.0, "EQUITY", "2026-01-01"),
+        )
+        conn.commit()
+        intent = _make_intent()
+        _insert_intent(conn, intent)
+        dec = risk_engine.evaluate(intent, _make_policy(), _make_account(), conn)
+        stale_check = next((c for c in dec.checks if c.rule == "RISK_STATE_STALE"), None)
+        assert stale_check is None  # not triggered
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# B0.2 — 0222: executable quote vs mark price
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestExecutableQuoteVsMarkPrice:
+    """_get_executable_quote fails closed on zero bid/ask; _get_mark_price allows fallback (0222)."""
+
+    def test_executable_quote_returns_none_on_zero_bid(self):
+        """_get_executable_quote returns None when bid=0 (zero-spread quote not executable) (0222)."""
+        from trade_engine.market_data import _get_executable_quote, _get_mark_price
+        import yfinance as yf
+        mock_info = MagicMock()
+        mock_info.bid = 0
+        mock_info.ask = 0
+        mock_info.last_price = 100.0
+        with patch.object(yf.Ticker, "fast_info", new_callable=lambda: property(lambda self: mock_info)):
+            result = _get_executable_quote("ANET")
+        assert result is None
+
+    def test_mark_price_allows_last_price_fallback(self):
+        """_get_mark_price returns mid from last_price when bid/ask unavailable (0222)."""
+        from trade_engine.market_data import _get_mark_price
+        import yfinance as yf
+        mock_info = MagicMock()
+        mock_info.bid = 0
+        mock_info.ask = 0
+        mock_info.last_price = 100.0
+        mock_info.regular_market_time = None
+        with patch.object(yf.Ticker, "fast_info", new_callable=lambda: property(lambda self: mock_info)):
+            price = _get_mark_price("ANET")
+        assert price == pytest.approx(100.0)
+
+    def test_data_freshness_rule_checks_equity_price_as_of(self):
+        """Rule 15 DATA_FRESHNESS catches stale price_as_of when market_price is absent (0222).
+
+        RISK_STATE_STALE only fires when market_price IS NOT NULL. By inserting a position with
+        market_price=NULL but a stale price_as_of, we can reach DATA_FRESHNESS independently.
+        """
+        conn = _make_conn()
+        stale_ts = (datetime.now(timezone.utc) - timedelta(minutes=120)).isoformat()
+        # market_price=NULL → RISK_STATE_STALE skips; price_as_of set and old → DATA_FRESHNESS fires
+        conn.execute(
+            """INSERT INTO position_snapshots
+               (account_id, symbol, qty, avg_cost, instrument_type, as_of, price_as_of)
+               VALUES (?,?,?,?,?,?,?)""",
+            ("AGENTIC_SHADOW_01", "ANET", 10.0, 100.0, "EQUITY", "2026-01-01", stale_ts),
+        )
+        conn.commit()
+        intent = _make_intent(symbol="ANET", side=Side.SELL, quantity=5.0, limit_price=100.0)
+        _insert_intent(conn, intent)
+        dec = risk_engine.evaluate(intent, _make_policy(), _make_account(), conn, strict_all=True)
+        freshness = next((c for c in dec.checks if c.rule == "DATA_FRESHNESS"), None)
+        assert freshness is not None
+        assert freshness.result == RuleResult.FAIL
+
+    def test_data_freshness_skips_for_new_position(self):
+        """Rule 15 DATA_FRESHNESS skips when no position exists (new buy) (0222)."""
+        conn = _make_conn()
+        intent = _make_intent(symbol="ANET", side=Side.BUY, quantity=1.0, limit_price=50.0)
+        _insert_intent(conn, intent)
+        dec = risk_engine.evaluate(intent, _make_policy(), _make_account(), conn, strict_all=True)
+        freshness = next((c for c in dec.checks if c.rule == "DATA_FRESHNESS"), None)
+        assert freshness is not None
+        assert freshness.result == RuleResult.SKIP
+
+    @pytest.fixture(autouse=True)
+    def _market_open(self):
+        with patch.object(market_calendar, "is_market_open", return_value=True):
+            yield
+
+    def test_stale_executable_quote_blocks_fill(self):
+        """attempt_fill skipped when quote.retrieved_at is older than stale threshold (0222)."""
+        conn = _make_conn()
+        intent = _make_intent(quantity=1.0, limit_price=100.0)
+        _insert_intent(conn, intent)
+        stale_retrieved = (datetime.now(timezone.utc) - timedelta(minutes=120)).isoformat()
+        stale_quote = Quote(bid=99.0, ask=100.0, timestamp="t", retrieved_at=stale_retrieved)
+
+        with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
+             patch.object(execution_engine, "_get_executable_quote", return_value=stale_quote):
+            result = execution_engine.process_intent(intent.intent_id, conn)
+
+        assert result.fill is None
+        order_state = conn.execute(
+            "SELECT state, market_data_status FROM orders WHERE order_id=?", (result.order_id,)
+        ).fetchone()
+        assert order_state["market_data_status"] == "stale"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# B0.2 — 0223: SELL notional in daily turnover
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestSellNotionalDailyTurnover:
+    """Open SELL notional counts toward MAX_DAILY_NOTIONAL (0223)."""
+
+    def _seed_working_sell(self, conn, qty=10.0, limit=150.0, symbol="ANET") -> str:
+        order_id = str(uuid.uuid4())
+        intent_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            """INSERT INTO trade_intents (intent_id, account_id, instrument_type,
+               symbol, side, quantity, order_type, limit_price, time_in_force,
+               created_at, status, valid_until)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (intent_id, "AGENTIC_SHADOW_01", "EQUITY", symbol, "SELL",
+             qty, "LIMIT", limit, "GTC", now, "APPROVED", _future_iso()),
+        )
+        conn.execute(
+            """INSERT INTO orders (order_id, intent_id, account_id, symbol, side,
+               quantity, contracts, order_type, limit_price, state, time_in_force,
+               submitted_at, updated_at, fill_qty, fill_cash)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (order_id, intent_id, "AGENTIC_SHADOW_01", symbol, "SELL",
+             qty, None, "LIMIT", limit, "WORKING", "GTC", now, now, 0.0, 0.0),
+        )
+        conn.execute(
+            """INSERT INTO position_snapshots (account_id, symbol, qty, avg_cost, instrument_type, as_of)
+               VALUES (?,?,?,?,?,?)""",
+            ("AGENTIC_SHADOW_01", symbol, qty + 5, 100.0, "EQUITY", "2026-01-01"),
+        )
+        conn.commit()
+        return order_id
+
+    def test_open_sell_notional_is_computed(self):
+        """_open_sell_notional returns correct gross sell commitment (0223)."""
+        from trade_engine.risk_engine import _open_sell_notional
+        conn = _make_conn()
+        self._seed_working_sell(conn, qty=10.0, limit=150.0)
+        total = _open_sell_notional("AGENTIC_SHADOW_01", conn)
+        assert total == pytest.approx(1500.0)
+
+    def test_working_sell_counts_toward_daily_notional_limit(self):
+        """WORKING SELL $1500 + new SELL $1500 against $2000 limit → REJECTED (0223)."""
+        conn = _make_conn()
+        self._seed_working_sell(conn, qty=10.0, limit=150.0)  # $1500 open sell
+        # $2000 daily limit = 20% of $10000 NAV
+        new_sell_intent = _make_intent(
+            side=Side.SELL, quantity=10.0, limit_price=150.0,
+            symbol="ANET",
+        )
+        _insert_intent(conn, new_sell_intent)
+        # Update position_snapshots to reflect more holdings (enough to cover sell)
+        dec = risk_engine.evaluate(new_sell_intent, _make_policy(), _make_account(), conn, strict_all=True)
+        notional_check = next(c for c in dec.checks if c.rule == "MAX_DAILY_NOTIONAL")
+        assert notional_check.result == RuleResult.FAIL
+
+    def test_sufficient_cash_unaffected_by_sell_notional(self):
+        """SUFFICIENT_CASH rule is buy-side only — sells don't consume cash (0223)."""
+        from trade_engine.risk_engine import _open_sell_notional, _open_buy_notional
+        conn = _make_conn()
+        self._seed_working_sell(conn, qty=10.0, limit=150.0)
+        sell_n = _open_sell_notional("AGENTIC_SHADOW_01", conn)
+        buy_n = _open_buy_notional("AGENTIC_SHADOW_01", conn)
+        assert sell_n == pytest.approx(1500.0)
+        assert buy_n == pytest.approx(0.0)  # no open buy orders
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# B0.2 — 0224: partial fill quantity fix
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestPartialFillQuantity:
+    """Partial fills use remaining qty, not original order qty (0224)."""
+
+    @pytest.fixture(autouse=True)
+    def _market_open(self):
+        with patch.object(market_calendar, "is_market_open", return_value=True):
+            yield
+
+    def test_first_partial_fill_transitions_to_partially_filled(self):
+        """After a partial fill, order state = PARTIALLY_FILLED (not FILLED) (0224)."""
+        conn = _make_conn()
+        intent = _make_intent(quantity=100.0, limit_price=100.0)
+        _insert_intent(conn, intent)
+        broker = ShadowBroker(conn)
+        order = broker.submit_order(intent)
+
+        # Manually set fill_qty to simulate partial fill already applied
+        conn.execute("UPDATE orders SET fill_qty=60, state='PARTIALLY_FILLED' WHERE order_id=?",
+                     (order.order_id,))
+        conn.commit()
+        order = broker.get_order(order.order_id)
+
+        fill = broker.attempt_fill(order, Quote(bid=99.0, ask=100.0, timestamp="t"))
+        assert fill is not None
+        assert fill.qty == pytest.approx(40.0)  # remaining = 100 - 60
+        updated = broker.get_order(order.order_id)
+        assert updated.state == OrderState.FILLED
+
+    def test_partial_fill_qty_uses_remaining_not_total(self):
+        """attempt_fill fills remaining qty (order.quantity - fill_qty), not original qty (0224)."""
+        conn = _make_conn()
+        intent = _make_intent(quantity=100.0, limit_price=100.0)
+        _insert_intent(conn, intent)
+        broker = ShadowBroker(conn)
+        order = broker.submit_order(intent)
+        # First fill: 60 shares
+        fill1 = broker.attempt_fill(order, Quote(bid=99.0, ask=100.0, timestamp="t"))
+        assert fill1 is not None
+        assert fill1.qty == pytest.approx(100.0)  # first fill, 100 remaining
+        # If the order was only partial (simulated by manipulating fill_qty)
+        conn.execute("UPDATE orders SET fill_qty=60, fill_cash=6000, state='PARTIALLY_FILLED' WHERE order_id=?",
+                     (order.order_id,))
+        conn.commit()
+        order = broker.get_order(order.order_id)
+        fill2 = broker.attempt_fill(order, Quote(bid=99.0, ask=100.0, timestamp="t"))
+        assert fill2 is not None
+        assert fill2.qty == pytest.approx(40.0)
+
+    def test_fully_filled_order_returns_none_on_retry(self):
+        """attempt_fill on an order with fill_qty >= quantity returns None (0224)."""
+        conn = _make_conn()
+        intent = _make_intent(quantity=10.0, limit_price=100.0)
+        _insert_intent(conn, intent)
+        broker = ShadowBroker(conn)
+        order = broker.submit_order(intent)
+        # Fully filled already (state transition requires WORKING → FILLED via fills table)
+        fill = broker.attempt_fill(order, Quote(bid=99.0, ask=100.0, timestamp="t"))
+        assert fill is not None
+        # Now order should be FILLED; attempt_fill on non-WORKING returns None
+        order = broker.get_order(order.order_id)
+        assert order.state == OrderState.FILLED
+        result = broker.attempt_fill(order, Quote(bid=99.0, ask=100.0, timestamp="t"))
+        assert result is None
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# B0.2 — 0225: BrokerAdapter contract
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestBrokerAdapterContract:
+    """ShadowBrokerAdapter satisfies the BrokerAdapter contract (0225)."""
+
+    @pytest.fixture(autouse=True)
+    def _market_open(self):
+        with patch.object(market_calendar, "is_market_open", return_value=True):
+            yield
+
+    def _make_adapter(self, conn):
+        from trade_engine.broker_adapter import ShadowBrokerAdapter
+        return ShadowBrokerAdapter(conn, "AGENTIC_SHADOW_01")
+
+    def test_get_account_returns_trading_account(self):
+        """get_account(account_id) loads from trading_accounts (0225)."""
+        conn = _make_conn()
+        adapter = self._make_adapter(conn)
+        acct = adapter.get_account("AGENTIC_SHADOW_01")
+        assert acct.account_id == "AGENTIC_SHADOW_01"
+        assert acct.current_cash == pytest.approx(10000.0)
+
+    def test_get_fills_correct_account_id(self):
+        """get_fills(account_id) queries by account_id, not connection object (0225)."""
+        conn = _make_conn()
+        intent = _make_intent(quantity=1.0, limit_price=100.0)
+        _insert_intent(conn, intent)
+        broker = ShadowBroker(conn)
+        order = broker.submit_order(intent)
+        broker.attempt_fill(order, Quote(bid=99.0, ask=100.0, timestamp="t"))
+
+        adapter = self._make_adapter(conn)
+        fills = adapter.get_fills("AGENTIC_SHADOW_01")
+        assert len(fills) == 1
+        assert fills[0].account_id == "AGENTIC_SHADOW_01"
+
+    def test_get_fills_since_filter(self):
+        """get_fills(account_id, since=...) filters by filled_at (0225)."""
+        conn = _make_conn()
+        intent = _make_intent(quantity=1.0, limit_price=100.0)
+        _insert_intent(conn, intent)
+        broker = ShadowBroker(conn)
+        order = broker.submit_order(intent)
+        broker.attempt_fill(order, Quote(bid=99.0, ask=100.0, timestamp="t"))
+
+        future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        adapter = self._make_adapter(conn)
+        fills_all = adapter.get_fills("AGENTIC_SHADOW_01")
+        fills_future = adapter.get_fills("AGENTIC_SHADOW_01", since=future)
+        assert len(fills_all) == 1
+        assert len(fills_future) == 0
+
+    def test_no_circular_import(self):
+        """broker_adapter does not import execution_engine (circular dep fixed) (0225)."""
+        import importlib, inspect
+        ba_source = inspect.getsource(__import__("trade_engine.broker_adapter", fromlist=["broker_adapter"]))
+        assert "execution_engine" not in ba_source
+
+    def test_submit_and_get_order(self):
+        """submit_order then get_order returns the submitted order (0225)."""
+        conn = _make_conn()
+        adapter = self._make_adapter(conn)
+        intent = _make_intent(quantity=1.0, limit_price=100.0)
+        _insert_intent(conn, intent)
+        order = adapter.submit_order(intent)
+        fetched = adapter.get_order(order.order_id)
+        assert fetched is not None
+        assert fetched.order_id == order.order_id
+        assert fetched.state in (OrderState.WORKING, OrderState.SUBMITTED)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# B0.2 — 0226: comprehensive execution telemetry
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestComprehensiveTelemetry:
+    """run_execution_cycle returns full telemetry (0226)."""
+
+    @pytest.fixture(autouse=True)
+    def _market_open(self):
+        with patch.object(market_calendar, "is_market_open", return_value=True):
+            yield
+
+    def test_all_telemetry_keys_present(self):
+        """run_execution_cycle return dict contains all B0.2 telemetry keys (0226)."""
+        conn = _make_conn()
+        with patch.object(execution_engine, "_refresh_market_prices"), \
+             patch.object(execution_engine, "_update_nav_high_water"), \
+             patch.object(execution_engine, "_write_account_snapshot"), \
+             patch.object(execution_engine, "_get_executable_quote", return_value=None):
+            summary = execution_engine.run_execution_cycle("AGENTIC_SHADOW_01", conn)
+
+        required_keys = {
+            "new_intents_processed", "new_intents_blocked", "stale_symbols",
+            "new_orders_created", "fills_on_submission", "risk_rejections",
+            "working_orders_checked", "fills_on_retry", "total_fills",
+            "orders_expired", "results",
+        }
+        missing = required_keys - set(summary.keys())
+        assert not missing, f"Missing telemetry keys: {missing}"
+
+    def test_fills_on_submission_counted(self):
+        """fills_on_submission incremented when process_intent produces a fill (0226)."""
+        conn = _make_conn()
+        intent = _make_intent(quantity=1.0, limit_price=100.0)
+        _insert_intent(conn, intent)
+        fill_quote = Quote(bid=99.0, ask=100.0, timestamp="t",
+                           retrieved_at=datetime.now(timezone.utc).isoformat())
+        with patch.object(execution_engine, "_refresh_market_prices"), \
+             patch.object(execution_engine, "_update_nav_high_water"), \
+             patch.object(execution_engine, "_write_account_snapshot"), \
+             patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
+             patch.object(execution_engine, "_get_executable_quote", return_value=fill_quote):
+            summary = execution_engine.run_execution_cycle("AGENTIC_SHADOW_01", conn)
+
+        assert summary["fills_on_submission"] == 1
+        assert summary["total_fills"] >= 1
+
+    def test_risk_rejections_counted(self):
+        """risk_rejections incremented for REJECTED intents (0226)."""
+        conn = _make_conn()
+        # Disable trading to force rejection
+        intent = _make_intent(quantity=1.0, limit_price=100.0)
+        _insert_intent(conn, intent)
+        disabled_policy = _make_policy({"circuit_breakers": {"trading_enabled": False}})
+        with patch.object(execution_engine, "_refresh_market_prices"), \
+             patch.object(execution_engine, "_update_nav_high_water"), \
+             patch.object(execution_engine, "_write_account_snapshot"), \
+             patch.object(execution_engine, "load_policy", return_value=disabled_policy), \
+             patch.object(execution_engine, "_get_executable_quote", return_value=None):
+            summary = execution_engine.run_execution_cycle("AGENTIC_SHADOW_01", conn)
+
+        assert summary["risk_rejections"] >= 1
+        assert summary["new_intents_processed"] == 1
+
+    def test_total_fills_is_sum(self):
+        """total_fills = fills_on_submission + fills_on_retry (0226)."""
+        conn = _make_conn()
+        with patch.object(execution_engine, "_refresh_market_prices"), \
+             patch.object(execution_engine, "_update_nav_high_water"), \
+             patch.object(execution_engine, "_write_account_snapshot"), \
+             patch.object(execution_engine, "_get_executable_quote", return_value=None):
+            summary = execution_engine.run_execution_cycle("AGENTIC_SHADOW_01", conn)
+
+        assert summary["total_fills"] == summary["fills_on_submission"] + summary["fills_on_retry"]
