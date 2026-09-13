@@ -279,15 +279,65 @@ def reconcile(
                 ))
                 continue
             from datetime import datetime, timezone as _tz
+            from .execution_engine import apply_broker_fill  # local import avoids circular dep
             now_str = datetime.now(_tz.utc).isoformat()
             if bo is not None:
-                # Broker has the order — promote PENDING_SUBMIT → WORKING
-                conn.execute(
-                    """UPDATE orders SET state='WORKING', broker_order_id=?, submitted_at=?, updated_at=?
-                       WHERE order_id=?""",
-                    (bo.broker_order_id, now_str, now_str, prow["order_id"]),
-                )
-                conn.commit()
+                # Broker returned an order — apply state-specific recovery reducer (0274).
+                _bstate = bo.state if bo.state else "WORKING"
+                if _bstate in ("WORKING", "PARTIALLY_FILLED"):
+                    conn.execute(
+                        """UPDATE orders SET state='WORKING', broker_order_id=?, submitted_at=?, updated_at=?
+                           WHERE order_id=?""",
+                        (bo.broker_order_id, now_str, now_str, prow["order_id"]),
+                    )
+                    conn.commit()
+                elif _bstate == "PENDING":
+                    # Broker queued but not yet active — keep as PENDING_SUBMIT
+                    conn.execute(
+                        "UPDATE orders SET broker_order_id=?, updated_at=? WHERE order_id=?",
+                        (bo.broker_order_id, now_str, prow["order_id"]),
+                    )
+                    conn.commit()
+                elif _bstate == "FILLED":
+                    # Broker filled before restart — ingest authoritative fills then mark FILLED
+                    conn.execute(
+                        """UPDATE orders SET state='WORKING', broker_order_id=?, submitted_at=?, updated_at=?
+                           WHERE order_id=?""",
+                        (bo.broker_order_id, now_str, now_str, prow["order_id"]),
+                    )
+                    conn.commit()
+                    try:
+                        _reco_fills = broker.get_fills_for_order(bo.broker_order_id)
+                    except Exception:
+                        _reco_fills = []
+                    for _rf in _reco_fills:
+                        apply_broker_fill(_rf, account_id, conn)
+                elif _bstate in ("CANCELLED", "REJECTED", "EXPIRED"):
+                    _local_terminal = _bstate
+                    conn.execute(
+                        "UPDATE orders SET state=?, broker_order_id=?, updated_at=? WHERE order_id=?",
+                        (_local_terminal, bo.broker_order_id, now_str, prow["order_id"]),
+                    )
+                    _intent_status = {
+                        "CANCELLED": "CANCELLED",
+                        "REJECTED": "REJECTED",
+                        "EXPIRED": "EXPIRED",
+                    }[_local_terminal]
+                    conn.execute(
+                        """UPDATE trade_intents SET status=?
+                           WHERE intent_id = (SELECT intent_id FROM orders WHERE order_id=?)""",
+                        (_intent_status, prow["order_id"]),
+                    )
+                    conn.commit()
+                else:
+                    # Unknown broker state — cannot safely recover; block submission
+                    discrepancies.append(Discrepancy(
+                        kind=DiscrepancyKind.RECONCILIATION_UNAVAILABLE,
+                        subject=prow["order_id"],
+                        local_value="PENDING_SUBMIT",
+                        broker_value=_bstate,
+                        detail=f"unknown broker state {_bstate!r} during PENDING_SUBMIT recovery",
+                    ))
             else:
                 # Broker definitively has no record — safe to cancel
                 conn.execute(

@@ -98,6 +98,15 @@ class TradingPolicy:
         """
         return self.circuit_breakers.get("expected_broker_account_id", None)
 
+    def require_account_binding(self) -> bool:
+        """When True, initialization halts if expected_broker_account_id is not configured (0276).
+
+        For live accounts, set require_account_binding=True in circuit_breakers to enforce
+        that the operator explicitly configures the expected broker account ID. A policy that
+        cannot be loaded at all always halts regardless of this flag.
+        """
+        return bool(self.circuit_breakers.get("require_account_binding", False))
+
     def policy_hash(self) -> str:
         return hashlib.sha256(self._raw_json.encode()).hexdigest()[:12]
 

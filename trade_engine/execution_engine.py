@@ -550,34 +550,27 @@ def process_intent(
         )
     elif _ack_state == "FILLED":
         # Broker filled immediately on acceptance (e.g. market-at-open); advance to WORKING
-        # then synthesize a fill so local state reaches FILLED without waiting for poll_order_events
+        # then retrieve authoritative fills from the broker before booking (0273).
+        # Never synthesize price/fee from intent or quote — use only what the broker reports.
         conn.execute(
             "UPDATE orders SET broker_order_id=?, state='WORKING', submitted_at=? WHERE order_id=?",
             (ack.broker_order_id, ack.accepted_at or now_str2, local_order_id),
         )
         conn.commit()
-        mid_price = (bquote.bid + bquote.ask) / 2.0
-        _fill_price = float(intent.limit_price) if intent.limit_price else mid_price
-        _synthetic_fill = BrokerFill(
-            broker_fill_id=f"ack-fill-{ack.broker_order_id}",
-            broker_order_id=ack.broker_order_id,
-            symbol=intent.symbol,
-            side=intent.side.value,
-            qty=float(intent.quantity),
-            price=_fill_price,
-            filled_at=ack.accepted_at or now_str2,
-            fee=0.0,
-            local_order_id=local_order_id,
-            account_id=intent.account_id,
-        )
-        apply_broker_fill(_synthetic_fill, intent.account_id, conn)
-        fill_row = conn.execute(
-            "SELECT * FROM fills WHERE fill_id=?", (_synthetic_fill.broker_fill_id,)
-        ).fetchone()
-        fill = Fill.from_db_row(fill_row) if fill_row else None
+        broker_fills = broker.get_fills_for_order(ack.broker_order_id)
+        fill: Optional[Fill] = None
+        for bf in broker_fills:
+            apply_broker_fill(bf, intent.account_id, conn)
+            if fill is None:
+                fill_row = conn.execute(
+                    "SELECT * FROM fills WHERE fill_id=?", (bf.broker_fill_id,)
+                ).fetchone()
+                if fill_row:
+                    fill = Fill.from_db_row(fill_row)
         if fill:
             _update_intent_status(intent_id, IntentStatus.FILLED, conn)
             _write_executed_action(fill, intent, conn)
+        # If no fills returned yet, order stays WORKING and reconciliation ingests fills normally.
         return ExecutionResult(
             intent_id=intent_id,
             decision="APPROVED",
@@ -618,6 +611,7 @@ def process_intent(
                 fee=float(event.fee),
                 local_order_id=event.local_order_id,
                 account_id=intent.account_id,
+                client_order_id=getattr(event, "client_order_id", None),  # three-tier resolver (0273)
             )
             apply_broker_fill(bf, intent.account_id, conn)
             fill_row = conn.execute(
@@ -735,19 +729,21 @@ def process_open_orders(
         # ── Ingest broker events first (authoritative; quote-independent) (0259, 0261) ─
         # Events from the broker are final facts. Process them before risk revalidation
         # so a FILLED order is never risk-cancelled and a CANCELLED order is not re-evaluated.
-        for event in events_by_order.get(order.order_id, []):
+        local_order_id = row["order_id"]  # always use local PK for DB operations (0275)
+        for event in events_by_order.get(local_order_id, []):
             if event.event_type in ("FILLED", "PARTIALLY_FILLED"):
                 bf = BrokerFill(
                     broker_fill_id=event.broker_fill_id or str(_uuid.uuid4()),
                     broker_order_id=event.broker_order_id,
                     symbol=order.symbol,
-                    side=order.side.value,
+                    side=order.side,  # BrokerOrder.side is already str (0275)
                     qty=float(event.fill_qty),
                     price=float(event.fill_price),
                     filled_at=event.filled_at or _now_utc().isoformat(),
                     fee=float(event.fee),
                     local_order_id=event.local_order_id,
                     account_id=account_id,
+                    client_order_id=getattr(event, "client_order_id", None),  # three-tier resolver (0273)
                 )
                 apply_broker_fill(bf, account_id, conn)
                 fill_row = conn.execute(
@@ -762,17 +758,17 @@ def process_open_orders(
             else:
                 _log.warning(
                     "process_open_orders: unknown event_type %r for order %s",
-                    event.event_type, order.order_id,
+                    event.event_type, local_order_id,
                 )
 
         # Skip risk revalidation if the order is no longer open after event ingestion
         post_event_order = conn.execute(
-            "SELECT state FROM orders WHERE order_id=?", (order.order_id,)
+            "SELECT state FROM orders WHERE order_id=?", (local_order_id,)
         ).fetchone()
         if post_event_order and post_event_order["state"] not in ("WORKING", "PARTIALLY_FILLED"):
             # Sync intent status from the terminal order state (handles ALREADY_APPLIED case
             # where shadow_broker._apply_fill() already wrote the fill to DB)
-            terminal_order = broker.get_order(broker_oid)  # use broker-native ID (0268)
+            terminal_order = broker.get_order(broker_oid)  # returns BrokerOrder (0275)
             if terminal_order:
                 _sync_intent_from_order(terminal_order, row["intent_id"], conn)
             continue
@@ -783,7 +779,7 @@ def process_open_orders(
             remaining_qty = (order.quantity or 0.0) - (order.fill_qty or 0.0)
             pre_fill_decision = risk_evaluate(
                 intent, policy, account, conn,
-                exclude_order_id=order.order_id,
+                exclude_order_id=local_order_id,
                 phase="PRE_FILL",
                 remaining_quantity=max(0.0, remaining_qty),
             )
@@ -800,24 +796,24 @@ def process_open_orders(
         if not bquote:
             conn.execute(
                 "UPDATE orders SET market_data_status='unavailable' WHERE order_id=?",
-                (order.order_id,),
+                (local_order_id,),
             )
         elif not _is_quote_fresh(bquote, stale_minutes,
                                  require_market_timestamp=broker.requires_market_timestamp):
             conn.execute(
                 "UPDATE orders SET market_data_status='stale' WHERE order_id=?",
-                (order.order_id,),
+                (local_order_id,),
             )
         else:
             conn.execute(
                 "UPDATE orders SET market_data_status='ok' WHERE order_id=?",
-                (order.order_id,),
+                (local_order_id,),
             )
         conn.commit()
 
-        updated = broker.get_order(broker_oid)  # broker-native ID (0268)
+        updated = broker.get_order(broker_oid)  # returns BrokerOrder; broker-native ID (0268, 0275)
         if updated:
-            if updated.state == OrderState.EXPIRED:
+            if updated.state == "EXPIRED":
                 orders_expired += 1
             _sync_intent_from_order(updated, row["intent_id"], conn)
 
@@ -1302,12 +1298,25 @@ def initialize_trading_session(
     if broker is None:
         broker = ShadowBrokerAdapter(conn, account_id)
 
-    # Step 0: account-ID binding check (0272)
+    # Step 0: account-ID binding check (0272, 0276)
+    # Policy load failure always halts — a missing/corrupt policy cannot safely disable the check.
     try:
-        policy = load_policy(account_id)
-        expected_bid = policy.expected_broker_account_id()
-    except Exception:
-        expected_bid = None
+        _init_policy = load_policy(account_id)
+        expected_bid = _init_policy.expected_broker_account_id()
+        _require_binding = _init_policy.require_account_binding()
+    except Exception as exc:
+        _log.error(
+            "initialize_trading_session: policy load failed for %s: %s — HALTED",
+            account_id, exc,
+        )
+        return TradingReadyState.HALTED
+    if _require_binding and expected_bid is None:
+        _log.error(
+            "initialize_trading_session: require_account_binding=True but no "
+            "expected_broker_account_id configured for %s — HALTED",
+            account_id,
+        )
+        return TradingReadyState.HALTED
     if expected_bid:
         try:
             actual_bid = broker.get_account_id()

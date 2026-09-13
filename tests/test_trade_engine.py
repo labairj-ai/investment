@@ -2645,7 +2645,7 @@ class TestBrokerAdapterContract:
         assert ack.broker_order_id is not None
         fetched = adapter.get_order(ack.broker_order_id)
         assert fetched is not None
-        assert fetched.order_id == ack.broker_order_id
+        assert fetched.broker_order_id == ack.broker_order_id  # BrokerOrder uses broker_order_id (0275)
         assert fetched.state in (OrderState.WORKING, OrderState.SUBMITTED)
 
 
@@ -3301,6 +3301,7 @@ class TestFailClosedReconciliation:
             def attempt_fill(self, order, quote): raise NotImplementedError
             def find_order_by_client_order_id(self, client_order_id): return None
             def get_account_id(self): return "AGENTIC_SHADOW_01"
+            def get_fills_for_order(self, broker_order_id): return []
 
         return _FakeBroker()
 

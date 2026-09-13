@@ -106,6 +106,18 @@ class BrokerOrderEvent(NamedTuple):
     client_order_id: Optional[str] = None  # enables third-tier resolver lookup (0269)
 
 
+class BrokerCancelAck(NamedTuple):
+    """Normalized response from BrokerAdapter.cancel_order() (0275).
+
+    Separates the broker's cancel confirmation from local Order model objects so
+    real adapters never need to construct an internal Order.
+    """
+    broker_order_id: str
+    accepted: bool
+    normalized_state: Optional[str] = None  # broker-reported state after cancel attempt
+    raw_status: Optional[str] = None        # broker-native status string for debugging
+
+
 class BrokerOrderAck(NamedTuple):
     """Acknowledgement returned by BrokerAdapter.submit_order() (0267).
 

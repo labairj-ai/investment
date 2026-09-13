@@ -175,7 +175,7 @@ class BrokerAdapterContractMixin:
         ack = adapter.submit_order(intent)
         fetched = adapter.get_order(ack.broker_order_id)
         assert fetched is not None
-        assert fetched.order_id == ack.broker_order_id
+        assert fetched.broker_order_id == ack.broker_order_id  # BrokerOrder uses broker_order_id (0275)
         assert fetched.symbol == intent.symbol
 
     # ── 4. cancel_order transitions to CANCELLED ──────────────────────────────

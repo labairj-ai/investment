@@ -13,7 +13,7 @@ from typing import Optional
 
 from trade_engine.broker_adapter import ShadowBrokerAdapter
 from trade_engine.broker_types import (
-    BrokerAccountState, BrokerFill, BrokerOrder, BrokerOrderAck, BrokerOrderEvent,
+    BrokerAccountState, BrokerCancelAck, BrokerFill, BrokerOrder, BrokerOrderAck, BrokerOrderEvent,
     BrokerPosition, BrokerQuote,
 )
 from trade_engine.models import Fill, Order, OrderState, TradeIntent
@@ -84,6 +84,9 @@ class FakeBrokerAdapter(ShadowBrokerAdapter):
         self._broker_orders: dict[str, BrokerOrder] = {}
         # Mapping broker_order_id → local order_id for distinct_broker_id mode (0268)
         self._broker_to_local: dict[str, str] = {}
+        # Broker fill ledger keyed by broker_order_id (0273): authoritative fill data
+        # pre-staged when ack_state=="FILLED" or manually set by tests (0274/0277).
+        self._broker_fills: dict[str, list[BrokerFill]] = {}
 
     def submit_order(self, intent: TradeIntent, client_order_id: Optional[str] = None) -> BrokerOrderAck:
         if self._submit_lost:
@@ -134,17 +137,22 @@ class FakeBrokerAdapter(ShadowBrokerAdapter):
                 accepted_at=ack.accepted_at,
                 raw_status=ack.raw_status,
             )
+            bo_state = "FILLED" if self._ack_state == "FILLED" else "WORKING"
             self._broker_orders[new_broker_oid] = BrokerOrder(
                 broker_order_id=new_broker_oid,
                 symbol=intent.symbol,
                 side=intent.side,
                 quantity=float(intent.quantity),
-                fill_qty=0.0,
-                state="WORKING",
+                fill_qty=float(intent.quantity) if self._ack_state == "FILLED" else 0.0,
+                state=bo_state,
                 limit_price=float(intent.limit_price) if intent.limit_price is not None else None,
                 client_order_id=client_order_id,
                 local_order_id=local_oid,
             )
+            if self._ack_state == "FILLED":
+                self._broker_fills[new_broker_oid] = [self._make_broker_fill(
+                    new_broker_oid, local_oid, intent, client_order_id, ack.accepted_at,
+                )]
         else:
             ack = BrokerOrderAck(
                 broker_order_id=ack.broker_order_id,
@@ -153,29 +161,62 @@ class FakeBrokerAdapter(ShadowBrokerAdapter):
                 accepted_at=ack.accepted_at,
                 raw_status=ack.raw_status,
             )
-            # Mirror successful submissions into the in-memory ledger too
+            bo_state = "FILLED" if self._ack_state == "FILLED" else "WORKING"
             self._broker_orders[ack.broker_order_id] = BrokerOrder(
                 broker_order_id=ack.broker_order_id,
                 symbol=intent.symbol,
                 side=intent.side,
                 quantity=float(intent.quantity),
-                fill_qty=0.0,
-                state="WORKING",
+                fill_qty=float(intent.quantity) if self._ack_state == "FILLED" else 0.0,
+                state=bo_state,
                 limit_price=float(intent.limit_price) if intent.limit_price is not None else None,
                 client_order_id=client_order_id,
                 local_order_id=ack.broker_order_id,
             )
+            if self._ack_state == "FILLED":
+                self._broker_fills[ack.broker_order_id] = [self._make_broker_fill(
+                    ack.broker_order_id, local_oid, intent, client_order_id, ack.accepted_at,
+                )]
         return ack
+
+    def _make_broker_fill(
+        self, broker_order_id: str, local_order_id: str, intent, client_order_id, accepted_at
+    ) -> BrokerFill:
+        """Pre-stage a broker-authoritative fill for FILLED ACK mode (0273)."""
+        side_str = intent.side.value if hasattr(intent.side, "value") else str(intent.side)
+        fill_price = float(intent.limit_price) if intent.limit_price is not None else 100.0
+        return BrokerFill(
+            broker_fill_id=f"fake-fill-{broker_order_id}",
+            broker_order_id=broker_order_id,
+            symbol=intent.symbol,
+            side=side_str,
+            qty=float(intent.quantity),
+            price=fill_price,
+            filled_at=accepted_at or datetime.now(timezone.utc).isoformat(),
+            fee=0.01,
+            local_order_id=local_order_id,
+            account_id=intent.account_id,
+            client_order_id=client_order_id,
+        )
 
     def get_order(self, order_id: str):
         # Translate broker_order_id → local order_id for distinct_broker_id mode (0268)
         local_id = self._broker_to_local.get(order_id, order_id)
         return super().get_order(local_id)
 
-    def cancel_order(self, order_id: str, reason: str = "USER_REQUESTED"):
+    def cancel_order(self, order_id: str, reason: str = "USER_REQUESTED") -> BrokerCancelAck:
         # Translate broker_order_id → local order_id for distinct_broker_id mode (0268)
         local_id = self._broker_to_local.get(order_id, order_id)
         return super().cancel_order(local_id, reason=reason)
+
+    def get_fills_for_order(self, broker_order_id: str) -> list[BrokerFill]:
+        """Return pre-staged broker fills from the in-memory ledger (0273).
+
+        For FILLED ACK tests, fills are pre-staged in _broker_fills during submit_order().
+        Tests can also manually populate _broker_fills[broker_order_id] to simulate a
+        broker that filled before the app restarted (0274/0277 crash matrix scenarios).
+        """
+        return list(self._broker_fills.get(broker_order_id, []))
 
     def find_order_by_client_order_id(self, client_order_id: str):
         """Search in-memory broker ledger only (0270); DB is local, not broker, for fake mode."""

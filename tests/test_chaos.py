@@ -28,7 +28,7 @@ sys.path.insert(0, str(ROOT))
 
 from trade_engine import execution_engine, market_calendar
 from trade_engine.broker_adapter import ShadowBrokerAdapter
-from trade_engine.broker_types import BrokerFill, BrokerOrderEvent, BrokerQuote
+from trade_engine.broker_types import BrokerFill, BrokerOrder, BrokerOrderEvent, BrokerQuote
 from trade_engine.execution_engine import FillResult, apply_broker_fill
 from trade_engine.models import IntentStatus, Side, TradeIntent, OrderType, TimeInForce, InstrumentType
 
@@ -938,3 +938,308 @@ class TestBrokerAccountBinding:
         state = execution_engine.initialize_trading_session("AGENTIC_SHADOW_01", conn, broker=broker)
         assert state == execution_engine.TradingReadyState.TRADING_READY
         assert len(get_account_id_calls) == 0, "get_account_id must not be called when no binding configured"
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# 0274: Terminal-state indeterminate recovery
+# ════════════════════════════════════════════════════════════════════════════════
+
+class TestTerminalStateRecovery:
+    """PENDING_SUBMIT reconciliation respects terminal broker states (0274).
+
+    When a crash leaves a PENDING_SUBMIT row and the broker reports a terminal
+    state (FILLED/CANCELLED/REJECTED) before the app restarts, reconciliation
+    must recover to that terminal state — not blindly advance to WORKING.
+    """
+
+    class _FreshQ:
+        bid = 99.5
+        ask = 100.5
+        market_timestamp = None
+        retrieved_at = None
+        source = "test"
+
+        def __init__(self):
+            self.retrieved_at = datetime.now(timezone.utc).isoformat()
+
+    def _crash_and_stage_broker_state(self, conn, broker_state: str, fill_price: float = 99.83):
+        """Submit with timeout (crash), then stage the broker's state before restart."""
+        intent_id = _seed_intent(conn, qty=1.0, price=100.0)
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01", submit_timeout=True)
+
+        with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
+             patch.object(market_calendar, "is_market_open", return_value=True), \
+             patch("trade_engine.market_data._get_executable_quote", return_value=self._FreshQ()):
+            with pytest.raises(execution_engine.BrokerSubmissionIndeterminate):
+                execution_engine.process_intent(intent_id, conn, broker=broker)
+
+        # After crash: PENDING_SUBMIT locally; broker has WORKING in _broker_orders
+        row = conn.execute(
+            "SELECT state, client_order_id FROM orders WHERE intent_id=?", (intent_id,)
+        ).fetchone()
+        assert row["state"] == "PENDING_SUBMIT"
+        cid = row["client_order_id"]
+        broker_order_id = next(
+            bid for bid, bo in broker._broker_orders.items() if bo.client_order_id == cid
+        )
+
+        # Stage the broker's state before restart
+        existing = broker._broker_orders[broker_order_id]
+        broker._broker_orders[broker_order_id] = BrokerOrder(
+            broker_order_id=broker_order_id,
+            symbol=existing.symbol,
+            side=existing.side,
+            quantity=existing.quantity,
+            fill_qty=existing.quantity if broker_state == "FILLED" else 0.0,
+            state=broker_state,
+            limit_price=existing.limit_price,
+            client_order_id=existing.client_order_id,
+            local_order_id=existing.local_order_id,
+        )
+        if broker_state == "FILLED":
+            broker._broker_fills[broker_order_id] = [BrokerFill(
+                broker_fill_id=f"auth-fill-{broker_order_id}",
+                broker_order_id=broker_order_id,
+                symbol=existing.symbol,
+                side=existing.side,
+                qty=existing.quantity,
+                price=fill_price,
+                filled_at=datetime.now(timezone.utc).isoformat(),
+                fee=0.27,
+                local_order_id=None,
+                account_id="AGENTIC_SHADOW_01",
+                client_order_id=cid,
+            )]
+
+        broker._submit_timeout = False
+        return broker, intent_id
+
+    def test_broker_filled_before_restart_recovers_filled(self):
+        """submit_timeout → broker fills at authoritative price → reconcile → FILLED (0274)."""
+        conn = _make_conn()
+        broker, intent_id = self._crash_and_stage_broker_state(conn, "FILLED", fill_price=99.83)
+
+        state = execution_engine.initialize_trading_session("AGENTIC_SHADOW_01", conn, broker=broker)
+        assert state == execution_engine.TradingReadyState.TRADING_READY, (
+            f"Expected TRADING_READY after terminal recovery; got {state}"
+        )
+        final = conn.execute("SELECT state, fill_qty FROM orders WHERE intent_id=?", (intent_id,)).fetchone()
+        assert final["state"] == "FILLED", f"Expected FILLED; got {final['state']}"
+        assert float(final["fill_qty"]) == pytest.approx(1.0)
+
+        fill_row = conn.execute(
+            "SELECT price, fee FROM fills WHERE account_id='AGENTIC_SHADOW_01'"
+        ).fetchone()
+        assert fill_row is not None, "Fill must be persisted after FILLED recovery"
+        assert fill_row["price"] == pytest.approx(99.83), "Fill price must be broker-authoritative"
+        assert fill_row["fee"] == pytest.approx(0.27), "Fill fee must be broker-authoritative"
+
+    def test_broker_cancelled_before_restart_recovers_cancelled(self):
+        """submit_timeout → broker cancels → reconcile → CANCELLED locally (0274)."""
+        conn = _make_conn()
+        broker, intent_id = self._crash_and_stage_broker_state(conn, "CANCELLED")
+
+        state = execution_engine.initialize_trading_session("AGENTIC_SHADOW_01", conn, broker=broker)
+        assert state == execution_engine.TradingReadyState.TRADING_READY
+        final = conn.execute("SELECT state FROM orders WHERE intent_id=?", (intent_id,)).fetchone()
+        assert final["state"] == "CANCELLED", f"Expected CANCELLED; got {final['state']}"
+        intent_row = conn.execute(
+            "SELECT status FROM trade_intents WHERE intent_id=?", (intent_id,)
+        ).fetchone()
+        assert intent_row["status"] == "CANCELLED"
+
+    def test_broker_rejected_before_restart_recovers_rejected(self):
+        """submit_timeout → broker rejects → reconcile → REJECTED locally (0274)."""
+        conn = _make_conn()
+        broker, intent_id = self._crash_and_stage_broker_state(conn, "REJECTED")
+
+        state = execution_engine.initialize_trading_session("AGENTIC_SHADOW_01", conn, broker=broker)
+        assert state == execution_engine.TradingReadyState.TRADING_READY
+        final = conn.execute("SELECT state FROM orders WHERE intent_id=?", (intent_id,)).fetchone()
+        assert final["state"] == "REJECTED", f"Expected REJECTED; got {final['state']}"
+        intent_row = conn.execute(
+            "SELECT status FROM trade_intents WHERE intent_id=?", (intent_id,)
+        ).fetchone()
+        assert intent_row["status"] == "REJECTED"
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# 0276: Fail-closed account binding
+# ════════════════════════════════════════════════════════════════════════════════
+
+class TestFailClosedAccountBinding:
+    """Policy load failure or missing required ID halts session init (0276)."""
+
+    def test_policy_load_failure_halts(self):
+        """load_policy() raises → initialize_trading_session returns HALTED (0276)."""
+        conn = _make_conn()
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01")
+        with patch.object(execution_engine, "load_policy",
+                          side_effect=FileNotFoundError("policy.json not found")):
+            state = execution_engine.initialize_trading_session("AGENTIC_SHADOW_01", conn, broker=broker)
+        assert state == execution_engine.TradingReadyState.HALTED, (
+            f"Policy load failure must → HALTED; got {state}"
+        )
+
+    def test_require_binding_without_expected_id_halts(self):
+        """require_account_binding=True but no expected_broker_account_id → HALTED (0276)."""
+        conn = _make_conn()
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01")
+        policy_req = _make_policy()
+        object.__setattr__(
+            policy_req, "circuit_breakers",
+            {**policy_req.circuit_breakers, "require_account_binding": True},
+        )
+        with patch.object(execution_engine, "load_policy", return_value=policy_req):
+            state = execution_engine.initialize_trading_session("AGENTIC_SHADOW_01", conn, broker=broker)
+        assert state == execution_engine.TradingReadyState.HALTED, (
+            f"require_account_binding=True with no ID must → HALTED; got {state}"
+        )
+
+    def test_require_binding_false_with_no_id_is_ok(self):
+        """require_account_binding=False (default) with no expected ID → check skipped (0276)."""
+        conn = _make_conn()
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01")
+        # Default policy has no expected ID and require_account_binding=False
+        state = execution_engine.initialize_trading_session("AGENTIC_SHADOW_01", conn, broker=broker)
+        assert state == execution_engine.TradingReadyState.TRADING_READY
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# 0277: End-to-end crash matrix with distinct broker IDs
+# ════════════════════════════════════════════════════════════════════════════════
+
+class TestCrashMatrixE2E:
+    """Full crash/restart/recovery matrix; local ID ≠ broker ID throughout (0277)."""
+
+    class _FreshQ:
+        bid = 99.5
+        ask = 100.5
+        market_timestamp = None
+        retrieved_at = None
+        source = "test"
+
+        def __init__(self):
+            self.retrieved_at = datetime.now(timezone.utc).isoformat()
+
+    def _do_crash(self, conn):
+        """Submit via submit_timeout → raises BrokerSubmissionIndeterminate; returns broker."""
+        intent_id = _seed_intent(conn, qty=1.0, price=100.0)
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01", submit_timeout=True)
+        with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
+             patch.object(market_calendar, "is_market_open", return_value=True), \
+             patch("trade_engine.market_data._get_executable_quote", return_value=self._FreshQ()):
+            with pytest.raises(execution_engine.BrokerSubmissionIndeterminate):
+                execution_engine.process_intent(intent_id, conn, broker=broker)
+        return broker, intent_id
+
+    def test_broker_fills_before_restart_exact_economics(self):
+        """submit_timeout → broker fills at authoritative price+fee → restart → FILLED with correct economics (0277)."""
+        conn = _make_conn()
+        broker, intent_id = self._do_crash(conn)
+
+        row = conn.execute(
+            "SELECT state, client_order_id FROM orders WHERE intent_id=?", (intent_id,)
+        ).fetchone()
+        assert row["state"] == "PENDING_SUBMIT"
+        cid = row["client_order_id"]
+
+        # Find broker-side order_id (different from local UUID because submit_timeout creates its own UUID)
+        broker_order_id = next(
+            bid for bid, bo in broker._broker_orders.items() if bo.client_order_id == cid
+        )
+        assert broker_order_id != row  # broker UUID differs from local order_id (E2E check)
+
+        # Simulate broker filled the order before restart with authoritative economics
+        existing = broker._broker_orders[broker_order_id]
+        auth_price, auth_fee = 99.47, 0.35
+        broker._broker_orders[broker_order_id] = BrokerOrder(
+            broker_order_id=broker_order_id,
+            symbol=existing.symbol, side=existing.side,
+            quantity=existing.quantity, fill_qty=existing.quantity,
+            state="FILLED", limit_price=existing.limit_price,
+            client_order_id=existing.client_order_id, local_order_id=existing.local_order_id,
+        )
+        broker._broker_fills[broker_order_id] = [BrokerFill(
+            broker_fill_id=f"auth-{broker_order_id}",
+            broker_order_id=broker_order_id,
+            symbol=existing.symbol, side=existing.side,
+            qty=existing.quantity, price=auth_price,
+            filled_at=datetime.now(timezone.utc).isoformat(),
+            fee=auth_fee,
+            local_order_id=None, account_id="AGENTIC_SHADOW_01",
+            client_order_id=cid,
+        )]
+
+        broker._submit_timeout = False
+        original_submit_count = broker._submit_calls  # record before restart
+
+        state = execution_engine.initialize_trading_session("AGENTIC_SHADOW_01", conn, broker=broker)
+        assert state == execution_engine.TradingReadyState.TRADING_READY
+
+        final = conn.execute(
+            "SELECT state, fill_qty FROM orders WHERE intent_id=?", (intent_id,)
+        ).fetchone()
+        assert final["state"] == "FILLED", f"Expected FILLED; got {final['state']}"
+        assert float(final["fill_qty"]) == pytest.approx(1.0)
+
+        fill_row = conn.execute(
+            "SELECT price, fee FROM fills WHERE account_id='AGENTIC_SHADOW_01'"
+        ).fetchone()
+        assert fill_row is not None, "Fill must be persisted"
+        assert fill_row["price"] == pytest.approx(auth_price), (
+            f"Fill price must be broker-authoritative {auth_price}; got {fill_row['price']}"
+        )
+        assert fill_row["fee"] == pytest.approx(auth_fee)
+
+        # submit_order must NOT have been called again
+        assert broker._submit_calls == original_submit_count, (
+            "submit_order must not be retried after restart"
+        )
+
+        order_count = conn.execute(
+            "SELECT COUNT(*) FROM orders WHERE intent_id=?", (intent_id,)
+        ).fetchone()[0]
+        assert order_count == 1, f"Zero resubmissions expected; found {order_count} orders"
+
+    def test_broker_cancelled_before_restart_no_position_delta(self):
+        """submit_timeout → broker cancels → restart → CANCELLED, no position change (0277)."""
+        conn = _make_conn()
+        broker, intent_id = self._do_crash(conn)
+
+        row = conn.execute(
+            "SELECT client_order_id FROM orders WHERE intent_id=?", (intent_id,)
+        ).fetchone()
+        cid = row["client_order_id"]
+        broker_order_id = next(
+            bid for bid, bo in broker._broker_orders.items() if bo.client_order_id == cid
+        )
+
+        existing = broker._broker_orders[broker_order_id]
+        broker._broker_orders[broker_order_id] = BrokerOrder(
+            broker_order_id=broker_order_id,
+            symbol=existing.symbol, side=existing.side,
+            quantity=existing.quantity, fill_qty=0.0,
+            state="CANCELLED", limit_price=existing.limit_price,
+            client_order_id=existing.client_order_id, local_order_id=existing.local_order_id,
+        )
+
+        broker._submit_timeout = False
+        state = execution_engine.initialize_trading_session("AGENTIC_SHADOW_01", conn, broker=broker)
+        assert state == execution_engine.TradingReadyState.TRADING_READY
+
+        final = conn.execute(
+            "SELECT state FROM orders WHERE intent_id=?", (intent_id,)
+        ).fetchone()
+        assert final["state"] == "CANCELLED"
+
+        # No fills → no position delta
+        fill_count = conn.execute(
+            "SELECT COUNT(*) FROM fills WHERE account_id='AGENTIC_SHADOW_01'"
+        ).fetchone()[0]
+        assert fill_count == 0, f"CANCELLED recovery must produce zero fills; got {fill_count}"
+
+        intent_row = conn.execute(
+            "SELECT status FROM trade_intents WHERE intent_id=?", (intent_id,)
+        ).fetchone()
+        assert intent_row["status"] == "CANCELLED"

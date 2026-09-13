@@ -10,7 +10,7 @@ import datetime
 from abc import ABC, abstractmethod
 from typing import Optional
 
-from .broker_types import BrokerAccountState, BrokerFill, BrokerOrder, BrokerOrderAck, BrokerOrderEvent, BrokerPosition, BrokerQuote
+from .broker_types import BrokerAccountState, BrokerCancelAck, BrokerFill, BrokerOrder, BrokerOrderAck, BrokerOrderEvent, BrokerPosition, BrokerQuote
 from .models import Fill, Order, TradeIntent, TradingAccount
 
 
@@ -56,7 +56,9 @@ class BrokerAdapter(ABC):
     def submit_order(self, intent: TradeIntent, client_order_id: Optional[str] = None) -> BrokerOrderAck: ...
 
     @abstractmethod
-    def cancel_order(self, order_id: str, reason: str = "USER_REQUESTED") -> Order: ...
+    def cancel_order(self, order_id: str, reason: str = "USER_REQUESTED") -> BrokerCancelAck:
+        """Cancel an order by broker-native order ID; return normalized cancel confirmation (0275)."""
+        ...
 
     @abstractmethod
     def poll_order_events(
@@ -69,10 +71,27 @@ class BrokerAdapter(ABC):
     """
 
     @abstractmethod
-    def get_order(self, order_id: str) -> Optional[Order]: ...
+    def get_order(self, order_id: str) -> Optional[BrokerOrder]:
+        """Return the broker's normalized view of an order by broker-native ID (0275).
+
+        Never returns the internal Order domain model; the engine layer owns that mapping.
+        Returns None when the broker has no record of this order ID.
+        """
+        ...
 
     @abstractmethod
     def get_fills(self, account_id: str, since: Optional[str] = None) -> list[BrokerFill]: ...
+
+    @abstractmethod
+    def get_fills_for_order(self, broker_order_id: str) -> list[BrokerFill]:
+        """Return all fills the broker has recorded for a specific order (0273).
+
+        Used after a FILLED ACK to retrieve authoritative fill economics before booking.
+        Returns an empty list when the broker has no fills yet (order stays WORKING
+        until reconciliation ingests the fills normally).
+        Raises on transient connectivity errors.
+        """
+        ...
 
     @abstractmethod
     def find_order_by_client_order_id(self, client_order_id: str) -> Optional[BrokerOrder]:
@@ -213,17 +232,71 @@ class ShadowBrokerAdapter(BrokerAdapter):
             raw_status=order.state.value if order.state else None,
         )
 
-    def cancel_order(self, order_id: str, reason: str = "USER_REQUESTED") -> Order:
-        return self._broker.cancel_order(order_id, reason=reason)
+    def cancel_order(self, order_id: str, reason: str = "USER_REQUESTED") -> BrokerCancelAck:
+        self._broker.cancel_order(order_id, reason=reason)
+        row = self._conn.execute(
+            "SELECT broker_order_id, state FROM orders WHERE order_id=?", (order_id,)
+        ).fetchone()
+        state = row["state"] if row else None
+        return BrokerCancelAck(
+            broker_order_id=order_id,
+            accepted=state == "CANCELLED",
+            normalized_state=state,
+            raw_status=state,
+        )
 
-    def get_order(self, order_id: str) -> Optional[Order]:
-        return self._broker.get_order(order_id)
-
-    def find_order_by_client_order_id(self, client_order_id: str) -> Optional[BrokerOrder]:
-        """Return broker's view of order with this client_order_id (WORKING/PARTIALLY_FILLED only) (0270)."""
+    def get_order(self, order_id: str) -> Optional[BrokerOrder]:
+        """Return broker-normalized order view; never leaks internal Order model (0275)."""
         row = self._conn.execute(
             "SELECT order_id, broker_order_id, symbol, side, quantity, fill_qty, state, limit_price, client_order_id "
-            "FROM orders WHERE client_order_id=? AND state NOT IN ('PENDING_SUBMIT','CANCELLED','REJECTED','EXPIRED','FILLED')",
+            "FROM orders WHERE order_id=?",
+            (order_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return BrokerOrder(
+            broker_order_id=row["broker_order_id"] or row["order_id"],
+            symbol=row["symbol"],
+            side=row["side"],
+            quantity=float(row["quantity"] or 0),
+            fill_qty=float(row["fill_qty"] or 0),
+            state=row["state"],
+            limit_price=float(row["limit_price"]) if row["limit_price"] is not None else None,
+            local_order_id=row["order_id"],
+            client_order_id=row["client_order_id"],
+        )
+
+    def get_fills_for_order(self, broker_order_id: str) -> list[BrokerFill]:
+        """Return fills recorded in local DB for this order (shadow: broker == local) (0273)."""
+        rows = self._conn.execute(
+            "SELECT * FROM fills WHERE order_id=?", (broker_order_id,)
+        ).fetchall()
+        return [
+            BrokerFill(
+                broker_fill_id=r["fill_id"],
+                broker_order_id=broker_order_id,
+                symbol=r["symbol"],
+                side=r["side"],
+                qty=float(r["qty"] or 0),
+                price=float(r["price"] or 0),
+                filled_at=r["filled_at"],
+                fee=float(r["fee"] or 0),
+                local_order_id=r["order_id"],
+                account_id=r["account_id"],
+            )
+            for r in rows
+        ]
+
+    def find_order_by_client_order_id(self, client_order_id: str) -> Optional[BrokerOrder]:
+        """Return broker's view of order with this client_order_id, including terminal states (0270, 0274).
+
+        Excludes PENDING_SUBMIT (local-only state; a real broker never reports this).
+        Includes terminal states (FILLED/CANCELLED/REJECTED/EXPIRED) so crash-restart recovery
+        can correctly map broker-terminal → local-terminal rather than → WORKING (0274).
+        """
+        row = self._conn.execute(
+            "SELECT order_id, broker_order_id, symbol, side, quantity, fill_qty, state, limit_price, client_order_id "
+            "FROM orders WHERE client_order_id=? AND state != 'PENDING_SUBMIT' ORDER BY submitted_at DESC LIMIT 1",
             (client_order_id,),
         ).fetchone()
         if row is None:
@@ -246,9 +319,20 @@ class ShadowBrokerAdapter(BrokerAdapter):
 
     # ── Fills ─────────────────────────────────────────────────────────────────
 
-    def attempt_fill(self, order: Order, quote: BrokerQuote) -> Optional[Fill]:
-        """Shadow simulation helper; delegates to ShadowBroker.attempt_fill (0248)."""
+    def attempt_fill(self, broker_order_or_order, quote: BrokerQuote) -> Optional[Fill]:
+        """Shadow simulation helper; delegates to ShadowBroker.attempt_fill (0248, 0275).
+
+        Accepts either a BrokerOrder (from get_order()) or an internal Order for backwards
+        compat. When given a BrokerOrder, looks up the internal Order by local_order_id.
+        """
         from .shadow_broker import Quote as ShadowQuote
+        if isinstance(broker_order_or_order, BrokerOrder):
+            local_id = broker_order_or_order.local_order_id or broker_order_or_order.broker_order_id
+            order = self._broker.get_order(local_id)
+            if not order:
+                return None
+        else:
+            order = broker_order_or_order
         shadow_q = ShadowQuote(
             bid=quote.bid,
             ask=quote.ask,
@@ -300,21 +384,22 @@ class ShadowBrokerAdapter(BrokerAdapter):
                     )
                     events.append(BrokerOrderEvent(
                         event_type=event_type,
-                        broker_order_id=order.order_id,
-                        local_order_id=order.order_id,
+                        broker_order_id=order.broker_order_id,
+                        local_order_id=order.local_order_id,
                         fill_qty=fill.qty,
                         fill_price=fill.price,
                         filled_at=fill.filled_at,
                         fee=fill.fee,
-                        broker_fill_id=fill.fill_id,   # canonical ID for deduplication (0256)
+                        broker_fill_id=fill.fill_id,       # canonical ID for deduplication (0256)
+                        client_order_id=order.client_order_id,  # propagate for three-tier resolver (0273)
                     ))
-            # Check for expiry after fill attempt
+            # Check for expiry after fill attempt (0259): re-read via get_order returns BrokerOrder
             refreshed = self.get_order(bo.local_order_id or bo.broker_order_id)
-            if refreshed and refreshed.state.value == "EXPIRED":
+            if refreshed and refreshed.state == "EXPIRED":
                 events.append(BrokerOrderEvent(
                     event_type="EXPIRED",
-                    broker_order_id=order.order_id,
-                    local_order_id=order.order_id,
+                    broker_order_id=order.broker_order_id,
+                    local_order_id=order.local_order_id,
                 ))
         return events
 
