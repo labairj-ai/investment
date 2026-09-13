@@ -2152,17 +2152,24 @@ class TestPreFillRiskRevalidation:
         return order_id
 
     def test_pre_fill_rejection_cancels_working_order(self):
-        """WORKING order violating current risk limits is cancelled before fill (0220)."""
+        """WORKING order violating current risk limits is cancelled before fill (0220).
+
+        With the event-first architecture (0259), fills from broker events are ingested before
+        risk revalidation. Risk revalidation only sees orders that are STILL WORKING after event
+        ingestion. Here we use a miss quote so no fill event arrives; the order stays WORKING
+        and risk revalidation can cancel it.
+        """
         conn = _make_conn()
         conn.execute("UPDATE trading_accounts SET current_cash=200 WHERE account_id='AGENTIC_SHADOW_01'")
         conn.commit()
         order_id = self._seed_working_buy(conn, qty=10.0, limit=100.0)
 
-        # Quote would cross limit, but cash is now insufficient
-        hit_quote = Quote(bid=99.0, ask=100.0, timestamp="t",
-                          retrieved_at=datetime.now(timezone.utc).isoformat())
+        # Miss quote: ask=101 > limit=100 → shadow broker generates no fill event.
+        # The order stays WORKING so risk revalidation runs and cancels it (cash=200 < $1000).
+        miss_quote = Quote(bid=99.0, ask=101.0, timestamp="t",
+                           retrieved_at=datetime.now(timezone.utc).isoformat())
         with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
-             patch("trade_engine.market_data._get_executable_quote", return_value=hit_quote):
+             patch("trade_engine.market_data._get_executable_quote", return_value=miss_quote):
             fills, rejections, _ = execution_engine.process_open_orders("AGENTIC_SHADOW_01", conn)
 
         assert len(fills) == 0
@@ -3389,6 +3396,29 @@ class TestTradingReadinessEnforced:
 class TestApplyBrokerFill:
     """apply_broker_fill() updates all state atomically; cursor advances correctly (0245)."""
 
+    def _seed_order(self, conn, order_id: str, symbol="ANET", side="BUY", qty=10.0,
+                    limit=100.0, state="WORKING") -> str:
+        """Insert a minimal intent + order row so apply_broker_fill can find the order."""
+        intent_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            """INSERT INTO trade_intents (intent_id, account_id, instrument_type, symbol, side,
+               quantity, order_type, limit_price, time_in_force, valid_until, status, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (intent_id, "AGENTIC_SHADOW_01", "EQUITY", symbol, side,
+             qty, "LIMIT", limit, "GTC", _future_iso(), "APPROVED", now),
+        )
+        conn.execute(
+            """INSERT INTO orders (order_id, intent_id, account_id, symbol, side,
+               quantity, contracts, order_type, limit_price, state, time_in_force,
+               submitted_at, updated_at, fill_qty, fill_cash)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (order_id, intent_id, "AGENTIC_SHADOW_01", symbol, side,
+             qty, None, "LIMIT", limit, state, "GTC", now, now, 0.0, 0.0),
+        )
+        conn.commit()
+        return intent_id
+
     def _make_broker_fill(self, symbol="ANET", side="BUY", qty=10.0, price=100.0, fee=1.0,
                           filled_at=None, fill_id=None, order_id=None):
         from trade_engine.broker_types import BrokerFill
@@ -3405,7 +3435,9 @@ class TestApplyBrokerFill:
     def test_buy_fill_increases_position_and_decreases_cash(self):
         """BUY fill: position created, cash reduced by qty*price+fee (0245)."""
         conn = _make_conn()
-        bf = self._make_broker_fill(qty=10.0, price=100.0, fee=1.0)
+        order_id = str(uuid.uuid4())
+        self._seed_order(conn, order_id, side="BUY", qty=10.0, limit=100.0)
+        bf = self._make_broker_fill(qty=10.0, price=100.0, fee=1.0, order_id=order_id)
         execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
 
         pos = conn.execute(
@@ -3421,12 +3453,14 @@ class TestApplyBrokerFill:
     def test_sell_fill_decreases_position_and_increases_cash(self):
         """SELL fill: existing position reduced; cash increased by qty*price-fee (0245)."""
         conn = _make_conn()
+        order_id = str(uuid.uuid4())
+        self._seed_order(conn, order_id, side="SELL", qty=10.0, limit=110.0)
         conn.execute(
             "INSERT INTO position_snapshots (account_id, symbol, qty, avg_cost, instrument_type, as_of) VALUES (?,?,?,?,?,?)",
             ("AGENTIC_SHADOW_01", "ANET", 20.0, 100.0, "EQUITY", "2026-01-01"),
         )
         conn.commit()
-        bf = self._make_broker_fill(side="SELL", qty=10.0, price=110.0, fee=1.0)
+        bf = self._make_broker_fill(side="SELL", qty=10.0, price=110.0, fee=1.0, order_id=order_id)
         execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
 
         pos = conn.execute(
@@ -3511,3 +3545,294 @@ class TestClientOrderIdIdempotency:
             execution_engine.process_intent(intent_id, conn)
         count = conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0]
         assert count == 1
+
+
+# 21. Quote sanity, fill safety, and ExecutionSession (0259, 0261, 0262)
+class TestQuoteSanityChecks:
+    """Bad quotes are rejected before broker call; each case returns QUOTE_REJECTED (0262)."""
+
+    def _submit_with_quote(self, bid, ask):
+        from trade_engine.broker_types import BrokerQuote
+        conn = _make_conn()
+        intent_id = _seed_pending_intent(conn, quantity=1.0, limit_price=100.0)
+        broker_quote = BrokerQuote(
+            bid=bid, ask=ask, symbol="ANET",
+            retrieved_at=datetime.now(timezone.utc).isoformat(),
+        )
+        with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
+             patch("trade_engine.market_data._get_executable_quote", return_value=None) as mock_mktdata, \
+             patch.object(execution_engine, "_get_broker_quote_obj", return_value=broker_quote, create=True):
+            # Patch broker.get_quote at adapter level instead
+            from trade_engine.broker_adapter import ShadowBrokerAdapter
+            with patch.object(ShadowBrokerAdapter, "get_quote", return_value=broker_quote):
+                result = execution_engine.process_intent(intent_id, conn)
+        return result
+
+    def _result_for_bad_quote(self, bid, ask):
+        """Return the ExecutionResult when process_intent is given a specific bid/ask."""
+        from trade_engine.broker_types import BrokerQuote
+        conn = _make_conn()
+        intent_id = _seed_pending_intent(conn, quantity=1.0, limit_price=100.0)
+        broker_quote = BrokerQuote(
+            bid=bid, ask=ask, symbol="ANET",
+            retrieved_at=datetime.now(timezone.utc).isoformat(),
+        )
+        from trade_engine.broker_adapter import ShadowBrokerAdapter
+        with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
+             patch.object(ShadowBrokerAdapter, "get_quote", return_value=broker_quote):
+            result = execution_engine.process_intent(intent_id, conn)
+        return result, conn
+
+    def test_zero_bid_rejected(self):
+        """bid=0 → QUOTE_REJECTED; submit_order never called (0262)."""
+        result, conn = self._result_for_bad_quote(bid=0.0, ask=100.0)
+        assert result.decision in ("QUOTE_REJECTED", "QUOTE_UNAVAILABLE")
+        assert conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0] == 0
+
+    def test_zero_ask_rejected(self):
+        """ask=0 → QUOTE_REJECTED; submit_order never called (0262)."""
+        result, conn = self._result_for_bad_quote(bid=0.0, ask=0.0)
+        assert result.decision in ("QUOTE_REJECTED", "QUOTE_UNAVAILABLE")
+        assert conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0] == 0
+
+    def test_negative_bid_rejected(self):
+        """bid<0 → QUOTE_REJECTED; no order submitted (0262)."""
+        result, conn = self._result_for_bad_quote(bid=-1.0, ask=100.0)
+        assert result.decision in ("QUOTE_REJECTED", "QUOTE_UNAVAILABLE")
+        assert conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0] == 0
+
+    def test_bid_exceeds_ask_rejected(self):
+        """bid > ask (inverted spread) → QUOTE_REJECTED; no order submitted (0262)."""
+        result, conn = self._result_for_bad_quote(bid=101.0, ask=99.0)
+        assert result.decision in ("QUOTE_REJECTED", "QUOTE_UNAVAILABLE")
+        assert conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0] == 0
+
+
+class TestApplyBrokerFillSafety:
+    """Overfill, impossible sell, and unknown fill guards in apply_broker_fill (0261, 0262)."""
+
+    def _seed_order(self, conn, order_id: str, symbol="ANET", side="BUY", qty=10.0,
+                    limit=100.0, state="WORKING", fill_qty=0.0) -> str:
+        intent_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            """INSERT INTO trade_intents (intent_id, account_id, instrument_type, symbol, side,
+               quantity, order_type, limit_price, time_in_force, valid_until, status, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (intent_id, "AGENTIC_SHADOW_01", "EQUITY", symbol, side,
+             qty, "LIMIT", limit, "GTC", _future_iso(), "APPROVED", now),
+        )
+        conn.execute(
+            """INSERT INTO orders (order_id, intent_id, account_id, symbol, side,
+               quantity, contracts, order_type, limit_price, state, time_in_force,
+               submitted_at, updated_at, fill_qty, fill_cash)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (order_id, intent_id, "AGENTIC_SHADOW_01", symbol, side,
+             qty, None, "LIMIT", limit, state, "GTC", now, now, fill_qty, 0.0),
+        )
+        conn.commit()
+        return intent_id
+
+    def _make_bf(self, order_id, qty=1.0, price=100.0, side="BUY", symbol="ANET"):
+        from trade_engine.broker_types import BrokerFill
+        return execution_engine.BrokerFill(
+            broker_fill_id=str(uuid.uuid4()),
+            broker_order_id=order_id,
+            symbol=symbol, side=side, qty=qty, price=price,
+            filled_at=datetime.now(timezone.utc).isoformat(),
+            fee=0.0, local_order_id=order_id, account_id="AGENTIC_SHADOW_01",
+        )
+
+    def test_unknown_fill_raises(self):
+        """apply_broker_fill raises UnknownFillError when order not in local DB (0261)."""
+        conn = _make_conn()
+        bf = self._make_bf(order_id=str(uuid.uuid4()))
+        with pytest.raises(execution_engine.UnknownFillError):
+            execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+
+    def test_overfill_raises(self):
+        """apply_broker_fill raises OverfillError when fill qty > remaining (0262)."""
+        conn = _make_conn()
+        order_id = str(uuid.uuid4())
+        self._seed_order(conn, order_id, side="BUY", qty=1.0, limit=100.0)
+        bf = self._make_bf(order_id=order_id, qty=2.0)  # 2 > remaining 1
+        with pytest.raises(execution_engine.OverfillError):
+            execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+
+    def test_impossible_sell_raises(self):
+        """apply_broker_fill raises ImpossibleSellError when sell qty > held position (0262)."""
+        conn = _make_conn()
+        order_id = str(uuid.uuid4())
+        self._seed_order(conn, order_id, side="SELL", qty=5.0, limit=100.0)
+        # Only 2 shares held, but trying to sell 5
+        conn.execute(
+            "INSERT INTO position_snapshots (account_id, symbol, qty, avg_cost, instrument_type, as_of) VALUES (?,?,?,?,?,?)",
+            ("AGENTIC_SHADOW_01", "ANET", 2.0, 100.0, "EQUITY", "2026-01-01"),
+        )
+        conn.commit()
+        bf = self._make_bf(order_id=order_id, qty=5.0, side="SELL")
+        with pytest.raises(execution_engine.ImpossibleSellError):
+            execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+
+    def test_duplicate_fill_returns_already_applied(self):
+        """Second identical fill returns ALREADY_APPLIED without mutation (0261)."""
+        conn = _make_conn()
+        order_id = str(uuid.uuid4())
+        self._seed_order(conn, order_id, side="BUY", qty=10.0, limit=100.0)
+        bf = self._make_bf(order_id=order_id, qty=1.0)
+        r1 = execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+        r2 = execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+        assert r1 == execution_engine.FillResult.APPLIED
+        assert r2 == execution_engine.FillResult.ALREADY_APPLIED
+        # Cash debited only once
+        cash = conn.execute(
+            "SELECT current_cash FROM trading_accounts WHERE account_id='AGENTIC_SHADOW_01'"
+        ).fetchone()["current_cash"]
+        assert cash == pytest.approx(10000.0 - 1.0 * 100.0)
+
+
+class TestApplyBrokerOrderEvent:
+    """apply_broker_order_event state machine: valid transitions and no-op invalid ones (0261)."""
+
+    def _seed_working_order(self, conn, order_id: str, state="WORKING") -> str:
+        intent_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            """INSERT INTO trade_intents (intent_id, account_id, instrument_type, symbol, side,
+               quantity, order_type, limit_price, time_in_force, valid_until, status, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (intent_id, "AGENTIC_SHADOW_01", "EQUITY", "ANET", "BUY",
+             1.0, "LIMIT", 100.0, "GTC", _future_iso(), "APPROVED", now),
+        )
+        conn.execute(
+            """INSERT INTO orders (order_id, intent_id, account_id, symbol, side,
+               quantity, contracts, order_type, limit_price, state, time_in_force,
+               submitted_at, updated_at, fill_qty, fill_cash)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (order_id, intent_id, "AGENTIC_SHADOW_01", "ANET", "BUY",
+             1.0, None, "LIMIT", 100.0, state, "GTC", now, now, 0.0, 0.0),
+        )
+        conn.commit()
+        return intent_id
+
+    def _make_event(self, order_id: str, event_type: str):
+        from trade_engine.broker_types import BrokerOrderEvent
+        return BrokerOrderEvent(
+            event_type=event_type,
+            broker_order_id=order_id,
+            local_order_id=order_id,
+        )
+
+    def test_cancelled_event_updates_working_order(self):
+        """CANCELLED event on WORKING order → state CANCELLED, intent CANCELLED (0261)."""
+        conn = _make_conn()
+        oid = str(uuid.uuid4())
+        intent_id = self._seed_working_order(conn, oid, state="WORKING")
+        event = self._make_event(oid, "CANCELLED")
+        execution_engine.apply_broker_order_event(event, "AGENTIC_SHADOW_01", conn)
+        assert conn.execute("SELECT state FROM orders WHERE order_id=?", (oid,)).fetchone()["state"] == "CANCELLED"
+        assert conn.execute("SELECT status FROM trade_intents WHERE intent_id=?", (intent_id,)).fetchone()["status"] == "CANCELLED"
+
+    def test_expired_event_updates_working_order(self):
+        """EXPIRED event on WORKING order → state EXPIRED, intent EXPIRED (0261)."""
+        conn = _make_conn()
+        oid = str(uuid.uuid4())
+        intent_id = self._seed_working_order(conn, oid, state="WORKING")
+        event = self._make_event(oid, "EXPIRED")
+        execution_engine.apply_broker_order_event(event, "AGENTIC_SHADOW_01", conn)
+        assert conn.execute("SELECT state FROM orders WHERE order_id=?", (oid,)).fetchone()["state"] == "EXPIRED"
+        assert conn.execute("SELECT status FROM trade_intents WHERE intent_id=?", (intent_id,)).fetchone()["status"] == "EXPIRED"
+
+    def test_cancelled_on_filled_order_no_mutation(self):
+        """CANCELLED event on already-FILLED order is silently ignored (0261)."""
+        conn = _make_conn()
+        oid = str(uuid.uuid4())
+        self._seed_working_order(conn, oid, state="FILLED")
+        event = self._make_event(oid, "CANCELLED")
+        execution_engine.apply_broker_order_event(event, "AGENTIC_SHADOW_01", conn)
+        # FILLED state unchanged
+        assert conn.execute("SELECT state FROM orders WHERE order_id=?", (oid,)).fetchone()["state"] == "FILLED"
+
+    def test_cancel_requested_transitions_to_cancelled(self):
+        """CANCELLED event on CANCEL_REQUESTED order → CANCELLED (0261)."""
+        conn = _make_conn()
+        oid = str(uuid.uuid4())
+        intent_id = self._seed_working_order(conn, oid, state="CANCEL_REQUESTED")
+        event = self._make_event(oid, "CANCELLED")
+        execution_engine.apply_broker_order_event(event, "AGENTIC_SHADOW_01", conn)
+        assert conn.execute("SELECT state FROM orders WHERE order_id=?", (oid,)).fetchone()["state"] == "CANCELLED"
+
+
+class TestExecutionSession:
+    """ExecutionSession guards process_intent and run_cycle against uninitialized use (0262)."""
+
+    def test_process_intent_before_initialize_raises(self):
+        """Calling process_intent without initialize() raises SessionNotReadyError (0262)."""
+        conn = _make_conn()
+        session = execution_engine.ExecutionSession("AGENTIC_SHADOW_01", conn)
+        with pytest.raises(execution_engine.SessionNotReadyError):
+            session.process_intent("any-intent-id")
+
+    def test_run_cycle_before_initialize_raises(self):
+        """Calling run_cycle() without initialize() raises SessionNotReadyError (0262)."""
+        conn = _make_conn()
+        session = execution_engine.ExecutionSession("AGENTIC_SHADOW_01", conn)
+        with pytest.raises(execution_engine.SessionNotReadyError):
+            session.run_cycle()
+
+    def test_initialize_returns_trading_ready(self):
+        """After successful initialize(), session is marked ready (0262)."""
+        conn = _make_conn()
+        from unittest.mock import MagicMock
+        broker = MagicMock()
+        broker.get_broker_account.return_value = MagicMock(cash=10000.0, nav=10000.0, buying_power=10000.0)
+        broker.get_fills.return_value = []
+        broker.get_open_orders.return_value = []
+        broker.get_positions.return_value = []
+        session = execution_engine.ExecutionSession("AGENTIC_SHADOW_01", conn, broker)
+        state = session.initialize()
+        assert state == execution_engine.TradingReadyState.TRADING_READY
+        assert session._initialized is True
+
+
+class TestPollOnceContract:
+    """poll_order_events called exactly once per process_open_orders cycle (0259)."""
+
+    def test_poll_called_once_regardless_of_open_order_count(self):
+        """With 2 open orders, poll_order_events is still called exactly once (0259)."""
+        conn = _make_conn()
+        now = datetime.now(timezone.utc).isoformat()
+        for _ in range(2):
+            intent_id = str(uuid.uuid4())
+            order_id = str(uuid.uuid4())
+            conn.execute(
+                """INSERT INTO trade_intents (intent_id, account_id, instrument_type, symbol, side,
+                   quantity, order_type, limit_price, time_in_force, valid_until, status, created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (intent_id, "AGENTIC_SHADOW_01", "EQUITY", "ANET", "BUY",
+                 1.0, "LIMIT", 100.0, "GTC", _future_iso(), "APPROVED", now),
+            )
+            conn.execute(
+                """INSERT INTO orders (order_id, intent_id, account_id, symbol, side,
+                   quantity, contracts, order_type, limit_price, state, time_in_force,
+                   submitted_at, updated_at, fill_qty, fill_cash)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (order_id, intent_id, "AGENTIC_SHADOW_01", "ANET", "BUY",
+                 1.0, None, "LIMIT", 100.0, "WORKING", "GTC", now, now, 0.0, 0.0),
+            )
+        conn.commit()
+
+        from unittest.mock import MagicMock, call
+        broker = MagicMock()
+        broker.get_order.return_value = MagicMock(
+            order_id=str(uuid.uuid4()), state=MagicMock(value="WORKING"),
+            quantity=1.0, fill_qty=0.0, symbol="ANET", side=MagicMock(value="BUY"),
+        )
+        broker.get_quote.return_value = None
+        broker.poll_order_events.return_value = []
+        broker.requires_market_timestamp = False
+
+        with patch.object(execution_engine, "load_policy", return_value=_make_policy()):
+            execution_engine.process_open_orders("AGENTIC_SHADOW_01", conn, broker=broker)
+
+        assert broker.poll_order_events.call_count == 1

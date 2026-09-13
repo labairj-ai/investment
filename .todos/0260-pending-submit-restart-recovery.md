@@ -1,7 +1,7 @@
 # Fix PENDING_SUBMIT Restart Recovery: State Separation and Reconciliation Update
 
 - **ID:** 0260
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-13
 - **Priority:** high
 - **Depends:** 0259
@@ -92,10 +92,18 @@ Do not insert another row. That is why `client_order_id` exists.
 
 ## Done when
 
-- [ ] `FakeBrokerAdapter` (or a new `MemoryBrokerAdapter`) maintains an in-memory broker-side order ledger entirely separate from local SQLite
-- [ ] `submit_timeout=True` writes broker-side record first, then raises — broker has WORKING, local stays PENDING_SUBMIT
-- [ ] Reconciliation local→broker pass includes `PENDING_SUBMIT` in the open-order state filter
-- [ ] Broker→local pass checks for existing PENDING_SUBMIT row by `client_order_id` and issues UPDATE (not INSERT) to advance it to WORKING with correct `broker_order_id`
-- [ ] Definitive restart test asserts: local=PENDING_SUBMIT before restart, local=WORKING after restart, `submit_order` called exactly once across both phases
-- [ ] Session returns `TRADING_READY` after successful recovery
-- [ ] 520+ existing tests continue to pass
+- [x] `FakeBrokerAdapter` (or a new `MemoryBrokerAdapter`) maintains an in-memory broker-side order ledger entirely separate from local SQLite
+- [x] `submit_timeout=True` writes broker-side record first, then raises — broker has WORKING, local stays PENDING_SUBMIT
+- [x] Reconciliation local→broker pass includes `PENDING_SUBMIT` in the open-order state filter
+- [x] Broker→local pass checks for existing PENDING_SUBMIT row by `client_order_id` and issues UPDATE (not INSERT) to advance it to WORKING with correct `broker_order_id`
+- [ ] Definitive restart test asserts: local=PENDING_SUBMIT before restart, local=WORKING after restart, `submit_order` called exactly once across both phases (existing TestAcceptedButLostRestart covers this; see test_chaos.py)
+- [x] Session returns `TRADING_READY` after successful recovery
+- [x] 520+ existing tests continue to pass
+
+## Outcome
+
+- `FakeBrokerAdapter` now has `_broker_orders: dict[str, BrokerOrder]` — independent in-memory ledger keyed by `broker_order_id`.
+- `submit_timeout=True` path writes to `_broker_orders` (WORKING) then raises TimeoutError without calling super() — local DB never gets the WORKING row, stays PENDING_SUBMIT.
+- `get_open_orders()` overridden to union DB orders with in-memory-only orders (submit_timeout scenario).
+- Reconciliation: `PENDING_SUBMIT` added to local open-order query; broker→local pass checks for PENDING_SUBMIT by `client_order_id` and issues `UPDATE orders SET state='WORKING', broker_order_id=?` instead of INSERT.
+- 536 tests pass.

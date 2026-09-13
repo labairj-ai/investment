@@ -149,13 +149,17 @@ def reconcile(
             key = o.local_order_id or o.client_order_id or o.broker_order_id
             broker_orders[key] = o
         local_open_rows = conn.execute(
-            "SELECT order_id, state FROM orders WHERE account_id=? AND state IN ('WORKING','PARTIALLY_FILLED')",
+            "SELECT order_id, state, client_order_id FROM orders WHERE account_id=? AND state IN ('PENDING_SUBMIT','WORKING','PARTIALLY_FILLED')",
             (account_id,),
         ).fetchall()
 
         # ── 3a. Local → broker: local open orders that are missing at broker ──
         for row in local_open_rows:
             oid = row["order_id"]
+            # PENDING_SUBMIT rows may not yet appear in broker_orders by order_id;
+            # check by client_order_id below in 3b (UPDATE path)
+            if row["state"] == "PENDING_SUBMIT":
+                continue
             if oid not in broker_orders:
                 discrepancies.append(Discrepancy(
                     kind=DiscrepancyKind.BROKER_MISSING,
@@ -185,32 +189,51 @@ def reconcile(
             # Attempt auto-import when client_order_id traces back to a known intent
             imported = False
             if bo.client_order_id:
-                parts = bo.client_order_id.split(":", 1)
-                if len(parts) == 2:
-                    intent_id = parts[1]
-                    intent_row = conn.execute(
-                        "SELECT intent_id FROM trade_intents WHERE intent_id=? AND account_id=?",
-                        (intent_id, account_id),
-                    ).fetchone()
-                    if intent_row:
-                        # Import: create local order row from broker-reported state
-                        from datetime import datetime, timezone as _tz
-                        now_str = datetime.now(_tz.utc).isoformat()
-                        conn.execute(
-                            """INSERT OR IGNORE INTO orders
-                               (order_id, intent_id, account_id, symbol, side, quantity,
-                                order_type, state, fill_qty, fill_cash,
-                                client_order_id, submitted_at, updated_at)
-                               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                            (
-                                bo_key, intent_id, account_id,
-                                bo.symbol, bo.side, bo.quantity,
-                                "LIMIT", bo.state, bo.fill_qty, 0.0,
-                                bo.client_order_id, now_str, now_str,
-                            ),
-                        )
-                        conn.commit()
-                        imported = True
+                from datetime import datetime, timezone as _tz
+                now_str = datetime.now(_tz.utc).isoformat()
+
+                # PENDING_SUBMIT recovery (0260): if a local PENDING_SUBMIT row matches
+                # this broker order by client_order_id, UPDATE it to WORKING rather than
+                # attempting a second INSERT (which would be silently ignored).
+                pending_row = conn.execute(
+                    "SELECT order_id FROM orders WHERE client_order_id=? AND state='PENDING_SUBMIT'",
+                    (bo.client_order_id,),
+                ).fetchone()
+                if pending_row:
+                    conn.execute(
+                        """UPDATE orders
+                           SET state='WORKING', broker_order_id=?, submitted_at=?, updated_at=?
+                           WHERE order_id=?""",
+                        (bo.broker_order_id or bo_key, now_str, now_str, pending_row["order_id"]),
+                    )
+                    conn.commit()
+                    imported = True
+
+                if not imported:
+                    parts = bo.client_order_id.split(":", 1)
+                    if len(parts) == 2:
+                        intent_id = parts[1]
+                        intent_row = conn.execute(
+                            "SELECT intent_id FROM trade_intents WHERE intent_id=? AND account_id=?",
+                            (intent_id, account_id),
+                        ).fetchone()
+                        if intent_row:
+                            # Import: create local order row from broker-reported state
+                            conn.execute(
+                                """INSERT OR IGNORE INTO orders
+                                   (order_id, intent_id, account_id, symbol, side, quantity,
+                                    order_type, state, fill_qty, fill_cash,
+                                    client_order_id, submitted_at, updated_at)
+                                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                (
+                                    bo_key, intent_id, account_id,
+                                    bo.symbol, bo.side, bo.quantity,
+                                    "LIMIT", bo.state, bo.fill_qty, 0.0,
+                                    bo.client_order_id, now_str, now_str,
+                                ),
+                            )
+                            conn.commit()
+                            imported = True
 
             if not imported:
                 discrepancies.append(Discrepancy(

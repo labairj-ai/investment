@@ -1,7 +1,7 @@
 # Broker Event State Reducer, Atomic Fill Dedup, Unknown Fill Quarantine
 
 - **ID:** 0261
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-13
 - **Priority:** normal
 - **Depends:** 0259, 0260
@@ -98,12 +98,20 @@ No test verifies that when two orders both have events in a single `poll_order_e
 
 ## Done when
 
-- [ ] `apply_broker_order_event()` exists and owns all valid broker-driven order state transitions
-- [ ] CANCELLED event updates local order state to CANCELLED (no longer a no-op `pass`)
-- [ ] EXPIRED event updates local order state to EXPIRED (no longer a no-op `pass`)
-- [ ] Invalid/impossible transitions (e.g., CANCELLED on a FILLED order) log a warning and return without mutation
-- [ ] `apply_broker_fill()` uses `INSERT OR IGNORE` + `rowcount` check; concurrent callers: one returns APPLIED, one returns ALREADY_APPLIED, neither raises an exception
-- [ ] `apply_broker_fill()` halts with a quarantine/halt signal when no local order can be identified by any ID field
-- [ ] `TestCancelFillRace` tests ordering A (FILLED → CANCELLED) and ordering B (CANCEL_REQUESTED → CANCELLED → late FILLED); both assert final state is FILLED
-- [ ] New test sends two open-order events in a single poll; both are processed and ingested correctly
-- [ ] 520+ existing tests continue to pass
+- [x] `apply_broker_order_event()` exists and owns all valid broker-driven order state transitions
+- [x] CANCELLED event updates local order state to CANCELLED (no longer a no-op `pass`)
+- [x] EXPIRED event updates local order state to EXPIRED (no longer a no-op `pass`)
+- [x] Invalid/impossible transitions (e.g., CANCELLED on a FILLED order) log a warning and return without mutation
+- [x] `apply_broker_fill()` uses `INSERT OR IGNORE` + `rowcount` check; concurrent callers: one returns APPLIED, one returns ALREADY_APPLIED, neither raises an exception
+- [x] `apply_broker_fill()` halts with a quarantine/halt signal when no local order can be identified by any ID field
+- [ ] `TestCancelFillRace` full rewrite with both orderings (existing test covers partial scenario; full CANCEL_REQUESTED→CANCELLED→late FILLED ordering deferred)
+- [x] New test sends two open-order events in a single poll; both are processed and ingested correctly (TestPollOnceContract)
+- [x] 520+ existing tests continue to pass
+
+## Outcome
+
+- `apply_broker_order_event(event, account_id, conn)` added to execution_engine.py. Handles CANCELLED (valid from WORKING/CANCEL_REQUESTED/PARTIALLY_FILLED) and EXPIRED (valid from WORKING/PARTIALLY_FILLED); invalid transitions log warning and return without mutation; also updates trade_intents status.
+- `apply_broker_fill()` rewritten: `INSERT OR IGNORE` + `rowcount==0 → ALREADY_APPLIED`; `UnknownFillError` when order not in local DB; `OverfillError` for material overfills; `ImpossibleSellError` for sells exceeding held position.
+- `TestApplyBrokerFillSafety` added (unknown fill, overfill, impossible sell, duplicate dedup tests).
+- `TestApplyBrokerOrderEvent` added (CANCELLED, EXPIRED transitions; invalid transition no-op).
+- 536 tests pass.

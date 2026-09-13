@@ -53,6 +53,22 @@ class FillResult(str, Enum):
     ALREADY_APPLIED = "ALREADY_APPLIED"
 
 
+class UnknownFillError(RuntimeError):
+    """apply_broker_fill() cannot match a fill to any local order — quarantine required (0261)."""
+
+
+class OverfillError(RuntimeError):
+    """Fill quantity exceeds order remaining quantity — broker reporting error (0262)."""
+
+
+class ImpossibleSellError(RuntimeError):
+    """Sell fill quantity exceeds locally held position — state corruption (0262)."""
+
+
+class SessionNotReadyError(RuntimeError):
+    """process_intent() or run_execution_cycle() called before successful initialize() (0262)."""
+
+
 _FILL_REPLAY_WINDOW_MINUTES = 15   # look this far back when querying fills to catch late arrivals (0257)
 _MAX_LIMIT_OVERAGE = 2.0           # reject LIMIT orders > 200% above ask (BUY) or < 200% below bid (SELL) (0251)
 
@@ -370,10 +386,20 @@ def process_intent(
             elapsed_ms=int((time.monotonic() - t0) * 1000),
         )
 
+    # Quote sanity: reject malformed quotes before any spread or limit check (0262)
+    if bquote.bid <= 0 or bquote.ask <= 0 or bquote.bid > bquote.ask:
+        return ExecutionResult(
+            intent_id=intent_id,
+            decision="QUOTE_REJECTED",
+            order_id=None,
+            fill=None,
+            risk_decision=risk_decision,
+            elapsed_ms=int((time.monotonic() - t0) * 1000),
+        )
+
     # Spread sanity: reject if ask spread is too wide for reliable execution
-    if bquote.ask > 0:
-        spread_pct = (bquote.ask - bquote.bid) / bquote.ask * 100.0
-        if spread_pct > policy.max_spread_pct():
+    spread_pct = (bquote.ask - bquote.bid) / bquote.ask * 100.0
+    if spread_pct > policy.max_spread_pct():
             return ExecutionResult(
                 intent_id=intent_id,
                 decision="QUOTE_REJECTED",
@@ -433,22 +459,33 @@ def process_intent(
     # ── Order submission (broker call after local row is durable) ─────────────
     order = broker.submit_order(intent, client_order_id=client_order_id)
 
-    # ── First fill attempt using pre-fetched bquote ───────────────────────────
-    existing_fill_row = conn.execute(
-        "SELECT * FROM fills WHERE order_id=?", (order.order_id,)
-    ).fetchone()
-
+    # ── Ingest any immediate fills via the canonical event path (0259) ────────
+    # attempt_fill() is NOT called here; all fills flow through apply_broker_fill().
     fill: Optional[Fill] = None
-    if existing_fill_row:
-        fill = Fill.from_db_row(existing_fill_row)
-    elif order.state in (OrderState.WORKING, OrderState.PARTIALLY_FILLED):
-        fill = broker.attempt_fill(order, bquote)
-        if not fill:
-            conn.execute(
-                "UPDATE orders SET market_data_status='ok' WHERE order_id=?",
-                (order.order_id,),
+    initial_events = broker.poll_order_events(intent.account_id, quote=bquote)
+    for event in initial_events:
+        event_order_id = event.local_order_id or event.broker_order_id
+        if event_order_id != order.order_id:
+            continue
+        if event.event_type in ("FILLED", "PARTIALLY_FILLED"):
+            bf = BrokerFill(
+                broker_fill_id=event.broker_fill_id or str(_uuid.uuid4()),
+                broker_order_id=event.broker_order_id,
+                symbol=order.symbol,
+                side=order.side.value,
+                qty=float(event.fill_qty),
+                price=float(event.fill_price),
+                filled_at=event.filled_at or _now_utc().isoformat(),
+                fee=float(event.fee),
+                local_order_id=event.local_order_id,
+                account_id=intent.account_id,
             )
-            conn.commit()
+            apply_broker_fill(bf, intent.account_id, conn)
+            fill_row = conn.execute(
+                "SELECT * FROM fills WHERE fill_id=?", (bf.broker_fill_id,)
+            ).fetchone()
+            if fill_row and fill is None:
+                fill = Fill.from_db_row(fill_row)
 
     if fill:
         updated_order = broker.get_order(order.order_id)
@@ -521,6 +558,14 @@ def process_open_orders(
         # No policy = no authority = no fills (0227)
         raise PolicyUnavailable(f"Cannot load policy for {account_id!r}: {exc}") from exc
 
+    # ── Poll ONCE for all open orders (0259) ─────────────────────────────────
+    # Broker events are authoritative; quote unavailability must never gate ingestion.
+    all_events = broker.poll_order_events(account_id)
+    events_by_order: dict[str, list] = {}
+    for _e in all_events:
+        _key = _e.local_order_id or _e.broker_order_id
+        events_by_order.setdefault(_key, []).append(_e)
+
     for row in open_rows:
         order = broker.get_order(row["order_id"])
         if not order:
@@ -531,6 +576,51 @@ def process_open_orders(
         if not intent_row:
             continue
         intent = TradeIntent.from_db_row(intent_row)
+
+        # ── Ingest broker events first (authoritative; quote-independent) (0259, 0261) ─
+        # Events from the broker are final facts. Process them before risk revalidation
+        # so a FILLED order is never risk-cancelled and a CANCELLED order is not re-evaluated.
+        for event in events_by_order.get(order.order_id, []):
+            if event.event_type in ("FILLED", "PARTIALLY_FILLED"):
+                bf = BrokerFill(
+                    broker_fill_id=event.broker_fill_id or str(_uuid.uuid4()),
+                    broker_order_id=event.broker_order_id,
+                    symbol=order.symbol,
+                    side=order.side.value,
+                    qty=float(event.fill_qty),
+                    price=float(event.fill_price),
+                    filled_at=event.filled_at or _now_utc().isoformat(),
+                    fee=float(event.fee),
+                    local_order_id=event.local_order_id,
+                    account_id=account_id,
+                )
+                apply_broker_fill(bf, account_id, conn)
+                fill_row = conn.execute(
+                    "SELECT * FROM fills WHERE fill_id=?", (bf.broker_fill_id,)
+                ).fetchone()
+                if fill_row:
+                    fill = Fill.from_db_row(fill_row)
+                    fills.append(fill)
+                    _write_executed_action(fill, intent, conn)
+            elif event.event_type in ("CANCELLED", "EXPIRED"):
+                apply_broker_order_event(event, account_id, conn)
+            else:
+                _log.warning(
+                    "process_open_orders: unknown event_type %r for order %s",
+                    event.event_type, order.order_id,
+                )
+
+        # Skip risk revalidation if the order is no longer open after event ingestion
+        post_event_order = conn.execute(
+            "SELECT state FROM orders WHERE order_id=?", (order.order_id,)
+        ).fetchone()
+        if post_event_order and post_event_order["state"] not in ("WORKING", "PARTIALLY_FILLED"):
+            # Sync intent status from the terminal order state (handles ALREADY_APPLIED case
+            # where shadow_broker._apply_fill() already wrote the fill to DB)
+            terminal_order = broker.get_order(order.order_id)
+            if terminal_order:
+                _sync_intent_from_order(terminal_order, row["intent_id"], conn)
+            continue
 
         # ── Pre-fill risk revalidation (0220, 0229, 0230) ─────────────────────
         account = _load_account(account_id, conn)
@@ -550,68 +640,25 @@ def process_open_orders(
                 pre_fill_rejections += 1
                 continue
 
-        bquote = broker.get_quote(order.symbol)  # (0243) route through broker abstraction
+        # ── Quote: update market_data_status; stale quote only blocks submissions ─
+        bquote = broker.get_quote(order.symbol)
         if not bquote:
             conn.execute(
                 "UPDATE orders SET market_data_status='unavailable' WHERE order_id=?",
                 (order.order_id,),
             )
-            conn.commit()
-            continue
-
-        if not _is_quote_fresh(bquote, stale_minutes,
-                               require_market_timestamp=broker.requires_market_timestamp):
+        elif not _is_quote_fresh(bquote, stale_minutes,
+                                 require_market_timestamp=broker.requires_market_timestamp):
             conn.execute(
                 "UPDATE orders SET market_data_status='stale' WHERE order_id=?",
                 (order.order_id,),
             )
-            conn.commit()
-            continue
-
-        conn.execute(
-            "UPDATE orders SET market_data_status='ok' WHERE order_id=?",
-            (order.order_id,),
-        )
-
-        # ── Poll broker event stream; process events for this order only (0256) ─
-        events = broker.poll_order_events(account_id, quote=bquote)
-
-        for event in events:
-            event_order_id = event.local_order_id or event.broker_order_id
-            if event_order_id != order.order_id:
-                continue  # poll_order_events may emit events for all orders; filter to current
-
-            if event.event_type in ("FILLED", "PARTIALLY_FILLED"):
-                bf = BrokerFill(
-                    broker_fill_id=event.broker_fill_id or str(_uuid.uuid4()),
-                    broker_order_id=event.broker_order_id,
-                    symbol=order.symbol,
-                    side=order.side.value,
-                    qty=float(event.fill_qty),
-                    price=float(event.fill_price),
-                    filled_at=event.filled_at or _now_utc().isoformat(),
-                    fee=float(event.fee),
-                    local_order_id=event.local_order_id,
-                    account_id=account_id,
-                )
-                apply_broker_fill(bf, account_id, conn)
-                # Query fill for audit record (shadow: already written; real broker: just written)
-                fill_row = conn.execute(
-                    "SELECT * FROM fills WHERE fill_id=?", (bf.broker_fill_id,)
-                ).fetchone()
-                if fill_row:
-                    fill = Fill.from_db_row(fill_row)
-                    fills.append(fill)
-                    _write_executed_action(fill, intent, conn)
-            elif event.event_type == "CANCELLED":
-                pass  # broker-initiated cancel; order state already updated by broker
-            elif event.event_type == "EXPIRED":
-                pass  # counted below via updated.state check
-            else:
-                _log.warning(
-                    "process_open_orders: unknown event_type %r for order %s",
-                    event.event_type, order.order_id,
-                )
+        else:
+            conn.execute(
+                "UPDATE orders SET market_data_status='ok' WHERE order_id=?",
+                (order.order_id,),
+            )
+        conn.commit()
 
         updated = broker.get_order(order.order_id)
         if updated:
@@ -750,16 +797,78 @@ def run_execution_cycle(
     }
 
 
+class ExecutionSession:
+    """Execution context that owns initialization state so TRADING_READY is never caller-supplied (0262).
+
+    Usage:
+        session = ExecutionSession(account_id, conn, broker)
+        session.initialize()                # reconciliation; raises SessionNotReadyError if not READY
+        session.process_intent(intent_id)
+        session.run_cycle()
+    """
+
+    def __init__(
+        self,
+        account_id: str,
+        conn: sqlite3.Connection,
+        broker: Optional[BrokerAdapter] = None,
+    ) -> None:
+        self._account_id = account_id
+        self._conn = conn
+        self._broker = broker
+        self._initialized: bool = False
+        self._trading_state: Optional[TradingReadyState] = None
+
+    def initialize(self) -> TradingReadyState:
+        """Run startup reconciliation. Raises SessionNotReadyError if result is not TRADING_READY."""
+        state = initialize_trading_session(self._account_id, self._conn, self._broker)
+        self._trading_state = state
+        if state != TradingReadyState.TRADING_READY:
+            raise SessionNotReadyError(
+                f"initialize_trading_session returned {state.value} for {self._account_id}"
+            )
+        self._initialized = True
+        return state
+
+    def _require_initialized(self) -> None:
+        if not self._initialized:
+            raise SessionNotReadyError(
+                "ExecutionSession.initialize() must succeed before processing orders"
+            )
+
+    def process_intent(self, intent_id: int) -> "ExecutionResult":
+        self._require_initialized()
+        return process_intent(intent_id, self._conn, broker=self._broker)
+
+    def process_open_orders(self) -> tuple:
+        self._require_initialized()
+        return process_open_orders(self._account_id, self._conn, broker=self._broker)
+
+    def run_cycle(self) -> dict:
+        self._require_initialized()
+        return run_execution_cycle(
+            self._account_id,
+            self._conn,
+            broker=self._broker,
+            trading_state=TradingReadyState.TRADING_READY,
+        )
+
+
 def apply_broker_fill(
     bf,  # BrokerFill
     account_id: str,
     conn: sqlite3.Connection,
 ) -> FillResult:
-    """Apply a broker fill atomically: fills + order state + positions + cash + audit (0245, 0252).
+    """Apply a broker fill atomically: fills + order state + positions + cash + audit (0245, 0252, 0261, 0262).
 
-    Idempotent (0252): pre-checks fill_id existence; returns ALREADY_APPLIED without any
-    mutation if the fill was already applied. All mutations run in one transaction;
-    conn.rollback() is called on any failure so partial state can never be committed.
+    Idempotent (0261): uses INSERT OR IGNORE + rowcount so concurrent callers both get a clean
+    result (APPLIED or ALREADY_APPLIED) without exceptions. All mutations run in one
+    transaction; conn.rollback() is called on any failure.
+
+    Guards (0262):
+    - UnknownFillError: fill cannot be matched to any local order → quarantine
+    - OverfillError: fill qty exceeds order remaining quantity
+    - ImpossibleSellError: sell qty exceeds held position
     """
     order_id = bf.local_order_id or bf.broker_order_id
     side = bf.side
@@ -768,36 +877,44 @@ def apply_broker_fill(
     fee = float(bf.fee)
     filled_at = bf.filled_at
 
-    # Idempotency gate: check before any mutation (0252)
-    if conn.execute(
-        "SELECT 1 FROM fills WHERE fill_id=?", (bf.broker_fill_id,)
-    ).fetchone():
-        return FillResult.ALREADY_APPLIED
-
     try:
-        # Insert fill record (plain INSERT — pre-check above prevents duplicates)
-        conn.execute(
-            """INSERT INTO fills
+        # Atomic dedup: INSERT OR IGNORE lets the unique PK enforce idempotency (0261)
+        cursor = conn.execute(
+            """INSERT OR IGNORE INTO fills
                (fill_id, order_id, account_id, symbol, side, qty, price,
                 fee, fill_source, filled_at)
                VALUES (?,?,?,?,?,?,?,?,?,?)""",
             (bf.broker_fill_id, order_id, account_id, bf.symbol,
              side, qty, price, fee, "broker_import", filled_at),
         )
+        if cursor.rowcount == 0:
+            return FillResult.ALREADY_APPLIED  # fill already applied; no mutations needed
 
-        # Update order fill totals and state
+        # Only the transaction that wrote the fill row proceeds with mutations
         order_row = conn.execute(
             "SELECT quantity, fill_qty, fill_cash FROM orders WHERE order_id=?", (order_id,)
         ).fetchone()
-        if order_row:
-            new_fill_qty = float(order_row["fill_qty"] or 0) + qty
-            new_fill_cash = float(order_row["fill_cash"] or 0) + qty * price
-            total_qty = float(order_row["quantity"] or 0)
-            new_state = "FILLED" if new_fill_qty >= total_qty else "PARTIALLY_FILLED"
-            conn.execute(
-                "UPDATE orders SET fill_qty=?, fill_cash=?, state=? WHERE order_id=?",
-                (new_fill_qty, new_fill_cash, new_state, order_id),
+        if order_row is None:
+            raise UnknownFillError(
+                f"fill {bf.broker_fill_id}: order {order_id!r} not in local DB — quarantine"
             )
+
+        total_qty = float(order_row["quantity"] or 0)
+        prior_fill_qty = float(order_row["fill_qty"] or 0)
+        remaining = max(0.0, total_qty - prior_fill_qty)
+        # Overfill guard: allow tiny float tolerance (0262)
+        if qty > remaining + 1e-6:
+            raise OverfillError(
+                f"fill {bf.broker_fill_id}: fill qty {qty} exceeds remaining {remaining:.6f} for order {order_id}"
+            )
+
+        new_fill_qty = prior_fill_qty + qty
+        new_fill_cash = float(order_row["fill_cash"] or 0) + qty * price
+        new_state = "FILLED" if new_fill_qty >= total_qty - 1e-9 else "PARTIALLY_FILLED"
+        conn.execute(
+            "UPDATE orders SET fill_qty=?, fill_cash=?, state=? WHERE order_id=?",
+            (new_fill_qty, new_fill_cash, new_state, order_id),
+        )
 
         # Update position: BUY increases qty/avg_cost; SELL decreases qty
         is_sell = side in ("SELL", "SELL_TO_OPEN")
@@ -807,8 +924,13 @@ def apply_broker_fill(
         ).fetchone()
         if is_sell:
             old_qty = float(pos_row["qty"] or 0) if pos_row else 0.0
-            new_qty = max(0.0, old_qty - qty)
-            if new_qty == 0.0:
+            # Impossible sell guard: refuse silently clamping to zero (0262)
+            if qty > old_qty + 1e-6:
+                raise ImpossibleSellError(
+                    f"fill {bf.broker_fill_id}: sell qty {qty} exceeds held qty {old_qty} for {bf.symbol}"
+                )
+            new_qty = old_qty - qty
+            if new_qty <= 1e-9:
                 conn.execute(
                     "DELETE FROM position_snapshots WHERE account_id=? AND symbol=?",
                     (account_id, bf.symbol),
@@ -844,21 +966,99 @@ def apply_broker_fill(
         )
 
         # Update intent status if order is now fully filled
-        if order_row:
-            new_fill_qty2 = float(order_row["fill_qty"] or 0) + qty
-            if new_fill_qty2 >= float(order_row["quantity"] or 0):
-                conn.execute(
-                    """UPDATE trade_intents SET status='FILLED'
-                       WHERE intent_id = (SELECT intent_id FROM orders WHERE order_id=?)""",
-                    (order_id,),
-                )
+        if new_fill_qty >= total_qty - 1e-9:
+            conn.execute(
+                """UPDATE trade_intents SET status='FILLED'
+                   WHERE intent_id = (SELECT intent_id FROM orders WHERE order_id=?)""",
+                (order_id,),
+            )
 
         conn.commit()
         return FillResult.APPLIED
 
+    except (UnknownFillError, OverfillError, ImpossibleSellError):
+        conn.rollback()
+        raise
     except Exception:
         conn.rollback()
         raise
+
+
+def apply_broker_order_event(
+    event,  # BrokerOrderEvent
+    account_id: str,
+    conn: sqlite3.Connection,
+) -> None:
+    """Central state reducer for non-fill broker order events (0261).
+
+    Valid transitions:
+      WORKING            → CANCELLED       (CANCELLED event)
+      WORKING            → EXPIRED         (EXPIRED event)
+      CANCEL_REQUESTED   → CANCELLED       (CANCELLED event)
+      PARTIALLY_FILLED   → CANCELLED       (CANCELLED event — partial fill accepted, rest cancelled)
+
+    Invalid/impossible transitions (e.g. CANCELLED on a FILLED order) log a warning
+    and return without mutation. Fill events are not handled here — route them to
+    apply_broker_fill() instead.
+    """
+    order_id = event.local_order_id or event.broker_order_id
+    event_type = event.event_type
+
+    if event_type in ("FILLED", "PARTIALLY_FILLED"):
+        _log.warning(
+            "apply_broker_order_event: fill event %s for order %s — route to apply_broker_fill()",
+            event_type, order_id,
+        )
+        return
+
+    row = conn.execute(
+        "SELECT state FROM orders WHERE order_id=?", (order_id,)
+    ).fetchone()
+    if row is None:
+        _log.warning(
+            "apply_broker_order_event: order %s not found in local DB (event: %s)", order_id, event_type
+        )
+        return
+
+    current_state = row["state"]
+
+    VALID_CANCEL = {"WORKING", "CANCEL_REQUESTED", "PARTIALLY_FILLED"}
+    VALID_EXPIRE = {"WORKING", "PARTIALLY_FILLED"}
+
+    if event_type == "CANCELLED":
+        if current_state not in VALID_CANCEL:
+            _log.warning(
+                "apply_broker_order_event: ignoring CANCELLED for order %s in state %s",
+                order_id, current_state,
+            )
+            return
+        conn.execute("UPDATE orders SET state='CANCELLED' WHERE order_id=?", (order_id,))
+        conn.execute(
+            """UPDATE trade_intents SET status='CANCELLED'
+               WHERE intent_id = (SELECT intent_id FROM orders WHERE order_id=?)""",
+            (order_id,),
+        )
+        conn.commit()
+
+    elif event_type == "EXPIRED":
+        if current_state not in VALID_EXPIRE:
+            _log.warning(
+                "apply_broker_order_event: ignoring EXPIRED for order %s in state %s",
+                order_id, current_state,
+            )
+            return
+        conn.execute("UPDATE orders SET state='EXPIRED' WHERE order_id=?", (order_id,))
+        conn.execute(
+            """UPDATE trade_intents SET status='EXPIRED'
+               WHERE intent_id = (SELECT intent_id FROM orders WHERE order_id=?)""",
+            (order_id,),
+        )
+        conn.commit()
+
+    else:
+        _log.warning(
+            "apply_broker_order_event: unrecognised event_type %r for order %s", event_type, order_id
+        )
 
 
 def initialize_trading_session(

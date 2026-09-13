@@ -6,11 +6,30 @@ objects to the normalized types in broker_types.py before returning them.
 """
 from __future__ import annotations
 
+import datetime
 from abc import ABC, abstractmethod
 from typing import Optional
 
 from .broker_types import BrokerAccountState, BrokerFill, BrokerOrder, BrokerOrderEvent, BrokerPosition, BrokerQuote
 from .models import Fill, Order, TradeIntent, TradingAccount
+
+
+def _shadow_quote_fresh(quote: BrokerQuote, stale_minutes: int) -> bool:
+    """Return True when the quote is recent enough to trigger a simulated fill (0259)."""
+    now = datetime.datetime.now(datetime.timezone.utc).timestamp()
+    if quote.market_timestamp:
+        try:
+            ts = datetime.datetime.fromisoformat(quote.market_timestamp).timestamp()
+            return (now - ts) / 60 <= stale_minutes
+        except Exception:
+            pass
+    if quote.retrieved_at:
+        try:
+            ts = datetime.datetime.fromisoformat(quote.retrieved_at).timestamp()
+            return (now - ts) / 60 <= stale_minutes
+        except Exception:
+            pass
+    return False
 
 
 class BrokerAdapter(ABC):
@@ -194,14 +213,19 @@ class ShadowBrokerAdapter(BrokerAdapter):
     def poll_order_events(
         self, account_id: str, quote: Optional[BrokerQuote] = None
     ) -> list[BrokerOrderEvent]:
-        """Simulate order events synchronously for shadow mode (0248, 0256).
+        """Simulate order events synchronously for shadow mode (0248, 0256, 0259).
 
         For each WORKING/PARTIALLY_FILLED order, attempts a fill using the provided quote
-        (if the quote's symbol matches the order's symbol) or a freshly fetched quote when
-        no quote is supplied. Returns BrokerOrderEvent list; fill events carry broker_fill_id
-        so apply_broker_fill() can deduplicate via the idempotency gate (0252).
-        Expired orders produce EXPIRED events.
+        (if fresh and symbol matches) or a freshly fetched quote when no quote is supplied.
+        Returns BrokerOrderEvent list; fill events carry broker_fill_id so apply_broker_fill()
+        can deduplicate via the idempotency gate (0252).
+
+        Freshness: a stale quote (older than _SHADOW_STALE_MINUTES) never triggers a
+        simulated fill — this preserves the test guarantee that stale quotes block fills (0259).
+        Expired orders produce EXPIRED events regardless of quote state.
         """
+        _SHADOW_STALE_MINUTES = 15  # conservative default; real policy not available here
+
         events: list[BrokerOrderEvent] = []
         open_orders = self.get_open_orders(account_id)
         for bo in open_orders:
@@ -216,7 +240,8 @@ class ShadowBrokerAdapter(BrokerAdapter):
             elif quote is None:
                 effective_quote = self.get_quote(order.symbol)
 
-            if effective_quote:
+            # Only attempt fill when quote is present AND fresh (0259)
+            if effective_quote and _shadow_quote_fresh(effective_quote, _SHADOW_STALE_MINUTES):
                 fill = self.attempt_fill(order, effective_quote)
                 if fill:
                     event_type = (

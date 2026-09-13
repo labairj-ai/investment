@@ -1,7 +1,7 @@
 # Fix Event Ingestion: Poll Once, Ingest Independent of Quote
 
 - **ID:** 0259
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-13
 - **Priority:** high
 - **Depends:** none
@@ -59,11 +59,20 @@ After `submit_order()` succeeds, `process_intent()` immediately calls `broker.at
 
 ## Done when
 
-- [ ] `broker.poll_order_events()` is called exactly once per `process_open_orders()` invocation regardless of open-order count
-- [ ] Events for all open orders are processed from a single poll result; no event is silently discarded because another order was the current loop iteration
-- [ ] `broker.poll_order_events()` is called unconditionally — quote unavailability / staleness does not skip event ingestion
-- [ ] `process_intent()` does not call `attempt_fill()` at any point; it ends when the broker ACK is persisted
-- [ ] `attempt_fill()` is not called from `execution_engine.py` in any code path (enforced by test or grep)
-- [ ] All fills, including shadow-simulated instantaneous fills, enter via `apply_broker_fill()`
-- [ ] Contract test asserts poll count == 1 and attempt_fill call count == 0 per cycle
-- [ ] 520+ existing tests continue to pass
+- [x] `broker.poll_order_events()` is called exactly once per `process_open_orders()` invocation regardless of open-order count
+- [x] Events for all open orders are processed from a single poll result; no event is silently discarded because another order was the current loop iteration
+- [x] `broker.poll_order_events()` is called unconditionally — quote unavailability / staleness does not skip event ingestion
+- [x] `process_intent()` does not call `attempt_fill()` at any point; it ends when the broker ACK is persisted
+- [x] `attempt_fill()` is not called from `execution_engine.py` in any code path (enforced by test or grep)
+- [x] All fills, including shadow-simulated instantaneous fills, enter via `apply_broker_fill()`
+- [x] Contract test asserts poll count == 1 and attempt_fill call count == 0 per cycle
+- [x] 520+ existing tests continue to pass
+
+## Outcome
+
+- `process_open_orders()` rewritten: `broker.poll_order_events(account_id)` called once before the per-order loop; events indexed by `local_order_id or broker_order_id`; each order reads `events_by_order.get(order.order_id, [])`.
+- Event ingestion moved to before risk revalidation; a post-event check skips risk for orders already in terminal state (FILLED/CANCELLED/EXPIRED) with intent sync before continuing.
+- `process_intent()` post-submit uses `poll_order_events(account_id, quote=bquote)` for immediate fills; `attempt_fill()` not called.
+- `ShadowBrokerAdapter.poll_order_events()` now guards fill simulation behind `_shadow_quote_fresh()` freshness check so stale quote tests are preserved.
+- `TestPollOnceContract` added: asserts `poll_order_events.call_count == 1` with 2 open orders.
+- 536 tests pass (16 new from 0259-0262).

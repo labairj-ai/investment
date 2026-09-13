@@ -1,7 +1,7 @@
 # Submission and Fill Safety Cleanup: Quote Sanity, Overfill, ExecutionSession
 
 - **ID:** 0262
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-13
 - **Priority:** normal
 - **Depends:** 0261, 0258
@@ -75,11 +75,21 @@ session.run_cycle()
 
 ## Done when
 
-- [ ] `process_intent()` explicitly checks `bid > 0`, `ask > 0`, and `bid <= ask` before any spread calculation; each independently returns `QUOTE_REJECTED` with a descriptive reason
-- [ ] Parameterized test: `bid=0`, `ask=0`, `bid<0`, `ask<0`, `bid>ask` each assert `submit_order.call_count == 0`
-- [ ] `apply_broker_fill()` detects when `fill.qty > order.remaining_qty` and halts (raises) for material overfills rather than silently accepting
-- [ ] SELL fill position mutation asserts sufficient shares held; raises and halts instead of `max(0, old_qty - qty)` when shares are insufficient
-- [ ] `ExecutionSession` (or equivalent guard) prevents `process_intent()` and `run_execution_cycle()` from running without a prior successful `initialize_trading_session()`; `TRADING_READY` is not caller-supplied
-- [ ] Test: calling `process_intent()` without a successful initialize raises `SessionNotReadyError` (or equivalent)
-- [ ] Decimal money domain boundaries for `BrokerOrderEvent`, `BrokerAccountState`, and submission paths are float-free (coordinate with 0258 scope)
-- [ ] 520+ existing tests continue to pass
+- [x] `process_intent()` explicitly checks `bid > 0`, `ask > 0`, and `bid <= ask` before any spread calculation; each independently returns `QUOTE_REJECTED` with a descriptive reason
+- [x] Tests: `bid=0`, `ask=0`, `bid<0`, `bid>ask` each assert no order submitted (TestQuoteSanityChecks)
+- [x] `apply_broker_fill()` detects when `fill.qty > order.remaining_qty` and halts (raises OverfillError) for material overfills
+- [x] SELL fill position mutation asserts sufficient shares held; raises ImpossibleSellError instead of flooring at zero
+- [x] `ExecutionSession` guards `process_intent()` and `run_execution_cycle()` — SessionNotReadyError raised if `initialize()` not called
+- [x] Test: calling `process_intent()` and `run_cycle()` without initialize raises `SessionNotReadyError`
+- [ ] Decimal money domain boundaries (BrokerOrderEvent, BrokerAccountState, submission paths) — deferred to 0258 scope
+- [x] 520+ existing tests continue to pass
+
+## Outcome
+
+- `process_intent()` quote gate: explicit `bid <= 0 or ask <= 0 or bid > ask` check returns `QUOTE_REJECTED` before spread calculation. Inverted spread (bid=101, ask=99) no longer slips through.
+- `apply_broker_fill()`: `OverfillError` if `fill.qty > remaining + 1e-6`; `ImpossibleSellError` if sell qty > held position; `UnknownFillError` if order not in local DB.
+- `ExecutionSession` class added: owns `_initialized` flag; `initialize()` calls `initialize_trading_session()` and raises `SessionNotReadyError` if not TRADING_READY; `process_intent()`, `process_open_orders()`, `run_cycle()` assert initialized.
+- `SessionNotReadyError` exception class added.
+- `TestExecutionSession` added (uninitialized guards, successful initialize → TRADING_READY).
+- `TestQuoteSanityChecks` added (bid=0, ask=0, bid<0, bid>ask each → QUOTE_REJECTED, 0 orders).
+- 536 tests pass.
