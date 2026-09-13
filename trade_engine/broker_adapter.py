@@ -194,22 +194,36 @@ class ShadowBrokerAdapter(BrokerAdapter):
     def poll_order_events(
         self, account_id: str, quote: Optional[BrokerQuote] = None
     ) -> list[BrokerOrderEvent]:
-        """Simulate order events synchronously for shadow mode (0248).
+        """Simulate order events synchronously for shadow mode (0248, 0256).
 
         For each WORKING/PARTIALLY_FILLED order, attempts a fill using the provided quote
-        and translates the result to BrokerOrderEvent. Expired orders produce EXPIRED events.
+        (if the quote's symbol matches the order's symbol) or a freshly fetched quote when
+        no quote is supplied. Returns BrokerOrderEvent list; fill events carry broker_fill_id
+        so apply_broker_fill() can deduplicate via the idempotency gate (0252).
+        Expired orders produce EXPIRED events.
         """
-        from .shadow_broker import Quote as ShadowQuote
         events: list[BrokerOrderEvent] = []
         open_orders = self.get_open_orders(account_id)
         for bo in open_orders:
             order = self.get_order(bo.local_order_id or bo.broker_order_id)
             if not order:
                 continue
-            if quote:
-                fill = self.attempt_fill(order, quote)
+
+            # Choose effective quote: use passed quote only when symbol matches; else fetch per-order
+            effective_quote: Optional[BrokerQuote] = None
+            if quote is not None and getattr(quote, "symbol", "") == order.symbol:
+                effective_quote = quote
+            elif quote is None:
+                effective_quote = self.get_quote(order.symbol)
+
+            if effective_quote:
+                fill = self.attempt_fill(order, effective_quote)
                 if fill:
-                    event_type = "FILLED" if float(order.fill_qty or 0) + float(fill.qty) >= float(order.quantity or 0) else "PARTIALLY_FILLED"
+                    event_type = (
+                        "FILLED"
+                        if float(order.fill_qty or 0) + float(fill.qty) >= float(order.quantity or 0)
+                        else "PARTIALLY_FILLED"
+                    )
                     events.append(BrokerOrderEvent(
                         event_type=event_type,
                         broker_order_id=order.order_id,
@@ -218,6 +232,7 @@ class ShadowBrokerAdapter(BrokerAdapter):
                         fill_price=fill.price,
                         filled_at=fill.filled_at,
                         fee=fill.fee,
+                        broker_fill_id=fill.fill_id,   # canonical ID for deduplication (0256)
                     ))
             # Check for expiry after fill attempt
             refreshed = self.get_order(bo.local_order_id or bo.broker_order_id)

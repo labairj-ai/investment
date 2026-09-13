@@ -1,7 +1,7 @@
 # Make apply_broker_fill Idempotent on Duplicate Fill ID
 
 - **ID:** 0252
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-13
 - **Priority:** high
 - **Depends:** none
@@ -43,10 +43,14 @@ through `apply_broker_fill()`.
 
 ## Done when
 
-- [ ] Calling `apply_broker_fill()` twice with the same `broker_fill_id` leaves `fills` count == 1
-- [ ] `orders.fill_qty` is not incremented on the second call
-- [ ] `position_snapshots.qty` is not incremented on the second call
-- [ ] `current_cash` is not decremented on the second call
-- [ ] The function is wrapped in an explicit transaction; any exception triggers a rollback
-- [ ] Return value distinguishes `APPLIED` from `ALREADY_APPLIED`
-- [ ] All existing tests pass
+- [x] Calling `apply_broker_fill()` twice with the same `broker_fill_id` leaves `fills` count == 1
+- [x] `orders.fill_qty` is not incremented on the second call
+- [x] `position_snapshots.qty` is not incremented on the second call
+- [x] `current_cash` is not decremented on the second call
+- [x] The function is wrapped in an explicit transaction; any exception triggers a rollback
+- [x] Return value distinguishes `APPLIED` from `ALREADY_APPLIED`
+- [x] All existing tests pass (520 passed, 1 skipped)
+
+## Outcome
+
+Pre-check SELECT on `fill_id` before INSERT; plain INSERT (no OR IGNORE) so any unexpected collision raises rather than silently ignoring. Full try/except wraps all mutations with `conn.rollback()` on error. `FillResult` enum (`APPLIED`/`ALREADY_APPLIED`) returned. `TestDuplicateFill` and `TestCancelFillRace` in `test_chaos.py` assert both results and verify single-debit behaviour.

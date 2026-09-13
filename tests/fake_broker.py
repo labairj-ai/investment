@@ -64,6 +64,10 @@ class FakeBrokerAdapter(ShadowBrokerAdapter):
 
     def submit_order(self, intent: TradeIntent, client_order_id: Optional[str] = None) -> Order:
         if self._submit_timeout:
+            # Accepted-but-response-lost (0253): broker creates the order internally, then
+            # the network call times out before the response reaches us. On restart,
+            # reconciliation must discover this order via client_order_id and import it.
+            super().submit_order(intent, client_order_id=client_order_id)
             raise TimeoutError("broker submission timed out (chaos: submit_timeout)")
         if self._crash_after_submit:
             if self._crash_submitted:

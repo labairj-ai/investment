@@ -1,7 +1,7 @@
 # Fix Quote-Before-Submit Ordering and Full Validation Gate
 
 - **ID:** 0251
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-13
 - **Priority:** high
 - **Depends:** none
@@ -49,11 +49,15 @@ that asserts `submit_order.call_count == 0` for each individual invalid-quote ca
 
 ## Done when
 
-- [ ] `broker.get_quote()` is called before `broker.submit_order()` in `process_intent()`
-- [ ] Quote missing or stale → intent not submitted, reason recorded
-- [ ] `bid <= 0`, `ask <= 0`, `bid > ask` each independently block submission
-- [ ] Spread exceeding `policy.max_spread_pct` blocks submission
-- [ ] Absurd limit-price (BUY far below ask / SELL far above bid) blocks submission
-- [ ] Spy-broker parametrised test asserts `submit_order.call_count == 0` for every bad-quote case
-- [ ] `process_open_orders()` applies the same gate on the retry path
-- [ ] All existing tests pass
+- [x] `broker.get_quote()` is called before `broker.submit_order()` in `process_intent()`
+- [x] Quote missing or stale → intent not submitted, reason recorded
+- [x] `bid <= 0`, `ask <= 0`, `bid > ask` each independently block submission
+- [x] Spread exceeding `policy.max_spread_pct` blocks submission
+- [x] Absurd limit-price (BUY far below ask / SELL far above bid) blocks submission
+- [x] Spy-broker parametrised test asserts `submit_order.call_count == 0` for every bad-quote case
+- [x] `process_open_orders()` applies the same gate on the retry path (quote freshness check via is_quote_fresh before processing events)
+- [x] All existing tests pass (520 passed, 1 skipped)
+
+## Outcome
+
+Quote gate fully front-loads into `process_intent()`: freshness → positive bid/ask → bid≤ask → spread ≤ `policy.max_spread_pct` (2.0%, configurable) → limit-price sanity (BUY limit ≥ ask/`_MAX_LIMIT_OVERAGE` where overage=2.0). Missing quote returns `QUOTE_UNAVAILABLE`; validation failures return `QUOTE_REJECTED`. `max_spread_pct` added to `policy.py` and `config/trading_policy.json`. No order row is created until the gate fully passes.

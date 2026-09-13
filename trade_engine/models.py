@@ -54,6 +54,7 @@ class TimeInForce(str, Enum):
 
 class OrderState(str, Enum):
     PENDING = "PENDING"
+    PENDING_SUBMIT = "PENDING_SUBMIT"  # local row committed; broker call not yet made (0253)
     SUBMITTED = "SUBMITTED"
     WORKING = "WORKING"
     PARTIALLY_FILLED = "PARTIALLY_FILLED"
@@ -66,7 +67,8 @@ class OrderState(str, Enum):
 
 
 _VALID_TRANSITIONS: dict[OrderState, set[OrderState]] = {
-    OrderState.PENDING: {OrderState.SUBMITTED},
+    OrderState.PENDING: {OrderState.SUBMITTED, OrderState.PENDING_SUBMIT},
+    OrderState.PENDING_SUBMIT: {OrderState.WORKING, OrderState.SUBMITTED, OrderState.REJECTED, OrderState.CANCELLED},
     OrderState.SUBMITTED: {OrderState.WORKING, OrderState.REJECTED},
     OrderState.WORKING: {
         OrderState.FILLED,

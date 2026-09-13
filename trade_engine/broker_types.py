@@ -101,3 +101,4 @@ class BrokerOrderEvent(NamedTuple):
     fill_price: float = 0.0
     filled_at: Optional[str] = None
     fee: float = 0.0
+    broker_fill_id: Optional[str] = None   # canonical fill ID for deduplication (0256)

@@ -82,8 +82,8 @@ class ShadowBroker:
         ).fetchone()
         order = Order.from_db_row(row)
 
-        # Advance SUBMITTED → WORKING if not already past that state
-        if order.state == OrderState.SUBMITTED:
+        # Advance PENDING_SUBMIT/SUBMITTED → WORKING if not already past that state (0253)
+        if order.state in (OrderState.PENDING_SUBMIT, OrderState.SUBMITTED):
             self._transition_order(order, OrderState.WORKING)
 
         return order

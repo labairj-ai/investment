@@ -80,6 +80,9 @@ class TradingPolicy:
     def max_slippage_pct(self) -> float:
         return float(self.execution.get("max_slippage_pct", 1.0))
 
+    def max_spread_pct(self) -> float:
+        return float(self.execution.get("max_spread_pct", 2.0))
+
     # ── risk ──────────────────────────────────────────────────────────────────
     def max_drawdown_pct(self) -> float:
         return float(self.risk.get("max_drawdown_pct", 10))

@@ -27,6 +27,7 @@ class DiscrepancyKind(str, Enum):
 # Discrepancy kinds that block new order submission
 _BLOCKING_KINDS = {
     DiscrepancyKind.CASH_MISMATCH,
+    DiscrepancyKind.LOCAL_MISSING,                # broker has it; local DB doesn't — blocks (0257)
     DiscrepancyKind.BROKER_MISSING,               # open order/position missing at broker
     DiscrepancyKind.STATE_MISMATCH,               # order in wrong state
     DiscrepancyKind.QUANTITY_MISMATCH,            # position qty mismatch blocks after fills (0246)
@@ -142,8 +143,9 @@ def reconcile(
     # ── 3. Open orders ────────────────────────────────────────────────────────
     try:
         # Index by local_order_id, then client_order_id, then broker_order_id (0247)
+        broker_order_list = broker.get_open_orders(account_id)
         broker_orders = {}
-        for o in broker.get_open_orders(account_id):
+        for o in broker_order_list:
             key = o.local_order_id or o.client_order_id or o.broker_order_id
             broker_orders[key] = o
         local_open_rows = conn.execute(
@@ -151,6 +153,7 @@ def reconcile(
             (account_id,),
         ).fetchall()
 
+        # ── 3a. Local → broker: local open orders that are missing at broker ──
         for row in local_open_rows:
             oid = row["order_id"]
             if oid not in broker_orders:
@@ -171,6 +174,52 @@ def reconcile(
                         local_value=local_state,
                         broker_value=broker_state,
                     ))
+
+        # ── 3b. Broker → local: broker open orders with no local record (0257) ─
+        local_order_ids = {row["order_id"] for row in local_open_rows}
+        for bo in broker_order_list:
+            bo_key = bo.local_order_id or bo.broker_order_id
+            if bo_key in local_order_ids:
+                continue  # already matched in local→broker pass
+
+            # Attempt auto-import when client_order_id traces back to a known intent
+            imported = False
+            if bo.client_order_id:
+                parts = bo.client_order_id.split(":", 1)
+                if len(parts) == 2:
+                    intent_id = parts[1]
+                    intent_row = conn.execute(
+                        "SELECT intent_id FROM trade_intents WHERE intent_id=? AND account_id=?",
+                        (intent_id, account_id),
+                    ).fetchone()
+                    if intent_row:
+                        # Import: create local order row from broker-reported state
+                        from datetime import datetime, timezone as _tz
+                        now_str = datetime.now(_tz.utc).isoformat()
+                        conn.execute(
+                            """INSERT OR IGNORE INTO orders
+                               (order_id, intent_id, account_id, symbol, side, quantity,
+                                order_type, state, fill_qty, fill_cash,
+                                client_order_id, submitted_at, updated_at)
+                               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                            (
+                                bo_key, intent_id, account_id,
+                                bo.symbol, bo.side, bo.quantity,
+                                "LIMIT", bo.state, bo.fill_qty, 0.0,
+                                bo.client_order_id, now_str, now_str,
+                            ),
+                        )
+                        conn.commit()
+                        imported = True
+
+            if not imported:
+                discrepancies.append(Discrepancy(
+                    kind=DiscrepancyKind.LOCAL_MISSING,
+                    subject=bo_key,
+                    local_value=None,
+                    broker_value=bo.state,
+                    detail="broker has open order with no matching local DB record",
+                ))
     except Exception as exc:
         # Retrieval failure blocks submission — fail closed (0246)
         discrepancies.append(Discrepancy(

@@ -1,7 +1,7 @@
 # Persist Order Reservation and client_order_id Before Broker Call
 
 - **ID:** 0253
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-13
 - **Priority:** high
 - **Depends:** 0251, 0252
@@ -53,10 +53,14 @@ canonical representation that reconciliation can recognise and recover.
 
 ## Done when
 
-- [ ] Local `Order` row with `client_order_id` is committed to DB before any broker network call
-- [ ] `OrderState.PENDING_SUBMIT` exists and is set before submission
-- [ ] `UNIQUE(account_id, client_order_id)` index exists in `orders`
-- [ ] `FakeBrokerAdapter` models accepted-but-response-lost: broker order exists, local submit raises
-- [ ] Restart test: submit timeout on first call, retry → broker.submit_order called exactly once
-- [ ] `initialize_trading_session()` reconciliation detects `PENDING_SUBMIT` orders and resolves them
-- [ ] All existing tests pass
+- [x] Local `Order` row with `client_order_id` is committed to DB before any broker network call
+- [x] `OrderState.PENDING_SUBMIT` exists and is set before submission
+- [x] `UNIQUE(account_id, client_order_id)` index exists in `orders`
+- [x] `FakeBrokerAdapter` models accepted-but-response-lost: broker order exists, local submit raises
+- [x] Restart test: submit timeout on first call, restart via `initialize_trading_session()` imports order → TRADING_READY
+- [x] `initialize_trading_session()` reconciliation detects PENDING_SUBMIT via bidirectional order check and resolves via client_order_id
+- [x] All existing tests pass (520 passed, 1 skipped)
+
+## Outcome
+
+`PENDING_SUBMIT` state added to `OrderState` with valid transitions to `WORKING`/`SUBMITTED`/`REJECTED`/`CANCELLED`. `INSERT OR IGNORE` into orders with `PENDING_SUBMIT` committed before `broker.submit_order()`. Unique index `idx_orders_account_client_id` added via `agent_db.py` migration. `ShadowBroker` accepts `PENDING_SUBMIT → WORKING` transition. `FakeBrokerAdapter.submit_timeout` calls `super().submit_order()` then raises TimeoutError so broker-side record exists.

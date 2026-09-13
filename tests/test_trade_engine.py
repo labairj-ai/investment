@@ -968,7 +968,8 @@ class TestExecutionEngine:
         )
         conn.commit()
 
-        mock_quote = Quote(bid=99.0, ask=100.0, timestamp="t")
+        mock_quote = Quote(bid=99.0, ask=100.0, timestamp="t",
+                          retrieved_at=datetime.now(timezone.utc).isoformat())
         with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
              patch("trade_engine.market_data._get_executable_quote", return_value=mock_quote):
             result = execution_engine.process_intent(intent.intent_id, conn)
@@ -1236,21 +1237,19 @@ class TestExecutionSafety:
     # ── 0200: fail-closed on missing quote ───────────────────────────────────
 
     def test_no_fill_when_quote_unavailable(self):
-        """_get_quote returns None → order stays WORKING, no fill, market_data_status set."""
+        """quote=None → 0251 gate fires before submit → QUOTE_UNAVAILABLE, no order created."""
         conn = _make_conn()
         intent = _make_intent(quantity=1.0, limit_price=100.0)
         _insert_intent(conn, intent)
         with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
              patch("trade_engine.market_data._get_executable_quote", return_value=None):
             result = execution_engine.process_intent(intent.intent_id, conn)
-        assert result.decision == "APPROVED"
+        assert result.decision == "QUOTE_UNAVAILABLE"
         assert result.fill is None
-        order_row = conn.execute(
-            "SELECT state, market_data_status FROM orders WHERE intent_id=?",
-            (intent.intent_id,),
-        ).fetchone()
-        assert order_row["state"] == "WORKING"
-        assert order_row["market_data_status"] == "unavailable"
+        assert result.order_id is None
+        # No order row — submit was blocked before any DB write
+        order_count = conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0]
+        assert order_count == 0
 
     # ── 0209: order lifecycle — session gate + explicit expiry ───────────────
 
@@ -1376,8 +1375,8 @@ class TestExecutionSafety:
         _insert_intent(conn, intent)
 
         now_iso = datetime.now(timezone.utc).isoformat()
-        miss_quote = Quote(bid=98.0, ask=101.5, timestamp="t", retrieved_at=now_iso)  # ask 101.5 > limit 100 → no fill
-        hit_quote = Quote(bid=99.0, ask=100.0, timestamp="t", retrieved_at=now_iso)   # ask 100.0 == limit 100 → fill
+        miss_quote = Quote(bid=100.0, ask=101.0, timestamp="t", retrieved_at=now_iso)  # ask 101 > limit 100 → no fill; spread ~0.99%
+        hit_quote = Quote(bid=99.0, ask=100.0, timestamp="t", retrieved_at=now_iso)   # ask 100.0 == limit 100 → fill; spread ~1%
 
         with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
              patch("trade_engine.market_data._get_executable_quote", return_value=miss_quote):
@@ -1943,7 +1942,7 @@ class TestPolicyEnforcement:
             "max_single_position_pct", "max_new_position_pct",
             "covered_calls_allowed", "naked_options_allowed", "max_contracts_per_symbol",
             "market_orders_allowed", "max_orders_per_day", "max_daily_notional_pct",
-            "max_slippage_pct", "min_limit_price",
+            "max_slippage_pct", "min_limit_price", "max_spread_pct",
             "max_drawdown_pct", "max_daily_loss_pct",
             "trading_enabled", "halt_on_data_stale_minutes",
         }
@@ -2411,7 +2410,7 @@ class TestExecutableQuoteVsMarkPrice:
             yield
 
     def test_stale_executable_quote_blocks_fill(self):
-        """attempt_fill skipped when quote.retrieved_at is older than stale threshold (0222)."""
+        """Stale quote → 0251 gate fires before submit → QUOTE_UNAVAILABLE, no order created (0222)."""
         conn = _make_conn()
         intent = _make_intent(quantity=1.0, limit_price=100.0)
         _insert_intent(conn, intent)
@@ -2423,10 +2422,8 @@ class TestExecutableQuoteVsMarkPrice:
             result = execution_engine.process_intent(intent.intent_id, conn)
 
         assert result.fill is None
-        order_state = conn.execute(
-            "SELECT state, market_data_status FROM orders WHERE order_id=?", (result.order_id,)
-        ).fetchone()
-        assert order_state["market_data_status"] == "stale"
+        assert result.decision == "QUOTE_UNAVAILABLE"
+        assert result.order_id is None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -3460,8 +3457,9 @@ class TestApplyBrokerFill:
         broker = MagicMock()
         broker.get_broker_account.return_value = MagicMock(cash=10000.0, nav=10000.0, buying_power=10000.0)
         broker.get_fills.return_value = [bf]
-        # Patch apply_broker_fill to avoid schema issues, check cursor logic
-        with patch.object(execution_engine, "apply_broker_fill"):
+        # Patch apply_broker_fill to return APPLIED so cursor logic treats fill as imported
+        from trade_engine.execution_engine import FillResult
+        with patch.object(execution_engine, "apply_broker_fill", return_value=FillResult.APPLIED):
             state = execution_engine.initialize_trading_session("AGENTIC_SHADOW_01", conn, broker=broker)
 
         row = conn.execute("SELECT last_fill_synced_at FROM trading_accounts WHERE account_id='AGENTIC_SHADOW_01'").fetchone()
@@ -3472,12 +3470,18 @@ class TestApplyBrokerFill:
 class TestClientOrderIdIdempotency:
     """client_order_id written before submission; reconciliation matches by it (0247)."""
 
+    def _no_fill_quote(self):
+        """Quote that passes the 0251 gate but won't fill a BUY LIMIT order at 100."""
+        # ask=101 > limit=100 → no fill; spread=(101-100)/101 ≈ 0.99% ≤ 2.0%
+        return Quote(bid=100.0, ask=101.0, timestamp="t",
+                     retrieved_at=datetime.now(timezone.utc).isoformat())
+
     def test_client_order_id_written_to_orders_table(self):
-        """process_intent writes client_order_id before broker.submit_order (0247)."""
+        """process_intent writes client_order_id to PENDING_SUBMIT row before broker call (0247, 0253)."""
         conn = _make_conn()
         intent_id = _seed_pending_intent(conn, quantity=1.0, limit_price=100.0)
         with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
-             patch("trade_engine.market_data._get_executable_quote", return_value=None):
+             patch("trade_engine.market_data._get_executable_quote", return_value=self._no_fill_quote()):
             execution_engine.process_intent(intent_id, conn)
         row = conn.execute("SELECT client_order_id FROM orders LIMIT 1").fetchone()
         assert row is not None
@@ -3489,7 +3493,7 @@ class TestClientOrderIdIdempotency:
         conn = _make_conn()
         intent_id = _seed_pending_intent(conn, quantity=1.0, limit_price=100.0)
         with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
-             patch("trade_engine.market_data._get_executable_quote", return_value=None):
+             patch("trade_engine.market_data._get_executable_quote", return_value=self._no_fill_quote()):
             execution_engine.process_intent(intent_id, conn)
         row = conn.execute("SELECT client_order_id FROM orders LIMIT 1").fetchone()
         assert intent_id in row["client_order_id"]
@@ -3499,8 +3503,11 @@ class TestClientOrderIdIdempotency:
         conn = _make_conn()
         intent_id = _seed_pending_intent(conn, quantity=1.0, limit_price=100.0)
         with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
-             patch("trade_engine.market_data._get_executable_quote", return_value=None):
+             patch("trade_engine.market_data._get_executable_quote", return_value=self._no_fill_quote()):
             execution_engine.process_intent(intent_id, conn)
-            # Calling again with same intent_id: idempotent (already APPROVED)
+            # Reset intent to PENDING and retry: idempotent via PENDING_SUBMIT → WORKING (0253)
+            conn.execute("UPDATE trade_intents SET status='PENDING' WHERE intent_id=?", (intent_id,))
+            conn.commit()
+            execution_engine.process_intent(intent_id, conn)
         count = conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0]
         assert count == 1

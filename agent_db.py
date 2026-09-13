@@ -585,6 +585,15 @@ def migrate() -> None:
         conn.commit()
     except sqlite3.OperationalError:
         pass
+    # 0253 — unique (account_id, client_order_id) prevents duplicate submissions per idempotency key
+    try:
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_account_client_id "
+            "ON orders (account_id, client_order_id)"
+        )
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
 
     conn.close()
 

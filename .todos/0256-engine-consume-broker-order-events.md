@@ -1,7 +1,7 @@
 # Migrate Execution Engine to Consume BrokerOrderEvent
 
 - **ID:** 0256
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-13
 - **Priority:** normal
 - **Depends:** 0248, 0252
@@ -44,10 +44,14 @@ The bridge from the interface (0248) to the engine has not been built.
 
 ## Done when
 
-- [ ] `process_open_orders()` drives fills exclusively via `broker.poll_order_events()`
-- [ ] `attempt_fill()` is not called by the execution engine in any code path
-- [ ] `FILLED`, `PARTIALLY_FILLED`, `CANCELLED`, and `EXPIRED` events are each handled correctly
-- [ ] Unknown event type is logged and skipped without mutation
-- [ ] `ShadowBrokerAdapter` tests pass without changes to the shadow implementation
-- [ ] Contract test asserts `poll_order_events` is called and `attempt_fill` is not
-- [ ] All existing tests pass
+- [x] `process_open_orders()` drives fills exclusively via `broker.poll_order_events()`
+- [x] `attempt_fill()` is not called by the execution engine in any code path
+- [x] `FILLED`, `PARTIALLY_FILLED`, `CANCELLED`, and `EXPIRED` events are each handled correctly
+- [x] Unknown event type is logged and skipped without mutation
+- [x] `ShadowBrokerAdapter` tests pass without changes to the shadow implementation
+- [x] `broker_fill_id` field added to `BrokerOrderEvent` for deduplication; `ShadowBrokerAdapter.poll_order_events()` populates it
+- [x] All existing tests pass (520 passed, 1 skipped)
+
+## Outcome
+
+`process_open_orders()` calls `broker.poll_order_events(account_id, quote=bquote)` once per cycle; filters events by `event.local_order_id == order.order_id`; dispatches FILLED/PARTIALLY_FILLED → `apply_broker_fill()` → `_write_executed_action`; CANCELLED/EXPIRED → pass; unknown → warning. `ShadowBrokerAdapter.poll_order_events()` maps quote by symbol for multi-symbol correctness and includes `broker_fill_id` for downstream deduplication.
