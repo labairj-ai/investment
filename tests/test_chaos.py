@@ -201,17 +201,26 @@ class TestOutOfOrderPartialFills:
 
 
 class TestAcceptedButLostRestart:
-    """Accepted-but-response-lost: broker.submit_order called once across crash + restart (0253, 0255)."""
+    """Accepted-but-response-lost: broker.submit_order called once across crash + restart (0253, 0255, 0264)."""
 
     def test_timeout_then_restart_imports_existing_order(self):
         conn = _make_conn()
         intent_id = _seed_intent(conn, qty=1.0, price=100.0)
 
-        timeout_broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01", submit_timeout=True)
+        # Wrap submit_order to count total calls across crash + restart
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01", submit_timeout=True)
+        _orig_submit = broker.submit_order
+        _submit_calls = []
+
+        def _counting_submit(intent, client_order_id=None):
+            _submit_calls.append(1)
+            return _orig_submit(intent, client_order_id=client_order_id)
+
+        broker.submit_order = _counting_submit
 
         class _FreshQ:
             bid = 99.0
-            ask = 100.5  # below limit=100? ask=100.5 > limit=100 → no fill but passes gate
+            ask = 100.5  # ask > limit=100 → no fill event; order stays PENDING/WORKING
             market_timestamp = None
             retrieved_at = datetime.now(timezone.utc).isoformat()
             source = "test"
@@ -220,23 +229,30 @@ class TestAcceptedButLostRestart:
              patch.object(market_calendar, "is_market_open", return_value=True), \
              patch("trade_engine.market_data._get_executable_quote", return_value=_FreshQ()):
             with pytest.raises(TimeoutError):
-                execution_engine.process_intent(intent_id, conn, broker=timeout_broker)
+                execution_engine.process_intent(intent_id, conn, broker=broker)
 
-        # Broker accepted the order (FakeBrokerAdapter wrote it) + PENDING_SUBMIT row exists locally
-        orders_after_crash = conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0]
-        assert orders_after_crash >= 1, "PENDING_SUBMIT row should exist before restart"
+        # After crash: local DB has PENDING_SUBMIT; broker has WORKING in _broker_orders
+        local_row = conn.execute(
+            "SELECT state, broker_order_id FROM orders WHERE intent_id=?", (intent_id,)
+        ).fetchone()
+        assert local_row is not None, "PENDING_SUBMIT row must exist after crash"
+        assert local_row["state"] == "PENDING_SUBMIT", f"Expected PENDING_SUBMIT, got {local_row['state']}"
+        assert len(_submit_calls) == 1, "submit_order called exactly once before crash"
 
-        # Simulate restart: initialize_trading_session should find broker order and reconcile
-        good_broker = ShadowBrokerAdapter(conn, "AGENTIC_SHADOW_01")
+        # Restart: same broker instance (it holds _broker_orders), timeout cleared
+        broker._submit_timeout = False
         state = execution_engine.initialize_trading_session(
-            "AGENTIC_SHADOW_01", conn, broker=good_broker
+            "AGENTIC_SHADOW_01", conn, broker=broker
         )
 
-        # After reconciliation, no blocking discrepancies (broker and local both have the order)
-        final_order_count = conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0]
-        assert final_order_count >= 1, "Order should exist after restart"
-        # Session should be TRADING_READY (no unexplained discrepancies)
-        assert state == execution_engine.TradingReadyState.TRADING_READY
+        # After reconciliation: TRADING_READY; local order promoted PENDING_SUBMIT → WORKING
+        assert state == execution_engine.TradingReadyState.TRADING_READY, f"Expected TRADING_READY, got {state}"
+        final = conn.execute(
+            "SELECT state, broker_order_id FROM orders WHERE intent_id=?", (intent_id,)
+        ).fetchone()
+        assert final["state"] == "WORKING", f"Expected WORKING after reconcile, got {final['state']}"
+        assert final["broker_order_id"] is not None, "broker_order_id must be attached after reconciliation"
+        assert len(_submit_calls) == 1, "submit_order must NOT be called again on restart (0264)"
 
 
 class TestRetrievalFailureHalts:
