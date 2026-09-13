@@ -1,7 +1,7 @@
 # ExecutionEngine Must Accept BrokerAdapter — Remove Direct ShadowBroker Instantiation
 
 - **ID:** 0238
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-12
 - **Priority:** high
 - **Depends:** 0237

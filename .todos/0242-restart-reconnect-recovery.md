@@ -1,7 +1,7 @@
 # Restart/Reconnect Recovery: Reconcile Before TRADING_READY
 
 - **ID:** 0242
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-12
 - **Priority:** high
 - **Depends:** 0238, 0240

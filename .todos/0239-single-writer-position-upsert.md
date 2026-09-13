@@ -1,7 +1,7 @@
 # Replace Fragile INSERT OR IGNORE + Conditional UPDATE with Atomic UPSERT
 
 - **ID:** 0239
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-12
 - **Priority:** normal
 - **Depends:** none

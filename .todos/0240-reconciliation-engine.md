@@ -1,7 +1,7 @@
 # ReconciliationEngine: Compare Broker vs Local State, Block on Mismatch
 
 - **ID:** 0240
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-12
 - **Priority:** high
 - **Depends:** 0237, 0238

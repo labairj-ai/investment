@@ -41,6 +41,7 @@ class OrderState(str, Enum):
     SUBMITTED = "SUBMITTED"
     WORKING = "WORKING"
     PARTIALLY_FILLED = "PARTIALLY_FILLED"
+    CANCEL_REQUESTED = "CANCEL_REQUESTED"   # async cancel sent to broker; fill race still possible (0236)
     FILLED = "FILLED"
     CANCELLED = "CANCELLED"
     REJECTED = "REJECTED"
@@ -54,11 +55,18 @@ _VALID_TRANSITIONS: dict[OrderState, set[OrderState]] = {
     OrderState.WORKING: {
         OrderState.FILLED,
         OrderState.PARTIALLY_FILLED,
+        OrderState.CANCEL_REQUESTED,
         OrderState.CANCELLED,
         OrderState.EXPIRED,
         OrderState.ERROR,
     },
-    OrderState.PARTIALLY_FILLED: {OrderState.FILLED, OrderState.CANCELLED},
+    # CANCEL_REQUESTED: broker may fill before cancel arrives — FILLED is legal (0236)
+    OrderState.CANCEL_REQUESTED: {OrderState.CANCELLED, OrderState.FILLED},
+    OrderState.PARTIALLY_FILLED: {
+        OrderState.FILLED,
+        OrderState.CANCEL_REQUESTED,
+        OrderState.CANCELLED,
+    },
     OrderState.FILLED: set(),
     OrderState.CANCELLED: set(),
     OrderState.REJECTED: set(),
@@ -71,7 +79,8 @@ class IntentStatus(str, Enum):
     PENDING = "PENDING"
     APPROVED = "APPROVED"
     REJECTED = "REJECTED"
-    EXPIRED = "EXPIRED"
+    CANCELLED = "CANCELLED"   # risk/policy/user cancellation — distinct from EXPIRED (0236)
+    EXPIRED = "EXPIRED"       # time-based expiry only (DAY order reached 4pm, valid_until passed)
     FILLED = "FILLED"
 
 

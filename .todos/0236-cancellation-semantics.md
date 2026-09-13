@@ -1,7 +1,7 @@
 # Cancellation Semantics: IntentStatus.CANCELLED, cancel_reason, CANCEL_REQUESTED
 
 - **ID:** 0236
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-12
 - **Priority:** high
 - **Depends:** none

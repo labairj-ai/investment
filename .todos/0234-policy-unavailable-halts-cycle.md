@@ -1,7 +1,7 @@
 # Policy Failure at Any Cycle Point Must Return HALTED
 
 - **ID:** 0234
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-12
 - **Priority:** high
 - **Depends:** none

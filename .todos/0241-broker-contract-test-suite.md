@@ -1,7 +1,7 @@
 # Broker Contract Test Suite: Every Adapter Must Pass Identical Tests
 
 - **ID:** 0241
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-12
 - **Priority:** high
 - **Depends:** 0237, 0238

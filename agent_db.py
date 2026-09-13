@@ -503,6 +503,12 @@ def migrate() -> None:
         ("account_snapshots",  "snapshot_reason",      "TEXT"),
         # 0220 — pre-fill risk revalidation phase tracking
         ("risk_decisions",     "phase",                "TEXT"),
+        # 0236 — cancellation reason and timestamp tracking
+        ("orders",             "cancel_reason",        "TEXT"),
+        ("orders",             "cancel_requested_at",  "TEXT"),
+        ("orders",             "cancel_confirmed_at",  "TEXT"),
+        # 0242 — last fill sync timestamp for restart reconciliation
+        ("trading_accounts",   "last_fill_synced_at",  "TEXT"),
     ]
     for table, col, col_type in _new_cols:
         try:

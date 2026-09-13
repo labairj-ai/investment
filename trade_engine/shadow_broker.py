@@ -20,9 +20,15 @@ from . import market_calendar
 
 
 class Quote(NamedTuple):
+    """Shadow-mode quote with legacy timestamp field. Used by ShadowBroker internals.
+
+    BrokerAdapter.get_quote() returns BrokerQuote (broker_types.py) — the normalized
+    type that flows through the adapter boundary. Quote stays here for shadow internals
+    and existing test fixtures (0237).
+    """
     bid: float
     ask: float
-    timestamp: str
+    timestamp: str = ""
     market_timestamp: Optional[str] = None  # when exchange last published this quote
     retrieved_at: Optional[str] = None       # when we fetched it
     source: str = "yfinance"
@@ -248,34 +254,23 @@ class ShadowBroker:
                      fill.account_id, fill.symbol),
                 )
         elif is_buy:
-            # 0231: new position — use fill price as initial mark so same-cycle intents see exposure
+            # 0231, 0239: atomic UPSERT — single writer invariant; no race between INSERT and UPDATE.
+            # ON CONFLICT accumulates qty and recomputes avg_cost atomically.
             self._conn.execute(
-                """INSERT OR IGNORE INTO position_snapshots
+                """INSERT INTO position_snapshots
                    (account_id, symbol, qty, avg_cost, instrument_type, as_of,
                     market_price, market_value, price_as_of)
-                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(account_id, symbol) DO UPDATE SET
+                       avg_cost = (qty * avg_cost + excluded.qty * excluded.avg_cost)
+                                  / (qty + excluded.qty),
+                       qty      = qty + excluded.qty,
+                       as_of    = excluded.as_of,
+                       market_price  = excluded.market_price,
+                       market_value  = (qty + excluded.qty) * excluded.market_price,
+                       price_as_of   = excluded.price_as_of""",
                 (fill.account_id, fill.symbol, fill.qty, fill.price, "EQUITY", fill.filled_at,
                  fill.price, fill.qty * fill.price, fill.filled_at),
-            )
-            # If another process beat us, UPDATE to accumulate
-            self._conn.execute(
-                """UPDATE position_snapshots
-                   SET qty = qty + ?,
-                       avg_cost = (qty * avg_cost + ? * ?) / (qty + ?),
-                       as_of = ?
-                   WHERE account_id=? AND symbol=? AND qty != ?""",
-                (
-                    fill.qty,
-                    (self._conn.execute(
-                        "SELECT qty FROM position_snapshots WHERE account_id=? AND symbol=?",
-                        (fill.account_id, fill.symbol),
-                    ).fetchone() or {"qty": fill.qty})["qty"],
-                    fill.price,
-                    fill.qty,
-                    fill.filled_at,
-                    fill.account_id, fill.symbol,
-                    fill.qty,  # don't update if we just inserted (qty == fill.qty)
-                ),
             )
 
         # Update account cash
@@ -299,14 +294,31 @@ class ShadowBroker:
 
     # ── Queries ───────────────────────────────────────────────────────────────
 
-    def cancel_order(self, order_id: str) -> Order:
+    def cancel_order(self, order_id: str, reason: str = "USER_REQUESTED") -> Order:
+        """Cancel an order, recording the reason (0236).
+
+        Shadow mode: CANCEL_REQUESTED → CANCELLED is synchronous (no broker round-trip).
+        For paper/live adapters these two transitions will be separated by an async ACK.
+        cancel_reason, cancel_requested_at, cancel_confirmed_at are written if the columns
+        exist (added by agent_db._new_cols; gracefully ignored if schema is older).
+        """
         row = self._conn.execute(
             "SELECT * FROM orders WHERE order_id=?", (order_id,)
         ).fetchone()
         if not row:
             raise ValueError(f"Order {order_id!r} not found")
         order = Order.from_db_row(row)
-        self._transition_order(order, OrderState.CANCELLED)
+        now_iso = _now_utc().isoformat()
+        self._transition_order(order, OrderState.CANCEL_REQUESTED, commit=False)
+        self._transition_order(order, OrderState.CANCELLED, commit=False)
+        try:
+            self._conn.execute(
+                "UPDATE orders SET cancel_reason=?, cancel_requested_at=?, cancel_confirmed_at=? WHERE order_id=?",
+                (reason, now_iso, now_iso, order_id),
+            )
+        except Exception:
+            pass  # columns may not exist on older schemas
+        self._conn.commit()
         return order
 
     def get_order(self, order_id: str) -> Optional[Order]:
