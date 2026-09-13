@@ -77,6 +77,7 @@ class BrokerFill(NamedTuple):
     fee: float = 0.0
     local_order_id: Optional[str] = None
     account_id: Optional[str] = None
+    client_order_id: Optional[str] = None   # enables third-tier resolver lookup (0269)
 
 
 class BrokerAccountState(NamedTuple):
@@ -102,6 +103,7 @@ class BrokerOrderEvent(NamedTuple):
     filled_at: Optional[str] = None
     fee: float = 0.0
     broker_fill_id: Optional[str] = None   # canonical fill ID for deduplication (0256)
+    client_order_id: Optional[str] = None  # enables third-tier resolver lookup (0269)
 
 
 class BrokerOrderAck(NamedTuple):

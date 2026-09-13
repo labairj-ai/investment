@@ -36,9 +36,13 @@ class FakeBrokerAdapter(ShadowBrokerAdapter):
         out_of_order: poll_order_events reverses event order
         cancel_race: FILLED event emitted simultaneously with cancel
         submit_timeout: submit_order writes broker-side record then raises TimeoutError
+        submit_lost: submit_order raises WITHOUT writing to _broker_orders (pure network loss)
         crash_after_submit: submit_order succeeds once, then raises on restart
         position_mismatch: get_positions returns qty different from local DB
         stale_quote: get_quote returns quote with retrieved_at far in the past
+        distinct_broker_id: submit_order returns a broker_order_id different from local order_id (0268)
+        ack_state: normalized_state returned in BrokerOrderAck (default "WORKING") (0271)
+        broker_account_id: ID returned by get_account_id() (default matches account_id) (0272)
     """
 
     def __init__(
@@ -55,6 +59,9 @@ class FakeBrokerAdapter(ShadowBrokerAdapter):
         crash_after_submit: bool = False,
         position_mismatch_qty: Optional[float] = None,  # override qty returned by get_positions
         stale_quote: bool = False,
+        distinct_broker_id: bool = False,    # broker_order_id ≠ local order_id (0268)
+        ack_state: str = "WORKING",          # normalized_state in returned BrokerOrderAck (0271)
+        broker_account_id: Optional[str] = None,  # overrides get_account_id() response (0272)
     ) -> None:
         super().__init__(conn, account_id)
         self._delay_ack = delay_ack
@@ -68,10 +75,15 @@ class FakeBrokerAdapter(ShadowBrokerAdapter):
         self._crash_submitted = False
         self._position_mismatch_qty = position_mismatch_qty
         self._stale_quote = stale_quote
+        self._distinct_broker_id = distinct_broker_id
+        self._ack_state = ack_state
+        self._broker_account_id = broker_account_id
         # Independent broker-side ledger (0260): keyed by broker_order_id.
         # This dict is the single source of truth for what the broker believes;
         # the local SQLite DB tracks what the engine believes.
         self._broker_orders: dict[str, BrokerOrder] = {}
+        # Mapping broker_order_id → local order_id for distinct_broker_id mode (0268)
+        self._broker_to_local: dict[str, str] = {}
 
     def submit_order(self, intent: TradeIntent, client_order_id: Optional[str] = None) -> BrokerOrderAck:
         if self._submit_lost:
@@ -103,8 +115,45 @@ class FakeBrokerAdapter(ShadowBrokerAdapter):
             if self._submit_calls <= self._delay_ack:
                 raise TimeoutError(f"broker ACK delayed (chaos: delay_ack, call {self._submit_calls}/{self._delay_ack})")
         ack = super().submit_order(intent, client_order_id=client_order_id)
-        # Mirror successful submissions into the in-memory ledger too
-        if ack:
+        local_oid = ack.broker_order_id  # in shadow mode, broker_order_id == local order_id
+
+        if self._distinct_broker_id:
+            # Generate a separate broker-native ID, distinct from the local order_id (0268).
+            # Update DB so broker_order_id column is set to the new UUID.
+            new_broker_oid = str(uuid.uuid4())
+            self._conn.execute(
+                "UPDATE orders SET broker_order_id=? WHERE order_id=?",
+                (new_broker_oid, local_oid),
+            )
+            self._conn.commit()
+            self._broker_to_local[new_broker_oid] = local_oid
+            ack = BrokerOrderAck(
+                broker_order_id=new_broker_oid,
+                client_order_id=client_order_id,
+                normalized_state=self._ack_state,
+                accepted_at=ack.accepted_at,
+                raw_status=ack.raw_status,
+            )
+            self._broker_orders[new_broker_oid] = BrokerOrder(
+                broker_order_id=new_broker_oid,
+                symbol=intent.symbol,
+                side=intent.side,
+                quantity=float(intent.quantity),
+                fill_qty=0.0,
+                state="WORKING",
+                limit_price=float(intent.limit_price) if intent.limit_price is not None else None,
+                client_order_id=client_order_id,
+                local_order_id=local_oid,
+            )
+        else:
+            ack = BrokerOrderAck(
+                broker_order_id=ack.broker_order_id,
+                client_order_id=client_order_id,
+                normalized_state=self._ack_state,
+                accepted_at=ack.accepted_at,
+                raw_status=ack.raw_status,
+            )
+            # Mirror successful submissions into the in-memory ledger too
             self._broker_orders[ack.broker_order_id] = BrokerOrder(
                 broker_order_id=ack.broker_order_id,
                 symbol=intent.symbol,
@@ -117,6 +166,27 @@ class FakeBrokerAdapter(ShadowBrokerAdapter):
                 local_order_id=ack.broker_order_id,
             )
         return ack
+
+    def get_order(self, order_id: str):
+        # Translate broker_order_id → local order_id for distinct_broker_id mode (0268)
+        local_id = self._broker_to_local.get(order_id, order_id)
+        return super().get_order(local_id)
+
+    def cancel_order(self, order_id: str, reason: str = "USER_REQUESTED"):
+        # Translate broker_order_id → local order_id for distinct_broker_id mode (0268)
+        local_id = self._broker_to_local.get(order_id, order_id)
+        return super().cancel_order(local_id, reason=reason)
+
+    def find_order_by_client_order_id(self, client_order_id: str):
+        """Search in-memory broker ledger only (0270); DB is local, not broker, for fake mode."""
+        for bo in self._broker_orders.values():
+            if bo.client_order_id == client_order_id:
+                return bo
+        return None
+
+    def get_account_id(self) -> str:
+        """Return configurable broker account ID for account-binding chaos tests (0272)."""
+        return self._broker_account_id if self._broker_account_id is not None else self.account_id
 
     def get_open_orders(self, account_id: str) -> list[BrokerOrder]:
         """Return union of in-memory ledger and DB-backed orders (0260).

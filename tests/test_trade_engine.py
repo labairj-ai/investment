@@ -3299,6 +3299,8 @@ class TestFailClosedReconciliation:
             def get_fills(self, account_id, since=None): return []
             def poll_order_events(self, account_id, quote=None): return []
             def attempt_fill(self, order, quote): raise NotImplementedError
+            def find_order_by_client_order_id(self, client_order_id): return None
+            def get_account_id(self): return "AGENTIC_SHADOW_01"
 
         return _FakeBroker()
 

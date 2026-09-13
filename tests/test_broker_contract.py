@@ -54,7 +54,7 @@ def _make_conn() -> sqlite3.Connection:
             symbol TEXT, side TEXT, quantity REAL, contracts INTEGER,
             order_type TEXT, limit_price REAL, state TEXT DEFAULT 'PENDING',
             time_in_force TEXT DEFAULT 'DAY',
-            broker_order_id TEXT, submitted_at TEXT, updated_at TEXT,
+            broker_order_id TEXT, client_order_id TEXT, submitted_at TEXT, updated_at TEXT,
             fill_qty REAL DEFAULT 0, fill_cash REAL DEFAULT 0,
             market_data_status TEXT, expires_at TEXT,
             cancel_reason TEXT, cancel_requested_at TEXT, cancel_confirmed_at TEXT

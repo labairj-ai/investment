@@ -69,6 +69,15 @@ class SessionNotReadyError(RuntimeError):
     """process_intent() or run_execution_cycle() called before successful initialize() (0262)."""
 
 
+class BrokerAccountMismatch(RuntimeError):
+    """Broker get_account_id() returned an ID that doesn't match expected_broker_account_id (0272).
+
+    Raised (and caught → HALTED) during initialize_trading_session() so no order is
+    ever submitted to the wrong account. Set expected_broker_account_id to None in
+    trading_policy.json to opt out of the check (shadow/paper accounts without a real broker ID).
+    """
+
+
 class BrokerSubmissionIndeterminate(RuntimeError):
     """submit_order() raised a network error after PENDING_SUBMIT was durably written (0265).
 
@@ -470,9 +479,26 @@ def process_intent(
     # already exists for this intent (crash-restart scenario). Re-query by intent_id so
     # subsequent references point to the canonical row, not the unused pending_order_id.
     resolved_row = conn.execute(
-        "SELECT order_id FROM orders WHERE intent_id=?", (intent_id,)
+        "SELECT order_id, state FROM orders WHERE intent_id=?", (intent_id,)
     ).fetchone()
     local_order_id = resolved_row["order_id"] if resolved_row else pending_order_id
+
+    # If the canonical order is already in a terminal state (crash-restart re-run path),
+    # skip resubmission entirely — the intent has already been executed.
+    if resolved_row and resolved_row["state"] in ("FILLED", "CANCELLED", "REJECTED", "EXPIRED"):
+        fill_row = conn.execute(
+            "SELECT * FROM fills WHERE order_id=? ORDER BY filled_at DESC LIMIT 1",
+            (local_order_id,),
+        ).fetchone()
+        existing_fill = Fill.from_db_row(fill_row) if fill_row else None
+        return ExecutionResult(
+            intent_id=intent_id,
+            decision="APPROVED",
+            order_id=local_order_id,
+            fill=existing_fill,
+            risk_decision=risk_decision,
+            elapsed_ms=int((time.monotonic() - t0) * 1000),
+        )
 
     # ── Order submission (broker call after local row is durable) ─────────────
     try:
@@ -485,14 +511,88 @@ def process_intent(
             f"written — broker acceptance unknown; halt until reconciliation"
         ) from exc
 
-    # ── Attach broker_order_id and advance PENDING_SUBMIT → WORKING (0267) ───
+    # ── Attach broker_order_id and advance PENDING_SUBMIT → correct ACK state (0267, 0271) ──
     # Execution engine owns the local ledger; adapter owns the broker API response.
+    # Respect normalized_state from the ACK — do not blindly assume WORKING (0271).
     now_str2 = _now_utc().isoformat()
-    conn.execute(
-        "UPDATE orders SET broker_order_id=?, state='WORKING', submitted_at=? WHERE order_id=?",
-        (ack.broker_order_id, ack.accepted_at or now_str2, local_order_id),
-    )
-    conn.commit()
+    _ack_state = ack.normalized_state or "WORKING"
+
+    if _ack_state == "REJECTED":
+        conn.execute(
+            "UPDATE orders SET broker_order_id=?, state='REJECTED', submitted_at=? WHERE order_id=?",
+            (ack.broker_order_id, ack.accepted_at or now_str2, local_order_id),
+        )
+        conn.commit()
+        _update_intent_status(intent_id, IntentStatus.REJECTED, conn)
+        return ExecutionResult(
+            intent_id=intent_id,
+            decision="REJECTED",
+            order_id=local_order_id,
+            fill=None,
+            risk_decision=risk_decision,
+            elapsed_ms=int((time.monotonic() - t0) * 1000),
+        )
+    elif _ack_state == "PENDING":
+        # Broker queued the order but hasn't activated it; set/keep PENDING_SUBMIT for reconciliation.
+        # Explicitly write state so ShadowBroker's WORKING advance is overridden by the ACK.
+        conn.execute(
+            "UPDATE orders SET broker_order_id=?, state='PENDING_SUBMIT', submitted_at=? WHERE order_id=?",
+            (ack.broker_order_id, ack.accepted_at or now_str2, local_order_id),
+        )
+        conn.commit()
+        return ExecutionResult(
+            intent_id=intent_id,
+            decision="APPROVED",
+            order_id=local_order_id,
+            fill=None,
+            risk_decision=risk_decision,
+            elapsed_ms=int((time.monotonic() - t0) * 1000),
+        )
+    elif _ack_state == "FILLED":
+        # Broker filled immediately on acceptance (e.g. market-at-open); advance to WORKING
+        # then synthesize a fill so local state reaches FILLED without waiting for poll_order_events
+        conn.execute(
+            "UPDATE orders SET broker_order_id=?, state='WORKING', submitted_at=? WHERE order_id=?",
+            (ack.broker_order_id, ack.accepted_at or now_str2, local_order_id),
+        )
+        conn.commit()
+        mid_price = (bquote.bid + bquote.ask) / 2.0
+        _fill_price = float(intent.limit_price) if intent.limit_price else mid_price
+        _synthetic_fill = BrokerFill(
+            broker_fill_id=f"ack-fill-{ack.broker_order_id}",
+            broker_order_id=ack.broker_order_id,
+            symbol=intent.symbol,
+            side=intent.side.value,
+            qty=float(intent.quantity),
+            price=_fill_price,
+            filled_at=ack.accepted_at or now_str2,
+            fee=0.0,
+            local_order_id=local_order_id,
+            account_id=intent.account_id,
+        )
+        apply_broker_fill(_synthetic_fill, intent.account_id, conn)
+        fill_row = conn.execute(
+            "SELECT * FROM fills WHERE fill_id=?", (_synthetic_fill.broker_fill_id,)
+        ).fetchone()
+        fill = Fill.from_db_row(fill_row) if fill_row else None
+        if fill:
+            _update_intent_status(intent_id, IntentStatus.FILLED, conn)
+            _write_executed_action(fill, intent, conn)
+        return ExecutionResult(
+            intent_id=intent_id,
+            decision="APPROVED",
+            order_id=local_order_id,
+            fill=fill,
+            risk_decision=risk_decision,
+            elapsed_ms=int((time.monotonic() - t0) * 1000),
+        )
+    else:
+        # WORKING (default): broker accepted and order is live
+        conn.execute(
+            "UPDATE orders SET broker_order_id=?, state='WORKING', submitted_at=? WHERE order_id=?",
+            (ack.broker_order_id, ack.accepted_at or now_str2, local_order_id),
+        )
+        conn.commit()
 
     # ── Ingest any immediate fills via the canonical event path (0259) ────────
     # attempt_fill() is NOT called here; all fills flow through apply_broker_fill().
@@ -527,7 +627,7 @@ def process_intent(
                 fill = Fill.from_db_row(fill_row)
 
     if fill:
-        updated_order = broker.get_order(local_order_id)
+        updated_order = broker.get_order(ack.broker_order_id)  # broker-native ID (0268)
         if updated_order and updated_order.state == OrderState.FILLED:
             _update_intent_status(intent_id, IntentStatus.FILLED, conn)
         _write_executed_action(fill, intent, conn)
@@ -579,7 +679,7 @@ def process_open_orders(
     Fills are driven by poll_order_events() rather than attempt_fill() (0256).
     """
     open_rows = conn.execute(
-        """SELECT o.order_id, o.intent_id
+        """SELECT o.order_id, o.broker_order_id, o.intent_id
            FROM orders o
            WHERE o.account_id=? AND o.state IN ('WORKING','PARTIALLY_FILLED','CANCEL_REQUESTED')""",
         (account_id,),
@@ -620,7 +720,9 @@ def process_open_orders(
             )
 
     for row in open_rows:
-        order = broker.get_order(row["order_id"])
+        # Local PK for all DB operations; broker-native ID for all external adapter calls (0268)
+        broker_oid = row["broker_order_id"] or row["order_id"]
+        order = broker.get_order(broker_oid)
         if not order:
             continue
         intent_row = conn.execute(
@@ -670,7 +772,7 @@ def process_open_orders(
         if post_event_order and post_event_order["state"] not in ("WORKING", "PARTIALLY_FILLED"):
             # Sync intent status from the terminal order state (handles ALREADY_APPLIED case
             # where shadow_broker._apply_fill() already wrote the fill to DB)
-            terminal_order = broker.get_order(order.order_id)
+            terminal_order = broker.get_order(broker_oid)  # use broker-native ID (0268)
             if terminal_order:
                 _sync_intent_from_order(terminal_order, row["intent_id"], conn)
             continue
@@ -686,8 +788,8 @@ def process_open_orders(
                 remaining_quantity=max(0.0, remaining_qty),
             )
             if pre_fill_decision.decision == "REJECTED":
-                broker.cancel_order(order.order_id, reason="RISK_REVALIDATION_FAILED")
-                cancelled = broker.get_order(order.order_id)
+                broker.cancel_order(broker_oid, reason="RISK_REVALIDATION_FAILED")  # broker-native ID (0268)
+                cancelled = broker.get_order(broker_oid)
                 if cancelled:
                     _sync_intent_from_order(cancelled, row["intent_id"], conn)
                 pre_fill_rejections += 1
@@ -713,7 +815,7 @@ def process_open_orders(
             )
         conn.commit()
 
-        updated = broker.get_order(order.order_id)
+        updated = broker.get_order(broker_oid)  # broker-native ID (0268)
         if updated:
             if updated.state == OrderState.EXPIRED:
                 orders_expired += 1
@@ -1199,6 +1301,28 @@ def initialize_trading_session(
 
     if broker is None:
         broker = ShadowBrokerAdapter(conn, account_id)
+
+    # Step 0: account-ID binding check (0272)
+    try:
+        policy = load_policy(account_id)
+        expected_bid = policy.expected_broker_account_id()
+    except Exception:
+        expected_bid = None
+    if expected_bid:
+        try:
+            actual_bid = broker.get_account_id()
+        except Exception as exc:
+            _log.error(
+                "initialize_trading_session: cannot verify broker account ID for %s: %s — HALTED",
+                account_id, exc,
+            )
+            return TradingReadyState.HALTED
+        if actual_bid != expected_bid:
+            _log.error(
+                "initialize_trading_session: ACCOUNT_MISMATCH for %s — expected %r, got %r — HALTED",
+                account_id, expected_bid, actual_bid,
+            )
+            return TradingReadyState.HALTED
 
     # Step 1: verify broker connectivity
     try:

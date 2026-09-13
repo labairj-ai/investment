@@ -28,7 +28,7 @@ sys.path.insert(0, str(ROOT))
 
 from trade_engine import execution_engine, market_calendar
 from trade_engine.broker_adapter import ShadowBrokerAdapter
-from trade_engine.broker_types import BrokerFill, BrokerQuote
+from trade_engine.broker_types import BrokerFill, BrokerOrderEvent, BrokerQuote
 from trade_engine.execution_engine import FillResult, apply_broker_fill
 from trade_engine.models import IntentStatus, Side, TradeIntent, OrderType, TimeInForce, InstrumentType
 
@@ -500,3 +500,441 @@ class TestStaleQuoteNoSubmit:
             "SELECT COUNT(*) FROM orders WHERE state='PENDING_SUBMIT'"
         ).fetchone()[0]
         assert pending == 0, f"No PENDING_SUBMIT order should exist when quote fails; got {pending}"
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# 0268: Strict local/broker ID separation
+# ════════════════════════════════════════════════════════════════════════════════
+
+class TestDistinctBrokerIdRouting:
+    """distinct_broker_id mode: local order_id ≠ broker_order_id; all routing must still work (0268)."""
+
+    class _FreshQ:
+        bid = 99.5
+        ask = 100.5  # above limit=100 → BUY LIMIT doesn't fill; spread ≈1% < 2% max
+        market_timestamp = None
+        retrieved_at = None
+        source = "test"
+
+        def __init__(self):
+            self.retrieved_at = datetime.now(timezone.utc).isoformat()
+
+    def _run_intent(self, conn, broker):
+        intent_id = _seed_intent(conn, qty=1.0, price=100.0)
+        with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
+             patch.object(market_calendar, "is_market_open", return_value=True), \
+             patch("trade_engine.market_data._get_executable_quote", return_value=self._FreshQ()):
+            result = execution_engine.process_intent(intent_id, conn, broker=broker)
+        return result
+
+    def test_submit_attaches_distinct_broker_order_id(self):
+        """With distinct_broker_id, broker_order_id in DB ≠ local order_id (0268)."""
+        conn = _make_conn()
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01", distinct_broker_id=True)
+        result = self._run_intent(conn, broker)
+
+        assert result.decision == "APPROVED", f"Expected APPROVED, got {result.decision}"
+        assert result.order_id is not None
+
+        row = conn.execute(
+            "SELECT order_id, broker_order_id FROM orders WHERE order_id=?", (result.order_id,)
+        ).fetchone()
+        assert row is not None
+        assert row["broker_order_id"] is not None
+        assert row["broker_order_id"] != row["order_id"], (
+            f"broker_order_id must differ from local order_id; both were {row['order_id']}"
+        )
+
+    def test_process_open_orders_routes_fills_via_broker_id(self):
+        """process_open_orders uses broker_order_id for get_order; fill still lands on correct local row (0268)."""
+        conn = _make_conn()
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01", distinct_broker_id=True)
+        result = self._run_intent(conn, broker)
+        local_oid = result.order_id
+
+        row = conn.execute(
+            "SELECT broker_order_id FROM orders WHERE order_id=?", (local_oid,)
+        ).fetchone()
+        assert row["broker_order_id"] != local_oid, "pre-condition: IDs must differ"
+
+        # Deliver a fill event keyed by broker_order_id (not local order_id)
+        broker_oid = row["broker_order_id"]
+        fill_event = BrokerOrderEvent(
+            event_type="FILLED",
+            broker_order_id=broker_oid,
+            local_order_id=None,   # real broker never sends local ID
+            fill_qty=1.0,
+            fill_price=100.0,
+            filled_at=datetime.now(timezone.utc).isoformat(),
+            fee=0.0,
+            broker_fill_id=str(uuid.uuid4()),
+        )
+
+        # Patch poll_order_events to return our event
+        with patch.object(broker, "poll_order_events", return_value=[fill_event]), \
+             patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
+             patch.object(market_calendar, "is_market_open", return_value=True):
+            fills, _, _ = execution_engine.process_open_orders(
+                "AGENTIC_SHADOW_01", conn, broker=broker
+            )
+
+        assert len(fills) == 1, f"Expected 1 fill, got {len(fills)}"
+        filled_order = conn.execute(
+            "SELECT state FROM orders WHERE order_id=?", (local_oid,)
+        ).fetchone()
+        assert filled_order["state"] == "FILLED", f"Expected FILLED, got {filled_order['state']}"
+
+    def test_cancel_uses_broker_order_id(self):
+        """Pre-fill risk revalidation cancels via broker_order_id; local row transitions to CANCELLED (0268)."""
+        conn = _make_conn()
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01", distinct_broker_id=True)
+        result = self._run_intent(conn, broker)
+        local_oid = result.order_id
+
+        # Rig risk revalidation to reject so cancel_order is called
+        cancel_calls = []
+        orig_cancel = broker.cancel_order
+
+        def _recording_cancel(order_id, reason="USER_REQUESTED"):
+            cancel_calls.append(order_id)
+            return orig_cancel(order_id, reason=reason)
+
+        broker.cancel_order = _recording_cancel
+
+        rejecting_risk = MagicMock(return_value=MagicMock(decision="REJECTED"))
+        with patch.object(execution_engine, "risk_evaluate", rejecting_risk), \
+             patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
+             patch("trade_engine.market_data._get_executable_quote", return_value=self._FreshQ()):
+            execution_engine.process_open_orders("AGENTIC_SHADOW_01", conn, broker=broker)
+
+        assert len(cancel_calls) == 1, f"cancel_order must be called once; called {len(cancel_calls)} times"
+        row = conn.execute(
+            "SELECT broker_order_id FROM orders WHERE order_id=?", (local_oid,)
+        ).fetchone()
+        # The recorded cancel call must use the broker_order_id, not the local order_id
+        assert cancel_calls[0] == row["broker_order_id"], (
+            f"cancel_order must receive broker_order_id={row['broker_order_id']!r}, "
+            f"got {cancel_calls[0]!r}"
+        )
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# 0269: client_order_id in BrokerFill/BrokerOrderEvent; resolver used in reconciliation
+# ════════════════════════════════════════════════════════════════════════════════
+
+class TestResolverEverywhere:
+    """Three-tier resolver works for fills and events; reconciliation uses resolver (0269)."""
+
+    def _seed_working_order(self, conn, broker_order_id=None):
+        """Insert a WORKING order with optional broker_order_id."""
+        local_oid = str(uuid.uuid4())
+        cid = f"AGENTIC_SHADOW_01:intent-{local_oid[:8]}"
+        intent_id = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO trade_intents (intent_id, account_id, symbol, side, quantity, "
+            "order_type, limit_price, time_in_force, status, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (intent_id, "AGENTIC_SHADOW_01", "ANET", "BUY", 1.0, "LIMIT", 100.0, "GTC", "APPROVED",
+             datetime.now(timezone.utc).isoformat()),
+        )
+        conn.execute(
+            "INSERT INTO orders (order_id, intent_id, account_id, symbol, side, quantity, "
+            "order_type, state, fill_qty, fill_cash, client_order_id, broker_order_id, "
+            "submitted_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (local_oid, intent_id, "AGENTIC_SHADOW_01", "ANET", "BUY", 1.0, "LIMIT", "WORKING",
+             0.0, 0.0, cid, broker_order_id, datetime.now(timezone.utc).isoformat(),
+             datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+        return local_oid, cid, broker_order_id or local_oid
+
+    def test_fill_resolved_by_broker_order_id(self):
+        """apply_broker_fill with broker_order_id only (no local_order_id) resolves correctly (0269)."""
+        conn = _make_conn()
+        conn.execute(
+            "INSERT INTO position_snapshots (account_id, symbol, qty, avg_cost, instrument_type, as_of) "
+            "VALUES (?,?,?,?,?,?)",
+            ("AGENTIC_SHADOW_01", "ANET", 0.0, 0.0, "EQUITY", "2026-01-01"),
+        )
+        conn.commit()
+        broker_oid = str(uuid.uuid4())
+        local_oid, cid, _ = self._seed_working_order(conn, broker_order_id=broker_oid)
+
+        bf = BrokerFill(
+            broker_fill_id="FILL-BOID-001",
+            broker_order_id=broker_oid,
+            symbol="ANET",
+            side="BUY",
+            qty=1.0,
+            price=100.0,
+            filled_at=datetime.now(timezone.utc).isoformat(),
+            fee=0.0,
+            local_order_id=None,   # broker doesn't send local ID
+            account_id="AGENTIC_SHADOW_01",
+        )
+        result = apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+        assert result == FillResult.APPLIED
+        fill_row = conn.execute("SELECT fill_id FROM fills WHERE fill_id=?", ("FILL-BOID-001",)).fetchone()
+        assert fill_row is not None, "Fill must be recorded by broker_order_id resolution"
+
+    def test_fill_resolved_by_client_order_id(self):
+        """apply_broker_fill with client_order_id only resolves correctly (0269)."""
+        conn = _make_conn()
+        conn.execute(
+            "INSERT INTO position_snapshots (account_id, symbol, qty, avg_cost, instrument_type, as_of) "
+            "VALUES (?,?,?,?,?,?)",
+            ("AGENTIC_SHADOW_01", "ANET", 0.0, 0.0, "EQUITY", "2026-01-01"),
+        )
+        conn.commit()
+        local_oid, cid, _ = self._seed_working_order(conn)  # broker_order_id=None → resolver uses client_order_id
+
+        bf = BrokerFill(
+            broker_fill_id="FILL-CID-001",
+            broker_order_id="UNKNOWN-BROKER-ID",
+            symbol="ANET",
+            side="BUY",
+            qty=1.0,
+            price=100.0,
+            filled_at=datetime.now(timezone.utc).isoformat(),
+            fee=0.0,
+            local_order_id=None,
+            account_id="AGENTIC_SHADOW_01",
+            client_order_id=cid,
+        )
+        result = apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+        assert result == FillResult.APPLIED
+        fill_row = conn.execute("SELECT fill_id FROM fills WHERE fill_id=?", ("FILL-CID-001",)).fetchone()
+        assert fill_row is not None, "Fill must be recorded by client_order_id resolution"
+
+    def test_event_resolved_by_broker_order_id(self):
+        """apply_broker_order_event with broker_order_id only cancels the correct local row (0269)."""
+        conn = _make_conn()
+        broker_oid = str(uuid.uuid4())
+        local_oid, _, _ = self._seed_working_order(conn, broker_order_id=broker_oid)
+
+        from trade_engine.execution_engine import apply_broker_order_event
+        event = BrokerOrderEvent(
+            event_type="CANCELLED",
+            broker_order_id=broker_oid,
+            local_order_id=None,
+        )
+        apply_broker_order_event(event, "AGENTIC_SHADOW_01", conn)
+        row = conn.execute("SELECT state FROM orders WHERE order_id=?", (local_oid,)).fetchone()
+        assert row["state"] == "CANCELLED", f"Expected CANCELLED, got {row['state']}"
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# 0270: PENDING_SUBMIT resolution via find_order_by_client_order_id
+# ════════════════════════════════════════════════════════════════════════════════
+
+class TestIndeterminateResolution:
+    """PENDING_SUBMIT rows are always resolved during reconciliation (0270)."""
+
+    class _FreshQ:
+        bid = 99.0
+        ask = 100.5
+        market_timestamp = None
+        retrieved_at = None
+        source = "test"
+
+        def __init__(self):
+            self.retrieved_at = datetime.now(timezone.utc).isoformat()
+
+    def test_submit_lost_reconcile_marks_cancelled(self):
+        """submit_lost: broker never received order; reconcile marks CANCELLED (0270)."""
+        conn = _make_conn()
+        intent_id = _seed_intent(conn, qty=1.0, price=100.0)
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01", submit_lost=True)
+
+        with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
+             patch.object(market_calendar, "is_market_open", return_value=True), \
+             patch("trade_engine.market_data._get_executable_quote", return_value=self._FreshQ()):
+            with pytest.raises(execution_engine.BrokerSubmissionIndeterminate):
+                execution_engine.process_intent(intent_id, conn, broker=broker)
+
+        # After crash: PENDING_SUBMIT; broker's _broker_orders is empty
+        row = conn.execute("SELECT state FROM orders WHERE intent_id=?", (intent_id,)).fetchone()
+        assert row["state"] == "PENDING_SUBMIT"
+
+        # Reconcile with submit_lost broker: find_order_by_client_order_id → None → CANCELLED
+        state = execution_engine.initialize_trading_session("AGENTIC_SHADOW_01", conn, broker=broker)
+        assert state == execution_engine.TradingReadyState.TRADING_READY, (
+            f"Expected TRADING_READY after resolving lost submit, got {state}"
+        )
+        final = conn.execute("SELECT state FROM orders WHERE intent_id=?", (intent_id,)).fetchone()
+        assert final["state"] == "CANCELLED", (
+            f"Lost order must be CANCELLED after reconciliation; got {final['state']}"
+        )
+
+    def test_submit_timeout_reconcile_promotes_to_working(self):
+        """submit_timeout: broker has order; reconcile promotes PENDING_SUBMIT → WORKING (0270)."""
+        conn = _make_conn()
+        intent_id = _seed_intent(conn, qty=1.0, price=100.0)
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01", submit_timeout=True)
+
+        with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
+             patch.object(market_calendar, "is_market_open", return_value=True), \
+             patch("trade_engine.market_data._get_executable_quote", return_value=self._FreshQ()):
+            with pytest.raises(execution_engine.BrokerSubmissionIndeterminate):
+                execution_engine.process_intent(intent_id, conn, broker=broker)
+
+        broker._submit_timeout = False
+        state = execution_engine.initialize_trading_session("AGENTIC_SHADOW_01", conn, broker=broker)
+        assert state == execution_engine.TradingReadyState.TRADING_READY
+        final = conn.execute("SELECT state, broker_order_id FROM orders WHERE intent_id=?", (intent_id,)).fetchone()
+        assert final["state"] == "WORKING", f"Expected WORKING, got {final['state']}"
+        assert final["broker_order_id"] is not None
+
+    def test_find_order_lookup_failure_halts(self):
+        """find_order_by_client_order_id raising → RECONCILIATION_UNAVAILABLE → HALTED (0270)."""
+        conn = _make_conn()
+        intent_id = _seed_intent(conn, qty=1.0, price=100.0)
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01", submit_lost=True)
+
+        with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
+             patch.object(market_calendar, "is_market_open", return_value=True), \
+             patch("trade_engine.market_data._get_executable_quote", return_value=self._FreshQ()):
+            with pytest.raises(execution_engine.BrokerSubmissionIndeterminate):
+                execution_engine.process_intent(intent_id, conn, broker=broker)
+
+        # Simulate connectivity failure during find_order_by_client_order_id
+        broker.find_order_by_client_order_id = MagicMock(
+            side_effect=RuntimeError("network timeout on client_order_id lookup")
+        )
+        state = execution_engine.initialize_trading_session("AGENTIC_SHADOW_01", conn, broker=broker)
+        assert state == execution_engine.TradingReadyState.HALTED, (
+            f"Lookup failure must → HALTED; got {state}"
+        )
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# 0271: ACK-state normalization
+# ════════════════════════════════════════════════════════════════════════════════
+
+class TestAckStateNormalization:
+    """BrokerOrderAck.normalized_state drives local order state after submit (0271)."""
+
+    class _FreshQ:
+        bid = 99.5
+        ask = 100.5  # above limit=100 → no fill in shadow mode; spread ≈1% < 2% max
+        market_timestamp = None
+        retrieved_at = None
+        source = "test"
+
+        def __init__(self):
+            self.retrieved_at = datetime.now(timezone.utc).isoformat()
+
+    def _run_intent_with_ack_state(self, conn, ack_state: str):
+        intent_id = _seed_intent(conn, qty=1.0, price=100.0)
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01", ack_state=ack_state)
+        with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
+             patch.object(market_calendar, "is_market_open", return_value=True), \
+             patch("trade_engine.market_data._get_executable_quote", return_value=self._FreshQ()):
+            result = execution_engine.process_intent(intent_id, conn, broker=broker)
+        return result, intent_id, conn.execute(
+            "SELECT state FROM orders WHERE intent_id=?", (intent_id,)
+        ).fetchone()
+
+    def test_working_ack_produces_working_order(self):
+        result, _, row = self._run_intent_with_ack_state(_make_conn(), "WORKING")
+        assert result.decision == "APPROVED"
+        assert row["state"] == "WORKING"
+
+    def test_rejected_ack_produces_rejected_order_and_intent(self):
+        conn = _make_conn()
+        result, intent_id, row = self._run_intent_with_ack_state(conn, "REJECTED")
+        assert result.decision == "REJECTED"
+        assert row["state"] == "REJECTED"
+        intent_row = conn.execute(
+            "SELECT status FROM trade_intents WHERE intent_id=?", (intent_id,)
+        ).fetchone()
+        assert intent_row["status"] == "REJECTED", f"Intent must be REJECTED; got {intent_row['status']}"
+
+    def test_pending_ack_leaves_pending_submit(self):
+        """PENDING ACK: broker queued but not activated; local stays PENDING_SUBMIT (0271)."""
+        conn = _make_conn()
+        result, _, row = self._run_intent_with_ack_state(conn, "PENDING")
+        assert result.decision == "APPROVED"
+        assert row["state"] == "PENDING_SUBMIT", f"Expected PENDING_SUBMIT; got {row['state']}"
+
+    def test_filled_ack_produces_filled_order_immediately(self):
+        """FILLED ACK: broker confirmed fill at acceptance; local order must reach FILLED (0271)."""
+        conn = _make_conn()
+        result, intent_id, row = self._run_intent_with_ack_state(conn, "FILLED")
+        assert result.decision == "APPROVED"
+        assert row["state"] == "FILLED", f"Expected FILLED; got {row['state']}"
+        assert result.fill is not None, "FILLED ACK must produce a Fill object"
+        # Verify fill is persisted
+        fill_count = conn.execute("SELECT COUNT(*) FROM fills WHERE account_id=?",
+                                  ("AGENTIC_SHADOW_01",)).fetchone()[0]
+        assert fill_count == 1, f"Expected 1 fill; got {fill_count}"
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# 0272: Broker account binding
+# ════════════════════════════════════════════════════════════════════════════════
+
+class TestBrokerAccountBinding:
+    """Broker account ID verified at session init; mismatch halts (0272)."""
+
+    def test_matching_account_id_allows_trading_ready(self):
+        """Broker returns expected account ID → TRADING_READY (0272)."""
+        conn = _make_conn()
+        # No expected_broker_account_id in policy → always passes
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01", broker_account_id="AGENTIC_SHADOW_01")
+        state = execution_engine.initialize_trading_session("AGENTIC_SHADOW_01", conn, broker=broker)
+        assert state == execution_engine.TradingReadyState.TRADING_READY
+
+    def test_mismatched_account_id_halts_when_expected_set(self):
+        """Broker returns wrong account ID when expected_broker_account_id is configured → HALTED (0272)."""
+        conn = _make_conn()
+
+        # Inject expected_broker_account_id into policy via a patched load_policy
+        from trade_engine.policy import TradingPolicy
+        policy_with_binding = _make_policy()
+        object.__setattr__(
+            policy_with_binding, "circuit_breakers",
+            {**policy_with_binding.circuit_breakers, "expected_broker_account_id": "EXPECTED_ACCOUNT_99"}
+        )
+
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01", broker_account_id="WRONG_ACCOUNT")
+        with patch.object(execution_engine, "load_policy", return_value=policy_with_binding):
+            state = execution_engine.initialize_trading_session(
+                "AGENTIC_SHADOW_01", conn, broker=broker
+            )
+        assert state == execution_engine.TradingReadyState.HALTED, (
+            f"Account mismatch must → HALTED; got {state}"
+        )
+
+    def test_get_account_id_failure_halts(self):
+        """get_account_id() raising during init → HALTED (0272)."""
+        conn = _make_conn()
+        policy_with_binding = _make_policy()
+        object.__setattr__(
+            policy_with_binding, "circuit_breakers",
+            {**policy_with_binding.circuit_breakers, "expected_broker_account_id": "ANY_ID"}
+        )
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01")
+        broker.get_account_id = MagicMock(side_effect=RuntimeError("connectivity failure"))
+        with patch.object(execution_engine, "load_policy", return_value=policy_with_binding):
+            state = execution_engine.initialize_trading_session(
+                "AGENTIC_SHADOW_01", conn, broker=broker
+            )
+        assert state == execution_engine.TradingReadyState.HALTED
+
+    def test_no_expected_account_id_skips_check(self):
+        """No expected_broker_account_id in policy → get_account_id never called (0272)."""
+        conn = _make_conn()
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01", broker_account_id="ANY_ID")
+        get_account_id_calls = []
+        orig = broker.get_account_id
+
+        def _recording():
+            get_account_id_calls.append(1)
+            return orig()
+
+        broker.get_account_id = _recording
+        # Default policy has no expected_broker_account_id → check skipped
+        state = execution_engine.initialize_trading_session("AGENTIC_SHADOW_01", conn, broker=broker)
+        assert state == execution_engine.TradingReadyState.TRADING_READY
+        assert len(get_account_id_calls) == 0, "get_account_id must not be called when no binding configured"

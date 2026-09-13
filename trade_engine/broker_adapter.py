@@ -74,6 +74,24 @@ class BrokerAdapter(ABC):
     @abstractmethod
     def get_fills(self, account_id: str, since: Optional[str] = None) -> list[BrokerFill]: ...
 
+    @abstractmethod
+    def find_order_by_client_order_id(self, client_order_id: str) -> Optional[BrokerOrder]:
+        """Return the broker's view of an order by its client_order_id, or None if not known (0270).
+
+        Returns None when the broker has no record of an order with this client_order_id.
+        Raise on transient connectivity errors so callers can distinguish "not found" from "unknown".
+        """
+        ...
+
+    @abstractmethod
+    def get_account_id(self) -> str:
+        """Return the broker's canonical account identifier for this session (0272).
+
+        Used during initialization to verify that credentials connect to the expected account.
+        Raises on connectivity failure.
+        """
+        ...
+
     def attempt_fill(self, order: Order, quote: BrokerQuote) -> Optional[Fill]:
         """Legacy simulation helper; use poll_order_events() for new lifecycle logic (0248)."""
         raise NotImplementedError("Subclass must implement attempt_fill or use poll_order_events()")
@@ -159,13 +177,13 @@ class ShadowBrokerAdapter(BrokerAdapter):
 
     def get_open_orders(self, account_id: str) -> list[BrokerOrder]:
         rows = self._conn.execute(
-            "SELECT order_id, symbol, side, quantity, fill_qty, state, limit_price "
+            "SELECT order_id, broker_order_id, symbol, side, quantity, fill_qty, state, limit_price, client_order_id "
             "FROM orders WHERE account_id=? AND state IN ('WORKING','PARTIALLY_FILLED')",
             (account_id,),
         ).fetchall()
         return [
             BrokerOrder(
-                broker_order_id=r["order_id"],
+                broker_order_id=r["broker_order_id"] or r["order_id"],  # use actual broker ID (0268)
                 symbol=r["symbol"],
                 side=r["side"],
                 quantity=float(r["quantity"] or 0),
@@ -173,6 +191,7 @@ class ShadowBrokerAdapter(BrokerAdapter):
                 state=r["state"],
                 limit_price=float(r["limit_price"]) if r["limit_price"] is not None else None,
                 local_order_id=r["order_id"],
+                client_order_id=r["client_order_id"],
             )
             for r in rows
         ]
@@ -199,6 +218,31 @@ class ShadowBrokerAdapter(BrokerAdapter):
 
     def get_order(self, order_id: str) -> Optional[Order]:
         return self._broker.get_order(order_id)
+
+    def find_order_by_client_order_id(self, client_order_id: str) -> Optional[BrokerOrder]:
+        """Return broker's view of order with this client_order_id (WORKING/PARTIALLY_FILLED only) (0270)."""
+        row = self._conn.execute(
+            "SELECT order_id, broker_order_id, symbol, side, quantity, fill_qty, state, limit_price, client_order_id "
+            "FROM orders WHERE client_order_id=? AND state NOT IN ('PENDING_SUBMIT','CANCELLED','REJECTED','EXPIRED','FILLED')",
+            (client_order_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return BrokerOrder(
+            broker_order_id=row["broker_order_id"] or row["order_id"],
+            symbol=row["symbol"],
+            side=row["side"],
+            quantity=float(row["quantity"] or 0),
+            fill_qty=float(row["fill_qty"] or 0),
+            state=row["state"],
+            limit_price=float(row["limit_price"]) if row["limit_price"] is not None else None,
+            local_order_id=row["order_id"],
+            client_order_id=client_order_id,
+        )
+
+    def get_account_id(self) -> str:
+        """Return account_id this adapter was initialized for (0272)."""
+        return self.account_id
 
     # ── Fills ─────────────────────────────────────────────────────────────────
 

@@ -5,6 +5,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
 _POLICY_PATH = Path(__file__).resolve().parent.parent / "config" / "trading_policy.json"
 
@@ -89,6 +90,13 @@ class TradingPolicy:
 
     def max_daily_loss_pct(self) -> float:
         return float(self.risk.get("max_daily_loss_pct", 3))
+
+    def expected_broker_account_id(self) -> Optional[str]:
+        """Broker account ID that must match broker.get_account_id() at session init (0272).
+
+        None means no binding check — opt-out for shadow/paper accounts without a real broker ID.
+        """
+        return self.circuit_breakers.get("expected_broker_account_id", None)
 
     def policy_hash(self) -> str:
         return hashlib.sha256(self._raw_json.encode()).hexdigest()[:12]

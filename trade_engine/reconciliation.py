@@ -142,25 +142,31 @@ def reconcile(
 
     # ── 3. Open orders ────────────────────────────────────────────────────────
     try:
-        # Index by local_order_id, then client_order_id, then broker_order_id (0247)
+        from .execution_engine import resolve_local_order_id  # local import avoids circular dep
         broker_order_list = broker.get_open_orders(account_id)
-        broker_orders = {}
-        for o in broker_order_list:
-            key = o.local_order_id or o.client_order_id or o.broker_order_id
-            broker_orders[key] = o
         local_open_rows = conn.execute(
             "SELECT order_id, state, client_order_id FROM orders WHERE account_id=? AND state IN ('PENDING_SUBMIT','WORKING','PARTIALLY_FILLED')",
             (account_id,),
         ).fetchall()
 
-        # ── 3a. Local → broker: local open orders that are missing at broker ──
+        # Build broker orders indexed by resolved LOCAL order_id (0269).
+        # Prevents false BROKER_MISSING when broker uses a different ID namespace.
+        broker_orders_by_local: dict = {}
+        for bo in broker_order_list:
+            bo_cid = getattr(bo, "client_order_id", None)
+            local_id = resolve_local_order_id(bo.local_order_id, bo.broker_order_id, bo_cid, conn)
+            if local_id:
+                broker_orders_by_local[local_id] = bo
+            else:
+                # New broker order with no local row yet; store by broker_order_id as fallback
+                broker_orders_by_local.setdefault(bo.broker_order_id, bo)
+
+        # ── 3a. Local → broker: check WORKING/PARTIALLY_FILLED orders (0269) ──
         for row in local_open_rows:
             oid = row["order_id"]
-            # PENDING_SUBMIT rows may not yet appear in broker_orders by order_id;
-            # check by client_order_id below in 3b (UPDATE path)
             if row["state"] == "PENDING_SUBMIT":
-                continue
-            if oid not in broker_orders:
+                continue  # handled explicitly by 3c below
+            if oid not in broker_orders_by_local:
                 discrepancies.append(Discrepancy(
                     kind=DiscrepancyKind.BROKER_MISSING,
                     subject=oid,
@@ -169,7 +175,7 @@ def reconcile(
                     detail="WORKING order in local DB is missing at broker",
                 ))
             else:
-                broker_state = broker_orders[oid].state
+                broker_state = broker_orders_by_local[oid].state
                 local_state = row["state"]
                 if broker_state != local_state:
                     discrepancies.append(Discrepancy(
@@ -179,38 +185,37 @@ def reconcile(
                         broker_value=broker_state,
                     ))
 
-        # ── 3b. Broker → local: broker open orders with no local record (0257) ─
+        # ── 3b. Broker → local: import broker orders with no local record (0257) ─
         local_order_ids = {row["order_id"] for row in local_open_rows}
         for bo in broker_order_list:
-            bo_key = bo.local_order_id or bo.broker_order_id
-            if bo_key in local_order_ids:
-                continue  # already matched in local→broker pass
+            bo_cid = getattr(bo, "client_order_id", None)
+            bo_local_id = resolve_local_order_id(bo.local_order_id, bo.broker_order_id, bo_cid, conn)
+            if bo_local_id and bo_local_id in local_order_ids:
+                continue  # already matched via resolver
 
             # Attempt auto-import when client_order_id traces back to a known intent
             imported = False
-            if bo.client_order_id:
+            if bo_cid:
                 from datetime import datetime, timezone as _tz
                 now_str = datetime.now(_tz.utc).isoformat()
 
-                # PENDING_SUBMIT recovery (0260): if a local PENDING_SUBMIT row matches
-                # this broker order by client_order_id, UPDATE it to WORKING rather than
-                # attempting a second INSERT (which would be silently ignored).
+                # PENDING_SUBMIT recovery (0260): UPDATE to WORKING
                 pending_row = conn.execute(
                     "SELECT order_id FROM orders WHERE client_order_id=? AND state='PENDING_SUBMIT'",
-                    (bo.client_order_id,),
+                    (bo_cid,),
                 ).fetchone()
                 if pending_row:
                     conn.execute(
                         """UPDATE orders
                            SET state='WORKING', broker_order_id=?, submitted_at=?, updated_at=?
                            WHERE order_id=?""",
-                        (bo.broker_order_id or bo_key, now_str, now_str, pending_row["order_id"]),
+                        (bo.broker_order_id or bo.local_order_id or bo.broker_order_id, now_str, now_str, pending_row["order_id"]),
                     )
                     conn.commit()
                     imported = True
 
                 if not imported:
-                    parts = bo.client_order_id.split(":", 1)
+                    parts = bo_cid.split(":", 1)
                     if len(parts) == 2:
                         intent_id = parts[1]
                         intent_row = conn.execute(
@@ -218,7 +223,7 @@ def reconcile(
                             (intent_id, account_id),
                         ).fetchone()
                         if intent_row:
-                            # Import: create local order row from broker-reported state
+                            bo_key = bo.local_order_id or bo.broker_order_id
                             conn.execute(
                                 """INSERT OR IGNORE INTO orders
                                    (order_id, intent_id, account_id, symbol, side, quantity,
@@ -229,7 +234,7 @@ def reconcile(
                                     bo_key, intent_id, account_id,
                                     bo.symbol, bo.side, bo.quantity,
                                     "LIMIT", bo.state, bo.fill_qty, 0.0,
-                                    bo.client_order_id, now_str, now_str,
+                                    bo_cid, now_str, now_str,
                                 ),
                             )
                             conn.commit()
@@ -238,11 +243,64 @@ def reconcile(
             if not imported:
                 discrepancies.append(Discrepancy(
                     kind=DiscrepancyKind.LOCAL_MISSING,
-                    subject=bo_key,
+                    subject=bo.local_order_id or bo.broker_order_id,
                     local_value=None,
                     broker_value=bo.state,
                     detail="broker has open order with no matching local DB record",
                 ))
+
+        # ── 3c. PENDING_SUBMIT resolution (0270) ─────────────────────────────
+        # Any remaining PENDING_SUBMIT rows must be explicitly resolved before TRADING_READY.
+        # Without this, a submit_lost crash leaves a ghost PENDING_SUBMIT that silently clears.
+        pending_submit_rows = conn.execute(
+            "SELECT order_id, client_order_id FROM orders WHERE account_id=? AND state='PENDING_SUBMIT'",
+            (account_id,),
+        ).fetchall()
+        for prow in pending_submit_rows:
+            pcid = prow["client_order_id"]
+            if not pcid:
+                discrepancies.append(Discrepancy(
+                    kind=DiscrepancyKind.BROKER_MISSING,
+                    subject=prow["order_id"],
+                    local_value="PENDING_SUBMIT",
+                    broker_value=None,
+                    detail="PENDING_SUBMIT order has no client_order_id; cannot verify with broker",
+                ))
+                continue
+            try:
+                bo = broker.find_order_by_client_order_id(pcid)
+            except Exception as exc:
+                discrepancies.append(Discrepancy(
+                    kind=DiscrepancyKind.RECONCILIATION_UNAVAILABLE,
+                    subject=prow["order_id"],
+                    local_value="PENDING_SUBMIT",
+                    broker_value=None,
+                    detail=f"find_order_by_client_order_id failed: {exc}",
+                ))
+                continue
+            from datetime import datetime, timezone as _tz
+            now_str = datetime.now(_tz.utc).isoformat()
+            if bo is not None:
+                # Broker has the order — promote PENDING_SUBMIT → WORKING
+                conn.execute(
+                    """UPDATE orders SET state='WORKING', broker_order_id=?, submitted_at=?, updated_at=?
+                       WHERE order_id=?""",
+                    (bo.broker_order_id, now_str, now_str, prow["order_id"]),
+                )
+                conn.commit()
+            else:
+                # Broker definitively has no record — safe to cancel
+                conn.execute(
+                    "UPDATE orders SET state='CANCELLED', updated_at=? WHERE order_id=?",
+                    (now_str, prow["order_id"]),
+                )
+                conn.execute(
+                    """UPDATE trade_intents SET status='CANCELLED'
+                       WHERE intent_id = (SELECT intent_id FROM orders WHERE order_id=?)""",
+                    (prow["order_id"],),
+                )
+                conn.commit()
+
     except Exception as exc:
         # Retrieval failure blocks submission — fail closed (0246)
         discrepancies.append(Discrepancy(
