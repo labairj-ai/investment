@@ -1,7 +1,7 @@
 # Prove Accepted-But-Lost Recovery With True State Separation
 
 - **ID:** 0264
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-13
 - **Priority:** high
 - **Depends:** 0263

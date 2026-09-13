@@ -1,7 +1,7 @@
 # Fix Cancel/Fill Race: Include CANCEL_REQUESTED in Event Ingestion
 
 - **ID:** 0266
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-13
 - **Priority:** high
 - **Depends:** 0263

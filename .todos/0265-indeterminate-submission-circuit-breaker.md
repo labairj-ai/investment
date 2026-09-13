@@ -1,7 +1,7 @@
 # Halt Account on Indeterminate Broker Submission
 
 - **ID:** 0265
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-13
 - **Priority:** high
 - **Depends:** 0264

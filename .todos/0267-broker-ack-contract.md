@@ -1,7 +1,7 @@
 # Change submit_order to Return BrokerOrderAck
 
 - **ID:** 0267
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-13
 - **Priority:** normal
 - **Depends:** 0263, 0264

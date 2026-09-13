@@ -1,7 +1,7 @@
 # Transition DQ CC-Management Exclusions to SQL Version Gating
 
 - **ID:** 0135
-- **Status:** in-progress
+- **Status:** backlog
 - **Created:** 2026-09-11
 - **Priority:** normal
 - **Depends:** none
@@ -9,6 +9,12 @@
 ## Problem
 
 CC management actions (HOLD_CALL, BUY_TO_CLOSE, ALLOW_ASSIGNMENT, ROLL_OUT, ROLL_UP, ROLL_UP_AND_OUT) are currently excluded from Decision Quality via a Python-side hardcode in `_EXCLUDE_FROM_DQ` (`agents/decision_quality.py`). The `outcome_math_version` column already exists (migration 0128) and is set to `2` for all CC management outcomes, but the SQL query in `get_outcome_statistics_by_category()` does not yet filter on it. The long-term design is to gate CC management rows by `outcome_math_version >= 2` in SQL and lift the Python exclusions — but this requires enough real v2 rows to have accumulated in the production database first.
+
+## Blocker
+
+Checked prod DB on 2026-09-13: `recommendation_outcomes` has 0 rows total — `outcome_math_version`
+column exists (migration 0128 ran) but no evaluation jobs have written any outcomes yet. Cannot
+proceed until ≥30 v2 rows per CC mgmt action type at ≥3m horizon exist. Re-check periodically.
 
 ## Proposed approach
 

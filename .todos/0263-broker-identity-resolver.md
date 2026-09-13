@@ -1,7 +1,7 @@
 # Add Central Broker Identity Resolver
 
 - **ID:** 0263
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-13
 - **Priority:** high
 - **Depends:** none
