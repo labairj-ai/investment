@@ -1243,3 +1243,326 @@ class TestCrashMatrixE2E:
             "SELECT status FROM trade_intents WHERE intent_id=?", (intent_id,)
         ).fetchone()
         assert intent_row["status"] == "CANCELLED"
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# 0278: Settlement-indeterminate circuit breaker
+# ════════════════════════════════════════════════════════════════════════════════
+
+class TestSettlementIndeterminateCircuit:
+    """FILLED ACK without authoritative fill economics halts new submissions (0278)."""
+
+    class _FreshQ:
+        bid = 99.0
+        ask = 101.0
+        market_timestamp = None
+        source = "test"
+
+        def __init__(self):
+            self.retrieved_at = datetime.now(timezone.utc).isoformat()
+
+    def _process(self, intent_id, conn, broker):
+        with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
+             patch.object(market_calendar, "is_market_open", return_value=True), \
+             patch("trade_engine.market_data._get_executable_quote", return_value=self._FreshQ()):
+            return execution_engine.process_intent(intent_id, conn, broker=broker)
+
+    def test_filled_ack_fill_lookup_raises_halts_submission(self):
+        """FILLED ACK + get_fills_for_order raises → BrokerSettlementIndeterminate (0278)."""
+        conn = _make_conn()
+        intent_id = _seed_intent(conn, qty=1.0, price=100.0)
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01", ack_state="FILLED", fill_raises=True)
+        with pytest.raises(execution_engine.BrokerSettlementIndeterminate):
+            self._process(intent_id, conn, broker)
+
+    def test_filled_ack_empty_fills_halts_submission(self):
+        """FILLED ACK + empty fill list → BrokerSettlementIndeterminate (0278)."""
+        conn = _make_conn()
+        intent_id = _seed_intent(conn, qty=1.0, price=100.0)
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01", ack_state="FILLED")
+        with patch.object(broker, "get_fills_for_order", return_value=[]):
+            with pytest.raises(execution_engine.BrokerSettlementIndeterminate):
+                self._process(intent_id, conn, broker)
+
+    def test_filled_ack_partial_fill_intent_not_prematurely_filled(self):
+        """FILLED ACK + lagging fill endpoint returns partial qty → intent NOT FILLED (0278).
+
+        Verifies the removed explicit _update_intent_status(...FILLED) call: only
+        apply_broker_fill()'s aggregate-qty check may promote to FILLED.
+        """
+        conn = _make_conn()
+        intent_id = _seed_intent(conn, qty=2.0, price=100.0)
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01", ack_state="FILLED")
+
+        def _partial_fills(broker_order_id):
+            local_oid = broker._broker_to_local.get(broker_order_id, broker_order_id)
+            return [BrokerFill(
+                broker_fill_id="partial-only",
+                broker_order_id=broker_order_id,
+                symbol="ANET", side="BUY",
+                qty=1.0,
+                price=100.0,
+                filled_at=datetime.now(timezone.utc).isoformat(),
+                fee=0.0,
+                local_order_id=local_oid,
+                account_id="AGENTIC_SHADOW_01",
+            )]
+
+        with patch.object(broker, "get_fills_for_order", side_effect=_partial_fills):
+            self._process(intent_id, conn, broker)
+
+        order_row = conn.execute(
+            "SELECT state, fill_qty FROM orders WHERE intent_id=?", (intent_id,)
+        ).fetchone()
+        assert order_row["state"] == "PARTIALLY_FILLED", (
+            f"Expected PARTIALLY_FILLED (lagging fill); got {order_row['state']}"
+        )
+        assert float(order_row["fill_qty"]) == pytest.approx(1.0)
+
+        intent_row = conn.execute(
+            "SELECT status FROM trade_intents WHERE intent_id=?", (intent_id,)
+        ).fetchone()
+        assert intent_row["status"] != "FILLED", (
+            "Intent must not be FILLED when fill qty (1.0) < order qty (2.0)"
+        )
+
+    def test_process_new_intents_halts_after_settlement_indeterminate(self):
+        """Second intent never submitted after first raises BrokerSettlementIndeterminate (0278)."""
+        conn = _make_conn()
+        intent_id_1 = _seed_intent(conn, qty=1.0, price=100.0)
+        intent_id_2 = _seed_intent(conn, qty=1.0, price=100.0)
+
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01", ack_state="FILLED", fill_raises=True)
+        with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
+             patch.object(market_calendar, "is_market_open", return_value=True), \
+             patch("trade_engine.market_data._get_executable_quote", return_value=self._FreshQ()):
+            with pytest.raises(execution_engine.BrokerSettlementIndeterminate):
+                execution_engine.process_new_intents("AGENTIC_SHADOW_01", conn, broker=broker)
+
+        order_2 = conn.execute(
+            "SELECT state FROM orders WHERE intent_id=?", (intent_id_2,)
+        ).fetchone()
+        assert order_2 is None, (
+            "Second intent must not have been submitted after BrokerSettlementIndeterminate"
+        )
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# 0279: PARTIALLY_FILLED branch in PENDING_SUBMIT recovery reducer
+# ════════════════════════════════════════════════════════════════════════════════
+
+class TestPartiallyFilledCrashRecovery:
+    """Broker partially fills an order before restart; recovery produces correct state (0279)."""
+
+    class _FreshQ:
+        bid = 99.0
+        ask = 101.0
+        market_timestamp = None
+        source = "test"
+
+        def __init__(self):
+            self.retrieved_at = datetime.now(timezone.utc).isoformat()
+
+    def _do_crash(self, conn, qty: float = 2.0):
+        intent_id = _seed_intent(conn, qty=qty, price=100.0)
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01", submit_timeout=True)
+        with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
+             patch.object(market_calendar, "is_market_open", return_value=True), \
+             patch("trade_engine.market_data._get_executable_quote", return_value=self._FreshQ()):
+            with pytest.raises(execution_engine.BrokerSubmissionIndeterminate):
+                execution_engine.process_intent(intent_id, conn, broker=broker)
+        return broker, intent_id
+
+    def test_partially_filled_before_restart_correct_state(self):
+        """PENDING_SUBMIT + broker PARTIALLY_FILLED before restart → PARTIALLY_FILLED with correct economics (0279)."""
+        conn = _make_conn()
+        broker, intent_id = self._do_crash(conn, qty=2.0)
+
+        row = conn.execute(
+            "SELECT state, client_order_id FROM orders WHERE intent_id=?", (intent_id,)
+        ).fetchone()
+        assert row["state"] == "PENDING_SUBMIT"
+        cid = row["client_order_id"]
+
+        broker_order_id = next(
+            bid for bid, bo in broker._broker_orders.items() if bo.client_order_id == cid
+        )
+
+        auth_price, auth_fee = 99.47, 0.10
+        existing = broker._broker_orders[broker_order_id]
+        broker._broker_orders[broker_order_id] = BrokerOrder(
+            broker_order_id=broker_order_id,
+            symbol=existing.symbol, side=existing.side,
+            quantity=2.0, fill_qty=1.0,
+            state="PARTIALLY_FILLED",
+            limit_price=existing.limit_price,
+            client_order_id=existing.client_order_id,
+            local_order_id=existing.local_order_id,
+        )
+        broker._broker_fills[broker_order_id] = [BrokerFill(
+            broker_fill_id=f"pf-fill-{broker_order_id}",
+            broker_order_id=broker_order_id,
+            symbol=existing.symbol, side=existing.side,
+            qty=1.0, price=auth_price,
+            filled_at=datetime.now(timezone.utc).isoformat(),
+            fee=auth_fee,
+            local_order_id=None, account_id="AGENTIC_SHADOW_01",
+            client_order_id=cid,
+        )]
+
+        broker._submit_timeout = False
+        state = execution_engine.initialize_trading_session("AGENTIC_SHADOW_01", conn, broker=broker)
+        assert state == execution_engine.TradingReadyState.TRADING_READY
+
+        final = conn.execute(
+            "SELECT state, fill_qty FROM orders WHERE intent_id=?", (intent_id,)
+        ).fetchone()
+        assert final["state"] == "PARTIALLY_FILLED", (
+            f"Expected PARTIALLY_FILLED after partial-fill recovery; got {final['state']}"
+        )
+        assert float(final["fill_qty"]) == pytest.approx(1.0)
+
+        fill_row = conn.execute(
+            "SELECT price, fee FROM fills WHERE account_id='AGENTIC_SHADOW_01'"
+        ).fetchone()
+        assert fill_row is not None, "Fill must be persisted"
+        assert fill_row["price"] == pytest.approx(auth_price)
+        assert fill_row["fee"] == pytest.approx(auth_fee)
+
+        intent_row = conn.execute(
+            "SELECT status FROM trade_intents WHERE intent_id=?", (intent_id,)
+        ).fetchone()
+        assert intent_row["status"] != "FILLED"
+
+        order_count = conn.execute(
+            "SELECT COUNT(*) FROM orders WHERE intent_id=?", (intent_id,)
+        ).fetchone()[0]
+        assert order_count == 1, f"Zero resubmissions expected; got {order_count} orders"
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# 0280: Exhaustive ACK state reducer
+# ════════════════════════════════════════════════════════════════════════════════
+
+class TestExhaustiveACKReducer:
+    """Every BrokerOrderState value has an explicit ACK branch; ERROR/unknown fail closed (0280)."""
+
+    class _FreshQ:
+        bid = 99.0
+        ask = 101.0
+        market_timestamp = None
+        source = "test"
+
+        def __init__(self):
+            self.retrieved_at = datetime.now(timezone.utc).isoformat()
+
+    def _submit(self, conn, broker, qty: float = 1.0, price: float = 100.0):
+        intent_id = _seed_intent(conn, qty=qty, price=price)
+        with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
+             patch.object(market_calendar, "is_market_open", return_value=True), \
+             patch("trade_engine.market_data._get_executable_quote", return_value=self._FreshQ()):
+            execution_engine.process_intent(intent_id, conn, broker=broker)
+        return intent_id
+
+    def _submit_raises(self, conn, broker, exc_type, qty: float = 1.0, price: float = 100.0):
+        intent_id = _seed_intent(conn, qty=qty, price=price)
+        with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
+             patch.object(market_calendar, "is_market_open", return_value=True), \
+             patch("trade_engine.market_data._get_executable_quote", return_value=self._FreshQ()):
+            with pytest.raises(exc_type):
+                execution_engine.process_intent(intent_id, conn, broker=broker)
+        return intent_id
+
+    def test_ack_working(self):
+        """WORKING ACK → local order WORKING."""
+        conn = _make_conn()
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01", ack_state="WORKING")
+        intent_id = self._submit(conn, broker)
+        row = conn.execute("SELECT state FROM orders WHERE intent_id=?", (intent_id,)).fetchone()
+        assert row["state"] == "WORKING"
+
+    def test_ack_pending(self):
+        """PENDING ACK → local order stays PENDING_SUBMIT for reconciliation."""
+        conn = _make_conn()
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01", ack_state="PENDING")
+        intent_id = self._submit(conn, broker)
+        row = conn.execute("SELECT state FROM orders WHERE intent_id=?", (intent_id,)).fetchone()
+        assert row["state"] == "PENDING_SUBMIT"
+
+    def test_ack_filled(self):
+        """FILLED ACK + authoritative fills → order FILLED via apply_broker_fill (0278, 0280)."""
+        conn = _make_conn()
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01", ack_state="FILLED")
+        intent_id = self._submit(conn, broker)
+        row = conn.execute("SELECT state, fill_qty FROM orders WHERE intent_id=?", (intent_id,)).fetchone()
+        assert row["state"] == "FILLED"
+        assert float(row["fill_qty"]) == pytest.approx(1.0)
+        intent_row = conn.execute(
+            "SELECT status FROM trade_intents WHERE intent_id=?", (intent_id,)
+        ).fetchone()
+        assert intent_row["status"] == "FILLED"
+
+    def test_ack_partially_filled(self):
+        """PARTIALLY_FILLED ACK → fills applied; order PARTIALLY_FILLED; intent not FILLED (0280)."""
+        conn = _make_conn()
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01", ack_state="PARTIALLY_FILLED")
+        intent_id = self._submit(conn, broker, qty=2.0)
+        row = conn.execute("SELECT state, fill_qty FROM orders WHERE intent_id=?", (intent_id,)).fetchone()
+        assert row["state"] == "PARTIALLY_FILLED", f"Expected PARTIALLY_FILLED; got {row['state']}"
+        assert float(row["fill_qty"]) == pytest.approx(1.0)
+        fill_count = conn.execute(
+            "SELECT COUNT(*) FROM fills WHERE account_id='AGENTIC_SHADOW_01'"
+        ).fetchone()[0]
+        assert fill_count == 1
+        intent_row = conn.execute(
+            "SELECT status FROM trade_intents WHERE intent_id=?", (intent_id,)
+        ).fetchone()
+        assert intent_row["status"] != "FILLED"
+
+    def test_ack_rejected(self):
+        """REJECTED ACK → order REJECTED + intent REJECTED."""
+        conn = _make_conn()
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01", ack_state="REJECTED")
+        intent_id = self._submit(conn, broker)
+        row = conn.execute("SELECT state FROM orders WHERE intent_id=?", (intent_id,)).fetchone()
+        assert row["state"] == "REJECTED"
+        intent_row = conn.execute(
+            "SELECT status FROM trade_intents WHERE intent_id=?", (intent_id,)
+        ).fetchone()
+        assert intent_row["status"] == "REJECTED"
+
+    def test_ack_cancelled(self):
+        """CANCELLED ACK → order CANCELLED + intent CANCELLED (0280)."""
+        conn = _make_conn()
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01", ack_state="CANCELLED")
+        intent_id = self._submit(conn, broker)
+        row = conn.execute("SELECT state FROM orders WHERE intent_id=?", (intent_id,)).fetchone()
+        assert row["state"] == "CANCELLED", f"Expected CANCELLED; got {row['state']}"
+        intent_row = conn.execute(
+            "SELECT status FROM trade_intents WHERE intent_id=?", (intent_id,)
+        ).fetchone()
+        assert intent_row["status"] == "CANCELLED"
+
+    def test_ack_expired(self):
+        """EXPIRED ACK → order EXPIRED + intent EXPIRED (0280)."""
+        conn = _make_conn()
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01", ack_state="EXPIRED")
+        intent_id = self._submit(conn, broker)
+        row = conn.execute("SELECT state FROM orders WHERE intent_id=?", (intent_id,)).fetchone()
+        assert row["state"] == "EXPIRED", f"Expected EXPIRED; got {row['state']}"
+        intent_row = conn.execute(
+            "SELECT status FROM trade_intents WHERE intent_id=?", (intent_id,)
+        ).fetchone()
+        assert intent_row["status"] == "EXPIRED"
+
+    def test_ack_error_raises_settlement_indeterminate(self):
+        """ERROR ACK → BrokerSettlementIndeterminate; never writes WORKING (0280)."""
+        conn = _make_conn()
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01", ack_state="ERROR")
+        self._submit_raises(conn, broker, execution_engine.BrokerSettlementIndeterminate)
+
+    def test_ack_unknown_state_raises_settlement_indeterminate(self):
+        """Unrecognized ACK state string → BrokerSettlementIndeterminate; fail closed (0280)."""
+        conn = _make_conn()
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01", ack_state="BANANA")
+        self._submit_raises(conn, broker, execution_engine.BrokerSettlementIndeterminate)

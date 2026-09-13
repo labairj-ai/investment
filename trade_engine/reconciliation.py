@@ -284,13 +284,27 @@ def reconcile(
             if bo is not None:
                 # Broker returned an order — apply state-specific recovery reducer (0274).
                 _bstate = bo.state if bo.state else "WORKING"
-                if _bstate in ("WORKING", "PARTIALLY_FILLED"):
+                if _bstate == "WORKING":
                     conn.execute(
                         """UPDATE orders SET state='WORKING', broker_order_id=?, submitted_at=?, updated_at=?
                            WHERE order_id=?""",
                         (bo.broker_order_id, now_str, now_str, prow["order_id"]),
                     )
                     conn.commit()
+                elif _bstate == "PARTIALLY_FILLED":
+                    # Broker has partial fills; open order, fetch fills, let ledger own state (0279).
+                    conn.execute(
+                        """UPDATE orders SET state='WORKING', broker_order_id=?, submitted_at=?, updated_at=?
+                           WHERE order_id=?""",
+                        (bo.broker_order_id, now_str, now_str, prow["order_id"]),
+                    )
+                    conn.commit()
+                    try:
+                        _pf_reco_fills = broker.get_fills_for_order(bo.broker_order_id)
+                    except Exception:
+                        _pf_reco_fills = []
+                    for _rf in _pf_reco_fills:
+                        apply_broker_fill(_rf, account_id, conn)
                 elif _bstate == "PENDING":
                     # Broker queued but not yet active — keep as PENDING_SUBMIT
                     conn.execute(

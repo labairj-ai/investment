@@ -62,6 +62,7 @@ class FakeBrokerAdapter(ShadowBrokerAdapter):
         distinct_broker_id: bool = False,    # broker_order_id ≠ local order_id (0268)
         ack_state: str = "WORKING",          # normalized_state in returned BrokerOrderAck (0271)
         broker_account_id: Optional[str] = None,  # overrides get_account_id() response (0272)
+        fill_raises: bool = False,           # get_fills_for_order raises RuntimeError (0278)
     ) -> None:
         super().__init__(conn, account_id)
         self._delay_ack = delay_ack
@@ -78,6 +79,7 @@ class FakeBrokerAdapter(ShadowBrokerAdapter):
         self._distinct_broker_id = distinct_broker_id
         self._ack_state = ack_state
         self._broker_account_id = broker_account_id
+        self._fill_raises = fill_raises
         # Independent broker-side ledger (0260): keyed by broker_order_id.
         # This dict is the single source of truth for what the broker believes;
         # the local SQLite DB tracks what the engine believes.
@@ -137,21 +139,22 @@ class FakeBrokerAdapter(ShadowBrokerAdapter):
                 accepted_at=ack.accepted_at,
                 raw_status=ack.raw_status,
             )
-            bo_state = "FILLED" if self._ack_state == "FILLED" else "WORKING"
+            _bo_state = {"FILLED": "FILLED", "PARTIALLY_FILLED": "PARTIALLY_FILLED"}.get(self._ack_state, "WORKING")
+            _pf_qty = float(intent.quantity) if self._ack_state == "FILLED" else (float(intent.quantity) / 2 if self._ack_state == "PARTIALLY_FILLED" else 0.0)
             self._broker_orders[new_broker_oid] = BrokerOrder(
                 broker_order_id=new_broker_oid,
                 symbol=intent.symbol,
                 side=intent.side,
                 quantity=float(intent.quantity),
-                fill_qty=float(intent.quantity) if self._ack_state == "FILLED" else 0.0,
-                state=bo_state,
+                fill_qty=_pf_qty,
+                state=_bo_state,
                 limit_price=float(intent.limit_price) if intent.limit_price is not None else None,
                 client_order_id=client_order_id,
                 local_order_id=local_oid,
             )
-            if self._ack_state == "FILLED":
+            if self._ack_state in ("FILLED", "PARTIALLY_FILLED"):
                 self._broker_fills[new_broker_oid] = [self._make_broker_fill(
-                    new_broker_oid, local_oid, intent, client_order_id, ack.accepted_at,
+                    new_broker_oid, local_oid, intent, client_order_id, ack.accepted_at, qty=_pf_qty,
                 )]
         else:
             ack = BrokerOrderAck(
@@ -161,36 +164,38 @@ class FakeBrokerAdapter(ShadowBrokerAdapter):
                 accepted_at=ack.accepted_at,
                 raw_status=ack.raw_status,
             )
-            bo_state = "FILLED" if self._ack_state == "FILLED" else "WORKING"
+            _bo_state = {"FILLED": "FILLED", "PARTIALLY_FILLED": "PARTIALLY_FILLED"}.get(self._ack_state, "WORKING")
+            _pf_qty = float(intent.quantity) if self._ack_state == "FILLED" else (float(intent.quantity) / 2 if self._ack_state == "PARTIALLY_FILLED" else 0.0)
             self._broker_orders[ack.broker_order_id] = BrokerOrder(
                 broker_order_id=ack.broker_order_id,
                 symbol=intent.symbol,
                 side=intent.side,
                 quantity=float(intent.quantity),
-                fill_qty=float(intent.quantity) if self._ack_state == "FILLED" else 0.0,
-                state=bo_state,
+                fill_qty=_pf_qty,
+                state=_bo_state,
                 limit_price=float(intent.limit_price) if intent.limit_price is not None else None,
                 client_order_id=client_order_id,
                 local_order_id=ack.broker_order_id,
             )
-            if self._ack_state == "FILLED":
+            if self._ack_state in ("FILLED", "PARTIALLY_FILLED"):
                 self._broker_fills[ack.broker_order_id] = [self._make_broker_fill(
-                    ack.broker_order_id, local_oid, intent, client_order_id, ack.accepted_at,
+                    ack.broker_order_id, local_oid, intent, client_order_id, ack.accepted_at, qty=_pf_qty,
                 )]
         return ack
 
     def _make_broker_fill(
-        self, broker_order_id: str, local_order_id: str, intent, client_order_id, accepted_at
+        self, broker_order_id: str, local_order_id: str, intent, client_order_id, accepted_at, *, qty=None,
     ) -> BrokerFill:
-        """Pre-stage a broker-authoritative fill for FILLED ACK mode (0273)."""
+        """Pre-stage a broker-authoritative fill for FILLED/PARTIALLY_FILLED ACK mode (0273, 0280)."""
         side_str = intent.side.value if hasattr(intent.side, "value") else str(intent.side)
         fill_price = float(intent.limit_price) if intent.limit_price is not None else 100.0
+        fill_qty = float(qty) if qty is not None else float(intent.quantity)
         return BrokerFill(
             broker_fill_id=f"fake-fill-{broker_order_id}",
             broker_order_id=broker_order_id,
             symbol=intent.symbol,
             side=side_str,
-            qty=float(intent.quantity),
+            qty=fill_qty,
             price=fill_price,
             filled_at=accepted_at or datetime.now(timezone.utc).isoformat(),
             fee=0.01,
@@ -212,10 +217,11 @@ class FakeBrokerAdapter(ShadowBrokerAdapter):
     def get_fills_for_order(self, broker_order_id: str) -> list[BrokerFill]:
         """Return pre-staged broker fills from the in-memory ledger (0273).
 
-        For FILLED ACK tests, fills are pre-staged in _broker_fills during submit_order().
-        Tests can also manually populate _broker_fills[broker_order_id] to simulate a
-        broker that filled before the app restarted (0274/0277 crash matrix scenarios).
+        Raises RuntimeError when fill_raises=True — simulates a broker fill endpoint
+        failure to test BrokerSettlementIndeterminate handling (0278).
         """
+        if self._fill_raises:
+            raise RuntimeError("chaos: get_fills_for_order raised (fill_raises=True)")
         return list(self._broker_fills.get(broker_order_id, []))
 
     def find_order_by_client_order_id(self, client_order_id: str):

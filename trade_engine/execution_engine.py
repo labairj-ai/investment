@@ -88,6 +88,18 @@ class BrokerSubmissionIndeterminate(RuntimeError):
     """
 
 
+class BrokerSettlementIndeterminate(RuntimeError):
+    """FILLED ACK received but authoritative fill economics could not be retrieved (0278).
+
+    Raised when get_fills_for_order() fails or returns no fills after a FILLED ACK,
+    or when the ACK carries an ERROR or unrecognized normalized_state (0280).
+    New order submissions must halt until the account's economic state is synchronized
+    via reconciliation. Open-order polling and fill reconciliation may continue.
+    Recovery path: run initialize_trading_session() + run_reconciliation() to ingest
+    authoritative fills, then resume.
+    """
+
+
 _FILL_REPLAY_WINDOW_MINUTES = 15   # look this far back when querying fills to catch late arrivals (0257)
 _MAX_LIMIT_OVERAGE = 2.0           # reject LIMIT orders > 200% above ask (BUY) or < 200% below bid (SELL) (0251)
 
@@ -534,7 +546,6 @@ def process_intent(
         )
     elif _ack_state == "PENDING":
         # Broker queued the order but hasn't activated it; set/keep PENDING_SUBMIT for reconciliation.
-        # Explicitly write state so ShadowBroker's WORKING advance is overridden by the ACK.
         conn.execute(
             "UPDATE orders SET broker_order_id=?, state='PENDING_SUBMIT', submitted_at=? WHERE order_id=?",
             (ack.broker_order_id, ack.accepted_at or now_str2, local_order_id),
@@ -549,15 +560,27 @@ def process_intent(
             elapsed_ms=int((time.monotonic() - t0) * 1000),
         )
     elif _ack_state == "FILLED":
-        # Broker filled immediately on acceptance (e.g. market-at-open); advance to WORKING
-        # then retrieve authoritative fills from the broker before booking (0273).
-        # Never synthesize price/fee from intent or quote — use only what the broker reports.
+        # Broker filled immediately (e.g. market-at-open); retrieve authoritative fills (0273, 0278).
+        # Never synthesize price/fee — use only what the broker reports.
+        # Fail closed: if we cannot retrieve authoritative economics, halt new submissions.
         conn.execute(
             "UPDATE orders SET broker_order_id=?, state='WORKING', submitted_at=? WHERE order_id=?",
             (ack.broker_order_id, ack.accepted_at or now_str2, local_order_id),
         )
         conn.commit()
-        broker_fills = broker.get_fills_for_order(ack.broker_order_id)
+        try:
+            broker_fills = broker.get_fills_for_order(ack.broker_order_id)
+        except Exception as _sf_exc:
+            raise BrokerSettlementIndeterminate(
+                f"FILLED ACK for order {local_order_id} (broker {ack.broker_order_id}): "
+                f"get_fills_for_order() raised {type(_sf_exc).__name__} — "
+                f"halting new submissions until reconciliation"
+            ) from _sf_exc
+        if not broker_fills:
+            raise BrokerSettlementIndeterminate(
+                f"FILLED ACK for order {local_order_id} (broker {ack.broker_order_id}): "
+                f"no authoritative fills returned — halting new submissions until reconciliation"
+            )
         fill: Optional[Fill] = None
         for bf in broker_fills:
             apply_broker_fill(bf, intent.account_id, conn)
@@ -567,10 +590,10 @@ def process_intent(
                 ).fetchone()
                 if fill_row:
                     fill = Fill.from_db_row(fill_row)
+        # Do NOT call _update_intent_status(...FILLED) — apply_broker_fill() already sets
+        # intent status to FILLED when aggregate fill qty reaches order qty (0278).
         if fill:
-            _update_intent_status(intent_id, IntentStatus.FILLED, conn)
             _write_executed_action(fill, intent, conn)
-        # If no fills returned yet, order stays WORKING and reconciliation ingests fills normally.
         return ExecutionResult(
             intent_id=intent_id,
             decision="APPROVED",
@@ -579,13 +602,67 @@ def process_intent(
             risk_decision=risk_decision,
             elapsed_ms=int((time.monotonic() - t0) * 1000),
         )
-    else:
-        # WORKING (default): broker accepted and order is live
+    elif _ack_state == "PARTIALLY_FILLED":
+        # Broker filled some shares immediately; remainder is still WORKING (0280).
+        # Retrieve any available fills; do not fail-closed on empty (remainder arrives via events).
         conn.execute(
             "UPDATE orders SET broker_order_id=?, state='WORKING', submitted_at=? WHERE order_id=?",
             (ack.broker_order_id, ack.accepted_at or now_str2, local_order_id),
         )
         conn.commit()
+        try:
+            _pf_fills = broker.get_fills_for_order(ack.broker_order_id)
+        except Exception:
+            _pf_fills = []
+        fill: Optional[Fill] = None
+        for bf in _pf_fills:
+            apply_broker_fill(bf, intent.account_id, conn)
+            if fill is None:
+                fill_row = conn.execute(
+                    "SELECT * FROM fills WHERE fill_id=?", (bf.broker_fill_id,)
+                ).fetchone()
+                if fill_row:
+                    fill = Fill.from_db_row(fill_row)
+        if fill:
+            _write_executed_action(fill, intent, conn)
+        return ExecutionResult(
+            intent_id=intent_id,
+            decision="APPROVED",
+            order_id=local_order_id,
+            fill=fill,
+            risk_decision=risk_decision,
+            elapsed_ms=int((time.monotonic() - t0) * 1000),
+        )
+    elif _ack_state in ("CANCELLED", "EXPIRED"):
+        # Immediate terminal response from broker — write terminal state and update intent (0280).
+        conn.execute(
+            "UPDATE orders SET broker_order_id=?, state=?, submitted_at=? WHERE order_id=?",
+            (ack.broker_order_id, _ack_state, ack.accepted_at or now_str2, local_order_id),
+        )
+        conn.commit()
+        _terminal_intent_map = {"CANCELLED": IntentStatus.CANCELLED, "EXPIRED": IntentStatus.EXPIRED}
+        _update_intent_status(intent_id, _terminal_intent_map[_ack_state], conn)
+        return ExecutionResult(
+            intent_id=intent_id,
+            decision=_ack_state,
+            order_id=local_order_id,
+            fill=None,
+            risk_decision=risk_decision,
+            elapsed_ms=int((time.monotonic() - t0) * 1000),
+        )
+    elif _ack_state == "WORKING":
+        # Broker accepted; order is live — attach broker_order_id and poll for fills below.
+        conn.execute(
+            "UPDATE orders SET broker_order_id=?, state='WORKING', submitted_at=? WHERE order_id=?",
+            (ack.broker_order_id, ack.accepted_at or now_str2, local_order_id),
+        )
+        conn.commit()
+    else:
+        # ERROR or unrecognized ACK state — fail closed; never silently assume WORKING (0280).
+        raise BrokerSettlementIndeterminate(
+            f"order {local_order_id}: unrecognized ACK normalized_state {_ack_state!r} "
+            f"from broker — halting new submissions"
+        )
 
     # ── Ingest any immediate fills via the canonical event path (0259) ────────
     # attempt_fill() is NOT called here; all fills flow through apply_broker_fill().
@@ -652,8 +729,8 @@ def process_new_intents(
         try:
             result = process_intent(row["intent_id"], conn, broker=broker)
             results.append(result)
-        except BrokerSubmissionIndeterminate:
-            raise  # propagate — further intent processing must stop (0265)
+        except (BrokerSubmissionIndeterminate, BrokerSettlementIndeterminate):
+            raise  # propagate — further intent processing must stop (0265, 0278)
         except Exception as exc:
             _log.error("process_intent failed for %s: %s", row["intent_id"], exc)
     return results
