@@ -553,7 +553,7 @@ def process_open_orders(
     conn: sqlite3.Connection,
     broker: Optional[BrokerAdapter] = None,
 ) -> tuple[list[Fill], int, int]:
-    """Re-attempt fills on all WORKING/PARTIALLY_FILLED orders via broker event stream (0199, 0220, 0238, 0256).
+    """Re-attempt fills on all WORKING/PARTIALLY_FILLED/CANCEL_REQUESTED orders via broker event stream (0199, 0220, 0238, 0256, 0266).
 
     broker: BrokerAdapter to use. Defaults to ShadowBrokerAdapter when None.
     Returns (fills, pre_fill_rejections, orders_expired).
@@ -564,7 +564,7 @@ def process_open_orders(
     open_rows = conn.execute(
         """SELECT o.order_id, o.intent_id
            FROM orders o
-           WHERE o.account_id=? AND o.state IN ('WORKING','PARTIALLY_FILLED')""",
+           WHERE o.account_id=? AND o.state IN ('WORKING','PARTIALLY_FILLED','CANCEL_REQUESTED')""",
         (account_id,),
     ).fetchall()
 

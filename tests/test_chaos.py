@@ -133,37 +133,112 @@ class TestDuplicateFill:
 
 
 class TestCancelFillRace:
-    """FILLED event + CANCELLED event for same order → FILLED wins; cash debited once (0255)."""
+    """Cancel/fill race correctness with real BrokerOrderEvent objects (0255, 0266).
 
-    def test_filled_then_cancelled_event_no_double_debit(self):
+    Ordering A: FILLED event then CANCELLED event → final state FILLED, cash debited once.
+    Ordering B: CANCEL_REQUESTED → CANCELLED event → late FILLED event → final state FILLED, cash once.
+    """
+
+    def _run_open_orders(self, conn, broker):
+        """Run process_open_orders with standard policy/market patches."""
+        with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
+             patch.object(market_calendar, "is_market_open", return_value=True), \
+             patch("trade_engine.market_data._get_executable_quote", return_value=None):
+            return execution_engine.process_open_orders(
+                "AGENTIC_SHADOW_01", conn, broker=broker
+            )
+
+    def _make_filled_event(self, order_id: str, qty: float = 1.0, price: float = 100.0) -> "BrokerOrderEvent":
+        from trade_engine.broker_types import BrokerOrderEvent
+        return BrokerOrderEvent(
+            event_type="FILLED",
+            broker_order_id=order_id,
+            local_order_id=order_id,
+            fill_qty=qty,
+            fill_price=price,
+            filled_at=datetime.now(timezone.utc).isoformat(),
+            fee=0.0,
+            broker_fill_id=str(uuid.uuid4()),
+        )
+
+    def _make_cancelled_event(self, order_id: str) -> "BrokerOrderEvent":
+        from trade_engine.broker_types import BrokerOrderEvent
+        return BrokerOrderEvent(
+            event_type="CANCELLED",
+            broker_order_id=order_id,
+            local_order_id=order_id,
+        )
+
+    def test_ordering_a_filled_then_cancelled(self):
+        """Ordering A: FILLED event arrives before CANCELLED → final FILLED, cash debited once (0266)."""
         conn = _make_conn()
         order_id = _submit_working_order(conn)
-
-        fill_id = str(uuid.uuid4())
-        bf = _make_broker_fill(order_id, fill_id=fill_id, price=100.0)
 
         cash_before = conn.execute(
             "SELECT current_cash FROM trading_accounts WHERE account_id='AGENTIC_SHADOW_01'"
         ).fetchone()["current_cash"]
 
-        # FILLED event arrives first
-        r1 = apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
-        # CANCELLED event injected for same order (race): apply_broker_fill is not called for cancel
-        # Cancel transition is handled by the engine directly
-        conn.execute("UPDATE orders SET state='CANCELLED' WHERE order_id=?", (order_id,))
-        conn.commit()
-        # Duplicate fill event arrives (same fill_id — idempotency catches it)
-        r2 = apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+        filled_event = self._make_filled_event(order_id, qty=1.0, price=100.0)
+        cancelled_event = self._make_cancelled_event(order_id)
 
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01")
+        broker.poll_order_events = lambda account_id, quote=None: [filled_event, cancelled_event]
+
+        self._run_open_orders(conn, broker)
+
+        final = conn.execute(
+            "SELECT state FROM orders WHERE order_id=?", (order_id,)
+        ).fetchone()
         cash_after = conn.execute(
             "SELECT current_cash FROM trading_accounts WHERE account_id='AGENTIC_SHADOW_01'"
         ).fetchone()["current_cash"]
-        fills = conn.execute("SELECT COUNT(*) FROM fills").fetchone()[0]
+        fills = conn.execute("SELECT COUNT(*) FROM fills WHERE order_id=?", (order_id,)).fetchone()[0]
+        pos = conn.execute(
+            "SELECT qty FROM position_snapshots WHERE account_id='AGENTIC_SHADOW_01' AND symbol='ANET'"
+        ).fetchone()
 
-        assert r1 == FillResult.APPLIED
-        assert r2 == FillResult.ALREADY_APPLIED
-        assert fills == 1
-        assert cash_after == pytest.approx(cash_before - 100.0, abs=0.01)
+        assert final["state"] == "FILLED", f"Expected FILLED, got {final['state']}"
+        assert fills == 1, f"Expected 1 fill row, got {fills}"
+        assert cash_after == pytest.approx(cash_before - 1.0 * 100.0, abs=0.01)
+        assert pos is not None and pos["qty"] == pytest.approx(1.0)
+
+    def test_ordering_b_cancel_then_late_fill(self):
+        """Ordering B: CANCEL_REQUESTED → CANCELLED → late FILLED → final FILLED, cash debited once (0266)."""
+        conn = _make_conn()
+        order_id = _submit_working_order(conn)
+
+        # Transition to CANCEL_REQUESTED (simulating a cancel request sent to broker)
+        conn.execute("UPDATE orders SET state='CANCEL_REQUESTED' WHERE order_id=?", (order_id,))
+        conn.commit()
+
+        cash_before = conn.execute(
+            "SELECT current_cash FROM trading_accounts WHERE account_id='AGENTIC_SHADOW_01'"
+        ).fetchone()["current_cash"]
+
+        cancelled_event = self._make_cancelled_event(order_id)
+        late_filled_event = self._make_filled_event(order_id, qty=1.0, price=100.0)
+
+        # Both events arrive in same poll: CANCELLED first, then late FILLED
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01")
+        broker.poll_order_events = lambda account_id, quote=None: [cancelled_event, late_filled_event]
+
+        self._run_open_orders(conn, broker)
+
+        final = conn.execute(
+            "SELECT state FROM orders WHERE order_id=?", (order_id,)
+        ).fetchone()
+        cash_after = conn.execute(
+            "SELECT current_cash FROM trading_accounts WHERE account_id='AGENTIC_SHADOW_01'"
+        ).fetchone()["current_cash"]
+        fills = conn.execute("SELECT COUNT(*) FROM fills WHERE order_id=?", (order_id,)).fetchone()[0]
+        pos = conn.execute(
+            "SELECT qty FROM position_snapshots WHERE account_id='AGENTIC_SHADOW_01' AND symbol='ANET'"
+        ).fetchone()
+
+        assert final["state"] == "FILLED", f"Expected FILLED after late fill, got {final['state']}"
+        assert fills == 1, f"Expected 1 fill row, got {fills}"
+        assert cash_after == pytest.approx(cash_before - 1.0 * 100.0, abs=0.01)
+        assert pos is not None and pos["qty"] == pytest.approx(1.0)
 
 
 class TestOutOfOrderPartialFills:
