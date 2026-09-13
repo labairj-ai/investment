@@ -228,7 +228,7 @@ class TestAcceptedButLostRestart:
         with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
              patch.object(market_calendar, "is_market_open", return_value=True), \
              patch("trade_engine.market_data._get_executable_quote", return_value=_FreshQ()):
-            with pytest.raises(TimeoutError):
+            with pytest.raises(execution_engine.BrokerSubmissionIndeterminate):
                 execution_engine.process_intent(intent_id, conn, broker=broker)
 
         # After crash: local DB has PENDING_SUBMIT; broker has WORKING in _broker_orders
@@ -253,6 +253,104 @@ class TestAcceptedButLostRestart:
         assert final["state"] == "WORKING", f"Expected WORKING after reconcile, got {final['state']}"
         assert final["broker_order_id"] is not None, "broker_order_id must be attached after reconciliation"
         assert len(_submit_calls) == 1, "submit_order must NOT be called again on restart (0264)"
+
+
+class TestIndeterminateSubmissionCircuitBreaker:
+    """BrokerSubmissionIndeterminate halts the cycle and blocks further intent processing (0265)."""
+
+    class _FreshQ:
+        bid = 99.0
+        ask = 100.5  # > limit=100 → no immediate fill
+        market_timestamp = None
+        retrieved_at = None
+        source = "test"
+
+        def __init__(self):
+            from datetime import datetime, timezone
+            self.retrieved_at = datetime.now(timezone.utc).isoformat()
+
+    def _run_cycle(self, conn, broker):
+        with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
+             patch.object(market_calendar, "is_market_open", return_value=True), \
+             patch.object(execution_engine, "_refresh_market_prices"), \
+             patch.object(execution_engine, "_update_nav_high_water"), \
+             patch.object(execution_engine, "_write_account_snapshot"), \
+             patch("trade_engine.market_data._get_executable_quote", return_value=self._FreshQ()):
+            return execution_engine.run_execution_cycle(
+                "AGENTIC_SHADOW_01", conn, broker=broker,
+                trading_state=execution_engine.TradingReadyState.TRADING_READY,
+            )
+
+    def test_indeterminate_halts_cycle(self):
+        """Two pending intents; first causes BrokerSubmissionIndeterminate; second never submitted (0265)."""
+        conn = _make_conn()
+        _seed_intent(conn, qty=1.0, price=100.0)  # intent #1
+        _seed_intent(conn, qty=1.0, price=100.0)  # intent #2
+
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01", submit_lost=True)
+        submit_count = []
+        orig = broker.submit_order
+
+        def _counting(intent, client_order_id=None):
+            submit_count.append(1)
+            return orig(intent, client_order_id=client_order_id)
+
+        broker.submit_order = _counting
+
+        result = self._run_cycle(conn, broker)
+
+        assert result["execution_state"] == "HALTED", f"Expected HALTED, got {result['execution_state']}"
+        assert result["halt_reason"] == "SUBMISSION_INDETERMINATE"
+        assert len(submit_count) == 1, f"submit_order must be called exactly once; got {len(submit_count)}"
+
+    def test_indeterminate_process_intent_raises(self):
+        """process_intent raises BrokerSubmissionIndeterminate when submit_order throws (0265)."""
+        conn = _make_conn()
+        intent_id = _seed_intent(conn, qty=1.0, price=100.0)
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01", submit_lost=True)
+
+        class _FreshQ:
+            bid = 99.0
+            ask = 100.5
+            market_timestamp = None
+            retrieved_at = datetime.now(timezone.utc).isoformat()
+            source = "test"
+
+        with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
+             patch.object(market_calendar, "is_market_open", return_value=True), \
+             patch("trade_engine.market_data._get_executable_quote", return_value=_FreshQ()):
+            with pytest.raises(execution_engine.BrokerSubmissionIndeterminate):
+                execution_engine.process_intent(intent_id, conn, broker=broker)
+
+    def test_after_reconciliation_next_cycle_processes_remaining(self):
+        """After BrokerSubmissionIndeterminate + reconciliation, remaining intents are processed (0265)."""
+        conn = _make_conn()
+        _seed_intent(conn, qty=1.0, price=100.0)  # intent #1 — will cause timeout
+        _seed_intent(conn, qty=1.0, price=100.0)  # intent #2 — blocked by halt, then processed
+
+        # submit_timeout: broker writes to _broker_orders then raises (0264 pattern)
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01", submit_timeout=True)
+
+        # First cycle: intent #1 → BrokerSubmissionIndeterminate → HALTED
+        result1 = self._run_cycle(conn, broker)
+        assert result1["execution_state"] == "HALTED"
+        assert result1["halt_reason"] == "SUBMISSION_INDETERMINATE"
+
+        # Reconciliation: same broker instance, timeout mode cleared
+        broker._submit_timeout = False
+        state = execution_engine.initialize_trading_session("AGENTIC_SHADOW_01", conn, broker=broker)
+        assert state == execution_engine.TradingReadyState.TRADING_READY
+
+        # Intent #1: PENDING_SUBMIT → WORKING (reconciled); status still APPROVED → not re-queued
+        intent1_order = conn.execute(
+            "SELECT state FROM orders LIMIT 1"
+        ).fetchone()
+        assert intent1_order["state"] == "WORKING"
+
+        # Second cycle: processes intent #2 (still PENDING in trade_intents)
+        result2 = self._run_cycle(conn, broker)
+        assert result2["execution_state"] == "OK", f"Expected OK, got {result2['execution_state']}"
+        assert result2["new_intents_processed"] == 1, "Intent #2 must be processed in second cycle"
 
 
 class TestRetrievalFailureHalts:

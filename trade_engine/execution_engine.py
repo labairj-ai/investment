@@ -69,6 +69,16 @@ class SessionNotReadyError(RuntimeError):
     """process_intent() or run_execution_cycle() called before successful initialize() (0262)."""
 
 
+class BrokerSubmissionIndeterminate(RuntimeError):
+    """submit_order() raised a network error after PENDING_SUBMIT was durably written (0265).
+
+    Broker acceptance is unknown. The account must halt until reconciliation confirms
+    whether the broker received the order. Recovery path: run initialize_trading_session()
+    which will either import the broker order (WORKING) or leave PENDING_SUBMIT for manual
+    review, then re-evaluate.
+    """
+
+
 _FILL_REPLAY_WINDOW_MINUTES = 15   # look this far back when querying fills to catch late arrivals (0257)
 _MAX_LIMIT_OVERAGE = 2.0           # reject LIMIT orders > 200% above ask (BUY) or < 200% below bid (SELL) (0251)
 
@@ -457,7 +467,15 @@ def process_intent(
     conn.commit()
 
     # ── Order submission (broker call after local row is durable) ─────────────
-    order = broker.submit_order(intent, client_order_id=client_order_id)
+    try:
+        order = broker.submit_order(intent, client_order_id=client_order_id)
+    except (TimeoutError, OSError, ConnectionError) as exc:
+        # PENDING_SUBMIT is durable; broker acceptance is unknown (0265).
+        # Halt the account so no further intents are submitted until reconciliation resolves state.
+        raise BrokerSubmissionIndeterminate(
+            f"intent {intent_id}: {type(exc).__name__} raised by submit_order after PENDING_SUBMIT "
+            f"written — broker acceptance unknown; halt until reconciliation"
+        ) from exc
 
     # ── Ingest any immediate fills via the canonical event path (0259) ────────
     # attempt_fill() is NOT called here; all fills flow through apply_broker_fill().
@@ -523,6 +541,8 @@ def process_new_intents(
         try:
             result = process_intent(row["intent_id"], conn, broker=broker)
             results.append(result)
+        except BrokerSubmissionIndeterminate:
+            raise  # propagate — further intent processing must stop (0265)
         except Exception as exc:
             _log.error("process_intent failed for %s: %s", row["intent_id"], exc)
     return results
@@ -771,7 +791,14 @@ def run_execution_cycle(
         )
         new_intents_blocked = True
     else:
-        new_results = process_new_intents(account_id, conn, broker=broker)
+        try:
+            new_results = process_new_intents(account_id, conn, broker=broker)
+        except BrokerSubmissionIndeterminate as exc:
+            _log.error(
+                "SUBMISSION_INDETERMINATE for %s: %s — halting cycle; reconcile before next run",
+                account_id, exc,
+            )
+            return {**_HALTED_BASE, "halt_reason": "SUBMISSION_INDETERMINATE"}
 
     # Count open orders before retry (snapshot includes orders created this cycle)
     working_orders_checked = conn.execute(

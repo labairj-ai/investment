@@ -51,6 +51,7 @@ class FakeBrokerAdapter(ShadowBrokerAdapter):
         out_of_order: bool = False,
         cancel_race: bool = False,
         submit_timeout: bool = False,
+        submit_lost: bool = False,
         crash_after_submit: bool = False,
         position_mismatch_qty: Optional[float] = None,  # override qty returned by get_positions
         stale_quote: bool = False,
@@ -62,6 +63,7 @@ class FakeBrokerAdapter(ShadowBrokerAdapter):
         self._out_of_order = out_of_order
         self._cancel_race = cancel_race
         self._submit_timeout = submit_timeout
+        self._submit_lost = submit_lost
         self._crash_after_submit = crash_after_submit
         self._crash_submitted = False
         self._position_mismatch_qty = position_mismatch_qty
@@ -72,6 +74,10 @@ class FakeBrokerAdapter(ShadowBrokerAdapter):
         self._broker_orders: dict[str, BrokerOrder] = {}
 
     def submit_order(self, intent: TradeIntent, client_order_id: Optional[str] = None) -> Order:
+        if self._submit_lost:
+            # Pure network failure (0265): raises WITHOUT writing to _broker_orders.
+            # Broker definitively does not have this order.
+            raise TimeoutError("network failure: broker never received order (chaos: submit_lost)")
         if self._submit_timeout:
             # Accepted-but-response-lost (0260): write broker-side record first (broker accepted),
             # then raise before returning — local DB stays at PENDING_SUBMIT, broker has WORKING.
