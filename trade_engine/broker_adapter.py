@@ -10,7 +10,7 @@ import datetime
 from abc import ABC, abstractmethod
 from typing import Optional
 
-from .broker_types import BrokerAccountState, BrokerFill, BrokerOrder, BrokerOrderEvent, BrokerPosition, BrokerQuote
+from .broker_types import BrokerAccountState, BrokerFill, BrokerOrder, BrokerOrderAck, BrokerOrderEvent, BrokerPosition, BrokerQuote
 from .models import Fill, Order, TradeIntent, TradingAccount
 
 
@@ -53,7 +53,7 @@ class BrokerAdapter(ABC):
     def get_quote(self, symbol: str) -> Optional[BrokerQuote]: ...
 
     @abstractmethod
-    def submit_order(self, intent: TradeIntent, client_order_id: Optional[str] = None) -> Order: ...
+    def submit_order(self, intent: TradeIntent, client_order_id: Optional[str] = None) -> BrokerOrderAck: ...
 
     @abstractmethod
     def cancel_order(self, order_id: str, reason: str = "USER_REQUESTED") -> Order: ...
@@ -177,7 +177,7 @@ class ShadowBrokerAdapter(BrokerAdapter):
             for r in rows
         ]
 
-    def submit_order(self, intent: TradeIntent, client_order_id: Optional[str] = None) -> Order:
+    def submit_order(self, intent: TradeIntent, client_order_id: Optional[str] = None) -> BrokerOrderAck:
         order = self._broker.submit_order(intent)
         if client_order_id and order:
             # Persist client_order_id durably so reconciliation can match after a crash (0247)
@@ -186,8 +186,13 @@ class ShadowBrokerAdapter(BrokerAdapter):
                 (client_order_id, order.order_id),
             )
             self._conn.commit()
-            order.client_order_id = client_order_id
-        return order
+        return BrokerOrderAck(
+            broker_order_id=order.order_id,
+            client_order_id=client_order_id,
+            normalized_state=order.state.value if order.state else "WORKING",
+            accepted_at=order.submitted_at,
+            raw_status=order.state.value if order.state else None,
+        )
 
     def cancel_order(self, order_id: str, reason: str = "USER_REQUESTED") -> Order:
         return self._broker.cancel_order(order_id, reason=reason)

@@ -2634,15 +2634,18 @@ class TestBrokerAdapterContract:
         assert "execution_engine" not in ba_source
 
     def test_submit_and_get_order(self):
-        """submit_order then get_order returns the submitted order (0225)."""
+        """submit_order returns BrokerOrderAck; get_order fetches the submitted order (0225, 0267)."""
         conn = _make_conn()
         adapter = self._make_adapter(conn)
         intent = _make_intent(quantity=1.0, limit_price=100.0)
         _insert_intent(conn, intent)
-        order = adapter.submit_order(intent)
-        fetched = adapter.get_order(order.order_id)
+        from trade_engine.broker_types import BrokerOrderAck
+        ack = adapter.submit_order(intent)
+        assert isinstance(ack, BrokerOrderAck), f"Expected BrokerOrderAck, got {type(ack)}"
+        assert ack.broker_order_id is not None
+        fetched = adapter.get_order(ack.broker_order_id)
         assert fetched is not None
-        assert fetched.order_id == order.order_id
+        assert fetched.order_id == ack.broker_order_id
         assert fetched.state in (OrderState.WORKING, OrderState.SUBMITTED)
 
 

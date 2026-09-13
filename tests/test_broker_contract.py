@@ -20,7 +20,7 @@ import sys
 sys.path.insert(0, str(ROOT))
 
 from trade_engine.broker_adapter import BrokerAdapter, ShadowBrokerAdapter
-from trade_engine.broker_types import BrokerAccountState, BrokerFill, BrokerOrder, BrokerPosition, BrokerQuote
+from trade_engine.broker_types import BrokerAccountState, BrokerFill, BrokerOrder, BrokerOrderAck, BrokerPosition, BrokerQuote
 from trade_engine.models import (
     InstrumentType, IntentStatus, Order, OrderState, OrderType, Side, TimeInForce, TradeIntent
 )
@@ -141,28 +141,29 @@ class BrokerAdapterContractMixin:
     def make_adapter(self, conn: sqlite3.Connection) -> BrokerAdapter:
         raise NotImplementedError("Subclass must implement make_adapter(conn)")
 
-    # ── 1. submit_order returns Order with order_id ───────────────────────────
+    # ── 1. submit_order returns BrokerOrderAck (0267) ────────────────────────
 
     def test_submit_order_returns_order(self):
         conn = _make_conn()
         adapter = self.make_adapter(conn)
         intent = _make_intent()
         _insert_intent(conn, intent)
-        order = adapter.submit_order(intent)
-        assert isinstance(order, Order)
-        assert order.order_id
+        ack = adapter.submit_order(intent)
+        assert isinstance(ack, BrokerOrderAck)
+        assert ack.broker_order_id
+        order = adapter.get_order(ack.broker_order_id)
         assert order.state in (OrderState.WORKING, OrderState.SUBMITTED)
 
-    # ── 2. Idempotent submit — same intent_id → same order_id ─────────────────
+    # ── 2. Idempotent submit — same intent_id → same broker_order_id ──────────
 
     def test_submit_order_idempotent(self):
         conn = _make_conn()
         adapter = self.make_adapter(conn)
         intent = _make_intent()
         _insert_intent(conn, intent)
-        order1 = adapter.submit_order(intent)
-        order2 = adapter.submit_order(intent)
-        assert order1.order_id == order2.order_id
+        ack1 = adapter.submit_order(intent)
+        ack2 = adapter.submit_order(intent)
+        assert ack1.broker_order_id == ack2.broker_order_id
 
     # ── 3. get_order returns submitted order ──────────────────────────────────
 
@@ -171,10 +172,10 @@ class BrokerAdapterContractMixin:
         adapter = self.make_adapter(conn)
         intent = _make_intent()
         _insert_intent(conn, intent)
-        order = adapter.submit_order(intent)
-        fetched = adapter.get_order(order.order_id)
+        ack = adapter.submit_order(intent)
+        fetched = adapter.get_order(ack.broker_order_id)
         assert fetched is not None
-        assert fetched.order_id == order.order_id
+        assert fetched.order_id == ack.broker_order_id
         assert fetched.symbol == intent.symbol
 
     # ── 4. cancel_order transitions to CANCELLED ──────────────────────────────
@@ -184,10 +185,11 @@ class BrokerAdapterContractMixin:
         adapter = self.make_adapter(conn)
         intent = _make_intent()
         _insert_intent(conn, intent)
-        order = adapter.submit_order(intent)
+        ack = adapter.submit_order(intent)
+        order = adapter.get_order(ack.broker_order_id)
         assert order.state == OrderState.WORKING
-        adapter.cancel_order(order.order_id, reason="TEST_CANCEL")
-        cancelled = adapter.get_order(order.order_id)
+        adapter.cancel_order(ack.broker_order_id, reason="TEST_CANCEL")
+        cancelled = adapter.get_order(ack.broker_order_id)
         assert cancelled.state == OrderState.CANCELLED
 
     # ── 5. attempt_fill on WORKING order with valid quote produces Fill ────────
@@ -198,12 +200,13 @@ class BrokerAdapterContractMixin:
             adapter = self.make_adapter(conn)
             intent = _make_intent(quantity=1.0, limit_price=100.0)
             _insert_intent(conn, intent)
-            order = adapter.submit_order(intent)
+            ack = adapter.submit_order(intent)
+            order = adapter.get_order(ack.broker_order_id)
             bquote = _fresh_quote(bid=99.0, ask=100.0)
             fill = adapter.attempt_fill(order, bquote)
         assert fill is not None
         assert fill.qty == pytest.approx(1.0)
-        filled = adapter.get_order(order.order_id)
+        filled = adapter.get_order(ack.broker_order_id)
         assert filled.state == OrderState.FILLED
 
     # ── 6. Partial fill → PARTIALLY_FILLED ────────────────────────────────────
@@ -214,21 +217,22 @@ class BrokerAdapterContractMixin:
             adapter = self.make_adapter(conn)
             intent = _make_intent(quantity=10.0, limit_price=100.0)
             _insert_intent(conn, intent)
-            order = adapter.submit_order(intent)
+            ack = adapter.submit_order(intent)
+            order = adapter.get_order(ack.broker_order_id)
             # Directly update order qty to simulate partial fill state externally,
             # then call attempt_fill. ShadowBrokerAdapter fills remaining qty in one shot,
             # so we manually set fill_qty to simulate partial state first.
             conn.execute(
                 "UPDATE orders SET fill_qty=5.0, state='PARTIALLY_FILLED' WHERE order_id=?",
-                (order.order_id,),
+                (ack.broker_order_id,),
             )
             conn.commit()
-            partial_order = adapter.get_order(order.order_id)
+            partial_order = adapter.get_order(ack.broker_order_id)
             assert partial_order.state == OrderState.PARTIALLY_FILLED
             bquote = _fresh_quote(bid=99.0, ask=100.0)
             fill2 = adapter.attempt_fill(partial_order, bquote)
         assert fill2 is not None
-        final = adapter.get_order(order.order_id)
+        final = adapter.get_order(ack.broker_order_id)
         assert final.state == OrderState.FILLED
 
     # ── 7. get_positions returns list[BrokerPosition] ─────────────────────────
@@ -292,7 +296,8 @@ class BrokerAdapterContractMixin:
             adapter = self.make_adapter(conn)
             intent = _make_intent(quantity=1.0, limit_price=100.0)
             _insert_intent(conn, intent)
-            order = adapter.submit_order(intent)
+            ack = adapter.submit_order(intent)
+            order = adapter.get_order(ack.broker_order_id)
             adapter.attempt_fill(order, _fresh_quote())
         fills = adapter.get_fills("AGENTIC_SHADOW_01")
         assert len(fills) == 1
@@ -307,11 +312,11 @@ class BrokerAdapterContractMixin:
         adapter = self.make_adapter(conn)
         intent = _make_intent()
         _insert_intent(conn, intent)
-        order = adapter.submit_order(intent)
+        ack = adapter.submit_order(intent)
         open_orders = adapter.get_open_orders("AGENTIC_SHADOW_01")
         assert isinstance(open_orders, list)
         order_ids = [o.broker_order_id for o in open_orders]
-        assert order.order_id in order_ids
+        assert ack.broker_order_id in order_ids
 
     # ── 13. Cancelled order not in working orders ─────────────────────────────
 
@@ -320,11 +325,11 @@ class BrokerAdapterContractMixin:
         adapter = self.make_adapter(conn)
         intent = _make_intent()
         _insert_intent(conn, intent)
-        order = adapter.submit_order(intent)
-        adapter.cancel_order(order.order_id)
+        ack = adapter.submit_order(intent)
+        adapter.cancel_order(ack.broker_order_id)
         open_orders = adapter.get_open_orders("AGENTIC_SHADOW_01")
         order_ids = [o.broker_order_id for o in open_orders]
-        assert order.order_id not in order_ids
+        assert ack.broker_order_id not in order_ids
 
     # ── 14. get_fills since filter excludes old fills ─────────────────────────
 
@@ -334,7 +339,8 @@ class BrokerAdapterContractMixin:
             adapter = self.make_adapter(conn)
             intent = _make_intent(quantity=1.0, limit_price=100.0)
             _insert_intent(conn, intent)
-            order = adapter.submit_order(intent)
+            ack = adapter.submit_order(intent)
+            order = adapter.get_order(ack.broker_order_id)
             adapter.attempt_fill(order, _fresh_quote())
         future = (datetime.now(timezone.utc).replace(year=2099)).isoformat()
         fills_all = adapter.get_fills("AGENTIC_SHADOW_01")

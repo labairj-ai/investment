@@ -13,7 +13,7 @@ from typing import Optional
 
 from trade_engine.broker_adapter import ShadowBrokerAdapter
 from trade_engine.broker_types import (
-    BrokerAccountState, BrokerFill, BrokerOrder, BrokerOrderEvent,
+    BrokerAccountState, BrokerFill, BrokerOrder, BrokerOrderAck, BrokerOrderEvent,
     BrokerPosition, BrokerQuote,
 )
 from trade_engine.models import Fill, Order, OrderState, TradeIntent
@@ -73,7 +73,7 @@ class FakeBrokerAdapter(ShadowBrokerAdapter):
         # the local SQLite DB tracks what the engine believes.
         self._broker_orders: dict[str, BrokerOrder] = {}
 
-    def submit_order(self, intent: TradeIntent, client_order_id: Optional[str] = None) -> Order:
+    def submit_order(self, intent: TradeIntent, client_order_id: Optional[str] = None) -> BrokerOrderAck:
         if self._submit_lost:
             # Pure network failure (0265): raises WITHOUT writing to _broker_orders.
             # Broker definitively does not have this order.
@@ -82,7 +82,6 @@ class FakeBrokerAdapter(ShadowBrokerAdapter):
             # Accepted-but-response-lost (0260): write broker-side record first (broker accepted),
             # then raise before returning — local DB stays at PENDING_SUBMIT, broker has WORKING.
             broker_order_id = str(uuid.uuid4())
-            now_str = datetime.now(timezone.utc).isoformat()
             self._broker_orders[broker_order_id] = BrokerOrder(
                 broker_order_id=broker_order_id,
                 symbol=intent.symbol,
@@ -103,11 +102,11 @@ class FakeBrokerAdapter(ShadowBrokerAdapter):
             self._submit_calls += 1
             if self._submit_calls <= self._delay_ack:
                 raise TimeoutError(f"broker ACK delayed (chaos: delay_ack, call {self._submit_calls}/{self._delay_ack})")
-        order = super().submit_order(intent, client_order_id=client_order_id)
+        ack = super().submit_order(intent, client_order_id=client_order_id)
         # Mirror successful submissions into the in-memory ledger too
-        if order:
-            self._broker_orders[order.order_id] = BrokerOrder(
-                broker_order_id=order.order_id,
+        if ack:
+            self._broker_orders[ack.broker_order_id] = BrokerOrder(
+                broker_order_id=ack.broker_order_id,
                 symbol=intent.symbol,
                 side=intent.side,
                 quantity=float(intent.quantity),
@@ -115,9 +114,9 @@ class FakeBrokerAdapter(ShadowBrokerAdapter):
                 state="WORKING",
                 limit_price=float(intent.limit_price) if intent.limit_price is not None else None,
                 client_order_id=client_order_id,
-                local_order_id=order.order_id,
+                local_order_id=ack.broker_order_id,
             )
-        return order
+        return ack
 
     def get_open_orders(self, account_id: str) -> list[BrokerOrder]:
         """Return union of in-memory ledger and DB-backed orders (0260).

@@ -466,9 +466,17 @@ def process_intent(
     )
     conn.commit()
 
+    # Resolve actual local order_id: INSERT OR IGNORE may have been a no-op if an order
+    # already exists for this intent (crash-restart scenario). Re-query by intent_id so
+    # subsequent references point to the canonical row, not the unused pending_order_id.
+    resolved_row = conn.execute(
+        "SELECT order_id FROM orders WHERE intent_id=?", (intent_id,)
+    ).fetchone()
+    local_order_id = resolved_row["order_id"] if resolved_row else pending_order_id
+
     # ── Order submission (broker call after local row is durable) ─────────────
     try:
-        order = broker.submit_order(intent, client_order_id=client_order_id)
+        ack = broker.submit_order(intent, client_order_id=client_order_id)
     except (TimeoutError, OSError, ConnectionError) as exc:
         # PENDING_SUBMIT is durable; broker acceptance is unknown (0265).
         # Halt the account so no further intents are submitted until reconciliation resolves state.
@@ -476,6 +484,15 @@ def process_intent(
             f"intent {intent_id}: {type(exc).__name__} raised by submit_order after PENDING_SUBMIT "
             f"written — broker acceptance unknown; halt until reconciliation"
         ) from exc
+
+    # ── Attach broker_order_id and advance PENDING_SUBMIT → WORKING (0267) ───
+    # Execution engine owns the local ledger; adapter owns the broker API response.
+    now_str2 = _now_utc().isoformat()
+    conn.execute(
+        "UPDATE orders SET broker_order_id=?, state='WORKING', submitted_at=? WHERE order_id=?",
+        (ack.broker_order_id, ack.accepted_at or now_str2, local_order_id),
+    )
+    conn.commit()
 
     # ── Ingest any immediate fills via the canonical event path (0259) ────────
     # attempt_fill() is NOT called here; all fills flow through apply_broker_fill().
@@ -487,14 +504,14 @@ def process_intent(
             event.local_order_id, event.broker_order_id,
             getattr(event, "client_order_id", None), conn,
         )
-        if event_order_id != order.order_id:
+        if event_order_id != local_order_id:
             continue
         if event.event_type in ("FILLED", "PARTIALLY_FILLED"):
             bf = BrokerFill(
                 broker_fill_id=event.broker_fill_id or str(_uuid.uuid4()),
                 broker_order_id=event.broker_order_id,
-                symbol=order.symbol,
-                side=order.side.value,
+                symbol=intent.symbol,
+                side=intent.side.value,
                 qty=float(event.fill_qty),
                 price=float(event.fill_price),
                 filled_at=event.filled_at or _now_utc().isoformat(),
@@ -510,7 +527,7 @@ def process_intent(
                 fill = Fill.from_db_row(fill_row)
 
     if fill:
-        updated_order = broker.get_order(order.order_id)
+        updated_order = broker.get_order(local_order_id)
         if updated_order and updated_order.state == OrderState.FILLED:
             _update_intent_status(intent_id, IntentStatus.FILLED, conn)
         _write_executed_action(fill, intent, conn)
@@ -519,7 +536,7 @@ def process_intent(
     return ExecutionResult(
         intent_id=intent_id,
         decision="APPROVED",
-        order_id=order.order_id,
+        order_id=local_order_id,
         fill=fill,
         risk_decision=risk_decision,
         elapsed_ms=elapsed_ms,

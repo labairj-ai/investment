@@ -102,3 +102,18 @@ class BrokerOrderEvent(NamedTuple):
     filled_at: Optional[str] = None
     fee: float = 0.0
     broker_fill_id: Optional[str] = None   # canonical fill ID for deduplication (0256)
+
+
+class BrokerOrderAck(NamedTuple):
+    """Acknowledgement returned by BrokerAdapter.submit_order() (0267).
+
+    Separates broker-API knowledge (what the broker returned) from local-ledger
+    knowledge (which the execution engine owns). A real adapter translates the
+    broker's HTTP response into this type; the engine then attaches broker_order_id
+    to the local PENDING_SUBMIT row without granting the adapter DB write access.
+    """
+    broker_order_id: str
+    client_order_id: Optional[str] = None
+    normalized_state: str = "WORKING"    # normalised BrokerOrderState value
+    accepted_at: Optional[str] = None   # ISO timestamp from broker (or local wall-clock)
+    raw_status: Optional[str] = None    # broker-native status string for debugging
