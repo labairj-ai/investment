@@ -464,7 +464,11 @@ def process_intent(
     fill: Optional[Fill] = None
     initial_events = broker.poll_order_events(intent.account_id, quote=bquote)
     for event in initial_events:
-        event_order_id = event.local_order_id or event.broker_order_id
+        # Resolve via identity resolver so broker_order_id-only events match (0263)
+        event_order_id = resolve_local_order_id(
+            event.local_order_id, event.broker_order_id,
+            getattr(event, "client_order_id", None), conn,
+        )
         if event_order_id != order.order_id:
             continue
         if event.event_type in ("FILLED", "PARTIALLY_FILLED"):
@@ -561,10 +565,22 @@ def process_open_orders(
     # ── Poll ONCE for all open orders (0259) ─────────────────────────────────
     # Broker events are authoritative; quote unavailability must never gate ingestion.
     all_events = broker.poll_order_events(account_id)
+
+    # Re-key events by resolved LOCAL order_id (0263): a real-broker event may carry
+    # only broker_order_id; resolve_local_order_id() finds the correct local PK.
     events_by_order: dict[str, list] = {}
     for _e in all_events:
-        _key = _e.local_order_id or _e.broker_order_id
-        events_by_order.setdefault(_key, []).append(_e)
+        _local_id = resolve_local_order_id(
+            _e.local_order_id, _e.broker_order_id,
+            getattr(_e, "client_order_id", None), conn,
+        )
+        if _local_id:
+            events_by_order.setdefault(_local_id, []).append(_e)
+        else:
+            _log.warning(
+                "process_open_orders: cannot resolve event %s for broker_order_id=%r — skipping",
+                _e.event_type, _e.broker_order_id,
+            )
 
     for row in open_rows:
         order = broker.get_order(row["order_id"])
@@ -854,6 +870,51 @@ class ExecutionSession:
         )
 
 
+def resolve_local_order_id(
+    local_order_id: Optional[str],
+    broker_order_id: Optional[str],
+    client_order_id: Optional[str],
+    conn: sqlite3.Connection,
+) -> Optional[str]:
+    """Return the local orders.order_id by trying three lookups in priority order (0263).
+
+    Resolution order:
+      1. local_order_id   — direct PK match (shadow mode; always set when engine created the order)
+      2. broker_order_id  — match on orders.broker_order_id column (real-broker events)
+      3. client_order_id  — match on orders.client_order_id column (reconciliation fallback)
+
+    Returns None when no unique match is found. Callers should raise UnknownFillError /
+    halt when None is returned.
+    """
+    if local_order_id:
+        row = conn.execute(
+            "SELECT order_id FROM orders WHERE order_id=?", (local_order_id,)
+        ).fetchone()
+        if row:
+            return row["order_id"]
+
+    if broker_order_id:
+        row = conn.execute(
+            "SELECT order_id FROM orders WHERE broker_order_id=?", (broker_order_id,)
+        ).fetchone()
+        if row:
+            return row["order_id"]
+
+    if client_order_id:
+        rows = conn.execute(
+            "SELECT order_id FROM orders WHERE client_order_id=?", (client_order_id,)
+        ).fetchall()
+        if len(rows) == 1:
+            return rows[0]["order_id"]
+        if len(rows) > 1:
+            _log.warning(
+                "resolve_local_order_id: multiple orders share client_order_id %r — cannot resolve uniquely",
+                client_order_id,
+            )
+
+    return None
+
+
 def apply_broker_fill(
     bf,  # BrokerFill
     account_id: str,
@@ -870,12 +931,21 @@ def apply_broker_fill(
     - OverfillError: fill qty exceeds order remaining quantity
     - ImpossibleSellError: sell qty exceeds held position
     """
-    order_id = bf.local_order_id or bf.broker_order_id
+    # Resolve local order_id via the three-tier identity resolver (0263)
+    order_id = resolve_local_order_id(
+        bf.local_order_id, bf.broker_order_id, getattr(bf, "client_order_id", None), conn
+    )
     side = bf.side
     qty = float(bf.qty)
     price = float(bf.price)
     fee = float(bf.fee)
     filled_at = bf.filled_at
+
+    if order_id is None:
+        raise UnknownFillError(
+            f"fill {bf.broker_fill_id}: cannot resolve order from "
+            f"local_order_id={bf.local_order_id!r}, broker_order_id={bf.broker_order_id!r} — quarantine"
+        )
 
     try:
         # Atomic dedup: INSERT OR IGNORE lets the unique PK enforce idempotency (0261)
@@ -896,7 +966,7 @@ def apply_broker_fill(
         ).fetchone()
         if order_row is None:
             raise UnknownFillError(
-                f"fill {bf.broker_fill_id}: order {order_id!r} not in local DB — quarantine"
+                f"fill {bf.broker_fill_id}: order {order_id!r} disappeared after resolve — quarantine"
             )
 
         total_qty = float(order_row["quantity"] or 0)
@@ -1001,7 +1071,10 @@ def apply_broker_order_event(
     and return without mutation. Fill events are not handled here — route them to
     apply_broker_fill() instead.
     """
-    order_id = event.local_order_id or event.broker_order_id
+    order_id = resolve_local_order_id(
+        event.local_order_id, event.broker_order_id,
+        getattr(event, "client_order_id", None), conn
+    )
     event_type = event.event_type
 
     if event_type in ("FILLED", "PARTIALLY_FILLED"):

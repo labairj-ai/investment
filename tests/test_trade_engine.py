@@ -3690,6 +3690,37 @@ class TestApplyBrokerFillSafety:
         ).fetchone()["current_cash"]
         assert cash == pytest.approx(10000.0 - 1.0 * 100.0)
 
+    def test_broker_order_id_only_resolves_fill(self):
+        """Fill with only broker_order_id (no local_order_id) routes to correct local order (0263)."""
+        conn = _make_conn()
+        local_id = "LOCAL-123"
+        broker_id = "BROKER-987"
+        self._seed_order(conn, local_id, side="BUY", qty=10.0, limit=50.0)
+        # Attach broker_order_id as a real broker would after submit_order
+        conn.execute(
+            "UPDATE orders SET broker_order_id=? WHERE order_id=?", (broker_id, local_id)
+        )
+        conn.commit()
+        from trade_engine.broker_types import BrokerFill
+        bf = BrokerFill(
+            broker_fill_id="FILL-001",
+            broker_order_id=broker_id,
+            symbol="ANET", side="BUY", qty=3.0, price=50.0,
+            filled_at=datetime.now(timezone.utc).isoformat(),
+            fee=0.0,
+            local_order_id=None,  # broker doesn't echo local ID
+            account_id="AGENTIC_SHADOW_01",
+        )
+        result = execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+        assert result == execution_engine.FillResult.APPLIED
+        row = conn.execute(
+            "SELECT fill_qty, fill_cash FROM orders WHERE order_id=?", (local_id,)
+        ).fetchone()
+        assert row["fill_qty"] == pytest.approx(3.0)
+        assert row["fill_cash"] == pytest.approx(3.0 * 50.0)
+        fills = conn.execute("SELECT COUNT(*) as n FROM fills WHERE fill_id='FILL-001'").fetchone()
+        assert fills["n"] == 1
+
 
 class TestApplyBrokerOrderEvent:
     """apply_broker_order_event state machine: valid transitions and no-op invalid ones (0261)."""
