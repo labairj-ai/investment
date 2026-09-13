@@ -1,7 +1,7 @@
 # Policy Field Enforcement Audit: min_limit_price Rule + Inactive Markers
 
 - **ID:** 0217
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-12
 - **Priority:** normal
 - **Depends:** none
@@ -36,9 +36,13 @@ A policy field that looks like a hard control but silently does nothing creates 
 
 ## Done when
 
-- [ ] `TradingPolicy.min_limit_price()` returns `execution.min_limit_price` (default 0.01)
-- [ ] Risk rule 19 `MIN_LIMIT_PRICE` fails when `intent.limit_price < policy.min_limit_price()`
-- [ ] Test: intent with `limit_price=0.001` → REJECTED via MIN_LIMIT_PRICE
-- [ ] `trading_policy.json` comments document which fields are reserved/future
-- [ ] `test_policy_fields_enforced_or_documented()` passes and would catch new undocumented fields
-- [ ] All 391 existing tests still pass
+- [x] `TradingPolicy.min_limit_price()` returns `execution.min_limit_price` (default 0.01)
+- [x] Risk rule 19 `MIN_LIMIT_PRICE` fails when `intent.limit_price < policy.min_limit_price()`
+- [x] Test: intent with `limit_price=0.001` → REJECTED via MIN_LIMIT_PRICE
+- [x] `trading_policy.json` comments document which fields are reserved/future
+- [x] `test_policy_fields_enforced_or_documented()` passes and would catch new undocumented fields
+- [x] All 391 existing tests still pass
+
+## Outcome
+
+TradingPolicy.min_limit_price() accessor added. Risk rule 19 MIN_LIMIT_PRICE rejects intent.limit_price < policy.min_limit_price(). trading_policy.json documents reserved fields. Test section 15 verifies.

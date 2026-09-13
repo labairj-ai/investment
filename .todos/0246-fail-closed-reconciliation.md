@@ -1,7 +1,7 @@
 # Fail-Closed Reconciliation — Retrieval Failures Block Submission
 
 - **ID:** 0246
-- **Status:** backlog
+- **Status:** in-progress
 - **Created:** 2026-09-13
 - **Priority:** high
 - **Depends:** 0240

@@ -2,10 +2,26 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+from decimal import Decimal
 from enum import Enum
 from typing import Optional
+
+# Register sqlite3 adapter so Decimal values bind as REAL (0250).
+# Read side uses Decimal(str(...)) for exact conversion.
+sqlite3.register_adapter(Decimal, float)
+
+
+def _parse_iso(s: str) -> datetime:
+    """Parse an ISO-8601 timestamp string to a timezone-aware datetime (0250).
+
+    Handles both UTC 'Z' suffix and explicit '+HH:MM' offsets.
+    This is the single canonical location for the Z→+00:00 normalization.
+    Raises ValueError on unparseable input.
+    """
+    return datetime.fromisoformat(s.replace("Z", "+00:00"))
 
 
 class AccountMode(str, Enum):
@@ -174,7 +190,7 @@ class TradeIntent:
 
     def is_expired(self) -> bool:
         try:
-            vu = datetime.fromisoformat(self.valid_until.replace("Z", "+00:00"))
+            vu = _parse_iso(self.valid_until)
             return datetime.now(timezone.utc) > vu
         except Exception:
             return False
@@ -289,6 +305,7 @@ class Order:
     state: OrderState = OrderState.PENDING
     time_in_force: TimeInForce = TimeInForce.DAY
     broker_order_id: Optional[str] = None
+    client_order_id: Optional[str] = None  # durable idempotency key written before any network call (0247)
     submitted_at: Optional[str] = None
     updated_at: Optional[str] = None
     fill_qty: float = 0.0
@@ -318,6 +335,7 @@ class Order:
             "state": self.state.value,
             "time_in_force": self.time_in_force.value,
             "broker_order_id": self.broker_order_id,
+            "client_order_id": self.client_order_id,
             "submitted_at": self.submitted_at,
             "updated_at": self.updated_at,
             "fill_qty": self.fill_qty,
@@ -341,6 +359,7 @@ class Order:
             state=OrderState(row["state"]),
             time_in_force=TimeInForce(tif_val or "DAY"),
             broker_order_id=row["broker_order_id"],
+            client_order_id=row["client_order_id"] if "client_order_id" in row.keys() else None,
             submitted_at=row["submitted_at"],
             updated_at=row["updated_at"],
             fill_qty=float(row["fill_qty"] or 0),
@@ -351,27 +370,37 @@ class Order:
 
 @dataclass(frozen=True)
 class Fill:
+    """A single executed fill (0250: qty/price/fee/cost_basis/pnl fields are Decimal)."""
+
     fill_id: str
     order_id: str
     account_id: str
     symbol: str
     side: Side
-    qty: float
-    price: float
-    fee: float
+    qty: Decimal
+    price: Decimal
+    fee: Decimal
     fill_source: str
     filled_at: str
-    cost_basis: float = 0.0        # avg_cost × qty at fill time (sells only) — 0202
-    realized_pnl: float = 0.0      # proceeds − cost_basis; negative = loss — 0202
-    realized_pnl_pct: float = 0.0  # realized_pnl / cost_basis × 100 — 0202
+    cost_basis: Decimal = Decimal(0)   # avg_cost × qty at fill time (sells only) — 0202
+    realized_pnl: Decimal = Decimal(0)      # proceeds − cost_basis; negative = loss — 0202
+    realized_pnl_pct: Decimal = Decimal(0)  # realized_pnl / cost_basis × 100 — 0202
 
-    def cash_impact(self) -> float:
+    def __post_init__(self) -> None:
+        # Coerce float/int inputs to Decimal at construction time (0250).
+        # object.__setattr__ required because the dataclass is frozen.
+        for f in ("qty", "price", "fee", "cost_basis", "realized_pnl", "realized_pnl_pct"):
+            v = getattr(self, f)
+            if not isinstance(v, Decimal):
+                object.__setattr__(self, f, Decimal(str(v)))
+
+    def cash_impact(self) -> Decimal:
         """Positive = cash received (sell); negative = cash paid (buy).
         Options (SELL_TO_OPEN / BUY_TO_CLOSE) apply the standard 100× multiplier (0205).
         """
         is_option_leg = self.side in (Side.SELL_TO_OPEN, Side.BUY_TO_CLOSE)
-        multiplier = 100 if is_option_leg else 1
-        sign = 1.0 if self.side in (Side.SELL, Side.SELL_TO_OPEN) else -1.0
+        multiplier = Decimal(100) if is_option_leg else Decimal(1)
+        sign = Decimal(1) if self.side in (Side.SELL, Side.SELL_TO_OPEN) else Decimal(-1)
         return sign * (self.qty * self.price * multiplier) - self.fee
 
     def to_dict(self) -> dict:
@@ -381,14 +410,14 @@ class Fill:
             "account_id": self.account_id,
             "symbol": self.symbol,
             "side": self.side.value,
-            "qty": self.qty,
-            "price": self.price,
-            "fee": self.fee,
+            "qty": float(self.qty),
+            "price": float(self.price),
+            "fee": float(self.fee),
             "fill_source": self.fill_source,
             "filled_at": self.filled_at,
-            "cost_basis": self.cost_basis,
-            "realized_pnl": self.realized_pnl,
-            "realized_pnl_pct": self.realized_pnl_pct,
+            "cost_basis": float(self.cost_basis),
+            "realized_pnl": float(self.realized_pnl),
+            "realized_pnl_pct": float(self.realized_pnl_pct),
         }
 
     @classmethod
@@ -400,14 +429,14 @@ class Fill:
             account_id=row["account_id"],
             symbol=row["symbol"],
             side=Side(row["side"]),
-            qty=float(row["qty"] or 0),
-            price=float(row["price"] or 0),
-            fee=float(row["fee"] or 0),
+            qty=Decimal(str(row["qty"] or 0)),
+            price=Decimal(str(row["price"] or 0)),
+            fee=Decimal(str(row["fee"] or 0)),
             fill_source=row["fill_source"] or "shadow",
             filled_at=row["filled_at"],
-            cost_basis=float(row["cost_basis"] or 0) if "cost_basis" in keys else 0.0,
-            realized_pnl=float(row["realized_pnl"] or 0) if "realized_pnl" in keys else 0.0,
-            realized_pnl_pct=float(row["realized_pnl_pct"] or 0) if "realized_pnl_pct" in keys else 0.0,
+            cost_basis=Decimal(str(row["cost_basis"] or 0)) if "cost_basis" in keys else Decimal(0),
+            realized_pnl=Decimal(str(row["realized_pnl"] or 0)) if "realized_pnl" in keys else Decimal(0),
+            realized_pnl_pct=Decimal(str(row["realized_pnl_pct"] or 0)) if "realized_pnl_pct" in keys else Decimal(0),
         )
 
 

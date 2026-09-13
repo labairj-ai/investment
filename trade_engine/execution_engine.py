@@ -15,7 +15,6 @@ from enum import Enum
 from typing import Optional
 
 from .broker_adapter import BrokerAdapter, ShadowBrokerAdapter
-from .broker_types import BrokerQuote
 from .models import (
     ExecutionResult,
     Fill,
@@ -24,11 +23,12 @@ from .models import (
     OrderState,
     TradeIntent,
     TradingAccount,
+    _parse_iso,
 )
 from .policy import TradingPolicy, load_policy
 from .risk_engine import evaluate as risk_evaluate
 from .shadow_broker import Quote
-from .market_data import _get_quote, _get_executable_quote, _get_mark_price
+from .market_data import _get_quote, _get_mark_price
 
 _log = logging.getLogger(__name__)
 
@@ -97,8 +97,8 @@ def _write_executed_action(fill: Fill, intent: TradeIntent, conn: sqlite3.Connec
             fill.price,
             fill.filled_at[:10],
             fill.fee,
-            f"shadow fill_source={fill.fill_source}",
-            "shadow",
+            f"fill_source={fill.fill_source}",
+            fill.fill_source,
             time.time(),
             fill.fill_id,
         ),
@@ -107,7 +107,7 @@ def _write_executed_action(fill: Fill, intent: TradeIntent, conn: sqlite3.Connec
 
 
 def _is_quote_fresh(
-    quote: Quote,
+    quote,  # Quote or BrokerQuote — both have market_timestamp and retrieved_at
     stale_minutes: int,
     *,
     require_market_timestamp: bool = False,
@@ -125,9 +125,7 @@ def _is_quote_fresh(
     now_ts = _now_utc().timestamp()
     if quote.market_timestamp:
         try:
-            mt_ts = datetime.fromisoformat(
-                quote.market_timestamp.replace("Z", "+00:00")
-            ).timestamp()
+            mt_ts = _parse_iso(quote.market_timestamp).timestamp()
             if (now_ts - mt_ts) / 60 > stale_minutes:
                 return False  # market observation is too old
         except Exception:
@@ -138,9 +136,7 @@ def _is_quote_fresh(
     if not quote.retrieved_at:
         return False
     try:
-        rt_ts = datetime.fromisoformat(
-            quote.retrieved_at.replace("Z", "+00:00")
-        ).timestamp()
+        rt_ts = _parse_iso(quote.retrieved_at).timestamp()
         return (now_ts - rt_ts) / 60 <= stale_minutes
     except Exception:
         return False
@@ -202,7 +198,7 @@ def _check_portfolio_mark_freshness(
             stale.append(r["symbol"])
             continue
         try:
-            ts = datetime.fromisoformat(price_as_of.replace("Z", "+00:00")).timestamp()
+            ts = _parse_iso(price_as_of).timestamp()
             if (now_ts - ts) / 60 > stale_minutes:
                 stale.append(r["symbol"])
         except Exception:
@@ -342,7 +338,10 @@ def process_intent(
     _update_intent_status(intent_id, IntentStatus.APPROVED, conn)
 
     # ── Order submission (idempotent via INSERT OR IGNORE) ────────────────────
-    order = broker.submit_order(intent)
+    # Generate client_order_id durably before any network call (0247): crash-safe idempotency
+    import uuid as _uuid
+    client_order_id = f"{intent.account_id}:{intent_id}"
+    order = broker.submit_order(intent, client_order_id=client_order_id)
 
     # ── First fill attempt ────────────────────────────────────────────────────
     existing_fill_row = conn.execute(
@@ -354,11 +353,8 @@ def process_intent(
         fill = Fill.from_db_row(existing_fill_row)
     elif order.state in (OrderState.WORKING, OrderState.PARTIALLY_FILLED):
         stale_minutes = policy.halt_on_data_stale_minutes()
-        raw_quote = _get_executable_quote(intent.symbol)
-        if raw_quote:
-            bquote = BrokerQuote(bid=raw_quote.bid, ask=raw_quote.ask, symbol=intent.symbol,
-                                 market_timestamp=raw_quote.market_timestamp,
-                                 retrieved_at=raw_quote.retrieved_at, source=raw_quote.source)
+        bquote = broker.get_quote(intent.symbol)  # (0243) route through broker abstraction
+        if bquote:
             if _is_quote_fresh(bquote, stale_minutes,
                                require_market_timestamp=broker.requires_market_timestamp):
                 fill = broker.attempt_fill(order, bquote)
@@ -474,8 +470,8 @@ def process_open_orders(
                 pre_fill_rejections += 1
                 continue
 
-        raw_quote = _get_executable_quote(order.symbol)
-        if not raw_quote:
+        bquote = broker.get_quote(order.symbol)  # (0243) route through broker abstraction
+        if not bquote:
             conn.execute(
                 "UPDATE orders SET market_data_status='unavailable' WHERE order_id=?",
                 (order.order_id,),
@@ -483,9 +479,6 @@ def process_open_orders(
             conn.commit()
             continue
 
-        bquote = BrokerQuote(bid=raw_quote.bid, ask=raw_quote.ask, symbol=order.symbol,
-                             market_timestamp=raw_quote.market_timestamp,
-                             retrieved_at=raw_quote.retrieved_at, source=raw_quote.source)
         if not _is_quote_fresh(bquote, stale_minutes,
                                require_market_timestamp=broker.requires_market_timestamp):
             conn.execute(
@@ -520,7 +513,7 @@ def run_execution_cycle(
     conn: sqlite3.Connection,
     broker: Optional[BrokerAdapter] = None,
     *,
-    trading_state: TradingReadyState = TradingReadyState.TRADING_READY,
+    trading_state: TradingReadyState = TradingReadyState.INITIALIZING,  # (0244) callers must earn TRADING_READY
 ) -> dict:
     """Full execution cycle: refresh MtM → freshness gate → risk → fill retry (0199, 0210).
 
@@ -643,6 +636,104 @@ def run_execution_cycle(
     }
 
 
+def apply_broker_fill(
+    bf,  # BrokerFill
+    account_id: str,
+    conn: sqlite3.Connection,
+) -> None:
+    """Apply a broker fill atomically: fills + order state + positions + cash + audit (0245).
+
+    All updates are committed together. Any failure raises, halting the session.
+    The cursor (last_fill_synced_at) is advanced only after all fills succeed.
+    """
+    order_id = bf.local_order_id or bf.broker_order_id
+    side = bf.side
+    qty = float(bf.qty)
+    price = float(bf.price)
+    fee = float(bf.fee)
+    filled_at = bf.filled_at
+
+    # Insert fill record
+    conn.execute(
+        """INSERT OR IGNORE INTO fills
+           (fill_id, order_id, account_id, symbol, side, qty, price,
+            fee, fill_source, filled_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (bf.broker_fill_id, order_id, account_id, bf.symbol,
+         side, qty, price, fee, "broker_import", filled_at),
+    )
+
+    # Update order fill totals and state
+    order_row = conn.execute(
+        "SELECT quantity, fill_qty, fill_cash FROM orders WHERE order_id=?", (order_id,)
+    ).fetchone()
+    if order_row:
+        new_fill_qty = float(order_row["fill_qty"] or 0) + qty
+        new_fill_cash = float(order_row["fill_cash"] or 0) + qty * price
+        total_qty = float(order_row["quantity"] or 0)
+        new_state = "FILLED" if new_fill_qty >= total_qty else "PARTIALLY_FILLED"
+        conn.execute(
+            "UPDATE orders SET fill_qty=?, fill_cash=?, state=? WHERE order_id=?",
+            (new_fill_qty, new_fill_cash, new_state, order_id),
+        )
+
+    # Update position: BUY increases qty/avg_cost; SELL decreases qty
+    is_sell = side in ("SELL", "SELL_TO_OPEN")
+    pos_row = conn.execute(
+        "SELECT qty, avg_cost FROM position_snapshots WHERE account_id=? AND symbol=?",
+        (account_id, bf.symbol),
+    ).fetchone()
+    if is_sell:
+        old_qty = float(pos_row["qty"] or 0) if pos_row else 0.0
+        new_qty = max(0.0, old_qty - qty)
+        if new_qty == 0.0:
+            conn.execute(
+                "DELETE FROM position_snapshots WHERE account_id=? AND symbol=?",
+                (account_id, bf.symbol),
+            )
+        elif pos_row:
+            conn.execute(
+                "UPDATE position_snapshots SET qty=? WHERE account_id=? AND symbol=?",
+                (new_qty, account_id, bf.symbol),
+            )
+    else:
+        if pos_row:
+            old_qty = float(pos_row["qty"] or 0)
+            old_avg = float(pos_row["avg_cost"] or 0)
+            new_qty = old_qty + qty
+            new_avg = (old_qty * old_avg + qty * price) / new_qty if new_qty else price
+            conn.execute(
+                "UPDATE position_snapshots SET qty=?, avg_cost=? WHERE account_id=? AND symbol=?",
+                (new_qty, new_avg, account_id, bf.symbol),
+            )
+        else:
+            conn.execute(
+                """INSERT INTO position_snapshots
+                   (account_id, symbol, qty, avg_cost, instrument_type, as_of)
+                   VALUES (?,?,?,?,?,?)""",
+                (account_id, bf.symbol, qty, price, "EQUITY", filled_at[:10]),
+            )
+
+    # Update cash: BUY decreases, SELL increases
+    cash_delta = qty * price - fee if is_sell else -(qty * price + fee)
+    conn.execute(
+        "UPDATE trading_accounts SET current_cash = current_cash + ? WHERE account_id=?",
+        (cash_delta, account_id),
+    )
+
+    # Update intent status if order is now fully filled
+    if order_row:
+        new_fill_qty2 = float(order_row["fill_qty"] or 0) + qty
+        if new_fill_qty2 >= float(order_row["quantity"] or 0):
+            conn.execute(
+                """UPDATE trade_intents SET status='FILLED'
+                   WHERE intent_id = (SELECT intent_id FROM orders WHERE order_id=?)""",
+                (order_id,),
+            )
+
+    conn.commit()
+
+
 def initialize_trading_session(
     account_id: str,
     conn: sqlite3.Connection,
@@ -672,7 +763,7 @@ def initialize_trading_session(
         _log.error("initialize_trading_session: broker unreachable for %s: %s", account_id, exc)
         return TradingReadyState.HALTED
 
-    # Step 2-3: import fills since last sync (prevents duplicate order submission on restart)
+    # Step 2-3: import fills since last sync atomically; halt on any failure (0245)
     try:
         last_sync_row = conn.execute(
             "SELECT last_fill_synced_at FROM trading_accounts WHERE account_id=?", (account_id,)
@@ -680,34 +771,28 @@ def initialize_trading_session(
         last_sync = last_sync_row["last_fill_synced_at"] if last_sync_row else None
         broker_fills = broker.get_fills(account_id, since=last_sync)
         imported = 0
+        max_filled_at: Optional[str] = None
         for bf in broker_fills:
             existing = conn.execute(
                 "SELECT fill_id FROM fills WHERE fill_id=?", (bf.broker_fill_id,)
             ).fetchone()
             if not existing:
-                try:
-                    conn.execute(
-                        """INSERT OR IGNORE INTO fills
-                           (fill_id, order_id, account_id, symbol, side, qty, price,
-                            fee, fill_source, filled_at)
-                           VALUES (?,?,?,?,?,?,?,?,?,?)""",
-                        (bf.broker_fill_id, bf.local_order_id or bf.broker_order_id,
-                         account_id, bf.symbol, bf.side, bf.qty, bf.price,
-                         bf.fee, "broker_import", bf.filled_at),
-                    )
-                    imported += 1
-                except Exception:
-                    pass
+                apply_broker_fill(bf, account_id, conn)
+                imported += 1
+                if max_filled_at is None or bf.filled_at > max_filled_at:
+                    max_filled_at = bf.filled_at
         if imported > 0:
             _log.info("initialize_trading_session: imported %d broker fills for %s", imported, account_id)
-        now_iso = _now_utc().isoformat()
+        # Advance cursor only to max filled_at of successfully imported fills (not now) (0245)
+        sync_mark = max_filled_at or last_sync or _now_utc().isoformat()
         conn.execute(
             "UPDATE trading_accounts SET last_fill_synced_at=? WHERE account_id=?",
-            (now_iso, account_id),
+            (sync_mark, account_id),
         )
         conn.commit()
     except Exception as exc:
-        _log.warning("initialize_trading_session: fill import failed for %s: %s", account_id, exc)
+        _log.error("initialize_trading_session: fill import failed for %s: %s — HALTED", account_id, exc)
+        return TradingReadyState.HALTED  # (0245) fill-import failure → halt, not silent skip
 
     # Step 4: reconcile
     try:

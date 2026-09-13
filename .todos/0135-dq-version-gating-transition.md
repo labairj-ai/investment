@@ -1,7 +1,7 @@
 # Transition DQ CC-Management Exclusions to SQL Version Gating
 
 - **ID:** 0135
-- **Status:** backlog
+- **Status:** in-progress
 - **Created:** 2026-09-11
 - **Priority:** normal
 - **Depends:** none

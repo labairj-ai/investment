@@ -1,7 +1,7 @@
 # Enforce Quote Freshness: market_timestamp, Staleness Gate Before Fill
 
 - **ID:** 0213
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-12
 - **Priority:** normal
 - **Depends:** none
@@ -43,10 +43,14 @@
 
 ## Done when
 
-- [ ] `Quote` has `market_timestamp`, `retrieved_at`, `source` optional fields (backward compat: existing `Quote(bid, ask, timestamp)` still works)
-- [ ] `_get_quote()` populates `market_timestamp` from yfinance when available
-- [ ] Quote with `bid=0` → no fill
-- [ ] Quote with `bid > ask` → no fill
-- [ ] Quote with `retrieved_at` > `halt_on_data_stale_minutes` ago → no fill
-- [ ] Fresh valid quote → fill proceeds normally
-- [ ] All 391 existing tests still pass
+- [x] `Quote` has `market_timestamp`, `retrieved_at`, `source` optional fields (backward compat: existing `Quote(bid, ask, timestamp)` still works)
+- [x] `_get_quote()` populates `market_timestamp` from yfinance when available
+- [x] Quote with `bid=0` → no fill
+- [x] Quote with `bid > ask` → no fill
+- [x] Quote with `retrieved_at` > `halt_on_data_stale_minutes` ago → no fill
+- [x] Fresh valid quote → fill proceeds normally
+- [x] All 391 existing tests still pass
+
+## Outcome
+
+BrokerQuote/Quote have market_timestamp, retrieved_at, source fields. ShadowBroker.attempt_fill() rejects bid=0, bid>ask quotes. Staleness gate enforced via halt_on_data_stale_minutes policy field. All existing tests still pass.

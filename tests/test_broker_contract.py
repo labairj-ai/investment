@@ -350,3 +350,31 @@ class TestShadowBrokerAdapterContract(BrokerAdapterContractMixin):
 
     def make_adapter(self, conn: sqlite3.Connection) -> BrokerAdapter:
         return ShadowBrokerAdapter(conn, "AGENTIC_SHADOW_01")
+
+    # ── 15. poll_order_events returns events for open orders (0248) ───────────
+
+    def test_poll_order_events_fill_produces_event(self):
+        """poll_order_events() with a valid quote produces FILLED event (0248)."""
+        from trade_engine.broker_types import BrokerQuote
+        conn = _make_conn()
+        with patch.object(market_calendar, "is_market_open", return_value=True):
+            adapter = self.make_adapter(conn)
+            intent = _make_intent(quantity=1.0, limit_price=100.0)
+            _insert_intent(conn, intent)
+            order = adapter.submit_order(intent)
+            quote = _fresh_quote()
+            events = adapter.poll_order_events("AGENTIC_SHADOW_01", quote=quote)
+        assert any(e.event_type in ("FILLED", "PARTIALLY_FILLED") for e in events), \
+            f"Expected fill event, got: {events}"
+
+    def test_poll_order_events_no_quote_no_fill_event(self):
+        """poll_order_events() with no quote produces no fill events (0248)."""
+        conn = _make_conn()
+        with patch.object(market_calendar, "is_market_open", return_value=True):
+            adapter = self.make_adapter(conn)
+            intent = _make_intent(quantity=1.0, limit_price=100.0)
+            _insert_intent(conn, intent)
+            adapter.submit_order(intent)
+            events = adapter.poll_order_events("AGENTIC_SHADOW_01", quote=None)
+        fill_events = [e for e in events if e.event_type in ("FILLED", "PARTIALLY_FILLED")]
+        assert len(fill_events) == 0

@@ -509,6 +509,8 @@ def migrate() -> None:
         ("orders",             "cancel_confirmed_at",  "TEXT"),
         # 0242 — last fill sync timestamp for restart reconciliation
         ("trading_accounts",   "last_fill_synced_at",  "TEXT"),
+        # 0247 — durable idempotency key written before broker submission
+        ("orders",             "client_order_id",      "TEXT"),
     ]
     for table, col, col_type in _new_cols:
         try:

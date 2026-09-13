@@ -1,7 +1,7 @@
 # Durable Broker Idempotency via Client Order ID
 
 - **ID:** 0247
-- **Status:** backlog
+- **Status:** in-progress
 - **Created:** 2026-09-13
 - **Priority:** high
 - **Depends:** 0243, 0244

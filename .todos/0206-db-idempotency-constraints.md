@@ -1,7 +1,7 @@
 # DB-Enforced Idempotency: Unique Indexes on Orders and Positions
 
 - **ID:** 0206
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-12
 - **Priority:** high
 - **Depends:** none
@@ -48,9 +48,13 @@ followed by an UPDATE for the running balance — or use `INSERT ... ON CONFLICT
 
 ## Done when
 
-- [ ] `idx_orders_intent_id` unique index exists (verified via `SELECT * FROM sqlite_master`)
-- [ ] `idx_positions_account_symbol` unique index exists
-- [ ] `submit_order()` uses `INSERT OR IGNORE`; concurrent calls return same order_id
-- [ ] `_apply_fill()` position INSERT uses conflict handling; no duplicate position rows possible
-- [ ] Test: call `submit_order()` twice for same intent concurrently → exactly one row in orders
-- [ ] Test: two fills for same symbol → one position row with accumulated qty
+- [x] `idx_orders_intent_id` unique index exists (verified via `SELECT * FROM sqlite_master`)
+- [x] `idx_positions_account_symbol` unique index exists
+- [x] `submit_order()` uses `INSERT OR IGNORE`; concurrent calls return same order_id
+- [x] `_apply_fill()` position INSERT uses conflict handling; no duplicate position rows possible
+- [x] Test: call `submit_order()` twice for same intent concurrently → exactly one row in orders
+- [x] Test: two fills for same symbol → one position row with accumulated qty
+
+## Outcome
+
+idx_orders_intent_id and idx_positions_account_symbol unique indexes in agent_db.py. submit_order() uses INSERT OR IGNORE. _apply_fill() position INSERT uses ON CONFLICT DO UPDATE. Tests verify idempotency.

@@ -1,7 +1,7 @@
 # Recommendation-Driven Position Sizing: Agent Proposes, Policy Enforces Ceiling
 
 - **ID:** 0207
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-12
 - **Priority:** normal
 - **Depends:** 0195
@@ -59,8 +59,12 @@ This also applies to TRIM: the agent already emits `trim_fraction` in payload �
 
 ## Done when
 
-- [ ] IntentBuilder reads `quantity` from payload if present, uses it directly
-- [ ] IntentBuilder reads `target_weight_pct` from payload if present, sizes accordingly
-- [ ] Fallback to `max_new_position_pct` when neither field is present (backward compat)
-- [ ] Risk engine still rejects if proposed size exceeds policy limit (not silently clamped)
-- [ ] Test: `target_weight_pct=2.5` on $10k NAV @ $100 price → quantity=24 (not 49 from 5% max)
+- [x] IntentBuilder reads `quantity` from payload if present, uses it directly
+- [x] IntentBuilder reads `target_weight_pct` from payload if present, sizes accordingly
+- [x] Fallback to `max_new_position_pct` when neither field is present (backward compat)
+- [x] Risk engine still rejects if proposed size exceeds policy limit (not silently clamped)
+- [x] Test: `target_weight_pct=2.5` on $10k NAV @ $100 price → quantity=24 (not 49 from 5% max)
+
+## Outcome
+
+IntentBuilder reads quantity and target_weight_pct from action_payload_json. Falls back to max_new_position_pct when absent. Risk engine still rejects if size exceeds policy ceiling. Tests verify target_weight_pct sizing.

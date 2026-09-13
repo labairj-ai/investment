@@ -1,7 +1,7 @@
 # Separate Broker Execution Lifecycle From Shadow Fill Simulation
 
 - **ID:** 0248
-- **Status:** backlog
+- **Status:** in-progress
 - **Created:** 2026-09-13
 - **Priority:** normal
 - **Depends:** 0243, 0247

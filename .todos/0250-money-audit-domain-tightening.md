@@ -1,7 +1,7 @@
 # Tighten Money and Audit Domain — Decimal, Enums, Timestamps, Source Label
 
 - **ID:** 0250
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-13
 - **Priority:** normal
 - **Depends:** 0245
@@ -31,10 +31,21 @@ Four related hygiene issues that will matter once real money flows through:
 - `trade_engine/reconciliation.py`
 - `tests/test_trade_engine.py`, `tests/test_broker_contract.py`
 
+## Outcome
+
+Added `_parse_iso(s)` utility to `models.py` — single canonical location for Z→+00:00 normalization.
+Removed all other `replace("Z", "+00:00")` calls from `execution_engine.py`, `shadow_broker.py`,
+`risk_engine.py`, and `models.py:TradeIntent.is_expired()`. Added `BrokerOrderState` and
+`BrokerFillStatus` enums to `broker_types.py`. Changed `Fill.qty/price/fee/cost_basis/realized_pnl`
+to `decimal.Decimal` with a `__post_init__` coercer (frozen dataclass) and a `sqlite3.register_adapter`
+for the DB boundary. Fixed all float+Decimal arithmetic in `shadow_broker.py` and `broker_adapter.py`.
+Fixed `_write_executed_action()` to use `fill.fill_source` instead of hardcoded `"shadow"`.
+515 tests pass, 1 skipped.
+
 ## Done when
 
-- [ ] `Fill.price`, `Fill.qty`, `Fill.fee` are `Decimal`; cash math uses Decimal throughout
-- [ ] `BrokerOrderState` and `BrokerFillStatus` enums exist; adapters map to them at boundary
-- [ ] No `replace("Z", "+00:00")` in production code; all datetime parsing uses a single utility
-- [ ] `_write_executed_action()` uses `fill.fill_source` — not hardcoded `"shadow"`
-- [ ] All tests pass with Decimal arithmetic
+- [x] `Fill.price`, `Fill.qty`, `Fill.fee` are `Decimal`; cash math uses Decimal throughout
+- [x] `BrokerOrderState` and `BrokerFillStatus` enums exist; adapters map to them at boundary
+- [x] No `replace("Z", "+00:00")` in production code; all datetime parsing uses a single utility
+- [x] `_write_executed_action()` uses `fill.fill_source` — not hardcoded `"shadow"`
+- [x] All tests pass with Decimal arithmetic

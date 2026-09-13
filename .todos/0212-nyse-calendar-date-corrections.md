@@ -1,7 +1,7 @@
 # Fix NYSE Calendar: Dec 24/27 2027 Swap, Add July 3 2028 Early Close
 
 - **ID:** 0212
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-12
 - **Priority:** normal
 - **Depends:** none
@@ -37,8 +37,12 @@ Add parameterized tests in `tests/test_trade_engine.py` (or a new `tests/test_ma
 
 ## Done when
 
-- [ ] `is_trading_day(date(2027, 12, 24))` returns False (holiday)
-- [ ] `is_trading_day(date(2027, 12, 27))` returns True (normal trading day)
-- [ ] `session_close_time(date(2028, 7, 3))` returns `time(13, 0)` (early close)
-- [ ] `is_trading_day(date(2028, 7, 4))` returns False (Independence Day)
-- [ ] All 391 existing tests still pass
+- [x] `is_trading_day(date(2027, 12, 24))` returns False (holiday)
+- [x] `is_trading_day(date(2027, 12, 27))` returns True (normal trading day)
+- [x] `session_close_time(date(2028, 7, 3))` returns `time(13, 0)` (early close)
+- [x] `is_trading_day(date(2028, 7, 4))` returns False (Independence Day)
+- [x] All 391 existing tests still pass
+
+## Outcome
+
+NYSE calendar corrected: Dec 24 2027 is a holiday (not Dec 27). July 3 2028 early close at 13:00. Tests assert is_trading_day and session_close_time for both dates.

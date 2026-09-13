@@ -1,7 +1,7 @@
 # Mark-to-Market Position Valuation for NAV and Risk Limits
 
 - **ID:** 0201
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-12
 - **Priority:** high
 - **Depends:** 0199
@@ -58,9 +58,13 @@ nav_high_water REAL  -- updated whenever current NAV > prior high_water
 
 ## Done when
 
-- [ ] `position_snapshots` has `market_price`, `market_value`, `price_as_of` columns
-- [ ] `trading_accounts` has `nav_high_water`; updated whenever NAV exceeds prior high
-- [ ] Risk engine `_nav()` uses `market_value` (not `avg_cost × qty`)
-- [ ] `MAX_POSITION_WEIGHT` uses market value; test: position doubles → concentration limit fires at correct weight
-- [ ] `MAX_DRAWDOWN` uses `(nav_high_water - nav) / nav_high_water`; test: price drop → drawdown breaker fires
-- [ ] Tests: cost basis unchanged after price move; only market_value changes
+- [x] `position_snapshots` has `market_price`, `market_value`, `price_as_of` columns
+- [x] `trading_accounts` has `nav_high_water`; updated whenever NAV exceeds prior high
+- [x] Risk engine `_nav()` uses `market_value` (not `avg_cost × qty`)
+- [x] `MAX_POSITION_WEIGHT` uses market value; test: position doubles → concentration limit fires at correct weight
+- [x] `MAX_DRAWDOWN` uses `(nav_high_water - nav) / nav_high_water`; test: price drop → drawdown breaker fires
+- [x] Tests: cost basis unchanged after price move; only market_value changes
+
+## Outcome
+
+position_snapshots has market_price, market_value, price_as_of. trading_accounts has nav_high_water. _refresh_market_prices() updates marks each cycle. Risk engine _nav() and MAX_POSITION_WEIGHT both use market_value. _update_nav_high_water() called each cycle.

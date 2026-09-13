@@ -1,7 +1,7 @@
 # Options Execution Prerequisites: Multiplier, Instrument Identity, MAX_CONTRACTS Bug
 
 - **ID:** 0205
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-12
 - **Priority:** high
 - **Depends:** none
@@ -53,8 +53,12 @@ open_c + (intent.contracts or 1) <= limit_c  # was: open_c < limit_c
 
 ## Done when
 
-- [ ] `Fill.cash_impact()` applies 100× multiplier for SELL_TO_OPEN / BUY_TO_CLOSE fills
-- [ ] `MAX_CONTRACTS_PER_SYMBOL`: open=0 + requesting 2 + limit=1 → REJECTED
-- [ ] `Instrument` dataclass importable from `trade_engine.models`
-- [ ] Test: option fill cash_impact = qty × price × 100 − fee
-- [ ] Test: MAX_CONTRACTS off-by-one fixed (two-contract intent with limit=1 → FAIL)
+- [x] `Fill.cash_impact()` applies 100× multiplier for SELL_TO_OPEN / BUY_TO_CLOSE fills
+- [x] `MAX_CONTRACTS_PER_SYMBOL`: open=0 + requesting 2 + limit=1 → REJECTED
+- [x] `Instrument` dataclass importable from `trade_engine.models`
+- [x] Test: option fill cash_impact = qty × price × 100 − fee
+- [x] Test: MAX_CONTRACTS off-by-one fixed (two-contract intent with limit=1 → FAIL)
+
+## Outcome
+
+Instrument dataclass in models.py with instrument_type and multiplier. Fill.cash_impact() applies 100x multiplier for options. MAX_CONTRACTS_PER_SYMBOL rule 14 implemented in risk_engine.py. Tests verify option cash_impact and two-contract rejection.

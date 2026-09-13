@@ -16,18 +16,21 @@ if TYPE_CHECKING:
 
 class DiscrepancyKind(str, Enum):
     MATCH = "MATCH"
-    LOCAL_MISSING = "LOCAL_MISSING"       # broker has it; local DB doesn't
-    BROKER_MISSING = "BROKER_MISSING"     # local DB has it; broker doesn't
+    LOCAL_MISSING = "LOCAL_MISSING"                   # broker has it; local DB doesn't
+    BROKER_MISSING = "BROKER_MISSING"                 # local DB has it; broker doesn't
     QUANTITY_MISMATCH = "QUANTITY_MISMATCH"
     STATE_MISMATCH = "STATE_MISMATCH"
     CASH_MISMATCH = "CASH_MISMATCH"
+    RECONCILIATION_UNAVAILABLE = "RECONCILIATION_UNAVAILABLE"  # retrieval failure (0246)
 
 
 # Discrepancy kinds that block new order submission
 _BLOCKING_KINDS = {
     DiscrepancyKind.CASH_MISMATCH,
-    DiscrepancyKind.BROKER_MISSING,     # open order missing at broker
-    DiscrepancyKind.STATE_MISMATCH,     # order in wrong state
+    DiscrepancyKind.BROKER_MISSING,               # open order/position missing at broker
+    DiscrepancyKind.STATE_MISMATCH,               # order in wrong state
+    DiscrepancyKind.QUANTITY_MISMATCH,            # position qty mismatch blocks after fills (0246)
+    DiscrepancyKind.RECONCILIATION_UNAVAILABLE,   # any retrieval failure blocks submission (0246)
 }
 
 
@@ -126,13 +129,23 @@ def reconcile(
                     broker_value=bpos.qty,
                     detail="position at broker not in local DB",
                 ))
-    except Exception:
-        pass  # position comparison is best-effort; cash and order checks are primary gates
+    except Exception as exc:
+        # Retrieval failure blocks submission — fail closed (0246)
+        discrepancies.append(Discrepancy(
+            kind=DiscrepancyKind.RECONCILIATION_UNAVAILABLE,
+            subject="positions",
+            local_value=None,
+            broker_value=None,
+            detail=str(exc),
+        ))
 
     # ── 3. Open orders ────────────────────────────────────────────────────────
     try:
-        broker_orders = {o.local_order_id or o.broker_order_id: o
-                         for o in broker.get_open_orders(account_id)}
+        # Index by local_order_id, then client_order_id, then broker_order_id (0247)
+        broker_orders = {}
+        for o in broker.get_open_orders(account_id):
+            key = o.local_order_id or o.client_order_id or o.broker_order_id
+            broker_orders[key] = o
         local_open_rows = conn.execute(
             "SELECT order_id, state FROM orders WHERE account_id=? AND state IN ('WORKING','PARTIALLY_FILLED')",
             (account_id,),
@@ -158,8 +171,15 @@ def reconcile(
                         local_value=local_state,
                         broker_value=broker_state,
                     ))
-    except Exception:
-        pass
+    except Exception as exc:
+        # Retrieval failure blocks submission — fail closed (0246)
+        discrepancies.append(Discrepancy(
+            kind=DiscrepancyKind.RECONCILIATION_UNAVAILABLE,
+            subject="open_orders",
+            local_value=None,
+            broker_value=None,
+            detail=str(exc),
+        ))
 
     blocks = any(d.kind in _BLOCKING_KINDS for d in discrepancies)
     ok = len(discrepancies) == 0

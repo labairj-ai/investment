@@ -1,7 +1,7 @@
 # Market Calendar: Block Weekend/Holiday/Out-of-Session Execution
 
 - **ID:** 0203
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-12
 - **Priority:** high
 - **Depends:** 0199
@@ -44,9 +44,13 @@ Include early-close days (e.g. day before Thanksgiving, Christmas Eve) at 1:00 P
 
 ## Done when
 
-- [ ] `is_market_open()` returns False on weekends, NYSE holidays, before 9:30 AM ET, after 4:00 PM ET
-- [ ] `is_trading_day()` returns False for Saturdays, Sundays, NYSE holidays
-- [ ] `next_market_close()` skips weekends/holidays correctly
-- [ ] ShadowBroker: Saturday WORKING order → does not fill (attempt_fill skipped or returns None)
-- [ ] IntentBuilder: `valid_until` for an intent created Friday at 3 PM = Friday 4 PM (same day, not Monday)
-- [ ] Tests: Saturday → no fill; Christmas Day → no fill; Friday 3:30 PM → market open; Friday 4:15 PM → market closed
+- [x] `is_market_open()` returns False on weekends, NYSE holidays, before 9:30 AM ET, after 4:00 PM ET
+- [x] `is_trading_day()` returns False for Saturdays, Sundays, NYSE holidays
+- [x] `next_market_close()` skips weekends/holidays correctly
+- [x] ShadowBroker: Saturday WORKING order → does not fill (attempt_fill skipped or returns None)
+- [x] IntentBuilder: `valid_until` for an intent created Friday at 3 PM = Friday 4 PM (same day, not Monday)
+- [x] Tests: Saturday → no fill; Christmas Day → no fill; Friday 3:30 PM → market open; Friday 4:15 PM → market closed
+
+## Outcome
+
+trade_engine/market_calendar.py implements is_market_open(), is_trading_day(), next_market_close(), session_close_time(). ShadowBroker gates fills on is_market_open(). IntentBuilder sets valid_until using next_market_close(). Full holiday table through 2028.

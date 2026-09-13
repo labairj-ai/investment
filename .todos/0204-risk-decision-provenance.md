@@ -1,7 +1,7 @@
 # Risk Decision Provenance: Persist Policy Hash, Snapshot Refs, Fix UUID Identity
 
 - **ID:** 0204
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-12
 - **Priority:** high
 - **Depends:** none
@@ -54,8 +54,12 @@ Recommendation
 
 ## Done when
 
-- [ ] `risk_decisions.decision_id` is TEXT (UUID), matching `RiskDecision.decision_id` returned by `_finalize()`
-- [ ] `risk_decisions` has `policy_version`, `policy_hash`, `account_cash_at_eval`, `account_nav_at_eval`
-- [ ] `trade_intents` has `policy_hash` set by IntentBuilder
-- [ ] Test: round-trip a risk decision; DB row `decision_id` == returned `RiskDecision.decision_id`
-- [ ] Test: `policy_hash` in risk_decisions matches `TradingPolicy.policy_hash()` at evaluation time
+- [x] `risk_decisions.decision_id` is TEXT (UUID), matching `RiskDecision.decision_id` returned by `_finalize()`
+- [x] `risk_decisions` has `policy_version`, `policy_hash`, `account_cash_at_eval`, `account_nav_at_eval`
+- [x] `trade_intents` has `policy_hash` set by IntentBuilder
+- [x] Test: round-trip a risk decision; DB row `decision_id` == returned `RiskDecision.decision_id`
+- [x] Test: `policy_hash` in risk_decisions matches `TradingPolicy.policy_hash()` at evaluation time
+
+## Outcome
+
+risk_decisions.decision_id is UUID TEXT. risk_decisions has policy_version, policy_hash, account_cash_at_eval, account_nav_at_eval. trade_intents has policy_hash set by IntentBuilder. Round-trip test passes.

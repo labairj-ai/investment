@@ -1,7 +1,7 @@
 # Switch serve.py from run_pending_intents to run_execution_cycle
 
 - **ID:** 0216
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-12
 - **Priority:** normal
 - **Depends:** none
@@ -42,8 +42,12 @@ Also update `run_execution_cycle()` return dict to include `working_orders_check
 
 ## Done when
 
-- [ ] `POST /api/trade-engine/run` returns `new_intents_processed` and `fills` with actual counts
-- [ ] Response no longer shows `processed: 0` when fills occurred
-- [ ] `run_execution_cycle()` return dict includes `working_orders_checked`
-- [ ] `run_pending_intents` import removed from serve.py
-- [ ] All 391 existing tests still pass
+- [x] `POST /api/trade-engine/run` returns `new_intents_processed` and `fills` with actual counts
+- [x] Response no longer shows `processed: 0` when fills occurred
+- [x] `run_execution_cycle()` return dict includes `working_orders_checked`
+- [x] `run_pending_intents` import removed from serve.py
+- [x] All 391 existing tests still pass
+
+## Outcome
+
+serve.py _handle_trade_engine_run() imports and calls run_execution_cycle(). Returns new_intents_processed, working_orders_checked, fills. run_pending_intents import removed. Test section 14 verifies response dict.

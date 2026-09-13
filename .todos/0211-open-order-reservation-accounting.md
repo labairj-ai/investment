@@ -1,7 +1,7 @@
 # Add Open-Order Reservation Accounting to Risk Engine
 
 - **ID:** 0211
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-12
 - **Priority:** high
 - **Depends:** none
@@ -53,9 +53,13 @@ Precompute `open_buy_notional = _open_buy_notional(account.account_id, conn)` on
 
 ## Done when
 
-- [ ] Two concurrent $1,500 BUY intents: second fails MAX_DAILY_NOTIONAL when limit is $2,000
-- [ ] Open BUY order for symbol X reduces available cash for a second BUY on symbol Y
-- [ ] Open SELL order for 50 shares blocks a second SELL of 60 shares from the same 80-share position (only 30 free)
-- [ ] BUY weight projection includes open buy notional for the same symbol
-- [ ] `_open_buy_notional` returns 0.0 when no open orders exist (no regression)
-- [ ] All 391 existing tests still pass
+- [x] Two concurrent $1,500 BUY intents: second fails MAX_DAILY_NOTIONAL when limit is $2,000
+- [x] Open BUY order for symbol X reduces available cash for a second BUY on symbol Y
+- [x] Open SELL order for 50 shares blocks a second SELL of 60 shares from the same 80-share position (only 30 free)
+- [x] BUY weight projection includes open buy notional for the same symbol
+- [x] `_open_buy_notional` returns 0.0 when no open orders exist (no regression)
+- [x] All 391 existing tests still pass
+
+## Outcome
+
+_open_buy_notional() and _open_sell_qty() helpers in risk_engine.py. MAX_DAILY_NOTIONAL includes open BUY+SELL. MAX_POSITION_WEIGHT projection includes open buy. Concurrent-intent and open-sell-blocks-second-sell tests pass.

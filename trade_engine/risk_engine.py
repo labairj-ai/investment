@@ -22,6 +22,7 @@ from .models import (
     Side,
     TradeIntent,
     TradingAccount,
+    _parse_iso,
 )
 from .policy import TradingPolicy
 
@@ -216,7 +217,7 @@ def _stale_position_symbols(
             stale.append(r["symbol"])
             continue
         try:
-            ts = datetime.fromisoformat(price_as_of.replace("Z", "+00:00")).timestamp()
+            ts = _parse_iso(price_as_of).timestamp()
             if (now_ts - ts) / 60 > stale_minutes:
                 stale.append(r["symbol"])
         except Exception:
@@ -558,9 +559,7 @@ def evaluate(
         ).fetchone()
         if pos_row and pos_row["price_as_of"]:
             try:
-                price_ts = datetime.fromisoformat(
-                    pos_row["price_as_of"].replace("Z", "+00:00")
-                ).timestamp()
+                price_ts = _parse_iso(pos_row["price_as_of"]).timestamp()
                 age_minutes = (_now_utc().timestamp() - price_ts) / 60
                 fresh = age_minutes <= stale_minutes
                 add(RuleCheck(

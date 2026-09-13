@@ -1,7 +1,7 @@
 # Design BrokerAdapter Contract (B1 — Backlog, No Implementation Yet)
 
 - **ID:** 0218
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-12
 - **Priority:** normal
 - **Depends:** 0209, 0210, 0211, 0212, 0213, 0214, 0215, 0216, 0217
@@ -64,9 +64,13 @@ Validation phase: run shadow and paper in parallel, compare fills, measure slipp
 
 ## Done when
 
-- [ ] Design document / interface stub in `trade_engine/broker_adapter.py` describing the full contract
-- [ ] `BrokerAdapter` ABC defined with all methods above
-- [ ] `ShadowBrokerAdapter` stub (wraps `ShadowBroker`) showing the mapping
-- [ ] Comment in `execution_engine.py` marking where `BrokerAdapter` would replace `ShadowBroker(conn)` construction
-- [ ] No actual IBKR/Alpaca code written (that is B1)
-- [ ] All 391 existing tests still pass (this is additive only)
+- [x] Design document / interface stub in `trade_engine/broker_adapter.py` describing the full contract
+- [x] `BrokerAdapter` ABC defined with all methods above
+- [x] `ShadowBrokerAdapter` stub (wraps `ShadowBroker`) showing the mapping
+- [x] Comment in `execution_engine.py` marking where `BrokerAdapter` would replace `ShadowBroker(conn)` construction
+- [x] No actual IBKR/Alpaca code written (that is B1)
+- [x] All 391 existing tests still pass (this is additive only)
+
+## Outcome
+
+BrokerAdapter ABC, ShadowBrokerAdapter, and normalized broker_types.py were fully implemented in 0237/0238. broker_adapter.py (214 lines) has the complete contract, ShadowBrokerAdapter wrapping ShadowBroker, and execution_engine.py accepts a BrokerAdapter parameter throughout. No IBKR/Alpaca code written.

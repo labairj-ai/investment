@@ -1,7 +1,7 @@
 # Refresh Market Prices Before Risk Evaluation in run_execution_cycle
 
 - **ID:** 0210
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-12
 - **Priority:** high
 - **Depends:** none
@@ -33,8 +33,12 @@ Add `_write_account_snapshot()` stub (actual implementation is todo 0214; this t
 
 ## Done when
 
-- [ ] `run_execution_cycle()` refreshes MtM prices before calling `process_new_intents()`
-- [ ] `process_open_orders()` no longer calls `_refresh_market_prices()` or `_update_nav_high_water()` internally
-- [ ] Test: risk engine sees updated `market_value` on position_snapshots when evaluating a new intent
-- [ ] Test: `nav_high_water` is updated before the first intent in a cycle is evaluated
-- [ ] All 391 existing tests still pass
+- [x] `run_execution_cycle()` refreshes MtM prices before calling `process_new_intents()`
+- [x] `process_open_orders()` no longer calls `_refresh_market_prices()` or `_update_nav_high_water()` internally
+- [x] Test: risk engine sees updated `market_value` on position_snapshots when evaluating a new intent
+- [x] Test: `nav_high_water` is updated before the first intent in a cycle is evaluated
+- [x] All 391 existing tests still pass
+
+## Outcome
+
+_refresh_market_prices() called at start of run_execution_cycle() before process_new_intents(). process_open_orders() no longer calls it internally. Tests verify fresh market_value visible to risk engine.

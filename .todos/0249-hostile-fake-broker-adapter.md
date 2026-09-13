@@ -1,7 +1,7 @@
 # Build Hostile FakeBrokerAdapter for Chaos Testing
 
 - **ID:** 0249
-- **Status:** backlog
+- **Status:** in-progress
 - **Created:** 2026-09-13
 - **Priority:** normal
 - **Depends:** 0248

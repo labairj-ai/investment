@@ -1,7 +1,7 @@
 # Fix Migration Ordering: Trade-Engine Tables Before _new_cols ALTER TABLE
 
 - **ID:** 0215
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-12
 - **Priority:** normal
 - **Depends:** none
@@ -37,8 +37,12 @@ Tests don't catch this because `test_trade_engine.py` constructs the final schem
 
 ## Done when
 
-- [ ] Fresh SQLite DB after `migrate()` has `fills.cost_basis`, `position_snapshots.market_value`, `trading_accounts.nav_high_water`, `orders.market_data_status`, `trade_intents.policy_hash`, `risk_decisions.uuid_id`
-- [ ] `migrate()` on a fresh DB seeds `AGENTIC_SHADOW_01` correctly
-- [ ] Calling `migrate()` twice produces no error
-- [ ] Existing optiplex DB (with B0 columns already present) migrates without error
-- [ ] All 391 existing tests still pass
+- [x] Fresh SQLite DB after `migrate()` has `fills.cost_basis`, `position_snapshots.market_value`, `trading_accounts.nav_high_water`, `orders.market_data_status`, `trade_intents.policy_hash`, `risk_decisions.uuid_id`
+- [x] `migrate()` on a fresh DB seeds `AGENTIC_SHADOW_01` correctly
+- [x] Calling `migrate()` twice produces no error
+- [x] Existing optiplex DB (with B0 columns already present) migrates without error
+- [x] All 391 existing tests still pass
+
+## Outcome
+
+_migrate_trade_engine() now called before _new_cols ALTER TABLE loop in agent_db.migrate(). Test: fresh in-memory DB after migrate() has all B0 columns. migrate() twice is idempotent.

@@ -1,7 +1,7 @@
 # Trade Engine Test Gaps: Rules 14-18 and Safety Edge Cases
 
 - **ID:** 0208
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-12
 - **Priority:** normal
 - **Depends:** 0199, 0200, 0201, 0202, 0203
@@ -46,11 +46,15 @@ Additionally, several behavioral safety properties introduced in 0199-0206 need 
 
 ## Done when
 
-- [ ] Rules 14-18 each have a dedicated failing-case test
-- [ ] No-quote → no-fill test passes
-- [ ] Saturday/holiday → no-fill tests pass
-- [ ] WORKING order retry test passes
-- [ ] Full-EXIT-at-loss → daily-loss circuit test passes
-- [ ] Market-value concentration test passes
-- [ ] Two-contract limit-one rejection test passes
-- [ ] All new tests run with no live network calls (all yfinance/clock mocked)
+- [x] Rules 14-18 each have a dedicated failing-case test
+- [x] No-quote → no-fill test passes
+- [x] Saturday/holiday → no-fill tests pass
+- [x] WORKING order retry test passes
+- [x] Full-EXIT-at-loss → daily-loss circuit test passes
+- [x] Market-value concentration test passes
+- [x] Two-contract limit-one rejection test passes
+- [x] All new tests run with no live network calls (all yfinance/clock mocked)
+
+## Outcome
+
+Tests for rules 14-18 in test_trade_engine.py sections 9+. No-quote, weekend/holiday, WORKING retry, full-exit daily-loss, market-value concentration, two-contract-limit-one all covered. All mocked — no live network calls.

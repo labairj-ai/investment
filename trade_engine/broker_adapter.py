@@ -9,7 +9,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Optional
 
-from .broker_types import BrokerAccountState, BrokerFill, BrokerOrder, BrokerPosition, BrokerQuote
+from .broker_types import BrokerAccountState, BrokerFill, BrokerOrder, BrokerOrderEvent, BrokerPosition, BrokerQuote
 from .models import Fill, Order, TradeIntent, TradingAccount
 
 
@@ -34,19 +34,30 @@ class BrokerAdapter(ABC):
     def get_quote(self, symbol: str) -> Optional[BrokerQuote]: ...
 
     @abstractmethod
-    def submit_order(self, intent: TradeIntent) -> Order: ...
+    def submit_order(self, intent: TradeIntent, client_order_id: Optional[str] = None) -> Order: ...
 
     @abstractmethod
     def cancel_order(self, order_id: str, reason: str = "USER_REQUESTED") -> Order: ...
 
     @abstractmethod
-    def attempt_fill(self, order: Order, quote: BrokerQuote) -> Optional[Fill]: ...
+    def poll_order_events(
+        self, account_id: str, quote: Optional[BrokerQuote] = None
+    ) -> list[BrokerOrderEvent]: ...
+    """Return order lifecycle events since last poll (fills, cancels, expiries) (0248).
+
+    Shadow: simulates synchronously using the quote to decide fill/expire.
+    Paper/live: polls broker API for state changes since last call.
+    """
 
     @abstractmethod
     def get_order(self, order_id: str) -> Optional[Order]: ...
 
     @abstractmethod
     def get_fills(self, account_id: str, since: Optional[str] = None) -> list[BrokerFill]: ...
+
+    def attempt_fill(self, order: Order, quote: BrokerQuote) -> Optional[Fill]:
+        """Legacy simulation helper; use poll_order_events() for new lifecycle logic (0248)."""
+        raise NotImplementedError("Subclass must implement attempt_fill or use poll_order_events()")
 
     # Legacy helper — still used by some callers before full migration
     def get_account(self, account_id: str) -> TradingAccount:
@@ -147,8 +158,17 @@ class ShadowBrokerAdapter(BrokerAdapter):
             for r in rows
         ]
 
-    def submit_order(self, intent: TradeIntent) -> Order:
-        return self._broker.submit_order(intent)
+    def submit_order(self, intent: TradeIntent, client_order_id: Optional[str] = None) -> Order:
+        order = self._broker.submit_order(intent)
+        if client_order_id and order:
+            # Persist client_order_id durably so reconciliation can match after a crash (0247)
+            self._conn.execute(
+                "UPDATE orders SET client_order_id=? WHERE order_id=?",
+                (client_order_id, order.order_id),
+            )
+            self._conn.commit()
+            order.client_order_id = client_order_id
+        return order
 
     def cancel_order(self, order_id: str, reason: str = "USER_REQUESTED") -> Order:
         return self._broker.cancel_order(order_id, reason=reason)
@@ -159,8 +179,8 @@ class ShadowBrokerAdapter(BrokerAdapter):
     # ── Fills ─────────────────────────────────────────────────────────────────
 
     def attempt_fill(self, order: Order, quote: BrokerQuote) -> Optional[Fill]:
+        """Shadow simulation helper; delegates to ShadowBroker.attempt_fill (0248)."""
         from .shadow_broker import Quote as ShadowQuote
-        # Translate BrokerQuote → ShadowBroker's Quote for internal fill logic
         shadow_q = ShadowQuote(
             bid=quote.bid,
             ask=quote.ask,
@@ -170,6 +190,44 @@ class ShadowBrokerAdapter(BrokerAdapter):
             source=quote.source,
         )
         return self._broker.attempt_fill(order, shadow_q)
+
+    def poll_order_events(
+        self, account_id: str, quote: Optional[BrokerQuote] = None
+    ) -> list[BrokerOrderEvent]:
+        """Simulate order events synchronously for shadow mode (0248).
+
+        For each WORKING/PARTIALLY_FILLED order, attempts a fill using the provided quote
+        and translates the result to BrokerOrderEvent. Expired orders produce EXPIRED events.
+        """
+        from .shadow_broker import Quote as ShadowQuote
+        events: list[BrokerOrderEvent] = []
+        open_orders = self.get_open_orders(account_id)
+        for bo in open_orders:
+            order = self.get_order(bo.local_order_id or bo.broker_order_id)
+            if not order:
+                continue
+            if quote:
+                fill = self.attempt_fill(order, quote)
+                if fill:
+                    event_type = "FILLED" if float(order.fill_qty or 0) + float(fill.qty) >= float(order.quantity or 0) else "PARTIALLY_FILLED"
+                    events.append(BrokerOrderEvent(
+                        event_type=event_type,
+                        broker_order_id=order.order_id,
+                        local_order_id=order.order_id,
+                        fill_qty=fill.qty,
+                        fill_price=fill.price,
+                        filled_at=fill.filled_at,
+                        fee=fill.fee,
+                    ))
+            # Check for expiry after fill attempt
+            refreshed = self.get_order(bo.local_order_id or bo.broker_order_id)
+            if refreshed and refreshed.state.value == "EXPIRED":
+                events.append(BrokerOrderEvent(
+                    event_type="EXPIRED",
+                    broker_order_id=order.order_id,
+                    local_order_id=order.order_id,
+                ))
+        return events
 
     def get_fills(self, account_id: str, since: Optional[str] = None) -> list[BrokerFill]:
         if since:

@@ -1,7 +1,7 @@
 # Fail Closed on Missing or Stale Market Data
 
 - **ID:** 0200
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-12
 - **Priority:** high
 - **Depends:** 0199
@@ -50,7 +50,11 @@ For the `DATA_FRESHNESS` risk rule: align it to use the same freshness threshold
 
 ## Done when
 
-- [ ] `_get_quote()` returns None → order stays WORKING, `market_data_status='unavailable'`, no fill written
-- [ ] Quote with timestamp > stale threshold → treated same as None
-- [ ] Removing the fallback Quote is confirmed by test: mock `_get_quote` to return None, assert no fill row created
-- [ ] Tests: network failure on open BUY order → no executed_actions row; retry on next cycle when quote available
+- [x] `_get_quote()` returns None → order stays WORKING, `market_data_status='unavailable'`, no fill written
+- [x] Quote with timestamp > stale threshold → treated same as None
+- [x] Removing the fallback Quote is confirmed by test: mock `_get_quote` to return None, assert no fill row created
+- [x] Tests: network failure on open BUY order → no executed_actions row; retry on next cycle when quote available
+
+## Outcome
+
+Fail-closed path implemented in _attempt_fill_order() and process_open_orders(). Missing or stale quote sets market_data_status='unavailable' and returns without writing a fill. Tests mock _get_quote to None and assert no executed_actions row.

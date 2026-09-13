@@ -1,7 +1,7 @@
 # Fix Working Order Lifecycle: Split New-Intent vs Open-Order Processing
 
 - **ID:** 0199
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-12
 - **Priority:** high
 - **Depends:** none
@@ -43,8 +43,12 @@ Also: intent status must stay in sync with order terminal states (FILLED, EXPIRE
 
 ## Done when
 
-- [ ] WORKING order with no fill on cycle 1 gets re-attempted on cycle 2
-- [ ] DAY order placed at 3:50 PM ET → expires on the next scheduler cycle after 4:00 PM
-- [ ] Intent status stays in sync: FILLED order → intent FILLED; EXPIRED order → intent EXPIRED
-- [ ] `run_pending_intents()` deprecated in favor of `run_execution_cycle()`
-- [ ] Tests: WORKING order retried; DAY order eventually expires; intent status mirrors order state
+- [x] WORKING order with no fill on cycle 1 gets re-attempted on cycle 2
+- [x] DAY order placed at 3:50 PM ET → expires on the next scheduler cycle after 4:00 PM
+- [x] Intent status stays in sync: FILLED order → intent FILLED; EXPIRED order → intent EXPIRED
+- [x] `run_pending_intents()` deprecated in favor of `run_execution_cycle()`
+- [x] Tests: WORKING order retried; DAY order eventually expires; intent status mirrors order state
+
+## Outcome
+
+process_new_intents() + process_open_orders() + run_execution_cycle() implemented in execution_engine.py. Working orders retried each cycle; DAY expiry fires when expires_at < now; intent status mirrors order state. run_pending_intents() deprecated to backward-compat stub.

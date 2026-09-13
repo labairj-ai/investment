@@ -1,7 +1,7 @@
 # Populate account_snapshots Every Execution Cycle
 
 - **ID:** 0214
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-12
 - **Priority:** normal
 - **Depends:** 0210
@@ -34,9 +34,13 @@
 
 ## Done when
 
-- [ ] `account_snapshots` has all 6 new columns after migration
-- [ ] `run_execution_cycle()` writes a "pre_cycle" snapshot before processing new intents
-- [ ] `run_execution_cycle()` writes a "post_cycle" snapshot after open-order processing
-- [ ] Snapshot `nav` matches `cash + sum(market_value)` at time of write
-- [ ] Snapshot `realized_pnl_today` matches today's fill P&L
-- [ ] All 391 existing tests still pass
+- [x] `account_snapshots` has all 6 new columns after migration
+- [x] `run_execution_cycle()` writes a "pre_cycle" snapshot before processing new intents
+- [x] `run_execution_cycle()` writes a "post_cycle" snapshot after open-order processing
+- [x] Snapshot `nav` matches `cash + sum(market_value)` at time of write
+- [x] Snapshot `realized_pnl_today` matches today's fill P&L
+- [x] All 391 existing tests still pass
+
+## Outcome
+
+account_snapshots has gross_exposure, open_order_notional, realized_pnl_today, snapshot_type, cycle_id, position_count. run_execution_cycle() writes pre_cycle and post_cycle snapshots. Test section 16 verifies.

@@ -1,7 +1,7 @@
 # Gate Broker Submission Behind Quote Freshness Check
 
 - **ID:** 0243
-- **Status:** backlog
+- **Status:** in-progress
 - **Created:** 2026-09-12
 - **Priority:** high
 - **Depends:** 0238

@@ -1,7 +1,7 @@
 # Capture Realized P&L at Fill Time for Reliable Circuit Breakers
 
 - **ID:** 0202
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-12
 - **Priority:** high
 - **Depends:** none
@@ -56,8 +56,12 @@ This is now authoritative regardless of whether positions still exist.
 
 ## Done when
 
-- [ ] `fills` table has `cost_basis`, `realized_pnl`, `realized_pnl_pct`
-- [ ] `_apply_fill()` writes these for SELL/BUY_TO_CLOSE fills before position update
-- [ ] `MAX_DAILY_LOSS` queries `SUM(realized_pnl)` from fills, not position_snapshots join
-- [ ] Test: buy 10 @ $100, sell all 10 @ $70 → position row deleted → daily_loss rule still sees $300 loss → rejects next trade
-- [ ] Test: partial sell → realized_pnl correct for partial qty
+- [x] `fills` table has `cost_basis`, `realized_pnl`, `realized_pnl_pct`
+- [x] `_apply_fill()` writes these for SELL/BUY_TO_CLOSE fills before position update
+- [x] `MAX_DAILY_LOSS` queries `SUM(realized_pnl)` from fills, not position_snapshots join
+- [x] Test: buy 10 @ $100, sell all 10 @ $70 → position row deleted → daily_loss rule still sees $300 loss → rejects next trade
+- [x] Test: partial sell → realized_pnl correct for partial qty
+
+## Outcome
+
+fills table has cost_basis, realized_pnl, realized_pnl_pct. _apply_fill() captures realized P&L for SELL/BUY_TO_CLOSE before position mutation. MAX_DAILY_LOSS queries SUM(realized_pnl) from fills.

@@ -1,7 +1,7 @@
 # Fix DAY/GTC Order Lifecycle: Explicit expires_at, Pre-Market Stays WORKING
 
 - **ID:** 0209
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-12
 - **Priority:** high
 - **Depends:** none
@@ -40,11 +40,15 @@ Additionally, GTC orders have no market-session gate at all — `_fill_price()` 
 
 ## Done when
 
-- [ ] DAY order at 8:00 AM ET → remains WORKING (not expired)
-- [ ] DAY order at 9:29 AM ET → remains WORKING
-- [ ] DAY order at 9:30 AM ET → eligible for fill
-- [ ] DAY order at 16:00 ET (expires_at reached) → EXPIRED
-- [ ] GTC order at 3:00 AM → no fill (market closed), remains WORKING
-- [ ] GTC order during session → eligible for fill
-- [ ] Friday after-close DAY order: remains WORKING through weekend, expires Monday
-- [ ] All 391 existing tests still pass
+- [x] DAY order at 8:00 AM ET → remains WORKING (not expired)
+- [x] DAY order at 9:29 AM ET → remains WORKING
+- [x] DAY order at 9:30 AM ET → eligible for fill
+- [x] DAY order at 16:00 ET (expires_at reached) → EXPIRED
+- [x] GTC order at 3:00 AM → no fill (market closed), remains WORKING
+- [x] GTC order during session → eligible for fill
+- [x] Friday after-close DAY order: remains WORKING through weekend, expires Monday
+- [x] All 391 existing tests still pass
+
+## Outcome
+
+expires_at column on orders. ShadowBroker.submit_order() sets expires_at: DAY=next session close, GTC=intent.valid_until. attempt_fill() checks expires_at before session gate. Pre-market DAY order stays WORKING; after-close fires EXPIRED.

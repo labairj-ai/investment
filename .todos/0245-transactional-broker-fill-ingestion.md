@@ -1,7 +1,7 @@
 # Transactional Broker Fill Ingestion With Atomic Cursor Advance
 
 - **ID:** 0245
-- **Status:** backlog
+- **Status:** in-progress
 - **Created:** 2026-09-13
 - **Priority:** high
 - **Depends:** 0242

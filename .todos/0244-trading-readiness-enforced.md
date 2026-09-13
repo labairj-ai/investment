@@ -1,7 +1,7 @@
 # Enforce Trading Readiness — No Bypass Allowed
 
 - **ID:** 0244
-- **Status:** backlog
+- **Status:** in-progress
 - **Created:** 2026-09-13
 - **Priority:** high
 - **Depends:** 0242, 0243

@@ -5623,11 +5623,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._send_json({"ok": False, "error": str(e)}, 500)
 
     def _handle_trade_engine_run(self):
-        """POST /api/trade-engine/run — full execution cycle for AGENTIC_SHADOW_01 (0216)."""
+        """POST /api/trade-engine/run — full execution cycle for AGENTIC_SHADOW_01 (0216, 0244)."""
         try:
-            from trade_engine.execution_engine import run_execution_cycle
+            from trade_engine.execution_engine import (
+                initialize_trading_session, run_execution_cycle, TradingReadyState,
+            )
             conn = self._shadow_conn()
-            summary = run_execution_cycle("AGENTIC_SHADOW_01", conn)
+            trading_state = initialize_trading_session("AGENTIC_SHADOW_01", conn)
+            summary = run_execution_cycle("AGENTIC_SHADOW_01", conn, trading_state=trading_state)
             conn.close()
             self._json({
                 "ok": True,

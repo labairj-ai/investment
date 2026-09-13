@@ -4,6 +4,7 @@ from __future__ import annotations
 import sqlite3
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import NamedTuple, Optional
 
 from .models import (
@@ -15,6 +16,7 @@ from .models import (
     Side,
     TimeInForce,
     TradeIntent,
+    _parse_iso,
 )
 from . import market_calendar
 
@@ -104,9 +106,7 @@ class ShadowBroker:
 
         # Expiry check (0219): parse to aware datetimes — never compare ISO strings across TZs
         if order.expires_at:
-            expiry = datetime.fromisoformat(
-                order.expires_at.replace("Z", "+00:00")
-            ).astimezone(timezone.utc)
+            expiry = _parse_iso(order.expires_at).astimezone(timezone.utc)
             if _now_utc() >= expiry:
                 self._transition_order(order, OrderState.EXPIRED)
                 return None
@@ -181,11 +181,11 @@ class ShadowBroker:
                 (fill.account_id, fill.symbol),
             ).fetchone()
             if pos_row:
-                avg_cost = float(pos_row["avg_cost"] or 0)
+                avg_cost = Decimal(str(pos_row["avg_cost"] or 0))
                 cost_basis = fill.qty * avg_cost
                 proceeds = fill.qty * fill.price - fill.fee
                 realized_pnl = proceeds - cost_basis
-                realized_pnl_pct = (realized_pnl / cost_basis * 100) if cost_basis else 0.0
+                realized_pnl_pct = (realized_pnl / cost_basis * 100) if cost_basis else Decimal(0)
 
         cash_delta = fill.cash_impact()
 
@@ -205,11 +205,11 @@ class ShadowBroker:
         )
 
         # Update order fill_qty / fill_cash / state (0224)
-        new_fill_qty = order.fill_qty + fill.qty
-        new_fill_cash = order.fill_cash + fill.qty * fill.price
-        order.fill_qty = new_fill_qty
-        order.fill_cash = new_fill_cash
-        total_qty = order.quantity or 0.0
+        new_fill_qty = Decimal(str(order.fill_qty or 0)) + fill.qty
+        new_fill_cash = Decimal(str(order.fill_cash or 0)) + fill.qty * fill.price
+        order.fill_qty = float(new_fill_qty)
+        order.fill_cash = float(new_fill_cash)
+        total_qty = Decimal(str(order.quantity or 0))
         new_state = OrderState.FILLED if new_fill_qty >= total_qty else OrderState.PARTIALLY_FILLED
         self._transition_order(order, new_state, commit=False)
         self._conn.execute(
@@ -226,12 +226,12 @@ class ShadowBroker:
         ).fetchone()
 
         if existing_pos:
-            old_qty = float(existing_pos["qty"])
-            old_avg = float(existing_pos["avg_cost"])
-            old_market_price = float(existing_pos["market_price"]) if existing_pos["market_price"] is not None else None
+            old_qty = Decimal(str(existing_pos["qty"] or 0))
+            old_avg = Decimal(str(existing_pos["avg_cost"] or 0))
+            old_market_price = Decimal(str(existing_pos["market_price"])) if existing_pos["market_price"] is not None else None
             if is_buy:
                 new_qty = old_qty + fill.qty
-                new_avg = (old_qty * old_avg + fill.qty * fill.price) / new_qty if new_qty > 0 else 0.0
+                new_avg = (old_qty * old_avg + fill.qty * fill.price) / new_qty if new_qty > 0 else Decimal(0)
             else:
                 new_qty = old_qty - fill.qty
                 new_avg = old_avg  # avg_cost unchanged on sell
