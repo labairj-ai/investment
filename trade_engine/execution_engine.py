@@ -54,15 +54,24 @@ class FillResult(str, Enum):
     ALREADY_APPLIED = "ALREADY_APPLIED"
 
 
-class UnknownFillError(RuntimeError):
+class BrokerStateIntegrityError(RuntimeError):
+    """Base for all broker state integrity violations that require an account halt (0288).
+
+    Any subclass escaping process_intent() or apply_broker_fill() must halt the cycle
+    before the next intent is evaluated. Callers should catch this base class rather than
+    listing individual subclasses, so newly added integrity errors are automatically halted.
+    """
+
+
+class UnknownFillError(BrokerStateIntegrityError):
     """apply_broker_fill() cannot match a fill to any local order — quarantine required (0261)."""
 
 
-class OverfillError(RuntimeError):
+class OverfillError(BrokerStateIntegrityError):
     """Fill quantity exceeds order remaining quantity — broker reporting error (0262)."""
 
 
-class ImpossibleSellError(RuntimeError):
+class ImpossibleSellError(BrokerStateIntegrityError):
     """Sell fill quantity exceeds locally held position — state corruption (0262)."""
 
 
@@ -89,7 +98,7 @@ class BrokerSubmissionIndeterminate(RuntimeError):
     """
 
 
-class BrokerSettlementIndeterminate(RuntimeError):
+class BrokerSettlementIndeterminate(BrokerStateIntegrityError):
     """FILLED ACK received but authoritative fill economics could not be retrieved (0278).
 
     Raised when get_fills_for_order() fails or returns no fills after a FILLED ACK,
@@ -109,7 +118,7 @@ class PolicyUnavailable(RuntimeError):
     """Trading policy cannot be loaded; cycle must halt fail-closed (0227)."""
 
 
-class BrokerFillInvalid(RuntimeError):
+class BrokerFillInvalid(BrokerStateIntegrityError):
     """apply_broker_fill() received a fill that fails identity or economics validation (0286).
 
     Raised when any field in the fill does not match the resolved local order or violates
@@ -772,8 +781,8 @@ def process_new_intents(
         try:
             result = process_intent(row["intent_id"], conn, broker=broker)
             results.append(result)
-        except (BrokerSubmissionIndeterminate, BrokerSettlementIndeterminate):
-            raise  # propagate — further intent processing must stop (0265, 0278)
+        except (BrokerSubmissionIndeterminate, BrokerStateIntegrityError):
+            raise  # propagate — further intent processing must stop (0265, 0278, 0288)
         except Exception as exc:
             _log.error("process_intent failed for %s: %s", row["intent_id"], exc)
     return results
@@ -1144,12 +1153,12 @@ def run_execution_cycle(
     # ── 0284: Broker truth sync — ingest all pending fills before risk evaluation ─
     try:
         sync_fills = sync_broker_state(account_id, conn, broker)
-    except BrokerSettlementIndeterminate as exc:
+    except BrokerStateIntegrityError as exc:
         _log.error(
-            "SETTLEMENT_INDETERMINATE in broker sync for %s: %s — halting cycle; reconcile before next run",
+            "BROKER_STATE_INTEGRITY in broker sync for %s: %s — halting cycle; reconcile before next run",
             account_id, exc,
         )
-        return {**_HALTED_BASE, "halt_reason": "SETTLEMENT_INDETERMINATE"}
+        return {**_HALTED_BASE, "halt_reason": "BROKER_STATE_INTEGRITY"}
 
     try:
         _refresh_market_prices(account_id, conn)
@@ -1182,12 +1191,12 @@ def run_execution_cycle(
                 account_id, exc,
             )
             return {**_HALTED_BASE, "halt_reason": "SUBMISSION_INDETERMINATE"}
-        except BrokerSettlementIndeterminate as exc:
+        except BrokerStateIntegrityError as exc:
             _log.error(
-                "SETTLEMENT_INDETERMINATE for %s: %s — halting cycle; reconcile before next run",
+                "BROKER_STATE_INTEGRITY for %s: %s — halting cycle; reconcile before next run",
                 account_id, exc,
             )
-            return {**_HALTED_BASE, "halt_reason": "SETTLEMENT_INDETERMINATE"}
+            return {**_HALTED_BASE, "halt_reason": "BROKER_STATE_INTEGRITY"}
 
     # Count open orders before retry (snapshot includes orders created this cycle)
     working_orders_checked = conn.execute(
@@ -1202,12 +1211,12 @@ def run_execution_cycle(
     except PolicyUnavailable as exc:
         _log.error("POLICY_UNAVAILABLE in fill retry for %s: %s — halting cycle", account_id, exc)
         return {**_HALTED_BASE, "halt_reason": "POLICY_UNAVAILABLE"}  # 0234: any policy failure → HALTED
-    except BrokerSettlementIndeterminate as exc:
+    except BrokerStateIntegrityError as exc:
         _log.error(
-            "SETTLEMENT_INDETERMINATE in fill retry for %s: %s — halting cycle; reconcile before next run",
+            "BROKER_STATE_INTEGRITY in fill retry for %s: %s — halting cycle; reconcile before next run",
             account_id, exc,
         )
-        return {**_HALTED_BASE, "halt_reason": "SETTLEMENT_INDETERMINATE"}
+        return {**_HALTED_BASE, "halt_reason": "BROKER_STATE_INTEGRITY"}
 
     try:
         _write_account_snapshot(account_id, conn, "post_cycle")
@@ -1513,7 +1522,7 @@ def apply_broker_fill(
         conn.commit()
         return FillResult.APPLIED
 
-    except (UnknownFillError, OverfillError, ImpossibleSellError, BrokerFillInvalid):
+    except BrokerStateIntegrityError:
         conn.rollback()
         raise
     except Exception:

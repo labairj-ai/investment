@@ -1597,7 +1597,7 @@ class TestSettlementIndeterminateCycleLevel:
             )
 
     def test_settlement_indeterminate_halts_cycle(self):
-        """FILLED ACK + fill lookup raises → run_execution_cycle returns HALTED / SETTLEMENT_INDETERMINATE (0281)."""
+        """FILLED ACK + fill lookup raises → run_execution_cycle returns HALTED / BROKER_STATE_INTEGRITY (0281, 0288)."""
         conn = _make_conn()
         _seed_intent(conn, qty=1.0, price=100.0)
         broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01", ack_state="FILLED", fill_raises=True)
@@ -1607,8 +1607,8 @@ class TestSettlementIndeterminateCycleLevel:
         assert result["execution_state"] == "HALTED", (
             f"Expected HALTED; got {result['execution_state']}"
         )
-        assert result["halt_reason"] == "SETTLEMENT_INDETERMINATE", (
-            f"Expected SETTLEMENT_INDETERMINATE; got {result.get('halt_reason')}"
+        assert result["halt_reason"] == "BROKER_STATE_INTEGRITY", (
+            f"Expected BROKER_STATE_INTEGRITY; got {result.get('halt_reason')}"
         )
 
     def test_settlement_indeterminate_does_not_raise(self):
@@ -1958,7 +1958,7 @@ class TestPreCycleBrokerSync:
         )
 
     def test_sync_bsi_halts_before_new_intents(self):
-        """sync_broker_state raising BSI halts cycle before process_new_intents (0284, 0285)."""
+        """sync_broker_state raising BSI halts cycle before process_new_intents (0284, 0285, 0288)."""
         conn = _make_conn()
         _seed_intent(conn, qty=1.0, price=100.0)
 
@@ -1966,7 +1966,7 @@ class TestPreCycleBrokerSync:
         result = self._run_cycle(conn, broker)
 
         assert result["execution_state"] == "HALTED"
-        assert result["halt_reason"] == "SETTLEMENT_INDETERMINATE"
+        assert result["halt_reason"] == "BROKER_STATE_INTEGRITY"
         # No intents were processed (sync halted before process_new_intents)
         assert result["new_intents_processed"] == 0
 
@@ -2004,13 +2004,13 @@ class TestUnknownBrokerActivityFails:
             )
 
     def test_unresolvable_event_halts_cycle(self):
-        """Unresolvable FILLED event in sync_broker_state → HALTED, not warn-skip (0285)."""
+        """Unresolvable FILLED event in sync_broker_state → HALTED/BROKER_STATE_INTEGRITY, not warn-skip (0285, 0288)."""
         conn = _make_conn()
         broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01", unresolvable_events=True)
         result = self._run_cycle(conn, broker)
 
         assert result["execution_state"] == "HALTED"
-        assert result["halt_reason"] == "SETTLEMENT_INDETERMINATE"
+        assert result["halt_reason"] == "BROKER_STATE_INTEGRITY"
 
     def test_unresolvable_event_in_process_open_orders_raises_bsi(self):
         """Unresolvable event in process_open_orders raises BrokerSettlementIndeterminate (0285)."""
@@ -2042,7 +2042,7 @@ class TestUnknownBrokerActivityFails:
                 self._open_orders(conn, broker)
 
     def test_locally_open_order_missing_at_broker_halts_cycle(self):
-        """Locally-WORKING order missing at broker in process_open_orders → cycle HALTED (0285)."""
+        """Locally-WORKING order missing at broker in process_open_orders → cycle HALTED/BROKER_STATE_INTEGRITY (0285, 0288)."""
         conn = _make_conn()
         _submit_working_order(conn)
 
@@ -2054,7 +2054,7 @@ class TestUnknownBrokerActivityFails:
             result = self._run_cycle(conn, broker)
 
         assert result["execution_state"] == "HALTED"
-        assert result["halt_reason"] == "SETTLEMENT_INDETERMINATE"
+        assert result["halt_reason"] == "BROKER_STATE_INTEGRITY"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2273,6 +2273,86 @@ class TestBrokerFillInvalidGuard:
             "SELECT COUNT(*) FROM fills WHERE fill_id=?", ("valid-fill-001",)
         ).fetchone()[0]
         assert count == 1
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# B9 — 0288: Broker-state integrity circuit breaker
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _seed_two_intents(conn):
+    """Insert two PENDING intents; return their intent_ids."""
+    i1 = _make_intent(quantity=1.0, limit_price=100.0)
+    i2 = _make_intent(quantity=1.0, limit_price=100.0)
+    _insert_intent(conn, i1)
+    _insert_intent(conn, i2)
+    return i1.intent_id, i2.intent_id
+
+
+class TestBrokerStateIntegrityCircuit:
+    """BrokerFillInvalid (and sibling integrity errors) halt the cycle before the next intent (0288)."""
+
+    class _FreshQ:
+        bid = 99.0
+        ask = 101.0
+        market_timestamp = None
+        source = "test"
+
+        def __init__(self):
+            self.retrieved_at = datetime.now(timezone.utc).isoformat()
+
+    def _run_cycle(self, conn, broker):
+        with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
+             patch.object(execution_engine, "_refresh_market_prices"), \
+             patch.object(execution_engine, "_update_nav_high_water"), \
+             patch.object(execution_engine, "_write_account_snapshot"), \
+             patch.object(market_calendar, "is_market_open", return_value=True), \
+             patch("trade_engine.market_data._get_executable_quote",
+                   return_value=self._FreshQ()):
+            return execution_engine.run_execution_cycle(
+                "AGENTIC_SHADOW_01", conn, broker=broker,
+                trading_state=execution_engine.TradingReadyState.TRADING_READY,
+            )
+
+    def test_invalid_fill_halts_cycle_broker_state_integrity(self):
+        """BrokerFillInvalid on intent #1 → HALTED/BROKER_STATE_INTEGRITY before intent #2 (0288)."""
+        conn = _make_conn()
+        intent1_id, intent2_id = _seed_two_intents(conn)
+
+        # Broker ACKs immediately as FILLED, but get_fills_for_order raises → BrokerSettlementIndeterminate
+        # which is a BrokerStateIntegrityError subclass.
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01", ack_state="FILLED", fill_raises=True)
+        result = self._run_cycle(conn, broker)
+
+        assert result["execution_state"] == "HALTED"
+        assert result["halt_reason"] == "BROKER_STATE_INTEGRITY"
+        # Cycle halted after intent #1 failed — intent #2 must NOT have been submitted
+        submitted = conn.execute(
+            "SELECT COUNT(*) FROM orders WHERE account_id='AGENTIC_SHADOW_01'"
+        ).fetchone()[0]
+        # At most one order was created (for intent #1, before the fill-lookup failure)
+        assert submitted <= 1, (
+            f"Intent #2 must not be submitted when integrity error halts after intent #1; "
+            f"found {submitted} order(s)"
+        )
+        # Intent #2 must still be PENDING
+        i2_status = conn.execute(
+            "SELECT status FROM trade_intents WHERE intent_id=?", (intent2_id,)
+        ).fetchone()["status"]
+        assert i2_status == "PENDING", (
+            f"Intent #2 should remain PENDING after HALTED cycle; got {i2_status!r}"
+        )
+
+    def test_broker_state_integrity_error_is_base_of_integrity_exceptions(self):
+        """BrokerStateIntegrityError is the base class for all fill-integrity exceptions (0288)."""
+        assert issubclass(execution_engine.BrokerFillInvalid, execution_engine.BrokerStateIntegrityError)
+        assert issubclass(execution_engine.OverfillError, execution_engine.BrokerStateIntegrityError)
+        assert issubclass(execution_engine.ImpossibleSellError, execution_engine.BrokerStateIntegrityError)
+        assert issubclass(execution_engine.UnknownFillError, execution_engine.BrokerStateIntegrityError)
+        assert issubclass(execution_engine.BrokerSettlementIndeterminate, execution_engine.BrokerStateIntegrityError)
+        # BrokerSubmissionIndeterminate is network-uncertainty, not fill integrity — must NOT subclass
+        assert not issubclass(
+            execution_engine.BrokerSubmissionIndeterminate, execution_engine.BrokerStateIntegrityError
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
