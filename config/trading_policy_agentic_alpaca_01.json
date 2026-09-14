@@ -43,7 +43,7 @@
     "halt_on_position_mismatch": true,
     "halt_on_data_stale_minutes": 60,
     "halt_on_daily_loss_pct": 3,
-    "expected_broker_account_id": null,
+    "expected_broker_account_id": "${ALPACA_PAPER_ACCOUNT_ID}",
     "require_account_binding": true
   }
 }

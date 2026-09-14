@@ -914,7 +914,7 @@ def sync_broker_state(
     account_id: str,
     conn: sqlite3.Connection,
     broker: BrokerAdapter,
-) -> list[Fill]:
+) -> tuple[list[Fill], int]:
     """Ingest all pending broker events as the first action in a cycle (0284).
 
     Polls broker.poll_order_events() once and applies FILLED/PARTIALLY_FILLED events via
@@ -923,10 +923,11 @@ def sync_broker_state(
     economic state before any risk evaluation occurs.
 
     Raises BrokerSettlementIndeterminate on unresolvable events (0285) or fill retrieval
-    failures; callers treat this as HALTED. Returns the list of newly applied fills.
+    failures; callers treat this as HALTED. Returns (newly_applied_fills, duplicate_fills_skipped).
     """
     all_events = broker.poll_order_events(account_id)
     fills: list[Fill] = []
+    duplicate_fills_skipped: int = 0
 
     for _e in all_events:
         _local_id = resolve_local_order_id(
@@ -970,6 +971,8 @@ def sync_broker_state(
                     if _fill_row:
                         _fill = Fill.from_db_row(_fill_row)
                         fills.append(_fill)
+                else:
+                    duplicate_fills_skipped += 1
             else:
                 # No broker_fill_id — fetch authoritative fills (0283)
                 try:
@@ -993,6 +996,8 @@ def sync_broker_state(
                         if _fill_row:
                             _fill = Fill.from_db_row(_fill_row)
                             fills.append(_fill)
+                    else:
+                        duplicate_fills_skipped += 1
 
         elif _e.event_type in ("CANCELLED", "EXPIRED", "REJECTED"):
             apply_broker_order_event(_e, account_id, conn)
@@ -1030,6 +1035,8 @@ def sync_broker_state(
                     fills.append(Fill.from_db_row(_fill_row))
                 if _lf.filled_at and (_max_filled_at is None or _lf.filled_at > _max_filled_at):
                     _max_filled_at = _lf.filled_at
+            else:
+                duplicate_fills_skipped += 1
         if _max_filled_at:
             conn.execute(
                 "UPDATE trading_accounts SET last_fill_synced_at=? WHERE account_id=?",
@@ -1044,7 +1051,7 @@ def sync_broker_state(
             f"{type(_ledger_exc).__name__} — halting (0289)"
         ) from _ledger_exc
 
-    return fills
+    return fills, duplicate_fills_skipped
 
 
 def run_execution_cycle(
@@ -1083,6 +1090,7 @@ def run_execution_cycle(
             "fills_on_retry": 0,
             "total_fills": 0,
             "orders_expired": 0,
+            "duplicate_fills_skipped": 0,
             "results": [],
         }
 
@@ -1100,6 +1108,7 @@ def run_execution_cycle(
         "fills_on_retry": 0,
         "total_fills": 0,
         "orders_expired": 0,
+        "duplicate_fills_skipped": 0,
         "results": [],
     }
 
@@ -1115,7 +1124,7 @@ def run_execution_cycle(
 
     # ── 0284: Broker truth sync — ingest all pending fills before risk evaluation ─
     try:
-        sync_fills = sync_broker_state(account_id, conn, broker)
+        sync_fills, duplicate_fills_skipped = sync_broker_state(account_id, conn, broker)
     except BrokerStateIntegrityError as exc:
         _log.error(
             "BROKER_STATE_INTEGRITY in broker sync for %s: %s — halting cycle; reconcile before next run",
@@ -1204,6 +1213,7 @@ def run_execution_cycle(
         "fills_on_retry": len(retry_fills),
         "total_fills": len(sync_fills) + fills_on_submission + len(retry_fills),
         "orders_expired": orders_expired_retry,
+        "duplicate_fills_skipped": duplicate_fills_skipped,
         "results": [r.to_dict() for r in new_results],
     }
 

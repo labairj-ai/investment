@@ -511,6 +511,10 @@ def migrate() -> None:
         ("trading_accounts",   "last_fill_synced_at",  "TEXT"),
         # 0247 — durable idempotency key written before broker submission
         ("orders",             "client_order_id",      "TEXT"),
+        # 0320 — cycle scorecard timing and staleness
+        ("cycle_runs",         "duration_seconds",                  "REAL"),
+        ("cycle_runs",         "oldest_unresolved_order_age_minutes", "REAL"),
+        ("cycle_runs",         "duplicate_fills_skipped_ledger",    "INTEGER"),
     ]
     for table, col, col_type in _new_cols:
         try:
@@ -729,6 +733,13 @@ def _migrate_trade_engine(conn: sqlite3.Connection) -> None:
             called_at   TEXT,
             account_id  TEXT
         );
+
+        CREATE TABLE IF NOT EXISTS execution_leases (
+            account_id  TEXT PRIMARY KEY,
+            locked_by   TEXT NOT NULL,
+            locked_at   TEXT NOT NULL,
+            expires_at  TEXT NOT NULL
+        );
     """)
 
     # Seed AGENTIC_SHADOW_01 if not present
@@ -750,6 +761,51 @@ def _migrate_trade_engine(conn: sqlite3.Connection) -> None:
            VALUES (?,?,?,?,?,?,?,?,?)""",
         ("AGENTIC_ALPACA_01", "Agentic Alpaca Paper Account", "paper",
          100000.0, 100000.0, "alpaca", 1, "1.0", _now),
+    )
+    conn.commit()
+
+
+# ── Execution lease helpers (0317) ───────────────────────────────────────────
+
+def acquire_execution_lease(
+    conn: "sqlite3.Connection",
+    account_id: str,
+    holder: str,
+    ttl_seconds: int = 300,
+) -> bool:
+    """Acquire a named execution lease for account_id. Returns True if acquired.
+
+    Uses an atomic INSERT ... ON CONFLICT DO UPDATE WHERE expires_at < now()
+    so the lease is only taken over if the existing holder's TTL has expired.
+    Both serve.py and runner.py call this before constructing ExecutionSession
+    so the two processes cannot execute concurrently for the same account.
+    """
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc).isoformat()
+    expires = (datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)).isoformat()
+    cur = conn.execute(
+        """INSERT INTO execution_leases (account_id, locked_by, locked_at, expires_at)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(account_id) DO UPDATE
+               SET locked_by=excluded.locked_by,
+                   locked_at=excluded.locked_at,
+                   expires_at=excluded.expires_at
+               WHERE execution_leases.expires_at < ?""",
+        (account_id, holder, now, expires, now),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def release_execution_lease(
+    conn: "sqlite3.Connection",
+    account_id: str,
+    holder: str,
+) -> None:
+    """Release the execution lease for account_id if still held by holder."""
+    conn.execute(
+        "DELETE FROM execution_leases WHERE account_id=? AND locked_by=?",
+        (account_id, holder),
     )
     conn.commit()
 

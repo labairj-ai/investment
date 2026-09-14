@@ -201,7 +201,7 @@ def build_intent(
         order_type=OrderType.LIMIT,
         limit_price=limit_price,
         time_in_force=TimeInForce.DAY,
-        strategy="shadow_equity",
+        strategy="agentic_equity_v1",
         thesis_version=thesis_version,
         strategy_config_hash=_get_strategy_config_hash(),
         policy_hash=policy.policy_hash(),  # 0204

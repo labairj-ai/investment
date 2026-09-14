@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -112,6 +113,21 @@ class TradingPolicy:
         return hashlib.sha256(self._raw_json.encode()).hexdigest()[:12]
 
 
+def _resolve_env_vars(circuit_breakers: dict) -> dict:
+    """Substitute ${ENV_VAR} placeholders in circuit_breakers fields.
+
+    Allows expected_broker_account_id to be configured via env without committing
+    the actual account ID to the repo. Returns a copy with substitutions applied.
+    """
+    cb = dict(circuit_breakers)
+    val = cb.get("expected_broker_account_id")
+    if isinstance(val, str) and val.startswith("${") and val.endswith("}"):
+        env_name = val[2:-1]
+        resolved = os.environ.get(env_name) or None
+        cb["expected_broker_account_id"] = resolved
+    return cb
+
+
 def load_policy(account_id: str, policy_path: Path | None = None) -> TradingPolicy:
     if policy_path is None:
         per_account = _POLICY_DIR / f"trading_policy_{account_id.lower()}.json"
@@ -133,6 +149,6 @@ def load_policy(account_id: str, policy_path: Path | None = None) -> TradingPoli
         options=data.get("options", {}),
         execution=data.get("execution", {}),
         risk=data.get("risk", {}),
-        circuit_breakers=data.get("circuit_breakers", {}),
+        circuit_breakers=_resolve_env_vars(data.get("circuit_breakers", {})),
         _raw_json=raw,
     )

@@ -151,16 +151,6 @@ PROJECT_DIR = Path(__file__).parent
 os.chdir(PROJECT_DIR)
 
 # Per-account execution locks — prevents concurrent cycle runs in ThreadingHTTPServer (0310).
-# Keys are account_id strings; values are threading.Lock instances.
-_EXECUTION_LOCKS: dict[str, threading.Lock] = {}
-_EXECUTION_LOCKS_MUTEX = threading.Lock()
-
-
-def _get_execution_lock(account_id: str) -> threading.Lock:
-    with _EXECUTION_LOCKS_MUTEX:
-        if account_id not in _EXECUTION_LOCKS:
-            _EXECUTION_LOCKS[account_id] = threading.Lock()
-        return _EXECUTION_LOCKS[account_id]
 
 
 def _classify_div_type(info, ticker):
@@ -5860,9 +5850,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 {"ok": False, "error": "ALPACA_PAPER_SUBMISSION_ENABLED is not set to '1'"}, 503
             )
 
-        # ── Single-flight concurrency lock (0310) ─────────────────────────────
-        lock = _get_execution_lock("AGENTIC_ALPACA_01")
-        if not lock.acquire(blocking=False):
+        # ── Cross-process single-flight execution lease (0317) ────────────────
+        from agent_db import acquire_execution_lease, release_execution_lease
+        import socket as _socket
+        _lease_holder = f"http:{_socket.gethostname()}:{os.getpid()}"
+        _lease_conn = self._shadow_conn()
+        if not acquire_execution_lease(_lease_conn, "AGENTIC_ALPACA_01", _lease_holder):
+            _lease_conn.close()
             return self._restricted_send_json(
                 {"ok": False, "error": "execution cycle already running for AGENTIC_ALPACA_01"}, 409
             )
@@ -5881,6 +5875,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
             # ── Account binding (0309) ─────────────────────────────────────────
             expected_account_id = os.environ.get("ALPACA_PAPER_ACCOUNT_ID") or None
+            if not expected_account_id:
+                return self._restricted_send_json(
+                    {"ok": False, "error": "ALPACA_PAPER_ACCOUNT_ID not configured — account binding cannot be verified"},
+                    503,
+                )
 
             adapter = AlpacaAdapter(
                 api_key=api_key,
@@ -5926,7 +5925,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         except Exception as e:
             self._restricted_send_json({"ok": False, "error": str(e)}, 500)
         finally:
-            lock.release()
+            release_execution_lease(_lease_conn, "AGENTIC_ALPACA_01", _lease_holder)
+            _lease_conn.close()
             if conn is not None:
                 conn.close()
 
