@@ -63,6 +63,7 @@ class FakeBrokerAdapter(ShadowBrokerAdapter):
         ack_state: str = "WORKING",          # normalized_state in returned BrokerOrderAck (0271)
         broker_account_id: Optional[str] = None,  # overrides get_account_id() response (0272)
         fill_raises: bool = False,           # get_fills_for_order raises RuntimeError (0278)
+        no_fill_id_events: bool = False,     # poll events omit broker_fill_id (0283)
     ) -> None:
         super().__init__(conn, account_id)
         self._delay_ack = delay_ack
@@ -80,6 +81,7 @@ class FakeBrokerAdapter(ShadowBrokerAdapter):
         self._ack_state = ack_state
         self._broker_account_id = broker_account_id
         self._fill_raises = fill_raises
+        self._no_fill_id_events = no_fill_id_events
         # Independent broker-side ledger (0260): keyed by broker_order_id.
         # This dict is the single source of truth for what the broker believes;
         # the local SQLite DB tracks what the engine believes.
@@ -301,5 +303,21 @@ class FakeBrokerAdapter(ShadowBrokerAdapter):
                         local_order_id=e.local_order_id,
                     ))
                     break
+
+        if self._no_fill_id_events:
+            events = [
+                BrokerOrderEvent(
+                    event_type=e.event_type,
+                    broker_order_id=e.broker_order_id,
+                    local_order_id=e.local_order_id,
+                    fill_qty=e.fill_qty,
+                    fill_price=e.fill_price,
+                    filled_at=e.filled_at,
+                    fee=e.fee,
+                    broker_fill_id=None,
+                    client_order_id=e.client_order_id,
+                ) if e.event_type in ("FILLED", "PARTIALLY_FILLED") else e
+                for e in events
+            ]
 
         return events

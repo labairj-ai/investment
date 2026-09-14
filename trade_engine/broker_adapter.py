@@ -86,10 +86,14 @@ class BrokerAdapter(ABC):
     def get_fills_for_order(self, broker_order_id: str) -> list[BrokerFill]:
         """Return all fills the broker has recorded for a specific order (0273).
 
-        Used after a FILLED ACK to retrieve authoritative fill economics before booking.
-        Returns an empty list when the broker has no fills yet (order stays WORKING
-        until reconciliation ingests the fills normally).
-        Raises on transient connectivity errors.
+        Called in three contexts with distinct empty-return semantics (0278, 0282):
+        - After a FILLED ACK: empty return raises BrokerSettlementIndeterminate.
+        - After a PARTIALLY_FILLED ACK: empty return raises BrokerSettlementIndeterminate.
+        - During PENDING_SUBMIT crash-recovery (reconciliation section 3c): empty return
+          appends a RECONCILIATION_UNAVAILABLE discrepancy that blocks new submissions.
+        Never called with a fabricated fill ID; callers must use authoritative IDs (0283).
+        Raises on transient connectivity errors; caller interprets the exception as
+        BrokerSettlementIndeterminate or RECONCILIATION_UNAVAILABLE depending on context.
         """
         ...
 

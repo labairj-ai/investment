@@ -292,7 +292,7 @@ def reconcile(
                     )
                     conn.commit()
                 elif _bstate == "PARTIALLY_FILLED":
-                    # Broker has partial fills; open order, fetch fills, let ledger own state (0279).
+                    # Broker has partial fills; open order, fetch fills, let ledger own state (0279, 0282).
                     conn.execute(
                         """UPDATE orders SET state='WORKING', broker_order_id=?, submitted_at=?, updated_at=?
                            WHERE order_id=?""",
@@ -301,8 +301,24 @@ def reconcile(
                     conn.commit()
                     try:
                         _pf_reco_fills = broker.get_fills_for_order(bo.broker_order_id)
-                    except Exception:
+                    except Exception as _pf_reco_exc:
+                        discrepancies.append(Discrepancy(
+                            kind=DiscrepancyKind.RECONCILIATION_UNAVAILABLE,
+                            subject=prow["order_id"],
+                            local_value="PARTIALLY_FILLED",
+                            broker_value="PARTIALLY_FILLED",
+                            detail=f"get_fills_for_order() raised {type(_pf_reco_exc).__name__}",
+                        ))
                         _pf_reco_fills = []
+                    else:
+                        if not _pf_reco_fills:
+                            discrepancies.append(Discrepancy(
+                                kind=DiscrepancyKind.RECONCILIATION_UNAVAILABLE,
+                                subject=prow["order_id"],
+                                local_value="PARTIALLY_FILLED",
+                                broker_value="PARTIALLY_FILLED",
+                                detail="broker reports PARTIALLY_FILLED but fills endpoint returned empty",
+                            ))
                     for _rf in _pf_reco_fills:
                         apply_broker_fill(_rf, account_id, conn)
                 elif _bstate == "PENDING":
@@ -313,7 +329,7 @@ def reconcile(
                     )
                     conn.commit()
                 elif _bstate == "FILLED":
-                    # Broker filled before restart — ingest authoritative fills then mark FILLED
+                    # Broker filled before restart — ingest authoritative fills then mark FILLED (0282).
                     conn.execute(
                         """UPDATE orders SET state='WORKING', broker_order_id=?, submitted_at=?, updated_at=?
                            WHERE order_id=?""",
@@ -322,8 +338,24 @@ def reconcile(
                     conn.commit()
                     try:
                         _reco_fills = broker.get_fills_for_order(bo.broker_order_id)
-                    except Exception:
+                    except Exception as _reco_exc:
+                        discrepancies.append(Discrepancy(
+                            kind=DiscrepancyKind.RECONCILIATION_UNAVAILABLE,
+                            subject=prow["order_id"],
+                            local_value="FILLED",
+                            broker_value="FILLED",
+                            detail=f"get_fills_for_order() raised {type(_reco_exc).__name__}",
+                        ))
                         _reco_fills = []
+                    else:
+                        if not _reco_fills:
+                            discrepancies.append(Discrepancy(
+                                kind=DiscrepancyKind.RECONCILIATION_UNAVAILABLE,
+                                subject=prow["order_id"],
+                                local_value="FILLED",
+                                broker_value="FILLED",
+                                detail="broker reports FILLED but fills endpoint returned empty",
+                            ))
                     for _rf in _reco_fills:
                         apply_broker_fill(_rf, account_id, conn)
                 elif _bstate in ("CANCELLED", "REJECTED", "EXPIRED"):

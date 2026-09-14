@@ -603,8 +603,8 @@ def process_intent(
             elapsed_ms=int((time.monotonic() - t0) * 1000),
         )
     elif _ack_state == "PARTIALLY_FILLED":
-        # Broker filled some shares immediately; remainder is still WORKING (0280).
-        # Retrieve any available fills; do not fail-closed on empty (remainder arrives via events).
+        # Broker filled some shares immediately; remainder is still WORKING (0280, 0282).
+        # Fail closed: if authoritative fills are unavailable, halt new submissions.
         conn.execute(
             "UPDATE orders SET broker_order_id=?, state='WORKING', submitted_at=? WHERE order_id=?",
             (ack.broker_order_id, ack.accepted_at or now_str2, local_order_id),
@@ -612,8 +612,17 @@ def process_intent(
         conn.commit()
         try:
             _pf_fills = broker.get_fills_for_order(ack.broker_order_id)
-        except Exception:
-            _pf_fills = []
+        except Exception as _pf_exc:
+            raise BrokerSettlementIndeterminate(
+                f"PARTIALLY_FILLED ACK for order {local_order_id} (broker {ack.broker_order_id}): "
+                f"get_fills_for_order() raised {type(_pf_exc).__name__} — "
+                f"halting new submissions until reconciliation"
+            ) from _pf_exc
+        if not _pf_fills:
+            raise BrokerSettlementIndeterminate(
+                f"PARTIALLY_FILLED ACK for order {local_order_id} (broker {ack.broker_order_id}): "
+                f"no authoritative fills returned — halting new submissions until reconciliation"
+            )
         fill: Optional[Fill] = None
         for bf in _pf_fills:
             apply_broker_fill(bf, intent.account_id, conn)
@@ -677,25 +686,49 @@ def process_intent(
         if event_order_id != local_order_id:
             continue
         if event.event_type in ("FILLED", "PARTIALLY_FILLED"):
-            bf = BrokerFill(
-                broker_fill_id=event.broker_fill_id or str(_uuid.uuid4()),
-                broker_order_id=event.broker_order_id,
-                symbol=intent.symbol,
-                side=intent.side.value,
-                qty=float(event.fill_qty),
-                price=float(event.fill_price),
-                filled_at=event.filled_at or _now_utc().isoformat(),
-                fee=float(event.fee),
-                local_order_id=event.local_order_id,
-                account_id=intent.account_id,
-                client_order_id=getattr(event, "client_order_id", None),  # three-tier resolver (0273)
-            )
-            apply_broker_fill(bf, intent.account_id, conn)
-            fill_row = conn.execute(
-                "SELECT * FROM fills WHERE fill_id=?", (bf.broker_fill_id,)
-            ).fetchone()
-            if fill_row and fill is None:
-                fill = Fill.from_db_row(fill_row)
+            if event.broker_fill_id:
+                bf = BrokerFill(
+                    broker_fill_id=event.broker_fill_id,
+                    broker_order_id=event.broker_order_id,
+                    symbol=intent.symbol,
+                    side=intent.side.value,
+                    qty=float(event.fill_qty),
+                    price=float(event.fill_price),
+                    filled_at=event.filled_at or _now_utc().isoformat(),
+                    fee=float(event.fee),
+                    local_order_id=event.local_order_id,
+                    account_id=intent.account_id,
+                    client_order_id=getattr(event, "client_order_id", None),
+                )
+                apply_broker_fill(bf, intent.account_id, conn)
+                fill_row = conn.execute(
+                    "SELECT * FROM fills WHERE fill_id=?", (bf.broker_fill_id,)
+                ).fetchone()
+                if fill_row and fill is None:
+                    fill = Fill.from_db_row(fill_row)
+            else:
+                # No broker_fill_id — do NOT invent one; fetch authoritative fills (0283).
+                try:
+                    _auth_fills = broker.get_fills_for_order(event.broker_order_id)
+                except Exception as _af_exc:
+                    raise BrokerSettlementIndeterminate(
+                        f"fill event for order {local_order_id} has no broker_fill_id and "
+                        f"get_fills_for_order() raised {type(_af_exc).__name__} — "
+                        f"halting new submissions"
+                    ) from _af_exc
+                if not _auth_fills:
+                    raise BrokerSettlementIndeterminate(
+                        f"fill event for order {local_order_id} has no broker_fill_id and "
+                        f"get_fills_for_order() returned empty — halting new submissions"
+                    )
+                for bf in _auth_fills:
+                    apply_broker_fill(bf, intent.account_id, conn)
+                    if fill is None:
+                        fill_row = conn.execute(
+                            "SELECT * FROM fills WHERE fill_id=?", (bf.broker_fill_id,)
+                        ).fetchone()
+                        if fill_row:
+                            fill = Fill.from_db_row(fill_row)
 
     if fill:
         updated_order = broker.get_order(ack.broker_order_id)  # broker-native ID (0268)
@@ -809,27 +842,52 @@ def process_open_orders(
         local_order_id = row["order_id"]  # always use local PK for DB operations (0275)
         for event in events_by_order.get(local_order_id, []):
             if event.event_type in ("FILLED", "PARTIALLY_FILLED"):
-                bf = BrokerFill(
-                    broker_fill_id=event.broker_fill_id or str(_uuid.uuid4()),
-                    broker_order_id=event.broker_order_id,
-                    symbol=order.symbol,
-                    side=order.side,  # BrokerOrder.side is already str (0275)
-                    qty=float(event.fill_qty),
-                    price=float(event.fill_price),
-                    filled_at=event.filled_at or _now_utc().isoformat(),
-                    fee=float(event.fee),
-                    local_order_id=event.local_order_id,
-                    account_id=account_id,
-                    client_order_id=getattr(event, "client_order_id", None),  # three-tier resolver (0273)
-                )
-                apply_broker_fill(bf, account_id, conn)
-                fill_row = conn.execute(
-                    "SELECT * FROM fills WHERE fill_id=?", (bf.broker_fill_id,)
-                ).fetchone()
-                if fill_row:
-                    fill = Fill.from_db_row(fill_row)
-                    fills.append(fill)
-                    _write_executed_action(fill, intent, conn)
+                if event.broker_fill_id:
+                    bf = BrokerFill(
+                        broker_fill_id=event.broker_fill_id,
+                        broker_order_id=event.broker_order_id,
+                        symbol=order.symbol,
+                        side=order.side,  # BrokerOrder.side is already str (0275)
+                        qty=float(event.fill_qty),
+                        price=float(event.fill_price),
+                        filled_at=event.filled_at or _now_utc().isoformat(),
+                        fee=float(event.fee),
+                        local_order_id=event.local_order_id,
+                        account_id=account_id,
+                        client_order_id=getattr(event, "client_order_id", None),
+                    )
+                    apply_broker_fill(bf, account_id, conn)
+                    fill_row = conn.execute(
+                        "SELECT * FROM fills WHERE fill_id=?", (bf.broker_fill_id,)
+                    ).fetchone()
+                    if fill_row:
+                        fill = Fill.from_db_row(fill_row)
+                        fills.append(fill)
+                        _write_executed_action(fill, intent, conn)
+                else:
+                    # No broker_fill_id — do NOT invent one; fetch authoritative fills (0283).
+                    try:
+                        _auth_fills = broker.get_fills_for_order(event.broker_order_id)
+                    except Exception as _af_exc:
+                        raise BrokerSettlementIndeterminate(
+                            f"fill event for order {local_order_id} has no broker_fill_id and "
+                            f"get_fills_for_order() raised {type(_af_exc).__name__} — "
+                            f"halting new submissions"
+                        ) from _af_exc
+                    if not _auth_fills:
+                        raise BrokerSettlementIndeterminate(
+                            f"fill event for order {local_order_id} has no broker_fill_id and "
+                            f"get_fills_for_order() returned empty — halting new submissions"
+                        )
+                    for bf in _auth_fills:
+                        apply_broker_fill(bf, account_id, conn)
+                        fill_row = conn.execute(
+                            "SELECT * FROM fills WHERE fill_id=?", (bf.broker_fill_id,)
+                        ).fetchone()
+                        if fill_row:
+                            fill = Fill.from_db_row(fill_row)
+                            fills.append(fill)
+                            _write_executed_action(fill, intent, conn)
             elif event.event_type in ("CANCELLED", "EXPIRED"):
                 apply_broker_order_event(event, account_id, conn)
             else:
@@ -991,6 +1049,12 @@ def run_execution_cycle(
                 account_id, exc,
             )
             return {**_HALTED_BASE, "halt_reason": "SUBMISSION_INDETERMINATE"}
+        except BrokerSettlementIndeterminate as exc:
+            _log.error(
+                "SETTLEMENT_INDETERMINATE for %s: %s — halting cycle; reconcile before next run",
+                account_id, exc,
+            )
+            return {**_HALTED_BASE, "halt_reason": "SETTLEMENT_INDETERMINATE"}
 
     # Count open orders before retry (snapshot includes orders created this cycle)
     working_orders_checked = conn.execute(
@@ -1005,6 +1069,12 @@ def run_execution_cycle(
     except PolicyUnavailable as exc:
         _log.error("POLICY_UNAVAILABLE in fill retry for %s: %s — halting cycle", account_id, exc)
         return {**_HALTED_BASE, "halt_reason": "POLICY_UNAVAILABLE"}  # 0234: any policy failure → HALTED
+    except BrokerSettlementIndeterminate as exc:
+        _log.error(
+            "SETTLEMENT_INDETERMINATE in fill retry for %s: %s — halting cycle; reconcile before next run",
+            account_id, exc,
+        )
+        return {**_HALTED_BASE, "halt_reason": "SETTLEMENT_INDETERMINATE"}
 
     try:
         _write_account_snapshot(account_id, conn, "post_cycle")

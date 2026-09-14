@@ -1566,3 +1566,312 @@ class TestExhaustiveACKReducer:
         conn = _make_conn()
         broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01", ack_state="BANANA")
         self._submit_raises(conn, broker, execution_engine.BrokerSettlementIndeterminate)
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# 0281: Catch BrokerSettlementIndeterminate at run_execution_cycle level
+# ════════════════════════════════════════════════════════════════════════════════
+
+class TestSettlementIndeterminateCycleLevel:
+    """BrokerSettlementIndeterminate from process_new_intents returns HALTED from run_execution_cycle (0281)."""
+
+    class _FreshQ:
+        bid = 99.0
+        ask = 101.0
+        market_timestamp = None
+        source = "test"
+
+        def __init__(self):
+            self.retrieved_at = datetime.now(timezone.utc).isoformat()
+
+    def _run_cycle(self, conn, broker):
+        with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
+             patch.object(market_calendar, "is_market_open", return_value=True), \
+             patch.object(execution_engine, "_refresh_market_prices"), \
+             patch.object(execution_engine, "_update_nav_high_water"), \
+             patch.object(execution_engine, "_write_account_snapshot"), \
+             patch("trade_engine.market_data._get_executable_quote", return_value=self._FreshQ()):
+            return execution_engine.run_execution_cycle(
+                "AGENTIC_SHADOW_01", conn, broker=broker,
+                trading_state=execution_engine.TradingReadyState.TRADING_READY,
+            )
+
+    def test_settlement_indeterminate_halts_cycle(self):
+        """FILLED ACK + fill lookup raises → run_execution_cycle returns HALTED / SETTLEMENT_INDETERMINATE (0281)."""
+        conn = _make_conn()
+        _seed_intent(conn, qty=1.0, price=100.0)
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01", ack_state="FILLED", fill_raises=True)
+
+        result = self._run_cycle(conn, broker)
+
+        assert result["execution_state"] == "HALTED", (
+            f"Expected HALTED; got {result['execution_state']}"
+        )
+        assert result["halt_reason"] == "SETTLEMENT_INDETERMINATE", (
+            f"Expected SETTLEMENT_INDETERMINATE; got {result.get('halt_reason')}"
+        )
+
+    def test_settlement_indeterminate_does_not_raise(self):
+        """BrokerSettlementIndeterminate must not propagate as an unhandled exception (0281)."""
+        conn = _make_conn()
+        _seed_intent(conn, qty=1.0, price=100.0)
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01", ack_state="FILLED", fill_raises=True)
+
+        try:
+            result = self._run_cycle(conn, broker)
+        except execution_engine.BrokerSettlementIndeterminate:
+            pytest.fail(
+                "run_execution_cycle must not let BrokerSettlementIndeterminate escape as unhandled exception"
+            )
+        assert result["execution_state"] == "HALTED"
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# 0282: Fail closed on all paths where broker confirms execution but fills unavailable
+# ════════════════════════════════════════════════════════════════════════════════
+
+class TestPartiallyFilledACKFailClosed:
+    """Fail closed on PARTIALLY_FILLED ACK and reconciliation paths when fills are unavailable (0282)."""
+
+    class _FreshQ:
+        bid = 99.0
+        ask = 101.0
+        market_timestamp = None
+        source = "test"
+
+        def __init__(self):
+            self.retrieved_at = datetime.now(timezone.utc).isoformat()
+
+    def _process(self, intent_id, conn, broker):
+        with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
+             patch.object(market_calendar, "is_market_open", return_value=True), \
+             patch("trade_engine.market_data._get_executable_quote", return_value=self._FreshQ()):
+            return execution_engine.process_intent(intent_id, conn, broker=broker)
+
+    def test_partially_filled_ack_fill_lookup_raises_bsi(self):
+        """PARTIALLY_FILLED ACK + get_fills_for_order raises → BrokerSettlementIndeterminate (0282)."""
+        conn = _make_conn()
+        intent_id = _seed_intent(conn, qty=1.0, price=100.0)
+        broker = FakeBrokerAdapter(
+            conn, "AGENTIC_SHADOW_01", ack_state="PARTIALLY_FILLED", fill_raises=True
+        )
+        with pytest.raises(execution_engine.BrokerSettlementIndeterminate):
+            self._process(intent_id, conn, broker)
+
+    def test_partially_filled_ack_empty_fills_bsi(self):
+        """PARTIALLY_FILLED ACK + get_fills_for_order returns empty → BrokerSettlementIndeterminate (0282)."""
+        conn = _make_conn()
+        intent_id = _seed_intent(conn, qty=1.0, price=100.0)
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01", ack_state="PARTIALLY_FILLED")
+        with patch.object(broker, "get_fills_for_order", return_value=[]):
+            with pytest.raises(execution_engine.BrokerSettlementIndeterminate):
+                self._process(intent_id, conn, broker)
+
+    def _crash_and_stage(self, conn, broker_state: str):
+        """submit_timeout crash → stage broker state before restart."""
+        intent_id = _seed_intent(conn, qty=1.0, price=100.0)
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01", submit_timeout=True)
+
+        with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
+             patch.object(market_calendar, "is_market_open", return_value=True), \
+             patch("trade_engine.market_data._get_executable_quote", return_value=self._FreshQ()):
+            with pytest.raises(execution_engine.BrokerSubmissionIndeterminate):
+                execution_engine.process_intent(intent_id, conn, broker=broker)
+
+        row = conn.execute(
+            "SELECT state, client_order_id FROM orders WHERE intent_id=?", (intent_id,)
+        ).fetchone()
+        cid = row["client_order_id"]
+        broker_order_id = next(
+            bid for bid, bo in broker._broker_orders.items() if bo.client_order_id == cid
+        )
+        from trade_engine.broker_types import BrokerOrder as _BO
+        existing = broker._broker_orders[broker_order_id]
+        fill_qty = existing.quantity / 2 if broker_state == "PARTIALLY_FILLED" else existing.quantity
+        broker._broker_orders[broker_order_id] = _BO(
+            broker_order_id=broker_order_id,
+            symbol=existing.symbol,
+            side=existing.side,
+            quantity=existing.quantity,
+            fill_qty=fill_qty,
+            state=broker_state,
+            limit_price=existing.limit_price,
+            client_order_id=existing.client_order_id,
+            local_order_id=existing.local_order_id,
+        )
+        broker._submit_timeout = False
+        return broker, intent_id
+
+    def test_partially_filled_reco_fill_lookup_failure_blocks(self):
+        """PARTIALLY_FILLED reco + get_fills_for_order raises → RECONCILIATION_UNAVAILABLE → HALTED (0282)."""
+        conn = _make_conn()
+        broker, intent_id = self._crash_and_stage(conn, "PARTIALLY_FILLED")
+        broker._fill_raises = True
+
+        state = execution_engine.initialize_trading_session("AGENTIC_SHADOW_01", conn, broker=broker)
+        assert state == execution_engine.TradingReadyState.HALTED, (
+            f"Fill lookup failure during PARTIALLY_FILLED recovery must → HALTED; got {state}"
+        )
+
+    def test_filled_reco_fill_lookup_failure_blocks(self):
+        """FILLED reco + get_fills_for_order raises → RECONCILIATION_UNAVAILABLE → HALTED (0282)."""
+        conn = _make_conn()
+        broker, intent_id = self._crash_and_stage(conn, "FILLED")
+        broker._fill_raises = True
+
+        state = execution_engine.initialize_trading_session("AGENTIC_SHADOW_01", conn, broker=broker)
+        assert state == execution_engine.TradingReadyState.HALTED, (
+            f"Fill lookup failure during FILLED recovery must → HALTED; got {state}"
+        )
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# 0283: Never fabricate fill IDs; use authoritative broker identity
+# ════════════════════════════════════════════════════════════════════════════════
+
+class TestImmutableFillIdentity:
+    """Fill events without broker_fill_id use get_fills_for_order instead of fabricated UUID (0283)."""
+
+    class _FreshQ:
+        bid = 99.0
+        ask = 101.0   # above limit=100 → shadow broker won't fill (BUY, ask > limit)
+        market_timestamp = None
+        source = "test"
+
+        def __init__(self):
+            self.retrieved_at = datetime.now(timezone.utc).isoformat()
+
+    def _submit_working(self, conn, qty: float = 1.0):
+        """Submit intent with WORKING ack; returns broker and intent_id."""
+        intent_id = _seed_intent(conn, qty=qty, price=100.0)
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01", ack_state="WORKING")
+        with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
+             patch.object(market_calendar, "is_market_open", return_value=True), \
+             patch("trade_engine.market_data._get_executable_quote", return_value=self._FreshQ()):
+            execution_engine.process_intent(intent_id, conn, broker=broker)
+        return broker, intent_id
+
+    def _open_orders(self, conn, broker, events):
+        with patch.object(broker, "poll_order_events", return_value=events), \
+             patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
+             patch.object(market_calendar, "is_market_open", return_value=True), \
+             patch("trade_engine.market_data._get_executable_quote", return_value=self._FreshQ()):
+            return execution_engine.process_open_orders("AGENTIC_SHADOW_01", conn, broker=broker)
+
+    def test_fill_event_no_id_uses_authoritative_fills(self):
+        """fill event with broker_fill_id=None → get_fills_for_order called; canonical ID written to DB (0283)."""
+        conn = _make_conn()
+        broker, intent_id = self._submit_working(conn, qty=1.0)
+
+        order_row = conn.execute(
+            "SELECT order_id, broker_order_id FROM orders WHERE intent_id=?", (intent_id,)
+        ).fetchone()
+        local_oid = order_row["order_id"]
+        broker_oid = order_row["broker_order_id"] or local_oid
+
+        canonical_fill_id = f"canonical-fill-{local_oid}"
+        broker._broker_fills[broker_oid] = [BrokerFill(
+            broker_fill_id=canonical_fill_id,
+            broker_order_id=broker_oid,
+            symbol="ANET",
+            side="BUY",
+            qty=1.0,
+            price=100.0,
+            filled_at=datetime.now(timezone.utc).isoformat(),
+            fee=0.01,
+            local_order_id=local_oid,
+            account_id="AGENTIC_SHADOW_01",
+        )]
+
+        fill_event = BrokerOrderEvent(
+            event_type="FILLED",
+            broker_order_id=broker_oid,
+            local_order_id=local_oid,
+            fill_qty=1.0,
+            fill_price=100.0,
+            filled_at=datetime.now(timezone.utc).isoformat(),
+            fee=0.01,
+            broker_fill_id=None,
+        )
+        self._open_orders(conn, broker, [fill_event])
+
+        fill_row = conn.execute(
+            "SELECT fill_id FROM fills WHERE account_id='AGENTIC_SHADOW_01'"
+        ).fetchone()
+        assert fill_row is not None, "Fill must be persisted after no-id fill event"
+        assert fill_row["fill_id"] == canonical_fill_id, (
+            f"Expected broker-issued fill_id {canonical_fill_id!r}; got {fill_row['fill_id']!r} "
+            f"(a UUID would indicate fabrication)"
+        )
+
+    def test_fill_event_no_id_replay_deduplicates(self):
+        """Replaying a broker_fill_id=None fill event applies fill exactly once (0283)."""
+        conn = _make_conn()
+        broker, intent_id = self._submit_working(conn, qty=2.0)  # 2-share order; partial fill keeps WORKING
+
+        order_row = conn.execute(
+            "SELECT order_id, broker_order_id FROM orders WHERE intent_id=?", (intent_id,)
+        ).fetchone()
+        local_oid = order_row["order_id"]
+        broker_oid = order_row["broker_order_id"] or local_oid
+
+        canonical_fill_id = f"canonical-fill-{local_oid}"
+        broker._broker_fills[broker_oid] = [BrokerFill(
+            broker_fill_id=canonical_fill_id,
+            broker_order_id=broker_oid,
+            symbol="ANET",
+            side="BUY",
+            qty=1.0,    # partial fill of 2-share order; order stays PARTIALLY_FILLED
+            price=100.0,
+            filled_at=datetime.now(timezone.utc).isoformat(),
+            fee=0.01,
+            local_order_id=local_oid,
+            account_id="AGENTIC_SHADOW_01",
+        )]
+
+        fill_event = BrokerOrderEvent(
+            event_type="PARTIALLY_FILLED",
+            broker_order_id=broker_oid,
+            local_order_id=local_oid,
+            fill_qty=1.0,
+            fill_price=100.0,
+            filled_at=datetime.now(timezone.utc).isoformat(),
+            fee=0.01,
+            broker_fill_id=None,
+        )
+
+        self._open_orders(conn, broker, [fill_event])   # applies fill
+        self._open_orders(conn, broker, [fill_event])   # replay → ALREADY_APPLIED
+
+        fill_count = conn.execute(
+            "SELECT COUNT(*) FROM fills WHERE account_id='AGENTIC_SHADOW_01'"
+        ).fetchone()[0]
+        assert fill_count == 1, (
+            f"Replay of broker_fill_id=None event must not double-apply fill; "
+            f"expected 1, got {fill_count}"
+        )
+
+    def test_fill_event_no_id_empty_lookup_raises_bsi(self):
+        """fill event with broker_fill_id=None + get_fills_for_order returns empty → BrokerSettlementIndeterminate (0283)."""
+        conn = _make_conn()
+        broker, intent_id = self._submit_working(conn, qty=1.0)
+
+        order_row = conn.execute(
+            "SELECT order_id, broker_order_id FROM orders WHERE intent_id=?", (intent_id,)
+        ).fetchone()
+        local_oid = order_row["order_id"]
+        broker_oid = order_row["broker_order_id"] or local_oid
+
+        fill_event = BrokerOrderEvent(
+            event_type="FILLED",
+            broker_order_id=broker_oid,
+            local_order_id=local_oid,
+            fill_qty=1.0,
+            fill_price=100.0,
+            filled_at=datetime.now(timezone.utc).isoformat(),
+            fee=0.01,
+            broker_fill_id=None,
+        )
+        with patch.object(broker, "get_fills_for_order", return_value=[]):
+            with pytest.raises(execution_engine.BrokerSettlementIndeterminate):
+                self._open_orders(conn, broker, [fill_event])
