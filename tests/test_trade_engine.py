@@ -4124,3 +4124,120 @@ class TestPollOnceContract:
             execution_engine.process_open_orders("AGENTIC_SHADOW_01", conn, broker=broker)
 
         assert broker.poll_order_events.call_count == 1
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Risk engine EQUITY-only guard (0311)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestRiskEngineEquityGuard:
+    def _options_disabled_policy(self) -> TradingPolicy:
+        return _make_policy({
+            "options": {
+                "covered_calls_allowed": False,
+                "naked_options_allowed": False,
+                "max_contracts_per_symbol": 0,
+            }
+        })
+
+    def test_option_intent_rejected_when_options_disabled(self):
+        conn = _make_conn()
+        intent = _make_intent(instrument_type=InstrumentType.OPTION)
+        _insert_intent(conn, intent)
+        dec = risk_engine.evaluate(intent, self._options_disabled_policy(), _make_account(), conn)
+        assert dec.decision == "REJECTED"
+        check = next(c for c in dec.checks if c.rule == "INSTRUMENT_ALLOWED")
+        assert check.result == RuleResult.FAIL
+        assert "EQUITY" in check.reason
+
+    def test_equity_intent_passes_instrument_check_with_options_disabled(self):
+        conn = _make_conn()
+        # Small size so only INSTRUMENT_ALLOWED runs cleanly (passes)
+        intent = _make_intent(
+            instrument_type=InstrumentType.EQUITY,
+            quantity=1.0, limit_price=1.0,
+        )
+        _insert_intent(conn, intent)
+        dec = risk_engine.evaluate(
+            intent, self._options_disabled_policy(), _make_account(), conn, strict_all=True
+        )
+        checks_by_rule = {c.rule: c for c in dec.checks}
+        assert checks_by_rule["INSTRUMENT_ALLOWED"].result == RuleResult.PASS
+
+    def test_option_intent_allowed_when_covered_calls_enabled(self):
+        conn = _make_conn()
+        intent = _make_intent(instrument_type=InstrumentType.OPTION)
+        _insert_intent(conn, intent)
+        policy = _make_policy({
+            "options": {"covered_calls_allowed": True, "naked_options_allowed": False,
+                        "max_contracts_per_symbol": 5}
+        })
+        dec = risk_engine.evaluate(intent, policy, _make_account(), conn, strict_all=True)
+        checks_by_rule = {c.rule: c for c in dec.checks}
+        assert checks_by_rule["INSTRUMENT_ALLOWED"].result == RuleResult.PASS
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Intent builder idempotency — INSERT OR IGNORE + UNIQUE index (0314)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestIntentBuilderIdempotency:
+    def _conn_with_unique_index(self) -> sqlite3.Connection:
+        conn = _make_conn()
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS recommendations (
+                id INTEGER PRIMARY KEY, run_id INTEGER, ticker TEXT NOT NULL,
+                action TEXT NOT NULL, action_payload_json TEXT,
+                recommendation_score INTEGER DEFAULT 50, confidence INTEGER DEFAULT 50,
+                priority TEXT DEFAULT 'normal', why_now TEXT, rationale TEXT,
+                counter_case TEXT, no_action_case TEXT,
+                status TEXT DEFAULT 'open', valid_until REAL, created_at REAL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_intents_account_rec
+                ON trade_intents (account_id, recommendation_id)
+                WHERE recommendation_id IS NOT NULL;
+        """)
+        conn.commit()
+        return conn
+
+    def _seed_rec(self, conn, rec_id: int = 1, action: str = "BUY") -> None:
+        payload = json.dumps({"price": 100.0, "quantity": 1})
+        conn.execute(
+            "INSERT OR REPLACE INTO recommendations "
+            "(id, run_id, ticker, action, action_payload_json, status, created_at, valid_until) "
+            "VALUES (?,1,'ANET',?,?,'accepted',0,9999999999)",
+            (rec_id, action, payload),
+        )
+        conn.execute(
+            "UPDATE trading_accounts SET current_cash=9000 WHERE account_id='AGENTIC_SHADOW_01'"
+        )
+        conn.commit()
+
+    def test_second_build_returns_existing_intent(self):
+        conn = self._conn_with_unique_index()
+        self._seed_rec(conn, rec_id=10)
+        policy = _make_policy()
+
+        with patch.object(intent_builder.market_calendar, "next_market_close",
+                          return_value=datetime(2099, 12, 31, 21, tzinfo=timezone.utc)):
+            i1 = intent_builder.build_intent(10, "AGENTIC_SHADOW_01", policy, conn)
+            i2 = intent_builder.build_intent(10, "AGENTIC_SHADOW_01", policy, conn)
+
+        assert i1 is not None
+        assert i2 is not None
+        assert i1.intent_id == i2.intent_id, "second call must return same intent_id"
+
+    def test_only_one_row_inserted_after_two_builds(self):
+        conn = self._conn_with_unique_index()
+        self._seed_rec(conn, rec_id=20)
+        policy = _make_policy()
+
+        with patch.object(intent_builder.market_calendar, "next_market_close",
+                          return_value=datetime(2099, 12, 31, 21, tzinfo=timezone.utc)):
+            intent_builder.build_intent(20, "AGENTIC_SHADOW_01", policy, conn)
+            intent_builder.build_intent(20, "AGENTIC_SHADOW_01", policy, conn)
+
+        count = conn.execute(
+            "SELECT COUNT(*) FROM trade_intents WHERE recommendation_id=20 AND account_id='AGENTIC_SHADOW_01'"
+        ).fetchone()[0]
+        assert count == 1, f"expected 1 row, got {count}"

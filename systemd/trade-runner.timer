@@ -1,0 +1,16 @@
+[Unit]
+Description=Run trade-runner 3x per weekday during US market hours
+
+[Timer]
+# 9:45am ET (13:45 UTC covers EDT; 14:45 UTC covers EST — fire both to be safe)
+OnCalendar=Mon..Fri *-*-* 13:45:00 UTC
+OnCalendar=Mon..Fri *-*-* 14:45:00 UTC
+# ~midday ET
+OnCalendar=Mon..Fri *-*-* 17:00:00 UTC
+# ~3:45pm ET
+OnCalendar=Mon..Fri *-*-* 19:45:00 UTC
+# Catch up on missed fires (e.g., after reboot)
+Persistent=true
+
+[Install]
+WantedBy=timers.target

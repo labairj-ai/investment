@@ -752,3 +752,54 @@ class TestHttpErrors:
         with patch("requests.request", side_effect=[_mock_204(), order_resp]):
             ack = adapter.cancel_order("o1")
         assert ack.accepted is True
+
+
+# ── submit_order pre-flight validation (0311) ─────────────────────────────────
+
+class TestSubmitOrderPreFlight:
+    """AlpacaAdapter.submit_order() rejects non-EQUITY, non-LIMIT, non-DAY, non-BUY/SELL, non-integer qty."""
+
+    def _submit_adapter(self) -> AlpacaAdapter:
+        return _adapter(submission_enabled=True)
+
+    def test_non_equity_raises(self):
+        adapter = self._submit_adapter()
+        with pytest.raises(ValueError, match="EQUITY"):
+            adapter.submit_order(_intent(instrument_type=InstrumentType.OPTION))
+
+    def test_non_limit_raises(self):
+        adapter = self._submit_adapter()
+        with pytest.raises(ValueError, match="LIMIT"):
+            adapter.submit_order(_intent(order_type=OrderType.MARKET))
+
+    def test_non_day_tif_raises(self):
+        from trade_engine.models import TimeInForce as TIF
+        adapter = self._submit_adapter()
+        with pytest.raises(ValueError, match="DAY"):
+            adapter.submit_order(_intent(time_in_force=TIF.GTC))
+
+    def test_non_buy_sell_side_raises(self):
+        adapter = self._submit_adapter()
+        with pytest.raises(ValueError, match="BUY or SELL"):
+            adapter.submit_order(_intent(side=Side.SELL_TO_OPEN))
+
+    def test_zero_quantity_raises(self):
+        adapter = self._submit_adapter()
+        with pytest.raises(ValueError, match="quantity"):
+            adapter.submit_order(_intent(quantity=0.0))
+
+    def test_fractional_quantity_raises(self):
+        adapter = self._submit_adapter()
+        with pytest.raises(ValueError, match="quantity"):
+            adapter.submit_order(_intent(quantity=1.5))
+
+    def test_valid_buy_passes_preflight(self):
+        adapter = self._submit_adapter()
+        order_payload = {
+            "id": "broker-123", "symbol": "AAPL", "side": "buy",
+            "qty": "1", "filled_qty": "0", "status": "new",
+            "client_order_id": "c1",
+        }
+        with patch("requests.request", return_value=_mock_response(order_payload, status=200)):
+            ack = adapter.submit_order(_intent(side=Side.BUY, quantity=1.0))
+        assert ack.broker_order_id == "broker-123"

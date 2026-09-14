@@ -12,8 +12,8 @@
     "buy_allowed": true,
     "sell_allowed": true,
     "shorting_allowed": false,
-    "max_single_position_pct": 10,
-    "max_new_position_pct": 5
+    "max_single_position_pct": 2,
+    "max_new_position_pct": 1
   },
 
   "options": {
@@ -25,8 +25,8 @@
 
   "execution": {
     "market_orders_allowed": false,
-    "max_orders_per_day": 5,
-    "max_daily_notional_pct": 20,
+    "max_orders_per_day": 1,
+    "max_daily_notional_pct": 2,
     "max_slippage_pct": 1.0,
     "min_limit_price": 0.01,
     "max_spread_pct": 2.0
@@ -44,6 +44,6 @@
     "halt_on_data_stale_minutes": 60,
     "halt_on_daily_loss_pct": 3,
     "expected_broker_account_id": null,
-    "require_account_binding": false
+    "require_account_binding": true
   }
 }

@@ -87,10 +87,14 @@ def build_intent(
     Sizing (0207): reads target_weight_pct or quantity from action_payload_json when present.
     Falls back to max_new_position_pct when neither is set (backward-compatible).
     """
-    # Idempotency: return existing PENDING intent for this rec/account
+    # Idempotency: return existing intent (any non-terminal status) for this rec/account.
+    # The UNIQUE index on (account_id, recommendation_id) enforces this at the DB layer (0314),
+    # but we check here first to return the existing intent rather than silently ignoring.
     existing = conn.execute(
         """SELECT * FROM trade_intents
-           WHERE recommendation_id=? AND account_id=? AND status='PENDING'""",
+           WHERE recommendation_id=? AND account_id=?
+             AND status NOT IN ('CANCELLED','REJECTED','EXPIRED')
+           ORDER BY created_at DESC LIMIT 1""",
         (recommendation_id, account_id),
     ).fetchone()
     if existing:
@@ -209,9 +213,19 @@ def build_intent(
     d = intent.to_db_dict()
     cols = ", ".join(d.keys())
     placeholders = ", ".join(f":{k}" for k in d.keys())
-    conn.execute(
-        f"INSERT INTO trade_intents ({cols}) VALUES ({placeholders})", d
+    # INSERT OR IGNORE: the UNIQUE index on (account_id, recommendation_id) prevents
+    # duplicates even under concurrent or retry conditions (0314).
+    cur = conn.execute(
+        f"INSERT OR IGNORE INTO trade_intents ({cols}) VALUES ({placeholders})", d
     )
     conn.commit()
+
+    if cur.rowcount == 0:
+        # Another process raced us; return the row that won.
+        row = conn.execute(
+            "SELECT * FROM trade_intents WHERE recommendation_id=? AND account_id=? LIMIT 1",
+            (recommendation_id, account_id),
+        ).fetchone()
+        return TradeIntent.from_db_row(row) if row else None
 
     return intent

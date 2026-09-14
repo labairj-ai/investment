@@ -1,0 +1,16 @@
+[Unit]
+Description=Investment Trade Runner (AGENTIC_ALPACA_01 execution cycle)
+After=network.target
+ConditionPathExists=/home/optiplex/investment/out/investment.db
+
+[Service]
+Type=oneshot
+User=optiplex
+WorkingDirectory=/home/optiplex/investment
+ExecStart=/home/optiplex/investment/venv/bin/python3 -m trade_engine.runner
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=trade-runner
+
+# Env vars shared with investment.service — see override.conf
+EnvironmentFile=-/etc/systemd/system/trade-runner.service.d/override.conf

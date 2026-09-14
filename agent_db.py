@@ -699,6 +699,36 @@ def _migrate_trade_engine(conn: sqlite3.Connection) -> None:
             instrument_type TEXT,
             as_of           TEXT
         );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_intents_account_rec
+            ON trade_intents (account_id, recommendation_id)
+            WHERE recommendation_id IS NOT NULL;
+
+        CREATE TABLE IF NOT EXISTS cycle_runs (
+            id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id              TEXT NOT NULL,
+            run_at                  TEXT NOT NULL,
+            execution_state         TEXT,
+            halt_reason             TEXT,
+            new_intents_processed   INTEGER DEFAULT 0,
+            risk_rejections         INTEGER DEFAULT 0,
+            orders_submitted        INTEGER DEFAULT 0,
+            fills_applied           INTEGER DEFAULT 0,
+            duplicate_fills_skipped INTEGER DEFAULT 0,
+            broker_api_errors       INTEGER DEFAULT 0,
+            cash_delta_vs_broker    REAL,
+            position_delta_vs_broker REAL
+        );
+
+        CREATE TABLE IF NOT EXISTS broker_api_log (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            request_id  TEXT,
+            method      TEXT,
+            path        TEXT,
+            status_code INTEGER,
+            called_at   TEXT,
+            account_id  TEXT
+        );
     """)
 
     # Seed AGENTIC_SHADOW_01 if not present

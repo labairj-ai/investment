@@ -16,9 +16,12 @@ Hardening (0300): data_url allowlist, fail-closed on unknown order statuses.
 """
 from __future__ import annotations
 
+import logging
 import urllib.parse
 from datetime import datetime, timezone
 from typing import Optional
+
+_log = logging.getLogger(__name__)
 
 import requests
 
@@ -28,7 +31,7 @@ from .broker_types import (
     BrokerOrderAck, BrokerOrderEvent, BrokerPosition, BrokerQuote,
 )
 from .execution_engine import BrokerSettlementIndeterminate, BrokerSubmissionIndeterminate
-from .models import TradeIntent
+from .models import InstrumentType, OrderType, Side, TimeInForce, TradeIntent
 
 _ALPACA_PAPER_HOSTNAME = "paper-api.alpaca.markets"
 _ALPACA_DATA_HOSTNAME = "data.alpaca.markets"
@@ -173,6 +176,8 @@ class AlpacaAdapter(BrokerAdapter):
         self._tracked_broker_order_ids: set[str] = set()
         # Seeded from broker open orders on first poll so restart recovers tracked state (0299)
         self._poll_seeded: bool = False
+        # Rolling log of recent API calls for X-Request-ID persistence and cycle scorecard (0316)
+        self._recent_api_calls: list[dict] = []
 
     # ── HTTP helpers ──────────────────────────────────────────────────────────
 
@@ -208,6 +213,20 @@ class AlpacaAdapter(BrokerAdapter):
             raise BrokerSettlementIndeterminate(
                 f"AlpacaAdapter: {method} {path} request failed: {exc}"
             ) from exc
+        # Log X-Request-ID for every call; Alpaca recommends retaining it for support (0316).
+        req_id = resp.headers.get("x-request-id") or resp.headers.get("X-Request-Id", "")
+        if req_id:
+            _log.debug("AlpacaAdapter %s %s → %s  x-request-id=%s", method, path, resp.status_code, req_id)
+        self._recent_api_calls.append({
+            "method": method,
+            "path": path,
+            "status_code": resp.status_code,
+            "request_id": req_id,
+            "called_at": datetime.now(timezone.utc).isoformat(),
+        })
+        if len(self._recent_api_calls) > 200:
+            self._recent_api_calls = self._recent_api_calls[-200:]
+
         # 204 No Content is a success response with no body (e.g. cancel ACK) (0297).
         if resp.status_code == 204:
             return None
@@ -388,6 +407,29 @@ class AlpacaAdapter(BrokerAdapter):
         if not self._submission_enabled:
             raise RuntimeError(
                 "submission_enabled=False; set explicitly to enable paper order submission"
+            )
+        # Pre-flight validation (0311): reject non-equity/non-LIMIT/non-DAY/non-whole-share intents
+        # before any network call. Raises ValueError (logic fault, not transient broker error).
+        if intent.instrument_type != InstrumentType.EQUITY:
+            raise ValueError(
+                f"AlpacaAdapter only submits EQUITY orders; got instrument_type={intent.instrument_type!r}"
+            )
+        if intent.order_type != OrderType.LIMIT:
+            raise ValueError(
+                f"AlpacaAdapter only submits LIMIT orders; got order_type={intent.order_type!r}"
+            )
+        if intent.time_in_force != TimeInForce.DAY:
+            raise ValueError(
+                f"AlpacaAdapter only submits DAY orders; got time_in_force={intent.time_in_force!r}"
+            )
+        if intent.side not in (Side.BUY, Side.SELL):
+            raise ValueError(
+                f"AlpacaAdapter only submits BUY or SELL orders; got side={intent.side!r}"
+            )
+        qty = intent.quantity or 0
+        if qty <= 0 or qty != int(qty):
+            raise ValueError(
+                f"AlpacaAdapter requires positive whole-share quantity; got quantity={qty!r}"
             )
         body = {
             "symbol": intent.symbol,

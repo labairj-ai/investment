@@ -17,6 +17,7 @@ Serves static files at http://localhost:5001 and handles:
 import collections
 import csv as _csv_mod
 import datetime
+import hmac
 import json
 import math
 import http.server
@@ -148,6 +149,18 @@ PORT = 5001
 
 PROJECT_DIR = Path(__file__).parent
 os.chdir(PROJECT_DIR)
+
+# Per-account execution locks — prevents concurrent cycle runs in ThreadingHTTPServer (0310).
+# Keys are account_id strings; values are threading.Lock instances.
+_EXECUTION_LOCKS: dict[str, threading.Lock] = {}
+_EXECUTION_LOCKS_MUTEX = threading.Lock()
+
+
+def _get_execution_lock(account_id: str) -> threading.Lock:
+    with _EXECUTION_LOCKS_MUTEX:
+        if account_id not in _EXECUTION_LOCKS:
+            _EXECUTION_LOCKS[account_id] = threading.Lock()
+        return _EXECUTION_LOCKS[account_id]
 
 
 def _classify_div_type(info, ticker):
@@ -5645,20 +5658,31 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             session = ExecutionSession("AGENTIC_SHADOW_01", conn)
             session.initialize()  # raises SessionNotReadyError if not TRADING_READY
             summary = session.run_cycle()
-            self._json({
-                "ok": True,
-                "new_intents_processed": summary["new_intents_processed"],
-                "new_intents_blocked": summary.get("new_intents_blocked", False),
-                "stale_symbols": summary.get("stale_symbols", []),
-                "new_orders_created": summary.get("new_orders_created", 0),
-                "fills_on_submission": summary.get("fills_on_submission", 0),
-                "risk_rejections": summary.get("risk_rejections", 0),
-                "working_orders_checked": summary.get("working_orders_checked", 0),
-                "fills_on_retry": summary.get("fills_on_retry", 0),
-                "total_fills": summary.get("total_fills", 0),
-                "orders_expired": summary.get("orders_expired", 0),
-                "results": summary.get("results", []),
-            })
+            execution_state = summary.get("execution_state", "OK")
+            if execution_state == "HALTED":
+                self._send_json({
+                    "ok": False,
+                    "execution_state": "HALTED",
+                    "halt_reason": summary.get("halt_reason", "unknown"),
+                    "new_intents_processed": summary.get("new_intents_processed", 0),
+                    "results": summary.get("results", []),
+                }, 409)
+            else:
+                self._json({
+                    "ok": True,
+                    "execution_state": execution_state,
+                    "new_intents_processed": summary["new_intents_processed"],
+                    "new_intents_blocked": summary.get("new_intents_blocked", False),
+                    "stale_symbols": summary.get("stale_symbols", []),
+                    "new_orders_created": summary.get("new_orders_created", 0),
+                    "fills_on_submission": summary.get("fills_on_submission", 0),
+                    "risk_rejections": summary.get("risk_rejections", 0),
+                    "working_orders_checked": summary.get("working_orders_checked", 0),
+                    "fills_on_retry": summary.get("fills_on_retry", 0),
+                    "total_fills": summary.get("total_fills", 0),
+                    "orders_expired": summary.get("orders_expired", 0),
+                    "results": summary.get("results", []),
+                })
         except SessionNotReadyError as e:
             self._send_json({"ok": False, "error": str(e), "halt_reason": "NOT_TRADING_READY"}, 503)
         except Exception as e:
@@ -5676,7 +5700,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 "SELECT * FROM trading_accounts WHERE account_id='AGENTIC_ALPACA_01'"
             ).fetchone()
             if not row:
-                return self._send_json({"ok": False, "error": "alpaca account not found"}, 404)
+                return self._restricted_send_json({"ok": False, "error": "alpaca account not found"}, 404)
             positions = conn.execute(
                 "SELECT symbol, qty, avg_cost, instrument_type, market_price, market_value "
                 "FROM position_snapshots WHERE account_id='AGENTIC_ALPACA_01'"
@@ -5688,7 +5712,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             )
             nav = float(row["current_cash"] or 0) + pos_value
             conn.close()
-            self._json({
+            self._restricted_json({
                 "ok": True,
                 "account_id": row["account_id"],
                 "name": row["name"],
@@ -5715,7 +5739,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 ],
             })
         except Exception as e:
-            self._send_json({"ok": False, "error": str(e)}, 500)
+            self._restricted_send_json({"ok": False, "error": str(e)}, 500)
 
     def _handle_alpaca_intents(self, limit: int = 20):
         try:
@@ -5754,9 +5778,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     "fail_reason": failed[0].get("reason") if failed else None,
                 })
             conn.close()
-            self._json({"ok": True, "intents": intents})
+            self._restricted_json({"ok": True, "intents": intents})
         except Exception as e:
-            self._send_json({"ok": False, "error": str(e)}, 500)
+            self._restricted_send_json({"ok": False, "error": str(e)}, 500)
 
     def _handle_alpaca_fills(self, limit: int = 20):
         try:
@@ -5773,7 +5797,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 (limit,),
             ).fetchall()
             conn.close()
-            self._json({
+            self._restricted_json({
                 "ok": True,
                 "fills": [
                     {
@@ -5792,7 +5816,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 ],
             })
         except Exception as e:
-            self._send_json({"ok": False, "error": str(e)}, 500)
+            self._restricted_send_json({"ok": False, "error": str(e)}, 500)
 
     def _handle_alpaca_risk(self, intent_id: str):
         try:
@@ -5803,14 +5827,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             ).fetchone()
             conn.close()
             if not row:
-                return self._send_json({"ok": False, "error": "no risk decision found"}, 404)
+                return self._restricted_send_json({"ok": False, "error": "no risk decision found"}, 404)
             checks = []
             if row["checks_json"]:
                 try:
                     checks = json.loads(row["checks_json"])
                 except Exception:
                     pass
-            self._json({
+            self._restricted_json({
                 "ok": True,
                 "intent_id": row["intent_id"],
                 "decision": row["decision"],
@@ -5818,34 +5842,66 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 "checks": checks,
             })
         except Exception as e:
-            self._send_json({"ok": False, "error": str(e)}, 500)
+            self._restricted_send_json({"ok": False, "error": str(e)}, 500)
 
     def _handle_trade_engine_run_alpaca(self):
-        """POST /api/trade-engine/run-alpaca — execution cycle for AGENTIC_ALPACA_01 via Alpaca paper broker."""
-        import os as _os
+        """POST /api/trade-engine/run-alpaca — execution cycle for AGENTIC_ALPACA_01 (0308-0312)."""
+        # ── Auth (0308) ────────────────────────────────────────────────────────
+        expected_token = os.environ.get("TRADE_ENGINE_API_TOKEN", "")
+        provided_token = self.headers.get("X-Trade-Engine-Token", "")
+        if not expected_token or not hmac.compare_digest(
+            expected_token.encode(), provided_token.encode()
+        ):
+            return self._restricted_send_json({"ok": False, "error": "unauthorized"}, 401)
+
+        # ── Submission feature flag (0310) ─────────────────────────────────────
+        if os.environ.get("ALPACA_PAPER_SUBMISSION_ENABLED") != "1":
+            return self._restricted_send_json(
+                {"ok": False, "error": "ALPACA_PAPER_SUBMISSION_ENABLED is not set to '1'"}, 503
+            )
+
+        # ── Single-flight concurrency lock (0310) ─────────────────────────────
+        lock = _get_execution_lock("AGENTIC_ALPACA_01")
+        if not lock.acquire(blocking=False):
+            return self._restricted_send_json(
+                {"ok": False, "error": "execution cycle already running for AGENTIC_ALPACA_01"}, 409
+            )
+
         conn = None
         try:
             from trade_engine.execution_engine import ExecutionSession, SessionNotReadyError
             from trade_engine.alpaca_adapter import AlpacaAdapter, _ALPACA_PAPER_URL, _ALPACA_DATA_URL
-            api_key = _os.environ.get("ALPACA_API_KEY", "")
-            api_secret = _os.environ.get("ALPACA_API_SECRET", "")
+
+            api_key = os.environ.get("ALPACA_API_KEY", "")
+            api_secret = os.environ.get("ALPACA_API_SECRET", "")
             if not api_key or not api_secret:
-                return self._send_json(
+                return self._restricted_send_json(
                     {"ok": False, "error": "ALPACA_API_KEY / ALPACA_API_SECRET not configured"}, 503
                 )
+
+            # ── Account binding (0309) ─────────────────────────────────────────
+            expected_account_id = os.environ.get("ALPACA_PAPER_ACCOUNT_ID") or None
+
             adapter = AlpacaAdapter(
                 api_key=api_key,
                 api_secret=api_secret,
                 base_url=_ALPACA_PAPER_URL,
                 data_url=_ALPACA_DATA_URL,
                 submission_enabled=True,
+                expected_account_id=expected_account_id,
             )
             conn = self._shadow_conn()
             session = ExecutionSession("AGENTIC_ALPACA_01", conn, broker=adapter)
             session.initialize()
             summary = session.run_cycle()
-            self._json({
-                "ok": True,
+
+            # ── Surface HALTED accurately (0312) ──────────────────────────────
+            exec_state = summary.get("execution_state", "OK")
+            halt_reason = summary.get("halt_reason")
+            response = {
+                "ok": exec_state != "HALTED",
+                "execution_state": exec_state,
+                "halt_reason": halt_reason,
                 "new_intents_processed": summary["new_intents_processed"],
                 "new_intents_blocked": summary.get("new_intents_blocked", False),
                 "stale_symbols": summary.get("stale_symbols", []),
@@ -5857,14 +5913,42 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 "total_fills": summary.get("total_fills", 0),
                 "orders_expired": summary.get("orders_expired", 0),
                 "results": summary.get("results", []),
-            })
+            }
+            if exec_state == "HALTED":
+                self._restricted_send_json(response, 409)
+            else:
+                self._restricted_json(response)
         except SessionNotReadyError as e:
-            self._send_json({"ok": False, "error": str(e), "halt_reason": "NOT_TRADING_READY"}, 503)
+            self._restricted_send_json(
+                {"ok": False, "error": str(e), "execution_state": "HALTED",
+                 "halt_reason": "NOT_TRADING_READY"}, 503
+            )
         except Exception as e:
-            self._send_json({"ok": False, "error": str(e)}, 500)
+            self._restricted_send_json({"ok": False, "error": str(e)}, 500)
         finally:
+            lock.release()
             if conn is not None:
                 conn.close()
+
+    def _restricted_json(self, data):
+        """Send 200 JSON with no CORS header — for execution/sensitive endpoints (0308)."""
+        body = json.dumps(data).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", len(body))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _restricted_send_json(self, data, status: int = 200):
+        """Send JSON with custom status and no CORS header — for execution/sensitive endpoints (0308)."""
+        body = json.dumps(data).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", len(body))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
 
     def _json(self, data):
         body = json.dumps(data).encode()

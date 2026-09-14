@@ -337,6 +337,17 @@ def evaluate(
         add(RuleCheck(rule="NO_DUPLICATE_INTENT", result=_SKIP, reason="no recommendation_id"))
 
     # ── 5. INSTRUMENT_ALLOWED ─────────────────────────────────────────────────
+    # Flat rejection for any non-EQUITY instrument when options are disabled (0311).
+    # This fires before the per-side option checks so BUY options are also caught.
+    if intent.instrument_type != InstrumentType.EQUITY and not policy.covered_calls_allowed():
+        ok = add(RuleCheck(
+            rule="INSTRUMENT_ALLOWED",
+            result=_FAIL,
+            reason=f"instrument_type={intent.instrument_type.value!r} is not EQUITY and options are disabled by policy",
+        ))
+        if not ok and not strict_all:
+            return _finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
+
     allowed = True
     reason_ia = None
     if intent.instrument_type == InstrumentType.EQUITY:
