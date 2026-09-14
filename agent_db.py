@@ -515,6 +515,8 @@ def migrate() -> None:
         ("cycle_runs",         "duration_seconds",                  "REAL"),
         ("cycle_runs",         "oldest_unresolved_order_age_minutes", "REAL"),
         ("cycle_runs",         "duplicate_fills_skipped_ledger",    "INTEGER"),
+        # 0324 — transport-error type in broker API log
+        ("broker_api_log",     "error_type",                        "TEXT"),
     ]
     for table, col, col_type in _new_cols:
         try:

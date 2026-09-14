@@ -135,9 +135,10 @@ def _flush_broker_api_log(conn: sqlite3.Connection, adapter) -> None:
         return
     try:
         conn.executemany(
-            """INSERT INTO broker_api_log (request_id, method, path, status_code, called_at, account_id)
-               VALUES (:request_id, :method, :path, :status_code, :called_at, :account_id)""",
-            [{**c, "account_id": _ACCOUNT_ID} for c in calls],
+            """INSERT INTO broker_api_log
+               (request_id, method, path, status_code, called_at, account_id, error_type)
+               VALUES (:request_id, :method, :path, :status_code, :called_at, :account_id, :error_type)""",
+            [{**c, "account_id": _ACCOUNT_ID, "error_type": c.get("error_type")} for c in calls],
         )
         conn.commit()
         adapter._recent_api_calls = []
@@ -180,6 +181,32 @@ def run() -> int:
         expected_account_id=expected_account_id,
     )
 
+    # ── Market-session gate (0325) ────────────────────────────────────────────
+    # Fail-open: if the clock check itself fails, proceed with the cycle and let
+    # the stale-quote circuit breakers catch any post-close trades.
+    try:
+        clock = adapter.get_market_clock()
+        if not clock.get("is_open", True):
+            _log.info(
+                "SKIPPED_MARKET_CLOSED: market is closed (next_open=%s) — skipping cycle",
+                clock.get("next_open", "unknown"),
+            )
+            _skipped_conn = _open_db(_DB_PATH)
+            try:
+                _skipped_conn.execute(
+                    "INSERT INTO cycle_runs (account_id, run_at, execution_state, duration_seconds)"
+                    " VALUES (?, ?, 'SKIPPED', 0.0)",
+                    (_ACCOUNT_ID, datetime.now(timezone.utc).isoformat()),
+                )
+                _skipped_conn.commit()
+            except Exception as exc:
+                _log.warning("failed to write SKIPPED cycle_runs row: %s", exc)
+            finally:
+                _skipped_conn.close()
+            return 0
+    except Exception as exc:
+        _log.warning("market clock check failed (%s) — proceeding with cycle", exc)
+
     conn = _open_db(_DB_PATH)
     lease_holder = f"runner:{socket.gethostname()}:{os.getpid()}"
 
@@ -202,7 +229,16 @@ def run() -> int:
             session.initialize()
         except SessionNotReadyError as exc:
             _log.error("SessionNotReadyError during initialize: %s", exc)
-            summary = {"execution_state": "HALTED", "halt_reason": "NOT_TRADING_READY"}
+            duration_seconds = time.monotonic() - started_at
+            broker_api_errors = sum(
+                1 for c in getattr(adapter, "_recent_api_calls", [])
+                if c.get("status_code") is None or c.get("status_code", 0) >= 400
+            )
+            summary = {
+                "execution_state": "HALTED",
+                "halt_reason": "NOT_TRADING_READY",
+                "broker_api_errors": broker_api_errors,
+            }
             exit_code = 1
             return exit_code
 

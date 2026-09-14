@@ -271,6 +271,15 @@ class AlpacaAdapter(BrokerAdapter):
             buying_power=float(data["buying_power"]),
         )
 
+    def get_market_clock(self) -> dict:
+        """Return {'is_open': bool, 'next_open': str, 'next_close': str} from GET /v1/clock."""
+        data = self._request("GET", "/v1/clock")
+        return {
+            "is_open": bool(data.get("is_open", False)),
+            "next_open": data.get("next_open", ""),
+            "next_close": data.get("next_close", ""),
+        }
+
     # ── Positions ─────────────────────────────────────────────────────────────
 
     def get_positions(self, account_id: str) -> list[BrokerPosition]:
