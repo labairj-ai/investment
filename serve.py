@@ -5855,7 +5855,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         import socket as _socket
         _lease_holder = f"http:{_socket.gethostname()}:{os.getpid()}"
         _lease_conn = self._shadow_conn()
-        if not acquire_execution_lease(_lease_conn, "AGENTIC_ALPACA_01", _lease_holder):
+        if not acquire_execution_lease(_lease_conn, "AGENTIC_ALPACA_01", _lease_holder, ttl_seconds=1800):
             _lease_conn.close()
             return self._restricted_send_json(
                 {"ok": False, "error": "execution cycle already running for AGENTIC_ALPACA_01"}, 409

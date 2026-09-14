@@ -210,6 +210,18 @@ class AlpacaAdapter(BrokerAdapter):
             # Catch the full RequestException family (Timeout, ConnectionError, etc.) so
             # a connection reset during POST becomes BrokerSettlementIndeterminate rather
             # than an unhandled exception (0297).
+            # Record transport failure in call log before re-raising so broker_api_errors
+            # counts it (status_code=None distinguishes transport vs HTTP errors) (0321).
+            self._recent_api_calls.append({
+                "method": method,
+                "path": path,
+                "status_code": None,
+                "request_id": "",
+                "called_at": datetime.now(timezone.utc).isoformat(),
+                "error_type": type(exc).__name__,
+            })
+            if len(self._recent_api_calls) > 200:
+                self._recent_api_calls = self._recent_api_calls[-200:]
             raise BrokerSettlementIndeterminate(
                 f"AlpacaAdapter: {method} {path} request failed: {exc}"
             ) from exc

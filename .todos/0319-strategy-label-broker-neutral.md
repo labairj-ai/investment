@@ -1,7 +1,7 @@
 # Rename "shadow_equity" Strategy Label to Broker-Neutral Name
 
 - **ID:** 0319
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-14
 - **Priority:** low
 - **Depends:** none
@@ -24,6 +24,10 @@
 
 ## Done when
 
-- [ ] No new `TradeIntent` rows are written with `strategy="shadow_equity"`
-- [ ] `AGENTIC_ALPACA_01` intents carry a label that does not reference "shadow"
-- [ ] All tests pass with the updated string
+- [x] No new `TradeIntent` rows are written with `strategy="shadow_equity"`
+- [x] `AGENTIC_ALPACA_01` intents carry a label that does not reference "shadow"
+- [x] All tests pass with the updated string
+
+## Outcome
+
+intent_builder.py already uses strategy="agentic_equity_v1" — done in a prior session. No code change required.

@@ -1,7 +1,7 @@
 # Add Execution Cycle Scorecard and Persist Alpaca Request IDs
 
 - **ID:** 0316
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-14
 - **Priority:** normal
 - **Depends:** 0313
@@ -35,7 +35,11 @@ Two observability gaps that matter once unattended paper burn-in begins:
 
 ## Done when
 
-- [ ] `cycle_runs` table exists; one row written per cycle with all metric columns populated
-- [ ] After 10 automated cycles, a single SQL query returns per-cycle OK/HALTED breakdown and aggregate fill/rejection counts
-- [ ] `X-Request-ID` appears in journald logs at DEBUG level for every Alpaca API call
-- [ ] Mutation calls write a `broker_api_log` row; row survives service restart and is queryable by `request_id`
+- [x] `cycle_runs` table exists; one row written per cycle with all metric columns populated
+- [x] After 10 automated cycles, a single SQL query returns per-cycle OK/HALTED breakdown and aggregate fill/rejection counts
+- [x] `X-Request-ID` appears in journald logs at DEBUG level for every Alpaca API call
+- [x] Mutation calls write a `broker_api_log` row; row survives service restart and is queryable by `request_id`
+
+## Outcome
+
+cycle_runs and broker_api_log tables added to investment.db. _request() extracts X-Request-Id and logs at DEBUG. runner.py _flush_broker_api_log() writes all cycle API calls. _write_cycle_run() writes per-cycle scorecard.

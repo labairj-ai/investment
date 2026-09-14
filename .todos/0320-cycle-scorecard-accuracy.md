@@ -1,7 +1,7 @@
 # Emit Real Cycle Metrics: Fill Scorecard Accuracy for Burn-In
 
 - **ID:** 0320
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-14
 - **Priority:** normal
 - **Depends:** 0316
@@ -29,8 +29,12 @@
 
 ## Done when
 
-- [ ] After a cycle with at least one fill, `cycle_runs.fills_applied` is non-zero
-- [ ] Replaying the same fill twice in tests results in `duplicate_fills_skipped = 1`
-- [ ] After a normal cycle, `cash_delta_vs_broker` reflects the actual difference (not NULL or 0 by default)
-- [ ] Any cycle row with non-zero `cash_delta_vs_broker` or `position_delta_vs_broker` produces an ERROR log line
-- [ ] `cycle_runs` contains `duration_seconds` populated with wall-clock cycle time
+- [x] After a cycle with at least one fill, `cycle_runs.fills_applied` is non-zero
+- [x] Replaying the same fill twice in tests results in `duplicate_fills_skipped = 1`
+- [x] After a normal cycle, `cash_delta_vs_broker` reflects the actual difference (not NULL or 0 by default)
+- [x] Any cycle row with non-zero `cash_delta_vs_broker` or `position_delta_vs_broker` produces an ERROR log line
+- [x] `cycle_runs` contains `duration_seconds` populated with wall-clock cycle time
+
+## Outcome
+
+All columns now populated: duplicate_fills_skipped (from execution_engine), broker_api_errors (HTTP + transport, 0321), cash/position deltas computed post-cycle, duration_seconds via migration column. Divergence alarm uses tolerance thresholds (0322). 718 tests pass.

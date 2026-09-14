@@ -1,7 +1,7 @@
 # Make Recommendation-to-Intent Promotion Idempotent
 
 - **ID:** 0314
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-14
 - **Priority:** high
 - **Depends:** 0311
@@ -30,7 +30,11 @@
 
 ## Done when
 
-- [ ] `UNIQUE(account_id, recommendation_id)` index exists in `trade_intents` on both dev and optiplex DB
-- [ ] Calling the intent builder twice with the same ACCEPTED recommendation creates exactly one intent
-- [ ] All promotion eligibility checks fire before INSERT and produce a logged skip, not a runtime error
-- [ ] Existing intent builder tests still pass; new duplicate-promotion test added
+- [x] `UNIQUE(account_id, recommendation_id)` index exists in `trade_intents` on both dev and optiplex DB
+- [x] Calling the intent builder twice with the same ACCEPTED recommendation creates exactly one intent
+- [x] All promotion eligibility checks fire before INSERT and produce a logged skip, not a runtime error
+- [x] Existing intent builder tests still pass; new duplicate-promotion test added
+
+## Outcome
+
+INSERT OR IGNORE on trade_intents with UNIQUE INDEX on (account_id, recommendation_id WHERE recommendation_id IS NOT NULL). Pre-checks for ACCEPTED status, positive quantity/price, and supported actions.

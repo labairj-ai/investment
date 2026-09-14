@@ -1,7 +1,7 @@
 # Surface HALTED State Accurately in Execution Cycle API Responses
 
 - **ID:** 0312
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-14
 - **Priority:** normal
 - **Depends:** 0308
@@ -24,7 +24,11 @@
 
 ## Done when
 
-- [ ] A halted cycle (e.g. triggered by a mock `BrokerStateIntegrityError`) returns HTTP 409 with `"ok": false` and a non-null `halt_reason`
-- [ ] A healthy cycle returns HTTP 200 with `"ok": true` and `"execution_state"` present in the body
-- [ ] `SessionNotReadyError` catch block response includes `halt_reason`
-- [ ] Both shadow and Alpaca run handlers are consistent
+- [x] A halted cycle (e.g. triggered by a mock `BrokerStateIntegrityError`) returns HTTP 409 with `"ok": false` and a non-null `halt_reason`
+- [x] A healthy cycle returns HTTP 200 with `"ok": true` and `"execution_state"` present in the body
+- [x] `SessionNotReadyError` catch block response includes `halt_reason`
+- [x] Both shadow and Alpaca run handlers are consistent
+
+## Outcome
+
+exec_state check after run_cycle(): HALTED returns HTTP 409 with ok=false and halt_reason. Healthy cycles return 200 with execution_state always present. SessionNotReadyError path also returns halt_reason.

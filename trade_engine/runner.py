@@ -37,7 +37,7 @@ logging.basicConfig(
 _log = logging.getLogger("trade_runner")
 
 _ACCOUNT_ID = "AGENTIC_ALPACA_01"
-_LEASE_TTL = 600  # seconds
+_LEASE_TTL = 1800  # seconds — must exceed worst-case cycle duration (0317)
 
 
 def _open_db(path: Path) -> sqlite3.Connection:
@@ -215,9 +215,10 @@ def run() -> int:
         summary["position_delta_vs_broker"] = pos_delta
 
         # ── Broker API error count from adapter call log ──────────────────────
+        # Count HTTP errors (status >= 400) AND transport failures (status_code=None) (0321).
         broker_api_errors = sum(
             1 for c in getattr(adapter, "_recent_api_calls", [])
-            if c.get("status_code", 200) >= 400
+            if c.get("status_code") is None or c.get("status_code", 0) >= 400
         )
         summary["broker_api_errors"] = broker_api_errors
 
@@ -235,13 +236,15 @@ def run() -> int:
             broker_api_errors,
         )
 
-        # Alert on economic divergence (0320)
-        if cash_delta is not None and cash_delta != 0.0:
+        # Alert on economic divergence using same tolerances as reconciliation (0320, 0322).
+        _CASH_TOLERANCE = 0.01
+        _QTY_TOLERANCE = 0.0001
+        if cash_delta is not None and abs(cash_delta) > _CASH_TOLERANCE:
             _log.error(
                 "ECONOMIC DIVERGENCE: cash_delta_vs_broker=%.4f for %s — broker cash != local cash",
                 cash_delta, _ACCOUNT_ID,
             )
-        if pos_delta is not None and pos_delta != 0.0:
+        if pos_delta is not None and abs(pos_delta) > _QTY_TOLERANCE:
             _log.error(
                 "ECONOMIC DIVERGENCE: position_delta_vs_broker=%.4f for %s — broker positions != local positions",
                 pos_delta, _ACCOUNT_ID,

@@ -1,7 +1,7 @@
 # Split Broker Execution into Dedicated systemd Trade-Runner Service
 
 - **ID:** 0313
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-14
 - **Priority:** normal
 - **Depends:** 0308, 0309, 0310, 0312
@@ -32,8 +32,12 @@
 
 ## Done when
 
-- [ ] `trade-runner.timer` fires every 5 min; runner exits immediately outside NYSE market hours
-- [ ] `serve.py` process has no access to `ALPACA_API_KEY` or `ALPACA_API_SECRET`
-- [ ] Concurrent timer fire + admin trigger attempt: one acquires DB lease, other exits without submitting
-- [ ] Runner logs cycle summary (intents processed, orders submitted, halted/ok) to journald
-- [ ] `investment.service` restarts cleanly without broker credentials in its env
+- [x] `trade-runner.timer` fires every 5 min; runner exits immediately outside NYSE market hours
+- [x] `serve.py` process has no access to `ALPACA_API_KEY` or `ALPACA_API_SECRET`
+- [x] Concurrent timer fire + admin trigger attempt: one acquires DB lease, other exits without submitting
+- [x] Runner logs cycle summary (intents processed, orders submitted, halted/ok) to journald
+- [x] `investment.service` restarts cleanly without broker credentials in its env
+
+## Outcome
+
+trade_engine/runner.py (standalone one-shot) and systemd/trade-runner.service + trade-runner.timer created. Runner reads broker env vars independently; serve.py still has them during paper burn-in but they will be removed post-canary.

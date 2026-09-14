@@ -2,12 +2,11 @@
 Description=Run trade-runner 3x per weekday during US market hours (America/New_York)
 
 [Timer]
-# Requires systemd >= 242. Verify on optiplex: systemctl --version
-# If < 242, fall back to three UTC entries that cover both EST and EDT.
-TIMEZONE=America/New_York
-OnCalendar=Mon..Fri *-*-* 09:45:00
-OnCalendar=Mon..Fri *-*-* 12:00:00
-OnCalendar=Mon..Fri *-*-* 15:45:00
+# Timezone embedded in each OnCalendar= expression (TIMEZONE= is not a valid [Timer] directive).
+# Validate with: systemd-analyze calendar "Mon..Fri *-*-* 09:45:00 America/New_York"
+OnCalendar=Mon..Fri *-*-* 09:45:00 America/New_York
+OnCalendar=Mon..Fri *-*-* 12:00:00 America/New_York
+OnCalendar=Mon..Fri *-*-* 15:45:00 America/New_York
 
 [Install]
 WantedBy=timers.target

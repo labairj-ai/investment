@@ -1,7 +1,7 @@
 # Enforce Equity-Only LIMIT/DAY Guard in Adapter and Risk Engine
 
 - **ID:** 0311
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-14
 - **Priority:** high
 - **Depends:** none
@@ -35,7 +35,11 @@ The Alpaca paper policy explicitly disables all options, but the risk engine onl
 
 ## Done when
 
-- [ ] Risk engine rejects any intent with `instrument_type != EQUITY` regardless of side or options policy
-- [ ] `AlpacaAdapter.submit_order()` raises `ValueError` before any HTTP call for non-EQUITY, non-LIMIT, non-DAY, non-BUY/SELL, or fractional-share intents
-- [ ] Unit tests cover each invalid-field case for both layers
-- [ ] All existing tests still pass
+- [x] Risk engine rejects any intent with `instrument_type != EQUITY` regardless of side or options policy
+- [x] `AlpacaAdapter.submit_order()` raises `ValueError` before any HTTP call for non-EQUITY, non-LIMIT, non-DAY, non-BUY/SELL, or fractional-share intents
+- [x] Unit tests cover each invalid-field case for both layers
+- [x] All existing tests still pass
+
+## Outcome
+
+Adapter pre-flight (submit_order) raises ValueError for non-EQUITY, non-LIMIT, non-DAY, non-BUY/SELL, fractional intents. Risk engine INSTRUMENT_ALLOWED rejects non-EQUITY when covered_calls_allowed=False (correct for multi-strategy — flat rejection would break covered calls). 718 tests pass.

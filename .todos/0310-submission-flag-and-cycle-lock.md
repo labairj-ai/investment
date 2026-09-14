@@ -1,7 +1,7 @@
 # Add Submission Feature Flag and Single-Flight Execution Lock
 
 - **ID:** 0310
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-14
 - **Priority:** high
 - **Depends:** 0308, 0309
@@ -40,7 +40,11 @@ Two independent safety gaps in the Alpaca execution path:
 
 ## Done when
 
-- [ ] With `ALPACA_PAPER_SUBMISSION_ENABLED` absent or `"0"`, `run-alpaca` returns an error and no order is submitted
-- [ ] With flag `"1"` and policy `trading_enabled=true`, submission proceeds normally
-- [ ] Two simultaneous `POST /run-alpaca` requests: one returns 409, one completes; no duplicate broker submissions
-- [ ] Paper policy limits updated to the conservative burn-in values listed above
+- [x] With `ALPACA_PAPER_SUBMISSION_ENABLED` absent or `"0"`, `run-alpaca` returns an error and no order is submitted
+- [x] With flag `"1"` and policy `trading_enabled=true`, submission proceeds normally
+- [x] Two simultaneous `POST /run-alpaca` requests: one returns 409, one completes; no duplicate broker submissions
+- [x] Paper policy limits updated to the conservative burn-in values listed above
+
+## Outcome
+
+ALPACA_PAPER_SUBMISSION_ENABLED != "1" returns 503. DB execution_leases table with acquire/release helpers prevents concurrent HTTP+runner execution. Policy limits tightened in trading_policy_agentic_alpaca_01.json.

@@ -110,7 +110,19 @@ class TradingPolicy:
         return bool(self.circuit_breakers.get("require_account_binding", False))
 
     def policy_hash(self) -> str:
-        return hashlib.sha256(self._raw_json.encode()).hexdigest()[:12]
+        # Hash resolved effective policy so env-var substitutions (e.g. ALPACA_PAPER_ACCOUNT_ID)
+        # change the hash. _raw_json contains unresolved ${...} placeholders (0323).
+        resolved = {
+            "policy_version": self.policy_version,
+            "account_id": self.account_id,
+            "capital": self.capital,
+            "equities": self.equities,
+            "options": self.options,
+            "execution": self.execution,
+            "risk": self.risk,
+            "circuit_breakers": self.circuit_breakers,
+        }
+        return hashlib.sha256(json.dumps(resolved, sort_keys=True).encode()).hexdigest()[:12]
 
 
 def _resolve_env_vars(circuit_breakers: dict) -> dict:

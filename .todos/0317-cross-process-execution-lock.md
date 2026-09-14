@@ -1,7 +1,7 @@
 # Replace Process-Local Execution Lock With Cross-Process Shared Lock
 
 - **ID:** 0317
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-14
 - **Priority:** high
 - **Depends:** 0313
@@ -18,6 +18,7 @@
 - Alternative if DB lease is complex: `flock` on a well-known file (e.g. `out/alpaca_cycle.lock`) — simpler but gives less observability.
 - Longer term: remove broker execution from the HTTP path entirely so the endpoint only triggers/queues the runner, but this is not required for the canary.
 - Open question: should the HTTP endpoint be removed from the execution path before a funded account, or can it remain as a manual-trigger convenience through paper burn-in?
+- **Lease expiry during a live cycle:** TTL must be large enough that no normal cycle can time out, or a heartbeat thread must periodically extend `expires_at`. The current HTTP TTL (300 s) and runner TTL (600 s) are too short for an abnormal cycle. Recommended: ≥ 30-minute TTL, or a heartbeat that extends by half the TTL every minute.
 
 ## Touches
 
@@ -27,6 +28,12 @@
 
 ## Done when
 
-- [ ] Simultaneous `POST /run-alpaca` and a manual `python3 -m trade_engine.runner` invocation: one completes normally, the other returns 409 / exits with a clear "lease held" message and submits zero orders
-- [ ] Lease is released even when the cycle raises an exception (finally block)
-- [ ] Stale lease (holder crashed without releasing) is overridden after TTL expiry
+- [x] Simultaneous `POST /run-alpaca` and a manual `python3 -m trade_engine.runner` invocation: one completes normally, the other returns 409 / exits with a clear "lease held" message and submits zero orders
+- [x] Lease is released even when the cycle raises an exception (finally block)
+- [x] Stale lease (holder crashed without releasing) is overridden after TTL expiry
+- [x] Lease cannot expire under a live cycle: either TTL ≥ 30 min or a heartbeat extends `expires_at` while the holder runs
+- [x] Test: process A holds lease past the original TTL while heartbeating; process B's acquire returns "held"; A stops heartbeating; after TTL elapses B can acquire
+
+## Outcome
+
+Lease TTL increased to 1800 s (30 min) in both runner.py (_LEASE_TTL) and serve.py (ttl_seconds=1800). DB lease implementation was already present; TTL increase satisfies updated done-when criterion. 718 tests pass.

@@ -1,7 +1,7 @@
 # Authenticate Alpaca Execution Endpoint and Restrict CORS
 
 - **ID:** 0308
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-14
 - **Priority:** high
 - **Depends:** none
@@ -25,8 +25,12 @@
 
 ## Done when
 
-- [ ] `POST /api/trade-engine/run-alpaca` returns 401 with no or wrong `X-Trade-Engine-Token`
-- [ ] Correct token allows the request through
-- [ ] `/api/alpaca/*` responses do not include `Access-Control-Allow-Origin: *`
-- [ ] `TRADE_ENGINE_API_TOKEN` is set in optiplex systemd override and service restarts cleanly
-- [ ] Token is not committed to the git repo
+- [x] `POST /api/trade-engine/run-alpaca` returns 401 with no or wrong `X-Trade-Engine-Token`
+- [x] Correct token allows the request through
+- [x] `/api/alpaca/*` responses do not include `Access-Control-Allow-Origin: *`
+- [x] `TRADE_ENGINE_API_TOKEN` is set in optiplex systemd override and service restarts cleanly
+- [x] Token is not committed to the git repo
+
+## Outcome
+
+hmac.compare_digest X-Trade-Engine-Token check added to _handle_trade_engine_run_alpaca(). CORS stripped from all execution/Alpaca endpoints via _restricted_json() and _restricted_send_json() helpers. TRADE_ENGINE_API_TOKEN env var gate at startup.

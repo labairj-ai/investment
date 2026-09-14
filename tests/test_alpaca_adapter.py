@@ -753,6 +753,19 @@ class TestHttpErrors:
             ack = adapter.cancel_order("o1")
         assert ack.accepted is True
 
+    def test_transport_error_appended_to_recent_api_calls(self):
+        """ConnectionError is recorded in _recent_api_calls with status_code=None (0321)."""
+        adapter = _adapter()
+        with patch("requests.request", side_effect=req_lib.exceptions.ConnectionError("reset")):
+            with pytest.raises(BrokerSettlementIndeterminate):
+                adapter.get_broker_account("acc1")
+        assert len(adapter._recent_api_calls) == 1
+        rec = adapter._recent_api_calls[0]
+        assert rec["status_code"] is None
+        assert rec["method"] == "GET"
+        assert rec["path"] == "/v2/account"
+        assert rec["error_type"] == "ConnectionError"
+
 
 # ── submit_order pre-flight validation (0311) ─────────────────────────────────
 

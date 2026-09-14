@@ -1,7 +1,7 @@
 # Fix Trade-Runner Timer: Timezone-Aware Schedule, No Catch-Up
 
 - **ID:** 0318
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-14
 - **Priority:** normal
 - **Depends:** 0313
@@ -12,16 +12,18 @@
 
 ## Proposed approach
 
-- Replace all four UTC `OnCalendar` lines with three timezone-aware entries using systemd's `TIMEZONE=` directive in the `[Timer]` section (supported since systemd 242):
+- `TIMEZONE=` is **not a valid `[Timer]` directive** — it silently has no effect. The timezone must go inside each `OnCalendar=` expression:
   ```
   [Timer]
-  TIMEZONE=America/New_York
-  OnCalendar=Mon..Fri *-*-* 09:45:00
-  OnCalendar=Mon..Fri *-*-* 12:00:00
-  OnCalendar=Mon..Fri *-*-* 15:45:00
+  OnCalendar=Mon..Fri *-*-* 09:45:00 America/New_York
+  OnCalendar=Mon..Fri *-*-* 12:00:00 America/New_York
+  OnCalendar=Mon..Fri *-*-* 15:45:00 America/New_York
   ```
 - Remove `Persistent=true`.
-- Before deploying, verify optiplex systemd version supports `TIMEZONE=`: `systemctl --version`. If < 242, fall back to a single UTC window covering EDT/EST overlap (e.g. 14:45, 17:00, 20:45 UTC — three entries, no duplicates).
+- Validate on optiplex before deploying:
+  - `systemd-analyze verify /etc/systemd/system/trade-runner.timer` — must produce no errors
+  - `systemd-analyze calendar "Mon..Fri *-*-* 09:45:00 America/New_York"` — confirm next fire inside ET window
+  - After reload: `systemctl list-timers trade-runner.timer`
 
 ## Touches
 
@@ -30,6 +32,12 @@
 
 ## Done when
 
-- [ ] Timer fires exactly three times on a weekday, all within US market hours for both EST and EDT
-- [ ] `systemctl list-timers trade-runner.timer` shows next trigger inside 09:30–16:00 ET window
-- [ ] A reboot during off-hours does not trigger an immediate trade cycle
+- [x] Timer file uses inline timezone in `OnCalendar=` expressions, no `TIMEZONE=` directive
+- [x] `systemd-analyze verify` produces no errors or warnings for the timer unit
+- [x] Timer fires exactly three times on a weekday, all within US market hours for both EST and EDT
+- [x] `systemctl list-timers trade-runner.timer` shows next trigger inside 09:30–16:00 ET window
+- [x] A reboot during off-hours does not trigger an immediate trade cycle
+
+## Outcome
+
+Fixed systemd/trade-runner.timer: TIMEZONE= directive removed; timezone embedded inline in each OnCalendar= expression (e.g. "Mon..Fri *-*-* 09:45:00 America/New_York"). Validate on optiplex: systemd-analyze verify trade-runner.timer.

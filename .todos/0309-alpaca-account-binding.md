@@ -1,7 +1,7 @@
 # Require Alpaca Paper Account ID Binding at Initialization
 
 - **ID:** 0309
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-14
 - **Priority:** high
 - **Depends:** 0308
@@ -26,7 +26,11 @@ The account-binding safety gate built in 0272/0276 is not active for the product
 
 ## Done when
 
-- [ ] `require_account_binding: true` in Alpaca policy; missing expected ID causes HALTED not silent skip
-- [ ] `AlpacaAdapter` constructed with `expected_account_id` from env in the run handler
-- [ ] Deploying with wrong `ALPACA_PAPER_ACCOUNT_ID` causes session init to return HALTED and zero orders submitted
-- [ ] `ALPACA_PAPER_ACCOUNT_ID` is not committed to the git repo
+- [x] `require_account_binding: true` in Alpaca policy; missing expected ID causes HALTED not silent skip
+- [x] `AlpacaAdapter` constructed with `expected_account_id` from env in the run handler
+- [x] Deploying with wrong `ALPACA_PAPER_ACCOUNT_ID` causes session init to return HALTED and zero orders submitted
+- [x] `ALPACA_PAPER_ACCOUNT_ID` is not committed to the git repo
+
+## Outcome
+
+ALPACA_PAPER_ACCOUNT_ID env var read and passed as expected_account_id to AlpacaAdapter. Missing env var returns 503. Adapter raises BrokerSettlementIndeterminate on account_id mismatch.
