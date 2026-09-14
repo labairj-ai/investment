@@ -1,7 +1,7 @@
 # Make Fill and Audit Settlement Atomic in One Transaction
 
 - **ID:** 0293
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-14
 - **Priority:** high
 - **Depends:** 0289
@@ -25,8 +25,12 @@
 
 ## Done when
 
-- [ ] `apply_broker_fill()` writes the `executed_actions` row inside its existing transaction before `COMMIT`
-- [ ] No caller calls `_write_executed_action()` after `apply_broker_fill()` returns
-- [ ] A three-part partial fill (three separate `BrokerFill` objects for one order) produces exactly three `fills` rows and exactly three `executed_actions` rows
-- [ ] Duplicate replay (`apply_broker_fill()` called twice with the same `broker_fill_id`) leaves both `fills` and `executed_actions` counts unchanged (idempotent)
-- [ ] All existing tests pass
+- [x] `apply_broker_fill()` writes the `executed_actions` row inside its existing transaction before `COMMIT`
+- [x] No caller calls `_write_executed_action()` after `apply_broker_fill()` returns
+- [x] A three-part partial fill (three separate `BrokerFill` objects for one order) produces exactly three `fills` rows and exactly three `executed_actions` rows
+- [x] Duplicate replay (`apply_broker_fill()` called twice with the same `broker_fill_id`) leaves both `fills` and `executed_actions` counts unchanged (idempotent)
+- [x] All existing tests pass
+
+## Outcome
+
+Moved `executed_actions` INSERT inside `apply_broker_fill()` before `conn.commit()` for the APPLIED path. Added audit repair in the ALREADY_APPLIED path (idempotent — covers pre-0293 fills and shadow-mode fills inserted by ShadowBroker.attempt_fill()). Removed all `_write_executed_action()` call sites from process_intent(), process_open_orders(), and sync_broker_state(). `_write_executed_action()` definition kept as dead code (can be removed later). Added `TestAtomicFillAuditSettlement` in test_chaos.py with 4 tests.

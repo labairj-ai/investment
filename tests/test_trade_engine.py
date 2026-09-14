@@ -946,20 +946,27 @@ class TestExecutionEngine:
         assert status == "REJECTED"
 
     def test_approved_intent_creates_fill(self):
+        # process_intent() returns fill=None for WORKING ACK (0292); fills arrive via
+        # process_open_orders() which drains the event queue after submission.
         conn = _make_conn()
         intent = _make_intent(quantity=1.0, limit_price=100.0)
         _insert_intent(conn, intent)
 
         mock_quote = Quote(bid=99.0, ask=100.0, timestamp="t", retrieved_at=datetime.now(timezone.utc).isoformat())
         with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
-             patch("trade_engine.market_data._get_executable_quote", return_value=mock_quote):
+             patch("trade_engine.market_data._get_executable_quote", return_value=mock_quote), \
+             patch.object(market_calendar, "is_market_open", return_value=True):
             result = execution_engine.process_intent(intent.intent_id, conn)
+            fills, _, _ = execution_engine.process_open_orders(intent.account_id, conn)
 
         assert result.decision == "APPROVED"
-        assert result.fill is not None
-        assert result.fill.qty == 1.0
+        assert result.fill is None  # fills now arrive via process_open_orders (0292)
+        assert len(fills) == 1
+        assert fills[0].qty == 1.0
 
     def test_fill_written_to_executed_actions(self):
+        # Audit record is written atomically inside apply_broker_fill() (0293).
+        # Source reflects the fill_source of the fill row: "shadow" for ShadowBrokerAdapter fills.
         conn = _make_conn()
         rec_id = self._setup_accepted_rec(conn)
         intent = _make_intent(quantity=1.0, limit_price=100.0, recommendation_id=rec_id)
@@ -967,12 +974,14 @@ class TestExecutionEngine:
 
         mock_quote = Quote(bid=99.0, ask=100.0, timestamp="t", retrieved_at=datetime.now(timezone.utc).isoformat())
         with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
-             patch("trade_engine.market_data._get_executable_quote", return_value=mock_quote):
-            result = execution_engine.process_intent(intent.intent_id, conn)
+             patch("trade_engine.market_data._get_executable_quote", return_value=mock_quote), \
+             patch.object(market_calendar, "is_market_open", return_value=True):
+            execution_engine.process_intent(intent.intent_id, conn)
+            fills, _, _ = execution_engine.process_open_orders(intent.account_id, conn)
 
-        assert result.fill is not None
+        assert len(fills) == 1
         ea = conn.execute(
-            "SELECT * FROM executed_actions WHERE fill_id=?", (result.fill.fill_id,)
+            "SELECT * FROM executed_actions WHERE fill_id=?", (fills[0].fill_id,)
         ).fetchone()
         assert ea is not None
         assert ea["recommendation_id"] == rec_id
@@ -1011,7 +1020,7 @@ class TestExecutionEngine:
         assert count == 1
 
     def test_crash_after_fill_executed_actions_idempotent(self):
-        """Re-running after fill already exists: executed_actions not double-written."""
+        """Replaying apply_broker_fill after fill already committed: executed_actions not double-written (0293)."""
         conn = _make_conn()
         rec_id = self._setup_accepted_rec(conn)
         intent = _make_intent(quantity=1.0, limit_price=100.0, recommendation_id=rec_id)
@@ -1019,25 +1028,44 @@ class TestExecutionEngine:
 
         mock_quote = Quote(bid=99.0, ask=100.0, timestamp="t", retrieved_at=datetime.now(timezone.utc).isoformat())
         with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
-             patch("trade_engine.market_data._get_executable_quote", return_value=mock_quote):
+             patch("trade_engine.market_data._get_executable_quote", return_value=mock_quote), \
+             patch.object(market_calendar, "is_market_open", return_value=True):
             execution_engine.process_intent(intent.intent_id, conn)
-            # Mark intent PENDING again to simulate re-run
-            conn.execute(
-                "UPDATE trade_intents SET status='APPROVED' WHERE intent_id=?",
-                (intent.intent_id,),
-            )
-            conn.commit()
-            # Re-run — fill already exists
-            execution_engine.process_intent(intent.intent_id, conn)
+            fills, _, _ = execution_engine.process_open_orders(intent.account_id, conn)
 
-        # executed_actions should have exactly one row for this fill
-        count = conn.execute(
+        assert len(fills) == 1
+        count_after_first = conn.execute(
             "SELECT COUNT(*) FROM executed_actions WHERE recommendation_id=?", (rec_id,)
         ).fetchone()[0]
-        assert count == 1
+        assert count_after_first == 1
+
+        # Simulate crash + replay: call apply_broker_fill with the same fill again.
+        # ALREADY_APPLIED path must not create a second audit row.
+        from trade_engine.broker_types import BrokerFill
+        fill = fills[0]
+        order_row = conn.execute("SELECT * FROM orders WHERE order_id=?", (fill.order_id,)).fetchone()
+        replay_bf = BrokerFill(
+            broker_fill_id=fill.fill_id,
+            broker_order_id=order_row["broker_order_id"] or fill.order_id,
+            symbol=fill.symbol,
+            side=fill.side.value,
+            qty=float(fill.qty),
+            price=float(fill.price),
+            filled_at=fill.filled_at,
+            fee=float(fill.fee),
+            local_order_id=fill.order_id,
+            account_id=fill.account_id,
+        )
+        from trade_engine.execution_engine import apply_broker_fill, FillResult
+        result = apply_broker_fill(replay_bf, fill.account_id, conn)
+        assert result == FillResult.ALREADY_APPLIED
+        count_after_replay = conn.execute(
+            "SELECT COUNT(*) FROM executed_actions WHERE recommendation_id=?", (rec_id,)
+        ).fetchone()[0]
+        assert count_after_replay == 1  # idempotent — no duplicate row
 
     def test_end_to_end_buy_recommendation_to_executed_action(self):
-        """Full flow: BUY recommendation → intent → risk → fill → executed_actions."""
+        """Full flow: BUY recommendation → intent → risk → order → fill (via process_open_orders) → executed_actions."""
         conn = _make_conn()
         rec_id = self._setup_accepted_rec(conn)
         policy = _make_policy()
@@ -1051,9 +1079,11 @@ class TestExecutionEngine:
              patch("trade_engine.market_data._get_executable_quote", return_value=mock_quote), \
              patch.object(market_calendar, "is_market_open", return_value=True):
             result = execution_engine.process_intent(built_intent.intent_id, conn)
+            fills, _, _ = execution_engine.process_open_orders("AGENTIC_SHADOW_01", conn)
 
         assert result.decision == "APPROVED"
-        assert result.fill is not None
+        assert result.fill is None  # fills arrive via process_open_orders (0292)
+        assert len(fills) == 1
 
         ea = conn.execute(
             "SELECT * FROM executed_actions WHERE recommendation_id=?", (rec_id,)
@@ -2709,7 +2739,7 @@ class TestComprehensiveTelemetry:
         assert not missing, f"Missing telemetry keys: {missing}"
 
     def test_fills_on_submission_counted(self):
-        """fills_on_submission incremented when process_intent produces a fill (0226)."""
+        """fills_on_submission is 0 for WORKING ACK (0292); fill lands in fills_on_retry via process_open_orders."""
         conn = _make_conn()
         intent = _make_intent(quantity=1.0, limit_price=100.0)
         _insert_intent(conn, intent)
@@ -2722,7 +2752,9 @@ class TestComprehensiveTelemetry:
              patch("trade_engine.market_data._get_executable_quote", return_value=fill_quote):
             summary = execution_engine.run_execution_cycle("AGENTIC_SHADOW_01", conn, trading_state=execution_engine.TradingReadyState.TRADING_READY)
 
-        assert summary["fills_on_submission"] == 1
+        # process_intent() WORKING ACK returns fill=None; event-queue path fills_on_retry gets it.
+        assert summary["fills_on_submission"] == 0
+        assert summary["fills_on_retry"] == 1
         assert summary["total_fills"] >= 1
 
     def test_risk_rejections_counted(self):

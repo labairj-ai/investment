@@ -41,4 +41,8 @@ The engine's safety properties (idempotent fills, crash recovery, no duplicate s
 - [ ] Matrix point 5: every fill (including each leg of a partial fill) has a matching `executed_actions` row
 - [ ] 1-share DAY LIMIT order: submit → WORKING → cancel → CANCELLED verified
 - [ ] Marketable LIMIT order: submit → FILLED, cash debited, position updated, audit row written
-- [ ] Integration tests skip cleanly when credentials are absent
+- [x] Integration tests skip cleanly when credentials are absent
+
+## Progress
+
+`tests/test_alpaca_integration.py` scaffolded (0294/0295). Integration tests skip via `pytest.mark.skipif` when `ALPACA_API_KEY`/`ALPACA_API_SECRET` absent. Order submission tests also gated by `ALPACA_INTEGRATION_SUBMIT=1` env var to prevent accidental live orders during read-only runs. The matrix point exercises require a live paper account with clean state — to be verified manually with real credentials before enabling unattended execution.

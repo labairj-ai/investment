@@ -611,8 +611,7 @@ def process_intent(
                     fill = Fill.from_db_row(fill_row)
         # Do NOT call _update_intent_status(...FILLED) — apply_broker_fill() already sets
         # intent status to FILLED when aggregate fill qty reaches order qty (0278).
-        if fill:
-            _write_executed_action(fill, intent, conn)
+        # Audit row is written atomically inside apply_broker_fill() (0293).
         return ExecutionResult(
             intent_id=intent_id,
             decision="APPROVED",
@@ -651,8 +650,7 @@ def process_intent(
                 ).fetchone()
                 if fill_row:
                     fill = Fill.from_db_row(fill_row)
-        if fill:
-            _write_executed_action(fill, intent, conn)
+        # Audit row is written atomically inside apply_broker_fill() (0293).
         return ExecutionResult(
             intent_id=intent_id,
             decision="APPROVED",
@@ -679,12 +677,22 @@ def process_intent(
             elapsed_ms=int((time.monotonic() - t0) * 1000),
         )
     elif _ack_state == "WORKING":
-        # Broker accepted; order is live — attach broker_order_id and poll for fills below.
+        # Broker accepted; order is live. Fills arrive asynchronously — do NOT drain
+        # the account-wide event queue here (0292). sync_broker_state() owns event ingestion.
         conn.execute(
             "UPDATE orders SET broker_order_id=?, state='WORKING', submitted_at=? WHERE order_id=?",
             (ack.broker_order_id, ack.accepted_at or now_str2, local_order_id),
         )
         conn.commit()
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        return ExecutionResult(
+            intent_id=intent_id,
+            decision="APPROVED",
+            order_id=local_order_id,
+            fill=None,  # fills ingested by sync_broker_state() at next cycle start
+            risk_decision=risk_decision,
+            elapsed_ms=elapsed_ms,
+        )
     else:
         # ERROR or unrecognized ACK state — fail closed; never silently assume WORKING (0280).
         raise BrokerSettlementIndeterminate(
@@ -692,88 +700,15 @@ def process_intent(
             f"from broker — halting new submissions"
         )
 
-    # ── Ingest any immediate fills via the canonical event path (0259) ────────
-    # attempt_fill() is NOT called here; all fills flow through apply_broker_fill().
-    fill: Optional[Fill] = None
-    initial_events = broker.poll_order_events(intent.account_id, quote=bquote)
-    for event in initial_events:
-        # Resolve via identity resolver so broker_order_id-only events match (0263)
-        event_order_id = resolve_local_order_id(
-            event.local_order_id, event.broker_order_id,
-            getattr(event, "client_order_id", None), conn,
-        )
-        if event_order_id != local_order_id:
-            continue
-        if event.event_type in ("FILLED", "PARTIALLY_FILLED"):
-            if event.broker_fill_id:
-                bf = BrokerFill(
-                    broker_fill_id=event.broker_fill_id,
-                    broker_order_id=event.broker_order_id,
-                    symbol=intent.symbol,
-                    side=intent.side.value,
-                    qty=float(event.fill_qty),
-                    price=float(event.fill_price),
-                    filled_at=event.filled_at or _now_utc().isoformat(),
-                    fee=float(event.fee),
-                    local_order_id=event.local_order_id,
-                    account_id=intent.account_id,
-                    client_order_id=getattr(event, "client_order_id", None),
-                )
-                apply_broker_fill(bf, intent.account_id, conn)
-                fill_row = conn.execute(
-                    "SELECT * FROM fills WHERE fill_id=?", (bf.broker_fill_id,)
-                ).fetchone()
-                if fill_row and fill is None:
-                    fill = Fill.from_db_row(fill_row)
-            else:
-                # No broker_fill_id — do NOT invent one; fetch authoritative fills (0283).
-                try:
-                    _auth_fills = broker.get_fills_for_order(event.broker_order_id)
-                except Exception as _af_exc:
-                    raise BrokerSettlementIndeterminate(
-                        f"fill event for order {local_order_id} has no broker_fill_id and "
-                        f"get_fills_for_order() raised {type(_af_exc).__name__} — "
-                        f"halting new submissions"
-                    ) from _af_exc
-                if not _auth_fills:
-                    raise BrokerSettlementIndeterminate(
-                        f"fill event for order {local_order_id} has no broker_fill_id and "
-                        f"get_fills_for_order() returned empty — halting new submissions"
-                    )
-                for bf in _auth_fills:
-                    apply_broker_fill(bf, intent.account_id, conn)
-                    if fill is None:
-                        fill_row = conn.execute(
-                            "SELECT * FROM fills WHERE fill_id=?", (bf.broker_fill_id,)
-                        ).fetchone()
-                        if fill_row:
-                            fill = Fill.from_db_row(fill_row)
-
-    if fill:
-        updated_order = broker.get_order(ack.broker_order_id)  # broker-native ID (0268)
-        if updated_order and updated_order.state == OrderState.FILLED:
-            _update_intent_status(intent_id, IntentStatus.FILLED, conn)
-        _write_executed_action(fill, intent, conn)
-
-    elapsed_ms = int((time.monotonic() - t0) * 1000)
-    return ExecutionResult(
-        intent_id=intent_id,
-        decision="APPROVED",
-        order_id=local_order_id,
-        fill=fill,
-        risk_decision=risk_decision,
-        elapsed_ms=elapsed_ms,
-    )
-
-
 def process_new_intents(
     account_id: str,
     conn: sqlite3.Connection,
     broker: Optional[BrokerAdapter] = None,
 ) -> list[ExecutionResult]:
-    """Process all PENDING intents for the account (0199)."""
+    """Submit at most one PENDING intent per cycle, oldest-first (0292)."""
     rows = conn.execute(
-        "SELECT intent_id FROM trade_intents WHERE account_id=? AND status='PENDING'",
+        "SELECT intent_id FROM trade_intents WHERE account_id=? AND status='PENDING'"
+        " ORDER BY created_at ASC LIMIT 1",
         (account_id,),
     ).fetchall()
     results = []
@@ -885,7 +820,6 @@ def process_open_orders(
                     if fill_row:
                         fill = Fill.from_db_row(fill_row)
                         fills.append(fill)
-                        _write_executed_action(fill, intent, conn)
                 else:
                     # No broker_fill_id — do NOT invent one; fetch authoritative fills (0283).
                     try:
@@ -909,7 +843,6 @@ def process_open_orders(
                         if fill_row:
                             fill = Fill.from_db_row(fill_row)
                             fills.append(fill)
-                            _write_executed_action(fill, intent, conn)
             elif event.event_type in ("CANCELLED", "EXPIRED", "REJECTED"):
                 apply_broker_order_event(event, account_id, conn)
             else:
@@ -1037,12 +970,6 @@ def sync_broker_state(
                     if _fill_row:
                         _fill = Fill.from_db_row(_fill_row)
                         fills.append(_fill)
-                        _intent_row = conn.execute(
-                            "SELECT * FROM trade_intents WHERE intent_id=?",
-                            (_order_meta["intent_id"],),
-                        ).fetchone()
-                        if _intent_row:
-                            _write_executed_action(_fill, TradeIntent.from_db_row(_intent_row), conn)
             else:
                 # No broker_fill_id — fetch authoritative fills (0283)
                 try:
@@ -1066,12 +993,6 @@ def sync_broker_state(
                         if _fill_row:
                             _fill = Fill.from_db_row(_fill_row)
                             fills.append(_fill)
-                            _intent_row = conn.execute(
-                                "SELECT * FROM trade_intents WHERE intent_id=?",
-                                (_order_meta["intent_id"],),
-                            ).fetchone()
-                            if _intent_row:
-                                _write_executed_action(_fill, TradeIntent.from_db_row(_intent_row), conn)
 
         elif _e.event_type in ("CANCELLED", "EXPIRED", "REJECTED"):
             apply_broker_order_event(_e, account_id, conn)
@@ -1484,7 +1405,46 @@ def apply_broker_fill(
              side, qty, price, fee, "broker_import", filled_at),
         )
         if cursor.rowcount == 0:
-            return FillResult.ALREADY_APPLIED  # fill already applied; no mutations needed
+            # Fill committed by an earlier call (or by ShadowBroker.attempt_fill() in shadow
+            # mode). Write audit row if missing so the record is always present regardless of
+            # which code path first inserted the fill (0293).
+            _ea_missing = not conn.execute(
+                "SELECT 1 FROM executed_actions WHERE fill_id=?", (bf.broker_fill_id,)
+            ).fetchone()
+            if _ea_missing:
+                _ir = conn.execute(
+                    """SELECT ti.recommendation_id
+                       FROM trade_intents ti
+                       JOIN orders o ON ti.intent_id = o.intent_id
+                       WHERE o.order_id = ?""",
+                    (order_id,),
+                ).fetchone()
+                _fill_src_row = conn.execute(
+                    "SELECT fill_source, filled_at FROM fills WHERE fill_id=?", (bf.broker_fill_id,)
+                ).fetchone()
+                _fill_src = _fill_src_row["fill_source"] if _fill_src_row else "broker_import"
+                _fill_at = _fill_src_row["filled_at"] if _fill_src_row else filled_at
+                conn.execute(
+                    """INSERT OR IGNORE INTO executed_actions
+                       (recommendation_id, ticker, action, quantity, execution_price,
+                        execution_date, fees, notes, source, created_at, fill_id)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        _ir["recommendation_id"] if _ir else None,
+                        bf.symbol,
+                        side,
+                        qty,
+                        price,
+                        _fill_at[:10] if _fill_at else None,
+                        fee,
+                        f"fill_source={_fill_src}",
+                        _fill_src,
+                        time.time(),
+                        bf.broker_fill_id,
+                    ),
+                )
+                conn.commit()
+            return FillResult.ALREADY_APPLIED  # fill already applied; mutations skipped
 
         # Only the transaction that wrote the fill row proceeds with mutations
         total_qty = float(_order_row["quantity"] or 0)
@@ -1560,6 +1520,36 @@ def apply_broker_fill(
                    WHERE intent_id = (SELECT intent_id FROM orders WHERE order_id=?)""",
                 (order_id,),
             )
+
+        # Write audit record atomically with the fill (0293).
+        # INSERT OR IGNORE ensures idempotency on replay without raising.
+        _intent_row = conn.execute(
+            """SELECT ti.recommendation_id
+               FROM trade_intents ti
+               JOIN orders o ON ti.intent_id = o.intent_id
+               WHERE o.order_id = ?""",
+            (order_id,),
+        ).fetchone()
+        _rec_id = _intent_row["recommendation_id"] if _intent_row else None
+        conn.execute(
+            """INSERT OR IGNORE INTO executed_actions
+               (recommendation_id, ticker, action, quantity, execution_price,
+                execution_date, fees, notes, source, created_at, fill_id)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                _rec_id,
+                bf.symbol,
+                side,
+                qty,
+                price,
+                filled_at[:10] if filled_at else None,
+                fee,
+                "fill_source=broker_import",
+                "broker_import",
+                time.time(),
+                bf.broker_fill_id,
+            ),
+        )
 
         conn.commit()
         return FillResult.APPLIED

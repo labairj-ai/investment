@@ -1,7 +1,7 @@
 # Single-Owner Event Ingestion and One Submission Per Cycle
 
 - **ID:** 0292
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-14
 - **Priority:** high
 - **Depends:** 0289
@@ -27,8 +27,12 @@ Open question: should the one-order-per-cycle limit be a hardcoded constant or a
 
 ## Done when
 
-- [ ] `process_intent()` does not call `broker.poll_order_events()`
-- [ ] `process_new_intents()` submits at most one new order per cycle
-- [ ] Pending intents are fetched with explicit `ORDER BY` (deterministic priority)
-- [ ] Chaos test: fill event for WORKING order B arrives during process_intent(A) → fill not lost, ingested by next cycle
-- [ ] All existing tests pass
+- [x] `process_intent()` does not call `broker.poll_order_events()`
+- [x] `process_new_intents()` submits at most one new order per cycle
+- [x] Pending intents are fetched with explicit `ORDER BY` (deterministic priority)
+- [x] Chaos test: fill event for WORKING order B arrives during process_intent(A) → fill not lost, ingested by next cycle
+- [x] All existing tests pass
+
+## Outcome
+
+Removed the `broker.poll_order_events()` block from `process_intent()`'s WORKING ACK path entirely. WORKING ACK now returns immediately with `fill=None`. Added `ORDER BY created_at ASC LIMIT 1` to `process_new_intents()`. Updated affected tests (test_approved_intent_creates_fill, test_fill_written_to_executed_actions, test_fills_on_submission_counted, etc.) to use `process_open_orders()` for fills. Added `TestSingleOwnerEventIngestion` in test_chaos.py with 3 tests.

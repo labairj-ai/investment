@@ -1,7 +1,7 @@
 # AlpacaAdapter Order Mutation Behind Submission Gate
 
 - **ID:** 0295
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-14
 - **Priority:** high
 - **Depends:** 0292, 0293, 0294
@@ -26,11 +26,15 @@
 
 ## Done when
 
-- [ ] `submit_order()` raises when `submission_enabled=False` (default)
-- [ ] `submit_order()` with `submission_enabled=True` posts `POST /v2/orders` with `client_order_id` forwarded and returns a valid `BrokerOrderAck`
-- [ ] `submit_order()` raises `BrokerSubmissionIndeterminate` on timeout without retrying
-- [ ] `cancel_order()` calls `DELETE /v2/orders/{order_id}` and returns `BrokerCancelAck`
-- [ ] `get_order()` calls `GET /v2/orders/{order_id}` and returns `BrokerOrder` with normalized state
-- [ ] `poll_order_events()` returns `BrokerOrderEvent` list based on polling `GET /v2/orders?status=all&after=...`
-- [ ] Unit tests cover all methods with mocked HTTP; gate behavior tested without live credentials
-- [ ] All existing tests pass
+- [x] `submit_order()` raises when `submission_enabled=False` (default)
+- [x] `submit_order()` with `submission_enabled=True` posts `POST /v2/orders` with `client_order_id` forwarded and returns a valid `BrokerOrderAck`
+- [x] `submit_order()` raises `BrokerSubmissionIndeterminate` on timeout without retrying
+- [x] `cancel_order()` calls `DELETE /v2/orders/{order_id}` and returns `BrokerCancelAck`
+- [x] `get_order()` calls `GET /v2/orders/{order_id}` and returns `BrokerOrder` with normalized state
+- [x] `poll_order_events()` returns `BrokerOrderEvent` list based on polling `GET /v2/orders?status=all&after=...`
+- [x] Unit tests cover all methods with mocked HTTP; gate behavior tested without live credentials
+- [x] All existing tests pass
+
+## Outcome
+
+Implemented `submit_order()`, `cancel_order()`, `get_order()`, and `poll_order_events()` in `trade_engine/alpaca_adapter.py`. `submission_enabled=False` gate raises `RuntimeError` before any network call. `submit_order()` wraps `_request()` failures as `BrokerSubmissionIndeterminate`. `poll_order_events()` polls `GET /v2/orders?status=all&after={last_poll_ts}` and emits `BrokerOrderEvent` only for actionable terminal states (FILLED, PARTIALLY_FILLED, CANCELLED, EXPIRED, REJECTED). Added 7 new mocked tests in `tests/test_alpaca_adapter.py`. Full suite: 675 passed, 1 skipped.

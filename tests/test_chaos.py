@@ -2667,3 +2667,218 @@ class TestUniversalContractNoAttemptFill:
                 f"BrokerAdapterContractMixin.{test_name} calls attempt_fill — "
                 f"must be in ShadowSimulationContractMixin instead"
             )
+
+
+class TestSingleOwnerEventIngestion:
+    """process_intent() no longer drains the account-wide event queue (0292).
+
+    Fills for WORKING orders arrive via process_open_orders() / sync_broker_state(),
+    not via the old poll block inside process_intent(). This prevents one intent from
+    silently consuming fill events belonging to another order.
+    """
+
+    def test_process_intent_working_returns_fill_none(self):
+        """WORKING ACK: process_intent() returns fill=None (fills arrive later via process_open_orders)."""
+        from unittest.mock import patch
+        from tests.test_trade_engine import _make_conn, _make_intent, _insert_intent, _make_policy
+
+        conn = _make_conn()
+        intent = _make_intent(quantity=1.0, limit_price=100.0)
+        _insert_intent(conn, intent)
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01", ack_state="WORKING")
+
+        with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
+             patch("trade_engine.market_data._get_executable_quote", return_value=_fresh_quote()):
+            result = execution_engine.process_intent(intent.intent_id, conn, broker=broker)
+
+        assert result.decision == "APPROVED"
+        assert result.fill is None
+
+    def test_process_new_intents_submits_one_oldest_first(self):
+        """process_new_intents() submits exactly 1 intent per call, choosing oldest created_at (0292)."""
+        from unittest.mock import patch
+        from tests.test_trade_engine import _make_conn, _make_intent, _insert_intent, _make_policy
+        import time as _time
+
+        conn = _make_conn()
+        intent_a = _make_intent(quantity=1.0, limit_price=100.0)
+        intent_b = _make_intent(quantity=2.0, limit_price=100.0)
+        # Insert with explicit ordering: a before b
+        conn.execute(
+            """INSERT INTO trade_intents
+               (intent_id, account_id, symbol, side, quantity, order_type, limit_price,
+                time_in_force, instrument_type, status, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (intent_a.intent_id, "AGENTIC_SHADOW_01", "ANET", "BUY", 1.0,
+             "LIMIT", 100.0, "DAY", "EQUITY", "PENDING", "2026-01-01T00:00:01+00:00"),
+        )
+        conn.execute(
+            """INSERT INTO trade_intents
+               (intent_id, account_id, symbol, side, quantity, order_type, limit_price,
+                time_in_force, instrument_type, status, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (intent_b.intent_id, "AGENTIC_SHADOW_01", "ANET", "BUY", 2.0,
+             "LIMIT", 100.0, "DAY", "EQUITY", "PENDING", "2026-01-01T00:00:02+00:00"),
+        )
+        conn.commit()
+
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01", ack_state="WORKING")
+
+        with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
+             patch("trade_engine.market_data._get_executable_quote", return_value=_fresh_quote()):
+            results = execution_engine.process_new_intents("AGENTIC_SHADOW_01", conn, broker=broker)
+
+        assert len(results) == 1, "only one intent processed per cycle"
+        assert results[0].decision == "APPROVED"
+        # The oldest intent (qty=1.0, intent_a) must be picked
+        submitted_order = conn.execute(
+            "SELECT quantity FROM orders WHERE intent_id=?", (intent_a.intent_id,)
+        ).fetchone()
+        assert submitted_order is not None and float(submitted_order["quantity"]) == 1.0
+        # intent_b stays PENDING
+        status_b = conn.execute(
+            "SELECT status FROM trade_intents WHERE intent_id=?", (intent_b.intent_id,)
+        ).fetchone()["status"]
+        assert status_b == "PENDING"
+
+    def test_fill_arrives_via_process_open_orders_not_process_intent(self):
+        """Fill for a WORKING order is delivered by process_open_orders(), not process_intent()."""
+        from unittest.mock import patch
+        from tests.test_trade_engine import _make_conn, _make_intent, _insert_intent, _make_policy
+
+        conn = _make_conn()
+        # limit=102 so ask=101 satisfies the BUY fill condition (ask <= limit)
+        intent = _make_intent(quantity=1.0, limit_price=102.0)
+        _insert_intent(conn, intent)
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01", ack_state="WORKING")
+
+        with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
+             patch("trade_engine.market_data._get_executable_quote", return_value=_fresh_quote()), \
+             patch.object(market_calendar, "is_market_open", return_value=True):
+            submission = execution_engine.process_intent(intent.intent_id, conn, broker=broker)
+            assert submission.fill is None
+            fills, _, _ = execution_engine.process_open_orders(
+                "AGENTIC_SHADOW_01", conn, broker=broker
+            )
+
+        assert len(fills) == 1
+        assert fills[0].qty == 1.0
+
+
+class TestAtomicFillAuditSettlement:
+    """executed_actions is written inside apply_broker_fill()'s transaction (0293).
+
+    The fill row and its audit record are always committed together or not at all.
+    Replay (ALREADY_APPLIED path) also ensures the audit row is present.
+    """
+
+    def test_new_fill_writes_executed_actions_atomically(self):
+        """apply_broker_fill() on a new fill writes fills + executed_actions in one commit."""
+        conn = _make_conn()
+        order_id = _submit_working_order(conn)
+        bf = _make_broker_fill(order_id, qty=1.0, price=100.0)
+
+        result = apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+        assert result == FillResult.APPLIED
+
+        ea = conn.execute(
+            "SELECT * FROM executed_actions WHERE fill_id=?", (bf.broker_fill_id,)
+        ).fetchone()
+        assert ea is not None
+        assert ea["source"] == "broker_import"
+        assert ea["quantity"] == 1.0
+        assert abs(ea["execution_price"] - 100.0) < 0.01
+
+    def test_three_part_partial_fill_three_audit_rows(self):
+        """Three-leg partial fill → exactly three fills rows and three executed_actions rows (0293)."""
+        conn = _make_conn()
+        # Insert WORKING order directly to bypass risk evaluation for large qty
+        order_id = str(uuid.uuid4())
+        intent_id = str(uuid.uuid4())
+        conn.execute(
+            """INSERT INTO trade_intents
+               (intent_id, account_id, symbol, side, quantity, order_type, limit_price,
+                time_in_force, instrument_type, status, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (intent_id, "AGENTIC_SHADOW_01", "ANET", "BUY", 100.0,
+             "LIMIT", 50.0, "GTC", "EQUITY", "APPROVED", "2026-01-01T00:00:00+00:00"),
+        )
+        conn.execute(
+            """INSERT INTO orders
+               (order_id, intent_id, account_id, symbol, side, quantity, order_type,
+                limit_price, state, time_in_force, broker_order_id, submitted_at, updated_at,
+                fill_qty, fill_cash)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (order_id, intent_id, "AGENTIC_SHADOW_01", "ANET", "BUY", 100.0,
+             "LIMIT", 50.0, "WORKING", "GTC", order_id,
+             "2026-01-01T00:00:00+00:00", "2026-01-01T00:00:00+00:00", 0.0, 0.0),
+        )
+        conn.commit()
+        bf1 = _make_broker_fill(order_id, qty=25.0, price=50.00, fill_id="F001")
+        bf2 = _make_broker_fill(order_id, qty=35.0, price=49.98, fill_id="F002")
+        bf3 = _make_broker_fill(order_id, qty=40.0, price=49.95, fill_id="F003")
+
+        for bf in (bf1, bf2, bf3):
+            r = apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+            assert r == FillResult.APPLIED
+
+        fill_count = conn.execute(
+            "SELECT COUNT(*) FROM fills WHERE order_id=?", (order_id,)
+        ).fetchone()[0]
+        audit_count = conn.execute(
+            "SELECT COUNT(*) FROM executed_actions WHERE fill_id IN ('F001','F002','F003')"
+        ).fetchone()[0]
+        assert fill_count == 3
+        assert audit_count == 3
+
+    def test_duplicate_replay_leaves_counts_unchanged(self):
+        """Replaying the same fill twice via apply_broker_fill(): fills and audit counts unchanged (0293)."""
+        conn = _make_conn()
+        order_id = _submit_working_order(conn)
+        bf = _make_broker_fill(order_id, qty=1.0, price=100.0)
+
+        r1 = apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+        assert r1 == FillResult.APPLIED
+        r2 = apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+        assert r2 == FillResult.ALREADY_APPLIED
+
+        fill_count = conn.execute(
+            "SELECT COUNT(*) FROM fills WHERE fill_id=?", (bf.broker_fill_id,)
+        ).fetchone()[0]
+        audit_count = conn.execute(
+            "SELECT COUNT(*) FROM executed_actions WHERE fill_id=?", (bf.broker_fill_id,)
+        ).fetchone()[0]
+        assert fill_count == 1
+        assert audit_count == 1
+
+    def test_already_applied_fill_without_audit_gets_repaired(self):
+        """Pre-0293 fill in DB without executed_actions row gets audit on next apply_broker_fill() call."""
+        conn = _make_conn()
+        order_id = _submit_working_order(conn)
+        bf = _make_broker_fill(order_id, qty=1.0, price=100.0)
+
+        # Simulate old behavior: insert fill directly, no audit row
+        conn.execute(
+            """INSERT INTO fills (fill_id, order_id, account_id, symbol, side, qty, price,
+               fee, fill_source, filled_at) VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (bf.broker_fill_id, order_id, "AGENTIC_SHADOW_01", "ANET", "BUY",
+             1.0, 100.0, 0.0, "broker_import", "2026-01-01T12:00:00+00:00"),
+        )
+        conn.commit()
+        # Update order and account so integrity checks pass
+        conn.execute("UPDATE orders SET fill_qty=1.0, state='FILLED' WHERE order_id=?", (order_id,))
+        conn.execute("UPDATE trading_accounts SET current_cash=current_cash-100.0 WHERE account_id='AGENTIC_SHADOW_01'")
+        conn.commit()
+        # No executed_actions row yet
+        assert conn.execute(
+            "SELECT COUNT(*) FROM executed_actions WHERE fill_id=?", (bf.broker_fill_id,)
+        ).fetchone()[0] == 0
+
+        # Replay through apply_broker_fill → ALREADY_APPLIED + audit repair
+        result = apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+        assert result == FillResult.ALREADY_APPLIED
+
+        audit_count = conn.execute(
+            "SELECT COUNT(*) FROM executed_actions WHERE fill_id=?", (bf.broker_fill_id,)
+        ).fetchone()[0]
+        assert audit_count == 1
