@@ -816,3 +816,36 @@ class TestSubmitOrderPreFlight:
         with patch("requests.request", return_value=_mock_response(order_payload, status=200)):
             ack = adapter.submit_order(_intent(side=Side.BUY, quantity=1.0))
         assert ack.broker_order_id == "broker-123"
+
+
+# ── get_market_clock (0326) ───────────────────────────────────────────────────
+
+class TestGetMarketClock:
+    """get_market_clock() must call GET /v2/clock (not /v1/clock) and map the response."""
+
+    def test_calls_v2_clock_endpoint(self):
+        """Assert the correct /v2/clock path is passed to _request (0326)."""
+        adapter = _adapter()
+        clock_payload = {"is_open": True, "next_open": "2026-09-15T13:30:00Z", "next_close": "2026-09-14T20:00:00Z"}
+        with patch("requests.request", return_value=_mock_response(clock_payload)) as mock_req:
+            result = adapter.get_market_clock()
+        # Verify the URL contains /v2/clock, not /v1/clock
+        called_url = mock_req.call_args[1].get("url") or mock_req.call_args[0][1]
+        assert "/v2/clock" in called_url, f"Expected /v2/clock in URL, got: {called_url}"
+        assert "/v1/clock" not in called_url
+
+    def test_returns_is_open_true(self):
+        adapter = _adapter()
+        payload = {"is_open": True, "next_open": "", "next_close": "2026-09-14T20:00:00Z"}
+        with patch("requests.request", return_value=_mock_response(payload)):
+            result = adapter.get_market_clock()
+        assert result["is_open"] is True
+        assert result["next_close"] == "2026-09-14T20:00:00Z"
+
+    def test_returns_is_open_false(self):
+        adapter = _adapter()
+        payload = {"is_open": False, "next_open": "2026-09-15T13:30:00Z", "next_close": ""}
+        with patch("requests.request", return_value=_mock_response(payload)):
+            result = adapter.get_market_clock()
+        assert result["is_open"] is False
+        assert result["next_open"] == "2026-09-15T13:30:00Z"

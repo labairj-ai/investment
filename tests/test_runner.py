@@ -219,3 +219,55 @@ class TestHaltTelemetry:
         assert row["duration_seconds"] > 0.0
         # broker_api_errors reflects the transport failure (status_code=None → counts as error)
         assert row["broker_api_errors"] == 1
+
+
+# ── 0326: fail-closed clock gate when submission enabled ──────────────────────
+
+class TestMarketClockFailClosed:
+    def test_clock_failure_halts_when_submission_enabled(self, monkeypatch):
+        """Clock exception + submission enabled → exit 1, HALTED/MARKET_CLOCK_UNAVAILABLE."""
+        monkeypatch.setenv("ALPACA_API_KEY", "test-key")
+        monkeypatch.setenv("ALPACA_API_SECRET", "test-secret")
+        monkeypatch.setenv("ALPACA_PAPER_SUBMISSION_ENABLED", "1")
+        monkeypatch.setenv("ALPACA_PAPER_ACCOUNT_ID", "test-acct-id")
+        db_path = _setup_temp_db()
+
+        with (
+            patch("trade_engine.runner._DB_PATH", Path(db_path)),
+            patch("trade_engine.alpaca_adapter.AlpacaAdapter") as MockAdapter,
+            patch("agent_db.acquire_execution_lease"),
+            patch("agent_db.release_execution_lease"),
+        ):
+            adapter_inst = MockAdapter.return_value
+            adapter_inst.get_market_clock.side_effect = RuntimeError("503 upstream")
+
+            from trade_engine import runner
+            result = runner.run()
+
+        assert result == 1
+        rows = _query_db(db_path, "SELECT execution_state, halt_reason FROM cycle_runs")
+        assert len(rows) == 1
+        assert rows[0]["execution_state"] == "HALTED"
+        assert rows[0]["halt_reason"] == "MARKET_CLOCK_UNAVAILABLE"
+
+    def test_clock_failure_proceeds_when_submission_disabled(self, monkeypatch):
+        """Clock exception + submission disabled → fail-open (lease attempted)."""
+        monkeypatch.setenv("ALPACA_API_KEY", "test-key")
+        monkeypatch.setenv("ALPACA_API_SECRET", "test-secret")
+        # ALPACA_PAPER_SUBMISSION_ENABLED not set → disabled
+        db_path = _setup_temp_db()
+
+        with (
+            patch("trade_engine.runner._DB_PATH", Path(db_path)),
+            patch("trade_engine.alpaca_adapter.AlpacaAdapter") as MockAdapter,
+            patch("agent_db.acquire_execution_lease", return_value=False) as mock_acquire,
+            patch("agent_db.release_execution_lease"),
+        ):
+            adapter_inst = MockAdapter.return_value
+            adapter_inst.get_market_clock.side_effect = RuntimeError("503 upstream")
+
+            from trade_engine import runner
+            runner.run()
+
+        # Fail-open: lease was attempted despite clock failure
+        mock_acquire.assert_called_once()

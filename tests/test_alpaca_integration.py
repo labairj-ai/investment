@@ -608,3 +608,17 @@ class TestMarketableFill:
         # After restart, fills must be present in conn2 (imported by initialize_trading_session)
         restart_fills = conn2.execute("SELECT fill_id FROM fills WHERE account_id=?", (account_id,)).fetchall()
         assert len(restart_fills) > 0, "initialize_trading_session() did not import fills on restart"
+
+
+# ── Market clock integration (0326) ──────────────────────────────────────────
+
+@integration
+@skip_no_creds
+def test_get_market_clock_real_endpoint():
+    """GET /v2/clock returns is_open, next_open, next_close on the real paper API (0326)."""
+    adapter = _make_adapter()
+    clock = adapter.get_market_clock()
+    assert "is_open" in clock, f"is_open missing from clock response: {clock}"
+    assert "next_open" in clock, f"next_open missing from clock response: {clock}"
+    assert "next_close" in clock, f"next_close missing from clock response: {clock}"
+    assert isinstance(clock["is_open"], bool), f"is_open should be bool, got: {type(clock['is_open'])}"

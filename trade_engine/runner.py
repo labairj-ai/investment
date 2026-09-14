@@ -181,9 +181,10 @@ def run() -> int:
         expected_account_id=expected_account_id,
     )
 
-    # ── Market-session gate (0325) ────────────────────────────────────────────
-    # Fail-open: if the clock check itself fails, proceed with the cycle and let
-    # the stale-quote circuit breakers catch any post-close trades.
+    # ── Market-session gate (0325/0326) ──────────────────────────────────────
+    # Fail-closed when submission is enabled: an unknown market state must not
+    # allow order submission. Fail-open only when submission is disabled (dry-run),
+    # where stale-quote circuit breakers provide a second line of defence.
     try:
         clock = adapter.get_market_clock()
         if not clock.get("is_open", True):
@@ -205,7 +206,26 @@ def run() -> int:
                 _skipped_conn.close()
             return 0
     except Exception as exc:
-        _log.warning("market clock check failed (%s) — proceeding with cycle", exc)
+        if submission_enabled:
+            _log.error(
+                "MARKET_CLOCK_UNAVAILABLE: clock check failed (%s) and submission is enabled — "
+                "halting to prevent order submission with unknown market state",
+                exc,
+            )
+            _halt_conn = _open_db(_DB_PATH)
+            try:
+                _halt_conn.execute(
+                    "INSERT INTO cycle_runs (account_id, run_at, execution_state, halt_reason, duration_seconds)"
+                    " VALUES (?, ?, 'HALTED', 'MARKET_CLOCK_UNAVAILABLE', 0.0)",
+                    (_ACCOUNT_ID, datetime.now(timezone.utc).isoformat()),
+                )
+                _halt_conn.commit()
+            except Exception as db_exc:
+                _log.warning("failed to write HALTED cycle_runs row: %s", db_exc)
+            finally:
+                _halt_conn.close()
+            return 1
+        _log.warning("market clock check failed (%s) — proceeding with cycle (submission disabled)", exc)
 
     conn = _open_db(_DB_PATH)
     lease_holder = f"runner:{socket.gethostname()}:{os.getpid()}"
