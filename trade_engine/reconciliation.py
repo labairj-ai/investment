@@ -145,7 +145,7 @@ def reconcile(
         from .execution_engine import resolve_local_order_id  # local import avoids circular dep
         broker_order_list = broker.get_open_orders(account_id)
         local_open_rows = conn.execute(
-            "SELECT order_id, state, client_order_id FROM orders WHERE account_id=? AND state IN ('PENDING_SUBMIT','WORKING','PARTIALLY_FILLED')",
+            "SELECT order_id, state, client_order_id, broker_order_id FROM orders WHERE account_id=? AND state IN ('PENDING_SUBMIT','WORKING','PARTIALLY_FILLED')",
             (account_id,),
         ).fetchall()
 
@@ -167,13 +167,99 @@ def reconcile(
             if row["state"] == "PENDING_SUBMIT":
                 continue  # handled explicitly by 3c below
             if oid not in broker_orders_by_local:
-                discrepancies.append(Discrepancy(
-                    kind=DiscrepancyKind.BROKER_MISSING,
-                    subject=oid,
-                    local_value=row["state"],
-                    broker_value=None,
-                    detail="WORKING order in local DB is missing at broker",
-                ))
+                broker_oid = row["broker_order_id"]
+                if broker_oid:
+                    # Order was submitted; look it up directly before declaring BROKER_MISSING (0302).
+                    # A DAY order that expired while down should resolve cleanly, not force manual intervention.
+                    try:
+                        _looked_up = broker.get_order(broker_oid)
+                    except Exception as _go_exc:
+                        discrepancies.append(Discrepancy(
+                            kind=DiscrepancyKind.RECONCILIATION_UNAVAILABLE,
+                            subject=oid,
+                            local_value=row["state"],
+                            broker_value=None,
+                            detail=f"get_order({broker_oid!r}) raised {type(_go_exc).__name__}: {_go_exc}",
+                        ))
+                    else:
+                        if _looked_up is None:
+                            # Broker returns 404 — uncertain; never infer terminal state from absence (0302).
+                            discrepancies.append(Discrepancy(
+                                kind=DiscrepancyKind.BROKER_MISSING,
+                                subject=oid,
+                                local_value=row["state"],
+                                broker_value=None,
+                                detail=f"get_order({broker_oid!r}) returned None — broker has no record",
+                            ))
+                        elif _looked_up.state in ("WORKING", "PARTIALLY_FILLED"):
+                            # Still open at broker but absent from open-orders list — genuine discrepancy
+                            discrepancies.append(Discrepancy(
+                                kind=DiscrepancyKind.BROKER_MISSING,
+                                subject=oid,
+                                local_value=row["state"],
+                                broker_value=_looked_up.state,
+                                detail="absent from broker open-orders list but get_order() shows still open",
+                            ))
+                        elif _looked_up.state == "FILLED":
+                            from datetime import datetime, timezone as _tz
+                            from .execution_engine import apply_broker_fill  # local import avoids circular dep
+                            _now_r = datetime.now(_tz.utc).isoformat()
+                            conn.execute(
+                                "UPDATE orders SET state='WORKING', broker_order_id=?, updated_at=? WHERE order_id=?",
+                                (broker_oid, _now_r, oid),
+                            )
+                            conn.commit()
+                            try:
+                                _reco_fills = broker.get_fills_for_order(broker_oid)
+                            except Exception as _reco_exc:
+                                discrepancies.append(Discrepancy(
+                                    kind=DiscrepancyKind.RECONCILIATION_UNAVAILABLE,
+                                    subject=oid,
+                                    local_value="FILLED",
+                                    broker_value="FILLED",
+                                    detail=f"get_fills_for_order() raised {type(_reco_exc).__name__}",
+                                ))
+                            else:
+                                if not _reco_fills:
+                                    discrepancies.append(Discrepancy(
+                                        kind=DiscrepancyKind.RECONCILIATION_UNAVAILABLE,
+                                        subject=oid,
+                                        local_value="FILLED",
+                                        broker_value="FILLED",
+                                        detail="broker reports FILLED but fills endpoint returned empty",
+                                    ))
+                                for _rf in _reco_fills:
+                                    apply_broker_fill(_rf, account_id, conn)
+                        elif _looked_up.state in ("CANCELLED", "REJECTED", "EXPIRED"):
+                            from datetime import datetime, timezone as _tz
+                            _now_r = datetime.now(_tz.utc).isoformat()
+                            conn.execute(
+                                "UPDATE orders SET state=?, broker_order_id=?, updated_at=? WHERE order_id=?",
+                                (_looked_up.state, broker_oid, _now_r, oid),
+                            )
+                            _intent_status = {"CANCELLED": "CANCELLED", "REJECTED": "REJECTED", "EXPIRED": "EXPIRED"}[_looked_up.state]
+                            conn.execute(
+                                """UPDATE trade_intents SET status=?
+                                   WHERE intent_id = (SELECT intent_id FROM orders WHERE order_id=?)""",
+                                (_intent_status, oid),
+                            )
+                            conn.commit()
+                        else:
+                            discrepancies.append(Discrepancy(
+                                kind=DiscrepancyKind.RECONCILIATION_UNAVAILABLE,
+                                subject=oid,
+                                local_value=row["state"],
+                                broker_value=_looked_up.state,
+                                detail=f"unknown broker state {_looked_up.state!r} returned by get_order()",
+                            ))
+                else:
+                    discrepancies.append(Discrepancy(
+                        kind=DiscrepancyKind.BROKER_MISSING,
+                        subject=oid,
+                        local_value=row["state"],
+                        broker_value=None,
+                        detail="WORKING order in local DB is missing at broker (no broker_order_id to look up)",
+                    ))
             else:
                 broker_state = broker_orders_by_local[oid].state
                 local_state = row["state"]

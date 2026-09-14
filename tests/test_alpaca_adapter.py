@@ -396,6 +396,42 @@ class TestGetFillsForOrder:
             fills = adapter.get_fills_for_order("o1")
         assert fills[0].account_id == "live-acct-456"
 
+    def test_raises_when_no_account_id_available(self):
+        """_map_fill() raises BrokerSettlementIndeterminate when account_id is None (0304)."""
+        adapter = _adapter()  # no expected_account_id; get_account_id() never called
+        payload = [{
+            "id": "f1", "order_id": "o1", "symbol": "AAPL", "side": "buy",
+            "qty": "1", "price": "100.00", "transaction_time": "2026-09-14T10:00:00Z",
+        }]
+        with patch("requests.request", return_value=_mock_response(payload)):
+            with pytest.raises(BrokerSettlementIndeterminate, match="account_id is None"):
+                adapter.get_fills_for_order("o1")
+
+    def test_paginates_via_page_token(self):
+        """get_fills_for_order() follows page_token when first page is full (0304)."""
+        adapter = _adapter(expected_account_id="acct-1")
+
+        def _fill(fid: str) -> dict:
+            return {
+                "id": fid, "order_id": "o1", "symbol": "AAPL", "side": "buy",
+                "qty": "1", "price": "100.00", "transaction_time": "2026-09-14T10:00:00Z",
+            }
+
+        # First page returns 100 fills (full page) → adapter must request page 2
+        page1 = [_fill(f"f{i}") for i in range(100)]
+        page2 = [_fill("f100")]  # partial page → stop
+
+        with patch("requests.request", side_effect=[
+            _mock_response(page1),
+            _mock_response(page2),
+        ]) as mock_req:
+            fills = adapter.get_fills_for_order("o1")
+
+        assert len(fills) == 101
+        # Second call must include page_token from last item of page 1
+        second_params = mock_req.call_args_list[1].kwargs.get("params") or mock_req.call_args_list[1][1].get("params")
+        assert second_params["page_token"] == "f99"
+
 
 # ── get_quote ─────────────────────────────────────────────────────────────────
 
@@ -510,15 +546,25 @@ class TestPollOrderEvents:
         assert events == []
         assert "o1" in adapter._tracked_broker_order_ids
 
-    def test_connectivity_error_keeps_order_tracked(self):
-        """get_open_orders() failure returns empty events, keeps tracking set (0299)."""
+    def test_connectivity_error_raises_settlement_indeterminate(self):
+        """get_open_orders() failure during normal poll propagates — no silent empty (0301)."""
         adapter = _adapter()
         adapter._poll_seeded = True
         adapter._tracked_broker_order_ids = {"o1"}
         with patch("requests.request", return_value=_mock_response({}, status=503)):
-            events = adapter.poll_order_events("acc1")
-        assert events == []
+            with pytest.raises(BrokerSettlementIndeterminate):
+                adapter.poll_order_events("acc1")
+        # tracking set is unchanged — order stays tracked for next cycle
         assert "o1" in adapter._tracked_broker_order_ids
+
+    def test_seed_failure_leaves_poll_unseeded(self):
+        """get_open_orders() failure during seed propagates and leaves _poll_seeded=False (0301)."""
+        adapter = _adapter()
+        assert adapter._poll_seeded is False
+        with patch("requests.request", return_value=_mock_response({}, status=503)):
+            with pytest.raises(BrokerSettlementIndeterminate):
+                adapter.poll_order_events("acc1")
+        assert adapter._poll_seeded is False
 
     def test_order_submitted_then_polled_as_filled(self):
         """submit_order() registers broker_order_id; next poll detects fill (0299)."""
@@ -627,13 +673,24 @@ class TestCancelOrder:
         assert ack.accepted is True
         assert ack.normalized_state == "CANCELLED"
 
-    def test_cancel_404_not_accepted(self):
+    def test_cancel_404_raises_when_get_also_404(self):
+        """DELETE 404 + GET 404 → BrokerSettlementIndeterminate (0303)."""
         adapter = _adapter()
         delete_resp = _mock_response("not found", status=404)
         order_resp = _mock_response("not found", status=404)
         with patch("requests.request", side_effect=[delete_resp, order_resp]):
-            ack = adapter.cancel_order("missing-order")
+            with pytest.raises(BrokerSettlementIndeterminate, match="no record"):
+                adapter.cancel_order("missing-order")
+
+    def test_cancel_404_but_get_returns_terminal_state(self):
+        """DELETE 404 (already closed) + GET returns real state → valid ack (0303)."""
+        adapter = _adapter()
+        delete_resp = _mock_response("not found", status=404)
+        order_resp = _mock_response(_order_payload("o1", status="expired"))
+        with patch("requests.request", side_effect=[delete_resp, order_resp]):
+            ack = adapter.cancel_order("o1")
         assert ack.accepted is False
+        assert ack.normalized_state == "EXPIRED"
 
 
 # ── get_order ─────────────────────────────────────────────────────────────────

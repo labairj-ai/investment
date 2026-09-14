@@ -3419,6 +3419,147 @@ class TestFailClosedReconciliation:
         assert result.ok is True
 
 
+# 17b. Reconciliation: terminal-order repair on restart (0302)
+class TestReconciliationRestartRepair:
+    """When a local WORKING order is absent from broker open-orders, reconcile() calls
+    get_order() and routes on the result rather than immediately declaring BROKER_MISSING (0302)."""
+
+    ACCOUNT_ID = "AGENTIC_SHADOW_01"
+
+    def _seed_working_order(self, conn, order_id: str = "ord-1", broker_oid: str = "b-oid-1") -> None:
+        conn.execute(
+            "INSERT OR IGNORE INTO trading_accounts (account_id, current_cash, mode, starting_capital) VALUES (?,?,?,?)",
+            (self.ACCOUNT_ID, 10000.0, "SHADOW", 10000.0),
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO trade_intents (intent_id, account_id, symbol, side, quantity, limit_price, status, created_at, valid_until, instrument_type, order_type, time_in_force, strategy, thesis_version, strategy_config_hash, policy_hash) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("intent-1", self.ACCOUNT_ID, "ANET", "BUY", 10.0, 100.0, "PENDING", "2026-09-14T00:00:00Z", "2026-12-31T00:00:00Z", "EQUITY", "LIMIT", "DAY", "test", 1, "hash", "phash"),
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO orders (order_id, intent_id, account_id, symbol, side, quantity, order_type, state, broker_order_id, submitted_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (order_id, "intent-1", self.ACCOUNT_ID, "ANET", "BUY", 10.0, "LIMIT", "WORKING", broker_oid, "2026-09-14T09:00:00Z", "2026-09-14T09:00:00Z"),
+        )
+        conn.commit()
+
+    def _make_broker_with_get_order(self, get_open_orders_result=None, get_order_result=None, get_order_raises=False):
+        from trade_engine.broker_adapter import BrokerAdapter
+        from trade_engine.broker_types import BrokerAccountState
+
+        _get_order_result = get_order_result
+        _get_order_raises = get_order_raises
+
+        class _Broker(BrokerAdapter):
+            def get_broker_account(self, account_id):
+                return BrokerAccountState(account_id=account_id, cash=10000.0, nav=10000.0, buying_power=10000.0)
+            def get_positions(self, account_id): return []
+            def get_open_orders(self, account_id): return get_open_orders_result or []
+            def get_order(self, order_id):
+                if _get_order_raises:
+                    raise RuntimeError("broker unreachable")
+                return _get_order_result
+            def get_fills(self, account_id, since=None): return []
+            def get_fills_for_order(self, broker_order_id): return []
+            def get_quote(self, symbol): return None
+            def submit_order(self, intent): raise NotImplementedError
+            def cancel_order(self, order_id, reason=""): raise NotImplementedError
+            def poll_order_events(self, account_id, quote=None): return []
+            def attempt_fill(self, order, quote): raise NotImplementedError
+            def find_order_by_client_order_id(self, cid): return None
+            def get_account_id(self): return self.ACCOUNT_ID
+
+        return _Broker()
+
+    def test_working_order_cancelled_at_broker_is_repaired(self):
+        """Local WORKING, broker returns CANCELLED → order updated to CANCELLED, no BROKER_MISSING (0302)."""
+        from trade_engine.reconciliation import reconcile
+        from trade_engine.broker_types import BrokerOrder
+        conn = _make_conn()
+        self._seed_working_order(conn)
+        cancelled_order = BrokerOrder(broker_order_id="b-oid-1", symbol="ANET", side="BUY", quantity=10.0, fill_qty=0.0, state="CANCELLED")
+        broker = self._make_broker_with_get_order(get_order_result=cancelled_order)
+        result = reconcile(self.ACCOUNT_ID, conn, broker)
+        # Must not have BROKER_MISSING
+        kinds = [d.kind.value for d in result.discrepancies]
+        assert "BROKER_MISSING" not in kinds
+        assert result.blocks_submission is False
+        # Order state must be updated in DB
+        row = conn.execute("SELECT state FROM orders WHERE order_id='ord-1'").fetchone()
+        assert row["state"] == "CANCELLED"
+
+    def test_working_order_expired_at_broker_is_repaired(self):
+        """Local WORKING, broker returns EXPIRED → order updated to EXPIRED, no halt (0302)."""
+        from trade_engine.reconciliation import reconcile
+        from trade_engine.broker_types import BrokerOrder
+        conn = _make_conn()
+        self._seed_working_order(conn)
+        expired_order = BrokerOrder(broker_order_id="b-oid-1", symbol="ANET", side="BUY", quantity=10.0, fill_qty=0.0, state="EXPIRED")
+        broker = self._make_broker_with_get_order(get_order_result=expired_order)
+        result = reconcile(self.ACCOUNT_ID, conn, broker)
+        kinds = [d.kind.value for d in result.discrepancies]
+        assert "BROKER_MISSING" not in kinds
+        assert result.blocks_submission is False
+        row = conn.execute("SELECT state FROM orders WHERE order_id='ord-1'").fetchone()
+        assert row["state"] == "EXPIRED"
+
+    def test_working_order_still_open_at_broker_keeps_broker_missing(self):
+        """Local WORKING absent from open list but get_order() says WORKING → BROKER_MISSING (0302)."""
+        from trade_engine.reconciliation import reconcile
+        from trade_engine.broker_types import BrokerOrder
+        conn = _make_conn()
+        self._seed_working_order(conn)
+        still_open = BrokerOrder(broker_order_id="b-oid-1", symbol="ANET", side="BUY", quantity=10.0, fill_qty=0.0, state="WORKING")
+        broker = self._make_broker_with_get_order(get_order_result=still_open)
+        result = reconcile(self.ACCOUNT_ID, conn, broker)
+        kinds = [d.kind.value for d in result.discrepancies]
+        assert "BROKER_MISSING" in kinds
+        assert result.blocks_submission is True
+
+    def test_working_order_404_at_broker_stays_broker_missing(self):
+        """Local WORKING absent from open list, get_order() returns None → BROKER_MISSING (0302)."""
+        from trade_engine.reconciliation import reconcile
+        conn = _make_conn()
+        self._seed_working_order(conn)
+        broker = self._make_broker_with_get_order(get_order_result=None)
+        result = reconcile(self.ACCOUNT_ID, conn, broker)
+        kinds = [d.kind.value for d in result.discrepancies]
+        assert "BROKER_MISSING" in kinds
+        assert result.blocks_submission is True
+
+    def test_working_order_get_order_failure_blocks_submission(self):
+        """get_order() raising during repair → RECONCILIATION_UNAVAILABLE → blocks (0302)."""
+        from trade_engine.reconciliation import reconcile
+        conn = _make_conn()
+        self._seed_working_order(conn)
+        broker = self._make_broker_with_get_order(get_order_raises=True)
+        result = reconcile(self.ACCOUNT_ID, conn, broker)
+        kinds = [d.kind.value for d in result.discrepancies]
+        assert "RECONCILIATION_UNAVAILABLE" in kinds
+        assert result.blocks_submission is True
+
+    def test_working_order_no_broker_order_id_stays_broker_missing(self):
+        """WORKING order with no broker_order_id → BROKER_MISSING without any get_order() call (0302)."""
+        from trade_engine.reconciliation import reconcile
+        conn = _make_conn()
+        conn.execute(
+            "INSERT OR IGNORE INTO trading_accounts (account_id, current_cash, mode, starting_capital) VALUES (?,?,?,?)",
+            (self.ACCOUNT_ID, 10000.0, "SHADOW", 10000.0),
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO trade_intents (intent_id, account_id, symbol, side, quantity, limit_price, status, created_at, valid_until, instrument_type, order_type, time_in_force, strategy, thesis_version, strategy_config_hash, policy_hash) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("intent-1", self.ACCOUNT_ID, "ANET", "BUY", 10.0, 100.0, "PENDING", "2026-09-14T00:00:00Z", "2026-12-31T00:00:00Z", "EQUITY", "LIMIT", "DAY", "test", 1, "hash", "phash"),
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO orders (order_id, intent_id, account_id, symbol, side, quantity, order_type, state, broker_order_id, submitted_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            ("ord-1", "intent-1", self.ACCOUNT_ID, "ANET", "BUY", 10.0, "LIMIT", "WORKING", None, "2026-09-14T09:00:00Z", "2026-09-14T09:00:00Z"),
+        )
+        conn.commit()
+        broker = self._make_broker_with_get_order(get_order_result=None)
+        result = reconcile(self.ACCOUNT_ID, conn, broker)
+        kinds = [d.kind.value for d in result.discrepancies]
+        assert "BROKER_MISSING" in kinds
+        assert result.blocks_submission is True
+
+
 # 18. Trading readiness enforcement (0244)
 class TestTradingReadinessEnforced:
     """run_execution_cycle() requires TRADING_READY; default is INITIALIZING (0244)."""

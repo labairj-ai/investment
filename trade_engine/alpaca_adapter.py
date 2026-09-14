@@ -323,12 +323,19 @@ class AlpacaAdapter(BrokerAdapter):
         return fills
 
     def get_fills_for_order(self, broker_order_id: str) -> list[BrokerFill]:
-        # Use specific-type endpoint and pass cached account_id (0297, 0298)
-        rows = self._request(
-            "GET", "/v2/account/activities/FILL",
-            params={"order_id": broker_order_id},
-        )
-        return [self._map_fill(r, self._account_id, broker_order_id=broker_order_id) for r in rows]
+        # Use specific-type endpoint with same page_size+page_token pagination as get_fills() (0297, 0298, 0304)
+        fills: list[BrokerFill] = []
+        params: dict = {"order_id": broker_order_id, "page_size": 100}
+        while True:
+            rows = self._request("GET", "/v2/account/activities/FILL", params=params)
+            if not rows:
+                break
+            for r in rows:
+                fills.append(self._map_fill(r, self._account_id, broker_order_id=broker_order_id))
+            if len(rows) < 100:
+                break
+            params["page_token"] = rows[-1]["id"]
+        return fills
 
     def _map_fill(
         self,
@@ -336,8 +343,13 @@ class AlpacaAdapter(BrokerAdapter):
         account_id: Optional[str],
         broker_order_id: Optional[str] = None,
     ) -> BrokerFill:
-        # Use cached _account_id as fallback so fills always carry account identity (0298)
+        # Use cached _account_id as fallback so fills always carry account identity (0298, 0304)
         resolved_account_id = account_id or self._account_id
+        if resolved_account_id is None:
+            raise BrokerSettlementIndeterminate(
+                "AlpacaAdapter._map_fill: account_id is None — call get_account_id() or "
+                "pass expected_account_id at construction before fetching fills."
+            )
         return BrokerFill(
             broker_fill_id=data["id"],
             broker_order_id=broker_order_id or data.get("order_id", ""),
@@ -418,7 +430,15 @@ class AlpacaAdapter(BrokerAdapter):
             else:
                 raise
         order = self.get_order(order_id)
-        state = order.state if order else "CANCELLED"
+        if order is None:
+            # Both DELETE and GET returned 404 — broker has no record of this order_id.
+            # Absence is not evidence of cancellation; fail closed (0303).
+            raise BrokerSettlementIndeterminate(
+                f"AlpacaAdapter.cancel_order: DELETE returned 404/422 and "
+                f"GET /v2/orders/{order_id!r} also returned 404 — broker has no record "
+                f"of this order_id; cannot confirm cancellation state."
+            )
+        state = order.state
         return BrokerCancelAck(
             broker_order_id=order_id,
             accepted=accepted,
@@ -449,23 +469,19 @@ class AlpacaAdapter(BrokerAdapter):
 
         Streaming (Alpaca trade updates WebSocket) is the preferred long-term replacement.
         """
-        # Seed tracking set from broker on first poll (handles restart) (0299)
+        # Seed tracking set from broker on first poll (handles restart) (0299, 0301).
+        # Failure leaves _poll_seeded=False so the next cycle retries — do not swallow.
         if not self._poll_seeded:
-            try:
-                open_orders = self.get_open_orders(account_id)
-                for o in open_orders:
-                    self._tracked_broker_order_ids.add(o.broker_order_id)
-            except BrokerSettlementIndeterminate:
-                pass  # best-effort seed; will retry next cycle
+            open_orders = self.get_open_orders(account_id)
+            for o in open_orders:
+                self._tracked_broker_order_ids.add(o.broker_order_id)
             self._poll_seeded = True
 
         if not self._tracked_broker_order_ids:
             return []
 
-        try:
-            open_orders = self.get_open_orders(account_id)
-        except BrokerSettlementIndeterminate:
-            return []
+        # Broker unreachability must propagate, not silently become "no events" (0301).
+        open_orders = self.get_open_orders(account_id)
 
         broker_open_ids = {o.broker_order_id for o in open_orders}
         _ACTIONABLE = {"FILLED", "PARTIALLY_FILLED", "CANCELLED", "EXPIRED", "REJECTED"}
