@@ -64,6 +64,7 @@ class FakeBrokerAdapter(ShadowBrokerAdapter):
         broker_account_id: Optional[str] = None,  # overrides get_account_id() response (0272)
         fill_raises: bool = False,           # get_fills_for_order raises RuntimeError (0278)
         no_fill_id_events: bool = False,     # poll events omit broker_fill_id (0283)
+        unresolvable_events: bool = False,   # emit a phantom event with a bogus broker_order_id (0285)
     ) -> None:
         super().__init__(conn, account_id)
         self._delay_ack = delay_ack
@@ -82,6 +83,7 @@ class FakeBrokerAdapter(ShadowBrokerAdapter):
         self._broker_account_id = broker_account_id
         self._fill_raises = fill_raises
         self._no_fill_id_events = no_fill_id_events
+        self._unresolvable_events = unresolvable_events
         # Independent broker-side ledger (0260): keyed by broker_order_id.
         # This dict is the single source of truth for what the broker believes;
         # the local SQLite DB tracks what the engine believes.
@@ -319,5 +321,18 @@ class FakeBrokerAdapter(ShadowBrokerAdapter):
                 ) if e.event_type in ("FILLED", "PARTIALLY_FILLED") else e
                 for e in events
             ]
+
+        if self._unresolvable_events:
+            # Inject a phantom fill event with a broker_order_id no local order can match (0285)
+            events.append(BrokerOrderEvent(
+                event_type="FILLED",
+                broker_order_id="phantom-" + str(uuid.uuid4()),
+                local_order_id=None,
+                fill_qty=1.0,
+                fill_price=100.0,
+                filled_at=datetime.now(timezone.utc).isoformat(),
+                fee=0.0,
+                broker_fill_id="phantom-fill-" + str(uuid.uuid4()),
+            ))
 
         return events

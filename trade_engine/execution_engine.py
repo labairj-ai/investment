@@ -8,6 +8,7 @@ Cycle architecture (0199):
 from __future__ import annotations
 
 import logging
+import math
 import sqlite3
 import time
 import uuid as _uuid
@@ -106,6 +107,15 @@ _MAX_LIMIT_OVERAGE = 2.0           # reject LIMIT orders > 200% above ask (BUY) 
 
 class PolicyUnavailable(RuntimeError):
     """Trading policy cannot be loaded; cycle must halt fail-closed (0227)."""
+
+
+class BrokerFillInvalid(RuntimeError):
+    """apply_broker_fill() received a fill that fails identity or economics validation (0286).
+
+    Raised when any field in the fill does not match the resolved local order or violates
+    numeric invariants (zero qty, negative price, NaN/Inf). The fill is rejected and no
+    DB state is mutated; callers must halt new submissions until the discrepancy is resolved.
+    """
 
 
 def _now_utc() -> datetime:
@@ -818,9 +828,9 @@ def process_open_orders(
         if _local_id:
             events_by_order.setdefault(_local_id, []).append(_e)
         else:
-            _log.warning(
-                "process_open_orders: cannot resolve event %s for broker_order_id=%r — skipping",
-                _e.event_type, _e.broker_order_id,
+            raise BrokerSettlementIndeterminate(
+                f"process_open_orders: cannot resolve event {_e.event_type} "
+                f"for broker_order_id={_e.broker_order_id!r} — halting (0285)"
             )
 
     for row in open_rows:
@@ -828,7 +838,10 @@ def process_open_orders(
         broker_oid = row["broker_order_id"] or row["order_id"]
         order = broker.get_order(broker_oid)
         if not order:
-            continue
+            raise BrokerSettlementIndeterminate(
+                f"process_open_orders: locally-open order {broker_oid!r} "
+                f"not found at broker — halting (0285)"
+            )
         intent_row = conn.execute(
             "SELECT * FROM trade_intents WHERE intent_id=?", (row["intent_id"],)
         ).fetchone()
@@ -955,6 +968,113 @@ def process_open_orders(
     return fills, pre_fill_rejections, orders_expired
 
 
+def sync_broker_state(
+    account_id: str,
+    conn: sqlite3.Connection,
+    broker: BrokerAdapter,
+) -> list[Fill]:
+    """Ingest all pending broker events as the first action in a cycle (0284).
+
+    Polls broker.poll_order_events() once and applies FILLED/PARTIALLY_FILLED events via
+    apply_broker_fill() and CANCELLED/EXPIRED events via apply_broker_order_event().
+    Called before process_new_intents() so fills arriving between cycles update local
+    economic state before any risk evaluation occurs.
+
+    Raises BrokerSettlementIndeterminate on unresolvable events (0285) or fill retrieval
+    failures; callers treat this as HALTED. Returns the list of newly applied fills.
+    """
+    all_events = broker.poll_order_events(account_id)
+    fills: list[Fill] = []
+
+    for _e in all_events:
+        _local_id = resolve_local_order_id(
+            _e.local_order_id, _e.broker_order_id,
+            getattr(_e, "client_order_id", None), conn,
+        )
+        if _local_id is None:
+            raise BrokerSettlementIndeterminate(
+                f"sync_broker_state: cannot resolve event {_e.event_type} "
+                f"for broker_order_id={_e.broker_order_id!r} — halting (0285)"
+            )
+
+        if _e.event_type in ("FILLED", "PARTIALLY_FILLED"):
+            _order_meta = conn.execute(
+                "SELECT symbol, side, intent_id FROM orders WHERE order_id=?", (_local_id,)
+            ).fetchone()
+            if _order_meta is None:
+                raise BrokerSettlementIndeterminate(
+                    f"sync_broker_state: resolved order {_local_id!r} not found in DB — halting"
+                )
+
+            if _e.broker_fill_id:
+                _bf = BrokerFill(
+                    broker_fill_id=_e.broker_fill_id,
+                    broker_order_id=_e.broker_order_id,
+                    symbol=_order_meta["symbol"],
+                    side=_order_meta["side"],
+                    qty=float(_e.fill_qty),
+                    price=float(_e.fill_price),
+                    filled_at=_e.filled_at or _now_utc().isoformat(),
+                    fee=float(_e.fee),
+                    local_order_id=_e.local_order_id,
+                    account_id=account_id,
+                    client_order_id=getattr(_e, "client_order_id", None),
+                )
+                _result = apply_broker_fill(_bf, account_id, conn)
+                if _result == FillResult.APPLIED:
+                    _fill_row = conn.execute(
+                        "SELECT * FROM fills WHERE fill_id=?", (_bf.broker_fill_id,)
+                    ).fetchone()
+                    if _fill_row:
+                        _fill = Fill.from_db_row(_fill_row)
+                        fills.append(_fill)
+                        _intent_row = conn.execute(
+                            "SELECT * FROM trade_intents WHERE intent_id=?",
+                            (_order_meta["intent_id"],),
+                        ).fetchone()
+                        if _intent_row:
+                            _write_executed_action(_fill, TradeIntent.from_db_row(_intent_row), conn)
+            else:
+                # No broker_fill_id — fetch authoritative fills (0283)
+                try:
+                    _auth_fills = broker.get_fills_for_order(_e.broker_order_id)
+                except Exception as _af_exc:
+                    raise BrokerSettlementIndeterminate(
+                        f"sync_broker_state: fill event for order {_local_id} has no broker_fill_id and "
+                        f"get_fills_for_order() raised {type(_af_exc).__name__} — halting"
+                    ) from _af_exc
+                if not _auth_fills:
+                    raise BrokerSettlementIndeterminate(
+                        f"sync_broker_state: fill event for order {_local_id} has no broker_fill_id and "
+                        f"get_fills_for_order() returned empty — halting"
+                    )
+                for _bf in _auth_fills:
+                    _result = apply_broker_fill(_bf, account_id, conn)
+                    if _result == FillResult.APPLIED:
+                        _fill_row = conn.execute(
+                            "SELECT * FROM fills WHERE fill_id=?", (_bf.broker_fill_id,)
+                        ).fetchone()
+                        if _fill_row:
+                            _fill = Fill.from_db_row(_fill_row)
+                            fills.append(_fill)
+                            _intent_row = conn.execute(
+                                "SELECT * FROM trade_intents WHERE intent_id=?",
+                                (_order_meta["intent_id"],),
+                            ).fetchone()
+                            if _intent_row:
+                                _write_executed_action(_fill, TradeIntent.from_db_row(_intent_row), conn)
+
+        elif _e.event_type in ("CANCELLED", "EXPIRED"):
+            apply_broker_order_event(_e, account_id, conn)
+        else:
+            _log.warning(
+                "sync_broker_state: unknown event_type %r for order_id=%r",
+                _e.event_type, _local_id,
+            )
+
+    return fills
+
+
 def run_execution_cycle(
     account_id: str,
     conn: sqlite3.Connection,
@@ -962,16 +1082,17 @@ def run_execution_cycle(
     *,
     trading_state: TradingReadyState = TradingReadyState.INITIALIZING,  # (0244) callers must earn TRADING_READY
 ) -> dict:
-    """Full execution cycle: refresh MtM → freshness gate → risk → fill retry (0199, 0210).
+    """Full execution cycle: broker sync → refresh MtM → freshness gate → risk → fill retry (0199, 0210, 0284).
 
     Order:
-    1. _refresh_market_prices   — fresh MtM using mark prices before any risk evaluation
-    2. _update_nav_high_water   — update peak NAV
-    3. _write_account_snapshot  — pre-cycle state
-    4. freshness gate           — block new intent authorization if any mark is stale (0221)
-    5. process_new_intents      — PENDING intents evaluated against fresh marks
-    6. process_open_orders      — retry open orders with pre-fill risk revalidation (0220)
-    7. _write_account_snapshot  — post-cycle state
+    1. sync_broker_state    — ingest pending fills/events before any risk evaluation (0284)
+    2. _refresh_market_prices   — fresh MtM using mark prices before any risk evaluation
+    3. _update_nav_high_water   — update peak NAV
+    4. _write_account_snapshot  — pre-cycle state
+    5. freshness gate           — block new intent authorization if any mark is stale (0221)
+    6. process_new_intents      — PENDING intents evaluated against fresh marks
+    7. process_open_orders      — retry open orders with pre-fill risk revalidation (0220)
+    8. _write_account_snapshot  — post-cycle state
     """
     if trading_state != TradingReadyState.TRADING_READY:
         return {
@@ -983,6 +1104,7 @@ def run_execution_cycle(
             "stale_symbols": [],
             "market_state": "unknown",
             "new_orders_created": 0,
+            "fills_on_sync": 0,
             "fills_on_submission": 0,
             "risk_rejections": 0,
             "working_orders_checked": 0,
@@ -999,6 +1121,7 @@ def run_execution_cycle(
         "stale_symbols": [],
         "market_state": "unknown",
         "new_orders_created": 0,
+        "fills_on_sync": 0,
         "fills_on_submission": 0,
         "risk_rejections": 0,
         "working_orders_checked": 0,
@@ -1015,6 +1138,19 @@ def run_execution_cycle(
         _log.error("POLICY_UNAVAILABLE for %s: %s — halting cycle fail-closed", account_id, exc)
         return {**_HALTED_BASE, "halt_reason": "POLICY_UNAVAILABLE"}
 
+    if broker is None:
+        broker = ShadowBrokerAdapter(conn, account_id)
+
+    # ── 0284: Broker truth sync — ingest all pending fills before risk evaluation ─
+    try:
+        sync_fills = sync_broker_state(account_id, conn, broker)
+    except BrokerSettlementIndeterminate as exc:
+        _log.error(
+            "SETTLEMENT_INDETERMINATE in broker sync for %s: %s — halting cycle; reconcile before next run",
+            account_id, exc,
+        )
+        return {**_HALTED_BASE, "halt_reason": "SETTLEMENT_INDETERMINATE"}
+
     try:
         _refresh_market_prices(account_id, conn)
         _update_nav_high_water(account_id, conn)
@@ -1030,9 +1166,6 @@ def run_execution_cycle(
     fresh, stale_symbols = _check_portfolio_mark_freshness(account_id, conn, stale_minutes)
     new_results: list[ExecutionResult] = []
     new_intents_blocked = False
-
-    if broker is None:
-        broker = ShadowBrokerAdapter(conn, account_id)
 
     if not fresh:
         _log.warning(
@@ -1092,11 +1225,12 @@ def run_execution_cycle(
         "stale_symbols": stale_symbols,
         "market_state": market_state,
         "new_orders_created": sum(1 for r in new_results if r.order_id is not None),
+        "fills_on_sync": len(sync_fills),
         "fills_on_submission": fills_on_submission,
         "risk_rejections": risk_rejections_new + pre_fill_rejections,
         "working_orders_checked": working_orders_checked,
         "fills_on_retry": len(retry_fills),
-        "total_fills": fills_on_submission + len(retry_fills),
+        "total_fills": len(sync_fills) + fills_on_submission + len(retry_fills),
         "orders_expired": orders_expired_retry,
         "results": [r.to_dict() for r in new_results],
     }
@@ -1232,8 +1366,60 @@ def apply_broker_fill(
 
     if order_id is None:
         raise UnknownFillError(
-            f"fill {bf.broker_fill_id}: cannot resolve order from "
+            f"fill {bf.broker_fill_id!r}: cannot resolve order from "
             f"local_order_id={bf.local_order_id!r}, broker_order_id={bf.broker_order_id!r} — quarantine"
+        )
+
+    # ── 0286: validate fill identity and economics before any DB write ─────────
+    if not bf.broker_fill_id:
+        raise BrokerFillInvalid(
+            f"fill for order {order_id}: broker_fill_id is empty — rejecting"
+        )
+    if not (qty > 0 and math.isfinite(qty)):
+        raise BrokerFillInvalid(
+            f"fill {bf.broker_fill_id}: qty={qty} must be positive and finite"
+        )
+    if not (price > 0 and math.isfinite(price)):
+        raise BrokerFillInvalid(
+            f"fill {bf.broker_fill_id}: price={price} must be positive and finite"
+        )
+    if not (fee >= 0 and math.isfinite(fee)):
+        raise BrokerFillInvalid(
+            f"fill {bf.broker_fill_id}: fee={fee} must be non-negative and finite"
+        )
+    if bf.account_id != account_id:
+        raise BrokerFillInvalid(
+            f"fill {bf.broker_fill_id}: account_id mismatch: "
+            f"fill={bf.account_id!r} expected={account_id!r}"
+        )
+
+    # Fetch order row for field validation; reused for mutation calculations inside try (0286)
+    _order_row = conn.execute(
+        "SELECT symbol, side, broker_order_id, quantity, fill_qty, fill_cash "
+        "FROM orders WHERE order_id=?",
+        (order_id,),
+    ).fetchone()
+    if _order_row is None:
+        raise UnknownFillError(
+            f"fill {bf.broker_fill_id}: order {order_id!r} not found — quarantine"
+        )
+    if bf.symbol != _order_row["symbol"]:
+        raise BrokerFillInvalid(
+            f"fill {bf.broker_fill_id}: symbol mismatch: "
+            f"fill={bf.symbol!r} order={_order_row['symbol']!r}"
+        )
+    if side != _order_row["side"]:
+        raise BrokerFillInvalid(
+            f"fill {bf.broker_fill_id}: side mismatch: "
+            f"fill={side!r} order={_order_row['side']!r}"
+        )
+    # Only validate broker_order_id when the order has a real broker-assigned ID; skip when
+    # the order is broker_order_id=NULL (client_order_id crash-recovery path via tier-3 resolver)
+    _order_broker_oid = _order_row["broker_order_id"]
+    if _order_broker_oid and bf.broker_order_id != _order_broker_oid:
+        raise BrokerFillInvalid(
+            f"fill {bf.broker_fill_id}: broker_order_id mismatch: "
+            f"fill={bf.broker_order_id!r} order={_order_broker_oid!r}"
         )
 
     try:
@@ -1250,16 +1436,8 @@ def apply_broker_fill(
             return FillResult.ALREADY_APPLIED  # fill already applied; no mutations needed
 
         # Only the transaction that wrote the fill row proceeds with mutations
-        order_row = conn.execute(
-            "SELECT quantity, fill_qty, fill_cash FROM orders WHERE order_id=?", (order_id,)
-        ).fetchone()
-        if order_row is None:
-            raise UnknownFillError(
-                f"fill {bf.broker_fill_id}: order {order_id!r} disappeared after resolve — quarantine"
-            )
-
-        total_qty = float(order_row["quantity"] or 0)
-        prior_fill_qty = float(order_row["fill_qty"] or 0)
+        total_qty = float(_order_row["quantity"] or 0)
+        prior_fill_qty = float(_order_row["fill_qty"] or 0)
         remaining = max(0.0, total_qty - prior_fill_qty)
         # Overfill guard: allow tiny float tolerance (0262)
         if qty > remaining + 1e-6:
@@ -1268,7 +1446,7 @@ def apply_broker_fill(
             )
 
         new_fill_qty = prior_fill_qty + qty
-        new_fill_cash = float(order_row["fill_cash"] or 0) + qty * price
+        new_fill_cash = float(_order_row["fill_cash"] or 0) + qty * price
         new_state = "FILLED" if new_fill_qty >= total_qty - 1e-9 else "PARTIALLY_FILLED"
         conn.execute(
             "UPDATE orders SET fill_qty=?, fill_cash=?, state=? WHERE order_id=?",
@@ -1335,7 +1513,7 @@ def apply_broker_fill(
         conn.commit()
         return FillResult.APPLIED
 
-    except (UnknownFillError, OverfillError, ImpossibleSellError):
+    except (UnknownFillError, OverfillError, ImpossibleSellError, BrokerFillInvalid):
         conn.rollback()
         raise
     except Exception:

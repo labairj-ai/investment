@@ -2672,7 +2672,7 @@ class TestComprehensiveTelemetry:
 
         required_keys = {
             "new_intents_processed", "new_intents_blocked", "stale_symbols",
-            "new_orders_created", "fills_on_submission", "risk_rejections",
+            "new_orders_created", "fills_on_sync", "fills_on_submission", "risk_rejections",
             "working_orders_checked", "fills_on_retry", "total_fills",
             "orders_expired", "results",
         }
@@ -2714,7 +2714,7 @@ class TestComprehensiveTelemetry:
         assert summary["new_intents_processed"] == 1
 
     def test_total_fills_is_sum(self):
-        """total_fills = fills_on_submission + fills_on_retry (0226)."""
+        """total_fills = fills_on_sync + fills_on_submission + fills_on_retry (0226, 0284)."""
         conn = _make_conn()
         with patch.object(execution_engine, "_refresh_market_prices"), \
              patch.object(execution_engine, "_update_nav_high_water"), \
@@ -2722,7 +2722,9 @@ class TestComprehensiveTelemetry:
              patch("trade_engine.market_data._get_executable_quote", return_value=None):
             summary = execution_engine.run_execution_cycle("AGENTIC_SHADOW_01", conn, trading_state=execution_engine.TradingReadyState.TRADING_READY)
 
-        assert summary["total_fills"] == summary["fills_on_submission"] + summary["fills_on_retry"]
+        assert summary["total_fills"] == (
+            summary["fills_on_sync"] + summary["fills_on_submission"] + summary["fills_on_retry"]
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

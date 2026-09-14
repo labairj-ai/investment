@@ -115,10 +115,6 @@ class BrokerAdapter(ABC):
         """
         ...
 
-    def attempt_fill(self, order: Order, quote: BrokerQuote) -> Optional[Fill]:
-        """Legacy simulation helper; use poll_order_events() for new lifecycle logic (0248)."""
-        raise NotImplementedError("Subclass must implement attempt_fill or use poll_order_events()")
-
     # Legacy helper — still used by some callers before full migration
     def get_account(self, account_id: str) -> TradingAccount:
         raise NotImplementedError
@@ -250,11 +246,15 @@ class ShadowBrokerAdapter(BrokerAdapter):
         )
 
     def get_order(self, order_id: str) -> Optional[BrokerOrder]:
-        """Return broker-normalized order view; never leaks internal Order model (0275)."""
+        """Return broker-normalized order view; never leaks internal Order model (0275).
+
+        Looks up by broker_order_id first (the caller passes a broker-native ID), then
+        falls back to order_id so both regular and reconciliation-imported orders are found.
+        """
         row = self._conn.execute(
             "SELECT order_id, broker_order_id, symbol, side, quantity, fill_qty, state, limit_price, client_order_id "
-            "FROM orders WHERE order_id=?",
-            (order_id,),
+            "FROM orders WHERE broker_order_id=? OR order_id=? LIMIT 1",
+            (order_id, order_id),
         ).fetchone()
         if row is None:
             return None

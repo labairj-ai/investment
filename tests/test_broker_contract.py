@@ -1,9 +1,16 @@
-"""Broker adapter contract tests — any concrete BrokerAdapter must pass (0241).
+"""Broker adapter contract tests — any concrete BrokerAdapter must pass (0241, 0287).
 
-Usage: mix BrokerAdapterContractMixin into a test class that provides make_adapter().
+Two contract suites:
+  BrokerAdapterContractMixin      — universal contract; every adapter must satisfy this.
+                                    No attempt_fill, no SQLite manipulation.
+  ShadowSimulationContractMixin   — shadow-only contract; attempt_fill and direct-fill tests.
+                                    Applied only to ShadowBrokerAdapter and FakeBrokerAdapter.
+
+Usage: mix BrokerAdapterContractMixin into any adapter test class.
+       Mix both into shadow/fake adapter test classes.
 
 Concrete implementations: TestShadowBrokerAdapterContract.
-When a paper or live adapter is written, add its class here.
+When a paper or live adapter is written, add a class that only mixes BrokerAdapterContractMixin.
 """
 from __future__ import annotations
 
@@ -192,49 +199,6 @@ class BrokerAdapterContractMixin:
         cancelled = adapter.get_order(ack.broker_order_id)
         assert cancelled.state == OrderState.CANCELLED
 
-    # ── 5. attempt_fill on WORKING order with valid quote produces Fill ────────
-
-    def test_full_fill_state(self):
-        conn = _make_conn()
-        with patch.object(market_calendar, "is_market_open", return_value=True):
-            adapter = self.make_adapter(conn)
-            intent = _make_intent(quantity=1.0, limit_price=100.0)
-            _insert_intent(conn, intent)
-            ack = adapter.submit_order(intent)
-            order = adapter.get_order(ack.broker_order_id)
-            bquote = _fresh_quote(bid=99.0, ask=100.0)
-            fill = adapter.attempt_fill(order, bquote)
-        assert fill is not None
-        assert fill.qty == pytest.approx(1.0)
-        filled = adapter.get_order(ack.broker_order_id)
-        assert filled.state == OrderState.FILLED
-
-    # ── 6. Partial fill → PARTIALLY_FILLED ────────────────────────────────────
-
-    def test_partial_fill_state(self):
-        conn = _make_conn()
-        with patch.object(market_calendar, "is_market_open", return_value=True):
-            adapter = self.make_adapter(conn)
-            intent = _make_intent(quantity=10.0, limit_price=100.0)
-            _insert_intent(conn, intent)
-            ack = adapter.submit_order(intent)
-            order = adapter.get_order(ack.broker_order_id)
-            # Directly update order qty to simulate partial fill state externally,
-            # then call attempt_fill. ShadowBrokerAdapter fills remaining qty in one shot,
-            # so we manually set fill_qty to simulate partial state first.
-            conn.execute(
-                "UPDATE orders SET fill_qty=5.0, state='PARTIALLY_FILLED' WHERE order_id=?",
-                (ack.broker_order_id,),
-            )
-            conn.commit()
-            partial_order = adapter.get_order(ack.broker_order_id)
-            assert partial_order.state == OrderState.PARTIALLY_FILLED
-            bquote = _fresh_quote(bid=99.0, ask=100.0)
-            fill2 = adapter.attempt_fill(partial_order, bquote)
-        assert fill2 is not None
-        final = adapter.get_order(ack.broker_order_id)
-        assert final.state == OrderState.FILLED
-
     # ── 7. get_positions returns list[BrokerPosition] ─────────────────────────
 
     def test_get_positions_returns_typed_list(self):
@@ -288,23 +252,6 @@ class BrokerAdapterContractMixin:
         assert isinstance(fills, list)
         assert len(fills) == 0
 
-    # ── 11. get_fills returns BrokerFill after fill ───────────────────────────
-
-    def test_get_fills_returns_broker_fill_type(self):
-        conn = _make_conn()
-        with patch.object(market_calendar, "is_market_open", return_value=True):
-            adapter = self.make_adapter(conn)
-            intent = _make_intent(quantity=1.0, limit_price=100.0)
-            _insert_intent(conn, intent)
-            ack = adapter.submit_order(intent)
-            order = adapter.get_order(ack.broker_order_id)
-            adapter.attempt_fill(order, _fresh_quote())
-        fills = adapter.get_fills("AGENTIC_SHADOW_01")
-        assert len(fills) == 1
-        assert isinstance(fills[0], BrokerFill)
-        assert fills[0].account_id == "AGENTIC_SHADOW_01"
-        assert fills[0].qty == pytest.approx(1.0)
-
     # ── 12. get_open_orders includes WORKING order ────────────────────────────
 
     def test_get_open_orders_returns_working_order(self):
@@ -331,7 +278,78 @@ class BrokerAdapterContractMixin:
         order_ids = [o.broker_order_id for o in open_orders]
         assert ack.broker_order_id not in order_ids
 
-    # ── 14. get_fills since filter excludes old fills ─────────────────────────
+
+# ── Shadow-only simulation contract ──────────────────────────────────────────
+
+class ShadowSimulationContractMixin:
+    """Shadow-simulation-specific contract: attempt_fill and direct fill staging (0287).
+
+    Mix into test classes for ShadowBrokerAdapter and FakeBrokerAdapter only.
+    Real external adapters (Alpaca, IBKR) must NOT be tested with this mixin —
+    they cannot implement attempt_fill().
+    """
+
+    def make_adapter(self, conn: sqlite3.Connection) -> BrokerAdapter:
+        raise NotImplementedError("Subclass must implement make_adapter(conn)")
+
+    # ── S1. attempt_fill on WORKING order with valid quote produces Fill ───────
+
+    def test_full_fill_state(self):
+        conn = _make_conn()
+        with patch.object(market_calendar, "is_market_open", return_value=True):
+            adapter = self.make_adapter(conn)
+            intent = _make_intent(quantity=1.0, limit_price=100.0)
+            _insert_intent(conn, intent)
+            ack = adapter.submit_order(intent)
+            order = adapter.get_order(ack.broker_order_id)
+            bquote = _fresh_quote(bid=99.0, ask=100.0)
+            fill = adapter.attempt_fill(order, bquote)
+        assert fill is not None
+        assert fill.qty == pytest.approx(1.0)
+        filled = adapter.get_order(ack.broker_order_id)
+        assert filled.state == OrderState.FILLED
+
+    # ── S2. Partial fill staging → PARTIALLY_FILLED ───────────────────────────
+
+    def test_partial_fill_state(self):
+        conn = _make_conn()
+        with patch.object(market_calendar, "is_market_open", return_value=True):
+            adapter = self.make_adapter(conn)
+            intent = _make_intent(quantity=10.0, limit_price=100.0)
+            _insert_intent(conn, intent)
+            ack = adapter.submit_order(intent)
+            order = adapter.get_order(ack.broker_order_id)
+            conn.execute(
+                "UPDATE orders SET fill_qty=5.0, state='PARTIALLY_FILLED' WHERE order_id=?",
+                (ack.broker_order_id,),
+            )
+            conn.commit()
+            partial_order = adapter.get_order(ack.broker_order_id)
+            assert partial_order.state == OrderState.PARTIALLY_FILLED
+            bquote = _fresh_quote(bid=99.0, ask=100.0)
+            fill2 = adapter.attempt_fill(partial_order, bquote)
+        assert fill2 is not None
+        final = adapter.get_order(ack.broker_order_id)
+        assert final.state == OrderState.FILLED
+
+    # ── S3. get_fills returns BrokerFill after attempt_fill ───────────────────
+
+    def test_get_fills_returns_broker_fill_type(self):
+        conn = _make_conn()
+        with patch.object(market_calendar, "is_market_open", return_value=True):
+            adapter = self.make_adapter(conn)
+            intent = _make_intent(quantity=1.0, limit_price=100.0)
+            _insert_intent(conn, intent)
+            ack = adapter.submit_order(intent)
+            order = adapter.get_order(ack.broker_order_id)
+            adapter.attempt_fill(order, _fresh_quote())
+        fills = adapter.get_fills("AGENTIC_SHADOW_01")
+        assert len(fills) == 1
+        assert isinstance(fills[0], BrokerFill)
+        assert fills[0].account_id == "AGENTIC_SHADOW_01"
+        assert fills[0].qty == pytest.approx(1.0)
+
+    # ── S4. get_fills since filter excludes old fills ─────────────────────────
 
     def test_get_fills_since_filter(self):
         conn = _make_conn()
@@ -351,8 +369,8 @@ class BrokerAdapterContractMixin:
 
 # ── Shadow reference implementation ──────────────────────────────────────────
 
-class TestShadowBrokerAdapterContract(BrokerAdapterContractMixin):
-    """ShadowBrokerAdapter passes the full BrokerAdapter contract (0241)."""
+class TestShadowBrokerAdapterContract(BrokerAdapterContractMixin, ShadowSimulationContractMixin):
+    """ShadowBrokerAdapter passes both the universal and shadow-simulation contracts (0241, 0287)."""
 
     def make_adapter(self, conn: sqlite3.Connection) -> BrokerAdapter:
         return ShadowBrokerAdapter(conn, "AGENTIC_SHADOW_01")

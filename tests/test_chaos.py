@@ -1875,3 +1875,457 @@ class TestImmutableFillIdentity:
         with patch.object(broker, "get_fills_for_order", return_value=[]):
             with pytest.raises(execution_engine.BrokerSettlementIndeterminate):
                 self._open_orders(conn, broker, [fill_event])
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# B8 — 0284: Pre-cycle broker truth sync
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestPreCycleBrokerSync:
+    """sync_broker_state() ingests fills before new intent evaluation (0284)."""
+
+    def _run_cycle(self, conn, broker):
+        with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
+             patch.object(execution_engine, "_refresh_market_prices"), \
+             patch.object(execution_engine, "_update_nav_high_water"), \
+             patch.object(execution_engine, "_write_account_snapshot"), \
+             patch.object(market_calendar, "is_market_open", return_value=True), \
+             patch("trade_engine.market_data._get_executable_quote", return_value=None):
+            return execution_engine.run_execution_cycle(
+                "AGENTIC_SHADOW_01", conn, broker=broker,
+                trading_state=execution_engine.TradingReadyState.TRADING_READY,
+            )
+
+    def test_fills_on_sync_appears_in_telemetry(self):
+        """run_execution_cycle result includes fills_on_sync key (0284)."""
+        conn = _make_conn()
+        result = self._run_cycle(conn, None)
+        assert "fills_on_sync" in result, f"fills_on_sync missing from: {list(result.keys())}"
+        assert result["fills_on_sync"] == 0
+
+    def test_total_fills_includes_sync_fills(self):
+        """total_fills = fills_on_sync + fills_on_submission + fills_on_retry (0284)."""
+        conn = _make_conn()
+        result = self._run_cycle(conn, None)
+        assert result["total_fills"] == (
+            result["fills_on_sync"] + result["fills_on_submission"] + result["fills_on_retry"]
+        )
+
+    def test_inter_cycle_fill_updates_cash_before_next_intent(self):
+        """Fill that arrives between cycles is ingested by sync before next intent risk evaluation (0284).
+
+        Scenario: submit a BUY ANET order in cycle 1 (no fill). Between cycles, the
+        broker fills it. Cycle 2: sync_broker_state ingests the fill (cash decreases).
+        The fill count appears in fills_on_sync, not fills_on_retry.
+        """
+        conn = _make_conn()
+
+        # Submit an order that stays WORKING (quote above limit so no immediate fill)
+        order_id = _submit_working_order(conn)
+        order_row = conn.execute(
+            "SELECT order_id, broker_order_id FROM orders WHERE order_id=?", (order_id,)
+        ).fetchone()
+        broker_oid = order_row["broker_order_id"] or order_id
+
+        cash_before = conn.execute(
+            "SELECT current_cash FROM trading_accounts WHERE account_id='AGENTIC_SHADOW_01'"
+        ).fetchone()["current_cash"]
+
+        # Broker fills the order between cycles: inject a FILLED event via poll_order_events
+        fill_event = BrokerOrderEvent(
+            event_type="FILLED",
+            broker_order_id=broker_oid,
+            local_order_id=order_id,
+            fill_qty=1.0,
+            fill_price=100.0,
+            filled_at=datetime.now(timezone.utc).isoformat(),
+            fee=0.0,
+            broker_fill_id="sync-fill-" + str(uuid.uuid4()),
+        )
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01")
+        with patch.object(broker, "poll_order_events", return_value=[fill_event]):
+            result = self._run_cycle(conn, broker)
+
+        # Fill was ingested by sync before new intent evaluation
+        assert result["execution_state"] == "OK"
+        assert result["fills_on_sync"] == 1
+
+        cash_after = conn.execute(
+            "SELECT current_cash FROM trading_accounts WHERE account_id='AGENTIC_SHADOW_01'"
+        ).fetchone()["current_cash"]
+        assert cash_after == pytest.approx(cash_before - 100.0, abs=0.01), (
+            f"Cash should decrease by 100 after sync fill; before={cash_before} after={cash_after}"
+        )
+
+    def test_sync_bsi_halts_before_new_intents(self):
+        """sync_broker_state raising BSI halts cycle before process_new_intents (0284, 0285)."""
+        conn = _make_conn()
+        _seed_intent(conn, qty=1.0, price=100.0)
+
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01", unresolvable_events=True)
+        result = self._run_cycle(conn, broker)
+
+        assert result["execution_state"] == "HALTED"
+        assert result["halt_reason"] == "SETTLEMENT_INDETERMINATE"
+        # No intents were processed (sync halted before process_new_intents)
+        assert result["new_intents_processed"] == 0
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# B8 — 0285: Unknown broker activity fails closed
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestUnknownBrokerActivityFails:
+    """Unresolvable events and missing orders halt instead of warn-and-skip (0285)."""
+
+    def _run_cycle(self, conn, broker):
+        with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
+             patch.object(execution_engine, "_refresh_market_prices"), \
+             patch.object(execution_engine, "_update_nav_high_water"), \
+             patch.object(execution_engine, "_write_account_snapshot"), \
+             patch.object(market_calendar, "is_market_open", return_value=True), \
+             patch("trade_engine.market_data._get_executable_quote", return_value=None):
+            return execution_engine.run_execution_cycle(
+                "AGENTIC_SHADOW_01", conn, broker=broker,
+                trading_state=execution_engine.TradingReadyState.TRADING_READY,
+            )
+
+    def _open_orders(self, conn, broker, events=None):
+        with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
+             patch.object(market_calendar, "is_market_open", return_value=True), \
+             patch("trade_engine.market_data._get_executable_quote", return_value=None):
+            if events is not None:
+                with patch.object(broker, "poll_order_events", return_value=events):
+                    return execution_engine.process_open_orders(
+                        "AGENTIC_SHADOW_01", conn, broker=broker
+                    )
+            return execution_engine.process_open_orders(
+                "AGENTIC_SHADOW_01", conn, broker=broker
+            )
+
+    def test_unresolvable_event_halts_cycle(self):
+        """Unresolvable FILLED event in sync_broker_state → HALTED, not warn-skip (0285)."""
+        conn = _make_conn()
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01", unresolvable_events=True)
+        result = self._run_cycle(conn, broker)
+
+        assert result["execution_state"] == "HALTED"
+        assert result["halt_reason"] == "SETTLEMENT_INDETERMINATE"
+
+    def test_unresolvable_event_in_process_open_orders_raises_bsi(self):
+        """Unresolvable event in process_open_orders raises BrokerSettlementIndeterminate (0285)."""
+        conn = _make_conn()
+        order_id = _submit_working_order(conn)
+
+        phantom_event = BrokerOrderEvent(
+            event_type="FILLED",
+            broker_order_id="phantom-no-local-match",
+            local_order_id=None,
+            fill_qty=1.0,
+            fill_price=100.0,
+            filled_at=datetime.now(timezone.utc).isoformat(),
+            fee=0.0,
+            broker_fill_id="phantom-fill-001",
+        )
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01")
+        with pytest.raises(execution_engine.BrokerSettlementIndeterminate):
+            self._open_orders(conn, broker, events=[phantom_event])
+
+    def test_locally_open_order_missing_at_broker_raises_bsi(self):
+        """Locally-WORKING order returning None from broker.get_order() → BSI (0285)."""
+        conn = _make_conn()
+        _submit_working_order(conn)
+
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01")
+        with patch.object(broker, "get_order", return_value=None):
+            with pytest.raises(execution_engine.BrokerSettlementIndeterminate):
+                self._open_orders(conn, broker)
+
+    def test_locally_open_order_missing_at_broker_halts_cycle(self):
+        """Locally-WORKING order missing at broker in process_open_orders → cycle HALTED (0285)."""
+        conn = _make_conn()
+        _submit_working_order(conn)
+
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01")
+        # Sync sees no events (poll returns []), but process_open_orders sees the WORKING order
+        # and get_order returns None → BSI → HALTED
+        with patch.object(broker, "poll_order_events", return_value=[]), \
+             patch.object(broker, "get_order", return_value=None):
+            result = self._run_cycle(conn, broker)
+
+        assert result["execution_state"] == "HALTED"
+        assert result["halt_reason"] == "SETTLEMENT_INDETERMINATE"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# B8 — 0286: Broker fill invariant validation
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestBrokerFillInvalidGuard:
+    """apply_broker_fill() rejects fills that fail identity or economics invariants (0286)."""
+
+    def _make_valid_fill(self, order_id: str) -> BrokerFill:
+        return BrokerFill(
+            broker_fill_id="valid-fill-001",
+            broker_order_id=order_id,
+            symbol="ANET",
+            side="BUY",
+            qty=1.0,
+            price=100.0,
+            filled_at=datetime.now(timezone.utc).isoformat(),
+            fee=0.0,
+            local_order_id=order_id,
+            account_id="AGENTIC_SHADOW_01",
+        )
+
+    def _assert_no_fill_written(self, conn, fill_id: str) -> None:
+        count = conn.execute("SELECT COUNT(*) FROM fills WHERE fill_id=?", (fill_id,)).fetchone()[0]
+        assert count == 0, f"Expected no fill row for {fill_id!r} but found {count}"
+
+    def test_empty_broker_fill_id_raises(self):
+        """broker_fill_id='' → BrokerFillInvalid; no fill row written (0286)."""
+        conn = _make_conn()
+        order_id = _submit_working_order(conn)
+        bf = self._make_valid_fill(order_id)._replace(broker_fill_id="")
+        with pytest.raises(execution_engine.BrokerFillInvalid, match="broker_fill_id is empty"):
+            apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+
+    def test_zero_qty_raises(self):
+        """qty=0 → BrokerFillInvalid; no fill row written (0286)."""
+        conn = _make_conn()
+        order_id = _submit_working_order(conn)
+        bf = BrokerFill(
+            broker_fill_id="fill-zero-qty",
+            broker_order_id=order_id,
+            symbol="ANET", side="BUY", qty=0.0, price=100.0,
+            filled_at=datetime.now(timezone.utc).isoformat(),
+            fee=0.0, local_order_id=order_id,
+            account_id="AGENTIC_SHADOW_01",
+        )
+        with pytest.raises(execution_engine.BrokerFillInvalid, match="qty="):
+            apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+        self._assert_no_fill_written(conn, "fill-zero-qty")
+
+    def test_negative_qty_raises(self):
+        """qty<0 → BrokerFillInvalid (0286)."""
+        conn = _make_conn()
+        order_id = _submit_working_order(conn)
+        bf = BrokerFill(
+            broker_fill_id="fill-neg-qty",
+            broker_order_id=order_id,
+            symbol="ANET", side="BUY", qty=-1.0, price=100.0,
+            filled_at=datetime.now(timezone.utc).isoformat(),
+            fee=0.0, local_order_id=order_id,
+            account_id="AGENTIC_SHADOW_01",
+        )
+        with pytest.raises(execution_engine.BrokerFillInvalid, match="qty="):
+            apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+        self._assert_no_fill_written(conn, "fill-neg-qty")
+
+    def test_nan_qty_raises(self):
+        """qty=NaN → BrokerFillInvalid (0286)."""
+        import math as _math
+        conn = _make_conn()
+        order_id = _submit_working_order(conn)
+        bf = BrokerFill(
+            broker_fill_id="fill-nan-qty",
+            broker_order_id=order_id,
+            symbol="ANET", side="BUY", qty=_math.nan, price=100.0,
+            filled_at=datetime.now(timezone.utc).isoformat(),
+            fee=0.0, local_order_id=order_id,
+            account_id="AGENTIC_SHADOW_01",
+        )
+        with pytest.raises(execution_engine.BrokerFillInvalid, match="qty="):
+            apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+        self._assert_no_fill_written(conn, "fill-nan-qty")
+
+    def test_zero_price_raises(self):
+        """price=0 → BrokerFillInvalid (0286)."""
+        conn = _make_conn()
+        order_id = _submit_working_order(conn)
+        bf = BrokerFill(
+            broker_fill_id="fill-zero-price",
+            broker_order_id=order_id,
+            symbol="ANET", side="BUY", qty=1.0, price=0.0,
+            filled_at=datetime.now(timezone.utc).isoformat(),
+            fee=0.0, local_order_id=order_id,
+            account_id="AGENTIC_SHADOW_01",
+        )
+        with pytest.raises(execution_engine.BrokerFillInvalid, match="price="):
+            apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+        self._assert_no_fill_written(conn, "fill-zero-price")
+
+    def test_negative_fee_raises(self):
+        """fee<0 → BrokerFillInvalid (0286)."""
+        conn = _make_conn()
+        order_id = _submit_working_order(conn)
+        bf = BrokerFill(
+            broker_fill_id="fill-neg-fee",
+            broker_order_id=order_id,
+            symbol="ANET", side="BUY", qty=1.0, price=100.0,
+            filled_at=datetime.now(timezone.utc).isoformat(),
+            fee=-1.0, local_order_id=order_id,
+            account_id="AGENTIC_SHADOW_01",
+        )
+        with pytest.raises(execution_engine.BrokerFillInvalid, match="fee="):
+            apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+        self._assert_no_fill_written(conn, "fill-neg-fee")
+
+    def test_account_id_mismatch_raises(self):
+        """fill.account_id != execution account_id → BrokerFillInvalid (0286)."""
+        conn = _make_conn()
+        order_id = _submit_working_order(conn)
+        bf = BrokerFill(
+            broker_fill_id="fill-wrong-account",
+            broker_order_id=order_id,
+            symbol="ANET", side="BUY", qty=1.0, price=100.0,
+            filled_at=datetime.now(timezone.utc).isoformat(),
+            fee=0.0, local_order_id=order_id,
+            account_id="WRONG_ACCOUNT",
+        )
+        with pytest.raises(execution_engine.BrokerFillInvalid, match="account_id mismatch"):
+            apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+        self._assert_no_fill_written(conn, "fill-wrong-account")
+
+    def test_symbol_mismatch_raises(self):
+        """fill.symbol != order.symbol → BrokerFillInvalid (0286)."""
+        conn = _make_conn()
+        order_id = _submit_working_order(conn)
+        bf = BrokerFill(
+            broker_fill_id="fill-wrong-symbol",
+            broker_order_id=order_id,
+            symbol="AAPL",
+            side="BUY", qty=1.0, price=100.0,
+            filled_at=datetime.now(timezone.utc).isoformat(),
+            fee=0.0, local_order_id=order_id,
+            account_id="AGENTIC_SHADOW_01",
+        )
+        with pytest.raises(execution_engine.BrokerFillInvalid, match="symbol mismatch"):
+            apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+        self._assert_no_fill_written(conn, "fill-wrong-symbol")
+
+    def test_side_mismatch_raises(self):
+        """fill.side != order.side → BrokerFillInvalid (0286)."""
+        conn = _make_conn()
+        order_id = _submit_working_order(conn)
+        bf = BrokerFill(
+            broker_fill_id="fill-wrong-side",
+            broker_order_id=order_id,
+            symbol="ANET", side="SELL",
+            qty=1.0, price=100.0,
+            filled_at=datetime.now(timezone.utc).isoformat(),
+            fee=0.0, local_order_id=order_id,
+            account_id="AGENTIC_SHADOW_01",
+        )
+        with pytest.raises(execution_engine.BrokerFillInvalid, match="side mismatch"):
+            apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+        self._assert_no_fill_written(conn, "fill-wrong-side")
+
+    def test_broker_order_id_mismatch_raises_when_set(self):
+        """fill.broker_order_id != resolved order.broker_order_id (when set) → BrokerFillInvalid (0286)."""
+        conn = _make_conn()
+        # Use distinct_broker_id mode so broker_order_id is set in the DB
+        intent = _make_intent(quantity=1.0, limit_price=100.0)
+        _insert_intent(conn, intent)
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01", distinct_broker_id=True)
+
+        q_ask = 102.0
+        q_bid = 101.0
+        class _NoFill:
+            bid = q_bid
+            ask = q_ask
+            market_timestamp = None
+            retrieved_at = datetime.now(timezone.utc).isoformat()
+            source = "test"
+
+        with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
+             patch.object(market_calendar, "is_market_open", return_value=True), \
+             patch("trade_engine.market_data._get_executable_quote", return_value=_NoFill()):
+            execution_engine.process_intent(intent.intent_id, conn, broker=broker)
+
+        order_row = conn.execute(
+            "SELECT order_id, broker_order_id FROM orders WHERE intent_id=?",
+            (intent.intent_id,),
+        ).fetchone()
+        local_oid = order_row["order_id"]
+        real_broker_oid = order_row["broker_order_id"]
+
+        bf = BrokerFill(
+            broker_fill_id="fill-wrong-broker-oid",
+            broker_order_id="completely-wrong-broker-id",  # wrong
+            symbol="ANET", side="BUY", qty=1.0, price=100.0,
+            filled_at=datetime.now(timezone.utc).isoformat(),
+            fee=0.0, local_order_id=local_oid,
+            account_id="AGENTIC_SHADOW_01",
+        )
+        with pytest.raises(execution_engine.BrokerFillInvalid, match="broker_order_id mismatch"):
+            apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+        self._assert_no_fill_written(conn, "fill-wrong-broker-oid")
+
+    def test_valid_fill_applied_after_validation(self):
+        """Valid fill passes all invariant checks and is applied normally (0286)."""
+        conn = _make_conn()
+        order_id = _submit_working_order(conn)
+        bf = self._make_valid_fill(order_id)
+        result = apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+        assert result == FillResult.APPLIED
+        count = conn.execute(
+            "SELECT COUNT(*) FROM fills WHERE fill_id=?", ("valid-fill-001",)
+        ).fetchone()[0]
+        assert count == 1
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# B8 — 0287: External adapter contract and paper-only guard
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestAlpacaAdapterPaperGuard:
+    """AlpacaAdapter raises at construction if paper=True + live endpoint (0287)."""
+
+    def test_paper_true_paper_url_constructs(self):
+        """paper=True with paper URL constructs without error (0287)."""
+        from trade_engine.alpaca_adapter import AlpacaAdapter
+        adapter = AlpacaAdapter(
+            api_key="key", api_secret="secret",
+            base_url="https://paper-api.alpaca.markets", paper=True,
+        )
+        assert adapter is not None
+
+    def test_paper_true_live_url_raises(self):
+        """paper=True with a live URL (no 'paper' substring) raises ValueError at construction (0287)."""
+        from trade_engine.alpaca_adapter import AlpacaAdapter
+        with pytest.raises(ValueError, match="paper"):
+            AlpacaAdapter(
+                api_key="key", api_secret="secret",
+                base_url="https://api.alpaca.markets", paper=True,
+            )
+
+    def test_paper_false_raises(self):
+        """paper=False always raises — live trading not supported (0287)."""
+        from trade_engine.alpaca_adapter import AlpacaAdapter
+        with pytest.raises(ValueError, match="paper=True"):
+            AlpacaAdapter(
+                api_key="key", api_secret="secret",
+                base_url="https://api.alpaca.markets", paper=False,
+            )
+
+
+class TestUniversalContractNoAttemptFill:
+    """BrokerAdapterContractMixin does not require or test attempt_fill (0287)."""
+
+    def test_fake_broker_satisfies_universal_contract(self):
+        """FakeBrokerAdapter passes BrokerAdapterContractMixin without attempt_fill (0287)."""
+        from tests.test_broker_contract import BrokerAdapterContractMixin, _make_conn as _bac_make_conn
+        # Verify the mixin has no test that calls attempt_fill
+        mixin_tests = [
+            name for name in dir(BrokerAdapterContractMixin)
+            if name.startswith("test_")
+        ]
+        # attempt_fill-related tests moved to ShadowSimulationContractMixin
+        import inspect
+        for test_name in mixin_tests:
+            src = inspect.getsource(getattr(BrokerAdapterContractMixin, test_name))
+            assert "attempt_fill" not in src, (
+                f"BrokerAdapterContractMixin.{test_name} calls attempt_fill — "
+                f"must be in ShadowSimulationContractMixin instead"
+            )
