@@ -1,14 +1,16 @@
-"""AlpacaAdapter: stub external broker adapter for Alpaca paper trading (0287).
+"""AlpacaAdapter: stub external broker adapter for Alpaca paper trading (0287, 0291).
 
 This is a stub — only the constructor and paper-safety guard are implemented.
 Full method implementations are left for when live paper integration begins.
 
-Paper-only guard: if paper=True (the only supported mode) and the provided
-base_url does not contain the substring "paper", construction raises at
-init time so misconfiguration is caught immediately, not at order submission.
+Paper-only guard (0291): construction validates that base_url uses HTTPS and has
+the exact hostname paper-api.alpaca.markets. Substring checks are insufficient —
+a look-alike domain such as something-paper.example.com would pass a substring
+test but connect to the wrong host.
 """
 from __future__ import annotations
 
+import urllib.parse
 from typing import Optional
 
 from .broker_adapter import BrokerAdapter
@@ -18,8 +20,8 @@ from .broker_types import (
 )
 from .models import Fill, Order, TradingAccount, TradeIntent
 
-_PAPER_SENTINEL = "paper"
-_ALPACA_PAPER_URL = "https://paper-api.alpaca.markets"
+_ALPACA_PAPER_HOSTNAME = "paper-api.alpaca.markets"
+_ALPACA_PAPER_URL = f"https://{_ALPACA_PAPER_HOSTNAME}"
 
 # Mapping from Alpaca native trade_updates event types to normalized BrokerOrderEvent
 # event_type values (0290). None = informational only; no order state change required.
@@ -43,11 +45,14 @@ _ALPACA_NATIVE_TO_NORMALIZED: dict[str, str | None] = {
 
 
 class AlpacaAdapter(BrokerAdapter):
-    """Alpaca broker adapter — paper trading only (0287).
+    """Alpaca broker adapter — paper trading only (0287, 0291).
 
-    Construction guard: raises ValueError at init time if paper=True (the only
-    supported mode) but base_url does not contain "paper". This prevents accidental
-    connection to a live endpoint through misconfiguration.
+    Construction guard (0291): raises ValueError if paper=True (the only supported
+    mode) and base_url does not pass the exact-hostname allowlist check:
+      - scheme must be "https"
+      - hostname must be exactly "paper-api.alpaca.markets"
+    Substring checks are not sufficient — look-alike domains would pass them.
+    Use _allow_custom_url=True only in tests that need a non-standard URL.
     """
 
     requires_market_timestamp = True  # Alpaca supplies exchange observation time
@@ -59,20 +64,30 @@ class AlpacaAdapter(BrokerAdapter):
         base_url: str = _ALPACA_PAPER_URL,
         *,
         paper: bool = True,
+        expected_account_id: Optional[str] = None,
+        _allow_custom_url: bool = False,  # test-only escape hatch; never set in production
     ) -> None:
         if not paper:
             raise ValueError(
                 "AlpacaAdapter only supports paper=True; live trading is not yet implemented"
             )
-        if _PAPER_SENTINEL not in base_url:
-            raise ValueError(
-                f"AlpacaAdapter: paper=True requires a paper endpoint URL "
-                f"(expected URL containing {_PAPER_SENTINEL!r}); got {base_url!r}. "
-                f"Set base_url to {_ALPACA_PAPER_URL!r} for paper trading."
-            )
+        if not _allow_custom_url:
+            _parsed = urllib.parse.urlparse(base_url)
+            if _parsed.scheme != "https":
+                raise ValueError(
+                    f"AlpacaAdapter: base_url must use HTTPS; "
+                    f"got scheme {_parsed.scheme!r} in {base_url!r}"
+                )
+            if _parsed.hostname != _ALPACA_PAPER_HOSTNAME:
+                raise ValueError(
+                    f"AlpacaAdapter: base_url hostname must be exactly "
+                    f"{_ALPACA_PAPER_HOSTNAME!r}; got {_parsed.hostname!r} in {base_url!r}. "
+                    f"Set base_url to {_ALPACA_PAPER_URL!r} for paper trading."
+                )
         self._api_key = api_key
         self._api_secret = api_secret
         self._base_url = base_url
+        self._expected_account_id = expected_account_id
 
     # ── BrokerAdapter ABC stubs (not yet implemented) ─────────────────────────
 

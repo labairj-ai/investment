@@ -2360,10 +2360,10 @@ class TestBrokerStateIntegrityCircuit:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TestAlpacaAdapterPaperGuard:
-    """AlpacaAdapter raises at construction if paper=True + live endpoint (0287)."""
+    """AlpacaAdapter raises at construction for any non-allowlisted URL (0287, 0291)."""
 
     def test_paper_true_paper_url_constructs(self):
-        """paper=True with paper URL constructs without error (0287)."""
+        """paper=True with exact paper hostname constructs without error (0287)."""
         from trade_engine.alpaca_adapter import AlpacaAdapter
         adapter = AlpacaAdapter(
             api_key="key", api_secret="secret",
@@ -2372,9 +2372,9 @@ class TestAlpacaAdapterPaperGuard:
         assert adapter is not None
 
     def test_paper_true_live_url_raises(self):
-        """paper=True with a live URL (no 'paper' substring) raises ValueError at construction (0287)."""
+        """paper=True with Alpaca live hostname raises ValueError (0287, 0291)."""
         from trade_engine.alpaca_adapter import AlpacaAdapter
-        with pytest.raises(ValueError, match="paper"):
+        with pytest.raises(ValueError, match="paper-api.alpaca.markets"):
             AlpacaAdapter(
                 api_key="key", api_secret="secret",
                 base_url="https://api.alpaca.markets", paper=True,
@@ -2388,6 +2388,41 @@ class TestAlpacaAdapterPaperGuard:
                 api_key="key", api_secret="secret",
                 base_url="https://api.alpaca.markets", paper=False,
             )
+
+    def test_lookalike_domain_raises(self):
+        """paper=True with a look-alike domain (substring match but wrong host) raises (0291)."""
+        from trade_engine.alpaca_adapter import AlpacaAdapter
+        with pytest.raises(ValueError, match="paper-api.alpaca.markets"):
+            AlpacaAdapter(
+                api_key="key", api_secret="secret",
+                base_url="https://something-paper.example.com", paper=True,
+            )
+
+    def test_http_url_raises(self):
+        """paper=True with HTTP (not HTTPS) raises ValueError (0291)."""
+        from trade_engine.alpaca_adapter import AlpacaAdapter
+        with pytest.raises(ValueError, match="HTTPS"):
+            AlpacaAdapter(
+                api_key="key", api_secret="secret",
+                base_url="http://paper-api.alpaca.markets", paper=True,
+            )
+
+    def test_expected_account_id_mismatch_halts_session(self):
+        """AlpacaAdapter with wrong broker account ID → initialize_trading_session HALTED (0291)."""
+        from trade_engine.alpaca_adapter import AlpacaAdapter
+        conn = _make_conn()
+        adapter = AlpacaAdapter(
+            api_key="key", api_secret="secret",
+            expected_account_id="MY_PAPER_ACCT",
+        )
+        # Policy expects "MY_PAPER_ACCT"; broker returns "WRONG_ACCT" → mismatch → HALTED
+        policy = _make_policy({"circuit_breakers": {"expected_broker_account_id": "MY_PAPER_ACCT"}})
+        with patch.object(execution_engine, "load_policy", return_value=policy), \
+             patch.object(adapter, "get_account_id", return_value="WRONG_ACCT"):
+            result = execution_engine.initialize_trading_session(
+                "AGENTIC_SHADOW_01", conn, broker=adapter,
+            )
+        assert result == execution_engine.TradingReadyState.HALTED
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

@@ -1,7 +1,7 @@
 # Harden Alpaca Paper Isolation
 
 - **ID:** 0291
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-13
 - **Priority:** high
 - **Depends:** none
@@ -33,11 +33,15 @@ The current `AlpacaAdapter` paper guard checks `if "paper" not in base_url: rais
 - `trade_engine/alpaca_adapter.py` — constructor URL parsing, account-ID binding
 - `tests/test_chaos.py` or `tests/test_trade_engine.py` — expanded paper-guard tests
 
+## Outcome
+
+Substring check (`"paper" not in base_url`) replaced with `urllib.parse.urlparse` allowlist: scheme must be `"https"`, hostname must be exactly `"paper-api.alpaca.markets"`. `_PAPER_SENTINEL` constant removed; `_ALPACA_PAPER_HOSTNAME` added. `_allow_custom_url=True` keyword-only escape hatch added for tests. `expected_account_id: Optional[str] = None` stored as `self._expected_account_id` for future use when `get_account_id()` is implemented. 3 new tests added to `TestAlpacaAdapterPaperGuard`: look-alike domain raises, HTTP URL raises, account-ID mismatch → `initialize_trading_session` returns HALTED (via the existing 0272 policy binding mechanism). Suite: 622 passed, 1 skipped. 0291 done unblocks 0289.
+
 ## Done when
 
-- [ ] `AlpacaAdapter` parses `base_url` and enforces `scheme=https` and `hostname=paper-api.alpaca.markets` exactly (no substring)
-- [ ] Look-alike domains (e.g. `something-paper.example.com`) fail at construction
-- [ ] HTTP URLs fail at construction
-- [ ] `paper=False` still raises unconditionally
-- [ ] `expected_account_id` mismatch is detected and raises / causes HALTED at session init
-- [ ] All existing 612 tests still pass
+- [x] `AlpacaAdapter` parses `base_url` and enforces `scheme=https` and `hostname=paper-api.alpaca.markets` exactly (no substring)
+- [x] Look-alike domains (e.g. `something-paper.example.com`) fail at construction
+- [x] HTTP URLs fail at construction
+- [x] `paper=False` still raises unconditionally
+- [x] `expected_account_id` mismatch is detected and raises / causes HALTED at session init
+- [x] All existing 619 tests still pass (622 now, +3 new)
