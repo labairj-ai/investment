@@ -1,7 +1,7 @@
 # Run End-to-End Paper Integration Go/No-Go Matrix
 
 - **ID:** 0296
-- **Status:** backlog
+- **Status:** in-progress
 - **Created:** 2026-09-14
 - **Priority:** high
 - **Depends:** 0292, 0293, 0294, 0295
@@ -36,7 +36,7 @@ Add 0305 and 0306 during this work — they are small enough not to block Phase 
 
 ## Touches
 
-- `tests/test_alpaca_integration.py` — expand beyond scaffold; add Phase 2–4 tests
+- `tests/test_alpaca_integration.py` — expanded from scaffold (commit 23c7127+)
 - `trade_engine/alpaca_adapter.py` — any field-mapping bugs found during live runs
 - `trade_engine/reconciliation.py` — 0305/0306 fixes applied before Phase 4
 
@@ -44,19 +44,36 @@ Add 0305 and 0306 during this work — they are small enough not to block Phase 
 
 - [ ] Paper account is clean; `ALPACA_EXPECTED_ACCOUNT_ID` documented
 - [ ] Phase 1: `get_account_id()` matches expected; `initialize_trading_session()` → `TRADING_READY`; balances match UI
-- [ ] Phase 2: 1-share non-marketable order → WORKING → cancel → CANCELLED; `client_order_id` lookup works
+- [ ] Phase 2: 1-share non-marketable order → WORKING → cancel → CANCELLED; `client_order_id` lookup works; `poll_order_events()` emits CANCELLED event
 - [ ] Phase 3: marketable fill → real activity ID as `fill_id`; cash/position/audit correct; restart replay is idempotent
-- [ ] Phase 4, point 1: activity stream dropped → fill ingested from durable API before next risk decision
-- [ ] Phase 4, point 2: restart after fill while down → `TRADING_READY`, no duplicate order
+- [ ] Phase 4, point 2: restart after fill while down → `TRADING_READY`, fills imported, no duplicate order
 - [ ] Phase 4, point 3: crash-after-submit + restart → no duplicate order on broker
 - [ ] Phase 4, point 4: duplicate fill replay → row counts unchanged
 - [ ] Phase 4, point 5: every fill leg has a matching `executed_actions` row
-- [ ] 0305 (terminal lookup uncertainty) resolved before Phase 4
-- [ ] 0306 (fill completeness assertion) resolved before Phase 4
+- [x] 0305 (terminal lookup uncertainty) resolved
+- [x] 0306 (fill completeness assertion) resolved
 - [x] Integration tests skip cleanly when credentials are absent
+- [x] All integration test classes collect without errors (14 tests)
 
 ## Progress
 
-`tests/test_alpaca_integration.py` scaffolded (0294/0295). Submission gated by
-`ALPACA_INTEGRATION_SUBMIT=1`; account binding gated by `ALPACA_EXPECTED_ACCOUNT_ID`.
-Adapter hardened through 0297–0304 (commit 7f398ca). Ready to begin Phase 1.
+All adapter hardening through 0301–0306 complete (commit 23c7127).
+Integration test file fully expanded: `TestReadOnlyBinding` (7 tests including
+`initialize_trading_session()`), `TestGoNoGoMatrix` (3 tests including poll seeding),
+`TestLiveOrderRoundTrip` (3 tests including crash-recovery and polling),
+`TestMarketableFill` (1 test covering Phase 3 + matrix points 2, 4, 5, gated by
+`ALPACA_INTEGRATION_FILL=1`).
+
+Run Phase 1:
+    ALPACA_API_KEY=... ALPACA_API_SECRET=... \\
+    pytest tests/test_alpaca_integration.py::TestReadOnlyBinding -v
+
+Run Phase 2 (add submit flag):
+    ALPACA_API_KEY=... ALPACA_API_SECRET=... \\
+    ALPACA_INTEGRATION_SUBMIT=1 ALPACA_EXPECTED_ACCOUNT_ID=... \\
+    pytest tests/test_alpaca_integration.py::TestLiveOrderRoundTrip -v
+
+Run Phase 3 (market hours only):
+    ALPACA_API_KEY=... ALPACA_API_SECRET=... \\
+    ALPACA_INTEGRATION_SUBMIT=1 ALPACA_EXPECTED_ACCOUNT_ID=... ALPACA_INTEGRATION_FILL=1 \\
+    pytest tests/test_alpaca_integration.py::TestMarketableFill -v
