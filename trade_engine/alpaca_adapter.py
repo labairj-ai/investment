@@ -1,13 +1,18 @@
 """AlpacaAdapter: external broker adapter for Alpaca paper trading (0287, 0291, 0294, 0295).
 
-Paper-only guard (0291): construction validates that base_url uses HTTPS and has
-the exact hostname paper-api.alpaca.markets. Substring checks are insufficient —
-a look-alike domain such as something-paper.example.com would pass a substring
-test but connect to the wrong host.
+Paper-only guard (0291): construction validates that base_url uses HTTPS and has the exact
+hostname paper-api.alpaca.markets, and data_url uses HTTPS with exact hostname
+data.alpaca.markets (0300). Substring checks are insufficient.
 
 Read-only methods (0294): account identity, positions, open orders, fills, quote.
 Order mutation (0295): submit_order, cancel_order, get_order, poll_order_events,
 behind a submission_enabled=False safety gate.
+
+API contract fixes (0297): correct client-order lookup endpoint, FILL activity endpoint,
+204 No Content handling, RequestException catch-all.
+Fill account identity (0298): _account_id cache propagated to all BrokerFill objects.
+Polling correctness (0299): per-order refresh instead of submitted-at watermark.
+Hardening (0300): data_url allowlist, fail-closed on unknown order statuses.
 """
 from __future__ import annotations
 
@@ -26,60 +31,91 @@ from .execution_engine import BrokerSettlementIndeterminate, BrokerSubmissionInd
 from .models import TradeIntent
 
 _ALPACA_PAPER_HOSTNAME = "paper-api.alpaca.markets"
+_ALPACA_DATA_HOSTNAME = "data.alpaca.markets"
 _ALPACA_PAPER_URL = f"https://{_ALPACA_PAPER_HOSTNAME}"
-_ALPACA_DATA_URL = "https://data.alpaca.markets"
+_ALPACA_DATA_URL = f"https://{_ALPACA_DATA_HOSTNAME}"
 
 # Mapping from Alpaca native trade_updates event types to normalized BrokerOrderEvent
 # event_type values (0290). None = informational only; no order state change required.
 _ALPACA_NATIVE_TO_NORMALIZED: dict[str, str | None] = {
-    "fill":           "FILLED",
-    "partial_fill":   "PARTIALLY_FILLED",
-    "canceled":       "CANCELLED",
-    "expired":        "EXPIRED",
-    "rejected":       "REJECTED",
+    "fill":            "FILLED",
+    "partial_fill":    "PARTIALLY_FILLED",
+    "canceled":        "CANCELLED",
+    "expired":         "EXPIRED",
+    "rejected":        "REJECTED",
     # Informational lifecycle notifications — adapters may safely ignore these:
-    "new":            None,
-    "accepted":       None,
-    "pending_new":    None,
-    "replaced":       None,
-    "pending_cancel": None,
+    "new":             None,
+    "accepted":        None,
+    "pending_new":     None,
+    "replaced":        None,
+    "pending_cancel":  None,
     "pending_replace": None,
-    "held":           None,
-    "done_for_day":   None,
-    "suspended":      None,
+    "held":            None,
+    "done_for_day":    None,
+    "suspended":       None,
 }
 
-# Map Alpaca order status strings → normalized state strings
+# Full documented Alpaca order status → normalized BrokerOrderState (0300).
+# Any status NOT in this map causes _normalize_order_status() to fail closed —
+# unknown broker state must never silently become WORKING.
 _ALPACA_ORDER_STATUS_MAP: dict[str, str] = {
-    "new":              "WORKING",
-    "accepted":         "WORKING",
-    "pending_new":      "WORKING",
-    "partially_filled": "PARTIALLY_FILLED",
-    "filled":           "FILLED",
-    "canceled":         "CANCELLED",
-    "expired":          "EXPIRED",
-    "rejected":         "REJECTED",
-    "replaced":         "CANCELLED",
-    "done_for_day":     "EXPIRED",
-    "suspended":        "WORKING",
-    "held":             "WORKING",
+    "new":                  "WORKING",
+    "accepted":             "WORKING",
+    "accepted_for_bidding": "WORKING",
+    "pending_new":          "WORKING",
+    "pending_cancel":       "WORKING",   # cancel in flight; still open
+    "pending_replace":      "WORKING",   # replace in flight; still open
+    "held":                 "WORKING",
+    "suspended":            "WORKING",
+    "stopped":              "WORKING",
+    "calculated":           "WORKING",   # post-market processing
+    "partially_filled":     "PARTIALLY_FILLED",
+    "filled":               "FILLED",
+    "canceled":             "CANCELLED",
+    "replaced":             "CANCELLED",
+    "expired":              "EXPIRED",
+    "done_for_day":         "EXPIRED",
+    "rejected":             "REJECTED",
 }
 
 _REQUEST_TIMEOUT = 10  # seconds
 
 
+def _normalize_order_status(raw: str) -> str:
+    """Return normalized BrokerOrderState for a raw Alpaca status string (0300).
+
+    Raises BrokerSettlementIndeterminate on any status not in the explicit map.
+    Callers must NOT use .get(raw, default) — unknown states fail closed.
+    """
+    try:
+        return _ALPACA_ORDER_STATUS_MAP[raw]
+    except KeyError:
+        raise BrokerSettlementIndeterminate(
+            f"AlpacaAdapter: unknown Alpaca order status {raw!r} — failing closed. "
+            f"Update _ALPACA_ORDER_STATUS_MAP when Alpaca documents this status."
+        )
+
+
 class AlpacaAdapter(BrokerAdapter):
     """Alpaca broker adapter — paper trading only (0287, 0291, 0294, 0295).
 
-    Construction guard (0291): raises ValueError if paper=True (the only supported
-    mode) and base_url does not pass the exact-hostname allowlist check:
-      - scheme must be "https"
-      - hostname must be exactly "paper-api.alpaca.markets"
-    Substring checks are not sufficient — look-alike domains would pass them.
-    Use _allow_custom_url=True only in tests that need a non-standard URL.
+    Construction guards (0291, 0300):
+      - paper=True enforced unconditionally
+      - base_url: HTTPS + exact hostname paper-api.alpaca.markets
+      - data_url: HTTPS + exact hostname data.alpaca.markets
+    Use _allow_custom_url=True ONLY in unit tests that need a local HTTP server.
 
     Submission gate (0295): submit_order() raises RuntimeError unless
     submission_enabled=True is passed at construction time.
+
+    Account identity cache (0298): _account_id is set from expected_account_id at
+    construction, or from the broker's response in get_account_id(). All BrokerFill
+    objects carry this value so apply_broker_fill() account validation always passes.
+
+    Order tracking for poll correctness (0299): _tracked_broker_order_ids stores IDs
+    of orders submitted through this adapter. poll_order_events() refreshes each tracked
+    order individually via get_order() rather than using a submitted-at watermark, which
+    Alpaca's `after` parameter does not support for state-change detection.
     """
 
     requires_market_timestamp = True  # Alpaca supplies exchange observation time
@@ -101,17 +137,29 @@ class AlpacaAdapter(BrokerAdapter):
                 "AlpacaAdapter only supports paper=True; live trading is not yet implemented"
             )
         if not _allow_custom_url:
-            _parsed = urllib.parse.urlparse(base_url)
-            if _parsed.scheme != "https":
+            _parsed_base = urllib.parse.urlparse(base_url)
+            if _parsed_base.scheme != "https":
                 raise ValueError(
                     f"AlpacaAdapter: base_url must use HTTPS; "
-                    f"got scheme {_parsed.scheme!r} in {base_url!r}"
+                    f"got scheme {_parsed_base.scheme!r} in {base_url!r}"
                 )
-            if _parsed.hostname != _ALPACA_PAPER_HOSTNAME:
+            if _parsed_base.hostname != _ALPACA_PAPER_HOSTNAME:
                 raise ValueError(
                     f"AlpacaAdapter: base_url hostname must be exactly "
-                    f"{_ALPACA_PAPER_HOSTNAME!r}; got {_parsed.hostname!r} in {base_url!r}. "
+                    f"{_ALPACA_PAPER_HOSTNAME!r}; got {_parsed_base.hostname!r} in {base_url!r}. "
                     f"Set base_url to {_ALPACA_PAPER_URL!r} for paper trading."
+                )
+            _parsed_data = urllib.parse.urlparse(data_url)
+            if _parsed_data.scheme != "https":
+                raise ValueError(
+                    f"AlpacaAdapter: data_url must use HTTPS; "
+                    f"got scheme {_parsed_data.scheme!r} in {data_url!r}"
+                )
+            if _parsed_data.hostname != _ALPACA_DATA_HOSTNAME:
+                raise ValueError(
+                    f"AlpacaAdapter: data_url hostname must be exactly "
+                    f"{_ALPACA_DATA_HOSTNAME!r}; got {_parsed_data.hostname!r} in {data_url!r}. "
+                    f"Set data_url to {_ALPACA_DATA_URL!r}."
                 )
         self._api_key = api_key
         self._api_secret = api_secret
@@ -119,7 +167,12 @@ class AlpacaAdapter(BrokerAdapter):
         self._data_url = data_url.rstrip("/")
         self._expected_account_id = expected_account_id
         self._submission_enabled = submission_enabled
-        self._last_poll_ts: Optional[str] = datetime.now(timezone.utc).isoformat()
+        # Verified paper account ID — populated from expected_account_id or get_account_id() (0298)
+        self._account_id: Optional[str] = expected_account_id
+        # Broker order IDs submitted through this adapter; used by poll_order_events() (0299)
+        self._tracked_broker_order_ids: set[str] = set()
+        # Seeded from broker open orders on first poll so restart recovers tracked state (0299)
+        self._poll_seeded: bool = False
 
     # ── HTTP helpers ──────────────────────────────────────────────────────────
 
@@ -138,7 +191,7 @@ class AlpacaAdapter(BrokerAdapter):
         base: str | None = None,
         params: dict | None = None,
         json: dict | None = None,
-    ) -> dict | list:
+    ) -> dict | list | None:
         url = f"{base or self._base_url}{path}"
         try:
             resp = requests.request(
@@ -148,10 +201,16 @@ class AlpacaAdapter(BrokerAdapter):
                 json=json,
                 timeout=_REQUEST_TIMEOUT,
             )
-        except (requests.exceptions.Timeout, OSError) as exc:
+        except requests.exceptions.RequestException as exc:
+            # Catch the full RequestException family (Timeout, ConnectionError, etc.) so
+            # a connection reset during POST becomes BrokerSettlementIndeterminate rather
+            # than an unhandled exception (0297).
             raise BrokerSettlementIndeterminate(
-                f"AlpacaAdapter: {method} {path} timed out: {exc}"
+                f"AlpacaAdapter: {method} {path} request failed: {exc}"
             ) from exc
+        # 204 No Content is a success response with no body (e.g. cancel ACK) (0297).
+        if resp.status_code == 204:
+            return None
         if not resp.ok:
             raise BrokerSettlementIndeterminate(
                 f"AlpacaAdapter: {method} {path} returned {resp.status_code}: {resp.text[:200]}"
@@ -168,6 +227,8 @@ class AlpacaAdapter(BrokerAdapter):
                 f"AlpacaAdapter: account_id mismatch: "
                 f"broker={account_id!r} expected={self._expected_account_id!r}"
             )
+        # Cache the verified account ID so all fill construction has it (0298)
+        self._account_id = account_id
         return account_id
 
     def get_broker_account(self, account_id: str) -> BrokerAccountState:
@@ -212,10 +273,13 @@ class AlpacaAdapter(BrokerAdapter):
         return self._map_order(data)
 
     def find_order_by_client_order_id(self, client_order_id: str) -> Optional[BrokerOrder]:
+        # Correct Alpaca endpoint for client-order lookup (0297).
+        # The prior implementation used GET /v2/orders/{id}?by=client_order_id which is wrong;
+        # the documented endpoint is GET /v2/orders:by_client_order_id?client_order_id=<id>.
         try:
             data = self._request(
-                "GET", f"/v2/orders/{client_order_id}",
-                params={"by": "client_order_id"},
+                "GET", "/v2/orders:by_client_order_id",
+                params={"client_order_id": client_order_id},
             )
         except BrokerSettlementIndeterminate as exc:
             if "404" in str(exc):
@@ -225,7 +289,7 @@ class AlpacaAdapter(BrokerAdapter):
 
     def _map_order(self, data: dict) -> BrokerOrder:
         raw_status = data.get("status", "")
-        normalized = _ALPACA_ORDER_STATUS_MAP.get(raw_status, "WORKING")
+        normalized = _normalize_order_status(raw_status)  # fail closed on unknown (0300)
         return BrokerOrder(
             broker_order_id=data["id"],
             symbol=data["symbol"],
@@ -241,11 +305,13 @@ class AlpacaAdapter(BrokerAdapter):
 
     def get_fills(self, account_id: str, since: Optional[str] = None) -> list[BrokerFill]:
         fills: list[BrokerFill] = []
-        params: dict = {"activity_type": "FILL", "page_size": 100}
+        # Use the specific-type endpoint /v2/account/activities/FILL to avoid
+        # the plural parameter ambiguity of activity_types= (0297).
+        params: dict = {"page_size": 100}
         if since:
             params["after"] = since
         while True:
-            rows = self._request("GET", "/v2/account/activities", params=params)
+            rows = self._request("GET", "/v2/account/activities/FILL", params=params)
             if not rows:
                 break
             for r in rows:
@@ -257,11 +323,12 @@ class AlpacaAdapter(BrokerAdapter):
         return fills
 
     def get_fills_for_order(self, broker_order_id: str) -> list[BrokerFill]:
+        # Use specific-type endpoint and pass cached account_id (0297, 0298)
         rows = self._request(
-            "GET", "/v2/account/activities",
-            params={"activity_type": "FILL", "order_id": broker_order_id},
+            "GET", "/v2/account/activities/FILL",
+            params={"order_id": broker_order_id},
         )
-        return [self._map_fill(r, None, broker_order_id=broker_order_id) for r in rows]
+        return [self._map_fill(r, self._account_id, broker_order_id=broker_order_id) for r in rows]
 
     def _map_fill(
         self,
@@ -269,6 +336,8 @@ class AlpacaAdapter(BrokerAdapter):
         account_id: Optional[str],
         broker_order_id: Optional[str] = None,
     ) -> BrokerFill:
+        # Use cached _account_id as fallback so fills always carry account identity (0298)
+        resolved_account_id = account_id or self._account_id
         return BrokerFill(
             broker_fill_id=data["id"],
             broker_order_id=broker_order_id or data.get("order_id", ""),
@@ -278,7 +347,7 @@ class AlpacaAdapter(BrokerAdapter):
             price=float(data["price"]),
             filled_at=data.get("transaction_time") or data.get("timestamp", ""),
             fee=0.0,  # Alpaca does not report per-fill commission in activities
-            account_id=account_id,
+            account_id=resolved_account_id,
         )
 
     # ── Quotes ────────────────────────────────────────────────────────────────
@@ -325,10 +394,13 @@ class AlpacaAdapter(BrokerAdapter):
                 f"AlpacaAdapter.submit_order: order POST failed — broker acceptance unknown; "
                 f"restart will recover via client_order_id: {exc}"
             ) from exc
+        broker_order_id = data["id"]
         raw_status = data.get("status", "")
-        normalized = _ALPACA_ORDER_STATUS_MAP.get(raw_status, "WORKING")
+        normalized = _normalize_order_status(raw_status)
+        # Track this order ID so poll_order_events() can refresh it (0299)
+        self._tracked_broker_order_ids.add(broker_order_id)
         return BrokerOrderAck(
-            broker_order_id=data["id"],
+            broker_order_id=broker_order_id,
             client_order_id=data.get("client_order_id"),
             normalized_state=normalized,
             accepted_at=data.get("submitted_at"),
@@ -337,6 +409,7 @@ class AlpacaAdapter(BrokerAdapter):
 
     def cancel_order(self, order_id: str, reason: str = "USER_REQUESTED") -> BrokerCancelAck:
         try:
+            # Alpaca returns 204 No Content on success; _request() returns None for 204 (0297)
             self._request("DELETE", f"/v2/orders/{order_id}")
             accepted = True
         except BrokerSettlementIndeterminate as exc:
@@ -356,27 +429,68 @@ class AlpacaAdapter(BrokerAdapter):
     def poll_order_events(
         self, account_id: str, quote: Optional[BrokerQuote] = None
     ) -> list[BrokerOrderEvent]:
-        """Poll for order state changes since last call via GET /v2/orders?status=all."""
-        since = self._last_poll_ts
-        self._last_poll_ts = datetime.now(timezone.utc).isoformat()
-        params: dict = {"status": "all", "limit": 100}
-        if since:
-            params["after"] = since
+        """Refresh each tracked open order by its broker ID (0299).
+
+        The prior submitted-at watermark approach (GET /v2/orders?status=all&after={ts})
+        is incorrect: Alpaca's `after` parameter filters by order submission time, not by
+        last state-change time. An order submitted before the watermark that later fills,
+        cancels, or is rejected is excluded from the response — events are silently lost.
+
+        This implementation:
+        1. On first call: seeds _tracked_broker_order_ids from the broker's currently open
+           orders so a restart recovers order tracking without DB access.
+        2. Calls get_open_orders() to see which tracked orders are still open at the broker.
+        3. For each tracked order not in the broker's open set, calls get_order() to fetch
+           final state and emits a BrokerOrderEvent.
+        4. Removes closed orders from the tracking set.
+
+        The durable get_fills() ledger (called by sync_broker_state()) remains the canonical
+        fill source. This polling path detects cancellations and rejections that fills cannot.
+
+        Streaming (Alpaca trade updates WebSocket) is the preferred long-term replacement.
+        """
+        # Seed tracking set from broker on first poll (handles restart) (0299)
+        if not self._poll_seeded:
+            try:
+                open_orders = self.get_open_orders(account_id)
+                for o in open_orders:
+                    self._tracked_broker_order_ids.add(o.broker_order_id)
+            except BrokerSettlementIndeterminate:
+                pass  # best-effort seed; will retry next cycle
+            self._poll_seeded = True
+
+        if not self._tracked_broker_order_ids:
+            return []
+
         try:
-            rows = self._request("GET", "/v2/orders", params=params)
+            open_orders = self.get_open_orders(account_id)
         except BrokerSettlementIndeterminate:
             return []
-        # Emit events only for actionable terminal states; WORKING states are not events
+
+        broker_open_ids = {o.broker_order_id for o in open_orders}
         _ACTIONABLE = {"FILLED", "PARTIALLY_FILLED", "CANCELLED", "EXPIRED", "REJECTED"}
         events: list[BrokerOrderEvent] = []
-        for r in rows:
-            raw = r.get("status", "")
-            normalized = _ALPACA_ORDER_STATUS_MAP.get(raw)
-            if normalized not in _ACTIONABLE:
+        still_open: set[str] = set()
+
+        for broker_order_id in list(self._tracked_broker_order_ids):
+            if broker_order_id in broker_open_ids:
+                still_open.add(broker_order_id)
+                continue
+            # Not in broker's open set — has reached a terminal state; refresh to confirm
+            try:
+                order = self.get_order(broker_order_id)
+            except BrokerSettlementIndeterminate:
+                still_open.add(broker_order_id)  # connectivity issue — keep tracking
+                continue
+            if order is None or order.state not in _ACTIONABLE:
+                # Order not found or still in a non-terminal state; keep tracking
+                still_open.add(broker_order_id)
                 continue
             events.append(BrokerOrderEvent(
-                event_type=normalized,
-                broker_order_id=r["id"],
-                client_order_id=r.get("client_order_id"),
+                event_type=order.state,
+                broker_order_id=broker_order_id,
+                client_order_id=order.client_order_id,
             ))
+
+        self._tracked_broker_order_ids = still_open
         return events
