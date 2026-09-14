@@ -21,6 +21,26 @@ from .models import Fill, Order, TradingAccount, TradeIntent
 _PAPER_SENTINEL = "paper"
 _ALPACA_PAPER_URL = "https://paper-api.alpaca.markets"
 
+# Mapping from Alpaca native trade_updates event types to normalized BrokerOrderEvent
+# event_type values (0290). None = informational only; no order state change required.
+_ALPACA_NATIVE_TO_NORMALIZED: dict[str, str | None] = {
+    "fill":           "FILLED",
+    "partial_fill":   "PARTIALLY_FILLED",
+    "canceled":       "CANCELLED",
+    "expired":        "EXPIRED",
+    "rejected":       "REJECTED",
+    # Informational lifecycle notifications — adapters may safely ignore these:
+    "new":            None,
+    "accepted":       None,
+    "pending_new":    None,
+    "replaced":       None,
+    "pending_cancel": None,
+    "pending_replace": None,
+    "held":           None,
+    "done_for_day":   None,
+    "suspended":      None,
+}
+
 
 class AlpacaAdapter(BrokerAdapter):
     """Alpaca broker adapter — paper trading only (0287).

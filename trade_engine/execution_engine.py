@@ -910,12 +910,12 @@ def process_open_orders(
                             fill = Fill.from_db_row(fill_row)
                             fills.append(fill)
                             _write_executed_action(fill, intent, conn)
-            elif event.event_type in ("CANCELLED", "EXPIRED"):
+            elif event.event_type in ("CANCELLED", "EXPIRED", "REJECTED"):
                 apply_broker_order_event(event, account_id, conn)
             else:
-                _log.warning(
-                    "process_open_orders: unknown event_type %r for order %s",
-                    event.event_type, local_order_id,
+                raise BrokerStateIntegrityError(
+                    f"process_open_orders: unrecognized normalized event_type {event.event_type!r} "
+                    f"for order {local_order_id} — adapter contract violation (0290)"
                 )
 
         # Skip risk revalidation if the order is no longer open after event ingestion
@@ -1073,12 +1073,12 @@ def sync_broker_state(
                             if _intent_row:
                                 _write_executed_action(_fill, TradeIntent.from_db_row(_intent_row), conn)
 
-        elif _e.event_type in ("CANCELLED", "EXPIRED"):
+        elif _e.event_type in ("CANCELLED", "EXPIRED", "REJECTED"):
             apply_broker_order_event(_e, account_id, conn)
         else:
-            _log.warning(
-                "sync_broker_state: unknown event_type %r for order_id=%r",
-                _e.event_type, _local_id,
+            raise BrokerStateIntegrityError(
+                f"sync_broker_state: unrecognized normalized event_type {_e.event_type!r} "
+                f"for order_id={_local_id!r} — adapter contract violation (0290)"
             )
 
     return fills
@@ -1604,9 +1604,27 @@ def apply_broker_order_event(
         )
         conn.commit()
 
+    elif event_type == "REJECTED":
+        # Broker rejected the order after submission (e.g. margin violation, bad params) (0290).
+        VALID_REJECT = {"WORKING", "PENDING_SUBMIT", "PARTIALLY_FILLED"}
+        if current_state not in VALID_REJECT:
+            _log.warning(
+                "apply_broker_order_event: ignoring REJECTED for order %s in state %s",
+                order_id, current_state,
+            )
+            return
+        conn.execute("UPDATE orders SET state='REJECTED' WHERE order_id=?", (order_id,))
+        conn.execute(
+            """UPDATE trade_intents SET status='REJECTED'
+               WHERE intent_id = (SELECT intent_id FROM orders WHERE order_id=?)""",
+            (order_id,),
+        )
+        conn.commit()
+
     else:
-        _log.warning(
-            "apply_broker_order_event: unrecognised event_type %r for order %s", event_type, order_id
+        raise BrokerStateIntegrityError(
+            f"apply_broker_order_event: unrecognized event_type {event_type!r} for order {order_id} "
+            f"— adapter contract violation (0290)"
         )
 
 

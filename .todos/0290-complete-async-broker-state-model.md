@@ -1,7 +1,7 @@
 # Complete Asynchronous Broker State Model
 
 - **ID:** 0290
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-13
 - **Priority:** high
 - **Depends:** 0288
@@ -28,11 +28,15 @@ The normalized `BrokerOrderEvent` model currently handles `FILLED`, `PARTIALLY_F
 - `tests/fake_broker.py` — REJECTED event emission support
 - `tests/test_chaos.py` or `tests/test_trade_engine.py` — REJECTED path tests, unknown-normalized halt test
 
+## Outcome
+
+`REJECTED` added as a recognized normalized event type. `apply_broker_order_event()` handles REJECTED (valid from WORKING/PENDING_SUBMIT/PARTIALLY_FILLED) and its final `else` now raises `BrokerStateIntegrityError` instead of logging. `sync_broker_state()` and `process_open_orders()` both route REJECTED through `apply_broker_order_event()` and their `else` branches raise `BrokerStateIntegrityError` — unknown normalized event types are now an adapter contract violation. `_ALPACA_NATIVE_TO_NORMALIZED` constant added to `alpaca_adapter.py` mapping all documented `trade_updates` event types (fill/partial_fill/canceled/expired/rejected → normalized; new/accepted/pending_new/etc. → None/informational). `FakeBrokerAdapter` gains `rejected_events=True` (replaces fill events with REJECTED) and `unknown_event_type=True` (injects a BAZINGA event). 5 new tests in `TestAsyncBrokerStateModel`: REJECTED transitions order/intent via process_open_orders; unknown event raises BSI directly; unknown event halts cycle; Alpaca mapping table validated. Suite: 619 passed, 1 skipped. Next: 0291 (Alpaca URL allowlist) unblocks 0289.
+
 ## Done when
 
-- [ ] `REJECTED` is a recognized normalized event type and handled in `sync_broker_state()` and `process_open_orders()` (order → REJECTED, intent updated)
-- [ ] Unknown normalized event types raise `BrokerStateIntegrityError` (not warn-and-continue)
-- [ ] Alpaca adapter maps all documented native `trade_updates` event types to normalized equivalents or marks them informational
-- [ ] `ShadowBrokerAdapter` / `FakeBrokerAdapter` can emit `REJECTED` events
-- [ ] Tests cover REJECTED state transition and the unknown-normalized halt path
-- [ ] All existing 612 tests still pass
+- [x] `REJECTED` is a recognized normalized event type and handled in `sync_broker_state()` and `process_open_orders()` (order → REJECTED, intent updated)
+- [x] Unknown normalized event types raise `BrokerStateIntegrityError` (not warn-and-continue)
+- [x] Alpaca adapter maps all documented native `trade_updates` event types to normalized equivalents or marks them informational
+- [x] `ShadowBrokerAdapter` / `FakeBrokerAdapter` can emit `REJECTED` events
+- [x] Tests cover REJECTED state transition and the unknown-normalized halt path
+- [x] All existing 614 tests still pass (619 now, +5 new)

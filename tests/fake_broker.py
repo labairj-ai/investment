@@ -65,6 +65,8 @@ class FakeBrokerAdapter(ShadowBrokerAdapter):
         fill_raises: bool = False,           # get_fills_for_order raises RuntimeError (0278)
         no_fill_id_events: bool = False,     # poll events omit broker_fill_id (0283)
         unresolvable_events: bool = False,   # emit a phantom event with a bogus broker_order_id (0285)
+        rejected_events: bool = False,       # replace open-order fill events with REJECTED events (0290)
+        unknown_event_type: bool = False,    # inject an event with an unrecognized event_type (0290)
     ) -> None:
         super().__init__(conn, account_id)
         self._delay_ack = delay_ack
@@ -84,6 +86,8 @@ class FakeBrokerAdapter(ShadowBrokerAdapter):
         self._fill_raises = fill_raises
         self._no_fill_id_events = no_fill_id_events
         self._unresolvable_events = unresolvable_events
+        self._rejected_events = rejected_events
+        self._unknown_event_type = unknown_event_type
         # Independent broker-side ledger (0260): keyed by broker_order_id.
         # This dict is the single source of truth for what the broker believes;
         # the local SQLite DB tracks what the engine believes.
@@ -334,5 +338,31 @@ class FakeBrokerAdapter(ShadowBrokerAdapter):
                 fee=0.0,
                 broker_fill_id="phantom-fill-" + str(uuid.uuid4()),
             ))
+
+        if self._rejected_events:
+            # Replace fill events with REJECTED events — simulates broker rejection (0290).
+            # Keeps non-fill events (EXPIRED etc.) unchanged.
+            events = [
+                BrokerOrderEvent(
+                    event_type="REJECTED",
+                    broker_order_id=e.broker_order_id,
+                    local_order_id=e.local_order_id,
+                    client_order_id=e.client_order_id,
+                ) if e.event_type in ("FILLED", "PARTIALLY_FILLED") else e
+                for e in events
+            ]
+
+        if self._unknown_event_type:
+            # Inject an event with an unrecognized event_type to trigger fail-closed (0290).
+            open_rows = self._conn.execute(
+                "SELECT order_id, broker_order_id FROM orders WHERE account_id=? AND state='WORKING' LIMIT 1",
+                (self.account_id,),
+            ).fetchone()
+            if open_rows:
+                events.append(BrokerOrderEvent(
+                    event_type="BAZINGA",
+                    broker_order_id=open_rows["broker_order_id"] or open_rows["order_id"],
+                    local_order_id=open_rows["order_id"],
+                ))
 
         return events

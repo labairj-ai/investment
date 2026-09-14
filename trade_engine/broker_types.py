@@ -95,7 +95,7 @@ class BrokerOrderEvent(NamedTuple):
     from the return value of attempt_fill(). Real adapters produce events asynchronously;
     shadow adapts synchronously for testing.
     """
-    event_type: str           # FILLED | PARTIALLY_FILLED | CANCELLED | EXPIRED
+    event_type: str           # FILLED | PARTIALLY_FILLED | CANCELLED | EXPIRED | REJECTED (0290)
     broker_order_id: str
     local_order_id: Optional[str] = None
     fill_qty: float = 0.0

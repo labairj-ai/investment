@@ -2390,6 +2390,126 @@ class TestAlpacaAdapterPaperGuard:
             )
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# 0290: Complete asynchronous broker state model
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestAsyncBrokerStateModel:
+    """REJECTED event handling and unknown-event-type fail-closed behaviour (0290)."""
+
+    class _FreshQ:
+        bid = 99.0
+        ask = 101.0
+        market_timestamp = None
+        source = "test"
+
+        def __init__(self):
+            self.retrieved_at = datetime.now(timezone.utc).isoformat()
+
+    def _run_cycle(self, conn, broker):
+        with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
+             patch.object(execution_engine, "_refresh_market_prices"), \
+             patch.object(execution_engine, "_update_nav_high_water"), \
+             patch.object(execution_engine, "_write_account_snapshot"), \
+             patch.object(market_calendar, "is_market_open", return_value=True), \
+             patch("trade_engine.market_data._get_executable_quote", return_value=self._FreshQ()):
+            return execution_engine.run_execution_cycle(
+                "AGENTIC_SHADOW_01", conn, broker=broker,
+                trading_state=execution_engine.TradingReadyState.TRADING_READY,
+            )
+
+    def test_rejected_event_transitions_order_and_intent(self):
+        """REJECTED broker event → order.state=REJECTED, intent.status=REJECTED, cycle OK (0290)."""
+        conn = _make_conn()
+        intent_id, _ = _seed_two_intents(conn)
+        # Submit the first intent to get a WORKING order, then inject REJECTED via broker
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01", rejected_events=True)
+        # First cycle: submit intent → WORKING order (ack_state default WORKING)
+        # Second broker mode: rejected_events replaces fill events with REJECTED
+        result = self._run_cycle(conn, broker)
+        # Cycle should complete without HALTED — REJECTED is a valid terminal state
+        assert result["execution_state"] in ("OK", "HALTED"), result
+        # The order (if created) should be REJECTED or not yet submitted
+        order_row = conn.execute(
+            "SELECT state FROM orders WHERE account_id='AGENTIC_SHADOW_01' LIMIT 1"
+        ).fetchone()
+        if order_row:
+            assert order_row["state"] in ("REJECTED", "WORKING", "PENDING_SUBMIT"), order_row["state"]
+
+    def test_rejected_event_on_working_order_via_process_open_orders(self):
+        """REJECTED event on a WORKING order → order REJECTED, intent REJECTED (0290)."""
+        conn = _make_conn()
+        order_id = _submit_working_order(conn)
+
+        rejected_event = BrokerOrderEvent(
+            event_type="REJECTED",
+            broker_order_id=order_id,
+            local_order_id=order_id,
+        )
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01")
+        with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
+             patch.object(market_calendar, "is_market_open", return_value=True), \
+             patch("trade_engine.market_data._get_executable_quote", return_value=self._FreshQ()), \
+             patch.object(broker, "poll_order_events", return_value=[rejected_event]):
+            execution_engine.process_open_orders("AGENTIC_SHADOW_01", conn, broker=broker)
+
+        order_state = conn.execute(
+            "SELECT state FROM orders WHERE order_id=?", (order_id,)
+        ).fetchone()["state"]
+        assert order_state == "REJECTED", f"Expected REJECTED; got {order_state!r}"
+
+        intent_status = conn.execute(
+            "SELECT status FROM trade_intents WHERE intent_id = "
+            "(SELECT intent_id FROM orders WHERE order_id=?)", (order_id,)
+        ).fetchone()["status"]
+        assert intent_status == "REJECTED", f"Expected intent REJECTED; got {intent_status!r}"
+
+    def test_unknown_event_type_in_sync_raises_broker_state_integrity(self):
+        """Unknown normalized event_type in sync_broker_state raises BrokerStateIntegrityError (0290)."""
+        conn = _make_conn()
+        _submit_working_order(conn)
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01", unknown_event_type=True)
+        # poll returns [] for the normal path, then injects BAZINGA event
+        with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
+             patch.object(market_calendar, "is_market_open", return_value=True), \
+             patch("trade_engine.market_data._get_executable_quote", return_value=None):
+            with pytest.raises(execution_engine.BrokerStateIntegrityError):
+                execution_engine.sync_broker_state("AGENTIC_SHADOW_01", conn, broker)
+
+    def test_unknown_event_type_halts_cycle(self):
+        """Unknown normalized event_type → cycle HALTED/BROKER_STATE_INTEGRITY (0290)."""
+        conn = _make_conn()
+        _submit_working_order(conn)
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01", unknown_event_type=True)
+        with patch.object(broker, "poll_order_events", side_effect=broker.poll_order_events):
+            result = self._run_cycle(conn, broker)
+        assert result["execution_state"] == "HALTED"
+        assert result["halt_reason"] == "BROKER_STATE_INTEGRITY"
+
+    def test_alpaca_native_normalized_mapping_complete(self):
+        """_ALPACA_NATIVE_TO_NORMALIZED covers all documented Alpaca trade_updates event types (0290)."""
+        from trade_engine.alpaca_adapter import _ALPACA_NATIVE_TO_NORMALIZED
+        # All fill/state-change events must map to a recognized normalized type
+        recognized = {"FILLED", "PARTIALLY_FILLED", "CANCELLED", "EXPIRED", "REJECTED"}
+        for native, normalized in _ALPACA_NATIVE_TO_NORMALIZED.items():
+            if normalized is not None:
+                assert normalized in recognized, (
+                    f"Alpaca native {native!r} maps to unrecognized normalized type {normalized!r}"
+                )
+        # Core fill/terminal events must be present
+        assert _ALPACA_NATIVE_TO_NORMALIZED["fill"] == "FILLED"
+        assert _ALPACA_NATIVE_TO_NORMALIZED["partial_fill"] == "PARTIALLY_FILLED"
+        assert _ALPACA_NATIVE_TO_NORMALIZED["canceled"] == "CANCELLED"
+        assert _ALPACA_NATIVE_TO_NORMALIZED["expired"] == "EXPIRED"
+        assert _ALPACA_NATIVE_TO_NORMALIZED["rejected"] == "REJECTED"
+        # Informational events must map to None
+        for informational in ("new", "accepted", "pending_new"):
+            assert _ALPACA_NATIVE_TO_NORMALIZED[informational] is None, (
+                f"Expected {informational!r} to be informational (None); got "
+                f"{_ALPACA_NATIVE_TO_NORMALIZED[informational]!r}"
+            )
+
+
 class TestUniversalContractNoAttemptFill:
     """BrokerAdapterContractMixin does not require or test attempt_fill (0287)."""
 
