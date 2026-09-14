@@ -1,7 +1,7 @@
 # Enforce Trading Readiness — No Bypass Allowed
 
 - **ID:** 0244
-- **Status:** in-progress
+- **Status:** done
 - **Created:** 2026-09-13
 - **Priority:** high
 - **Depends:** 0242, 0243
@@ -26,7 +26,7 @@
 
 ## Done when
 
-- [ ] No caller can reach order submission without an explicit `TRADING_READY` state from `initialize_trading_session()`
-- [ ] `serve.py` calls `initialize_trading_session()` on startup before enabling the execution endpoint
-- [ ] Tests confirm HALTED result when readiness gate is not satisfied
-- [ ] `process_intent()` cannot be used to bypass the gate
+- [x] No caller can reach order submission without an explicit `TRADING_READY` state from `initialize_trading_session()`
+- [x] `serve.py` calls `initialize_trading_session()` on startup before enabling the execution endpoint
+- [x] Tests confirm HALTED result when readiness gate is not satisfied
+- [x] `process_intent()` cannot be used to bypass the gate

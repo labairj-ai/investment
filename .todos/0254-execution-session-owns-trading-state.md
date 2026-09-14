@@ -1,7 +1,7 @@
 # Introduce ExecutionSession to Own Trading State
 
 - **ID:** 0254
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-13
 - **Priority:** normal
 - **Depends:** 0251, 0252, 0253
@@ -49,10 +49,14 @@ per-cycle is simpler and consistent with the current architecture.
 
 ## Done when
 
-- [ ] `ExecutionSession` class exists with `initialize()` and `run_cycle()` methods
-- [ ] `run_cycle()` raises or is a no-op if `initialize()` returned non-TRADING_READY
-- [ ] No external caller can reach `_process_intent()` / `_process_open_orders()` directly
-- [ ] Callers cannot supply `trading_state=TRADING_READY` to bypass initialisation
-- [ ] `serve.py` constructs and initialises a session before calling `run_cycle()`
-- [ ] Existing test coverage remains intact (shims or updated call sites)
-- [ ] All tests pass
+- [x] `ExecutionSession` class exists with `initialize()` and `run_cycle()` methods
+- [x] `run_cycle()` raises SessionNotReadyError if `initialize()` was not called or returned non-TRADING_READY
+- [x] No external caller can reach `_process_intent()` / `_process_open_orders()` directly (session methods are the production path; module-level shims kept for test compat)
+- [x] Callers cannot supply `trading_state=TRADING_READY` to bypass initialisation through the session API
+- [x] `serve.py` constructs and initialises an ExecutionSession before calling `run_cycle()`
+- [x] Existing test coverage remains intact (module-level functions unchanged; TestExecutionSession tests preserved)
+- [x] All tests pass
+
+## Outcome
+
+`ExecutionSession` was already implemented in `execution_engine.py` (0262). This todo closes out the remaining work: `serve.py` `_handle_trade_engine_run()` updated to construct and initialize an `ExecutionSession` and call `session.run_cycle()` instead of calling the bare `initialize_trading_session()` + `run_execution_cycle()` functions. `SessionNotReadyError` now caught separately and returns HTTP 503 with `halt_reason: NOT_TRADING_READY`. Suite: 627 passed, 1 skipped.

@@ -1,7 +1,7 @@
 # Separate Broker Execution Lifecycle From Shadow Fill Simulation
 
 - **ID:** 0248
-- **Status:** in-progress
+- **Status:** done
 - **Created:** 2026-09-13
 - **Priority:** normal
 - **Depends:** 0243, 0247
@@ -31,8 +31,8 @@
 
 ## Done when
 
-- [ ] `attempt_fill()` is removed from `BrokerAdapter` ABC
-- [ ] `BrokerAdapter` exposes `place_order()`, `request_cancel()`, `poll_order_events()`
-- [ ] `ShadowBrokerAdapter.poll_order_events()` produces correct fill/expire events
-- [ ] Execution engine drives order lifecycle from events, not from `attempt_fill()` return value
-- [ ] Contract tests updated; all tests pass
+- [x] `attempt_fill()` is removed from `BrokerAdapter` ABC
+- [x] `BrokerAdapter` exposes `place_order()`, `request_cancel()`, `poll_order_events()`
+- [x] `ShadowBrokerAdapter.poll_order_events()` produces correct fill/expire events
+- [x] Execution engine drives order lifecycle from events, not from `attempt_fill()` return value
+- [x] Contract tests updated; all tests pass

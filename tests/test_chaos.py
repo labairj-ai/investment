@@ -2545,6 +2545,109 @@ class TestAsyncBrokerStateModel:
             )
 
 
+class TestLedgerFillSync:
+    """Durable pre-cycle fill reconciliation via broker ledger pull (0289).
+
+    sync_broker_state() calls broker.get_fills() after poll_order_events() so a
+    WebSocket blackout cannot permanently miss a fill. apply_broker_fill() is
+    idempotent: fills already applied via the event queue are silently skipped.
+    """
+
+    def test_websocket_blackout_fill_ingested_from_ledger(self):
+        """WebSocket delivers no events; ledger pull ingests the missed fill."""
+        conn = _make_conn()
+        order_id = _submit_working_order(conn)
+
+        cash_before = conn.execute(
+            "SELECT current_cash FROM trading_accounts WHERE account_id='AGENTIC_SHADOW_01'"
+        ).fetchone()["current_cash"]
+
+        # Pre-stage a fill in the broker's authoritative ledger (not yet in local DB).
+        # In a real deployment this fill arrived at Alpaca but the WebSocket event was dropped.
+        bf = _make_broker_fill(order_id, qty=1.0, price=100.0)
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01", ledger_fills=[bf])
+
+        # poll_order_events() returns [] (no WebSocket delivery); ledger pull must compensate.
+        with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
+             patch.object(market_calendar, "is_market_open", return_value=True):
+            fills = execution_engine.sync_broker_state("AGENTIC_SHADOW_01", conn, broker=broker)
+
+        assert len(fills) == 1, "ledger fill must be returned from sync_broker_state"
+        cash_after = conn.execute(
+            "SELECT current_cash FROM trading_accounts WHERE account_id='AGENTIC_SHADOW_01'"
+        ).fetchone()["current_cash"]
+        assert cash_after < cash_before, "BUY fill must debit cash"
+        assert abs(cash_after - (cash_before - 1.0 * 100.0)) < 0.01
+
+    def test_ledger_fill_not_double_applied_when_event_queue_also_delivers(self):
+        """Fill delivered by both WebSocket and ledger pull is applied exactly once."""
+        conn = _make_conn()
+        order_id = _submit_working_order(conn)
+
+        cash_before = conn.execute(
+            "SELECT current_cash FROM trading_accounts WHERE account_id='AGENTIC_SHADOW_01'"
+        ).fetchone()["current_cash"]
+
+        bf = _make_broker_fill(order_id, qty=1.0, price=100.0)
+        # Apply the fill once via the event queue first (as if WebSocket delivered it).
+        apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+
+        # Ledger also returns the same fill — idempotency must prevent double debit.
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01", ledger_fills=[bf])
+
+        with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
+             patch.object(market_calendar, "is_market_open", return_value=True):
+            fills = execution_engine.sync_broker_state("AGENTIC_SHADOW_01", conn, broker=broker)
+
+        # The fill was already applied; ledger pull should return 0 new fills.
+        assert len(fills) == 0
+        cash_after = conn.execute(
+            "SELECT current_cash FROM trading_accounts WHERE account_id='AGENTIC_SHADOW_01'"
+        ).fetchone()["current_cash"]
+        expected = cash_before - 1.0 * 100.0
+        assert abs(cash_after - expected) < 0.01, "cash debited exactly once"
+
+    def test_ledger_pull_failure_halts_cycle(self):
+        """get_fills() raising causes sync_broker_state to raise BrokerSettlementIndeterminate,
+        which propagates up through run_execution_cycle as BROKER_STATE_INTEGRITY."""
+        conn = _make_conn()
+        _submit_working_order(conn)
+
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01")
+
+        with patch.object(broker, "get_fills", side_effect=RuntimeError("ledger unavailable")), \
+             patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
+             patch.object(market_calendar, "is_market_open", return_value=True):
+            from trade_engine.execution_engine import BrokerSettlementIndeterminate
+            with pytest.raises(BrokerSettlementIndeterminate, match="ledger fill pull failed"):
+                execution_engine.sync_broker_state("AGENTIC_SHADOW_01", conn, broker=broker)
+
+    def test_ledger_pull_failure_halts_full_cycle(self):
+        """Ledger pull failure surfacing through run_execution_cycle returns HALTED."""
+        conn = _make_conn()
+        _submit_working_order(conn)
+
+        broker = FakeBrokerAdapter(conn, "AGENTIC_SHADOW_01")
+
+        class _FreshQ:
+            bid = 99.0
+            ask = 101.0
+            market_timestamp = None
+            retrieved_at = datetime.now(timezone.utc).isoformat()
+            source = "test"
+
+        with patch.object(broker, "get_fills", side_effect=RuntimeError("ledger unavailable")), \
+             patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
+             patch.object(market_calendar, "is_market_open", return_value=True), \
+             patch("trade_engine.market_data._get_executable_quote", return_value=_FreshQ()):
+            result = execution_engine.run_execution_cycle(
+                "AGENTIC_SHADOW_01", conn, broker=broker,
+                trading_state=execution_engine.TradingReadyState.TRADING_READY,
+            )
+
+        assert result.get("halt_reason") == "BROKER_STATE_INTEGRITY"
+
+
 class TestUniversalContractNoAttemptFill:
     """BrokerAdapterContractMixin does not require or test attempt_fill (0287)."""
 

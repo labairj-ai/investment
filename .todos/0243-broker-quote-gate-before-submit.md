@@ -1,7 +1,7 @@
 # Gate Broker Submission Behind Quote Freshness Check
 
 - **ID:** 0243
-- **Status:** in-progress
+- **Status:** done
 - **Created:** 2026-09-12
 - **Priority:** high
 - **Depends:** 0238
@@ -29,8 +29,8 @@ The correct pre-submit gate is: `broker.get_quote()` → freshness/spread/sanity
 
 ## Done when
 
-- [ ] `process_intent()` calls `broker.get_quote()` before `broker.submit_order()`
-- [ ] No order is submitted when quote is None or stale
-- [ ] `process_open_orders()` uses `broker.get_quote()` for freshness checks
-- [ ] `_get_executable_quote` is not called in execution orchestration paths
-- [ ] All existing tests pass (mock patches updated as needed)
+- [x] `process_intent()` calls `broker.get_quote()` before `broker.submit_order()`
+- [x] No order is submitted when quote is None or stale
+- [x] `process_open_orders()` uses `broker.get_quote()` for freshness checks
+- [x] `_get_executable_quote` is not called in execution orchestration paths
+- [x] All existing tests pass (mock patches updated as needed)

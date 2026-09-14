@@ -5623,15 +5623,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._send_json({"ok": False, "error": str(e)}, 500)
 
     def _handle_trade_engine_run(self):
-        """POST /api/trade-engine/run — full execution cycle for AGENTIC_SHADOW_01 (0216, 0244)."""
+        """POST /api/trade-engine/run — full execution cycle for AGENTIC_SHADOW_01 (0216, 0244, 0254)."""
+        conn = None
         try:
-            from trade_engine.execution_engine import (
-                initialize_trading_session, run_execution_cycle, TradingReadyState,
-            )
+            from trade_engine.execution_engine import ExecutionSession, SessionNotReadyError
             conn = self._shadow_conn()
-            trading_state = initialize_trading_session("AGENTIC_SHADOW_01", conn)
-            summary = run_execution_cycle("AGENTIC_SHADOW_01", conn, trading_state=trading_state)
-            conn.close()
+            session = ExecutionSession("AGENTIC_SHADOW_01", conn)
+            session.initialize()  # raises SessionNotReadyError if not TRADING_READY
+            summary = session.run_cycle()
             self._json({
                 "ok": True,
                 "new_intents_processed": summary["new_intents_processed"],
@@ -5646,8 +5645,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 "orders_expired": summary.get("orders_expired", 0),
                 "results": summary.get("results", []),
             })
+        except SessionNotReadyError as e:
+            self._send_json({"ok": False, "error": str(e), "halt_reason": "NOT_TRADING_READY"}, 503)
         except Exception as e:
             self._send_json({"ok": False, "error": str(e)}, 500)
+        finally:
+            if conn is not None:
+                conn.close()
 
     def _json(self, data):
         body = json.dumps(data).encode()

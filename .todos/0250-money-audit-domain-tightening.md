@@ -1,7 +1,7 @@
 # Tighten Money and Audit Domain — Decimal, Enums, Timestamps, Source Label
 
 - **ID:** 0250
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-13
 - **Priority:** normal
 - **Depends:** 0245

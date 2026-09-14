@@ -12,7 +12,7 @@ import math
 import sqlite3
 import time
 import uuid as _uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Optional
 
@@ -1081,6 +1081,48 @@ def sync_broker_state(
                 f"for order_id={_local_id!r} — adapter contract violation (0290)"
             )
 
+    # ── Ledger pull: catch fills missed by the push event queue (0289) ─────────
+    # poll_order_events() depends on the broker's WebSocket push. A dropped connection
+    # or delayed event silently misses a fill. Querying the broker's authoritative fill
+    # log on every cycle with the same cursor+replay-window used by
+    # initialize_trading_session() ensures any missed fill is ingested before the next
+    # risk evaluation. apply_broker_fill() is idempotent — already-applied fills are
+    # skipped with FillResult.ALREADY_APPLIED.
+    try:
+        _ls_row = conn.execute(
+            "SELECT last_fill_synced_at FROM trading_accounts WHERE account_id=?", (account_id,)
+        ).fetchone()
+        _last_sync_ts = _ls_row["last_fill_synced_at"] if _ls_row else None
+        _since: Optional[str] = (
+            (_parse_iso(_last_sync_ts) - timedelta(minutes=_FILL_REPLAY_WINDOW_MINUTES)).isoformat()
+            if _last_sync_ts else None
+        )
+        _ledger = broker.get_fills(account_id, since=_since)
+        _max_filled_at: Optional[str] = None
+        for _lf in _ledger:
+            _lr = apply_broker_fill(_lf, account_id, conn)
+            if _lr == FillResult.APPLIED:
+                _fill_row = conn.execute(
+                    "SELECT * FROM fills WHERE fill_id=?", (_lf.broker_fill_id,)
+                ).fetchone()
+                if _fill_row:
+                    fills.append(Fill.from_db_row(_fill_row))
+                if _lf.filled_at and (_max_filled_at is None or _lf.filled_at > _max_filled_at):
+                    _max_filled_at = _lf.filled_at
+        if _max_filled_at:
+            conn.execute(
+                "UPDATE trading_accounts SET last_fill_synced_at=? WHERE account_id=?",
+                (_max_filled_at, account_id),
+            )
+            conn.commit()
+    except BrokerStateIntegrityError:
+        raise  # fill validation failures must still halt
+    except Exception as _ledger_exc:
+        raise BrokerSettlementIndeterminate(
+            f"sync_broker_state: ledger fill pull failed for {account_id}: "
+            f"{type(_ledger_exc).__name__} — halting (0289)"
+        ) from _ledger_exc
+
     return fills
 
 
@@ -1694,7 +1736,6 @@ def initialize_trading_session(
 
     # Step 2-3: import fills since last sync atomically; halt on any failure (0245, 0257)
     try:
-        from datetime import timedelta
         last_sync_row = conn.execute(
             "SELECT last_fill_synced_at FROM trading_accounts WHERE account_id=?", (account_id,)
         ).fetchone()

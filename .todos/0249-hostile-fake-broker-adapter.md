@@ -1,7 +1,7 @@
 # Build Hostile FakeBrokerAdapter for Chaos Testing
 
 - **ID:** 0249
-- **Status:** in-progress
+- **Status:** done
 - **Created:** 2026-09-13
 - **Priority:** normal
 - **Depends:** 0248
@@ -39,8 +39,8 @@ Scenario tests in `tests/test_chaos.py`:
 
 ## Done when
 
-- [ ] `FakeBrokerAdapter` is configurable for all failure modes listed above
-- [ ] All chaos scenarios in `test_chaos.py` pass
-- [ ] Duplicate fill produces correct account state (one debit)
-- [ ] Crash-after-submit + restart produces no duplicate order
-- [ ] Cancel/fill race resolves to correct final order and cash state
+- [x] `FakeBrokerAdapter` is configurable for all failure modes listed above
+- [x] All chaos scenarios in `test_chaos.py` pass
+- [x] Duplicate fill produces correct account state (one debit)
+- [x] Crash-after-submit + restart produces no duplicate order
+- [x] Cancel/fill race resolves to correct final order and cash state

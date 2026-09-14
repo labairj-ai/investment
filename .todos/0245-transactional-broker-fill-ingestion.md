@@ -1,7 +1,7 @@
 # Transactional Broker Fill Ingestion With Atomic Cursor Advance
 
 - **ID:** 0245
-- **Status:** in-progress
+- **Status:** done
 - **Created:** 2026-09-13
 - **Priority:** high
 - **Depends:** 0242
@@ -33,8 +33,8 @@
 
 ## Done when
 
-- [ ] `apply_broker_fill()` updates fills, order state, positions, cash, intent status, and audit record atomically
-- [ ] `last_fill_synced_at` advances only to the max `filled_at` of successfully imported fills
-- [ ] A fill-import failure halts the session (HALTED) rather than silently skipping
-- [ ] No bare `except: pass` in fill-import or reconciliation code paths
-- [ ] Tests confirm cash and positions are updated after fill import on reconnect
+- [x] `apply_broker_fill()` updates fills, order state, positions, cash, intent status, and audit record atomically
+- [x] `last_fill_synced_at` advances only to the max `filled_at` of successfully imported fills
+- [x] A fill-import failure halts the session (HALTED) rather than silently skipping
+- [x] No bare `except: pass` in fill-import or reconciliation code paths
+- [x] Tests confirm cash and positions are updated after fill import on reconnect

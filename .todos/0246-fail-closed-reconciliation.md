@@ -1,7 +1,7 @@
 # Fail-Closed Reconciliation — Retrieval Failures Block Submission
 
 - **ID:** 0246
-- **Status:** in-progress
+- **Status:** done
 - **Created:** 2026-09-13
 - **Priority:** high
 - **Depends:** 0240
@@ -27,8 +27,8 @@
 
 ## Done when
 
-- [ ] `get_positions()` or `get_open_orders()` failure produces `RECONCILIATION_UNAVAILABLE` discrepancy that blocks submission
-- [ ] Position comparison is bidirectional (broker-only positions detected as `LOCAL_MISSING`)
-- [ ] `QUANTITY_MISMATCH` blocks submission after fill import completes
-- [ ] No bare `except: pass` remains in `reconcile()`
-- [ ] Tests simulate broker retrieval failure and assert `blocks_submission=True`
+- [x] `get_positions()` or `get_open_orders()` failure produces `RECONCILIATION_UNAVAILABLE` discrepancy that blocks submission
+- [x] Position comparison is bidirectional (broker-only positions detected as `LOCAL_MISSING`)
+- [x] `QUANTITY_MISMATCH` blocks submission after fill import completes
+- [x] No bare `except: pass` remains in `reconcile()`
+- [x] Tests simulate broker retrieval failure and assert `blocks_submission=True`

@@ -9,8 +9,12 @@ from decimal import Decimal
 from enum import Enum
 from typing import Optional
 
-# Register sqlite3 adapter so Decimal values bind as REAL (0250).
-# Read side uses Decimal(str(...)) for exact conversion.
+# Known precision compromise (0258, Option B): Decimal values are stored as SQLite REAL
+# (IEEE-754 float64) via this adapter. At the read boundary, from_db_row() restores
+# Decimal via Decimal(str(row[col])), which preserves float64's ~15 significant digits.
+# For typical trading values (prices ≤ 6 significant digits, quantities ≤ 10 sig digits)
+# this is exact. Values requiring more than 15 significant digits (e.g. exotic fractional
+# crypto quantities) may lose precision. A full TEXT-based ledger migration is deferred.
 sqlite3.register_adapter(Decimal, float)
 
 

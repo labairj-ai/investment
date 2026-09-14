@@ -116,6 +116,7 @@ class AlpacaAdapter(BrokerAdapter):
         raise NotImplementedError("AlpacaAdapter.get_order not yet implemented")
 
     def get_fills(self, account_id: str, since: Optional[str] = None) -> list[BrokerFill]:
+        # Implement via GET /v2/account/activities?activity_type=FILL&after={since}
         raise NotImplementedError("AlpacaAdapter.get_fills not yet implemented")
 
     def get_fills_for_order(self, broker_order_id: str) -> list[BrokerFill]:

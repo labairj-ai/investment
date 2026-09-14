@@ -1,7 +1,7 @@
 # Durable Broker Idempotency via Client Order ID
 
 - **ID:** 0247
-- **Status:** in-progress
+- **Status:** done
 - **Created:** 2026-09-13
 - **Priority:** high
 - **Depends:** 0243, 0244
@@ -29,8 +29,8 @@ There is no durable idempotency key generated before network submission. The dan
 
 ## Done when
 
-- [ ] `client_order_id` is written to `orders` table before any broker submission attempt
-- [ ] `BrokerAdapter.submit_order()` accepts and forwards `client_order_id`
-- [ ] Reconciliation matches broker orders by `client_order_id` when `local_order_id` is missing
-- [ ] Crash-after-submit test confirms no duplicate order is generated on restart
-- [ ] Contract test: submit with same `client_order_id` twice → single broker order
+- [x] `client_order_id` is written to `orders` table before any broker submission attempt
+- [x] `BrokerAdapter.submit_order()` accepts and forwards `client_order_id`
+- [x] Reconciliation matches broker orders by `client_order_id` when `local_order_id` is missing
+- [x] Crash-after-submit test confirms no duplicate order is generated on restart
+- [x] Contract test: submit with same `client_order_id` twice → single broker order

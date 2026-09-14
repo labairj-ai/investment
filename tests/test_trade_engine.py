@@ -334,6 +334,35 @@ class TestFillModel:
         assert d["side"] == "BUY"
         assert d["qty"] == 5
 
+    def test_decimal_db_roundtrip_exact_for_typical_trading_values(self):
+        """Decimal fill fields round-trip through SQLite without precision loss for
+        typical trading values (0258, Option B).
+
+        sqlite3.register_adapter(Decimal, float) stores as IEEE-754 REAL; from_db_row()
+        reads back via Decimal(str(...)). Values with ≤ 15 significant digits and exact
+        float64 representations are lossless. See models.py comment for the known
+        precision trade-off on exotic fractional quantities.
+        """
+        from decimal import Decimal as D
+        conn = _make_conn()
+        # Insert a fill with typical trading values (price, qty, fee all float-exact).
+        import uuid
+        fid = str(uuid.uuid4())
+        oid = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO fills (fill_id, order_id, account_id, symbol, side, "
+            "qty, price, fee, fill_source, filled_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (fid, oid, "AGENTIC_SHADOW_01", "ANET", "BUY",
+             D("10.5"), D("150.75"), D("0.01"),
+             "shadow", "2026-01-01T00:00:00+00:00"),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM fills WHERE fill_id=?", (fid,)).fetchone()
+        fill = Fill.from_db_row(row)
+        assert fill.qty == D("10.5")
+        assert fill.price == D("150.75")
+        assert fill.fee == D("0.01")
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 2. TradingPolicy

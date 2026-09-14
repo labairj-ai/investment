@@ -67,6 +67,7 @@ class FakeBrokerAdapter(ShadowBrokerAdapter):
         unresolvable_events: bool = False,   # emit a phantom event with a bogus broker_order_id (0285)
         rejected_events: bool = False,       # replace open-order fill events with REJECTED events (0290)
         unknown_event_type: bool = False,    # inject an event with an unrecognized event_type (0290)
+        ledger_fills: list | None = None,    # fills returned by get_fills() — simulates broker ledger (0289)
     ) -> None:
         super().__init__(conn, account_id)
         self._delay_ack = delay_ack
@@ -88,6 +89,7 @@ class FakeBrokerAdapter(ShadowBrokerAdapter):
         self._unresolvable_events = unresolvable_events
         self._rejected_events = rejected_events
         self._unknown_event_type = unknown_event_type
+        self._ledger_fills = ledger_fills
         # Independent broker-side ledger (0260): keyed by broker_order_id.
         # This dict is the single source of truth for what the broker believes;
         # the local SQLite DB tracks what the engine believes.
@@ -231,6 +233,17 @@ class FakeBrokerAdapter(ShadowBrokerAdapter):
         if self._fill_raises:
             raise RuntimeError("chaos: get_fills_for_order raised (fill_raises=True)")
         return list(self._broker_fills.get(broker_order_id, []))
+
+    def get_fills(self, account_id: str, since=None) -> list:
+        """Return staged ledger fills when set, otherwise delegate to shadow DB (0289).
+
+        ledger_fills simulates the broker's authoritative fill log containing fills that
+        the WebSocket event queue missed — they exist on the broker side but are not yet
+        in the local SQLite fills table.
+        """
+        if self._ledger_fills is not None:
+            return list(self._ledger_fills)
+        return super().get_fills(account_id, since=since)
 
     def find_order_by_client_order_id(self, client_order_id: str):
         """Search in-memory broker ledger only (0270); DB is local, not broker, for fake mode."""
