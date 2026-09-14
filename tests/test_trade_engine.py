@@ -3559,6 +3559,53 @@ class TestReconciliationRestartRepair:
         assert "BROKER_MISSING" in kinds
         assert result.blocks_submission is True
 
+    def test_working_order_filled_incomplete_fills_blocks(self):
+        """FILLED at broker but sum(fill.qty) != fill_qty → RECONCILIATION_UNAVAILABLE (0306)."""
+        from trade_engine.reconciliation import reconcile
+        from trade_engine.broker_types import BrokerOrder, BrokerFill
+        conn = _make_conn()
+        self._seed_working_order(conn)
+        filled_order = BrokerOrder(broker_order_id="b-oid-1", symbol="ANET", side="BUY", quantity=10.0, fill_qty=10.0, state="FILLED")
+
+        class _Broker(self._make_broker_with_get_order(get_order_result=filled_order).__class__):
+            pass
+
+        # Return only 4 shares filled — should be 10
+        incomplete_fill = BrokerFill(
+            broker_fill_id="f1", broker_order_id="b-oid-1", symbol="ANET", side="BUY",
+            qty=4.0, price=100.0, filled_at="2026-09-14T10:00:00Z", fee=0.0, account_id="AGENTIC_SHADOW_01",
+        )
+        broker = self._make_broker_with_get_order(get_order_result=filled_order)
+        # Override get_fills_for_order to return incomplete set
+        broker.__class__ = type("_Broker2", (broker.__class__,), {
+            "get_fills_for_order": lambda self, oid: [incomplete_fill],
+        })
+        result = reconcile(self.ACCOUNT_ID, conn, broker)
+        kinds = [d.kind.value for d in result.discrepancies]
+        assert "RECONCILIATION_UNAVAILABLE" in kinds
+        assert result.blocks_submission is True
+        assert any("mismatch" in d.detail for d in result.discrepancies)
+
+    def test_working_order_filled_complete_fills_passes(self):
+        """FILLED at broker with sum(fill.qty) == fill_qty → no discrepancy (0306)."""
+        from trade_engine.reconciliation import reconcile
+        from trade_engine.broker_types import BrokerOrder, BrokerFill
+        conn = _make_conn()
+        self._seed_working_order(conn)
+        filled_order = BrokerOrder(broker_order_id="b-oid-1", symbol="ANET", side="BUY", quantity=10.0, fill_qty=10.0, state="FILLED")
+        complete_fill = BrokerFill(
+            broker_fill_id="f1", broker_order_id="b-oid-1", symbol="ANET", side="BUY",
+            qty=10.0, price=100.0, filled_at="2026-09-14T10:00:00Z", fee=0.0, account_id="AGENTIC_SHADOW_01",
+        )
+        broker = self._make_broker_with_get_order(get_order_result=filled_order)
+        broker.__class__ = type("_Broker3", (broker.__class__,), {
+            "get_fills_for_order": lambda self, oid: [complete_fill],
+        })
+        result = reconcile(self.ACCOUNT_ID, conn, broker)
+        kinds = [d.kind.value for d in result.discrepancies]
+        assert "RECONCILIATION_UNAVAILABLE" not in kinds
+        assert "BROKER_MISSING" not in kinds
+
 
 # 18. Trading readiness enforcement (0244)
 class TestTradingReadinessEnforced:

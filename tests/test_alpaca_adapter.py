@@ -566,6 +566,17 @@ class TestPollOrderEvents:
                 adapter.poll_order_events("acc1")
         assert adapter._poll_seeded is False
 
+    def test_get_order_failure_after_order_leaves_open_set_propagates(self):
+        """get_order() raising after order disappears from open set propagates — not silent (0305)."""
+        adapter = _adapter()
+        adapter._poll_seeded = True
+        adapter._tracked_broker_order_ids = {"o1"}
+        open_resp = _mock_response([])  # o1 no longer open
+        get_order_resp = _mock_response({}, status=503)  # get_order fails
+        with patch("requests.request", side_effect=[open_resp, get_order_resp]):
+            with pytest.raises(BrokerSettlementIndeterminate):
+                adapter.poll_order_events("acc1")
+
     def test_order_submitted_then_polled_as_filled(self):
         """submit_order() registers broker_order_id; next poll detects fill (0299)."""
         adapter = _adapter(submission_enabled=True)

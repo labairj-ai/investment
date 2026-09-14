@@ -1,7 +1,7 @@
 # Fail Closed on Terminal-State Lookup Failure in poll_order_events
 
 - **ID:** 0305
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-14
 - **Priority:** high
 - **Depends:** 0301
@@ -22,6 +22,12 @@ When `poll_order_events()` detects that a tracked order has disappeared from the
 
 ## Done when
 
-- [ ] `get_order()` failure for an order absent from the open-orders list propagates as `BrokerSettlementIndeterminate` rather than retaining the order in `still_open`
-- [ ] Unit test asserts the exception is raised (not silently swallowed)
-- [ ] All existing tests pass
+- [x] `get_order()` failure for an order absent from the open-orders list propagates as `BrokerSettlementIndeterminate` rather than retaining the order in `still_open`
+- [x] Unit test asserts the exception is raised (not silently swallowed)
+- [x] All existing tests pass
+
+## Outcome
+
+Removed the `try/except BrokerSettlementIndeterminate` around `get_order()` in the per-order
+refresh loop. The exception now propagates to the caller. Added
+`test_get_order_failure_after_order_leaves_open_set_propagates`. 705 tests pass.

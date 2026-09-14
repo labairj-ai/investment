@@ -492,12 +492,10 @@ class AlpacaAdapter(BrokerAdapter):
             if broker_order_id in broker_open_ids:
                 still_open.add(broker_order_id)
                 continue
-            # Not in broker's open set — has reached a terminal state; refresh to confirm
-            try:
-                order = self.get_order(broker_order_id)
-            except BrokerSettlementIndeterminate:
-                still_open.add(broker_order_id)  # connectivity issue — keep tracking
-                continue
+            # Not in broker's open set — has reached a terminal state; refresh to confirm.
+            # If get_order() raises, the broker confirmed the order is no longer open but
+            # cannot report its terminal state — propagate rather than silently deferring (0305).
+            order = self.get_order(broker_order_id)
             if order is None or order.state not in _ACTIONABLE:
                 # Order not found or still in a non-terminal state; keep tracking
                 still_open.add(broker_order_id)

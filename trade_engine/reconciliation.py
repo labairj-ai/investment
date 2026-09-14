@@ -228,6 +228,17 @@ def reconcile(
                                         broker_value="FILLED",
                                         detail="broker reports FILLED but fills endpoint returned empty",
                                     ))
+                                else:
+                                    _obs_qty = sum(f.qty for f in _reco_fills)
+                                    if abs(_obs_qty - _looked_up.fill_qty) > 1e-6:
+                                        discrepancies.append(Discrepancy(
+                                            kind=DiscrepancyKind.RECONCILIATION_UNAVAILABLE,
+                                            subject=oid,
+                                            local_value="FILLED",
+                                            broker_value="FILLED",
+                                            detail=f"fill qty mismatch: broker fill_qty={_looked_up.fill_qty} observed={_obs_qty} (0306)",
+                                        ))
+                                        _reco_fills = []  # skip apply
                                 for _rf in _reco_fills:
                                     apply_broker_fill(_rf, account_id, conn)
                         elif _looked_up.state in ("CANCELLED", "REJECTED", "EXPIRED"):
@@ -405,6 +416,17 @@ def reconcile(
                                 broker_value="PARTIALLY_FILLED",
                                 detail="broker reports PARTIALLY_FILLED but fills endpoint returned empty",
                             ))
+                        else:
+                            _obs_pf_qty = sum(f.qty for f in _pf_reco_fills)
+                            if abs(_obs_pf_qty - bo.fill_qty) > 1e-6:
+                                discrepancies.append(Discrepancy(
+                                    kind=DiscrepancyKind.RECONCILIATION_UNAVAILABLE,
+                                    subject=prow["order_id"],
+                                    local_value="PARTIALLY_FILLED",
+                                    broker_value="PARTIALLY_FILLED",
+                                    detail=f"fill qty mismatch: broker fill_qty={bo.fill_qty} observed={_obs_pf_qty} (0306)",
+                                ))
+                                _pf_reco_fills = []  # skip apply
                     for _rf in _pf_reco_fills:
                         apply_broker_fill(_rf, account_id, conn)
                 elif _bstate == "PENDING":
@@ -442,6 +464,17 @@ def reconcile(
                                 broker_value="FILLED",
                                 detail="broker reports FILLED but fills endpoint returned empty",
                             ))
+                        else:
+                            _obs_qty = sum(f.qty for f in _reco_fills)
+                            if abs(_obs_qty - bo.fill_qty) > 1e-6:
+                                discrepancies.append(Discrepancy(
+                                    kind=DiscrepancyKind.RECONCILIATION_UNAVAILABLE,
+                                    subject=prow["order_id"],
+                                    local_value="FILLED",
+                                    broker_value="FILLED",
+                                    detail=f"fill qty mismatch: broker fill_qty={bo.fill_qty} observed={_obs_qty} (0306)",
+                                ))
+                                _reco_fills = []  # skip apply
                     for _rf in _reco_fills:
                         apply_broker_fill(_rf, account_id, conn)
                 elif _bstate in ("CANCELLED", "REJECTED", "EXPIRED"):
