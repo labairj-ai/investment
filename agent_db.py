@@ -703,14 +703,23 @@ def _migrate_trade_engine(conn: sqlite3.Connection) -> None:
 
     # Seed AGENTIC_SHADOW_01 if not present
     from datetime import datetime as _dt, timezone as _tz
+    _now = _dt.now(_tz.utc).isoformat()
     conn.execute(
         """INSERT OR IGNORE INTO trading_accounts
            (account_id, name, mode, starting_capital, current_cash,
             broker, trading_enabled, policy_version, created_at)
            VALUES (?,?,?,?,?,?,?,?,?)""",
         ("AGENTIC_SHADOW_01", "Agentic Shadow Account", "shadow",
-         10000.0, 10000.0, None, 1, "1.0",
-         _dt.now(_tz.utc).isoformat()),
+         10000.0, 10000.0, None, 1, "1.0", _now),
+    )
+    # Seed AGENTIC_ALPACA_01 (Alpaca paper trading) if not present
+    conn.execute(
+        """INSERT OR IGNORE INTO trading_accounts
+           (account_id, name, mode, starting_capital, current_cash,
+            broker, trading_enabled, policy_version, created_at)
+           VALUES (?,?,?,?,?,?,?,?,?)""",
+        ("AGENTIC_ALPACA_01", "Agentic Alpaca Paper Account", "paper",
+         100000.0, 100000.0, "alpaca", 1, "1.0", _now),
     )
     conn.commit()
 

@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-_POLICY_PATH = Path(__file__).resolve().parent.parent / "config" / "trading_policy.json"
+_POLICY_DIR = Path(__file__).resolve().parent.parent / "config"
+_POLICY_PATH = _POLICY_DIR / "trading_policy.json"
 
 
 @dataclass(frozen=True)
@@ -112,7 +113,11 @@ class TradingPolicy:
 
 
 def load_policy(account_id: str, policy_path: Path | None = None) -> TradingPolicy:
-    path = policy_path or _POLICY_PATH
+    if policy_path is None:
+        per_account = _POLICY_DIR / f"trading_policy_{account_id.lower()}.json"
+        path = per_account if per_account.exists() else _POLICY_PATH
+    else:
+        path = policy_path
     raw = path.read_text(encoding="utf-8")
     data = json.loads(raw)
     if data.get("account_id") != account_id:
