@@ -615,7 +615,7 @@ class TestMarketableFill:
         for pos in broker_positions_before:
             conn2.execute(
                 "INSERT OR IGNORE INTO position_snapshots "
-                "(account_id, symbol, qty, cost_basis, last_updated) VALUES (?,?,?,?,?)",
+                "(account_id, symbol, qty, avg_cost, as_of) VALUES (?,?,?,?,?)",
                 (account_id, pos.symbol, float(pos.qty), float(pos.avg_cost), now),
             )
         conn2.commit()
