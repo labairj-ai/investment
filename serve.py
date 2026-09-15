@@ -117,6 +117,10 @@ _ai_insight_generating = False  # True while background generation is running
 _news_summary_lock = threading.Lock()
 _news_summary_generating = False
 
+_comparison_cache: dict | None = None      # cached score_for_comparison result
+_comparison_cache_at: float = 0.0          # monotonic time of last cache fill
+_COMPARISON_CACHE_TTL = 900.0              # 15 minutes — LLM result is stable
+
 
 def _job_create(kind: str) -> str:
     job_id = uuid.uuid4().hex[:16]
@@ -4789,30 +4793,39 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         try:
             import csv as _csv
             candidates = agent_db.get_candidates(include_rejected=False)
-            # Auto-sync owned status from holdings.csv
-            try:
-                held = []
-                csv_path = PROJECT_DIR / "holdings.csv"
-                if csv_path.exists():
-                    with open(csv_path, newline="") as f:
-                        for row in _csv.DictReader(f):
-                            t = str(row.get("Stock", "")).strip().upper()
-                            if t:
-                                held.append(t)
-                agent_db.sync_owned_candidates(held)
-                candidates = agent_db.get_candidates(include_rejected=False)
-            except Exception:
-                pass
+            # Sync owned status from holdings.csv in a background thread so the
+            # GET response is not blocked by write-lock contention on the DB.
+            def _sync_bg():
+                try:
+                    held = []
+                    csv_path = PROJECT_DIR / "holdings.csv"
+                    if csv_path.exists():
+                        with open(csv_path, newline="") as f:
+                            for row in _csv.DictReader(f):
+                                t = str(row.get("Stock", "")).strip().upper()
+                                if t:
+                                    held.append(t)
+                    agent_db.sync_owned_candidates(held)
+                except Exception:
+                    pass
+            threading.Thread(target=_sync_bg, daemon=True).start()
             self._json({"ok": True, "candidates": candidates})
         except Exception as e:
             self._json_error(500, str(e))
 
     def _handle_candidates_comparison(self):
-        """GET /api/candidates/comparison — score and rank active candidates."""
+        """GET /api/candidates/comparison — score and rank active candidates (cached 15 min)."""
+        global _comparison_cache, _comparison_cache_at
+        import time as _time
         try:
+            now = _time.monotonic()
+            if _comparison_cache is not None and (now - _comparison_cache_at) < _COMPARISON_CACHE_TTL:
+                return self._json({"ok": True, "cached": True, **_comparison_cache})
             from agents.opportunity_agent import score_for_comparison
             candidates = agent_db.get_candidates(include_rejected=False)
             result = score_for_comparison(candidates)
+            _comparison_cache = result
+            _comparison_cache_at = _time.monotonic()
             self._json({"ok": True, **result})
         except Exception as e:
             self._json_error(500, str(e))
