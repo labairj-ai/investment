@@ -25,6 +25,11 @@ from strategy_config import LAYER_NAMES, LAYER_TARGETS, LAYER_LABELS
 from .confidence import calculate_confidence
 from .contracts import AgentContext, EvidenceBundle, Recommendation
 from .orchestrator import register_agent
+from .learning.episode_capture import (
+    capture_candidate_episode,
+    update_episode_ranks,
+    mark_episode_selected,
+)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -398,6 +403,11 @@ def run_opportunity_hunter(ctx: AgentContext) -> list[Recommendation]:
     layer_weights = _get_layer_weights()
     holding_sectors = _get_holding_sectors(held)
 
+    portfolio_snapshot = {
+        "layer_weights": {str(k): v for k, v in layer_weights.items()},
+        "held_tickers": sorted(held),
+    }
+
     # Score every unowned candidate
     scored: list[dict] = []
     for w in all_candidates:
@@ -416,6 +426,9 @@ def run_opportunity_hunter(ctx: AgentContext) -> list[Recommendation]:
         w["_c"]       = c
         w["_ec"]      = ec
         w["_composite"] = _composite(q, v, pf, c, ec)
+        w["_episode_id"] = capture_candidate_episode(
+            ctx.run_id, w, portfolio_snapshot=portfolio_snapshot
+        )
         scored.append(w)
 
     if not scored:
@@ -423,6 +436,10 @@ def run_opportunity_hunter(ctx: AgentContext) -> list[Recommendation]:
         return []
 
     scored.sort(key=lambda x: x["_composite"], reverse=True)
+    update_episode_ranks(
+        [(c["_episode_id"], rank) for rank, c in enumerate(scored, 1)
+         if c.get("_episode_id")]
+    )
     top = scored[:_MAX_CANDIDATES]
 
     print(
@@ -447,6 +464,12 @@ def run_opportunity_hunter(ctx: AgentContext) -> list[Recommendation]:
     else:
         result = _fallback_select(top)
         selected = top[0]
+
+    if selected.get("_episode_id"):
+        mark_episode_selected(
+            selected["_episode_id"],
+            llm_why=result.get("why"),
+        )
 
     # Assemble recommendation
     meta = selected.get("_pf_meta", {})

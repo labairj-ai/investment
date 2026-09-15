@@ -517,6 +517,10 @@ def migrate() -> None:
         ("cycle_runs",         "duplicate_fills_skipped_ledger",    "INTEGER"),
         # 0324 — transport-error type in broker API log
         ("broker_api_log",     "error_type",                        "TEXT"),
+        # 0327 — learning episode linkage and execution semantics
+        ("trade_intents",      "decision_origin",       "TEXT"),
+        ("trade_intents",      "episode_id",            "TEXT"),
+        ("executed_actions",   "recommendation_action", "TEXT"),
     ]
     for table, col, col_type in _new_cols:
         try:
@@ -600,6 +604,9 @@ def migrate() -> None:
         conn.commit()
     except sqlite3.OperationalError:
         pass
+
+    # 0327 — strategy learning episode tables
+    _migrate_learning_episodes(conn)
 
     conn.close()
 
@@ -764,6 +771,87 @@ def _migrate_trade_engine(conn: sqlite3.Connection) -> None:
         ("AGENTIC_ALPACA_01", "Agentic Alpaca Paper Account", "paper",
          100000.0, 100000.0, "alpaca", 1, "1.0", _now),
     )
+    conn.commit()
+
+
+# ── Strategy learning episode tables (0327) ──────────────────────────────────
+
+def _migrate_learning_episodes(conn: sqlite3.Connection) -> None:
+    """Create decision_episodes, episode_outcomes, learning_models, and
+    risk_counterfactual_outcomes tables. Safe to re-run."""
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS decision_episodes (
+            episode_id             TEXT PRIMARY KEY,
+            run_id                 INTEGER,
+            ticker                 TEXT NOT NULL,
+            captured_at            REAL NOT NULL,
+            candidate_rank         INTEGER,
+            selected               INTEGER NOT NULL DEFAULT 0,
+            q_score                REAL,
+            v_score                REAL,
+            pf_score               REAL,
+            c_score                REAL,
+            ec_score               REAL,
+            composite_score        INTEGER,
+            buffett_score          INTEGER,
+            pe_ratio               REAL,
+            p_fcf                  REAL,
+            ev_ebitda              REAL,
+            gross_margin           REAL,
+            net_income_margin      REAL,
+            sga_margin             REAL,
+            capex_margin           REAL,
+            market_cap             REAL,
+            layer_rec              INTEGER,
+            sector                 TEXT,
+            industry               TEXT,
+            value_trap_risk        TEXT,
+            llm_model              TEXT,
+            llm_why                TEXT,
+            llm_conviction         INTEGER,
+            prompt_version         TEXT,
+            feature_schema_version TEXT,
+            portfolio_snapshot_json TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS episode_outcomes (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            episode_id    TEXT NOT NULL REFERENCES decision_episodes(episode_id),
+            horizon       TEXT NOT NULL,
+            ticker_return REAL,
+            spy_return    REAL,
+            alpha         REAL,
+            mfe           REAL,
+            mae           REAL,
+            labeled_at    REAL NOT NULL,
+            UNIQUE(episode_id, horizon)
+        );
+
+        CREATE TABLE IF NOT EXISTS learning_models (
+            model_version       TEXT PRIMARY KEY,
+            training_cutoff     TEXT,
+            feature_schema_hash TEXT,
+            training_n          INTEGER,
+            validation_metrics  TEXT,
+            created_at          REAL
+        );
+
+        CREATE TABLE IF NOT EXISTS risk_counterfactual_outcomes (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            intent_id    TEXT REFERENCES trade_intents(intent_id),
+            ticker       TEXT,
+            side         TEXT,
+            quantity     REAL,
+            limit_price  REAL,
+            rejected_at  REAL,
+            reject_rule  TEXT,
+            horizon      TEXT,
+            ticker_return REAL,
+            spy_return   REAL,
+            alpha        REAL,
+            labeled_at   REAL
+        );
+    """)
     conn.commit()
 
 

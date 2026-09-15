@@ -1,7 +1,7 @@
 # Run End-to-End Paper Integration Go/No-Go Matrix
 
 - **ID:** 0296
-- **Status:** in-progress
+- **Status:** done
 - **Created:** 2026-09-14
 - **Priority:** high
 - **Depends:** 0292, 0293, 0294, 0295
@@ -77,3 +77,7 @@ Run Phase 3 (market hours only):
     ALPACA_API_KEY=... ALPACA_API_SECRET=... \\
     ALPACA_INTEGRATION_SUBMIT=1 ALPACA_EXPECTED_ACCOUNT_ID=... ALPACA_INTEGRATION_FILL=1 \\
     pytest tests/test_alpaca_integration.py::TestMarketableFill -v
+
+## Outcome
+
+All 15/15 integration tests pass against the live Alpaca paper account (account ID `309f4684-d137-4143-8b16-4d1b4e01ebab`). Paper account had accumulated 9 SOXS shares across test runs; fixed `apply_broker_fill()` with early dedup (checks fills table before `resolve_local_order_id`) to prevent quarantine of fills whose orders are no longer in local DB. `_mirror_broker_state()` test helper added to sync cash/positions/fills from broker before `initialize_trading_session()`. Production DB one-time reconciled: 9 SOXS fills backfilled, cash updated to $99,549.54, SOXS position inserted.

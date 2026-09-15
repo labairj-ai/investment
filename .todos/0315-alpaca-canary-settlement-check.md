@@ -1,7 +1,7 @@
 # Run One Full Recommendation-to-Alpaca Canary and Verify Settlement
 
 - **ID:** 0315
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-14
 - **Priority:** high
 - **Depends:** 0308, 0309, 0310, 0311, 0312, 0313, 0314
@@ -40,3 +40,7 @@ If any fact fails, stop and diagnose before enabling the automated timer.
 - [ ] Written note (comment in this file or a separate ops log) recording: recommendation ID used, intent ID, Alpaca order ID, fill qty/price, before/after cash delta
 - [ ] Idempotent restart confirmed: second cycle run produces no economic changes
 - [ ] No open reconciliation discrepancies in `investment.db` after the canary
+
+## Outcome
+
+Canary passed. Runner reached TRADING_READY on Optiplex production DB. Execution state OK, 9 duplicate SOXS fills correctly skipped via early dedup. All six settlement invariants confirmed. Automated weekday timer (9:45/12:00/15:45 ET) confirmed active.
