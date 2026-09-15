@@ -504,9 +504,12 @@ class TestMarketableFill:
             valid_until="2099-12-31T23:59:59Z", created_at="2026-09-14T00:00:00Z",
         )
 
-        # Seed DB with the real broker cash so reconciliation doesn't mismatch
+        # Snapshot broker state before submitting so conn2 can mirror pre-fill state.
+        # Paper account accumulates positions across test runs; conn2 must start with
+        # the real broker positions so reconciliation agrees after importing the new fill.
         broker_acct = adapter.get_broker_account(account_id)
         starting_cash = broker_acct.cash
+        broker_positions_before = adapter.get_positions(account_id)
         conn = _make_integration_conn(account_id, cash=starting_cash)
         now = "2026-09-14T09:00:00Z"
         conn.execute(
@@ -599,14 +602,21 @@ class TestMarketableFill:
             (order_id, intent_id, account_id, symbol, "BUY", 1.0, "LIMIT", "WORKING",
              broker_order_id, client_id, now, now),
         )
-        # Pre-seed conn2 fills table with prior-run fills so they are recognized by
-        # the early-dedup path in apply_broker_fill and not quarantined during restart.
+        # Pre-seed conn2 fills table with prior-run fills (early-dedup skips them without quarantine).
         prior_fills = [f for f in adapter.get_fills(account_id) if f.broker_fill_id not in fill_ids_before]
         for pf in prior_fills:
             conn2.execute(
                 "INSERT OR IGNORE INTO fills (fill_id, account_id, symbol, side, qty, price, filled_at) "
                 "VALUES (?,?,?,?,?,?,?)",
                 (pf.broker_fill_id, account_id, pf.symbol, pf.side, pf.qty, pf.price, pf.filled_at),
+            )
+        # Pre-seed conn2 positions with broker's pre-fill snapshot so reconciliation
+        # agrees after initialize_trading_session imports the current fill (+1 share).
+        for pos in broker_positions_before:
+            conn2.execute(
+                "INSERT OR IGNORE INTO position_snapshots "
+                "(account_id, symbol, qty, cost_basis, last_updated) VALUES (?,?,?,?,?)",
+                (account_id, pos.symbol, float(pos.qty), float(pos.avg_cost), now),
             )
         conn2.commit()
 
