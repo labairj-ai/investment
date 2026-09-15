@@ -30,6 +30,7 @@ from .learning.episode_capture import (
     update_episode_ranks,
     mark_episode_selected,
 )
+from .learning.challenger import apply_challenger_adjustment
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -434,6 +435,14 @@ def run_opportunity_hunter(ctx: AgentContext) -> list[Recommendation]:
     if not scored:
         print("[opportunity] All candidates are already held — no recommendation")
         return []
+
+    # Apply challenger model adjustment (no-op if model inactive or training_n < 30)
+    for c in scored:
+        adj_composite, challenger_info = apply_challenger_adjustment(c)
+        c["_composite_challenger"] = adj_composite
+        c["_challenger_info"]      = challenger_info
+        if challenger_info.get("active"):
+            c["_composite"] = adj_composite
 
     scored.sort(key=lambda x: x["_composite"], reverse=True)
     update_episode_ranks(
