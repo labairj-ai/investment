@@ -234,10 +234,11 @@ class TestReadOnlyBinding:
         adapter = _make_adapter()
         quote = adapter.get_quote("AAPL")
         assert quote is not None
-        assert quote.bid > 0
-        assert quote.ask > 0
-        assert quote.ask >= quote.bid
         assert quote.symbol == "AAPL"
+        # bid or ask may be 0 outside market hours; assert at least one is positive
+        assert quote.bid > 0 or quote.ask > 0, f"both bid and ask are 0 — adapter may be broken"
+        if quote.ask > 0 and quote.bid > 0:
+            assert quote.ask >= quote.bid
 
     def test_initialize_trading_session_reaches_trading_ready(self):
         """initialize_trading_session() with a clean paper account → TRADING_READY (0296 Phase 1)."""
