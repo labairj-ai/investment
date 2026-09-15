@@ -1336,6 +1336,45 @@ def apply_broker_fill(
     - OverfillError: fill qty exceeds order remaining quantity
     - ImpossibleSellError: sell qty exceeds held position
     """
+    # ── Early dedup: if fill_id already recorded, skip before order resolution ──
+    # Prevents quarantine of fills whose orders are no longer in the local DB
+    # (prior integration test runs, pre-existing manual trades). Preserves the
+    # 0293 audit-repair path by reading order_id from the existing fills row.
+    if bf.broker_fill_id:
+        _existing_fill = conn.execute(
+            "SELECT order_id, fill_source, filled_at FROM fills WHERE fill_id=?",
+            (bf.broker_fill_id,),
+        ).fetchone()
+        if _existing_fill:
+            _stored_oid = _existing_fill["order_id"]
+            _ea_missing = not conn.execute(
+                "SELECT 1 FROM executed_actions WHERE fill_id=?", (bf.broker_fill_id,)
+            ).fetchone()
+            if _ea_missing and _stored_oid:
+                _ir2 = conn.execute(
+                    """SELECT ti.recommendation_id FROM trade_intents ti
+                       JOIN orders o ON ti.intent_id = o.intent_id
+                       WHERE o.order_id = ?""",
+                    (_stored_oid,),
+                ).fetchone()
+                _fsrc = _existing_fill["fill_source"] or "broker_import"
+                _fat = _existing_fill["filled_at"] or bf.filled_at
+                conn.execute(
+                    """INSERT OR IGNORE INTO executed_actions
+                       (recommendation_id, ticker, action, quantity, execution_price,
+                        execution_date, fees, notes, source, created_at, fill_id)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        _ir2["recommendation_id"] if _ir2 else None,
+                        bf.symbol, bf.side, float(bf.qty), float(bf.price),
+                        _fat[:10] if _fat else None,
+                        float(bf.fee), f"fill_source={_fsrc}", _fsrc,
+                        time.time(), bf.broker_fill_id,
+                    ),
+                )
+                conn.commit()
+            return FillResult.ALREADY_APPLIED
+
     # Resolve local order_id via the three-tier identity resolver (0263)
     order_id = resolve_local_order_id(
         bf.local_order_id, bf.broker_order_id, getattr(bf, "client_order_id", None), conn

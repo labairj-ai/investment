@@ -599,8 +599,8 @@ class TestMarketableFill:
             (order_id, intent_id, account_id, symbol, "BUY", 1.0, "LIMIT", "WORKING",
              broker_order_id, client_id, now, now),
         )
-        # Pre-seed conn2 with any fills from prior test runs so initialize_trading_session
-        # doesn't quarantine them as unresolvable (paper account accumulates state across runs).
+        # Pre-seed conn2 fills table with prior-run fills so they are recognized by
+        # the early-dedup path in apply_broker_fill and not quarantined during restart.
         prior_fills = [f for f in adapter.get_fills(account_id) if f.broker_fill_id not in fill_ids_before]
         for pf in prior_fills:
             conn2.execute(
