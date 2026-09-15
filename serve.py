@@ -1952,6 +1952,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         elif parsed.path.startswith("/api/shadow/risk/"):
             intent_id = parsed.path.split("/api/shadow/risk/", 1)[1]
             self._handle_shadow_risk(intent_id)
+        elif parsed.path == "/api/learning/stats":
+            self._handle_learning_stats()
         # ── Alpaca paper account endpoints ────────────────────────────────────
         elif parsed.path == "/api/alpaca/account":
             self._handle_alpaca_account()
@@ -5671,6 +5673,116 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._json({
                 "ok": True,
                 "runs": [dict(r) for r in rows],
+            })
+        except Exception as e:
+            self._json_error(500, str(e))
+
+    def _handle_learning_stats(self):
+        """GET /api/learning/stats — strategy learning calibration data (0329)."""
+        try:
+            conn = agent_db._connect()
+
+            # Overview counts
+            overview = conn.execute("""
+                SELECT
+                    COUNT(DISTINCT e.episode_id)                                   AS total_episodes,
+                    COUNT(DISTINCT o.episode_id)                                   AS labeled_episodes,
+                    SUM(CASE WHEN e.selected=1 THEN 1 ELSE 0 END)                 AS selected_episodes,
+                    MIN(DATE(e.captured_at, 'unixepoch'))                          AS earliest_date,
+                    MAX(DATE(e.captured_at, 'unixepoch'))                          AS latest_date
+                FROM decision_episodes e
+                LEFT JOIN episode_outcomes o ON e.episode_id = o.episode_id
+                  AND o.horizon = '3m'
+            """).fetchone()
+            overview = dict(overview) if overview else {}
+
+            # Score calibration: mean 3m alpha by composite_score bucket
+            cal_rows = conn.execute("""
+                SELECT
+                    CASE
+                        WHEN e.composite_score < 55 THEN '45-54'
+                        WHEN e.composite_score < 65 THEN '55-64'
+                        WHEN e.composite_score < 75 THEN '65-74'
+                        WHEN e.composite_score < 85 THEN '75-84'
+                        ELSE '85+'
+                    END                   AS bucket,
+                    COUNT(*)              AS n,
+                    ROUND(AVG(o.alpha)*100, 2)        AS mean_alpha_pct,
+                    ROUND(AVG(o.ticker_return)*100, 2) AS mean_return_pct,
+                    ROUND(AVG(o.spy_return)*100, 2)   AS mean_spy_pct
+                FROM decision_episodes e
+                JOIN episode_outcomes o ON e.episode_id = o.episode_id
+                WHERE o.horizon = '3m'
+                GROUP BY bucket
+                ORDER BY bucket
+            """).fetchall()
+            score_calibration = [dict(r) for r in cal_rows]
+
+            # Feature attribution: mean 3m alpha by component buckets
+            def _feature_buckets(component_col: str) -> list[dict]:
+                rows = conn.execute(f"""
+                    SELECT
+                        CASE
+                            WHEN e.{component_col} IS NULL THEN 'N/A'
+                            WHEN e.{component_col} < 50    THEN '<50'
+                            WHEN e.{component_col} < 65    THEN '50-64'
+                            WHEN e.{component_col} < 80    THEN '65-79'
+                            ELSE '80+'
+                        END              AS bucket,
+                        COUNT(*)         AS n,
+                        ROUND(AVG(o.alpha)*100, 2) AS mean_alpha_pct
+                    FROM decision_episodes e
+                    JOIN episode_outcomes o ON e.episode_id = o.episode_id
+                    WHERE o.horizon = '3m'
+                    GROUP BY bucket ORDER BY bucket
+                """).fetchall()
+                return [dict(r) for r in rows]
+
+            feature_attribution = {
+                "Q":  _feature_buckets("q_score"),
+                "V":  _feature_buckets("v_score"),
+                "PF": _feature_buckets("pf_score"),
+                "C":  _feature_buckets("c_score"),
+                "EC": _feature_buckets("ec_score"),
+            }
+
+            # LLM calibration: by conviction stars (NULL until conviction data arrives)
+            llm_rows = conn.execute("""
+                SELECT
+                    COALESCE(e.llm_conviction, -1) AS stars,
+                    COUNT(*)                        AS n,
+                    ROUND(AVG(o.alpha)*100, 2)      AS mean_alpha_pct,
+                    ROUND(SUM(CASE WHEN o.alpha > 0 THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1)
+                                                    AS hit_rate_pct
+                FROM decision_episodes e
+                JOIN episode_outcomes o ON e.episode_id = o.episode_id
+                WHERE o.horizon = '3m' AND e.selected = 1
+                GROUP BY stars ORDER BY stars
+            """).fetchall()
+            llm_calibration = [dict(r) for r in llm_rows]
+
+            # Risk gate audit: counterfactual outcomes by reject_rule
+            risk_rows = conn.execute("""
+                SELECT
+                    COALESCE(reject_rule, 'unknown') AS rule,
+                    COUNT(*)                          AS n_blocked,
+                    SUM(CASE WHEN alpha < 0 THEN 1 ELSE 0 END) AS losses_avoided,
+                    SUM(CASE WHEN alpha > 0 THEN 1 ELSE 0 END) AS alpha_missed,
+                    ROUND(AVG(alpha)*100, 2)          AS mean_alpha_pct
+                FROM risk_counterfactual_outcomes
+                WHERE horizon = '3m' AND alpha IS NOT NULL
+                GROUP BY rule ORDER BY n_blocked DESC
+            """).fetchall()
+            risk_audit = [dict(r) for r in risk_rows]
+
+            conn.close()
+            self._json({
+                "ok": True,
+                "overview": overview,
+                "score_calibration": score_calibration,
+                "feature_attribution": feature_attribution,
+                "llm_calibration": llm_calibration,
+                "risk_audit": risk_audit,
             })
         except Exception as e:
             self._json_error(500, str(e))

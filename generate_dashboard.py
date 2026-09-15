@@ -2336,12 +2336,14 @@ def build_dashboard(portfolio, layers, holdings):
   <button class="dash-tab-btn" id="tab-btn-decisions" onclick="showDashTab('decisions')">Decisions</button>
   <button class="dash-tab-btn" id="tab-btn-macro" onclick="showDashTab('macro')">📊 Macro Risk</button>
   <button class="dash-tab-btn" id="tab-btn-shadow" onclick="showDashTab('shadow');loadShadowPanel()">🤖 Shadow</button>
+  <button class="dash-tab-btn" id="tab-btn-learning" onclick="showDashTab('learning');loadLearningPanel()">📈 Learning Lab</button>
   <button id="nav-hamburger" onclick="toggleNavMenu(event)" aria-label="Menu">&#9776;</button>
   <div id="nav-dropdown">
     <button class="nav-dd-btn" id="tab-dd-btn-portfolio" onclick="showDashTab('portfolio');closeNavMenu()">Portfolio</button>
     <button class="nav-dd-btn" id="tab-dd-btn-decisions" onclick="showDashTab('decisions');closeNavMenu()">Decisions</button>
     <button class="nav-dd-btn" id="tab-dd-btn-macro" onclick="showDashTab('macro');closeNavMenu()">📊 Macro Risk</button>
     <button class="nav-dd-btn" id="tab-dd-btn-shadow" onclick="showDashTab('shadow');loadShadowPanel();closeNavMenu()">🤖 Shadow</button>
+    <button class="nav-dd-btn" id="tab-dd-btn-learning" onclick="showDashTab('learning');loadLearningPanel();closeNavMenu()">📈 Learning Lab</button>
     <button class="nav-dd-btn" id="tab-dd-btn-glossary" onclick="showDashTab('glossary');closeNavMenu()">📖 Glossary</button>
   </div>
 </nav>
@@ -3089,6 +3091,55 @@ def build_dashboard(portfolio, layers, holdings):
 
   </div>
 </div><!-- end tab-shadow -->
+
+<div id="tab-learning" class="dash-tab-content" style="display:none;">
+  <div style="max-width:960px;margin:0 auto;padding:20px 24px;display:flex;flex-direction:column;gap:18px;">
+
+    <!-- Header row -->
+    <div style="display:flex;align-items:center;justify-content:space-between;">
+      <div>
+        <h2 style="margin:0 0 4px;">Learning Lab</h2>
+        <p style="margin:0;font-size:13px;color:#718096;">Read-only calibration view — no weights or risk rules are modified here.</p>
+      </div>
+      <button onclick="loadLearningPanel()" style="font-size:11px;padding:4px 12px;background:#ebf8ff;color:#2b6cb0;border:1px solid #bee3f8;border-radius:6px;cursor:pointer;">Refresh</button>
+    </div>
+
+    <!-- Overview -->
+    <div style="background:#fff;border-radius:10px;padding:18px 22px;box-shadow:0 1px 4px rgba(0,0,0,.07);">
+      <h3 style="margin:0 0 12px;font-size:14px;font-weight:700;color:#2d3748;">Episode Dataset</h3>
+      <div id="learning-overview" style="color:#718096;font-size:13px;">Loading…</div>
+    </div>
+
+    <!-- Score Calibration -->
+    <div style="background:#fff;border-radius:10px;padding:18px 22px;box-shadow:0 1px 4px rgba(0,0,0,.07);">
+      <h3 style="margin:0 0 4px;font-size:14px;font-weight:700;color:#2d3748;">Score Calibration</h3>
+      <p style="margin:0 0 12px;font-size:12px;color:#718096;">Mean 90-day alpha vs SPY by composite score bucket — shows whether higher scores predict better returns.</p>
+      <div id="learning-score-cal" style="color:#718096;font-size:13px;">Loading…</div>
+    </div>
+
+    <!-- Feature Attribution -->
+    <div style="background:#fff;border-radius:10px;padding:18px 22px;box-shadow:0 1px 4px rgba(0,0,0,.07);">
+      <h3 style="margin:0 0 4px;font-size:14px;font-weight:700;color:#2d3748;">Feature Attribution</h3>
+      <p style="margin:0 0 12px;font-size:12px;color:#718096;">Mean 90-day alpha by component score bucket — shows which Q/V/PF/C/EC dimensions actually predict excess return.</p>
+      <div id="learning-feature-attr" style="color:#718096;font-size:13px;">Loading…</div>
+    </div>
+
+    <!-- LLM Calibration -->
+    <div style="background:#fff;border-radius:10px;padding:18px 22px;box-shadow:0 1px 4px rgba(0,0,0,.07);">
+      <h3 style="margin:0 0 4px;font-size:14px;font-weight:700;color:#2d3748;">LLM Conviction Calibration</h3>
+      <p style="margin:0 0 12px;font-size:12px;color:#718096;">Hit rate and mean alpha by LLM conviction stars — reveals systematic over/under-confidence in model selection.</p>
+      <div id="learning-llm-cal" style="color:#718096;font-size:13px;">Loading…</div>
+    </div>
+
+    <!-- Risk Gate Audit -->
+    <div style="background:#fff;border-radius:10px;padding:18px 22px;box-shadow:0 1px 4px rgba(0,0,0,.07);">
+      <h3 style="margin:0 0 4px;font-size:14px;font-weight:700;color:#2d3748;">Risk Gate Audit</h3>
+      <p style="margin:0 0 12px;font-size:12px;color:#718096;">Counterfactual outcomes for risk-rejected intents — shows which rules block bad trades vs miss good ones.</p>
+      <div id="learning-risk-audit" style="color:#718096;font-size:13px;">Loading…</div>
+    </div>
+
+  </div>
+</div><!-- end tab-learning -->
 
 <div id="tab-decisions" class="dash-tab-content" style="display:none;">
   <div style="max-width:900px;margin:0 auto;padding:20px 24px;display:flex;flex-direction:column;gap:18px;">
@@ -8786,6 +8837,116 @@ function loadShadowRuns() {{
   }});
 }}
 
+// ── Learning Lab ─────────────────────────────────────────────────────────────
+
+function loadLearningPanel() {{
+  var overviewEl = document.getElementById('learning-overview');
+  var scoreEl    = document.getElementById('learning-score-cal');
+  var featureEl  = document.getElementById('learning-feature-attr');
+  var llmEl      = document.getElementById('learning-llm-cal');
+  var riskEl     = document.getElementById('learning-risk-audit');
+  if (!overviewEl) return;
+
+  fetch('/api/learning/stats').then(function(r) {{ return r.json(); }}).then(function(d) {{
+    if (!d.ok) {{
+      overviewEl.innerHTML = '<span style="color:#fc8181;">Error: ' + (d.error||'unknown') + '</span>';
+      return;
+    }}
+
+    // Overview
+    var ov = d.overview || {{}};
+    var nEp = ov.total_episodes || 0;
+    var nLab = ov.labeled_episodes || 0;
+    var nSel = ov.selected_episodes || 0;
+    overviewEl.innerHTML =
+      '<div style="display:flex;gap:28px;flex-wrap:wrap;">' +
+      '<div><div style="font-size:10px;color:#718096;text-transform:uppercase;margin-bottom:2px;">Candidates Captured</div>' +
+        '<div style="font-size:20px;font-weight:700;color:#2d3748;">' + nEp + '</div></div>' +
+      '<div><div style="font-size:10px;color:#718096;text-transform:uppercase;margin-bottom:2px;">Selected (Recommended)</div>' +
+        '<div style="font-size:20px;font-weight:700;color:#2d3748;">' + nSel + '</div></div>' +
+      '<div><div style="font-size:10px;color:#718096;text-transform:uppercase;margin-bottom:2px;">90d Outcomes Labeled</div>' +
+        '<div style="font-size:20px;font-weight:700;color:#2d3748;">' + nLab + '</div></div>' +
+      (ov.earliest_date ? '<div><div style="font-size:10px;color:#718096;text-transform:uppercase;margin-bottom:2px;">Date Range</div>' +
+        '<div style="font-size:14px;font-weight:600;color:#4a5568;">' + ov.earliest_date + ' → ' + (ov.latest_date || '…') + '</div></div>' : '') +
+      '</div>' +
+      (nLab < 10 ? '<p style="margin:14px 0 0;font-size:12px;color:#a0aec0;font-style:italic;">Calibration tables below require ≥10 labeled 90-day outcomes. ' + nLab + ' available so far — check back in 3 months.</p>' : '');
+
+    // Helper: render a calibration table
+    function _calTable(rows, cols) {{
+      if (!rows || rows.length === 0) {{
+        return '<span style="color:#a0aec0;font-style:italic;">No labeled data yet.</span>';
+      }}
+      var hdr = cols.map(function(c) {{ return '<th style="padding:6px 10px;text-align:left;font-weight:600;">' + c.label + '</th>'; }}).join('');
+      var body = rows.map(function(r) {{
+        var cells = cols.map(function(c) {{
+          var val = r[c.key];
+          if (val === null || val === undefined) val = '—';
+          if (c.pct && val !== '—') val = (val > 0 ? '+' : '') + val + '%';
+          if (c.color && val !== '—') {{
+            var cl = val.toString().startsWith('+') ? '#38a169' : (val.toString().startsWith('-') ? '#e53e3e' : '#2d3748');
+            return '<td style="padding:6px 10px;color:' + cl + ';font-weight:600;">' + val + '</td>';
+          }}
+          return '<td style="padding:6px 10px;color:#4a5568;">' + val + '</td>';
+        }}).join('');
+        return '<tr style="border-top:1px solid #edf2f7;">' + cells + '</tr>';
+      }}).join('');
+      return '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:13px;">' +
+        '<thead style="background:#f7fafc;"><tr style="color:#718096;font-size:11px;text-transform:uppercase;">' + hdr + '</tr></thead>' +
+        '<tbody>' + body + '</tbody></table></div>';
+    }}
+
+    // Score calibration
+    var sCols = [
+      {{key:'bucket',label:'Score Range'}},
+      {{key:'n',label:'N'}},
+      {{key:'mean_return_pct',label:'Mean Return',pct:true,color:true}},
+      {{key:'mean_spy_pct',label:'Mean SPY',pct:true,color:true}},
+      {{key:'mean_alpha_pct',label:'Mean Alpha',pct:true,color:true}},
+    ];
+    scoreEl.innerHTML = _calTable(d.score_calibration, sCols);
+
+    // Feature attribution — one sub-table per component
+    var fa = d.feature_attribution || {{}};
+    var fCols = [{{key:'bucket',label:'Score Range'}},{{key:'n',label:'N'}},{{key:'mean_alpha_pct',label:'Mean 90d Alpha',pct:true,color:true}}];
+    var fHtml = '';
+    ['Q','V','PF','C','EC'].forEach(function(k) {{
+      var name = {{Q:'Quality',V:'Valuation',PF:'Portfolio Fit',C:'Catalyst',EC:'Evidence Confidence'}}[k];
+      fHtml += '<div style="margin-bottom:14px;">' +
+        '<div style="font-size:12px;font-weight:700;color:#4a5568;margin-bottom:6px;">' + name + ' (' + k + ')</div>' +
+        _calTable(fa[k], fCols) + '</div>';
+    }});
+    featureEl.innerHTML = fHtml || '<span style="color:#a0aec0;font-style:italic;">No labeled data yet.</span>';
+
+    // LLM calibration
+    var llmCols = [
+      {{key:'stars',label:'Conviction Stars'}},
+      {{key:'n',label:'N Selected'}},
+      {{key:'hit_rate_pct',label:'Hit Rate (alpha>0)'}},
+      {{key:'mean_alpha_pct',label:'Mean Alpha',pct:true,color:true}},
+    ];
+    var llmRows = (d.llm_calibration || []).map(function(r) {{
+      var s = r.stars === -1 ? 'N/A (no data)' : (r.stars + ' ★');
+      return Object.assign({{}}, r, {{stars: s}});
+    }});
+    llmEl.innerHTML = _calTable(llmRows.length ? llmRows : null, llmCols);
+
+    // Risk gate audit
+    var rCols = [
+      {{key:'rule',label:'Rule'}},
+      {{key:'n_blocked',label:'Blocked'}},
+      {{key:'losses_avoided',label:'Losses Avoided'}},
+      {{key:'alpha_missed',label:'Alpha Missed'}},
+      {{key:'mean_alpha_pct',label:'Mean Blocked Alpha',pct:true,color:true}},
+    ];
+    riskEl.innerHTML = (d.risk_audit && d.risk_audit.length)
+      ? _calTable(d.risk_audit, rCols)
+      : '<span style="color:#a0aec0;font-style:italic;">No counterfactual data yet — outcomes are labeled for risk-rejected intents once 90 days have elapsed.</span>';
+
+  }}).catch(function(e) {{
+    if (overviewEl) overviewEl.innerHTML = '<span style="color:#fc8181;">Failed to load: ' + e.message + '</span>';
+  }});
+}}
+
 // ── Agent status badge ────────────────────────────────────────────────────────
 var _agentStatusTimer   = null;
 var _agentTickTimer     = null;
@@ -8868,6 +9029,7 @@ document.addEventListener('click', function(e) {{
   if (saved && document.getElementById('tab-' + saved)) {{
     showDashTab(saved);
     if (saved === 'shadow') loadShadowPanel();
+    if (saved === 'learning') loadLearningPanel();
   }}
 }})();
 
