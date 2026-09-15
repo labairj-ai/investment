@@ -504,8 +504,10 @@ class TestMarketableFill:
             valid_until="2099-12-31T23:59:59Z", created_at="2026-09-14T00:00:00Z",
         )
 
-        # Seed DB before submission
-        conn = _make_integration_conn(account_id, cash=50_000.0)
+        # Seed DB with the real broker cash so reconciliation doesn't mismatch
+        broker_acct = adapter.get_broker_account(account_id)
+        starting_cash = broker_acct.cash
+        conn = _make_integration_conn(account_id, cash=starting_cash)
         now = "2026-09-14T09:00:00Z"
         conn.execute(
             "INSERT OR IGNORE INTO trade_intents "
@@ -563,7 +565,7 @@ class TestMarketableFill:
 
         # Assert: cash debited
         acct_row = conn.execute("SELECT current_cash FROM trading_accounts WHERE account_id=?", (account_id,)).fetchone()
-        assert acct_row["current_cash"] < 50_000.0, "cash not debited after fill"
+        assert acct_row["current_cash"] < starting_cash, "cash not debited after fill"
 
         # Assert: executed_actions row present (matrix point 5)
         ea_rows = conn.execute("SELECT fill_id FROM executed_actions WHERE fill_id IS NOT NULL").fetchall()
@@ -581,7 +583,7 @@ class TestMarketableFill:
         assert ea_count_after == ea_count_before, "replay changed executed_actions row count"
 
         # Matrix point 2: restart — initialize_trading_session() imports fills, reaches TRADING_READY
-        conn2 = _make_integration_conn(account_id, cash=50_000.0)
+        conn2 = _make_integration_conn(account_id, cash=starting_cash)
         conn2.execute(
             "INSERT OR IGNORE INTO trade_intents "
             "(intent_id, account_id, symbol, side, quantity, limit_price, status, created_at, valid_until, instrument_type, order_type, time_in_force, strategy, thesis_version, strategy_config_hash, policy_hash) "
