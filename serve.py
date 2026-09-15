@@ -1946,6 +1946,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         elif parsed.path == "/api/shadow/fills":
             limit = int(parse_qs(parsed.query).get("limit", ["20"])[0])
             self._handle_shadow_fills(limit)
+        elif parsed.path == "/api/shadow/runs":
+            limit = int(parse_qs(parsed.query).get("limit", ["20"])[0])
+            self._handle_shadow_runs(limit)
         elif parsed.path.startswith("/api/shadow/risk/"):
             intent_id = parsed.path.split("/api/shadow/risk/", 1)[1]
             self._handle_shadow_risk(intent_id)
@@ -5651,6 +5654,26 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             })
         except Exception as e:
             self._send_json({"ok": False, "error": str(e)}, 500)
+
+    def _handle_shadow_runs(self, limit: int = 20):
+        try:
+            conn = self._shadow_conn()
+            rows = conn.execute(
+                """SELECT run_at, execution_state, halt_reason, duration_seconds,
+                          new_intents_processed, risk_rejections, orders_submitted,
+                          fills_applied, duplicate_fills_skipped, broker_api_errors,
+                          cash_delta_vs_broker, position_delta_vs_broker,
+                          oldest_unresolved_order_age_minutes
+                   FROM cycle_runs ORDER BY run_at DESC LIMIT ?""",
+                (limit,),
+            ).fetchall()
+            conn.close()
+            self._json({
+                "ok": True,
+                "runs": [dict(r) for r in rows],
+            })
+        except Exception as e:
+            self._json_error(500, str(e))
 
     def _handle_trade_engine_run(self):
         """POST /api/trade-engine/run — full execution cycle for AGENTIC_SHADOW_01 (0216, 0244, 0254)."""
