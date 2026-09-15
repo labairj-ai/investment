@@ -1,0 +1,13 @@
+[Unit]
+Description=Investment Outcome Labeler — label mature decision_episodes with market outcomes
+After=network.target
+ConditionPathExists=/home/optiplex/investment/out/investment.db
+
+[Service]
+Type=oneshot
+User=optiplex
+WorkingDirectory=/home/optiplex/investment
+ExecStart=/home/optiplex/investment/venv/bin/python3 -m agents.learning.outcome_labeler
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=outcome-labeler
