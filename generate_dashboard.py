@@ -8812,7 +8812,10 @@ document.addEventListener('click', function(e) {{
 (function() {{
   var saved = '';
   try {{ saved = localStorage.getItem('dashTab') || ''; }} catch(e) {{}}
-  if (saved && document.getElementById('tab-' + saved)) showDashTab(saved);
+  if (saved && document.getElementById('tab-' + saved)) {{
+    showDashTab(saved);
+    if (saved === 'shadow') loadShadowPanel();
+  }}
 }})();
 
 // ── Investment Thesis Modal ───────────────────────────────────────────────────
