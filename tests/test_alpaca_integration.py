@@ -143,6 +143,23 @@ _SCHEMA_SQL = """
 """
 
 
+def _preseed_prior_fills(conn, adapter, account_id: str, exclude: set = frozenset()) -> None:
+    """Insert all current broker fills (except `exclude`) as already-processed.
+
+    Prevents initialize_trading_session from quarantining fills accumulated
+    across prior integration test runs whose orders are not in this conn.
+    """
+    for f in adapter.get_fills(account_id):
+        if f.broker_fill_id in exclude:
+            continue
+        conn.execute(
+            "INSERT OR IGNORE INTO fills (fill_id, account_id, symbol, side, qty, price, filled_at) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (f.broker_fill_id, account_id, f.symbol, f.side, f.qty, f.price, f.filled_at),
+        )
+    conn.commit()
+
+
 def _make_integration_conn(account_id: str, cash: float = 100_000.0) -> sqlite3.Connection:
     """In-memory DB with full engine schema and a seeded paper trading account."""
     conn = sqlite3.connect(":memory:")
@@ -246,6 +263,7 @@ class TestReadOnlyBinding:
         adapter = _make_adapter()
         account_id = adapter.get_account_id()
         conn = _make_integration_conn(account_id)
+        _preseed_prior_fills(conn, adapter, account_id)
         policy = _permissive_policy(account_id)
         with patch("trade_engine.execution_engine.load_policy", return_value=policy):
             state = execution_engine.initialize_trading_session(account_id, conn, broker=adapter)
@@ -441,6 +459,7 @@ class TestLiveOrderRoundTrip:
             (ack.broker_order_id, intent_id, account_id, "AAPL", "BUY", 1.0, "LIMIT", "WORKING",
              ack.broker_order_id, client_id, now, now),
         )
+        _preseed_prior_fills(conn, adapter, account_id)
         conn.commit()
 
         try:
