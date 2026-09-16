@@ -5747,10 +5747,13 @@ function renderCCPositions() {{
     const net      = p.net_premium;
     const buyback  = p.closed_price != null ? p.closed_price * p.contracts * 100 : null;
 
+    const netVal   = net ?? 0;
+    const netColor = netVal >= 0 ? "#27ae60" : "#e74c3c";
+    const netSign  = netVal >= 0 ? "+" : "−";
     const netCell  = isOpen
       ? `<td style="padding:7px 10px;color:#aaa;font-size:11px;">open</td>`
-      : `<td style="padding:7px 10px;font-weight:700;color:#27ae60;">
-           +$${{(net ?? 0).toFixed(2)}}
+      : `<td style="padding:7px 10px;font-weight:700;color:${{netColor}};">
+           ${{netSign}}$${{Math.abs(netVal).toFixed(2)}}
            ${{buyback ? `<div style="font-size:10px;color:#e74c3c;font-weight:400;">−$${{buyback.toFixed(2)}} buyback</div>` : ""}}
          </td>`;
 
@@ -5809,8 +5812,8 @@ function renderCCPositions() {{
       <span>Open gross premium: <b style="color:#1a6e38;">$${{openGross.toFixed(2)}}</b></span>
       ${{hasMtm ? `<span>Unrealized P&amp;L: <b>${{fmtPnl(openMtmTotal)}}</b></span>` : ""}}
       ${{hasMtm ? `<span>Today's option P&amp;L: <b>${{fmtPnl(openMtmDay)}}</b></span>` : ""}}
-      <span style="border-left:1px solid #dde;padding-left:16px;">YTD income: <b style="color:#27ae60;">$${{ytdNet.toFixed(2)}}</b></span>
-      <span style="color:#aaa;font-size:12px;">All-time: $${{netRealized.toFixed(2)}}</span>
+      <span style="border-left:1px solid #dde;padding-left:16px;">YTD net: <b style="color:${{ytdNet >= 0 ? '#27ae60' : '#e74c3c'}};">${{ytdNet >= 0 ? '+' : '−'}}$${{Math.abs(ytdNet).toFixed(2)}}</b></span>
+      <span style="color:#aaa;font-size:12px;">All-time: ${{netRealized >= 0 ? '' : '−'}}$${{Math.abs(netRealized).toFixed(2)}}</span>
       ${{buybackCost > 0 ? `<span style="color:#aaa;font-size:12px;">($${{grossRealized.toFixed(2)}} gross − $${{buybackCost.toFixed(2)}} buybacks)</span>` : ""}}
     </div>`;
 
@@ -6185,10 +6188,14 @@ function _updateCCClosePreview() {{
   preview.style.display = "block";
   preview.style.background = net >= 0 ? "#f0fff4" : "#fff0f0";
   preview.style.borderColor = net >= 0 ? "#ade" : "#fcc";
+  const netLabel = net >= 0 ? "Net realized income" : "Net realized loss";
+  const taxNote  = net >= 0
+    ? "Short-term ordinary income · taxed at your ST rate"
+    : "Buyback at a loss — deductible against other ST gains";
   preview.innerHTML = `
-    Net realized income: <b style="color:${{net>=0?"#27ae60":"#e74c3c"}};">${{net>=0?"+":""}}$${{Math.abs(net).toFixed(2)}}</b>
+    ${{netLabel}}: <b style="color:${{net>=0?"#27ae60":"#e74c3c"}};">${{net>=0?"+":"−"}}$${{Math.abs(net).toFixed(2)}}</b>
     ${{buyback > 0 ? `<span style="color:#888;font-size:11px;">($${{gross.toFixed(2)}} gross − $${{(buyback*p.contracts*100).toFixed(2)}} buyback)</span>` : ""}}
-    <br><span style="font-size:11px;color:#888;">Always short-term ordinary income · taxed at your ST rate</span>`;
+    <br><span style="font-size:11px;color:#888;">${{taxNote}}</span>`;
 }}
 
 document.getElementById("cc-close-price")?.addEventListener("input", _updateCCClosePreview);
