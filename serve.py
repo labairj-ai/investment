@@ -2341,34 +2341,35 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             db = PROJECT_DIR / "out" / "investment.db"
             if not db.exists():
                 return self._json({"ok": True, "positions": []})
-            conn = sqlite3.connect(str(db), timeout=10)
+            conn = sqlite3.connect(str(db), timeout=30)
             conn.row_factory = sqlite3.Row
+            try:
+                # Auto-expire any open positions whose expiry date has passed.
+                # Options expire at end of day on the expiry date, so we compare
+                # strictly: expiry < today (i.e. the day after expiry has arrived).
+                today = datetime.date.today().isoformat()
+                past_open = conn.execute(
+                    "SELECT id, premium_per_contract, contracts, expiry "
+                    "FROM cc_positions WHERE status = 'open' AND expiry < ?",
+                    (today,)
+                ).fetchall()
+                for row in past_open:
+                    net = round(row["premium_per_contract"] * row["contracts"] * 100, 2)
+                    conn.execute(
+                        "UPDATE cc_positions "
+                        "SET status='expired', close_type='expired', "
+                        "    closed_date=?, net_premium=? "
+                        "WHERE id=?",
+                        (row["expiry"], net, row["id"])
+                    )
+                if past_open:
+                    conn.commit()
 
-            # Auto-expire any open positions whose expiry date has passed.
-            # Options expire at end of day on the expiry date, so we compare
-            # strictly: expiry < today (i.e. the day after expiry has arrived).
-            today = datetime.date.today().isoformat()
-            past_open = conn.execute(
-                "SELECT id, premium_per_contract, contracts, expiry "
-                "FROM cc_positions WHERE status = 'open' AND expiry < ?",
-                (today,)
-            ).fetchall()
-            for row in past_open:
-                net = round(row["premium_per_contract"] * row["contracts"] * 100, 2)
-                conn.execute(
-                    "UPDATE cc_positions "
-                    "SET status='expired', close_type='expired', "
-                    "    closed_date=?, net_premium=? "
-                    "WHERE id=?",
-                    (row["expiry"], net, row["id"])
-                )
-            if past_open:
-                conn.commit()
-
-            positions = [dict(r) for r in conn.execute(
-                "SELECT * FROM cc_positions ORDER BY opened_date DESC, id DESC"
-            )]
-            conn.close()
+                positions = [dict(r) for r in conn.execute(
+                    "SELECT * FROM cc_positions ORDER BY opened_date DESC, id DESC"
+                )]
+            finally:
+                conn.close()
             # Compute mark-to-market P&L for open positions
             for p in positions:
                 if p["status"] == "open" and p.get("current_mark") is not None:
@@ -2396,17 +2397,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return self._json_error(400, f"Missing fields: {', '.join(missing)}")
 
             db = PROJECT_DIR / "out" / "investment.db"
-            conn = sqlite3.connect(str(db), timeout=10)
-            cur  = conn.execute("""
-                INSERT INTO cc_positions
-                (ticker, contracts, strike, expiry, premium_per_contract, opened_date, status, notes)
-                VALUES (?, ?, ?, ?, ?, ?, 'open', ?)
-            """, (_normalize_ticker(body["ticker"]), int(body["contracts"]), float(body["strike"]),
-                  body["expiry"], float(body["premium_per_contract"]),
-                  body["opened_date"], body.get("notes", "")))
-            conn.commit()
-            pos_id = cur.lastrowid
-            conn.close()
+            conn = sqlite3.connect(str(db), timeout=30)
+            try:
+                cur  = conn.execute("""
+                    INSERT INTO cc_positions
+                    (ticker, contracts, strike, expiry, premium_per_contract, opened_date, status, notes)
+                    VALUES (?, ?, ?, ?, ?, ?, 'open', ?)
+                """, (_normalize_ticker(body["ticker"]), int(body["contracts"]), float(body["strike"]),
+                      body["expiry"], float(body["premium_per_contract"]),
+                      body["opened_date"], body.get("notes", "")))
+                conn.commit()
+                pos_id = cur.lastrowid
+            finally:
+                conn.close()
             self._json({"ok": True, "id": pos_id})
         except Exception as e:
             self._json_error(500, str(e))
@@ -2428,53 +2431,54 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         try:
             body    = self._read_body()
             db      = PROJECT_DIR / "out" / "investment.db"
-            conn    = sqlite3.connect(str(db), timeout=10)
+            conn    = sqlite3.connect(str(db), timeout=30)
             conn.row_factory = sqlite3.Row
-            updates = []
-            values  = []
-            for field in ["status", "closed_date", "closed_price", "close_type", "notes"]:
-                if field in body:
-                    updates.append(f"{field} = ?")
-                    values.append(body[field])
-            # Editable core fields (ticker typo fixes, etc.)
-            if "ticker" in body:
-                from covered_call_rec import normalize_ticker as _nt
-                updates.append("ticker = ?")
-                values.append(_nt(str(body["ticker"]).strip().upper()))
-            if "contracts" in body:
-                updates.append("contracts = ?")
-                values.append(int(body["contracts"]))
-            if "strike" in body:
-                updates.append("strike = ?")
-                values.append(float(body["strike"]))
-            if "expiry" in body:
-                updates.append("expiry = ?")
-                values.append(str(body["expiry"]).strip())
-            if "premium_per_contract" in body:
-                updates.append("premium_per_contract = ?")
-                values.append(float(body["premium_per_contract"]))
-            if "opened_date" in body:
-                updates.append("opened_date = ?")
-                values.append(str(body["opened_date"]).strip())
-            # Auto-compute net_premium whenever the position is being closed
-            new_status = body.get("status", "")
-            if new_status in ("closed", "expired", "assigned"):
-                row = conn.execute(
-                    "SELECT premium_per_contract, contracts FROM cc_positions WHERE id = ?",
-                    (pos_id,)
-                ).fetchone()
-                if row:
-                    buyback = float(body.get("closed_price") or 0)
-                    net     = round((row["premium_per_contract"] - buyback) * row["contracts"] * 100, 2)
-                    updates.append("net_premium = ?")
-                    values.append(net)
-            if not updates:
+            try:
+                updates = []
+                values  = []
+                for field in ["status", "closed_date", "closed_price", "close_type", "notes"]:
+                    if field in body:
+                        updates.append(f"{field} = ?")
+                        values.append(body[field])
+                # Editable core fields (ticker typo fixes, etc.)
+                if "ticker" in body:
+                    from covered_call_rec import normalize_ticker as _nt
+                    updates.append("ticker = ?")
+                    values.append(_nt(str(body["ticker"]).strip().upper()))
+                if "contracts" in body:
+                    updates.append("contracts = ?")
+                    values.append(int(body["contracts"]))
+                if "strike" in body:
+                    updates.append("strike = ?")
+                    values.append(float(body["strike"]))
+                if "expiry" in body:
+                    updates.append("expiry = ?")
+                    values.append(str(body["expiry"]).strip())
+                if "premium_per_contract" in body:
+                    updates.append("premium_per_contract = ?")
+                    values.append(float(body["premium_per_contract"]))
+                if "opened_date" in body:
+                    updates.append("opened_date = ?")
+                    values.append(str(body["opened_date"]).strip())
+                # Auto-compute net_premium whenever the position is being closed
+                new_status = body.get("status", "")
+                if new_status in ("closed", "expired", "assigned"):
+                    row = conn.execute(
+                        "SELECT premium_per_contract, contracts FROM cc_positions WHERE id = ?",
+                        (pos_id,)
+                    ).fetchone()
+                    if row:
+                        buyback = float(body.get("closed_price") or 0)
+                        net     = round((row["premium_per_contract"] - buyback) * row["contracts"] * 100, 2)
+                        updates.append("net_premium = ?")
+                        values.append(net)
+                if not updates:
+                    return self._json_error(400, "No updatable fields provided")
+                values.append(pos_id)
+                conn.execute(f"UPDATE cc_positions SET {', '.join(updates)} WHERE id = ?", values)
+                conn.commit()
+            finally:
                 conn.close()
-                return self._json_error(400, "No updatable fields provided")
-            values.append(pos_id)
-            conn.execute(f"UPDATE cc_positions SET {', '.join(updates)} WHERE id = ?", values)
-            conn.commit()
-            conn.close()
             self._json({"ok": True})
         except Exception as e:
             self._json_error(500, str(e))
