@@ -1,7 +1,7 @@
 # Challenger Statistical Hardening: Cohorts, Real Walk-Forward, Remove Fake p_outperform
 
 - **ID:** 0334
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-17
 - **Priority:** high
 - **Depends:** 0331, 0332, 0333
@@ -62,10 +62,14 @@ All recorded in `validation_metrics_json` on `learning_models`.
 
 ## Done when
 
-- [ ] `unique_tickers`, `unique_decision_dates`, `unique_weeks`, `raw_n` recorded in `learning_models` at training time
-- [ ] Training uses decision-date cohort walk-forward folds with embargo; no single 80/20 row-index split
-- [ ] Baseline (null model MAE) computed and compared; challenger must beat baseline before being considered trained
-- [ ] `top_vs_bottom_quintile_alpha` computed and stored in `validation_metrics_json`
-- [ ] Directional stability (coefficient sign consistency across folds) computed and stored
-- [ ] `p_outperform` removed from all code paths — model, scorer, UI, tests
-- [ ] `python -m pytest tests/` passes with no regressions
+- [x] `unique_tickers`, `unique_decision_dates`, `unique_weeks`, `raw_n` recorded in `learning_models` at training time
+- [x] Training uses decision-date cohort walk-forward folds with embargo; no single 80/20 row-index split
+- [x] Baseline (null model MAE) computed and compared; challenger must beat baseline before being considered trained
+- [x] `top_vs_bottom_quintile_alpha` computed and stored in `validation_metrics_json`
+- [x] Directional stability (coefficient sign consistency across folds) computed and stored
+- [x] `p_outperform` removed from all code paths — model, scorer, UI, tests
+- [x] `python -m pytest tests/` passes with no regressions
+
+## Outcome
+
+4 files changed. `calibration.py` rewritten (0334): `_cv_walk_forward()` replaces 80/20 row-index split with decision-date cohort walk-forward using 91-day embargo; each fold validates on the first date after the embargo; baseline MAE (null model = predict mean) computed per fold; top-vs-bottom quintile alpha spread computed when val_n>=5; coefficient sign consistency tracked per fold as `coef_positive_rate`. `p_outperform` removed from `score()` and its sigmoid computation deleted. `unique_tickers`, `unique_decision_dates`, `unique_weeks`, `raw_n` tracked at train time and persisted. `agent_db.py`: 4 new columns added to `learning_models` CREATE TABLE + `_new_cols` migrations. `tests/test_calibration.py`: `test_validation_metrics_present` updated for new metric keys; 5 new tests in `TestChallengerHardening0334`. 772 passed, 16 skipped.

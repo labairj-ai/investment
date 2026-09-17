@@ -127,9 +127,19 @@ class TestChallengerModel:
 
         model = ChallengerModel.train()
         assert model is not None
-        assert "val_n" in model.validation_metrics
-        assert "val_mae" in model.validation_metrics
-        assert model.validation_metrics["val_mae"] >= 0
+        vm = model.validation_metrics
+        # 0334: walk-forward metrics replace single-split val_n/val_mae
+        assert "cv_folds" in vm
+        assert "raw_n" in vm
+        assert "unique_tickers" in vm
+        assert "unique_decision_dates" in vm
+        assert "unique_weeks" in vm
+        assert vm["raw_n"] == 50
+        # With 50 episodes spread over 50 days + 91-day embargo, walk-forward
+        # may or may not produce folds depending on data span; cv_folds can be 0
+        assert isinstance(vm["cv_folds"], int)
+        # beats_baseline is True, False, or None (if no folds)
+        assert vm["beats_baseline"] in (True, False, None)
 
     def test_shrinkage_formula(self, mem_db, monkeypatch):
         import agent_db
@@ -280,3 +290,108 @@ class TestChallengerWiring:
         # Adjustment bounded to ±10 score points from original
         from agents.learning.calibration import MAX_ADJUSTMENT
         assert abs(result_composite - 72) <= MAX_ADJUSTMENT + 1  # +1 for rounding
+
+
+class TestChallengerHardening0334:
+    """0334: walk-forward CV, unique tracking, p_outperform removed."""
+
+    def test_p_outperform_absent_from_score(self, mem_db, monkeypatch):
+        import agent_db
+        from agents.learning.calibration import ChallengerModel
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        _seed_episodes(conn, 50)
+        conn.close()
+
+        model = ChallengerModel.train()
+        assert model is not None
+        cand = {"q_score": 80, "v_score": 70, "pf_score": 65, "c_score": 60, "ec_score": 55}
+        info = model.score(cand)
+        assert "p_outperform" not in info
+
+    def test_unique_metrics_populated(self, mem_db, monkeypatch):
+        import agent_db
+        from agents.learning.calibration import ChallengerModel
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        _seed_episodes(conn, 50)  # 50 distinct tickers (TK000..TK049), 50 distinct days
+        conn.close()
+
+        model = ChallengerModel.train()
+        assert model is not None
+        vm = model.validation_metrics
+        assert vm["unique_tickers"] == 50   # each episode has a distinct ticker
+        assert vm["unique_decision_dates"] == 50  # one episode per day
+        assert vm["unique_weeks"] >= 7  # 50 days ≈ 7+ ISO weeks
+        assert vm["raw_n"] == 50
+
+    def test_walk_forward_produces_folds_when_span_sufficient(self, mem_db, monkeypatch):
+        """With 200+ episodes spanning 200+ days, walk-forward finds folds past embargo."""
+        import agent_db
+        from agents.learning.calibration import ChallengerModel, EMBARGO_DAYS
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        _seed_episodes(conn, 200)  # 200 days of history — some folds beyond 91-day embargo
+        conn.close()
+
+        model = ChallengerModel.train()
+        assert model is not None
+        vm = model.validation_metrics
+        # 200 days span >> MIN_TRAINING_N(30) + EMBARGO(91) → should find at least 1 fold
+        assert vm["cv_folds"] >= 1
+        assert vm["cv_mae_mean"] is not None and vm["cv_mae_mean"] >= 0
+        assert vm["baseline_mae_mean"] is not None and vm["baseline_mae_mean"] >= 0
+        assert vm["beats_baseline"] in (True, False)
+
+    def test_walk_forward_no_folds_when_span_too_short(self, mem_db, monkeypatch):
+        """With 30 episodes in 30 days, the embargo prevents any validation fold."""
+        import agent_db
+        from agents.learning.calibration import ChallengerModel
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        _seed_episodes(conn, 30)  # 30 days, embargo=91 → no validation fold possible
+        conn.close()
+
+        model = ChallengerModel.train()
+        assert model is not None
+        vm = model.validation_metrics
+        assert vm["cv_folds"] == 0
+        assert vm["beats_baseline"] is None
+
+    def test_unique_metrics_persisted_to_db(self, mem_db, monkeypatch):
+        import agent_db
+        from agents.learning.calibration import ChallengerModel
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        _seed_episodes(conn, 50)
+        conn.close()
+
+        model = ChallengerModel.train()
+        model.save_with_weights()
+
+        conn = _make_conn(mem_db)
+        row = dict(conn.execute(
+            "SELECT unique_tickers, unique_decision_dates, unique_weeks, raw_n "
+            "FROM learning_models ORDER BY created_at DESC LIMIT 1"
+        ).fetchone())
+        conn.close()
+
+        assert row["raw_n"] == 50
+        assert row["unique_tickers"] == 50
+        assert row["unique_decision_dates"] == 50
+        assert row["unique_weeks"] is not None and row["unique_weeks"] >= 1

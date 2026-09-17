@@ -533,6 +533,11 @@ def migrate() -> None:
         ("risk_counterfactual_outcomes", "decision_date",    "TEXT"),
         ("risk_counterfactual_outcomes", "mfe",              "REAL"),
         ("risk_counterfactual_outcomes", "mae",              "REAL"),
+        # 0334 — challenger statistical hardening: effective sample size on learning_models
+        ("learning_models", "unique_tickers",        "INTEGER"),
+        ("learning_models", "unique_decision_dates", "INTEGER"),
+        ("learning_models", "unique_weeks",          "INTEGER"),
+        ("learning_models", "raw_n",                 "INTEGER"),
     ]
     for table, col, col_type in _new_cols:
         try:
@@ -843,12 +848,16 @@ def _migrate_learning_episodes(conn: sqlite3.Connection) -> None:
         );
 
         CREATE TABLE IF NOT EXISTS learning_models (
-            model_version       TEXT PRIMARY KEY,
-            training_cutoff     TEXT,
-            feature_schema_hash TEXT,
-            training_n          INTEGER,
-            validation_metrics  TEXT,
-            created_at          REAL
+            model_version          TEXT PRIMARY KEY,
+            training_cutoff        TEXT,
+            feature_schema_hash    TEXT,
+            training_n             INTEGER,
+            validation_metrics     TEXT,
+            created_at             REAL,
+            unique_tickers         INTEGER,
+            unique_decision_dates  INTEGER,
+            unique_weeks           INTEGER,
+            raw_n                  INTEGER
         );
 
         CREATE TABLE IF NOT EXISTS risk_counterfactual_outcomes (
