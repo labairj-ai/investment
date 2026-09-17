@@ -37,6 +37,7 @@ def capture_candidate_episode(
     a DB error never interrupts the main recommendation flow.
     """
     episode_id = str(uuid.uuid4())
+    base_score = candidate.get("_composite")  # 0331: explicit base score before any challenger
     try:
         snapshot_json = json.dumps(portfolio_snapshot) if portfolio_snapshot else None
         conn = agent_db._connect()
@@ -50,7 +51,7 @@ def capture_candidate_episode(
                 gross_margin, net_income_margin, sga_margin, capex_margin,
                 market_cap, layer_rec, sector, industry, value_trap_risk,
                 llm_model, prompt_version, feature_schema_version,
-                portfolio_snapshot_json
+                portfolio_snapshot_json, base_score
             ) VALUES (
                 ?,?,?,?,
                 NULL,0,
@@ -59,7 +60,7 @@ def capture_candidate_episode(
                 ?,?,?,?,
                 ?,?,?,?,?,
                 ?,?,?,
-                ?
+                ?,?
             )
             """,
             (
@@ -77,7 +78,7 @@ def capture_candidate_episode(
                 "mlx-community/Qwen3.6-35B-A3B-4bit",
                 "opportunity_hunter_v1",
                 _FEATURE_SCHEMA_VERSION,
-                snapshot_json,
+                snapshot_json, base_score,
             ),
         )
         conn.commit()
@@ -108,15 +109,44 @@ def update_episode_ranks(episodes: list[tuple[str, int]]) -> None:
         print(f"[episode_capture] WARNING: failed to update episode ranks: {e}")
 
 
-def mark_episode_selected(episode_id: str, llm_why: str | None = None) -> None:
-    """Mark the winner episode as selected=1 and store the LLM's rationale."""
+def mark_episode_selected(
+    episode_id: str,
+    llm_why: str | None = None,
+    llm_conviction: int | None = None,
+    challenger_score: float | None = None,
+    challenger_model_version: str | None = None,
+) -> None:
+    """Mark the winner episode as selected=1 and store LLM rationale and challenger info."""
     try:
         conn = agent_db._connect()
         conn.execute(
-            "UPDATE decision_episodes SET selected=1, llm_why=? WHERE episode_id=?",
-            (llm_why, episode_id),
+            """UPDATE decision_episodes
+               SET selected=1, llm_why=?, llm_conviction=?,
+                   challenger_score=?, challenger_model_version=?
+               WHERE episode_id=?""",
+            (llm_why, llm_conviction, challenger_score, challenger_model_version, episode_id),
         )
         conn.commit()
         conn.close()
     except Exception as e:
         print(f"[episode_capture] WARNING: failed to mark episode selected: {e}")
+
+
+def update_episode_challenger_info(
+    episode_id: str,
+    challenger_score: float | None,
+    challenger_model_version: str | None,
+) -> None:
+    """Update challenger score and model version on any episode after the challenger runs."""
+    try:
+        conn = agent_db._connect()
+        conn.execute(
+            """UPDATE decision_episodes
+               SET challenger_score=?, challenger_model_version=?
+               WHERE episode_id=?""",
+            (challenger_score, challenger_model_version, episode_id),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[episode_capture] WARNING: failed to update challenger info: {e}")

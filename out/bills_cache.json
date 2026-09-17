@@ -1,0 +1,210 @@
+{
+  "bills": [
+    {
+      "bill_id": "H.R. 1869",
+      "title": "Protecting American Industry and Labor from International Trade Crimes Act of 2026",
+      "introduced": "2025-03-05",
+      "latest_action": "Motion to reconsider laid on the table Agreed to without objection.",
+      "action_date": "2026-08-31",
+      "stage": "Active",
+      "url": "https://www.congress.gov/bill/119th-congress/house-bill/1869",
+      "summary": "",
+      "source": "Congress.gov",
+      "domains": [
+        "labor"
+      ]
+    },
+    {
+      "bill_id": "H.R. 1693",
+      "title": "To redesignate the National Historic Trails Interpretive Center in Casper, Wyoming, as the \"Barbara L. Cubin National Historic Trails Interpretive Center\".",
+      "introduced": "2025-02-27",
+      "latest_action": "Placed on the Union Calendar, Calendar No. 671.",
+      "action_date": "2026-08-27",
+      "stage": "Floor-bound",
+      "url": "https://www.congress.gov/bill/119th-congress/house-bill/1693",
+      "summary": "",
+      "source": "Congress.gov",
+      "domains": []
+    },
+    {
+      "bill_id": "H.R. 7487",
+      "title": "Rural Jobs and Hydropower Expansion Act",
+      "introduced": "2026-02-11",
+      "latest_action": "Placed on the Union Calendar, Calendar No. 676.",
+      "action_date": "2026-08-27",
+      "stage": "Floor-bound",
+      "url": "https://www.congress.gov/bill/119th-congress/house-bill/7487",
+      "summary": "",
+      "source": "Congress.gov",
+      "domains": []
+    },
+    {
+      "bill_id": "H.R. 726",
+      "title": "Crow Tribe Water Rights Settlement Amendments Act of 2025",
+      "introduced": "2025-01-24",
+      "latest_action": "Placed on the Union Calendar, Calendar No. 670.",
+      "action_date": "2026-08-27",
+      "stage": "Floor-bound",
+      "url": "https://www.congress.gov/bill/119th-congress/house-bill/726",
+      "summary": "",
+      "source": "Congress.gov",
+      "domains": []
+    },
+    {
+      "bill_id": "H.R. 741",
+      "title": "Stronger Engagement for Indian Health Needs Act of 2025",
+      "introduced": "2025-01-28",
+      "latest_action": "Placed on the Union Calendar, Calendar No. 668.",
+      "action_date": "2026-08-27",
+      "stage": "Floor-bound",
+      "url": "https://www.congress.gov/bill/119th-congress/house-bill/741",
+      "summary": "",
+      "source": "Congress.gov",
+      "domains": [
+        "healthcare"
+      ]
+    },
+    {
+      "bill_id": "H.R. 10273",
+      "title": "Fairness for Farm Workers Act",
+      "introduced": "2026-09-03",
+      "latest_action": "Referred to the House Committee on Education and Workforce.",
+      "action_date": "2026-09-03",
+      "stage": "In committee",
+      "url": "https://www.congress.gov/bill/119th-congress/house-bill/10273",
+      "summary": "",
+      "source": "Congress.gov",
+      "domains": [
+        "labor",
+        "food_ag"
+      ]
+    },
+    {
+      "bill_id": "H.R. 10263",
+      "title": "Halt Abusive Internet Lawsuits Act of 2026",
+      "introduced": "2026-09-03",
+      "latest_action": "Referred to the House Committee on the Judiciary.",
+      "action_date": "2026-09-03",
+      "stage": "In committee",
+      "url": "https://www.congress.gov/bill/119th-congress/house-bill/10263",
+      "summary": "",
+      "source": "Congress.gov",
+      "domains": [
+        "telecom"
+      ]
+    },
+    {
+      "bill_id": "H.R. 10252",
+      "title": "Launching with Healthcare Act",
+      "introduced": "2026-09-03",
+      "latest_action": "Referred to the House Committee on Energy and Commerce.",
+      "action_date": "2026-09-03",
+      "stage": "In committee",
+      "url": "https://www.congress.gov/bill/119th-congress/house-bill/10252",
+      "summary": "",
+      "source": "Congress.gov",
+      "domains": [
+        "healthcare"
+      ]
+    },
+    {
+      "bill_id": "H.R. 10271",
+      "title": "Mobile Workforce State Income Tax Simplification Act of 2026",
+      "introduced": "2026-09-03",
+      "latest_action": "Referred to the House Committee on the Judiciary.",
+      "action_date": "2026-09-03",
+      "stage": "In committee",
+      "url": "https://www.congress.gov/bill/119th-congress/house-bill/10271",
+      "summary": "",
+      "source": "Congress.gov",
+      "domains": [
+        "labor",
+        "tax_corporate"
+      ]
+    },
+    {
+      "bill_id": "H.R. 10242",
+      "title": "Janie Wynn Protecting Elders from Financial Exploitation Act",
+      "introduced": "2026-09-03",
+      "latest_action": "Referred to the House Committee on Financial Services.",
+      "action_date": "2026-09-03",
+      "stage": "In committee",
+      "url": "https://www.congress.gov/bill/119th-congress/house-bill/10242",
+      "summary": "",
+      "source": "Congress.gov",
+      "domains": [
+        "financial"
+      ]
+    },
+    {
+      "bill_id": "H.R. 10288",
+      "title": "Rural Broadband Modernization Act",
+      "introduced": "2026-09-03",
+      "latest_action": "Referred to the Committee on Agriculture, and in addition to the Committee on Energy and Commerce, for a period to be subsequently determined by the Speaker, in each case for consideration of such provisions as fall within the jurisdiction of the committee concerned.",
+      "action_date": "2026-09-03",
+      "stage": "In committee",
+      "url": "https://www.congress.gov/bill/119th-congress/house-bill/10288",
+      "summary": "",
+      "source": "Congress.gov",
+      "domains": [
+        "telecom"
+      ]
+    },
+    {
+      "bill_id": "H.R. 10256",
+      "title": "Taxpayer Relief from Big Oil Act",
+      "introduced": "2026-09-03",
+      "latest_action": "Referred to the House Committee on Natural Resources.",
+      "action_date": "2026-09-03",
+      "stage": "In committee",
+      "url": "https://www.congress.gov/bill/119th-congress/house-bill/10256",
+      "summary": "",
+      "source": "Congress.gov",
+      "domains": [
+        "energy",
+        "tax_corporate"
+      ]
+    },
+    {
+      "bill_id": "H.R. 10272",
+      "title": "End Gas Station Heroin Act",
+      "introduced": "2026-09-03",
+      "latest_action": "Referred to the Committee on Energy and Commerce, and in addition to the Committee on the Judiciary, for a period to be subsequently determined by the Speaker, in each case for consideration of such provisions as fall within the jurisdiction of the committee concerned.",
+      "action_date": "2026-09-03",
+      "stage": "In committee",
+      "url": "https://www.congress.gov/bill/119th-congress/house-bill/10272",
+      "summary": "",
+      "source": "Congress.gov",
+      "domains": [
+        "energy"
+      ]
+    },
+    {
+      "bill_id": "H.R. 10247",
+      "title": "Future of America\u2019s Workforce Act",
+      "introduced": "2026-09-03",
+      "latest_action": "Referred to the House Committee on Education and Workforce.",
+      "action_date": "2026-09-03",
+      "stage": "In committee",
+      "url": "https://www.congress.gov/bill/119th-congress/house-bill/10247",
+      "summary": "",
+      "source": "Congress.gov",
+      "domains": [
+        "labor"
+      ]
+    },
+    {
+      "bill_id": "H.R. 10283",
+      "title": "Congressional Pension Accountability Act",
+      "introduced": "2026-09-03",
+      "latest_action": "Referred to the Committee on House Administration, and in addition to the Committee on Oversight and Government Reform, for a period to be subsequently determined by the Speaker, in each case for consideration of such provisions as fall within the jurisdiction of the committee concerned.",
+      "action_date": "2026-09-03",
+      "stage": "In committee",
+      "url": "https://www.congress.gov/bill/119th-congress/house-bill/10283",
+      "summary": "",
+      "source": "Congress.gov",
+      "domains": []
+    }
+  ],
+  "_fetched_at": 1788741860.914347
+}

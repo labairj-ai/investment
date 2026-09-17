@@ -389,6 +389,7 @@ def _run_single_agent(
                 input_hash=rec.input_hash,
                 trade_chain_id=rec.trade_chain_id,
                 parent_cc_rec_id=rec.parent_cc_rec_id,
+                episode_id=getattr(rec, "episode_id", None),
             )
             if rec.dependencies:
                 agent_db.write_dependencies(rec_id, rec.dependencies)

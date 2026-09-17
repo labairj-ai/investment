@@ -1,7 +1,7 @@
 # Wire Learning Lineage: Episode → Recommendation → Intent → Fill
 
 - **ID:** 0331
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-17
 - **Priority:** high
 - **Depends:** none
@@ -60,9 +60,13 @@ fill (recommendation_action populated)
 
 ## Done when
 
-- [ ] `TradeIntent` dataclass exposes `episode_id` and `decision_origin`; DB insert/read round-trips both fields
-- [ ] `IntentBuilder` sets `episode_id` (from originating episode) and `decision_origin` on every new intent
-- [ ] `_write_executed_action()` populates `recommendation_action` with the source recommendation's action, not the fill-side verb
-- [ ] `decision_episodes` has `base_score`, `challenger_score`, `challenger_model_version` columns (migration); opportunity agent writes all three at capture time
-- [ ] A single paper fill can be traced unambiguously: episode → recommendation → intent → risk_decision → order → fill (SQL join chain works end-to-end)
-- [ ] `python -m pytest tests/` passes with no regressions
+- [x] `TradeIntent` dataclass exposes `episode_id` and `decision_origin`; DB insert/read round-trips both fields
+- [x] `IntentBuilder` sets `episode_id` (from originating episode) and `decision_origin = "CHAMPION"` on every new intent
+- [x] `_write_executed_action()` populates `recommendation_action` with the source recommendation's action, not the fill-side verb
+- [x] `decision_episodes` has `base_score`, `challenger_score`, `challenger_model_version` columns (migration); opportunity agent writes all three during the run
+- [x] A single paper fill can be traced unambiguously: episode → recommendation (episode_id) → intent (episode_id, decision_origin) → risk_decision → order → fill (recommendation_action)
+- [x] `python -m pytest tests/` passes — 760 passed, 16 skipped (4 new lineage tests added)
+
+## Outcome
+
+8 files changed. `agent_db.py`: added `episode_id` to recommendations schema + migration; added `base_score`/`challenger_score`/`challenger_model_version` to `decision_episodes` schema (both CREATE TABLE and _new_cols for existing DBs); added `episode_id` param to `insert_recommendation()`. `trade_engine/models.py`: `TradeIntent` gained `episode_id` and `decision_origin` fields with `to_db_dict`/`from_db_row` support. `intent_builder.py`: reads `episode_id` from recommendation row, sets `decision_origin = "CHAMPION"`. `execution_engine._write_executed_action()`: looks up recommendation action from DB and writes `recommendation_action`. `agents/contracts.py`: `Recommendation` gained `episode_id`. `orchestrator.py`: passes `rec.episode_id` to `insert_recommendation`. `episode_capture.py`: `capture_candidate_episode` writes `base_score`; `mark_episode_selected` accepts `llm_conviction`/`challenger_score`/`challenger_model_version`; new `update_episode_challenger_info` helper. `opportunity_agent.py`: writes challenger info on all scored episodes; extracts `llm_conviction` from AI analysis and passes to `mark_episode_selected`; sets `episode_id` on emitted Recommendation.

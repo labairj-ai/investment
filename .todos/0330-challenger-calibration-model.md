@@ -1,7 +1,7 @@
 # Build Challenger Calibration Model for Score Adjustment
 
 - **ID:** 0330
-- **Status:** in-progress
+- **Status:** done
 - **Created:** 2026-09-15
 - **Priority:** normal
 - **Depends:** 0329
@@ -44,3 +44,7 @@ The base scoring formula (Buffett quality + valuation + portfolio fit + catalyst
 - [ ] Hard risk rules in the risk engine are not modified and have no awareness of the challenger
 - [ ] Walk-forward validation metrics are recorded in `learning_models` and visible in Learning Lab (0329)
 - [ ] All existing unit and integration tests pass
+
+## Outcome
+
+Implemented in commit a7202de. Ridge regression via numpy normal equations (sklearn not installed). Features: q_score, v_score, pf_score, c_score, ec_score → 90d SPY alpha. Shrinkage: `reliability = n / (n + 50.0)`, adjustment capped at ±10 score points. Chronological walk-forward split (first 80% train, last 20% validate). Model persisted to `learning_models` table via `save_with_weights()` (coef/intercept stored in validation_metrics JSON). `challenger.py` has module-level model cache. opportunity_agent.py wired: adjustment applied after scoring loop, before sort; no-op when training_n < 30 or no model. 12 calibration tests + 756 total pass. **Today the model is inactive** (0 labeled 3m episodes). Will auto-activate once 30 labeled episodes exist, after 90+ days of episode accumulation.

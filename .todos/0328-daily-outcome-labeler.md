@@ -1,7 +1,7 @@
 # Build Daily Outcome Labeler for Episode Dataset
 
 - **ID:** 0328
-- **Status:** in-progress
+- **Status:** done
 - **Created:** 2026-09-15
 - **Priority:** normal
 - **Depends:** 0327
@@ -38,3 +38,7 @@
 - [ ] Existing episodes are not re-labeled if an outcome row already exists for that episode_id + horizon
 - [ ] Daily systemd timer fires after market close on Optiplex
 - [ ] Unit tests pass with mock prices; integration test verifies at least one real episode gets labeled end-to-end
+
+## Outcome
+
+Implemented in commit d7b6cc2. `agents/learning/outcome_labeler.py` with `label_mature_episodes(min_age_days=7, dry_run=False)`. Price fetching: holding_day first, yfinance fallback. SPY prices via existing `_ensure_spy_prices` + `_spy_price_at`. MFE/MAE from full daily price series. Systemd service + timer at 6pm ET weekdays in `systemd/`. `Persistent=true` so a missed run catches up. 7 tests, 744 total pass. **Deploy**: copy service/timer to optiplex and `systemctl enable --now outcome-labeler.timer`. The labeler won't produce useful data until episode_capture has been accumulating for 7+ days.

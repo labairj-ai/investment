@@ -1,0 +1,48 @@
+{
+  "by_ticker": {
+    "STZ": [
+      {
+        "title": "Should you Avoid Constellation Brands Stock, Even at a 52-Week Low?",
+        "url": "https://www.fool.com/investing/2026/09/06/should-you-avoid-constellation-brands-stock/?.tsrc=rss",
+        "source": "Yahoo Finance",
+        "pub_date": "Sun, 06 Sep 2026 09:45:00 +0000",
+        "excerpt": "Beer sales have been down, but the company's brand power appears intact."
+      }
+    ],
+    "NFLX": [
+      {
+        "title": "Netflix Raised U.K. Prices Again. History Says a Netflix Price Increase Has Never Cost It a Year of Revenue Growth.",
+        "url": "https://www.fool.com/investing/2026/09/06/netflix-raised-u-k-prices-again-history-says-a-netflix-price-increase-has-never-cost-it-a-year-of-revenue-growth/?.tsrc=rss",
+        "source": "Yahoo Finance",
+        "pub_date": "Sun, 06 Sep 2026 20:23:01 +0000",
+        "excerpt": "The streaming giant's cheapest U.K. plan just jumped by a third. Can the tier built for price-sensitive members absorb that?"
+      }
+    ],
+    "WMT": [
+      {
+        "title": "Retailers are Handling Tariff Refunds in Very Different Ways: Walmart and Home Depot",
+        "url": "https://finance.yahoo.com/economy/policy/articles/retailers-handling-tariff-refunds-very-225628436.html?.tsrc=rss",
+        "source": "Yahoo Finance",
+        "pub_date": "Sun, 06 Sep 2026 22:56:28 +0000",
+        "excerpt": "Walmart Inc. (NASDAQ:WMT) and The Home Depot, Inc. (NYSE:HD) are both booking real tariff refund windfalls, but reporting and using the money in noticeably different ways, CNBC reported. Walmart CFO John David Rainey said the company is eligible for roughly $2.9 billion in refunds, has yet to receive just under $100 million of that, and [\u2026]"
+      },
+      {
+        "title": "S&P 500 Companies Snag More Than $10 Billion in Tariff Refunds. What Goes to You.",
+        "url": "https://finance.yahoo.com/m/66061ebb-5c07-3a1e-9a04-1b05343f9fae/s%26p-500-companies-snag-more.html?.tsrc=rss",
+        "source": "Yahoo Finance",
+        "pub_date": "Sun, 06 Sep 2026 06:00:00 +0000",
+        "excerpt": "Companies mostly are using tariff refunds to offset inflation, but some like Walmart are lowering prices"
+      }
+    ],
+    "BP": [
+      {
+        "title": "Oil Majors Seek Bigger Bargaining Power in Labor Disputes",
+        "url": "https://finance.yahoo.com/energy/articles/oil-majors-seek-bigger-bargaining-210000743.html?.tsrc=rss",
+        "source": "Yahoo Finance",
+        "pub_date": "Sun, 06 Sep 2026 21:00:00 +0000",
+        "excerpt": "Big Oil is taking a tougher stance in labor negotiations, with BP and Marathon using refinery lockouts to push for concessions from unionized workers."
+      }
+    ]
+  },
+  "_fetched_at": 1788746970.510205
+}

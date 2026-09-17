@@ -193,6 +193,8 @@ class TradeIntent:
     valid_until: str
     created_at: str
     status: IntentStatus = IntentStatus.PENDING
+    episode_id: Optional[str] = None        # originating decision_episode (0331)
+    decision_origin: Optional[str] = None  # CHAMPION | PAPER_CHALLENGER (0331)
 
     def is_expired(self) -> bool:
         try:
@@ -229,10 +231,13 @@ class TradeIntent:
             "valid_until": self.valid_until,
             "created_at": self.created_at,
             "status": self.status.value,
+            "episode_id": self.episode_id,
+            "decision_origin": self.decision_origin,
         }
 
     @classmethod
     def from_db_row(cls, row) -> "TradeIntent":
+        keys = row.keys()
         return cls(
             intent_id=row["intent_id"],
             account_id=row["account_id"],
@@ -252,10 +257,12 @@ class TradeIntent:
             strategy=row["strategy"] or "",
             thesis_version=row["thesis_version"],
             strategy_config_hash=row["strategy_config_hash"],
-            policy_hash=row["policy_hash"] if "policy_hash" in row.keys() else None,
+            policy_hash=row["policy_hash"] if "policy_hash" in keys else None,
             valid_until=row["valid_until"],
             created_at=row["created_at"],
             status=IntentStatus(row["status"]),
+            episode_id=row["episode_id"] if "episode_id" in keys else None,
+            decision_origin=row["decision_origin"] if "decision_origin" in keys else None,
         )
 
 

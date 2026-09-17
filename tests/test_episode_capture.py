@@ -205,6 +205,108 @@ class TestMarkEpisodeSelected:
         assert row["feature_schema_version"] == "v1"
 
 
+class TestLearningLineage0331:
+    """0331: base_score, challenger_score, llm_conviction, recommendation_action wiring."""
+
+    def test_base_score_captured_at_episode_creation(self, mem_db, monkeypatch):
+        import agent_db
+        from agents.learning.episode_capture import capture_candidate_episode
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        ep = capture_candidate_episode(run_id=1, candidate=_make_candidate("ANET", 78))
+        rows = _fetch_all_episodes(mem_db)
+        assert len(rows) == 1
+        assert rows[0]["base_score"] == 78
+
+    def test_mark_episode_writes_conviction_and_challenger(self, mem_db, monkeypatch):
+        import agent_db
+        from agents.learning.episode_capture import capture_candidate_episode, mark_episode_selected
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        ep = capture_candidate_episode(run_id=1, candidate=_make_candidate("ANET", 72))
+        mark_episode_selected(
+            ep,
+            llm_why="strong",
+            llm_conviction=4,
+            challenger_score=76.0,
+            challenger_model_version="edge_v001",
+        )
+
+        rows = _fetch_all_episodes(mem_db)
+        row = rows[0]
+        assert row["selected"] == 1
+        assert row["llm_conviction"] == 4
+        assert row["challenger_score"] == pytest.approx(76.0)
+        assert row["challenger_model_version"] == "edge_v001"
+
+    def test_update_episode_challenger_info(self, mem_db, monkeypatch):
+        import agent_db
+        from agents.learning.episode_capture import (
+            capture_candidate_episode,
+            update_episode_challenger_info,
+        )
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        ep = capture_candidate_episode(run_id=1, candidate=_make_candidate("GRMN", 65))
+        update_episode_challenger_info(ep, challenger_score=68.5, challenger_model_version="edge_v002")
+
+        rows = _fetch_all_episodes(mem_db)
+        assert rows[0]["challenger_score"] == pytest.approx(68.5)
+        assert rows[0]["challenger_model_version"] == "edge_v002"
+
+    def test_intent_builder_populates_episode_id_and_decision_origin(self, mem_db, monkeypatch):
+        import json
+        import agent_db
+        from trade_engine.intent_builder import build_intent
+        from trade_engine.policy import TradingPolicy
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+
+        # Insert prerequisites (mem_db already has full migrated schema via mem_db fixture)
+        conn.execute(
+            "INSERT INTO trading_accounts (account_id, name, mode, starting_capital, current_cash, trading_enabled, policy_version) VALUES ('ACC','test','paper',100000,50000,1,'1.0')"
+        )
+        conn.execute(
+            "INSERT INTO agent_runs (id, agent_type, scope, started_at, status) VALUES (1,'opportunity','portfolio',1.0,'done')"
+        )
+        conn.execute(
+            "INSERT INTO recommendations (id, run_id, ticker, action, recommendation_score, confidence, priority, status, created_at, action_payload_json, episode_id) VALUES (1,1,'AAPL','BUY',75,80,'normal','accepted',1.0,?,?)",
+            (json.dumps({"price": 100.0}), "ep-abc123"),
+        )
+        conn.commit()
+
+        policy = TradingPolicy(
+            policy_version="1.0",
+            account_id="ACC",
+            capital={"starting_capital": 100000, "minimum_cash_pct": 5, "minimum_cash_abs": 500},
+            equities={"buy_allowed": True, "sell_allowed": True, "shorting_allowed": False,
+                      "max_single_position_pct": 10, "max_new_position_pct": 5},
+            options={"covered_calls_allowed": False, "naked_options_allowed": False,
+                     "max_contracts_per_symbol": 1},
+            execution={"market_orders_allowed": False, "max_orders_per_day": 5,
+                       "max_daily_notional_pct": 20, "max_slippage_pct": 1.0, "min_limit_price": 0.01},
+            risk={"max_drawdown_pct": 10, "max_daily_loss_pct": 3, "max_weekly_loss_pct": 7},
+            circuit_breakers={"trading_enabled": True, "halt_on_position_mismatch": True,
+                               "halt_on_data_stale_minutes": 60, "halt_on_daily_loss_pct": 3},
+        )
+
+        intent = build_intent(recommendation_id=1, account_id="ACC", policy=policy, conn=conn)
+        conn.close()
+
+        assert intent is not None
+        assert intent.episode_id == "ep-abc123"
+        assert intent.decision_origin == "CHAMPION"
+
+
 class TestOpportunityAgentWiring:
     """Verify that run_opportunity_hunter populates decision_episodes."""
 

@@ -54,7 +54,8 @@ def _make_conn() -> sqlite3.Connection:
             expiration TEXT, order_type TEXT, limit_price REAL, time_in_force TEXT,
             strategy TEXT, thesis_version INTEGER, strategy_config_hash TEXT,
             portfolio_snapshot_id TEXT, policy_hash TEXT, valid_until TEXT, created_at TEXT,
-            status TEXT DEFAULT 'PENDING'
+            status TEXT DEFAULT 'PENDING',
+            episode_id TEXT, decision_origin TEXT
         );
         CREATE TABLE IF NOT EXISTS orders (
             order_id TEXT PRIMARY KEY, intent_id TEXT, account_id TEXT,

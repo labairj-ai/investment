@@ -115,6 +115,7 @@ class Recommendation:
     input_hash: str | None = None
     trade_chain_id: str | None = None    # 0130: CC lifecycle chain identifier
     parent_cc_rec_id: int | None = None  # 0130: originating SELL_CC (or predecessor) rec id
+    episode_id: str | None = None        # 0331: originating decision_episode
 
 
 @dataclass

@@ -1,7 +1,7 @@
 # Add Read-Only Learning Lab Dashboard Panel
 
 - **ID:** 0329
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-15
 - **Priority:** normal
 - **Depends:** 0328
@@ -37,3 +37,7 @@ Frontend: new tab in `generate_dashboard.py` rendered as static tables/grids. No
 - [ ] Sections show a "not enough data" message gracefully when < 10 labeled episodes exist
 - [ ] `/api/learning/stats` returns within 2 seconds on the Optiplex hardware
 - [ ] No execution logic or scoring weights are modified by anything in this panel
+
+## Outcome
+
+Implemented in commit a7322b8. `📈 Learning Lab` tab added to nav + dropdown. Five cards: Episode Dataset (overview counts + date range), Score Calibration (mean 90d alpha by composite bucket), Feature Attribution (mean alpha by Q/V/PF/C/EC bucket), LLM Conviction Calibration (conviction stars vs hit rate/alpha for selected candidates), Risk Gate Audit (counterfactual outcomes by reject_rule). All sections show "no data yet" message when < 10 labeled outcomes. Backend: `/api/learning/stats` returns all aggregations in one call. Tab restore wired. Dashboard regenerated. 744 tests pass.

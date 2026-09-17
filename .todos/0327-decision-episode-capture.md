@@ -1,7 +1,7 @@
 # Build Decision Episode and Candidate Observation Layer
 
 - **ID:** 0327
-- **Status:** in-progress
+- **Status:** done
 - **Created:** 2026-09-15
 - **Priority:** normal
 - **Depends:** 0315
@@ -48,3 +48,7 @@ The system discards all scoring data for candidates it does not select: every cy
 - [ ] `selected` and `llm_conviction` are back-filled on the winner episode after LLM returns
 - [ ] Existing scoring, sorting, thresholding, and recommendation behavior is unchanged
 - [ ] All existing tests pass; new unit tests verify episode rows are created and immutable
+
+## Outcome
+
+Implemented in commit 44a6b90. Four new tables: `decision_episodes`, `episode_outcomes`, `learning_models`, `risk_counterfactual_outcomes`. Three new columns: `trade_intents.decision_origin`, `trade_intents.episode_id`, `executed_actions.recommendation_action`. `agents/learning/episode_capture.py` provides `capture_candidate_episode()` / `update_episode_ranks()` / `mark_episode_selected()`. opportunity_agent.py wired: episodes captured for every scored candidate before sort, ranks updated after sort, winner marked after LLM selection. 10 new tests, 737 total pass. The `portfolio_snapshot_json` field captures `layer_weights` and `held_tickers` at capture time. `llm_conviction` column exists but is NULL until a future agent returns a 1-5 star score.

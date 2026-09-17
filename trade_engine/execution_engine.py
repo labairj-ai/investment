@@ -166,11 +166,24 @@ def _sync_intent_from_order(order: Order, intent_id: str, conn: sqlite3.Connecti
 
 def _write_executed_action(fill: Fill, intent: TradeIntent, conn: sqlite3.Connection) -> None:
     """Write shadow fill to executed_actions for outcome evaluator integration."""
+    # 0331: populate recommendation_action with the source recommendation's semantic
+    # action (BUY/TRIM/EXIT) rather than the fill-side verb (BUY/SELL), so the
+    # executed_actions ledger reflects intent rather than mechanics.
+    rec_action: Optional[str] = None
+    if intent.recommendation_id is not None:
+        rec_row = conn.execute(
+            "SELECT action FROM recommendations WHERE id=?",
+            (intent.recommendation_id,),
+        ).fetchone()
+        if rec_row:
+            rec_action = rec_row["action"]
+
     conn.execute(
         """INSERT OR IGNORE INTO executed_actions
            (recommendation_id, ticker, action, quantity, execution_price,
-            execution_date, fees, notes, source, created_at, fill_id)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            execution_date, fees, notes, source, created_at, fill_id,
+            recommendation_action)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             intent.recommendation_id,
             fill.symbol,
@@ -183,6 +196,7 @@ def _write_executed_action(fill: Fill, intent: TradeIntent, conn: sqlite3.Connec
             fill.fill_source,
             time.time(),
             fill.fill_id,
+            rec_action,
         ),
     )
     conn.commit()

@@ -181,6 +181,11 @@ def build_intent(
     if thesis_row:
         thesis_version = thesis_row["id"]
 
+    # 0331: propagate episode_id and decision_origin from the source recommendation
+    rec_keys = rec.keys() if hasattr(rec, "keys") else []
+    episode_id = rec["episode_id"] if "episode_id" in rec_keys else None
+    decision_origin = "CHAMPION"  # 0336 will route challenger variants differently
+
     now = _now_utc().isoformat()
     # Use market_calendar for valid_until so weekends/holidays are skipped (0203)
     valid_until = market_calendar.next_market_close().isoformat()
@@ -208,6 +213,8 @@ def build_intent(
         valid_until=valid_until,
         created_at=now,
         status=IntentStatus.PENDING,
+        episode_id=episode_id,
+        decision_origin=decision_origin,
     )
 
     d = intent.to_db_dict()

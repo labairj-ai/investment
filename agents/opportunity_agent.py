@@ -29,6 +29,7 @@ from .learning.episode_capture import (
     capture_candidate_episode,
     update_episode_ranks,
     mark_episode_selected,
+    update_episode_challenger_info,
 )
 from .learning.challenger import apply_challenger_adjustment
 
@@ -436,13 +437,20 @@ def run_opportunity_hunter(ctx: AgentContext) -> list[Recommendation]:
         print("[opportunity] All candidates are already held — no recommendation")
         return []
 
-    # Apply challenger model adjustment (no-op if model inactive or training_n < 30)
+    # Apply challenger model adjustment (no-op until model reaches PAPER_ACTIVE state per 0335)
+    # 0331: record challenger info on every episode; do not overwrite base _composite here
+    # (0336 will wire challenger scores to a separate routing path for the paper account).
     for c in scored:
         adj_composite, challenger_info = apply_challenger_adjustment(c)
         c["_composite_challenger"] = adj_composite
         c["_challenger_info"]      = challenger_info
-        if challenger_info.get("active"):
-            c["_composite"] = adj_composite
+        ch_version = challenger_info.get("model_version")
+        if c.get("_episode_id") and challenger_info.get("active"):
+            update_episode_challenger_info(
+                c["_episode_id"],
+                challenger_score=float(adj_composite),
+                challenger_model_version=ch_version,
+            )
 
     scored.sort(key=lambda x: x["_composite"], reverse=True)
     update_episode_ranks(
@@ -474,10 +482,24 @@ def run_opportunity_hunter(ctx: AgentContext) -> list[Recommendation]:
         result = _fallback_select(top)
         selected = top[0]
 
+    # 0331: extract conviction from AI analysis (stored in candidate at score time)
+    sel_conviction: int | None = None
+    try:
+        ai_raw = selected.get("ai_analysis")
+        if ai_raw:
+            ai = json.loads(ai_raw) if isinstance(ai_raw, str) else ai_raw
+            sel_conviction = int(ai.get("conviction", 0)) or None
+    except Exception:
+        pass
+
+    sel_ch_info = selected.get("_challenger_info", {})
     if selected.get("_episode_id"):
         mark_episode_selected(
             selected["_episode_id"],
             llm_why=result.get("why"),
+            llm_conviction=sel_conviction,
+            challenger_score=float(selected["_composite_challenger"]) if sel_ch_info.get("active") else None,
+            challenger_model_version=sel_ch_info.get("model_version"),
         )
 
     # Assemble recommendation
@@ -551,6 +573,7 @@ def run_opportunity_hunter(ctx: AgentContext) -> list[Recommendation]:
         action_payload=action_payload,
         valid_until=time.time() + 7 * 86400,
         dependencies=[fin_period_dep] if fin_period_dep else None,
+        episode_id=selected.get("_episode_id"),
     )
 
     print(

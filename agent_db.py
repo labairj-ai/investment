@@ -83,7 +83,8 @@ def migrate() -> None:
             no_action_case       TEXT,
             status               TEXT    NOT NULL DEFAULT 'open',
             valid_until          REAL,
-            created_at           REAL    NOT NULL
+            created_at           REAL    NOT NULL,
+            episode_id           TEXT
         );
 
         CREATE TABLE IF NOT EXISTS critic_reviews (
@@ -521,6 +522,11 @@ def migrate() -> None:
         ("trade_intents",      "decision_origin",       "TEXT"),
         ("trade_intents",      "episode_id",            "TEXT"),
         ("executed_actions",   "recommendation_action", "TEXT"),
+        # 0331 — learning lineage: episode → recommendation → intent → fill
+        ("recommendations",    "episode_id",            "TEXT"),
+        ("decision_episodes",  "base_score",            "REAL"),
+        ("decision_episodes",  "challenger_score",      "REAL"),
+        ("decision_episodes",  "challenger_model_version", "TEXT"),
     ]
     for table, col, col_type in _new_cols:
         try:
@@ -811,7 +817,10 @@ def _migrate_learning_episodes(conn: sqlite3.Connection) -> None:
             llm_conviction         INTEGER,
             prompt_version         TEXT,
             feature_schema_version TEXT,
-            portfolio_snapshot_json TEXT
+            portfolio_snapshot_json TEXT,
+            base_score             REAL,
+            challenger_score       REAL,
+            challenger_model_version TEXT
         );
 
         CREATE TABLE IF NOT EXISTS episode_outcomes (
@@ -1068,6 +1077,7 @@ def insert_recommendation(
     rationale_class: str | None = None,
     trade_chain_id: str | None = None,
     parent_cc_rec_id: int | None = None,
+    episode_id: str | None = None,
 ) -> int:
     now = time.time()
     urgency = compute_urgency_level(action, recommendation_score, valid_until)
@@ -1077,14 +1087,15 @@ def insert_recommendation(
            (run_id, ticker, action, action_payload_json, recommendation_score,
             confidence, priority, why_now, rationale, counter_case,
             no_action_case, status, valid_until, input_hash, updated_at,
-            created_at, rationale_class, urgency_level, trade_chain_id, parent_cc_rec_id)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            created_at, rationale_class, urgency_level, trade_chain_id, parent_cc_rec_id,
+            episode_id)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (run_id, ticker, action,
          json.dumps(action_payload) if action_payload else None,
          recommendation_score, confidence, priority, why_now, rationale,
          counter_case, no_action_case, "open", valid_until,
          input_hash, now, now, rationale_class, urgency,
-         trade_chain_id, parent_cc_rec_id),
+         trade_chain_id, parent_cc_rec_id, episode_id),
     )
     rec_id = cur.lastrowid
     conn.commit()
