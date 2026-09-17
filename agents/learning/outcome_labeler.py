@@ -223,6 +223,101 @@ def label_mature_episodes(
     return result
 
 
+_CF_HORIZONS: list[tuple[str, int]] = [
+    ("1w",  7),
+    ("1m",  30),
+    ("3m",  91),
+]
+
+
+def _already_cf_labeled(conn, intent_id: str, horizon: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM risk_counterfactual_outcomes WHERE intent_id=? AND horizon=? LIMIT 1",
+        (intent_id, horizon),
+    ).fetchone()
+    return row is not None
+
+
+def label_risk_counterfactuals(
+    min_age_days: int = _MIN_AGE_DAYS,
+    dry_run: bool = False,
+) -> dict[str, int]:
+    """Label mature risk counterfactual rows with market outcomes (0332).
+
+    Finds base rejection rows (horizon IS NULL) that are old enough, then for
+    each mature horizon inserts a labeled row with ticker/SPY returns and alpha.
+
+    Returns {"rejections_checked": n, "horizons_written": m}.
+    """
+    cutoff = time.time() - (min_age_days * 86400)
+    today  = date.today().isoformat()
+
+    conn = agent_db._connect()
+    base_rows = conn.execute(
+        """SELECT id, intent_id, episode_id, ticker, decision_date, rejected_at
+           FROM risk_counterfactual_outcomes
+           WHERE horizon IS NULL AND rejected_at < ?""",
+        (cutoff,),
+    ).fetchall()
+
+    total_written = 0
+    for base in base_rows:
+        intent_id = base["intent_id"]
+        ticker    = base["ticker"]
+        entry     = base["decision_date"] or _entry_date(base["rejected_at"] or time.time())
+
+        for horizon_label, days in _CF_HORIZONS:
+            h_date = _horizon_date(entry, days)
+            if h_date > today:
+                continue
+            if _already_cf_labeled(conn, intent_id, horizon_label):
+                continue
+
+            entry_price = _get_ticker_price(ticker, entry)
+            h_price     = _get_ticker_price(ticker, h_date)
+            if entry_price is None or h_price is None or entry_price == 0:
+                print(f"[outcome_labeler] counterfactual missing price for {ticker} "
+                      f"entry={entry} horizon={h_date} — skipping")
+                continue
+
+            ticker_return = (h_price / entry_price) - 1.0
+
+            spy_entry = _spy_price_at(entry)
+            spy_h     = _spy_price_at(h_date)
+            spy_return = ((spy_h / spy_entry) - 1.0) if spy_entry and spy_h else None
+            alpha      = (ticker_return - spy_return) if spy_return is not None else None
+
+            mfe, mae = _compute_mfe_mae(ticker, entry, h_date, entry_price)
+
+            if dry_run:
+                print(
+                    f"  DRY-RUN counterfactual {ticker} {horizon_label}: "
+                    f"return={ticker_return:+.2%} alpha={alpha and f'{alpha:+.2%}' or '?'}"
+                )
+            else:
+                conn.execute(
+                    """INSERT OR IGNORE INTO risk_counterfactual_outcomes
+                       (intent_id, episode_id, ticker, decision_date, horizon,
+                        ticker_return, spy_return, alpha, mfe, mae, labeled_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        intent_id, base["episode_id"], ticker, entry,
+                        horizon_label, ticker_return, spy_return, alpha,
+                        mfe, mae, time.time(),
+                    ),
+                )
+            total_written += 1
+
+    if not dry_run and total_written:
+        conn.commit()
+    conn.close()
+    result = {"rejections_checked": len(base_rows), "horizons_written": total_written}
+    if not dry_run:
+        print(f"[outcome_labeler] counterfactuals: {result}")
+    return result
+
+
 if __name__ == "__main__":
     dry = "--dry-run" in sys.argv
     label_mature_episodes(dry_run=dry)
+    label_risk_counterfactuals(dry_run=dry)

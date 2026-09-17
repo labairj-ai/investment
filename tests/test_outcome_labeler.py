@@ -225,3 +225,148 @@ class TestLabelMatureEpisodes:
         outcomes = _fetch_outcomes(conn)
         conn.close()
         assert outcomes == []
+
+
+class TestRiskCounterfactualPipeline:
+    """0332: risk rejection → counterfactual capture → outcome labeling."""
+
+    def _insert_base_rejection(self, conn, ticker="AAPL", days_old=10, intent_id=None):
+        import uuid
+        intent_id = intent_id or str(uuid.uuid4())
+        decision_date = (date.today() - timedelta(days=days_old)).isoformat()
+        conn.execute("PRAGMA foreign_keys=OFF")
+        # Dummy trade_intent row so FK on risk_counterfactual_outcomes resolves
+        conn.execute(
+            """INSERT OR IGNORE INTO trade_intents
+               (intent_id, symbol, side, quantity, limit_price, order_type,
+                time_in_force, strategy, valid_until, created_at, status)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (intent_id, ticker, "BUY", 10.0, 150.0, "LIMIT", "DAY",
+             "test", "2099-01-01", "2026-01-01", "REJECTED"),
+        )
+        conn.execute(
+            """INSERT INTO risk_counterfactual_outcomes
+               (intent_id, ticker, side, quantity, limit_price,
+                rejected_at, reject_rule, rejection_reason, decision_date, horizon)
+               VALUES (?,?,?,?,?,?,?,?,?,NULL)""",
+            (intent_id, ticker, "BUY", 10.0, 150.0,
+             _days_ago(days_old), "MAX_POSITION_PCT", "position would exceed 10%", decision_date),
+        )
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.commit()
+        return intent_id, decision_date
+
+    def test_labeler_writes_counterfactual_horizon(self, mem_db, monkeypatch):
+        import agent_db
+        from agents.learning.outcome_labeler import label_risk_counterfactuals
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        intent_id, _ = self._insert_base_rejection(conn, days_old=10)
+        conn.close()
+
+        with patch("agents.learning.outcome_labeler._get_ticker_price", return_value=150.0), \
+             patch("agents.learning.outcome_labeler._spy_price_at", return_value=500.0), \
+             patch("agents.learning.outcome_labeler._compute_mfe_mae", return_value=(0.03, -0.01)):
+            result = label_risk_counterfactuals(min_age_days=7)
+
+        assert result["rejections_checked"] == 1
+        assert result["horizons_written"] >= 1
+
+        conn = _make_conn(mem_db)
+        rows = [dict(r) for r in conn.execute(
+            "SELECT * FROM risk_counterfactual_outcomes WHERE intent_id=? AND horizon IS NOT NULL",
+            (intent_id,),
+        ).fetchall()]
+        conn.close()
+
+        assert len(rows) >= 1
+        assert rows[0]["ticker"] == "AAPL"
+        assert rows[0]["horizon"] in ("1w", "1m", "3m")
+        assert rows[0]["ticker_return"] == pytest.approx(0.0)  # 150/150 - 1
+
+    def test_labeler_skips_already_labeled(self, mem_db, monkeypatch):
+        import agent_db
+        from agents.learning.outcome_labeler import label_risk_counterfactuals
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        intent_id, decision_date = self._insert_base_rejection(conn, days_old=10)
+        # Pre-insert a labeled row for 1w
+        conn.execute(
+            """INSERT INTO risk_counterfactual_outcomes
+               (intent_id, ticker, decision_date, horizon, ticker_return, labeled_at)
+               VALUES (?,?,?,?,?,?)""",
+            (intent_id, "AAPL", decision_date, "1w", 0.05, time.time()),
+        )
+        conn.commit()
+        conn.close()
+
+        with patch("agents.learning.outcome_labeler._get_ticker_price", return_value=150.0), \
+             patch("agents.learning.outcome_labeler._spy_price_at", return_value=500.0), \
+             patch("agents.learning.outcome_labeler._compute_mfe_mae", return_value=(0.03, -0.01)):
+            result = label_risk_counterfactuals(min_age_days=7)
+
+        # 1w was already labeled; should have labeled 1m (since 10 days > 7 but < 30 for 1m)
+        # Actually 10 days is not enough for 1m (30 days), so only 1w was eligible
+        # so total written should be 0 for 1w (already done) and 0 for 1m/3m (not mature)
+        conn = _make_conn(mem_db)
+        rows = [dict(r) for r in conn.execute(
+            "SELECT * FROM risk_counterfactual_outcomes WHERE intent_id=? AND horizon='1w'",
+            (intent_id,),
+        ).fetchall()]
+        conn.close()
+        assert len(rows) == 1  # original only, not duplicated
+
+    def test_risk_engine_writes_counterfactual_on_rejection(self, mem_db, monkeypatch):
+        """Rejected intents produce a base counterfactual row."""
+        import agent_db
+        from trade_engine.risk_engine import _write_counterfactual_rejection
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        # Insert prerequisite account, then trade_intent with episode_id
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute(
+            """INSERT OR IGNORE INTO trading_accounts (account_id, broker, mode)
+               VALUES ('ACC','alpaca','paper')"""
+        )
+        conn.execute(
+            """INSERT INTO trade_intents
+               (intent_id, account_id, instrument_type, symbol, side, quantity, limit_price,
+                order_type, time_in_force, strategy, valid_until, created_at, status, episode_id)
+               VALUES ('int-001','ACC','EQUITY','AAPL','BUY',10,150,
+                       'LIMIT','DAY','test','2099-01-01','2026-09-01','PENDING','ep-xyz')"""
+        )
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.commit()
+
+        class _FakeCheck:
+            def __init__(self, rule, result, reason=None):
+                self.rule = rule
+                self.result = type("R", (), {"value": result})()
+                self.reason = reason
+
+        checks = [
+            _FakeCheck("MAX_POSITION_PCT", "FAIL", "position too large"),
+            _FakeCheck("CASH_FLOOR", "PASS"),
+        ]
+
+        _write_counterfactual_rejection("int-001", checks, "2026-09-17T14:00:00+00:00", conn)
+
+        rows = [dict(r) for r in conn.execute(
+            "SELECT * FROM risk_counterfactual_outcomes WHERE intent_id='int-001' AND horizon IS NULL"
+        ).fetchall()]
+        conn.close()
+
+        assert len(rows) == 1
+        assert rows[0]["reject_rule"] == "MAX_POSITION_PCT"
+        assert rows[0]["rejection_reason"] == "position too large"
+        assert rows[0]["episode_id"] == "ep-xyz"
+        assert rows[0]["ticker"] == "AAPL"

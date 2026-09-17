@@ -716,6 +716,10 @@ def _finalize(
         )
     conn.commit()
 
+    # 0332: record rejected intents for Risk Gate Audit counterfactual analysis
+    if decision == "REJECTED":
+        _write_counterfactual_rejection(intent_id, checks, evaluated_at, conn)
+
     return RiskDecision(
         decision_id=decision_id,
         intent_id=intent_id,
@@ -723,3 +727,60 @@ def _finalize(
         checks=checks,
         evaluated_at=evaluated_at,
     )
+
+
+def _write_counterfactual_rejection(
+    intent_id: str,
+    checks: list,
+    rejected_at: str,
+    conn: sqlite3.Connection,
+) -> None:
+    """Write a base rejection row to risk_counterfactual_outcomes (0332).
+
+    Looks up ticker, quantity, limit_price, episode_id from trade_intents.
+    The first failing rule becomes reject_rule/rejection_reason. The labeler
+    fills in per-horizon outcome rows (ticker_return, spy_return, alpha).
+    """
+    try:
+        row = conn.execute(
+            "SELECT symbol, side, quantity, limit_price, episode_id FROM trade_intents WHERE intent_id=?",
+            (intent_id,),
+        ).fetchone()
+        if not row:
+            return
+
+        first_fail = next((c for c in checks if c.result.value == "FAIL"), None)
+        reject_rule = first_fail.rule if first_fail else None
+        rejection_reason = first_fail.reason if first_fail else None
+
+        # Decision date in ET market-calendar terms
+        from zoneinfo import ZoneInfo
+        from datetime import datetime as _dt
+        try:
+            et_tz = ZoneInfo("America/New_York")
+        except Exception:
+            from datetime import timezone as _tz, timedelta as _td
+            et_tz = _tz(_td(hours=-4))
+        decision_date = _dt.now(et_tz).strftime("%Y-%m-%d")
+
+        conn.execute(
+            """INSERT OR IGNORE INTO risk_counterfactual_outcomes
+               (intent_id, episode_id, ticker, side, quantity, limit_price,
+                rejected_at, reject_rule, rejection_reason, decision_date, horizon)
+               VALUES (?,?,?,?,?,?,?,?,?,?,NULL)""",
+            (
+                intent_id,
+                row["episode_id"] if "episode_id" in row.keys() else None,
+                row["symbol"],
+                row["side"],
+                row["quantity"],
+                row["limit_price"],
+                _dt.fromisoformat(rejected_at.replace("Z", "+00:00")).timestamp(),
+                reject_rule,
+                rejection_reason,
+                decision_date,
+            ),
+        )
+        conn.commit()
+    except Exception as e:
+        print(f"[risk_engine] WARNING: failed to write counterfactual rejection for {intent_id}: {e}")

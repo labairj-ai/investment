@@ -1,7 +1,7 @@
 # Build Risk Counterfactual Pipeline: Capture + Label Rejected Trades
 
 - **ID:** 0332
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-17
 - **Priority:** high
 - **Depends:** 0331
@@ -41,7 +41,11 @@ To make the question answerable, every risk rejection needs to be captured with 
 
 ## Done when
 
-- [ ] Every `TradeIntent` rejection by the risk engine writes a row to `risk_counterfactual_outcomes` with `failed_rule`, `episode_id`, `proposed_*` fields, and `decision_date` in ET market-calendar terms
-- [ ] `daily_outcome_labeler.py` labels unresolved counterfactual rows at 1w/1m/3m with SPY-relative alpha
-- [ ] Risk Gate Audit card in Learning Lab renders non-empty results (at least 1w horizon) after one labeler run
-- [ ] `python -m pytest tests/` passes with no regressions
+- [x] Every `TradeIntent` rejection by the risk engine writes a row to `risk_counterfactual_outcomes` with `failed_rule`, `episode_id`, `proposed_*` fields, and `decision_date` in ET market-calendar terms
+- [x] `daily_outcome_labeler.py` labels unresolved counterfactual rows at 1w/1m/3m with SPY-relative alpha
+- [x] Risk Gate Audit card in Learning Lab renders non-empty results (at least 1w horizon) after one labeler run
+- [x] `python -m pytest tests/` passes with no regressions
+
+## Outcome
+
+4 files changed. `agent_db.py`: extended `risk_counterfactual_outcomes` schema with `episode_id`, `rejection_reason`, `decision_date`, `mfe`, `mae` columns (in both CREATE TABLE and `_new_cols` migrations). `trade_engine/risk_engine.py`: `_finalize()` calls `_write_counterfactual_rejection()` on REJECTED decisions; new function looks up symbol/side/qty/limit_price/episode_id from `trade_intents`, finds first FAIL check for rule/reason, computes ET decision_date, INSERTs base row with `horizon=NULL`. Bug found and fixed: column is `symbol` not `ticker` in trade_intents. `agents/learning/outcome_labeler.py`: `label_risk_counterfactuals()` scans base rows (horizon IS NULL), applies 1w/1m/3m horizons, computes ticker/SPY returns + alpha + MFE/MAE, inserts labeled rows with `INSERT OR IGNORE`. `tests/test_outcome_labeler.py`: 3 new tests in `TestRiskCounterfactualPipeline` covering labeler write, idempotency, and risk engine rejection capture. 763 passed, 16 skipped.

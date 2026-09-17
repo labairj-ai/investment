@@ -527,6 +527,12 @@ def migrate() -> None:
         ("decision_episodes",  "base_score",            "REAL"),
         ("decision_episodes",  "challenger_score",      "REAL"),
         ("decision_episodes",  "challenger_model_version", "TEXT"),
+        # 0332 — risk counterfactual pipeline
+        ("risk_counterfactual_outcomes", "episode_id",       "TEXT"),
+        ("risk_counterfactual_outcomes", "rejection_reason", "TEXT"),
+        ("risk_counterfactual_outcomes", "decision_date",    "TEXT"),
+        ("risk_counterfactual_outcomes", "mfe",              "REAL"),
+        ("risk_counterfactual_outcomes", "mae",              "REAL"),
     ]
     for table, col, col_type in _new_cols:
         try:
@@ -846,19 +852,25 @@ def _migrate_learning_episodes(conn: sqlite3.Connection) -> None:
         );
 
         CREATE TABLE IF NOT EXISTS risk_counterfactual_outcomes (
-            id           INTEGER PRIMARY KEY AUTOINCREMENT,
-            intent_id    TEXT REFERENCES trade_intents(intent_id),
-            ticker       TEXT,
-            side         TEXT,
-            quantity     REAL,
-            limit_price  REAL,
-            rejected_at  REAL,
-            reject_rule  TEXT,
-            horizon      TEXT,
-            ticker_return REAL,
-            spy_return   REAL,
-            alpha        REAL,
-            labeled_at   REAL
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            intent_id       TEXT REFERENCES trade_intents(intent_id),
+            episode_id      TEXT,
+            ticker          TEXT,
+            side            TEXT,
+            quantity        REAL,
+            limit_price     REAL,
+            rejected_at     REAL,
+            reject_rule     TEXT,
+            rejection_reason TEXT,
+            decision_date   TEXT,
+            horizon         TEXT,
+            ticker_return   REAL,
+            spy_return      REAL,
+            alpha           REAL,
+            mfe             REAL,
+            mae             REAL,
+            labeled_at      REAL,
+            UNIQUE(intent_id, horizon)
         );
     """)
     conn.commit()
