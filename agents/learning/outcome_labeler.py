@@ -260,7 +260,7 @@ def label_risk_counterfactuals(
 
     conn = agent_db._connect()
     base_rows = conn.execute(
-        """SELECT id, intent_id, episode_id, ticker, decision_date, rejected_at
+        """SELECT id, intent_id, episode_id, ticker, side, decision_date, rejected_at
            FROM risk_counterfactual_outcomes
            WHERE horizon IS NULL AND rejected_at < ?""",
         (cutoff,),
@@ -270,6 +270,7 @@ def label_risk_counterfactuals(
     for base in base_rows:
         intent_id = base["intent_id"]
         ticker    = base["ticker"]
+        side      = (base["side"] or "BUY").upper()
         entry     = base["decision_date"] or _entry_date(base["rejected_at"] or time.time())
 
         for horizon_label, days in _CF_HORIZONS:
@@ -288,27 +289,36 @@ def label_risk_counterfactuals(
 
             ticker_return = (h_price / entry_price) - 1.0
 
+            # 0338: directional_return flips sign for SELL/EXIT — a blocked exit before
+            # a price decline is a good blocked trade (decision was right, gate was wrong).
+            directional_return = ticker_return if side == "BUY" else -ticker_return
+
             spy_entry = _spy_price_at(entry)
             spy_h     = _spy_price_at(h_date)
             spy_return = ((spy_h / spy_entry) - 1.0) if spy_entry and spy_h else None
             alpha      = (ticker_return - spy_return) if spy_return is not None else None
+            decision_alpha = (directional_return - spy_return) if spy_return is not None else None
 
             mfe, mae = _compute_mfe_mae(ticker, entry, h_date, entry_price)
 
             if dry_run:
                 print(
                     f"  DRY-RUN counterfactual {ticker} {horizon_label}: "
-                    f"return={ticker_return:+.2%} alpha={alpha and f'{alpha:+.2%}' or '?'}"
+                    f"return={ticker_return:+.2%} directional={directional_return:+.2%} "
+                    f"alpha={alpha and f'{alpha:+.2%}' or '?'}"
                 )
             else:
                 conn.execute(
                     """INSERT OR IGNORE INTO risk_counterfactual_outcomes
                        (intent_id, episode_id, ticker, decision_date, horizon,
-                        ticker_return, spy_return, alpha, mfe, mae, labeled_at)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                        ticker_return, spy_return, alpha,
+                        directional_return, decision_alpha,
+                        mfe, mae, labeled_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         intent_id, base["episode_id"], ticker, entry,
                         horizon_label, ticker_return, spy_return, alpha,
+                        directional_return, decision_alpha,
                         mfe, mae, time.time(),
                     ),
                 )
@@ -345,10 +355,13 @@ def label_trade_outcomes(
     today = date.today().isoformat()
     conn = agent_db._connect()
     rows = conn.execute(
-        """SELECT id, fill_id, ticker, fill_date, fill_price, fill_fees, fill_qty
-           FROM trade_outcomes
-           WHERE fill_date IS NOT NULL AND fill_price IS NOT NULL AND fill_price > 0
-             AND julianday('now') - julianday(fill_date) >= ?""",
+        """SELECT to2.id, to2.fill_id, to2.ticker, to2.fill_date, to2.fill_price,
+                  to2.fill_fees, to2.fill_qty, to2.intent_id, to2.arrival_price,
+                  COALESCE(to2.action, ti.side, 'BUY') AS resolved_action
+           FROM trade_outcomes to2
+           LEFT JOIN trade_intents ti ON to2.intent_id = ti.intent_id
+           WHERE to2.fill_date IS NOT NULL AND to2.fill_price IS NOT NULL AND to2.fill_price > 0
+             AND julianday('now') - julianday(to2.fill_date) >= ?""",
         (min_age_days,),
     ).fetchall()
 
@@ -357,7 +370,31 @@ def label_trade_outcomes(
         to_id = row["id"]
         ticker = row["ticker"]
         fill_date = row["fill_date"]
-        entry_price = float(row["fill_price"])
+        gross_fill_price = float(row["fill_price"])
+        fill_qty  = float(row["fill_qty"] or 1)
+        fill_fees = float(row["fill_fees"] or 0)
+        arrival_price = row["arrival_price"]
+
+        # 0338: direction sign — SELL/EXIT/TRIM decisions are good when price falls after
+        resolved_action = (row["resolved_action"] or "BUY").upper()
+        is_sell = resolved_action in ("SELL", "EXIT", "TRIM")
+
+        # 0339: fee-adjusted effective entry price
+        fees_per_share = fill_fees / fill_qty if fill_qty > 0 else 0.0
+        if is_sell:
+            effective_entry = gross_fill_price - fees_per_share
+        else:
+            effective_entry = gross_fill_price + fees_per_share
+        if effective_entry <= 0:
+            effective_entry = gross_fill_price  # fallback if fees exceed price
+
+        # 0339: implementation shortfall — filled price vs arrival (limit) price
+        impl_shortfall = None
+        if arrival_price and arrival_price > 0:
+            if is_sell:
+                impl_shortfall = (arrival_price - gross_fill_price) / arrival_price
+            else:
+                impl_shortfall = (gross_fill_price - arrival_price) / arrival_price
 
         for horizon_label, days, labeled_col in _TO_HORIZONS:
             h_date = _horizon_date(fill_date, days)
@@ -371,33 +408,43 @@ def label_trade_outcomes(
                 continue
 
             h_price = _get_ticker_price(ticker, h_date)
-            if h_price is None or entry_price == 0:
+            if h_price is None or effective_entry == 0:
                 continue
 
-            to_return = (h_price / entry_price) - 1.0
+            # 0339: fee-adjusted return uses effective_entry (fees baked in)
+            to_return = (h_price / effective_entry) - 1.0
+            # 0338: decision_return sign-flipped for SELL/EXIT/TRIM
+            decision_return = -to_return if is_sell else to_return
 
             spy_entry = _spy_price_at(fill_date)
             spy_h     = _spy_price_at(h_date)
             spy_return = ((spy_h / spy_entry) - 1.0) if spy_entry and spy_h else None
             alpha      = (to_return - spy_return) if spy_return is not None else None
+            decision_alpha = (decision_return - spy_return) if spy_return is not None else None
 
-            mark_col    = f"mark_{horizon_label}"
-            return_col  = f"return_{horizon_label}"
-            spy_col     = f"spy_return_{horizon_label}"
-            alpha_col   = f"alpha_{horizon_label}"
+            mark_col          = f"mark_{horizon_label}"
+            return_col        = f"return_{horizon_label}"
+            spy_col           = f"spy_return_{horizon_label}"
+            alpha_col         = f"alpha_{horizon_label}"
+            dec_return_col    = f"decision_return_{horizon_label}"
+            dec_alpha_col     = f"decision_alpha_{horizon_label}"
 
             if dry_run:
                 print(
                     f"  DRY-RUN trade_outcome {ticker} {horizon_label}: "
-                    f"return={to_return:+.2%} alpha={alpha and f'{alpha:+.2%}' or '?'}"
+                    f"return={to_return:+.2%} decision_return={decision_return:+.2%} "
+                    f"alpha={alpha and f'{alpha:+.2%}' or '?'} IS={impl_shortfall}"
                 )
             else:
                 conn.execute(
                     f"""UPDATE trade_outcomes
                         SET {mark_col}=?, {return_col}=?, {spy_col}=?, {alpha_col}=?,
-                            {labeled_col}=?
+                            {dec_return_col}=?, {dec_alpha_col}=?,
+                            implementation_shortfall=?, {labeled_col}=?
                         WHERE id=?""",
-                    (h_price, to_return, spy_return, alpha, time.time(), to_id),
+                    (h_price, to_return, spy_return, alpha,
+                     decision_return, decision_alpha,
+                     impl_shortfall, time.time(), to_id),
                 )
             total_written += 1
 

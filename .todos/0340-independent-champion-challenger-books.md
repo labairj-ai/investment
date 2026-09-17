@@ -1,7 +1,7 @@
 # Independent Champion/Challenger Portfolio Books
 
 - **ID:** 0340
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-17
 - **Priority:** normal
 - **Depends:** 0337, 0338, 0339
@@ -41,9 +41,13 @@ Option B (future): Two real Alpaca paper accounts (`ALPACA_CHAMPION`, `ALPACA_CH
 
 ## Done when
 
-- [ ] `virtual_books` and `virtual_fills` tables exist; champion and challenger books receive simulated fills from opportunity hunter runs
-- [ ] Portfolio NAV series computable from `virtual_fills` for both books
-- [ ] `/api/learning/champion-challenger` returns portfolio-level metrics: cumulative return, max drawdown, volatility, turnover, trade count, win rate, profit factor, exposure
-- [ ] Dashboard shows cumulative return curves: CHAMPION_BOOK vs CHALLENGER_BOOK vs SPY over the same calendar period
-- [ ] Per-trade stats (alpha mean, hit rate, MAE/MFE) retained and consistent with prior endpoint
-- [ ] `python -m pytest tests/` passes with no regressions
+- [x] `virtual_books` and `virtual_fills` tables exist; champion and challenger books receive simulated fills from opportunity hunter runs
+- [x] Portfolio NAV series computable from `virtual_fills` for both books
+- [x] `/api/learning/champion-challenger` returns portfolio-level metrics: cumulative return, max drawdown, volatility, turnover, trade count, win rate, profit factor, exposure
+- [x] Dashboard shows cumulative return curves: CHAMPION_BOOK vs CHALLENGER_BOOK vs SPY over the same calendar period
+- [x] Per-trade stats (alpha mean, hit rate, MAE/MFE) retained and consistent with prior endpoint
+- [x] `python -m pytest tests/` passes with no regressions
+
+## Outcome
+
+6 files changed + 1 new file. `agent_db.py`: added `virtual_books` (book_id, label, starting_cash, current_cash, as_of) and `virtual_fills` (id, book_id, episode_id, ticker, action, price, qty, fees, filled_at, decision_origin, created_at) tables; seed INSERTs for CHAMPION_BOOK and CHALLENGER_BOOK at $100k each. `agents/learning/book_simulator.py` (new): `record_virtual_fills(champion_ticker, champion_price, challenger_ticker, challenger_price, episode_id, action)` — inserts fills for both books at opportunity-hunter time; `compute_book_stats(book_id, price_fn)` — returns cum_return, max_drawdown, turnover, win_rate, profit_factor, exposure_pct; `_record_one_book` applies 1% slippage, sizes at 10% of current cash, checks cash sufficiency. `agents/opportunity_agent.py`: imports `record_virtual_fills`; calls it after `_insert_decision_variant()` with champion and challenger tickers/prices. `serve.py` `_handle_champion_challenger`: added `_book_portfolio_stats(book_id)` inner function returning cost-basis NAV series + portfolio metrics for each virtual book; also adds `decision_return_mean`, `impl_shortfall_mean` to per-trade stats; adds `execution_quality` block (mean IS by action). `generate_dashboard.py`: added Champion vs Challenger Portfolio card to Learning Lab; `loadLearningPanel` fetches `/api/learning/champion-challenger` and renders book-level stat cards plus the full per-trade table. `tests/test_book_simulator.py`: 12 tests covering schema seeding, fill insertion, cash decrement, missing-price no-op, insufficient-cash guard, episode_id persistence, and compute_book_stats. 804 passed, 16 skipped.

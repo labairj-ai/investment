@@ -181,7 +181,8 @@ def _spawn_trade_outcome(
     """
     try:
         row = conn.execute(
-            """SELECT ti.intent_id, ti.episode_id, r.action as rec_action
+            """SELECT ti.intent_id, ti.episode_id, ti.limit_price as intent_limit_price,
+                      r.action as rec_action
                FROM trade_intents ti
                JOIN orders o ON ti.intent_id = o.intent_id
                LEFT JOIN recommendations r ON ti.recommendation_id = r.id
@@ -191,6 +192,8 @@ def _spawn_trade_outcome(
         intent_id = row["intent_id"] if row else None
         episode_id = row["episode_id"] if row and "episode_id" in row.keys() else None
         action = row["rec_action"] if row else None
+        # 0339: use intent limit_price as arrival_price proxy (best available at spawn time)
+        arrival_price = float(row["intent_limit_price"]) if row and row["intent_limit_price"] else None
 
         from zoneinfo import ZoneInfo
         from datetime import datetime as _dt
@@ -205,10 +208,10 @@ def _spawn_trade_outcome(
         conn.execute(
             """INSERT OR IGNORE INTO trade_outcomes
                (fill_id, intent_id, episode_id, ticker, action, decision_date,
-                fill_date, fill_price, fill_qty, fill_fees, label_type, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                fill_date, fill_price, fill_qty, fill_fees, arrival_price, label_type, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (fill_id, intent_id, episode_id, symbol, action, decision_date,
-             fill_date, fill_price, fill_qty, fill_fee,
+             fill_date, fill_price, fill_qty, fill_fee, arrival_price,
              "EXECUTED_TRADE_RETURN", time.time()),
         )
     except Exception as e:

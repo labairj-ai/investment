@@ -541,6 +541,25 @@ def migrate() -> None:
         # 0335 — model lifecycle governance
         ("learning_models", "lifecycle_state",       "TEXT"),
         ("learning_models", "promotion_gates_json",  "TEXT"),
+        # 0337 — executable variant fields on decision_variants
+        ("decision_variants", "action",              "TEXT"),
+        ("decision_variants", "price",               "REAL"),
+        ("decision_variants", "target_weight_pct",   "REAL"),
+        ("decision_variants", "quantity",            "REAL"),
+        ("decision_variants", "thesis_version",      "INTEGER"),
+        # 0338 — direction-aware decision returns on trade_outcomes
+        ("trade_outcomes", "decision_return_1w",     "REAL"),
+        ("trade_outcomes", "decision_return_1m",     "REAL"),
+        ("trade_outcomes", "decision_return_3m",     "REAL"),
+        ("trade_outcomes", "decision_alpha_1w",      "REAL"),
+        ("trade_outcomes", "decision_alpha_1m",      "REAL"),
+        ("trade_outcomes", "decision_alpha_3m",      "REAL"),
+        # 0338 — direction-aware returns on risk_counterfactual_outcomes
+        ("risk_counterfactual_outcomes", "directional_return",         "REAL"),
+        ("risk_counterfactual_outcomes", "decision_alpha",             "REAL"),
+        # 0339 — execution cost accounting
+        ("trade_outcomes", "arrival_price",                            "REAL"),
+        ("trade_outcomes", "implementation_shortfall",                 "REAL"),
     ]
     for table, col, col_type in _new_cols:
         try:
@@ -877,13 +896,15 @@ def _migrate_learning_episodes(conn: sqlite3.Connection) -> None:
             reject_rule     TEXT,
             rejection_reason TEXT,
             decision_date   TEXT,
-            horizon         TEXT,
-            ticker_return   REAL,
-            spy_return      REAL,
-            alpha           REAL,
-            mfe             REAL,
-            mae             REAL,
-            labeled_at      REAL,
+            horizon             TEXT,
+            ticker_return       REAL,
+            spy_return          REAL,
+            alpha               REAL,
+            directional_return  REAL,
+            decision_alpha      REAL,
+            mfe                 REAL,
+            mae                 REAL,
+            labeled_at          REAL,
             UNIQUE(intent_id, horizon)
         );
 
@@ -898,6 +919,11 @@ def _migrate_learning_episodes(conn: sqlite3.Connection) -> None:
             would_have_selected      INTEGER DEFAULT 0,
             champion_ticker          TEXT,
             variant_ticker           TEXT,
+            action                   TEXT,
+            price                    REAL,
+            target_weight_pct        REAL,
+            quantity                 REAL,
+            thesis_version           INTEGER,
             created_at               REAL
         );
 
@@ -923,16 +949,53 @@ def _migrate_learning_episodes(conn: sqlite3.Connection) -> None:
             spy_return_1w   REAL,
             spy_return_1m   REAL,
             spy_return_3m   REAL,
-            alpha_1w        REAL,
-            alpha_1m        REAL,
-            alpha_3m        REAL,
-            mfe_pct         REAL,
-            mae_pct         REAL,
+            alpha_1w            REAL,
+            alpha_1m            REAL,
+            alpha_3m            REAL,
+            decision_return_1w  REAL,
+            decision_return_1m  REAL,
+            decision_return_3m  REAL,
+            decision_alpha_1w   REAL,
+            decision_alpha_1m   REAL,
+            decision_alpha_3m   REAL,
+            arrival_price           REAL,
+            implementation_shortfall REAL,
+            mfe_pct             REAL,
+            mae_pct             REAL,
             labeled_1w_at   REAL,
             labeled_1m_at   REAL,
             labeled_3m_at   REAL,
             created_at      REAL
         );
+
+        -- 0340: virtual portfolio books for champion/challenger comparison
+        CREATE TABLE IF NOT EXISTS virtual_books (
+            book_id     TEXT PRIMARY KEY,
+            label       TEXT,
+            starting_cash REAL DEFAULT 100000,
+            current_cash  REAL DEFAULT 100000,
+            as_of       TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS virtual_fills (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            book_id         TEXT REFERENCES virtual_books(book_id),
+            episode_id      TEXT,
+            ticker          TEXT,
+            action          TEXT,
+            price           REAL,
+            qty             REAL,
+            fees            REAL DEFAULT 0,
+            filled_at       TEXT,
+            decision_origin TEXT,
+            created_at      REAL
+        );
+
+        -- Seed the two books if they don't exist yet
+        INSERT OR IGNORE INTO virtual_books (book_id, label, starting_cash, current_cash)
+            VALUES ('CHAMPION_BOOK', 'Champion', 100000, 100000);
+        INSERT OR IGNORE INTO virtual_books (book_id, label, starting_cash, current_cash)
+            VALUES ('CHALLENGER_BOOK', 'Challenger', 100000, 100000);
     """)
     conn.commit()
 

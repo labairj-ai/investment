@@ -73,6 +73,127 @@ def _get_strategy_config_hash() -> Optional[str]:
         return None
 
 
+def build_intent_from_variant(
+    variant_id: int,
+    account_id: str,
+    policy: TradingPolicy,
+    conn: sqlite3.Connection,
+) -> Optional[TradeIntent]:
+    """Build a TradeIntent from a decision_variants row for a PAPER_CHALLENGER account (0337).
+
+    Uses the variant's ticker, action, and price — never the champion recommendation's ticker.
+    Idempotent: returns existing PENDING/WORKING intent for this account+variant.
+    """
+    var = conn.execute(
+        "SELECT * FROM decision_variants WHERE id=?", (variant_id,)
+    ).fetchone()
+    if not var:
+        return None
+
+    ticker = var["variant_ticker"]
+    action = var["action"] or "BUY"
+    episode_id = var["episode_id"]
+
+    if not ticker or action not in _SUPPORTED_ACTIONS:
+        return None
+
+    # Idempotency: check for existing active intent for this account+episode+PAPER_CHALLENGER
+    existing = conn.execute(
+        """SELECT * FROM trade_intents
+           WHERE account_id=? AND episode_id=? AND decision_origin='PAPER_CHALLENGER'
+             AND status NOT IN ('CANCELLED','REJECTED','EXPIRED')
+           LIMIT 1""",
+        (account_id, episode_id),
+    ).fetchone()
+    if existing:
+        return TradeIntent.from_db_row(existing)
+
+    raw_price = float(var["price"] or 0)
+    if raw_price <= 0:
+        return None
+
+    cash, pos_qty, nav = _get_account_state(account_id, ticker, conn)
+
+    if action == "BUY":
+        side = Side.BUY
+        limit_price = round(raw_price * (1 + policy.max_slippage_pct() / 100), 2)
+        if var["quantity"] and float(var["quantity"]) >= 1:
+            quantity = int(float(var["quantity"]))
+        elif var["target_weight_pct"] and float(var["target_weight_pct"]) > 0:
+            target_dollars = nav * float(var["target_weight_pct"]) / 100.0
+            quantity = math.floor(target_dollars / limit_price)
+        else:
+            target_weight = min(policy.max_new_position_pct(), policy.max_single_position_pct())
+            quantity = math.floor(nav * target_weight / 100.0 / limit_price)
+        if quantity < 1:
+            return None
+
+    elif action == "TRIM":
+        if pos_qty <= 0:
+            return None
+        side = Side.SELL
+        limit_price = round(raw_price * (1 - policy.max_slippage_pct() / 100), 2)
+        quantity = math.floor(pos_qty * 0.25)
+        if quantity < 1:
+            return None
+
+    elif action == "EXIT":
+        if pos_qty <= 0:
+            return None
+        side = Side.SELL
+        limit_price = round(raw_price * (1 - policy.max_slippage_pct() / 100), 2)
+        quantity = pos_qty
+
+    else:
+        return None
+
+    thesis_version = var["thesis_version"] if var["thesis_version"] else None
+    if thesis_version is None:
+        tv_row = conn.execute(
+            "SELECT id FROM investment_theses WHERE ticker=? ORDER BY id DESC LIMIT 1",
+            (ticker,),
+        ).fetchone()
+        if tv_row:
+            thesis_version = tv_row["id"]
+
+    now = _now_utc().isoformat()
+    valid_until = market_calendar.next_market_close().isoformat()
+
+    intent = TradeIntent(
+        intent_id=str(uuid.uuid4()),
+        account_id=account_id,
+        recommendation_id=None,
+        agent_run_id=None,
+        instrument_type=InstrumentType.EQUITY,
+        symbol=ticker,
+        side=side,
+        quantity=float(quantity),
+        contracts=None,
+        option_type=None,
+        strike=None,
+        expiration=None,
+        order_type=OrderType.LIMIT,
+        limit_price=limit_price,
+        time_in_force=TimeInForce.DAY,
+        strategy="agentic_equity_v1",
+        thesis_version=thesis_version,
+        strategy_config_hash=_get_strategy_config_hash(),
+        policy_hash=policy.policy_hash(),
+        valid_until=valid_until,
+        created_at=now,
+        status=IntentStatus.PENDING,
+        episode_id=episode_id,
+        decision_origin="PAPER_CHALLENGER",
+    )
+
+    d = intent.to_db_dict()
+    cols = ", ".join(d.keys())
+    placeholders = ", ".join(f":{k}" for k in d.keys())
+    conn.execute(f"INSERT INTO trade_intents ({cols}) VALUES ({placeholders})", d)
+    conn.commit()
+    return intent
+
+
 def build_intent(
     recommendation_id: int,
     account_id: str,
@@ -83,6 +204,10 @@ def build_intent(
 
     Returns existing intent if already built (idempotent).
     Returns None if recommendation is not executable for this account.
+
+    0337: For ALPACA accounts, if a PAPER_CHALLENGER variant exists for the episode,
+    delegates to build_intent_from_variant() so the variant's ticker (not the champion's)
+    is what actually executes. This is the clean champion/challenger separation.
 
     Sizing (0207): reads target_weight_pct or quantity from action_payload_json when present.
     Falls back to max_new_position_pct when neither is set (backward-compatible).
@@ -113,6 +238,21 @@ def build_intent(
 
     if rec["status"] != "accepted":
         return None
+
+    # 0331: propagate episode_id from the source recommendation
+    rec_keys = rec.keys() if hasattr(rec, "keys") else []
+    episode_id = rec["episode_id"] if "episode_id" in rec_keys else None
+
+    # 0337: for ALPACA accounts, route to build_intent_from_variant() when a challenger
+    # variant exists — never patch decision_origin onto a champion-built intent.
+    if episode_id and "ALPACA" in account_id.upper():
+        variant_row = conn.execute(
+            """SELECT id FROM decision_variants
+               WHERE episode_id=? AND origin='PAPER_CHALLENGER' LIMIT 1""",
+            (episode_id,),
+        ).fetchone()
+        if variant_row:
+            return build_intent_from_variant(variant_row["id"], account_id, policy, conn)
 
     ticker = rec["ticker"]
     payload = {}
@@ -181,22 +321,6 @@ def build_intent(
     if thesis_row:
         thesis_version = thesis_row["id"]
 
-    # 0331: propagate episode_id and decision_origin from the source recommendation
-    rec_keys = rec.keys() if hasattr(rec, "keys") else []
-    episode_id = rec["episode_id"] if "episode_id" in rec_keys else None
-
-    # 0336: for Alpaca paper account, mark as PAPER_CHALLENGER if a challenger variant exists
-    # (no-op until a model reaches PAPER_ACTIVE state)
-    decision_origin = "CHAMPION"
-    if episode_id and "ALPACA" in account_id.upper():
-        variant_row = conn.execute(
-            """SELECT id FROM decision_variants
-               WHERE episode_id=? AND origin='PAPER_CHALLENGER' LIMIT 1""",
-            (episode_id,),
-        ).fetchone()
-        if variant_row:
-            decision_origin = "PAPER_CHALLENGER"
-
     now = _now_utc().isoformat()
     # Use market_calendar for valid_until so weekends/holidays are skipped (0203)
     valid_until = market_calendar.next_market_close().isoformat()
@@ -225,7 +349,7 @@ def build_intent(
         created_at=now,
         status=IntentStatus.PENDING,
         episode_id=episode_id,
-        decision_origin=decision_origin,
+        decision_origin="CHAMPION",
     )
 
     d = intent.to_db_dict()

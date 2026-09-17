@@ -1,7 +1,7 @@
 # Execute True Challenger Decision Variant
 
 - **ID:** 0337
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-17
 - **Priority:** high
 - **Depends:** 0336
@@ -28,10 +28,14 @@ Open question: if champion and challenger pick the same ticker, the variant is a
 - `trade_engine/intent_builder.py` — add `build_intent_from_variant()`; update ALPACA routing logic
 - `tests/test_calibration.py` or new `tests/test_challenger_execution.py` — champion=A, challenger=B → assert Alpaca intent `symbol=B, decision_origin=PAPER_CHALLENGER`; assert shadow/non-ALPACA intent `symbol=A, decision_origin=CHAMPION`
 
+## Outcome
+
+5 files changed. `agent_db.py`: `decision_variants` table gains `action TEXT`, `price REAL`, `target_weight_pct REAL`, `quantity REAL`, `thesis_version INTEGER` columns in CREATE TABLE + `_new_cols` ALTER TABLE migration. `agents/opportunity_agent.py`: `_insert_decision_variant()` now populates `action="BUY"`, `price` (from candidate's market price), and `thesis_version` (looked up from `investment_theses`). `trade_engine/intent_builder.py`: added `build_intent_from_variant(variant_id, account_id, policy, conn)` — reads the variant row, uses `variant_ticker`/`action`/`price` entirely, never touches the recommendation ticker; idempotent via `(account_id, episode_id, decision_origin='PAPER_CHALLENGER')` check. `build_intent()` now routes ALPACA accounts to `build_intent_from_variant()` when a variant exists, instead of patching `decision_origin` onto a champion-built intent. `tests/test_calibration.py`: updated existing variant test to include `action` + `price` in variant row; added `test_variant_ticker_used_not_champion_ticker` asserting champion=ANET/challenger=GRMN → Alpaca gets GRMN + PAPER_CHALLENGER, shadow gets ANET + CHAMPION. 784 passed, 16 skipped.
+
 ## Done when
 
-- [ ] `decision_variants` carries `action`, `price`, `target_weight_pct`, `quantity`, `thesis_version` populated at variant-recording time from the challenger's top pick
-- [ ] `build_intent_from_variant()` exists and builds the full `TradeIntent` from `decision_variants` — not from `recommendations.ticker`
-- [ ] ALPACA account with a PAPER_CHALLENGER variant row calls `build_intent_from_variant()`; all other accounts call `build_intent()`
-- [ ] Test: champion picks ANET, challenger picks GRMN → Alpaca intent `symbol=GRMN, decision_origin=PAPER_CHALLENGER`; shadow/non-Alpaca intent `symbol=ANET, decision_origin=CHAMPION`
-- [ ] `python -m pytest tests/` passes with no regressions
+- [x] `decision_variants` carries `action`, `price`, `target_weight_pct`, `quantity`, `thesis_version` populated at variant-recording time from the challenger's top pick
+- [x] `build_intent_from_variant()` exists and builds the full `TradeIntent` from `decision_variants` — not from `recommendations.ticker`
+- [x] ALPACA account with a PAPER_CHALLENGER variant row calls `build_intent_from_variant()`; all other accounts call `build_intent()`
+- [x] Test: champion picks ANET, challenger picks GRMN → Alpaca intent `symbol=GRMN, decision_origin=PAPER_CHALLENGER`; shadow/non-Alpaca intent `symbol=ANET, decision_origin=CHAMPION`
+- [x] `python -m pytest tests/` passes with no regressions

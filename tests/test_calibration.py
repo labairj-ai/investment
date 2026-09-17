@@ -735,8 +735,10 @@ class TestChampionChallengerExperiment0336:
                     '{"price": 200.0, "quantity": 5}', 1000000)""", (ep_id,))
         conn.execute("""INSERT INTO decision_variants
             (episode_id, origin, challenger_model_version, challenger_score,
-             challenger_adjustment, would_have_selected, champion_ticker, variant_ticker, created_at)
-            VALUES (?, 'PAPER_CHALLENGER', 'v_test', 77.5, 2.5, 0, 'AAPL', 'AAPL', 1000000)""",
+             challenger_adjustment, would_have_selected, champion_ticker, variant_ticker,
+             action, price, created_at)
+            VALUES (?, 'PAPER_CHALLENGER', 'v_test', 77.5, 2.5, 0, 'AAPL', 'AAPL',
+                    'BUY', 200.0, 1000000)""",
             (ep_id,))
         conn.commit()
 
@@ -746,3 +748,55 @@ class TestChampionChallengerExperiment0336:
 
         assert intent is not None
         assert intent.decision_origin == "PAPER_CHALLENGER"
+        assert intent.symbol == "AAPL"
+
+    def test_variant_ticker_used_not_champion_ticker(self, mem_db, monkeypatch):
+        """0337 key test: champion=ANET, challenger=GRMN → Alpaca intent symbol=GRMN."""
+        import agent_db
+        from trade_engine.intent_builder import build_intent
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        conn.execute("PRAGMA foreign_keys=OFF")
+
+        conn.execute("""INSERT INTO trading_accounts
+            (account_id, mode, current_cash, created_at)
+            VALUES ('ALPACA_TEST_01', 'paper', 100000, 1000000)""")
+        ep_id = str(uuid.uuid4())
+        # Champion recommendation is for ANET
+        conn.execute("""INSERT INTO decision_episodes
+            (episode_id, run_id, ticker, captured_at, composite_score, feature_schema_version)
+            VALUES (?, 1, 'ANET', 1000000, 82, 'v1')""", (ep_id,))
+        conn.execute("""INSERT INTO recommendations
+            (id, run_id, ticker, action, status, recommendation_score, episode_id,
+             action_payload_json, created_at)
+            VALUES (9003, 1, 'ANET', 'BUY', 'accepted', 82, ?,
+                    '{"price": 300.0, "quantity": 3}', 1000000)""", (ep_id,))
+        # Challenger variant picks GRMN instead
+        conn.execute("""INSERT INTO decision_variants
+            (episode_id, origin, challenger_model_version, challenger_score,
+             challenger_adjustment, would_have_selected, champion_ticker, variant_ticker,
+             action, price, created_at)
+            VALUES (?, 'PAPER_CHALLENGER', 'v_test', 84.0, 2.0, 1, 'ANET', 'GRMN',
+                    'BUY', 150.0, 1000000)""", (ep_id,))
+        conn.commit()
+
+        policy = self._make_policy("ALPACA_TEST_01")
+        alpaca_intent = build_intent(9003, "ALPACA_TEST_01", policy, conn)
+
+        # Shadow account (non-ALPACA) should still get the champion ticker ANET
+        conn.execute("""INSERT INTO trading_accounts
+            (account_id, mode, current_cash, created_at)
+            VALUES ('SHADOW_01', 'shadow', 100000, 1000000)""")
+        shadow_intent = build_intent(9003, "SHADOW_01", policy, conn)
+        conn.close()
+
+        assert alpaca_intent is not None, "ALPACA intent not created"
+        assert alpaca_intent.symbol == "GRMN", f"expected GRMN, got {alpaca_intent.symbol}"
+        assert alpaca_intent.decision_origin == "PAPER_CHALLENGER"
+
+        assert shadow_intent is not None, "Shadow intent not created"
+        assert shadow_intent.symbol == "ANET", f"expected ANET, got {shadow_intent.symbol}"
+        assert shadow_intent.decision_origin == "CHAMPION"

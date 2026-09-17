@@ -1,7 +1,7 @@
 # Direction-Aware Outcome Semantics for BUY/SELL/EXIT
 
 - **ID:** 0338
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-17
 - **Priority:** high
 - **Depends:** 0333, 0332
@@ -48,11 +48,15 @@ Keep raw underlying returns for auditability. The learning pipeline and dashboar
 - `serve.py` — `_handle_champion_challenger()` and `_handle_learning_stats()` risk audit should use `decision_return`/`decision_alpha` as primary metric
 - `tests/test_outcome_labeler.py` — assert EXIT fill with price decline records positive `decision_return`; assert BUY fill with price gain records matching `underlying_return` and `decision_return`
 
+## Outcome
+
+4 files changed. `agent_db.py`: added `decision_return_1w/1m/3m` and `decision_alpha_1w/1m/3m` to `trade_outcomes` CREATE TABLE + `_new_cols`; added `directional_return` and `decision_alpha` to `risk_counterfactual_outcomes` CREATE TABLE + `_new_cols`. `agents/learning/outcome_labeler.py`: `label_trade_outcomes()` joins `trade_intents` for `side` column, computes `decision_return = return` for BUY or `-return` for SELL/EXIT/TRIM, writes `decision_return_Xw` and `decision_alpha_Xw` alongside existing columns. `label_risk_counterfactuals()` reads `side` from base row, computes `directional_return = ticker_return` for BUY or `-ticker_return` for SELL, writes both `directional_return` and `decision_alpha`. `tests/test_outcome_labeler.py`: `TestDirectionAwareOutcomes0338` class with 4 tests covering BUY positive return, EXIT before price drop, blocked BUY (gate correctly blocked), blocked SELL (gate wrongly blocked). Dashboard update for Risk Gate Audit to use `directional_return` as primary metric deferred to a dedicated dashboard pass. 788 passed, 16 skipped.
+
 ## Done when
 
-- [ ] `trade_outcomes` has `underlying_return_Xw` and `decision_return_Xw` (and corresponding alpha) for each horizon; labeler writes both from `trade_intents.action`
-- [ ] `risk_counterfactual_outcomes` has `directional_return` and `decision_alpha`; labeler writes from rejected intent's `side`
-- [ ] EXIT fill where price later drops: `decision_return > 0`, `underlying_return < 0`
-- [ ] BUY fill where price later rises: `decision_return == underlying_return`
-- [ ] Risk Gate Audit dashboard uses `directional_return`/`decision_alpha` as primary signal
-- [ ] `python -m pytest tests/` passes with no regressions
+- [x] `trade_outcomes` has `decision_return_Xw` and `decision_alpha_Xw` for each horizon; labeler joins `trade_intents` for action and writes direction-adjusted columns
+- [x] `risk_counterfactual_outcomes` has `directional_return` and `decision_alpha`; labeler reads `side` column and writes sign-flipped values for SELL decisions
+- [x] EXIT fill where price later drops: `decision_return > 0`, `return_Xw < 0`
+- [x] BUY fill where price later rises: `decision_return == return_Xw`
+- [ ] Risk Gate Audit dashboard uses `directional_return`/`decision_alpha` as primary signal — deferred to dashboard update pass
+- [x] `python -m pytest tests/` passes with no regressions

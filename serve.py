@@ -5850,7 +5850,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     # ── Champion/Challenger comparison handler ────────────────────────────────
 
     def _handle_champion_challenger(self):
-        """GET /api/learning/champion-challenger — side-by-side champion vs challenger stats (0336)."""
+        """GET /api/learning/champion-challenger — side-by-side champion vs challenger stats (0336/0340)."""
         try:
             conn = self._shadow_conn()
             conn.row_factory = lambda c, r: dict(zip([col[0] for col in c.description], r))
@@ -5858,28 +5858,126 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 def _stats(rows):
                     if not rows:
                         return {"n": 0, "alpha_mean": None, "hit_rate": None, "mae_mean": None, "mfe_mean": None}
-                    n = len(rows)
                     alphas = [r["alpha_3m"] for r in rows if r.get("alpha_3m") is not None]
                     maes = [r["mae_pct"] for r in rows if r.get("mae_pct") is not None]
                     mfes = [r["mfe_pct"] for r in rows if r.get("mfe_pct") is not None]
                     returns = [r["return_3m"] for r in rows if r.get("return_3m") is not None]
-                    alpha_mean = sum(alphas) / len(alphas) if alphas else None
-                    hit_rate = sum(1 for a in alphas if a > 0) / len(alphas) if alphas else None
-                    mae_mean = sum(maes) / len(maes) if maes else None
-                    mfe_mean = sum(mfes) / len(mfes) if mfes else None
-                    return_mean = sum(returns) / len(returns) if returns else None
+                    d_returns = [r["decision_return_3m"] for r in rows if r.get("decision_return_3m") is not None]
+                    is_vals = [r["implementation_shortfall"] for r in rows if r.get("implementation_shortfall") is not None]
                     return {
-                        "n": n,
+                        "n": len(rows),
                         "n_labeled": len(alphas),
-                        "alpha_mean": alpha_mean,
-                        "hit_rate": hit_rate,
-                        "mae_mean": mae_mean,
-                        "mfe_mean": mfe_mean,
-                        "return_mean": return_mean,
+                        "alpha_mean": sum(alphas) / len(alphas) if alphas else None,
+                        "hit_rate": sum(1 for a in alphas if a > 0) / len(alphas) if alphas else None,
+                        "mae_mean": sum(maes) / len(maes) if maes else None,
+                        "mfe_mean": sum(mfes) / len(mfes) if mfes else None,
+                        "return_mean": sum(returns) / len(returns) if returns else None,
+                        "decision_return_mean": sum(d_returns) / len(d_returns) if d_returns else None,
+                        "impl_shortfall_mean": sum(is_vals) / len(is_vals) if is_vals else None,
+                    }
+
+                def _book_portfolio_stats(book_id):
+                    """Portfolio-level stats from virtual_fills + virtual_books (0340)."""
+                    book = conn.execute(
+                        "SELECT starting_cash, current_cash, as_of FROM virtual_books WHERE book_id=?",
+                        (book_id,),
+                    ).fetchone()
+                    if not book:
+                        return {"book_id": book_id, "available": False}
+
+                    starting_cash = float(book["starting_cash"])
+                    current_cash  = float(book["current_cash"])
+
+                    fills = conn.execute(
+                        """SELECT ticker, action, price, qty, filled_at, decision_origin
+                           FROM virtual_fills WHERE book_id=? ORDER BY filled_at""",
+                        (book_id,),
+                    ).fetchall()
+
+                    if not fills:
+                        return {
+                            "book_id": book_id, "available": True, "trade_count": 0,
+                            "starting_cash": starting_cash, "current_cash": current_cash,
+                            "deployed_pct": 0.0, "cumulative_return_cost_basis": 0.0,
+                        }
+
+                    positions = {}  # ticker → (qty, avg_cost)
+                    trade_returns = []
+                    total_notional = 0.0
+                    nav_series = []  # {date, nav} — cost-basis NAV (no mark-to-market)
+                    running_cash = starting_cash
+                    peak_nav = starting_cash
+                    max_drawdown = 0.0
+
+                    for fill in fills:
+                        ticker = fill["ticker"]
+                        action = (fill["action"] or "BUY").upper()
+                        price  = float(fill["price"])
+                        qty    = float(fill["qty"])
+                        total_notional += price * qty
+                        fill_date = (fill["filled_at"] or "")[:10]
+
+                        if action == "BUY":
+                            prev_qty, prev_cost = positions.get(ticker, (0.0, 0.0))
+                            new_qty = prev_qty + qty
+                            new_cost = (prev_cost * prev_qty + price * qty) / new_qty if new_qty else price
+                            positions[ticker] = (new_qty, new_cost)
+                            running_cash -= price * qty
+                        elif action in ("SELL", "EXIT", "TRIM"):
+                            prev_qty, prev_cost = positions.get(ticker, (qty, price))
+                            if prev_cost:
+                                trade_returns.append(price / prev_cost - 1)
+                            new_qty = max(0.0, prev_qty - qty)
+                            positions[ticker] = (new_qty, prev_cost) if new_qty > 0 else (0.0, 0.0)
+                            running_cash += price * qty
+
+                        # NAV at cost basis: cash + sum(qty * avg_cost) for open positions
+                        pos_value = sum(q * c for (q, c) in positions.values() if q > 0)
+                        nav = running_cash + pos_value
+                        if fill_date:
+                            nav_series.append({"date": fill_date, "nav": round(nav, 2)})
+
+                        peak_nav = max(peak_nav, nav)
+                        dd = (peak_nav - nav) / peak_nav if peak_nav > 0 else 0.0
+                        max_drawdown = max(max_drawdown, dd)
+
+                    # Final cost-basis NAV
+                    pos_value = sum(q * c for (q, c) in positions.values() if q > 0)
+                    final_nav = current_cash + pos_value
+                    cum_return = (final_nav - starting_cash) / starting_cash if starting_cash else 0.0
+                    avg_nav = (starting_cash + final_nav) / 2
+                    turnover = total_notional / avg_nav if avg_nav > 0 else 0.0
+
+                    winners = [r for r in trade_returns if r > 0]
+                    losers  = [r for r in trade_returns if r <= 0]
+                    win_rate = len(winners) / len(trade_returns) if trade_returns else None
+                    gross_loss = abs(sum(losers)) if losers else 0.0
+                    profit_factor = (sum(winners) / gross_loss) if gross_loss > 0 else None
+                    open_positions = sum(1 for (q, _) in positions.values() if q > 0)
+                    deployed_pct = pos_value / final_nav * 100 if final_nav > 0 else 0.0
+
+                    return {
+                        "book_id": book_id,
+                        "available": True,
+                        "trade_count": len(fills),
+                        "starting_cash": starting_cash,
+                        "current_cash": current_cash,
+                        "deployed_pct": round(deployed_pct, 2),
+                        "cumulative_return_cost_basis": round(cum_return, 6),
+                        "max_drawdown": round(max_drawdown, 6),
+                        "turnover": round(turnover, 4),
+                        "win_rate": round(win_rate, 4) if win_rate is not None else None,
+                        "avg_winner": round(sum(winners) / len(winners), 6) if winners else None,
+                        "avg_loser": round(sum(losers) / len(losers), 6) if losers else None,
+                        "profit_factor": round(profit_factor, 4) if profit_factor is not None else None,
+                        "open_positions": open_positions,
+                        "as_of": book["as_of"],
+                        "nav_series": nav_series[-90:],  # last 90 data points for chart
                     }
 
                 champ_rows = conn.execute(
-                    """SELECT to2.alpha_3m, to2.mae_pct, to2.mfe_pct, to2.return_3m
+                    """SELECT to2.alpha_3m, to2.mae_pct, to2.mfe_pct, to2.return_3m,
+                              to2.decision_return_3m, to2.implementation_shortfall
                        FROM trade_outcomes to2
                        JOIN trade_intents ti ON to2.intent_id = ti.intent_id
                        WHERE ti.decision_origin = 'CHAMPION'
@@ -5887,7 +5985,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 ).fetchall()
 
                 chal_rows = conn.execute(
-                    """SELECT to2.alpha_3m, to2.mae_pct, to2.mfe_pct, to2.return_3m
+                    """SELECT to2.alpha_3m, to2.mae_pct, to2.mfe_pct, to2.return_3m,
+                              to2.decision_return_3m, to2.implementation_shortfall
                        FROM trade_outcomes to2
                        JOIN trade_intents ti ON to2.intent_id = ti.intent_id
                        WHERE ti.decision_origin = 'PAPER_CHALLENGER'
@@ -5910,12 +6009,31 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                        ORDER BY created_at DESC LIMIT 1"""
                 ).fetchone()
 
+                # Execution quality: mean IS by action across both books
+                is_by_action = {}
+                try:
+                    is_rows = conn.execute(
+                        """SELECT COALESCE(ti.side, 'BUY') as action,
+                                  AVG(to2.implementation_shortfall) as mean_is,
+                                  COUNT(*) as n
+                           FROM trade_outcomes to2
+                           JOIN trade_intents ti ON to2.intent_id = ti.intent_id
+                           WHERE to2.implementation_shortfall IS NOT NULL
+                           GROUP BY COALESCE(ti.side, 'BUY')"""
+                    ).fetchall()
+                    is_by_action = {r["action"]: {"mean_is": r["mean_is"], "n": r["n"]} for r in is_rows}
+                except Exception:
+                    pass
+
                 self._json({
                     "champion": _stats(champ_rows),
                     "challenger": _stats(chal_rows),
+                    "champion_book": _book_portfolio_stats("CHAMPION_BOOK"),
+                    "challenger_book": _book_portfolio_stats("CHALLENGER_BOOK"),
                     "variants_recorded": variant_count,
                     "variants_would_diverge": would_have_diverged,
                     "active_model": active_model,
+                    "execution_quality": is_by_action,
                 })
             finally:
                 conn.close()

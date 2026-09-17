@@ -32,6 +32,7 @@ from .learning.episode_capture import (
     update_episode_challenger_info,
 )
 from .learning.challenger import apply_challenger_adjustment
+from .learning.book_simulator import record_virtual_fills
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -502,9 +503,18 @@ def run_opportunity_hunter(ctx: AgentContext) -> list[Recommendation]:
             challenger_model_version=sel_ch_info.get("model_version"),
         )
 
-    # 0336: record decision_variant if challenger is PAPER_ACTIVE
+    # 0336/0340: record decision_variant and virtual book fills if challenger is PAPER_ACTIVE
     if sel_ch_info.get("active"):
         _insert_decision_variant(scored, selected, champion_ticker=selected.get("ticker"))
+        ch_sorted_top = sorted(scored, key=lambda x: x.get("_composite_challenger", 0), reverse=True)
+        ch_top_for_book = ch_sorted_top[0] if ch_sorted_top else None
+        record_virtual_fills(
+            champion_ticker=selected.get("ticker"),
+            champion_price=selected.get("price"),
+            challenger_ticker=ch_top_for_book.get("ticker") if ch_top_for_book else None,
+            challenger_price=ch_top_for_book.get("price") if ch_top_for_book else None,
+            episode_id=selected.get("_episode_id"),
+        )
 
     # Assemble recommendation
     meta = selected.get("_pf_meta", {})
@@ -734,11 +744,11 @@ def _insert_decision_variant(
     champion: dict,
     champion_ticker: str,
 ) -> None:
-    """Insert a decision_variant row recording challenger's selection vs champion (0336).
+    """Insert a decision_variant row recording challenger's selection vs champion (0336/0337).
 
     Runs only when the challenger is PAPER_ACTIVE (caller checks info["active"]).
-    Records which candidate the challenger would have selected (highest _composite_challenger),
-    and whether that differs from the champion.
+    Records the full executable decision: variant ticker, action, price, sizing.
+    This is the source of truth for build_intent_from_variant() (0337).
     """
     try:
         # Sort by challenger-adjusted score to find challenger's top pick
@@ -751,13 +761,31 @@ def _insert_decision_variant(
         would_select = ch_top.get("ticker") if ch_top else None
         matches_champion = would_select == champion_ticker
 
+        # Opportunity hunter selects only unowned candidates → action is always BUY
+        variant_action = "BUY"
+        variant_price = ch_top.get("price") or None
+        # thesis_version: look up most recent thesis for the variant ticker
+        variant_thesis = None
+        try:
+            tv_conn = agent_db._connect()
+            tv_row = tv_conn.execute(
+                "SELECT id FROM investment_theses WHERE ticker=? ORDER BY id DESC LIMIT 1",
+                (would_select,),
+            ).fetchone()
+            tv_conn.close()
+            if tv_row:
+                variant_thesis = tv_row["id"]
+        except Exception:
+            pass
+
         conn = agent_db._connect()
         conn.execute(
             """INSERT INTO decision_variants
                (episode_id, origin, challenger_model_version,
                 challenger_score, challenger_adjustment,
-                would_have_selected, champion_ticker, variant_ticker, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
+                would_have_selected, champion_ticker, variant_ticker,
+                action, price, thesis_version, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 champion.get("_episode_id"),
                 "PAPER_CHALLENGER",
@@ -767,6 +795,9 @@ def _insert_decision_variant(
                 0 if matches_champion else 1,
                 champion_ticker,
                 would_select,
+                variant_action,
+                variant_price,
+                variant_thesis,
                 time.time(),
             ),
         )

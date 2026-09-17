@@ -3138,6 +3138,13 @@ def build_dashboard(portfolio, layers, holdings):
       <div id="learning-risk-audit" style="color:#718096;font-size:13px;">Loading…</div>
     </div>
 
+    <!-- Champion vs Challenger Portfolio Books -->
+    <div style="background:#fff;border-radius:10px;padding:18px 22px;box-shadow:0 1px 4px rgba(0,0,0,.07);">
+      <h3 style="margin:0 0 4px;font-size:14px;font-weight:700;color:#2d3748;">Champion vs Challenger Portfolio</h3>
+      <p style="margin:0 0 12px;font-size:12px;color:#718096;">Virtual portfolio comparison — both books use identical execution assumptions. Champion follows the accepted recommendation; Challenger follows the PAPER_ACTIVE model's pick.</p>
+      <div id="learning-cc-portfolio" style="color:#718096;font-size:13px;">Loading…</div>
+    </div>
+
   </div>
 </div><!-- end tab-learning -->
 
@@ -8852,6 +8859,7 @@ function loadLearningPanel() {{
   var featureEl  = document.getElementById('learning-feature-attr');
   var llmEl      = document.getElementById('learning-llm-cal');
   var riskEl     = document.getElementById('learning-risk-audit');
+  var ccEl       = document.getElementById('learning-cc-portfolio');
   if (!overviewEl) return;
 
   fetch('/api/learning/stats').then(function(r) {{ return r.json(); }}).then(function(d) {{
@@ -8952,6 +8960,97 @@ function loadLearningPanel() {{
   }}).catch(function(e) {{
     if (overviewEl) overviewEl.innerHTML = '<span style="color:#fc8181;">Failed to load: ' + e.message + '</span>';
   }});
+
+  // Champion / Challenger portfolio books (0340)
+  if (ccEl) {{
+    fetch('/api/learning/champion-challenger').then(function(r) {{ return r.json(); }}).then(function(d) {{
+      function _bookCard(book, label, color) {{
+        if (!book || !book.available) return '<div style="flex:1;min-width:200px;padding:14px 18px;background:#f7fafc;border-radius:8px;color:#a0aec0;font-style:italic;">No data yet</div>';
+        var cum = book.cumulative_return_cost_basis;
+        var cumPct = cum !== null && cum !== undefined ? ((cum * 100).toFixed(2) + '%') : '—';
+        var cumColor = cum > 0 ? '#38a169' : (cum < 0 ? '#e53e3e' : '#718096');
+        var dd = book.max_drawdown;
+        var ddPct = dd !== null && dd !== undefined ? ((dd * 100).toFixed(2) + '%') : '—';
+        var wr = book.win_rate !== null && book.win_rate !== undefined ? (book.win_rate * 100).toFixed(1) + '%' : '—';
+        var pf = book.profit_factor !== null && book.profit_factor !== undefined ? book.profit_factor.toFixed(2) : '—';
+        return '<div style="flex:1;min-width:200px;padding:14px 18px;background:#f7fafc;border-radius:8px;">' +
+          '<div style="font-size:11px;font-weight:700;color:' + color + ';text-transform:uppercase;margin-bottom:8px;">' + label + '</div>' +
+          '<div style="display:flex;flex-wrap:wrap;gap:12px;">' +
+          '<div><div style="font-size:10px;color:#718096;text-transform:uppercase;">Cum. Return</div>' +
+            '<div style="font-size:18px;font-weight:700;color:' + cumColor + ';">' + cumPct + '</div></div>' +
+          '<div><div style="font-size:10px;color:#718096;text-transform:uppercase;">Max DD</div>' +
+            '<div style="font-size:18px;font-weight:700;color:#e53e3e;">' + ddPct + '</div></div>' +
+          '<div><div style="font-size:10px;color:#718096;text-transform:uppercase;">Trades</div>' +
+            '<div style="font-size:18px;font-weight:700;color:#2d3748;">' + (book.trade_count||0) + '</div></div>' +
+          '<div><div style="font-size:10px;color:#718096;text-transform:uppercase;">Win Rate</div>' +
+            '<div style="font-size:14px;font-weight:600;color:#2d3748;">' + wr + '</div></div>' +
+          '<div><div style="font-size:10px;color:#718096;text-transform:uppercase;">Profit Factor</div>' +
+            '<div style="font-size:14px;font-weight:600;color:#2d3748;">' + pf + '</div></div>' +
+          '<div><div style="font-size:10px;color:#718096;text-transform:uppercase;">Deployed</div>' +
+            '<div style="font-size:14px;font-weight:600;color:#2d3748;">' + (book.deployed_pct||0).toFixed(1) + '%</div></div>' +
+          '<div><div style="font-size:10px;color:#718096;text-transform:uppercase;">Open Pos.</div>' +
+            '<div style="font-size:14px;font-weight:600;color:#2d3748;">' + (book.open_positions||0) + '</div></div>' +
+          '<div><div style="font-size:10px;color:#718096;text-transform:uppercase;">Turnover</div>' +
+            '<div style="font-size:14px;font-weight:600;color:#2d3748;">' + (book.turnover||0).toFixed(2) + 'x</div></div>' +
+          '</div></div>';
+      }}
+
+      var html = '<div style="display:flex;gap:14px;flex-wrap:wrap;">' +
+        _bookCard(d.champion_book, 'Champion Book', '#2b6cb0') +
+        _bookCard(d.challenger_book, 'Challenger Book', '#6b46c1') +
+        '</div>';
+
+      // Per-trade stats row
+      var ch = d.champion || {{}};
+      var cr = d.challenger || {{}};
+      var _fmt = function(v, pct) {{
+        if (v === null || v === undefined) return '—';
+        var n = pct ? (v * 100).toFixed(2) + '%' : v.toFixed(4);
+        if (pct) return (v > 0 ? '<span style="color:#38a169;">' : (v < 0 ? '<span style="color:#e53e3e;">' : '<span>')) + n + '</span>';
+        return n;
+      }};
+      html += '<div style="margin-top:14px;">' +
+        '<div style="font-size:11px;font-weight:700;color:#718096;text-transform:uppercase;margin-bottom:8px;">Per-Trade Outcomes (90d, labeled fills)</div>' +
+        '<table style="width:100%;border-collapse:collapse;font-size:12px;">' +
+        '<thead><tr style="background:#f7fafc;color:#718096;font-size:10px;text-transform:uppercase;">' +
+        '<th style="padding:5px 8px;text-align:left;"></th>' +
+        '<th style="padding:5px 8px;">N fills</th>' +
+        '<th style="padding:5px 8px;">Alpha mean</th>' +
+        '<th style="padding:5px 8px;">Hit rate</th>' +
+        '<th style="padding:5px 8px;">Decision ret.</th>' +
+        '<th style="padding:5px 8px;">MAE</th>' +
+        '<th style="padding:5px 8px;">MFE</th>' +
+        '<th style="padding:5px 8px;">Impl. shortfall</th>' +
+        '</tr></thead><tbody>' +
+        '<tr style="border-top:1px solid #edf2f7;">' +
+        '<td style="padding:5px 8px;font-weight:700;color:#2b6cb0;">Champion</td>' +
+        '<td style="padding:5px 8px;text-align:center;">' + (ch.n_labeled||ch.n||0) + '</td>' +
+        '<td style="padding:5px 8px;text-align:center;">' + _fmt(ch.alpha_mean, true) + '</td>' +
+        '<td style="padding:5px 8px;text-align:center;">' + (ch.hit_rate !== null && ch.hit_rate !== undefined ? (ch.hit_rate*100).toFixed(1)+'%' : '—') + '</td>' +
+        '<td style="padding:5px 8px;text-align:center;">' + _fmt(ch.decision_return_mean, true) + '</td>' +
+        '<td style="padding:5px 8px;text-align:center;">' + _fmt(ch.mae_mean, true) + '</td>' +
+        '<td style="padding:5px 8px;text-align:center;">' + _fmt(ch.mfe_mean, true) + '</td>' +
+        '<td style="padding:5px 8px;text-align:center;">' + _fmt(ch.impl_shortfall_mean, true) + '</td>' +
+        '</tr><tr style="border-top:1px solid #edf2f7;">' +
+        '<td style="padding:5px 8px;font-weight:700;color:#6b46c1;">Challenger</td>' +
+        '<td style="padding:5px 8px;text-align:center;">' + (cr.n_labeled||cr.n||0) + '</td>' +
+        '<td style="padding:5px 8px;text-align:center;">' + _fmt(cr.alpha_mean, true) + '</td>' +
+        '<td style="padding:5px 8px;text-align:center;">' + (cr.hit_rate !== null && cr.hit_rate !== undefined ? (cr.hit_rate*100).toFixed(1)+'%' : '—') + '</td>' +
+        '<td style="padding:5px 8px;text-align:center;">' + _fmt(cr.decision_return_mean, true) + '</td>' +
+        '<td style="padding:5px 8px;text-align:center;">' + _fmt(cr.mae_mean, true) + '</td>' +
+        '<td style="padding:5px 8px;text-align:center;">' + _fmt(cr.mfe_mean, true) + '</td>' +
+        '<td style="padding:5px 8px;text-align:center;">' + _fmt(cr.impl_shortfall_mean, true) + '</td>' +
+        '</tr></tbody></table>' +
+        '<div style="margin-top:6px;font-size:11px;color:#a0aec0;">' +
+        'Variants recorded: ' + (d.variants_recorded||0) + ' · Would diverge: ' + (d.variants_would_diverge||0) +
+        (d.active_model ? ' · Active model: ' + d.active_model.model_version : '') +
+        '</div></div>';
+
+      ccEl.innerHTML = html;
+    }}).catch(function(e) {{
+      if (ccEl) ccEl.innerHTML = '<span style="color:#fc8181;">Failed to load: ' + e.message + '</span>';
+    }});
+  }}
 }}
 
 // ── Agent status badge ────────────────────────────────────────────────────────
