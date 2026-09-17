@@ -33,10 +33,15 @@ _CI_THRESHOLD = 0.02    # minimum |agent_edge| to be actionable (2%)
 # 0103: actual-return math for these actions was corrected. Exclude from DQ until
 # enough post-fix non-estimated outcomes accumulate so stale pre-fix rows don't
 # corrupt the agent_edge signal. Lift per-action when history is trustworthy.
-# 0128: CC management actions excluded pending NAV-corrected outcome math (0125-0127).
-# Lift each action once DQ query gates on outcome_math_version >= 2.
 _EXCLUDE_FROM_DQ: frozenset[str] = frozenset({
     "TRIM", "ALLOCATE", "REBALANCE",
+})
+
+# 0128: CC management outcomes use NAV-corrected math (outcome_math_version=2).
+# These are no longer excluded at the Python level — the SQL query gates on
+# outcome_math_version >= 2 so legacy v1 rows never corrupt the signal.
+# Scores will appear automatically once enough v2 rows accumulate.
+_CC_MGMT_ACTIONS: frozenset[str] = frozenset({
     "BUY_TO_CLOSE", "HOLD_CALL", "ALLOW_ASSIGNMENT",
     "ROLL_OUT", "ROLL_UP", "ROLL_UP_AND_OUT",
 })
@@ -54,7 +59,10 @@ def compute_quality_stats() -> list[dict]:
 
     Only includes categories with n >= _MIN_SAMPLES non-estimated outcomes.
     """
-    rows = agent_db.get_outcome_statistics_by_category(min_samples=_MIN_SAMPLES)
+    rows = agent_db.get_outcome_statistics_by_category(
+        min_samples=_MIN_SAMPLES,
+        version_gated_actions=_CC_MGMT_ACTIONS,
+    )
     result = []
     for r in rows:
         agent_edge = None

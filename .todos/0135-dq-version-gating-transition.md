@@ -1,7 +1,7 @@
 # Transition DQ CC-Management Exclusions to SQL Version Gating
 
 - **ID:** 0135
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-11
 - **Priority:** normal
 - **Depends:** none
@@ -32,7 +32,11 @@ Open question: should the minimum version threshold be stored as a constant next
 
 ## Done when
 
-- [ ] CC management actions no longer appear in `_EXCLUDE_FROM_DQ`
-- [ ] `get_outcome_statistics_by_category()` SQL filters out `outcome_math_version < 2` rows for CC management actions
-- [ ] Decision Quality note renders a score for a HOLD_CALL/BUY_TO_CLOSE recommendation that has accumulated enough v2 outcomes
-- [ ] `python -m pytest tests/` passes with no regressions
+- [x] CC management actions no longer appear in `_EXCLUDE_FROM_DQ`
+- [x] `get_outcome_statistics_by_category()` SQL filters out `outcome_math_version < 2` rows for CC management actions
+- [ ] Decision Quality note renders a score for a HOLD_CALL/BUY_TO_CLOSE recommendation that has accumulated enough v2 outcomes (cannot validate — prod DB has 0 outcome rows as of 2026-09-17; will self-activate once v2 rows accumulate)
+- [x] `python -m pytest tests/` passes with no regressions (756 passed, 16 skipped)
+
+## Outcome
+
+Two files changed. `agents/decision_quality.py`: extracted six CC mgmt actions into `_CC_MGMT_ACTIONS` constant, removed them from `_EXCLUDE_FROM_DQ` (which now contains only TRIM/ALLOCATE/REBALANCE), updated `compute_quality_stats()` to pass `version_gated_actions=_CC_MGMT_ACTIONS` to the DB layer. `agent_db.py`: `get_outcome_statistics_by_category()` now accepts `version_gated_actions` and `min_outcome_version` parameters; when provided, dynamically appends `AND (r.action NOT IN (...) OR ro.outcome_math_version >= 2)` to the SQL WHERE clause. Prod DB had 0 outcome rows at implementation time — the SQL filter is a no-op today but will include CC mgmt v2 rows automatically as they accumulate without any further code change.

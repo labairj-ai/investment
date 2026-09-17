@@ -3516,15 +3516,32 @@ def get_todays_critic_summary(window_hours: int = 24) -> dict:
 def get_outcome_statistics_by_category(
     min_samples: int = 10,
     min_horizon_days: int = 90,
+    version_gated_actions: "frozenset[str] | None" = None,
+    min_outcome_version: int = 2,
 ) -> list[dict]:
     """Return per-(agent_type, action, rationale_class) outcome stats from matured recommendations.
 
     Only includes categories with >= min_samples outcomes at >= min_horizon_days horizon.
     Used by the Decision Quality Model (separate from PreferenceLearner).
+
+    version_gated_actions: actions that must have outcome_math_version >= min_outcome_version
+    to be included. Rows for those actions with older math versions are silently excluded,
+    preventing stale pre-fix data from corrupting the signal.
     """
     conn = _connect()
+
+    version_gate_clause = ""
+    params: list = [min_samples]
+    if version_gated_actions:
+        placeholders = ",".join("?" * len(version_gated_actions))
+        version_gate_clause = (
+            f"AND (r.action NOT IN ({placeholders})"
+            f" OR ro.outcome_math_version >= ?)"
+        )
+        params = list(version_gated_actions) + [min_outcome_version, min_samples]
+
     rows = conn.execute(
-        """SELECT ar.agent_type, r.action, r.rationale_class,
+        f"""SELECT ar.agent_type, r.action, r.rationale_class,
                   COUNT(*) as n,
                   AVG(ro.actual_return) as avg_actual,
                   AVG(ro.recommended_path_return) as avg_agent,
@@ -3548,9 +3565,10 @@ def get_outcome_statistics_by_category(
              AND ro.recommended_path_return IS NOT NULL
              AND ro.hold_return IS NOT NULL
              AND ro.horizon IN ('3m', '6m', '12m')
+             {version_gate_clause}
            GROUP BY ar.agent_type, r.action, r.rationale_class
            HAVING COUNT(*) >= ?""",
-        (min_samples,),
+        params,
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
