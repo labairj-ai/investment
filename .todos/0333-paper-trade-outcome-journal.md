@@ -1,7 +1,7 @@
 # Paper Trade Outcome Journal: Execution-Aware Trade Returns
 
 - **ID:** 0333
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-17
 - **Priority:** high
 - **Depends:** 0331
@@ -57,10 +57,14 @@ Two semantically distinct outcome labels are needed:
 
 ## Done when
 
-- [ ] `trade_outcomes` table created with fill-price entry, fee-adjusted returns, MAE/MFE, and SPY alpha at 1w/1m/3m horizons
-- [ ] Every Alpaca paper fill automatically spawns a `trade_outcomes` row at fill ingestion time
-- [ ] Daily labeler populates return/alpha/MAE/MFE fields once horizon dates are reached
-- [ ] `_entry_date()` (and all equivalent date derivations) uses America/New_York + exchange calendar, not UTC
-- [ ] `COUNTERFACTUAL_SIGNAL_RETURN` and `EXECUTED_TRADE_RETURN` are distinguishable labels; challenger training can select by label type
-- [ ] Learning Lab horizon selector (1w/1m/3m/6m/12m) present, with 1w/1m marked diagnostic-only
-- [ ] `python -m pytest tests/` passes with no regressions
+- [x] `trade_outcomes` table created with fill-price entry, fee-adjusted returns, MAE/MFE, and SPY alpha at 1w/1m/3m horizons
+- [x] Every Alpaca paper fill automatically spawns a `trade_outcomes` row at fill ingestion time
+- [x] Daily labeler populates return/alpha/MAE/MFE fields once horizon dates are reached
+- [x] `_entry_date()` (and all equivalent date derivations) uses America/New_York + exchange calendar, not UTC
+- [x] `COUNTERFACTUAL_SIGNAL_RETURN` and `EXECUTED_TRADE_RETURN` are distinguishable labels; challenger training can select by label type
+- [x] Learning Lab horizon selector (1w/1m/3m/6m/12m) present, with 1w/1m marked diagnostic-only
+- [x] `python -m pytest tests/` passes with no regressions
+
+## Outcome
+
+5 files changed. `agent_db.py`: added `trade_outcomes` table in `_migrate_learning_episodes()` with fill-price entry, per-horizon return/SPY/alpha/MFE columns, and `labeled_Xw_at` timestamps. `execution_engine.py`: new `_spawn_trade_outcome()` called after every new fill in `apply_broker_fill()`; looks up episode_id and recommendation action via order→intent→recommendation chain, writes `EXECUTED_TRADE_RETURN` row. `outcome_labeler.py`: `_entry_date()` fixed to use America/New_York; new `label_trade_outcomes()` scans rows by fill_date age and computes per-horizon returns from fill_price entry; called from `__main__`. `serve.py`: `/api/learning/stats` now accepts `?horizon=1w|1m|3m|6m|12m`, parameterizes all SQL queries, returns `horizon` and `diagnostic_only` flags; `risk_audit` clamped to 1w/1m/3m since counterfactuals only run those horizons. 4 new tests. 767 passed, 16 skipped.

@@ -1953,7 +1953,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             intent_id = parsed.path.split("/api/shadow/risk/", 1)[1]
             self._handle_shadow_risk(intent_id)
         elif parsed.path == "/api/learning/stats":
-            self._handle_learning_stats()
+            _valid_horizons = {"1w", "1m", "3m", "6m", "12m"}
+            _h = parse_qs(parsed.query).get("horizon", ["3m"])[0]
+            _horizon = _h if _h in _valid_horizons else "3m"
+            self._handle_learning_stats(_horizon)
         # ── Alpaca paper account endpoints ────────────────────────────────────
         elif parsed.path == "/api/alpaca/account":
             self._handle_alpaca_account()
@@ -5681,10 +5684,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         except Exception as e:
             self._json_error(500, str(e))
 
-    def _handle_learning_stats(self):
-        """GET /api/learning/stats — strategy learning calibration data (0329)."""
+    def _handle_learning_stats(self, horizon: str = "3m"):
+        """GET /api/learning/stats?horizon=3m — strategy learning calibration data (0329, 0333).
+
+        horizon param: 1w|1m|3m (diagnostic)|6m|12m — defaults to 3m.
+        1w and 1m are flagged diagnostic_only in the response.
+        """
         try:
             conn = agent_db._connect()
+            horizon = horizon or "3m"
+            diagnostic_only = horizon in ("1w", "1m")
 
             # Overview counts
             overview = conn.execute("""
@@ -5696,11 +5705,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     MAX(DATE(e.captured_at, 'unixepoch'))                          AS latest_date
                 FROM decision_episodes e
                 LEFT JOIN episode_outcomes o ON e.episode_id = o.episode_id
-                  AND o.horizon = '3m'
-            """).fetchone()
+                  AND o.horizon = ?
+            """, (horizon,)).fetchone()
             overview = dict(overview) if overview else {}
 
-            # Score calibration: mean 3m alpha by composite_score bucket
+            # Score calibration: mean alpha by composite_score bucket
             cal_rows = conn.execute("""
                 SELECT
                     CASE
@@ -5716,13 +5725,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     ROUND(AVG(o.spy_return)*100, 2)   AS mean_spy_pct
                 FROM decision_episodes e
                 JOIN episode_outcomes o ON e.episode_id = o.episode_id
-                WHERE o.horizon = '3m'
+                WHERE o.horizon = ?
                 GROUP BY bucket
                 ORDER BY bucket
-            """).fetchall()
+            """, (horizon,)).fetchall()
             score_calibration = [dict(r) for r in cal_rows]
 
-            # Feature attribution: mean 3m alpha by component buckets
+            # Feature attribution: mean alpha by component buckets
             def _feature_buckets(component_col: str) -> list[dict]:
                 rows = conn.execute(f"""
                     SELECT
@@ -5737,9 +5746,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         ROUND(AVG(o.alpha)*100, 2) AS mean_alpha_pct
                     FROM decision_episodes e
                     JOIN episode_outcomes o ON e.episode_id = o.episode_id
-                    WHERE o.horizon = '3m'
+                    WHERE o.horizon = ?
                     GROUP BY bucket ORDER BY bucket
-                """).fetchall()
+                """, (horizon,)).fetchall()
                 return [dict(r) for r in rows]
 
             feature_attribution = {
@@ -5760,12 +5769,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                                                     AS hit_rate_pct
                 FROM decision_episodes e
                 JOIN episode_outcomes o ON e.episode_id = o.episode_id
-                WHERE o.horizon = '3m' AND e.selected = 1
+                WHERE o.horizon = ? AND e.selected = 1
                 GROUP BY stars ORDER BY stars
-            """).fetchall()
+            """, (horizon,)).fetchall()
             llm_calibration = [dict(r) for r in llm_rows]
 
             # Risk gate audit: counterfactual outcomes by reject_rule
+            cf_horizon = horizon if horizon in ("1w", "1m", "3m") else "3m"
             risk_rows = conn.execute("""
                 SELECT
                     COALESCE(reject_rule, 'unknown') AS rule,
@@ -5774,14 +5784,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     SUM(CASE WHEN alpha > 0 THEN 1 ELSE 0 END) AS alpha_missed,
                     ROUND(AVG(alpha)*100, 2)          AS mean_alpha_pct
                 FROM risk_counterfactual_outcomes
-                WHERE horizon = '3m' AND alpha IS NOT NULL
+                WHERE horizon = ? AND alpha IS NOT NULL
                 GROUP BY rule ORDER BY n_blocked DESC
-            """).fetchall()
+            """, (cf_horizon,)).fetchall()
             risk_audit = [dict(r) for r in risk_rows]
 
             conn.close()
             self._json({
                 "ok": True,
+                "horizon": horizon,
+                "diagnostic_only": diagnostic_only,
                 "overview": overview,
                 "score_calibration": score_calibration,
                 "feature_attribution": feature_attribution,

@@ -164,6 +164,57 @@ def _sync_intent_from_order(order: Order, intent_id: str, conn: sqlite3.Connecti
         _update_intent_status(intent_id, _TERMINAL_MAP[order.state], conn)
 
 
+def _spawn_trade_outcome(
+    conn: sqlite3.Connection,
+    fill_id: str,
+    order_id: str,
+    symbol: str,
+    fill_price: float,
+    fill_qty: float,
+    fill_fee: float,
+    filled_at: str,
+) -> None:
+    """Create an initial trade_outcomes row after a new fill is applied (0333).
+
+    Looks up episode_id and recommendation action via the order→intent→recommendation chain.
+    The daily labeler fills in return/alpha fields once horizons mature.
+    """
+    try:
+        row = conn.execute(
+            """SELECT ti.intent_id, ti.episode_id, r.action as rec_action
+               FROM trade_intents ti
+               JOIN orders o ON ti.intent_id = o.intent_id
+               LEFT JOIN recommendations r ON ti.recommendation_id = r.id
+               WHERE o.order_id = ?""",
+            (order_id,),
+        ).fetchone()
+        intent_id = row["intent_id"] if row else None
+        episode_id = row["episode_id"] if row and "episode_id" in row.keys() else None
+        action = row["rec_action"] if row else None
+
+        from zoneinfo import ZoneInfo
+        from datetime import datetime as _dt
+        try:
+            et_tz = ZoneInfo("America/New_York")
+        except Exception:
+            from datetime import timezone as _tz, timedelta as _td
+            et_tz = _tz(_td(hours=-4))
+        decision_date = _dt.now(et_tz).strftime("%Y-%m-%d")
+        fill_date = filled_at[:10] if filled_at else decision_date
+
+        conn.execute(
+            """INSERT OR IGNORE INTO trade_outcomes
+               (fill_id, intent_id, episode_id, ticker, action, decision_date,
+                fill_date, fill_price, fill_qty, fill_fees, label_type, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (fill_id, intent_id, episode_id, symbol, action, decision_date,
+             fill_date, fill_price, fill_qty, fill_fee,
+             "EXECUTED_TRADE_RETURN", time.time()),
+        )
+    except Exception as e:
+        print(f"[execution_engine] WARNING: failed to spawn trade_outcome for fill {fill_id}: {e}")
+
+
 def _write_executed_action(fill: Fill, intent: TradeIntent, conn: sqlite3.Connection) -> None:
     """Write shadow fill to executed_actions for outcome evaluator integration."""
     # 0331: populate recommendation_action with the source recommendation's semantic
@@ -1614,6 +1665,9 @@ def apply_broker_fill(
             ),
         )
 
+        # 0333: spawn trade outcome row for fill-price-entry learning signal
+        _spawn_trade_outcome(conn, bf.broker_fill_id, order_id, bf.symbol,
+                             price, qty, fee, filled_at)
         conn.commit()
         return FillResult.APPLIED
 

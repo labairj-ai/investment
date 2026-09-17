@@ -31,7 +31,13 @@ _MIN_AGE_DAYS = 7
 
 
 def _entry_date(captured_at: float) -> str:
-    return datetime.fromtimestamp(captured_at, tz=timezone.utc).strftime("%Y-%m-%d")
+    try:
+        from zoneinfo import ZoneInfo
+        et_tz = ZoneInfo("America/New_York")
+    except Exception:
+        from datetime import timedelta
+        et_tz = timezone(timedelta(hours=-4))
+    return datetime.fromtimestamp(captured_at, tz=et_tz).strftime("%Y-%m-%d")
 
 
 def _horizon_date(entry: str, days: int) -> str:
@@ -317,7 +323,95 @@ def label_risk_counterfactuals(
     return result
 
 
+_TO_HORIZONS: list[tuple[str, int, str]] = [
+    ("1w",  7,  "labeled_1w_at"),
+    ("1m",  30, "labeled_1m_at"),
+    ("3m",  91, "labeled_3m_at"),
+]
+
+
+def label_trade_outcomes(
+    min_age_days: int = _MIN_AGE_DAYS,
+    dry_run: bool = False,
+) -> dict[str, int]:
+    """Label trade_outcomes rows with fill-price-entry returns at 1w/1m/3m (0333).
+
+    Scans rows where the labeled_Xw_at column is NULL and the fill is old enough.
+    Computes return from fill_price (not market close), so the entry reflects actual
+    execution quality — the EXECUTED_TRADE_RETURN label type.
+
+    Returns {"fills_checked": n, "horizons_written": m}.
+    """
+    today = date.today().isoformat()
+    conn = agent_db._connect()
+    rows = conn.execute(
+        """SELECT id, fill_id, ticker, fill_date, fill_price, fill_fees, fill_qty
+           FROM trade_outcomes
+           WHERE fill_date IS NOT NULL AND fill_price IS NOT NULL AND fill_price > 0
+             AND julianday('now') - julianday(fill_date) >= ?""",
+        (min_age_days,),
+    ).fetchall()
+
+    total_written = 0
+    for row in rows:
+        to_id = row["id"]
+        ticker = row["ticker"]
+        fill_date = row["fill_date"]
+        entry_price = float(row["fill_price"])
+
+        for horizon_label, days, labeled_col in _TO_HORIZONS:
+            h_date = _horizon_date(fill_date, days)
+            if h_date > today:
+                continue
+            # Skip if already labeled
+            existing = conn.execute(
+                f"SELECT {labeled_col} FROM trade_outcomes WHERE id=?", (to_id,)
+            ).fetchone()
+            if existing and existing[labeled_col] is not None:
+                continue
+
+            h_price = _get_ticker_price(ticker, h_date)
+            if h_price is None or entry_price == 0:
+                continue
+
+            to_return = (h_price / entry_price) - 1.0
+
+            spy_entry = _spy_price_at(fill_date)
+            spy_h     = _spy_price_at(h_date)
+            spy_return = ((spy_h / spy_entry) - 1.0) if spy_entry and spy_h else None
+            alpha      = (to_return - spy_return) if spy_return is not None else None
+
+            mark_col    = f"mark_{horizon_label}"
+            return_col  = f"return_{horizon_label}"
+            spy_col     = f"spy_return_{horizon_label}"
+            alpha_col   = f"alpha_{horizon_label}"
+
+            if dry_run:
+                print(
+                    f"  DRY-RUN trade_outcome {ticker} {horizon_label}: "
+                    f"return={to_return:+.2%} alpha={alpha and f'{alpha:+.2%}' or '?'}"
+                )
+            else:
+                conn.execute(
+                    f"""UPDATE trade_outcomes
+                        SET {mark_col}=?, {return_col}=?, {spy_col}=?, {alpha_col}=?,
+                            {labeled_col}=?
+                        WHERE id=?""",
+                    (h_price, to_return, spy_return, alpha, time.time(), to_id),
+                )
+            total_written += 1
+
+    if not dry_run and total_written:
+        conn.commit()
+    conn.close()
+    result = {"fills_checked": len(rows), "horizons_written": total_written}
+    if not dry_run:
+        print(f"[outcome_labeler] trade_outcomes: {result}")
+    return result
+
+
 if __name__ == "__main__":
     dry = "--dry-run" in sys.argv
     label_mature_episodes(dry_run=dry)
     label_risk_counterfactuals(dry_run=dry)
+    label_trade_outcomes(dry_run=dry)

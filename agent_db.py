@@ -872,6 +872,39 @@ def _migrate_learning_episodes(conn: sqlite3.Connection) -> None:
             labeled_at      REAL,
             UNIQUE(intent_id, horizon)
         );
+
+        CREATE TABLE IF NOT EXISTS trade_outcomes (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            fill_id         TEXT UNIQUE REFERENCES fills(fill_id),
+            intent_id       TEXT REFERENCES trade_intents(intent_id),
+            episode_id      TEXT,
+            ticker          TEXT,
+            action          TEXT,
+            decision_date   TEXT,
+            fill_date       TEXT,
+            fill_price      REAL,
+            fill_qty        REAL,
+            fill_fees       REAL,
+            label_type      TEXT DEFAULT 'EXECUTED_TRADE_RETURN',
+            mark_1w         REAL,
+            mark_1m         REAL,
+            mark_3m         REAL,
+            return_1w       REAL,
+            return_1m       REAL,
+            return_3m       REAL,
+            spy_return_1w   REAL,
+            spy_return_1m   REAL,
+            spy_return_3m   REAL,
+            alpha_1w        REAL,
+            alpha_1m        REAL,
+            alpha_3m        REAL,
+            mfe_pct         REAL,
+            mae_pct         REAL,
+            labeled_1w_at   REAL,
+            labeled_1m_at   REAL,
+            labeled_3m_at   REAL,
+            created_at      REAL
+        );
     """)
     conn.commit()
 

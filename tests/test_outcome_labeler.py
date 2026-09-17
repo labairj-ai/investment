@@ -370,3 +370,138 @@ class TestRiskCounterfactualPipeline:
         assert rows[0]["rejection_reason"] == "position too large"
         assert rows[0]["episode_id"] == "ep-xyz"
         assert rows[0]["ticker"] == "AAPL"
+
+
+class TestTradeOutcomePipeline:
+    """0333: fill ingestion → trade_outcomes row → labeler populates returns."""
+
+    def _insert_trade_outcome(self, conn, ticker="ANET", days_old=10, fill_id=None, fill_price=200.0):
+        import uuid
+        fill_id = fill_id or f"fill-{uuid.uuid4()}"
+        fill_date = (date.today() - timedelta(days=days_old)).isoformat()
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute(
+            """INSERT OR IGNORE INTO trade_outcomes
+               (fill_id, ticker, action, fill_date, fill_price, fill_qty, fill_fees,
+                label_type, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (fill_id, ticker, "BUY", fill_date, fill_price, 10.0, 0.0,
+             "EXECUTED_TRADE_RETURN", time.time()),
+        )
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.commit()
+        return fill_id, fill_date
+
+    def test_labeler_writes_1w_return(self, mem_db, monkeypatch):
+        import agent_db
+        from agents.learning.outcome_labeler import label_trade_outcomes
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        fill_id, _ = self._insert_trade_outcome(conn, days_old=10, fill_price=200.0)
+        conn.close()
+
+        with patch("agents.learning.outcome_labeler._get_ticker_price", return_value=210.0), \
+             patch("agents.learning.outcome_labeler._spy_price_at", return_value=500.0):
+            result = label_trade_outcomes(min_age_days=7)
+
+        assert result["fills_checked"] == 1
+        assert result["horizons_written"] >= 1
+
+        conn = _make_conn(mem_db)
+        row = dict(conn.execute(
+            "SELECT * FROM trade_outcomes WHERE fill_id=?", (fill_id,)
+        ).fetchone())
+        conn.close()
+
+        assert row["return_1w"] == pytest.approx(0.05, abs=0.001)  # 210/200 - 1
+        assert row["labeled_1w_at"] is not None
+
+    def test_labeler_idempotent(self, mem_db, monkeypatch):
+        import agent_db
+        from agents.learning.outcome_labeler import label_trade_outcomes
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        self._insert_trade_outcome(conn, days_old=10, fill_price=200.0)
+        conn.close()
+
+        with patch("agents.learning.outcome_labeler._get_ticker_price", return_value=210.0), \
+             patch("agents.learning.outcome_labeler._spy_price_at", return_value=500.0):
+            label_trade_outcomes(min_age_days=7)
+            result2 = label_trade_outcomes(min_age_days=7)
+
+        assert result2["horizons_written"] == 0  # already labeled
+
+    def test_spawn_trade_outcome_on_fill(self, mem_db, monkeypatch):
+        """apply_broker_fill spawns a trade_outcomes row."""
+        import agent_db
+        from trade_engine.execution_engine import apply_broker_fill
+        from trade_engine.broker_types import BrokerFill
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        # Seed account, trade_intent, order
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute(
+            "INSERT OR IGNORE INTO trading_accounts (account_id, broker, mode, current_cash)"
+            " VALUES ('ACC','alpaca','paper',50000)"
+        )
+        conn.execute(
+            """INSERT OR IGNORE INTO trade_intents
+               (intent_id, account_id, symbol, side, quantity, limit_price,
+                order_type, time_in_force, strategy, valid_until, created_at, status)
+               VALUES ('int-to','ACC','ANET','BUY',5,200,'LIMIT','DAY',
+                       'test','2099-01-01','2026-01-01','PENDING')"""
+        )
+        conn.execute(
+            """INSERT OR IGNORE INTO orders
+               (order_id, intent_id, account_id, symbol, side, quantity,
+                order_type, time_in_force, broker_order_id, state)
+               VALUES ('ord-to','int-to','ACC','ANET','BUY',5,'LIMIT','DAY',
+                       'brk-ord-to','WORKING')"""
+        )
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.commit()
+
+        bf = BrokerFill(
+            broker_fill_id="fill-to-001",
+            broker_order_id="brk-ord-to",
+            local_order_id="ord-to",
+            account_id="ACC",
+            symbol="ANET",
+            side="BUY",
+            qty=5,
+            price=201.0,
+            fee=0.0,
+            filled_at="2026-09-10T14:30:00+00:00",
+        )
+
+        apply_broker_fill(bf, "ACC", conn)
+        conn.close()
+
+        conn = _make_conn(mem_db)
+        row = conn.execute(
+            "SELECT * FROM trade_outcomes WHERE fill_id='fill-to-001'"
+        ).fetchone()
+        conn.close()
+
+        assert row is not None
+        assert row["ticker"] == "ANET"
+        assert row["fill_price"] == pytest.approx(201.0)
+        assert row["label_type"] == "EXECUTED_TRADE_RETURN"
+
+    def test_entry_date_uses_et_not_utc(self):
+        """_entry_date uses ET, so 2025-01-01T04:00:00 UTC = 2024-12-31 ET (UTC-5 in winter)."""
+        from agents.learning.outcome_labeler import _entry_date
+        # 2025-01-01 00:00 UTC = 1735689600; +4h = 1735704000
+        # In ET (UTC-5): 2024-12-31 23:00 → date is 2024-12-31
+        ts = 1735704000.0  # 2025-01-01T04:00:00Z
+        result = _entry_date(ts)
+        assert result == "2024-12-31"
