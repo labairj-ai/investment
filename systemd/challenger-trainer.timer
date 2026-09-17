@@ -1,0 +1,10 @@
+[Unit]
+Description=Run challenger-trainer nightly after outcome labeler (weekdays, 7pm ET)
+
+[Timer]
+TIMEZONE=America/New_York
+OnCalendar=Mon..Fri *-*-* 19:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

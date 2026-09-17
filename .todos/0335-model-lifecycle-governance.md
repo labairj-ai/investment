@@ -1,7 +1,7 @@
 # Model Lifecycle Governance: TRAINED → OBSERVE → PAPER_ACTIVE → RETIRED
 
 - **ID:** 0335
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-17
 - **Priority:** high
 - **Depends:** 0334
@@ -67,10 +67,14 @@ Gate thresholds are config-driven (not hardcoded) and recorded as a JSON checkli
 
 ## Done when
 
-- [ ] `learning_models` has `lifecycle_state` and `promotion_gates_json` columns; `train_and_save()` writes `TRAINED`
-- [ ] `challenger.py` returns zero adjustment for any model not in `PAPER_ACTIVE` state
-- [ ] All `training_n >= 30` implicit activation logic removed from opportunity agent and challenger
-- [ ] `promote()` function validates all configured gates before advancing lifecycle state; gates recorded in `promotion_gates_json`
-- [ ] Scheduled retraining timer configured on Optiplex (TRAINED state only, never auto-promotes)
-- [ ] `mark_episode_selected()` writes `llm_conviction`; LLM Conviction card in Learning Lab shows non-NULL values after next episode capture run
-- [ ] `python -m pytest tests/` passes with no regressions
+- [x] `learning_models` has `lifecycle_state` and `promotion_gates_json` columns; `train_and_save()` writes `TRAINED`
+- [x] `challenger.py` returns zero adjustment for any model not in `PAPER_ACTIVE` state
+- [x] All `training_n >= 30` implicit activation logic removed from opportunity agent and challenger
+- [x] `promote()` function validates all configured gates before advancing lifecycle state; gates recorded in `promotion_gates_json`
+- [x] Scheduled retraining timer configured on Optiplex (TRAINED state only, never auto-promotes)
+- [x] `mark_episode_selected()` writes `llm_conviction`; LLM Conviction card in Learning Lab shows non-NULL values after next episode capture run
+- [x] `python -m pytest tests/` passes with no regressions
+
+## Outcome
+
+5 files changed. `agent_db.py`: added `lifecycle_state TEXT DEFAULT 'TRAINED'` and `promotion_gates_json TEXT` to `learning_models` CREATE TABLE + `_new_cols` migrations. `calibration.py`: `ChallengerModel` gets `lifecycle_state` attribute; `score()` gates on `lifecycle_state == PAPER_ACTIVE` (double-gated with challenger.py); `_write()` persists lifecycle_state; `promote()` function enforces state machine transitions (TRAINED→OBSERVE→PAPER_ACTIVE→RETIRED) with configurable gate checks (unique_tickers ≥ 10, dates ≥ 30, weeks ≥ 4, cv_folds ≥ 1, beats_baseline); force=True for RETIRED; `__main__` calls `train_and_save()`. `challenger.py`: gates on `lifecycle_state == PAPER_ACTIVE`, removing `training_n >= 30` check. `mark_episode_selected()` already wrote `llm_conviction` from 0331 (no change needed). Systemd timer files: `challenger-trainer.service` + `.timer` (Mon-Fri 7pm ET, after outcome-labeler at 6pm). 6 new lifecycle tests. 778 passed, 16 skipped.

@@ -538,6 +538,9 @@ def migrate() -> None:
         ("learning_models", "unique_decision_dates", "INTEGER"),
         ("learning_models", "unique_weeks",          "INTEGER"),
         ("learning_models", "raw_n",                 "INTEGER"),
+        # 0335 — model lifecycle governance
+        ("learning_models", "lifecycle_state",       "TEXT"),
+        ("learning_models", "promotion_gates_json",  "TEXT"),
     ]
     for table, col, col_type in _new_cols:
         try:
@@ -857,7 +860,9 @@ def _migrate_learning_episodes(conn: sqlite3.Connection) -> None:
             unique_tickers         INTEGER,
             unique_decision_dates  INTEGER,
             unique_weeks           INTEGER,
-            raw_n                  INTEGER
+            raw_n                  INTEGER,
+            lifecycle_state        TEXT DEFAULT 'TRAINED',
+            promotion_gates_json   TEXT
         );
 
         CREATE TABLE IF NOT EXISTS risk_counterfactual_outcomes (

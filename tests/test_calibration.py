@@ -264,7 +264,7 @@ class TestChallengerWiring:
     def test_active_model_adjusts_composite(self, mem_db, monkeypatch):
         import agent_db
         from agents.learning import calibration, challenger
-        from agents.learning.calibration import ChallengerModel
+        from agents.learning.calibration import ChallengerModel, promote
 
         monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
         monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
@@ -279,11 +279,19 @@ class TestChallengerWiring:
         assert model is not None
         model.save_with_weights()
 
+        # 0335: must promote to PAPER_ACTIVE before the model influences scoring
+        r1 = promote(model.model_version, "OBSERVE", force=True)
+        assert r1["promoted"], f"promote to OBSERVE failed: {r1}"
+        r2 = promote(model.model_version, "PAPER_ACTIVE", force=True)
+        assert r2["promoted"], f"promote to PAPER_ACTIVE failed: {r2}"
+        monkeypatch.setattr(challenger, "_cached_model", None)
+        monkeypatch.setattr(challenger, "_cached_version", None)
+
         cand = {"_composite": 72, "q_score": 90, "v_score": 85, "pf_score": 75,
                 "c_score": 65, "ec_score": 60}
         from agents.learning.challenger import apply_challenger_adjustment
         result_composite, info = apply_challenger_adjustment(cand)
-        # With training_n=50, model is active
+        # After promotion to PAPER_ACTIVE, model is active
         assert info["active"] is True
         # Composite is bounded to [0, 100]
         assert 0 <= result_composite <= 100
@@ -395,3 +403,137 @@ class TestChallengerHardening0334:
         assert row["unique_tickers"] == 50
         assert row["unique_decision_dates"] == 50
         assert row["unique_weeks"] is not None and row["unique_weeks"] >= 1
+
+
+class TestLifecycleGovernance0335:
+    """0335: TRAINED → OBSERVE → PAPER_ACTIVE lifecycle gates."""
+
+    def test_new_model_starts_in_trained_state(self, mem_db, monkeypatch):
+        import agent_db
+        from agents.learning.calibration import ChallengerModel, LIFECYCLE_TRAINED
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        _seed_episodes(conn, 50)
+        conn.close()
+
+        model = ChallengerModel.train()
+        assert model.lifecycle_state == LIFECYCLE_TRAINED
+        model.save_with_weights()
+
+        loaded = ChallengerModel.load_latest()
+        assert loaded.lifecycle_state == LIFECYCLE_TRAINED
+
+    def test_trained_model_returns_no_adjustment(self, mem_db, monkeypatch):
+        """TRAINED state → challenger returns zero adjustment (inactive)."""
+        import agent_db
+        from agents.learning import challenger
+        from agents.learning.calibration import ChallengerModel
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+        monkeypatch.setattr(challenger, "_cached_model", None)
+        monkeypatch.setattr(challenger, "_cached_version", None)
+
+        conn = _make_conn(mem_db)
+        _seed_episodes(conn, 50)
+        conn.close()
+
+        model = ChallengerModel.train()
+        model.save_with_weights()
+
+        cand = {"_composite": 72, "q_score": 90, "v_score": 85,
+                "pf_score": 75, "c_score": 65, "ec_score": 60}
+        from agents.learning.challenger import apply_challenger_adjustment
+        result_composite, info = apply_challenger_adjustment(cand)
+        assert info["active"] is False
+        assert result_composite == 72
+
+    def test_promote_trained_to_observe_with_force(self, mem_db, monkeypatch):
+        import agent_db
+        from agents.learning.calibration import ChallengerModel, promote, LIFECYCLE_OBSERVE
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        _seed_episodes(conn, 50)
+        conn.close()
+
+        model = ChallengerModel.train()
+        model.save_with_weights()
+
+        result = promote(model.model_version, "OBSERVE", force=True)
+        assert result["promoted"] is True
+        assert result["new_state"] == LIFECYCLE_OBSERVE
+
+        loaded = ChallengerModel.load_latest()
+        assert loaded.lifecycle_state == LIFECYCLE_OBSERVE
+
+    def test_promote_gate_check_fails_insufficient_data(self, mem_db, monkeypatch):
+        """With only 30 episodes and no CV folds, gates fail without force."""
+        import agent_db
+        from agents.learning.calibration import ChallengerModel, promote
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        _seed_episodes(conn, 30)  # cv_folds=0 (30 days < embargo)
+        conn.close()
+
+        model = ChallengerModel.train()
+        model.save_with_weights()
+
+        result = promote(model.model_version, "OBSERVE", force=False)
+        assert result["promoted"] is False
+        assert "failed_gates" in result
+        assert len(result["failed_gates"]) > 0
+
+    def test_invalid_transition_rejected(self, mem_db, monkeypatch):
+        """Cannot go from TRAINED directly to PAPER_ACTIVE."""
+        import agent_db
+        from agents.learning.calibration import ChallengerModel, promote
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        _seed_episodes(conn, 50)
+        conn.close()
+
+        model = ChallengerModel.train()
+        model.save_with_weights()
+
+        result = promote(model.model_version, "PAPER_ACTIVE", force=True)
+        assert result["promoted"] is False
+        assert "invalid transition" in result.get("error", "")
+
+    def test_observe_model_also_inactive(self, mem_db, monkeypatch):
+        """OBSERVE state → challenger still returns zero adjustment."""
+        import agent_db
+        from agents.learning import challenger
+        from agents.learning.calibration import ChallengerModel, promote
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+        monkeypatch.setattr(challenger, "_cached_model", None)
+        monkeypatch.setattr(challenger, "_cached_version", None)
+
+        conn = _make_conn(mem_db)
+        _seed_episodes(conn, 50)
+        conn.close()
+
+        model = ChallengerModel.train()
+        model.save_with_weights()
+        promote(model.model_version, "OBSERVE", force=True)
+        monkeypatch.setattr(challenger, "_cached_model", None)
+        monkeypatch.setattr(challenger, "_cached_version", None)
+
+        cand = {"_composite": 72, "q_score": 90, "v_score": 85,
+                "pf_score": 75, "c_score": 65, "ec_score": 60}
+        from agents.learning.challenger import apply_challenger_adjustment
+        _, info = apply_challenger_adjustment(cand)
+        assert info["active"] is False

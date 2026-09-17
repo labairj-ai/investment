@@ -1,0 +1,13 @@
+[Unit]
+Description=Investment Challenger Trainer — fit ridge model on labeled episodes (TRAINED state only)
+After=network.target
+ConditionPathExists=/home/optiplex/investment/out/investment.db
+
+[Service]
+Type=oneshot
+User=optiplex
+WorkingDirectory=/home/optiplex/investment
+ExecStart=/home/optiplex/investment/venv/bin/python3 -m agents.learning.calibration
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=challenger-trainer

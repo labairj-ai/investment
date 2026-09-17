@@ -45,6 +45,18 @@ MAX_CV_FOLDS        = 10        # cap walk-forward iterations
 FEATURES            = ["q_score", "v_score", "pf_score", "c_score", "ec_score"]
 FEATURE_SCHEMA_VER  = "v1"
 
+# Lifecycle states — explicit promotion gates required between each (0335)
+LIFECYCLE_TRAINED      = "TRAINED"
+LIFECYCLE_OBSERVE      = "OBSERVE"
+LIFECYCLE_PAPER_ACTIVE = "PAPER_ACTIVE"
+LIFECYCLE_RETIRED      = "RETIRED"
+
+# Promotion gate thresholds for TRAINED → OBSERVE
+PROMOTE_MIN_UNIQUE_TICKERS        = 10
+PROMOTE_MIN_UNIQUE_DECISION_DATES = 30
+PROMOTE_MIN_UNIQUE_WEEKS          = 4
+# beats_baseline == True and cv_folds >= 1 also required for OBSERVE
+
 
 class ChallengerModel:
     """Shrinkage-regularized ridge model predicting 90d SPY alpha."""
@@ -59,15 +71,17 @@ class ChallengerModel:
         model_version: str,
         validation_metrics: dict,
         feature_schema_hash: str,
+        lifecycle_state: str = LIFECYCLE_TRAINED,
     ):
-        self.coef               = np.array(coef)
-        self.intercept          = intercept
-        self.mean_alpha         = mean_alpha
-        self.training_n         = training_n
-        self.training_cutoff    = training_cutoff
-        self.model_version      = model_version
-        self.validation_metrics = validation_metrics
+        self.coef                = np.array(coef)
+        self.intercept           = intercept
+        self.mean_alpha          = mean_alpha
+        self.training_n          = training_n
+        self.training_cutoff     = training_cutoff
+        self.model_version       = model_version
+        self.validation_metrics  = validation_metrics
         self.feature_schema_hash = feature_schema_hash
+        self.lifecycle_state     = lifecycle_state
 
     @property
     def reliability(self) -> float:
@@ -91,7 +105,8 @@ class ChallengerModel:
           model_version         str
           active                bool          — False when training_n < MIN_TRAINING_N
         """
-        active = self.training_n >= MIN_TRAINING_N
+        active = (self.lifecycle_state == LIFECYCLE_PAPER_ACTIVE
+                  and self.training_n >= MIN_TRAINING_N)
         pred = self.predict_alpha(candidate) if active else None
 
         if pred is None or not active:
@@ -137,8 +152,9 @@ class ChallengerModel:
             """INSERT OR REPLACE INTO learning_models
                (model_version, training_cutoff, feature_schema_hash,
                 training_n, validation_metrics, created_at,
-                unique_tickers, unique_decision_dates, unique_weeks, raw_n)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                unique_tickers, unique_decision_dates, unique_weeks, raw_n,
+                lifecycle_state)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 self.model_version,
                 self.training_cutoff,
@@ -150,6 +166,7 @@ class ChallengerModel:
                 vm.get("unique_decision_dates"),
                 vm.get("unique_weeks"),
                 vm.get("raw_n"),
+                self.lifecycle_state,
             ),
         )
         conn.commit()
@@ -165,6 +182,7 @@ class ChallengerModel:
             "model_version": self.model_version,
             "validation_metrics": self.validation_metrics,
             "feature_schema_hash": self.feature_schema_hash,
+            "lifecycle_state": self.lifecycle_state,
         }
 
     @classmethod
@@ -178,6 +196,7 @@ class ChallengerModel:
             model_version=d["model_version"],
             validation_metrics=d["validation_metrics"],
             feature_schema_hash=d["feature_schema_hash"],
+            lifecycle_state=d.get("lifecycle_state", LIFECYCLE_TRAINED),
         )
 
     @classmethod
@@ -294,6 +313,7 @@ class ChallengerModel:
             intercept = metrics.get("intercept")
             if coef is None:
                 return None
+            keys = row.keys() if hasattr(row, "keys") else []
             return cls(
                 coef=coef,
                 intercept=intercept,
@@ -303,6 +323,7 @@ class ChallengerModel:
                 model_version=row["model_version"],
                 validation_metrics=metrics,
                 feature_schema_hash=row["feature_schema_hash"] or "",
+                lifecycle_state=row["lifecycle_state"] if "lifecycle_state" in keys else LIFECYCLE_TRAINED,
             )
         except Exception:
             return None
@@ -421,7 +442,7 @@ def _schema_hash() -> str:
 
 
 def train_and_save() -> dict:
-    """Train a new model and save it. Returns summary dict."""
+    """Train a new model (lifecycle_state=TRAINED). Promotion requires separate promote() call."""
     model = ChallengerModel.train()
     if model is None:
         return {
@@ -432,10 +453,10 @@ def train_and_save() -> dict:
     vm = model.validation_metrics
     return {
         "trained": True,
+        "lifecycle_state": LIFECYCLE_TRAINED,
         "model_version": model.model_version,
         "training_n": model.training_n,
         "reliability": model.reliability,
-        "active": model.training_n >= MIN_TRAINING_N,
         "validation_metrics": vm,
         "unique_tickers": vm.get("unique_tickers"),
         "unique_decision_dates": vm.get("unique_decision_dates"),
@@ -443,3 +464,96 @@ def train_and_save() -> dict:
         "cv_folds": vm.get("cv_folds"),
         "beats_baseline": vm.get("beats_baseline"),
     }
+
+
+def _check_promotion_gates(model_version: str, target_state: str) -> dict:
+    """Evaluate promotion gate checklist. Returns dict with keys passed, failed, gates."""
+    conn = agent_db._connect()
+    row = conn.execute(
+        "SELECT * FROM learning_models WHERE model_version=?", (model_version,)
+    ).fetchone()
+    conn.close()
+    if not row:
+        return {"passed": False, "failed": ["model_not_found"], "gates": {}}
+
+    vm = json.loads(row["validation_metrics"] or "{}")
+    ut  = row["unique_tickers"] or vm.get("unique_tickers") or 0
+    ud  = row["unique_decision_dates"] or vm.get("unique_decision_dates") or 0
+    uw  = row["unique_weeks"] or vm.get("unique_weeks") or 0
+    cf  = vm.get("cv_folds") or 0
+    bb  = vm.get("beats_baseline")
+
+    gates: dict[str, bool] = {
+        "unique_tickers":        ut >= PROMOTE_MIN_UNIQUE_TICKERS,
+        "unique_decision_dates": ud >= PROMOTE_MIN_UNIQUE_DECISION_DATES,
+        "unique_weeks":          uw >= PROMOTE_MIN_UNIQUE_WEEKS,
+        "has_cv_folds":          cf >= 1,
+        "beats_baseline":        bb is True,
+    }
+    failed = [k for k, v in gates.items() if not v]
+    return {"passed": len(failed) == 0, "failed": failed, "gates": gates}
+
+
+def promote(
+    model_version: str,
+    target_state: str,
+    force: bool = False,
+) -> dict:
+    """Advance lifecycle_state with gate validation (0335).
+
+    target_state: OBSERVE | PAPER_ACTIVE | RETIRED
+    force=True skips gate checks (use for RETIRED).
+    Returns {"promoted": bool, "new_state": str, "gates": dict}.
+    """
+    valid_transitions = {
+        LIFECYCLE_TRAINED:      (LIFECYCLE_OBSERVE,),
+        LIFECYCLE_OBSERVE:      (LIFECYCLE_PAPER_ACTIVE, LIFECYCLE_RETIRED),
+        LIFECYCLE_PAPER_ACTIVE: (LIFECYCLE_RETIRED,),
+    }
+
+    conn = agent_db._connect()
+    row = conn.execute(
+        "SELECT lifecycle_state FROM learning_models WHERE model_version=?",
+        (model_version,),
+    ).fetchone()
+    if not row:
+        conn.close()
+        return {"promoted": False, "error": "model_not_found", "gates": {}}
+
+    current = row["lifecycle_state"] or LIFECYCLE_TRAINED
+    allowed = valid_transitions.get(current, ())
+    if target_state not in allowed:
+        conn.close()
+        return {
+            "promoted": False,
+            "error": f"invalid transition {current} → {target_state}",
+            "gates": {},
+        }
+
+    if not force and target_state != LIFECYCLE_RETIRED:
+        gate_result = _check_promotion_gates(model_version, target_state)
+        if not gate_result["passed"]:
+            conn.close()
+            return {
+                "promoted": False,
+                "error": "gate_check_failed",
+                "failed_gates": gate_result["failed"],
+                "gates": gate_result["gates"],
+            }
+    else:
+        gate_result = {"gates": {}}
+
+    conn.execute(
+        "UPDATE learning_models SET lifecycle_state=?, promotion_gates_json=? WHERE model_version=?",
+        (target_state, json.dumps(gate_result["gates"]), model_version),
+    )
+    conn.commit()
+    conn.close()
+    return {"promoted": True, "new_state": target_state, "gates": gate_result["gates"]}
+
+
+if __name__ == "__main__":
+    import sys
+    result = train_and_save()
+    print(f"[calibration] {result}")
+    sys.exit(0 if result.get("trained") else 1)

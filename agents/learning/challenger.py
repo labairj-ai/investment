@@ -13,14 +13,18 @@ Hard risk limits in the risk engine are unaffected.
 """
 from __future__ import annotations
 
-from .calibration import ChallengerModel
+from .calibration import ChallengerModel, LIFECYCLE_PAPER_ACTIVE
 
 _cached_model: ChallengerModel | None = None
 _cached_version: str | None = None
 
 
 def get_model() -> ChallengerModel | None:
-    """Return the latest active challenger model, or None if unavailable/inactive."""
+    """Return the latest challenger model in PAPER_ACTIVE state, or None (0335).
+
+    Models in TRAINED or OBSERVE state have no influence on scoring.
+    Explicit promotion to PAPER_ACTIVE via calibration.promote() is required.
+    """
     global _cached_model, _cached_version
     try:
         model = ChallengerModel.load_latest()
@@ -29,7 +33,9 @@ def get_model() -> ChallengerModel | None:
         if model.model_version != _cached_version:
             _cached_model = model
             _cached_version = model.model_version
-        return _cached_model if (_cached_model and _cached_model.training_n >= 30) else None
+        if _cached_model and _cached_model.lifecycle_state == LIFECYCLE_PAPER_ACTIVE:
+            return _cached_model
+        return None
     except Exception as e:
         print(f"[challenger] WARNING: failed to load model: {e}")
         return None
