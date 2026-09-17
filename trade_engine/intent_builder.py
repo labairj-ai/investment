@@ -98,13 +98,13 @@ def build_intent_from_variant(
     if not ticker or action not in _SUPPORTED_ACTIONS:
         return None
 
-    # Idempotency: check for existing active intent for this account+episode+PAPER_CHALLENGER
+    # 0349: idempotency by decision_variant_id (not account+episode combo)
     existing = conn.execute(
         """SELECT * FROM trade_intents
-           WHERE account_id=? AND episode_id=? AND decision_origin='PAPER_CHALLENGER'
+           WHERE decision_variant_id=?
              AND status NOT IN ('CANCELLED','REJECTED','EXPIRED')
            LIMIT 1""",
-        (account_id, episode_id),
+        (variant_id,),
     ).fetchone()
     if existing:
         return TradeIntent.from_db_row(existing)
@@ -186,6 +186,8 @@ def build_intent_from_variant(
         episode_id=episode_id,
         decision_origin="PAPER_CHALLENGER",
         code_commit_sha=agent_db.CODE_COMMIT_SHA,
+        decision_variant_id=variant_id,
+        decision_market_price=raw_price,  # pre-slippage price at intent creation (0350)
     )
 
     d = intent.to_db_dict()
@@ -245,9 +247,17 @@ def build_intent(
     rec_keys = rec.keys() if hasattr(rec, "keys") else []
     episode_id = rec["episode_id"] if "episode_id" in rec_keys else None
 
-    # 0337: for ALPACA accounts, route to build_intent_from_variant() when a challenger
-    # variant exists — never patch decision_origin onto a champion-built intent.
-    if episode_id and "ALPACA" in account_id.upper():
+    # 0349: route to build_intent_from_variant() when this account has role='paper_challenger'.
+    # Check the role column first; fall back to ALPACA string match for rows without role set.
+    acct_row = conn.execute(
+        "SELECT role FROM trading_accounts WHERE account_id=?", (account_id,)
+    ).fetchone()
+    acct_role = acct_row["role"] if acct_row and acct_row["role"] else None
+    is_paper_challenger = (
+        acct_role == "paper_challenger"
+        or (acct_role is None and "ALPACA" in account_id.upper())
+    )
+    if episode_id and is_paper_challenger:
         variant_row = conn.execute(
             """SELECT id FROM decision_variants
                WHERE episode_id=? AND origin='PAPER_CHALLENGER' LIMIT 1""",
@@ -270,6 +280,7 @@ def build_intent(
     limit_price = float(payload.get("price") or payload.get("limit_price") or 0)
     if limit_price <= 0:
         return None
+    decision_market_price = limit_price  # pre-slippage price at intent creation time (0350)
 
     if action == "BUY":
         side = Side.BUY
@@ -353,6 +364,7 @@ def build_intent(
         episode_id=episode_id,
         decision_origin="CHAMPION",
         code_commit_sha=agent_db.CODE_COMMIT_SHA,
+        decision_market_price=decision_market_price,  # pre-slippage price (0350)
     )
 
     d = intent.to_db_dict()

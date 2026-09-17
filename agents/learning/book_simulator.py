@@ -10,6 +10,7 @@ variant are produced.
 """
 from __future__ import annotations
 
+import json
 import time
 from datetime import datetime, timezone
 
@@ -17,7 +18,8 @@ import agent_db
 
 _STARTING_CASH = 100_000.0
 _DEFAULT_SLIPPAGE_PCT = 1.0    # mirror TradingPolicy default
-_MAX_POSITION_PCT = 10.0       # cap per position
+_MAX_POSITION_PCT = 10.0       # cap per fill (10% of current cash)
+_MAX_TICKER_EXPOSURE_PCT = 15.0  # 0346: per-ticker aggregate limit (% of starting NAV)
 
 
 def _now_iso() -> str:
@@ -53,27 +55,108 @@ def record_virtual_fills(
         print(f"[book_simulator] WARNING: failed to record virtual fills: {e}")
 
 
+def _write_nav_row(conn, book_id: str, date: str, cash: float) -> None:
+    """Write a virtual_book_nav row with cost-basis NAV (0346).
+
+    Cost basis is used until a mark-to-market nightly job replaces it.
+    position values use avg_cost from virtual_fills since we have no mark prices here.
+    """
+    fills = conn.execute(
+        "SELECT ticker, action, price, qty FROM virtual_fills WHERE book_id=? ORDER BY filled_at",
+        (book_id,),
+    ).fetchall()
+    positions: dict[str, tuple[float, float]] = {}
+    for f in fills:
+        t = f["ticker"]
+        a = (f["action"] or "BUY").upper()
+        p = float(f["price"])
+        q = float(f["qty"])
+        if a == "BUY":
+            prev_q, prev_c = positions.get(t, (0.0, 0.0))
+            new_q = prev_q + q
+            new_c = (prev_c * prev_q + p * q) / new_q if new_q else p
+            positions[t] = (new_q, new_c)
+        elif a in ("SELL", "EXIT", "TRIM"):
+            prev_q, prev_c = positions.get(t, (0.0, p))
+            positions[t] = (max(0.0, prev_q - q), prev_c)
+
+    pos_value = sum(q * c for q, c in positions.values() if q > 0)
+    total_nav = cash + pos_value
+    positions_json = json.dumps({t: {"qty": q, "avg_cost": c} for t, (q, c) in positions.items() if q > 0})
+    try:
+        conn.execute(
+            """INSERT OR REPLACE INTO virtual_book_nav
+               (book_id, date, cash, positions_json, total_nav, created_at)
+               VALUES (?,?,?,?,?,?)""",
+            (book_id, date, cash, positions_json, total_nav, time.time()),
+        )
+    except Exception:
+        pass  # virtual_book_nav may not exist on older DBs; ignore
+
+
 def _record_one_book(conn, book_id, ticker, price, episode_id, action, origin):
     if not ticker or not price or price <= 0:
         return
 
     book = conn.execute(
-        "SELECT current_cash FROM virtual_books WHERE book_id=?", (book_id,)
+        "SELECT starting_cash, current_cash FROM virtual_books WHERE book_id=?", (book_id,)
     ).fetchone()
+    starting_cash = float(book["starting_cash"]) if book else _STARTING_CASH
     cash = float(book["current_cash"]) if book else _STARTING_CASH
 
-    # Apply slippage to simulate the fill price
-    fill_price = round(price * (1 + _DEFAULT_SLIPPAGE_PCT / 100), 2)
+    action_upper = (action or "BUY").upper()
 
-    # Size: up to MAX_POSITION_PCT of current cash (simple heuristic — no full NAV)
-    max_dollars = cash * _MAX_POSITION_PCT / 100
-    qty = int(max_dollars / fill_price) if fill_price > 0 else 0
-    if qty < 1:
-        return
+    # 0346: direction-aware slippage
+    if action_upper in ("SELL", "EXIT", "TRIM"):
+        fill_price = round(price * (1 - _DEFAULT_SLIPPAGE_PCT / 100), 2)
+    else:
+        fill_price = round(price * (1 + _DEFAULT_SLIPPAGE_PCT / 100), 2)
 
-    cost = qty * fill_price
-    if cost > cash:
-        return  # insufficient cash
+    if action_upper == "BUY":
+        # 0346: per-ticker aggregate position limit
+        existing_qty = conn.execute(
+            """SELECT COALESCE(SUM(CASE WHEN action='BUY' THEN qty
+                                        WHEN action IN ('SELL','EXIT','TRIM') THEN -qty
+                                        ELSE 0 END), 0) as net_qty
+               FROM virtual_fills WHERE book_id=? AND ticker=?""",
+            (book_id, ticker),
+        ).fetchone()
+        net_qty = float(existing_qty["net_qty"]) if existing_qty else 0.0
+        current_exposure = net_qty * fill_price
+        max_exposure = starting_cash * _MAX_TICKER_EXPOSURE_PCT / 100
+        if current_exposure >= max_exposure:
+            return  # already at per-ticker limit
+
+        # Size: up to MAX_POSITION_PCT of current cash
+        max_dollars = min(
+            cash * _MAX_POSITION_PCT / 100,
+            max_exposure - current_exposure,
+        )
+        qty = int(max_dollars / fill_price) if fill_price > 0 else 0
+        if qty < 1:
+            return
+
+        cost = qty * fill_price
+        if cost > cash:
+            return  # insufficient cash
+
+        new_cash = cash - cost
+    else:
+        # SELL / EXIT / TRIM: look up existing qty
+        existing_qty = conn.execute(
+            """SELECT COALESCE(SUM(CASE WHEN action='BUY' THEN qty
+                                        WHEN action IN ('SELL','EXIT','TRIM') THEN -qty
+                                        ELSE 0 END), 0) as net_qty
+               FROM virtual_fills WHERE book_id=? AND ticker=?""",
+            (book_id, ticker),
+        ).fetchone()
+        net_qty = float(existing_qty["net_qty"]) if existing_qty else 0.0
+        if net_qty <= 0:
+            return  # nothing to sell
+
+        qty = int(net_qty) if action_upper == "EXIT" else max(1, int(net_qty * 0.25))
+        proceeds = qty * fill_price
+        new_cash = cash + proceeds
 
     now = _now_iso()
     conn.execute(
@@ -81,12 +164,15 @@ def _record_one_book(conn, book_id, ticker, price, episode_id, action, origin):
            (book_id, episode_id, ticker, action, price, qty, fees, filled_at,
             decision_origin, created_at)
            VALUES (?,?,?,?,?,?,?,?,?,?)""",
-        (book_id, episode_id, ticker, action, fill_price, qty, 0.0, now, origin, time.time()),
+        (book_id, episode_id, ticker, action_upper, fill_price, qty, 0.0, now, origin, time.time()),
     )
     conn.execute(
         "UPDATE virtual_books SET current_cash=?, as_of=? WHERE book_id=?",
-        (cash - cost, now[:10], book_id),
+        (new_cash, now[:10], book_id),
     )
+
+    # 0346: write a cost-basis NAV row after every fill
+    _write_nav_row(conn, book_id, now[:10], new_cash)
 
 
 def compute_book_stats(book_id: str, price_fn) -> dict:

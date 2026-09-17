@@ -1,7 +1,7 @@
 # Champion/Challenger Experimental Symmetry
 
 - **ID:** 0345
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-17
 - **Priority:** high
 - **Depends:** 0337, 0344
@@ -43,8 +43,12 @@ Either way, document the chosen experiment design in a new `EXPERIMENT_DESIGN.md
 
 ## Done when
 
-- [ ] Exactly one variable differs between champion and challenger selection paths (either: score adjustment only, or: ranked input to an identical LLM call)
-- [ ] The experiment design is documented: treatment variable, constant factors, null hypothesis
-- [ ] If Option A: LLM is not called for either champion or challenger selection (or is called for both)
-- [ ] If Option B: same LLM model, prompt template, and temperature for both champion and challenger
-- [ ] `python -m pytest tests/` passes with no regressions
+- [x] Exactly one variable differs between champion and challenger selection paths (either: score adjustment only, or: ranked input to an identical LLM call)
+- [x] The experiment design is documented: treatment variable, constant factors, null hypothesis
+- [x] If Option A: LLM is not called for either champion or challenger selection (or is called for both)
+- [x] If Option B: same LLM model, prompt template, and temperature for both champion and challenger
+- [x] `python -m pytest tests/` passes with no regressions
+
+## Outcome
+
+Chose Option A (ranking-only). `opportunity_agent.py`: CHAMPION_BOOK uses `scored[0]` (top-1 by base composite, no LLM); CHALLENGER_BOOK uses top-1 by `_composite_challenger` score. Treatment variable = learned score adjustment only. The live LLM-selected recommendation is unchanged. 847 tests pass.

@@ -1,7 +1,7 @@
 # Learning Metrics Semantic Cleanup
 
 - **ID:** 0347
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-17
 - **Priority:** normal
 - **Depends:** 0338, 0343
@@ -35,8 +35,12 @@ Three distinct semantic mismatches accumulated across 0338 and 0343 that make th
 ## Done when
 
 - [ ] Risk Gate Audit endpoint uses `decision_alpha` for `losses_avoided` / `alpha_missed`; both `alpha` and `decision_alpha` visible in dashboard table
-- [ ] Bootstrap CI uses 5th/95th percentiles (90% interval) or clearly labeled as 80% — no discrepancy between code and label
-- [ ] Metric renamed from "Expected Alpha CI" to "Ranking Alpha Spread" (or equivalent clear name) at code and dashboard level
-- [ ] `alpha_reliability` replaced by `alpha_precision` (band-width-based) + `alpha_edge_evidence` (zero-crossing-based)
-- [ ] Dashboard model card displays precision and edge evidence as separate labeled fields
-- [ ] `python -m pytest tests/` passes with no regressions
+- [x] Bootstrap CI uses 5th/95th percentiles (90% interval) or clearly labeled as 80% — no discrepancy between code and label
+- [x] Metric renamed from "Expected Alpha CI" to "Ranking Alpha Spread" (or equivalent clear name) at code and dashboard level
+- [x] `alpha_reliability` replaced by `alpha_precision` (band-width-based) + `alpha_edge_evidence` (zero-crossing-based)
+- [x] Dashboard model card displays precision and edge evidence as separate labeled fields
+- [x] `python -m pytest tests/` passes with no regressions
+
+## Outcome
+
+`_bootstrap_alpha_ci()` updated to 5th/95th percentiles. Keys renamed: `alpha_ci_low/high` → `ranking_spread_ci_low/high`; `alpha_reliability` → `alpha_precision` (HIGH/MEDIUM/LOW by band-width) + `alpha_edge_evidence` (POSITIVE/INCONCLUSIVE/NEGATIVE by zero-crossing). Dashboard renders two separate badges. Risk gate audit uses COALESCE(decision_alpha, alpha). `TestAlphaUncertaintyBands0343` updated. 847 tests pass.

@@ -20,22 +20,23 @@ _cached_version: str | None = None
 
 
 def get_model() -> ChallengerModel | None:
-    """Return the latest challenger model in PAPER_ACTIVE state, or None (0335).
+    """Return the PAPER_ACTIVE challenger model, or None (0335/0344).
 
-    Models in TRAINED or OBSERVE state have no influence on scoring.
-    Explicit promotion to PAPER_ACTIVE via calibration.promote() is required.
+    Uses load_paper_active() so a newly trained (TRAINED/OBSERVE) model never
+    shadows the incumbent PAPER_ACTIVE model.  Models in TRAINED or OBSERVE state
+    have no influence on scoring until explicitly promoted via calibration.promote().
     """
     global _cached_model, _cached_version
     try:
-        model = ChallengerModel.load_latest()
+        model = ChallengerModel.load_paper_active()
         if model is None:
+            _cached_model = None
+            _cached_version = None
             return None
         if model.model_version != _cached_version:
             _cached_model = model
             _cached_version = model.model_version
-        if _cached_model and _cached_model.lifecycle_state == LIFECYCLE_PAPER_ACTIVE:
-            return _cached_model
-        return None
+        return _cached_model
     except Exception as e:
         print(f"[challenger] WARNING: failed to load model: {e}")
         return None

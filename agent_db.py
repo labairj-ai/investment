@@ -584,6 +584,14 @@ def migrate() -> None:
         ("agent_runs",        "code_commit_sha",  "TEXT"),
         ("decision_episodes", "code_commit_sha",  "TEXT"),
         ("trade_intents",     "code_commit_sha",  "TEXT"),
+        # 0349 — variant idempotency and account roles
+        ("trade_intents",     "decision_variant_id", "INTEGER"),
+        ("trading_accounts",  "role",                "TEXT"),
+        # 0350 — real execution benchmarking: decision-time prices and fill-vs-limit variance
+        ("trade_intents",     "decision_market_price", "REAL"),
+        ("trade_intents",     "decision_bid",          "REAL"),
+        ("trade_intents",     "decision_ask",          "REAL"),
+        ("trade_outcomes",    "limit_variance",        "REAL"),
     ]
     for table, col, col_type in _new_cols:
         try:
@@ -597,6 +605,16 @@ def migrate() -> None:
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_executed_actions_fill_id "
             "ON executed_actions (fill_id) WHERE fill_id IS NOT NULL"
+        )
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
+    # 0344: at most one PAPER_ACTIVE model at a time
+    try:
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_one_paper_active "
+            "ON learning_models (lifecycle_state) WHERE lifecycle_state='PAPER_ACTIVE'"
         )
         conn.commit()
     except sqlite3.OperationalError:
@@ -688,7 +706,8 @@ def _migrate_trade_engine(conn: sqlite3.Connection) -> None:
             broker           TEXT,
             trading_enabled  INTEGER DEFAULT 1,
             policy_version   TEXT,
-            created_at       TEXT
+            created_at       TEXT,
+            role             TEXT
         );
 
         CREATE TABLE IF NOT EXISTS trade_intents (
@@ -714,7 +733,11 @@ def _migrate_trade_engine(conn: sqlite3.Connection) -> None:
             valid_until           TEXT,
             created_at            TEXT,
             status                TEXT DEFAULT 'PENDING',
-            code_commit_sha       TEXT
+            code_commit_sha       TEXT,
+            decision_variant_id   INTEGER,
+            decision_market_price REAL,
+            decision_bid          REAL,
+            decision_ask          REAL
         );
 
         CREATE TABLE IF NOT EXISTS risk_decisions (
@@ -830,10 +853,14 @@ def _migrate_trade_engine(conn: sqlite3.Connection) -> None:
     conn.execute(
         """INSERT OR IGNORE INTO trading_accounts
            (account_id, name, mode, starting_capital, current_cash,
-            broker, trading_enabled, policy_version, created_at)
-           VALUES (?,?,?,?,?,?,?,?,?)""",
+            broker, trading_enabled, policy_version, created_at, role)
+           VALUES (?,?,?,?,?,?,?,?,?,?)""",
         ("AGENTIC_ALPACA_01", "Agentic Alpaca Paper Account", "paper",
-         100000.0, 100000.0, "alpaca", 1, "1.0", _now),
+         100000.0, 100000.0, "alpaca", 1, "1.0", _now, "paper_challenger"),
+    )
+    # 0349: ensure existing AGENTIC_ALPACA_01 rows get the role set (idempotent)
+    conn.execute(
+        "UPDATE trading_accounts SET role='paper_challenger' WHERE account_id='AGENTIC_ALPACA_01' AND (role IS NULL OR role='')"
     )
     conn.commit()
 
@@ -997,6 +1024,7 @@ def _migrate_learning_episodes(conn: sqlite3.Connection) -> None:
             decision_alpha_3m   REAL,
             arrival_price           REAL,
             implementation_shortfall REAL,
+            limit_variance          REAL,
             mfe_pct             REAL,
             mae_pct             REAL,
             labeled_1w_at   REAL,
@@ -1026,6 +1054,20 @@ def _migrate_learning_episodes(conn: sqlite3.Connection) -> None:
             filled_at       TEXT,
             decision_origin TEXT,
             created_at      REAL
+        );
+
+        -- 0346: daily NAV ledger for true mark-to-market accounting
+        CREATE TABLE IF NOT EXISTS virtual_book_nav (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            book_id         TEXT REFERENCES virtual_books(book_id),
+            date            TEXT NOT NULL,
+            cash            REAL,
+            positions_json  TEXT,
+            total_nav       REAL,
+            spy_nav         REAL,
+            daily_return    REAL,
+            created_at      REAL,
+            UNIQUE(book_id, date)
         );
 
         -- Seed the two books if they don't exist yet

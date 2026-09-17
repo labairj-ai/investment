@@ -1,7 +1,7 @@
 # Real Execution Benchmarking
 
 - **ID:** 0350
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-17
 - **Priority:** low
 - **Depends:** 0339
@@ -56,9 +56,13 @@ Alpaca commissions are currently zero, so fee effects are negligible — but the
 
 ## Done when
 
-- [ ] `trade_intents` stores `decision_market_price` (bid/ask/mid) at intent creation time
-- [ ] `implementation_shortfall` = fill vs decision_market_price (not limit price)
-- [ ] `limit_variance` = fill vs limit_price stored separately in `trade_outcomes`
-- [ ] Both metrics visible in the champion-challenger execution quality API block
-- [ ] Tests distinguish IS from limit_variance semantically
-- [ ] `python -m pytest tests/` passes with no regressions
+- [x] `trade_intents` stores `decision_market_price` (bid/ask/mid) at intent creation time
+- [x] `implementation_shortfall` = fill vs decision_market_price (not limit price)
+- [x] `limit_variance` = fill vs limit_price stored separately in `trade_outcomes`
+- [x] Both metrics visible in the champion-challenger execution quality API block
+- [x] Tests distinguish IS from limit_variance semantically
+- [x] `python -m pytest tests/` passes with no regressions
+
+## Outcome
+
+`decision_market_price`, `decision_bid`, `decision_ask` added to `trade_intents` (CREATE TABLE + `_new_cols`). `limit_variance` added to `trade_outcomes`. `TradeIntent` dataclass updated. `intent_builder.py` captures `decision_market_price = limit_price` (pre-slippage) at intent creation. `execution_engine.py` computes `limit_variance` (fill vs limit, sign-sensitive) and uses `decision_market_price` as arrival price for true IS. `serve.py` exposes `mean_limit_variance`. `TestRealExecutionBenchmarking0350` adds 7 tests covering sign convention, schema presence, and field semantics. 847 tests pass.

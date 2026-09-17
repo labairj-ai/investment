@@ -45,8 +45,8 @@ MAX_CV_FOLDS        = 10        # cap walk-forward iterations
 FEATURES            = ["q_score", "v_score", "pf_score", "c_score", "ec_score"]
 FEATURE_SCHEMA_VER  = "v1"
 
-# 0343 — uncertainty band thresholds for alpha CI width classification
-ALPHA_CI_HIGH_THRESHOLD   = 0.02   # band width < 2% → HIGH reliability
+# 0343/0347 — uncertainty band thresholds for ranking-spread CI width (precision classification)
+ALPHA_CI_HIGH_THRESHOLD   = 0.02   # band width < 2% → HIGH precision
 ALPHA_CI_MEDIUM_THRESHOLD = 0.05   # band width < 5% → MEDIUM; else LOW
 
 # Lifecycle states — explicit promotion gates required between each (0335)
@@ -150,31 +150,39 @@ class ChallengerModel:
         self._write(json.dumps(full_metrics))
 
     def _write(self, metrics_json: str) -> None:
+        """INSERT-only write — model rows are immutable after creation (0344).
+
+        Raises sqlite3.IntegrityError if model_version already exists; lifecycle
+        state changes must go through promote() only.
+        """
+        import sqlite3 as _sqlite3
         vm = self.validation_metrics
         conn = agent_db._connect()
-        conn.execute(
-            """INSERT OR REPLACE INTO learning_models
-               (model_version, training_cutoff, feature_schema_hash,
-                training_n, validation_metrics, created_at,
-                unique_tickers, unique_decision_dates, unique_weeks, raw_n,
-                lifecycle_state)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-            (
-                self.model_version,
-                self.training_cutoff,
-                self.feature_schema_hash,
-                self.training_n,
-                metrics_json,
-                time.time(),
-                vm.get("unique_tickers"),
-                vm.get("unique_decision_dates"),
-                vm.get("unique_weeks"),
-                vm.get("raw_n"),
-                self.lifecycle_state,
-            ),
-        )
-        conn.commit()
-        conn.close()
+        try:
+            conn.execute(
+                """INSERT INTO learning_models
+                   (model_version, training_cutoff, feature_schema_hash,
+                    training_n, validation_metrics, created_at,
+                    unique_tickers, unique_decision_dates, unique_weeks, raw_n,
+                    lifecycle_state)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    self.model_version,
+                    self.training_cutoff,
+                    self.feature_schema_hash,
+                    self.training_n,
+                    metrics_json,
+                    time.time(),
+                    vm.get("unique_tickers"),
+                    vm.get("unique_decision_dates"),
+                    vm.get("unique_weeks"),
+                    vm.get("raw_n"),
+                    self.lifecycle_state,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
 
     def to_dict(self) -> dict:
         return {
@@ -291,10 +299,11 @@ class ChallengerModel:
             "unique_decision_dates":    len(unique_dates),
             "unique_weeks":             unique_weeks,
             "raw_n":                    n,
-            # 0343 — uncertainty bands
-            "alpha_ci_low":             ci["alpha_ci_low"],
-            "alpha_ci_high":            ci["alpha_ci_high"],
-            "alpha_reliability":        ci["alpha_reliability"],
+            # 0343/0347 — ranking-spread uncertainty bands (90% CI = 5th/95th percentile)
+            "ranking_spread_ci_low":    ci["ranking_spread_ci_low"],
+            "ranking_spread_ci_high":   ci["ranking_spread_ci_high"],
+            "alpha_precision":          ci["alpha_precision"],
+            "alpha_edge_evidence":      ci["alpha_edge_evidence"],
         }
 
         return cls(
@@ -309,35 +318,66 @@ class ChallengerModel:
         )
 
     @classmethod
-    def load_latest(cls) -> "ChallengerModel | None":
-        """Load the most recently saved model from learning_models, if any."""
+    def _from_row(cls, row) -> "ChallengerModel | None":
+        """Construct from a learning_models DB row, or None if weights missing."""
+        if not row:
+            return None
+        metrics = json.loads(row["validation_metrics"] or "{}")
+        coef = metrics.get("coef")
+        intercept = metrics.get("intercept")
+        if coef is None:
+            return None
+        keys = row.keys() if hasattr(row, "keys") else []
+        return cls(
+            coef=coef,
+            intercept=intercept,
+            mean_alpha=metrics.get("mean_alpha", 0.0),
+            training_n=row["training_n"] or 0,
+            training_cutoff=row["training_cutoff"] or "",
+            model_version=row["model_version"],
+            validation_metrics=metrics,
+            feature_schema_hash=row["feature_schema_hash"] or "",
+            lifecycle_state=row["lifecycle_state"] if "lifecycle_state" in keys else LIFECYCLE_TRAINED,
+        )
+
+    @classmethod
+    def load_paper_active(cls) -> "ChallengerModel | None":
+        """Load the PAPER_ACTIVE model, independent of any newer TRAINED model (0344).
+
+        This is the correct callsite for scoring.  Training a new model never
+        shadows an active one because this query filters by lifecycle_state.
+        """
+        try:
+            conn = agent_db._connect()
+            row = conn.execute(
+                "SELECT * FROM learning_models WHERE lifecycle_state=? ORDER BY created_at DESC LIMIT 1",
+                (LIFECYCLE_PAPER_ACTIVE,),
+            ).fetchone()
+            conn.close()
+            return cls._from_row(row)
+        except Exception:
+            return None
+
+    @classmethod
+    def load_latest_trained(cls) -> "ChallengerModel | None":
+        """Load the most recently saved model regardless of lifecycle state.
+
+        Use for admin/training workflows only.  Scoring must use load_paper_active().
+        """
         try:
             conn = agent_db._connect()
             row = conn.execute(
                 "SELECT * FROM learning_models ORDER BY created_at DESC LIMIT 1"
             ).fetchone()
             conn.close()
-            if not row:
-                return None
-            metrics = json.loads(row["validation_metrics"] or "{}")
-            coef = metrics.get("coef")
-            intercept = metrics.get("intercept")
-            if coef is None:
-                return None
-            keys = row.keys() if hasattr(row, "keys") else []
-            return cls(
-                coef=coef,
-                intercept=intercept,
-                mean_alpha=metrics.get("mean_alpha", 0.0),
-                training_n=row["training_n"] or 0,
-                training_cutoff=row["training_cutoff"] or "",
-                model_version=row["model_version"],
-                validation_metrics=metrics,
-                feature_schema_hash=row["feature_schema_hash"] or "",
-                lifecycle_state=row["lifecycle_state"] if "lifecycle_state" in keys else LIFECYCLE_TRAINED,
-            )
+            return cls._from_row(row)
         except Exception:
             return None
+
+    @classmethod
+    def load_latest(cls) -> "ChallengerModel | None":
+        """Deprecated alias for load_latest_trained(). Use load_paper_active() for scoring."""
+        return cls.load_latest_trained()
 
 
 def _episode_date(captured_at: float) -> str:
@@ -362,40 +402,56 @@ def _bootstrap_alpha_ci(
     n_iter: int = 1000,
     rng_seed: int = 42,
 ) -> dict:
-    """Bootstrap 10th/90th percentile CI over fold-level mean alphas (0343).
+    """Bootstrap 5th/95th percentile CI over fold-level ranking-alpha spread (0343/0347).
 
-    Resamples fold Q/B spread values (top_vs_bottom_quintile_alpha) with
-    replacement. Returns alpha_ci_low, alpha_ci_high, alpha_reliability.
+    Metric: top_vs_bottom_quintile_alpha — the alpha spread between top and bottom
+    quintile of the model's ranking.  This is *ranking power*, not individual expected
+    alpha; the key names and dashboard labels use "ranking_spread" to make that clear.
+
+    Returns ranking_spread_ci_low, ranking_spread_ci_high, alpha_precision
+    (HIGH/MEDIUM/LOW by band width), and alpha_edge_evidence
+    (POSITIVE/INCONCLUSIVE/NEGATIVE by whether CI crosses zero).
     INSUFFICIENT_DATA returned when < 2 folds have a spread value.
     """
     spreads = [f["top_vs_bottom_quintile_alpha"]
                for f in folds if f.get("top_vs_bottom_quintile_alpha") is not None]
     if len(spreads) < 2:
         return {
-            "alpha_ci_low": None,
-            "alpha_ci_high": None,
-            "alpha_reliability": "INSUFFICIENT_DATA",
+            "ranking_spread_ci_low":  None,
+            "ranking_spread_ci_high": None,
+            "alpha_precision":        "INSUFFICIENT_DATA",
+            "alpha_edge_evidence":    "INSUFFICIENT_DATA",
         }
 
     rng = np.random.default_rng(rng_seed)
     arr = np.array(spreads)
     boot_means = [float(rng.choice(arr, size=len(arr), replace=True).mean())
                   for _ in range(n_iter)]
-    ci_low  = float(np.percentile(boot_means, 10))
-    ci_high = float(np.percentile(boot_means, 90))
+    ci_low  = float(np.percentile(boot_means, 5))
+    ci_high = float(np.percentile(boot_means, 95))
     band_width = ci_high - ci_low
 
+    # Precision: how tight the 90% interval is
     if band_width < ALPHA_CI_HIGH_THRESHOLD:
-        reliability = "HIGH"
+        precision = "HIGH"
     elif band_width < ALPHA_CI_MEDIUM_THRESHOLD:
-        reliability = "MEDIUM"
+        precision = "MEDIUM"
     else:
-        reliability = "LOW"
+        precision = "LOW"
+
+    # Edge evidence: does the CI exclude zero?
+    if ci_low > 0:
+        edge_evidence = "POSITIVE"
+    elif ci_high < 0:
+        edge_evidence = "NEGATIVE"
+    else:
+        edge_evidence = "INCONCLUSIVE"
 
     return {
-        "alpha_ci_low": round(ci_low, 6),
-        "alpha_ci_high": round(ci_high, 6),
-        "alpha_reliability": reliability,
+        "ranking_spread_ci_low":  round(ci_low, 6),
+        "ranking_spread_ci_high": round(ci_high, 6),
+        "alpha_precision":        precision,
+        "alpha_edge_evidence":    edge_evidence,
     }
 
 
@@ -520,14 +576,21 @@ def train_and_save() -> dict:
 
 
 def _check_promotion_gates(model_version: str, target_state: str) -> dict:
-    """Evaluate promotion gate checklist. Returns dict with keys passed, failed, gates."""
+    """Evaluate promotion gate checklist (0348).
+
+    Returns dict with keys:
+      passed  — bool
+      failed  — list of gate names that did not pass
+      gates   — rich dict: {gate: {value, minimum|expected, pass}}
+      vm      — raw validation_metrics dict for snapshot building
+    """
     conn = agent_db._connect()
     row = conn.execute(
         "SELECT * FROM learning_models WHERE model_version=?", (model_version,)
     ).fetchone()
     conn.close()
     if not row:
-        return {"passed": False, "failed": ["model_not_found"], "gates": {}}
+        return {"passed": False, "failed": ["model_not_found"], "gates": {}, "vm": {}}
 
     vm = json.loads(row["validation_metrics"] or "{}")
     ut  = row["unique_tickers"] or vm.get("unique_tickers") or 0
@@ -536,15 +599,30 @@ def _check_promotion_gates(model_version: str, target_state: str) -> dict:
     cf  = vm.get("cv_folds") or 0
     bb  = vm.get("beats_baseline")
 
-    gates: dict[str, bool] = {
-        "unique_tickers":        ut >= PROMOTE_MIN_UNIQUE_TICKERS,
-        "unique_decision_dates": ud >= PROMOTE_MIN_UNIQUE_DECISION_DATES,
-        "unique_weeks":          uw >= PROMOTE_MIN_UNIQUE_WEEKS,
-        "has_cv_folds":          cf >= 1,
-        "beats_baseline":        bb is True,
+    gates: dict[str, dict] = {
+        "unique_tickers": {
+            "value": ut, "minimum": PROMOTE_MIN_UNIQUE_TICKERS,
+            "pass": ut >= PROMOTE_MIN_UNIQUE_TICKERS,
+        },
+        "unique_decision_dates": {
+            "value": ud, "minimum": PROMOTE_MIN_UNIQUE_DECISION_DATES,
+            "pass": ud >= PROMOTE_MIN_UNIQUE_DECISION_DATES,
+        },
+        "unique_weeks": {
+            "value": uw, "minimum": PROMOTE_MIN_UNIQUE_WEEKS,
+            "pass": uw >= PROMOTE_MIN_UNIQUE_WEEKS,
+        },
+        "has_cv_folds": {
+            "value": cf, "minimum": 1,
+            "pass": cf >= 1,
+        },
+        "beats_baseline": {
+            "value": bb, "expected": True,
+            "pass": bb is True,
+        },
     }
-    failed = [k for k, v in gates.items() if not v]
-    return {"passed": len(failed) == 0, "failed": failed, "gates": gates}
+    failed = [k for k, v in gates.items() if not v["pass"]]
+    return {"passed": len(failed) == 0, "failed": failed, "gates": gates, "vm": vm}
 
 
 def promote(
@@ -553,15 +631,27 @@ def promote(
     force: bool = False,
     promoted_by: str = "manual",
     promotion_reason: str = "",
+    override_reason: str = "",
 ) -> dict:
-    """Advance lifecycle_state with gate validation (0335/0342).
+    """Advance lifecycle_state with gate validation (0335/0342/0344/0348).
 
     target_state: OBSERVE | PAPER_ACTIVE | RETIRED
-    force=True skips gate checks (use for RETIRED).
+    force=True: only allowed for → RETIRED transitions (0348).  For any other
+        target, pass a non-empty override_reason instead; gates_bypassed=True
+        will be stored in the snapshot.
     promoted_by: identifier for who/what triggered the promotion (0342).
     promotion_reason: free-text note captured at promotion time (0342).
+    override_reason: required when bypassing gates for non-RETIRED targets.
     Returns {"promoted": bool, "new_state": str, "gates": dict}.
     """
+    # 0348: restrict force to RETIRED only
+    if force and target_state != LIFECYCLE_RETIRED:
+        raise ValueError(
+            f"force=True is only allowed for → RETIRED transitions; "
+            f"got target_state={target_state!r}. "
+            f"Pass a non-empty override_reason to bypass gates instead."
+        )
+
     valid_transitions = {
         LIFECYCLE_TRAINED:      (LIFECYCLE_OBSERVE,),
         LIFECYCLE_OBSERVE:      (LIFECYCLE_PAPER_ACTIVE, LIFECYCLE_RETIRED),
@@ -587,7 +677,15 @@ def promote(
             "gates": {},
         }
 
-    if not force and target_state != LIFECYCLE_RETIRED:
+    gates_bypassed = False
+    if force or target_state == LIFECYCLE_RETIRED:
+        gate_result = {"gates": {}, "vm": {}, "passed": True, "failed": []}
+        gates_bypassed = bool(force)
+    elif override_reason:
+        # Explicit gate bypass with auditable reason (0348)
+        gate_result = _check_promotion_gates(model_version, target_state)
+        gates_bypassed = True
+    else:
         gate_result = _check_promotion_gates(model_version, target_state)
         if not gate_result["passed"]:
             conn.close()
@@ -597,12 +695,49 @@ def promote(
                 "failed_gates": gate_result["failed"],
                 "gates": gate_result["gates"],
             }
-    else:
-        gate_result = {"gates": {}}
+
+    # 0348: build rich snapshot with actual metric values, thresholds, and pass/fail
+    vm = gate_result.get("vm", {})
+    snapshot: dict = {
+        "gates_bypassed": gates_bypassed,
+    }
+    if override_reason:
+        snapshot["override_reason"] = override_reason
+    for gate_name, gate_info in gate_result.get("gates", {}).items():
+        snapshot[gate_name] = gate_info
+    # Supplement with raw model metrics for full audit trail
+    for key in ("cv_mae_mean", "baseline_mae_mean", "ranking_spread_ci_low",
+                "ranking_spread_ci_high", "alpha_precision", "alpha_edge_evidence"):
+        if key in vm:
+            snapshot[key] = {"value": vm[key]}
+
+    # 0344: auto-retire any existing PAPER_ACTIVE before activating a new one
+    if target_state == LIFECYCLE_PAPER_ACTIVE:
+        existing_active = conn.execute(
+            "SELECT model_version FROM learning_models WHERE lifecycle_state=? AND model_version!=?",
+            (LIFECYCLE_PAPER_ACTIVE, model_version),
+        ).fetchall()
+        for ea in existing_active:
+            conn.execute(
+                "UPDATE learning_models SET lifecycle_state=? WHERE model_version=?",
+                (LIFECYCLE_RETIRED, ea["model_version"]),
+            )
+            conn.execute(
+                """INSERT INTO model_promotion_log
+                   (model_version, from_state, to_state, promoted_by, promoted_at,
+                    promotion_reason, promotion_metrics_snapshot)
+                   VALUES (?,?,?,?,?,?,?)""",
+                (
+                    ea["model_version"], LIFECYCLE_PAPER_ACTIVE, LIFECYCLE_RETIRED,
+                    "auto_retire", time.time(),
+                    f"Auto-retired when {model_version} promoted to PAPER_ACTIVE",
+                    json.dumps({"gates_bypassed": False}),
+                ),
+            )
 
     conn.execute(
         "UPDATE learning_models SET lifecycle_state=?, promotion_gates_json=? WHERE model_version=?",
-        (target_state, json.dumps(gate_result["gates"]), model_version),
+        (target_state, json.dumps(snapshot), model_version),
     )
     # 0342: write promotion log row with full metrics snapshot
     conn.execute(
@@ -613,12 +748,12 @@ def promote(
         (
             model_version, current, target_state, promoted_by,
             time.time(), promotion_reason,
-            json.dumps(gate_result["gates"]),
+            json.dumps(snapshot),
         ),
     )
     conn.commit()
     conn.close()
-    return {"promoted": True, "new_state": target_state, "gates": gate_result["gates"]}
+    return {"promoted": True, "new_state": target_state, "gates": gate_result.get("gates", {})}
 
 
 if __name__ == "__main__":

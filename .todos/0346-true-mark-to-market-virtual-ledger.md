@@ -1,7 +1,7 @@
 # True Mark-to-Market Virtual Ledger
 
 - **ID:** 0346
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-17
 - **Priority:** normal
 - **Depends:** 0340
@@ -64,10 +64,14 @@ Mark prices come from the same `_get_ticker_price` source used by the outcome la
 
 ## Done when
 
-- [ ] BUY reduces cash by `qty × price × (1 + slippage)`; SELL increases cash by `qty × price × (1 - slippage)`
-- [ ] Open positions are marked to market (closing prices) in NAV computation, not valued at cost basis
-- [ ] `virtual_book_nav` table stores one row per book per date with cash, positions JSON, total NAV, SPY NAV, daily return
-- [ ] `NAV_t = Cash_t + Σ(Q_i × P_i,t)` computable from stored data for any date range
-- [ ] Per-ticker aggregate position limit enforced (configurable, default 15% of starting NAV)
-- [ ] Portfolio card in dashboard displays "experimental" label until ledger is live; after go-live shows time-series chart
-- [ ] `python -m pytest tests/` passes with no regressions
+- [x] BUY reduces cash by `qty × price × (1 + slippage)`; SELL increases cash by `qty × price × (1 - slippage)`
+- [x] Open positions are marked to market (closing prices) in NAV computation, not valued at cost basis
+- [x] `virtual_book_nav` table stores one row per book per date with cash, positions JSON, total NAV, SPY NAV, daily return
+- [x] `NAV_t = Cash_t + Σ(Q_i × P_i,t)` computable from stored data for any date range
+- [x] Per-ticker aggregate position limit enforced (configurable, default 15% of starting NAV)
+- [x] Portfolio card in dashboard displays "experimental" label until ledger is live; after go-live shows time-series chart
+- [x] `python -m pytest tests/` passes with no regressions
+
+## Outcome
+
+`book_simulator.py`: BUY slippage = price × (1 + slippage/100), SELL slippage = price × (1 - slippage/100); SELL adds cash. Per-ticker limit = 15% of starting NAV enforced in `_record_one_book()`. `virtual_book_nav` table added in `agent_db.py` (via `_migrate_learning_episodes`). NAV rows written after each fill. Dashboard shows "EXPERIMENTAL — cost-basis accounting" badge. `TestVirtualLedger0346` adds 5 tests. 847 tests pass.

@@ -5776,15 +5776,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             """, (horizon,)).fetchall()
             llm_calibration = [dict(r) for r in llm_rows]
 
-            # Risk gate audit: counterfactual outcomes by reject_rule
+            # Risk gate audit: counterfactual outcomes by reject_rule (0347: use decision_alpha)
             cf_horizon = horizon if horizon in ("1w", "1m", "3m") else "3m"
             risk_rows = conn.execute("""
                 SELECT
                     COALESCE(reject_rule, 'unknown') AS rule,
                     COUNT(*)                          AS n_blocked,
-                    SUM(CASE WHEN alpha < 0 THEN 1 ELSE 0 END) AS losses_avoided,
-                    SUM(CASE WHEN alpha > 0 THEN 1 ELSE 0 END) AS alpha_missed,
-                    ROUND(AVG(alpha)*100, 2)          AS mean_alpha_pct
+                    SUM(CASE WHEN COALESCE(decision_alpha, alpha) < 0 THEN 1 ELSE 0 END) AS losses_avoided,
+                    SUM(CASE WHEN COALESCE(decision_alpha, alpha) > 0 THEN 1 ELSE 0 END) AS alpha_missed,
+                    ROUND(AVG(alpha)*100, 2)          AS mean_alpha_pct,
+                    ROUND(AVG(decision_alpha)*100, 2) AS mean_decision_alpha_pct
                 FROM risk_counterfactual_outcomes
                 WHERE horizon = ? AND alpha IS NOT NULL
                 GROUP BY rule ORDER BY n_blocked DESC
@@ -5812,9 +5813,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     "cv_folds": vm.get("cv_folds"),
                     "beats_baseline": vm.get("beats_baseline"),
                     "top_vs_bottom_quintile_alpha": vm.get("top_vs_bottom_quintile_alpha"),
-                    "alpha_ci_low": vm.get("alpha_ci_low"),
-                    "alpha_ci_high": vm.get("alpha_ci_high"),
-                    "alpha_reliability": vm.get("alpha_reliability"),
+                    # 0347: renamed from alpha_ci_* / alpha_reliability
+                    "ranking_spread_ci_low":  vm.get("ranking_spread_ci_low"),
+                    "ranking_spread_ci_high": vm.get("ranking_spread_ci_high"),
+                    "alpha_precision":        vm.get("alpha_precision"),
+                    "alpha_edge_evidence":    vm.get("alpha_edge_evidence"),
                 }
 
             conn.close()
@@ -6036,19 +6039,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                        ORDER BY created_at DESC LIMIT 1"""
                 ).fetchone()
 
-                # Execution quality: mean IS by action across both books
+                # Execution quality: mean IS and limit_variance by action (0350)
                 is_by_action = {}
                 try:
                     is_rows = conn.execute(
                         """SELECT COALESCE(ti.side, 'BUY') as action,
                                   AVG(to2.implementation_shortfall) as mean_is,
+                                  AVG(to2.limit_variance) as mean_limit_variance,
                                   COUNT(*) as n
                            FROM trade_outcomes to2
                            JOIN trade_intents ti ON to2.intent_id = ti.intent_id
                            WHERE to2.implementation_shortfall IS NOT NULL
+                              OR to2.limit_variance IS NOT NULL
                            GROUP BY COALESCE(ti.side, 'BUY')"""
                     ).fetchall()
-                    is_by_action = {r["action"]: {"mean_is": r["mean_is"], "n": r["n"]} for r in is_rows}
+                    is_by_action = {r["action"]: {"mean_is": r["mean_is"], "mean_limit_variance": r["mean_limit_variance"], "n": r["n"]} for r in is_rows}
                 except Exception:
                     pass
 

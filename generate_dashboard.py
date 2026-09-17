@@ -8971,13 +8971,14 @@ function loadLearningPanel() {{
       if (!mc) {{
         modelCardEl.innerHTML = '<span style="color:#a0aec0;font-style:italic;">No PAPER_ACTIVE model yet.</span>';
       }} else {{
-        var reliabilityColor = {{HIGH:'#38a169',MEDIUM:'#d69e2e',LOW:'#e53e3e',INSUFFICIENT_DATA:'#a0aec0'}};
-        var rel = mc.alpha_reliability || 'INSUFFICIENT_DATA';
-        var relColor = reliabilityColor[rel] || '#718096';
+        var precisionColor = {{HIGH:'#38a169',MEDIUM:'#d69e2e',LOW:'#e53e3e',INSUFFICIENT_DATA:'#a0aec0'}};
+        var edgeColor = {{POSITIVE:'#38a169',INCONCLUSIVE:'#d69e2e',NEGATIVE:'#e53e3e',INSUFFICIENT_DATA:'#a0aec0'}};
+        var prec = mc.alpha_precision || 'INSUFFICIENT_DATA';
+        var edge = mc.alpha_edge_evidence || 'INSUFFICIENT_DATA';
         var q_spread = mc.top_vs_bottom_quintile_alpha;
         var qPct = q_spread !== null && q_spread !== undefined ? ((q_spread*100).toFixed(2)+'%') : '—';
-        var ciLow  = mc.alpha_ci_low  !== null && mc.alpha_ci_low  !== undefined ? (mc.alpha_ci_low*100).toFixed(2)+'%' : null;
-        var ciHigh = mc.alpha_ci_high !== null && mc.alpha_ci_high !== undefined ? (mc.alpha_ci_high*100).toFixed(2)+'%' : null;
+        var ciLow  = mc.ranking_spread_ci_low  !== null && mc.ranking_spread_ci_low  !== undefined ? (mc.ranking_spread_ci_low*100).toFixed(2)+'%' : null;
+        var ciHigh = mc.ranking_spread_ci_high !== null && mc.ranking_spread_ci_high !== undefined ? (mc.ranking_spread_ci_high*100).toFixed(2)+'%' : null;
         var ciStr  = (ciLow && ciHigh) ? (ciLow + ' – ' + ciHigh) : '—';
         modelCardEl.innerHTML =
           '<div style="display:flex;gap:20px;flex-wrap:wrap;align-items:flex-start;">' +
@@ -8987,10 +8988,13 @@ function loadLearningPanel() {{
             '<div style="font-size:11px;color:#718096;margin-top:2px;">' + mc.training_n + ' training rows · ' + (mc.unique_tickers||'?') + ' tickers · ' + (mc.cv_folds||0) + ' CV folds</div>' +
           '</div>' +
           '<div style="background:#f7fafc;border-radius:8px;padding:12px 16px;">' +
-            '<div style="font-size:10px;color:#718096;text-transform:uppercase;margin-bottom:4px;">Expected Alpha (Q-spread)</div>' +
+            '<div style="font-size:10px;color:#718096;text-transform:uppercase;margin-bottom:4px;">Out-of-Sample Ranking Alpha Spread</div>' +
             '<div style="font-size:22px;font-weight:700;color:#2d3748;">' + qPct + '</div>' +
             '<div style="font-size:12px;color:#4a5568;margin-top:2px;">90% CI: ' + ciStr + '</div>' +
-            '<div style="margin-top:6px;display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700;background:' + relColor + ';color:#fff;">Reliability: ' + rel + '</div>' +
+            '<div style="margin-top:6px;display:flex;gap:6px;">' +
+              '<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700;background:' + precisionColor[prec] + ';color:#fff;">Precision: ' + prec + '</span>' +
+              '<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700;background:' + edgeColor[edge] + ';color:#fff;">Edge: ' + edge + '</span>' +
+            '</div>' +
           '</div>' +
           '<div>' +
             '<div style="font-size:10px;color:#718096;text-transform:uppercase;margin-bottom:2px;">Beats Baseline</div>' +
@@ -9038,7 +9042,11 @@ function loadLearningPanel() {{
           '</div></div>';
       }}
 
-      var html = '<div style="display:flex;gap:14px;flex-wrap:wrap;">' +
+      var html = '<div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;">' +
+        '<span style="font-size:11px;font-weight:700;color:#718096;text-transform:uppercase;">Portfolio Simulation</span>' +
+        '<span style="font-size:10px;padding:1px 7px;border-radius:10px;background:#ecc94b;color:#744210;font-weight:700;">EXPERIMENTAL — cost-basis accounting</span>' +
+        '</div>' +
+        '<div style="display:flex;gap:14px;flex-wrap:wrap;">' +
         _bookCard(d.champion_book, 'Champion Book', '#2b6cb0') +
         _bookCard(d.challenger_book, 'Challenger Book', '#6b46c1') +
         '</div>';

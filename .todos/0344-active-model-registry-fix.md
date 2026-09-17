@@ -1,7 +1,7 @@
 # Active Model Registry Fix
 
 - **ID:** 0344
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-17
 - **Priority:** high
 - **Depends:** 0342
@@ -29,8 +29,12 @@ Additionally, nothing prevents two models from holding `lifecycle_state = 'PAPER
 
 ## Done when
 
-- [ ] `load_paper_active()` exists and returns the PAPER_ACTIVE model regardless of whether a newer TRAINED model exists
-- [ ] Training a new challenger model does not deactivate or shadow the currently PAPER_ACTIVE one
-- [ ] At most one model can hold `PAPER_ACTIVE` at any time; promoting a second auto-retires the first with a log entry
-- [ ] `save_with_weights()` is immutable — model rows cannot be silently overwritten
-- [ ] `python -m pytest tests/` passes with no regressions
+- [x] `load_paper_active()` exists and returns the PAPER_ACTIVE model regardless of whether a newer TRAINED model exists
+- [x] Training a new challenger model does not deactivate or shadow the currently PAPER_ACTIVE one
+- [x] At most one model can hold `PAPER_ACTIVE` at any time; promoting a second auto-retires the first with a log entry
+- [x] `save_with_weights()` is immutable — model rows cannot be silently overwritten
+- [x] `python -m pytest tests/` passes with no regressions
+
+## Outcome
+
+`load_paper_active()` added to `ChallengerModel`, queries by `lifecycle_state='PAPER_ACTIVE'` only. `challenger.py` `get_model()` now calls it directly. `_write()` changed from INSERT OR REPLACE to INSERT (raises IntegrityError on duplicate). `promote()` auto-retires existing PAPER_ACTIVE when promoting a new one. Partial UNIQUE index `idx_one_paper_active` enforces DB-level constraint. `TestActiveModelRegistry0344` adds 4 tests. 847 tests pass.

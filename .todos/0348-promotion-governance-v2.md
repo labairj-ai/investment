@@ -1,7 +1,7 @@
 # Promotion Governance V2
 
 - **ID:** 0348
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-17
 - **Priority:** normal
 - **Depends:** 0342
@@ -50,8 +50,12 @@ Pull the actual `validation_metrics` values from the `learning_models` row at pr
 
 ## Done when
 
-- [ ] `promotion_metrics_snapshot` contains actual metric values, thresholds, and pass/fail for each gate
-- [ ] `force=True` on a non-RETIRED transition raises `ValueError` (or is blocked with a clear error)
-- [ ] Override promotions (if ever needed) require non-empty `override_reason` and store `gates_bypassed: true` in the snapshot
-- [ ] A future audit on `model_promotion_log` can answer: what were the exact metric values when this model was promoted?
-- [ ] `python -m pytest tests/` passes with no regressions
+- [x] `promotion_metrics_snapshot` contains actual metric values, thresholds, and pass/fail for each gate
+- [x] `force=True` on a non-RETIRED transition raises `ValueError` (or is blocked with a clear error)
+- [x] Override promotions (if ever needed) require non-empty `override_reason` and store `gates_bypassed: true` in the snapshot
+- [x] A future audit on `model_promotion_log` can answer: what were the exact metric values when this model was promoted?
+- [x] `python -m pytest tests/` passes with no regressions
+
+## Outcome
+
+`_check_promotion_gates()` returns rich dict with `{value, minimum/expected, pass}` per gate. `promote()` builds detailed snapshot from gate results + validation_metrics; `force=True` restricted to RETIRED (raises ValueError otherwise); `override_reason` param bypasses gates with `gates_bypassed=True` stored. Pre-existing tests using `force=True` on non-RETIRED updated to use `override_reason="test"`. `TestPromotionGovernanceV2_0348` adds 4 tests. 847 tests pass.

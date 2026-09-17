@@ -503,14 +503,22 @@ def run_opportunity_hunter(ctx: AgentContext) -> list[Recommendation]:
             challenger_model_version=sel_ch_info.get("model_version"),
         )
 
-    # 0336/0340: record decision_variant and virtual book fills if challenger is PAPER_ACTIVE
+    # 0336/0340/0345: record decision_variant and virtual book fills if challenger is PAPER_ACTIVE
     if sel_ch_info.get("active"):
         _insert_decision_variant(scored, selected, champion_ticker=selected.get("ticker"))
+
+        # 0345 — Experimental Symmetry (Option A, ranking-only):
+        # CHAMPION_BOOK uses top-1 by BASE composite score (no LLM),
+        # CHALLENGER_BOOK uses top-1 by challenger-ADJUSTED composite score.
+        # Treatment variable: learned score adjustment only.
+        # Held constant: no LLM, same candidate universe, same sizing, same execution.
+        # Null hypothesis: challenger-adjusted ranking produces equivalent returns to base ranking.
+        book_champion = scored[0] if scored else None  # top-1 by base composite (already sorted)
         ch_sorted_top = sorted(scored, key=lambda x: x.get("_composite_challenger", 0), reverse=True)
         ch_top_for_book = ch_sorted_top[0] if ch_sorted_top else None
         record_virtual_fills(
-            champion_ticker=selected.get("ticker"),
-            champion_price=selected.get("price"),
+            champion_ticker=book_champion.get("ticker") if book_champion else None,
+            champion_price=book_champion.get("price") if book_champion else None,
             challenger_ticker=ch_top_for_book.get("ticker") if ch_top_for_book else None,
             challenger_price=ch_top_for_book.get("price") if ch_top_for_book else None,
             episode_id=selected.get("_episode_id"),

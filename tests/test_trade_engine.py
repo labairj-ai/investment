@@ -53,7 +53,7 @@ def _make_conn() -> sqlite3.Connection:
             account_id TEXT PRIMARY KEY, name TEXT, mode TEXT,
             starting_capital REAL, current_cash REAL, broker TEXT,
             trading_enabled INTEGER DEFAULT 1, policy_version TEXT, created_at TEXT,
-            nav_high_water REAL, last_fill_synced_at TEXT
+            nav_high_water REAL, last_fill_synced_at TEXT, role TEXT
         );
         CREATE TABLE IF NOT EXISTS trade_intents (
             intent_id TEXT PRIMARY KEY, account_id TEXT, recommendation_id INTEGER,
@@ -63,7 +63,9 @@ def _make_conn() -> sqlite3.Connection:
             strategy TEXT, thesis_version INTEGER, strategy_config_hash TEXT,
             portfolio_snapshot_id TEXT, policy_hash TEXT, valid_until TEXT, created_at TEXT,
             status TEXT DEFAULT 'PENDING',
-            episode_id TEXT, decision_origin TEXT, code_commit_sha TEXT
+            episode_id TEXT, decision_origin TEXT, code_commit_sha TEXT,
+            decision_variant_id INTEGER,
+            decision_market_price REAL, decision_bid REAL, decision_ask REAL
         );
         CREATE TABLE IF NOT EXISTS risk_decisions (
             decision_id INTEGER PRIMARY KEY AUTOINCREMENT, intent_id TEXT,

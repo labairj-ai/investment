@@ -182,6 +182,7 @@ def _spawn_trade_outcome(
     try:
         row = conn.execute(
             """SELECT ti.intent_id, ti.episode_id, ti.limit_price as intent_limit_price,
+                      ti.side as intent_side, ti.decision_market_price,
                       r.action as rec_action
                FROM trade_intents ti
                JOIN orders o ON ti.intent_id = o.intent_id
@@ -192,8 +193,29 @@ def _spawn_trade_outcome(
         intent_id = row["intent_id"] if row else None
         episode_id = row["episode_id"] if row and "episode_id" in row.keys() else None
         action = row["rec_action"] if row else None
-        # 0339: use intent limit_price as arrival_price proxy (best available at spawn time)
-        arrival_price = float(row["intent_limit_price"]) if row and row["intent_limit_price"] else None
+        row_keys = row.keys() if row and hasattr(row, "keys") else []
+        # 0339: limit_price as arrival_price proxy (best available at spawn time)
+        intent_limit_price = float(row["intent_limit_price"]) if row and row["intent_limit_price"] else None
+        arrival_price = intent_limit_price
+        # 0350: decision_market_price is pre-slippage price at intent creation
+        decision_market_price = float(row["decision_market_price"]) if row and "decision_market_price" in row_keys and row["decision_market_price"] else None
+
+        # 0350: limit_variance = fill vs limit (fill-vs-limit, not true IS)
+        limit_variance = None
+        if intent_limit_price and intent_limit_price > 0:
+            is_sell = (action or "").upper() in ("SELL", "EXIT", "TRIM")
+            if is_sell:
+                limit_variance = (intent_limit_price - fill_price) / intent_limit_price
+            else:
+                limit_variance = (fill_price - intent_limit_price) / intent_limit_price
+
+        # 0350: true IS = fill vs decision_market_price when available
+        if decision_market_price and decision_market_price > 0:
+            is_sell = (action or "").upper() in ("SELL", "EXIT", "TRIM")
+            if is_sell:
+                arrival_price = decision_market_price
+            else:
+                arrival_price = decision_market_price
 
         from zoneinfo import ZoneInfo
         from datetime import datetime as _dt
@@ -208,11 +230,12 @@ def _spawn_trade_outcome(
         conn.execute(
             """INSERT OR IGNORE INTO trade_outcomes
                (fill_id, intent_id, episode_id, ticker, action, decision_date,
-                fill_date, fill_price, fill_qty, fill_fees, arrival_price, label_type, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                fill_date, fill_price, fill_qty, fill_fees, arrival_price,
+                limit_variance, label_type, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (fill_id, intent_id, episode_id, symbol, action, decision_date,
              fill_date, fill_price, fill_qty, fill_fee, arrival_price,
-             "EXECUTED_TRADE_RETURN", time.time()),
+             limit_variance, "EXECUTED_TRADE_RETURN", time.time()),
         )
     except Exception as e:
         print(f"[execution_engine] WARNING: failed to spawn trade_outcome for fill {fill_id}: {e}")

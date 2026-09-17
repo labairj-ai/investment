@@ -1,7 +1,7 @@
 # Variant Idempotency and Account Roles
 
 - **ID:** 0349
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-17
 - **Priority:** normal
 - **Depends:** 0337
@@ -36,8 +36,12 @@ Two related correctness issues in the challenger execution path:
 
 ## Done when
 
-- [ ] `trade_intents.decision_variant_id` populated for every PAPER_CHALLENGER intent
-- [ ] A risk-rejected or expired challenger intent for a given `decision_variant_id` cannot be re-created as a fresh pending intent on re-run
-- [ ] Routing to the challenger path uses `trading_accounts.role = 'paper_challenger'` (not string-matching on account_id)
-- [ ] A future `ALPACA_LIVE_01` account without the paper_challenger role receives champion behavior
-- [ ] `python -m pytest tests/` passes with no regressions
+- [x] `trade_intents.decision_variant_id` populated for every PAPER_CHALLENGER intent
+- [x] A risk-rejected or expired challenger intent for a given `decision_variant_id` cannot be re-created as a fresh pending intent on re-run
+- [x] Routing to the challenger path uses `trading_accounts.role = 'paper_challenger'` (not string-matching on account_id)
+- [x] A future `ALPACA_LIVE_01` account without the paper_challenger role receives champion behavior
+- [x] `python -m pytest tests/` passes with no regressions
+
+## Outcome
+
+`decision_variant_id INTEGER` added to `trade_intents` (CREATE TABLE + `_new_cols`). `role TEXT` added to `trading_accounts` + `_new_cols`; `AGENTIC_ALPACA_01` seeded with `role='paper_challenger'`. `build_intent_from_variant()` idempotency check uses `decision_variant_id`. Routing checks `role='paper_challenger'` first, falls back to ALPACA string-match for NULL role rows. `TestVariantIdempotencyAndRoles0349` adds 4 tests. `trading_accounts` schema updated in both `test_trade_engine.py` and `test_broker_contract.py`. 847 tests pass.

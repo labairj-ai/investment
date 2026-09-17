@@ -196,6 +196,10 @@ class TradeIntent:
     episode_id: Optional[str] = None        # originating decision_episode (0331)
     decision_origin: Optional[str] = None  # CHAMPION | PAPER_CHALLENGER (0331)
     code_commit_sha: Optional[str] = None  # git HEAD SHA at intent creation time (0341)
+    decision_variant_id: Optional[int] = None    # FK to decision_variants.id (0349)
+    decision_market_price: Optional[float] = None  # pre-slippage market price at intent creation (0350)
+    decision_bid: Optional[float] = None           # bid at intent creation (0350)
+    decision_ask: Optional[float] = None           # ask at intent creation (0350)
 
     def is_expired(self) -> bool:
         try:
@@ -235,6 +239,10 @@ class TradeIntent:
             "episode_id": self.episode_id,
             "decision_origin": self.decision_origin,
             "code_commit_sha": self.code_commit_sha,
+            "decision_variant_id": self.decision_variant_id,
+            "decision_market_price": self.decision_market_price,
+            "decision_bid": self.decision_bid,
+            "decision_ask": self.decision_ask,
         }
 
     @classmethod
@@ -266,6 +274,10 @@ class TradeIntent:
             episode_id=row["episode_id"] if "episode_id" in keys else None,
             decision_origin=row["decision_origin"] if "decision_origin" in keys else None,
             code_commit_sha=row["code_commit_sha"] if "code_commit_sha" in keys else None,
+            decision_variant_id=row["decision_variant_id"] if "decision_variant_id" in keys else None,
+            decision_market_price=row["decision_market_price"] if "decision_market_price" in keys else None,
+            decision_bid=row["decision_bid"] if "decision_bid" in keys else None,
+            decision_ask=row["decision_ask"] if "decision_ask" in keys else None,
         )
 
 
