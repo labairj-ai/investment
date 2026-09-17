@@ -195,6 +195,7 @@ class TradeIntent:
     status: IntentStatus = IntentStatus.PENDING
     episode_id: Optional[str] = None        # originating decision_episode (0331)
     decision_origin: Optional[str] = None  # CHAMPION | PAPER_CHALLENGER (0331)
+    code_commit_sha: Optional[str] = None  # git HEAD SHA at intent creation time (0341)
 
     def is_expired(self) -> bool:
         try:
@@ -233,6 +234,7 @@ class TradeIntent:
             "status": self.status.value,
             "episode_id": self.episode_id,
             "decision_origin": self.decision_origin,
+            "code_commit_sha": self.code_commit_sha,
         }
 
     @classmethod
@@ -263,6 +265,7 @@ class TradeIntent:
             status=IntentStatus(row["status"]),
             episode_id=row["episode_id"] if "episode_id" in keys else None,
             decision_origin=row["decision_origin"] if "decision_origin" in keys else None,
+            code_commit_sha=row["code_commit_sha"] if "code_commit_sha" in keys else None,
         )
 
 

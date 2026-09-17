@@ -7,10 +7,29 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import subprocess
 import time
 from pathlib import Path
 
 DB_PATH = Path(__file__).resolve().parent / "out" / "investment.db"
+
+
+def _read_code_sha() -> str | None:
+    """Return the current git HEAD SHA, or None if not in a git repo."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=3,
+            cwd=Path(__file__).resolve().parent,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return None
+
+
+CODE_COMMIT_SHA: str | None = _read_code_sha()
 
 # ── Canonical candidate_universe status values ────────────────────────────────
 CAND_ACTIVE   = "active"
@@ -50,7 +69,8 @@ def migrate() -> None:
             input_snapshot_json  TEXT,
             started_at           REAL    NOT NULL,
             finished_at          REAL,
-            error                TEXT
+            error                TEXT,
+            code_commit_sha      TEXT
         );
 
         CREATE TABLE IF NOT EXISTS agent_findings (
@@ -560,6 +580,10 @@ def migrate() -> None:
         # 0339 — execution cost accounting
         ("trade_outcomes", "arrival_price",                            "REAL"),
         ("trade_outcomes", "implementation_shortfall",                 "REAL"),
+        # 0341 — git SHA provenance on decision chain anchors
+        ("agent_runs",        "code_commit_sha",  "TEXT"),
+        ("decision_episodes", "code_commit_sha",  "TEXT"),
+        ("trade_intents",     "code_commit_sha",  "TEXT"),
     ]
     for table, col, col_type in _new_cols:
         try:
@@ -689,7 +713,8 @@ def _migrate_trade_engine(conn: sqlite3.Connection) -> None:
             portfolio_snapshot_id TEXT,
             valid_until           TEXT,
             created_at            TEXT,
-            status                TEXT DEFAULT 'PENDING'
+            status                TEXT DEFAULT 'PENDING',
+            code_commit_sha       TEXT
         );
 
         CREATE TABLE IF NOT EXISTS risk_decisions (
@@ -853,7 +878,8 @@ def _migrate_learning_episodes(conn: sqlite3.Connection) -> None:
             portfolio_snapshot_json TEXT,
             base_score             REAL,
             challenger_score       REAL,
-            challenger_model_version TEXT
+            challenger_model_version TEXT,
+            code_commit_sha        TEXT
         );
 
         CREATE TABLE IF NOT EXISTS episode_outcomes (
@@ -882,6 +908,17 @@ def _migrate_learning_episodes(conn: sqlite3.Connection) -> None:
             raw_n                  INTEGER,
             lifecycle_state        TEXT DEFAULT 'TRAINED',
             promotion_gates_json   TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS model_promotion_log (
+            id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+            model_version               TEXT NOT NULL,
+            from_state                  TEXT NOT NULL,
+            to_state                    TEXT NOT NULL,
+            promoted_by                 TEXT NOT NULL,
+            promoted_at                 REAL NOT NULL,
+            promotion_reason            TEXT,
+            promotion_metrics_snapshot  TEXT
         );
 
         CREATE TABLE IF NOT EXISTS risk_counterfactual_outcomes (
@@ -1063,12 +1100,13 @@ def insert_agent_run(
     cur = conn.execute(
         """INSERT INTO agent_runs
            (agent_type, scope, ticker, trigger_type, trigger_key, status,
-            model, prompt_version, input_hash, input_snapshot_json, started_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            model, prompt_version, input_hash, input_snapshot_json, started_at,
+            code_commit_sha)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
         (agent_type, scope, ticker, trigger_type, trigger_key, "running",
          model, prompt_version, input_hash,
          json.dumps(input_snapshot) if input_snapshot else None,
-         time.time()),
+         time.time(), CODE_COMMIT_SHA),
     )
     run_id = cur.lastrowid
     conn.commit()

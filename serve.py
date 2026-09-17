@@ -5791,6 +5791,32 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             """, (cf_horizon,)).fetchall()
             risk_audit = [dict(r) for r in risk_rows]
 
+            # Active model card with uncertainty bands (0343)
+            active_model_row = conn.execute(
+                """SELECT model_version, lifecycle_state, training_n, unique_tickers,
+                          unique_decision_dates, created_at, validation_metrics
+                   FROM learning_models
+                   WHERE lifecycle_state = 'PAPER_ACTIVE'
+                   ORDER BY created_at DESC LIMIT 1"""
+            ).fetchone()
+            active_model_card = None
+            if active_model_row:
+                import json as _json
+                vm = _json.loads(active_model_row["validation_metrics"] or "{}")
+                active_model_card = {
+                    "model_version": active_model_row["model_version"],
+                    "lifecycle_state": active_model_row["lifecycle_state"],
+                    "training_n": active_model_row["training_n"],
+                    "unique_tickers": active_model_row["unique_tickers"],
+                    "unique_decision_dates": active_model_row["unique_decision_dates"],
+                    "cv_folds": vm.get("cv_folds"),
+                    "beats_baseline": vm.get("beats_baseline"),
+                    "top_vs_bottom_quintile_alpha": vm.get("top_vs_bottom_quintile_alpha"),
+                    "alpha_ci_low": vm.get("alpha_ci_low"),
+                    "alpha_ci_high": vm.get("alpha_ci_high"),
+                    "alpha_reliability": vm.get("alpha_reliability"),
+                }
+
             conn.close()
             self._json({
                 "ok": True,
@@ -5801,6 +5827,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 "feature_attribution": feature_attribution,
                 "llm_calibration": llm_calibration,
                 "risk_audit": risk_audit,
+                "active_model_card": active_model_card,
             })
         except Exception as e:
             self._json_error(500, str(e))

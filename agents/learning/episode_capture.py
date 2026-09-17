@@ -51,7 +51,7 @@ def capture_candidate_episode(
                 gross_margin, net_income_margin, sga_margin, capex_margin,
                 market_cap, layer_rec, sector, industry, value_trap_risk,
                 llm_model, prompt_version, feature_schema_version,
-                portfolio_snapshot_json, base_score
+                portfolio_snapshot_json, base_score, code_commit_sha
             ) VALUES (
                 ?,?,?,?,
                 NULL,0,
@@ -60,7 +60,7 @@ def capture_candidate_episode(
                 ?,?,?,?,
                 ?,?,?,?,?,
                 ?,?,?,
-                ?,?
+                ?,?,?
             )
             """,
             (
@@ -78,7 +78,7 @@ def capture_candidate_episode(
                 "mlx-community/Qwen3.6-35B-A3B-4bit",
                 "opportunity_hunter_v1",
                 _FEATURE_SCHEMA_VERSION,
-                snapshot_json, base_score,
+                snapshot_json, base_score, agent_db.CODE_COMMIT_SHA,
             ),
         )
         conn.commit()

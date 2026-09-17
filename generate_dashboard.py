@@ -3110,6 +3110,13 @@ def build_dashboard(portfolio, layers, holdings):
       <div id="learning-overview" style="color:#718096;font-size:13px;">Loading…</div>
     </div>
 
+    <!-- Active Model Card -->
+    <div style="background:#fff;border-radius:10px;padding:18px 22px;box-shadow:0 1px 4px rgba(0,0,0,.07);">
+      <h3 style="margin:0 0 4px;font-size:14px;font-weight:700;color:#2d3748;">Active Challenger Model</h3>
+      <p style="margin:0 0 12px;font-size:12px;color:#718096;">The PAPER_ACTIVE model and its expected alpha uncertainty band — wide bands mean limited confidence in the point estimate.</p>
+      <div id="learning-model-card" style="color:#718096;font-size:13px;">Loading…</div>
+    </div>
+
     <!-- Score Calibration -->
     <div style="background:#fff;border-radius:10px;padding:18px 22px;box-shadow:0 1px 4px rgba(0,0,0,.07);">
       <h3 style="margin:0 0 4px;font-size:14px;font-weight:700;color:#2d3748;">Score Calibration</h3>
@@ -8956,6 +8963,42 @@ function loadLearningPanel() {{
     riskEl.innerHTML = (d.risk_audit && d.risk_audit.length)
       ? _calTable(d.risk_audit, rCols)
       : '<span style="color:#a0aec0;font-style:italic;">No counterfactual data yet — outcomes are labeled for risk-rejected intents once 90 days have elapsed.</span>';
+
+    // Active model card with uncertainty bands (0343)
+    var modelCardEl = document.getElementById('learning-model-card');
+    if (modelCardEl) {{
+      var mc = d.active_model_card;
+      if (!mc) {{
+        modelCardEl.innerHTML = '<span style="color:#a0aec0;font-style:italic;">No PAPER_ACTIVE model yet.</span>';
+      }} else {{
+        var reliabilityColor = {{HIGH:'#38a169',MEDIUM:'#d69e2e',LOW:'#e53e3e',INSUFFICIENT_DATA:'#a0aec0'}};
+        var rel = mc.alpha_reliability || 'INSUFFICIENT_DATA';
+        var relColor = reliabilityColor[rel] || '#718096';
+        var q_spread = mc.top_vs_bottom_quintile_alpha;
+        var qPct = q_spread !== null && q_spread !== undefined ? ((q_spread*100).toFixed(2)+'%') : '—';
+        var ciLow  = mc.alpha_ci_low  !== null && mc.alpha_ci_low  !== undefined ? (mc.alpha_ci_low*100).toFixed(2)+'%' : null;
+        var ciHigh = mc.alpha_ci_high !== null && mc.alpha_ci_high !== undefined ? (mc.alpha_ci_high*100).toFixed(2)+'%' : null;
+        var ciStr  = (ciLow && ciHigh) ? (ciLow + ' – ' + ciHigh) : '—';
+        modelCardEl.innerHTML =
+          '<div style="display:flex;gap:20px;flex-wrap:wrap;align-items:flex-start;">' +
+          '<div>' +
+            '<div style="font-size:10px;color:#718096;text-transform:uppercase;margin-bottom:2px;">Model</div>' +
+            '<div style="font-size:14px;font-weight:700;color:#2d3748;">' + mc.model_version + '</div>' +
+            '<div style="font-size:11px;color:#718096;margin-top:2px;">' + mc.training_n + ' training rows · ' + (mc.unique_tickers||'?') + ' tickers · ' + (mc.cv_folds||0) + ' CV folds</div>' +
+          '</div>' +
+          '<div style="background:#f7fafc;border-radius:8px;padding:12px 16px;">' +
+            '<div style="font-size:10px;color:#718096;text-transform:uppercase;margin-bottom:4px;">Expected Alpha (Q-spread)</div>' +
+            '<div style="font-size:22px;font-weight:700;color:#2d3748;">' + qPct + '</div>' +
+            '<div style="font-size:12px;color:#4a5568;margin-top:2px;">90% CI: ' + ciStr + '</div>' +
+            '<div style="margin-top:6px;display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700;background:' + relColor + ';color:#fff;">Reliability: ' + rel + '</div>' +
+          '</div>' +
+          '<div>' +
+            '<div style="font-size:10px;color:#718096;text-transform:uppercase;margin-bottom:2px;">Beats Baseline</div>' +
+            '<div style="font-size:18px;font-weight:700;color:' + (mc.beats_baseline ? '#38a169' : '#e53e3e') + ';">' + (mc.beats_baseline ? 'Yes' : (mc.beats_baseline===false ? 'No' : '—')) + '</div>' +
+          '</div>' +
+          '</div>';
+      }}
+    }}
 
   }}).catch(function(e) {{
     if (overviewEl) overviewEl.innerHTML = '<span style="color:#fc8181;">Failed to load: ' + e.message + '</span>';

@@ -1,7 +1,7 @@
 # Model Promotion Approval Record
 
 - **ID:** 0342
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-17
 - **Priority:** normal
 - **Depends:** 0335
@@ -30,7 +30,11 @@ Recommend a separate `model_promotion_log` table rather than columns on `learnin
 
 ## Done when
 
-- [ ] `model_promotion_log` table exists with all fields above
-- [ ] `promote()` writes a log row for every successful state transition, including `promoted_by`, `promotion_reason`, and a JSON metrics snapshot
-- [ ] Query `SELECT * FROM model_promotion_log WHERE model_version=?` gives complete promotion history for any model
-- [ ] `python -m pytest tests/` passes with no regressions
+- [x] `model_promotion_log` table exists with all fields above
+- [x] `promote()` writes a log row for every successful state transition, including `promoted_by`, `promotion_reason`, and a JSON metrics snapshot
+- [x] Query `SELECT * FROM model_promotion_log WHERE model_version=?` gives complete promotion history for any model
+- [x] `python -m pytest tests/` passes with no regressions
+
+## Outcome
+
+2 files changed. `agent_db.py`: `model_promotion_log` table added (id, model_version, from_state, to_state, promoted_by, promoted_at, promotion_reason, promotion_metrics_snapshot). `agents/learning/calibration.py`: `promote()` signature gains `promoted_by: str = "manual"` and `promotion_reason: str = ""`; on every successful state transition, writes a log row including `promotion_metrics_snapshot` (JSON of gate values); failed promotions write no log row. 4 new tests in `TestModelPromotionLog0342` covering: log row written on success, metrics snapshot is valid JSON, three-step history produces three rows, failed promotion produces no log row. 820 passed.

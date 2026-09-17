@@ -1,7 +1,7 @@
 # Add Git Commit SHA to Decision/Fill Provenance Chain
 
 - **ID:** 0341
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-17
 - **Priority:** low
 - **Depends:** 0331
@@ -26,7 +26,11 @@ The system already persists `feature_schema_version`, `model_version`, `strategy
 
 ## Done when
 
-- [ ] `git rev-parse HEAD` is captured at run time and stored on `agent_runs`, `decision_episodes`, and `trade_intents`
-- [ ] Graceful fallback to `NULL` when not in a git repo (test environments)
-- [ ] Postmortem query `SELECT DISTINCT code_commit_sha FROM decision_episodes WHERE captured_at BETWEEN X AND Y` returns meaningful results
-- [ ] `python -m pytest tests/` passes with no regressions
+- [x] `git rev-parse HEAD` is captured at run time and stored on `agent_runs`, `decision_episodes`, and `trade_intents`
+- [x] Graceful fallback to `NULL` when not in a git repo (test environments)
+- [x] Postmortem query `SELECT DISTINCT code_commit_sha FROM decision_episodes WHERE captured_at BETWEEN X AND Y` returns meaningful results
+- [x] `python -m pytest tests/` passes with no regressions
+
+## Outcome
+
+5 files changed. `agent_db.py`: added `CODE_COMMIT_SHA` module constant (subprocess `git rev-parse HEAD`, None if not in a repo); `code_commit_sha TEXT` added to CREATE TABLE for `agent_runs`, `trade_intents`, `decision_episodes`, and to `_new_cols` migration list for existing DBs; `insert_agent_run()` writes the SHA. `agents/learning/episode_capture.py`: INSERT includes `code_commit_sha`. `trade_engine/models.py`: `TradeIntent` gains `code_commit_sha: Optional[str]` field; `to_db_dict()` and `from_db_row()` updated. `trade_engine/intent_builder.py`: imports `agent_db`; both `build_intent()` and `build_intent_from_variant()` pass `code_commit_sha=agent_db.CODE_COMMIT_SHA`. Tests in `tests/test_trade_engine.py` and `tests/test_broker_contract.py` updated with the new column. 5 new tests in `TestGitShaSHA0341`. 820 passed.

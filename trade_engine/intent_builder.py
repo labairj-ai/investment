@@ -11,6 +11,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
+import agent_db
 from .models import (
     InstrumentType,
     IntentStatus,
@@ -184,6 +185,7 @@ def build_intent_from_variant(
         status=IntentStatus.PENDING,
         episode_id=episode_id,
         decision_origin="PAPER_CHALLENGER",
+        code_commit_sha=agent_db.CODE_COMMIT_SHA,
     )
 
     d = intent.to_db_dict()
@@ -350,6 +352,7 @@ def build_intent(
         status=IntentStatus.PENDING,
         episode_id=episode_id,
         decision_origin="CHAMPION",
+        code_commit_sha=agent_db.CODE_COMMIT_SHA,
     )
 
     d = intent.to_db_dict()

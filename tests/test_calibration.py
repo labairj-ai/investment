@@ -800,3 +800,352 @@ class TestChampionChallengerExperiment0336:
         assert shadow_intent is not None, "Shadow intent not created"
         assert shadow_intent.symbol == "ANET", f"expected ANET, got {shadow_intent.symbol}"
         assert shadow_intent.decision_origin == "CHAMPION"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 0341 — Git SHA provenance
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _make_test_policy(account_id="SHADOW_TEST"):
+    """Module-level helper — builds a minimal TradingPolicy for SHA/calibration tests."""
+    import json
+    from trade_engine.policy import TradingPolicy
+    base = {
+        "policy_version": "1.0", "account_id": account_id,
+        "capital": {"starting_capital": 100000, "minimum_cash_pct": 5, "minimum_cash_abs": 500},
+        "equities": {"buy_allowed": True, "sell_allowed": True, "shorting_allowed": False,
+                     "max_single_position_pct": 20, "max_new_position_pct": 10},
+        "options": {"covered_calls_allowed": False, "naked_options_allowed": False,
+                    "max_contracts_per_symbol": 0},
+        "execution": {"market_orders_allowed": False, "max_orders_per_day": 5,
+                      "max_daily_notional_pct": 50, "max_slippage_pct": 1.0, "min_limit_price": 0.01},
+        "risk": {"max_drawdown_pct": 20, "max_daily_loss_pct": 5, "max_weekly_loss_pct": 10},
+        "circuit_breakers": {"trading_enabled": True, "halt_on_position_mismatch": False,
+                             "halt_on_data_stale_minutes": 1440, "halt_on_daily_loss_pct": 10},
+    }
+    return TradingPolicy(
+        policy_version=base["policy_version"], account_id=account_id,
+        capital=base["capital"], equities=base["equities"], options=base["options"],
+        execution=base["execution"], risk=base["risk"],
+        circuit_breakers=base["circuit_breakers"], _raw_json=json.dumps(base),
+    )
+
+
+class TestGitShaSHA0341:
+    def test_code_commit_sha_constant_is_string_or_none(self):
+        import agent_db
+        sha = agent_db.CODE_COMMIT_SHA
+        assert sha is None or (isinstance(sha, str) and len(sha) == 40)
+
+    def test_agent_run_has_code_commit_sha_column(self, mem_db, monkeypatch):
+        import agent_db
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        run_id = agent_db.insert_agent_run("test_agent", scope="portfolio")
+        conn = _make_conn(mem_db)
+        row = conn.execute("SELECT code_commit_sha FROM agent_runs WHERE id=?", (run_id,)).fetchone()
+        conn.close()
+        # Column exists and value is either the SHA or NULL (test env may not be in a git repo)
+        assert row is not None
+        sha = row["code_commit_sha"]
+        assert sha is None or (isinstance(sha, str) and len(sha) == 40)
+
+    def test_decision_episode_has_code_commit_sha_column(self, mem_db, monkeypatch):
+        """capture_candidate_episode writes code_commit_sha."""
+        import agent_db
+        from agents.learning.episode_capture import capture_candidate_episode
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        candidate = {
+            "ticker": "ANET", "_q": 80, "_v": 70, "_pf": 60, "_c": 65, "_ec": 75,
+            "_composite": 72, "quality_score": 80, "pe_ratio": 20, "p_fcf": 15,
+            "ev_ebitda": 12, "gross_margin": 0.6, "net_income_margin": 0.2,
+            "sga_margin": 0.1, "capex_margin": 0.05, "market_cap": 1e10,
+            "layer_rec": 3, "sector": "Tech", "industry": "Networks",
+            "value_trap_risk": "LOW",
+        }
+        ep_id = capture_candidate_episode(run_id=1, candidate=candidate)
+        conn = _make_conn(mem_db)
+        row = conn.execute(
+            "SELECT code_commit_sha FROM decision_episodes WHERE episode_id=?", (ep_id,)
+        ).fetchone()
+        conn.close()
+        assert row is not None
+
+    def test_trade_intent_has_code_commit_sha_column(self, mem_db, monkeypatch):
+        """build_intent writes code_commit_sha onto the TradeIntent."""
+        import agent_db
+        from trade_engine.intent_builder import build_intent
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+        # Override SHA to a known test value
+        monkeypatch.setattr(agent_db, "CODE_COMMIT_SHA", "a" * 40)
+
+        conn = _make_conn(mem_db)
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute("""INSERT INTO trading_accounts
+            (account_id, mode, current_cash, created_at)
+            VALUES ('SHADOW_SHA', 'shadow', 100000, 1000000)""")
+        ep_id = str(uuid.uuid4())
+        conn.execute("""INSERT INTO decision_episodes
+            (episode_id, run_id, ticker, captured_at, composite_score, feature_schema_version)
+            VALUES (?, 1, 'ANET', 1000000, 72, 'v1')""", (ep_id,))
+        conn.execute("""INSERT INTO recommendations
+            (id, run_id, ticker, action, status, recommendation_score, episode_id,
+             action_payload_json, created_at)
+            VALUES (9999, 1, 'ANET', 'BUY', 'accepted', 72, ?, '{"price":200.0,"quantity":5}', 1000000)""", (ep_id,))
+        conn.commit()
+
+        policy = _make_test_policy("SHADOW_SHA")
+        intent = build_intent(9999, "SHADOW_SHA", policy, conn)
+        conn.close()
+
+        assert intent is not None
+        assert intent.code_commit_sha == "a" * 40
+
+    def test_code_commit_sha_written_to_db(self, mem_db, monkeypatch):
+        """code_commit_sha on the intent is persisted in trade_intents table."""
+        import agent_db
+        from trade_engine.intent_builder import build_intent
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+        monkeypatch.setattr(agent_db, "CODE_COMMIT_SHA", "b" * 40)
+
+        conn = _make_conn(mem_db)
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute("""INSERT INTO trading_accounts
+            (account_id, mode, current_cash, created_at)
+            VALUES ('SHADOW_SHA2', 'shadow', 100000, 1000000)""")
+        ep_id = str(uuid.uuid4())
+        conn.execute("""INSERT INTO decision_episodes
+            (episode_id, run_id, ticker, captured_at, composite_score, feature_schema_version)
+            VALUES (?, 1, 'GRMN', 1000000, 70, 'v1')""", (ep_id,))
+        conn.execute("""INSERT INTO recommendations
+            (id, run_id, ticker, action, status, recommendation_score, episode_id,
+             action_payload_json, created_at)
+            VALUES (9998, 1, 'GRMN', 'BUY', 'accepted', 70, ?, '{"price":150.0,"quantity":5}', 1000000)""", (ep_id,))
+        conn.commit()
+
+        policy = _make_test_policy("SHADOW_SHA2")
+        build_intent(9998, "SHADOW_SHA2", policy, conn)
+        row = conn.execute(
+            "SELECT code_commit_sha FROM trade_intents WHERE recommendation_id=9998"
+        ).fetchone()
+        conn.close()
+        assert row is not None
+        assert row["code_commit_sha"] == "b" * 40
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 0342 — Model promotion approval record
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestModelPromotionLog0342:
+    def _seed_promotable_model(self, conn, model_version: str) -> None:
+        conn.execute(
+            """INSERT INTO learning_models
+               (model_version, training_cutoff, feature_schema_hash, training_n,
+                validation_metrics, created_at, unique_tickers, unique_decision_dates,
+                unique_weeks, lifecycle_state)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (model_version, "2026-01-01", "abc", 50,
+             '{"cv_folds":2,"beats_baseline":true}',
+             time.time(), 15, 35, 6, "TRAINED"),
+        )
+        conn.commit()
+
+    def test_promote_writes_log_row(self, mem_db, monkeypatch):
+        import agent_db
+        from agents.learning.calibration import promote
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        self._seed_promotable_model(conn, "edge_v001")
+        conn.close()
+
+        result = promote("edge_v001", "OBSERVE", promoted_by="pytest", promotion_reason="test run")
+        assert result["promoted"] is True
+
+        conn = _make_conn(mem_db)
+        log = conn.execute(
+            "SELECT * FROM model_promotion_log WHERE model_version='edge_v001'"
+        ).fetchone()
+        conn.close()
+        assert log is not None
+        assert log["from_state"] == "TRAINED"
+        assert log["to_state"] == "OBSERVE"
+        assert log["promoted_by"] == "pytest"
+        assert log["promotion_reason"] == "test run"
+
+    def test_promotion_log_has_metrics_snapshot(self, mem_db, monkeypatch):
+        import agent_db, json
+        from agents.learning.calibration import promote
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        self._seed_promotable_model(conn, "edge_v002")
+        conn.close()
+
+        promote("edge_v002", "OBSERVE", promoted_by="auto", force=True)
+        conn = _make_conn(mem_db)
+        log = conn.execute(
+            "SELECT promotion_metrics_snapshot FROM model_promotion_log WHERE model_version='edge_v002'"
+        ).fetchone()
+        conn.close()
+        assert log is not None
+        snapshot = json.loads(log["promotion_metrics_snapshot"] or "{}")
+        assert isinstance(snapshot, dict)
+
+    def test_multiple_promotions_produce_multiple_log_rows(self, mem_db, monkeypatch):
+        import agent_db
+        from agents.learning.calibration import promote
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        self._seed_promotable_model(conn, "edge_v003")
+        conn.close()
+
+        promote("edge_v003", "OBSERVE", promoted_by="user1", force=True)
+        promote("edge_v003", "PAPER_ACTIVE", promoted_by="user2", force=True)
+        promote("edge_v003", "RETIRED", promoted_by="system", force=True)
+
+        conn = _make_conn(mem_db)
+        rows = conn.execute(
+            "SELECT from_state, to_state FROM model_promotion_log WHERE model_version='edge_v003' ORDER BY id"
+        ).fetchall()
+        conn.close()
+        transitions = [(r["from_state"], r["to_state"]) for r in rows]
+        assert len(transitions) == 3
+        assert transitions[0] == ("TRAINED", "OBSERVE")
+        assert transitions[1] == ("OBSERVE", "PAPER_ACTIVE")
+        assert transitions[2] == ("PAPER_ACTIVE", "RETIRED")
+
+    def test_failed_promotion_does_not_write_log(self, mem_db, monkeypatch):
+        import agent_db
+        from agents.learning.calibration import promote
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        # Model with insufficient data — will fail gates
+        conn.execute(
+            """INSERT INTO learning_models
+               (model_version, training_n, validation_metrics, created_at,
+                unique_tickers, unique_decision_dates, unique_weeks, lifecycle_state)
+               VALUES ('edge_v004', 10,
+                '{"cv_folds":0,"beats_baseline":false}',
+                1000000, 3, 5, 1, 'TRAINED')""",
+        )
+        conn.commit()
+        conn.close()
+
+        result = promote("edge_v004", "OBSERVE", promoted_by="pytest")
+        assert result["promoted"] is False
+
+        conn = _make_conn(mem_db)
+        count = conn.execute(
+            "SELECT COUNT(*) FROM model_promotion_log WHERE model_version='edge_v004'"
+        ).fetchone()[0]
+        conn.close()
+        assert count == 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 0343 — Challenger alpha uncertainty bands
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestAlphaUncertaintyBands0343:
+    def test_bootstrap_ci_with_sufficient_folds(self):
+        from agents.learning.calibration import _bootstrap_alpha_ci
+
+        folds = [
+            {"top_vs_bottom_quintile_alpha": 0.03},
+            {"top_vs_bottom_quintile_alpha": 0.04},
+            {"top_vs_bottom_quintile_alpha": 0.02},
+            {"top_vs_bottom_quintile_alpha": 0.05},
+            {"top_vs_bottom_quintile_alpha": 0.03},
+        ]
+        result = _bootstrap_alpha_ci(folds)
+        assert result["alpha_ci_low"] is not None
+        assert result["alpha_ci_high"] is not None
+        assert result["alpha_ci_low"] <= result["alpha_ci_high"]
+        assert result["alpha_reliability"] in ("HIGH", "MEDIUM", "LOW")
+
+    def test_ci_bounds_bracket_mean(self):
+        from agents.learning.calibration import _bootstrap_alpha_ci
+
+        folds = [{"top_vs_bottom_quintile_alpha": v}
+                 for v in [0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07]]
+        result = _bootstrap_alpha_ci(folds)
+        mean_val = sum(f["top_vs_bottom_quintile_alpha"] for f in folds) / len(folds)
+        # CI should bracket the mean (10th–90th percentile always includes mean)
+        assert result["alpha_ci_low"] <= mean_val <= result["alpha_ci_high"], (
+            f"CI [{result['alpha_ci_low']}, {result['alpha_ci_high']}] doesn't include mean {mean_val}"
+        )
+
+    def test_insufficient_folds_returns_none(self):
+        from agents.learning.calibration import _bootstrap_alpha_ci
+
+        result = _bootstrap_alpha_ci([{"top_vs_bottom_quintile_alpha": 0.03}])
+        assert result["alpha_ci_low"] is None
+        assert result["alpha_ci_high"] is None
+        assert result["alpha_reliability"] == "INSUFFICIENT_DATA"
+
+    def test_no_folds_returns_insufficient(self):
+        from agents.learning.calibration import _bootstrap_alpha_ci
+
+        result = _bootstrap_alpha_ci([])
+        assert result["alpha_reliability"] == "INSUFFICIENT_DATA"
+
+    def test_validation_metrics_includes_ci_fields(self, mem_db, monkeypatch):
+        """After training with enough data, validation_metrics contains CI fields."""
+        import agent_db
+        from agents.learning.calibration import ChallengerModel
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        _seed_episodes(conn, 60, with_outcomes=True, noise=0.05)
+        conn.close()
+
+        model = ChallengerModel.train()
+        if model is None:
+            pytest.skip("Insufficient training data in synthetic seed")
+
+        vm = model.validation_metrics
+        assert "alpha_ci_low" in vm
+        assert "alpha_ci_high" in vm
+        assert "alpha_reliability" in vm
+
+    def test_ci_ordering_low_le_high(self, mem_db, monkeypatch):
+        import agent_db
+        from agents.learning.calibration import ChallengerModel
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        _seed_episodes(conn, 60, with_outcomes=True, noise=0.05)
+        conn.close()
+
+        model = ChallengerModel.train()
+        if model is None:
+            pytest.skip("Insufficient training data in synthetic seed")
+
+        vm = model.validation_metrics
+        ci_low  = vm.get("alpha_ci_low")
+        ci_high = vm.get("alpha_ci_high")
+        if ci_low is not None and ci_high is not None:
+            assert ci_low <= ci_high, f"CI inverted: low={ci_low} high={ci_high}"
+
+    def test_high_reliability_when_spread_tight(self):
+        from agents.learning.calibration import _bootstrap_alpha_ci
+
+        # Identical values → zero variance → band width ≈ 0 → HIGH
+        folds = [{"top_vs_bottom_quintile_alpha": 0.03} for _ in range(10)]
+        result = _bootstrap_alpha_ci(folds)
+        assert result["alpha_reliability"] == "HIGH"

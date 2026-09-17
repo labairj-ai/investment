@@ -45,6 +45,10 @@ MAX_CV_FOLDS        = 10        # cap walk-forward iterations
 FEATURES            = ["q_score", "v_score", "pf_score", "c_score", "ec_score"]
 FEATURE_SCHEMA_VER  = "v1"
 
+# 0343 — uncertainty band thresholds for alpha CI width classification
+ALPHA_CI_HIGH_THRESHOLD   = 0.02   # band width < 2% → HIGH reliability
+ALPHA_CI_MEDIUM_THRESHOLD = 0.05   # band width < 5% → MEDIUM; else LOW
+
 # Lifecycle states — explicit promotion gates required between each (0335)
 LIFECYCLE_TRAINED      = "TRAINED"
 LIFECYCLE_OBSERVE      = "OBSERVE"
@@ -241,6 +245,9 @@ class ChallengerModel:
         # Decision-date cohort walk-forward cross-validation (0334)
         folds = _cv_walk_forward(X, y, dates, ridge_alpha)
 
+        # Bootstrap uncertainty bands for expected alpha (0343)
+        ci = _bootstrap_alpha_ci(folds)
+
         fold_maes      = [f["mae"] for f in folds]
         fold_baselines = [f["baseline_mae"] for f in folds]
 
@@ -284,6 +291,10 @@ class ChallengerModel:
             "unique_decision_dates":    len(unique_dates),
             "unique_weeks":             unique_weeks,
             "raw_n":                    n,
+            # 0343 — uncertainty bands
+            "alpha_ci_low":             ci["alpha_ci_low"],
+            "alpha_ci_high":            ci["alpha_ci_high"],
+            "alpha_reliability":        ci["alpha_reliability"],
         }
 
         return cls(
@@ -344,6 +355,48 @@ def _iso_week(date_str: str) -> str:
     d = _date.fromisoformat(date_str)
     iso = d.isocalendar()
     return f"{iso[0]:04d}-W{iso[1]:02d}"
+
+
+def _bootstrap_alpha_ci(
+    folds: list[dict],
+    n_iter: int = 1000,
+    rng_seed: int = 42,
+) -> dict:
+    """Bootstrap 10th/90th percentile CI over fold-level mean alphas (0343).
+
+    Resamples fold Q/B spread values (top_vs_bottom_quintile_alpha) with
+    replacement. Returns alpha_ci_low, alpha_ci_high, alpha_reliability.
+    INSUFFICIENT_DATA returned when < 2 folds have a spread value.
+    """
+    spreads = [f["top_vs_bottom_quintile_alpha"]
+               for f in folds if f.get("top_vs_bottom_quintile_alpha") is not None]
+    if len(spreads) < 2:
+        return {
+            "alpha_ci_low": None,
+            "alpha_ci_high": None,
+            "alpha_reliability": "INSUFFICIENT_DATA",
+        }
+
+    rng = np.random.default_rng(rng_seed)
+    arr = np.array(spreads)
+    boot_means = [float(rng.choice(arr, size=len(arr), replace=True).mean())
+                  for _ in range(n_iter)]
+    ci_low  = float(np.percentile(boot_means, 10))
+    ci_high = float(np.percentile(boot_means, 90))
+    band_width = ci_high - ci_low
+
+    if band_width < ALPHA_CI_HIGH_THRESHOLD:
+        reliability = "HIGH"
+    elif band_width < ALPHA_CI_MEDIUM_THRESHOLD:
+        reliability = "MEDIUM"
+    else:
+        reliability = "LOW"
+
+    return {
+        "alpha_ci_low": round(ci_low, 6),
+        "alpha_ci_high": round(ci_high, 6),
+        "alpha_reliability": reliability,
+    }
 
 
 def _cv_walk_forward(
@@ -498,11 +551,15 @@ def promote(
     model_version: str,
     target_state: str,
     force: bool = False,
+    promoted_by: str = "manual",
+    promotion_reason: str = "",
 ) -> dict:
-    """Advance lifecycle_state with gate validation (0335).
+    """Advance lifecycle_state with gate validation (0335/0342).
 
     target_state: OBSERVE | PAPER_ACTIVE | RETIRED
     force=True skips gate checks (use for RETIRED).
+    promoted_by: identifier for who/what triggered the promotion (0342).
+    promotion_reason: free-text note captured at promotion time (0342).
     Returns {"promoted": bool, "new_state": str, "gates": dict}.
     """
     valid_transitions = {
@@ -546,6 +603,18 @@ def promote(
     conn.execute(
         "UPDATE learning_models SET lifecycle_state=?, promotion_gates_json=? WHERE model_version=?",
         (target_state, json.dumps(gate_result["gates"]), model_version),
+    )
+    # 0342: write promotion log row with full metrics snapshot
+    conn.execute(
+        """INSERT INTO model_promotion_log
+           (model_version, from_state, to_state, promoted_by, promoted_at,
+            promotion_reason, promotion_metrics_snapshot)
+           VALUES (?,?,?,?,?,?,?)""",
+        (
+            model_version, current, target_state, promoted_by,
+            time.time(), promotion_reason,
+            json.dumps(gate_result["gates"]),
+        ),
     )
     conn.commit()
     conn.close()
