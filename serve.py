@@ -1957,6 +1957,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             _h = parse_qs(parsed.query).get("horizon", ["3m"])[0]
             _horizon = _h if _h in _valid_horizons else "3m"
             self._handle_learning_stats(_horizon)
+        elif parsed.path == "/api/learning/champion-challenger":
+            self._handle_champion_challenger()
         # ── Alpaca paper account endpoints ────────────────────────────────────
         elif parsed.path == "/api/alpaca/account":
             self._handle_alpaca_account()
@@ -5844,6 +5846,81 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         finally:
             if conn is not None:
                 conn.close()
+
+    # ── Champion/Challenger comparison handler ────────────────────────────────
+
+    def _handle_champion_challenger(self):
+        """GET /api/learning/champion-challenger — side-by-side champion vs challenger stats (0336)."""
+        try:
+            conn = self._shadow_conn()
+            conn.row_factory = lambda c, r: dict(zip([col[0] for col in c.description], r))
+            try:
+                def _stats(rows):
+                    if not rows:
+                        return {"n": 0, "alpha_mean": None, "hit_rate": None, "mae_mean": None, "mfe_mean": None}
+                    n = len(rows)
+                    alphas = [r["alpha_3m"] for r in rows if r.get("alpha_3m") is not None]
+                    maes = [r["mae_pct"] for r in rows if r.get("mae_pct") is not None]
+                    mfes = [r["mfe_pct"] for r in rows if r.get("mfe_pct") is not None]
+                    returns = [r["return_3m"] for r in rows if r.get("return_3m") is not None]
+                    alpha_mean = sum(alphas) / len(alphas) if alphas else None
+                    hit_rate = sum(1 for a in alphas if a > 0) / len(alphas) if alphas else None
+                    mae_mean = sum(maes) / len(maes) if maes else None
+                    mfe_mean = sum(mfes) / len(mfes) if mfes else None
+                    return_mean = sum(returns) / len(returns) if returns else None
+                    return {
+                        "n": n,
+                        "n_labeled": len(alphas),
+                        "alpha_mean": alpha_mean,
+                        "hit_rate": hit_rate,
+                        "mae_mean": mae_mean,
+                        "mfe_mean": mfe_mean,
+                        "return_mean": return_mean,
+                    }
+
+                champ_rows = conn.execute(
+                    """SELECT to2.alpha_3m, to2.mae_pct, to2.mfe_pct, to2.return_3m
+                       FROM trade_outcomes to2
+                       JOIN trade_intents ti ON to2.intent_id = ti.intent_id
+                       WHERE ti.decision_origin = 'CHAMPION'
+                       ORDER BY to2.created_at DESC LIMIT 500"""
+                ).fetchall()
+
+                chal_rows = conn.execute(
+                    """SELECT to2.alpha_3m, to2.mae_pct, to2.mfe_pct, to2.return_3m
+                       FROM trade_outcomes to2
+                       JOIN trade_intents ti ON to2.intent_id = ti.intent_id
+                       WHERE ti.decision_origin = 'PAPER_CHALLENGER'
+                       ORDER BY to2.created_at DESC LIMIT 500"""
+                ).fetchall()
+
+                variant_count = conn.execute(
+                    "SELECT COUNT(*) as n FROM decision_variants"
+                ).fetchone()["n"]
+
+                would_have_diverged = conn.execute(
+                    "SELECT COUNT(*) as n FROM decision_variants WHERE would_have_selected=1"
+                ).fetchone()["n"]
+
+                active_model = conn.execute(
+                    """SELECT model_version, lifecycle_state, training_n, unique_tickers,
+                              unique_decision_dates, created_at
+                       FROM learning_models
+                       WHERE lifecycle_state = 'PAPER_ACTIVE'
+                       ORDER BY created_at DESC LIMIT 1"""
+                ).fetchone()
+
+                self._json({
+                    "champion": _stats(champ_rows),
+                    "challenger": _stats(chal_rows),
+                    "variants_recorded": variant_count,
+                    "variants_would_diverge": would_have_diverged,
+                    "active_model": active_model,
+                })
+            finally:
+                conn.close()
+        except Exception as e:
+            self._json_error(500, str(e))
 
     # ── Alpaca paper account handlers ─────────────────────────────────────────
 

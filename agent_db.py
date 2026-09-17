@@ -887,6 +887,20 @@ def _migrate_learning_episodes(conn: sqlite3.Connection) -> None:
             UNIQUE(intent_id, horizon)
         );
 
+        CREATE TABLE IF NOT EXISTS decision_variants (
+            id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+            recommendation_id        INTEGER,
+            episode_id               TEXT,
+            origin                   TEXT DEFAULT 'PAPER_CHALLENGER',
+            challenger_model_version TEXT,
+            challenger_score         REAL,
+            challenger_adjustment    REAL,
+            would_have_selected      INTEGER DEFAULT 0,
+            champion_ticker          TEXT,
+            variant_ticker           TEXT,
+            created_at               REAL
+        );
+
         CREATE TABLE IF NOT EXISTS trade_outcomes (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
             fill_id         TEXT UNIQUE REFERENCES fills(fill_id),

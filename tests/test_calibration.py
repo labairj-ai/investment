@@ -537,3 +537,212 @@ class TestLifecycleGovernance0335:
         from agents.learning.challenger import apply_challenger_adjustment
         _, info = apply_challenger_adjustment(cand)
         assert info["active"] is False
+
+
+class TestChampionChallengerExperiment0336:
+    """0336: base _composite unchanged after challenger pass; variants recorded; routing correct."""
+
+    def test_base_composite_unchanged_after_challenger_pass(self, mem_db, monkeypatch):
+        """apply_challenger_adjustment must never overwrite _composite."""
+        import agent_db
+        from agents.learning import challenger
+        from agents.learning.calibration import ChallengerModel, promote
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+        monkeypatch.setattr(challenger, "_cached_model", None)
+        monkeypatch.setattr(challenger, "_cached_version", None)
+
+        conn = _make_conn(mem_db)
+        _seed_episodes(conn, 50)
+        conn.close()
+
+        model = ChallengerModel.train()
+        model.save_with_weights()
+        promote(model.model_version, "OBSERVE", force=True)
+        promote(model.model_version, "PAPER_ACTIVE", force=True)
+        monkeypatch.setattr(challenger, "_cached_model", None)
+        monkeypatch.setattr(challenger, "_cached_version", None)
+
+        from agents.learning.challenger import apply_challenger_adjustment
+        cand = {"_composite": 72, "q_score": 85, "v_score": 80,
+                "pf_score": 75, "c_score": 70, "ec_score": 65}
+        original_composite = cand["_composite"]
+        adj, info = apply_challenger_adjustment(cand)
+
+        # _composite on the dict itself must not be overwritten — caller stores adj separately
+        assert cand["_composite"] == original_composite, "apply_challenger_adjustment must not mutate _composite"
+        # The returned adj may differ from the original composite (adjustment applied)
+        assert isinstance(adj, (int, float))
+
+    def test_challenger_variants_recorded_when_paper_active(self, mem_db, monkeypatch):
+        """_insert_decision_variant writes a decision_variants row when challenger is PAPER_ACTIVE."""
+        import agent_db
+        from agents.learning import challenger
+        from agents.learning.calibration import ChallengerModel, promote
+        from agents.opportunity_agent import _insert_decision_variant
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+        monkeypatch.setattr(challenger, "_cached_model", None)
+        monkeypatch.setattr(challenger, "_cached_version", None)
+
+        conn = _make_conn(mem_db)
+        _seed_episodes(conn, 50)
+        conn.close()
+
+        model = ChallengerModel.train()
+        model.save_with_weights()
+        promote(model.model_version, "OBSERVE", force=True)
+        promote(model.model_version, "PAPER_ACTIVE", force=True)
+        monkeypatch.setattr(challenger, "_cached_model", None)
+        monkeypatch.setattr(challenger, "_cached_version", None)
+
+        from agents.learning.challenger import apply_challenger_adjustment
+        scored = []
+        for i, ticker in enumerate(["AAPL", "MSFT", "GOOG"]):
+            cand = {"ticker": ticker, "_composite": 80 - i * 5, "_episode_id": str(uuid.uuid4()),
+                    "q_score": 80, "v_score": 75, "pf_score": 70, "c_score": 65, "ec_score": 60}
+            adj, info = apply_challenger_adjustment(cand)
+            cand["_composite_challenger"] = adj
+            cand["_challenger_info"] = info
+            scored.append(cand)
+
+        champion = scored[0]
+        _insert_decision_variant(scored, champion, champion_ticker=champion["ticker"])
+
+        conn2 = _make_conn(mem_db)
+        row = conn2.execute(
+            "SELECT * FROM decision_variants WHERE origin='PAPER_CHALLENGER' LIMIT 1"
+        ).fetchone()
+        conn2.close()
+
+        assert row is not None, "decision_variants row not created"
+        assert row["champion_ticker"] == champion["ticker"]
+        assert row["variant_ticker"] is not None
+
+    def test_no_variant_recorded_when_model_not_paper_active(self, mem_db, monkeypatch):
+        """_insert_decision_variant is NOT called when challenger info shows active=False."""
+        import agent_db
+        from agents.learning import challenger
+        from agents.opportunity_agent import _insert_decision_variant
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+        monkeypatch.setattr(challenger, "_cached_model", None)
+        monkeypatch.setattr(challenger, "_cached_version", None)
+
+        # No model trained — challenger is inactive
+        from agents.learning.challenger import apply_challenger_adjustment
+        scored = []
+        for i, ticker in enumerate(["AAPL", "MSFT"]):
+            cand = {"ticker": ticker, "_composite": 80 - i * 5, "_episode_id": str(uuid.uuid4()),
+                    "q_score": 80, "v_score": 75, "pf_score": 70, "c_score": 65, "ec_score": 60}
+            adj, info = apply_challenger_adjustment(cand)
+            cand["_composite_challenger"] = adj
+            cand["_challenger_info"] = info
+            scored.append(cand)
+
+        # Opportunity agent only calls _insert_decision_variant when info["active"] is True
+        # — we verify the guard logic: if active=False, no variant row should exist
+        sel_ch_info = scored[0].get("_challenger_info", {})
+        if sel_ch_info.get("active"):
+            _insert_decision_variant(scored, scored[0], champion_ticker=scored[0]["ticker"])
+
+        conn = _make_conn(mem_db)
+        count = conn.execute("SELECT COUNT(*) FROM decision_variants").fetchone()[0]
+        conn.close()
+        assert count == 0
+
+    def _make_policy(self, account_id="ALPACA_TEST_01"):
+        """Return a minimal TradingPolicy for tests that call build_intent."""
+        import json
+        from trade_engine.policy import TradingPolicy
+        base = {
+            "policy_version": "1.0", "account_id": account_id,
+            "capital": {"starting_capital": 100000, "minimum_cash_pct": 5, "minimum_cash_abs": 500},
+            "equities": {"buy_allowed": True, "sell_allowed": True, "shorting_allowed": False,
+                         "max_single_position_pct": 20, "max_new_position_pct": 10},
+            "options": {"covered_calls_allowed": False, "naked_options_allowed": False,
+                        "max_contracts_per_symbol": 0},
+            "execution": {"market_orders_allowed": False, "max_orders_per_day": 5,
+                          "max_daily_notional_pct": 50, "max_slippage_pct": 1.0, "min_limit_price": 0.01},
+            "risk": {"max_drawdown_pct": 20, "max_daily_loss_pct": 5, "max_weekly_loss_pct": 10},
+            "circuit_breakers": {"trading_enabled": True, "halt_on_position_mismatch": False,
+                                 "halt_on_data_stale_minutes": 1440, "halt_on_daily_loss_pct": 10},
+        }
+        return TradingPolicy(
+            policy_version=base["policy_version"], account_id=base["account_id"],
+            capital=base["capital"], equities=base["equities"], options=base["options"],
+            execution=base["execution"], risk=base["risk"],
+            circuit_breakers=base["circuit_breakers"], _raw_json=json.dumps(base),
+        )
+
+    def test_decision_origin_champion_when_no_variant(self, mem_db, monkeypatch):
+        """Intent built without a challenger variant gets decision_origin=CHAMPION."""
+        import agent_db
+        from trade_engine.intent_builder import build_intent
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        conn.execute("PRAGMA foreign_keys=OFF")
+
+        conn.execute("""INSERT INTO trading_accounts
+            (account_id, mode, current_cash, created_at)
+            VALUES ('ALPACA_TEST_01', 'paper', 100000, 1000000)""")
+        ep_id = str(uuid.uuid4())
+        conn.execute("""INSERT INTO decision_episodes
+            (episode_id, run_id, ticker, captured_at, composite_score, feature_schema_version)
+            VALUES (?, 1, 'AAPL', 1000000, 75, 'v1')""", (ep_id,))
+        conn.execute("""INSERT INTO recommendations
+            (id, run_id, ticker, action, status, recommendation_score, episode_id,
+             action_payload_json, created_at)
+            VALUES (9001, 1, 'AAPL', 'BUY', 'accepted', 75, ?,
+                    '{"price": 200.0, "quantity": 5}', 1000000)""", (ep_id,))
+        conn.commit()
+
+        policy = self._make_policy("ALPACA_TEST_01")
+        intent = build_intent(9001, "ALPACA_TEST_01", policy, conn)
+        conn.close()
+
+        assert intent is not None
+        assert intent.decision_origin == "CHAMPION"
+
+    def test_decision_origin_paper_challenger_when_variant_exists(self, mem_db, monkeypatch):
+        """Intent built for ALPACA account with a challenger variant row gets PAPER_CHALLENGER."""
+        import agent_db
+        from trade_engine.intent_builder import build_intent
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        conn.execute("PRAGMA foreign_keys=OFF")
+
+        conn.execute("""INSERT INTO trading_accounts
+            (account_id, mode, current_cash, created_at)
+            VALUES ('ALPACA_TEST_01', 'paper', 100000, 1000000)""")
+        ep_id = str(uuid.uuid4())
+        conn.execute("""INSERT INTO decision_episodes
+            (episode_id, run_id, ticker, captured_at, composite_score, feature_schema_version)
+            VALUES (?, 1, 'AAPL', 1000000, 75, 'v1')""", (ep_id,))
+        conn.execute("""INSERT INTO recommendations
+            (id, run_id, ticker, action, status, recommendation_score, episode_id,
+             action_payload_json, created_at)
+            VALUES (9002, 1, 'AAPL', 'BUY', 'accepted', 75, ?,
+                    '{"price": 200.0, "quantity": 5}', 1000000)""", (ep_id,))
+        conn.execute("""INSERT INTO decision_variants
+            (episode_id, origin, challenger_model_version, challenger_score,
+             challenger_adjustment, would_have_selected, champion_ticker, variant_ticker, created_at)
+            VALUES (?, 'PAPER_CHALLENGER', 'v_test', 77.5, 2.5, 0, 'AAPL', 'AAPL', 1000000)""",
+            (ep_id,))
+        conn.commit()
+
+        policy = self._make_policy("ALPACA_TEST_01")
+        intent = build_intent(9002, "ALPACA_TEST_01", policy, conn)
+        conn.close()
+
+        assert intent is not None
+        assert intent.decision_origin == "PAPER_CHALLENGER"

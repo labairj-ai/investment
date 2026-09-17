@@ -184,7 +184,18 @@ def build_intent(
     # 0331: propagate episode_id and decision_origin from the source recommendation
     rec_keys = rec.keys() if hasattr(rec, "keys") else []
     episode_id = rec["episode_id"] if "episode_id" in rec_keys else None
-    decision_origin = "CHAMPION"  # 0336 will route challenger variants differently
+
+    # 0336: for Alpaca paper account, mark as PAPER_CHALLENGER if a challenger variant exists
+    # (no-op until a model reaches PAPER_ACTIVE state)
+    decision_origin = "CHAMPION"
+    if episode_id and "ALPACA" in account_id.upper():
+        variant_row = conn.execute(
+            """SELECT id FROM decision_variants
+               WHERE episode_id=? AND origin='PAPER_CHALLENGER' LIMIT 1""",
+            (episode_id,),
+        ).fetchone()
+        if variant_row:
+            decision_origin = "PAPER_CHALLENGER"
 
     now = _now_utc().isoformat()
     # Use market_calendar for valid_until so weekends/holidays are skipped (0203)

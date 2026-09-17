@@ -502,6 +502,10 @@ def run_opportunity_hunter(ctx: AgentContext) -> list[Recommendation]:
             challenger_model_version=sel_ch_info.get("model_version"),
         )
 
+    # 0336: record decision_variant if challenger is PAPER_ACTIVE
+    if sel_ch_info.get("active"):
+        _insert_decision_variant(scored, selected, champion_ticker=selected.get("ticker"))
+
     # Assemble recommendation
     meta = selected.get("_pf_meta", {})
     layer_rec   = selected.get("layer_rec")
@@ -723,6 +727,53 @@ def score_for_comparison(db_candidates: list[dict]) -> dict:
         "candidates": scored,
         "recommendation": rec,
     }
+
+
+def _insert_decision_variant(
+    scored: list[dict],
+    champion: dict,
+    champion_ticker: str,
+) -> None:
+    """Insert a decision_variant row recording challenger's selection vs champion (0336).
+
+    Runs only when the challenger is PAPER_ACTIVE (caller checks info["active"]).
+    Records which candidate the challenger would have selected (highest _composite_challenger),
+    and whether that differs from the champion.
+    """
+    try:
+        # Sort by challenger-adjusted score to find challenger's top pick
+        ch_sorted = sorted(scored, key=lambda x: x.get("_composite_challenger", 0), reverse=True)
+        ch_top = ch_sorted[0] if ch_sorted else None
+        if not ch_top:
+            return
+
+        ch_info = ch_top.get("_challenger_info", {})
+        would_select = ch_top.get("ticker") if ch_top else None
+        matches_champion = would_select == champion_ticker
+
+        conn = agent_db._connect()
+        conn.execute(
+            """INSERT INTO decision_variants
+               (episode_id, origin, challenger_model_version,
+                challenger_score, challenger_adjustment,
+                would_have_selected, champion_ticker, variant_ticker, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (
+                champion.get("_episode_id"),
+                "PAPER_CHALLENGER",
+                ch_info.get("model_version"),
+                float(ch_top.get("_composite_challenger", 0)) if ch_top else None,
+                float(ch_info.get("learning_adjustment", 0)),
+                0 if matches_champion else 1,
+                champion_ticker,
+                would_select,
+                time.time(),
+            ),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[opportunity] WARNING: failed to insert decision_variant: {e}")
 
 
 register_agent("opportunity_hunter", run_opportunity_hunter)

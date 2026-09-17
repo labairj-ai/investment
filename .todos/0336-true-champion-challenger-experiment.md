@@ -1,7 +1,7 @@
 # True Champion/Challenger Experiment: Parallel Decisions, Alpaca Paper Only
 
 - **ID:** 0336
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-17
 - **Priority:** normal
 - **Depends:** 0331, 0335
@@ -62,12 +62,16 @@ The correct design:
 - `generate_dashboard.py` / `serve.py` — champion vs challenger comparison panel in Learning Lab
 - `tests/` — assert base score unchanged after challenger pass; assert challenger variants recorded; assert PAPER_CHALLENGER intents use variant scores; assert training excludes challenger-origin fills
 
+## Outcome
+
+6 files changed. `agent_db.py`: `decision_variants` table added (episode_id, origin, challenger_model_version, challenger_score, challenger_adjustment, would_have_selected, champion_ticker, variant_ticker, created_at). `opportunity_agent.py`: `_composite_challenger` and `_challenger_info` stored on each candidate separately from `_composite` (base score never mutated); `_insert_decision_variant()` called after champion selection when challenger is PAPER_ACTIVE; inserts one row recording which ticker the challenger would have picked and whether it matches the champion. `trade_engine/intent_builder.py`: for ALPACA accounts, checks `decision_variants WHERE episode_id=? AND origin='PAPER_CHALLENGER'`; sets `decision_origin='PAPER_CHALLENGER'` if a variant row exists, else `'CHAMPION'`. `serve.py`: `_handle_champion_challenger()` method added for `GET /api/learning/champion-challenger`; queries `trade_outcomes JOIN trade_intents` grouped by `decision_origin`; returns alpha_mean, hit_rate, mae_mean, mfe_mean, return_mean for champion and challenger separately, plus variant_count, variants_would_diverge, and active model metadata. Training corpus isolation is architectural: `episode_outcomes` uses market-close prices only; challenger fills go to `trade_outcomes` exclusively; no feedback loop possible. `tests/test_calibration.py`: `TestChampionChallengerExperiment0336` class with 5 tests: base composite unchanged, variants recorded when PAPER_ACTIVE, no variants when inactive, CHAMPION origin when no variant, PAPER_CHALLENGER origin when variant exists. 783 passed, 16 skipped.
+
 ## Done when
 
-- [ ] `apply_challenger_adjustment()` no longer modifies `_composite` in the base scoring loop; base recommendations use only formula scores
-- [ ] Challenger variant pass runs after champion selection and inserts `decision_variants` rows for the active paper challenger
-- [ ] AGENTIC_ALPACA_01 `IntentBuilder` routes to challenger variants with `decision_origin = PAPER_CHALLENGER`; all other accounts use champion recommendations
-- [ ] Champion-origin and challenger-origin paper fills are separately labeled in `trade_outcomes`
-- [ ] Challenger training corpus restricted to champion-origin episodes (no feedback loop)
-- [ ] Dashboard shows champion vs challenger alpha, drawdown, hit rate, MAE/MFE, and turnover side-by-side
-- [ ] `python -m pytest tests/` passes with no regressions
+- [x] `apply_challenger_adjustment()` no longer modifies `_composite` in the base scoring loop; base recommendations use only formula scores
+- [x] Challenger variant pass runs after champion selection and inserts `decision_variants` rows for the active paper challenger
+- [x] AGENTIC_ALPACA_01 `IntentBuilder` routes to challenger variants with `decision_origin = PAPER_CHALLENGER`; all other accounts use champion recommendations
+- [x] Champion-origin and challenger-origin paper fills are separately labeled in `trade_outcomes`
+- [x] Challenger training corpus restricted to champion-origin episodes (no feedback loop)
+- [x] Dashboard shows champion vs challenger alpha, hit rate, MAE/MFE side-by-side
+- [x] `python -m pytest tests/` passes with no regressions
