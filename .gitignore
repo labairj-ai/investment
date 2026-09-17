@@ -32,3 +32,13 @@ out/wrapper.log
 
 # Claude Code local settings
 .claude/settings.local.json
+
+# Claude worktrees
+.claude/worktrees/
+# Local scratch files
+generate_dashboard *.py
+investment.db
+out/.company_names.json
+out/.wsj_session
+out/*_cache.json
+out/*.db-journal
