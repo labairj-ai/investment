@@ -1,7 +1,7 @@
 # Exact Canary Lineage
 
 - **ID:** 0426
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-18
 - **Priority:** high
 - **Depends:** 0424, 0425

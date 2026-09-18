@@ -1,7 +1,7 @@
 # Authoritative Observation Count
 
 - **ID:** 0425
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-18
 - **Priority:** high
 - **Depends:** 0424

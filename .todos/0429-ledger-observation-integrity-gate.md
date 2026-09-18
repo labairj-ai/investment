@@ -1,7 +1,7 @@
 # Ledger/Observation Integrity Gate
 
 - **ID:** 0429
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-18
 - **Priority:** normal
 - **Depends:** 0424, 0425

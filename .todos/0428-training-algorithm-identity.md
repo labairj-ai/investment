@@ -1,7 +1,7 @@
 # Training Algorithm Identity
 
 - **ID:** 0428
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-18
 - **Priority:** normal
 - **Depends:** 0420
