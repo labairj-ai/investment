@@ -642,6 +642,9 @@ def migrate() -> None:
         ("model_performance_snapshots", "snapshot_incremental_spread",       "REAL"),
         # 0384 — outcome-time hysteresis anchor (preferred over obs id)
         ("model_performance_snapshots", "last_outcome_labeled_at",           "TEXT"),
+        # 0391 — cohort-based selection edge in degradation monitor
+        ("model_performance_snapshots", "snapshot_selection_delta",          "REAL"),
+        ("model_performance_snapshots", "n_divergent_cohorts_in_window",     "INTEGER"),
     ]
     for table, col, col_type in _new_cols:
         try:
@@ -1241,6 +1244,8 @@ def _migrate_learning_episodes(conn: sqlite3.Connection) -> None:
             snapshot_challenger_ranking_spread REAL,
             snapshot_incremental_spread       REAL,
             last_outcome_labeled_at           TEXT,
+            snapshot_selection_delta          REAL,
+            n_divergent_cohorts_in_window     INTEGER,
             UNIQUE(model_version, snapshot_date)
         );
 

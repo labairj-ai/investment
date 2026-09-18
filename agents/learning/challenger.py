@@ -42,7 +42,7 @@ def get_model() -> ChallengerModel | None:
         return None
 
 
-def score_for_observe(model_version: str, candidates: list[dict]) -> None:
+def score_for_observe(model_version: str, candidates: list, cohort_id: str = None) -> None:
     """Score candidates using an OBSERVE/PAPER_ACTIVE/SUSPENDED model; write to model_observations.
 
     Does not affect live rankings. Builds the shadow prediction log for:
@@ -53,6 +53,8 @@ def score_for_observe(model_version: str, candidates: list[dict]) -> None:
     0373: sets target_horizon_version from the model's training_horizon_version.
     0374: sets observation_phase from the model's current lifecycle_state.
     0378: sets baseline_predicted_alpha from model.mean_alpha; scored_at_date from today.
+    0387: cohort_id should be supplied by the caller (once per invocation) for stable grouping;
+          falls back to a fresh UUID if not provided.
     """
     import agent_db
     from datetime import datetime, timezone
@@ -86,8 +88,9 @@ def score_for_observe(model_version: str, candidates: list[dict]) -> None:
                 from datetime import timezone as _tz, timedelta as _tdt
                 scored_at_date = datetime.now(_tz(offset=_tdt(hours=-5))).strftime("%Y-%m-%d")
 
-            # 0382: stable cohort id for all candidates scored in this run (UTC minute)
-            decision_cohort_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M")
+            # 0387: use caller-supplied cohort_id; generate UUID if not provided
+            import uuid as _uuid
+            decision_cohort_id = cohort_id if cohort_id is not None else str(_uuid.uuid4())
 
             scored_pairs: list[tuple] = []
             for c in candidates:
@@ -105,23 +108,20 @@ def score_for_observe(model_version: str, candidates: list[dict]) -> None:
 
             if scored_pairs:
                 max_cs = max(o["ch_score"] for _, o in scored_pairs)
-                # 0382: compute base_would_select — top quintile by base_score
-                n_sp = len(scored_pairs)
-                q_sz = max(1, n_sp // 5)
-                base_scored = [(i, o["base_score"]) for i, (_, o) in enumerate(scored_pairs)
-                               if o["base_score"] is not None]
-                base_top_idxs: set = set()
-                if base_scored:
-                    top_base = sorted(base_scored, key=lambda x: x[1], reverse=True)[:q_sz]
-                    base_top_idxs = {idx for idx, _ in top_base}
+                # 0386: base_would_select = 1 for exactly top-1 by base_score (mirrors would_select)
+                base_scores_available = [(i, o["base_score"]) for i, (_, o) in enumerate(scored_pairs)
+                                         if o["base_score"] is not None]
+                base_top_idx: int = -1
+                if base_scores_available:
+                    base_top_idx = max(base_scores_available, key=lambda x: x[1])[0]
 
                 for i, (c, out) in enumerate(scored_pairs):
                     ep_id = c.get("_episode_id")
                     if not ep_id:
                         continue
                     base_would_sel = None
-                    if base_scored:
-                        base_would_sel = 1 if i in base_top_idxs else 0
+                    if base_scores_available:
+                        base_would_sel = 1 if i == base_top_idx else 0
                     try:
                         conn.execute(
                             """INSERT OR IGNORE INTO model_observations

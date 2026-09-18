@@ -9038,6 +9038,25 @@ function loadLearningPanel() {{
       var incSpread = rp.incremental_ranking_spread;
       var incStr = incSpread !== null && incSpread !== undefined ? ((incSpread*100).toFixed(2)+'%') : '—';
       var incColor = incSpread > 0 ? '#38a169' : (incSpread < 0 ? '#e53e3e' : '#4a5568');
+      // Decision evidence section (0392) — only shown when enough divergent cohorts
+      var nDiv = rp.n_divergent_cohorts || 0;
+      var decisionHtml = '';
+      if (nDiv >= 3) {{
+        var winRate = rp.challenger_win_rate;
+        var winRateStr = winRate !== null && winRate !== undefined ? (winRate*100).toFixed(1)+'%' : '—';
+        var winColor = winRate > 0.5 ? '#38a169' : (winRate < 0.5 ? '#e53e3e' : '#4a5568');
+        var msd = rp.mean_selection_delta;
+        var msdStr = msd !== null && msd !== undefined ? ((msd*100).toFixed(2)+'%') : '—';
+        var msdColor = msd > 0 ? '#38a169' : (msd < 0 ? '#e53e3e' : '#4a5568');
+        decisionHtml = '<div style="margin-top:12px;padding-top:10px;border-top:1px solid #e2e8f0;">' +
+          '<div style="font-size:10px;color:#718096;text-transform:uppercase;margin-bottom:6px;font-weight:700;">Decision Evidence (' + nDiv + ' divergent cohorts)</div>' +
+          '<div style="display:flex;gap:14px;flex-wrap:wrap;">' +
+          '<div><div style="font-size:10px;color:#718096;text-transform:uppercase;">Win Rate</div><div style="font-size:13px;font-weight:700;color:' + winColor + ';">' + winRateStr + '</div></div>' +
+          '<div><div style="font-size:10px;color:#718096;text-transform:uppercase;">Mean Δ</div><div style="font-size:13px;font-weight:700;color:' + msdColor + ';">' + msdStr + '</div></div>' +
+          '<div><div style="font-size:10px;color:#718096;text-transform:uppercase;">W/L/T</div><div style="font-size:13px;font-weight:700;color:#2d3748;">' + (rp.challenger_wins||0) + '/' + (rp.base_wins||0) + '/' + (rp.ties||0) + '</div></div>' +
+          '</div></div>';
+      }}
+      var gateTargetLabel = rp.promotion_target_state ? ' → ' + rp.promotion_target_state.replace('_',' ') : '';
       readinessEl.innerHTML =
         '<div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:12px;">' +
         '<div><div style="font-size:10px;color:#718096;text-transform:uppercase;">Horizon</div><div style="font-size:13px;font-weight:700;color:#2d3748;">' + (rp.training_horizon_version||rp.canonical_horizon||'—') + '</div></div>' +
@@ -9049,7 +9068,8 @@ function loadLearningPanel() {{
         '<div><div style="font-size:10px;color:#718096;text-transform:uppercase;">Data Health</div><div style="font-size:13px;font-weight:700;color:' + dhColor + ';">' + (rp.data_health||'—').toUpperCase() + '</div></div>' +
         (rp.next_maturity_date ? '<div><div style="font-size:10px;color:#718096;text-transform:uppercase;">Next Maturity</div><div style="font-size:13px;font-weight:700;color:#4a5568;">' + rp.next_maturity_date + '</div></div>' : '') +
         '</div>' +
-        (gatesHtml ? '<div style="margin-top:6px;"><div style="font-size:10px;color:#718096;text-transform:uppercase;margin-bottom:4px;">Promotion Gates</div>' + gatesHtml + '</div>' : '') +
+        decisionHtml +
+        (gatesHtml ? '<div style="margin-top:10px;"><div style="font-size:10px;color:#718096;text-transform:uppercase;margin-bottom:4px;">Promotion Gates' + gateTargetLabel + '</div>' + gatesHtml + '</div>' : '') +
         (rp.promotion_failed && rp.promotion_failed.length ? '<div style="margin-top:8px;font-size:11px;color:#e53e3e;font-weight:600;">Blockers: ' + rp.promotion_failed.join(', ') + '</div>' : '');
     }}).catch(function(e) {{
       if (readinessEl) readinessEl.innerHTML = '<span style="color:#fc8181;">Failed to load: ' + e.message + '</span>';

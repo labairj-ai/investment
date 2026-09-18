@@ -4485,3 +4485,470 @@ class TestLearningReadinessReport0385:
         expected = (date(2026, 9, 1) + timedelta(days=91)).isoformat()
         assert result.get("next_maturity_date") == expected, \
             f"Expected {expected}, got {result.get('next_maturity_date')}"
+
+
+# ===========================================================================
+# 0386 — Exact Top-1 Cohort Counterfactual
+# ===========================================================================
+
+class TestExactTop1CohortCounterfactual0386:
+    """0386: base_would_select marks exactly top-1 by base_score, not top quintile."""
+
+    def test_exactly_one_base_would_select_per_run(self, mem_db, monkeypatch):
+        """score_for_observe marks exactly one row base_would_select=1 per invocation."""
+        import agent_db
+        from agents.learning.challenger import score_for_observe
+        from agents.learning.calibration import LEARNING_TARGET_HORIZON, train_and_save, LIFECYCLE_OBSERVE
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        _seed_episodes(conn, 60, with_outcomes=True, horizon_definition_version=LEARNING_TARGET_HORIZON)
+        conn.close()
+
+        result = train_and_save()
+        assert result["trained"]
+        mv = result["model_version"]
+
+        conn = _make_conn(mem_db)
+        conn.execute("UPDATE learning_models SET lifecycle_state=? WHERE model_version=?",
+                     (LIFECYCLE_OBSERVE, mv))
+        conn.commit()
+        conn.close()
+
+        candidates = [
+            {"_episode_id": str(uuid.uuid4()), "ticker": f"TK{i}", "composite_score": 40 + i * 5,
+             "_composite": 40 + i * 5, "q_score": 40 + i, "v_score": 40 + i, "pf_score": 40 + i,
+             "c_score": 40 + i, "ec_score": 40 + i}
+            for i in range(10)
+        ]
+        score_for_observe(mv, candidates)
+
+        conn = _make_conn(mem_db)
+        rows = conn.execute(
+            "SELECT base_would_select FROM model_observations WHERE model_version=?", (mv,)
+        ).fetchall()
+        conn.close()
+
+        base_selected = [r["base_would_select"] for r in rows if r["base_would_select"] == 1]
+        assert len(base_selected) == 1, \
+            f"Exactly 1 base_would_select=1 expected; got {len(base_selected)} for {len(rows)} observations"
+
+    def test_base_would_select_is_max_base_score(self, mem_db, monkeypatch):
+        """The single base_would_select=1 row has the highest base_score (composite_score)."""
+        import agent_db
+        from agents.learning.challenger import score_for_observe
+        from agents.learning.calibration import LEARNING_TARGET_HORIZON, train_and_save, LIFECYCLE_OBSERVE
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        _seed_episodes(conn, 60, with_outcomes=True, horizon_definition_version=LEARNING_TARGET_HORIZON)
+        conn.close()
+
+        result = train_and_save()
+        assert result["trained"]
+        mv = result["model_version"]
+
+        conn = _make_conn(mem_db)
+        conn.execute("UPDATE learning_models SET lifecycle_state=? WHERE model_version=?",
+                     (LIFECYCLE_OBSERVE, mv))
+        conn.commit()
+        conn.close()
+
+        # Give candidates clearly different base scores
+        eps = [str(uuid.uuid4()) for _ in range(8)]
+        base_scores = [50, 30, 90, 40, 70, 60, 80, 20]
+        candidates = [
+            {"_episode_id": eps[i], "ticker": f"TK{i}", "composite_score": base_scores[i],
+             "_composite": base_scores[i], "q_score": base_scores[i], "v_score": base_scores[i],
+             "pf_score": base_scores[i], "c_score": base_scores[i], "ec_score": base_scores[i]}
+            for i in range(8)
+        ]
+        score_for_observe(mv, candidates)
+
+        conn = _make_conn(mem_db)
+        row = conn.execute(
+            "SELECT episode_id, base_score FROM model_observations WHERE model_version=? AND base_would_select=1",
+            (mv,),
+        ).fetchone()
+        all_base = conn.execute(
+            "SELECT base_score FROM model_observations WHERE model_version=?", (mv,)
+        ).fetchall()
+        conn.close()
+
+        assert row is not None, "base_would_select=1 row should exist"
+        max_base = max(r["base_score"] for r in all_base if r["base_score"] is not None)
+        assert float(row["base_score"]) == max_base, \
+            f"base_would_select=1 should be the max base_score; got {row['base_score']}, max={max_base}"
+
+
+# ===========================================================================
+# 0387 — Stable Decision Cohort ID
+# ===========================================================================
+
+class TestStableDecisionCohortId0387:
+    """0387: score_for_observe accepts caller-supplied cohort_id; all rows share it."""
+
+    def test_caller_supplied_cohort_id_used(self, mem_db, monkeypatch):
+        """When cohort_id is passed, all written rows use that exact ID."""
+        import agent_db
+        from agents.learning.challenger import score_for_observe
+        from agents.learning.calibration import LEARNING_TARGET_HORIZON, train_and_save, LIFECYCLE_OBSERVE
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        _seed_episodes(conn, 60, with_outcomes=True, horizon_definition_version=LEARNING_TARGET_HORIZON)
+        conn.close()
+
+        result = train_and_save()
+        assert result["trained"]
+        mv = result["model_version"]
+
+        conn = _make_conn(mem_db)
+        conn.execute("UPDATE learning_models SET lifecycle_state=? WHERE model_version=?",
+                     (LIFECYCLE_OBSERVE, mv))
+        conn.commit()
+        conn.close()
+
+        stable_id = "test-stable-cohort-12345"
+        candidates = [
+            {"_episode_id": str(uuid.uuid4()), "ticker": f"TK{i}", "composite_score": 50 + i,
+             "_composite": 50 + i, "q_score": 50 + i, "v_score": 50 + i, "pf_score": 50 + i,
+             "c_score": 50 + i, "ec_score": 50 + i}
+            for i in range(5)
+        ]
+        score_for_observe(mv, candidates, cohort_id=stable_id)
+
+        conn = _make_conn(mem_db)
+        rows = conn.execute(
+            "SELECT decision_cohort_id FROM model_observations WHERE model_version=?", (mv,)
+        ).fetchall()
+        conn.close()
+
+        assert len(rows) > 0
+        cohort_ids = {r["decision_cohort_id"] for r in rows}
+        assert cohort_ids == {stable_id}, \
+            f"All rows should use the supplied cohort_id={stable_id!r}; got {cohort_ids}"
+
+    def test_uuid_generated_when_no_cohort_id(self, mem_db, monkeypatch):
+        """When cohort_id is not supplied, a UUID is generated (not a minute string)."""
+        import agent_db
+        from agents.learning.challenger import score_for_observe
+        from agents.learning.calibration import LEARNING_TARGET_HORIZON, train_and_save, LIFECYCLE_OBSERVE
+        import re
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        _seed_episodes(conn, 60, with_outcomes=True, horizon_definition_version=LEARNING_TARGET_HORIZON)
+        conn.close()
+
+        result = train_and_save()
+        assert result["trained"]
+        mv = result["model_version"]
+
+        conn = _make_conn(mem_db)
+        conn.execute("UPDATE learning_models SET lifecycle_state=? WHERE model_version=?",
+                     (LIFECYCLE_OBSERVE, mv))
+        conn.commit()
+        conn.close()
+
+        candidates = [
+            {"_episode_id": str(uuid.uuid4()), "ticker": "AAPL", "composite_score": 70,
+             "_composite": 70, "q_score": 70, "v_score": 65, "pf_score": 60, "c_score": 55, "ec_score": 50}
+        ]
+        score_for_observe(mv, candidates)  # no cohort_id
+
+        conn = _make_conn(mem_db)
+        row = conn.execute(
+            "SELECT decision_cohort_id FROM model_observations WHERE model_version=? LIMIT 1", (mv,)
+        ).fetchone()
+        conn.close()
+
+        assert row is not None and row["decision_cohort_id"] is not None
+        # UUID format: 8-4-4-4-12 hex chars
+        assert re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
+                        row["decision_cohort_id"]), \
+            f"Expected UUID format; got {row['decision_cohort_id']!r}"
+
+
+# ===========================================================================
+# 0388 — Divergence by Episode Identity
+# ===========================================================================
+
+class TestDivergenceByEpisodeIdentity0388:
+    """0388: n_divergent_cohorts uses episode identity, not outcome equality."""
+
+    def _seed_obs(self, conn, model_version, cohort_entries):
+        """cohort_entries: list of (cohort_id, ep_id, bs, cs, sel, bsel, out)"""
+        import datetime as _dt
+        conn.execute(
+            """INSERT INTO learning_models
+               (model_version, training_cutoff, feature_schema_hash, training_n,
+                validation_metrics, created_at, lifecycle_state)
+               VALUES (?, '2026-01-01', 'h', 50, '{"cv_folds":3}', ?, 'OBSERVE')""",
+            (model_version, time.time()),
+        )
+        for i, (cid, ep, bs, cs, sel, bsel, out) in enumerate(cohort_entries):
+            sdate = f"2026-08-{i + 1:02d}"
+            conn.execute(
+                """INSERT INTO model_observations
+                   (model_version, episode_id, ticker, prediction_timestamp,
+                    base_score, challenger_score, predicted_alpha, would_select, base_would_select,
+                    outcome_alpha_90d, outcome_labeled_at, scored_at_date, decision_cohort_id)
+                   VALUES (?, ?, 'TK', '2026-01-01T00:00:00', ?, ?, 0.02, ?, ?, ?, '2026-08-01', ?, ?)""",
+                (model_version, ep, bs, cs, sel, bsel, out, sdate, cid),
+            )
+        conn.commit()
+
+    def test_same_episode_not_divergent(self, mem_db, monkeypatch):
+        """Same episode selected by both base and challenger → not divergent."""
+        import agent_db
+        from agents.learning.calibration import compute_prospective_metrics
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        ep_shared = str(uuid.uuid4())
+        ep_other = str(uuid.uuid4())
+        conn = _make_conn(mem_db)
+        self._seed_obs(conn, "mv_same", [
+            ("coh1", ep_shared, 90, 85, 1, 1, 0.05),  # both pick same episode
+            ("coh1", ep_other,  30, 40, 0, 0, -0.01),
+            # Pad to 5+ rows to satisfy prospective_n >= 5
+            ("coh2", str(uuid.uuid4()), 80, 75, 1, 1, 0.04),
+            ("coh2", str(uuid.uuid4()), 20, 25, 0, 0, -0.02),
+            ("coh3", str(uuid.uuid4()), 70, 70, 1, 1, 0.03),
+        ])
+        pm = compute_prospective_metrics("mv_same", conn)
+        conn.close()
+
+        assert pm.get("n_divergent_cohorts", 0) == 0, \
+            f"No divergence expected when same episode chosen; got {pm.get('n_divergent_cohorts')}"
+
+    def test_different_episode_is_divergent(self, mem_db, monkeypatch):
+        """Different episodes selected by base vs challenger → divergent."""
+        import agent_db
+        from agents.learning.calibration import compute_prospective_metrics
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        cohorts = []
+        for c_idx in range(5):
+            ep_ch = str(uuid.uuid4())
+            ep_base = str(uuid.uuid4())
+            cid = f"coh{c_idx}"
+            cohorts += [
+                (cid, ep_ch,   90, 80, 1, 0, 0.05),  # challenger picks ep_ch
+                (cid, ep_base, 80, 70, 0, 1, 0.03),  # base picks ep_base
+            ]
+        self._seed_obs(conn, "mv_div", cohorts)
+        pm = compute_prospective_metrics("mv_div", conn)
+        conn.close()
+
+        assert pm.get("n_divergent_cohorts", 0) == 5, \
+            f"All 5 cohorts divergent; got {pm.get('n_divergent_cohorts')}"
+        assert "challenger_wins" in pm
+        assert "base_wins" in pm
+        assert "ties" in pm
+        assert "mean_selection_delta" in pm
+
+    def test_win_loss_counts_correct(self, mem_db, monkeypatch):
+        """challenger_wins + base_wins + ties == n_divergent_cohorts."""
+        import agent_db
+        from agents.learning.calibration import compute_prospective_metrics
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        cohorts = []
+        # 3 cohorts: 2 challenger wins, 1 base win
+        for i, (ch_out, b_out) in enumerate([(0.05, 0.02), (0.04, 0.01), (0.01, 0.03)]):
+            ep_ch = str(uuid.uuid4())
+            ep_base = str(uuid.uuid4())
+            cohorts += [
+                (f"c{i}", ep_ch,   90, 80, 1, 0, ch_out),
+                (f"c{i}", ep_base, 80, 70, 0, 1, b_out),
+            ]
+        # Pad to 5+ total rows
+        for _ in range(2):
+            ep = str(uuid.uuid4())
+            cohorts.append(("cpad", ep, 50, 50, 0, 0, 0.0))
+        self._seed_obs(conn, "mv_wl", cohorts)
+        pm = compute_prospective_metrics("mv_wl", conn)
+        conn.close()
+
+        assert pm.get("challenger_wins") == 2
+        assert pm.get("base_wins") == 1
+        assert pm.get("n_divergent_cohorts") == 3
+
+
+# ===========================================================================
+# 0389 — Horizon-Exact Episode Eligibility
+# ===========================================================================
+
+class TestHorizonExactDataHealth0389:
+    """0389: compute_data_health uses 130-day cutoff for sessions_v2, 91-day for calendar_v1."""
+
+    def test_sessions_v2_uses_130_day_cutoff(self, mem_db, monkeypatch):
+        """Episode 100 days old: eligible for calendar_v1, NOT eligible for sessions_v2."""
+        import agent_db
+        from agents.learning.calibration import compute_data_health
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        # Episode 100 days old — between 91 and 130 days
+        ts_100d = time.time() - 100 * 86400
+        conn.execute(
+            "INSERT INTO decision_episodes (episode_id,run_id,ticker,captured_at,composite_score,feature_schema_version) VALUES (?,1,'TK',?,80,'v1')",
+            (str(uuid.uuid4()), ts_100d),
+        )
+        conn.commit()
+
+        r_cal = compute_data_health(conn, target_horizon_version="calendar_v1")
+        r_ses = compute_data_health(conn, target_horizon_version="sessions_v2")
+        conn.close()
+
+        assert r_cal["eligible_episodes"] == 1, \
+            f"calendar_v1 should count 100d-old episode as eligible; got {r_cal['eligible_episodes']}"
+        assert r_ses["eligible_episodes"] == 0, \
+            f"sessions_v2 should NOT count 100d-old episode as eligible; got {r_ses['eligible_episodes']}"
+
+    def test_calendar_v1_unchanged_at_91_days(self, mem_db, monkeypatch):
+        """calendar_v1 eligibility cutoff remains 91 days."""
+        import agent_db
+        from agents.learning.calibration import compute_data_health
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        ts_92d = time.time() - 92 * 86400
+        conn.execute(
+            "INSERT INTO decision_episodes (episode_id,run_id,ticker,captured_at,composite_score,feature_schema_version) VALUES (?,1,'TK',?,80,'v1')",
+            (str(uuid.uuid4()), ts_92d),
+        )
+        conn.commit()
+
+        result = compute_data_health(conn, target_horizon_version="calendar_v1")
+        conn.close()
+
+        assert result["eligible_episodes"] == 1
+
+
+# ===========================================================================
+# 0391 — Cohort-Based Selection Edge in Degradation
+# ===========================================================================
+
+class TestCohortBasedDegradation0391:
+    """0391: _check_degradation stores snapshot_selection_delta and n_divergent_cohorts_in_window."""
+
+    def _seed_pa_model(self, conn, mv):
+        conn.execute(
+            """INSERT INTO learning_models
+               (model_version, training_cutoff, feature_schema_hash, training_n,
+                validation_metrics, created_at, lifecycle_state)
+               VALUES (?, '2026-01-01', 'h', 80, '{"cv_folds":5}', ?, 'PAPER_ACTIVE')""",
+            (mv, time.time()),
+        )
+
+    def test_selection_delta_stored_when_divergent_cohorts_present(self, mem_db, monkeypatch):
+        """When divergent cohorts exist in window, snapshot_selection_delta is populated."""
+        import agent_db
+        from agents.learning.calibration import _check_degradation
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        import datetime as _dt
+        conn = _make_conn(mem_db)
+        self._seed_pa_model(conn, "mv_391")
+        now_iso = _dt.datetime.utcnow().isoformat()
+        # 10 obs across 5 cohorts, each with challenger and base picking different episodes
+        for c in range(5):
+            ep_ch = str(uuid.uuid4())
+            ep_base = str(uuid.uuid4())
+            cid = f"coh391_{c}"
+            for j, (ep, sel, bsel, out, sdate) in enumerate([
+                (ep_ch, 1, 0, 0.05, f"2026-08-{c * 2 + 1:02d}"),
+                (ep_base, 0, 1, 0.02, f"2026-08-{c * 2 + 2:02d}"),
+            ]):
+                conn.execute(
+                    """INSERT INTO model_observations
+                       (model_version, episode_id, ticker, prediction_timestamp,
+                        challenger_score, base_score, predicted_alpha, would_select,
+                        base_would_select, outcome_alpha_90d, outcome_labeled_at,
+                        observation_phase, scored_at_date, decision_cohort_id)
+                       VALUES ('mv_391', ?, 'TK', ?, 60, 55, 0.02, ?, ?, ?, ?, 'PAPER_ACTIVE', ?, ?)""",
+                    (ep, now_iso, sel, bsel, out, now_iso, sdate, cid),
+                )
+        conn.commit()
+
+        _check_degradation("mv_391", conn)
+
+        snap = conn.execute(
+            "SELECT snapshot_selection_delta, n_divergent_cohorts_in_window FROM model_performance_snapshots WHERE model_version='mv_391'"
+        ).fetchone()
+        conn.close()
+
+        assert snap is not None
+        assert snap["snapshot_selection_delta"] is not None, \
+            "snapshot_selection_delta should be populated when divergent cohorts exist"
+        assert snap["n_divergent_cohorts_in_window"] is not None
+
+    def test_negative_selection_delta_with_enough_cohorts_is_negative_verdict(self, mem_db, monkeypatch):
+        """Sustained negative selection_delta with >= DEGRADATION_MIN_DIVERGENT_COHORTS → NEGATIVE."""
+        import agent_db
+        from agents.learning.calibration import _check_degradation, DEGRADATION_MIN_DIVERGENT_COHORTS
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        import datetime as _dt
+        conn = _make_conn(mem_db)
+        self._seed_pa_model(conn, "mv_391neg")
+        now_iso = _dt.datetime.utcnow().isoformat()
+        # Enough cohorts where base always outperforms challenger
+        n_cohorts = DEGRADATION_MIN_DIVERGENT_COHORTS
+        for c in range(n_cohorts):
+            ep_ch = str(uuid.uuid4())
+            ep_base = str(uuid.uuid4())
+            cid = f"coh391n_{c}"
+            for ep, sel, bsel, out, sdate in [
+                (ep_ch,   1, 0, -0.02, f"2026-09-{c * 2 + 1:02d}"),  # challenger picks worse
+                (ep_base, 0, 1,  0.03, f"2026-09-{c * 2 + 2:02d}"),  # base picks better
+            ]:
+                conn.execute(
+                    """INSERT INTO model_observations
+                       (model_version, episode_id, ticker, prediction_timestamp,
+                        challenger_score, base_score, predicted_alpha, would_select,
+                        base_would_select, outcome_alpha_90d, outcome_labeled_at,
+                        observation_phase, scored_at_date, decision_cohort_id)
+                       VALUES ('mv_391neg', ?, 'TK', ?, 60, 55, 0.02, ?, ?, ?, ?, 'PAPER_ACTIVE', ?, ?)""",
+                    (ep, now_iso, sel, bsel, out, now_iso, sdate, cid),
+                )
+        conn.commit()
+
+        _check_degradation("mv_391neg", conn)
+
+        snap = conn.execute(
+            "SELECT edge_verdict, snapshot_selection_delta FROM model_performance_snapshots WHERE model_version='mv_391neg'"
+        ).fetchone()
+        conn.close()
+
+        assert snap is not None
+        assert snap["snapshot_selection_delta"] < 0, \
+            "Challenger consistently worse → negative selection delta"
+        assert snap["edge_verdict"] == "NEGATIVE", \
+            f"Expected NEGATIVE verdict; got {snap['edge_verdict']}"

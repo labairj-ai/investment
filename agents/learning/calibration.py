@@ -67,6 +67,8 @@ OBSERVE_MIN_MATURE_OBS            = 5   # 0360: minimum model_observations with 
 OBSERVE_MIN_COHORT_DAYS           = 10  # 0378: minimum distinct market days for cohort independence
 DEGRADATION_MIN_NEW_OUTCOMES      = 15  # 0377: new PAPER_ACTIVE outcomes required between snapshots
 DEGRADATION_MIN_NEW_COHORT_DAYS   = 3   # 0384: distinct scored_at_date values between snapshots
+DEGRADATION_MIN_DIVERGENT_COHORTS = 5   # 0391: min divergent cohorts before selection delta used as NEGATIVE signal
+SESSIONS_V2_CALENDAR_DAYS         = 130 # 0389: approx calendar days for 63 NYSE sessions (sessions_v2 horizon)
 
 # Canonical training target — the horizon the scheduled trainer uses (0379)
 LEARNING_TARGET_HORIZON = "sessions_v2"
@@ -967,7 +969,7 @@ def compute_prospective_metrics(model_version: str, conn) -> dict:
     thv = ((mv_row["training_horizon_version"] if mv_row else None) or "calendar_v1")
 
     rows = conn.execute(
-        """SELECT challenger_score, base_score, predicted_alpha, would_select,
+        """SELECT episode_id, ticker, challenger_score, base_score, predicted_alpha, would_select,
                   outcome_alpha_90d, baseline_predicted_alpha, scored_at_date,
                   prediction_timestamp, decision_cohort_id, base_would_select
            FROM model_observations
@@ -1031,11 +1033,14 @@ def compute_prospective_metrics(model_version: str, conn) -> dict:
         if sel_mean is not None:
             selection_alpha_delta = sel_mean - base_top_mean
 
-    # 0382: cohort-matched selection_alpha_delta
-    # For each decision_cohort_id, compute (challenger_picked_mean - base_picked_mean)
-    # and average across cohorts where the picks diverge.
+    # 0382/0388: cohort-matched selection delta — divergence by episode identity, not outcome equality
+    # After 0386, both base and challenger select exactly top-1 per cohort.
     selection_alpha_delta_legacy = selection_alpha_delta  # preserve global-quintile value
     n_divergent_cohorts = 0
+    challenger_wins = 0
+    base_wins = 0
+    ties = 0
+    cohort_deltas: list = []
     rows_with_cohort = [r for r in rows if r["decision_cohort_id"] is not None]
     if rows_with_cohort:
         from collections import defaultdict
@@ -1044,17 +1049,28 @@ def compute_prospective_metrics(model_version: str, conn) -> dict:
             cohort_map[r["decision_cohort_id"]].append(r)
         cohort_deltas = []
         for cohort_rows in cohort_map.values():
-            ch_picked = [float(r["outcome_alpha_90d"]) for r in cohort_rows if r["would_select"]]
-            base_picked = [float(r["outcome_alpha_90d"]) for r in cohort_rows
-                           if r["base_would_select"] is not None and r["base_would_select"]]
-            if not ch_picked or not base_picked:
+            ch_rows = [r for r in cohort_rows if r["would_select"]]
+            base_rows = [r for r in cohort_rows
+                         if r["base_would_select"] is not None and int(r["base_would_select"])]
+            if not ch_rows or not base_rows:
                 continue
-            ch_mean = sum(ch_picked) / len(ch_picked)
-            base_mean = sum(base_picked) / len(base_picked)
-            # Count as divergent if different mean outcomes (crude proxy for different picks)
-            if ch_picked != base_picked:
+            ch_row = ch_rows[0]
+            base_row = base_rows[0]
+            ch_outcome = float(ch_row["outcome_alpha_90d"])
+            base_outcome = float(base_row["outcome_alpha_90d"])
+            delta = ch_outcome - base_outcome
+            cohort_deltas.append(delta)
+            # 0388: divergence = different episode identity
+            ch_ep = ch_row["episode_id"]
+            base_ep = base_row["episode_id"]
+            if ch_ep != base_ep:
                 n_divergent_cohorts += 1
-            cohort_deltas.append(ch_mean - base_mean)
+                if delta > 0:
+                    challenger_wins += 1
+                elif delta < 0:
+                    base_wins += 1
+                else:
+                    ties += 1
         if cohort_deltas:
             selection_alpha_delta = sum(cohort_deltas) / len(cohort_deltas)
 
@@ -1120,8 +1136,12 @@ def compute_prospective_metrics(model_version: str, conn) -> dict:
         # 0378: cohort independence metrics
         "n_cohort_days": n_cohort_days,
         "effective_n": effective_n,
-        # 0382: decision cohort evaluation
+        # 0382/0388: decision cohort evaluation (identity-based divergence)
         "n_divergent_cohorts": n_divergent_cohorts,
+        "challenger_wins": challenger_wins,
+        "base_wins": base_wins,
+        "ties": ties,
+        "mean_selection_delta": round(sum(cohort_deltas) / len(cohort_deltas), 6) if cohort_deltas else None,
     }
 
 
@@ -1143,9 +1163,11 @@ def compute_data_health(conn, target_horizon_version: str = None) -> dict:
     except Exception:
         pass
 
-    # 0380: eligible episodes = those old enough to have matured 3m outcomes (>= 91 calendar days)
+    # 0380/0389: eligible episodes = those old enough to have matured outcomes.
+    # Use horizon-exact cutoff: 91d for calendar_v1; ~130d (63 NYSE sessions) for sessions_v2.
     eligible_episodes = 0
-    eligible_cutoff_ts = _time.time() - 91 * 86400
+    _horizon_days = SESSIONS_V2_CALENDAR_DAYS if target_horizon_version == "sessions_v2" else 91
+    eligible_cutoff_ts = _time.time() - _horizon_days * 86400
     try:
         eligible_episodes = conn.execute(
             "SELECT COUNT(*) FROM decision_episodes WHERE captured_at <= ?",
@@ -1350,8 +1372,9 @@ def _check_degradation(model_version: str, conn) -> None:
 
     # 0374: filter on PAPER_ACTIVE-phase rows (backward compat: include NULL phase)
     obs = conn.execute(
-        """SELECT id, challenger_score, base_score, predicted_alpha, would_select,
-                  outcome_alpha_90d, baseline_predicted_alpha, outcome_labeled_at, scored_at_date
+        """SELECT id, episode_id, challenger_score, base_score, predicted_alpha, would_select,
+                  outcome_alpha_90d, baseline_predicted_alpha, outcome_labeled_at, scored_at_date,
+                  decision_cohort_id, base_would_select
            FROM model_observations
            WHERE model_version=? AND outcome_alpha_90d IS NOT NULL
              AND (observation_phase='PAPER_ACTIVE' OR observation_phase IS NULL)
@@ -1412,8 +1435,38 @@ def _check_degradation(model_version: str, conn) -> None:
                              - sum(o for _, o in sorted_base[:q_size]) / q_size)
         snap_incremental_spread = snap_challenger_spread - snap_base_spread
 
+    # 0391: cohort-based selection delta over the rolling window
+    snap_selection_delta: float | None = None
+    n_divergent_window = 0
+    obs_with_cohort = [r for r in obs if r["decision_cohort_id"] is not None]
+    if obs_with_cohort:
+        from collections import defaultdict as _dd
+        cmap: dict = _dd(list)
+        for r in obs_with_cohort:
+            cmap[r["decision_cohort_id"]].append(r)
+        _win_deltas = []
+        for crow in cmap.values():
+            ch_r = [r for r in crow if r["would_select"]]
+            base_r = [r for r in crow if r["base_would_select"] is not None
+                      and int(r["base_would_select"])]
+            if not ch_r or not base_r:
+                continue
+            ch_ep = ch_r[0]["episode_id"]
+            base_ep = base_r[0]["episode_id"]
+            ch_out = float(ch_r[0]["outcome_alpha_90d"])
+            base_out = float(base_r[0]["outcome_alpha_90d"])
+            _win_deltas.append(ch_out - base_out)
+            if ch_ep != base_ep:
+                n_divergent_window += 1
+        if _win_deltas:
+            snap_selection_delta = sum(_win_deltas) / len(_win_deltas)
+
     # 0383: verdict — incremental_spread < 0 is also a NEGATIVE signal
+    # 0391: sustained negative selection_delta with enough divergent cohorts is also NEGATIVE
     if snap_incremental_spread is not None and snap_incremental_spread < 0:
+        verdict = "NEGATIVE"
+    elif (snap_selection_delta is not None and snap_selection_delta < 0
+          and n_divergent_window >= DEGRADATION_MIN_DIVERGENT_COHORTS):
         verdict = "NEGATIVE"
     elif spread is not None and spread > 0 and prediction_mae <= baseline_mae:
         verdict = "POSITIVE"
@@ -1432,12 +1485,12 @@ def _check_degradation(model_version: str, conn) -> None:
                 prediction_mae, baseline_mae, prospective_hit_rate, edge_verdict,
                 last_snapshot_max_obs_id, snapshot_base_ranking_spread,
                 snapshot_challenger_ranking_spread, snapshot_incremental_spread,
-                last_outcome_labeled_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                last_outcome_labeled_at, snapshot_selection_delta, n_divergent_cohorts_in_window)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (model_version, today, n_obs, spread, prediction_mae, baseline_mae,
              hit_rate, verdict, current_max_obs_id,
              snap_base_spread, snap_challenger_spread, snap_incremental_spread,
-             current_max_labeled_at),
+             current_max_labeled_at, snap_selection_delta, n_divergent_window),
         )
         conn.commit()
     except Exception:
@@ -1506,12 +1559,15 @@ def learning_readiness_report(conn, model_version: str = None) -> dict:
     mature_obs = int(pm.get("prospective_n", 0))
     cohort_days = int(pm.get("n_cohort_days", 0))
 
-    # Promotion gates — target depends on lifecycle:
+    # Promotion gates — target depends on lifecycle (0396):
     # OBSERVE → PAPER_ACTIVE gates; SUSPENDED → OBSERVE re-entry gates
     gates_result: dict = {}
+    promotion_target_state: str = ""
     if lifecycle == LIFECYCLE_OBSERVE:
+        promotion_target_state = LIFECYCLE_PAPER_ACTIVE
         gates_result = _check_promotion_gates(model_version, LIFECYCLE_PAPER_ACTIVE)
     elif lifecycle == LIFECYCLE_SUSPENDED:
+        promotion_target_state = LIFECYCLE_OBSERVE
         gates_result = _check_promotion_gates(model_version, LIFECYCLE_OBSERVE)
 
     # Next maturity date: earliest date when an unmatured observation could mature
@@ -1531,6 +1587,7 @@ def learning_readiness_report(conn, model_version: str = None) -> dict:
     except Exception:
         pass
 
+    n_div = pm.get("n_divergent_cohorts", 0)
     return {
         "canonical_horizon": LEARNING_TARGET_HORIZON,
         "model_version": model_version,
@@ -1539,11 +1596,19 @@ def learning_readiness_report(conn, model_version: str = None) -> dict:
         "eligible_episodes": eligible_episodes,
         "mature_observations": mature_obs,
         "independent_cohort_days": cohort_days,
+        # Ranking evidence (all mature observations)
         "base_ranking_spread": pm.get("base_ranking_spread"),
         "challenger_ranking_spread": pm.get("challenger_ranking_spread"),
         "incremental_ranking_spread": pm.get("incremental_ranking_spread"),
+        # Decision evidence (divergent cohorts only) — 0388/0392
+        "n_divergent_cohorts": n_div,
+        "challenger_wins": pm.get("challenger_wins", 0),
+        "base_wins": pm.get("base_wins", 0),
+        "ties": pm.get("ties", 0),
+        "mean_selection_delta": pm.get("mean_selection_delta"),
         "selection_alpha_delta": pm.get("selection_alpha_delta"),
-        "n_divergent_cohorts": pm.get("n_divergent_cohorts", 0),
+        "challenger_win_rate": (pm.get("challenger_wins", 0) / n_div) if n_div > 0 else None,
+        "promotion_target_state": promotion_target_state,  # 0396
         "promotion_gates": gates_result.get("gates", {}),
         "promotion_passed": gates_result.get("passed"),
         "promotion_failed": gates_result.get("failed", []),
