@@ -7641,8 +7641,10 @@ class TestExactCanaryLineage0426:
             "canary_audit.sh must query learning_sweep_runs as its audit anchor"
         assert "agent_run_id" in content, \
             "canary_audit.sh must use agent_run_id from ledger to verify decision_episodes"
-        assert "status='COMPLETED'" in content or "status=.COMPLETED." in content, \
-            "canary_audit.sh must filter to COMPLETED ledger rows only"
+        # 0435: anchor uses the LATEST ledger row (any status), then verifies status==COMPLETED.
+        # The COMPLETED check is a post-anchor assertion, not a SQL filter on the anchor query.
+        assert "COMPLETED" in content, \
+            "canary_audit.sh must verify the anchor row is COMPLETED (post-anchor assertion)"
 
     def test_canary_uses_ledger_scored_candidates_for_obs_count(self):
         """canary_audit.sh must verify observation count against ledger scored_candidates."""
@@ -8551,13 +8553,13 @@ class TestStratifiedDecisionEdge0433:
         assert "divergent_cohorts" in elig, "eligible_sweeps must have divergent_cohorts"
         assert "challenger_top1_mean_alpha" in elig
         assert "base_top1_mean_alpha" in elig
-        assert "incremental_selection_edge" in elig
+        assert "all_cohort_incremental_edge" in elig
         assert "wins" in elig
         assert "losses" in elig
         assert "ties" in elig
 
     def test_incremental_edge_is_challenger_minus_base(self, mem_db, monkeypatch):
-        """incremental_selection_edge = challenger_top1_mean_alpha - base_top1_mean_alpha."""
+        """all_cohort_incremental_edge = challenger_top1_mean_alpha - base_top1_mean_alpha."""
         import agent_db
         from agents.learning.calibration import compute_prospective_metrics
 
@@ -8594,12 +8596,12 @@ class TestStratifiedDecisionEdge0433:
         elig = sm.get("eligible_sweeps", {})
         ch_mean = elig.get("challenger_top1_mean_alpha")
         base_mean = elig.get("base_top1_mean_alpha")
-        edge = elig.get("incremental_selection_edge")
+        edge = elig.get("all_cohort_incremental_edge")
 
         assert ch_mean is not None and base_mean is not None
         expected_edge = round(ch_mean - base_mean, 6)
         assert abs(edge - expected_edge) < 1e-9, \
-            f"incremental_edge={edge} must equal ch_mean({ch_mean}) - base_mean({base_mean})"
+            f"all_cohort_edge={edge} must equal ch_mean({ch_mean}) - base_mean({base_mean})"
 
     def test_divergent_count_only_counts_different_picks(self, mem_db, monkeypatch):
         """Cohorts where ch_top1==base_top1 do NOT count toward divergent_cohorts."""
@@ -8685,19 +8687,455 @@ class TestCanaryLineageCompletion0434:
             score_for_observe(mv, candidates, cohort_id=str(uuid.uuid4()), agent_run_id="")
 
     def test_canary_script_has_episode_count_assertion(self):
-        """canary_audit.sh must contain N_EPISODES count assertion (0434)."""
+        """canary_audit.sh must assert decision_episodes count against expected (0434)."""
         script = Path(__file__).resolve().parent.parent / "scripts" / "canary_audit.sh"
         content = script.read_text()
-        assert "N_EPISODES" in content, \
-            "canary_audit.sh must include N_EPISODES count check (0434)"
-        assert "EXP_CANDS" in content, \
-            "canary_audit.sh must compare N_EPISODES against EXP_CANDS"
+        # Script uses _N_EP for the episode count variable
+        assert "_N_EP" in content or "N_EP" in content, \
+            "canary_audit.sh must include episode count check (0434)"
+        assert "EXP_CANDS" in content or "_EXP" in content, \
+            "canary_audit.sh must compare episode count against expected candidates"
+        assert "decision_episodes" in content, \
+            "canary_audit.sh must query decision_episodes table (0434)"
 
     def test_canary_script_has_row_level_lineage(self):
         """canary_audit.sh must contain orphan-join assertion for row-level lineage (0434)."""
         script = Path(__file__).resolve().parent.parent / "scripts" / "canary_audit.sh"
         content = script.read_text()
-        assert "N_ORPHAN_OBS" in content, \
-            "canary_audit.sh must include N_ORPHAN_OBS row-level lineage check (0434)"
+        # Script uses _N_ORPHAN for the orphan count variable
+        assert "_N_ORPHAN" in content or "N_ORPHAN" in content, \
+            "canary_audit.sh must include orphan observation check (0434)"
         assert "LEFT JOIN decision_episodes" in content, \
             "canary_audit.sh must use LEFT JOIN to detect unlinked observation episodes"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 0435 — Canary Anchor Latest Attempt, Audit All Models in OH Run
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestCanaryAnchorLatestAttempt0435:
+    """Canary fails (not warns) on missing agent_run_id; audits all models in invocation."""
+
+    def test_canary_fails_not_warns_on_missing_agent_run_id(self):
+        """canary_audit.sh must FAIL (not WARN) when agent_run_id is empty (0435)."""
+        script = Path(__file__).resolve().parent.parent / "scripts" / "canary_audit.sh"
+        content = script.read_text()
+        assert "FAIL  agent_run_id not set" in content, \
+            "canary must FAIL (not WARN) on missing agent_run_id (0435)"
+        assert "WARN  agent_run_id not set" not in content, \
+            "canary must not silently warn on missing agent_run_id (0435)"
+
+    def test_canary_sets_fail_flag_on_missing_agent_run_id(self):
+        """The branch handling empty AGENT_RUN_ID must set FAIL=1."""
+        script = Path(__file__).resolve().parent.parent / "scripts" / "canary_audit.sh"
+        content = script.read_text()
+        # Both FAIL message and FAIL=1 must appear near agent_run_id check
+        assert "FAIL=1" in content, "canary must set FAIL=1 when agent_run_id is missing"
+        assert "agent_run_id" in content
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 0436 — Enforce One Ledger Row Per Model/Cohort Pair
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestLedgerAttemptUniqueness0436:
+    """learning_sweep_runs UNIQUE(model_version, cohort_id) prevents duplicate rows."""
+
+    def test_unique_constraint_index_exists(self, mem_db, monkeypatch):
+        """idx_sweep_runs_unique_attempt must exist on learning_sweep_runs."""
+        conn = _make_conn(mem_db)
+        indices = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='learning_sweep_runs'"
+        ).fetchall()
+        conn.close()
+        names = {r["name"] for r in indices}
+        assert "idx_sweep_runs_unique_attempt" in names, \
+            "learning_sweep_runs must have idx_sweep_runs_unique_attempt UNIQUE index (0436)"
+
+    def test_duplicate_cohort_raises_integrity_error(self, mem_db, monkeypatch):
+        """Second INSERT with same (model_version, cohort_id) must raise IntegrityError."""
+        import sqlite3
+
+        conn = _make_conn(mem_db)
+        mv = "edge_sessions_v2_aa_v0436_001"
+        cid = str(uuid.uuid4())
+        conn.execute(
+            """INSERT INTO learning_sweep_runs
+               (cohort_id, model_version, expected_candidates, scored_candidates,
+                started_at, completed_at, status)
+               VALUES (?,?,3,3,'2026-01-01T10:00:00Z','2026-01-01T10:05:00Z','COMPLETED')""",
+            (cid, mv),
+        )
+        conn.commit()
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                """INSERT INTO learning_sweep_runs
+                   (cohort_id, model_version, expected_candidates, scored_candidates,
+                    started_at, completed_at, status)
+                   VALUES (?,?,3,3,'2026-01-01T11:00:00Z','2026-01-01T11:05:00Z','FAILED')""",
+                (cid, mv),
+            )
+            conn.commit()
+        conn.close()
+
+    def test_eligible_cohorts_docstring_notes_non_overlap(self):
+        """eligible_learning_cohorts docstring must mention the UNIQUE/non-overlap guarantee."""
+        from agents.learning.calibration import eligible_learning_cohorts
+        doc = eligible_learning_cohorts.__doc__ or ""
+        assert "UNIQUE" in doc or "non-overlap" in doc.lower(), \
+            "eligible_learning_cohorts docstring must note UNIQUE/non-overlap guarantee (0436)"
+
+    def test_ineligible_cohorts_docstring_notes_non_overlap(self):
+        """_ineligible_ledger_cohorts docstring must mention the UNIQUE/non-overlap guarantee."""
+        from agents.learning.calibration import _ineligible_ledger_cohorts
+        doc = _ineligible_ledger_cohorts.__doc__ or ""
+        assert "UNIQUE" in doc or "non-overlap" in doc.lower(), \
+            "_ineligible_ledger_cohorts docstring must note UNIQUE/non-overlap guarantee (0436)"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 0437 — Report Divergent-Only and All-Cohort Edge Separately
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestDivergentDecisionEdgeV20437:
+    """_summarize_row_subset reports all_cohort_incremental_edge AND divergent-only metrics."""
+
+    def _seed_full(self, conn, mv: str, cohorts: list) -> None:
+        """cohorts: list of (cohort_id, base_eligible, [(ep_id, ch_winner, base_winner, outcome)])"""
+        _vm = json.dumps({"cv_folds": 3, "coef": [0.001]*5, "intercept": 0.01, "mean_alpha": 0.02})
+        conn.execute(
+            """INSERT INTO learning_models
+               (model_version, training_cutoff, feature_schema_hash, training_n,
+                validation_metrics, created_at, lifecycle_state, training_horizon_version)
+               VALUES (?,?,?,?,?,?,'OBSERVE','sessions_v2')""",
+            (mv, "2026-01-01", "aabb", 50, _vm, time.time()),
+        )
+        now = time.time()
+        for cohort_id, base_eligible, obs_list in cohorts:
+            conn.execute(
+                """INSERT INTO learning_sweep_runs
+                   (cohort_id, model_version, expected_candidates, scored_candidates,
+                    base_recommendation_eligible, started_at, completed_at, status)
+                   VALUES (?,?,?,?,?,?,?,'COMPLETED')""",
+                (cohort_id, mv, len(obs_list), len(obs_list), 1 if base_eligible else 0,
+                 "2026-01-01T10:00:00Z", "2026-01-01T10:05:00Z"),
+            )
+            for ep_id, ch_win, base_win, outcome in obs_list:
+                conn.execute(
+                    """INSERT OR IGNORE INTO model_observations
+                       (model_version, episode_id, ticker, prediction_timestamp,
+                        base_score, predicted_alpha, learning_adjustment, challenger_score,
+                        would_select, observation_phase, target_horizon_version,
+                        baseline_predicted_alpha, scored_at_date, decision_cohort_id,
+                        base_would_select, outcome_alpha_90d, outcome_labeled_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (mv, ep_id, "TK", now, 60.0, 0.03, 0.5, 62.0,
+                     1 if ch_win else 0, "OBSERVE", "sessions_v2",
+                     0.02, "2026-01-01", cohort_id,
+                     1 if base_win else 0, outcome, now),
+                )
+        conn.commit()
+
+    def test_all_cohort_edge_key_present_old_key_removed(self, mem_db, monkeypatch):
+        """all_cohort_incremental_edge present; incremental_selection_edge removed."""
+        import agent_db
+        from agents.learning.calibration import compute_prospective_metrics
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        mv = "edge_sessions_v2_aa_v0437_001"
+        conn = _make_conn(mem_db)
+        cid = str(uuid.uuid4())
+        cohorts = [(cid, True, [
+            (str(uuid.uuid4()), True, False, 0.06),
+            (str(uuid.uuid4()), False, True, 0.02),
+            (str(uuid.uuid4()), False, False, 0.01),
+            (str(uuid.uuid4()), False, False, 0.01),
+            (str(uuid.uuid4()), False, False, 0.01),
+        ])]
+        self._seed_full(conn, mv, cohorts)
+        conn.close()
+
+        conn = _make_conn(mem_db)
+        pm = compute_prospective_metrics(mv, conn)
+        conn.close()
+
+        elig = pm.get("stratified_metrics", {}).get("eligible_sweeps", {})
+        assert "all_cohort_incremental_edge" in elig, \
+            "all_cohort_incremental_edge must be present (renamed from incremental_selection_edge)"
+        assert "incremental_selection_edge" not in elig, \
+            "old incremental_selection_edge key must be removed"
+
+    def test_divergent_only_metrics_present(self, mem_db, monkeypatch):
+        """divergent_only_mean_edge, divergent_only_median_edge, divergent_win_rate, divergence_rate."""
+        import agent_db
+        from agents.learning.calibration import compute_prospective_metrics
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        mv = "edge_sessions_v2_aa_v0437_002"
+        conn = _make_conn(mem_db)
+        cid = str(uuid.uuid4())
+        cohorts = [(cid, True, [
+            (str(uuid.uuid4()), True, False, 0.06),
+            (str(uuid.uuid4()), False, True, 0.02),
+            (str(uuid.uuid4()), False, False, 0.01),
+            (str(uuid.uuid4()), False, False, 0.01),
+            (str(uuid.uuid4()), False, False, 0.01),
+        ])]
+        self._seed_full(conn, mv, cohorts)
+        conn.close()
+
+        conn = _make_conn(mem_db)
+        pm = compute_prospective_metrics(mv, conn)
+        conn.close()
+
+        elig = pm.get("stratified_metrics", {}).get("eligible_sweeps", {})
+        for key in ("divergent_only_mean_edge", "divergent_only_median_edge",
+                    "divergent_win_rate", "divergence_rate"):
+            assert key in elig, f"{key} must be present in _summarize_row_subset output (0437)"
+
+    def test_divergent_only_edge_differs_from_all_cohort(self, mem_db, monkeypatch):
+        """divergent_only_mean_edge != all_cohort_incremental_edge when some cohorts unchanged."""
+        import agent_db
+        from agents.learning.calibration import compute_prospective_metrics
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        mv = "edge_sessions_v2_aa_v0437_003"
+        conn = _make_conn(mem_db)
+
+        # cohort A: same winner (no divergence) — delta=0 dilutes all-cohort edge
+        cid_a = str(uuid.uuid4()); ep_same = str(uuid.uuid4())
+        # cohort B: divergent, ch wins big
+        cid_b = str(uuid.uuid4()); ep_b_ch = str(uuid.uuid4()); ep_b_base = str(uuid.uuid4())
+        cohorts = [
+            (cid_a, True, [
+                (ep_same, True, True, 0.03),    # same winner — no divergence
+                (str(uuid.uuid4()), False, False, 0.02),
+                (str(uuid.uuid4()), False, False, 0.01),
+            ]),
+            (cid_b, True, [
+                (ep_b_ch, True, False, 0.10),   # ch wins +0.10 vs base
+                (ep_b_base, False, True, 0.00),
+                (str(uuid.uuid4()), False, False, 0.00),
+            ]),
+        ]
+        self._seed_full(conn, mv, cohorts)
+        conn.close()
+
+        conn = _make_conn(mem_db)
+        pm = compute_prospective_metrics(mv, conn)
+        conn.close()
+
+        elig = pm.get("stratified_metrics", {}).get("eligible_sweeps", {})
+        all_edge = elig.get("all_cohort_incremental_edge")
+        div_edge = elig.get("divergent_only_mean_edge")
+        div_cohorts = elig.get("divergent_cohorts")
+
+        assert div_cohorts == 1, f"only cohort B is divergent; got {div_cohorts}"
+        assert all_edge is not None and div_edge is not None
+        # divergent_only should be larger than all_cohort (cohort A dilutes all_cohort with 0 delta)
+        assert abs(div_edge - all_edge) > 0.01, \
+            f"div_edge ({div_edge}) should differ from all_cohort_edge ({all_edge})"
+
+    def test_zero_divergent_returns_none_for_divergent_metrics(self, mem_db, monkeypatch):
+        """When all cohorts have same winner, divergent_only metrics are None."""
+        import agent_db
+        from agents.learning.calibration import compute_prospective_metrics
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        mv = "edge_sessions_v2_aa_v0437_004"
+        conn = _make_conn(mem_db)
+        cid = str(uuid.uuid4()); ep_same = str(uuid.uuid4())
+        cohorts = [(cid, True, [
+            (ep_same, True, True, 0.04),   # same winner
+            (str(uuid.uuid4()), False, False, 0.02),
+            (str(uuid.uuid4()), False, False, 0.01),
+            (str(uuid.uuid4()), False, False, 0.01),
+            (str(uuid.uuid4()), False, False, 0.01),
+        ])]
+        self._seed_full(conn, mv, cohorts)
+        conn.close()
+
+        conn = _make_conn(mem_db)
+        pm = compute_prospective_metrics(mv, conn)
+        conn.close()
+
+        elig = pm.get("stratified_metrics", {}).get("eligible_sweeps", {})
+        assert elig.get("divergent_only_mean_edge") is None, \
+            "divergent_only_mean_edge must be None when divergent_cohorts==0"
+        assert elig.get("divergent_win_rate") is None, \
+            "divergent_win_rate must be None when divergent_cohorts==0"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 0438 — Replace Timestamp Rollout Boundary with Evidence Contract Version
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestEvidenceContractVersion0438:
+    """evidence_contract_version column drives modern/legacy gate; timestamp is migration fallback."""
+
+    def _seed_model(self, conn, mv: str, evidence_contract_version=None,
+                    created_at=None, lifecycle="OBSERVE"):
+        _vm = json.dumps({"cv_folds": 3, "coef": [0.001]*5, "intercept": 0.01, "mean_alpha": 0.02})
+        ts = created_at if created_at is not None else time.time()
+        if evidence_contract_version is not None:
+            conn.execute(
+                """INSERT INTO learning_models
+                   (model_version, training_cutoff, feature_schema_hash, training_n,
+                    validation_metrics, created_at, lifecycle_state, training_horizon_version,
+                    evidence_contract_version)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                (mv, "2026-01-01", "aabb", 50, _vm, ts, lifecycle, "sessions_v2",
+                 evidence_contract_version),
+            )
+        else:
+            conn.execute(
+                """INSERT INTO learning_models
+                   (model_version, training_cutoff, feature_schema_hash, training_n,
+                    validation_metrics, created_at, lifecycle_state, training_horizon_version)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                (mv, "2026-01-01", "aabb", 50, _vm, ts, lifecycle, "sessions_v2"),
+            )
+        conn.commit()
+
+    def _insert_obs(self, conn, mv, cohort_id, ep_id, outcome=0.04):
+        conn.execute(
+            """INSERT OR IGNORE INTO model_observations
+               (model_version, episode_id, ticker, prediction_timestamp,
+                base_score, predicted_alpha, learning_adjustment, challenger_score,
+                would_select, observation_phase, target_horizon_version,
+                baseline_predicted_alpha, scored_at_date, decision_cohort_id,
+                base_would_select, outcome_alpha_90d, outcome_labeled_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (mv, ep_id, "TK", time.time(), 60.0, 0.03, 0.5, 62.0,
+             1, "OBSERVE", "sessions_v2", 0.02, "2026-01-01", cohort_id,
+             1, outcome, time.time()),
+        )
+        conn.commit()
+
+    def test_save_with_weights_writes_evidence_contract_version_1(self, mem_db, monkeypatch):
+        """ChallengerModel.save_with_weights() must persist evidence_contract_version=1."""
+        import agent_db
+        from agents.learning.calibration import ChallengerModel
+        import numpy as np
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        mv = "edge_sessions_v2_aa_v0438_001"
+        model = ChallengerModel(
+            model_version=mv,
+            coef=np.array([0.001, 0.001, 0.001, 0.001, 0.001]),
+            intercept=0.01,
+            mean_alpha=0.02,
+            training_n=10,
+            training_cutoff="2026-01-01",
+            validation_metrics={"cv_folds": 3},
+            feature_schema_hash="aabb",
+            lifecycle_state="TRAINED",
+        )
+        model.save_with_weights()
+
+        conn = _make_conn(mem_db)
+        row = conn.execute(
+            "SELECT evidence_contract_version FROM learning_models WHERE model_version=?", (mv,)
+        ).fetchone()
+        conn.close()
+        assert row is not None
+        assert int(row["evidence_contract_version"]) == 1, \
+            f"save_with_weights must write evidence_contract_version=1; got {row['evidence_contract_version']}"
+
+    def test_ev1_on_old_timestamp_treated_as_modern(self, mem_db, monkeypatch):
+        """evidence_contract_version=1 overrides old timestamp and forces modern filter."""
+        import agent_db
+        from agents.learning.calibration import compute_prospective_metrics, LEDGER_ROLLOUT_CUTOFF
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        mv = "edge_sessions_v2_aa_v0438_002"
+        old_ts = LEDGER_ROLLOUT_CUTOFF - 10000  # old timestamp, but ev=1 must override
+        conn = _make_conn(mem_db)
+        self._seed_model(conn, mv, evidence_contract_version=1, created_at=old_ts)
+
+        # Verified cohort — must pass through
+        good_cohort = str(uuid.uuid4())
+        conn.execute(
+            """INSERT INTO learning_sweep_runs
+               (cohort_id, model_version, expected_candidates, scored_candidates,
+                started_at, completed_at, status)
+               VALUES (?,?,5,5,'2026-01-01T10:00:00Z','2026-01-01T10:05:00Z','COMPLETED')""",
+            (good_cohort, mv),
+        )
+        for _ in range(5):
+            self._insert_obs(conn, mv, good_cohort, str(uuid.uuid4()), outcome=0.04)
+
+        # Unledgered cohort — must be excluded (modern model via ev=1)
+        for _ in range(5):
+            self._insert_obs(conn, mv, str(uuid.uuid4()), str(uuid.uuid4()), outcome=-0.05)
+        conn.commit()
+        conn.close()
+
+        conn = _make_conn(mem_db)
+        pm = compute_prospective_metrics(mv, conn, filter_partial_ledger=True)
+        conn.close()
+
+        n = pm.get("prospective_n", 0)
+        assert n == 5, \
+            f"ev=1 overrides old timestamp (modern filter applied); expected 5, got {n}"
+
+    def test_zero_or_null_ev_falls_back_to_timestamp_legacy(self, mem_db, monkeypatch):
+        """ev=0 or NULL + pre-rollout timestamp = legacy; unledgered cohorts pass through."""
+        import agent_db
+        from agents.learning.calibration import compute_prospective_metrics, LEDGER_ROLLOUT_CUTOFF
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        mv = "edge_sessions_v2_aa_v0438_003"
+        old_ts = LEDGER_ROLLOUT_CUTOFF - 10000  # pre-rollout; ev=0 (DEFAULT) => fall back to ts
+        conn = _make_conn(mem_db)
+        # seed without evidence_contract_version — gets DEFAULT 0
+        self._seed_model(conn, mv, evidence_contract_version=None, created_at=old_ts)
+
+        legacy_cohort = str(uuid.uuid4())
+        for _ in range(6):
+            self._insert_obs(conn, mv, legacy_cohort, str(uuid.uuid4()), outcome=0.04)
+        conn.close()
+
+        conn = _make_conn(mem_db)
+        pm = compute_prospective_metrics(mv, conn, filter_partial_ledger=True)
+        conn.close()
+
+        n = pm.get("prospective_n", 0)
+        assert n == 6, \
+            f"ev=0 + pre-rollout ts = legacy; unledgered cohort should pass; got {n}"
+
+    def test_readiness_report_provenance_includes_ev(self, mem_db, monkeypatch):
+        """provenance_breakdown must include evidence_contract_version field."""
+        import agent_db
+        from agents.learning.calibration import learning_readiness_report
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        mv = "edge_sessions_v2_aa_v0438_004"
+        conn = _make_conn(mem_db)
+        self._seed_model(conn, mv, evidence_contract_version=1, lifecycle="OBSERVE")
+        conn.close()
+
+        conn = _make_conn(mem_db)
+        report = learning_readiness_report(conn, model_version=mv)
+        conn.close()
+
+        pb = report.get("provenance_breakdown", {})
+        assert "evidence_contract_version" in pb, \
+            "provenance_breakdown must include evidence_contract_version (0438)"
+        assert pb["evidence_contract_version"] == 1

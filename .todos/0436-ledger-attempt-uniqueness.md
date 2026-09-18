@@ -1,7 +1,7 @@
 # Enforce One Ledger Row Per Model/Cohort Pair
 
 - **ID:** 0436
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-18
 - **Priority:** high
 - **Depends:** 0430

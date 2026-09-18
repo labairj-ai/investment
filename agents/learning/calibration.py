@@ -113,9 +113,9 @@ GATE_PASS          = "PASS"
 GATE_FAIL          = "FAIL"
 GATE_NOT_EVALUABLE = "NOT_EVALUABLE"
 
-# 0430/0432: unix timestamp of commit 88c3f87 (0424-0429 ledger-contract implementation).
-# Models created after this cutoff are "modern" — they must have COMPLETED ledger rows.
-# Pre-rollout models retain legacy treatment (unledgered cohorts allowed through gates).
+# 0432/0438: MIGRATION-ONLY fallback. Prefer evidence_contract_version column on learning_models.
+# Used only when evidence_contract_version IS NULL (models written before 0438).
+# Do NOT extend or rely on this timestamp for new logic; populate evidence_contract_version instead.
 LEDGER_ROLLOUT_CUTOFF: float = 1789769915.0
 
 
@@ -229,8 +229,9 @@ class ChallengerModel:
                     training_n, validation_metrics, created_at,
                     unique_tickers, unique_decision_dates, unique_weeks, raw_n,
                     lifecycle_state, training_horizon_version,
-                    model_id, training_config_hash, code_commit_sha)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    model_id, training_config_hash, code_commit_sha,
+                    evidence_contract_version)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     self.model_version,
                     self.training_cutoff,
@@ -247,6 +248,7 @@ class ChallengerModel:
                     _model_id,
                     vm.get("training_config_hash"),
                     vm.get("code_commit_sha"),
+                    1,  # 0438: evidence_contract_version=1 for all new models
                 ),
             )
             conn.commit()
@@ -678,6 +680,9 @@ def eligible_learning_cohorts(conn, model_version: str) -> frozenset:
 
     COMPLETED status AND scored_candidates == expected_candidates.
     Pre-0424 cohorts with no ledger row are NOT included; callers decide legacy treatment.
+
+    Non-overlap guarantee (0436): learning_sweep_runs has UNIQUE(model_version, cohort_id), so a
+    cohort_id appears in exactly one of eligible_learning_cohorts or _ineligible_ledger_cohorts.
     """
     try:
         rows = conn.execute(
@@ -696,6 +701,9 @@ def _ineligible_ledger_cohorts(conn, model_version: str) -> frozenset:
 
     Includes: PARTIAL, FAILED, STARTED, and COMPLETED-but-count-mismatch rows.
     Pre-0424 cohorts with NO ledger row are NOT in this set — they are legacy.
+
+    Non-overlap guarantee (0436): UNIQUE(model_version, cohort_id) on learning_sweep_runs ensures
+    no cohort_id appears in both this set and eligible_learning_cohorts() simultaneously.
     """
     try:
         rows = conn.execute(
@@ -738,6 +746,7 @@ def _summarize_row_subset(rows: list) -> dict:
     wins = losses = ties = 0
     ch_top1_alphas: list = []
     base_top1_alphas: list = []
+    divergent_deltas: list = []  # 0437: (ch_out - base_out) for divergent cohorts only
     for crow in cmap.values():
         ch_r = [r for r in crow if r["would_select"]]
         base_r = [r for r in crow if r["base_would_select"] is not None and int(r["base_would_select"])]
@@ -751,6 +760,7 @@ def _summarize_row_subset(rows: list) -> dict:
         base_top1_alphas.append(base_out)
         if ch_ep != base_ep:
             divergent_cohorts += 1
+            divergent_deltas.append(ch_out - base_out)
             if ch_out > base_out:
                 wins += 1
             elif ch_out < base_out:
@@ -760,9 +770,28 @@ def _summarize_row_subset(rows: list) -> dict:
 
     ch_top1_mean = (sum(ch_top1_alphas) / len(ch_top1_alphas)) if ch_top1_alphas else None
     base_top1_mean = (sum(base_top1_alphas) / len(base_top1_alphas)) if base_top1_alphas else None
-    incremental_edge = (
+    all_cohort_incremental_edge = (
         round(ch_top1_mean - base_top1_mean, 6)
         if ch_top1_mean is not None and base_top1_mean is not None else None
+    )
+
+    # 0437: divergent-only metrics (cohorts where challenger and base chose different episodes)
+    total_with_both = len(ch_top1_alphas)
+    divergent_only_mean_edge = (
+        round(sum(divergent_deltas) / len(divergent_deltas), 6) if divergent_deltas else None
+    )
+    _sorted_div = sorted(divergent_deltas)
+    if _sorted_div:
+        _m = len(_sorted_div)
+        divergent_only_median_edge = round(
+            (_sorted_div[_m // 2] if _m % 2 else (_sorted_div[_m // 2 - 1] + _sorted_div[_m // 2]) / 2),
+            6,
+        )
+    else:
+        divergent_only_median_edge = None
+    divergent_win_rate = round(wins / divergent_cohorts, 6) if divergent_cohorts > 0 else None
+    divergence_rate = (
+        round(divergent_cohorts / total_with_both, 6) if total_with_both > 0 else None
     )
 
     return {
@@ -774,7 +803,12 @@ def _summarize_row_subset(rows: list) -> dict:
         "divergent_cohorts": divergent_cohorts,
         "challenger_top1_mean_alpha": round(ch_top1_mean, 6) if ch_top1_mean is not None else None,
         "base_top1_mean_alpha": round(base_top1_mean, 6) if base_top1_mean is not None else None,
-        "incremental_selection_edge": incremental_edge,
+        "all_cohort_incremental_edge": all_cohort_incremental_edge,
+        # 0437: divergent-only edge (cohorts where challenger/base picked different episodes)
+        "divergent_only_mean_edge": divergent_only_mean_edge,
+        "divergent_only_median_edge": divergent_only_median_edge,
+        "divergent_win_rate": divergent_win_rate,
+        "divergence_rate": divergence_rate,
         "wins": wins,
         "losses": losses,
         "ties": ties,
@@ -1231,16 +1265,25 @@ def compute_prospective_metrics(model_version: str, conn, *, filter_partial_ledg
     _elig_cids = eligible_learning_cohorts(conn, model_version)
     _ineligible_cohorts_ledger = len(_inelig_cids)
 
-    # 0432: modern models (created after rollout cutoff) exclude even legacy unledgered cohorts
+    # 0432/0438: modern models must have COMPLETED ledger rows (no legacy unledgered cohorts)
     _mv_created_at: float | None = None
+    _ev_ver: int | None = None
     try:
         _mcr = conn.execute(
-            "SELECT created_at FROM learning_models WHERE model_version=?", (model_version,)
+            "SELECT created_at, evidence_contract_version FROM learning_models WHERE model_version=?",
+            (model_version,),
         ).fetchone()
         _mv_created_at = float(_mcr["created_at"]) if _mcr else None
+        _ev_ver_raw = _mcr["evidence_contract_version"] if _mcr else None
+        _ev_ver = int(_ev_ver_raw) if _ev_ver_raw is not None else None
     except Exception:
         pass
-    _is_modern_model = _mv_created_at is not None and _mv_created_at > LEDGER_ROLLOUT_CUTOFF
+    # 0438: prefer evidence_contract_version>=1; ev=0 or NULL falls back to timestamp
+    _is_modern_model = (
+        (_ev_ver >= 1)
+        if _ev_ver
+        else (_mv_created_at is not None and _mv_created_at > LEDGER_ROLLOUT_CUTOFF)
+    )
 
     # 0427: build cohort eligibility map for stratified metrics
     _eligible_cohort_ids: set = set()
@@ -1841,14 +1884,23 @@ def _check_degradation(model_version: str, conn) -> None:
     _deg_inelig = _ineligible_ledger_cohorts(conn, model_version)
     if _deg_inelig:
         _deg_mv_created: float | None = None
+        _deg_ev_ver: int | None = None
         try:
             _deg_cr = conn.execute(
-                "SELECT created_at FROM learning_models WHERE model_version=?", (model_version,)
+                "SELECT created_at, evidence_contract_version FROM learning_models WHERE model_version=?",
+                (model_version,),
             ).fetchone()
             _deg_mv_created = float(_deg_cr["created_at"]) if _deg_cr else None
+            _deg_ev_raw = _deg_cr["evidence_contract_version"] if _deg_cr else None
+            _deg_ev_ver = int(_deg_ev_raw) if _deg_ev_raw is not None else None
         except Exception:
             pass
-        _deg_is_modern = _deg_mv_created is not None and _deg_mv_created > LEDGER_ROLLOUT_CUTOFF
+        # 0438: prefer evidence_contract_version>=1; ev=0 or NULL falls back to timestamp
+        _deg_is_modern = (
+            (_deg_ev_ver >= 1)
+            if _deg_ev_ver
+            else (_deg_mv_created is not None and _deg_mv_created > LEDGER_ROLLOUT_CUTOFF)
+        )
         if _deg_is_modern:
             _deg_elig = eligible_learning_cohorts(conn, model_version)
             _cohort_ids = [cid for cid in _cohort_ids if cid in _deg_elig]
@@ -2054,18 +2106,24 @@ def learning_readiness_report(conn, model_version: str = None) -> dict:
     mv_row = conn.execute("SELECT * FROM learning_models WHERE model_version=?", (model_version,)).fetchone()
     lifecycle = mv_row["lifecycle_state"] if mv_row else None
     thv = (mv_row["training_horizon_version"] if mv_row else None) or LEARNING_TARGET_HORIZON
-    # 0432: provenance classification
     _mv_ts = float(mv_row["created_at"]) if mv_row and mv_row["created_at"] else 0.0
-    _is_modern = _mv_ts > LEDGER_ROLLOUT_CUTOFF
-
-    # 0415: pipeline observability — last successful shadow score
     _mv_keys = mv_row.keys() if (mv_row and hasattr(mv_row, "keys")) else []
+    # 0415: pipeline observability — last successful shadow score
     last_shadow_score_at = mv_row["last_shadow_score_at"] if "last_shadow_score_at" in _mv_keys else None
     last_shadow_cohort_id = mv_row["last_shadow_cohort_id"] if "last_shadow_cohort_id" in _mv_keys else None
     # 0416: artifact identity fields
     model_id = mv_row["model_id"] if "model_id" in _mv_keys else None
     training_config_hash = mv_row["training_config_hash"] if "training_config_hash" in _mv_keys else None
     code_commit_sha_val = mv_row["code_commit_sha"] if "code_commit_sha" in _mv_keys else None
+    # 0432/0438: provenance classification — prefer evidence_contract_version, fall back to timestamp
+    _ev_contract_raw = mv_row["evidence_contract_version"] if "evidence_contract_version" in _mv_keys else None
+    _ev_contract_int = int(_ev_contract_raw) if _ev_contract_raw is not None else None
+    # 0438: prefer evidence_contract_version>=1; ev=0 or NULL falls back to timestamp
+    _is_modern = (
+        (_ev_contract_int >= 1)
+        if _ev_contract_int
+        else (_mv_ts > LEDGER_ROLLOUT_CUTOFF)
+    )
 
     # Data health (target-aware)
     health = compute_data_health(conn, target_horizon_version=thv)
@@ -2156,11 +2214,12 @@ def learning_readiness_report(conn, model_version: str = None) -> dict:
         "population_label": pm.get("population_label", "all"),
         # 0429: ineligible ledger cohort count (PARTIAL/FAILED sweeps excluded from gates)
         "ineligible_cohorts_ledger": int(pm.get("ineligible_cohorts_ledger", 0)),
-        # 0432: provenance classification for this model's cohorts
+        # 0432/0438: provenance classification for this model's cohorts
         "provenance_breakdown": {
             "verified_modern": len(eligible_learning_cohorts(conn, model_version)),
             "ineligible": len(_ineligible_ledger_cohorts(conn, model_version)),
             "is_modern_model": _is_modern,
+            "evidence_contract_version": _ev_contract_int,
         },
     }
 

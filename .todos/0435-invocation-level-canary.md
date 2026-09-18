@@ -1,7 +1,7 @@
 # Anchor Canary on Latest Attempt, Audit All Models in OH Run
 
 - **ID:** 0435
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-18
 - **Priority:** high
 - **Depends:** 0434

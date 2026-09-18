@@ -1,165 +1,166 @@
 #!/usr/bin/env bash
-# Canary audit for the learning pipeline after a live OH sweep (0423/0426).
-# 0426: anchored on one COMPLETED ledger row — all assertions derived from the same
-#       agent_run_id, cohort_id, and model_version to eliminate cross-run timing assumptions.
-# Exit 0 = all assertions pass, 1 = one or more failures.
+# Canary audit for the learning pipeline (0423/0426/0435).
+# 0435: anchors on the LATEST ledger attempt (not latest COMPLETED), then audits
+#       every model sweep belonging to that OH invocation.
+# Exit 0 = all pass, 1 = one or more failures.
 
 DB="${1:-/home/optiplex/investment/out/investment.db}"
 FAIL=0
-
-check() {
-    local label="$1"
-    local sql="$2"
-    local expect="$3"
-    local actual
-    actual=$(sqlite3 "$DB" "$sql" 2>&1)
-    if [ "$actual" = "$expect" ]; then
-        echo "  PASS  $label"
-    else
-        echo "  FAIL  $label (expected='$expect' got='$actual')"
-        FAIL=1
-    fi
-}
 
 echo ""
 echo "=== Investment Learning Canary Audit ==="
 echo "DB: $DB"
 echo ""
 
-# ── Anchor: latest COMPLETED ledger row ────────────────────────────────────────
-# 0426: Start from a single ledger row so agent_run_id, cohort_id, and model_version
-# all come from the same OH invocation — no independent "latest" queries that could
-# produce a cross-run mismatch.
-LEDGER=$(sqlite3 "$DB" \
-    "SELECT id||'|'||COALESCE(agent_run_id,'')||'|'||cohort_id||'|'||model_version||'|'||COALESCE(phase,'')||'|'||expected_candidates||'|'||scored_candidates||'|'||COALESCE(base_recommendation_eligible,'') FROM learning_sweep_runs WHERE status='COMPLETED' ORDER BY id DESC LIMIT 1" \
+# ── Anchor: latest ledger row (any status) ─────────────────────────────────────
+# 0435: No status filter. If the most recent sweep failed, the canary must fail too.
+ANCHOR=$(sqlite3 "$DB" \
+    "SELECT id||'|'||COALESCE(agent_run_id,'')||'|'||cohort_id||'|'||model_version||'|'||status||'|'||expected_candidates||'|'||scored_candidates \
+     FROM learning_sweep_runs ORDER BY id DESC LIMIT 1" \
     2>/dev/null)
 
-if [ -z "$LEDGER" ]; then
-    echo "  FAIL  No COMPLETED ledger row found — no sweep has been recorded yet"
-    echo ""
-    echo "=== CANARY FAILURES DETECTED — investigate before next cycle ==="
+if [ -z "$ANCHOR" ]; then
+    echo "  FAIL  No ledger rows found — no sweep has been recorded yet"
+    echo "=== CANARY FAILURES DETECTED ==="
     exit 1
 fi
 
-LEDGER_ID=$(echo "$LEDGER"  | cut -d'|' -f1)
-AGENT_RUN_ID=$(echo "$LEDGER" | cut -d'|' -f2)
-COHORT_ID=$(echo "$LEDGER"  | cut -d'|' -f3)
-MV=$(echo "$LEDGER"         | cut -d'|' -f4)
-PHASE=$(echo "$LEDGER"      | cut -d'|' -f5)
-EXP_CANDS=$(echo "$LEDGER"  | cut -d'|' -f6)
-SCO_CANDS=$(echo "$LEDGER"  | cut -d'|' -f7)
-BASE_ELIG=$(echo "$LEDGER"  | cut -d'|' -f8)
+LEDGER_ID=$(echo "$ANCHOR"    | cut -d'|' -f1)
+AGENT_RUN_ID=$(echo "$ANCHOR" | cut -d'|' -f2)
+COHORT_ID=$(echo "$ANCHOR"    | cut -d'|' -f3)
+MV=$(echo "$ANCHOR"           | cut -d'|' -f4)
+LATEST_STATUS=$(echo "$ANCHOR"| cut -d'|' -f5)
+EXP_CANDS=$(echo "$ANCHOR"    | cut -d'|' -f6)
+SCO_CANDS=$(echo "$ANCHOR"    | cut -d'|' -f7)
 
-echo "Ledger row ID:      $LEDGER_ID"
-echo "Agent run ID:       ${AGENT_RUN_ID:-(not set — pre-0424 sweep)}"
-echo "Cohort ID:          $COHORT_ID"
-echo "Model version:      $MV"
-echo "Phase:              ${PHASE:-(null)}"
-echo "Candidates:         expected=$EXP_CANDS  scored=$SCO_CANDS"
-echo "Base eligible:      ${BASE_ELIG:-(not recorded)}"
+echo "Latest ledger row ID:  $LEDGER_ID"
+echo "Agent run ID:          ${AGENT_RUN_ID:-(not set)}"
+echo "Cohort ID:             $COHORT_ID"
+echo "Model version:         $MV"
+echo "Status:                $LATEST_STATUS"
+echo "Candidates:            expected=$EXP_CANDS  scored=$SCO_CANDS"
 echo ""
 
-# 1. Sweep ledger expected == scored
-if [ "$EXP_CANDS" = "$SCO_CANDS" ]; then
-    echo "  PASS  sweep ledger (expected=$EXP_CANDS == scored=$SCO_CANDS, COMPLETED)"
-else
-    echo "  FAIL  sweep ledger mismatch (expected=$EXP_CANDS vs scored=$SCO_CANDS)"
+# 1. Latest sweep must be COMPLETED with exact count
+if [ "$LATEST_STATUS" != "COMPLETED" ]; then
+    echo "  FAIL  Latest sweep status=$LATEST_STATUS (must be COMPLETED)"
     FAIL=1
-fi
-
-# 2. Observation count in model_observations matches ledger scored_candidates
-N_OBS=$(sqlite3 "$DB" \
-    "SELECT COUNT(*) FROM model_observations WHERE decision_cohort_id='$COHORT_ID' AND model_version='$MV'" \
-    2>/dev/null)
-if [ "$N_OBS" = "$SCO_CANDS" ]; then
-    echo "  PASS  observation count matches ledger ($N_OBS = $SCO_CANDS)"
-else
-    echo "  FAIL  observation count=$N_OBS vs ledger scored=$SCO_CANDS"
+elif [ "$EXP_CANDS" != "$SCO_CANDS" ]; then
+    echo "  FAIL  Latest sweep count mismatch (expected=$EXP_CANDS scored=$SCO_CANDS)"
     FAIL=1
-fi
-
-# 3. decision_episodes exist for agent_run_id (when populated)
-if [ -n "$AGENT_RUN_ID" ]; then
-    check "decision_episodes exist for agent_run_id" \
-        "SELECT COUNT(*) > 0 FROM decision_episodes WHERE run_id='$AGENT_RUN_ID'" \
-        "1"
 else
-    echo "  SKIP  decision_episodes check (agent_run_id not set — pre-0424 sweep)"
+    echo "  PASS  Latest sweep COMPLETED with exact count ($SCO_CANDS)"
 fi
 
-# 3b. decision_episodes count for agent_run_id must equal expected_candidates (0434)
-if [ -n "$AGENT_RUN_ID" ]; then
-    N_EPISODES=$(sqlite3 "$DB" \
-        "SELECT COUNT(*) FROM decision_episodes WHERE run_id='$AGENT_RUN_ID'" \
+# 0435: post-0434 all sweeps carry agent_run_id; missing = failure, not a skip.
+if [ -z "$AGENT_RUN_ID" ]; then
+    echo "  FAIL  agent_run_id not set — post-0434 every sweep must carry agent_run_id"
+    FAIL=1
+else
+    # ── Full invocation audit: all models in this OH run ─────────────────────────
+    echo "--- Invocation audit for agent_run_id=$AGENT_RUN_ID ---"
+    ALL_ROWS=$(sqlite3 "$DB" \
+        "SELECT model_version||'|'||cohort_id||'|'||expected_candidates||'|'||scored_candidates||'|'||status \
+         FROM learning_sweep_runs WHERE agent_run_id='$AGENT_RUN_ID' ORDER BY id ASC" \
         2>/dev/null)
-    if [ "$N_EPISODES" = "$EXP_CANDS" ]; then
-        echo "  PASS  decision_episodes count matches expected ($N_EPISODES = $EXP_CANDS)"
-    else
-        echo "  FAIL  decision_episodes count=$N_EPISODES vs expected=$EXP_CANDS for run_id=$AGENT_RUN_ID"
+
+    if [ -z "$ALL_ROWS" ]; then
+        echo "  FAIL  No ledger rows found for agent_run_id=$AGENT_RUN_ID"
         FAIL=1
-    fi
-else
-    echo "  SKIP  decision_episodes count check (agent_run_id not set)"
-fi
-
-# 3c. Every model_observations episode in this cohort must belong to the anchored agent_run_id (0434)
-if [ -n "$AGENT_RUN_ID" ]; then
-    N_ORPHAN_OBS=$(sqlite3 "$DB" \
-        "SELECT COUNT(*) FROM model_observations mo
-         LEFT JOIN decision_episodes de ON mo.episode_id=de.episode_id AND de.run_id='$AGENT_RUN_ID'
-         WHERE mo.decision_cohort_id='$COHORT_ID' AND mo.model_version='$MV'
-           AND de.episode_id IS NULL" \
-        2>/dev/null)
-    if [ "$N_ORPHAN_OBS" = "0" ]; then
-        echo "  PASS  all cohort observations belong to anchored agent_run_id"
     else
-        echo "  FAIL  $N_ORPHAN_OBS observation(s) in cohort do not link to run_id=$AGENT_RUN_ID"
-        FAIL=1
+        N_MODELS=$(echo "$ALL_ROWS" | wc -l | tr -d ' ')
+        echo "  Models in invocation: $N_MODELS"
+        echo ""
+        while IFS='|' read -r _MV _CID _EXP _SCO _STATUS; do
+            echo "  Model: $_MV"
+            # 2. Each model sweep must be COMPLETED + exact
+            if [ "$_STATUS" != "COMPLETED" ]; then
+                echo "    FAIL  status=$_STATUS (must be COMPLETED)"
+                FAIL=1
+            elif [ "$_EXP" != "$_SCO" ]; then
+                echo "    FAIL  count mismatch (expected=$_EXP scored=$_SCO)"
+                FAIL=1
+            else
+                echo "    PASS  COMPLETED exact ($_SCO candidates)"
+            fi
+            # 3. Observation count matches
+            _N_OBS=$(sqlite3 "$DB" \
+                "SELECT COUNT(*) FROM model_observations WHERE decision_cohort_id='$_CID' AND model_version='$_MV'" \
+                2>/dev/null)
+            if [ "$_N_OBS" = "$_SCO" ]; then
+                echo "    PASS  observation count=$_N_OBS matches scored=$_SCO"
+            else
+                echo "    FAIL  observation count=$_N_OBS vs scored=$_SCO"
+                FAIL=1
+            fi
+            # 4. Exactly one challenger winner
+            _N_CH=$(sqlite3 "$DB" \
+                "SELECT COUNT(*) FROM model_observations WHERE decision_cohort_id='$_CID' AND model_version='$_MV' AND would_select=1" \
+                2>/dev/null)
+            if [ "$_N_CH" = "1" ]; then
+                echo "    PASS  exactly one challenger winner"
+            else
+                echo "    FAIL  expected 1 challenger winner, got $_N_CH"
+                FAIL=1
+            fi
+            # 5. Exactly one base winner
+            _N_BASE=$(sqlite3 "$DB" \
+                "SELECT COUNT(*) FROM model_observations WHERE decision_cohort_id='$_CID' AND model_version='$_MV' AND base_would_select=1" \
+                2>/dev/null)
+            if [ "$_N_BASE" = "1" ]; then
+                echo "    PASS  exactly one base winner"
+            else
+                echo "    FAIL  expected 1 base winner, got $_N_BASE"
+                FAIL=1
+            fi
+            # 6. Episode count == expected (decision_episodes for this run)
+            _N_EP=$(sqlite3 "$DB" \
+                "SELECT COUNT(*) FROM decision_episodes WHERE run_id='$AGENT_RUN_ID'" \
+                2>/dev/null)
+            if [ "$_N_EP" = "$_EXP" ]; then
+                echo "    PASS  decision_episodes count=$_N_EP matches expected=$_EXP"
+            else
+                echo "    FAIL  decision_episodes count=$_N_EP vs expected=$_EXP"
+                FAIL=1
+            fi
+            # 7. Row-level lineage: every observation episode belongs to this run
+            _N_ORPHAN=$(sqlite3 "$DB" \
+                "SELECT COUNT(*) FROM model_observations mo
+                 LEFT JOIN decision_episodes de ON mo.episode_id=de.episode_id AND de.run_id='$AGENT_RUN_ID'
+                 WHERE mo.decision_cohort_id='$_CID' AND mo.model_version='$_MV' AND de.episode_id IS NULL" \
+                2>/dev/null)
+            if [ "$_N_ORPHAN" = "0" ]; then
+                echo "    PASS  all observation episodes belong to run_id"
+            else
+                echo "    FAIL  $_N_ORPHAN observation(s) not linked to run_id=$AGENT_RUN_ID"
+                FAIL=1
+            fi
+            # 8. Variant parity (PAPER_ACTIVE only)
+            _IS_PA=$(sqlite3 "$DB" \
+                "SELECT lifecycle_state FROM learning_models WHERE model_version='$_MV'" \
+                2>/dev/null)
+            if [ "$_IS_PA" = "PAPER_ACTIVE" ]; then
+                _SHADOW_EP=$(sqlite3 "$DB" \
+                    "SELECT episode_id FROM model_observations WHERE decision_cohort_id='$_CID' AND model_version='$_MV' AND would_select=1 LIMIT 1" \
+                    2>/dev/null)
+                _VARIANT_EP=$(sqlite3 "$DB" \
+                    "SELECT challenger_episode_id FROM decision_variants WHERE decision_cohort_id='$_CID' AND challenger_model_version='$_MV' LIMIT 1" \
+                    2>/dev/null)
+                if [ -z "$_VARIANT_EP" ]; then
+                    echo "    SKIP  no decision_variant row (model not yet eligible)"
+                elif [ "$_SHADOW_EP" = "$_VARIANT_EP" ]; then
+                    echo "    PASS  shadow episode matches decision_variant"
+                else
+                    echo "    FAIL  shadow ep=$_SHADOW_EP vs variant ep=$_VARIANT_EP"
+                    FAIL=1
+                fi
+            fi
+            echo ""
+        done <<< "$ALL_ROWS"
     fi
-else
-    echo "  SKIP  row-level lineage check (agent_run_id not set)"
 fi
 
-# 4. Exactly one would_select=1 per cohort
-N_CH=$(sqlite3 "$DB" \
-    "SELECT COUNT(*) FROM model_observations WHERE decision_cohort_id='$COHORT_ID' AND model_version='$MV' AND would_select=1" \
-    2>/dev/null)
-if [ "$N_CH" = "1" ]; then
-    echo "  PASS  exactly one challenger winner (would_select=1)"
-else
-    echo "  FAIL  expected 1 challenger winner, got $N_CH"
-    FAIL=1
-fi
-
-# 5. Exactly one base_would_select=1 per cohort
-N_BASE=$(sqlite3 "$DB" \
-    "SELECT COUNT(*) FROM model_observations WHERE decision_cohort_id='$COHORT_ID' AND model_version='$MV' AND base_would_select=1" \
-    2>/dev/null)
-if [ "$N_BASE" = "1" ]; then
-    echo "  PASS  exactly one base winner (base_would_select=1)"
-else
-    echo "  FAIL  expected 1 base winner, got $N_BASE"
-    FAIL=1
-fi
-
-# 6. decision_variants challenger_episode_id matches shadow observation episode_id
-SHADOW_EP=$(sqlite3 "$DB" \
-    "SELECT episode_id FROM model_observations WHERE decision_cohort_id='$COHORT_ID' AND model_version='$MV' AND would_select=1 LIMIT 1" \
-    2>/dev/null)
-VARIANT_EP=$(sqlite3 "$DB" \
-    "SELECT challenger_episode_id FROM decision_variants WHERE decision_cohort_id='$COHORT_ID' AND challenger_model_version='$MV' LIMIT 1" \
-    2>/dev/null)
-if [ -z "$VARIANT_EP" ]; then
-    echo "  SKIP  no decision_variant row (model not PAPER_ACTIVE or not eligible)"
-elif [ "$SHADOW_EP" = "$VARIANT_EP" ]; then
-    echo "  PASS  shadow episode matches decision_variant challenger_episode_id"
-else
-    echo "  FAIL  shadow ep=$SHADOW_EP vs variant ep=$VARIANT_EP"
-    FAIL=1
-fi
-
-# 7. Full integrity audit
-echo ""
+# ── Full integrity audit ───────────────────────────────────────────────────────
 echo "Running full integrity audit..."
 AUDIT=$(cd "$(dirname "$DB")/.." && python3 check_integrity.py --json 2>/dev/null \
     | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['overall'])" 2>/dev/null)
@@ -168,7 +169,7 @@ if [ "$AUDIT" = "ok" ]; then
 elif [ "$AUDIT" = "WARN" ]; then
     echo "  WARN  integrity audit has warnings (not blocking)"
 else
-    echo "  FAIL  integrity audit overall=${AUDIT:-(unknown — check_integrity.py failed)}"
+    echo "  FAIL  integrity audit overall=${AUDIT:-(unknown)}"
     FAIL=1
 fi
 

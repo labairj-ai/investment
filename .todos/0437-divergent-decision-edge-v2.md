@@ -1,7 +1,7 @@
 # Report Divergent-Only and All-Cohort Edge Separately
 
 - **ID:** 0437
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-18
 - **Priority:** normal
 - **Depends:** 0433

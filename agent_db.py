@@ -659,6 +659,8 @@ def migrate() -> None:
         ("learning_models", "code_commit_sha",                               "TEXT"),
         # 0419 — prospective population: tag cohorts as base-recommendation-eligible
         ("learning_sweep_runs", "base_recommendation_eligible",              "INTEGER"),
+        # 0438 — evidence contract version: 0=legacy, 1=ledger_v1 (requires COMPLETED ledger)
+        ("learning_models", "evidence_contract_version",                     "INTEGER DEFAULT 0"),
     ]
     for table, col, col_type in _new_cols:
         try:
@@ -702,6 +704,16 @@ def migrate() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_sweep_runs_cohort "
             "ON learning_sweep_runs (cohort_id, model_version)"
+        )
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
+    # 0436: one ledger row per (model_version, cohort_id) — retries must use new cohort IDs
+    try:
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_sweep_runs_unique_attempt "
+            "ON learning_sweep_runs (model_version, cohort_id)"
         )
         conn.commit()
     except sqlite3.OperationalError:

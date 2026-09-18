@@ -1,7 +1,7 @@
 # Replace Timestamp Rollout Boundary with Evidence Contract Version
 
 - **ID:** 0438
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-18
 - **Priority:** normal
 - **Depends:** 0432
