@@ -78,11 +78,13 @@ def score_for_observe(model_version: str, candidates: list[dict]) -> None:
 
             now = datetime.now(timezone.utc).isoformat()
             # 0384: use America/New_York date so evening runs don't advance to next UTC day
+            # Fallback uses a fixed UTC-5 offset (EST) — avoids tzdata dependency on minimal systems
             try:
                 from zoneinfo import ZoneInfo
                 scored_at_date = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
             except Exception:
-                scored_at_date = now[:10]
+                from datetime import timezone as _tz, timedelta as _tdt
+                scored_at_date = datetime.now(_tz(offset=_tdt(hours=-5))).strftime("%Y-%m-%d")
 
             # 0382: stable cohort id for all candidates scored in this run (UTC minute)
             decision_cohort_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M")

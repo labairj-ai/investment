@@ -1335,7 +1335,7 @@ def _check_degradation(model_version: str, conn) -> None:
             ).fetchone()[0]
             if new_n < DEGRADATION_MIN_NEW_OUTCOMES or new_cohort_days < DEGRADATION_MIN_NEW_COHORT_DAYS:
                 return
-        elif last_max_obs_id is not None and int(last_max_obs_id) > 0:
+        elif last_max_obs_id is not None:
             # 0377 legacy: count by observation id
             new_n = conn.execute(
                 """SELECT COUNT(*) FROM model_observations
@@ -1362,9 +1362,13 @@ def _check_degradation(model_version: str, conn) -> None:
         return
 
     current_max_obs_id = max(int(r["id"]) for r in obs)
-    # 0384: track max outcome_labeled_at for the next snapshot's anchor
-    labeled_at_vals = [r["outcome_labeled_at"] for r in obs if r["outcome_labeled_at"] is not None]
-    current_max_labeled_at = max(labeled_at_vals) if labeled_at_vals else None
+    # 0393: query globally for max outcome_labeled_at — LIMIT 30 window may not contain the true max
+    current_max_labeled_at = conn.execute(
+        """SELECT MAX(outcome_labeled_at) FROM model_observations
+           WHERE model_version=? AND outcome_alpha_90d IS NOT NULL
+             AND (observation_phase='PAPER_ACTIVE' OR observation_phase IS NULL)""",
+        (model_version,),
+    ).fetchone()[0]
 
     outcomes = [float(r["outcome_alpha_90d"]) for r in obs]
     n_obs = len(obs)
@@ -1420,8 +1424,10 @@ def _check_degradation(model_version: str, conn) -> None:
 
     today = _d2.today().isoformat()
     try:
+        # 0394: use INSERT OR REPLACE so a second run on the same day updates the anchor
+        # rather than silently ignoring it (which would freeze last_outcome_labeled_at at T1)
         conn.execute(
-            """INSERT OR IGNORE INTO model_performance_snapshots
+            """INSERT OR REPLACE INTO model_performance_snapshots
                (model_version, snapshot_date, window_n, selection_alpha_spread,
                 prediction_mae, baseline_mae, prospective_hit_rate, edge_verdict,
                 last_snapshot_max_obs_id, snapshot_base_ranking_spread,
@@ -1500,23 +1506,27 @@ def learning_readiness_report(conn, model_version: str = None) -> dict:
     mature_obs = int(pm.get("prospective_n", 0))
     cohort_days = int(pm.get("n_cohort_days", 0))
 
-    # Promotion gates (only meaningful for OBSERVE or SUSPENDED→OBSERVE)
+    # Promotion gates — target depends on lifecycle:
+    # OBSERVE → PAPER_ACTIVE gates; SUSPENDED → OBSERVE re-entry gates
     gates_result: dict = {}
-    if lifecycle in (LIFECYCLE_OBSERVE, LIFECYCLE_SUSPENDED):
+    if lifecycle == LIFECYCLE_OBSERVE:
         gates_result = _check_promotion_gates(model_version, LIFECYCLE_PAPER_ACTIVE)
+    elif lifecycle == LIFECYCLE_SUSPENDED:
+        gates_result = _check_promotion_gates(model_version, LIFECYCLE_OBSERVE)
 
     # Next maturity date: earliest date when an unmatured observation could mature
-    # = max(scored_at_date among unmatured obs) + horizon_days
+    # = MIN(scored_at_date among unmatured obs) + horizon_days
+    # MIN gives the soonest any evidence will arrive; MAX would give the latest
     horizon_days = 91  # calendar approximation for both versions
     next_maturity_date: str | None = None
     try:
-        max_unmatured = conn.execute(
-            """SELECT MAX(scored_at_date) FROM model_observations
+        min_unmatured = conn.execute(
+            """SELECT MIN(scored_at_date) FROM model_observations
                WHERE model_version=? AND outcome_alpha_90d IS NULL AND scored_at_date IS NOT NULL""",
             (model_version,),
         ).fetchone()[0]
-        if max_unmatured:
-            nd = _d.fromisoformat(max_unmatured) + _td(days=horizon_days)
+        if min_unmatured:
+            nd = _d.fromisoformat(min_unmatured) + _td(days=horizon_days)
             next_maturity_date = nd.isoformat()
     except Exception:
         pass
