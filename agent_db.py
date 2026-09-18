@@ -433,6 +433,9 @@ def migrate() -> None:
     # so that B0 columns land on the right tables on fresh installs
     _migrate_trade_engine(conn)
 
+    # 0327 — learning tables must exist BEFORE _new_cols so ALTER TABLE columns land correctly
+    _migrate_learning_episodes(conn)
+
     # Add columns introduced after the initial schema (safe to re-run)
     _new_cols = [
         ("investment_theses", "approved_by",      "TEXT"),
@@ -607,6 +610,16 @@ def migrate() -> None:
         ("decision_variants", "challenger_episode_id",             "TEXT"),
         # 0364 — completeness flag on MTM rows
         ("virtual_book_nav",  "is_complete",                       "INTEGER DEFAULT 1"),
+        # 0365 — prospective OBSERVE metrics (computed from model_observations outcomes)
+        ("learning_models",   "prospective_metrics_json",          "TEXT"),
+        # 0369 — session-based outcome label versioning
+        ("decision_episodes", "horizon_definition_version",        "TEXT DEFAULT 'calendar_v1'"),
+        ("episode_outcomes",  "horizon_definition_version",        "TEXT DEFAULT 'calendar_v1'"),
+        ("learning_models",   "training_horizon_version",          "TEXT DEFAULT 'calendar_v1'"),
+        # 0368 — quote quality contract
+        ("trade_intents",     "quote_quality",                     "TEXT"),
+        ("trade_intents",     "market_timestamp",                  "TEXT"),
+        # 0371 — SUSPENDED lifecycle state (no schema change needed; uses existing lifecycle_state col)
     ]
     for table, col, col_type in _new_cols:
         try:
@@ -710,9 +723,6 @@ def migrate() -> None:
         conn.commit()
     except sqlite3.OperationalError:
         pass
-
-    # 0327 — strategy learning episode tables
-    _migrate_learning_episodes(conn)
 
     conn.close()
 
@@ -1131,6 +1141,20 @@ def _migrate_learning_episodes(conn: sqlite3.Connection) -> None:
 
         CREATE UNIQUE INDEX IF NOT EXISTS idx_model_obs_version_episode
             ON model_observations(model_version, episode_id);
+
+        -- 0371: rolling performance snapshots for PAPER_ACTIVE degradation detection
+        CREATE TABLE IF NOT EXISTS model_performance_snapshots (
+            id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+            model_version          TEXT NOT NULL,
+            snapshot_date          TEXT NOT NULL,
+            window_n               INTEGER,
+            selection_alpha_spread REAL,
+            prediction_mae         REAL,
+            baseline_mae           REAL,
+            prospective_hit_rate   REAL,
+            edge_verdict           TEXT,
+            UNIQUE(model_version, snapshot_date)
+        );
 
         -- Seed the two books if they don't exist yet
         INSERT OR IGNORE INTO virtual_books (book_id, label, starting_cash, current_cash)

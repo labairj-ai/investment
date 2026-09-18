@@ -54,6 +54,7 @@ LIFECYCLE_TRAINED      = "TRAINED"
 LIFECYCLE_OBSERVE      = "OBSERVE"
 LIFECYCLE_PAPER_ACTIVE = "PAPER_ACTIVE"
 LIFECYCLE_RETIRED      = "RETIRED"
+LIFECYCLE_SUSPENDED    = "SUSPENDED"  # 0371: auto-suspended on edge degradation
 
 # Promotion gate thresholds
 PROMOTE_MIN_UNIQUE_TICKERS        = 10
@@ -167,8 +168,8 @@ class ChallengerModel:
                    (model_version, training_cutoff, feature_schema_hash,
                     training_n, validation_metrics, created_at,
                     unique_tickers, unique_decision_dates, unique_weeks, raw_n,
-                    lifecycle_state)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                    lifecycle_state, training_horizon_version)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     self.model_version,
                     self.training_cutoff,
@@ -181,6 +182,7 @@ class ChallengerModel:
                     vm.get("unique_weeks"),
                     vm.get("raw_n"),
                     self.lifecycle_state,
+                    vm.get("training_horizon_version", "calendar_v1"),  # 0369
                 ),
             )
             conn.commit()
@@ -215,27 +217,53 @@ class ChallengerModel:
         )
 
     @classmethod
-    def train(cls, ridge_alpha: float = RIDGE_ALPHA) -> "ChallengerModel | None":
+    def train(
+        cls,
+        ridge_alpha: float = RIDGE_ALPHA,
+        horizon_version: str = "calendar_v1",
+    ) -> "ChallengerModel | None":
         """Train on all labeled 3m episodes using decision-date cohort walk-forward (0334).
 
+        horizon_version: 0369 — 'calendar_v1' (91d) or 'sessions_v2' (63 sessions).
+        Rows from different versions are never mixed in one training run.
         Returns None if fewer than MIN_TRAINING_N rows are available.
         """
         conn = agent_db._connect()
-        rows = conn.execute(
-            f"""
-            SELECT e.episode_id, e.captured_at, e.ticker,
-                   e.q_score, e.v_score, e.pf_score, e.c_score, e.ec_score,
-                   o.alpha
-            FROM decision_episodes e
-            JOIN episode_outcomes o ON e.episode_id = o.episode_id
-            WHERE o.horizon = ? AND o.alpha IS NOT NULL
-              AND e.q_score IS NOT NULL AND e.v_score IS NOT NULL
-              AND e.pf_score IS NOT NULL AND e.c_score IS NOT NULL
-              AND e.ec_score IS NOT NULL
-            ORDER BY e.captured_at ASC
-            """,
-            (HORIZON,),
-        ).fetchall()
+        try:
+            rows = conn.execute(
+                """
+                SELECT e.episode_id, e.captured_at, e.ticker,
+                       e.q_score, e.v_score, e.pf_score, e.c_score, e.ec_score,
+                       o.alpha
+                FROM decision_episodes e
+                JOIN episode_outcomes o ON e.episode_id = o.episode_id
+                WHERE o.horizon = ? AND o.alpha IS NOT NULL
+                  AND o.horizon_definition_version = ?
+                  AND e.q_score IS NOT NULL AND e.v_score IS NOT NULL
+                  AND e.pf_score IS NOT NULL AND e.c_score IS NOT NULL
+                  AND e.ec_score IS NOT NULL
+                ORDER BY e.captured_at ASC
+                """,
+                (HORIZON, horizon_version),
+            ).fetchall()
+        except Exception:
+            # Older DB without horizon_definition_version column — fall back (backward compat)
+            rows = conn.execute(
+                f"""
+                SELECT e.episode_id, e.captured_at, e.ticker,
+                       e.q_score, e.v_score, e.pf_score, e.c_score, e.ec_score,
+                       o.alpha
+                FROM decision_episodes e
+                JOIN episode_outcomes o ON e.episode_id = o.episode_id
+                WHERE o.horizon = ? AND o.alpha IS NOT NULL
+                  AND e.q_score IS NOT NULL AND e.v_score IS NOT NULL
+                  AND e.pf_score IS NOT NULL AND e.c_score IS NOT NULL
+                  AND e.ec_score IS NOT NULL
+                ORDER BY e.captured_at ASC
+                """,
+                (HORIZON,),
+            ).fetchall()
+            horizon_version = "calendar_v1"
         conn.close()
 
         n = len(rows)
@@ -307,6 +335,8 @@ class ChallengerModel:
             "ranking_spread_ci_high":   ci["ranking_spread_ci_high"],
             "alpha_precision":          ci["alpha_precision"],
             "alpha_edge_evidence":      ci["alpha_edge_evidence"],
+            # 0369 — version of horizon definition used for training data
+            "training_horizon_version": horizon_version,
         }
 
         return cls(
@@ -666,24 +696,40 @@ def _check_promotion_gates(model_version: str, target_state: str) -> dict:
             "minimum": OBSERVE_MIN_FRESH_EPISODES,
             "pass": fresh_episodes >= OBSERVE_MIN_FRESH_EPISODES,
         }
-        # 0360: mature shadow observations required before leaving OBSERVE
-        try:
-            mature_obs = conn.execute(
-                """SELECT COUNT(*) FROM model_observations
-                   WHERE model_version=? AND outcome_alpha_90d IS NOT NULL""",
-                (model_version,),
-            ).fetchone()[0]
-        except Exception:
-            mature_obs = 0
+        # 0360/0365: prospective evidence gates — must come from model_observations
+        pm = compute_prospective_metrics(model_version, conn)
+        prospective_n = int(pm.get("prospective_n", 0))
+        prospective_selected_n = int(pm.get("prospective_selected_n", 0))
+        ranking_spread = pm.get("prospective_ranking_spread")
+        pred_mae = pm.get("prediction_mae")
+        base_mae = pm.get("baseline_mae")
+        obs_edge = pm.get("prospective_edge_evidence", "")
+
         gates["mature_observations"] = {
-            "value": int(mature_obs),
+            "value": prospective_n,
             "minimum": OBSERVE_MIN_MATURE_OBS,
-            "pass": int(mature_obs) >= OBSERVE_MIN_MATURE_OBS,
+            "pass": prospective_n >= OBSERVE_MIN_MATURE_OBS,
         }
-        # Positive or inconclusive edge required for PAPER_ACTIVE (NEGATIVE blocks)
-        gates["edge_not_negative"] = {
-            "value": edge, "expected": "POSITIVE or INCONCLUSIVE",
-            "pass": edge not in ("NEGATIVE", None),
+        gates["prospective_selected_n"] = {
+            "value": prospective_selected_n,
+            "minimum": OBSERVE_MIN_MATURE_OBS,
+            "pass": prospective_selected_n >= OBSERVE_MIN_MATURE_OBS,
+        }
+        gates["prospective_ranking_spread"] = {
+            "value": ranking_spread,
+            "expected": "> 0",
+            "pass": ranking_spread is not None and ranking_spread > 0,
+        }
+        gates["prediction_mae_vs_baseline"] = {
+            "value": pred_mae,
+            "expected": f"<= baseline ({base_mae})",
+            "pass": pred_mae is not None and base_mae is not None and pred_mae <= base_mae,
+        }
+        # Positive or inconclusive prospective edge required; NEGATIVE blocks promotion
+        gates["prospective_edge_not_negative"] = {
+            "value": obs_edge,
+            "expected": "POSITIVE or INCONCLUSIVE",
+            "pass": obs_edge not in ("NEGATIVE", "") and obs_edge is not None,
         }
 
     conn.close()
@@ -722,6 +768,7 @@ def promote(
         LIFECYCLE_TRAINED:      (LIFECYCLE_OBSERVE,),
         LIFECYCLE_OBSERVE:      (LIFECYCLE_PAPER_ACTIVE, LIFECYCLE_RETIRED),
         LIFECYCLE_PAPER_ACTIVE: (LIFECYCLE_RETIRED,),
+        LIFECYCLE_SUSPENDED:    (LIFECYCLE_OBSERVE,),  # 0371: re-enter observation after suspension
     }
 
     conn = agent_db._connect()
@@ -820,6 +867,286 @@ def promote(
     conn.commit()
     conn.close()
     return {"promoted": True, "new_state": target_state, "gates": gate_result.get("gates", {})}
+
+
+def compute_prospective_metrics(model_version: str, conn) -> dict:
+    """Compute out-of-sample ranking metrics from labeled model_observations (0365).
+
+    Returns a dict with selection_alpha_spread, prediction_mae, baseline_mae,
+    prospective_ranking_spread, and prospective_edge_evidence derived purely from
+    model_observations (not from retrospective CV metrics).
+    Returns {} when fewer than 5 labeled observations exist.
+    """
+    import math
+
+    rows = conn.execute(
+        """SELECT challenger_score, predicted_alpha, would_select, outcome_alpha_90d
+           FROM model_observations
+           WHERE model_version=? AND outcome_alpha_90d IS NOT NULL""",
+        (model_version,),
+    ).fetchall()
+    if len(rows) < 5:
+        return {}
+
+    # Use predicted_alpha for MAE — challenger_score is a composite, not an alpha prediction
+    outcomes = [float(r["outcome_alpha_90d"]) for r in rows]
+    ch_scores = [float(r["challenger_score"]) for r in rows]
+    pred_alphas = [float(r["predicted_alpha"]) if r["predicted_alpha"] is not None else None
+                   for r in rows]
+    selected = [r for r in rows if r["would_select"]]
+    not_selected = [r for r in rows if not r["would_select"]]
+    n = len(rows)
+
+    mean_alpha = sum(outcomes) / n
+    # MAE: compare predicted_alpha to actual alpha; fall back to challenger_score if unavailable
+    valid_preds = [(p, o) for p, o in zip(pred_alphas, outcomes) if p is not None]
+    if valid_preds:
+        prediction_mae = sum(abs(p - o) for p, o in valid_preds) / len(valid_preds)
+    else:
+        prediction_mae = sum(abs(s - o) for s, o in zip(ch_scores, outcomes)) / n
+    baseline_mae = sum(abs(mean_alpha - o) for o in outcomes) / n
+    # Use challenger_score for quintile ranking spread (ranking quality, not alpha accuracy)
+    scores = ch_scores
+
+    sel_mean = (sum(float(r["outcome_alpha_90d"]) for r in selected) / len(selected)) if selected else None
+    not_mean = (sum(float(r["outcome_alpha_90d"]) for r in not_selected) / len(not_selected)) if not_selected else None
+    spread = (sel_mean - not_mean) if sel_mean is not None and not_mean is not None else None
+
+    # Quintile ranking spread
+    sorted_pairs = sorted(zip(scores, outcomes), key=lambda x: x[0])
+    q_size = max(1, n // 5)
+    bottom_mean = sum(o for _, o in sorted_pairs[:q_size]) / q_size
+    top_mean = sum(o for _, o in sorted_pairs[-q_size:]) / q_size
+    quintile_spread = top_mean - bottom_mean
+
+    # Pearson correlation
+    corr: float | None = None
+    if n >= 2:
+        mean_s = sum(scores) / n
+        mean_o = mean_alpha
+        cov = sum((s - mean_s) * (o - mean_o) for s, o in zip(scores, outcomes)) / n
+        std_s = math.sqrt(sum((s - mean_s)**2 for s in scores) / n)
+        std_o = math.sqrt(sum((o - mean_o)**2 for o in outcomes) / n)
+        if std_s > 0 and std_o > 0:
+            corr = cov / (std_s * std_o)
+
+    hit_rate = (sum(1 for r in rows if r["would_select"] and float(r["outcome_alpha_90d"]) > mean_alpha)
+                / max(len(selected), 1))
+
+    # Prospective edge evidence — derived from observations, NOT from CV metrics
+    if spread is not None and spread > 0 and prediction_mae <= baseline_mae:
+        obs_edge = "POSITIVE"
+    elif spread is not None and spread < 0:
+        obs_edge = "NEGATIVE"
+    else:
+        obs_edge = "INCONCLUSIVE"
+
+    return {
+        "prospective_n": n,
+        "prospective_selected_n": len(selected),
+        "prediction_mae": round(prediction_mae, 6),
+        "baseline_mae": round(baseline_mae, 6),
+        "prediction_vs_actual_corr": round(corr, 4) if corr is not None else None,
+        "would_select_mean_alpha": round(sel_mean, 6) if sel_mean is not None else None,
+        "nonselected_mean_alpha": round(not_mean, 6) if not_mean is not None else None,
+        "selection_alpha_spread": round(spread, 6) if spread is not None else None,
+        "top_quintile_mean_alpha": round(top_mean, 6),
+        "bottom_quintile_mean_alpha": round(bottom_mean, 6),
+        "prospective_ranking_spread": round(quintile_spread, 6),
+        "prospective_hit_rate": round(hit_rate, 4),
+        "prospective_edge_evidence": obs_edge,
+    }
+
+
+def compute_data_health(conn) -> dict:
+    """Compute learning dataset health metrics for training/promotion decisions (0370).
+
+    Returns {"overall": "ok"|"warn"|"block", "metrics": {...}, "total_episodes": int}.
+    """
+    findings: dict = {}
+
+    total_episodes = 0
+    try:
+        total_episodes = conn.execute("SELECT COUNT(*) FROM decision_episodes").fetchone()[0]
+    except Exception:
+        pass
+
+    # Outcome coverage (3m)
+    try:
+        labeled_3m = conn.execute(
+            """SELECT COUNT(*) FROM episode_outcomes
+               WHERE horizon='3m'"""
+        ).fetchone()[0]
+        coverage = labeled_3m / total_episodes if total_episodes else 0.0
+        findings["outcome_coverage_3m_pct"] = {
+            "value": round(coverage, 3),
+            "status": "ok" if coverage >= 0.50 else ("warn" if coverage >= 0.25 else "block"),
+        }
+    except Exception:
+        findings["outcome_coverage_3m_pct"] = {"value": None, "status": "warn"}
+
+    # Ticker concentration
+    try:
+        if total_episodes:
+            top = conn.execute(
+                """SELECT ticker, COUNT(*) as n FROM decision_episodes
+                   GROUP BY ticker ORDER BY n DESC LIMIT 1"""
+            ).fetchone()
+            conc = top["n"] / total_episodes if top else 0.0
+            findings["top_ticker_concentration_pct"] = {
+                "value": round(conc, 3),
+                "ticker": top["ticker"] if top else None,
+                "status": "ok" if conc < 0.25 else ("warn" if conc < 0.40 else "block"),
+            }
+    except Exception:
+        pass
+
+    # MTM completeness
+    try:
+        total_nav = conn.execute("SELECT COUNT(*) FROM virtual_book_nav").fetchone()[0]
+        incomplete = conn.execute(
+            "SELECT COUNT(*) FROM virtual_book_nav WHERE is_complete=0"
+        ).fetchone()[0]
+        incomplete_pct = incomplete / total_nav if total_nav else 0.0
+        findings["incomplete_mtm_pct"] = {
+            "value": round(incomplete_pct, 3),
+            "status": "ok" if incomplete_pct < 0.10 else ("warn" if incomplete_pct < 0.30 else "block"),
+        }
+    except Exception:
+        findings["incomplete_mtm_pct"] = {"value": None, "status": "warn"}
+
+    # OBSERVE observation coverage per model
+    try:
+        obs_models = conn.execute(
+            "SELECT model_version FROM learning_models WHERE lifecycle_state='OBSERVE'"
+        ).fetchall()
+        for om in obs_models:
+            mv = om["model_version"]
+            total_obs = conn.execute(
+                "SELECT COUNT(*) FROM model_observations WHERE model_version=?", (mv,)
+            ).fetchone()[0]
+            labeled_obs = conn.execute(
+                "SELECT COUNT(*) FROM model_observations WHERE model_version=? AND outcome_alpha_90d IS NOT NULL",
+                (mv,),
+            ).fetchone()[0]
+            findings[f"observe_coverage_{mv}"] = {
+                "total": total_obs, "labeled": labeled_obs,
+                "status": "ok" if labeled_obs >= 5 else "warn",
+            }
+    except Exception:
+        pass
+
+    # Feature null rates for key score columns
+    for col in ("composite_score", "quality_score", "portfolio_fit_score"):
+        try:
+            null_count = conn.execute(
+                f"SELECT COUNT(*) FROM decision_episodes WHERE {col} IS NULL"
+            ).fetchone()[0]
+            null_rate = null_count / total_episodes if total_episodes else 0.0
+            findings[f"feature_null_rate_{col}"] = {
+                "value": round(null_rate, 3),
+                "status": "ok" if null_rate < 0.05 else ("warn" if null_rate < 0.20 else "block"),
+            }
+        except Exception:
+            pass
+
+    statuses = [v.get("status") for v in findings.values() if isinstance(v, dict)]
+    if "block" in statuses:
+        overall = "block"
+    elif "warn" in statuses:
+        overall = "warn"
+    else:
+        overall = "ok"
+
+    return {"overall": overall, "metrics": findings, "total_episodes": total_episodes}
+
+
+def _check_degradation(model_version: str, conn) -> None:
+    """Compute rolling performance snapshot; auto-suspend on 2 consecutive NEGATIVE verdicts (0371).
+
+    Called by outcome_labeler after back-filling outcomes for PAPER_ACTIVE models.
+    """
+    from datetime import date as _d2
+
+    row = conn.execute(
+        "SELECT lifecycle_state FROM learning_models WHERE model_version=?",
+        (model_version,),
+    ).fetchone()
+    if not row or row["lifecycle_state"] != LIFECYCLE_PAPER_ACTIVE:
+        return
+
+    obs = conn.execute(
+        """SELECT challenger_score, predicted_alpha, would_select, outcome_alpha_90d
+           FROM model_observations
+           WHERE model_version=? AND outcome_alpha_90d IS NOT NULL
+           ORDER BY prediction_timestamp DESC LIMIT 30""",
+        (model_version,),
+    ).fetchall()
+    if len(obs) < 5:
+        return
+
+    outcomes = [float(r["outcome_alpha_90d"]) for r in obs]
+    selected = [r for r in obs if r["would_select"]]
+    not_selected = [r for r in obs if not r["would_select"]]
+    mean_alpha = sum(outcomes) / len(outcomes)
+    # Use predicted_alpha for MAE (challenger_score is composite, not an alpha prediction)
+    valid_pred = [(float(r["predicted_alpha"]), float(r["outcome_alpha_90d"]))
+                  for r in obs if r["predicted_alpha"] is not None]
+    if valid_pred:
+        prediction_mae = sum(abs(p - o) for p, o in valid_pred) / len(valid_pred)
+    else:
+        prediction_mae = sum(abs(float(r["challenger_score"]) - float(r["outcome_alpha_90d"])) for r in obs) / len(obs)
+    baseline_mae = sum(abs(mean_alpha - o) for o in outcomes) / len(outcomes)
+
+    sel_mean = (sum(float(r["outcome_alpha_90d"]) for r in selected) / len(selected)) if selected else None
+    not_mean = (sum(float(r["outcome_alpha_90d"]) for r in not_selected) / len(not_selected)) if not_selected else None
+    spread = (sel_mean - not_mean) if sel_mean is not None and not_mean is not None else None
+
+    hit_rate = sum(1 for r in obs if r["would_select"] and float(r["outcome_alpha_90d"]) > mean_alpha) / max(len(selected), 1)
+
+    if spread is not None and spread > 0 and prediction_mae <= baseline_mae:
+        verdict = "POSITIVE"
+    elif spread is not None and spread < 0:
+        verdict = "NEGATIVE"
+    else:
+        verdict = "INCONCLUSIVE"
+
+    today = _d2.today().isoformat()
+    try:
+        conn.execute(
+            """INSERT OR IGNORE INTO model_performance_snapshots
+               (model_version, snapshot_date, window_n, selection_alpha_spread,
+                prediction_mae, baseline_mae, prospective_hit_rate, edge_verdict)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (model_version, today, len(obs), spread, prediction_mae, baseline_mae, hit_rate, verdict),
+        )
+        conn.commit()
+    except Exception:
+        pass
+
+    # Auto-suspend if 2 consecutive NEGATIVE verdicts
+    recent = conn.execute(
+        """SELECT edge_verdict FROM model_performance_snapshots
+           WHERE model_version=? ORDER BY snapshot_date DESC LIMIT 2""",
+        (model_version,),
+    ).fetchall()
+    if len(recent) >= 2 and all(r["edge_verdict"] == "NEGATIVE" for r in recent):
+        now_ts = time.time()
+        conn.execute(
+            "UPDATE learning_models SET lifecycle_state=? WHERE model_version=?",
+            (LIFECYCLE_SUSPENDED, model_version),
+        )
+        conn.execute(
+            """INSERT INTO model_promotion_log
+               (model_version, from_state, to_state, promoted_by, promoted_at,
+                promotion_reason, promotion_metrics_snapshot)
+               VALUES (?,?,?,?,?,?,?)""",
+            (model_version, LIFECYCLE_PAPER_ACTIVE, LIFECYCLE_SUSPENDED,
+             "auto_degradation_monitor", now_ts,
+             "auto_degradation: 2 consecutive NEGATIVE rolling snapshots",
+             json.dumps({"edge_verdict": verdict, "spread": spread, "mae": prediction_mae})),
+        )
+        conn.commit()
 
 
 if __name__ == "__main__":

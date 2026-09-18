@@ -26,6 +26,16 @@ _HORIZONS: list[tuple[str, int]] = [
     ("12m", 365),
 ]
 
+# 0369: session-based horizons — trading sessions, not calendar days
+# Label version = "sessions_v2"; never mixed with calendar_v1 rows in training
+_HORIZONS_SESSIONS: list[tuple[str, int]] = [
+    ("1w",  5),
+    ("1m",  21),
+    ("3m",  63),
+    ("6m",  126),
+    ("12m", 252),
+]
+
 # Episodes must be at least this old before their 1w label is written.
 _MIN_AGE_DAYS = 7
 
@@ -44,11 +54,20 @@ def _horizon_date(entry: str, days: int) -> str:
     return (date.fromisoformat(entry) + timedelta(days=days)).isoformat()
 
 
-def _already_labeled(conn, episode_id: str, horizon: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM episode_outcomes WHERE episode_id=? AND horizon=? LIMIT 1",
-        (episode_id, horizon),
-    ).fetchone()
+def _already_labeled(conn, episode_id: str, horizon: str,
+                     version: str = "calendar_v1") -> bool:
+    try:
+        row = conn.execute(
+            """SELECT 1 FROM episode_outcomes
+               WHERE episode_id=? AND horizon=? AND horizon_definition_version=? LIMIT 1""",
+            (episode_id, horizon, version),
+        ).fetchone()
+    except Exception:
+        # Older DB without version column — fall back to unversioned check
+        row = conn.execute(
+            "SELECT 1 FROM episode_outcomes WHERE episode_id=? AND horizon=? LIMIT 1",
+            (episode_id, horizon),
+        ).fetchone()
     return row is not None
 
 
@@ -135,13 +154,25 @@ def _insert_outcome(
     alpha: float | None,
     mfe: float | None,
     mae: float | None,
+    horizon_definition_version: str = "calendar_v1",
 ) -> None:
-    conn.execute(
-        """INSERT OR IGNORE INTO episode_outcomes
-           (episode_id, horizon, ticker_return, spy_return, alpha, mfe, mae, labeled_at)
-           VALUES (?,?,?,?,?,?,?,?)""",
-        (episode_id, horizon, ticker_return, spy_return, alpha, mfe, mae, time.time()),
-    )
+    try:
+        conn.execute(
+            """INSERT OR IGNORE INTO episode_outcomes
+               (episode_id, horizon, ticker_return, spy_return, alpha, mfe, mae, labeled_at,
+                horizon_definition_version)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (episode_id, horizon, ticker_return, spy_return, alpha, mfe, mae, time.time(),
+             horizon_definition_version),
+        )
+    except Exception:
+        # Older DB without horizon_definition_version column — fall back
+        conn.execute(
+            """INSERT OR IGNORE INTO episode_outcomes
+               (episode_id, horizon, ticker_return, spy_return, alpha, mfe, mae, labeled_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (episode_id, horizon, ticker_return, spy_return, alpha, mfe, mae, time.time()),
+        )
 
 
 def _label_one_episode(
@@ -152,14 +183,22 @@ def _label_one_episode(
     today: str,
     dry_run: bool,
 ) -> int:
-    """Label all mature horizons for one episode. Returns count of horizons written."""
+    """Label all mature horizons for one episode. Returns count of horizons written.
+
+    Writes both calendar_v1 (91d 3m) and sessions_v2 (63-session 3m) rows
+    so models trained on either version have labeled data available (0369).
+    """
+    from trade_engine.market_calendar import trading_sessions_between
+
     entry = _entry_date(captured_at)
     written = 0
+
+    # --- calendar_v1 horizons ---
     for horizon_label, days in _HORIZONS:
         h_date = _horizon_date(entry, days)
         if h_date > today:
             continue
-        if _already_labeled(conn, episode_id, horizon_label):
+        if _already_labeled(conn, episode_id, horizon_label, "calendar_v1"):
             continue
 
         entry_price = _get_ticker_price(ticker, entry)
@@ -170,24 +209,21 @@ def _label_one_episode(
             continue
 
         ticker_return = (h_price / entry_price) - 1.0
-
         spy_entry = _spy_price_at(entry)
         spy_h     = _spy_price_at(h_date)
         spy_return = ((spy_h / spy_entry) - 1.0) if spy_entry and spy_h else None
         alpha      = (ticker_return - spy_return) if spy_return is not None else None
-
         mfe, mae = _compute_mfe_mae(ticker, entry, h_date, entry_price)
 
         if dry_run:
             print(
-                f"  DRY-RUN {ticker} {horizon_label}: "
+                f"  DRY-RUN {ticker} {horizon_label} (calendar_v1): "
                 f"return={ticker_return:+.2%} spy={spy_return and f'{spy_return:+.2%}' or '?'} "
-                f"alpha={alpha and f'{alpha:+.2%}' or '?'} "
-                f"mfe={mfe and f'{mfe:+.2%}' or '?'} mae={mae and f'{mae:+.2%}' or '?'}"
+                f"alpha={alpha and f'{alpha:+.2%}' or '?'}"
             )
         else:
             _insert_outcome(conn, episode_id, horizon_label, ticker_return,
-                            spy_return, alpha, mfe, mae)
+                            spy_return, alpha, mfe, mae, "calendar_v1")
             # 0360: propagate 3m alpha to model_observations shadow predictions
             if horizon_label == "3m" and alpha is not None:
                 try:
@@ -201,6 +237,61 @@ def _label_one_episode(
                 except Exception:
                     pass
         written += 1
+
+    # --- sessions_v2 horizons (0369) ---
+    try:
+        for horizon_label, min_sessions in _HORIZONS_SESSIONS:
+            sessions_elapsed = trading_sessions_between(entry, today)
+            if sessions_elapsed < min_sessions:
+                continue
+            # Skip if ANY row exists for this (episode, horizon) — UNIQUE(episode_id, horizon)
+            # prevents sessions_v2 from coexisting with calendar_v1 in the same slot
+            if _already_labeled(conn, episode_id, horizon_label, "sessions_v2"):
+                continue
+            if _already_labeled(conn, episode_id, horizon_label, "calendar_v1"):
+                continue
+
+            # Find the date when min_sessions had elapsed since entry
+            from datetime import timedelta as _td
+            # Walk forward from entry until we accumulate min_sessions
+            h_candidate = date.fromisoformat(entry)
+            sessions_counted = 0
+            for _ in range(min_sessions * 2 + 10):
+                h_candidate += _td(days=1)
+                if h_candidate.isoformat() > today:
+                    break
+                day_sessions = trading_sessions_between(
+                    entry, h_candidate.isoformat()
+                )
+                if day_sessions >= min_sessions:
+                    break
+            h_date_sv2 = h_candidate.isoformat()
+            if h_date_sv2 > today:
+                continue
+
+            entry_price = _get_ticker_price(ticker, entry)
+            h_price_sv2 = _get_ticker_price(ticker, h_date_sv2)
+            if entry_price is None or h_price_sv2 is None or entry_price == 0:
+                continue
+
+            tr_sv2 = (h_price_sv2 / entry_price) - 1.0
+            spy_entry_sv2 = _spy_price_at(entry)
+            spy_h_sv2     = _spy_price_at(h_date_sv2)
+            spy_ret_sv2   = ((spy_h_sv2 / spy_entry_sv2) - 1.0) if spy_entry_sv2 and spy_h_sv2 else None
+            alpha_sv2     = (tr_sv2 - spy_ret_sv2) if spy_ret_sv2 is not None else None
+            mfe_sv2, mae_sv2 = _compute_mfe_mae(ticker, entry, h_date_sv2, entry_price)
+
+            if dry_run:
+                print(
+                    f"  DRY-RUN {ticker} {horizon_label} (sessions_v2): "
+                    f"return={tr_sv2:+.2%} alpha={alpha_sv2 and f'{alpha_sv2:+.2%}' or '?'}"
+                )
+            else:
+                _insert_outcome(conn, episode_id, horizon_label, tr_sv2,
+                                spy_ret_sv2, alpha_sv2, mfe_sv2, mae_sv2, "sessions_v2")
+            written += 1
+    except Exception as e:
+        print(f"[outcome_labeler] sessions_v2 labeling error for {ticker}: {e}")
 
     if not dry_run and written:
         conn.commit()
@@ -233,6 +324,34 @@ def label_mature_episodes(
             print(f"[outcome_labeler] {ticker} (captured {_entry_date(captured)}):")
         written = _label_one_episode(conn, ep_id, ticker, captured, today, dry_run)
         total_written += written
+
+    # 0365/0371: update prospective metrics + check degradation for all active/observe models
+    if not dry_run and total_written:
+        try:
+            import json as _json
+            from agents.learning.calibration import (
+                compute_prospective_metrics,
+                _check_degradation,
+                LIFECYCLE_PAPER_ACTIVE,
+                LIFECYCLE_OBSERVE,
+            )
+            active_models = conn.execute(
+                "SELECT model_version, lifecycle_state FROM learning_models WHERE lifecycle_state IN (?,?)",
+                (LIFECYCLE_PAPER_ACTIVE, LIFECYCLE_OBSERVE),
+            ).fetchall()
+            for m in active_models:
+                mv = m["model_version"]
+                pm = compute_prospective_metrics(mv, conn)
+                if pm:
+                    conn.execute(
+                        "UPDATE learning_models SET prospective_metrics_json=? WHERE model_version=?",
+                        (_json.dumps(pm), mv),
+                    )
+                if m["lifecycle_state"] == LIFECYCLE_PAPER_ACTIVE:
+                    _check_degradation(mv, conn)
+            conn.commit()
+        except Exception as _e:
+            print(f"[outcome_labeler] prospective/degradation update error: {_e}")
 
     conn.close()
     result = {"episodes_checked": len(episodes), "horizons_written": total_written}

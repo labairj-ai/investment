@@ -13,7 +13,7 @@ Hard risk limits in the risk engine are unaffected.
 """
 from __future__ import annotations
 
-from .calibration import ChallengerModel, LIFECYCLE_PAPER_ACTIVE, LIFECYCLE_OBSERVE
+from .calibration import ChallengerModel, LIFECYCLE_PAPER_ACTIVE, LIFECYCLE_OBSERVE, LIFECYCLE_SUSPENDED
 
 _cached_model: ChallengerModel | None = None
 _cached_version: str | None = None
@@ -47,6 +47,7 @@ def score_for_observe(model_version: str, candidates: list[dict]) -> None:
 
     Does not affect rankings. Builds the shadow prediction log that the
     OBSERVE→PAPER_ACTIVE gate (mature_observations) checks against.
+    SUSPENDED models also write observations for retrospective audit (0371).
     """
     import agent_db
     from datetime import datetime, timezone
@@ -55,8 +56,8 @@ def score_for_observe(model_version: str, candidates: list[dict]) -> None:
         conn = agent_db._connect()
         try:
             row = conn.execute(
-                "SELECT * FROM learning_models WHERE model_version=? AND lifecycle_state=?",
-                (model_version, LIFECYCLE_OBSERVE),
+                "SELECT * FROM learning_models WHERE model_version=? AND lifecycle_state IN (?,?)",
+                (model_version, LIFECYCLE_OBSERVE, LIFECYCLE_SUSPENDED),
             ).fetchone()
             if not row:
                 return
@@ -115,9 +116,25 @@ def apply_challenger_adjustment(candidate: dict) -> tuple[int, dict]:
 
     challenger_info contains the scoring metadata (or {"active": False} if no model).
     The returned composite is clamped to [0, 100].
+    SUSPENDED models return 0.0 adjustment (0371) — shadow obs still written by score_for_observe().
     """
+    import agent_db
+
     model = get_model()
     if model is None:
+        # 0371: check if there is a SUSPENDED model — if so, report it but apply 0.0 adj
+        try:
+            conn = agent_db._connect()
+            susp = conn.execute(
+                "SELECT model_version FROM learning_models WHERE lifecycle_state=? LIMIT 1",
+                (LIFECYCLE_SUSPENDED,),
+            ).fetchone()
+            conn.close()
+            if susp:
+                return candidate["_composite"], {"active": False, "suspended": True,
+                                                  "model_version": susp["model_version"]}
+        except Exception:
+            pass
         return candidate["_composite"], {"active": False}
 
     info = model.score(candidate)

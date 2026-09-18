@@ -5318,6 +5318,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # /api/agents/coverage
         if len(parts) == 4 and parts[3] == "coverage":
             return self._json({"ok": True, **agent_db.get_coverage()})
+        # /api/agents/learning/health — 0370: data health dashboard
+        if len(parts) == 5 and parts[3] == "learning" and parts[4] == "health":
+            try:
+                from agents.learning.calibration import compute_data_health
+                conn = agent_db._connect()
+                try:
+                    health = compute_data_health(conn)
+                finally:
+                    conn.close()
+                return self._json({"ok": True, **health})
+            except Exception as e:
+                return self._json_error(500, f"health check failed: {e}")
         self._json_error(404, "Not found")
 
     def _handle_agents_post(self, parsed):
@@ -5945,11 +5957,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         daily_rets = [float(r["daily_return"]) for r in nav_rows if r["daily_return"] is not None]
                         nav_series = [{"date": r["date"], "nav": round(float(r["total_nav"]), 2)} for r in nav_rows]
 
-                        starting = navs[0] if navs else starting_cash
+                        # 0367: use starting_cash as the inception NAV, not navs[0]
+                        # navs[0] is the first MTM row, which may be after cash was deployed;
+                        # starting from navs[0] silently drops the return earned between
+                        # inception and the first MTM run
+                        starting = starting_cash
                         cum_return = (navs[-1] - starting) / starting if starting else 0.0
                         spy_cum = (spy_navs[-1] - spy_navs[0]) / spy_navs[0] if len(spy_navs) >= 2 else None
 
-                        peak = navs[0]
+                        peak = starting
                         max_dd = 0.0
                         for n in navs:
                             peak = max(peak, n)

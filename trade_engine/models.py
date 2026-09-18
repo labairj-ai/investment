@@ -205,6 +205,8 @@ class TradeIntent:
     decision_spread_bps: Optional[float] = None    # bid/ask spread in basis points (0356)
     quote_timestamp: Optional[str] = None          # timestamp of quote fetch (0356)
     price_source: Optional[str] = None             # 'yfinance', 'db_cache', or 'payload' (0356)
+    quote_quality: Optional[str] = None            # 0368: BID_ASK | LAST_ONLY | PAYLOAD_FALLBACK
+    market_timestamp: Optional[str] = None         # 0368: exchange timestamp of the quote
 
     def is_expired(self) -> bool:
         try:
@@ -253,6 +255,8 @@ class TradeIntent:
             "decision_spread_bps": self.decision_spread_bps,
             "quote_timestamp": self.quote_timestamp,
             "price_source": self.price_source,
+            "quote_quality": self.quote_quality,
+            "market_timestamp": self.market_timestamp,
         }
 
     @classmethod
@@ -293,6 +297,8 @@ class TradeIntent:
             decision_spread_bps=row["decision_spread_bps"] if "decision_spread_bps" in keys else None,
             quote_timestamp=row["quote_timestamp"] if "quote_timestamp" in keys else None,
             price_source=row["price_source"] if "price_source" in keys else None,
+            quote_quality=row["quote_quality"] if "quote_quality" in keys else None,
+            market_timestamp=row["market_timestamp"] if "market_timestamp" in keys else None,
         )
 
 

@@ -79,33 +79,58 @@ def _fetch_quote_fields(ticker: str, fallback_price: float) -> dict:
     """Fetch live bid/ask for a ticker; fall back to payload price (0356).
 
     Returns dict with decision_last, decision_mid, decision_bid, decision_ask,
-    decision_spread_bps, quote_timestamp, price_source, and updated decision_market_price.
+    decision_spread_bps, quote_timestamp, price_source, quote_quality,
+    market_timestamp, and updated decision_market_price.
+
+    0368: quote_quality tier reflects actual data availability:
+      BID_ASK       — genuine bid+ask from exchange
+      LAST_ONLY     — only last_price available (bid/ask=0); use fallback price for mid
+      PAYLOAD_FALLBACK — no live quote; price from decision payload
     """
     try:
         quote = _market_data._get_quote(ticker)
-        if quote and quote.bid > 0 and quote.ask > 0:
-            mid = (quote.bid + quote.ask) / 2.0
-            spread_bps = (quote.ask - quote.bid) / mid * 10000 if mid > 0 else None
-            return {
-                "decision_bid": quote.bid,
-                "decision_ask": quote.ask,
-                "decision_last": quote.last,  # 0363: genuine last trade; NULL if unavailable
-                "decision_mid": mid,
-                "decision_spread_bps": round(spread_bps, 2) if spread_bps is not None else None,
-                "quote_timestamp": quote.timestamp,
-                "price_source": "yfinance",
-                "decision_market_price": mid,
-            }
+        if quote is not None:
+            if quote.bid > 0 and quote.ask > 0:
+                mid = (quote.bid + quote.ask) / 2.0
+                spread_bps = (quote.ask - quote.bid) / mid * 10000 if mid > 0 else None
+                return {
+                    "decision_bid": quote.bid,
+                    "decision_ask": quote.ask,
+                    "decision_last": quote.last,
+                    "decision_mid": mid,
+                    "decision_spread_bps": round(spread_bps, 2) if spread_bps is not None else None,
+                    "quote_timestamp": quote.timestamp,
+                    "market_timestamp": quote.market_timestamp,
+                    "price_source": "yfinance",
+                    "quote_quality": "BID_ASK",
+                    "decision_market_price": mid,
+                }
+            elif quote.last and quote.last > 0:
+                # 0368: last-only — record it but use fallback for execution price
+                return {
+                    "decision_bid": None,
+                    "decision_ask": None,
+                    "decision_last": quote.last,
+                    "decision_mid": None,
+                    "decision_spread_bps": None,
+                    "quote_timestamp": quote.timestamp,
+                    "market_timestamp": quote.market_timestamp,
+                    "price_source": "yfinance_last",
+                    "quote_quality": "LAST_ONLY",
+                    "decision_market_price": fallback_price,
+                }
     except Exception:
         pass
     return {
         "decision_bid": None,
         "decision_ask": None,
-        "decision_last": fallback_price,  # 0363: payload price is a last-known price
+        "decision_last": fallback_price,
         "decision_mid": None,
         "decision_spread_bps": None,
         "quote_timestamp": None,
+        "market_timestamp": None,
         "price_source": "payload",
+        "quote_quality": "PAYLOAD_FALLBACK",
         "decision_market_price": fallback_price,
     }
 
@@ -235,6 +260,8 @@ def build_intent_from_variant(
         decision_spread_bps=qf["decision_spread_bps"],
         quote_timestamp=qf["quote_timestamp"],
         price_source=qf["price_source"],
+        quote_quality=qf.get("quote_quality"),
+        market_timestamp=qf.get("market_timestamp"),
     )
 
     d = intent.to_db_dict()
@@ -431,6 +458,8 @@ def build_intent(
         decision_spread_bps=qf["decision_spread_bps"],
         quote_timestamp=qf["quote_timestamp"],
         price_source=qf["price_source"],
+        quote_quality=qf.get("quote_quality"),
+        market_timestamp=qf.get("market_timestamp"),
     )
 
     d = intent.to_db_dict()

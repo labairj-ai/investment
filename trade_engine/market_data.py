@@ -17,10 +17,11 @@ def _now_utc() -> datetime:
 
 
 def _get_quote(symbol: str) -> Optional[Quote]:
-    """Fetch bid/ask from yfinance; falls back to last_price when bid/ask unavailable.
+    """Fetch bid/ask from yfinance; returns last-only quote when bid/ask unavailable.
 
-    Suitable for position marking only — NOT for fill execution.
-    Use _get_executable_quote() for fills.
+    0368: no longer synthesizes bid=ask=last. Instead, returns a Quote with
+    bid=ask=0 and last filled in — callers use bid > 0 and ask > 0 to detect
+    LAST_ONLY quality and avoid fake zero-spread records.
     """
     try:
         import yfinance as yf
@@ -31,19 +32,17 @@ def _get_quote(symbol: str) -> Optional[Quote]:
         ask = float(getattr(info, "ask", None) or 0)
         last_raw = getattr(info, "last_price", None)
         last_price = float(last_raw) if last_raw else None
-        last_for_fallback = last_price or 0.0
-        if bid <= 0:
-            bid = last_for_fallback
-        if ask <= 0:
-            ask = last_for_fallback
-        if bid > 0 and ask > 0:
-            market_ts = None
-            try:
-                rmt = getattr(info, "regular_market_time", None)
-                if rmt:
-                    market_ts = datetime.fromtimestamp(float(rmt), tz=timezone.utc).isoformat()
-            except Exception:
-                pass
+
+        market_ts = None
+        try:
+            rmt = getattr(info, "regular_market_time", None)
+            if rmt:
+                market_ts = datetime.fromtimestamp(float(rmt), tz=timezone.utc).isoformat()
+        except Exception:
+            pass
+
+        # Only return a Quote when we have something useful (bid/ask or at least last)
+        if (bid > 0 and ask > 0) or last_price:
             return Quote(
                 bid=bid, ask=ask,
                 timestamp=retrieved_at,
@@ -94,9 +93,13 @@ def _get_executable_quote(symbol: str) -> Optional[Quote]:
 def _get_mark_price(symbol: str) -> Optional[float]:
     """Return mid price for position marking, with last-price fallback.
 
-    Not suitable for fill execution.
+    Not suitable for fill execution. Returns mid when bid+ask available,
+    falls back to last_price (0368: _get_quote no longer synthesizes bid/ask from last).
     """
     quote = _get_quote(symbol)
     if quote:
-        return (quote.bid + quote.ask) / 2.0
+        if quote.bid > 0 and quote.ask > 0:
+            return (quote.bid + quote.ask) / 2.0
+        if quote.last and quote.last > 0:
+            return float(quote.last)
     return None

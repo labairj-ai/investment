@@ -175,11 +175,18 @@ def run_mark_to_market(date_str: str | None = None) -> dict:
                 # 1. Reconstruct current holdings
                 holdings = _get_holdings(conn, book_id)
 
+                # 0366: any_incomplete must cover expiry failures too
+                any_incomplete = False
+
                 # 2. Expire positions older than BOOK_HOLD_SESSIONS trading sessions (0361)
                 for ticker, info in list(holdings.items()):
                     sessions = trading_sessions_between(info["first_buy_date"], date_str)
                     if sessions >= BOOK_HOLD_SESSIONS:
-                        exit_price = _get_closing_price(ticker, date_str) or info["avg_cost"]
+                        exit_price = _get_closing_price(ticker, date_str)
+                        if exit_price is None:
+                            # 0366: no price → retain position, mark row incomplete
+                            any_incomplete = True
+                            continue
                         origin = "CHAMPION" if book_id == "CHAMPION_BOOK" else "PAPER_CHALLENGER"
                         _emit_synthetic_sell(
                             conn, book_id, ticker, info["qty"], exit_price, date_str, origin
@@ -195,7 +202,7 @@ def run_mark_to_market(date_str: str | None = None) -> dict:
 
                 # 3. Mark open positions to exact-date closing prices (0364)
                 prices: dict[str, float] = {}
-                any_incomplete = False
+                # any_incomplete already reflects expiry failures from loop above (0366)
                 for ticker in holdings:
                     p = _get_closing_price(ticker, date_str)
                     if p is not None:
@@ -217,14 +224,16 @@ def run_mark_to_market(date_str: str | None = None) -> dict:
                 elif spy_close is not None:
                     spy_nav = spy_close  # raw fallback
 
-                # 5. Daily return vs previous row
+                # 5. Daily return vs previous *complete* row (0366: never use incomplete prior nav)
                 prev_row = conn.execute(
                     """SELECT total_nav FROM virtual_book_nav
-                       WHERE book_id=? ORDER BY date DESC LIMIT 1""",
+                       WHERE book_id=? AND is_complete=1
+                       ORDER BY date DESC LIMIT 1""",
                     (book_id,),
                 ).fetchone()
+                # 0366: if today's row is incomplete, daily_return is meaningless — write NULL
                 daily_return: float | None = None
-                if prev_row and prev_row["total_nav"] and float(prev_row["total_nav"]) > 0:
+                if not any_incomplete and prev_row and prev_row["total_nav"] and float(prev_row["total_nav"]) > 0:
                     daily_return = (total_nav / float(prev_row["total_nav"])) - 1.0
 
                 # 6. Write the NAV row with is_complete flag (0364)
