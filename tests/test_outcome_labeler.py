@@ -145,9 +145,10 @@ class TestLabelMatureEpisodes:
         conn = _make_conn(mem_db)
         outcomes = _fetch_outcomes(conn)
         conn.close()
-        # No duplicate rows per (episode_id, horizon)
-        pairs = [(o["episode_id"], o["horizon"]) for o in outcomes]
-        assert len(pairs) == len(set(pairs))
+        # No duplicate rows per (episode_id, horizon, horizon_definition_version) — 0372
+        triples = [(o["episode_id"], o["horizon"], o["horizon_definition_version"] or "calendar_v1")
+                   for o in outcomes]
+        assert len(triples) == len(set(triples))
 
     def test_alpha_computed_correctly(self, mem_db, monkeypatch):
         import agent_db

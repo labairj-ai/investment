@@ -224,14 +224,18 @@ def _label_one_episode(
         else:
             _insert_outcome(conn, episode_id, horizon_label, ticker_return,
                             spy_return, alpha, mfe, mae, "calendar_v1")
-            # 0360: propagate 3m alpha to model_observations shadow predictions
+            # 0360/0373: propagate 3m alpha to model_observations shadow predictions
+            # Only update observations whose target_horizon_version matches 'calendar_v1'
             if horizon_label == "3m" and alpha is not None:
                 try:
                     now_iso = datetime.now(timezone.utc).isoformat()
                     conn.execute(
                         """UPDATE model_observations
-                           SET outcome_alpha_90d=?, outcome_labeled_at=?
-                           WHERE episode_id=? AND outcome_alpha_90d IS NULL""",
+                           SET outcome_alpha_90d=?, outcome_labeled_at=?,
+                               outcome_horizon_version='calendar_v1'
+                           WHERE episode_id=? AND outcome_alpha_90d IS NULL
+                             AND (target_horizon_version='calendar_v1'
+                                  OR target_horizon_version IS NULL)""",
                         (alpha, now_iso, episode_id),
                     )
                 except Exception:
@@ -244,11 +248,9 @@ def _label_one_episode(
             sessions_elapsed = trading_sessions_between(entry, today)
             if sessions_elapsed < min_sessions:
                 continue
-            # Skip if ANY row exists for this (episode, horizon) — UNIQUE(episode_id, horizon)
-            # prevents sessions_v2 from coexisting with calendar_v1 in the same slot
+            # 0372: UNIQUE(episode_id, horizon, horizon_definition_version) allows
+            # sessions_v2 to coexist with calendar_v1 — only skip if THIS version exists
             if _already_labeled(conn, episode_id, horizon_label, "sessions_v2"):
-                continue
-            if _already_labeled(conn, episode_id, horizon_label, "calendar_v1"):
                 continue
 
             # Find the date when min_sessions had elapsed since entry
@@ -289,6 +291,20 @@ def _label_one_episode(
             else:
                 _insert_outcome(conn, episode_id, horizon_label, tr_sv2,
                                 spy_ret_sv2, alpha_sv2, mfe_sv2, mae_sv2, "sessions_v2")
+                # 0373: propagate sessions_v2 3m alpha to model_observations for sessions_v2-trained models
+                if horizon_label == "3m" and alpha_sv2 is not None:
+                    try:
+                        now_iso_sv2 = datetime.now(timezone.utc).isoformat()
+                        conn.execute(
+                            """UPDATE model_observations
+                               SET outcome_alpha_90d=?, outcome_labeled_at=?,
+                                   outcome_horizon_version='sessions_v2'
+                               WHERE episode_id=? AND outcome_alpha_90d IS NULL
+                                 AND target_horizon_version='sessions_v2'""",
+                            (alpha_sv2, now_iso_sv2, episode_id),
+                        )
+                    except Exception:
+                        pass
             written += 1
     except Exception as e:
         print(f"[outcome_labeler] sessions_v2 labeling error for {ticker}: {e}")

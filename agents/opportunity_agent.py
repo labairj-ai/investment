@@ -533,13 +533,16 @@ def run_opportunity_hunter(ctx: AgentContext) -> list[Recommendation]:
             challenger_episode_id=ch_top_for_book.get("_episode_id") if ch_top_for_book else None,
         )
 
-    # 0360: shadow-score for any OBSERVE-state model
+    # 0360/0374: shadow-score for OBSERVE, PAPER_ACTIVE, and SUSPENDED models
+    # OBSERVE: builds promotion-gate evidence
+    # PAPER_ACTIVE: builds degradation-monitor evidence (post-promotion performance)
+    # SUSPENDED: builds recovery audit trail
     try:
         import agent_db as _adb
         _conn = _adb._connect()
         obs_models = _conn.execute(
-            "SELECT model_version FROM learning_models WHERE lifecycle_state=?",
-            ("OBSERVE",)
+            "SELECT model_version FROM learning_models WHERE lifecycle_state IN (?,?,?)",
+            ("OBSERVE", "PAPER_ACTIVE", "SUSPENDED"),
         ).fetchall()
         _conn.close()
         for _om in obs_models:

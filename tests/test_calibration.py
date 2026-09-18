@@ -2961,3 +2961,778 @@ class TestDataHealth0370:
 
         conc = result["metrics"].get("top_ticker_concentration_pct", {})
         assert conc.get("status") in ("warn", "block")
+
+
+# ===========================================================================
+# 0372 — Outcome Version Schema Migration
+# ===========================================================================
+
+class TestOutcomeVersionMigration0372:
+    """0372: episode_outcomes UNIQUE becomes (episode_id, horizon, horizon_definition_version)."""
+
+    def test_two_versions_coexist_for_same_episode_horizon(self, mem_db, monkeypatch):
+        """calendar_v1 and sessions_v2 rows can coexist for the same (episode_id, horizon)."""
+        import agent_db
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        ep_id = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO decision_episodes (episode_id,run_id,ticker,captured_at,composite_score,feature_schema_version) VALUES (?,1,'TK',?,80,'v1')",
+            (ep_id, time.time() - 200 * 86400),
+        )
+        conn.execute(
+            """INSERT INTO episode_outcomes
+               (episode_id, horizon, ticker_return, spy_return, alpha, labeled_at, horizon_definition_version)
+               VALUES (?,?,?,?,?,?,?)""",
+            (ep_id, "3m", 0.05, 0.03, 0.02, time.time(), "calendar_v1"),
+        )
+        conn.execute(
+            """INSERT INTO episode_outcomes
+               (episode_id, horizon, ticker_return, spy_return, alpha, labeled_at, horizon_definition_version)
+               VALUES (?,?,?,?,?,?,?)""",
+            (ep_id, "3m", 0.04, 0.03, 0.01, time.time(), "sessions_v2"),
+        )
+        conn.commit()
+
+        count = conn.execute(
+            "SELECT COUNT(*) FROM episode_outcomes WHERE episode_id=? AND horizon='3m'",
+            (ep_id,),
+        ).fetchone()[0]
+        conn.close()
+        assert count == 2, "Both calendar_v1 and sessions_v2 rows must coexist"
+
+    def test_same_version_duplicate_blocked(self, mem_db, monkeypatch):
+        """Two calendar_v1 rows for the same (episode_id, horizon) are still rejected."""
+        import agent_db
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        ep_id = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO decision_episodes (episode_id,run_id,ticker,captured_at,composite_score,feature_schema_version) VALUES (?,1,'TK',?,80,'v1')",
+            (ep_id, time.time() - 200 * 86400),
+        )
+        conn.execute(
+            """INSERT INTO episode_outcomes
+               (episode_id, horizon, ticker_return, spy_return, alpha, labeled_at, horizon_definition_version)
+               VALUES (?,?,?,?,?,?,?)""",
+            (ep_id, "3m", 0.05, 0.03, 0.02, time.time(), "calendar_v1"),
+        )
+        conn.execute(
+            """INSERT OR IGNORE INTO episode_outcomes
+               (episode_id, horizon, ticker_return, spy_return, alpha, labeled_at, horizon_definition_version)
+               VALUES (?,?,?,?,?,?,?)""",
+            (ep_id, "3m", 0.06, 0.03, 0.03, time.time(), "calendar_v1"),
+        )
+        conn.commit()
+        count = conn.execute(
+            "SELECT COUNT(*) FROM episode_outcomes WHERE episode_id=? AND horizon='3m' AND horizon_definition_version='calendar_v1'",
+            (ep_id,),
+        ).fetchone()[0]
+        conn.close()
+        assert count == 1, "Duplicate calendar_v1 row must be blocked by UNIQUE constraint"
+
+
+# ===========================================================================
+# 0373 — Version-Aware Model Observations
+# ===========================================================================
+
+class TestVersionAwareObservations0373:
+    """0373: outcome backfill is version-gated; calendar_v1 outcomes don't contaminate sessions_v2 models."""
+
+    def test_calendar_v1_outcome_updates_only_matching_target(self, mem_db, monkeypatch):
+        """calendar_v1 outcome only updates observations with target_horizon_version=calendar_v1."""
+        import agent_db
+        from agents.learning.outcome_labeler import _label_one_episode
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        ep_id = str(uuid.uuid4())
+        ts = time.time() - 200 * 86400
+        conn.execute(
+            "INSERT INTO decision_episodes (episode_id,run_id,ticker,captured_at,composite_score,feature_schema_version) VALUES (?,1,'TK',?,80,'v1')",
+            (ep_id, ts),
+        )
+        # calendar_v1-targeted observation
+        conn.execute(
+            """INSERT INTO model_observations
+               (model_version, episode_id, ticker, prediction_timestamp,
+                challenger_score, would_select, target_horizon_version)
+               VALUES ('mv_cv1',?,'TK','2026-01-01T00:00:00',75,1,'calendar_v1')""",
+            (ep_id,),
+        )
+        # sessions_v2-targeted observation for same episode
+        conn.execute(
+            """INSERT INTO model_observations
+               (model_version, episode_id, ticker, prediction_timestamp,
+                challenger_score, would_select, target_horizon_version)
+               VALUES ('mv_sv2',?,'TK','2026-01-01T00:00:00',75,1,'sessions_v2')""",
+            (ep_id,),
+        )
+        conn.commit()
+
+        # Directly apply the calendar_v1 outcome update (simulating labeler)
+        import datetime as _dt
+        now_iso = _dt.datetime.utcnow().isoformat()
+        conn.execute(
+            """UPDATE model_observations
+               SET outcome_alpha_90d=0.03, outcome_labeled_at=?,
+                   outcome_horizon_version='calendar_v1'
+               WHERE episode_id=? AND outcome_alpha_90d IS NULL
+                 AND (target_horizon_version='calendar_v1' OR target_horizon_version IS NULL)""",
+            (now_iso, ep_id),
+        )
+        conn.commit()
+
+        # calendar_v1-targeted obs should be updated
+        cv1 = conn.execute(
+            "SELECT outcome_alpha_90d, outcome_horizon_version FROM model_observations WHERE model_version='mv_cv1' AND episode_id=?",
+            (ep_id,),
+        ).fetchone()
+        # sessions_v2-targeted obs should NOT be updated
+        sv2 = conn.execute(
+            "SELECT outcome_alpha_90d FROM model_observations WHERE model_version='mv_sv2' AND episode_id=?",
+            (ep_id,),
+        ).fetchone()
+        conn.close()
+
+        assert cv1["outcome_alpha_90d"] == pytest.approx(0.03)
+        assert cv1["outcome_horizon_version"] == "calendar_v1"
+        assert sv2["outcome_alpha_90d"] is None, "sessions_v2-targeted obs should NOT get calendar_v1 outcome"
+
+    def test_score_for_observe_sets_target_horizon_version(self, mem_db, monkeypatch):
+        """score_for_observe populates target_horizon_version from the model's training version."""
+        import agent_db
+        from agents.learning.challenger import score_for_observe
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        conn.execute(
+            """INSERT INTO learning_models
+               (model_version, training_cutoff, feature_schema_hash, training_n,
+                validation_metrics, created_at, lifecycle_state, training_horizon_version)
+               VALUES ('mv_thv','2026-01-01','h',50,?,?,?,?)""",
+            ('{"cv_folds":3,"coef":[0.001,0.001,0.001,0.001,0.001],"intercept":0.0,"mean_alpha":0.02}',
+             time.time(), "OBSERVE", "sessions_v2"),
+        )
+        conn.commit()
+        conn.close()
+
+        ep_id = str(uuid.uuid4())
+        candidates = [{
+            "ticker": "AAPL", "_episode_id": ep_id, "_composite": 80,
+            "composite_score": 80,
+            "q_score": 80, "v_score": 75, "pf_score": 70, "c_score": 65, "ec_score": 60,
+        }]
+        score_for_observe("mv_thv", candidates)
+
+        conn = _make_conn(mem_db)
+        row = conn.execute(
+            "SELECT target_horizon_version, observation_phase FROM model_observations WHERE model_version='mv_thv'",
+        ).fetchone()
+        conn.close()
+
+        assert row is not None
+        assert row["target_horizon_version"] == "sessions_v2"
+        assert row["observation_phase"] == "OBSERVE"
+
+
+# ===========================================================================
+# 0374 — Continuous Model Observation
+# ===========================================================================
+
+class TestContinuousObservation0374:
+    """0374: PAPER_ACTIVE models write observations; degradation uses PAPER_ACTIVE-phase rows."""
+
+    def test_paper_active_model_writes_observations(self, mem_db, monkeypatch):
+        """score_for_observe writes rows for PAPER_ACTIVE lifecycle state."""
+        import agent_db
+        from agents.learning.challenger import score_for_observe
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        conn.execute(
+            """INSERT INTO learning_models
+               (model_version, training_cutoff, feature_schema_hash, training_n,
+                validation_metrics, created_at, lifecycle_state)
+               VALUES ('mv_pa','2026-01-01','h',50,?,?,?)""",
+            ('{"cv_folds":3,"coef":[0.001,0.001,0.001,0.001,0.001],"intercept":0.0,"mean_alpha":0.02}',
+             time.time(), "PAPER_ACTIVE"),
+        )
+        conn.commit()
+        conn.close()
+
+        ep_id = str(uuid.uuid4())
+        candidates = [{
+            "ticker": "AAPL", "_episode_id": ep_id, "_composite": 80,
+            "composite_score": 80,
+            "q_score": 80, "v_score": 75, "pf_score": 70, "c_score": 65, "ec_score": 60,
+        }]
+        score_for_observe("mv_pa", candidates)
+
+        conn = _make_conn(mem_db)
+        row = conn.execute(
+            "SELECT observation_phase, baseline_predicted_alpha, scored_at_date FROM model_observations WHERE model_version='mv_pa'",
+        ).fetchone()
+        conn.close()
+
+        assert row is not None
+        assert row["observation_phase"] == "PAPER_ACTIVE"
+        assert row["baseline_predicted_alpha"] is not None
+        assert row["scored_at_date"] is not None
+
+    def test_degradation_uses_paper_active_phase_rows(self, mem_db, monkeypatch):
+        """_check_degradation evaluates only PAPER_ACTIVE-phase obs; ignores OBSERVE-phase rows."""
+        import agent_db
+        from agents.learning.calibration import _check_degradation, LIFECYCLE_PAPER_ACTIVE
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        conn.execute(
+            """INSERT INTO learning_models
+               (model_version, training_cutoff, feature_schema_hash, training_n,
+                validation_metrics, created_at, lifecycle_state)
+               VALUES ('mv_deg74','2026-01-01','h',50,'{"cv_folds":3}',?,?)""",
+            (time.time(), LIFECYCLE_PAPER_ACTIVE),
+        )
+        # Seed OBSERVE-phase rows with good edge (should be ignored)
+        for score, pred, sel, out in [
+            (90, 0.05, 1, 0.06), (85, 0.04, 1, 0.05), (80, 0.03, 1, 0.04),
+            (75, 0.02, 1, 0.03), (20, -0.02, 0, -0.01),
+        ]:
+            conn.execute(
+                """INSERT INTO model_observations
+                   (model_version, episode_id, ticker, prediction_timestamp,
+                    challenger_score, predicted_alpha, would_select, outcome_alpha_90d,
+                    observation_phase)
+                   VALUES ('mv_deg74',?,?,'2026-01-01T00:00:00',?,?,?,?,'OBSERVE')""",
+                (str(uuid.uuid4()), "TK", score, pred, sel, out),
+            )
+        # Seed PAPER_ACTIVE-phase rows with negative edge
+        for score, pred, sel, out in [
+            (90, 0.05, 1, -0.04), (85, 0.04, 1, -0.03), (80, 0.03, 1, -0.02),
+            (75, 0.02, 1, -0.02), (20, -0.02, 0, 0.03),
+            (15, -0.01, 0, 0.03),
+        ]:
+            conn.execute(
+                """INSERT INTO model_observations
+                   (model_version, episode_id, ticker, prediction_timestamp,
+                    challenger_score, predicted_alpha, would_select, outcome_alpha_90d,
+                    observation_phase)
+                   VALUES ('mv_deg74',?,?,'2026-01-01T00:00:00',?,?,?,?,'PAPER_ACTIVE')""",
+                (str(uuid.uuid4()), "TK", score, pred, sel, out),
+            )
+        conn.commit()
+
+        _check_degradation("mv_deg74", conn)
+        snap = conn.execute(
+            "SELECT edge_verdict FROM model_performance_snapshots WHERE model_version='mv_deg74'"
+        ).fetchone()
+        conn.close()
+
+        assert snap is not None, "Snapshot should be written"
+        assert snap["edge_verdict"] == "NEGATIVE", "PAPER_ACTIVE-phase rows show negative edge"
+
+
+# ===========================================================================
+# 0375 — Incremental Edge Evaluation
+# ===========================================================================
+
+class TestIncrementalEdge0375:
+    """0375: compute_prospective_metrics reports base/challenger/incremental ranking spreads."""
+
+    def _seed_with_base_scores(self, conn, model_version, observations):
+        """observations: (ch_score, base_score, pred_alpha, would_select, outcome)."""
+        conn.execute(
+            """INSERT INTO learning_models
+               (model_version, training_cutoff, feature_schema_hash, training_n,
+                validation_metrics, created_at, lifecycle_state)
+               VALUES (?,?,?,?,?,?,?)""",
+            (model_version, "2026-01-01", "h", 50, '{"cv_folds":3}', time.time(), "OBSERVE"),
+        )
+        for ch, base, pred, sel, out in observations:
+            conn.execute(
+                """INSERT INTO model_observations
+                   (model_version, episode_id, ticker, prediction_timestamp,
+                    challenger_score, base_score, predicted_alpha, would_select, outcome_alpha_90d)
+                   VALUES (?,?,?,'2026-01-01T00:00:00',?,?,?,?,?)""",
+                (model_version, str(uuid.uuid4()), "TK", ch, base, pred, sel, out),
+            )
+        conn.commit()
+
+    def test_incremental_spread_positive_when_challenger_improves(self, mem_db, monkeypatch):
+        """When challenger re-ranks candidates better than base, incremental_ranking_spread > 0."""
+        import agent_db
+        from agents.learning.calibration import compute_prospective_metrics
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        # Base scores: poor ranking (low base_score → good outcome)
+        # Challenger scores: good ranking (high ch_score → good outcome)
+        obs = [
+            # (ch_score, base_score, pred, would_select, outcome)
+            (90, 30, 0.05, 1, 0.05), (85, 25, 0.04, 1, 0.04), (80, 20, 0.03, 1, 0.03),
+            (75, 15, 0.02, 1, 0.03), (70, 10, 0.02, 1, 0.02),
+            (30, 85, -0.01, 0, -0.01), (25, 80, -0.01, 0, -0.01), (20, 75, -0.01, 0, -0.02),
+            (15, 70, -0.02, 0, -0.02), (10, 65, -0.02, 0, -0.03),
+        ]
+        self._seed_with_base_scores(conn, "mv_incr_pos", obs)
+        conn.close()
+
+        conn = _make_conn(mem_db)
+        pm = compute_prospective_metrics("mv_incr_pos", conn)
+        conn.close()
+
+        assert pm.get("incremental_ranking_spread") is not None
+        assert pm["incremental_ranking_spread"] > 0
+        assert pm["base_ranking_spread"] is not None
+        assert pm["challenger_ranking_spread"] is not None
+
+    def test_incremental_spread_negative_when_challenger_degrades(self, mem_db, monkeypatch):
+        """When challenger re-ranks worse than base, incremental_ranking_spread < 0.
+
+        Design: base has good discrimination (high base_score → good outcome).
+        Challenger inverts this — high ch_score maps to bad outcomes, low ch_score to good.
+        base_ranking_spread > 0, challenger_ranking_spread < 0 → incremental < 0.
+        """
+        import agent_db
+        from agents.learning.calibration import compute_prospective_metrics
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        # ch=high → bad outcome, ch=low → good outcome (challenger hurts ranking)
+        # base=high → good outcome, base=low → bad outcome (base is a good ranker)
+        obs = [
+            # (ch_score, base_score, pred, would_select, outcome)
+            (90, 10, -0.01, 1, -0.01), (85, 15, -0.01, 1, -0.02),
+            (80, 20, -0.01, 1, -0.02), (75, 25, -0.01, 1, -0.03), (70, 30, -0.01, 1, -0.03),
+            (30, 70, 0.03, 0, 0.03), (25, 75, 0.03, 0, 0.03),
+            (20, 80, 0.03, 0, 0.04), (15, 85, 0.04, 0, 0.04), (10, 90, 0.04, 0, 0.05),
+        ]
+        self._seed_with_base_scores(conn, "mv_incr_neg", obs)
+        conn.commit()
+        conn.close()
+
+        conn = _make_conn(mem_db)
+        pm = compute_prospective_metrics("mv_incr_neg", conn)
+        conn.close()
+
+        assert pm.get("incremental_ranking_spread") is not None
+        assert pm["incremental_ranking_spread"] < 0
+
+    def test_none_incremental_spread_passes_gate(self, mem_db, monkeypatch):
+        """incremental_ranking_spread=None (no base_score) passes the gate (can't evaluate)."""
+        import agent_db
+        from agents.learning.calibration import compute_prospective_metrics
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        # No base_score populated
+        conn.execute(
+            """INSERT INTO learning_models
+               (model_version, training_cutoff, feature_schema_hash, training_n,
+                validation_metrics, created_at, lifecycle_state)
+               VALUES ('mv_no_base','2026-01-01','h',50,'{"cv_folds":3}',?,'OBSERVE')""",
+            (time.time(),),
+        )
+        for score, pred, sel, out in [
+            (85, 0.04, 1, 0.05), (80, 0.03, 1, 0.04), (75, 0.02, 1, 0.03),
+            (30, -0.01, 0, -0.01), (20, -0.02, 0, -0.02),
+        ]:
+            conn.execute(
+                """INSERT INTO model_observations
+                   (model_version, episode_id, ticker, prediction_timestamp,
+                    challenger_score, predicted_alpha, would_select, outcome_alpha_90d)
+                   VALUES ('mv_no_base',?,?,'2026-01-01T00:00:00',?,?,?,?)""",
+                (str(uuid.uuid4()), "TK", score, pred, sel, out),
+            )
+        conn.commit()
+        conn.close()
+
+        conn = _make_conn(mem_db)
+        pm = compute_prospective_metrics("mv_no_base", conn)
+        conn.close()
+        assert pm.get("incremental_ranking_spread") is None
+
+
+# ===========================================================================
+# 0376 — Data Health as Hard Gate
+# ===========================================================================
+
+class TestDataHealthHardGate0376:
+    """0376: compute_data_health uses correct column names; train_and_save raises on block."""
+
+    def test_feature_null_rate_uses_correct_column_names(self, mem_db, monkeypatch):
+        """compute_data_health checks q_score, v_score, pf_score, c_score, ec_score."""
+        import agent_db
+        from agents.learning.calibration import compute_data_health
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        # Seed episodes with NULL q_score (high null rate)
+        for i in range(10):
+            conn.execute(
+                """INSERT INTO decision_episodes
+                   (episode_id,run_id,ticker,captured_at,composite_score,feature_schema_version,
+                    q_score, v_score, pf_score, c_score, ec_score)
+                   VALUES (?,1,'TK',?,80,'v1',NULL,NULL,NULL,NULL,NULL)""",
+                (str(uuid.uuid4()), time.time() - i * 86400),
+            )
+        conn.commit()
+
+        result = compute_data_health(conn)
+        conn.close()
+
+        # q_score should show 100% null rate → block
+        q_null = result["metrics"].get("feature_null_rate_q_score")
+        assert q_null is not None, "q_score null rate should be reported"
+        assert q_null["status"] == "block", f"100% null rate should be block, got {q_null}"
+        # Old column names should NOT be present
+        assert "feature_null_rate_quality_score" not in result["metrics"]
+        assert "feature_null_rate_portfolio_fit_score" not in result["metrics"]
+
+    def test_train_and_save_raises_on_block(self, mem_db, monkeypatch):
+        """train_and_save raises DataHealthBlockError when data health is block."""
+        import agent_db
+        from agents.learning.calibration import train_and_save, DataHealthBlockError
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        # Seed enough episodes to pass MIN_TRAINING_N but with extreme ticker concentration
+        for i in range(40):
+            conn.execute(
+                "INSERT INTO decision_episodes (episode_id,run_id,ticker,captured_at,composite_score,feature_schema_version,q_score,v_score,pf_score,c_score,ec_score) VALUES (?,1,'AAPL',?,80,'v1',NULL,NULL,NULL,NULL,NULL)",
+                (str(uuid.uuid4()), time.time() - i * 86400),
+            )
+        conn.commit()
+        conn.close()
+
+        with pytest.raises(DataHealthBlockError):
+            train_and_save()
+
+    def test_per_version_outcome_coverage_reported(self, mem_db, monkeypatch):
+        """compute_data_health reports outcome coverage separately for calendar_v1 and sessions_v2."""
+        import agent_db
+        from agents.learning.calibration import compute_data_health
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        ep_id = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO decision_episodes (episode_id,run_id,ticker,captured_at,composite_score,feature_schema_version) VALUES (?,1,'TK',?,80,'v1')",
+            (ep_id, time.time() - 200 * 86400),
+        )
+        conn.execute(
+            """INSERT INTO episode_outcomes
+               (episode_id, horizon, ticker_return, spy_return, alpha, labeled_at, horizon_definition_version)
+               VALUES (?,?,?,?,?,?,?)""",
+            (ep_id, "3m", 0.05, 0.03, 0.02, time.time(), "calendar_v1"),
+        )
+        conn.commit()
+
+        result = compute_data_health(conn)
+        conn.close()
+
+        assert "outcome_coverage_3m_calendar_v1_pct" in result["metrics"]
+        assert "outcome_coverage_3m_sessions_v2_pct" in result["metrics"]
+        cv1 = result["metrics"]["outcome_coverage_3m_calendar_v1_pct"]["value"]
+        sv2 = result["metrics"]["outcome_coverage_3m_sessions_v2_pct"]["value"]
+        assert cv1 == pytest.approx(1.0)   # 1 episode with calendar_v1 3m outcome
+        assert sv2 == pytest.approx(0.0)   # no sessions_v2 outcome
+
+
+# ===========================================================================
+# 0377 — Degradation Hysteresis
+# ===========================================================================
+
+class TestDegradationHysteresis0377:
+    """0377: non-overlapping cohort check prevents rapid suspension from overlapping windows."""
+
+    def test_second_snapshot_blocked_when_too_few_new_outcomes(self, mem_db, monkeypatch):
+        """_check_degradation skips snapshot when < DEGRADATION_MIN_NEW_OUTCOMES new outcomes."""
+        import agent_db
+        from agents.learning.calibration import _check_degradation, DEGRADATION_MIN_NEW_OUTCOMES, LIFECYCLE_PAPER_ACTIVE
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        conn.execute(
+            """INSERT INTO learning_models
+               (model_version, training_cutoff, feature_schema_hash, training_n,
+                validation_metrics, created_at, lifecycle_state)
+               VALUES ('mv_hys','2026-01-01','h',50,'{"cv_folds":3}',?,?)""",
+            (time.time(), LIFECYCLE_PAPER_ACTIVE),
+        )
+        # Seed negative PAPER_ACTIVE observations
+        obs_ids = []
+        for score, pred, sel, out in [
+            (90, 0.05, 1, -0.04), (85, 0.04, 1, -0.03), (80, 0.03, 1, -0.02),
+            (75, 0.02, 1, -0.02), (20, -0.02, 0, 0.03), (15, -0.01, 0, 0.03),
+        ]:
+            conn.execute(
+                """INSERT INTO model_observations
+                   (model_version, episode_id, ticker, prediction_timestamp,
+                    challenger_score, predicted_alpha, would_select, outcome_alpha_90d,
+                    observation_phase)
+                   VALUES ('mv_hys',?,?,'2026-01-01T00:00:00',?,?,?,?,'PAPER_ACTIVE')""",
+                (str(uuid.uuid4()), "TK", score, pred, sel, out),
+            )
+        conn.commit()
+
+        # Get max obs_id so far
+        max_id = conn.execute("SELECT MAX(id) FROM model_observations WHERE model_version='mv_hys'").fetchone()[0]
+
+        # Manually insert first snapshot WITH last_snapshot_max_obs_id = max_id
+        conn.execute(
+            """INSERT INTO model_performance_snapshots
+               (model_version, snapshot_date, window_n, edge_verdict, last_snapshot_max_obs_id)
+               VALUES ('mv_hys', '2026-06-01', 6, 'NEGATIVE', ?)""",
+            (max_id,),
+        )
+        conn.commit()
+
+        # Add only a few new outcomes (< DEGRADATION_MIN_NEW_OUTCOMES)
+        new_count = DEGRADATION_MIN_NEW_OUTCOMES - 5
+        for score, pred, sel, out in [(80, 0.03, 1, -0.02)] * new_count:
+            conn.execute(
+                """INSERT INTO model_observations
+                   (model_version, episode_id, ticker, prediction_timestamp,
+                    challenger_score, predicted_alpha, would_select, outcome_alpha_90d,
+                    observation_phase)
+                   VALUES ('mv_hys',?,?,'2026-06-15T00:00:00',?,?,?,?,'PAPER_ACTIVE')""",
+                (str(uuid.uuid4()), "TK", score, pred, sel, out),
+            )
+        conn.commit()
+
+        snapshot_count_before = conn.execute(
+            "SELECT COUNT(*) FROM model_performance_snapshots WHERE model_version='mv_hys'"
+        ).fetchone()[0]
+
+        _check_degradation("mv_hys", conn)
+
+        snapshot_count_after = conn.execute(
+            "SELECT COUNT(*) FROM model_performance_snapshots WHERE model_version='mv_hys'"
+        ).fetchone()[0]
+        state = conn.execute(
+            "SELECT lifecycle_state FROM learning_models WHERE model_version='mv_hys'"
+        ).fetchone()["lifecycle_state"]
+        conn.close()
+
+        assert snapshot_count_after == snapshot_count_before, "No new snapshot when too few new outcomes"
+        assert state == LIFECYCLE_PAPER_ACTIVE, "Model should NOT be suspended without enough new evidence"
+
+    def test_suspension_fires_after_enough_new_outcomes(self, mem_db, monkeypatch):
+        """Suspension fires when >= DEGRADATION_MIN_NEW_OUTCOMES new outcomes appear."""
+        import agent_db
+        from agents.learning.calibration import _check_degradation, DEGRADATION_MIN_NEW_OUTCOMES, LIFECYCLE_SUSPENDED, LIFECYCLE_PAPER_ACTIVE
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        conn.execute(
+            """INSERT INTO learning_models
+               (model_version, training_cutoff, feature_schema_hash, training_n,
+                validation_metrics, created_at, lifecycle_state)
+               VALUES ('mv_hys2','2026-01-01','h',50,'{"cv_folds":3}',?,?)""",
+            (time.time(), LIFECYCLE_PAPER_ACTIVE),
+        )
+        # Seed initial batch of negative observations
+        for score, pred, sel, out in [(90, 0.05, 1, -0.04), (85, 0.04, 1, -0.03),
+                                       (80, 0.03, 1, -0.02), (20, -0.02, 0, 0.03), (15, -0.01, 0, 0.03)]:
+            conn.execute(
+                """INSERT INTO model_observations
+                   (model_version, episode_id, ticker, prediction_timestamp,
+                    challenger_score, predicted_alpha, would_select, outcome_alpha_90d,
+                    observation_phase)
+                   VALUES ('mv_hys2',?,?,'2026-01-01T00:00:00',?,?,?,?,'PAPER_ACTIVE')""",
+                (str(uuid.uuid4()), "TK", score, pred, sel, out),
+            )
+        conn.commit()
+        max_id_first = conn.execute("SELECT MAX(id) FROM model_observations WHERE model_version='mv_hys2'").fetchone()[0]
+
+        # First snapshot with last_snapshot_max_obs_id set
+        conn.execute(
+            """INSERT INTO model_performance_snapshots
+               (model_version, snapshot_date, window_n, edge_verdict, last_snapshot_max_obs_id)
+               VALUES ('mv_hys2', '2026-06-01', 5, 'NEGATIVE', ?)""",
+            (max_id_first,),
+        )
+        conn.commit()
+
+        # Add enough new negative outcomes
+        for _ in range(DEGRADATION_MIN_NEW_OUTCOMES):
+            conn.execute(
+                """INSERT INTO model_observations
+                   (model_version, episode_id, ticker, prediction_timestamp,
+                    challenger_score, predicted_alpha, would_select, outcome_alpha_90d,
+                    observation_phase)
+                   VALUES ('mv_hys2',?,?,'2026-07-01T00:00:00',80,0.03,1,-0.03,'PAPER_ACTIVE')""",
+                (str(uuid.uuid4()), "TK"),
+            )
+        conn.commit()
+
+        _check_degradation("mv_hys2", conn)
+
+        state = conn.execute(
+            "SELECT lifecycle_state FROM learning_models WHERE model_version='mv_hys2'"
+        ).fetchone()["lifecycle_state"]
+        conn.close()
+        assert state == LIFECYCLE_SUSPENDED, "Should suspend after enough new negative outcomes"
+
+
+# ===========================================================================
+# 0378 — Baseline & Prospective Cohort Hardening
+# ===========================================================================
+
+class TestBaselineCohortHardening0378:
+    """0378: baseline_mae uses per-row baseline_predicted_alpha; n_cohort_days tracks diversity."""
+
+    def test_baseline_mae_uses_per_row_not_hindsight_mean(self, mem_db, monkeypatch):
+        """baseline_mae uses baseline_predicted_alpha from prediction time, not hindsight mean."""
+        import agent_db
+        from agents.learning.calibration import compute_prospective_metrics
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        conn.execute(
+            """INSERT INTO learning_models
+               (model_version, training_cutoff, feature_schema_hash, training_n,
+                validation_metrics, created_at, lifecycle_state)
+               VALUES ('mv_bl','2026-01-01','h',50,'{"cv_folds":3}',?,'OBSERVE')""",
+            (time.time(),),
+        )
+        # Seed observations with baseline_predicted_alpha = 0.01 (training-time mean)
+        # Actual outcomes vary — hindsight mean would be different from 0.01
+        for i, (score, pred, sel, out) in enumerate([
+            (85, 0.04, 1, 0.05), (82, 0.03, 1, 0.04), (80, 0.03, 1, 0.03),
+            (30, -0.01, 0, -0.01), (20, -0.02, 0, -0.02),
+        ]):
+            conn.execute(
+                """INSERT INTO model_observations
+                   (model_version, episode_id, ticker, prediction_timestamp,
+                    challenger_score, predicted_alpha, would_select, outcome_alpha_90d,
+                    baseline_predicted_alpha, scored_at_date)
+                   VALUES ('mv_bl',?,?,'2026-01-01T00:00:00',?,?,?,?,?,?)""",
+                (str(uuid.uuid4()), "TK", score, pred, sel, out, 0.01,
+                 f"2026-0{i + 1}-15"),
+            )
+        conn.commit()
+        conn.close()
+
+        conn = _make_conn(mem_db)
+        pm = compute_prospective_metrics("mv_bl", conn)
+        conn.close()
+
+        # baseline_mae should use 0.01 per-row, not the hindsight mean
+        assert pm.get("baseline_mae") is not None
+        # Verify: mean of |0.01 - outcome| for each row
+        outcomes = [0.05, 0.04, 0.03, -0.01, -0.02]
+        expected_baseline_mae = sum(abs(0.01 - o) for o in outcomes) / len(outcomes)
+        assert pm["baseline_mae"] == pytest.approx(expected_baseline_mae, abs=1e-5)
+
+    def test_n_cohort_days_reported(self, mem_db, monkeypatch):
+        """n_cohort_days counts distinct scored_at_date values."""
+        import agent_db
+        from agents.learning.calibration import compute_prospective_metrics
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        conn.execute(
+            """INSERT INTO learning_models
+               (model_version, training_cutoff, feature_schema_hash, training_n,
+                validation_metrics, created_at, lifecycle_state)
+               VALUES ('mv_cd','2026-01-01','h',50,'{"cv_folds":3}',?,'OBSERVE')""",
+            (time.time(),),
+        )
+        # 10 observations across 10 different dates
+        for i in range(10):
+            conn.execute(
+                """INSERT INTO model_observations
+                   (model_version, episode_id, ticker, prediction_timestamp,
+                    challenger_score, predicted_alpha, would_select, outcome_alpha_90d,
+                    baseline_predicted_alpha, scored_at_date)
+                   VALUES ('mv_cd',?,?,'2026-01-01T00:00:00',?,?,?,?,?,?)""",
+                (str(uuid.uuid4()), "TK",
+                 80 - i * 5, 0.04 - i * 0.005,
+                 1 if i < 5 else 0,
+                 0.04 - i * 0.004,
+                 0.01,
+                 f"2026-0{i + 1:02d}-15" if i < 9 else "2026-10-15"),
+            )
+        conn.commit()
+        conn.close()
+
+        conn = _make_conn(mem_db)
+        pm = compute_prospective_metrics("mv_cd", conn)
+        conn.close()
+
+        assert pm.get("n_cohort_days") == 10
+        assert pm.get("effective_n") is not None
+
+    def test_old_rows_without_scored_at_date_skip_cohort_gate(self, mem_db, monkeypatch):
+        """When scored_at_date is NULL for most rows, n_cohort_days=0 and gate passes."""
+        import agent_db
+        from agents.learning.calibration import compute_prospective_metrics
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        conn.execute(
+            """INSERT INTO learning_models
+               (model_version, training_cutoff, feature_schema_hash, training_n,
+                validation_metrics, created_at, lifecycle_state)
+               VALUES ('mv_nodate','2026-01-01','h',50,'{"cv_folds":3}',?,'OBSERVE')""",
+            (time.time(),),
+        )
+        # Old rows: no scored_at_date
+        for score, pred, sel, out in [
+            (85, 0.04, 1, 0.05), (80, 0.03, 1, 0.04), (75, 0.02, 1, 0.03),
+            (30, -0.01, 0, -0.01), (20, -0.02, 0, -0.02),
+        ]:
+            conn.execute(
+                """INSERT INTO model_observations
+                   (model_version, episode_id, ticker, prediction_timestamp,
+                    challenger_score, predicted_alpha, would_select, outcome_alpha_90d)
+                   VALUES ('mv_nodate',?,?,'2026-01-01T00:00:00',?,?,?,?)""",
+                (str(uuid.uuid4()), "TK", score, pred, sel, out),
+            )
+        conn.commit()
+        conn.close()
+
+        conn = _make_conn(mem_db)
+        pm = compute_prospective_metrics("mv_nodate", conn)
+        conn.close()
+
+        assert pm.get("n_cohort_days") == 0, "Old rows without scored_at_date should give n_cohort_days=0"

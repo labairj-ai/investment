@@ -64,6 +64,12 @@ PROMOTE_MIN_CV_FOLDS              = 3   # 0355: raised from 1; single fold is no
 OBSERVE_MIN_DAYS                  = 14  # 0355: minimum calendar days in OBSERVE before PAPER_ACTIVE
 OBSERVE_MIN_FRESH_EPISODES        = 5   # 0355: minimum new decision_episodes since entering OBSERVE
 OBSERVE_MIN_MATURE_OBS            = 5   # 0360: minimum model_observations with outcome labels
+OBSERVE_MIN_COHORT_DAYS           = 10  # 0378: minimum distinct market days for cohort independence
+DEGRADATION_MIN_NEW_OUTCOMES      = 15  # 0377: new PAPER_ACTIVE outcomes required between snapshots
+
+
+class DataHealthBlockError(Exception):
+    """Raised by train_and_save() when compute_data_health() returns overall='block'. (0376)"""
 
 
 class ChallengerModel:
@@ -584,7 +590,22 @@ def _schema_hash() -> str:
 
 
 def train_and_save() -> dict:
-    """Train a new model (lifecycle_state=TRAINED). Promotion requires separate promote() call."""
+    """Train a new model (lifecycle_state=TRAINED). Promotion requires separate promote() call.
+
+    Raises DataHealthBlockError when compute_data_health() returns overall='block'. (0376)
+    """
+    conn = agent_db._connect()
+    try:
+        health = compute_data_health(conn)
+    finally:
+        conn.close()
+    if health["overall"] == "block":
+        blocking = [k for k, v in health["metrics"].items()
+                    if isinstance(v, dict) and v.get("status") == "block"]
+        raise DataHealthBlockError(
+            f"Data health check blocked training: {blocking}"
+        )
+
     model = ChallengerModel.train()
     if model is None:
         return {
@@ -704,6 +725,8 @@ def _check_promotion_gates(model_version: str, target_state: str) -> dict:
         pred_mae = pm.get("prediction_mae")
         base_mae = pm.get("baseline_mae")
         obs_edge = pm.get("prospective_edge_evidence", "")
+        incremental_spread = pm.get("incremental_ranking_spread")
+        n_cohort_days = pm.get("n_cohort_days", 0)
 
         gates["mature_observations"] = {
             "value": prospective_n,
@@ -730,6 +753,20 @@ def _check_promotion_gates(model_version: str, target_state: str) -> dict:
             "value": obs_edge,
             "expected": "POSITIVE or INCONCLUSIVE",
             "pass": obs_edge not in ("NEGATIVE", "") and obs_edge is not None,
+        }
+        # 0375: challenger must not degrade base-strategy ranking
+        # Pass when incremental_ranking_spread is None (no base_score data — can't evaluate)
+        gates["incremental_ranking_non_negative"] = {
+            "value": incremental_spread,
+            "expected": ">= 0 (or unevaluable)",
+            "pass": incremental_spread is None or incremental_spread >= 0,
+        }
+        # 0378: require cohort day diversity when scored_at_date is populated
+        # Pass when n_cohort_days == 0 (old rows without scored_at_date — can't evaluate)
+        gates["cohort_day_diversity"] = {
+            "value": n_cohort_days,
+            "minimum": OBSERVE_MIN_COHORT_DAYS,
+            "pass": n_cohort_days == 0 or n_cohort_days >= OBSERVE_MIN_COHORT_DAYS,
         }
 
     conn.close()
@@ -876,19 +913,33 @@ def compute_prospective_metrics(model_version: str, conn) -> dict:
     prospective_ranking_spread, and prospective_edge_evidence derived purely from
     model_observations (not from retrospective CV metrics).
     Returns {} when fewer than 5 labeled observations exist.
+
+    0373: filters by target_horizon_version matching the model's training_horizon_version.
+    0375: adds base_ranking_spread, challenger_ranking_spread, incremental_ranking_spread,
+          selection_alpha_delta.
+    0378: uses per-row baseline_predicted_alpha for baseline_mae; tracks n_cohort_days.
     """
     import math
 
-    rows = conn.execute(
-        """SELECT challenger_score, predicted_alpha, would_select, outcome_alpha_90d
-           FROM model_observations
-           WHERE model_version=? AND outcome_alpha_90d IS NOT NULL""",
+    # 0373: look up training_horizon_version to filter observations by version
+    mv_row = conn.execute(
+        "SELECT training_horizon_version FROM learning_models WHERE model_version=?",
         (model_version,),
+    ).fetchone()
+    thv = ((mv_row["training_horizon_version"] if mv_row else None) or "calendar_v1")
+
+    rows = conn.execute(
+        """SELECT challenger_score, base_score, predicted_alpha, would_select,
+                  outcome_alpha_90d, baseline_predicted_alpha, scored_at_date,
+                  prediction_timestamp
+           FROM model_observations
+           WHERE model_version=? AND outcome_alpha_90d IS NOT NULL
+             AND (target_horizon_version=? OR target_horizon_version IS NULL)""",
+        (model_version, thv),
     ).fetchall()
     if len(rows) < 5:
         return {}
 
-    # Use predicted_alpha for MAE — challenger_score is a composite, not an alpha prediction
     outcomes = [float(r["outcome_alpha_90d"]) for r in rows]
     ch_scores = [float(r["challenger_score"]) for r in rows]
     pred_alphas = [float(r["predicted_alpha"]) if r["predicted_alpha"] is not None else None
@@ -898,28 +949,51 @@ def compute_prospective_metrics(model_version: str, conn) -> dict:
     n = len(rows)
 
     mean_alpha = sum(outcomes) / n
-    # MAE: compare predicted_alpha to actual alpha; fall back to challenger_score if unavailable
+
+    # 0378: per-row baseline from baseline_predicted_alpha (training-time mean), not hindsight mean
+    rows_with_baseline = [(float(r["baseline_predicted_alpha"]), float(r["outcome_alpha_90d"]))
+                          for r in rows if r["baseline_predicted_alpha"] is not None]
+    if rows_with_baseline:
+        baseline_mae = sum(abs(b - o) for b, o in rows_with_baseline) / len(rows_with_baseline)
+    else:
+        baseline_mae = sum(abs(mean_alpha - o) for o in outcomes) / n
+
+    # MAE: predicted_alpha vs actual; fall back to challenger_score if unavailable
     valid_preds = [(p, o) for p, o in zip(pred_alphas, outcomes) if p is not None]
     if valid_preds:
         prediction_mae = sum(abs(p - o) for p, o in valid_preds) / len(valid_preds)
     else:
         prediction_mae = sum(abs(s - o) for s, o in zip(ch_scores, outcomes)) / n
-    baseline_mae = sum(abs(mean_alpha - o) for o in outcomes) / n
-    # Use challenger_score for quintile ranking spread (ranking quality, not alpha accuracy)
-    scores = ch_scores
 
+    scores = ch_scores
     sel_mean = (sum(float(r["outcome_alpha_90d"]) for r in selected) / len(selected)) if selected else None
     not_mean = (sum(float(r["outcome_alpha_90d"]) for r in not_selected) / len(not_selected)) if not_selected else None
     spread = (sel_mean - not_mean) if sel_mean is not None and not_mean is not None else None
 
-    # Quintile ranking spread
-    sorted_pairs = sorted(zip(scores, outcomes), key=lambda x: x[0])
+    # Challenger quintile ranking spread
+    sorted_ch = sorted(zip(scores, outcomes), key=lambda x: x[0])
     q_size = max(1, n // 5)
-    bottom_mean = sum(o for _, o in sorted_pairs[:q_size]) / q_size
-    top_mean = sum(o for _, o in sorted_pairs[-q_size:]) / q_size
-    quintile_spread = top_mean - bottom_mean
+    ch_bottom_mean = sum(o for _, o in sorted_ch[:q_size]) / q_size
+    ch_top_mean = sum(o for _, o in sorted_ch[-q_size:]) / q_size
+    challenger_ranking_spread = ch_top_mean - ch_bottom_mean
 
-    # Pearson correlation
+    # 0375: Base ranking spread and incremental edge
+    base_scores_raw = [r["base_score"] for r in rows]
+    base_scores = [float(b) for b in base_scores_raw if b is not None]
+    base_ranking_spread: float | None = None
+    incremental_ranking_spread: float | None = None
+    selection_alpha_delta: float | None = None
+
+    if len(base_scores) == n:  # all rows have base_score populated
+        sorted_base = sorted(zip([float(b) for b in base_scores_raw], outcomes), key=lambda x: x[0])
+        base_bottom_mean = sum(o for _, o in sorted_base[:q_size]) / q_size
+        base_top_mean = sum(o for _, o in sorted_base[-q_size:]) / q_size
+        base_ranking_spread = base_top_mean - base_bottom_mean
+        incremental_ranking_spread = challenger_ranking_spread - base_ranking_spread
+        if sel_mean is not None:
+            selection_alpha_delta = sel_mean - base_top_mean
+
+    # Pearson correlation (challenger_score vs outcome)
     corr: float | None = None
     if n >= 2:
         mean_s = sum(scores) / n
@@ -932,6 +1006,23 @@ def compute_prospective_metrics(model_version: str, conn) -> dict:
 
     hit_rate = (sum(1 for r in rows if r["would_select"] and float(r["outcome_alpha_90d"]) > mean_alpha)
                 / max(len(selected), 1))
+
+    # 0378: cohort day tracking — use scored_at_date, fall back to date portion of prediction_timestamp
+    dates = []
+    for r in rows:
+        d = r["scored_at_date"]
+        if not d and r["prediction_timestamp"]:
+            d = str(r["prediction_timestamp"])[:10]
+        if d and len(d) >= 10:
+            dates.append(d[:10])
+    # Only count cohort days when scored_at_date was actually populated
+    # (old rows without scored_at_date don't give reliable cohort data)
+    rows_with_scored_date = sum(1 for r in rows if r["scored_at_date"])
+    if rows_with_scored_date >= n // 2:
+        n_cohort_days = len(set(dates))
+    else:
+        n_cohort_days = 0  # can't evaluate — old rows without scored_at_date
+    effective_n = min(n, 3 * n_cohort_days) if n_cohort_days > 0 else n
 
     # Prospective edge evidence — derived from observations, NOT from CV metrics
     if spread is not None and spread > 0 and prediction_mae <= baseline_mae:
@@ -950,11 +1041,19 @@ def compute_prospective_metrics(model_version: str, conn) -> dict:
         "would_select_mean_alpha": round(sel_mean, 6) if sel_mean is not None else None,
         "nonselected_mean_alpha": round(not_mean, 6) if not_mean is not None else None,
         "selection_alpha_spread": round(spread, 6) if spread is not None else None,
-        "top_quintile_mean_alpha": round(top_mean, 6),
-        "bottom_quintile_mean_alpha": round(bottom_mean, 6),
-        "prospective_ranking_spread": round(quintile_spread, 6),
+        "top_quintile_mean_alpha": round(ch_top_mean, 6),
+        "bottom_quintile_mean_alpha": round(ch_bottom_mean, 6),
+        "prospective_ranking_spread": round(challenger_ranking_spread, 6),
         "prospective_hit_rate": round(hit_rate, 4),
         "prospective_edge_evidence": obs_edge,
+        # 0375: incremental edge over base strategy
+        "base_ranking_spread": round(base_ranking_spread, 6) if base_ranking_spread is not None else None,
+        "challenger_ranking_spread": round(challenger_ranking_spread, 6),
+        "incremental_ranking_spread": round(incremental_ranking_spread, 6) if incremental_ranking_spread is not None else None,
+        "selection_alpha_delta": round(selection_alpha_delta, 6) if selection_alpha_delta is not None else None,
+        # 0378: cohort independence metrics
+        "n_cohort_days": n_cohort_days,
+        "effective_n": effective_n,
     }
 
 
@@ -1036,8 +1135,23 @@ def compute_data_health(conn) -> dict:
     except Exception:
         pass
 
-    # Feature null rates for key score columns
-    for col in ("composite_score", "quality_score", "portfolio_fit_score"):
+    # 0376: per-version outcome coverage breakdown
+    try:
+        for ver in ("calendar_v1", "sessions_v2"):
+            labeled_ver = conn.execute(
+                "SELECT COUNT(*) FROM episode_outcomes WHERE horizon='3m' AND horizon_definition_version=?",
+                (ver,),
+            ).fetchone()[0]
+            cov_ver = labeled_ver / total_episodes if total_episodes else 0.0
+            findings[f"outcome_coverage_3m_{ver}_pct"] = {
+                "value": round(cov_ver, 3),
+                "status": "ok" if cov_ver >= 0.50 else ("warn" if cov_ver >= 0.25 else "block"),
+            }
+    except Exception:
+        pass
+
+    # 0376: feature null rates using correct column names (q_score/v_score/pf_score/c_score/ec_score)
+    for col in ("q_score", "v_score", "pf_score", "c_score", "ec_score"):
         try:
             null_count = conn.execute(
                 f"SELECT COUNT(*) FROM decision_episodes WHERE {col} IS NULL"
@@ -1064,6 +1178,9 @@ def compute_data_health(conn) -> dict:
 def _check_degradation(model_version: str, conn) -> None:
     """Compute rolling performance snapshot; auto-suspend on 2 consecutive NEGATIVE verdicts (0371).
 
+    0374: evaluates only PAPER_ACTIVE-phase observations (post-promotion evidence).
+    0377: non-overlapping cohort hysteresis — requires DEGRADATION_MIN_NEW_OUTCOMES new
+          outcomes since the last snapshot before computing a new one.
     Called by outcome_labeler after back-filling outcomes for PAPER_ACTIVE models.
     """
     from datetime import date as _d2
@@ -1075,21 +1192,44 @@ def _check_degradation(model_version: str, conn) -> None:
     if not row or row["lifecycle_state"] != LIFECYCLE_PAPER_ACTIVE:
         return
 
+    # 0377: check if enough new outcomes have matured since the last snapshot
+    last_snap = conn.execute(
+        """SELECT last_snapshot_max_obs_id FROM model_performance_snapshots
+           WHERE model_version=? AND last_snapshot_max_obs_id IS NOT NULL
+           ORDER BY snapshot_date DESC LIMIT 1""",
+        (model_version,),
+    ).fetchone()
+    last_max_obs_id = int(last_snap["last_snapshot_max_obs_id"]) if last_snap else 0
+
+    if last_max_obs_id > 0:
+        new_n = conn.execute(
+            """SELECT COUNT(*) FROM model_observations
+               WHERE model_version=? AND outcome_alpha_90d IS NOT NULL
+                 AND id > ?
+                 AND (observation_phase='PAPER_ACTIVE' OR observation_phase IS NULL)""",
+            (model_version, last_max_obs_id),
+        ).fetchone()[0]
+        if new_n < DEGRADATION_MIN_NEW_OUTCOMES:
+            return  # not enough new outcomes for an independent cohort
+
+    # 0374: filter on PAPER_ACTIVE-phase rows (backward compat: include NULL phase)
     obs = conn.execute(
-        """SELECT challenger_score, predicted_alpha, would_select, outcome_alpha_90d
+        """SELECT id, challenger_score, predicted_alpha, would_select, outcome_alpha_90d
            FROM model_observations
            WHERE model_version=? AND outcome_alpha_90d IS NOT NULL
-           ORDER BY prediction_timestamp DESC LIMIT 30""",
+             AND (observation_phase='PAPER_ACTIVE' OR observation_phase IS NULL)
+           ORDER BY id DESC LIMIT 30""",
         (model_version,),
     ).fetchall()
     if len(obs) < 5:
         return
 
+    current_max_obs_id = max(int(r["id"]) for r in obs)
+
     outcomes = [float(r["outcome_alpha_90d"]) for r in obs]
     selected = [r for r in obs if r["would_select"]]
     not_selected = [r for r in obs if not r["would_select"]]
     mean_alpha = sum(outcomes) / len(outcomes)
-    # Use predicted_alpha for MAE (challenger_score is composite, not an alpha prediction)
     valid_pred = [(float(r["predicted_alpha"]), float(r["outcome_alpha_90d"]))
                   for r in obs if r["predicted_alpha"] is not None]
     if valid_pred:
@@ -1116,15 +1256,17 @@ def _check_degradation(model_version: str, conn) -> None:
         conn.execute(
             """INSERT OR IGNORE INTO model_performance_snapshots
                (model_version, snapshot_date, window_n, selection_alpha_spread,
-                prediction_mae, baseline_mae, prospective_hit_rate, edge_verdict)
-               VALUES (?,?,?,?,?,?,?,?)""",
-            (model_version, today, len(obs), spread, prediction_mae, baseline_mae, hit_rate, verdict),
+                prediction_mae, baseline_mae, prospective_hit_rate, edge_verdict,
+                last_snapshot_max_obs_id)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (model_version, today, len(obs), spread, prediction_mae, baseline_mae,
+             hit_rate, verdict, current_max_obs_id),
         )
         conn.commit()
     except Exception:
         pass
 
-    # Auto-suspend if 2 consecutive NEGATIVE verdicts
+    # Auto-suspend if 2 consecutive NEGATIVE verdicts (from any snapshot, including manual ones)
     recent = conn.execute(
         """SELECT edge_verdict FROM model_performance_snapshots
            WHERE model_version=? ORDER BY snapshot_date DESC LIMIT 2""",

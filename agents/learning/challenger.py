@@ -43,11 +43,16 @@ def get_model() -> ChallengerModel | None:
 
 
 def score_for_observe(model_version: str, candidates: list[dict]) -> None:
-    """Score candidates using an OBSERVE-state model; write to model_observations (0360).
+    """Score candidates using an OBSERVE/PAPER_ACTIVE/SUSPENDED model; write to model_observations.
 
-    Does not affect rankings. Builds the shadow prediction log that the
-    OBSERVE→PAPER_ACTIVE gate (mature_observations) checks against.
-    SUSPENDED models also write observations for retrospective audit (0371).
+    Does not affect live rankings. Builds the shadow prediction log for:
+    - OBSERVE → PAPER_ACTIVE promotion gate (0360)
+    - PAPER_ACTIVE degradation monitoring (0371/0374)
+    - SUSPENDED retrospective audit (0371)
+
+    0373: sets target_horizon_version from the model's training_horizon_version.
+    0374: sets observation_phase from the model's current lifecycle_state.
+    0378: sets baseline_predicted_alpha from model.mean_alpha; scored_at_date from today.
     """
     import agent_db
     from datetime import datetime, timezone
@@ -56,8 +61,8 @@ def score_for_observe(model_version: str, candidates: list[dict]) -> None:
         conn = agent_db._connect()
         try:
             row = conn.execute(
-                "SELECT * FROM learning_models WHERE model_version=? AND lifecycle_state IN (?,?)",
-                (model_version, LIFECYCLE_OBSERVE, LIFECYCLE_SUSPENDED),
+                "SELECT * FROM learning_models WHERE model_version=? AND lifecycle_state IN (?,?,?)",
+                (model_version, LIFECYCLE_OBSERVE, LIFECYCLE_SUSPENDED, LIFECYCLE_PAPER_ACTIVE),
             ).fetchone()
             if not row:
                 return
@@ -66,14 +71,18 @@ def score_for_observe(model_version: str, candidates: list[dict]) -> None:
             if model is None:
                 return
 
+            observation_phase = row["lifecycle_state"]
+            keys = row.keys() if hasattr(row, "keys") else []
+            training_horizon_version = (row["training_horizon_version"]
+                                        if "training_horizon_version" in keys else None) or "calendar_v1"
+
             now = datetime.now(timezone.utc).isoformat()
+            scored_at_date = now[:10]
             scored_pairs: list[tuple] = []
             for c in candidates:
-                # Use predict_alpha directly — score() only activates for PAPER_ACTIVE
                 predicted = model.predict_alpha(c)
                 if predicted is None:
                     continue
-                # Compute adjustment using same formula as score()
                 from .calibration import ALPHA_TO_SCORE_SCALE, MAX_ADJUSTMENT
                 import numpy as np
                 raw_adj = (predicted - model.mean_alpha) * ALPHA_TO_SCORE_SCALE
@@ -92,15 +101,21 @@ def score_for_observe(model_version: str, candidates: list[dict]) -> None:
                             """INSERT OR IGNORE INTO model_observations
                                (model_version, episode_id, ticker, prediction_timestamp,
                                 base_score, predicted_alpha, learning_adjustment,
-                                challenger_score, would_select)
-                               VALUES (?,?,?,?,?,?,?,?,?)""",
+                                challenger_score, would_select,
+                                observation_phase, target_horizon_version,
+                                baseline_predicted_alpha, scored_at_date)
+                               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                             (model_version, ep_id, c.get("ticker", ""),
                              now,
                              c.get("composite_score") or c.get("_composite"),
                              out["predicted_alpha"],
                              out["adjustment"],
                              out["ch_score"],
-                             1 if out["ch_score"] == max_cs else 0),
+                             1 if out["ch_score"] == max_cs else 0,
+                             observation_phase,
+                             training_horizon_version,
+                             model.mean_alpha,
+                             scored_at_date),
                         )
                     except Exception:
                         pass

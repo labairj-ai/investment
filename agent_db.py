@@ -436,6 +436,9 @@ def migrate() -> None:
     # 0327 — learning tables must exist BEFORE _new_cols so ALTER TABLE columns land correctly
     _migrate_learning_episodes(conn)
 
+    # 0372 — migrate episode_outcomes unique constraint from 2-column to 3-column
+    _migrate_episode_outcomes_unique(conn)
+
     # Add columns introduced after the initial schema (safe to re-run)
     _new_cols = [
         ("investment_theses", "approved_by",      "TEXT"),
@@ -620,6 +623,16 @@ def migrate() -> None:
         ("trade_intents",     "quote_quality",                     "TEXT"),
         ("trade_intents",     "market_timestamp",                  "TEXT"),
         # 0371 — SUSPENDED lifecycle state (no schema change needed; uses existing lifecycle_state col)
+        # 0373 — version-aware model_observations outcome backfill
+        ("model_observations", "target_horizon_version",           "TEXT"),
+        ("model_observations", "outcome_horizon_version",          "TEXT"),
+        # 0374 — continuous model observation phase tracking
+        ("model_observations", "observation_phase",                "TEXT"),
+        # 0377 — degradation hysteresis: non-overlapping snapshot cohorts
+        ("model_performance_snapshots", "last_snapshot_max_obs_id", "INTEGER"),
+        # 0378 — per-row baseline and cohort day tracking
+        ("model_observations", "baseline_predicted_alpha",         "REAL"),
+        ("model_observations", "scored_at_date",                   "TEXT"),
     ]
     for table, col, col_type in _new_cols:
         try:
@@ -914,6 +927,59 @@ def _migrate_trade_engine(conn: sqlite3.Connection) -> None:
 
 # ── Strategy learning episode tables (0327) ──────────────────────────────────
 
+def _migrate_episode_outcomes_unique(conn: sqlite3.Connection) -> None:
+    """0372: Migrate episode_outcomes UNIQUE(episode_id, horizon) →
+    UNIQUE(episode_id, horizon, horizon_definition_version). Safe to re-run."""
+    import re
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='episode_outcomes'"
+    ).fetchone()
+    if not row:
+        return
+    create_sql = (row[0] or "").lower()
+    # Check whether the existing UNIQUE clause already includes horizon_definition_version
+    unique_match = re.search(r'unique\s*\(([^)]+)\)', create_sql)
+    if unique_match and "horizon_definition_version" in unique_match.group(1):
+        return  # already migrated
+    if not unique_match:
+        return  # no inline UNIQUE found; skip
+
+    # Need to rebuild the table with 3-column unique constraint
+    conn.execute("PRAGMA foreign_keys=OFF")
+    try:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS episode_outcomes_v2 (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                episode_id    TEXT NOT NULL,
+                horizon       TEXT NOT NULL,
+                ticker_return REAL,
+                spy_return    REAL,
+                alpha         REAL,
+                mfe           REAL,
+                mae           REAL,
+                labeled_at    REAL NOT NULL,
+                horizon_definition_version TEXT DEFAULT 'calendar_v1',
+                UNIQUE(episode_id, horizon, horizon_definition_version)
+            );
+        """)
+        conn.execute("""
+            INSERT OR IGNORE INTO episode_outcomes_v2
+                (id, episode_id, horizon, ticker_return, spy_return, alpha, mfe, mae,
+                 labeled_at, horizon_definition_version)
+            SELECT id, episode_id, horizon, ticker_return, spy_return, alpha, mfe, mae,
+                   labeled_at, COALESCE(horizon_definition_version, 'calendar_v1')
+            FROM episode_outcomes
+        """)
+        conn.commit()
+        conn.executescript("""
+            DROP TABLE episode_outcomes;
+            ALTER TABLE episode_outcomes_v2 RENAME TO episode_outcomes;
+        """)
+        conn.commit()
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")
+
+
 def _migrate_learning_episodes(conn: sqlite3.Connection) -> None:
     """Create decision_episodes, episode_outcomes, learning_models, and
     risk_counterfactual_outcomes tables. Safe to re-run."""
@@ -966,7 +1032,8 @@ def _migrate_learning_episodes(conn: sqlite3.Connection) -> None:
             mfe           REAL,
             mae           REAL,
             labeled_at    REAL NOT NULL,
-            UNIQUE(episode_id, horizon)
+            horizon_definition_version TEXT DEFAULT 'calendar_v1',
+            UNIQUE(episode_id, horizon, horizon_definition_version)
         );
 
         CREATE TABLE IF NOT EXISTS learning_models (
@@ -1123,20 +1190,25 @@ def _migrate_learning_episodes(conn: sqlite3.Connection) -> None:
             UNIQUE(book_id, date)
         );
 
-        -- 0360: shadow predictions from OBSERVE-state models (before PAPER_ACTIVE)
+        -- 0360: shadow predictions from OBSERVE/PAPER_ACTIVE/SUSPENDED models
         CREATE TABLE IF NOT EXISTS model_observations (
-            id                   INTEGER PRIMARY KEY AUTOINCREMENT,
-            model_version        TEXT NOT NULL,
-            episode_id           TEXT NOT NULL,
-            ticker               TEXT NOT NULL,
-            prediction_timestamp TEXT NOT NULL,
-            base_score           REAL,
-            predicted_alpha      REAL,
-            learning_adjustment  REAL,
-            challenger_score     REAL,
-            would_select         INTEGER,
-            outcome_alpha_90d    REAL,
-            outcome_labeled_at   TEXT
+            id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+            model_version            TEXT NOT NULL,
+            episode_id               TEXT NOT NULL,
+            ticker                   TEXT NOT NULL,
+            prediction_timestamp     TEXT NOT NULL,
+            base_score               REAL,
+            predicted_alpha          REAL,
+            learning_adjustment      REAL,
+            challenger_score         REAL,
+            would_select             INTEGER,
+            outcome_alpha_90d        REAL,
+            outcome_labeled_at       TEXT,
+            observation_phase        TEXT,
+            target_horizon_version   TEXT,
+            outcome_horizon_version  TEXT,
+            baseline_predicted_alpha REAL,
+            scored_at_date           TEXT
         );
 
         CREATE UNIQUE INDEX IF NOT EXISTS idx_model_obs_version_episode
@@ -1144,15 +1216,16 @@ def _migrate_learning_episodes(conn: sqlite3.Connection) -> None:
 
         -- 0371: rolling performance snapshots for PAPER_ACTIVE degradation detection
         CREATE TABLE IF NOT EXISTS model_performance_snapshots (
-            id                     INTEGER PRIMARY KEY AUTOINCREMENT,
-            model_version          TEXT NOT NULL,
-            snapshot_date          TEXT NOT NULL,
-            window_n               INTEGER,
-            selection_alpha_spread REAL,
-            prediction_mae         REAL,
-            baseline_mae           REAL,
-            prospective_hit_rate   REAL,
-            edge_verdict           TEXT,
+            id                        INTEGER PRIMARY KEY AUTOINCREMENT,
+            model_version             TEXT NOT NULL,
+            snapshot_date             TEXT NOT NULL,
+            window_n                  INTEGER,
+            selection_alpha_spread    REAL,
+            prediction_mae            REAL,
+            baseline_mae              REAL,
+            prospective_hit_rate      REAL,
+            edge_verdict              TEXT,
+            last_snapshot_max_obs_id  INTEGER,
             UNIQUE(model_version, snapshot_date)
         );
 
