@@ -1,7 +1,7 @@
 # Make Post-Insert COUNT Failure Abort the Sweep
 
 - **ID:** 0431
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-18
 - **Priority:** high
 - **Depends:** 0425

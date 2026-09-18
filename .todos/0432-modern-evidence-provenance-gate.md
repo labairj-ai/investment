@@ -1,7 +1,7 @@
 # Require COMPLETED Ledger for Post-Rollout Model Promotion
 
 - **ID:** 0432
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-18
 - **Priority:** normal
 - **Depends:** 0430

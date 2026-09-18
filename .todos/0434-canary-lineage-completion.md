@@ -1,7 +1,7 @@
 # Complete Canary Lineage: Episode Count + Row-Level Run Proof
 
 - **ID:** 0434
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-18
 - **Priority:** normal
 - **Depends:** 0426

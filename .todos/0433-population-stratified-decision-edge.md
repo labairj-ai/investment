@@ -1,7 +1,7 @@
 # Add Base-vs-Challenger Decision Edge to Stratified Metrics
 
 - **ID:** 0433
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-18
 - **Priority:** normal
 - **Depends:** 0427
