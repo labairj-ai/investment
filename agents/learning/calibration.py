@@ -335,8 +335,11 @@ class ChallengerModel:
 
         feature_schema_hash = _schema_hash()
         # 0403: include horizon version in model ID to prevent collision between
-        # models trained on different horizons against the same episode cutoff
-        model_version = f"edge_{horizon_version}_v{int(training_cutoff):010d}"
+        # models trained on different horizons against the same episode cutoff.
+        # 0409: also include feature_schema_hash prefix so retrains after a schema
+        # change with the same cutoff produce a distinct version key.
+        _schema_short = (feature_schema_hash or "")[:8] or "nohash"
+        model_version = f"edge_{horizon_version}_{_schema_short}_v{int(training_cutoff):010d}"
 
         val_metrics: dict = {
             "cv_folds":                 len(folds),
@@ -1056,11 +1059,16 @@ def compute_prospective_metrics(model_version: str, conn) -> dict:
     base_wins = 0
     ties = 0
     cohort_deltas: list = []
+    cohort_delta_weeks: list = []  # parallel: ISO week label per divergent cohort (0408)
     # 0402: initialize before cohort block so return dict is always valid
     selection_delta_ci_low: float | None = None
     selection_delta_ci_high: float | None = None
     selection_delta_evidence: str | None = None
     median_selection_delta: float | None = None
+    # 0408: block bootstrap CI (clustered by decision week)
+    selection_delta_ci_low_block: float | None = None
+    selection_delta_ci_high_block: float | None = None
+    selection_delta_evidence_block: str | None = None
 
     rows_with_cohort = [r for r in rows if r["decision_cohort_id"] is not None]
     if rows_with_cohort:
@@ -1069,6 +1077,7 @@ def compute_prospective_metrics(model_version: str, conn) -> dict:
         for r in rows_with_cohort:
             cohort_map[r["decision_cohort_id"]].append(r)
         cohort_deltas = []
+        cohort_delta_weeks = []
         for cohort_rows in cohort_map.values():
             ch_rows = [r for r in cohort_rows if r["would_select"]]
             base_rows = [r for r in cohort_rows
@@ -1088,13 +1097,24 @@ def compute_prospective_metrics(model_version: str, conn) -> dict:
             if ch_ep != base_ep:
                 n_divergent_cohorts += 1
                 cohort_deltas.append(delta)
+                # 0408: track ISO week of each divergent cohort for block bootstrap
+                _sdate = ch_row["scored_at_date"] or ""
+                if _sdate and len(_sdate) >= 10:
+                    try:
+                        from datetime import date as _ddate
+                        _week = _ddate.fromisoformat(_sdate[:10]).isocalendar()[:2]  # (year, week)
+                        cohort_delta_weeks.append(f"{_week[0]}-W{_week[1]:02d}")
+                    except Exception:
+                        cohort_delta_weeks.append("unknown")
+                else:
+                    cohort_delta_weeks.append("unknown")
                 if delta > 0:
                     challenger_wins += 1
                 elif delta < 0:
                     base_wins += 1
                 else:
                     ties += 1
-        # 0402: bootstrap 90% CI and median over divergent cohort deltas
+        # 0402: IID bootstrap 90% CI and median over divergent cohort deltas
         if cohort_deltas:
             selection_alpha_delta = sum(cohort_deltas) / len(cohort_deltas)
             sorted_d = sorted(cohort_deltas)
@@ -1114,6 +1134,30 @@ def compute_prospective_metrics(model_version: str, conn) -> dict:
                     selection_delta_evidence = "NEGATIVE"
                 else:
                     selection_delta_evidence = "INCONCLUSIVE"
+
+            # 0408: block bootstrap — resample by ISO week to account for overlapping 63-session
+            # return windows (consecutive daily cohorts share almost all of their outcome period).
+            # Requires >= 4 distinct decision weeks; otherwise the clustering has too few groups.
+            if cohort_delta_weeks and len(set(cohort_delta_weeks)) >= 4:
+                from collections import defaultdict as _dd2
+                week_buckets: dict = _dd2(list)
+                for d, w in zip(cohort_deltas, cohort_delta_weeks):
+                    week_buckets[w].append(d)
+                week_means = [float(np.mean(v)) for v in week_buckets.values()]
+                nw = len(week_means)
+                rng_b = np.random.default_rng(43)
+                arr_w = np.array(week_means)
+                # Resample whole weeks; each resample mean approximates the overall mean
+                boot_b = [float(rng_b.choice(arr_w, size=nw, replace=True).mean())
+                          for _ in range(2000)]
+                selection_delta_ci_low_block = round(float(np.percentile(boot_b, 5)), 6)
+                selection_delta_ci_high_block = round(float(np.percentile(boot_b, 95)), 6)
+                if selection_delta_ci_low_block > 0:
+                    selection_delta_evidence_block = "POSITIVE"
+                elif selection_delta_ci_high_block < 0:
+                    selection_delta_evidence_block = "NEGATIVE"
+                else:
+                    selection_delta_evidence_block = "INCONCLUSIVE"
 
     # Pearson correlation (challenger_score vs outcome)
     corr: float | None = None
@@ -1187,6 +1231,10 @@ def compute_prospective_metrics(model_version: str, conn) -> dict:
         "selection_delta_ci_low": selection_delta_ci_low,
         "selection_delta_ci_high": selection_delta_ci_high,
         "selection_delta_evidence": selection_delta_evidence,
+        # 0408: block bootstrap (weekly clusters, accounts for overlapping return windows)
+        "selection_delta_ci_low_block": selection_delta_ci_low_block,
+        "selection_delta_ci_high_block": selection_delta_ci_high_block,
+        "selection_delta_evidence_block": selection_delta_evidence_block,
     }
 
 
@@ -1362,6 +1410,30 @@ def compute_data_health(conn, target_horizon_version: str = None) -> dict:
         except Exception:
             pass
 
+    # 0406: cohort winner-count invariant — exactly one would_select and one base_would_select
+    # per (model_version, decision_cohort_id). Violations indicate a bug in score_for_observe.
+    try:
+        bad_cohort_rows = conn.execute(
+            """SELECT model_version, decision_cohort_id,
+                      SUM(would_select) AS ch_winners,
+                      SUM(COALESCE(base_would_select, 0)) AS base_winners
+               FROM model_observations
+               WHERE decision_cohort_id IS NOT NULL
+               GROUP BY model_version, decision_cohort_id
+               HAVING ch_winners != 1 OR base_winners != 1"""
+        ).fetchall()
+        n_bad = len(bad_cohort_rows)
+        if n_bad == 0:
+            findings["cohort_winner_invariant"] = {"value": 0, "status": "ok"}
+        else:
+            findings["cohort_winner_invariant"] = {
+                "value": n_bad,
+                "status": "block",
+                "detail": f"{n_bad} cohort(s) with wrong winner count",
+            }
+    except Exception:
+        findings["cohort_winner_invariant"] = {"value": None, "status": "warn"}
+
     statuses = [v.get("status") for v in findings.values() if isinstance(v, dict)]
     if "block" in statuses:
         overall = "block"
@@ -1444,14 +1516,16 @@ def _check_degradation(model_version: str, conn) -> None:
         # else: no hysteresis anchor → proceed unconditionally
 
     # 0401: window by latest N distinct decision cohorts, not N candidate rows.
-    # A sweep with 20 candidates would fill LIMIT 30 with < 2 cohorts, making
-    # n_divergent_cohorts thresholds unreachable.
+    # 0407: GROUP BY + MAX(id) ORDER instead of DISTINCT + ORDER BY id — DISTINCT with an
+    # unaggregated ORDER BY id is query-planner-dependent and not reproducible.
     _latest_cohorts = conn.execute(
-        """SELECT DISTINCT decision_cohort_id FROM model_observations
+        """SELECT decision_cohort_id, MAX(id) AS max_id
+           FROM model_observations
            WHERE model_version=? AND outcome_alpha_90d IS NOT NULL
              AND (observation_phase='PAPER_ACTIVE' OR observation_phase IS NULL)
              AND decision_cohort_id IS NOT NULL
-           ORDER BY id DESC LIMIT ?""",
+           GROUP BY decision_cohort_id
+           ORDER BY max_id DESC LIMIT ?""",
         (model_version, DEGRADATION_WINDOW_COHORTS),
     ).fetchall()
     _cohort_ids = [r["decision_cohort_id"] for r in _latest_cohorts]
@@ -1713,6 +1787,10 @@ def learning_readiness_report(conn, model_version: str = None) -> dict:
         "selection_delta_ci_low": pm.get("selection_delta_ci_low"),
         "selection_delta_ci_high": pm.get("selection_delta_ci_high"),
         "selection_delta_evidence": pm.get("selection_delta_evidence"),
+        # 0408: block bootstrap CI
+        "selection_delta_ci_low_block": pm.get("selection_delta_ci_low_block"),
+        "selection_delta_ci_high_block": pm.get("selection_delta_ci_high_block"),
+        "selection_delta_evidence_block": pm.get("selection_delta_evidence_block"),
         "selection_alpha_delta": pm.get("selection_alpha_delta"),
         "challenger_win_rate": (pm.get("challenger_wins", 0) / n_div) if n_div > 0 else None,
         "promotion_target_state": promotion_target_state,  # 0396

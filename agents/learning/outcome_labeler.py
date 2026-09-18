@@ -188,8 +188,7 @@ def _label_one_episode(
     Writes both calendar_v1 (91d 3m) and sessions_v2 (63-session 3m) rows
     so models trained on either version have labeled data available (0369).
     """
-    from trade_engine.market_calendar import trading_sessions_between
-
+    from trade_engine.market_calendar import trading_sessions_between  # used for elapsed check
     entry = _entry_date(captured_at)
     written = 0
 
@@ -242,8 +241,11 @@ def _label_one_episode(
                     pass
         written += 1
 
-    # --- sessions_v2 horizons (0369) ---
+    # --- sessions_v2 horizons (0369/0405) ---
+    # 0405: use maturity_date() as single source of truth for session-exact horizons;
+    # the old manual walk-forward loop is eliminated here to prevent drift.
     try:
+        from trade_engine.market_calendar import maturity_date as _mat_date
         for horizon_label, min_sessions in _HORIZONS_SESSIONS:
             sessions_elapsed = trading_sessions_between(entry, today)
             if sessions_elapsed < min_sessions:
@@ -253,21 +255,7 @@ def _label_one_episode(
             if _already_labeled(conn, episode_id, horizon_label, "sessions_v2"):
                 continue
 
-            # Find the date when min_sessions had elapsed since entry
-            from datetime import timedelta as _td
-            # Walk forward from entry until we accumulate min_sessions
-            h_candidate = date.fromisoformat(entry)
-            sessions_counted = 0
-            for _ in range(min_sessions * 2 + 10):
-                h_candidate += _td(days=1)
-                if h_candidate.isoformat() > today:
-                    break
-                day_sessions = trading_sessions_between(
-                    entry, h_candidate.isoformat()
-                )
-                if day_sessions >= min_sessions:
-                    break
-            h_date_sv2 = h_candidate.isoformat()
+            h_date_sv2 = _mat_date(entry, "sessions_v2", horizon_label)
             if h_date_sv2 > today:
                 continue
 

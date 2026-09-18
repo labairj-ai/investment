@@ -42,7 +42,7 @@ def get_model() -> ChallengerModel | None:
         return None
 
 
-def score_for_observe(model_version: str, candidates: list, cohort_id: str = None) -> None:
+def score_for_observe(model_version: str, candidates: list, *, cohort_id: str) -> None:
     """Score candidates using an OBSERVE/PAPER_ACTIVE/SUSPENDED model; write to model_observations.
 
     Does not affect live rankings. Builds the shadow prediction log for:
@@ -53,8 +53,9 @@ def score_for_observe(model_version: str, candidates: list, cohort_id: str = Non
     0373: sets target_horizon_version from the model's training_horizon_version.
     0374: sets observation_phase from the model's current lifecycle_state.
     0378: sets baseline_predicted_alpha from model.mean_alpha; scored_at_date from today.
-    0387: cohort_id should be supplied by the caller (once per invocation) for stable grouping;
-          falls back to a fresh UUID if not provided.
+    0398: cohort_id is mandatory (keyword-only). Callers must generate one UUID per sweep
+          and pass it here so all models in one run share a single decision_cohort_id.
+    0406: cohort_id is no longer optional; omitting it raises TypeError at call time.
     """
     import agent_db
     from datetime import datetime, timezone
@@ -88,9 +89,7 @@ def score_for_observe(model_version: str, candidates: list, cohort_id: str = Non
                 from datetime import timezone as _tz, timedelta as _tdt
                 scored_at_date = datetime.now(_tz(offset=_tdt(hours=-5))).strftime("%Y-%m-%d")
 
-            # 0387: use caller-supplied cohort_id; generate UUID if not provided
-            import uuid as _uuid
-            decision_cohort_id = cohort_id if cohort_id is not None else str(_uuid.uuid4())
+            decision_cohort_id = cohort_id
 
             scored_pairs: list[tuple] = []
             for c in candidates:
@@ -172,10 +171,11 @@ def score_for_observe(model_version: str, candidates: list, cohort_id: str = Non
 
 
 def apply_challenger_adjustment(candidate: dict) -> tuple[int, dict]:
-    """Return (adjusted_composite, challenger_info) for a scored candidate.
+    """Return (adjusted_composite_rounded, challenger_info) for a scored candidate.
 
     challenger_info contains the scoring metadata (or {"active": False} if no model).
-    The returned composite is clamped to [0, 100].
+    The returned composite is rounded to int for display/storage; use
+    challenger_info["challenger_score_raw"] for ranking (0404).
     SUSPENDED models return 0.0 adjustment (0371) — shadow obs still written by score_for_observe().
     """
     import agent_db
@@ -191,13 +191,52 @@ def apply_challenger_adjustment(candidate: dict) -> tuple[int, dict]:
             ).fetchone()
             conn.close()
             if susp:
-                return candidate["_composite"], {"active": False, "suspended": True,
-                                                  "model_version": susp["model_version"]}
+                return (candidate["_composite"],
+                        {"active": False, "suspended": True,
+                         "model_version": susp["model_version"],
+                         "challenger_score_raw": float(candidate["_composite"])})
         except Exception:
             pass
-        return candidate["_composite"], {"active": False}
+        return candidate["_composite"], {"active": False,
+                                          "challenger_score_raw": float(candidate["_composite"])}
 
     info = model.score(candidate)
     adj  = info.get("learning_adjustment", 0.0)
-    new_composite = int(round(max(0.0, min(100.0, candidate["_composite"] + adj))))
+    raw  = float(candidate["_composite"]) + adj
+    info["challenger_score_raw"] = raw
+    new_composite = int(round(max(0.0, min(100.0, raw))))
     return new_composite, info
+
+
+def select_challenger_winner(scored: list) -> "dict | None":
+    """Return the single challenger-top-1 candidate using the canonical tie-breaking policy.
+
+    Tie-breaking: challenger_score_raw DESC → base _composite DESC → ticker ASC.
+    Uses raw floating-point challenger scores so rounding never changes the winner (0404).
+    Returns None if scored is empty.
+    """
+    if not scored:
+        return None
+    return sorted(
+        scored,
+        key=lambda c: (
+            -(c.get("_challenger_info", {}).get("challenger_score_raw")
+              or c.get("_composite_challenger", 0)),
+            -(c.get("_composite") or 0),
+            c.get("ticker", ""),
+        ),
+    )[0]
+
+
+def select_base_winner(scored: list) -> "dict | None":
+    """Return the single base-top-1 candidate using canonical tie-breaking.
+
+    Tie-breaking: _composite DESC → ticker ASC (0404).
+    Returns None if scored is empty.
+    """
+    if not scored:
+        return None
+    return sorted(
+        scored,
+        key=lambda c: (-(c.get("_composite") or 0), c.get("ticker", "")),
+    )[0]

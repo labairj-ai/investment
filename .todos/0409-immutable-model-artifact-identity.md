@@ -1,7 +1,7 @@
 # Immutable Model Artifact Identity
 
 - **ID:** 0409
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-18
 - **Priority:** normal
 - **Depends:** 0403

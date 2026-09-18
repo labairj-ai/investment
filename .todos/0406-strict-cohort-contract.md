@@ -1,7 +1,7 @@
 # Strict Cohort Contract
 
 - **ID:** 0406
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-18
 - **Priority:** high
 - **Depends:** 0398, 0399

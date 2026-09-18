@@ -178,10 +178,21 @@ def nth_trading_session_after(start_date: str, n: int) -> str:
 def nth_trading_session_before(end_date: str, n: int) -> str:
     """Return date X such that exactly n NYSE sessions fall in (X, end_date].
 
+    If end_date is not a trading day the result is identical to calling with the
+    immediately preceding trading day — so weekend/holiday API calls are not
+    one session more permissive than weekday calls (0405 off-by-one fix).
+
     Used to compute episode eligibility cutoffs: episodes captured on or before
     the returned date have had at least n sessions elapse since capture.
     """
     d = date.fromisoformat(end_date)
+    # Normalize: treat non-trading end_date as the last trading day before it.
+    # Without this, (Friday, Saturday] yields 0 sessions but the original code
+    # returned Friday — one session too permissive.
+    for _ in range(7):
+        if is_trading_day(d):
+            break
+        d -= timedelta(days=1)
     count = 0
     current = d
     for _ in range(n * 3 + 30):  # safety cap

@@ -31,7 +31,11 @@ from .learning.episode_capture import (
     mark_episode_selected,
     update_episode_challenger_info,
 )
-from .learning.challenger import apply_challenger_adjustment
+from .learning.challenger import (
+    apply_challenger_adjustment,
+    select_challenger_winner,
+    select_base_winner,
+)
 from .learning.book_simulator import record_virtual_fills
 
 # ---------------------------------------------------------------------------
@@ -444,6 +448,10 @@ def run_opportunity_hunter(ctx: AgentContext) -> list[Recommendation]:
     for c in scored:
         adj_composite, challenger_info = apply_challenger_adjustment(c)
         c["_composite_challenger"] = adj_composite
+        # 0404: store raw (unrounded) challenger score so selection uses float ranking,
+        # not rounded-int ranking — prevents ties from flipping the winner vs shadow obs
+        c["_composite_challenger_raw"] = challenger_info.get("challenger_score_raw",
+                                                              float(adj_composite))
         c["_challenger_info"]      = challenger_info
         ch_version = challenger_info.get("model_version")
         if c.get("_episode_id") and challenger_info.get("active"):
@@ -505,9 +513,9 @@ def run_opportunity_hunter(ctx: AgentContext) -> list[Recommendation]:
 
     # 0336/0340/0345: record decision_variant and virtual book fills if challenger is PAPER_ACTIVE
     if sel_ch_info.get("active"):
-        book_exp_champion = scored[0] if scored else None  # top-1 by base composite = experiment champion
-        ch_sorted_top = sorted(scored, key=lambda x: x.get("_composite_challenger", 0), reverse=True)
-        ch_top_for_book = ch_sorted_top[0] if ch_sorted_top else None
+        book_exp_champion = select_base_winner(scored)   # top-1 by base composite = experiment champion
+        # 0404: use canonical select_challenger_winner (raw float, deterministic tie-break)
+        ch_top_for_book = select_challenger_winner(scored)
         _insert_decision_variant(
             scored,
             selected,
@@ -802,8 +810,8 @@ def _insert_decision_variant(
     """
     try:
         # Sort by challenger-adjusted score to find challenger's top pick
-        ch_sorted = sorted(scored, key=lambda x: x.get("_composite_challenger", 0), reverse=True)
-        ch_top = challenger if challenger is not None else (ch_sorted[0] if ch_sorted else None)
+        # 0404: canonical selection — raw float scores, deterministic tie-break
+        ch_top = challenger if challenger is not None else select_challenger_winner(scored)
         if not ch_top:
             return
 

@@ -1,7 +1,7 @@
 # Session Calendar Single Source of Truth
 
 - **ID:** 0405
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-18
 - **Priority:** high
 - **Depends:** 0397

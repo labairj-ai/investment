@@ -1,7 +1,7 @@
 # Full Regression and Learning Integrity Audit
 
 - **ID:** 0410
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-18
 - **Priority:** normal
 - **Depends:** 0404, 0406, 0407

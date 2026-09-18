@@ -1,7 +1,7 @@
 # Dependence-Aware Decision Uncertainty
 
 - **ID:** 0408
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-18
 - **Priority:** normal
 - **Depends:** 0402

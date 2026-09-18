@@ -1,7 +1,7 @@
 # Canonical Challenger Decision Function
 
 - **ID:** 0404
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-18
 - **Priority:** high
 - **Depends:** none
