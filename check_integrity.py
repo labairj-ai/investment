@@ -236,6 +236,7 @@ def _check_candidate_coverage(conn) -> dict:
 
         # LEFT JOIN: every ledger row is considered; rows without matching observations
         # are the ones that scored zero or fewer than expected.
+        # 0425: PARTIAL status (actual < expected, no error) is also a coverage gap.
         problem_rows = conn.execute(
             """SELECT sr.cohort_id,
                       sr.model_version,
@@ -245,9 +246,9 @@ def _check_candidate_coverage(conn) -> dict:
                       sr.status,
                       sr.error
                FROM learning_sweep_runs sr
-               WHERE sr.status IN ('COMPLETED', 'FAILED', 'STARTED')
+               WHERE sr.status IN ('COMPLETED', 'FAILED', 'STARTED', 'PARTIAL')
                  AND (
-                     sr.status = 'FAILED'
+                     sr.status IN ('FAILED', 'PARTIAL')
                      OR COALESCE(sr.scored_candidates, 0) < sr.expected_candidates
                  )
                ORDER BY sr.started_at DESC
@@ -281,6 +282,96 @@ def _check_candidate_coverage(conn) -> dict:
         }
 
 
+def _check_ledger_observation_consistency(conn) -> dict:
+    """For each OBSERVE/PAPER_ACTIVE/SUSPENDED model, verify cohorts have COMPLETED ledger rows.
+
+    0429: PARTIAL/FAILED ledger rows are BLOCK — those cohorts' observations are excluded from
+    promotion/degradation gate calculations.  Pre-0424 cohorts with no ledger row at all are
+    treated as legacy (WARN, not BLOCK) until they age out of the evaluation window.
+    """
+    try:
+        tbl_exists = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='learning_sweep_runs'"
+        ).fetchone()
+        if not tbl_exists:
+            return {
+                "name": "ledger_observation_consistency",
+                "severity": "WARN",
+                "count": 0,
+                "detail": {"note": "learning_sweep_runs table not found — 0424 migration pending"},
+                "status": "WARN",
+            }
+
+        cohort_rows = conn.execute(
+            """SELECT DISTINCT mo.model_version, mo.decision_cohort_id
+               FROM model_observations mo
+               JOIN learning_models lm ON mo.model_version = lm.model_version
+               WHERE lm.lifecycle_state IN ('OBSERVE','PAPER_ACTIVE','SUSPENDED')
+                 AND mo.decision_cohort_id IS NOT NULL"""
+        ).fetchall()
+
+        if not cohort_rows:
+            return {
+                "name": "ledger_observation_consistency",
+                "severity": "ok",
+                "count": 0,
+                "detail": [],
+                "status": "ok",
+            }
+
+        partial_or_failed = []
+        no_ledger = []
+        for cr in cohort_rows:
+            mv = cr["model_version"]
+            cid = cr["decision_cohort_id"]
+            ledger = conn.execute(
+                """SELECT status FROM learning_sweep_runs
+                   WHERE cohort_id=? AND model_version=?
+                   ORDER BY id DESC LIMIT 1""",
+                (cid, mv),
+            ).fetchone()
+            if ledger is None:
+                no_ledger.append({"model_version": mv, "cohort_id": cid})
+            elif ledger["status"] in ("PARTIAL", "FAILED"):
+                partial_or_failed.append(
+                    {"model_version": mv, "cohort_id": cid, "status": ledger["status"]}
+                )
+
+        if partial_or_failed:
+            return {
+                "name": "ledger_observation_consistency",
+                "severity": "BLOCK",
+                "count": len(partial_or_failed),
+                "detail": partial_or_failed[:20],
+                "no_ledger_legacy_count": len(no_ledger),
+                "status": "BLOCK",
+            }
+        elif no_ledger:
+            return {
+                "name": "ledger_observation_consistency",
+                "severity": "WARN",
+                "count": len(no_ledger),
+                "detail": no_ledger[:20],
+                "status": "WARN",
+            }
+        else:
+            return {
+                "name": "ledger_observation_consistency",
+                "severity": "ok",
+                "count": 0,
+                "detail": [],
+                "status": "ok",
+            }
+    except Exception as exc:
+        return {
+            "name": "ledger_observation_consistency",
+            "severity": "WARN",
+            "count": -1,
+            "detail": {"error": str(exc)},
+            "status": "error",
+        }
+
+
 # ── Runner ────────────────────────────────────────────────────────────────────
 
 _CHECKS = [
@@ -292,6 +383,7 @@ _CHECKS = [
     _check_shadow_paper_disagreement,
     _check_null_cohort_obs,
     _check_candidate_coverage,
+    _check_ledger_observation_consistency,
 ]
 
 

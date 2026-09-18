@@ -44,6 +44,10 @@ EMBARGO_DAYS        = 91        # no overlap with 3m return window
 MAX_CV_FOLDS        = 10        # cap walk-forward iterations
 FEATURES            = ["q_score", "v_score", "pf_score", "c_score", "ec_score"]
 FEATURE_SCHEMA_VER  = "v1"
+# 0428: Increment this string ONLY when the training algorithm materially changes
+# (fold selection, embargo math, feature normalization, the Ridge fit itself).
+# Code changes unrelated to model output (dashboard, canary, tests) must NOT change this.
+TRAINING_ALGORITHM_VERSION = "ridge_v1"
 
 # 0411: Opportunity Hunter builds candidates with underscore-prefix keys (_q, _v, …).
 # This map lets predict_alpha() accept either form without touching opportunity_agent.py.
@@ -664,8 +668,53 @@ def _schema_hash() -> str:
     return hashlib.md5("|".join(FEATURES).encode()).hexdigest()[:12]
 
 
+def _summarize_row_subset(rows: list) -> dict:
+    """Minimal prospective summary for a subset of observation rows (0427)."""
+    n = len(rows)
+    if n < 3:
+        return {"n": n, "insufficient_data": True}
+    outcomes = [float(r["outcome_alpha_90d"]) for r in rows]
+    ch_scores = [float(r["challenger_score"]) for r in rows]
+    selected = [r for r in rows if r["would_select"]]
+    not_selected = [r for r in rows if not r["would_select"]]
+    sel_mean = (sum(float(r["outcome_alpha_90d"]) for r in selected) / len(selected)) if selected else None
+    not_mean = (sum(float(r["outcome_alpha_90d"]) for r in not_selected) / len(not_selected)) if not_selected else None
+    spread = (sel_mean - not_mean) if sel_mean is not None and not_mean is not None else None
+    q_size = max(1, n // 5)
+    sorted_ch = sorted(zip(ch_scores, outcomes), key=lambda x: x[0])
+    ranking_spread = (sum(o for _, o in sorted_ch[-q_size:]) / q_size
+                      - sum(o for _, o in sorted_ch[:q_size]) / q_size)
+    return {
+        "n": n,
+        "mean_alpha": round(sum(outcomes) / n, 6),
+        "selection_alpha_spread": round(spread, 6) if spread is not None else None,
+        "ranking_spread": round(ranking_spread, 6),
+    }
+
+
+def _build_stratified_metrics(rows: list, eligible_ids: set, ineligible_ids: set) -> dict:
+    """Stratified prospective metrics by base_recommendation_eligible (0427).
+
+    eligible_ids: cohort_ids where base_recommendation_eligible=1 (base would have acted)
+    ineligible_ids: cohort_ids where base_recommendation_eligible=0 (base would not have acted)
+    """
+    if not eligible_ids and not ineligible_ids:
+        return {}
+    known_rows = [r for r in rows if r["decision_cohort_id"] is not None]
+    eligible_rows = [r for r in known_rows if r["decision_cohort_id"] in eligible_ids]
+    ineligible_rows = [r for r in known_rows if r["decision_cohort_id"] in ineligible_ids]
+    e_ids = {r["decision_cohort_id"] for r in eligible_rows}
+    i_ids = {r["decision_cohort_id"] for r in ineligible_rows}
+    return {
+        "eligible_sweeps": _summarize_row_subset(eligible_rows),
+        "ineligible_sweeps": _summarize_row_subset(ineligible_rows),
+        "eligible_cohort_count": len(e_ids),
+        "ineligible_cohort_count": len(i_ids),
+    }
+
+
 def _training_config_hash(horizon_version: str, ridge_alpha: float) -> str:
-    """0416: Hash all model-affecting constants so different configs produce different keys."""
+    """0416/0428: Hash all model-affecting constants so different configs produce different keys."""
     parts = [
         f"features={','.join(FEATURES)}",
         f"ridge_alpha={ridge_alpha}",
@@ -676,6 +725,7 @@ def _training_config_hash(horizon_version: str, ridge_alpha: float) -> str:
         f"horizon_version={horizon_version}",
         f"horizon_label={HORIZON}",
         f"feature_schema_ver={FEATURE_SCHEMA_VER}",
+        f"algorithm_version={TRAINING_ALGORITHM_VERSION}",
     ]
     return hashlib.md5("|".join(parts).encode()).hexdigest()[:12]
 
@@ -825,8 +875,8 @@ def _check_promotion_gates(model_version: str, target_state: str) -> dict:
             "minimum": OBSERVE_MIN_FRESH_EPISODES,
             "pass": fresh_episodes >= OBSERVE_MIN_FRESH_EPISODES,
         }
-        # 0360/0365: prospective evidence gates — must come from model_observations
-        pm = compute_prospective_metrics(model_version, conn)
+        # 0360/0365/0429: prospective evidence gates — filter out PARTIAL/FAILED ledger cohorts
+        pm = compute_prospective_metrics(model_version, conn, filter_partial_ledger=True)
         prospective_n = int(pm.get("prospective_n", 0))
         prospective_selected_n = int(pm.get("prospective_selected_n", 0))
         ranking_spread = pm.get("prospective_ranking_spread")
@@ -1040,7 +1090,7 @@ def promote(
     return {"promoted": True, "new_state": target_state, "gates": gate_result.get("gates", {})}
 
 
-def compute_prospective_metrics(model_version: str, conn) -> dict:
+def compute_prospective_metrics(model_version: str, conn, *, filter_partial_ledger: bool = False) -> dict:
     """Compute out-of-sample ranking metrics from labeled model_observations (0365).
 
     Returns a dict with selection_alpha_spread, prediction_mae, baseline_mae,
@@ -1052,6 +1102,9 @@ def compute_prospective_metrics(model_version: str, conn) -> dict:
     0375: adds base_ranking_spread, challenger_ranking_spread, incremental_ranking_spread,
           selection_alpha_delta.
     0378: uses per-row baseline_predicted_alpha for baseline_mae; tracks n_cohort_days.
+    0427: adds stratified_metrics — eligible vs ineligible sweeps by base_recommendation_eligible.
+    0429: filter_partial_ledger=True excludes cohorts with PARTIAL/FAILED ledger status from all
+          gate-relevant counts; pre-0424 cohorts with no ledger row are kept (legacy treatment).
     """
     import math
 
@@ -1084,8 +1137,48 @@ def compute_prospective_metrics(model_version: str, conn) -> dict:
                  AND target_horizon_version=?""",
             (model_version, thv),
         ).fetchall()
+    # 0429: identify cohorts with non-COMPLETED ledger status (PARTIAL/FAILED/STARTED)
+    _ineligible_ledger_ids: set = set()
+    _ineligible_cohorts_ledger: int = 0
+    try:
+        _bad_ledger = conn.execute(
+            """SELECT DISTINCT cohort_id FROM learning_sweep_runs
+               WHERE model_version=? AND status IN ('PARTIAL','FAILED','STARTED')""",
+            (model_version,),
+        ).fetchall()
+        _ineligible_ledger_ids = {r["cohort_id"] for r in _bad_ledger}
+        _ineligible_cohorts_ledger = len(_ineligible_ledger_ids)
+    except Exception:
+        pass  # table may not exist on old DBs
+
+    # 0427: build cohort eligibility map for stratified metrics
+    _eligible_cohort_ids: set = set()
+    _ineligible_eligibility_ids: set = set()
+    try:
+        _led_rows = conn.execute(
+            """SELECT cohort_id, base_recommendation_eligible FROM learning_sweep_runs
+               WHERE model_version=? AND status='COMPLETED'
+                 AND base_recommendation_eligible IS NOT NULL""",
+            (model_version,),
+        ).fetchall()
+        for _lr in _led_rows:
+            if _lr["base_recommendation_eligible"] == 1:
+                _eligible_cohort_ids.add(_lr["cohort_id"])
+            else:
+                _ineligible_eligibility_ids.add(_lr["cohort_id"])
+    except Exception:
+        pass
+
+    # 0429: exclude PARTIAL/FAILED cohorts when computing gate-relevant metrics
+    if filter_partial_ledger and _ineligible_ledger_ids:
+        rows = [r for r in rows if r["decision_cohort_id"] not in _ineligible_ledger_ids]
+
     if len(rows) < 5:
-        return {}
+        return {
+            "ineligible_cohorts_ledger": _ineligible_cohorts_ledger,
+            "stratified_metrics": {},
+            "population_label": "complete_ledger" if filter_partial_ledger else "all",
+        }
 
     outcomes = [float(r["outcome_alpha_90d"]) for r in rows]
     ch_scores = [float(r["challenger_score"]) for r in rows]
@@ -1324,6 +1417,12 @@ def compute_prospective_metrics(model_version: str, conn) -> dict:
         "selection_delta_ci_low_short_block": selection_delta_ci_low_short_block,
         "selection_delta_ci_high_short_block": selection_delta_ci_high_short_block,
         "selection_delta_evidence_short_block": selection_delta_evidence_short_block,
+        # 0427: stratified metrics by base_recommendation_eligible
+        "stratified_metrics": _build_stratified_metrics(
+            rows, _eligible_cohort_ids, _ineligible_eligibility_ids),
+        # 0429: ineligible ledger cohort count; population_label signals filtering state
+        "ineligible_cohorts_ledger": _ineligible_cohorts_ledger,
+        "population_label": "complete_ledger" if filter_partial_ledger else "all",
     }
 
 
@@ -1854,8 +1953,8 @@ def learning_readiness_report(conn, model_version: str = None) -> dict:
     health = compute_data_health(conn, target_horizon_version=thv)
     eligible_episodes = health.get("eligible_episodes", 0)
 
-    # Prospective metrics
-    pm = compute_prospective_metrics(model_version, conn)
+    # Prospective metrics — filter PARTIAL/FAILED ledger cohorts consistent with promotion gates
+    pm = compute_prospective_metrics(model_version, conn, filter_partial_ledger=True)
     mature_obs = int(pm.get("prospective_n", 0))
     cohort_days = int(pm.get("n_cohort_days", 0))
 
@@ -1934,6 +2033,11 @@ def learning_readiness_report(conn, model_version: str = None) -> dict:
         "model_id": model_id,
         "training_config_hash": training_config_hash,
         "code_commit_sha": code_commit_sha_val,
+        # 0427: stratified metrics by base_recommendation_eligible
+        "stratified_metrics": pm.get("stratified_metrics", {}),
+        "population_label": pm.get("population_label", "all"),
+        # 0429: ineligible ledger cohort count (PARTIAL/FAILED sweeps excluded from gates)
+        "ineligible_cohorts_ledger": int(pm.get("ineligible_cohorts_ledger", 0)),
     }
 
 

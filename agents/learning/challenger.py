@@ -48,6 +48,7 @@ def score_for_observe(
     *,
     cohort_id: str,
     base_recommendation_eligible: bool | None = None,
+    agent_run_id: str | None = None,
 ) -> None:
     """Score candidates using an OBSERVE/PAPER_ACTIVE/SUSPENDED model; write to model_observations.
 
@@ -65,27 +66,38 @@ def score_for_observe(
     0419: base_recommendation_eligible records whether the base strategy would have acted
           on this sweep (top composite >= threshold). Stored in sweep ledger for population
           analysis — does NOT gate shadow scoring.
+    0424: agent_run_id ties the ledger row back to the triggering OH invocation.
+          Ledger INSERT failure is now fail-closed: raises so the caller can log and abort
+          shadow scoring. The base recommendation path is unaffected (caller catches).
+    0425: scored_candidates is set from actual COUNT(*) after inserts, not attempted-insert
+          counter. status=PARTIAL when actual < expected (no error). completed_at is full ISO.
     """
     import agent_db
     from datetime import datetime, timezone
 
     conn = agent_db._connect()
-    # 0418/0419: write sweep ledger row BEFORE scoring so zero-row failures are detectable
+    # 0418/0419/0424: write sweep ledger row BEFORE scoring — fail-closed on failure
     now = datetime.now(timezone.utc).isoformat()
     eligible_int = (1 if base_recommendation_eligible else 0) if base_recommendation_eligible is not None else None
     sweep_row_id: int | None = None
     try:
         cur = conn.execute(
             """INSERT INTO learning_sweep_runs
-               (cohort_id, model_version, phase, expected_candidates,
+               (cohort_id, model_version, agent_run_id, phase, expected_candidates,
                 scored_candidates, base_recommendation_eligible, started_at, status)
-               VALUES (?,?,?,?,0,?,?,'STARTED')""",
-            (cohort_id, model_version, None, len(candidates), eligible_int, now),
+               VALUES (?,?,?,?,?,0,?,?,'STARTED')""",
+            (cohort_id, model_version, agent_run_id, None, len(candidates), eligible_int, now),
         )
         sweep_row_id = cur.lastrowid
         conn.commit()
-    except Exception:
-        pass  # ledger write failure must not block scoring
+    except Exception as _ledger_err:
+        conn.close()
+        # 0424: ledger write failure aborts shadow scoring — learning observations must
+        # not exist without a corresponding STARTED ledger row.
+        raise RuntimeError(
+            f"[challenger] sweep ledger INSERT failed for {model_version} cohort={cohort_id}: "
+            f"{_ledger_err}"
+        ) from _ledger_err
 
     try:
         row = conn.execute(
@@ -221,14 +233,27 @@ def score_for_observe(
             )
             conn.commit()
 
-        # 0418: mark sweep as completed
+        # 0425: authoritative scored_candidates from actual persisted rows (not attempted inserts)
+        # INSERT OR IGNORE can silently skip duplicate episode_ids; COUNT(*) is authoritative.
+        actual_count: int = n_written
+        try:
+            actual_count = conn.execute(
+                "SELECT COUNT(*) FROM model_observations WHERE model_version=? AND decision_cohort_id=?",
+                (model_version, cohort_id),
+            ).fetchone()[0]
+        except Exception:
+            pass
+
+        # 0418/0425: mark sweep COMPLETED or PARTIAL; use full ISO timestamp for completed_at
         if sweep_row_id is not None:
             try:
+                now_complete = datetime.now(timezone.utc).isoformat()
+                final_status = "COMPLETED" if actual_count >= len(candidates) else "PARTIAL"
                 conn.execute(
                     """UPDATE learning_sweep_runs
-                       SET scored_candidates=?, completed_at=?, status='COMPLETED'
+                       SET scored_candidates=?, completed_at=?, status=?
                        WHERE id=?""",
-                    (n_written, scored_at_date, sweep_row_id),
+                    (actual_count, now_complete, final_status, sweep_row_id),
                 )
                 conn.commit()
             except Exception:
@@ -242,12 +267,13 @@ def score_for_observe(
             model_version, cohort_id, e, exc_info=True,
         )
         print(f"[challenger] ERROR: score_for_observe failed ({model_version}): {e}")
-        # 0418: record failure in sweep ledger
+        # 0418/0425: record failure in sweep ledger with full ISO timestamp
         if sweep_row_id is not None:
             try:
+                now_fail = datetime.now(timezone.utc).isoformat()
                 conn.execute(
                     "UPDATE learning_sweep_runs SET status='FAILED',error=?,completed_at=? WHERE id=?",
-                    (str(e)[:500], now, sweep_row_id),
+                    (str(e)[:500], now_fail, sweep_row_id),
                 )
                 conn.commit()
             except Exception:
