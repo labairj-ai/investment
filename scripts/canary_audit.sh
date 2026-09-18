@@ -87,6 +87,39 @@ else
     echo "  SKIP  decision_episodes check (agent_run_id not set — pre-0424 sweep)"
 fi
 
+# 3b. decision_episodes count for agent_run_id must equal expected_candidates (0434)
+if [ -n "$AGENT_RUN_ID" ]; then
+    N_EPISODES=$(sqlite3 "$DB" \
+        "SELECT COUNT(*) FROM decision_episodes WHERE run_id='$AGENT_RUN_ID'" \
+        2>/dev/null)
+    if [ "$N_EPISODES" = "$EXP_CANDS" ]; then
+        echo "  PASS  decision_episodes count matches expected ($N_EPISODES = $EXP_CANDS)"
+    else
+        echo "  FAIL  decision_episodes count=$N_EPISODES vs expected=$EXP_CANDS for run_id=$AGENT_RUN_ID"
+        FAIL=1
+    fi
+else
+    echo "  SKIP  decision_episodes count check (agent_run_id not set)"
+fi
+
+# 3c. Every model_observations episode in this cohort must belong to the anchored agent_run_id (0434)
+if [ -n "$AGENT_RUN_ID" ]; then
+    N_ORPHAN_OBS=$(sqlite3 "$DB" \
+        "SELECT COUNT(*) FROM model_observations mo
+         LEFT JOIN decision_episodes de ON mo.episode_id=de.episode_id AND de.run_id='$AGENT_RUN_ID'
+         WHERE mo.decision_cohort_id='$COHORT_ID' AND mo.model_version='$MV'
+           AND de.episode_id IS NULL" \
+        2>/dev/null)
+    if [ "$N_ORPHAN_OBS" = "0" ]; then
+        echo "  PASS  all cohort observations belong to anchored agent_run_id"
+    else
+        echo "  FAIL  $N_ORPHAN_OBS observation(s) in cohort do not link to run_id=$AGENT_RUN_ID"
+        FAIL=1
+    fi
+else
+    echo "  SKIP  row-level lineage check (agent_run_id not set)"
+fi
+
 # 4. Exactly one would_select=1 per cohort
 N_CH=$(sqlite3 "$DB" \
     "SELECT COUNT(*) FROM model_observations WHERE decision_cohort_id='$COHORT_ID' AND model_version='$MV' AND would_select=1" \

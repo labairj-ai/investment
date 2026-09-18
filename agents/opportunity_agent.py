@@ -499,7 +499,7 @@ def run_opportunity_hunter(ctx: AgentContext) -> list[Recommendation]:
                 score_for_observe(
                     _om["model_version"], scored, cohort_id=_sweep_cohort_id,
                     base_recommendation_eligible=_base_eligible,
-                    agent_run_id=str(ctx.run_id) if ctx.run_id is not None else None,
+                    agent_run_id=str(ctx.run_id) if ctx.run_id is not None else str(_uuid.uuid4()),
                 )
             except Exception as _sfe:
                 import logging as _log

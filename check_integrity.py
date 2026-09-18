@@ -249,7 +249,7 @@ def _check_candidate_coverage(conn) -> dict:
                WHERE sr.status IN ('COMPLETED', 'FAILED', 'STARTED', 'PARTIAL')
                  AND (
                      sr.status IN ('FAILED', 'PARTIAL')
-                     OR COALESCE(sr.scored_candidates, 0) < sr.expected_candidates
+                     OR COALESCE(sr.scored_candidates, 0) != sr.expected_candidates
                  )
                ORDER BY sr.started_at DESC
                LIMIT 50"""
