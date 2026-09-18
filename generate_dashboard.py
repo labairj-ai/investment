@@ -3145,6 +3145,13 @@ def build_dashboard(portfolio, layers, holdings):
       <div id="learning-risk-audit" style="color:#718096;font-size:13px;">Loading…</div>
     </div>
 
+    <!-- Learning Readiness Report (0385) -->
+    <div style="background:#fff;border-radius:10px;padding:18px 22px;box-shadow:0 1px 4px rgba(0,0,0,.07);">
+      <h3 style="margin:0 0 4px;font-size:14px;font-weight:700;color:#2d3748;">Learning Loop Readiness</h3>
+      <p style="margin:0 0 12px;font-size:12px;color:#718096;">Consolidated view: lifecycle state, promotion gate status, data health, and evidence maturity timeline.</p>
+      <div id="learning-readiness-card" style="color:#718096;font-size:13px;">Loading…</div>
+    </div>
+
     <!-- Champion vs Challenger Portfolio Books -->
     <div style="background:#fff;border-radius:10px;padding:18px 22px;box-shadow:0 1px 4px rgba(0,0,0,.07);">
       <h3 style="margin:0 0 4px;font-size:14px;font-weight:700;color:#2d3748;">Champion vs Challenger Portfolio</h3>
@@ -9007,6 +9014,47 @@ function loadLearningPanel() {{
   }}).catch(function(e) {{
     if (overviewEl) overviewEl.innerHTML = '<span style="color:#fc8181;">Failed to load: ' + e.message + '</span>';
   }});
+
+  // Learning Readiness card (0385)
+  var readinessEl = document.getElementById('learning-readiness-card');
+  if (readinessEl) {{
+    fetch('/api/learning/readiness').then(function(r) {{ return r.json(); }}).then(function(d) {{
+      if (!d.ok) {{ readinessEl.innerHTML = '<span style="color:#fc8181;">Error: ' + (d.error||'unknown') + '</span>'; return; }}
+      var rp = d.report || {{}};
+      var lc = rp.current_lifecycle || '—';
+      var lcColors = {{TRAINED:'#d69e2e',OBSERVE:'#3182ce',PAPER_ACTIVE:'#38a169',SUSPENDED:'#e53e3e',RETIRED:'#a0aec0'}};
+      var lcColor = lcColors[lc] || '#4a5568';
+      var gatesHtml = '';
+      var gMap = rp.promotion_gates || {{}};
+      var gResColors = {{PASS:'#38a169',FAIL:'#e53e3e',NOT_EVALUABLE:'#d69e2e'}};
+      Object.keys(gMap).forEach(function(gk) {{
+        var g = gMap[gk];
+        var res = g.result || (g.pass ? 'PASS' : 'FAIL');
+        var col = gResColors[res] || '#a0aec0';
+        gatesHtml += '<span style="display:inline-block;margin:2px 3px;padding:2px 7px;background:' + col + ';color:#fff;border-radius:4px;font-size:10px;font-weight:700;">' +
+          gk.replace(/_/g,' ') + ': ' + res + '</span>';
+      }});
+      var dhColor = {{ok:'#38a169',warn:'#d69e2e',block:'#e53e3e'}}[rp.data_health] || '#a0aec0';
+      var incSpread = rp.incremental_ranking_spread;
+      var incStr = incSpread !== null && incSpread !== undefined ? ((incSpread*100).toFixed(2)+'%') : '—';
+      var incColor = incSpread > 0 ? '#38a169' : (incSpread < 0 ? '#e53e3e' : '#4a5568');
+      readinessEl.innerHTML =
+        '<div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:12px;">' +
+        '<div><div style="font-size:10px;color:#718096;text-transform:uppercase;">Horizon</div><div style="font-size:13px;font-weight:700;color:#2d3748;">' + (rp.training_horizon_version||rp.canonical_horizon||'—') + '</div></div>' +
+        '<div><div style="font-size:10px;color:#718096;text-transform:uppercase;">Lifecycle</div><div style="font-size:13px;font-weight:700;color:' + lcColor + ';">' + lc + '</div></div>' +
+        '<div><div style="font-size:10px;color:#718096;text-transform:uppercase;">Eligible Episodes</div><div style="font-size:13px;font-weight:700;color:#2d3748;">' + (rp.eligible_episodes||0) + '</div></div>' +
+        '<div><div style="font-size:10px;color:#718096;text-transform:uppercase;">Mature Obs</div><div style="font-size:13px;font-weight:700;color:#2d3748;">' + (rp.mature_observations||0) + '</div></div>' +
+        '<div><div style="font-size:10px;color:#718096;text-transform:uppercase;">Cohort Days</div><div style="font-size:13px;font-weight:700;color:#2d3748;">' + (rp.independent_cohort_days||0) + '</div></div>' +
+        '<div><div style="font-size:10px;color:#718096;text-transform:uppercase;">Incremental Spread</div><div style="font-size:13px;font-weight:700;color:' + incColor + ';">' + incStr + '</div></div>' +
+        '<div><div style="font-size:10px;color:#718096;text-transform:uppercase;">Data Health</div><div style="font-size:13px;font-weight:700;color:' + dhColor + ';">' + (rp.data_health||'—').toUpperCase() + '</div></div>' +
+        (rp.next_maturity_date ? '<div><div style="font-size:10px;color:#718096;text-transform:uppercase;">Next Maturity</div><div style="font-size:13px;font-weight:700;color:#4a5568;">' + rp.next_maturity_date + '</div></div>' : '') +
+        '</div>' +
+        (gatesHtml ? '<div style="margin-top:6px;"><div style="font-size:10px;color:#718096;text-transform:uppercase;margin-bottom:4px;">Promotion Gates</div>' + gatesHtml + '</div>' : '') +
+        (rp.promotion_failed && rp.promotion_failed.length ? '<div style="margin-top:8px;font-size:11px;color:#e53e3e;font-weight:600;">Blockers: ' + rp.promotion_failed.join(', ') + '</div>' : '');
+    }}).catch(function(e) {{
+      if (readinessEl) readinessEl.innerHTML = '<span style="color:#fc8181;">Failed to load: ' + e.message + '</span>';
+    }});
+  }}
 
   // Champion / Challenger portfolio books (0340)
   if (ccEl) {{

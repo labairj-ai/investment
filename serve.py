@@ -1957,6 +1957,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             _h = parse_qs(parsed.query).get("horizon", ["3m"])[0]
             _horizon = _h if _h in _valid_horizons else "3m"
             self._handle_learning_stats(_horizon)
+        elif parsed.path == "/api/learning/readiness":
+            self._handle_learning_readiness()
         elif parsed.path == "/api/learning/champion-challenger":
             self._handle_champion_challenger()
         # ── Alpaca paper account endpoints ────────────────────────────────────
@@ -5885,6 +5887,33 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._send_json({"ok": False, "error": str(e), "halt_reason": "NOT_TRADING_READY"}, 503)
         except Exception as e:
             self._send_json({"ok": False, "error": str(e)}, 500)
+        finally:
+            if conn is not None:
+                conn.close()
+
+    # ── Learning Readiness Report (0385) ─────────────────────────────────────
+
+    def _handle_learning_readiness(self):
+        """GET /api/learning/readiness — consolidated learning loop readiness report (0385)."""
+        import agent_db
+        conn = None
+        try:
+            from agents.learning.calibration import learning_readiness_report
+            conn = agent_db._connect()
+            report = learning_readiness_report(conn)
+            body = json.dumps({"ok": True, "report": report}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except Exception as e:
+            body = json.dumps({"ok": False, "error": str(e)}).encode()
+            self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
         finally:
             if conn is not None:
                 conn.close()

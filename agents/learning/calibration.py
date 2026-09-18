@@ -66,6 +66,16 @@ OBSERVE_MIN_FRESH_EPISODES        = 5   # 0355: minimum new decision_episodes si
 OBSERVE_MIN_MATURE_OBS            = 5   # 0360: minimum model_observations with outcome labels
 OBSERVE_MIN_COHORT_DAYS           = 10  # 0378: minimum distinct market days for cohort independence
 DEGRADATION_MIN_NEW_OUTCOMES      = 15  # 0377: new PAPER_ACTIVE outcomes required between snapshots
+DEGRADATION_MIN_NEW_COHORT_DAYS   = 3   # 0384: distinct scored_at_date values between snapshots
+
+# Canonical training target — the horizon the scheduled trainer uses (0379)
+LEARNING_TARGET_HORIZON = "sessions_v2"
+LEARNING_TARGET_PERIOD  = "3m"
+
+# Gate result states (0381)
+GATE_PASS          = "PASS"
+GATE_FAIL          = "FAIL"
+GATE_NOT_EVALUABLE = "NOT_EVALUABLE"
 
 
 class DataHealthBlockError(Exception):
@@ -589,14 +599,16 @@ def _schema_hash() -> str:
     return hashlib.md5("|".join(FEATURES).encode()).hexdigest()[:12]
 
 
-def train_and_save() -> dict:
+def train_and_save(horizon_version: str = LEARNING_TARGET_HORIZON) -> dict:
     """Train a new model (lifecycle_state=TRAINED). Promotion requires separate promote() call.
 
+    horizon_version: the horizon label version to train on (0379). Defaults to
+        LEARNING_TARGET_HORIZON so the scheduled trainer uses the configured target.
     Raises DataHealthBlockError when compute_data_health() returns overall='block'. (0376)
     """
     conn = agent_db._connect()
     try:
-        health = compute_data_health(conn)
+        health = compute_data_health(conn, target_horizon_version=horizon_version)
     finally:
         conn.close()
     if health["overall"] == "block":
@@ -606,7 +618,7 @@ def train_and_save() -> dict:
             f"Data health check blocked training: {blocking}"
         )
 
-    model = ChallengerModel.train()
+    model = ChallengerModel.train(horizon_version=horizon_version)
     if model is None:
         return {
             "trained": False,
@@ -754,19 +766,45 @@ def _check_promotion_gates(model_version: str, target_state: str) -> dict:
             "expected": "POSITIVE or INCONCLUSIVE",
             "pass": obs_edge not in ("NEGATIVE", "") and obs_edge is not None,
         }
-        # 0375: challenger must not degrade base-strategy ranking
-        # Pass when incremental_ranking_spread is None (no base_score data — can't evaluate)
+        # 0375/0381: challenger must not degrade base-strategy ranking
+        # NOT_EVALUABLE when incremental_spread is None (no base_score data)
+        if incremental_spread is None:
+            _ir = GATE_NOT_EVALUABLE
+        elif incremental_spread >= 0:
+            _ir = GATE_PASS
+        else:
+            _ir = GATE_FAIL
         gates["incremental_ranking_non_negative"] = {
             "value": incremental_spread,
-            "expected": ">= 0 (or unevaluable)",
-            "pass": incremental_spread is None or incremental_spread >= 0,
+            "expected": ">= 0",
+            "result": _ir,
+            "pass": _ir == GATE_PASS,
         }
-        # 0378: require cohort day diversity when scored_at_date is populated
-        # Pass when n_cohort_days == 0 (old rows without scored_at_date — can't evaluate)
+        # 0378/0381: require cohort day diversity
+        # NOT_EVALUABLE when n_cohort_days == 0 (no scored_at_date populated)
+        if n_cohort_days == 0:
+            _cd = GATE_NOT_EVALUABLE
+        elif n_cohort_days >= OBSERVE_MIN_COHORT_DAYS:
+            _cd = GATE_PASS
+        else:
+            _cd = GATE_FAIL
         gates["cohort_day_diversity"] = {
             "value": n_cohort_days,
             "minimum": OBSERVE_MIN_COHORT_DAYS,
-            "pass": n_cohort_days == 0 or n_cohort_days >= OBSERVE_MIN_COHORT_DAYS,
+            "result": _cd,
+            "pass": _cd == GATE_PASS,
+        }
+
+        # 0380: data health must not be in block state for the model's training horizon
+        thv_for_health = (row["training_horizon_version"]
+                          if "training_horizon_version" in row.keys() else None) or "calendar_v1"
+        health = compute_data_health(conn, target_horizon_version=thv_for_health)
+        _dh = GATE_PASS if health["overall"] != "block" else GATE_FAIL
+        gates["data_health_block"] = {
+            "value": health["overall"],
+            "expected": "ok or warn",
+            "result": _dh,
+            "pass": _dh == GATE_PASS,
         }
 
     conn.close()
@@ -931,7 +969,7 @@ def compute_prospective_metrics(model_version: str, conn) -> dict:
     rows = conn.execute(
         """SELECT challenger_score, base_score, predicted_alpha, would_select,
                   outcome_alpha_90d, baseline_predicted_alpha, scored_at_date,
-                  prediction_timestamp
+                  prediction_timestamp, decision_cohort_id, base_would_select
            FROM model_observations
            WHERE model_version=? AND outcome_alpha_90d IS NOT NULL
              AND (target_horizon_version=? OR target_horizon_version IS NULL)""",
@@ -993,6 +1031,33 @@ def compute_prospective_metrics(model_version: str, conn) -> dict:
         if sel_mean is not None:
             selection_alpha_delta = sel_mean - base_top_mean
 
+    # 0382: cohort-matched selection_alpha_delta
+    # For each decision_cohort_id, compute (challenger_picked_mean - base_picked_mean)
+    # and average across cohorts where the picks diverge.
+    selection_alpha_delta_legacy = selection_alpha_delta  # preserve global-quintile value
+    n_divergent_cohorts = 0
+    rows_with_cohort = [r for r in rows if r["decision_cohort_id"] is not None]
+    if rows_with_cohort:
+        from collections import defaultdict
+        cohort_map: dict = defaultdict(list)
+        for r in rows_with_cohort:
+            cohort_map[r["decision_cohort_id"]].append(r)
+        cohort_deltas = []
+        for cohort_rows in cohort_map.values():
+            ch_picked = [float(r["outcome_alpha_90d"]) for r in cohort_rows if r["would_select"]]
+            base_picked = [float(r["outcome_alpha_90d"]) for r in cohort_rows
+                           if r["base_would_select"] is not None and r["base_would_select"]]
+            if not ch_picked or not base_picked:
+                continue
+            ch_mean = sum(ch_picked) / len(ch_picked)
+            base_mean = sum(base_picked) / len(base_picked)
+            # Count as divergent if different mean outcomes (crude proxy for different picks)
+            if ch_picked != base_picked:
+                n_divergent_cohorts += 1
+            cohort_deltas.append(ch_mean - base_mean)
+        if cohort_deltas:
+            selection_alpha_delta = sum(cohort_deltas) / len(cohort_deltas)
+
     # Pearson correlation (challenger_score vs outcome)
     corr: float | None = None
     if n >= 2:
@@ -1051,17 +1116,25 @@ def compute_prospective_metrics(model_version: str, conn) -> dict:
         "challenger_ranking_spread": round(challenger_ranking_spread, 6),
         "incremental_ranking_spread": round(incremental_ranking_spread, 6) if incremental_ranking_spread is not None else None,
         "selection_alpha_delta": round(selection_alpha_delta, 6) if selection_alpha_delta is not None else None,
+        "selection_alpha_delta_legacy": round(selection_alpha_delta_legacy, 6) if selection_alpha_delta_legacy is not None else None,
         # 0378: cohort independence metrics
         "n_cohort_days": n_cohort_days,
         "effective_n": effective_n,
+        # 0382: decision cohort evaluation
+        "n_divergent_cohorts": n_divergent_cohorts,
     }
 
 
-def compute_data_health(conn) -> dict:
-    """Compute learning dataset health metrics for training/promotion decisions (0370).
+def compute_data_health(conn, target_horizon_version: str = None) -> dict:
+    """Compute learning dataset health metrics for training/promotion decisions (0370/0380).
 
-    Returns {"overall": "ok"|"warn"|"block", "metrics": {...}, "total_episodes": int}.
+    target_horizon_version: when specified, only this version's coverage is a hard gate;
+        other versions are informational only (block downgraded to warn). (0380)
+
+    Returns {"overall": "ok"|"warn"|"block", "metrics": {...}, "total_episodes": int,
+             "eligible_episodes": int}.
     """
+    import time as _time
     findings: dict = {}
 
     total_episodes = 0
@@ -1070,17 +1143,31 @@ def compute_data_health(conn) -> dict:
     except Exception:
         pass
 
-    # Outcome coverage (3m)
+    # 0380: eligible episodes = those old enough to have matured 3m outcomes (>= 91 calendar days)
+    eligible_episodes = 0
+    eligible_cutoff_ts = _time.time() - 91 * 86400
+    try:
+        eligible_episodes = conn.execute(
+            "SELECT COUNT(*) FROM decision_episodes WHERE captured_at <= ?",
+            (eligible_cutoff_ts,),
+        ).fetchone()[0]
+    except Exception:
+        pass
+
+    # Outcome coverage (3m) — 0380: denominator = eligible episodes; use DISTINCT to avoid double-count
     try:
         labeled_3m = conn.execute(
-            """SELECT COUNT(*) FROM episode_outcomes
-               WHERE horizon='3m'"""
+            """SELECT COUNT(DISTINCT eo.episode_id) FROM episode_outcomes eo
+               JOIN decision_episodes de ON de.episode_id = eo.episode_id
+               WHERE eo.horizon='3m' AND de.captured_at <= ?""",
+            (eligible_cutoff_ts,),
         ).fetchone()[0]
-        coverage = labeled_3m / total_episodes if total_episodes else 0.0
-        findings["outcome_coverage_3m_pct"] = {
-            "value": round(coverage, 3),
-            "status": "ok" if coverage >= 0.50 else ("warn" if coverage >= 0.25 else "block"),
-        }
+        coverage = labeled_3m / eligible_episodes if eligible_episodes else 0.0
+        if eligible_episodes == 0:
+            cov_status = "warn"  # can't evaluate — no mature episodes yet
+        else:
+            cov_status = "ok" if coverage >= 0.50 else ("warn" if coverage >= 0.25 else "block")
+        findings["outcome_coverage_3m_pct"] = {"value": round(coverage, 3), "status": cov_status}
     except Exception:
         findings["outcome_coverage_3m_pct"] = {"value": None, "status": "warn"}
 
@@ -1135,20 +1222,36 @@ def compute_data_health(conn) -> dict:
     except Exception:
         pass
 
-    # 0376: per-version outcome coverage breakdown
+    # 0376/0380: per-version outcome coverage (denominator = eligible episodes for that version)
     try:
         for ver in ("calendar_v1", "sessions_v2"):
             labeled_ver = conn.execute(
-                "SELECT COUNT(*) FROM episode_outcomes WHERE horizon='3m' AND horizon_definition_version=?",
-                (ver,),
+                """SELECT COUNT(DISTINCT eo.episode_id) FROM episode_outcomes eo
+                   JOIN decision_episodes de ON de.episode_id = eo.episode_id
+                   WHERE eo.horizon='3m' AND eo.horizon_definition_version=?
+                     AND de.captured_at <= ?""",
+                (ver, eligible_cutoff_ts),
             ).fetchone()[0]
-            cov_ver = labeled_ver / total_episodes if total_episodes else 0.0
+            cov_ver = labeled_ver / eligible_episodes if eligible_episodes else 0.0
+            if eligible_episodes == 0:
+                ver_status = "warn"
+            else:
+                ver_status = "ok" if cov_ver >= 0.50 else ("warn" if cov_ver >= 0.25 else "block")
             findings[f"outcome_coverage_3m_{ver}_pct"] = {
                 "value": round(cov_ver, 3),
-                "status": "ok" if cov_ver >= 0.50 else ("warn" if cov_ver >= 0.25 else "block"),
+                "status": ver_status,
             }
     except Exception:
         pass
+
+    # 0380: if target_horizon_version is specified, downgrade non-target version block → warn
+    if target_horizon_version:
+        for ver in ("calendar_v1", "sessions_v2"):
+            if ver == target_horizon_version:
+                continue
+            key = f"outcome_coverage_3m_{ver}_pct"
+            if key in findings and findings[key].get("status") == "block":
+                findings[key]["status"] = "warn"
 
     # 0376: feature null rates using correct column names (q_score/v_score/pf_score/c_score/ec_score)
     for col in ("q_score", "v_score", "pf_score", "c_score", "ec_score"):
@@ -1172,7 +1275,12 @@ def compute_data_health(conn) -> dict:
     else:
         overall = "ok"
 
-    return {"overall": overall, "metrics": findings, "total_episodes": total_episodes}
+    return {
+        "overall": overall,
+        "metrics": findings,
+        "total_episodes": total_episodes,
+        "eligible_episodes": eligible_episodes,
+    }
 
 
 def _check_degradation(model_version: str, conn) -> None:
@@ -1181,6 +1289,10 @@ def _check_degradation(model_version: str, conn) -> None:
     0374: evaluates only PAPER_ACTIVE-phase observations (post-promotion evidence).
     0377: non-overlapping cohort hysteresis — requires DEGRADATION_MIN_NEW_OUTCOMES new
           outcomes since the last snapshot before computing a new one.
+    0383: uses per-row baseline_predicted_alpha for baseline_mae; stores ranking spreads;
+          adds incremental_spread < 0 as a NEGATIVE signal.
+    0384: uses last_outcome_labeled_at for hysteresis anchor when available; falls back
+          to last_snapshot_max_obs_id for backward compat.
     Called by outcome_labeler after back-filling outcomes for PAPER_ACTIVE models.
     """
     from datetime import date as _d2
@@ -1192,29 +1304,54 @@ def _check_degradation(model_version: str, conn) -> None:
     if not row or row["lifecycle_state"] != LIFECYCLE_PAPER_ACTIVE:
         return
 
-    # 0377: check if enough new outcomes have matured since the last snapshot
+    # 0377/0384: check if enough new outcomes have matured since the last snapshot
     last_snap = conn.execute(
-        """SELECT last_snapshot_max_obs_id FROM model_performance_snapshots
-           WHERE model_version=? AND last_snapshot_max_obs_id IS NOT NULL
+        """SELECT last_outcome_labeled_at, last_snapshot_max_obs_id
+           FROM model_performance_snapshots
+           WHERE model_version=?
            ORDER BY snapshot_date DESC LIMIT 1""",
         (model_version,),
     ).fetchone()
-    last_max_obs_id = int(last_snap["last_snapshot_max_obs_id"]) if last_snap else 0
 
-    if last_max_obs_id > 0:
-        new_n = conn.execute(
-            """SELECT COUNT(*) FROM model_observations
-               WHERE model_version=? AND outcome_alpha_90d IS NOT NULL
-                 AND id > ?
-                 AND (observation_phase='PAPER_ACTIVE' OR observation_phase IS NULL)""",
-            (model_version, last_max_obs_id),
-        ).fetchone()[0]
-        if new_n < DEGRADATION_MIN_NEW_OUTCOMES:
-            return  # not enough new outcomes for an independent cohort
+    if last_snap is not None:
+        last_labeled_at = last_snap["last_outcome_labeled_at"]
+        last_max_obs_id = last_snap["last_snapshot_max_obs_id"]
+
+        if last_labeled_at is not None:
+            # 0384: new approach — count by outcome_labeled_at timestamp
+            new_n = conn.execute(
+                """SELECT COUNT(*) FROM model_observations
+                   WHERE model_version=? AND outcome_alpha_90d IS NOT NULL
+                     AND (observation_phase='PAPER_ACTIVE' OR observation_phase IS NULL)
+                     AND outcome_labeled_at > ?""",
+                (model_version, last_labeled_at),
+            ).fetchone()[0]
+            new_cohort_days = conn.execute(
+                """SELECT COUNT(DISTINCT scored_at_date) FROM model_observations
+                   WHERE model_version=? AND outcome_alpha_90d IS NOT NULL
+                     AND (observation_phase='PAPER_ACTIVE' OR observation_phase IS NULL)
+                     AND outcome_labeled_at > ? AND scored_at_date IS NOT NULL""",
+                (model_version, last_labeled_at),
+            ).fetchone()[0]
+            if new_n < DEGRADATION_MIN_NEW_OUTCOMES or new_cohort_days < DEGRADATION_MIN_NEW_COHORT_DAYS:
+                return
+        elif last_max_obs_id is not None and int(last_max_obs_id) > 0:
+            # 0377 legacy: count by observation id
+            new_n = conn.execute(
+                """SELECT COUNT(*) FROM model_observations
+                   WHERE model_version=? AND outcome_alpha_90d IS NOT NULL
+                     AND id > ?
+                     AND (observation_phase='PAPER_ACTIVE' OR observation_phase IS NULL)""",
+                (model_version, last_max_obs_id),
+            ).fetchone()[0]
+            if new_n < DEGRADATION_MIN_NEW_OUTCOMES:
+                return
+        # else: no hysteresis anchor → proceed unconditionally
 
     # 0374: filter on PAPER_ACTIVE-phase rows (backward compat: include NULL phase)
     obs = conn.execute(
-        """SELECT id, challenger_score, predicted_alpha, would_select, outcome_alpha_90d
+        """SELECT id, challenger_score, base_score, predicted_alpha, would_select,
+                  outcome_alpha_90d, baseline_predicted_alpha, outcome_labeled_at, scored_at_date
            FROM model_observations
            WHERE model_version=? AND outcome_alpha_90d IS NOT NULL
              AND (observation_phase='PAPER_ACTIVE' OR observation_phase IS NULL)
@@ -1225,18 +1362,30 @@ def _check_degradation(model_version: str, conn) -> None:
         return
 
     current_max_obs_id = max(int(r["id"]) for r in obs)
+    # 0384: track max outcome_labeled_at for the next snapshot's anchor
+    labeled_at_vals = [r["outcome_labeled_at"] for r in obs if r["outcome_labeled_at"] is not None]
+    current_max_labeled_at = max(labeled_at_vals) if labeled_at_vals else None
 
     outcomes = [float(r["outcome_alpha_90d"]) for r in obs]
+    n_obs = len(obs)
     selected = [r for r in obs if r["would_select"]]
     not_selected = [r for r in obs if not r["would_select"]]
-    mean_alpha = sum(outcomes) / len(outcomes)
+    mean_alpha = sum(outcomes) / n_obs
     valid_pred = [(float(r["predicted_alpha"]), float(r["outcome_alpha_90d"]))
                   for r in obs if r["predicted_alpha"] is not None]
     if valid_pred:
         prediction_mae = sum(abs(p - o) for p, o in valid_pred) / len(valid_pred)
     else:
-        prediction_mae = sum(abs(float(r["challenger_score"]) - float(r["outcome_alpha_90d"])) for r in obs) / len(obs)
-    baseline_mae = sum(abs(mean_alpha - o) for o in outcomes) / len(outcomes)
+        prediction_mae = sum(abs(float(r["challenger_score"]) - o)
+                             for r, o in zip(obs, outcomes)) / n_obs
+
+    # 0383: use per-row baseline_predicted_alpha when available (ex-ante, not hindsight)
+    rows_with_baseline = [(float(r["baseline_predicted_alpha"]), float(r["outcome_alpha_90d"]))
+                          for r in obs if r["baseline_predicted_alpha"] is not None]
+    if rows_with_baseline:
+        baseline_mae = sum(abs(b - o) for b, o in rows_with_baseline) / len(rows_with_baseline)
+    else:
+        baseline_mae = sum(abs(mean_alpha - o) for o in outcomes) / n_obs
 
     sel_mean = (sum(float(r["outcome_alpha_90d"]) for r in selected) / len(selected)) if selected else None
     not_mean = (sum(float(r["outcome_alpha_90d"]) for r in not_selected) / len(not_selected)) if not_selected else None
@@ -1244,7 +1393,25 @@ def _check_degradation(model_version: str, conn) -> None:
 
     hit_rate = sum(1 for r in obs if r["would_select"] and float(r["outcome_alpha_90d"]) > mean_alpha) / max(len(selected), 1)
 
-    if spread is not None and spread > 0 and prediction_mae <= baseline_mae:
+    # 0383: compute ranking spreads for the snapshot
+    q_size = max(1, n_obs // 5)
+    ch_scores_arr = [float(r["challenger_score"]) for r in obs]
+    sorted_ch = sorted(zip(ch_scores_arr, outcomes), key=lambda x: x[0])
+    snap_challenger_spread = (sum(o for _, o in sorted_ch[-q_size:]) / q_size
+                               - sum(o for _, o in sorted_ch[:q_size]) / q_size)
+    snap_base_spread: float | None = None
+    snap_incremental_spread: float | None = None
+    base_scores_raw = [r["base_score"] for r in obs]
+    if all(b is not None for b in base_scores_raw):
+        sorted_base = sorted(zip([float(b) for b in base_scores_raw], outcomes), key=lambda x: x[0])
+        snap_base_spread = (sum(o for _, o in sorted_base[-q_size:]) / q_size
+                             - sum(o for _, o in sorted_base[:q_size]) / q_size)
+        snap_incremental_spread = snap_challenger_spread - snap_base_spread
+
+    # 0383: verdict — incremental_spread < 0 is also a NEGATIVE signal
+    if snap_incremental_spread is not None and snap_incremental_spread < 0:
+        verdict = "NEGATIVE"
+    elif spread is not None and spread > 0 and prediction_mae <= baseline_mae:
         verdict = "POSITIVE"
     elif spread is not None and spread < 0:
         verdict = "NEGATIVE"
@@ -1257,10 +1424,14 @@ def _check_degradation(model_version: str, conn) -> None:
             """INSERT OR IGNORE INTO model_performance_snapshots
                (model_version, snapshot_date, window_n, selection_alpha_spread,
                 prediction_mae, baseline_mae, prospective_hit_rate, edge_verdict,
-                last_snapshot_max_obs_id)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
-            (model_version, today, len(obs), spread, prediction_mae, baseline_mae,
-             hit_rate, verdict, current_max_obs_id),
+                last_snapshot_max_obs_id, snapshot_base_ranking_spread,
+                snapshot_challenger_ranking_spread, snapshot_incremental_spread,
+                last_outcome_labeled_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (model_version, today, n_obs, spread, prediction_mae, baseline_mae,
+             hit_rate, verdict, current_max_obs_id,
+             snap_base_spread, snap_challenger_spread, snap_incremental_spread,
+             current_max_labeled_at),
         )
         conn.commit()
     except Exception:
@@ -1289,6 +1460,87 @@ def _check_degradation(model_version: str, conn) -> None:
              json.dumps({"edge_verdict": verdict, "spread": spread, "mae": prediction_mae})),
         )
         conn.commit()
+
+
+def learning_readiness_report(conn, model_version: str = None) -> dict:
+    """Consolidated report on the state of the learning loop (0385).
+
+    Returns a single dict covering: canonical_horizon, eligible_episodes,
+    mature_observations, independent_cohort_days, ranking spreads,
+    current_lifecycle, promotion_gates, data_health, and next_maturity_date.
+    """
+    from datetime import date as _d, timedelta as _td
+
+    # Find the model to report on (latest in OBSERVE/PAPER_ACTIVE, then any)
+    if model_version is None:
+        for state in (LIFECYCLE_PAPER_ACTIVE, LIFECYCLE_OBSERVE, LIFECYCLE_SUSPENDED,
+                      LIFECYCLE_TRAINED):
+            r = conn.execute(
+                "SELECT model_version FROM learning_models WHERE lifecycle_state=? ORDER BY created_at DESC LIMIT 1",
+                (state,),
+            ).fetchone()
+            if r:
+                model_version = r["model_version"]
+                break
+
+    if model_version is None:
+        return {"error": "no models found", "canonical_horizon": LEARNING_TARGET_HORIZON}
+
+    # Model row
+    mv_row = conn.execute("SELECT * FROM learning_models WHERE model_version=?", (model_version,)).fetchone()
+    lifecycle = mv_row["lifecycle_state"] if mv_row else None
+    thv = (mv_row["training_horizon_version"] if mv_row else None) or LEARNING_TARGET_HORIZON
+
+    # Data health (target-aware)
+    health = compute_data_health(conn, target_horizon_version=thv)
+    eligible_episodes = health.get("eligible_episodes", 0)
+
+    # Prospective metrics
+    pm = compute_prospective_metrics(model_version, conn)
+    mature_obs = int(pm.get("prospective_n", 0))
+    cohort_days = int(pm.get("n_cohort_days", 0))
+
+    # Promotion gates (only meaningful for OBSERVE or SUSPENDED→OBSERVE)
+    gates_result: dict = {}
+    if lifecycle in (LIFECYCLE_OBSERVE, LIFECYCLE_SUSPENDED):
+        gates_result = _check_promotion_gates(model_version, LIFECYCLE_PAPER_ACTIVE)
+
+    # Next maturity date: earliest date when an unmatured observation could mature
+    # = max(scored_at_date among unmatured obs) + horizon_days
+    horizon_days = 91  # calendar approximation for both versions
+    next_maturity_date: str | None = None
+    try:
+        max_unmatured = conn.execute(
+            """SELECT MAX(scored_at_date) FROM model_observations
+               WHERE model_version=? AND outcome_alpha_90d IS NULL AND scored_at_date IS NOT NULL""",
+            (model_version,),
+        ).fetchone()[0]
+        if max_unmatured:
+            nd = _d.fromisoformat(max_unmatured) + _td(days=horizon_days)
+            next_maturity_date = nd.isoformat()
+    except Exception:
+        pass
+
+    return {
+        "canonical_horizon": LEARNING_TARGET_HORIZON,
+        "model_version": model_version,
+        "current_lifecycle": lifecycle,
+        "training_horizon_version": thv,
+        "eligible_episodes": eligible_episodes,
+        "mature_observations": mature_obs,
+        "independent_cohort_days": cohort_days,
+        "base_ranking_spread": pm.get("base_ranking_spread"),
+        "challenger_ranking_spread": pm.get("challenger_ranking_spread"),
+        "incremental_ranking_spread": pm.get("incremental_ranking_spread"),
+        "selection_alpha_delta": pm.get("selection_alpha_delta"),
+        "n_divergent_cohorts": pm.get("n_divergent_cohorts", 0),
+        "promotion_gates": gates_result.get("gates", {}),
+        "promotion_passed": gates_result.get("passed"),
+        "promotion_failed": gates_result.get("failed", []),
+        "data_health": health["overall"],
+        "data_health_metrics": health["metrics"],
+        "next_maturity_date": next_maturity_date,
+    }
 
 
 if __name__ == "__main__":

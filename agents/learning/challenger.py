@@ -77,7 +77,16 @@ def score_for_observe(model_version: str, candidates: list[dict]) -> None:
                                         if "training_horizon_version" in keys else None) or "calendar_v1"
 
             now = datetime.now(timezone.utc).isoformat()
-            scored_at_date = now[:10]
+            # 0384: use America/New_York date so evening runs don't advance to next UTC day
+            try:
+                from zoneinfo import ZoneInfo
+                scored_at_date = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+            except Exception:
+                scored_at_date = now[:10]
+
+            # 0382: stable cohort id for all candidates scored in this run (UTC minute)
+            decision_cohort_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M")
+
             scored_pairs: list[tuple] = []
             for c in candidates:
                 predicted = model.predict_alpha(c)
@@ -88,14 +97,29 @@ def score_for_observe(model_version: str, candidates: list[dict]) -> None:
                 raw_adj = (predicted - model.mean_alpha) * ALPHA_TO_SCORE_SCALE
                 adj = float(np.clip(model.reliability * raw_adj, -MAX_ADJUSTMENT, MAX_ADJUSTMENT))
                 ch_score = float(c.get("composite_score") or c.get("_composite") or 0) + adj
-                scored_pairs.append((c, {"predicted_alpha": predicted, "adjustment": adj, "ch_score": ch_score}))
+                base_s = c.get("composite_score") or c.get("_composite")
+                scored_pairs.append((c, {"predicted_alpha": predicted, "adjustment": adj,
+                                         "ch_score": ch_score, "base_score": base_s}))
 
             if scored_pairs:
                 max_cs = max(o["ch_score"] for _, o in scored_pairs)
-                for c, out in scored_pairs:
+                # 0382: compute base_would_select — top quintile by base_score
+                n_sp = len(scored_pairs)
+                q_sz = max(1, n_sp // 5)
+                base_scored = [(i, o["base_score"]) for i, (_, o) in enumerate(scored_pairs)
+                               if o["base_score"] is not None]
+                base_top_idxs: set = set()
+                if base_scored:
+                    top_base = sorted(base_scored, key=lambda x: x[1], reverse=True)[:q_sz]
+                    base_top_idxs = {idx for idx, _ in top_base}
+
+                for i, (c, out) in enumerate(scored_pairs):
                     ep_id = c.get("_episode_id")
                     if not ep_id:
                         continue
+                    base_would_sel = None
+                    if base_scored:
+                        base_would_sel = 1 if i in base_top_idxs else 0
                     try:
                         conn.execute(
                             """INSERT OR IGNORE INTO model_observations
@@ -103,11 +127,12 @@ def score_for_observe(model_version: str, candidates: list[dict]) -> None:
                                 base_score, predicted_alpha, learning_adjustment,
                                 challenger_score, would_select,
                                 observation_phase, target_horizon_version,
-                                baseline_predicted_alpha, scored_at_date)
-                               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                baseline_predicted_alpha, scored_at_date,
+                                decision_cohort_id, base_would_select)
+                               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                             (model_version, ep_id, c.get("ticker", ""),
                              now,
-                             c.get("composite_score") or c.get("_composite"),
+                             out["base_score"],
                              out["predicted_alpha"],
                              out["adjustment"],
                              out["ch_score"],
@@ -115,7 +140,9 @@ def score_for_observe(model_version: str, candidates: list[dict]) -> None:
                              observation_phase,
                              training_horizon_version,
                              model.mean_alpha,
-                             scored_at_date),
+                             scored_at_date,
+                             decision_cohort_id,
+                             base_would_sel),
                         )
                     except Exception:
                         pass

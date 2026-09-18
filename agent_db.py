@@ -633,6 +633,15 @@ def migrate() -> None:
         # 0378 — per-row baseline and cohort day tracking
         ("model_observations", "baseline_predicted_alpha",         "REAL"),
         ("model_observations", "scored_at_date",                   "TEXT"),
+        # 0382 — decision cohort evaluation
+        ("model_observations", "decision_cohort_id",               "TEXT"),
+        ("model_observations", "base_would_select",                "INTEGER"),
+        # 0383 — unified degradation: ranking spreads per snapshot
+        ("model_performance_snapshots", "snapshot_base_ranking_spread",      "REAL"),
+        ("model_performance_snapshots", "snapshot_challenger_ranking_spread", "REAL"),
+        ("model_performance_snapshots", "snapshot_incremental_spread",       "REAL"),
+        # 0384 — outcome-time hysteresis anchor (preferred over obs id)
+        ("model_performance_snapshots", "last_outcome_labeled_at",           "TEXT"),
     ]
     for table, col, col_type in _new_cols:
         try:
@@ -1208,7 +1217,9 @@ def _migrate_learning_episodes(conn: sqlite3.Connection) -> None:
             target_horizon_version   TEXT,
             outcome_horizon_version  TEXT,
             baseline_predicted_alpha REAL,
-            scored_at_date           TEXT
+            scored_at_date           TEXT,
+            decision_cohort_id       TEXT,
+            base_would_select        INTEGER
         );
 
         CREATE UNIQUE INDEX IF NOT EXISTS idx_model_obs_version_episode
@@ -1216,16 +1227,20 @@ def _migrate_learning_episodes(conn: sqlite3.Connection) -> None:
 
         -- 0371: rolling performance snapshots for PAPER_ACTIVE degradation detection
         CREATE TABLE IF NOT EXISTS model_performance_snapshots (
-            id                        INTEGER PRIMARY KEY AUTOINCREMENT,
-            model_version             TEXT NOT NULL,
-            snapshot_date             TEXT NOT NULL,
-            window_n                  INTEGER,
-            selection_alpha_spread    REAL,
-            prediction_mae            REAL,
-            baseline_mae              REAL,
-            prospective_hit_rate      REAL,
-            edge_verdict              TEXT,
-            last_snapshot_max_obs_id  INTEGER,
+            id                                INTEGER PRIMARY KEY AUTOINCREMENT,
+            model_version                     TEXT NOT NULL,
+            snapshot_date                     TEXT NOT NULL,
+            window_n                          INTEGER,
+            selection_alpha_spread            REAL,
+            prediction_mae                    REAL,
+            baseline_mae                      REAL,
+            prospective_hit_rate              REAL,
+            edge_verdict                      TEXT,
+            last_snapshot_max_obs_id          INTEGER,
+            snapshot_base_ranking_spread      REAL,
+            snapshot_challenger_ranking_spread REAL,
+            snapshot_incremental_spread       REAL,
+            last_outcome_labeled_at           TEXT,
             UNIQUE(model_version, snapshot_date)
         );
 
