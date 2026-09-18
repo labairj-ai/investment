@@ -152,6 +152,65 @@ def trading_sessions_between(start_date: str, end_date: str) -> int:
     return count
 
 
+# Session counts per horizon label for sessions_v2 (0397)
+_SESSIONS_V2_COUNTS: dict[str, int] = {
+    "1w": 5, "1m": 21, "3m": 63, "6m": 126, "12m": 252,
+}
+_CALENDAR_V1_DAYS: dict[str, int] = {
+    "1w": 7, "1m": 30, "3m": 91, "6m": 182, "12m": 365,
+}
+
+
+def nth_trading_session_after(start_date: str, n: int) -> str:
+    """Return the date of the nth NYSE trading session strictly after start_date."""
+    d = date.fromisoformat(start_date)
+    count = 0
+    current = d + timedelta(days=1)
+    for _ in range(n * 3 + 30):  # safety cap
+        if is_trading_day(current):
+            count += 1
+            if count >= n:
+                return current.isoformat()
+        current += timedelta(days=1)
+    raise ValueError(f"Could not find {n}th session after {start_date}")
+
+
+def nth_trading_session_before(end_date: str, n: int) -> str:
+    """Return date X such that exactly n NYSE sessions fall in (X, end_date].
+
+    Used to compute episode eligibility cutoffs: episodes captured on or before
+    the returned date have had at least n sessions elapse since capture.
+    """
+    d = date.fromisoformat(end_date)
+    count = 0
+    current = d
+    for _ in range(n * 3 + 30):  # safety cap
+        current -= timedelta(days=1)
+        if is_trading_day(current):
+            count += 1
+            if count >= n:
+                return current.isoformat()
+    raise ValueError(f"Could not find {n}th session before {end_date}")
+
+
+def maturity_date(start_date: str, horizon_version: str, horizon_label: str = "3m") -> str:
+    """Return the calendar date when a horizon label matures for an episode.
+
+    Single source of truth for eligibility in data health, readiness, and labeling.
+    For sessions_v2: counts NYSE trading sessions via the market calendar.
+    For calendar_v1: adds fixed calendar days.
+    """
+    if horizon_version == "sessions_v2":
+        n = _SESSIONS_V2_COUNTS.get(horizon_label)
+        if n is None:
+            raise ValueError(f"Unknown horizon_label {horizon_label!r} for sessions_v2")
+        return nth_trading_session_after(start_date, n)
+    n_days = _CALENDAR_V1_DAYS.get(horizon_label)
+    if n_days is None:
+        raise ValueError(f"Unknown horizon_label {horizon_label!r} for {horizon_version}")
+    return (date.fromisoformat(start_date) + timedelta(days=n_days)).isoformat()
+
+
 def next_market_open(now: Optional[datetime] = None) -> datetime:
     """Return the next NYSE session open as a timezone-aware datetime."""
     et_tz = _et_tz()

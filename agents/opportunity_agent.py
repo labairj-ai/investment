@@ -539,6 +539,11 @@ def run_opportunity_hunter(ctx: AgentContext) -> list[Recommendation]:
     # SUSPENDED: builds recovery audit trail
     try:
         import agent_db as _adb
+        import uuid as _uuid
+        # 0398: one cohort_id per sweep so all score_for_observe calls in this run
+        # share a single decision_cohort_id — cohort identity must be set here, not
+        # inside score_for_observe(), otherwise each model gets a different cohort.
+        _sweep_cohort_id = str(_uuid.uuid4())
         _conn = _adb._connect()
         obs_models = _conn.execute(
             "SELECT model_version FROM learning_models WHERE lifecycle_state IN (?,?,?)",
@@ -547,7 +552,7 @@ def run_opportunity_hunter(ctx: AgentContext) -> list[Recommendation]:
         _conn.close()
         for _om in obs_models:
             from agents.learning.challenger import score_for_observe
-            score_for_observe(_om["model_version"], scored)
+            score_for_observe(_om["model_version"], scored, cohort_id=_sweep_cohort_id)
     except Exception:
         pass
 

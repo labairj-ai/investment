@@ -107,13 +107,29 @@ def score_for_observe(model_version: str, candidates: list, cohort_id: str = Non
                                          "ch_score": ch_score, "base_score": base_s}))
 
             if scored_pairs:
-                max_cs = max(o["ch_score"] for _, o in scored_pairs)
-                # 0386: base_would_select = 1 for exactly top-1 by base_score (mirrors would_select)
-                base_scores_available = [(i, o["base_score"]) for i, (_, o) in enumerate(scored_pairs)
+                # 0399: exactly one base top-1 and one challenger top-1 per cohort.
+                # Tie-break deterministically: ch_score DESC, base_score DESC, ticker ASC.
+                ch_top_idx = sorted(
+                    range(len(scored_pairs)),
+                    key=lambda i: (
+                        -scored_pairs[i][1]["ch_score"],
+                        -(scored_pairs[i][1]["base_score"] or 0.0),
+                        scored_pairs[i][0].get("ticker", ""),
+                    ),
+                )[0]
+
+                # 0386: base_would_select = 1 for exactly top-1 by base_score; tie-break by ticker ASC
+                base_scores_available = [i for i, (_, o) in enumerate(scored_pairs)
                                          if o["base_score"] is not None]
                 base_top_idx: int = -1
                 if base_scores_available:
-                    base_top_idx = max(base_scores_available, key=lambda x: x[1])[0]
+                    base_top_idx = sorted(
+                        base_scores_available,
+                        key=lambda i: (
+                            -(scored_pairs[i][1]["base_score"] or 0.0),
+                            scored_pairs[i][0].get("ticker", ""),
+                        ),
+                    )[0]
 
                 for i, (c, out) in enumerate(scored_pairs):
                     ep_id = c.get("_episode_id")
@@ -138,7 +154,7 @@ def score_for_observe(model_version: str, candidates: list, cohort_id: str = Non
                              out["predicted_alpha"],
                              out["adjustment"],
                              out["ch_score"],
-                             1 if out["ch_score"] == max_cs else 0,
+                             1 if i == ch_top_idx else 0,
                              observation_phase,
                              training_horizon_version,
                              model.mean_alpha,

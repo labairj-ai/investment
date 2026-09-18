@@ -645,6 +645,9 @@ def migrate() -> None:
         # 0391 — cohort-based selection edge in degradation monitor
         ("model_performance_snapshots", "snapshot_selection_delta",          "REAL"),
         ("model_performance_snapshots", "n_divergent_cohorts_in_window",     "INTEGER"),
+        # 0401 — cohort-window degradation: window size provenance
+        ("model_performance_snapshots", "n_cohorts_in_window",               "INTEGER"),
+        ("model_performance_snapshots", "n_candidate_rows_in_window",        "INTEGER"),
     ]
     for table, col, col_type in _new_cols:
         try:

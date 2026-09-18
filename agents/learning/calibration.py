@@ -68,7 +68,7 @@ OBSERVE_MIN_COHORT_DAYS           = 10  # 0378: minimum distinct market days for
 DEGRADATION_MIN_NEW_OUTCOMES      = 15  # 0377: new PAPER_ACTIVE outcomes required between snapshots
 DEGRADATION_MIN_NEW_COHORT_DAYS   = 3   # 0384: distinct scored_at_date values between snapshots
 DEGRADATION_MIN_DIVERGENT_COHORTS = 5   # 0391: min divergent cohorts before selection delta used as NEGATIVE signal
-SESSIONS_V2_CALENDAR_DAYS         = 130 # 0389: approx calendar days for 63 NYSE sessions (sessions_v2 horizon)
+DEGRADATION_WINDOW_COHORTS        = 30  # 0401: number of complete decision cohorts in the degradation window
 
 # Canonical training target — the horizon the scheduled trainer uses (0379)
 LEARNING_TARGET_HORIZON = "sessions_v2"
@@ -334,7 +334,9 @@ class ChallengerModel:
         coef_full, intercept_full = _ridge_fit(X, y, ridge_alpha)
 
         feature_schema_hash = _schema_hash()
-        model_version = f"edge_v{int(training_cutoff):010d}"
+        # 0403: include horizon version in model ID to prevent collision between
+        # models trained on different horizons against the same episode cutoff
+        model_version = f"edge_{horizon_version}_v{int(training_cutoff):010d}"
 
         val_metrics: dict = {
             "cv_folds":                 len(folds),
@@ -968,15 +970,28 @@ def compute_prospective_metrics(model_version: str, conn) -> dict:
     ).fetchone()
     thv = ((mv_row["training_horizon_version"] if mv_row else None) or "calendar_v1")
 
-    rows = conn.execute(
-        """SELECT episode_id, ticker, challenger_score, base_score, predicted_alpha, would_select,
-                  outcome_alpha_90d, baseline_predicted_alpha, scored_at_date,
-                  prediction_timestamp, decision_cohort_id, base_would_select
-           FROM model_observations
-           WHERE model_version=? AND outcome_alpha_90d IS NOT NULL
-             AND (target_horizon_version=? OR target_horizon_version IS NULL)""",
-        (model_version, thv),
-    ).fetchall()
+    # 0403: strict horizon isolation — for sessions_v2 and newer versions, exclude legacy
+    # NULL target rows whose horizon is ambiguous; keep NULL fallback only for calendar_v1
+    if thv == "calendar_v1":
+        rows = conn.execute(
+            """SELECT episode_id, ticker, challenger_score, base_score, predicted_alpha, would_select,
+                      outcome_alpha_90d, baseline_predicted_alpha, scored_at_date,
+                      prediction_timestamp, decision_cohort_id, base_would_select
+               FROM model_observations
+               WHERE model_version=? AND outcome_alpha_90d IS NOT NULL
+                 AND (target_horizon_version=? OR target_horizon_version IS NULL)""",
+            (model_version, thv),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """SELECT episode_id, ticker, challenger_score, base_score, predicted_alpha, would_select,
+                      outcome_alpha_90d, baseline_predicted_alpha, scored_at_date,
+                      prediction_timestamp, decision_cohort_id, base_would_select
+               FROM model_observations
+               WHERE model_version=? AND outcome_alpha_90d IS NOT NULL
+                 AND target_horizon_version=?""",
+            (model_version, thv),
+        ).fetchall()
     if len(rows) < 5:
         return {}
 
@@ -1041,6 +1056,12 @@ def compute_prospective_metrics(model_version: str, conn) -> dict:
     base_wins = 0
     ties = 0
     cohort_deltas: list = []
+    # 0402: initialize before cohort block so return dict is always valid
+    selection_delta_ci_low: float | None = None
+    selection_delta_ci_high: float | None = None
+    selection_delta_evidence: str | None = None
+    median_selection_delta: float | None = None
+
     rows_with_cohort = [r for r in rows if r["decision_cohort_id"] is not None]
     if rows_with_cohort:
         from collections import defaultdict
@@ -1058,21 +1079,41 @@ def compute_prospective_metrics(model_version: str, conn) -> dict:
             base_row = base_rows[0]
             ch_outcome = float(ch_row["outcome_alpha_90d"])
             base_outcome = float(base_row["outcome_alpha_90d"])
-            delta = ch_outcome - base_outcome
-            cohort_deltas.append(delta)
             # 0388: divergence = different episode identity
+            # 0400: only accumulate delta for divergent cohorts — same-choice cohorts
+            # contribute delta=0 and dilute the mean edge without adding signal
             ch_ep = ch_row["episode_id"]
             base_ep = base_row["episode_id"]
+            delta = ch_outcome - base_outcome
             if ch_ep != base_ep:
                 n_divergent_cohorts += 1
+                cohort_deltas.append(delta)
                 if delta > 0:
                     challenger_wins += 1
                 elif delta < 0:
                     base_wins += 1
                 else:
                     ties += 1
+        # 0402: bootstrap 90% CI and median over divergent cohort deltas
         if cohort_deltas:
             selection_alpha_delta = sum(cohort_deltas) / len(cohort_deltas)
+            sorted_d = sorted(cohort_deltas)
+            nd = len(sorted_d)
+            median_selection_delta = (sorted_d[nd // 2] if nd % 2 == 1
+                                      else (sorted_d[nd // 2 - 1] + sorted_d[nd // 2]) / 2)
+            if nd >= 2:
+                rng_d = np.random.default_rng(42)
+                arr_d = np.array(cohort_deltas)
+                boot_d = [float(rng_d.choice(arr_d, size=nd, replace=True).mean())
+                          for _ in range(2000)]
+                selection_delta_ci_low = round(float(np.percentile(boot_d, 5)), 6)
+                selection_delta_ci_high = round(float(np.percentile(boot_d, 95)), 6)
+                if selection_delta_ci_low > 0:
+                    selection_delta_evidence = "POSITIVE"
+                elif selection_delta_ci_high < 0:
+                    selection_delta_evidence = "NEGATIVE"
+                else:
+                    selection_delta_evidence = "INCONCLUSIVE"
 
     # Pearson correlation (challenger_score vs outcome)
     corr: float | None = None
@@ -1136,12 +1177,16 @@ def compute_prospective_metrics(model_version: str, conn) -> dict:
         # 0378: cohort independence metrics
         "n_cohort_days": n_cohort_days,
         "effective_n": effective_n,
-        # 0382/0388: decision cohort evaluation (identity-based divergence)
+        # 0382/0388/0400/0402: decision cohort evaluation (divergent cohorts only)
         "n_divergent_cohorts": n_divergent_cohorts,
         "challenger_wins": challenger_wins,
         "base_wins": base_wins,
         "ties": ties,
-        "mean_selection_delta": round(sum(cohort_deltas) / len(cohort_deltas), 6) if cohort_deltas else None,
+        "mean_selection_delta": round(selection_alpha_delta, 6) if cohort_deltas else None,
+        "median_selection_delta": round(median_selection_delta, 6) if median_selection_delta is not None else None,
+        "selection_delta_ci_low": selection_delta_ci_low,
+        "selection_delta_ci_high": selection_delta_ci_high,
+        "selection_delta_evidence": selection_delta_evidence,
     }
 
 
@@ -1163,11 +1208,23 @@ def compute_data_health(conn, target_horizon_version: str = None) -> dict:
     except Exception:
         pass
 
-    # 0380/0389: eligible episodes = those old enough to have matured outcomes.
-    # Use horizon-exact cutoff: 91d for calendar_v1; ~130d (63 NYSE sessions) for sessions_v2.
+    # 0397: eligible episodes = those old enough to have matured outcomes.
+    # Use exchange-session-exact cutoff via market calendar; never a fixed calendar approximation.
     eligible_episodes = 0
-    _horizon_days = SESSIONS_V2_CALENDAR_DAYS if target_horizon_version == "sessions_v2" else 91
-    eligible_cutoff_ts = _time.time() - _horizon_days * 86400
+    from datetime import date as _dt_date, datetime as _dt_datetime, timedelta as _dt_td
+    _today_str = _dt_date.today().isoformat()
+    try:
+        from trade_engine.market_calendar import nth_trading_session_before
+        if target_horizon_version == "sessions_v2":
+            _elig_date = nth_trading_session_before(_today_str, 63)
+        else:
+            _elig_date = (_dt_date.today() - _dt_td(days=91)).isoformat()
+    except Exception:
+        _elig_date = (_dt_date.today() - _dt_td(days=91)).isoformat()
+    # Use end-of-day timestamp so episodes captured on the cutoff date are included
+    eligible_cutoff_ts = _dt_datetime.strptime(_elig_date, "%Y-%m-%d").replace(
+        hour=23, minute=59, second=59
+    ).timestamp()
     try:
         eligible_episodes = conn.execute(
             "SELECT COUNT(*) FROM decision_episodes WHERE captured_at <= ?",
@@ -1244,18 +1301,34 @@ def compute_data_health(conn, target_horizon_version: str = None) -> dict:
     except Exception:
         pass
 
-    # 0376/0380: per-version outcome coverage (denominator = eligible episodes for that version)
+    # 0397/0380: per-version outcome coverage with version-specific eligible cutoff
     try:
         for ver in ("calendar_v1", "sessions_v2"):
+            # Each version gets its own exact eligibility cutoff
+            try:
+                from trade_engine.market_calendar import nth_trading_session_before
+                if ver == "sessions_v2":
+                    _ver_elig_date = nth_trading_session_before(_today_str, 63)
+                else:
+                    _ver_elig_date = (_dt_date.today() - _dt_td(days=91)).isoformat()
+            except Exception:
+                _ver_elig_date = (_dt_date.today() - _dt_td(days=91)).isoformat()
+            _ver_cutoff_ts = _dt_datetime.strptime(_ver_elig_date, "%Y-%m-%d").replace(
+                hour=23, minute=59, second=59
+            ).timestamp()
+            ver_eligible = conn.execute(
+                "SELECT COUNT(*) FROM decision_episodes WHERE captured_at <= ?",
+                (_ver_cutoff_ts,),
+            ).fetchone()[0]
             labeled_ver = conn.execute(
                 """SELECT COUNT(DISTINCT eo.episode_id) FROM episode_outcomes eo
                    JOIN decision_episodes de ON de.episode_id = eo.episode_id
                    WHERE eo.horizon='3m' AND eo.horizon_definition_version=?
                      AND de.captured_at <= ?""",
-                (ver, eligible_cutoff_ts),
+                (ver, _ver_cutoff_ts),
             ).fetchone()[0]
-            cov_ver = labeled_ver / eligible_episodes if eligible_episodes else 0.0
-            if eligible_episodes == 0:
+            cov_ver = labeled_ver / ver_eligible if ver_eligible else 0.0
+            if ver_eligible == 0:
                 ver_status = "warn"
             else:
                 ver_status = "ok" if cov_ver >= 0.50 else ("warn" if cov_ver >= 0.25 else "block")
@@ -1370,18 +1443,47 @@ def _check_degradation(model_version: str, conn) -> None:
                 return
         # else: no hysteresis anchor → proceed unconditionally
 
-    # 0374: filter on PAPER_ACTIVE-phase rows (backward compat: include NULL phase)
-    obs = conn.execute(
-        """SELECT id, episode_id, challenger_score, base_score, predicted_alpha, would_select,
-                  outcome_alpha_90d, baseline_predicted_alpha, outcome_labeled_at, scored_at_date,
-                  decision_cohort_id, base_would_select
-           FROM model_observations
+    # 0401: window by latest N distinct decision cohorts, not N candidate rows.
+    # A sweep with 20 candidates would fill LIMIT 30 with < 2 cohorts, making
+    # n_divergent_cohorts thresholds unreachable.
+    _latest_cohorts = conn.execute(
+        """SELECT DISTINCT decision_cohort_id FROM model_observations
            WHERE model_version=? AND outcome_alpha_90d IS NOT NULL
              AND (observation_phase='PAPER_ACTIVE' OR observation_phase IS NULL)
-           ORDER BY id DESC LIMIT 30""",
-        (model_version,),
+             AND decision_cohort_id IS NOT NULL
+           ORDER BY id DESC LIMIT ?""",
+        (model_version, DEGRADATION_WINDOW_COHORTS),
     ).fetchall()
-    if len(obs) < 5:
+    _cohort_ids = [r["decision_cohort_id"] for r in _latest_cohorts]
+
+    if _cohort_ids:
+        _ph = ",".join("?" * len(_cohort_ids))
+        obs = conn.execute(
+            f"""SELECT id, episode_id, challenger_score, base_score, predicted_alpha, would_select,
+                      outcome_alpha_90d, baseline_predicted_alpha, outcome_labeled_at, scored_at_date,
+                      decision_cohort_id, base_would_select
+               FROM model_observations
+               WHERE model_version=? AND outcome_alpha_90d IS NOT NULL
+                 AND (observation_phase='PAPER_ACTIVE' OR observation_phase IS NULL)
+                 AND decision_cohort_id IN ({_ph})""",
+            [model_version] + _cohort_ids,
+        ).fetchall()
+    else:
+        # Fallback: legacy observations without decision_cohort_id
+        obs = conn.execute(
+            """SELECT id, episode_id, challenger_score, base_score, predicted_alpha, would_select,
+                      outcome_alpha_90d, baseline_predicted_alpha, outcome_labeled_at, scored_at_date,
+                      decision_cohort_id, base_would_select
+               FROM model_observations
+               WHERE model_version=? AND outcome_alpha_90d IS NOT NULL
+                 AND (observation_phase='PAPER_ACTIVE' OR observation_phase IS NULL)
+               ORDER BY id DESC LIMIT 30""",
+            (model_version,),
+        ).fetchall()
+    n_cohorts_in_window = len(_cohort_ids)
+    n_candidate_rows_in_window = len(obs)
+
+    if n_candidate_rows_in_window < 5:
         return
 
     current_max_obs_id = max(int(r["id"]) for r in obs)
@@ -1455,8 +1557,10 @@ def _check_degradation(model_version: str, conn) -> None:
             base_ep = base_r[0]["episode_id"]
             ch_out = float(ch_r[0]["outcome_alpha_90d"])
             base_out = float(base_r[0]["outcome_alpha_90d"])
-            _win_deltas.append(ch_out - base_out)
             if ch_ep != base_ep:
+                # 0400: only accumulate divergent-cohort deltas (same-choice cohorts
+                # contribute delta=0 and dilute the metric — exclude them)
+                _win_deltas.append(ch_out - base_out)
                 n_divergent_window += 1
         if _win_deltas:
             snap_selection_delta = sum(_win_deltas) / len(_win_deltas)
@@ -1485,12 +1589,14 @@ def _check_degradation(model_version: str, conn) -> None:
                 prediction_mae, baseline_mae, prospective_hit_rate, edge_verdict,
                 last_snapshot_max_obs_id, snapshot_base_ranking_spread,
                 snapshot_challenger_ranking_spread, snapshot_incremental_spread,
-                last_outcome_labeled_at, snapshot_selection_delta, n_divergent_cohorts_in_window)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                last_outcome_labeled_at, snapshot_selection_delta, n_divergent_cohorts_in_window,
+                n_cohorts_in_window, n_candidate_rows_in_window)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (model_version, today, n_obs, spread, prediction_mae, baseline_mae,
              hit_rate, verdict, current_max_obs_id,
              snap_base_spread, snap_challenger_spread, snap_incremental_spread,
-             current_max_labeled_at, snap_selection_delta, n_divergent_window),
+             current_max_labeled_at, snap_selection_delta, n_divergent_window,
+             n_cohorts_in_window, n_candidate_rows_in_window),
         )
         conn.commit()
     except Exception:
@@ -1570,10 +1676,7 @@ def learning_readiness_report(conn, model_version: str = None) -> dict:
         promotion_target_state = LIFECYCLE_OBSERVE
         gates_result = _check_promotion_gates(model_version, LIFECYCLE_OBSERVE)
 
-    # Next maturity date: earliest date when an unmatured observation could mature
-    # = MIN(scored_at_date among unmatured obs) + horizon_days
-    # MIN gives the soonest any evidence will arrive; MAX would give the latest
-    horizon_days = 91  # calendar approximation for both versions
+    # 0397: next maturity date via shared maturity_date() — no calendar approximation
     next_maturity_date: str | None = None
     try:
         min_unmatured = conn.execute(
@@ -1582,8 +1685,8 @@ def learning_readiness_report(conn, model_version: str = None) -> dict:
             (model_version,),
         ).fetchone()[0]
         if min_unmatured:
-            nd = _d.fromisoformat(min_unmatured) + _td(days=horizon_days)
-            next_maturity_date = nd.isoformat()
+            from trade_engine.market_calendar import maturity_date as _mat_date
+            next_maturity_date = _mat_date(min_unmatured, thv, "3m")
     except Exception:
         pass
 
@@ -1600,12 +1703,16 @@ def learning_readiness_report(conn, model_version: str = None) -> dict:
         "base_ranking_spread": pm.get("base_ranking_spread"),
         "challenger_ranking_spread": pm.get("challenger_ranking_spread"),
         "incremental_ranking_spread": pm.get("incremental_ranking_spread"),
-        # Decision evidence (divergent cohorts only) — 0388/0392
+        # Decision evidence (divergent cohorts only) — 0388/0392/0400/0402
         "n_divergent_cohorts": n_div,
         "challenger_wins": pm.get("challenger_wins", 0),
         "base_wins": pm.get("base_wins", 0),
         "ties": pm.get("ties", 0),
         "mean_selection_delta": pm.get("mean_selection_delta"),
+        "median_selection_delta": pm.get("median_selection_delta"),
+        "selection_delta_ci_low": pm.get("selection_delta_ci_low"),
+        "selection_delta_ci_high": pm.get("selection_delta_ci_high"),
+        "selection_delta_evidence": pm.get("selection_delta_evidence"),
         "selection_alpha_delta": pm.get("selection_alpha_delta"),
         "challenger_win_rate": (pm.get("challenger_wins", 0) / n_div) if n_div > 0 else None,
         "promotion_target_state": promotion_target_state,  # 0396

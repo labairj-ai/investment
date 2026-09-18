@@ -122,7 +122,7 @@ class TestChallengerModel:
         assert model is not None
         assert model.training_n == 50
         assert len(model.coef) == 5
-        assert model.model_version.startswith("edge_v")
+        assert model.model_version.startswith("edge_")
 
     def test_validation_metrics_present(self, mem_db, monkeypatch):
         import agent_db
@@ -4797,10 +4797,13 @@ class TestDivergenceByEpisodeIdentity0388:
 # ===========================================================================
 
 class TestHorizonExactDataHealth0389:
-    """0389: compute_data_health uses 130-day cutoff for sessions_v2, 91-day for calendar_v1."""
+    """0389/0397: compute_data_health uses session-exact cutoff (63 sessions ≈ 88-92 days)
+    for sessions_v2, and 91 calendar days for calendar_v1."""
 
-    def test_sessions_v2_uses_130_day_cutoff(self, mem_db, monkeypatch):
-        """Episode 100 days old: eligible for calendar_v1, NOT eligible for sessions_v2."""
+    def test_sessions_v2_uses_session_exact_cutoff(self, mem_db, monkeypatch):
+        """Episode 100 days old: eligible for both calendar_v1 and sessions_v2.
+        0397 replaced the old 130-day approximation with nth_trading_session_before(today, 63),
+        which is ~88-92 calendar days — so 100d IS within the eligible range."""
         import agent_db
         from agents.learning.calibration import compute_data_health
 
@@ -4808,7 +4811,7 @@ class TestHorizonExactDataHealth0389:
         monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
 
         conn = _make_conn(mem_db)
-        # Episode 100 days old — between 91 and 130 days
+        # 100 calendar days > 63 trading sessions (≈ 88-92 calendar days), so eligible
         ts_100d = time.time() - 100 * 86400
         conn.execute(
             "INSERT INTO decision_episodes (episode_id,run_id,ticker,captured_at,composite_score,feature_schema_version) VALUES (?,1,'TK',?,80,'v1')",
@@ -4822,8 +4825,30 @@ class TestHorizonExactDataHealth0389:
 
         assert r_cal["eligible_episodes"] == 1, \
             f"calendar_v1 should count 100d-old episode as eligible; got {r_cal['eligible_episodes']}"
+        assert r_ses["eligible_episodes"] == 1, \
+            f"sessions_v2 should count 100d-old episode as eligible (session-exact ≈ 88-92d); got {r_ses['eligible_episodes']}"
+
+    def test_sessions_v2_rejects_too_recent_episodes(self, mem_db, monkeypatch):
+        """Episode 80 days old is NOT yet eligible for sessions_v2 (63 sessions ≈ 88-92d)."""
+        import agent_db
+        from agents.learning.calibration import compute_data_health
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        ts_80d = time.time() - 80 * 86400
+        conn.execute(
+            "INSERT INTO decision_episodes (episode_id,run_id,ticker,captured_at,composite_score,feature_schema_version) VALUES (?,1,'TK',?,80,'v1')",
+            (str(uuid.uuid4()), ts_80d),
+        )
+        conn.commit()
+
+        r_ses = compute_data_health(conn, target_horizon_version="sessions_v2")
+        conn.close()
+
         assert r_ses["eligible_episodes"] == 0, \
-            f"sessions_v2 should NOT count 100d-old episode as eligible; got {r_ses['eligible_episodes']}"
+            f"sessions_v2 should NOT count 80d-old episode as eligible; got {r_ses['eligible_episodes']}"
 
     def test_calendar_v1_unchanged_at_91_days(self, mem_db, monkeypatch):
         """calendar_v1 eligibility cutoff remains 91 days."""
@@ -4952,3 +4977,634 @@ class TestCohortBasedDegradation0391:
             "Challenger consistently worse → negative selection delta"
         assert snap["edge_verdict"] == "NEGATIVE", \
             f"Expected NEGATIVE verdict; got {snap['edge_verdict']}"
+
+
+# ===========================================================================
+# 0397 — True Session Calendar Contract
+# ===========================================================================
+
+class TestSessionCalendarContract0397:
+    """market_calendar functions produce session-exact horizon dates."""
+
+    def test_nth_trading_session_after_counts_sessions(self):
+        from trade_engine.market_calendar import nth_trading_session_after, is_trading_day
+        from datetime import date, timedelta
+        start = "2026-01-02"  # NYSE open after New Year's
+        result = nth_trading_session_after(start, 5)
+        # Count manually: verify exactly 5 trading sessions in (start, result]
+        d = date.fromisoformat(start)
+        end = date.fromisoformat(result)
+        count = 0
+        cur = d + timedelta(days=1)
+        while cur <= end:
+            if is_trading_day(cur):
+                count += 1
+            cur += timedelta(days=1)
+        assert count == 5
+
+    def test_nth_trading_session_before_counts_sessions(self):
+        from trade_engine.market_calendar import nth_trading_session_before, is_trading_day
+        from datetime import date, timedelta
+        end = "2026-06-01"
+        result = nth_trading_session_before(end, 21)
+        d = date.fromisoformat(result)
+        end_d = date.fromisoformat(end)
+        count = 0
+        cur = d + timedelta(days=1)
+        while cur <= end_d:
+            if is_trading_day(cur):
+                count += 1
+            cur += timedelta(days=1)
+        assert count == 21
+
+    def test_maturity_date_sessions_v2_uses_63_sessions(self):
+        from trade_engine.market_calendar import maturity_date, trading_sessions_between
+        start = "2026-01-02"
+        mat = maturity_date(start, "sessions_v2", "3m")
+        count = trading_sessions_between(start, mat)
+        assert count == 63
+
+    def test_maturity_date_calendar_v1_uses_91_days(self):
+        from trade_engine.market_calendar import maturity_date
+        from datetime import date, timedelta
+        start = "2026-01-02"
+        mat = maturity_date(start, "calendar_v1", "3m")
+        expected = (date.fromisoformat(start) + timedelta(days=91)).isoformat()
+        assert mat == expected
+
+    def test_sessions_v2_eligibility_uses_session_exact_cutoff(self, mem_db, monkeypatch):
+        """compute_data_health(sessions_v2) uses nth_trading_session_before, not +130 days."""
+        import agent_db
+        from agents.learning.calibration import compute_data_health
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+        conn = _make_conn(mem_db)
+        # 95-day-old episode: 95 calendar days > 63 sessions (≈88-92d) → eligible
+        ts_95d = time.time() - 95 * 86400
+        conn.execute(
+            "INSERT INTO decision_episodes (episode_id,run_id,ticker,captured_at,composite_score,feature_schema_version) VALUES (?,1,'TK',?,80,'v1')",
+            (str(uuid.uuid4()), ts_95d),
+        )
+        conn.commit()
+        r = compute_data_health(conn, target_horizon_version="sessions_v2")
+        conn.close()
+        assert r["eligible_episodes"] == 1, \
+            f"95d-old episode should be eligible for sessions_v2; got {r['eligible_episodes']}"
+
+
+# ===========================================================================
+# 0398 — Cohort Identity at Opportunity-Hunter Level
+# ===========================================================================
+
+class TestCohortIdentityOH0398:
+    """score_for_observe calls within one OH sweep share a single decision_cohort_id."""
+
+    def test_sweep_cohort_id_shared_across_models(self, mem_db, monkeypatch):
+        """All score_for_observe calls in one sweep produce same decision_cohort_id."""
+        import agent_db
+        from agents.learning.challenger import score_for_observe
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+        conn = _make_conn(mem_db)
+
+        _vm = json.dumps({"coef": [0.1, 0.1, 0.1, 0.1, 0.1], "intercept": 0.0,
+                           "mean_alpha": 0.02, "reliability": 0.8})
+        # Train two models in OBSERVE state
+        for mv in ("mv_398a", "mv_398b"):
+            conn.execute(
+                """INSERT INTO learning_models
+                   (model_version, training_cutoff, feature_schema_hash, training_n,
+                    validation_metrics, created_at, lifecycle_state, training_horizon_version)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                (mv, "2026-01-01", "h", 10, _vm, time.time(), "OBSERVE", "sessions_v2"),
+            )
+        conn.commit()
+        conn.close()
+
+        ep_id = str(uuid.uuid4())
+        candidates = [{
+            "_episode_id": ep_id, "ticker": "TST",
+            "composite_score": 70, "_composite": 70,
+            "q_score": 0.6, "v_score": 0.5, "pf_score": 0.4, "c_score": 0.55, "ec_score": 0.45,
+        }]
+
+        shared_cohort = str(uuid.uuid4())
+        score_for_observe("mv_398a", candidates, cohort_id=shared_cohort)
+        score_for_observe("mv_398b", candidates, cohort_id=shared_cohort)
+
+        conn2 = _make_conn(mem_db)
+        rows = conn2.execute(
+            "SELECT model_version, decision_cohort_id FROM model_observations WHERE episode_id=?",
+            (ep_id,),
+        ).fetchall()
+        conn2.close()
+
+        assert len(rows) == 2
+        cohort_ids = {r["decision_cohort_id"] for r in rows}
+        assert len(cohort_ids) == 1, \
+            f"Both models should share one cohort_id; got {cohort_ids}"
+        assert cohort_ids.pop() == shared_cohort
+
+
+# ===========================================================================
+# 0399 — Exact Selection Invariants
+# ===========================================================================
+
+class TestExactSelectionInvariants0399:
+    """score_for_observe writes exactly one would_select=1 per cohort."""
+
+    def _seed_model(self, conn, mv, state="OBSERVE"):
+        _vm = json.dumps({"coef": [0.1, 0.1, 0.1, 0.1, 0.1], "intercept": 0.0,
+                           "mean_alpha": 0.02, "reliability": 0.8})
+        conn.execute(
+            """INSERT INTO learning_models
+               (model_version, training_cutoff, feature_schema_hash, training_n,
+                validation_metrics, created_at, lifecycle_state, training_horizon_version)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (mv, "2026-01-01", "h", 10, _vm, time.time(), state, "sessions_v2"),
+        )
+
+    def _make_candidate(self, ep_id, ticker, score):
+        return {
+            "_episode_id": ep_id, "ticker": ticker,
+            "composite_score": score, "_composite": score,
+            "q_score": 0.5, "v_score": 0.5, "pf_score": 0.5, "c_score": 0.5, "ec_score": 0.5,
+        }
+
+    def test_exactly_one_would_select_per_cohort(self, mem_db, monkeypatch):
+        import agent_db
+        from agents.learning.challenger import score_for_observe
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+        conn = _make_conn(mem_db)
+        self._seed_model(conn, "mv_399")
+        conn.commit()
+        conn.close()
+
+        eps = [str(uuid.uuid4()) for _ in range(3)]
+        candidates = [self._make_candidate(ep, f"TK{i}", 70) for i, ep in enumerate(eps)]
+        cid = str(uuid.uuid4())
+        score_for_observe("mv_399", candidates, cohort_id=cid)
+
+        conn2 = _make_conn(mem_db)
+        rows = conn2.execute(
+            "SELECT would_select FROM model_observations WHERE model_version='mv_399' AND decision_cohort_id=?",
+            (cid,),
+        ).fetchall()
+        conn2.close()
+
+        selected = sum(r["would_select"] for r in rows)
+        assert selected == 1, f"Exactly one would_select=1 expected; got {selected}"
+
+    def test_exactly_one_base_would_select_per_cohort(self, mem_db, monkeypatch):
+        import agent_db
+        from agents.learning.challenger import score_for_observe
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+        conn = _make_conn(mem_db)
+        self._seed_model(conn, "mv_399b")
+        conn.commit()
+        conn.close()
+
+        eps = [str(uuid.uuid4()) for _ in range(4)]
+        candidates = [self._make_candidate(ep, f"TK{i}", 60 + i) for i, ep in enumerate(eps)]
+        cid = str(uuid.uuid4())
+        score_for_observe("mv_399b", candidates, cohort_id=cid)
+
+        conn2 = _make_conn(mem_db)
+        rows = conn2.execute(
+            "SELECT base_would_select FROM model_observations WHERE model_version='mv_399b' AND decision_cohort_id=?",
+            (cid,),
+        ).fetchall()
+        conn2.close()
+
+        base_selected = sum(r["base_would_select"] for r in rows if r["base_would_select"] is not None)
+        assert base_selected == 1, f"Exactly one base_would_select=1 expected; got {base_selected}"
+
+    def test_tie_broken_deterministically(self, mem_db, monkeypatch):
+        """Equal scores → same ticker wins across two identical runs."""
+        import agent_db
+        from agents.learning.challenger import score_for_observe
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+        conn = _make_conn(mem_db)
+        self._seed_model(conn, "mv_399c")
+        conn.commit()
+        conn.close()
+
+        eps = [str(uuid.uuid4()) for _ in range(3)]
+        # All same composite score — tie on both ch_score and base_score → ticker ASC wins
+        candidates = [self._make_candidate(ep, f"TK{i}", 70) for i, ep in enumerate(eps)]
+        tickers = sorted(c["ticker"] for c in candidates)
+
+        cid1 = str(uuid.uuid4())
+        score_for_observe("mv_399c", candidates, cohort_id=cid1)
+
+        conn2 = _make_conn(mem_db)
+        winner = conn2.execute(
+            "SELECT ticker FROM model_observations WHERE model_version='mv_399c' AND would_select=1",
+        ).fetchone()
+        conn2.close()
+
+        assert winner is not None
+        assert winner["ticker"] == tickers[0], \
+            f"Lexicographically first ticker should win on tie; got {winner['ticker']}"
+
+
+# ===========================================================================
+# 0400 — Divergent-Only Decision Metrics
+# ===========================================================================
+
+class TestDivergentOnlyMetrics0400:
+    """cohort_deltas only accumulate for divergent cohorts (ch != base selection)."""
+
+    def test_same_choice_cohorts_excluded_from_deltas(self, mem_db, monkeypatch):
+        """Cohorts where ch and base pick the same episode must not affect selection_alpha_delta."""
+        import agent_db
+        from agents.learning.calibration import compute_prospective_metrics
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+        conn = _make_conn(mem_db)
+
+        mv = "mv_400"
+        now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        sdate = "2026-09-01"
+
+        _vm = json.dumps({"coef": [0.1, 0.1, 0.1, 0.1, 0.1], "intercept": 0.0,
+                           "mean_alpha": 0.02, "reliability": 0.8})
+        conn.execute(
+            """INSERT INTO learning_models
+               (model_version, training_cutoff, feature_schema_hash, training_n,
+                validation_metrics, created_at, lifecycle_state, training_horizon_version)
+               VALUES (?,?,?,?,?,?,'PAPER_ACTIVE','sessions_v2')""",
+            (mv, "2026-01-01", "h", 10, _vm, time.time()),
+        )
+
+        def _insert_obs(episode_id, ticker, would_sel, base_would_sel, outcome, cohort_id):
+            conn.execute(
+                """INSERT INTO model_observations
+                   (model_version, episode_id, ticker, prediction_timestamp,
+                    challenger_score, base_score, predicted_alpha, would_select,
+                    base_would_select, outcome_alpha_90d, outcome_labeled_at,
+                    observation_phase, scored_at_date, decision_cohort_id, target_horizon_version)
+                   VALUES (?,?,?,?,70,65,0.05,?,?,?,?,?,?,?,'sessions_v2')""",
+                (mv, episode_id, ticker, now_iso, would_sel, base_would_sel, outcome, now_iso,
+                 "PAPER_ACTIVE", sdate, cohort_id),
+            )
+
+        # 5 same-choice cohorts: ch and base both pick the same episode_id
+        # → n_divergent_cohorts should NOT count these; need >= 5 rows for metrics
+        for k in range(5):
+            ep = str(uuid.uuid4())
+            cid = str(uuid.uuid4())
+            _insert_obs(ep, "TK", 1, 1, 0.05, cid)  # one row: both picks = ep
+
+        # 1 divergent cohort: ch picks ep_c (out=+0.10), base picks ep_d (out=-0.05)
+        ep_c = str(uuid.uuid4())
+        ep_d = str(uuid.uuid4())
+        cid_div = str(uuid.uuid4())
+        _insert_obs(ep_c, "CH", 1, 0, 0.10, cid_div)   # ch winner
+        _insert_obs(ep_d, "BS", 0, 1, -0.05, cid_div)  # base winner
+        conn.commit()
+
+        pm = compute_prospective_metrics(mv, conn)
+        conn.close()
+
+        assert pm.get("n_divergent_cohorts") == 1, \
+            f"Only divergent cohorts counted; got {pm.get('n_divergent_cohorts')}"
+        delta = pm.get("mean_selection_delta")
+        assert delta is not None
+        assert abs(delta - 0.15) < 0.01, \
+            f"Delta should be 0.15 (ch_out - base_out for divergent cohort); got {delta}"
+
+
+# ===========================================================================
+# 0401 — True Cohort-Window Degradation
+# ===========================================================================
+
+class TestCohortWindowDegradation0401:
+    """_check_degradation uses latest N cohorts, not latest N rows."""
+
+    def test_snapshot_stores_cohort_and_row_counts(self, mem_db, monkeypatch):
+        import agent_db
+        from agents.learning.calibration import _check_degradation, DEGRADATION_WINDOW_COHORTS
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+        conn = _make_conn(mem_db)
+        _vm = json.dumps({"coef": [0.1, 0.1, 0.1, 0.1, 0.1], "intercept": 0.0,
+                           "mean_alpha": 0.02, "reliability": 0.8})
+        conn.execute(
+            """INSERT INTO learning_models
+               (model_version, training_cutoff, feature_schema_hash, training_n,
+                validation_metrics, created_at, lifecycle_state, training_horizon_version)
+               VALUES ('mv_401',?,?,?,?,?,'PAPER_ACTIVE','sessions_v2')""",
+            ("2026-01-01", "h", 10, _vm, time.time()),
+        )
+
+        now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        sdate = "2026-09-01"
+        # 3 cohorts, 2 candidates each
+        for k in range(3):
+            cid = str(uuid.uuid4())
+            ep_ch = str(uuid.uuid4())
+            ep_base = str(uuid.uuid4())
+            for ep, sel, bsel, out in [
+                (ep_ch,   1, 0, 0.05),
+                (ep_base, 0, 1, 0.03),
+            ]:
+                conn.execute(
+                    """INSERT INTO model_observations
+                       (model_version, episode_id, ticker, prediction_timestamp,
+                        challenger_score, base_score, predicted_alpha, would_select,
+                        base_would_select, outcome_alpha_90d, outcome_labeled_at,
+                        observation_phase, scored_at_date, decision_cohort_id)
+                       VALUES ('mv_401',?,?,?,70,65,0.04,?,?,?,?,'PAPER_ACTIVE',?,?)""",
+                    (ep, f"TK{k}", now_iso, sel, bsel, out, now_iso, sdate, cid),
+                )
+        conn.commit()
+
+        _check_degradation("mv_401", conn)
+
+        snap = conn.execute(
+            """SELECT n_cohorts_in_window, n_candidate_rows_in_window
+               FROM model_performance_snapshots WHERE model_version='mv_401'"""
+        ).fetchone()
+        conn.close()
+
+        assert snap is not None, "Snapshot should have been written"
+        assert snap["n_cohorts_in_window"] == 3
+        assert snap["n_candidate_rows_in_window"] == 6
+
+    def test_window_bounded_by_degradation_window_cohorts(self, mem_db, monkeypatch):
+        """Window contains at most DEGRADATION_WINDOW_COHORTS cohorts."""
+        import agent_db
+        from agents.learning.calibration import _check_degradation, DEGRADATION_WINDOW_COHORTS
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+        conn = _make_conn(mem_db)
+        _vm = json.dumps({"coef": [0.1, 0.1, 0.1, 0.1, 0.1], "intercept": 0.0,
+                           "mean_alpha": 0.02, "reliability": 0.8})
+        conn.execute(
+            """INSERT INTO learning_models
+               (model_version, training_cutoff, feature_schema_hash, training_n,
+                validation_metrics, created_at, lifecycle_state, training_horizon_version)
+               VALUES ('mv_401b',?,?,?,?,?,'PAPER_ACTIVE','sessions_v2')""",
+            ("2026-01-01", "h", 10, _vm, time.time()),
+        )
+        now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        sdate = "2026-09-01"
+        # Insert more cohorts than DEGRADATION_WINDOW_COHORTS
+        n_cohorts = DEGRADATION_WINDOW_COHORTS + 5
+        for k in range(n_cohorts):
+            cid = str(uuid.uuid4())
+            ep = str(uuid.uuid4())
+            conn.execute(
+                """INSERT INTO model_observations
+                   (model_version, episode_id, ticker, prediction_timestamp,
+                    challenger_score, base_score, predicted_alpha, would_select,
+                    base_would_select, outcome_alpha_90d, outcome_labeled_at,
+                    observation_phase, scored_at_date, decision_cohort_id)
+                   VALUES ('mv_401b',?,?,?,70,65,0.04,1,0,0.05,?,'PAPER_ACTIVE',?,?)""",
+                (ep, f"TK{k}", now_iso, now_iso, sdate, cid),
+            )
+        conn.commit()
+
+        _check_degradation("mv_401b", conn)
+
+        snap = conn.execute(
+            "SELECT n_cohorts_in_window FROM model_performance_snapshots WHERE model_version='mv_401b'"
+        ).fetchone()
+        conn.close()
+
+        assert snap is not None
+        assert snap["n_cohorts_in_window"] <= DEGRADATION_WINDOW_COHORTS, \
+            f"Window capped at {DEGRADATION_WINDOW_COHORTS}; got {snap['n_cohorts_in_window']}"
+
+
+# ===========================================================================
+# 0402 — Decision-Edge Uncertainty (Bootstrap CI)
+# ===========================================================================
+
+class TestDecisionEdgeUncertainty0402:
+    """compute_prospective_metrics exposes 90% CI, median, and evidence state."""
+
+    def _seed_model(self, conn, mv, thv="sessions_v2"):
+        _vm = json.dumps({"coef": [0.1, 0.1, 0.1, 0.1, 0.1], "intercept": 0.0,
+                           "mean_alpha": 0.02, "reliability": 0.8})
+        conn.execute(
+            """INSERT OR IGNORE INTO learning_models
+               (model_version, training_cutoff, feature_schema_hash, training_n,
+                validation_metrics, created_at, lifecycle_state, training_horizon_version)
+               VALUES (?,?,?,?,?,?,'PAPER_ACTIVE',?)""",
+            (mv, "2026-01-01", "h", 10, _vm, time.time(), thv),
+        )
+
+    def _insert_divergent_cohort(self, conn, mv, ep_ch, ep_base, cid, ch_out, base_out,
+                                  phase="PAPER_ACTIVE", thv="sessions_v2"):
+        """Insert two rows forming a divergent cohort: ch picks ep_ch, base picks ep_base."""
+        now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        sdate = "2026-09-01"
+        # ch winner row: would_select=1, base_would_select=0
+        # base winner row: would_select=0, base_would_select=1
+        for ep, sel, bsel, out in [(ep_ch, 1, 0, ch_out), (ep_base, 0, 1, base_out)]:
+            conn.execute(
+                """INSERT INTO model_observations
+                   (model_version, episode_id, ticker, prediction_timestamp,
+                    challenger_score, base_score, predicted_alpha, would_select,
+                    base_would_select, outcome_alpha_90d, outcome_labeled_at,
+                    observation_phase, scored_at_date, decision_cohort_id, target_horizon_version)
+                   VALUES (?,?,?,?,70,65,0.04,?,?,?,?,?,?,?,?)""",
+                (mv, ep, "TK", now_iso, sel, bsel, out, now_iso, phase, sdate, cid, thv),
+            )
+
+    def test_positive_evidence_state(self, mem_db, monkeypatch):
+        """CI lower bound > 0 → POSITIVE evidence."""
+        import agent_db
+        from agents.learning.calibration import compute_prospective_metrics
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+        conn = _make_conn(mem_db)
+        mv = "mv_402pos"
+        self._seed_model(conn, mv)
+        for k in range(10):
+            self._insert_divergent_cohort(
+                conn, mv, str(uuid.uuid4()), str(uuid.uuid4()),
+                str(uuid.uuid4()), 0.15, 0.02,
+            )
+        conn.commit()
+        pm = compute_prospective_metrics(mv, conn)
+        conn.close()
+        assert pm.get("selection_delta_evidence") == "POSITIVE", \
+            f"Large positive deltas should yield POSITIVE; got {pm.get('selection_delta_evidence')}"
+        assert pm.get("selection_delta_ci_low") is not None
+        assert pm.get("selection_delta_ci_high") is not None
+        assert pm["selection_delta_ci_low"] > 0
+
+    def test_negative_evidence_state(self, mem_db, monkeypatch):
+        """CI upper bound < 0 → NEGATIVE evidence."""
+        import agent_db
+        from agents.learning.calibration import compute_prospective_metrics
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+        conn = _make_conn(mem_db)
+        mv = "mv_402neg"
+        self._seed_model(conn, mv)
+        for k in range(10):
+            self._insert_divergent_cohort(
+                conn, mv, str(uuid.uuid4()), str(uuid.uuid4()),
+                str(uuid.uuid4()), -0.02, 0.15,
+            )
+        conn.commit()
+        pm = compute_prospective_metrics(mv, conn)
+        conn.close()
+        assert pm.get("selection_delta_evidence") == "NEGATIVE", \
+            f"Large negative deltas should yield NEGATIVE; got {pm.get('selection_delta_evidence')}"
+        assert pm["selection_delta_ci_high"] < 0
+
+    def test_inconclusive_evidence_state(self, mem_db, monkeypatch):
+        """Wide spread of deltas → INCONCLUSIVE (CI straddles 0)."""
+        import agent_db
+        from agents.learning.calibration import compute_prospective_metrics
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+        conn = _make_conn(mem_db)
+        mv = "mv_402inc"
+        self._seed_model(conn, mv)
+        deltas = [0.20, -0.18, 0.15, -0.14, 0.12, -0.11, 0.09, -0.08, 0.06, -0.05]
+        for d in deltas:
+            self._insert_divergent_cohort(
+                conn, mv, str(uuid.uuid4()), str(uuid.uuid4()),
+                str(uuid.uuid4()), 0.10 + d, 0.10,
+            )
+        conn.commit()
+        pm = compute_prospective_metrics(mv, conn)
+        conn.close()
+        assert pm.get("selection_delta_evidence") == "INCONCLUSIVE", \
+            f"Mixed deltas should yield INCONCLUSIVE; got {pm.get('selection_delta_evidence')}"
+
+    def test_median_selection_delta_returned(self, mem_db, monkeypatch):
+        """median_selection_delta is present and between min and max delta."""
+        import agent_db
+        from agents.learning.calibration import compute_prospective_metrics
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+        conn = _make_conn(mem_db)
+        mv = "mv_402med"
+        self._seed_model(conn, mv)
+        for ch_out, base_out in [(0.12, 0.05), (0.08, 0.03), (0.20, 0.10)]:
+            self._insert_divergent_cohort(
+                conn, mv, str(uuid.uuid4()), str(uuid.uuid4()),
+                str(uuid.uuid4()), ch_out, base_out,
+            )
+        conn.commit()
+        pm = compute_prospective_metrics(mv, conn)
+        conn.close()
+        assert pm.get("median_selection_delta") is not None
+        # deltas: 0.07, 0.05, 0.10 → median = 0.07
+        assert abs(pm["median_selection_delta"] - 0.07) < 0.001
+
+    def test_no_ci_with_single_cohort(self, mem_db, monkeypatch):
+        """CI requires >= 2 divergent cohorts; single cohort yields None CI."""
+        import agent_db
+        from agents.learning.calibration import compute_prospective_metrics
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+        conn = _make_conn(mem_db)
+        mv = "mv_402one"
+        self._seed_model(conn, mv)
+        self._insert_divergent_cohort(
+            conn, mv, str(uuid.uuid4()), str(uuid.uuid4()),
+            str(uuid.uuid4()), 0.10, 0.05,
+        )
+        conn.commit()
+        pm = compute_prospective_metrics(mv, conn)
+        conn.close()
+        assert pm.get("selection_delta_ci_low") is None
+        assert pm.get("selection_delta_ci_high") is None
+        assert pm.get("selection_delta_evidence") is None
+
+
+# ===========================================================================
+# 0403 — Versioned Model Identity
+# ===========================================================================
+
+class TestVersionedModelIdentity0403:
+    """Model version includes horizon version; sessions_v2 rejects NULL target rows."""
+
+    def test_model_version_includes_horizon(self, mem_db, monkeypatch):
+        """Trained model version string contains horizon component."""
+        import agent_db
+        from agents.learning.calibration import ChallengerModel
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+        conn = _make_conn(mem_db)
+        _seed_episodes(conn, 50, with_outcomes=True, horizon_definition_version="sessions_v2")
+        conn.commit()
+        conn.close()
+        model = ChallengerModel.train(horizon_version="sessions_v2")
+        assert model is not None
+        assert "sessions_v2" in model.model_version, \
+            f"Version should contain horizon; got {model.model_version}"
+
+    def test_calendar_v1_and_sessions_v2_produce_distinct_versions(self, mem_db, monkeypatch):
+        """Same cutoff, different horizon → different model_version strings."""
+        import agent_db
+        from agents.learning.calibration import ChallengerModel
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+        conn = _make_conn(mem_db)
+        _seed_episodes(conn, 50, with_outcomes=True, horizon_definition_version="calendar_v1")
+        _seed_episodes(conn, 50, with_outcomes=True, horizon_definition_version="sessions_v2")
+        conn.commit()
+        conn.close()
+
+        m1 = ChallengerModel.train(horizon_version="calendar_v1")
+        m2 = ChallengerModel.train(horizon_version="sessions_v2")
+        assert m1 is not None and m2 is not None
+        assert m1.model_version != m2.model_version, \
+            f"Different horizons must produce different versions; got {m1.model_version}"
+
+    def test_sessions_v2_excludes_null_target_horizon_rows(self, mem_db, monkeypatch):
+        """compute_prospective_metrics for sessions_v2 ignores rows with NULL target_horizon_version."""
+        import agent_db
+        from agents.learning.calibration import compute_prospective_metrics
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+        conn = _make_conn(mem_db)
+
+        mv = "mv_403"
+        now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        _vm = json.dumps({"coef": [0.1, 0.1, 0.1, 0.1, 0.1], "intercept": 0.0,
+                           "mean_alpha": 0.02, "reliability": 0.8})
+        conn.execute(
+            """INSERT INTO learning_models
+               (model_version, training_cutoff, feature_schema_hash, training_n,
+                validation_metrics, created_at, lifecycle_state, training_horizon_version)
+               VALUES (?,?,?,?,?,?,'PAPER_ACTIVE','sessions_v2')""",
+            (mv, "2026-01-01", "h", 10, _vm, time.time()),
+        )
+        def _ins(episode_id, thv):
+            conn.execute(
+                """INSERT INTO model_observations
+                   (model_version, episode_id, ticker, prediction_timestamp,
+                    challenger_score, base_score, predicted_alpha, would_select,
+                    base_would_select, outcome_alpha_90d, outcome_labeled_at,
+                    observation_phase, scored_at_date, decision_cohort_id, target_horizon_version)
+                   VALUES (?,?,?,?,70,65,0.05,1,0,0.08,?,'PAPER_ACTIVE','2026-01-01',?,?)""",
+                (mv, episode_id, "TK", now_iso, now_iso, str(uuid.uuid4()), thv),
+            )
+
+        # 5 rows with sessions_v2 — must be visible
+        for _ in range(5):
+            _ins(str(uuid.uuid4()), "sessions_v2")
+        # 5 rows with NULL target_horizon_version — must be excluded for sessions_v2 model
+        for _ in range(5):
+            _ins(str(uuid.uuid4()), None)
+        conn.commit()
+
+        pm = compute_prospective_metrics(mv, conn)
+        conn.close()
+
+        # Only the 5 sessions_v2 rows should contribute — NULL rows excluded
+        assert pm.get("prospective_n", 0) == 5, \
+            f"sessions_v2 should exclude NULL-target rows; got prospective_n={pm.get('prospective_n')}"
