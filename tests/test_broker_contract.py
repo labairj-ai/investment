@@ -57,7 +57,9 @@ def _make_conn() -> sqlite3.Connection:
             status TEXT DEFAULT 'PENDING',
             episode_id TEXT, decision_origin TEXT, code_commit_sha TEXT,
             decision_variant_id INTEGER,
-            decision_market_price REAL, decision_bid REAL, decision_ask REAL
+            decision_market_price REAL, decision_bid REAL, decision_ask REAL,
+            decision_last REAL, decision_mid REAL, decision_spread_bps REAL,
+            quote_timestamp TEXT, price_source TEXT
         );
         CREATE TABLE IF NOT EXISTS orders (
             order_id TEXT PRIMARY KEY, intent_id TEXT, account_id TEXT,
