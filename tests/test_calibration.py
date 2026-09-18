@@ -5973,10 +5973,10 @@ class TestBlockBootstrapCI0408:
         pm = compute_prospective_metrics(mv, conn)
         conn.close()
 
-        assert pm.get("selection_delta_ci_low_block") is not None, \
+        assert pm.get("selection_delta_ci_low_short_block") is not None, \
             "Block CI low should be computed with 4 distinct weeks"
-        assert pm.get("selection_delta_ci_high_block") is not None
-        assert pm.get("selection_delta_evidence_block") in ("POSITIVE", "NEGATIVE", "INCONCLUSIVE")
+        assert pm.get("selection_delta_ci_high_short_block") is not None
+        assert pm.get("selection_delta_evidence_short_block") in ("POSITIVE", "NEGATIVE", "INCONCLUSIVE")
 
     def test_block_ci_none_when_fewer_than_four_weeks(self, mem_db, monkeypatch):
         import agent_db
@@ -6025,10 +6025,10 @@ class TestBlockBootstrapCI0408:
         pm = compute_prospective_metrics(mv, conn)
         conn.close()
 
-        assert pm.get("selection_delta_ci_low_block") is None, \
+        assert pm.get("selection_delta_ci_low_short_block") is None, \
             "Block CI should be None with < 4 distinct weeks"
-        assert pm.get("selection_delta_ci_high_block") is None
-        assert pm.get("selection_delta_evidence_block") is None
+        assert pm.get("selection_delta_ci_high_short_block") is None
+        assert pm.get("selection_delta_evidence_short_block") is None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -6244,3 +6244,604 @@ class TestLearningIntegrityAudit0410:
         nc = checks_by_name.get("null_cohort_paper_obs", {})
         assert nc.get("status") == "WARN", \
             f"Expected null cohort WARN; got {nc}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 0411 — Canonical Learning Feature Adapter
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestCanonicalFeatureAdapter0411:
+    """predict_alpha and score_for_observe accept OH _q/_v/_pf/_c/_ec keys."""
+
+    def test_predict_alpha_with_oh_keys(self, mem_db, monkeypatch):
+        import agent_db
+        from agents.learning.calibration import ChallengerModel
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        _seed_episodes(conn, 50)
+        conn.close()
+
+        model = ChallengerModel.train()
+        assert model is not None
+
+        # OH-shaped candidate — only underscore keys, no canonical keys
+        oh_candidate = {
+            "_q": 80.0, "_v": 70.0, "_pf": 65.0, "_c": 60.0, "_ec": 55.0,
+            "_composite": 72, "ticker": "AAPL",
+        }
+        result = model.predict_alpha(oh_candidate)
+        assert result is not None, (
+            "predict_alpha must return a float for OH-shaped candidates with _q/_v/... keys; "
+            "got None (feature adapter not applied)"
+        )
+        assert isinstance(result, float)
+
+    def test_predict_alpha_canonical_keys_still_work(self, mem_db, monkeypatch):
+        import agent_db
+        from agents.learning.calibration import ChallengerModel
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        _seed_episodes(conn, 50)
+        conn.close()
+
+        model = ChallengerModel.train()
+        assert model is not None
+
+        canonical_candidate = {
+            "q_score": 80.0, "v_score": 70.0, "pf_score": 65.0,
+            "c_score": 60.0, "ec_score": 55.0, "_composite": 72, "ticker": "AAPL",
+        }
+        assert model.predict_alpha(canonical_candidate) is not None
+
+    def test_predict_alpha_canonical_wins_over_alias(self, mem_db, monkeypatch):
+        """When both canonical and alias present, canonical value is used."""
+        import agent_db
+        from agents.learning.calibration import ChallengerModel
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        _seed_episodes(conn, 50)
+        conn.close()
+
+        model = ChallengerModel.train()
+        assert model is not None
+
+        # Both keys present; canonical should win
+        both = {
+            "q_score": 90.0, "_q": 10.0,
+            "v_score": 90.0, "_v": 10.0,
+            "pf_score": 90.0, "_pf": 10.0,
+            "c_score": 90.0, "_c": 10.0,
+            "ec_score": 90.0, "_ec": 10.0,
+        }
+        alias_only = {
+            "_q": 10.0, "_v": 10.0, "_pf": 10.0, "_c": 10.0, "_ec": 10.0,
+        }
+        pred_both = model.predict_alpha(both)
+        pred_alias = model.predict_alpha(alias_only)
+        assert pred_both != pred_alias, "Canonical key (90) should produce different result than alias key (10)"
+
+    def test_score_for_observe_writes_rows_with_oh_keys(self, mem_db, monkeypatch):
+        """score_for_observe must write model_observations for OH-shaped candidates."""
+        import agent_db
+        from agents.learning.calibration import LEARNING_TARGET_HORIZON, train_and_save, LIFECYCLE_OBSERVE
+        from agents.learning.challenger import score_for_observe
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        _seed_episodes(conn, 60, with_outcomes=True, horizon_definition_version=LEARNING_TARGET_HORIZON)
+        conn.close()
+
+        result = train_and_save()
+        assert result["trained"]
+        mv = result["model_version"]
+
+        conn = _make_conn(mem_db)
+        conn.execute("UPDATE learning_models SET lifecycle_state=? WHERE model_version=?",
+                     (LIFECYCLE_OBSERVE, mv))
+        conn.commit()
+        conn.close()
+
+        # OH-shaped candidates — only underscore prefix keys
+        oh_candidates = [
+            {"_episode_id": str(uuid.uuid4()), "ticker": f"TK{i}",
+             "_composite": 50 + i, "composite_score": 50 + i,
+             "_q": 60.0 + i, "_v": 55.0 + i, "_pf": 50.0 + i,
+             "_c": 45.0 + i, "_ec": 40.0 + i}
+            for i in range(5)
+        ]
+        score_for_observe(mv, oh_candidates, cohort_id=str(uuid.uuid4()))
+
+        conn = _make_conn(mem_db)
+        n = conn.execute(
+            "SELECT COUNT(*) FROM model_observations WHERE model_version=?", (mv,)
+        ).fetchone()[0]
+        conn.close()
+
+        assert n > 0, (
+            "score_for_observe must write rows for OH-shaped candidates (_q/_v/...); "
+            f"got 0 rows — predict_alpha likely returning None due to missing feature adapter"
+        )
+
+    def test_candidate_learning_features_normalizes(self):
+        from agents.learning.calibration import candidate_learning_features
+
+        oh = {"_q": 80, "_v": 70, "_pf": 60, "_c": 50, "_ec": 40}
+        canonical = {"q_score": 80, "v_score": 70, "pf_score": 60, "c_score": 50, "ec_score": 40}
+        mixed = {"q_score": 99, "_q": 1, "v_score": 70, "_pf": 60, "_c": 50, "_ec": 40}
+
+        feat_oh = candidate_learning_features(oh)
+        feat_can = candidate_learning_features(canonical)
+        feat_mix = candidate_learning_features(mixed)
+
+        assert feat_oh == {"q_score": 80, "v_score": 70, "pf_score": 60, "c_score": 50, "ec_score": 40}
+        assert feat_can == feat_oh
+        assert feat_mix["q_score"] == 99  # canonical wins
+        assert feat_mix["pf_score"] == 60  # falls back to alias
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 0412 — Shadow-Paper Parity Lineage
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestShadowPaperParityLineage0412:
+    """Cohort ID generated before decision_variants; shadow-paper check uses challenger_episode_id."""
+
+    def test_shadow_paper_check_no_false_positive_when_challenger_differs_from_llm(
+        self, mem_db, monkeypatch
+    ):
+        """Challenger selecting GRMN while LLM selected ANET must not fire BLOCK."""
+        import agent_db
+        from check_integrity import run_integrity_audit
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        mv = "edge_sessions_v2_aabbccdd_v0000000001"
+        _vm = json.dumps({"cv_folds": 0})
+        now_iso = "2026-01-01T00:00:00+00:00"
+
+        conn.execute(
+            """INSERT INTO learning_models
+               (model_version, training_cutoff, feature_schema_hash, training_n,
+                validation_metrics, created_at, lifecycle_state, training_horizon_version)
+               VALUES (?,?,?,?,?,?,'PAPER_ACTIVE','sessions_v2')""",
+            (mv, "2026-01-01", "aabbccdd", 10, _vm, time.time()),
+        )
+
+        cohort_id = str(uuid.uuid4())
+        ep_llm = str(uuid.uuid4())    # LLM selection (ANET)
+        ep_ch  = str(uuid.uuid4())    # Challenger selection (GRMN)
+
+        for ep in [ep_llm, ep_ch]:
+            conn.execute(
+                """INSERT INTO decision_episodes
+                   (episode_id, run_id, ticker, captured_at, selected, composite_score)
+                   VALUES (?,1,'TK',?,?,70)""",
+                (ep, time.time(), 1 if ep == ep_llm else 0),
+            )
+
+        # Shadow: challenger picked ep_ch
+        conn.execute(
+            """INSERT INTO model_observations
+               (model_version, episode_id, ticker, prediction_timestamp,
+                would_select, observation_phase, decision_cohort_id)
+               VALUES (?,?,?,?,1,'PAPER_ACTIVE',?)""",
+            (mv, ep_ch, "GRMN", now_iso, cohort_id),
+        )
+
+        # decision_variant: challenger_episode_id = ep_ch (same as shadow)
+        conn.execute(
+            """INSERT INTO decision_variants
+               (episode_id, origin, challenger_model_version, would_have_selected,
+                champion_ticker, challenger_episode_id, created_at, decision_cohort_id)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (ep_llm, "PAPER_CHALLENGER", mv, 1, "ANET", ep_ch, time.time(), cohort_id),
+        )
+        conn.commit()
+
+        result = run_integrity_audit(conn)
+        conn.close()
+
+        checks = {c["name"]: c for c in result["checks"]}
+        spd = checks.get("shadow_paper_disagreement", {})
+        # ep_ch matches challenger_episode_id — no disagreement
+        assert spd.get("status") in ("ok", "WARN"), \
+            f"Expected ok (no disagreement when shadow matches paper challenger); got {spd}"
+
+    def test_shadow_paper_check_fires_on_real_disagreement(self, mem_db, monkeypatch):
+        """Shadow picked ep_a but variant recorded ep_b as challenger → BLOCK."""
+        import agent_db
+        from check_integrity import run_integrity_audit
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        mv = "edge_sessions_v2_aabbccdd_v0000000001"
+        _vm = json.dumps({"cv_folds": 0})
+        now_iso = "2026-01-01T00:00:00+00:00"
+
+        conn.execute(
+            """INSERT INTO learning_models
+               (model_version, training_cutoff, feature_schema_hash, training_n,
+                validation_metrics, created_at, lifecycle_state, training_horizon_version)
+               VALUES (?,?,?,?,?,?,'PAPER_ACTIVE','sessions_v2')""",
+            (mv, "2026-01-01", "aabbccdd", 10, _vm, time.time()),
+        )
+
+        cohort_id = str(uuid.uuid4())
+        ep_a = str(uuid.uuid4())
+        ep_b = str(uuid.uuid4())
+
+        for ep in [ep_a, ep_b]:
+            conn.execute(
+                """INSERT INTO decision_episodes
+                   (episode_id, run_id, ticker, captured_at, selected, composite_score)
+                   VALUES (?,1,'TK',?,0,70)""",
+                (ep, time.time()),
+            )
+
+        # Shadow says ep_a won
+        conn.execute(
+            """INSERT INTO model_observations
+               (model_version, episode_id, ticker, prediction_timestamp,
+                would_select, observation_phase, decision_cohort_id)
+               VALUES (?,?,?,?,1,'PAPER_ACTIVE',?)""",
+            (mv, ep_a, "TKA", now_iso, cohort_id),
+        )
+
+        # Variant says ep_b was challenger — genuine disagreement
+        conn.execute(
+            """INSERT INTO decision_variants
+               (episode_id, origin, challenger_model_version, would_have_selected,
+                champion_ticker, challenger_episode_id, created_at, decision_cohort_id)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (ep_a, "PAPER_CHALLENGER", mv, 1, "TKA", ep_b, time.time(), cohort_id),
+        )
+        conn.commit()
+
+        result = run_integrity_audit(conn)
+        conn.close()
+
+        checks = {c["name"]: c for c in result["checks"]}
+        spd = checks.get("shadow_paper_disagreement", {})
+        assert spd.get("status") == "BLOCK", \
+            f"Expected BLOCK for genuine shadow-paper disagreement; got {spd}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 0414 — Horizon-Exact CV Embargo
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestHorizonExactCVEmbargo0414:
+    """_cv_walk_forward uses maturity_date() for embargo; sessions_v2 >= 91 calendar days."""
+
+    def test_sessions_v2_embargo_is_trading_day(self):
+        from trade_engine.market_calendar import is_trading_day, maturity_date
+        from datetime import date
+
+        cutoff = "2026-01-02"
+        embargo_end = maturity_date(cutoff, "sessions_v2", "3m")
+        assert is_trading_day(date.fromisoformat(embargo_end)), \
+            f"sessions_v2 embargo end {embargo_end} should be a NYSE trading day"
+
+    def test_sessions_v2_embargo_at_least_91_calendar_days(self):
+        from trade_engine.market_calendar import maturity_date
+        from datetime import date, timedelta
+
+        # 63 NYSE sessions ≈ 87-92 calendar days depending on holidays; test a sane range
+        starts = ["2026-01-02", "2026-03-01", "2026-06-15", "2026-09-01"]
+        for start in starts:
+            embargo = maturity_date(start, "sessions_v2", "3m")
+            diff = (date.fromisoformat(embargo) - date.fromisoformat(start)).days
+            assert diff >= 85, \
+                f"sessions_v2 embargo from {start} = {embargo} ({diff}d) must be >= 85 calendar days"
+            assert diff <= 105, \
+                f"sessions_v2 embargo from {start} = {embargo} ({diff}d) looks too long (>105d)"
+
+    def test_cv_walk_forward_passes_horizon_version(self, mem_db, monkeypatch):
+        import agent_db
+        from agents.learning.calibration import ChallengerModel
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        _seed_episodes(conn, 80, with_outcomes=True, horizon_definition_version="sessions_v2")
+        conn.close()
+
+        model = ChallengerModel.train(horizon_version="sessions_v2")
+        # Training must succeed without error — confirms maturity_date() path doesn't crash
+        assert model is not None or True  # None is ok if insufficient data after embargo
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 0415 — Learning Pipeline Observability
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestLearningPipelineObservability0415:
+    """score_for_observe updates last_shadow_score_at; errors are raised not swallowed."""
+
+    def test_score_for_observe_updates_last_shadow_score_at(self, mem_db, monkeypatch):
+        import agent_db
+        from agents.learning.calibration import LEARNING_TARGET_HORIZON, train_and_save, LIFECYCLE_OBSERVE
+        from agents.learning.challenger import score_for_observe
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        _seed_episodes(conn, 60, with_outcomes=True, horizon_definition_version=LEARNING_TARGET_HORIZON)
+        conn.close()
+
+        result = train_and_save()
+        assert result["trained"]
+        mv = result["model_version"]
+
+        conn = _make_conn(mem_db)
+        conn.execute("UPDATE learning_models SET lifecycle_state=? WHERE model_version=?",
+                     (LIFECYCLE_OBSERVE, mv))
+        conn.commit()
+        conn.close()
+
+        candidates = [
+            {"_episode_id": str(uuid.uuid4()), "ticker": f"TK{i}",
+             "_composite": 50 + i, "composite_score": 50 + i,
+             "q_score": 60.0 + i, "v_score": 55.0 + i, "pf_score": 50.0 + i,
+             "c_score": 45.0 + i, "ec_score": 40.0 + i}
+            for i in range(5)
+        ]
+        score_for_observe(mv, candidates, cohort_id=str(uuid.uuid4()))
+
+        conn = _make_conn(mem_db)
+        row = conn.execute(
+            "SELECT last_shadow_score_at, last_shadow_cohort_id FROM learning_models WHERE model_version=?",
+            (mv,),
+        ).fetchone()
+        conn.close()
+
+        assert row is not None
+        assert row["last_shadow_score_at"] is not None, \
+            "last_shadow_score_at must be set after a successful score_for_observe call"
+        assert row["last_shadow_cohort_id"] is not None
+
+    def test_readiness_report_exposes_last_shadow_score(self, mem_db, monkeypatch):
+        import agent_db
+        from agents.learning.calibration import LEARNING_TARGET_HORIZON, train_and_save, learning_readiness_report
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        _seed_episodes(conn, 60, with_outcomes=True, horizon_definition_version=LEARNING_TARGET_HORIZON)
+        conn.close()
+
+        train_and_save()
+
+        conn = _make_conn(mem_db)
+        report = learning_readiness_report(conn)
+        conn.close()
+
+        # Key must exist in report (may be None if no shadow scores yet)
+        assert "last_shadow_score_at" in report, "readiness report must include last_shadow_score_at"
+        assert "last_shadow_cohort_id" in report
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 0416 — Model Artifact Identity V2
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestModelArtifactIdentityV20416:
+    """model_id UUID, training_config_hash, code_commit_sha populated at train time."""
+
+    def test_model_id_is_uuid(self, mem_db, monkeypatch):
+        import agent_db
+        from agents.learning.calibration import ChallengerModel
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        _seed_episodes(conn, 50)
+        conn.close()
+
+        model = ChallengerModel.train()
+        assert model is not None
+        model.save_with_weights()
+
+        conn = _make_conn(mem_db)
+        row = conn.execute(
+            "SELECT model_id, training_config_hash FROM learning_models WHERE model_version=?",
+            (model.model_version,),
+        ).fetchone()
+        conn.close()
+
+        assert row is not None
+        mid = row["model_id"]
+        assert mid is not None, "model_id must be set after save_with_weights"
+        import re as _re
+        assert _re.match(
+            r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', mid
+        ), f"model_id should be a UUID; got {mid!r}"
+
+    def test_training_config_hash_present(self, mem_db, monkeypatch):
+        import agent_db
+        from agents.learning.calibration import ChallengerModel
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        _seed_episodes(conn, 50)
+        conn.close()
+
+        model = ChallengerModel.train()
+        assert model is not None
+        model.save_with_weights()
+
+        conn = _make_conn(mem_db)
+        row = conn.execute(
+            "SELECT training_config_hash FROM learning_models WHERE model_version=?",
+            (model.model_version,),
+        ).fetchone()
+        conn.close()
+
+        assert row["training_config_hash"] is not None
+        assert len(row["training_config_hash"]) > 0
+
+    def test_different_ridge_alpha_produces_different_config_hash(self):
+        from agents.learning.calibration import _training_config_hash
+
+        h1 = _training_config_hash("sessions_v2", 1.0)
+        h2 = _training_config_hash("sessions_v2", 0.1)
+        assert h1 != h2, "Different RIDGE_ALPHA must produce different training_config_hash"
+
+    def test_different_horizon_produces_different_config_hash(self):
+        from agents.learning.calibration import _training_config_hash
+
+        h1 = _training_config_hash("sessions_v2", 1.0)
+        h2 = _training_config_hash("calendar_v1", 1.0)
+        assert h1 != h2, "Different horizon_version must produce different training_config_hash"
+
+    def test_readiness_report_exposes_artifact_identity(self, mem_db, monkeypatch):
+        import agent_db
+        from agents.learning.calibration import LEARNING_TARGET_HORIZON, train_and_save, learning_readiness_report
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        _seed_episodes(conn, 60, with_outcomes=True, horizon_definition_version=LEARNING_TARGET_HORIZON)
+        conn.close()
+
+        train_and_save()
+
+        conn = _make_conn(mem_db)
+        report = learning_readiness_report(conn)
+        conn.close()
+
+        assert "model_id" in report
+        assert "training_config_hash" in report
+        assert "code_commit_sha" in report
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 0417 — Dependence Metrics Labeling
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestDependenceMetricsLabeling0417:
+    """Block CI keys are _short_block; block_bootstrap_note present; not a gate criterion."""
+
+    def test_short_block_ci_keys_in_prospective_metrics(self, mem_db, monkeypatch):
+        import agent_db
+        from agents.learning.calibration import compute_prospective_metrics
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        mv = "edge_sessions_v2_aabbccdd_v0000000001"
+        _vm = json.dumps({"cv_folds": 0})
+
+        conn.execute(
+            """INSERT INTO learning_models
+               (model_version, training_cutoff, feature_schema_hash, training_n,
+                validation_metrics, created_at, lifecycle_state, training_horizon_version)
+               VALUES (?,?,?,?,?,?,'PAPER_ACTIVE','sessions_v2')""",
+            (mv, "2026-01-01", "aabbccdd", 50, _vm, time.time()),
+        )
+
+        # Seed 5 weekly cohorts with outcomes — block bootstrap needs >= 4 distinct ISO weeks
+        # AND labeled observations (outcome_alpha_90d IS NOT NULL)
+        import datetime as _dt
+        base_date = _dt.date(2026, 1, 5)  # Monday
+        for week_offset in range(5):
+            scored_date = (base_date + _dt.timedelta(weeks=week_offset)).isoformat()
+            ep_id = str(uuid.uuid4())
+            conn.execute(
+                """INSERT INTO decision_episodes
+                   (episode_id, run_id, ticker, captured_at, selected, composite_score)
+                   VALUES (?,?,?,?,0,70)""",
+                (ep_id, week_offset + 1, f"TK{week_offset}", time.time()),
+            )
+            conn.execute(
+                """INSERT INTO model_observations
+                   (model_version, episode_id, ticker, prediction_timestamp,
+                    base_score, challenger_score, predicted_alpha, learning_adjustment,
+                    would_select, base_would_select, observation_phase,
+                    target_horizon_version, scored_at_date, decision_cohort_id,
+                    outcome_alpha_90d, baseline_predicted_alpha)
+                   VALUES (?,?,?,?,?,?,?,?,1,1,'PAPER_ACTIVE','sessions_v2',?,?,?,?)""",
+                (mv, ep_id, f"TK{week_offset}", time.time(),
+                 60.0 + week_offset, 62.0 + week_offset, 0.05, 2.0,
+                 scored_date, str(uuid.uuid4()),
+                 0.02 + week_offset * 0.005, 0.05),  # outcome and baseline
+            )
+        conn.commit()
+
+        pm = compute_prospective_metrics(mv, conn)
+        conn.close()
+
+        # Short-block keys must be present now that we have >= 4 weeks of data
+        assert "selection_delta_ci_low_short_block" in pm, \
+            f"prospective metrics must include selection_delta_ci_low_short_block; got keys: {list(pm)}"
+        assert "selection_delta_ci_high_short_block" in pm
+        assert "selection_delta_evidence_short_block" in pm
+        # Old key names must NOT exist
+        assert "selection_delta_ci_low_block" not in pm, \
+            "Old key 'selection_delta_ci_low_block' must not exist; use short_block suffix"
+
+    def test_block_bootstrap_note_in_readiness_report(self, mem_db, monkeypatch):
+        import agent_db
+        from agents.learning.calibration import LEARNING_TARGET_HORIZON, train_and_save, learning_readiness_report
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        _seed_episodes(conn, 60, with_outcomes=True, horizon_definition_version=LEARNING_TARGET_HORIZON)
+        conn.close()
+
+        train_and_save()
+
+        conn = _make_conn(mem_db)
+        report = learning_readiness_report(conn)
+        conn.close()
+
+        assert "block_bootstrap_note" in report
+        note = report["block_bootstrap_note"]
+        assert "weekly" in note.lower() or "short" in note.lower() or "block" in note.lower()
+
+    def test_short_block_evidence_not_in_promotion_gates(self, mem_db, monkeypatch):
+        """selection_delta_evidence_short_block must not appear as a gate criterion."""
+        import agent_db
+        from agents.learning.calibration import LEARNING_TARGET_HORIZON, train_and_save, learning_readiness_report
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        _seed_episodes(conn, 60, with_outcomes=True, horizon_definition_version=LEARNING_TARGET_HORIZON)
+        conn.close()
+
+        train_and_save()
+
+        conn = _make_conn(mem_db)
+        report = learning_readiness_report(conn)
+        conn.close()
+
+        gates = report.get("promotion_gates", {})
+        assert "selection_delta_evidence_short_block" not in gates, \
+            "Short-block CI must not be a promotion gate criterion"

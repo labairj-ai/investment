@@ -1,7 +1,7 @@
 # UUID-Based Model Identity with Config and Commit Hash
 
 - **ID:** 0416
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-18
 - **Priority:** normal
 - **Depends:** 0409

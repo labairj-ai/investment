@@ -1,7 +1,7 @@
 # Audit Candidate Coverage Per Learning Cohort
 
 - **ID:** 0413
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-18
 - **Priority:** high
 - **Depends:** 0411, 0412

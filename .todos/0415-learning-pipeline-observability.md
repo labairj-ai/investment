@@ -1,7 +1,7 @@
 # Surface Learning Pipeline Failures Instead of Swallowing Them
 
 - **ID:** 0415
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-18
 - **Priority:** high
 - **Depends:** 0411

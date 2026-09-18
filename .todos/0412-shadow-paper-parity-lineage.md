@@ -1,7 +1,7 @@
 # Persist Cohort ID to Decision Variants for Exact Shadow-Paper Parity
 
 - **ID:** 0412
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-18
 - **Priority:** high
 - **Depends:** 0411

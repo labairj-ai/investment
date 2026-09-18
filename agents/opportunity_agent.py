@@ -511,6 +511,11 @@ def run_opportunity_hunter(ctx: AgentContext) -> list[Recommendation]:
             challenger_model_version=sel_ch_info.get("model_version"),
         )
 
+    # 0412: generate sweep cohort_id HERE — before decision_variants and shadow scoring —
+    # so both paths share the same cohort identity for exact lineage tracing.
+    import uuid as _uuid
+    _sweep_cohort_id = str(_uuid.uuid4())
+
     # 0336/0340/0345: record decision_variant and virtual book fills if challenger is PAPER_ACTIVE
     if sel_ch_info.get("active"):
         book_exp_champion = select_base_winner(scored)   # top-1 by base composite = experiment champion
@@ -523,6 +528,7 @@ def run_opportunity_hunter(ctx: AgentContext) -> list[Recommendation]:
             experiment_champion_ticker=book_exp_champion.get("ticker") if book_exp_champion else None,
             experiment_champion=book_exp_champion,
             challenger=ch_top_for_book,
+            decision_cohort_id=_sweep_cohort_id,
         )
 
         # 0345 — Experimental Symmetry (Option A, ranking-only):
@@ -545,13 +551,9 @@ def run_opportunity_hunter(ctx: AgentContext) -> list[Recommendation]:
     # OBSERVE: builds promotion-gate evidence
     # PAPER_ACTIVE: builds degradation-monitor evidence (post-promotion performance)
     # SUSPENDED: builds recovery audit trail
+    # 0415: errors are logged at ERROR level; base recommendations are unaffected.
+    import agent_db as _adb
     try:
-        import agent_db as _adb
-        import uuid as _uuid
-        # 0398: one cohort_id per sweep so all score_for_observe calls in this run
-        # share a single decision_cohort_id — cohort identity must be set here, not
-        # inside score_for_observe(), otherwise each model gets a different cohort.
-        _sweep_cohort_id = str(_uuid.uuid4())
         _conn = _adb._connect()
         obs_models = _conn.execute(
             "SELECT model_version FROM learning_models WHERE lifecycle_state IN (?,?,?)",
@@ -560,9 +562,21 @@ def run_opportunity_hunter(ctx: AgentContext) -> list[Recommendation]:
         _conn.close()
         for _om in obs_models:
             from agents.learning.challenger import score_for_observe
-            score_for_observe(_om["model_version"], scored, cohort_id=_sweep_cohort_id)
-    except Exception:
-        pass
+            try:
+                score_for_observe(_om["model_version"], scored, cohort_id=_sweep_cohort_id)
+            except Exception as _sfe:
+                import logging as _log
+                _log.getLogger(__name__).error(
+                    "[opportunity] shadow score failed for %s cohort=%s: %s",
+                    _om["model_version"], _sweep_cohort_id, _sfe,
+                )
+                print(f"[opportunity] ERROR: shadow scoring failed ({_om['model_version']}): {_sfe}")
+    except Exception as _outer_e:
+        import logging as _log
+        _log.getLogger(__name__).error(
+            "[opportunity] shadow scoring block failed cohort=%s: %s", _sweep_cohort_id, _outer_e
+        )
+        print(f"[opportunity] ERROR: shadow scoring block failed: {_outer_e}")
 
     # Assemble recommendation
     meta = selected.get("_pf_meta", {})
@@ -794,6 +808,7 @@ def _insert_decision_variant(
     experiment_champion_ticker: str | None = None,
     experiment_champion: dict | None = None,
     challenger: dict | None = None,
+    decision_cohort_id: str | None = None,
 ) -> None:
     """Insert a decision_variant row recording challenger's selection vs champion (0336/0337/0354/0358).
 
@@ -850,8 +865,9 @@ def _insert_decision_variant(
                 recommendation_control_ticker, experiment_champion_ticker,
                 recommendation_control_episode_id, experiment_champion_episode_id,
                 challenger_episode_id,
-                variant_ticker, action, price, thesis_version, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                variant_ticker, action, price, thesis_version, created_at,
+                decision_cohort_id)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 rec_control_ep,
                 "PAPER_CHALLENGER",
@@ -870,6 +886,7 @@ def _insert_decision_variant(
                 variant_price,
                 variant_thesis,
                 time.time(),
+                decision_cohort_id,          # 0412: sweep cohort for exact lineage
             ),
         )
         conn.commit()

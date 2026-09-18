@@ -648,6 +648,15 @@ def migrate() -> None:
         # 0401 — cohort-window degradation: window size provenance
         ("model_performance_snapshots", "n_cohorts_in_window",               "INTEGER"),
         ("model_performance_snapshots", "n_candidate_rows_in_window",        "INTEGER"),
+        # 0412 — sweep cohort ID on decision_variants for exact shadow-paper lineage
+        ("decision_variants", "decision_cohort_id",                          "TEXT"),
+        # 0415 — learning pipeline observability
+        ("learning_models", "last_shadow_score_at",                          "TEXT"),
+        ("learning_models", "last_shadow_cohort_id",                         "TEXT"),
+        # 0416 — model artifact identity v2
+        ("learning_models", "model_id",                                      "TEXT"),
+        ("learning_models", "training_config_hash",                          "TEXT"),
+        ("learning_models", "code_commit_sha",                               "TEXT"),
     ]
     for table, col, col_type in _new_cols:
         try:

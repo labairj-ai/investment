@@ -45,6 +45,32 @@ MAX_CV_FOLDS        = 10        # cap walk-forward iterations
 FEATURES            = ["q_score", "v_score", "pf_score", "c_score", "ec_score"]
 FEATURE_SCHEMA_VER  = "v1"
 
+# 0411: Opportunity Hunter builds candidates with underscore-prefix keys (_q, _v, …).
+# This map lets predict_alpha() accept either form without touching opportunity_agent.py.
+_FEATURE_ALIASES: dict[str, str] = {
+    "q_score":  "_q",
+    "v_score":  "_v",
+    "pf_score": "_pf",
+    "c_score":  "_c",
+    "ec_score": "_ec",
+}
+
+
+def candidate_learning_features(candidate: dict) -> dict:
+    """Return a normalized feature dict readable by the Ridge model.
+
+    Resolves both canonical names (q_score, …) and OH underscore aliases (_q, …).
+    Canonical key wins if both are present.  Returns a flat dict with exactly the
+    five FEATURES keys; missing values are None.
+    """
+    out: dict = {}
+    for canonical, alias in _FEATURE_ALIASES.items():
+        v = candidate.get(canonical)
+        if v is None:
+            v = candidate.get(alias)
+        out[canonical] = v
+    return out
+
 # 0343/0347 — uncertainty band thresholds for ranking-spread CI width (precision classification)
 ALPHA_CI_HIGH_THRESHOLD   = 0.02   # band width < 2% → HIGH precision
 ALPHA_CI_MEDIUM_THRESHOLD = 0.05   # band width < 5% → MEDIUM; else LOW
@@ -115,8 +141,9 @@ class ChallengerModel:
         return self.training_n / (self.training_n + SHRINKAGE_LAMBDA)
 
     def predict_alpha(self, candidate: dict) -> float | None:
-        """Predict 90d alpha for a candidate feature dict. Returns None if any feature missing."""
-        x = [candidate.get(f) for f in FEATURES]
+        """Predict 90d alpha for a candidate. Accepts OH _q/_v/… or canonical q_score/… keys."""
+        feat = candidate_learning_features(candidate)
+        x = [feat.get(f) for f in FEATURES]
         if any(v is None for v in x):
             return None
         return float(np.dot(self.coef, x) + self.intercept)
@@ -181,13 +208,16 @@ class ChallengerModel:
         vm = self.validation_metrics
         conn = agent_db._connect()
         try:
+            import uuid as _uuid_mod
+            _model_id = vm.get("model_id") or str(_uuid_mod.uuid4())
             conn.execute(
                 """INSERT INTO learning_models
                    (model_version, training_cutoff, feature_schema_hash,
                     training_n, validation_metrics, created_at,
                     unique_tickers, unique_decision_dates, unique_weeks, raw_n,
-                    lifecycle_state, training_horizon_version)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    lifecycle_state, training_horizon_version,
+                    model_id, training_config_hash, code_commit_sha)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     self.model_version,
                     self.training_cutoff,
@@ -201,6 +231,9 @@ class ChallengerModel:
                     vm.get("raw_n"),
                     self.lifecycle_state,
                     vm.get("training_horizon_version", "calendar_v1"),  # 0369
+                    _model_id,
+                    vm.get("training_config_hash"),
+                    vm.get("code_commit_sha"),
                 ),
             )
             conn.commit()
@@ -299,8 +332,8 @@ class ChallengerModel:
         unique_weeks = len(set(_iso_week(d) for d in unique_dates))
         unique_tickers = len(set(tickers))
 
-        # Decision-date cohort walk-forward cross-validation (0334)
-        folds = _cv_walk_forward(X, y, dates, ridge_alpha)
+        # Decision-date cohort walk-forward cross-validation (0334/0414)
+        folds = _cv_walk_forward(X, y, dates, ridge_alpha, horizon_version=horizon_version)
 
         # Bootstrap uncertainty bands for expected alpha (0343)
         ci = _bootstrap_alpha_ci(folds)
@@ -360,6 +393,10 @@ class ChallengerModel:
             "alpha_edge_evidence":      ci["alpha_edge_evidence"],
             # 0369 — version of horizon definition used for training data
             "training_horizon_version": horizon_version,
+            # 0416 — immutable artifact identity
+            "model_id": str(__import__("uuid").uuid4()),
+            "training_config_hash": _training_config_hash(horizon_version, ridge_alpha),
+            "code_commit_sha": _code_commit_sha(),
         }
 
         return cls(
@@ -516,16 +553,21 @@ def _cv_walk_forward(
     y: np.ndarray,
     dates: list[str],
     ridge_alpha: float,
+    horizon_version: str = "calendar_v1",
 ) -> list[dict]:
-    """Decision-date cohort walk-forward cross-validation with embargo (0334).
+    """Decision-date cohort walk-forward cross-validation with embargo (0334/0414).
 
     For each cutoff date where train_n >= MIN_TRAINING_N, validates on the
-    next available date that is at least EMBARGO_DAYS after the cutoff.
-    The embargo prevents return-window overlap between training and validation.
+    next available date that is at least one full horizon maturity period after
+    the cutoff.  The embargo prevents return-window overlap between training
+    and validation.  0414: embargo derived from maturity_date() so sessions_v2
+    models use the exact same horizon clock as labeling and eligibility checks.
 
     Returns list of fold dicts: mae, baseline_mae, train_n, val_n, coef_signs,
     top_vs_bottom_quintile_alpha (None when val_n < 5).
     """
+    from trade_engine.market_calendar import maturity_date as _mat_date
+
     unique_dates = sorted(set(dates))
     folds: list[dict] = []
 
@@ -534,7 +576,10 @@ def _cv_walk_forward(
         if int(train_mask.sum()) < MIN_TRAINING_N:
             continue
 
-        embargo_end = (_date.fromisoformat(cutoff_str) + _td(days=EMBARGO_DAYS)).isoformat()
+        try:
+            embargo_end = _mat_date(cutoff_str, horizon_version, HORIZON)
+        except Exception:
+            embargo_end = (_date.fromisoformat(cutoff_str) + _td(days=EMBARGO_DAYS)).isoformat()
         val_dates_after = [d for d in unique_dates if d > embargo_end]
         if not val_dates_after:
             break
@@ -604,6 +649,37 @@ def _ridge_fit(
 
 def _schema_hash() -> str:
     return hashlib.md5("|".join(FEATURES).encode()).hexdigest()[:12]
+
+
+def _training_config_hash(horizon_version: str, ridge_alpha: float) -> str:
+    """0416: Hash all model-affecting constants so different configs produce different keys."""
+    parts = [
+        f"features={','.join(FEATURES)}",
+        f"ridge_alpha={ridge_alpha}",
+        f"max_adj={MAX_ADJUSTMENT}",
+        f"alpha_scale={ALPHA_TO_SCORE_SCALE}",
+        f"shrinkage_lambda={SHRINKAGE_LAMBDA}",
+        f"min_training_n={MIN_TRAINING_N}",
+        f"horizon_version={horizon_version}",
+        f"horizon_label={HORIZON}",
+        f"feature_schema_ver={FEATURE_SCHEMA_VER}",
+    ]
+    return hashlib.md5("|".join(parts).encode()).hexdigest()[:12]
+
+
+def _code_commit_sha() -> str | None:
+    """0416: Best-effort git commit SHA at train time."""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()[:12]
+    except Exception:
+        pass
+    return None
 
 
 def train_and_save(horizon_version: str = LEARNING_TARGET_HORIZON) -> dict:
@@ -1066,9 +1142,9 @@ def compute_prospective_metrics(model_version: str, conn) -> dict:
     selection_delta_evidence: str | None = None
     median_selection_delta: float | None = None
     # 0408: block bootstrap CI (clustered by decision week)
-    selection_delta_ci_low_block: float | None = None
-    selection_delta_ci_high_block: float | None = None
-    selection_delta_evidence_block: str | None = None
+    selection_delta_ci_low_short_block: float | None = None
+    selection_delta_ci_high_short_block: float | None = None
+    selection_delta_evidence_short_block: str | None = None
 
     rows_with_cohort = [r for r in rows if r["decision_cohort_id"] is not None]
     if rows_with_cohort:
@@ -1150,14 +1226,14 @@ def compute_prospective_metrics(model_version: str, conn) -> dict:
                 # Resample whole weeks; each resample mean approximates the overall mean
                 boot_b = [float(rng_b.choice(arr_w, size=nw, replace=True).mean())
                           for _ in range(2000)]
-                selection_delta_ci_low_block = round(float(np.percentile(boot_b, 5)), 6)
-                selection_delta_ci_high_block = round(float(np.percentile(boot_b, 95)), 6)
-                if selection_delta_ci_low_block > 0:
-                    selection_delta_evidence_block = "POSITIVE"
-                elif selection_delta_ci_high_block < 0:
-                    selection_delta_evidence_block = "NEGATIVE"
+                selection_delta_ci_low_short_block = round(float(np.percentile(boot_b, 5)), 6)
+                selection_delta_ci_high_short_block = round(float(np.percentile(boot_b, 95)), 6)
+                if selection_delta_ci_low_short_block > 0:
+                    selection_delta_evidence_short_block = "POSITIVE"
+                elif selection_delta_ci_high_short_block < 0:
+                    selection_delta_evidence_short_block = "NEGATIVE"
                 else:
-                    selection_delta_evidence_block = "INCONCLUSIVE"
+                    selection_delta_evidence_short_block = "INCONCLUSIVE"
 
     # Pearson correlation (challenger_score vs outcome)
     corr: float | None = None
@@ -1232,9 +1308,9 @@ def compute_prospective_metrics(model_version: str, conn) -> dict:
         "selection_delta_ci_high": selection_delta_ci_high,
         "selection_delta_evidence": selection_delta_evidence,
         # 0408: block bootstrap (weekly clusters, accounts for overlapping return windows)
-        "selection_delta_ci_low_block": selection_delta_ci_low_block,
-        "selection_delta_ci_high_block": selection_delta_ci_high_block,
-        "selection_delta_evidence_block": selection_delta_evidence_block,
+        "selection_delta_ci_low_short_block": selection_delta_ci_low_short_block,
+        "selection_delta_ci_high_short_block": selection_delta_ci_high_short_block,
+        "selection_delta_evidence_short_block": selection_delta_evidence_short_block,
     }
 
 
@@ -1409,6 +1485,28 @@ def compute_data_health(conn, target_horizon_version: str = None) -> dict:
             }
         except Exception:
             pass
+
+    # 0415: learning pipeline health — flag when no shadow scores recorded in 3 trading days
+    try:
+        pa_row = conn.execute(
+            """SELECT model_version, last_shadow_score_at FROM learning_models
+               WHERE lifecycle_state='PAPER_ACTIVE' ORDER BY created_at DESC LIMIT 1"""
+        ).fetchone()
+        if pa_row is not None:
+            from trade_engine.market_calendar import nth_trading_session_before
+            _today = __import__("datetime").date.today().isoformat()
+            _stale_cutoff = nth_trading_session_before(_today, 3)
+            _last = pa_row["last_shadow_score_at"] if hasattr(pa_row, "__getitem__") else None
+            if _last is None or _last < _stale_cutoff:
+                findings["learning_pipeline_health"] = {
+                    "value": _last,
+                    "status": "block",
+                    "detail": f"PAPER_ACTIVE model has no shadow scores since {_stale_cutoff}",
+                }
+            else:
+                findings["learning_pipeline_health"] = {"value": _last, "status": "ok"}
+    except Exception:
+        pass
 
     # 0406: cohort winner-count invariant — exactly one would_select and one base_would_select
     # per (model_version, decision_cohort_id). Violations indicate a bug in score_for_observe.
@@ -1730,6 +1828,15 @@ def learning_readiness_report(conn, model_version: str = None) -> dict:
     lifecycle = mv_row["lifecycle_state"] if mv_row else None
     thv = (mv_row["training_horizon_version"] if mv_row else None) or LEARNING_TARGET_HORIZON
 
+    # 0415: pipeline observability — last successful shadow score
+    _mv_keys = mv_row.keys() if (mv_row and hasattr(mv_row, "keys")) else []
+    last_shadow_score_at = mv_row["last_shadow_score_at"] if "last_shadow_score_at" in _mv_keys else None
+    last_shadow_cohort_id = mv_row["last_shadow_cohort_id"] if "last_shadow_cohort_id" in _mv_keys else None
+    # 0416: artifact identity fields
+    model_id = mv_row["model_id"] if "model_id" in _mv_keys else None
+    training_config_hash = mv_row["training_config_hash"] if "training_config_hash" in _mv_keys else None
+    code_commit_sha_val = mv_row["code_commit_sha"] if "code_commit_sha" in _mv_keys else None
+
     # Data health (target-aware)
     health = compute_data_health(conn, target_horizon_version=thv)
     eligible_episodes = health.get("eligible_episodes", 0)
@@ -1787,10 +1894,17 @@ def learning_readiness_report(conn, model_version: str = None) -> dict:
         "selection_delta_ci_low": pm.get("selection_delta_ci_low"),
         "selection_delta_ci_high": pm.get("selection_delta_ci_high"),
         "selection_delta_evidence": pm.get("selection_delta_evidence"),
-        # 0408: block bootstrap CI
-        "selection_delta_ci_low_block": pm.get("selection_delta_ci_low_block"),
-        "selection_delta_ci_high_block": pm.get("selection_delta_ci_high_block"),
-        "selection_delta_evidence_block": pm.get("selection_delta_evidence_block"),
+        # 0408/0417: short-block bootstrap CI (weekly clusters, informational only).
+        # Adjacent daily cohorts share ~90% of their 63-session return window so
+        # weekly blocks still understate dependence.  NOT used in promotion gates.
+        "selection_delta_ci_low_short_block": pm.get("selection_delta_ci_low_short_block"),
+        "selection_delta_ci_high_short_block": pm.get("selection_delta_ci_high_short_block"),
+        "selection_delta_evidence_short_block": pm.get("selection_delta_evidence_short_block"),
+        "block_bootstrap_note": (
+            "Weekly blocks; adjacent 63-session cohorts ~90% correlated. "
+            "Treat as lower bound on uncertainty. Upgrade to 13-week blocks after "
+            "sufficient history accumulates."
+        ),
         "selection_alpha_delta": pm.get("selection_alpha_delta"),
         "challenger_win_rate": (pm.get("challenger_wins", 0) / n_div) if n_div > 0 else None,
         "promotion_target_state": promotion_target_state,  # 0396
@@ -1800,6 +1914,13 @@ def learning_readiness_report(conn, model_version: str = None) -> dict:
         "data_health": health["overall"],
         "data_health_metrics": health["metrics"],
         "next_maturity_date": next_maturity_date,
+        # 0415: pipeline observability
+        "last_shadow_score_at": last_shadow_score_at,
+        "last_shadow_cohort_id": last_shadow_cohort_id,
+        # 0416: artifact identity
+        "model_id": model_id,
+        "training_config_hash": training_config_hash,
+        "code_commit_sha": code_commit_sha_val,
     }
 
 

@@ -1,7 +1,7 @@
 # Replace Fixed 91-Day CV Embargo with Horizon-Exact maturity_date()
 
 - **ID:** 0414
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-18
 - **Priority:** normal
 - **Depends:** 0405

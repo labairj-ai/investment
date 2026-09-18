@@ -1,7 +1,7 @@
 # Normalize OH Candidate Feature Names Before Challenger Scoring
 
 - **ID:** 0411
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-18
 - **Priority:** high
 - **Depends:** 0404

@@ -131,36 +131,63 @@ def _check_paper_active_horizon(conn) -> dict:
 
 
 def _check_shadow_paper_disagreement(conn) -> dict:
-    """Cohort dates where shadow would_select episode != paper recommended episode.
+    """Shadow challenger episode != paper challenger episode for the same cohort.
 
-    Joins model_observations (shadow) with decision_episodes (paper actuals).
-    A mismatch means the live ranking and scoring differed at execution time —
-    potentially because rounding or the selection function diverged (0404).
+    0412: Joins on decision_cohort_id (not calendar date) and compares
+    model_observations.episode_id against decision_variants.challenger_episode_id.
+    This avoids false positives when the challenger overrides the LLM selection
+    (decision_episodes.selected=1 is the LLM pick, not the paper challenger's).
+    Falls back to a WARN if decision_variants.decision_cohort_id is not yet populated.
     """
-    rows = conn.execute(
-        """SELECT mo.decision_cohort_id, mo.scored_at_date, mo.episode_id AS shadow_ep,
-                  de.episode_id AS paper_ep, de.selected
-           FROM model_observations mo
-           JOIN decision_episodes de
-             ON mo.scored_at_date = DATE(de.captured_at, 'unixepoch')
-           WHERE mo.would_select = 1
-             AND de.selected = 1
-             AND mo.episode_id != de.episode_id
-             AND mo.observation_phase IN ('PAPER_ACTIVE')
-           ORDER BY mo.scored_at_date DESC
-           LIMIT 50"""
-    ).fetchall()
-    return {
-        "name": "shadow_paper_disagreement",
-        "severity": "BLOCK",
-        "count": len(rows),
-        "detail": [
-            {"cohort_id": r[0], "date": r[1],
-             "shadow_ep": r[2], "paper_ep": r[3]}
-            for r in rows
-        ],
-        "status": "BLOCK" if rows else "ok",
-    }
+    try:
+        rows = conn.execute(
+            """SELECT mo.decision_cohort_id,
+                      mo.scored_at_date,
+                      mo.episode_id         AS shadow_ep,
+                      dv.challenger_episode_id AS paper_ep,
+                      mo.model_version
+               FROM model_observations mo
+               JOIN decision_variants dv
+                 ON mo.decision_cohort_id = dv.decision_cohort_id
+                AND mo.model_version = dv.challenger_model_version
+               WHERE mo.would_select = 1
+                 AND mo.observation_phase = 'PAPER_ACTIVE'
+                 AND dv.challenger_episode_id IS NOT NULL
+                 AND mo.episode_id != dv.challenger_episode_id
+               ORDER BY mo.scored_at_date DESC
+               LIMIT 50"""
+        ).fetchall()
+        # Check whether any cohorts have been linked (if 0 variants have cohort_id yet, return WARN)
+        linked_count = conn.execute(
+            "SELECT COUNT(*) FROM decision_variants WHERE decision_cohort_id IS NOT NULL"
+        ).fetchone()[0]
+        if linked_count == 0:
+            return {
+                "name": "shadow_paper_disagreement",
+                "severity": "WARN",
+                "count": 0,
+                "detail": {"note": "No decision_variants have decision_cohort_id yet (0412 not yet deployed to live data)"},
+                "status": "WARN",
+            }
+        return {
+            "name": "shadow_paper_disagreement",
+            "severity": "BLOCK",
+            "count": len(rows),
+            "detail": [
+                {"cohort_id": r[0], "date": r[1], "shadow_ep": r[2], "paper_ep": r[3],
+                 "model_version": r[4]}
+                for r in rows
+            ],
+            "status": "BLOCK" if rows else "ok",
+        }
+    except Exception as exc:
+        return {
+            "name": "shadow_paper_disagreement",
+            "severity": "WARN",
+            "count": -1,
+            "detail": {"error": str(exc)},
+            "status": "error",
+        }
 
 
 def _check_null_cohort_obs(conn) -> dict:
@@ -180,6 +207,83 @@ def _check_null_cohort_obs(conn) -> dict:
     }
 
 
+def _check_candidate_coverage(conn) -> dict:
+    """Every learning cohort must have scored all scoreable candidates from its OH run.
+
+    0413: A partial cohort (fewer model_observations than scoreable decision_episodes
+    for the same OH run_id) means some candidates were silently skipped — most likely
+    because predict_alpha() returned None due to missing features (the _q/_q bug).
+    Zero-row cohorts are BLOCK; partial-row cohorts are also BLOCK.
+
+    Requires decision_cohort_id populated on decision_variants (0412). Falls back
+    to WARN if no linked variants exist yet.
+    """
+    try:
+        linked = conn.execute(
+            "SELECT COUNT(*) FROM decision_variants WHERE decision_cohort_id IS NOT NULL"
+        ).fetchone()[0]
+        if linked == 0:
+            return {
+                "name": "candidate_coverage",
+                "severity": "WARN",
+                "count": 0,
+                "detail": {"note": "No decision_variants linked to cohort_id yet (0412 pending)"},
+                "status": "WARN",
+            }
+
+        # For each cohort, find the OH run_id via decision_variants → decision_episodes,
+        # count scoreable episodes for that run, compare with model_observations written.
+        partial = conn.execute(
+            """SELECT mo_agg.decision_cohort_id,
+                      mo_agg.model_version,
+                      mo_agg.n_obs,
+                      ep_agg.n_scoreable
+               FROM (
+                   SELECT decision_cohort_id, model_version, COUNT(*) AS n_obs
+                   FROM model_observations
+                   WHERE decision_cohort_id IS NOT NULL
+                     AND observation_phase = 'PAPER_ACTIVE'
+                   GROUP BY decision_cohort_id, model_version
+               ) mo_agg
+               JOIN (
+                   -- Resolve run_id from decision_variants for the same cohort
+                   SELECT dv.decision_cohort_id,
+                          COUNT(DISTINCT de.episode_id) AS n_scoreable
+                   FROM decision_variants dv
+                   JOIN decision_episodes de ON de.run_id = (
+                       SELECT de2.run_id FROM decision_episodes de2
+                       WHERE de2.episode_id = dv.episode_id LIMIT 1
+                   )
+                   WHERE dv.decision_cohort_id IS NOT NULL
+                     AND de.q_score IS NOT NULL AND de.v_score IS NOT NULL
+                     AND de.pf_score IS NOT NULL AND de.c_score IS NOT NULL
+                     AND de.ec_score IS NOT NULL
+                   GROUP BY dv.decision_cohort_id
+               ) ep_agg ON mo_agg.decision_cohort_id = ep_agg.decision_cohort_id
+               WHERE mo_agg.n_obs < ep_agg.n_scoreable
+                  OR ep_agg.n_scoreable = 0"""
+        ).fetchall()
+        return {
+            "name": "candidate_coverage",
+            "severity": "BLOCK",
+            "count": len(partial),
+            "detail": [
+                {"cohort_id": r[0], "model_version": r[1],
+                 "n_obs": r[2], "n_scoreable": r[3]}
+                for r in partial
+            ],
+            "status": "BLOCK" if partial else "ok",
+        }
+    except Exception as exc:
+        return {
+            "name": "candidate_coverage",
+            "severity": "WARN",
+            "count": -1,
+            "detail": {"error": str(exc)},
+            "status": "error",
+        }
+
+
 # ── Runner ────────────────────────────────────────────────────────────────────
 
 _CHECKS = [
@@ -190,6 +294,7 @@ _CHECKS = [
     _check_paper_active_horizon,
     _check_shadow_paper_disagreement,
     _check_null_cohort_obs,
+    _check_candidate_coverage,
 ]
 
 

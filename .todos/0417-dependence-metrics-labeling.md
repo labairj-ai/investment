@@ -1,7 +1,7 @@
 # Label Block Bootstrap as Short-Block Estimate; Plan Stronger Inference
 
 - **ID:** 0417
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-18
 - **Priority:** low
 - **Depends:** 0408
