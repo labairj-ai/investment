@@ -42,7 +42,13 @@ def get_model() -> ChallengerModel | None:
         return None
 
 
-def score_for_observe(model_version: str, candidates: list, *, cohort_id: str) -> None:
+def score_for_observe(
+    model_version: str,
+    candidates: list,
+    *,
+    cohort_id: str,
+    base_recommendation_eligible: bool | None = None,
+) -> None:
     """Score candidates using an OBSERVE/PAPER_ACTIVE/SUSPENDED model; write to model_observations.
 
     Does not affect live rankings. Builds the shadow prediction log for:
@@ -56,29 +62,71 @@ def score_for_observe(model_version: str, candidates: list, *, cohort_id: str) -
     0398: cohort_id is mandatory (keyword-only). Callers must generate one UUID per sweep
           and pass it here so all models in one run share a single decision_cohort_id.
     0406: cohort_id is no longer optional; omitting it raises TypeError at call time.
+    0419: base_recommendation_eligible records whether the base strategy would have acted
+          on this sweep (top composite >= threshold). Stored in sweep ledger for population
+          analysis — does NOT gate shadow scoring.
     """
     import agent_db
     from datetime import datetime, timezone
 
     conn = agent_db._connect()
+    # 0418/0419: write sweep ledger row BEFORE scoring so zero-row failures are detectable
+    now = datetime.now(timezone.utc).isoformat()
+    eligible_int = (1 if base_recommendation_eligible else 0) if base_recommendation_eligible is not None else None
+    sweep_row_id: int | None = None
+    try:
+        cur = conn.execute(
+            """INSERT INTO learning_sweep_runs
+               (cohort_id, model_version, phase, expected_candidates,
+                scored_candidates, base_recommendation_eligible, started_at, status)
+               VALUES (?,?,?,?,0,?,?,'STARTED')""",
+            (cohort_id, model_version, None, len(candidates), eligible_int, now),
+        )
+        sweep_row_id = cur.lastrowid
+        conn.commit()
+    except Exception:
+        pass  # ledger write failure must not block scoring
+
     try:
         row = conn.execute(
             "SELECT * FROM learning_models WHERE model_version=? AND lifecycle_state IN (?,?,?)",
             (model_version, LIFECYCLE_OBSERVE, LIFECYCLE_SUSPENDED, LIFECYCLE_PAPER_ACTIVE),
         ).fetchone()
         if not row:
+            if sweep_row_id is not None:
+                conn.execute(
+                    "UPDATE learning_sweep_runs SET status='SKIPPED',completed_at=? WHERE id=?",
+                    (now, sweep_row_id),
+                )
+                conn.commit()
             return
 
         model = ChallengerModel._from_row(row)
         if model is None:
+            if sweep_row_id is not None:
+                conn.execute(
+                    "UPDATE learning_sweep_runs SET status='SKIPPED',completed_at=? WHERE id=?",
+                    (now, sweep_row_id),
+                )
+                conn.commit()
             return
 
         observation_phase = row["lifecycle_state"]
+        # Update phase in ledger now that we know it
+        if sweep_row_id is not None:
+            try:
+                conn.execute(
+                    "UPDATE learning_sweep_runs SET phase=? WHERE id=?",
+                    (observation_phase, sweep_row_id),
+                )
+                conn.commit()
+            except Exception:
+                pass
+
         keys = row.keys() if hasattr(row, "keys") else []
         training_horizon_version = (row["training_horizon_version"]
                                     if "training_horizon_version" in keys else None) or "calendar_v1"
 
-        now = datetime.now(timezone.utc).isoformat()
         # 0384: use America/New_York date so evening runs don't advance to next UTC day
         # Fallback uses a fixed UTC-5 offset (EST) — avoids tzdata dependency on minimal systems
         try:
@@ -92,7 +140,7 @@ def score_for_observe(model_version: str, candidates: list, *, cohort_id: str) -
 
         scored_pairs: list[tuple] = []
         for c in candidates:
-            predicted = model.predict_alpha(c)  # 0411: predict_alpha normalizes _q/_v/... internally
+            predicted = model.predict_alpha(c)  # 0411/0422: adapter resolves _q/_v/... with alias priority
             if predicted is None:
                 continue
             from .calibration import ALPHA_TO_SCORE_SCALE, MAX_ADJUSTMENT
@@ -172,6 +220,20 @@ def score_for_observe(model_version: str, candidates: list, *, cohort_id: str) -
                 (scored_at_date, decision_cohort_id, model_version),
             )
             conn.commit()
+
+        # 0418: mark sweep as completed
+        if sweep_row_id is not None:
+            try:
+                conn.execute(
+                    """UPDATE learning_sweep_runs
+                       SET scored_candidates=?, completed_at=?, status='COMPLETED'
+                       WHERE id=?""",
+                    (n_written, scored_at_date, sweep_row_id),
+                )
+                conn.commit()
+            except Exception:
+                pass
+
     except Exception as e:
         # 0415: log at ERROR level — silent pass previously hid full scoring failures
         import logging as _log
@@ -180,6 +242,16 @@ def score_for_observe(model_version: str, candidates: list, *, cohort_id: str) -
             model_version, cohort_id, e, exc_info=True,
         )
         print(f"[challenger] ERROR: score_for_observe failed ({model_version}): {e}")
+        # 0418: record failure in sweep ledger
+        if sweep_row_id is not None:
+            try:
+                conn.execute(
+                    "UPDATE learning_sweep_runs SET status='FAILED',error=?,completed_at=? WHERE id=?",
+                    (str(e)[:500], now, sweep_row_id),
+                )
+                conn.commit()
+            except Exception:
+                pass
         raise
     finally:
         conn.close()

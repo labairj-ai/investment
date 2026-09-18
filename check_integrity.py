@@ -208,71 +208,68 @@ def _check_null_cohort_obs(conn) -> dict:
 
 
 def _check_candidate_coverage(conn) -> dict:
-    """Every learning cohort must have scored all scoreable candidates from its OH run.
+    """Every scoring sweep must have observations equal to expected_candidates.
 
-    0413: A partial cohort (fewer model_observations than scoreable decision_episodes
-    for the same OH run_id) means some candidates were silently skipped — most likely
-    because predict_alpha() returned None due to missing features (the _q/_q bug).
-    Zero-row cohorts are BLOCK; partial-row cohorts are also BLOCK.
+    0418: Uses learning_sweep_runs (written BEFORE scoring) as the source of truth
+    so zero-row cohorts are detectable — they appear in the ledger even when
+    model_observations is empty.  Covers OBSERVE, PAPER_ACTIVE, and SUSPENDED phases.
 
-    Requires decision_cohort_id populated on decision_variants (0412). Falls back
-    to WARN if no linked variants exist yet.
+    0413 (previous): The old SQL started from model_observations (inner join) so a
+    sweep that scored 0 candidates was completely invisible.  This version inverts the
+    join direction, starting from the ledger.
+
+    Falls back to WARN + old inner-join logic when learning_sweep_runs doesn't exist yet.
     """
     try:
-        linked = conn.execute(
-            "SELECT COUNT(*) FROM decision_variants WHERE decision_cohort_id IS NOT NULL"
-        ).fetchone()[0]
-        if linked == 0:
+        # Check that the sweep ledger table exists (0418 migration required)
+        tbl_exists = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='learning_sweep_runs'"
+        ).fetchone()
+        if not tbl_exists:
             return {
                 "name": "candidate_coverage",
                 "severity": "WARN",
                 "count": 0,
-                "detail": {"note": "No decision_variants linked to cohort_id yet (0412 pending)"},
+                "detail": {"note": "learning_sweep_runs table not found — 0418 migration pending"},
                 "status": "WARN",
             }
 
-        # For each cohort, find the OH run_id via decision_variants → decision_episodes,
-        # count scoreable episodes for that run, compare with model_observations written.
-        partial = conn.execute(
-            """SELECT mo_agg.decision_cohort_id,
-                      mo_agg.model_version,
-                      mo_agg.n_obs,
-                      ep_agg.n_scoreable
-               FROM (
-                   SELECT decision_cohort_id, model_version, COUNT(*) AS n_obs
-                   FROM model_observations
-                   WHERE decision_cohort_id IS NOT NULL
-                     AND observation_phase = 'PAPER_ACTIVE'
-                   GROUP BY decision_cohort_id, model_version
-               ) mo_agg
-               JOIN (
-                   -- Resolve run_id from decision_variants for the same cohort
-                   SELECT dv.decision_cohort_id,
-                          COUNT(DISTINCT de.episode_id) AS n_scoreable
-                   FROM decision_variants dv
-                   JOIN decision_episodes de ON de.run_id = (
-                       SELECT de2.run_id FROM decision_episodes de2
-                       WHERE de2.episode_id = dv.episode_id LIMIT 1
-                   )
-                   WHERE dv.decision_cohort_id IS NOT NULL
-                     AND de.q_score IS NOT NULL AND de.v_score IS NOT NULL
-                     AND de.pf_score IS NOT NULL AND de.c_score IS NOT NULL
-                     AND de.ec_score IS NOT NULL
-                   GROUP BY dv.decision_cohort_id
-               ) ep_agg ON mo_agg.decision_cohort_id = ep_agg.decision_cohort_id
-               WHERE mo_agg.n_obs < ep_agg.n_scoreable
-                  OR ep_agg.n_scoreable = 0"""
+        # LEFT JOIN: every ledger row is considered; rows without matching observations
+        # are the ones that scored zero or fewer than expected.
+        problem_rows = conn.execute(
+            """SELECT sr.cohort_id,
+                      sr.model_version,
+                      sr.phase,
+                      sr.expected_candidates,
+                      COALESCE(sr.scored_candidates, 0)  AS scored_candidates,
+                      sr.status,
+                      sr.error
+               FROM learning_sweep_runs sr
+               WHERE sr.status IN ('COMPLETED', 'FAILED', 'STARTED')
+                 AND (
+                     sr.status = 'FAILED'
+                     OR COALESCE(sr.scored_candidates, 0) < sr.expected_candidates
+                 )
+               ORDER BY sr.started_at DESC
+               LIMIT 50"""
         ).fetchall()
         return {
             "name": "candidate_coverage",
             "severity": "BLOCK",
-            "count": len(partial),
+            "count": len(problem_rows),
             "detail": [
-                {"cohort_id": r[0], "model_version": r[1],
-                 "n_obs": r[2], "n_scoreable": r[3]}
-                for r in partial
+                {
+                    "cohort_id": r["cohort_id"],
+                    "model_version": r["model_version"],
+                    "phase": r["phase"],
+                    "expected": r["expected_candidates"],
+                    "scored": r["scored_candidates"],
+                    "status": r["status"],
+                    "error": r["error"],
+                }
+                for r in problem_rows
             ],
-            "status": "BLOCK" if partial else "ok",
+            "status": "BLOCK" if problem_rows else "ok",
         }
     except Exception as exc:
         return {

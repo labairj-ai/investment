@@ -1,7 +1,7 @@
 # Fail-Closed Calendar Validation
 
 - **ID:** 0421
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-18
 - **Priority:** high
 - **Depends:** 0414

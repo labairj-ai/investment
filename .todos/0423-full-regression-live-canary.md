@@ -1,7 +1,7 @@
 # Full Regression and Live Canary Audit
 
 - **ID:** 0423
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-18
 - **Priority:** high
 - **Depends:** 0418, 0419, 0420, 0421, 0422

@@ -6314,7 +6314,8 @@ class TestCanonicalFeatureAdapter0411:
         model = ChallengerModel.train()
         assert model is not None
 
-        # Both keys present; canonical should win
+        # 0422: alias (_q) wins over canonical (q_score) when both present
+        # — OH sweep values are authoritative; canonical may be stale DB values
         both = {
             "q_score": 90.0, "_q": 10.0,
             "v_score": 90.0, "_v": 10.0,
@@ -6325,9 +6326,17 @@ class TestCanonicalFeatureAdapter0411:
         alias_only = {
             "_q": 10.0, "_v": 10.0, "_pf": 10.0, "_c": 10.0, "_ec": 10.0,
         }
+        canonical_only = {
+            "q_score": 90.0, "v_score": 90.0, "pf_score": 90.0,
+            "c_score": 90.0, "ec_score": 90.0,
+        }
         pred_both = model.predict_alpha(both)
         pred_alias = model.predict_alpha(alias_only)
-        assert pred_both != pred_alias, "Canonical key (90) should produce different result than alias key (10)"
+        pred_canonical = model.predict_alpha(canonical_only)
+        assert pred_both == pred_alias, (
+            "When both present, alias (_q=10) must win over canonical (q_score=90)"
+        )
+        assert pred_both != pred_canonical, "alias-only (10) and canonical-only (90) should differ"
 
     def test_score_for_observe_writes_rows_with_oh_keys(self, mem_db, monkeypatch):
         """score_for_observe must write model_observations for OH-shaped candidates."""
@@ -6386,8 +6395,8 @@ class TestCanonicalFeatureAdapter0411:
 
         assert feat_oh == {"q_score": 80, "v_score": 70, "pf_score": 60, "c_score": 50, "ec_score": 40}
         assert feat_can == feat_oh
-        assert feat_mix["q_score"] == 99  # canonical wins
-        assert feat_mix["pf_score"] == 60  # falls back to alias
+        assert feat_mix["q_score"] == 1    # alias (_q=1) wins over canonical (q_score=99) per 0422
+        assert feat_mix["pf_score"] == 60  # falls back to alias when no canonical
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -6845,3 +6854,451 @@ class TestDependenceMetricsLabeling0417:
         gates = report.get("promotion_gates", {})
         assert "selection_delta_evidence_short_block" not in gates, \
             "Short-block CI must not be a promotion gate criterion"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 0418 — Learning Sweep Ledger + Zero-Row Detection
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestLearningSweepLedger0418:
+    """learning_sweep_runs written before scoring; zero-row cohorts are BLOCK."""
+
+    def test_sweep_ledger_row_written_on_score(self, mem_db, monkeypatch):
+        import agent_db
+        from agents.learning.calibration import LEARNING_TARGET_HORIZON, train_and_save, LIFECYCLE_OBSERVE
+        from agents.learning.challenger import score_for_observe
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        _seed_episodes(conn, 60, with_outcomes=True, horizon_definition_version=LEARNING_TARGET_HORIZON)
+        conn.close()
+
+        result = train_and_save()
+        assert result["trained"]
+        mv = result["model_version"]
+
+        conn = _make_conn(mem_db)
+        conn.execute("UPDATE learning_models SET lifecycle_state=? WHERE model_version=?",
+                     (LIFECYCLE_OBSERVE, mv))
+        conn.commit()
+
+        cohort_id = str(uuid.uuid4())
+        candidates = [
+            {"_episode_id": str(uuid.uuid4()), "ticker": f"TK{i}",
+             "_composite": 50 + i, "composite_score": 50 + i,
+             "q_score": 60.0 + i, "v_score": 55.0 + i, "pf_score": 50.0 + i,
+             "c_score": 45.0 + i, "ec_score": 40.0 + i}
+            for i in range(5)
+        ]
+        score_for_observe(mv, candidates, cohort_id=cohort_id)
+
+        row = conn.execute(
+            "SELECT * FROM learning_sweep_runs WHERE cohort_id=? AND model_version=?",
+            (cohort_id, mv),
+        ).fetchone()
+        conn.close()
+
+        assert row is not None, "learning_sweep_runs must have a row after score_for_observe"
+        assert row["expected_candidates"] == 5
+        assert row["scored_candidates"] > 0
+        assert row["status"] == "COMPLETED"
+
+    def test_zero_score_cohort_detected_as_block(self, mem_db, monkeypatch):
+        """A sweep with 0 scored candidates must be detectable via integrity audit."""
+        import agent_db
+        from check_integrity import run_integrity_audit
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        mv = "edge_sessions_v2_aabbccdd_cccccccc_v0000000001"
+        _vm = json.dumps({"cv_folds": 0})
+
+        conn.execute(
+            """INSERT INTO learning_models
+               (model_version, training_cutoff, feature_schema_hash, training_n,
+                validation_metrics, created_at, lifecycle_state, training_horizon_version)
+               VALUES (?,?,?,?,?,?,'PAPER_ACTIVE','sessions_v2')""",
+            (mv, "2026-01-01", "aabbccdd", 10, _vm, time.time()),
+        )
+        cohort_id = str(uuid.uuid4())
+        # Write ledger row with expected=5 but scored=0 (zero-row scenario)
+        conn.execute(
+            """INSERT INTO learning_sweep_runs
+               (cohort_id, model_version, phase, expected_candidates, scored_candidates,
+                started_at, completed_at, status)
+               VALUES (?,?,'PAPER_ACTIVE',5,0,?,?,'COMPLETED')""",
+            (cohort_id, mv, "2026-01-01T10:00:00Z", "2026-01-01"),
+        )
+        conn.commit()
+
+        result = run_integrity_audit(conn)
+        conn.close()
+
+        checks = {c["name"]: c for c in result["checks"]}
+        cc = checks.get("candidate_coverage", {})
+        assert cc.get("status") == "BLOCK", \
+            f"Zero-row cohort (expected=5, scored=0) must be BLOCK; got {cc}"
+
+    def test_failed_sweep_detected_as_block(self, mem_db, monkeypatch):
+        """A sweep with status=FAILED must be flagged as BLOCK."""
+        import agent_db
+        from check_integrity import run_integrity_audit
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        mv = "edge_sessions_v2_aabbccdd_cccccccc_v0000000001"
+        _vm = json.dumps({"cv_folds": 0})
+
+        conn.execute(
+            """INSERT INTO learning_models
+               (model_version, training_cutoff, feature_schema_hash, training_n,
+                validation_metrics, created_at, lifecycle_state, training_horizon_version)
+               VALUES (?,?,?,?,?,?,'OBSERVE','sessions_v2')""",
+            (mv, "2026-01-01", "aabbccdd", 10, _vm, time.time()),
+        )
+        cohort_id = str(uuid.uuid4())
+        conn.execute(
+            """INSERT INTO learning_sweep_runs
+               (cohort_id, model_version, phase, expected_candidates, scored_candidates,
+                started_at, completed_at, status, error)
+               VALUES (?,?,'OBSERVE',10,0,?,?,'FAILED','DB error')""",
+            (cohort_id, mv, "2026-01-01T10:00:00Z", "2026-01-01"),
+        )
+        conn.commit()
+
+        result = run_integrity_audit(conn)
+        conn.close()
+
+        checks = {c["name"]: c for c in result["checks"]}
+        cc = checks.get("candidate_coverage", {})
+        assert cc.get("status") == "BLOCK", \
+            f"Failed sweep must be BLOCK; got {cc}"
+
+    def test_full_coverage_cohort_is_ok(self, mem_db, monkeypatch):
+        """A sweep where scored == expected must return ok."""
+        import agent_db
+        from check_integrity import run_integrity_audit
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        cohort_id = str(uuid.uuid4())
+        conn.execute(
+            """INSERT INTO learning_sweep_runs
+               (cohort_id, model_version, phase, expected_candidates, scored_candidates,
+                started_at, completed_at, status)
+               VALUES (?,?,'PAPER_ACTIVE',5,5,?,?,'COMPLETED')""",
+            (cohort_id, "edge_test_v1", "2026-01-01T10:00:00Z", "2026-01-01"),
+        )
+        conn.commit()
+
+        result = run_integrity_audit(conn)
+        conn.close()
+
+        checks = {c["name"]: c for c in result["checks"]}
+        cc = checks.get("candidate_coverage", {})
+        assert cc.get("status") == "ok", \
+            f"Full-coverage cohort must be ok; got {cc}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 0419 — Prospective Population Contract
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestProspectivePopulationContract0419:
+    """Shadow scoring happens for all sweeps; base_recommendation_eligible recorded."""
+
+    def test_sweep_ledger_records_base_eligible_flag(self, mem_db, monkeypatch):
+        import agent_db
+        from agents.learning.calibration import LEARNING_TARGET_HORIZON, train_and_save, LIFECYCLE_OBSERVE
+        from agents.learning.challenger import score_for_observe
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        _seed_episodes(conn, 60, with_outcomes=True, horizon_definition_version=LEARNING_TARGET_HORIZON)
+        conn.close()
+
+        result = train_and_save()
+        assert result["trained"]
+        mv = result["model_version"]
+
+        conn = _make_conn(mem_db)
+        conn.execute("UPDATE learning_models SET lifecycle_state=? WHERE model_version=?",
+                     (LIFECYCLE_OBSERVE, mv))
+        conn.commit()
+
+        cohort_id = str(uuid.uuid4())
+        candidates = [
+            {"_episode_id": str(uuid.uuid4()), "ticker": f"TK{i}",
+             "_composite": 50 + i, "composite_score": 50 + i,
+             "q_score": 60.0 + i, "v_score": 55.0 + i, "pf_score": 50.0 + i,
+             "c_score": 45.0 + i, "ec_score": 40.0 + i}
+            for i in range(3)
+        ]
+        # below-threshold sweep
+        score_for_observe(mv, candidates, cohort_id=cohort_id, base_recommendation_eligible=False)
+
+        row = conn.execute(
+            "SELECT base_recommendation_eligible FROM learning_sweep_runs WHERE cohort_id=?",
+            (cohort_id,),
+        ).fetchone()
+        conn.close()
+
+        assert row is not None
+        assert row["base_recommendation_eligible"] == 0, \
+            "base_recommendation_eligible must be 0 when below-threshold sweep"
+
+    def test_eligible_flag_true_when_above_threshold(self, mem_db, monkeypatch):
+        import agent_db
+        from agents.learning.calibration import LEARNING_TARGET_HORIZON, train_and_save, LIFECYCLE_OBSERVE
+        from agents.learning.challenger import score_for_observe
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        _seed_episodes(conn, 60, with_outcomes=True, horizon_definition_version=LEARNING_TARGET_HORIZON)
+        conn.close()
+
+        result = train_and_save()
+        assert result["trained"]
+        mv = result["model_version"]
+
+        conn = _make_conn(mem_db)
+        conn.execute("UPDATE learning_models SET lifecycle_state=? WHERE model_version=?",
+                     (LIFECYCLE_OBSERVE, mv))
+        conn.commit()
+
+        cohort_id = str(uuid.uuid4())
+        candidates = [
+            {"_episode_id": str(uuid.uuid4()), "ticker": f"TK{i}",
+             "_composite": 50 + i, "composite_score": 50 + i,
+             "q_score": 60.0, "v_score": 55.0, "pf_score": 50.0,
+             "c_score": 45.0, "ec_score": 40.0}
+            for i in range(3)
+        ]
+        score_for_observe(mv, candidates, cohort_id=cohort_id, base_recommendation_eligible=True)
+
+        row = conn.execute(
+            "SELECT base_recommendation_eligible FROM learning_sweep_runs WHERE cohort_id=?",
+            (cohort_id,),
+        ).fetchone()
+        conn.close()
+
+        assert row is not None
+        assert row["base_recommendation_eligible"] == 1
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 0420 — Model Identity Completion
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestModelIdentityCompletion0420:
+    """Config hash in model_version; UNIQUE constraint on model_id."""
+
+    def test_model_version_includes_config_hash(self, mem_db, monkeypatch):
+        import agent_db
+        from agents.learning.calibration import ChallengerModel
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        _seed_episodes(conn, 50)
+        conn.close()
+
+        model = ChallengerModel.train()
+        assert model is not None
+        # 0420: model_version is edge_{horizon}_{schema8}_{config8}_v{cutoff}
+        import re
+        assert re.match(
+            r'^edge_[a-z0-9_]+_[0-9a-f]{8}_[0-9a-f]{8}_v\d+$',
+            model.model_version,
+        ), f"model_version format wrong after 0420: {model.model_version!r}"
+
+    def test_different_ridge_alpha_produces_different_model_version(self, mem_db, monkeypatch):
+        """Different hyperparams → different model_version (no silent INSERT collision)."""
+        import agent_db
+        from agents.learning.calibration import ChallengerModel
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        _seed_episodes(conn, 50)
+        conn.close()
+
+        model_a = ChallengerModel.train(ridge_alpha=1.0)
+        model_b = ChallengerModel.train(ridge_alpha=0.01)
+        assert model_a is not None
+        assert model_b is not None
+        assert model_a.model_version != model_b.model_version, (
+            "Different ridge_alpha must produce different model_version (config hash differs)"
+        )
+
+    def test_model_id_unique_constraint_enforced(self, mem_db, monkeypatch):
+        """Inserting two learning_models rows with same model_id must fail (UNIQUE)."""
+        import agent_db
+        import sqlite3 as _sq
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        mid = str(uuid.uuid4())
+        _vm = json.dumps({"cv_folds": 0})
+        conn.execute(
+            "INSERT INTO learning_models (model_version, training_cutoff, feature_schema_hash, training_n, validation_metrics, created_at, model_id) VALUES (?,?,?,?,?,?,?)",
+            ("mv_a", "2026-01-01", "aabb", 10, _vm, time.time(), mid),
+        )
+        conn.commit()
+        with pytest.raises(_sq.IntegrityError):
+            conn.execute(
+                "INSERT INTO learning_models (model_version, training_cutoff, feature_schema_hash, training_n, validation_metrics, created_at, model_id) VALUES (?,?,?,?,?,?,?)",
+                ("mv_b", "2026-01-01", "aabb", 10, _vm, time.time(), mid),
+            )
+            conn.commit()
+        conn.close()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 0421 — Fail-Closed Calendar Validation
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestFailClosedCalendarValidation0421:
+    """A maturity_date() error skips the fold, not falls back to 91-day approximation."""
+
+    def test_calendar_failure_skips_fold_not_relaxes_embargo(self, mem_db, monkeypatch):
+        import agent_db
+        from agents.learning.calibration import _cv_walk_forward, MIN_TRAINING_N, FEATURES, HORIZON
+        from unittest.mock import patch
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        _seed_episodes(conn, 50, with_outcomes=True)
+        conn.close()
+
+        # Build X, y, dates from the seeded data
+        conn = _make_conn(mem_db)
+        rows = conn.execute(
+            "SELECT e.episode_id, e.captured_at, e.ticker, e.q_score, e.v_score, "
+            "       e.pf_score, e.c_score, e.ec_score, o.alpha "
+            "FROM decision_episodes e JOIN episode_outcomes o ON e.episode_id=o.episode_id "
+            "WHERE o.horizon='3m' AND o.alpha IS NOT NULL"
+        ).fetchall()
+        conn.close()
+
+        import numpy as _np_mod
+        X = _np_mod.array([[r[f] for f in FEATURES] for r in rows], dtype=float)
+        y = _np_mod.array([r["alpha"] for r in rows], dtype=float)
+        import datetime as _dt2
+        dates = [_dt2.datetime.fromtimestamp(r["captured_at"]).strftime("%Y-%m-%d") for r in rows]
+
+        # Patch maturity_date to always raise — calendar unavailable
+        # Must patch trade_engine.market_calendar since _cv_walk_forward imports it at call time
+        with patch("trade_engine.market_calendar.maturity_date", side_effect=RuntimeError("no calendar")):
+            folds_broken = _cv_walk_forward(X, y, dates, 1.0, horizon_version="sessions_v2")
+
+        # All folds skipped — no fallback to 91-day embargo
+        assert len(folds_broken) == 0, (
+            "When maturity_date() always raises, all folds must be skipped (not evaluated with "
+            "91-day fallback embargo)"
+        )
+
+    def test_no_91day_fallback_in_cv_walk_forward_code(self):
+        """Verify the 91-day fallback was removed from _cv_walk_forward source."""
+        import inspect
+        from agents.learning.calibration import _cv_walk_forward
+        src = inspect.getsource(_cv_walk_forward)
+        # The old fallback used `EMBARGO_DAYS` in the exception handler
+        assert "EMBARGO_DAYS" not in src or "continue" in src, (
+            "_cv_walk_forward must not use EMBARGO_DAYS as a fallback on calendar error"
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 0422 — Feature-Source Consistency
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestFeatureSourceConsistency0422:
+    """OH underscore keys (_q/_v/…) win over canonical (q_score/…) when both present."""
+
+    def test_alias_wins_over_canonical(self):
+        from agents.learning.calibration import candidate_learning_features
+
+        mixed = {
+            "q_score": 90.0, "_q": 10.0,
+            "v_score": 80.0, "_v": 20.0,
+            "pf_score": 70.0, "_pf": 30.0,
+            "c_score": 60.0, "_c": 40.0,
+            "ec_score": 50.0, "_ec": 45.0,
+        }
+        feat = candidate_learning_features(mixed)
+        assert feat["q_score"] == 10.0, "alias _q=10 must win over canonical q_score=90"
+        assert feat["v_score"] == 20.0, "alias _v=20 must win over canonical v_score=80"
+        assert feat["pf_score"] == 30.0
+        assert feat["c_score"] == 40.0
+        assert feat["ec_score"] == 45.0
+
+    def test_canonical_used_as_fallback_when_no_alias(self):
+        from agents.learning.calibration import candidate_learning_features
+
+        canonical_only = {"q_score": 90.0, "v_score": 80.0, "pf_score": 70.0,
+                          "c_score": 60.0, "ec_score": 50.0}
+        feat = candidate_learning_features(canonical_only)
+        assert feat["q_score"] == 90.0
+        assert feat["v_score"] == 80.0
+
+    def test_alias_none_falls_back_to_canonical(self):
+        """If _q key is absent (not None), canonical q_score is used."""
+        from agents.learning.calibration import candidate_learning_features
+
+        no_alias = {"q_score": 90.0, "v_score": 80.0, "pf_score": 70.0,
+                    "c_score": 60.0, "ec_score": 50.0}
+        feat = candidate_learning_features(no_alias)
+        assert feat["q_score"] == 90.0
+
+    def test_oh_candidates_use_fresh_sweep_values(self, mem_db, monkeypatch):
+        """Live OH candidates must be evaluated on their freshly-computed _q values."""
+        import agent_db
+        from agents.learning.calibration import ChallengerModel
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        _seed_episodes(conn, 50)
+        conn.close()
+
+        model = ChallengerModel.train()
+        assert model is not None
+
+        # Simulate a candidate where DB had stale q_score but OH recomputed fresh _q
+        stale_canonical = {
+            "q_score": 10.0,   # stale DB value
+            "_q": 80.0,        # fresh OH computed value
+            "v_score": 10.0, "_v": 70.0,
+            "pf_score": 10.0, "_pf": 65.0,
+            "c_score": 10.0, "_c": 60.0,
+            "ec_score": 10.0, "_ec": 55.0,
+        }
+        fresh_only = {
+            "_q": 80.0, "_v": 70.0, "_pf": 65.0, "_c": 60.0, "_ec": 55.0,
+        }
+        pred_stale = model.predict_alpha(stale_canonical)
+        pred_fresh = model.predict_alpha(fresh_only)
+        assert pred_stale == pred_fresh, (
+            "OH candidate with both stale canonical and fresh alias must use alias value; "
+            "prediction should match alias-only candidate"
+        )

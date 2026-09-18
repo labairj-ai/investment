@@ -657,6 +657,8 @@ def migrate() -> None:
         ("learning_models", "model_id",                                      "TEXT"),
         ("learning_models", "training_config_hash",                          "TEXT"),
         ("learning_models", "code_commit_sha",                               "TEXT"),
+        # 0419 — prospective population: tag cohorts as base-recommendation-eligible
+        ("learning_sweep_runs", "base_recommendation_eligible",              "INTEGER"),
     ]
     for table, col, col_type in _new_cols:
         try:
@@ -680,6 +682,26 @@ def migrate() -> None:
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_one_paper_active "
             "ON learning_models (lifecycle_state) WHERE lifecycle_state='PAPER_ACTIVE'"
+        )
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
+    # 0420: model_id is a unique artifact identity — prevent silent INSERT collisions
+    try:
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_learning_models_model_id "
+            "ON learning_models (model_id) WHERE model_id IS NOT NULL"
+        )
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
+    # 0418: index on sweep ledger for coverage queries
+    try:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sweep_runs_cohort "
+            "ON learning_sweep_runs (cohort_id, model_version)"
         )
         conn.commit()
     except sqlite3.OperationalError:
@@ -1108,6 +1130,21 @@ def _migrate_learning_episodes(conn: sqlite3.Connection) -> None:
             mae                 REAL,
             labeled_at          REAL,
             UNIQUE(intent_id, horizon)
+        );
+
+        CREATE TABLE IF NOT EXISTS learning_sweep_runs (
+            id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+            cohort_id                   TEXT NOT NULL,
+            model_version               TEXT NOT NULL,
+            agent_run_id                TEXT,
+            phase                       TEXT,
+            expected_candidates         INTEGER NOT NULL DEFAULT 0,
+            scored_candidates           INTEGER NOT NULL DEFAULT 0,
+            base_recommendation_eligible INTEGER,
+            started_at                  TEXT NOT NULL,
+            completed_at                TEXT,
+            status                      TEXT NOT NULL DEFAULT 'STARTED',
+            error                       TEXT
         );
 
         CREATE TABLE IF NOT EXISTS decision_variants (

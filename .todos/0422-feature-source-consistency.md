@@ -1,7 +1,7 @@
 # Feature-Source Consistency
 
 - **ID:** 0422
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-18
 - **Priority:** normal
 - **Depends:** 0411

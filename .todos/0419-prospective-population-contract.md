@@ -1,7 +1,7 @@
 # Prospective Population Contract
 
 - **ID:** 0419
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-18
 - **Priority:** high
 - **Depends:** 0418

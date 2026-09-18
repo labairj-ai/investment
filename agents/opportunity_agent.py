@@ -473,11 +473,52 @@ def run_opportunity_hunter(ctx: AgentContext) -> list[Recommendation]:
         f"top {len(top)}: " + ", ".join(f"{c['ticker']}={c['_composite']}" for c in top)
     )
 
-    if not top or top[0]["_composite"] < _MIN_COMPOSITE:
+    # 0419: base_recommendation_eligible before early-return so shadow scoring always happens
+    _base_eligible = bool(top and top[0]["_composite"] >= _MIN_COMPOSITE)
+
+    # 0412/0419: generate sweep cohort_id BEFORE shadow scoring AND before early-return gate
+    # so the learner accumulates observations for every OH sweep, not just recommended ones.
+    import uuid as _uuid
+    _sweep_cohort_id = str(_uuid.uuid4())
+
+    # 0360/0374/0419: shadow-score for OBSERVE, PAPER_ACTIVE, and SUSPENDED models
+    # Must happen BEFORE _MIN_COMPOSITE early return (0419) so the learner sees all scored
+    # candidates, not just days where the base strategy would recommend.
+    # 0415: errors are logged at ERROR level; base recommendations are unaffected.
+    import agent_db as _adb
+    try:
+        _conn = _adb._connect()
+        obs_models = _conn.execute(
+            "SELECT model_version FROM learning_models WHERE lifecycle_state IN (?,?,?)",
+            ("OBSERVE", "PAPER_ACTIVE", "SUSPENDED"),
+        ).fetchall()
+        _conn.close()
+        for _om in obs_models:
+            from agents.learning.challenger import score_for_observe
+            try:
+                score_for_observe(
+                    _om["model_version"], scored, cohort_id=_sweep_cohort_id,
+                    base_recommendation_eligible=_base_eligible,
+                )
+            except Exception as _sfe:
+                import logging as _log
+                _log.getLogger(__name__).error(
+                    "[opportunity] shadow score failed for %s cohort=%s: %s",
+                    _om["model_version"], _sweep_cohort_id, _sfe,
+                )
+                print(f"[opportunity] ERROR: shadow scoring failed ({_om['model_version']}): {_sfe}")
+    except Exception as _outer_e:
+        import logging as _log
+        _log.getLogger(__name__).error(
+            "[opportunity] shadow scoring block failed cohort=%s: %s", _sweep_cohort_id, _outer_e
+        )
+        print(f"[opportunity] ERROR: shadow scoring block failed: {_outer_e}")
+
+    if not _base_eligible:
         print(
             f"[opportunity] Top candidate composite "
             f"{'none' if not top else top[0]['_composite']} "
-            f"below minimum threshold {_MIN_COMPOSITE} — no recommendation"
+            f"below minimum threshold {_MIN_COMPOSITE} — no recommendation (shadow scoring completed)"
         )
         return []
 
@@ -511,11 +552,6 @@ def run_opportunity_hunter(ctx: AgentContext) -> list[Recommendation]:
             challenger_model_version=sel_ch_info.get("model_version"),
         )
 
-    # 0412: generate sweep cohort_id HERE — before decision_variants and shadow scoring —
-    # so both paths share the same cohort identity for exact lineage tracing.
-    import uuid as _uuid
-    _sweep_cohort_id = str(_uuid.uuid4())
-
     # 0336/0340/0345: record decision_variant and virtual book fills if challenger is PAPER_ACTIVE
     if sel_ch_info.get("active"):
         book_exp_champion = select_base_winner(scored)   # top-1 by base composite = experiment champion
@@ -546,37 +582,6 @@ def run_opportunity_hunter(ctx: AgentContext) -> list[Recommendation]:
             champion_episode_id=book_champion.get("_episode_id") if book_champion else None,
             challenger_episode_id=ch_top_for_book.get("_episode_id") if ch_top_for_book else None,
         )
-
-    # 0360/0374: shadow-score for OBSERVE, PAPER_ACTIVE, and SUSPENDED models
-    # OBSERVE: builds promotion-gate evidence
-    # PAPER_ACTIVE: builds degradation-monitor evidence (post-promotion performance)
-    # SUSPENDED: builds recovery audit trail
-    # 0415: errors are logged at ERROR level; base recommendations are unaffected.
-    import agent_db as _adb
-    try:
-        _conn = _adb._connect()
-        obs_models = _conn.execute(
-            "SELECT model_version FROM learning_models WHERE lifecycle_state IN (?,?,?)",
-            ("OBSERVE", "PAPER_ACTIVE", "SUSPENDED"),
-        ).fetchall()
-        _conn.close()
-        for _om in obs_models:
-            from agents.learning.challenger import score_for_observe
-            try:
-                score_for_observe(_om["model_version"], scored, cohort_id=_sweep_cohort_id)
-            except Exception as _sfe:
-                import logging as _log
-                _log.getLogger(__name__).error(
-                    "[opportunity] shadow score failed for %s cohort=%s: %s",
-                    _om["model_version"], _sweep_cohort_id, _sfe,
-                )
-                print(f"[opportunity] ERROR: shadow scoring failed ({_om['model_version']}): {_sfe}")
-    except Exception as _outer_e:
-        import logging as _log
-        _log.getLogger(__name__).error(
-            "[opportunity] shadow scoring block failed cohort=%s: %s", _sweep_cohort_id, _outer_e
-        )
-        print(f"[opportunity] ERROR: shadow scoring block failed: {_outer_e}")
 
     # Assemble recommendation
     meta = selected.get("_pf_meta", {})

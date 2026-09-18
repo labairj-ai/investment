@@ -1,7 +1,7 @@
 # Learning Sweep Ledger and Zero-Row Detection
 
 - **ID:** 0418
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-18
 - **Priority:** high
 - **Depends:** 0412

@@ -60,15 +60,19 @@ def candidate_learning_features(candidate: dict) -> dict:
     """Return a normalized feature dict readable by the Ridge model.
 
     Resolves both canonical names (q_score, …) and OH underscore aliases (_q, …).
-    Canonical key wins if both are present.  Returns a flat dict with exactly the
-    five FEATURES keys; missing values are None.
+    0422: OH underscore keys (_q, _v, …) are authoritative when present — they hold
+    the values actually computed by the current sweep.  Canonical q_score/… values
+    may carry stale data from a previous DB read and must not silently override the
+    freshly-scored alias.  Canonical keys are used only as fallback when no alias exists.
+    Returns a flat dict with exactly the five FEATURES keys; missing values are None.
     """
     out: dict = {}
     for canonical, alias in _FEATURE_ALIASES.items():
-        v = candidate.get(canonical)
-        if v is None:
-            v = candidate.get(alias)
-        out[canonical] = v
+        alias_val = candidate.get(alias)
+        if alias_val is not None:
+            out[canonical] = alias_val
+        else:
+            out[canonical] = candidate.get(canonical)
     return out
 
 # 0343/0347 — uncertainty band thresholds for ranking-spread CI width (precision classification)
@@ -332,7 +336,7 @@ class ChallengerModel:
         unique_weeks = len(set(_iso_week(d) for d in unique_dates))
         unique_tickers = len(set(tickers))
 
-        # Decision-date cohort walk-forward cross-validation (0334/0414)
+        # Decision-date cohort walk-forward cross-validation (0334/0414/0421)
         folds = _cv_walk_forward(X, y, dates, ridge_alpha, horizon_version=horizon_version)
 
         # Bootstrap uncertainty bands for expected alpha (0343)
@@ -371,8 +375,11 @@ class ChallengerModel:
         # models trained on different horizons against the same episode cutoff.
         # 0409: also include feature_schema_hash prefix so retrains after a schema
         # change with the same cutoff produce a distinct version key.
+        # 0420: include training_config_hash prefix so retrains with different
+        # hyperparameters (ridge_alpha, MAX_ADJUSTMENT, etc.) produce a distinct PK.
         _schema_short = (feature_schema_hash or "")[:8] or "nohash"
-        model_version = f"edge_{horizon_version}_{_schema_short}_v{int(training_cutoff):010d}"
+        _config_short = _training_config_hash(horizon_version, ridge_alpha)[:8]
+        model_version = f"edge_{horizon_version}_{_schema_short}_{_config_short}_v{int(training_cutoff):010d}"
 
         val_metrics: dict = {
             "cv_folds":                 len(folds),
@@ -576,10 +583,16 @@ def _cv_walk_forward(
         if int(train_mask.sum()) < MIN_TRAINING_N:
             continue
 
+        # 0421: fail-closed — a calendar error must skip the fold, not relax the embargo
         try:
             embargo_end = _mat_date(cutoff_str, horizon_version, HORIZON)
-        except Exception:
-            embargo_end = (_date.fromisoformat(cutoff_str) + _td(days=EMBARGO_DAYS)).isoformat()
+        except Exception as _cal_err:
+            import logging as _log
+            _log.getLogger(__name__).error(
+                "[calibration] maturity_date() failed for cutoff %s horizon %s: %s — skipping fold",
+                cutoff_str, horizon_version, _cal_err,
+            )
+            continue  # skip this fold rather than weaken embargo
         val_dates_after = [d for d in unique_dates if d > embargo_end]
         if not val_dates_after:
             break
