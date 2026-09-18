@@ -868,6 +868,13 @@ def _migrate_trade_engine(conn: sqlite3.Connection) -> None:
         );
     """)
 
+    # Ensure role column exists before seeding accounts (may not be in _new_cols yet on this schema version)
+    try:
+        conn.execute("ALTER TABLE trading_accounts ADD COLUMN role TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # already exists
+
     # Seed AGENTIC_SHADOW_01 if not present
     from datetime import datetime as _dt, timezone as _tz
     _now = _dt.now(_tz.utc).isoformat()
