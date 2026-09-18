@@ -200,6 +200,11 @@ class TradeIntent:
     decision_market_price: Optional[float] = None  # pre-slippage market price at intent creation (0350)
     decision_bid: Optional[float] = None           # bid at intent creation (0350)
     decision_ask: Optional[float] = None           # ask at intent creation (0350)
+    decision_last: Optional[float] = None          # last trade price at intent creation (0356)
+    decision_mid: Optional[float] = None           # mid = (bid+ask)/2 at intent creation (0356)
+    decision_spread_bps: Optional[float] = None    # bid/ask spread in basis points (0356)
+    quote_timestamp: Optional[str] = None          # timestamp of quote fetch (0356)
+    price_source: Optional[str] = None             # 'yfinance', 'db_cache', or 'payload' (0356)
 
     def is_expired(self) -> bool:
         try:
@@ -243,6 +248,11 @@ class TradeIntent:
             "decision_market_price": self.decision_market_price,
             "decision_bid": self.decision_bid,
             "decision_ask": self.decision_ask,
+            "decision_last": self.decision_last,
+            "decision_mid": self.decision_mid,
+            "decision_spread_bps": self.decision_spread_bps,
+            "quote_timestamp": self.quote_timestamp,
+            "price_source": self.price_source,
         }
 
     @classmethod
@@ -278,6 +288,11 @@ class TradeIntent:
             decision_market_price=row["decision_market_price"] if "decision_market_price" in keys else None,
             decision_bid=row["decision_bid"] if "decision_bid" in keys else None,
             decision_ask=row["decision_ask"] if "decision_ask" in keys else None,
+            decision_last=row["decision_last"] if "decision_last" in keys else None,
+            decision_mid=row["decision_mid"] if "decision_mid" in keys else None,
+            decision_spread_bps=row["decision_spread_bps"] if "decision_spread_bps" in keys else None,
+            quote_timestamp=row["quote_timestamp"] if "quote_timestamp" in keys else None,
+            price_source=row["price_source"] if "price_source" in keys else None,
         )
 
 

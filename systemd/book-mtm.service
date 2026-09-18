@@ -1,0 +1,13 @@
+[Unit]
+Description=Investment Book MTM — daily mark-to-market NAV update for virtual portfolio books
+After=network.target
+ConditionPathExists=/home/optiplex/investment/out/investment.db
+
+[Service]
+Type=oneshot
+User=optiplex
+WorkingDirectory=/home/optiplex/investment
+ExecStart=/home/optiplex/investment/venv/bin/python3 -m agents.learning.book_mtm
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=book-mtm

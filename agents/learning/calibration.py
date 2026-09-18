@@ -55,11 +55,13 @@ LIFECYCLE_OBSERVE      = "OBSERVE"
 LIFECYCLE_PAPER_ACTIVE = "PAPER_ACTIVE"
 LIFECYCLE_RETIRED      = "RETIRED"
 
-# Promotion gate thresholds for TRAINED → OBSERVE
+# Promotion gate thresholds
 PROMOTE_MIN_UNIQUE_TICKERS        = 10
 PROMOTE_MIN_UNIQUE_DECISION_DATES = 30
 PROMOTE_MIN_UNIQUE_WEEKS          = 4
-# beats_baseline == True and cv_folds >= 1 also required for OBSERVE
+PROMOTE_MIN_CV_FOLDS              = 3   # 0355: raised from 1; single fold is not meaningful evidence
+OBSERVE_MIN_DAYS                  = 14  # 0355: minimum calendar days in OBSERVE before PAPER_ACTIVE
+OBSERVE_MIN_FRESH_EPISODES        = 5   # 0355: minimum new decision_episodes since entering OBSERVE
 
 
 class ChallengerModel:
@@ -576,7 +578,10 @@ def train_and_save() -> dict:
 
 
 def _check_promotion_gates(model_version: str, target_state: str) -> dict:
-    """Evaluate promotion gate checklist (0348).
+    """Evaluate promotion gate checklist, branched by target_state (0348/0355).
+
+    TRAINED → OBSERVE: data sufficiency + ≥3 CV folds + edge not NEGATIVE
+    OBSERVE → PAPER_ACTIVE: all TRAINED→OBSERVE gates + min elapsed days + fresh episodes
 
     Returns dict with keys:
       passed  — bool
@@ -588,8 +593,8 @@ def _check_promotion_gates(model_version: str, target_state: str) -> dict:
     row = conn.execute(
         "SELECT * FROM learning_models WHERE model_version=?", (model_version,)
     ).fetchone()
-    conn.close()
     if not row:
+        conn.close()
         return {"passed": False, "failed": ["model_not_found"], "gates": {}, "vm": {}}
 
     vm = json.loads(row["validation_metrics"] or "{}")
@@ -598,7 +603,9 @@ def _check_promotion_gates(model_version: str, target_state: str) -> dict:
     uw  = row["unique_weeks"] or vm.get("unique_weeks") or 0
     cf  = vm.get("cv_folds") or 0
     bb  = vm.get("beats_baseline")
+    edge = vm.get("alpha_edge_evidence")
 
+    # Base gates — shared by TRAINED→OBSERVE and OBSERVE→PAPER_ACTIVE
     gates: dict[str, dict] = {
         "unique_tickers": {
             "value": ut, "minimum": PROMOTE_MIN_UNIQUE_TICKERS,
@@ -613,14 +620,58 @@ def _check_promotion_gates(model_version: str, target_state: str) -> dict:
             "pass": uw >= PROMOTE_MIN_UNIQUE_WEEKS,
         },
         "has_cv_folds": {
-            "value": cf, "minimum": 1,
-            "pass": cf >= 1,
+            "value": cf, "minimum": PROMOTE_MIN_CV_FOLDS,
+            "pass": cf >= PROMOTE_MIN_CV_FOLDS,
         },
         "beats_baseline": {
             "value": bb, "expected": True,
             "pass": bb is True,
         },
+        "edge_not_negative": {
+            "value": edge, "expected": "not NEGATIVE",
+            "pass": edge != "NEGATIVE",
+        },
     }
+
+    # OBSERVE → PAPER_ACTIVE: additional time-in-OBSERVE and fresh-episode gates
+    if target_state == LIFECYCLE_PAPER_ACTIVE:
+        observe_log = conn.execute(
+            """SELECT promoted_at FROM model_promotion_log
+               WHERE model_version=? AND to_state=?
+               ORDER BY promoted_at DESC LIMIT 1""",
+            (model_version, LIFECYCLE_OBSERVE),
+        ).fetchone()
+        promoted_to_observe_at = float(observe_log["promoted_at"]) if observe_log else None
+
+        elapsed_days: float | None = None
+        if promoted_to_observe_at is not None:
+            elapsed_days = (time.time() - promoted_to_observe_at) / 86400.0
+
+        fresh_episodes: int = 0
+        if promoted_to_observe_at is not None:
+            fresh_row = conn.execute(
+                "SELECT COUNT(*) as n FROM decision_episodes WHERE captured_at > ?",
+                (promoted_to_observe_at,),
+            ).fetchone()
+            fresh_episodes = int(fresh_row["n"]) if fresh_row else 0
+
+        gates["observe_elapsed_days"] = {
+            "value": round(elapsed_days, 1) if elapsed_days is not None else None,
+            "minimum": OBSERVE_MIN_DAYS,
+            "pass": (elapsed_days is not None and elapsed_days >= OBSERVE_MIN_DAYS),
+        }
+        gates["fresh_episodes_since_observe"] = {
+            "value": fresh_episodes,
+            "minimum": OBSERVE_MIN_FRESH_EPISODES,
+            "pass": fresh_episodes >= OBSERVE_MIN_FRESH_EPISODES,
+        }
+        # Positive or inconclusive edge required for PAPER_ACTIVE (NEGATIVE blocks)
+        gates["edge_not_negative"] = {
+            "value": edge, "expected": "POSITIVE or INCONCLUSIVE",
+            "pass": edge not in ("NEGATIVE", None),
+        }
+
+    conn.close()
     failed = [k for k, v in gates.items() if not v["pass"]]
     return {"passed": len(failed) == 0, "failed": failed, "gates": gates, "vm": vm}
 

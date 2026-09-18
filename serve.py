@@ -6031,6 +6031,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     "SELECT COUNT(*) as n FROM decision_variants WHERE would_have_selected=1"
                 ).fetchone()["n"]
 
+                # 0354: experiment divergence = challenger vs base-score champion (not LLM rec)
+                experiment_diverged = conn.execute(
+                    """SELECT COUNT(*) as n FROM decision_variants
+                       WHERE experiment_champion_ticker IS NOT NULL
+                         AND experiment_champion_ticker != variant_ticker"""
+                ).fetchone()["n"]
+
                 active_model = conn.execute(
                     """SELECT model_version, lifecycle_state, training_n, unique_tickers,
                               unique_decision_dates, created_at
@@ -6046,6 +6053,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         """SELECT COALESCE(ti.side, 'BUY') as action,
                                   AVG(to2.implementation_shortfall) as mean_is,
                                   AVG(to2.limit_variance) as mean_limit_variance,
+                                  AVG(ti.decision_spread_bps) as mean_spread_bps,
                                   COUNT(*) as n
                            FROM trade_outcomes to2
                            JOIN trade_intents ti ON to2.intent_id = ti.intent_id
@@ -6053,7 +6061,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                               OR to2.limit_variance IS NOT NULL
                            GROUP BY COALESCE(ti.side, 'BUY')"""
                     ).fetchall()
-                    is_by_action = {r["action"]: {"mean_is": r["mean_is"], "mean_limit_variance": r["mean_limit_variance"], "n": r["n"]} for r in is_rows}
+                    is_by_action = {r["action"]: {"mean_is": r["mean_is"], "mean_limit_variance": r["mean_limit_variance"], "mean_spread_bps": r["mean_spread_bps"], "n": r["n"]} for r in is_rows}
+                except Exception:
+                    pass
+
+                # 0351: flag for dashboard — suppress 'experimental' badge once MTM rows exist
+                mtm_nav_available = False
+                try:
+                    from agents.learning.book_mtm import mtm_rows_available
+                    mtm_nav_available = mtm_rows_available(conn)
                 except Exception:
                     pass
 
@@ -6064,8 +6080,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     "challenger_book": _book_portfolio_stats("CHALLENGER_BOOK"),
                     "variants_recorded": variant_count,
                     "variants_would_diverge": would_have_diverged,
+                    "variants_experiment_diverge": experiment_diverged,
                     "active_model": active_model,
                     "execution_quality": is_by_action,
+                    "mtm_nav_available": mtm_nav_available,
                 })
             finally:
                 conn.close()

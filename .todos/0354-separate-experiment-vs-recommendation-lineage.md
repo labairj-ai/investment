@@ -1,7 +1,7 @@
 # Separate Experiment Champion from LLM Recommendation Lineage
 
 - **ID:** 0354
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-17
 - **Priority:** normal
 - **Depends:** 0345

@@ -592,6 +592,15 @@ def migrate() -> None:
         ("trade_intents",     "decision_bid",          "REAL"),
         ("trade_intents",     "decision_ask",          "REAL"),
         ("trade_outcomes",    "limit_variance",        "REAL"),
+        # 0354 — separate experiment champion from LLM recommendation lineage
+        ("decision_variants", "recommendation_control_ticker", "TEXT"),
+        ("decision_variants", "experiment_champion_ticker",    "TEXT"),
+        # 0356 — real quote snapshot at intent creation time
+        ("trade_intents",     "decision_last",        "REAL"),
+        ("trade_intents",     "decision_mid",         "REAL"),
+        ("trade_intents",     "decision_spread_bps",  "REAL"),
+        ("trade_intents",     "quote_timestamp",      "TEXT"),
+        ("trade_intents",     "price_source",         "TEXT"),
     ]
     for table, col, col_type in _new_cols:
         try:
@@ -615,6 +624,16 @@ def migrate() -> None:
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_one_paper_active "
             "ON learning_models (lifecycle_state) WHERE lifecycle_state='PAPER_ACTIVE'"
+        )
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
+    # 0352: one intent per (account, variant decision) — hard DB constraint
+    try:
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_intent_per_variant "
+            "ON trade_intents(account_id, decision_variant_id) WHERE decision_variant_id IS NOT NULL"
         )
         conn.commit()
     except sqlite3.OperationalError:
@@ -737,7 +756,12 @@ def _migrate_trade_engine(conn: sqlite3.Connection) -> None:
             decision_variant_id   INTEGER,
             decision_market_price REAL,
             decision_bid          REAL,
-            decision_ask          REAL
+            decision_ask          REAL,
+            decision_last         REAL,
+            decision_mid          REAL,
+            decision_spread_bps   REAL,
+            quote_timestamp       TEXT,
+            price_source          TEXT
         );
 
         CREATE TABLE IF NOT EXISTS risk_decisions (
@@ -973,22 +997,24 @@ def _migrate_learning_episodes(conn: sqlite3.Connection) -> None:
         );
 
         CREATE TABLE IF NOT EXISTS decision_variants (
-            id                       INTEGER PRIMARY KEY AUTOINCREMENT,
-            recommendation_id        INTEGER,
-            episode_id               TEXT,
-            origin                   TEXT DEFAULT 'PAPER_CHALLENGER',
-            challenger_model_version TEXT,
-            challenger_score         REAL,
-            challenger_adjustment    REAL,
-            would_have_selected      INTEGER DEFAULT 0,
-            champion_ticker          TEXT,
-            variant_ticker           TEXT,
-            action                   TEXT,
-            price                    REAL,
-            target_weight_pct        REAL,
-            quantity                 REAL,
-            thesis_version           INTEGER,
-            created_at               REAL
+            id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+            recommendation_id               INTEGER,
+            episode_id                      TEXT,
+            origin                          TEXT DEFAULT 'PAPER_CHALLENGER',
+            challenger_model_version        TEXT,
+            challenger_score                REAL,
+            challenger_adjustment           REAL,
+            would_have_selected             INTEGER DEFAULT 0,
+            champion_ticker                 TEXT,
+            recommendation_control_ticker   TEXT,
+            experiment_champion_ticker      TEXT,
+            variant_ticker                  TEXT,
+            action                          TEXT,
+            price                           REAL,
+            target_weight_pct               REAL,
+            quantity                        REAL,
+            thesis_version                  INTEGER,
+            created_at                      REAL
         );
 
         CREATE TABLE IF NOT EXISTS trade_outcomes (

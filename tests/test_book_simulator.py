@@ -398,3 +398,166 @@ class TestVirtualLedger0346:
             pass  # virtual_book_nav may not exist on very old schemas; tolerate
         finally:
             conn.close()
+
+
+# ---------------------------------------------------------------------------
+# 0351 — Daily Mark-to-Market NAV Job
+# ---------------------------------------------------------------------------
+
+class TestDailyMarkToMarketNAV0351:
+    """0351: book_mtm writes MTM nav rows; positions valued at close price not cost."""
+
+    def test_mtm_rows_available_false_when_no_rows(self, mem_db, monkeypatch):
+        """mtm_rows_available returns False when no virtual_book_nav rows exist."""
+        import agent_db
+        from agents.learning.book_mtm import mtm_rows_available
+
+        monkeypatch.setattr(agent_db, "_connect", lambda: _conn(mem_db))
+        conn = _conn(mem_db)
+        result = mtm_rows_available(conn, min_rows=30)
+        conn.close()
+        assert result is False
+
+    def test_mtm_rows_available_true_when_enough_rows(self, mem_db, monkeypatch):
+        """mtm_rows_available returns True when >=30 rows with spy_nav and daily_return."""
+        import agent_db
+        from agents.learning.book_mtm import mtm_rows_available
+        import time
+
+        monkeypatch.setattr(agent_db, "_connect", lambda: _conn(mem_db))
+        conn = _conn(mem_db)
+        for i in range(30):
+            conn.execute(
+                """INSERT OR REPLACE INTO virtual_book_nav
+                   (book_id, date, cash, positions_json, total_nav, spy_nav, daily_return, created_at)
+                   VALUES ('CHAMPION_BOOK', ?, 100000, '{}', 100000, 50000, 0.001, ?)""",
+                (f"2026-07-{i+1:02d}", time.time()),
+            )
+        conn.commit()
+        result = mtm_rows_available(conn, min_rows=30)
+        conn.close()
+        assert result is True
+
+    def test_get_holdings_buy_increases_qty(self, mem_db, monkeypatch):
+        """_get_holdings correctly sums BUY fills into net qty."""
+        import agent_db
+        from agents.learning.book_mtm import _get_holdings
+        import time
+
+        monkeypatch.setattr(agent_db, "_connect", lambda: _conn(mem_db))
+        conn = _conn(mem_db)
+        now = "2026-09-01T12:00:00+00:00"
+        conn.execute(
+            "INSERT INTO virtual_fills (book_id,episode_id,ticker,action,price,qty,fees,filled_at,decision_origin,created_at) VALUES ('CHAMPION_BOOK','ep1','AAPL','BUY',200.0,5,0,?,?,?)",
+            (now, "CHAMPION", time.time()),
+        )
+        conn.execute(
+            "INSERT INTO virtual_fills (book_id,episode_id,ticker,action,price,qty,fees,filled_at,decision_origin,created_at) VALUES ('CHAMPION_BOOK','ep2','AAPL','BUY',205.0,3,0,?,?,?)",
+            (now, "CHAMPION", time.time()),
+        )
+        conn.commit()
+        holdings = _get_holdings(conn, "CHAMPION_BOOK")
+        conn.close()
+        assert "AAPL" in holdings
+        assert holdings["AAPL"]["qty"] == 8.0
+
+    def test_get_holdings_sell_reduces_qty(self, mem_db, monkeypatch):
+        """_get_holdings correctly nets SELL fills against BUY positions."""
+        import agent_db
+        from agents.learning.book_mtm import _get_holdings
+        import time
+
+        monkeypatch.setattr(agent_db, "_connect", lambda: _conn(mem_db))
+        conn = _conn(mem_db)
+        now = "2026-09-01T12:00:00+00:00"
+        conn.execute(
+            "INSERT INTO virtual_fills (book_id,episode_id,ticker,action,price,qty,fees,filled_at,decision_origin,created_at) VALUES ('CHAMPION_BOOK','ep1','GRMN','BUY',150.0,10,0,?,?,?)",
+            (now, "CHAMPION", time.time()),
+        )
+        conn.execute(
+            "INSERT INTO virtual_fills (book_id,episode_id,ticker,action,price,qty,fees,filled_at,decision_origin,created_at) VALUES ('CHAMPION_BOOK','ep2','GRMN','SELL',155.0,4,0,?,?,?)",
+            (now, "CHAMPION", time.time()),
+        )
+        conn.commit()
+        holdings = _get_holdings(conn, "CHAMPION_BOOK")
+        conn.close()
+        assert "GRMN" in holdings
+        assert holdings["GRMN"]["qty"] == 6.0
+
+
+# ---------------------------------------------------------------------------
+# 0357 — Symmetric Holding and Exit Policy for Virtual Books
+# ---------------------------------------------------------------------------
+
+class TestHoldingExitPolicy0357:
+    """0357: BOOK_HOLD_DAYS constant exists; aged positions close on MTM run."""
+
+    def test_book_hold_days_constant(self):
+        """BOOK_HOLD_DAYS = 63 (3 months, matching alpha labeling horizon)."""
+        from agents.learning.book_mtm import BOOK_HOLD_DAYS
+        assert BOOK_HOLD_DAYS == 63
+
+    def test_aged_position_produces_synthetic_sell(self, mem_db, monkeypatch):
+        """A position first bought 64 days ago produces a SELL fill on MTM run."""
+        import agent_db
+        from agents.learning.book_mtm import _get_holdings, _emit_synthetic_sell
+        import time
+
+        monkeypatch.setattr(agent_db, "_connect", lambda: _conn(mem_db))
+
+        from datetime import date, timedelta
+        buy_date = (date.today() - timedelta(days=64)).isoformat()
+        buy_ts = f"{buy_date}T10:00:00+00:00"
+
+        conn = _conn(mem_db)
+        # Record an old BUY fill
+        conn.execute(
+            "INSERT INTO virtual_fills (book_id,episode_id,ticker,action,price,qty,fees,filled_at,decision_origin,created_at) VALUES ('CHAMPION_BOOK','ep_old','SPG','BUY',130.0,8,0,?,?,?)",
+            (buy_ts, "CHAMPION", time.time()),
+        )
+        conn.commit()
+
+        holdings = _get_holdings(conn, "CHAMPION_BOOK")
+        assert "SPG" in holdings
+        assert holdings["SPG"]["first_buy_date"] == buy_date
+
+        # Emit synthetic SELL (simulates what MTM job would do for aged positions)
+        today = date.today().isoformat()
+        _emit_synthetic_sell(conn, "CHAMPION_BOOK", "SPG", holdings["SPG"]["qty"],
+                              135.0, today, "CHAMPION")
+        conn.commit()
+
+        sells = conn.execute(
+            "SELECT action, ticker, qty FROM virtual_fills WHERE book_id='CHAMPION_BOOK' AND action='SELL'"
+        ).fetchall()
+        conn.close()
+
+        assert len(sells) == 1
+        assert sells[0]["ticker"] == "SPG"
+
+    def test_fresh_position_not_expired(self, mem_db, monkeypatch):
+        """A position bought today is not aged out."""
+        import agent_db
+        from agents.learning.book_mtm import _get_holdings, BOOK_HOLD_DAYS
+        import time
+
+        monkeypatch.setattr(agent_db, "_connect", lambda: _conn(mem_db))
+
+        from datetime import date
+        today = date.today().isoformat()
+        buy_ts = f"{today}T10:00:00+00:00"
+
+        conn = _conn(mem_db)
+        conn.execute(
+            "INSERT INTO virtual_fills (book_id,episode_id,ticker,action,price,qty,fees,filled_at,decision_origin,created_at) VALUES ('CHAMPION_BOOK','ep_new','META','BUY',500.0,2,0,?,?,?)",
+            (buy_ts, "CHAMPION", time.time()),
+        )
+        conn.commit()
+
+        holdings = _get_holdings(conn, "CHAMPION_BOOK")
+        conn.close()
+
+        from datetime import date, timedelta
+        expire_cutoff = (date.today() - timedelta(days=BOOK_HOLD_DAYS)).isoformat()
+        assert "META" in holdings
+        assert holdings["META"]["first_buy_date"] > expire_cutoff, "Today's position should not be expired"

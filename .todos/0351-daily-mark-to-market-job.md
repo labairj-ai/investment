@@ -1,7 +1,7 @@
 # Add Daily Mark-to-Market NAV Job
 
 - **ID:** 0351
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-17
 - **Priority:** high
 - **Depends:** 0346

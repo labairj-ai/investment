@@ -1,7 +1,7 @@
 # Define Symmetric Holding and Exit Policy for Virtual Books
 
 - **ID:** 0357
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-17
 - **Priority:** normal
 - **Depends:** 0351

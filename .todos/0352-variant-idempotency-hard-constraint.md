@@ -1,7 +1,7 @@
 # Enforce Variant Idempotency with Hard DB Constraint
 
 - **ID:** 0352
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-17
 - **Priority:** high
 - **Depends:** 0349

@@ -9042,9 +9042,12 @@ function loadLearningPanel() {{
           '</div></div>';
       }}
 
+      var _expBadge = (d.mtm_nav_available)
+        ? ''
+        : '<span style="font-size:10px;padding:1px 7px;border-radius:10px;background:#ecc94b;color:#744210;font-weight:700;">EXPERIMENTAL — cost-basis accounting</span>';
       var html = '<div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;">' +
         '<span style="font-size:11px;font-weight:700;color:#718096;text-transform:uppercase;">Portfolio Simulation</span>' +
-        '<span style="font-size:10px;padding:1px 7px;border-radius:10px;background:#ecc94b;color:#744210;font-weight:700;">EXPERIMENTAL — cost-basis accounting</span>' +
+        _expBadge +
         '</div>' +
         '<div style="display:flex;gap:14px;flex-wrap:wrap;">' +
         _bookCard(d.champion_book, 'Champion Book', '#2b6cb0') +

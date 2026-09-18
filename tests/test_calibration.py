@@ -1,4 +1,5 @@
 """Tests for agents/learning/calibration.py and challenger.py (0330)."""
+import json
 import sys
 import time
 import uuid
@@ -722,8 +723,8 @@ class TestChampionChallengerExperiment0336:
         conn.execute("PRAGMA foreign_keys=OFF")
 
         conn.execute("""INSERT INTO trading_accounts
-            (account_id, mode, current_cash, created_at)
-            VALUES ('ALPACA_TEST_01', 'paper', 100000, 1000000)""")
+            (account_id, mode, current_cash, created_at, role)
+            VALUES ('ALPACA_TEST_01', 'paper', 100000, 1000000, 'paper_challenger')""")
         ep_id = str(uuid.uuid4())
         conn.execute("""INSERT INTO decision_episodes
             (episode_id, run_id, ticker, captured_at, composite_score, feature_schema_version)
@@ -762,8 +763,8 @@ class TestChampionChallengerExperiment0336:
         conn.execute("PRAGMA foreign_keys=OFF")
 
         conn.execute("""INSERT INTO trading_accounts
-            (account_id, mode, current_cash, created_at)
-            VALUES ('ALPACA_TEST_01', 'paper', 100000, 1000000)""")
+            (account_id, mode, current_cash, created_at, role)
+            VALUES ('ALPACA_TEST_01', 'paper', 100000, 1000000, 'paper_challenger')""")
         ep_id = str(uuid.uuid4())
         # Champion recommendation is for ANET
         conn.execute("""INSERT INTO decision_episodes
@@ -951,7 +952,7 @@ class TestModelPromotionLog0342:
                 unique_weeks, lifecycle_state)
                VALUES (?,?,?,?,?,?,?,?,?,?)""",
             (model_version, "2026-01-01", "abc", 50,
-             '{"cv_folds":2,"beats_baseline":true}',
+             '{"cv_folds":3,"beats_baseline":true}',
              time.time(), 15, 35, 6, "TRAINED"),
         )
         conn.commit()
@@ -1270,14 +1271,15 @@ class TestActiveModelRegistry0344:
                VALUES (?,?,?,?,?,?,?,?,?,?)""",
             ("edge_v2", "2099-01-01", "abc123", 70,
              _json.dumps({"coef": [0.1]*5, "intercept": 0.0, "mean_alpha": 0.01,
-                          "cv_folds": 2, "beats_baseline": True}),
+                          "cv_folds": 3, "beats_baseline": True, "alpha_edge_evidence": "POSITIVE"}),
              time.time() + 100, 15, 35, 6, "OBSERVE"),
         )
         conn2.commit()
         conn2.close()
 
         result = promote("edge_v2", "PAPER_ACTIVE", force=False,
-                         promoted_by="test", promotion_reason="")
+                         promoted_by="test", promotion_reason="",
+                         override_reason="test retire behavior")
         assert result["promoted"] is True
 
         # edge_v1 must now be RETIRED
@@ -1393,7 +1395,7 @@ class TestPromotionGovernanceV2_0348:
                 unique_weeks, lifecycle_state)
                VALUES (?,?,?,?,?,?,?,?,?,?)""",
             ("edge_gate_test", "2026-01-01", "abc", 50,
-             _json.dumps({"cv_folds": 2, "beats_baseline": True, "coef": [0.1]*5, "intercept": 0.0}),
+             _json.dumps({"cv_folds": 3, "beats_baseline": True, "coef": [0.1]*5, "intercept": 0.0}),
              time.time(), 15, 35, 6, "TRAINED"),
         )
         conn.commit()
@@ -1668,3 +1670,490 @@ class TestRealExecutionBenchmarking0350:
         col_names = [row["name"] for row in pragma]
         conn.close()
         assert "limit_variance" in col_names
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 0352 — Variant Idempotency Hard DB Constraint
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestVariantIdempotencyHardConstraint0352:
+    """0352: terminal intent permanently closes a variant; unique DB index enforced."""
+
+    def _make_policy(self, account_id: str):
+        return _make_test_policy(account_id)
+
+    def test_rejected_variant_returns_none(self, mem_db, monkeypatch):
+        """A REJECTED variant intent makes the variant permanently closed (returns None on re-run)."""
+        import agent_db
+        from trade_engine.intent_builder import build_intent_from_variant
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute(
+            "INSERT OR IGNORE INTO trading_accounts (account_id,mode,current_cash,created_at) VALUES ('ALPACA_52','paper',100000,'2026-01-01')"
+        )
+        ep_id = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO decision_episodes (episode_id,run_id,ticker,captured_at,composite_score,feature_schema_version) VALUES (?,1,'GOOG',1000000,75,'v1')",
+            (ep_id,),
+        )
+        row = conn.execute(
+            """INSERT INTO decision_variants
+               (episode_id,origin,challenger_model_version,challenger_score,challenger_adjustment,
+                would_have_selected,champion_ticker,variant_ticker,action,price,created_at)
+               VALUES (?,'PAPER_CHALLENGER','v1',77,2,1,'AAPL','GOOG','BUY',170.0,1000000)""",
+            (ep_id,),
+        )
+        variant_id = row.lastrowid
+        conn.commit()
+
+        policy = self._make_policy("ALPACA_52")
+        intent1 = build_intent_from_variant(variant_id, "ALPACA_52", policy, conn)
+        assert intent1 is not None
+
+        conn.execute(
+            "UPDATE trade_intents SET status='REJECTED' WHERE intent_id=?", (intent1.intent_id,)
+        )
+        conn.commit()
+
+        # Second call: terminal REJECTED → must return None (not a new PENDING intent)
+        intent2 = build_intent_from_variant(variant_id, "ALPACA_52", policy, conn)
+        conn.close()
+        assert intent2 is None, "REJECTED variant should not produce a new PENDING intent"
+
+    def test_expired_variant_returns_none(self, mem_db, monkeypatch):
+        """An EXPIRED variant intent also permanently closes the variant."""
+        import agent_db
+        from trade_engine.intent_builder import build_intent_from_variant
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute(
+            "INSERT OR IGNORE INTO trading_accounts (account_id,mode,current_cash,created_at) VALUES ('ALPACA_53','paper',100000,'2026-01-01')"
+        )
+        ep_id = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO decision_episodes (episode_id,run_id,ticker,captured_at,composite_score,feature_schema_version) VALUES (?,1,'MSFT',1000000,80,'v1')",
+            (ep_id,),
+        )
+        row = conn.execute(
+            """INSERT INTO decision_variants
+               (episode_id,origin,challenger_model_version,challenger_score,challenger_adjustment,
+                would_have_selected,champion_ticker,variant_ticker,action,price,created_at)
+               VALUES (?,'PAPER_CHALLENGER','v1',82,2,0,'MSFT','MSFT','BUY',400.0,1000000)""",
+            (ep_id,),
+        )
+        variant_id = row.lastrowid
+        conn.commit()
+
+        policy = self._make_policy("ALPACA_53")
+        intent1 = build_intent_from_variant(variant_id, "ALPACA_53", policy, conn)
+        assert intent1 is not None
+        conn.execute(
+            "UPDATE trade_intents SET status='EXPIRED' WHERE intent_id=?", (intent1.intent_id,)
+        )
+        conn.commit()
+
+        intent2 = build_intent_from_variant(variant_id, "ALPACA_53", policy, conn)
+        conn.close()
+        assert intent2 is None, "EXPIRED variant should not produce a new PENDING intent"
+
+    def test_unique_index_on_account_variant(self, mem_db, monkeypatch):
+        """idx_intent_per_variant unique index exists in schema."""
+        conn = _make_conn(mem_db)
+        indexes = [r["name"] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index'"
+        ).fetchall()]
+        conn.close()
+        assert "idx_intent_per_variant" in indexes, "Unique index idx_intent_per_variant missing"
+
+    def test_non_terminal_intent_returned_on_second_call(self, mem_db, monkeypatch):
+        """A PENDING variant intent is returned as-is on second build call."""
+        import agent_db
+        from trade_engine.intent_builder import build_intent_from_variant
+        from trade_engine.models import IntentStatus
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute(
+            "INSERT OR IGNORE INTO trading_accounts (account_id,mode,current_cash,created_at) VALUES ('ALPACA_54','paper',100000,'2026-01-01')"
+        )
+        ep_id = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO decision_episodes (episode_id,run_id,ticker,captured_at,composite_score,feature_schema_version) VALUES (?,1,'AMZN',1000000,85,'v1')",
+            (ep_id,),
+        )
+        row = conn.execute(
+            """INSERT INTO decision_variants
+               (episode_id,origin,challenger_model_version,challenger_score,challenger_adjustment,
+                would_have_selected,champion_ticker,variant_ticker,action,price,created_at)
+               VALUES (?,'PAPER_CHALLENGER','v1',87,2,0,'AMZN','AMZN','BUY',190.0,1000000)""",
+            (ep_id,),
+        )
+        variant_id = row.lastrowid
+        conn.commit()
+
+        policy = self._make_policy("ALPACA_54")
+        intent1 = build_intent_from_variant(variant_id, "ALPACA_54", policy, conn)
+        intent2 = build_intent_from_variant(variant_id, "ALPACA_54", policy, conn)
+        conn.close()
+
+        assert intent1 is not None
+        assert intent2 is not None
+        assert intent1.intent_id == intent2.intent_id
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 0353 — Remove Account-ID String-Match Routing Heuristic
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestRemoveAccountIdHeuristics0353:
+    """0353: routing uses role column only; NULL role → champion regardless of account_id name."""
+
+    def _make_policy(self, account_id: str):
+        return _make_test_policy(account_id)
+
+    def _setup_ep_rec_variant(self, conn, rec_id, ep_id, champion_ticker, challenger_ticker, price):
+        conn.execute(
+            "INSERT INTO decision_episodes (episode_id,run_id,ticker,captured_at,composite_score,feature_schema_version) VALUES (?,1,?,1000000,80,'v1')",
+            (ep_id, champion_ticker),
+        )
+        conn.execute(
+            f"""INSERT INTO recommendations
+               (id,run_id,ticker,action,status,recommendation_score,episode_id,action_payload_json,created_at)
+               VALUES ({rec_id},1,?,\'BUY\',\'accepted\',80,?,'{{\"price\":{price}}}',1000000)""",
+            (champion_ticker, ep_id),
+        )
+        conn.execute(
+            """INSERT INTO decision_variants
+               (episode_id,origin,challenger_model_version,challenger_score,challenger_adjustment,
+                would_have_selected,champion_ticker,variant_ticker,action,price,created_at)
+               VALUES (?,'PAPER_CHALLENGER','v1',82,2,1,?,?,'BUY',?,1000000)""",
+            (ep_id, champion_ticker, challenger_ticker, price),
+        )
+        conn.commit()
+
+    def test_alpaca_live_null_role_gets_champion(self, mem_db, monkeypatch):
+        """ALPACA_LIVE_01 with role=NULL → champion behavior (no ALPACA string-match fallback)."""
+        import agent_db
+        from trade_engine.intent_builder import build_intent
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute(
+            "INSERT OR IGNORE INTO trading_accounts (account_id,mode,current_cash,created_at) VALUES ('ALPACA_LIVE_01','live',100000,'2026-01-01')"
+        )
+        ep_id = str(uuid.uuid4())
+        self._setup_ep_rec_variant(conn, 9901, ep_id, "AAPL", "GRMN", 200.0)
+
+        policy = self._make_policy("ALPACA_LIVE_01")
+        intent = build_intent(9901, "ALPACA_LIVE_01", policy, conn)
+        conn.close()
+
+        assert intent is not None
+        assert intent.symbol == "AAPL", f"Expected champion AAPL, got {intent.symbol}"
+        assert intent.decision_origin == "CHAMPION"
+
+    def test_foo_alpaca_test_null_role_gets_champion(self, mem_db, monkeypatch):
+        """FOO_ALPACA_TEST with role=NULL → champion behavior."""
+        import agent_db
+        from trade_engine.intent_builder import build_intent
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute(
+            "INSERT OR IGNORE INTO trading_accounts (account_id,mode,current_cash,created_at) VALUES ('FOO_ALPACA_TEST','paper',100000,'2026-01-01')"
+        )
+        ep_id = str(uuid.uuid4())
+        self._setup_ep_rec_variant(conn, 9902, ep_id, "NVDA", "TSLA", 450.0)
+
+        policy = self._make_policy("FOO_ALPACA_TEST")
+        intent = build_intent(9902, "FOO_ALPACA_TEST", policy, conn)
+        conn.close()
+
+        assert intent is not None
+        assert intent.symbol == "NVDA", f"Expected champion NVDA, got {intent.symbol}"
+
+    def test_paper_challenger_role_gets_challenger(self, mem_db, monkeypatch):
+        """Account with role='paper_challenger' → challenger behavior (GRMN not AAPL)."""
+        import agent_db
+        from trade_engine.intent_builder import build_intent
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute(
+            "INSERT OR IGNORE INTO trading_accounts (account_id,mode,current_cash,created_at,role) VALUES ('MY_PAPER_01','paper',100000,'2026-01-01','paper_challenger')"
+        )
+        ep_id = str(uuid.uuid4())
+        self._setup_ep_rec_variant(conn, 9903, ep_id, "AAPL", "GRMN", 200.0)
+
+        policy = self._make_policy("MY_PAPER_01")
+        intent = build_intent(9903, "MY_PAPER_01", policy, conn)
+        conn.close()
+
+        assert intent is not None
+        assert intent.symbol == "GRMN", f"Expected challenger GRMN, got {intent.symbol}"
+        assert intent.decision_origin == "PAPER_CHALLENGER"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 0354 — Separate Experiment Champion from LLM Recommendation Lineage
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestExperimentChampionLineage0354:
+    """0354: decision_variants stores recommendation_control_ticker and experiment_champion_ticker."""
+
+    def test_new_columns_in_schema(self, mem_db, monkeypatch):
+        """decision_variants table has recommendation_control_ticker and experiment_champion_ticker."""
+        conn = _make_conn(mem_db)
+        pragma = conn.execute("PRAGMA table_info(decision_variants)").fetchall()
+        col_names = [r["name"] for r in pragma]
+        conn.close()
+        assert "recommendation_control_ticker" in col_names
+        assert "experiment_champion_ticker" in col_names
+
+    def test_insert_decision_variant_populates_both(self, mem_db, monkeypatch):
+        """_insert_decision_variant populates both new ticker fields independently."""
+        import agent_db
+        from agents.opportunity_agent import _insert_decision_variant
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        conn.execute("PRAGMA foreign_keys=OFF")
+        ep_id = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO decision_episodes (episode_id,run_id,ticker,captured_at,composite_score,feature_schema_version) VALUES (?,1,'AAPL',%.6f,80,'v1')" % time.time(),
+            (ep_id,),
+        )
+        conn.execute(
+            "INSERT INTO learning_models (model_version,training_cutoff,feature_schema_hash,training_n,validation_metrics,created_at,lifecycle_state) VALUES ('v_test','cutoff','hash',50,'{}',%.6f,'PAPER_ACTIVE')" % time.time(),
+        )
+        conn.commit()
+
+        scored = [
+            {"ticker": "AAPL", "_composite": 90, "_composite_challenger": 85,
+             "_challenger_info": {"active": True, "model_version": "v_test", "learning_adjustment": -5},
+             "_episode_id": ep_id, "price": 200.0},
+            {"ticker": "GRMN", "_composite": 82, "_composite_challenger": 88,
+             "_challenger_info": {"active": True, "model_version": "v_test", "learning_adjustment": 6},
+             "_episode_id": ep_id, "price": 150.0},
+        ]
+        champion = {"ticker": "AAPL", "_episode_id": ep_id}
+
+        _insert_decision_variant(
+            scored, champion,
+            champion_ticker="AAPL",
+            experiment_champion_ticker="AAPL",  # top-1 by base score
+        )
+
+        row = conn.execute(
+            "SELECT recommendation_control_ticker, experiment_champion_ticker FROM decision_variants WHERE episode_id=?",
+            (ep_id,),
+        ).fetchone()
+        conn.close()
+
+        assert row is not None
+        assert row["recommendation_control_ticker"] == "AAPL"
+        assert row["experiment_champion_ticker"] == "AAPL"
+
+    def test_experiment_champion_can_differ_from_recommendation_control(self, mem_db, monkeypatch):
+        """If LLM picks different ticker than base-score top-1, both fields differ."""
+        import agent_db
+        from agents.opportunity_agent import _insert_decision_variant
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        conn.execute("PRAGMA foreign_keys=OFF")
+        ep_id = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO decision_episodes (episode_id,run_id,ticker,captured_at,composite_score,feature_schema_version) VALUES (?,1,'MSFT',%.6f,88,'v1')" % time.time(),
+            (ep_id,),
+        )
+        conn.commit()
+
+        scored = [
+            {"ticker": "MSFT", "_composite": 88, "_composite_challenger": 80,
+             "_challenger_info": {"active": True, "model_version": "v2", "learning_adjustment": -8},
+             "_episode_id": ep_id, "price": 420.0},
+            {"ticker": "NVDA", "_composite": 85, "_composite_challenger": 91,
+             "_challenger_info": {"active": True, "model_version": "v2", "learning_adjustment": 6},
+             "_episode_id": ep_id, "price": 950.0},
+        ]
+        # LLM selected NVDA (not the base-score top-1 MSFT)
+        champion = {"ticker": "NVDA", "_episode_id": ep_id}
+
+        _insert_decision_variant(
+            scored, champion,
+            champion_ticker="NVDA",            # LLM recommendation
+            experiment_champion_ticker="MSFT", # base-score top-1
+        )
+
+        row = conn.execute(
+            "SELECT recommendation_control_ticker, experiment_champion_ticker, variant_ticker FROM decision_variants WHERE episode_id=?",
+            (ep_id,),
+        ).fetchone()
+        conn.close()
+
+        assert row is not None
+        assert row["recommendation_control_ticker"] == "NVDA"
+        assert row["experiment_champion_ticker"] == "MSFT"
+        assert row["recommendation_control_ticker"] != row["experiment_champion_ticker"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 0355 — State-Specific Promotion Gates
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestStateSpecificPromotionGates0355:
+    """0355: TRAINED→OBSERVE requires cv_folds>=3; OBSERVE→PAPER_ACTIVE requires elapsed time."""
+
+    def test_cv_folds_3_required_for_observe(self, mem_db, monkeypatch):
+        """cv_folds=2 blocks TRAINED→OBSERVE (now requires >=3)."""
+        import agent_db
+        from agents.learning.calibration import _check_promotion_gates, PROMOTE_MIN_CV_FOLDS
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        assert PROMOTE_MIN_CV_FOLDS == 3
+
+        conn = _make_conn(mem_db)
+        vm = {"cv_folds": 2, "beats_baseline": True, "alpha_edge_evidence": "POSITIVE",
+              "unique_tickers": 15, "unique_decision_dates": 35, "unique_weeks": 6}
+        conn.execute(
+            """INSERT INTO learning_models
+               (model_version,training_cutoff,feature_schema_hash,training_n,validation_metrics,
+                created_at,unique_tickers,unique_decision_dates,unique_weeks,raw_n,lifecycle_state)
+               VALUES ('mv_355a','cut','h',60,?,?,15,35,6,60,'TRAINED')""",
+            (json.dumps(vm), time.time()),
+        )
+        conn.commit()
+        conn.close()
+
+        result = _check_promotion_gates("mv_355a", "OBSERVE")
+        assert not result["passed"], "cv_folds=2 should fail the TRAINED→OBSERVE gate"
+        assert "has_cv_folds" in result["failed"]
+
+    def test_cv_folds_3_passes_for_observe(self, mem_db, monkeypatch):
+        """cv_folds=3 passes the TRAINED→OBSERVE gate."""
+        import agent_db
+        from agents.learning.calibration import _check_promotion_gates
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        vm = {"cv_folds": 3, "beats_baseline": True, "alpha_edge_evidence": "INCONCLUSIVE",
+              "unique_tickers": 15, "unique_decision_dates": 35, "unique_weeks": 6}
+        conn.execute(
+            """INSERT INTO learning_models
+               (model_version,training_cutoff,feature_schema_hash,training_n,validation_metrics,
+                created_at,unique_tickers,unique_decision_dates,unique_weeks,raw_n,lifecycle_state)
+               VALUES ('mv_355b','cut','h',60,?,?,15,35,6,60,'TRAINED')""",
+            (json.dumps(vm), time.time()),
+        )
+        conn.commit()
+        conn.close()
+
+        result = _check_promotion_gates("mv_355b", "OBSERVE")
+        assert result["passed"], f"cv_folds=3 should pass TRAINED→OBSERVE; failed: {result['failed']}"
+
+    def test_observe_to_paper_active_blocked_within_14_days(self, mem_db, monkeypatch):
+        """Model promoted to OBSERVE today cannot immediately promote to PAPER_ACTIVE."""
+        import agent_db
+        from agents.learning.calibration import _check_promotion_gates, OBSERVE_MIN_DAYS
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        vm = {"cv_folds": 5, "beats_baseline": True, "alpha_edge_evidence": "POSITIVE",
+              "unique_tickers": 20, "unique_decision_dates": 40, "unique_weeks": 8}
+        conn.execute(
+            """INSERT INTO learning_models
+               (model_version,training_cutoff,feature_schema_hash,training_n,validation_metrics,
+                created_at,unique_tickers,unique_decision_dates,unique_weeks,raw_n,lifecycle_state)
+               VALUES ('mv_355c','cut','h',80,?,?,20,40,8,80,'OBSERVE')""",
+            (json.dumps(vm), time.time()),
+        )
+        # Log OBSERVE promotion as of "now" (< OBSERVE_MIN_DAYS ago)
+        conn.execute(
+            """INSERT INTO model_promotion_log
+               (model_version,from_state,to_state,promoted_by,promoted_at,promotion_reason,promotion_metrics_snapshot)
+               VALUES ('mv_355c','TRAINED','OBSERVE','test',?,?,?)""",
+            (time.time(), "test", "{}"),
+        )
+        # Seed enough fresh episodes
+        for i in range(10):
+            ep_id = str(uuid.uuid4())
+            conn.execute(
+                "INSERT INTO decision_episodes (episode_id,run_id,ticker,captured_at,composite_score,feature_schema_version) VALUES (?,1,'TK',?,80,'v1')",
+                (ep_id, time.time() + i),
+            )
+        conn.commit()
+        conn.close()
+
+        result = _check_promotion_gates("mv_355c", "PAPER_ACTIVE")
+        assert not result["passed"], "Model promoted to OBSERVE today should not reach PAPER_ACTIVE"
+        assert "observe_elapsed_days" in result["failed"]
+
+    def test_observe_to_paper_active_passes_after_14_days(self, mem_db, monkeypatch):
+        """Model that has been in OBSERVE for 15 days with 5+ fresh episodes can promote."""
+        import agent_db
+        from agents.learning.calibration import _check_promotion_gates, OBSERVE_MIN_DAYS
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        # Promote to OBSERVE 15 days ago
+        observe_at = time.time() - (OBSERVE_MIN_DAYS + 1) * 86400
+        conn = _make_conn(mem_db)
+        vm = {"cv_folds": 5, "beats_baseline": True, "alpha_edge_evidence": "POSITIVE",
+              "unique_tickers": 20, "unique_decision_dates": 40, "unique_weeks": 8}
+        conn.execute(
+            """INSERT INTO learning_models
+               (model_version,training_cutoff,feature_schema_hash,training_n,validation_metrics,
+                created_at,unique_tickers,unique_decision_dates,unique_weeks,raw_n,lifecycle_state)
+               VALUES ('mv_355d','cut','h',80,?,?,20,40,8,80,'OBSERVE')""",
+            (json.dumps(vm), observe_at),
+        )
+        conn.execute(
+            """INSERT INTO model_promotion_log
+               (model_version,from_state,to_state,promoted_by,promoted_at,promotion_reason,promotion_metrics_snapshot)
+               VALUES ('mv_355d','TRAINED','OBSERVE','test',?,?,?)""",
+            (observe_at, "test", "{}"),
+        )
+        # Seed 6 fresh episodes after the OBSERVE promotion
+        for i in range(6):
+            ep_id = str(uuid.uuid4())
+            conn.execute(
+                "INSERT INTO decision_episodes (episode_id,run_id,ticker,captured_at,composite_score,feature_schema_version) VALUES (?,1,'TK',?,80,'v1')",
+                (ep_id, observe_at + i * 86400 + 100),
+            )
+        conn.commit()
+        conn.close()
+
+        result = _check_promotion_gates("mv_355d", "PAPER_ACTIVE")
+        assert result["passed"], f"Should pass after 15 days + 6 episodes; failed: {result['failed']}"

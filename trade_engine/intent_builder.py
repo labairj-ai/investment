@@ -22,6 +22,7 @@ from .models import (
 )
 from .policy import TradingPolicy
 from . import market_calendar
+from . import market_data as _market_data
 
 _SUPPORTED_ACTIONS = {"BUY", "TRIM", "EXIT"}
 
@@ -74,6 +75,41 @@ def _get_strategy_config_hash() -> Optional[str]:
         return None
 
 
+def _fetch_quote_fields(ticker: str, fallback_price: float) -> dict:
+    """Fetch live bid/ask for a ticker; fall back to payload price (0356).
+
+    Returns dict with decision_last, decision_mid, decision_bid, decision_ask,
+    decision_spread_bps, quote_timestamp, price_source, and updated decision_market_price.
+    """
+    try:
+        quote = _market_data._get_quote(ticker)
+        if quote and quote.bid > 0 and quote.ask > 0:
+            mid = (quote.bid + quote.ask) / 2.0
+            spread_bps = (quote.ask - quote.bid) / mid * 10000 if mid > 0 else None
+            return {
+                "decision_bid": quote.bid,
+                "decision_ask": quote.ask,
+                "decision_last": mid,
+                "decision_mid": mid,
+                "decision_spread_bps": round(spread_bps, 2) if spread_bps is not None else None,
+                "quote_timestamp": quote.timestamp,
+                "price_source": "yfinance",
+                "decision_market_price": mid,
+            }
+    except Exception:
+        pass
+    return {
+        "decision_bid": None,
+        "decision_ask": None,
+        "decision_last": fallback_price,
+        "decision_mid": None,
+        "decision_spread_bps": None,
+        "quote_timestamp": None,
+        "price_source": "payload",
+        "decision_market_price": fallback_price,
+    }
+
+
 def build_intent_from_variant(
     variant_id: int,
     account_id: str,
@@ -98,15 +134,15 @@ def build_intent_from_variant(
     if not ticker or action not in _SUPPORTED_ACTIONS:
         return None
 
-    # 0349: idempotency by decision_variant_id (not account+episode combo)
+    # 0352: all-status query — any terminal intent permanently closes this variant decision
+    _TERMINAL = {"CANCELLED", "REJECTED", "EXPIRED", "FILLED"}
     existing = conn.execute(
-        """SELECT * FROM trade_intents
-           WHERE decision_variant_id=?
-             AND status NOT IN ('CANCELLED','REJECTED','EXPIRED')
-           LIMIT 1""",
+        "SELECT * FROM trade_intents WHERE decision_variant_id=? LIMIT 1",
         (variant_id,),
     ).fetchone()
     if existing:
+        if existing["status"] in _TERMINAL:
+            return None  # variant permanently closed; do not re-enter
         return TradeIntent.from_db_row(existing)
 
     raw_price = float(var["price"] or 0)
@@ -160,6 +196,9 @@ def build_intent_from_variant(
     now = _now_utc().isoformat()
     valid_until = market_calendar.next_market_close().isoformat()
 
+    # 0356: fetch live quote; fall back to payload price when unavailable
+    qf = _fetch_quote_fields(ticker, raw_price)
+
     intent = TradeIntent(
         intent_id=str(uuid.uuid4()),
         account_id=account_id,
@@ -187,7 +226,14 @@ def build_intent_from_variant(
         decision_origin="PAPER_CHALLENGER",
         code_commit_sha=agent_db.CODE_COMMIT_SHA,
         decision_variant_id=variant_id,
-        decision_market_price=raw_price,  # pre-slippage price at intent creation (0350)
+        decision_market_price=qf["decision_market_price"],
+        decision_bid=qf["decision_bid"],
+        decision_ask=qf["decision_ask"],
+        decision_last=qf["decision_last"],
+        decision_mid=qf["decision_mid"],
+        decision_spread_bps=qf["decision_spread_bps"],
+        quote_timestamp=qf["quote_timestamp"],
+        price_source=qf["price_source"],
     )
 
     d = intent.to_db_dict()
@@ -247,16 +293,18 @@ def build_intent(
     rec_keys = rec.keys() if hasattr(rec, "keys") else []
     episode_id = rec["episode_id"] if "episode_id" in rec_keys else None
 
-    # 0349: route to build_intent_from_variant() when this account has role='paper_challenger'.
-    # Check the role column first; fall back to ALPACA string match for rows without role set.
+    # 0353: route solely by trading_accounts.role; no string-match fallback.
+    # An account with role=NULL or role != 'paper_challenger' gets champion behavior.
     acct_row = conn.execute(
         "SELECT role FROM trading_accounts WHERE account_id=?", (account_id,)
     ).fetchone()
     acct_role = acct_row["role"] if acct_row and acct_row["role"] else None
-    is_paper_challenger = (
-        acct_role == "paper_challenger"
-        or (acct_role is None and "ALPACA" in account_id.upper())
-    )
+    if acct_role is None:
+        import logging as _logging
+        _logging.getLogger(__name__).debug(
+            "[intent_builder] account %s has NULL role — defaulting to champion behavior", account_id
+        )
+    is_paper_challenger = (acct_role == "paper_challenger")
     if episode_id and is_paper_challenger:
         variant_row = conn.execute(
             """SELECT id FROM decision_variants
@@ -280,7 +328,10 @@ def build_intent(
     limit_price = float(payload.get("price") or payload.get("limit_price") or 0)
     if limit_price <= 0:
         return None
-    decision_market_price = limit_price  # pre-slippage price at intent creation time (0350)
+
+    # 0356: fetch live quote; fall back to payload price when unavailable
+    qf = _fetch_quote_fields(ticker, limit_price)
+    decision_market_price = qf["decision_market_price"]
 
     if action == "BUY":
         side = Side.BUY
@@ -364,7 +415,14 @@ def build_intent(
         episode_id=episode_id,
         decision_origin="CHAMPION",
         code_commit_sha=agent_db.CODE_COMMIT_SHA,
-        decision_market_price=decision_market_price,  # pre-slippage price (0350)
+        decision_market_price=decision_market_price,
+        decision_bid=qf["decision_bid"],
+        decision_ask=qf["decision_ask"],
+        decision_last=qf["decision_last"],
+        decision_mid=qf["decision_mid"],
+        decision_spread_bps=qf["decision_spread_bps"],
+        quote_timestamp=qf["quote_timestamp"],
+        price_source=qf["price_source"],
     )
 
     d = intent.to_db_dict()

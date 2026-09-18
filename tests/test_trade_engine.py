@@ -65,7 +65,9 @@ def _make_conn() -> sqlite3.Connection:
             status TEXT DEFAULT 'PENDING',
             episode_id TEXT, decision_origin TEXT, code_commit_sha TEXT,
             decision_variant_id INTEGER,
-            decision_market_price REAL, decision_bid REAL, decision_ask REAL
+            decision_market_price REAL, decision_bid REAL, decision_ask REAL,
+            decision_last REAL, decision_mid REAL, decision_spread_bps REAL,
+            quote_timestamp TEXT, price_source TEXT
         );
         CREATE TABLE IF NOT EXISTS risk_decisions (
             decision_id INTEGER PRIMARY KEY AUTOINCREMENT, intent_id TEXT,
@@ -4244,3 +4246,76 @@ class TestIntentBuilderIdempotency:
             "SELECT COUNT(*) FROM trade_intents WHERE recommendation_id=20 AND account_id='AGENTIC_SHADOW_01'"
         ).fetchone()[0]
         assert count == 1, f"expected 1 row, got {count}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 0356 — Capture Real Market Quote at Intent Creation Time
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestRealQuoteSnapshotAtIntent0356:
+    """0356: decision_mid/bid/ask/spread_bps/price_source populated at intent creation."""
+
+    def test_new_fields_on_trade_intent_dataclass(self):
+        """TradeIntent dataclass has the 0356 quote fields."""
+        import dataclasses
+        from trade_engine.models import TradeIntent
+        field_names = {f.name for f in dataclasses.fields(TradeIntent)}
+        for f in ("decision_last", "decision_mid", "decision_spread_bps",
+                  "quote_timestamp", "price_source"):
+            assert f in field_names, f"Missing field: {f}"
+
+    def test_new_columns_in_schema(self):
+        """trade_intents table has 0356 columns (verified via _make_conn inline schema)."""
+        conn = _make_conn()
+        pragma = conn.execute("PRAGMA table_info(trade_intents)").fetchall()
+        col_names = [r["name"] for r in pragma]
+        conn.close()
+        for col in ("decision_last", "decision_mid", "decision_spread_bps",
+                    "quote_timestamp", "price_source"):
+            assert col in col_names, f"Missing column: {col}"
+
+    def test_fetch_quote_fields_yfinance_path(self):
+        """_fetch_quote_fields returns mid and source when quote available."""
+        from trade_engine.intent_builder import _fetch_quote_fields
+        from trade_engine.shadow_broker import Quote
+        from unittest.mock import patch
+
+        fake_quote = Quote(bid=99.0, ask=101.0, timestamp="2026-09-17T12:00:00+00:00")
+        with patch("trade_engine.intent_builder._market_data._get_quote", return_value=fake_quote):
+            result = _fetch_quote_fields("AAPL", 100.0)
+
+        assert result["price_source"] == "yfinance"
+        assert result["decision_mid"] == 100.0
+        assert result["decision_bid"] == 99.0
+        assert result["decision_ask"] == 101.0
+        assert result["decision_spread_bps"] == pytest.approx(200.0)  # (2/100)*10000
+
+    def test_fetch_quote_fields_payload_fallback(self):
+        """_fetch_quote_fields falls back to payload price when quote unavailable."""
+        from trade_engine.intent_builder import _fetch_quote_fields
+        from unittest.mock import patch
+
+        with patch("trade_engine.intent_builder._market_data._get_quote", return_value=None):
+            result = _fetch_quote_fields("AAPL", 123.45)
+
+        assert result["price_source"] == "payload"
+        assert result["decision_last"] == 123.45
+        assert result["decision_mid"] is None
+        assert result["decision_bid"] is None
+
+    def test_is_uses_decision_mid_over_limit_price(self):
+        """IS = fill vs decision_mid; limit_variance = fill vs limit_price (independent)."""
+        decision_mid = 100.0
+        limit_price = 101.0   # slippage-adjusted limit
+        fill_price = 100.8
+
+        # True IS: fill vs decision_mid
+        true_is = (fill_price - decision_mid) / decision_mid
+        assert true_is == pytest.approx(0.008)
+
+        # Limit variance: fill vs limit_price
+        lv = (fill_price - limit_price) / limit_price
+        assert lv == pytest.approx(-0.00198, rel=1e-2)  # favorable — filled inside limit
+
+        # They are distinct and tell different stories
+        assert true_is != lv

@@ -505,7 +505,13 @@ def run_opportunity_hunter(ctx: AgentContext) -> list[Recommendation]:
 
     # 0336/0340/0345: record decision_variant and virtual book fills if challenger is PAPER_ACTIVE
     if sel_ch_info.get("active"):
-        _insert_decision_variant(scored, selected, champion_ticker=selected.get("ticker"))
+        book_exp_champion = scored[0] if scored else None  # top-1 by base composite = experiment champion
+        _insert_decision_variant(
+            scored,
+            selected,
+            champion_ticker=selected.get("ticker"),
+            experiment_champion_ticker=book_exp_champion.get("ticker") if book_exp_champion else None,
+        )
 
         # 0345 — Experimental Symmetry (Option A, ranking-only):
         # CHAMPION_BOOK uses top-1 by BASE composite score (no LLM),
@@ -751,12 +757,17 @@ def _insert_decision_variant(
     scored: list[dict],
     champion: dict,
     champion_ticker: str,
+    experiment_champion_ticker: str | None = None,
 ) -> None:
-    """Insert a decision_variant row recording challenger's selection vs champion (0336/0337).
+    """Insert a decision_variant row recording challenger's selection vs champion (0336/0337/0354).
 
     Runs only when the challenger is PAPER_ACTIVE (caller checks info["active"]).
     Records the full executable decision: variant ticker, action, price, sizing.
     This is the source of truth for build_intent_from_variant() (0337).
+
+    champion_ticker (= recommendation_control_ticker): the LLM-selected candidate.
+    experiment_champion_ticker: top-1 by base composite score (what CHAMPION_BOOK uses).
+    These are semantically distinct and tracked separately for experiment lineage (0354).
     """
     try:
         # Sort by challenger-adjusted score to find challenger's top pick
@@ -791,9 +802,10 @@ def _insert_decision_variant(
             """INSERT INTO decision_variants
                (episode_id, origin, challenger_model_version,
                 challenger_score, challenger_adjustment,
-                would_have_selected, champion_ticker, variant_ticker,
-                action, price, thesis_version, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                would_have_selected, champion_ticker,
+                recommendation_control_ticker, experiment_champion_ticker,
+                variant_ticker, action, price, thesis_version, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 champion.get("_episode_id"),
                 "PAPER_CHALLENGER",
@@ -802,6 +814,8 @@ def _insert_decision_variant(
                 float(ch_info.get("learning_adjustment", 0)),
                 0 if matches_champion else 1,
                 champion_ticker,
+                champion_ticker,             # recommendation_control_ticker = LLM-selected
+                experiment_champion_ticker,  # experiment_champion_ticker = base-score top-1
                 would_select,
                 variant_action,
                 variant_price,
