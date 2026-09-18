@@ -1,7 +1,7 @@
 # Align Virtual Book Holding Horizon with Learning Target
 
 - **ID:** 0361
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-17
 - **Priority:** normal
 - **Depends:** 0357

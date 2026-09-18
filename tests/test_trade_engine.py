@@ -139,6 +139,29 @@ def _make_conn() -> sqlite3.Connection:
         CREATE TABLE IF NOT EXISTS investment_theses (
             id INTEGER PRIMARY KEY, ticker TEXT
         );
+        CREATE TABLE IF NOT EXISTS decision_variants (
+            id                                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            recommendation_id                   INTEGER,
+            episode_id                          TEXT,
+            origin                              TEXT DEFAULT 'PAPER_CHALLENGER',
+            challenger_model_version            TEXT,
+            challenger_score                    REAL,
+            challenger_adjustment               REAL,
+            would_have_selected                 INTEGER DEFAULT 0,
+            champion_ticker                     TEXT,
+            recommendation_control_ticker       TEXT,
+            experiment_champion_ticker          TEXT,
+            recommendation_control_episode_id   TEXT,
+            experiment_champion_episode_id      TEXT,
+            challenger_episode_id               TEXT,
+            variant_ticker                      TEXT,
+            action                              TEXT,
+            price                               REAL,
+            target_weight_pct                   REAL,
+            quantity                            REAL,
+            thesis_version                      INTEGER,
+            created_at                          REAL
+        );
     """)
     # Seed account
     conn.execute(
@@ -4319,3 +4342,150 @@ class TestRealQuoteSnapshotAtIntent0356:
 
         # They are distinct and tell different stories
         assert true_is != lv
+
+
+# ===========================================================================
+# 0362 — Harden Variant Idempotency
+# ===========================================================================
+
+class TestVariantIdempotencyHardened0362:
+    """0362: intent lookup scoped by account_id; INSERT OR IGNORE + re-query."""
+
+    def _make_policy(self, account_id):
+        import json
+        from trade_engine.policy import TradingPolicy
+        base = {
+            "policy_version": "1.0", "account_id": account_id,
+            "capital": {"starting_capital": 100000, "minimum_cash_pct": 5, "minimum_cash_abs": 500},
+            "equities": {"buy_allowed": True, "sell_allowed": True, "shorting_allowed": False,
+                         "max_single_position_pct": 20, "max_new_position_pct": 10},
+            "options": {"covered_calls_allowed": False, "naked_options_allowed": False,
+                        "max_contracts_per_symbol": 0},
+            "execution": {"market_orders_allowed": False, "max_orders_per_day": 5,
+                          "max_daily_notional_pct": 50, "max_slippage_pct": 1.0, "min_limit_price": 0.01},
+            "risk": {"max_drawdown_pct": 20, "max_daily_loss_pct": 5, "max_weekly_loss_pct": 10},
+            "circuit_breakers": {"trading_enabled": True, "halt_on_position_mismatch": False,
+                                 "halt_on_data_stale_minutes": 1440, "halt_on_daily_loss_pct": 10},
+        }
+        return TradingPolicy(
+            policy_version="1.0", account_id=account_id,
+            capital=base["capital"], equities=base["equities"], options=base["options"],
+            execution=base["execution"], risk=base["risk"],
+            circuit_breakers=base["circuit_breakers"], _raw_json=json.dumps(base),
+        )
+
+    def test_two_accounts_same_variant(self):
+        """Two accounts building intent from same variant_id each get their own row."""
+        from trade_engine.intent_builder import build_intent_from_variant
+        import time
+
+        conn = _make_conn()
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute(
+            "INSERT INTO trading_accounts (account_id, mode, current_cash, created_at, role)"
+            " VALUES ('ACCT_A', 'paper', 100000, 1000000, 'paper_challenger')"
+        )
+        conn.execute(
+            "INSERT INTO trading_accounts (account_id, mode, current_cash, created_at, role)"
+            " VALUES ('ACCT_B', 'paper', 100000, 1000000, 'paper_challenger')"
+        )
+        row = conn.execute(
+            "INSERT INTO decision_variants (episode_id, origin, variant_ticker, action, price, created_at)"
+            " VALUES ('ep1', 'PAPER_CHALLENGER', 'NVDA', 'BUY', 120.0, ?)",
+            (time.time(),),
+        )
+        variant_id = row.lastrowid
+        conn.commit()
+
+        policy_a = self._make_policy("ACCT_A")
+        policy_b = self._make_policy("ACCT_B")
+
+        intent_a = build_intent_from_variant(variant_id, "ACCT_A", policy_a, conn)
+        intent_b = build_intent_from_variant(variant_id, "ACCT_B", policy_b, conn)
+        conn.close()
+
+        assert intent_a is not None
+        assert intent_b is not None
+        assert intent_a.intent_id != intent_b.intent_id, "Each account should get its own intent"
+        assert intent_a.account_id == "ACCT_A"
+        assert intent_b.account_id == "ACCT_B"
+
+    def test_race_safe_concurrent_insert(self):
+        """Pre-inserting a row before calling build_intent returns existing row without exception."""
+        from trade_engine.intent_builder import build_intent_from_variant
+        from trade_engine.models import IntentStatus, Side, InstrumentType, OrderType, TimeInForce
+        import time
+
+        conn = _make_conn()
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute(
+            "INSERT INTO trading_accounts (account_id, mode, current_cash, created_at, role)"
+            " VALUES ('ACCT_RACE', 'paper', 100000, 1000000, 'paper_challenger')"
+        )
+        row = conn.execute(
+            "INSERT INTO decision_variants (episode_id, origin, variant_ticker, action, price, created_at)"
+            " VALUES ('ep_race', 'PAPER_CHALLENGER', 'AAPL', 'BUY', 200.0, ?)",
+            (time.time(),),
+        )
+        variant_id = row.lastrowid
+        conn.commit()
+
+        policy = self._make_policy("ACCT_RACE")
+
+        # First call creates the intent
+        intent_first = build_intent_from_variant(variant_id, "ACCT_RACE", policy, conn)
+        assert intent_first is not None
+
+        # Second call should return existing row without exception (idempotent)
+        intent_second = build_intent_from_variant(variant_id, "ACCT_RACE", policy, conn)
+        conn.close()
+
+        assert intent_second is not None
+        assert intent_first.intent_id == intent_second.intent_id, "Second call should return existing row"
+
+
+# ===========================================================================
+# 0363 — Quote Provenance V2
+# ===========================================================================
+
+class TestQuoteProvenanceV2_0363:
+    """0363: decision_last is genuine last trade price; distinct from decision_mid."""
+
+    def test_decision_last_distinct_from_mid(self):
+        """When last trade differs from mid, decision_last and decision_mid are distinct."""
+        from trade_engine.intent_builder import _fetch_quote_fields
+        from trade_engine.shadow_broker import Quote
+        from unittest.mock import patch
+
+        fake_quote = Quote(bid=99.0, ask=101.0, timestamp="2026-09-17T12:00:00+00:00", last=100.5)
+        with patch("trade_engine.intent_builder._market_data._get_quote", return_value=fake_quote):
+            result = _fetch_quote_fields("AAPL", 100.0)
+
+        assert result["decision_mid"] == pytest.approx(100.0)  # (99+101)/2
+        assert result["decision_last"] == pytest.approx(100.5)  # genuine last
+        assert result["decision_last"] != result["decision_mid"]
+
+    def test_decision_last_null_when_no_last(self):
+        """When last price is unavailable, decision_last is None."""
+        from trade_engine.intent_builder import _fetch_quote_fields
+        from trade_engine.shadow_broker import Quote
+        from unittest.mock import patch
+
+        fake_quote = Quote(bid=99.0, ask=101.0, timestamp="2026-09-17T12:00:00+00:00", last=None)
+        with patch("trade_engine.intent_builder._market_data._get_quote", return_value=fake_quote):
+            result = _fetch_quote_fields("AAPL", 100.0)
+
+        assert result["decision_last"] is None
+        assert result["decision_mid"] == pytest.approx(100.0)
+
+    def test_quote_namedtuple_has_last_field(self):
+        """Quote namedtuple has last field for genuine last traded price."""
+        from trade_engine.shadow_broker import Quote
+        q = Quote(bid=99.0, ask=101.0, last=100.5)
+        assert q.last == pytest.approx(100.5)
+
+    def test_quote_last_defaults_to_none(self):
+        """Quote.last defaults to None when not provided."""
+        from trade_engine.shadow_broker import Quote
+        q = Quote(bid=99.0, ask=101.0)
+        assert q.last is None

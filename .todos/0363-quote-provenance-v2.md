@@ -1,7 +1,7 @@
 # Quote Provenance V2: Genuine Last Trade Separate from Mid
 
 - **ID:** 0363
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-17
 - **Priority:** normal
 - **Depends:** 0356

@@ -13,7 +13,7 @@ Hard risk limits in the risk engine are unaffected.
 """
 from __future__ import annotations
 
-from .calibration import ChallengerModel, LIFECYCLE_PAPER_ACTIVE
+from .calibration import ChallengerModel, LIFECYCLE_PAPER_ACTIVE, LIFECYCLE_OBSERVE
 
 _cached_model: ChallengerModel | None = None
 _cached_version: str | None = None
@@ -40,6 +40,74 @@ def get_model() -> ChallengerModel | None:
     except Exception as e:
         print(f"[challenger] WARNING: failed to load model: {e}")
         return None
+
+
+def score_for_observe(model_version: str, candidates: list[dict]) -> None:
+    """Score candidates using an OBSERVE-state model; write to model_observations (0360).
+
+    Does not affect rankings. Builds the shadow prediction log that the
+    OBSERVE→PAPER_ACTIVE gate (mature_observations) checks against.
+    """
+    import agent_db
+    from datetime import datetime, timezone
+
+    try:
+        conn = agent_db._connect()
+        try:
+            row = conn.execute(
+                "SELECT * FROM learning_models WHERE model_version=? AND lifecycle_state=?",
+                (model_version, LIFECYCLE_OBSERVE),
+            ).fetchone()
+            if not row:
+                return
+
+            model = ChallengerModel._from_row(row)
+            if model is None:
+                return
+
+            now = datetime.now(timezone.utc).isoformat()
+            scored_pairs: list[tuple] = []
+            for c in candidates:
+                # Use predict_alpha directly — score() only activates for PAPER_ACTIVE
+                predicted = model.predict_alpha(c)
+                if predicted is None:
+                    continue
+                # Compute adjustment using same formula as score()
+                from .calibration import ALPHA_TO_SCORE_SCALE, MAX_ADJUSTMENT
+                import numpy as np
+                raw_adj = (predicted - model.mean_alpha) * ALPHA_TO_SCORE_SCALE
+                adj = float(np.clip(model.reliability * raw_adj, -MAX_ADJUSTMENT, MAX_ADJUSTMENT))
+                ch_score = float(c.get("composite_score") or c.get("_composite") or 0) + adj
+                scored_pairs.append((c, {"predicted_alpha": predicted, "adjustment": adj, "ch_score": ch_score}))
+
+            if scored_pairs:
+                max_cs = max(o["ch_score"] for _, o in scored_pairs)
+                for c, out in scored_pairs:
+                    ep_id = c.get("_episode_id")
+                    if not ep_id:
+                        continue
+                    try:
+                        conn.execute(
+                            """INSERT OR IGNORE INTO model_observations
+                               (model_version, episode_id, ticker, prediction_timestamp,
+                                base_score, predicted_alpha, learning_adjustment,
+                                challenger_score, would_select)
+                               VALUES (?,?,?,?,?,?,?,?,?)""",
+                            (model_version, ep_id, c.get("ticker", ""),
+                             now,
+                             c.get("composite_score") or c.get("_composite"),
+                             out["predicted_alpha"],
+                             out["adjustment"],
+                             out["ch_score"],
+                             1 if out["ch_score"] == max_cs else 0),
+                        )
+                    except Exception:
+                        pass
+                conn.commit()
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"[challenger] WARNING: score_for_observe failed: {e}")
 
 
 def apply_challenger_adjustment(candidate: dict) -> tuple[int, dict]:

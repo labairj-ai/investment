@@ -1,7 +1,7 @@
 # OBSERVE State: Real Shadow Scoring with Prospective Outcomes
 
 - **ID:** 0360
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-17
 - **Priority:** high
 - **Depends:** 0355

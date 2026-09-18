@@ -2152,8 +2152,298 @@ class TestStateSpecificPromotionGates0355:
                 "INSERT INTO decision_episodes (episode_id,run_id,ticker,captured_at,composite_score,feature_schema_version) VALUES (?,1,'TK',?,80,'v1')",
                 (ep_id, observe_at + i * 86400 + 100),
             )
+
+        # 0360: seed 5 mature model_observations (outcome_alpha_90d required)
+        import datetime as _dt
+        for i in range(5):
+            conn.execute(
+                """INSERT INTO model_observations
+                   (model_version, episode_id, ticker, prediction_timestamp,
+                    challenger_score, would_select, outcome_alpha_90d, outcome_labeled_at)
+                   VALUES ('mv_355d', ?, 'TK', ?, 0.5, 1, 0.02, ?)""",
+                (str(uuid.uuid4()), _dt.datetime.utcnow().isoformat(), _dt.datetime.utcnow().isoformat()),
+            )
         conn.commit()
         conn.close()
 
         result = _check_promotion_gates("mv_355d", "PAPER_ACTIVE")
-        assert result["passed"], f"Should pass after 15 days + 6 episodes; failed: {result['failed']}"
+        assert result["passed"], f"Should pass after 15 days + 6 episodes + 5 observations; failed: {result['failed']}"
+
+
+# ===========================================================================
+# 0358 — Correct Decision/Episode Lineage
+# ===========================================================================
+
+class TestEpisodeLineage0358:
+    """0358: decision_variants stores 3 separate episode IDs; intent uses challenger_episode_id."""
+
+    def test_three_episode_ids_stored_separately(self, mem_db, monkeypatch):
+        """decision_variants has recommendation_control_episode_id, experiment_champion_episode_id, challenger_episode_id."""
+        import agent_db
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        ctrl_ep = str(uuid.uuid4())
+        exp_ep  = str(uuid.uuid4())
+        chal_ep = str(uuid.uuid4())
+
+        conn = _make_conn(mem_db)
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute(
+            """INSERT INTO decision_variants
+               (episode_id, origin, variant_ticker, action, price,
+                recommendation_control_episode_id,
+                experiment_champion_episode_id,
+                challenger_episode_id, created_at)
+               VALUES ('ctrl_ep', 'PAPER_CHALLENGER', 'AAPL', 'BUY', 200.0, ?, ?, ?, ?)""",
+            (ctrl_ep, exp_ep, chal_ep, time.time()),
+        )
+        conn.commit()
+
+        row = conn.execute("SELECT * FROM decision_variants LIMIT 1").fetchone()
+        conn.close()
+
+        assert row["recommendation_control_episode_id"] == ctrl_ep
+        assert row["experiment_champion_episode_id"]    == exp_ep
+        assert row["challenger_episode_id"]             == chal_ep
+
+    def test_challenger_intent_uses_challenger_episode_id(self, mem_db, monkeypatch):
+        """build_intent_from_variant uses challenger_episode_id when present."""
+        import agent_db
+        from trade_engine.intent_builder import build_intent_from_variant
+        from trade_engine.policy import TradingPolicy
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        chal_ep = "ep-challenger-specific"
+        ctrl_ep = "ep-control-different"
+
+        conn = _make_conn(mem_db)
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute("""INSERT INTO trading_accounts
+            (account_id, mode, current_cash, created_at, role)
+            VALUES ('CHAL_ACCT', 'paper', 100000, 1000000, 'paper_challenger')""")
+        variant_id_row = conn.execute(
+            """INSERT INTO decision_variants
+               (episode_id, origin, variant_ticker, action, price,
+                recommendation_control_episode_id, challenger_episode_id, created_at)
+               VALUES (?, 'PAPER_CHALLENGER', 'MSFT', 'BUY', 400.0, ?, ?, ?)""",
+            (ctrl_ep, ctrl_ep, chal_ep, time.time()),
+        )
+        variant_id = variant_id_row.lastrowid
+        conn.commit()
+
+        import json
+        policy = TradingPolicy(
+            policy_version="1.0", account_id="CHAL_ACCT",
+            capital={"starting_capital": 100000, "minimum_cash_pct": 5, "minimum_cash_abs": 500},
+            equities={"buy_allowed": True, "sell_allowed": True, "shorting_allowed": False,
+                      "max_single_position_pct": 20, "max_new_position_pct": 10},
+            options={"covered_calls_allowed": False, "naked_options_allowed": False, "max_contracts_per_symbol": 0},
+            execution={"market_orders_allowed": False, "max_orders_per_day": 5,
+                       "max_daily_notional_pct": 50, "max_slippage_pct": 1.0, "min_limit_price": 0.01},
+            risk={"max_drawdown_pct": 20, "max_daily_loss_pct": 5, "max_weekly_loss_pct": 10},
+            circuit_breakers={"trading_enabled": True, "halt_on_position_mismatch": False,
+                               "halt_on_data_stale_minutes": 1440, "halt_on_daily_loss_pct": 10},
+            _raw_json="{}",
+        )
+        intent = build_intent_from_variant(variant_id, "CHAL_ACCT", policy, conn)
+        conn.close()
+
+        assert intent is not None
+        assert intent.episode_id == chal_ep, f"Expected challenger ep, got: {intent.episode_id}"
+
+    def test_falls_back_to_episode_id_for_old_rows(self, mem_db, monkeypatch):
+        """NULL challenger_episode_id falls back to legacy episode_id column."""
+        import agent_db
+        from trade_engine.intent_builder import build_intent_from_variant
+        from trade_engine.policy import TradingPolicy
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        legacy_ep = "ep-legacy"
+        conn = _make_conn(mem_db)
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute("""INSERT INTO trading_accounts
+            (account_id, mode, current_cash, created_at, role)
+            VALUES ('CHAL_B', 'paper', 100000, 1000000, 'paper_challenger')""")
+        row = conn.execute(
+            """INSERT INTO decision_variants
+               (episode_id, origin, variant_ticker, action, price,
+                challenger_episode_id, created_at)
+               VALUES (?, 'PAPER_CHALLENGER', 'GOOG', 'BUY', 180.0, NULL, ?)""",
+            (legacy_ep, time.time()),
+        )
+        variant_id = row.lastrowid
+        conn.commit()
+
+        import json
+        policy = TradingPolicy(
+            policy_version="1.0", account_id="CHAL_B",
+            capital={"starting_capital": 100000, "minimum_cash_pct": 5, "minimum_cash_abs": 500},
+            equities={"buy_allowed": True, "sell_allowed": True, "shorting_allowed": False,
+                      "max_single_position_pct": 20, "max_new_position_pct": 10},
+            options={"covered_calls_allowed": False, "naked_options_allowed": False, "max_contracts_per_symbol": 0},
+            execution={"market_orders_allowed": False, "max_orders_per_day": 5,
+                       "max_daily_notional_pct": 50, "max_slippage_pct": 1.0, "min_limit_price": 0.01},
+            risk={"max_drawdown_pct": 20, "max_daily_loss_pct": 5, "max_weekly_loss_pct": 10},
+            circuit_breakers={"trading_enabled": True, "halt_on_position_mismatch": False,
+                               "halt_on_data_stale_minutes": 1440, "halt_on_daily_loss_pct": 10},
+            _raw_json="{}",
+        )
+        intent = build_intent_from_variant(variant_id, "CHAL_B", policy, conn)
+        conn.close()
+
+        assert intent is not None
+        assert intent.episode_id == legacy_ep, f"Expected legacy ep fallback, got: {intent.episode_id}"
+
+
+# ===========================================================================
+# 0360 — OBSERVE Shadow Scoring
+# ===========================================================================
+
+class TestObserveShadowScoring0360:
+    """0360: score_for_observe writes model_observations; mature_observations gate."""
+
+    def _seed_observe_model(self, conn, model_version: str) -> None:
+        conn.execute(
+            """INSERT INTO learning_models
+               (model_version, training_cutoff, feature_schema_hash, training_n,
+                validation_metrics, created_at, unique_tickers, unique_decision_dates,
+                unique_weeks, lifecycle_state, promotion_gates_json)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (model_version, "2026-01-01", "abc", 50,
+             '{"cv_folds":3,"beats_baseline":true,"coef":[0.001,0.001,0.001,0.001,0.001],"intercept":0.0,"mean_alpha":0.02,"feature_schema_hash":"h","shrinkage_factor":0.5}',
+             time.time(), 15, 35, 6, "OBSERVE", None),
+        )
+        conn.commit()
+
+    def test_observe_model_writes_observations(self, mem_db, monkeypatch):
+        """score_for_observe() writes model_observations rows for OBSERVE model."""
+        import agent_db
+        from agents.learning.calibration import ChallengerModel
+        from agents.learning.challenger import score_for_observe
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        _seed_episodes(conn, 50)
+        conn.close()
+
+        model = ChallengerModel.train()
+        model.save_with_weights()
+        conn = _make_conn(mem_db)
+        conn.execute(
+            "UPDATE learning_models SET lifecycle_state='OBSERVE' WHERE model_version=?",
+            (model.model_version,),
+        )
+        conn.commit()
+        conn.close()
+
+        candidates = [
+            {"ticker": "AAPL", "_episode_id": str(uuid.uuid4()), "_composite": 80,
+             "composite_score": 80,
+             "q_score": 80, "v_score": 75, "pf_score": 70, "c_score": 65, "ec_score": 60},
+            {"ticker": "MSFT", "_episode_id": str(uuid.uuid4()), "_composite": 75,
+             "composite_score": 75,
+             "q_score": 75, "v_score": 70, "pf_score": 65, "c_score": 60, "ec_score": 55},
+        ]
+        score_for_observe(model.model_version, candidates)
+
+        conn = _make_conn(mem_db)
+        count = conn.execute(
+            "SELECT COUNT(*) FROM model_observations WHERE model_version=?",
+            (model.model_version,),
+        ).fetchone()[0]
+        conn.close()
+        assert count > 0, "score_for_observe should write observations"
+
+    def test_paper_active_gate_requires_mature_observations(self, mem_db, monkeypatch):
+        """OBSERVE→PAPER_ACTIVE fails when mature_observations < 5."""
+        import agent_db
+        from agents.learning.calibration import _check_promotion_gates
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        import datetime as _dt
+        observe_at = time.time() - (16 * 86400)  # 16 days ago
+        conn = _make_conn(mem_db)
+        vm = {"cv_folds": 5, "beats_baseline": True, "alpha_edge_evidence": "POSITIVE",
+              "unique_tickers": 20, "unique_decision_dates": 40, "unique_weeks": 8}
+        conn.execute(
+            """INSERT INTO learning_models
+               (model_version,training_cutoff,feature_schema_hash,training_n,validation_metrics,
+                created_at,unique_tickers,unique_decision_dates,unique_weeks,raw_n,lifecycle_state)
+               VALUES ('mv_obs_req','cut','h',80,?,?,20,40,8,80,'OBSERVE')""",
+            (json.dumps(vm), observe_at),
+        )
+        conn.execute(
+            """INSERT INTO model_promotion_log
+               (model_version,from_state,to_state,promoted_by,promoted_at,promotion_reason,promotion_metrics_snapshot)
+               VALUES ('mv_obs_req','TRAINED','OBSERVE','test',?,?,?)""",
+            (observe_at, "test", "{}"),
+        )
+        for i in range(6):
+            conn.execute(
+                "INSERT INTO decision_episodes (episode_id,run_id,ticker,captured_at,composite_score,feature_schema_version) VALUES (?,1,'TK',?,80,'v1')",
+                (str(uuid.uuid4()), observe_at + i * 86400 + 100),
+            )
+        # 0 mature observations — gate should fail
+        conn.commit()
+        conn.close()
+
+        result = _check_promotion_gates("mv_obs_req", "PAPER_ACTIVE")
+        assert not result["passed"]
+        assert "mature_observations" in result["failed"]
+
+    def test_paper_active_gate_passes_with_mature_observations(self, mem_db, monkeypatch):
+        """OBSERVE→PAPER_ACTIVE passes when 5+ mature model_observations exist."""
+        import agent_db
+        from agents.learning.calibration import _check_promotion_gates
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        import datetime as _dt
+        observe_at = time.time() - (16 * 86400)
+        conn = _make_conn(mem_db)
+        vm = {"cv_folds": 5, "beats_baseline": True, "alpha_edge_evidence": "POSITIVE",
+              "unique_tickers": 20, "unique_decision_dates": 40, "unique_weeks": 8}
+        conn.execute(
+            """INSERT INTO learning_models
+               (model_version,training_cutoff,feature_schema_hash,training_n,validation_metrics,
+                created_at,unique_tickers,unique_decision_dates,unique_weeks,raw_n,lifecycle_state)
+               VALUES ('mv_obs_pass','cut','h',80,?,?,20,40,8,80,'OBSERVE')""",
+            (json.dumps(vm), observe_at),
+        )
+        conn.execute(
+            """INSERT INTO model_promotion_log
+               (model_version,from_state,to_state,promoted_by,promoted_at,promotion_reason,promotion_metrics_snapshot)
+               VALUES ('mv_obs_pass','TRAINED','OBSERVE','test',?,?,?)""",
+            (observe_at, "test", "{}"),
+        )
+        for i in range(6):
+            conn.execute(
+                "INSERT INTO decision_episodes (episode_id,run_id,ticker,captured_at,composite_score,feature_schema_version) VALUES (?,1,'TK',?,80,'v1')",
+                (str(uuid.uuid4()), observe_at + i * 86400 + 100),
+            )
+        # 5 mature observations
+        now_iso = _dt.datetime.utcnow().isoformat()
+        for i in range(5):
+            conn.execute(
+                """INSERT INTO model_observations
+                   (model_version, episode_id, ticker, prediction_timestamp,
+                    challenger_score, would_select, outcome_alpha_90d, outcome_labeled_at)
+                   VALUES ('mv_obs_pass', ?, 'TK', ?, 0.5, 1, 0.02, ?)""",
+                (str(uuid.uuid4()), now_iso, now_iso),
+            )
+        conn.commit()
+        conn.close()
+
+        result = _check_promotion_gates("mv_obs_pass", "PAPER_ACTIVE")
+        assert result["passed"], f"Should pass with 5 mature obs; failed: {result['failed']}"

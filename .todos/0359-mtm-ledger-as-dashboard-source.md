@@ -1,7 +1,7 @@
 # Use MTM Ledger as Dashboard Source of Truth
 
 - **ID:** 0359
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-17
 - **Priority:** high
 - **Depends:** 0351

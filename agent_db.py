@@ -601,6 +601,12 @@ def migrate() -> None:
         ("trade_intents",     "decision_spread_bps",  "REAL"),
         ("trade_intents",     "quote_timestamp",      "TEXT"),
         ("trade_intents",     "price_source",         "TEXT"),
+        # 0358 — separate episode IDs per decision variant selection
+        ("decision_variants", "recommendation_control_episode_id", "TEXT"),
+        ("decision_variants", "experiment_champion_episode_id",    "TEXT"),
+        ("decision_variants", "challenger_episode_id",             "TEXT"),
+        # 0364 — completeness flag on MTM rows
+        ("virtual_book_nav",  "is_complete",                       "INTEGER DEFAULT 1"),
     ]
     for table, col, col_type in _new_cols:
         try:
@@ -997,24 +1003,27 @@ def _migrate_learning_episodes(conn: sqlite3.Connection) -> None:
         );
 
         CREATE TABLE IF NOT EXISTS decision_variants (
-            id                              INTEGER PRIMARY KEY AUTOINCREMENT,
-            recommendation_id               INTEGER,
-            episode_id                      TEXT,
-            origin                          TEXT DEFAULT 'PAPER_CHALLENGER',
-            challenger_model_version        TEXT,
-            challenger_score                REAL,
-            challenger_adjustment           REAL,
-            would_have_selected             INTEGER DEFAULT 0,
-            champion_ticker                 TEXT,
-            recommendation_control_ticker   TEXT,
-            experiment_champion_ticker      TEXT,
-            variant_ticker                  TEXT,
-            action                          TEXT,
-            price                           REAL,
-            target_weight_pct               REAL,
-            quantity                        REAL,
-            thesis_version                  INTEGER,
-            created_at                      REAL
+            id                                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            recommendation_id                   INTEGER,
+            episode_id                          TEXT,
+            origin                              TEXT DEFAULT 'PAPER_CHALLENGER',
+            challenger_model_version            TEXT,
+            challenger_score                    REAL,
+            challenger_adjustment               REAL,
+            would_have_selected                 INTEGER DEFAULT 0,
+            champion_ticker                     TEXT,
+            recommendation_control_ticker       TEXT,
+            experiment_champion_ticker          TEXT,
+            recommendation_control_episode_id   TEXT,
+            experiment_champion_episode_id      TEXT,
+            challenger_episode_id               TEXT,
+            variant_ticker                      TEXT,
+            action                              TEXT,
+            price                               REAL,
+            target_weight_pct                   REAL,
+            quantity                            REAL,
+            thesis_version                      INTEGER,
+            created_at                          REAL
         );
 
         CREATE TABLE IF NOT EXISTS trade_outcomes (
@@ -1092,9 +1101,29 @@ def _migrate_learning_episodes(conn: sqlite3.Connection) -> None:
             total_nav       REAL,
             spy_nav         REAL,
             daily_return    REAL,
+            is_complete     INTEGER DEFAULT 1,
             created_at      REAL,
             UNIQUE(book_id, date)
         );
+
+        -- 0360: shadow predictions from OBSERVE-state models (before PAPER_ACTIVE)
+        CREATE TABLE IF NOT EXISTS model_observations (
+            id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+            model_version        TEXT NOT NULL,
+            episode_id           TEXT NOT NULL,
+            ticker               TEXT NOT NULL,
+            prediction_timestamp TEXT NOT NULL,
+            base_score           REAL,
+            predicted_alpha      REAL,
+            learning_adjustment  REAL,
+            challenger_score     REAL,
+            would_select         INTEGER,
+            outcome_alpha_90d    REAL,
+            outcome_labeled_at   TEXT
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_model_obs_version_episode
+            ON model_observations(model_version, episode_id);
 
         -- Seed the two books if they don't exist yet
         INSERT OR IGNORE INTO virtual_books (book_id, label, starting_cash, current_cash)

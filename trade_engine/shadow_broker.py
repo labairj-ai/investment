@@ -34,6 +34,7 @@ class Quote(NamedTuple):
     market_timestamp: Optional[str] = None  # when exchange last published this quote
     retrieved_at: Optional[str] = None       # when we fetched it
     source: str = "yfinance"
+    last: Optional[float] = None             # 0363: last traded price (distinct from mid)
 
 
 def _now_utc() -> datetime:

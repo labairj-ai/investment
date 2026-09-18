@@ -31,23 +31,31 @@ def record_virtual_fills(
     champion_price: float | None,
     challenger_ticker: str | None,
     challenger_price: float | None,
-    episode_id: str | None,
+    episode_id: str | None = None,
     action: str = "BUY",
+    champion_episode_id: str | None = None,
+    challenger_episode_id: str | None = None,
 ) -> None:
     """Insert simulated fills into CHAMPION_BOOK and CHALLENGER_BOOK (0340).
 
     Uses limit_price * (1 + slippage) as the simulated fill price (same as
     build_intent_from_variant), capped by available cash in each book.
     No-ops when a required price is missing.
+
+    0358: champion_episode_id and challenger_episode_id allow each book's fill to
+    carry the correct episode FK.  Falls back to episode_id for callers that have
+    not yet been updated.
     """
+    champ_ep = champion_episode_id or episode_id
+    chal_ep  = challenger_episode_id or episode_id
     try:
         conn = agent_db._connect()
         try:
             _record_one_book(conn, "CHAMPION_BOOK", champion_ticker, champion_price,
-                             episode_id, action, "CHAMPION")
+                             champ_ep, action, "CHAMPION")
             if challenger_ticker and challenger_price:
                 _record_one_book(conn, "CHALLENGER_BOOK", challenger_ticker, challenger_price,
-                                 episode_id, action, "PAPER_CHALLENGER")
+                                 chal_ep, action, "PAPER_CHALLENGER")
             conn.commit()
         finally:
             conn.close()
@@ -113,7 +121,7 @@ def _record_one_book(conn, book_id, ticker, price, episode_id, action, origin):
         fill_price = round(price * (1 + _DEFAULT_SLIPPAGE_PCT / 100), 2)
 
     if action_upper == "BUY":
-        # 0346: per-ticker aggregate position limit
+        # 0361: one open position per ticker at a time — skip duplicate BUY
         existing_qty = conn.execute(
             """SELECT COALESCE(SUM(CASE WHEN action='BUY' THEN qty
                                         WHEN action IN ('SELL','EXIT','TRIM') THEN -qty
@@ -122,6 +130,8 @@ def _record_one_book(conn, book_id, ticker, price, episode_id, action, origin):
             (book_id, ticker),
         ).fetchone()
         net_qty = float(existing_qty["net_qty"]) if existing_qty else 0.0
+        if net_qty > 0:
+            return  # already holds this ticker; skip until position is closed
         current_exposure = net_qty * fill_price
         max_exposure = starting_cash * _MAX_TICKER_EXPOSURE_PCT / 100
         if current_exposure >= max_exposure:

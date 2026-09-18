@@ -493,9 +493,9 @@ class TestHoldingExitPolicy0357:
     """0357: BOOK_HOLD_DAYS constant exists; aged positions close on MTM run."""
 
     def test_book_hold_days_constant(self):
-        """BOOK_HOLD_DAYS = 63 (3 months, matching alpha labeling horizon)."""
-        from agents.learning.book_mtm import BOOK_HOLD_DAYS
-        assert BOOK_HOLD_DAYS == 63
+        """BOOK_HOLD_SESSIONS = 63 trading sessions (≈ 91 calendar days / 3 market months)."""
+        from agents.learning.book_mtm import BOOK_HOLD_SESSIONS
+        assert BOOK_HOLD_SESSIONS == 63
 
     def test_aged_position_produces_synthetic_sell(self, mem_db, monkeypatch):
         """A position first bought 64 days ago produces a SELL fill on MTM run."""
@@ -536,9 +536,10 @@ class TestHoldingExitPolicy0357:
         assert sells[0]["ticker"] == "SPG"
 
     def test_fresh_position_not_expired(self, mem_db, monkeypatch):
-        """A position bought today is not aged out."""
+        """A position bought today is not aged out after 63 trading sessions."""
         import agent_db
-        from agents.learning.book_mtm import _get_holdings, BOOK_HOLD_DAYS
+        from agents.learning.book_mtm import _get_holdings, BOOK_HOLD_SESSIONS
+        from trade_engine.market_calendar import trading_sessions_between
         import time
 
         monkeypatch.setattr(agent_db, "_connect", lambda: _conn(mem_db))
@@ -557,7 +558,160 @@ class TestHoldingExitPolicy0357:
         holdings = _get_holdings(conn, "CHAMPION_BOOK")
         conn.close()
 
-        from datetime import date, timedelta
-        expire_cutoff = (date.today() - timedelta(days=BOOK_HOLD_DAYS)).isoformat()
         assert "META" in holdings
-        assert holdings["META"]["first_buy_date"] > expire_cutoff, "Today's position should not be expired"
+        sessions = trading_sessions_between(holdings["META"]["first_buy_date"], today)
+        assert sessions < BOOK_HOLD_SESSIONS, "Today's position should not be expired"
+
+
+# ===========================================================================
+# 0361 — Align Holding Horizon (trading sessions, re-entry fix)
+# ===========================================================================
+
+class TestAlignHoldingHorizon0361:
+    """0361: _get_holdings removes ticker at zero qty; duplicate BUY skipped."""
+
+    def test_holdings_cleared_when_qty_reaches_zero(self, mem_db, monkeypatch):
+        """After a SELL that reduces qty to zero the ticker is removed from holdings."""
+        import agent_db
+        from agents.learning.book_mtm import _get_holdings
+        import time
+
+        monkeypatch.setattr(agent_db, "_connect", lambda: _conn(mem_db))
+
+        conn = _conn(mem_db)
+        now = "2026-09-10T10:00:00+00:00"
+        conn.execute(
+            "INSERT INTO virtual_fills (book_id,episode_id,ticker,action,price,qty,fees,filled_at,decision_origin,created_at)"
+            " VALUES ('CHAMPION_BOOK','ep1','NVDA','BUY',400.0,5,0,?,?,?)",
+            (now, "CHAMPION", time.time()),
+        )
+        conn.execute(
+            "INSERT INTO virtual_fills (book_id,episode_id,ticker,action,price,qty,fees,filled_at,decision_origin,created_at)"
+            " VALUES ('CHAMPION_BOOK','ep1','NVDA','SELL',410.0,5,0,?,?,?)",
+            ("2026-09-17T10:00:00+00:00", "CHAMPION", time.time()),
+        )
+        conn.commit()
+
+        holdings = _get_holdings(conn, "CHAMPION_BOOK")
+        conn.close()
+        assert "NVDA" not in holdings, "Fully exited position should be absent from holdings"
+
+    def test_reentry_uses_fresh_buy_date(self, mem_db, monkeypatch):
+        """After a full exit, a new BUY for the same ticker starts a clean clock."""
+        import agent_db
+        from agents.learning.book_mtm import _get_holdings
+        import time
+
+        monkeypatch.setattr(agent_db, "_connect", lambda: _conn(mem_db))
+
+        conn = _conn(mem_db)
+        conn.execute(
+            "INSERT INTO virtual_fills (book_id,episode_id,ticker,action,price,qty,fees,filled_at,decision_origin,created_at)"
+            " VALUES ('CHAMPION_BOOK','ep1','NVDA','BUY',400.0,5,0,'2026-01-02T10:00:00+00:00','CHAMPION',?)",
+            (time.time(),),
+        )
+        conn.execute(
+            "INSERT INTO virtual_fills (book_id,episode_id,ticker,action,price,qty,fees,filled_at,decision_origin,created_at)"
+            " VALUES ('CHAMPION_BOOK','ep1','NVDA','SELL',410.0,5,0,'2026-03-01T10:00:00+00:00','CHAMPION',?)",
+            (time.time(),),
+        )
+        conn.execute(
+            "INSERT INTO virtual_fills (book_id,episode_id,ticker,action,price,qty,fees,filled_at,decision_origin,created_at)"
+            " VALUES ('CHAMPION_BOOK','ep2','NVDA','BUY',420.0,3,0,'2026-09-10T10:00:00+00:00','CHAMPION',?)",
+            (time.time(),),
+        )
+        conn.commit()
+
+        holdings = _get_holdings(conn, "CHAMPION_BOOK")
+        conn.close()
+        assert "NVDA" in holdings
+        assert holdings["NVDA"]["first_buy_date"] == "2026-09-10", "Re-entry should start clock from new BUY date"
+
+    def test_duplicate_buy_skipped_when_position_open(self, mem_db, monkeypatch):
+        """record_virtual_fills skips a BUY for a ticker already held in a book."""
+        import agent_db
+        from agents.learning.book_simulator import record_virtual_fills
+
+        monkeypatch.setattr(agent_db, "_connect", lambda: _conn(mem_db))
+
+        # First BUY
+        record_virtual_fills("AAPL", 200.0, None, None)
+        # Second BUY for same ticker should be ignored
+        record_virtual_fills("AAPL", 210.0, None, None)
+
+        conn = _conn(mem_db)
+        buys = conn.execute(
+            "SELECT COUNT(*) as n FROM virtual_fills WHERE book_id='CHAMPION_BOOK' AND ticker='AAPL' AND action='BUY'"
+        ).fetchone()["n"]
+        conn.close()
+        assert buys == 1, "Duplicate BUY while position is open should be skipped"
+
+    def test_trading_sessions_between_counts_weekdays_only(self):
+        """trading_sessions_between counts (start, end] exclusive of start_date."""
+        from trade_engine.market_calendar import trading_sessions_between
+        # (Mon–Fri, no holidays): Mon 2026-09-21 is excluded; counts Tue–Fri = 4 sessions
+        sessions = trading_sessions_between("2026-09-21", "2026-09-25")
+        assert sessions == 4, f"Expected 4 sessions (Tue-Fri), got {sessions}"
+
+        # Weekend days not counted
+        sessions_with_weekend = trading_sessions_between("2026-09-18", "2026-09-25")  # Fri→Fri
+        assert sessions_with_weekend == 5, f"Sat/Sun should not count; got {sessions_with_weekend}"
+
+        # Two full calendar weeks (10 days) should yield fewer than 11 sessions
+        sessions_two_weeks = trading_sessions_between("2026-09-14", "2026-09-28")
+        assert sessions_two_weeks < 11, "10 calendar days should give fewer than 11 trading sessions"
+        assert sessions_two_weeks > 0
+
+
+# ===========================================================================
+# 0364 — MTM Operational Hardening
+# ===========================================================================
+
+class TestMTMOperationalHardening0364:
+    """0364: non-market days skipped; missing price sets is_complete=0; mtm_rows_available excludes incomplete."""
+
+    def test_non_market_day_writes_no_rows(self, mem_db, monkeypatch):
+        """run_mark_to_market on a Saturday writes no virtual_book_nav rows."""
+        import agent_db
+        from agents.learning.book_mtm import run_mark_to_market
+
+        monkeypatch.setattr(agent_db, "_connect", lambda: _conn(mem_db))
+
+        result = run_mark_to_market("2026-09-19")  # Saturday
+        conn = _conn(mem_db)
+        count = conn.execute("SELECT COUNT(*) FROM virtual_book_nav").fetchone()[0]
+        conn.close()
+        assert count == 0
+        assert result.get("skipped_non_market") is True
+
+    def test_is_complete_column_exists_in_schema(self, mem_db):
+        """virtual_book_nav has is_complete column."""
+        conn = _conn(mem_db)
+        pragma = conn.execute("PRAGMA table_info(virtual_book_nav)").fetchall()
+        col_names = [r["name"] for r in pragma]
+        conn.close()
+        assert "is_complete" in col_names
+
+    def test_mtm_rows_available_excludes_incomplete(self, mem_db, monkeypatch):
+        """mtm_rows_available() returns False when only incomplete rows exist."""
+        import agent_db
+        from agents.learning.book_mtm import mtm_rows_available
+        import time
+
+        monkeypatch.setattr(agent_db, "_connect", lambda: _conn(mem_db))
+
+        from datetime import date, timedelta
+        base_date = date(2026, 1, 2)
+        conn = _conn(mem_db)
+        for i in range(35):
+            d = (base_date + timedelta(days=i)).isoformat()
+            conn.execute(
+                """INSERT INTO virtual_book_nav
+                   (book_id, date, total_nav, spy_nav, daily_return, is_complete, created_at)
+                   VALUES ('CHAMPION_BOOK', ?, 100000, 100000, 0.001, 0, ?)""",
+                (d, time.time()),
+            )
+        conn.commit()
+
+        assert not mtm_rows_available(conn), "Incomplete rows should not count"
+        conn.close()

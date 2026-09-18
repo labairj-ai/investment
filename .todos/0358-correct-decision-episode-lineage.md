@@ -1,7 +1,7 @@
 # Correct Decision/Episode Lineage Across Three Selections
 
 - **ID:** 0358
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-17
 - **Priority:** high
 

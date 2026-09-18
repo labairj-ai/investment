@@ -506,11 +506,15 @@ def run_opportunity_hunter(ctx: AgentContext) -> list[Recommendation]:
     # 0336/0340/0345: record decision_variant and virtual book fills if challenger is PAPER_ACTIVE
     if sel_ch_info.get("active"):
         book_exp_champion = scored[0] if scored else None  # top-1 by base composite = experiment champion
+        ch_sorted_top = sorted(scored, key=lambda x: x.get("_composite_challenger", 0), reverse=True)
+        ch_top_for_book = ch_sorted_top[0] if ch_sorted_top else None
         _insert_decision_variant(
             scored,
             selected,
             champion_ticker=selected.get("ticker"),
             experiment_champion_ticker=book_exp_champion.get("ticker") if book_exp_champion else None,
+            experiment_champion=book_exp_champion,
+            challenger=ch_top_for_book,
         )
 
         # 0345 — Experimental Symmetry (Option A, ranking-only):
@@ -520,15 +524,29 @@ def run_opportunity_hunter(ctx: AgentContext) -> list[Recommendation]:
         # Held constant: no LLM, same candidate universe, same sizing, same execution.
         # Null hypothesis: challenger-adjusted ranking produces equivalent returns to base ranking.
         book_champion = scored[0] if scored else None  # top-1 by base composite (already sorted)
-        ch_sorted_top = sorted(scored, key=lambda x: x.get("_composite_challenger", 0), reverse=True)
-        ch_top_for_book = ch_sorted_top[0] if ch_sorted_top else None
         record_virtual_fills(
             champion_ticker=book_champion.get("ticker") if book_champion else None,
             champion_price=book_champion.get("price") if book_champion else None,
             challenger_ticker=ch_top_for_book.get("ticker") if ch_top_for_book else None,
             challenger_price=ch_top_for_book.get("price") if ch_top_for_book else None,
-            episode_id=selected.get("_episode_id"),
+            champion_episode_id=book_champion.get("_episode_id") if book_champion else None,
+            challenger_episode_id=ch_top_for_book.get("_episode_id") if ch_top_for_book else None,
         )
+
+    # 0360: shadow-score for any OBSERVE-state model
+    try:
+        import agent_db as _adb
+        _conn = _adb._connect()
+        obs_models = _conn.execute(
+            "SELECT model_version FROM learning_models WHERE lifecycle_state=?",
+            ("OBSERVE",)
+        ).fetchall()
+        _conn.close()
+        for _om in obs_models:
+            from agents.learning.challenger import score_for_observe
+            score_for_observe(_om["model_version"], scored)
+    except Exception:
+        pass
 
     # Assemble recommendation
     meta = selected.get("_pf_meta", {})
@@ -758,8 +776,10 @@ def _insert_decision_variant(
     champion: dict,
     champion_ticker: str,
     experiment_champion_ticker: str | None = None,
+    experiment_champion: dict | None = None,
+    challenger: dict | None = None,
 ) -> None:
-    """Insert a decision_variant row recording challenger's selection vs champion (0336/0337/0354).
+    """Insert a decision_variant row recording challenger's selection vs champion (0336/0337/0354/0358).
 
     Runs only when the challenger is PAPER_ACTIVE (caller checks info["active"]).
     Records the full executable decision: variant ticker, action, price, sizing.
@@ -768,11 +788,14 @@ def _insert_decision_variant(
     champion_ticker (= recommendation_control_ticker): the LLM-selected candidate.
     experiment_champion_ticker: top-1 by base composite score (what CHAMPION_BOOK uses).
     These are semantically distinct and tracked separately for experiment lineage (0354).
+
+    0358: each selection carries its own episode ID column so build_intent_from_variant
+    picks up the correct FK rather than reusing the LLM-selected episode.
     """
     try:
         # Sort by challenger-adjusted score to find challenger's top pick
         ch_sorted = sorted(scored, key=lambda x: x.get("_composite_challenger", 0), reverse=True)
-        ch_top = ch_sorted[0] if ch_sorted else None
+        ch_top = challenger if challenger is not None else (ch_sorted[0] if ch_sorted else None)
         if not ch_top:
             return
 
@@ -797,6 +820,11 @@ def _insert_decision_variant(
         except Exception:
             pass
 
+        # 0358: separate episode IDs per selection
+        rec_control_ep = champion.get("_episode_id")
+        exp_champion_ep = experiment_champion.get("_episode_id") if experiment_champion else None
+        challenger_ep = ch_top.get("_episode_id")
+
         conn = agent_db._connect()
         conn.execute(
             """INSERT INTO decision_variants
@@ -804,10 +832,12 @@ def _insert_decision_variant(
                 challenger_score, challenger_adjustment,
                 would_have_selected, champion_ticker,
                 recommendation_control_ticker, experiment_champion_ticker,
+                recommendation_control_episode_id, experiment_champion_episode_id,
+                challenger_episode_id,
                 variant_ticker, action, price, thesis_version, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
-                champion.get("_episode_id"),
+                rec_control_ep,
                 "PAPER_CHALLENGER",
                 ch_info.get("model_version"),
                 float(ch_top.get("_composite_challenger", 0)) if ch_top else None,
@@ -816,6 +846,9 @@ def _insert_decision_variant(
                 champion_ticker,
                 champion_ticker,             # recommendation_control_ticker = LLM-selected
                 experiment_champion_ticker,  # experiment_champion_ticker = base-score top-1
+                rec_control_ep,
+                exp_champion_ep,
+                challenger_ep,
                 would_select,
                 variant_action,
                 variant_price,

@@ -1,12 +1,12 @@
-"""Daily mark-to-market NAV update for virtual portfolio books (0351/0357).
+"""Daily mark-to-market NAV update for virtual portfolio books (0351/0357/0361/0364).
 
 Runs nightly after market close. For each virtual book:
   1. Reconstructs net holdings from virtual_fills.
-  2. Closes positions older than BOOK_HOLD_DAYS with a synthetic SELL fill (0357).
-  3. Fetches closing prices for remaining open positions via yfinance.
+  2. Closes positions older than BOOK_HOLD_SESSIONS trading sessions (0357/0361).
+  3. Fetches closing prices for remaining open positions via exact-date yfinance (0364).
   4. Writes one virtual_book_nav row per book with fully marked-to-market NAV.
 
-Scheduled via systemd timer: book-mtm.timer (Mon–Fri 18:30 ET, after outcome-labeler).
+Scheduled via systemd timer: book-mtm.timer (Mon–Fri 18:30 America/New_York).
 """
 from __future__ import annotations
 
@@ -15,11 +15,35 @@ import time
 from datetime import date as _date, datetime, timedelta, timezone
 
 import agent_db
+from trade_engine.market_calendar import trading_sessions_between, is_market_open_on_date
 
-# Exit positions held longer than this many calendar days (0357)
-BOOK_HOLD_DAYS = 63  # ~3 months, matching the alpha labeling horizon
+# Exit positions held longer than this many trading sessions (0361: 63 sessions ≈ 91 calendar days)
+BOOK_HOLD_SESSIONS = 63
 
 _SPY_ANCHOR_KEY = "SPY_ANCHOR"  # stored as special ticker in virtual_books.label for SPY reference
+
+
+def _get_closing_price(ticker: str, date_str: str) -> float | None:
+    """Fetch the official closing price for date_str exactly. Returns None if unavailable (0364)."""
+    try:
+        import yfinance as yf
+        d = _date.fromisoformat(date_str)
+        hist = yf.download(
+            ticker,
+            start=(d - timedelta(days=5)).isoformat(),
+            end=(d + timedelta(days=1)).isoformat(),
+            auto_adjust=False,
+            progress=False,
+            multi_level_column=False,
+        )
+        if hist.empty:
+            return None
+        hist.index = hist.index.astype(str).str[:10]
+        if date_str in hist.index:
+            return float(hist.loc[date_str, "Close"])
+        return None
+    except Exception:
+        return None
 
 
 def _now_iso() -> str:
@@ -58,7 +82,11 @@ def _get_holdings(conn, book_id: str) -> dict[str, dict]:
             }
         elif a in ("SELL", "EXIT", "TRIM"):
             if t in holdings:
-                holdings[t]["qty"] = max(0.0, holdings[t]["qty"] - q)
+                new_qty = holdings[t]["qty"] - q
+                if new_qty <= 0:
+                    del holdings[t]  # 0361: clean exit; fresh BUY starts a new clock
+                else:
+                    holdings[t]["qty"] = new_qty
 
     return {t: d for t, d in holdings.items() if d["qty"] > 0}
 
@@ -92,21 +120,19 @@ def _emit_synthetic_sell(conn, book_id: str, ticker: str, qty: float, price: flo
 def run_mark_to_market(date_str: str | None = None) -> dict:
     """Compute mark-to-market NAV for all virtual books for a given date.
 
-    Fetches closing prices for open positions, emits synthetic SELL fills for
-    positions older than BOOK_HOLD_DAYS, writes virtual_book_nav rows with
-    fully marked NAV values.
+    Fetches exact-date closing prices for open positions (0364), emits synthetic
+    SELL fills for positions older than BOOK_HOLD_SESSIONS trading sessions (0361),
+    writes virtual_book_nav rows with fully marked NAV values and is_complete flag.
 
     Returns {"books_updated": int, "holds_expired": int, "errors": list}.
     """
     if date_str is None:
         date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-    try:
-        import yfinance as yf
-    except ImportError:
-        return {"books_updated": 0, "holds_expired": 0, "errors": ["yfinance not available"]}
+    # 0364: skip non-market days entirely — don't write partial rows
+    if not is_market_open_on_date(date_str):
+        return {"books_updated": 0, "holds_expired": 0, "errors": [], "skipped_non_market": True}
 
-    today = _date.fromisoformat(date_str)
     errors: list[str] = []
     books_updated = 0
     holds_expired = 0
@@ -117,14 +143,10 @@ def run_mark_to_market(date_str: str | None = None) -> dict:
             "SELECT book_id, starting_cash, current_cash FROM virtual_books"
         ).fetchall()
 
-        # Fetch SPY close for NAV-indexing
-        spy_close: float | None = None
-        try:
-            hist = yf.Ticker("SPY").history(period="5d", auto_adjust=False)
-            if not hist.empty:
-                spy_close = float(hist["Close"].iloc[-1])
-        except Exception as e:
-            errors.append(f"SPY fetch: {e}")
+        # Fetch SPY close for the exact date
+        spy_close: float | None = _get_closing_price("SPY", date_str)
+        if spy_close is None:
+            errors.append(f"SPY fetch: no close for {date_str}")
 
         # Get SPY close at the earliest virtual_fills date (anchor for SPY NAV series)
         spy_anchor: float | None = None
@@ -134,17 +156,14 @@ def run_mark_to_market(date_str: str | None = None) -> dict:
             ).fetchone()
             if first_fill_row:
                 anchor_date = (first_fill_row["filled_at"] or "")[:10]
-                anchor_hist = yf.Ticker("SPY").history(start=anchor_date, end=anchor_date,
-                                                        auto_adjust=False)
-                if anchor_hist.empty:
-                    # try a few days forward in case of weekend/holiday
-                    anchor_hist = yf.Ticker("SPY").history(
-                        start=anchor_date,
-                        end=(_date.fromisoformat(anchor_date) + timedelta(days=5)).isoformat(),
-                        auto_adjust=False,
-                    )
-                if not anchor_hist.empty:
-                    spy_anchor = float(anchor_hist["Close"].iloc[0])
+                spy_anchor = _get_closing_price("SPY", anchor_date)
+                if spy_anchor is None:
+                    # try a few days forward in case anchor fell on a holiday
+                    for delta in range(1, 6):
+                        d_try = (_date.fromisoformat(anchor_date) + timedelta(days=delta)).isoformat()
+                        spy_anchor = _get_closing_price("SPY", d_try)
+                        if spy_anchor is not None:
+                            break
         except Exception as e:
             errors.append(f"SPY anchor fetch: {e}")
 
@@ -156,18 +175,11 @@ def run_mark_to_market(date_str: str | None = None) -> dict:
                 # 1. Reconstruct current holdings
                 holdings = _get_holdings(conn, book_id)
 
-                # 2. Expire positions older than BOOK_HOLD_DAYS (0357)
-                expire_cutoff = (today - timedelta(days=BOOK_HOLD_DAYS)).isoformat()
+                # 2. Expire positions older than BOOK_HOLD_SESSIONS trading sessions (0361)
                 for ticker, info in list(holdings.items()):
-                    if info["first_buy_date"] <= expire_cutoff:
-                        # Fetch closing price for the exit
-                        exit_price = info["avg_cost"]  # fallback
-                        try:
-                            hist = yf.Ticker(ticker).history(period="5d", auto_adjust=False)
-                            if not hist.empty:
-                                exit_price = float(hist["Close"].iloc[-1])
-                        except Exception:
-                            pass
+                    sessions = trading_sessions_between(info["first_buy_date"], date_str)
+                    if sessions >= BOOK_HOLD_SESSIONS:
+                        exit_price = _get_closing_price(ticker, date_str) or info["avg_cost"]
                         origin = "CHAMPION" if book_id == "CHAMPION_BOOK" else "PAPER_CHALLENGER"
                         _emit_synthetic_sell(
                             conn, book_id, ticker, info["qty"], exit_price, date_str, origin
@@ -181,15 +193,16 @@ def run_mark_to_market(date_str: str | None = None) -> dict:
                 ).fetchone()
                 current_cash = float(cash_row["current_cash"]) if cash_row else starting_cash
 
-                # 3. Mark open positions to closing prices
+                # 3. Mark open positions to exact-date closing prices (0364)
                 prices: dict[str, float] = {}
+                any_incomplete = False
                 for ticker in holdings:
-                    try:
-                        hist = yf.Ticker(ticker).history(period="5d", auto_adjust=False)
-                        if not hist.empty:
-                            prices[ticker] = float(hist["Close"].iloc[-1])
-                    except Exception as e:
-                        errors.append(f"{ticker} price: {e}")
+                    p = _get_closing_price(ticker, date_str)
+                    if p is not None:
+                        prices[ticker] = p
+                    else:
+                        errors.append(f"{ticker}: no close for {date_str}")
+                        any_incomplete = True
 
                 market_value = sum(
                     info["qty"] * prices.get(t, info["avg_cost"])
@@ -214,7 +227,8 @@ def run_mark_to_market(date_str: str | None = None) -> dict:
                 if prev_row and prev_row["total_nav"] and float(prev_row["total_nav"]) > 0:
                     daily_return = (total_nav / float(prev_row["total_nav"])) - 1.0
 
-                # 6. Write the NAV row
+                # 6. Write the NAV row with is_complete flag (0364)
+                is_complete = 0 if any_incomplete else 1
                 positions_json = json.dumps({
                     t: {
                         "qty": info["qty"],
@@ -226,10 +240,11 @@ def run_mark_to_market(date_str: str | None = None) -> dict:
                 })
                 conn.execute(
                     """INSERT OR REPLACE INTO virtual_book_nav
-                       (book_id, date, cash, positions_json, total_nav, spy_nav, daily_return, created_at)
-                       VALUES (?,?,?,?,?,?,?,?)""",
+                       (book_id, date, cash, positions_json, total_nav, spy_nav,
+                        daily_return, is_complete, created_at)
+                       VALUES (?,?,?,?,?,?,?,?,?)""",
                     (book_id, date_str, current_cash, positions_json,
-                     total_nav, spy_nav, daily_return, time.time()),
+                     total_nav, spy_nav, daily_return, is_complete, time.time()),
                 )
                 books_updated += 1
 
@@ -244,11 +259,18 @@ def run_mark_to_market(date_str: str | None = None) -> dict:
 
 
 def mtm_rows_available(conn, min_rows: int = 30) -> bool:
-    """Return True when enough MTM rows exist to remove the 'experimental' badge (0351)."""
-    row = conn.execute(
-        """SELECT COUNT(DISTINCT date) as n FROM virtual_book_nav
-           WHERE spy_nav IS NOT NULL AND daily_return IS NOT NULL"""
-    ).fetchone()
+    """Return True when enough complete MTM rows exist to remove the 'experimental' badge (0351/0364)."""
+    try:
+        row = conn.execute(
+            """SELECT COUNT(DISTINCT date) as n FROM virtual_book_nav
+               WHERE spy_nav IS NOT NULL AND daily_return IS NOT NULL AND is_complete=1"""
+        ).fetchone()
+    except Exception:
+        # is_complete column may not exist on very old DBs — fall back without filter
+        row = conn.execute(
+            """SELECT COUNT(DISTINCT date) as n FROM virtual_book_nav
+               WHERE spy_nav IS NOT NULL AND daily_return IS NOT NULL"""
+        ).fetchone()
     return bool(row and row["n"] >= min_rows)
 
 

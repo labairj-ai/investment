@@ -134,6 +134,24 @@ def next_market_close(now: Optional[datetime] = None) -> datetime:
     return fallback.replace(tzinfo=et_tz)
 
 
+def is_market_open_on_date(date_str: str) -> bool:
+    """Return True if date_str (YYYY-MM-DD) is a NYSE trading day."""
+    return is_trading_day(date.fromisoformat(date_str))
+
+
+def trading_sessions_between(start_date: str, end_date: str) -> int:
+    """Count NYSE trading sessions in (start_date, end_date] exclusive of start, inclusive of end."""
+    d = date.fromisoformat(start_date)
+    end = date.fromisoformat(end_date)
+    count = 0
+    current = d + timedelta(days=1)
+    while current <= end:
+        if is_trading_day(current):
+            count += 1
+        current += timedelta(days=1)
+    return count
+
+
 def next_market_open(now: Optional[datetime] = None) -> datetime:
     """Return the next NYSE session open as a timezone-aware datetime."""
     et_tz = _et_tz()

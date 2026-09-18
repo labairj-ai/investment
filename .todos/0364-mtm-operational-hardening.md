@@ -1,7 +1,7 @@
 # MTM Operational Hardening: Market-Date Close Prices and Schedule Fix
 
 - **ID:** 0364
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-17
 - **Priority:** normal
 - **Depends:** 0351

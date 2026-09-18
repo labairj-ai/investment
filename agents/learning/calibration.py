@@ -62,6 +62,7 @@ PROMOTE_MIN_UNIQUE_WEEKS          = 4
 PROMOTE_MIN_CV_FOLDS              = 3   # 0355: raised from 1; single fold is not meaningful evidence
 OBSERVE_MIN_DAYS                  = 14  # 0355: minimum calendar days in OBSERVE before PAPER_ACTIVE
 OBSERVE_MIN_FRESH_EPISODES        = 5   # 0355: minimum new decision_episodes since entering OBSERVE
+OBSERVE_MIN_MATURE_OBS            = 5   # 0360: minimum model_observations with outcome labels
 
 
 class ChallengerModel:
@@ -664,6 +665,20 @@ def _check_promotion_gates(model_version: str, target_state: str) -> dict:
             "value": fresh_episodes,
             "minimum": OBSERVE_MIN_FRESH_EPISODES,
             "pass": fresh_episodes >= OBSERVE_MIN_FRESH_EPISODES,
+        }
+        # 0360: mature shadow observations required before leaving OBSERVE
+        try:
+            mature_obs = conn.execute(
+                """SELECT COUNT(*) FROM model_observations
+                   WHERE model_version=? AND outcome_alpha_90d IS NOT NULL""",
+                (model_version,),
+            ).fetchone()[0]
+        except Exception:
+            mature_obs = 0
+        gates["mature_observations"] = {
+            "value": int(mature_obs),
+            "minimum": OBSERVE_MIN_MATURE_OBS,
+            "pass": int(mature_obs) >= OBSERVE_MIN_MATURE_OBS,
         }
         # Positive or inconclusive edge required for PAPER_ACTIVE (NEGATIVE blocks)
         gates["edge_not_negative"] = {

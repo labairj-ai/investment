@@ -2,8 +2,7 @@
 Description=Run book-mtm daily after market close (weekdays, 6:30pm ET — after outcome-labeler)
 
 [Timer]
-TIMEZONE=America/New_York
-OnCalendar=Mon..Fri *-*-* 18:30:00
+OnCalendar=Mon..Fri *-*-* 18:30:00 America/New_York
 Persistent=true
 
 [Install]

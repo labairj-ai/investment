@@ -5907,7 +5907,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     }
 
                 def _book_portfolio_stats(book_id):
-                    """Portfolio-level stats from virtual_fills + virtual_books (0340)."""
+                    """Portfolio-level stats from virtual_book_nav (MTM) or virtual_fills fallback (0340/0359)."""
                     book = conn.execute(
                         "SELECT starting_cash, current_cash, as_of FROM virtual_books WHERE book_id=?",
                         (book_id,),
@@ -5918,6 +5918,72 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     starting_cash = float(book["starting_cash"])
                     current_cash  = float(book["current_cash"])
 
+                    # 0359: use MTM ledger when available — it's the authoritative source
+                    try:
+                        nav_rows = conn.execute(
+                            """SELECT date, total_nav, spy_nav, daily_return
+                               FROM virtual_book_nav
+                               WHERE book_id=? AND is_complete=1
+                               ORDER BY date""",
+                            (book_id,),
+                        ).fetchall()
+                    except Exception:
+                        # is_complete column may not exist on older DBs
+                        try:
+                            nav_rows = conn.execute(
+                                """SELECT date, total_nav, spy_nav, daily_return
+                                   FROM virtual_book_nav WHERE book_id=? ORDER BY date""",
+                                (book_id,),
+                            ).fetchall()
+                        except Exception:
+                            nav_rows = []
+
+                    if nav_rows:
+                        import math as _math
+                        navs = [float(r["total_nav"]) for r in nav_rows]
+                        spy_navs = [float(r["spy_nav"]) for r in nav_rows if r["spy_nav"] is not None]
+                        daily_rets = [float(r["daily_return"]) for r in nav_rows if r["daily_return"] is not None]
+                        nav_series = [{"date": r["date"], "nav": round(float(r["total_nav"]), 2)} for r in nav_rows]
+
+                        starting = navs[0] if navs else starting_cash
+                        cum_return = (navs[-1] - starting) / starting if starting else 0.0
+                        spy_cum = (spy_navs[-1] - spy_navs[0]) / spy_navs[0] if len(spy_navs) >= 2 else None
+
+                        peak = navs[0]
+                        max_dd = 0.0
+                        for n in navs:
+                            peak = max(peak, n)
+                            dd = (peak - n) / peak if peak else 0.0
+                            max_dd = max(max_dd, dd)
+
+                        vol = None
+                        if len(daily_rets) >= 2:
+                            mean = sum(daily_rets) / len(daily_rets)
+                            var = sum((r - mean) ** 2 for r in daily_rets) / (len(daily_rets) - 1)
+                            vol = _math.sqrt(var) * _math.sqrt(252)
+
+                        fill_row = conn.execute(
+                            "SELECT COUNT(*) as n FROM virtual_fills WHERE book_id=? AND action='BUY'",
+                            (book_id,),
+                        ).fetchone()
+                        trade_count = fill_row["n"] if fill_row else 0
+
+                        return {
+                            "book_id": book_id,
+                            "available": True,
+                            "source": "mtm",
+                            "trade_count": trade_count,
+                            "starting_cash": starting_cash,
+                            "current_cash": current_cash,
+                            "cumulative_return": round(cum_return, 6),
+                            "spy_cumulative_return": round(spy_cum, 6) if spy_cum is not None else None,
+                            "max_drawdown": round(max_dd, 6),
+                            "annualized_volatility": round(vol, 6) if vol is not None else None,
+                            "nav_series": nav_series[-90:],
+                            "as_of": book["as_of"],
+                        }
+
+                    # Fallback: cost-basis reconstruction from fills
                     fills = conn.execute(
                         """SELECT ticker, action, price, qty, filled_at, decision_origin
                            FROM virtual_fills WHERE book_id=? ORDER BY filled_at""",
@@ -5926,7 +5992,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
                     if not fills:
                         return {
-                            "book_id": book_id, "available": True, "trade_count": 0,
+                            "book_id": book_id, "available": True, "source": "cost_basis",
+                            "trade_count": 0,
                             "starting_cash": starting_cash, "current_cash": current_cash,
                             "deployed_pct": 0.0, "cumulative_return_cost_basis": 0.0,
                         }
@@ -5989,6 +6056,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     return {
                         "book_id": book_id,
                         "available": True,
+                        "source": "cost_basis",
                         "trade_count": len(fills),
                         "starting_cash": starting_cash,
                         "current_cash": current_cash,
@@ -6065,19 +6133,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 except Exception:
                     pass
 
-                # 0351: flag for dashboard — suppress 'experimental' badge once MTM rows exist
-                mtm_nav_available = False
-                try:
-                    from agents.learning.book_mtm import mtm_rows_available
-                    mtm_nav_available = mtm_rows_available(conn)
-                except Exception:
-                    pass
+                champ_stats = _book_portfolio_stats("CHAMPION_BOOK")
+                chal_stats  = _book_portfolio_stats("CHALLENGER_BOOK")
+
+                # 0359: mtm_nav_available only True when stats actually came from MTM ledger
+                mtm_nav_available = (
+                    champ_stats.get("source") == "mtm" or chal_stats.get("source") == "mtm"
+                )
 
                 self._json({
                     "champion": _stats(champ_rows),
                     "challenger": _stats(chal_rows),
-                    "champion_book": _book_portfolio_stats("CHAMPION_BOOK"),
-                    "challenger_book": _book_portfolio_stats("CHALLENGER_BOOK"),
+                    "champion_book": champ_stats,
+                    "challenger_book": chal_stats,
                     "variants_recorded": variant_count,
                     "variants_would_diverge": would_have_diverged,
                     "variants_experiment_diverge": experiment_diverged,

@@ -188,6 +188,18 @@ def _label_one_episode(
         else:
             _insert_outcome(conn, episode_id, horizon_label, ticker_return,
                             spy_return, alpha, mfe, mae)
+            # 0360: propagate 3m alpha to model_observations shadow predictions
+            if horizon_label == "3m" and alpha is not None:
+                try:
+                    now_iso = datetime.now(timezone.utc).isoformat()
+                    conn.execute(
+                        """UPDATE model_observations
+                           SET outcome_alpha_90d=?, outcome_labeled_at=?
+                           WHERE episode_id=? AND outcome_alpha_90d IS NULL""",
+                        (alpha, now_iso, episode_id),
+                    )
+                except Exception:
+                    pass
         written += 1
 
     if not dry_run and written:

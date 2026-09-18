@@ -1,7 +1,7 @@
 # Harden Variant Idempotency Lookup and Insert
 
 - **ID:** 0362
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-17
 - **Priority:** normal
 - **Depends:** 0352

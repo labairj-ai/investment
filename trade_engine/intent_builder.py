@@ -89,7 +89,7 @@ def _fetch_quote_fields(ticker: str, fallback_price: float) -> dict:
             return {
                 "decision_bid": quote.bid,
                 "decision_ask": quote.ask,
-                "decision_last": mid,
+                "decision_last": quote.last,  # 0363: genuine last trade; NULL if unavailable
                 "decision_mid": mid,
                 "decision_spread_bps": round(spread_bps, 2) if spread_bps is not None else None,
                 "quote_timestamp": quote.timestamp,
@@ -101,7 +101,7 @@ def _fetch_quote_fields(ticker: str, fallback_price: float) -> dict:
     return {
         "decision_bid": None,
         "decision_ask": None,
-        "decision_last": fallback_price,
+        "decision_last": fallback_price,  # 0363: payload price is a last-known price
         "decision_mid": None,
         "decision_spread_bps": None,
         "quote_timestamp": None,
@@ -129,16 +129,17 @@ def build_intent_from_variant(
 
     ticker = var["variant_ticker"]
     action = var["action"] or "BUY"
-    episode_id = var["episode_id"]
+    # 0358: use challenger_episode_id if present; fall back to legacy episode_id
+    episode_id = var["challenger_episode_id"] or var["episode_id"]
 
     if not ticker or action not in _SUPPORTED_ACTIONS:
         return None
 
-    # 0352: all-status query — any terminal intent permanently closes this variant decision
+    # 0352/0362: scope lookup by account + variant — prevents cross-account intent sharing
     _TERMINAL = {"CANCELLED", "REJECTED", "EXPIRED", "FILLED"}
     existing = conn.execute(
-        "SELECT * FROM trade_intents WHERE decision_variant_id=? LIMIT 1",
-        (variant_id,),
+        "SELECT * FROM trade_intents WHERE account_id=? AND decision_variant_id=? LIMIT 1",
+        (account_id, variant_id),
     ).fetchone()
     if existing:
         if existing["status"] in _TERMINAL:
@@ -239,8 +240,15 @@ def build_intent_from_variant(
     d = intent.to_db_dict()
     cols = ", ".join(d.keys())
     placeholders = ", ".join(f":{k}" for k in d.keys())
-    conn.execute(f"INSERT INTO trade_intents ({cols}) VALUES ({placeholders})", d)
+    # 0362: INSERT OR IGNORE + re-query for race safety under concurrent workers
+    conn.execute(f"INSERT OR IGNORE INTO trade_intents ({cols}) VALUES ({placeholders})", d)
     conn.commit()
+    canonical = conn.execute(
+        "SELECT * FROM trade_intents WHERE account_id=? AND decision_variant_id=?",
+        (account_id, variant_id),
+    ).fetchone()
+    if canonical:
+        return TradeIntent.from_db_row(canonical)
     return intent
 
 

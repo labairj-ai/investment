@@ -29,11 +29,13 @@ def _get_quote(symbol: str) -> Optional[Quote]:
         info = ticker.fast_info
         bid = float(getattr(info, "bid", None) or 0)
         ask = float(getattr(info, "ask", None) or 0)
-        last = float(getattr(info, "last_price", None) or 0)
+        last_raw = getattr(info, "last_price", None)
+        last_price = float(last_raw) if last_raw else None
+        last_for_fallback = last_price or 0.0
         if bid <= 0:
-            bid = last
+            bid = last_for_fallback
         if ask <= 0:
-            ask = last
+            ask = last_for_fallback
         if bid > 0 and ask > 0:
             market_ts = None
             try:
@@ -48,6 +50,7 @@ def _get_quote(symbol: str) -> Optional[Quote]:
                 market_timestamp=market_ts,
                 retrieved_at=retrieved_at,
                 source="yfinance",
+                last=last_price,
             )
     except Exception:
         pass
