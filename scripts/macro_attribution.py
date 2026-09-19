@@ -121,23 +121,43 @@ def load_episodes_with_macro(horizon: str = "3m",
                   f"(use --include-pre-acceptance for diagnostics)")
         episodes = accepted
 
-    # 0513: schema v2 gate — only v2 scores carry per-dim usability fields.
-    # Legacy scores have get(key, True) semantics and must not enter formal attribution.
+    # 0513/0518: schema gate — only v2/v3 scores carry per-dim usability fields.
+    # v3 standardises evidence_quality vocab (full/partial/none). Legacy scores have
+    # get(key, True) semantics and must not enter formal attribution.
     # Use --include-legacy for diagnostic viewing of pre-v2 episodes.
     legacy_count = 0
     if not include_legacy:
-        v2 = [e for e in episodes if e["macro"].get("schema_version") == "v2"]
-        legacy_count = len(episodes) - len(v2)
+        current = [e for e in episodes if e["macro"].get("schema_version") in {"v2", "v3"}]
+        legacy_count = len(episodes) - len(current)
         if legacy_count > 0:
             print(f"[Attribution] Excluded {legacy_count} pre-v2 schema episodes "
                   f"(use --include-legacy for diagnostics)")
-        episodes = v2
+        episodes = current
 
     return episodes, total_loaded, pre_acceptance_count
 
 
 def _mean(vals: list[float]) -> float | None:
     return round(sum(vals) / len(vals), 4) if vals else None
+
+
+def _median(vals: list[float]) -> float | None:
+    if not vals:
+        return None
+    s = sorted(vals)
+    n = len(s)
+    mid = n // 2
+    return round(s[mid] if n % 2 else (s[mid - 1] + s[mid]) / 2, 4)
+
+
+def _iqr(vals: list[float]) -> float | None:
+    if len(vals) < 4:
+        return None
+    s = sorted(vals)
+    n = len(s)
+    q1 = s[n // 4]
+    q3 = s[(3 * n) // 4]
+    return round(q3 - q1, 4)
 
 
 def _extract_dim_score(val) -> int | None:
@@ -157,8 +177,9 @@ def _extract_dim_score(val) -> int | None:
 def _filter_by_dim_usability(episodes: list[dict], dim_key: str) -> list[dict]:
     """Gate 2: filter to episodes where this dimension is explicitly marked usable_for_attribution.
     Requires explicit True — missing key or False both exclude the episode (0513 fail-closed).
-    Geo attribution is disabled until at least one ticker has confidence=medium/high sourced
-    geo evidence (0516); geopolitical_risk requires evidence_quality_geo='full' per 0512."""
+    Geo (geopolitical_risk) attribution requires confidence='high' + source_date ≤18 months old
+    in company_geo_profile — currently all seeds are confidence='medium' so geo remains disabled
+    until at least one ticker is re-sourced with confidence='high' (0522)."""
     key = f"{dim_key}_usable_for_attribution"
     return [e for e in episodes if e["macro"].get(key) is True]
 
@@ -189,13 +210,20 @@ def analyse(episodes: list[dict], horizon: str, show_all_dims: bool = False) -> 
 
     def bucket_stats(bucket: list[dict]) -> dict:
         alphas = [e["alpha"] for e in bucket]
-        s: dict = {"n": len(bucket), "mean_alpha": _mean(alphas)}
+        s: dict = {
+            "n": len(bucket),
+            "mean_alpha": _mean(alphas),
+            "median_alpha": _median(alphas),
+            "iqr_alpha": _iqr(alphas),
+        }
         if has_mfe:
             mfes = [e["mfe"] for e in bucket if "mfe" in e]
             s["mean_mfe"] = _mean(mfes)
+            s["median_mfe"] = _median(mfes)
         if has_mae:
             maes = [e["mae"] for e in bucket if "mae" in e]
             s["mean_mae"] = _mean(maes)
+            s["median_mae"] = _median(maes)
         return s
 
     # 0509: per-dim usability filter + scalar extraction (handles both dict and legacy int scores)
@@ -257,6 +285,175 @@ def analyse(episodes: list[dict], horizon: str, show_all_dims: bool = False) -> 
         "partial_evidence": bucket_stats(partial_ev),
     }
 
+    # Signed interaction analysis (0501): compare rate_interaction > 0 vs <= 0 for episodes
+    # where the field exists. rate_interaction sign captures concordance between macro context
+    # and company factor beta — more informative than raw 1-10 structural scores.
+    def _signed_interaction_analysis() -> dict:
+        pos, neg, missing = [], [], 0
+        for e in episodes:
+            v = e["macro"].get("rate_interaction")
+            if v is None:
+                missing += 1
+                continue
+            try:
+                fv = float(v)
+            except (TypeError, ValueError):
+                missing += 1
+                continue
+            (pos if fv > 0 else neg).append(e)
+        if missing == len(episodes):
+            return {"status": "no_data", "note": "rate_interaction field absent from all episodes"}
+        return {
+            "status": "ok",
+            "positive_interaction": bucket_stats(pos),
+            "negative_interaction": bucket_stats(neg),
+            "n_missing_field": missing,
+            "note": "rate_interaction > 0 = macro tailwind for rate-sensitive stocks; < 0 = headwind",
+        }
+
+    # Cohort-blocked bootstrap CI (0501): resample decision_date cohorts (not individual episodes)
+    # to estimate uncertainty. Only meaningful with ≥60 episodes.
+    def _cohort_bootstrap_ci(n_boot: int = 1000) -> dict:
+        import random
+        if n < 60:
+            return {
+                "status": "insufficient_data",
+                "n": n,
+                "note": f"Need ≥60 ACCEPTED episodes for cohort bootstrap; have {n}.",
+            }
+        cohort_map: dict[str, list] = {}
+        for e in episodes:
+            cohort = (e.get("captured_at") or "")[:10]
+            cohort_map.setdefault(cohort, []).append(e)
+        cohort_list = list(cohort_map.values())
+        n_cohorts = len(cohort_list)
+        if n_cohorts < 5:
+            return {
+                "status": "insufficient_cohorts",
+                "n_cohorts": n_cohorts,
+                "note": "Need ≥5 distinct decision-date cohorts for cohort bootstrap.",
+            }
+        boot_means = []
+        rng = random.Random(42)
+        for _ in range(n_boot):
+            sample_cohorts = rng.choices(cohort_list, k=n_cohorts)
+            all_eps = [ep for c in sample_cohorts for ep in c]
+            if all_eps:
+                boot_means.append(sum(e["alpha"] for e in all_eps) / len(all_eps))
+        if not boot_means:
+            return {"status": "error"}
+        boot_means.sort()
+        lo = boot_means[int(0.025 * n_boot)]
+        hi = boot_means[int(0.975 * n_boot)]
+        return {
+            "status": "ok",
+            "n_cohorts": n_cohorts,
+            "n_boot": n_boot,
+            "mean_alpha": _mean([e["alpha"] for e in episodes]),
+            "ci_95_lo": round(lo, 4),
+            "ci_95_hi": round(hi, 4),
+            "note": "Cohort-blocked 95% CI — resamples decision-date cohorts, not individual episodes",
+        }
+
+    # MFE/MAE by stress group (0501): do high-stress episodes have larger downside MAE?
+    def _stress_mfe_mae() -> dict:
+        if not (has_mfe or has_mae):
+            return {"status": "no_mfe_mae_data"}
+        high_stress = [e for e in episodes
+                       if e["macro"].get("rate_sensitivity") is not None
+                       and _extract_dim_score(e["macro"].get("rate_sensitivity")) is not None
+                       and (_extract_dim_score(e["macro"].get("rate_sensitivity")) or 0) >= 7]
+        low_stress  = [e for e in episodes
+                       if e["macro"].get("rate_sensitivity") is not None
+                       and _extract_dim_score(e["macro"].get("rate_sensitivity")) is not None
+                       and (_extract_dim_score(e["macro"].get("rate_sensitivity")) or 10) <= 3]
+        result: dict = {"note": "high_stress = rate_sensitivity ≥7; low_stress ≤3"}
+        if has_mae:
+            result["high_stress_mean_mae"] = _mean([e["mae"] for e in high_stress if "mae" in e])
+            result["low_stress_mean_mae"]  = _mean([e["mae"] for e in low_stress  if "mae" in e])
+            result["high_stress_median_mae"] = _median([e["mae"] for e in high_stress if "mae" in e])
+            result["low_stress_median_mae"]  = _median([e["mae"] for e in low_stress  if "mae" in e])
+        if has_mfe:
+            result["high_stress_mean_mfe"] = _mean([e["mfe"] for e in high_stress if "mfe" in e])
+            result["low_stress_mean_mfe"]  = _mean([e["mfe"] for e in low_stress  if "mfe" in e])
+        result["n_high_stress"] = len(high_stress)
+        result["n_low_stress"]  = len(low_stress)
+        return result
+
+    # Divergence analysis (0502): when base and challenger diverge, are macro conditions
+    # associated with which one wins? Purely descriptive — no weight changes.
+    def _divergence_analysis() -> dict:
+        divergent = [
+            e for e in episodes
+            if e["macro"].get("challenger_recommendation") is not None
+            and e["macro"].get("base_recommendation") is not None
+            and e["macro"].get("challenger_recommendation") != e["macro"].get("base_recommendation")
+        ]
+        MIN_DIVERGENT = 30
+        if len(divergent) < MIN_DIVERGENT:
+            return {
+                "status": "insufficient_data",
+                "n_divergent": len(divergent),
+                "min_required": MIN_DIVERGENT,
+                "note": f"Need ≥{MIN_DIVERGENT} divergent ACCEPTED episodes with 3m outcomes; have {len(divergent)}.",
+            }
+        # Challenger win = challenger alpha > base alpha (use episode alpha as proxy if individual not stored)
+        # If per-agent alpha not available, skip win-rate analysis
+        can_compare = any(
+            e["macro"].get("challenger_alpha") is not None and e["macro"].get("base_alpha") is not None
+            for e in divergent
+        )
+        if not can_compare:
+            return {
+                "status": "no_per_agent_alpha",
+                "n_divergent": len(divergent),
+                "note": "challenger_alpha / base_alpha not stored in macro_snapshot — cannot compute win rates.",
+            }
+
+        def _challenger_wins(e: dict) -> bool | None:
+            ca = e["macro"].get("challenger_alpha")
+            ba = e["macro"].get("base_alpha")
+            if ca is None or ba is None:
+                return None
+            try:
+                return float(ca) > float(ba)
+            except (TypeError, ValueError):
+                return None
+
+        # Regime groups by rate_interaction sign
+        def _regime_win_rate(subset: list) -> dict:
+            outcomes = [_challenger_wins(e) for e in subset]
+            decided = [o for o in outcomes if o is not None]
+            if not decided:
+                return {"n": 0, "challenger_win_rate": None}
+            return {"n": len(decided), "challenger_win_rate": round(sum(decided) / len(decided), 4)}
+
+        pos_regime = [e for e in divergent
+                      if e["macro"].get("rate_interaction") is not None
+                      and float(e["macro"].get("rate_interaction", 0) or 0) > 0]
+        neg_regime = [e for e in divergent
+                      if e["macro"].get("rate_interaction") is not None
+                      and float(e["macro"].get("rate_interaction", 0) or 0) <= 0]
+        concordant   = [e for e in divergent if e["macro"].get("concordance_ok") is True]
+        discordant   = [e for e in divergent if e["macro"].get("concordance_ok") is False]
+
+        return {
+            "status": "ok",
+            "n_divergent": len(divergent),
+            "regime_group_win_rates": {
+                "positive_rate_interaction": _regime_win_rate(pos_regime),
+                "negative_rate_interaction": _regime_win_rate(neg_regime),
+            },
+            "concordance_group_win_rates": {
+                "concordant_beta_llm": _regime_win_rate(concordant),
+                "discordant_beta_llm": _regime_win_rate(discordant),
+            },
+            "note": (
+                "Descriptive only. challenger_win_rate = fraction of divergent episodes "
+                "where challenger alpha > base alpha. No model weights changed."
+            ),
+        }
+
     return {
         "status":            "ok",
         "n":                 n,
@@ -264,11 +461,16 @@ def analyse(episodes: list[dict], horizon: str, show_all_dims: bool = False) -> 
         "bucket_analysis":   bucket_analysis,
         "beta_confidence_analysis": beta_analysis,
         "evidence_quality_analysis": evidence_analysis,
+        "signed_interaction_analysis": _signed_interaction_analysis(),
+        "cohort_bootstrap_ci": _cohort_bootstrap_ci(),
+        "stress_mfe_mae": _stress_mfe_mae(),
+        "divergence_analysis": _divergence_analysis(),
         "coverage_by_state": _coverage_summary(episodes),
         "note": (
             "Exploratory only — no ranking, weight, or model changes. "
             "Minimum 60 ACCEPTED episodes recommended. "
-            "Simple conditional means; no significance testing."
+            "Medians and IQR reported alongside means for robustness. "
+            "Cohort-blocked bootstrap CI guards against date-cohort inflation."
         ),
     }
 

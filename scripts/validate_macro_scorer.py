@@ -874,9 +874,10 @@ def main():
     print(f"Summary: {summary_status} — {fails} fail, {warns} warn, {passes} pass")
     print(f"Verdict: {verdict}")
 
-    # 0506/0510: persist stability after verdict so validation_run_type is accurate
+    # 0517: persist stability to split tables after verdict.
+    # PASS → macro_dimension_validation (append-only accepted record).
+    # BLOCK/FAIL → macro_dimension_runtime_stability (mutable; runtime rows never grant usability).
     if repeatability and args.live:
-        _vrun_type = "accepted_validation" if verdict == "PASS" else "failed_validation"
         try:
             import sys as _sys
             _sys.path.insert(0, str(PROJECT_DIR))
@@ -887,20 +888,29 @@ def main():
             for _tk, _dims in repeatability.items():
                 for _dim, _r in _dims.items():
                     if _r.get("n", 0) >= 2:
-                        _sc.execute(
-                            "INSERT OR REPLACE INTO macro_dimension_stability "
-                            "(ticker, dim, stdev, mean, n_samples, stability_class, updated_at, "
-                            "acceptance_record_id, config_version, config_hash, "
-                            "model_identity, validation_run_type) "
-                            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                            (_tk, _dim, _r.get("stdev"), _r.get("mean"),
-                             _r.get("n"), _scls(_r.get("stdev")), _now,
-                             str(out_path), _config_version, _config_hash,
-                             _model_identity, _vrun_type)
-                        )
+                        _cls = _scls(_r.get("stdev"))
+                        if verdict == "PASS":
+                            _sc.execute(
+                                "INSERT OR IGNORE INTO macro_dimension_validation "
+                                "(acceptance_record_id, ticker, dimension, mean_score, stddev, "
+                                "n_samples, stability_class, config_version, config_hash, "
+                                "model_identity, recorded_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                                (str(out_path), _tk, _dim, _r.get("mean"), _r.get("stdev"),
+                                 _r.get("n"), _cls, _config_version, _config_hash,
+                                 _model_identity, _now)
+                            )
+                        else:
+                            _sc.execute(
+                                "INSERT OR REPLACE INTO macro_dimension_runtime_stability "
+                                "(ticker, dimension, mean_score, stddev, n_samples, "
+                                "stability_class, updated_at) VALUES (?,?,?,?,?,?,?)",
+                                (_tk, _dim, _r.get("mean"), _r.get("stdev"),
+                                 _r.get("n"), _cls, _now)
+                            )
             _sc.commit()
             _sc.close()
-            print(f"  Persisted stability data ({_vrun_type}) for {len(repeatability)} tickers")
+            _dest = "macro_dimension_validation" if verdict == "PASS" else "macro_dimension_runtime_stability"
+            print(f"  Persisted stability data → {_dest} for {len(repeatability)} tickers")
         except Exception as _e:
             print(f"  WARNING: could not persist stability data: {_e}")
 

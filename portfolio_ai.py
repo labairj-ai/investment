@@ -470,8 +470,67 @@ def _init_ai_tables():
             conn.execute(_col_sql)
         except Exception:
             pass
+    # Accepted validation table — append-only; one row per acceptance run × ticker × dim (0517)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS macro_dimension_validation (
+            id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+            acceptance_record_id TEXT NOT NULL,
+            ticker               TEXT NOT NULL,
+            dimension            TEXT NOT NULL,
+            mean_score           REAL,
+            stddev               REAL,
+            n_samples            INTEGER,
+            stability_class      TEXT,
+            config_version       TEXT,
+            config_hash          TEXT,
+            model_identity       TEXT,
+            recorded_at          TEXT,
+            UNIQUE(acceptance_record_id, ticker, dimension)
+        )
+    """)
+    # Runtime stability table — mutable; one row per ticker × dim; scorer overwrites here (0517)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS macro_dimension_runtime_stability (
+            ticker          TEXT NOT NULL,
+            dimension       TEXT NOT NULL,
+            mean_score      REAL,
+            stddev          REAL,
+            n_samples       INTEGER,
+            stability_class TEXT,
+            updated_at      TEXT,
+            PRIMARY KEY (ticker, dimension)
+        )
+    """)
+    # Migration (0517): one-time copy of existing macro_dimension_stability rows into new tables.
+    try:
+        _mig_count = conn.execute("SELECT COUNT(*) FROM macro_dimension_validation").fetchone()[0]
+        if _mig_count == 0:
+            _old_rows = conn.execute(
+                "SELECT ticker, dim, stdev, mean, n_samples, stability_class, updated_at, "
+                "acceptance_record_id, config_version, config_hash, model_identity, validation_run_type "
+                "FROM macro_dimension_stability"
+            ).fetchall()
+            for _r in _old_rows:
+                _tk, _dm, _sv, _mn, _ns, _sc, _up, _ar, _cv, _ch, _mi, _vt = _r
+                if _vt == "accepted_validation" and _ar:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO macro_dimension_validation "
+                        "(acceptance_record_id, ticker, dimension, mean_score, stddev, "
+                        "n_samples, stability_class, config_version, config_hash, "
+                        "model_identity, recorded_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                        (_ar, _tk, _dm, _mn, _sv, _ns, _sc, _cv, _ch, _mi, _up)
+                    )
+                else:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO macro_dimension_runtime_stability "
+                        "(ticker, dimension, mean_score, stddev, n_samples, stability_class, updated_at) "
+                        "VALUES (?,?,?,?,?,?,?)",
+                        (_tk, _dm, _mn, _sv, _ns, _sc, _up)
+                    )
+    except Exception:
+        pass
     # Seed initial geo profiles for known foreign companies (0508, 0516)
-    # Use INSERT OR REPLACE so stale seeds are refreshed when the module is re-initialised.
+    # INSERT OR IGNORE — only writes on first creation; retrieved_at reflects actual sourcing date.
     now_iso = datetime.utcnow().isoformat()
     _GEO_SEEDS = [
         # ITOCF — Itochu Corp, Japanese general trading company; EM/Asia exposure from annual report
@@ -483,7 +542,8 @@ def _init_ai_tables():
             "supply_chain_concentration": "diversified",
             "sanctions_exposure": "none_known", "tariff_sensitivity": "medium",
             "data_source": "manual_research", "source_date": "2026-09",
-            "retrieved_at": now_iso, "confidence": "medium",
+            "retrieved_at": "2026-09-19T00:00:00",  # fixed: reflects actual sourcing date
+            "confidence": "medium",
             "notes": "Ito Corporation — Japanese general trading company; EM/Asia exposure estimated from annual report",
         },
         # MITSF — Mitsubishi Corp, diversified Japanese conglomerate; global operations per IR materials
@@ -495,7 +555,8 @@ def _init_ai_tables():
             "supply_chain_concentration": "diversified",
             "sanctions_exposure": "none_known", "tariff_sensitivity": "medium",
             "data_source": "manual_research", "source_date": "2026-09",
-            "retrieved_at": now_iso, "confidence": "medium",
+            "retrieved_at": "2026-09-19T00:00:00",  # fixed: reflects actual sourcing date
+            "confidence": "medium",
             "notes": "Mitsubishi Corporation — diversified Japanese conglomerate; global operations per IR materials",
         },
     ]
@@ -507,7 +568,7 @@ def _init_ai_tables():
                            sort_keys=True).encode()
             ).hexdigest()
             conn.execute(
-                "INSERT OR REPLACE INTO company_geo_profile "
+                "INSERT OR IGNORE INTO company_geo_profile "
                 "(ticker, primary_hq_country, incorporation_country, major_operating_regions, "
                 "revenue_domestic_pct, revenue_us_pct, revenue_em_pct, "
                 "supply_chain_concentration, sanctions_exposure, tariff_sensitivity, updated_at, "
@@ -527,7 +588,7 @@ def _init_ai_tables():
     conn.close()
 
 
-MACRO_SCORE_SCHEMA_VERSION = "v2"
+MACRO_SCORE_SCHEMA_VERSION = "v3"
 MACRO_INTERACTION_VERSION = "macro_interaction_v1"
 _MACRO_SCORE_DIMS = ("rate_sensitivity", "inflation_hedge", "dollar_sensitivity", "geopolitical_risk")
 _STALE_SCORE_DAYS = 14
@@ -563,13 +624,21 @@ def _stability_class(stdev) -> str:
 
 
 def _is_formally_usable(ticker, dim, conn):
-    """True only if ticker×dim has an accepted_validation stability row (0511).
-    Runtime sampling rows are excluded — only rows written by a PASS acceptance run count."""
+    """True only when the active acceptance contract has validated this ticker×dim as stable (0517, 0519).
+    Queries macro_acceptance_state for the active record_id, then joins macro_dimension_validation.
+    Old acceptance rows from superseded contracts do not count."""
     try:
+        rec = conn.execute(
+            "SELECT record_id FROM macro_acceptance_state "
+            "WHERE contract='macro_validation_v1' AND record_id IS NOT NULL "
+            "ORDER BY accepted_at DESC LIMIT 1"
+        ).fetchone()
+        if not rec:
+            return False
         row = conn.execute(
-            "SELECT stability_class FROM macro_dimension_stability "
-            "WHERE ticker=? AND dim=? AND validation_run_type='accepted_validation'",
-            (ticker, dim)
+            "SELECT stability_class FROM macro_dimension_validation "
+            "WHERE acceptance_record_id=? AND ticker=? AND dimension=?",
+            (rec[0], ticker, dim)
         ).fetchone()
         if row:
             return row[0] in ("stable", "borderline")
@@ -588,12 +657,18 @@ def _usable_for_attribution(ticker, dim, evidence_quality, conn):
 
 def _n_samples_for_dim(ticker, dim, conn):
     """Adaptive N: 1 for stable, 3 for borderline/untested, 5 for unstable (0507).
-    Reads any stability row — accepted or runtime — for adaptive-N efficiency."""
+    Reads runtime_stability first; falls back to validation table (0517)."""
     try:
         row = conn.execute(
-            "SELECT stability_class FROM macro_dimension_stability WHERE ticker=? AND dim=?",
+            "SELECT stability_class FROM macro_dimension_runtime_stability WHERE ticker=? AND dimension=?",
             (ticker, dim)
         ).fetchone()
+        if not row:
+            row = conn.execute(
+                "SELECT stability_class FROM macro_dimension_validation "
+                "WHERE ticker=? AND dimension=? ORDER BY recorded_at DESC LIMIT 1",
+                (ticker, dim)
+            ).fetchone()
         cls = row[0] if row else "untested"
     except Exception:
         cls = "untested"
@@ -1753,18 +1828,18 @@ def _fetch_company_evidence(ticker: str, conn) -> dict:
     filled = sum(1 for k, v in evidence.items() if k not in _meta_keys and v is not None)
     evidence["evidence_quality"] = "full" if filled >= 3 else ("partial" if filled >= 1 else "none")
 
-    # Per-dimension evidence quality
+    # Per-dimension evidence quality — canonical vocab: full/partial/none (0518)
     rate_fields = [evidence.get("net_debt"), evidence.get("interest_coverage")]
     rate_filled = sum(1 for v in rate_fields if v is not None)
-    evidence["evidence_quality_rate"] = "good" if rate_filled >= 2 else ("limited" if rate_filled >= 1 else "none")
+    evidence["evidence_quality_rate"] = "full" if rate_filled >= 2 else ("partial" if rate_filled >= 1 else "none")
 
     dollar_filled = 1 if evidence.get("foreign_rev_pct") is not None else 0
-    evidence["evidence_quality_dollar"] = "good" if dollar_filled >= 1 else "none"
+    evidence["evidence_quality_dollar"] = "full" if dollar_filled >= 1 else "none"
 
     # Inflation hedge: gross margin (pricing power proxy)
     inflation_filled = 1 if evidence.get("gross_margin_pct") is not None else 0
-    evidence["evidence_quality_inflation"] = "good" if inflation_filled >= 1 else (
-        "limited" if evidence.get("sector") else "none"
+    evidence["evidence_quality_inflation"] = "full" if inflation_filled >= 1 else (
+        "partial" if evidence.get("sector") else "none"
     )
 
     # Geo profile (0508) — query company_geo_profile for structured country/region evidence
@@ -1789,19 +1864,45 @@ def _fetch_company_evidence(ticker: str, conn) -> dict:
     except Exception:
         pass
 
-    # Geopolitical: tiered by geo profile depth
-    has_hq      = evidence.get("geo_hq_country") is not None
-    has_regions = evidence.get("geo_major_regions") is not None
-    has_class   = evidence.get("geo_sanctions_exposure") is not None and evidence.get("geo_tariff_sensitivity") is not None
-    if has_hq and has_regions and has_class:
-        evidence["evidence_quality_geo"] = "full"
-    elif has_hq:
-        evidence["evidence_quality_geo"] = "partial"
-    else:
-        geo_filled = sum(1 for v in [evidence.get("sector"), evidence.get("revenue_ttm")] if v is not None)
-        evidence["evidence_quality_geo"] = "good" if geo_filled >= 2 else ("limited" if geo_filled >= 1 else "none")
+    # Geopolitical quality derived from confidence + freshness in company_geo_profile (0522)
+    evidence["evidence_quality_geo"] = _geo_evidence_quality(ticker, conn)
 
     return evidence
+
+
+def _geo_evidence_quality(ticker: str, conn) -> str:
+    """Derive evidence_quality_geo from confidence + source_date in company_geo_profile (0522).
+    Returns 'full' | 'partial' | 'none'.
+    confidence='high' + source_date ≤18 months old → 'full'.
+    confidence='medium', stale, or unparseable date → 'partial'.
+    No geo record, no primary country, or no conn → 'none'.
+    Geo attribution requires confidence='high' + fresh source_date (≤18 months).
+    """
+    if conn is None:
+        return "none"
+    try:
+        row = conn.execute(
+            "SELECT confidence, source_date, primary_hq_country FROM company_geo_profile WHERE ticker=?",
+            (ticker,)
+        ).fetchone()
+        if not row or not row[2]:
+            return "none"
+        confidence, source_date, _ = row
+        if source_date:
+            try:
+                yr = int(source_date[:4])
+                mo = int(source_date[5:7]) if len(source_date) >= 7 else 1
+                today = date.today()
+                age_months = (today.year - yr) * 12 + (today.month - mo)
+                if age_months > 18:
+                    return "partial"
+            except (ValueError, TypeError):
+                return "partial"
+        if confidence == "high":
+            return "full"
+        return "partial"
+    except Exception:
+        return "none"
 
 
 def _beta_confidence(tstat) -> str:
@@ -2574,25 +2675,22 @@ Return ONLY valid JSON. Each dimension must include a score AND a one-sentence r
                     (ticker, scores_json, now_str, run_id,
                      ollama_client.DEFAULT_MODEL, MACRO_SCORE_SCHEMA_VERSION, evidence_hash)
                 )
-                # Persist per-dim stability to macro_dimension_stability (0506, 0510).
-                # validation_run_type='runtime_sampling' — these rows never make a ticker
-                # formally usable for attribution; only 'accepted_validation' rows do (0511).
+                # Persist per-dim stability to runtime table (0517); scorer rows never make a
+                # ticker formally usable for attribution — only accepted_validation rows do.
                 for _sdim in _MACRO_SCORE_DIMS:
                     _dim_data = scores.get(_sdim)
                     if isinstance(_dim_data, dict) and _dim_data.get("n_samples", 0) > 1:
                         try:
                             conn.execute(
-                                "INSERT OR REPLACE INTO macro_dimension_stability "
-                                "(ticker, dim, stdev, mean, n_samples, stability_class, updated_at, "
-                                "validation_run_type, model_identity) "
-                                "VALUES (?,?,?,?,?,?,?,?,?)",
+                                "INSERT OR REPLACE INTO macro_dimension_runtime_stability "
+                                "(ticker, dimension, mean_score, stddev, n_samples, stability_class, updated_at) "
+                                "VALUES (?,?,?,?,?,?,?)",
                                 (ticker, _sdim,
-                                 _dim_data.get("stddev"), _dim_data.get("mean"),
+                                 _dim_data.get("mean"),
+                                 _dim_data.get("stddev"),
                                  _dim_data.get("n_samples"),
                                  _dim_data.get("stability_class"),
-                                 now_str,
-                                 "runtime_sampling",
-                                 ollama_client.DEFAULT_MODEL)
+                                 now_str)
                             )
                         except Exception:
                             pass
@@ -2642,6 +2740,26 @@ Return ONLY valid JSON. Each dimension must include a score AND a one-sentence r
         except Exception:
             pass
         raise RuntimeError(_acct_msg)
+
+    # Sub-accounting invariant: supported + unsupported must equal total processed (0520).
+    if supported_scored_n + unsupported_n != scored_n:
+        _sub_msg = (
+            f"[MacroScores] FATAL sub-accounting mismatch — "
+            f"supported={supported_scored_n}, unsupported={unsupported_n}, "
+            f"sum={supported_scored_n + unsupported_n}, processed={scored_n}"
+        )
+        print(_sub_msg)
+        try:
+            _fc = sqlite3.connect(str(DB_PATH), timeout=10)
+            _fc.execute(
+                "UPDATE macro_scoring_runs SET status='FAILED', errors_json=? WHERE run_id=?",
+                (json.dumps([_sub_msg]), run_id)
+            )
+            _fc.commit()
+            _fc.close()
+        except Exception:
+            pass
+        raise RuntimeError(_sub_msg)
 
     # Retry twice; raise on exhaustion — never silently drop (0478, 0485).
     for _upd_attempt in range(2):
