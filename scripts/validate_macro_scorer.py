@@ -38,9 +38,9 @@ ANCHORS = {
         "description": "REIT / long-duration bond-like",
         "rate_sensitivity": (7, 10),
     },
-    "UUP": {
-        "description": "US Dollar ETF — benefits from dollar strength",
-        "dollar_sensitivity": (1, 2),   # domestic dollar-denominated, minimal hurt
+    "NEE": {
+        "description": "NextEra Energy — domestic US utility, minimal foreign revenue",
+        "dollar_sensitivity": (1, 4),   # domestic utility, little FX exposure
     },
     "XOM": {
         "description": "Large US energy / inflation hedge",
