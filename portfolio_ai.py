@@ -455,7 +455,7 @@ _MACRO_SCORE_DIMS = ("rate_sensitivity", "inflation_hedge", "dollar_sensitivity"
 _STALE_SCORE_DAYS = 14
 
 
-def _stability_class(stdev: float | None) -> str:
+def _stability_class(stdev) -> str:
     """Map per-dim stdev to stability class (0506)."""
     if stdev is None:
         return "untested"
@@ -466,7 +466,7 @@ def _stability_class(stdev: float | None) -> str:
     return "unstable"
 
 
-def _usable_for_attribution(stdev: float | None, stability: str | None = None) -> bool:
+def _usable_for_attribution(stdev, stability=None) -> bool:
     """Dimension is attribution-ready only when stable or borderline and stdev ≤ 1.5 (0506)."""
     cls = stability or _stability_class(stdev)
     return cls in ("stable", "borderline")
