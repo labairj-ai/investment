@@ -13,7 +13,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from scripts.first_sweep_acceptance import (
+    _DbError,
     _check_paper_variant_agreement,
+    _find_any_completed_paper_sweep,
     _find_paper_sweep,
     _find_shadow_sweep,
     run_paper_acceptance,
@@ -519,12 +521,204 @@ class TestNoSweepHandling0456:
         result = run_paper_acceptance(str(db))
         assert result["status"] == "NO_SWEEP"
 
-    def test_shadow_missing_table_returns_no_sweep(self, tmp_path):
-        """DB without the learning_sweep_runs table is NO_SWEEP, not a crash."""
+    def test_shadow_missing_table_returns_db_error(self, tmp_path):
+        """DB without learning_sweep_runs is a hard DB_ERROR, not NO_SWEEP (0462)."""
         db = tmp_path / "bare.db"
         conn = sqlite3.connect(str(db))
         conn.execute("CREATE TABLE placeholder (id INTEGER)")
         conn.commit()
         conn.close()
         result = run_shadow_acceptance(str(db))
+        assert result["status"] == "DB_ERROR"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 0461 — git_dirty=None must block artifact write
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestGitDirtyNone0461:
+    """_git_dirty() returning None (status unknowable) must block artifact creation."""
+
+    def _run_main(self, tmp_path, dirty_value):
+        db = _make_db(tmp_path)
+        _seed_minimal_passing_shadow(db)
+        out_path = tmp_path / "shadow_out.json"
+        import scripts.first_sweep_acceptance as mod
+        import sys as _sys
+        old_argv = _sys.argv
+        _sys.argv = ["acceptance", "--db", str(db), "--mode", "shadow"]
+        try:
+            with (
+                patch("scripts.first_sweep_acceptance._SHADOW_OUT", out_path),
+                patch("scripts.first_sweep_acceptance._run_integrity_audit",
+                      return_value=("ok", {"overall": "ok"})),
+                patch("scripts.first_sweep_acceptance._git_sha", return_value="abc123"),
+                patch("scripts.first_sweep_acceptance._git_dirty", return_value=dirty_value),
+                pytest.raises(SystemExit) as exc,
+            ):
+                mod.main()
+        finally:
+            _sys.argv = old_argv
+        return exc.value.code, out_path
+
+    def test_none_blocks_with_exit_3(self, tmp_path):
+        code, out_path = self._run_main(tmp_path, None)
+        assert code == 3
+        assert not out_path.exists()
+
+    def test_true_still_blocks_with_exit_3(self, tmp_path):
+        code, out_path = self._run_main(tmp_path, True)
+        assert code == 3
+        assert not out_path.exists()
+
+    def test_false_allows_write(self, tmp_path):
+        import scripts.first_sweep_acceptance as mod
+        import sys as _sys
+        db = _make_db(tmp_path)
+        _seed_minimal_passing_shadow(db)
+        out_path = tmp_path / "shadow_out.json"
+        old_argv = _sys.argv
+        _sys.argv = ["acceptance", "--db", str(db), "--mode", "shadow"]
+        try:
+            with (
+                patch("scripts.first_sweep_acceptance._SHADOW_OUT", out_path),
+                patch("scripts.first_sweep_acceptance._run_integrity_audit",
+                      return_value=("ok", {"overall": "ok"})),
+                patch("scripts.first_sweep_acceptance._git_sha", return_value="abc123"),
+                patch("scripts.first_sweep_acceptance._git_dirty", return_value=False),
+            ):
+                try:
+                    mod.main()
+                except SystemExit:
+                    pass
+        finally:
+            _sys.argv = old_argv
+        assert out_path.exists()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 0460 — NULL paper eligibility fails closed end-to-end
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestNullEligibilityEndToEnd0460:
+    """A completed PAPER_ACTIVE sweep with NULL eligibility must fail, not return NO_SWEEP."""
+
+    def test_null_eligibility_returns_fail_not_no_sweep(self, tmp_path):
+        db = _make_db(tmp_path)
+        _insert_sweep(db, phase="PAPER_ACTIVE", status="COMPLETED", base_eligible=None)
+        result = run_paper_acceptance(str(db))
+        assert result["status"] == "FAIL", (
+            f"Expected FAIL for NULL eligibility, got {result['status']!r}"
+        )
+        assert any("eligibility" in f.lower() or "null" in f.lower()
+                   for f in result["failures"])
+
+    def test_null_eligibility_is_not_no_sweep(self, tmp_path):
+        db = _make_db(tmp_path)
+        _insert_sweep(db, phase="PAPER_ACTIVE", status="COMPLETED", base_eligible=None)
+        result = run_paper_acceptance(str(db))
+        assert result["status"] != "NO_SWEEP"
+
+    def test_eligible_1_still_qualifies(self, tmp_path):
+        """eligible=1 sweep still reaches normal acceptance checks (not NO_SWEEP/FAIL early)."""
+        db = _make_db(tmp_path)
+        _insert_sweep(db, phase="PAPER_ACTIVE", status="COMPLETED",
+                      base_eligible=1, expected=2, scored=2)
+        _insert_obs(db, episode_id="E1", would_select=1, base_would_select=0)
+        _insert_obs(db, episode_id="E2", would_select=0, base_would_select=1)
+        _insert_episode(db, episode_id="E1")
+        _insert_episode(db, episode_id="E2")
+        _insert_variant(db, challenger_episode_id="E1")
+        with patch("scripts.first_sweep_acceptance._run_integrity_audit",
+                   return_value=("ok", {"overall": "ok"})):
+            result = run_paper_acceptance(str(db))
+        # Should reach acceptance logic (PASS or FAIL on checks, not NO_SWEEP)
+        assert result["status"] in ("PASS", "FAIL")
+        assert result.get("mode") == "paper"
+
+    def test_eligible_0_returns_no_sweep(self, tmp_path):
+        """eligible=0 sweep → NO_SWEEP (not yet qualifying, not a hard failure)."""
+        db = _make_db(tmp_path)
+        _insert_sweep(db, phase="PAPER_ACTIVE", status="COMPLETED", base_eligible=0)
+        result = run_paper_acceptance(str(db))
         assert result["status"] == "NO_SWEEP"
+
+    def test_find_any_completed_paper_sweep_finds_null_eligible(self, tmp_path):
+        """_find_any_completed_paper_sweep must return sweeps with NULL eligibility."""
+        db = _make_db(tmp_path)
+        _insert_sweep(db, phase="PAPER_ACTIVE", status="COMPLETED", base_eligible=None)
+        conn = _conn(db)
+        sweep = _find_any_completed_paper_sweep(conn)
+        conn.close()
+        assert sweep is not None
+        assert not isinstance(sweep, _DbError)
+        assert sweep.get("base_recommendation_eligible") is None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 0462 — DB query errors are distinct from NO_SWEEP
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestDbErrorDistinction0462:
+    """sqlite3.OperationalError must produce DB_ERROR, not NO_SWEEP."""
+
+    def _bare_db(self, tmp_path) -> Path:
+        db = tmp_path / "bare.db"
+        conn = sqlite3.connect(str(db))
+        conn.execute("CREATE TABLE unrelated (id INTEGER)")
+        conn.commit()
+        conn.close()
+        return db
+
+    def test_shadow_db_error_status_is_db_error(self, tmp_path):
+        db = self._bare_db(tmp_path)
+        result = run_shadow_acceptance(str(db))
+        assert result["status"] == "DB_ERROR"
+
+    def test_shadow_db_error_is_not_no_sweep(self, tmp_path):
+        db = self._bare_db(tmp_path)
+        result = run_shadow_acceptance(str(db))
+        assert result["status"] != "NO_SWEEP"
+
+    def test_paper_db_error_status_is_db_error(self, tmp_path):
+        db = self._bare_db(tmp_path)
+        result = run_paper_acceptance(str(db))
+        assert result["status"] == "DB_ERROR"
+
+    def test_paper_db_error_is_not_no_sweep(self, tmp_path):
+        db = self._bare_db(tmp_path)
+        result = run_paper_acceptance(str(db))
+        assert result["status"] != "NO_SWEEP"
+
+    def test_find_shadow_sweep_returns_db_error_sentinel(self, tmp_path):
+        db = self._bare_db(tmp_path)
+        conn = _conn(db)
+        result = _find_shadow_sweep(conn)
+        conn.close()
+        assert isinstance(result, _DbError)
+
+    def test_find_any_paper_sweep_returns_db_error_sentinel(self, tmp_path):
+        db = self._bare_db(tmp_path)
+        conn = _conn(db)
+        result = _find_any_completed_paper_sweep(conn)
+        conn.close()
+        assert isinstance(result, _DbError)
+
+    def test_empty_db_returns_no_sweep_not_db_error(self, tmp_path):
+        """Successful query with no rows → NO_SWEEP, not DB_ERROR."""
+        db = _make_db(tmp_path)  # has the table, just no rows
+        result = run_shadow_acceptance(str(db))
+        assert result["status"] == "NO_SWEEP"
+
+    def test_main_exits_3_on_db_error(self, tmp_path):
+        db = self._bare_db(tmp_path)
+        import scripts.first_sweep_acceptance as mod
+        import sys as _sys
+        old_argv = _sys.argv
+        _sys.argv = ["acceptance", "--db", str(db), "--mode", "shadow"]
+        try:
+            with pytest.raises(SystemExit) as exc:
+                mod.main()
+        finally:
+            _sys.argv = old_argv
+        assert exc.value.code == 3

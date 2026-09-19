@@ -407,8 +407,9 @@ def run_integrity_audit(conn=None) -> dict:
                     "status": "error",
                 })
         blocks = [r for r in results if r["status"] == "BLOCK"]
+        errors = [r for r in results if r["status"] == "error"]
         warns  = [r for r in results if r["status"] == "WARN"]
-        overall = "BLOCK" if blocks else ("WARN" if warns else "ok")
+        overall = "BLOCK" if blocks else ("error" if errors else ("WARN" if warns else "ok"))
         return {"overall": overall, "checks": results}
     finally:
         if close:
@@ -446,8 +447,9 @@ def main() -> None:
         print()
 
     blocks = [c for c in result["checks"] if c["status"] == "BLOCK"]
+    errors = [c for c in result["checks"] if c["status"] == "error"]
     warns  = [c for c in result["checks"] if c["status"] == "WARN"]
-    sys.exit(2 if blocks else (1 if warns else 0))
+    sys.exit(2 if blocks else (1 if errors or warns else 0))
 
 
 if __name__ == "__main__":

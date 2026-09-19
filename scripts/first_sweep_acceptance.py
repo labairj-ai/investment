@@ -38,6 +38,18 @@ _PAPER_OUT  = _REPO_ROOT / "config" / "experiment_paper_canary_001.json"
 _HEALTHY_INTEGRITY = {"ok"}   # 0457: only "ok" is acceptable for a freeze record
 
 
+class _DbError:
+    """Sentinel returned by sweep locators when a DB query fails (0462).
+
+    Distinct from None (no qualifying row found) so the runner can exit hard
+    instead of reporting "too early."
+    """
+    __slots__ = ("exc",)
+
+    def __init__(self, exc: Exception) -> None:
+        self.exc = exc
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Git helpers
 # ─────────────────────────────────────────────────────────────────────────────
@@ -85,16 +97,16 @@ def _col(row, name, default=None):
 # Sweep locators
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _find_shadow_sweep(conn) -> dict | None:
-    """Latest COMPLETED OBSERVE sweep, or None."""
+def _find_shadow_sweep(conn):
+    """Latest COMPLETED OBSERVE sweep. Returns None if none found, _DbError if query fails."""
     try:
         row = conn.execute(
             """SELECT * FROM learning_sweep_runs
                WHERE phase='OBSERVE' AND status='COMPLETED'
                ORDER BY id DESC LIMIT 1"""
         ).fetchone()
-    except sqlite3.OperationalError:
-        return None
+    except sqlite3.OperationalError as exc:
+        return _DbError(exc)
     return dict(row) if row else None
 
 
@@ -110,6 +122,26 @@ def _find_paper_sweep(conn) -> dict | None:
         ).fetchone()
     except sqlite3.OperationalError:
         return None
+    return dict(row) if row else None
+
+
+def _find_any_completed_paper_sweep(conn):
+    """Latest COMPLETED PAPER_ACTIVE sweep regardless of eligibility (0460/0462).
+
+    Returns None when no completed PAPER_ACTIVE sweep exists, _DbError when the
+    query itself fails.  The caller classifies base_recommendation_eligible:
+      1    → qualifying sweep
+      0    → not yet qualifying (NO_SWEEP)
+      None → malformed evidence (fail-closed FAIL)
+    """
+    try:
+        row = conn.execute(
+            """SELECT * FROM learning_sweep_runs
+               WHERE phase='PAPER_ACTIVE' AND status='COMPLETED'
+               ORDER BY id DESC LIMIT 1"""
+        ).fetchone()
+    except sqlite3.OperationalError as exc:
+        return _DbError(exc)
     return dict(row) if row else None
 
 
@@ -242,6 +274,10 @@ def run_shadow_acceptance(db_path: str, waive_integrity_warn: bool = False) -> d
     """Validate the observation pipeline after the first OBSERVE sweep."""
     conn = _connect(db_path)
     sweep = _find_shadow_sweep(conn)
+    if isinstance(sweep, _DbError):
+        conn.close()
+        return {"status": "DB_ERROR",
+                "message": f"DB query failed during OBSERVE sweep lookup: {sweep.exc}"}
     if sweep is None:
         conn.close()
         return {"status": "NO_SWEEP",
@@ -305,11 +341,35 @@ def run_shadow_acceptance(db_path: str, waive_integrity_warn: bool = False) -> d
 def run_paper_acceptance(db_path: str, waive_integrity_warn: bool = False) -> dict:
     """Validate the full learning-to-paper path after first base-eligible PAPER_ACTIVE sweep."""
     conn = _connect(db_path)
-    sweep = _find_paper_sweep(conn)
+    sweep = _find_any_completed_paper_sweep(conn)
+    if isinstance(sweep, _DbError):
+        conn.close()
+        return {"status": "DB_ERROR",
+                "message": f"DB query failed during PAPER_ACTIVE sweep lookup: {sweep.exc}"}
     if sweep is None:
         conn.close()
         return {"status": "NO_SWEEP",
-                "message": "No completed base-eligible PAPER_ACTIVE sweep found yet."}
+                "message": "No completed PAPER_ACTIVE sweep found yet."}
+
+    base_eligible = sweep.get("base_recommendation_eligible")
+    if base_eligible == 0:
+        conn.close()
+        return {"status": "NO_SWEEP",
+                "message": "Most recent PAPER_ACTIVE sweep is not yet base-recommendation-eligible."}
+    if base_eligible is None:
+        conn.close()
+        return {
+            "status": "FAIL",
+            "mode": "paper",
+            "failures": [
+                "[eligibility] PAPER_ACTIVE sweep has NULL base_recommendation_eligible — "
+                "malformed evidence, fail-closed (0460)"
+            ],
+            "checks": {},
+            "sweep": sweep,
+            "integrity_overall": None,
+            "integrity_waived_warn": False,
+        }
 
     failures: list[str] = []
     checks: dict = {}
@@ -322,7 +382,7 @@ def run_paper_acceptance(db_path: str, waive_integrity_warn: bool = False) -> di
     agent_run_id  = sweep.get("agent_run_id", "")
     cohort_id     = sweep.get("cohort_id", "")
     model_version = sweep.get("model_version", "")
-    base_eligible = sweep.get("base_recommendation_eligible")  # 0458
+    # base_eligible is already validated above (0460): only 1 reaches here
 
     # Single cohort per run
     if agent_run_id:
@@ -432,6 +492,10 @@ def main() -> None:
         print("Run this script again after the qualifying sweep has occurred.")
         sys.exit(2)
 
+    if result["status"] == "DB_ERROR":
+        print(f"\n[0455/{args.mode}] {result['message']}")
+        sys.exit(3)
+
     sweep = result["sweep"]
     label = "Shadow pipeline" if args.mode == "shadow" else "Paper execution"
     print(f"\n=== {label} Acceptance (0455/0456) ===")
@@ -460,8 +524,13 @@ def main() -> None:
         print("\nERROR: git SHA unavailable — cannot write authoritative acceptance record.")
         print("Ensure git is available and HEAD is set.")
         sys.exit(3)
-    if dirty is True:
-        print("\nERROR: worktree is dirty — commit all changes before writing acceptance record.")
+    if dirty is not False:
+        msg = (
+            "worktree is dirty — commit all changes before writing acceptance record."
+            if dirty is True else
+            "git status could not be determined — cannot write authoritative acceptance record."
+        )
+        print(f"\nERROR: {msg}")
         print("The source_commit_sha must unambiguously identify the running code.")
         sys.exit(3)
 
