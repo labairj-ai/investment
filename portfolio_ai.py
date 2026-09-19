@@ -5,10 +5,12 @@ Generates daily macro-aware portfolio insights and per-holding macro risk scores
 All AI calls go through ollama_client (phi-4-4bit on MLX).
 """
 import csv
+import hashlib
 import json
 import os
 import sqlite3
 import time
+import uuid
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -319,12 +321,38 @@ def _init_ai_tables():
         "CREATE INDEX IF NOT EXISTS idx_mss_created "
         "ON macro_score_summaries (created_at DESC)"
     )
+    conn.execute("""CREATE TABLE IF NOT EXISTS macro_scoring_runs (
+        run_id       TEXT PRIMARY KEY,
+        run_at       TEXT NOT NULL,
+        expected_n   INTEGER,
+        scored_n     INTEGER,
+        failed_n     INTEGER,
+        coverage_pct REAL,
+        model_ver    TEXT,
+        schema_ver   TEXT,
+        macro_hash   TEXT,
+        status       TEXT NOT NULL DEFAULT 'IN_PROGRESS'
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS macro_regime_snapshots (
+        snapshot_date TEXT PRIMARY KEY,
+        regime_json   TEXT NOT NULL,
+        created_at    TEXT NOT NULL
+    )""")
+    # Add run_id column to holding_macro_scores if not present
+    try:
+        conn.execute("ALTER TABLE holding_macro_scores ADD COLUMN run_id TEXT")
+    except Exception:
+        pass
     conn.commit()
     conn.close()
 
 
+MACRO_SCORE_SCHEMA_VERSION = "v1"
+_MACRO_SCORE_DIMS = ("rate_sensitivity", "inflation_hedge", "dollar_sensitivity", "geopolitical_risk")
+
+
 def _score_val(dim_data):
-    """Extract integer score from {score, reason} dict or bare int. Returns int or None."""
+    """Extract integer score from {score, reason} dict or bare int. Returns int in [1,10] or None."""
     if isinstance(dim_data, dict):
         v = dim_data.get("score")
     elif isinstance(dim_data, (int, float)):
@@ -332,9 +360,30 @@ def _score_val(dim_data):
     else:
         return None
     try:
-        return int(v)
+        return max(1, min(10, int(v)))
     except (TypeError, ValueError):
         return None
+
+
+def _validate_macro_score_response(raw: dict, ticker: str) -> dict:
+    """Validate LLM score response for one ticker. Raises ValueError on invalid output."""
+    for dim in _MACRO_SCORE_DIMS:
+        if dim not in raw:
+            raise ValueError(f"{ticker}: missing dimension '{dim}'")
+        entry = raw[dim]
+        if not isinstance(entry, dict):
+            raise ValueError(f"{ticker}.{dim}: expected dict, got {type(entry).__name__}")
+        score = entry.get("score")
+        try:
+            score_int = int(score)
+        except (TypeError, ValueError):
+            raise ValueError(f"{ticker}.{dim}: score {score!r} is not numeric")
+        if not (1 <= score_int <= 10):
+            raise ValueError(f"{ticker}.{dim}: score {score_int} out of range [1,10]")
+        reason = entry.get("reason", "")
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError(f"{ticker}.{dim}: reason is missing or empty")
+    return raw
 
 
 def _score_reason(dim_data) -> str:
@@ -1275,6 +1324,95 @@ Return exactly this JSON structure:
 
 # ── Holding macro scores ──────────────────────────────────────────────────────
 
+def _fetch_company_evidence(ticker: str, conn) -> dict:
+    """Fetch available quantitative evidence for a ticker from company_financials.
+    Returns dict with whatever fields are available plus an evidence_quality key."""
+    evidence: dict = {}
+    if conn is None:
+        evidence["evidence_quality"] = "none"
+        return evidence
+    try:
+        cols_info = conn.execute("PRAGMA table_info(company_financials)").fetchall()
+        available_cols = {row[1] for row in cols_info}  # row[1] = column name
+        # Map desired fields to possible column names
+        field_candidates = {
+            "sector":           ["sector"],
+            "foreign_rev_pct":  ["international_revenue_pct", "foreign_revenue_pct", "intl_rev_pct"],
+            "net_debt":         ["net_debt", "net_debt_millions"],
+            "interest_coverage":["interest_coverage", "interest_coverage_ratio"],
+            "gross_margin_pct": ["gross_margin_pct", "gross_margin", "gross_profit_margin"],
+            "revenue_ttm":      ["revenue_ttm", "revenue_trailing_12m", "total_revenue"],
+        }
+        select_parts = []
+        col_map = {}
+        for field, candidates in field_candidates.items():
+            for cand in candidates:
+                if cand in available_cols:
+                    select_parts.append(cand)
+                    col_map[cand] = field
+                    break
+        if select_parts:
+            row = conn.execute(
+                f"SELECT {', '.join(select_parts)} FROM company_financials WHERE ticker=? ORDER BY rowid DESC LIMIT 1",
+                (ticker,)
+            ).fetchone()
+            if row:
+                for col, field in col_map.items():
+                    try:
+                        val = row[col]
+                        evidence[field] = float(val) if val is not None and field != "sector" else val
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+    filled = sum(1 for k, v in evidence.items() if v is not None)
+    evidence["evidence_quality"] = "full" if filled >= 3 else ("partial" if filled >= 1 else "none")
+    return evidence
+
+
+def _compute_equity_betas(ticker: str, lookback_days: int = 365) -> dict:
+    """Compute historical rate and USD betas for a ticker via OLS regression.
+    Returns {"rate_beta", "usd_beta", "n_weeks"} or {} on failure/insufficient data."""
+    try:
+        import yfinance as yf
+        import warnings
+        warnings.filterwarnings("ignore")
+        period = f"{lookback_days}d"
+        data = yf.download(
+            [ticker, "^TNX", "UUP"], period=period, interval="1wk",
+            group_by="ticker", progress=False, auto_adjust=True
+        )
+        eq = data[ticker]["Close"].dropna() if ticker in data.columns.get_level_values(0) else None
+        tnx = data["^TNX"]["Close"].dropna() if "^TNX" in data.columns.get_level_values(0) else None
+        uup = data["UUP"]["Close"].dropna() if "UUP" in data.columns.get_level_values(0) else None
+        if eq is None or tnx is None or uup is None:
+            return {}
+        idx = eq.index.intersection(tnx.index).intersection(uup.index)
+        if len(idx) < 27:  # need 26+ weeks of data
+            return {}
+        eq_r  = eq.loc[idx].pct_change().dropna()
+        tnx_c = tnx.loc[idx].diff().dropna() * 100  # bps change in 10Y yield
+        uup_r = uup.loc[idx].pct_change().dropna()
+        common = eq_r.index.intersection(tnx_c.index).intersection(uup_r.index)
+        if len(common) < 26:
+            return {}
+        y  = eq_r.loc[common].values
+        x1 = tnx_c.loc[common].values
+        x2 = uup_r.loc[common].values
+
+        def _ols(y, x):
+            n = len(y)
+            mx, my = x.mean(), y.mean()
+            beta = ((x - mx) * (y - my)).sum() / ((x - mx) ** 2).sum()
+            return float(beta)
+
+        rate_beta = _ols(y, x1)  # equity return per 100bps yield change
+        usd_beta  = _ols(y, x2)  # equity return per 1% UUP return
+        return {"rate_beta": round(rate_beta, 4), "usd_beta": round(usd_beta, 4), "n_weeks": len(common)}
+    except Exception:
+        return {}
+
+
 def generate_holding_macro_scores(force: bool = False) -> dict:
     """
     Score each holding on 4 macro dimensions (1–10 scale).
@@ -1314,30 +1452,100 @@ def generate_holding_macro_scores(force: bool = False) -> dict:
 
     import macro_context
     macro = macro_context.fetch()
-    macro_brief = (
-        f"Current macro: VIX={macro.get('vix', 'N/A')}, "
-        f"10Y yield={macro.get('yield_10y', 'N/A')}%, "
-        f"Spread={macro.get('spread_bps', 'N/A')}bps ({macro.get('curve_interp', '')}), "
-        f"CPI={macro.get('cpi_yoy', 'N/A')}% YoY, "
-        f"Dollar={macro.get('dollar_interp', 'N/A')}"
-    )
+
+    # Persist regime snapshot if available (0468)
+    regime = macro.get("regime")
+    if regime and DB_PATH.exists():
+        try:
+            conn = sqlite3.connect(str(DB_PATH), timeout=10)
+            conn.execute(
+                "INSERT OR REPLACE INTO macro_regime_snapshots (snapshot_date, regime_json, created_at) VALUES (?,?,?)",
+                (date.today().isoformat(), json.dumps(regime), datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+            )
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+
+    # Open a DB connection for evidence lookups
+    _evidence_conn = None
+    if DB_PATH.exists():
+        try:
+            _evidence_conn = sqlite3.connect(str(DB_PATH), timeout=10)
+            _evidence_conn.row_factory = sqlite3.Row
+        except Exception:
+            pass
 
     results = dict(existing)
     BATCH = 1
+    run_id = str(uuid.uuid4())[:8]
+    run_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    macro_hash = hashlib.md5(
+        str(sorted((k, v) for k, v in macro.items() if isinstance(v, (str, int, float, type(None))))).encode()
+    ).hexdigest()[:8]
+
+    # Write IN_PROGRESS ledger row
+    if DB_PATH.exists():
+        try:
+            conn = sqlite3.connect(str(DB_PATH), timeout=10)
+            conn.execute(
+                "INSERT OR REPLACE INTO macro_scoring_runs "
+                "(run_id, run_at, expected_n, scored_n, failed_n, coverage_pct, model_ver, schema_ver, macro_hash, status) "
+                "VALUES (?,?,?,0,0,0,?,?,?,'IN_PROGRESS')",
+                (run_id, run_at, len(to_score), ollama_client.DEFAULT_MODEL, MACRO_SCORE_SCHEMA_VERSION, macro_hash)
+            )
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+
+    scored_n = 0
+    failed_n = 0
 
     for i in range(0, len(to_score), BATCH):
         batch = to_score[i:i + BATCH]
         ticker_list = ", ".join(batch)
 
+        # Structural exposure only — no regime inputs. See 0464.
         dim_defs = "\n".join(
             f"- {dim}: {meta['prompt_def']}"
             for dim, meta in MACRO_DIMS.items()
         )
-        prompt = f"""You are a quantitative analyst. Score each ticker on 4 macro risk dimensions from 1-10, with a specific reason for each score.
 
-{macro_brief}
+        # Build company evidence block for this ticker (0466)
+        evidence_lines = []
+        betas_by_ticker = {}
+        for tk in batch:
+            ev = _fetch_company_evidence(tk, _evidence_conn)
+            if ev.get("evidence_quality") != "none":
+                parts = []
+                if ev.get("sector"):
+                    parts.append(f"sector={ev['sector']}")
+                if ev.get("gross_margin_pct") is not None:
+                    parts.append(f"gross_margin={ev['gross_margin_pct']:.1f}%")
+                if ev.get("net_debt") is not None:
+                    parts.append(f"net_debt=${ev['net_debt']:.0f}M")
+                if ev.get("foreign_rev_pct") is not None:
+                    parts.append(f"foreign_rev={ev['foreign_rev_pct']:.1f}%")
+                if parts:
+                    evidence_lines.append(f"Company data for {tk}: {', '.join(parts)}")
+            # Compute betas (0467)
+            betas = _compute_equity_betas(tk)
+            if betas:
+                betas_by_ticker[tk] = betas
+                evidence_lines.append(
+                    f"Measured betas for {tk}: rate_beta={betas['rate_beta']:.2f} "
+                    f"(equity return per 100bps yield change), "
+                    f"usd_beta={betas['usd_beta']:.2f} (equity return per 1% UUP change)"
+                )
 
-Scoring definitions (1=low, 10=high):
+        evidence_block = ("\n" + "\n".join(evidence_lines) + "\n") if evidence_lines else ""
+
+        prompt = f"""You are a quantitative analyst. Score each ticker's structural macro exposure on 4 dimensions from 1-10, with a specific reason for each score.
+
+Structural exposure measures how sensitive each company's business is to each macro factor — independent of current market conditions. Score based on business model, revenue geography, balance sheet structure, and sector characteristics.
+{evidence_block}
+Scoring definitions (1=low exposure, 10=high exposure):
 {dim_defs}
 
 Tickers to score: {ticker_list}
@@ -1360,6 +1568,7 @@ Return ONLY valid JSON. Each dimension must include a score AND a one-sentence r
             time.sleep(5)
         else:
             print(f"[MacroScores] Server not ready for batch {i//BATCH+1}, skipping")
+            failed_n += len(batch)
             continue
 
         full_text = ""
@@ -1371,13 +1580,15 @@ Return ONLY valid JSON. Each dimension must include a score AND a one-sentence r
                 full_text += tok
         except Exception as e:
             print(f"[MacroScores] Batch {i//BATCH+1} failed: {e}")
-            time.sleep(20)  # server likely restarted; give it time to reload
+            failed_n += len(batch)
+            time.sleep(20)
             continue
 
         batch_result = _extract_json(full_text)
         if batch_result is None:
             print(f"[MacroScores] Batch {i//BATCH+1} malformed JSON. Raw (first 400): {full_text[:400]!r}")
-            time.sleep(20)  # server may have crashed during generation
+            failed_n += len(batch)
+            time.sleep(20)
             continue
 
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -1385,22 +1596,68 @@ Return ONLY valid JSON. Each dimension must include a score AND a one-sentence r
             conn = sqlite3.connect(str(DB_PATH), timeout=10)
             for ticker, scores in batch_result.items():
                 ticker = _normalize_ticker(ticker)
-                if ticker in tickers:
-                    scores_json = json.dumps(scores)
-                    conn.execute(
-                        "INSERT OR REPLACE INTO holding_macro_scores (ticker, scores, updated_at) VALUES (?,?,?)",
-                        (ticker, scores_json, now_str)
-                    )
-                    conn.execute(
-                        "INSERT INTO holding_macro_scores_history (ticker, scores, scored_at) VALUES (?,?,?)",
-                        (ticker, scores_json, now_str)
-                    )
-                    results[ticker] = scores
+                if ticker not in tickers:
+                    continue
+                try:
+                    _validate_macro_score_response(scores, ticker)
+                except ValueError as ve:
+                    print(f"[MacroScores] Validation failed for {ticker}: {ve}")
+                    failed_n += 1
+                    continue
+                scores["schema_version"] = MACRO_SCORE_SCHEMA_VERSION
+                # Attach evidence quality and betas (0466, 0467)
+                ev = _fetch_company_evidence(ticker, _evidence_conn)
+                scores["evidence_quality"] = ev.get("evidence_quality", "none")
+                if ticker in betas_by_ticker:
+                    b = betas_by_ticker[ticker]
+                    scores["rate_beta"] = b.get("rate_beta")
+                    scores["usd_beta"]  = b.get("usd_beta")
+                    # Log agreement/disagreement between measured beta and LLM score
+                    rate_score = _score_val(scores.get("rate_sensitivity"))
+                    rb = b.get("rate_beta")
+                    if rb is not None and rate_score is not None:
+                        if rb < -0.02 and rate_score < 5:
+                            print(f"[MacroScores] {ticker}: measured rate_beta={rb:.3f} agrees with LLM rate_sensitivity={rate_score}")
+                        elif rb < -0.05 and rate_score >= 5:
+                            print(f"[MacroScores] WARNING {ticker}: measured rate_beta={rb:.3f} disagrees with LLM rate_sensitivity={rate_score}")
+                scores_json = json.dumps(scores)
+                conn.execute(
+                    "INSERT OR REPLACE INTO holding_macro_scores (ticker, scores, updated_at, run_id) VALUES (?,?,?,?)",
+                    (ticker, scores_json, now_str, run_id)
+                )
+                conn.execute(
+                    "INSERT INTO holding_macro_scores_history (ticker, scores, scored_at) VALUES (?,?,?)",
+                    (ticker, scores_json, now_str)
+                )
+                results[ticker] = scores
+                scored_n += 1
             conn.commit()
             conn.close()
 
         print(f"[MacroScores] Scored {len(batch_result)} tickers in batch {i//BATCH+1}")
         time.sleep(25)  # give server time to recover before next batch
+
+    if _evidence_conn:
+        try:
+            _evidence_conn.close()
+        except Exception:
+            pass
+
+    # Update ledger row with final counts
+    if DB_PATH.exists() and (scored_n + failed_n) > 0:
+        try:
+            cov = round(scored_n / len(to_score) * 100, 1) if to_score else 100.0
+            status = "COMPLETE" if failed_n == 0 else "PARTIAL"
+            conn = sqlite3.connect(str(DB_PATH), timeout=10)
+            conn.execute(
+                "UPDATE macro_scoring_runs SET scored_n=?, failed_n=?, coverage_pct=?, status=? WHERE run_id=?",
+                (scored_n, failed_n, cov, status, run_id)
+            )
+            conn.commit()
+            conn.close()
+            print(f"[MacroScores] Run {run_id}: {scored_n} scored, {failed_n} failed, {cov:.1f}% coverage — {status}")
+        except Exception:
+            pass
 
     if to_score and results:
         generate_macro_score_summary(results, macro)
@@ -1441,7 +1698,8 @@ def generate_macro_score_summary(current_scores: dict, macro: dict) -> None:
         pass
 
     def _composite(scores: dict):
-        # Must match _compute_macro_composite in generate_dashboard.py exactly
+        # Must match _compute_macro_composite in generate_dashboard.py exactly.
+        # Returns None if any dimension is missing (fail-closed — no partial composites).
         DIMS = [
             ("rate_sensitivity",   False),
             ("inflation_hedge",    True),
@@ -1452,7 +1710,7 @@ def generate_macro_score_summary(current_scores: dict, macro: dict) -> None:
         for dim, is_benefit in DIMS:
             sv = _score_val(scores.get(dim))
             if sv is None:
-                continue
+                return None
             parts.append((sv - 1) / 9 if is_benefit else (10 - sv) / 9)
         return round(sum(parts) / len(parts) * 100) if parts else None
 

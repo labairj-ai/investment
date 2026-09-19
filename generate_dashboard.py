@@ -345,8 +345,8 @@ def _dim_score_color(score, inverted):
 
 
 def _compute_macro_composite(scores_dict):
-    """Roll up 4 macro dimension scores (1–10) into a single 0–100 health score.
-    Higher = better macro health. Risk dims are inverted; benefit dims kept as-is."""
+    """Roll up 4 macro dimension scores (1–10) into a single 0–100 risk exposure score.
+    Higher = lower exposure (better). Risk dims are inverted; benefit dims kept as-is."""
     DIMS = [
         ("rate_sensitivity",   False),  # risk: invert
         ("inflation_hedge",    True),   # benefit: keep
@@ -373,7 +373,7 @@ def _composite_color(score) -> str:
 
 
 def _composite_badge(score) -> str:
-    """Inline HTML badge for a composite macro health score (0–100)."""
+    """Inline HTML badge for a composite macro risk exposure score (0–100)."""
     if score is None:
         return '<span style="font-size:10px;color:#aaa;margin-left:5px;">—</span>'
     color = _composite_color(score)
@@ -381,24 +381,25 @@ def _composite_badge(score) -> str:
 
 
 def _portfolio_health_chip(score) -> str:
-    """Static HTML chip showing the portfolio-level macro health score."""
+    """Static HTML chip showing the portfolio-level macro risk exposure score."""
     if score is None:
         return ''
     color = _composite_color(score)
-    label = 'Strong' if score >= 70 else ('Moderate' if score >= 45 else 'Stressed')
+    label = 'Low Exposure' if score >= 70 else ('Moderate' if score >= 45 else 'High Exposure')
     return (
         f'<div style="display:flex;align-items:center;gap:10px;margin:4px 0 14px;'
         f'padding:8px 12px;background:{color}10;border-radius:8px;border:1px solid {color}30;">'
-        f'<span style="font-size:12px;color:#718096;font-weight:500;">Portfolio Macro Health</span>'
+        f'<span style="font-size:12px;color:#718096;font-weight:500;">Portfolio Macro Risk Exposure</span>'
         f'<span style="font-size:22px;font-weight:800;color:{color};line-height:1;">{score}</span>'
         f'<span style="font-size:11px;color:{color};font-weight:600;">/100</span>'
         f'<span style="font-size:11px;color:#a0aec0;margin-left:2px;">· {label} · value-weighted composite</span>'
         f'</div>'
+        f'<div style="margin:-10px 0 10px;"><span style="font-size:10px;color:#a0aec0;">AI structural exposure estimate — not regime-adjusted</span></div>'
     )
 
 
 def _compute_portfolio_macro_health(holdings_sorted, macro_scores) -> dict:
-    """Compute value-weighted composite macro health score for portfolio and each layer.
+    """Compute value-weighted composite macro risk exposure score for portfolio and each layer.
     Returns {"portfolio": int|None, "layers": {layer_name: int|None}}."""
     port_value = 0.0
     port_wsum = 0.0
@@ -1054,6 +1055,9 @@ def _build_macro_risk_section(macro_scores, macro_history, wow_deltas,
       <span>Macro Risk Dashboard</span>
       <span style="font-size:12px;font-weight:400;color:#a0aec0;">{scored_label}</span>
     </h2>
+    <div style="margin-bottom:12px;padding:6px 10px;background:#fefce8;border:1px solid #fde68a;border-radius:6px;">
+      <span style="font-size:11px;color:#92400e;">⚠ Scores are AI structural exposure estimates (v1) — not derived from measured company data. Do not use as ML training features or risk-engine gates until 0467 deterministic factors are complete.</span>
+    </div>
     {trend_section}
     {summary_section}
     {heatmap_section}
@@ -1256,7 +1260,7 @@ def build_dashboard(portfolio, layers, holdings):
             layer_composite = portfolio_health["layers"].get(h["layer"])
             layer_health_html = (
                 f'<span style="float:right;font-size:11px;font-weight:400;color:#718096;">'
-                f'Macro Health {_composite_badge(layer_composite)}</span>'
+                f'Macro Risk Exposure {_composite_badge(layer_composite)}</span>'
             )
             holdings_rows += f'<tr class="layer-header"><td colspan="13" style="background:{lcolor}22;border-left:4px solid {lcolor};padding:6px 10px;font-weight:600;color:#333">{h["layer"]}{layer_health_html}</td></tr>\n'
             prev_layer = h["layer"]
@@ -1281,7 +1285,7 @@ def build_dashboard(portfolio, layers, holdings):
             wow_html = _wow_delta_badge(comp_delta)
             macro_cell = (
                 f'<td class="col-hide-sm" onclick="toggleMacroDetail(\'{safe_id}\')" '
-                f'style="cursor:pointer;white-space:nowrap;" title="Macro Health: {composite_score if composite_score is not None else "—"}/100 · Click for details">'
+                f'style="cursor:pointer;white-space:nowrap;" title="Macro Risk Exposure: {composite_score if composite_score is not None else "—"}/100 · Click for details">'
                 f'{_composite_badge(composite_score)}{wow_html}</td>'
             )
             # Build sparklines from history (larger for expand panel)

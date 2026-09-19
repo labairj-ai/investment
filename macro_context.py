@@ -10,9 +10,22 @@ import re
 import time
 import urllib.request
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from typing import Optional
 from zoneinfo import ZoneInfo
+
+
+@dataclass
+class MacroMeasurement:
+    value: Optional[float]
+    series_id: str
+    source: str           # "FRED" | "yfinance" | "calculated"
+    observation_date: Optional[str]  # ISO date of the underlying data point
+    retrieved_at: float   # unix timestamp
+    units: str
+    stale: bool = False
 
 PROJECT_DIR = Path(__file__).resolve().parent
 CACHE_PATH = PROJECT_DIR / "out" / "macro_cache.json"
@@ -100,6 +113,81 @@ def _safe_float(v, default=None):
         return default if (math.isnan(f) or math.isinf(f)) else f
     except (TypeError, ValueError):
         return default
+
+
+# ── Regime engine ────────────────────────────────────────────────────────────
+
+def _compute_regime(cpi_yoy: Optional[float] = None) -> dict:
+    """Compute multi-horizon macro regime observations from raw price data.
+    Returns a dict of regime dimensions; individual fields are None when data unavailable.
+    Observations only — no causal interpretations baked in."""
+    try:
+        import yfinance as yf
+        import warnings
+        warnings.filterwarnings("ignore")
+
+        syms = ["^TNX", "^IRX", "UUP", "^VIX"]
+        data = yf.download(syms, period="1y", interval="1d",
+                           group_by="ticker", progress=False, auto_adjust=True)
+
+        def _closes(sym):
+            try:
+                s = data[sym]["Close"].dropna()
+                return s if len(s) > 5 else None
+            except Exception:
+                return None
+
+        def _chg_bps(series, n):
+            if series is None or len(series) < n + 1:
+                return None
+            return round((float(series.iloc[-1]) - float(series.iloc[-1 - n])) * 100, 1)
+
+        def _chg_pct(series, n):
+            if series is None or len(series) < n + 1:
+                return None
+            prev = float(series.iloc[-1 - n])
+            if prev == 0:
+                return None
+            return round((float(series.iloc[-1]) - prev) / prev * 100, 3)
+
+        def _pct_rank(series, window):
+            if series is None or len(series) < 10:
+                return None
+            tail = series.iloc[-window:] if len(series) >= window else series
+            cur = float(series.iloc[-1])
+            return round(float((tail <= cur).mean()) * 100, 1)
+
+        tnx = _closes("^TNX")
+        irx = _closes("^IRX")
+        uup = _closes("UUP")
+        vix = _closes("^VIX")
+
+        regime = {
+            "rate": {
+                "yield_10y_level":  round(float(tnx.iloc[-1]), 3) if tnx is not None else None,
+                "yield_10y_5d_chg_bps":  _chg_bps(tnx, 5),
+                "yield_10y_21d_chg_bps": _chg_bps(tnx, 21),
+                "yield_10y_63d_chg_bps": _chg_bps(tnx, 63),
+                "yield_3m_level":   round(float(irx.iloc[-1]), 3) if irx is not None else None,
+            },
+            "dollar": {
+                "uup_5d_pct":  _chg_pct(uup, 5),
+                "uup_21d_pct": _chg_pct(uup, 21),
+                "uup_63d_pct": _chg_pct(uup, 63),
+            },
+            "volatility": {
+                "vix_level":       round(float(vix.iloc[-1]), 2) if vix is not None else None,
+                "vix_5d_chg":      _chg_bps(vix, 5),  # reuse bps func (VIX points × 100)
+                "vix_pct_rank_252d": _pct_rank(vix, 252),
+            },
+            "inflation": {
+                "cpi_yoy": cpi_yoy,  # passed in from FRED fetch
+            },
+            "computed_at": time.time(),
+        }
+        return regime
+    except Exception:
+        return {"computed_at": time.time()}
 
 
 # ── yfinance proxies ──────────────────────────────────────────────────────────
@@ -230,7 +318,13 @@ def _fetch_fred(series_id: str, api_key: str, limit: int = 14) -> list[dict]:
 
 
 def _fetch_fred_indicators(api_key: str) -> dict:
-    result = {"fed_funds": None, "cpi_yoy": None, "spread_10y2y": None, "unemployment": None}
+    result = {
+        "fed_funds": None, "fed_funds_date": None,
+        "cpi_yoy": None, "cpi_obs_date": None,
+        "spread_10y2y": None, "spread_10y2y_date": None,
+        "spread_10y3m": None, "spread_10y3m_date": None,
+        "unemployment": None, "unemployment_date": None,
+    }
     if not api_key:
         return result
 
@@ -238,17 +332,18 @@ def _fetch_fred_indicators(api_key: str) -> dict:
         obs = _fetch_fred("FEDFUNDS", api_key, 2)
         if obs:
             result["fed_funds"] = _safe_float(obs[0]["value"])
+            result["fed_funds_date"] = obs[0].get("date")
     except Exception:
         pass
 
     try:
         obs = _fetch_fred("CPIAUCSL", api_key, 14)
         if len(obs) >= 13:
-            # YoY = (recent / year_ago - 1) * 100
             recent = _safe_float(obs[0]["value"])
             year_ago = _safe_float(obs[12]["value"])
             if recent is not None and year_ago is not None:
                 result["cpi_yoy"] = round((recent / year_ago - 1) * 100, 2)
+                result["cpi_obs_date"] = obs[0].get("date")
     except Exception:
         pass
 
@@ -256,6 +351,15 @@ def _fetch_fred_indicators(api_key: str) -> dict:
         obs = _fetch_fred("T10Y2Y", api_key, 2)
         if obs:
             result["spread_10y2y"] = _safe_float(obs[0]["value"])
+            result["spread_10y2y_date"] = obs[0].get("date")
+    except Exception:
+        pass
+
+    try:
+        obs = _fetch_fred("T10Y3M", api_key, 2)
+        if obs:
+            result["spread_10y3m"] = _safe_float(obs[0]["value"])
+            result["spread_10y3m_date"] = obs[0].get("date")
     except Exception:
         pass
 
@@ -263,6 +367,7 @@ def _fetch_fred_indicators(api_key: str) -> dict:
         obs = _fetch_fred("UNRATE", api_key, 2)
         if obs:
             result["unemployment"] = _safe_float(obs[0]["value"])
+            result["unemployment_date"] = obs[0].get("date")
     except Exception:
         pass
 
@@ -559,11 +664,51 @@ def fetch(force: bool = False) -> dict:
     tnx  = yf_data.get("yield_10y", {}).get("price")  # already in % (e.g. 4.42)
     irx  = yf_data.get("yield_3m",  {}).get("price")  # already in %
 
-    # FRED T10Y2Y is in percent; if missing, derive from yfinance yields
-    spread_pct = fred.get("spread_10y2y")
-    if spread_pct is None and tnx is not None and irx is not None:
-        spread_pct = round(tnx - irx, 3)
-    spread_bps = round(spread_pct * 100, 0) if spread_pct is not None else None
+    now_ts = time.time()
+
+    # 10Y-2Y spread: FRED T10Y2Y only — never substitute ^TNX-^IRX (different series)
+    spread_10y2y_pct = fred.get("spread_10y2y")
+    yield_curve_10y2y_bps = round(spread_10y2y_pct * 100, 0) if spread_10y2y_pct is not None else None
+
+    # 10Y-3M spread: FRED T10Y3M preferred; fall back to ^TNX-^IRX (same economic measure)
+    spread_10y3m_pct = fred.get("spread_10y3m")
+    if spread_10y3m_pct is None and tnx is not None and irx is not None:
+        spread_10y3m_pct = round(tnx - irx, 3)
+    yield_curve_10y3m_bps = round(spread_10y3m_pct * 100, 0) if spread_10y3m_pct is not None else None
+
+    # Legacy alias: keep spread_bps pointing to the 10Y-2Y (FRED-sourced) series
+    spread_bps = yield_curve_10y2y_bps
+
+    # Build MacroMeasurement objects for provenance-tracked indicators
+    measurements = {
+        "fed_funds": MacroMeasurement(
+            value=fred.get("fed_funds"), series_id="FEDFUNDS", source="FRED",
+            observation_date=fred.get("fed_funds_date"), retrieved_at=now_ts,
+            units="percent", stale=False,
+        ),
+        "cpi_yoy": MacroMeasurement(
+            value=fred.get("cpi_yoy"), series_id="CPIAUCSL", source="FRED",
+            observation_date=fred.get("cpi_obs_date"), retrieved_at=now_ts,
+            units="percent YoY", stale=False,
+        ),
+        "yield_curve_10y2y_bps": MacroMeasurement(
+            value=yield_curve_10y2y_bps, series_id="T10Y2Y", source="FRED",
+            observation_date=fred.get("spread_10y2y_date"), retrieved_at=now_ts,
+            units="basis points", stale=yield_curve_10y2y_bps is None,
+        ),
+        "yield_curve_10y3m_bps": MacroMeasurement(
+            value=yield_curve_10y3m_bps,
+            series_id="T10Y3M" if fred.get("spread_10y3m") is not None else "calculated:^TNX-^IRX",
+            source="FRED" if fred.get("spread_10y3m") is not None else "calculated",
+            observation_date=fred.get("spread_10y3m_date"), retrieved_at=now_ts,
+            units="basis points", stale=False,
+        ),
+        "unemployment": MacroMeasurement(
+            value=fred.get("unemployment"), series_id="UNRATE", source="FRED",
+            observation_date=fred.get("unemployment_date"), retrieved_at=now_ts,
+            units="percent", stale=False,
+        ),
+    }
 
     ctx = {
         "date":          date.today().isoformat(),
@@ -576,7 +721,9 @@ def fetch(force: bool = False) -> dict:
         "tlt_interp":    _interp_tlt(tlt_chg),
         "yield_10y":     tnx,
         "yield_3m":      irx,
-        "spread_bps":    spread_bps,
+        "yield_curve_10y2y_bps": yield_curve_10y2y_bps,
+        "yield_curve_10y3m_bps": yield_curve_10y3m_bps,
+        "spread_bps":    spread_bps,   # backwards compat alias → 10Y-2Y
         "curve_interp":  _interp_spread(spread_bps),
         # Inflation / Gold
         "gld_chg":       gld_chg,
@@ -588,6 +735,10 @@ def fetch(force: bool = False) -> dict:
         "fed_funds":     fred.get("fed_funds"),
         "cpi_yoy":       fred.get("cpi_yoy"),
         "unemployment":  fred.get("unemployment"),
+        # Provenance-tracked measurements (MacroMeasurement objects — not JSON-serialisable directly)
+        "measurements":  measurements,
+        # Multi-horizon regime observations (0468)
+        "regime":        _compute_regime(cpi_yoy=fred.get("cpi_yoy")),
         # Headlines
         "headlines":          headlines,
         # Official bill record (Congress.gov API or GovTrack fallback)
@@ -597,11 +748,13 @@ def fetch(force: bool = False) -> dict:
         # Backwards compat alias
         "legislative_bills":  official_bills or media_coverage,
         # Cache metadata
-        "_fetched_at":   time.time(),
+        "_fetched_at":   now_ts,
     }
     ctx["formatted_block"] = _format_block(ctx)
 
-    CACHE_PATH.write_text(json.dumps(ctx, indent=2))
+    # Serialise without non-JSON-serialisable objects (MacroMeasurement dataclasses excluded)
+    cache_ctx = {k: v for k, v in ctx.items() if k != "measurements"}
+    CACHE_PATH.write_text(json.dumps(cache_ctx, indent=2))
     return ctx
 
 
@@ -621,7 +774,8 @@ def _format_block(ctx: dict) -> str:
         f"  Fed Funds Rate: {fmt_val(ctx['fed_funds'], '.2f', '%')}",
         f"  10Y Treasury Yield: {fmt_val(ctx['yield_10y'], '.2f', '%')}",
         f"  3M T-Bill Yield:    {fmt_val(ctx['yield_3m'],  '.2f', '%')}",
-        f"  10Y-3M Spread:      {fmt_val(ctx['spread_bps'], '.0f', ' bps')} — {ctx['curve_interp']}",
+        f"  10Y-2Y Spread (FRED T10Y2Y): {fmt_val(ctx.get('yield_curve_10y2y_bps'), '.0f', ' bps')} — {ctx['curve_interp']}",
+        f"  10Y-3M Spread (FRED T10Y3M): {fmt_val(ctx.get('yield_curve_10y3m_bps'), '.0f', ' bps')}",
         f"  TLT (long-duration): {fmt_pct(ctx['tlt_chg'])} — {ctx['tlt_interp']}",
         "",
         "INFLATION",
