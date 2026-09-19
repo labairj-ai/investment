@@ -1194,40 +1194,93 @@ def promote(
                 "ranking_spread_ci_high", "alpha_precision", "alpha_edge_evidence"):
         if key in vm:
             snapshot[key] = {"value": vm[key]}
-    # 0443: capture activation conditions so per-model state is recorded without touching
-    # experiment_baseline.json (which is frozen at experiment start, never at model activation)
+    # 0443/0447/0448: capture activation conditions explicitly; collect errors rather than
+    # silently passing so snapshot completeness is auditable.
+    _snap_errors: list[str] = []
+    _repo_root = str(Path(__file__).resolve().parent.parent.parent)
+
+    # Activation-time git state (0447)
     try:
         import subprocess as _sp
         _sha = _sp.check_output(
-            ["git", "rev-parse", "HEAD"],
-            cwd=str(Path(__file__).resolve().parent.parent.parent),
+            ["git", "rev-parse", "HEAD"], cwd=_repo_root,
             text=True, stderr=_sp.DEVNULL,
         ).strip()
-        snapshot["git_commit_sha"] = _sha
-    except Exception:
-        pass
+        snapshot["activation_commit_sha"] = _sha
+        _dirty_out = _sp.check_output(
+            ["git", "status", "--porcelain"], cwd=_repo_root,
+            text=True, stderr=_sp.DEVNULL,
+        )
+        snapshot["git_dirty"] = bool(_dirty_out.strip())
+    except Exception as _ge:
+        _snap_errors.append(f"git: {_ge}")
+
+    # Training provenance from learning_models (0448)
+    try:
+        _tr = conn.execute(
+            "SELECT model_id, training_config_hash, code_commit_sha, evidence_contract_version "
+            "FROM learning_models WHERE model_version=?",
+            (model_version,),
+        ).fetchone()
+        if _tr:
+            snapshot["model_version"] = model_version
+            if _tr["model_id"]:
+                snapshot["model_id"] = _tr["model_id"]
+            else:
+                _snap_errors.append("model_id: null in learning_models")
+            if _tr["training_config_hash"]:
+                snapshot["training_config_hash"] = _tr["training_config_hash"]
+            else:
+                _snap_errors.append("training_config_hash: null in learning_models")
+            if _tr["code_commit_sha"]:
+                snapshot["training_commit_sha"] = _tr["code_commit_sha"]
+            else:
+                _snap_errors.append("training_commit_sha: null in learning_models")
+            if _tr["evidence_contract_version"] is not None:
+                snapshot["evidence_contract_version"] = int(_tr["evidence_contract_version"])
+            else:
+                _snap_errors.append("evidence_contract_version: null in learning_models")
+        else:
+            _snap_errors.append("training_provenance: model row not found")
+    except Exception as _te:
+        _snap_errors.append(f"training_provenance: {_te}")
+
+    # Strategy hash (0448)
     try:
         import strategy_config as _sc
         snapshot["strategy_hash"] = _sc.get_hash()
-    except Exception:
-        pass
+    except Exception as _she:
+        _snap_errors.append(f"strategy_hash: {_she}")
+
+    # Policy hash/version (0448)
     try:
         from trade_engine.policy import load_policy as _lp
         _pol = _lp("AGENTIC_SHADOW_01")
         snapshot["policy_hash"] = _pol.policy_hash()
         snapshot["policy_version"] = _pol.policy_version
-    except Exception:
-        pass
-    # Record evidence_contract_version at promotion time
-    try:
-        _ev_row = conn.execute(
-            "SELECT evidence_contract_version FROM learning_models WHERE model_version=?",
-            (model_version,),
-        ).fetchone()
-        if _ev_row and _ev_row["evidence_contract_version"] is not None:
-            snapshot["evidence_contract_version"] = int(_ev_row["evidence_contract_version"])
-    except Exception:
-        pass
+    except Exception as _pe:
+        _snap_errors.append(f"policy: {_pe}")
+
+    snapshot["snapshot_errors"] = _snap_errors
+    snapshot["snapshot_complete"] = len(_snap_errors) == 0
+
+    # 0448: PAPER_ACTIVE requires complete provenance unless override_reason is set
+    _PAPER_ACTIVE_REQUIRED = frozenset({
+        "model_id", "model_version", "training_config_hash", "training_commit_sha",
+        "activation_commit_sha", "strategy_hash", "policy_hash", "policy_version",
+        "evidence_contract_version",
+    })
+    if target_state == LIFECYCLE_PAPER_ACTIVE and not override_reason:
+        _missing = [f for f in _PAPER_ACTIVE_REQUIRED if not snapshot.get(f)]
+        if _missing:
+            conn.close()
+            return {
+                "promoted": False,
+                "error": "incomplete_provenance",
+                "missing_provenance_fields": _missing,
+                "snapshot_errors": _snap_errors,
+                "gates": gate_result.get("gates", {}),
+            }
 
     # 0344: auto-retire any existing PAPER_ACTIVE before activating a new one
     if target_state == LIFECYCLE_PAPER_ACTIVE:

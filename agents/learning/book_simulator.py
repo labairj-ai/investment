@@ -15,8 +15,8 @@ import time
 from datetime import datetime, timezone
 
 import agent_db
+from ..opportunity_config import VIRTUAL_BOOK_STARTING_CASH
 
-_STARTING_CASH = 100_000.0
 _DEFAULT_SLIPPAGE_PCT = 1.0    # mirror TradingPolicy default
 _MAX_POSITION_PCT = 10.0       # cap per fill (10% of current cash)
 _MAX_TICKER_EXPOSURE_PCT = 15.0  # 0346: per-ticker aggregate limit (% of starting NAV)
@@ -109,8 +109,8 @@ def _record_one_book(conn, book_id, ticker, price, episode_id, action, origin):
     book = conn.execute(
         "SELECT starting_cash, current_cash FROM virtual_books WHERE book_id=?", (book_id,)
     ).fetchone()
-    starting_cash = float(book["starting_cash"]) if book else _STARTING_CASH
-    cash = float(book["current_cash"]) if book else _STARTING_CASH
+    starting_cash = float(book["starting_cash"]) if book else VIRTUAL_BOOK_STARTING_CASH
+    cash = float(book["current_cash"]) if book else VIRTUAL_BOOK_STARTING_CASH
 
     action_upper = (action or "BUY").upper()
 

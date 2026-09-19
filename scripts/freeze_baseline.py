@@ -30,8 +30,21 @@ _SHADOW_ACCOUNT_ID = "AGENTIC_SHADOW_01"
 def _git_sha() -> str | None:
     try:
         return subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=str(_REPO_ROOT), text=True
+            ["git", "rev-parse", "HEAD"], cwd=str(_REPO_ROOT), text=True,
+            stderr=subprocess.DEVNULL,
         ).strip()
+    except Exception:
+        return None
+
+
+def _git_dirty() -> bool | None:
+    """Return True if the worktree has uncommitted changes, False if clean, None if git unavailable."""
+    try:
+        out = subprocess.check_output(
+            ["git", "status", "--porcelain"], cwd=str(_REPO_ROOT), text=True,
+            stderr=subprocess.DEVNULL,
+        )
+        return bool(out.strip())
     except Exception:
         return None
 
@@ -111,20 +124,20 @@ def _load_policy_fields() -> dict:
 
 
 def _load_virtual_book_capital() -> float | None:
-    # 0444: authoritative source for champion/challenger virtual-book starting cash
+    # 0449: import from opportunity_config (pure module, no side effects)
     try:
         sys.path.insert(0, str(_REPO_ROOT))
-        from agents.learning.book_simulator import _STARTING_CASH
-        return float(_STARTING_CASH)
+        from agents.opportunity_config import VIRTUAL_BOOK_STARTING_CASH
+        return float(VIRTUAL_BOOK_STARTING_CASH)
     except Exception:
         return None
 
 
 def _load_formula_params() -> dict:
-    # 0445: import from authoritative source so formula changes propagate automatically
+    # 0449: import from opportunity_config — the genuine production source
     try:
         sys.path.insert(0, str(_REPO_ROOT))
-        from agents.opportunity_agent import COMPOSITE_WEIGHTS, MIN_COMPOSITE
+        from agents.opportunity_config import COMPOSITE_WEIGHTS, MIN_COMPOSITE
         weights = dict(COMPOSITE_WEIGHTS)
         formula_str = " + ".join(
             f"{v:.2f}*{k}" for k, v in weights.items()
@@ -154,6 +167,7 @@ def build_baseline(db_path: str) -> dict:
     strategy_hash = _load_strategy_hash()
     virtual_book_capital = _load_virtual_book_capital()
     sha = _git_sha()
+    dirty = _git_dirty()
     frozen_at = datetime.now(timezone.utc).isoformat()
 
     return {
@@ -164,6 +178,7 @@ def build_baseline(db_path: str) -> dict:
         ),
         "frozen_at": frozen_at,
         "git_commit_sha": sha,
+        "git_dirty": dirty,
         "model_version": db_fields["model_version"],
         "model_id": db_fields["model_id"],
         "lifecycle_state_at_freeze": db_fields["lifecycle_state"],
@@ -192,7 +207,18 @@ def main():
                         help="Path to investment.db")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print the snapshot without writing the file")
+    parser.add_argument("--force", action="store_true",
+                        help="Allow freeze from a dirty worktree (records git_dirty=true)")
     args = parser.parse_args()
+
+    # 0447: refuse to write from a dirty tree so git_commit_sha is trustworthy
+    if not args.dry_run and not args.force:
+        dirty = _git_dirty()
+        if dirty is True:
+            print("ERROR: worktree is dirty. Commit all changes before freezing the baseline.")
+            print("  The git_commit_sha in the snapshot must match the exact source tree.")
+            print("  Pass --force to override (recorded as git_dirty=true).")
+            sys.exit(1)
 
     if _OUT_PATH.exists() and not args.dry_run:
         print(f"WARNING: {_OUT_PATH} already exists.")

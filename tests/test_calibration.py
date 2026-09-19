@@ -9504,3 +9504,326 @@ class TestOvercountHardFailure0441:
         from agents.learning.calibration import LearningIntegrityError, LearningPipelineError
         assert issubclass(LearningIntegrityError, LearningPipelineError), \
             "LearningIntegrityError must subclass LearningPipelineError (0441)"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 0446 — _composite() Computes from COMPOSITE_WEIGHTS
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestCompositeSingleSourceOfTruth0446:
+    """_composite() must derive from COMPOSITE_WEIGHTS; changing the dict changes scoring."""
+
+    def test_composite_imports_from_opportunity_config(self):
+        """COMPOSITE_WEIGHTS and MIN_COMPOSITE must be importable from opportunity_config (0446/0449)."""
+        from agents.opportunity_config import COMPOSITE_WEIGHTS, MIN_COMPOSITE, VIRTUAL_BOOK_STARTING_CASH
+        assert isinstance(COMPOSITE_WEIGHTS, dict), "COMPOSITE_WEIGHTS must be a dict"
+        assert len(COMPOSITE_WEIGHTS) == 5, "COMPOSITE_WEIGHTS must have 5 components"
+        assert isinstance(MIN_COMPOSITE, int)
+        assert isinstance(VIRTUAL_BOOK_STARTING_CASH, float)
+
+    def test_composite_weights_sum_to_one(self):
+        """COMPOSITE_WEIGHTS values must sum to 1.0 (within floating-point tolerance)."""
+        from agents.opportunity_config import COMPOSITE_WEIGHTS
+        total = sum(COMPOSITE_WEIGHTS.values())
+        assert abs(total - 1.0) < 1e-9, f"weights sum to {total}, expected 1.0"
+
+    def test_composite_function_reflects_weight_patch(self, monkeypatch):
+        """Patching COMPOSITE_WEIGHTS in opportunity_agent changes _composite() output (0446)."""
+        import agents.opportunity_agent as oa
+        # With equal inputs, output = sum(w*100 for w) = 100 regardless of weights
+        assert oa._composite(100, 100, 100, 100, 100) == 100
+
+        # Patch so Q gets all the weight — _composite(80, 0, 0, 0, 0) should return 80
+        monkeypatch.setitem(oa.COMPOSITE_WEIGHTS, "Q",  1.00)
+        monkeypatch.setitem(oa.COMPOSITE_WEIGHTS, "V",  0.00)
+        monkeypatch.setitem(oa.COMPOSITE_WEIGHTS, "PF", 0.00)
+        monkeypatch.setitem(oa.COMPOSITE_WEIGHTS, "C",  0.00)
+        monkeypatch.setitem(oa.COMPOSITE_WEIGHTS, "EC", 0.00)
+        assert oa._composite(80, 0, 0, 0, 0) == 80, \
+            "_composite() must compute from COMPOSITE_WEIGHTS — patching the dict must change output"
+        assert oa._composite(0, 60, 0, 0, 0) == 0, \
+            "with Q-only weights and q=0, all components except Q must be ignored"
+
+    def test_composite_no_hardcoded_weights(self):
+        """_composite() source must not contain literal weight fractions (0446)."""
+        import inspect
+        import agents.opportunity_agent as oa
+        src = inspect.getsource(oa._composite)
+        for literal in ("0.30", "0.25", "0.20", "0.15", "0.10"):
+            assert literal not in src, \
+                f"_composite() must not hard-code weight {literal} — use COMPOSITE_WEIGHTS (0446)"
+
+    def test_min_composite_single_constant(self):
+        """MIN_COMPOSITE (not _MIN_COMPOSITE) is the sole threshold constant (0446)."""
+        import agents.opportunity_agent as oa
+        assert hasattr(oa, "MIN_COMPOSITE"), "MIN_COMPOSITE must be importable from opportunity_agent"
+        assert not hasattr(oa, "_MIN_COMPOSITE"), \
+            "_MIN_COMPOSITE private alias must be removed (0446); use MIN_COMPOSITE everywhere"
+
+    def test_opportunity_agent_does_not_import_full_module_for_config(self):
+        """freeze_baseline.py must import from opportunity_config, not opportunity_agent (0449)."""
+        from pathlib import Path
+        src = (Path(__file__).resolve().parent.parent / "scripts" / "freeze_baseline.py").read_text()
+        assert "opportunity_config" in src, \
+            "freeze_baseline.py must import from agents.opportunity_config (0449)"
+        assert "opportunity_agent" not in src or src.count("opportunity_agent") == 0, \
+            "freeze_baseline.py must not import from opportunity_agent (0449)"
+
+    def test_book_simulator_uses_virtual_book_starting_cash(self):
+        """book_simulator must import VIRTUAL_BOOK_STARTING_CASH from opportunity_config (0449)."""
+        from pathlib import Path
+        src = (Path(__file__).resolve().parent.parent /
+               "agents" / "learning" / "book_simulator.py").read_text()
+        assert "VIRTUAL_BOOK_STARTING_CASH" in src, \
+            "book_simulator must use VIRTUAL_BOOK_STARTING_CASH from opportunity_config (0449)"
+        assert "_STARTING_CASH =" not in src, \
+            "_STARTING_CASH private definition must be removed from book_simulator (0449)"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 0447 — Git Cleanliness in Baseline and Activation Snapshots
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestCleanTreeProvenance0447:
+    """freeze_baseline.py records git_dirty; promote() records git_dirty in activation snapshot."""
+
+    def test_freeze_baseline_records_git_dirty_field(self):
+        """build_baseline() output must include git_dirty field (0447)."""
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        from scripts.freeze_baseline import build_baseline
+        import tempfile, os
+        # Use a temp DB path that doesn't exist — DB fields will be null but that's fine
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:
+            tmp_db = tf.name
+        try:
+            import sqlite3
+            conn = sqlite3.connect(tmp_db)
+            conn.execute("CREATE TABLE learning_models (model_version TEXT, created_at REAL)")
+            conn.commit()
+            conn.close()
+            result = build_baseline(tmp_db)
+            assert "git_dirty" in result, \
+                "build_baseline() must include git_dirty in output (0447)"
+            assert result["git_dirty"] in (True, False, None), \
+                "git_dirty must be bool or None (unavailable)"
+        finally:
+            os.unlink(tmp_db)
+
+    def test_freeze_baseline_script_has_force_flag(self):
+        """freeze_baseline.py must accept --force to allow dirty-tree freeze (0447)."""
+        from pathlib import Path
+        src = (Path(__file__).resolve().parent.parent / "scripts" / "freeze_baseline.py").read_text()
+        assert "--force" in src, \
+            "freeze_baseline.py must have --force flag for dirty-tree override (0447)"
+        assert "git_dirty" in src, \
+            "freeze_baseline.py must record git_dirty in the snapshot (0447)"
+
+    def test_promote_snapshot_can_contain_git_dirty(self, mem_db, monkeypatch):
+        """promote() activation snapshot must include git_dirty field when git is available (0447)."""
+        import agent_db
+        from agents.learning.calibration import promote, ChallengerModel
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        _seed_episodes(conn, 60, with_outcomes=True, noise=0.05)
+        conn.close()
+        model = ChallengerModel.train()
+        assert model is not None
+        model.save_with_weights()
+
+        result = promote(model.model_version, "OBSERVE", override_reason="test")
+        assert result["promoted"] is True
+
+        conn = _make_conn(mem_db)
+        log = conn.execute(
+            "SELECT promotion_metrics_snapshot FROM model_promotion_log WHERE model_version=? LIMIT 1",
+            (model.model_version,),
+        ).fetchone()
+        conn.close()
+        snap = json.loads(log["promotion_metrics_snapshot"])
+        # git_dirty may be absent if git is unavailable; if present must be bool
+        if "git_dirty" in snap:
+            assert isinstance(snap["git_dirty"], bool), \
+                "git_dirty in promotion snapshot must be bool (0447)"
+
+    def test_promote_snapshot_has_snapshot_complete_field(self, mem_db, monkeypatch):
+        """Every promotion snapshot must include snapshot_complete and snapshot_errors (0448)."""
+        import agent_db
+        from agents.learning.calibration import promote, ChallengerModel
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        _seed_episodes(conn, 60, with_outcomes=True, noise=0.05)
+        conn.close()
+        model = ChallengerModel.train()
+        assert model is not None
+        model.save_with_weights()
+
+        result = promote(model.model_version, "OBSERVE", override_reason="test")
+        assert result["promoted"] is True
+
+        conn = _make_conn(mem_db)
+        log = conn.execute(
+            "SELECT promotion_metrics_snapshot FROM model_promotion_log WHERE model_version=? LIMIT 1",
+            (model.model_version,),
+        ).fetchone()
+        conn.close()
+        snap = json.loads(log["promotion_metrics_snapshot"])
+        assert "snapshot_complete" in snap, \
+            "promotion snapshot must include snapshot_complete bool (0448)"
+        assert "snapshot_errors" in snap, \
+            "promotion snapshot must include snapshot_errors list (0448)"
+        assert isinstance(snap["snapshot_errors"], list)
+        assert isinstance(snap["snapshot_complete"], bool)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 0448 — Activation Snapshot Completeness + PAPER_ACTIVE Provenance Gate
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestActivationSnapshotCompleteness0448:
+    """PAPER_ACTIVE blocked on missing provenance; override_reason bypasses; errors are explicit."""
+
+    def test_paper_active_blocked_on_missing_provenance(self, mem_db, monkeypatch):
+        """PAPER_ACTIVE without override_reason is blocked on missing provenance (0448).
+
+        Promotion gates are mocked to pass so the provenance check is reached; without
+        override_reason the provenance gate blocks when training_config_hash is absent.
+        """
+        import agent_db
+        import agents.learning.calibration as cal
+        from agents.learning.calibration import promote, ChallengerModel
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        _seed_episodes(conn, 60, with_outcomes=True, noise=0.05)
+        conn.close()
+        model = ChallengerModel.train()
+        assert model is not None
+        model.save_with_weights()
+
+        # Null out training_config_hash to create an incomplete provenance row
+        conn = _make_conn(mem_db)
+        conn.execute("UPDATE learning_models SET training_config_hash=NULL WHERE model_version=?",
+                     (model.model_version,))
+        conn.commit()
+        conn.close()
+
+        promote(model.model_version, "OBSERVE", override_reason="test")
+
+        # Mock promotion gates to pass so the provenance check is reached
+        monkeypatch.setattr(cal, "_check_promotion_gates",
+                            lambda mv, ts: {"passed": True, "failed": [], "gates": {}, "vm": {}})
+
+        result = promote(model.model_version, "PAPER_ACTIVE")
+        assert result["promoted"] is False, \
+            "PAPER_ACTIVE must be blocked when provenance is incomplete (0448)"
+        assert result.get("error") == "incomplete_provenance", \
+            f"error must be 'incomplete_provenance'; got {result.get('error')!r}"
+        assert "training_config_hash" in result.get("missing_provenance_fields", []), \
+            "training_config_hash must be listed as missing when nulled in learning_models (0448)"
+
+    def test_paper_active_override_reason_bypasses_provenance_gate(self, mem_db, monkeypatch):
+        """override_reason bypasses the provenance gate for PAPER_ACTIVE (0448)."""
+        import agent_db
+        from agents.learning.calibration import promote, ChallengerModel
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        _seed_episodes(conn, 60, with_outcomes=True, noise=0.05)
+        conn.close()
+        model = ChallengerModel.train()
+        assert model is not None
+        model.save_with_weights()
+
+        # Null out training_config_hash — same incomplete state as above test
+        conn = _make_conn(mem_db)
+        conn.execute("UPDATE learning_models SET training_config_hash=NULL WHERE model_version=?",
+                     (model.model_version,))
+        conn.commit()
+        conn.close()
+
+        promote(model.model_version, "OBSERVE", override_reason="test")
+        result = promote(model.model_version, "PAPER_ACTIVE", override_reason="emergency activation")
+        assert result["promoted"] is True, \
+            "override_reason must bypass provenance gate for PAPER_ACTIVE (0448)"
+
+    def test_snapshot_errors_populated_on_failure(self, mem_db, monkeypatch):
+        """snapshot_errors must list provenance failures rather than silently omitting them (0448)."""
+        import sys
+        import types
+        import agent_db
+        from agents.learning.calibration import promote, ChallengerModel
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        # Force strategy_config.get_hash() to raise so strategy_hash capture fails
+        fake_sc = types.ModuleType("strategy_config")
+        fake_sc.get_hash = lambda: (_ for _ in ()).throw(RuntimeError("simulated failure"))
+        monkeypatch.setitem(sys.modules, "strategy_config", fake_sc)
+
+        conn = _make_conn(mem_db)
+        _seed_episodes(conn, 60, with_outcomes=True, noise=0.05)
+        conn.close()
+        model = ChallengerModel.train()
+        assert model is not None
+        model.save_with_weights()
+
+        result = promote(model.model_version, "OBSERVE", override_reason="test")
+        assert result["promoted"] is True
+
+        conn = _make_conn(mem_db)
+        log = conn.execute(
+            "SELECT promotion_metrics_snapshot FROM model_promotion_log "
+            "WHERE model_version=? AND to_state='OBSERVE' LIMIT 1",
+            (model.model_version,),
+        ).fetchone()
+        conn.close()
+        snap = json.loads(log["promotion_metrics_snapshot"])
+        assert snap.get("snapshot_complete") is False, \
+            "snapshot_complete must be False when strategy_hash capture fails (0448)"
+        assert any("strategy_hash" in e for e in snap.get("snapshot_errors", [])), \
+            "strategy_hash error must appear in snapshot_errors (0448)"
+
+    def test_training_vs_activation_sha_distinct_fields(self, mem_db, monkeypatch):
+        """training_commit_sha and activation_commit_sha are recorded as distinct fields (0448)."""
+        import agent_db
+        from agents.learning.calibration import promote, ChallengerModel
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        _seed_episodes(conn, 60, with_outcomes=True, noise=0.05)
+        conn.close()
+        model = ChallengerModel.train()
+        assert model is not None
+        model.save_with_weights()
+
+        promote(model.model_version, "OBSERVE", override_reason="test")
+
+        conn = _make_conn(mem_db)
+        log = conn.execute(
+            "SELECT promotion_metrics_snapshot FROM model_promotion_log "
+            "WHERE model_version=? AND to_state='OBSERVE' LIMIT 1",
+            (model.model_version,),
+        ).fetchone()
+        conn.close()
+        snap = json.loads(log["promotion_metrics_snapshot"])
+        # training_commit_sha comes from learning_models.code_commit_sha (set at train time)
+        # activation_commit_sha comes from git HEAD at promote() time
+        # At least one must be present; if git is unavailable both appear in snapshot_errors
+        assert "training_commit_sha" in snap or "activation_commit_sha" in snap or \
+               len(snap.get("snapshot_errors", [])) > 0, \
+            "promotion snapshot must attempt both training_commit_sha and activation_commit_sha (0448)"

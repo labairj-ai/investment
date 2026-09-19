@@ -47,11 +47,9 @@ _PROMPT_VERSION = "opportunity_hunter_v1"
 _BUFFETT_DB = Path(agent_db.DB_PATH).parent / "buffett.db"
 _MAX_CANDIDATES = 3          # candidates passed to the LLM
 _LAYER_DEFICIT_THRESHOLD = 5.0  # pp underweight before PF bonus kicks in
-_MIN_COMPOSITE = 45          # minimum composite score to emit a RESEARCH rec
 
-# 0445: exported so freeze_baseline.py can derive the formula snapshot from source
-COMPOSITE_WEIGHTS: dict[str, float] = {"Q": 0.30, "V": 0.25, "PF": 0.20, "C": 0.15, "EC": 0.10}
-MIN_COMPOSITE: int = _MIN_COMPOSITE
+# 0446/0449: single source of truth — all scoring and snapshot code reads from opportunity_config
+from .opportunity_config import COMPOSITE_WEIGHTS, MIN_COMPOSITE
 
 _LLM_SCHEMA = {
     "action": "",
@@ -277,7 +275,9 @@ def _score_risk(w: dict) -> float:
 
 
 def _composite(q: float, v: float, pf: float, c: float, ec: float) -> int:
-    return round(0.30 * q + 0.25 * v + 0.20 * pf + 0.15 * c + 0.10 * ec)
+    # 0446: derive from COMPOSITE_WEIGHTS so one change propagates everywhere
+    _components = {"Q": q, "V": v, "PF": pf, "C": c, "EC": ec}
+    return round(sum(COMPOSITE_WEIGHTS[k] * _components[k] for k in COMPOSITE_WEIGHTS))
 
 
 def _composite_6(q: float, v: float, pf: float, c: float, r: float, ec: float) -> int:
@@ -478,7 +478,7 @@ def run_opportunity_hunter(ctx: AgentContext) -> list[Recommendation]:
     )
 
     # 0419: base_recommendation_eligible before early-return so shadow scoring always happens
-    _base_eligible = bool(top and top[0]["_composite"] >= _MIN_COMPOSITE)
+    _base_eligible = bool(top and top[0]["_composite"] >= MIN_COMPOSITE)
 
     # 0412/0419: generate sweep cohort_id BEFORE shadow scoring AND before early-return gate
     # so the learner accumulates observations for every OH sweep, not just recommended ones.
@@ -486,7 +486,7 @@ def run_opportunity_hunter(ctx: AgentContext) -> list[Recommendation]:
     _sweep_cohort_id = str(_uuid.uuid4())
 
     # 0360/0374/0419: shadow-score for OBSERVE, PAPER_ACTIVE, and SUSPENDED models
-    # Must happen BEFORE _MIN_COMPOSITE early return (0419) so the learner sees all scored
+    # Must happen BEFORE MIN_COMPOSITE early return (0419) so the learner sees all scored
     # candidates, not just days where the base strategy would recommend.
     # 0415: errors are logged at ERROR level; base recommendations are unaffected.
     import agent_db as _adb
@@ -523,7 +523,7 @@ def run_opportunity_hunter(ctx: AgentContext) -> list[Recommendation]:
         print(
             f"[opportunity] Top candidate composite "
             f"{'none' if not top else top[0]['_composite']} "
-            f"below minimum threshold {_MIN_COMPOSITE} — no recommendation (shadow scoring completed)"
+            f"below minimum threshold {MIN_COMPOSITE} — no recommendation (shadow scoring completed)"
         )
         return []
 
