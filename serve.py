@@ -5910,6 +5910,41 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     report["experiment_baseline"] = None
             else:
                 report["experiment_baseline"] = None
+            # 0443: attach latest model activation snapshot from model_promotion_log
+            try:
+                _mv = report.get("model_version")
+                if _mv:
+                    _promo = conn.execute(
+                        """SELECT from_state, to_state, promoted_by, promoted_at,
+                                  promotion_reason, promotion_metrics_snapshot
+                           FROM model_promotion_log
+                           WHERE model_version=? AND to_state IN ('OBSERVE','PAPER_ACTIVE')
+                           ORDER BY promoted_at DESC LIMIT 1""",
+                        (_mv,),
+                    ).fetchone()
+                    if _promo:
+                        _snap = {}
+                        try:
+                            _snap = json.loads(_promo["promotion_metrics_snapshot"] or "{}")
+                        except Exception:
+                            pass
+                        report["latest_activation_snapshot"] = {
+                            "from_state": _promo["from_state"],
+                            "to_state": _promo["to_state"],
+                            "promoted_by": _promo["promoted_by"],
+                            "promoted_at": _promo["promoted_at"],
+                            "promotion_reason": _promo["promotion_reason"],
+                            "git_commit_sha": _snap.get("git_commit_sha"),
+                            "strategy_hash": _snap.get("strategy_hash"),
+                            "policy_hash": _snap.get("policy_hash"),
+                            "evidence_contract_version": _snap.get("evidence_contract_version"),
+                        }
+                    else:
+                        report["latest_activation_snapshot"] = None
+                else:
+                    report["latest_activation_snapshot"] = None
+            except Exception:
+                report["latest_activation_snapshot"] = None
             body = json.dumps({"ok": True, "report": report}).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")

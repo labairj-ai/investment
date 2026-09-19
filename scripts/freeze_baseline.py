@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Freeze the current experiment baseline snapshot.
 
-Run once before material 63-session results arrive to capture the exact
+Run ONCE before material evidence accumulates to capture the exact
 experimental conditions under which challenger vs. base evidence is collected.
 Writes config/experiment_baseline.json (committed, not gitignored).
 
-The file is intentionally frozen: do NOT re-run this script unless you are
-starting a new controlled experiment. Re-running mid-experiment contaminates
-the comparison by silently redefining the baseline conditions.
+DO NOT re-run this script after the experiment has started — doing so would
+overwrite the immutable record of starting conditions and contaminate future
+comparisons. When a model is promoted to OBSERVE or PAPER_ACTIVE, the
+model_promotion_log records those conditions separately.
 
 Usage:
     python scripts/freeze_baseline.py [--db PATH] [--dry-run]
@@ -103,18 +104,38 @@ def _load_policy_fields() -> dict:
         return {
             "policy_version": policy.policy_version,
             "policy_hash": policy.policy_hash(),
-            "initial_capital_policy": policy.starting_capital(),
+            "shadow_account_initial_capital": policy.starting_capital(),
         }
     except Exception as e:
         return {"policy_error": str(e)}
 
 
+def _load_virtual_book_capital() -> float | None:
+    # 0444: authoritative source for champion/challenger virtual-book starting cash
+    try:
+        sys.path.insert(0, str(_REPO_ROOT))
+        from agents.learning.book_simulator import _STARTING_CASH
+        return float(_STARTING_CASH)
+    except Exception:
+        return None
+
+
 def _load_formula_params() -> dict:
-    return {
-        "composite_formula": "0.30*Q + 0.25*V + 0.20*PF + 0.15*C + 0.10*EC",
-        "composite_weights": {"Q": 0.30, "V": 0.25, "PF": 0.20, "C": 0.15, "EC": 0.10},
-        "min_composite_threshold": 45,
-    }
+    # 0445: import from authoritative source so formula changes propagate automatically
+    try:
+        sys.path.insert(0, str(_REPO_ROOT))
+        from agents.opportunity_agent import COMPOSITE_WEIGHTS, MIN_COMPOSITE
+        weights = dict(COMPOSITE_WEIGHTS)
+        formula_str = " + ".join(
+            f"{v:.2f}*{k}" for k, v in weights.items()
+        )
+        return {
+            "composite_formula": formula_str,
+            "composite_weights": weights,
+            "min_composite_threshold": int(MIN_COMPOSITE),
+        }
+    except Exception as _e:
+        return {"import_error": str(_e)}
 
 
 def _load_strategy_hash() -> str | None:
@@ -131,18 +152,15 @@ def build_baseline(db_path: str) -> dict:
     policy_fields = _load_policy_fields()
     formula_params = _load_formula_params()
     strategy_hash = _load_strategy_hash()
+    virtual_book_capital = _load_virtual_book_capital()
     sha = _git_sha()
     frozen_at = datetime.now(timezone.utc).isoformat()
 
-    initial_capital = (
-        policy_fields.get("initial_capital_policy")
-        or db_fields.get("initial_capital_db")
-    )
-
     return {
         "_note": (
-            "Frozen experiment baseline — DO NOT modify after initial freeze. "
-            "Re-run freeze_baseline.py only if starting a new controlled experiment."
+            "Frozen experiment baseline — DO NOT modify or re-run during this experiment. "
+            "This file records the conditions in place before the learner was activated. "
+            "Model activation conditions are recorded separately in model_promotion_log."
         ),
         "frozen_at": frozen_at,
         "git_commit_sha": sha,
@@ -151,7 +169,16 @@ def build_baseline(db_path: str) -> dict:
         "lifecycle_state_at_freeze": db_fields["lifecycle_state"],
         "evidence_contract_version": db_fields["evidence_contract_version"],
         "shadow_account_id": _SHADOW_ACCOUNT_ID,
-        "initial_capital": initial_capital,
+        # 0444: record both capital bases separately
+        "shadow_account_initial_capital": (
+            policy_fields.get("shadow_account_initial_capital")
+            or db_fields.get("initial_capital_db")
+        ),
+        "virtual_book_starting_cash": virtual_book_capital,
+        "_capital_note": (
+            "shadow_account_initial_capital = real-money risk limit for the shadow brokerage account; "
+            "virtual_book_starting_cash = notional starting cash for the champion/challenger virtual books."
+        ),
         "policy_version": policy_fields.get("policy_version"),
         "policy_hash": policy_fields.get("policy_hash"),
         "strategy_hash": strategy_hash,
@@ -169,7 +196,8 @@ def main():
 
     if _OUT_PATH.exists() and not args.dry_run:
         print(f"WARNING: {_OUT_PATH} already exists.")
-        answer = input("Overwrite? This resets the baseline. [y/N] ").strip().lower()
+        print("Re-running freeze_baseline.py overwrites the immutable experiment record.")
+        answer = input("Overwrite? Only do this if starting a brand-new experiment. [y/N] ").strip().lower()
         if answer != "y":
             print("Aborted.")
             sys.exit(0)
@@ -182,10 +210,12 @@ def main():
 
     _OUT_PATH.write_text(json.dumps(baseline, indent=2) + "\n", encoding="utf-8")
     print(f"Baseline frozen to {_OUT_PATH}")
-    print(f"  model_version:           {baseline['model_version']}")
-    print(f"  evidence_contract:       {baseline['evidence_contract_version']}")
-    print(f"  git_commit_sha:          {baseline['git_commit_sha']}")
-    print(f"  frozen_at:               {baseline['frozen_at']}")
+    print(f"  model_version:                 {baseline['model_version']}")
+    print(f"  evidence_contract:             {baseline['evidence_contract_version']}")
+    print(f"  shadow_account_initial_capital:{baseline['shadow_account_initial_capital']}")
+    print(f"  virtual_book_starting_cash:    {baseline['virtual_book_starting_cash']}")
+    print(f"  git_commit_sha:                {baseline['git_commit_sha']}")
+    print(f"  frozen_at:                     {baseline['frozen_at']}")
 
 
 if __name__ == "__main__":

@@ -49,6 +49,10 @@ _MAX_CANDIDATES = 3          # candidates passed to the LLM
 _LAYER_DEFICIT_THRESHOLD = 5.0  # pp underweight before PF bonus kicks in
 _MIN_COMPOSITE = 45          # minimum composite score to emit a RESEARCH rec
 
+# 0445: exported so freeze_baseline.py can derive the formula snapshot from source
+COMPOSITE_WEIGHTS: dict[str, float] = {"Q": 0.30, "V": 0.25, "PF": 0.20, "C": 0.15, "EC": 0.10}
+MIN_COMPOSITE: int = _MIN_COMPOSITE
+
 _LLM_SCHEMA = {
     "action": "",
     "ticker": "",

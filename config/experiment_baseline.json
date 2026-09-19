@@ -1,5 +1,5 @@
 {
-  "_note": "Frozen experiment baseline \u2014 DO NOT modify after initial freeze. Re-run freeze_baseline.py only if starting a new controlled experiment.",
+  "_note": "Frozen experiment baseline — DO NOT modify or re-run during this experiment. This file records the conditions in place before the learner was activated. Model activation conditions are recorded separately in model_promotion_log.",
   "frozen_at": "2026-09-19T00:01:42.045952+00:00",
   "git_commit_sha": "752b6788250188648d192b02f4309da9f3af084b",
   "model_version": null,
@@ -7,7 +7,9 @@
   "lifecycle_state_at_freeze": null,
   "evidence_contract_version": null,
   "shadow_account_id": "AGENTIC_SHADOW_01",
-  "initial_capital": 10000.0,
+  "shadow_account_initial_capital": 10000.0,
+  "virtual_book_starting_cash": 100000.0,
+  "_capital_note": "shadow_account_initial_capital = real-money risk limit for the shadow brokerage account; virtual_book_starting_cash = notional starting cash for the champion/challenger virtual books.",
   "policy_version": "1.0",
   "policy_hash": "031c42490a84",
   "strategy_hash": "f75ca2fc456f",

@@ -28,6 +28,7 @@ import hashlib
 import json
 import time
 from datetime import date as _date, timedelta as _td, timezone, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -1193,6 +1194,40 @@ def promote(
                 "ranking_spread_ci_high", "alpha_precision", "alpha_edge_evidence"):
         if key in vm:
             snapshot[key] = {"value": vm[key]}
+    # 0443: capture activation conditions so per-model state is recorded without touching
+    # experiment_baseline.json (which is frozen at experiment start, never at model activation)
+    try:
+        import subprocess as _sp
+        _sha = _sp.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(Path(__file__).resolve().parent.parent.parent),
+            text=True, stderr=_sp.DEVNULL,
+        ).strip()
+        snapshot["git_commit_sha"] = _sha
+    except Exception:
+        pass
+    try:
+        import strategy_config as _sc
+        snapshot["strategy_hash"] = _sc.get_hash()
+    except Exception:
+        pass
+    try:
+        from trade_engine.policy import load_policy as _lp
+        _pol = _lp("AGENTIC_SHADOW_01")
+        snapshot["policy_hash"] = _pol.policy_hash()
+        snapshot["policy_version"] = _pol.policy_version
+    except Exception:
+        pass
+    # Record evidence_contract_version at promotion time
+    try:
+        _ev_row = conn.execute(
+            "SELECT evidence_contract_version FROM learning_models WHERE model_version=?",
+            (model_version,),
+        ).fetchone()
+        if _ev_row and _ev_row["evidence_contract_version"] is not None:
+            snapshot["evidence_contract_version"] = int(_ev_row["evidence_contract_version"])
+    except Exception:
+        pass
 
     # 0344: auto-retire any existing PAPER_ACTIVE before activating a new one
     if target_state == LIFECYCLE_PAPER_ACTIVE:
