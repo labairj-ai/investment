@@ -2335,14 +2335,14 @@ def build_dashboard(portfolio, layers, holdings):
   <button class="dash-tab-btn active" id="tab-btn-portfolio" onclick="showDashTab('portfolio')">Portfolio</button>
   <button class="dash-tab-btn" id="tab-btn-decisions" onclick="showDashTab('decisions')">Decisions</button>
   <button class="dash-tab-btn" id="tab-btn-macro" onclick="showDashTab('macro')">📊 Macro Risk</button>
-  <button class="dash-tab-btn" id="tab-btn-shadow" onclick="showDashTab('shadow');loadShadowPanel()">🤖 Shadow</button>
+  <button class="dash-tab-btn" id="tab-btn-shadow" onclick="showDashTab('shadow');loadShadowPanel()">⚙️ Agent Engine</button>
   <button class="dash-tab-btn" id="tab-btn-learning" onclick="showDashTab('learning');loadLearningPanel()">📈 Learning Lab</button>
   <button id="nav-hamburger" onclick="toggleNavMenu(event)" aria-label="Menu">&#9776;</button>
   <div id="nav-dropdown">
     <button class="nav-dd-btn" id="tab-dd-btn-portfolio" onclick="showDashTab('portfolio');closeNavMenu()">Portfolio</button>
     <button class="nav-dd-btn" id="tab-dd-btn-decisions" onclick="showDashTab('decisions');closeNavMenu()">Decisions</button>
     <button class="nav-dd-btn" id="tab-dd-btn-macro" onclick="showDashTab('macro');closeNavMenu()">📊 Macro Risk</button>
-    <button class="nav-dd-btn" id="tab-dd-btn-shadow" onclick="showDashTab('shadow');loadShadowPanel();closeNavMenu()">🤖 Shadow</button>
+    <button class="nav-dd-btn" id="tab-dd-btn-shadow" onclick="showDashTab('shadow');loadShadowPanel();closeNavMenu()">⚙️ Agent Engine</button>
     <button class="nav-dd-btn" id="tab-dd-btn-learning" onclick="showDashTab('learning');loadLearningPanel();closeNavMenu()">📈 Learning Lab</button>
     <button class="nav-dd-btn" id="tab-dd-btn-glossary" onclick="showDashTab('glossary');closeNavMenu()">📖 Glossary</button>
   </div>
@@ -3056,7 +3056,7 @@ def build_dashboard(portfolio, layers, holdings):
     <!-- Account summary -->
     <div id="shadow-account-card" style="background:linear-gradient(135deg,#1a2340 0%,#243050 100%);border-radius:10px;padding:18px 22px;box-shadow:0 2px 8px rgba(0,0,0,.12);color:#e2e8f0;">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
-        <span style="font-size:11px;font-weight:700;letter-spacing:0.08em;color:#8ba4d4;text-transform:uppercase;">Agentic Shadow Account</span>
+        <span style="font-size:11px;font-weight:700;letter-spacing:0.08em;color:#8ba4d4;text-transform:uppercase;">Agent Execution Account</span>
         <span style="font-size:10px;background:#2d4a7a;color:#90cdf4;padding:3px 10px;border-radius:12px;font-weight:700;letter-spacing:0.06em;">SHADOW MODE</span>
       </div>
       <div id="shadow-account-body" style="color:#a0aec0;font-size:13px;">Loading…</div>
