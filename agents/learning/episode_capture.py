@@ -27,42 +27,78 @@ _FEATURE_SCHEMA_VERSION = "v1"
 
 
 def _build_macro_snapshot(ticker: str, conn) -> str:
-    """Load latest macro scores for ticker and build macro_snapshot JSON (0494, read-only)."""
+    """Load latest macro scores for ticker and build macro_snapshot JSON (0494/0497/0500)."""
     try:
         import sys, os
         sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-        from portfolio_ai import is_fund
-        if is_fund(ticker):
-            snap = {"macro_supported": False, "reason": "fund/etf — no constituent evidence"}
-            return json.dumps(snap)
-        row = conn.execute(
-            "SELECT scores, scored_at FROM holding_macro_scores "
-            "WHERE ticker=? ORDER BY scored_at DESC LIMIT 1",
-            (ticker,)
-        ).fetchone()
-        if not row:
-            return json.dumps({"macro_supported": False, "reason": "no macro scores available"})
-        scores_json, scored_at = row[0], row[1]
+        from portfolio_ai import (is_fund, _classify_macro_coverage,
+                                   _get_macro_acceptance_state, DB_PATH)
+        import sqlite3 as _sqlite3
+
+        coverage_state = _classify_macro_coverage(ticker, conn)
+
+        if coverage_state == "fund_unsupported":
+            snap = {"macro_supported": False, "coverage_state": "fund_unsupported",
+                    "reason": "fund/etf — no constituent evidence"}
+        elif coverage_state == "no_score_available":
+            snap = {"macro_supported": False, "coverage_state": "no_score_available",
+                    "reason": "company ticker but no macro score row"}
+        elif coverage_state == "stale_score":
+            snap = {"macro_supported": False, "coverage_state": "stale_score",
+                    "reason": f"score older than 14 days"}
+        else:
+            row = conn.execute(
+                "SELECT scores, scored_at FROM holding_macro_scores "
+                "WHERE ticker=? ORDER BY scored_at DESC LIMIT 1",
+                (ticker,)
+            ).fetchone()
+            if not row:
+                snap = {"macro_supported": False, "coverage_state": "no_score_available",
+                        "reason": "no macro scores available"}
+            else:
+                scores_json, scored_at = row[0], row[1]
+                try:
+                    scores = json.loads(scores_json)
+                except Exception:
+                    snap = {"macro_supported": False, "coverage_state": "no_score_available",
+                            "reason": "scores parse error"}
+                    scores = None
+                if scores is not None:
+                    snap = {
+                        "macro_supported":            True,
+                        "coverage_state":             "company_supported",
+                        "rate_sensitivity":           scores.get("rate_sensitivity"),
+                        "dollar_sensitivity":         scores.get("dollar_sensitivity"),
+                        "inflation_hedge":            scores.get("inflation_hedge"),
+                        "geopolitical_risk":          scores.get("geopolitical_risk"),
+                        "evidence_quality":           scores.get("evidence_quality"),
+                        "rate_beta_100bp_return_pct": scores.get("rate_beta_100bp_return_pct"),
+                        "usd_beta_1pct_return_pct":   scores.get("usd_beta_1pct_return_pct"),
+                        "rate_beta_confidence":       scores.get("rate_beta_confidence"),
+                        "run_id":                     scores.get("run_id"),
+                        "model_version":              scores.get("model_version"),
+                        "schema_version":             scores.get("schema_version"),
+                        "evidence_hash":              scores.get("evidence_hash"),
+                        "scored_at":                  scored_at,
+                    }
+
+        # 0497: tag validation status
         try:
-            scores = json.loads(scores_json)
+            conn_ac = _sqlite3.connect(str(DB_PATH), timeout=5)
+            acceptance = _get_macro_acceptance_state(conn_ac)
+            conn_ac.close()
         except Exception:
-            return json.dumps({"macro_supported": False, "reason": "scores parse error"})
-        return json.dumps({
-            "macro_supported":           True,
-            "rate_sensitivity":          scores.get("rate_sensitivity"),
-            "dollar_sensitivity":        scores.get("dollar_sensitivity"),
-            "inflation_hedge":           scores.get("inflation_hedge"),
-            "geopolitical_risk":         scores.get("geopolitical_risk"),
-            "evidence_quality":          scores.get("evidence_quality"),
-            "rate_beta_100bp_return_pct": scores.get("rate_beta_100bp_return_pct"),
-            "usd_beta_1pct_return_pct":  scores.get("usd_beta_1pct_return_pct"),
-            "rate_beta_confidence":      scores.get("rate_beta_confidence"),
-            "run_id":                    scores.get("run_id"),
-            "model_version":             scores.get("model_version"),
-            "schema_version":            scores.get("schema_version"),
-            "evidence_hash":             scores.get("evidence_hash"),
-            "scored_at":                 scored_at,
-        })
+            acceptance = {}
+        if acceptance:
+            snap["macro_validation_status"]    = "ACCEPTED"
+            snap["macro_validation_contract"]  = acceptance.get("contract")
+            snap["macro_validation_record_id"] = acceptance.get("record_id")
+        else:
+            snap["macro_validation_status"]    = "PRE_ACCEPTANCE"
+            snap["macro_validation_contract"]  = None
+            snap["macro_validation_record_id"] = None
+
+        return json.dumps(snap)
     except Exception as e:
         return json.dumps({"macro_supported": False, "reason": f"error: {e}"})
 

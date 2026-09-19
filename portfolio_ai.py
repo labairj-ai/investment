@@ -382,6 +382,17 @@ def _init_ai_tables():
         conn.execute("ALTER TABLE decision_episodes ADD COLUMN macro_snapshot TEXT")
     except Exception:
         pass
+    # Validation acceptance state table (0497)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS macro_acceptance_state (
+            contract       TEXT PRIMARY KEY,
+            accepted_at    TEXT,
+            record_id      TEXT,
+            commit_sha     TEXT,
+            model_identity TEXT,
+            notes          TEXT
+        )
+    """)
     conn.commit()
     conn.close()
 
@@ -389,6 +400,42 @@ def _init_ai_tables():
 MACRO_SCORE_SCHEMA_VERSION = "v1"
 MACRO_INTERACTION_VERSION = "macro_interaction_v1"
 _MACRO_SCORE_DIMS = ("rate_sensitivity", "inflation_hedge", "dollar_sensitivity", "geopolitical_risk")
+_STALE_SCORE_DAYS = 14
+
+
+def _get_macro_acceptance_state(conn: sqlite3.Connection) -> dict:
+    """Return the latest macro acceptance record, or {} if none exists (0497)."""
+    try:
+        row = conn.execute(
+            "SELECT contract, accepted_at, record_id, commit_sha "
+            "FROM macro_acceptance_state ORDER BY accepted_at DESC LIMIT 1"
+        ).fetchone()
+        if row:
+            return {"contract": row[0], "accepted_at": row[1],
+                    "record_id": row[2], "commit_sha": row[3]}
+    except Exception:
+        pass
+    return {}
+
+
+def _classify_macro_coverage(ticker: str, conn: sqlite3.Connection) -> str:
+    """Return one of the five coverage states for a ticker (0500)."""
+    if is_fund(ticker):
+        return "fund_unsupported"
+    row = conn.execute(
+        "SELECT scored_at FROM holding_macro_scores WHERE ticker=? ORDER BY scored_at DESC LIMIT 1",
+        (ticker,)
+    ).fetchone()
+    if not row:
+        return "no_score_available"
+    try:
+        scored_dt = datetime.fromisoformat(row[0])
+        if (datetime.now() - scored_dt).days > _STALE_SCORE_DAYS:
+            return "stale_score"
+    except Exception:
+        return "stale_score"
+    return "company_supported"
+
 
 # Canonical security master — single source of truth for security type classification.
 # security_type: "company" | "etf" | "mutual_fund"
@@ -1735,6 +1782,146 @@ def _reconcile_stale_runs(conn: sqlite3.Connection, stale_threshold_minutes: int
     except Exception as e:
         print(f"[MacroScores] WARNING: stale run reconciliation failed: {e}")
         return 0
+
+
+def compute_macro_health() -> dict:
+    """Compute macro health state on demand — does not require a scoring run (0499)."""
+    health: dict = {"computed_at": datetime.now().isoformat()}
+
+    if not DB_PATH.exists():
+        return {**health, "status": "NO_DB", "error": "Database not found"}
+
+    try:
+        conn = sqlite3.connect(str(DB_PATH), timeout=5)
+
+        # Reconcile stale runs first so health is immediately accurate (0493/0499)
+        _reconcile_stale_runs(conn)
+
+        # Latest successful run
+        latest_run = conn.execute(
+            "SELECT run_id, run_at, scored_n, expected_n, status "
+            "FROM macro_scoring_runs "
+            "WHERE status IN ('COMPLETE','PARTIAL') ORDER BY run_at DESC LIMIT 1"
+        ).fetchone()
+        if latest_run:
+            run_id, run_at_str, scored, expected, status = latest_run
+            try:
+                run_age_h = (datetime.now() - datetime.fromisoformat(run_at_str)).total_seconds() / 3600
+            except Exception:
+                run_age_h = None
+            health["latest_successful_run"] = {
+                "run_id": run_id, "run_at": run_at_str, "scored_n": scored,
+                "expected_n": expected, "status": status,
+                "age_hours": round(run_age_h, 1) if run_age_h is not None else None,
+            }
+            health["scorer_status"] = "WARNING" if run_age_h and run_age_h > 192 else "OK"
+        else:
+            health["latest_successful_run"] = None
+            health["scorer_status"] = "NO_RUNS"
+
+        # Stale STARTED count
+        health["stale_failed_count"] = conn.execute(
+            "SELECT COUNT(*) FROM macro_scoring_runs WHERE status='STALE_FAILED'"
+        ).fetchone()[0]
+
+        # Last health snapshot age
+        last_snap = conn.execute(
+            "SELECT captured_at FROM macro_health_snapshots ORDER BY captured_at DESC LIMIT 1"
+        ).fetchone()
+        if last_snap:
+            try:
+                snap_age_h = (datetime.now() - datetime.fromisoformat(last_snap[0])).total_seconds() / 3600
+                health["last_health_snapshot_age_hours"] = round(snap_age_h, 1)
+            except Exception:
+                health["last_health_snapshot_age_hours"] = None
+        else:
+            health["last_health_snapshot_age_hours"] = None
+
+        # Portfolio coverage
+        total = conn.execute("SELECT COUNT(*) FROM holding_macro_scores").fetchone()[0]
+        unsupported = conn.execute(
+            "SELECT COUNT(*) FROM holding_macro_scores "
+            "WHERE scores LIKE '%\"unsupported\"%' OR scores LIKE '%\"is_fund\": true%'"
+        ).fetchone()[0]
+        health["portfolio_coverage"] = {
+            "total": total,
+            "supported": total - unsupported,
+            "unsupported": unsupported,
+            "coverage_pct": round(100 * (total - unsupported) / total, 1) if total else 0.0,
+        }
+
+        # Macro cache freshness
+        cache_candidates = [
+            Path("out/macro_cache.json"),
+            Path("macro_cache.json"),
+            Path("out/macro_context_cache.json"),
+        ]
+        cache_file = next((p for p in cache_candidates if p.exists()), None)
+        if cache_file:
+            try:
+                cached = json.loads(cache_file.read_text())
+                fetched_at = cached.get("_fetched_at", 0)
+                cache_age_h = (datetime.now().timestamp() - fetched_at) / 3600
+                health["macro_cache_age_hours"] = round(cache_age_h, 1)
+                health["macro_cache_status"] = "STALE" if cache_age_h > 48 else "OK"
+            except Exception:
+                health["macro_cache_age_hours"] = None
+                health["macro_cache_status"] = "UNKNOWN"
+        else:
+            health["macro_cache_status"] = "NO_CACHE"
+
+        # Validation status (0497)
+        try:
+            acceptance = _get_macro_acceptance_state(conn)
+            health["validation_status"] = "ACCEPTED" if acceptance else "PRE_ACCEPTANCE"
+            health["validation_contract"] = acceptance.get("contract") if acceptance else None
+        except Exception:
+            health["validation_status"] = "UNKNOWN"
+            health["validation_contract"] = None
+
+        # Weak betas
+        health["weak_beta_count"] = conn.execute(
+            "SELECT COUNT(*) FROM holding_macro_scores "
+            "WHERE scores LIKE '%\"weak\"%' OR scores LIKE '%\"insufficient_data\"%'"
+        ).fetchone()[0]
+
+        # Episode coverage breakdown by state — last 30 days (0500)
+        try:
+            rows = conn.execute("""
+                SELECT macro_snapshot FROM decision_episodes
+                WHERE created_at >= (strftime('%s','now') - 2592000)
+                  AND macro_snapshot IS NOT NULL
+            """).fetchall()
+            coverage_counts: dict[str, int] = {
+                "company_supported": 0, "fund_unsupported": 0,
+                "no_score_available": 0, "stale_score": 0,
+                "macro_context_unavailable": 0, "unknown": 0,
+            }
+            for (snap_json,) in rows:
+                try:
+                    snap = json.loads(snap_json)
+                    state = snap.get("coverage_state", "unknown")
+                    coverage_counts[state] = coverage_counts.get(state, 0) + 1
+                except Exception:
+                    coverage_counts["unknown"] += 1
+            health["episode_coverage_30d"] = coverage_counts
+            total_ep = sum(coverage_counts.values())
+            no_score = coverage_counts.get("no_score_available", 0)
+            if total_ep > 0 and no_score / total_ep > 0.20:
+                health["episode_coverage_warning"] = (
+                    f"WARNING: {no_score}/{total_ep} episodes ({100*no_score//total_ep}%) "
+                    f"have no_score_available — consider expanding macro scoring universe"
+                )
+        except Exception:
+            health["episode_coverage_30d"] = None
+
+        conn.close()
+
+    except Exception as e:
+        health["error"] = str(e)
+        health["status"] = "ERROR"
+
+    return health
 
 
 def generate_holding_macro_scores(force: bool = False) -> dict:

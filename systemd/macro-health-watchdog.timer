@@ -1,0 +1,9 @@
+[Unit]
+Description=Run macro-health-watchdog daily at 6:15am ET (independent of weekly scorer)
+
+[Timer]
+OnCalendar=*-*-* 06:15:00 America/New_York
+Persistent=true
+
+[Install]
+WantedBy=timers.target

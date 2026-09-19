@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """
-Macro Attribution Analysis (0495).
+Macro Attribution Analysis (0495/0496).
 
-Run after ≥60 resolved decision episodes have macro_snapshot data (from 0494).
+Run after ≥60 resolved ACCEPTED decision episodes have macro_snapshot data.
 Analysis only — no model changes, no ranking changes, no weight updates.
 
-Usage: venv/bin/python scripts/macro_attribution.py
+Usage:
+  venv/bin/python scripts/macro_attribution.py
+  venv/bin/python scripts/macro_attribution.py --horizon 1m --include-pre-acceptance --debug
 """
 from __future__ import annotations
 
+import argparse
 import json
 import sqlite3
 import sys
@@ -21,123 +24,230 @@ OUT_DIR = PROJECT_DIR / "out"
 MIN_EPISODES = 10   # minimum to produce any output; 60 recommended for meaningful analysis
 
 
-def load_episodes_with_macro() -> list[dict]:
+def _parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Macro Attribution Analysis")
+    p.add_argument("--horizon", default="3m",
+                   help="Outcome horizon to analyse (default: 3m). Options: 1w, 1m, 3m, 6m, 12m")
+    p.add_argument("--include-pre-acceptance", action="store_true",
+                   help="Include PRE_ACCEPTANCE episodes (diagnostic use only)")
+    p.add_argument("--debug", action="store_true",
+                   help="Print SQL errors with full traceback")
+    return p.parse_args()
+
+
+def load_episodes_with_macro(horizon: str = "3m",
+                              include_pre_acceptance: bool = False,
+                              debug: bool = False) -> list[dict]:
     if not DB_PATH.exists():
-        print("No DB found.")
-        return []
+        print(f"[Attribution] ERROR: DB not found at {DB_PATH}", file=sys.stderr)
+        sys.exit(1)
+
+    # Check what columns are available in episode_outcomes
     try:
         conn = sqlite3.connect(str(DB_PATH), timeout=10)
         conn.row_factory = sqlite3.Row
-        try:
-            rows = conn.execute("""
-                SELECT e.episode_id, e.ticker, o.outcome_alpha,
-                       e.macro_snapshot, e.captured_at
-                FROM decision_episodes e
-                JOIN episode_outcomes o ON e.episode_id = o.episode_id
-                WHERE e.macro_snapshot IS NOT NULL
-                  AND o.outcome_alpha IS NOT NULL
-            """).fetchall()
-        except Exception as qe:
-            print(f"Query failed: {qe}")
-            conn.close()
-            return []
-        conn.close()
+        outcome_cols = {row[1] for row in conn.execute("PRAGMA table_info(episode_outcomes)").fetchall()}
     except Exception as e:
-        print(f"DB error: {e}")
-        return []
+        print(f"[Attribution] ERROR: Cannot read DB schema: {e}", file=sys.stderr)
+        if debug:
+            import traceback; traceback.print_exc()
+        sys.exit(1)
 
+    # Build SELECT for optional MFE/MAE columns
+    mfe_sel = ", o.mfe" if "mfe" in outcome_cols else ""
+    mae_sel = ", o.mae" if "mae" in outcome_cols else ""
+
+    # Fix 0496 bug #1: use o.alpha not o.outcome_alpha
+    # Fix 0496 bug #2: filter to single horizon to avoid 5× fan-out
+    query = f"""
+        SELECT e.episode_id, e.ticker, o.alpha{mfe_sel}{mae_sel},
+               e.macro_snapshot, e.captured_at
+        FROM decision_episodes e
+        JOIN episode_outcomes o ON e.episode_id = o.episode_id
+        WHERE e.macro_snapshot IS NOT NULL
+          AND o.alpha IS NOT NULL
+          AND o.horizon = ?
+    """
+    try:
+        rows = conn.execute(query, (horizon,)).fetchall()
+    except Exception as qe:
+        print(f"[Attribution] ERROR: Query failed: {qe}", file=sys.stderr)
+        if debug:
+            import traceback; traceback.print_exc()
+        conn.close()
+        sys.exit(1)
+
+    conn.close()
+
+    total_loaded = 0
     episodes = []
     for row in rows:
+        total_loaded += 1
         try:
             snap = json.loads(row["macro_snapshot"])
         except Exception:
             snap = {}
-        if snap.get("macro_supported"):
-            episodes.append({
-                "episode_id": row["episode_id"],
-                "ticker":     row["ticker"],
-                "alpha":      float(row["outcome_alpha"]),
-                "macro":      snap,
-                "captured_at": row["captured_at"],
-            })
-    return episodes
+        if not snap.get("macro_supported"):
+            continue
+        ep = {
+            "episode_id":  row["episode_id"],
+            "ticker":      row["ticker"],
+            "alpha":       float(row["alpha"]),
+            "macro":       snap,
+            "captured_at": row["captured_at"],
+        }
+        if "mfe" in outcome_cols and row["mfe"] is not None:
+            ep["mfe"] = float(row["mfe"])
+        if "mae" in outcome_cols and row["mae"] is not None:
+            ep["mae"] = float(row["mae"])
+        episodes.append(ep)
+
+    # 0497: filter to ACCEPTED only by default
+    pre_acceptance_count = 0
+    if not include_pre_acceptance:
+        accepted = [e for e in episodes
+                    if e["macro"].get("macro_validation_status") == "ACCEPTED"]
+        pre_acceptance_count = len(episodes) - len(accepted)
+        if pre_acceptance_count > 0:
+            print(f"[Attribution] Excluded {pre_acceptance_count} PRE_ACCEPTANCE episodes "
+                  f"(use --include-pre-acceptance for diagnostics)")
+        episodes = accepted
+
+    return episodes, total_loaded, pre_acceptance_count
 
 
 def _mean(vals: list[float]) -> float | None:
     return round(sum(vals) / len(vals), 4) if vals else None
 
 
-def analyse(episodes: list[dict]) -> dict:
+def _coverage_summary(episodes: list[dict]) -> dict:
+    """Count episodes by coverage_state."""
+    counts: dict[str, int] = {}
+    for e in episodes:
+        state = e["macro"].get("coverage_state", "unknown")
+        counts[state] = counts.get(state, 0) + 1
+    return counts
+
+
+def analyse(episodes: list[dict], horizon: str) -> dict:
     n = len(episodes)
     if n < MIN_EPISODES:
-        print(f"Only {n} supported episodes — need ≥{MIN_EPISODES} for output, ≥60 for meaningful analysis.")
-        return {"status": "insufficient_data", "n": n, "min_required": MIN_EPISODES}
+        print(f"Only {n} supported ACCEPTED episodes at horizon={horizon} — "
+              f"need ≥{MIN_EPISODES} for output, ≥60 for meaningful analysis.")
+        return {"status": "insufficient_data", "n": n, "min_required": MIN_EPISODES,
+                "horizon": horizon}
 
     if n < 60:
-        print(f"WARNING: {n} episodes is below the recommended minimum of 60. Treat results as exploratory.")
+        print(f"WARNING: {n} episodes is below the recommended minimum of 60. "
+              f"Treat results as exploratory.")
 
-    # 1. Rate sensitivity bucket analysis
-    high_rate  = [e for e in episodes if (e["macro"].get("rate_sensitivity") or 0) >= 7]
-    low_rate   = [e for e in episodes if (e["macro"].get("rate_sensitivity") or 0) <= 3]
-    high_dollar = [e for e in episodes if (e["macro"].get("dollar_sensitivity") or 0) >= 7]
-    low_dollar  = [e for e in episodes if (e["macro"].get("dollar_sensitivity") or 0) <= 3]
-    high_hedge  = [e for e in episodes if (e["macro"].get("inflation_hedge") or 0) >= 7]
-    low_hedge   = [e for e in episodes if (e["macro"].get("inflation_hedge") or 0) <= 3]
+    has_mfe = any("mfe" in e for e in episodes)
+    has_mae = any("mae" in e for e in episodes)
+
+    def bucket_stats(bucket: list[dict]) -> dict:
+        alphas = [e["alpha"] for e in bucket]
+        s: dict = {"n": len(bucket), "mean_alpha": _mean(alphas)}
+        if has_mfe:
+            mfes = [e["mfe"] for e in bucket if "mfe" in e]
+            s["mean_mfe"] = _mean(mfes)
+        if has_mae:
+            maes = [e["mae"] for e in bucket if "mae" in e]
+            s["mean_mae"] = _mean(maes)
+        return s
+
+    # Fix 0496 bug #3: exclude None values; track n_unknown per dimension
+    def split_buckets(field: str) -> tuple[list, list, int]:
+        high, low, unknown = [], [], 0
+        for e in episodes:
+            v = e["macro"].get(field)
+            if v is None:
+                unknown += 1
+                continue
+            if v >= 7:
+                high.append(e)
+            elif v <= 3:
+                low.append(e)
+        return high, low, unknown
+
+    hr, lr, unk_r = split_buckets("rate_sensitivity")
+    hd, ld, unk_d = split_buckets("dollar_sensitivity")
+    hh, lh, unk_h = split_buckets("inflation_hedge")
 
     bucket_analysis = {
         "rate_sensitivity": {
-            "high_7plus": {"n": len(high_rate),   "mean_alpha": _mean([e["alpha"] for e in high_rate])},
-            "low_3minus": {"n": len(low_rate),    "mean_alpha": _mean([e["alpha"] for e in low_rate])},
+            "high_7plus":   bucket_stats(hr),
+            "low_3minus":   bucket_stats(lr),
+            "n_unknown":    unk_r,
         },
         "dollar_sensitivity": {
-            "high_7plus": {"n": len(high_dollar), "mean_alpha": _mean([e["alpha"] for e in high_dollar])},
-            "low_3minus": {"n": len(low_dollar),  "mean_alpha": _mean([e["alpha"] for e in low_dollar])},
+            "high_7plus":   bucket_stats(hd),
+            "low_3minus":   bucket_stats(ld),
+            "n_unknown":    unk_d,
         },
         "inflation_hedge": {
-            "high_7plus": {"n": len(high_hedge),  "mean_alpha": _mean([e["alpha"] for e in high_hedge])},
-            "low_3minus": {"n": len(low_hedge),   "mean_alpha": _mean([e["alpha"] for e in low_hedge])},
+            "high_7plus":   bucket_stats(hh),
+            "low_3minus":   bucket_stats(lh),
+            "n_unknown":    unk_h,
         },
     }
 
-    # 2. Beta confidence vs outcome
-    strong_beta  = [e for e in episodes if e["macro"].get("rate_beta_confidence") == "stronger"]
-    weak_beta    = [e for e in episodes if e["macro"].get("rate_beta_confidence") in ("weak", "insufficient_data")]
+    # Beta confidence vs outcome
+    strong_beta = [e for e in episodes if e["macro"].get("rate_beta_confidence") == "stronger"]
+    weak_beta   = [e for e in episodes if e["macro"].get("rate_beta_confidence")
+                   in ("weak", "insufficient_data")]
     beta_analysis = {
-        "stronger_confidence": {"n": len(strong_beta), "mean_alpha": _mean([e["alpha"] for e in strong_beta])},
-        "weak_confidence":     {"n": len(weak_beta),   "mean_alpha": _mean([e["alpha"] for e in weak_beta])},
+        "stronger_confidence": bucket_stats(strong_beta),
+        "weak_confidence":     bucket_stats(weak_beta),
     }
 
-    # 3. Evidence quality vs outcome
+    # Evidence quality vs outcome
     full_ev    = [e for e in episodes if e["macro"].get("evidence_quality") == "full"]
     partial_ev = [e for e in episodes if e["macro"].get("evidence_quality") == "partial"]
     evidence_analysis = {
-        "full_evidence":    {"n": len(full_ev),    "mean_alpha": _mean([e["alpha"] for e in full_ev])},
-        "partial_evidence": {"n": len(partial_ev), "mean_alpha": _mean([e["alpha"] for e in partial_ev])},
+        "full_evidence":    bucket_stats(full_ev),
+        "partial_evidence": bucket_stats(partial_ev),
     }
 
     return {
         "status":            "ok",
         "n":                 n,
+        "horizon":           horizon,
         "bucket_analysis":   bucket_analysis,
         "beta_confidence_analysis": beta_analysis,
         "evidence_quality_analysis": evidence_analysis,
+        "coverage_by_state": _coverage_summary(episodes),
         "note": (
             "Exploratory only — no ranking, weight, or model changes. "
-            "Minimum 60 episodes recommended for meaningful analysis. "
+            "Minimum 60 ACCEPTED episodes recommended. "
             "Simple conditional means; no significance testing."
         ),
     }
 
 
 if __name__ == "__main__":
-    print("=== Macro Attribution Analysis ===")
+    args = _parse_args()
+    print(f"=== Macro Attribution Analysis (horizon={args.horizon}) ===")
     print(f"DB: {DB_PATH}")
-    episodes = load_episodes_with_macro()
-    print(f"Loaded {len(episodes)} resolved supported episodes")
 
-    results = analyse(episodes)
+    episodes, total_rows, pre_accept = load_episodes_with_macro(
+        horizon=args.horizon,
+        include_pre_acceptance=args.include_pre_acceptance,
+        debug=args.debug,
+    )
+    print(f"Loaded {len(episodes)} resolved supported ACCEPTED episodes "
+          f"from {total_rows} total outcome rows at horizon={args.horizon}")
+
+    # Coverage report first
+    cov = _coverage_summary(episodes)
+    if cov:
+        print("\nCoverage by state:")
+        for state, count in sorted(cov.items()):
+            print(f"  {state}: {count}")
+
+    results = analyse(episodes, args.horizon)
     output = {
         "generated_at": datetime.utcnow().isoformat(),
+        "horizon":      args.horizon,
         "analysis":     results,
     }
     print(json.dumps(results, indent=2))

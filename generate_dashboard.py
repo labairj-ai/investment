@@ -242,20 +242,12 @@ def _load_macro_score_history(limit=60) -> dict:
 
 
 def _load_macro_health_snapshot() -> dict:
-    """Load the most recent macro health snapshot from DB (0492)."""
-    if not DB_PATH.exists():
-        return {}
+    """Compute current macro health on demand — not coupled to last scoring run (0499)."""
     try:
-        conn = sqlite3.connect(str(DB_PATH), timeout=5)
-        row = conn.execute(
-            "SELECT health_json FROM macro_health_snapshots ORDER BY captured_at DESC LIMIT 1"
-        ).fetchone()
-        conn.close()
-        if row and row[0]:
-            return json.loads(row[0])
+        from portfolio_ai import compute_macro_health
+        return compute_macro_health()
     except Exception:
-        pass
-    return {}
+        return {}
 
 
 def _load_macro_attribution_html() -> str:
@@ -880,28 +872,80 @@ def _build_regime_stress_section(macro_scores: dict, today_holdings_sorted: list
 
 
 def _build_macro_health_card(snap: dict) -> str:
-    """Build the Macro Data Health card HTML (0492)."""
+    """Build the Macro Data Health card HTML (0492/0499/0500)."""
     if not snap:
         return ''
-    supported   = snap.get("supported_count", 0)
-    unsupported = snap.get("unsupported_count", 0)
-    total       = supported + unsupported
-    cov         = snap.get("portfolio_coverage_pct", 0.0)
-    weak        = snap.get("weak_beta_count", 0)
-    drift       = snap.get("unexplained_drift_count", 0)
-    stale_f     = snap.get("stale_failed_count", 0)
-    run_id      = snap.get("run_id", "—")
+
+    # Portfolio-level coverage (from holding_macro_scores)
+    port_cov    = snap.get("portfolio_coverage", {})
+    supported   = port_cov.get("supported", snap.get("supported_count", 0))
+    unsupported = port_cov.get("unsupported", snap.get("unsupported_count", 0))
+    total       = port_cov.get("total", supported + unsupported)
+    cov         = port_cov.get("coverage_pct", snap.get("portfolio_coverage_pct", 0.0))
     cov_color   = "#22c55e" if cov >= 80 else ("#f59e0b" if cov >= 50 else "#ef4444")
+
+    weak    = snap.get("weak_beta_count", 0)
+    drift   = snap.get("unexplained_drift_count", 0)
+    stale_f = snap.get("stale_failed_count", 0)
+
+    # Scorer status
+    scorer_status = snap.get("scorer_status", "UNKNOWN")
+    last_run      = snap.get("latest_successful_run") or {}
+    run_age_h     = last_run.get("age_hours")
+    scorer_color  = "#22c55e" if scorer_status == "OK" else ("#ef4444" if scorer_status in ("WARNING","NO_RUNS") else "#94a3b8")
+    scorer_label  = f"{run_age_h:.0f}h ago" if run_age_h is not None else scorer_status
+
+    # Validation status (0497)
+    val_status   = snap.get("validation_status", "UNKNOWN")
+    val_color    = "#22c55e" if val_status == "ACCEPTED" else ("#f59e0b" if val_status == "PRE_ACCEPTANCE" else "#94a3b8")
+    val_contract = snap.get("validation_contract") or "—"
+
+    # Episode coverage breakdown — last 30 days (0500)
+    ep_cov     = snap.get("episode_coverage_30d") or {}
+    ep_warn    = snap.get("episode_coverage_warning", "")
+    ep_total   = sum(ep_cov.values()) if ep_cov else 0
+    ep_rows    = ""
+    state_colors = {
+        "company_supported": "#22c55e",
+        "fund_unsupported":  "#94a3b8",
+        "no_score_available":"#ef4444",
+        "stale_score":       "#f59e0b",
+        "macro_context_unavailable": "#f59e0b",
+        "unknown":           "#94a3b8",
+    }
+    if ep_cov and ep_total > 0:
+        parts = []
+        for state in ("company_supported","fund_unsupported","no_score_available",
+                      "stale_score","macro_context_unavailable","unknown"):
+            cnt = ep_cov.get(state, 0)
+            if cnt == 0:
+                continue
+            pct = 100 * cnt // ep_total
+            col = state_colors.get(state, "#94a3b8")
+            lbl = state.replace("_", " ")
+            parts.append(f'<span style="color:{col};">{lbl}: {cnt} ({pct}%)</span>')
+        ep_rows = " &nbsp;|&nbsp; ".join(parts)
+
+    cache_status = snap.get("macro_cache_status", "")
+    cache_age    = snap.get("macro_cache_age_hours")
+    cache_label  = f"cache {cache_age:.0f}h old" if cache_age is not None else cache_status
+
+    warn_html = f'<div style="color:#ef4444;font-size:11px;margin-top:4px;">{ep_warn}</div>' if ep_warn else ""
+
     return f'''
   <div style="margin-bottom:14px;padding:10px 14px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;">
     <div style="font-size:11px;font-weight:700;color:#64748b;letter-spacing:.07em;text-transform:uppercase;margin-bottom:6px;">Macro Data Health</div>
-    <div style="display:flex;flex-wrap:wrap;gap:18px;font-size:12px;color:#374151;">
-      <span>Coverage: <strong style="color:{cov_color};">{cov:.0f}%</strong> ({supported} company / {unsupported} unsupported of {total})</span>
+    <div style="display:flex;flex-wrap:wrap;gap:18px;font-size:12px;color:#374151;margin-bottom:4px;">
+      <span>Holdings coverage: <strong style="color:{cov_color};">{cov:.0f}%</strong> ({supported} company / {unsupported} unsupported of {total})</span>
+      <span>Scorer: <strong style="color:{scorer_color};">{scorer_label}</strong></span>
+      <span>Validation: <strong style="color:{val_color};">{val_status}</strong> {val_contract if val_status == "ACCEPTED" else ""}</span>
       <span>Weak betas: <strong>{weak}</strong></span>
-      <span>Unexplained drift: <strong>{drift}</strong></span>
+      <span>Drift: <strong>{drift}</strong></span>
       <span>Stale runs: <strong>{stale_f}</strong></span>
-      <span style="color:#94a3b8;">run {run_id[:8]}</span>
+      <span style="color:#94a3b8;">{cache_label}</span>
     </div>
+    {f'<div style="font-size:11px;color:#64748b;">Episodes (30d coverage): {ep_rows}</div>' if ep_rows else ''}
+    {warn_html}
   </div>'''
 
 
