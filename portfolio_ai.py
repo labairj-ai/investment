@@ -540,6 +540,7 @@ SECURITY_MASTER: dict[str, dict] = {
     "DVY":   {"security_type": "etf",         "fund_family": "iShares"},
     "NOBL":  {"security_type": "etf",         "fund_family": "ProShares"},
     "IGV":   {"security_type": "etf",         "fund_family": "iShares"},
+    "SLYV":  {"security_type": "etf",         "fund_family": "SPDR"},
     "GLD":   {"security_type": "etf",         "fund_family": "SPDR"},
     "SLV":   {"security_type": "etf",         "fund_family": "iShares"},
     "IAU":   {"security_type": "etf",         "fund_family": "iShares"},
