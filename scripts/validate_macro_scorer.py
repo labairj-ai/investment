@@ -113,10 +113,14 @@ Return ONLY valid JSON:
 
 # ── Module 1: Repeatability ───────────────────────────────────────────────────
 
-def run_repeatability(tickers: list, macro: dict) -> dict:
-    """Score each ticker REPEATS times with frozen inputs; compute mean/stddev per dimension."""
+def _run_repeatability_n(tickers: list, macro: dict, n: int) -> dict:
+    return run_repeatability(tickers, macro, n=n)
+
+
+def run_repeatability(tickers: list, macro: dict, n: int = REPEATS) -> dict:
+    """Score each ticker n times with frozen inputs; compute mean/stddev per dimension."""
     all_scores: dict = {t: {d: [] for d in DIMS} for t in tickers}
-    for rep in range(1, REPEATS + 1):
+    for rep in range(1, n + 1):
         print(f"  Repeat {rep}/{REPEATS}...")
         for tk in tickers:
             scores = _score_one_ticker(tk, macro)
@@ -586,7 +590,114 @@ def _count_fails(repeatability, anchor_cal, concordance, drift,
     return fails, warns, passes
 
 
+def _load_validation_config() -> dict:
+    """Load validation_config.json thresholds; return defaults if absent."""
+    config_path = PROJECT_DIR / "validation_config.json"
+    defaults = {
+        "version": "v1",
+        "thresholds": {
+            "schema_valid_pct": 100,
+            "ledger_integrity_pct": 100,
+            "same_input_score_max_range": 1,
+            "unexplained_large_swings": 0,
+            "anchor_ordering_failures": 0,
+            "beta_recovery_tolerance": 1.5,
+            "missing_data_unknown_pct": 100,
+            "fund_unsupported_pct": 100,
+            "provenance_completeness_pct": 100,
+        },
+        "n_repeats": 20,
+    }
+    if config_path.exists():
+        try:
+            loaded = json.loads(config_path.read_text())
+            defaults.update(loaded)
+        except Exception:
+            pass
+    return defaults
+
+
+def _get_commit_sha() -> str:
+    import subprocess
+    try:
+        return subprocess.run(
+            ["git", "rev-parse", "HEAD"], capture_output=True, text=True,
+            cwd=str(PROJECT_DIR)
+        ).stdout.strip()
+    except Exception:
+        return "unknown"
+
+
+def _get_model_identity() -> str:
+    try:
+        import ollama_client
+        return ollama_client.DEFAULT_MODEL
+    except Exception:
+        return "unknown"
+
+
+def _check_thresholds(results: dict, config: dict) -> dict:
+    """Evaluate module results against config thresholds. Returns per-check status + overall verdict."""
+    t = config.get("thresholds", {})
+    checks = {}
+
+    # Synthetic regression
+    synth = results.get("synthetic_regression", {})
+    checks["beta_recovery"] = "PASS" if synth.get("status") == "PASS" else "BLOCK"
+
+    # Regime direction
+    rd = results.get("regime_direction", {})
+    checks["missing_data_unknown"] = "PASS" if rd.get("status") == "PASS" else "BLOCK"
+
+    # Fund classification
+    fc = results.get("fund_classification", {})
+    checks["fund_unsupported"] = "PASS" if fc.get("status") == "PASS" else "BLOCK"
+
+    # Ledger integrity
+    li = results.get("ledger_integrity", {})
+    if li.get("status") == "SKIP":
+        checks["ledger_integrity"] = "SKIP"
+    else:
+        checks["ledger_integrity"] = "PASS" if li.get("status") == "PASS" else "BLOCK"
+
+    # Anchor calibration
+    anchor = results.get("anchor_calibration", {})
+    anchor_fails = sum(
+        1 for res in anchor.values()
+        for r in res.get("dims", {}).values()
+        if r.get("status") != "PASS"
+    )
+    checks["anchor_calibration"] = "PASS" if anchor_fails == 0 else "BLOCK"
+
+    # Drift (warn, not block)
+    drift = results.get("drift", {})
+    drift_flags = drift.get("drift_flags", [])
+    checks["unexplained_drift"] = "PASS" if not drift_flags else "WARN"
+
+    # Repeatability (warn if UNSTABLE)
+    repeatability = results.get("repeatability", {})
+    unstable = sum(
+        1 for dims in repeatability.values()
+        for r in dims.values() if r.get("status") == "UNSTABLE"
+    )
+    checks["repeatability"] = "PASS" if unstable == 0 else "WARN"
+
+    # Overall verdict: BLOCK if any check is BLOCK, else PASS
+    verdict = "BLOCK" if any(v == "BLOCK" for v in checks.values()) else "PASS"
+    return {"verdict": verdict, "per_check": checks}
+
+
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Macro scorer validation lab")
+    parser.add_argument("--live", action="store_true", help="Use live LLM for repeatability/anchor tests")
+    parser.add_argument("--n-repeats", type=int, default=None, help="Override repeat count")
+    parser.add_argument("--out", type=str, default=None, help="Output file path for acceptance record")
+    args = parser.parse_args()
+
+    config = _load_validation_config()
+    n_repeats_effective = args.n_repeats or (5 if args.live else REPEATS)
+
     import macro_context
     print("Loading macro context (frozen for validation)...")
     macro = macro_context.fetch()
@@ -598,11 +709,18 @@ def main():
     except Exception:
         tickers = []
 
-    print(f"\n1. Repeatability test ({len(tickers)} holdings, N={REPEATS})...")
-    repeatability = run_repeatability(tickers, macro) if tickers else {}
+    # LLM-dependent tests only run in --live mode
+    if args.live:
+        print(f"\n1. Repeatability test ({len(tickers)} holdings, N={n_repeats_effective}, LIVE)...")
+        repeatability = run_repeatability(tickers, macro, n=n_repeats_effective) if tickers else {}
 
-    print("\n2. Anchor calibration...")
-    anchor_cal = run_anchor_calibration(macro)
+        print("\n2. Anchor calibration (LIVE)...")
+        anchor_cal = run_anchor_calibration(macro)
+    else:
+        print("\n1. Repeatability test — SKIP (use --live to run with LLM)")
+        repeatability = {}
+        print("\n2. Anchor calibration — SKIP (use --live)")
+        anchor_cal = {}
 
     print("\n3. Factor vs LLM concordance...")
     concordance = run_concordance(tickers)
@@ -628,9 +746,7 @@ def main():
                                         synth, regime_tests, fund_tests, ledger)
     summary_status = "FAIL" if fails > 0 else ("WARN" if warns > 0 else "PASS")
 
-    output = {
-        "run_at":              time.strftime("%Y-%m-%d %H:%M:%S"),
-        "repeats":             REPEATS,
+    all_results = {
         "repeatability":       repeatability,
         "anchor_calibration":  anchor_cal,
         "concordance":         concordance,
@@ -639,6 +755,21 @@ def main():
         "regime_direction":    regime_tests,
         "fund_classification": fund_tests,
         "ledger_integrity":    ledger,
+    }
+    threshold_result = _check_thresholds(all_results, config)
+    verdict = threshold_result["verdict"]
+
+    output = {
+        "version":        "v1",
+        "timestamp":      time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "commit_sha":     _get_commit_sha(),
+        "model_identity": _get_model_identity(),
+        "live_mode":      args.live,
+        "n_repeats":      n_repeats_effective,
+        "config_used":    config,
+        "results":        all_results,
+        "threshold_checks": threshold_result,
+        "verdict":        verdict,
         "summary": {
             "status": summary_status,
             "fail":   fails,
@@ -646,12 +777,23 @@ def main():
             "pass":   passes,
         },
     }
-    OUT_PATH.parent.mkdir(exist_ok=True)
-    OUT_PATH.write_text(json.dumps(output, indent=2))
-    print(f"\nResults written to {OUT_PATH}")
-    print(f"Summary: {summary_status} — {fails} fail, {warns} warn, {passes} pass")
 
-    if fails:
+    # Determine output path — immutable timestamped acceptance record or standard path
+    if args.out:
+        out_path = Path(args.out)
+    elif args.live:
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        out_path = PROJECT_DIR / "out" / f"macro_validation_acceptance_{ts}.json"
+    else:
+        out_path = OUT_PATH
+
+    out_path.parent.mkdir(exist_ok=True)
+    out_path.write_text(json.dumps(output, indent=2))
+    print(f"\nResults written to {out_path}")
+    print(f"Summary: {summary_status} — {fails} fail, {warns} warn, {passes} pass")
+    print(f"Verdict: {verdict}")
+
+    if fails or verdict == "BLOCK":
         sys.exit(1)
 
 

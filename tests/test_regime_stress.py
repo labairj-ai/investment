@@ -156,3 +156,75 @@ def test_evidence_hash_changes_with_data():
     h1 = hashlib.sha256(json.dumps(ev1, sort_keys=True).encode()).hexdigest()
     h2 = hashlib.sha256(json.dumps(ev2, sort_keys=True).encode()).hexdigest()
     assert h1 != h2
+
+
+# ── Signed interaction quadrant tests (0491) ─────────────────────────────────
+# Full pipeline: regime dict → compute_regime_stress → compute_regime_adjusted_risk
+
+def _structural(rate=5, dollar=5, inflation_hedge=5, geo=5):
+    return {
+        "rate_sensitivity": {"score": rate},
+        "dollar_sensitivity": {"score": dollar},
+        "inflation_hedge": {"score": inflation_hedge},
+        "geopolitical_risk": {"score": geo},
+    }
+
+
+def test_rising_rates_high_sensitivity_adverse():
+    """Rising rates + high rate_sensitivity → positive (adverse) interaction."""
+    regime = {"rate": {"yield_10y_63d_chg_bps": 120}, "dollar": {}, "volatility": {}}
+    stress = compute_regime_stress(regime)
+    interactions = compute_regime_adjusted_risk(_structural(rate=9), stress)
+    assert interactions is not None
+    val = interactions.get("rate_sensitivity_regime_risk")
+    assert val is not None and val > 0, f"Expected positive adverse interaction, got {val}"
+
+
+def test_falling_rates_high_sensitivity_favorable():
+    """Falling rates + high rate_sensitivity → negative (favorable) interaction."""
+    regime = {"rate": {"yield_10y_63d_chg_bps": -120}, "dollar": {}, "volatility": {}}
+    stress = compute_regime_stress(regime)
+    interactions = compute_regime_adjusted_risk(_structural(rate=9), stress)
+    assert interactions is not None
+    val = interactions.get("rate_sensitivity_regime_risk")
+    assert val is not None and val < 0, f"Expected negative favorable interaction, got {val}"
+
+
+def test_high_inflation_high_hedge_mitigating():
+    """High inflation stress (proxied by rising rates) + high inflation_hedge → negative (mitigating)."""
+    regime = {"rate": {"yield_10y_63d_chg_bps": 150}, "dollar": {}, "volatility": {}}
+    stress = compute_regime_stress(regime)
+    interactions = compute_regime_adjusted_risk(_structural(inflation_hedge=9), stress)
+    assert interactions is not None
+    val = interactions.get("inflation_hedge_regime_risk")
+    assert val is not None and val < 0, f"Expected negative (mitigating) inflation_hedge interaction, got {val}"
+
+
+def test_high_inflation_low_hedge_no_protection():
+    """High inflation stress + low inflation_hedge → near-zero (score=1 → norm=0)."""
+    regime = {"rate": {"yield_10y_63d_chg_bps": 150}, "dollar": {}, "volatility": {}}
+    stress = compute_regime_stress(regime)
+    interactions = compute_regime_adjusted_risk(_structural(inflation_hedge=1), stress)
+    assert interactions is not None
+    val = interactions.get("inflation_hedge_regime_risk")
+    assert val is None or abs(val) < 0.05, f"Expected near-zero for low hedge, got {val}"
+
+
+def test_unknown_regime_input_produces_none_interaction():
+    """Missing regime data → None interaction (not zero)."""
+    stress = compute_regime_stress({"rate": {}, "dollar": {}, "volatility": {}})
+    interactions = compute_regime_adjusted_risk(_structural(rate=9, dollar=9), stress)
+    assert interactions is not None
+    assert interactions.get("rate_sensitivity_regime_risk") is None, \
+        f"Missing rate data should produce None interaction, got {interactions.get('rate_sensitivity_regime_risk')}"
+    assert interactions.get("dollar_sensitivity_regime_risk") is None, \
+        f"Missing dollar data should produce None interaction, got {interactions.get('dollar_sensitivity_regime_risk')}"
+
+
+def test_interaction_version_stored():
+    """compute_regime_adjusted_risk result carries interaction_version."""
+    from portfolio_ai import MACRO_INTERACTION_VERSION
+    stress = {"rate_stress": 0.5, "dollar_stress": 0.2, "vol_stress": 0.3, "geopolitical_stress": None, "note": "x"}
+    interactions = compute_regime_adjusted_risk(_structural(), stress)
+    assert interactions is not None
+    assert interactions.get("interaction_version") == MACRO_INTERACTION_VERSION

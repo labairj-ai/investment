@@ -360,11 +360,34 @@ def _init_ai_tables():
         conn.execute("ALTER TABLE macro_scoring_runs ADD COLUMN errors_json TEXT")
     except Exception:
         pass
+    # Health snapshots table (0492)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS macro_health_snapshots (
+            snapshot_id            TEXT PRIMARY KEY,
+            run_id                 TEXT,
+            captured_at            TEXT,
+            supported_count        INTEGER,
+            unsupported_count      INTEGER,
+            portfolio_coverage_pct REAL,
+            stale_series_json      TEXT,
+            unknown_regime_fields_json TEXT,
+            weak_beta_count        INTEGER,
+            unexplained_drift_count INTEGER,
+            stale_failed_count     INTEGER,
+            health_json            TEXT
+        )
+    """)
+    # macro_snapshot column on decision_episodes (0494)
+    try:
+        conn.execute("ALTER TABLE decision_episodes ADD COLUMN macro_snapshot TEXT")
+    except Exception:
+        pass
     conn.commit()
     conn.close()
 
 
 MACRO_SCORE_SCHEMA_VERSION = "v1"
+MACRO_INTERACTION_VERSION = "macro_interaction_v1"
 _MACRO_SCORE_DIMS = ("rate_sensitivity", "inflation_hedge", "dollar_sensitivity", "geopolitical_risk")
 
 # Canonical security master — single source of truth for security type classification.
@@ -1630,6 +1653,90 @@ def _compute_equity_betas(ticker: str, lookback_days: int = 365) -> dict:
         return {}
 
 
+def _compute_macro_health_snapshot(run_id: str, conn: sqlite3.Connection) -> dict:
+    """Compute a health/coverage snapshot for the current scoring run (0492)."""
+    snap: dict = {"run_id": run_id, "captured_at": datetime.now().isoformat()}
+    try:
+        rows = conn.execute(
+            "SELECT scores FROM holding_macro_scores ORDER BY scored_at DESC LIMIT 200"
+        ).fetchall()
+        supported = unsupported = 0
+        for (scores_json,) in rows:
+            try:
+                s = json.loads(scores_json)
+                if s.get("evidence_quality") == "unsupported" or s.get("is_fund"):
+                    unsupported += 1
+                else:
+                    supported += 1
+            except Exception:
+                pass
+        total = supported + unsupported
+        snap["supported_count"] = supported
+        snap["unsupported_count"] = unsupported
+        snap["portfolio_coverage_pct"] = round(100 * supported / total, 1) if total else 0.0
+
+        stale_failed = conn.execute(
+            "SELECT COUNT(*) FROM macro_scoring_runs WHERE status='STALE_FAILED'"
+        ).fetchone()[0]
+        snap["stale_failed_count"] = stale_failed
+
+        weak_count = conn.execute(
+            "SELECT COUNT(*) FROM holding_macro_scores WHERE "
+            "scores LIKE '%\"weak\"%' OR scores LIKE '%\"insufficient_data\"%'"
+        ).fetchone()[0]
+        snap["weak_beta_count"] = weak_count
+
+        drift_count = 0
+        tickers = conn.execute(
+            "SELECT DISTINCT ticker FROM holding_macro_scores_history"
+        ).fetchall()
+        for (ticker,) in tickers:
+            hist = conn.execute(
+                "SELECT scores, evidence_hash FROM holding_macro_scores_history "
+                "WHERE ticker=? ORDER BY scored_at DESC LIMIT 2", (ticker,)
+            ).fetchall()
+            if len(hist) == 2:
+                try:
+                    s1 = json.loads(hist[0][0]); s2 = json.loads(hist[1][0])
+                    h1 = hist[0][1]; h2 = hist[1][1]
+                    if h1 and h2 and h1 == h2:
+                        for dim in _MACRO_SCORE_DIMS:
+                            v1 = _score_val(s1.get(dim)) or 5
+                            v2 = _score_val(s2.get(dim)) or 5
+                            if abs(v1 - v2) > 1:
+                                drift_count += 1
+                                break
+                except Exception:
+                    pass
+        snap["unexplained_drift_count"] = drift_count
+        snap["stale_series_json"] = None
+        snap["unknown_regime_fields_json"] = None
+        snap["health_json"] = json.dumps(snap)
+    except Exception as e:
+        snap["error"] = str(e)
+        snap["health_json"] = json.dumps(snap)
+    return snap
+
+
+def _reconcile_stale_runs(conn: sqlite3.Connection, stale_threshold_minutes: int = 60) -> int:
+    """Transition STARTED runs older than threshold to STALE_FAILED (0493). Returns count updated."""
+    try:
+        cutoff = (datetime.now() - timedelta(minutes=stale_threshold_minutes)).strftime("%Y-%m-%d %H:%M:%S")
+        cursor = conn.execute(
+            "UPDATE macro_scoring_runs SET status='STALE_FAILED', errors_json=? "
+            "WHERE status='STARTED' AND run_at < ?",
+            (json.dumps(["Reconciled: process likely crashed — no FAILED written"]), cutoff)
+        )
+        conn.commit()
+        count = cursor.rowcount
+        if count > 0:
+            print(f"[MacroScores] Reconciled {count} stale STARTED run(s) → STALE_FAILED")
+        return count
+    except Exception as e:
+        print(f"[MacroScores] WARNING: stale run reconciliation failed: {e}")
+        return 0
+
+
 def generate_holding_macro_scores(force: bool = False) -> dict:
     """
     Score each holding on 4 macro dimensions (1–10 scale).
@@ -1711,6 +1818,7 @@ def generate_holding_macro_scores(force: bool = False) -> dict:
     # sqlite3.connect() creates the DB file if absent; no DB_PATH.exists() guard needed (0485).
     try:
         conn = sqlite3.connect(str(DB_PATH), timeout=10)
+        _reconcile_stale_runs(conn)  # transition old STARTED rows to STALE_FAILED (0493)
         conn.execute(
             "INSERT OR REPLACE INTO macro_scoring_runs "
             "(run_id, run_at, expected_n, scored_n, failed_n, coverage_pct, model_ver, schema_ver, macro_hash, status) "
@@ -1864,6 +1972,7 @@ Return ONLY valid JSON. Each dimension must include a score AND a one-sentence r
                     run_errors.append({"tickers": [ticker], "error": f"validation: {ve}"})
                     continue
                 scores["schema_version"] = MACRO_SCORE_SCHEMA_VERSION
+                scores["interaction_version"] = MACRO_INTERACTION_VERSION
                 # Attach evidence quality (per-dimension + overall) and betas (0473, 0476, 0483)
                 ev = evidence_by_ticker.get(ticker) or _fetch_company_evidence(ticker, _evidence_conn)
                 scores["evidence_quality"]           = ev.get("evidence_quality", "none")
@@ -1965,6 +2074,28 @@ Return ONLY valid JSON. Each dimension must include a score AND a one-sentence r
 
     if to_score and results:
         generate_macro_score_summary(results, macro)
+
+    # Capture health snapshot (0492)
+    try:
+        snap_conn = sqlite3.connect(str(DB_PATH), timeout=10)
+        snap = _compute_macro_health_snapshot(run_id, snap_conn)
+        snap_id = str(uuid.uuid4())
+        snap_conn.execute(
+            "INSERT OR REPLACE INTO macro_health_snapshots "
+            "(snapshot_id, run_id, captured_at, supported_count, unsupported_count, "
+            "portfolio_coverage_pct, stale_series_json, unknown_regime_fields_json, "
+            "weak_beta_count, unexplained_drift_count, stale_failed_count, health_json) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (snap_id, run_id, snap.get("captured_at"), snap.get("supported_count", 0),
+             snap.get("unsupported_count", 0), snap.get("portfolio_coverage_pct", 0.0),
+             snap.get("stale_series_json"), snap.get("unknown_regime_fields_json"),
+             snap.get("weak_beta_count", 0), snap.get("unexplained_drift_count", 0),
+             snap.get("stale_failed_count", 0), snap.get("health_json")),
+        )
+        snap_conn.commit()
+        snap_conn.close()
+    except Exception as e:
+        print(f"[MacroScores] WARNING: health snapshot write failed: {e}")
 
     return results
 
@@ -2263,6 +2394,13 @@ def compute_regime_adjusted_risk(scores: dict, regime_stress: dict):
 
     When regime_stress for a dimension is None, that dimension's result is None.
     EXPERIMENTAL — research only. Do not use for recommendations or sizing.
+
+    Sign convention (macro_interaction_v1):
+      rate:            positive = adverse (rising rates hurt rate-sensitive names)
+      dollar:          positive = adverse (strong dollar hurts dollar-sensitive names)
+      inflation_hedge: negative = favorable (strong hedge offsets inflation pressure)
+      geopolitical:    None until real signal source exists
+    All interactions: +1 = max adverse, 0 = neutral, -1 = max favorable
     """
     if not scores or not regime_stress:
         return None
@@ -2289,6 +2427,7 @@ def compute_regime_adjusted_risk(scores: dict, regime_stress: dict):
 
     # Geopolitical: no signal yet
     result["geopolitical_risk_regime_risk"] = None
+    result["interaction_version"] = MACRO_INTERACTION_VERSION
     result["note"] = "EXPERIMENTAL — research only"
     return result
 

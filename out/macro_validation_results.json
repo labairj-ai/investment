@@ -1,0 +1,240 @@
+{
+  "version": "v1",
+  "timestamp": "2026-09-19T15:29:35Z",
+  "commit_sha": "6dd7626dfe81d0d75b19678883078366b0297b4d",
+  "model_identity": "mlx-community/Qwen3.6-35B-A3B-4bit",
+  "live_mode": false,
+  "n_repeats": 20,
+  "config_used": {
+    "version": "v1",
+    "thresholds": {
+      "schema_valid_pct": 100,
+      "ledger_integrity_pct": 100,
+      "same_input_score_max_range": 1,
+      "unexplained_large_swings": 0,
+      "anchor_ordering_failures": 0,
+      "beta_recovery_tolerance": 1.5,
+      "missing_data_unknown_pct": 100,
+      "fund_unsupported_pct": 100,
+      "provenance_completeness_pct": 100
+    },
+    "n_repeats": 20
+  },
+  "results": {
+    "repeatability": {},
+    "anchor_calibration": {},
+    "concordance": {
+      "skipped": true,
+      "reason": "no tickers with both beta and LLM score"
+    },
+    "drift": {
+      "skipped": true,
+      "reason": "no such column: evidence_hash"
+    },
+    "synthetic_regression": {
+      "status": "PASS",
+      "tests": [
+        {
+          "test": "rate_beta_truth",
+          "recovered": -4.808,
+          "expected": -5.0,
+          "tol": 1.5,
+          "status": "PASS"
+        },
+        {
+          "test": "usd_beta_truth",
+          "recovered": 2.372,
+          "expected": 2.0,
+          "tol": 1.5,
+          "status": "PASS"
+        },
+        {
+          "test": "market_beta_truth",
+          "recovered": 0.815,
+          "expected": 0.8,
+          "tol": 0.5,
+          "status": "PASS"
+        }
+      ]
+    },
+    "regime_direction": {
+      "status": "PASS",
+      "tests": [
+        {
+          "test": "rising_rates_positive",
+          "status": "PASS"
+        },
+        {
+          "test": "falling_rates_negative",
+          "status": "PASS"
+        },
+        {
+          "test": "missing_rate_is_none",
+          "status": "PASS"
+        },
+        {
+          "test": "strong_dollar_positive",
+          "status": "PASS"
+        },
+        {
+          "test": "weak_dollar_negative",
+          "status": "PASS"
+        },
+        {
+          "test": "missing_dollar_is_none",
+          "status": "PASS"
+        },
+        {
+          "test": "high_vix_positive",
+          "status": "PASS"
+        },
+        {
+          "test": "missing_vix_is_none",
+          "status": "PASS"
+        },
+        {
+          "test": "geo_stress_always_none",
+          "status": "PASS"
+        },
+        {
+          "test": "rate_stress_clamped_at_plus1",
+          "status": "PASS"
+        },
+        {
+          "test": "rate_stress_clamped_at_neg1",
+          "status": "PASS"
+        }
+      ]
+    },
+    "fund_classification": {
+      "status": "PASS",
+      "tickers": [
+        {
+          "ticker": "VTSAX",
+          "expected": "fund",
+          "got": "fund",
+          "status": "PASS"
+        },
+        {
+          "ticker": "VFIAX",
+          "expected": "fund",
+          "got": "fund",
+          "status": "PASS"
+        },
+        {
+          "ticker": "VTMGX",
+          "expected": "fund",
+          "got": "fund",
+          "status": "PASS"
+        },
+        {
+          "ticker": "FSPTX",
+          "expected": "fund",
+          "got": "fund",
+          "status": "PASS"
+        },
+        {
+          "ticker": "FXAIX",
+          "expected": "fund",
+          "got": "fund",
+          "status": "PASS"
+        },
+        {
+          "ticker": "VVIAX",
+          "expected": "fund",
+          "got": "fund",
+          "status": "PASS"
+        },
+        {
+          "ticker": "SPY",
+          "expected": "fund",
+          "got": "fund",
+          "status": "PASS"
+        },
+        {
+          "ticker": "QQQ",
+          "expected": "fund",
+          "got": "fund",
+          "status": "PASS"
+        },
+        {
+          "ticker": "SCHD",
+          "expected": "fund",
+          "got": "fund",
+          "status": "PASS"
+        },
+        {
+          "ticker": "BIL",
+          "expected": "fund",
+          "got": "fund",
+          "status": "PASS"
+        },
+        {
+          "ticker": "VNQ",
+          "expected": "fund",
+          "got": "fund",
+          "status": "PASS"
+        },
+        {
+          "ticker": "TLT",
+          "expected": "fund",
+          "got": "fund",
+          "status": "PASS"
+        },
+        {
+          "ticker": "AAPL",
+          "expected": "company",
+          "got": "company",
+          "status": "PASS"
+        },
+        {
+          "ticker": "GRMN",
+          "expected": "company",
+          "got": "company",
+          "status": "PASS"
+        },
+        {
+          "ticker": "MSTR",
+          "expected": "company",
+          "got": "company",
+          "status": "PASS"
+        },
+        {
+          "ticker": "NVDA",
+          "expected": "company",
+          "got": "company",
+          "status": "PASS"
+        },
+        {
+          "ticker": "AMZN",
+          "expected": "company",
+          "got": "company",
+          "status": "PASS"
+        }
+      ]
+    },
+    "ledger_integrity": {
+      "status": "SKIP",
+      "reason": "no such table: macro_scoring_runs"
+    }
+  },
+  "threshold_checks": {
+    "verdict": "PASS",
+    "per_check": {
+      "beta_recovery": "PASS",
+      "missing_data_unknown": "PASS",
+      "fund_unsupported": "PASS",
+      "ledger_integrity": "SKIP",
+      "anchor_calibration": "PASS",
+      "unexplained_drift": "PASS",
+      "repeatability": "PASS"
+    }
+  },
+  "verdict": "PASS",
+  "summary": {
+    "status": "PASS",
+    "fail": 0,
+    "warn": 0,
+    "pass": 28
+  }
+}

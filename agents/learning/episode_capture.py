@@ -26,6 +26,47 @@ import agent_db
 _FEATURE_SCHEMA_VERSION = "v1"
 
 
+def _build_macro_snapshot(ticker: str, conn) -> str:
+    """Load latest macro scores for ticker and build macro_snapshot JSON (0494, read-only)."""
+    try:
+        import sys, os
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+        from portfolio_ai import is_fund
+        if is_fund(ticker):
+            snap = {"macro_supported": False, "reason": "fund/etf — no constituent evidence"}
+            return json.dumps(snap)
+        row = conn.execute(
+            "SELECT scores, scored_at FROM holding_macro_scores "
+            "WHERE ticker=? ORDER BY scored_at DESC LIMIT 1",
+            (ticker,)
+        ).fetchone()
+        if not row:
+            return json.dumps({"macro_supported": False, "reason": "no macro scores available"})
+        scores_json, scored_at = row[0], row[1]
+        try:
+            scores = json.loads(scores_json)
+        except Exception:
+            return json.dumps({"macro_supported": False, "reason": "scores parse error"})
+        return json.dumps({
+            "macro_supported":           True,
+            "rate_sensitivity":          scores.get("rate_sensitivity"),
+            "dollar_sensitivity":        scores.get("dollar_sensitivity"),
+            "inflation_hedge":           scores.get("inflation_hedge"),
+            "geopolitical_risk":         scores.get("geopolitical_risk"),
+            "evidence_quality":          scores.get("evidence_quality"),
+            "rate_beta_100bp_return_pct": scores.get("rate_beta_100bp_return_pct"),
+            "usd_beta_1pct_return_pct":  scores.get("usd_beta_1pct_return_pct"),
+            "rate_beta_confidence":      scores.get("rate_beta_confidence"),
+            "run_id":                    scores.get("run_id"),
+            "model_version":             scores.get("model_version"),
+            "schema_version":            scores.get("schema_version"),
+            "evidence_hash":             scores.get("evidence_hash"),
+            "scored_at":                 scored_at,
+        })
+    except Exception as e:
+        return json.dumps({"macro_supported": False, "reason": f"error: {e}"})
+
+
 def capture_candidate_episode(
     run_id: int,
     candidate: dict,
@@ -81,6 +122,17 @@ def capture_candidate_episode(
                 snapshot_json, base_score, agent_db.CODE_COMMIT_SHA,
             ),
         )
+        # Attach macro snapshot read-only (0494) — never influences scoring/ranking
+        try:
+            macro_snap_json = _build_macro_snapshot(candidate["ticker"], conn)
+            conn.execute(
+                "UPDATE decision_episodes SET macro_snapshot=? "
+                "WHERE episode_id=? AND macro_snapshot IS NULL",
+                (macro_snap_json, episode_id),
+            )
+        except Exception as snap_e:
+            print(f"[episode_capture] WARNING: macro_snapshot attachment failed for "
+                  f"{candidate.get('ticker')}: {snap_e}")
         conn.commit()
         conn.close()
     except Exception as e:

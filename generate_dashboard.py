@@ -241,6 +241,49 @@ def _load_macro_score_history(limit=60) -> dict:
         return {}
 
 
+def _load_macro_health_snapshot() -> dict:
+    """Load the most recent macro health snapshot from DB (0492)."""
+    if not DB_PATH.exists():
+        return {}
+    try:
+        conn = sqlite3.connect(str(DB_PATH), timeout=5)
+        row = conn.execute(
+            "SELECT health_json FROM macro_health_snapshots ORDER BY captured_at DESC LIMIT 1"
+        ).fetchone()
+        conn.close()
+        if row and row[0]:
+            return json.loads(row[0])
+    except Exception:
+        pass
+    return {}
+
+
+def _load_macro_attribution_html() -> str:
+    """Load latest macro_attribution JSON and render a summary snippet (0495)."""
+    try:
+        attr_files = sorted((DB_PATH.parent).glob("macro_attribution_*.json"), reverse=True)
+        if not attr_files:
+            return "No attribution data yet. Run <code>venv/bin/python scripts/macro_attribution.py</code> after ≥60 resolved episodes accumulate."
+        latest = json.loads(attr_files[0].read_text())
+        analysis = latest.get("analysis", {})
+        if analysis.get("status") == "insufficient_data":
+            n = analysis.get("n", 0)
+            return f"Insufficient data: {n} resolved supported episodes. Need ≥60 for meaningful analysis."
+        n = analysis.get("n", "?")
+        lines = [f"<strong>n={n} resolved supported episodes</strong>"]
+        bucket = analysis.get("bucket_analysis", {})
+        for dim, buckets in bucket.items():
+            hi = buckets.get("high_7plus", {}); lo = buckets.get("low_3minus", {})
+            hi_alpha = f"{hi.get('mean_alpha', 0):.4f}" if hi.get("mean_alpha") is not None else "—"
+            lo_alpha = f"{lo.get('mean_alpha', 0):.4f}" if lo.get("mean_alpha") is not None else "—"
+            lines.append(f"{dim}: high(n={hi.get('n',0)}) α={hi_alpha} | low(n={lo.get('n',0)}) α={lo_alpha}")
+        ts = attr_files[0].name.replace("macro_attribution_","").replace(".json","")
+        lines.append(f"<span style='color:#94a3b8;font-size:11px;'>Generated {ts} — exploratory, no model changes</span>")
+        return "<br>".join(lines)
+    except Exception as e:
+        return f"Error loading attribution data: {e}"
+
+
 def _load_macro_summary() -> dict | None:
     """Load the most recent AI-generated macro score summary from DB."""
     if not DB_PATH.exists():
@@ -836,8 +879,35 @@ def _build_regime_stress_section(macro_scores: dict, today_holdings_sorted: list
     </div>'''
 
 
+def _build_macro_health_card(snap: dict) -> str:
+    """Build the Macro Data Health card HTML (0492)."""
+    if not snap:
+        return ''
+    supported   = snap.get("supported_count", 0)
+    unsupported = snap.get("unsupported_count", 0)
+    total       = supported + unsupported
+    cov         = snap.get("portfolio_coverage_pct", 0.0)
+    weak        = snap.get("weak_beta_count", 0)
+    drift       = snap.get("unexplained_drift_count", 0)
+    stale_f     = snap.get("stale_failed_count", 0)
+    run_id      = snap.get("run_id", "—")
+    cov_color   = "#22c55e" if cov >= 80 else ("#f59e0b" if cov >= 50 else "#ef4444")
+    return f'''
+  <div style="margin-bottom:14px;padding:10px 14px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;">
+    <div style="font-size:11px;font-weight:700;color:#64748b;letter-spacing:.07em;text-transform:uppercase;margin-bottom:6px;">Macro Data Health</div>
+    <div style="display:flex;flex-wrap:wrap;gap:18px;font-size:12px;color:#374151;">
+      <span>Coverage: <strong style="color:{cov_color};">{cov:.0f}%</strong> ({supported} company / {unsupported} unsupported of {total})</span>
+      <span>Weak betas: <strong>{weak}</strong></span>
+      <span>Unexplained drift: <strong>{drift}</strong></span>
+      <span>Stale runs: <strong>{stale_f}</strong></span>
+      <span style="color:#94a3b8;">run {run_id[:8]}</span>
+    </div>
+  </div>'''
+
+
 def _build_macro_risk_section(macro_scores, macro_history, wow_deltas,
-                               trend_data, today_holdings_sorted, portfolio_health) -> str:
+                               trend_data, today_holdings_sorted, portfolio_health,
+                               macro_health_snap=None) -> str:
     """Build the full standalone MACRO RISK DASHBOARD section HTML."""
     if not macro_scores:
         return ''
@@ -1177,6 +1247,7 @@ def _build_macro_risk_section(macro_scores, macro_history, wow_deltas,
         scored_label = 'No scoring data yet'
 
     regime_stress_section = _build_regime_stress_section(macro_scores, today_holdings_sorted)
+    health_card_html = _build_macro_health_card(macro_health_snap or {})
 
     return f'''
   <!-- Macro Risk Dashboard -->
@@ -1188,6 +1259,7 @@ def _build_macro_risk_section(macro_scores, macro_history, wow_deltas,
     <div style="margin-bottom:12px;padding:6px 10px;background:#fefce8;border:1px solid #fde68a;border-radius:6px;">
       <span style="font-size:11px;color:#92400e;">⚠ Scores are AI structural exposure estimates (v1) — not derived from measured company data. Do not use as ML training features or risk-engine gates until 0467 deterministic factors are complete.</span>
     </div>
+    {health_card_html}
     {trend_section}
     {summary_section}
     {heatmap_section}
@@ -1208,6 +1280,7 @@ def build_dashboard(portfolio, layers, holdings):
     today_holdings, today_layers, total_value_csv = rebuild_today_holdings(today_date, holdings, csv_holdings)
     macro_scores = _load_macro_scores()
     macro_history = _load_macro_score_history()
+    macro_health_snap = _load_macro_health_snapshot()
 
     today_holdings_sorted = sorted(today_holdings, key=lambda h: (h["layer"], -h["value"]))
     portfolio_health = _compute_portfolio_macro_health(today_holdings_sorted, macro_scores)
@@ -1222,7 +1295,7 @@ def build_dashboard(portfolio, layers, holdings):
     trend_data  = _build_macro_trend_data(macro_history, today_holdings_sorted)
     macro_risk_section = _build_macro_risk_section(
         macro_scores, macro_history, wow_deltas, trend_data,
-        today_holdings_sorted, portfolio_health,
+        today_holdings_sorted, portfolio_health, macro_health_snap,
     )
 
     total_v = total_value_csv
@@ -1564,6 +1637,9 @@ def build_dashboard(portfolio, layers, holdings):
         cc_trade_count = int(_life["n"]  or 0)
     except Exception:
         pass
+
+    # Macro attribution stub (0495) — load latest result if available
+    macro_attr_html = _load_macro_attribution_html()
 
     generated_at = datetime.now(TZ).strftime("%A, %B %d, %Y at %I:%M %p ET")
     chg_class_main = "pos" if total_chg >= 0 else "neg"
@@ -3299,6 +3375,15 @@ def build_dashboard(portfolio, layers, holdings):
       <h3 style="margin:0 0 4px;font-size:14px;font-weight:700;color:#2d3748;">Champion vs Challenger Portfolio</h3>
       <p style="margin:0 0 12px;font-size:12px;color:#718096;">Virtual portfolio comparison — both books use identical execution assumptions. Champion follows the accepted recommendation; Challenger follows the PAPER_ACTIVE model's pick.</p>
       <div id="learning-cc-portfolio" style="color:#718096;font-size:13px;">Loading…</div>
+    </div>
+
+    <!-- Macro Attribution (0495) -->
+    <div style="background:#fff;border-radius:10px;padding:18px 22px;box-shadow:0 1px 4px rgba(0,0,0,.07);border-left:3px solid #e2e8f0;">
+      <h3 style="margin:0 0 4px;font-size:14px;font-weight:700;color:#2d3748;">Macro Attribution</h3>
+      <p style="margin:0 0 10px;font-size:12px;color:#718096;">Exploratory: does macro context at decision time explain subsequent alpha? Available after ≥60 resolved episodes with macro snapshots. Run <code>venv/bin/python scripts/macro_attribution.py</code> to update.</p>
+      <div id="macro-attribution-stub" style="font-size:12px;color:#94a3b8;padding:8px 0;">
+        {macro_attr_html}
+      </div>
     </div>
 
   </div>

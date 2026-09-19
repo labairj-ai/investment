@@ -1,0 +1,15 @@
+{
+  "version": "v1",
+  "thresholds": {
+    "schema_valid_pct": 100,
+    "ledger_integrity_pct": 100,
+    "same_input_score_max_range": 1,
+    "unexplained_large_swings": 0,
+    "anchor_ordering_failures": 0,
+    "beta_recovery_tolerance": 1.5,
+    "missing_data_unknown_pct": 100,
+    "fund_unsupported_pct": 100,
+    "provenance_completeness_pct": 100
+  },
+  "n_repeats": 20
+}
