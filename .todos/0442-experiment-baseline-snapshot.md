@@ -1,7 +1,7 @@
 # Freeze Experiment Baseline Before Results Arrive
 
 - **ID:** 0442
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-18
 - **Priority:** normal
 - **Depends:** 0438

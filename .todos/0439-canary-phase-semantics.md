@@ -1,7 +1,7 @@
 # Fix Canary Phase Semantics and Cohort Invariant
 
 - **ID:** 0439
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-18
 - **Priority:** normal
 - **Depends:** 0435

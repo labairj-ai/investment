@@ -261,6 +261,7 @@ def score_for_observe(
             ) from _cnt_err
 
         # 0418/0425: mark sweep COMPLETED or PARTIAL; use full ISO timestamp for completed_at
+        _is_overcount = actual_count > len(candidates)
         if sweep_row_id is not None:
             try:
                 now_complete = datetime.now(timezone.utc).isoformat()
@@ -269,7 +270,7 @@ def score_for_observe(
                 elif actual_count < len(candidates):
                     final_status = "PARTIAL"
                 else:
-                    # 0431: actual > expected is an integrity error
+                    # 0431/0441: actual > expected is a structural integrity error
                     final_status = "FAILED"
                 conn.execute(
                     """UPDATE learning_sweep_runs
@@ -280,6 +281,13 @@ def score_for_observe(
                 conn.commit()
             except Exception:
                 pass
+        # 0441: raise AFTER persisting FAILED so the record is durable before unwinding
+        if _is_overcount:
+            from agents.learning.calibration import LearningIntegrityError
+            raise LearningIntegrityError(
+                f"[challenger] overcount for {model_version} cohort={cohort_id}: "
+                f"actual={actual_count} > expected={len(candidates)}"
+            )
 
     except Exception as e:
         # 0415: log at ERROR level — silent pass previously hid full scoring failures

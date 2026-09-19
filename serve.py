@@ -5901,6 +5901,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             from agents.learning.calibration import learning_readiness_report
             conn = agent_db._connect()
             report = learning_readiness_report(conn)
+            # 0442: attach experiment baseline snapshot if it exists
+            _baseline_path = Path(__file__).resolve().parent / "config" / "experiment_baseline.json"
+            if _baseline_path.exists():
+                try:
+                    report["experiment_baseline"] = json.loads(_baseline_path.read_text())
+                except Exception:
+                    report["experiment_baseline"] = None
+            else:
+                report["experiment_baseline"] = None
             body = json.dumps({"ok": True, "report": report}).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")

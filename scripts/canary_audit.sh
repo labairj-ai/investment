@@ -59,8 +59,9 @@ if [ -z "$AGENT_RUN_ID" ]; then
 else
     # ── Full invocation audit: all models in this OH run ─────────────────────────
     echo "--- Invocation audit for agent_run_id=$AGENT_RUN_ID ---"
+    # 0439: include phase so parity check uses sweep-time state, not current lifecycle_state
     ALL_ROWS=$(sqlite3 "$DB" \
-        "SELECT model_version||'|'||cohort_id||'|'||expected_candidates||'|'||scored_candidates||'|'||status \
+        "SELECT model_version||'|'||cohort_id||'|'||expected_candidates||'|'||scored_candidates||'|'||status||'|'||COALESCE(phase,'') \
          FROM learning_sweep_runs WHERE agent_run_id='$AGENT_RUN_ID' ORDER BY id ASC" \
         2>/dev/null)
 
@@ -70,8 +71,19 @@ else
     else
         N_MODELS=$(echo "$ALL_ROWS" | wc -l | tr -d ' ')
         echo "  Models in invocation: $N_MODELS"
+
+        # 0439: exactly one cohort_id per OH invocation
+        _N_COHORTS=$(sqlite3 "$DB" \
+            "SELECT COUNT(DISTINCT cohort_id) FROM learning_sweep_runs WHERE agent_run_id='$AGENT_RUN_ID'" \
+            2>/dev/null)
+        if [ "$_N_COHORTS" = "1" ]; then
+            echo "  PASS  single cohort per invocation (cohort_id distinct count=1)"
+        else
+            echo "  FAIL  multiple cohort_ids in invocation (got $_N_COHORTS, expected 1)"
+            FAIL=1
+        fi
         echo ""
-        while IFS='|' read -r _MV _CID _EXP _SCO _STATUS; do
+        while IFS='|' read -r _MV _CID _EXP _SCO _STATUS _PHASE; do
             echo "  Model: $_MV"
             # 2. Each model sweep must be COMPLETED + exact
             if [ "$_STATUS" != "COMPLETED" ]; then
@@ -136,9 +148,14 @@ else
                 FAIL=1
             fi
             # 8. Variant parity (PAPER_ACTIVE only)
-            _IS_PA=$(sqlite3 "$DB" \
-                "SELECT lifecycle_state FROM learning_models WHERE model_version='$_MV'" \
-                2>/dev/null)
+            # 0439: prefer phase from ledger row (sweep-time state); fall back to current lifecycle_state
+            if [ -n "$_PHASE" ]; then
+                _IS_PA="$_PHASE"
+            else
+                _IS_PA=$(sqlite3 "$DB" \
+                    "SELECT lifecycle_state FROM learning_models WHERE model_version='$_MV'" \
+                    2>/dev/null)
+            fi
             if [ "$_IS_PA" = "PAPER_ACTIVE" ]; then
                 _SHADOW_EP=$(sqlite3 "$DB" \
                     "SELECT episode_id FROM model_observations WHERE decision_cohort_id='$_CID' AND model_version='$_MV' AND would_select=1 LIMIT 1" \

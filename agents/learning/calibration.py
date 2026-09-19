@@ -123,6 +123,24 @@ class DataHealthBlockError(Exception):
     """Raised by train_and_save() when compute_data_health() returns overall='block'. (0376)"""
 
 
+class LearningPipelineError(Exception):
+    """Base for all learning-loop structural failures. Catch this to handle any pipeline error."""
+
+
+class LearningEvidenceUnavailable(LearningPipelineError):
+    """Raised by evidence helpers when a DB error makes ledger state unreadable (0440).
+
+    Callers must treat this as BLOCK — do NOT proceed as if there is simply no evidence.
+    """
+
+
+class LearningIntegrityError(LearningPipelineError):
+    """Raised when an observation count is structurally impossible (e.g. actual > expected) (0441).
+
+    Indicates cohort reuse, duplicate observations, or broken uniqueness. Fatal: do not continue.
+    """
+
+
 class ChallengerModel:
     """Shrinkage-regularized ridge model predicting 90d SPY alpha."""
 
@@ -683,6 +701,8 @@ def eligible_learning_cohorts(conn, model_version: str) -> frozenset:
 
     Non-overlap guarantee (0436): learning_sweep_runs has UNIQUE(model_version, cohort_id), so a
     cohort_id appears in exactly one of eligible_learning_cohorts or _ineligible_ledger_cohorts.
+
+    Raises LearningEvidenceUnavailable (0440) on DB error — callers must treat as BLOCK, not empty.
     """
     try:
         rows = conn.execute(
@@ -692,8 +712,10 @@ def eligible_learning_cohorts(conn, model_version: str) -> frozenset:
             (model_version,),
         ).fetchall()
         return frozenset(r["cohort_id"] for r in rows)
-    except Exception:
-        return frozenset()
+    except Exception as _e:
+        raise LearningEvidenceUnavailable(
+            f"eligible_learning_cohorts query failed for {model_version}: {_e}"
+        ) from _e
 
 
 def _ineligible_ledger_cohorts(conn, model_version: str) -> frozenset:
@@ -704,6 +726,8 @@ def _ineligible_ledger_cohorts(conn, model_version: str) -> frozenset:
 
     Non-overlap guarantee (0436): UNIQUE(model_version, cohort_id) on learning_sweep_runs ensures
     no cohort_id appears in both this set and eligible_learning_cohorts() simultaneously.
+
+    Raises LearningEvidenceUnavailable (0440) on DB error — callers must treat as BLOCK, not empty.
     """
     try:
         rows = conn.execute(
@@ -713,8 +737,10 @@ def _ineligible_ledger_cohorts(conn, model_version: str) -> frozenset:
             (model_version,),
         ).fetchall()
         return frozenset(r["cohort_id"] for r in rows)
-    except Exception:
-        return frozenset()
+    except Exception as _e:
+        raise LearningEvidenceUnavailable(
+            f"_ineligible_ledger_cohorts query failed for {model_version}: {_e}"
+        ) from _e
 
 
 def _summarize_row_subset(rows: list) -> dict:
@@ -1260,9 +1286,19 @@ def compute_prospective_metrics(model_version: str, conn, *, filter_partial_ledg
                  AND target_horizon_version=?""",
             (model_version, thv),
         ).fetchall()
-    # 0430: use centralized eligible/ineligible helpers for consistent gate quality
-    _inelig_cids = _ineligible_ledger_cohorts(conn, model_version)
-    _elig_cids = eligible_learning_cohorts(conn, model_version)
+    # 0430/0440: use centralized helpers; DB failure is BLOCK, not empty evidence
+    try:
+        _inelig_cids = _ineligible_ledger_cohorts(conn, model_version)
+        _elig_cids = eligible_learning_cohorts(conn, model_version)
+    except LearningEvidenceUnavailable as _leu:
+        return {
+            "error": "ledger_query_failed",
+            "blocked": True,
+            "blocked_reason": str(_leu),
+            "ineligible_cohorts_ledger": 0,
+            "stratified_metrics": {},
+            "population_label": "blocked",
+        }
     _ineligible_cohorts_ledger = len(_inelig_cids)
 
     # 0432/0438: modern models must have COMPLETED ledger rows (no legacy unledgered cohorts)
@@ -1879,9 +1915,12 @@ def _check_degradation(model_version: str, conn) -> None:
     ).fetchall()
     _cohort_ids = [r["decision_cohort_id"] for r in _latest_cohorts]
 
-    # 0430/0432: exclude cohorts with incomplete/failed ledger rows from the rolling window.
-    # Legacy cohorts (no ledger row, pre-0424) are allowed through for non-modern models.
-    _deg_inelig = _ineligible_ledger_cohorts(conn, model_version)
+    # 0430/0432/0440: exclude cohorts with incomplete/failed ledger rows from the rolling window.
+    # DB failure is safe-skip (cannot check degradation without evidence).
+    try:
+        _deg_inelig = _ineligible_ledger_cohorts(conn, model_version)
+    except LearningEvidenceUnavailable:
+        return  # can't safely assess degradation; skip this cycle
     if _deg_inelig:
         _deg_mv_created: float | None = None
         _deg_ev_ver: int | None = None
@@ -1902,7 +1941,10 @@ def _check_degradation(model_version: str, conn) -> None:
             else (_deg_mv_created is not None and _deg_mv_created > LEDGER_ROLLOUT_CUTOFF)
         )
         if _deg_is_modern:
-            _deg_elig = eligible_learning_cohorts(conn, model_version)
+            try:
+                _deg_elig = eligible_learning_cohorts(conn, model_version)
+            except LearningEvidenceUnavailable:
+                return  # can't safely filter; skip this cycle
             _cohort_ids = [cid for cid in _cohort_ids if cid in _deg_elig]
         else:
             _cohort_ids = [cid for cid in _cohort_ids if cid not in _deg_inelig]
@@ -2078,6 +2120,28 @@ def _check_degradation(model_version: str, conn) -> None:
         conn.commit()
 
 
+def _safe_provenance(conn, model_version: str, is_modern: bool, ev_contract_int) -> dict:
+    """Build provenance_breakdown dict, converting LearningEvidenceUnavailable to an error flag (0440)."""
+    try:
+        verified = len(eligible_learning_cohorts(conn, model_version))
+        ineligible = len(_ineligible_ledger_cohorts(conn, model_version))
+        return {
+            "verified_modern": verified,
+            "ineligible": ineligible,
+            "is_modern_model": is_modern,
+            "evidence_contract_version": ev_contract_int,
+        }
+    except LearningEvidenceUnavailable as _leu:
+        return {
+            "verified_modern": None,
+            "ineligible": None,
+            "is_modern_model": is_modern,
+            "evidence_contract_version": ev_contract_int,
+            "error": "ledger_query_failed",
+            "error_detail": str(_leu),
+        }
+
+
 def learning_readiness_report(conn, model_version: str = None) -> dict:
     """Consolidated report on the state of the learning loop (0385).
 
@@ -2214,12 +2278,9 @@ def learning_readiness_report(conn, model_version: str = None) -> dict:
         "population_label": pm.get("population_label", "all"),
         # 0429: ineligible ledger cohort count (PARTIAL/FAILED sweeps excluded from gates)
         "ineligible_cohorts_ledger": int(pm.get("ineligible_cohorts_ledger", 0)),
-        # 0432/0438: provenance classification for this model's cohorts
+        # 0432/0438/0440: provenance classification; DB failure surfaces as error, not zero counts
         "provenance_breakdown": {
-            "verified_modern": len(eligible_learning_cohorts(conn, model_version)),
-            "ineligible": len(_ineligible_ledger_cohorts(conn, model_version)),
-            "is_modern_model": _is_modern,
-            "evidence_contract_version": _ev_contract_int,
+            **_safe_provenance(conn, model_version, _is_modern, _ev_contract_int),
         },
     }
 

@@ -1,7 +1,7 @@
 # Make Evidence Helpers Fail-Closed on DB Error
 
 - **ID:** 0440
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-18
 - **Priority:** normal
 - **Depends:** 0436

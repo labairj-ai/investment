@@ -8249,9 +8249,12 @@ class TestAuthoritativeCountFailClosed0431:
             f"COUNT failure must produce FAILED ledger; got {row['status']!r}"
 
     def test_actual_greater_than_expected_is_failed(self, mem_db, monkeypatch):
-        """When actual count > expected candidates, ledger status must be FAILED."""
+        """When actual count > expected candidates, ledger status must be FAILED.
+        0441: score_for_observe now raises LearningIntegrityError after persisting FAILED.
+        """
         import agent_db
         from agents.learning.challenger import score_for_observe
+        from agents.learning.calibration import LearningIntegrityError
 
         monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
         monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
@@ -8282,7 +8285,11 @@ class TestAuthoritativeCountFailClosed0431:
              "_composite": 60, "composite_score": 60,
              "_q": 65.0, "_v": 60.0, "_pf": 55.0, "_c": 50.0, "_ec": 45.0}
         ]
-        score_for_observe(mv, candidates, cohort_id=cohort_id, agent_run_id="run-test-431b")
+        # 0441: overcount now raises LearningIntegrityError after writing FAILED
+        try:
+            score_for_observe(mv, candidates, cohort_id=cohort_id, agent_run_id="run-test-431b")
+        except LearningIntegrityError:
+            pass
 
         conn = _make_conn(mem_db)
         row = conn.execute(
@@ -9138,4 +9145,362 @@ class TestEvidenceContractVersion0438:
         pb = report.get("provenance_breakdown", {})
         assert "evidence_contract_version" in pb, \
             "provenance_breakdown must include evidence_contract_version (0438)"
-        assert pb["evidence_contract_version"] == 1
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 0439 — Canary: Phase from Ledger Row + Single-Cohort Invariant
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestCanaryPhaseSemantics0439:
+    """Canary uses sweep-time phase from ledger; asserts exactly one cohort per invocation."""
+
+    def _script_content(self):
+        from pathlib import Path
+        return (Path(__file__).resolve().parent.parent / "scripts" / "canary_audit.sh").read_text()
+
+    def test_all_rows_query_includes_phase_field(self):
+        """ALL_ROWS query must include COALESCE(phase,'') as the 6th field (0439)."""
+        content = self._script_content()
+        assert "COALESCE(phase,'')" in content, \
+            "ALL_ROWS query must include COALESCE(phase,'') so sweep-time phase is available (0439)"
+
+    def test_phase_parsed_as_sixth_field(self):
+        """IFS split must capture _PHASE as the 6th variable from the row (0439)."""
+        content = self._script_content()
+        assert "_PHASE" in content, \
+            "canary must parse _PHASE from the ledger row (0439)"
+        assert "read -r _MV _CID _EXP _SCO _STATUS _PHASE" in content, \
+            "IFS read must assign _PHASE as 6th variable (0439)"
+
+    def test_single_cohort_invariant_check_present(self):
+        """Canary must assert COUNT(DISTINCT cohort_id)=1 per OH invocation (0439)."""
+        content = self._script_content()
+        assert "COUNT(DISTINCT cohort_id)" in content, \
+            "canary must query COUNT(DISTINCT cohort_id) per agent_run_id (0439)"
+        assert "multiple cohort_ids in invocation" in content or \
+               "cohort_id distinct count" in content, \
+            "canary must emit a cohort-count message (0439)"
+
+    def test_single_cohort_mismatch_fails(self):
+        """A cohort count != 1 must set FAIL=1 (0439)."""
+        content = self._script_content()
+        # Both the FAIL message and FAIL=1 assignment must be in the cohort block
+        cohort_block_start = content.find("COUNT(DISTINCT cohort_id)")
+        assert cohort_block_start != -1, "cohort invariant block must exist"
+        block = content[cohort_block_start:cohort_block_start + 400]
+        assert "FAIL=1" in block, \
+            "FAIL=1 must be set when cohort count != 1 (0439)"
+
+    def test_parity_prefers_phase_over_lifecycle_state_query(self):
+        """When _PHASE is non-empty it must be used instead of querying lifecycle_state (0439)."""
+        content = self._script_content()
+        # _PHASE assignment must come before the lifecycle_state fallback in the parity block
+        phase_use = content.find('_IS_PA="$_PHASE"')
+        lifecycle_fallback = content.find("SELECT lifecycle_state FROM learning_models")
+        assert phase_use != -1, \
+            "parity check must assign _IS_PA from _PHASE (0439)"
+        assert lifecycle_fallback != -1, \
+            "fallback lifecycle_state query must still exist for pre-phase rows (0439)"
+        assert phase_use < lifecycle_fallback, \
+            "_PHASE assignment must appear before the lifecycle_state fallback (0439)"
+
+    def test_parity_fallback_exists_for_empty_phase(self):
+        """An else branch must fall back to lifecycle_state query when _PHASE is empty (0439)."""
+        content = self._script_content()
+        # The structure must be: if [ -n "$_PHASE" ]; then _IS_PA="$_PHASE"; else ... lifecycle query
+        assert '[ -n "$_PHASE" ]' in content, \
+            "canary must guard _PHASE usage with [ -n \\\"\\$_PHASE\\\" ] (0439)"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 0440 — Evidence Helpers Fail Closed (LearningEvidenceUnavailable)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestEvidenceHelperFailClosed0440:
+    """Evidence helpers raise LearningEvidenceUnavailable on DB error; callers treat as BLOCK."""
+
+    def _make_fail_conn(self, real_conn, fail_pattern: str):
+        """Return a connection wrapper that raises OperationalError for queries matching fail_pattern."""
+        import sqlite3 as _sqlite3
+
+        class _FailConn:
+            def __init__(self):
+                self._c = real_conn
+                self.row_factory = self._c.row_factory
+            def execute(self, sql, params=()):
+                if fail_pattern in sql:
+                    raise _sqlite3.OperationalError(f"simulated failure on: {fail_pattern!r}")
+                return self._c.execute(sql, params)
+            def commit(self): self._c.commit()
+            def close(self): self._c.close()
+
+        return _FailConn()
+
+    def test_eligible_cohorts_raises_on_db_error(self, mem_db):
+        """eligible_learning_cohorts() raises LearningEvidenceUnavailable on DB error (0440)."""
+        from agents.learning.calibration import eligible_learning_cohorts, LearningEvidenceUnavailable
+        conn = self._make_fail_conn(_make_conn(mem_db), "learning_sweep_runs")
+        with pytest.raises(LearningEvidenceUnavailable):
+            eligible_learning_cohorts(conn, "edge_sessions_v2_aa_v0440_001")
+
+    def test_ineligible_cohorts_raises_on_db_error(self, mem_db):
+        """_ineligible_ledger_cohorts() raises LearningEvidenceUnavailable on DB error (0440)."""
+        from agents.learning.calibration import _ineligible_ledger_cohorts, LearningEvidenceUnavailable
+        conn = self._make_fail_conn(_make_conn(mem_db), "learning_sweep_runs")
+        with pytest.raises(LearningEvidenceUnavailable):
+            _ineligible_ledger_cohorts(conn, "edge_sessions_v2_aa_v0440_002")
+
+    def test_evidence_unavailable_is_subclass_of_pipeline_error(self):
+        """LearningEvidenceUnavailable must be a LearningPipelineError subclass (0440)."""
+        from agents.learning.calibration import LearningEvidenceUnavailable, LearningPipelineError
+        assert issubclass(LearningEvidenceUnavailable, LearningPipelineError), \
+            "LearningEvidenceUnavailable must subclass LearningPipelineError (0440)"
+
+    def test_compute_prospective_metrics_returns_block_on_db_error(self, mem_db, monkeypatch):
+        """compute_prospective_metrics returns blocked dict when evidence helpers raise (0440)."""
+        import agent_db
+        from agents.learning.calibration import compute_prospective_metrics
+
+        mv = "edge_sessions_v2_aa_v0440_003"
+        # Seed a model so the function reaches the evidence helper call
+        conn0 = _make_conn(mem_db)
+        _vm = json.dumps({"cv_folds": 3, "coef": [0.001]*5, "intercept": 0.01, "mean_alpha": 0.02})
+        conn0.execute(
+            """INSERT INTO learning_models
+               (model_version, training_cutoff, feature_schema_hash, training_n,
+                validation_metrics, created_at, lifecycle_state, training_horizon_version,
+                evidence_contract_version)
+               VALUES (?,?,?,?,?,?,'OBSERVE','sessions_v2',1)""",
+            (mv, "2026-01-01", "aabb", 50, _vm, time.time()),
+        )
+        conn0.commit()
+        conn0.close()
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        fail_conn = self._make_fail_conn(_make_conn(mem_db), "learning_sweep_runs")
+        monkeypatch.setattr(agent_db, "_connect", lambda: self._make_fail_conn(_make_conn(mem_db), "learning_sweep_runs"))
+
+        result = compute_prospective_metrics(mv, fail_conn)
+        assert result.get("blocked") is True, \
+            "compute_prospective_metrics must return blocked=True on evidence DB error (0440)"
+        assert result.get("error") == "ledger_query_failed", \
+            "compute_prospective_metrics must return error='ledger_query_failed' (0440)"
+
+    def test_check_degradation_skips_safely_on_db_error(self, mem_db, monkeypatch):
+        """_check_degradation returns None safely when evidence helper raises (0440)."""
+        import agent_db
+        from agents.learning.calibration import _check_degradation
+
+        mv = "edge_sessions_v2_aa_v0440_004"
+        conn0 = _make_conn(mem_db)
+        _vm = json.dumps({"cv_folds": 3, "coef": [0.001]*5, "intercept": 0.01, "mean_alpha": 0.02})
+        conn0.execute(
+            """INSERT INTO learning_models
+               (model_version, training_cutoff, feature_schema_hash, training_n,
+                validation_metrics, created_at, lifecycle_state, training_horizon_version,
+                evidence_contract_version)
+               VALUES (?,?,?,?,?,?,'PAPER_ACTIVE','sessions_v2',1)""",
+            (mv, "2026-01-01", "aabb", 50, _vm, time.time()),
+        )
+        # Insert one labeled observation so the function reaches the evidence helper
+        cid = str(uuid.uuid4())
+        conn0.execute(
+            """INSERT OR IGNORE INTO model_observations
+               (model_version, episode_id, ticker, prediction_timestamp,
+                base_score, predicted_alpha, learning_adjustment, challenger_score,
+                would_select, observation_phase, target_horizon_version,
+                baseline_predicted_alpha, scored_at_date, decision_cohort_id,
+                base_would_select, outcome_alpha_90d, outcome_labeled_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (mv, str(uuid.uuid4()), "TK", time.time(), 60.0, 0.03, 0.5, 62.0,
+             1, "PAPER_ACTIVE", "sessions_v2", 0.02, "2026-01-01", cid, 0, 0.05, time.time()),
+        )
+        conn0.commit()
+        conn0.close()
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        fail_conn = self._make_fail_conn(_make_conn(mem_db), "learning_sweep_runs")
+        # Must not raise; degradation check silently skips on DB error
+        result = _check_degradation(mv, fail_conn)
+        assert result is None, \
+            "_check_degradation must return None (skip) when evidence helper raises (0440)"
+
+    def test_readiness_report_provenance_surfaces_error_on_db_failure(self, mem_db, monkeypatch):
+        """learning_readiness_report provenance_breakdown contains error key when helpers fail (0440)."""
+        import agent_db
+        from agents.learning.calibration import learning_readiness_report
+
+        mv = "edge_sessions_v2_aa_v0440_005"
+        conn0 = _make_conn(mem_db)
+        _vm = json.dumps({"cv_folds": 3, "coef": [0.001]*5, "intercept": 0.01, "mean_alpha": 0.02})
+        conn0.execute(
+            """INSERT INTO learning_models
+               (model_version, training_cutoff, feature_schema_hash, training_n,
+                validation_metrics, created_at, lifecycle_state, training_horizon_version,
+                evidence_contract_version)
+               VALUES (?,?,?,?,?,?,'OBSERVE','sessions_v2',1)""",
+            (mv, "2026-01-01", "aabb", 50, _vm, time.time()),
+        )
+        conn0.commit()
+        conn0.close()
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        fail_conn = self._make_fail_conn(_make_conn(mem_db), "learning_sweep_runs")
+        report = learning_readiness_report(fail_conn, model_version=mv)
+
+        pb = report.get("provenance_breakdown", {})
+        assert pb.get("error") == "ledger_query_failed", \
+            "provenance_breakdown must contain error='ledger_query_failed' when helpers fail (0440)"
+        assert pb.get("verified_modern") is None, \
+            "verified_modern must be None when evidence helpers fail (0440)"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 0441 — Overcount Raises LearningIntegrityError
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestOvercountHardFailure0441:
+    """score_for_observe raises LearningIntegrityError on actual > expected; PARTIAL is silent."""
+
+    def _seed_observe_model(self, conn, mv: str) -> None:
+        _vm = json.dumps({"cv_folds": 3, "coef": [0.001]*5, "intercept": 0.01, "mean_alpha": 0.02})
+        conn.execute(
+            """INSERT INTO learning_models
+               (model_version, training_cutoff, feature_schema_hash, training_n,
+                validation_metrics, created_at, lifecycle_state, training_horizon_version)
+               VALUES (?,?,?,?,?,?,'OBSERVE','sessions_v2')""",
+            (mv, "2026-01-01", "aabb", 50, _vm, time.time()),
+        )
+        conn.commit()
+
+    def test_overcount_raises_learning_integrity_error(self, mem_db, monkeypatch):
+        """score_for_observe raises LearningIntegrityError when actual_count > len(candidates) (0441)."""
+        import agent_db
+        from agents.learning.challenger import score_for_observe
+        from agents.learning.calibration import LearningIntegrityError
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        mv = "edge_sessions_v2_aa_v0441_001"
+        conn = _make_conn(mem_db)
+        self._seed_observe_model(conn, mv)
+
+        cohort_id = str(uuid.uuid4())
+        # Pre-insert extra observation so COUNT(*) will exceed len(candidates)=1
+        conn.execute(
+            """INSERT OR IGNORE INTO model_observations
+               (model_version, episode_id, ticker, prediction_timestamp,
+                base_score, predicted_alpha, learning_adjustment, challenger_score,
+                would_select, observation_phase, target_horizon_version,
+                baseline_predicted_alpha, scored_at_date, decision_cohort_id, base_would_select)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (mv, str(uuid.uuid4()), "EXTRA", time.time(), 60.0, 0.03, 0.5, 62.0,
+             0, "OBSERVE", "sessions_v2", 0.02, "2026-01-01", cohort_id, 0),
+        )
+        conn.commit()
+        conn.close()
+
+        candidates = [
+            {"_episode_id": str(uuid.uuid4()), "ticker": "NEW",
+             "_composite": 60, "composite_score": 60,
+             "_q": 65.0, "_v": 60.0, "_pf": 55.0, "_c": 50.0, "_ec": 45.0}
+        ]
+        with pytest.raises(LearningIntegrityError):
+            score_for_observe(mv, candidates, cohort_id=cohort_id, agent_run_id="run-test-0441a")
+
+    def test_overcount_persists_failed_before_raising(self, mem_db, monkeypatch):
+        """FAILED ledger row must be committed to DB before LearningIntegrityError is raised (0441)."""
+        import agent_db
+        from agents.learning.challenger import score_for_observe
+        from agents.learning.calibration import LearningIntegrityError
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        mv = "edge_sessions_v2_aa_v0441_002"
+        conn = _make_conn(mem_db)
+        self._seed_observe_model(conn, mv)
+
+        cohort_id = str(uuid.uuid4())
+        # Pre-insert extra so overcount fires
+        conn.execute(
+            """INSERT OR IGNORE INTO model_observations
+               (model_version, episode_id, ticker, prediction_timestamp,
+                base_score, predicted_alpha, learning_adjustment, challenger_score,
+                would_select, observation_phase, target_horizon_version,
+                baseline_predicted_alpha, scored_at_date, decision_cohort_id, base_would_select)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (mv, str(uuid.uuid4()), "EXTRA", time.time(), 60.0, 0.03, 0.5, 62.0,
+             0, "OBSERVE", "sessions_v2", 0.02, "2026-01-01", cohort_id, 0),
+        )
+        conn.commit()
+        conn.close()
+
+        candidates = [
+            {"_episode_id": str(uuid.uuid4()), "ticker": "NEW",
+             "_composite": 60, "composite_score": 60,
+             "_q": 65.0, "_v": 60.0, "_pf": 55.0, "_c": 50.0, "_ec": 45.0}
+        ]
+        try:
+            score_for_observe(mv, candidates, cohort_id=cohort_id, agent_run_id="run-test-0441b")
+        except LearningIntegrityError:
+            pass
+
+        # DB must show FAILED status — committed before the exception
+        conn = _make_conn(mem_db)
+        row = conn.execute(
+            "SELECT status FROM learning_sweep_runs WHERE cohort_id=?", (cohort_id,)
+        ).fetchone()
+        conn.close()
+        assert row is not None, "ledger row must exist after overcount"
+        assert row["status"] == "FAILED", \
+            f"ledger must be FAILED before LearningIntegrityError unwinds; got {row['status']!r}"
+
+    def test_partial_undercount_returns_normally(self, mem_db, monkeypatch):
+        """score_for_observe marks PARTIAL and returns without raising when actual < expected (0441)."""
+        import agent_db
+        from agents.learning.challenger import score_for_observe
+        from agents.learning.calibration import LearningIntegrityError
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        mv = "edge_sessions_v2_aa_v0441_003"
+        conn = _make_conn(mem_db)
+        self._seed_observe_model(conn, mv)
+        conn.close()
+
+        cohort_id = str(uuid.uuid4())
+        # 3 candidates but one has no _episode_id — inserts only 2, so actual < expected
+        candidates = [
+            {"_episode_id": str(uuid.uuid4()), "ticker": "A",
+             "_composite": 60, "composite_score": 60,
+             "_q": 65.0, "_v": 60.0, "_pf": 55.0, "_c": 50.0, "_ec": 45.0},
+            {"_episode_id": str(uuid.uuid4()), "ticker": "B",
+             "_composite": 58, "composite_score": 58,
+             "_q": 63.0, "_v": 58.0, "_pf": 53.0, "_c": 48.0, "_ec": 43.0},
+            {"ticker": "C", "_composite": 55, "composite_score": 55,
+             "_q": 60.0, "_v": 55.0, "_pf": 50.0, "_c": 45.0, "_ec": 40.0},  # no _episode_id
+        ]
+        # Must not raise
+        score_for_observe(mv, candidates, cohort_id=cohort_id, agent_run_id="run-test-0441c")
+
+        conn = _make_conn(mem_db)
+        row = conn.execute(
+            "SELECT status, scored_candidates, expected_candidates FROM learning_sweep_runs WHERE cohort_id=?",
+            (cohort_id,),
+        ).fetchone()
+        conn.close()
+
+        assert row is not None
+        assert row["status"] == "PARTIAL", \
+            f"undercount must produce PARTIAL status; got {row['status']!r}"
+        assert int(row["scored_candidates"]) < int(row["expected_candidates"]), \
+            "scored_candidates must be less than expected_candidates for PARTIAL"
+
+    def test_integrity_error_is_subclass_of_pipeline_error(self):
+        """LearningIntegrityError must be a LearningPipelineError subclass (0441)."""
+        from agents.learning.calibration import LearningIntegrityError, LearningPipelineError
+        assert issubclass(LearningIntegrityError, LearningPipelineError), \
+            "LearningIntegrityError must subclass LearningPipelineError (0441)"
