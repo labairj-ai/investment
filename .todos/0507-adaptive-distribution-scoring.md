@@ -1,7 +1,7 @@
 # Adaptive Distribution Scoring for Uncertain Dimensions
 
 - **ID:** 0507
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-19
 - **Priority:** normal
 - **Depends:** 0506

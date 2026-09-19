@@ -1,7 +1,7 @@
 # Per-Dimension Feature Quality: Stability, Evidence, and Attribution Usability
 
 - **ID:** 0506
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-19
 - **Priority:** high
 - **Depends:** 0505

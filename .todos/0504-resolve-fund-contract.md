@@ -1,7 +1,7 @@
 # Resolve Fund Scoring Contract: Unsupported vs Display-Only
 
 - **ID:** 0504
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-19
 - **Priority:** high
 - **Depends:** 0486

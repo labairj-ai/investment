@@ -1,7 +1,7 @@
 # Foreign Company and Geopolitical Evidence V2
 
 - **ID:** 0508
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-19
 - **Priority:** normal
 - **Depends:** 0506

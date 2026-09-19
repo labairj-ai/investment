@@ -1,7 +1,7 @@
 # Attribution Quality Gate: Engine Acceptance + Per-Dimension Usability
 
 - **ID:** 0509
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-19
 - **Priority:** high
 - **Depends:** 0505, 0506
