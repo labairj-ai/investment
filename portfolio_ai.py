@@ -393,6 +393,57 @@ def _init_ai_tables():
             notes          TEXT
         )
     """)
+    # Per-ticker × dim stability from acceptance/scoring runs (0506)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS macro_dimension_stability (
+            ticker          TEXT NOT NULL,
+            dim             TEXT NOT NULL,
+            stdev           REAL,
+            mean            REAL,
+            n_samples       INTEGER,
+            stability_class TEXT,
+            updated_at      TEXT NOT NULL,
+            PRIMARY KEY (ticker, dim)
+        )
+    """)
+    # Geo evidence for foreign / geopolitical scoring (0508)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS company_geo_profile (
+            ticker                   TEXT PRIMARY KEY,
+            primary_hq_country       TEXT,
+            incorporation_country    TEXT,
+            major_operating_regions  TEXT,
+            revenue_domestic_pct     REAL,
+            revenue_us_pct           REAL,
+            revenue_em_pct           REAL,
+            supply_chain_concentration TEXT,
+            sanctions_exposure       TEXT,
+            tariff_sensitivity       TEXT,
+            updated_at               TEXT NOT NULL
+        )
+    """)
+    # Seed initial geo profiles for known foreign companies (0508)
+    _GEO_SEEDS = [
+        # ITOCF — Itochu Corp, Japanese trading conglomerate, diverse EM exposure
+        ("ITOCF", "JP", "JP", '["Japan","China","Southeast Asia","United States"]',
+         45.0, 5.0, 30.0, "diversified", "none_known", "medium"),
+        # MITSF — Mitsubishi Corp, Japanese trading conglomerate, global operations
+        ("MITSF", "JP", "JP", '["Japan","China","Southeast Asia","Australia","United States"]',
+         40.0, 8.0, 28.0, "diversified", "none_known", "medium"),
+    ]
+    now_iso = datetime.utcnow().isoformat()
+    for seed in _GEO_SEEDS:
+        try:
+            conn.execute(
+                "INSERT OR IGNORE INTO company_geo_profile "
+                "(ticker, primary_hq_country, incorporation_country, major_operating_regions, "
+                "revenue_domestic_pct, revenue_us_pct, revenue_em_pct, "
+                "supply_chain_concentration, sanctions_exposure, tariff_sensitivity, updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (*seed, now_iso)
+            )
+        except Exception:
+            pass
     conn.commit()
     conn.close()
 
@@ -401,6 +452,36 @@ MACRO_SCORE_SCHEMA_VERSION = "v1"
 MACRO_INTERACTION_VERSION = "macro_interaction_v1"
 _MACRO_SCORE_DIMS = ("rate_sensitivity", "inflation_hedge", "dollar_sensitivity", "geopolitical_risk")
 _STALE_SCORE_DAYS = 14
+
+
+def _stability_class(stdev: float | None) -> str:
+    """Map per-dim stdev to stability class (0506)."""
+    if stdev is None:
+        return "untested"
+    if stdev <= 1.0:
+        return "stable"
+    if stdev <= 1.5:
+        return "borderline"
+    return "unstable"
+
+
+def _usable_for_attribution(stdev: float | None, stability: str | None = None) -> bool:
+    """Dimension is attribution-ready only when stable or borderline and stdev ≤ 1.5 (0506)."""
+    cls = stability or _stability_class(stdev)
+    return cls in ("stable", "borderline")
+
+
+def _n_samples_for_dim(ticker: str, dim: str, conn: sqlite3.Connection) -> int:
+    """Adaptive N: 1 for stable, 3 for borderline/untested, 5 for unstable (0507)."""
+    try:
+        row = conn.execute(
+            "SELECT stability_class FROM macro_dimension_stability WHERE ticker=? AND dim=?",
+            (ticker, dim)
+        ).fetchone()
+        cls = row[0] if row else "untested"
+    except Exception:
+        cls = "untested"
+    return {"stable": 1, "borderline": 3, "untested": 3, "unstable": 5}.get(cls, 3)
 
 
 def _get_macro_acceptance_state(conn: sqlite3.Connection) -> dict:
@@ -1569,9 +1650,39 @@ def _fetch_company_evidence(ticker: str, conn) -> dict:
         "limited" if evidence.get("sector") else "none"
     )
 
-    # Geopolitical: sector + revenue
-    geo_filled = sum(1 for v in [evidence.get("sector"), evidence.get("revenue_ttm")] if v is not None)
-    evidence["evidence_quality_geo"] = "good" if geo_filled >= 2 else ("limited" if geo_filled >= 1 else "none")
+    # Geo profile (0508) — query company_geo_profile for structured country/region evidence
+    try:
+        geo_row = conn.execute(
+            "SELECT primary_hq_country, incorporation_country, major_operating_regions, "
+            "revenue_domestic_pct, revenue_us_pct, revenue_em_pct, "
+            "supply_chain_concentration, sanctions_exposure, tariff_sensitivity "
+            "FROM company_geo_profile WHERE ticker=?",
+            (ticker,)
+        ).fetchone()
+        if geo_row:
+            evidence["geo_hq_country"]               = geo_row[0]
+            evidence["geo_incorporation_country"]    = geo_row[1]
+            evidence["geo_major_regions"]            = geo_row[2]
+            evidence["geo_revenue_domestic_pct"]     = geo_row[3]
+            evidence["geo_revenue_us_pct"]           = geo_row[4]
+            evidence["geo_revenue_em_pct"]           = geo_row[5]
+            evidence["geo_supply_chain"]             = geo_row[6]
+            evidence["geo_sanctions_exposure"]       = geo_row[7]
+            evidence["geo_tariff_sensitivity"]       = geo_row[8]
+    except Exception:
+        pass
+
+    # Geopolitical: tiered by geo profile depth
+    has_hq      = evidence.get("geo_hq_country") is not None
+    has_regions = evidence.get("geo_major_regions") is not None
+    has_class   = evidence.get("geo_sanctions_exposure") is not None and evidence.get("geo_tariff_sensitivity") is not None
+    if has_hq and has_regions and has_class:
+        evidence["evidence_quality_geo"] = "full"
+    elif has_hq:
+        evidence["evidence_quality_geo"] = "partial"
+    else:
+        geo_filled = sum(1 for v in [evidence.get("sector"), evidence.get("revenue_ttm")] if v is not None)
+        evidence["evidence_quality_geo"] = "good" if geo_filled >= 2 else ("limited" if geo_filled >= 1 else "none")
 
     return evidence
 
@@ -2022,8 +2133,46 @@ def generate_holding_macro_scores(force: bool = False) -> dict:
     failed_n = 0
     run_errors: list = []
 
-    for i in range(0, len(to_score), BATCH):
-        batch = to_score[i:i + BATCH]
+    # 0504 — fund early-exit: write unsupported record immediately, skip LLM entirely
+    company_tickers: list[str] = []
+    if DB_PATH.exists():
+        _fund_conn = sqlite3.connect(str(DB_PATH), timeout=10)
+        for _ft in to_score:
+            if not is_fund(_ft):
+                company_tickers.append(_ft)
+                continue
+            _fund_rec = {
+                "macro_supported": False,
+                "evidence_quality": "unsupported",
+                "is_fund": True,
+                "schema_version": MACRO_SCORE_SCHEMA_VERSION,
+                "interaction_version": MACRO_INTERACTION_VERSION,
+                "run_id": run_id,
+                "model_version": ollama_client.DEFAULT_MODEL,
+                "scored_at": run_at,
+            }
+            _fund_json = json.dumps(_fund_rec)
+            _ev_hash_fund = hashlib.sha256(b"fund:unsupported").hexdigest()
+            _fund_conn.execute(
+                "INSERT OR REPLACE INTO holding_macro_scores (ticker, scores, updated_at, run_id) VALUES (?,?,?,?)",
+                (_ft, _fund_json, run_at, run_id)
+            )
+            _fund_conn.execute(
+                "INSERT INTO holding_macro_scores_history "
+                "(ticker, scores, scored_at, run_id, model_ver, schema_ver, evidence_hash) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (_ft, _fund_json, run_at, run_id,
+                 ollama_client.DEFAULT_MODEL, MACRO_SCORE_SCHEMA_VERSION, _ev_hash_fund)
+            )
+            results[_ft] = _fund_rec
+            scored_n += 1
+        _fund_conn.commit()
+        _fund_conn.close()
+    else:
+        company_tickers = [t for t in to_score if not is_fund(t)]
+
+    for i in range(0, len(company_tickers), BATCH):
+        batch = company_tickers[i:i + BATCH]
         ticker_list = ", ".join(batch)
 
         # Structural exposure only — no regime inputs. See 0464.
@@ -2054,10 +2203,18 @@ def generate_holding_macro_scores(force: bool = False) -> dict:
                     parts.append(f"foreign_rev={ev['foreign_rev_pct']:.1f}%")
                 if ev.get("revenue_ttm") is not None:
                     parts.append(f"revenue_ttm=${ev['revenue_ttm']:.0f}M")
+                if ev.get("geo_hq_country"):
+                    parts.append(f"hq={ev['geo_hq_country']}")
+                if ev.get("geo_major_regions"):
+                    parts.append(f"regions={ev['geo_major_regions']}")
+                if ev.get("geo_revenue_domestic_pct") is not None:
+                    parts.append(f"domestic_rev={ev['geo_revenue_domestic_pct']:.0f}%")
+                if ev.get("geo_sanctions_exposure") and ev["geo_sanctions_exposure"] != "none_known":
+                    parts.append(f"sanctions={ev['geo_sanctions_exposure']}")
+                if ev.get("geo_tariff_sensitivity") and ev["geo_tariff_sensitivity"] != "low":
+                    parts.append(f"tariff_sensitivity={ev['geo_tariff_sensitivity']}")
                 if parts:
                     evidence_lines.append(f"Company data for {tk}: {', '.join(parts)}")
-            elif ev.get("is_fund"):
-                evidence_lines.append(f"Note: {tk} is an ETF/fund — score on index characteristics, not company fundamentals.")
             # Compute betas (0467 / 0473 / 0483)
             betas = _compute_equity_betas(tk)
             if betas:
@@ -2114,35 +2271,88 @@ Return ONLY valid JSON. Each dimension must include a score AND a one-sentence r
             run_errors.append({"tickers": batch, "error": msg})
             continue
 
-        full_text = ""
-        try:
-            for tok in ollama_client.stream_generate(
-                prompt, model=ollama_client.DEFAULT_MODEL,
-                temperature=0.2, num_predict=1600
-            ):
-                full_text += tok
-        except Exception as e:
-            msg = f"LLM stream failed: {e}"
-            print(f"[MacroScores] Batch {i//BATCH+1} failed: {e}")
+        # 0507: adaptive N per dimension based on stability class
+        import statistics as _stats
+        _tk_single = batch[0]
+        _n_per_dim = {
+            _d: (_n_samples_for_dim(_tk_single, _d, _evidence_conn) if _evidence_conn else 3)
+            for _d in _MACRO_SCORE_DIMS
+        }
+        _n_max = max(_n_per_dim.values())
+        prompt_hash = hashlib.sha256(prompt.encode()).hexdigest()
+
+        _raw_per_dim: dict[str, list[int]] = {_d: [] for _d in _MACRO_SCORE_DIMS}
+        _raw_reasons: dict[str, str] = {}
+        _raw_note = ""
+        _n_successful = 0
+        for _si in range(_n_max):
+            _ft = ""
+            try:
+                for tok in ollama_client.stream_generate(
+                    prompt, model=ollama_client.DEFAULT_MODEL,
+                    temperature=0.2, num_predict=1600
+                ):
+                    _ft += tok
+            except Exception as e:
+                print(f"[MacroScores] Sample {_si+1}/{_n_max} stream failed for {_tk_single}: {e}")
+                break
+            _parsed = _extract_json(_ft)
+            if _parsed is None:
+                continue
+            _tk_s = next((v for k, v in _parsed.items() if _normalize_ticker(k) == _tk_single), None)
+            if _tk_s is None:
+                continue
+            for _d in _MACRO_SCORE_DIMS:
+                _sv = _score_val(_tk_s.get(_d))
+                if _sv is not None:
+                    _raw_per_dim[_d].append(_sv)
+                    if _d not in _raw_reasons:
+                        _raw_reasons[_d] = (_tk_s.get(_d) or {}).get("reason", "")
+            if not _raw_note and "note" in _tk_s:
+                _raw_note = _tk_s["note"]
+            _n_successful += 1
+            if _si < _n_max - 1:
+                time.sleep(5)
+
+        if _n_successful == 0:
+            msg = f"All {_n_max} LLM samples failed or malformed"
+            print(f"[MacroScores] Batch {i//BATCH+1} ({ticker_list}) {msg}")
             failed_n += len(batch)
             run_errors.append({"tickers": batch, "error": msg})
             time.sleep(20)
             continue
 
-        batch_result = _extract_json(full_text)
-        if batch_result is None:
-            msg = f"Malformed JSON. Raw (first 200): {full_text[:200]!r}"
+        # Aggregate per-dim using exactly n_per_dim samples
+        _agg_dims: dict = {}
+        for _d in _MACRO_SCORE_DIMS:
+            _used = _raw_per_dim[_d][:_n_per_dim[_d]]
+            if not _used:
+                continue
+            _med = int(round(_stats.median(_used)))
+            _mn  = round(sum(_used) / len(_used), 2)
+            _sd  = round(_stats.stdev(_used) if len(_used) > 1 else 0.0, 3)
+            _agg_dims[_d] = {
+                "score":    _med,
+                "reason":   _raw_reasons.get(_d, ""),
+                "median":   _med,
+                "mean":     _mn,
+                "stddev":   _sd,
+                "min":      min(_used),
+                "max":      max(_used),
+                "n_samples": len(_used),
+            }
+        _agg_dims["note"] = _raw_note
+        batch_result = {_tk_single: _agg_dims}
+
+        # Ensure expected ticker is in result
+        if not _agg_dims.get(_MACRO_SCORE_DIMS[0]):
+            msg = "Ticker absent from all LLM samples"
             print(f"[MacroScores] Batch {i//BATCH+1} {msg}")
             failed_n += len(batch)
             run_errors.append({"tickers": batch, "error": msg})
-            time.sleep(20)
             continue
 
-        # Count any expected tickers that were omitted from the response as failures (0478, 0485)
-        for expected_tk in batch:
-            if expected_tk not in {_normalize_ticker(k) for k in batch_result}:
-                failed_n += 1
-                run_errors.append({"tickers": [expected_tk], "error": "ticker omitted from LLM response"})
+        # Ticker was confirmed present (checked above in the early-exit)
 
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         if DB_PATH.exists():
@@ -2186,6 +2396,22 @@ Return ONLY valid JSON. Each dimension must include a score AND a one-sentence r
                         else:
                             print(f"[MacroScores] {ticker}: rate_beta={rb:.3f}%/100bps concordant with LLM rate_sensitivity={rate_score}")
 
+                # 0506: attach per-dim stability class and usable_for_attribution
+                for _sdim in _MACRO_SCORE_DIMS:
+                    _dim_data = scores.get(_sdim)
+                    if isinstance(_dim_data, dict):
+                        _sd_val  = _dim_data.get("stddev")
+                        _scls    = _stability_class(_sd_val)
+                        _usable  = _usable_for_attribution(_sd_val, _scls)
+                        _dim_data[f"stability_class"] = _scls
+                        _dim_data[f"usable_for_attribution"] = _usable
+                # Also expose flat keys for attribution filter
+                for _sdim in _MACRO_SCORE_DIMS:
+                    _dim_data = scores.get(_sdim)
+                    if isinstance(_dim_data, dict):
+                        scores[f"{_sdim}_usable_for_attribution"] = _dim_data.get("usable_for_attribution")
+                        scores[f"{_sdim}_stability_class"]        = _dim_data.get("stability_class")
+
                 # Compute evidence hash (full SHA-256, no truncation) for provenance (0475, 0484)
                 _ev_meta = {"evidence_quality", "evidence_quality_rate", "evidence_quality_dollar",
                             "evidence_quality_inflation", "evidence_quality_geo", "is_fund", "fund_note"}
@@ -2213,6 +2439,24 @@ Return ONLY valid JSON. Each dimension must include a score AND a one-sentence r
                     (ticker, scores_json, now_str, run_id,
                      ollama_client.DEFAULT_MODEL, MACRO_SCORE_SCHEMA_VERSION, evidence_hash)
                 )
+                # Persist per-dim stability to macro_dimension_stability (0506)
+                for _sdim in _MACRO_SCORE_DIMS:
+                    _dim_data = scores.get(_sdim)
+                    if isinstance(_dim_data, dict) and _dim_data.get("n_samples", 0) > 1:
+                        try:
+                            conn.execute(
+                                "INSERT OR REPLACE INTO macro_dimension_stability "
+                                "(ticker, dim, stdev, mean, n_samples, stability_class, updated_at) "
+                                "VALUES (?,?,?,?,?,?,?)",
+                                (ticker, _sdim,
+                                 _dim_data.get("stddev"), _dim_data.get("mean"),
+                                 _dim_data.get("n_samples"),
+                                 _dim_data.get("stability_class"),
+                                 now_str)
+                            )
+                        except Exception:
+                            pass
+
                 results[ticker] = scores
                 scored_n += 1
             conn.commit()

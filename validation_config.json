@@ -1,5 +1,7 @@
 {
-  "version": "v1",
+  "version": "v1.1",
+  "amendment_note": "v1 BLOCK: UUP anchor was invalid — UUP is classified as ETF in SECURITY_MASTER and receives evidence_quality=unsupported in production; it would never receive a live structural score. Replaced with company anchors chosen from independently-evidenced company_financials data, not from expected LLM output. NEE chosen because it is a domestic US utility with <5% foreign revenue. XOM chosen because it has significant international operations and qualifies as an inflation hedge. Relative ordering invariant added: domestic utility dollar_sensitivity must be less than international energy dollar_sensitivity. Original BLOCK record: out/macro_validation_acceptance_20260919_134153.json",
+  "prior_block_record": "out/macro_validation_acceptance_20260919_134153.json",
   "thresholds": {
     "schema_valid_pct": 100,
     "ledger_integrity_pct": 100,

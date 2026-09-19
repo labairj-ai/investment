@@ -1517,7 +1517,19 @@ def build_dashboard(portfolio, layers, holdings):
         # Macro scores cell
         ticker_scores = macro_scores.get(h["ticker"], {})
         safe_id = h["ticker"].replace(".", "_")
-        if ticker_scores:
+        # 0504: fund/ETF receives unsupported record — render badge, skip score panels
+        if ticker_scores and (ticker_scores.get("evidence_quality") == "unsupported"
+                              or ticker_scores.get("macro_supported") is False
+                              or ticker_scores.get("is_fund")):
+            _tk_title = h["ticker"]
+            macro_cell = (
+                f'<td class="col-hide-sm" style="white-space:nowrap;" '
+                f'title="{_tk_title} is an ETF/fund — structural scores not supported">'
+                f'<span style="font-size:10px;color:#94a3b8;font-style:italic;">Unsupported&nbsp;—&nbsp;Fund/ETF</span>'
+                f'</td>'
+            )
+            detail_row = ''
+        elif ticker_scores:
             rate = ticker_scores.get("rate_sensitivity")
             infl = ticker_scores.get("inflation_hedge")
             dlr  = ticker_scores.get("dollar_sensitivity")

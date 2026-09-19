@@ -80,6 +80,23 @@ def _build_macro_snapshot(ticker: str, conn) -> str:
                         "schema_version":             scores.get("schema_version"),
                         "evidence_hash":              scores.get("evidence_hash"),
                         "scored_at":                  scored_at,
+                        # 0506/0509: per-dim usability and stability for attribution gate
+                        "rate_sensitivity_usable_for_attribution":
+                            scores.get("rate_sensitivity_usable_for_attribution"),
+                        "dollar_sensitivity_usable_for_attribution":
+                            scores.get("dollar_sensitivity_usable_for_attribution"),
+                        "inflation_hedge_usable_for_attribution":
+                            scores.get("inflation_hedge_usable_for_attribution"),
+                        "geopolitical_risk_usable_for_attribution":
+                            scores.get("geopolitical_risk_usable_for_attribution"),
+                        "rate_sensitivity_stability_class":
+                            scores.get("rate_sensitivity_stability_class"),
+                        "dollar_sensitivity_stability_class":
+                            scores.get("dollar_sensitivity_stability_class"),
+                        "inflation_hedge_stability_class":
+                            scores.get("inflation_hedge_stability_class"),
+                        "geopolitical_risk_stability_class":
+                            scores.get("geopolitical_risk_stability_class"),
                     }
 
         # 0497: tag validation status

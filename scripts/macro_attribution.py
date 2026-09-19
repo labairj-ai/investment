@@ -24,12 +24,17 @@ OUT_DIR = PROJECT_DIR / "out"
 MIN_EPISODES = 10   # minimum to produce any output; 60 recommended for meaningful analysis
 
 
+MIN_DIM_USABLE = 20  # episodes needed per dim for formal attribution
+
+
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Macro Attribution Analysis")
     p.add_argument("--horizon", default="3m",
                    help="Outcome horizon to analyse (default: 3m). Options: 1w, 1m, 3m, 6m, 12m")
     p.add_argument("--include-pre-acceptance", action="store_true",
                    help="Include PRE_ACCEPTANCE episodes (diagnostic use only)")
+    p.add_argument("--show-all-dims", action="store_true",
+                   help="Include all dims in formal tables (incl. geopolitical_risk)")
     p.add_argument("--debug", action="store_true",
                    help="Print SQL errors with full traceback")
     return p.parse_args()
@@ -120,6 +125,27 @@ def _mean(vals: list[float]) -> float | None:
     return round(sum(vals) / len(vals), 4) if vals else None
 
 
+def _extract_dim_score(val) -> int | None:
+    """Extract scalar 1-10 from dict {score, ...} or bare int. Handles legacy and new formats."""
+    if isinstance(val, dict):
+        v = val.get("score")
+    elif isinstance(val, (int, float)):
+        v = val
+    else:
+        return None
+    try:
+        return max(1, min(10, int(v)))
+    except (TypeError, ValueError):
+        return None
+
+
+def _filter_by_dim_usability(episodes: list[dict], dim_key: str) -> list[dict]:
+    """Gate 2: filter to episodes where this dimension is marked usable_for_attribution.
+    If the key is absent (old score without per-dim metadata), treat as usable for backward compat."""
+    key = f"{dim_key}_usable_for_attribution"
+    return [e for e in episodes if e["macro"].get(key, True) is not False]
+
+
 def _coverage_summary(episodes: list[dict]) -> dict:
     """Count episodes by coverage_state."""
     counts: dict[str, int] = {}
@@ -129,7 +155,7 @@ def _coverage_summary(episodes: list[dict]) -> dict:
     return counts
 
 
-def analyse(episodes: list[dict], horizon: str) -> dict:
+def analyse(episodes: list[dict], horizon: str, show_all_dims: bool = False) -> dict:
     n = len(episodes)
     if n < MIN_EPISODES:
         print(f"Only {n} supported ACCEPTED episodes at horizon={horizon} — "
@@ -155,11 +181,11 @@ def analyse(episodes: list[dict], horizon: str) -> dict:
             s["mean_mae"] = _mean(maes)
         return s
 
-    # Fix 0496 bug #3: exclude None values; track n_unknown per dimension
-    def split_buckets(field: str) -> tuple[list, list, int]:
+    # 0509: per-dim usability filter + scalar extraction (handles both dict and legacy int scores)
+    def split_buckets(field: str, dim_episodes: list[dict]) -> tuple[list, list, int]:
         high, low, unknown = [], [], 0
-        for e in episodes:
-            v = e["macro"].get(field)
+        for e in dim_episodes:
+            v = _extract_dim_score(e["macro"].get(field))
             if v is None:
                 unknown += 1
                 continue
@@ -169,27 +195,33 @@ def analyse(episodes: list[dict], horizon: str) -> dict:
                 low.append(e)
         return high, low, unknown
 
-    hr, lr, unk_r = split_buckets("rate_sensitivity")
-    hd, ld, unk_d = split_buckets("dollar_sensitivity")
-    hh, lh, unk_h = split_buckets("inflation_hedge")
+    def _dim_analysis(dim_key: str) -> dict:
+        """Per-dim Gate 2 filter + bucket analysis with N reporting."""
+        usable = _filter_by_dim_usability(episodes, dim_key)
+        excluded = len(episodes) - len(usable)
+        if len(usable) < MIN_DIM_USABLE:
+            return {
+                "status": "insufficient_data",
+                "n_usable": len(usable),
+                "n_excluded_by_usability": excluded,
+                "min_required": MIN_DIM_USABLE,
+                "note": f"Dimension {dim_key} has <{MIN_DIM_USABLE} usable episodes — excluded from formal attribution.",
+            }
+        h, l, unk = split_buckets(dim_key, usable)
+        return {
+            "status": "ok",
+            "n_usable": len(usable),
+            "n_excluded_by_usability": excluded,
+            "high_7plus":  bucket_stats(h),
+            "low_3minus":  bucket_stats(l),
+            "n_unknown":   unk,
+        }
 
-    bucket_analysis = {
-        "rate_sensitivity": {
-            "high_7plus":   bucket_stats(hr),
-            "low_3minus":   bucket_stats(lr),
-            "n_unknown":    unk_r,
-        },
-        "dollar_sensitivity": {
-            "high_7plus":   bucket_stats(hd),
-            "low_3minus":   bucket_stats(ld),
-            "n_unknown":    unk_d,
-        },
-        "inflation_hedge": {
-            "high_7plus":   bucket_stats(hh),
-            "low_3minus":   bucket_stats(lh),
-            "n_unknown":    unk_h,
-        },
-    }
+    dims_to_analyse = ["rate_sensitivity", "dollar_sensitivity", "inflation_hedge"]
+    if show_all_dims:
+        dims_to_analyse.append("geopolitical_risk")
+
+    bucket_analysis = {d: _dim_analysis(d) for d in dims_to_analyse}
 
     # Beta confidence vs outcome
     strong_beta = [e for e in episodes if e["macro"].get("rate_beta_confidence") == "stronger"]
@@ -244,7 +276,7 @@ if __name__ == "__main__":
         for state, count in sorted(cov.items()):
             print(f"  {state}: {count}")
 
-    results = analyse(episodes, args.horizon)
+    results = analyse(episodes, args.horizon, show_all_dims=args.show_all_dims)
     output = {
         "generated_at": datetime.utcnow().isoformat(),
         "horizon":      args.horizon,

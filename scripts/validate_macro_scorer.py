@@ -43,10 +43,41 @@ ANCHORS = {
         "dollar_sensitivity": (1, 4),   # domestic utility, little FX exposure
     },
     "XOM": {
-        "description": "Large US energy / inflation hedge",
-        "inflation_hedge": (6, 10),
+        "description": "Large US energy / inflation hedge / significant international operations",
+        "inflation_hedge":    (6, 10),
+        "dollar_sensitivity": (5, 9),   # international ops → moderate-high dollar exposure
     },
 }
+
+# Relative ordering invariants — more robust than absolute brackets.
+# Chosen from independently-evidenced company characteristics, not expected LLM output.
+RELATIVE_ORDERING_CHECKS = [
+    {
+        "lower_ticker":  "NEE",
+        "higher_ticker": "XOM",
+        "dimension":     "dollar_sensitivity",
+        "description":   "domestic utility (NEE) < international energy (XOM) for dollar_sensitivity",
+    }
+]
+
+
+def _check_relative_ordering(anchor_scores: dict, checks: list) -> list:
+    """Verify relative ordering invariants between anchor tickers."""
+    results = []
+    for check in checks:
+        lo_dim = anchor_scores.get(check["lower_ticker"], {}).get("dims", {}).get(check["dimension"], {})
+        hi_dim = anchor_scores.get(check["higher_ticker"], {}).get("dims", {}).get(check["dimension"], {})
+        lo = lo_dim.get("actual") if isinstance(lo_dim, dict) else None
+        hi = hi_dim.get("actual") if isinstance(hi_dim, dict) else None
+        if lo is None or hi is None:
+            results.append({"check": check["description"], "status": "SKIP",
+                            "reason": "score unavailable", "lo": lo, "hi": hi})
+        elif lo < hi:
+            results.append({"check": check["description"], "lo": lo, "hi": hi, "status": "PASS"})
+        else:
+            results.append({"check": check["description"], "lo": lo, "hi": hi, "status": "FAIL",
+                            "reason": f"{check['lower_ticker']}={lo} not < {check['higher_ticker']}={hi}"})
+    return results
 
 
 def _score_val(dim_data):
@@ -173,6 +204,8 @@ def run_anchor_calibration(macro: dict) -> dict:
             }
         results[ticker] = anchor_result
         time.sleep(8)
+    # Relative ordering checks — stored under special key, not iterated as a ticker
+    results["_ordering"] = _check_relative_ordering(results, RELATIVE_ORDERING_CHECKS)
     return results
 
 
@@ -460,9 +493,16 @@ def print_summary(repeatability: dict, anchor_cal: dict, concordance: dict, drif
 
     print("\n=== 2. ANCHOR CALIBRATION ===")
     for ticker, res in anchor_cal.items():
+        if ticker == "_ordering":
+            continue
         print(f"\n{ticker} — {res['description']}")
         for dim, r in res["dims"].items():
             print(f"  {dim}: actual={r['actual']}, expected={r['expected_range']} → {r['status']}")
+    ordering = anchor_cal.get("_ordering", {})
+    if ordering:
+        print(f"\n  Relative ordering: {'PASS' if ordering['pass'] else 'FAIL'}")
+        for chk in ordering.get("checks", []):
+            print(f"    {chk['label']}: {chk['status']} — {chk.get('detail', '')}")
 
     print("\n=== 3. FACTOR vs LLM CONCORDANCE ===")
     if concordance.get("skipped"):
@@ -536,7 +576,11 @@ def _count_fails(repeatability, anchor_cal, concordance, drift,
                 passes += 1
 
     # Anchor: FAIL = fail
-    for res in anchor_cal.values():
+    for k, res in anchor_cal.items():
+        if k == "_ordering":
+            if not res.get("pass"):
+                fails += sum(1 for c in res.get("checks", []) if c["status"] != "PASS")
+            continue
         for r in res["dims"].values():
             if r["status"] == "PASS":
                 passes += 1
@@ -663,11 +707,17 @@ def _check_thresholds(results: dict, config: dict) -> dict:
     # Anchor calibration
     anchor = results.get("anchor_calibration", {})
     anchor_fails = sum(
-        1 for res in anchor.values()
+        1 for k, res in anchor.items()
+        if k != "_ordering"
         for r in res.get("dims", {}).values()
         if r.get("status") != "PASS"
     )
+    ordering = anchor.get("_ordering", {})
+    ordering_fails = sum(
+        1 for c in ordering.get("checks", []) if c.get("status") != "PASS"
+    )
     checks["anchor_calibration"] = "PASS" if anchor_fails == 0 else "BLOCK"
+    checks["anchor_ordering"] = "PASS" if ordering_fails == 0 else "BLOCK"
 
     # Drift (warn, not block)
     drift = results.get("drift", {})
@@ -705,7 +755,9 @@ def main():
     try:
         import portfolio_ai as pai
         holdings = pai._load_holdings_csv()
-        tickers = list({pai._normalize_ticker(h.get("Stock", "")) for h in holdings if h.get("Stock")})[:8]
+        from portfolio_ai import is_fund
+        all_tickers = list({pai._normalize_ticker(h.get("Stock", "")) for h in holdings if h.get("Stock")})
+        tickers = [t for t in all_tickers if not is_fund(t)][:8]
     except Exception:
         tickers = []
 
@@ -721,6 +773,31 @@ def main():
         repeatability = {}
         print("\n2. Anchor calibration — SKIP (use --live)")
         anchor_cal = {}
+
+    # 0506: persist per-ticker×dim stability from this repeatability run
+    if repeatability and args.live:
+        try:
+            import sys as _sys
+            _sys.path.insert(0, str(PROJECT_DIR))
+            from portfolio_ai import DB_PATH as _DB, _stability_class as _scls
+            import sqlite3 as _sq
+            _now = time.strftime("%Y-%m-%d %H:%M:%S")
+            _sc = _sq.connect(str(_DB), timeout=10)
+            for _tk, _dims in repeatability.items():
+                for _dim, _r in _dims.items():
+                    if _r.get("n", 0) >= 2:
+                        _sc.execute(
+                            "INSERT OR REPLACE INTO macro_dimension_stability "
+                            "(ticker, dim, stdev, mean, n_samples, stability_class, updated_at) "
+                            "VALUES (?,?,?,?,?,?,?)",
+                            (_tk, _dim, _r.get("stdev"), _r.get("mean"),
+                             _r.get("n"), _scls(_r.get("stdev")), _now)
+                        )
+            _sc.commit()
+            _sc.close()
+            print(f"  Persisted stability data for {len(repeatability)} tickers to macro_dimension_stability")
+        except Exception as _e:
+            print(f"  WARNING: could not persist stability data: {_e}")
 
     print("\n3. Factor vs LLM concordance...")
     concordance = run_concordance(tickers)
