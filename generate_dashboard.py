@@ -708,6 +708,114 @@ def _build_macro_trend_data(macro_history, today_holdings_sorted) -> dict:
     return {"dates": all_dates, "portfolio": port_series, "layers": layer_datasets}
 
 
+def _build_regime_stress_section(macro_scores: dict, today_holdings_sorted: list) -> str:
+    """Build experimental regime stress vs structural exposure display (0482).
+    EXPERIMENTAL — research only. Not used in any trading or risk-gate logic."""
+    try:
+        import macro_context
+        import portfolio_ai as pai
+        macro = macro_context.fetch()
+        regime = macro.get("regime", {})
+        regime_stress = pai.compute_regime_stress(regime)
+    except Exception:
+        return ''
+
+    if not regime_stress or not macro_scores:
+        return ''
+
+    directional = regime.get("directional_states", {})
+    stress_bar_html = ""
+    STRESS_DIMS = [
+        ("rate_stress",         "Rate Stress",     "#e74c3c"),
+        ("dollar_stress",       "Dollar Stress",   "#3498db"),
+        ("vol_stress",          "Vol Stress (VIX)", "#f39c12"),
+    ]
+    for key, label, color in STRESS_DIMS:
+        val = regime_stress.get(key, 0.0)
+        pct = round(val * 100)
+        stress_bar_html += (
+            f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">'
+            f'<span style="font-size:10px;color:#718096;min-width:110px;">{label}</span>'
+            f'<div style="flex:1;height:8px;background:#e2e8f0;border-radius:4px;overflow:hidden;">'
+            f'<div style="width:{pct}%;height:100%;background:{color};opacity:0.7;border-radius:4px;transition:width .3s;"></div>'
+            f'</div>'
+            f'<span style="font-size:10px;font-weight:700;color:{color};min-width:30px;text-align:right;">{pct}%</span>'
+            f'</div>'
+        )
+
+    # Per-ticker regime-adjusted risk rows
+    tickers = [h["ticker"] for h in today_holdings_sorted if h["ticker"] in macro_scores][:20]
+    rows_html = ""
+    for ticker in tickers:
+        scores = macro_scores[ticker]
+        adj = pai.compute_regime_adjusted_risk(scores, regime_stress)
+        if adj is None:
+            continue
+        struct = _compute_macro_composite(scores) or 0
+
+        def _bar(val, color):
+            if val is None:
+                return '<span style="font-size:9px;color:#ccc;">N/A</span>'
+            pct = round(val * 100)
+            return (
+                f'<div style="display:flex;align-items:center;gap:3px;">'
+                f'<div style="width:40px;height:5px;background:#e2e8f0;border-radius:3px;overflow:hidden;">'
+                f'<div style="width:{pct}%;height:100%;background:{color};opacity:0.75;"></div>'
+                f'</div>'
+                f'<span style="font-size:9px;color:{color};font-weight:700;">{pct}%</span>'
+                f'</div>'
+            )
+
+        rows_html += (
+            f'<tr style="border-bottom:1px solid #f8f8f8;">'
+            f'<td style="padding:4px 8px;font-size:11px;font-weight:600;color:#1a2340;">{ticker}</td>'
+            f'<td style="padding:4px 8px;text-align:center;">'
+            f'<span style="font-size:11px;font-weight:700;color:{_composite_color(struct)};">{struct}</span>'
+            f'</td>'
+            f'<td style="padding:4px 8px;">{_bar(adj.get("rate_sensitivity_regime_risk"), "#e74c3c")}</td>'
+            f'<td style="padding:4px 8px;">{_bar(adj.get("dollar_sensitivity_regime_risk"), "#3498db")}</td>'
+            f'<td style="padding:4px 8px;">{_bar(adj.get("vol_stress"), None) if False else _bar(None, "#f39c12")}</td>'
+            f'</tr>'
+        )
+
+    regime_summary = (
+        f"Rates {directional.get('rates','—')} · "
+        f"Dollar {directional.get('dollar','—')} · "
+        f"VIX {directional.get('volatility','—')} · "
+        f"Curve {directional.get('curve','—')}"
+    )
+
+    return f'''
+    <div style="margin-bottom:20px;padding:12px;background:#fff8e7;border:1px solid #fde68a;border-radius:8px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-size:11px;font-weight:700;color:#92400e;text-transform:uppercase;letter-spacing:.05em;">
+          ⚗ Experimental: Regime Stress × Structural Exposure
+        </span>
+        <span style="font-size:10px;color:#b45309;">Research only — not used in any trading logic</span>
+      </div>
+      <div style="font-size:10px;color:#a0aec0;margin-bottom:10px;">{regime_summary}</div>
+      <div style="margin-bottom:12px;">{stress_bar_html}</div>
+      <div style="overflow-x:auto;">
+        <table style="width:100%;border-collapse:collapse;font-size:11px;">
+          <thead>
+            <tr style="border-bottom:2px solid #fde68a;">
+              <th style="text-align:left;padding:4px 8px;font-size:9px;color:#92400e;">Ticker</th>
+              <th style="text-align:center;padding:4px 8px;font-size:9px;color:#92400e;">Structural<br>Health</th>
+              <th style="text-align:left;padding:4px 8px;font-size:9px;color:#e74c3c;">Rate<br>Adj Risk</th>
+              <th style="text-align:left;padding:4px 8px;font-size:9px;color:#3498db;">Dollar<br>Adj Risk</th>
+              <th style="text-align:left;padding:4px 8px;font-size:9px;color:#f39c12;">Vol<br>(pending)</th>
+            </tr>
+          </thead>
+          <tbody>{rows_html}</tbody>
+        </table>
+      </div>
+      <div style="font-size:9px;color:#a0aec0;margin-top:8px;">
+        Regime-adj risk = structural exposure normalised (0–1) × regime stress scalar (0–1).
+        After ≥4 weeks of parallel data, compare rankings vs. structural composite before promoting.
+      </div>
+    </div>'''
+
+
 def _build_macro_risk_section(macro_scores, macro_history, wow_deltas,
                                trend_data, today_holdings_sorted, portfolio_health) -> str:
     """Build the full standalone MACRO RISK DASHBOARD section HTML."""
@@ -1048,6 +1156,8 @@ def _build_macro_risk_section(macro_scores, macro_history, wow_deltas,
     else:
         scored_label = 'No scoring data yet'
 
+    regime_stress_section = _build_regime_stress_section(macro_scores, today_holdings_sorted)
+
     return f'''
   <!-- Macro Risk Dashboard -->
   <div class="card" id="macro-risk-card">
@@ -1061,6 +1171,7 @@ def _build_macro_risk_section(macro_scores, macro_history, wow_deltas,
     {trend_section}
     {summary_section}
     {heatmap_section}
+    {regime_stress_section}
     <div>
       <div style="font-size:11px;font-weight:600;color:#a0aec0;text-transform:uppercase;
                   letter-spacing:.07em;margin-bottom:12px;">Per-Holding Detail</div>

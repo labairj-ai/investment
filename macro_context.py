@@ -162,26 +162,98 @@ def _compute_regime(cpi_yoy: Optional[float] = None) -> dict:
         uup = _closes("UUP")
         vix = _closes("^VIX")
 
+        def _chg_pts(series, n):
+            """Raw point change (no scaling). Use for VIX and yield levels."""
+            if series is None or len(series) < n + 1:
+                return None
+            return round(float(series.iloc[-1]) - float(series.iloc[-1 - n]), 2)
+
+        tnx_level = round(float(tnx.iloc[-1]), 3) if tnx is not None else None
+        irx_level = round(float(irx.iloc[-1]), 3) if irx is not None else None
+        vix_level = round(float(vix.iloc[-1]), 2) if vix is not None else None
+
+        # Curve state derived from live yields
+        curve_10y3m_bps: Optional[float] = None
+        curve_state: Optional[str] = None
+        if tnx_level is not None and irx_level is not None:
+            curve_10y3m_bps = round((tnx_level - irx_level) * 100, 1)
+            if curve_10y3m_bps > 50:
+                curve_state = "normal"
+            elif curve_10y3m_bps >= -25:
+                curve_state = "flat"
+            else:
+                curve_state = "inverted"
+
+        # Inflation direction from CPI YoY momentum (requires two observations — single value only)
+        inflation_direction: Optional[str] = None
+        if cpi_yoy is not None:
+            if cpi_yoy > 4.0:
+                inflation_direction = "high"
+            elif cpi_yoy > 2.5:
+                inflation_direction = "elevated"
+            elif cpi_yoy > 0:
+                inflation_direction = "moderate"
+            else:
+                inflation_direction = "low_or_deflation"
+
         regime = {
             "rate": {
-                "yield_10y_level":  round(float(tnx.iloc[-1]), 3) if tnx is not None else None,
+                "yield_10y_level":       tnx_level,
                 "yield_10y_5d_chg_bps":  _chg_bps(tnx, 5),
                 "yield_10y_21d_chg_bps": _chg_bps(tnx, 21),
                 "yield_10y_63d_chg_bps": _chg_bps(tnx, 63),
-                "yield_3m_level":   round(float(irx.iloc[-1]), 3) if irx is not None else None,
+                "yield_3m_level":        irx_level,
+                "curve_10y3m_bps":       curve_10y3m_bps,
+                "curve_state":           curve_state,
             },
             "dollar": {
                 "uup_5d_pct":  _chg_pct(uup, 5),
                 "uup_21d_pct": _chg_pct(uup, 21),
                 "uup_63d_pct": _chg_pct(uup, 63),
+                "direction":   ("strengthening" if (_chg_pct(uup, 21) or 0) > 0.5
+                                else "weakening" if (_chg_pct(uup, 21) or 0) < -0.5
+                                else "stable"),
             },
             "volatility": {
-                "vix_level":       round(float(vix.iloc[-1]), 2) if vix is not None else None,
-                "vix_5d_chg":      _chg_bps(vix, 5),  # reuse bps func (VIX points × 100)
-                "vix_pct_rank_252d": _pct_rank(vix, 252),
+                "vix_level":             vix_level,
+                "vix_5d_change_points":  _chg_pts(vix, 5),   # raw VIX points, not ×100
+                "vix_5d_change_pct":     _chg_pct(vix, 5),
+                "vix_pct_rank_252d":     _pct_rank(vix, 252),
+                "regime":                ("fear" if (vix_level or 0) >= 30
+                                          else "elevated" if (vix_level or 0) >= 20
+                                          else "calm"),
             },
             "inflation": {
-                "cpi_yoy": cpi_yoy,  # passed in from FRED fetch
+                "cpi_yoy":   cpi_yoy,
+                "direction": inflation_direction,
+            },
+            "directional_states": {
+                "rates":      ("rising" if (_chg_bps(tnx, 21) or 0) > 10
+                               else "falling" if (_chg_bps(tnx, 21) or 0) < -10
+                               else "stable"),
+                "dollar":     ("strengthening" if (_chg_pct(uup, 21) or 0) > 0.5
+                               else "weakening" if (_chg_pct(uup, 21) or 0) < -0.5
+                               else "stable"),
+                "volatility": ("spiking" if (_chg_pts(vix, 5) or 0) > 3
+                               else "falling" if (_chg_pts(vix, 5) or 0) < -3
+                               else "stable"),
+                "curve":      curve_state or "unknown",
+                "inflation":  inflation_direction or "unknown",
+                "geopolitical": "placeholder",  # reserved — no real-time signal yet
+            },
+            "regime_interpretations": {
+                "rate_risk":    ("high" if (tnx_level or 0) > 5.0 and (_chg_bps(tnx, 21) or 0) > 20
+                                 else "moderate" if (tnx_level or 0) > 4.0
+                                 else "low"),
+                "dollar_risk":  ("high" if (_chg_pct(uup, 63) or 0) > 3
+                                 else "moderate" if (_chg_pct(uup, 21) or 0) > 1
+                                 else "low"),
+                "vol_regime":   ("stress" if (vix_level or 0) >= 30
+                                 else "elevated" if (vix_level or 0) >= 20
+                                 else "benign"),
+                "inflation_regime": ("inflationary" if (cpi_yoy or 0) > 3
+                                     else "target_range" if (cpi_yoy or 0) > 1.5
+                                     else "below_target"),
             },
             "computed_at": time.time(),
         }
@@ -752,8 +824,22 @@ def fetch(force: bool = False) -> dict:
     }
     ctx["formatted_block"] = _format_block(ctx)
 
-    # Serialise without non-JSON-serialisable objects (MacroMeasurement dataclasses excluded)
-    cache_ctx = {k: v for k, v in ctx.items() if k != "measurements"}
+    # Serialise measurements as plain dicts so they survive the cache round-trip.
+    # On reload, measurements will be plain dicts (not MacroMeasurement objects) but
+    # all provenance fields (value, series_id, source, observation_date, etc.) are preserved.
+    cache_ctx = {**ctx}
+    cache_ctx["measurements"] = {
+        k: {
+            "value":            m.value,
+            "series_id":        m.series_id,
+            "source":           m.source,
+            "observation_date": m.observation_date,
+            "retrieved_at":     m.retrieved_at,
+            "units":            m.units,
+            "stale":            m.stale,
+        }
+        for k, m in measurements.items()
+    }
     CACHE_PATH.write_text(json.dumps(cache_ctx, indent=2))
     return ctx
 
