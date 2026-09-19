@@ -1264,7 +1264,7 @@ def promote(
     snapshot["snapshot_errors"] = _snap_errors
     snapshot["snapshot_complete"] = len(_snap_errors) == 0
 
-    # 0448: PAPER_ACTIVE requires complete provenance unless override_reason is set
+    # 0448/0451: PAPER_ACTIVE requires complete provenance unless override_reason is set
     _PAPER_ACTIVE_REQUIRED = frozenset({
         "model_id", "model_version", "training_config_hash", "training_commit_sha",
         "activation_commit_sha", "strategy_hash", "policy_hash", "policy_version",
@@ -1278,6 +1278,20 @@ def promote(
                 "promoted": False,
                 "error": "incomplete_provenance",
                 "missing_provenance_fields": _missing,
+                "snapshot_errors": _snap_errors,
+                "gates": gate_result.get("gates", {}),
+            }
+        # 0451: activation_commit_sha is untrustworthy when the tree is dirty
+        if snapshot.get("git_dirty") is True:
+            conn.close()
+            return {
+                "promoted": False,
+                "error": "dirty_worktree",
+                "detail": (
+                    "activation_commit_sha does not fully identify the running code "
+                    "when the worktree has uncommitted changes. "
+                    "Commit all changes first, or supply override_reason to bypass."
+                ),
                 "snapshot_errors": _snap_errors,
                 "gates": gate_result.get("gates", {}),
             }

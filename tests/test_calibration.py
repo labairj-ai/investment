@@ -9827,3 +9827,274 @@ class TestActivationSnapshotCompleteness0448:
         assert "training_commit_sha" in snap or "activation_commit_sha" in snap or \
                len(snap.get("snapshot_errors", [])) > 0, \
             "promotion snapshot must attempt both training_commit_sha and activation_commit_sha (0448)"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 0451 — Dirty Worktree Blocks PAPER_ACTIVE
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestDirtyActivationGate0451:
+    """PAPER_ACTIVE blocked when git_dirty=True; override_reason bypasses; absent git_dirty is OK."""
+
+    def test_paper_active_blocked_when_git_dirty(self, mem_db, monkeypatch):
+        """git_dirty=True must block PAPER_ACTIVE without override_reason (0451)."""
+        import subprocess
+        import agent_db
+        import agents.learning.calibration as cal
+        from agents.learning.calibration import promote, ChallengerModel
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        _seed_episodes(conn, 60, with_outcomes=True, noise=0.05)
+        conn.close()
+        model = ChallengerModel.train()
+        assert model is not None
+        model.save_with_weights()
+        promote(model.model_version, "OBSERVE", override_reason="test")
+
+        # Mock git to report dirty tree and return a valid SHA
+        def _fake_check_output(cmd, **kw):
+            if "rev-parse" in cmd:
+                return "deadbeef1234567890\n"
+            if "status" in cmd:
+                return " M agents/foo.py\n"  # dirty
+            return ""
+        monkeypatch.setattr(subprocess, "check_output", _fake_check_output)
+
+        # Mock promotion gates to pass so provenance gate is reached
+        monkeypatch.setattr(cal, "_check_promotion_gates",
+                            lambda mv, ts: {"passed": True, "failed": [], "gates": {}, "vm": {}})
+
+        result = promote(model.model_version, "PAPER_ACTIVE")
+        assert result["promoted"] is False, \
+            "PAPER_ACTIVE must be blocked when git_dirty=True (0451)"
+        assert result.get("error") == "dirty_worktree", \
+            f"error must be 'dirty_worktree'; got {result.get('error')!r}"
+
+    def test_paper_active_override_reason_bypasses_dirty_gate(self, mem_db, monkeypatch):
+        """override_reason bypasses the dirty-tree gate for PAPER_ACTIVE (0451)."""
+        import subprocess
+        import agent_db
+        from agents.learning.calibration import promote, ChallengerModel
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        _seed_episodes(conn, 60, with_outcomes=True, noise=0.05)
+        conn.close()
+        model = ChallengerModel.train()
+        assert model is not None
+        model.save_with_weights()
+        promote(model.model_version, "OBSERVE", override_reason="test")
+
+        def _fake_check_output(cmd, **kw):
+            if "rev-parse" in cmd:
+                return "deadbeef1234567890\n"
+            if "status" in cmd:
+                return " M agents/foo.py\n"
+            return ""
+        monkeypatch.setattr(subprocess, "check_output", _fake_check_output)
+
+        result = promote(model.model_version, "PAPER_ACTIVE", override_reason="emergency")
+        assert result["promoted"] is True, \
+            "override_reason must bypass dirty-tree gate for PAPER_ACTIVE (0451)"
+
+    def test_paper_active_not_blocked_when_git_unavailable(self, mem_db, monkeypatch):
+        """Absent git_dirty (git unavailable) must not block PAPER_ACTIVE (0451)."""
+        import subprocess
+        import agent_db
+        import agents.learning.calibration as cal
+        from agents.learning.calibration import promote, ChallengerModel
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        _seed_episodes(conn, 60, with_outcomes=True, noise=0.05)
+        conn.close()
+        model = ChallengerModel.train()
+        assert model is not None
+        model.save_with_weights()
+        promote(model.model_version, "OBSERVE", override_reason="test")
+
+        # Make git completely unavailable
+        monkeypatch.setattr(subprocess, "check_output",
+                            lambda *a, **kw: (_ for _ in ()).throw(FileNotFoundError("no git")))
+        monkeypatch.setattr(cal, "_check_promotion_gates",
+                            lambda mv, ts: {"passed": True, "failed": [], "gates": {}, "vm": {}})
+
+        result = promote(model.model_version, "PAPER_ACTIVE")
+        # git unavailable → git_dirty absent from snapshot → must NOT be blocked on it
+        assert result.get("error") != "dirty_worktree", \
+            "git being unavailable must not trigger dirty_worktree block (0451)"
+
+    def test_observe_not_blocked_by_dirty_gate(self, mem_db, monkeypatch):
+        """OBSERVE promotions are never blocked by the dirty-tree gate (0451)."""
+        import subprocess
+        import agent_db
+        from agents.learning.calibration import promote, ChallengerModel
+
+        monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
+        monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
+
+        conn = _make_conn(mem_db)
+        _seed_episodes(conn, 60, with_outcomes=True, noise=0.05)
+        conn.close()
+        model = ChallengerModel.train()
+        assert model is not None
+        model.save_with_weights()
+
+        def _fake_check_output(cmd, **kw):
+            if "rev-parse" in cmd:
+                return "deadbeef1234567890\n"
+            if "status" in cmd:
+                return " M agents/foo.py\n"
+            return ""
+        monkeypatch.setattr(subprocess, "check_output", _fake_check_output)
+
+        result = promote(model.model_version, "OBSERVE", override_reason="test")
+        assert result["promoted"] is True, \
+            "OBSERVE must not be blocked by dirty-tree gate (0451)"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 0452 — Baseline Freeze Fail-Closed
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestBaselineFreezeFails0452:
+    """freeze_baseline.py aborts (raises RuntimeError) when loaders fail (0452)."""
+
+    def test_formula_params_raises_on_import_error(self, monkeypatch):
+        """_load_formula_params() must raise RuntimeError when import fails (0452)."""
+        import sys
+        import scripts.freeze_baseline as fb
+        # Make opportunity_config unimportable
+        monkeypatch.setitem(sys.modules, "agents.opportunity_config", None)
+        with pytest.raises(RuntimeError, match="Cannot import from opportunity_config"):
+            fb._load_formula_params()
+
+    def test_virtual_book_capital_raises_on_import_error(self, monkeypatch):
+        """_load_virtual_book_capital() must raise RuntimeError when import fails (0452)."""
+        import sys
+        import scripts.freeze_baseline as fb
+        monkeypatch.setitem(sys.modules, "agents.opportunity_config", None)
+        with pytest.raises(RuntimeError, match="Cannot load VIRTUAL_BOOK_STARTING_CASH"):
+            fb._load_virtual_book_capital()
+
+    def test_strategy_hash_raises_on_failure(self, monkeypatch):
+        """_load_strategy_hash() must raise RuntimeError when strategy_config fails (0452)."""
+        import sys, types
+        import scripts.freeze_baseline as fb
+        fake_sc = types.ModuleType("strategy_config")
+        fake_sc.get_hash = lambda: (_ for _ in ()).throw(RuntimeError("boom"))
+        monkeypatch.setitem(sys.modules, "strategy_config", fake_sc)
+        with pytest.raises(RuntimeError, match="Cannot load strategy hash"):
+            fb._load_strategy_hash()
+
+    def test_policy_fields_raises_on_failure(self, monkeypatch):
+        """_load_policy_fields() must raise RuntimeError when policy load fails (0452)."""
+        import sys, types
+        import scripts.freeze_baseline as fb
+        # Make load_policy raise
+        fake_te = types.ModuleType("trade_engine")
+        fake_policy_mod = types.ModuleType("trade_engine.policy")
+        fake_policy_mod.load_policy = lambda acct: (_ for _ in ()).throw(RuntimeError("no policy"))
+        fake_te.policy = fake_policy_mod
+        monkeypatch.setitem(sys.modules, "trade_engine", fake_te)
+        monkeypatch.setitem(sys.modules, "trade_engine.policy", fake_policy_mod)
+        with pytest.raises(RuntimeError, match="Cannot load policy"):
+            fb._load_policy_fields()
+
+    def test_build_baseline_propagates_loader_error(self, monkeypatch, tmp_path):
+        """build_baseline() propagates RuntimeError from any loader (0452)."""
+        import sys, sqlite3
+        import scripts.freeze_baseline as fb
+        # Create a minimal valid DB so _load_db_fields() doesn't raise first
+        db = tmp_path / "test.db"
+        conn = sqlite3.connect(str(db))
+        conn.execute("CREATE TABLE learning_models (model_version TEXT, created_at REAL)")
+        conn.commit()
+        conn.close()
+        monkeypatch.setitem(sys.modules, "agents.opportunity_config", None)
+        with pytest.raises(RuntimeError):
+            fb.build_baseline(str(db))
+
+    def test_no_import_error_key_in_successful_baseline(self):
+        """A successfully built baseline must not contain import_error or policy_error keys (0452)."""
+        import scripts.freeze_baseline as fb
+        # We can't easily call build_baseline() without a real DB, but we can verify
+        # the loader functions no longer return error-dict shapes
+        import inspect
+        src = inspect.getsource(fb._load_formula_params)
+        assert "import_error" not in src, \
+            "_load_formula_params must not return import_error dict (0452)"
+        src2 = inspect.getsource(fb._load_policy_fields)
+        assert "policy_error" not in src2, \
+            "_load_policy_fields must not return policy_error dict (0452)"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 0453 — Comparison Score Contract
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestComparisonScoreContract0453:
+    """_composite_6() uses _COMPARISON_WEIGHTS, explicitly independent of COMPOSITE_WEIGHTS."""
+
+    def test_comparison_weights_exported_as_named_constant(self):
+        """_COMPARISON_WEIGHTS must exist as a named constant in opportunity_agent (0453)."""
+        import agents.opportunity_agent as oa
+        assert hasattr(oa, "_COMPARISON_WEIGHTS"), \
+            "_COMPARISON_WEIGHTS must be a named module-level constant (0453)"
+        assert isinstance(oa._COMPARISON_WEIGHTS, dict)
+        assert len(oa._COMPARISON_WEIGHTS) == 6, \
+            "_COMPARISON_WEIGHTS must have 6 components (adds R vs 5-component COMPOSITE_WEIGHTS)"
+
+    def test_comparison_weights_independent_of_composite_weights(self):
+        """_COMPARISON_WEIGHTS and COMPOSITE_WEIGHTS must be distinct (different keys) (0453)."""
+        import agents.opportunity_agent as oa
+        from agents.opportunity_config import COMPOSITE_WEIGHTS
+        assert set(oa._COMPARISON_WEIGHTS.keys()) != set(COMPOSITE_WEIGHTS.keys()), \
+            "_COMPARISON_WEIGHTS and COMPOSITE_WEIGHTS have the same keys — they are not independent (0453)"
+        assert "R" in oa._COMPARISON_WEIGHTS, \
+            "_COMPARISON_WEIGHTS must include R (risk score) component"
+        assert "R" not in COMPOSITE_WEIGHTS, \
+            "COMPOSITE_WEIGHTS must not include R — it is 5-component only"
+
+    def test_composite_6_consumes_comparison_weights(self, monkeypatch):
+        """Patching _COMPARISON_WEIGHTS changes _composite_6() output (0453)."""
+        import agents.opportunity_agent as oa
+        monkeypatch.setitem(oa._COMPARISON_WEIGHTS, "Q",  1.00)
+        monkeypatch.setitem(oa._COMPARISON_WEIGHTS, "V",  0.00)
+        monkeypatch.setitem(oa._COMPARISON_WEIGHTS, "PF", 0.00)
+        monkeypatch.setitem(oa._COMPARISON_WEIGHTS, "C",  0.00)
+        monkeypatch.setitem(oa._COMPARISON_WEIGHTS, "R",  0.00)
+        monkeypatch.setitem(oa._COMPARISON_WEIGHTS, "EC", 0.00)
+        assert oa._composite_6(75, 0, 0, 0, 0, 0) == 75, \
+            "_composite_6() must derive from _COMPARISON_WEIGHTS (0453)"
+
+    def test_composite_6_no_hardcoded_weights(self):
+        """_composite_6() source must not contain literal weight fractions (0453)."""
+        import inspect
+        import agents.opportunity_agent as oa
+        src = inspect.getsource(oa._composite_6)
+        for literal in ("0.25", "0.20", "0.15", "0.10"):
+            assert literal not in src, \
+                f"_composite_6() must not hard-code weight {literal} — use _COMPARISON_WEIGHTS (0453)"
+
+    def test_changing_composite_weights_does_not_affect_composite_6(self, monkeypatch):
+        """Patching COMPOSITE_WEIGHTS must not change _composite_6() output (0453)."""
+        import agents.opportunity_agent as oa
+        # Record baseline output
+        baseline = oa._composite_6(80, 70, 60, 50, 40, 30)
+        # Mutate COMPOSITE_WEIGHTS drastically
+        monkeypatch.setitem(oa.COMPOSITE_WEIGHTS, "Q", 1.00)
+        monkeypatch.setitem(oa.COMPOSITE_WEIGHTS, "V", 0.00)
+        monkeypatch.setitem(oa.COMPOSITE_WEIGHTS, "PF", 0.00)
+        monkeypatch.setitem(oa.COMPOSITE_WEIGHTS, "C", 0.00)
+        monkeypatch.setitem(oa.COMPOSITE_WEIGHTS, "EC", 0.00)
+        after = oa._composite_6(80, 70, 60, 50, 40, 30)
+        assert baseline == after, \
+            "Changing COMPOSITE_WEIGHTS must not affect _composite_6() (0453)"

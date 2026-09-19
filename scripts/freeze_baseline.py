@@ -110,6 +110,7 @@ def _table_exists(conn, name: str) -> bool:
 
 
 def _load_policy_fields() -> dict:
+    # 0452: raises on failure — partial baselines are not authoritative
     sys.path.insert(0, str(_REPO_ROOT))
     from trade_engine.policy import load_policy
     try:
@@ -120,44 +121,45 @@ def _load_policy_fields() -> dict:
             "shadow_account_initial_capital": policy.starting_capital(),
         }
     except Exception as e:
-        return {"policy_error": str(e)}
+        raise RuntimeError(f"Cannot load policy for {_SHADOW_ACCOUNT_ID}: {e}") from e
 
 
-def _load_virtual_book_capital() -> float | None:
+def _load_virtual_book_capital() -> float:
     # 0449: import from opportunity_config (pure module, no side effects)
+    # 0452: raises on failure
+    sys.path.insert(0, str(_REPO_ROOT))
     try:
-        sys.path.insert(0, str(_REPO_ROOT))
         from agents.opportunity_config import VIRTUAL_BOOK_STARTING_CASH
         return float(VIRTUAL_BOOK_STARTING_CASH)
-    except Exception:
-        return None
+    except Exception as e:
+        raise RuntimeError(f"Cannot load VIRTUAL_BOOK_STARTING_CASH: {e}") from e
 
 
 def _load_formula_params() -> dict:
     # 0449: import from opportunity_config — the genuine production source
+    # 0452: raises on failure
+    sys.path.insert(0, str(_REPO_ROOT))
     try:
-        sys.path.insert(0, str(_REPO_ROOT))
         from agents.opportunity_config import COMPOSITE_WEIGHTS, MIN_COMPOSITE
-        weights = dict(COMPOSITE_WEIGHTS)
-        formula_str = " + ".join(
-            f"{v:.2f}*{k}" for k, v in weights.items()
-        )
-        return {
-            "composite_formula": formula_str,
-            "composite_weights": weights,
-            "min_composite_threshold": int(MIN_COMPOSITE),
-        }
-    except Exception as _e:
-        return {"import_error": str(_e)}
+    except Exception as e:
+        raise RuntimeError(f"Cannot import from opportunity_config: {e}") from e
+    weights = dict(COMPOSITE_WEIGHTS)
+    formula_str = " + ".join(f"{v:.2f}*{k}" for k, v in weights.items())
+    return {
+        "composite_formula": formula_str,
+        "composite_weights": weights,
+        "min_composite_threshold": int(MIN_COMPOSITE),
+    }
 
 
-def _load_strategy_hash() -> str | None:
+def _load_strategy_hash() -> str:
+    # 0452: raises on failure
+    sys.path.insert(0, str(_REPO_ROOT))
     try:
-        sys.path.insert(0, str(_REPO_ROOT))
         import strategy_config
         return strategy_config.get_hash()
-    except Exception:
-        return None
+    except Exception as e:
+        raise RuntimeError(f"Cannot load strategy hash: {e}") from e
 
 
 def build_baseline(db_path: str) -> dict:
@@ -228,7 +230,15 @@ def main():
             print("Aborted.")
             sys.exit(0)
 
-    baseline = build_baseline(args.db)
+    # 0452: loaders raise RuntimeError on failure; abort rather than writing a partial baseline
+    try:
+        baseline = build_baseline(args.db)
+    except RuntimeError as e:
+        print(f"ERROR: {e}")
+        print("Baseline freeze aborted — fix the above error before proceeding.")
+        if args.dry_run:
+            print("(dry-run mode: no file would have been written)")
+        sys.exit(1)
 
     if args.dry_run:
         print(json.dumps(baseline, indent=2))

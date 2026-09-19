@@ -280,8 +280,18 @@ def _composite(q: float, v: float, pf: float, c: float, ec: float) -> int:
     return round(sum(COMPOSITE_WEIGHTS[k] * _components[k] for k in COMPOSITE_WEIGHTS))
 
 
+# 0453: comparison-table scoring uses 6 components (adds risk score R).
+# Intentionally independent of COMPOSITE_WEIGHTS — this is a display/ranking score
+# for the candidate comparison table, not the learning experiment scoring contract.
+# Changing COMPOSITE_WEIGHTS for experiment reasons must NOT implicitly change this.
+_COMPARISON_WEIGHTS: dict[str, float] = {
+    "Q": 0.25, "V": 0.20, "PF": 0.20, "C": 0.15, "R": 0.10, "EC": 0.10,
+}
+
+
 def _composite_6(q: float, v: float, pf: float, c: float, r: float, ec: float) -> int:
-    return round(0.25 * q + 0.20 * v + 0.20 * pf + 0.15 * c + 0.10 * r + 0.10 * ec)
+    _components = {"Q": q, "V": v, "PF": pf, "C": c, "R": r, "EC": ec}
+    return round(sum(_COMPARISON_WEIGHTS[k] * _components[k] for k in _COMPARISON_WEIGHTS))
 
 
 # ---------------------------------------------------------------------------
