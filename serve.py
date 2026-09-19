@@ -5902,7 +5902,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             conn = agent_db._connect()
             report = learning_readiness_report(conn)
             # 0442: attach experiment baseline snapshot if it exists
-            _baseline_path = Path(__file__).resolve().parent / "config" / "experiment_baseline.json"
+            _cfg = Path(__file__).resolve().parent / "config"
+            _baseline_path = _cfg / "experiment_baseline.json"
             if _baseline_path.exists():
                 try:
                     report["experiment_baseline"] = json.loads(_baseline_path.read_text())
@@ -5910,6 +5911,34 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     report["experiment_baseline"] = None
             else:
                 report["experiment_baseline"] = None
+            # attach operational integrity record if it exists
+            _ir_path = _cfg / "experiment_integrity_record.json"
+            try:
+                report["integrity_record"] = json.loads(_ir_path.read_text()) if _ir_path.exists() else None
+            except Exception:
+                report["integrity_record"] = None
+            # attach acceptance canary artifacts if they exist
+            for _key, _fname in (
+                ("shadow_canary", "experiment_shadow_canary_001.json"),
+                ("paper_canary",  "experiment_paper_canary_001.json"),
+            ):
+                _p = _cfg / _fname
+                try:
+                    report[_key] = json.loads(_p.read_text()) if _p.exists() else None
+                except Exception:
+                    report[_key] = None
+            # attach episode accumulation stats
+            try:
+                _ep = conn.execute(
+                    """SELECT COUNT(*) AS total,
+                              COUNT(DISTINCT ticker) AS tickers,
+                              MIN(captured_at) AS first_at,
+                              MAX(captured_at) AS last_at
+                       FROM decision_episodes"""
+                ).fetchone()
+                report["episode_stats"] = dict(_ep) if _ep else None
+            except Exception:
+                report["episode_stats"] = None
             # 0443: attach latest model activation snapshot from model_promotion_log
             try:
                 _mv = report.get("model_version")

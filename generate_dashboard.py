@@ -3152,6 +3152,13 @@ def build_dashboard(portfolio, layers, holdings):
       <div id="learning-readiness-card" style="color:#718096;font-size:13px;">Loading…</div>
     </div>
 
+    <!-- Experiment Status Card -->
+    <div style="background:#fff;border-radius:10px;padding:18px 22px;box-shadow:0 1px 4px rgba(0,0,0,.07);">
+      <h3 style="margin:0 0 4px;font-size:14px;font-weight:700;color:#2d3748;">Experiment Pipeline Status</h3>
+      <p style="margin:0 0 12px;font-size:12px;color:#718096;">Operational integrity record, acceptance milestones, and episode maturity timeline.</p>
+      <div id="learning-experiment-status" style="color:#718096;font-size:13px;">Loading…</div>
+    </div>
+
     <!-- Champion vs Challenger Portfolio Books -->
     <div style="background:#fff;border-radius:10px;padding:18px 22px;box-shadow:0 1px 4px rgba(0,0,0,.07);">
       <h3 style="margin:0 0 4px;font-size:14px;font-weight:700;color:#2d3748;">Champion vs Challenger Portfolio</h3>
@@ -9073,6 +9080,108 @@ function loadLearningPanel() {{
         (rp.promotion_failed && rp.promotion_failed.length ? '<div style="margin-top:8px;font-size:11px;color:#e53e3e;font-weight:600;">Blockers: ' + rp.promotion_failed.join(', ') + '</div>' : '');
     }}).catch(function(e) {{
       if (readinessEl) readinessEl.innerHTML = '<span style="color:#fc8181;">Failed to load: ' + e.message + '</span>';
+    }});
+  }}
+
+  // Experiment Pipeline Status card
+  var expStatusEl = document.getElementById('learning-experiment-status');
+  if (expStatusEl) {{
+    fetch('/api/learning/readiness').then(function(r) {{ return r.json(); }}).then(function(d) {{
+      if (!d.ok) {{ expStatusEl.innerHTML = '<span style="color:#fc8181;">Error loading readiness data</span>'; return; }}
+      var rp = d.report || {{}};
+      var ir  = rp.integrity_record  || null;
+      var sc  = rp.shadow_canary     || null;
+      var pc  = rp.paper_canary      || null;
+      var ep  = rp.episode_stats     || null;
+
+      // ── Operational integrity record ──────────────────────────────────────
+      var irHtml = '';
+      if (ir) {{
+        var irPass = ir.failed === 0;
+        var irColor = irPass ? '#38a169' : '#e53e3e';
+        var irDate = (ir.recorded_at || '').slice(0,10);
+        var irSha = (ir.commit_sha || '').slice(0,10);
+        var canary = ir.canary_audit_result || '—';
+        var canaryColor = /^PASS/.test(canary) ? '#38a169' : (/^FAIL/.test(canary) ? '#e53e3e' : '#d69e2e');
+        irHtml =
+          '<div style="margin-bottom:14px;">' +
+          '<div style="font-size:10px;color:#718096;text-transform:uppercase;margin-bottom:6px;font-weight:700;">Operational Integrity Record <span style="color:#a0aec0;font-weight:400;">(' + irDate + ' · ' + irSha + ')</span></div>' +
+          '<div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:6px;">' +
+          '<div><div style="font-size:10px;color:#718096;text-transform:uppercase;">Tests</div><div style="font-size:13px;font-weight:700;color:' + irColor + ';">' + (ir.passed||0) + ' passed</div></div>' +
+          '<div><div style="font-size:10px;color:#718096;text-transform:uppercase;">Skipped</div><div style="font-size:13px;font-weight:700;color:#718096;">' + (ir.skipped||0) + '</div></div>' +
+          '<div><div style="font-size:10px;color:#e53e3e;text-transform:uppercase;">Failed</div><div style="font-size:13px;font-weight:700;color:' + (ir.failed ? '#e53e3e' : '#38a169') + ';">' + (ir.failed||0) + '</div></div>' +
+          '<div><div style="font-size:10px;color:#718096;text-transform:uppercase;">Strategy Hash</div><div style="font-size:13px;font-weight:700;color:#4a5568;font-family:monospace;">' + (ir.strategy_hash||'—') + '</div></div>' +
+          '<div><div style="font-size:10px;color:#718096;text-transform:uppercase;">Policy Hash</div><div style="font-size:13px;font-weight:700;color:#4a5568;font-family:monospace;">' + (ir.policy_hash||'—') + '</div></div>' +
+          '</div>' +
+          '<div style="font-size:11px;padding:4px 8px;background:#f7fafc;border-radius:4px;border-left:3px solid ' + canaryColor + ';">' +
+          '<span style="color:#718096;">Canary at start: </span><span style="color:' + canaryColor + ';font-weight:600;">' + canary.split('—')[0].trim() + '</span>' +
+          (ir.canary_audit_note ? '<span style="color:#a0aec0;"> — ' + ir.canary_audit_note + '</span>' : '') +
+          '</div></div>';
+      }} else {{
+        irHtml = '<div style="margin-bottom:14px;color:#a0aec0;font-style:italic;font-size:12px;">No integrity record found (config/experiment_integrity_record.json)</div>';
+      }}
+
+      // ── Acceptance milestone checklist ────────────────────────────────────
+      function _milestone(label, artifact, extra) {{
+        var done = artifact !== null;
+        var icon = done ? '✓' : '✗';
+        var col  = done ? '#38a169' : '#a0aec0';
+        var date = done ? ((artifact.recorded_at||'').slice(0,10)) : '';
+        var sha  = done ? ((artifact.source_commit_sha||'').slice(0,8)) : '';
+        var detail = done
+          ? '<span style="color:#718096;font-size:10px;margin-left:6px;">' + date + (sha ? ' · ' + sha : '') + (extra ? ' · ' + extra : '') + '</span>'
+          : '';
+        return '<div style="display:flex;align-items:center;gap:6px;padding:3px 0;">' +
+          '<span style="font-size:13px;font-weight:700;color:' + col + ';width:14px;">' + icon + '</span>' +
+          '<span style="font-size:12px;color:#2d3748;">' + label + '</span>' + detail + '</div>';
+      }}
+      var sweepsExist = (rp.current_lifecycle && rp.current_lifecycle !== 'none') || (ep && ep.total > 0);
+      var modelTrained = !!(rp.current_lifecycle && rp.current_lifecycle !== 'none');
+      var irExists = ir !== null;
+      var baselineExists = rp.experiment_baseline !== null && rp.experiment_baseline !== undefined;
+      var milestoneHtml =
+        '<div style="margin-bottom:14px;">' +
+        '<div style="font-size:10px;color:#718096;text-transform:uppercase;margin-bottom:6px;font-weight:700;">Acceptance Milestones</div>' +
+        _milestone('Operational integrity recorded', irExists ? ir : null) +
+        _milestone('Baseline frozen', baselineExists ? (rp.experiment_baseline||{{}}) : null) +
+        _milestone('Episodes accumulating', ep && ep.total > 0 ? {{recorded_at: '', source_commit_sha: ''}} : null,
+                   ep ? (ep.total + ' eps · ' + (ep.tickers||0) + ' tickers') : '') +
+        _milestone('First OBSERVE sweep completed', rp.current_lifecycle ? {{recorded_at:'',source_commit_sha:''}} : null) +
+        _milestone('Shadow canary PASS', sc, sc ? 'mode=' + (sc.mode||'shadow') : '') +
+        _milestone('Paper canary PASS', pc, pc ? 'mode=' + (pc.mode||'paper') : '') +
+        '</div>';
+
+      // ── Episode maturity timeline ─────────────────────────────────────────
+      var matHtml = '';
+      if (ep && ep.total > 0 && ep.first_at) {{
+        // first_at is a Unix timestamp (float)
+        var firstMs = ep.first_at * 1000;
+        var matMs   = firstMs + 91 * 24 * 3600 * 1000;  // ~91 calendar days for calendar_v1
+        var matDate = new Date(matMs).toISOString().slice(0,10);
+        var now = Date.now();
+        var daysLeft = Math.ceil((matMs - now) / 86400000);
+        var lastDate = ep.last_at ? new Date(ep.last_at * 1000).toISOString().slice(0,10) : '—';
+        var progressPct = Math.min(100, Math.max(0, Math.round(100 * (now - firstMs) / (matMs - firstMs))));
+        matHtml =
+          '<div>' +
+          '<div style="font-size:10px;color:#718096;text-transform:uppercase;margin-bottom:6px;font-weight:700;">Episode Maturity Timeline</div>' +
+          '<div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:8px;">' +
+          '<div><div style="font-size:10px;color:#718096;text-transform:uppercase;">Episodes</div><div style="font-size:13px;font-weight:700;color:#2d3748;">' + ep.total + '</div></div>' +
+          '<div><div style="font-size:10px;color:#718096;text-transform:uppercase;">Tickers</div><div style="font-size:13px;font-weight:700;color:#2d3748;">' + (ep.tickers||0) + '</div></div>' +
+          '<div><div style="font-size:10px;color:#718096;text-transform:uppercase;">Last Captured</div><div style="font-size:13px;font-weight:700;color:#2d3748;">' + lastDate + '</div></div>' +
+          '<div><div style="font-size:10px;color:#718096;text-transform:uppercase;">First Cohort Matures</div><div style="font-size:13px;font-weight:700;color:#4a5568;">' + matDate + '</div></div>' +
+          (daysLeft > 0 ? '<div><div style="font-size:10px;color:#718096;text-transform:uppercase;">Days Until Maturity</div><div style="font-size:13px;font-weight:700;color:#d69e2e;">' + daysLeft + 'd</div></div>' : '') +
+          '</div>' +
+          '<div style="background:#e2e8f0;border-radius:4px;height:6px;overflow:hidden;">' +
+          '<div style="background:#3182ce;height:6px;width:' + progressPct + '%;transition:width .4s;"></div>' +
+          '</div>' +
+          '<div style="font-size:10px;color:#718096;margin-top:3px;">' + progressPct + '% of 91-day maturity window elapsed</div>' +
+          '</div>';
+      }}
+
+      expStatusEl.innerHTML = irHtml + milestoneHtml + matHtml;
+    }}).catch(function(e) {{
+      if (expStatusEl) expStatusEl.innerHTML = '<span style="color:#fc8181;">Failed to load: ' + e.message + '</span>';
     }});
   }}
 
