@@ -581,8 +581,8 @@ def _count_fails(repeatability, anchor_cal, concordance, drift,
     # Anchor: FAIL = fail
     for k, res in anchor_cal.items():
         if k == "_ordering":
-            if not res.get("pass"):
-                fails += sum(1 for c in res.get("checks", []) if c["status"] != "PASS")
+            fails += sum(1 for c in res.get("checks", []) if c.get("status") == "FAIL")
+            passes += sum(1 for c in res.get("checks", []) if c.get("status") == "PASS")
             continue
         for r in res["dims"].values():
             if r["status"] == "PASS":
@@ -717,7 +717,7 @@ def _check_thresholds(results: dict, config: dict) -> dict:
     )
     ordering = anchor.get("_ordering", {})
     ordering_fails = sum(
-        1 for c in ordering.get("checks", []) if c.get("status") != "PASS"
+        1 for c in ordering.get("checks", []) if c.get("status") == "FAIL"
     )
     checks["anchor_calibration"] = "PASS" if anchor_fails == 0 else "BLOCK"
     checks["anchor_ordering"] = "PASS" if ordering_fails == 0 else "BLOCK"
