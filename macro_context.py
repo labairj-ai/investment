@@ -32,6 +32,29 @@ CACHE_PATH = PROJECT_DIR / "out" / "macro_cache.json"
 CACHE_TTL = 1800  # 30 minutes
 TZ = ZoneInfo("America/New_York")
 
+# Per-series maximum age in days before a MacroMeasurement is considered stale (0487).
+_SERIES_CADENCE_DAYS: dict[str, int] = {
+    "T10Y2Y": 3, "T10Y3M": 3,
+    "TNX": 1, "IRX": 1,
+    "FEDFUNDS": 3,
+    "CPIAUCSL": 45, "UNRATE": 45,
+    "VIX": 1, "UUP": 1,
+}
+_DEFAULT_CADENCE_DAYS = 7
+
+
+def _is_stale(series_id: str, observation_date: Optional[str]) -> bool:
+    """Return True if observation_date is older than the series cadence. Unknown → stale."""
+    if not observation_date:
+        return True
+    try:
+        from datetime import date as _date
+        obs = _date.fromisoformat(observation_date)
+        cadence = _SERIES_CADENCE_DAYS.get(series_id, _DEFAULT_CADENCE_DAYS)
+        return (_date.today() - obs).days > cadence
+    except Exception:
+        return True
+
 FRED_BASE = "https://api.stlouisfed.org/fred/series/observations"
 
 CONGRESS_API_BASE = "https://api.congress.gov/v3"
@@ -184,17 +207,71 @@ def _compute_regime(cpi_yoy: Optional[float] = None) -> dict:
             else:
                 curve_state = "inverted"
 
-        # Inflation direction from CPI YoY momentum (requires two observations — single value only)
-        inflation_direction: Optional[str] = None
+        # Inflation level regime from CPI YoY level
+        inflation_level_regime: Optional[str] = None
         if cpi_yoy is not None:
             if cpi_yoy > 4.0:
-                inflation_direction = "high"
+                inflation_level_regime = "high"
             elif cpi_yoy > 2.5:
-                inflation_direction = "elevated"
+                inflation_level_regime = "elevated"
             elif cpi_yoy > 0:
-                inflation_direction = "moderate"
+                inflation_level_regime = "moderate"
             else:
-                inflation_direction = "low_or_deflation"
+                inflation_level_regime = "low_or_deflation"
+        # inflation_trend requires multi-observation history — UNKNOWN from single value
+        inflation_trend: Optional[str] = "UNKNOWN"
+
+        def _direction_bps(chg, pos_thresh, neg_thresh):
+            """Classify bps change; returns UNKNOWN if data missing."""
+            if chg is None:
+                return "UNKNOWN"
+            if chg > pos_thresh:
+                return "rising"
+            if chg < neg_thresh:
+                return "falling"
+            return "stable"
+
+        def _direction_pct(chg, pos_thresh, neg_thresh):
+            """Classify pct change; returns UNKNOWN if data missing."""
+            if chg is None:
+                return "UNKNOWN"
+            if chg > pos_thresh:
+                return "strengthening"
+            if chg < neg_thresh:
+                return "weakening"
+            return "stable"
+
+        def _direction_pts(chg, pos_thresh, neg_thresh):
+            """Classify point change; returns UNKNOWN if data missing."""
+            if chg is None:
+                return "UNKNOWN"
+            if chg > pos_thresh:
+                return "spiking"
+            if chg < neg_thresh:
+                return "falling"
+            return "stable"
+
+        def _interp_rate_risk():
+            """Returns UNKNOWN when data absent rather than defaulting to 'low'."""
+            if tnx_level is None:
+                return "UNKNOWN"
+            tnx_21 = _chg_bps(tnx, 21)
+            if tnx_level > 5.0 and tnx_21 is not None and tnx_21 > 20:
+                return "high"
+            if tnx_level > 4.0:
+                return "moderate"
+            return "low"
+
+        def _interp_dollar_risk():
+            if _chg_pct(uup, 63) is None and _chg_pct(uup, 21) is None:
+                return "UNKNOWN"
+            uup_63 = _chg_pct(uup, 63)
+            uup_21 = _chg_pct(uup, 21)
+            if uup_63 is not None and uup_63 > 3:
+                return "high"
+            if uup_21 is not None and uup_21 > 1:
+                return "moderate"
+            return "low"
 
         regime = {
             "rate": {
@@ -210,49 +287,43 @@ def _compute_regime(cpi_yoy: Optional[float] = None) -> dict:
                 "uup_5d_pct":  _chg_pct(uup, 5),
                 "uup_21d_pct": _chg_pct(uup, 21),
                 "uup_63d_pct": _chg_pct(uup, 63),
-                "direction":   ("strengthening" if (_chg_pct(uup, 21) or 0) > 0.5
-                                else "weakening" if (_chg_pct(uup, 21) or 0) < -0.5
-                                else "stable"),
+                "direction":   _direction_pct(_chg_pct(uup, 21), 0.5, -0.5),
             },
             "volatility": {
                 "vix_level":             vix_level,
-                "vix_5d_change_points":  _chg_pts(vix, 5),   # raw VIX points, not ×100
+                "vix_5d_change_points":  _chg_pts(vix, 5),
                 "vix_5d_change_pct":     _chg_pct(vix, 5),
                 "vix_pct_rank_252d":     _pct_rank(vix, 252),
-                "regime":                ("fear" if (vix_level or 0) >= 30
-                                          else "elevated" if (vix_level or 0) >= 20
+                "regime":                (None if vix_level is None
+                                          else "fear"     if vix_level >= 30
+                                          else "elevated" if vix_level >= 20
                                           else "calm"),
             },
             "inflation": {
-                "cpi_yoy":   cpi_yoy,
-                "direction": inflation_direction,
+                "cpi_yoy":              cpi_yoy,
+                "inflation_level_regime": inflation_level_regime,
+                "inflation_trend":      inflation_trend,
+                # backwards compat alias
+                "direction":            inflation_level_regime,
             },
             "directional_states": {
-                "rates":      ("rising" if (_chg_bps(tnx, 21) or 0) > 10
-                               else "falling" if (_chg_bps(tnx, 21) or 0) < -10
-                               else "stable"),
-                "dollar":     ("strengthening" if (_chg_pct(uup, 21) or 0) > 0.5
-                               else "weakening" if (_chg_pct(uup, 21) or 0) < -0.5
-                               else "stable"),
-                "volatility": ("spiking" if (_chg_pts(vix, 5) or 0) > 3
-                               else "falling" if (_chg_pts(vix, 5) or 0) < -3
-                               else "stable"),
-                "curve":      curve_state or "unknown",
-                "inflation":  inflation_direction or "unknown",
-                "geopolitical": "placeholder",  # reserved — no real-time signal yet
+                "rates":        _direction_bps(_chg_bps(tnx, 21), 10, -10),
+                "dollar":       _direction_pct(_chg_pct(uup, 21), 0.5, -0.5),
+                "volatility":   _direction_pts(_chg_pts(vix, 5), 3, -3),
+                "curve":        curve_state if curve_state is not None else "UNKNOWN",
+                "inflation":    inflation_level_regime if inflation_level_regime is not None else "UNKNOWN",
+                "geopolitical": "UNKNOWN",  # reserved — no real-time signal yet
             },
             "regime_interpretations": {
-                "rate_risk":    ("high" if (tnx_level or 0) > 5.0 and (_chg_bps(tnx, 21) or 0) > 20
-                                 else "moderate" if (tnx_level or 0) > 4.0
-                                 else "low"),
-                "dollar_risk":  ("high" if (_chg_pct(uup, 63) or 0) > 3
-                                 else "moderate" if (_chg_pct(uup, 21) or 0) > 1
-                                 else "low"),
-                "vol_regime":   ("stress" if (vix_level or 0) >= 30
-                                 else "elevated" if (vix_level or 0) >= 20
-                                 else "benign"),
-                "inflation_regime": ("inflationary" if (cpi_yoy or 0) > 3
-                                     else "target_range" if (cpi_yoy or 0) > 1.5
+                "rate_risk":        _interp_rate_risk(),
+                "dollar_risk":      _interp_dollar_risk(),
+                "vol_regime":       (None if vix_level is None
+                                     else "stress"   if vix_level >= 30
+                                     else "elevated" if vix_level >= 20
+                                     else "benign"),
+                "inflation_regime": (None if cpi_yoy is None
+                                     else "inflationary" if cpi_yoy > 3
+                                     else "target_range" if cpi_yoy > 1.5
                                      else "below_target"),
             },
             "computed_at": time.time(),
@@ -751,34 +822,40 @@ def fetch(force: bool = False) -> dict:
     # Legacy alias: keep spread_bps pointing to the 10Y-2Y (FRED-sourced) series
     spread_bps = yield_curve_10y2y_bps
 
-    # Build MacroMeasurement objects for provenance-tracked indicators
+    # Build MacroMeasurement objects for provenance-tracked indicators.
+    # staleness computed dynamically from observation_date + per-series cadence (0487).
     measurements = {
         "fed_funds": MacroMeasurement(
             value=fred.get("fed_funds"), series_id="FEDFUNDS", source="FRED",
             observation_date=fred.get("fed_funds_date"), retrieved_at=now_ts,
-            units="percent", stale=False,
+            units="percent",
+            stale=_is_stale("FEDFUNDS", fred.get("fed_funds_date")),
         ),
         "cpi_yoy": MacroMeasurement(
             value=fred.get("cpi_yoy"), series_id="CPIAUCSL", source="FRED",
             observation_date=fred.get("cpi_obs_date"), retrieved_at=now_ts,
-            units="percent YoY", stale=False,
+            units="percent YoY",
+            stale=_is_stale("CPIAUCSL", fred.get("cpi_obs_date")),
         ),
         "yield_curve_10y2y_bps": MacroMeasurement(
             value=yield_curve_10y2y_bps, series_id="T10Y2Y", source="FRED",
             observation_date=fred.get("spread_10y2y_date"), retrieved_at=now_ts,
-            units="basis points", stale=yield_curve_10y2y_bps is None,
+            units="basis points",
+            stale=_is_stale("T10Y2Y", fred.get("spread_10y2y_date")),
         ),
         "yield_curve_10y3m_bps": MacroMeasurement(
             value=yield_curve_10y3m_bps,
             series_id="T10Y3M" if fred.get("spread_10y3m") is not None else "calculated:^TNX-^IRX",
             source="FRED" if fred.get("spread_10y3m") is not None else "calculated",
             observation_date=fred.get("spread_10y3m_date"), retrieved_at=now_ts,
-            units="basis points", stale=False,
+            units="basis points",
+            stale=_is_stale("T10Y3M", fred.get("spread_10y3m_date")),
         ),
         "unemployment": MacroMeasurement(
             value=fred.get("unemployment"), series_id="UNRATE", source="FRED",
             observation_date=fred.get("unemployment_date"), retrieved_at=now_ts,
-            units="percent", stale=False,
+            units="percent",
+            stale=_is_stale("UNRATE", fred.get("unemployment_date")),
         ),
     }
 

@@ -367,17 +367,85 @@ def _init_ai_tables():
 MACRO_SCORE_SCHEMA_VERSION = "v1"
 _MACRO_SCORE_DIMS = ("rate_sensitivity", "inflation_hedge", "dollar_sensitivity", "geopolitical_risk")
 
-# Known ETF/fund tickers that have no fundamental company evidence.
-# These are scored on structural characteristics of the underlying index, not individual financials.
-_KNOWN_FUNDS = frozenset({
-    "SPY", "QQQ", "IWM", "DIA", "VTI", "VEA", "VWO", "EFA", "EEM",
-    "GLD", "SLV", "IAU", "USO", "BIL", "SHY", "IEI", "IEF", "TLT", "AGG", "BND",
-    "LQD", "HYG", "JNK", "EMB", "TIP", "SCHD", "VYM", "DVY", "NOBL",
-    "XLF", "XLK", "XLE", "XLV", "XLI", "XLU", "XLB", "XLP", "XLY", "XLRE",
-    "VNQ", "REM", "KBWB", "IBB", "XBI", "SMH", "SOXX", "ARKK", "ARKG",
-    "GDX", "GDXJ", "UUP", "EWJ", "EWZ", "FXI", "KWEB",
-    "BITO", "GBTC", "MSTR",
-})
+# Canonical security master — single source of truth for security type classification.
+# security_type: "company" | "etf" | "mutual_fund"
+# MSTR is a company (MicroStrategy), not a fund. Do not add it here.
+SECURITY_MASTER: dict[str, dict] = {
+    # ETFs
+    "SPY":   {"security_type": "etf",         "fund_family": "SPDR"},
+    "IVV":   {"security_type": "etf",         "fund_family": "iShares"},
+    "VTI":   {"security_type": "etf",         "fund_family": "Vanguard"},
+    "QQQ":   {"security_type": "etf",         "fund_family": "Invesco"},
+    "IWM":   {"security_type": "etf",         "fund_family": "iShares"},
+    "DIA":   {"security_type": "etf",         "fund_family": "SPDR"},
+    "EFA":   {"security_type": "etf",         "fund_family": "iShares"},
+    "EEM":   {"security_type": "etf",         "fund_family": "iShares"},
+    "VEA":   {"security_type": "etf",         "fund_family": "Vanguard"},
+    "VWO":   {"security_type": "etf",         "fund_family": "Vanguard"},
+    "IEFA":  {"security_type": "etf",         "fund_family": "iShares"},
+    "SCHD":  {"security_type": "etf",         "fund_family": "Schwab"},
+    "VYM":   {"security_type": "etf",         "fund_family": "Vanguard"},
+    "DVY":   {"security_type": "etf",         "fund_family": "iShares"},
+    "NOBL":  {"security_type": "etf",         "fund_family": "ProShares"},
+    "IGV":   {"security_type": "etf",         "fund_family": "iShares"},
+    "GLD":   {"security_type": "etf",         "fund_family": "SPDR"},
+    "SLV":   {"security_type": "etf",         "fund_family": "iShares"},
+    "IAU":   {"security_type": "etf",         "fund_family": "iShares"},
+    "GDX":   {"security_type": "etf",         "fund_family": "VanEck"},
+    "GDXJ":  {"security_type": "etf",         "fund_family": "VanEck"},
+    "USO":   {"security_type": "etf",         "fund_family": "USCF"},
+    "BIL":   {"security_type": "etf",         "fund_family": "SPDR"},
+    "SHY":   {"security_type": "etf",         "fund_family": "iShares"},
+    "IEI":   {"security_type": "etf",         "fund_family": "iShares"},
+    "IEF":   {"security_type": "etf",         "fund_family": "iShares"},
+    "TLT":   {"security_type": "etf",         "fund_family": "iShares"},
+    "AGG":   {"security_type": "etf",         "fund_family": "iShares"},
+    "BND":   {"security_type": "etf",         "fund_family": "Vanguard"},
+    "LQD":   {"security_type": "etf",         "fund_family": "iShares"},
+    "HYG":   {"security_type": "etf",         "fund_family": "iShares"},
+    "JNK":   {"security_type": "etf",         "fund_family": "SPDR"},
+    "EMB":   {"security_type": "etf",         "fund_family": "iShares"},
+    "TIP":   {"security_type": "etf",         "fund_family": "iShares"},
+    "XLF":   {"security_type": "etf",         "fund_family": "SPDR"},
+    "XLK":   {"security_type": "etf",         "fund_family": "SPDR"},
+    "XLE":   {"security_type": "etf",         "fund_family": "SPDR"},
+    "XLV":   {"security_type": "etf",         "fund_family": "SPDR"},
+    "XLI":   {"security_type": "etf",         "fund_family": "SPDR"},
+    "XLU":   {"security_type": "etf",         "fund_family": "SPDR"},
+    "XLB":   {"security_type": "etf",         "fund_family": "SPDR"},
+    "XLP":   {"security_type": "etf",         "fund_family": "SPDR"},
+    "XLY":   {"security_type": "etf",         "fund_family": "SPDR"},
+    "XLRE":  {"security_type": "etf",         "fund_family": "SPDR"},
+    "VNQ":   {"security_type": "etf",         "fund_family": "Vanguard"},
+    "REM":   {"security_type": "etf",         "fund_family": "iShares"},
+    "KBWB":  {"security_type": "etf",         "fund_family": "Invesco"},
+    "IBB":   {"security_type": "etf",         "fund_family": "iShares"},
+    "XBI":   {"security_type": "etf",         "fund_family": "SPDR"},
+    "SMH":   {"security_type": "etf",         "fund_family": "VanEck"},
+    "SOXX":  {"security_type": "etf",         "fund_family": "iShares"},
+    "ARKK":  {"security_type": "etf",         "fund_family": "ARK"},
+    "ARKG":  {"security_type": "etf",         "fund_family": "ARK"},
+    "UUP":   {"security_type": "etf",         "fund_family": "Invesco"},
+    "EWJ":   {"security_type": "etf",         "fund_family": "iShares"},
+    "EWZ":   {"security_type": "etf",         "fund_family": "iShares"},
+    "FXI":   {"security_type": "etf",         "fund_family": "iShares"},
+    "KWEB":  {"security_type": "etf",         "fund_family": "KraneShares"},
+    "BITO":  {"security_type": "etf",         "fund_family": "ProShares"},
+    "GBTC":  {"security_type": "etf",         "fund_family": "Grayscale"},
+    # Mutual funds
+    "VFIAX": {"security_type": "mutual_fund", "fund_family": "Vanguard"},
+    "VTSAX": {"security_type": "mutual_fund", "fund_family": "Vanguard"},
+    "VTMGX": {"security_type": "mutual_fund", "fund_family": "Vanguard"},
+    "VVIAX": {"security_type": "mutual_fund", "fund_family": "Vanguard"},
+    "FSPTX": {"security_type": "mutual_fund", "fund_family": "Fidelity"},
+    "FXAIX": {"security_type": "mutual_fund", "fund_family": "Fidelity"},
+}
+
+
+def is_fund(ticker: str) -> bool:
+    """Return True if ticker is a known ETF or mutual fund (not a company)."""
+    entry = SECURITY_MASTER.get(ticker.upper())
+    return entry is not None and entry["security_type"] in ("etf", "mutual_fund")
 
 
 def _score_val(dim_data):
@@ -1362,11 +1430,15 @@ def _fetch_company_evidence(ticker: str, conn) -> dict:
       is_fund                 — True if ticker is a known ETF/index fund
     """
     evidence: dict = {}
-    if ticker in _KNOWN_FUNDS:
+    if is_fund(ticker):
+        st = SECURITY_MASTER.get(ticker.upper(), {}).get("security_type", "fund")
         evidence["is_fund"] = True
-        evidence["evidence_quality"] = "fund"
-        evidence["evidence_quality_rate"] = "none"
-        evidence["evidence_quality_dollar"] = "none"
+        evidence["evidence_quality"]           = "unsupported"
+        evidence["evidence_quality_rate"]      = "unsupported"
+        evidence["evidence_quality_dollar"]    = "unsupported"
+        evidence["evidence_quality_inflation"] = "unsupported"
+        evidence["evidence_quality_geo"]       = "unsupported"
+        evidence["fund_note"] = f"{st} — constituent-derived exposure not implemented"
         return evidence
     evidence["is_fund"] = False
     if conn is None:
@@ -1408,38 +1480,71 @@ def _fetch_company_evidence(ticker: str, conn) -> dict:
                         pass
     except Exception:
         pass
-    filled = sum(1 for k, v in evidence.items()
-                 if k not in ("evidence_quality", "evidence_quality_rate", "evidence_quality_dollar", "is_fund")
-                 and v is not None)
+    _meta_keys = {"evidence_quality", "evidence_quality_rate", "evidence_quality_dollar",
+                  "evidence_quality_inflation", "evidence_quality_geo", "is_fund", "fund_note"}
+    filled = sum(1 for k, v in evidence.items() if k not in _meta_keys and v is not None)
     evidence["evidence_quality"] = "full" if filled >= 3 else ("partial" if filled >= 1 else "none")
 
     # Per-dimension evidence quality
-    # Rate: net_debt + interest_coverage are the key drivers
     rate_fields = [evidence.get("net_debt"), evidence.get("interest_coverage")]
     rate_filled = sum(1 for v in rate_fields if v is not None)
     evidence["evidence_quality_rate"] = "good" if rate_filled >= 2 else ("limited" if rate_filled >= 1 else "none")
 
-    # Dollar: foreign_rev_pct is the key driver
     dollar_filled = 1 if evidence.get("foreign_rev_pct") is not None else 0
     evidence["evidence_quality_dollar"] = "good" if dollar_filled >= 1 else "none"
+
+    # Inflation hedge: gross margin (pricing power proxy)
+    inflation_filled = 1 if evidence.get("gross_margin_pct") is not None else 0
+    evidence["evidence_quality_inflation"] = "good" if inflation_filled >= 1 else (
+        "limited" if evidence.get("sector") else "none"
+    )
+
+    # Geopolitical: sector + revenue
+    geo_filled = sum(1 for v in [evidence.get("sector"), evidence.get("revenue_ttm")] if v is not None)
+    evidence["evidence_quality_geo"] = "good" if geo_filled >= 2 else ("limited" if geo_filled >= 1 else "none")
 
     return evidence
 
 
+def _beta_confidence(tstat) -> str:
+    """Classify t-statistic into confidence tier for LLM gating."""
+    if tstat is None:
+        return "insufficient_data"
+    t = abs(tstat)
+    if t >= 2.0:
+        return "stronger"
+    if t >= 1.5:
+        return "suggestive"
+    return "weak"
+
+
+def _is_concordance_warning(rate_beta: float, rate_sensitivity: int) -> bool:
+    """Return True when measured rate_beta directionally disagrees with LLM rate_sensitivity score.
+    rate_beta < -5 (stock hurt by rising rates) → supports HIGH sensitivity (≥6); warns if ≤4.
+    rate_beta > -2 (near-zero/positive) → supports LOW sensitivity (≤4); warns if ≥6.
+    Neutral zone (-5 to -2): no concordance check.
+    """
+    if rate_beta < -5.0:
+        return rate_sensitivity <= 4
+    if rate_beta > -2.0:
+        return rate_sensitivity >= 6
+    return False
+
+
 def _compute_equity_betas(ticker: str, lookback_days: int = 365) -> dict:
-    """Compute historical rate and USD betas for a ticker via multivariate OLS.
+    """Compute historical rate, USD, and market betas via multivariate OLS with SPY control.
 
     Returns:
-      rate_beta_100bp_return_pct — equity % return per +100bps in 10Y yield
-      usd_beta_1pct_return_pct   — equity % return per +1% in UUP
+      rate_beta_100bp_return_pct — idiosyncratic equity % return per +100bps yield rise
+      usd_beta_1pct_return_pct   — idiosyncratic equity % return per +1% UUP rise
+      market_beta                — equity % return per +1% SPY return
+      rate_beta_confidence       — "stronger" | "suggestive" | "weak" | "insufficient_data"
+      usd_beta_confidence        — same
       r_squared                  — multivariate R² (float 0–1)
-      rate_se                    — standard error of rate coefficient
-      usd_se                     — standard error of USD coefficient
-      rate_t                     — t-statistic for rate coefficient
-      usd_t                      — t-statistic for USD coefficient
+      rate_se, usd_se, market_se — standard errors
+      rate_t, usd_t, market_t    — t-statistics
       n_weeks                    — number of weekly observations
-      lookback_start             — ISO date of first observation used
-      lookback_end               — ISO date of last observation used
+      lookback_start, lookback_end — ISO dates
     Returns {} on failure/insufficient data.
     """
     try:
@@ -1449,63 +1554,75 @@ def _compute_equity_betas(ticker: str, lookback_days: int = 365) -> dict:
         warnings.filterwarnings("ignore")
         period = f"{lookback_days}d"
         data = yf.download(
-            [ticker, "^TNX", "UUP"], period=period, interval="1wk",
+            [ticker, "^TNX", "UUP", "SPY"], period=period, interval="1wk",
             group_by="ticker", progress=False, auto_adjust=True
         )
-        eq  = data[ticker]["Close"].dropna() if ticker in data.columns.get_level_values(0) else None
-        tnx = data["^TNX"]["Close"].dropna() if "^TNX" in data.columns.get_level_values(0) else None
-        uup = data["UUP"]["Close"].dropna() if "UUP" in data.columns.get_level_values(0) else None
-        if eq is None or tnx is None or uup is None:
+        lvl0 = data.columns.get_level_values(0)
+        eq  = data[ticker]["Close"].dropna() if ticker in lvl0 else None
+        tnx = data["^TNX"]["Close"].dropna() if "^TNX" in lvl0 else None
+        uup = data["UUP"]["Close"].dropna()  if "UUP"  in lvl0 else None
+        spy = data["SPY"]["Close"].dropna()  if "SPY"  in lvl0 else None
+        if eq is None or tnx is None or uup is None or spy is None:
             return {}
-        idx = eq.index.intersection(tnx.index).intersection(uup.index)
-        if len(idx) < 27:  # need 26+ weeks of data
+        idx = eq.index.intersection(tnx.index).intersection(uup.index).intersection(spy.index)
+        if len(idx) < 27:
             return {}
-        # All series in percent units — tnx diff is already in percent points, so ÷100 = bps→%
-        eq_r_pct = eq.loc[idx].pct_change().dropna() * 100    # equity % return
-        tnx_c_pct = tnx.loc[idx].diff().dropna()              # 10Y yield change in % pts (= 100bps scale)
-        uup_r_pct = uup.loc[idx].pct_change().dropna() * 100  # UUP % return
-        common = eq_r_pct.index.intersection(tnx_c_pct.index).intersection(uup_r_pct.index)
+        eq_r_pct  = eq.loc[idx].pct_change().dropna() * 100    # equity % return
+        tnx_c_pct = tnx.loc[idx].diff().dropna()               # 10Y yield change in % pts (1 unit = 100bps)
+        uup_r_pct = uup.loc[idx].pct_change().dropna() * 100   # UUP % return
+        spy_r_pct = spy.loc[idx].pct_change().dropna() * 100   # SPY % return (market control)
+        common = (eq_r_pct.index
+                  .intersection(tnx_c_pct.index)
+                  .intersection(uup_r_pct.index)
+                  .intersection(spy_r_pct.index))
         if len(common) < 26:
             return {}
         y  = eq_r_pct.loc[common].values.astype(float)
-        x1 = tnx_c_pct.loc[common].values.astype(float)   # 10Y change in % pts (1 unit = 100bps)
-        x2 = uup_r_pct.loc[common].values.astype(float)   # UUP % return (1 unit = 1%)
-        n = len(y)
+        x1 = tnx_c_pct.loc[common].values.astype(float)
+        x2 = uup_r_pct.loc[common].values.astype(float)
+        x3 = spy_r_pct.loc[common].values.astype(float)
+        n  = len(y)
 
-        # Multivariate OLS: Y = a + b1*X1 + b2*X2 + e
-        X = np.column_stack([np.ones(n), x1, x2])
+        # Multivariate OLS: Y = a + b1*yield_chg + b2*uup_ret + b3*spy_ret + e
+        # Partial coefficients b1/b2 are idiosyncratic (market-return controlled).
+        X = np.column_stack([np.ones(n), x1, x2, x3])
         try:
-            betas, residuals, rank, sv = np.linalg.lstsq(X, y, rcond=None)
+            betas_arr, _, _, _ = np.linalg.lstsq(X, y, rcond=None)
         except np.linalg.LinAlgError:
             return {}
-        a, b1, b2 = float(betas[0]), float(betas[1]), float(betas[2])
+        a, b1, b2, b3 = (float(betas_arr[i]) for i in range(4))
 
-        y_hat = X @ betas
+        y_hat = X @ betas_arr
         ss_res = float(np.sum((y - y_hat) ** 2))
         ss_tot = float(np.sum((y - y.mean()) ** 2))
         r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
 
-        # Standard errors
-        dof = n - 3
+        dof = n - 4
         if dof < 1:
             return {}
         mse = ss_res / dof
         XtX_inv = np.linalg.pinv(X.T @ X)
         se = np.sqrt(np.maximum(np.diag(XtX_inv) * mse, 0))
-        b1_se, b2_se = float(se[1]), float(se[2])
+        b1_se, b2_se, b3_se = float(se[1]), float(se[2]), float(se[3])
         b1_t = b1 / b1_se if b1_se > 0 else None
         b2_t = b2 / b2_se if b2_se > 0 else None
+        b3_t = b3 / b3_se if b3_se > 0 else None
 
         dates = common.tolist()
         return {
-            "rate_beta_100bp_return_pct": round(b1, 4),  # % equity return per +100bps yield rise
-            "usd_beta_1pct_return_pct":   round(b2, 4),  # % equity return per +1% UUP rise
-            "r_squared":   round(r2, 4),
-            "rate_se":     round(b1_se, 4),
-            "usd_se":      round(b2_se, 4),
-            "rate_t":      round(b1_t, 2) if b1_t is not None else None,
-            "usd_t":       round(b2_t, 2) if b2_t is not None else None,
-            "n_weeks":     n,
+            "rate_beta_100bp_return_pct": round(b1, 4),
+            "usd_beta_1pct_return_pct":   round(b2, 4),
+            "market_beta":                round(b3, 4),
+            "rate_beta_confidence":       _beta_confidence(b1_t),
+            "usd_beta_confidence":        _beta_confidence(b2_t),
+            "r_squared":      round(r2, 4),
+            "rate_se":        round(b1_se, 4),
+            "usd_se":         round(b2_se, 4),
+            "market_se":      round(b3_se, 4),
+            "rate_t":         round(b1_t, 2) if b1_t is not None else None,
+            "usd_t":          round(b2_t, 2) if b2_t is not None else None,
+            "market_t":       round(b3_t, 2) if b3_t is not None else None,
+            "n_weeks":        n,
             "lookback_start": str(dates[0])[:10] if dates else None,
             "lookback_end":   str(dates[-1])[:10] if dates else None,
         }
@@ -1588,10 +1705,11 @@ def generate_holding_macro_scores(force: bool = False) -> dict:
                               "official_bills", "legislative_bills", "legislative_media")}
     macro_hash = hashlib.sha256(
         json.dumps(_hash_ctx, sort_keys=True, default=str).encode()
-    ).hexdigest()[:16]
+    ).hexdigest()  # full 64-char SHA-256 (0484)
 
-    # STARTED row is mandatory — raise if write fails so the run is never untracked (0478).
-    if DB_PATH.exists():
+    # STARTED row is mandatory — raise if write fails so the run is never untracked (0478, 0485).
+    # sqlite3.connect() creates the DB file if absent; no DB_PATH.exists() guard needed (0485).
+    try:
         conn = sqlite3.connect(str(DB_PATH), timeout=10)
         conn.execute(
             "INSERT OR REPLACE INTO macro_scoring_runs "
@@ -1601,6 +1719,9 @@ def generate_holding_macro_scores(force: bool = False) -> dict:
         )
         conn.commit()
         conn.close()
+    except Exception as e:
+        print(f"[MacroScores] FATAL: cannot write ledger STARTED row: {e}")
+        raise
 
     scored_n = 0
     failed_n = 0
@@ -1642,17 +1763,26 @@ def generate_holding_macro_scores(force: bool = False) -> dict:
                     evidence_lines.append(f"Company data for {tk}: {', '.join(parts)}")
             elif ev.get("is_fund"):
                 evidence_lines.append(f"Note: {tk} is an ETF/fund — score on index characteristics, not company fundamentals.")
-            # Compute betas (0467 / 0473)
+            # Compute betas (0467 / 0473 / 0483)
             betas = _compute_equity_betas(tk)
             if betas:
                 betas_by_ticker[tk] = betas
                 rb = betas.get("rate_beta_100bp_return_pct")
                 ub = betas.get("usd_beta_1pct_return_pct")
                 r2 = betas.get("r_squared")
+                rate_conf = betas.get("rate_beta_confidence", "insufficient_data")
+                usd_conf  = betas.get("usd_beta_confidence",  "insufficient_data")
+                if rate_conf in ("suggestive", "stronger"):
+                    rate_line = f"rate_beta={rb:.2f}%/100bps (t={betas.get('rate_t')}, {rate_conf})"
+                else:
+                    rate_line = "rate factor: insufficient data (t<1.5) — not reliable"
+                if usd_conf in ("suggestive", "stronger"):
+                    usd_line = f"usd_beta={ub:.2f}%/1%UUP (t={betas.get('usd_t')}, {usd_conf})"
+                else:
+                    usd_line = "usd factor: insufficient data (t<1.5) — not reliable"
                 evidence_lines.append(
-                    f"Measured betas for {tk}: rate_beta={rb:.2f}%/100bps, "
-                    f"usd_beta={ub:.2f}%/1%UUP, "
-                    f"R²={r2:.2f}, n={betas.get('n_weeks')}wk"
+                    f"Measured betas for {tk}: {rate_line}, {usd_line}, "
+                    f"market_beta={betas.get('market_beta', 0):.2f}, R²={r2:.2f}, n={betas.get('n_weeks')}wk"
                 )
 
         evidence_block = ("\n" + "\n".join(evidence_lines) + "\n") if evidence_lines else ""
@@ -1713,9 +1843,10 @@ Return ONLY valid JSON. Each dimension must include a score AND a one-sentence r
             time.sleep(20)
             continue
 
-        # Count any expected tickers that were omitted from the response as failures (0478)
+        # Count any expected tickers that were omitted from the response as failures (0478, 0485)
         for expected_tk in batch:
             if expected_tk not in {_normalize_ticker(k) for k in batch_result}:
+                failed_n += 1
                 run_errors.append({"tickers": [expected_tk], "error": "ticker omitted from LLM response"})
 
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -1733,34 +1864,46 @@ Return ONLY valid JSON. Each dimension must include a score AND a one-sentence r
                     run_errors.append({"tickers": [ticker], "error": f"validation: {ve}"})
                     continue
                 scores["schema_version"] = MACRO_SCORE_SCHEMA_VERSION
-                # Attach evidence quality (per-dimension + overall) and betas (0473, 0476)
+                # Attach evidence quality (per-dimension + overall) and betas (0473, 0476, 0483)
                 ev = evidence_by_ticker.get(ticker) or _fetch_company_evidence(ticker, _evidence_conn)
-                scores["evidence_quality"] = ev.get("evidence_quality", "none")
-                scores["evidence_quality_rate"] = ev.get("evidence_quality_rate", "none")
-                scores["evidence_quality_dollar"] = ev.get("evidence_quality_dollar", "none")
+                scores["evidence_quality"]           = ev.get("evidence_quality", "none")
+                scores["evidence_quality_rate"]      = ev.get("evidence_quality_rate", "none")
+                scores["evidence_quality_dollar"]    = ev.get("evidence_quality_dollar", "none")
+                scores["evidence_quality_inflation"] = ev.get("evidence_quality_inflation", "none")
+                scores["evidence_quality_geo"]       = ev.get("evidence_quality_geo", "none")
                 scores["is_fund"] = ev.get("is_fund", False)
                 if ticker in betas_by_ticker:
                     b = betas_by_ticker[ticker]
                     scores["rate_beta_100bp_return_pct"] = b.get("rate_beta_100bp_return_pct")
                     scores["usd_beta_1pct_return_pct"]   = b.get("usd_beta_1pct_return_pct")
+                    scores["market_beta"]                = b.get("market_beta")
+                    scores["rate_beta_confidence"]       = b.get("rate_beta_confidence")
+                    scores["usd_beta_confidence"]        = b.get("usd_beta_confidence")
                     scores["beta_r_squared"]             = b.get("r_squared")
                     scores["beta_n_weeks"]               = b.get("n_weeks")
-                    # Log agreement/disagreement between measured beta and LLM score (0473)
+                    # Concordance check: negative rate_beta should agree with HIGH rate_sensitivity (0483)
                     rate_score = _score_val(scores.get("rate_sensitivity"))
                     rb = b.get("rate_beta_100bp_return_pct")
                     if rb is not None and rate_score is not None:
-                        if rb < -0.5 and rate_score < 5:
-                            print(f"[MacroScores] {ticker}: rate_beta={rb:.3f}%/100bps agrees with LLM rate_sensitivity={rate_score}")
-                        elif rb < -1.0 and rate_score >= 5:
-                            print(f"[MacroScores] WARNING {ticker}: rate_beta={rb:.3f}%/100bps disagrees with LLM rate_sensitivity={rate_score}")
+                        if _is_concordance_warning(rb, rate_score):
+                            print(f"[MacroScores] CONCORDANCE WARNING {ticker}: rate_beta={rb:.3f}%/100bps disagrees with LLM rate_sensitivity={rate_score}")
+                        else:
+                            print(f"[MacroScores] {ticker}: rate_beta={rb:.3f}%/100bps concordant with LLM rate_sensitivity={rate_score}")
 
-                # Compute evidence hash for provenance tracking (0475)
-                ev_fields = {k: v for k, v in ev.items()
-                             if k not in ("evidence_quality", "evidence_quality_rate",
-                                         "evidence_quality_dollar", "is_fund")}
+                # Compute evidence hash (full SHA-256, no truncation) for provenance (0475, 0484)
+                _ev_meta = {"evidence_quality", "evidence_quality_rate", "evidence_quality_dollar",
+                            "evidence_quality_inflation", "evidence_quality_geo", "is_fund", "fund_note"}
+                ev_fields = {k: v for k, v in ev.items() if k not in _ev_meta}
                 evidence_hash = hashlib.sha256(
                     json.dumps(ev_fields, sort_keys=True, default=str).encode()
-                ).hexdigest()[:16]
+                ).hexdigest()  # full 64-char SHA-256
+
+                # Attach full provenance to score dict (0484)
+                scores["evidence_hash"]  = evidence_hash
+                scores["run_id"]         = run_id
+                scores["model_version"]  = ollama_client.DEFAULT_MODEL
+                scores["prompt_hash"]    = prompt_hash
+                scores["scored_at"]      = now_str
 
                 scores_json = json.dumps(scores)
                 conn.execute(
@@ -1788,31 +1931,37 @@ Return ONLY valid JSON. Each dimension must include a score AND a one-sentence r
         except Exception:
             pass
 
-    # Update ledger row with final counts — COMPLETE only when scored_n == expected_n (0478).
-    if DB_PATH.exists():
-        cov = round(scored_n / len(to_score) * 100, 1) if to_score else 100.0
-        if scored_n == len(to_score):
-            status = "COMPLETE"
-        elif scored_n > 0:
-            status = "PARTIAL"
-        else:
-            status = "FAILED"
-        errors_json_str = json.dumps(run_errors) if run_errors else None
-        # Retry once if the final UPDATE fails — never silently drop (0478).
-        for _upd_attempt in range(2):
-            try:
-                conn = sqlite3.connect(str(DB_PATH), timeout=10)
-                conn.execute(
-                    "UPDATE macro_scoring_runs SET scored_n=?, failed_n=?, coverage_pct=?, status=?, errors_json=? WHERE run_id=?",
-                    (scored_n, failed_n, cov, status, errors_json_str, run_id)
-                )
-                conn.commit()
-                conn.close()
-                print(f"[MacroScores] Run {run_id[:8]}: {scored_n}/{len(to_score)} scored, {cov:.1f}% — {status}")
-                break
-            except Exception as e:
-                print(f"[MacroScores] WARNING: ledger UPDATE failed (attempt {_upd_attempt+1}): {e}")
-                time.sleep(3)
+    # Update ledger row with final counts — COMPLETE only when scored_n == expected_n (0478, 0485).
+    cov = round(scored_n / len(to_score) * 100, 1) if to_score else 100.0
+    if scored_n == len(to_score):
+        status = "COMPLETE"
+    elif scored_n > 0:
+        status = "PARTIAL"
+    else:
+        status = "FAILED"
+    errors_json_str = json.dumps(run_errors) if run_errors else None
+
+    # Assert accounting invariant (0485)
+    if scored_n + failed_n != len(to_score):
+        print(f"[MacroScores] WARNING: accounting mismatch — expected={len(to_score)}, scored={scored_n}, failed={failed_n}, sum={scored_n+failed_n}")
+
+    # Retry twice; raise on exhaustion — never silently drop (0478, 0485).
+    for _upd_attempt in range(2):
+        try:
+            conn = sqlite3.connect(str(DB_PATH), timeout=10)
+            conn.execute(
+                "UPDATE macro_scoring_runs SET scored_n=?, failed_n=?, coverage_pct=?, status=?, errors_json=? WHERE run_id=?",
+                (scored_n, failed_n, cov, status, errors_json_str, run_id)
+            )
+            conn.commit()
+            conn.close()
+            print(f"[MacroScores] Run {run_id[:8]}: {scored_n}/{len(to_score)} scored, {cov:.1f}% — {status}")
+            break
+        except Exception as e:
+            print(f"[MacroScores] WARNING: ledger UPDATE failed (attempt {_upd_attempt+1}): {e}")
+            if _upd_attempt == 1:
+                raise RuntimeError(f"[MacroScores] FATAL: run {run_id} ledger UPDATE failed after 2 attempts") from e
+            time.sleep(3)
 
     if to_score and results:
         generate_macro_score_summary(results, macro)
@@ -1899,12 +2048,14 @@ def generate_macro_score_summary(current_scores: dict, macro: dict) -> None:
         prev_c = _composite(prev_s) if prev_s is not None else None
         delta_c = (curr_c - prev_c) if (curr_c is not None and prev_c is not None) else None
 
-        # Classify the source of score changes (0480)
-        curr_ev_hash   = scores.get("evidence_hash")  # may not be present pre-0475
-        prev_ev_hash   = prev_evidence_hash.get(ticker)
-        curr_model     = scores.get("schema_version") or MACRO_SCORE_SCHEMA_VERSION
-        p_model        = prev_model_ver.get(ticker)
-        p_schema       = prev_schema_ver.get(ticker)
+        # Classify the source of score changes (0480, 0484 — use model_version not schema_version)
+        curr_ev_hash    = scores.get("evidence_hash")
+        prev_ev_hash    = prev_evidence_hash.get(ticker)
+        curr_model_ver  = scores.get("model_version", "unknown")
+        prev_model_ver_ = prev_model_ver.get(ticker, "unknown")
+        curr_schema_ver = scores.get("schema_version", MACRO_SCORE_SCHEMA_VERSION)
+        prev_schema_ver_ = prev_schema_ver.get(ticker, "unknown")
+        version_changed = (curr_model_ver != prev_model_ver_) or (curr_schema_ver != prev_schema_ver_)
 
         if prev_s is None:
             change_class = "first_score"
@@ -1912,7 +2063,7 @@ def generate_macro_score_summary(current_scores: dict, macro: dict) -> None:
             change_class = "evidence_unverifiable"
         elif curr_ev_hash != prev_ev_hash:
             change_class = "evidence_driven"
-        elif curr_model != p_model or MACRO_SCORE_SCHEMA_VERSION != p_schema:
+        elif version_changed:
             change_class = "version_artefact"
         elif delta_c is not None and abs(delta_c) > 5:
             change_class = "unexplained_instability"
@@ -2067,66 +2218,77 @@ Return ONLY valid JSON, no extra text:
 # ── Regime stress scalars (0482) ─────────────────────────────────────────────
 
 def compute_regime_stress(regime: dict) -> dict:
-    """Compute per-dimension regime stress scalars (0.0 = benign, 1.0 = severe).
-    Used for experimental regime-adjusted risk display. NOT used in any trading logic.
+    """Compute per-dimension regime stress scalars (0488).
 
-    Returns {rate_stress, dollar_stress, vol_stress, geopolitical_stress (placeholder)}.
-    Linear normalisation over recent historical reference ranges.
+    Signed scalars: +1 = strongly adverse, 0 = neutral, -1 = strongly favorable.
+    For rate_sensitivity: adverse = rising rates (positive rate_stress).
+    For dollar_sensitivity: adverse = strengthening dollar (positive dollar_stress).
+    vol_stress: unsigned 0–1 (VIX high is generically adverse).
+    geopolitical_stress: None — no real signal source yet.
+    Returns None per dimension when input data is unavailable (0487: missing ≠ benign).
+    EXPERIMENTAL — research only. NOT used in any trading or risk-gate logic.
     """
     if not regime:
         return {}
 
-    # Reference ranges derived from 2020–2025 historical observations.
-    # rate_stress: based on 21-day yield change magnitude (bps)
-    rate_chg = regime.get("rate", {}).get("yield_10y_21d_chg_bps") or 0
-    rate_stress = min(1.0, abs(rate_chg) / 100.0)  # 100bps = full stress
+    # Rate stress: +1 when 63d yield change is strongly rising (+150bps), -1 when falling (-150bps)
+    rate_63d = regime.get("rate", {}).get("yield_10y_63d_chg_bps")
+    rate_stress = round(max(-1.0, min(1.0, rate_63d / 150.0)), 3) if rate_63d is not None else None
 
-    # dollar_stress: based on 21-day UUP % change magnitude
-    dollar_chg = abs(regime.get("dollar", {}).get("uup_21d_pct") or 0)
-    dollar_stress = min(1.0, dollar_chg / 3.0)  # 3% = full stress
+    # Dollar stress: +1 when dollar is strongly strengthening (+5%), -1 when weakening (-5%)
+    dollar_63d = regime.get("dollar", {}).get("uup_63d_pct")
+    dollar_stress = round(max(-1.0, min(1.0, dollar_63d / 5.0)), 3) if dollar_63d is not None else None
 
-    # vol_stress: based on VIX level (normalised 10–40 range)
-    vix_level = regime.get("volatility", {}).get("vix_level") or 15
-    vol_stress = min(1.0, max(0.0, (vix_level - 10) / 30.0))  # VIX 10=0, VIX 40=1
+    # Vol stress: unsigned 0–1 based on VIX level (15=0, 35=1)
+    vix_level = regime.get("volatility", {}).get("vix_level")
+    vol_stress = round(max(0.0, min(1.0, (vix_level - 15) / 20.0)), 3) if vix_level is not None else None
 
-    # geopolitical_stress: placeholder — no real-time signal
-    geopolitical_stress = 0.0
-
+    # Geopolitical: no real signal — remains None rather than zero (0487)
     return {
-        "rate_stress":         round(rate_stress, 3),
-        "dollar_stress":       round(dollar_stress, 3),
-        "vol_stress":          round(vol_stress, 3),
-        "geopolitical_stress": geopolitical_stress,
+        "rate_stress":         rate_stress,
+        "dollar_stress":       dollar_stress,
+        "vol_stress":          vol_stress,
+        "geopolitical_stress": None,
         "note":                "EXPERIMENTAL — research only; not used in trading or risk gates",
     }
 
 
 def compute_regime_adjusted_risk(scores: dict, regime_stress: dict):
-    """Compute experimental per-dimension regime-adjusted risk for a holding.
-    Returns None if scores or regime_stress are incomplete.
-    regime_adjusted_risk = structural_exposure_normalised × regime_stress_scalar
-    Result is 0–1 per dimension; interpret as instantaneous risk intensity.
+    """Compute experimental signed regime-adjusted risk per dimension (0488).
+
+    signed_interaction = structural_exposure_normalised × regime_stress_signed
+      +1 = structural exposure fully amplified by adverse regime
+       0 = neutral regime
+      -1 = structural exposure fully offset by favorable regime
+
+    When regime_stress for a dimension is None, that dimension's result is None.
     EXPERIMENTAL — research only. Do not use for recommendations or sizing.
     """
     if not scores or not regime_stress:
         return None
-    DIMS = [
-        ("rate_sensitivity",   "rate_stress",         False),
-        ("inflation_hedge",    None,                  True),   # inflation hedge has no matching stress scalar yet
-        ("dollar_sensitivity", "dollar_stress",       False),
-        ("geopolitical_risk",  "geopolitical_stress", False),
-    ]
     result = {}
-    for dim, stress_key, is_benefit in DIMS:
+
+    # Rate and dollar: positive stress = adverse for high-sensitivity names
+    for dim, stress_key in (("rate_sensitivity", "rate_stress"), ("dollar_sensitivity", "dollar_stress")):
         sv = _score_val(scores.get(dim))
-        if sv is None:
-            return None  # require all dims
-        struct_norm = (sv - 1) / 9  # 0 = no exposure, 1 = max exposure
-        if not is_benefit and stress_key:
-            stress = regime_stress.get(stress_key, 0.0)
-            result[f"{dim}_regime_risk"] = round(struct_norm * stress, 3)
+        stress = regime_stress.get(stress_key)
+        if sv is None or stress is None:
+            result[f"{dim}_regime_risk"] = None
         else:
-            result[f"{dim}_regime_risk"] = None  # placeholder
+            struct_norm = (sv - 1) / 9.0
+            result[f"{dim}_regime_risk"] = round(struct_norm * stress, 3)
+
+    # Inflation hedge: high score = favorable; rising rates offset by inflation protection
+    inf_sv = _score_val(scores.get("inflation_hedge"))
+    rate_stress = regime_stress.get("rate_stress")
+    if inf_sv is None or rate_stress is None:
+        result["inflation_hedge_regime_risk"] = None
+    else:
+        struct_norm = (inf_sv - 1) / 9.0
+        result["inflation_hedge_regime_risk"] = round(struct_norm * (-rate_stress), 3)
+
+    # Geopolitical: no signal yet
+    result["geopolitical_risk_regime_risk"] = None
     result["note"] = "EXPERIMENTAL — research only"
     return result
 

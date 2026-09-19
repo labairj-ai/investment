@@ -172,18 +172,18 @@ def run_anchor_calibration(macro: dict) -> dict:
     return results
 
 
-# ── Module 3: Factor vs LLM Concordance (0473) ───────────────────────────────
+# ── Module 3: Factor vs LLM Concordance (0483) ───────────────────────────────
 
 def run_concordance(tickers: list) -> dict:
-    """Compare measured rate_beta sign to LLM rate_sensitivity direction.
-    Requires 0473 betas (rate_beta_100bp_return_pct) stored in macro scores DB.
-    rate_beta < 0  → should have rate_sensitivity ≥ 5 (hurt by rising rates)
-    rate_beta ≥ 0  → should have rate_sensitivity ≤ 5 (not hurt / benefits)
-    Returns concordance rate and per-ticker results.
+    """Compare measured rate_beta direction to LLM rate_sensitivity using corrected logic (0483).
+    rate_beta < -5   → high sensitivity (≥6) expected
+    rate_beta > -2   → low sensitivity (≤4) expected
+    neutral zone     → no check
     """
     if not DB_PATH.exists():
         return {"skipped": True, "reason": "DB not found"}
     try:
+        from portfolio_ai import _is_concordance_warning
         conn = sqlite3.connect(str(DB_PATH), timeout=10)
         conn.row_factory = sqlite3.Row
         rows = conn.execute("SELECT ticker, scores FROM holding_macro_scores").fetchall()
@@ -192,6 +192,7 @@ def run_concordance(tickers: list) -> dict:
         return {"skipped": True, "reason": str(e)}
 
     checked = []
+    warnings_found = []
     for row in rows:
         try:
             s = json.loads(row["scores"])
@@ -201,27 +202,33 @@ def run_concordance(tickers: list) -> dict:
         rs = _score_val(s.get("rate_sensitivity"))
         if rb is None or rs is None:
             continue
-        # beta < 0 → equity falls when rates rise → high rate_sensitivity expected (≥ 5)
-        expected_high = rb < 0
-        actual_high   = rs >= 5
-        agree = (expected_high == actual_high)
-        checked.append({
+        warn = _is_concordance_warning(rb, rs)
+        entry = {
             "ticker": row["ticker"],
             "rate_beta": round(rb, 4),
             "rate_sensitivity": rs,
-            "expected_high": expected_high,
-            "actual_high": actual_high,
-            "agree": agree,
-        })
+            "confidence": s.get("rate_beta_confidence", "unknown"),
+            "concordance_warning": warn,
+        }
+        checked.append(entry)
+        if warn:
+            warnings_found.append(entry)
 
     if not checked:
         return {"skipped": True, "reason": "no tickers with both beta and LLM score"}
 
-    concordance_rate = sum(1 for c in checked if c["agree"]) / len(checked)
+    # Only count non-neutral-zone tickers for concordance rate
+    directional = [c for c in checked if c["rate_beta"] < -5.0 or c["rate_beta"] > -2.0]
+    concordance_rate = (
+        sum(1 for c in directional if not c["concordance_warning"]) / len(directional)
+        if directional else None
+    )
     return {
         "skipped": False,
-        "concordance_rate": round(concordance_rate, 3),
-        "n": len(checked),
+        "concordance_rate": round(concordance_rate, 3) if concordance_rate is not None else None,
+        "n_directional": len(directional),
+        "n_neutral_zone": len(checked) - len(directional),
+        "warnings": warnings_found,
         "tickers": checked,
     }
 
@@ -306,9 +313,138 @@ def run_drift_detection() -> dict:
     }
 
 
+# ── Module 5: Synthetic Regression Truth (0489) ──────────────────────────────
+
+def run_synthetic_regression() -> dict:
+    """Verify multivariate OLS recovers injected true betas within tolerance."""
+    try:
+        import numpy as np
+        np.random.seed(42)
+        n = 104
+        yield_chg = np.random.normal(0, 0.10, n)
+        uup_ret   = np.random.normal(0, 0.5, n)
+        spy_ret   = np.random.normal(0.1, 1.5, n)
+        noise     = np.random.normal(0, 1.0, n)
+        equity_pct = -5.0 * yield_chg + 2.0 * uup_ret + 0.8 * spy_ret + noise
+
+        X = np.column_stack([np.ones(n), yield_chg, uup_ret, spy_ret])
+        coeffs, _, _, _ = np.linalg.lstsq(X, equity_pct, rcond=None)
+        rate_r, usd_r, spy_r = coeffs[1], coeffs[2], coeffs[3]
+
+        results = []
+        results.append({"test": "rate_beta_truth",   "recovered": round(float(rate_r),3), "expected": -5.0, "tol": 1.5,
+                         "status": "PASS" if abs(rate_r - (-5.0)) < 1.5 else "FAIL"})
+        results.append({"test": "usd_beta_truth",    "recovered": round(float(usd_r), 3), "expected": 2.0,  "tol": 1.5,
+                         "status": "PASS" if abs(usd_r - 2.0) < 1.5 else "FAIL"})
+        results.append({"test": "market_beta_truth", "recovered": round(float(spy_r), 3), "expected": 0.8,  "tol": 0.5,
+                         "status": "PASS" if abs(spy_r - 0.8) < 0.5 else "FAIL"})
+        return {"status": "PASS" if all(r["status"] == "PASS" for r in results) else "FAIL", "tests": results}
+    except Exception as e:
+        return {"status": "FAIL", "error": str(e)}
+
+
+# ── Module 6: Regime Direction Tests (0489) ───────────────────────────────────
+
+def run_regime_direction_tests() -> dict:
+    """Verify compute_regime_stress direction semantics and missing-data handling."""
+    try:
+        from portfolio_ai import compute_regime_stress
+        results = []
+
+        def _r(rate=None, dollar=None, vix=None):
+            return {
+                "rate":       {"yield_10y_63d_chg_bps": rate}   if rate   is not None else {},
+                "dollar":     {"uup_63d_pct": dollar}           if dollar is not None else {},
+                "volatility": {"vix_level": vix}                if vix    is not None else {},
+            }
+
+        tests = [
+            ("rising_rates_positive",        lambda: compute_regime_stress(_r(rate=100))["rate_stress"]   >  0),
+            ("falling_rates_negative",       lambda: compute_regime_stress(_r(rate=-100))["rate_stress"]  <  0),
+            ("missing_rate_is_none",         lambda: compute_regime_stress(_r())["rate_stress"]           is None),
+            ("strong_dollar_positive",       lambda: compute_regime_stress(_r(dollar=3.0))["dollar_stress"] > 0),
+            ("weak_dollar_negative",         lambda: compute_regime_stress(_r(dollar=-3.0))["dollar_stress"] < 0),
+            ("missing_dollar_is_none",       lambda: compute_regime_stress(_r())["dollar_stress"]          is None),
+            ("high_vix_positive",            lambda: compute_regime_stress(_r(vix=35))["vol_stress"] > 0),
+            ("missing_vix_is_none",          lambda: compute_regime_stress(_r())["vol_stress"]       is None),
+            ("geo_stress_always_none",       lambda: compute_regime_stress(_r(rate=100))["geopolitical_stress"] is None),
+            ("rate_stress_clamped_at_plus1", lambda: compute_regime_stress(_r(rate=10000))["rate_stress"]  <= 1.0),
+            ("rate_stress_clamped_at_neg1",  lambda: compute_regime_stress(_r(rate=-10000))["rate_stress"] >= -1.0),
+        ]
+        for name, fn in tests:
+            try:
+                ok = fn()
+                results.append({"test": name, "status": "PASS" if ok else "FAIL"})
+            except Exception as e:
+                results.append({"test": name, "status": "FAIL", "error": str(e)})
+
+        return {"status": "PASS" if all(r["status"] == "PASS" for r in results) else "FAIL",
+                "tests": results}
+    except Exception as e:
+        return {"status": "FAIL", "error": str(e)}
+
+
+# ── Module 7: Fund Classification Tests (0489) ────────────────────────────────
+
+def run_fund_classification_tests() -> dict:
+    """Verify SECURITY_MASTER correctly classifies known instruments."""
+    try:
+        from portfolio_ai import is_fund, SECURITY_MASTER
+        results = []
+        funds     = ["VTSAX", "VFIAX", "VTMGX", "FSPTX", "FXAIX", "VVIAX",
+                     "SPY", "QQQ", "SCHD", "BIL", "VNQ", "TLT"]
+        companies = ["AAPL", "GRMN", "MSTR", "NVDA", "AMZN"]
+        for t in funds:
+            ok = is_fund(t)
+            results.append({"ticker": t, "expected": "fund",    "got": "fund" if ok else "company",
+                             "status": "PASS" if ok else "FAIL"})
+        for t in companies:
+            ok = not is_fund(t)
+            results.append({"ticker": t, "expected": "company", "got": "company" if ok else "fund",
+                             "status": "PASS" if ok else "FAIL"})
+        return {"status": "PASS" if all(r["status"] == "PASS" for r in results) else "FAIL",
+                "tickers": results}
+    except Exception as e:
+        return {"status": "FAIL", "error": str(e)}
+
+
+# ── Module 8: Ledger Integrity (0489) ─────────────────────────────────────────
+
+def run_ledger_integrity() -> dict:
+    """Verify expected_n == scored_n + failed_n for all completed runs."""
+    if not DB_PATH.exists():
+        return {"status": "SKIP", "reason": "no DB"}
+    try:
+        conn = sqlite3.connect(str(DB_PATH), timeout=10)
+        rows = conn.execute(
+            "SELECT run_id, expected_n, scored_n, failed_n, status FROM macro_scoring_runs WHERE status != 'STARTED'"
+        ).fetchall()
+        conn.close()
+    except Exception as e:
+        return {"status": "SKIP", "reason": str(e)}
+
+    results = []
+    for run_id, exp, scored, failed, status in rows:
+        ok = (exp == scored + failed)
+        results.append({
+            "run_id": run_id[:8] if run_id else "?",
+            "expected": exp, "scored": scored, "failed": failed, "status_field": status,
+            "accounting_ok": ok,
+            "status": "PASS" if ok else "FAIL",
+        })
+
+    if not results:
+        return {"status": "SKIP", "reason": "no completed runs yet"}
+
+    overall = "PASS" if all(r["status"] == "PASS" for r in results) else "FAIL"
+    return {"status": overall, "runs": results}
+
+
 # ── Summary + Output ──────────────────────────────────────────────────────────
 
-def print_summary(repeatability: dict, anchor_cal: dict, concordance: dict, drift: dict):
+def print_summary(repeatability: dict, anchor_cal: dict, concordance: dict, drift: dict,
+                  synth: dict = None, regime_tests: dict = None,
+                  fund_tests: dict = None, ledger: dict = None):
     print("\n=== 1. REPEATABILITY (N={}) ===".format(REPEATS))
     print(f"{'Ticker':<12} {'Dimension':<22} {'Mean':>6} {'StDev':>6} {'N':>3} {'Status'}")
     print("-" * 65)
@@ -328,12 +464,14 @@ def print_summary(repeatability: dict, anchor_cal: dict, concordance: dict, drif
     if concordance.get("skipped"):
         print(f"  SKIPPED: {concordance.get('reason')}")
     else:
-        print(f"  Sign concordance: {concordance['concordance_rate']:.1%} ({concordance['n']} tickers)")
-        disagree = [c for c in concordance.get("tickers", []) if not c["agree"]]
-        if disagree:
-            print(f"  Disagreements ({len(disagree)}):")
-            for c in disagree[:10]:
-                print(f"    {c['ticker']}: beta={c['rate_beta']:+.3f}, LLM rate_sensitivity={c['rate_sensitivity']}")
+        cr = concordance.get("concordance_rate")
+        cr_str = f"{cr:.1%}" if cr is not None else "N/A"
+        print(f"  Directional concordance: {cr_str} ({concordance.get('n_directional',0)} tickers)")
+        warns = concordance.get("warnings", [])
+        if warns:
+            print(f"  Concordance warnings ({len(warns)}):")
+            for c in warns[:10]:
+                print(f"    {c['ticker']}: rate_beta={c['rate_beta']:+.3f}, LLM rate_sensitivity={c['rate_sensitivity']}")
 
     print("\n=== 4. UNEXPLAINED DRIFT DETECTION ===")
     if drift.get("skipped"):
@@ -350,8 +488,38 @@ def print_summary(repeatability: dict, anchor_cal: dict, concordance: dict, drif
         else:
             print("  No unexplained drift detected.")
 
+    if synth:
+        print(f"\n=== 5. SYNTHETIC REGRESSION ({synth.get('status')}) ===")
+        for t in synth.get("tests", []):
+            print(f"  {t['test']}: recovered={t['recovered']}, expected={t['expected']} ±{t['tol']} → {t['status']}")
 
-def _count_fails(repeatability, anchor_cal, concordance, drift) -> tuple[int, int, int]:
+    if regime_tests:
+        print(f"\n=== 6. REGIME DIRECTION ({regime_tests.get('status')}) ===")
+        fails = [t for t in regime_tests.get("tests", []) if t["status"] != "PASS"]
+        print(f"  {len(regime_tests.get('tests',[]))} checks, {len(fails)} failed")
+        for t in fails:
+            print(f"  FAIL: {t['test']}")
+
+    if fund_tests:
+        print(f"\n=== 7. FUND CLASSIFICATION ({fund_tests.get('status')}) ===")
+        fails = [t for t in fund_tests.get("tickers", []) if t["status"] != "PASS"]
+        print(f"  {len(fund_tests.get('tickers',[]))} tickers, {len(fails)} failed")
+        for t in fails:
+            print(f"  FAIL: {t['ticker']} expected={t['expected']} got={t['got']}")
+
+    if ledger:
+        print(f"\n=== 8. LEDGER INTEGRITY ({ledger.get('status')}) ===")
+        if ledger.get("status") == "SKIP":
+            print(f"  SKIPPED: {ledger.get('reason')}")
+        else:
+            fails = [r for r in ledger.get("runs", []) if r["status"] != "PASS"]
+            print(f"  {len(ledger.get('runs',[]))} runs, {len(fails)} accounting failures")
+            for r in fails:
+                print(f"  FAIL: {r['run_id']} expected={r['expected']} scored={r['scored']} failed={r['failed']}")
+
+
+def _count_fails(repeatability, anchor_cal, concordance, drift,
+                 synth=None, regime_tests=None, fund_tests=None, ledger=None) -> tuple[int, int, int]:
     """Return (fail, warn, pass) counts."""
     fails = warns = passes = 0
 
@@ -371,17 +539,49 @@ def _count_fails(repeatability, anchor_cal, concordance, drift) -> tuple[int, in
             else:
                 fails += 1
 
-    # Concordance: < 60% = warn
+    # Concordance: warnings = warns
     if not concordance.get("skipped"):
-        if concordance["concordance_rate"] < 0.6:
-            warns += 1
-        else:
+        warns += len(concordance.get("warnings", []))
+        cr = concordance.get("concordance_rate")
+        if cr is not None and cr >= 0.6:
             passes += 1
 
     # Drift: each flag = warn
     if not drift.get("skipped"):
         warns += len(drift.get("drift_flags", []))
         passes += drift.get("stable_count", 0)
+
+    # Synthetic regression: FAIL = fail
+    if synth and synth.get("status") == "FAIL":
+        for t in synth.get("tests", []):
+            if t["status"] == "FAIL":
+                fails += 1
+            else:
+                passes += 1
+
+    # Regime direction: FAIL = fail
+    if regime_tests and regime_tests.get("status") != "SKIP":
+        for t in regime_tests.get("tests", []):
+            if t["status"] == "FAIL":
+                fails += 1
+            else:
+                passes += 1
+
+    # Fund classification: FAIL = fail
+    if fund_tests and fund_tests.get("status") != "SKIP":
+        for t in fund_tests.get("tickers", []):
+            if t["status"] == "FAIL":
+                fails += 1
+            else:
+                passes += 1
+
+    # Ledger integrity: FAIL = fail
+    if ledger and ledger.get("status") == "FAIL":
+        for r in ledger.get("runs", []):
+            if r["status"] == "FAIL":
+                fails += 1
+            else:
+                passes += 1
 
     return fails, warns, passes
 
@@ -410,18 +610,35 @@ def main():
     print("\n4. Drift detection...")
     drift = run_drift_detection()
 
-    print_summary(repeatability, anchor_cal, concordance, drift)
+    print("\n5. Synthetic regression truth...")
+    synth = run_synthetic_regression()
 
-    fails, warns, passes = _count_fails(repeatability, anchor_cal, concordance, drift)
+    print("\n6. Regime direction tests...")
+    regime_tests = run_regime_direction_tests()
+
+    print("\n7. Fund classification tests...")
+    fund_tests = run_fund_classification_tests()
+
+    print("\n8. Ledger integrity...")
+    ledger = run_ledger_integrity()
+
+    print_summary(repeatability, anchor_cal, concordance, drift, synth, regime_tests, fund_tests, ledger)
+
+    fails, warns, passes = _count_fails(repeatability, anchor_cal, concordance, drift,
+                                        synth, regime_tests, fund_tests, ledger)
     summary_status = "FAIL" if fails > 0 else ("WARN" if warns > 0 else "PASS")
 
     output = {
-        "run_at":           time.strftime("%Y-%m-%d %H:%M:%S"),
-        "repeats":          REPEATS,
-        "repeatability":    repeatability,
-        "anchor_calibration": anchor_cal,
-        "concordance":      concordance,
-        "drift":            drift,
+        "run_at":              time.strftime("%Y-%m-%d %H:%M:%S"),
+        "repeats":             REPEATS,
+        "repeatability":       repeatability,
+        "anchor_calibration":  anchor_cal,
+        "concordance":         concordance,
+        "drift":               drift,
+        "synthetic_regression": synth,
+        "regime_direction":    regime_tests,
+        "fund_classification": fund_tests,
+        "ledger_integrity":    ledger,
         "summary": {
             "status": summary_status,
             "fail":   fails,

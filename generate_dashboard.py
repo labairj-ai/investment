@@ -726,20 +726,36 @@ def _build_regime_stress_section(macro_scores: dict, today_holdings_sorted: list
     directional = regime.get("directional_states", {})
     stress_bar_html = ""
     STRESS_DIMS = [
-        ("rate_stress",         "Rate Stress",     "#e74c3c"),
-        ("dollar_stress",       "Dollar Stress",   "#3498db"),
-        ("vol_stress",          "Vol Stress (VIX)", "#f39c12"),
+        ("rate_stress",   "Rate Stress (signed)",    True),
+        ("dollar_stress", "Dollar Stress (signed)",  True),
+        ("vol_stress",    "Vol Stress / VIX",        False),
     ]
-    for key, label, color in STRESS_DIMS:
-        val = regime_stress.get(key, 0.0)
-        pct = round(val * 100)
+    for key, label, is_signed in STRESS_DIMS:
+        val = regime_stress.get(key)
+        if val is None:
+            stress_bar_html += (
+                f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">'
+                f'<span style="font-size:10px;color:#718096;min-width:110px;">{label}</span>'
+                f'<span style="font-size:10px;color:#ccc;">UNKNOWN</span>'
+                f'</div>'
+            )
+            continue
+        if is_signed:
+            # signed: -1=green(favorable), 0=grey, +1=red(adverse)
+            bar_color = "#e74c3c" if val > 0 else ("#38a169" if val < 0 else "#a0aec0")
+            bar_pct = round(abs(val) * 100)
+            sign_label = f"{val:+.2f}"
+        else:
+            bar_color = "#f39c12"
+            bar_pct = round(val * 100)
+            sign_label = f"{bar_pct}%"
         stress_bar_html += (
             f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">'
             f'<span style="font-size:10px;color:#718096;min-width:110px;">{label}</span>'
             f'<div style="flex:1;height:8px;background:#e2e8f0;border-radius:4px;overflow:hidden;">'
-            f'<div style="width:{pct}%;height:100%;background:{color};opacity:0.7;border-radius:4px;transition:width .3s;"></div>'
+            f'<div style="width:{bar_pct}%;height:100%;background:{bar_color};opacity:0.7;border-radius:4px;transition:width .3s;"></div>'
             f'</div>'
-            f'<span style="font-size:10px;font-weight:700;color:{color};min-width:30px;text-align:right;">{pct}%</span>'
+            f'<span style="font-size:10px;font-weight:700;color:{bar_color};min-width:40px;text-align:right;">{sign_label}</span>'
             f'</div>'
         )
 
@@ -753,16 +769,19 @@ def _build_regime_stress_section(macro_scores: dict, today_holdings_sorted: list
             continue
         struct = _compute_macro_composite(scores) or 0
 
-        def _bar(val, color):
+        def _signed_bar(val, color_adverse, color_favorable="#38a169"):
+            """Render a signed interaction value. Positive=red(adverse), negative=green(favorable)."""
             if val is None:
                 return '<span style="font-size:9px;color:#ccc;">N/A</span>'
-            pct = round(val * 100)
+            color = color_adverse if val >= 0 else color_favorable
+            pct = round(abs(val) * 100)
+            sign = f"{val:+.2f}"
             return (
                 f'<div style="display:flex;align-items:center;gap:3px;">'
                 f'<div style="width:40px;height:5px;background:#e2e8f0;border-radius:3px;overflow:hidden;">'
                 f'<div style="width:{pct}%;height:100%;background:{color};opacity:0.75;"></div>'
                 f'</div>'
-                f'<span style="font-size:9px;color:{color};font-weight:700;">{pct}%</span>'
+                f'<span style="font-size:9px;color:{color};font-weight:700;">{sign}</span>'
                 f'</div>'
             )
 
@@ -772,9 +791,9 @@ def _build_regime_stress_section(macro_scores: dict, today_holdings_sorted: list
             f'<td style="padding:4px 8px;text-align:center;">'
             f'<span style="font-size:11px;font-weight:700;color:{_composite_color(struct)};">{struct}</span>'
             f'</td>'
-            f'<td style="padding:4px 8px;">{_bar(adj.get("rate_sensitivity_regime_risk"), "#e74c3c")}</td>'
-            f'<td style="padding:4px 8px;">{_bar(adj.get("dollar_sensitivity_regime_risk"), "#3498db")}</td>'
-            f'<td style="padding:4px 8px;">{_bar(adj.get("vol_stress"), None) if False else _bar(None, "#f39c12")}</td>'
+            f'<td style="padding:4px 8px;">{_signed_bar(adj.get("rate_sensitivity_regime_risk"), "#e74c3c")}</td>'
+            f'<td style="padding:4px 8px;">{_signed_bar(adj.get("dollar_sensitivity_regime_risk"), "#3498db")}</td>'
+            f'<td style="padding:4px 8px;">{_signed_bar(adj.get("inflation_hedge_regime_risk"), "#e74c3c", "#38a169")}</td>'
             f'</tr>'
         )
 
@@ -801,16 +820,17 @@ def _build_regime_stress_section(macro_scores: dict, today_holdings_sorted: list
             <tr style="border-bottom:2px solid #fde68a;">
               <th style="text-align:left;padding:4px 8px;font-size:9px;color:#92400e;">Ticker</th>
               <th style="text-align:center;padding:4px 8px;font-size:9px;color:#92400e;">Structural<br>Health</th>
-              <th style="text-align:left;padding:4px 8px;font-size:9px;color:#e74c3c;">Rate<br>Adj Risk</th>
-              <th style="text-align:left;padding:4px 8px;font-size:9px;color:#3498db;">Dollar<br>Adj Risk</th>
-              <th style="text-align:left;padding:4px 8px;font-size:9px;color:#f39c12;">Vol<br>(pending)</th>
+              <th style="text-align:left;padding:4px 8px;font-size:9px;color:#e74c3c;">Rate<br>Interaction</th>
+              <th style="text-align:left;padding:4px 8px;font-size:9px;color:#3498db;">Dollar<br>Interaction</th>
+              <th style="text-align:left;padding:4px 8px;font-size:9px;color:#38a169;">Inflation<br>Hedge</th>
             </tr>
           </thead>
           <tbody>{rows_html}</tbody>
         </table>
       </div>
       <div style="font-size:9px;color:#a0aec0;margin-top:8px;">
-        Regime-adj risk = structural exposure normalised (0–1) × regime stress scalar (0–1).
+        Signed interaction: +1=adverse (exposure amplified by regime), -1=favorable (exposure offset by regime).
+        +1=adverse, -1=favorable. Regime Stress: +1=adverse, -1=favorable (signed: +1=adverse, -1=favorable).
         After ≥4 weeks of parallel data, compare rankings vs. structural composite before promoting.
       </div>
     </div>'''
