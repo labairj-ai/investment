@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import statistics
 import time
 import uuid
 from datetime import date, datetime, timedelta
@@ -2272,7 +2273,6 @@ Return ONLY valid JSON. Each dimension must include a score AND a one-sentence r
             continue
 
         # 0507: adaptive N per dimension based on stability class
-        import statistics as _stats
         _tk_single = batch[0]
         _n_per_dim = {
             _d: (_n_samples_for_dim(_tk_single, _d, _evidence_conn) if _evidence_conn else 3)
@@ -2328,9 +2328,9 @@ Return ONLY valid JSON. Each dimension must include a score AND a one-sentence r
             _used = _raw_per_dim[_d][:_n_per_dim[_d]]
             if not _used:
                 continue
-            _med = int(round(_stats.median(_used)))
+            _med = int(round(statistics.median(_used)))
             _mn  = round(sum(_used) / len(_used), 2)
-            _sd  = round(_stats.stdev(_used) if len(_used) > 1 else 0.0, 3)
+            _sd  = round(statistics.stdev(_used) if len(_used) > 1 else 0.0, 3)
             _agg_dims[_d] = {
                 "score":    _med,
                 "reason":   _raw_reasons.get(_d, ""),
