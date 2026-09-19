@@ -457,6 +457,8 @@ The dashboard has three tabs (persistent via `localStorage`) plus a footer Gloss
 - **Portfolio** (default) — macro bar, news, AI insight, KPIs, charts, holdings table, realized gains, covered calls, Buffett screener
 - **Decisions** — Portfolio Decision Queue (open agent recommendations, sorted by urgency then priority) + Decision Journal (historical decisions + outcomes) + **🧠 Investor Model** (collapsible card — learned preferences with feedback buttons + read-only strategy config; lazy-loads on first expand); the tab button shows the count of open items (e.g. `Decisions (3)`)
 - **📊 Macro Risk** — portfolio composite weekly trend chart, layer-level week-over-week panel, dimension heatmap (all tickers × all macro dimensions, color-coded), and per-ticker score cards with sparklines
+- **⚙️ Agent Engine** — live execution monitoring: trade intents, fills, shadow-account positions, runner cycle log, and real-time NAV. Shows what the trade engine is doing right now (distinct from Learning Lab, which covers the research pipeline).
+- **📈 Learning Lab** — research pipeline monitoring: decision episodes, model training state, champion/challenger readiness, evidence accumulation, experiment pipeline status (integrity record, acceptance milestones, episode maturity). Shows whether the learning system is ready to graduate to paper trading.
 - **📖 Glossary** — accessible via the **footer link** at the bottom of every tab and via the hamburger dropdown on mobile. Plain-English definitions for every metric in the UI; V2 metrics (CC Alpha, Regret %, Score, IV Richness, μ, Exec Premium) highlighted with a purple NEW badge.
 
 ### Header
