@@ -61,23 +61,26 @@ RELATIVE_ORDERING_CHECKS = [
 ]
 
 
-def _check_relative_ordering(anchor_scores: dict, checks: list) -> list:
-    """Verify relative ordering invariants between anchor tickers."""
-    results = []
+def _check_relative_ordering(anchor_scores: dict, checks: list) -> dict:
+    """Verify relative ordering invariants. Returns {"pass": bool, "checks": [...]}."""
+    check_results = []
     for check in checks:
         lo_dim = anchor_scores.get(check["lower_ticker"], {}).get("dims", {}).get(check["dimension"], {})
         hi_dim = anchor_scores.get(check["higher_ticker"], {}).get("dims", {}).get(check["dimension"], {})
         lo = lo_dim.get("actual") if isinstance(lo_dim, dict) else None
         hi = hi_dim.get("actual") if isinstance(hi_dim, dict) else None
+        label = check.get("description", f"{check['lower_ticker']}<{check['higher_ticker']} on {check['dimension']}")
         if lo is None or hi is None:
-            results.append({"check": check["description"], "status": "SKIP",
-                            "reason": "score unavailable", "lo": lo, "hi": hi})
+            check_results.append({"label": label, "status": "SKIP",
+                                   "detail": "score unavailable", "lo": lo, "hi": hi})
         elif lo < hi:
-            results.append({"check": check["description"], "lo": lo, "hi": hi, "status": "PASS"})
+            check_results.append({"label": label, "lo": lo, "hi": hi, "status": "PASS",
+                                   "detail": f"{check['lower_ticker']}={lo} < {check['higher_ticker']}={hi}"})
         else:
-            results.append({"check": check["description"], "lo": lo, "hi": hi, "status": "FAIL",
-                            "reason": f"{check['lower_ticker']}={lo} not < {check['higher_ticker']}={hi}"})
-    return results
+            check_results.append({"label": label, "lo": lo, "hi": hi, "status": "FAIL",
+                                   "detail": f"{check['lower_ticker']}={lo} not < {check['higher_ticker']}={hi}"})
+    all_pass = all(c["status"] in ("PASS", "SKIP") for c in check_results)
+    return {"pass": all_pass, "checks": check_results}
 
 
 def _score_val(dim_data):
