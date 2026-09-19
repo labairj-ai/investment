@@ -1,7 +1,7 @@
 # Require Variant Row When Base Was Eligible in PAPER_ACTIVE Sweep
 
 - **ID:** 0458
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-18
 - **Priority:** high
 - **Depends:** 0456
@@ -45,7 +45,7 @@ Add tests:
 
 ## Done when
 
-- [ ] Missing variant row with `base_recommendation_eligible=1` is a FAIL, not a skip
-- [ ] `base_recommendation_eligible=0` records `not_expected` and produces no failure
-- [ ] NULL / absent `base_recommendation_eligible` defaults to eligible (fail-closed)
-- [ ] Tests cover all four cases
+- [x] Missing variant row with `base_recommendation_eligible=1` is a FAIL, not a skip
+- [x] `base_recommendation_eligible=0` records `not_expected` and produces no failure
+- [x] NULL / absent `base_recommendation_eligible` defaults to eligible (fail-closed)
+- [x] Tests cover all four cases

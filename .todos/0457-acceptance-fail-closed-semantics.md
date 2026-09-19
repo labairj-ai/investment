@@ -1,7 +1,7 @@
 # Require Clean Git State and Healthy Integrity for Acceptance PASS
 
 - **ID:** 0457
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-18
 - **Priority:** high
 - **Depends:** 0456
@@ -43,8 +43,8 @@ provenance chain the rest of the architecture was built to guarantee.
 
 ## Done when
 
-- [ ] Only `integrity_overall == "ok"` (or explicitly waived WARN) allows PASS
-- [ ] `"error"` and unrecognised integrity statuses cause acceptance to FAIL
-- [ ] `source_commit_sha` is required non-null before writing the artifact
-- [ ] `git_dirty == False` is required before writing the artifact
-- [ ] Tests cover all four new failure paths
+- [x] Only `integrity_overall == "ok"` (or explicitly waived WARN) allows PASS
+- [x] `"error"` and unrecognised integrity statuses cause acceptance to FAIL
+- [x] `source_commit_sha` is required non-null before writing the artifact
+- [x] `git_dirty == False` is required before writing the artifact
+- [x] Tests cover all four new failure paths

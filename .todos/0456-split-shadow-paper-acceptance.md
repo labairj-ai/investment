@@ -1,7 +1,7 @@
 # Split Acceptance into Shadow and Paper Milestones
 
 - **ID:** 0456
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-18
 - **Priority:** high
 - **Depends:** 0455
@@ -42,7 +42,7 @@ append-only output file in `config/`.
 
 ## Done when
 
-- [ ] Shadow-pipeline acceptance writes `experiment_shadow_canary_001.json` and says "observation pipeline verified"
-- [ ] Paper-execution acceptance writes `experiment_paper_canary_001.json` and says "full architecture validated"
-- [ ] Neither artifact can be written by the other mode's sweep
-- [ ] Existing `experiment_canary_001.json` reference is cleaned up or renamed
+- [x] Shadow-pipeline acceptance writes `experiment_shadow_canary_001.json` and says "observation pipeline verified"
+- [x] Paper-execution acceptance writes `experiment_paper_canary_001.json` and says "full architecture validated"
+- [x] Neither artifact can be written by the other mode's sweep
+- [x] Existing `experiment_canary_001.json` reference is cleaned up or renamed
