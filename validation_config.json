@@ -1,7 +1,9 @@
 {
-  "version": "v1.1",
-  "amendment_note": "v1 BLOCK: UUP anchor was invalid — UUP is classified as ETF in SECURITY_MASTER and receives evidence_quality=unsupported in production; it would never receive a live structural score. Replaced with company anchors chosen from independently-evidenced company_financials data, not from expected LLM output. NEE chosen because it is a domestic US utility with <5% foreign revenue. XOM chosen because it has significant international operations and qualifies as an inflation hedge. Relative ordering invariant added: domestic utility dollar_sensitivity must be less than international energy dollar_sensitivity. Original BLOCK record: out/macro_validation_acceptance_20260919_134153.json",
+  "version": "v1.2",
+  "amendment_note_v1.2": "Added deterministic repeatability_universe — 8 company tickers covering diverse sectors and evidence quality. Universe changes require a version bump and amendment note. Tickers chosen to span rate-sensitive (JOBY, UNP), dollar-sensitive (DSGX, BRK-B), inflation/commodity (XOM), growth (NFLX, GRMN), and industrials (SNA).",
+  "amendment_note_v1.1": "v1 BLOCK: UUP anchor was invalid — UUP is classified as ETF in SECURITY_MASTER and receives evidence_quality=unsupported in production; it would never receive a live structural score. Replaced with company anchors chosen from independently-evidenced company_financials data, not from expected LLM output. NEE chosen because it is a domestic US utility with <5% foreign revenue. XOM chosen because it has significant international operations and qualifies as an inflation hedge. Relative ordering invariant added: domestic utility dollar_sensitivity must be less than international energy dollar_sensitivity. Original BLOCK record: out/macro_validation_acceptance_20260919_134153.json",
   "prior_block_record": "out/macro_validation_acceptance_20260919_134153.json",
+  "repeatability_universe": ["XOM", "NFLX", "GRMN", "DSGX", "BRK-B", "UNP", "JOBY", "SNA"],
   "thresholds": {
     "schema_valid_pct": 100,
     "ledger_integrity_pct": 100,

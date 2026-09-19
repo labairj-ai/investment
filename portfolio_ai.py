@@ -323,17 +323,19 @@ def _init_ai_tables():
         "ON macro_score_summaries (created_at DESC)"
     )
     conn.execute("""CREATE TABLE IF NOT EXISTS macro_scoring_runs (
-        run_id       TEXT PRIMARY KEY,
-        run_at       TEXT NOT NULL,
-        expected_n   INTEGER,
-        scored_n     INTEGER,
-        failed_n     INTEGER,
-        coverage_pct REAL,
-        model_ver    TEXT,
-        schema_ver   TEXT,
-        macro_hash   TEXT,
-        status       TEXT NOT NULL DEFAULT 'IN_PROGRESS',
-        errors_json  TEXT
+        run_id             TEXT PRIMARY KEY,
+        run_at             TEXT NOT NULL,
+        expected_n         INTEGER,
+        scored_n           INTEGER,
+        failed_n           INTEGER,
+        supported_scored_n INTEGER,
+        unsupported_n      INTEGER,
+        coverage_pct       REAL,
+        model_ver          TEXT,
+        schema_ver         TEXT,
+        macro_hash         TEXT,
+        status             TEXT NOT NULL DEFAULT 'IN_PROGRESS',
+        errors_json        TEXT
     )""")
     conn.execute("""CREATE TABLE IF NOT EXISTS macro_regime_snapshots (
         snapshot_date TEXT PRIMARY KEY,
@@ -361,6 +363,15 @@ def _init_ai_tables():
         conn.execute("ALTER TABLE macro_scoring_runs ADD COLUMN errors_json TEXT")
     except Exception:
         pass
+    # Add supported_scored_n / unsupported_n columns to macro_scoring_runs (0515)
+    for _col_sql in [
+        "ALTER TABLE macro_scoring_runs ADD COLUMN supported_scored_n INTEGER",
+        "ALTER TABLE macro_scoring_runs ADD COLUMN unsupported_n INTEGER",
+    ]:
+        try:
+            conn.execute(_col_sql)
+        except Exception:
+            pass
     # Health snapshots table (0492)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS macro_health_snapshots (
@@ -394,54 +405,121 @@ def _init_ai_tables():
             notes          TEXT
         )
     """)
-    # Per-ticker × dim stability from acceptance/scoring runs (0506)
+    # Per-ticker × dim stability from acceptance/scoring runs (0506, 0510)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS macro_dimension_stability (
-            ticker          TEXT NOT NULL,
-            dim             TEXT NOT NULL,
-            stdev           REAL,
-            mean            REAL,
-            n_samples       INTEGER,
-            stability_class TEXT,
-            updated_at      TEXT NOT NULL,
+            ticker              TEXT NOT NULL,
+            dim                 TEXT NOT NULL,
+            stdev               REAL,
+            mean                REAL,
+            n_samples           INTEGER,
+            stability_class     TEXT,
+            updated_at          TEXT NOT NULL,
+            acceptance_record_id TEXT,
+            config_version      TEXT,
+            config_hash         TEXT,
+            model_identity      TEXT,
+            validation_run_type TEXT,
             PRIMARY KEY (ticker, dim)
         )
     """)
-    # Geo evidence for foreign / geopolitical scoring (0508)
+    # Geo evidence for foreign / geopolitical scoring (0508, 0516)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS company_geo_profile (
-            ticker                   TEXT PRIMARY KEY,
-            primary_hq_country       TEXT,
-            incorporation_country    TEXT,
-            major_operating_regions  TEXT,
-            revenue_domestic_pct     REAL,
-            revenue_us_pct           REAL,
-            revenue_em_pct           REAL,
+            ticker                     TEXT PRIMARY KEY,
+            primary_hq_country         TEXT,
+            incorporation_country      TEXT,
+            major_operating_regions    TEXT,
+            revenue_domestic_pct       REAL,
+            revenue_us_pct             REAL,
+            revenue_em_pct             REAL,
             supply_chain_concentration TEXT,
-            sanctions_exposure       TEXT,
-            tariff_sensitivity       TEXT,
-            updated_at               TEXT NOT NULL
+            sanctions_exposure         TEXT,
+            tariff_sensitivity         TEXT,
+            updated_at                 TEXT NOT NULL,
+            data_source                TEXT,
+            source_date                TEXT,
+            retrieved_at               TEXT,
+            confidence                 TEXT,
+            evidence_hash              TEXT,
+            notes                      TEXT
         )
     """)
-    # Seed initial geo profiles for known foreign companies (0508)
-    _GEO_SEEDS = [
-        # ITOCF — Itochu Corp, Japanese trading conglomerate, diverse EM exposure
-        ("ITOCF", "JP", "JP", '["Japan","China","Southeast Asia","United States"]',
-         45.0, 5.0, 30.0, "diversified", "none_known", "medium"),
-        # MITSF — Mitsubishi Corp, Japanese trading conglomerate, global operations
-        ("MITSF", "JP", "JP", '["Japan","China","Southeast Asia","Australia","United States"]',
-         40.0, 8.0, 28.0, "diversified", "none_known", "medium"),
-    ]
-    now_iso = datetime.utcnow().isoformat()
-    for seed in _GEO_SEEDS:
+    # Add provenance columns to macro_dimension_stability for existing DBs (0510)
+    for _col_sql in [
+        "ALTER TABLE macro_dimension_stability ADD COLUMN acceptance_record_id TEXT",
+        "ALTER TABLE macro_dimension_stability ADD COLUMN config_version TEXT",
+        "ALTER TABLE macro_dimension_stability ADD COLUMN config_hash TEXT",
+        "ALTER TABLE macro_dimension_stability ADD COLUMN model_identity TEXT",
+        "ALTER TABLE macro_dimension_stability ADD COLUMN validation_run_type TEXT",
+    ]:
         try:
+            conn.execute(_col_sql)
+        except Exception:
+            pass
+    # Add provenance columns to company_geo_profile for existing DBs (0516)
+    for _col_sql in [
+        "ALTER TABLE company_geo_profile ADD COLUMN data_source TEXT",
+        "ALTER TABLE company_geo_profile ADD COLUMN source_date TEXT",
+        "ALTER TABLE company_geo_profile ADD COLUMN retrieved_at TEXT",
+        "ALTER TABLE company_geo_profile ADD COLUMN confidence TEXT",
+        "ALTER TABLE company_geo_profile ADD COLUMN evidence_hash TEXT",
+        "ALTER TABLE company_geo_profile ADD COLUMN notes TEXT",
+    ]:
+        try:
+            conn.execute(_col_sql)
+        except Exception:
+            pass
+    # Seed initial geo profiles for known foreign companies (0508, 0516)
+    # Use INSERT OR REPLACE so stale seeds are refreshed when the module is re-initialised.
+    now_iso = datetime.utcnow().isoformat()
+    _GEO_SEEDS = [
+        # ITOCF — Itochu Corp, Japanese general trading company; EM/Asia exposure from annual report
+        {
+            "ticker": "ITOCF",
+            "primary_hq_country": "JP", "incorporation_country": "JP",
+            "major_operating_regions": '["Japan","China","Southeast Asia","United States"]',
+            "revenue_domestic_pct": 45.0, "revenue_us_pct": 5.0, "revenue_em_pct": 30.0,
+            "supply_chain_concentration": "diversified",
+            "sanctions_exposure": "none_known", "tariff_sensitivity": "medium",
+            "data_source": "manual_research", "source_date": "2026-09",
+            "retrieved_at": now_iso, "confidence": "medium",
+            "notes": "Ito Corporation — Japanese general trading company; EM/Asia exposure estimated from annual report",
+        },
+        # MITSF — Mitsubishi Corp, diversified Japanese conglomerate; global operations per IR materials
+        {
+            "ticker": "MITSF",
+            "primary_hq_country": "JP", "incorporation_country": "JP",
+            "major_operating_regions": '["Japan","China","Southeast Asia","Australia","United States"]',
+            "revenue_domestic_pct": 40.0, "revenue_us_pct": 8.0, "revenue_em_pct": 28.0,
+            "supply_chain_concentration": "diversified",
+            "sanctions_exposure": "none_known", "tariff_sensitivity": "medium",
+            "data_source": "manual_research", "source_date": "2026-09",
+            "retrieved_at": now_iso, "confidence": "medium",
+            "notes": "Mitsubishi Corporation — diversified Japanese conglomerate; global operations per IR materials",
+        },
+    ]
+    for _seed in _GEO_SEEDS:
+        try:
+            _ev_hash = hashlib.sha256(
+                json.dumps({k: v for k, v in _seed.items()
+                            if k not in ("retrieved_at", "notes")},
+                           sort_keys=True).encode()
+            ).hexdigest()
             conn.execute(
-                "INSERT OR IGNORE INTO company_geo_profile "
+                "INSERT OR REPLACE INTO company_geo_profile "
                 "(ticker, primary_hq_country, incorporation_country, major_operating_regions, "
                 "revenue_domestic_pct, revenue_us_pct, revenue_em_pct, "
-                "supply_chain_concentration, sanctions_exposure, tariff_sensitivity, updated_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                (*seed, now_iso)
+                "supply_chain_concentration, sanctions_exposure, tariff_sensitivity, updated_at, "
+                "data_source, source_date, retrieved_at, confidence, evidence_hash, notes) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (_seed["ticker"], _seed["primary_hq_country"], _seed["incorporation_country"],
+                 _seed["major_operating_regions"], _seed["revenue_domestic_pct"],
+                 _seed["revenue_us_pct"], _seed["revenue_em_pct"],
+                 _seed["supply_chain_concentration"], _seed["sanctions_exposure"],
+                 _seed["tariff_sensitivity"], now_iso,
+                 _seed["data_source"], _seed["source_date"], _seed["retrieved_at"],
+                 _seed["confidence"], _ev_hash, _seed["notes"])
             )
         except Exception:
             pass
@@ -449,10 +527,28 @@ def _init_ai_tables():
     conn.close()
 
 
-MACRO_SCORE_SCHEMA_VERSION = "v1"
+MACRO_SCORE_SCHEMA_VERSION = "v2"
 MACRO_INTERACTION_VERSION = "macro_interaction_v1"
 _MACRO_SCORE_DIMS = ("rate_sensitivity", "inflation_hedge", "dollar_sensitivity", "geopolitical_risk")
 _STALE_SCORE_DAYS = 14
+
+# Minimum evidence quality for each dimension to be usable for formal attribution (0512).
+# "none" and "unsupported" are always ineligible regardless of stability.
+# geopolitical_risk requires "full" — "partial" geo evidence is too thin until 0508 data matures.
+_EV_MIN_FOR_USABILITY = {
+    "rate_sensitivity":   {"full", "partial"},
+    "dollar_sensitivity": {"full", "partial"},
+    "inflation_hedge":    {"full", "partial"},
+    "geopolitical_risk":  {"full"},
+}
+
+# Map dim name to its evidence_quality key in the score/evidence dict (0512)
+_DIM_EV_KEY = {
+    "rate_sensitivity":   "evidence_quality_rate",
+    "dollar_sensitivity": "evidence_quality_dollar",
+    "inflation_hedge":    "evidence_quality_inflation",
+    "geopolitical_risk":  "evidence_quality_geo",
+}
 
 
 def _stability_class(stdev) -> str:
@@ -466,14 +562,33 @@ def _stability_class(stdev) -> str:
     return "unstable"
 
 
-def _usable_for_attribution(stdev, stability=None) -> bool:
-    """Dimension is attribution-ready only when stable or borderline and stdev ≤ 1.5 (0506)."""
-    cls = stability or _stability_class(stdev)
-    return cls in ("stable", "borderline")
+def _is_formally_usable(ticker, dim, conn):
+    """True only if ticker×dim has an accepted_validation stability row (0511).
+    Runtime sampling rows are excluded — only rows written by a PASS acceptance run count."""
+    try:
+        row = conn.execute(
+            "SELECT stability_class FROM macro_dimension_stability "
+            "WHERE ticker=? AND dim=? AND validation_run_type='accepted_validation'",
+            (ticker, dim)
+        ).fetchone()
+        if row:
+            return row[0] in ("stable", "borderline")
+    except Exception:
+        pass
+    return False
 
 
-def _n_samples_for_dim(ticker: str, dim: str, conn: sqlite3.Connection) -> int:
-    """Adaptive N: 1 for stable, 3 for borderline/untested, 5 for unstable (0507)."""
+def _usable_for_attribution(ticker, dim, evidence_quality, conn):
+    """Dimension is attribution-ready only when BOTH evidence quality meets the minimum
+    AND a formal accepted_validation stability row exists (0511, 0512)."""
+    if evidence_quality not in _EV_MIN_FOR_USABILITY.get(dim, set()):
+        return False
+    return _is_formally_usable(ticker, dim, conn)
+
+
+def _n_samples_for_dim(ticker, dim, conn):
+    """Adaptive N: 1 for stable, 3 for borderline/untested, 5 for unstable (0507).
+    Reads any stability row — accepted or runtime — for adaptive-N efficiency."""
     try:
         row = conn.execute(
             "SELECT stability_class FROM macro_dimension_stability WHERE ticker=? AND dim=?",
@@ -2121,8 +2236,9 @@ def generate_holding_macro_scores(force: bool = False) -> dict:
         _reconcile_stale_runs(conn)  # transition old STARTED rows to STALE_FAILED (0493)
         conn.execute(
             "INSERT OR REPLACE INTO macro_scoring_runs "
-            "(run_id, run_at, expected_n, scored_n, failed_n, coverage_pct, model_ver, schema_ver, macro_hash, status) "
-            "VALUES (?,?,?,0,0,0,?,?,?,'STARTED')",
+            "(run_id, run_at, expected_n, scored_n, failed_n, supported_scored_n, unsupported_n, "
+            "coverage_pct, model_ver, schema_ver, macro_hash, status) "
+            "VALUES (?,?,?,0,0,0,0,0,?,?,?,'STARTED')",
             (run_id, run_at, len(to_score), ollama_client.DEFAULT_MODEL, MACRO_SCORE_SCHEMA_VERSION, macro_hash)
         )
         conn.commit()
@@ -2133,10 +2249,12 @@ def generate_holding_macro_scores(force: bool = False) -> dict:
 
     scored_n = 0
     failed_n = 0
+    supported_scored_n = 0
+    unsupported_n = 0
     run_errors: list = []
 
     # 0504 — fund early-exit: write unsupported record immediately, skip LLM entirely
-    company_tickers: list[str] = []
+    company_tickers = []
     if DB_PATH.exists():
         _fund_conn = sqlite3.connect(str(DB_PATH), timeout=10)
         for _ft in to_score:
@@ -2168,6 +2286,7 @@ def generate_holding_macro_scores(force: bool = False) -> dict:
             )
             results[_ft] = _fund_rec
             scored_n += 1
+            unsupported_n += 1
         _fund_conn.commit()
         _fund_conn.close()
     else:
@@ -2397,21 +2516,36 @@ Return ONLY valid JSON. Each dimension must include a score AND a one-sentence r
                         else:
                             print(f"[MacroScores] {ticker}: rate_beta={rb:.3f}%/100bps concordant with LLM rate_sensitivity={rate_score}")
 
-                # 0506: attach per-dim stability class and usable_for_attribution
+                # 0506/0511/0512: attach per-dim stability class and usable_for_attribution.
+                # Stability class comes from the current sample set (runtime).
+                # usable_for_attribution requires BOTH a formal accepted_validation stability row
+                # AND evidence quality meeting the per-dim minimum.
                 for _sdim in _MACRO_SCORE_DIMS:
                     _dim_data = scores.get(_sdim)
                     if isinstance(_dim_data, dict):
                         _sd_val  = _dim_data.get("stddev")
                         _scls    = _stability_class(_sd_val)
-                        _usable  = _usable_for_attribution(_sd_val, _scls)
-                        _dim_data[f"stability_class"] = _scls
-                        _dim_data[f"usable_for_attribution"] = _usable
-                # Also expose flat keys for attribution filter
+                        _ev_key  = _DIM_EV_KEY.get(_sdim, "evidence_quality")
+                        _ev_qual = scores.get(_ev_key) or ev.get(_ev_key, "none")
+                        _usable  = _usable_for_attribution(ticker, _sdim, _ev_qual, conn)
+                        _dim_data["stability_class"]        = _scls
+                        _dim_data["usable_for_attribution"] = _usable
+                # Also expose flat keys for attribution filter (0511: include validated vs runtime)
                 for _sdim in _MACRO_SCORE_DIMS:
                     _dim_data = scores.get(_sdim)
                     if isinstance(_dim_data, dict):
                         scores[f"{_sdim}_usable_for_attribution"] = _dim_data.get("usable_for_attribution")
                         scores[f"{_sdim}_stability_class"]        = _dim_data.get("stability_class")
+                        scores[f"{_sdim}_runtime_stability"]   = _dim_data.get("stability_class")
+                        try:
+                            _vrow = conn.execute(
+                                "SELECT stability_class FROM macro_dimension_stability "
+                                "WHERE ticker=? AND dim=? AND validation_run_type='accepted_validation'",
+                                (ticker, _sdim)
+                            ).fetchone()
+                            scores[f"{_sdim}_validated_stability"] = _vrow[0] if _vrow else None
+                        except Exception:
+                            scores[f"{_sdim}_validated_stability"] = None
 
                 # Compute evidence hash (full SHA-256, no truncation) for provenance (0475, 0484)
                 _ev_meta = {"evidence_quality", "evidence_quality_rate", "evidence_quality_dollar",
@@ -2440,26 +2574,32 @@ Return ONLY valid JSON. Each dimension must include a score AND a one-sentence r
                     (ticker, scores_json, now_str, run_id,
                      ollama_client.DEFAULT_MODEL, MACRO_SCORE_SCHEMA_VERSION, evidence_hash)
                 )
-                # Persist per-dim stability to macro_dimension_stability (0506)
+                # Persist per-dim stability to macro_dimension_stability (0506, 0510).
+                # validation_run_type='runtime_sampling' — these rows never make a ticker
+                # formally usable for attribution; only 'accepted_validation' rows do (0511).
                 for _sdim in _MACRO_SCORE_DIMS:
                     _dim_data = scores.get(_sdim)
                     if isinstance(_dim_data, dict) and _dim_data.get("n_samples", 0) > 1:
                         try:
                             conn.execute(
                                 "INSERT OR REPLACE INTO macro_dimension_stability "
-                                "(ticker, dim, stdev, mean, n_samples, stability_class, updated_at) "
-                                "VALUES (?,?,?,?,?,?,?)",
+                                "(ticker, dim, stdev, mean, n_samples, stability_class, updated_at, "
+                                "validation_run_type, model_identity) "
+                                "VALUES (?,?,?,?,?,?,?,?,?)",
                                 (ticker, _sdim,
                                  _dim_data.get("stddev"), _dim_data.get("mean"),
                                  _dim_data.get("n_samples"),
                                  _dim_data.get("stability_class"),
-                                 now_str)
+                                 now_str,
+                                 "runtime_sampling",
+                                 ollama_client.DEFAULT_MODEL)
                             )
                         except Exception:
                             pass
 
                 results[ticker] = scores
                 scored_n += 1
+                supported_scored_n += 1
             conn.commit()
             conn.close()
 
@@ -2482,21 +2622,45 @@ Return ONLY valid JSON. Each dimension must include a score AND a one-sentence r
         status = "FAILED"
     errors_json_str = json.dumps(run_errors) if run_errors else None
 
-    # Assert accounting invariant (0485)
+    # Accounting invariant: every ticker in to_score must appear in scored_n or failed_n (0515).
+    # Mismatch means a code path dropped a ticker silently — persist FAILED and raise.
     if scored_n + failed_n != len(to_score):
-        print(f"[MacroScores] WARNING: accounting mismatch — expected={len(to_score)}, scored={scored_n}, failed={failed_n}, sum={scored_n+failed_n}")
+        _acct_msg = (
+            f"[MacroScores] FATAL accounting mismatch — "
+            f"expected={len(to_score)}, scored={scored_n}, failed={failed_n}, "
+            f"sum={scored_n + failed_n}"
+        )
+        print(_acct_msg)
+        try:
+            _fc = sqlite3.connect(str(DB_PATH), timeout=10)
+            _fc.execute(
+                "UPDATE macro_scoring_runs SET status='FAILED', errors_json=? WHERE run_id=?",
+                (json.dumps([_acct_msg]), run_id)
+            )
+            _fc.commit()
+            _fc.close()
+        except Exception:
+            pass
+        raise RuntimeError(_acct_msg)
 
     # Retry twice; raise on exhaustion — never silently drop (0478, 0485).
     for _upd_attempt in range(2):
         try:
             conn = sqlite3.connect(str(DB_PATH), timeout=10)
             conn.execute(
-                "UPDATE macro_scoring_runs SET scored_n=?, failed_n=?, coverage_pct=?, status=?, errors_json=? WHERE run_id=?",
-                (scored_n, failed_n, cov, status, errors_json_str, run_id)
+                "UPDATE macro_scoring_runs "
+                "SET scored_n=?, failed_n=?, supported_scored_n=?, unsupported_n=?, "
+                "coverage_pct=?, status=?, errors_json=? WHERE run_id=?",
+                (scored_n, failed_n, supported_scored_n, unsupported_n,
+                 cov, status, errors_json_str, run_id)
             )
             conn.commit()
             conn.close()
-            print(f"[MacroScores] Run {run_id[:8]}: {scored_n}/{len(to_score)} scored, {cov:.1f}% — {status}")
+            print(
+                f"[MacroScores] Run {run_id[:8]}: {scored_n}/{len(to_score)} processed "
+                f"({supported_scored_n} LLM-scored, {unsupported_n} unsupported), "
+                f"{cov:.1f}% — {status}"
+            )
             break
         except Exception as e:
             print(f"[MacroScores] WARNING: ledger UPDATE failed (attempt {_upd_attempt+1}): {e}")

@@ -33,6 +33,8 @@ def _parse_args() -> argparse.Namespace:
                    help="Outcome horizon to analyse (default: 3m). Options: 1w, 1m, 3m, 6m, 12m")
     p.add_argument("--include-pre-acceptance", action="store_true",
                    help="Include PRE_ACCEPTANCE episodes (diagnostic use only)")
+    p.add_argument("--include-legacy", action="store_true",
+                   help="Include pre-v2 schema episodes (diagnostic only; these lack per-dim usability fields)")
     p.add_argument("--show-all-dims", action="store_true",
                    help="Include all dims in formal tables (incl. geopolitical_risk)")
     p.add_argument("--debug", action="store_true",
@@ -42,6 +44,7 @@ def _parse_args() -> argparse.Namespace:
 
 def load_episodes_with_macro(horizon: str = "3m",
                               include_pre_acceptance: bool = False,
+                              include_legacy: bool = False,
                               debug: bool = False) -> list[dict]:
     if not DB_PATH.exists():
         print(f"[Attribution] ERROR: DB not found at {DB_PATH}", file=sys.stderr)
@@ -118,6 +121,18 @@ def load_episodes_with_macro(horizon: str = "3m",
                   f"(use --include-pre-acceptance for diagnostics)")
         episodes = accepted
 
+    # 0513: schema v2 gate — only v2 scores carry per-dim usability fields.
+    # Legacy scores have get(key, True) semantics and must not enter formal attribution.
+    # Use --include-legacy for diagnostic viewing of pre-v2 episodes.
+    legacy_count = 0
+    if not include_legacy:
+        v2 = [e for e in episodes if e["macro"].get("schema_version") == "v2"]
+        legacy_count = len(episodes) - len(v2)
+        if legacy_count > 0:
+            print(f"[Attribution] Excluded {legacy_count} pre-v2 schema episodes "
+                  f"(use --include-legacy for diagnostics)")
+        episodes = v2
+
     return episodes, total_loaded, pre_acceptance_count
 
 
@@ -140,10 +155,12 @@ def _extract_dim_score(val) -> int | None:
 
 
 def _filter_by_dim_usability(episodes: list[dict], dim_key: str) -> list[dict]:
-    """Gate 2: filter to episodes where this dimension is marked usable_for_attribution.
-    If the key is absent (old score without per-dim metadata), treat as usable for backward compat."""
+    """Gate 2: filter to episodes where this dimension is explicitly marked usable_for_attribution.
+    Requires explicit True — missing key or False both exclude the episode (0513 fail-closed).
+    Geo attribution is disabled until at least one ticker has confidence=medium/high sourced
+    geo evidence (0516); geopolitical_risk requires evidence_quality_geo='full' per 0512."""
     key = f"{dim_key}_usable_for_attribution"
-    return [e for e in episodes if e["macro"].get(key, True) is not False]
+    return [e for e in episodes if e["macro"].get(key) is True]
 
 
 def _coverage_summary(episodes: list[dict]) -> dict:
@@ -264,6 +281,7 @@ if __name__ == "__main__":
     episodes, total_rows, pre_accept = load_episodes_with_macro(
         horizon=args.horizon,
         include_pre_acceptance=args.include_pre_acceptance,
+        include_legacy=args.include_legacy,
         debug=args.debug,
     )
     print(f"Loaded {len(episodes)} resolved supported ACCEPTED episodes "

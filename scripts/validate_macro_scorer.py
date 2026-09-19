@@ -8,6 +8,7 @@ Four test modules:
   3. Factor concordance — measure beta sign vs LLM score sign agreement (0473)
   4. Drift detection  — compare last two history rows per ticker; flag unexplained deltas
 """
+import hashlib
 import json
 import math
 import sqlite3
@@ -755,14 +756,23 @@ def main():
     print("Loading macro context (frozen for validation)...")
     macro = macro_context.fetch()
 
-    try:
-        import portfolio_ai as pai
-        holdings = pai._load_holdings_csv()
-        from portfolio_ai import is_fund
-        all_tickers = list({pai._normalize_ticker(h.get("Stock", "")) for h in holdings if h.get("Stock")})
-        tickers = [t for t in all_tickers if not is_fund(t)][:8]
-    except Exception:
-        tickers = []
+    # 0514: deterministic repeatability_universe from config — no dynamic set-based selection
+    from portfolio_ai import is_fund
+    universe = config.get("repeatability_universe")
+    if not universe:
+        raise ValueError(
+            "repeatability_universe missing from validation_config.json — "
+            "cannot run deterministic validation. Add a list of ≥6 company tickers."
+        )
+    tickers = [t for t in universe if not is_fund(t)]
+    fund_excluded = [t for t in universe if is_fund(t)]
+    if fund_excluded:
+        print(f"  WARNING: {len(fund_excluded)} fund(s) in repeatability_universe excluded: {fund_excluded}")
+    if len(tickers) < 6:
+        raise ValueError(
+            f"repeatability_universe has only {len(tickers)} non-fund tickers after exclusions — "
+            f"need ≥6. Update validation_config.json and bump the version."
+        )
 
     # LLM-dependent tests only run in --live mode
     if args.live:
@@ -777,30 +787,8 @@ def main():
         print("\n2. Anchor calibration — SKIP (use --live)")
         anchor_cal = {}
 
-    # 0506: persist per-ticker×dim stability from this repeatability run
-    if repeatability and args.live:
-        try:
-            import sys as _sys
-            _sys.path.insert(0, str(PROJECT_DIR))
-            from portfolio_ai import DB_PATH as _DB, _stability_class as _scls
-            import sqlite3 as _sq
-            _now = time.strftime("%Y-%m-%d %H:%M:%S")
-            _sc = _sq.connect(str(_DB), timeout=10)
-            for _tk, _dims in repeatability.items():
-                for _dim, _r in _dims.items():
-                    if _r.get("n", 0) >= 2:
-                        _sc.execute(
-                            "INSERT OR REPLACE INTO macro_dimension_stability "
-                            "(ticker, dim, stdev, mean, n_samples, stability_class, updated_at) "
-                            "VALUES (?,?,?,?,?,?,?)",
-                            (_tk, _dim, _r.get("stdev"), _r.get("mean"),
-                             _r.get("n"), _scls(_r.get("stdev")), _now)
-                        )
-            _sc.commit()
-            _sc.close()
-            print(f"  Persisted stability data for {len(repeatability)} tickers to macro_dimension_stability")
-        except Exception as _e:
-            print(f"  WARNING: could not persist stability data: {_e}")
+    # 0506/0510: stability data is collected now but written to DB after verdict so we can set
+    # validation_run_type='accepted_validation' (PASS) or 'failed_validation' (BLOCK/FAIL).
 
     print("\n3. Factor vs LLM concordance...")
     concordance = run_concordance(tickers)
@@ -839,24 +827,15 @@ def main():
     threshold_result = _check_thresholds(all_results, config)
     verdict = threshold_result["verdict"]
 
-    output = {
-        "version":        "v1",
-        "timestamp":      time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "commit_sha":     _get_commit_sha(),
-        "model_identity": _get_model_identity(),
-        "live_mode":      args.live,
-        "n_repeats":      n_repeats_effective,
-        "config_used":    config,
-        "results":        all_results,
-        "threshold_checks": threshold_result,
-        "verdict":        verdict,
-        "summary": {
-            "status": summary_status,
-            "fail":   fails,
-            "warn":   warns,
-            "pass":   passes,
-        },
-    }
+    # 0513: acceptance_contract and validation_config_version are separate fields so the
+    # record can be queried by contract name independently of the config version that was live.
+    _commit_sha     = _get_commit_sha()
+    _model_identity = _get_model_identity()
+    _config_version = config.get("version", "unknown")
+    _config_hash    = hashlib.sha256(
+        json.dumps(config, sort_keys=True).encode()
+    ).hexdigest()
+    _acceptance_contract = "macro_validation_v1"
 
     # Determine output path — immutable timestamped acceptance record or standard path
     if args.out:
@@ -867,11 +846,63 @@ def main():
     else:
         out_path = OUT_PATH
 
+    output = {
+        "acceptance_contract":      _acceptance_contract,
+        "validation_config_version": _config_version,
+        "validation_config_hash":   _config_hash,
+        "timestamp":                time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "commit_sha":               _commit_sha,
+        "model_identity":           _model_identity,
+        "live_mode":                args.live,
+        "n_repeats":                n_repeats_effective,
+        "config_used":              config,
+        "results":                  all_results,
+        "threshold_checks":         threshold_result,
+        "verdict":                  verdict,
+        "record_id":                str(out_path),
+        "summary": {
+            "status": summary_status,
+            "fail":   fails,
+            "warn":   warns,
+            "pass":   passes,
+        },
+    }
+
     out_path.parent.mkdir(exist_ok=True)
     out_path.write_text(json.dumps(output, indent=2))
     print(f"\nResults written to {out_path}")
     print(f"Summary: {summary_status} — {fails} fail, {warns} warn, {passes} pass")
     print(f"Verdict: {verdict}")
+
+    # 0506/0510: persist stability after verdict so validation_run_type is accurate
+    if repeatability and args.live:
+        _vrun_type = "accepted_validation" if verdict == "PASS" else "failed_validation"
+        try:
+            import sys as _sys
+            _sys.path.insert(0, str(PROJECT_DIR))
+            from portfolio_ai import DB_PATH as _DB, _stability_class as _scls
+            import sqlite3 as _sq
+            _now = time.strftime("%Y-%m-%d %H:%M:%S")
+            _sc = _sq.connect(str(_DB), timeout=10)
+            for _tk, _dims in repeatability.items():
+                for _dim, _r in _dims.items():
+                    if _r.get("n", 0) >= 2:
+                        _sc.execute(
+                            "INSERT OR REPLACE INTO macro_dimension_stability "
+                            "(ticker, dim, stdev, mean, n_samples, stability_class, updated_at, "
+                            "acceptance_record_id, config_version, config_hash, "
+                            "model_identity, validation_run_type) "
+                            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                            (_tk, _dim, _r.get("stdev"), _r.get("mean"),
+                             _r.get("n"), _scls(_r.get("stdev")), _now,
+                             str(out_path), _config_version, _config_hash,
+                             _model_identity, _vrun_type)
+                        )
+            _sc.commit()
+            _sc.close()
+            print(f"  Persisted stability data ({_vrun_type}) for {len(repeatability)} tickers")
+        except Exception as _e:
+            print(f"  WARNING: could not persist stability data: {_e}")
 
     if fails or verdict == "BLOCK":
         sys.exit(1)
