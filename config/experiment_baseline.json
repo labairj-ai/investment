@@ -1,0 +1,25 @@
+{
+  "_note": "Frozen experiment baseline \u2014 DO NOT modify after initial freeze. Re-run freeze_baseline.py only if starting a new controlled experiment.",
+  "frozen_at": "2026-09-19T00:01:42.045952+00:00",
+  "git_commit_sha": "752b6788250188648d192b02f4309da9f3af084b",
+  "model_version": null,
+  "model_id": null,
+  "lifecycle_state_at_freeze": null,
+  "evidence_contract_version": null,
+  "shadow_account_id": "AGENTIC_SHADOW_01",
+  "initial_capital": 10000.0,
+  "policy_version": "1.0",
+  "policy_hash": "031c42490a84",
+  "strategy_hash": "f75ca2fc456f",
+  "base_formula": {
+    "composite_formula": "0.30*Q + 0.25*V + 0.20*PF + 0.15*C + 0.10*EC",
+    "composite_weights": {
+      "Q": 0.3,
+      "V": 0.25,
+      "PF": 0.2,
+      "C": 0.15,
+      "EC": 0.1
+    },
+    "min_composite_threshold": 45
+  }
+}
