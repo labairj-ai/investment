@@ -1,7 +1,7 @@
 # Attribution to Actual Decision Quality: Base vs Challenger Divergence
 
 - **ID:** 0502
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-19
 - **Priority:** normal
 - **Depends:** 0501

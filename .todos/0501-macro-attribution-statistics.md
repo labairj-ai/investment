@@ -1,7 +1,7 @@
 # Macro Attribution: Medians, Dispersion, and Cohort-Blocked Intervals
 
 - **ID:** 0501
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-19
 - **Priority:** normal
 - **Depends:** 0496, 0498

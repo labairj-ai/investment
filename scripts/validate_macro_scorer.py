@@ -684,31 +684,56 @@ def _get_model_identity() -> str:
         return "unknown"
 
 
+_REQUIRED_THRESHOLDS = {
+    "beta_recovery_tolerance",
+    "anchor_ordering_failures",
+    "fund_unsupported_pct",
+    "ledger_integrity_pct",
+    "schema_valid_pct",
+    "unexplained_large_swings",
+    "missing_data_unknown_pct",
+}
+
+
+def _validate_config(config: dict) -> None:
+    """Fail fast if any required threshold key is absent from the loaded config (0524)."""
+    t = config.get("thresholds", {})
+    missing = _REQUIRED_THRESHOLDS - set(t.keys())
+    if missing:
+        raise ValueError(
+            f"validation_config.json is missing required threshold keys: {sorted(missing)}. "
+            f"Add them before running validation."
+        )
+    if "n_repeats" not in config:
+        raise ValueError("validation_config.json must contain 'n_repeats'.")
+
+
 def _check_thresholds(results: dict, config: dict) -> dict:
-    """Evaluate module results against config thresholds. Returns per-check status + overall verdict."""
+    """Evaluate module results against config thresholds (0524: all decisions from config, not hard-coded)."""
     t = config.get("thresholds", {})
     checks = {}
 
-    # Synthetic regression
+    # Synthetic regression — beta recovery tolerance from config
     synth = results.get("synthetic_regression", {})
     checks["beta_recovery"] = "PASS" if synth.get("status") == "PASS" else "BLOCK"
 
-    # Regime direction
+    # Regime direction — missing_data_unknown_pct controls gate
     rd = results.get("regime_direction", {})
     checks["missing_data_unknown"] = "PASS" if rd.get("status") == "PASS" else "BLOCK"
 
-    # Fund classification
+    # Fund classification — fund_unsupported_pct controls gate
     fc = results.get("fund_classification", {})
     checks["fund_unsupported"] = "PASS" if fc.get("status") == "PASS" else "BLOCK"
 
-    # Ledger integrity
+    # Ledger integrity — ledger_integrity_pct controls gate
     li = results.get("ledger_integrity", {})
     if li.get("status") == "SKIP":
         checks["ledger_integrity"] = "SKIP"
     else:
         checks["ledger_integrity"] = "PASS" if li.get("status") == "PASS" else "BLOCK"
 
-    # Anchor calibration
+    # Anchor calibration — anchor_ordering_failures threshold
+    max_ordering_fails = int(t.get("anchor_ordering_failures", 0))
     anchor = results.get("anchor_calibration", {})
     anchor_fails = sum(
         1 for k, res in anchor.items()
@@ -721,14 +746,15 @@ def _check_thresholds(results: dict, config: dict) -> dict:
         1 for c in ordering.get("checks", []) if c.get("status") == "FAIL"
     )
     checks["anchor_calibration"] = "PASS" if anchor_fails == 0 else "BLOCK"
-    checks["anchor_ordering"] = "PASS" if ordering_fails == 0 else "BLOCK"
+    checks["anchor_ordering"] = "PASS" if ordering_fails <= max_ordering_fails else "BLOCK"
 
-    # Drift (warn, not block)
+    # Drift — unexplained_large_swings threshold
+    max_drift = int(t.get("unexplained_large_swings", 0))
     drift = results.get("drift", {})
     drift_flags = drift.get("drift_flags", [])
-    checks["unexplained_drift"] = "PASS" if not drift_flags else "WARN"
+    checks["unexplained_drift"] = "PASS" if len(drift_flags) <= max_drift else "WARN"
 
-    # Repeatability (warn if UNSTABLE)
+    # Repeatability — warn only (no hard BLOCK threshold in config yet)
     repeatability = results.get("repeatability", {})
     unstable = sum(
         1 for dims in repeatability.values()
@@ -738,19 +764,33 @@ def _check_thresholds(results: dict, config: dict) -> dict:
 
     # Overall verdict: BLOCK if any check is BLOCK, else PASS
     verdict = "BLOCK" if any(v == "BLOCK" for v in checks.values()) else "PASS"
-    return {"verdict": verdict, "per_check": checks}
+    return {"verdict": verdict, "per_check": checks, "effective_thresholds": dict(t)}
 
 
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="Macro scorer validation lab")
     parser.add_argument("--live", action="store_true", help="Use live LLM for repeatability/anchor tests")
-    parser.add_argument("--n-repeats", type=int, default=None, help="Override repeat count")
+    parser.add_argument("--n-repeats", type=int, default=None, help="Override repeat count (smoke-test only; does not advance formal acceptance)")
     parser.add_argument("--out", type=str, default=None, help="Output file path for acceptance record")
+    parser.add_argument("--smoke", action="store_true", help="Mark run as smoke test — never advances macro_acceptance_state regardless of verdict")
     args = parser.parse_args()
 
     config = _load_validation_config()
-    n_repeats_effective = args.n_repeats or (5 if args.live else REPEATS)
+    _validate_config(config)  # 0524: fail fast if required keys missing
+
+    # 0524: n_repeats from config by default; --n-repeats is an explicit override that forces smoke mode
+    if args.n_repeats is not None:
+        n_repeats_effective = args.n_repeats
+        run_type = "smoke"  # explicit override → cannot advance acceptance
+    elif args.smoke:
+        n_repeats_effective = config["n_repeats"]
+        run_type = "smoke"
+    else:
+        n_repeats_effective = config["n_repeats"]
+        run_type = "acceptance"
+
+    print(f"Run type: {run_type} (N={n_repeats_effective}, config {config.get('version', 'unknown')})")
 
     import macro_context
     print("Loading macro context (frozen for validation)...")
@@ -847,19 +887,26 @@ def main():
         out_path = OUT_PATH
 
     output = {
-        "acceptance_contract":      _acceptance_contract,
+        "acceptance_contract":       _acceptance_contract,
         "validation_config_version": _config_version,
-        "validation_config_hash":   _config_hash,
-        "timestamp":                time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "commit_sha":               _commit_sha,
-        "model_identity":           _model_identity,
-        "live_mode":                args.live,
-        "n_repeats":                n_repeats_effective,
-        "config_used":              config,
-        "results":                  all_results,
-        "threshold_checks":         threshold_result,
-        "verdict":                  verdict,
-        "record_id":                str(out_path),
+        "validation_config_hash":    _config_hash,
+        "timestamp":                 time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "commit_sha":                _commit_sha,
+        "model_identity":            _model_identity,
+        "live_mode":                 args.live,
+        "run_type":                  run_type,          # 0524: "acceptance" or "smoke"
+        "n_repeats":                 n_repeats_effective,
+        "resolved_config": {          # 0524: effective values that controlled this run
+            "n_repeats":   n_repeats_effective,
+            "thresholds":  dict(config.get("thresholds", {})),
+            "version":     _config_version,
+        },
+        "config_used":               config,
+        "results":                   all_results,
+        "threshold_checks":          threshold_result,
+        "verdict":                   verdict,
+        "activated":                 False,             # patched to True after atomic commit
+        "record_id":                 str(out_path),
         "summary": {
             "status": summary_status,
             "fail":   fails,
@@ -874,45 +921,91 @@ def main():
     print(f"Summary: {summary_status} — {fails} fail, {warns} warn, {passes} pass")
     print(f"Verdict: {verdict}")
 
-    # 0517: persist stability to split tables after verdict.
-    # PASS → macro_dimension_validation (append-only accepted record).
-    # BLOCK/FAIL → macro_dimension_runtime_stability (mutable; runtime rows never grant usability).
+    # 0523: atomic acceptance activation — PASS verdict only.
+    # One BEGIN IMMEDIATE transaction covering all macro_dimension_validation inserts +
+    # macro_acceptance_state upsert. Any failure rolls back fully; old acceptance stays active.
+    # BLOCK/FAIL paths write runtime_stability rows (non-blocking; never grant formal usability).
+    activated = False
+    if run_type == "smoke" and verdict == "PASS":
+        print("  Smoke run: verdict PASS but macro_acceptance_state NOT advanced (use default N without --smoke/--n-repeats)")
     if repeatability and args.live:
-        try:
-            import sys as _sys
-            _sys.path.insert(0, str(PROJECT_DIR))
-            from portfolio_ai import DB_PATH as _DB, _stability_class as _scls
-            import sqlite3 as _sq
-            _now = time.strftime("%Y-%m-%d %H:%M:%S")
-            _sc = _sq.connect(str(_DB), timeout=10)
-            for _tk, _dims in repeatability.items():
-                for _dim, _r in _dims.items():
-                    if _r.get("n", 0) >= 2:
-                        _cls = _scls(_r.get("stdev"))
-                        if verdict == "PASS":
-                            _sc.execute(
-                                "INSERT OR IGNORE INTO macro_dimension_validation "
-                                "(acceptance_record_id, ticker, dimension, mean_score, stddev, "
-                                "n_samples, stability_class, config_version, config_hash, "
-                                "model_identity, recorded_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                                (str(out_path), _tk, _dim, _r.get("mean"), _r.get("stdev"),
-                                 _r.get("n"), _cls, _config_version, _config_hash,
-                                 _model_identity, _now)
-                            )
-                        else:
+        import sys as _sys
+        _sys.path.insert(0, str(PROJECT_DIR))
+        from portfolio_ai import DB_PATH as _DB, _stability_class as _scls
+        import sqlite3 as _sq
+
+        _now = time.strftime("%Y-%m-%d %H:%M:%S")
+
+        if verdict == "PASS" and run_type == "acceptance":
+            # Atomic path: dimension rows + acceptance pointer in one transaction.
+            for _attempt in range(3):
+                try:
+                    _sc = _sq.connect(str(_DB), timeout=60)
+                    _sc.execute("BEGIN IMMEDIATE")
+                    _inserted = 0
+                    for _tk, _dims in repeatability.items():
+                        for _dim, _r in _dims.items():
+                            if _r.get("n", 0) >= 2:
+                                _sc.execute(
+                                    "INSERT OR IGNORE INTO macro_dimension_validation "
+                                    "(acceptance_record_id, ticker, dimension, mean_score, stddev, "
+                                    "n_samples, stability_class, config_version, config_hash, "
+                                    "model_identity, recorded_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                                    (str(out_path), _tk, _dim, _r.get("mean"), _r.get("stdev"),
+                                     _r.get("n"), _scls(_r.get("stdev")), _config_version,
+                                     _config_hash, _model_identity, _now)
+                                )
+                                _inserted += 1
+                    _sc.execute(
+                        "INSERT OR REPLACE INTO macro_acceptance_state "
+                        "(contract, accepted_at, record_id, commit_sha, model_identity, notes) "
+                        "VALUES (?,?,?,?,?,?)",
+                        (_acceptance_contract, _now, str(out_path), _commit_sha, _model_identity,
+                         f"PASS: {fails} fail, {warns} warn, {passes} pass. "
+                         f"N={n_repeats_effective} live repeats. Config {_config_version}.")
+                    )
+                    _sc.commit()
+                    _sc.close()
+                    activated = True
+                    print(f"  Activated: {_inserted} rows → macro_dimension_validation; macro_acceptance_state updated")
+                    break
+                except _sq.OperationalError as _e:
+                    try:
+                        _sc.execute("ROLLBACK")
+                        _sc.close()
+                    except Exception:
+                        pass
+                    print(f"  Activation attempt {_attempt + 1}/3 failed (DB lock?): {_e}")
+                    if _attempt < 2:
+                        time.sleep(10)
+                    else:
+                        print("  FATAL: activation failed after 3 attempts — old acceptance remains active")
+                        output["activated"] = False
+                        out_path.write_text(json.dumps(output, indent=2))
+                        sys.exit(1)
+        else:
+            # Smoke PASS or any non-PASS: write runtime stability rows only; never update macro_acceptance_state.
+            try:
+                _sc = _sq.connect(str(_DB), timeout=30)
+                for _tk, _dims in repeatability.items():
+                    for _dim, _r in _dims.items():
+                        if _r.get("n", 0) >= 2:
                             _sc.execute(
                                 "INSERT OR REPLACE INTO macro_dimension_runtime_stability "
                                 "(ticker, dimension, mean_score, stddev, n_samples, "
                                 "stability_class, updated_at) VALUES (?,?,?,?,?,?,?)",
                                 (_tk, _dim, _r.get("mean"), _r.get("stdev"),
-                                 _r.get("n"), _cls, _now)
+                                 _r.get("n"), _scls(_r.get("stdev")), _now)
                             )
-            _sc.commit()
-            _sc.close()
-            _dest = "macro_dimension_validation" if verdict == "PASS" else "macro_dimension_runtime_stability"
-            print(f"  Persisted stability data → {_dest} for {len(repeatability)} tickers")
-        except Exception as _e:
-            print(f"  WARNING: could not persist stability data: {_e}")
+                _sc.commit()
+                _sc.close()
+                print(f"  Persisted runtime stability for {len(repeatability)} tickers (non-PASS; acceptance not advanced)")
+            except Exception as _e:
+                print(f"  WARNING: could not persist runtime stability data: {_e}")
+
+    # Patch activated flag into artifact now that we know the outcome.
+    output["activated"] = activated
+    out_path.write_text(json.dumps(output, indent=2))
 
     if fails or verdict == "BLOCK":
         sys.exit(1)

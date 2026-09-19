@@ -285,9 +285,9 @@ def analyse(episodes: list[dict], horizon: str, show_all_dims: bool = False) -> 
         "partial_evidence": bucket_stats(partial_ev),
     }
 
-    # Signed interaction analysis (0501): compare rate_interaction > 0 vs <= 0 for episodes
-    # where the field exists. rate_interaction sign captures concordance between macro context
-    # and company factor beta — more informative than raw 1-10 structural scores.
+    # Signed interaction analysis (0501, 0528): exploratory — uses all ACCEPTED v2/v3 episodes,
+    # not gated per-dim since rate_interaction is a composite field. Labeled exploratory so
+    # downstream consumers know not to use it as formal attribution evidence.
     def _signed_interaction_analysis() -> dict:
         pos, neg, missing = [], [], 0
         for e in episodes:
@@ -302,17 +302,19 @@ def analyse(episodes: list[dict], horizon: str, show_all_dims: bool = False) -> 
                 continue
             (pos if fv > 0 else neg).append(e)
         if missing == len(episodes):
-            return {"status": "no_data", "note": "rate_interaction field absent from all episodes"}
+            return {"exploratory": True, "status": "no_data",
+                    "note": "rate_interaction field absent from all episodes"}
         return {
+            "exploratory": True,
             "status": "ok",
             "positive_interaction": bucket_stats(pos),
             "negative_interaction": bucket_stats(neg),
             "n_missing_field": missing,
-            "note": "rate_interaction > 0 = macro tailwind for rate-sensitive stocks; < 0 = headwind",
+            "note": "Exploratory. rate_interaction > 0 = macro tailwind for rate-sensitive stocks; < 0 = headwind. Not gated on formal dim usability.",
         }
 
-    # Cohort-blocked bootstrap CI (0501): resample decision_date cohorts (not individual episodes)
-    # to estimate uncertainty. Only meaningful with ≥60 episodes.
+    # Cohort-blocked bootstrap CI (0501, 0528): 95% CI around the positive-vs-negative
+    # rate_interaction alpha CONTRAST, not the overall mean. CI excluding zero = meaningful evidence.
     def _cohort_bootstrap_ci(n_boot: int = 1000) -> dict:
         import random
         if n < 60:
@@ -320,6 +322,26 @@ def analyse(episodes: list[dict], horizon: str, show_all_dims: bool = False) -> 
                 "status": "insufficient_data",
                 "n": n,
                 "note": f"Need ≥60 ACCEPTED episodes for cohort bootstrap; have {n}.",
+            }
+        # Partition episodes by rate_interaction sign
+        pos_eps, neg_eps = [], []
+        for e in episodes:
+            v = e["macro"].get("rate_interaction")
+            try:
+                fv = float(v) if v is not None else None
+            except (TypeError, ValueError):
+                fv = None
+            if fv is None:
+                continue
+            (pos_eps if fv > 0 else neg_eps).append(e)
+        MIN_GROUP = 10
+        if len(pos_eps) < MIN_GROUP or len(neg_eps) < MIN_GROUP:
+            return {
+                "status": "insufficient_contrast_data",
+                "n_positive": len(pos_eps),
+                "n_negative": len(neg_eps),
+                "min_required_per_group": MIN_GROUP,
+                "note": "Both groups need ≥10 episodes for a meaningful contrast CI.",
             }
         cohort_map: dict[str, list] = {}
         for e in episodes:
@@ -333,44 +355,55 @@ def analyse(episodes: list[dict], horizon: str, show_all_dims: bool = False) -> 
                 "n_cohorts": n_cohorts,
                 "note": "Need ≥5 distinct decision-date cohorts for cohort bootstrap.",
             }
-        boot_means = []
+        # Bootstrap: resample cohorts, compute contrast (pos mean alpha − neg mean alpha)
+        boot_contrasts = []
         rng = random.Random(42)
         for _ in range(n_boot):
             sample_cohorts = rng.choices(cohort_list, k=n_cohorts)
             all_eps = [ep for c in sample_cohorts for ep in c]
-            if all_eps:
-                boot_means.append(sum(e["alpha"] for e in all_eps) / len(all_eps))
-        if not boot_means:
-            return {"status": "error"}
-        boot_means.sort()
-        lo = boot_means[int(0.025 * n_boot)]
-        hi = boot_means[int(0.975 * n_boot)]
+            b_pos = [e["alpha"] for e in all_eps if float(e["macro"].get("rate_interaction") or 0) > 0]
+            b_neg = [e["alpha"] for e in all_eps if float(e["macro"].get("rate_interaction") or 0) <= 0]
+            if b_pos and b_neg:
+                boot_contrasts.append(sum(b_pos) / len(b_pos) - sum(b_neg) / len(b_neg))
+        if len(boot_contrasts) < n_boot * 0.5:
+            return {"status": "error", "note": "Too few valid bootstrap samples"}
+        boot_contrasts.sort()
+        k = len(boot_contrasts)
+        lo = boot_contrasts[int(0.025 * k)]
+        hi = boot_contrasts[int(0.975 * k)]
+        observed_contrast = round(
+            _mean([e["alpha"] for e in pos_eps]) - _mean([e["alpha"] for e in neg_eps]), 4
+        ) if pos_eps and neg_eps else None
         return {
             "status": "ok",
             "n_cohorts": n_cohorts,
-            "n_boot": n_boot,
-            "mean_alpha": _mean([e["alpha"] for e in episodes]),
-            "ci_95_lo": round(lo, 4),
-            "ci_95_hi": round(hi, 4),
-            "note": "Cohort-blocked 95% CI — resamples decision-date cohorts, not individual episodes",
+            "n_boot": k,
+            "n_positive_episodes": len(pos_eps),
+            "n_negative_episodes": len(neg_eps),
+            "observed_contrast": observed_contrast,
+            "contrast_ci_95_lo": round(lo, 4),
+            "contrast_ci_95_hi": round(hi, 4),
+            "ci_excludes_zero": lo > 0 or hi < 0,
+            "note": "Cohort-blocked 95% CI around (pos_rate_interaction alpha − neg_rate_interaction alpha). CI excluding zero = meaningful evidence of rate_interaction effect.",
         }
 
-    # MFE/MAE by stress group (0501): do high-stress episodes have larger downside MAE?
+    # MFE/MAE by stress group (0501, 0528): exploratory diagnostic — labeled as such.
     def _stress_mfe_mae() -> dict:
         if not (has_mfe or has_mae):
-            return {"status": "no_mfe_mae_data"}
+            return {"exploratory": True, "status": "no_mfe_mae_data"}
         high_stress = [e for e in episodes
-                       if e["macro"].get("rate_sensitivity") is not None
-                       and _extract_dim_score(e["macro"].get("rate_sensitivity")) is not None
+                       if _extract_dim_score(e["macro"].get("rate_sensitivity")) is not None
                        and (_extract_dim_score(e["macro"].get("rate_sensitivity")) or 0) >= 7]
         low_stress  = [e for e in episodes
-                       if e["macro"].get("rate_sensitivity") is not None
-                       and _extract_dim_score(e["macro"].get("rate_sensitivity")) is not None
+                       if _extract_dim_score(e["macro"].get("rate_sensitivity")) is not None
                        and (_extract_dim_score(e["macro"].get("rate_sensitivity")) or 10) <= 3]
-        result: dict = {"note": "high_stress = rate_sensitivity ≥7; low_stress ≤3"}
+        result: dict = {
+            "exploratory": True,
+            "note": "Exploratory. high_stress = rate_sensitivity ≥7; low_stress ≤3. Not gated on formal dim usability.",
+        }
         if has_mae:
-            result["high_stress_mean_mae"] = _mean([e["mae"] for e in high_stress if "mae" in e])
-            result["low_stress_mean_mae"]  = _mean([e["mae"] for e in low_stress  if "mae" in e])
+            result["high_stress_mean_mae"]   = _mean([e["mae"] for e in high_stress if "mae" in e])
+            result["low_stress_mean_mae"]    = _mean([e["mae"] for e in low_stress  if "mae" in e])
             result["high_stress_median_mae"] = _median([e["mae"] for e in high_stress if "mae" in e])
             result["low_stress_median_mae"]  = _median([e["mae"] for e in low_stress  if "mae" in e])
         if has_mfe:

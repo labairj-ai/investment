@@ -501,10 +501,21 @@ def _init_ai_tables():
             PRIMARY KEY (ticker, dimension)
         )
     """)
-    # Migration (0517): one-time copy of existing macro_dimension_stability rows into new tables.
-    try:
-        _mig_count = conn.execute("SELECT COUNT(*) FROM macro_dimension_validation").fetchone()[0]
-        if _mig_count == 0:
+    # Schema migration version tracking — idempotent (0527)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS _schema_migrations (
+            migration_id TEXT PRIMARY KEY,
+            applied_at   TEXT NOT NULL
+        )
+    """)
+    # Migration M001 (0517): copy macro_dimension_stability rows into split tables.
+    # Savepoint-guarded so partial failure leaves new tables empty rather than partially filled.
+    _m001 = conn.execute(
+        "SELECT 1 FROM _schema_migrations WHERE migration_id='M001_stability_split'"
+    ).fetchone()
+    if not _m001:
+        try:
+            conn.execute("SAVEPOINT m001")
             _old_rows = conn.execute(
                 "SELECT ticker, dim, stdev, mean, n_samples, stability_class, updated_at, "
                 "acceptance_record_id, config_version, config_hash, model_identity, validation_run_type "
@@ -527,8 +538,18 @@ def _init_ai_tables():
                         "VALUES (?,?,?,?,?,?,?)",
                         (_tk, _dm, _mn, _sv, _ns, _sc, _up)
                     )
-    except Exception:
-        pass
+            conn.execute(
+                "INSERT INTO _schema_migrations (migration_id, applied_at) VALUES (?,?)",
+                ("M001_stability_split", datetime.utcnow().isoformat())
+            )
+            conn.execute("RELEASE SAVEPOINT m001")
+        except Exception as _mig_err:
+            try:
+                conn.execute("ROLLBACK TO SAVEPOINT m001")
+                conn.execute("RELEASE SAVEPOINT m001")
+            except Exception:
+                pass
+            print(f"[InitDB] WARNING: M001 migration failed, new tables left empty: {_mig_err}")
     # Seed initial geo profiles for known foreign companies (0508, 0516)
     # INSERT OR IGNORE — only writes on first creation; retrieved_at reflects actual sourcing date.
     now_iso = datetime.utcnow().isoformat()
@@ -623,10 +644,13 @@ def _stability_class(stdev) -> str:
     return "unstable"
 
 
-def _is_formally_usable(ticker, dim, conn):
-    """True only when the active acceptance contract has validated this ticker×dim as stable (0517, 0519).
-    Queries macro_acceptance_state for the active record_id, then joins macro_dimension_validation.
-    Old acceptance rows from superseded contracts do not count."""
+def _accepted_dim_state(ticker: str, dim: str, conn) -> dict:
+    """Return the accepted dimension state for ticker×dim from the active contract (0525).
+    Single source of truth for both usability gate and *_validated_stability fields.
+    Returns dict with: stability_class, mean_score, stddev, n_samples, record_id, usable (bool).
+    All values are None / False when no active acceptance or no matching validation row."""
+    default = {"stability_class": None, "mean_score": None, "stddev": None,
+                "n_samples": None, "record_id": None, "usable": False}
     try:
         rec = conn.execute(
             "SELECT record_id FROM macro_acceptance_state "
@@ -634,17 +658,30 @@ def _is_formally_usable(ticker, dim, conn):
             "ORDER BY accepted_at DESC LIMIT 1"
         ).fetchone()
         if not rec:
-            return False
+            return default
         row = conn.execute(
-            "SELECT stability_class FROM macro_dimension_validation "
+            "SELECT stability_class, mean_score, stddev, n_samples FROM macro_dimension_validation "
             "WHERE acceptance_record_id=? AND ticker=? AND dimension=?",
             (rec[0], ticker, dim)
         ).fetchone()
-        if row:
-            return row[0] in ("stable", "borderline")
+        if not row:
+            return {**default, "record_id": rec[0]}
+        cls = row[0]
+        return {
+            "stability_class": cls,
+            "mean_score":      row[1],
+            "stddev":          row[2],
+            "n_samples":       row[3],
+            "record_id":       rec[0],
+            "usable":          cls in ("stable", "borderline"),
+        }
     except Exception:
-        pass
-    return False
+        return default
+
+
+def _is_formally_usable(ticker, dim, conn):
+    """True only when the active acceptance contract has validated this ticker×dim as stable (0519, 0525)."""
+    return _accepted_dim_state(ticker, dim, conn)["usable"]
 
 
 def _usable_for_attribution(ticker, dim, evidence_quality, conn):
@@ -1871,12 +1908,12 @@ def _fetch_company_evidence(ticker: str, conn) -> dict:
 
 
 def _geo_evidence_quality(ticker: str, conn) -> str:
-    """Derive evidence_quality_geo from confidence + source_date in company_geo_profile (0522).
-    Returns 'full' | 'partial' | 'none'.
-    confidence='high' + source_date ≤18 months old → 'full'.
-    confidence='medium', stale, or unparseable date → 'partial'.
-    No geo record, no primary country, or no conn → 'none'.
-    Geo attribution requires confidence='high' + fresh source_date (≤18 months).
+    """Derive evidence_quality_geo from confidence + source_date in company_geo_profile (0522, 0526).
+    Returns 'full' | 'partial' | 'none'. Fails closed on all provenance gaps.
+
+    'full' requires ALL of: confidence='high', source_date present, parseable, non-future, ≤18 months old.
+    Any gap (missing date, malformed, future date, stale, or confidence != 'high') → 'partial' or 'none'.
+    No record or no primary country → 'none'. Presence of a record but incomplete provenance → 'partial'.
     """
     if conn is None:
         return "none"
@@ -1888,16 +1925,27 @@ def _geo_evidence_quality(ticker: str, conn) -> str:
         if not row or not row[2]:
             return "none"
         confidence, source_date, _ = row
-        if source_date:
-            try:
-                yr = int(source_date[:4])
-                mo = int(source_date[5:7]) if len(source_date) >= 7 else 1
-                today = date.today()
-                age_months = (today.year - yr) * 12 + (today.month - mo)
-                if age_months > 18:
-                    return "partial"
-            except (ValueError, TypeError):
-                return "partial"
+        # source_date required for 'full' — absence means provenance is incomplete (0526)
+        if not source_date:
+            if confidence == "high":
+                print(f"[GeoQuality] {ticker}: confidence=high but source_date missing — downgraded to partial")
+            return "partial"
+        # Parse and validate date
+        try:
+            yr = int(source_date[:4])
+            mo = int(source_date[5:7]) if len(source_date) >= 7 else 1
+        except (ValueError, TypeError, IndexError):
+            print(f"[GeoQuality] {ticker}: unparseable source_date '{source_date}' — downgraded to partial")
+            return "partial"
+        today = date.today()
+        # Future date (impossible) → partial
+        if yr > today.year or (yr == today.year and mo > today.month):
+            print(f"[GeoQuality] {ticker}: source_date '{source_date}' is in the future — downgraded to partial")
+            return "partial"
+        age_months = (today.year - yr) * 12 + (today.month - mo)
+        if age_months > 18:
+            print(f"[GeoQuality] {ticker}: source_date '{source_date}' is {age_months}m old (>18) — downgraded to partial")
+            return "partial"
         if confidence == "high":
             return "full"
         return "partial"
@@ -2638,15 +2686,10 @@ Return ONLY valid JSON. Each dimension must include a score AND a one-sentence r
                         scores[f"{_sdim}_usable_for_attribution"] = _dim_data.get("usable_for_attribution")
                         scores[f"{_sdim}_stability_class"]        = _dim_data.get("stability_class")
                         scores[f"{_sdim}_runtime_stability"]   = _dim_data.get("stability_class")
-                        try:
-                            _vrow = conn.execute(
-                                "SELECT stability_class FROM macro_dimension_stability "
-                                "WHERE ticker=? AND dim=? AND validation_run_type='accepted_validation'",
-                                (ticker, _sdim)
-                            ).fetchone()
-                            scores[f"{_sdim}_validated_stability"] = _vrow[0] if _vrow else None
-                        except Exception:
-                            scores[f"{_sdim}_validated_stability"] = None
+                        # 0525: validated_stability from active acceptance contract only
+                        _ads = _accepted_dim_state(ticker, _sdim, conn)
+                        scores[f"{_sdim}_validated_stability"] = _ads["stability_class"]
+                        scores[f"{_sdim}_acceptance_record_id"] = _ads["record_id"]
 
                 # Compute evidence hash (full SHA-256, no truncation) for provenance (0475, 0484)
                 _ev_meta = {"evidence_quality", "evidence_quality_rate", "evidence_quality_dollar",

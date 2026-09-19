@@ -1,7 +1,7 @@
 # Live Acceptance Rerun Under Amended Contract
 
 - **ID:** 0505
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-19
 - **Priority:** high
 - **Depends:** 0503, 0504

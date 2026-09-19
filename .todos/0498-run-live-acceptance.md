@@ -1,7 +1,7 @@
 # Run the Actual Live Acceptance Validation (N=20)
 
 - **ID:** 0498
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-19
 - **Priority:** high
 - **Depends:** 0490, 0497
