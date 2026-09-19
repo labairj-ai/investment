@@ -1,0 +1,17 @@
+{
+  "_note": "One-time operational-start integrity snapshot (0454). Captured from a clean committed tree after all learning pipeline architecture work (0439-0453). Not a recurring CI artifact.",
+  "commit_sha": "7e6cf730c25d42ff4b3fb2d49c90822044dc9767",
+  "git_dirty": false,
+  "test_suite": "tests/",
+  "test_count_total": 1148,
+  "passed": 1132,
+  "skipped": 16,
+  "failed": 0,
+  "warnings": 2,
+  "strategy_hash": "f75ca2fc456f",
+  "policy_hash": "031c42490a84",
+  "policy_version": "1.0",
+  "canary_audit_result": "FAIL — No ledger rows found (expected pre-experiment: no learning sweeps have been recorded yet against the live DB)",
+  "canary_audit_note": "Canary failure is expected at operational start — the learning pipeline has not yet run a sweep. Canary will pass once the first sweep is recorded.",
+  "recorded_at": "2026-09-19T00:48:52.532033+00:00"
+}

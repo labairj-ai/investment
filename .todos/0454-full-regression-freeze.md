@@ -1,7 +1,7 @@
 # Run Full Suite and Record Experiment Operational-Start Integrity
 
 - **ID:** 0454
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-18
 - **Priority:** high
 - **Depends:** 0450, 0451, 0452

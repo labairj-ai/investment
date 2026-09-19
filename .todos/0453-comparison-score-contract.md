@@ -1,7 +1,7 @@
 # Document or Extract _composite_6() as Explicit Separate Contract
 
 - **ID:** 0453
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-18
 - **Priority:** normal
 - **Depends:** 0449

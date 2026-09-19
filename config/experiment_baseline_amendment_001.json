@@ -1,0 +1,17 @@
+{
+  "_note": "Append-only provenance amendment — DO NOT modify. Preserves the original baseline event and establishes a verified clean-tree checkpoint after the 0447 format upgrade.",
+  "amendment_number": 1,
+  "amendment_reason": "Provenance format upgrade (0447): git_dirty field added; activation_commit_sha / training_commit_sha separated; freeze_baseline.py made fail-closed (0452). No experiment conditions changed — formula, weights, threshold, policy, capital, and strategy are identical to the original baseline.",
+  "original_frozen_at": "2026-09-19T00:01:42.045952+00:00",
+  "original_commit_sha": "752b6788250188648d192b02f4309da9f3af084b",
+  "amendment_commit_sha": "7e6cf730c25d42ff4b3fb2d49c90822044dc9767",
+  "git_dirty": false,
+  "strategy_formula_changed": false,
+  "policy_changed": false,
+  "capital_contract_changed": false,
+  "composite_weights_changed": false,
+  "strategy_hash": "f75ca2fc456f",
+  "policy_hash": "031c42490a84",
+  "policy_version": "1.0",
+  "amended_at": "2026-09-19T00:48:52.532033+00:00"
+}

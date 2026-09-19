@@ -1,7 +1,7 @@
 # Amend Experiment Baseline Provenance Without Overwriting History
 
 - **ID:** 0450
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-18
 - **Priority:** high
 - **Depends:** 0447

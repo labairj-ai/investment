@@ -1,7 +1,7 @@
 # Abort Baseline Freeze on Config or Policy Load Failure
 
 - **ID:** 0452
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-18
 - **Priority:** high
 - **Depends:** 0450
