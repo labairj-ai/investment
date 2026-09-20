@@ -491,14 +491,15 @@ def run_ledger_integrity(current_contract_hash: str = None, require_current: boo
     results = []
     for row in rows:
         run_id, exp, scored, failed, supported, unsupported, status = row[:7]
-        extras = list(row[7:]) + [None] * (4 - len(row[7:]))
-        contract_hash, run_scope, run_portfolio_n, run_universe_hash = extras[:4]
+        extras = dict(zip(optional, row[7:]))
+        contract_hash, run_scope, run_portfolio_n, run_universe_hash = (
+            extras.get(c) for c in ("scorer_contract_hash", "run_scope", "portfolio_n", "portfolio_universe_hash"))
         accounting_ok = (exp == scored + failed)
         certified_ok = (
             status == "COMPLETE" and contract_hash == current_contract_hash and
             exp == scored and failed == 0 and (supported or 0) + (unsupported or 0) == scored
             and (portfolio_n is None or run_scope == "full_refresh")
-            and (portfolio_n is None or run_portfolio_n == portfolio_n)
+            and (portfolio_n is None or (portfolio_n > 0 and run_portfolio_n == portfolio_n and exp == portfolio_n))
             and (portfolio_universe_hash is None or run_universe_hash == portfolio_universe_hash)
         )
         current_ok = certified_ok if require_current else True
@@ -526,9 +527,9 @@ def run_ledger_integrity(current_contract_hash: str = None, require_current: boo
 
 
 def _current_portfolio_tickers(pai) -> list:
+    """Use the same canonical holdings source as production scoring (0548)."""
     try:
-        with sqlite3.connect(str(pai.DB_PATH), timeout=10) as conn:
-            return [r[0] for r in conn.execute("SELECT ticker FROM holding_macro_scores ORDER BY ticker").fetchall()]
+        return pai._current_holdings_universe()["tickers"]
     except Exception:
         return []
 

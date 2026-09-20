@@ -4,7 +4,7 @@
 - **Status:** in-progress
 - **Created:** 2026-09-20
 - **Priority:** high
-- **Depends:** 0544
+- **Depends:** 0544, 0548
 
 ## Problem
 
@@ -31,5 +31,10 @@ A current-contract COMPLETE run with one rescored holding could satisfy certific
 - [ ] The 28-holding run is verified as COMPLETE with zero failures and matching hashes.
 - [ ] A regression test covers a valid one-holding run being rejected for formal certification.
 - [ ] New and sold holdings are reflected by certification-universe tests.
+- [ ] The scorer uses one run-start universe snapshot for the entire production run.
 
 Code is implemented; a fresh forced production refresh is still required to create the first certification row containing the new scope and universe provenance.
+
+## Implementation verification — 2026-09-20
+
+Per-ticker terminal states commit atomically with score and history writes. Stale reconciliation reconstructs supported, unsupported, and failed counts and preserves non-certifiable STALE_FAILED status. Production and validation share the normalized holdings universe; certification requires full-refresh scope, matching universe provenance, and expected count equal to portfolio count. Fifteen recovery/universe regression tests pass, including commit-boundary failures, immediate interruption, legacy recovery, new/sold holdings, and incremental-run rejection. Production rollout verification is pending.

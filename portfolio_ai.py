@@ -341,6 +341,15 @@ def _init_ai_tables():
         portfolio_n        INTEGER,
         portfolio_universe_hash TEXT
     )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS macro_scoring_run_items (
+        run_id               TEXT NOT NULL,
+        ticker               TEXT NOT NULL,
+        status               TEXT NOT NULL CHECK (status IN ('PENDING','SUPPORTED','UNSUPPORTED','FAILED')),
+        scorer_contract_hash TEXT,
+        completed_at         TEXT,
+        error                TEXT,
+        PRIMARY KEY (run_id, ticker)
+    )""")
     conn.execute("""CREATE TABLE IF NOT EXISTS macro_regime_snapshots (
         snapshot_date TEXT PRIMARY KEY,
         regime_json   TEXT NOT NULL,
@@ -817,6 +826,18 @@ def _portfolio_universe_hash(tickers) -> str:
     """Stable identity for the normalized portfolio universe (0545)."""
     universe = sorted({_normalize_ticker(t) for t in tickers if _normalize_ticker(t)})
     return hashlib.sha256(json.dumps(universe, separators=(",", ":")).encode()).hexdigest()
+
+
+def _current_holdings_universe() -> dict:
+    """Return the canonical holdings snapshot used by scoring and certification (0548)."""
+    holdings = _load_holdings_csv() or []
+    tickers = sorted({_normalize_ticker(h.get("Stock", "")) for h in holdings if h.get("Stock")})
+    tickers = [t for t in tickers if t]
+    return {
+        "tickers": tickers,
+        "count": len(tickers),
+        "hash": _portfolio_universe_hash(tickers),
+    }
 
 
 def _stability_class(stdev, config=None) -> str:
@@ -2401,17 +2422,64 @@ def _reconcile_stale_runs(conn: sqlite3.Connection, stale_threshold_minutes: int
     """Transition STARTED runs older than threshold to STALE_FAILED (0493). Returns count updated."""
     try:
         cutoff = (datetime.now() - timedelta(minutes=stale_threshold_minutes)).strftime("%Y-%m-%d %H:%M:%S")
-        cursor = conn.execute(
-            "UPDATE macro_scoring_runs SET status='STALE_FAILED', errors_json=? "
-            "WHERE status='STARTED' AND run_at < ?",
-            (json.dumps(["Reconciled: process likely crashed — no FAILED written"]), cutoff)
-        )
+        stale = conn.execute(
+            "SELECT run_id, expected_n FROM macro_scoring_runs "
+            "WHERE status='STARTED' AND run_at < ? "
+            "AND COALESCE((SELECT MAX(completed_at) FROM macro_scoring_run_items i "
+            "WHERE i.run_id=macro_scoring_runs.run_id), run_at) < ?", (cutoff, cutoff)
+        ).fetchall()
+        count = 0
+        for run_id, expected_n in stale:
+            item_rows = conn.execute(
+                "SELECT status FROM macro_scoring_run_items WHERE run_id=?", (run_id,)
+            ).fetchall()
+            if item_rows:
+                conn.execute(
+                    "UPDATE macro_scoring_run_items SET status='FAILED', completed_at=?, error=? "
+                    "WHERE run_id=? AND status='PENDING'",
+                    (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "Reconciled after interruption", run_id)
+                )
+                counts = conn.execute(
+                    "SELECT COUNT(*), SUM(status IN ('SUPPORTED','UNSUPPORTED')), "
+                    "SUM(status='SUPPORTED'), SUM(status='UNSUPPORTED') "
+                    "FROM macro_scoring_run_items WHERE run_id=?", (run_id,)
+                ).fetchone()
+                total, scored, supported, unsupported = [int(v or 0) for v in counts]
+                failed = max(0, total - scored)
+                expected = int(expected_n or total)
+                failed = max(failed, expected - scored)
+                conn.execute(
+                    "UPDATE macro_scoring_runs SET scored_n=?, failed_n=?, supported_scored_n=?, "
+                    "unsupported_n=?, coverage_pct=?, status='STALE_FAILED', errors_json=? WHERE run_id=?",
+                    (scored, failed, supported, unsupported,
+                     round(scored / expected * 100, 1) if expected else 0.0,
+                     json.dumps(["Reconciled: process interrupted; pending tickers marked FAILED"]), run_id)
+                )
+            else:
+                # Legacy run without item rows: reconstruct distinct history rows once.
+                processed = conn.execute(
+                    "SELECT ticker, scores FROM holding_macro_scores_history WHERE run_id=? ORDER BY scored_at", (run_id,)
+                ).fetchall()
+                processed = dict(processed)
+                scored = len(processed)
+                supported = sum(1 for scores in processed.values()
+                                if json.loads(scores).get("macro_supported", True))
+                unsupported = scored - supported
+                failed = max(0, int(expected_n or 0) - scored)
+                conn.execute(
+                    "UPDATE macro_scoring_runs SET scored_n=?, failed_n=?, supported_scored_n=?, "
+                    "unsupported_n=?, coverage_pct=?, status='STALE_FAILED', errors_json=? WHERE run_id=?",
+                    (scored, failed, supported, unsupported,
+                     round(scored / int(expected_n) * 100, 1) if expected_n else 0.0,
+                     json.dumps(["Reconciled legacy run from distinct history rows"]), run_id)
+                )
+            count += 1
         conn.commit()
-        count = cursor.rowcount
         if count > 0:
             print(f"[MacroScores] Reconciled {count} stale STARTED run(s) → STALE_FAILED")
         return count
     except Exception as e:
+        conn.rollback()
         print(f"[MacroScores] WARNING: stale run reconciliation failed: {e}")
         return 0
 
@@ -2571,12 +2639,10 @@ def generate_holding_macro_scores(force: bool = False) -> dict:
     if not ollama_client.available():
         return {}
 
-    holdings = _load_holdings_csv()
-    if not holdings:
+    universe = _current_holdings_universe()
+    tickers = universe["tickers"]
+    if not tickers:
         return {}
-
-    tickers = [_normalize_ticker(h.get("Stock", "")) for h in holdings if h.get("Stock")]
-    tickers = list(dict.fromkeys(t for t in tickers if t))
 
     # Load existing scores from DB
     existing: dict = {}
@@ -2591,7 +2657,7 @@ def generate_holding_macro_scores(force: bool = False) -> dict:
             if r["updated_at"] and r["updated_at"][:10] >= cutoff:
                 try:
                     payload = json.loads(r["scores"])
-                    if payload.get("scorer_contract_hash") == current_contract:
+                    if r["ticker"] in tickers and payload.get("scorer_contract_hash") == current_contract:
                         existing[_normalize_ticker(r["ticker"])] = payload
                 except Exception:
                     pass
@@ -2631,7 +2697,7 @@ def generate_holding_macro_scores(force: bool = False) -> dict:
     run_id = str(uuid.uuid4())  # full UUID (0478)
     run_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     scorer_contract_hash = _compute_scorer_contract_hash()
-    portfolio_universe_hash = _portfolio_universe_hash(tickers)
+    portfolio_universe_hash = universe["hash"]
     run_scope = "full_refresh" if force and set(to_score) == set(tickers) else "incremental"
 
     # SHA-256 macro_hash over full nested context including measurements and regime (0478).
@@ -2656,7 +2722,11 @@ def generate_holding_macro_scores(force: bool = False) -> dict:
                 "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (run_id, run_at, len(to_score), 0, 0, 0, 0, 0,
                  ollama_client.DEFAULT_MODEL, MACRO_SCORE_SCHEMA_VERSION, macro_hash,
-                 scorer_contract_hash, run_scope, len(tickers), portfolio_universe_hash, "STARTED")
+                 scorer_contract_hash, run_scope, universe["count"], portfolio_universe_hash, "STARTED")
+        )
+        conn.executemany(
+            "INSERT INTO macro_scoring_run_items (run_id,ticker,status,scorer_contract_hash) VALUES (?,?,?,?)",
+            [(run_id, ticker, "PENDING", scorer_contract_hash) for ticker in to_score]
         )
         conn.commit()
         conn.close()
@@ -2674,39 +2744,49 @@ def generate_holding_macro_scores(force: bool = False) -> dict:
     company_tickers = []
     if DB_PATH.exists():
         _fund_conn = sqlite3.connect(str(DB_PATH), timeout=10)
-        for _ft in to_score:
-            if not is_fund(_ft):
-                company_tickers.append(_ft)
-                continue
-            _fund_rec = {
-                "macro_supported": False,
-                "scorer_contract_hash": scorer_contract_hash,
-                "evidence_quality": "unsupported",
-                "is_fund": True,
-                "schema_version": MACRO_SCORE_SCHEMA_VERSION,
-                "interaction_version": MACRO_INTERACTION_VERSION,
-                "run_id": run_id,
-                "model_version": ollama_client.DEFAULT_MODEL,
-                "scored_at": run_at,
-            }
-            _fund_json = json.dumps(_fund_rec)
-            _ev_hash_fund = hashlib.sha256(b"fund:unsupported").hexdigest()
-            _fund_conn.execute(
-                "INSERT OR REPLACE INTO holding_macro_scores (ticker, scores, updated_at, run_id) VALUES (?,?,?,?)",
-                (_ft, _fund_json, run_at, run_id)
-            )
-            _fund_conn.execute(
-                "INSERT INTO holding_macro_scores_history "
-                "(ticker, scores, scored_at, run_id, model_ver, schema_ver, evidence_hash) "
-                "VALUES (?,?,?,?,?,?,?)",
-                (_ft, _fund_json, run_at, run_id,
-                 ollama_client.DEFAULT_MODEL, MACRO_SCORE_SCHEMA_VERSION, _ev_hash_fund)
-            )
-            results[_ft] = _fund_rec
-            scored_n += 1
-            unsupported_n += 1
-        _fund_conn.commit()
-        _fund_conn.close()
+        try:
+            for _ft in to_score:
+                if not is_fund(_ft):
+                    company_tickers.append(_ft)
+                    continue
+                _fund_rec = {
+                    "macro_supported": False,
+                    "scorer_contract_hash": scorer_contract_hash,
+                    "evidence_quality": "unsupported",
+                    "is_fund": True,
+                    "schema_version": MACRO_SCORE_SCHEMA_VERSION,
+                    "interaction_version": MACRO_INTERACTION_VERSION,
+                    "run_id": run_id,
+                    "model_version": ollama_client.DEFAULT_MODEL,
+                    "scored_at": run_at,
+                }
+                _fund_json = json.dumps(_fund_rec)
+                _ev_hash_fund = hashlib.sha256(b"fund:unsupported").hexdigest()
+                _fund_conn.execute(
+                    "INSERT OR REPLACE INTO holding_macro_scores (ticker, scores, updated_at, run_id) VALUES (?,?,?,?)",
+                    (_ft, _fund_json, run_at, run_id)
+                )
+                _fund_conn.execute(
+                    "INSERT INTO holding_macro_scores_history "
+                    "(ticker, scores, scored_at, run_id, model_ver, schema_ver, evidence_hash) "
+                    "VALUES (?,?,?,?,?,?,?)",
+                    (_ft, _fund_json, run_at, run_id,
+                     ollama_client.DEFAULT_MODEL, MACRO_SCORE_SCHEMA_VERSION, _ev_hash_fund)
+                )
+                _fund_conn.execute(
+                    "UPDATE macro_scoring_run_items SET status='UNSUPPORTED', completed_at=? WHERE run_id=? AND ticker=?",
+                    (run_at, run_id, _ft)
+                )
+                _fund_conn.commit()
+                results[_ft] = _fund_rec
+                scored_n += 1
+                unsupported_n += 1
+            _fund_conn.commit()
+        except BaseException:
+            _fund_conn.rollback()
+            raise
+        finally:
+            _fund_conn.close()
     else:
         company_tickers = [t for t in to_score if not is_fund(t)]
 
@@ -2741,6 +2821,11 @@ def generate_holding_macro_scores(force: bool = False) -> dict:
             print(f"[MacroScores] {msg}")
             failed_n += len(batch)
             run_errors.append({"tickers": batch, "error": msg})
+            with sqlite3.connect(str(DB_PATH), timeout=10) as _fc:
+                _fc.executemany(
+                    "UPDATE macro_scoring_run_items SET status='FAILED', completed_at=?, error=? WHERE run_id=? AND ticker=?",
+                    [(datetime.now().strftime("%Y-%m-%d %H:%M:%S"), msg, run_id, t) for t in batch]
+                )
             continue
 
         # 0507: adaptive N per dimension based on stability class
@@ -2787,6 +2872,11 @@ def generate_holding_macro_scores(force: bool = False) -> dict:
             print(f"[MacroScores] Batch {i//BATCH+1} ({ticker_list}) {msg}")
             failed_n += len(batch)
             run_errors.append({"tickers": batch, "error": msg})
+            with sqlite3.connect(str(DB_PATH), timeout=10) as _fc:
+                _fc.executemany(
+                    "UPDATE macro_scoring_run_items SET status='FAILED', completed_at=?, error=? WHERE run_id=? AND ticker=?",
+                    [(datetime.now().strftime("%Y-%m-%d %H:%M:%S"), msg, run_id, t) for t in batch]
+                )
             time.sleep(20)
             continue
 
@@ -2818,6 +2908,11 @@ def generate_holding_macro_scores(force: bool = False) -> dict:
             print(f"[MacroScores] Batch {i//BATCH+1} {msg}")
             failed_n += len(batch)
             run_errors.append({"tickers": batch, "error": msg})
+            with sqlite3.connect(str(DB_PATH), timeout=10) as _fc:
+                _fc.executemany(
+                    "UPDATE macro_scoring_run_items SET status='FAILED', completed_at=?, error=? WHERE run_id=? AND ticker=?",
+                    [(datetime.now().strftime("%Y-%m-%d %H:%M:%S"), msg, run_id, t) for t in batch]
+                )
             continue
 
         # Ticker was confirmed present (checked above in the early-exit)
@@ -2825,124 +2920,137 @@ def generate_holding_macro_scores(force: bool = False) -> dict:
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         if DB_PATH.exists():
             conn = sqlite3.connect(str(DB_PATH), timeout=10)
-            for ticker, scores in batch_result.items():
-                ticker = _normalize_ticker(ticker)
-                if ticker not in tickers:
-                    continue
-                try:
-                    _validate_macro_score_response(scores, ticker)
-                except ValueError as ve:
-                    print(f"[MacroScores] Validation failed for {ticker}: {ve}")
-                    failed_n += 1
-                    run_errors.append({"tickers": [ticker], "error": f"validation: {ve}"})
-                    continue
-                scores["schema_version"] = MACRO_SCORE_SCHEMA_VERSION
-                scores["interaction_version"] = MACRO_INTERACTION_VERSION
-                # Attach evidence quality (per-dimension + overall) and betas (0473, 0476, 0483)
-                ev = evidence_by_ticker.get(ticker) or _fetch_company_evidence(ticker, _evidence_conn)
-                scores["evidence_quality"]           = ev.get("evidence_quality", "none")
-                scores["evidence_quality_rate"]      = ev.get("evidence_quality_rate", "none")
-                scores["evidence_quality_dollar"]    = ev.get("evidence_quality_dollar", "none")
-                scores["evidence_quality_inflation"] = ev.get("evidence_quality_inflation", "none")
-                scores["evidence_quality_geo"]       = ev.get("evidence_quality_geo", "none")
-                scores["is_fund"] = ev.get("is_fund", False)
-                if ticker in betas_by_ticker:
-                    b = betas_by_ticker[ticker]
-                    scores["rate_beta_100bp_return_pct"] = b.get("rate_beta_100bp_return_pct")
-                    scores["usd_beta_1pct_return_pct"]   = b.get("usd_beta_1pct_return_pct")
-                    scores["market_beta"]                = b.get("market_beta")
-                    scores["rate_beta_confidence"]       = b.get("rate_beta_confidence")
-                    scores["usd_beta_confidence"]        = b.get("usd_beta_confidence")
-                    scores["beta_r_squared"]             = b.get("r_squared")
-                    scores["beta_n_weeks"]               = b.get("n_weeks")
-                    # Concordance check: negative rate_beta should agree with HIGH rate_sensitivity (0483)
-                    rate_score = _score_val(scores.get("rate_sensitivity"))
-                    rb = b.get("rate_beta_100bp_return_pct")
-                    if rb is not None and rate_score is not None:
-                        if _is_concordance_warning(rb, rate_score):
-                            print(f"[MacroScores] CONCORDANCE WARNING {ticker}: rate_beta={rb:.3f}%/100bps disagrees with LLM rate_sensitivity={rate_score}")
-                        else:
-                            print(f"[MacroScores] {ticker}: rate_beta={rb:.3f}%/100bps concordant with LLM rate_sensitivity={rate_score}")
+            try:
+                for ticker, scores in batch_result.items():
+                    ticker = _normalize_ticker(ticker)
+                    if ticker not in tickers:
+                        continue
+                    try:
+                        _validate_macro_score_response(scores, ticker)
+                    except ValueError as ve:
+                        print(f"[MacroScores] Validation failed for {ticker}: {ve}")
+                        failed_n += 1
+                        run_errors.append({"tickers": [ticker], "error": f"validation: {ve}"})
+                        conn.execute(
+                            "UPDATE macro_scoring_run_items SET status='FAILED', completed_at=?, error=? WHERE run_id=? AND ticker=?",
+                            (now_str, f"validation: {ve}", run_id, ticker)
+                        )
+                        continue
+                    scores["schema_version"] = MACRO_SCORE_SCHEMA_VERSION
+                    scores["interaction_version"] = MACRO_INTERACTION_VERSION
+                    # Attach evidence quality (per-dimension + overall) and betas (0473, 0476, 0483)
+                    ev = evidence_by_ticker.get(ticker) or _fetch_company_evidence(ticker, _evidence_conn)
+                    scores["evidence_quality"]           = ev.get("evidence_quality", "none")
+                    scores["evidence_quality_rate"]      = ev.get("evidence_quality_rate", "none")
+                    scores["evidence_quality_dollar"]    = ev.get("evidence_quality_dollar", "none")
+                    scores["evidence_quality_inflation"] = ev.get("evidence_quality_inflation", "none")
+                    scores["evidence_quality_geo"]       = ev.get("evidence_quality_geo", "none")
+                    scores["is_fund"] = ev.get("is_fund", False)
+                    if ticker in betas_by_ticker:
+                        b = betas_by_ticker[ticker]
+                        scores["rate_beta_100bp_return_pct"] = b.get("rate_beta_100bp_return_pct")
+                        scores["usd_beta_1pct_return_pct"]   = b.get("usd_beta_1pct_return_pct")
+                        scores["market_beta"]                = b.get("market_beta")
+                        scores["rate_beta_confidence"]       = b.get("rate_beta_confidence")
+                        scores["usd_beta_confidence"]        = b.get("usd_beta_confidence")
+                        scores["beta_r_squared"]             = b.get("r_squared")
+                        scores["beta_n_weeks"]               = b.get("n_weeks")
+                        # Concordance check: negative rate_beta should agree with HIGH rate_sensitivity (0483)
+                        rate_score = _score_val(scores.get("rate_sensitivity"))
+                        rb = b.get("rate_beta_100bp_return_pct")
+                        if rb is not None and rate_score is not None:
+                            if _is_concordance_warning(rb, rate_score):
+                                print(f"[MacroScores] CONCORDANCE WARNING {ticker}: rate_beta={rb:.3f}%/100bps disagrees with LLM rate_sensitivity={rate_score}")
+                            else:
+                                print(f"[MacroScores] {ticker}: rate_beta={rb:.3f}%/100bps concordant with LLM rate_sensitivity={rate_score}")
 
-                # 0506/0511/0512: attach per-dim stability class and usable_for_attribution.
-                # Stability class comes from the current sample set (runtime).
-                # usable_for_attribution requires BOTH a formal accepted_validation stability row
-                # AND evidence quality meeting the per-dim minimum.
-                for _sdim in _MACRO_SCORE_DIMS:
-                    _dim_data = scores.get(_sdim)
-                    if isinstance(_dim_data, dict):
-                        _sd_val  = _dim_data.get("stddev")
-                        _scls    = _stability_class(_sd_val)
-                        _ev_key  = _DIM_EV_KEY.get(_sdim, "evidence_quality")
-                        _ev_qual = scores.get(_ev_key) or ev.get(_ev_key, "none")
-                        _usable  = _usable_for_attribution(ticker, _sdim, _ev_qual, conn)
-                        _dim_data["stability_class"]        = _scls
-                        _dim_data["usable_for_attribution"] = _usable
-                # Also expose flat keys for attribution filter (0511: include validated vs runtime)
-                for _sdim in _MACRO_SCORE_DIMS:
-                    _dim_data = scores.get(_sdim)
-                    if isinstance(_dim_data, dict):
-                        scores[f"{_sdim}_usable_for_attribution"] = _dim_data.get("usable_for_attribution")
-                        scores[f"{_sdim}_stability_class"]        = _dim_data.get("stability_class")
-                        scores[f"{_sdim}_runtime_stability"]   = _dim_data.get("stability_class")
-                        # 0525: validated_stability from active acceptance contract only
-                        _ads = _accepted_dim_state(ticker, _sdim, conn)
-                        scores[f"{_sdim}_validated_stability"] = _ads["stability_class"]
-                        scores[f"{_sdim}_acceptance_record_id"] = _ads["record_id"]
+                    # 0506/0511/0512: attach per-dim stability class and usable_for_attribution.
+                    # Stability class comes from the current sample set (runtime).
+                    # usable_for_attribution requires BOTH a formal accepted_validation stability row
+                    # AND evidence quality meeting the per-dim minimum.
+                    for _sdim in _MACRO_SCORE_DIMS:
+                        _dim_data = scores.get(_sdim)
+                        if isinstance(_dim_data, dict):
+                            _sd_val  = _dim_data.get("stddev")
+                            _scls    = _stability_class(_sd_val)
+                            _ev_key  = _DIM_EV_KEY.get(_sdim, "evidence_quality")
+                            _ev_qual = scores.get(_ev_key) or ev.get(_ev_key, "none")
+                            _usable  = _usable_for_attribution(ticker, _sdim, _ev_qual, conn)
+                            _dim_data["stability_class"]        = _scls
+                            _dim_data["usable_for_attribution"] = _usable
+                    # Also expose flat keys for attribution filter (0511: include validated vs runtime)
+                    for _sdim in _MACRO_SCORE_DIMS:
+                        _dim_data = scores.get(_sdim)
+                        if isinstance(_dim_data, dict):
+                            scores[f"{_sdim}_usable_for_attribution"] = _dim_data.get("usable_for_attribution")
+                            scores[f"{_sdim}_stability_class"]        = _dim_data.get("stability_class")
+                            scores[f"{_sdim}_runtime_stability"]   = _dim_data.get("stability_class")
+                            # 0525: validated_stability from active acceptance contract only
+                            _ads = _accepted_dim_state(ticker, _sdim, conn)
+                            scores[f"{_sdim}_validated_stability"] = _ads["stability_class"]
+                            scores[f"{_sdim}_acceptance_record_id"] = _ads["record_id"]
 
-                # Compute evidence hash (full SHA-256, no truncation) for provenance (0475, 0484)
-                _ev_meta = {"evidence_quality", "evidence_quality_rate", "evidence_quality_dollar",
-                            "evidence_quality_inflation", "evidence_quality_geo", "is_fund", "fund_note"}
-                ev_fields = {k: v for k, v in ev.items() if k not in _ev_meta}
-                evidence_hash = hashlib.sha256(
-                    json.dumps(ev_fields, sort_keys=True, default=str).encode()
-                ).hexdigest()  # full 64-char SHA-256
+                    # Compute evidence hash (full SHA-256, no truncation) for provenance (0475, 0484)
+                    _ev_meta = {"evidence_quality", "evidence_quality_rate", "evidence_quality_dollar",
+                                "evidence_quality_inflation", "evidence_quality_geo", "is_fund", "fund_note"}
+                    ev_fields = {k: v for k, v in ev.items() if k not in _ev_meta}
+                    evidence_hash = hashlib.sha256(
+                        json.dumps(ev_fields, sort_keys=True, default=str).encode()
+                    ).hexdigest()  # full 64-char SHA-256
 
-                # Attach full provenance to score dict (0484)
-                scores["evidence_hash"]  = evidence_hash
-                scores["run_id"]         = run_id
-                scores["model_version"]  = ollama_client.DEFAULT_MODEL
-                scores["prompt_hash"]    = prompt_hash
-                scores["scorer_contract_hash"] = scorer_contract_hash
-                scores["scored_at"]      = now_str
+                    # Attach full provenance to score dict (0484)
+                    scores["evidence_hash"]  = evidence_hash
+                    scores["run_id"]         = run_id
+                    scores["model_version"]  = ollama_client.DEFAULT_MODEL
+                    scores["prompt_hash"]    = prompt_hash
+                    scores["scorer_contract_hash"] = scorer_contract_hash
+                    scores["scored_at"]      = now_str
 
-                scores_json = json.dumps(scores)
-                conn.execute(
-                    "INSERT OR REPLACE INTO holding_macro_scores (ticker, scores, updated_at, run_id) VALUES (?,?,?,?)",
-                    (ticker, scores_json, now_str, run_id)
-                )
-                conn.execute(
-                    "INSERT INTO holding_macro_scores_history "
-                    "(ticker, scores, scored_at, run_id, model_ver, schema_ver, evidence_hash) "
-                    "VALUES (?,?,?,?,?,?,?)",
-                    (ticker, scores_json, now_str, run_id,
-                     ollama_client.DEFAULT_MODEL, MACRO_SCORE_SCHEMA_VERSION, evidence_hash)
-                )
-                # Persist per-dim stability to runtime table (0517); scorer rows never make a
-                # ticker formally usable for attribution — only accepted_validation rows do.
-                for _sdim in _MACRO_SCORE_DIMS:
-                    _dim_data = scores.get(_sdim)
-                    if isinstance(_dim_data, dict) and _dim_data.get("n_samples", 0) > 1:
-                        try:
-                            conn.execute(
-                                "INSERT OR REPLACE INTO macro_dimension_runtime_stability "
-                                "(ticker, dimension, mean_score, stddev, n_samples, stability_class, updated_at) "
-                                "VALUES (?,?,?,?,?,?,?)",
-                                (ticker, _sdim,
-                                 _dim_data.get("mean"),
-                                 _dim_data.get("stddev"),
-                                 _dim_data.get("n_samples"),
-                                 _dim_data.get("stability_class"),
-                                 now_str)
-                            )
-                        except Exception:
-                            pass
+                    scores_json = json.dumps(scores)
+                    conn.execute(
+                        "INSERT OR REPLACE INTO holding_macro_scores (ticker, scores, updated_at, run_id) VALUES (?,?,?,?)",
+                        (ticker, scores_json, now_str, run_id)
+                    )
+                    conn.execute(
+                        "INSERT INTO holding_macro_scores_history "
+                        "(ticker, scores, scored_at, run_id, model_ver, schema_ver, evidence_hash) "
+                        "VALUES (?,?,?,?,?,?,?)",
+                        (ticker, scores_json, now_str, run_id,
+                         ollama_client.DEFAULT_MODEL, MACRO_SCORE_SCHEMA_VERSION, evidence_hash)
+                    )
+                    conn.execute(
+                        "UPDATE macro_scoring_run_items SET status='SUPPORTED', completed_at=? WHERE run_id=? AND ticker=?",
+                        (now_str, run_id, ticker)
+                    )
+                    # Persist per-dim stability to runtime table (0517); scorer rows never make a
+                    # ticker formally usable for attribution — only accepted_validation rows do.
+                    for _sdim in _MACRO_SCORE_DIMS:
+                        _dim_data = scores.get(_sdim)
+                        if isinstance(_dim_data, dict) and _dim_data.get("n_samples", 0) > 1:
+                            try:
+                                conn.execute(
+                                    "INSERT OR REPLACE INTO macro_dimension_runtime_stability "
+                                    "(ticker, dimension, mean_score, stddev, n_samples, stability_class, updated_at) "
+                                    "VALUES (?,?,?,?,?,?,?)",
+                                    (ticker, _sdim,
+                                     _dim_data.get("mean"),
+                                     _dim_data.get("stddev"),
+                                     _dim_data.get("n_samples"),
+                                     _dim_data.get("stability_class"),
+                                     now_str)
+                                )
+                            except Exception:
+                                pass
 
-                results[ticker] = scores
-                scored_n += 1
-                supported_scored_n += 1
-            conn.commit()
-            conn.close()
+                    results[ticker] = scores
+                    scored_n += 1
+                    supported_scored_n += 1
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
 
         print(f"[MacroScores] Scored {len(batch_result)} tickers in batch {i//BATCH+1}")
         time.sleep(25)  # give server time to recover before next batch
