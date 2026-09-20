@@ -31,3 +31,7 @@ Open question: content-addressed ID (hash of ticker set + config hash + timestam
 - [ ] Duplicate `record_id` on insert raises a fatal error; `INSERT OR IGNORE` is gone from the acceptance write path
 - [ ] Output path is stored as a separate provenance field
 - [ ] Test confirms a duplicate ID attempt terminates with an error rather than silently succeeding
+
+## Review — 2026-09-20
+
+Partially implemented in 4dbb0c0. UUIDs, plain dimension-row INSERTs, and separate artifact output_path are implemented. The UUID is generated after validation rather than at run start. The duplicate test exercises raw SQL rather than the acceptance write path; finish run-start identity and verify duplicate failure through that path before closing.

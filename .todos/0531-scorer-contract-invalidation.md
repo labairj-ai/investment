@@ -34,3 +34,7 @@ Open question: should `scorer_contract_hash` be computed from source code string
 - [ ] Commit SHA is retained as provenance but not used as a compatibility gate
 - [ ] Test confirms each hash-covered component independently triggers invalidation when changed
 - [ ] Production scoring stores the hash so accepted vs. runtime contract can be compared in the audit trail
+
+## Review — 2026-09-20
+
+Partially implemented in 4dbb0c0. Acceptance hash comparison exists, but production score rows do not store scorer_contract_hash, and tests do not mutate each contract component independently. The hash also lacks an explicit evidence-schema and aggregation-version component.

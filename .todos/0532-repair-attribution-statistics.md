@@ -36,3 +36,7 @@ Open question: should malformed `rate_interaction` values log a warning or be si
 - [ ] Divergence subgroup win rates are suppressed when subgroup `n < MIN_SUBGROUP_N`
 - [ ] `high_stress`/`low_stress` labels replaced with rate-sensitivity terminology throughout
 - [ ] Tests confirm each of the above behaviors independently
+
+## Review — 2026-09-20
+
+Partially implemented in 4dbb0c0. Sign grouping, subgroup suppression, and ties are implemented. Cohort timestamps are only sliced and length-checked, so malformed strings of length 10 or more remain accepted instead of being parsed and excluded. Required timestamp-exclusion coverage is absent.

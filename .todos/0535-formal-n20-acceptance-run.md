@@ -36,3 +36,7 @@ The current acceptance record was generated against a validator that does not ru
 - [ ] SQLite shows exactly 32 validation rows for 8 tickers × 4 dimensions
 - [ ] All 32 rows share identical acceptance/config/model/scorer hashes
 - [ ] No manual DB patching was performed after the run
+
+## Review — 2026-09-20
+
+Pending operational acceptance. Keep open until 0529–0534 meet their completion criteria and the formal N=20 production-contract run and database verification are documented. This TODO review did not launch a live acceptance run.

@@ -35,3 +35,7 @@ Open question: should evidence snapshots live in the DB or alongside the JSON ar
 - [ ] Acceptance artifact records `prompt_hash`, `evidence_hash`, and `scorer_contract_hash`
 - [ ] Evidence inputs for the validation universe are frozen at run start; all N repeats use byte-identical evidence
 - [ ] Regression test asserts validator and production requests are identical for the same ticker/evidence fixture and fails if they diverge
+
+## Review — 2026-09-20
+
+Partially implemented in 4dbb0c0. The shared request builder and frozen in-memory evidence exist, but the acceptance artifact does not record prompt hashes or persist the full evidence snapshot; validation rows lack prompt/evidence hashes. The prompt-identity test calls the same helper twice rather than comparing the production and validator call paths.

@@ -36,3 +36,7 @@ A validation run without `--live` currently writes `run_type="acceptance"` even 
 - [ ] Explicit tests exist for all eight failure/edge-case scenarios listed above
 - [ ] Stale "groups of 8" docstring is corrected
 - [ ] Full test suite passes with no regressions
+
+## Review — 2026-09-20
+
+Partially implemented in 4dbb0c0. Dry-run labeling exists, but acceptance is selected before the final verdict. Explicit DB-lock rollback and per-component stale-contract tests are absent, and prompt identity coverage does not compare the two call paths. Complete the listed edge-case tests and full regression verification.

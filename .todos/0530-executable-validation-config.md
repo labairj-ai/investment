@@ -34,3 +34,7 @@ Open question: should threshold validation happen at config load time (fail-fast
 - [ ] Malformed or unknown config keys raise a fatal error rather than falling back to defaults
 - [ ] `provenance_completeness_pct` and `schema_valid_pct` are either implemented or removed from the required-threshold list
 - [ ] Parameterized test confirms every threshold independently gates the verdict when its boundary is crossed
+
+## Review — 2026-09-20
+
+Partially implemented in 4dbb0c0. Config loading rejects malformed JSON and unknown threshold names, but missing_data_unknown_pct, fund_unsupported_pct, and ledger_integrity_pct are not numerically applied: _check_thresholds still trusts module status strings. Boundary tests for every required threshold are absent.
