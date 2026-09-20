@@ -1,5 +1,5 @@
 {
-  "version": "v1.5",
+  "version": "v1.6",
   "amendment_note_v1.3": "0530: removed schema_valid_pct and provenance_completeness_pct (unimplemented); added drift_score_delta_threshold; added same_input_score_max_range to required set; all thresholds are now executable. 0529/0531: scorer_contract_hash gating added.",
   "amendment_note_v1.2": "Added deterministic repeatability_universe \u2014 8 company tickers covering diverse sectors and evidence quality. Universe changes require a version bump and amendment note. Tickers chosen to span rate-sensitive (JOBY, UNP), dollar-sensitive (DSGX, BRK-B), inflation/commodity (XOM), growth (NFLX, GRMN), and industrials (SNA).",
   "amendment_note_v1.1": "v1 BLOCK: UUP anchor was invalid \u2014 UUP is classified as ETF in SECURITY_MASTER and receives evidence_quality=unsupported in production; it would never receive a live structural score. Replaced with company anchors chosen from independently-evidenced company_financials data, not from expected LLM output. NEE chosen because it is a domestic US utility with <5% foreign revenue. XOM chosen because it has significant international operations and qualifies as an inflation hedge. Relative ordering invariant added: domestic utility dollar_sensitivity must be less than international energy dollar_sensitivity. Original BLOCK record: out/macro_validation_acceptance_20260919_134153.json",
@@ -26,5 +26,6 @@
   },
   "n_repeats": 20,
   "amendment_note_v1.4": "0529\u20130534 completion: numeric threshold gates, full-N completeness, frozen evidence/prompt provenance, stale contract rejection, atomic UUID run ledger, and failed-run semantics. Fund anchors remain unsupported per production policy; company anchors use production evidence.",
-  "amendment_note_v1.5": "0539: system acceptance requires complete N=20 observations and healthy system gates; range and stability classify individual ticker-dimension eligibility without blocking unrelated dimensions. 0536\u20130538: contract-aware cache, canonical response validation, and provenance-aware drift."
+  "amendment_note_v1.5": "0539: system acceptance requires complete N=20 observations and healthy system gates; range and stability classify individual ticker-dimension eligibility without blocking unrelated dimensions. 0536\u20130538: contract-aware cache, canonical response validation, and provenance-aware drift.",
+  "amendment_note_v1.6": "0541: canonical dimension eligibility uses stability class; range is diagnostic warning only. 0542: formal acceptance requires a COMPLETE current-contract production ledger run with zero failures and reconciled sub-accounting."
 }

@@ -173,6 +173,11 @@ def run_repeatability(tickers: list, macro: dict, n: int = 20,
                     "values": list(vals),
                     "status": "UNSTABLE" if flag else "ok",
                 }
+                import portfolio_ai as _pai
+                if hasattr(_pai, "_dimension_validation_state"):
+                    results[tk][dim].update(_pai._dimension_validation_state(
+                        results[tk][dim], {"n_repeats": n,
+                        "thresholds": {"same_input_score_max_range": same_input_score_max_range}}))
             elif len(vals) == 1:
                 results[tk][dim] = {"mean": vals[0], "stdev": None, "range": 0, "n": 1, "values": list(vals),
                                     "flag": False, "status": "insufficient"}
@@ -468,26 +473,33 @@ def run_fund_classification_tests() -> dict:
 
 # ── Module 8: Ledger Integrity (0489) ─────────────────────────────────────────
 
-def run_ledger_integrity() -> dict:
-    """Verify expected_n == scored_n + failed_n for all completed runs."""
+def run_ledger_integrity(current_contract_hash: str = None, require_current: bool = False) -> dict:
+    """Verify accounting and, for formal acceptance, current-contract completion (0542)."""
     if not DB_PATH.exists():
         return {"status": "SKIP", "reason": "no DB"}
     try:
         conn = sqlite3.connect(str(DB_PATH), timeout=10)
         rows = conn.execute(
-            "SELECT run_id, expected_n, scored_n, failed_n, status FROM macro_scoring_runs WHERE status != 'STARTED'"
+            "SELECT run_id, expected_n, scored_n, failed_n, supported_scored_n, unsupported_n, status, scorer_contract_hash FROM macro_scoring_runs WHERE status != 'STARTED'"
         ).fetchall()
         conn.close()
     except Exception as e:
         return {"status": "SKIP", "reason": str(e)}
 
     results = []
-    for run_id, exp, scored, failed, status in rows:
-        ok = (exp == scored + failed)
+    for run_id, exp, scored, failed, supported, unsupported, status, contract_hash in rows:
+        accounting_ok = (exp == scored + failed)
+        current_ok = (not require_current or (
+            status == "COMPLETE" and contract_hash == current_contract_hash and
+            exp == scored and failed == 0 and (supported or 0) + (unsupported or 0) == scored
+        ))
+        ok = accounting_ok and current_ok
         results.append({
             "run_id": run_id[:8] if run_id else "?",
             "expected": exp, "scored": scored, "failed": failed, "status_field": status,
-            "accounting_ok": ok,
+            "accounting_ok": accounting_ok,
+            "current_contract_ok": current_ok,
+            "scorer_contract_hash": contract_hash,
             "status": "PASS" if ok else "FAIL",
         })
 
@@ -817,14 +829,16 @@ def _persist_run(db_path, output, timeout=30):
             for ticker, dims in output["results"]["repeatability"].items():
                 provenance = output["evidence_snapshot"][ticker]
                 for dim, r in dims.items():
+                    state = pai._dimension_validation_state(r, output["config_used"])
                     conn.execute("""INSERT INTO macro_dimension_validation
                         (acceptance_record_id,ticker,dimension,mean_score,stddev,n_samples,
                          stability_class,config_version,config_hash,model_identity,scorer_contract_hash,
-                         prompt_hash,evidence_hash,recorded_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+                         prompt_hash,evidence_hash,eligible,eligibility_reason,recorded_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
                         output["record_id"], ticker, dim, r["mean"], r["stdev"], r["n"],
-                        pai._stability_class(r["stdev"]), output["validation_config_version"],
+                        state["stability_class"], output["validation_config_version"],
                         output["validation_config_hash"], output["model_identity"], output["scorer_contract_hash"],
-                        provenance["prompt_hash"], provenance["evidence_hash"], output["timestamp"]))
+                        provenance["prompt_hash"], provenance["evidence_hash"], int(state["eligible"]),
+                        state["eligibility_reason"], output["timestamp"]))
             conn.execute("""INSERT INTO macro_acceptance_state
                 (contract,accepted_at,record_id,commit_sha,model_identity,scorer_contract_hash,output_path,notes)
                 VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(contract) DO UPDATE SET
@@ -890,7 +904,9 @@ def main():
         "drift": run_drift_detection(t["drift_score_delta_threshold"]),
         "synthetic_regression": run_synthetic_regression(t["beta_recovery_tolerance"]),
         "regime_direction": run_regime_direction_tests(),
-        "fund_classification": run_fund_classification_tests(), "ledger_integrity": run_ledger_integrity(),
+        "fund_classification": run_fund_classification_tests(),
+        "ledger_integrity": run_ledger_integrity(contract_hash,
+            args.live and args.n_repeats is None and not args.smoke),
     }
     effective_config = dict(config, n_repeats=n)
     checks = _check_thresholds(results, effective_config)

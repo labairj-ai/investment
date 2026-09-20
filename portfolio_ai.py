@@ -501,7 +501,10 @@ def _init_ai_tables():
         ("macro_dimension_validation", "scorer_contract_hash"),
         ("macro_dimension_validation", "prompt_hash"),
         ("macro_dimension_validation", "evidence_hash"),
+        ("macro_dimension_validation", "eligible"),
+        ("macro_dimension_validation", "eligibility_reason"),
         ("macro_acceptance_state", "output_path"),
+        ("macro_scoring_runs", "scorer_contract_hash"),
     ):
         _columns = {r[1] for r in conn.execute(f"PRAGMA table_info({_table})")}
         if _column not in _columns:
@@ -778,6 +781,31 @@ def _stability_class(stdev) -> str:
     return "unstable"
 
 
+def _dimension_validation_state(row: dict, config=None) -> dict:
+    """Canonical per-dimension validation class and eligibility policy (0541).
+
+    Range remains a diagnostic warning. Eligibility is based on the versioned
+    stability class: stable and borderline are eligible; unstable/incomplete
+    observations are not.
+    """
+    config = config or {}
+    stdev = row.get("stdev")
+    n = row.get("n", row.get("n_samples", 0))
+    expected_n = config.get("n_repeats")
+    cls = _stability_class(stdev)
+    if expected_n is not None and n != expected_n:
+        return {"stability_class": "untested", "eligible": False,
+                "eligibility_reason": "incomplete_samples", "range_warning": False}
+    eligible = cls in ("stable", "borderline")
+    threshold = config.get("thresholds", {}).get("same_input_score_max_range")
+    range_warning = threshold is not None and row.get("range") is not None and row["range"] > threshold
+    reason = None if eligible else "unstable_standard_deviation"
+    if range_warning and eligible:
+        reason = "range_warning"
+    return {"stability_class": cls, "eligible": eligible,
+            "eligibility_reason": reason, "range_warning": bool(range_warning)}
+
+
 def _accepted_dim_state(ticker: str, dim: str, conn) -> dict:
     """Return the accepted dimension state for ticker×dim from the active contract (0525, 0531).
     Single source of truth for both usability gate and *_validated_stability fields.
@@ -803,21 +831,22 @@ def _accepted_dim_state(ticker: str, dim: str, conn) -> dict:
             return {**default, "record_id": record_id,
                     "usable_reason": "acceptance_contract_unavailable"}
         row = conn.execute(
-            "SELECT stability_class, mean_score, stddev, n_samples FROM macro_dimension_validation "
+            "SELECT stability_class, mean_score, stddev, n_samples, eligible, eligibility_reason FROM macro_dimension_validation "
             "WHERE acceptance_record_id=? AND ticker=? AND dimension=?",
             (record_id, ticker, dim)
         ).fetchone()
         if not row:
             return {**default, "record_id": record_id}
         cls = row[0]
+        eligible = bool(row[4]) if row[4] is not None else cls in ("stable", "borderline")
         return {
             "stability_class": cls,
             "mean_score":      row[1],
             "stddev":          row[2],
             "n_samples":       row[3],
             "record_id":       record_id,
-            "usable":          cls in ("stable", "borderline"),
-            "usable_reason":   None,
+            "usable":          eligible,
+            "usable_reason":   row[5] if not eligible else None,
         }
     except Exception:
         return default
@@ -2491,6 +2520,7 @@ def generate_holding_macro_scores(force: bool = False) -> dict:
 
     # Load existing scores from DB
     existing: dict = {}
+    current_contract = _compute_scorer_contract_hash()
     if DB_PATH.exists():
         conn = sqlite3.connect(str(DB_PATH), timeout=10)
         conn.row_factory = sqlite3.Row
@@ -2500,7 +2530,9 @@ def generate_holding_macro_scores(force: bool = False) -> dict:
         for r in rows:
             if r["updated_at"] and r["updated_at"][:10] >= cutoff:
                 try:
-                    existing[_normalize_ticker(r["ticker"])] = json.loads(r["scores"])
+                    payload = json.loads(r["scores"])
+                    if payload.get("scorer_contract_hash") == current_contract:
+                        existing[_normalize_ticker(r["ticker"])] = payload
                 except Exception:
                     pass
 
@@ -2555,11 +2587,12 @@ def generate_holding_macro_scores(force: bool = False) -> dict:
         conn = sqlite3.connect(str(DB_PATH), timeout=10)
         _reconcile_stale_runs(conn)  # transition old STARTED rows to STALE_FAILED (0493)
         conn.execute(
-            "INSERT OR REPLACE INTO macro_scoring_runs "
-            "(run_id, run_at, expected_n, scored_n, failed_n, supported_scored_n, unsupported_n, "
-            "coverage_pct, model_ver, schema_ver, macro_hash, status) "
-            "VALUES (?,?,?,0,0,0,0,0,?,?,?,'STARTED')",
-            (run_id, run_at, len(to_score), ollama_client.DEFAULT_MODEL, MACRO_SCORE_SCHEMA_VERSION, macro_hash)
+                "INSERT OR REPLACE INTO macro_scoring_runs "
+                "(run_id, run_at, expected_n, scored_n, failed_n, supported_scored_n, unsupported_n, "
+                "coverage_pct, model_ver, schema_ver, macro_hash, scorer_contract_hash, status) "
+                "VALUES (?,?,?,0,0,0,0,0,?,?,?,?, 'STARTED')",
+                (run_id, run_at, len(to_score), ollama_client.DEFAULT_MODEL, MACRO_SCORE_SCHEMA_VERSION,
+                 macro_hash, scorer_contract_hash)
         )
         conn.commit()
         conn.close()
