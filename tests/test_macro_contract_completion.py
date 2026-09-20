@@ -47,8 +47,11 @@ def test_each_threshold_changes_verdict(key):
         results['ledger_integrity']['runs'].append({'expected': 2, 'scored': 0, 'failed': 0})
         good, bad = 50, 51
     elif key == 'same_input_score_max_range':
+        # 0539: this threshold classifies dimensions; it does not block system acceptance.
         results['repeatability']['XOM'][v.DIMS[0]]['range'] = 2
-        good, bad = 2, 1
+        config['thresholds'][key] = 1
+        assert v._check_thresholds(results, config)['verdict'] == 'PASS'
+        return
     elif key == 'unexplained_large_swings':
         results['drift']['comparisons'] = [{'ticker': 'XOM', 'delta': 2}]
         good, bad = 1, 0
