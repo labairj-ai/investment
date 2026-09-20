@@ -1,7 +1,7 @@
 # Make Drift Provenance Contract and Input Aware
 
 - **ID:** 0538
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-20
 - **Priority:** high
 - **Depends:** 0537
@@ -30,3 +30,7 @@ Drift detection currently compares scores when `evidence_hash` is unchanged, but
 - [ ] Same contract and prompt with changed scores is classified as unexplained drift.
 - [ ] Zero interaction is neutral and excluded from positive/negative cohorts.
 - [ ] Tests cover all classifications and zero handling.
+
+## Completion — 2026-09-20
+
+Implemented in `03636aa`: drift compares contract, prompt, and evidence provenance; contract/input changes are reported separately, and zero interaction is neutral.

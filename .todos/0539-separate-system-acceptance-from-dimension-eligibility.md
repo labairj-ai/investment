@@ -1,7 +1,7 @@
 # Separate System Acceptance from Dimension Eligibility
 
 - **ID:** 0539
-- **Status:** backlog
+- **Status:** in-progress
 - **Created:** 2026-09-20
 - **Priority:** high
 - **Depends:** 0536, 0537, 0538
@@ -34,3 +34,7 @@ The v1.4 acceptance gate blocks the entire scorer when any one of the 32 ticker-
 - [ ] Config v1.5 documents the policy change and preserves v1.4 history.
 - [ ] A completed production scoring ledger exists before the next formal acceptance.
 - [ ] The next 0535 run verifies atomic activation, 32 rows, current hashes, and eligible dimensions only.
+
+## Progress — 2026-09-20
+
+Implemented v1.5 system-versus-dimension gate semantics and added the repeatability diagnostic script. Remaining work is operational: complete a reconciled production scoring cycle, record the blocked v1.4 32-cell distribution, and rerun formal acceptance under v1.5.

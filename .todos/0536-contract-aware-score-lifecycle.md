@@ -1,7 +1,7 @@
 # Enforce Scorer Contract on Cached Macro Scores
 
 - **ID:** 0536
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-20
 - **Priority:** high
 - **Depends:** 0535
@@ -29,3 +29,7 @@ Production reuses supported-company macro scores based on age, even when the sto
 - [ ] Coverage and health distinguish stale contract scores from ordinary staleness.
 - [ ] Tests cover current, missing, mismatched, and fresh-score cases.
 - [ ] A post-acceptance forced refresh is verified against the active contract hash.
+
+## Completion — 2026-09-20
+
+Implemented in `03636aa`: cache reuse, prompt blocks, coverage, and acceptance health now fail closed on missing or mismatched scorer contracts. Forced-refresh verification remains part of the production rollout record.

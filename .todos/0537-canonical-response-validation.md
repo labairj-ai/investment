@@ -1,7 +1,7 @@
 # Share Canonical Macro Response Validation
 
 - **ID:** 0537
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-20
 - **Priority:** high
 - **Depends:** 0536
@@ -29,3 +29,7 @@ The validator parses a ticker payload and extracts numeric scores directly, whil
 - [ ] Invalid responses cannot contribute repeatability samples.
 - [ ] The response-validation contract is covered by scorer identity.
 - [ ] Shared fixtures pass and fail identically in both paths.
+
+## Completion — 2026-09-20
+
+Implemented in `03636aa`: production and validator use `_parse_and_validate_macro_score_response()`, and response-validation source is included in the scorer contract hash.
