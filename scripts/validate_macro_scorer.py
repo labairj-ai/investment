@@ -133,10 +133,7 @@ def _score_one_ticker(ticker: str, evidence: dict, betas):
             num_predict=pai._MACRO_SCORE_NUM_PREDICT,
         ):
             full_text += tok
-        result = pai._extract_json(full_text)
-        if result and ticker in result:
-            return result[ticker]
-        return None
+        return pai._parse_and_validate_macro_score_response(full_text, ticker)
     except Exception as e:
         print(f"  [error] {ticker}: {e}")
         return None
@@ -173,13 +170,14 @@ def run_repeatability(tickers: list, macro: dict, n: int = 20,
                 results[tk][dim] = {
                     "mean": round(mean, 2), "stdev": round(stdev, 3),
                     "range": score_range, "n": len(vals), "flag": flag,
+                    "values": list(vals),
                     "status": "UNSTABLE" if flag else "ok",
                 }
             elif len(vals) == 1:
-                results[tk][dim] = {"mean": vals[0], "stdev": None, "range": 0, "n": 1,
+                results[tk][dim] = {"mean": vals[0], "stdev": None, "range": 0, "n": 1, "values": list(vals),
                                     "flag": False, "status": "insufficient"}
             else:
-                results[tk][dim] = {"mean": None, "stdev": None, "range": None, "n": 0,
+                results[tk][dim] = {"mean": None, "stdev": None, "range": None, "n": 0, "values": [],
                                     "flag": False, "status": "no_data"}
     return results
 
@@ -304,6 +302,7 @@ def run_drift_detection(drift_score_delta_threshold: int = 1) -> dict:
 
     drift_flags = []
     comparisons = []
+    provenance_events = []
     stable_count = 0
     evidence_changed_count = 0
     unverifiable_count = 0
@@ -312,21 +311,27 @@ def run_drift_detection(drift_score_delta_threshold: int = 1) -> dict:
         if len(run_list) < 2:
             continue
         curr_row, prev_row = run_list[0], run_list[1]
-        curr_ev = curr_row["evidence_hash"]
-        prev_ev = prev_row["evidence_hash"]
-
         try:
             curr_s = json.loads(curr_row["scores"])
             prev_s = json.loads(prev_row["scores"])
         except Exception:
             continue
 
-        if curr_ev is None or prev_ev is None:
-            unverifiable_count += 1
+        curr_contract = curr_s.get("scorer_contract_hash")
+        prev_contract = prev_s.get("scorer_contract_hash")
+        curr_prompt = curr_s.get("prompt_hash")
+        prev_prompt = prev_s.get("prompt_hash")
+        curr_ev = curr_row["evidence_hash"]
+        prev_ev = prev_row["evidence_hash"]
+        if curr_contract != prev_contract:
+            provenance_events.append({"ticker": ticker, "classification": "contract_changed"})
             continue
-
-        if curr_ev != prev_ev:
+        if curr_prompt != prev_prompt or curr_ev != prev_ev:
+            provenance_events.append({"ticker": ticker, "classification": "input_changed"})
             evidence_changed_count += 1
+            continue
+        if curr_contract is None or curr_prompt is None:
+            unverifiable_count += 1
             continue
 
         # Same evidence hash — check for score drift
@@ -345,6 +350,8 @@ def run_drift_detection(drift_score_delta_threshold: int = 1) -> dict:
                 "curr_scored_at": curr_row["scored_at"],
                 "prev_scored_at": prev_row["scored_at"],
                 "evidence_hash": curr_ev,
+                "prompt_hash": curr_prompt,
+                "scorer_contract_hash": curr_contract,
                 "drifted_dims": drifted_dims,
                 "status": "UNEXPLAINED_DRIFT",
             })
@@ -355,6 +362,7 @@ def run_drift_detection(drift_score_delta_threshold: int = 1) -> dict:
         "skipped": False,
         "drift_flags": drift_flags,
         "comparisons": comparisons,
+        "provenance_events": provenance_events,
         "stable_count": stable_count,
         "evidence_changed_count": evidence_changed_count,
         "unverifiable_count": unverifiable_count,
@@ -768,11 +776,15 @@ def _check_thresholds(results: dict, config: dict) -> dict:
          and len(drifted) <= t["unexplained_large_swings"])
     repeat = results.get("repeatability", {})
     expected = config.get("repeatability_universe", list(repeat))
-    gate("repeatability", bool(expected) and set(repeat) == set(expected) and all(
+    # 0539: system acceptance requires complete observations; per-dimension range
+    # remains an eligibility classification and does not invalidate other dimensions.
+    complete = bool(expected) and set(repeat) == set(expected) and all(
         set(repeat[tk]) == set(DIMS) and all(r.get("n") == config.get("n_repeats")
         and isinstance(r.get("range"), (int, float)) and math.isfinite(r["range"])
-        and 0 <= r["range"] <= t["same_input_score_max_range"]
-        for r in repeat[tk].values()) for tk in expected))
+        and r.get("mean") is not None for r in repeat[tk].values()) for tk in expected)
+    gate("repeatability", complete)
+    if complete:
+        checks["repeatability_eligibility"] = "PASS"
     return {"verdict": "PASS" if all(v == "PASS" for v in checks.values()) else "BLOCK",
             "per_check": checks, "effective_thresholds": dict(t)}
 

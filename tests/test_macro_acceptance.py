@@ -357,6 +357,10 @@ class TestConfigValidation:
         }
         fake_pai._MACRO_SCORE_TEMPERATURE = 0.2
         fake_pai._MACRO_SCORE_NUM_PREDICT = 1600
+        fake_pai._parse_and_validate_macro_score_response = lambda text, ticker: {
+            d: {"score": 3 if _call_count[0] % 2 == 0 else 5, "reason": "r"}
+            for d in ("rate_sensitivity", "inflation_hedge", "dollar_sensitivity", "geopolitical_risk")
+        }
         monkeypatch.setitem(sys.modules, "portfolio_ai", fake_pai)
 
         fake_ollama = types.ModuleType("ollama_client")
@@ -548,10 +552,10 @@ class TestAttributionRateInteractionSign:
         ep = {"macro": {"rate_interaction": -0.3}}
         assert _rate_interaction_sign(ep) == "negative"
 
-    def test_zero_value_returns_negative(self):
+    def test_zero_value_is_neutral_and_excluded(self):
         from scripts.macro_attribution import _rate_interaction_sign
         ep = {"macro": {"rate_interaction": 0.0}}
-        assert _rate_interaction_sign(ep) == "negative"
+        assert _rate_interaction_sign(ep) is None
 
 
 class TestDivergenceSubgroupMinimum:

@@ -220,6 +220,8 @@ def _rate_interaction_sign(episode: dict):
     import math
     if not math.isfinite(fv):
         return None
+    if not math.isfinite(fv) or fv == 0:
+        return None
     return "positive" if fv > 0 else "negative"
 
 

@@ -752,6 +752,7 @@ def _compute_scorer_contract_hash() -> str:
     import inspect
     contract = {
         "prompt_builder_source": inspect.getsource(_build_macro_score_request),
+        "response_validator_source": inspect.getsource(_parse_and_validate_macro_score_response) + inspect.getsource(_validate_macro_score_response),
         "macro_dims":      MACRO_DIMS,
         "model_identity":  ollama_client.DEFAULT_MODEL,
         "temperature":     _MACRO_SCORE_TEMPERATURE,
@@ -859,12 +860,16 @@ def _get_macro_acceptance_state(conn: sqlite3.Connection) -> dict:
     """Return the latest macro acceptance record, or {} if none exists (0497)."""
     try:
         row = conn.execute(
-            "SELECT contract, accepted_at, record_id, commit_sha "
+            "SELECT contract, accepted_at, record_id, commit_sha, scorer_contract_hash "
             "FROM macro_acceptance_state ORDER BY accepted_at DESC LIMIT 1"
         ).fetchone()
         if row:
+            current = _compute_scorer_contract_hash()
             return {"contract": row[0], "accepted_at": row[1],
-                    "record_id": row[2], "commit_sha": row[3]}
+                    "record_id": row[2], "commit_sha": row[3],
+                    "scorer_contract_hash": row[4],
+                    "usable": bool(row[4]) and row[4] == current,
+                    "usable_reason": None if row[4] == current else "acceptance_stale_scorer_contract"}
     except Exception:
         pass
     return {}
@@ -875,7 +880,7 @@ def _classify_macro_coverage(ticker: str, conn: sqlite3.Connection) -> str:
     if is_fund(ticker):
         return "fund_unsupported"
     row = conn.execute(
-        "SELECT scored_at FROM holding_macro_scores WHERE ticker=? ORDER BY scored_at DESC LIMIT 1",
+        "SELECT updated_at, scores FROM holding_macro_scores WHERE ticker=? ORDER BY updated_at DESC LIMIT 1",
         (ticker,)
     ).fetchone()
     if not row:
@@ -886,6 +891,12 @@ def _classify_macro_coverage(ticker: str, conn: sqlite3.Connection) -> str:
             return "stale_score"
     except Exception:
         return "stale_score"
+    try:
+        payload = json.loads(row[1])
+        if payload.get("scorer_contract_hash") != _compute_scorer_contract_hash():
+            return "stale_scorer_contract"
+    except Exception:
+        return "stale_scorer_contract"
     return "company_supported"
 
 
@@ -1006,6 +1017,17 @@ def _validate_macro_score_response(raw: dict, ticker: str) -> dict:
     return raw
 
 
+def _parse_and_validate_macro_score_response(text: str, ticker: str) -> dict:
+    """Parse and validate the exact response contract shared by production and validator."""
+    parsed = _extract_json(text)
+    if not isinstance(parsed, dict):
+        raise ValueError(f"{ticker}: response is not a JSON object")
+    payload = next((v for k, v in parsed.items() if _normalize_ticker(k) == _normalize_ticker(ticker)), None)
+    if not isinstance(payload, dict):
+        raise ValueError(f"{ticker}: ticker payload missing")
+    return _validate_macro_score_response(payload, ticker)
+
+
 def _score_reason(dim_data) -> str:
     if isinstance(dim_data, dict):
         return str(dim_data.get("reason", ""))
@@ -1043,6 +1065,8 @@ def _get_macro_scores_block(tickers=None, compact=False, reason_max=120):
             scored_at = (r["updated_at"] or "")[:10]
             data["_scored_at"] = scored_at
             data["_stale"]     = scored_at < stale_cutoff
+            data["_stale_contract"] = data.get("scorer_contract_hash") != _compute_scorer_contract_hash()
+            data["_coverage_state"] = "stale_scorer_contract" if data["_stale_contract"] else ("stale_score" if data["_stale"] else "company_supported")
             scores[t] = data
         except Exception:
             pass
@@ -1056,7 +1080,7 @@ def _get_macro_scores_block(tickers=None, compact=False, reason_max=120):
     ]
     for t, data in scores.items():
         scored_at = data["_scored_at"]
-        stale_note = (f"  ⚠ scored {scored_at}" if data["_stale"] else f"  scored {scored_at}")
+        stale_note = ("  ⚠ stale scorer contract" if data["_stale_contract"] else (f"  ⚠ scored {scored_at}" if data["_stale"] else f"  scored {scored_at}"))
         row = "  ".join(
             f"{dim[:4]}={_score_val(data.get(dim)) or '?'}"
             for dim in SCORE_DIMS
@@ -2641,11 +2665,9 @@ def generate_holding_macro_scores(force: bool = False) -> dict:
             except Exception as e:
                 print(f"[MacroScores] Sample {_si+1}/{_n_max} stream failed for {_tk_single}: {e}")
                 break
-            _parsed = _extract_json(_ft)
-            if _parsed is None:
-                continue
-            _tk_s = next((v for k, v in _parsed.items() if _normalize_ticker(k) == _tk_single), None)
-            if _tk_s is None:
+            try:
+                _tk_s = _parse_and_validate_macro_score_response(_ft, _tk_single)
+            except ValueError:
                 continue
             for _d in _MACRO_SCORE_DIMS:
                 _sv = _score_val(_tk_s.get(_d))
