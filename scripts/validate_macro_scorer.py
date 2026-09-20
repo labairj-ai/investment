@@ -143,7 +143,8 @@ def _score_one_ticker(ticker: str, evidence: dict, betas):
 
 def run_repeatability(tickers: list, macro: dict, n: int = 20,
                        evidence_snapshot=None,
-                       same_input_score_max_range: int = 1) -> dict:
+                       same_input_score_max_range: int = 1,
+                       stability_policy=None) -> dict:
     """Score each ticker n times with frozen evidence; flag dimensions where range > same_input_score_max_range."""
     all_scores: dict = {t: {d: [] for d in DIMS} for t in tickers}
     for rep in range(1, n + 1):
@@ -171,13 +172,15 @@ def run_repeatability(tickers: list, macro: dict, n: int = 20,
                     "mean": round(mean, 2), "stdev": round(stdev, 3),
                     "range": score_range, "n": len(vals), "flag": flag,
                     "values": list(vals),
-                    "status": "UNSTABLE" if flag else "ok",
+                    "status": "ok",
                 }
                 import portfolio_ai as _pai
                 if hasattr(_pai, "_dimension_validation_state"):
                     results[tk][dim].update(_pai._dimension_validation_state(
                         results[tk][dim], {"n_repeats": n,
-                        "thresholds": {"same_input_score_max_range": same_input_score_max_range}}))
+                        "thresholds": {"same_input_score_max_range": same_input_score_max_range},
+                        "stability_policy": stability_policy or {}}))
+                    results[tk][dim]["status"] = "ok" if results[tk][dim]["eligible"] else "UNSTABLE"
             elif len(vals) == 1:
                 results[tk][dim] = {"mean": vals[0], "stdev": None, "range": 0, "n": 1, "values": list(vals),
                                     "flag": False, "status": "insufficient"}
@@ -938,7 +941,8 @@ def main():
             snapshot = _freeze_validation_evidence(universe, conn)
         print(f"Frozen evidence for {len(universe)} tickers; run {record_id}; N={n}", flush=True)
         repeatability = run_repeatability(tickers, {}, n=n, evidence_snapshot=snapshot,
-                                          same_input_score_max_range=t["same_input_score_max_range"])
+                                          same_input_score_max_range=t["same_input_score_max_range"],
+                                          stability_policy=config.get("stability_policy"))
         anchor = run_anchor_calibration(snapshot)
     portfolio_tickers = _current_portfolio_tickers(pai)
     results = {

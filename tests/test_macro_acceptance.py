@@ -343,13 +343,15 @@ class TestConfigValidation:
             vms.PROJECT_DIR = orig
 
     def test_repeatability_applies_same_input_score_max_range(self, monkeypatch):
-        """UNSTABLE flag is set when score range > same_input_score_max_range (0530)."""
+        """Range warnings do not override canonical eligibility (0530/0541)."""
         from scripts.validate_macro_scorer import run_repeatability, _score_val
         # Build a mock that returns alternating scores to create a range of 2
         import sys
         import types
 
+        from portfolio_ai import _dimension_validation_state
         fake_pai = types.ModuleType("portfolio_ai")
+        fake_pai._dimension_validation_state = _dimension_validation_state
         fake_pai._build_macro_score_request = lambda ticker, ev, betas: "prompt"
         fake_pai._extract_json = lambda text: {
             "XOM": {d: {"score": 3 if _call_count[0] % 2 == 0 else 5, "reason": "r"}
@@ -379,9 +381,11 @@ class TestConfigValidation:
         try:
             result = run_repeatability(["XOM"], {}, n=4, same_input_score_max_range=1)
             rs = result["XOM"]["rate_sensitivity"]
-            # range=2 > max_range=1 → UNSTABLE
+            # Range is a warning; canonical standard deviation controls eligibility.
             assert rs["flag"] is True
-            assert rs["status"] == "UNSTABLE"
+            assert rs["range_warning"] is True
+            assert rs["eligible"] is True
+            assert rs["status"] == "ok"
         finally:
             monkeypatch.undo()
 

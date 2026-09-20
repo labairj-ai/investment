@@ -143,3 +143,27 @@ def test_legacy_run_reconstructs_committed_history(scoring):
         c.commit()
         assert pai._reconcile_stale_runs(c) == 1
         assert c.execute('SELECT scored_n,failed_n,supported_scored_n,unsupported_n,status FROM macro_scoring_runs').fetchone() == (2, 1, 1, 1, 'STALE_FAILED')
+
+
+@pytest.mark.parametrize('boundaries,eligible', [({'stable_stddev_max': 1.0, 'borderline_stddev_max': 1.5}, True), ({'stable_stddev_max': 0.1, 'borderline_stddev_max': 0.2}, False)])
+def test_repeatability_report_uses_configured_eligibility(monkeypatch, boundaries, eligible):
+    from scripts import validate_macro_scorer as v
+    values = iter([4, 5, 6, 5])
+    def score(*args):
+        value = next(values)
+        return {d: {'score': value, 'reason': 'fixture'} for d in v.DIMS}
+    monkeypatch.setattr(v, '_score_one_ticker', score)
+    monkeypatch.setattr(v.time, 'sleep', lambda *a: None)
+    rows = v.run_repeatability(['XOM'], {}, n=4, stability_policy=boundaries)['XOM']
+    for row in rows.values():
+        assert row['range_warning'] is True
+        assert row['eligible'] is eligible
+        assert row['status'] == ('ok' if eligible else 'UNSTABLE')
+
+
+def test_diagnostic_uses_artifact_policy_and_records_sequence():
+    from scripts.diagnose_macro_repeatability import diagnose
+    artifact = {'config_used': {'n_repeats': 4, 'thresholds': {'same_input_score_max_range': 1}, 'stability_policy': {'stable_stddev_max': 0.1, 'borderline_stddev_max': 0.2}}, 'results': {'repeatability': {'XOM': {'rate_sensitivity': {'n': 4, 'stdev': 0.8, 'range': 2, 'values': [4, 5, 6, 5]}}}}}
+    row = diagnose(artifact)['cells'][0]
+    assert row['eligible'] is False and row['stability_class'] == 'unstable'
+    assert row['adjacent_changes'] == 3 and row['max_adjacent_change'] == 1

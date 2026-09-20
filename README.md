@@ -15,7 +15,8 @@ A personal investment tracking system that sends a daily email newsletter, maint
 
 ## Macro validation acceptance
 
-`validation_config.json` v1.4 controls every acceptance threshold. Run
+`validation_config.json` v1.7 controls every acceptance threshold and the
+stable/borderline dimension boundaries. Run
 `venv/bin/python -u scripts/validate_macro_scorer.py --live` on optiplex for the
 formal N=20 run. Overrides (`--smoke`, `--n-repeats`) cannot activate acceptance.
 Non-live runs are recorded as `dry_run`; failed live runs as `validation_failed`.
@@ -28,6 +29,18 @@ updates the active pointer in one transaction. Missing samples, absent required
 measurements, stale scorer contracts, duplicate IDs, and DB failures cannot grant
 acceptance. Funds remain unsupported and are excluded from scored company anchors.
 Legacy acceptance records without a scorer hash must be revalidated.
+
+Production certification requires a complete forced refresh of the canonical
+current holdings universe, with matching scorer/universe hashes and zero failures.
+Incremental refreshes cannot certify the portfolio. Each run snapshots the holdings
+once and records one item per ticker; score, history, and terminal item state commit
+together. Interrupted runs reconcile committed successes and pending failures into
+`STALE_FAILED`, preserving accounting without granting certification.
+
+System acceptance and dimension eligibility are separate: complete N=20 samples and
+all system gates must pass, while the configured standard-deviation policy controls
+each dimension's eligibility. Range is a diagnostic warning. Health distinguishes
+`ACCEPTED_CURRENT`, `ACCEPTANCE_STALE_CONTRACT`, and `PRE_ACCEPTANCE`.
 
 
 ## Deployment

@@ -1,7 +1,7 @@
 # Bind Certification to the Full Portfolio Universe
 
 - **ID:** 0545
-- **Status:** in-progress
+- **Status:** done
 - **Created:** 2026-09-20
 - **Priority:** high
 - **Depends:** 0544, 0548
@@ -28,13 +28,17 @@ A current-contract COMPLETE run with one rescored holding could satisfy certific
 
 - [x] Full-refresh scope and portfolio-universe hash are stored for each scoring run.
 - [x] Formal certification rejects incremental or wrong-universe runs.
-- [ ] The 28-holding run is verified as COMPLETE with zero failures and matching hashes.
-- [ ] A regression test covers a valid one-holding run being rejected for formal certification.
-- [ ] New and sold holdings are reflected by certification-universe tests.
-- [ ] The scorer uses one run-start universe snapshot for the entire production run.
+- [x] The 28-holding run is verified as COMPLETE with zero failures and matching hashes.
+- [x] A regression test covers a valid one-holding run being rejected for formal certification.
+- [x] New and sold holdings are reflected by certification-universe tests.
+- [x] The scorer uses one run-start universe snapshot for the entire production run.
 
 Code is implemented; a fresh forced production refresh is still required to create the first certification row containing the new scope and universe provenance.
 
 ## Implementation verification — 2026-09-20
 
 Per-ticker terminal states commit atomically with score and history writes. Stale reconciliation reconstructs supported, unsupported, and failed counts and preserves non-certifiable STALE_FAILED status. Production and validation share the normalized holdings universe; certification requires full-refresh scope, matching universe provenance, and expected count equal to portfolio count. Fifteen recovery/universe regression tests pass, including commit-boundary failures, immediate interruption, legacy recovery, new/sold holdings, and incremental-run rejection. Production rollout verification is pending.
+
+## Production verification — 2026-09-20
+
+Optiplex run `51625048-8212-4e8b-892d-be9728ed881c` completed 28/28 with zero failures (20 supported companies, 8 unsupported instruments). Read-only verification confirmed exact current holdings membership, all 28 terminal run items, matching current scorer hash `7a0fe1256ab2cefdc6c0d3bd06ec1a71e73aa07bf628deeda058cd61e509447b`, matching universe hash `e3e1b392f1b02361074888d7156fd322fcd8529d6e6428783b2e1a51aad2a297`, and supported score prompt/evidence provenance. Historical integrity and full-portfolio certification both PASS. Log: `out/macro_certification_ca33690.log` on optiplex.

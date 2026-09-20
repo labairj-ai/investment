@@ -1,7 +1,7 @@
 # Define Canonical Dimension Eligibility Policy
 
 - **ID:** 0541
-- **Status:** in-progress
+- **Status:** done
 - **Created:** 2026-09-20
 - **Priority:** high
 - **Depends:** 0539
@@ -27,11 +27,11 @@ The validator marks a dimension unstable when its observed range exceeds `same_i
 
 ## Done when
 
-- [ ] Every ticker-dimension cell has one canonical class and eligibility result.
-- [ ] Validation, activation, diagnostics, and runtime usability use that result.
-- [ ] Range and standard deviation cannot produce contradictory eligibility decisions.
-- [ ] Config v1.6 records the policy and preserves the v1.4/v1.5 artifacts.
-- [ ] Stable, borderline, unstable, and range-vs-stdev edge cases are tested.
+- [x] Every ticker-dimension cell has one canonical class and eligibility result.
+- [x] Validation, activation, diagnostics, and runtime usability use that result.
+- [x] Range and standard deviation cannot produce contradictory eligibility decisions.
+- [x] Config v1.6 records the policy and preserves the v1.4/v1.5 artifacts.
+- [x] Stable, borderline, unstable, and range-vs-stdev edge cases are tested.
 
 ## Completion — 2026-09-20
 
@@ -40,3 +40,9 @@ Implemented in `0798ca0`: `_dimension_validation_state()` is the canonical polic
 ## Follow-up review — 2026-09-20
 
 The policy is canonical in memory, but the persisted `eligible` column is TEXT-affinity and `_accepted_dim_state()` uses Python truthiness. A stored `"0"` can therefore read back as true. 0543 adds typed persistence and round-trip tests.
+
+## Closure — 2026-09-20
+
+Completed in the deployed implementation through `ca33690`. Targeted regression checks pass on optiplex (101 tests), and GitHub CI passed. Operational portfolio/acceptance evidence is tracked in 0545 and 0535.
+
+The final reporting follow-up passes the configured stability boundaries into repeatability classification and removes the obsolete range-based UNSTABLE status. Diagnostics use the same canonical policy and preserve the observed sequence and adjacent-change statistics.

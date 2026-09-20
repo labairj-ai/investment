@@ -1,7 +1,7 @@
 # Make Scoring Runs Crash-Safe and Accountable
 
 - **ID:** 0547
-- **Status:** in-progress
+- **Status:** done
 - **Created:** 2026-09-20
 - **Priority:** high
 - **Depends:** 0544
@@ -26,12 +26,16 @@
 
 ## Done when
 
-- [ ] A partially processed `STARTED` run is reconstructable after interruption.
-- [ ] Reconciled stale runs have complete accounting and remain non-certifiable.
-- [ ] A regression test verifies `STARTED 28 → N scored + 28-N failed → STALE_FAILED`.
-- [ ] Historical integrity remains PASS while current certification remains BLOCKED.
-- [ ] Immediate crash, unsupported fund, commit-boundary crash, and repeated reconciliation are covered.
+- [x] A partially processed `STARTED` run is reconstructable after interruption.
+- [x] Reconciled stale runs have complete accounting and remain non-certifiable.
+- [x] A regression test verifies `STARTED 28 → N scored + 28-N failed → STALE_FAILED`.
+- [x] Historical integrity remains PASS while current certification remains BLOCKED.
+- [x] Immediate crash, unsupported fund, commit-boundary crash, and repeated reconciliation are covered.
 
 ## Implementation verification — 2026-09-20
 
 Per-ticker terminal states commit atomically with score and history writes. Stale reconciliation reconstructs supported, unsupported, and failed counts and preserves non-certifiable STALE_FAILED status. Production and validation share the normalized holdings universe; certification requires full-refresh scope, matching universe provenance, and expected count equal to portfolio count. Fifteen recovery/universe regression tests pass, including commit-boundary failures, immediate interruption, legacy recovery, new/sold holdings, and incremental-run rejection. Production rollout verification is pending.
+
+## Closure — 2026-09-20
+
+Completed in the deployed implementation through `ca33690`. Targeted regression checks pass on optiplex (101 tests), and GitHub CI passed. Operational portfolio/acceptance evidence is tracked in 0545 and 0535.

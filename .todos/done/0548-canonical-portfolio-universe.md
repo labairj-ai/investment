@@ -1,7 +1,7 @@
 # Use One Canonical Portfolio Universe for Certification
 
 - **ID:** 0548
-- **Status:** in-progress
+- **Status:** done
 - **Created:** 2026-09-20
 - **Priority:** high
 - **Depends:** 0544
@@ -26,14 +26,18 @@ Production derives the portfolio universe from `_load_holdings_csv()`, while val
 
 ## Done when
 
-- [ ] Validator and production use the same canonical holdings helper.
-- [ ] A new holding with no prior score changes the expected certification universe.
-- [ ] A sold holding lingering in `holding_macro_scores` is excluded.
-- [ ] A one-holding incremental run is rejected for full-portfolio certification.
-- [ ] The 28-holding run is COMPLETE with zero failures and matching provenance.
+- [x] Validator and production use the same canonical holdings helper.
+- [x] A new holding with no prior score changes the expected certification universe.
+- [x] A sold holding lingering in `holding_macro_scores` is excluded.
+- [x] A one-holding incremental run is rejected for full-portfolio certification.
+- [x] The 28-holding run is COMPLETE with zero failures and matching provenance.
 
 **Blocks:** 0545, 0535
 
 ## Implementation verification — 2026-09-20
 
 Per-ticker terminal states commit atomically with score and history writes. Stale reconciliation reconstructs supported, unsupported, and failed counts and preserves non-certifiable STALE_FAILED status. Production and validation share the normalized holdings universe; certification requires full-refresh scope, matching universe provenance, and expected count equal to portfolio count. Fifteen recovery/universe regression tests pass, including commit-boundary failures, immediate interruption, legacy recovery, new/sold holdings, and incremental-run rejection. Production rollout verification is pending.
+
+## Production verification — 2026-09-20
+
+Optiplex run `51625048-8212-4e8b-892d-be9728ed881c` completed 28/28 with zero failures (20 supported companies, 8 unsupported instruments). Read-only verification confirmed exact current holdings membership, all 28 terminal run items, matching current scorer hash `7a0fe1256ab2cefdc6c0d3bd06ec1a71e73aa07bf628deeda058cd61e509447b`, matching universe hash `e3e1b392f1b02361074888d7156fd322fcd8529d6e6428783b2e1a51aad2a297`, and supported score prompt/evidence provenance. Historical integrity and full-portfolio certification both PASS. Log: `out/macro_certification_ca33690.log` on optiplex.

@@ -1,7 +1,7 @@
 # Require Current-Contract Complete Production Certification
 
 - **ID:** 0542
-- **Status:** in-progress
+- **Status:** done
 - **Created:** 2026-09-20
 - **Priority:** high
 - **Depends:** 0540, 0541
@@ -26,11 +26,11 @@ The production scoring ledger does not store `scorer_contract_hash`, and formal 
 
 ## Done when
 
-- [ ] Every scoring run records its scorer contract hash.
-- [ ] Formal acceptance rejects old-contract and PARTIAL ledger runs.
-- [ ] A current-contract COMPLETE run with zero failures satisfies the ledger gate.
-- [ ] Production verification records the 28-holding accounting and hash results.
-- [ ] Formal 0535 rerun is gated on this certification.
+- [x] Every scoring run records its scorer contract hash.
+- [x] Formal acceptance rejects old-contract and PARTIAL ledger runs.
+- [x] A current-contract COMPLETE run with zero failures satisfies the ledger gate.
+- [x] Production verification records the 28-holding accounting and hash results.
+- [x] Formal 0535 rerun is gated on this certification.
 
 ## Progress — 2026-09-20
 
@@ -39,3 +39,7 @@ Implemented current-contract hash storage at run start, current-contract COMPLET
 ## Follow-up review — 2026-09-20
 
 The current-contract predicate exists, but the formal threshold calculation does not yet require it. 0544 separates historical accounting integrity from existential current-contract certification and wires both gates into the acceptance verdict.
+
+## Production verification — 2026-09-20
+
+Optiplex run `51625048-8212-4e8b-892d-be9728ed881c` completed 28/28 with zero failures (20 supported companies, 8 unsupported instruments). Read-only verification confirmed exact current holdings membership, all 28 terminal run items, matching current scorer hash `7a0fe1256ab2cefdc6c0d3bd06ec1a71e73aa07bf628deeda058cd61e509447b`, matching universe hash `e3e1b392f1b02361074888d7156fd322fcd8529d6e6428783b2e1a51aad2a297`, and supported score prompt/evidence provenance. Historical integrity and full-portfolio certification both PASS. Log: `out/macro_certification_ca33690.log` on optiplex.
