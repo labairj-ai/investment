@@ -35,3 +35,7 @@ The production scoring ledger does not store `scorer_contract_hash`, and formal 
 ## Progress — 2026-09-20
 
 Implemented current-contract hash storage at run start, current-contract COMPLETE-run requirements, and rejection tests. A fresh 28-holding production cycle is running on optiplex; formal 0535 remains gated until it finishes with 28/28 and zero failures.
+
+## Follow-up review — 2026-09-20
+
+The current-contract predicate exists, but the formal threshold calculation does not yet require it. 0544 separates historical accounting integrity from existential current-contract certification and wires both gates into the acceptance verdict.

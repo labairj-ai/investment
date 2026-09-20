@@ -1,7 +1,7 @@
 # Define Canonical Dimension Eligibility Policy
 
 - **ID:** 0541
-- **Status:** done
+- **Status:** in-progress
 - **Created:** 2026-09-20
 - **Priority:** high
 - **Depends:** 0539
@@ -36,3 +36,7 @@ The validator marks a dimension unstable when its observed range exceeds `same_i
 ## Completion — 2026-09-20
 
 Implemented in `0798ca0`: `_dimension_validation_state()` is the canonical policy; range is diagnostic, standard-deviation class drives eligibility, and activation persists the class, eligible flag, and reason. Edge-case coverage is included in the lifecycle tests.
+
+## Follow-up review — 2026-09-20
+
+The policy is canonical in memory, but the persisted `eligible` column is TEXT-affinity and `_accepted_dim_state()` uses Python truthiness. A stored `"0"` can therefore read back as true. 0543 adds typed persistence and round-trip tests.
