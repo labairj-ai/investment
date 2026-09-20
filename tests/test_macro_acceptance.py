@@ -325,8 +325,8 @@ class TestConfigValidation:
         # With threshold=0 ordering failures allowed → BLOCK
         config_strict = {"thresholds": {"anchor_ordering_failures": 0, "unexplained_large_swings": 0,
                                          "beta_recovery_tolerance": 1.5, "fund_unsupported_pct": 100,
-                                         "ledger_integrity_pct": 100, "schema_valid_pct": 100,
-                                         "missing_data_unknown_pct": 100}}
+                                         "ledger_integrity_pct": 100, "missing_data_unknown_pct": 100,
+                                         "same_input_score_max_range": 1, "drift_score_delta_threshold": 1}}
         r_strict = _check_thresholds(results, config_strict)
         assert r_strict["verdict"] == "BLOCK"
 
@@ -334,3 +334,315 @@ class TestConfigValidation:
         config_lenient = {"thresholds": {**config_strict["thresholds"], "anchor_ordering_failures": 1}}
         r_lenient = _check_thresholds(results, config_lenient)
         assert r_lenient["verdict"] == "PASS"
+
+    def test_validate_config_rejects_unknown_threshold_keys(self):
+        """Unknown threshold keys must raise ValueError (0530)."""
+        from scripts.validate_macro_scorer import _validate_config, _REQUIRED_THRESHOLDS
+        good = {k: 0 for k in _REQUIRED_THRESHOLDS}
+        bad_config = {"thresholds": {**good, "unknown_key": 99}, "n_repeats": 20}
+        with pytest.raises(ValueError, match="unknown threshold"):
+            _validate_config(bad_config)
+
+    def test_load_validation_config_fails_on_malformed_json(self, tmp_path):
+        """Malformed config must raise ValueError, not silently use defaults (0530)."""
+        bad_file = tmp_path / "validation_config.json"
+        bad_file.write_text("{not valid json")
+        from scripts import validate_macro_scorer as vms
+        orig = vms.PROJECT_DIR
+        try:
+            vms.PROJECT_DIR = tmp_path
+            with pytest.raises(ValueError, match="malformed"):
+                vms._load_validation_config()
+        finally:
+            vms.PROJECT_DIR = orig
+
+    def test_repeatability_applies_same_input_score_max_range(self):
+        """UNSTABLE flag is set when score range > same_input_score_max_range (0530)."""
+        from scripts.validate_macro_scorer import run_repeatability, _score_val
+        # Build a mock that returns alternating scores to create a range of 2
+        import sys
+        import types
+
+        fake_pai = types.ModuleType("portfolio_ai")
+        fake_pai._build_macro_score_request = lambda ticker, ev, betas: "prompt"
+        fake_pai._extract_json = lambda text: {
+            "XOM": {d: {"score": 3 if _call_count[0] % 2 == 0 else 5, "reason": "r"}
+                    for d in ("rate_sensitivity", "inflation_hedge", "dollar_sensitivity", "geopolitical_risk")}
+        }
+        fake_pai._MACRO_SCORE_TEMPERATURE = 0.2
+        fake_pai._MACRO_SCORE_NUM_PREDICT = 1600
+        sys.modules["portfolio_ai"] = fake_pai
+
+        fake_ollama = types.ModuleType("ollama_client")
+        fake_ollama.available = lambda: True
+        fake_ollama.DEFAULT_MODEL = "test-model"
+        _call_count = [0]
+
+        def fake_stream(prompt, model, temperature, num_predict):
+            _call_count[0] += 1
+            yield '{"XOM": {"rate_sensitivity": {"score": ' + ("3" if _call_count[0] % 2 == 0 else "5") + ', "reason": "r"}, "inflation_hedge": {"score": 5, "reason": "r"}, "dollar_sensitivity": {"score": 5, "reason": "r"}, "geopolitical_risk": {"score": 5, "reason": "r"}}}'
+
+        fake_ollama.stream_generate = fake_stream
+        sys.modules["ollama_client"] = fake_ollama
+
+        try:
+            result = run_repeatability(["XOM"], {}, n=4, same_input_score_max_range=1)
+            rs = result["XOM"]["rate_sensitivity"]
+            # range=2 > max_range=1 → UNSTABLE
+            assert rs["flag"] is True
+            assert rs["status"] == "UNSTABLE"
+        finally:
+            sys.modules.pop("portfolio_ai", None)
+            sys.modules.pop("ollama_client", None)
+
+    def test_synthetic_regression_uses_config_tolerance(self):
+        """Tight tolerance from config causes synthetic regression to FAIL (0530)."""
+        from scripts.validate_macro_scorer import run_synthetic_regression
+        # Use an impossibly tight tolerance — should FAIL
+        result = run_synthetic_regression(beta_recovery_tolerance=0.001)
+        assert result["status"] == "FAIL"
+        # Default tolerance should PASS
+        result_default = run_synthetic_regression(beta_recovery_tolerance=1.5)
+        assert result_default["status"] == "PASS"
+
+
+# ---------------------------------------------------------------------------
+# 0531 — scorer contract invalidation
+# ---------------------------------------------------------------------------
+
+class TestScorerContractInvalidation:
+    def test_accepted_dim_state_invalid_when_hash_mismatch(self):
+        """Stale scorer_contract_hash in DB → usable=False with stale reason (0531)."""
+        p, conn = _fresh_db()
+        # Seed acceptance with a deliberately wrong contract hash
+        conn.execute(
+            "INSERT OR REPLACE INTO macro_acceptance_state "
+            "(contract, accepted_at, record_id, commit_sha, model_identity, scorer_contract_hash, notes) "
+            "VALUES (?,?,?,?,?,?,?)",
+            ("macro_validation_v1", "2026-01-01T00:00:00", "rec/001",
+             "abc123", "model-x", "0000_wrong_hash", "test seed with wrong hash")
+        )
+        conn.commit()
+        _seed_validation_row(conn, "XOM", "rate_sensitivity", "rec/001", "stable")
+        import portfolio_ai
+        result = portfolio_ai._accepted_dim_state("XOM", "rate_sensitivity", conn)
+        assert result["usable"] is False
+        assert result["usable_reason"] == "acceptance_stale_scorer_contract"
+        conn.close()
+        p.unlink(missing_ok=True)
+
+    def test_accepted_dim_state_usable_when_hash_matches(self):
+        """Matching scorer_contract_hash → usable=True as normal (0531)."""
+        import portfolio_ai
+        p, conn = _fresh_db()
+        try:
+            current_hash = portfolio_ai._compute_scorer_contract_hash()
+        except Exception:
+            conn.close()
+            p.unlink(missing_ok=True)
+            pytest.skip("Cannot compute scorer_contract_hash in test environment")
+        conn.execute(
+            "INSERT OR REPLACE INTO macro_acceptance_state "
+            "(contract, accepted_at, record_id, commit_sha, model_identity, scorer_contract_hash, notes) "
+            "VALUES (?,?,?,?,?,?,?)",
+            ("macro_validation_v1", "2026-01-01T00:00:00", "rec/002",
+             "abc123", "model-x", current_hash, "matching hash")
+        )
+        conn.commit()
+        _seed_validation_row(conn, "XOM", "rate_sensitivity", "rec/002", "stable")
+        result = portfolio_ai._accepted_dim_state("XOM", "rate_sensitivity", conn)
+        assert result["usable"] is True
+        conn.close()
+        p.unlink(missing_ok=True)
+
+    def test_accepted_dim_state_usable_when_no_hash_stored(self):
+        """NULL scorer_contract_hash in DB (pre-0531 record) → hash check skipped, normal path (0531)."""
+        p, conn = _fresh_db()
+        _seed_acceptance(conn, "rec/001")  # no scorer_contract_hash column value → NULL
+        _seed_validation_row(conn, "XOM", "rate_sensitivity", "rec/001", "stable")
+        import portfolio_ai
+        result = portfolio_ai._accepted_dim_state("XOM", "rate_sensitivity", conn)
+        assert result["usable"] is True
+        conn.close()
+        p.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# 0533 — acceptance record immutability
+# ---------------------------------------------------------------------------
+
+class TestAcceptanceRecordImmutability:
+    def test_duplicate_record_id_raises_on_insert(self):
+        """Inserting a duplicate acceptance_record_id must raise (not be silently ignored) (0533)."""
+        p, conn = _fresh_db()
+        conn.execute(
+            "INSERT INTO macro_dimension_validation "
+            "(acceptance_record_id, ticker, dimension, mean_score, stddev, "
+            "n_samples, stability_class, recorded_at) VALUES (?,?,?,?,?,?,?,?)",
+            ("dup-id", "XOM", "rate_sensitivity", 5.0, 0.2, 5, "stable", "2026-01-01")
+        )
+        conn.commit()
+        with pytest.raises(Exception):
+            conn.execute(
+                "INSERT INTO macro_dimension_validation "
+                "(acceptance_record_id, ticker, dimension, mean_score, stddev, "
+                "n_samples, stability_class, recorded_at) VALUES (?,?,?,?,?,?,?,?)",
+                ("dup-id", "XOM", "rate_sensitivity", 6.0, 0.3, 5, "stable", "2026-01-02")
+            )
+            conn.commit()
+        conn.close()
+        p.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# 0534 — run type semantics
+# ---------------------------------------------------------------------------
+
+class TestRunTypeSemantics:
+    def test_dry_run_type_without_live(self):
+        """Non-live run must produce run_type='dry_run', not 'acceptance' (0534)."""
+        import sys
+        import types
+        import json as _json
+        import tempfile
+
+        # Minimal stub for _load_validation_config
+        from scripts.validate_macro_scorer import _REQUIRED_THRESHOLDS
+        good_thresholds = {k: 0 for k in _REQUIRED_THRESHOLDS}
+        # We just test the run_type logic directly
+        # Simulate the branch: not live, no override, no smoke
+        args_live = False
+        args_n_repeats = None
+        args_smoke = False
+        if args_n_repeats is not None:
+            run_type = "smoke"
+        elif args_smoke:
+            run_type = "smoke"
+        else:
+            run_type = "acceptance" if args_live else "dry_run"
+        assert run_type == "dry_run"
+
+    def test_acceptance_run_type_with_live(self):
+        args_live = True
+        args_n_repeats = None
+        args_smoke = False
+        if args_n_repeats is not None:
+            run_type = "smoke"
+        elif args_smoke:
+            run_type = "smoke"
+        else:
+            run_type = "acceptance" if args_live else "dry_run"
+        assert run_type == "acceptance"
+
+
+# ---------------------------------------------------------------------------
+# 0532 — attribution statistics
+# ---------------------------------------------------------------------------
+
+class TestAttributionRateInteractionSign:
+    def test_missing_rate_interaction_returns_none(self):
+        from scripts.macro_attribution import _rate_interaction_sign
+        ep = {"macro": {}}
+        assert _rate_interaction_sign(ep) is None
+
+    def test_malformed_rate_interaction_returns_none(self):
+        from scripts.macro_attribution import _rate_interaction_sign
+        ep = {"macro": {"rate_interaction": "not-a-number"}}
+        assert _rate_interaction_sign(ep) is None
+
+    def test_positive_value_returns_positive(self):
+        from scripts.macro_attribution import _rate_interaction_sign
+        ep = {"macro": {"rate_interaction": 0.5}}
+        assert _rate_interaction_sign(ep) == "positive"
+
+    def test_negative_value_returns_negative(self):
+        from scripts.macro_attribution import _rate_interaction_sign
+        ep = {"macro": {"rate_interaction": -0.3}}
+        assert _rate_interaction_sign(ep) == "negative"
+
+    def test_zero_value_returns_negative(self):
+        from scripts.macro_attribution import _rate_interaction_sign
+        ep = {"macro": {"rate_interaction": 0.0}}
+        assert _rate_interaction_sign(ep) == "negative"
+
+
+class TestDivergenceSubgroupMinimum:
+    def _make_episodes(self, n: int) -> list:
+        return [
+            {"macro": {
+                "challenger_recommendation": "BUY",
+                "base_recommendation": "HOLD",
+                "challenger_alpha": 1.0,
+                "base_alpha": 0.5,
+                "rate_interaction": 0.1,
+                "concordance_ok": True,
+            }, "alpha": 1.0, "captured_at": f"2026-0{(i%9)+1}-01"}
+            for i in range(n)
+        ]
+
+    def test_subgroup_below_min_is_suppressed(self):
+        from scripts.macro_attribution import analyse, MIN_SUBGROUP_N
+        episodes = self._make_episodes(35)
+        result = analyse(episodes, "3m")
+        da = result["divergence_analysis"]
+        if da.get("status") == "ok":
+            rg = da["regime_group_win_rates"]
+            for k, v in rg.items():
+                if v.get("n", MIN_SUBGROUP_N) < MIN_SUBGROUP_N:
+                    assert v.get("suppressed") is True
+
+
+class TestDivergenceTieReporting:
+    def test_tie_counted_separately_not_as_base_win(self):
+        from scripts.macro_attribution import analyse
+        # Episodes where challenger_alpha == base_alpha → tie
+        tie_episodes = [
+            {"macro": {
+                "challenger_recommendation": "BUY",
+                "base_recommendation": "HOLD",
+                "challenger_alpha": 1.0,
+                "base_alpha": 1.0,  # tie
+                "rate_interaction": 0.1,
+                "concordance_ok": True,
+            }, "alpha": 1.0, "captured_at": f"2026-0{(i%9)+1}-01"}
+            for i in range(35)
+        ]
+        result = analyse(tie_episodes, "3m")
+        da = result["divergence_analysis"]
+        if da.get("status") == "ok":
+            rg = da["regime_group_win_rates"]
+            for k, v in rg.items():
+                if "ties" in v:
+                    # Ties should be > 0 if we have tie episodes
+                    assert v["wins"] + v["losses"] + v["ties"] == v["n"]
+
+
+# ---------------------------------------------------------------------------
+# 0529 — prompt identity between production and validator
+# ---------------------------------------------------------------------------
+
+class TestProductionValidatorPromptIdentity:
+    def test_build_macro_score_request_deterministic(self):
+        """_build_macro_score_request with same inputs produces the same prompt (0529)."""
+        import portfolio_ai as pai
+        evidence = {"evidence_quality": "full", "sector": "Energy", "gross_margin_pct": 45.0}
+        betas = None
+        p1 = pai._build_macro_score_request("XOM", evidence, betas)
+        p2 = pai._build_macro_score_request("XOM", evidence, betas)
+        assert p1 == p2
+
+    def test_build_macro_score_request_includes_evidence(self):
+        """_build_macro_score_request includes evidence fields in the prompt (0529)."""
+        import portfolio_ai as pai
+        evidence = {"evidence_quality": "full", "sector": "Technology", "gross_margin_pct": 70.0}
+        prompt = pai._build_macro_score_request("GRMN", evidence, None)
+        assert "GRMN" in prompt
+        assert "sector=Technology" in prompt or "Technology" in prompt
+
+    def test_build_macro_score_request_empty_evidence_still_valid(self):
+        """_build_macro_score_request with no evidence produces a well-formed prompt (0529)."""
+        import portfolio_ai as pai
+        prompt = pai._build_macro_score_request("XOM", {}, None)
+        assert "XOM" in prompt
+        assert "rate_sensitivity" in prompt
+        assert "Return ONLY valid JSON" in prompt

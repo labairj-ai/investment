@@ -25,6 +25,7 @@ MIN_EPISODES = 10   # minimum to produce any output; 60 recommended for meaningf
 
 
 MIN_DIM_USABLE = 20  # episodes needed per dim for formal attribution
+MIN_SUBGROUP_N = 10  # minimum divergence subgroup size to emit a win rate
 
 
 def _parse_args() -> argparse.Namespace:
@@ -193,6 +194,21 @@ def _coverage_summary(episodes: list[dict]) -> dict:
     return counts
 
 
+def _rate_interaction_sign(episode: dict):
+    """Return 'positive', 'negative', or None for missing/malformed rate_interaction (0532).
+    Used for both observed grouping and bootstrap draws to ensure the same population
+    is used in both places. None means the episode is excluded from that analysis.
+    """
+    v = episode.get("macro", {}).get("rate_interaction")
+    if v is None:
+        return None
+    try:
+        fv = float(v)
+    except (TypeError, ValueError):
+        return None
+    return "positive" if fv > 0 else "negative"
+
+
 def analyse(episodes: list[dict], horizon: str, show_all_dims: bool = False) -> dict:
     n = len(episodes)
     if n < MIN_EPISODES:
@@ -291,16 +307,13 @@ def analyse(episodes: list[dict], horizon: str, show_all_dims: bool = False) -> 
     def _signed_interaction_analysis() -> dict:
         pos, neg, missing = [], [], 0
         for e in episodes:
-            v = e["macro"].get("rate_interaction")
-            if v is None:
+            sign = _rate_interaction_sign(e)
+            if sign is None:
                 missing += 1
-                continue
-            try:
-                fv = float(v)
-            except (TypeError, ValueError):
-                missing += 1
-                continue
-            (pos if fv > 0 else neg).append(e)
+            elif sign == "positive":
+                pos.append(e)
+            else:
+                neg.append(e)
         if missing == len(episodes):
             return {"exploratory": True, "status": "no_data",
                     "note": "rate_interaction field absent from all episodes"}
@@ -323,17 +336,15 @@ def analyse(episodes: list[dict], horizon: str, show_all_dims: bool = False) -> 
                 "n": n,
                 "note": f"Need ≥60 ACCEPTED episodes for cohort bootstrap; have {n}.",
             }
-        # Partition episodes by rate_interaction sign
+        # Partition by rate_interaction sign using shared helper (0532: same population for
+        # observed contrast and bootstrap draws)
         pos_eps, neg_eps = [], []
         for e in episodes:
-            v = e["macro"].get("rate_interaction")
-            try:
-                fv = float(v) if v is not None else None
-            except (TypeError, ValueError):
-                fv = None
-            if fv is None:
-                continue
-            (pos_eps if fv > 0 else neg_eps).append(e)
+            sign = _rate_interaction_sign(e)
+            if sign == "positive":
+                pos_eps.append(e)
+            elif sign == "negative":
+                neg_eps.append(e)
         MIN_GROUP = 10
         if len(pos_eps) < MIN_GROUP or len(neg_eps) < MIN_GROUP:
             return {
@@ -343,10 +354,13 @@ def analyse(episodes: list[dict], horizon: str, show_all_dims: bool = False) -> 
                 "min_required_per_group": MIN_GROUP,
                 "note": "Both groups need ≥10 episodes for a meaningful contrast CI.",
             }
+        # 0532: exclude episodes without a parseable captured_at from cohort bootstrap
         cohort_map: dict[str, list] = {}
         for e in episodes:
-            cohort = (e.get("captured_at") or "")[:10]
-            cohort_map.setdefault(cohort, []).append(e)
+            ca = (e.get("captured_at") or "")[:10]
+            if not ca or len(ca) < 10:
+                continue  # exclude; not binned into an empty-string pseudo-cohort
+            cohort_map.setdefault(ca, []).append(e)
         cohort_list = list(cohort_map.values())
         n_cohorts = len(cohort_list)
         if n_cohorts < 5:
@@ -355,14 +369,14 @@ def analyse(episodes: list[dict], horizon: str, show_all_dims: bool = False) -> 
                 "n_cohorts": n_cohorts,
                 "note": "Need ≥5 distinct decision-date cohorts for cohort bootstrap.",
             }
-        # Bootstrap: resample cohorts, compute contrast (pos mean alpha − neg mean alpha)
+        # Bootstrap: resample cohorts, compute contrast using _rate_interaction_sign (0532)
         boot_contrasts = []
         rng = random.Random(42)
         for _ in range(n_boot):
             sample_cohorts = rng.choices(cohort_list, k=n_cohorts)
             all_eps = [ep for c in sample_cohorts for ep in c]
-            b_pos = [e["alpha"] for e in all_eps if float(e["macro"].get("rate_interaction") or 0) > 0]
-            b_neg = [e["alpha"] for e in all_eps if float(e["macro"].get("rate_interaction") or 0) <= 0]
+            b_pos = [e["alpha"] for e in all_eps if _rate_interaction_sign(e) == "positive"]
+            b_neg = [e["alpha"] for e in all_eps if _rate_interaction_sign(e) == "negative"]
             if b_pos and b_neg:
                 boot_contrasts.append(sum(b_pos) / len(b_pos) - sum(b_neg) / len(b_neg))
         if len(boot_contrasts) < n_boot * 0.5:
@@ -391,26 +405,28 @@ def analyse(episodes: list[dict], horizon: str, show_all_dims: bool = False) -> 
     def _stress_mfe_mae() -> dict:
         if not (has_mfe or has_mae):
             return {"exploratory": True, "status": "no_mfe_mae_data"}
-        high_stress = [e for e in episodes
-                       if _extract_dim_score(e["macro"].get("rate_sensitivity")) is not None
-                       and (_extract_dim_score(e["macro"].get("rate_sensitivity")) or 0) >= 7]
-        low_stress  = [e for e in episodes
-                       if _extract_dim_score(e["macro"].get("rate_sensitivity")) is not None
-                       and (_extract_dim_score(e["macro"].get("rate_sensitivity")) or 10) <= 3]
+        # 0532: renamed from high_stress/low_stress — grouping is by rate sensitivity score,
+        # not by a macro stress composite; the label was misleading.
+        high_rate_sens = [e for e in episodes
+                          if _extract_dim_score(e["macro"].get("rate_sensitivity")) is not None
+                          and (_extract_dim_score(e["macro"].get("rate_sensitivity")) or 0) >= 7]
+        low_rate_sens  = [e for e in episodes
+                          if _extract_dim_score(e["macro"].get("rate_sensitivity")) is not None
+                          and (_extract_dim_score(e["macro"].get("rate_sensitivity")) or 10) <= 3]
         result: dict = {
             "exploratory": True,
-            "note": "Exploratory. high_stress = rate_sensitivity ≥7; low_stress ≤3. Not gated on formal dim usability.",
+            "note": "Exploratory. high_rate_sensitivity = rate_sensitivity score ≥7; low_rate_sensitivity ≤3. Not gated on formal dim usability.",
         }
         if has_mae:
-            result["high_stress_mean_mae"]   = _mean([e["mae"] for e in high_stress if "mae" in e])
-            result["low_stress_mean_mae"]    = _mean([e["mae"] for e in low_stress  if "mae" in e])
-            result["high_stress_median_mae"] = _median([e["mae"] for e in high_stress if "mae" in e])
-            result["low_stress_median_mae"]  = _median([e["mae"] for e in low_stress  if "mae" in e])
+            result["high_rate_sensitivity_mean_mae"]   = _mean([e["mae"] for e in high_rate_sens if "mae" in e])
+            result["low_rate_sensitivity_mean_mae"]    = _mean([e["mae"] for e in low_rate_sens  if "mae" in e])
+            result["high_rate_sensitivity_median_mae"] = _median([e["mae"] for e in high_rate_sens if "mae" in e])
+            result["low_rate_sensitivity_median_mae"]  = _median([e["mae"] for e in low_rate_sens  if "mae" in e])
         if has_mfe:
-            result["high_stress_mean_mfe"] = _mean([e["mfe"] for e in high_stress if "mfe" in e])
-            result["low_stress_mean_mfe"]  = _mean([e["mfe"] for e in low_stress  if "mfe" in e])
-        result["n_high_stress"] = len(high_stress)
-        result["n_low_stress"]  = len(low_stress)
+            result["high_rate_sensitivity_mean_mfe"] = _mean([e["mfe"] for e in high_rate_sens if "mfe" in e])
+            result["low_rate_sensitivity_mean_mfe"]  = _mean([e["mfe"] for e in low_rate_sens  if "mfe" in e])
+        result["n_high_rate_sensitivity"] = len(high_rate_sens)
+        result["n_low_rate_sensitivity"]  = len(low_rate_sens)
         return result
 
     # Divergence analysis (0502): when base and challenger diverge, are macro conditions
@@ -443,30 +459,43 @@ def analyse(episodes: list[dict], horizon: str, show_all_dims: bool = False) -> 
                 "note": "challenger_alpha / base_alpha not stored in macro_snapshot — cannot compute win rates.",
             }
 
-        def _challenger_wins(e: dict) -> bool | None:
+        def _outcome(e: dict):
+            """Return 'win', 'loss', 'tie', or None for undecidable (0532: explicit tie state)."""
             ca = e["macro"].get("challenger_alpha")
             ba = e["macro"].get("base_alpha")
             if ca is None or ba is None:
                 return None
             try:
-                return float(ca) > float(ba)
+                ca_f, ba_f = float(ca), float(ba)
             except (TypeError, ValueError):
                 return None
+            if ca_f > ba_f:
+                return "win"
+            if ca_f < ba_f:
+                return "loss"
+            return "tie"
 
-        # Regime groups by rate_interaction sign
         def _regime_win_rate(subset: list) -> dict:
-            outcomes = [_challenger_wins(e) for e in subset]
-            decided = [o for o in outcomes if o is not None]
+            """Win/loss/tie counts; suppresses win_rate when n < MIN_SUBGROUP_N (0532)."""
+            if len(subset) < MIN_SUBGROUP_N:
+                return {"n": len(subset), "suppressed": True,
+                        "note": f"n < {MIN_SUBGROUP_N} — win rate not reported"}
+            outcomes = [_outcome(e) for e in subset]
+            decided  = [o for o in outcomes if o is not None]
             if not decided:
-                return {"n": 0, "challenger_win_rate": None}
-            return {"n": len(decided), "challenger_win_rate": round(sum(decided) / len(decided), 4)}
+                return {"n": 0, "wins": 0, "losses": 0, "ties": 0, "challenger_win_rate": None}
+            wins   = sum(1 for o in decided if o == "win")
+            losses = sum(1 for o in decided if o == "loss")
+            ties   = sum(1 for o in decided if o == "tie")
+            return {
+                "n": len(decided),
+                "wins": wins, "losses": losses, "ties": ties,
+                "challenger_win_rate": round(wins / len(decided), 4),
+            }
 
-        pos_regime = [e for e in divergent
-                      if e["macro"].get("rate_interaction") is not None
-                      and float(e["macro"].get("rate_interaction", 0) or 0) > 0]
-        neg_regime = [e for e in divergent
-                      if e["macro"].get("rate_interaction") is not None
-                      and float(e["macro"].get("rate_interaction", 0) or 0) <= 0]
+        # 0532: use _rate_interaction_sign for consistent grouping
+        pos_regime   = [e for e in divergent if _rate_interaction_sign(e) == "positive"]
+        neg_regime   = [e for e in divergent if _rate_interaction_sign(e) == "negative"]
         concordant   = [e for e in divergent if e["macro"].get("concordance_ok") is True]
         discordant   = [e for e in divergent if e["macro"].get("concordance_ok") is False]
 
@@ -483,7 +512,8 @@ def analyse(episodes: list[dict], horizon: str, show_all_dims: bool = False) -> 
             },
             "note": (
                 "Descriptive only. challenger_win_rate = fraction of divergent episodes "
-                "where challenger alpha > base alpha. No model weights changed."
+                "where challenger alpha > base alpha. Ties reported separately. "
+                f"Subgroups with n < {MIN_SUBGROUP_N} suppressed. No model weights changed."
             ),
         }
 

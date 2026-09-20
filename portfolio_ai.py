@@ -445,6 +445,15 @@ def _init_ai_tables():
             notes                      TEXT
         )
     """)
+    # Add scorer_contract_hash to acceptance tables for existing DBs (0531)
+    for _col_sql in [
+        "ALTER TABLE macro_acceptance_state ADD COLUMN scorer_contract_hash TEXT",
+        "ALTER TABLE macro_dimension_validation ADD COLUMN scorer_contract_hash TEXT",
+    ]:
+        try:
+            conn.execute(_col_sql)
+        except Exception:
+            pass
     # Add provenance columns to macro_dimension_stability for existing DBs (0510)
     for _col_sql in [
         "ALTER TABLE macro_dimension_stability ADD COLUMN acceptance_record_id TEXT",
@@ -632,6 +641,110 @@ _DIM_EV_KEY = {
     "geopolitical_risk":  "evidence_quality_geo",
 }
 
+# LLM parameters that are part of the scoring contract (0529/0531)
+_MACRO_SCORE_TEMPERATURE = 0.2
+_MACRO_SCORE_NUM_PREDICT = 1600
+
+
+def _build_macro_score_request(ticker: str, evidence: dict, betas) -> str:
+    """Canonical LLM macro scoring prompt for a single ticker (0529).
+    Both generate_holding_macro_scores() and the validator call this function.
+    evidence: output of _fetch_company_evidence(ticker, conn)
+    betas: output of _compute_equity_betas(ticker), or None/empty
+    """
+    dim_defs = "\n".join(
+        f"- {dim} ({'1=low inflation protection, 10=strong inflation protection' if meta.get('direction') == 'benefit' else '1=low exposure, 10=high exposure'}): {meta['prompt_def']}"
+        for dim, meta in MACRO_DIMS.items()
+    )
+    evidence_lines = []
+    ev = evidence or {}
+    if ev.get("evidence_quality") not in ("none", "fund"):
+        parts = []
+        if ev.get("sector"):
+            parts.append(f"sector={ev['sector']}")
+        if ev.get("gross_margin_pct") is not None:
+            parts.append(f"gross_margin={ev['gross_margin_pct']:.1f}%")
+        if ev.get("net_debt") is not None:
+            parts.append(f"net_debt=${ev['net_debt']:.0f}M")
+        if ev.get("interest_coverage") is not None:
+            parts.append(f"interest_coverage={ev['interest_coverage']:.1f}x")
+        if ev.get("foreign_rev_pct") is not None:
+            parts.append(f"foreign_rev={ev['foreign_rev_pct']:.1f}%")
+        if ev.get("revenue_ttm") is not None:
+            parts.append(f"revenue_ttm=${ev['revenue_ttm']:.0f}M")
+        if ev.get("geo_hq_country"):
+            parts.append(f"hq={ev['geo_hq_country']}")
+        if ev.get("geo_major_regions"):
+            parts.append(f"regions={ev['geo_major_regions']}")
+        if ev.get("geo_revenue_domestic_pct") is not None:
+            parts.append(f"domestic_rev={ev['geo_revenue_domestic_pct']:.0f}%")
+        if ev.get("geo_sanctions_exposure") and ev["geo_sanctions_exposure"] != "none_known":
+            parts.append(f"sanctions={ev['geo_sanctions_exposure']}")
+        if ev.get("geo_tariff_sensitivity") and ev["geo_tariff_sensitivity"] != "low":
+            parts.append(f"tariff_sensitivity={ev['geo_tariff_sensitivity']}")
+        if parts:
+            evidence_lines.append(f"Company data for {ticker}: {', '.join(parts)}")
+    b = betas or {}
+    if b:
+        rb = b.get("rate_beta_100bp_return_pct")
+        ub = b.get("usd_beta_1pct_return_pct")
+        r2 = b.get("r_squared")
+        rate_conf = b.get("rate_beta_confidence", "insufficient_data")
+        usd_conf  = b.get("usd_beta_confidence",  "insufficient_data")
+        rate_line = (
+            f"rate_beta={rb:.2f}%/100bps (t={b.get('rate_t')}, {rate_conf})"
+            if rate_conf in ("suggestive", "stronger")
+            else "rate factor: insufficient data (t<1.5) — not reliable"
+        )
+        usd_line = (
+            f"usd_beta={ub:.2f}%/1%UUP (t={b.get('usd_t')}, {usd_conf})"
+            if usd_conf in ("suggestive", "stronger")
+            else "usd factor: insufficient data (t<1.5) — not reliable"
+        )
+        evidence_lines.append(
+            f"Measured betas for {ticker}: {rate_line}, {usd_line}, "
+            f"market_beta={b.get('market_beta', 0):.2f}, R²={r2:.2f}, n={b.get('n_weeks')}wk"
+        )
+    evidence_block = ("\n" + "\n".join(evidence_lines) + "\n") if evidence_lines else ""
+    return f"""You are a quantitative analyst. Score each ticker's structural macro exposure on 4 dimensions from 1-10, with a specific reason for each score.
+
+Structural exposure measures how sensitive each company's business is to each macro factor — independent of current market conditions. Score based on business model, revenue geography, balance sheet structure, and sector characteristics.
+{evidence_block}
+Scoring definitions (scale is dimension-specific — read each label carefully):
+{dim_defs}
+
+Tickers to score: {ticker}
+
+Return ONLY valid JSON. Each dimension must include a score AND a one-sentence reason explaining specifically why that score applies to this ticker:
+{{
+  "TICKER1": {{
+    "rate_sensitivity": {{"score": <1-10>, "reason": "<why this specific score for this ticker>"}},
+    "inflation_hedge": {{"score": <1-10>, "reason": "<why this specific score for this ticker>"}},
+    "dollar_sensitivity": {{"score": <1-10>, "reason": "<why this specific score for this ticker>"}},
+    "geopolitical_risk": {{"score": <1-10>, "reason": "<why this specific score for this ticker>"}},
+    "note": "<one sentence overall summary>"
+  }}
+}}"""
+
+
+def _compute_scorer_contract_hash() -> str:
+    """Content hash over all scoring contract components that define compatibility (0531).
+    Changes to MACRO_DIMS, model, temperature, num_predict, or the prompt template
+    all produce a different hash, automatically invalidating stale acceptance records.
+    """
+    import ollama_client
+    contract = {
+        "macro_dims":      MACRO_DIMS,
+        "model_identity":  ollama_client.DEFAULT_MODEL,
+        "temperature":     _MACRO_SCORE_TEMPERATURE,
+        "num_predict":     _MACRO_SCORE_NUM_PREDICT,
+        "schema_version":  MACRO_SCORE_SCHEMA_VERSION,
+        "prompt_template": _build_macro_score_request("__TICKER__", {}, None),
+    }
+    return hashlib.sha256(
+        json.dumps(contract, sort_keys=True).encode()
+    ).hexdigest()
+
 
 def _stability_class(stdev) -> str:
     """Map per-dim stdev to stability class (0506)."""
@@ -645,35 +758,45 @@ def _stability_class(stdev) -> str:
 
 
 def _accepted_dim_state(ticker: str, dim: str, conn) -> dict:
-    """Return the accepted dimension state for ticker×dim from the active contract (0525).
+    """Return the accepted dimension state for ticker×dim from the active contract (0525, 0531).
     Single source of truth for both usability gate and *_validated_stability fields.
-    Returns dict with: stability_class, mean_score, stddev, n_samples, record_id, usable (bool).
-    All values are None / False when no active acceptance or no matching validation row."""
+    Returns dict with: stability_class, mean_score, stddev, n_samples, record_id, usable (bool),
+    usable_reason (str|None). Returns usable=False with usable_reason='acceptance_stale_scorer_contract'
+    when the current scoring contract differs from the one accepted (0531)."""
     default = {"stability_class": None, "mean_score": None, "stddev": None,
-                "n_samples": None, "record_id": None, "usable": False}
+               "n_samples": None, "record_id": None, "usable": False, "usable_reason": None}
     try:
         rec = conn.execute(
-            "SELECT record_id FROM macro_acceptance_state "
+            "SELECT record_id, scorer_contract_hash FROM macro_acceptance_state "
             "WHERE contract='macro_validation_v1' AND record_id IS NOT NULL "
             "ORDER BY accepted_at DESC LIMIT 1"
         ).fetchone()
         if not rec:
             return default
+        record_id, stored_hash = rec[0], rec[1]
+        if stored_hash is not None:
+            try:
+                if _compute_scorer_contract_hash() != stored_hash:
+                    return {**default, "record_id": record_id,
+                            "usable_reason": "acceptance_stale_scorer_contract"}
+            except Exception:
+                pass
         row = conn.execute(
             "SELECT stability_class, mean_score, stddev, n_samples FROM macro_dimension_validation "
             "WHERE acceptance_record_id=? AND ticker=? AND dimension=?",
-            (rec[0], ticker, dim)
+            (record_id, ticker, dim)
         ).fetchone()
         if not row:
-            return {**default, "record_id": rec[0]}
+            return {**default, "record_id": record_id}
         cls = row[0]
         return {
             "stability_class": cls,
             "mean_score":      row[1],
             "stddev":          row[2],
             "n_samples":       row[3],
-            "record_id":       rec[0],
+            "record_id":       record_id,
             "usable":          cls in ("stable", "borderline"),
+            "usable_reason":   None,
         }
     except Exception:
         return default
@@ -2302,9 +2425,8 @@ def compute_macro_health() -> dict:
 
 
 def generate_holding_macro_scores(force: bool = False) -> dict:
-    """
-    Score each holding on 4 macro dimensions (1–10 scale).
-    Batches tickers in groups of 8. Skips tickers scored within the last 7 days.
+    """Score each holding on 4 macro dimensions (1–10 scale), BATCH=1 per LLM call.
+    Skips tickers scored within the last 7 days unless force=True.
     Returns {ticker: {rate_sensitivity, inflation_hedge, dollar_sensitivity, geopolitical_risk, note}}.
     """
     _init_ai_tables()
@@ -2445,89 +2567,22 @@ def generate_holding_macro_scores(force: bool = False) -> dict:
         batch = company_tickers[i:i + BATCH]
         ticker_list = ", ".join(batch)
 
-        # Structural exposure only — no regime inputs. See 0464.
-        # Use dimension-specific scale labels: risk dims use exposure framing, benefit dim uses protection framing.
-        dim_defs = "\n".join(
-            f"- {dim} ({'1=low inflation protection, 10=strong inflation protection' if meta.get('direction') == 'benefit' else '1=low exposure, 10=high exposure'}): {meta['prompt_def']}"
-            for dim, meta in MACRO_DIMS.items()
-        )
-
-        # Build company evidence block for this ticker (0466)
-        evidence_lines = []
+        # Build evidence and betas per ticker; prompt built via canonical function (0529)
         betas_by_ticker = {}
         evidence_by_ticker = {}
         for tk in batch:
             ev = _fetch_company_evidence(tk, _evidence_conn)
             evidence_by_ticker[tk] = ev
-            if ev.get("evidence_quality") not in ("none", "fund"):
-                parts = []
-                if ev.get("sector"):
-                    parts.append(f"sector={ev['sector']}")
-                if ev.get("gross_margin_pct") is not None:
-                    parts.append(f"gross_margin={ev['gross_margin_pct']:.1f}%")
-                if ev.get("net_debt") is not None:
-                    parts.append(f"net_debt=${ev['net_debt']:.0f}M")
-                if ev.get("interest_coverage") is not None:
-                    parts.append(f"interest_coverage={ev['interest_coverage']:.1f}x")
-                if ev.get("foreign_rev_pct") is not None:
-                    parts.append(f"foreign_rev={ev['foreign_rev_pct']:.1f}%")
-                if ev.get("revenue_ttm") is not None:
-                    parts.append(f"revenue_ttm=${ev['revenue_ttm']:.0f}M")
-                if ev.get("geo_hq_country"):
-                    parts.append(f"hq={ev['geo_hq_country']}")
-                if ev.get("geo_major_regions"):
-                    parts.append(f"regions={ev['geo_major_regions']}")
-                if ev.get("geo_revenue_domestic_pct") is not None:
-                    parts.append(f"domestic_rev={ev['geo_revenue_domestic_pct']:.0f}%")
-                if ev.get("geo_sanctions_exposure") and ev["geo_sanctions_exposure"] != "none_known":
-                    parts.append(f"sanctions={ev['geo_sanctions_exposure']}")
-                if ev.get("geo_tariff_sensitivity") and ev["geo_tariff_sensitivity"] != "low":
-                    parts.append(f"tariff_sensitivity={ev['geo_tariff_sensitivity']}")
-                if parts:
-                    evidence_lines.append(f"Company data for {tk}: {', '.join(parts)}")
-            # Compute betas (0467 / 0473 / 0483)
             betas = _compute_equity_betas(tk)
             if betas:
                 betas_by_ticker[tk] = betas
-                rb = betas.get("rate_beta_100bp_return_pct")
-                ub = betas.get("usd_beta_1pct_return_pct")
-                r2 = betas.get("r_squared")
-                rate_conf = betas.get("rate_beta_confidence", "insufficient_data")
-                usd_conf  = betas.get("usd_beta_confidence",  "insufficient_data")
-                if rate_conf in ("suggestive", "stronger"):
-                    rate_line = f"rate_beta={rb:.2f}%/100bps (t={betas.get('rate_t')}, {rate_conf})"
-                else:
-                    rate_line = "rate factor: insufficient data (t<1.5) — not reliable"
-                if usd_conf in ("suggestive", "stronger"):
-                    usd_line = f"usd_beta={ub:.2f}%/1%UUP (t={betas.get('usd_t')}, {usd_conf})"
-                else:
-                    usd_line = "usd factor: insufficient data (t<1.5) — not reliable"
-                evidence_lines.append(
-                    f"Measured betas for {tk}: {rate_line}, {usd_line}, "
-                    f"market_beta={betas.get('market_beta', 0):.2f}, R²={r2:.2f}, n={betas.get('n_weeks')}wk"
-                )
 
-        evidence_block = ("\n" + "\n".join(evidence_lines) + "\n") if evidence_lines else ""
-
-        prompt = f"""You are a quantitative analyst. Score each ticker's structural macro exposure on 4 dimensions from 1-10, with a specific reason for each score.
-
-Structural exposure measures how sensitive each company's business is to each macro factor — independent of current market conditions. Score based on business model, revenue geography, balance sheet structure, and sector characteristics.
-{evidence_block}
-Scoring definitions (scale is dimension-specific — read each label carefully):
-{dim_defs}
-
-Tickers to score: {ticker_list}
-
-Return ONLY valid JSON. Each dimension must include a score AND a one-sentence reason explaining specifically why that score applies to this ticker:
-{{
-  "TICKER1": {{
-    "rate_sensitivity": {{"score": <1-10>, "reason": "<why this specific score for this ticker>"}},
-    "inflation_hedge": {{"score": <1-10>, "reason": "<why this specific score for this ticker>"}},
-    "dollar_sensitivity": {{"score": <1-10>, "reason": "<why this specific score for this ticker>"}},
-    "geopolitical_risk": {{"score": <1-10>, "reason": "<why this specific score for this ticker>"}},
-    "note": "<one sentence overall summary>"
-  }}
-}}"""
+        _tk_single = batch[0]
+        prompt = _build_macro_score_request(
+            _tk_single,
+            evidence_by_ticker[_tk_single],
+            betas_by_ticker.get(_tk_single),
+        )
 
         # Wait for server to be ready before each batch (it may have restarted)
         for _attempt in range(30):
@@ -2542,7 +2597,6 @@ Return ONLY valid JSON. Each dimension must include a score AND a one-sentence r
             continue
 
         # 0507: adaptive N per dimension based on stability class
-        _tk_single = batch[0]
         _n_per_dim = {
             _d: (_n_samples_for_dim(_tk_single, _d, _evidence_conn) if _evidence_conn else 3)
             for _d in _MACRO_SCORE_DIMS
@@ -2559,7 +2613,7 @@ Return ONLY valid JSON. Each dimension must include a score AND a one-sentence r
             try:
                 for tok in ollama_client.stream_generate(
                     prompt, model=ollama_client.DEFAULT_MODEL,
-                    temperature=0.2, num_predict=1600
+                    temperature=_MACRO_SCORE_TEMPERATURE, num_predict=_MACRO_SCORE_NUM_PREDICT
                 ):
                     _ft += tok
             except Exception as e:

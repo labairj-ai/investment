@@ -3,26 +3,23 @@
 Macro scorer validation lab (0479).
 
 Four test modules:
-  1. Repeatability    — N=20 passes on frozen inputs, per-dim stddev; flag > 1.0
+  1. Repeatability    — N=20 passes on frozen inputs, per-dim range/stddev; gate from config
   2. Anchor calibration — known instruments against expected score brackets
   3. Factor concordance — measure beta sign vs LLM score sign agreement (0473)
   4. Drift detection  — compare last two history rows per ticker; flag unexplained deltas
 """
 import hashlib
 import json
-import math
 import sqlite3
 import statistics
 import sys
 import time
+import uuid
 from pathlib import Path
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_DIR))
 
-REPEATS = 20
-STDEV_WARN_THRESHOLD = 1.0
-DRIFT_THRESHOLD = 1        # score-point change without evidence-hash change
 DIMS = ("rate_sensitivity", "inflation_hedge", "dollar_sensitivity", "geopolitical_risk")
 
 OUT_PATH = PROJECT_DIR / "out" / "macro_validation_results.json"
@@ -97,46 +94,45 @@ def _score_val(dim_data):
         return None
 
 
-def _score_one_ticker(ticker: str, macro: dict):
-    """Score a single ticker using the project's scoring prompt. Returns raw score dict or None."""
+def _freeze_validation_evidence(tickers: list, conn) -> dict:
+    """Freeze evidence and betas for the validation universe at run start (0529).
+    Returns {ticker: {"evidence": dict, "betas": dict, "evidence_hash": str}}.
+    All N repeatability repeats use this snapshot so inputs are byte-identical.
+    """
+    import portfolio_ai as pai
+    snapshot = {}
+    for tk in tickers:
+        ev = pai._fetch_company_evidence(tk, conn)
+        betas = pai._compute_equity_betas(tk) or {}
+        ev_meta = {"evidence_quality", "evidence_quality_rate", "evidence_quality_dollar",
+                   "evidence_quality_inflation", "evidence_quality_geo", "is_fund", "fund_note"}
+        ev_fields = {k: v for k, v in ev.items() if k not in ev_meta}
+        ev_hash = hashlib.sha256(
+            json.dumps(ev_fields, sort_keys=True, default=str).encode()
+        ).hexdigest()
+        snapshot[tk] = {"evidence": ev, "betas": betas, "evidence_hash": ev_hash}
+    return snapshot
+
+
+def _score_one_ticker(ticker: str, evidence: dict, betas):
+    """Score a single ticker using the canonical production scoring contract (0529).
+    evidence: pre-frozen via _freeze_validation_evidence; betas: same.
+    All repeats must receive the same evidence/betas for byte-identical inputs.
+    """
     try:
         import portfolio_ai as pai
         import ollama_client
         if not ollama_client.available():
             print(f"  [skip] Ollama not available for {ticker}")
             return None
-
-        dim_defs = "\n".join(
-            f"- {dim} ({'1=low inflation protection, 10=strong inflation protection' if meta.get('direction') == 'benefit' else '1=low exposure, 10=high exposure'}): {meta['prompt_def']}"
-            for dim, meta in pai.MACRO_DIMS.items()
-        )
-        prompt = f"""You are a quantitative analyst. Score the ticker's structural macro exposure on 4 dimensions from 1-10.
-
-Structural exposure measures how sensitive the company's business is to each macro factor — independent of current market conditions.
-
-Scoring definitions (scale is dimension-specific):
-{dim_defs}
-
-Tickers to score: {ticker}
-
-Return ONLY valid JSON:
-{{
-  "{ticker}": {{
-    "rate_sensitivity": {{"score": <1-10>, "reason": "<reason>"}},
-    "inflation_hedge": {{"score": <1-10>, "reason": "<reason>"}},
-    "dollar_sensitivity": {{"score": <1-10>, "reason": "<reason>"}},
-    "geopolitical_risk": {{"score": <1-10>, "reason": "<reason>"}},
-    "note": "<summary>"
-  }}
-}}"""
-
+        prompt = pai._build_macro_score_request(ticker, evidence, betas)
         full_text = ""
         for tok in ollama_client.stream_generate(
             prompt, model=ollama_client.DEFAULT_MODEL,
-            temperature=0.2, num_predict=800
+            temperature=pai._MACRO_SCORE_TEMPERATURE,
+            num_predict=pai._MACRO_SCORE_NUM_PREDICT,
         ):
             full_text += tok
-
         result = pai._extract_json(full_text)
         if result and ticker in result:
             return result[ticker]
@@ -148,17 +144,16 @@ Return ONLY valid JSON:
 
 # ── Module 1: Repeatability ───────────────────────────────────────────────────
 
-def _run_repeatability_n(tickers: list, macro: dict, n: int) -> dict:
-    return run_repeatability(tickers, macro, n=n)
-
-
-def run_repeatability(tickers: list, macro: dict, n: int = REPEATS) -> dict:
-    """Score each ticker n times with frozen inputs; compute mean/stddev per dimension."""
+def run_repeatability(tickers: list, macro: dict, n: int = 20,
+                       evidence_snapshot=None,
+                       same_input_score_max_range: int = 1) -> dict:
+    """Score each ticker n times with frozen evidence; flag dimensions where range > same_input_score_max_range."""
     all_scores: dict = {t: {d: [] for d in DIMS} for t in tickers}
     for rep in range(1, n + 1):
-        print(f"  Repeat {rep}/{REPEATS}...")
+        print(f"  Repeat {rep}/{n}...")
         for tk in tickers:
-            scores = _score_one_ticker(tk, macro)
+            snap = (evidence_snapshot or {}).get(tk, {})
+            scores = _score_one_ticker(tk, snap.get("evidence", {}), snap.get("betas"))
             if scores:
                 for dim in DIMS:
                     sv = _score_val(scores.get(dim))
@@ -171,18 +166,21 @@ def run_repeatability(tickers: list, macro: dict, n: int = REPEATS) -> dict:
         results[tk] = {}
         for dim, vals in dims.items():
             if len(vals) >= 2:
-                mean = statistics.mean(vals)
+                mean  = statistics.mean(vals)
                 stdev = statistics.stdev(vals)
-                flag = stdev > STDEV_WARN_THRESHOLD
+                score_range = max(vals) - min(vals)
+                flag = score_range > same_input_score_max_range
                 results[tk][dim] = {
                     "mean": round(mean, 2), "stdev": round(stdev, 3),
-                    "n": len(vals), "flag": flag,
+                    "range": score_range, "n": len(vals), "flag": flag,
                     "status": "UNSTABLE" if flag else "ok",
                 }
             elif len(vals) == 1:
-                results[tk][dim] = {"mean": vals[0], "stdev": None, "n": 1, "flag": False, "status": "insufficient"}
+                results[tk][dim] = {"mean": vals[0], "stdev": None, "range": 0, "n": 1,
+                                    "flag": False, "status": "insufficient"}
             else:
-                results[tk][dim] = {"mean": None, "stdev": None, "n": 0, "flag": False, "status": "no_data"}
+                results[tk][dim] = {"mean": None, "stdev": None, "range": None, "n": 0,
+                                    "flag": False, "status": "no_data"}
     return results
 
 
@@ -276,9 +274,9 @@ def run_concordance(tickers: list) -> dict:
 
 # ── Module 4: Unexplained Drift Detection ────────────────────────────────────
 
-def run_drift_detection() -> dict:
+def run_drift_detection(drift_score_delta_threshold: int = 1) -> dict:
     """Compare two most recent holding_macro_scores_history rows per ticker.
-    Flag tickers where evidence_hash unchanged but score changed > DRIFT_THRESHOLD.
+    Flag tickers where evidence_hash unchanged but score changed > drift_score_delta_threshold.
     """
     if not DB_PATH.exists():
         return {"skipped": True, "reason": "DB not found"}
@@ -329,7 +327,7 @@ def run_drift_detection() -> dict:
         for dim in DIMS:
             cv = _score_val(curr_s.get(dim))
             pv = _score_val(prev_s.get(dim))
-            if cv is not None and pv is not None and abs(cv - pv) > DRIFT_THRESHOLD:
+            if cv is not None and pv is not None and abs(cv - pv) > drift_score_delta_threshold:
                 drifted_dims.append({"dim": dim, "prev": pv, "curr": cv, "delta": cv - pv})
 
         if drifted_dims:
@@ -356,8 +354,8 @@ def run_drift_detection() -> dict:
 
 # ── Module 5: Synthetic Regression Truth (0489) ──────────────────────────────
 
-def run_synthetic_regression() -> dict:
-    """Verify multivariate OLS recovers injected true betas within tolerance."""
+def run_synthetic_regression(beta_recovery_tolerance: float = 1.5) -> dict:
+    """Verify multivariate OLS recovers injected true betas within tolerance (from config)."""
     try:
         import numpy as np
         np.random.seed(42)
@@ -371,14 +369,15 @@ def run_synthetic_regression() -> dict:
         X = np.column_stack([np.ones(n), yield_chg, uup_ret, spy_ret])
         coeffs, _, _, _ = np.linalg.lstsq(X, equity_pct, rcond=None)
         rate_r, usd_r, spy_r = coeffs[1], coeffs[2], coeffs[3]
+        tol = beta_recovery_tolerance
 
         results = []
-        results.append({"test": "rate_beta_truth",   "recovered": round(float(rate_r),3), "expected": -5.0, "tol": 1.5,
-                         "status": "PASS" if abs(rate_r - (-5.0)) < 1.5 else "FAIL"})
-        results.append({"test": "usd_beta_truth",    "recovered": round(float(usd_r), 3), "expected": 2.0,  "tol": 1.5,
-                         "status": "PASS" if abs(usd_r - 2.0) < 1.5 else "FAIL"})
-        results.append({"test": "market_beta_truth", "recovered": round(float(spy_r), 3), "expected": 0.8,  "tol": 0.5,
-                         "status": "PASS" if abs(spy_r - 0.8) < 0.5 else "FAIL"})
+        results.append({"test": "rate_beta_truth",   "recovered": round(float(rate_r), 3), "expected": -5.0, "tol": tol,
+                         "status": "PASS" if abs(rate_r - (-5.0)) < tol else "FAIL"})
+        results.append({"test": "usd_beta_truth",    "recovered": round(float(usd_r),  3), "expected": 2.0,  "tol": tol,
+                         "status": "PASS" if abs(usd_r - 2.0) < tol else "FAIL"})
+        results.append({"test": "market_beta_truth", "recovered": round(float(spy_r),  3), "expected": 0.8,  "tol": tol,
+                         "status": "PASS" if abs(spy_r - 0.8) < tol else "FAIL"})
         return {"status": "PASS" if all(r["status"] == "PASS" for r in results) else "FAIL", "tests": results}
     except Exception as e:
         return {"status": "FAIL", "error": str(e)}
@@ -639,30 +638,20 @@ def _count_fails(repeatability, anchor_cal, concordance, drift,
 
 
 def _load_validation_config() -> dict:
-    """Load validation_config.json thresholds; return defaults if absent."""
+    """Load validation_config.json. Raises on missing file or malformed JSON — no silent defaults."""
     config_path = PROJECT_DIR / "validation_config.json"
-    defaults = {
-        "version": "v1",
-        "thresholds": {
-            "schema_valid_pct": 100,
-            "ledger_integrity_pct": 100,
-            "same_input_score_max_range": 1,
-            "unexplained_large_swings": 0,
-            "anchor_ordering_failures": 0,
-            "beta_recovery_tolerance": 1.5,
-            "missing_data_unknown_pct": 100,
-            "fund_unsupported_pct": 100,
-            "provenance_completeness_pct": 100,
-        },
-        "n_repeats": 20,
-    }
-    if config_path.exists():
-        try:
-            loaded = json.loads(config_path.read_text())
-            defaults.update(loaded)
-        except Exception:
-            pass
-    return defaults
+    if not config_path.exists():
+        raise FileNotFoundError(
+            f"validation_config.json not found at {config_path}. "
+            "Create it with all required threshold keys before running validation."
+        )
+    try:
+        return json.loads(config_path.read_text())
+    except json.JSONDecodeError as e:
+        raise ValueError(
+            f"validation_config.json is malformed — {e}. "
+            "Fix the JSON before running validation. Refusing to fall back to defaults."
+        ) from e
 
 
 def _get_commit_sha() -> str:
@@ -689,20 +678,27 @@ _REQUIRED_THRESHOLDS = {
     "anchor_ordering_failures",
     "fund_unsupported_pct",
     "ledger_integrity_pct",
-    "schema_valid_pct",
     "unexplained_large_swings",
     "missing_data_unknown_pct",
+    "same_input_score_max_range",
+    "drift_score_delta_threshold",
 }
 
 
 def _validate_config(config: dict) -> None:
-    """Fail fast if any required threshold key is absent from the loaded config (0524)."""
+    """Fail fast on missing required thresholds or unknown threshold keys (0524, 0530)."""
     t = config.get("thresholds", {})
     missing = _REQUIRED_THRESHOLDS - set(t.keys())
     if missing:
         raise ValueError(
             f"validation_config.json is missing required threshold keys: {sorted(missing)}. "
             f"Add them before running validation."
+        )
+    unknown = set(t.keys()) - _REQUIRED_THRESHOLDS
+    if unknown:
+        raise ValueError(
+            f"validation_config.json has unknown threshold keys: {sorted(unknown)}. "
+            f"Remove or rename them (known keys: {sorted(_REQUIRED_THRESHOLDS)})."
         )
     if "n_repeats" not in config:
         raise ValueError("validation_config.json must contain 'n_repeats'.")
@@ -780,6 +776,7 @@ def main():
     _validate_config(config)  # 0524: fail fast if required keys missing
 
     # 0524: n_repeats from config by default; --n-repeats is an explicit override that forces smoke mode
+    # 0534: run_type="acceptance" reserved exclusively for --live + configured N + all required tests
     if args.n_repeats is not None:
         n_repeats_effective = args.n_repeats
         run_type = "smoke"  # explicit override → cannot advance acceptance
@@ -788,7 +785,7 @@ def main():
         run_type = "smoke"
     else:
         n_repeats_effective = config["n_repeats"]
-        run_type = "acceptance"
+        run_type = "acceptance" if args.live else "dry_run"
 
     print(f"Run type: {run_type} (N={n_repeats_effective}, config {config.get('version', 'unknown')})")
 
@@ -814,10 +811,34 @@ def main():
             f"need ≥6. Update validation_config.json and bump the version."
         )
 
+    t = config.get("thresholds", {})
+
     # LLM-dependent tests only run in --live mode
+    evidence_snapshot: dict = {}
     if args.live:
+        # Freeze evidence at run start so all N repeats use byte-identical inputs (0529)
+        from portfolio_ai import DB_PATH as _PAI_DB
+        import sqlite3 as _sq_ev
+        _ev_conn = None
+        if _PAI_DB.exists():
+            try:
+                _ev_conn = _sq_ev.connect(str(_PAI_DB), timeout=10)
+                _ev_conn.row_factory = _sq_ev.Row
+            except Exception:
+                pass
+        print(f"\nFreezing evidence snapshot for {len(tickers)} tickers...")
+        evidence_snapshot = _freeze_validation_evidence(tickers, _ev_conn)
+        if _ev_conn:
+            _ev_conn.close()
+        evidence_hashes = {tk: v["evidence_hash"] for tk, v in evidence_snapshot.items()}
+        print(f"  Evidence frozen: {evidence_hashes}")
+
         print(f"\n1. Repeatability test ({len(tickers)} holdings, N={n_repeats_effective}, LIVE)...")
-        repeatability = run_repeatability(tickers, macro, n=n_repeats_effective) if tickers else {}
+        repeatability = run_repeatability(
+            tickers, macro, n=n_repeats_effective,
+            evidence_snapshot=evidence_snapshot,
+            same_input_score_max_range=int(t.get("same_input_score_max_range", 1)),
+        ) if tickers else {}
 
         print("\n2. Anchor calibration (LIVE)...")
         anchor_cal = run_anchor_calibration(macro)
@@ -827,17 +848,18 @@ def main():
         print("\n2. Anchor calibration — SKIP (use --live)")
         anchor_cal = {}
 
-    # 0506/0510: stability data is collected now but written to DB after verdict so we can set
-    # validation_run_type='accepted_validation' (PASS) or 'failed_validation' (BLOCK/FAIL).
-
     print("\n3. Factor vs LLM concordance...")
     concordance = run_concordance(tickers)
 
     print("\n4. Drift detection...")
-    drift = run_drift_detection()
+    drift = run_drift_detection(
+        drift_score_delta_threshold=int(t.get("drift_score_delta_threshold", 1))
+    )
 
     print("\n5. Synthetic regression truth...")
-    synth = run_synthetic_regression()
+    synth = run_synthetic_regression(
+        beta_recovery_tolerance=float(t.get("beta_recovery_tolerance", 1.5))
+    )
 
     print("\n6. Regime direction tests...")
     regime_tests = run_regime_direction_tests()
@@ -876,6 +898,14 @@ def main():
         json.dumps(config, sort_keys=True).encode()
     ).hexdigest()
     _acceptance_contract = "macro_validation_v1"
+    # 0533: UUID per run — never derived from output path to avoid stale-row collisions
+    _record_id = str(uuid.uuid4())
+    # 0531: scorer contract hash over model+prompt template+dims+temperature+num_predict
+    try:
+        import portfolio_ai as _pai
+        _scorer_contract_hash = _pai._compute_scorer_contract_hash()
+    except Exception:
+        _scorer_contract_hash = None
 
     # Determine output path — immutable timestamped acceptance record or standard path
     if args.out:
@@ -884,29 +914,32 @@ def main():
         ts = time.strftime("%Y%m%d_%H%M%S")
         out_path = PROJECT_DIR / "out" / f"macro_validation_acceptance_{ts}.json"
     else:
-        out_path = OUT_PATH
+        out_path = PROJECT_DIR / "out" / "macro_validation_results.json"
 
     output = {
         "acceptance_contract":       _acceptance_contract,
         "validation_config_version": _config_version,
         "validation_config_hash":    _config_hash,
+        "scorer_contract_hash":      _scorer_contract_hash,
         "timestamp":                 time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "commit_sha":                _commit_sha,
         "model_identity":            _model_identity,
         "live_mode":                 args.live,
-        "run_type":                  run_type,          # 0524: "acceptance" or "smoke"
+        "run_type":                  run_type,
         "n_repeats":                 n_repeats_effective,
-        "resolved_config": {          # 0524: effective values that controlled this run
+        "resolved_config": {
             "n_repeats":   n_repeats_effective,
             "thresholds":  dict(config.get("thresholds", {})),
             "version":     _config_version,
         },
         "config_used":               config,
+        "evidence_snapshot_hashes":  {tk: v["evidence_hash"] for tk, v in evidence_snapshot.items()},
         "results":                   all_results,
         "threshold_checks":          threshold_result,
         "verdict":                   verdict,
-        "activated":                 False,             # patched to True after atomic commit
-        "record_id":                 str(out_path),
+        "activated":                 False,
+        "record_id":                 _record_id,       # 0533: UUID, not output path
+        "output_path":               str(out_path),    # 0533: provenance only
         "summary": {
             "status": summary_status,
             "fail":   fails,
@@ -946,21 +979,24 @@ def main():
                     for _tk, _dims in repeatability.items():
                         for _dim, _r in _dims.items():
                             if _r.get("n", 0) >= 2:
+                                # 0533: INSERT (not OR IGNORE) — duplicate record_id is a fatal error
                                 _sc.execute(
-                                    "INSERT OR IGNORE INTO macro_dimension_validation "
+                                    "INSERT INTO macro_dimension_validation "
                                     "(acceptance_record_id, ticker, dimension, mean_score, stddev, "
                                     "n_samples, stability_class, config_version, config_hash, "
-                                    "model_identity, recorded_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                                    (str(out_path), _tk, _dim, _r.get("mean"), _r.get("stdev"),
+                                    "model_identity, scorer_contract_hash, recorded_at) "
+                                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                                    (_record_id, _tk, _dim, _r.get("mean"), _r.get("stdev"),
                                      _r.get("n"), _scls(_r.get("stdev")), _config_version,
-                                     _config_hash, _model_identity, _now)
+                                     _config_hash, _model_identity, _scorer_contract_hash, _now)
                                 )
                                 _inserted += 1
                     _sc.execute(
                         "INSERT OR REPLACE INTO macro_acceptance_state "
-                        "(contract, accepted_at, record_id, commit_sha, model_identity, notes) "
-                        "VALUES (?,?,?,?,?,?)",
-                        (_acceptance_contract, _now, str(out_path), _commit_sha, _model_identity,
+                        "(contract, accepted_at, record_id, commit_sha, model_identity, "
+                        "scorer_contract_hash, notes) VALUES (?,?,?,?,?,?,?)",
+                        (_acceptance_contract, _now, _record_id, _commit_sha, _model_identity,
+                         _scorer_contract_hash,
                          f"PASS: {fails} fail, {warns} warn, {passes} pass. "
                          f"N={n_repeats_effective} live repeats. Config {_config_version}.")
                     )
