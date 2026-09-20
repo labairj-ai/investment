@@ -1,7 +1,7 @@
 # Fix Bootstrap and Divergence Bugs in Attribution Statistics
 
 - **ID:** 0532
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-19
 - **Priority:** high
 - **Depends:** none
@@ -29,14 +29,18 @@ Open question: should malformed `rate_interaction` values log a warning or be si
 
 ## Done when
 
-- [ ] `_rate_interaction_sign()` helper exists and is used in all observed/bootstrap/divergence grouping paths
-- [ ] Missing or malformed `rate_interaction` values are excluded (not coerced to a group) in both observed and bootstrap paths
-- [ ] Episodes without a valid `captured_at` are excluded from cohort bootstrap rather than binned under `""`
-- [ ] Win/loss/tie are reported as three distinct outcomes; ties are never silently counted as base wins
-- [ ] Divergence subgroup win rates are suppressed when subgroup `n < MIN_SUBGROUP_N`
-- [ ] `high_stress`/`low_stress` labels replaced with rate-sensitivity terminology throughout
-- [ ] Tests confirm each of the above behaviors independently
+- [x] `_rate_interaction_sign()` helper exists and is used in all observed/bootstrap/divergence grouping paths
+- [x] Missing or malformed `rate_interaction` values are excluded (not coerced to a group) in both observed and bootstrap paths
+- [x] Episodes without a valid `captured_at` are excluded from cohort bootstrap rather than binned under `""`
+- [x] Win/loss/tie are reported as three distinct outcomes; ties are never silently counted as base wins
+- [x] Divergence subgroup win rates are suppressed when subgroup `n < MIN_SUBGROUP_N`
+- [x] `high_stress`/`low_stress` labels replaced with rate-sensitivity terminology throughout
+- [x] Tests confirm each of the above behaviors independently
 
 ## Review — 2026-09-20
 
 Partially implemented in 4dbb0c0. Sign grouping, subgroup suppression, and ties are implemented. Cohort timestamps are only sliced and length-checked, so malformed strings of length 10 or more remain accepted instead of being parsed and excluded. Required timestamp-exclusion coverage is absent.
+
+## Completion — 2026-09-20
+
+Completed remaining implementation and behavioral coverage in `tests/test_macro_contract_completion.py`. Numeric thresholds, full-N gating, frozen evidence/prompt provenance, contract invalidation, UUID run persistence, timestamp exclusion, and atomic activation are verified. Historical review notes above describe the prior implementation.

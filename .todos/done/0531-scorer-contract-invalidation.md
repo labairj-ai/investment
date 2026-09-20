@@ -1,7 +1,7 @@
 # Invalidate Acceptance Automatically on Scorer Contract Change
 
 - **ID:** 0531
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-19
 - **Priority:** high
 - **Depends:** 0529
@@ -29,12 +29,16 @@ Open question: should `scorer_contract_hash` be computed from source code string
 
 ## Done when
 
-- [ ] `scorer_contract_hash` is persisted in `macro_acceptance_state` at acceptance time
-- [ ] `_accepted_dim_state()` computes the current hash and returns `usable=False` with `reason="acceptance_stale_scorer_contract"` on mismatch
-- [ ] Commit SHA is retained as provenance but not used as a compatibility gate
-- [ ] Test confirms each hash-covered component independently triggers invalidation when changed
-- [ ] Production scoring stores the hash so accepted vs. runtime contract can be compared in the audit trail
+- [x] `scorer_contract_hash` is persisted in `macro_acceptance_state` at acceptance time
+- [x] `_accepted_dim_state()` computes the current hash and returns `usable=False` with `reason="acceptance_stale_scorer_contract"` on mismatch
+- [x] Commit SHA is retained as provenance but not used as a compatibility gate
+- [x] Test confirms each hash-covered component independently triggers invalidation when changed
+- [x] Production scoring stores the hash so accepted vs. runtime contract can be compared in the audit trail
 
 ## Review — 2026-09-20
 
 Partially implemented in 4dbb0c0. Acceptance hash comparison exists, but production score rows do not store scorer_contract_hash, and tests do not mutate each contract component independently. The hash also lacks an explicit evidence-schema and aggregation-version component.
+
+## Completion — 2026-09-20
+
+Completed remaining implementation and behavioral coverage in `tests/test_macro_contract_completion.py`. Numeric thresholds, full-N gating, frozen evidence/prompt provenance, contract invalidation, UUID run persistence, timestamp exclusion, and atomic activation are verified. Historical review notes above describe the prior implementation.

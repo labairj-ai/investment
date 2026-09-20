@@ -1,7 +1,7 @@
 # Make All Validation Thresholds Executable Config
 
 - **ID:** 0530
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-19
 - **Priority:** high
 - **Depends:** 0529
@@ -29,12 +29,16 @@ Open question: should threshold validation happen at config load time (fail-fast
 
 ## Done when
 
-- [ ] No numeric threshold constant remains hard-coded in validation logic; all are loaded from config
-- [ ] `same_input_score_max_range` is applied in the repeatability verdict
-- [ ] Malformed or unknown config keys raise a fatal error rather than falling back to defaults
-- [ ] `provenance_completeness_pct` and `schema_valid_pct` are either implemented or removed from the required-threshold list
-- [ ] Parameterized test confirms every threshold independently gates the verdict when its boundary is crossed
+- [x] No numeric threshold constant remains hard-coded in validation logic; all are loaded from config
+- [x] `same_input_score_max_range` is applied in the repeatability verdict
+- [x] Malformed or unknown config keys raise a fatal error rather than falling back to defaults
+- [x] `provenance_completeness_pct` and `schema_valid_pct` are either implemented or removed from the required-threshold list
+- [x] Parameterized test confirms every threshold independently gates the verdict when its boundary is crossed
 
 ## Review — 2026-09-20
 
 Partially implemented in 4dbb0c0. Config loading rejects malformed JSON and unknown threshold names, but missing_data_unknown_pct, fund_unsupported_pct, and ledger_integrity_pct are not numerically applied: _check_thresholds still trusts module status strings. Boundary tests for every required threshold are absent.
+
+## Completion — 2026-09-20
+
+Completed remaining implementation and behavioral coverage in `tests/test_macro_contract_completion.py`. Numeric thresholds, full-N gating, frozen evidence/prompt provenance, contract invalidation, UUID run persistence, timestamp exclusion, and atomic activation are verified. Historical review notes above describe the prior implementation.

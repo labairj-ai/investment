@@ -10,6 +10,7 @@ Four test modules:
 """
 import hashlib
 import json
+import math
 import sqlite3
 import statistics
 import sys
@@ -104,13 +105,12 @@ def _freeze_validation_evidence(tickers: list, conn) -> dict:
     for tk in tickers:
         ev = pai._fetch_company_evidence(tk, conn)
         betas = pai._compute_equity_betas(tk) or {}
-        ev_meta = {"evidence_quality", "evidence_quality_rate", "evidence_quality_dollar",
-                   "evidence_quality_inflation", "evidence_quality_geo", "is_fund", "fund_note"}
-        ev_fields = {k: v for k, v in ev.items() if k not in ev_meta}
-        ev_hash = hashlib.sha256(
-            json.dumps(ev_fields, sort_keys=True, default=str).encode()
-        ).hexdigest()
-        snapshot[tk] = {"evidence": ev, "betas": betas, "evidence_hash": ev_hash}
+        ev_hash = hashlib.sha256(json.dumps(
+            {"evidence": ev, "betas": betas}, sort_keys=True, default=str
+        ).encode()).hexdigest()
+        prompt = pai._build_macro_score_request(tk, ev, betas)
+        snapshot[tk] = {"evidence": ev, "betas": betas, "evidence_hash": ev_hash,
+                        "prompt_hash": hashlib.sha256(prompt.encode()).hexdigest()}
     return snapshot
 
 
@@ -186,12 +186,18 @@ def run_repeatability(tickers: list, macro: dict, n: int = 20,
 
 # ── Module 2: Anchor Calibration ─────────────────────────────────────────────
 
-def run_anchor_calibration(macro: dict) -> dict:
+def run_anchor_calibration(evidence_snapshot: dict) -> dict:
     """Score anchor instruments; compare vs expected brackets."""
     results = {}
     for ticker, anchor in ANCHORS.items():
         print(f"  Scoring anchor {ticker} ({anchor['description']})...")
-        scores = _score_one_ticker(ticker, macro)
+        from portfolio_ai import is_fund
+        if is_fund(ticker):
+            results[ticker] = {"description": anchor["description"], "dims": {},
+                               "status": "UNSUPPORTED", "reason": "Production excludes funds"}
+            continue
+        snap = evidence_snapshot[ticker]
+        scores = _score_one_ticker(ticker, snap["evidence"], snap["betas"])
         anchor_result = {"description": anchor["description"], "dims": {}}
         for dim in DIMS:
             if dim not in anchor:
@@ -297,6 +303,7 @@ def run_drift_detection(drift_score_delta_threshold: int = 1) -> dict:
         ticker_runs.setdefault(r["ticker"], []).append(r)
 
     drift_flags = []
+    comparisons = []
     stable_count = 0
     evidence_changed_count = 0
     unverifiable_count = 0
@@ -327,8 +334,10 @@ def run_drift_detection(drift_score_delta_threshold: int = 1) -> dict:
         for dim in DIMS:
             cv = _score_val(curr_s.get(dim))
             pv = _score_val(prev_s.get(dim))
-            if cv is not None and pv is not None and abs(cv - pv) > drift_score_delta_threshold:
-                drifted_dims.append({"dim": dim, "prev": pv, "curr": cv, "delta": cv - pv})
+            if cv is not None and pv is not None:
+                comparisons.append({"ticker": ticker, "dim": dim, "delta": cv - pv})
+                if abs(cv - pv) > drift_score_delta_threshold:
+                    drifted_dims.append({"dim": dim, "prev": pv, "curr": cv, "delta": cv - pv})
 
         if drifted_dims:
             drift_flags.append({
@@ -345,6 +354,7 @@ def run_drift_detection(drift_score_delta_threshold: int = 1) -> dict:
     return {
         "skipped": False,
         "drift_flags": drift_flags,
+        "comparisons": comparisons,
         "stable_count": stable_count,
         "evidence_changed_count": evidence_changed_count,
         "unverifiable_count": unverifiable_count,
@@ -485,7 +495,7 @@ def run_ledger_integrity() -> dict:
 def print_summary(repeatability: dict, anchor_cal: dict, concordance: dict, drift: dict,
                   synth: dict = None, regime_tests: dict = None,
                   fund_tests: dict = None, ledger: dict = None):
-    print("\n=== 1. REPEATABILITY (N={}) ===".format(REPEATS))
+    print("\n=== 1. REPEATABILITY ===")
     print(f"{'Ticker':<12} {'Dimension':<22} {'Mean':>6} {'StDev':>6} {'N':>3} {'Status'}")
     print("-" * 65)
     for tk, dims in repeatability.items():
@@ -646,7 +656,9 @@ def _load_validation_config() -> dict:
             "Create it with all required threshold keys before running validation."
         )
     try:
-        return json.loads(config_path.read_text())
+        config = json.loads(config_path.read_text())
+        _validate_config(config)
+        return config
     except json.JSONDecodeError as e:
         raise ValueError(
             f"validation_config.json is malformed — {e}. "
@@ -686,364 +698,218 @@ _REQUIRED_THRESHOLDS = {
 
 
 def _validate_config(config: dict) -> None:
-    """Fail fast on missing required thresholds or unknown threshold keys (0524, 0530)."""
-    t = config.get("thresholds", {})
-    missing = _REQUIRED_THRESHOLDS - set(t.keys())
-    if missing:
-        raise ValueError(
-            f"validation_config.json is missing required threshold keys: {sorted(missing)}. "
-            f"Add them before running validation."
-        )
-    unknown = set(t.keys()) - _REQUIRED_THRESHOLDS
+    if not isinstance(config, dict):
+        raise ValueError("validation config must be an object")
+    allowed = {"version", "repeatability_universe", "thresholds", "n_repeats", "prior_block_record"}
+    unknown = {k for k in config if k not in allowed and not k.startswith("amendment_note")}
     if unknown:
-        raise ValueError(
-            f"validation_config.json has unknown threshold keys: {sorted(unknown)}. "
-            f"Remove or rename them (known keys: {sorted(_REQUIRED_THRESHOLDS)})."
-        )
-    if "n_repeats" not in config:
-        raise ValueError("validation_config.json must contain 'n_repeats'.")
+        raise ValueError(f"unknown config keys: {sorted(unknown)}")
+    t = config.get("thresholds", {})
+    if not isinstance(t, dict):
+        raise ValueError("thresholds must be an object")
+    if _REQUIRED_THRESHOLDS - set(t):
+        raise ValueError(f"missing required threshold keys: {sorted(_REQUIRED_THRESHOLDS - set(t))}")
+    if set(t) - _REQUIRED_THRESHOLDS:
+        raise ValueError(f"unknown threshold keys: {sorted(set(t) - _REQUIRED_THRESHOLDS)}")
+    for key, value in t.items():
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+            raise ValueError(f"invalid numeric threshold: {key}")
+        if key.endswith("_pct") and value > 100:
+            raise ValueError(f"percentage outside 0..100: {key}")
+    if type(config.get("n_repeats")) is not int or config["n_repeats"] < 2:
+        raise ValueError("n_repeats must be an integer >= 2")
+    universe = config.get("repeatability_universe")
+    if universe is not None and (not isinstance(universe, list) or not universe
+            or any(not isinstance(tk, str) or not tk.strip() for tk in universe)
+            or len(set(universe)) != len(universe)):
+        raise ValueError("repeatability_universe must contain unique ticker strings")
 
 
 def _check_thresholds(results: dict, config: dict) -> dict:
-    """Evaluate module results against config thresholds (0524: all decisions from config, not hard-coded)."""
-    t = config.get("thresholds", {})
+    """Derive verdicts from measured values, never trust upstream PASS labels."""
+    t = config["thresholds"]
     checks = {}
-
-    # Synthetic regression — beta recovery tolerance from config
-    synth = results.get("synthetic_regression", {})
-    checks["beta_recovery"] = "PASS" if synth.get("status") == "PASS" else "BLOCK"
-
-    # Regime direction — missing_data_unknown_pct controls gate
-    rd = results.get("regime_direction", {})
-    checks["missing_data_unknown"] = "PASS" if rd.get("status") == "PASS" else "BLOCK"
-
-    # Fund classification — fund_unsupported_pct controls gate
-    fc = results.get("fund_classification", {})
-    checks["fund_unsupported"] = "PASS" if fc.get("status") == "PASS" else "BLOCK"
-
-    # Ledger integrity — ledger_integrity_pct controls gate
-    li = results.get("ledger_integrity", {})
-    if li.get("status") == "SKIP":
-        checks["ledger_integrity"] = "SKIP"
-    else:
-        checks["ledger_integrity"] = "PASS" if li.get("status") == "PASS" else "BLOCK"
-
-    # Anchor calibration — anchor_ordering_failures threshold
-    max_ordering_fails = int(t.get("anchor_ordering_failures", 0))
+    def gate(name, ok):
+        checks[name] = "PASS" if ok else "BLOCK"
+    def pct(rows):
+        return 100 * sum(r.get("status") == "PASS" for r in rows) / len(rows) if rows else None
+    def minimum(name, rows, threshold):
+        value = pct(rows)
+        gate(name, value is not None and value >= threshold)
+    synth = results.get("synthetic_regression", {}).get("tests", [])
+    gate("beta_recovery", bool(synth) and all(
+        isinstance(r.get("recovered"), (int, float)) and isinstance(r.get("expected"), (int, float))
+        and math.isfinite(r["recovered"]) and math.isfinite(r["expected"])
+        and abs(r["recovered"] - r["expected"]) <= t["beta_recovery_tolerance"] for r in synth))
+    regime = results.get("regime_direction", {}).get("tests", [])
+    missing = [r for r in regime if r.get("test", "").startswith("missing_") or r.get("test") == "geo_stress_always_none"]
+    direction = [r for r in regime if r not in missing]
+    minimum("missing_data_unknown", missing, t["missing_data_unknown_pct"])
+    gate("regime_direction", bool(direction) and all(r.get("status") == "PASS" for r in direction))
+    funds = results.get("fund_classification", {}).get("tickers", [])
+    minimum("fund_unsupported", [r for r in funds if r.get("expected") == "fund"], t["fund_unsupported_pct"])
+    companies = [r for r in funds if r.get("expected") == "company"]
+    gate("company_classification", bool(companies) and all(r.get("status") == "PASS" for r in companies))
+    ledger = results.get("ledger_integrity", {}).get("runs", [])
+    measured = [{"status": "PASS" if r.get("expected") is not None and
+                 r.get("expected") == r.get("scored", -1) + r.get("failed", -1) else "FAIL"} for r in ledger]
+    minimum("ledger_integrity", measured, t["ledger_integrity_pct"])
     anchor = results.get("anchor_calibration", {})
-    anchor_fails = sum(
-        1 for k, res in anchor.items()
-        if k != "_ordering"
-        for r in res.get("dims", {}).values()
-        if r.get("status") != "PASS"
-    )
-    ordering = anchor.get("_ordering", {})
-    ordering_fails = sum(
-        1 for c in ordering.get("checks", []) if c.get("status") == "FAIL"
-    )
-    checks["anchor_calibration"] = "PASS" if anchor_fails == 0 else "BLOCK"
-    checks["anchor_ordering"] = "PASS" if ordering_fails <= max_ordering_fails else "BLOCK"
-
-    # Drift — unexplained_large_swings threshold
-    max_drift = int(t.get("unexplained_large_swings", 0))
+    dims = [r for tk, res in anchor.items() if tk != "_ordering" and isinstance(res, dict) for r in res.get("dims", {}).values()]
+    gate("anchor_calibration", bool(dims) and all(r.get("actual") is not None
+         and r["expected_range"][0] <= r["actual"] <= r["expected_range"][1] for r in dims))
+    ordering = anchor.get("_ordering", {}).get("checks", [])
+    gate("anchor_ordering", bool(ordering) and all(r.get("lo") is not None and r.get("hi") is not None for r in ordering)
+         and sum(r["lo"] >= r["hi"] for r in ordering) <= t["anchor_ordering_failures"])
     drift = results.get("drift", {})
-    drift_flags = drift.get("drift_flags", [])
-    checks["unexplained_drift"] = "PASS" if len(drift_flags) <= max_drift else "WARN"
+    deltas = drift.get("comparisons")
+    drifted = {r["ticker"] for r in (deltas or []) if abs(r["delta"]) > t["drift_score_delta_threshold"]}
+    gate("unexplained_drift", deltas is not None and not drift.get("skipped")
+         and len(drifted) <= t["unexplained_large_swings"])
+    repeat = results.get("repeatability", {})
+    expected = config.get("repeatability_universe", list(repeat))
+    gate("repeatability", bool(expected) and set(repeat) == set(expected) and all(
+        set(repeat[tk]) == set(DIMS) and all(r.get("n") == config.get("n_repeats")
+        and isinstance(r.get("range"), (int, float)) and math.isfinite(r["range"])
+        and 0 <= r["range"] <= t["same_input_score_max_range"]
+        for r in repeat[tk].values()) for tk in expected))
+    return {"verdict": "PASS" if all(v == "PASS" for v in checks.values()) else "BLOCK",
+            "per_check": checks, "effective_thresholds": dict(t)}
 
-    # Repeatability — warn only (no hard BLOCK threshold in config yet)
-    repeatability = results.get("repeatability", {})
-    unstable = sum(
-        1 for dims in repeatability.values()
-        for r in dims.values() if r.get("status") == "UNSTABLE"
-    )
-    checks["repeatability"] = "PASS" if unstable == 0 else "WARN"
 
-    # Overall verdict: BLOCK if any check is BLOCK, else PASS
-    verdict = "BLOCK" if any(v == "BLOCK" for v in checks.values()) else "PASS"
-    return {"verdict": verdict, "per_check": checks, "effective_thresholds": dict(t)}
+def _run_type(live, smoke, override, verdict):
+    if smoke or override is not None:
+        return "smoke"
+    if not live:
+        return "dry_run"
+    return "acceptance" if verdict == "PASS" else "validation_failed"
+
+
+def _persist_run(db_path, output, timeout=30):
+    """Record each UUID once; atomically activate all dimensions and the pointer."""
+    import portfolio_ai as pai
+    activate = output["run_type"] == "acceptance" and output["verdict"] == "PASS"
+    if activate:
+        if _check_thresholds(output["results"], output["config_used"])["verdict"] != "PASS":
+            raise ValueError("acceptance measurements do not satisfy config")
+        if output["scorer_contract_hash"] != pai._compute_scorer_contract_hash():
+            raise ValueError("scorer contract changed during validation")
+    conn = sqlite3.connect(str(db_path), timeout=timeout)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        record = dict(output, activated=activate)
+        conn.execute("INSERT INTO macro_validation_runs VALUES (?,?,?,?,?,?)", (
+            output["record_id"], output["output_path"], output["run_type"], output["verdict"],
+            json.dumps(record, sort_keys=True), output["timestamp"]))
+        if activate:
+            for ticker, dims in output["results"]["repeatability"].items():
+                provenance = output["evidence_snapshot"][ticker]
+                for dim, r in dims.items():
+                    conn.execute("""INSERT INTO macro_dimension_validation
+                        (acceptance_record_id,ticker,dimension,mean_score,stddev,n_samples,
+                         stability_class,config_version,config_hash,model_identity,scorer_contract_hash,
+                         prompt_hash,evidence_hash,recorded_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+                        output["record_id"], ticker, dim, r["mean"], r["stdev"], r["n"],
+                        pai._stability_class(r["stdev"]), output["validation_config_version"],
+                        output["validation_config_hash"], output["model_identity"], output["scorer_contract_hash"],
+                        provenance["prompt_hash"], provenance["evidence_hash"], output["timestamp"]))
+            conn.execute("""INSERT INTO macro_acceptance_state
+                (contract,accepted_at,record_id,commit_sha,model_identity,scorer_contract_hash,output_path,notes)
+                VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(contract) DO UPDATE SET
+                accepted_at=excluded.accepted_at,record_id=excluded.record_id,commit_sha=excluded.commit_sha,
+                model_identity=excluded.model_identity,scorer_contract_hash=excluded.scorer_contract_hash,
+                output_path=excluded.output_path,notes=excluded.notes""", (
+                output["acceptance_contract"], output["timestamp"], output["record_id"], output["commit_sha"],
+                output["model_identity"], output["scorer_contract_hash"], output["output_path"], "Formal validation PASS"))
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return activate
 
 
 def main():
     import argparse
+    import portfolio_ai as pai
     parser = argparse.ArgumentParser(description="Macro scorer validation lab")
-    parser.add_argument("--live", action="store_true", help="Use live LLM for repeatability/anchor tests")
-    parser.add_argument("--n-repeats", type=int, default=None, help="Override repeat count (smoke-test only; does not advance formal acceptance)")
-    parser.add_argument("--out", type=str, default=None, help="Output file path for acceptance record")
-    parser.add_argument("--smoke", action="store_true", help="Mark run as smoke test — never advances macro_acceptance_state regardless of verdict")
+    parser.add_argument("--live", action="store_true")
+    parser.add_argument("--n-repeats", type=int, default=None, help="Override N; forces smoke mode")
+    parser.add_argument("--out", type=str, default=None)
+    parser.add_argument("--smoke", action="store_true")
     args = parser.parse_args()
-
+    record_id = str(uuid.uuid4())  # allocated before evidence collection or validation
+    started_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     config = _load_validation_config()
-    _validate_config(config)  # 0524: fail fast if required keys missing
-
-    # 0524: n_repeats from config by default; --n-repeats is an explicit override that forces smoke mode
-    # 0534: run_type="acceptance" reserved exclusively for --live + configured N + all required tests
-    if args.n_repeats is not None:
-        n_repeats_effective = args.n_repeats
-        run_type = "smoke"  # explicit override → cannot advance acceptance
-    elif args.smoke:
-        n_repeats_effective = config["n_repeats"]
-        run_type = "smoke"
-    else:
-        n_repeats_effective = config["n_repeats"]
-        run_type = "acceptance" if args.live else "dry_run"
-
-    print(f"Run type: {run_type} (N={n_repeats_effective}, config {config.get('version', 'unknown')})")
-
-    import macro_context
-    print("Loading macro context (frozen for validation)...")
-    macro = macro_context.fetch()
-
-    # 0514: deterministic repeatability_universe from config — no dynamic set-based selection
-    from portfolio_ai import is_fund
-    universe = config.get("repeatability_universe")
-    if not universe:
-        raise ValueError(
-            "repeatability_universe missing from validation_config.json — "
-            "cannot run deterministic validation. Add a list of ≥6 company tickers."
-        )
-    tickers = [t for t in universe if not is_fund(t)]
-    fund_excluded = [t for t in universe if is_fund(t)]
-    if fund_excluded:
-        print(f"  WARNING: {len(fund_excluded)} fund(s) in repeatability_universe excluded: {fund_excluded}")
-    if len(tickers) < 6:
-        raise ValueError(
-            f"repeatability_universe has only {len(tickers)} non-fund tickers after exclusions — "
-            f"need ≥6. Update validation_config.json and bump the version."
-        )
-
-    t = config.get("thresholds", {})
-
-    # LLM-dependent tests only run in --live mode
-    evidence_snapshot: dict = {}
+    n = args.n_repeats if args.n_repeats is not None else config["n_repeats"]
+    if n < 2:
+        raise ValueError("repeat count must be >= 2")
+    tickers = config.get("repeatability_universe", [])
+    if len(tickers) < 6 or any(pai.is_fund(tk) for tk in tickers):
+        raise ValueError("repeatability_universe requires >=6 unique company tickers")
+    contract_hash = pai._compute_scorer_contract_hash()
+    commit_sha = _get_commit_sha()
+    model_identity = _get_model_identity()
+    out_path = Path(args.out) if args.out else PROJECT_DIR / "out" / f"macro_validation_{record_id}.json"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if out_path.exists():
+        raise FileExistsError(f"Refusing to overwrite validation artifact: {out_path}")
+    # Initialize/migrate only the configured production DB (tests redirect to temporary DBs).
+    pai._init_ai_tables()
+    snapshot = {}
+    repeatability, anchor = {}, {}
+    t = config["thresholds"]
     if args.live:
-        # Freeze evidence at run start so all N repeats use byte-identical inputs (0529)
-        from portfolio_ai import DB_PATH as _PAI_DB
-        import sqlite3 as _sq_ev
-        _ev_conn = None
-        if _PAI_DB.exists():
-            try:
-                _ev_conn = _sq_ev.connect(str(_PAI_DB), timeout=10)
-                _ev_conn.row_factory = _sq_ev.Row
-            except Exception:
-                pass
-        print(f"\nFreezing evidence snapshot for {len(tickers)} tickers...")
-        evidence_snapshot = _freeze_validation_evidence(tickers, _ev_conn)
-        if _ev_conn:
-            _ev_conn.close()
-        evidence_hashes = {tk: v["evidence_hash"] for tk, v in evidence_snapshot.items()}
-        print(f"  Evidence frozen: {evidence_hashes}")
-
-        print(f"\n1. Repeatability test ({len(tickers)} holdings, N={n_repeats_effective}, LIVE)...")
-        repeatability = run_repeatability(
-            tickers, macro, n=n_repeats_effective,
-            evidence_snapshot=evidence_snapshot,
-            same_input_score_max_range=int(t.get("same_input_score_max_range", 1)),
-        ) if tickers else {}
-
-        print("\n2. Anchor calibration (LIVE)...")
-        anchor_cal = run_anchor_calibration(macro)
-    else:
-        print("\n1. Repeatability test — SKIP (use --live to run with LLM)")
-        repeatability = {}
-        print("\n2. Anchor calibration — SKIP (use --live)")
-        anchor_cal = {}
-
-    print("\n3. Factor vs LLM concordance...")
-    concordance = run_concordance(tickers)
-
-    print("\n4. Drift detection...")
-    drift = run_drift_detection(
-        drift_score_delta_threshold=int(t.get("drift_score_delta_threshold", 1))
-    )
-
-    print("\n5. Synthetic regression truth...")
-    synth = run_synthetic_regression(
-        beta_recovery_tolerance=float(t.get("beta_recovery_tolerance", 1.5))
-    )
-
-    print("\n6. Regime direction tests...")
-    regime_tests = run_regime_direction_tests()
-
-    print("\n7. Fund classification tests...")
-    fund_tests = run_fund_classification_tests()
-
-    print("\n8. Ledger integrity...")
-    ledger = run_ledger_integrity()
-
-    print_summary(repeatability, anchor_cal, concordance, drift, synth, regime_tests, fund_tests, ledger)
-
-    fails, warns, passes = _count_fails(repeatability, anchor_cal, concordance, drift,
-                                        synth, regime_tests, fund_tests, ledger)
-    summary_status = "FAIL" if fails > 0 else ("WARN" if warns > 0 else "PASS")
-
-    all_results = {
-        "repeatability":       repeatability,
-        "anchor_calibration":  anchor_cal,
-        "concordance":         concordance,
-        "drift":               drift,
-        "synthetic_regression": synth,
-        "regime_direction":    regime_tests,
-        "fund_classification": fund_tests,
-        "ledger_integrity":    ledger,
+        import ollama_client
+        if not ollama_client.available():
+            raise RuntimeError("Production LLM unavailable")
+        universe = list(dict.fromkeys(tickers + [tk for tk in ANCHORS if not pai.is_fund(tk)]))
+        with sqlite3.connect(str(pai.DB_PATH), timeout=10) as conn:
+            conn.row_factory = sqlite3.Row
+            snapshot = _freeze_validation_evidence(universe, conn)
+        print(f"Frozen evidence for {len(universe)} tickers; run {record_id}; N={n}", flush=True)
+        repeatability = run_repeatability(tickers, {}, n=n, evidence_snapshot=snapshot,
+                                          same_input_score_max_range=t["same_input_score_max_range"])
+        anchor = run_anchor_calibration(snapshot)
+    results = {
+        "repeatability": repeatability, "anchor_calibration": anchor,
+        "concordance": run_concordance(tickers),
+        "drift": run_drift_detection(t["drift_score_delta_threshold"]),
+        "synthetic_regression": run_synthetic_regression(t["beta_recovery_tolerance"]),
+        "regime_direction": run_regime_direction_tests(),
+        "fund_classification": run_fund_classification_tests(), "ledger_integrity": run_ledger_integrity(),
     }
-    threshold_result = _check_thresholds(all_results, config)
-    verdict = threshold_result["verdict"]
-
-    # 0513: acceptance_contract and validation_config_version are separate fields so the
-    # record can be queried by contract name independently of the config version that was live.
-    _commit_sha     = _get_commit_sha()
-    _model_identity = _get_model_identity()
-    _config_version = config.get("version", "unknown")
-    _config_hash    = hashlib.sha256(
-        json.dumps(config, sort_keys=True).encode()
-    ).hexdigest()
-    _acceptance_contract = "macro_validation_v1"
-    # 0533: UUID per run — never derived from output path to avoid stale-row collisions
-    _record_id = str(uuid.uuid4())
-    # 0531: scorer contract hash over model+prompt template+dims+temperature+num_predict
-    try:
-        import portfolio_ai as _pai
-        _scorer_contract_hash = _pai._compute_scorer_contract_hash()
-    except Exception:
-        _scorer_contract_hash = None
-
-    # Determine output path — immutable timestamped acceptance record or standard path
-    if args.out:
-        out_path = Path(args.out)
-    elif args.live:
-        ts = time.strftime("%Y%m%d_%H%M%S")
-        out_path = PROJECT_DIR / "out" / f"macro_validation_acceptance_{ts}.json"
-    else:
-        out_path = PROJECT_DIR / "out" / "macro_validation_results.json"
-
+    effective_config = dict(config, n_repeats=n)
+    checks = _check_thresholds(results, effective_config)
+    verdict = checks["verdict"]
     output = {
-        "acceptance_contract":       _acceptance_contract,
-        "validation_config_version": _config_version,
-        "validation_config_hash":    _config_hash,
-        "scorer_contract_hash":      _scorer_contract_hash,
-        "timestamp":                 time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "commit_sha":                _commit_sha,
-        "model_identity":            _model_identity,
-        "live_mode":                 args.live,
-        "run_type":                  run_type,
-        "n_repeats":                 n_repeats_effective,
-        "resolved_config": {
-            "n_repeats":   n_repeats_effective,
-            "thresholds":  dict(config.get("thresholds", {})),
-            "version":     _config_version,
-        },
-        "config_used":               config,
-        "evidence_snapshot_hashes":  {tk: v["evidence_hash"] for tk, v in evidence_snapshot.items()},
-        "results":                   all_results,
-        "threshold_checks":          threshold_result,
-        "verdict":                   verdict,
-        "activated":                 False,
-        "record_id":                 _record_id,       # 0533: UUID, not output path
-        "output_path":               str(out_path),    # 0533: provenance only
-        "summary": {
-            "status": summary_status,
-            "fail":   fails,
-            "warn":   warns,
-            "pass":   passes,
-        },
+        "record_id": record_id, "timestamp": started_at, "output_path": str(out_path),
+        "acceptance_contract": "macro_validation_v1", "commit_sha": commit_sha,
+        "model_identity": model_identity, "scorer_contract_hash": contract_hash,
+        "validation_config_version": config["version"],
+        "validation_config_hash": hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest(),
+        "config_used": config, "resolved_config": effective_config,
+        "live_mode": args.live, "run_type": _run_type(args.live, args.smoke, args.n_repeats, verdict),
+        "n_repeats": n, "verdict": verdict, "activated": False,
+        "evidence_snapshot": snapshot,
+        "evidence_hash": {tk: v["evidence_hash"] for tk, v in snapshot.items()},
+        "prompt_hash": {tk: v["prompt_hash"] for tk, v in snapshot.items()},
+        "evidence_snapshot_hashes": {tk: v["evidence_hash"] for tk, v in snapshot.items()},
+        "results": results, "threshold_checks": checks,
     }
-
-    out_path.parent.mkdir(exist_ok=True)
-    out_path.write_text(json.dumps(output, indent=2))
-    print(f"\nResults written to {out_path}")
-    print(f"Summary: {summary_status} — {fails} fail, {warns} warn, {passes} pass")
-    print(f"Verdict: {verdict}")
-
-    # 0523: atomic acceptance activation — PASS verdict only.
-    # One BEGIN IMMEDIATE transaction covering all macro_dimension_validation inserts +
-    # macro_acceptance_state upsert. Any failure rolls back fully; old acceptance stays active.
-    # BLOCK/FAIL paths write runtime_stability rows (non-blocking; never grant formal usability).
-    activated = False
-    if run_type == "smoke" and verdict == "PASS":
-        print("  Smoke run: verdict PASS but macro_acceptance_state NOT advanced (use default N without --smoke/--n-repeats)")
-    if repeatability and args.live:
-        import sys as _sys
-        _sys.path.insert(0, str(PROJECT_DIR))
-        from portfolio_ai import DB_PATH as _DB, _stability_class as _scls
-        import sqlite3 as _sq
-
-        _now = time.strftime("%Y-%m-%d %H:%M:%S")
-
-        if verdict == "PASS" and run_type == "acceptance":
-            # Atomic path: dimension rows + acceptance pointer in one transaction.
-            for _attempt in range(3):
-                try:
-                    _sc = _sq.connect(str(_DB), timeout=60)
-                    _sc.execute("BEGIN IMMEDIATE")
-                    _inserted = 0
-                    for _tk, _dims in repeatability.items():
-                        for _dim, _r in _dims.items():
-                            if _r.get("n", 0) >= 2:
-                                # 0533: INSERT (not OR IGNORE) — duplicate record_id is a fatal error
-                                _sc.execute(
-                                    "INSERT INTO macro_dimension_validation "
-                                    "(acceptance_record_id, ticker, dimension, mean_score, stddev, "
-                                    "n_samples, stability_class, config_version, config_hash, "
-                                    "model_identity, scorer_contract_hash, recorded_at) "
-                                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                                    (_record_id, _tk, _dim, _r.get("mean"), _r.get("stdev"),
-                                     _r.get("n"), _scls(_r.get("stdev")), _config_version,
-                                     _config_hash, _model_identity, _scorer_contract_hash, _now)
-                                )
-                                _inserted += 1
-                    _sc.execute(
-                        "INSERT OR REPLACE INTO macro_acceptance_state "
-                        "(contract, accepted_at, record_id, commit_sha, model_identity, "
-                        "scorer_contract_hash, notes) VALUES (?,?,?,?,?,?,?)",
-                        (_acceptance_contract, _now, _record_id, _commit_sha, _model_identity,
-                         _scorer_contract_hash,
-                         f"PASS: {fails} fail, {warns} warn, {passes} pass. "
-                         f"N={n_repeats_effective} live repeats. Config {_config_version}.")
-                    )
-                    _sc.commit()
-                    _sc.close()
-                    activated = True
-                    print(f"  Activated: {_inserted} rows → macro_dimension_validation; macro_acceptance_state updated")
-                    break
-                except _sq.OperationalError as _e:
-                    try:
-                        _sc.execute("ROLLBACK")
-                        _sc.close()
-                    except Exception:
-                        pass
-                    print(f"  Activation attempt {_attempt + 1}/3 failed (DB lock?): {_e}")
-                    if _attempt < 2:
-                        time.sleep(10)
-                    else:
-                        print("  FATAL: activation failed after 3 attempts — old acceptance remains active")
-                        output["activated"] = False
-                        out_path.write_text(json.dumps(output, indent=2))
-                        sys.exit(1)
-        else:
-            # Smoke PASS or any non-PASS: write runtime stability rows only; never update macro_acceptance_state.
-            try:
-                _sc = _sq.connect(str(_DB), timeout=30)
-                for _tk, _dims in repeatability.items():
-                    for _dim, _r in _dims.items():
-                        if _r.get("n", 0) >= 2:
-                            _sc.execute(
-                                "INSERT OR REPLACE INTO macro_dimension_runtime_stability "
-                                "(ticker, dimension, mean_score, stddev, n_samples, "
-                                "stability_class, updated_at) VALUES (?,?,?,?,?,?,?)",
-                                (_tk, _dim, _r.get("mean"), _r.get("stdev"),
-                                 _r.get("n"), _scls(_r.get("stdev")), _now)
-                            )
-                _sc.commit()
-                _sc.close()
-                print(f"  Persisted runtime stability for {len(repeatability)} tickers (non-PASS; acceptance not advanced)")
-            except Exception as _e:
-                print(f"  WARNING: could not persist runtime stability data: {_e}")
-
-    # Patch activated flag into artifact now that we know the outcome.
-    output["activated"] = activated
-    out_path.write_text(json.dumps(output, indent=2))
-
-    if fails or verdict == "BLOCK":
+    # Exclusive creation preserves prior artifacts even when --out is reused.
+    with out_path.open("x") as f:
+        json.dump(output, f, indent=2, default=str)
+    try:
+        output["activated"] = _persist_run(pai.DB_PATH, output)
+    except Exception as exc:
+        output["activation_error"] = str(exc)
+        out_path.write_text(json.dumps(output, indent=2, default=str))
+        raise
+    out_path.write_text(json.dumps(output, indent=2, default=str))
+    print(f"Results: {out_path}\nVerdict: {verdict}; activated={output['activated']}", flush=True)
+    if verdict != "PASS":
         sys.exit(1)
 
 

@@ -497,6 +497,20 @@ def _init_ai_tables():
             UNIQUE(acceptance_record_id, ticker, dimension)
         )
     """)
+    for _table, _column in (
+        ("macro_dimension_validation", "scorer_contract_hash"),
+        ("macro_dimension_validation", "prompt_hash"),
+        ("macro_dimension_validation", "evidence_hash"),
+        ("macro_acceptance_state", "output_path"),
+    ):
+        _columns = {r[1] for r in conn.execute(f"PRAGMA table_info({_table})")}
+        if _column not in _columns:
+            conn.execute(f"ALTER TABLE {_table} ADD COLUMN {_column} TEXT")
+    conn.execute("""CREATE TABLE IF NOT EXISTS macro_validation_runs (
+        record_id TEXT PRIMARY KEY, output_path TEXT NOT NULL,
+        run_type TEXT NOT NULL, verdict TEXT NOT NULL, artifact_json TEXT NOT NULL,
+        recorded_at TEXT NOT NULL
+    )""")
     # Runtime stability table — mutable; one row per ticker × dim; scorer overwrites here (0517)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS macro_dimension_runtime_stability (
@@ -619,6 +633,8 @@ def _init_ai_tables():
 
 
 MACRO_SCORE_SCHEMA_VERSION = "v3"
+MACRO_EVIDENCE_SCHEMA_VERSION = "v2"
+MACRO_AGGREGATION_VERSION = "adaptive-median-v1"
 MACRO_INTERACTION_VERSION = "macro_interaction_v1"
 _MACRO_SCORE_DIMS = ("rate_sensitivity", "inflation_hedge", "dollar_sensitivity", "geopolitical_risk")
 _STALE_SCORE_DAYS = 14
@@ -733,12 +749,16 @@ def _compute_scorer_contract_hash() -> str:
     all produce a different hash, automatically invalidating stale acceptance records.
     """
     import ollama_client
+    import inspect
     contract = {
+        "prompt_builder_source": inspect.getsource(_build_macro_score_request),
         "macro_dims":      MACRO_DIMS,
         "model_identity":  ollama_client.DEFAULT_MODEL,
         "temperature":     _MACRO_SCORE_TEMPERATURE,
         "num_predict":     _MACRO_SCORE_NUM_PREDICT,
         "schema_version":  MACRO_SCORE_SCHEMA_VERSION,
+        "evidence_schema_version": MACRO_EVIDENCE_SCHEMA_VERSION,
+        "aggregation_version": MACRO_AGGREGATION_VERSION,
         "prompt_template": _build_macro_score_request("__TICKER__", {}, None),
     }
     return hashlib.sha256(
@@ -774,13 +794,13 @@ def _accepted_dim_state(ticker: str, dim: str, conn) -> dict:
         if not rec:
             return default
         record_id, stored_hash = rec[0], rec[1]
-        if stored_hash is not None:
-            try:
-                if _compute_scorer_contract_hash() != stored_hash:
-                    return {**default, "record_id": record_id,
-                            "usable_reason": "acceptance_stale_scorer_contract"}
-            except Exception:
-                pass
+        try:
+            if not stored_hash or _compute_scorer_contract_hash() != stored_hash:
+                return {**default, "record_id": record_id,
+                        "usable_reason": "acceptance_stale_scorer_contract"}
+        except Exception:
+            return {**default, "record_id": record_id,
+                    "usable_reason": "acceptance_contract_unavailable"}
         row = conn.execute(
             "SELECT stability_class, mean_score, stddev, n_samples FROM macro_dimension_validation "
             "WHERE acceptance_record_id=? AND ticker=? AND dimension=?",
@@ -2490,6 +2510,7 @@ def generate_holding_macro_scores(force: bool = False) -> dict:
     BATCH = 1
     run_id = str(uuid.uuid4())  # full UUID (0478)
     run_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    scorer_contract_hash = _compute_scorer_contract_hash()
 
     # SHA-256 macro_hash over full nested context including measurements and regime (0478).
     # Exclude non-deterministic keys (_fetched_at, formatted_block, headlines, bills).
@@ -2534,6 +2555,7 @@ def generate_holding_macro_scores(force: bool = False) -> dict:
                 continue
             _fund_rec = {
                 "macro_supported": False,
+                "scorer_contract_hash": scorer_contract_hash,
                 "evidence_quality": "unsupported",
                 "is_fund": True,
                 "schema_version": MACRO_SCORE_SCHEMA_VERSION,
@@ -2758,6 +2780,7 @@ def generate_holding_macro_scores(force: bool = False) -> dict:
                 scores["run_id"]         = run_id
                 scores["model_version"]  = ollama_client.DEFAULT_MODEL
                 scores["prompt_hash"]    = prompt_hash
+                scores["scorer_contract_hash"] = scorer_contract_hash
                 scores["scored_at"]      = now_str
 
                 scores_json = json.dumps(scores)

@@ -44,6 +44,9 @@ def _seed_acceptance(conn: sqlite3.Connection, record_id: str = "rec/001",
         "VALUES (?,?,?,?,?,?)",
         (contract, "2026-01-01T00:00:00", record_id, "abc123", "model-x", "test seed")
     )
+    import portfolio_ai
+    conn.execute("UPDATE macro_acceptance_state SET scorer_contract_hash=? WHERE record_id=?",
+                 (portfolio_ai._compute_scorer_contract_hash(), record_id))
     conn.commit()
 
 
@@ -311,29 +314,12 @@ class TestConfigValidation:
     def test_check_thresholds_uses_config_anchor_ordering(self):
         """anchor_ordering_failures threshold from config controls the verdict."""
         from scripts.validate_macro_scorer import _check_thresholds
-        results = {
-            "synthetic_regression": {"status": "PASS"},
-            "regime_direction": {"status": "PASS"},
-            "fund_classification": {"status": "PASS"},
-            "ledger_integrity": {"status": "SKIP"},
-            "anchor_calibration": {
-                "_ordering": {"checks": [{"status": "FAIL"}]},
-            },
-            "drift": {},
-            "repeatability": {},
-        }
-        # With threshold=0 ordering failures allowed → BLOCK
-        config_strict = {"thresholds": {"anchor_ordering_failures": 0, "unexplained_large_swings": 0,
-                                         "beta_recovery_tolerance": 1.5, "fund_unsupported_pct": 100,
-                                         "ledger_integrity_pct": 100, "missing_data_unknown_pct": 100,
-                                         "same_input_score_max_range": 1, "drift_score_delta_threshold": 1}}
-        r_strict = _check_thresholds(results, config_strict)
-        assert r_strict["verdict"] == "BLOCK"
-
-        # With threshold=1 → PASS
-        config_lenient = {"thresholds": {**config_strict["thresholds"], "anchor_ordering_failures": 1}}
-        r_lenient = _check_thresholds(results, config_lenient)
-        assert r_lenient["verdict"] == "PASS"
+        from test_macro_contract_completion import passing
+        config, results = passing()
+        results["anchor_calibration"]["_ordering"]["checks"] = [{"lo": 2, "hi": 1}]
+        assert _check_thresholds(results, config)["verdict"] == "BLOCK"
+        config["thresholds"]["anchor_ordering_failures"] = 1
+        assert _check_thresholds(results, config)["verdict"] == "PASS"
 
     def test_validate_config_rejects_unknown_threshold_keys(self):
         """Unknown threshold keys must raise ValueError (0530)."""
@@ -356,7 +342,7 @@ class TestConfigValidation:
         finally:
             vms.PROJECT_DIR = orig
 
-    def test_repeatability_applies_same_input_score_max_range(self):
+    def test_repeatability_applies_same_input_score_max_range(self, monkeypatch):
         """UNSTABLE flag is set when score range > same_input_score_max_range (0530)."""
         from scripts.validate_macro_scorer import run_repeatability, _score_val
         # Build a mock that returns alternating scores to create a range of 2
@@ -371,7 +357,7 @@ class TestConfigValidation:
         }
         fake_pai._MACRO_SCORE_TEMPERATURE = 0.2
         fake_pai._MACRO_SCORE_NUM_PREDICT = 1600
-        sys.modules["portfolio_ai"] = fake_pai
+        monkeypatch.setitem(sys.modules, "portfolio_ai", fake_pai)
 
         fake_ollama = types.ModuleType("ollama_client")
         fake_ollama.available = lambda: True
@@ -383,7 +369,8 @@ class TestConfigValidation:
             yield '{"XOM": {"rate_sensitivity": {"score": ' + ("3" if _call_count[0] % 2 == 0 else "5") + ', "reason": "r"}, "inflation_hedge": {"score": 5, "reason": "r"}, "dollar_sensitivity": {"score": 5, "reason": "r"}, "geopolitical_risk": {"score": 5, "reason": "r"}}}'
 
         fake_ollama.stream_generate = fake_stream
-        sys.modules["ollama_client"] = fake_ollama
+        monkeypatch.setitem(sys.modules, "ollama_client", fake_ollama)
+        monkeypatch.setattr(time, "sleep", lambda *args: None)
 
         try:
             result = run_repeatability(["XOM"], {}, n=4, same_input_score_max_range=1)
@@ -392,8 +379,7 @@ class TestConfigValidation:
             assert rs["flag"] is True
             assert rs["status"] == "UNSTABLE"
         finally:
-            sys.modules.pop("portfolio_ai", None)
-            sys.modules.pop("ollama_client", None)
+            monkeypatch.undo()
 
     def test_synthetic_regression_uses_config_tolerance(self):
         """Tight tolerance from config causes synthetic regression to FAIL (0530)."""
@@ -455,14 +441,16 @@ class TestScorerContractInvalidation:
         conn.close()
         p.unlink(missing_ok=True)
 
-    def test_accepted_dim_state_usable_when_no_hash_stored(self):
-        """NULL scorer_contract_hash in DB (pre-0531 record) → hash check skipped, normal path (0531)."""
+    def test_accepted_dim_state_unusable_when_no_hash_stored(self):
+        """Legacy NULL hash cannot grant current scorer acceptance."""
         p, conn = _fresh_db()
-        _seed_acceptance(conn, "rec/001")  # no scorer_contract_hash column value → NULL
+        _seed_acceptance(conn, "rec/001")
+        conn.execute("UPDATE macro_acceptance_state SET scorer_contract_hash=NULL")
+        conn.commit()
         _seed_validation_row(conn, "XOM", "rate_sensitivity", "rec/001", "stable")
         import portfolio_ai
         result = portfolio_ai._accepted_dim_state("XOM", "rate_sensitivity", conn)
-        assert result["usable"] is True
+        assert result["usable"] is False
         conn.close()
         p.unlink(missing_ok=True)
 

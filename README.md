@@ -13,6 +13,23 @@ A personal investment tracking system that sends a daily email newsletter, maint
 
 ---
 
+## Macro validation acceptance
+
+`validation_config.json` v1.4 controls every acceptance threshold. Run
+`venv/bin/python -u scripts/validate_macro_scorer.py --live` on optiplex for the
+formal N=20 run. Overrides (`--smoke`, `--n-repeats`) cannot activate acceptance.
+Non-live runs are recorded as `dry_run`; failed live runs as `validation_failed`.
+
+Each run receives a UUID before evidence collection and saves the frozen evidence,
+betas, prompt hashes, config hash, and scorer contract hash in its JSON artifact.
+The artifact path cannot overwrite an existing file. `macro_validation_runs` keeps
+an immutable DB copy; a successful activation inserts all 32 dimension rows and
+updates the active pointer in one transaction. Missing samples, absent required
+measurements, stale scorer contracts, duplicate IDs, and DB failures cannot grant
+acceptance. Funds remain unsupported and are excluded from scored company anchors.
+Legacy acceptance records without a scorer hash must be revalidated.
+
+
 ## Deployment
 
 The recommended setup is a always-on home server (e.g. a mini PC or Raspberry Pi running Ubuntu) with a systemd service for `serve.py`. The Mac/dev machine is for development only.

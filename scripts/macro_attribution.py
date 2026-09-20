@@ -194,6 +194,17 @@ def _coverage_summary(episodes: list[dict]) -> dict:
     return counts
 
 
+def _cohort_date(episode):
+    from datetime import datetime
+    value = episode.get("captured_at")
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).date().isoformat()
+    except ValueError:
+        return None
+
+
 def _rate_interaction_sign(episode: dict):
     """Return 'positive', 'negative', or None for missing/malformed rate_interaction (0532).
     Used for both observed grouping and bootstrap draws to ensure the same population
@@ -205,6 +216,9 @@ def _rate_interaction_sign(episode: dict):
     try:
         fv = float(v)
     except (TypeError, ValueError):
+        return None
+    import math
+    if not math.isfinite(fv):
         return None
     return "positive" if fv > 0 else "negative"
 
@@ -330,16 +344,18 @@ def analyse(episodes: list[dict], horizon: str, show_all_dims: bool = False) -> 
     # rate_interaction alpha CONTRAST, not the overall mean. CI excluding zero = meaningful evidence.
     def _cohort_bootstrap_ci(n_boot: int = 1000) -> dict:
         import random
-        if n < 60:
+        eligible = [e for e in episodes if _cohort_date(e) is not None
+                    and _rate_interaction_sign(e) is not None]
+        if len(eligible) < 60:
             return {
                 "status": "insufficient_data",
-                "n": n,
-                "note": f"Need ≥60 ACCEPTED episodes for cohort bootstrap; have {n}.",
+                "n": len(eligible),
+                "note": f"Need ≥60 ACCEPTED episodes for cohort bootstrap; have {len(eligible)}.",
             }
         # Partition by rate_interaction sign using shared helper (0532: same population for
         # observed contrast and bootstrap draws)
         pos_eps, neg_eps = [], []
-        for e in episodes:
+        for e in eligible:
             sign = _rate_interaction_sign(e)
             if sign == "positive":
                 pos_eps.append(e)
@@ -356,9 +372,9 @@ def analyse(episodes: list[dict], horizon: str, show_all_dims: bool = False) -> 
             }
         # 0532: exclude episodes without a parseable captured_at from cohort bootstrap
         cohort_map: dict[str, list] = {}
-        for e in episodes:
-            ca = (e.get("captured_at") or "")[:10]
-            if not ca or len(ca) < 10:
+        for e in eligible:
+            ca = _cohort_date(e)
+            if ca is None:
                 continue  # exclude; not binned into an empty-string pseudo-cohort
             cohort_map.setdefault(ca, []).append(e)
         cohort_list = list(cohort_map.values())
@@ -469,6 +485,9 @@ def analyse(episodes: list[dict], horizon: str, show_all_dims: bool = False) -> 
                 ca_f, ba_f = float(ca), float(ba)
             except (TypeError, ValueError):
                 return None
+            import math
+            if not math.isfinite(ca_f) or not math.isfinite(ba_f):
+                return None
             if ca_f > ba_f:
                 return "win"
             if ca_f < ba_f:
@@ -482,8 +501,9 @@ def analyse(episodes: list[dict], horizon: str, show_all_dims: bool = False) -> 
                         "note": f"n < {MIN_SUBGROUP_N} — win rate not reported"}
             outcomes = [_outcome(e) for e in subset]
             decided  = [o for o in outcomes if o is not None]
-            if not decided:
-                return {"n": 0, "wins": 0, "losses": 0, "ties": 0, "challenger_win_rate": None}
+            if len(decided) < MIN_SUBGROUP_N:
+                return {"n": len(decided), "suppressed": True,
+                        "note": f"n < {MIN_SUBGROUP_N} — win rate not reported"}
             wins   = sum(1 for o in decided if o == "win")
             losses = sum(1 for o in decided if o == "loss")
             ties   = sum(1 for o in decided if o == "tie")

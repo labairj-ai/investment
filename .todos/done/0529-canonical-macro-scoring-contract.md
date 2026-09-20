@@ -1,7 +1,7 @@
 # Unify Macro Scoring Contract for Validator and Production
 
 - **ID:** 0529
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-19
 - **Priority:** high
 - **Depends:** none
@@ -30,12 +30,16 @@ Open question: should evidence snapshots live in the DB or alongside the JSON ar
 
 ## Done when
 
-- [ ] A single shared function builds the LLM request; no inline prompt construction remains in the validator
-- [ ] Validator uses the same `num_predict` as production
-- [ ] Acceptance artifact records `prompt_hash`, `evidence_hash`, and `scorer_contract_hash`
-- [ ] Evidence inputs for the validation universe are frozen at run start; all N repeats use byte-identical evidence
-- [ ] Regression test asserts validator and production requests are identical for the same ticker/evidence fixture and fails if they diverge
+- [x] A single shared function builds the LLM request; no inline prompt construction remains in the validator
+- [x] Validator uses the same `num_predict` as production
+- [x] Acceptance artifact records `prompt_hash`, `evidence_hash`, and `scorer_contract_hash`
+- [x] Evidence inputs for the validation universe are frozen at run start; all N repeats use byte-identical evidence
+- [x] Regression test asserts validator and production requests are identical for the same ticker/evidence fixture and fails if they diverge
 
 ## Review — 2026-09-20
 
 Partially implemented in 4dbb0c0. The shared request builder and frozen in-memory evidence exist, but the acceptance artifact does not record prompt hashes or persist the full evidence snapshot; validation rows lack prompt/evidence hashes. The prompt-identity test calls the same helper twice rather than comparing the production and validator call paths.
+
+## Completion — 2026-09-20
+
+Completed remaining implementation and behavioral coverage in `tests/test_macro_contract_completion.py`. Numeric thresholds, full-N gating, frozen evidence/prompt provenance, contract invalidation, UUID run persistence, timestamp exclusion, and atomic activation are verified. Historical review notes above describe the prior implementation.
