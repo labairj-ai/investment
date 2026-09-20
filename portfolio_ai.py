@@ -713,7 +713,9 @@ _DIM_EV_KEY = {
 }
 
 # LLM parameters that are part of the scoring contract (0529/0531)
-_MACRO_SCORE_TEMPERATURE = 0.2
+# Structural exposure scores must be repeatable for unchanged inputs.
+# Greedy decoding removes sampling randomness; this value is contract-hashed.
+_MACRO_SCORE_TEMPERATURE = 0.0
 _MACRO_SCORE_NUM_PREDICT = 1600
 
 

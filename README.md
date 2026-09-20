@@ -37,6 +37,9 @@ once and records one item per ticker; score, history, and terminal item state co
 together. Interrupted runs reconcile committed successes and pending failures into
 `STALE_FAILED`, preserving accounting without granting certification.
 
+Structured macro scoring uses temperature 0 (greedy decoding) to remove sampling
+randomness; the decoding temperature is part of scorer-contract identity.
+
 System acceptance and dimension eligibility are separate: complete N=20 samples and
 all system gates must pass, while the configured standard-deviation policy controls
 each dimension's eligibility. Range is a diagnostic warning. Health distinguishes
@@ -51,7 +54,7 @@ The recommended setup is a always-on home server (e.g. a mini PC or Raspberry Pi
 - **Newsletter:** serve.py's built-in scheduler sends at ~7:15 AM ET; `run_investment.sh` via a systemd timer at 8 AM acts as a backstop (flag file `out/last_run_date.txt` prevents double sends)
 - **LAN / remote access:** by default `serve.py` binds to `localhost`; change to `0.0.0.0` to expose on the LAN; use [Tailscale Funnel](https://tailscale.com/kb/1223/funnel) or a reverse proxy for remote access
 - **Data backup:** `backup_data.sh` pushes DB + CSV to a separate private GitHub repo
-- **Deploy flow:** commit + push on dev machine, `git pull` on server; restart the service only when `serve.py` changes. On startup, `serve.py` automatically regenerates `out/dashboard.html` if `generate_dashboard.py` is newer than the existing file — so changes to the dashboard generator take effect on the next service restart without a manual regeneration step.
+- **Deploy flow:** commit + push on dev machine, `git pull` on server; restart the service when `serve.py` or an imported Python module changes. On startup, `serve.py` automatically regenerates `out/dashboard.html` if `generate_dashboard.py` is newer than the existing file — so changes to the dashboard generator take effect on the next service restart without a manual regeneration step.
 
 The old macOS launchd agents are archived in `launchd-disabled-on-mac/`.
 

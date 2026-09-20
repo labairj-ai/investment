@@ -44,3 +44,7 @@ Pending operational acceptance. Keep open until 0529–0534 meet their completio
 ## Follow-up review — 2026-09-20
 
 The v1.4 N=20 run completed with `verdict=BLOCK` and `activated=false`. The blocked artifact is preserved as evidence. It showed repeatability failures in several dimensions and a missing completed production ledger, so the next run must wait for 0536–0539, a completed production scoring cycle, and the versioned acceptance-policy decision.
+
+## Operational result — 2026-09-20
+
+Formal run `c0eaa1d3-276c-48fb-a3a8-0bbb0a18ce18` (`out/macro_validation_33f7de1_n20.json` on optiplex) completed all 160 responses. Eleven gates passed; unexplained drift blocked activation on DSGX, NFLX, STZ, and VLY. Repeatability classified 23 stable, 7 borderline, and 2 unstable cells. No acceptance rows were manually patched. The blocked artifact remains immutable. Follow-up uses temperature 0 for structural scoring, with a new scorer hash, fresh production certification, and a new formal run; thresholds remain unchanged.

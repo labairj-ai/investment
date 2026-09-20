@@ -167,3 +167,20 @@ def test_diagnostic_uses_artifact_policy_and_records_sequence():
     row = diagnose(artifact)['cells'][0]
     assert row['eligible'] is False and row['stability_class'] == 'unstable'
     assert row['adjacent_changes'] == 3 and row['max_adjacent_change'] == 1
+
+
+def test_greedy_scoring_is_shared_and_contract_hashed(scoring, monkeypatch):
+    pai, validator, _ = scoring
+    import ollama_client
+    observed = []
+    def stream(prompt, **kwargs):
+        observed.append(kwargs['temperature'])
+        ticker = 'AAPL' if 'AAPL' in prompt else 'XOM'
+        yield json.dumps({ticker: {d: {'score': 5, 'reason': 'fixture'} for d in pai._MACRO_SCORE_DIMS}})
+    monkeypatch.setattr(ollama_client, 'stream_generate', stream)
+    before = pai._compute_scorer_contract_hash()
+    pai.generate_holding_macro_scores(force=True)
+    validator._score_one_ticker('XOM', {}, None)
+    assert observed and set(observed) == {0.0}
+    monkeypatch.setattr(pai, '_MACRO_SCORE_TEMPERATURE', 0.2)
+    assert pai._compute_scorer_contract_hash() != before
