@@ -1,7 +1,7 @@
 # Require Current-Contract Complete Production Certification
 
 - **ID:** 0542
-- **Status:** backlog
+- **Status:** in-progress
 - **Created:** 2026-09-20
 - **Priority:** high
 - **Depends:** 0540, 0541
@@ -31,3 +31,7 @@ The production scoring ledger does not store `scorer_contract_hash`, and formal 
 - [ ] A current-contract COMPLETE run with zero failures satisfies the ledger gate.
 - [ ] Production verification records the 28-holding accounting and hash results.
 - [ ] Formal 0535 rerun is gated on this certification.
+
+## Progress — 2026-09-20
+
+Implemented current-contract hash storage at run start, current-contract COMPLETE-run requirements, and rejection tests. A fresh 28-holding production cycle is running on optiplex; formal 0535 remains gated until it finishes with 28/28 and zero failures.

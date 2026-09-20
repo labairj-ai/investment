@@ -1,7 +1,7 @@
 # Define Canonical Dimension Eligibility Policy
 
 - **ID:** 0541
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-20
 - **Priority:** high
 - **Depends:** 0539
@@ -32,3 +32,7 @@ The validator marks a dimension unstable when its observed range exceeds `same_i
 - [ ] Range and standard deviation cannot produce contradictory eligibility decisions.
 - [ ] Config v1.6 records the policy and preserves the v1.4/v1.5 artifacts.
 - [ ] Stable, borderline, unstable, and range-vs-stdev edge cases are tested.
+
+## Completion — 2026-09-20
+
+Implemented in `0798ca0`: `_dimension_validation_state()` is the canonical policy; range is diagnostic, standard-deviation class drives eligibility, and activation persists the class, eligible flag, and reason. Edge-case coverage is included in the lifecycle tests.

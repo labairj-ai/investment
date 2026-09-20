@@ -1,7 +1,7 @@
 # Make Production Cache Reuse Contract Aware
 
 - **ID:** 0540
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-20
 - **Priority:** high
 - **Depends:** 0536
@@ -28,3 +28,7 @@
 - [ ] Fresh scores with the current contract hash are reused without an LLM call.
 - [ ] Regenerated scores persist the current contract and prompt hashes.
 - [ ] Both cache branches are covered by tests.
+
+## Completion — 2026-09-20
+
+Implemented in `0798ca0`: `generate_holding_macro_scores(force=False)` reuses a fresh score only when its payload hash matches the current scorer contract. Both stale and current cache branches are covered by regression tests.
