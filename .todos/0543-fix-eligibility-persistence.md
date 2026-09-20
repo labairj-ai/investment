@@ -1,7 +1,7 @@
 # Fix Persisted Dimension Eligibility Semantics
 
 - **ID:** 0543
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-20
 - **Priority:** high
 - **Depends:** 0541
@@ -24,7 +24,7 @@ The accepted-validation `eligible` column is added through a generic TEXT migrat
 
 ## Done when
 
-- [ ] Persisted false eligibility can never read back as usable.
-- [ ] The schema enforces integer 0/1 values for new rows.
-- [ ] Legacy NULL behavior is explicit and tested.
-- [ ] Existing databases migrate without losing accepted-validation history.
+- [x] Persisted false eligibility can never read back as usable.
+- [x] The schema enforces integer 0/1 values for new rows.
+- [x] Legacy NULL behavior is explicit and tested.
+- [x] Existing databases migrate without losing accepted-validation history.

@@ -335,7 +335,11 @@ def _init_ai_tables():
         schema_ver         TEXT,
         macro_hash         TEXT,
         status             TEXT NOT NULL DEFAULT 'IN_PROGRESS',
-        errors_json        TEXT
+        errors_json        TEXT,
+        scorer_contract_hash TEXT,
+        run_scope          TEXT,
+        portfolio_n        INTEGER,
+        portfolio_universe_hash TEXT
     )""")
     conn.execute("""CREATE TABLE IF NOT EXISTS macro_regime_snapshots (
         snapshot_date TEXT PRIMARY KEY,
@@ -367,6 +371,10 @@ def _init_ai_tables():
     for _col_sql in [
         "ALTER TABLE macro_scoring_runs ADD COLUMN supported_scored_n INTEGER",
         "ALTER TABLE macro_scoring_runs ADD COLUMN unsupported_n INTEGER",
+        "ALTER TABLE macro_scoring_runs ADD COLUMN scorer_contract_hash TEXT",
+        "ALTER TABLE macro_scoring_runs ADD COLUMN run_scope TEXT",
+        "ALTER TABLE macro_scoring_runs ADD COLUMN portfolio_n INTEGER",
+        "ALTER TABLE macro_scoring_runs ADD COLUMN portfolio_universe_hash TEXT",
     ]:
         try:
             conn.execute(_col_sql)
@@ -493,10 +501,42 @@ def _init_ai_tables():
             config_version       TEXT,
             config_hash          TEXT,
             model_identity       TEXT,
+            eligible              INTEGER CHECK (eligible IN (0,1)),
+            eligibility_reason    TEXT,
             recorded_at          TEXT,
             UNIQUE(acceptance_record_id, ticker, dimension)
         )
     """)
+    # 0543: rebuild legacy TEXT-affinity eligibility columns so SQLite cannot
+    # turn numeric 0 into the truthy Python string "0" on readback.
+    _mv_cols = {r[1]: r[2].upper() for r in conn.execute("PRAGMA table_info(macro_dimension_validation)")}
+    if "eligible" in _mv_cols and "INT" not in _mv_cols["eligible"]:
+        conn.execute("ALTER TABLE macro_dimension_validation RENAME TO macro_dimension_validation_legacy")
+        conn.execute("""CREATE TABLE macro_dimension_validation (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, acceptance_record_id TEXT NOT NULL,
+            ticker TEXT NOT NULL, dimension TEXT NOT NULL, mean_score REAL, stddev REAL,
+            n_samples INTEGER, stability_class TEXT, config_version TEXT, config_hash TEXT,
+            model_identity TEXT, eligible INTEGER CHECK (eligible IN (0,1)),
+            eligibility_reason TEXT, recorded_at TEXT, scorer_contract_hash TEXT,
+            prompt_hash TEXT, evidence_hash TEXT,
+            UNIQUE(acceptance_record_id, ticker, dimension))""")
+        _old = {r[1] for r in conn.execute("PRAGMA table_info(macro_dimension_validation_legacy)")}
+        _common = ["acceptance_record_id", "ticker", "dimension", "mean_score", "stddev",
+                   "n_samples", "stability_class", "config_version", "config_hash",
+                   "model_identity", "recorded_at", "scorer_contract_hash", "prompt_hash", "evidence_hash"]
+        _present = [c for c in _common if c in _old]
+        _select = ",".join(_present)
+        if "eligible" in _old:
+            _select += ", CASE WHEN CAST(eligible AS TEXT) IN ('1','true','TRUE') THEN 1 WHEN CAST(eligible AS TEXT) IN ('0','false','FALSE') THEN 0 ELSE NULL END"
+        else:
+            _select += ", NULL"
+        if "eligibility_reason" in _old:
+            _select += ", eligibility_reason"
+        else:
+            _select += ", NULL"
+        _target = ",".join(_present + ["eligible", "eligibility_reason"])
+        conn.execute(f"INSERT INTO macro_dimension_validation ({_target}) SELECT {_select} FROM macro_dimension_validation_legacy")
+        conn.execute("DROP TABLE macro_dimension_validation_legacy")
     for _table, _column in (
         ("macro_dimension_validation", "scorer_contract_hash"),
         ("macro_dimension_validation", "prompt_hash"),
@@ -505,6 +545,9 @@ def _init_ai_tables():
         ("macro_dimension_validation", "eligibility_reason"),
         ("macro_acceptance_state", "output_path"),
         ("macro_scoring_runs", "scorer_contract_hash"),
+        ("macro_scoring_runs", "run_scope"),
+        ("macro_scoring_runs", "portfolio_n"),
+        ("macro_scoring_runs", "portfolio_universe_hash"),
     ):
         _columns = {r[1] for r in conn.execute(f"PRAGMA table_info({_table})")}
         if _column not in _columns:
@@ -770,13 +813,22 @@ def _compute_scorer_contract_hash() -> str:
     ).hexdigest()
 
 
-def _stability_class(stdev) -> str:
-    """Map per-dim stdev to stability class (0506)."""
+def _portfolio_universe_hash(tickers) -> str:
+    """Stable identity for the normalized portfolio universe (0545)."""
+    universe = sorted({_normalize_ticker(t) for t in tickers if _normalize_ticker(t)})
+    return hashlib.sha256(json.dumps(universe, separators=(",", ":")).encode()).hexdigest()
+
+
+def _stability_class(stdev, config=None) -> str:
+    """Map per-dimension stdev to the versioned stability policy (0546)."""
+    policy = (config or {}).get("stability_policy", {})
+    stable_max = float(policy.get("stable_stddev_max", 1.0))
+    borderline_max = float(policy.get("borderline_stddev_max", 1.5))
     if stdev is None:
         return "untested"
-    if stdev <= 1.0:
+    if stdev <= stable_max:
         return "stable"
-    if stdev <= 1.5:
+    if stdev <= borderline_max:
         return "borderline"
     return "unstable"
 
@@ -792,7 +844,7 @@ def _dimension_validation_state(row: dict, config=None) -> dict:
     stdev = row.get("stdev")
     n = row.get("n", row.get("n_samples", 0))
     expected_n = config.get("n_repeats")
-    cls = _stability_class(stdev)
+    cls = _stability_class(stdev, config)
     if expected_n is not None and n != expected_n:
         return {"stability_class": "untested", "eligible": False,
                 "eligibility_reason": "incomplete_samples", "range_warning": False}
@@ -838,7 +890,10 @@ def _accepted_dim_state(ticker: str, dim: str, conn) -> dict:
         if not row:
             return {**default, "record_id": record_id}
         cls = row[0]
-        eligible = bool(row[4]) if row[4] is not None else cls in ("stable", "borderline")
+        # NULL is the legacy representation: preserve the stored stability class
+        # while requiring explicit 0/1 for new rows (0543).
+        eligible = ((row[4] == 1) if row[4] is not None else
+                    row[0] in ("stable", "borderline"))
         return {
             "stability_class": cls,
             "mean_score":      row[1],
@@ -2450,7 +2505,12 @@ def compute_macro_health() -> dict:
         # Validation status (0497)
         try:
             acceptance = _get_macro_acceptance_state(conn)
-            health["validation_status"] = "ACCEPTED" if acceptance else "PRE_ACCEPTANCE"
+            if not acceptance:
+                health["validation_status"] = "PRE_ACCEPTANCE"
+            elif acceptance.get("usable"):
+                health["validation_status"] = "ACCEPTED_CURRENT"
+            else:
+                health["validation_status"] = "ACCEPTANCE_STALE_CONTRACT"
             health["validation_contract"] = acceptance.get("contract") if acceptance else None
         except Exception:
             health["validation_status"] = "UNKNOWN"
@@ -2571,6 +2631,8 @@ def generate_holding_macro_scores(force: bool = False) -> dict:
     run_id = str(uuid.uuid4())  # full UUID (0478)
     run_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     scorer_contract_hash = _compute_scorer_contract_hash()
+    portfolio_universe_hash = _portfolio_universe_hash(tickers)
+    run_scope = "full_refresh" if force and set(to_score) == set(tickers) else "incremental"
 
     # SHA-256 macro_hash over full nested context including measurements and regime (0478).
     # Exclude non-deterministic keys (_fetched_at, formatted_block, headlines, bills).
@@ -2589,10 +2651,12 @@ def generate_holding_macro_scores(force: bool = False) -> dict:
         conn.execute(
                 "INSERT OR REPLACE INTO macro_scoring_runs "
                 "(run_id, run_at, expected_n, scored_n, failed_n, supported_scored_n, unsupported_n, "
-                "coverage_pct, model_ver, schema_ver, macro_hash, scorer_contract_hash, status) "
-                "VALUES (?,?,?,0,0,0,0,0,?,?,?,?, 'STARTED')",
-                (run_id, run_at, len(to_score), ollama_client.DEFAULT_MODEL, MACRO_SCORE_SCHEMA_VERSION,
-                 macro_hash, scorer_contract_hash)
+                "coverage_pct, model_ver, schema_ver, macro_hash, scorer_contract_hash, run_scope, "
+                "portfolio_n, portfolio_universe_hash, status) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (run_id, run_at, len(to_score), 0, 0, 0, 0, 0,
+                 ollama_client.DEFAULT_MODEL, MACRO_SCORE_SCHEMA_VERSION, macro_hash,
+                 scorer_contract_hash, run_scope, len(tickers), portfolio_universe_hash, "STARTED")
         )
         conn.commit()
         conn.close()

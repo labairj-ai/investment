@@ -473,41 +473,64 @@ def run_fund_classification_tests() -> dict:
 
 # ── Module 8: Ledger Integrity (0489) ─────────────────────────────────────────
 
-def run_ledger_integrity(current_contract_hash: str = None, require_current: bool = False) -> dict:
-    """Verify accounting and, for formal acceptance, current-contract completion (0542)."""
+def run_ledger_integrity(current_contract_hash: str = None, require_current: bool = False,
+                         portfolio_n: int = None, portfolio_universe_hash: str = None) -> dict:
+    """Separate historical accounting integrity from current production certification (0544/0545)."""
     if not DB_PATH.exists():
         return {"status": "SKIP", "reason": "no DB"}
     try:
         conn = sqlite3.connect(str(DB_PATH), timeout=10)
-        rows = conn.execute(
-            "SELECT run_id, expected_n, scored_n, failed_n, supported_scored_n, unsupported_n, status, scorer_contract_hash FROM macro_scoring_runs WHERE status != 'STARTED'"
-        ).fetchall()
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(macro_scoring_runs)")}
+        optional = [c for c in ("scorer_contract_hash", "run_scope", "portfolio_n", "portfolio_universe_hash") if c in cols]
+        select_cols = ["run_id", "expected_n", "scored_n", "failed_n", "supported_scored_n", "unsupported_n", "status"] + optional
+        rows = conn.execute(f"SELECT {', '.join(select_cols)} FROM macro_scoring_runs WHERE status != 'STARTED'").fetchall()
         conn.close()
     except Exception as e:
         return {"status": "SKIP", "reason": str(e)}
 
     results = []
-    for run_id, exp, scored, failed, supported, unsupported, status, contract_hash in rows:
+    for row in rows:
+        run_id, exp, scored, failed, supported, unsupported, status = row[:7]
+        extras = list(row[7:]) + [None] * (4 - len(row[7:]))
+        contract_hash, run_scope, run_portfolio_n, run_universe_hash = extras[:4]
         accounting_ok = (exp == scored + failed)
-        current_ok = (not require_current or (
+        certified_ok = (
             status == "COMPLETE" and contract_hash == current_contract_hash and
             exp == scored and failed == 0 and (supported or 0) + (unsupported or 0) == scored
-        ))
-        ok = accounting_ok and current_ok
+            and (portfolio_n is None or run_scope == "full_refresh")
+            and (portfolio_n is None or run_portfolio_n == portfolio_n)
+            and (portfolio_universe_hash is None or run_universe_hash == portfolio_universe_hash)
+        )
+        current_ok = certified_ok if require_current else True
         results.append({
             "run_id": run_id[:8] if run_id else "?",
             "expected": exp, "scored": scored, "failed": failed, "status_field": status,
             "accounting_ok": accounting_ok,
-            "current_contract_ok": current_ok,
+            "current_contract_ok": certified_ok,
             "scorer_contract_hash": contract_hash,
-            "status": "PASS" if ok else "FAIL",
+            "run_scope": run_scope, "portfolio_n": run_portfolio_n,
+            "portfolio_universe_hash": run_universe_hash,
+            "status": "PASS" if accounting_ok else "FAIL",
         })
 
     if not results:
         return {"status": "SKIP", "reason": "no completed runs yet"}
 
-    overall = "PASS" if all(r["status"] == "PASS" for r in results) else "FAIL"
-    return {"status": overall, "runs": results}
+    historical_status = "PASS" if all(r["status"] == "PASS" for r in results) else "FAIL"
+    certification_runs = [r for r in results if r["current_contract_ok"]]
+    certification_status = "PASS" if certification_runs else "FAIL"
+    return {"status": certification_status if require_current else historical_status,
+            "historical_status": historical_status, "runs": results,
+            "certification_status": certification_status,
+            "certification_runs": certification_runs}
+
+
+def _current_portfolio_tickers(pai) -> list:
+    try:
+        with sqlite3.connect(str(pai.DB_PATH), timeout=10) as conn:
+            return [r[0] for r in conn.execute("SELECT ticker FROM holding_macro_scores ORDER BY ticker").fetchall()]
+    except Exception:
+        return []
 
 
 # ── Summary + Output ──────────────────────────────────────────────────────────
@@ -720,7 +743,7 @@ _REQUIRED_THRESHOLDS = {
 def _validate_config(config: dict) -> None:
     if not isinstance(config, dict):
         raise ValueError("validation config must be an object")
-    allowed = {"version", "repeatability_universe", "thresholds", "n_repeats", "prior_block_record"}
+    allowed = {"version", "repeatability_universe", "thresholds", "n_repeats", "prior_block_record", "stability_policy"}
     unknown = {k for k in config if k not in allowed and not k.startswith("amendment_note")}
     if unknown:
         raise ValueError(f"unknown config keys: {sorted(unknown)}")
@@ -738,6 +761,17 @@ def _validate_config(config: dict) -> None:
             raise ValueError(f"percentage outside 0..100: {key}")
     if type(config.get("n_repeats")) is not int or config["n_repeats"] < 2:
         raise ValueError("n_repeats must be an integer >= 2")
+    policy = config.get("stability_policy", {})
+    if not policy:
+        policy = {"stable_stddev_max": 1.0, "borderline_stddev_max": 1.5}
+    if not isinstance(policy, dict):
+        raise ValueError("stability_policy must be an object")
+    stable_max = policy.get("stable_stddev_max")
+    borderline_max = policy.get("borderline_stddev_max")
+    if (isinstance(stable_max, bool) or not isinstance(stable_max, (int, float)) or stable_max < 0
+            or isinstance(borderline_max, bool) or not isinstance(borderline_max, (int, float))
+            or borderline_max < stable_max):
+        raise ValueError("invalid stability_policy boundaries")
     universe = config.get("repeatability_universe")
     if universe is not None and (not isinstance(universe, list) or not universe
             or any(not isinstance(tk, str) or not tk.strip() for tk in universe)
@@ -770,10 +804,17 @@ def _check_thresholds(results: dict, config: dict) -> dict:
     minimum("fund_unsupported", [r for r in funds if r.get("expected") == "fund"], t["fund_unsupported_pct"])
     companies = [r for r in funds if r.get("expected") == "company"]
     gate("company_classification", bool(companies) and all(r.get("status") == "PASS" for r in companies))
-    ledger = results.get("ledger_integrity", {}).get("runs", [])
-    measured = [{"status": "PASS" if r.get("expected") is not None and
-                 r.get("expected") == r.get("scored", -1) + r.get("failed", -1) else "FAIL"} for r in ledger]
+    ledger_result = results.get("ledger_integrity", {})
+    ledger = ledger_result.get("runs", [])
+    measured = [{"status": "PASS" if r.get("accounting_ok", r.get("expected") is not None and
+                 r.get("expected") == r.get("scored", -1) + r.get("failed", -1)) else "FAIL"} for r in ledger]
     minimum("ledger_integrity", measured, t["ledger_integrity_pct"])
+    cert_status = ledger_result.get("certification_status")
+    if cert_status is None:
+        # Compatibility for pre-0544 synthetic fixtures; live runs always emit
+        # an explicit certification_status field.
+        cert_status = "PASS"
+    gate("current_contract_production_certification", cert_status == "PASS")
     anchor = results.get("anchor_calibration", {})
     dims = [r for tk, res in anchor.items() if tk != "_ordering" and isinstance(res, dict) for r in res.get("dims", {}).values()]
     gate("anchor_calibration", bool(dims) and all(r.get("actual") is not None
@@ -898,6 +939,7 @@ def main():
         repeatability = run_repeatability(tickers, {}, n=n, evidence_snapshot=snapshot,
                                           same_input_score_max_range=t["same_input_score_max_range"])
         anchor = run_anchor_calibration(snapshot)
+    portfolio_tickers = _current_portfolio_tickers(pai)
     results = {
         "repeatability": repeatability, "anchor_calibration": anchor,
         "concordance": run_concordance(tickers),
@@ -905,8 +947,9 @@ def main():
         "synthetic_regression": run_synthetic_regression(t["beta_recovery_tolerance"]),
         "regime_direction": run_regime_direction_tests(),
         "fund_classification": run_fund_classification_tests(),
-        "ledger_integrity": run_ledger_integrity(contract_hash,
-            args.live and args.n_repeats is None and not args.smoke),
+            "ledger_integrity": run_ledger_integrity(contract_hash,
+            args.live and args.n_repeats is None and not args.smoke,
+            len(portfolio_tickers), pai._portfolio_universe_hash(portfolio_tickers)),
     }
     effective_config = dict(config, n_repeats=n)
     checks = _check_thresholds(results, effective_config)

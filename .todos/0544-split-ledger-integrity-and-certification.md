@@ -1,7 +1,7 @@
 # Require Current-Contract Production Certification
 
 - **ID:** 0544
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-20
 - **Priority:** high
 - **Depends:** 0542
@@ -24,7 +24,7 @@ The ledger checker can calculate current-contract certification, but the formal 
 
 ## Done when
 
-- [ ] Historical integrity and current certification are separate checks.
-- [ ] Acceptance requires both checks to pass.
-- [ ] An old valid run plus a current valid run passes.
-- [ ] PARTIAL, wrong-contract, and sub-account-mismatch runs block acceptance.
+- [x] Historical integrity and current certification are separate checks.
+- [x] Acceptance requires both checks to pass.
+- [x] An old valid run plus a current valid run passes.
+- [x] PARTIAL, wrong-contract, and sub-account-mismatch runs block acceptance.

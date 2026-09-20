@@ -1,7 +1,7 @@
 # Bind Certification to the Full Portfolio Universe
 
 - **ID:** 0545
-- **Status:** backlog
+- **Status:** in-progress
 - **Created:** 2026-09-20
 - **Priority:** high
 - **Depends:** 0544
@@ -25,7 +25,9 @@ A current-contract COMPLETE run with one rescored holding could satisfy certific
 
 ## Done when
 
-- [ ] Full-refresh scope and portfolio-universe hash are stored for each scoring run.
-- [ ] Formal certification rejects incremental or wrong-universe runs.
+- [x] Full-refresh scope and portfolio-universe hash are stored for each scoring run.
+- [x] Formal certification rejects incremental or wrong-universe runs.
 - [ ] The 28-holding run is verified as COMPLETE with zero failures and matching hashes.
 - [ ] A regression test covers a valid one-holding run being rejected for formal certification.
+
+Code is implemented; a fresh forced production refresh is still required to create the first certification row containing the new scope and universe provenance.
