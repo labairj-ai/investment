@@ -4,7 +4,7 @@
 - **Status:** backlog
 - **Created:** 2026-09-19
 - **Priority:** normal
-- **Depends:** 0529, 0530, 0531, 0532, 0533, 0534
+- **Depends:** 0529, 0530, 0531, 0532, 0533, 0534, 0536, 0537, 0538, 0539
 
 ## Problem
 
@@ -40,3 +40,7 @@ The current acceptance record was generated against a validator that does not ru
 ## Review — 2026-09-20
 
 Pending operational acceptance. Keep open until 0529–0534 meet their completion criteria and the formal N=20 production-contract run and database verification are documented. This TODO review did not launch a live acceptance run.
+
+## Follow-up review — 2026-09-20
+
+The v1.4 N=20 run completed with `verdict=BLOCK` and `activated=false`. The blocked artifact is preserved as evidence. It showed repeatability failures in several dimensions and a missing completed production ledger, so the next run must wait for 0536–0539, a completed production scoring cycle, and the versioned acceptance-policy decision.
