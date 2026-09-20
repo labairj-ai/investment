@@ -38,3 +38,7 @@ The v1.4 acceptance gate blocks the entire scorer when any one of the 32 ticker-
 ## Progress — 2026-09-20
 
 Implemented v1.5 system-versus-dimension gate semantics and added the repeatability diagnostic script. Remaining work is operational: complete a reconciled production scoring cycle, record the blocked v1.4 32-cell distribution, and rerun formal acceptance under v1.5.
+
+## Follow-up review — 2026-09-20
+
+The system-level range block was removed, but validation still labels range-over-one cells unstable while activation derives eligibility from standard deviation alone. 0541 defines one canonical dimension eligibility function and versions the policy change as v1.6.

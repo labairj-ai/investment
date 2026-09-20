@@ -1,7 +1,7 @@
 # Enforce Scorer Contract on Cached Macro Scores
 
 - **ID:** 0536
-- **Status:** done
+- **Status:** in-progress
 - **Created:** 2026-09-20
 - **Priority:** high
 - **Depends:** 0535
@@ -33,3 +33,7 @@ Production reuses supported-company macro scores based on age, even when the sto
 ## Completion — 2026-09-20
 
 Implemented in `03636aa`: cache reuse, prompt blocks, coverage, and acceptance health now fail closed on missing or mismatched scorer contracts. Forced-refresh verification remains part of the production rollout record.
+
+## Follow-up review — 2026-09-20
+
+The downstream prompt and coverage paths are contract-aware, but `generate_holding_macro_scores(force=False)` still reuses any score younger than seven days without comparing its stored scorer hash. 0540 adds the missing cache-reuse gate and its direct regression tests.
