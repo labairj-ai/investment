@@ -17,8 +17,8 @@ def test_cached_score_requires_current_contract(tmp_path, monkeypatch):
         conn.commit()
         assert pai._classify_macro_coverage("XOM", conn) == "stale_scorer_contract"
     scores, block = pai._get_macro_scores_block(["XOM"])
-    assert scores["XOM"]["_coverage_state"] == "stale_scorer_contract"
-    assert "stale scorer contract" in block
+    assert scores == {}
+    assert block == ""
 
 
 def test_cached_score_missing_contract_is_not_current(tmp_path, monkeypatch):

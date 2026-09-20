@@ -1067,6 +1067,10 @@ def _get_macro_scores_block(tickers=None, compact=False, reason_max=120):
             data["_stale"]     = scored_at < stale_cutoff
             data["_stale_contract"] = data.get("scorer_contract_hash") != _compute_scorer_contract_hash()
             data["_coverage_state"] = "stale_scorer_contract" if data["_stale_contract"] else ("stale_score" if data["_stale"] else "company_supported")
+            if data["_stale_contract"]:
+                # A stale-contract score is diagnostic coverage only; never feed it
+                # back into downstream prompts as if it were current production data.
+                continue
             scores[t] = data
         except Exception:
             pass
