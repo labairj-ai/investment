@@ -75,6 +75,13 @@ uncertainty. See [experiment design and verified rollout records](docs/macro-val
 for provenance IDs, operational commands, exclusions and graduation requirements.
 
 
+## Help and glossary
+
+Macro Risk, Learning Lab and Agent Engine column headers have explanations on
+hover, keyboard focus or tap. The searchable glossary tab and `/glossary` share
+105 definitions covering portfolio, options, macro, learning, execution and
+watchdog terminology. See the [site terminology review](docs/site-terminology-review.md).
+
 ## Operational watchdog
 
 An independent 15-minute systemd watchdog checks successful pipeline completion,

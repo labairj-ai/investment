@@ -1,0 +1,271 @@
+[
+  {
+    "section": "Macro Risk and evidence",
+    "terms": [
+      {
+        "term": "Macro dimensions: Rate, Inflation, Dollar, Geo",
+        "definition": "Four company exposure estimates on a 1–10 scale. Higher Rate, Dollar and Geo indicate greater sensitivity or risk; higher Inflation indicates stronger inflation resilience or benefit. Scores describe exposure, not probabilities or expected investment returns."
+      },
+      {
+        "term": "Macro Health / Structural Health",
+        "definition": "A 0–100 display composite. Risk dimensions are reversed and inflation benefit is retained, so higher Health means lower structural macro exposure. All four scores must be present. A Health score does not establish accepted experiment eligibility."
+      },
+      {
+        "term": "Basis point (bp)",
+        "definition": "One hundredth of one percentage point: 50 basis points equals 0.50 percentage points. The rate sensitivity scenario uses a +50bp change in the 10-year yield."
+      },
+      {
+        "term": "Week-over-week change (WoW)",
+        "definition": "Change from the prior available scoring period. Arrows represent score changes, not stock returns; the favorable direction depends on whether the column is risk, benefit or Health."
+      },
+      {
+        "term": "Structural exposure versus regime interaction",
+        "definition": "Structural exposure describes company sensitivity. The experimental interaction view combines that sensitivity with current signed macro stress: positive is adverse and negative is favorable. These interaction values are research context."
+      },
+      {
+        "term": "Scorer acceptance / ACCEPTED_CURRENT",
+        "definition": "The scorer passed its formal validation under the current contract. This validates engineering behavior and repeatability, not investment effectiveness. A contract mismatch makes acceptance stale."
+      },
+      {
+        "term": "Scorer contract and protocol hash",
+        "definition": "Content fingerprints identify the exact scoring inputs/implementation or experiment rules. Changes are visible as a new identity rather than silently mixed into previous observations."
+      },
+      {
+        "term": "Formal N=20 repeatability validation",
+        "definition": "Twenty repeated scores are evaluated under frozen inputs and the accepted dimension policy. Stable or eligible scoring is not evidence that a dimension improves investment selection."
+      },
+      {
+        "term": "Dimension eligibility and evidence quality",
+        "definition": "A dimension must have formal accepted validation or matching supplemental certification, and usable runtime evidence. Full, partial and none describe evidence completeness. Formal validation does not override missing or stale sources."
+      },
+      {
+        "term": "Supplemental coverage certification",
+        "definition": "Separate, immutable ticker-by-dimension validation tied to an accepted scorer contract. It extends eligible ticker coverage without altering the original acceptance artifact. Runtime scoring alone does not certify a candidate."
+      },
+      {
+        "term": "Provenance / accepted-era snapshot",
+        "definition": "The saved lineage of a decision’s macro inputs: accepted record, scorer/config identity, prompt and evidence hashes, score timing and usable dimensions. The prospective experiment uses information available before the decision."
+      },
+      {
+        "term": "Net debt",
+        "definition": "Total debt minus cash from the same available financial period. Negative values indicate more cash than debt. The macro prompt expresses this derived value in millions of reporting-currency units; it does not assume all companies report in US dollars."
+      },
+      {
+        "term": "Stale, unsupported and unavailable",
+        "definition": "Stale means outside the relevant freshness or contract rule. Unsupported means the scorer does not support that security type. Unavailable means necessary evidence is absent or invalid. These states must not be interpreted as a zero risk score."
+      }
+    ]
+  },
+  {
+    "section": "Learning Lab and prospective experiments",
+    "terms": [
+      {
+        "term": "Decision episode",
+        "definition": "An immutable snapshot of one candidate and the evidence available when it was scored. Many candidate episodes can belong to a single decision sweep."
+      },
+      {
+        "term": "Decision cohort / sweep",
+        "definition": "Candidates evaluated together for one decision. The macro experiment compares selections at the cohort level; candidates from the same date are not independent pieces of evidence."
+      },
+      {
+        "term": "Control, macro challenger and ablation",
+        "definition": "The macro control uses the frozen base ranking. Its challenger uses the same candidates and evidence plus eligible macro information. An ablation removes or limits that information to isolate its incremental contribution. This macro experiment is separate from the learned champion/challenger model."
+      },
+      {
+        "term": "Stage 0 / observe-only",
+        "definition": "The experiment records shadow scores, selections and books but has zero production macro weight. Data collection, scorer acceptance or a positive-looking dashboard cannot automatically promote it."
+      },
+      {
+        "term": "Decision-relevant envelope",
+        "definition": "Candidates with base score at least Bmax minus twice the adjustment cap. At a cap of 5, the inclusive boundary is Bmax minus 10: lower-ranked candidates cannot overtake the leader even under opposite maximum adjustments."
+      },
+      {
+        "term": "Common usable dimensions",
+        "definition": "Intersection of usable dimensions across all candidates inside the decision-relevant envelope. Each candidate receives the same dimension set and original weights; omitted dimensions are not renormalized."
+      },
+      {
+        "term": "Observed cohort / excluded cohort",
+        "definition": "Observed means the cohort passed prospective coverage and provenance rules. Excluded means it has a recorded reason, such as incomplete certification or no common usable dimensions. An unexplained missing cohort is an operational failure, not a valid exclusion."
+      },
+      {
+        "term": "Divergent cohort",
+        "definition": "A cohort where macro and control select different tickers. These cohorts provide direct evidence about whether the macro information changes selection value. Identical winners are normal and do not constitute evidence for or against improvement."
+      },
+      {
+        "term": "SPY-relative alpha",
+        "definition": "Ticker return minus SPY return over the same horizon. For example, a 4% ticker return and 3% SPY return give +1 percentage point of alpha. Positive alpha can occur even when both investments lose money."
+      },
+      {
+        "term": "Mean selection delta / Δ alpha",
+        "definition": "Average macro-selected alpha minus control-selected alpha among evaluable divergent cohorts. Positive favors the macro selection. The return difference is expressed in percentage points, not as a relative percentage increase."
+      },
+      {
+        "term": "Outcome horizon: 1w, 1m, 3m / 90d",
+        "definition": "The prospective sessions_v2 targets are 5, 21 and 63 trading sessions, with 63 sessions approximately 90 calendar days. Legacy calendar_v1 reports use calendar-day horizons. Horizon versions must remain separate."
+      },
+      {
+        "term": "Matured and evaluable outcomes",
+        "definition": "Matured means the relevant horizon has elapsed. Evaluable additionally requires valid outcome labels and matching benchmark data. Missing labels or prices cannot be imputed as a zero return."
+      },
+      {
+        "term": "Hit rate, wins and ties",
+        "definition": "Hit rate in calibration is the fraction of usable outcomes with positive SPY-relative alpha. Macro/control wins compare paired selections; ties fall within the protocol’s tie tolerance. These are different summaries."
+      },
+      {
+        "term": "MAE / maximum adverse excursion",
+        "definition": "Worst price movement below the entry reference during the horizon. Under the return convention used here, more negative is worse. It describes the path, not the closing return."
+      },
+      {
+        "term": "MFE / maximum favorable excursion",
+        "definition": "Best price movement above the entry reference during the horizon. This is an intrahorizon opportunity measure and does not imply the position was sold at that price."
+      },
+      {
+        "term": "Confidence interval (CI) and clustered bootstrap",
+        "definition": "An uncertainty range computed by resampling the relevant evidence units. The macro experiment clusters by decision date to avoid treating same-date candidates as independent. Its 95% interval differs from the learned model card’s 90% ranking-spread interval."
+      },
+      {
+        "term": "INSUFFICIENT / INCONCLUSIVE / POSITIVE / NEGATIVE",
+        "definition": "Evidence states summarize whether enough usable outcomes and statistical precision exist and what the estimated effect supports. They are distinct from operational HEALTHY/RED/YELLOW statuses. Early positive results do not automatically permit production influence."
+      },
+      {
+        "term": "Walk-forward validation and embargo",
+        "definition": "Training uses earlier decision dates and validation uses later ones. An embargo separates overlapping outcome windows to reduce information leakage. Future outcomes must not enter the original decision evidence."
+      },
+      {
+        "term": "Experiment epoch",
+        "definition": "A population of observations tied to a specific accepted scorer, base contract and protocol. A changed contract starts a separate epoch; historical cohorts remain immutable."
+      },
+      {
+        "term": "Exploratory dimension ablation / attribution",
+        "definition": "A diagnostic of selected dimensions or score buckets. It uses frozen evidence and does not replace the preregistered primary comparison. An operational minimum sample count is a display threshold, not proof of effectiveness."
+      },
+      {
+        "term": "Q / V / PF / C / EC",
+        "definition": "Opportunity Hunter’s component scores: Quality, Valuation, Portfolio Fit, Catalyst and Evidence Confidence. These contribute to a candidate’s composite rank; they are distinct from the covered-call contract Score and Opp Score."
+      },
+      {
+        "term": "Calibration / score bucket",
+        "definition": "Comparison of historical forward outcomes within score ranges or conviction categories. Calibration checks whether higher scores correspond to better outcomes; it does not turn an LLM judgment into a guaranteed probability."
+      },
+      {
+        "term": "Champion / learned challenger",
+        "definition": "The champion is the existing comparison baseline; a learned challenger is an alternative bounded scoring model. Lifecycle states such as OBSERVE, PAPER_ACTIVE and SUSPENDED control its use. The macro experiment has separate arms and a separate stage-zero influence lock."
+      },
+      {
+        "term": "Ranking alpha spread / precision / edge",
+        "definition": "The learned-model card reports out-of-sample alpha separation between high- and low-ranked groups. Precision describes uncertainty; edge describes the direction of evidence. They are separate questions, and neither is a guaranteed forecast."
+      },
+      {
+        "term": "Virtual book / NAV / mark-to-market (MTM)",
+        "definition": "A simulated account records fills, cash and positions. Daily complete market-price marks support net asset value, cumulative return, drawdown and volatility. A cost-basis fallback or incomplete mark is not complete MTM performance."
+      },
+      {
+        "term": "Maximum drawdown and volatility",
+        "definition": "Drawdown measures the largest decline from a prior NAV peak; volatility summarizes variation in returns. These statistics require an adequate, complete marked return series."
+      },
+      {
+        "term": "Concentration, turnover and recommendation churn",
+        "definition": "Concentration describes how much selection is clustered in a ticker or sector. Turnover concerns changes in holdings or trades; recommendation churn concerns changing selections. Better average alpha must be considered alongside these risks and costs."
+      }
+    ]
+  },
+  {
+    "section": "Agent Engine and execution",
+    "terms": [
+      {
+        "term": "Recommendation → intent → order → fill",
+        "definition": "A recommendation is a proposed action. A trade intent is an actionable proposal subjected to policy and risk checks. An order is submitted for execution; a fill records what actually executed. These records are not interchangeable."
+      },
+      {
+        "term": "Shadow, paper and live execution",
+        "definition": "Shadow mode observes or simulates without live trading. Paper accounts use simulated broker execution. Live accounts can place real trades. Read the account/mode badge; a completed shadow cycle is not a real fill in a live account."
+      },
+      {
+        "term": "Runner cycle, state and duration",
+        "definition": "One execution-engine pass through its work. State records the cycle’s workflow status and duration records elapsed time. A running process or triggered timer alone does not prove expected work completed."
+      },
+      {
+        "term": "Risk gate / blocked intent",
+        "definition": "A deterministic rule that can prevent a proposal from proceeding. The audit compares later hypothetical outcomes for rejected candidates, but hindsight performance does not authorize bypassing the rule."
+      },
+      {
+        "term": "Losses avoided / alpha missed",
+        "definition": "Counts in the risk audit use negative or positive decision-relative alpha where available, with ticker-alpha fallback for legacy rows. They do not represent realized dollar savings or losses, and negative alpha need not mean an absolute loss."
+      },
+      {
+        "term": "Decision return",
+        "definition": "Return signed for the action’s direction: a sell, exit or trim can be favorable when the price subsequently falls. Distinct from the raw stock return and SPY-relative alpha."
+      },
+      {
+        "term": "Implementation shortfall",
+        "definition": "Execution price compared with the recorded arrival reference, signed so positive means worse execution. Newer records use the decision quote; legacy records may use an order limit as proxy. The per-trade table displays it as a percentage."
+      },
+      {
+        "term": "API errors",
+        "definition": "Failures reported while communicating with an external service. They may prevent useful work even if the surrounding process remains alive; inspect the run’s error and completion evidence."
+      },
+      {
+        "term": "UTC versus ET",
+        "definition": "Runner timestamps marked UTC use Coordinated Universal Time. Operational schedules use America/New_York (ET), including daylight-saving changes. A displayed date should be interpreted in its stated timezone."
+      },
+      {
+        "term": "Thesis, pillar, trigger and invalidation",
+        "definition": "A thesis records why a position belongs in the portfolio. Pillars are supporting claims; triggers specify review conditions, and invalidation indicates that assumptions or supporting evidence no longer meet the defined rule."
+      }
+    ]
+  },
+  {
+    "section": "Operational Watchdog",
+    "terms": [
+      {
+        "term": "Successful heartbeat",
+        "definition": "Evidence that expected work completed, not merely that a process exists or a timer fired. The independent watchdog reads existing business ledgers and its own producer completion receipts."
+      },
+      {
+        "term": "HEALTHY / YELLOW / RED / STALE / UNKNOWN",
+        "definition": "HEALTHY means current checks pass or work is legitimately not due. YELLOW means investigate missed deadlines, coverage or data gaps. RED indicates a failure or invariant breach. STALE means check evidence is too old; UNKNOWN means it is unavailable. These are operational states, not investment recommendations."
+      },
+      {
+        "term": "Expected, observed, excluded and unexplained cohorts",
+        "definition": "Watchdog continuity counts begin at watchdog activation. Each completed eligible sweep must have an observed cohort or documented exclusion. Unexplained missing must be zero. The epoch’s total observed count is displayed separately."
+      },
+      {
+        "term": "Incident, resolution and alert-only",
+        "definition": "Watchdog incidents have append-only detection and resolution transitions. RED notifications are immediate; unresolved YELLOW findings are summarized daily. The watchdog never restarts jobs, repairs data, promotes a model or changes recommendations."
+      },
+      {
+        "term": "Due versus overdue",
+        "definition": "Due time depends on the job’s actual schedule, grace window and, for market work, trading calendar. Nothing due is normal. Overdue means required completion evidence or usable outcomes are still missing after the applicable deadline."
+      },
+      {
+        "term": "Backup completion receipt",
+        "definition": "Records success only after a consistent database snapshot, integrity check and verified destination completion. A recent attempt, copied flag file or started process is not sufficient proof of a successful backup."
+      }
+    ]
+  },
+  {
+    "section": "Portfolio measurement and display conventions",
+    "terms": [
+      {
+        "term": "Percent versus percentage points",
+        "definition": "Percent expresses a return or fraction. A difference between two returns is a percentage-point difference: 6% minus 4% is +2 percentage points. A score-point change is a third, separate unit."
+      },
+      {
+        "term": "Dash / N/A / zero",
+        "definition": "A dash or N/A means the value is unavailable, unsupported or not yet evaluable. Zero is an actual measured value. Neither a missing score nor missing outcome should be treated as zero."
+      },
+      {
+        "term": "Realized versus unrealized P&L",
+        "definition": "Realized profit/loss relates to closed transactions; unrealized profit/loss describes open positions relative to their recorded cost. Fees, lot selection and price freshness affect how a displayed amount should be interpreted."
+      },
+      {
+        "term": "Market value, weight and allocation drift",
+        "definition": "Market value is a position’s price times shares; weight is its share of the portfolio value. Allocation drift is the difference from a configured target, commonly shown in percentage points."
+      },
+      {
+        "term": "Confidence versus evidence confidence",
+        "definition": "LLM confidence or conviction is a recorded model judgment. Evidence Confidence is an Opportunity Hunter input score. Neither is the same as a statistical confidence interval or a calibrated probability."
+      }
+    ]
+  }
+]
