@@ -26,104 +26,22 @@ import agent_db
 _FEATURE_SCHEMA_VERSION = "v1"
 
 
-def _build_macro_snapshot(ticker: str, conn) -> str:
-    """Load latest macro scores for ticker and build macro_snapshot JSON (0494/0497/0500)."""
+def _build_macro_snapshot(ticker: str, conn, captured_at=None) -> str:
+    """Freeze accepted macro context using the episode's connection and timestamp."""
+    from .macro_provenance import snapshot
     try:
-        import sys, os
-        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-        from portfolio_ai import (is_fund, _classify_macro_coverage,
-                                   _get_macro_acceptance_state, DB_PATH)
-        import sqlite3 as _sqlite3
-
-        coverage_state = _classify_macro_coverage(ticker, conn)
-
-        if coverage_state == "fund_unsupported":
-            snap = {"macro_supported": False, "coverage_state": "fund_unsupported",
-                    "reason": "fund/etf — no constituent evidence"}
-        elif coverage_state == "no_score_available":
-            snap = {"macro_supported": False, "coverage_state": "no_score_available",
-                    "reason": "company ticker but no macro score row"}
-        elif coverage_state == "stale_score":
-            snap = {"macro_supported": False, "coverage_state": "stale_score",
-                    "reason": f"score older than 14 days"}
-        else:
-            row = conn.execute(
-                "SELECT scores, scored_at FROM holding_macro_scores "
-                "WHERE ticker=? ORDER BY scored_at DESC LIMIT 1",
-                (ticker,)
-            ).fetchone()
-            if not row:
-                snap = {"macro_supported": False, "coverage_state": "no_score_available",
-                        "reason": "no macro scores available"}
-            else:
-                scores_json, scored_at = row[0], row[1]
-                try:
-                    scores = json.loads(scores_json)
-                except Exception:
-                    snap = {"macro_supported": False, "coverage_state": "no_score_available",
-                            "reason": "scores parse error"}
-                    scores = None
-                if scores is not None:
-                    snap = {
-                        "macro_supported":            True,
-                        "coverage_state":             "company_supported",
-                        "rate_sensitivity":           scores.get("rate_sensitivity"),
-                        "dollar_sensitivity":         scores.get("dollar_sensitivity"),
-                        "inflation_hedge":            scores.get("inflation_hedge"),
-                        "geopolitical_risk":          scores.get("geopolitical_risk"),
-                        "evidence_quality":           scores.get("evidence_quality"),
-                        "rate_beta_100bp_return_pct": scores.get("rate_beta_100bp_return_pct"),
-                        "usd_beta_1pct_return_pct":   scores.get("usd_beta_1pct_return_pct"),
-                        "rate_beta_confidence":       scores.get("rate_beta_confidence"),
-                        "run_id":                     scores.get("run_id"),
-                        "model_version":              scores.get("model_version"),
-                        "schema_version":             scores.get("schema_version"),
-                        "evidence_hash":              scores.get("evidence_hash"),
-                        "scored_at":                  scored_at,
-                        # 0506/0509: per-dim usability and stability for attribution gate
-                        "rate_sensitivity_usable_for_attribution":
-                            scores.get("rate_sensitivity_usable_for_attribution"),
-                        "dollar_sensitivity_usable_for_attribution":
-                            scores.get("dollar_sensitivity_usable_for_attribution"),
-                        "inflation_hedge_usable_for_attribution":
-                            scores.get("inflation_hedge_usable_for_attribution"),
-                        "geopolitical_risk_usable_for_attribution":
-                            scores.get("geopolitical_risk_usable_for_attribution"),
-                        "rate_sensitivity_stability_class":
-                            scores.get("rate_sensitivity_stability_class"),
-                        "dollar_sensitivity_stability_class":
-                            scores.get("dollar_sensitivity_stability_class"),
-                        "inflation_hedge_stability_class":
-                            scores.get("inflation_hedge_stability_class"),
-                        "geopolitical_risk_stability_class":
-                            scores.get("geopolitical_risk_stability_class"),
-                    }
-
-        # 0497: tag validation status
-        try:
-            conn_ac = _sqlite3.connect(str(DB_PATH), timeout=5)
-            acceptance = _get_macro_acceptance_state(conn_ac)
-            conn_ac.close()
-        except Exception:
-            acceptance = {}
-        if acceptance:
-            snap["macro_validation_status"]    = "ACCEPTED"
-            snap["macro_validation_contract"]  = acceptance.get("contract")
-            snap["macro_validation_record_id"] = acceptance.get("record_id")
-        else:
-            snap["macro_validation_status"]    = "PRE_ACCEPTANCE"
-            snap["macro_validation_contract"]  = None
-            snap["macro_validation_record_id"] = None
-
-        return json.dumps(snap)
-    except Exception as e:
-        return json.dumps({"macro_supported": False, "reason": f"error: {e}"})
+        return json.dumps(snapshot(ticker, conn, time.time() if captured_at is None else captured_at))
+    except Exception as exc:
+        return json.dumps({"macro_supported": False, "coverage_state": "provenance_unavailable",
+                           "usable_dimensions": [], "reason": str(exc)})
 
 
 def capture_candidate_episode(
     run_id: int,
     candidate: dict,
     portfolio_snapshot: dict | None = None,
+    captured_at: float | None = None,
+    macro_epoch: str | None = None,
 ) -> str:
     """Insert one immutable episode row for a scored candidate.
 
@@ -131,6 +49,7 @@ def capture_candidate_episode(
     a DB error never interrupts the main recommendation flow.
     """
     episode_id = str(uuid.uuid4())
+    captured_at = time.time() if captured_at is None else captured_at
     base_score = candidate.get("_composite")  # 0331: explicit base score before any challenger
     try:
         snapshot_json = json.dumps(portfolio_snapshot) if portfolio_snapshot else None
@@ -158,7 +77,7 @@ def capture_candidate_episode(
             )
             """,
             (
-                episode_id, run_id, candidate["ticker"], time.time(),
+                episode_id, run_id, candidate["ticker"], captured_at,
                 candidate.get("_q"), candidate.get("_v"),
                 candidate.get("_pf"), candidate.get("_c"),
                 candidate.get("_ec"), candidate.get("_composite"),
@@ -177,11 +96,23 @@ def capture_candidate_episode(
         )
         # Attach macro snapshot read-only (0494) — never influences scoring/ranking
         try:
-            macro_snap_json = _build_macro_snapshot(candidate["ticker"], conn)
+            macro_snap_json = _build_macro_snapshot(candidate["ticker"], conn, captured_at)
             conn.execute(
                 "UPDATE decision_episodes SET macro_snapshot=? "
                 "WHERE episode_id=? AND macro_snapshot IS NULL",
                 (macro_snap_json, episode_id),
+            )
+            ms = json.loads(macro_snap_json)
+            conn.execute(
+                """UPDATE decision_episodes SET macro_acceptance_record_id=?,
+                   macro_scorer_contract_hash=?, macro_config_version=?,
+                   macro_score_timestamp=?, macro_prompt_hash=?, macro_evidence_hash=?,
+                   macro_usable_dimensions=?, macro_coverage_state=?, macro_epoch=?
+                   WHERE episode_id=?""",
+                (ms.get("macro_validation_record_id"), ms.get("scorer_contract_hash"),
+                 ms.get("macro_config_version"), ms.get("scored_at"), ms.get("prompt_hash"),
+                 ms.get("evidence_hash"), json.dumps(ms.get("usable_dimensions", [])),
+                 ms.get("coverage_state"), macro_epoch, episode_id),
             )
         except Exception as snap_e:
             print(f"[episode_capture] WARNING: macro_snapshot attachment failed for "

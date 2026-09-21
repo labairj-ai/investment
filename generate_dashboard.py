@@ -3377,6 +3377,11 @@ def build_dashboard(portfolio, layers, holdings):
       <div id="learning-overview" style="color:#718096;font-size:13px;">Loading…</div>
     </div>
 
+    <div style="background:#fff;border-radius:10px;padding:18px 22px;box-shadow:0 1px 4px rgba(0,0,0,.07);">
+      <h3 style="margin:0 0 12px;font-size:14px;">Macro Value Experiment · Observe only</h3>
+      <div id="macro-experiment-panel" style="font-size:13px;color:#718096;">Loading…</div>
+    </div>
+
     <!-- Active Model Card -->
     <div style="background:#fff;border-radius:10px;padding:18px 22px;box-shadow:0 1px 4px rgba(0,0,0,.07);">
       <h3 style="margin:0 0 4px;font-size:14px;font-weight:700;color:#2d3748;">Active Challenger Model</h3>
@@ -9304,6 +9309,40 @@ function loadLearningPanel() {{
     fetch('/api/learning/readiness').then(function(r) {{ return r.json(); }}).then(function(d) {{
       if (!d.ok) {{ readinessEl.innerHTML = '<span style="color:#fc8181;">Error: ' + (d.error||'unknown') + '</span>'; return; }}
       var rp = d.report || {{}};
+      var macroEl = document.getElementById('macro-experiment-panel');
+      if (macroEl) {{
+        var mx = rp.macro_experiment || {{}};
+        var safeMacro = function(v) {{ var el = document.createElement('span'); el.textContent = String(v == null ? '—' : v); return el.innerHTML; }};
+        var pctMacro = function(v) {{ return typeof v === 'number' ? (v * 100).toFixed(2) + '%' : '—'; }};
+        var ciMacro = mx.mean_ci ? '[' + mx.mean_ci.map(pctMacro).join(', ') + ']' : 'Not estimable';
+        var mxHtml = '<b>' + safeMacro(mx.evidence_state || 'UNAVAILABLE') + '</b>';
+        mxHtml += '<p>Acceptance: ' + safeMacro(mx.acceptance ? mx.acceptance.config_version : 'Unavailable') +
+          ' · Epoch: ' + safeMacro(mx.epoch_id ? mx.epoch_id.slice(0, 12) : 'Awaiting registration') + '</p>';
+        mxHtml += '<p>Prospective cohorts: ' + safeMacro(mx.prospective_cohorts) + ' · Divergent: ' + safeMacro(mx.divergent_cohorts) +
+          ' · 90d matured divergent: ' + safeMacro(mx.matured_divergent) + ' · Excluded: ' + safeMacro(mx.excluded_cohorts) + '</p>';
+        mxHtml += '<p>Macro wins / control wins / ties: ' + safeMacro(mx.macro_wins) + ' / ' + safeMacro(mx.control_wins) + ' / ' + safeMacro(mx.ties) +
+          '<br>Mean selection delta: ' + pctMacro(mx.mean_selection_delta) + ' · 95% CI: ' + safeMacro(ciMacro) + '</p>';
+        mxHtml += '<p>Primary: 63 trading sessions, approximately 90 days. Early outcomes and dimension analyses are diagnostics. Production influence remains zero.</p>';
+        mxHtml += '<p>Median selection delta: ' + pctMacro(mx.median_selection_delta) +
+          ' · Matured but unevaluable: ' + safeMacro(mx.unevaluable_matured || 0) + '</p>';
+        if (mx.secondary) {{
+          mxHtml += '<p>Early diagnostics — 1w: ' + pctMacro(mx.secondary['1w'].mean) +
+            ' (N=' + safeMacro(mx.secondary['1w'].n) + ') · 1m: ' + pctMacro(mx.secondary['1m'].mean) +
+            ' (N=' + safeMacro(mx.secondary['1m'].n) + ')</p>';
+        }}
+        if (mx.exclusions) {{
+          Object.keys(mx.exclusions).forEach(function(k) {{ mxHtml += '<p>Excluded: ' + safeMacro(k) + ' — ' + safeMacro(mx.exclusions[k]) + '</p>'; }});
+        }}
+        if (mx.dimension_ablations) {{
+          mxHtml += '<table style="width:100%;text-align:left;"><tr><th>Exploratory dimension</th><th>N</th><th>Δ alpha</th><th>Δ MAE</th></tr>';
+          Object.keys(mx.dimension_ablations).forEach(function(k) {{ var a = mx.dimension_ablations[k];
+            mxHtml += '<tr><td>' + safeMacro(k) + '</td><td>' + safeMacro(a.n) + '</td><td>' + pctMacro(a.mean) + '</td><td>' + pctMacro(a.delta_mae) + '</td></tr>';
+          }});
+          mxHtml += '</table>';
+        }}
+        mxHtml += '<p>' + (mx.blockers || []).concat(mx.risk_blockers || []).map(safeMacro).join(' · ') + '</p>';
+        macroEl.innerHTML = mxHtml;
+      }}
       var lc = rp.current_lifecycle || '—';
       var lcColors = {{TRAINED:'#d69e2e',OBSERVE:'#3182ce',PAPER_ACTIVE:'#38a169',SUSPENDED:'#e53e3e',RETIRED:'#a0aec0'}};
       var lcColor = lcColors[lc] || '#4a5568';

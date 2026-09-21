@@ -5939,6 +5939,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 report["episode_stats"] = dict(_ep) if _ep else None
             except Exception:
                 report["episode_stats"] = None
+            # 0554: accepted-era macro effectiveness, observe-only
+            try:
+                from agents.learning.macro_experiment import evaluate as _macro_eval
+                report["macro_experiment"] = _macro_eval(conn)
+            except Exception as _macro_exc:
+                report["macro_experiment"] = {"evidence_state": "UNAVAILABLE", "error": str(_macro_exc), "observe_only": True}
             # 0443: attach latest model activation snapshot from model_promotion_log
             try:
                 _mv = report.get("model_version")

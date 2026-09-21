@@ -429,6 +429,18 @@ def run_opportunity_hunter(ctx: AgentContext) -> list[Recommendation]:
         "held_tickers": sorted(held),
     }
 
+    # Register the observe-only protocol before capturing this prospective universe.
+    import time as _macro_time
+    _macro_epoch = None
+    try:
+        from agents.learning.macro_experiment import register_epoch
+        with agent_db._connect() as _macro_conn:
+            _macro_epoch = register_epoch(_macro_conn)
+        _macro_conn.close()
+    except Exception as exc:
+        print(f"[opportunity] macro experiment unavailable: {exc}")
+    _macro_captured_at = _macro_time.time()
+
     # Score every unowned candidate
     scored: list[dict] = []
     for w in all_candidates:
@@ -448,7 +460,8 @@ def run_opportunity_hunter(ctx: AgentContext) -> list[Recommendation]:
         w["_ec"]      = ec
         w["_composite"] = _composite(q, v, pf, c, ec)
         w["_episode_id"] = capture_candidate_episode(
-            ctx.run_id, w, portfolio_snapshot=portfolio_snapshot
+            ctx.run_id, w, portfolio_snapshot=portfolio_snapshot,
+            captured_at=_macro_captured_at, macro_epoch=_macro_epoch
         )
         scored.append(w)
 
@@ -494,6 +507,15 @@ def run_opportunity_hunter(ctx: AgentContext) -> list[Recommendation]:
     # so the learner accumulates observations for every OH sweep, not just recommended ones.
     import uuid as _uuid
     _sweep_cohort_id = str(_uuid.uuid4())
+    if _macro_epoch:
+        try:
+            from agents.learning.macro_experiment import observe_cohort
+            with agent_db._connect() as _macro_conn:
+                observe_cohort(_macro_conn, _macro_epoch, _sweep_cohort_id,
+                               ctx.run_id, scored, _macro_captured_at)
+            _macro_conn.close()
+        except Exception as exc:
+            print(f"[opportunity] macro cohort excluded: {exc}")
 
     # 0360/0374/0419: shadow-score for OBSERVE, PAPER_ACTIVE, and SUSPENDED models
     # Must happen BEFORE MIN_COMPOSITE early return (0419) so the learner sees all scored

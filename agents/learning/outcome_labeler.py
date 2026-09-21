@@ -358,6 +358,14 @@ def label_mature_episodes(
             print(f"[outcome_labeler] prospective/degradation update error: {_e}")
 
     conn.close()
+    if not dry_run:
+        try:
+            from agents.learning.macro_experiment import sync_labels
+            with agent_db._connect() as macro_conn:
+                sync_labels(macro_conn)
+            macro_conn.close()
+        except Exception as exc:
+            print(f"[outcome_labeler] macro label sync error: {exc}")
     result = {"episodes_checked": len(episodes), "horizons_written": total_written}
     if not dry_run:
         print(f"[outcome_labeler] Done: {result}")

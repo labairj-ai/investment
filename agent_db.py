@@ -553,6 +553,17 @@ def migrate() -> None:
         ("decision_episodes",  "base_score",            "REAL"),
         ("decision_episodes",  "challenger_score",      "REAL"),
         ("decision_episodes",  "challenger_model_version", "TEXT"),
+        # 0549 — accepted-era macro provenance on immutable episodes
+        ("decision_episodes",  "macro_acceptance_record_id", "TEXT"),
+        ("decision_episodes",  "macro_scorer_contract_hash", "TEXT"),
+        ("decision_episodes",  "macro_config_version", "TEXT"),
+        ("decision_episodes",  "macro_score_timestamp", "TEXT"),
+        ("decision_episodes",  "macro_prompt_hash", "TEXT"),
+        ("decision_episodes",  "macro_evidence_hash", "TEXT"),
+        ("decision_episodes",  "macro_usable_dimensions", "TEXT"),
+        ("decision_episodes",  "macro_coverage_state", "TEXT"),
+        ("decision_episodes",  "macro_epoch", "TEXT"),
+        ("decision_episodes",  "macro_snapshot", "TEXT"),
         # 0332 — risk counterfactual pipeline
         ("risk_counterfactual_outcomes", "episode_id",       "TEXT"),
         ("risk_counterfactual_outcomes", "rejection_reason", "TEXT"),
@@ -668,6 +679,9 @@ def migrate() -> None:
             conn.commit()
         except sqlite3.OperationalError:
             pass  # column already exists
+
+    from agents.learning.macro_experiment import migrate as migrate_macro_experiment
+    migrate_macro_experiment(conn)
 
     # 0092: unique index on executed_actions.fill_id
     try:
@@ -1077,7 +1091,16 @@ def _migrate_learning_episodes(conn: sqlite3.Connection) -> None:
             base_score             REAL,
             challenger_score       REAL,
             challenger_model_version TEXT,
-            code_commit_sha        TEXT
+            code_commit_sha        TEXT,
+            macro_acceptance_record_id TEXT,
+            macro_scorer_contract_hash TEXT,
+            macro_config_version TEXT,
+            macro_score_timestamp TEXT,
+            macro_prompt_hash TEXT,
+            macro_evidence_hash TEXT,
+            macro_usable_dimensions TEXT,
+            macro_coverage_state TEXT,
+            macro_epoch TEXT
         );
 
         CREATE TABLE IF NOT EXISTS episode_outcomes (
