@@ -99,3 +99,9 @@ the actual Opportunity Hunter universe. The implementation reports exclusions;
 it does not loosen eligibility, score candidates with future information or claim
 that empty cohorts establish effectiveness. Resolving that coverage limitation
 is a separate scope decision under the frozen acceptance policy.
+
+Deployment verification also found zero currently usable dimensions across the
+eight accepted tickers under runtime evidence-quality checks (XOM, for example,
+has `none` in all four current evidence-quality fields). Formal acceptance alone
+does not make those snapshots usable. This data-readiness limitation is also
+tracked in 0557; the experiment correctly excludes these scores.

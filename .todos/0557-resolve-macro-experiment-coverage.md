@@ -13,6 +13,13 @@ and zero overlap with the eight tickers carrying accepted per-dimension eligibil
 The new experiment therefore records coverage exclusions until valid accepted
 macro evidence becomes available for its actual opportunity universe.
 
+The deployed provenance check also finds zero currently usable dimensions across
+all eight accepted tickers under runtime evidence-quality requirements. For
+example, XOM's current score payload records `none` for every dimension's evidence
+quality despite valid acceptance, scorer and run provenance. Formal eligibility
+does not override missing runtime evidence. This is a second data-readiness
+constraint to resolve before interpreting any experiment result.
+
 ## Constraint
 
 The user explicitly froze acceptance unless a real defect is discovered. This is
