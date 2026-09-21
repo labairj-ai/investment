@@ -688,7 +688,7 @@ def _init_ai_tables():
 
 
 MACRO_SCORE_SCHEMA_VERSION = "v3"
-MACRO_EVIDENCE_SCHEMA_VERSION = "v2"
+MACRO_EVIDENCE_SCHEMA_VERSION = "v3"
 MACRO_AGGREGATION_VERSION = "adaptive-median-v1"
 MACRO_INTERACTION_VERSION = "macro_interaction_v1"
 _MACRO_SCORE_DIMS = ("rate_sensitivity", "inflation_hedge", "dollar_sensitivity", "geopolitical_risk")
@@ -738,7 +738,7 @@ def _build_macro_score_request(ticker: str, evidence: dict, betas) -> str:
         if ev.get("gross_margin_pct") is not None:
             parts.append(f"gross_margin={ev['gross_margin_pct']:.1f}%")
         if ev.get("net_debt") is not None:
-            parts.append(f"net_debt=${ev['net_debt']:.0f}M")
+            parts.append(f"net_debt={ev['net_debt']:.3f}M reporting-currency units (currency unspecified)")
         if ev.get("interest_coverage") is not None:
             parts.append(f"interest_coverage={ev['interest_coverage']:.1f}x")
         if ev.get("foreign_rev_pct") is not None:
@@ -807,7 +807,9 @@ def _compute_scorer_contract_hash() -> str:
     """
     import ollama_client
     import inspect
+    import macro_evidence
     contract = {
+        "evidence_adapter_source": inspect.getsource(macro_evidence),
         "prompt_builder_source": inspect.getsource(_build_macro_score_request),
         "response_validator_source": inspect.getsource(_parse_and_validate_macro_score_response) + inspect.getsource(_validate_macro_score_response),
         "macro_dims":      MACRO_DIMS,
@@ -2104,43 +2106,12 @@ def _fetch_company_evidence(ticker: str, conn) -> dict:
         evidence["evidence_quality_rate"] = "none"
         evidence["evidence_quality_dollar"] = "none"
         return evidence
-    try:
-        cols_info = conn.execute("PRAGMA table_info(company_financials)").fetchall()
-        available_cols = {row[1] for row in cols_info}  # row[1] = column name
-        # Map desired fields to possible column names
-        field_candidates = {
-            "sector":           ["sector"],
-            "foreign_rev_pct":  ["international_revenue_pct", "foreign_revenue_pct", "intl_rev_pct"],
-            "net_debt":         ["net_debt", "net_debt_millions"],
-            "interest_coverage":["interest_coverage", "interest_coverage_ratio"],
-            "gross_margin_pct": ["gross_margin_pct", "gross_margin", "gross_profit_margin"],
-            "revenue_ttm":      ["revenue_ttm", "revenue_trailing_12m", "total_revenue"],
-        }
-        select_parts = []
-        col_map = {}
-        for field, candidates in field_candidates.items():
-            for cand in candidates:
-                if cand in available_cols:
-                    select_parts.append(cand)
-                    col_map[cand] = field
-                    break
-        if select_parts:
-            row = conn.execute(
-                f"SELECT {', '.join(select_parts)} FROM company_financials WHERE ticker=? ORDER BY rowid DESC LIMIT 1",
-                (ticker,)
-            ).fetchone()
-            if row:
-                for col, field in col_map.items():
-                    try:
-                        val = row[col]
-                        evidence[field] = float(val) if val is not None and field != "sector" else val
-                    except Exception:
-                        pass
-    except Exception:
-        pass
+    from macro_evidence import financial_evidence
+    evidence.update(financial_evidence(ticker, conn))
     _meta_keys = {"evidence_quality", "evidence_quality_rate", "evidence_quality_dollar",
                   "evidence_quality_inflation", "evidence_quality_geo", "is_fund", "fund_note"}
-    filled = sum(1 for k, v in evidence.items() if k not in _meta_keys and v is not None)
+    filled = sum(evidence.get(k) is not None for k in
+                 ("sector", "foreign_rev_pct", "net_debt", "interest_coverage", "gross_margin_pct", "revenue_ttm"))
     evidence["evidence_quality"] = "full" if filled >= 3 else ("partial" if filled >= 1 else "none")
 
     # Per-dimension evidence quality — canonical vocab: full/partial/none (0518)
