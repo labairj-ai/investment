@@ -15,7 +15,7 @@ A personal investment tracking system that sends a daily email newsletter, maint
 
 ## Macro validation acceptance
 
-`validation_config.json` v1.7 controls every acceptance threshold and the
+`validation_config.json` v1.8 controls every acceptance threshold and the
 stable/borderline dimension boundaries. Run
 `venv/bin/python -u scripts/validate_macro_scorer.py --live` on optiplex for the
 formal N=20 run. Overrides (`--smoke`, `--n-repeats`) cannot activate acceptance.
@@ -44,6 +44,35 @@ System acceptance and dimension eligibility are separate: complete N=20 samples 
 all system gates must pass, while the configured standard-deviation policy controls
 each dimension's eligibility. Range is a diagnostic warning. Health distinguishes
 `ACCEPTED_CURRENT`, `ACCEPTANCE_STALE_CONTRACT`, and `PRE_ACCEPTANCE`.
+
+## Prospective macro value experiment
+
+The v1.8 evidence adapter derives net debt and gross margin from stored financials
+with explicit units and point-in-time provenance. The changed scoring inputs passed
+formal N=20 reacceptance; the previous v1.7 acceptance remains immutable.
+
+Opportunity Hunter uses separate candidate score storage and supplemental N=20
+ticker/dimension certification tied to the accepted contract. Scheduled preparation
+(`macro-candidate-preparation.timer`) targets candidates within the inclusive
+`Bmax - 2 * adjustment_cap` envelope: 10 base points at the current cap of 5.
+Both experimental arms use the same frozen universe; the macro arm uses only the
+intersection of usable dimensions across the envelope, without renormalizing weights.
+Incomplete coverage excludes the cohort, and scores and certifications must predate
+the decision. Runtime scores alone never grant eligibility.
+
+**Verified September 21, 2026:** TODOs 0557–0562 are complete and deployed on
+Optiplex. The post-acceptance refresh completed **28/28 with zero failures**;
+13 candidate tickers received supplemental certification and the real prospective
+canary passed production parity and shadow-book checks. Learning Lab reported
+three observed cohorts, zero divergent selections, and inflation as the common
+usable dimension. Both shadow books have fills but no complete daily marks yet.
+
+The experiment remains **stage 0, observe-only, with zero production macro weight**.
+Its protocol is frozen while outcomes accumulate. Evidence is **INSUFFICIENT**;
+collection success does not establish predictive value. The primary horizon is
+63 trading sessions (approximately 90 calendar days), with decision-date clustered
+uncertainty. See [experiment design and verified rollout records](docs/macro-value-experiment.md)
+for provenance IDs, operational commands, exclusions and graduation requirements.
 
 
 ## Deployment
