@@ -416,11 +416,28 @@ def run_opportunity_hunter(ctx: AgentContext) -> list[Recommendation]:
               + ", ".join(m["ticker"] for m in manual))
     all_candidates = winners + manual
 
+    # Independent expectations are recorded before experiment capture. These
+    # operational receipts never grant prospective eligibility or repair cohorts.
+    from operational_watchdog import sweep_receipt
+
     if not all_candidates:
+        sweep_receipt(ctx.run_id, 0, [], 'no_candidates')
         print("[opportunity] No candidates in DB — no recommendation")
         return []
 
     held = _get_current_tickers()
+    _watchdog_models = []
+    try:
+        with agent_db._connect() as _watchdog_conn:
+            _watchdog_models = [r[0] for r in _watchdog_conn.execute(
+                "SELECT model_version FROM learning_models WHERE lifecycle_state IN ('OBSERVE','PAPER_ACTIVE','SUSPENDED')")]
+        _watchdog_conn.close()
+    except Exception as exc:
+        print(f"[watchdog] Cannot read expected learning models: {type(exc).__name__}")
+        _watchdog_models = ['EXPECTATION_READ_FAILED']
+    _watchdog_n = sum(w['ticker'] not in held for w in all_candidates)
+    sweep_receipt(ctx.run_id, _watchdog_n, _watchdog_models,
+                  'all_candidates_held' if not _watchdog_n else None)
     layer_weights = _get_layer_weights()
     holding_sectors = _get_holding_sectors(held)
 

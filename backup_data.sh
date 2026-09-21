@@ -18,11 +18,12 @@ if [ ! -d "$BACKUP_DIR/.git" ]; then
 fi
 
 # ── Copy binary files ─────────────────────────────────────────────────────────
-cp "$PROJECT_DIR/out/investment.db"  "$BACKUP_DIR/investment.db"
+# SQLite's online backup includes committed WAL content; raw cp can omit it.
+"$PROJECT_DIR/venv/bin/python3" "$PROJECT_DIR/scripts/watchdog_backup_snapshot.py" "$PROJECT_DIR/out/investment.db" "$BACKUP_DIR/investment.db"
 cp "$PROJECT_DIR/holdings.csv"       "$BACKUP_DIR/holdings.csv"
 
 if [ -f "$PROJECT_DIR/out/buffett.db" ]; then
-  cp "$PROJECT_DIR/out/buffett.db" "$BACKUP_DIR/buffett.db"
+  "$PROJECT_DIR/venv/bin/python3" "$PROJECT_DIR/scripts/watchdog_backup_snapshot.py" "$PROJECT_DIR/out/buffett.db" "$BACKUP_DIR/buffett.db"
 fi
 
 # ── Export thesis data as human-readable JSON ─────────────────────────────────
@@ -76,9 +77,13 @@ git add investment.db holdings.csv theses.json 2>/dev/null
 git add buffett.db 2>/dev/null || true
 
 if git diff --cached --quiet; then
-  echo "[backup] No changes — nothing to push."
+  echo "[backup] No new changes — verifying destination is current."
 else
   git commit -m "Data backup — $TIMESTAMP"
-  git push origin main
-  echo "[backup] Pushed to investment-data."
 fi
+# Push even with no new diff: an earlier commit may still be ahead after a failed push.
+git push origin main
+BACKUP_LOCAL_HEAD="$(git rev-parse HEAD)"
+BACKUP_REMOTE_HEAD="$(git ls-remote origin refs/heads/main | cut -f1)"
+test "$BACKUP_LOCAL_HEAD" = "$BACKUP_REMOTE_HEAD"
+echo "[backup] Destination verified at $BACKUP_LOCAL_HEAD"

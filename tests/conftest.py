@@ -17,6 +17,11 @@ sys.path.insert(0, str(ROOT))
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(autouse=True)
+def isolated_watchdog_state(tmp_path, monkeypatch):
+    import operational_watchdog
+    monkeypatch.setattr(operational_watchdog, 'STATE', tmp_path / 'watchdog.db')
+
+@pytest.fixture(autouse=True)
 def mock_llm(monkeypatch):
     """Replace ollama_client.generate_structured with a deterministic stub."""
     import ollama_client

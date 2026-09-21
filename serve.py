@@ -469,17 +469,18 @@ def _backup_data():
     """Push investment.db, buffett.db, and holdings.csv to the private data repo."""
     script = PROJECT_DIR / "backup_data.sh"
     if not script.exists():
-        return
+        raise FileNotFoundError(script)
     import subprocess
     result = subprocess.run(
-        ["bash", str(script)],
+        [str(PROJECT_DIR / "venv/bin/python"), str(PROJECT_DIR / "scripts/watchdog_job.py"),
+         "backup", "--", "bash", str(script)],
         cwd=str(PROJECT_DIR),
         capture_output=True, text=True, timeout=120
     )
     if result.stdout:
         print(result.stdout.strip())
     if result.returncode != 0:
-        print(f"[Backup] Failed: {result.stderr.strip()}")
+        raise RuntimeError(f"Backup failed (exit {result.returncode}); success flag not advanced")
 
 
 def _run_daily():
@@ -1015,6 +1016,8 @@ def _run_agent_pipeline(log_path=None) -> None:
     log_path (a Path or str) so they appear in newsletter.log.
     Non-fatal: exceptions are caught and logged; caller continues normally.
     """
+    from operational_watchdog import receipt
+    _watchdog_record = receipt('agent_pipeline')
     def _log(msg):
         print(msg)
         if log_path:
@@ -1035,6 +1038,7 @@ def _run_agent_pipeline(log_path=None) -> None:
 
         from agents.triggers import detect_triggers
         events = detect_triggers(snapshot)
+        _run_ids = []
         triggered = list({e.agent_type for e in events})
         _log(f"[triggers] {len(events)} events → agents: {triggered}")
 
@@ -1045,11 +1049,23 @@ def _run_agent_pipeline(log_path=None) -> None:
         else:
             _log("[Orchestrator] No agents triggered.")
 
+        import agent_db as _watchdog_adb
+        with _watchdog_adb._connect() as _watchdog_conn:
+            _watchdog_runs = [dict(r) for r in _watchdog_conn.execute(
+                "SELECT id,agent_type,status FROM agent_runs WHERE id IN (" +
+                ','.join('?' for _ in _run_ids) + ")", _run_ids)] if _run_ids else []
+        _watchdog_conn.close()
+        receipt('agent_pipeline', _watchdog_record,
+                'FAILED' if any(r['status'] != 'done' for r in _watchdog_runs) else 'COMPLETE',
+                {'opportunity_expected': any(e.agent_type == 'opportunity_hunter' for e in events),
+                 'opportunity_run_ids': [r['id'] for r in _watchdog_runs if r['agent_type'] == 'opportunity_hunter']})
+
         try:
             _dispatch_urgent_notifications()
         except Exception as _ne:
             _log(f"[Notifications] dispatch failed: {_ne}")
     except Exception as _e:
+        receipt('agent_pipeline', _watchdog_record, 'FAILED', {'error': type(_e).__name__})
         _log(f"[AgentPipeline] Failed: {_e}")
 
 
@@ -1957,6 +1973,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             _h = parse_qs(parsed.query).get("horizon", ["3m"])[0]
             _horizon = _h if _h in _valid_horizons else "3m"
             self._handle_learning_stats(_horizon)
+        elif parsed.path == "/api/watchdog/heartbeat":
+            try:
+                import sqlite3 as _watchdog_sqlite
+                with _watchdog_sqlite.connect(f'file:{PROJECT_DIR}/out/investment.db?mode=ro', uri=True, timeout=3) as _wd:
+                    _wd.execute('SELECT 1 FROM agent_runs LIMIT 1').fetchone()
+                _wd.close()
+                self._json({"ok": True})
+            except Exception:
+                self._json_error(503, "Database unavailable")
+        elif parsed.path == "/api/watchdog":
+            from operational_watchdog import report
+            self._json({"ok": True, "report": report()})
         elif parsed.path == "/api/learning/readiness":
             self._handle_learning_readiness()
         elif parsed.path == "/api/learning/champion-challenger":

@@ -42,3 +42,6 @@ out/.company_names.json
 out/.wsj_session
 out/*_cache.json
 out/*.db-journal
+out/watchdog.db*
+out/watchdog*.json*
+out/watchdog.lock

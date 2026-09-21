@@ -75,6 +75,16 @@ uncertainty. See [experiment design and verified rollout records](docs/macro-val
 for provenance IDs, operational commands, exclusions and graduation requirements.
 
 
+## Operational watchdog
+
+An independent 15-minute systemd watchdog checks successful pipeline completion,
+experiment continuity, due labels and complete MTM, backup receipts, source freshness,
+and the pinned acceptance/protocol/stage-zero contract. Learning Lab shows its
+read-only status. RED incidents notify immediately; unresolved YELLOWs receive a
+daily digest through the configured email transport. The watchdog is strictly
+alert-only and never repairs data or changes investment behavior.
+See [operational checks, schedules and deployment](docs/operational-watchdog.md).
+
 ## Deployment
 
 The recommended setup is a always-on home server (e.g. a mini PC or Raspberry Pi running Ubuntu) with a systemd service for `serve.py`. The Mac/dev machine is for development only.

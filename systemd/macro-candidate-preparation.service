@@ -8,5 +8,5 @@ User=optiplex
 WorkingDirectory=/home/optiplex/investment
 Environment=LLM_URL=http://100.73.128.40:8080
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/home/optiplex/investment/venv/bin/python scripts/prepare_macro_candidates.py --prepare
+ExecStart=/home/optiplex/investment/venv/bin/python3 scripts/watchdog_job.py candidate_preparation -- /home/optiplex/investment/venv/bin/python scripts/prepare_macro_candidates.py --prepare
 TimeoutStartSec=6h

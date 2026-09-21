@@ -3382,6 +3382,11 @@ def build_dashboard(portfolio, layers, holdings):
       <div id="macro-experiment-panel" style="font-size:13px;color:#718096;">Loading…</div>
     </div>
 
+    <div style="background:#fff;border-radius:10px;padding:18px 22px;box-shadow:0 1px 4px rgba(0,0,0,.07);">
+      <h3 style="margin:0 0 12px;font-size:14px;">System Watchdog · Alert only</h3>
+      <div id="system-watchdog-panel" style="font-size:13px;">UNKNOWN · Awaiting operational check</div>
+    </div>
+
     <!-- Active Model Card -->
     <div style="background:#fff;border-radius:10px;padding:18px 22px;box-shadow:0 1px 4px rgba(0,0,0,.07);">
       <h3 style="margin:0 0 4px;font-size:14px;font-weight:700;color:#2d3748;">Active Challenger Model</h3>
@@ -9155,7 +9160,39 @@ function loadShadowRuns() {{
 
 // ── Learning Lab ─────────────────────────────────────────────────────────────
 
+function loadWatchdogPanel() {{
+  var el = document.getElementById('system-watchdog-panel');
+  if (!el) return;
+  fetch('/api/watchdog', {{cache: 'no-store'}}).then(function(r) {{ if (!r.ok) throw Error('Unavailable'); return r.json(); }}).then(function(d) {{
+    var report = d.report || {{overall:'UNKNOWN',components:[]}};
+    el.replaceChildren();
+    var heading = document.createElement('strong');
+    heading.textContent = report.overall + (report.stale ? ' · STALE checks' : '') + ' · Last check: ' + (report.checked_at ? new Date(report.checked_at*1000).toLocaleString() : 'Never');
+    heading.style.color = report.overall === 'HEALTHY' ? '#276749' : report.overall === 'RED' ? '#c53030' : '#975a16';
+    el.appendChild(heading);
+    (report.components || []).forEach(function(c) {{
+      var row = document.createElement('div'); row.style.marginTop = '7px';
+      var detail = JSON.parse(c.detail), evidence = detail.evidence || {{}};
+      row.textContent = c.component.replaceAll('_',' ') + ' · ' + c.status + ' · ' + detail.reason;
+      if (c.component === 'macro_experiment') row.textContent += ' · expected ' + evidence.expected + ', observed ' + evidence.observed + ', excluded ' + evidence.excluded + ', unexplained ' + evidence.unexplained_missing;
+      if (c.component === 'influence_lock' && evidence.current) row.textContent += c.status === 'INFO' ? ' · Stage 0 · production macro weight 0 (pinned source)' : ' · production influence UNVERIFIED';
+      if (c.component === 'macro_acceptance' && evidence.current && evidence.current.acceptance) row.textContent += ' · ' + evidence.current.acceptance.config_version;
+      if (evidence.overdue != null) row.textContent += ' · overdue ' + evidence.overdue;
+      if (evidence.missing_n != null) row.textContent += ' · missing ' + evidence.missing_n;
+      if (evidence.common_dimensions) row.textContent += ' · common: ' + (evidence.common_dimensions.join(', ') || 'none');
+      if (c.last_success_at) row.textContent += ' · Last success: ' + new Date(c.last_success_at*1000).toLocaleString();
+      if (c.last_expected_at) row.textContent += ' · Expected: ' + new Date(c.last_expected_at*1000).toLocaleString();
+      el.appendChild(row);
+    }});
+  }}).catch(function() {{ el.textContent = 'UNKNOWN · Watchdog status unavailable. Check the service journal on Optiplex.'; }});
+}}
+setInterval(function() {{
+  var tab = document.getElementById('tab-learning');
+  if (tab && tab.style.display !== 'none') loadWatchdogPanel();
+}}, 60000);
+
 function loadLearningPanel() {{
+  loadWatchdogPanel();
   var overviewEl = document.getElementById('learning-overview');
   var scoreEl    = document.getElementById('learning-score-cal');
   var featureEl  = document.getElementById('learning-feature-attr');

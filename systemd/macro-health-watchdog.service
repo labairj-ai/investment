@@ -1,12 +1,13 @@
 [Unit]
-Description=Macro Health Watchdog — check macro scorer health independently of weekly scorer
+Description=Operational Watchdog — deterministic checks and alert delivery
 After=network.target
 
 [Service]
 Type=oneshot
 User=optiplex
 WorkingDirectory=/home/optiplex/investment
-ExecStart=/home/optiplex/investment/venv/bin/python3 scripts/macro_health_watchdog.py
+ExecStart=/home/optiplex/investment/venv/bin/python3 scripts/macro_health_watchdog.py --notify
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=macro-health-watchdog
+TimeoutStartSec=180
