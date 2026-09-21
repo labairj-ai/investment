@@ -1,11 +1,13 @@
 # Macro Value Experiment
 
-Acceptance is frozen at v1.7. This workstream measures incremental selection value;
-it neither changes the accepted scorer nor grants it production influence.
+The v1.7 acceptance remains an immutable historical record. The confirmed financial
+adapter defect requires v1.8 acceptance before repaired evidence is usable. This
+workstream measures incremental selection value and grants no production influence.
 
 ## Prospective protocol
 
-`config/macro_experiment_v1.json` is the preregistration. Before the first episode,
+`config/macro_experiment_v2.json` is the current preregistration; v1 is retained.
+Before the first episode,
 the accepted artifact, protocol, ranking source and risk constants are hashed into
 an immutable epoch. Changing any of these starts a separate population. Reporting
 defaults to the current epoch and never pools older epochs. Historical episodes
@@ -22,9 +24,14 @@ weights: rates -0.25, inflation +0.25, dollar -0.25, geopolitics -0.25
 ```
 
 Only formally eligible dimensions with the exact accepted scorer, configuration,
-model, evidence provenance and completed scoring item contribute. Missing or
-ineligible dimensions contribute no incremental adjustment; weights are never
-renormalized and missing scores are never imputed. Both arms share base-score
+model, evidence provenance and completed scoring item contribute. All base-eligible
+candidates at or above `Bmax - 2*adjustment_cap` (inclusive, currently Bmax-10)
+must carry original or supplemental accepted coverage before the decision. Missing
+certification excludes the cohort as `coverage_incomplete`. The treatment uses the
+intersection of their usable dimensions; an empty intersection excludes the cohort
+as `no_common_usable_macro_dimensions`. Weights are never renormalized, missing
+scores are never imputed, and candidates outside the envelope cannot win under the
+bounded adjustment. Both arms share base-score
 eligibility and deterministic ticker tie-breaking. Existing AI conviction remains
 in the common base; this isolates **accepted macro score influence**, not all
 possible macro information latent in earlier analysis. Neither arm adds an LLM
@@ -105,3 +112,48 @@ eight accepted tickers under runtime evidence-quality checks (XOM, for example,
 has `none` in all four current evidence-quality fields). Formal acceptance alone
 does not make those snapshots usable. This data-readiness limitation is also
 tracked in 0557; the experiment correctly excludes these scores.
+
+## Repaired evidence and supplemental candidate coverage
+
+The defect diagnosis supersedes the earlier description of all missing runtime
+evidence as a data-readiness limitation. `macro_evidence.py` reads the real stored
+statement schema. It derives `(total_debt-cash)/1e6` in reporting-currency millions
+and `100*gross_profit/revenue` in percentage points, selects by financial period
+and conservative fetched-at availability, and preserves source values and units.
+No USD currency is invented. Same-period quarterly rows take precedence over annual
+rows; freshness limits are 185 days for quarters and 550 days for annual statements.
+Unknown interest coverage, foreign revenue and unsourced geo data remain unavailable.
+The adapter source and evidence schema v3 are part of the scorer contract hash.
+
+Candidate scores, immutable history and run/item ledgers are separate from holding
+scores. Supplemental N=20 certification reuses the canonical frozen-input scorer
+and accepted stability policy. Immutable coverage records reference the current
+acceptance; they never activate acceptance or extend its original artifact. Both
+score publication and certification must predate any consuming decision.
+
+```
+venv/bin/python scripts/prepare_macro_candidates.py
+venv/bin/python scripts/prepare_macro_candidates.py --prepare --out out/coverage_PREPARATION_ID.json
+venv/bin/python scripts/run_macro_coverage_canary.py --out out/canary_CANARY_ID.json
+```
+
+The first command only plans the bounded target envelope. Preparation fetches
+existing financial sources, scores candidates, and certifies previously untested
+targets under the current acceptance. A process lock prevents overlapping collectors;
+stale interrupted ledgers are reconciled before a new collection. The optional
+weekday 04:00 America/New_York timer prepares data ahead of later sweeps. It must
+not be enabled until the initial acceptance/coverage rollout has completed.
+
+The real canary invokes Opportunity Hunter and persists prospective episodes,
+cohorts and virtual books. It does not publish returned recommendations or invoke
+broker execution. An isolated pre-sweep database copy replays the existing production
+path with macro observation disabled and the same recorded LLM response. All
+recommendation fields must match except distinct episode IDs and wall-clock expiry
+timestamps; the seven-day validity duration is independently checked. The canary
+also requires unchanged trade-intent counts and fills in both macro virtual books.
+Cost-basis placeholders remain incomplete until ordinary nightly mark-to-market.
+
+Only a passing canary establishes `collection_started_at` in Learning Lab. A failed
+or uncovered sweep remains excluded and cannot be backfilled. No divergence or
+positive outcome is required to begin collecting; no effectiveness or promotion
+claim is implied. Freeze protocol v2 while prospective outcomes accumulate.

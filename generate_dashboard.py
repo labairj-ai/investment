@@ -9323,6 +9323,8 @@ function loadLearningPanel() {{
         mxHtml += '<p>Macro wins / control wins / ties: ' + safeMacro(mx.macro_wins) + ' / ' + safeMacro(mx.control_wins) + ' / ' + safeMacro(mx.ties) +
           '<br>Mean selection delta: ' + pctMacro(mx.mean_selection_delta) + ' · 95% CI: ' + safeMacro(ciMacro) + '</p>';
         mxHtml += '<p>Primary: 63 trading sessions, approximately 90 days. Early outcomes and dimension analyses are diagnostics. Production influence remains zero.</p>';
+        mxHtml += '<p>Latest common dimensions: ' + safeMacro((mx.latest_common_dimensions || []).join(', ') || 'None') + '</p>';
+        mxHtml += '<p>Prospective clock: ' + safeMacro(mx.collection_started_at ? new Date(mx.collection_started_at * 1000).toLocaleString() : 'Awaiting a passing real coverage canary') + '</p>';
         mxHtml += '<p>Median selection delta: ' + pctMacro(mx.median_selection_delta) +
           ' · Matured but unevaluable: ' + safeMacro(mx.unevaluable_matured || 0) + '</p>';
         if (mx.secondary) {{

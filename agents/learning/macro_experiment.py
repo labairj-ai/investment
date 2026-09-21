@@ -11,7 +11,7 @@ from pathlib import Path
 
 from .macro_provenance import DIMS, ET, accepted_contract, canonical, digest
 
-PROTOCOL_PATH = Path(__file__).resolve().parents[2] / "config" / "macro_experiment_v1.json"
+PROTOCOL_PATH = Path(__file__).resolve().parents[2] / "config" / "macro_experiment_v2.json"
 
 
 def migrate(conn):
@@ -55,8 +55,16 @@ def migrate(conn):
         PRIMARY KEY(cohort_id,horizon,horizon_version)
       );
       CREATE INDEX IF NOT EXISTS idx_macro_cohorts_epoch_date ON macro_experiment_cohorts(epoch_id,decision_date);
+      CREATE TABLE IF NOT EXISTS macro_experiment_coverage (
+        cohort_id TEXT PRIMARY KEY REFERENCES macro_experiment_cohorts(cohort_id),
+        envelope_json TEXT NOT NULL, common_dimensions TEXT NOT NULL, adjustment_cap REAL NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS macro_experiment_canaries (
+        canary_id TEXT PRIMARY KEY, epoch_id TEXT NOT NULL, cohort_id TEXT NOT NULL,
+        completed_at REAL NOT NULL, status TEXT NOT NULL, artifact_json TEXT NOT NULL
+      );
     """)
-    for table in ("macro_experiment_epochs", "macro_experiment_cohorts", "macro_experiment_candidates", "macro_experiment_labels"):
+    for table in ("macro_experiment_epochs", "macro_experiment_cohorts", "macro_experiment_candidates", "macro_experiment_labels", "macro_experiment_coverage", "macro_experiment_canaries"):
         for operation in ("UPDATE", "DELETE"):
             conn.execute(f"CREATE TRIGGER IF NOT EXISTS immutable_{table}_{operation} "
                          f"BEFORE {operation} ON {table} BEGIN SELECT RAISE(ABORT, 'immutable macro experiment record'); END")
@@ -93,7 +101,7 @@ def base_contract():
                    "slippage": books._DEFAULT_SLIPPAGE_PCT, "position_cap": books._MAX_POSITION_PCT,
                    "ticker_cap": books._MAX_TICKER_EXPOSURE_PCT,
                    "experiment_source": [inspect.getsource(f) for f in
-                       (adjustment, observe_cohort, macro_provenance.snapshot, _mature, _outcome)],
+                       (adjustment, balanced_coverage, observe_cohort, macro_provenance.snapshot, _mature, _outcome)],
                    "book_horizon_sessions": book_mtm.BOOK_HOLD_SESSIONS})
 
 
@@ -181,6 +189,19 @@ def _books(conn, epoch, control, macro, date):
     return "RECORDED"
 
 
+def balanced_coverage(candidates, protocol):
+    eligible = [c for c in candidates if c["risk_eligible"]]
+    if not eligible:
+        return [], [], "no_base_eligible_candidates"
+    maximum = max(c["base_score"] for c in eligible)
+    envelope = [c for c in eligible if c["base_score"] >= maximum - 2 * protocol["adjustment_cap"]]
+    snapshots = [json.loads(c["macro_snapshot"]) for c in envelope]
+    if any(s.get("coverage_certified") is not True for s in snapshots):
+        return envelope, [], "coverage_incomplete"
+    common = sorted(set.intersection(*(set(s.get("usable_dimensions", [])) for s in snapshots)))
+    return envelope, common, None if common else "no_common_usable_macro_dimensions"
+
+
 def observe_cohort(conn, epoch_id, cohort_id, agent_run_id, candidates, captured_at):
     """Persist all candidates and both selections atomically, from captured episodes."""
     epoch_row = conn.execute("SELECT * FROM macro_experiment_epochs WHERE epoch_id=?", (epoch_id,)).fetchone()
@@ -221,7 +242,7 @@ def observe_cohort(conn, epoch_id, cohort_id, agent_run_id, candidates, captured
                     or not snap.get("prompt_hash") or not snap.get("evidence_hash")
                     or snap.get("macro_score_timestamp", float("inf")) > captured_at):
                 raise ValueError("unusable accepted macro provenance")
-        adj = adjustment(snap, protocol)
+        adj = 0.0  # computed after the full decision-relevant coverage intersection
         # One shared immutable candidate payload; arm-specific fields are excluded.
         evidence = {k: v for k, v in c.items() if not k.startswith("_challenger") and not k.startswith("_composite_challenger")}
         frozen.append({"episode_id": row["episode_id"], "ticker": row["ticker"], "base_score": base,
@@ -235,10 +256,12 @@ def observe_cohort(conn, epoch_id, cohort_id, agent_run_id, candidates, captured
             raise ValueError("cohort retry changed its frozen universe")
         return prior[0]
     eligible = [c for c in frozen if c["risk_eligible"]]
+    envelope, dims, reason = balanced_coverage(frozen, protocol)
+    for c in envelope:
+        c["adjustment"] = adjustment(json.loads(c["macro_snapshot"]), protocol, dims)
+        c["macro_score"] = c["base_score"] + c["adjustment"]
     control = min(eligible, key=lambda c: (-c["base_score"], c["ticker"])) if eligible else None
     macro = min(eligible, key=lambda c: (-c["macro_score"], c["ticker"])) if eligible else None
-    dims = sorted({d for c in eligible for d in json.loads(c["macro_snapshot"]).get("usable_dimensions", [])})
-    reason = "no_base_eligible_candidates" if not eligible else "no_usable_macro_dimensions" if not dims else None
     date = datetime.fromtimestamp(captured_at, ET).date().isoformat()
     regime, regime_json = _regime(conn, captured_at)
     conn.execute("SAVEPOINT macro_cohort")
@@ -252,6 +275,8 @@ def observe_cohort(conn, epoch_id, cohort_id, agent_run_id, candidates, captured
                       control["base_score"] if control else None, macro["macro_score"] if macro else None,
                       int(bool(control and control["ticker"] != macro["ticker"])), canonical(dims), regime,
                       canonical(regime_json), book_status, time.time()))
+        conn.execute("INSERT INTO macro_experiment_coverage VALUES (?,?,?,?)",
+                     (cohort_id, canonical([c["ticker"] for c in envelope]), canonical(dims), protocol["adjustment_cap"]))
         conn.executemany("INSERT INTO macro_experiment_candidates VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                          [(cohort_id, c["episode_id"], c["ticker"], c["base_score"], c["macro_score"], c["adjustment"],
                            c["risk_eligible"], c["evidence_json"], c["evidence_hash"], c["macro_snapshot"], c["sector"], c["price"]) for c in frozen])
@@ -387,6 +412,9 @@ def evaluate(conn, now=None, epoch_id=None):
     if not epoch:
         return report
     p = json.loads(epoch["protocol_json"])
+    canary = conn.execute("SELECT k.canary_id,c.captured_at FROM macro_experiment_canaries k JOIN macro_experiment_cohorts c USING(cohort_id) WHERE k.epoch_id=? AND k.status='PASS' ORDER BY c.captured_at LIMIT 1", (epoch["epoch_id"],)).fetchone()
+    report["collection_started_at"] = canary[1] if canary else None
+    report["coverage_canary_id"] = canary[0] if canary else None
     epoch_current = bool(current and epoch["acceptance_id"] == current["record_id"]
                          and epoch["scorer_contract_hash"] == current["scorer_contract_hash"]
                          and epoch["base_contract_hash"] == base_contract()
@@ -461,6 +489,7 @@ def evaluate(conn, now=None, epoch_id=None):
                   blockers=blockers, risk_blockers=risk, graduation_ready=state == "POSITIVE" and not risk,
                   protocol=p, epoch_acceptance_id=epoch["acceptance_id"],
                   epoch_current=epoch_current,
+                  latest_common_dimensions=json.loads(all_rows[-1]["dimensions_json"]) if all_rows else [],
                   regime_breakdown={regime: summarize([(r["decision_date"], labels[(r["cohort_id"], "3m")]["delta_alpha"])
                                                        for r in matured if r["regime"] == regime], p)
                                     for regime in sorted({r["regime"] for r in matured})},
@@ -477,7 +506,8 @@ def _ablations(conn, rows, candidates, protocol, now):
             universe = [c for c in candidates if c["cohort_id"] == cohort["cohort_id"] and c["risk_eligible"]]
             if not universe or not _mature(cohort["captured_at"], "3m", now):
                 continue
-            selected = min(universe, key=lambda c: (-(c["base_score"] + adjustment(json.loads(c["macro_snapshot"]), protocol, dims)), c["ticker"]))
+            allowed = set(dims) & set(json.loads(cohort["dimensions_json"]))
+            selected = min(universe, key=lambda c: (-(c["base_score"] + adjustment(json.loads(c["macro_snapshot"]), protocol, allowed)), c["ticker"]))
             if selected["episode_id"] == cohort["control_episode_id"]:
                 continue
             c = _outcome(conn, cohort["control_episode_id"], "3m", now)

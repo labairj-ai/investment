@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import sqlite3
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -72,12 +73,22 @@ def snapshot(ticker, conn, at):
         if pai.is_fund(ticker):
             snap["coverage_state"] = "fund_unsupported"
             return snap
-        row = conn.execute("SELECT scores,updated_at,run_id FROM holding_macro_scores WHERE ticker=?", (ticker,)).fetchone()
+        source, item_table = "holding_macro_scores", "macro_scoring_run_items"
+        try:
+            row = conn.execute("SELECT scores,updated_at,run_id,score_id FROM macro_candidate_scores WHERE ticker=?", (ticker,)).fetchone()
+        except sqlite3.OperationalError:
+            row = None
+        if row:
+            source, item_table = "macro_candidate_scores", "macro_candidate_scoring_run_items"
+            snap["candidate_score_id"] = row[3]
+        else:
+            row = conn.execute("SELECT scores,updated_at,run_id FROM holding_macro_scores WHERE ticker=?", (ticker,)).fetchone()
+        snap["score_source"] = source
         if not row:
             return snap
         scores = json.loads(row[0])
         scored_at = timestamp(row[1], local=True)
-        item = conn.execute("SELECT status,completed_at,scorer_contract_hash FROM macro_scoring_run_items WHERE run_id=? AND ticker=?", (row[2], ticker)).fetchone()
+        item = conn.execute(f"SELECT status,completed_at,scorer_contract_hash FROM {item_table} WHERE run_id=? AND ticker=?", (row[2], ticker)).fetchone()
         completed_at = timestamp(item[1], local=True) if item else None
         snap.update({d: scores.get(d) for d in DIMS})
         snap.update(scorer_contract_hash=scores.get("scorer_contract_hash"),
@@ -103,11 +114,22 @@ def snapshot(ticker, conn, at):
             snap.update(macro_supported=True, coverage_state="company_supported")
             snap["score_completed_at"] = completed_at
             states = {}
+            certified = []
             for dim in DIMS:
                 evidence = scores.get(pai._DIM_EV_KEY[dim], "none")
                 state = conn.execute("SELECT eligible,config_hash,scorer_contract_hash,n_samples,model_identity "
                                      "FROM macro_dimension_validation WHERE acceptance_record_id=? AND ticker=? AND dimension=?",
                                      (acceptance["record_id"], ticker, dim)).fetchone()
+                basis, certification_id, certified_at = "original_acceptance", None, acceptance["accepted_at"]
+                original_valid = bool(state and state[0] == 1 and state[1] == acceptance["config_hash"]
+                                      and state[2] == acceptance["scorer_contract_hash"] and state[3] == 20
+                                      and state[4] == acceptance["model_identity"])
+                if not original_valid:
+                    from .macro_coverage import coverage_row
+                    state = coverage_row(conn, acceptance, ticker, dim, at)
+                    basis = "supplemental_certification"
+                    if state:
+                        certification_id, certified_at = state[5], state[6]
                 data = scores.get(dim)
                 score = data.get("score") if isinstance(data, dict) else None
                 valid = (isinstance(score, (float, int)) and not isinstance(score, bool)
@@ -116,11 +138,16 @@ def snapshot(ticker, conn, at):
                               and state[2] == acceptance["scorer_contract_hash"] and state[3] == 20
                               and state[4] == acceptance["model_identity"]
                               and evidence in pai._EV_MIN_FOR_USABILITY[dim])
-                states[dim] = {"usable": usable, "evidence_quality": evidence}
+                if state and state[0] == 1:
+                    certified.append(dim)
+                states[dim] = {"usable": usable, "evidence_quality": evidence, "basis": basis,
+                               "certification_id": certification_id, "certified_at": certified_at}
                 snap[f"{dim}_usable_for_attribution"] = usable
                 if usable:
                     snap["usable_dimensions"].append(dim)
             snap["dimension_eligibility"] = states
+            snap["certified_dimensions"] = certified
+            snap["coverage_certified"] = bool(certified)
         return snap
     except (ValueError, KeyError, TypeError) as exc:
         snap.update(coverage_state="invalid_provenance", error=str(exc), usable_dimensions=[])

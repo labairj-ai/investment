@@ -1,0 +1,13 @@
+[Unit]
+Description=Prepare bounded macro candidate scoring and supplemental coverage
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=optiplex
+WorkingDirectory=/home/optiplex/investment
+Environment=LLM_URL=http://100.73.128.40:8080
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/optiplex/investment/venv/bin/python scripts/prepare_macro_candidates.py --prepare
+TimeoutStartSec=6h
+

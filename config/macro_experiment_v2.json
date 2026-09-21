@@ -1,0 +1,102 @@
+{
+  "version": "macro_value_v2",
+  "mode": "observe_only",
+  "hypothesis": "Eligible accepted macro exposure adds incremental selection value to the existing deterministic Opportunity Hunter ranking.",
+  "control": "Frozen base composite; no accepted macro features, no LLM reselection, no learned challenger adjustment.",
+  "treatment": "Same ranking plus an equal-weight structural defensiveness adjustment. Inflation is beneficial; rate, dollar and geopolitical exposures are adverse. This tests this fixed ranking rule, not all possible uses of macro.",
+  "adjustment_cap": 5,
+  "dimension_weights": {
+    "rate_sensitivity": -0.25,
+    "inflation_hedge": 0.25,
+    "dollar_sensitivity": -0.25,
+    "geopolitical_risk": -0.25
+  },
+  "missing_dimension_policy": "Outside the decision-relevant envelope: zero contribution. Inside: exclude incomplete certification or empty common dimensions; apply the same common dimensions and original weights to every arm candidate.",
+  "horizon_version": "sessions_v2",
+  "horizons": {
+    "1w": 5,
+    "1m": 21,
+    "3m": 63
+  },
+  "primary": "Mean paired SPY-relative alpha difference on divergent cohorts at 63 trading sessions (approximately 90 calendar days).",
+  "secondary": [
+    "median_delta",
+    "macro_wins",
+    "control_wins",
+    "ties",
+    "1w_delta",
+    "1m_delta",
+    "mfe_delta",
+    "mae_delta",
+    "book_return",
+    "drawdown",
+    "volatility",
+    "ticker_concentration",
+    "sector_concentration",
+    "turnover",
+    "churn"
+  ],
+  "bootstrap": {
+    "unit": "decision_date",
+    "replicates": 2000,
+    "seed": 549,
+    "confidence": 0.95
+  },
+  "tie_tolerance": 0.000001,
+  "diversity": {
+    "decision_dates": 10,
+    "tickers": 5,
+    "sectors": 3,
+    "regimes": 2
+  },
+  "minimum_divergence_fraction": 0.05,
+  "max_mean_ci_half_width": 0.02,
+  "minimum_effect": 0,
+  "max_mae_worsening": 0.02,
+  "max_drawdown_worsening": 0.03,
+  "max_concentration_increase": 0.1,
+  "preliminary_reporting_milestone": 25,
+  "graduation": "Diversity, divergence, clustered uncertainty, effect and risk jointly required. Milestone count is not proof. Early horizons cannot graduate the experiment. Promotion requires a separate explicit production change.",
+  "dimension_ablations": {
+    "rates": [
+      "rate_sensitivity"
+    ],
+    "inflation": [
+      "inflation_hedge"
+    ],
+    "dollar": [
+      "dollar_sensitivity"
+    ],
+    "geo": [
+      "geopolitical_risk"
+    ],
+    "rates_inflation": [
+      "rate_sensitivity",
+      "inflation_hedge"
+    ]
+  },
+  "ablation_analysis": "Exploratory only on originally frozen prospective candidates; no rescoring with current data and no production challengers.",
+  "stages": {
+    "0": {
+      "name": "observe_only",
+      "cap": 0
+    },
+    "1": {
+      "name": "near_ties",
+      "cap": 1
+    },
+    "2": {
+      "name": "bounded_adjustment",
+      "cap": 2
+    },
+    "3": {
+      "name": "learned_bounded_weight",
+      "cap": 3
+    },
+    "4": {
+      "name": "broader_bounded_influence",
+      "cap": 5
+    }
+  },
+  "coverage_policy": "Inclusive base_score >= Bmax - 2*adjustment_cap envelope; pre-decision accepted certification for every envelope candidate; treatment uses intersection of usable dimensions without renormalization."
+}

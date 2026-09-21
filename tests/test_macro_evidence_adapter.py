@@ -6,7 +6,8 @@ from macro_evidence import financial_evidence
 
 
 @pytest.fixture
-def statements():
+def statements(monkeypatch):
+    monkeypatch.setattr("macro_evidence.time.time", lambda: NOW)
     c = sqlite3.connect(":memory:")
     c.row_factory = sqlite3.Row
     c.execute("CREATE TABLE company_financials(ticker,period_end,period_type,fetched_at,total_debt,cash,gross_profit,revenue)")

@@ -1,0 +1,10 @@
+[Unit]
+Description=Prepare macro candidate evidence ahead of later opportunity sweeps
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 04:00:00 America/New_York
+Persistent=true
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

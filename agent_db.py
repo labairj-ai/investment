@@ -682,6 +682,8 @@ def migrate() -> None:
 
     from agents.learning.macro_experiment import migrate as migrate_macro_experiment
     migrate_macro_experiment(conn)
+    from agents.learning.macro_coverage import migrate as migrate_macro_coverage
+    migrate_macro_coverage(conn)
 
     # 0092: unique index on executed_actions.fill_id
     try:

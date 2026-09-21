@@ -29,6 +29,7 @@ def cohort(db, monkeypatch, *, at=None, run="run", no_macro=False):
     candidates = []
     for ticker, base, rate in (("AAA", 60, 10), ("BBB", 59, 1)):
         snap = {"coverage_state": "company_supported",
+                "coverage_certified": True,
                 "usable_dimensions": [] if no_macro else ["rate_sensitivity"],
                 "rate_sensitivity": {"score": rate}, "macro_acceptance_record_id": "accepted",
                 "scorer_contract_hash": "scorer", "macro_config_hash": "config",
