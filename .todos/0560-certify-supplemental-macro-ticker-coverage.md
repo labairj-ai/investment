@@ -1,7 +1,7 @@
 # Certify Supplemental Macro Ticker Coverage
 
 - **ID:** 0560
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-21
 - **Priority:** high
 - **Depends:** 0558, 0559
@@ -24,8 +24,12 @@ agent_db.py; scripts/validate_macro_scorer.py; agents/learning/macro_provenance.
 
 ## Done when
 
-- [ ] Supplemental certification cannot mutate original acceptance artifacts, original validation rows or the active acceptance pointer.
-- [ ] Original and supplemental provenance paths enforce the same accepted policy, runtime evidence requirements and pre-decision timing.
-- [ ] Certification lineage is immutable and tests reject runtime-only eligibility, insufficient samples, future certification and mismatched acceptance/config/model/scorer.
-- [ ] A pre-certified candidate outside the original eight-ticker universe becomes eligible only on a later valid prospective sweep.
-- [ ] QA evaluation conducted: functionality verified working, no regressions introduced.
+- [x] Supplemental certification cannot mutate original acceptance artifacts, original validation rows or the active acceptance pointer.
+- [x] Original and supplemental provenance paths enforce the same accepted policy, runtime evidence requirements and pre-decision timing.
+- [x] Certification lineage is immutable and tests reject runtime-only eligibility, insufficient samples, future certification and mismatched acceptance/config/model/scorer.
+- [x] A pre-certified candidate outside the original eight-ticker universe becomes eligible only on a later valid prospective sweep.
+- [x] QA evaluation conducted: functionality verified working, no regressions introduced.
+
+## Completion — 2026-09-21
+
+Implemented and verified in production. See [rollout evidence](../docs/macro-value-experiment.md#verified-rollout--2026-09-21) for acceptance, certification, canary and collection records. Full regression: 1,362 passed, 16 skipped. Production remains stage 0; outcome maturation is pending.

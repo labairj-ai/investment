@@ -1,7 +1,7 @@
 # Resolve Macro Experiment Opportunity Coverage
 
 - **ID:** 0557
-- **Status:** blocked
+- **Status:** done
 - **Created:** 2026-09-20
 - **Priority:** high
 - **Depends:** 0558, 0559, 0560, 0561, 0562
@@ -46,16 +46,19 @@ separate from original acceptance, with runtime evidence quality still required.
 0549–0556 remain implemented. Preserve v1.7 artifacts, evidence thresholds,
 original opportunity-universe membership and historical cohorts. No runtime-only
 certification, retrospective attachment, blanket certification of all 79 stocks,
-or production macro influence is permitted. This review creates implementation
-backlog items; it does not itself change the deployed scorer or start collection.
+or production macro influence is permitted. The original review created the implementation backlog; the completion record below supersedes that operational status.
 
 ## Done when
 
-- [ ] Evidence-adapter repair and required v1.8 reacceptance are complete (0558).
-- [ ] Separate candidate scoring and supplemental certification provide a compatible coverage path (0559–0560).
-- [ ] Coverage-balanced prospective enrollment and the real canary pass (0561–0562).
-- [ ] A real future sweep records usable accepted macro candidates in both arms.
-- [ ] Prospective collection starts without any production recommendation influence.
+- [x] Evidence-adapter repair and required v1.8 reacceptance are complete (0558).
+- [x] Separate candidate scoring and supplemental certification provide a compatible coverage path (0559–0560).
+- [x] Coverage-balanced prospective enrollment and the real canary pass (0561–0562).
+- [x] A real future sweep records usable accepted macro candidates in both arms.
+- [x] Prospective collection starts without any production recommendation influence.
 
 Outcome maturation and evidence evaluation follow collection; neither can be
 declared complete before the preregistered horizon and uncertainty requirements.
+
+## Completion — 2026-09-21
+
+Implemented and verified in production. See [rollout evidence](../docs/macro-value-experiment.md#verified-rollout--2026-09-21) for acceptance, certification, canary and collection records. Full regression: 1,362 passed, 16 skipped. Production remains stage 0; outcome maturation is pending.

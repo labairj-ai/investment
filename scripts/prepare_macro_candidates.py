@@ -49,7 +49,12 @@ def main():
                         pending.append(ticker)
                 report["certification_id"] = certify(conn, pending) if pending else None
                 report["acceptance"] = acc
+                # The prospective gate conservatively reserves one second for
+                # publication precision. Read readiness only after that boundary.
+                time.sleep(1.01)
                 report["coverage"] = {t: snapshot(t, conn, time.time()) for t in targets}
+                report["common_dimensions"] = sorted(set.intersection(*(set(s["usable_dimensions"]) for s in report["coverage"].values())))
+                report["ready_for_later_sweep"] = bool(report["common_dimensions"]) and all(s.get("coverage_certified") is True for s in report["coverage"].values())
                 report["completed_at"] = time.time()
             finally:
                 conn.close()
@@ -58,6 +63,8 @@ def main():
         with args.out.open("x") as f:
             f.write(output + "\n")
     print(output)
+    if args.prepare and not report["ready_for_later_sweep"]:
+        raise SystemExit("Coverage remains incomplete or common usable dimensions are empty; do not start the canary")
 
 
 if __name__ == "__main__":

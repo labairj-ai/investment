@@ -1,7 +1,7 @@
 # Run a Prospective Macro Coverage Canary
 
 - **ID:** 0562
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-21
 - **Priority:** high
 - **Depends:** 0558, 0559, 0560, 0561
@@ -25,8 +25,12 @@ agents/opportunity_agent.py; agents/learning/macro_experiment.py; scripts/; Lear
 
 ## Done when
 
-- [ ] A real later sweep is OBSERVED with all accepted/current, point-in-time, envelope and common-dimension conditions proven from persisted records.
-- [ ] Both virtual books and Learning Lab are checked; missing prices or incomplete marks are reported and never presented as complete MTM.
-- [ ] Production parity against the existing macro-disabled path is demonstrated; stage remains zero and no production macro influence or canary live trade is introduced.
-- [ ] A durable canary artifact establishes the first usable prospective timestamp; no backfill, automatic promotion or early-horizon effectiveness claim occurs.
-- [ ] QA evaluation conducted: functionality verified working, no regressions introduced.
+- [x] A real later sweep is OBSERVED with all accepted/current, point-in-time, envelope and common-dimension conditions proven from persisted records.
+- [x] Both virtual books and Learning Lab are checked; missing prices or incomplete marks are reported and never presented as complete MTM.
+- [x] Production parity against the existing macro-disabled path is demonstrated; stage remains zero and no production macro influence or canary live trade is introduced.
+- [x] A durable canary artifact establishes the first usable prospective timestamp; no backfill, automatic promotion or early-horizon effectiveness claim occurs.
+- [x] QA evaluation conducted: functionality verified working, no regressions introduced.
+
+## Completion — 2026-09-21
+
+Implemented and verified in production. See [rollout evidence](../docs/macro-value-experiment.md#verified-rollout--2026-09-21) for acceptance, certification, canary and collection records. Full regression: 1,362 passed, 16 skipped. Production remains stage 0; outcome maturation is pending.

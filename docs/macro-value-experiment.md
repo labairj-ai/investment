@@ -157,3 +157,15 @@ Only a passing canary establishes `collection_started_at` in Learning Lab. A fai
 or uncovered sweep remains excluded and cannot be backfilled. No divergence or
 positive outcome is required to begin collecting; no effectiveness or promotion
 claim is implied. Freeze protocol v2 while prospective outcomes accumulate.
+
+## Verified rollout — 2026-09-21
+
+TODOs 0557–0562 are complete. Formal v1.8 N=20 acceptance passed and activated as `c7cb2b88-7539-476d-9a33-5d472af4e915`; the prior v1.7 artifact remains immutable. The post-acceptance holding refresh `df55341f-77b4-48d1-8394-99f002f48bbd` completed 28/28 with zero failures (20 supported, eight unsupported).
+
+Supplemental certification `29d97699-286b-40a7-aa75-7a1de4475750` covers the 13 decision-relevant candidates under the same accepted N=20 policy. Candidate financial evidence provides partial rates and full inflation for 12 candidates; FHI has no rate evidence and partial inflation evidence. Common treatment therefore uses inflation only, with unchanged weights and thresholds. Dollar and geopolitical source limitations remain explicit.
+
+Real canary `f9dad4ff-0e97-4a84-8a01-48ac7faab823` passed: cohort `87ff7744-b8bd-4aad-b0d1-91dda36b337c`, 79 candidates, 77 base-eligible, a 13-candidate envelope, and MSGM selected by both experimental arms. Production parity against the isolated macro-disabled replay passed; trade intents were unchanged and no canary recommendation was published or live trade executed. Both shadow books recorded MSGM fills. They currently have zero complete mark-to-market days, so return, drawdown and volatility remain unavailable.
+
+Learning Lab API and rendered panel checks passed. The preparation timer is enabled and active. The current epoch is `83b0f50ce2e40ef5922a1718e0527cbe44e2957964eaf12f8a8481327da1e75a`, with collection starting at Unix timestamp `1789995200.4390466`. Verification found three observed prospective cohorts, zero divergent cohorts and zero matured divergent outcomes. Evidence is **INSUFFICIENT**; this is successful collection, not demonstrated predictive value.
+
+The protocol and scorer contract are frozen while observations accumulate. Stage remains 0 and production macro weight remains zero. Final ingestion fixes ensure fresh-schema valuation support, row-based valuation reads and per-ticker fetch completion timestamps; operational preparation waits for the existing publication guard and fails explicitly when coverage is not ready. These fixes do not alter the accepted scorer or experiment epoch. Full local regression: 1,362 passed, 16 skipped.

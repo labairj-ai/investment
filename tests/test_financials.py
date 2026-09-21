@@ -11,6 +11,40 @@ from unittest.mock import MagicMock
 
 import pytest
 
+
+def test_fetch_pipeline_records_completion_and_populates_valuation(mem_db, monkeypatch):
+    import financials_fetcher as ff
+    import agent_db
+    import pandas as pd
+    from datetime import datetime
+    monkeypatch.setattr(ff, "DB_PATH", mem_db)
+    clock = [datetime(2026, 9, 21, 10)]
+    class Clock:
+        @staticmethod
+        def now():
+            return clock[0]
+    monkeypatch.setattr(ff, "datetime", Clock)
+    quarters = []
+    for day in ("2025-09-30", "2025-12-31", "2026-03-31", "2026-06-30"):
+        quarters.append(dict(period_end=day, revenue=1e9, gross_profit=4e8, operating_income=2e8,
+                             net_income=1e8, eps_diluted=1, free_cash_flow=1e8,
+                             total_debt=2e8, cash=1e8, total_equity=5e8,
+                             shares_outstanding=1e8, shares_period_end=1e8))
+    def fetch(ticker):
+        clock[0] = datetime(2026, 9, 21, 11)
+        return quarters, [], {}
+    monkeypatch.setattr(ff, "_fetch_one", fetch)
+    monkeypatch.setattr(ff, "_write_earnings_and_events", lambda ticker: None)
+    monkeypatch.setattr(ff, "_write_estimate_history", lambda *args: None)
+    monkeypatch.setattr(ff.time, "sleep", lambda seconds: None)
+    provider = MagicMock()
+    provider.history.return_value = pd.DataFrame({"Close": [100.] * 4}, index=pd.to_datetime([r["period_end"] for r in quarters]))
+    monkeypatch.setattr("yfinance.Ticker", lambda ticker: provider)
+    ff.fetch_all(["AAPL"], force=True)
+    with agent_db._connect() as conn:
+        assert conn.execute("SELECT DISTINCT fetched_at FROM company_financials").fetchone()[0] == "2026-09-21 11:00:00"
+        assert conn.execute("SELECT COUNT(*) FROM historical_valuation_metrics WHERE ticker='AAPL'").fetchone()[0] > 0
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 

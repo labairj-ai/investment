@@ -1,7 +1,7 @@
 # Balance Prospective Macro Cohort Coverage
 
 - **ID:** 0561
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-21
 - **Priority:** high
 - **Depends:** 0559, 0560
@@ -25,8 +25,12 @@ agents/learning/macro_experiment.py; agents/learning/macro_provenance.py; config
 
 ## Done when
 
-- [ ] Boundary/tie tests prove a candidate strictly below Bmax-2*Mmax cannot win; the exact boundary is included and cap changes update the envelope.
-- [ ] AAA={rate,inflation,dollar}, BBB={rate,inflation}, CCC={rate,inflation,geo} yields common={rate,inflation} and equal dimension treatment for all three.
-- [ ] Missing certification inside the envelope and empty common dimensions have distinct exclusions; missing coverage outside the envelope does not block an otherwise valid cohort.
-- [ ] No weights are renormalized, no historical cohort is rewritten, no after-decision score/certification is attached, and no production influence changes.
-- [ ] QA evaluation conducted: functionality verified working, no regressions introduced.
+- [x] Boundary/tie tests prove a candidate strictly below Bmax-2*Mmax cannot win; the exact boundary is included and cap changes update the envelope.
+- [x] AAA={rate,inflation,dollar}, BBB={rate,inflation}, CCC={rate,inflation,geo} yields common={rate,inflation} and equal dimension treatment for all three.
+- [x] Missing certification inside the envelope and empty common dimensions have distinct exclusions; missing coverage outside the envelope does not block an otherwise valid cohort.
+- [x] No weights are renormalized, no historical cohort is rewritten, no after-decision score/certification is attached, and no production influence changes.
+- [x] QA evaluation conducted: functionality verified working, no regressions introduced.
+
+## Completion — 2026-09-21
+
+Implemented and verified in production. See [rollout evidence](../docs/macro-value-experiment.md#verified-rollout--2026-09-21) for acceptance, certification, canary and collection records. Full regression: 1,362 passed, 16 skipped. Production remains stage 0; outcome maturation is pending.

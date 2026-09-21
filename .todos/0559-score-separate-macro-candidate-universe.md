@@ -1,7 +1,7 @@
 # Score a Separate Macro Candidate Universe
 
 - **ID:** 0559
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-21
 - **Priority:** high
 - **Depends:** 0558
@@ -24,8 +24,12 @@ portfolio_ai.py; agent_db.py; agents/opportunity_agent.py; agents/learning/macro
 
 ## Done when
 
-- [ ] Candidate scores and crash-safe run/item accounting are stored separately from holdings and use the same canonical scorer contract.
-- [ ] Request/response parity, recovery, retries, stale/wrong-contract rejection and timestamp provenance are tested.
-- [ ] Scheduled preparation targets the bounded decision-relevant envelope; runtime scores alone grant no formal eligibility.
-- [ ] Candidate collection changes neither the Opportunity Hunter universe nor production recommendations/weights.
-- [ ] QA evaluation conducted: functionality verified working, no regressions introduced.
+- [x] Candidate scores and crash-safe run/item accounting are stored separately from holdings and use the same canonical scorer contract.
+- [x] Request/response parity, recovery, retries, stale/wrong-contract rejection and timestamp provenance are tested.
+- [x] Scheduled preparation targets the bounded decision-relevant envelope; runtime scores alone grant no formal eligibility.
+- [x] Candidate collection changes neither the Opportunity Hunter universe nor production recommendations/weights.
+- [x] QA evaluation conducted: functionality verified working, no regressions introduced.
+
+## Completion — 2026-09-21
+
+Implemented and verified in production. See [rollout evidence](../docs/macro-value-experiment.md#verified-rollout--2026-09-21) for acceptance, certification, canary and collection records. Full regression: 1,362 passed, 16 skipped. Production remains stage 0; outcome maturation is pending.

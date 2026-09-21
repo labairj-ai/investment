@@ -50,6 +50,7 @@ def _init_tables():
         cash                REAL,
         total_equity        REAL,
         shares_outstanding  REAL,
+        shares_period_end   REAL,
         fetched_at          TEXT,
         PRIMARY KEY (ticker, period_type, period_end)
     )""")
@@ -58,6 +59,11 @@ def _init_tables():
         conn.execute("ALTER TABLE company_financials ADD COLUMN shares_outstanding REAL")
         conn.commit()
     except Exception:
+        pass  # column already exists
+    try:
+        conn.execute("ALTER TABLE company_financials ADD COLUMN shares_period_end REAL")
+        conn.commit()
+    except sqlite3.OperationalError:
         pass  # column already exists
     conn.execute("""CREATE TABLE IF NOT EXISTS company_estimates (
         ticker          TEXT PRIMARY KEY,
@@ -223,7 +229,7 @@ def fetch_all(tickers, company_names=None, force=False):
     cutoff  = time.time() - CACHE_TTL
 
     conn = sqlite3.connect(str(DB_PATH), timeout=30)
-
+    conn.row_factory = sqlite3.Row
     for ticker in stock_tickers:
         if not force:
             row = conn.execute(
@@ -241,6 +247,9 @@ def fetch_all(tickers, company_names=None, force=False):
         print(f"[financials] Fetching {ticker}…")
         try:
             q_rows, a_rows, estimates = _fetch_one(ticker)
+            # Availability is when this ticker's fetch completed, not when a
+            # potentially long multi-ticker batch began.
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
             for r in q_rows:
                 conn.execute("""INSERT OR REPLACE INTO company_financials

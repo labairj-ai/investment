@@ -10,4 +10,3 @@ Environment=LLM_URL=http://100.73.128.40:8080
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/home/optiplex/investment/venv/bin/python scripts/prepare_macro_candidates.py --prepare
 TimeoutStartSec=6h
-

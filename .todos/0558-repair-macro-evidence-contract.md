@@ -1,7 +1,7 @@
 # Repair the Macro Evidence Contract
 
 - **ID:** 0558
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-21
 - **Priority:** high
 - **Depends:** none
@@ -25,8 +25,12 @@ portfolio_ai.py; financials_fetcher.py; scripts/validate_macro_scorer.py; config
 
 ## Done when
 
-- [ ] Real-schema fixtures derive net debt and gross margin from compatible latest available rows, with unit-correct prompt output.
-- [ ] Missing values, zero revenue, out-of-order ingestion, mixed periods, stale periods and future availability are tested; an XOM-like fixture with valid stored financials no longer incorrectly yields all none.
-- [ ] Before/after evidence coverage is reported without relaxing thresholds; dollar/geo gaps remain explicit.
-- [ ] Prompt impact is documented and, if changed, v1.8 formal acceptance and production verification pass without overwriting v1.7; production macro influence remains zero.
-- [ ] QA evaluation conducted: functionality verified working, no regressions introduced.
+- [x] Real-schema fixtures derive net debt and gross margin from compatible latest available rows, with unit-correct prompt output.
+- [x] Missing values, zero revenue, out-of-order ingestion, mixed periods, stale periods and future availability are tested; an XOM-like fixture with valid stored financials no longer incorrectly yields all none.
+- [x] Before/after evidence coverage is reported without relaxing thresholds; dollar/geo gaps remain explicit.
+- [x] Prompt impact is documented and, if changed, v1.8 formal acceptance and production verification pass without overwriting v1.7; production macro influence remains zero.
+- [x] QA evaluation conducted: functionality verified working, no regressions introduced.
+
+## Completion — 2026-09-21
+
+Implemented and verified in production. See [rollout evidence](../docs/macro-value-experiment.md#verified-rollout--2026-09-21) for acceptance, certification, canary and collection records. Full regression: 1,362 passed, 16 skipped. Production remains stage 0; outcome maturation is pending.
