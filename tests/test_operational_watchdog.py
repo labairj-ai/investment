@@ -176,3 +176,16 @@ def test_resolved_incident_does_not_leave_delivery_failure_active(tmp_path):
     assert wd.delivery_failures(c,now)==1
     wd.persist(c,[wd.result('db')],now+1)
     assert wd.delivery_failures(c,now+1)==0
+
+
+def test_later_success_does_not_hide_an_older_stuck_run():
+    rows=[dict(record_id='stuck',started_at=1000,completed_at=None,status='STARTED'),
+          dict(record_id='later',started_at=30000,completed_at=31000,status='COMPLETE')]
+    finding=wd.run_health('job',rows,32000,900,timeout=3600)
+    assert finding['status']=='RED'
+    assert finding['evidence']['stuck']==['stuck']
+
+
+def test_backup_backstop_accepts_verified_earlier_same_day_completion():
+    rows=[dict(record_id='backup',started_at=at('2026-09-21T17:00'),completed_at=at('2026-09-21T17:01'),status='COMPLETE')]
+    assert wd.run_health('backup',rows,at('2026-09-21T22:00'),at('2026-09-21T00:00'),wd.SCHEDULES['backup'])['status']=='INFO'

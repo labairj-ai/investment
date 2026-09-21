@@ -1,7 +1,7 @@
 # Add Deterministic Operational Watchdog Checks
 
 - **ID:** 0563
-- **Status:** in-progress
+- **Status:** done
 - **Created:** 2026-09-21
 - **Priority:** high
 - **Depends:** none
@@ -27,9 +27,13 @@ scripts/macro_health_watchdog.py; systemd/; agent_db.py; serve.py; backup_data.s
 
 ## Done when
 
-- [ ] Each component has a documented authoritative success source, expected cadence, grace window and severity policy.
-- [ ] Deterministic clock/DB fixtures cover never-started, stuck, failed, healthy, not-due, holiday/DST and missing-DB cases without live external calls.
-- [ ] State and immutable incident transitions survive repeated runs; DB failure remains externally observable.
-- [ ] Backup health requires verified successful snapshot/destination completion, not a scheduler flag or attempt.
-- [ ] Independent timer and checks preserve accepted scorer, experiment epoch and stage-0 production behavior.
-- [ ] QA evaluation conducted: functionality verified working, no regressions introduced.
+- [x] Each component has a documented authoritative success source, expected cadence, grace window and severity policy.
+- [x] Deterministic clock/DB fixtures cover never-started, stuck, failed, healthy, not-due, holiday/DST and missing-DB cases without live external calls.
+- [x] State and immutable incident transitions survive repeated runs; DB failure remains externally observable.
+- [x] Backup health requires verified successful snapshot/destination completion, not a scheduler flag or attempt.
+- [x] Independent timer and checks preserve accepted scorer, experiment epoch and stage-0 production behavior.
+- [x] QA evaluation conducted: functionality verified working, no regressions introduced.
+
+## Completion — 2026-09-21
+
+Implemented and deployed on Optiplex. The independent timer and alert-only service pass live checks; the accepted experiment epoch, collection clock and stage-zero influence remain unchanged. See [operational verification](../docs/operational-watchdog.md#verified-deployment--2026-09-21). Full local regression: 1,376 passed, 16 skipped; implementation CI passed. Transport failure/deduplication tests used fake senders; no synthetic emails were sent.

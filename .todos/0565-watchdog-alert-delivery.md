@@ -1,7 +1,7 @@
 # Deliver Deduplicated Watchdog Alerts
 
 - **ID:** 0565
-- **Status:** in-progress
+- **Status:** done
 - **Created:** 2026-09-21
 - **Priority:** high
 - **Depends:** 0563, 0564
@@ -24,8 +24,12 @@ Watchdog runner; existing email transport; watchdog event/delivery state; system
 
 ## Done when
 
-- [ ] RED opens/escalations notify promptly; unresolved YELLOWs appear once in the daily digest; INFO never alerts.
-- [ ] Repeated checks, failed transport, process restart and incident resolution preserve deduplication and accurate delivery state.
-- [ ] DB-unavailable incidents can alert without the application database or serve.py; transport failure remains visible.
-- [ ] Messages and retry policy are tested with fake transport, with no live messages sent by tests.
-- [ ] QA evaluation conducted: functionality verified working, no regressions introduced.
+- [x] RED opens/escalations notify promptly; unresolved YELLOWs appear once in the daily digest; INFO never alerts.
+- [x] Repeated checks, failed transport, process restart and incident resolution preserve deduplication and accurate delivery state.
+- [x] DB-unavailable incidents can alert without the application database or serve.py; transport failure remains visible.
+- [x] Messages and retry policy are tested with fake transport, with no live messages sent by tests.
+- [x] QA evaluation conducted: functionality verified working, no regressions introduced.
+
+## Completion — 2026-09-21
+
+Implemented and deployed on Optiplex. The independent timer and alert-only service pass live checks; the accepted experiment epoch, collection clock and stage-zero influence remain unchanged. See [operational verification](../docs/operational-watchdog.md#verified-deployment--2026-09-21). Full local regression: 1,376 passed, 16 skipped; implementation CI passed. Transport failure/deduplication tests used fake senders; no synthetic emails were sent.

@@ -106,3 +106,33 @@ cat out/watchdog_latest.json
 Learning Lab displays a compact read-only System Watchdog card. There are no
 remediation controls. A watchdog RED exit makes the oneshot service failed while
 the independent timer remains active and continues checking for recovery.
+
+## Verified deployment — 2026-09-21
+
+The initial read-only dry run found no pipeline/contract failures; its only warning
+was the intentionally not-yet-started watchdog timer. After activation, the live
+service returned HEALTHY across 34 checks, with systemd Result=success and exit 0.
+The independent timer is active on the 15-minute schedule. Existing outcome/MTM
+and candidate preparation units now use completion receipt wrappers.
+
+A real deployment-verification backup completed successfully, including destination
+HEAD verification at `f51815d2d784de6744e23a8373a029c5301394b2`, with receipt
+`427d0457-880f-48b1-a662-f13683509145`. The unchanged-data path also pushes any
+previously unpushed commit before declaring destination success.
+
+The Learning Lab API and generated card were checked. Native browser visual
+inspection was unavailable because macOS computer-use permissions were pending;
+no visual inspection is claimed. The compact card exposes key checks first and
+collapses additional healthy checks and timing. Warnings remain immediately visible.
+
+The macro experiment remains at epoch
+`83b0f50ce2e40ef5922a1718e0527cbe44e2957964eaf12f8a8481327da1e75a`,
+collection start `1789995200.4390466`, stage 0, with three observed cohorts at
+verification time. No historical experiment data was rewritten. Watchdog continuity
+counts explicitly start at watchdog activation and display the epoch's total
+observed count separately.
+
+Full local regression: 1,376 passed, 16 skipped. Implementation CI run
+[35628293623](https://github.com/labairj-ai/investment/actions/runs/35628293623)
+passed. Live notification attempts were zero because no alertable incident was
+present; error/retry/deduplication paths were tested with fake transport.

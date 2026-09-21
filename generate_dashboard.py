@@ -9170,11 +9170,15 @@ function loadWatchdogPanel() {{
     heading.textContent = report.overall + (report.stale ? ' · STALE checks' : '') + ' · Last check: ' + (report.checked_at ? new Date(report.checked_at*1000).toLocaleString() : 'Never');
     heading.style.color = report.overall === 'HEALTHY' ? '#276749' : report.overall === 'RED' ? '#c53030' : '#975a16';
     el.appendChild(heading);
+    var extra = document.createElement('details');
+    var extraTitle = document.createElement('summary');
+    extraTitle.textContent = 'Additional checks and timing'; extra.style.marginTop = '10px'; extra.appendChild(extraTitle);
+    var primary = ['serve','macro_acceptance','influence_lock','opportunity_hunter','macro_experiment','outcome_completeness','learning_continuity','mtm_completeness','backup'];
     (report.components || []).forEach(function(c) {{
       var row = document.createElement('div'); row.style.marginTop = '7px';
       var detail = JSON.parse(c.detail), evidence = detail.evidence || {{}};
       row.textContent = c.component.replaceAll('_',' ') + ' · ' + c.status + ' · ' + detail.reason;
-      if (c.component === 'macro_experiment') row.textContent += ' · expected ' + evidence.expected + ', observed ' + evidence.observed + ', excluded ' + evidence.excluded + ', unexplained ' + evidence.unexplained_missing;
+      if (c.component === 'macro_experiment') row.textContent += ' · ' + evidence.epoch_observed + ' total observed · since activation: expected ' + evidence.expected + ', observed ' + evidence.observed + ', excluded ' + evidence.excluded + ', unexplained ' + evidence.unexplained_missing;
       if (c.component === 'influence_lock' && evidence.current) row.textContent += c.status === 'INFO' ? ' · Stage 0 · production macro weight 0 (pinned source)' : ' · production influence UNVERIFIED';
       if (c.component === 'macro_acceptance' && evidence.current && evidence.current.acceptance) row.textContent += ' · ' + evidence.current.acceptance.config_version;
       if (evidence.overdue != null) row.textContent += ' · overdue ' + evidence.overdue;
@@ -9182,8 +9186,9 @@ function loadWatchdogPanel() {{
       if (evidence.common_dimensions) row.textContent += ' · common: ' + (evidence.common_dimensions.join(', ') || 'none');
       if (c.last_success_at) row.textContent += ' · Last success: ' + new Date(c.last_success_at*1000).toLocaleString();
       if (c.last_expected_at) row.textContent += ' · Expected: ' + new Date(c.last_expected_at*1000).toLocaleString();
-      el.appendChild(row);
+      (primary.indexOf(c.component) >= 0 || c.status !== 'INFO' ? el : extra).appendChild(row);
     }});
+    el.appendChild(extra);
   }}).catch(function() {{ el.textContent = 'UNKNOWN · Watchdog status unavailable. Check the service journal on Optiplex.'; }});
 }}
 setInterval(function() {{

@@ -1,7 +1,7 @@
 # Display Operational Watchdog Health
 
 - **ID:** 0566
-- **Status:** in-progress
+- **Status:** done
 - **Created:** 2026-09-21
 - **Priority:** normal
 - **Depends:** 0563, 0564
@@ -24,8 +24,12 @@ generate_dashboard.py; serve.py read-only API; watchdog state projection; tests/
 
 ## Done when
 
-- [ ] Healthy, RED, YELLOW, not-due, unknown and stale states render with text as well as color.
-- [ ] Displayed counts and timestamps match authoritative watchdog records and expose unexplained missing cohorts.
-- [ ] Expired heartbeat data cannot show overall HEALTHY; unavailable MTM is not shown as valid performance.
-- [ ] UI/API checks verify a compact read-only card without altering investment logic or the frozen experiment.
-- [ ] QA evaluation conducted: functionality verified working, no regressions introduced.
+- [x] Healthy, RED, YELLOW, not-due, unknown and stale states render with text as well as color.
+- [x] Displayed counts and timestamps match authoritative watchdog records and expose unexplained missing cohorts.
+- [x] Expired heartbeat data cannot show overall HEALTHY; unavailable MTM is not shown as valid performance.
+- [x] UI/API checks verify a compact read-only card without altering investment logic or the frozen experiment.
+- [x] QA evaluation conducted: functionality verified working, no regressions introduced.
+
+## Completion — 2026-09-21
+
+Implemented and deployed on Optiplex. The independent timer and alert-only service pass live checks; the accepted experiment epoch, collection clock and stage-zero influence remain unchanged. See [operational verification](../docs/operational-watchdog.md#verified-deployment--2026-09-21). Full local regression: 1,376 passed, 16 skipped; implementation CI passed. Transport failure/deduplication tests used fake senders; no synthetic emails were sent.

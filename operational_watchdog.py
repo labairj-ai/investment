@@ -131,7 +131,7 @@ def run_health(component, rows, now, since, schedule=None, timeout=6*3600):
     unresolved = [r for r in rows if r['started_at'] >= since and
                   (not last or r['started_at'] > last['started_at'])]
     failed = [r['record_id'] for r in unresolved if r['status'] in ('FAILED', 'STALE_FAILED', 'ERROR', 'error')]
-    stuck = [r['record_id'] for r in unresolved if r['status'] in ('STARTED', 'IN_PROGRESS', 'running')
+    stuck = [r['record_id'] for r in rows if r['started_at'] >= since and r['status'] in ('STARTED', 'IN_PROGRESS', 'running')
              and now - r['started_at'] > timeout]
     if failed or stuck:
         return result(component, 'RED', 'Failed or stale started work', failed=failed, stuck=stuck, **evidence)
@@ -186,7 +186,8 @@ def continuity(conn, state, baseline, now):
     runs = [dict(r) for r in conn.execute("SELECT * FROM agent_runs WHERE agent_type='opportunity_hunter' AND started_at>=?", (since,))]
     receipts = {r['run_id']: dict(r) for r in state.execute('SELECT * FROM watchdog_sweeps WHERE captured_at>=?', (since,))}
     cohorts = {str(r['agent_run_id']): dict(r) for r in conn.execute('SELECT * FROM macro_experiment_cohorts WHERE epoch_id=?', (baseline['epoch_id'],))}
-    counts = dict(expected=0, observed=0, excluded=0, unexplained_missing=0)
+    counts = dict(expected=0, observed=0, excluded=0, unexplained_missing=0,
+                  monitored_since=since, epoch_observed=sum(r['status']=='OBSERVED' for r in cohorts.values()))
     missing, learning_missing = [], []
     for run in runs:
         if run['status'] != 'done' or not run['finished_at'] or run['finished_at'] + 300 > now:
@@ -209,7 +210,7 @@ def continuity(conn, state, baseline, now):
                 if not row or row['status'] != 'COMPLETED':
                     learning_missing.append({'run_id': key, 'model': model, 'status': row['status'] if row else 'MISSING'})
     out = [result('macro_experiment', 'RED' if missing else 'INFO',
-                  'Unexplained missing cohorts' if missing else 'Every completed sweep accounted for', **counts, missing_run_ids=missing),
+                  'Unexplained missing cohorts' if missing else 'Completed sweeps since watchdog activation accounted for', **counts, missing_run_ids=missing),
            result('learning_continuity', 'RED' if learning_missing else 'INFO',
                   'Expected learning work missing or incomplete' if learning_missing else 'Expected learning sweeps accounted for', missing=learning_missing)]
     if counts['expected'] >= 5 and counts['excluded']/counts['expected'] > .5:

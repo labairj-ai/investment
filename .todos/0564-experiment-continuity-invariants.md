@@ -1,7 +1,7 @@
 # Detect Missing Experiment Work and Outcomes
 
 - **ID:** 0564
-- **Status:** in-progress
+- **Status:** done
 - **Created:** 2026-09-21
 - **Priority:** high
 - **Depends:** 0563
@@ -25,8 +25,12 @@ Operational watchdog checks; agents/opportunity_agent.py (completion instrumenta
 
 ## Done when
 
-- [ ] A completed eligible sweep with neither cohort nor exclusion is detected even when no experiment row was ever written.
-- [ ] Expected = observed + explicitly excluded + unexplained missing is reconciled by sweep lineage; a healthy result requires unexplained missing = 0.
-- [ ] Fixtures cover duplicate/retried/skipped sweeps, capture exceptions, pre-activation history, due-session boundaries, missing labels and incomplete MTM.
-- [ ] No prospective data is backfilled, labels imputed, recommendations changed or experiment hashes altered.
-- [ ] QA evaluation conducted: functionality verified working, no regressions introduced.
+- [x] A completed eligible sweep with neither cohort nor exclusion is detected even when no experiment row was ever written.
+- [x] Expected = observed + explicitly excluded + unexplained missing is reconciled by sweep lineage; a healthy result requires unexplained missing = 0.
+- [x] Fixtures cover duplicate/retried/skipped sweeps, capture exceptions, pre-activation history, due-session boundaries, missing labels and incomplete MTM.
+- [x] No prospective data is backfilled, labels imputed, recommendations changed or experiment hashes altered.
+- [x] QA evaluation conducted: functionality verified working, no regressions introduced.
+
+## Completion — 2026-09-21
+
+Implemented and deployed on Optiplex. The independent timer and alert-only service pass live checks; the accepted experiment epoch, collection clock and stage-zero influence remain unchanged. See [operational verification](../docs/operational-watchdog.md#verified-deployment--2026-09-21). Full local regression: 1,376 passed, 16 skipped; implementation CI passed. Transport failure/deduplication tests used fake senders; no synthetic emails were sent.
