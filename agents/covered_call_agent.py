@@ -233,7 +233,8 @@ def _analyze_roll(ctx: AgentContext, ticker: str, position: dict) -> list[Recomm
     existing_strike  = float(position["strike"])
     existing_expiry  = position["expiry"]
     existing_premium = float(position["premium_per_contract"])
-    stored_mark      = float(position.get("current_mark") or 0.0)
+    _raw_mark        = position.get("current_mark")
+    stored_mark      = float(_raw_mark) if _raw_mark is not None else None
     contracts        = int(position["contracts"])
 
     print(f"[covered_call] {ticker}: mgmt — strike={existing_strike} exp={existing_expiry}")
@@ -259,7 +260,7 @@ def _analyze_roll(ctx: AgentContext, ticker: str, position: dict) -> list[Recomm
     delta         = eval_result["delta"]
     risk_events   = eval_result["risk_events"]
     remaining_ext = eval_result.get("remaining_extrinsic")
-    pnl           = round((existing_premium - current_mark) * contracts * 100, 2)
+    pnl           = round((existing_premium - current_mark) * contracts * 100, 2) if current_mark is not None else None
 
     # 0152/0162: assemble ManagementPolicyContext from live snapshot + DB pre-fetches
     policy       = _get_cc_policy(ticker)
@@ -338,8 +339,8 @@ def _analyze_roll(ctx: AgentContext, ticker: str, position: dict) -> list[Recomm
     metrics_lines = [
         f"Ticker: {ticker}  Shares: {holding.shares:.0f}  Avg cost: ${holding.avg_cost:.2f}",
         f"Position: strike=${existing_strike:.2f}  expiry={existing_expiry}  DTE={dte}",
-        f"Original premium: ${existing_premium:.2f}/share  Current mark: ${current_mark:.2f}/share",
-        f"P&L to date: ${pnl:+.2f} total  Premium captured: {f'{pct_captured:.0f}%' if pct_captured is not None else 'N/A'}",
+        f"Original premium: ${existing_premium:.2f}/share  Current mark: {'N/A (quote unavailable)' if current_mark is None else f'${current_mark:.2f}/share'}",
+        f"P&L to date: {'N/A' if pnl is None else f'${pnl:+.2f} total'}  Premium captured: {f'{pct_captured:.0f}%' if pct_captured is not None else 'N/A'}",
         f"Current price: ${current_price:.2f}  Delta: {f'{delta:.3f}' if delta is not None else 'N/A'}",
         f"Remaining extrinsic: ${remaining_ext:.2f}" if remaining_ext is not None else "Remaining extrinsic: N/A",
     ]

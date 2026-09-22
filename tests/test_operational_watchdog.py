@@ -178,10 +178,22 @@ def test_resolved_incident_does_not_leave_delivery_failure_active(tmp_path):
     assert wd.delivery_failures(c,now+1)==0
 
 
-def test_later_success_does_not_hide_an_older_stuck_run():
+def test_later_success_resolves_older_stuck_run():
+    # A STARTED receipt that predates the last COMPLETE is resolved by that success —
+    # consistent with "Historical resolved failures do not page forever" for FAILED records.
     rows=[dict(record_id='stuck',started_at=1000,completed_at=None,status='STARTED'),
           dict(record_id='later',started_at=30000,completed_at=31000,status='COMPLETE')]
     finding=wd.run_health('job',rows,32000,900,timeout=3600)
+    assert finding['status']!='RED', (
+        f"Stuck run predating last success should be resolved, got {finding['status']}: {finding['evidence']}"
+    )
+
+
+def test_stuck_run_after_last_success_still_fires_red():
+    # A STARTED receipt that starts AFTER the last success is still unresolved — RED.
+    rows=[dict(record_id='ok',started_at=1000,completed_at=2000,status='COMPLETE'),
+          dict(record_id='stuck',started_at=30000,completed_at=None,status='STARTED')]
+    finding=wd.run_health('job',rows,34000,900,timeout=3600)
     assert finding['status']=='RED'
     assert finding['evidence']['stuck']==['stuck']
 

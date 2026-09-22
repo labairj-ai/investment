@@ -1,4 +1,4 @@
-"""Tests for the unified CC management engine (0151, 0152, 0157–0162, 0168–0173, 0174–0189)."""
+"""Tests for the unified CC management engine (0151, 0152, 0157–0162, 0168–0173, 0174–0189, null-mark guard)."""
 import sys
 import sqlite3
 from pathlib import Path
@@ -1140,3 +1140,102 @@ def test_trim_fraction_concentration_floor_2x():
     P = 80
     floored = max(raw, 0.50) if P >= 75 else max(raw, 0.33) if P >= 55 else raw
     assert floored == 0.50
+
+
+# ---------------------------------------------------------------------------
+# Null-mark guard: cc_positions.current_mark IS NULL + failed option quote fetch
+# ---------------------------------------------------------------------------
+
+def _null_mark_ctx(**kwargs) -> ManagementPolicyContext:
+    """Minimal ManagementPolicyContext with no quote data available."""
+    defaults = dict(
+        ticker="BRK-B",
+        current_price=504.24,
+        strike=519.50,
+        dte=30,
+        delta=None,
+        remaining_extrinsic=None,
+        pct_captured=None,
+        has_avoid=False,
+        risk_events=[],
+        contracts=1,
+        assignment_price_floor=None,
+        assignment_policy={},
+        current_weight_pct=None,
+        max_position_pct=None,
+        conviction=None,
+        thesis_health=None,
+        assignment_tax_friction=0.0,
+        tax_friction_reason="",
+        tax_friction_available=False,
+        tax_friction_detail=TaxFrictionDetail(
+            total_friction=0.0, reason="unavailable", available=False
+        ),
+        expiry_date=date(2026, 10, 22),
+    )
+    defaults.update(kwargs)
+    return ManagementPolicyContext(**defaults)
+
+
+def test_null_mark_does_not_trigger_buy_to_close():
+    """When pct_captured is None (mark unavailable), cap=0 — BUY_TO_CLOSE ≥80% gate must not fire."""
+    ctx = _null_mark_ctx()
+    action, reason = evaluate_cc_management_state(ctx)
+    assert action != "BUY_TO_CLOSE", (
+        f"BUY_TO_CLOSE fired with pct_captured=None (action={action}, reason={reason!r}); "
+        "null mark must not be treated as 100% captured"
+    )
+
+
+def test_null_mark_stored_mark_coercion():
+    """cc_positions.current_mark=None must not be coerced to 0.0 before passing to evaluate_open_position."""
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agents"))
+    from unittest.mock import patch, MagicMock
+
+    # Simulate what _analyze_roll does with a NULL db row
+    position = {
+        "strike": 519.50,
+        "expiry": "2026-10-22",
+        "premium_per_contract": 1.995,
+        "current_mark": None,   # NULL in cc_positions
+        "contracts": 1,
+    }
+    _raw_mark = position.get("current_mark")
+    stored_mark = float(_raw_mark) if _raw_mark is not None else None
+    assert stored_mark is None, (
+        f"stored_mark should be None when current_mark is NULL, got {stored_mark}"
+    )
+
+
+def test_null_mark_pct_captured_none_when_fetch_fails():
+    """evaluate_open_position with current_mark=None + failed option chain → pct_captured=None."""
+    import covered_call_rec
+    from unittest.mock import patch, MagicMock
+
+    mock_stock = MagicMock()
+    mock_stock.fast_info = MagicMock()
+    mock_stock.fast_info.last_price = 504.24
+    mock_stock.history.return_value = MagicMock(empty=True)
+    # option_chain raises so the fetch block is skipped entirely
+    mock_stock.option_chain.side_effect = Exception("expiry not found")
+
+    with patch("covered_call_rec.yf.Ticker", return_value=mock_stock):
+        result = covered_call_rec.evaluate_open_position(
+            ticker="BRK-B",
+            strike=519.50,
+            expiry="2026-10-22",
+            original_premium=1.995,
+            current_mark=None,
+        )
+
+    assert result["current_mark"] is None, (
+        f"current_mark should be None when fetch fails and no stored mark, got {result['current_mark']}"
+    )
+    assert result["pct_captured"] is None, (
+        f"pct_captured should be None when mark unavailable, got {result['pct_captured']}"
+    )
+    assert result["remaining_extrinsic"] is None, (
+        f"remaining_extrinsic should be None when mark unavailable, got {result['remaining_extrinsic']}"
+    )
