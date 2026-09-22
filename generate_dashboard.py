@@ -3319,7 +3319,7 @@ def build_dashboard(portfolio, layers, holdings):
           <h2 style="margin:0;font-size:16px;font-weight:700;color:#2d3748;">Learning Lab</h2>
           <span style="font-size:11px;color:#a0aec0;font-weight:400;">· read-only</span>
         </div>
-        <button onclick="loadLearningPanel()" style="font-size:11px;padding:3px 10px;background:#ebf8ff;color:#2b6cb0;border:1px solid #bee3f8;border-radius:6px;cursor:pointer;">Refresh</button>
+        <button id="learning-refresh-btn" onclick="loadLearningPanel(this)" style="font-size:11px;padding:3px 10px;background:#ebf8ff;color:#2b6cb0;border:1px solid #bee3f8;border-radius:6px;cursor:pointer;">Refresh</button>
       </div>
       <div style="display:flex;gap:20px;flex-wrap:wrap;">
         <div>
@@ -3365,10 +3365,10 @@ def build_dashboard(portfolio, layers, holdings):
     <!-- ── Zone 4: Calibration Evidence (tabbed) ── -->
     <div style="background:#fff;border-radius:10px;padding:18px 22px;box-shadow:0 1px 4px rgba(0,0,0,.07);margin-bottom:16px;">
       <h3 style="margin:0 0 12px;font-size:14px;font-weight:700;color:#2d3748;">Calibration Evidence</h3>
-      <div style="display:flex;gap:4px;margin-bottom:14px;flex-wrap:wrap;">
-        <button id="lcal-btn-score" onclick="showLCalTab('score')" style="padding:6px 14px;font-size:12px;border:0;border-radius:6px;background:#ebf8ff;cursor:pointer;color:#2b6cb0;font-weight:700;outline:none;">Score</button>
-        <button id="lcal-btn-feature" onclick="showLCalTab('feature')" style="padding:6px 14px;font-size:12px;border:0;border-radius:6px;background:transparent;cursor:pointer;color:#718096;font-weight:600;outline:none;">Features (Q/V/PF/C/EC)</button>
-        <button id="lcal-btn-llm" onclick="showLCalTab('llm')" style="padding:6px 14px;font-size:12px;border:0;border-radius:6px;background:transparent;cursor:pointer;color:#718096;font-weight:600;outline:none;">LLM Conviction</button>
+      <div style="display:flex;gap:0;margin-bottom:16px;background:#f1f5f9;border-radius:8px;padding:3px;">
+        <button id="lcal-btn-score" onclick="showLCalTab('score')" style="flex:1;padding:7px 8px;font-size:12px;border:0;border-radius:6px;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.12);cursor:pointer;color:#2b6cb0;font-weight:700;outline:none;">Score</button>
+        <button id="lcal-btn-feature" onclick="showLCalTab('feature')" style="flex:1;padding:7px 8px;font-size:12px;border:0;border-radius:6px;background:transparent;box-shadow:none;cursor:pointer;color:#718096;font-weight:500;outline:none;">Features</button>
+        <button id="lcal-btn-llm" onclick="showLCalTab('llm')" style="flex:1;padding:7px 8px;font-size:12px;border:0;border-radius:6px;background:transparent;box-shadow:none;cursor:pointer;color:#718096;font-weight:500;outline:none;">LLM Conviction</button>
       </div>
       <div id="lcal-score">
         <p style="margin:0 0 8px;font-size:12px;color:#718096;">Mean 90-day alpha vs SPY by composite score bucket — shows whether higher scores predict better returns.</p>
@@ -9218,13 +9218,16 @@ function showLCalTab(name) {{
     if (pane) pane.style.display = active ? 'block' : 'none';
     if (btn) {{
       btn.style.color = active ? '#2b6cb0' : '#718096';
-      btn.style.fontWeight = active ? '700' : '600';
-      btn.style.background = active ? '#ebf8ff' : 'transparent';
+      btn.style.fontWeight = active ? '700' : '500';
+      btn.style.background = active ? '#fff' : 'transparent';
+      btn.style.boxShadow = active ? '0 1px 3px rgba(0,0,0,.12)' : 'none';
     }}
   }});
 }}
 
-function loadLearningPanel() {{
+function loadLearningPanel(btn) {{
+  if (btn) {{ btn.textContent = 'Refreshing…'; btn.disabled = true; }}
+  var _restoreBtn = function() {{ if (btn) {{ btn.textContent = 'Refresh'; btn.disabled = false; }} }};
   loadWatchdogPanel();
   var overviewEl = document.getElementById('learning-overview');
   var scoreEl    = document.getElementById('learning-score-cal');
@@ -9235,6 +9238,7 @@ function loadLearningPanel() {{
   if (!overviewEl) return;
 
   fetch('/api/learning/stats').then(function(r) {{ return r.json(); }}).then(function(d) {{
+    _restoreBtn();
     if (!d.ok) {{
       overviewEl.innerHTML = '<span style="color:#fc8181;">Error: ' + (d.error||'unknown') + '</span>';
       return;
@@ -9370,6 +9374,7 @@ function loadLearningPanel() {{
     }}
 
   }}).catch(function(e) {{
+    _restoreBtn();
     if (overviewEl) overviewEl.innerHTML = '<span style="color:#fc8181;">Failed to load: ' + e.message + '</span>';
   }});
 
