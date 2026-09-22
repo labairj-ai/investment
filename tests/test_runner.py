@@ -32,7 +32,11 @@ CREATE TABLE IF NOT EXISTS cycle_runs (
     cash_delta_vs_broker REAL,
     position_delta_vs_broker REAL,
     duration_seconds REAL DEFAULT 0.0,
-    oldest_unresolved_order_age_minutes REAL
+    oldest_unresolved_order_age_minutes REAL,
+    broker_fills_observed INTEGER DEFAULT 0,
+    broker_fills_new INTEGER DEFAULT 0,
+    broker_fills_duplicate INTEGER DEFAULT 0,
+    external_fills_observed INTEGER DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS broker_api_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

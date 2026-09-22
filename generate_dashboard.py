@@ -2603,7 +2603,7 @@ def build_dashboard(portfolio, layers, holdings):
   <button class="dash-tab-btn active" id="tab-btn-portfolio" onclick="showDashTab('portfolio')">Portfolio</button>
   <button class="dash-tab-btn" id="tab-btn-decisions" onclick="showDashTab('decisions')">Decisions</button>
   <button class="dash-tab-btn" id="tab-btn-macro" onclick="showDashTab('macro')">📊 Macro Risk</button>
-  <button class="dash-tab-btn" id="tab-btn-shadow" onclick="showDashTab('shadow');loadShadowPanel()">⚙️ Agent Engine</button>
+  <button class="dash-tab-btn" id="tab-btn-shadow" onclick="showDashTab('shadow');loadShadowPanel();loadAlpacaRuns()">⚙️ Agent Engine</button>
   <button class="dash-tab-btn" id="tab-btn-learning" onclick="showDashTab('learning');loadLearningPanel()">📈 Learning Lab</button>
   <button id="nav-hamburger" onclick="toggleNavMenu(event)" aria-label="Menu">&#9776;</button>
   <div id="nav-dropdown">
@@ -3288,10 +3288,22 @@ def build_dashboard(portfolio, layers, holdings):
       <div id="shadow-fills-body" style="color:#718096;font-size:13px;">Loading…</div>
     </div>
 
-    <!-- Runner history -->
+    <!-- Runner history (shadow) -->
     <div style="background:#fff;border-radius:10px;padding:18px 22px;box-shadow:0 1px 4px rgba(0,0,0,.07);">
       <h2 style="margin-bottom:12px;">Runner History</h2>
       <div id="shadow-runs-body" style="color:#718096;font-size:13px;">Loading…</div>
+    </div>
+
+    <!-- Alpaca paper runner history -->
+    <div style="background:#fff;border-radius:10px;padding:18px 22px;box-shadow:0 1px 4px rgba(0,0,0,.07);">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+        <div>
+          <h2 style="margin:0;">Alpaca Paper Runner History</h2>
+          <p style="margin:2px 0 0;font-size:11px;color:#718096;">ENGINE = agent-placed &nbsp;|&nbsp; Broker Obs = total fills returned by broker API &nbsp;|&nbsp; External = fills with no local order</p>
+        </div>
+        <button onclick="loadAlpacaRuns()" style="font-size:11px;padding:4px 12px;background:#ebf8ff;color:#2b6cb0;border:1px solid #bee3f8;border-radius:6px;cursor:pointer;">Refresh</button>
+      </div>
+      <div id="alpaca-runs-body" style="color:#718096;font-size:13px;">Loading…</div>
     </div>
 
   </div>
@@ -9050,6 +9062,51 @@ function loadShadowPanel() {{
   loadShadowRuns();
 }}
 
+function _renderRunsTable(runs) {{
+  var stateColor = {{'OK':'#38a169','SKIPPED':'#718096','HALTED':'#e53e3e','ERROR':'#e53e3e'}};
+  var rows = runs.map(function(r) {{
+    var dt = r.run_at ? r.run_at.slice(0,16).replace('T',' ') : '—';
+    var sc = stateColor[r.execution_state] || '#718096';
+    var dur = r.duration_seconds != null ? r.duration_seconds.toFixed(1) + 's' : '—';
+    var halt = r.halt_reason ? '<span style="font-size:10px;color:#718096;margin-left:4px;">(' + r.halt_reason + ')</span>' : '';
+    var intents = r.new_intents_processed || 0;
+    var orders = r.orders_submitted || 0;
+    var fills = r.fills_applied || 0;
+    var errs = r.broker_api_errors || 0;
+    var errCell = errs > 0
+      ? '<span style="color:#e53e3e;font-weight:700;">' + errs + '</span>'
+      : '<span style="color:#a0aec0;">0</span>';
+    var bObs = r.broker_fills_observed != null ? r.broker_fills_observed : '—';
+    var bExt = r.external_fills_observed != null ? r.external_fills_observed : '—';
+    var extCell = (r.external_fills_observed > 0)
+      ? '<span style="color:#d69e2e;font-weight:700;">' + bExt + '</span>'
+      : '<span style="color:#a0aec0;">' + bExt + '</span>';
+    return '<tr style="border-top:1px solid #edf2f7;">' +
+      '<td style="padding:6px 8px;font-size:11px;color:#718096;white-space:nowrap;">' + dt + '</td>' +
+      '<td style="padding:6px 8px;font-weight:700;color:' + sc + ';">' + r.execution_state + halt + '</td>' +
+      '<td style="padding:6px 8px;font-size:12px;">' + dur + '</td>' +
+      '<td style="padding:6px 8px;font-size:12px;">' + intents + '</td>' +
+      '<td style="padding:6px 8px;font-size:12px;">' + orders + '</td>' +
+      '<td style="padding:6px 8px;font-size:12px;">' + fills + '</td>' +
+      '<td style="padding:6px 8px;font-size:12px;">' + bObs + '</td>' +
+      '<td style="padding:6px 8px;">' + extCell + '</td>' +
+      '<td style="padding:6px 8px;">' + errCell + '</td>' +
+      '</tr>';
+  }}).join('');
+  return '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:13px;">' +
+    '<thead><tr style="color:#718096;font-size:10px;text-transform:uppercase;border-bottom:2px solid #e2e8f0;">' +
+    '<th style="padding:6px 8px;text-align:left;">Time (UTC)</th>' +
+    '<th style="padding:6px 8px;text-align:left;">State</th>' +
+    '<th style="padding:6px 8px;text-align:left;">Duration</th>' +
+    '<th style="padding:6px 8px;text-align:left;">Intents</th>' +
+    '<th style="padding:6px 8px;text-align:left;">Orders</th>' +
+    '<th style="padding:6px 8px;text-align:left;">Fills</th>' +
+    '<th style="padding:6px 8px;text-align:left;">Broker Obs</th>' +
+    '<th style="padding:6px 8px;text-align:left;">External</th>' +
+    '<th style="padding:6px 8px;text-align:left;">API Errs</th>' +
+    '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+}}
+
 function loadShadowRuns() {{
   var el = document.getElementById('shadow-runs-body');
   if (!el) return;
@@ -9058,41 +9115,23 @@ function loadShadowRuns() {{
       el.innerHTML = '<span style="color:#a0aec0;font-style:italic;">No runner cycles recorded yet.</span>';
       return;
     }}
-    var stateColor = {{'OK':'#38a169','SKIPPED':'#718096','HALTED':'#e53e3e','ERROR':'#e53e3e'}};
-    var rows = d.runs.map(function(r) {{
-      var dt = r.run_at ? r.run_at.slice(0,16).replace('T',' ') : '—';
-      var sc = stateColor[r.execution_state] || '#718096';
-      var dur = r.duration_seconds != null ? r.duration_seconds.toFixed(1) + 's' : '—';
-      var halt = r.halt_reason ? '<span style="font-size:10px;color:#718096;margin-left:4px;">(' + r.halt_reason + ')</span>' : '';
-      var intents = r.new_intents_processed || 0;
-      var orders = r.orders_submitted || 0;
-      var fills = r.fills_applied || 0;
-      var errs = r.broker_api_errors || 0;
-      var errCell = errs > 0
-        ? '<span style="color:#e53e3e;font-weight:700;">' + errs + '</span>'
-        : '<span style="color:#a0aec0;">0</span>';
-      return '<tr style="border-top:1px solid #edf2f7;">' +
-        '<td style="padding:6px 8px;font-size:11px;color:#718096;white-space:nowrap;">' + dt + '</td>' +
-        '<td style="padding:6px 8px;font-weight:700;color:' + sc + ';">' + r.execution_state + halt + '</td>' +
-        '<td style="padding:6px 8px;font-size:12px;">' + dur + '</td>' +
-        '<td style="padding:6px 8px;font-size:12px;">' + intents + '</td>' +
-        '<td style="padding:6px 8px;font-size:12px;">' + orders + '</td>' +
-        '<td style="padding:6px 8px;font-size:12px;">' + fills + '</td>' +
-        '<td style="padding:6px 8px;">' + errCell + '</td>' +
-        '</tr>';
-    }}).join('');
-    el.innerHTML = '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:13px;">' +
-      '<thead><tr style="color:#718096;font-size:10px;text-transform:uppercase;border-bottom:2px solid #e2e8f0;">' +
-      '<th style="padding:6px 8px;text-align:left;">Time (UTC)</th>' +
-      '<th style="padding:6px 8px;text-align:left;">State</th>' +
-      '<th style="padding:6px 8px;text-align:left;">Duration</th>' +
-      '<th style="padding:6px 8px;text-align:left;">Intents</th>' +
-      '<th style="padding:6px 8px;text-align:left;">Orders</th>' +
-      '<th style="padding:6px 8px;text-align:left;">Fills</th>' +
-      '<th style="padding:6px 8px;text-align:left;">API Errs</th>' +
-      '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+    el.innerHTML = _renderRunsTable(d.runs);
   }}).catch(function() {{
     el.innerHTML = '<span style="color:#fc8181;">Failed to load runner history.</span>';
+  }});
+}}
+
+function loadAlpacaRuns() {{
+  var el = document.getElementById('alpaca-runs-body');
+  if (!el) return;
+  fetch('/api/alpaca/runs?limit=20').then(function(r) {{ return r.json(); }}).then(function(d) {{
+    if (!d.ok || !d.runs.length) {{
+      el.innerHTML = '<span style="color:#a0aec0;font-style:italic;">No Alpaca runner cycles recorded yet.</span>';
+      return;
+    }}
+    el.innerHTML = _renderRunsTable(d.runs);
+  }}).catch(function() {{
+    el.innerHTML = '<span style="color:#fc8181;">Failed to load Alpaca runner history.</span>';
   }});
 }}
 

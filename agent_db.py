@@ -672,6 +672,15 @@ def migrate() -> None:
         ("learning_sweep_runs", "base_recommendation_eligible",              "INTEGER"),
         # 0438 — evidence contract version: 0=legacy, 1=ledger_v1 (requires COMPLETED ledger)
         ("learning_models", "evidence_contract_version",                     "INTEGER DEFAULT 0"),
+        # 0567/0568 — fill provenance and broker observation metrics
+        ("fills",       "origin",                   "TEXT DEFAULT 'UNKNOWN'"),
+        ("fills",       "engine_managed",            "INTEGER DEFAULT 0"),
+        ("fills",       "first_seen_at",             "TEXT"),
+        ("fills",       "reconciled_at",             "TEXT"),
+        ("cycle_runs",  "broker_fills_observed",     "INTEGER DEFAULT 0"),
+        ("cycle_runs",  "broker_fills_new",          "INTEGER DEFAULT 0"),
+        ("cycle_runs",  "broker_fills_duplicate",    "INTEGER DEFAULT 0"),
+        ("cycle_runs",  "external_fills_observed",   "INTEGER DEFAULT 0"),
     ]
     for table, col, col_type in _new_cols:
         try:
@@ -679,6 +688,21 @@ def migrate() -> None:
             conn.commit()
         except sqlite3.OperationalError:
             pass  # column already exists
+
+    # 0568: backfill fills.origin for rows that predate the column
+    try:
+        conn.execute("""
+            UPDATE fills SET origin='MANUAL', engine_managed=0
+            WHERE fill_source='manual_seed' AND (origin IS NULL OR origin='UNKNOWN')
+        """)
+        conn.execute("""
+            UPDATE fills SET origin='ENGINE', engine_managed=1
+            WHERE order_id IS NOT NULL AND (origin IS NULL OR origin='UNKNOWN')
+              AND (fill_source IS NULL OR fill_source != 'manual_seed')
+        """)
+        conn.commit()
+    except Exception:
+        pass  # best-effort backfill; table may not exist yet on fresh DB
 
     from agents.learning.macro_experiment import migrate as migrate_macro_experiment
     migrate_macro_experiment(conn)

@@ -1998,6 +1998,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         elif parsed.path == "/api/alpaca/fills":
             limit = int(parse_qs(parsed.query).get("limit", ["20"])[0])
             self._handle_alpaca_fills(limit)
+        elif parsed.path == "/api/alpaca/runs":
+            limit = int(parse_qs(parsed.query).get("limit", ["20"])[0])
+            self._handle_alpaca_runs(limit)
         elif parsed.path.startswith("/api/alpaca/risk/"):
             intent_id = parsed.path.split("/api/alpaca/risk/", 1)[1]
             self._handle_alpaca_risk(intent_id)
@@ -6406,11 +6409,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             conn = self._shadow_conn()
             rows = conn.execute(
                 """SELECT f.fill_id, f.symbol, f.side, f.qty, f.price, f.fee,
-                          f.fill_source, f.filled_at, ti.recommendation_id,
-                          o.broker_order_id
+                          f.fill_source, f.filled_at, f.origin,
+                          ti.recommendation_id, o.broker_order_id
                    FROM fills f
-                   JOIN orders o ON f.order_id=o.order_id
-                   JOIN trade_intents ti ON o.intent_id=ti.intent_id
+                   LEFT JOIN orders o ON f.order_id=o.order_id
+                   LEFT JOIN trade_intents ti ON o.intent_id=ti.intent_id
                    WHERE f.account_id='AGENTIC_ALPACA_01'
                    ORDER BY f.filled_at DESC LIMIT ?""",
                 (limit,),
@@ -6428,12 +6431,34 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         "fee": r["fee"],
                         "fill_source": r["fill_source"],
                         "filled_at": r["filled_at"],
+                        "origin": r["origin"],
                         "recommendation_id": r["recommendation_id"],
                         "broker_order_id": r["broker_order_id"],
                     }
                     for r in rows
                 ],
             })
+        except Exception as e:
+            self._restricted_send_json({"ok": False, "error": str(e)}, 500)
+
+    def _handle_alpaca_runs(self, limit: int = 20):
+        try:
+            conn = self._shadow_conn()
+            rows = conn.execute(
+                """SELECT run_at, execution_state, halt_reason, duration_seconds,
+                          new_intents_processed, risk_rejections, orders_submitted,
+                          fills_applied, duplicate_fills_skipped, broker_api_errors,
+                          cash_delta_vs_broker, position_delta_vs_broker,
+                          oldest_unresolved_order_age_minutes,
+                          broker_fills_observed, broker_fills_new,
+                          broker_fills_duplicate, external_fills_observed
+                   FROM cycle_runs
+                   WHERE account_id='AGENTIC_ALPACA_01'
+                   ORDER BY run_at DESC LIMIT ?""",
+                (limit,),
+            ).fetchall()
+            conn.close()
+            self._restricted_json({"ok": True, "runs": [dict(r) for r in rows]})
         except Exception as e:
             self._restricted_send_json({"ok": False, "error": str(e)}, 500)
 

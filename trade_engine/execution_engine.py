@@ -52,6 +52,7 @@ class FillResult(str, Enum):
     """Return value of apply_broker_fill() indicating whether the fill was newly applied (0252)."""
     APPLIED = "APPLIED"
     ALREADY_APPLIED = "ALREADY_APPLIED"
+    APPLIED_EXTERNAL = "APPLIED_EXTERNAL"  # 0568: ingested economically; no local order chain
 
 
 class BrokerStateIntegrityError(RuntimeError):
@@ -1105,6 +1106,10 @@ def sync_broker_state(
     # initialize_trading_session() ensures any missed fill is ingested before the next
     # risk evaluation. apply_broker_fill() is idempotent — already-applied fills are
     # skipped with FillResult.ALREADY_APPLIED.
+    _broker_fills_observed = 0
+    _broker_fills_new = 0
+    _broker_fills_duplicate = 0
+    _external_fills_observed = 0
     try:
         _ls_row = conn.execute(
             "SELECT last_fill_synced_at FROM trading_accounts WHERE account_id=?", (account_id,)
@@ -1117,17 +1122,26 @@ def sync_broker_state(
         _ledger = broker.get_fills(account_id, since=_since)
         _max_filled_at: Optional[str] = None
         for _lf in _ledger:
+            _broker_fills_observed += 1
             _lr = apply_broker_fill(_lf, account_id, conn)
             if _lr == FillResult.APPLIED:
+                _broker_fills_new += 1
                 _fill_row = conn.execute(
                     "SELECT * FROM fills WHERE fill_id=?", (_lf.broker_fill_id,)
                 ).fetchone()
                 if _fill_row:
                     fills.append(Fill.from_db_row(_fill_row))
-                if _lf.filled_at and (_max_filled_at is None or _lf.filled_at > _max_filled_at):
-                    _max_filled_at = _lf.filled_at
+            elif _lr == FillResult.APPLIED_EXTERNAL:
+                # 0568: external fill ingested economically; not added to engine fills list
+                _broker_fills_new += 1
+                _external_fills_observed += 1
             else:
+                # ALREADY_APPLIED
+                _broker_fills_duplicate += 1
                 duplicate_fills_skipped += 1
+            # 0567: advance cursor for all observed fills regardless of APPLIED/ALREADY_APPLIED
+            if _lf.filled_at and (_max_filled_at is None or _lf.filled_at > _max_filled_at):
+                _max_filled_at = _lf.filled_at
         if _max_filled_at:
             conn.execute(
                 "UPDATE trading_accounts SET last_fill_synced_at=? WHERE account_id=?",
@@ -1142,7 +1156,13 @@ def sync_broker_state(
             f"{type(_ledger_exc).__name__} — halting (0289)"
         ) from _ledger_exc
 
-    return fills, duplicate_fills_skipped
+    _broker_stats = {
+        "broker_fills_observed": _broker_fills_observed,
+        "broker_fills_new": _broker_fills_new,
+        "broker_fills_duplicate": _broker_fills_duplicate,
+        "external_fills_observed": _external_fills_observed,
+    }
+    return fills, duplicate_fills_skipped, _broker_stats
 
 
 def run_execution_cycle(
@@ -1182,6 +1202,10 @@ def run_execution_cycle(
             "total_fills": 0,
             "orders_expired": 0,
             "duplicate_fills_skipped": 0,
+            "broker_fills_observed": 0,
+            "broker_fills_new": 0,
+            "broker_fills_duplicate": 0,
+            "external_fills_observed": 0,
             "results": [],
         }
 
@@ -1200,6 +1224,10 @@ def run_execution_cycle(
         "total_fills": 0,
         "orders_expired": 0,
         "duplicate_fills_skipped": 0,
+        "broker_fills_observed": 0,
+        "broker_fills_new": 0,
+        "broker_fills_duplicate": 0,
+        "external_fills_observed": 0,
         "results": [],
     }
 
@@ -1215,7 +1243,7 @@ def run_execution_cycle(
 
     # ── 0284: Broker truth sync — ingest all pending fills before risk evaluation ─
     try:
-        sync_fills, duplicate_fills_skipped = sync_broker_state(account_id, conn, broker)
+        sync_fills, duplicate_fills_skipped, broker_stats = sync_broker_state(account_id, conn, broker)
     except BrokerStateIntegrityError as exc:
         _log.error(
             "BROKER_STATE_INTEGRITY in broker sync for %s: %s — halting cycle; reconcile before next run",
@@ -1305,6 +1333,10 @@ def run_execution_cycle(
         "total_fills": len(sync_fills) + fills_on_submission + len(retry_fills),
         "orders_expired": orders_expired_retry,
         "duplicate_fills_skipped": duplicate_fills_skipped,
+        "broker_fills_observed": broker_stats.get("broker_fills_observed", 0),
+        "broker_fills_new": broker_stats.get("broker_fills_new", 0),
+        "broker_fills_duplicate": broker_stats.get("broker_fills_duplicate", 0),
+        "external_fills_observed": broker_stats.get("external_fills_observed", 0),
         "results": [r.to_dict() for r in new_results],
     }
 
@@ -1477,10 +1509,95 @@ def apply_broker_fill(
     filled_at = bf.filled_at
 
     if order_id is None:
-        raise UnknownFillError(
-            f"fill {bf.broker_fill_id!r}: cannot resolve order from "
-            f"local_order_id={bf.local_order_id!r}, broker_order_id={bf.broker_order_id!r} — quarantine"
+        # 0568: BROKER_EXTERNAL — fill from broker with no matching local order.
+        # Ingest economically (update position/cash) but do NOT invent order/intent lineage.
+        if not bf.broker_fill_id:
+            raise BrokerFillInvalid("external fill: broker_fill_id is empty — rejecting")
+        if not (qty > 0 and math.isfinite(qty)):
+            raise BrokerFillInvalid(f"external fill {bf.broker_fill_id}: qty={qty} must be positive and finite")
+        if not (price > 0 and math.isfinite(price)):
+            raise BrokerFillInvalid(f"external fill {bf.broker_fill_id}: price={price} must be positive and finite")
+        if not (fee >= 0 and math.isfinite(fee)):
+            raise BrokerFillInvalid(f"external fill {bf.broker_fill_id}: fee={fee} must be non-negative and finite")
+        if bf.account_id != account_id:
+            raise BrokerFillInvalid(
+                f"external fill {bf.broker_fill_id}: account_id mismatch: "
+                f"fill={bf.account_id!r} expected={account_id!r}"
+            )
+        _log.warning(
+            "apply_broker_fill: BROKER_EXTERNAL fill %r for %s — no local order; ingesting economically",
+            bf.broker_fill_id, account_id,
         )
+        _ext_now = datetime.now(timezone.utc).isoformat()
+        _ext_sell = side in ("SELL", "SELL_TO_OPEN")
+        try:
+            _ext_cur = conn.execute(
+                """INSERT OR IGNORE INTO fills
+                   (fill_id, order_id, account_id, symbol, side, qty, price,
+                    fee, fill_source, filled_at, origin, engine_managed,
+                    first_seen_at, reconciled_at)
+                   VALUES (?,NULL,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (bf.broker_fill_id, account_id, bf.symbol,
+                 side, qty, price, fee, "broker_external", filled_at,
+                 "BROKER_EXTERNAL", 0, _ext_now, _ext_now),
+            )
+            if _ext_cur.rowcount == 0:
+                return FillResult.ALREADY_APPLIED
+            _ext_pos = conn.execute(
+                "SELECT qty, avg_cost FROM position_snapshots WHERE account_id=? AND symbol=?",
+                (account_id, bf.symbol),
+            ).fetchone()
+            if _ext_sell:
+                _ext_old_qty = float(_ext_pos["qty"] or 0) if _ext_pos else 0.0
+                if qty > _ext_old_qty + 1e-6:
+                    raise ImpossibleSellError(
+                        f"external fill {bf.broker_fill_id}: sell qty {qty} exceeds held qty {_ext_old_qty}"
+                    )
+                _ext_new_qty = _ext_old_qty - qty
+                if _ext_new_qty <= 1e-9:
+                    conn.execute(
+                        "DELETE FROM position_snapshots WHERE account_id=? AND symbol=?",
+                        (account_id, bf.symbol),
+                    )
+                elif _ext_pos:
+                    conn.execute(
+                        "UPDATE position_snapshots SET qty=? WHERE account_id=? AND symbol=?",
+                        (_ext_new_qty, account_id, bf.symbol),
+                    )
+            else:
+                if _ext_pos:
+                    _ext_old_qty2 = float(_ext_pos["qty"] or 0)
+                    _ext_old_avg2 = float(_ext_pos["avg_cost"] or 0)
+                    _ext_new_qty2 = _ext_old_qty2 + qty
+                    _ext_new_avg2 = (
+                        (_ext_old_qty2 * _ext_old_avg2 + qty * price) / _ext_new_qty2
+                        if _ext_new_qty2 else price
+                    )
+                    conn.execute(
+                        "UPDATE position_snapshots SET qty=?, avg_cost=? WHERE account_id=? AND symbol=?",
+                        (_ext_new_qty2, _ext_new_avg2, account_id, bf.symbol),
+                    )
+                else:
+                    conn.execute(
+                        """INSERT INTO position_snapshots
+                           (account_id, symbol, qty, avg_cost, instrument_type, as_of)
+                           VALUES (?,?,?,?,?,?)""",
+                        (account_id, bf.symbol, qty, price, "EQUITY",
+                         filled_at[:10] if filled_at else None),
+                    )
+            _ext_cash_delta = qty * price - fee if _ext_sell else -(qty * price + fee)
+            conn.execute(
+                "UPDATE trading_accounts SET current_cash = current_cash + ? WHERE account_id=?",
+                (_ext_cash_delta, account_id),
+            )
+            conn.commit()
+            return FillResult.APPLIED_EXTERNAL
+        except BrokerStateIntegrityError:
+            conn.rollback()
+            raise
+        except Exception:
+            conn.rollback()
+            raise
 
     # ── 0286: validate fill identity and economics before any DB write ─────────
     if not bf.broker_fill_id:
@@ -1536,13 +1653,16 @@ def apply_broker_fill(
 
     try:
         # Atomic dedup: INSERT OR IGNORE lets the unique PK enforce idempotency (0261)
+        _eng_now = datetime.now(timezone.utc).isoformat()
         cursor = conn.execute(
             """INSERT OR IGNORE INTO fills
                (fill_id, order_id, account_id, symbol, side, qty, price,
-                fee, fill_source, filled_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                fee, fill_source, filled_at, origin, engine_managed,
+                first_seen_at, reconciled_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (bf.broker_fill_id, order_id, account_id, bf.symbol,
-             side, qty, price, fee, "broker_import", filled_at),
+             side, qty, price, fee, "broker_import", filled_at,
+             "ENGINE", 1, _eng_now, _eng_now),
         )
         if cursor.rowcount == 0:
             # Fill committed by an earlier call (or by ShadowBroker.attempt_fill() in shadow
@@ -1886,13 +2006,14 @@ def initialize_trading_session(
         max_filled_at: Optional[str] = None
         for bf in broker_fills:
             result = apply_broker_fill(bf, account_id, conn)  # idempotent; skips duplicates (0252)
-            if result == FillResult.APPLIED:
+            if result in (FillResult.APPLIED, FillResult.APPLIED_EXTERNAL):
                 imported += 1
-                if max_filled_at is None or bf.filled_at > max_filled_at:
-                    max_filled_at = bf.filled_at
+            # 0567: advance cursor for all observed fills (APPLIED, APPLIED_EXTERNAL, ALREADY_APPLIED)
+            if bf.filled_at and (max_filled_at is None or bf.filled_at > max_filled_at):
+                max_filled_at = bf.filled_at
         if imported > 0:
             _log.info("initialize_trading_session: imported %d broker fills for %s", imported, account_id)
-        # Advance cursor to max filled_at of new fills only; never to now for fresh accounts (0257)
+        # Advance cursor to max filled_at across all observed fills (0567)
         sync_mark = max_filled_at or last_sync
         if sync_mark:
             conn.execute(

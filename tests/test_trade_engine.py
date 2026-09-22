@@ -92,7 +92,9 @@ def _make_conn() -> sqlite3.Connection:
             fill_id TEXT PRIMARY KEY, order_id TEXT, account_id TEXT,
             symbol TEXT, side TEXT, qty REAL, price REAL, fee REAL DEFAULT 0,
             fill_source TEXT, filled_at TEXT,
-            cost_basis REAL DEFAULT 0, realized_pnl REAL, realized_pnl_pct REAL
+            cost_basis REAL DEFAULT 0, realized_pnl REAL, realized_pnl_pct REAL,
+            origin TEXT DEFAULT 'UNKNOWN', engine_managed INTEGER DEFAULT 0,
+            first_seen_at TEXT, reconciled_at TEXT
         );
         CREATE TABLE IF NOT EXISTS account_snapshots (
             snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT, account_id TEXT,
@@ -3929,12 +3931,13 @@ class TestApplyBrokerFillSafety:
             fee=0.0, local_order_id=order_id, account_id="AGENTIC_SHADOW_01",
         )
 
-    def test_unknown_fill_raises(self):
-        """apply_broker_fill raises UnknownFillError when order not in local DB (0261)."""
+    def test_unknown_fill_ingested_as_broker_external(self):
+        """Fill with no matching local order is now ingested as BROKER_EXTERNAL (0568), not raised."""
         conn = _make_conn()
+        # Use a random order_id that does not exist in the DB — resolve_local_order_id returns None
         bf = self._make_bf(order_id=str(uuid.uuid4()))
-        with pytest.raises(execution_engine.UnknownFillError):
-            execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+        result = execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+        assert result == execution_engine.FillResult.APPLIED_EXTERNAL
 
     def test_overfill_raises(self):
         """apply_broker_fill raises OverfillError when fill qty > remaining (0262)."""
@@ -4490,3 +4493,303 @@ class TestQuoteProvenanceV2_0363:
         from trade_engine.shadow_broker import Quote
         q = Quote(bid=99.0, ask=101.0)
         assert q.last is None
+
+
+# ── 0567: Fill cursor advancement ─────────────────────────────────────────────
+
+def _make_bf_simple(fill_id: str, filled_at: str, order_id: str | None = None,
+                    broker_order_id: str | None = None, symbol="AAPL",
+                    side="BUY", qty=1.0, price=100.0):
+    """Helper: build a BrokerFill for cursor tests."""
+    return execution_engine.BrokerFill(
+        broker_fill_id=fill_id,
+        broker_order_id=broker_order_id or order_id or "",
+        symbol=symbol, side=side, qty=qty, price=price,
+        filled_at=filled_at, fee=0.0,
+        local_order_id=order_id,
+        account_id="AGENTIC_SHADOW_01",
+    )
+
+
+def _seed_order_and_pos(conn, order_id: str, symbol="AAPL", side="BUY", qty=1.0, price=100.0):
+    """Seed an order + initial position (for SELL tests)."""
+    intent_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """INSERT INTO trade_intents
+           (intent_id, account_id, instrument_type, symbol, side, quantity,
+            order_type, limit_price, time_in_force, valid_until, status, created_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (intent_id, "AGENTIC_SHADOW_01", "EQUITY", symbol, side,
+         qty, "LIMIT", price, "GTC",
+         (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),
+         "APPROVED", now),
+    )
+    conn.execute(
+        """INSERT INTO orders
+           (order_id, intent_id, account_id, symbol, side, quantity, contracts,
+            order_type, limit_price, state, time_in_force,
+            broker_order_id, submitted_at, updated_at, fill_qty, fill_cash)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (order_id, intent_id, "AGENTIC_SHADOW_01", symbol, side,
+         qty, None, "LIMIT", price, "WORKING", "GTC",
+         order_id, now, now, 0.0, 0.0),
+    )
+    if side == "SELL":
+        conn.execute(
+            """INSERT OR REPLACE INTO position_snapshots
+               (account_id, symbol, qty, avg_cost, instrument_type, as_of)
+               VALUES (?,?,?,?,?,?)""",
+            ("AGENTIC_SHADOW_01", symbol, qty, price, "EQUITY", now[:10]),
+        )
+    conn.commit()
+
+
+class TestFillCursor0567:
+    """Cursor advancement fix: last_fill_synced_at advances regardless of APPLIED/ALREADY_APPLIED."""
+
+    def _get_cursor(self, conn) -> str | None:
+        row = conn.execute(
+            "SELECT last_fill_synced_at FROM trading_accounts WHERE account_id='AGENTIC_SHADOW_01'"
+        ).fetchone()
+        return row["last_fill_synced_at"] if row else None
+
+    def _make_broker_with_fills(self, fills):
+        from trade_engine.broker_adapter import BrokerAdapter
+        from trade_engine.broker_types import BrokerAccountState
+
+        class _Broker(BrokerAdapter):
+            def get_broker_account(self, account_id):
+                return BrokerAccountState(account_id=account_id, cash=10000.0, nav=10000.0, buying_power=10000.0)
+            def get_positions(self, account_id): return []
+            def get_open_orders(self, account_id): return []
+            def get_quote(self, symbol): return None
+            def submit_order(self, intent): raise NotImplementedError
+            def cancel_order(self, order_id, reason=""): raise NotImplementedError
+            def get_order(self, order_id): raise NotImplementedError
+            def get_fills(self, account_id, since=None): return fills
+            def poll_order_events(self, account_id, quote=None): return []
+            def attempt_fill(self, order, quote): raise NotImplementedError
+            def find_order_by_client_order_id(self, client_order_id): return None
+            def get_account_id(self): return "AGENTIC_SHADOW_01"
+            def get_fills_for_order(self, broker_order_id): return []
+
+        return _Broker()
+
+    def test_all_new_fills_advance_cursor(self):
+        """All-new fills: cursor advances to max filled_at."""
+        conn = _make_conn()
+        order_id = str(uuid.uuid4())
+        _seed_order_and_pos(conn, order_id, qty=2.0)
+        fills = [
+            _make_bf_simple(str(uuid.uuid4()), "2026-09-20T10:00:00+00:00", order_id, qty=1.0),
+        ]
+        broker = self._make_broker_with_fills(fills)
+        execution_engine.sync_broker_state("AGENTIC_SHADOW_01", conn, broker)
+        assert self._get_cursor(conn) == "2026-09-20T10:00:00+00:00"
+
+    def test_all_duplicate_fills_still_advance_cursor(self):
+        """All-duplicate fills: cursor advances to max filled_at even with no APPLIED results."""
+        conn = _make_conn()
+        order_id = str(uuid.uuid4())
+        _seed_order_and_pos(conn, order_id, qty=1.0)
+        fill_id = str(uuid.uuid4())
+        fill_ts = "2026-09-20T10:00:00+00:00"
+        # Apply once so subsequent call sees ALREADY_APPLIED
+        bf = _make_bf_simple(fill_id, fill_ts, order_id)
+        execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+        # Cursor is still None (not set by apply_broker_fill directly)
+        broker = self._make_broker_with_fills([
+            _make_bf_simple(fill_id, fill_ts, order_id),
+        ])
+        execution_engine.sync_broker_state("AGENTIC_SHADOW_01", conn, broker)
+        assert self._get_cursor(conn) == fill_ts
+
+    def test_mixed_new_and_duplicate_cursor_reaches_max(self):
+        """Mix of new and duplicate fills: cursor reaches max across both sets."""
+        conn = _make_conn()
+        order_id1 = str(uuid.uuid4())
+        order_id2 = str(uuid.uuid4())
+        _seed_order_and_pos(conn, order_id1, symbol="AAPL", qty=1.0)
+        _seed_order_and_pos(conn, order_id2, symbol="MSFT", qty=1.0)
+        fill_id1 = str(uuid.uuid4())
+        fill_ts1 = "2026-09-18T10:00:00+00:00"
+        fill_ts2 = "2026-09-20T12:00:00+00:00"
+        # Pre-apply fill1 so it's a duplicate in the next sync
+        bf1 = _make_bf_simple(fill_id1, fill_ts1, order_id1, symbol="AAPL")
+        execution_engine.apply_broker_fill(bf1, "AGENTIC_SHADOW_01", conn)
+        broker = self._make_broker_with_fills([
+            _make_bf_simple(fill_id1, fill_ts1, order_id1, symbol="AAPL"),
+            _make_bf_simple(str(uuid.uuid4()), fill_ts2, order_id2, symbol="MSFT"),
+        ])
+        execution_engine.sync_broker_state("AGENTIC_SHADOW_01", conn, broker)
+        assert self._get_cursor(conn) == fill_ts2
+
+    def test_duplicate_newer_than_new_reaches_duplicate_timestamp(self):
+        """Duplicate fill with later timestamp than the newest new fill: cursor reaches duplicate ts."""
+        conn = _make_conn()
+        order_id1 = str(uuid.uuid4())
+        order_id2 = str(uuid.uuid4())
+        _seed_order_and_pos(conn, order_id1, symbol="AAPL", qty=1.0)
+        _seed_order_and_pos(conn, order_id2, symbol="MSFT", qty=1.0)
+        fill_ts_new = "2026-09-19T10:00:00+00:00"
+        fill_ts_dup = "2026-09-21T10:00:00+00:00"  # later than new
+        fill_id_dup = str(uuid.uuid4())
+        # Pre-apply the "dup" fill (it has a later timestamp)
+        bf_dup = _make_bf_simple(fill_id_dup, fill_ts_dup, order_id1, symbol="AAPL")
+        execution_engine.apply_broker_fill(bf_dup, "AGENTIC_SHADOW_01", conn)
+        broker = self._make_broker_with_fills([
+            _make_bf_simple(str(uuid.uuid4()), fill_ts_new, order_id2, symbol="MSFT"),
+            _make_bf_simple(fill_id_dup, fill_ts_dup, order_id1, symbol="AAPL"),
+        ])
+        execution_engine.sync_broker_state("AGENTIC_SHADOW_01", conn, broker)
+        assert self._get_cursor(conn) == fill_ts_dup
+
+    def test_integrity_error_mid_batch_does_not_advance_cursor(self):
+        """OverfillError mid-batch: sync raises; cursor not written by sync."""
+        conn = _make_conn()
+        order_id = str(uuid.uuid4())
+        _seed_order_and_pos(conn, order_id, qty=1.0)
+        fill_ts_good = "2026-09-20T10:00:00+00:00"
+        fill_ts_bad = "2026-09-20T11:00:00+00:00"
+        # Two fills for the same order of qty=1.0; the second will trigger OverfillError
+        broker = self._make_broker_with_fills([
+            _make_bf_simple(str(uuid.uuid4()), fill_ts_good, order_id, qty=1.0),
+            _make_bf_simple(str(uuid.uuid4()), fill_ts_bad, order_id, qty=1.0),
+        ])
+        initial_cursor = self._get_cursor(conn)
+        with pytest.raises(execution_engine.BrokerStateIntegrityError):
+            execution_engine.sync_broker_state("AGENTIC_SHADOW_01", conn, broker)
+        # Cursor must not have advanced — the exception prevented the UPDATE from running
+        assert self._get_cursor(conn) == initial_cursor
+
+    def test_broker_stats_returned_from_sync(self):
+        """sync_broker_state returns broker observation stats as third tuple element."""
+        conn = _make_conn()
+        order_id = str(uuid.uuid4())
+        _seed_order_and_pos(conn, order_id, qty=2.0)
+        fill_id = str(uuid.uuid4())
+        fill_ts = "2026-09-20T10:00:00+00:00"
+        # Pre-apply so second call produces ALREADY_APPLIED
+        execution_engine.apply_broker_fill(
+            _make_bf_simple(fill_id, fill_ts, order_id),
+            "AGENTIC_SHADOW_01", conn,
+        )
+        broker = self._make_broker_with_fills([
+            _make_bf_simple(fill_id, fill_ts, order_id),
+            _make_bf_simple(str(uuid.uuid4()), "2026-09-20T11:00:00+00:00", order_id),
+        ])
+        _, dup_count, stats = execution_engine.sync_broker_state("AGENTIC_SHADOW_01", conn, broker)
+        assert stats["broker_fills_observed"] == 2
+        assert stats["broker_fills_new"] == 1
+        assert stats["broker_fills_duplicate"] == 1
+        assert dup_count == 1
+
+
+# ── 0568: Fill origin tracking ────────────────────────────────────────────────
+
+class TestFillOrigin0568:
+    """origin column is set correctly on fills: ENGINE for order-linked, BROKER_EXTERNAL otherwise."""
+
+    def _seed_order(self, conn, order_id: str, symbol="AAPL", side="BUY", qty=1.0, price=100.0):
+        _seed_order_and_pos(conn, order_id, symbol=symbol, side=side, qty=qty, price=price)
+
+    def _make_bf(self, order_id: str | None, fill_id: str | None = None, symbol="AAPL",
+                 side="BUY", qty=1.0, price=100.0, broker_order_id: str | None = None):
+        return execution_engine.BrokerFill(
+            broker_fill_id=fill_id or str(uuid.uuid4()),
+            broker_order_id=broker_order_id or order_id or "",
+            symbol=symbol, side=side, qty=qty, price=price,
+            filled_at=datetime.now(timezone.utc).isoformat(),
+            fee=0.0,
+            local_order_id=order_id,
+            account_id="AGENTIC_SHADOW_01",
+        )
+
+    def test_engine_fill_gets_origin_engine(self):
+        """Fill linked to a local order gets origin='ENGINE', engine_managed=1."""
+        conn = _make_conn()
+        order_id = str(uuid.uuid4())
+        self._seed_order(conn, order_id)
+        bf = self._make_bf(order_id)
+        result = execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+        assert result == execution_engine.FillResult.APPLIED
+        row = conn.execute(
+            "SELECT origin, engine_managed FROM fills WHERE fill_id=?", (bf.broker_fill_id,)
+        ).fetchone()
+        assert row["origin"] == "ENGINE"
+        assert row["engine_managed"] == 1
+
+    def test_broker_external_fill_gets_origin_broker_external(self):
+        """Fill with no local order gets origin='BROKER_EXTERNAL', engine_managed=0."""
+        conn = _make_conn()
+        bf = self._make_bf(order_id=None, broker_order_id="ext-broker-123")
+        result = execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+        assert result == execution_engine.FillResult.APPLIED_EXTERNAL
+        row = conn.execute(
+            "SELECT origin, engine_managed FROM fills WHERE fill_id=?", (bf.broker_fill_id,)
+        ).fetchone()
+        assert row["origin"] == "BROKER_EXTERNAL"
+        assert row["engine_managed"] == 0
+
+    def test_broker_external_fill_updates_position(self):
+        """BROKER_EXTERNAL BUY fill updates position_snapshots."""
+        conn = _make_conn()
+        bf = self._make_bf(order_id=None, broker_order_id="ext-buy-1", symbol="GOOG", qty=5.0, price=200.0)
+        execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+        pos = conn.execute(
+            "SELECT qty FROM position_snapshots WHERE account_id='AGENTIC_SHADOW_01' AND symbol='GOOG'"
+        ).fetchone()
+        assert pos is not None
+        assert pos["qty"] == pytest.approx(5.0)
+
+    def test_broker_external_fill_idempotent(self):
+        """Applying the same BROKER_EXTERNAL fill twice returns ALREADY_APPLIED on second call."""
+        conn = _make_conn()
+        fill_id = str(uuid.uuid4())
+        bf = self._make_bf(order_id=None, fill_id=fill_id, broker_order_id="ext-dup-1")
+        r1 = execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+        r2 = execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+        assert r1 == execution_engine.FillResult.APPLIED_EXTERNAL
+        assert r2 == execution_engine.FillResult.ALREADY_APPLIED
+
+    def test_engine_fill_has_first_seen_at(self):
+        """ENGINE fill records first_seen_at and reconciled_at timestamps."""
+        conn = _make_conn()
+        order_id = str(uuid.uuid4())
+        self._seed_order(conn, order_id)
+        bf = self._make_bf(order_id)
+        execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+        row = conn.execute(
+            "SELECT first_seen_at, reconciled_at FROM fills WHERE fill_id=?", (bf.broker_fill_id,)
+        ).fetchone()
+        assert row["first_seen_at"] is not None
+        assert row["reconciled_at"] is not None
+
+    def test_external_fill_counted_in_broker_stats(self):
+        """BROKER_EXTERNAL fill is counted in external_fills_observed broker stat."""
+        from trade_engine.broker_adapter import BrokerAdapter
+        from trade_engine.broker_types import BrokerAccountState
+
+        conn = _make_conn()
+        bf_ext = self._make_bf(order_id=None, broker_order_id="ext-stat-1", symbol="TSLA")
+
+        class _Broker(BrokerAdapter):
+            def get_broker_account(self, account_id):
+                return BrokerAccountState(account_id=account_id, cash=10000.0, nav=10000.0, buying_power=10000.0)
+            def get_positions(self, account_id): return []
+            def get_open_orders(self, account_id): return []
+            def get_quote(self, symbol): return None
+            def submit_order(self, intent): raise NotImplementedError
+            def cancel_order(self, order_id, reason=""): raise NotImplementedError
+            def get_order(self, order_id): raise NotImplementedError
+            def get_fills(self, account_id, since=None): return [bf_ext]
+            def poll_order_events(self, account_id, quote=None): return []
+            def attempt_fill(self, order, quote): raise NotImplementedError
+            def find_order_by_client_order_id(self, client_order_id): return None
+            def get_account_id(self): return "AGENTIC_SHADOW_01"
+            def get_fills_for_order(self, broker_order_id): return []
+
+        _, _, stats = execution_engine.sync_broker_state("AGENTIC_SHADOW_01", conn, _Broker())
+        assert stats["external_fills_observed"] == 1
+        assert stats["broker_fills_new"] == 1

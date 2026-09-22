@@ -2570,7 +2570,7 @@ class TestLedgerFillSync:
         # poll_order_events() returns [] (no WebSocket delivery); ledger pull must compensate.
         with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
              patch.object(market_calendar, "is_market_open", return_value=True):
-            fills, _dupes = execution_engine.sync_broker_state("AGENTIC_SHADOW_01", conn, broker=broker)
+            fills, _dupes, _stats = execution_engine.sync_broker_state("AGENTIC_SHADOW_01", conn, broker=broker)
 
         assert len(fills) == 1, "ledger fill must be returned from sync_broker_state"
         cash_after = conn.execute(
@@ -2597,7 +2597,7 @@ class TestLedgerFillSync:
 
         with patch.object(execution_engine, "load_policy", return_value=_make_policy()), \
              patch.object(market_calendar, "is_market_open", return_value=True):
-            fills, dupes = execution_engine.sync_broker_state("AGENTIC_SHADOW_01", conn, broker=broker)
+            fills, dupes, _stats = execution_engine.sync_broker_state("AGENTIC_SHADOW_01", conn, broker=broker)
 
         # The fill was already applied; ledger pull should return 0 new fills and 1 duplicate.
         assert len(fills) == 0

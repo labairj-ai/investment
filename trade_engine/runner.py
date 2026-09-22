@@ -105,8 +105,10 @@ def _write_cycle_run(conn: sqlite3.Connection, summary: dict, duration_seconds: 
                 new_intents_processed, risk_rejections, orders_submitted,
                 fills_applied, duplicate_fills_skipped, broker_api_errors,
                 cash_delta_vs_broker, position_delta_vs_broker,
-                duration_seconds, oldest_unresolved_order_age_minutes
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                duration_seconds, oldest_unresolved_order_age_minutes,
+                broker_fills_observed, broker_fills_new,
+                broker_fills_duplicate, external_fills_observed
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 _ACCOUNT_ID,
                 datetime.now(timezone.utc).isoformat(),
@@ -122,6 +124,10 @@ def _write_cycle_run(conn: sqlite3.Connection, summary: dict, duration_seconds: 
                 summary.get("position_delta_vs_broker"),
                 duration_seconds,
                 oldest_age,
+                summary.get("broker_fills_observed", 0),
+                summary.get("broker_fills_new", 0),
+                summary.get("broker_fills_duplicate", 0),
+                summary.get("external_fills_observed", 0),
             ),
         )
         conn.commit()
