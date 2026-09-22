@@ -11,8 +11,10 @@ Scheduled via systemd timer: book-mtm.timer (Mon–Fri 18:30 America/New_York).
 from __future__ import annotations
 
 import json
+import math
 import time
 from datetime import date as _date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import agent_db
 from trade_engine.market_calendar import trading_sessions_between, is_market_open_on_date
@@ -34,15 +36,17 @@ def _get_closing_price(ticker: str, date_str: str) -> float | None:
             end=(d + timedelta(days=1)).isoformat(),
             auto_adjust=False,
             progress=False,
-            multi_level_column=False,
+            multi_level_index=False,
         )
-        if hist.empty:
+        if hist is None or hist.empty:
             return None
         hist.index = hist.index.astype(str).str[:10]
         if date_str in hist.index:
-            return float(hist.loc[date_str, "Close"])
+            price = float(hist.loc[date_str, "Close"])
+            return price if math.isfinite(price) and price > 0 else None
         return None
-    except Exception:
+    except Exception as exc:
+        print(f"[book_mtm] Close fetch failed for {ticker} on {date_str}: {type(exc).__name__}: {exc}")
         return None
 
 
@@ -127,7 +131,7 @@ def run_mark_to_market(date_str: str | None = None) -> dict:
     Returns {"books_updated": int, "holds_expired": int, "errors": list}.
     """
     if date_str is None:
-        date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        date_str = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
 
     # 0364: skip non-market days entirely — don't write partial rows
     if not is_market_open_on_date(date_str):
@@ -227,9 +231,9 @@ def run_mark_to_market(date_str: str | None = None) -> dict:
                 # 5. Daily return vs previous *complete* row (0366: never use incomplete prior nav)
                 prev_row = conn.execute(
                     """SELECT total_nav FROM virtual_book_nav
-                       WHERE book_id=? AND is_complete=1
+                       WHERE book_id=? AND is_complete=1 AND date<?
                        ORDER BY date DESC LIMIT 1""",
-                    (book_id,),
+                    (book_id, date_str),
                 ).fetchone()
                 # 0366: if today's row is incomplete, daily_return is meaningless — write NULL
                 daily_return: float | None = None
@@ -286,3 +290,4 @@ def mtm_rows_available(conn, min_rows: int = 30) -> bool:
 if __name__ == "__main__":
     result = run_mark_to_market()
     print(f"[book_mtm] {result}")
+    raise SystemExit(1 if result['errors'] else 0)

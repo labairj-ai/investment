@@ -90,6 +90,9 @@ and the pinned acceptance/protocol/stage-zero contract. Learning Lab shows its
 read-only status. RED incidents notify immediately; unresolved YELLOWs receive a
 daily digest through the configured email transport. The watchdog is strictly
 alert-only and never repairs data or changes investment behavior.
+MTM price failures now fail the scheduled job explicitly; alerts identify missing
+book/date marks. Exact-date prices are required, and same-day repairs preserve
+returns relative to the preceding complete trading-day mark.
 See [operational checks, schedules and deployment](docs/operational-watchdog.md).
 
 ## Deployment

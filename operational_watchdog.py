@@ -245,19 +245,31 @@ def outcomes_and_marks(conn, baseline, now):
             if deadline <= now and not conn.execute("SELECT 1 FROM macro_experiment_labels WHERE cohort_id=? AND horizon=? AND horizon_version='sessions_v2'", (cohort['cohort_id'],horizon)).fetchone():
                 paired_missing.append(dict(cohort_id=cohort['cohort_id'],horizon=horizon))
     marks = []
+    mark_sets = {}
     for book in conn.execute('SELECT book_id,MIN(created_at) inception FROM virtual_fills GROUP BY book_id'):
         since = max(book['inception'], baseline['activated_at'])
         for due in due_slots(now, since, [(18,30)], sessions=True, grace=3600):
             day = datetime.fromtimestamp(due, ET).date().isoformat()
-            row = conn.execute('SELECT is_complete,total_nav FROM virtual_book_nav WHERE book_id=? AND date=?', (book['book_id'],day)).fetchone()
+            row = conn.execute('SELECT is_complete,total_nav,created_at FROM virtual_book_nav WHERE book_id=? AND date=?', (book['book_id'],day)).fetchone()
+            group = mark_sets.setdefault(due, dict(complete=True, timestamps=[]))
             if not row or row['is_complete'] != 1 or row['total_nav'] is None:
+                group['complete'] = False
                 marks.append(dict(book_id=book['book_id'], date=day, reason='missing' if not row else 'incomplete'))
+            elif row['created_at']:
+                group['timestamps'].append(row['created_at'])
+    completed = [due for due, group in mark_sets.items() if group['complete']]
+    latest_complete = max(completed) if completed else None
+    timestamps = mark_sets[latest_complete]['timestamps'] if latest_complete else []
     return [result('outcome_completeness', 'YELLOW' if missing or paired_missing else 'INFO',
                    'Due outcomes missing or unevaluable' if missing or paired_missing else ('All due outcomes labeled' if due_n else 'Nothing due'),
                    due=due_n, overdue=len(missing), missing=missing[:50], paired_missing=paired_missing[:50]),
             result('mtm_completeness','YELLOW' if marks else 'INFO',
                    'Missing or incomplete daily marks' if marks else 'All due daily marks complete; pre-inception/not-due days excluded',
-                   missing_n=len(marks), missing=marks[:50])]
+                   missing_n=len(marks), missing=marks[:50],
+                   last_expected_at=max(mark_sets) if mark_sets else None,
+                   last_success_at=max(timestamps) if timestamps else None,
+                   last_record_id=('virtual_book_nav:'+datetime.fromtimestamp(latest_complete,ET).date().isoformat()) if latest_complete else None,
+                   expected_cadence='Trading days at 18:30 America/New_York; 1h grace')]
 
 
 def collect(conn, state, baseline, now):
@@ -394,6 +406,21 @@ def delivery_failures(state, now):
     return sum(bool(state.execute('SELECT 1 FROM watchdog_delivery WHERE delivery_key=? AND delivered_at IS NULL AND error IS NOT NULL',(key,)).fetchone()) for key in keys)
 
 
+def alert_summary(row):
+    """Readable operational metadata only; never include portfolio evidence."""
+    detail = json.loads(row['detail'])
+    success = row['last_success_at']
+    success_text = datetime.fromtimestamp(success, ET).isoformat() if success else 'No successful completion recorded'
+    lines = [f"{row['component']}: {detail['reason']}",
+             f"Last success: {success_text}",
+             f"Record: {row['last_record_id'] or 'No completion record available'}"]
+    if row['component'] == 'mtm_completeness':
+        for mark in detail.get('evidence', {}).get('missing', []):
+            lines.append(f"Affected mark: {mark['book_id']} / {mark['date']} ({mark['reason']})")
+    lines.append(f"Incident: {row['incident_id']}")
+    return '\n'.join(lines)
+
+
 def deliver(state, now, transport, enabled=False):
     """Deduplicated notification attempts, never business-job retries.
 
@@ -414,7 +441,7 @@ def deliver(state, now, transport, enabled=False):
         if previous and (previous['delivered_at'] or now-previous['last_attempt']<min(21600,900*2**min(previous['attempts']-1,5))): continue
         # Only component summaries and timing go to email; evidence can contain
         # portfolio data and remains on the host for authenticated inspection.
-        body='\n'.join(f"{r['component']}: {json.loads(r['detail'])['reason']}\nLast success: {r['last_success_at']}\nRecord: {r['last_record_id']}\nIncident: {r['incident_id']}" for r in rows)
+        body='\n'.join(alert_summary(r) for r in rows)
         if not enabled:
             print(json.dumps(dict(delivery_key=key,subject=subject,body=body,dry_run=True)))
             continue
