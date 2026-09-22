@@ -3310,93 +3310,126 @@ def build_dashboard(portfolio, layers, holdings):
 </div><!-- end tab-shadow -->
 
 <div id="tab-learning" class="dash-tab-content" style="display:none;">
-  <div style="max-width:960px;margin:0 auto;padding:20px 24px;display:flex;flex-direction:column;gap:18px;">
+  <div style="max-width:1100px;margin:0 auto;padding:20px 24px;">
 
-    <!-- Header row -->
-    <div style="display:flex;align-items:center;justify-content:space-between;">
-      <div>
-        <h2 style="margin:0 0 4px;">Learning Lab</h2>
-        <p style="margin:0;font-size:13px;color:#718096;">Read-only calibration view — no weights or risk rules are modified here.</p>
+    <!-- ── Zone 1: Status Bar ── -->
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;padding:14px 20px;background:#fff;border-radius:10px;box-shadow:0 1px 4px rgba(0,0,0,.07);">
+      <div style="display:flex;align-items:center;gap:8px;">
+        <h2 style="margin:0;font-size:16px;font-weight:700;color:#2d3748;">Learning Lab</h2>
+        <span style="font-size:11px;color:#a0aec0;font-weight:400;">· read-only</span>
+        <button onclick="loadLearningPanel()" style="margin-left:8px;font-size:11px;padding:3px 10px;background:#ebf8ff;color:#2b6cb0;border:1px solid #bee3f8;border-radius:6px;cursor:pointer;">Refresh</button>
       </div>
-      <button onclick="loadLearningPanel()" style="font-size:11px;padding:4px 12px;background:#ebf8ff;color:#2b6cb0;border:1px solid #bee3f8;border-radius:6px;cursor:pointer;">Refresh</button>
+      <div style="display:flex;align-items:center;gap:28px;flex-wrap:wrap;">
+        <div style="text-align:right;">
+          <div style="font-size:10px;color:#718096;text-transform:uppercase;letter-spacing:.05em;">System</div>
+          <div id="learning-status-watchdog" style="font-size:13px;font-weight:700;color:#718096;">—</div>
+        </div>
+        <div style="text-align:right;">
+          <div style="font-size:10px;color:#718096;text-transform:uppercase;letter-spacing:.05em;">Lifecycle</div>
+          <div id="learning-status-lifecycle" style="font-size:13px;font-weight:700;color:#718096;">—</div>
+        </div>
+        <div style="text-align:right;">
+          <div style="font-size:10px;color:#718096;text-transform:uppercase;letter-spacing:.05em;">Data Health</div>
+          <div id="learning-status-health" style="font-size:13px;font-weight:700;color:#718096;">—</div>
+        </div>
+        <div style="text-align:right;">
+          <div style="font-size:10px;color:#718096;text-transform:uppercase;letter-spacing:.05em;">Next Maturity</div>
+          <div id="learning-status-maturity" style="font-size:13px;font-weight:700;color:#718096;">—</div>
+        </div>
+      </div>
     </div>
 
-    <!-- Overview -->
-    <div style="background:#fff;border-radius:10px;padding:18px 22px;box-shadow:0 1px 4px rgba(0,0,0,.07);">
-      <h3 style="margin:0 0 12px;font-size:14px;font-weight:700;color:#2d3748;">Episode Dataset</h3>
-      <div id="learning-overview" style="color:#718096;font-size:13px;">Loading…</div>
+    <!-- ── Zone 2: Primary Row — Readiness + Active Model ── -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;">
+      <div style="background:#fff;border-radius:10px;padding:18px 22px;box-shadow:0 1px 4px rgba(0,0,0,.07);">
+        <h3 style="margin:0 0 4px;font-size:14px;font-weight:700;color:#2d3748;">Learning Loop Readiness</h3>
+        <p style="margin:0 0 12px;font-size:12px;color:#718096;">Lifecycle state, promotion gates, data health, and evidence maturity.</p>
+        <div id="learning-readiness-card" style="color:#718096;font-size:13px;">Loading…</div>
+      </div>
+      <div style="background:#fff;border-radius:10px;padding:18px 22px;box-shadow:0 1px 4px rgba(0,0,0,.07);">
+        <h3 style="margin:0 0 4px;font-size:14px;font-weight:700;color:#2d3748;">Active Challenger Model</h3>
+        <p style="margin:0 0 12px;font-size:12px;color:#718096;">PAPER_ACTIVE model and expected alpha uncertainty band — wide bands mean limited confidence.</p>
+        <div id="learning-model-card" style="color:#718096;font-size:13px;">Loading…</div>
+      </div>
     </div>
 
-    <div style="background:#fff;border-radius:10px;padding:18px 22px;box-shadow:0 1px 4px rgba(0,0,0,.07);">
-      <h3 style="margin:0 0 12px;font-size:14px;">Macro Value Experiment · Observe only</h3>
-      <div id="macro-experiment-panel" style="font-size:13px;color:#718096;">Loading…</div>
-    </div>
-
-    <div style="background:#fff;border-radius:10px;padding:18px 22px;box-shadow:0 1px 4px rgba(0,0,0,.07);">
-      <h3 style="margin:0 0 12px;font-size:14px;">System Watchdog · Alert only</h3>
-      <div id="system-watchdog-panel" style="font-size:13px;">UNKNOWN · Awaiting operational check</div>
-    </div>
-
-    <!-- Active Model Card -->
-    <div style="background:#fff;border-radius:10px;padding:18px 22px;box-shadow:0 1px 4px rgba(0,0,0,.07);">
-      <h3 style="margin:0 0 4px;font-size:14px;font-weight:700;color:#2d3748;">Active Challenger Model</h3>
-      <p style="margin:0 0 12px;font-size:12px;color:#718096;">The PAPER_ACTIVE model and its expected alpha uncertainty band — wide bands mean limited confidence in the point estimate.</p>
-      <div id="learning-model-card" style="color:#718096;font-size:13px;">Loading…</div>
-    </div>
-
-    <!-- Score Calibration -->
-    <div style="background:#fff;border-radius:10px;padding:18px 22px;box-shadow:0 1px 4px rgba(0,0,0,.07);">
-      <h3 style="margin:0 0 4px;font-size:14px;font-weight:700;color:#2d3748;">Score Calibration</h3>
-      <p style="margin:0 0 12px;font-size:12px;color:#718096;">Mean 90-day alpha vs SPY by composite score bucket — shows whether higher scores predict better returns.</p>
-      <div id="learning-score-cal" style="color:#718096;font-size:13px;">Loading…</div>
-    </div>
-
-    <!-- Feature Attribution -->
-    <div style="background:#fff;border-radius:10px;padding:18px 22px;box-shadow:0 1px 4px rgba(0,0,0,.07);">
-      <h3 style="margin:0 0 4px;font-size:14px;font-weight:700;color:#2d3748;">Feature Attribution</h3>
-      <p style="margin:0 0 12px;font-size:12px;color:#718096;">Mean 90-day alpha by component score bucket — shows which Q/V/PF/C/EC dimensions actually predict excess return.</p>
-      <div id="learning-feature-attr" style="color:#718096;font-size:13px;">Loading…</div>
-    </div>
-
-    <!-- LLM Calibration -->
-    <div style="background:#fff;border-radius:10px;padding:18px 22px;box-shadow:0 1px 4px rgba(0,0,0,.07);">
-      <h3 style="margin:0 0 4px;font-size:14px;font-weight:700;color:#2d3748;">LLM Conviction Calibration</h3>
-      <p style="margin:0 0 12px;font-size:12px;color:#718096;">Hit rate and mean alpha by LLM conviction stars — reveals systematic over/under-confidence in model selection.</p>
-      <div id="learning-llm-cal" style="color:#718096;font-size:13px;">Loading…</div>
-    </div>
-
-    <!-- Risk Gate Audit -->
-    <div style="background:#fff;border-radius:10px;padding:18px 22px;box-shadow:0 1px 4px rgba(0,0,0,.07);">
-      <h3 style="margin:0 0 4px;font-size:14px;font-weight:700;color:#2d3748;">Risk Gate Audit</h3>
-      <p style="margin:0 0 12px;font-size:12px;color:#718096;">Counterfactual outcomes for risk-rejected intents — shows which rules block bad trades vs miss good ones.</p>
-      <div id="learning-risk-audit" style="color:#718096;font-size:13px;">Loading…</div>
-    </div>
-
-    <!-- Learning Readiness Report (0385) -->
-    <div style="background:#fff;border-radius:10px;padding:18px 22px;box-shadow:0 1px 4px rgba(0,0,0,.07);">
-      <h3 style="margin:0 0 4px;font-size:14px;font-weight:700;color:#2d3748;">Learning Loop Readiness</h3>
-      <p style="margin:0 0 12px;font-size:12px;color:#718096;">Consolidated view: lifecycle state, promotion gate status, data health, and evidence maturity timeline.</p>
-      <div id="learning-readiness-card" style="color:#718096;font-size:13px;">Loading…</div>
-    </div>
-
-    <!-- Experiment Status Card -->
-    <div style="background:#fff;border-radius:10px;padding:18px 22px;box-shadow:0 1px 4px rgba(0,0,0,.07);">
-      <h3 style="margin:0 0 4px;font-size:14px;font-weight:700;color:#2d3748;">Experiment Pipeline Status</h3>
-      <p style="margin:0 0 12px;font-size:12px;color:#718096;">Operational integrity record, acceptance milestones, and episode maturity timeline.</p>
-      <div id="learning-experiment-status" style="color:#718096;font-size:13px;">Loading…</div>
-    </div>
-
-    <!-- Champion vs Challenger Portfolio Books -->
-    <div style="background:#fff;border-radius:10px;padding:18px 22px;box-shadow:0 1px 4px rgba(0,0,0,.07);">
+    <!-- ── Zone 3: Champion vs Challenger Portfolio ── -->
+    <div style="background:#fff;border-radius:10px;padding:18px 22px;box-shadow:0 1px 4px rgba(0,0,0,.07);margin-bottom:16px;">
       <h3 style="margin:0 0 4px;font-size:14px;font-weight:700;color:#2d3748;">Champion vs Challenger Portfolio</h3>
       <p style="margin:0 0 12px;font-size:12px;color:#718096;">Virtual portfolio comparison — both books use identical execution assumptions. Champion follows the accepted recommendation; Challenger follows the PAPER_ACTIVE model's pick.</p>
       <div id="learning-cc-portfolio" style="color:#718096;font-size:13px;">Loading…</div>
     </div>
 
-    <!-- Macro Attribution (0495) -->
-    <div style="background:#fff;border-radius:10px;padding:18px 22px;box-shadow:0 1px 4px rgba(0,0,0,.07);border-left:3px solid #e2e8f0;">
-      <h3 style="margin:0 0 4px;font-size:14px;font-weight:700;color:#2d3748;">Macro Attribution</h3>
-      <p style="margin:0 0 10px;font-size:12px;color:#718096;">Exploratory: does macro context at decision time explain subsequent alpha? Available after ≥60 resolved episodes with macro snapshots. Run <code>venv/bin/python scripts/macro_attribution.py</code> to update.</p>
+    <!-- ── Zone 4: Calibration Evidence (tabbed) ── -->
+    <div style="background:#fff;border-radius:10px;padding:18px 22px;box-shadow:0 1px 4px rgba(0,0,0,.07);margin-bottom:16px;">
+      <h3 style="margin:0 0 12px;font-size:14px;font-weight:700;color:#2d3748;">Calibration Evidence</h3>
+      <div style="display:flex;gap:0;margin-bottom:14px;border-bottom:2px solid #e2e8f0;">
+        <button id="lcal-btn-score" onclick="showLCalTab('score')" style="padding:6px 16px;font-size:12px;border:none;border-bottom:2px solid #2b6cb0;margin-bottom:-2px;background:none;cursor:pointer;color:#2b6cb0;font-weight:700;">Score</button>
+        <button id="lcal-btn-feature" onclick="showLCalTab('feature')" style="padding:6px 16px;font-size:12px;border:none;border-bottom:2px solid transparent;margin-bottom:-2px;background:none;cursor:pointer;color:#718096;font-weight:600;">Features (Q/V/PF/C/EC)</button>
+        <button id="lcal-btn-llm" onclick="showLCalTab('llm')" style="padding:6px 16px;font-size:12px;border:none;border-bottom:2px solid transparent;margin-bottom:-2px;background:none;cursor:pointer;color:#718096;font-weight:600;">LLM Conviction</button>
+      </div>
+      <div id="lcal-score">
+        <p style="margin:0 0 8px;font-size:12px;color:#718096;">Mean 90-day alpha vs SPY by composite score bucket — shows whether higher scores predict better returns.</p>
+        <div id="learning-score-cal" style="color:#718096;font-size:13px;">Loading…</div>
+      </div>
+      <div id="lcal-feature" style="display:none;">
+        <p style="margin:0 0 8px;font-size:12px;color:#718096;">Mean 90-day alpha by component score bucket — which Q/V/PF/C/EC dimensions actually predict excess return.</p>
+        <div id="learning-feature-attr" style="color:#718096;font-size:13px;">Loading…</div>
+      </div>
+      <div id="lcal-llm" style="display:none;">
+        <p style="margin:0 0 8px;font-size:12px;color:#718096;">Hit rate and mean alpha by LLM conviction stars — reveals systematic over/under-confidence in model selection.</p>
+        <div id="learning-llm-cal" style="color:#718096;font-size:13px;">Loading…</div>
+      </div>
+    </div>
+
+    <!-- ── Zone 5: Data & Pipeline Row ── -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;">
+      <div style="background:#fff;border-radius:10px;padding:18px 22px;box-shadow:0 1px 4px rgba(0,0,0,.07);">
+        <h3 style="margin:0 0 12px;font-size:14px;font-weight:700;color:#2d3748;">Episode Dataset</h3>
+        <div id="learning-overview" style="color:#718096;font-size:13px;">Loading…</div>
+      </div>
+      <div style="background:#fff;border-radius:10px;padding:18px 22px;box-shadow:0 1px 4px rgba(0,0,0,.07);">
+        <h3 style="margin:0 0 4px;font-size:14px;font-weight:700;color:#2d3748;">Experiment Pipeline Status</h3>
+        <p style="margin:0 0 12px;font-size:12px;color:#718096;">Integrity record, acceptance milestones, and episode maturity timeline.</p>
+        <div id="learning-experiment-status" style="color:#718096;font-size:13px;">Loading…</div>
+      </div>
+    </div>
+
+    <!-- ── Zone 6: System Watchdog (collapsible) ── -->
+    <details style="background:#fff;border-radius:10px;box-shadow:0 1px 4px rgba(0,0,0,.07);margin-bottom:16px;">
+      <summary style="padding:14px 22px;font-size:14px;font-weight:700;color:#2d3748;cursor:pointer;list-style:none;display:flex;align-items:center;gap:6px;">
+        <span style="font-size:11px;color:#718096;">▶</span> System Watchdog <span style="font-size:11px;color:#a0aec0;font-weight:400;">· alert only</span>
+      </summary>
+      <div style="padding:0 22px 18px;">
+        <div id="system-watchdog-panel" style="font-size:13px;">UNKNOWN · Awaiting operational check</div>
+      </div>
+    </details>
+
+    <!-- ── Zone 7: Macro Experiment (collapsible) ── -->
+    <details style="background:#fff;border-radius:10px;box-shadow:0 1px 4px rgba(0,0,0,.07);margin-bottom:16px;">
+      <summary style="padding:14px 22px;font-size:14px;font-weight:700;color:#2d3748;cursor:pointer;list-style:none;display:flex;align-items:center;gap:6px;">
+        <span style="font-size:11px;color:#718096;">▶</span> Macro Value Experiment <span style="font-size:11px;color:#a0aec0;font-weight:400;">· observe only</span>
+      </summary>
+      <div style="padding:0 22px 18px;">
+        <div id="macro-experiment-panel" style="font-size:13px;color:#718096;">Loading…</div>
+      </div>
+    </details>
+
+    <!-- ── Zone 8: Risk Gate Audit (collapsible) ── -->
+    <details style="background:#fff;border-radius:10px;box-shadow:0 1px 4px rgba(0,0,0,.07);margin-bottom:16px;">
+      <summary style="padding:14px 22px;font-size:14px;font-weight:700;color:#2d3748;cursor:pointer;list-style:none;display:flex;align-items:center;gap:6px;">
+        <span style="font-size:11px;color:#718096;">▶</span> Risk Gate Audit <span style="font-size:11px;color:#a0aec0;font-weight:400;">· counterfactual outcomes</span>
+      </summary>
+      <div style="padding:0 22px 18px;">
+        <p style="margin:0 0 8px;font-size:12px;color:#718096;">Outcomes for risk-rejected intents — shows which rules block bad trades vs miss good ones.</p>
+        <div id="learning-risk-audit" style="color:#718096;font-size:13px;">Loading…</div>
+      </div>
+    </details>
+
+    <!-- ── Zone 9: Macro Attribution (exploratory, bottom) ── -->
+    <div style="background:#fff;border-radius:10px;padding:18px 22px;box-shadow:0 1px 4px rgba(0,0,0,.07);border-left:3px solid #e2e8f0;margin-bottom:16px;">
+      <h3 style="margin:0 0 4px;font-size:14px;font-weight:700;color:#2d3748;">Macro Attribution <span style="font-size:11px;color:#94a3b8;font-weight:400;">· exploratory</span></h3>
+      <p style="margin:0 0 10px;font-size:12px;color:#718096;">Does macro context at decision time explain subsequent alpha? Available after ≥60 resolved episodes with macro snapshots. Run <code>venv/bin/python scripts/macro_attribution.py</code> to update.</p>
       <div id="macro-attribution-stub" style="font-size:12px;color:#94a3b8;padding:8px 0;">
         {macro_attr_html}
       </div>
@@ -9147,6 +9180,8 @@ function loadWatchdogPanel() {{
     heading.textContent = report.overall + (report.stale ? ' · STALE checks' : '') + ' · Last check: ' + (report.checked_at ? new Date(report.checked_at*1000).toLocaleString() : 'Never');
     heading.style.color = report.overall === 'HEALTHY' ? '#276749' : report.overall === 'RED' ? '#c53030' : '#975a16';
     el.appendChild(heading);
+    var _sbw = document.getElementById('learning-status-watchdog');
+    if (_sbw) {{ _sbw.textContent = report.overall; _sbw.style.color = heading.style.color; }}
     var extra = document.createElement('details');
     var extraTitle = document.createElement('summary');
     extraTitle.textContent = 'Additional checks and timing'; extra.style.marginTop = '10px'; extra.appendChild(extraTitle);
@@ -9172,6 +9207,20 @@ setInterval(function() {{
   var tab = document.getElementById('tab-learning');
   if (tab && tab.style.display !== 'none') loadWatchdogPanel();
 }}, 60000);
+
+function showLCalTab(name) {{
+  ['score','feature','llm'].forEach(function(k) {{
+    var pane = document.getElementById('lcal-' + k);
+    var btn  = document.getElementById('lcal-btn-' + k);
+    var active = k === name;
+    if (pane) pane.style.display = active ? '' : 'none';
+    if (btn) {{
+      btn.style.color = active ? '#2b6cb0' : '#718096';
+      btn.style.fontWeight = active ? '700' : '600';
+      btn.style.borderBottom = active ? '2px solid #2b6cb0' : '2px solid transparent';
+    }}
+  }});
+}}
 
 function loadLearningPanel() {{
   loadWatchdogPanel();
@@ -9378,6 +9427,12 @@ function loadLearningPanel() {{
           gk.replace(/_/g,' ') + ': ' + res + '</span>';
       }});
       var dhColor = {{ok:'#38a169',warn:'#d69e2e',block:'#e53e3e'}}[rp.data_health] || '#a0aec0';
+      var _sbLC = document.getElementById('learning-status-lifecycle');
+      if (_sbLC) {{ _sbLC.textContent = lc; _sbLC.style.color = lcColor; }}
+      var _sbDH = document.getElementById('learning-status-health');
+      if (_sbDH) {{ _sbDH.textContent = (rp.data_health||'—').toUpperCase(); _sbDH.style.color = dhColor; }}
+      var _sbMat = document.getElementById('learning-status-maturity');
+      if (_sbMat) _sbMat.textContent = rp.next_maturity_date || '—';
       var incSpread = rp.incremental_ranking_spread;
       var incStr = incSpread !== null && incSpread !== undefined ? ((incSpread*100).toFixed(2)+'%') : '—';
       var incColor = incSpread > 0 ? '#38a169' : (incSpread < 0 ? '#e53e3e' : '#4a5568');
