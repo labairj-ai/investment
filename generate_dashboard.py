@@ -9226,8 +9226,12 @@ function showLCalTab(name) {{
 }}
 
 function loadLearningPanel(btn) {{
+  var _t0 = Date.now();
   if (btn) {{ btn.textContent = 'Refreshing…'; btn.disabled = true; }}
-  var _restoreBtn = function() {{ if (btn) {{ btn.textContent = 'Refresh'; btn.disabled = false; }} }};
+  var _restoreBtn = function() {{
+    var wait = Math.max(0, 800 - (Date.now() - _t0));
+    setTimeout(function() {{ if (btn) {{ btn.textContent = 'Refresh'; btn.disabled = false; }} }}, wait);
+  }};
   loadWatchdogPanel();
   var overviewEl = document.getElementById('learning-overview');
   var scoreEl    = document.getElementById('learning-score-cal');
