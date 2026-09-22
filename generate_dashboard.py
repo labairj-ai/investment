@@ -3365,10 +3365,10 @@ def build_dashboard(portfolio, layers, holdings):
     <!-- ── Zone 4: Calibration Evidence (tabbed) ── -->
     <div style="background:#fff;border-radius:10px;padding:18px 22px;box-shadow:0 1px 4px rgba(0,0,0,.07);margin-bottom:16px;">
       <h3 style="margin:0 0 12px;font-size:14px;font-weight:700;color:#2d3748;">Calibration Evidence</h3>
-      <div style="display:flex;gap:0;margin-bottom:14px;border-bottom:2px solid #e2e8f0;">
-        <button id="lcal-btn-score" onclick="showLCalTab('score')" style="padding:6px 16px;font-size:12px;border:none;border-bottom:2px solid #2b6cb0;margin-bottom:-2px;background:none;cursor:pointer;color:#2b6cb0;font-weight:700;">Score</button>
-        <button id="lcal-btn-feature" onclick="showLCalTab('feature')" style="padding:6px 16px;font-size:12px;border:none;border-bottom:2px solid transparent;margin-bottom:-2px;background:none;cursor:pointer;color:#718096;font-weight:600;">Features (Q/V/PF/C/EC)</button>
-        <button id="lcal-btn-llm" onclick="showLCalTab('llm')" style="padding:6px 16px;font-size:12px;border:none;border-bottom:2px solid transparent;margin-bottom:-2px;background:none;cursor:pointer;color:#718096;font-weight:600;">LLM Conviction</button>
+      <div style="display:flex;gap:4px;margin-bottom:14px;flex-wrap:wrap;">
+        <button id="lcal-btn-score" onclick="showLCalTab('score')" style="padding:6px 14px;font-size:12px;border:0;border-radius:6px;background:#ebf8ff;cursor:pointer;color:#2b6cb0;font-weight:700;outline:none;">Score</button>
+        <button id="lcal-btn-feature" onclick="showLCalTab('feature')" style="padding:6px 14px;font-size:12px;border:0;border-radius:6px;background:transparent;cursor:pointer;color:#718096;font-weight:600;outline:none;">Features (Q/V/PF/C/EC)</button>
+        <button id="lcal-btn-llm" onclick="showLCalTab('llm')" style="padding:6px 14px;font-size:12px;border:0;border-radius:6px;background:transparent;cursor:pointer;color:#718096;font-weight:600;outline:none;">LLM Conviction</button>
       </div>
       <div id="lcal-score">
         <p style="margin:0 0 8px;font-size:12px;color:#718096;">Mean 90-day alpha vs SPY by composite score bucket — shows whether higher scores predict better returns.</p>
@@ -9203,7 +9203,7 @@ function loadWatchdogPanel() {{
       (primary.indexOf(c.component) >= 0 || c.status !== 'INFO' ? el : extra).appendChild(row);
     }});
     el.appendChild(extra);
-  }}).catch(function() {{ el.textContent = 'UNKNOWN · Watchdog status unavailable. Check the service journal on Optiplex.'; }});
+  }}).catch(function(e) {{ el.textContent = 'UNKNOWN · ' + (e && e.message ? e.message : 'Watchdog fetch failed — check the service journal on Optiplex.'); }});
 }}
 setInterval(function() {{
   var tab = document.getElementById('tab-learning');
@@ -9215,11 +9215,11 @@ function showLCalTab(name) {{
     var pane = document.getElementById('lcal-' + k);
     var btn  = document.getElementById('lcal-btn-' + k);
     var active = k === name;
-    if (pane) pane.style.display = active ? '' : 'none';
+    if (pane) pane.style.display = active ? 'block' : 'none';
     if (btn) {{
       btn.style.color = active ? '#2b6cb0' : '#718096';
       btn.style.fontWeight = active ? '700' : '600';
-      btn.style.borderBottom = active ? '2px solid #2b6cb0' : '2px solid transparent';
+      btn.style.background = active ? '#ebf8ff' : 'transparent';
     }}
   }});
 }}
