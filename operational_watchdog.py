@@ -127,11 +127,11 @@ def run_health(component, rows, now, since, schedule=None, timeout=6*3600):
     evidence = dict(last_expected_at=due, last_started_at=rows[-1]['started_at'] if rows else None,
                     last_success_at=last.get('completed_at'), last_record_id=last.get('record_id'),
                     expected_cadence=json.dumps(schedule) if schedule else 'triggered', count=len(rows))
-    # Historical resolved failures do not page forever; a later success resolves them.
+    # Historical resolved failures/stalls do not page forever; a later success resolves them.
     unresolved = [r for r in rows if r['started_at'] >= since and
                   (not last or r['started_at'] > last['started_at'])]
     failed = [r['record_id'] for r in unresolved if r['status'] in ('FAILED', 'STALE_FAILED', 'ERROR', 'error')]
-    stuck = [r['record_id'] for r in rows if r['started_at'] >= since and r['status'] in ('STARTED', 'IN_PROGRESS', 'running')
+    stuck = [r['record_id'] for r in unresolved if r['status'] in ('STARTED', 'IN_PROGRESS', 'running')
              and now - r['started_at'] > timeout]
     if failed or stuck:
         return result(component, 'RED', 'Failed or stale started work', failed=failed, stuck=stuck, **evidence)
