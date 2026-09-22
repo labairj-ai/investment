@@ -1340,7 +1340,7 @@ def _run_cc_ai_job(job_id: str, ticker: str) -> None:
         _job_update(job_id, progress="Sending to AI…")
 
         full_text = ""
-        for tok in ollama_client.stream_generate(prompt):
+        for tok in ollama_client.stream_generate(prompt, content_only=True, num_predict=1500):
             full_text += tok
             _job_update(job_id, progress=full_text)
 
@@ -3035,7 +3035,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
             def _generate():
                 try:
-                    for tok in ollama_client.stream_generate(prompt):
+                    for tok in ollama_client.stream_generate(prompt, content_only=True, num_predict=1500):
                         _tok_q.put(("token", tok))
                     _tok_q.put(("done", None))
                 except Exception as exc:
