@@ -3313,26 +3313,28 @@ def build_dashboard(portfolio, layers, holdings):
   <div style="max-width:1100px;margin:0 auto;padding:20px 24px;">
 
     <!-- ── Zone 1: Status Bar ── -->
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;padding:14px 20px;background:#fff;border-radius:10px;box-shadow:0 1px 4px rgba(0,0,0,.07);">
-      <div style="display:flex;align-items:center;gap:8px;">
-        <h2 style="margin:0;font-size:16px;font-weight:700;color:#2d3748;">Learning Lab</h2>
-        <span style="font-size:11px;color:#a0aec0;font-weight:400;">· read-only</span>
-        <button onclick="loadLearningPanel()" style="margin-left:8px;font-size:11px;padding:3px 10px;background:#ebf8ff;color:#2b6cb0;border:1px solid #bee3f8;border-radius:6px;cursor:pointer;">Refresh</button>
+    <div style="margin-bottom:16px;padding:14px 20px;background:#fff;border-radius:10px;box-shadow:0 1px 4px rgba(0,0,0,.07);">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+        <div style="display:flex;align-items:center;gap:8px;">
+          <h2 style="margin:0;font-size:16px;font-weight:700;color:#2d3748;">Learning Lab</h2>
+          <span style="font-size:11px;color:#a0aec0;font-weight:400;">· read-only</span>
+        </div>
+        <button onclick="loadLearningPanel()" style="font-size:11px;padding:3px 10px;background:#ebf8ff;color:#2b6cb0;border:1px solid #bee3f8;border-radius:6px;cursor:pointer;">Refresh</button>
       </div>
-      <div style="display:flex;align-items:center;gap:28px;flex-wrap:wrap;">
-        <div style="text-align:right;">
+      <div style="display:flex;gap:20px;flex-wrap:wrap;">
+        <div>
           <div style="font-size:10px;color:#718096;text-transform:uppercase;letter-spacing:.05em;">System</div>
           <div id="learning-status-watchdog" style="font-size:13px;font-weight:700;color:#718096;">—</div>
         </div>
-        <div style="text-align:right;">
+        <div>
           <div style="font-size:10px;color:#718096;text-transform:uppercase;letter-spacing:.05em;">Lifecycle</div>
           <div id="learning-status-lifecycle" style="font-size:13px;font-weight:700;color:#718096;">—</div>
         </div>
-        <div style="text-align:right;">
+        <div>
           <div style="font-size:10px;color:#718096;text-transform:uppercase;letter-spacing:.05em;">Data Health</div>
           <div id="learning-status-health" style="font-size:13px;font-weight:700;color:#718096;">—</div>
         </div>
-        <div style="text-align:right;">
+        <div>
           <div style="font-size:10px;color:#718096;text-transform:uppercase;letter-spacing:.05em;">Next Maturity</div>
           <div id="learning-status-maturity" style="font-size:13px;font-weight:700;color:#718096;">—</div>
         </div>
