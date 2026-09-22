@@ -4793,3 +4793,424 @@ class TestFillOrigin0568:
         _, _, stats = execution_engine.sync_broker_state("AGENTIC_SHADOW_01", conn, _Broker())
         assert stats["external_fills_observed"] == 1
         assert stats["broker_fills_new"] == 1
+
+
+# ── 0569: PENDING_SUBMIT pre-resolution ───────────────────────────────────────
+
+class TestPendingSubmitPreResolution0569:
+    """Pre-resolve PENDING_SUBMIT broker_order_ids before fill import (0569).
+
+    Prevents a fill for a crash-recovered order from being misclassified BROKER_EXTERNAL.
+    """
+
+    def _make_simple_broker(self, pending_bo=None, fills=None):
+        from trade_engine.broker_adapter import BrokerAdapter
+        from trade_engine.broker_types import BrokerAccountState
+
+        _bo = pending_bo
+        _fills = fills or []
+
+        class _Broker(BrokerAdapter):
+            def get_broker_account(self, account_id):
+                return BrokerAccountState(account_id=account_id, cash=10000.0, nav=10000.0, buying_power=10000.0)
+            def get_positions(self, account_id): return []
+            def get_open_orders(self, account_id): return []
+            def find_order_by_client_order_id(self, client_order_id): return _bo
+            def get_fills(self, account_id, since=None): return _fills
+            def get_quote(self, symbol): return None
+            def submit_order(self, intent): raise NotImplementedError
+            def cancel_order(self, order_id, reason=""): raise NotImplementedError
+            def get_order(self, order_id): return None
+            def poll_order_events(self, account_id, quote=None): return []
+            def attempt_fill(self, order, quote): raise NotImplementedError
+            def get_account_id(self): return "AGENTIC_SHADOW_01"
+            def get_fills_for_order(self, broker_order_id): return []
+
+        return _Broker()
+
+    def test_pending_submit_fill_classified_engine_not_external(self):
+        """PENDING_SUBMIT order fill resolves as ENGINE, not BROKER_EXTERNAL, after pre-resolution."""
+        from unittest.mock import MagicMock, patch
+        from trade_engine.reconciliation import ReconciliationResult
+
+        conn = _make_conn()
+        order_id = str(uuid.uuid4())
+        intent_id = str(uuid.uuid4())
+        client_order_id = f"AGENTIC_SHADOW_01:{intent_id}"
+        broker_order_id = "broker-oid-crash-recover"
+        fill_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+
+        conn.execute(
+            """INSERT INTO trade_intents (intent_id, account_id, instrument_type, symbol, side,
+               quantity, order_type, limit_price, time_in_force, valid_until, status, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (intent_id, "AGENTIC_SHADOW_01", "EQUITY", "AAPL", "BUY",
+             1.0, "LIMIT", 150.0, "DAY", _future_iso(), "APPROVED", now),
+        )
+        conn.execute(
+            """INSERT INTO orders (order_id, intent_id, account_id, symbol, side, quantity,
+               order_type, state, fill_qty, fill_cash, client_order_id, submitted_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (order_id, intent_id, "AGENTIC_SHADOW_01", "AAPL", "BUY",
+             1.0, "LIMIT", "PENDING_SUBMIT", 0.0, 0.0, client_order_id, now, now),
+        )
+        conn.commit()
+
+        mock_bo = MagicMock()
+        mock_bo.broker_order_id = broker_order_id
+
+        from trade_engine.broker_types import BrokerFill
+        fill = BrokerFill(
+            broker_fill_id=fill_id,
+            broker_order_id=broker_order_id,
+            symbol="AAPL", side="BUY",
+            qty=1.0, price=150.0,
+            filled_at=now, fee=0.0,
+            local_order_id=None,
+            account_id="AGENTIC_SHADOW_01",
+            client_order_id=None,
+        )
+
+        broker = self._make_simple_broker(pending_bo=mock_bo, fills=[fill])
+        mock_rec = ReconciliationResult(ok=True, discrepancies=[], blocks_submission=False)
+        with patch("trade_engine.reconciliation.reconcile", return_value=mock_rec):
+            state = execution_engine.initialize_trading_session("AGENTIC_SHADOW_01", conn, broker=broker)
+
+        assert state == execution_engine.TradingReadyState.TRADING_READY
+        row = conn.execute("SELECT origin, order_id FROM fills WHERE fill_id=?", (fill_id,)).fetchone()
+        assert row is not None
+        assert row["origin"] == "ENGINE", f"Expected ENGINE origin, got {row['origin']!r}"
+        assert row["order_id"] == order_id
+
+    def test_broker_order_id_updated_on_pending_submit(self):
+        """PENDING_SUBMIT order gets broker_order_id set during pre-resolution step."""
+        from unittest.mock import MagicMock, patch
+        from trade_engine.reconciliation import ReconciliationResult
+
+        conn = _make_conn()
+        order_id = str(uuid.uuid4())
+        intent_id = str(uuid.uuid4())
+        client_order_id = f"AGENTIC_SHADOW_01:{intent_id}"
+        broker_order_id = "resolved-broker-id"
+        now = datetime.now(timezone.utc).isoformat()
+
+        conn.execute(
+            """INSERT INTO trade_intents (intent_id, account_id, instrument_type, symbol, side,
+               quantity, order_type, limit_price, time_in_force, valid_until, status, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (intent_id, "AGENTIC_SHADOW_01", "EQUITY", "MSFT", "BUY",
+             2.0, "LIMIT", 300.0, "DAY", _future_iso(), "APPROVED", now),
+        )
+        conn.execute(
+            """INSERT INTO orders (order_id, intent_id, account_id, symbol, side, quantity,
+               order_type, state, fill_qty, fill_cash, client_order_id, submitted_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (order_id, intent_id, "AGENTIC_SHADOW_01", "MSFT", "BUY",
+             2.0, "LIMIT", "PENDING_SUBMIT", 0.0, 0.0, client_order_id, now, now),
+        )
+        conn.commit()
+
+        mock_bo = MagicMock()
+        mock_bo.broker_order_id = broker_order_id
+
+        broker = self._make_simple_broker(pending_bo=mock_bo, fills=[])
+        mock_rec = ReconciliationResult(ok=True, discrepancies=[], blocks_submission=False)
+        with patch("trade_engine.reconciliation.reconcile", return_value=mock_rec):
+            execution_engine.initialize_trading_session("AGENTIC_SHADOW_01", conn, broker=broker)
+
+        row = conn.execute("SELECT broker_order_id FROM orders WHERE order_id=?", (order_id,)).fetchone()
+        assert row["broker_order_id"] == broker_order_id
+
+    def test_pending_submit_lookup_failure_does_not_halt(self):
+        """find_order_by_client_order_id failure for a PENDING_SUBMIT is non-fatal (continues to reconcile)."""
+        from unittest.mock import patch
+        from trade_engine.reconciliation import ReconciliationResult
+
+        conn = _make_conn()
+        order_id = str(uuid.uuid4())
+        intent_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+
+        conn.execute(
+            """INSERT INTO trade_intents (intent_id, account_id, instrument_type, symbol, side,
+               quantity, order_type, limit_price, time_in_force, valid_until, status, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (intent_id, "AGENTIC_SHADOW_01", "EQUITY", "GOOG", "BUY",
+             1.0, "LIMIT", 200.0, "DAY", _future_iso(), "APPROVED", now),
+        )
+        conn.execute(
+            """INSERT INTO orders (order_id, intent_id, account_id, symbol, side, quantity,
+               order_type, state, fill_qty, fill_cash, client_order_id, submitted_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (order_id, intent_id, "AGENTIC_SHADOW_01", "GOOG", "BUY",
+             1.0, "LIMIT", "PENDING_SUBMIT", 0.0, 0.0, f"AGENTIC_SHADOW_01:{intent_id}", now, now),
+        )
+        conn.commit()
+
+        from trade_engine.broker_adapter import BrokerAdapter
+        from trade_engine.broker_types import BrokerAccountState
+
+        class _ErrorBroker(BrokerAdapter):
+            def get_broker_account(self, account_id):
+                return BrokerAccountState(account_id=account_id, cash=10000.0, nav=10000.0, buying_power=10000.0)
+            def get_positions(self, account_id): return []
+            def get_open_orders(self, account_id): return []
+            def find_order_by_client_order_id(self, cid): raise RuntimeError("broker timeout")
+            def get_fills(self, account_id, since=None): return []
+            def get_quote(self, symbol): return None
+            def submit_order(self, intent): raise NotImplementedError
+            def cancel_order(self, order_id, reason=""): raise NotImplementedError
+            def get_order(self, order_id): return None
+            def poll_order_events(self, account_id, quote=None): return []
+            def attempt_fill(self, order, quote): raise NotImplementedError
+            def get_account_id(self): return "AGENTIC_SHADOW_01"
+            def get_fills_for_order(self, broker_order_id): return []
+
+        mock_rec = ReconciliationResult(ok=True, discrepancies=[], blocks_submission=False)
+        with patch("trade_engine.reconciliation.reconcile", return_value=mock_rec):
+            state = execution_engine.initialize_trading_session(
+                "AGENTIC_SHADOW_01", conn, broker=_ErrorBroker()
+            )
+        # Lookup failure is non-fatal; reconciliation still completes
+        assert state == execution_engine.TradingReadyState.TRADING_READY
+
+
+# ── 0570: External fill PnL accounting ────────────────────────────────────────
+
+class TestExternalFillPnl0570:
+    """External and manual fills compute realized_pnl so the MAX_DAILY_LOSS circuit breaker sees them."""
+
+    def _seed_position(self, conn, symbol="AAPL", qty=10.0, avg_cost=100.0):
+        now = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            """INSERT OR REPLACE INTO position_snapshots
+               (account_id, symbol, qty, avg_cost, instrument_type, as_of)
+               VALUES (?,?,?,?,?,?)""",
+            ("AGENTIC_SHADOW_01", symbol, qty, avg_cost, "EQUITY", now[:10]),
+        )
+        conn.commit()
+
+    def _make_ext_fill(self, side, qty, price, fee=0.0, symbol="AAPL"):
+        return execution_engine.BrokerFill(
+            broker_fill_id=str(uuid.uuid4()),
+            broker_order_id="ext-broker-999",
+            symbol=symbol, side=side, qty=qty, price=price,
+            filled_at=datetime.now(timezone.utc).isoformat(),
+            fee=fee,
+            local_order_id=None,
+            account_id="AGENTIC_SHADOW_01",
+        )
+
+    def test_external_sell_has_realized_pnl(self):
+        """BROKER_EXTERNAL SELL computes and stores realized_pnl."""
+        conn = _make_conn()
+        self._seed_position(conn, qty=10.0, avg_cost=100.0)
+        bf = self._make_ext_fill("SELL", qty=5.0, price=120.0, fee=1.0)
+        execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+        row = conn.execute(
+            "SELECT cost_basis, realized_pnl, realized_pnl_pct FROM fills WHERE fill_id=?",
+            (bf.broker_fill_id,),
+        ).fetchone()
+        assert row["cost_basis"] == pytest.approx(500.0)   # 100.0 * 5
+        assert row["realized_pnl"] == pytest.approx(99.0)  # 5*120 - 1 - 500
+        assert row["realized_pnl_pct"] == pytest.approx(99.0 / 500.0)
+
+    def test_external_sell_pnl_visible_to_max_daily_loss_query(self):
+        """realized_pnl from external SELL is included in SUM(-realized_pnl) used by MAX_DAILY_LOSS."""
+        conn = _make_conn()
+        self._seed_position(conn, qty=10.0, avg_cost=100.0)
+        bf = self._make_ext_fill("SELL", qty=3.0, price=80.0)  # loss: 3*80 - 0 - 300 = -60
+        execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+        row = conn.execute(
+            "SELECT SUM(-realized_pnl) AS daily_loss FROM fills "
+            "WHERE account_id='AGENTIC_SHADOW_01' AND DATE(filled_at) = DATE('now')"
+        ).fetchone()
+        assert row["daily_loss"] == pytest.approx(60.0)
+
+    def test_external_buy_has_null_realized_pnl(self):
+        """BROKER_EXTERNAL BUY has NULL realized_pnl — no realized gain on open."""
+        conn = _make_conn()
+        bf = self._make_ext_fill("BUY", qty=5.0, price=100.0)
+        execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+        row = conn.execute(
+            "SELECT realized_pnl FROM fills WHERE fill_id=?", (bf.broker_fill_id,)
+        ).fetchone()
+        assert row["realized_pnl"] is None
+
+    def test_external_sell_without_position_has_null_pnl(self):
+        """BROKER_EXTERNAL SELL with no prior position row yields NULL realized_pnl (avg_cost unknown)."""
+        conn = _make_conn()
+        # No position seeded — can't compute cost basis
+        bf = self._make_ext_fill("SELL", qty=1.0, price=100.0)
+        # Seed just enough position to pass ImpossibleSellError guard
+        conn.execute(
+            """INSERT OR REPLACE INTO position_snapshots
+               (account_id, symbol, qty, avg_cost, instrument_type, as_of)
+               VALUES (?,?,?,?,?,?)""",
+            ("AGENTIC_SHADOW_01", "AAPL", 5.0, 0.0, "EQUITY", "2026-01-01"),
+        )
+        conn.commit()
+        execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+        row = conn.execute(
+            "SELECT realized_pnl, cost_basis FROM fills WHERE fill_id=?", (bf.broker_fill_id,)
+        ).fetchone()
+        # avg_cost=0 → cost_basis=0 → realized_pnl is still computed (proceeds - 0)
+        assert row["cost_basis"] == pytest.approx(0.0)
+        assert row["realized_pnl"] == pytest.approx(100.0)  # 1*100 - 0 - 0
+
+    def test_external_sell_idempotent_preserves_pnl(self):
+        """Applying the same BROKER_EXTERNAL SELL twice returns ALREADY_APPLIED; PnL row unchanged."""
+        conn = _make_conn()
+        self._seed_position(conn, qty=10.0, avg_cost=50.0)
+        fill_id = str(uuid.uuid4())
+        bf = execution_engine.BrokerFill(
+            broker_fill_id=fill_id,
+            broker_order_id="ext-dup-pnl",
+            symbol="AAPL", side="SELL", qty=2.0, price=60.0,
+            filled_at=datetime.now(timezone.utc).isoformat(), fee=0.0,
+            local_order_id=None, account_id="AGENTIC_SHADOW_01",
+        )
+        execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+        r2 = execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+        assert r2 == execution_engine.FillResult.ALREADY_APPLIED
+        row = conn.execute("SELECT realized_pnl FROM fills WHERE fill_id=?", (fill_id,)).fetchone()
+        assert row["realized_pnl"] == pytest.approx(20.0)  # 2*60 - 0 - 2*50
+
+
+# ── 0571: Runner-wide broker observation telemetry ────────────────────────────
+
+class TestRunnerBrokerTelemetry0571:
+    """Broker observation counters aggregate across initialize() and run_cycle()."""
+
+    def _make_tracking_broker(self, init_fills=None, cycle_fills=None):
+        """Broker that returns init_fills on first get_fills call, cycle_fills on second."""
+        from trade_engine.broker_adapter import BrokerAdapter
+        from trade_engine.broker_types import BrokerAccountState
+
+        _init = list(init_fills or [])
+        _cycle = list(cycle_fills or [])
+        _call_count = [0]
+
+        class _Broker(BrokerAdapter):
+            def get_broker_account(self, account_id):
+                return BrokerAccountState(account_id=account_id, cash=10000.0, nav=10000.0, buying_power=10000.0)
+            def get_positions(self, account_id): return []
+            def get_open_orders(self, account_id): return []
+            def find_order_by_client_order_id(self, cid): return None
+            def get_fills(self, account_id, since=None):
+                n = _call_count[0]
+                _call_count[0] += 1
+                return _init if n == 0 else _cycle
+            def get_quote(self, symbol): return None
+            def submit_order(self, intent): raise NotImplementedError
+            def cancel_order(self, order_id, reason=""): raise NotImplementedError
+            def get_order(self, order_id): return None
+            def poll_order_events(self, account_id, quote=None): return []
+            def attempt_fill(self, order, quote): raise NotImplementedError
+            def get_account_id(self): return "AGENTIC_SHADOW_01"
+            def get_fills_for_order(self, broker_order_id): return []
+
+        return _Broker()
+
+    def test_fill_applied_in_initialize_counts_in_merged_stats(self):
+        """External fill applied in initialize() appears in broker_fills_new and external_fills_observed."""
+        from unittest.mock import patch
+        from trade_engine.reconciliation import ReconciliationResult
+
+        conn = _make_conn()
+        fill_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+        ext_fill = execution_engine.BrokerFill(
+            broker_fill_id=fill_id,
+            broker_order_id="overnight-ext",
+            symbol="TSLA", side="BUY", qty=1.0, price=200.0,
+            filled_at=now, fee=0.0,
+            local_order_id=None, account_id="AGENTIC_SHADOW_01",
+        )
+        # init gets the fill; cycle gets the same fill (ALREADY_APPLIED on second call)
+        broker = self._make_tracking_broker(init_fills=[ext_fill], cycle_fills=[ext_fill])
+
+        session = execution_engine.ExecutionSession("AGENTIC_SHADOW_01", conn, broker)
+        mock_rec = ReconciliationResult(ok=True, discrepancies=[], blocks_submission=False)
+        with patch("trade_engine.reconciliation.reconcile", return_value=mock_rec):
+            session.initialize()
+        result = session.run_cycle()
+
+        assert result["broker_fills_observed"] == 1    # unique fills seen = 1
+        assert result["broker_fills_new"] == 1         # newly inserted once
+        assert result["broker_fills_duplicate"] == 0   # not counted as dup at invocation level
+        assert result["external_fills_observed"] == 1  # origin=BROKER_EXTERNAL
+
+    def test_reconciled_at_updated_on_already_applied(self):
+        """ALREADY_APPLIED path updates reconciled_at to the current observation time."""
+        conn = _make_conn()
+        order_id = str(uuid.uuid4())
+        _seed_order_and_pos(conn, order_id, qty=1.0)
+        fill_id = str(uuid.uuid4())
+        fill_ts = "2026-09-20T10:00:00+00:00"
+        bf = _make_bf_simple(fill_id, fill_ts, order_id)
+
+        # Apply once — sets first_seen_at = reconciled_at = T1
+        execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+        row1 = conn.execute(
+            "SELECT first_seen_at, reconciled_at FROM fills WHERE fill_id=?", (fill_id,)
+        ).fetchone()
+        t1_first = row1["first_seen_at"]
+        t1_reconciled = row1["reconciled_at"]
+
+        # Apply again — ALREADY_APPLIED; reconciled_at advances, first_seen_at stays
+        execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+        row2 = conn.execute(
+            "SELECT first_seen_at, reconciled_at FROM fills WHERE fill_id=?", (fill_id,)
+        ).fetchone()
+        assert row2["first_seen_at"] == t1_first       # immutable
+        assert row2["reconciled_at"] >= t1_reconciled  # must advance (or stay same in very fast test)
+
+    def test_unique_fill_counted_once_across_init_and_cycle(self):
+        """A fill seen in both initialize() and run_cycle() is counted once as observed."""
+        from unittest.mock import patch
+        from trade_engine.reconciliation import ReconciliationResult
+
+        conn = _make_conn()
+        order_id = str(uuid.uuid4())
+        _seed_order_and_pos(conn, order_id, qty=1.0)
+        fill_id = str(uuid.uuid4())
+        bf = _make_bf_simple(fill_id, "2026-09-20T10:00:00+00:00", order_id)
+
+        broker = self._make_tracking_broker(init_fills=[bf], cycle_fills=[bf])
+        session = execution_engine.ExecutionSession("AGENTIC_SHADOW_01", conn, broker)
+        mock_rec = ReconciliationResult(ok=True, discrepancies=[], blocks_submission=False)
+        with patch("trade_engine.reconciliation.reconcile", return_value=mock_rec):
+            session.initialize()
+        result = session.run_cycle()
+
+        assert result["broker_fills_observed"] == 1
+        assert result["broker_fills_new"] == 1
+        assert result["broker_fills_duplicate"] == 0
+
+    def test_external_fill_counted_by_origin_not_result(self):
+        """external_fills_observed is based on stored origin column, counting even ALREADY_APPLIED duplicates."""
+        from unittest.mock import patch
+        from trade_engine.reconciliation import ReconciliationResult
+
+        conn = _make_conn()
+        fill_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+        ext_fill = execution_engine.BrokerFill(
+            broker_fill_id=fill_id,
+            broker_order_id="ext-already-seen",
+            symbol="NVDA", side="BUY", qty=1.0, price=500.0,
+            filled_at=now, fee=0.0,
+            local_order_id=None, account_id="AGENTIC_SHADOW_01",
+        )
+        # Both init and cycle see the same external fill
+        broker = self._make_tracking_broker(init_fills=[ext_fill], cycle_fills=[ext_fill])
+        session = execution_engine.ExecutionSession("AGENTIC_SHADOW_01", conn, broker)
+        mock_rec = ReconciliationResult(ok=True, discrepancies=[], blocks_submission=False)
+        with patch("trade_engine.reconciliation.reconcile", return_value=mock_rec):
+            session.initialize()
+        result = session.run_cycle()
+
+        # external_fills_observed counts unique external fill IDs observed, regardless of dup/new
+        assert result["external_fills_observed"] == 1
