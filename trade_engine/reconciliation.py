@@ -240,7 +240,7 @@ def reconcile(
                                         ))
                                         _reco_fills = []  # skip apply
                                 for _rf in _reco_fills:
-                                    apply_broker_fill(_rf, account_id, conn)
+                                    apply_broker_fill(_rf, account_id, conn, broker=broker)
                         elif _looked_up.state in ("CANCELLED", "REJECTED", "EXPIRED"):
                             from datetime import datetime, timezone as _tz
                             _now_r = datetime.now(_tz.utc).isoformat()
@@ -428,7 +428,7 @@ def reconcile(
                                 ))
                                 _pf_reco_fills = []  # skip apply
                     for _rf in _pf_reco_fills:
-                        apply_broker_fill(_rf, account_id, conn)
+                        apply_broker_fill(_rf, account_id, conn, broker=broker)
                 elif _bstate == "PENDING":
                     # Broker queued but not yet active — keep as PENDING_SUBMIT
                     conn.execute(
@@ -476,7 +476,7 @@ def reconcile(
                                 ))
                                 _reco_fills = []  # skip apply
                     for _rf in _reco_fills:
-                        apply_broker_fill(_rf, account_id, conn)
+                        apply_broker_fill(_rf, account_id, conn, broker=broker)
                 elif _bstate in ("CANCELLED", "REJECTED", "EXPIRED"):
                     _local_terminal = _bstate
                     conn.execute(

@@ -265,6 +265,7 @@ def run() -> int:
                 "halt_reason": "NOT_TRADING_READY",
                 "broker_api_errors": broker_api_errors,
             }
+            summary = session.merge_broker_stats(summary)
             exit_code = 1
             return exit_code
 

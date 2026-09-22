@@ -1,7 +1,7 @@
 # Prove External Fill Ownership Before BROKER_EXTERNAL Classification
 
 - **ID:** 0569
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-22
 - **Priority:** high
 - **Depends:** 0568

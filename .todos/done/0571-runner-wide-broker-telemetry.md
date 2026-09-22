@@ -1,7 +1,7 @@
 # Aggregate Broker Observation Counters Across Full Runner Invocation
 
 - **ID:** 0571
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-22
 - **Priority:** normal
 - **Depends:** 0568

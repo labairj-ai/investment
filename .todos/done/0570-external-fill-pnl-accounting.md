@@ -1,7 +1,7 @@
 # Compute and Persist PnL for External and Manual Fills
 
 - **ID:** 0570
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-22
 - **Priority:** high
 - **Depends:** 0568

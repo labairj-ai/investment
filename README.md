@@ -13,6 +13,10 @@ A personal investment tracking system that sends a daily email newsletter, maint
 
 ---
 
+## Fill and reconciliation hardening
+
+[Ownership, shared equity economics, invocation telemetry, and canary evidence](docs/fill-reconciliation-hardening.md) cover TODOs 0572–0574.
+
 ## Macro validation acceptance
 
 `validation_config.json` v1.8 controls every acceptance threshold and the

@@ -170,25 +170,19 @@ class ShadowBroker:
             return
 
         is_buy = fill.side in (Side.BUY, Side.BUY_TO_CLOSE)
-        is_sell = not is_buy
 
-        # ── Capture realized P&L before position mutation (0202) ─────────────
-        cost_basis = 0.0
-        realized_pnl = 0.0
-        realized_pnl_pct = 0.0
-        if is_sell:
-            pos_row = self._conn.execute(
-                "SELECT qty, avg_cost FROM position_snapshots WHERE account_id=? AND symbol=?",
-                (fill.account_id, fill.symbol),
-            ).fetchone()
-            if pos_row:
-                avg_cost = Decimal(str(pos_row["avg_cost"] or 0))
-                cost_basis = fill.qty * avg_cost
-                proceeds = fill.qty * fill.price - fill.fee
-                realized_pnl = proceeds - cost_basis
-                realized_pnl_pct = (realized_pnl / cost_basis * 100) if cost_basis else Decimal(0)
-
-        cash_delta = fill.cash_impact()
+        from .fill_economics import calculate_fill_economics
+        pos_row = self._conn.execute(
+            "SELECT qty, avg_cost FROM position_snapshots WHERE account_id=? AND symbol=?",
+            (fill.account_id, fill.symbol),
+        ).fetchone()
+        economics = calculate_fill_economics(fill.side, fill.qty, fill.price, fill.fee,
+            pos_row["qty"] or 0 if pos_row else 0,
+            pos_row["avg_cost"] or 0 if pos_row else 0)
+        cost_basis, realized_pnl, realized_pnl_pct = (
+            economics.cost_basis, economics.realized_pnl, economics.realized_pnl_pct)
+        # Options retain their existing contract-multiplier cash convention.
+        cash_delta = economics.cash_delta if fill.side in (Side.BUY, Side.SELL) else fill.cash_impact()
 
         # Write fill with realized P&L
         self._conn.execute(
@@ -227,15 +221,8 @@ class ShadowBroker:
         ).fetchone()
 
         if existing_pos:
-            old_qty = Decimal(str(existing_pos["qty"] or 0))
-            old_avg = Decimal(str(existing_pos["avg_cost"] or 0))
             old_market_price = Decimal(str(existing_pos["market_price"])) if existing_pos["market_price"] is not None else None
-            if is_buy:
-                new_qty = old_qty + fill.qty
-                new_avg = (old_qty * old_avg + fill.qty * fill.price) / new_qty if new_qty > 0 else Decimal(0)
-            else:
-                new_qty = old_qty - fill.qty
-                new_avg = old_avg  # avg_cost unchanged on sell
+            new_qty, new_avg = economics.new_qty, economics.new_avg_cost
             if new_qty <= 0:
                 self._conn.execute(
                     "DELETE FROM position_snapshots WHERE account_id=? AND symbol=?",

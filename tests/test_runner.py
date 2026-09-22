@@ -209,6 +209,7 @@ class TestHaltTelemetry:
 
             session_inst = MockSession.return_value
             session_inst.initialize.side_effect = SessionNotReadyError("broker unreachable")
+            session_inst.merge_broker_stats.side_effect = lambda summary: summary
 
             from trade_engine import runner
             result = runner.run()

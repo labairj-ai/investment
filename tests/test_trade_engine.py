@@ -40,6 +40,17 @@ from trade_engine import execution_engine
 from trade_engine import market_calendar
 
 
+def _proven_external_broker(fill):
+    """Positive broker identity evidence, required before external settlement."""
+    from trade_engine.broker_types import BrokerOrder
+    broker = MagicMock()
+    broker.get_order.return_value = BrokerOrder(
+        fill.broker_order_id, fill.symbol, fill.side, fill.qty, fill.qty, 'FILLED',
+        client_order_id='manual-order',
+    )
+    return broker
+
+
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
 def _make_conn() -> sqlite3.Connection:
@@ -3931,13 +3942,12 @@ class TestApplyBrokerFillSafety:
             fee=0.0, local_order_id=order_id, account_id="AGENTIC_SHADOW_01",
         )
 
-    def test_unknown_fill_ingested_as_broker_external(self):
-        """Fill with no matching local order is now ingested as BROKER_EXTERNAL (0568), not raised."""
+    def test_unknown_fill_without_ownership_evidence_is_quarantined(self):
         conn = _make_conn()
-        # Use a random order_id that does not exist in the DB — resolve_local_order_id returns None
         bf = self._make_bf(order_id=str(uuid.uuid4()))
-        result = execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
-        assert result == execution_engine.FillResult.APPLIED_EXTERNAL
+        with pytest.raises(execution_engine.UnknownFillError):
+            execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+        assert conn.execute("SELECT COUNT(*) FROM fills").fetchone()[0] == 0
 
     def test_overfill_raises(self):
         """apply_broker_fill raises OverfillError when fill qty > remaining (0262)."""
@@ -4712,7 +4722,7 @@ class TestFillOrigin0568:
         order_id = str(uuid.uuid4())
         self._seed_order(conn, order_id)
         bf = self._make_bf(order_id)
-        result = execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+        result = execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn, broker=_proven_external_broker(bf))
         assert result == execution_engine.FillResult.APPLIED
         row = conn.execute(
             "SELECT origin, engine_managed FROM fills WHERE fill_id=?", (bf.broker_fill_id,)
@@ -4724,7 +4734,7 @@ class TestFillOrigin0568:
         """Fill with no local order gets origin='BROKER_EXTERNAL', engine_managed=0."""
         conn = _make_conn()
         bf = self._make_bf(order_id=None, broker_order_id="ext-broker-123")
-        result = execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+        result = execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn, broker=_proven_external_broker(bf))
         assert result == execution_engine.FillResult.APPLIED_EXTERNAL
         row = conn.execute(
             "SELECT origin, engine_managed FROM fills WHERE fill_id=?", (bf.broker_fill_id,)
@@ -4736,7 +4746,7 @@ class TestFillOrigin0568:
         """BROKER_EXTERNAL BUY fill updates position_snapshots."""
         conn = _make_conn()
         bf = self._make_bf(order_id=None, broker_order_id="ext-buy-1", symbol="GOOG", qty=5.0, price=200.0)
-        execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+        execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn, broker=_proven_external_broker(bf))
         pos = conn.execute(
             "SELECT qty FROM position_snapshots WHERE account_id='AGENTIC_SHADOW_01' AND symbol='GOOG'"
         ).fetchone()
@@ -4748,8 +4758,8 @@ class TestFillOrigin0568:
         conn = _make_conn()
         fill_id = str(uuid.uuid4())
         bf = self._make_bf(order_id=None, fill_id=fill_id, broker_order_id="ext-dup-1")
-        r1 = execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
-        r2 = execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+        r1 = execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn, broker=_proven_external_broker(bf))
+        r2 = execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn, broker=_proven_external_broker(bf))
         assert r1 == execution_engine.FillResult.APPLIED_EXTERNAL
         assert r2 == execution_engine.FillResult.ALREADY_APPLIED
 
@@ -4759,7 +4769,7 @@ class TestFillOrigin0568:
         order_id = str(uuid.uuid4())
         self._seed_order(conn, order_id)
         bf = self._make_bf(order_id)
-        execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+        execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn, broker=_proven_external_broker(bf))
         row = conn.execute(
             "SELECT first_seen_at, reconciled_at FROM fills WHERE fill_id=?", (bf.broker_fill_id,)
         ).fetchone()
@@ -4782,7 +4792,7 @@ class TestFillOrigin0568:
             def get_quote(self, symbol): return None
             def submit_order(self, intent): raise NotImplementedError
             def cancel_order(self, order_id, reason=""): raise NotImplementedError
-            def get_order(self, order_id): raise NotImplementedError
+            def get_order(self, order_id): return _proven_external_broker(bf_ext).get_order(order_id)
             def get_fills(self, account_id, since=None): return [bf_ext]
             def poll_order_events(self, account_id, quote=None): return []
             def attempt_fill(self, order, quote): raise NotImplementedError
@@ -4882,6 +4892,9 @@ class TestPendingSubmitPreResolution0569:
         assert row is not None
         assert row["origin"] == "ENGINE", f"Expected ENGINE origin, got {row['origin']!r}"
         assert row["order_id"] == order_id
+        order = conn.execute("SELECT state, fill_qty FROM orders WHERE order_id=?", (order_id,)).fetchone()
+        assert order["state"] == "FILLED"
+        assert order["fill_qty"] == 1.0
 
     def test_broker_order_id_updated_on_pending_submit(self):
         """PENDING_SUBMIT order gets broker_order_id set during pre-resolution step."""
@@ -4922,8 +4935,8 @@ class TestPendingSubmitPreResolution0569:
         row = conn.execute("SELECT broker_order_id FROM orders WHERE order_id=?", (order_id,)).fetchone()
         assert row["broker_order_id"] == broker_order_id
 
-    def test_pending_submit_lookup_failure_does_not_halt(self):
-        """find_order_by_client_order_id failure for a PENDING_SUBMIT is non-fatal (continues to reconcile)."""
+    def test_pending_submit_lookup_failure_halts(self):
+        """A PENDING_SUBMIT lookup timeout must stop fill import and submission."""
         from unittest.mock import patch
         from trade_engine.reconciliation import ReconciliationResult
 
@@ -4972,8 +4985,8 @@ class TestPendingSubmitPreResolution0569:
             state = execution_engine.initialize_trading_session(
                 "AGENTIC_SHADOW_01", conn, broker=_ErrorBroker()
             )
-        # Lookup failure is non-fatal; reconciliation still completes
-        assert state == execution_engine.TradingReadyState.TRADING_READY
+        # Ownership is indeterminate; do not proceed to reconciliation/submission.
+        assert state == execution_engine.TradingReadyState.HALTED
 
 
 # ── 0570: External fill PnL accounting ────────────────────────────────────────
@@ -5007,21 +5020,21 @@ class TestExternalFillPnl0570:
         conn = _make_conn()
         self._seed_position(conn, qty=10.0, avg_cost=100.0)
         bf = self._make_ext_fill("SELL", qty=5.0, price=120.0, fee=1.0)
-        execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+        execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn, broker=_proven_external_broker(bf))
         row = conn.execute(
             "SELECT cost_basis, realized_pnl, realized_pnl_pct FROM fills WHERE fill_id=?",
             (bf.broker_fill_id,),
         ).fetchone()
         assert row["cost_basis"] == pytest.approx(500.0)   # 100.0 * 5
         assert row["realized_pnl"] == pytest.approx(99.0)  # 5*120 - 1 - 500
-        assert row["realized_pnl_pct"] == pytest.approx(99.0 / 500.0)
+        assert row["realized_pnl_pct"] == pytest.approx(19.8)
 
     def test_external_sell_pnl_visible_to_max_daily_loss_query(self):
         """realized_pnl from external SELL is included in SUM(-realized_pnl) used by MAX_DAILY_LOSS."""
         conn = _make_conn()
         self._seed_position(conn, qty=10.0, avg_cost=100.0)
         bf = self._make_ext_fill("SELL", qty=3.0, price=80.0)  # loss: 3*80 - 0 - 300 = -60
-        execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+        execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn, broker=_proven_external_broker(bf))
         row = conn.execute(
             "SELECT SUM(-realized_pnl) AS daily_loss FROM fills "
             "WHERE account_id='AGENTIC_SHADOW_01' AND DATE(filled_at) = DATE('now')"
@@ -5032,7 +5045,7 @@ class TestExternalFillPnl0570:
         """BROKER_EXTERNAL BUY has NULL realized_pnl — no realized gain on open."""
         conn = _make_conn()
         bf = self._make_ext_fill("BUY", qty=5.0, price=100.0)
-        execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+        execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn, broker=_proven_external_broker(bf))
         row = conn.execute(
             "SELECT realized_pnl FROM fills WHERE fill_id=?", (bf.broker_fill_id,)
         ).fetchone()
@@ -5051,7 +5064,7 @@ class TestExternalFillPnl0570:
             ("AGENTIC_SHADOW_01", "AAPL", 5.0, 0.0, "EQUITY", "2026-01-01"),
         )
         conn.commit()
-        execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+        execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn, broker=_proven_external_broker(bf))
         row = conn.execute(
             "SELECT realized_pnl, cost_basis FROM fills WHERE fill_id=?", (bf.broker_fill_id,)
         ).fetchone()
@@ -5071,8 +5084,8 @@ class TestExternalFillPnl0570:
             filled_at=datetime.now(timezone.utc).isoformat(), fee=0.0,
             local_order_id=None, account_id="AGENTIC_SHADOW_01",
         )
-        execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
-        r2 = execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+        execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn, broker=_proven_external_broker(bf))
+        r2 = execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn, broker=_proven_external_broker(bf))
         assert r2 == execution_engine.FillResult.ALREADY_APPLIED
         row = conn.execute("SELECT realized_pnl FROM fills WHERE fill_id=?", (fill_id,)).fetchone()
         assert row["realized_pnl"] == pytest.approx(20.0)  # 2*60 - 0 - 2*50
@@ -5105,7 +5118,9 @@ class TestRunnerBrokerTelemetry0571:
             def get_quote(self, symbol): return None
             def submit_order(self, intent): raise NotImplementedError
             def cancel_order(self, order_id, reason=""): raise NotImplementedError
-            def get_order(self, order_id): return None
+            def get_order(self, order_id):
+                fill = next(f for f in _init + _cycle if f.broker_order_id == order_id)
+                return _proven_external_broker(fill).get_order(order_id)
             def poll_order_events(self, account_id, quote=None): return []
             def attempt_fill(self, order, quote): raise NotImplementedError
             def get_account_id(self): return "AGENTIC_SHADOW_01"
@@ -5152,7 +5167,7 @@ class TestRunnerBrokerTelemetry0571:
         bf = _make_bf_simple(fill_id, fill_ts, order_id)
 
         # Apply once — sets first_seen_at = reconciled_at = T1
-        execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+        execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn, broker=_proven_external_broker(bf))
         row1 = conn.execute(
             "SELECT first_seen_at, reconciled_at FROM fills WHERE fill_id=?", (fill_id,)
         ).fetchone()
@@ -5160,7 +5175,7 @@ class TestRunnerBrokerTelemetry0571:
         t1_reconciled = row1["reconciled_at"]
 
         # Apply again — ALREADY_APPLIED; reconciled_at advances, first_seen_at stays
-        execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn)
+        execution_engine.apply_broker_fill(bf, "AGENTIC_SHADOW_01", conn, broker=_proven_external_broker(bf))
         row2 = conn.execute(
             "SELECT first_seen_at, reconciled_at FROM fills WHERE fill_id=?", (fill_id,)
         ).fetchone()
