@@ -1300,9 +1300,6 @@ def _build_macro_risk_section(macro_scores, macro_history, wow_deltas,
       <span>Macro Risk Dashboard</span>
       <span style="font-size:12px;font-weight:400;color:#a0aec0;">{scored_label}</span>
     </h2>
-    <div style="margin-bottom:12px;padding:6px 10px;background:#fefce8;border:1px solid #fde68a;border-radius:6px;">
-      <span style="font-size:11px;color:#92400e;">⚠ Scores are AI structural exposure estimates (v1) — not derived from measured company data. Do not use as ML training features or risk-engine gates until 0467 deterministic factors are complete.</span>
-    </div>
     {health_card_html}
     {trend_section}
     {summary_section}
