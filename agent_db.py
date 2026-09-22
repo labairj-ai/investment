@@ -1584,30 +1584,38 @@ def insert_recommendation(
     parent_cc_rec_id: int | None = None,
     episode_id: str | None = None,
 ) -> int:
+    # Portfolio briefings have no security ticker; the schema uses non-null text.
+    if action == "BRIEFING" and ticker is None:
+        ticker = ""
     now = time.time()
     urgency = compute_urgency_level(action, recommendation_score, valid_until)
     conn = _connect()
-    cur = conn.execute(
-        """INSERT INTO recommendations
-           (run_id, ticker, action, action_payload_json, recommendation_score,
-            confidence, priority, why_now, rationale, counter_case,
-            no_action_case, status, valid_until, input_hash, updated_at,
-            created_at, rationale_class, urgency_level, trade_chain_id, parent_cc_rec_id,
-            episode_id)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (run_id, ticker, action,
-         json.dumps(action_payload) if action_payload else None,
-         recommendation_score, confidence, priority, why_now, rationale,
-         counter_case, no_action_case, "open", valid_until,
-         input_hash, now, now, rationale_class, urgency,
-         trade_chain_id, parent_cc_rec_id, episode_id),
-    )
-    rec_id = cur.lastrowid
-    conn.commit()
-    if action != "NO_ACTION" and run_id is not None:
-        _link_lineage(conn, rec_id, ticker, run_id)
+    try:
+        cur = conn.execute(
+            """INSERT INTO recommendations
+               (run_id, ticker, action, action_payload_json, recommendation_score,
+                confidence, priority, why_now, rationale, counter_case,
+                no_action_case, status, valid_until, input_hash, updated_at,
+                created_at, rationale_class, urgency_level, trade_chain_id, parent_cc_rec_id,
+                episode_id)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (run_id, ticker, action,
+             json.dumps(action_payload) if action_payload else None,
+             recommendation_score, confidence, priority, why_now, rationale,
+             counter_case, no_action_case, "open", valid_until,
+             input_hash, now, now, rationale_class, urgency,
+             trade_chain_id, parent_cc_rec_id, episode_id),
+        )
+        rec_id = cur.lastrowid
         conn.commit()
-    conn.close()
+        if action != "NO_ACTION" and run_id is not None:
+            _link_lineage(conn, rec_id, ticker, run_id)
+            conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
     return rec_id
 
 

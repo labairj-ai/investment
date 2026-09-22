@@ -412,7 +412,7 @@ def _score_V(ticker: str, current_price: float) -> tuple[int, str]:
         return 25, "no data"
 
     quarters = conn.execute(
-        """SELECT eps_diluted, free_cash_flow, price_to_earnings, period_end
+        """SELECT eps_diluted, free_cash_flow, period_end
            FROM company_financials
            WHERE ticker = ? AND period_type = 'Q'
            ORDER BY period_end DESC LIMIT 20""",
@@ -488,10 +488,8 @@ def _score_V(ticker: str, current_price: float) -> tuple[int, str]:
             # Prefer true ratio history from historical_valuation_metrics
             import agent_db as _adb
             hist_pe = _adb.get_valuation_ratio_history(ticker, "pe")
-            if len(hist_pe) < 4:
-                # Fall back to stored price_to_earnings column values
-                hist_pe = [float(q["price_to_earnings"]) for q in quarters
-                           if q["price_to_earnings"] is not None and float(q["price_to_earnings"]) > 0]
+            # Ratio history lives in historical_valuation_metrics. With too few
+            # observations, use the existing absolute P/E fallback below.
             pct = _valuation_percentile(pe, hist_pe)
 
             if pct is not None:
