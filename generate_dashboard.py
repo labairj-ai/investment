@@ -10717,7 +10717,7 @@ async function rejectThesisProposal(recId) {{
     const pillar = ev.pillar_name || ev.risk_name || '';
     const hasThesis = Boolean(pillar) || Boolean(ev.thesis_relevance > 0.25);
     // Classify by signal_strength, not portfolio_priority (0588 fix)
-    const bucket = _bucketClass(dir, hasThesis, sig, ev.trigger_proximity || 0);
+    const bucket = _bucketClass(dir, hasThesis, sig, ev.event_trigger_proximity || ev.trigger_proximity || 0);
     const cardClass = _sigClass(dir) + (bucket === 'thesis' ? ' thesis-card' : '');
 
     let dirBadge = '';
@@ -10878,7 +10878,7 @@ async function rejectThesisProposal(recId) {{
       const buckets = {{ risk: [], opp: [], thesis: [], watch: [] }};
       const nothingTickers = [];
 
-      // Build cards: up to 3 events per ticker; all go in the bucket of the top event (0588)
+      // Build cards: up to 3 events per ticker; each bucketed by its own direction+signal (0600)
       for (const ticker of tickers) {{
         const tickerEvents = eventsMap[ticker] || [];
         const s = summaries && summaries[ticker];
@@ -10886,16 +10886,10 @@ async function rejectThesisProposal(recId) {{
           nothingTickers.push(ticker);
           continue;
         }}
-        // Classify ticker bucket by top event (highest portfolio_priority)
-        const topEv = tickerEvents[0];
-        const topResult = _renderIntelCard(ticker, topEv, s, bt);
-        const tickerBucket = topResult.bucket;
-        buckets[tickerBucket].push({{ html: topResult.html, pp: topResult.pp, ticker }});
-        // Render additional events (up to 2 more) in the same bucket
-        for (let i = 1; i < Math.min(3, tickerEvents.length); i++) {{
+        for (let i = 0; i < Math.min(3, tickerEvents.length); i++) {{
           const ev = tickerEvents[i];
           const r = _renderIntelCard(ticker, ev, s, bt);
-          buckets[tickerBucket].push({{ html: r.html, pp: r.pp, ticker }});
+          buckets[r.bucket].push({{ html: r.html, pp: r.pp, ticker }});
         }}
       }}
 

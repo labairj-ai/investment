@@ -315,6 +315,12 @@ def _init_ai_tables():
         "ALTER TABLE news_events ADD COLUMN article_ids_json TEXT",
         "ALTER TABLE news_events ADD COLUMN causal_driver TEXT",
         "ALTER TABLE news_events ADD COLUMN news_intelligence_version TEXT",
+        # 0598: real event identity
+        "ALTER TABLE news_events ADD COLUMN causal_event_key TEXT",
+        # 0599: separate pillar health from event trigger
+        "ALTER TABLE news_events ADD COLUMN pillar_health_state TEXT",
+        "ALTER TABLE news_events ADD COLUMN event_trigger_state TEXT",
+        "ALTER TABLE news_events ADD COLUMN event_trigger_proximity REAL",
     ]:
         try:
             conn.execute(_ns_col)
@@ -377,6 +383,15 @@ def _init_ai_tables():
         "CREATE INDEX IF NOT EXISTS idx_news_portfolio_themes_day "
         "ON news_portfolio_themes (day DESC)"
     )
+    # 0598: decay state machine — no synthetic rows in news_events
+    conn.execute("""CREATE TABLE IF NOT EXISTS news_event_state (
+        ticker            TEXT NOT NULL,
+        causal_event_key  TEXT NOT NULL,
+        last_real_seen_at TEXT NOT NULL,
+        state             TEXT NOT NULL DEFAULT 'ACTIVE',
+        state_as_of       TEXT NOT NULL,
+        PRIMARY KEY (ticker, causal_event_key)
+    )""")
     conn.execute("""CREATE TABLE IF NOT EXISTS holding_macro_scores_history (
         id        INTEGER PRIMARY KEY AUTOINCREMENT,
         ticker    TEXT NOT NULL,
@@ -1744,9 +1759,14 @@ def generate_news_summaries(force: bool = False) -> dict:
     if not tickers_with_news:
         return {}
 
-    # Compute content hash and check hash-based cache (0580)
     from agents.news import intelligence as _intel
-    news_hash = _intel.compute_news_hash(tickers_with_news)
+
+    # 0596: enrich BEFORE building snapshot so hash covers full model_input_text
+    news_fetcher.enrich_with_bodies(tickers_with_news)
+
+    # Build canonical snapshot (hash covers body[:120], not truncated [:80])
+    snapshot = _intel.build_news_snapshot(tickers_with_news)
+    news_hash = snapshot["snapshot_hash"]
 
     if not force:
         cached, _ = get_cached_news_summaries_today(news_snapshot_hash=news_hash)
@@ -1755,8 +1775,6 @@ def generate_news_summaries(force: bool = False) -> dict:
             # Accept cache only if it has current schema: per-ticker news + portfolio _outlook
             if sample.get("news") and isinstance(cached.get("_outlook"), dict):
                 return cached
-
-    news_fetcher.enrich_with_bodies(tickers_with_news)
 
     # Build portfolio weights map for scoring
     _prices_map = _get_holding_prices_from_db()
@@ -1772,7 +1790,7 @@ def generate_news_summaries(force: bool = False) -> dict:
             _intel_conn.row_factory = sqlite3.Row
             intel_result = _intel.run_pipeline(
                 tickers_with_news, portfolio_weights, _intel_conn,
-                ollama_client, day=today,
+                ollama_client, day=today, snapshot=snapshot,
             )
             _intel_conn.close()
         except Exception as _ie:

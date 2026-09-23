@@ -691,6 +691,12 @@ def migrate() -> None:
         ("news_events",    "causal_driver",          "TEXT"),
         # 0594 — news intelligence versioning
         ("news_events",    "news_intelligence_version", "TEXT"),
+        # 0598 — real event identity: LLM-supplied opaque event key for longitudinal tracking
+        ("news_events",    "causal_event_key",        "TEXT"),
+        # 0599 — separate pillar health snapshot from event-specific trigger proximity
+        ("news_events",    "pillar_health_state",     "TEXT"),
+        ("news_events",    "event_trigger_state",     "TEXT"),
+        ("news_events",    "event_trigger_proximity", "REAL"),
     ]
     for table, col, col_type in _new_cols:
         try:

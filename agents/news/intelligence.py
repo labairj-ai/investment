@@ -1,8 +1,16 @@
 """
-News intelligence pipeline: structured event extraction, thesis relevance mapping,
-novelty/trend detection, deterministic materiality scoring, confirmation signals,
-and portfolio theme detection.
+News intelligence pipeline v2.
+
+0596-0600: canonical snapshot contract, fail-closed grounding,
+real event identity + decay state, complete thesis contract,
+true confirmation channels + per-event bucketing.
+
+v1 → v2: changed provenance (canonical snapshot), event identity (causal_event_key),
+         decay semantics (news_event_state), thesis contract, confirmation channels.
+No v1 rows in production DB as of 2026-09-23 — clean bump.
 """
+from __future__ import annotations
+
 import hashlib
 import json
 import re
@@ -16,7 +24,7 @@ from typing import Optional
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent.parent
 
-NEWS_INTELLIGENCE_VERSION = "v1"
+NEWS_INTELLIGENCE_VERSION = "v2"
 PROMPT_VERSION = "v1"
 
 # ── Event taxonomy ────────────────────────────────────────────────────────────
@@ -29,7 +37,6 @@ EVENT_TAXONOMY = [
     "DIVIDEND_BUYBACK", "MACRO_EXPOSURE",
 ]
 
-# Causal macro/cross-sector drivers (0593)
 CAUSAL_DRIVER_VOCAB = [
     "AI_CAPEX", "USD_STRENGTH", "RATES_HIGHER", "RATES_LOWER",
     "CONSUMER_WEAKNESS", "CHINA_DEMAND", "FREIGHT_WEAKNESS",
@@ -37,7 +44,6 @@ CAUSAL_DRIVER_VOCAB = [
     "CREDIT_TIGHTENING", "REGULATORY_PRESSURE", "OTHER",
 ]
 
-# Base materiality weight per event type (0.0–1.0)
 _MATERIALITY: dict = {
     "GUIDANCE_CHANGE":  0.90,
     "EARNINGS":         0.85,
@@ -73,7 +79,6 @@ _CONFIRM_BOOST = {
     "MULTI_SIGNAL_CONFIRMATION": 1.6, "CONTRADICTED": 0.7,
 }
 
-# Keyword sets for thesis component keyword retrieval (pre-filter for 0591)
 _EVENT_KEYWORDS: dict = {
     "GUIDANCE_CHANGE":  ["guidance", "forecast", "outlook", "target", "revenue guide"],
     "EARNINGS":         ["earnings", "eps", "profit", "income", "quarter", "results"],
@@ -95,17 +100,15 @@ _EVENT_KEYWORDS: dict = {
     "MACRO_EXPOSURE":   ["macro", "economic", "rate", "dollar", "inflation", "geopolit"],
 }
 
-# Classification thresholds (use signal_strength, not portfolio_priority — 0588)
-EMERGING_RISK_THRESHOLD = 45   # signal_strength threshold
+EMERGING_RISK_THRESHOLD = 45
 EMERGING_OPP_THRESHOLD  = 45
 THESIS_CHANGE_THRESHOLD = 25
 PORTFOLIO_THEME_MIN     = 3
 
 
-# ── Article identity (0589) ───────────────────────────────────────────────────
+# ── Article identity ──────────────────────────────────────────────────────────
 
 def _article_id(art: dict) -> str:
-    """Deterministic SHA256[:16] ID for an article (url+source+pub_date+title)."""
     key = "|".join([
         art.get("url", ""),
         art.get("source", ""),
@@ -116,7 +119,6 @@ def _article_id(art: dict) -> str:
 
 
 def _build_article_manifest(by_ticker: dict) -> dict:
-    """Return {article_id: {ticker, title, source, pub_date, url}} for all articles."""
     manifest = {}
     for ticker, articles in by_ticker.items():
         for art in articles:
@@ -133,46 +135,74 @@ def _build_article_manifest(by_ticker: dict) -> dict:
 
 def _event_fingerprint(ticker: str, event_type: str, direction: str,
                         affected_metric: str = "") -> str:
-    """Stable 12-char fingerprint for the underlying business event."""
     key = f"{ticker}|{event_type}|{direction}|{(affected_metric or '').lower()[:40]}"
     return hashlib.sha256(key.encode()).hexdigest()[:12]
 
 
-# ── Hash computation (0580 + 0589 extension) ──────────────────────────────────
+# ── Canonical NewsSnapshot contract (0596) ────────────────────────────────────
 
-def compute_news_hash(by_ticker: dict) -> str:
-    """SHA256 over url/title/source/pub_date/excerpt per ticker — covers full content."""
-    parts = []
+def build_news_snapshot(by_ticker: dict) -> dict:
+    """
+    Build a canonical NewsSnapshot after enrichment.
+    model_input_text = exact bytes supplied to the LLM (body[:120] else excerpt[:80]).
+    Hash covers full model_input_text — body changes past char 80 now invalidate cache.
+    Returns {snapshot_id, captured_at, articles: [...], snapshot_hash}.
+    """
+    articles = []
     for ticker in sorted(by_ticker.keys()):
         for art in by_ticker[ticker]:
-            parts.append((
-                ticker,
-                art.get("url", ""),
-                art.get("title", ""),
-                art.get("source", ""),
-                art.get("pub_date", ""),
-                (art.get("excerpt") or art.get("body") or "")[:80],
-            ))
-    payload = json.dumps(sorted(parts), separators=(",", ":"))
-    return hashlib.sha256(payload.encode()).hexdigest()[:16]
+            aid = _article_id(art)
+            body    = art.get("body", "") or ""
+            excerpt = art.get("excerpt", "") or ""
+            model_input_text = body[:120] if body else excerpt[:80]
+            content_hash = hashlib.sha256(
+                (art.get("url", "") + model_input_text).encode()
+            ).hexdigest()[:16]
+            articles.append({
+                "article_id":       aid,
+                "ticker":           ticker,
+                "url":              art.get("url", ""),
+                "source":           art.get("source", ""),
+                "published_at":     art.get("pub_date", ""),
+                "title":            art.get("title", ""),
+                "model_input_text": model_input_text,
+                "content_hash":     content_hash,
+            })
+
+    payload = json.dumps(
+        [(a["article_id"], a["model_input_text"]) for a in articles],
+        separators=(",", ":"),
+    )
+    snapshot_hash = hashlib.sha256(payload.encode()).hexdigest()[:16]
+
+    return {
+        "snapshot_id":   str(uuid.uuid4()),
+        "captured_at":   datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+        "articles":      articles,
+        "snapshot_hash": snapshot_hash,
+    }
 
 
-# ── LLM event extraction (0581 + 0589 + 0593 extensions) ─────────────────────
+def compute_news_hash(by_ticker: dict) -> str:
+    """Thin wrapper around build_news_snapshot for backward compatibility."""
+    return build_news_snapshot(by_ticker)["snapshot_hash"]
 
-_TAXONOMY_LINE     = ", ".join(EVENT_TAXONOMY)
+
+# ── LLM event extraction (0596-0597: canonical snapshot + fail-closed) ────────
+
+_TAXONOMY_LINE      = ", ".join(EVENT_TAXONOMY)
 _CAUSAL_DRIVER_LINE = ", ".join(CAUSAL_DRIVER_VOCAB)
 
 
 def _build_event_extraction_prompt(by_ticker: dict, manifest: dict) -> str:
-    """Build extraction prompt that includes article_ids and requests causal_driver."""
     news_block = ""
     for ticker, items in by_ticker.items():
         news_block += f"\n{ticker}:\n"
         for art in items[:4]:
-            aid = _article_id(art)
-            src = art.get("source", "")
-            title = art.get("title", "")
-            body = art.get("body", "")
+            aid    = _article_id(art)
+            src    = art.get("source", "")
+            title  = art.get("title", "")
+            body   = art.get("body", "")
             excerpt = art.get("excerpt", "")
             detail = body[:120] if body else excerpt[:80] if excerpt else ""
             news_block += f"  [id:{aid}] [{src}] {title}\n"
@@ -201,24 +231,36 @@ Return this structure (0-5 events per ticker, only tickers with real events):
       "affected_metric": "revenue guidance",
       "evidence": "one-sentence description of what happened with specifics",
       "article_ids": ["<id from input>"],
-      "causal_driver": "AI_CAPEX|USD_STRENGTH|null"
+      "causal_driver": "AI_CAPEX|USD_STRENGTH|null",
+      "causal_event_key": "TICKER_SHORT_EVENT_DESCRIPTION_IN_CAPS"
     }}
   ]
 }}
 
 Rules:
 - article_ids must ONLY contain ids that appear as id:... in the input above
+- Only include tickers that appear in the input above
 - causal_driver: only set when a macro/cross-sector driver clearly explains the event; null otherwise
+- causal_event_key: stable identifier for the underlying business event (e.g. META_FY27_AI_CAPEX_RAISE); max 60 chars uppercase; null if unclear
 - Merge articles about the same underlying fact into one event"""
 
 
-def extract_events_llm(by_ticker: dict, ollama_client_mod) -> dict:
-    """Call LLM to extract structured events. Returns {ticker: [events]} plus manifest."""
+def extract_events_llm(by_ticker: dict, ollama_client_mod,
+                        manifest: Optional[dict] = None) -> dict:
+    """
+    Call LLM to extract structured events. Fail-closed validation (0597):
+    - Unknown ticker → reject event
+    - Cross-ticker article ID → reject that ID
+    - Zero valid same-ticker IDs → reject event
+    - No title-string fallback for structured events
+    """
     if not by_ticker:
         return {}
 
-    manifest = _build_article_manifest(by_ticker)
-    valid_ids = set(manifest.keys())
+    if manifest is None:
+        manifest = _build_article_manifest(by_ticker)
+
+    valid_tickers = {t.upper() for t in by_ticker.keys()}
 
     prompt = _build_event_extraction_prompt(by_ticker, manifest)
     raw = ""
@@ -253,10 +295,17 @@ def extract_events_llm(by_ticker: dict, ollama_client_mod) -> dict:
     if not isinstance(parsed, dict):
         return {}
 
-    valid = {}
+    valid: dict = {}
     for ticker, events in parsed.items():
+        event_ticker = ticker.upper()
+
+        # 0597: reject unknown tickers
+        if event_ticker not in valid_tickers:
+            continue
+
         if not isinstance(events, list):
             continue
+
         clean_events = []
         for ev in events:
             if not isinstance(ev, dict):
@@ -276,16 +325,32 @@ def extract_events_llm(by_ticker: dict, ollama_client_mod) -> dict:
             conf = float(ev.get("confidence", 0.7))
             conf = max(0.0, min(1.0, conf))
 
-            # Validate article_ids against manifest (0589)
+            # 0597: validate article_ids — only IDs belonging to this ticker
             raw_ids = ev.get("article_ids") or []
-            validated_ids = [aid for aid in raw_ids if aid in valid_ids]
+            validated_ids = [
+                aid for aid in raw_ids
+                if aid in manifest and manifest[aid]["ticker"].upper() == event_ticker
+            ]
+
+            # 0597: reject event with zero valid same-ticker article IDs
+            if not validated_ids:
+                continue
 
             # causal_driver (0593)
             cd = ev.get("causal_driver")
-            if cd and cd.upper() in CAUSAL_DRIVER_VOCAB:
-                causal_driver = cd.upper()
+            causal_driver = cd.upper() if cd and cd.upper() in CAUSAL_DRIVER_VOCAB else None
+
+            # causal_event_key (0598): LLM-supplied opaque event identity string
+            cek = ev.get("causal_event_key")
+            if cek:
+                cek = str(cek).upper().strip()[:60]
+                if not cek:
+                    cek = None
             else:
-                causal_driver = None
+                cek = None
+
+            # Titles derived exclusively from validated manifest entries (0597: no fallback)
+            titles = [manifest[aid]["title"] for aid in validated_ids if manifest.get(aid)]
 
             clean_events.append({
                 "event_type":      et,
@@ -297,23 +362,19 @@ def extract_events_llm(by_ticker: dict, ollama_client_mod) -> dict:
                 "evidence":        str(ev.get("evidence", "") or ""),
                 "article_ids":     validated_ids,
                 "causal_driver":   causal_driver,
-                # titles kept for legacy display
-                "titles": [
-                    manifest[aid]["title"] for aid in validated_ids
-                ] or [str(t) for t in (ev.get("titles") or [])[:5]],
+                "causal_event_key": cek,
+                "titles":          titles,
             })
         if clean_events:
-            valid[ticker.upper()] = clean_events
+            valid[event_ticker] = clean_events
 
-    # Attach manifest for provenance storage
     valid["_manifest"] = manifest
     return valid
 
 
-# ── Thesis relevance mapping (0582 + 0591 LLM semantic mapper) ───────────────
+# ── Thesis relevance mapping (0599: complete thesis contract) ─────────────────
 
 def _pillar_matches_event(pillar_name: str, risk_name: str, event_type: str) -> float:
-    """Return keyword-overlap relevance 0.0-1.0."""
     text = (pillar_name + " " + risk_name).lower()
     keywords = _EVENT_KEYWORDS.get(event_type, [])
     if not keywords:
@@ -325,7 +386,6 @@ def _pillar_matches_event(pillar_name: str, risk_name: str, event_type: str) -> 
 def _thesis_map_llm(event_type: str, direction: str, evidence: str,
                      affected_metric: str, candidates: list,
                      ollama_client_mod) -> dict:
-    """LLM semantic pass: map event to best candidate thesis component (0591)."""
     if not candidates or not ollama_client_mod:
         return {}
 
@@ -368,13 +428,12 @@ def _thesis_map_llm(event_type: str, direction: str, evidence: str,
     except Exception:
         return {}
 
-    # Validate relationship and trigger_state
     if r.get("relationship") not in ("STRENGTHENS", "WEAKENS", "SUPPORTS", "CONTRADICTS", "NONE"):
         r["relationship"] = "NONE"
     if r.get("trigger_state") not in ("NONE", "APPROACHING", "POSSIBLE_MATCH"):
         r["trigger_state"] = "NONE"
-    r["relevance"] = max(0.0, min(1.0, float(r.get("relevance", 0.0))))
-    r["confidence"] = max(0.0, min(1.0, float(r.get("confidence", 0.0))))
+    r["relevance"]   = max(0.0, min(1.0, float(r.get("relevance", 0.0))))
+    r["confidence"]  = max(0.0, min(1.0, float(r.get("confidence", 0.0))))
     return r
 
 
@@ -382,16 +441,24 @@ def map_thesis_relevance(event_type: str, ticker: str,
                           ev_evidence: str = "", ev_metric: str = "",
                           ev_direction: str = "NEUTRAL",
                           ollama_client_mod=None) -> dict:
-    """Keyword pre-filter + optional LLM semantic mapping (0591)."""
+    """
+    Keyword pre-filter + optional LLM semantic mapping.
+    0599: includes review_triggers/ADD/TRIM/EXIT candidates; after LLM call,
+    pillar_name/risk_name/catalyst_name reflects LLM's chosen component;
+    separates pillar_health_state from event_trigger_state/event_trigger_proximity.
+    """
     result = {
-        "thesis_relevance":  0.0,
-        "pillar_name":       None,
-        "risk_name":         None,
-        "catalyst_name":     None,
-        "trigger_proximity": 0.0,
-        "thesis_relationship": None,
-        "thesis_trigger_state": "NONE",
-        "thesis_explanation":   None,
+        "thesis_relevance":       0.0,
+        "pillar_name":            None,
+        "risk_name":              None,
+        "catalyst_name":          None,
+        "trigger_proximity":      0.0,   # kept for schema compat; scoring uses event_trigger_proximity
+        "pillar_health_state":    None,  # snapshot of matched pillar status
+        "event_trigger_state":    "NONE",
+        "event_trigger_proximity": 0.0,
+        "thesis_relationship":    None,
+        "thesis_trigger_state":   "NONE",
+        "thesis_explanation":     None,
     }
     try:
         sys.path.insert(0, str(PROJECT_DIR))
@@ -403,8 +470,22 @@ def map_thesis_relevance(event_type: str, ticker: str,
         key_risks = thesis.get("key_risks", []) or []
         catalysts = thesis.get("catalysts", []) or []
 
-        # Keyword pre-filter: score each component
+        # 0599: include review_triggers and ADD/TRIM/EXIT conditions as candidates
+        review_triggers_raw = thesis.get("review_triggers")
+        if review_triggers_raw:
+            if isinstance(review_triggers_raw, str):
+                try:
+                    review_triggers_raw = json.loads(review_triggers_raw)
+                except Exception:
+                    review_triggers_raw = [review_triggers_raw]
+        review_triggers = review_triggers_raw if isinstance(review_triggers_raw, list) else []
+
+        add_condition  = thesis.get("add_condition", "") or ""
+        trim_condition = thesis.get("trim_condition", "") or ""
+        exit_condition = thesis.get("exit_condition", "") or ""
+
         keyword_scored = []
+
         for p in pillars:
             pname = p.get("name", "") or ""
             pdesc = p.get("description", "") or ""
@@ -429,77 +510,119 @@ def map_thesis_relevance(event_type: str, ticker: str,
                 keyword_scored.append({"type": "catalyst", "name": cname,
                                         "score": score, "raw": c})
 
+        # 0599: review_triggers
+        for trig in review_triggers:
+            tname = trig if isinstance(trig, str) else str(trig)
+            score = _pillar_matches_event(tname, "", event_type)
+            if score > 0:
+                keyword_scored.append({"type": "trigger", "name": tname,
+                                        "score": score, "raw": {"description": tname}})
+
+        # 0599: ADD/TRIM/EXIT conditions
+        for cond_type, cond_text in [
+            ("add_condition", add_condition),
+            ("trim_condition", trim_condition),
+            ("exit_condition", exit_condition),
+        ]:
+            if cond_text:
+                score = _pillar_matches_event(cond_text, "", event_type)
+                if score > 0:
+                    keyword_scored.append({"type": cond_type, "name": cond_text[:60],
+                                            "score": score, "raw": {"description": cond_text}})
+
         if not keyword_scored:
             return result
 
         keyword_scored.sort(key=lambda x: -x["score"])
         top_candidates = keyword_scored[:4]
-
-        # Best from keyword pass
         best = top_candidates[0]
-        best_score = best["score"]
-        best_type  = best["type"]
-        best_name  = best["name"]
 
-        result["thesis_relevance"] = round(min(1.0, best_score), 3)
-        if best_type == "pillar":
-            result["pillar_name"] = best_name
-        elif best_type == "risk":
-            result["risk_name"] = best_name
-        else:
-            result["catalyst_name"] = best_name
+        result["thesis_relevance"] = round(min(1.0, best["score"]), 3)
 
-        # Trigger proximity: based on pillar health (snapshot, not event-specific)
-        trigger_prox = 0.0
-        if best_type == "pillar":
-            matched = [p for p in pillars if p.get("name") == best_name]
+        # Set the matching name field from keyword pass (will be overridden by LLM below)
+        _set_component_name(result, best["type"], best["name"])
+
+        # 0599: pillar_health_state — snapshot of current pillar health, independent of event
+        if best["type"] == "pillar":
+            matched = [p for p in pillars if p.get("name") == best["name"]]
             if matched:
-                p = matched[0]
-                if p.get("status") == "VIOLATED":
-                    trigger_prox = 1.0
-                elif p.get("status") == "WARNING":
-                    trigger_prox = 0.5
-        result["trigger_proximity"] = trigger_prox
+                result["pillar_health_state"] = matched[0].get("status") or "ON_TRACK"
 
-        # LLM semantic mapping (0591) — only when evidence available
+        # LLM semantic mapping (0591+0599) — only when evidence available
         if ollama_client_mod and (ev_evidence or ev_metric):
             candidate_payload = [
-                {"component_type": c["type"], "component_name": c["name"],
-                 "description": c["raw"].get("description", "") if isinstance(c["raw"], dict) else ""}
+                {
+                    "component_type": c["type"],
+                    "component_name": c["name"],
+                    "description": c["raw"].get("description", "") if isinstance(c["raw"], dict) else "",
+                }
                 for c in top_candidates
             ]
             llm_result = _thesis_map_llm(
                 event_type, ev_direction, ev_evidence, ev_metric,
-                candidate_payload, ollama_client_mod
+                candidate_payload, ollama_client_mod,
             )
             if llm_result and llm_result.get("relevance", 0) > 0:
-                # LLM overrides keyword score when it has meaningful relevance
                 rel = llm_result["relevance"]
-                result["thesis_relevance"] = round(rel, 3)
-                result["thesis_relationship"]  = llm_result.get("relationship")
-                result["thesis_trigger_state"] = llm_result.get("trigger_state", "NONE")
-                result["thesis_explanation"]   = llm_result.get("explanation")
-                # Update trigger_proximity if LLM says APPROACHING/POSSIBLE_MATCH
+                result["thesis_relevance"]   = round(rel, 3)
+                result["thesis_relationship"] = llm_result.get("relationship")
+                result["thesis_explanation"]  = llm_result.get("explanation")
+
+                # 0599: update pillar/risk/catalyst_name from LLM's chosen component
+                llm_ctype = llm_result.get("component_type", "none")
+                llm_cname = llm_result.get("component_name")
+                if llm_cname and llm_ctype != "none":
+                    # Validate against candidate list before accepting
+                    candidate_names = {c["name"] for c in top_candidates}
+                    if llm_cname in candidate_names:
+                        # Clear all, then set the LLM's chosen one
+                        result["pillar_name"]    = None
+                        result["risk_name"]      = None
+                        result["catalyst_name"]  = None
+                        _set_component_name(result, llm_ctype, llm_cname)
+                        # Update pillar_health_state if LLM chose a pillar
+                        if llm_ctype == "pillar":
+                            matched = [p for p in pillars if p.get("name") == llm_cname]
+                            if matched:
+                                result["pillar_health_state"] = matched[0].get("status") or "ON_TRACK"
+                        else:
+                            result["pillar_health_state"] = None
+
+                # 0599: event_trigger_state and event_trigger_proximity from LLM
                 ts = llm_result.get("trigger_state", "NONE")
+                result["event_trigger_state"] = ts
+                result["thesis_trigger_state"] = ts
                 if ts == "POSSIBLE_MATCH":
-                    result["trigger_proximity"] = max(trigger_prox, 0.8)
+                    result["event_trigger_proximity"] = 0.8
                 elif ts == "APPROACHING":
-                    result["trigger_proximity"] = max(trigger_prox, 0.4)
+                    result["event_trigger_proximity"] = 0.4
+                else:
+                    result["event_trigger_proximity"] = 0.0
 
     except Exception:
         pass
     return result
 
 
-# ── Trend detection (0583 + 0590 fixes) ──────────────────────────────────────
+def _set_component_name(result: dict, comp_type: str, comp_name: str) -> None:
+    """Set the appropriate name field; clear others. Handles extended component types."""
+    if comp_type == "pillar":
+        result["pillar_name"] = comp_name
+    elif comp_type == "risk":
+        result["risk_name"] = comp_name
+    elif comp_type in ("catalyst", "add_condition", "trim_condition", "exit_condition", "trigger"):
+        result["catalyst_name"] = comp_name
+
+
+# ── Trend detection (0598: count distinct causal_event_key) ──────────────────
 
 def compute_trend(ticker: str, event_type: str, direction: str,
                   today: str, conn: sqlite3.Connection) -> dict:
     """
     Query event history; return trend_status + occurrence counts.
-    Uses COUNT(DISTINCT event_fingerprint) to avoid media-recurrence inflation.
-    FADING/RESOLVED are NOT returned here — those are decay states from the
-    nightly sweep for tickers with no events today (see sweep_fading_resolved).
+    0598: counts distinct causal_event_key (with fingerprint/event_id fallback)
+    so the same underlying business event is never double-counted.
+    FADING/RESOLVED come from news_event_state, not from this function.
     """
     today_dt = datetime.strptime(today, "%Y-%m-%d")
     d7  = (today_dt - timedelta(days=7)).strftime("%Y-%m-%d")
@@ -507,21 +630,20 @@ def compute_trend(ticker: str, event_type: str, direction: str,
     d90 = (today_dt - timedelta(days=90)).strftime("%Y-%m-%d")
 
     try:
-        # Count distinct fingerprints (same underlying event counted once per period)
         row7 = conn.execute(
-            "SELECT COUNT(DISTINCT COALESCE(event_fingerprint, event_id)) "
+            "SELECT COUNT(DISTINCT COALESCE(causal_event_key, event_fingerprint, event_id)) "
             "FROM news_events WHERE ticker=? AND event_type=? "
             "AND direction=? AND day>=? AND day<?",
             (ticker, event_type, direction, d7, today)
         ).fetchone()
         row30 = conn.execute(
-            "SELECT COUNT(DISTINCT COALESCE(event_fingerprint, event_id)) "
+            "SELECT COUNT(DISTINCT COALESCE(causal_event_key, event_fingerprint, event_id)) "
             "FROM news_events WHERE ticker=? AND event_type=? "
             "AND direction=? AND day>=? AND day<?",
             (ticker, event_type, direction, d30, today)
         ).fetchone()
         row90 = conn.execute(
-            "SELECT COUNT(DISTINCT COALESCE(event_fingerprint, event_id)) "
+            "SELECT COUNT(DISTINCT COALESCE(causal_event_key, event_fingerprint, event_id)) "
             "FROM news_events WHERE ticker=? AND event_type=? "
             "AND direction=? AND day>=? AND day<?",
             (ticker, event_type, direction, d90, today)
@@ -535,7 +657,7 @@ def compute_trend(ticker: str, event_type: str, direction: str,
         opp_30 = 0
         if opp_dir:
             opp_row = conn.execute(
-                "SELECT COUNT(DISTINCT COALESCE(event_fingerprint, event_id)) "
+                "SELECT COUNT(DISTINCT COALESCE(causal_event_key, event_fingerprint, event_id)) "
                 "FROM news_events WHERE ticker=? AND event_type=? "
                 "AND direction=? AND day>=? AND day<?",
                 (ticker, event_type, opp_dir, d30, today)
@@ -549,8 +671,7 @@ def compute_trend(ticker: str, event_type: str, direction: str,
     n30 = row30[0] if row30 else 0
     n90 = row90[0] if row90 else 0
 
-    # REVERSING must be checked BEFORE NEW — a first positive event after negative
-    # history is REVERSING, not NEW (0590 fix: opposite-direction check runs first)
+    # REVERSING check before NEW — first positive after negative history (0590 fix)
     if opp_30 > 0:
         trend = "REVERSING"
     elif n30 == 0 and n90 == 0:
@@ -558,10 +679,6 @@ def compute_trend(ticker: str, event_type: str, direction: str,
     elif n7 >= 2 and n30 >= 3:
         trend = "ACCELERATING"
     elif n30 >= 2:
-        trend = "CONFIRMING"
-    elif n90 > 0 and n30 == 0:
-        # Event reappearing after gap — it's CONFIRMING, not FADING
-        # FADING/RESOLVED are generated by sweep_fading_resolved() for absent events
         trend = "CONFIRMING"
     else:
         trend = "CONFIRMING"
@@ -574,87 +691,101 @@ def compute_trend(ticker: str, event_type: str, direction: str,
     }
 
 
-def sweep_fading_resolved(day: str, conn: sqlite3.Connection) -> None:
+def update_event_state_sweep(day: str, conn: sqlite3.Connection) -> None:
     """
-    End-of-run sweep: mark previously active (ticker, event_type, direction) combos
-    as FADING or RESOLVED when they are absent from today's events.
-    FADING: active in last 30d, not today.
-    RESOLVED: active 31-90d ago but not in last 30d and not today.
+    Update news_event_state for all known causal_event_keys (0598).
+    NEVER inserts synthetic rows into news_events.
+
+    State machine:
+    - Real event today         → ACTIVE
+    - Absent ≤30d from last seen → FADING
+    - Absent >30d from last seen → RESOLVED
     """
     today_dt = datetime.strptime(day, "%Y-%m-%d")
     d30 = (today_dt - timedelta(days=30)).strftime("%Y-%m-%d")
-    d90 = (today_dt - timedelta(days=90)).strftime("%Y-%m-%d")
     now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
     try:
-        # Combos active in last 30d
-        active_rows = conn.execute(
-            "SELECT DISTINCT ticker, event_type, direction FROM news_events "
-            "WHERE day>=? AND day<?",
-            (d30, day)
-        ).fetchall()
+        conn.execute("""CREATE TABLE IF NOT EXISTS news_event_state (
+            ticker            TEXT NOT NULL,
+            causal_event_key  TEXT NOT NULL,
+            last_real_seen_at TEXT NOT NULL,
+            state             TEXT NOT NULL DEFAULT 'ACTIVE',
+            state_as_of       TEXT NOT NULL,
+            PRIMARY KEY (ticker, causal_event_key)
+        )""")
 
-        # Combos seen today
-        today_rows = conn.execute(
-            "SELECT DISTINCT ticker, event_type, direction FROM news_events WHERE day=?",
+        # Mark events seen today as ACTIVE
+        today_keys = conn.execute(
+            "SELECT DISTINCT ticker, causal_event_key FROM news_events "
+            "WHERE day=? AND causal_event_key IS NOT NULL",
             (day,)
         ).fetchall()
-        today_set = {(r[0], r[1], r[2]) for r in today_rows}
 
-        for row in active_rows:
-            ticker, et, direction = row[0], row[1], row[2]
-            if (ticker, et, direction) in today_set:
-                continue  # Still active today
-
-            # Determine FADING vs RESOLVED
-            n30 = conn.execute(
-                "SELECT COUNT(*) FROM news_events WHERE ticker=? AND event_type=? "
-                "AND direction=? AND day>=? AND day<?",
-                (ticker, et, direction, d30, day)
-            ).fetchone()[0]
-            n90 = conn.execute(
-                "SELECT COUNT(*) FROM news_events WHERE ticker=? AND event_type=? "
-                "AND direction=? AND day>=? AND day<?",
-                (ticker, et, direction, d90, d30)
-            ).fetchone()[0]
-
-            new_status = "FADING" if n30 > 0 else ("RESOLVED" if n90 > 0 else None)
-            if not new_status:
-                continue
-
-            # Insert a synthetic decay marker for today
-            fp = _event_fingerprint(ticker, et, direction, "decay")
+        for ticker, key in today_keys:
             conn.execute(
-                """INSERT OR IGNORE INTO news_events
-                   (event_id, ticker, day, event_type, direction, magnitude,
-                    expected_horizon, confidence, trend_status,
-                    occurrence_count_7d, occurrence_count_30d, occurrence_count_90d,
-                    signal_strength, portfolio_priority,
-                    news_snapshot_hash, event_fingerprint, extracted_at,
-                    news_intelligence_version)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (
-                    str(uuid.uuid4()), ticker, day, et, direction,
-                    "LOW", "SHORT", 0.5, new_status,
-                    0, n30, n90,
-                    0.0, 0.0,
-                    "", fp, now_str,
-                    NEWS_INTELLIGENCE_VERSION,
-                ),
+                """INSERT OR REPLACE INTO news_event_state
+                   (ticker, causal_event_key, last_real_seen_at, state, state_as_of)
+                   VALUES (?, ?, ?, 'ACTIVE', ?)""",
+                (ticker, key, day, now_str),
             )
+
+        today_set = {(r[0], r[1]) for r in today_keys}
+
+        # Discover all known causal_event_keys from news_events history (last 90d)
+        # and register/update their state, even if not yet in news_event_state
+        d90 = (today_dt - timedelta(days=90)).strftime("%Y-%m-%d")
+        historical = conn.execute(
+            "SELECT DISTINCT ticker, causal_event_key, MAX(day) as last_real "
+            "FROM news_events WHERE causal_event_key IS NOT NULL AND day >= ? "
+            "GROUP BY ticker, causal_event_key",
+            (d90,)
+        ).fetchall()
+
+        for ticker, key, last_real in historical:
+            if (ticker, key) in today_set:
+                continue  # Already registered as ACTIVE above
+            new_state = "FADING" if last_real >= d30 else "RESOLVED"
+            # INSERT if new, otherwise UPDATE if state has changed
+            conn.execute(
+                """INSERT OR REPLACE INTO news_event_state
+                   (ticker, causal_event_key, last_real_seen_at, state, state_as_of)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (ticker, key, last_real, new_state, now_str),
+            )
+
+        # Also decay existing state table entries not covered by news_events history
+        stale_rows = conn.execute(
+            "SELECT ticker, causal_event_key, last_real_seen_at FROM news_event_state "
+            "WHERE state != 'RESOLVED'"
+        ).fetchall()
+        historical_set = {(r[0], r[1]) for r in historical}
+        for ticker, key, last_seen in stale_rows:
+            if (ticker, key) in today_set or (ticker, key) in historical_set:
+                continue
+            new_state = "FADING" if last_seen >= d30 else "RESOLVED"
+            conn.execute(
+                "UPDATE news_event_state SET state=?, state_as_of=? "
+                "WHERE ticker=? AND causal_event_key=?",
+                (new_state, now_str, ticker, key),
+            )
+
         conn.commit()
     except Exception as e:
-        print(f"[NewsIntelligence] Fading sweep error: {e}")
+        print(f"[NewsIntelligence] Event state sweep error: {e}")
 
 
-# ── Deterministic scoring (0584) ─────────────────────────────────────────────
+# Backward-compat alias — call site in run_pipeline now uses update_event_state_sweep
+sweep_fading_resolved = update_event_state_sweep
+
+
+# ── Deterministic scoring (0599: trigger_bonus uses event_trigger_proximity) ──
 
 def score_event(event: dict, position_weight: float = 1.0) -> dict:
     """
     Compute signal_strength and portfolio_priority deterministically.
-    signal_strength is used for bucket classification (0588).
-    portfolio_priority is signal_strength × position_weight × trigger_bonus,
-    used for ordering within buckets only.
+    0599: trigger_bonus reads event_trigger_proximity (event-specific LLM value),
+    not the old pillar-health-based trigger_proximity.
     """
     et        = event.get("event_type", "MACRO_EXPOSURE")
     magnitude = event.get("magnitude", "MEDIUM")
@@ -663,7 +794,8 @@ def score_event(event: dict, position_weight: float = 1.0) -> dict:
     trend     = event.get("trend_status", "NEW")
     confirm   = event.get("confirmation_class", "NEWS_ONLY")
     thesis_rel = float(event.get("thesis_relevance", 0.0))
-    trigger_px = float(event.get("trigger_proximity", 0.0))
+    # 0599: use event_trigger_proximity (LLM-derived), not trigger_proximity (pillar health)
+    trigger_px = float(event.get("event_trigger_proximity", 0.0))
 
     mat      = _MATERIALITY.get(et, 0.5)
     mag_sc   = _MAGNITUDE_SCALE.get(magnitude, 0.75)
@@ -703,13 +835,10 @@ def score_event(event: dict, position_weight: float = 1.0) -> dict:
     }
 
 
-# ── Confirmation signals (0585 + 0592 fixes) ──────────────────────────────────
+# ── Confirmation signals (0600: true independent channels) ────────────────────
 
 def _get_price_alpha(ticker: str, conn: sqlite3.Connection) -> dict:
-    """
-    Compute 1d/5d/20d alpha vs SPY using date-aligned pairs (0592 fix).
-    Builds (date, ticker_price, spy_price) triplets joined on trading date.
-    """
+    """Compute 1d/5d/20d alpha vs SPY using date-aligned pairs (0592)."""
     try:
         rows = conn.execute(
             "SELECT day, price FROM holding_day WHERE ticker=? AND price>0 "
@@ -726,13 +855,11 @@ def _get_price_alpha(ticker: str, conn: sqlite3.Connection) -> dict:
         ).fetchall()
         spy_map = {r[0]: r[1] for r in spys}
 
-        # Build aligned triplets — only dates present in BOTH series (0592 fix)
         aligned = [(r[0], r[1], spy_map[r[0]])
                    for r in rows if r[0] in spy_map and spy_map[r[0]] > 0]
         if len(aligned) < 2:
             return {}
 
-        # aligned is sorted descending by day
         alpha = {}
         for n, label in ((1, "1d"), (5, "5d"), (20, "20d")):
             if len(aligned) < n + 1:
@@ -749,8 +876,7 @@ def _get_price_alpha(ticker: str, conn: sqlite3.Connection) -> dict:
         return {}
 
 
-def _get_thesis_health(ticker: str):
-    """Return thesis health_score (0–100) for ticker, or None."""
+def _get_thesis_health(ticker: str) -> Optional[float]:
     try:
         sys.path.insert(0, str(PROJECT_DIR))
         import agent_db as _adb
@@ -763,7 +889,6 @@ def _get_thesis_health(ticker: str):
 
 
 def _get_macro_score(ticker: str, conn: sqlite3.Connection) -> dict:
-    """Return latest macro scores dict for ticker."""
     try:
         row = conn.execute(
             "SELECT scores FROM holding_macro_scores WHERE ticker=?", (ticker,)
@@ -775,39 +900,76 @@ def _get_macro_score(ticker: str, conn: sqlite3.Connection) -> dict:
     return {}
 
 
+def _get_fundamentals_trend(ticker: str, conn: sqlite3.Connection) -> Optional[str]:
+    """
+    Revenue trend from financial pipeline — stub for FUNDAMENTALS channel (0600).
+    Returns 'positive', 'negative', or None.
+    """
+    try:
+        rows = conn.execute(
+            "SELECT period_end, revenue FROM company_financials "
+            "WHERE ticker=? AND period_type='Q' AND revenue IS NOT NULL "
+            "ORDER BY period_end DESC LIMIT 2",
+            (ticker,)
+        ).fetchall()
+        if len(rows) < 2 or rows[1][1] is None or rows[1][1] == 0:
+            return None
+        growth = (rows[0][1] - rows[1][1]) / abs(rows[1][1])
+        if growth > 0.03:
+            return "positive"
+        if growth < -0.03:
+            return "negative"
+        return None
+    except Exception:
+        return None
+
+
+def _get_agent_findings_flag(ticker: str, conn: sqlite3.Connection) -> Optional[str]:
+    """Agent findings channel stub (0600). Returns None until Guardian wiring lands."""
+    return None
+
+
 def attach_confirmation(event: dict, ticker: str, conn: sqlite3.Connection) -> dict:
     """
     Classify event as NEWS_ONLY / SOFT / MULTI_SIGNAL / CONTRADICTED.
-    Confirmation channels: price/alpha, thesis health, macro state only.
-    Trend is NOT a confirmation channel — it already affects signal_strength
-    via novelty_weight and persistence_adj (0592 fix removes triple-count).
+    0600: each channel casts at most one vote.
+    Channels: PRICE (best of 1d/5d), THESIS, MACRO, FUNDAMENTALS, AGENT_FINDINGS.
+    Trend is not a channel (0592). MULTI_SIGNAL requires 3+ independent channels.
     """
     direction  = event.get("direction", "NEUTRAL")
     event_type = event.get("event_type", "")
 
-    alpha      = _get_price_alpha(ticker, conn)
-    th_health  = _get_thesis_health(ticker)
-    macro_sc   = _get_macro_score(ticker, conn)
+    alpha     = _get_price_alpha(ticker, conn)
+    th_health = _get_thesis_health(ticker)
+    macro_sc  = _get_macro_score(ticker, conn)
 
-    signals     = {}
+    signals: dict       = {}
     corroborating = 0
     contradicting = 0
 
-    # Price alpha check (independent channel 1)
-    for span in ("1d", "5d"):
-        a = alpha.get(span)
-        if a is None:
-            continue
-        signals[f"alpha_{span}"] = round(a * 100, 2)
-        if direction == "NEGATIVE" and a < -0.005:
-            corroborating += 1
-        elif direction == "POSITIVE" and a > 0.005:
-            corroborating += 1
-        elif direction in ("NEGATIVE", "POSITIVE"):
-            if (direction == "NEGATIVE" and a > 0.01) or (direction == "POSITIVE" and a < -0.01):
-                contradicting += 1
+    # PRICE channel — one vote; use the more extreme of 1d/5d alpha (0600)
+    a1d = alpha.get("1d")
+    a5d = alpha.get("5d")
+    if a1d is not None:
+        signals["alpha_1d"] = round(a1d * 100, 2)
+    if a5d is not None:
+        signals["alpha_5d"] = round(a5d * 100, 2)
 
-    # Thesis health (independent channel 2)
+    price_alpha: Optional[float] = None
+    for a in (a1d, a5d):
+        if a is not None and (price_alpha is None or abs(a) > abs(price_alpha)):
+            price_alpha = a
+
+    if price_alpha is not None and direction in ("POSITIVE", "NEGATIVE"):
+        if direction == "NEGATIVE" and price_alpha < -0.005:
+            corroborating += 1
+        elif direction == "POSITIVE" and price_alpha > 0.005:
+            corroborating += 1
+        elif (direction == "NEGATIVE" and price_alpha > 0.01) or \
+             (direction == "POSITIVE" and price_alpha < -0.01):
+            contradicting += 1
+
+    # THESIS channel (0600)
     if th_health is not None:
         signals["thesis_health"] = round(th_health, 1)
         if direction == "NEGATIVE" and th_health < 50:
@@ -817,7 +979,7 @@ def attach_confirmation(event: dict, ticker: str, conn: sqlite3.Connection) -> d
         elif direction == "NEGATIVE" and th_health > 75:
             contradicting += 1
 
-    # Macro exposure (independent channel 3)
+    # MACRO channel (0600)
     if event_type == "MARGIN" and macro_sc:
         rate_sens = macro_sc.get("rate_sensitivity")
         if rate_sens is not None:
@@ -825,7 +987,23 @@ def attach_confirmation(event: dict, ticker: str, conn: sqlite3.Connection) -> d
             if direction == "NEGATIVE" and rate_sens >= 7:
                 corroborating += 1
 
-    # NOTE: trend is intentionally NOT added as a corroboration channel (0592 fix)
+    # FUNDAMENTALS channel — one vote (0600 stub)
+    fund_trend = _get_fundamentals_trend(ticker, conn)
+    if fund_trend is not None:
+        signals["fundamentals_trend"] = fund_trend
+        if direction == "NEGATIVE" and fund_trend == "negative":
+            corroborating += 1
+        elif direction == "POSITIVE" and fund_trend == "positive":
+            corroborating += 1
+        elif direction == "NEGATIVE" and fund_trend == "positive":
+            contradicting += 1
+
+    # AGENT_FINDINGS channel — one vote (0600 stub)
+    agent_flag = _get_agent_findings_flag(ticker, conn)
+    if agent_flag is not None:
+        signals["agent_findings"] = agent_flag
+        if direction == "NEGATIVE" and agent_flag == "flagged":
+            corroborating += 1
 
     if direction in ("NEUTRAL", "MIXED"):
         confirm_class = "NEWS_ONLY"
@@ -855,19 +1033,14 @@ def attach_confirmation(event: dict, ticker: str, conn: sqlite3.Connection) -> d
     }
 
 
-# ── Portfolio theme detection (0585 + 0593 causal_driver) ─────────────────────
+# ── Portfolio theme detection (0593 causal_driver-based) ─────────────────────
 
 def detect_portfolio_themes(events_by_ticker: dict,
                              portfolio_weights: dict) -> list:
-    """
-    Fire a PORTFOLIO_THEME alert when 3+ holdings share the same causal_driver
-    and direction (0593). Generic event_type grouping is not sufficient.
-    Requires causal_driver != None and != OTHER.
-    """
     causal_dir_map: dict = defaultdict(list)
 
     for ticker, events in events_by_ticker.items():
-        seen = set()
+        seen: set = set()
         for ev in events:
             cd = ev.get("causal_driver")
             if not cd or cd == "OTHER":
@@ -889,7 +1062,7 @@ def detect_portfolio_themes(events_by_ticker: dict,
         )
         themes.append({
             "causal_driver":    causal_driver,
-            "event_type":       causal_driver,  # kept for legacy display
+            "event_type":       causal_driver,
             "direction":        direction,
             "affected_tickers": tickers,
             "combined_weight":  round(combined_wt, 2),
@@ -904,7 +1077,7 @@ def detect_portfolio_themes(events_by_ticker: dict,
     return sorted(themes, key=lambda t: -t["combined_weight"])
 
 
-# ── DB persistence (0589 + 0593 + 0594) ──────────────────────────────────────
+# ── DB persistence (0596-0599: new fields) ────────────────────────────────────
 
 def persist_events(events_by_ticker: dict,
                    themes: list,
@@ -912,10 +1085,6 @@ def persist_events(events_by_ticker: dict,
                    conn: sqlite3.Connection,
                    news_snapshot_hash: str = "",
                    manifest: Optional[dict] = None) -> None:
-    """
-    Upsert news_events and news_portfolio_themes for the given day.
-    Preserves first_seen from prior rows with matching event_fingerprint (0589).
-    """
     now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     tickers = list(events_by_ticker.keys())
 
@@ -933,7 +1102,6 @@ def persist_events(events_by_ticker: dict,
                 ev.get("affected_metric", "")
             )
 
-            # Preserve first_seen from prior occurrences of same underlying event (0589)
             existing = conn.execute(
                 "SELECT first_seen FROM news_events WHERE ticker=? AND event_fingerprint=? "
                 "ORDER BY first_seen ASC LIMIT 1",
@@ -941,23 +1109,24 @@ def persist_events(events_by_ticker: dict,
             ).fetchone()
             first_seen = existing[0] if existing else day
 
-            # article_ids_json: validated IDs from LLM (0589)
             article_ids = ev.get("article_ids", [])
-            source_count = len(article_ids) if article_ids else max(1, len(ev.get("titles", [])))
+            source_count = len(article_ids) if article_ids else 1
 
             conn.execute(
                 """INSERT OR REPLACE INTO news_events
                    (event_id, ticker, day, event_type, direction, magnitude,
                     expected_horizon, confidence, affected_metric, evidence_text,
                     source_titles, source_count, first_seen, last_seen,
-                    thesis_relevance, pillar_name, risk_name, catalyst_name, trigger_proximity,
+                    thesis_relevance, pillar_name, risk_name, catalyst_name,
+                    trigger_proximity,
+                    pillar_health_state, event_trigger_state, event_trigger_proximity,
                     trend_status, occurrence_count_7d, occurrence_count_30d, occurrence_count_90d,
                     signal_strength, portfolio_priority, score_decomposition,
                     confirmation_class, confirmation_signals, skepticism_note,
                     news_snapshot_hash, extracted_at,
-                    event_fingerprint, article_ids_json, causal_driver,
+                    event_fingerprint, article_ids_json, causal_driver, causal_event_key,
                     news_intelligence_version)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     ev.get("event_id") or str(uuid.uuid4()),
                     ticker, day,
@@ -973,6 +1142,9 @@ def persist_events(events_by_ticker: dict,
                     ev.get("risk_name"),
                     ev.get("catalyst_name"),
                     ev.get("trigger_proximity", 0.0),
+                    ev.get("pillar_health_state"),
+                    ev.get("event_trigger_state", "NONE"),
+                    ev.get("event_trigger_proximity", 0.0),
                     ev.get("trend_status", "NEW"),
                     ev.get("occurrence_count_7d", 0),
                     ev.get("occurrence_count_30d", 0),
@@ -988,6 +1160,7 @@ def persist_events(events_by_ticker: dict,
                     fingerprint,
                     json.dumps(article_ids),
                     ev.get("causal_driver"),
+                    ev.get("causal_event_key"),
                     NEWS_INTELLIGENCE_VERSION,
                 ),
             )
@@ -1010,26 +1183,45 @@ def persist_events(events_by_ticker: dict,
     conn.commit()
 
 
-# ── Main pipeline entry point ─────────────────────────────────────────────────
+# ── Main pipeline ─────────────────────────────────────────────────────────────
 
 def run_pipeline(by_ticker: dict,
                  portfolio_weights: dict,
                  conn: sqlite3.Connection,
                  ollama_client_mod,
-                 day=None):
+                 day=None,
+                 snapshot: Optional[dict] = None):
     """
     Run the full news intelligence pipeline.
+    0596: accepts optional pre-built snapshot (built after enrichment in portfolio_ai.py).
     Returns dict with: events_by_ticker, themes, news_snapshot_hash, article_count.
     """
     if day is None:
         day = date.today().isoformat()
 
-    news_snapshot_hash = compute_news_hash(by_ticker)
+    # 0596: use canonical snapshot hash; build from by_ticker if not provided
+    if snapshot is not None:
+        news_snapshot_hash = snapshot["snapshot_hash"]
+        # Build manifest from snapshot articles
+        manifest = {
+            a["article_id"]: {
+                "ticker":   a["ticker"],
+                "title":    a["title"],
+                "source":   a["source"],
+                "pub_date": a["published_at"],
+                "url":      a["url"],
+            }
+            for a in snapshot["articles"]
+        }
+    else:
+        snap = build_news_snapshot(by_ticker)
+        news_snapshot_hash = snap["snapshot_hash"]
+        manifest = None  # built inside extract_events_llm
+
     article_count = sum(len(v) for v in by_ticker.values())
 
-    # Step 1: LLM event extraction (0581 + 0589 article IDs)
-    extraction_result = extract_events_llm(by_ticker, ollama_client_mod)
-    manifest = extraction_result.pop("_manifest", {})
+    extraction_result = extract_events_llm(by_ticker, ollama_client_mod, manifest=manifest)
+    manifest = extraction_result.pop("_manifest", manifest or {})
     raw_events = extraction_result
     if not raw_events:
         return {
@@ -1039,13 +1231,11 @@ def run_pipeline(by_ticker: dict,
             "article_count": article_count,
         }
 
-    # Steps 2-6: enrich each event
     enriched: dict = {}
     for ticker, events in raw_events.items():
         pos_wt = portfolio_weights.get(ticker, 0.0)
         ticker_events = []
         for ev in events:
-            # 0582+0591: thesis relevance (with LLM semantic mapping)
             thesis_info = map_thesis_relevance(
                 ev["event_type"], ticker,
                 ev_evidence=ev.get("evidence", ""),
@@ -1055,17 +1245,14 @@ def run_pipeline(by_ticker: dict,
             )
             ev.update(thesis_info)
 
-            # 0583+0590: trend detection (fixed ordering)
             trend_info = compute_trend(
                 ticker, ev["event_type"], ev["direction"], day, conn
             )
             ev.update(trend_info)
 
-            # 0585+0592: confirmation (trend removed from channels)
             confirm_info = attach_confirmation(ev, ticker, conn)
             ev.update(confirm_info)
 
-            # 0584: score (after trend + confirmation)
             score_info = score_event(ev, position_weight=pos_wt)
             ev.update(score_info)
 
@@ -1074,20 +1261,18 @@ def run_pipeline(by_ticker: dict,
         ticker_events.sort(key=lambda e: -e.get("portfolio_priority", 0))
         enriched[ticker] = ticker_events
 
-    # Step 7: portfolio theme detection (0593 causal_driver-based)
     themes = detect_portfolio_themes(enriched, portfolio_weights)
 
-    # Persist to DB
     try:
         persist_events(enriched, themes, day, conn, news_snapshot_hash, manifest)
     except Exception as e:
         print(f"[NewsIntelligence] Persist error: {e}")
 
-    # Step 8: fading/resolved sweep (0590)
+    # 0598: update news_event_state (no synthetic news_events rows)
     try:
-        sweep_fading_resolved(day, conn)
+        update_event_state_sweep(day, conn)
     except Exception as e:
-        print(f"[NewsIntelligence] Fading sweep error: {e}")
+        print(f"[NewsIntelligence] Event state sweep error: {e}")
 
     return {
         "events_by_ticker":  enriched,
@@ -1099,7 +1284,6 @@ def run_pipeline(by_ticker: dict,
 
 
 def load_events_for_day(day: str, conn: sqlite3.Connection) -> dict:
-    """Load persisted events and themes for a given day from DB."""
     try:
         rows = conn.execute(
             "SELECT * FROM news_events WHERE day=? ORDER BY portfolio_priority DESC",
