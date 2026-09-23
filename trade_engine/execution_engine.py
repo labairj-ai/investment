@@ -12,6 +12,7 @@ import math
 import sqlite3
 import time
 import uuid as _uuid
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Optional
@@ -819,6 +820,8 @@ def process_open_orders(
     account_id: str,
     conn: sqlite3.Connection,
     broker: Optional[BrokerAdapter] = None,
+    *,
+    _progress: Optional["CycleProgress"] = None,
 ) -> tuple[list[Fill], int, int]:
     """Re-attempt fills on all WORKING/PARTIALLY_FILLED/CANCEL_REQUESTED orders via broker event stream (0199, 0220, 0238, 0256, 0266).
 
@@ -912,6 +915,8 @@ def process_open_orders(
                     if fill_row:
                         fill = Fill.from_db_row(fill_row)
                         fills.append(fill)
+                        if _progress is not None:
+                            _progress.retry_fills.append(fill)
                 else:
                     # No broker_fill_id — do NOT invent one; fetch authoritative fills (0283).
                     try:
@@ -935,6 +940,8 @@ def process_open_orders(
                         if fill_row:
                             fill = Fill.from_db_row(fill_row)
                             fills.append(fill)
+                            if _progress is not None:
+                                _progress.retry_fills.append(fill)
             elif event.event_type in ("CANCELLED", "EXPIRED", "REJECTED"):
                 apply_broker_order_event(event, account_id, conn)
             else:
@@ -971,6 +978,8 @@ def process_open_orders(
                 if cancelled:
                     _sync_intent_from_order(cancelled, row["intent_id"], conn)
                 pre_fill_rejections += 1
+                if _progress is not None:
+                    _progress.pre_fill_rejections += 1
                 continue
 
         # ── Quote: update market_data_status; stale quote only blocks submissions ─
@@ -997,6 +1006,8 @@ def process_open_orders(
         if updated:
             if updated.state == "EXPIRED":
                 orders_expired += 1
+                if _progress is not None:
+                    _progress.orders_expired += 1
             _sync_intent_from_order(updated, row["intent_id"], conn)
 
     return fills, pre_fill_rejections, orders_expired
@@ -1166,6 +1177,65 @@ def sync_broker_state(
     return fills, duplicate_fills_skipped, _broker_stats
 
 
+@dataclass
+class CycleProgress:
+    """Accumulates in-progress cycle activity so every exit path reports what actually happened (0577).
+
+    Each stage updates this object as events occur. run_execution_cycle() calls to_summary() on
+    every exit path — HALTED or OK — so no activity is silently erased by a later-stage failure.
+    """
+    # sync stage
+    sync_fills: list = field(default_factory=list)
+    duplicate_fills_skipped: int = 0
+    broker_fills_observed: int = 0
+    broker_fills_new: int = 0
+    broker_fills_duplicate: int = 0
+    external_fills_observed: int = 0
+    broker_seen_ids: set = field(default_factory=set)
+    broker_new_ids: set = field(default_factory=set)
+    # freshness gate (defaults match pre-gate HALT semantics)
+    new_intents_blocked: bool = True
+    stale_symbols: list = field(default_factory=list)
+    market_state: str = "unknown"
+    # intent stage
+    new_results: list = field(default_factory=list)
+    working_orders_checked: int = 0
+    # open-order stage — updated per-order inside process_open_orders()
+    retry_fills: list = field(default_factory=list)
+    pre_fill_rejections: int = 0
+    orders_expired: int = 0
+
+    def to_summary(self, execution_state: str, halt_reason: str | None = None) -> dict:
+        fills_on_submission = sum(1 for r in self.new_results if r.fill is not None)
+        risk_rejections_new = sum(1 for r in self.new_results if r.decision == "REJECTED")
+        d = {
+            "execution_state": execution_state,
+            "new_intents_processed": len(self.new_results),
+            "new_intents_blocked": self.new_intents_blocked,
+            "stale_symbols": self.stale_symbols,
+            "market_state": self.market_state,
+            "new_orders_created": sum(1 for r in self.new_results if r.order_id is not None),
+            "fills_on_sync": len(self.sync_fills),
+            "fills_on_submission": fills_on_submission,
+            "risk_rejections": risk_rejections_new + self.pre_fill_rejections,
+            "working_orders_checked": self.working_orders_checked,
+            "fills_on_retry": len(self.retry_fills),
+            "total_fills": len(self.sync_fills) + fills_on_submission + len(self.retry_fills),
+            "orders_expired": self.orders_expired,
+            "duplicate_fills_skipped": self.duplicate_fills_skipped,
+            "broker_fills_observed": self.broker_fills_observed,
+            "broker_fills_new": self.broker_fills_new,
+            "broker_fills_duplicate": self.broker_fills_duplicate,
+            "external_fills_observed": self.external_fills_observed,
+            "_seen_ids": self.broker_seen_ids,
+            "_new_ids": self.broker_new_ids,
+            "results": [r.to_dict() for r in self.new_results],
+        }
+        if halt_reason is not None:
+            d["halt_reason"] = halt_reason
+        return d
+
+
 def run_execution_cycle(
     account_id: str,
     conn: sqlite3.Connection,
@@ -1210,34 +1280,16 @@ def run_execution_cycle(
             "results": [],
         }
 
-    _HALTED_BASE = {
-        "execution_state": "HALTED",
-        "new_intents_processed": 0,
-        "new_intents_blocked": True,
-        "stale_symbols": [],
-        "market_state": "unknown",
-        "new_orders_created": 0,
-        "fills_on_sync": 0,
-        "fills_on_submission": 0,
-        "risk_rejections": 0,
-        "working_orders_checked": 0,
-        "fills_on_retry": 0,
-        "total_fills": 0,
-        "orders_expired": 0,
-        "duplicate_fills_skipped": 0,
-        "broker_fills_observed": 0,
-        "broker_fills_new": 0,
-        "broker_fills_duplicate": 0,
-        "external_fills_observed": 0,
-        "results": [],
-    }
+    # 0577: progress accumulator — every exit path calls progress.to_summary() so no
+    # activity committed before a later-stage halt is silently erased from the summary.
+    progress = CycleProgress()
 
     try:
         policy = load_policy(account_id)
         stale_minutes = policy.halt_on_data_stale_minutes()
     except Exception as exc:
         _log.error("POLICY_UNAVAILABLE for %s: %s — halting cycle fail-closed", account_id, exc)
-        return {**_HALTED_BASE, "halt_reason": "POLICY_UNAVAILABLE"}
+        return progress.to_summary("HALTED", "POLICY_UNAVAILABLE")
 
     if broker is None:
         broker = ShadowBrokerAdapter(conn, account_id)
@@ -1253,24 +1305,20 @@ def run_execution_cycle(
             account_id, exc,
         )
         result = _merge_invocation_broker_stats(sync_stats, {
-            **_HALTED_BASE, "halt_reason": "BROKER_STATE_INTEGRITY",
+            **progress.to_summary("HALTED", "BROKER_STATE_INTEGRITY"),
         }, conn)
         result.update(_seen_ids=sync_stats.get("seen_ids", set()),
                       _new_ids=sync_stats.get("new_ids", set()))
         return result
 
-    # 0575: capture sync earnings so later HALTs don't silently zero out already-applied fills
-    _sync_earned = {
-        "fills_on_sync": len(sync_fills),
-        "duplicate_fills_skipped": duplicate_fills_skipped,
-        "total_fills": len(sync_fills),
-        "broker_fills_observed": broker_stats.get("broker_fills_observed", 0),
-        "broker_fills_new": broker_stats.get("broker_fills_new", 0),
-        "broker_fills_duplicate": broker_stats.get("broker_fills_duplicate", 0),
-        "external_fills_observed": broker_stats.get("external_fills_observed", 0),
-        "_seen_ids": broker_stats.get("_seen_ids", set()),
-        "_new_ids": broker_stats.get("_new_ids", set()),
-    }
+    progress.sync_fills = sync_fills
+    progress.duplicate_fills_skipped = duplicate_fills_skipped
+    progress.broker_fills_observed = broker_stats.get("broker_fills_observed", 0)
+    progress.broker_fills_new = broker_stats.get("broker_fills_new", 0)
+    progress.broker_fills_duplicate = broker_stats.get("broker_fills_duplicate", 0)
+    progress.external_fills_observed = broker_stats.get("external_fills_observed", 0)
+    progress.broker_seen_ids = broker_stats.get("_seen_ids", set())
+    progress.broker_new_ids = broker_stats.get("_new_ids", set())
 
     try:
         _refresh_market_prices(account_id, conn)
@@ -1285,83 +1333,57 @@ def run_execution_cycle(
 
     # ── Freshness gate (0221): block new authorizations if any position mark is stale ──
     fresh, stale_symbols = _check_portfolio_mark_freshness(account_id, conn, stale_minutes)
-    new_results: list[ExecutionResult] = []
-    new_intents_blocked = False
+    progress.stale_symbols = stale_symbols
 
     if not fresh:
         _log.warning(
             "Stale market marks for account %s (symbols: %s) — new intent authorization blocked",
             account_id, stale_symbols,
         )
-        new_intents_blocked = True
+        progress.new_intents_blocked = True
+        progress.market_state = "stale"
     else:
+        progress.new_intents_blocked = False
+        progress.market_state = "fresh"
         try:
-            new_results = process_new_intents(account_id, conn, broker=broker)
+            progress.new_results = process_new_intents(account_id, conn, broker=broker)
         except BrokerSubmissionIndeterminate as exc:
             _log.error(
                 "SUBMISSION_INDETERMINATE for %s: %s — halting cycle; reconcile before next run",
                 account_id, exc,
             )
-            return {**_HALTED_BASE, **_sync_earned, "halt_reason": "SUBMISSION_INDETERMINATE"}
+            return progress.to_summary("HALTED", "SUBMISSION_INDETERMINATE")
         except BrokerStateIntegrityError as exc:
             _log.error(
                 "BROKER_STATE_INTEGRITY for %s: %s — halting cycle; reconcile before next run",
                 account_id, exc,
             )
-            return {**_HALTED_BASE, **_sync_earned, "halt_reason": "BROKER_STATE_INTEGRITY"}
+            return progress.to_summary("HALTED", "BROKER_STATE_INTEGRITY")
 
     # Count open orders before retry (snapshot includes orders created this cycle)
-    working_orders_checked = conn.execute(
+    progress.working_orders_checked = conn.execute(
         "SELECT COUNT(*) FROM orders WHERE account_id=? AND state IN ('WORKING','PARTIALLY_FILLED')",
         (account_id,),
     ).fetchone()[0]
 
     try:
-        retry_fills, pre_fill_rejections, orders_expired_retry = process_open_orders(
-            account_id, conn, broker=broker
-        )
+        process_open_orders(account_id, conn, broker=broker, _progress=progress)
     except PolicyUnavailable as exc:
         _log.error("POLICY_UNAVAILABLE in fill retry for %s: %s — halting cycle", account_id, exc)
-        return {**_HALTED_BASE, **_sync_earned, "halt_reason": "POLICY_UNAVAILABLE"}  # 0234: any policy failure → HALTED
+        return progress.to_summary("HALTED", "POLICY_UNAVAILABLE")  # 0234: any policy failure → HALTED
     except BrokerStateIntegrityError as exc:
         _log.error(
             "BROKER_STATE_INTEGRITY in fill retry for %s: %s — halting cycle; reconcile before next run",
             account_id, exc,
         )
-        return {**_HALTED_BASE, **_sync_earned, "halt_reason": "BROKER_STATE_INTEGRITY"}
+        return progress.to_summary("HALTED", "BROKER_STATE_INTEGRITY")
 
     try:
         _write_account_snapshot(account_id, conn, "post_cycle")
     except Exception as exc:
         _log.warning("post-cycle snapshot failed: %s", exc)
 
-    fills_on_submission = sum(1 for r in new_results if r.fill is not None)
-    risk_rejections_new = sum(1 for r in new_results if r.decision == "REJECTED")
-    market_state = "stale" if new_intents_blocked else "fresh"
-
-    return {
-        "execution_state": "OK",
-        "new_intents_processed": len(new_results),
-        "new_intents_blocked": new_intents_blocked,
-        "stale_symbols": stale_symbols,
-        "market_state": market_state,
-        "new_orders_created": sum(1 for r in new_results if r.order_id is not None),
-        "fills_on_sync": len(sync_fills),
-        "fills_on_submission": fills_on_submission,
-        "risk_rejections": risk_rejections_new + pre_fill_rejections,
-        "working_orders_checked": working_orders_checked,
-        "fills_on_retry": len(retry_fills),
-        "total_fills": len(sync_fills) + fills_on_submission + len(retry_fills),
-        "orders_expired": orders_expired_retry,
-        "duplicate_fills_skipped": duplicate_fills_skipped,
-        "broker_fills_observed": broker_stats.get("broker_fills_observed", 0),
-        "broker_fills_new": broker_stats.get("broker_fills_new", 0),
-        "broker_fills_duplicate": broker_stats.get("broker_fills_duplicate", 0),
-        "external_fills_observed": broker_stats.get("external_fills_observed", 0),
-        "_seen_ids": broker_stats.get("_seen_ids", set()),
-        "_new_ids": broker_stats.get("_new_ids", set()),
-        "results": [r.to_dict() for r in new_results],
-    }
+    return progress.to_summary("OK")
 
 
 def _merge_invocation_broker_stats(

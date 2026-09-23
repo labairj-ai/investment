@@ -1,7 +1,7 @@
 # Replace Cycle Exit Accumulation with Mutable Progress Ledger
 
 - **ID:** 0577
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-23
 - **Priority:** normal
 - **Depends:** none
@@ -26,10 +26,22 @@
 
 ## Done when
 
-- [ ] Successful new order submitted in `process_new_intents()` → `process_open_orders()` raises `BrokerStateIntegrityError` → submitted order appears in cycle summary (`new_orders_created ≥ 1`)
-- [ ] Immediate fill during new-intent submission → later HALT → fill counted in `fills_on_submission`
-- [ ] Open-order A fills → open-order B causes integrity HALT → A's fill visible in `fills_on_retry`
-- [ ] Open-order A risk-cancelled → B causes HALT → rejection/cancel activity visible in `risk_rejections` / `orders_expired`
-- [ ] All-success path produces exactly the same metrics as before this change
-- [ ] Existing 0576 tests (`test_sync_fill_preserved_when_*`) still pass unchanged
-- [ ] Full suite remains green (`pytest tests/` passes)
+- [x] Successful new order submitted in `process_new_intents()` → `process_open_orders()` raises `BrokerStateIntegrityError` → submitted order appears in cycle summary (`new_orders_created ≥ 1`)
+- [x] Immediate fill during new-intent submission → later HALT → fill counted in `fills_on_submission`
+- [x] Open-order A fills → open-order B causes integrity HALT → A's fill visible in `fills_on_retry`
+- [x] Open-order A risk-cancelled → B causes HALT → rejection/cancel activity visible in `risk_rejections` / `orders_expired`
+- [x] All-success path produces exactly the same metrics as before this change
+- [x] Existing 0576 tests (`test_sync_fill_preserved_when_*`) still pass unchanged
+- [x] Full suite remains green (`pytest tests/` passes)
+
+## Outcome
+
+**`trade_engine/execution_engine.py`**:
+- Added `from dataclasses import dataclass, field` to imports
+- Added `CycleProgress` dataclass (57 lines) just before `run_execution_cycle`: fields for sync, freshness-gate, intent, and open-order stages; `to_summary(execution_state, halt_reason)` builds the result dict from accumulated state
+- `process_open_orders()` gains `_progress: Optional[CycleProgress] = None` kwarg; three in-place updates mirror each fill/rejection/expiration into `_progress` before any raise
+- `run_execution_cycle()` rewritten to create `progress = CycleProgress()` at entry, populate it after each stage, and call `progress.to_summary(...)` on every exit path (HALTED or OK) — `_HALTED_BASE` and `_sync_earned` dict literals removed
+
+**Invariant achieved**: `HALTED` describes why the cycle stopped; it no longer erases what happened before the stop.
+
+**`tests/test_fill_hardening.py`**: 5 new tests covering all five Done-when scenarios. Full suite: 1454 passed, 0 failed.

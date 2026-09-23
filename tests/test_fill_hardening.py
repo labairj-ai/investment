@@ -318,6 +318,103 @@ def test_cycle_halt_retains_event_fill_observation(setup):
     assert conn.execute('SELECT COUNT(*) FROM fills').fetchone()[0] == 1
 
 
+class _FakeResult:
+    """Minimal ExecutionResult stand-in for CycleProgress tests."""
+    def __init__(self, order_id=None, fill=None, decision='APPROVED'):
+        self.order_id = order_id
+        self.fill = fill
+        self.decision = decision
+    def to_dict(self): return {'order_id': self.order_id, 'decision': self.decision}
+
+
+def test_submitted_order_preserved_when_open_orders_halts(setup):
+    # 0577: process_new_intents succeeds (order created) → process_open_orders raises → order visible
+    conn, broker = setup
+    fake = _FakeResult(order_id=str(uuid.uuid4()))
+    with patch.object(eng, 'process_new_intents', return_value=[fake]), \
+         patch.object(eng, 'process_open_orders', side_effect=eng.BrokerStateIntegrityError('halt')):
+        result = eng.run_execution_cycle(ACCOUNT, conn, broker,
+                                        trading_state=eng.TradingReadyState.TRADING_READY)
+    assert result['execution_state'] == 'HALTED'
+    assert result['new_orders_created'] == 1
+    assert result['new_intents_processed'] == 1
+
+
+def test_submission_fill_preserved_when_open_orders_halts(setup):
+    # 0577: immediate fill during intent submission → process_open_orders raises → fill counted
+    conn, broker = setup
+    fake = _FakeResult(order_id=str(uuid.uuid4()), fill=object())  # non-None fill
+    with patch.object(eng, 'process_new_intents', return_value=[fake]), \
+         patch.object(eng, 'process_open_orders', side_effect=eng.BrokerStateIntegrityError('halt')):
+        result = eng.run_execution_cycle(ACCOUNT, conn, broker,
+                                        trading_state=eng.TradingReadyState.TRADING_READY)
+    assert result['execution_state'] == 'HALTED'
+    assert result['fills_on_submission'] == 1
+    assert result['total_fills'] == 1
+
+
+def test_retry_fill_preserved_when_integrity_halt_on_later_event(setup):
+    # 0577: order A fills (event 1) → INVALID event 2 on same order raises BSI → fill visible
+    # sync_broker_state polls first (call 1 → empty); process_open_orders polls second (call 2 → events)
+    conn, broker = setup
+    bf = fill()
+    oid, cid = local_order(conn, bf)
+    # broker.orders needed for apply_broker_fill ownership check; no ledger fill so sync sees nothing
+    broker.orders[bf.broker_order_id] = BrokerOrder(
+        bf.broker_order_id, bf.symbol, bf.side, bf.qty, bf.qty, 'FILLED', client_order_id=cid)
+    _calls = [0]
+    _orig = broker.poll_order_events
+    def _two_phase(account_id, quote=None):
+        _calls[0] += 1
+        if _calls[0] == 1:
+            return []  # sync phase: nothing to ingest
+        return [
+            BrokerOrderEvent('FILLED', bf.broker_order_id, oid, bf.qty, bf.price,
+                             bf.filled_at, bf.fee, bf.broker_fill_id),
+            BrokerOrderEvent('INVALID_TYPE', bf.broker_order_id, oid),
+        ]
+    broker.poll_order_events = _two_phase
+    result = eng.run_execution_cycle(ACCOUNT, conn, broker,
+                                    trading_state=eng.TradingReadyState.TRADING_READY)
+    assert result['execution_state'] == 'HALTED'
+    assert result['fills_on_retry'] == 1
+    assert result['total_fills'] == 1
+    assert conn.execute('SELECT COUNT(*) FROM fills').fetchone()[0] == 1
+
+
+def test_open_order_rejection_preserved_when_later_halt(setup):
+    # 0577: partial process_open_orders records a pre-fill rejection before raising → visible in summary
+    conn, broker = setup
+
+    def _partial_then_raise(account_id, conn, broker=None, *, _progress=None):
+        if _progress is not None:
+            _progress.pre_fill_rejections += 1
+        raise eng.BrokerStateIntegrityError('order B integrity halt')
+
+    with patch.object(eng, 'process_open_orders', side_effect=_partial_then_raise):
+        result = eng.run_execution_cycle(ACCOUNT, conn, broker,
+                                        trading_state=eng.TradingReadyState.TRADING_READY)
+    assert result['execution_state'] == 'HALTED'
+    assert result['risk_rejections'] == 1
+
+
+def test_all_success_cycle_metrics_via_progress(setup):
+    # 0577: idle OK cycle through CycleProgress.to_summary has all expected keys and sane values
+    conn, broker = setup
+    result = eng.run_execution_cycle(ACCOUNT, conn, broker,
+                                    trading_state=eng.TradingReadyState.TRADING_READY)
+    assert result['execution_state'] == 'OK'
+    for key in ('new_intents_processed', 'new_intents_blocked', 'stale_symbols', 'market_state',
+                'new_orders_created', 'fills_on_sync', 'fills_on_submission', 'risk_rejections',
+                'working_orders_checked', 'fills_on_retry', 'total_fills', 'orders_expired',
+                'duplicate_fills_skipped', 'broker_fills_observed', 'broker_fills_new',
+                'broker_fills_duplicate', 'external_fills_observed', 'results'):
+        assert key in result, f'missing key: {key}'
+    assert result['total_fills'] == 0
+    assert result['market_state'] == 'fresh'
+    assert result['new_intents_blocked'] is False
+
+
 @pytest.mark.parametrize('exc_type', [eng.BrokerSubmissionIndeterminate, eng.BrokerStateIntegrityError])
 def test_sync_fill_preserved_when_process_new_intents_halts(setup, exc_type):
     # 0576: sync applies fill, then process_new_intents halts — fill must still appear in result
