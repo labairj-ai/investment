@@ -29,14 +29,12 @@ def _get_closing_price(ticker: str, date_str: str) -> float | None:
     """Fetch the official closing price for date_str exactly. Returns None if unavailable (0364)."""
     try:
         import yfinance as yf
-        d = _date.fromisoformat(date_str)
-        hist = yf.download(
-            ticker,
-            start=(d - timedelta(days=5)).isoformat(),
-            end=(d + timedelta(days=1)).isoformat(),
+        from datetime import date as _d
+        end = (_d.fromisoformat(date_str) + timedelta(days=1)).isoformat()
+        hist = yf.Ticker(ticker).history(
+            start=date_str,
+            end=end,
             auto_adjust=False,
-            progress=False,
-            multi_level_index=False,
         )
         if hist is None or hist.empty:
             return None
