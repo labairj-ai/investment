@@ -106,7 +106,16 @@ def _make_db():
     )""")
     conn.execute("""CREATE TABLE company_financials (
         ticker TEXT, period_end TEXT, period_type TEXT,
-        revenue REAL, gross_profit REAL
+        revenue REAL, gross_profit REAL,
+        total_debt REAL, cash REAL
+    )""")
+    conn.execute("""CREATE TABLE guardian_flags (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ticker TEXT NOT NULL,
+        reason TEXT,
+        source TEXT NOT NULL DEFAULT 'guardian',
+        flagged_at TEXT NOT NULL,
+        resolved_at TEXT
     )""")
     return conn
 
@@ -160,7 +169,7 @@ class TestNewsHash:
         assert h1 != h2
 
     def test_body_change_past_char80_invalidates_hash(self):
-        """0596: hash covers body[:120], not just [:80] — change at chars 81-119 must invalidate."""
+        """0596/0601: hash covers body[:150] — change at chars 81-119 must invalidate."""
         base = _make_article("AAPL", "Apple Q3", url="https://x.com/3")
         art1 = dict(base, body="x" * 80 + "SUFFIX_A_UNIQUE")
         art2 = dict(base, body="x" * 80 + "SUFFIX_B_UNIQUE")
@@ -806,7 +815,8 @@ class TestEpisodeImmutability:
         rows = conn.execute(
             "SELECT event_type, direction, magnitude, signal_strength, portfolio_priority, "
             "confirmation_class, thesis_relevance, pillar_name, trend_status, "
-            "occurrence_count_30d, event_fingerprint, causal_driver, news_intelligence_version "
+            "occurrence_count_30d, event_fingerprint, causal_driver, news_intelligence_version, "
+            "news_snapshot_hash "
             "FROM news_events WHERE ticker='AAPL' AND day=? "
             "ORDER BY portfolio_priority DESC LIMIT 5",
             (today,)
@@ -918,3 +928,312 @@ class TestVersioning:
             assert row[1] == day1, (
                 f"first_seen should be {day1}, got {row[1]} on day {row[0]}"
             )
+
+
+# ── Tests: canonical snapshot contract (0601) ─────────────────────────────────
+
+class TestCanonicalSnapshot:
+
+    def test_body_change_chars_121_150_invalidates_hash(self):
+        """0601a: body[:150] — change at chars 121-149 must invalidate the hash."""
+        base = _make_article("AAPL", "Apple Q3", url="https://x.com/q3a")
+        art1 = dict(base, body="x" * 120 + "SUFFIX_A_UNIQUE")
+        art2 = dict(base, body="x" * 120 + "SUFFIX_B_UNIQUE")
+        h1 = intel.compute_news_hash({"AAPL": [art1]})
+        h2 = intel.compute_news_hash({"AAPL": [art2]})
+        assert h1 != h2, "Body change at chars 121-149 must invalidate hash (0601a)"
+
+    def test_snapshot_hash_includes_ticker(self):
+        """0601b: ticker is in hash payload — same article for different holding → different hash."""
+        art = _make_article("AAPL", "Markets news", url="https://x.com/shared1")
+        h1 = intel.compute_news_hash({"AAPL": [art]})
+        h2 = intel.compute_news_hash({"MSFT": [art]})
+        assert h1 != h2, "Ticker must be in hash payload (0601b)"
+
+    def test_shared_article_both_tickers_accepted(self):
+        """0601c: same article for two holdings → two distinct manifest entries, both accepted."""
+        art = _make_article("AAPL", "Industry news", url="https://x.com/shared2")
+        by_ticker = {"AAPL": [art], "MSFT": [art]}
+        manifest = intel._build_article_manifest(by_ticker)
+        assert len(manifest) == 2, "Shared article must produce two distinct evidence_id entries"
+        aid = intel._article_id(art)
+        eid_aapl = intel._evidence_id("AAPL", aid)
+        eid_msft = intel._evidence_id("MSFT", aid)
+        assert eid_aapl in manifest
+        assert eid_msft in manifest
+        assert manifest[eid_aapl]["ticker"] == "AAPL"
+        assert manifest[eid_msft]["ticker"] == "MSFT"
+
+    def test_episode_includes_snapshot_hash(self):
+        """0601d: _build_news_state() JSON must include news_snapshot_hash."""
+        import uuid
+        conn = _make_db()
+        import datetime as _dt
+        today = _dt.date.today().isoformat()
+        fp = intel._event_fingerprint("META", "EARNINGS", "POSITIVE")
+        conn.execute(
+            "INSERT INTO news_events "
+            "(event_id, ticker, day, event_type, direction, magnitude, expected_horizon, "
+            "confidence, extracted_at, trend_status, signal_strength, portfolio_priority, "
+            "event_fingerprint, causal_event_key, news_intelligence_version, news_snapshot_hash) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (str(uuid.uuid4()), "META", today, "EARNINGS", "POSITIVE", "HIGH", "SHORT",
+             0.8, today, "NEW", 70.0, 7.0, fp, "META_Q3_BEAT",
+             intel.NEWS_INTELLIGENCE_VERSION, "abc123snapshot"),
+        )
+        conn.commit()
+
+        with patch.dict("sys.modules", {"agents.news.intelligence": intel}):
+            from agents.learning.episode_capture import _build_news_state
+            state_json = _build_news_state("META", conn)
+
+        assert state_json is not None
+        state = json.loads(state_json)
+        assert "news_snapshot_hash" in state, "news_snapshot_hash must be in episode news_state"
+        assert state["news_snapshot_hash"] == "abc123snapshot"
+
+
+# ── Tests: independent event-state sweep (0602) ───────────────────────────────
+
+class TestIndependentEventStateSweep:
+
+    def test_sweep_advances_fading_without_extraction(self):
+        """0602: calling sweep standalone (no run_pipeline) advances FADING for 20d-old event."""
+        from datetime import date as _date, timedelta as _td
+        conn = _make_db()
+        today = _date.today().isoformat()
+        past_day = (_date.today() - _td(days=20)).isoformat()
+        _insert_event(conn, "AAPL", "EARNINGS", "NEGATIVE", past_day,
+                      causal_event_key="AAPL_FADING_STANDALONE")
+        intel.update_event_state_sweep(today, conn)
+        row = conn.execute(
+            "SELECT state FROM news_event_state "
+            "WHERE ticker='AAPL' AND causal_event_key='AAPL_FADING_STANDALONE'"
+        ).fetchone()
+        assert row is not None, "Sweep must register state for historical events"
+        assert row[0] == "FADING", f"Expected FADING for 20d absence, got {row[0]}"
+
+
+# ── Tests: contract tightening (0603) ─────────────────────────────────────────
+
+class TestContractTightening:
+
+    def test_pair_mismatch_falls_back_to_keyword(self):
+        """0603a: LLM returns correct name but wrong type → keyword result is preserved."""
+        thesis = {
+            "status": "ACTIVE",
+            "pillars": [
+                {"name": "Revenue Guidance Outlook", "description": "Annual guidance trajectory",
+                 "importance": 80, "status": "ON_TRACK"},
+            ],
+            "key_risks": [], "catalysts": [],
+            "review_triggers": None, "add_condition": None,
+            "trim_condition": None, "exit_condition": None,
+        }
+        llm_response = {
+            "component_type": "risk",               # wrong type — name belongs to a pillar
+            "component_name": "Revenue Guidance Outlook",
+            "relationship": "WEAKENS",
+            "relevance": 0.8,
+            "trigger_state": "NONE",
+            "explanation": "Guidance miss",
+            "confidence": 0.85,
+        }
+        with patch("agent_db.get_thesis", return_value=thesis):
+            with patch.object(intel, "_thesis_map_llm", return_value=llm_response):
+                result = intel.map_thesis_relevance(
+                    "GUIDANCE_CHANGE", "AAPL",
+                    ev_evidence="Apple cuts guidance",
+                    ev_metric="guidance",
+                    ev_direction="NEGATIVE",
+                    ollama_client_mod=MagicMock(),
+                )
+        # Pair ("risk", "Revenue Guidance Outlook") is not in candidate_pairs
+        # → keyword fallback preserved: pillar_name set, risk_name not set
+        assert result["risk_name"] is None, (
+            "Pair-mismatch: LLM risk type for a pillar name must not set risk_name"
+        )
+        assert result["pillar_name"] == "Revenue Guidance Outlook", (
+            f"Keyword fallback must retain pillar_name, got {result}"
+        )
+
+    def test_extended_types_normalized_to_trigger_before_llm(self):
+        """0603b: add_condition/trim_condition/exit_condition normalized to 'trigger' for LLM."""
+        thesis = {
+            "status": "ACTIVE",
+            "pillars": [],
+            "key_risks": [],
+            "catalysts": [],
+            "review_triggers": None,
+            "add_condition": "revenue guidance miss above 10%",
+            "trim_condition": None,
+            "exit_condition": None,
+        }
+        captured = []
+
+        def capture_candidates(et, direction, evidence, metric, candidates, client):
+            captured.extend(candidates)
+            return {}
+
+        with patch("agent_db.get_thesis", return_value=thesis):
+            with patch.object(intel, "_thesis_map_llm", side_effect=capture_candidates):
+                intel.map_thesis_relevance(
+                    "GUIDANCE_CHANGE", "AAPL",
+                    ev_evidence="Guidance cut",
+                    ev_metric="guidance",
+                    ev_direction="NEGATIVE",
+                    ollama_client_mod=MagicMock(),
+                )
+
+        ext_types = {c["component_type"] for c in captured}
+        assert "add_condition" not in ext_types, (
+            f"add_condition must be normalized before LLM, got: {ext_types}"
+        )
+        if captured:
+            assert "trigger" in ext_types, (
+                "add_condition candidates must appear as 'trigger' type in LLM payload"
+            )
+
+    def test_fresh_db_has_v2_columns(self):
+        """0603c: _init_ai_tables() on a fresh empty DB produces news_events with v2 columns."""
+        import tempfile
+        from pathlib import Path as _Path
+        sys.path.insert(0, str(intel.PROJECT_DIR))
+        import portfolio_ai
+
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as _f:
+            tmp_path = _Path(_f.name)
+
+        try:
+            with patch.object(portfolio_ai, "DB_PATH", tmp_path):
+                portfolio_ai._init_ai_tables()
+
+            import sqlite3 as _sq
+            _conn = _sq.connect(str(tmp_path))
+            cols = {row[1] for row in _conn.execute("PRAGMA table_info(news_events)").fetchall()}
+            _conn.close()
+
+            for col in ("causal_event_key", "pillar_health_state",
+                        "event_trigger_state", "event_trigger_proximity"):
+                assert col in cols, f"v2 column '{col}' missing from fresh news_events table"
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+
+# ── Tests: fundamentals dispatch (0604) ───────────────────────────────────────
+
+class TestFundamentalsDispatch:
+
+    def _five_quarters(self, ticker="AAPL",
+                       rev_curr=118.0, rev_year_ago=100.0,
+                       gp_curr=35.0, gp_year_ago=30.0,
+                       debt_curr=50.0, cash_curr=20.0,
+                       debt_year_ago=60.0, cash_year_ago=15.0):
+        return [
+            (ticker, "2026-03-31", "Q", rev_curr, gp_curr, debt_curr, cash_curr),
+            (ticker, "2025-12-31", "Q", 115.0, 34.0, 52.0, 18.0),
+            (ticker, "2025-09-30", "Q", 110.0, 33.0, 55.0, 16.0),
+            (ticker, "2025-06-30", "Q", 105.0, 31.0, 57.0, 17.0),
+            (ticker, "2025-03-31", "Q", rev_year_ago, gp_year_ago, debt_year_ago, cash_year_ago),
+        ]
+
+    def _load(self, rows):
+        conn = _make_db()
+        for t, pe, pt, rev, gp, debt, cash in rows:
+            conn.execute(
+                "INSERT OR REPLACE INTO company_financials "
+                "(ticker, period_end, period_type, revenue, gross_profit, total_debt, cash) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (t, pe, pt, rev, gp, debt, cash),
+            )
+        conn.commit()
+        return conn
+
+    def test_demand_event_yoy_revenue_positive(self):
+        conn = self._load(self._five_quarters(rev_curr=118.0, rev_year_ago=100.0))
+        assert intel._get_fundamentals_trend("AAPL", conn, "DEMAND") == "positive"
+
+    def test_earnings_event_yoy_revenue_negative(self):
+        conn = self._load(self._five_quarters(rev_curr=90.0, rev_year_ago=100.0))
+        assert intel._get_fundamentals_trend("AAPL", conn, "EARNINGS") == "negative"
+
+    def test_margin_event_uses_gross_margin(self):
+        conn = self._load(self._five_quarters(
+            rev_curr=100.0, gp_curr=35.0, rev_year_ago=100.0, gp_year_ago=30.0
+        ))
+        assert intel._get_fundamentals_trend("AAPL", conn, "MARGIN") == "positive"
+
+    def test_insufficient_history_returns_none(self):
+        conn = _make_db()
+        conn.execute(
+            "INSERT INTO company_financials (ticker, period_end, period_type, revenue) VALUES (?,?,?,?)",
+            ("AAPL", "2026-03-31", "Q", 100.0),
+        )
+        conn.commit()
+        assert intel._get_fundamentals_trend("AAPL", conn, "EARNINGS") is None
+
+    def test_yoy_not_sequential_qoq(self):
+        """YoY: compare Q[0] vs Q[4], not Q[0] vs Q[1] — avoids seasonality noise."""
+        rows = self._five_quarters(rev_curr=118.0, rev_year_ago=100.0)
+        conn = self._load(rows)
+        # Make Q1 (index 1) larger than Q0 so sequential QoQ would say "negative"
+        conn.execute(
+            "UPDATE company_financials SET revenue=130.0 WHERE ticker='AAPL' AND period_end='2025-12-31'"
+        )
+        conn.commit()
+        result = intel._get_fundamentals_trend("AAPL", conn, "DEMAND")
+        assert result == "positive", "YoY should be positive even when sequential QoQ reverses"
+
+
+# ── Tests: agent findings channel (0604) ──────────────────────────────────────
+
+class TestAgentFindings:
+
+    def test_flag_before_snapshot_is_accepted(self):
+        """Finding predating snapshot → independent signal, accepted."""
+        conn = _make_db()
+        conn.execute(
+            "INSERT INTO guardian_flags (ticker, reason, flagged_at) VALUES (?,?,?)",
+            ("AAPL", "Regulatory headwinds", "2026-09-20 10:00:00"),
+        )
+        conn.commit()
+        result = intel._get_agent_findings_flag(
+            "AAPL", conn, snapshot_captured_at="2026-09-23 08:00:00"
+        )
+        assert result is not None
+        assert result["flagged"] is True
+        assert result["source"] == "guardian"
+        assert "flagged_at" in result
+
+    def test_flag_after_snapshot_is_rejected(self):
+        """Flag after snapshot captured_at → may be triggered by same news, rejected."""
+        conn = _make_db()
+        conn.execute(
+            "INSERT INTO guardian_flags (ticker, reason, flagged_at) VALUES (?,?,?)",
+            ("AAPL", "Late finding", "2026-09-23 12:00:00"),
+        )
+        conn.commit()
+        result = intel._get_agent_findings_flag(
+            "AAPL", conn, snapshot_captured_at="2026-09-23 08:00:00"
+        )
+        assert result is None, "Flag after snapshot must be rejected (independence check)"
+
+    def test_resolved_flag_not_returned(self):
+        """Resolved flags do not vote."""
+        conn = _make_db()
+        conn.execute(
+            "INSERT INTO guardian_flags (ticker, reason, flagged_at, resolved_at) VALUES (?,?,?,?)",
+            ("AAPL", "Old concern", "2026-09-01 10:00:00", "2026-09-10 00:00:00"),
+        )
+        conn.commit()
+        result = intel._get_agent_findings_flag(
+            "AAPL", conn, snapshot_captured_at="2026-09-23 08:00:00"
+        )
+        assert result is None, "Resolved flag must not be returned"
+
+    def test_missing_guardian_table_returns_none(self):
+        """Missing guardian_flags table must not raise — returns None gracefully."""
+        import sqlite3 as _sq3
+        conn = _sq3.connect(":memory:")  # fresh DB with no tables
+        result = intel._get_agent_findings_flag("AAPL", conn)
+        assert result is None

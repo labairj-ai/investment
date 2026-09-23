@@ -118,17 +118,28 @@ def _article_id(art: dict) -> str:
     return hashlib.sha256(key.encode()).hexdigest()[:16]
 
 
+def _evidence_id(ticker: str, article_id: str) -> str:
+    """Ticker-scoped manifest key. Same article covering two tickers yields two distinct keys."""
+    return hashlib.sha256((ticker.upper() + article_id).encode()).hexdigest()[:16]
+
+
 def _build_article_manifest(by_ticker: dict) -> dict:
+    """
+    Build manifest keyed by evidence_id = hash(ticker + article_id).
+    Each (ticker, article) pair is a distinct entry — shared articles never collide.
+    """
     manifest = {}
     for ticker, articles in by_ticker.items():
         for art in articles:
             aid = _article_id(art)
-            manifest[aid] = {
-                "ticker": ticker,
-                "title":    art.get("title", ""),
-                "source":   art.get("source", ""),
-                "pub_date": art.get("pub_date", ""),
-                "url":      art.get("url", ""),
+            eid = _evidence_id(ticker, aid)
+            manifest[eid] = {
+                "ticker":     ticker,
+                "article_id": aid,
+                "title":      art.get("title", ""),
+                "source":     art.get("source", ""),
+                "pub_date":   art.get("pub_date", ""),
+                "url":        art.get("url", ""),
             }
     return manifest
 
@@ -144,8 +155,8 @@ def _event_fingerprint(ticker: str, event_type: str, direction: str,
 def build_news_snapshot(by_ticker: dict) -> dict:
     """
     Build a canonical NewsSnapshot after enrichment.
-    model_input_text = exact bytes supplied to the LLM (body[:120] else excerpt[:80]).
-    Hash covers full model_input_text — body changes past char 80 now invalidate cache.
+    model_input_text = exact bytes supplied to the LLM (body[:150] else excerpt[:100]).
+    Hash payload includes ticker — reassigning article to different holding changes hash.
     Returns {snapshot_id, captured_at, articles: [...], snapshot_hash}.
     """
     articles = []
@@ -154,7 +165,7 @@ def build_news_snapshot(by_ticker: dict) -> dict:
             aid = _article_id(art)
             body    = art.get("body", "") or ""
             excerpt = art.get("excerpt", "") or ""
-            model_input_text = body[:120] if body else excerpt[:80]
+            model_input_text = body[:150] if body else excerpt[:100]
             content_hash = hashlib.sha256(
                 (art.get("url", "") + model_input_text).encode()
             ).hexdigest()[:16]
@@ -169,8 +180,10 @@ def build_news_snapshot(by_ticker: dict) -> dict:
                 "content_hash":     content_hash,
             })
 
+    # Hash includes ticker so reassigning an article to a different holding changes the hash.
+    # Articles are already in sorted-ticker order (sorted(by_ticker.keys()) above).
     payload = json.dumps(
-        [(a["article_id"], a["model_input_text"]) for a in articles],
+        [(a["ticker"], a["article_id"], a["model_input_text"]) for a in articles],
         separators=(",", ":"),
     )
     snapshot_hash = hashlib.sha256(payload.encode()).hexdigest()[:16]
@@ -204,7 +217,7 @@ def _build_event_extraction_prompt(by_ticker: dict, manifest: dict) -> str:
             title  = art.get("title", "")
             body   = art.get("body", "")
             excerpt = art.get("excerpt", "")
-            detail = body[:120] if body else excerpt[:80] if excerpt else ""
+            detail = body[:150] if body else excerpt[:100] if excerpt else ""
             news_block += f"  [id:{aid}] [{src}] {title}\n"
             if detail:
                 news_block += f"    {detail}\n"
@@ -325,11 +338,13 @@ def extract_events_llm(by_ticker: dict, ollama_client_mod,
             conf = float(ev.get("confidence", 0.7))
             conf = max(0.0, min(1.0, conf))
 
-            # 0597: validate article_ids — only IDs belonging to this ticker
+            # 0597/0601c: validate article_ids using ticker-scoped evidence_id keys.
+            # An article covering two holdings produces two distinct manifest entries,
+            # so cross-ticker validation is unambiguous even for shared articles.
             raw_ids = ev.get("article_ids") or []
             validated_ids = [
                 aid for aid in raw_ids
-                if aid in manifest and manifest[aid]["ticker"].upper() == event_ticker
+                if _evidence_id(event_ticker, aid) in manifest
             ]
 
             # 0597: reject event with zero valid same-ticker article IDs
@@ -350,7 +365,11 @@ def extract_events_llm(by_ticker: dict, ollama_client_mod,
                 cek = None
 
             # Titles derived exclusively from validated manifest entries (0597: no fallback)
-            titles = [manifest[aid]["title"] for aid in validated_ids if manifest.get(aid)]
+            titles = [
+                manifest[_evidence_id(event_ticker, aid)]["title"]
+                for aid in validated_ids
+                if _evidence_id(event_ticker, aid) in manifest
+            ]
 
             clean_events.append({
                 "event_type":      et,
@@ -550,9 +569,13 @@ def map_thesis_relevance(event_type: str, ticker: str,
 
         # LLM semantic mapping (0591+0599) — only when evidence available
         if ollama_client_mod and (ev_evidence or ev_metric):
+            # 0603b: normalize extended types to "trigger" before LLM call so the
+            # prompt contract stays clean (pillar|risk|catalyst|trigger|none only).
+            _TYPE_NORMALIZE = {"add_condition": "trigger", "trim_condition": "trigger",
+                               "exit_condition": "trigger"}
             candidate_payload = [
                 {
-                    "component_type": c["type"],
+                    "component_type": _TYPE_NORMALIZE.get(c["type"], c["type"]),
                     "component_name": c["name"],
                     "description": c["raw"].get("description", "") if isinstance(c["raw"], dict) else "",
                 }
@@ -568,13 +591,20 @@ def map_thesis_relevance(event_type: str, ticker: str,
                 result["thesis_relationship"] = llm_result.get("relationship")
                 result["thesis_explanation"]  = llm_result.get("explanation")
 
-                # 0599: update pillar/risk/catalyst_name from LLM's chosen component
+                # 0599/0603a: update pillar/risk/catalyst_name from LLM's chosen component.
+                # Validate the full (type, name) pair — name-only validation can match
+                # the wrong type (e.g. LLM returns type=risk for a pillar component).
                 llm_ctype = llm_result.get("component_type", "none")
                 llm_cname = llm_result.get("component_name")
                 if llm_cname and llm_ctype != "none":
-                    # Validate against candidate list before accepting
-                    candidate_names = {c["name"] for c in top_candidates}
-                    if llm_cname in candidate_names:
+                    # Build candidate_pairs using normalized types (same normalization as payload)
+                    _TYPE_NORMALIZE_V = {"add_condition": "trigger", "trim_condition": "trigger",
+                                         "exit_condition": "trigger"}
+                    candidate_pairs = {
+                        (_TYPE_NORMALIZE_V.get(c["type"], c["type"]), c["name"])
+                        for c in top_candidates
+                    }
+                    if (llm_ctype, llm_cname) in candidate_pairs:
                         # Clear all, then set the LLM's chosen one
                         result["pillar_name"]    = None
                         result["risk_name"]      = None
@@ -691,15 +721,28 @@ def compute_trend(ticker: str, event_type: str, direction: str,
     }
 
 
+_EVENT_STATE_RESOLVED_DAYS = 30  # days without evidence before RESOLVED transition
+
 def update_event_state_sweep(day: str, conn: sqlite3.Connection) -> None:
     """
     Update news_event_state for all known causal_event_keys (0598).
     NEVER inserts synthetic rows into news_events.
+    Callable standalone, independent of run_pipeline() (0602).
 
     State machine:
-    - Real event today         → ACTIVE
-    - Absent ≤30d from last seen → FADING
-    - Absent >30d from last seen → RESOLVED
+    - Real event today                          → ACTIVE
+    - Absent ≤30d from last seen               → FADING
+    - Absent >30d from last seen               → RESOLVED
+
+    IMPORTANT — RESOLVED semantics (0602):
+    RESOLVED means "no new supporting evidence for more than 30 days."
+    It does NOT mean the underlying business issue is resolved.
+    A lawsuit, regulatory inquiry, or structural risk can fall out of
+    headlines for a month while the case remains open.  Treat RESOLVED
+    as EVIDENCE_STALE, not ISSUE_CLOSED.  A genuine resolution requires
+    an explicit confirming event (e.g. a REGULATORY event, direction
+    POSITIVE, citing a settlement or dismissal) — which is a separate
+    observation, not inferred from silence.
     """
     today_dt = datetime.strptime(day, "%Y-%m-%d")
     d30 = (today_dt - timedelta(days=30)).strftime("%Y-%m-%d")
@@ -900,41 +943,133 @@ def _get_macro_score(ticker: str, conn: sqlite3.Connection) -> dict:
     return {}
 
 
-def _get_fundamentals_trend(ticker: str, conn: sqlite3.Connection) -> Optional[str]:
+_FUNDAMENTALS_REVENUE_EVENTS = frozenset(
+    {"DEMAND", "GUIDANCE_CHANGE", "EARNINGS", "PRODUCT", "CAPEX"}
+)
+_FUNDAMENTALS_MARGIN_EVENTS = frozenset({"MARGIN", "PRICING"})
+_FUNDAMENTALS_DEBT_EVENTS   = frozenset({"CREDIT_DEBT", "REGULATORY"})
+
+
+def _get_fundamentals_trend(ticker: str, conn: sqlite3.Connection,
+                             event_type: str = "EARNINGS") -> Optional[str]:
     """
-    Revenue trend from financial pipeline — stub for FUNDAMENTALS channel (0600).
-    Returns 'positive', 'negative', or None.
+    Event-specific fundamentals signal from company_financials (0604).
+    Uses YoY quarterly comparison (current Q vs same Q 4 quarters ago) when ≥5 quarters
+    available; returns None if history is insufficient.
+
+    Dispatch:
+      DEMAND/GUIDANCE_CHANGE/EARNINGS/PRODUCT/CAPEX → YoY revenue growth
+      MARGIN/PRICING                                  → YoY gross-margin trend
+      CREDIT_DEBT/REGULATORY                         → YoY net-debt/revenue trend
+      (others)                                        → YoY revenue (generic fallback)
     """
+    et = (event_type or "EARNINGS").upper()
     try:
         rows = conn.execute(
-            "SELECT period_end, revenue FROM company_financials "
+            "SELECT period_end, revenue, gross_profit, total_debt, cash "
+            "FROM company_financials "
             "WHERE ticker=? AND period_type='Q' AND revenue IS NOT NULL "
-            "ORDER BY period_end DESC LIMIT 2",
+            "ORDER BY period_end DESC LIMIT 5",
             (ticker,)
         ).fetchall()
-        if len(rows) < 2 or rows[1][1] is None or rows[1][1] == 0:
+
+        if len(rows) < 5:
             return None
-        growth = (rows[0][1] - rows[1][1]) / abs(rows[1][1])
-        if growth > 0.03:
-            return "positive"
-        if growth < -0.03:
-            return "negative"
-        return None
+
+        curr     = rows[0]  # most recent quarter
+        year_ago = rows[4]  # same quarter prior year (4 quarters back)
+
+        if et in _FUNDAMENTALS_MARGIN_EVENTS:
+            gp_curr = curr[2]
+            gp_ago  = year_ago[2]
+            rev_curr = curr[1]
+            rev_ago  = year_ago[1]
+            if not gp_curr or not gp_ago or not rev_curr or not rev_ago:
+                return None
+            margin_curr = gp_curr / rev_curr
+            margin_ago  = gp_ago  / rev_ago
+            diff = margin_curr - margin_ago
+            if diff > 0.02:
+                return "positive"
+            if diff < -0.02:
+                return "negative"
+            return None
+
+        elif et in _FUNDAMENTALS_DEBT_EVENTS:
+            td_curr = curr[3]
+            ca_curr = curr[4]
+            td_ago  = year_ago[3]
+            ca_ago  = year_ago[4]
+            rev_ago = year_ago[1]
+            if td_curr is None or td_ago is None or not rev_ago:
+                return None
+            nd_curr = (td_curr or 0) - (ca_curr or 0)
+            nd_ago  = (td_ago  or 0) - (ca_ago  or 0)
+            diff = (nd_curr - nd_ago) / abs(rev_ago)
+            if diff < -0.05:  # leverage improved
+                return "positive"
+            if diff > 0.05:   # leverage worsened
+                return "negative"
+            return None
+
+        else:
+            # Revenue events and fallback
+            rev_curr = curr[1]
+            rev_ago  = year_ago[1]
+            if not rev_curr or not rev_ago:
+                return None
+            growth = (rev_curr - rev_ago) / abs(rev_ago)
+            if growth > 0.03:
+                return "positive"
+            if growth < -0.03:
+                return "negative"
+            return None
+
     except Exception:
         return None
 
 
-def _get_agent_findings_flag(ticker: str, conn: sqlite3.Connection) -> Optional[str]:
-    """Agent findings channel stub (0600). Returns None until Guardian wiring lands."""
+def _get_agent_findings_flag(
+    ticker: str,
+    conn: sqlite3.Connection,
+    snapshot_captured_at: Optional[str] = None,
+) -> Optional[dict]:
+    """
+    Agent findings channel (0604). Reads guardian_flags table.
+    Independence check: only flags recorded BEFORE the current snapshot are counted.
+    A Guardian agent that reacts to the same news articles is not an independent signal —
+    only flags predating the snapshot captured_at timestamp are accepted.
+    Returns {'flagged': True, 'source': ..., 'flagged_at': ..., 'reason': ...} or None.
+    """
+    try:
+        cutoff = snapshot_captured_at or datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        row = conn.execute(
+            "SELECT source, flagged_at, reason FROM guardian_flags "
+            "WHERE ticker=? AND flagged_at < ? "
+            "AND (resolved_at IS NULL OR resolved_at > ?) "
+            "ORDER BY flagged_at DESC LIMIT 1",
+            (ticker, cutoff, cutoff),
+        ).fetchone()
+        if row:
+            return {
+                "flagged":    True,
+                "source":     row[0] or "guardian",
+                "flagged_at": row[1],
+                "reason":     row[2] or "",
+            }
+    except Exception:
+        pass
     return None
 
 
-def attach_confirmation(event: dict, ticker: str, conn: sqlite3.Connection) -> dict:
+def attach_confirmation(event: dict, ticker: str, conn: sqlite3.Connection,
+                        snapshot_captured_at: Optional[str] = None) -> dict:
     """
     Classify event as NEWS_ONLY / SOFT / MULTI_SIGNAL / CONTRADICTED.
     0600: each channel casts at most one vote.
     Channels: PRICE (best of 1d/5d), THESIS, MACRO, FUNDAMENTALS, AGENT_FINDINGS.
     Trend is not a channel (0592). MULTI_SIGNAL requires 3+ independent channels.
+    0604: FUNDAMENTALS dispatches on event_type; AGENT_FINDINGS requires pre-snapshot flag.
     """
     direction  = event.get("direction", "NEUTRAL")
     event_type = event.get("event_type", "")
@@ -987,8 +1122,8 @@ def attach_confirmation(event: dict, ticker: str, conn: sqlite3.Connection) -> d
             if direction == "NEGATIVE" and rate_sens >= 7:
                 corroborating += 1
 
-    # FUNDAMENTALS channel — one vote (0600 stub)
-    fund_trend = _get_fundamentals_trend(ticker, conn)
+    # FUNDAMENTALS channel — one vote; dispatch on event_type (0604)
+    fund_trend = _get_fundamentals_trend(ticker, conn, event_type=event_type)
     if fund_trend is not None:
         signals["fundamentals_trend"] = fund_trend
         if direction == "NEGATIVE" and fund_trend == "negative":
@@ -998,11 +1133,12 @@ def attach_confirmation(event: dict, ticker: str, conn: sqlite3.Connection) -> d
         elif direction == "NEGATIVE" and fund_trend == "positive":
             contradicting += 1
 
-    # AGENT_FINDINGS channel — one vote (0600 stub)
-    agent_flag = _get_agent_findings_flag(ticker, conn)
+    # AGENT_FINDINGS channel — one vote; independence-checked (0604)
+    agent_flag = _get_agent_findings_flag(ticker, conn,
+                                          snapshot_captured_at=snapshot_captured_at)
     if agent_flag is not None:
-        signals["agent_findings"] = agent_flag
-        if direction == "NEGATIVE" and agent_flag == "flagged":
+        signals["agent_findings"] = agent_flag  # includes source, flagged_at, reason
+        if direction == "NEGATIVE" and agent_flag.get("flagged"):
             corroborating += 1
 
     if direction in ("NEUTRAL", "MIXED"):
@@ -1199,23 +1335,27 @@ def run_pipeline(by_ticker: dict,
     if day is None:
         day = date.today().isoformat()
 
-    # 0596: use canonical snapshot hash; build from by_ticker if not provided
+    # 0596/0601c: use canonical snapshot hash; build from by_ticker if not provided.
+    # Manifest keys are evidence_id = hash(ticker + article_id) so shared articles
+    # get distinct entries per holding.
     if snapshot is not None:
-        news_snapshot_hash = snapshot["snapshot_hash"]
-        # Build manifest from snapshot articles
+        news_snapshot_hash    = snapshot["snapshot_hash"]
+        snapshot_captured_at  = snapshot.get("captured_at")
         manifest = {
-            a["article_id"]: {
-                "ticker":   a["ticker"],
-                "title":    a["title"],
-                "source":   a["source"],
-                "pub_date": a["published_at"],
-                "url":      a["url"],
+            _evidence_id(a["ticker"], a["article_id"]): {
+                "ticker":     a["ticker"],
+                "article_id": a["article_id"],
+                "title":      a["title"],
+                "source":     a["source"],
+                "pub_date":   a["published_at"],
+                "url":        a["url"],
             }
             for a in snapshot["articles"]
         }
     else:
         snap = build_news_snapshot(by_ticker)
-        news_snapshot_hash = snap["snapshot_hash"]
+        news_snapshot_hash   = snap["snapshot_hash"]
+        snapshot_captured_at = snap.get("captured_at")
         manifest = None  # built inside extract_events_llm
 
     article_count = sum(len(v) for v in by_ticker.values())
@@ -1250,7 +1390,8 @@ def run_pipeline(by_ticker: dict,
             )
             ev.update(trend_info)
 
-            confirm_info = attach_confirmation(ev, ticker, conn)
+            confirm_info = attach_confirmation(ev, ticker, conn,
+                                              snapshot_captured_at=snapshot_captured_at)
             ev.update(confirm_info)
 
             score_info = score_event(ev, position_weight=pos_wt)

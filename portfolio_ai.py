@@ -358,7 +358,15 @@ def _init_ai_tables():
         confirmation_signals TEXT,
         skepticism_note     TEXT,
         news_snapshot_hash  TEXT,
-        extracted_at        TEXT NOT NULL
+        extracted_at        TEXT NOT NULL,
+        event_fingerprint   TEXT,
+        article_ids_json    TEXT,
+        causal_driver       TEXT,
+        news_intelligence_version TEXT,
+        causal_event_key    TEXT,
+        pillar_health_state TEXT,
+        event_trigger_state TEXT,
+        event_trigger_proximity REAL DEFAULT 0.0
     )""")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_news_events_ticker_day "
@@ -772,6 +780,19 @@ def _init_ai_tables():
             )
         except Exception:
             pass
+    # Guardian flags — agent findings channel (0604)
+    conn.execute("""CREATE TABLE IF NOT EXISTS guardian_flags (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        ticker      TEXT NOT NULL,
+        reason      TEXT,
+        source      TEXT NOT NULL DEFAULT 'guardian',
+        flagged_at  TEXT NOT NULL,
+        resolved_at TEXT
+    )""")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_guardian_flags_ticker "
+        "ON guardian_flags (ticker, flagged_at DESC)"
+    )
     conn.commit()
     conn.close()
 
@@ -1756,15 +1777,26 @@ def generate_news_summaries(force: bool = False) -> dict:
     result = news_fetcher.fetch(tickers, force=force)
     by_ticker = result.get("by_ticker", {})
     tickers_with_news = {t: items for t, items in by_ticker.items() if items}
-    if not tickers_with_news:
-        return {}
 
     from agents.news import intelligence as _intel
+
+    # 0602: run event-state sweep unconditionally — even on quiet days with no news.
+    # State maintenance (FADING → RESOLVED) must not depend on extraction succeeding.
+    if DB_PATH.exists():
+        try:
+            _sweep_conn = sqlite3.connect(str(DB_PATH), timeout=10)
+            _intel.update_event_state_sweep(today, _sweep_conn)
+            _sweep_conn.close()
+        except Exception as _se:
+            print(f"[NewsIntelligence] Standalone sweep error: {_se}")
+
+    if not tickers_with_news:
+        return {}
 
     # 0596: enrich BEFORE building snapshot so hash covers full model_input_text
     news_fetcher.enrich_with_bodies(tickers_with_news)
 
-    # Build canonical snapshot (hash covers body[:120], not truncated [:80])
+    # Build canonical snapshot (hash covers body[:150]; includes ticker in payload)
     snapshot = _intel.build_news_snapshot(tickers_with_news)
     news_hash = snapshot["snapshot_hash"]
 
