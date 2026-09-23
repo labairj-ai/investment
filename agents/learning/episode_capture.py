@@ -36,6 +36,33 @@ def _build_macro_snapshot(ticker: str, conn, captured_at=None) -> str:
                            "usable_dimensions": [], "reason": str(exc)})
 
 
+def _build_news_state(ticker: str, conn) -> str | None:
+    """Freeze today's news intelligence state for the ticker (0586, observe-only)."""
+    try:
+        import datetime
+        today = datetime.date.today().isoformat()
+        rows = conn.execute(
+            "SELECT event_type, direction, magnitude, signal_strength, portfolio_priority, "
+            "confirmation_class, thesis_relevance, pillar_name, trend_status, "
+            "occurrence_count_30d "
+            "FROM news_events WHERE ticker=? AND day=? ORDER BY portfolio_priority DESC LIMIT 5",
+            (ticker, today),
+        ).fetchall()
+        if not rows:
+            return None
+        events = [dict(r) for r in rows]
+        return json.dumps({
+            "as_of": today,
+            "events": events,
+            "top_signal_strength": max(e.get("signal_strength") or 0 for e in events),
+            "top_confirmation": events[0].get("confirmation_class") if events else None,
+            "has_thesis_event": any(e.get("thesis_relevance", 0) > 0.3 for e in events),
+            "event_types": list({e["event_type"] for e in events}),
+        })
+    except Exception:
+        return None
+
+
 def capture_candidate_episode(
     run_id: int,
     candidate: dict,
@@ -117,6 +144,16 @@ def capture_candidate_episode(
         except Exception as snap_e:
             print(f"[episode_capture] WARNING: macro_snapshot attachment failed for "
                   f"{candidate.get('ticker')}: {snap_e}")
+        # Attach news intelligence state (0586 — observe-only, never influences scoring)
+        try:
+            news_state_json = _build_news_state(candidate["ticker"], conn)
+            if news_state_json:
+                conn.execute(
+                    "UPDATE decision_episodes SET news_state=? WHERE episode_id=? AND news_state IS NULL",
+                    (news_state_json, episode_id),
+                )
+        except Exception:
+            pass
         conn.commit()
         conn.close()
     except Exception as e:

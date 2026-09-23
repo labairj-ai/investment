@@ -1959,9 +1959,7 @@ def build_dashboard(portfolio, layers, holdings):
       font-size: 16px; padding: 0 4px; line-height: 1; transition: transform .2s;
     }}
     #ai-news-card.collapsed #ai-news-collapse-btn {{ transform: rotate(-90deg); }}
-    .ai-news-ticker {{
-      margin-bottom: 10px;
-    }}
+    .ai-news-ticker {{ margin-bottom: 10px; }}
     .ai-news-ticker-label {{
       font-size: 10px; font-weight: 700; text-transform: uppercase;
       letter-spacing: .08em; color: #a0aec0; margin-bottom: 4px;
@@ -1971,12 +1969,8 @@ def build_dashboard(portfolio, layers, holdings):
       display: flex; align-items: baseline; gap: 6px;
     }}
     .ai-news-item:last-child {{ border-bottom: none; }}
-    .ai-news-source {{
-      font-size: 10px; color: #718096; white-space: nowrap; flex-shrink: 0;
-    }}
-    .ai-news-link {{
-      font-size: 12px; color: #c9b8ff; text-decoration: none; line-height: 1.4;
-    }}
+    .ai-news-source {{ font-size: 10px; color: #718096; white-space: nowrap; flex-shrink: 0; }}
+    .ai-news-link {{ font-size: 12px; color: #c9b8ff; text-decoration: none; line-height: 1.4; }}
     .ai-news-link:hover {{ color: #e2e8f0; text-decoration: underline; }}
     #ai-news-loading {{ color: #718096; font-size: 12px; }}
     .ai-news-summary {{ font-size: 12px; color: #cbd5e0; margin: 4px 0 6px; line-height: 1.5; }}
@@ -2017,6 +2011,83 @@ def build_dashboard(portfolio, layers, holdings):
       margin-left: auto;
     }}
     #ai-news-refresh:hover {{ background: rgba(255,255,255,.08); color: #e2e8f0; }}
+    /* ── Intelligence bucket layout (0587) ─────────────────────────────────── */
+    .news-bucket {{ margin-bottom: 16px; }}
+    .news-bucket-header {{
+      font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em;
+      color: #718096; margin-bottom: 8px; padding-bottom: 4px;
+      border-bottom: 1px solid rgba(255,255,255,.08);
+      display: flex; align-items: center; gap: 6px; cursor: pointer;
+    }}
+    .news-bucket-nothing .news-bucket-header {{ color: #4a5568; }}
+    .news-bucket-count {{
+      font-size: 9px; background: rgba(255,255,255,.08); border-radius: 9px;
+      padding: 1px 6px; font-weight: 400; letter-spacing: 0;
+    }}
+    .news-bucket-nothing.collapsed .news-bucket-body {{ display: none; }}
+    .news-intel-card {{
+      background: rgba(255,255,255,.04); border-radius: 6px;
+      margin-bottom: 8px; overflow: hidden;
+      border: 1px solid rgba(255,255,255,.07);
+    }}
+    .news-intel-card.risk-card {{ border-left: 3px solid #e74c3c; }}
+    .news-intel-card.opp-card  {{ border-left: 3px solid #27ae60; }}
+    .news-intel-card.thesis-card {{ border-left: 3px solid #f6ad55; }}
+    .news-intel-card.watch-card {{ border-left: 3px solid #718096; }}
+    .news-intel-header {{
+      padding: 8px 10px; display: flex; align-items: center; gap: 8px;
+      cursor: pointer; justify-content: space-between;
+    }}
+    .news-intel-ticker {{
+      font-size: 12px; font-weight: 700; color: #e2e8f0; letter-spacing: .04em;
+    }}
+    .news-intel-badges {{ display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }}
+    .news-badge {{
+      font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
+      padding: 1px 5px; border-radius: 3px;
+    }}
+    .badge-risk    {{ background: rgba(231,76,60,.25);  color: #fc8181; }}
+    .badge-opp     {{ background: rgba(39,174,96,.25);  color: #68d391; }}
+    .badge-thesis  {{ background: rgba(246,173,85,.2);  color: #f6ad55; }}
+    .badge-watch   {{ background: rgba(113,128,150,.2); color: #a0aec0; }}
+    .badge-new        {{ background: rgba(159,122,234,.2); color: #b794f4; }}
+    .badge-confirming {{ background: rgba(99,179,237,.2);  color: #63b3ed; }}
+    .badge-accel      {{ background: rgba(246,173,85,.25); color: #f6ad55; }}
+    .badge-reversing  {{ background: rgba(246,173,85,.2);  color: #fbd38d; }}
+    .badge-fading     {{ background: rgba(113,128,150,.15);color: #718096; }}
+    .badge-multi {{ background: rgba(39,174,96,.2); color: #68d391; }}
+    .badge-soft  {{ background: rgba(99,179,237,.15); color: #63b3ed; }}
+    .badge-contradicted {{ background: rgba(231,76,60,.15); color: #fc8181; }}
+    .news-signal-bar {{
+      font-size: 9px; color: #4a5568; white-space: nowrap;
+    }}
+    .news-intel-body {{ padding: 0 10px 10px; }}
+    .news-intel-section {{ margin-top: 7px; }}
+    .news-intel-section-label {{
+      font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em;
+      color: #4a5568; margin-bottom: 2px;
+    }}
+    .news-intel-section-body {{ font-size: 11px; color: #a0b0c8; line-height: 1.5; }}
+    .news-intel-thesis {{ color: #f6ad55; }}
+    .news-intel-confirm-multi {{ color: #68d391; }}
+    .news-intel-confirm-contra {{ color: #fc8181; font-style: italic; }}
+    .news-evidence-toggle {{
+      font-size: 10px; color: #4a5568; cursor: pointer; margin-top: 6px; display: inline-block;
+    }}
+    .news-evidence-toggle:hover {{ color: #718096; }}
+    .news-evidence-list {{ display: none; margin-top: 4px; }}
+    .news-evidence-list.open {{ display: block; }}
+    .news-evidence-item {{ font-size: 10px; color: #4a5568; padding: 1px 0; }}
+    .news-portfolio-theme {{
+      background: #1e2840; border: 1px solid rgba(246,173,85,.3);
+      border-left: 3px solid #f6ad55; border-radius: 6px; padding: 8px 12px;
+      margin-bottom: 8px;
+    }}
+    .news-portfolio-theme-label {{
+      font-size: 10px; font-weight: 700; color: #f6ad55; text-transform: uppercase;
+      letter-spacing: .07em; margin-bottom: 3px;
+    }}
+    .news-portfolio-theme-body {{ font-size: 11px; color: #cbd5e0; line-height: 1.5; }}
 
     /* ── AI Insight Card ─────────────────────────────────────────────────── */
     #ai-insight-card {{
@@ -10583,26 +10654,166 @@ async function rejectThesisProposal(recId) {{
     if (el) el.remove();
   }}
 
-  function _renderNewsBody(bt, summaries, generating) {{
+  // ── News Intelligence helpers (0587) ──────────────────────────────────────
+  const _EMERGING_RISK_THRESH = 45;
+  const _EMERGING_OPP_THRESH  = 45;
+  const _THESIS_THRESH        = 25;
+
+  function _trendBadge(trend) {{
+    const map = {{
+      'NEW':'badge-new','CONFIRMING':'badge-confirming','ACCELERATING':'badge-accel',
+      'REVERSING':'badge-reversing','FADING':'badge-fading','RESOLVED':'badge-fading',
+    }};
+    return `<span class="news-badge ${{map[trend]||'badge-watch'}}">${{trend||''}}</span>`;
+  }}
+  function _confirmBadge(c) {{
+    if (c === 'MULTI_SIGNAL_CONFIRMATION') return `<span class="news-badge badge-multi">MULTI-SIG</span>`;
+    if (c === 'SOFT_CONFIRMATION')         return `<span class="news-badge badge-soft">SOFT CONF</span>`;
+    if (c === 'CONTRADICTED')              return `<span class="news-badge badge-contradicted">CONTRA</span>`;
+    return '';
+  }}
+  function _sigClass(dir) {{
+    if (dir === 'NEGATIVE') return 'risk-card';
+    if (dir === 'POSITIVE') return 'opp-card';
+    return 'watch-card';
+  }}
+  function _bucketClass(dir, hasThesis, score) {{
+    if (dir === 'NEGATIVE' && score >= _EMERGING_RISK_THRESH) return 'risk';
+    if (dir === 'POSITIVE' && score >= _EMERGING_OPP_THRESH)  return 'opp';
+    if (hasThesis && score >= _THESIS_THRESH)                  return 'thesis';
+    return 'watch';
+  }}
+
+  function _renderIntelCard(ticker, ev, summary, bt) {{
+    const dir    = ev.direction || 'NEUTRAL';
+    const trend  = ev.trend_status || 'NEW';
+    const conf   = ev.confirmation_class || 'NEWS_ONLY';
+    const sig    = ev.signal_strength || 0;
+    const pp     = ev.portfolio_priority || 0;
+    const pillar = ev.pillar_name || ev.risk_name || '';
+    const hasThesis = Boolean(pillar);
+    const bucket = _bucketClass(dir, hasThesis, pp);
+    const cardClass = _sigClass(dir) + (bucket === 'thesis' ? ' thesis-card' : '');
+
+    let dirBadge = '';
+    if (dir === 'NEGATIVE')     dirBadge = `<span class="news-badge badge-risk">RISK</span>`;
+    else if (dir === 'POSITIVE') dirBadge = `<span class="news-badge badge-opp">OPP</span>`;
+    else                         dirBadge = `<span class="news-badge badge-watch">${{dir}}</span>`;
+
+    const evTypeLabel = (ev.event_type||'').replace(/_/g,' ');
+    const evId = 'ni-' + ticker + '-' + (ev.event_type||'') + '-' + Math.random().toString(36).slice(2,6);
+
+    // Prose summary from existing format
+    const s = summary || {{}};
+    const _v = x => x && x !== 'null' && x !== 'None' ? x : null;
+    const prosSummary = _v(s.news) || '';
+
+    // Evidence (article titles)
+    const titleList = ev.titles || ev.source_titles || [];
+    const titles    = Array.isArray(titleList) ? titleList : (typeof titleList==='string' ? JSON.parse(titleList||'[]') : []);
+
+    // Confirmation note
+    const confirmSigs = ev.confirmation_signals || {{}};
+    let confirmNote = '';
+    const alpha1d = confirmSigs.alpha_1d;
+    const alpha5d = confirmSigs.alpha_5d;
+    if (alpha1d != null || alpha5d != null) {{
+      confirmNote = `Alpha: 1d=${{alpha1d!=null?((alpha1d>0?'+':'')+alpha1d.toFixed(1)+'%'):'—'}} 5d=${{alpha5d!=null?((alpha5d>0?'+':'')+alpha5d.toFixed(1)+'%'):'—'}}`;
+    }}
+    if (confirmSigs.thesis_health != null) {{
+      confirmNote += (confirmNote?' · ':'') + `Thesis health: ${{confirmSigs.thesis_health.toFixed(0)}}/100`;
+    }}
+
+    let html = `<div class="news-intel-card ${{cardClass}}" id="${{evId}}">`;
+    html += `<div class="news-intel-header" onclick="this.parentNode.querySelector('.news-intel-body').style.display=this.parentNode.querySelector('.news-intel-body').style.display==='none'?'block':'none'">`;
+    html += `<div style="display:flex;align-items:center;gap:6px;">`;
+    html += `<span class="news-intel-ticker">${{ticker}}</span>`;
+    html += `<div class="news-intel-badges">${{dirBadge}}${{_trendBadge(trend)}}${{_confirmBadge(conf)}}</div>`;
+    if (pillar) html += `<span style="font-size:9px;color:#f6ad55;" title="Thesis pillar/risk">⚡${{pillar}}</span>`;
+    html += `</div>`;
+    html += `<span class="news-signal-bar" title="Signal strength / Portfolio priority">sig ${{sig.toFixed(0)}} · pp ${{pp.toFixed(0)}}</span>`;
+    html += `</div>`;
+
+    html += `<div class="news-intel-body" style="display:none">`;
+
+    if (ev.evidence) {{
+      html += `<div class="news-intel-section">`;
+      html += `<div class="news-intel-section-label">What Changed</div>`;
+      html += `<div class="news-intel-section-body">${{ev.evidence}}</div>`;
+      html += `</div>`;
+    }}
+    if (prosSummary) {{
+      html += `<div class="news-intel-section">`;
+      html += `<div class="news-intel-section-label">Analysis</div>`;
+      html += `<div class="news-intel-section-body">${{prosSummary}}</div>`;
+      html += `</div>`;
+    }}
+    if (pillar || ev.catalyst_name) {{
+      const impactTarget = pillar || ev.catalyst_name || '';
+      html += `<div class="news-intel-section">`;
+      html += `<div class="news-intel-section-label">Thesis Impact</div>`;
+      html += `<div class="news-intel-section-body news-intel-thesis">${{evTypeLabel}} ${{dir.toLowerCase()}} → ${{impactTarget}}</div>`;
+      html += `</div>`;
+    }}
+    html += `<div class="news-intel-section">`;
+    html += `<div class="news-intel-section-label">Why It Matters</div>`;
+    const occLabel = ev.occurrence_count_30d > 1 ? ` · ${{ev.occurrence_count_30d}}× in 30d` : '';
+    html += `<div class="news-intel-section-body">`;
+    html += `${{evTypeLabel}} · ${{ev.magnitude||'MEDIUM'}} magnitude · ${{(ev.expected_horizon||ev.horizon||'SHORT').toLowerCase()}} horizon${{occLabel}}`;
+    html += `</div></div>`;
+
+    if (confirmNote || conf !== 'NEWS_ONLY') {{
+      const cnClass = conf==='MULTI_SIGNAL_CONFIRMATION'?'news-intel-confirm-multi':conf==='CONTRADICTED'?'news-intel-confirm-contra':'';
+      html += `<div class="news-intel-section">`;
+      html += `<div class="news-intel-section-label">Confirmation</div>`;
+      html += `<div class="news-intel-section-body ${{cnClass}}">${{conf.replace(/_/g,' ')}}${{confirmNote?' · '+confirmNote:''}}`;
+      if (ev.skepticism_note) html += ` — ${{ev.skepticism_note}}`;
+      html += `</div></div>`;
+    }}
+
+    const extraFactors = [
+      _v(s.rates) ? ['📈 Rates', s.rates] : null,
+      _v(s.trade) ? ['🌐 Trade', s.trade] : null,
+      _v(s.environment) ? ['🏛 Environment', s.environment] : null,
+      _v(s.leg_risk) ? ['🔴 Legislative Risk', s.leg_risk] : null,
+      _v(s.leg_opp) ? ['🟢 Legislative Opp', s.leg_opp] : null,
+      _v(s.tax_angle) ? ['⚖ Tax', s.tax_angle] : null,
+    ].filter(Boolean);
+    for (const [label, val] of extraFactors) {{
+      html += `<div class="ai-news-factor"><span class="ai-news-factor-label">${{label}}</span>${{val}}</div>`;
+    }}
+
+    if (titles.length) {{
+      const listId = evId + '-ev';
+      html += `<span class="news-evidence-toggle" onclick="document.getElementById('${{listId}}').classList.toggle('open');this.textContent=document.getElementById('${{listId}}').classList.contains('open')?'▲ Hide sources':'▼ ${{titles.length}} source${{titles.length>1?'s':''}}">▼ ${{titles.length}} source${{titles.length>1?'s':''}}</span>`;
+      html += `<div class="news-evidence-list" id="${{listId}}">`;
+      for (const t of titles) {{
+        html += `<div class="news-evidence-item">· ${{t}}</div>`;
+      }}
+      html += `</div>`;
+    }}
+
+    html += `</div></div>`;
+    return {{ html, bucket, pp }};
+  }}
+
+  function _renderNewsBody(bt, summaries, generating, events, themes) {{
     const tickers = Object.keys(bt);
     if (!tickers.length) {{
       return '<span id="ai-news-loading" style="color:#718096;font-size:12px;">No holding-specific news found.</span>';
     }}
+
+    const eventsMap  = (events && typeof events === 'object') ? events : {{}};
+    const themesList = Array.isArray(themes) ? themes : [];
     let html = '';
 
-    // Portfolio-level action/outlook panel
+    // Portfolio-level outlook panel (existing)
     const outlook = summaries && summaries._outlook;
     if (outlook) {{
       let panelHtml = '<div class="news-outlook-panel">';
-      if (outlook.top_risk) {{
-        panelHtml += `<div class="news-outlook-cell news-outlook-risk"><div class="news-outlook-cell-label">🔴 Top Risk</div><div class="news-outlook-cell-body">${{outlook.top_risk}}</div></div>`;
-      }}
-      if (outlook.top_opportunity) {{
-        panelHtml += `<div class="news-outlook-cell news-outlook-opp"><div class="news-outlook-cell-label">🟢 Opportunity</div><div class="news-outlook-cell-body">${{outlook.top_opportunity}}</div></div>`;
-      }}
-      if (outlook.tax_watch) {{
-        panelHtml += `<div class="news-outlook-cell news-outlook-tax"><div class="news-outlook-cell-label">⚖ Tax Watch</div><div class="news-outlook-cell-body">${{outlook.tax_watch}}</div></div>`;
-      }}
+      if (outlook.top_risk)        panelHtml += `<div class="news-outlook-cell news-outlook-risk"><div class="news-outlook-cell-label">🔴 Top Risk</div><div class="news-outlook-cell-body">${{outlook.top_risk}}</div></div>`;
+      if (outlook.top_opportunity) panelHtml += `<div class="news-outlook-cell news-outlook-opp"><div class="news-outlook-cell-label">🟢 Opportunity</div><div class="news-outlook-cell-body">${{outlook.top_opportunity}}</div></div>`;
+      if (outlook.tax_watch)       panelHtml += `<div class="news-outlook-cell news-outlook-tax"><div class="news-outlook-cell-label">⚖ Tax Watch</div><div class="news-outlook-cell-body">${{outlook.tax_watch}}</div></div>`;
       panelHtml += '</div>';
       if (outlook.action_items && outlook.action_items.length) {{
         panelHtml += '<div class="news-action-list"><div class="news-action-list-label">📋 Action Items</div>';
@@ -10613,36 +10824,98 @@ async function rejectThesisProposal(recId) {{
       }}
       html += `<div class="legislative-outlook-banner">${{panelHtml}}</div>`;
     }} else if (summaries && summaries._legislative_outlook) {{
-      // backward-compat: old string format
       html += `<div class="legislative-outlook-banner"><span class="legislative-outlook-label">⚖ Legislative Watch</span><div class="legislative-outlook-body">${{summaries._legislative_outlook}}</div></div>`;
     }}
 
-    for (const ticker of tickers) {{
-      const items = bt[ticker];
-      if (!items || !items.length) continue;
-      const s = summaries && summaries[ticker];
-      let tickerHtml = '';
-      if (s) {{
-        if (s.news) {{
-          tickerHtml += `<div class="ai-news-summary">${{s.news}}</div>`;
-          const _v = x => x && x !== 'null' && x !== 'None' ? x : null;
-          if (_v(s.rates))       tickerHtml += `<div class="ai-news-factor"><span class="ai-news-factor-label">📈 Rates</span>${{_v(s.rates)}}</div>`;
-          if (_v(s.trade))       tickerHtml += `<div class="ai-news-factor"><span class="ai-news-factor-label">🌐 Trade</span>${{_v(s.trade)}}</div>`;
-          if (_v(s.environment)) tickerHtml += `<div class="ai-news-factor"><span class="ai-news-factor-label">🏛 Environment</span>${{_v(s.environment)}}</div>`;
-          if (_v(s.leg_risk))    tickerHtml += `<div class="ai-news-factor ai-news-leg-risk"><span class="ai-news-factor-label">🔴 Legislative Risk</span>${{_v(s.leg_risk)}}</div>`;
-          if (_v(s.leg_opp))     tickerHtml += `<div class="ai-news-factor ai-news-leg-opp"><span class="ai-news-factor-label">🟢 Legislative Opp</span>${{_v(s.leg_opp)}}</div>`;
-          if (_v(s.tax_angle))   tickerHtml += `<div class="ai-news-factor ai-news-tax"><span class="ai-news-factor-label">⚖ Tax Angle</span>${{_v(s.tax_angle)}}</div>`;
-          // backward-compat: old single legislation key
-          if (_v(s.legislation) && !_v(s.leg_risk) && !_v(s.leg_opp)) tickerHtml += `<div class="ai-news-factor"><span class="ai-news-factor-label">⚖ Legislation</span>${{_v(s.legislation)}}</div>`;
-        }} else if (s.summary) {{
-          tickerHtml += `<div class="ai-news-summary">${{s.summary}}</div>`;
-          if (s.macro_angle) tickerHtml += `<div class="ai-news-macro">📊 ${{s.macro_angle}}</div>`;
-        }}
-      }} else if (generating) {{
-        tickerHtml += `<div style="font-size:11px;color:#4a5568;font-style:italic;padding:2px 0 4px;">Analyzing…</div>`;
+    // Portfolio theme alerts (0585)
+    if (themesList.length) {{
+      for (const th of themesList) {{
+        const tks = Array.isArray(th.affected_tickers) ? th.affected_tickers.join(', ') : '';
+        html += `<div class="news-portfolio-theme">`;
+        html += `<div class="news-portfolio-theme-label">⚡ Portfolio Theme: ${{th.event_type.replace(/_/g,' ')}} (${{th.direction}})</div>`;
+        html += `<div class="news-portfolio-theme-body">${{th.description}} — ${{tks}}</div>`;
+        html += `</div>`;
       }}
-      if (tickerHtml) html += `<div class="ai-news-ticker"><div class="ai-news-ticker-label">${{ticker}}</div>${{tickerHtml}}</div>`;
     }}
+
+    // If we have structured events, render 4-bucket layout (0587)
+    const hasIntelData = Object.keys(eventsMap).length > 0;
+    if (hasIntelData) {{
+      const buckets = {{ risk: [], opp: [], thesis: [], watch: [] }};
+      const nothingTickers = [];
+
+      // Build cards sorted by portfolio_priority
+      for (const ticker of tickers) {{
+        const tickerEvents = eventsMap[ticker] || [];
+        const s = summaries && summaries[ticker];
+        if (!tickerEvents.length) {{
+          nothingTickers.push(ticker);
+          continue;
+        }}
+        // Use the top event for this ticker's bucket classification
+        const topEv = tickerEvents[0];
+        const cardResult = _renderIntelCard(ticker, topEv, s, bt);
+        buckets[cardResult.bucket].push({{ html: cardResult.html, pp: cardResult.pp, ticker }});
+      }}
+
+      const BUCKET_CONFIG = [
+        {{ key: 'risk',   label: '🔴 Emerging Risks',        cls: '' }},
+        {{ key: 'opp',    label: '🟢 Emerging Opportunities', cls: '' }},
+        {{ key: 'thesis', label: '⚡ Thesis Changes',         cls: '' }},
+        {{ key: 'watch',  label: '🔵 Watch',                  cls: '' }},
+      ];
+
+      for (const {{ key, label, cls }} of BUCKET_CONFIG) {{
+        const items = buckets[key].sort((a,b) => b.pp - a.pp);
+        if (!items.length) continue;
+        html += `<div class="news-bucket ${{cls}}">`;
+        html += `<div class="news-bucket-header">${{label}}<span class="news-bucket-count">${{items.length}}</span></div>`;
+        html += `<div class="news-bucket-body">`;
+        for (const item of items) html += item.html;
+        html += `</div></div>`;
+      }}
+
+      // Nothing Material Changed bucket (collapsed by default)
+      if (nothingTickers.length) {{
+        const nmId = 'nm-bucket-' + Math.random().toString(36).slice(2,6);
+        html += `<div class="news-bucket news-bucket-nothing" id="${{nmId}}">`;
+        html += `<div class="news-bucket-header" onclick="document.getElementById('${{nmId}}').classList.toggle('collapsed')">`;
+        html += `⬜ Nothing Material Changed<span class="news-bucket-count">${{nothingTickers.length}}</span>`;
+        html += `</div>`;
+        html += `<div class="news-bucket-body" style="font-size:11px;color:#4a5568;padding:4px 0;">`;
+        html += nothingTickers.join(', ');
+        html += `</div></div>`;
+      }}
+
+    }} else {{
+      // Legacy fallback: simple ticker list if no structured events
+      for (const ticker of tickers) {{
+        const items = bt[ticker];
+        if (!items || !items.length) continue;
+        const s = summaries && summaries[ticker];
+        let tickerHtml = '';
+        if (s) {{
+          if (s.news) {{
+            tickerHtml += `<div class="ai-news-summary">${{s.news}}</div>`;
+            const _v = x => x && x !== 'null' && x !== 'None' ? x : null;
+            if (_v(s.rates))       tickerHtml += `<div class="ai-news-factor"><span class="ai-news-factor-label">📈 Rates</span>${{_v(s.rates)}}</div>`;
+            if (_v(s.trade))       tickerHtml += `<div class="ai-news-factor"><span class="ai-news-factor-label">🌐 Trade</span>${{_v(s.trade)}}</div>`;
+            if (_v(s.environment)) tickerHtml += `<div class="ai-news-factor"><span class="ai-news-factor-label">🏛 Environment</span>${{_v(s.environment)}}</div>`;
+            if (_v(s.leg_risk))    tickerHtml += `<div class="ai-news-factor ai-news-leg-risk"><span class="ai-news-factor-label">🔴 Legislative Risk</span>${{_v(s.leg_risk)}}</div>`;
+            if (_v(s.leg_opp))     tickerHtml += `<div class="ai-news-factor ai-news-leg-opp"><span class="ai-news-factor-label">🟢 Legislative Opp</span>${{_v(s.leg_opp)}}</div>`;
+            if (_v(s.tax_angle))   tickerHtml += `<div class="ai-news-factor ai-news-tax"><span class="ai-news-factor-label">⚖ Tax Angle</span>${{_v(s.tax_angle)}}</div>`;
+            if (_v(s.legislation) && !_v(s.leg_risk) && !_v(s.leg_opp)) tickerHtml += `<div class="ai-news-factor"><span class="ai-news-factor-label">⚖ Legislation</span>${{_v(s.legislation)}}</div>`;
+          }} else if (s.summary) {{
+            tickerHtml += `<div class="ai-news-summary">${{s.summary}}</div>`;
+            if (s.macro_angle) tickerHtml += `<div class="ai-news-macro">📊 ${{s.macro_angle}}</div>`;
+          }}
+        }} else if (generating) {{
+          tickerHtml += `<div style="font-size:11px;color:#4a5568;font-style:italic;padding:2px 0 4px;">Analyzing…</div>`;
+        }}
+        if (tickerHtml) html += `<div class="ai-news-ticker"><div class="ai-news-ticker-label">${{ticker}}</div>${{tickerHtml}}</div>`;
+      }}
+    }}
+
     return html || '<span id="ai-news-loading" style="color:#718096;font-size:12px;">No holding-specific news found.</span>';
   }}
 
@@ -10663,7 +10936,7 @@ async function rejectThesisProposal(recId) {{
       _clearNewsStatus();
       if (data.ok && data.summaries) {{
         const body = document.getElementById('ai-news-body');
-        if (body) body.innerHTML = _renderNewsBody(bt, data.summaries, false);
+        if (body) body.innerHTML = _renderNewsBody(bt, data.summaries, false, data.events, data.themes);
         const ts = document.getElementById('ai-news-timestamp');
         if (ts) ts.textContent = _fmtTimestamp(data.generated_at);
       }} else if (!data.ok && data.error) {{
@@ -10723,7 +10996,9 @@ async function rejectThesisProposal(recId) {{
       const bt = newsData.by_ticker || {{}};
       const generating = sumData.status === 'generating';
       const summaries = (sumData.ok && sumData.summaries) ? sumData.summaries : null;
-      const html = _renderNewsBody(bt, summaries, generating);
+      const events    = (sumData.ok && sumData.events)    ? sumData.events    : {{}};
+      const themes    = (sumData.ok && sumData.themes)    ? sumData.themes    : [];
+      const html = _renderNewsBody(bt, summaries, generating, events, themes);
       body.innerHTML = html;
       if (generating) {{
         _setNewsStatus(`${{_aiSpinner}} AI analysis generating — will auto-update when ready…`);

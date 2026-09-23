@@ -681,6 +681,8 @@ def migrate() -> None:
         ("cycle_runs",  "broker_fills_new",          "INTEGER DEFAULT 0"),
         ("cycle_runs",  "broker_fills_duplicate",    "INTEGER DEFAULT 0"),
         ("cycle_runs",  "external_fills_observed",   "INTEGER DEFAULT 0"),
+        # 0586 — news intelligence state snapshot on decision episodes (observe-only)
+        ("decision_episodes", "news_state",          "TEXT"),
     ]
     for table, col, col_type in _new_cols:
         try:

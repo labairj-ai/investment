@@ -4642,7 +4642,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if cached.get("_failed"):
                 self._json({"ok": False, "error": cached.get("_error", "Generation failed"), "date": today})
                 return
-            self._json({"ok": True, "summaries": cached, "date": today, "generated_at": generated_at})
+            self._json({
+                "ok": True,
+                "summaries": cached,
+                "events":    cached.get("_events", {}),
+                "themes":    cached.get("_themes", []),
+                "news_hash": cached.get("_news_hash", ""),
+                "date": today,
+                "generated_at": generated_at,
+            })
             return
 
         # No cache — kick off background generation

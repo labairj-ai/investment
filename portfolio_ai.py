@@ -303,6 +303,74 @@ def _init_ai_tables():
         summaries    TEXT,
         generated_at TEXT
     )""")
+    # Add provenance columns to news_summaries for content-addressed cache (0580)
+    for _ns_col in [
+        "ALTER TABLE news_summaries ADD COLUMN news_snapshot_hash TEXT",
+        "ALTER TABLE news_summaries ADD COLUMN model_id TEXT",
+        "ALTER TABLE news_summaries ADD COLUMN prompt_version TEXT",
+        "ALTER TABLE news_summaries ADD COLUMN article_count INTEGER",
+    ]:
+        try:
+            conn.execute(_ns_col)
+        except Exception:
+            pass
+    # Structured event tables (0581-0585)
+    conn.execute("""CREATE TABLE IF NOT EXISTS news_events (
+        event_id            TEXT PRIMARY KEY,
+        ticker              TEXT NOT NULL,
+        day                 TEXT NOT NULL,
+        event_type          TEXT NOT NULL,
+        direction           TEXT NOT NULL,
+        magnitude           TEXT NOT NULL,
+        expected_horizon    TEXT NOT NULL,
+        confidence          REAL NOT NULL,
+        affected_metric     TEXT,
+        evidence_text       TEXT,
+        source_titles       TEXT,
+        source_count        INTEGER DEFAULT 1,
+        first_seen          TEXT,
+        last_seen           TEXT,
+        thesis_relevance    REAL DEFAULT 0.0,
+        pillar_name         TEXT,
+        risk_name           TEXT,
+        catalyst_name       TEXT,
+        trigger_proximity   REAL DEFAULT 0.0,
+        trend_status        TEXT,
+        occurrence_count_7d  INTEGER DEFAULT 0,
+        occurrence_count_30d INTEGER DEFAULT 0,
+        occurrence_count_90d INTEGER DEFAULT 0,
+        signal_strength     REAL DEFAULT 0.0,
+        portfolio_priority  REAL DEFAULT 0.0,
+        score_decomposition TEXT,
+        confirmation_class  TEXT DEFAULT 'NEWS_ONLY',
+        confirmation_signals TEXT,
+        skepticism_note     TEXT,
+        news_snapshot_hash  TEXT,
+        extracted_at        TEXT NOT NULL
+    )""")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_news_events_ticker_day "
+        "ON news_events (ticker, day DESC)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_news_events_type_dir "
+        "ON news_events (ticker, event_type, direction, day DESC)"
+    )
+    conn.execute("""CREATE TABLE IF NOT EXISTS news_portfolio_themes (
+        theme_id        TEXT PRIMARY KEY,
+        day             TEXT NOT NULL,
+        event_type      TEXT NOT NULL,
+        direction       TEXT,
+        affected_tickers TEXT NOT NULL,
+        combined_weight REAL,
+        event_count     INTEGER,
+        description     TEXT,
+        detected_at     TEXT NOT NULL
+    )""")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_news_portfolio_themes_day "
+        "ON news_portfolio_themes (day DESC)"
+    )
     conn.execute("""CREATE TABLE IF NOT EXISTS holding_macro_scores_history (
         id        INTEGER PRIMARY KEY AUTOINCREMENT,
         ticker    TEXT NOT NULL,
@@ -1608,8 +1676,9 @@ def get_cached_insight_today():
     return None, None
 
 
-def get_cached_news_summaries_today():
+def get_cached_news_summaries_today(news_snapshot_hash=None):
     """Return (data, generated_at_str) for today's cached per-ticker news summaries, or (None, None).
+    If news_snapshot_hash is given, cache is considered stale when the stored hash differs.
     Returns (sentinel, generated_at) during error cooldown so caller can distinguish."""
     _init_ai_tables()
     today = date.today().isoformat()
@@ -1618,12 +1687,14 @@ def get_cached_news_summaries_today():
     try:
         conn = sqlite3.connect(str(DB_PATH), timeout=5)
         row = conn.execute(
-            "SELECT summaries, generated_at FROM news_summaries WHERE day=?", (today,)
+            "SELECT summaries, generated_at, news_snapshot_hash FROM news_summaries WHERE day=?",
+            (today,)
         ).fetchone()
         conn.close()
         if row and row[0]:
             data = json.loads(row[0])
             generated_at = row[1] or ""
+            stored_hash  = row[2] if len(row) > 2 else None
             if data.get("_failed"):
                 # Allow retry after 30-minute cooldown
                 try:
@@ -1633,6 +1704,9 @@ def get_cached_news_summaries_today():
                 except Exception:
                     pass
                 return None, None  # cooldown expired — allow fresh attempt
+            # Hash-based staleness check (0580): if caller provides hash and it differs, invalidate
+            if news_snapshot_hash is not None and stored_hash and stored_hash != news_snapshot_hash:
+                return None, None  # new articles present — regenerate
             return data, generated_at
     except Exception:
         pass
@@ -1641,20 +1715,14 @@ def get_cached_news_summaries_today():
 
 def generate_news_summaries(force: bool = False) -> dict:
     """
-    For each holding that has recent news, generate an AI summary of the
-    headlines plus a macro-angle sentence.  Returns {ticker: {summary, macro_angle}}.
-    Cached in DB by day.
+    For each holding that has recent news, run the news intelligence pipeline
+    (structured event extraction, thesis mapping, trend/scoring, confirmation)
+    then generate prose analysis.  Returns {ticker: {...}, _outlook: {...},
+    _events: {...}, _themes: [...], _news_hash: str}.
+    Cached in DB; re-runs when news snapshot hash changes (0580).
     """
     _init_ai_tables()
     today = date.today().isoformat()
-
-    if not force:
-        cached, _ = get_cached_news_summaries_today()
-        if cached is not None:
-            sample = next((v for v in cached.values() if isinstance(v, dict)), {})
-            # Accept cache only if it has current schema: per-ticker news + portfolio _outlook
-            if sample.get("news") and isinstance(cached.get("_outlook"), dict):
-                return cached
 
     if not ollama_client.available():
         return {"error": "AI model unavailable — check MLX server"}
@@ -1664,13 +1732,46 @@ def generate_news_summaries(force: bool = False) -> dict:
     tickers = list(dict.fromkeys(t for t in tickers if t))
 
     import news_fetcher
-    result = news_fetcher.fetch(tickers)
+    result = news_fetcher.fetch(tickers, force=force)
     by_ticker = result.get("by_ticker", {})
     tickers_with_news = {t: items for t, items in by_ticker.items() if items}
     if not tickers_with_news:
         return {}
 
+    # Compute content hash and check hash-based cache (0580)
+    from agents.news import intelligence as _intel
+    news_hash = _intel.compute_news_hash(tickers_with_news)
+
+    if not force:
+        cached, _ = get_cached_news_summaries_today(news_snapshot_hash=news_hash)
+        if cached is not None:
+            sample = next((v for v in cached.values() if isinstance(v, dict)), {})
+            # Accept cache only if it has current schema: per-ticker news + portfolio _outlook
+            if sample.get("news") and isinstance(cached.get("_outlook"), dict):
+                return cached
+
     news_fetcher.enrich_with_bodies(tickers_with_news)
+
+    # Build portfolio weights map for scoring
+    _prices_map = _get_holding_prices_from_db()
+    portfolio_weights = {t: float(_prices_map.get(t, {}).get("weight_pct") or 0)
+                         for t in tickers}
+
+    # Run intelligence pipeline (0581-0585): event extraction, thesis mapping,
+    # trend detection, scoring, confirmation, portfolio themes
+    intel_result: dict = {}
+    if DB_PATH.exists():
+        try:
+            _intel_conn = sqlite3.connect(str(DB_PATH), timeout=20)
+            _intel_conn.row_factory = sqlite3.Row
+            intel_result = _intel.run_pipeline(
+                tickers_with_news, portfolio_weights, _intel_conn,
+                ollama_client, day=today,
+            )
+            _intel_conn.close()
+        except Exception as _ie:
+            print(f"[NewsIntelligence] Pipeline error (non-fatal): {_ie}")
+            intel_result = {}
 
     import macro_context
     macro = macro_context.fetch()
@@ -1736,6 +1837,26 @@ def generate_news_summaries(force: bool = False) -> dict:
 
     legislative_block = official_block  # kept for outlook_prompt
 
+    # Build structured-events context block for prose prompt (0581)
+    _events_ctx = ""
+    _intel_events = intel_result.get("events_by_ticker", {})
+    if _intel_events:
+        _elines = ["STRUCTURED EVENTS (pre-extracted — use these to anchor your analysis):"]
+        for _t, _evs in _intel_events.items():
+            for _ev in _evs[:3]:
+                _sig = _ev.get("signal_strength", 0)
+                _trend = _ev.get("trend_status", "NEW")
+                _conf_cls = _ev.get("confirmation_class", "NEWS_ONLY")
+                _thesis = _ev.get("pillar_name") or _ev.get("risk_name") or ""
+                _thesis_part = f" [thesis:{_thesis}]" if _thesis else ""
+                _elines.append(
+                    f"  {_t}: {_ev['event_type']} {_ev['direction']} mag={_ev['magnitude']} "
+                    f"trend={_trend} signal={_sig:.0f} confirm={_conf_cls}{_thesis_part}"
+                )
+                if _ev.get("evidence"):
+                    _elines.append(f"    → {_ev['evidence'][:150]}")
+        _events_ctx = "\n".join(_elines) + "\n\n"
+
     prompt = f"""You are a portfolio risk analyst helping a personal investor take action. Your job is not to describe — it is to FLAG risks, surface OPPORTUNITIES, and call out TAX implications so the investor knows what needs attention TODAY.
 
 CURRENT MACRO ENVIRONMENT:
@@ -1747,7 +1868,7 @@ KEY NUMBERS:
 
 {scores_block}
 
-RECENT NEWS BY HOLDING (last 24 hours):
+{_events_ctx}RECENT NEWS BY HOLDING (last 24 hours):
 {news_block}
 
 BILLS UNDER REVIEW — OFFICIAL GOVERNMENT RECORD (Congress.gov; authoritative — weight these facts over any media framing):
@@ -1821,8 +1942,9 @@ Be specific. Name the legislation by ID and the matching holding. No generic sta
             try:
                 c = sqlite3.connect(str(DB_PATH), timeout=10)
                 c.execute(
-                    "INSERT OR REPLACE INTO news_summaries (day, summaries, generated_at) VALUES (?,?,?)",
-                    (today, json.dumps({"_failed": True, "_error": error_msg}), now_s)
+                    """INSERT OR REPLACE INTO news_summaries
+                       (day, summaries, generated_at, news_snapshot_hash) VALUES (?,?,?,?)""",
+                    (today, json.dumps({"_failed": True, "_error": error_msg}), now_s, news_hash)
                 )
                 c.commit()
                 c.close()
@@ -1879,12 +2001,21 @@ Be specific. Name the legislation by ID and the matching holding. No generic sta
             "action_items": [],
         }
 
+    # Attach structured intelligence data to return value (0581-0585)
+    summaries["_events"]    = intel_result.get("events_by_ticker", {})
+    summaries["_themes"]    = intel_result.get("themes", [])
+    summaries["_news_hash"] = news_hash
+    article_count           = intel_result.get("article_count", 0)
+
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if DB_PATH.exists():
         conn = sqlite3.connect(str(DB_PATH), timeout=10)
         conn.execute(
-            "INSERT OR REPLACE INTO news_summaries (day, summaries, generated_at) VALUES (?,?,?)",
-            (today, json.dumps(summaries), now_str)
+            """INSERT OR REPLACE INTO news_summaries
+               (day, summaries, generated_at, news_snapshot_hash, model_id, prompt_version, article_count)
+               VALUES (?,?,?,?,?,?,?)""",
+            (today, json.dumps(summaries), now_str, news_hash,
+             ollama_client.DEFAULT_MODEL, f"news_prose_{_intel.PROMPT_VERSION}", article_count)
         )
         conn.commit()
         conn.close()
