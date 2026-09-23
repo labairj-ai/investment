@@ -320,7 +320,7 @@ def test_cycle_halt_retains_event_fill_observation(setup):
 
 @pytest.mark.parametrize('exc_type', [eng.BrokerSubmissionIndeterminate, eng.BrokerStateIntegrityError])
 def test_sync_fill_preserved_when_process_new_intents_halts(setup, exc_type):
-    # 0575: sync applies fill, then process_new_intents halts — fill must still appear in result
+    # 0576: sync applies fill, then process_new_intents halts — fill must still appear in result
     conn, broker = setup
     bf = fill()
     oid, cid = local_order(conn, bf)
@@ -336,7 +336,7 @@ def test_sync_fill_preserved_when_process_new_intents_halts(setup, exc_type):
 
 @pytest.mark.parametrize('exc_type', [eng.PolicyUnavailable, eng.BrokerStateIntegrityError])
 def test_sync_fill_preserved_when_process_open_orders_halts(setup, exc_type):
-    # 0575: sync applies fill, then process_open_orders halts — fill must still appear in result
+    # 0576: sync applies fill, then process_open_orders halts — fill must still appear in result
     conn, broker = setup
     bf = fill()
     oid, cid = local_order(conn, bf)
