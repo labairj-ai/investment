@@ -467,25 +467,39 @@ def test_external_ownership_requires_positive_broker_response(setup, cid):
 
 # ── 0578 tests ────────────────────────────────────────────────────────────────
 
-def test_pending_submit_timeout_visible_in_halted_summary(setup, monkeypatch):
-    # 0578 criterion 1: PENDING_SUBMIT committed → submit_order times out →
-    # HALTED summary shows orders_created ≥ 1 even though no ExecutionResult was returned.
-    conn, broker = setup
-    def _raise_after_created(intent_id, conn, broker=None, *, _progress=None):
-        if _progress is not None:
-            _progress.orders_created += 1
-        raise eng.BrokerSubmissionIndeterminate('submit timeout simulated')
-    monkeypatch.setattr(eng, 'process_intent', _raise_after_created)
-    # Need a PENDING intent so process_new_intents actually calls process_intent
+def test_pending_submit_timeout_creates_row_and_reports_order(setup):
+    # 0579: real process_intent() path — INSERT OR IGNORE committed → submit_order()
+    # raises TimeoutError → BrokerSubmissionIndeterminate → HALTED summary reports
+    # new_orders_created==1 and the DB row exists with state==PENDING_SUBMIT.
+    from trade_engine.shadow_broker import Quote
     from test_trade_engine import _make_intent, _insert_intent
     from dataclasses import replace as dc_replace
+
+    conn, broker = setup
     intent = dc_replace(_make_intent(quantity=1, limit_price=50), account_id=ACCOUNT)
     _insert_intent(conn, intent)
+
+    broker.get_quote = lambda symbol: Quote(
+        bid=49.0, ask=50.0, timestamp='t',
+        retrieved_at=datetime.now(timezone.utc).isoformat(),
+    )
+
+    def _timeout_submit(intent, client_order_id=None):
+        raise TimeoutError('broker unreachable')
+    broker.submit_order = _timeout_submit
+
     result = eng.run_execution_cycle(ACCOUNT, conn, broker,
                                     trading_state=eng.TradingReadyState.TRADING_READY)
+
     assert result['execution_state'] == 'HALTED'
     assert result['halt_reason'] == 'SUBMISSION_INDETERMINATE'
-    assert result['new_orders_created'] >= 1
+    assert result['new_orders_created'] == 1
+
+    order_row = conn.execute(
+        "SELECT state FROM orders WHERE intent_id=?", (intent.intent_id,)
+    ).fetchone()
+    assert order_row is not None
+    assert order_row['state'] == 'PENDING_SUBMIT'
 
 
 def test_already_applied_retry_not_counted(setup):

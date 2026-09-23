@@ -585,7 +585,7 @@ def process_intent(
         expires_at = market_calendar.next_market_close().astimezone(timezone.utc).isoformat()
     else:
         expires_at = intent.valid_until
-    conn.execute(
+    _insert_cursor = conn.execute(
         """INSERT OR IGNORE INTO orders
            (order_id, intent_id, account_id, symbol, side, quantity,
             contracts, order_type, limit_price, state, time_in_force,
@@ -627,7 +627,8 @@ def process_intent(
         )
 
     # ── Order submission (broker call after local row is durable) ─────────────
-    if _progress is not None:
+    # orders_created tracks newly inserted rows only — rowcount==0 means crash-restart re-entry.
+    if _progress is not None and _insert_cursor.rowcount == 1:
         _progress.orders_created += 1
     try:
         ack = broker.submit_order(intent, client_order_id=client_order_id)
