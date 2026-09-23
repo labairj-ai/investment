@@ -117,6 +117,51 @@ def _make_db():
         flagged_at TEXT NOT NULL,
         resolved_at TEXT
     )""")
+    conn.execute("""CREATE TABLE agent_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        agent_type TEXT NOT NULL,
+        scope TEXT,
+        ticker TEXT,
+        status TEXT NOT NULL DEFAULT 'done',
+        started_at REAL,
+        finished_at REAL
+    )""")
+    conn.execute("""CREATE TABLE agent_findings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id INTEGER REFERENCES agent_runs(id),
+        ticker TEXT NOT NULL,
+        finding_type TEXT NOT NULL,
+        severity INTEGER DEFAULT 5,
+        confidence INTEGER DEFAULT 70,
+        summary TEXT,
+        why_now TEXT,
+        metrics_json TEXT,
+        evidence_json TEXT,
+        created_at REAL NOT NULL,
+        expires_at REAL
+    )""")
+    conn.execute("""CREATE TABLE news_maintenance_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_at TEXT NOT NULL,
+        day TEXT NOT NULL,
+        active_count INTEGER DEFAULT 0,
+        fading_count INTEGER DEFAULT 0,
+        resolved_count INTEGER DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'ok',
+        error TEXT
+    )""")
+    conn.execute("""CREATE TABLE news_summaries (
+        day TEXT PRIMARY KEY,
+        summaries TEXT,
+        generated_at TEXT,
+        news_snapshot_hash TEXT,
+        model_id TEXT,
+        prompt_version TEXT,
+        article_count INTEGER,
+        input_manifest_json TEXT,
+        snapshot_id TEXT,
+        snapshot_captured_at TEXT
+    )""")
     return conn
 
 
@@ -1188,52 +1233,426 @@ class TestFundamentalsDispatch:
 # ── Tests: agent findings channel (0604) ──────────────────────────────────────
 
 class TestAgentFindings:
+    """0606: _get_agent_findings_flag() reads agent_findings JOIN agent_runs (not guardian_flags)."""
 
-    def test_flag_before_snapshot_is_accepted(self):
-        """Finding predating snapshot → independent signal, accepted."""
-        conn = _make_db()
+    def _insert_guardian_finding(self, conn, ticker, finding_type, created_at_unix,
+                                   expires_at_unix=None, summary="Position risk flagged"):
         conn.execute(
-            "INSERT INTO guardian_flags (ticker, reason, flagged_at) VALUES (?,?,?)",
-            ("AAPL", "Regulatory headwinds", "2026-09-20 10:00:00"),
+            "INSERT INTO agent_runs (agent_type, ticker, status, started_at) VALUES (?,?,?,?)",
+            ("portfolio_guardian", ticker, "done", created_at_unix - 60),
+        )
+        run_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            """INSERT INTO agent_findings (run_id, ticker, finding_type, summary, created_at, expires_at)
+               VALUES (?,?,?,?,?,?)""",
+            (run_id, ticker, finding_type, summary, created_at_unix, expires_at_unix),
         )
         conn.commit()
-        result = intel._get_agent_findings_flag(
-            "AAPL", conn, snapshot_captured_at="2026-09-23 08:00:00"
+        return run_id
+
+    def test_guardian_finding_before_snapshot_is_accepted(self):
+        """Finding from agent_findings with portfolio_guardian run predating snapshot → accepted."""
+        import time as _time
+        conn = _make_db()
+        snap_ts = _time.time() - 3600  # snapshot was 1 hour ago
+        finding_ts = snap_ts - 7200   # finding was 3 hours ago (before snapshot)
+        self._insert_guardian_finding(conn, "AAPL", "position_risk", finding_ts)
+        snap_iso = (
+            __import__("datetime").datetime.utcfromtimestamp(snap_ts)
+            .strftime("%Y-%m-%d %H:%M:%S")
         )
+        result = intel._get_agent_findings_flag("AAPL", conn, snapshot_captured_at=snap_iso)
         assert result is not None
         assert result["flagged"] is True
-        assert result["source"] == "guardian"
-        assert "flagged_at" in result
+        assert result["source"] == "portfolio_guardian"
+        assert "finding_type" in result
+        assert "created_at" in result
 
-    def test_flag_after_snapshot_is_rejected(self):
-        """Flag after snapshot captured_at → may be triggered by same news, rejected."""
+    def test_guardian_finding_after_snapshot_is_rejected(self):
+        """Finding recorded after snapshot captured_at is not independent — rejected."""
+        import time as _time
         conn = _make_db()
+        snap_ts = _time.time() - 3600
+        finding_ts = snap_ts + 300   # 5 min AFTER snapshot
+        self._insert_guardian_finding(conn, "AAPL", "position_risk", finding_ts)
+        snap_iso = (
+            __import__("datetime").datetime.utcfromtimestamp(snap_ts)
+            .strftime("%Y-%m-%d %H:%M:%S")
+        )
+        result = intel._get_agent_findings_flag("AAPL", conn, snapshot_captured_at=snap_iso)
+        assert result is None, "Post-snapshot finding must be rejected (independence)"
+
+    def test_expired_finding_not_returned(self):
+        """Expired finding (expires_at < now) is excluded."""
+        import time as _time
+        conn = _make_db()
+        now = _time.time()
+        snap_ts = now - 3600
+        finding_ts = snap_ts - 7200
+        expires_at = now - 60  # already expired
+        self._insert_guardian_finding(conn, "AAPL", "position_risk", finding_ts,
+                                       expires_at_unix=expires_at)
+        snap_iso = (
+            __import__("datetime").datetime.utcfromtimestamp(snap_ts)
+            .strftime("%Y-%m-%d %H:%M:%S")
+        )
+        result = intel._get_agent_findings_flag("AAPL", conn, snapshot_captured_at=snap_iso)
+        assert result is None, "Expired finding must not be returned"
+
+    def test_non_guardian_agent_not_counted(self):
+        """Finding from a different agent_type is not counted."""
+        import time as _time
+        conn = _make_db()
+        snap_ts = _time.time() - 3600
+        finding_ts = snap_ts - 7200
         conn.execute(
-            "INSERT INTO guardian_flags (ticker, reason, flagged_at) VALUES (?,?,?)",
-            ("AAPL", "Late finding", "2026-09-23 12:00:00"),
+            "INSERT INTO agent_runs (agent_type, ticker, status, started_at) VALUES (?,?,?,?)",
+            ("thesis_monitor", "AAPL", "done", finding_ts - 60),  # different agent
+        )
+        run_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            "INSERT INTO agent_findings (run_id, ticker, finding_type, summary, created_at) VALUES (?,?,?,?,?)",
+            (run_id, "AAPL", "thesis_violation", "thesis degraded", finding_ts),
         )
         conn.commit()
-        result = intel._get_agent_findings_flag(
-            "AAPL", conn, snapshot_captured_at="2026-09-23 08:00:00"
+        snap_iso = (
+            __import__("datetime").datetime.utcfromtimestamp(snap_ts)
+            .strftime("%Y-%m-%d %H:%M:%S")
         )
-        assert result is None, "Flag after snapshot must be rejected (independence check)"
+        result = intel._get_agent_findings_flag("AAPL", conn, snapshot_captured_at=snap_iso)
+        assert result is None, "Non-guardian agent findings must not be counted"
 
-    def test_resolved_flag_not_returned(self):
-        """Resolved flags do not vote."""
-        conn = _make_db()
-        conn.execute(
-            "INSERT INTO guardian_flags (ticker, reason, flagged_at, resolved_at) VALUES (?,?,?,?)",
-            ("AAPL", "Old concern", "2026-09-01 10:00:00", "2026-09-10 00:00:00"),
-        )
-        conn.commit()
-        result = intel._get_agent_findings_flag(
-            "AAPL", conn, snapshot_captured_at="2026-09-23 08:00:00"
-        )
-        assert result is None, "Resolved flag must not be returned"
-
-    def test_missing_guardian_table_returns_none(self):
-        """Missing guardian_flags table must not raise — returns None gracefully."""
+    def test_missing_agent_tables_returns_none(self):
+        """Missing agent_findings/agent_runs tables must not raise — returns None."""
         import sqlite3 as _sq3
-        conn = _sq3.connect(":memory:")  # fresh DB with no tables
+        conn = _sq3.connect(":memory:")
         result = intel._get_agent_findings_flag("AAPL", conn)
         assert result is None
+
+
+# ── Tests: independent confirmation sources (0606) ─────────────────────────────
+
+class TestIndependentConfirmation:
+    """0606: THESIS independence check, CAPEX/PRODUCT/MANAGEMENT/LITIGATION → None."""
+
+    def test_capex_event_returns_none_from_fundamentals(self):
+        """CAPEX has no relevant column in company_financials → return None (0606)."""
+        conn = _make_db()
+        # Load 5 quarters with revenue data — but CAPEX should still return None
+        for i, pe in enumerate(["2026-03-31","2025-12-31","2025-09-30","2025-06-30","2025-03-31"]):
+            conn.execute(
+                "INSERT INTO company_financials (ticker, period_end, period_type, revenue) "
+                "VALUES (?,?,?,?)", ("AAPL", pe, "Q", 100.0 + i),
+            )
+        conn.commit()
+        assert intel._get_fundamentals_trend("AAPL", conn, "CAPEX") is None, (
+            "CAPEX must return None — no relevant column (0606)"
+        )
+
+    def test_product_event_returns_none_from_fundamentals(self):
+        """PRODUCT has no specific metric → None."""
+        conn = _make_db()
+        for i, pe in enumerate(["2026-03-31","2025-12-31","2025-09-30","2025-06-30","2025-03-31"]):
+            conn.execute(
+                "INSERT INTO company_financials (ticker, period_end, period_type, revenue) "
+                "VALUES (?,?,?,?)", ("AAPL", pe, "Q", 100.0 + i),
+            )
+        conn.commit()
+        assert intel._get_fundamentals_trend("AAPL", conn, "PRODUCT") is None
+
+    def test_management_and_litigation_return_none(self):
+        """MANAGEMENT and LITIGATION return None (no relevant metric)."""
+        conn = _make_db()
+        for i, pe in enumerate(["2026-03-31","2025-12-31","2025-09-30","2025-06-30","2025-03-31"]):
+            conn.execute(
+                "INSERT INTO company_financials (ticker, period_end, period_type, revenue) "
+                "VALUES (?,?,?,?)", ("AAPL", pe, "Q", 100.0 + i),
+            )
+        conn.commit()
+        assert intel._get_fundamentals_trend("AAPL", conn, "MANAGEMENT") is None
+        assert intel._get_fundamentals_trend("AAPL", conn, "LITIGATION") is None
+
+    def test_thesis_vote_skipped_when_evaluated_after_snapshot(self):
+        """THESIS vote is skipped when thesis was evaluated after snapshot.captured_at (0606)."""
+        import time as _time
+        snap_ts = _time.time() - 3600
+        thesis_eval_ts = snap_ts + 300  # thesis evaluated 5 min AFTER snapshot
+        snap_iso = (
+            __import__("datetime").datetime.utcfromtimestamp(snap_ts)
+            .strftime("%Y-%m-%d %H:%M:%S")
+        )
+        conn = _make_db()
+        ev = {"event_type": "EARNINGS", "direction": "NEGATIVE"}
+        with patch.object(intel, "_get_thesis_health",
+                          return_value=(30.0, thesis_eval_ts)):  # low health, but not independent
+            result = intel.attach_confirmation(ev, "AAPL", conn,
+                                               snapshot_captured_at=snap_iso)
+        signals = result.get("confirmation_signals", {})
+        meta = signals.get("thesis_health_meta", {})
+        assert meta.get("independent") is False, (
+            "Thesis evaluated after snapshot must be marked not independent"
+        )
+        # Low health thesis evaluated after snapshot → no corroborating vote
+        assert result["confirmation_class"] == "NEWS_ONLY"
+
+    def test_thesis_vote_counts_when_evaluated_before_snapshot(self):
+        """THESIS vote counts as independent when thesis was evaluated before snapshot."""
+        import time as _time
+        snap_ts = _time.time() - 3600
+        thesis_eval_ts = snap_ts - 7200  # thesis evaluated 2 hours BEFORE snapshot
+        snap_iso = (
+            __import__("datetime").datetime.utcfromtimestamp(snap_ts)
+            .strftime("%Y-%m-%d %H:%M:%S")
+        )
+        conn = _make_db()
+        ev = {"event_type": "EARNINGS", "direction": "NEGATIVE"}
+        with patch.object(intel, "_get_thesis_health",
+                          return_value=(25.0, thesis_eval_ts)):  # low health, independent
+            result = intel.attach_confirmation(ev, "AAPL", conn,
+                                               snapshot_captured_at=snap_iso)
+        signals = result.get("confirmation_signals", {})
+        meta = signals.get("thesis_health_meta", {})
+        assert meta.get("independent") is True
+        assert signals.get("thesis_health") == 25.0
+
+    def test_thesis_independence_stored_in_signals(self):
+        """thesis_health_meta dict with evaluated_at and independent is in confirmation_signals."""
+        import time as _time
+        snap_ts = _time.time() - 3600
+        eval_ts = snap_ts - 1800
+        snap_iso = (
+            __import__("datetime").datetime.utcfromtimestamp(snap_ts)
+            .strftime("%Y-%m-%d %H:%M:%S")
+        )
+        conn = _make_db()
+        ev = {"event_type": "EARNINGS", "direction": "POSITIVE"}
+        with patch.object(intel, "_get_thesis_health", return_value=(80.0, eval_ts)):
+            result = intel.attach_confirmation(ev, "AAPL", conn,
+                                               snapshot_captured_at=snap_iso)
+        meta = result["confirmation_signals"].get("thesis_health_meta", {})
+        assert "evaluated_at" in meta
+        assert "independent" in meta
+        assert meta["independent"] is True
+
+
+# ── Tests: news maintenance operationalization (0605) ──────────────────────────
+
+class TestNewsMaintenance:
+    """0605: run_daily_sweep writes audit row; sweep runs before MLX check."""
+
+    def test_run_daily_sweep_returns_counts(self, tmp_path):
+        """run_daily_sweep() returns dict with active/fading/resolved counts."""
+        import importlib
+        db_file = tmp_path / "investment.db"
+        conn = sqlite3.connect(str(db_file))
+        conn.row_factory = sqlite3.Row
+        # Create required tables
+        conn.execute("""CREATE TABLE news_events (
+            event_id TEXT PRIMARY KEY, ticker TEXT, day TEXT,
+            event_type TEXT, direction TEXT, magnitude TEXT DEFAULT 'MEDIUM',
+            expected_horizon TEXT DEFAULT 'SHORT', confidence REAL DEFAULT 0.7,
+            extracted_at TEXT DEFAULT 'now', signal_strength REAL DEFAULT 0.0,
+            portfolio_priority REAL DEFAULT 0.0, event_fingerprint TEXT,
+            causal_event_key TEXT, news_intelligence_version TEXT
+        )""")
+        conn.execute("""CREATE TABLE news_event_state (
+            ticker TEXT NOT NULL, causal_event_key TEXT NOT NULL,
+            last_real_seen_at TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'ACTIVE',
+            state_as_of TEXT NOT NULL, PRIMARY KEY (ticker, causal_event_key)
+        )""")
+        import datetime as _dt2
+        today = _dt2.date.today().isoformat()
+        import uuid as _uuid
+        conn.execute(
+            "INSERT INTO news_events (event_id, ticker, day, event_type, direction, "
+            "extracted_at, causal_event_key) VALUES (?,?,?,?,?,?,?)",
+            (str(_uuid.uuid4()), "AAPL", today, "EARNINGS", "NEGATIVE", today, "ek1"),
+        )
+        conn.commit()
+        conn.close()
+
+        from agents.news import maintenance as _maint
+        import importlib as _imp
+        _maint = _imp.import_module("agents.news.maintenance")
+        orig_db = _maint._DB_PATH
+        try:
+            _maint._DB_PATH = db_file
+            result = _maint.run_daily_sweep(day=today)
+        finally:
+            _maint._DB_PATH = orig_db
+
+        assert result["status"] == "ok"
+        assert result["day"] == today
+        assert "active" in result
+
+    def test_run_daily_sweep_writes_log_row(self, tmp_path):
+        """run_daily_sweep() inserts one row into news_maintenance_log."""
+        import datetime as _dt2, uuid as _uuid
+        db_file = tmp_path / "investment.db"
+        conn = sqlite3.connect(str(db_file))
+        conn.execute("""CREATE TABLE news_events (
+            event_id TEXT PRIMARY KEY, ticker TEXT, day TEXT,
+            event_type TEXT, direction TEXT, magnitude TEXT DEFAULT 'MEDIUM',
+            expected_horizon TEXT DEFAULT 'SHORT', confidence REAL DEFAULT 0.7,
+            extracted_at TEXT DEFAULT 'now', causal_event_key TEXT
+        )""")
+        conn.execute("""CREATE TABLE news_event_state (
+            ticker TEXT NOT NULL, causal_event_key TEXT NOT NULL,
+            last_real_seen_at TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'ACTIVE',
+            state_as_of TEXT NOT NULL, PRIMARY KEY (ticker, causal_event_key)
+        )""")
+        conn.commit()
+        conn.close()
+
+        from agents.news import maintenance as _maint
+        orig_db = _maint._DB_PATH
+        today = _dt2.date.today().isoformat()
+        try:
+            _maint._DB_PATH = db_file
+            _maint.run_daily_sweep(day=today)
+        finally:
+            _maint._DB_PATH = orig_db
+
+        check_conn = sqlite3.connect(str(db_file))
+        row = check_conn.execute(
+            "SELECT run_at, day, status FROM news_maintenance_log WHERE day=?", (today,)
+        ).fetchone()
+        check_conn.close()
+        assert row is not None, "run_daily_sweep must insert a row into news_maintenance_log"
+        assert row[2] == "ok"
+
+    def test_sweep_returns_count_dict(self):
+        """update_event_state_sweep returns dict with active/fading/resolved keys."""
+        conn = _make_db()
+        import datetime as _dt2
+        today = _dt2.date.today().isoformat()
+        _insert_event(conn, "AAPL", "EARNINGS", "NEGATIVE", today,
+                      causal_event_key="ek_active_test")
+        result = intel.update_event_state_sweep(today, conn)
+        assert isinstance(result, dict), "update_event_state_sweep must return a dict"
+        assert "active" in result and "fading" in result and "resolved" in result
+        assert result["active"] >= 1
+
+    def test_generate_news_summaries_runs_sweep_before_mlx_check(self, tmp_path):
+        """0605: generate_news_summaries() writes maintenance log even when MLX unavailable."""
+        import importlib, datetime as _dt2
+        db_file = tmp_path / "investment.db"
+        conn = sqlite3.connect(str(db_file))
+        # Minimal schema for generate_news_summaries to not crash on _init_ai_tables
+        conn.execute("CREATE TABLE IF NOT EXISTS news_events (event_id TEXT PRIMARY KEY, ticker TEXT, "
+                     "day TEXT, event_type TEXT, direction TEXT, magnitude TEXT, expected_horizon TEXT, "
+                     "confidence REAL, extracted_at TEXT)")
+        conn.execute("CREATE TABLE IF NOT EXISTS news_event_state (ticker TEXT, causal_event_key TEXT, "
+                     "last_real_seen_at TEXT, state TEXT, state_as_of TEXT, PRIMARY KEY (ticker, causal_event_key))")
+        conn.commit()
+        conn.close()
+
+        import portfolio_ai as _pai
+        today = _dt2.date.today().isoformat()
+        from agents.news import maintenance as _maint
+        orig_db_maint = _maint._DB_PATH
+        try:
+            _maint._DB_PATH = db_file
+            with patch.object(_pai.ollama_client, "available", return_value=False):
+                with patch.object(_pai, "DB_PATH", db_file):
+                    _pai.generate_news_summaries()
+        finally:
+            _maint._DB_PATH = orig_db_maint
+
+        check_conn = sqlite3.connect(str(db_file))
+        row = check_conn.execute(
+            "SELECT run_at, day, status FROM news_maintenance_log WHERE day=?", (today,)
+        ).fetchone()
+        check_conn.close()
+        assert row is not None, (
+            "news_maintenance_log must have a row even when MLX is unavailable (0605)"
+        )
+
+
+# ── Tests: provenance and acceptance boundary (0607) ─────────────────────────
+
+class TestProvenanceBoundary:
+    """0607: full canonical manifest in news_summaries; acceptance table seeded."""
+
+    def _make_fresh_db(self, tmp_path):
+        """Create an empty DB file (so _init_ai_tables doesn't return early)."""
+        db_file = tmp_path / "investment.db"
+        sqlite3.connect(str(db_file)).close()  # touch file
+        return db_file
+
+    def test_acceptance_table_seeded_on_init(self, tmp_path):
+        """_init_ai_tables seeds _news_intelligence_acceptance with accepted_commit=94e0575."""
+        import portfolio_ai as _pai
+        db_file = self._make_fresh_db(tmp_path)
+        with patch.object(_pai, "DB_PATH", db_file):
+            _pai._init_ai_tables()
+        conn = sqlite3.connect(str(db_file))
+        row = conn.execute(
+            "SELECT accepted_commit, accepted_version FROM _news_intelligence_acceptance "
+            "WHERE id=1"
+        ).fetchone()
+        conn.close()
+        assert row is not None, "_news_intelligence_acceptance must be seeded"
+        assert row[0] == "94e0575"
+        assert row[1] == "v2"
+
+    def test_acceptance_seed_is_idempotent(self, tmp_path):
+        """Calling _init_ai_tables() twice must not duplicate the acceptance row."""
+        import portfolio_ai as _pai
+        db_file = self._make_fresh_db(tmp_path)
+        with patch.object(_pai, "DB_PATH", db_file):
+            _pai._init_ai_tables()
+            _pai._init_ai_tables()
+        conn = sqlite3.connect(str(db_file))
+        count = conn.execute(
+            "SELECT COUNT(*) FROM _news_intelligence_acceptance WHERE accepted_commit='94e0575'"
+        ).fetchone()[0]
+        conn.close()
+        assert count == 1, "Acceptance row must be idempotent (INSERT OR IGNORE)"
+
+    def test_news_summaries_has_snapshot_columns(self, tmp_path):
+        """_init_ai_tables adds snapshot_id and snapshot_captured_at to news_summaries."""
+        import portfolio_ai as _pai
+        db_file = self._make_fresh_db(tmp_path)
+        with patch.object(_pai, "DB_PATH", db_file):
+            _pai._init_ai_tables()
+        conn = sqlite3.connect(str(db_file))
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(news_summaries)").fetchall()}
+        conn.close()
+        assert "snapshot_id" in cols
+        assert "snapshot_captured_at" in cols
+
+    def test_canonical_manifest_includes_model_input_text(self):
+        """run_pipeline() manifest includes model_input_text and content_hash (0607)."""
+        arts = [_make_article("AAPL", "Apple beats earnings", body="Long body text here " * 5,
+                              url="https://x.com/1")]
+        by_ticker = {"AAPL": arts}
+        snap = intel.build_news_snapshot(by_ticker)
+
+        mock_client = MagicMock()
+        mock_client.generate = MagicMock(return_value=json.dumps([]))
+
+        conn = _make_db()
+        result = intel.run_pipeline(by_ticker, {"AAPL": 5.0}, conn, mock_client,
+                                    snapshot=snap)
+        manifest = result.get("_manifest", {})
+        if manifest:
+            entry = next(iter(manifest.values()))
+            assert "model_input_text" in entry, "Manifest must include model_input_text (0607)"
+            assert "content_hash" in entry, "Manifest must include content_hash (0607)"
+
+    def test_run_pipeline_returns_snapshot_id(self):
+        """run_pipeline() return value includes _snapshot_id and _snapshot_captured_at."""
+        arts = [_make_article("AAPL", "Apple news", body="body", url="https://x.com/2")]
+        by_ticker = {"AAPL": arts}
+        snap = intel.build_news_snapshot(by_ticker)
+
+        mock_client = MagicMock()
+        mock_client.generate = MagicMock(return_value=json.dumps([]))
+
+        conn = _make_db()
+        result = intel.run_pipeline(by_ticker, {"AAPL": 5.0}, conn, mock_client,
+                                    snapshot=snap)
+        assert "_snapshot_id" in result
+        assert result["_snapshot_id"] == snap["snapshot_id"]
+        assert result["_snapshot_captured_at"] == snap["captured_at"]

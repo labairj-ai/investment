@@ -1,0 +1,9 @@
+[Unit]
+Description=Run news event-state maintenance daily at 02:00 ET (07:00 UTC)
+
+[Timer]
+OnCalendar=*-*-* 07:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

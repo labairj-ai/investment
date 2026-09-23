@@ -780,7 +780,7 @@ def _init_ai_tables():
             )
         except Exception:
             pass
-    # Guardian flags — agent findings channel (0604)
+    # Guardian flags — kept for historical data; no production writer (see agent_findings)
     conn.execute("""CREATE TABLE IF NOT EXISTS guardian_flags (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
         ticker      TEXT NOT NULL,
@@ -792,6 +792,48 @@ def _init_ai_tables():
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_guardian_flags_ticker "
         "ON guardian_flags (ticker, flagged_at DESC)"
+    )
+    # News maintenance audit log (0605)
+    conn.execute("""CREATE TABLE IF NOT EXISTS news_maintenance_log (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_at         TEXT NOT NULL,
+        day            TEXT NOT NULL,
+        active_count   INTEGER DEFAULT 0,
+        fading_count   INTEGER DEFAULT 0,
+        resolved_count INTEGER DEFAULT 0,
+        status         TEXT NOT NULL DEFAULT 'ok',
+        error          TEXT
+    )""")
+    # 0607: full canonical manifest + snapshot identity columns on news_summaries
+    for _ns_col_0607 in [
+        "ALTER TABLE news_summaries ADD COLUMN snapshot_id TEXT",
+        "ALTER TABLE news_summaries ADD COLUMN snapshot_captured_at TEXT",
+    ]:
+        try:
+            conn.execute(_ns_col_0607)
+        except Exception:
+            pass
+    # 0607: acceptance boundary — records the first commit where v2 contract is stable
+    # Learning queries must filter: WHERE extracted_at >= (SELECT accepted_at FROM
+    # _news_intelligence_acceptance WHERE accepted_version='v2' ORDER BY accepted_at DESC LIMIT 1)
+    conn.execute("""CREATE TABLE IF NOT EXISTS _news_intelligence_acceptance (
+        id               INTEGER PRIMARY KEY,
+        accepted_at      TEXT NOT NULL,
+        accepted_commit  TEXT NOT NULL,
+        accepted_version TEXT NOT NULL,
+        notes            TEXT
+    )""")
+    _acceptance_notes = (
+        "v2 contract finalized: snapshot identity, evidence identity, "
+        "confirmation semantics, state-maintenance behavior. "
+        "Exclude news_events rows with extracted_at before accepted_at "
+        "from learning effectiveness analysis."
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO _news_intelligence_acceptance "
+        "(id, accepted_at, accepted_commit, accepted_version, notes) "
+        "VALUES (1, ?, '94e0575', 'v2', ?)",
+        (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), _acceptance_notes),
     )
     conn.commit()
     conn.close()
@@ -1766,6 +1808,15 @@ def generate_news_summaries(force: bool = False) -> dict:
     _init_ai_tables()
     today = date.today().isoformat()
 
+    # 0605: run event-state sweep BEFORE any MLX/network checks — state maintenance
+    # must be independent of AI availability.  run_daily_sweep() also writes the
+    # news_maintenance_log audit row that the watchdog reads.
+    from agents.news.maintenance import run_daily_sweep as _run_maintenance_sweep
+    try:
+        _run_maintenance_sweep(day=today)
+    except Exception as _se:
+        print(f"[NewsIntelligence] Maintenance sweep error: {_se}")
+
     if not ollama_client.available():
         return {"error": "AI model unavailable — check MLX server"}
 
@@ -1779,16 +1830,6 @@ def generate_news_summaries(force: bool = False) -> dict:
     tickers_with_news = {t: items for t, items in by_ticker.items() if items}
 
     from agents.news import intelligence as _intel
-
-    # 0602: run event-state sweep unconditionally — even on quiet days with no news.
-    # State maintenance (FADING → RESOLVED) must not depend on extraction succeeding.
-    if DB_PATH.exists():
-        try:
-            _sweep_conn = sqlite3.connect(str(DB_PATH), timeout=10)
-            _intel.update_event_state_sweep(today, _sweep_conn)
-            _sweep_conn.close()
-        except Exception as _se:
-            print(f"[NewsIntelligence] Standalone sweep error: {_se}")
 
     if not tickers_with_news:
         return {}
@@ -2066,21 +2107,45 @@ Be specific. Name the legislation by ID and the matching holding. No generic sta
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if DB_PATH.exists():
         conn = sqlite3.connect(str(DB_PATH), timeout=10)
-        # Persist input_manifest_json for provenance (0589)
-        manifest_json = json.dumps(intel_result.get("_manifest", {})) if intel_result else None
+        # 0607: store full canonical manifest (model_input_text, content_hash per article)
+        # so any future audit can reconstruct exactly what evidence produced a given snapshot hash.
+        canonical_manifest = {}
+        if snapshot is not None:
+            from agents.news.intelligence import _evidence_id as _eid
+            for _a in snapshot["articles"]:
+                _k = _eid(_a["ticker"], _a["article_id"])
+                canonical_manifest[_k] = {
+                    "ticker":           _a["ticker"],
+                    "article_id":       _a["article_id"],
+                    "title":            _a.get("title", ""),
+                    "url":              _a.get("url", ""),
+                    "model_input_text": _a.get("model_input_text", ""),
+                    "content_hash":     _a.get("content_hash", ""),
+                }
+        manifest_json = (json.dumps(canonical_manifest) if canonical_manifest
+                         else json.dumps(intel_result.get("_manifest", {})) if intel_result else None)
         conn.execute(
             """INSERT OR REPLACE INTO news_summaries
                (day, summaries, generated_at, news_snapshot_hash, model_id, prompt_version,
-                article_count, input_manifest_json)
-               VALUES (?,?,?,?,?,?,?,?)""",
+                article_count, input_manifest_json, snapshot_id, snapshot_captured_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
             (today, json.dumps(summaries), now_str, news_hash,
              ollama_client.DEFAULT_MODEL, f"news_prose_{_intel.PROMPT_VERSION}",
-             article_count, manifest_json)
+             article_count, manifest_json,
+             snapshot.get("snapshot_id") if snapshot is not None else None,
+             snapshot.get("captured_at") if snapshot is not None else None)
         )
         conn.commit()
         conn.close()
 
     return summaries
+
+
+def run_news_maintenance(day=None) -> dict:
+    """Standalone news event-state maintenance sweep entry point (0605)."""
+    _init_ai_tables()
+    from agents.news.maintenance import run_daily_sweep
+    return run_daily_sweep(day=day)
 
 
 def generate_daily_insight(force: bool = False) -> dict:

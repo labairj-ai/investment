@@ -335,6 +335,27 @@ def collect(conn, state, baseline, now):
                       'Stale prices or holding scores' if stale or prices_stale else 'Source freshness checks passed',
                       stale_holding_scores=stale,last_price_day=last_day,expected_price_day=day.isoformat())
     guarded('data_freshness',freshness)
+    def news_maintenance_check():
+        try:
+            row=conn.execute(
+                "SELECT MAX(run_at) as last_run FROM news_maintenance_log WHERE status='ok'"
+            ).fetchone()
+            last_run=row['last_run'] if row else None
+            stale=True
+            if last_run:
+                from datetime import datetime as _dt
+                try:
+                    last_ts=(_dt.strptime(last_run,'%Y-%m-%d %H:%M:%S')-_dt(1970,1,1)).total_seconds()
+                    stale=now-last_ts>26*3600
+                except ValueError:
+                    pass
+            return result('news_maintenance','YELLOW' if stale else 'INFO',
+                          'News event-state sweep overdue (>26h)' if stale else 'News event-state sweep is current',
+                          last_run_at=last_run,stale=stale,
+                          expected_cadence='Daily at 02:00 ET via systemd; also runs inside generate_news_summaries')
+        except Exception:
+            return result('news_maintenance','YELLOW','news_maintenance_log unavailable')
+    guarded('news_maintenance',news_maintenance_check)
     for component in ('agent_pipeline','outcome_labeler','virtual_book_mtm','backup','candidate_preparation'):
         rows=[dict(r) for r in state.execute('SELECT * FROM watchdog_receipts WHERE component=?',(component,))]
         schedule=SCHEDULES.get(component,SCHEDULES['candidate_macro_refresh'])

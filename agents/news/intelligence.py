@@ -16,6 +16,7 @@ import json
 import re
 import sqlite3
 import sys
+import time
 import uuid
 from collections import defaultdict
 from datetime import date, datetime, timedelta
@@ -723,11 +724,12 @@ def compute_trend(ticker: str, event_type: str, direction: str,
 
 _EVENT_STATE_RESOLVED_DAYS = 30  # days without evidence before RESOLVED transition
 
-def update_event_state_sweep(day: str, conn: sqlite3.Connection) -> None:
+def update_event_state_sweep(day: str, conn: sqlite3.Connection) -> dict:
     """
     Update news_event_state for all known causal_event_keys (0598).
     NEVER inserts synthetic rows into news_events.
     Callable standalone, independent of run_pipeline() (0602).
+    Returns {active, fading, resolved} total counts after sweep (0605).
 
     State machine:
     - Real event today                          → ACTIVE
@@ -747,6 +749,7 @@ def update_event_state_sweep(day: str, conn: sqlite3.Connection) -> None:
     today_dt = datetime.strptime(day, "%Y-%m-%d")
     d30 = (today_dt - timedelta(days=30)).strftime("%Y-%m-%d")
     now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    counts: dict = {"active": 0, "fading": 0, "resolved": 0}
 
     try:
         conn.execute("""CREATE TABLE IF NOT EXISTS news_event_state (
@@ -814,8 +817,15 @@ def update_event_state_sweep(day: str, conn: sqlite3.Connection) -> None:
             )
 
         conn.commit()
+        for row in conn.execute(
+            "SELECT state, COUNT(*) FROM news_event_state GROUP BY state"
+        ).fetchall():
+            k = row[0].lower()
+            if k in counts:
+                counts[k] = row[1]
     except Exception as e:
         print(f"[NewsIntelligence] Event state sweep error: {e}")
+    return counts
 
 
 # Backward-compat alias — call site in run_pipeline now uses update_event_state_sweep
@@ -919,13 +929,33 @@ def _get_price_alpha(ticker: str, conn: sqlite3.Connection) -> dict:
         return {}
 
 
-def _get_thesis_health(ticker: str) -> Optional[float]:
+def _iso_to_unix(iso_str: str) -> Optional[float]:
+    """Convert UTC ISO string (YYYY-MM-DD HH:MM:SS) to Unix timestamp."""
+    try:
+        dt = datetime.strptime(iso_str, "%Y-%m-%d %H:%M:%S")
+        return (dt - datetime(1970, 1, 1)).total_seconds()
+    except (ValueError, TypeError):
+        return None
+
+
+def _get_thesis_health(ticker: str) -> Optional[tuple]:
+    """
+    Returns (health_score, last_evaluated_at_unix) for ACTIVE thesis, or None.
+    last_evaluated_at is MAX(thesis_pillars.last_evaluated_at) — used for THESIS
+    independence check (0606): only vote if thesis was evaluated before snapshot.
+    """
     try:
         sys.path.insert(0, str(PROJECT_DIR))
         import agent_db as _adb
         t = _adb.get_thesis(ticker)
         if t and t.get("status") == "ACTIVE":
-            return t.get("health_score")
+            health = t.get("health_score")
+            if health is not None:
+                pillars = t.get("pillars", [])
+                evals = [p["last_evaluated_at"] for p in pillars
+                         if p.get("last_evaluated_at") is not None]
+                last_eval = max(evals) if evals else None
+                return (health, last_eval)
     except Exception:
         pass
     return None
@@ -944,10 +974,15 @@ def _get_macro_score(ticker: str, conn: sqlite3.Connection) -> dict:
 
 
 _FUNDAMENTALS_REVENUE_EVENTS = frozenset(
-    {"DEMAND", "GUIDANCE_CHANGE", "EARNINGS", "PRODUCT", "CAPEX"}
+    {"DEMAND", "GUIDANCE_CHANGE", "EARNINGS"}
 )
-_FUNDAMENTALS_MARGIN_EVENTS = frozenset({"MARGIN", "PRICING"})
-_FUNDAMENTALS_DEBT_EVENTS   = frozenset({"CREDIT_DEBT", "REGULATORY"})
+_FUNDAMENTALS_MARGIN_EVENTS    = frozenset({"MARGIN", "PRICING"})
+_FUNDAMENTALS_DEBT_EVENTS      = frozenset({"CREDIT_DEBT", "REGULATORY"})
+# No economically relevant column for these — return None rather than a spurious
+# revenue signal (0606: CAPEX/PRODUCT/MANAGEMENT/LITIGATION).
+_FUNDAMENTALS_NO_SIGNAL_EVENTS = frozenset(
+    {"CAPEX", "PRODUCT", "MANAGEMENT", "LITIGATION"}
+)
 
 
 def _get_fundamentals_trend(ticker: str, conn: sqlite3.Connection,
@@ -958,12 +993,15 @@ def _get_fundamentals_trend(ticker: str, conn: sqlite3.Connection,
     available; returns None if history is insufficient.
 
     Dispatch:
-      DEMAND/GUIDANCE_CHANGE/EARNINGS/PRODUCT/CAPEX → YoY revenue growth
-      MARGIN/PRICING                                  → YoY gross-margin trend
-      CREDIT_DEBT/REGULATORY                         → YoY net-debt/revenue trend
-      (others)                                        → YoY revenue (generic fallback)
+      DEMAND/GUIDANCE_CHANGE/EARNINGS → YoY revenue growth
+      MARGIN/PRICING                   → YoY gross-margin trend
+      CREDIT_DEBT/REGULATORY           → YoY net-debt/revenue trend
+      CAPEX/PRODUCT/MANAGEMENT/LITIGATION → None (no relevant column; 0606)
+      (others)                         → YoY revenue (generic fallback)
     """
     et = (event_type or "EARNINGS").upper()
+    if et in _FUNDAMENTALS_NO_SIGNAL_EVENTS:
+        return None
     try:
         rows = conn.execute(
             "SELECT period_end, revenue, gross_profit, total_debt, cash "
@@ -1035,27 +1073,37 @@ def _get_agent_findings_flag(
     snapshot_captured_at: Optional[str] = None,
 ) -> Optional[dict]:
     """
-    Agent findings channel (0604). Reads guardian_flags table.
-    Independence check: only flags recorded BEFORE the current snapshot are counted.
-    A Guardian agent that reacts to the same news articles is not an independent signal —
-    only flags predating the snapshot captured_at timestamp are accepted.
-    Returns {'flagged': True, 'source': ..., 'flagged_at': ..., 'reason': ...} or None.
+    Agent findings channel (0606). Reads agent_findings JOIN agent_runs WHERE
+    agent_type='portfolio_guardian'. Guardian runs from price/weight/covariance —
+    not from news articles — so its findings are genuinely independent of news.
+    guardian_flags has no production writer and is no longer used as a data source.
+
+    Independence check: only findings created BEFORE the snapshot captured_at timestamp
+    are accepted. created_at is a REAL Unix timestamp.
     """
     try:
-        cutoff = snapshot_captured_at or datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        now_unix = time.time()
+        snap_ts = _iso_to_unix(snapshot_captured_at) if snapshot_captured_at else now_unix
+        if snap_ts is None:
+            snap_ts = now_unix
         row = conn.execute(
-            "SELECT source, flagged_at, reason FROM guardian_flags "
-            "WHERE ticker=? AND flagged_at < ? "
-            "AND (resolved_at IS NULL OR resolved_at > ?) "
-            "ORDER BY flagged_at DESC LIMIT 1",
-            (ticker, cutoff, cutoff),
+            """SELECT af.finding_type, af.summary, af.created_at
+               FROM agent_findings af
+               JOIN agent_runs ar ON ar.id = af.run_id
+               WHERE af.ticker = ?
+                 AND ar.agent_type = 'portfolio_guardian'
+                 AND af.created_at < ?
+                 AND (af.expires_at IS NULL OR af.expires_at > ?)
+               ORDER BY af.created_at DESC LIMIT 1""",
+            (ticker, snap_ts, now_unix),
         ).fetchone()
         if row:
             return {
-                "flagged":    True,
-                "source":     row[0] or "guardian",
-                "flagged_at": row[1],
-                "reason":     row[2] or "",
+                "flagged":      True,
+                "source":       "portfolio_guardian",
+                "finding_type": row[0] or "",
+                "created_at":   row[2],
+                "summary":      row[1] or "",
             }
     except Exception:
         pass
@@ -1074,9 +1122,12 @@ def attach_confirmation(event: dict, ticker: str, conn: sqlite3.Connection,
     direction  = event.get("direction", "NEUTRAL")
     event_type = event.get("event_type", "")
 
-    alpha     = _get_price_alpha(ticker, conn)
-    th_health = _get_thesis_health(ticker)
-    macro_sc  = _get_macro_score(ticker, conn)
+    alpha          = _get_price_alpha(ticker, conn)
+    th_health_result = _get_thesis_health(ticker)
+    th_health    = th_health_result[0] if th_health_result is not None else None
+    th_eval_at   = th_health_result[1] if th_health_result is not None else None
+    snap_ts      = _iso_to_unix(snapshot_captured_at) if snapshot_captured_at else None
+    macro_sc     = _get_macro_score(ticker, conn)
 
     signals: dict       = {}
     corroborating = 0
@@ -1104,15 +1155,20 @@ def attach_confirmation(event: dict, ticker: str, conn: sqlite3.Connection,
              (direction == "POSITIVE" and price_alpha < -0.01):
             contradicting += 1
 
-    # THESIS channel (0600)
+    # THESIS channel (0600, 0606 independence check)
+    # Skip if thesis was evaluated after the snapshot — it may have consumed the same
+    # news articles and would not be an independent signal.
     if th_health is not None:
+        thesis_independent = (th_eval_at is None or snap_ts is None or th_eval_at < snap_ts)
         signals["thesis_health"] = round(th_health, 1)
-        if direction == "NEGATIVE" and th_health < 50:
-            corroborating += 1
-        elif direction == "POSITIVE" and th_health > 70:
-            corroborating += 1
-        elif direction == "NEGATIVE" and th_health > 75:
-            contradicting += 1
+        signals["thesis_health_meta"] = {"evaluated_at": th_eval_at, "independent": thesis_independent}
+        if thesis_independent:
+            if direction == "NEGATIVE" and th_health < 50:
+                corroborating += 1
+            elif direction == "POSITIVE" and th_health > 70:
+                corroborating += 1
+            elif direction == "NEGATIVE" and th_health > 75:
+                contradicting += 1
 
     # MACRO channel (0600)
     if event_type == "MARGIN" and macro_sc:
@@ -1341,14 +1397,18 @@ def run_pipeline(by_ticker: dict,
     if snapshot is not None:
         news_snapshot_hash    = snapshot["snapshot_hash"]
         snapshot_captured_at  = snapshot.get("captured_at")
+        snapshot_id           = snapshot.get("snapshot_id")
+        # Full canonical manifest: include model_input_text and content_hash (0607)
         manifest = {
             _evidence_id(a["ticker"], a["article_id"]): {
-                "ticker":     a["ticker"],
-                "article_id": a["article_id"],
-                "title":      a["title"],
-                "source":     a["source"],
-                "pub_date":   a["published_at"],
-                "url":        a["url"],
+                "ticker":           a["ticker"],
+                "article_id":       a["article_id"],
+                "title":            a["title"],
+                "source":           a["source"],
+                "pub_date":         a["published_at"],
+                "url":              a["url"],
+                "model_input_text": a.get("model_input_text", ""),
+                "content_hash":     a.get("content_hash", ""),
             }
             for a in snapshot["articles"]
         }
@@ -1356,6 +1416,7 @@ def run_pipeline(by_ticker: dict,
         snap = build_news_snapshot(by_ticker)
         news_snapshot_hash   = snap["snapshot_hash"]
         snapshot_captured_at = snap.get("captured_at")
+        snapshot_id          = snap.get("snapshot_id")
         manifest = None  # built inside extract_events_llm
 
     article_count = sum(len(v) for v in by_ticker.values())
@@ -1365,10 +1426,12 @@ def run_pipeline(by_ticker: dict,
     raw_events = extraction_result
     if not raw_events:
         return {
-            "events_by_ticker": {},
-            "themes": [],
-            "news_snapshot_hash": news_snapshot_hash,
-            "article_count": article_count,
+            "events_by_ticker":     {},
+            "themes":               [],
+            "news_snapshot_hash":   news_snapshot_hash,
+            "article_count":        article_count,
+            "_snapshot_id":         snapshot_id,
+            "_snapshot_captured_at": snapshot_captured_at,
         }
 
     enriched: dict = {}
@@ -1416,11 +1479,13 @@ def run_pipeline(by_ticker: dict,
         print(f"[NewsIntelligence] Event state sweep error: {e}")
 
     return {
-        "events_by_ticker":  enriched,
-        "themes":            themes,
-        "news_snapshot_hash": news_snapshot_hash,
-        "article_count":    article_count,
-        "_manifest":        manifest,
+        "events_by_ticker":     enriched,
+        "themes":               themes,
+        "news_snapshot_hash":   news_snapshot_hash,
+        "article_count":        article_count,
+        "_manifest":            manifest,
+        "_snapshot_id":         snapshot_id,
+        "_snapshot_captured_at": snapshot_captured_at,
     }
 
 

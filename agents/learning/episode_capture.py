@@ -58,17 +58,32 @@ def _build_news_state(ticker: str, conn) -> Optional[str]:
         # 0601d: include news_snapshot_hash to close the invariant:
         # summaries hash == events hash == episode hash
         snapshot_hash = events[0].get("news_snapshot_hash") if events else None
+        # 0607: include snapshot_id and snapshot_captured_at from news_summaries
+        snapshot_id = None
+        snapshot_captured_at = None
+        try:
+            snap_row = conn.execute(
+                "SELECT snapshot_id, snapshot_captured_at FROM news_summaries WHERE day=?",
+                (today,)
+            ).fetchone()
+            if snap_row:
+                snapshot_id = snap_row[0]
+                snapshot_captured_at = snap_row[1]
+        except Exception:
+            pass
         return json.dumps({
-            "as_of":                    today,
-            "news_intelligence_version": NEWS_INTELLIGENCE_VERSION,
-            "news_prompt_version":       _NP_VER,
-            "news_snapshot_hash":        snapshot_hash,
-            "events":                   events,
-            "event_fingerprints":        fingerprints,
-            "top_signal_strength":      max(e.get("signal_strength") or 0 for e in events),
-            "top_confirmation":         events[0].get("confirmation_class") if events else None,
-            "has_thesis_event":         any(e.get("thesis_relevance", 0) > 0.3 for e in events),
-            "event_types":              list({e["event_type"] for e in events}),
+            "as_of":                     today,
+            "news_intelligence_version":  NEWS_INTELLIGENCE_VERSION,
+            "news_prompt_version":        _NP_VER,
+            "news_snapshot_hash":         snapshot_hash,
+            "snapshot_id":               snapshot_id,
+            "snapshot_captured_at":      snapshot_captured_at,
+            "events":                    events,
+            "event_fingerprints":         fingerprints,
+            "top_signal_strength":       max(e.get("signal_strength") or 0 for e in events),
+            "top_confirmation":          events[0].get("confirmation_class") if events else None,
+            "has_thesis_event":          any(e.get("thesis_relevance", 0) > 0.3 for e in events),
+            "event_types":               list({e["event_type"] for e in events}),
         })
     except Exception:
         return None

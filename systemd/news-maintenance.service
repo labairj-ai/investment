@@ -1,0 +1,14 @@
+[Unit]
+Description=News Event-State Maintenance — daily sweep independent of AI server availability
+After=network.target
+ConditionPathExists=/home/optiplex/investment/out/investment.db
+
+[Service]
+Type=oneshot
+User=optiplex
+WorkingDirectory=/home/optiplex/investment
+ExecStart=/home/optiplex/investment/venv/bin/python3 -m agents.news.maintenance
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=news-maintenance
+TimeoutStartSec=120
