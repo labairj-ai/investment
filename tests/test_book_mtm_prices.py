@@ -10,22 +10,31 @@ import operational_watchdog as wd
 @pytest.mark.parametrize('price,expected', [(4.25,4.25),(0,None),(-1,None),(float('nan'),None),(float('inf'),None)])
 def test_provider_contract_and_valid_close(monkeypatch, price, expected):
     import yfinance
-    def download(ticker, *, start, end, auto_adjust, progress, multi_level_index):
-        assert (ticker,start,end)==('MSGM','2026-09-16','2026-09-22')
-        assert not auto_adjust and not progress and not multi_level_index
-        return pd.DataFrame({'Close':[price]},index=pd.to_datetime(['2026-09-21']))
-    monkeypatch.setattr(yfinance,'download',download)
-    assert book_mtm._get_closing_price('MSGM','2026-09-21') == expected
+    class MockTicker:
+        def __init__(self, ticker):
+            assert ticker == 'MSGM'
+        def history(self, *, start, end, auto_adjust, **kwargs):
+            assert start == '2026-09-21' and end == '2026-09-22'
+            assert not auto_adjust
+            return pd.DataFrame({'Close': [price]}, index=pd.to_datetime(['2026-09-21']))
+    monkeypatch.setattr(yfinance, 'Ticker', MockTicker)
+    assert book_mtm._get_closing_price('MSGM', '2026-09-21') == expected
 
 
-def test_no_previous_day_substitution_and_visible_failure(monkeypatch,capsys):
+def test_no_previous_day_substitution_and_visible_failure(monkeypatch, capsys):
     import yfinance
-    monkeypatch.setattr(yfinance,'download',lambda *a,**k: pd.DataFrame({'Close':[4.2]},index=pd.to_datetime(['2026-09-18'])))
-    assert book_mtm._get_closing_price('MSGM','2026-09-21') is None
-    def broken(*a,**k):
-        raise TypeError('provider contract error')
-    monkeypatch.setattr(yfinance,'download',broken)
-    assert book_mtm._get_closing_price('MSGM','2026-09-21') is None
+    class WrongDateTicker:
+        def __init__(self, ticker): pass
+        def history(self, **kwargs):
+            return pd.DataFrame({'Close': [4.2]}, index=pd.to_datetime(['2026-09-18']))
+    monkeypatch.setattr(yfinance, 'Ticker', WrongDateTicker)
+    assert book_mtm._get_closing_price('MSGM', '2026-09-21') is None
+    class BrokenTicker:
+        def __init__(self, ticker): pass
+        def history(self, **kwargs):
+            raise TypeError('provider contract error')
+    monkeypatch.setattr(yfinance, 'Ticker', BrokenTicker)
+    assert book_mtm._get_closing_price('MSGM', '2026-09-21') is None
     assert 'TypeError: provider contract error' in capsys.readouterr().out
 
 

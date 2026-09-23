@@ -1259,6 +1259,19 @@ def run_execution_cycle(
                       _new_ids=sync_stats.get("new_ids", set()))
         return result
 
+    # 0575: capture sync earnings so later HALTs don't silently zero out already-applied fills
+    _sync_earned = {
+        "fills_on_sync": len(sync_fills),
+        "duplicate_fills_skipped": duplicate_fills_skipped,
+        "total_fills": len(sync_fills),
+        "broker_fills_observed": broker_stats.get("broker_fills_observed", 0),
+        "broker_fills_new": broker_stats.get("broker_fills_new", 0),
+        "broker_fills_duplicate": broker_stats.get("broker_fills_duplicate", 0),
+        "external_fills_observed": broker_stats.get("external_fills_observed", 0),
+        "_seen_ids": broker_stats.get("_seen_ids", set()),
+        "_new_ids": broker_stats.get("_new_ids", set()),
+    }
+
     try:
         _refresh_market_prices(account_id, conn)
         _update_nav_high_water(account_id, conn)
@@ -1289,13 +1302,13 @@ def run_execution_cycle(
                 "SUBMISSION_INDETERMINATE for %s: %s — halting cycle; reconcile before next run",
                 account_id, exc,
             )
-            return {**_HALTED_BASE, "halt_reason": "SUBMISSION_INDETERMINATE"}
+            return {**_HALTED_BASE, **_sync_earned, "halt_reason": "SUBMISSION_INDETERMINATE"}
         except BrokerStateIntegrityError as exc:
             _log.error(
                 "BROKER_STATE_INTEGRITY for %s: %s — halting cycle; reconcile before next run",
                 account_id, exc,
             )
-            return {**_HALTED_BASE, "halt_reason": "BROKER_STATE_INTEGRITY"}
+            return {**_HALTED_BASE, **_sync_earned, "halt_reason": "BROKER_STATE_INTEGRITY"}
 
     # Count open orders before retry (snapshot includes orders created this cycle)
     working_orders_checked = conn.execute(
@@ -1309,13 +1322,13 @@ def run_execution_cycle(
         )
     except PolicyUnavailable as exc:
         _log.error("POLICY_UNAVAILABLE in fill retry for %s: %s — halting cycle", account_id, exc)
-        return {**_HALTED_BASE, "halt_reason": "POLICY_UNAVAILABLE"}  # 0234: any policy failure → HALTED
+        return {**_HALTED_BASE, **_sync_earned, "halt_reason": "POLICY_UNAVAILABLE"}  # 0234: any policy failure → HALTED
     except BrokerStateIntegrityError as exc:
         _log.error(
             "BROKER_STATE_INTEGRITY in fill retry for %s: %s — halting cycle; reconcile before next run",
             account_id, exc,
         )
-        return {**_HALTED_BASE, "halt_reason": "BROKER_STATE_INTEGRITY"}
+        return {**_HALTED_BASE, **_sync_earned, "halt_reason": "BROKER_STATE_INTEGRITY"}
 
     try:
         _write_account_snapshot(account_id, conn, "post_cycle")

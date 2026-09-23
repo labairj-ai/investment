@@ -318,6 +318,38 @@ def test_cycle_halt_retains_event_fill_observation(setup):
     assert conn.execute('SELECT COUNT(*) FROM fills').fetchone()[0] == 1
 
 
+@pytest.mark.parametrize('exc_type', [eng.BrokerSubmissionIndeterminate, eng.BrokerStateIntegrityError])
+def test_sync_fill_preserved_when_process_new_intents_halts(setup, exc_type):
+    # 0575: sync applies fill, then process_new_intents halts — fill must still appear in result
+    conn, broker = setup
+    bf = fill()
+    oid, cid = local_order(conn, bf)
+    broker.stage(bf, cid)
+    with patch.object(eng, 'process_new_intents', side_effect=exc_type('test halt')):
+        result = eng.run_execution_cycle(ACCOUNT, conn, broker,
+                                        trading_state=eng.TradingReadyState.TRADING_READY)
+    assert result['execution_state'] == 'HALTED'
+    assert result['fills_on_sync'] == 1
+    assert result['broker_fills_new'] == 1
+    assert conn.execute('SELECT COUNT(*) FROM fills').fetchone()[0] == 1
+
+
+@pytest.mark.parametrize('exc_type', [eng.PolicyUnavailable, eng.BrokerStateIntegrityError])
+def test_sync_fill_preserved_when_process_open_orders_halts(setup, exc_type):
+    # 0575: sync applies fill, then process_open_orders halts — fill must still appear in result
+    conn, broker = setup
+    bf = fill()
+    oid, cid = local_order(conn, bf)
+    broker.stage(bf, cid)
+    with patch.object(eng, 'process_open_orders', side_effect=exc_type('test halt')):
+        result = eng.run_execution_cycle(ACCOUNT, conn, broker,
+                                        trading_state=eng.TradingReadyState.TRADING_READY)
+    assert result['execution_state'] == 'HALTED'
+    assert result['fills_on_sync'] == 1
+    assert result['broker_fills_new'] == 1
+    assert conn.execute('SELECT COUNT(*) FROM fills').fetchone()[0] == 1
+
+
 @pytest.mark.parametrize('cid', [None, '', 'manual-order'])
 def test_external_ownership_requires_positive_broker_response(setup, cid):
     conn, broker = setup
