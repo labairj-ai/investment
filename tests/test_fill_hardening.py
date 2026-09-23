@@ -502,6 +502,43 @@ def test_pending_submit_timeout_creates_row_and_reports_order(setup):
     assert order_row['state'] == 'PENDING_SUBMIT'
 
 
+def test_reentrant_intent_does_not_increment_orders_created(setup):
+    # 0579 inverse case: pre-existing non-terminal order → INSERT OR IGNORE rowcount==0
+    # → orders_created stays 0 so a crash-restart re-entry does not inflate new_orders_created.
+    from trade_engine.shadow_broker import Quote
+    from test_trade_engine import _make_intent, _insert_intent
+    from dataclasses import replace as dc_replace
+
+    conn, broker = setup
+    intent = dc_replace(_make_intent(quantity=1, limit_price=50), account_id=ACCOUNT)
+    _insert_intent(conn, intent)
+
+    # Pre-seed a WORKING order for this intent (crash-restart scenario)
+    existing_oid = str(uuid.uuid4())
+    conn.execute(
+        '''INSERT INTO orders
+           (order_id, intent_id, account_id, symbol, side, quantity, order_type,
+            state, fill_qty, fill_cash, client_order_id, submitted_at, updated_at)
+           VALUES (?,?,?,?,?,?,'LIMIT','WORKING',0,0,?,?,?)''',
+        (existing_oid, intent.intent_id, ACCOUNT, intent.symbol, intent.side.value,
+         intent.quantity, f'{ACCOUNT}:{intent.intent_id}',
+         datetime.now(timezone.utc).isoformat(), datetime.now(timezone.utc).isoformat()),
+    )
+    conn.commit()
+
+    broker.get_quote = lambda symbol: Quote(
+        bid=49.0, ask=50.0, timestamp='t',
+        retrieved_at=datetime.now(timezone.utc).isoformat(),
+    )
+    broker.submit_order = lambda i, client_order_id=None: (_ for _ in ()).throw(TimeoutError('x'))
+
+    progress = eng.CycleProgress()
+    with pytest.raises(eng.BrokerSubmissionIndeterminate):
+        eng.process_intent(intent.intent_id, conn, broker=broker, _progress=progress)
+
+    assert progress.orders_created == 0
+
+
 def test_already_applied_retry_not_counted(setup):
     # 0578 criterion 6: replayed FILLED event (ALREADY_APPLIED) must not inflate fills_on_retry.
     conn, broker = setup
