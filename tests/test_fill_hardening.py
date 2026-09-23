@@ -331,7 +331,11 @@ def test_submitted_order_preserved_when_open_orders_halts(setup):
     # 0577: process_new_intents succeeds (order created) → process_open_orders raises → order visible
     conn, broker = setup
     fake = _FakeResult(order_id=str(uuid.uuid4()))
-    with patch.object(eng, 'process_new_intents', return_value=[fake]), \
+    def _fake_pni(account_id, conn, broker=None, *, _progress=None):
+        if _progress is not None:
+            _progress.orders_created += 1
+        return [fake]
+    with patch.object(eng, 'process_new_intents', side_effect=_fake_pni), \
          patch.object(eng, 'process_open_orders', side_effect=eng.BrokerStateIntegrityError('halt')):
         result = eng.run_execution_cycle(ACCOUNT, conn, broker,
                                         trading_state=eng.TradingReadyState.TRADING_READY)
@@ -343,8 +347,12 @@ def test_submitted_order_preserved_when_open_orders_halts(setup):
 def test_submission_fill_preserved_when_open_orders_halts(setup):
     # 0577: immediate fill during intent submission → process_open_orders raises → fill counted
     conn, broker = setup
-    fake = _FakeResult(order_id=str(uuid.uuid4()), fill=object())  # non-None fill
-    with patch.object(eng, 'process_new_intents', return_value=[fake]), \
+    fake = _FakeResult(order_id=str(uuid.uuid4()), fill=object())
+    def _fake_pni(account_id, conn, broker=None, *, _progress=None):
+        if _progress is not None:
+            _progress.submission_fills.append(object())
+        return [fake]
+    with patch.object(eng, 'process_new_intents', side_effect=_fake_pni), \
          patch.object(eng, 'process_open_orders', side_effect=eng.BrokerStateIntegrityError('halt')):
         result = eng.run_execution_cycle(ACCOUNT, conn, broker,
                                         trading_state=eng.TradingReadyState.TRADING_READY)
@@ -455,3 +463,71 @@ def test_external_ownership_requires_positive_broker_response(setup, cid):
     assert eng.apply_broker_fill(bf, ACCOUNT, conn, broker) == eng.FillResult.APPLIED_EXTERNAL
     assert tuple(conn.execute('SELECT origin,order_id,engine_managed FROM fills').fetchone()) == (
         'BROKER_EXTERNAL', None, 0)
+
+
+# ── 0578 tests ────────────────────────────────────────────────────────────────
+
+def test_pending_submit_timeout_visible_in_halted_summary(setup, monkeypatch):
+    # 0578 criterion 1: PENDING_SUBMIT committed → submit_order times out →
+    # HALTED summary shows orders_created ≥ 1 even though no ExecutionResult was returned.
+    conn, broker = setup
+    def _raise_after_created(intent_id, conn, broker=None, *, _progress=None):
+        if _progress is not None:
+            _progress.orders_created += 1
+        raise eng.BrokerSubmissionIndeterminate('submit timeout simulated')
+    monkeypatch.setattr(eng, 'process_intent', _raise_after_created)
+    # Need a PENDING intent so process_new_intents actually calls process_intent
+    from test_trade_engine import _make_intent, _insert_intent
+    from dataclasses import replace as dc_replace
+    intent = dc_replace(_make_intent(quantity=1, limit_price=50), account_id=ACCOUNT)
+    _insert_intent(conn, intent)
+    result = eng.run_execution_cycle(ACCOUNT, conn, broker,
+                                    trading_state=eng.TradingReadyState.TRADING_READY)
+    assert result['execution_state'] == 'HALTED'
+    assert result['halt_reason'] == 'SUBMISSION_INDETERMINATE'
+    assert result['new_orders_created'] >= 1
+
+
+def test_already_applied_retry_not_counted(setup):
+    # 0578 criterion 6: replayed FILLED event (ALREADY_APPLIED) must not inflate fills_on_retry.
+    conn, broker = setup
+    bf = fill()
+    oid, cid = local_order(conn, bf)
+    broker.orders[bf.broker_order_id] = BrokerOrder(
+        bf.broker_order_id, bf.symbol, bf.side, bf.qty, 0.0, 'WORKING', client_order_id=cid)
+    # Sync phase sees nothing; process_open_orders phase sees the FILLED event.
+    _calls = [0]
+    def _two_phase(account_id, quote=None):
+        _calls[0] += 1
+        if _calls[0] == 1:
+            return []
+        return [BrokerOrderEvent('FILLED', bf.broker_order_id, oid, bf.qty, bf.price,
+                                 bf.filled_at, bf.fee, bf.broker_fill_id)]
+    broker.poll_order_events = _two_phase
+    with patch.object(eng, 'apply_broker_fill', return_value=eng.FillResult.ALREADY_APPLIED):
+        result = eng.run_execution_cycle(ACCOUNT, conn, broker,
+                                        trading_state=eng.TradingReadyState.TRADING_READY)
+    assert result['execution_state'] == 'OK'
+    assert result['fills_on_retry'] == 0
+    assert result['total_fills'] == 0
+
+
+def test_fills_on_sync_preserved_when_sync_raises_after_first_fill(setup):
+    # 0578 criterion 7: fill applied in event loop → second event is invalid → fills_on_sync == 1
+    conn, broker = setup
+    bf = fill()
+    oid, cid = local_order(conn, bf)
+    broker.orders[bf.broker_order_id] = BrokerOrder(
+        bf.broker_order_id, bf.symbol, bf.side, bf.qty, bf.qty, 'FILLED', client_order_id=cid)
+    broker.events = [
+        BrokerOrderEvent('FILLED', bf.broker_order_id, oid, bf.qty, bf.price,
+                         bf.filled_at, bf.fee, bf.broker_fill_id),
+        BrokerOrderEvent('INVALID_TYPE', bf.broker_order_id, oid),
+    ]
+    # Prevent ledger pull from running (raise would mask the event-loop error ordering)
+    broker.get_fills = lambda account_id, since=None: []
+    result = eng.run_execution_cycle(ACCOUNT, conn, broker,
+                                    trading_state=eng.TradingReadyState.TRADING_READY)
+    assert result['execution_state'] == 'HALTED'
+    assert result['fills_on_sync'] == 1
+    assert conn.execute('SELECT COUNT(*) FROM fills').fetchone()[0] == 1

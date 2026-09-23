@@ -468,6 +468,8 @@ def process_intent(
     intent_id: str,
     conn: sqlite3.Connection,
     broker: Optional[BrokerAdapter] = None,
+    *,
+    _progress: Optional["CycleProgress"] = None,
 ) -> ExecutionResult:
     """Run the full execution pipeline for a single PENDING intent (0238, 0251, 0253).
 
@@ -625,6 +627,8 @@ def process_intent(
         )
 
     # ── Order submission (broker call after local row is durable) ─────────────
+    if _progress is not None:
+        _progress.orders_created += 1
     try:
         ack = broker.submit_order(intent, client_order_id=client_order_id)
     except (TimeoutError, OSError, ConnectionError) as exc:
@@ -695,13 +699,16 @@ def process_intent(
             )
         fill: Optional[Fill] = None
         for bf in broker_fills:
-            apply_broker_fill(bf, intent.account_id, conn, broker=broker)
-            if fill is None:
-                fill_row = conn.execute(
-                    "SELECT * FROM fills WHERE fill_id=?", (bf.broker_fill_id,)
-                ).fetchone()
-                if fill_row:
-                    fill = Fill.from_db_row(fill_row)
+            _fr = apply_broker_fill(bf, intent.account_id, conn, broker=broker)
+            fill_row = conn.execute(
+                "SELECT * FROM fills WHERE fill_id=?", (bf.broker_fill_id,)
+            ).fetchone()
+            if fill_row:
+                _f = Fill.from_db_row(fill_row)
+                if fill is None:
+                    fill = _f
+                if _progress is not None and _fr == FillResult.APPLIED:
+                    _progress.submission_fills.append(_f)
         # Do NOT call _update_intent_status(...FILLED) — apply_broker_fill() already sets
         # intent status to FILLED when aggregate fill qty reaches order qty (0278).
         # Audit row is written atomically inside apply_broker_fill() (0293).
@@ -736,13 +743,16 @@ def process_intent(
             )
         fill: Optional[Fill] = None
         for bf in _pf_fills:
-            apply_broker_fill(bf, intent.account_id, conn, broker=broker)
-            if fill is None:
-                fill_row = conn.execute(
-                    "SELECT * FROM fills WHERE fill_id=?", (bf.broker_fill_id,)
-                ).fetchone()
-                if fill_row:
-                    fill = Fill.from_db_row(fill_row)
+            _fr = apply_broker_fill(bf, intent.account_id, conn, broker=broker)
+            fill_row = conn.execute(
+                "SELECT * FROM fills WHERE fill_id=?", (bf.broker_fill_id,)
+            ).fetchone()
+            if fill_row:
+                _f = Fill.from_db_row(fill_row)
+                if fill is None:
+                    fill = _f
+                if _progress is not None and _fr == FillResult.APPLIED:
+                    _progress.submission_fills.append(_f)
         # Audit row is written atomically inside apply_broker_fill() (0293).
         return ExecutionResult(
             intent_id=intent_id,
@@ -797,6 +807,8 @@ def process_new_intents(
     account_id: str,
     conn: sqlite3.Connection,
     broker: Optional[BrokerAdapter] = None,
+    *,
+    _progress: Optional["CycleProgress"] = None,
 ) -> list[ExecutionResult]:
     """Submit at most one PENDING intent per cycle, oldest-first (0292)."""
     rows = conn.execute(
@@ -807,7 +819,7 @@ def process_new_intents(
     results = []
     for row in rows:
         try:
-            result = process_intent(row["intent_id"], conn, broker=broker)
+            result = process_intent(row["intent_id"], conn, broker=broker, _progress=_progress)
             results.append(result)
         except (BrokerSubmissionIndeterminate, BrokerStateIntegrityError):
             raise  # propagate — further intent processing must stop (0265, 0278, 0288)
@@ -908,14 +920,14 @@ def process_open_orders(
                         account_id=account_id,
                         client_order_id=getattr(event, "client_order_id", None),
                     )
-                    apply_broker_fill(bf, account_id, conn, broker=broker)
+                    _apply_result = apply_broker_fill(bf, account_id, conn, broker=broker)
                     fill_row = conn.execute(
                         "SELECT * FROM fills WHERE fill_id=?", (bf.broker_fill_id,)
                     ).fetchone()
                     if fill_row:
                         fill = Fill.from_db_row(fill_row)
                         fills.append(fill)
-                        if _progress is not None:
+                        if _progress is not None and _apply_result == FillResult.APPLIED:
                             _progress.retry_fills.append(fill)
                 else:
                     # No broker_fill_id — do NOT invent one; fetch authoritative fills (0283).
@@ -933,14 +945,14 @@ def process_open_orders(
                             f"get_fills_for_order() returned empty — halting new submissions"
                         )
                     for bf in _auth_fills:
-                        apply_broker_fill(bf, account_id, conn, broker=broker)
+                        _apply_result = apply_broker_fill(bf, account_id, conn, broker=broker)
                         fill_row = conn.execute(
                             "SELECT * FROM fills WHERE fill_id=?", (bf.broker_fill_id,)
                         ).fetchone()
                         if fill_row:
                             fill = Fill.from_db_row(fill_row)
                             fills.append(fill)
-                            if _progress is not None:
+                            if _progress is not None and _apply_result == FillResult.APPLIED:
                                 _progress.retry_fills.append(fill)
             elif event.event_type in ("CANCELLED", "EXPIRED", "REJECTED"):
                 apply_broker_order_event(event, account_id, conn)
@@ -1019,6 +1031,7 @@ def sync_broker_state(
     broker: BrokerAdapter,
     *,
     _fill_stats: Optional[dict] = None,
+    _progress: Optional["CycleProgress"] = None,
 ) -> tuple[list[Fill], int, dict]:
     """Ingest all pending broker events as the first action in a cycle (0284).
 
@@ -1089,8 +1102,12 @@ def sync_broker_state(
                     if _fill_row:
                         _fill = Fill.from_db_row(_fill_row)
                         fills.append(_fill)
+                        if _progress is not None:
+                            _progress.sync_fills.append(_fill)
                 else:
                     duplicate_fills_skipped += 1
+                    if _progress is not None:
+                        _progress.duplicate_fills_skipped += 1
             else:
                 # No broker_fill_id — fetch authoritative fills (0283)
                 try:
@@ -1114,8 +1131,12 @@ def sync_broker_state(
                         if _fill_row:
                             _fill = Fill.from_db_row(_fill_row)
                             fills.append(_fill)
+                            if _progress is not None:
+                                _progress.sync_fills.append(_fill)
                     else:
                         duplicate_fills_skipped += 1
+                        if _progress is not None:
+                            _progress.duplicate_fills_skipped += 1
 
         elif _e.event_type in ("CANCELLED", "EXPIRED", "REJECTED"):
             apply_broker_order_event(_e, account_id, conn)
@@ -1150,9 +1171,14 @@ def sync_broker_state(
                     "SELECT * FROM fills WHERE fill_id=?", (_lf.broker_fill_id,)
                 ).fetchone()
                 if _fill_row:
-                    fills.append(Fill.from_db_row(_fill_row))
+                    _fill = Fill.from_db_row(_fill_row)
+                    fills.append(_fill)
+                    if _progress is not None:
+                        _progress.sync_fills.append(_fill)
             elif _lr == FillResult.ALREADY_APPLIED:
                 duplicate_fills_skipped += 1
+                if _progress is not None:
+                    _progress.duplicate_fills_skipped += 1
             # 0567: advance cursor for all observed fills regardless of APPLIED/ALREADY_APPLIED
             if _lf.filled_at and (_max_filled_at is None or _lf.filled_at > _max_filled_at):
                 _max_filled_at = _lf.filled_at
@@ -1199,6 +1225,8 @@ class CycleProgress:
     market_state: str = "unknown"
     # intent stage
     new_results: list = field(default_factory=list)
+    orders_created: int = 0
+    submission_fills: list = field(default_factory=list)
     working_orders_checked: int = 0
     # open-order stage — updated per-order inside process_open_orders()
     retry_fills: list = field(default_factory=list)
@@ -1206,7 +1234,7 @@ class CycleProgress:
     orders_expired: int = 0
 
     def to_summary(self, execution_state: str, halt_reason: str | None = None) -> dict:
-        fills_on_submission = sum(1 for r in self.new_results if r.fill is not None)
+        fills_on_submission = len(self.submission_fills)
         risk_rejections_new = sum(1 for r in self.new_results if r.decision == "REJECTED")
         d = {
             "execution_state": execution_state,
@@ -1214,7 +1242,7 @@ class CycleProgress:
             "new_intents_blocked": self.new_intents_blocked,
             "stale_symbols": self.stale_symbols,
             "market_state": self.market_state,
-            "new_orders_created": sum(1 for r in self.new_results if r.order_id is not None),
+            "new_orders_created": self.orders_created,
             "fills_on_sync": len(self.sync_fills),
             "fills_on_submission": fills_on_submission,
             "risk_rejections": risk_rejections_new + self.pre_fill_rejections,
@@ -1298,7 +1326,7 @@ def run_execution_cycle(
     sync_stats: dict = {}
     try:
         sync_fills, duplicate_fills_skipped, broker_stats = sync_broker_state(
-            account_id, conn, broker, _fill_stats=sync_stats)
+            account_id, conn, broker, _fill_stats=sync_stats, _progress=progress)
     except BrokerStateIntegrityError as exc:
         _log.error(
             "BROKER_STATE_INTEGRITY in broker sync for %s: %s — halting cycle; reconcile before next run",
@@ -1311,8 +1339,6 @@ def run_execution_cycle(
                       _new_ids=sync_stats.get("new_ids", set()))
         return result
 
-    progress.sync_fills = sync_fills
-    progress.duplicate_fills_skipped = duplicate_fills_skipped
     progress.broker_fills_observed = broker_stats.get("broker_fills_observed", 0)
     progress.broker_fills_new = broker_stats.get("broker_fills_new", 0)
     progress.broker_fills_duplicate = broker_stats.get("broker_fills_duplicate", 0)
@@ -1346,7 +1372,7 @@ def run_execution_cycle(
         progress.new_intents_blocked = False
         progress.market_state = "fresh"
         try:
-            progress.new_results = process_new_intents(account_id, conn, broker=broker)
+            progress.new_results = process_new_intents(account_id, conn, broker=broker, _progress=progress)
         except BrokerSubmissionIndeterminate as exc:
             _log.error(
                 "SUBMISSION_INDETERMINATE for %s: %s — halting cycle; reconcile before next run",

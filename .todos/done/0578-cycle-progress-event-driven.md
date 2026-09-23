@@ -1,7 +1,7 @@
 # Make CycleProgress Truly Event-Driven Across All Stages
 
 - **ID:** 0578
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-23
 - **Priority:** normal
 - **Depends:** none
@@ -35,11 +35,22 @@
 
 ## Done when
 
-- [ ] `PENDING_SUBMIT` committed → `submit_order()` timeout → `HALTED` summary shows the local order was created (`orders_created ≥ 1` or equivalent)
-- [ ] `FILLED` ACK → fill retrieval fails → order activity preserved in summary even though fill count is 0
-- [ ] `PARTIALLY_FILLED` ACK → fill A applies → fill B throws integrity error → A counted in `fills_on_submission`
-- [ ] Broker rejects immediately → rejection visible in HALTED summary
-- [ ] Normal successful submission path produces same metrics as before
-- [ ] Replayed broker event (`ALREADY_APPLIED`) does not inflate `fills_on_retry` or `total_fills`
-- [ ] `fills_on_sync` equals the number of fills actually applied during sync, even when sync raises after the first fill
-- [ ] All 1,454 existing passing tests continue to pass
+- [x] `PENDING_SUBMIT` committed → `submit_order()` timeout → `HALTED` summary shows the local order was created (`orders_created ≥ 1` or equivalent)
+- [x] `FILLED` ACK → fill retrieval fails → order activity preserved in summary even though fill count is 0
+- [x] `PARTIALLY_FILLED` ACK → fill A applies → fill B throws integrity error → A counted in `fills_on_submission`
+- [x] Broker rejects immediately → rejection visible in HALTED summary
+- [x] Normal successful submission path produces same metrics as before
+- [x] Replayed broker event (`ALREADY_APPLIED`) does not inflate `fills_on_retry` or `total_fills`
+- [x] `fills_on_sync` equals the number of fills actually applied during sync, even when sync raises after the first fill
+- [x] All 1,454 existing passing tests continue to pass (1,457 pass with 3 new tests)
+
+## Outcome
+
+`CycleProgress` is now truly event-driven across all three stages:
+
+- **process_intent**: Added `_progress` keyword param. `orders_created` incremented before `submit_order()`. `submission_fills` appended for each `APPLIED` fill in FILLED/PARTIALLY_FILLED ACK loops.
+- **process_new_intents**: Pass-through of `_progress` to `process_intent`.
+- **sync_broker_state**: Added `_progress` param. All three fill paths append to `_progress.sync_fills` / increment `_progress.duplicate_fills_skipped` in-flight. Bulk bulk-assignment in `run_execution_cycle` removed.
+- **process_open_orders**: `_progress.retry_fills` only appended when `apply_broker_fill` returns `APPLIED`; `fills` return value retains backward-compat (appends if fill_row exists).
+- **CycleProgress**: Added `orders_created` and `submission_fills` fields; `to_summary()` uses them instead of counting from `new_results`.
+- One existing test updated: `test_fills_on_submission_counted` — removed wrong `fills_on_retry == 1` assertion for ShadowBroker (shadow applies fills internally → ALREADY_APPLIED → correctly 0).
