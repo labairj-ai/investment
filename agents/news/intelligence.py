@@ -751,80 +751,78 @@ def update_event_state_sweep(day: str, conn: sqlite3.Connection) -> dict:
     now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     counts: dict = {"active": 0, "fading": 0, "resolved": 0}
 
-    try:
-        conn.execute("""CREATE TABLE IF NOT EXISTS news_event_state (
-            ticker            TEXT NOT NULL,
-            causal_event_key  TEXT NOT NULL,
-            last_real_seen_at TEXT NOT NULL,
-            state             TEXT NOT NULL DEFAULT 'ACTIVE',
-            state_as_of       TEXT NOT NULL,
-            PRIMARY KEY (ticker, causal_event_key)
-        )""")
+    # Exceptions propagate to callers (run_daily_sweep records status='error';
+    # run_pipeline's try/except catches and logs). No silent swallowing (0608).
+    conn.execute("""CREATE TABLE IF NOT EXISTS news_event_state (
+        ticker            TEXT NOT NULL,
+        causal_event_key  TEXT NOT NULL,
+        last_real_seen_at TEXT NOT NULL,
+        state             TEXT NOT NULL DEFAULT 'ACTIVE',
+        state_as_of       TEXT NOT NULL,
+        PRIMARY KEY (ticker, causal_event_key)
+    )""")
 
-        # Mark events seen today as ACTIVE
-        today_keys = conn.execute(
-            "SELECT DISTINCT ticker, causal_event_key FROM news_events "
-            "WHERE day=? AND causal_event_key IS NOT NULL",
-            (day,)
-        ).fetchall()
+    # Mark events seen today as ACTIVE
+    today_keys = conn.execute(
+        "SELECT DISTINCT ticker, causal_event_key FROM news_events "
+        "WHERE day=? AND causal_event_key IS NOT NULL",
+        (day,)
+    ).fetchall()
 
-        for ticker, key in today_keys:
-            conn.execute(
-                """INSERT OR REPLACE INTO news_event_state
-                   (ticker, causal_event_key, last_real_seen_at, state, state_as_of)
-                   VALUES (?, ?, ?, 'ACTIVE', ?)""",
-                (ticker, key, day, now_str),
-            )
+    for ticker, key in today_keys:
+        conn.execute(
+            """INSERT OR REPLACE INTO news_event_state
+               (ticker, causal_event_key, last_real_seen_at, state, state_as_of)
+               VALUES (?, ?, ?, 'ACTIVE', ?)""",
+            (ticker, key, day, now_str),
+        )
 
-        today_set = {(r[0], r[1]) for r in today_keys}
+    today_set = {(r[0], r[1]) for r in today_keys}
 
-        # Discover all known causal_event_keys from news_events history (last 90d)
-        # and register/update their state, even if not yet in news_event_state
-        d90 = (today_dt - timedelta(days=90)).strftime("%Y-%m-%d")
-        historical = conn.execute(
-            "SELECT DISTINCT ticker, causal_event_key, MAX(day) as last_real "
-            "FROM news_events WHERE causal_event_key IS NOT NULL AND day >= ? "
-            "GROUP BY ticker, causal_event_key",
-            (d90,)
-        ).fetchall()
+    # Discover all known causal_event_keys from news_events history (last 90d)
+    # and register/update their state, even if not yet in news_event_state
+    d90 = (today_dt - timedelta(days=90)).strftime("%Y-%m-%d")
+    historical = conn.execute(
+        "SELECT DISTINCT ticker, causal_event_key, MAX(day) as last_real "
+        "FROM news_events WHERE causal_event_key IS NOT NULL AND day >= ? "
+        "GROUP BY ticker, causal_event_key",
+        (d90,)
+    ).fetchall()
 
-        for ticker, key, last_real in historical:
-            if (ticker, key) in today_set:
-                continue  # Already registered as ACTIVE above
-            new_state = "FADING" if last_real >= d30 else "RESOLVED"
-            # INSERT if new, otherwise UPDATE if state has changed
-            conn.execute(
-                """INSERT OR REPLACE INTO news_event_state
-                   (ticker, causal_event_key, last_real_seen_at, state, state_as_of)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (ticker, key, last_real, new_state, now_str),
-            )
+    for ticker, key, last_real in historical:
+        if (ticker, key) in today_set:
+            continue  # Already registered as ACTIVE above
+        new_state = "FADING" if last_real >= d30 else "RESOLVED"
+        conn.execute(
+            """INSERT OR REPLACE INTO news_event_state
+               (ticker, causal_event_key, last_real_seen_at, state, state_as_of)
+               VALUES (?, ?, ?, ?, ?)""",
+            (ticker, key, last_real, new_state, now_str),
+        )
 
-        # Also decay existing state table entries not covered by news_events history
-        stale_rows = conn.execute(
-            "SELECT ticker, causal_event_key, last_real_seen_at FROM news_event_state "
-            "WHERE state != 'RESOLVED'"
-        ).fetchall()
-        historical_set = {(r[0], r[1]) for r in historical}
-        for ticker, key, last_seen in stale_rows:
-            if (ticker, key) in today_set or (ticker, key) in historical_set:
-                continue
-            new_state = "FADING" if last_seen >= d30 else "RESOLVED"
-            conn.execute(
-                "UPDATE news_event_state SET state=?, state_as_of=? "
-                "WHERE ticker=? AND causal_event_key=?",
-                (new_state, now_str, ticker, key),
-            )
+    # Also decay existing state table entries not covered by news_events history
+    stale_rows = conn.execute(
+        "SELECT ticker, causal_event_key, last_real_seen_at FROM news_event_state "
+        "WHERE state != 'RESOLVED'"
+    ).fetchall()
+    historical_set = {(r[0], r[1]) for r in historical}
+    for ticker, key, last_seen in stale_rows:
+        if (ticker, key) in today_set or (ticker, key) in historical_set:
+            continue
+        new_state = "FADING" if last_seen >= d30 else "RESOLVED"
+        conn.execute(
+            "UPDATE news_event_state SET state=?, state_as_of=? "
+            "WHERE ticker=? AND causal_event_key=?",
+            (new_state, now_str, ticker, key),
+        )
 
-        conn.commit()
-        for row in conn.execute(
-            "SELECT state, COUNT(*) FROM news_event_state GROUP BY state"
-        ).fetchall():
-            k = row[0].lower()
-            if k in counts:
-                counts[k] = row[1]
-    except Exception as e:
-        print(f"[NewsIntelligence] Event state sweep error: {e}")
+    conn.commit()
+    for row in conn.execute(
+        "SELECT state, COUNT(*) FROM news_event_state GROUP BY state"
+    ).fetchall():
+        k = row[0].lower()
+        if k in counts:
+            counts[k] = row[1]
     return counts
 
 
@@ -977,11 +975,11 @@ _FUNDAMENTALS_REVENUE_EVENTS = frozenset(
     {"DEMAND", "GUIDANCE_CHANGE", "EARNINGS"}
 )
 _FUNDAMENTALS_MARGIN_EVENTS    = frozenset({"MARGIN", "PRICING"})
-_FUNDAMENTALS_DEBT_EVENTS      = frozenset({"CREDIT_DEBT", "REGULATORY"})
+_FUNDAMENTALS_DEBT_EVENTS      = frozenset({"CREDIT_DEBT"})
 # No economically relevant column for these — return None rather than a spurious
-# revenue signal (0606: CAPEX/PRODUCT/MANAGEMENT/LITIGATION).
+# revenue signal (0606: CAPEX/PRODUCT/MANAGEMENT/LITIGATION; 0609: REGULATORY).
 _FUNDAMENTALS_NO_SIGNAL_EVENTS = frozenset(
-    {"CAPEX", "PRODUCT", "MANAGEMENT", "LITIGATION"}
+    {"CAPEX", "PRODUCT", "MANAGEMENT", "LITIGATION", "REGULATORY"}
 )
 
 
@@ -992,12 +990,11 @@ def _get_fundamentals_trend(ticker: str, conn: sqlite3.Connection,
     Uses YoY quarterly comparison (current Q vs same Q 4 quarters ago) when ≥5 quarters
     available; returns None if history is insufficient.
 
-    Dispatch:
+    Whitelist dispatch (0609: no else-fallback; unmapped types return None):
       DEMAND/GUIDANCE_CHANGE/EARNINGS → YoY revenue growth
       MARGIN/PRICING                   → YoY gross-margin trend
-      CREDIT_DEBT/REGULATORY           → YoY net-debt/revenue trend
-      CAPEX/PRODUCT/MANAGEMENT/LITIGATION → None (no relevant column; 0606)
-      (others)                         → YoY revenue (generic fallback)
+      CREDIT_DEBT                      → YoY net-debt/revenue trend
+      everything else (incl. REGULATORY, CAPEX, PRODUCT, MANAGEMENT, LITIGATION) → None
     """
     et = (event_type or "EARNINGS").upper()
     if et in _FUNDAMENTALS_NO_SIGNAL_EVENTS:
@@ -1050,8 +1047,7 @@ def _get_fundamentals_trend(ticker: str, conn: sqlite3.Connection,
                 return "negative"
             return None
 
-        else:
-            # Revenue events and fallback
+        elif et in _FUNDAMENTALS_REVENUE_EVENTS:
             rev_curr = curr[1]
             rev_ago  = year_ago[1]
             if not rev_curr or not rev_ago:
@@ -1061,6 +1057,10 @@ def _get_fundamentals_trend(ticker: str, conn: sqlite3.Connection,
                 return "positive"
             if growth < -0.03:
                 return "negative"
+            return None
+
+        else:
+            # Whitelist-only: no vote for unmapped event types (0609)
             return None
 
     except Exception:
@@ -1078,24 +1078,43 @@ def _get_agent_findings_flag(
     not from news articles — so its findings are genuinely independent of news.
     guardian_flags has no production writer and is no longer used as a data source.
 
-    Independence check: only findings created BEFORE the snapshot captured_at timestamp
-    are accepted. created_at is a REAL Unix timestamp.
+    Independence check (0609): only the latest COMPLETED Guardian run whose
+    started_at < snap_ts is eligible. This prevents findings from stale runs from
+    voting indefinitely — if the most recent pre-snapshot run has no finding for
+    this ticker, None is returned regardless of older runs.
+
+    Type whitelist (0609): only position_risk and risk_contribution qualify as
+    ticker-level independent signals. Portfolio-level findings (sector_concentration,
+    portfolio_beta, correlation_cluster, layer_drift) are not credited.
     """
     try:
         now_unix = time.time()
         snap_ts = _iso_to_unix(snapshot_captured_at) if snapshot_captured_at else now_unix
         if snap_ts is None:
             snap_ts = now_unix
+
+        # Find the latest completed Guardian run before the snapshot
+        latest_run = conn.execute(
+            """SELECT id FROM agent_runs
+               WHERE agent_type = 'portfolio_guardian'
+                 AND status = 'done'
+                 AND started_at < ?
+               ORDER BY started_at DESC LIMIT 1""",
+            (snap_ts,),
+        ).fetchone()
+        if not latest_run:
+            return None
+
+        run_id = latest_run[0]
         row = conn.execute(
             """SELECT af.finding_type, af.summary, af.created_at
                FROM agent_findings af
-               JOIN agent_runs ar ON ar.id = af.run_id
-               WHERE af.ticker = ?
-                 AND ar.agent_type = 'portfolio_guardian'
-                 AND af.created_at < ?
+               WHERE af.run_id = ?
+                 AND af.ticker = ?
+                 AND af.finding_type IN ('position_risk', 'risk_contribution')
                  AND (af.expires_at IS NULL OR af.expires_at > ?)
                ORDER BY af.created_at DESC LIMIT 1""",
-            (ticker, snap_ts, now_unix),
+            (run_id, ticker, now_unix),
         ).fetchone()
         if row:
             return {
@@ -1159,7 +1178,8 @@ def attach_confirmation(event: dict, ticker: str, conn: sqlite3.Connection,
     # Skip if thesis was evaluated after the snapshot — it may have consumed the same
     # news articles and would not be an independent signal.
     if th_health is not None:
-        thesis_independent = (th_eval_at is None or snap_ts is None or th_eval_at < snap_ts)
+        # Fail-closed (0609): both timestamps must be present and thesis must predate snapshot
+        thesis_independent = (th_eval_at is not None and snap_ts is not None and th_eval_at < snap_ts)
         signals["thesis_health"] = round(th_health, 1)
         signals["thesis_health_meta"] = {"evaluated_at": th_eval_at, "independent": thesis_independent}
         if thesis_independent:
@@ -1375,6 +1395,36 @@ def persist_events(events_by_ticker: dict,
     conn.commit()
 
 
+def _persist_snapshot(conn: sqlite3.Connection,
+                      snapshot_hash: str,
+                      snapshot_id: Optional[str],
+                      captured_at: Optional[str],
+                      manifest: Optional[dict]) -> None:
+    """
+    Write snapshot identity to news_snapshots (0610). INSERT OR IGNORE — immutable once set.
+    Creates the table if missing so this is safe to call before _init_ai_tables() (e.g. tests).
+    """
+    conn.execute("""CREATE TABLE IF NOT EXISTS news_snapshots (
+        snapshot_hash  TEXT PRIMARY KEY,
+        snapshot_id    TEXT,
+        captured_at    TEXT,
+        version        TEXT,
+        manifest_json  TEXT,
+        created_at     TEXT NOT NULL
+    )""")
+    now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    conn.execute(
+        """INSERT OR IGNORE INTO news_snapshots
+           (snapshot_hash, snapshot_id, captured_at, version, manifest_json, created_at)
+           VALUES (?,?,?,?,?,?)""",
+        (snapshot_hash, snapshot_id, captured_at,
+         NEWS_INTELLIGENCE_VERSION,
+         json.dumps(manifest) if manifest is not None else None,
+         now_str),
+    )
+    conn.commit()
+
+
 # ── Main pipeline ─────────────────────────────────────────────────────────────
 
 def run_pipeline(by_ticker: dict,
@@ -1423,6 +1473,13 @@ def run_pipeline(by_ticker: dict,
 
     extraction_result = extract_events_llm(by_ticker, ollama_client_mod, manifest=manifest)
     manifest = extraction_result.pop("_manifest", manifest or {})
+
+    # 0610: persist snapshot identity before any early return so provenance is always recorded
+    try:
+        _persist_snapshot(conn, news_snapshot_hash, snapshot_id, snapshot_captured_at, manifest)
+    except Exception as e:
+        print(f"[NewsIntelligence] Snapshot persist error: {e}")
+
     raw_events = extraction_result
     if not raw_events:
         return {

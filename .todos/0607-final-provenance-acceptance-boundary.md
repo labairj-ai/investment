@@ -1,7 +1,7 @@
 # Persist Full Snapshot Manifest and Record Acceptance Boundary
 
 - **ID:** 0607
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-23
 - **Priority:** normal
 - **Depends:** 0601, 0602

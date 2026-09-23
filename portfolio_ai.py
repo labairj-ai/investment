@@ -813,9 +813,10 @@ def _init_ai_tables():
             conn.execute(_ns_col_0607)
         except Exception:
             pass
-    # 0607: acceptance boundary — records the first commit where v2 contract is stable
-    # Learning queries must filter: WHERE extracted_at >= (SELECT accepted_at FROM
-    # _news_intelligence_acceptance WHERE accepted_version='v2' ORDER BY accepted_at DESC LIMIT 1)
+    # 0607: acceptance boundary — records commits where v2 contract is stable.
+    # Effectiveness queries: WHERE extracted_at >= (SELECT MAX(accepted_at) FROM
+    # _news_intelligence_acceptance WHERE accepted_version='v2')
+    # Use MAX(accepted_at) so newer rows (tighter boundaries) automatically win.
     conn.execute("""CREATE TABLE IF NOT EXISTS _news_intelligence_acceptance (
         id               INTEGER PRIMARY KEY,
         accepted_at      TEXT NOT NULL,
@@ -823,18 +824,43 @@ def _init_ai_tables():
         accepted_version TEXT NOT NULL,
         notes            TEXT
     )""")
-    _acceptance_notes = (
-        "v2 contract finalized: snapshot identity, evidence identity, "
+    _acceptance_notes_base = (
+        "v2 contract baseline: snapshot identity, evidence identity, "
         "confirmation semantics, state-maintenance behavior. "
         "Exclude news_events rows with extracted_at before accepted_at "
         "from learning effectiveness analysis."
     )
+    # id=1 inserted with UTC (new deployments); existing rows are unaffected by OR IGNORE
     conn.execute(
         "INSERT OR IGNORE INTO _news_intelligence_acceptance "
         "(id, accepted_at, accepted_commit, accepted_version, notes) "
         "VALUES (1, ?, '94e0575', 'v2', ?)",
-        (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), _acceptance_notes),
+        (datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"), _acceptance_notes_base),
     )
+    # 0610: final v2 boundary — c5053fb materially changes confirmation contract,
+    # maintenance truthfulness, and provenance. accepted_at UTC so textual comparison
+    # with news_events.extracted_at (also UTC) is consistent.
+    _acceptance_notes_final = (
+        "Final v2 contract boundary: independent confirmation semantics (0606), "
+        "maintenance sweep truthfulness (0605), full canonical manifest (0607). "
+        "Use MAX(accepted_at) WHERE accepted_version='v2' as the filter boundary."
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO _news_intelligence_acceptance "
+        "(id, accepted_at, accepted_commit, accepted_version, notes) "
+        "VALUES (2, ?, 'c5053fb', 'v2', ?)",
+        (datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"), _acceptance_notes_final),
+    )
+    # 0610: atomic snapshot provenance table — keyed by snapshot_hash.
+    # Populated by run_pipeline() via _persist_snapshot(); read by _build_news_state().
+    conn.execute("""CREATE TABLE IF NOT EXISTS news_snapshots (
+        snapshot_hash  TEXT PRIMARY KEY,
+        snapshot_id    TEXT,
+        captured_at    TEXT,
+        version        TEXT,
+        manifest_json  TEXT,
+        created_at     TEXT NOT NULL
+    )""")
     conn.commit()
     conn.close()
 

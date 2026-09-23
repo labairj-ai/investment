@@ -1,7 +1,7 @@
 # Wire Real Independent Confirmation Sources
 
 - **ID:** 0606
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-23
 - **Priority:** high
 - **Depends:** 0600, 0604

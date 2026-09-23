@@ -162,6 +162,14 @@ def _make_db():
         snapshot_id TEXT,
         snapshot_captured_at TEXT
     )""")
+    conn.execute("""CREATE TABLE news_snapshots (
+        snapshot_hash  TEXT PRIMARY KEY,
+        snapshot_id    TEXT,
+        captured_at    TEXT,
+        version        TEXT,
+        manifest_json  TEXT,
+        created_at     TEXT NOT NULL
+    )""")
     return conn
 
 
@@ -1656,3 +1664,304 @@ class TestProvenanceBoundary:
         assert "_snapshot_id" in result
         assert result["_snapshot_id"] == snap["snapshot_id"]
         assert result["_snapshot_captured_at"] == snap["captured_at"]
+
+
+# ── Tests: maintenance truthfulness and timer fix (0608) ─────────────────────
+
+class TestMaintenanceTruthfulness:
+    """0608: sweep exceptions propagate → run_daily_sweep records status='error'."""
+
+    def test_sweep_exception_sets_status_error(self, tmp_path):
+        """If update_event_state_sweep raises, run_daily_sweep records status='error'."""
+        import datetime as _dt
+        db_file = tmp_path / "investment.db"
+        # DB with only the log table — no news_events — sweep will fail on query
+        conn = sqlite3.connect(str(db_file))
+        conn.execute("""CREATE TABLE news_maintenance_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_at TEXT NOT NULL, day TEXT NOT NULL,
+            active_count INTEGER DEFAULT 0, fading_count INTEGER DEFAULT 0,
+            resolved_count INTEGER DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'ok', error TEXT
+        )""")
+        conn.commit()
+        conn.close()
+        import agents.news.maintenance as maint
+        today = _dt.date.today().isoformat()
+        with patch.object(maint, "_DB_PATH", db_file):
+            result = maint.run_daily_sweep(today)
+        assert result.get("status") == "error", (
+            "run_daily_sweep must return status='error' when sweep raises (0608)"
+        )
+        conn = sqlite3.connect(str(db_file))
+        row = conn.execute(
+            "SELECT status, error FROM news_maintenance_log WHERE day=?", (today,)
+        ).fetchone()
+        conn.close()
+        assert row is not None
+        assert row[0] == "error", "news_maintenance_log must record status='error' on failure"
+        assert row[1], "error message must be non-empty"
+
+    def test_all_error_log_invisible_to_watchdog_staleness(self, tmp_path):
+        """All-error rows → MAX(run_at) WHERE status='ok' is NULL → watchdog reports stale."""
+        import datetime as _dt
+        db_file = tmp_path / "test.db"
+        conn = sqlite3.connect(str(db_file))
+        conn.execute("""CREATE TABLE news_maintenance_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_at TEXT NOT NULL, day TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'ok', error TEXT
+        )""")
+        now_str = _dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute(
+            "INSERT INTO news_maintenance_log (run_at, day, status, error) VALUES (?,?,?,?)",
+            (now_str, "2026-09-23", "error", "sweep failed"),
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT MAX(run_at) as last_run FROM news_maintenance_log WHERE status='ok'"
+        ).fetchone()
+        conn.close()
+        assert row[0] is None, (
+            "All-error log must return NULL from watchdog staleness query → YELLOW (0608)"
+        )
+
+
+# ── Tests: confirmation freshness and fail-closed semantics (0609) ───────────
+
+class TestConfirmationFreshnessFix:
+    """0609: Guardian latest-run scoping, thesis fail-closed, fundamentals whitelist."""
+
+    def _insert_guardian_run(self, conn, started_at, status="done"):
+        conn.execute(
+            "INSERT INTO agent_runs (agent_type, status, started_at) VALUES (?,?,?)",
+            ("portfolio_guardian", status, started_at),
+        )
+        run_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.commit()
+        return run_id
+
+    def test_stale_finding_rejected_when_newer_run_has_no_flag(self):
+        """Older run has a finding; newest pre-snapshot run has none → None returned."""
+        import time as _time
+        conn = _make_db()
+        snap_ts = _time.time() - 3600
+        old_run_id = self._insert_guardian_run(conn, snap_ts - 7200)
+        conn.execute(
+            "INSERT INTO agent_findings (run_id, ticker, finding_type, summary, created_at) "
+            "VALUES (?,?,?,?,?)",
+            (old_run_id, "AAPL", "position_risk", "flagged long ago", snap_ts - 7200),
+        )
+        self._insert_guardian_run(conn, snap_ts - 1800)  # newer run, no findings
+        conn.commit()
+        snap_iso = (
+            __import__("datetime").datetime.utcfromtimestamp(snap_ts)
+            .strftime("%Y-%m-%d %H:%M:%S")
+        )
+        result = intel._get_agent_findings_flag("AAPL", conn, snapshot_captured_at=snap_iso)
+        assert result is None, (
+            "Latest pre-snapshot run has no flag for AAPL → stale finding rejected (0609)"
+        )
+
+    def test_disqualified_finding_type_rejected(self):
+        """Portfolio-level finding_type not in whitelist → None (0609)."""
+        import time as _time
+        conn = _make_db()
+        snap_ts = _time.time() - 3600
+        run_id = self._insert_guardian_run(conn, snap_ts - 3600)
+        conn.execute(
+            "INSERT INTO agent_findings (run_id, ticker, finding_type, summary, created_at) "
+            "VALUES (?,?,?,?,?)",
+            (run_id, "AAPL", "sector_concentration", "portfolio concentrated", snap_ts - 3600),
+        )
+        conn.commit()
+        snap_iso = (
+            __import__("datetime").datetime.utcfromtimestamp(snap_ts)
+            .strftime("%Y-%m-%d %H:%M:%S")
+        )
+        result = intel._get_agent_findings_flag("AAPL", conn, snapshot_captured_at=snap_iso)
+        assert result is None, "sector_concentration is not a whitelisted type (0609)"
+
+    def test_thesis_fail_closed_missing_snap_ts(self):
+        """snapshot_captured_at=None → snap_ts=None → thesis_independent=False (0609)."""
+        import time as _time
+        conn = _make_db()
+        ev = {"event_type": "EARNINGS", "direction": "NEGATIVE"}
+        with patch.object(intel, "_get_thesis_health",
+                          return_value=(20.0, _time.time() - 7200)):
+            result = intel.attach_confirmation(ev, "AAPL", conn, snapshot_captured_at=None)
+        meta = result.get("confirmation_signals", {}).get("thesis_health_meta", {})
+        assert meta.get("independent") is False, (
+            "Missing snap_ts → thesis must be fail-closed (independent=False) (0609)"
+        )
+        assert result["confirmation_class"] == "NEWS_ONLY"
+
+    def test_thesis_fail_closed_missing_eval_at(self):
+        """th_eval_at=None → thesis_independent=False even with valid snap_ts (0609)."""
+        import time as _time
+        conn = _make_db()
+        snap_ts = _time.time() - 3600
+        snap_iso = (
+            __import__("datetime").datetime.utcfromtimestamp(snap_ts)
+            .strftime("%Y-%m-%d %H:%M:%S")
+        )
+        ev = {"event_type": "EARNINGS", "direction": "NEGATIVE"}
+        with patch.object(intel, "_get_thesis_health", return_value=(20.0, None)):
+            result = intel.attach_confirmation(ev, "AAPL", conn, snapshot_captured_at=snap_iso)
+        meta = result.get("confirmation_signals", {}).get("thesis_health_meta", {})
+        assert meta.get("independent") is False, (
+            "Missing th_eval_at → thesis must be fail-closed (independent=False) (0609)"
+        )
+
+    def test_regulatory_returns_none_from_fundamentals(self):
+        """REGULATORY → None (no reliable net-debt link, moved to no-signal set, 0609)."""
+        conn = _make_db()
+        for i, pe in enumerate(["2026-03-31","2025-12-31","2025-09-30","2025-06-30","2025-03-31"]):
+            conn.execute(
+                "INSERT INTO company_financials "
+                "(ticker, period_end, period_type, revenue, total_debt, cash) "
+                "VALUES (?,?,?,?,?,?)",
+                ("AAPL", pe, "Q", 100.0, 50.0 + i, 20.0),
+            )
+        conn.commit()
+        assert intel._get_fundamentals_trend("AAPL", conn, "REGULATORY") is None, (
+            "REGULATORY must return None (not a reliable net-debt signal) (0609)"
+        )
+
+    def test_unknown_event_type_returns_none_from_fundamentals(self):
+        """Unmapped type → whitelist-only else branch → None (0609)."""
+        conn = _make_db()
+        for i, pe in enumerate(["2026-03-31","2025-12-31","2025-09-30","2025-06-30","2025-03-31"]):
+            conn.execute(
+                "INSERT INTO company_financials "
+                "(ticker, period_end, period_type, revenue) VALUES (?,?,?,?)",
+                ("AAPL", pe, "Q", 100.0 + i),
+            )
+        conn.commit()
+        assert intel._get_fundamentals_trend("AAPL", conn, "COMPLETELY_NEW_UNKNOWN") is None, (
+            "Unmapped event type must return None — whitelist-only (0609)"
+        )
+
+
+# ── Tests: atomic provenance and acceptance boundary (0610) ──────────────────
+
+class TestAtomicProvenance:
+    """0610: news_snapshots written by run_pipeline; _build_news_state hash join; c5053fb row."""
+
+    def _make_fresh_db(self, tmp_path):
+        db_file = tmp_path / "investment.db"
+        sqlite3.connect(str(db_file)).close()
+        return db_file
+
+    def test_run_pipeline_writes_news_snapshots(self):
+        """run_pipeline() persists snapshot identity to news_snapshots (0610)."""
+        arts = [_make_article("AAPL", "Apple launch", body="body text " * 5,
+                              url="https://example.com/snap1")]
+        by_ticker = {"AAPL": arts}
+        snap = intel.build_news_snapshot(by_ticker)
+        mock_client = MagicMock()
+        mock_client.generate = MagicMock(return_value=json.dumps([]))
+        conn = _make_db()
+        intel.run_pipeline(by_ticker, {"AAPL": 5.0}, conn, mock_client, snapshot=snap)
+        row = conn.execute(
+            "SELECT snapshot_id, captured_at, version FROM news_snapshots WHERE snapshot_hash=?",
+            (snap["snapshot_hash"],)
+        ).fetchone()
+        assert row is not None, "run_pipeline must write to news_snapshots (0610)"
+        assert row[0] == snap["snapshot_id"]
+        assert row[1] == snap["captured_at"]
+        assert row[2] == intel.NEWS_INTELLIGENCE_VERSION
+
+    def test_persist_snapshot_is_immutable(self):
+        """Second call with same hash does not overwrite (INSERT OR IGNORE, 0610)."""
+        conn = _make_db()
+        intel._persist_snapshot(conn, "hashABC", "sid-first", "2026-09-23 10:00:00", None)
+        intel._persist_snapshot(conn, "hashABC", "sid-second", "2026-09-23 11:00:00", {"x": 1})
+        row = conn.execute(
+            "SELECT snapshot_id FROM news_snapshots WHERE snapshot_hash='hashABC'"
+        ).fetchone()
+        assert row[0] == "sid-first", "news_snapshots row must be immutable once written (0610)"
+
+    def test_build_news_state_uses_hash_join(self):
+        """_build_news_state resolves snapshot_id/captured_at from news_snapshots (not news_summaries, 0610)."""
+        import datetime as _dt
+        from agents.learning import episode_capture as ep
+        conn = _make_db()
+        today = _dt.date.today().isoformat()
+        snap_hash = "provenance_hash_XYZ"
+        snap_id = "snap-id-resolved"
+        snap_cap = "2026-09-23 08:00:00"
+        conn.execute(
+            "INSERT INTO news_events "
+            "(event_id, ticker, day, event_type, direction, magnitude, expected_horizon, "
+            "confidence, extracted_at, trend_status, signal_strength, portfolio_priority, "
+            "event_fingerprint, news_intelligence_version, news_snapshot_hash) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("ev-hash1", "AAPL", today, "EARNINGS", "POSITIVE", "MEDIUM", "SHORT",
+             0.8, today, "CONFIRMING", 50.0, 5.0, "fp-hash1",
+             intel.NEWS_INTELLIGENCE_VERSION, snap_hash),
+        )
+        conn.execute(
+            "INSERT INTO news_snapshots (snapshot_hash, snapshot_id, captured_at, version, created_at) "
+            "VALUES (?,?,?,?,?)",
+            (snap_hash, snap_id, snap_cap, intel.NEWS_INTELLIGENCE_VERSION, today),
+        )
+        conn.commit()
+        state_json = ep._build_news_state("AAPL", conn)
+        assert state_json is not None
+        state = json.loads(state_json)
+        assert state["snapshot_id"] == snap_id, (
+            "_build_news_state must resolve snapshot_id from news_snapshots hash join (0610)"
+        )
+        assert state["snapshot_captured_at"] == snap_cap
+
+    def test_c5053fb_acceptance_row_created_on_init(self, tmp_path):
+        """_init_ai_tables seeds id=2 acceptance row for c5053fb (final v2 boundary, 0610)."""
+        import portfolio_ai as _pai
+        db_file = self._make_fresh_db(tmp_path)
+        with patch.object(_pai, "DB_PATH", db_file):
+            _pai._init_ai_tables()
+        conn = sqlite3.connect(str(db_file))
+        row = conn.execute(
+            "SELECT accepted_commit, accepted_version FROM _news_intelligence_acceptance WHERE id=2"
+        ).fetchone()
+        conn.close()
+        assert row is not None, "id=2 acceptance row must be seeded by _init_ai_tables (0610)"
+        assert row[0] == "c5053fb"
+        assert row[1] == "v2"
+
+    def test_acceptance_rows_use_utc_timestamp(self, tmp_path):
+        """acceptance rows use UTC accepted_at (not local time) (0610)."""
+        import portfolio_ai as _pai
+        import datetime as _dt
+        import re
+        db_file = self._make_fresh_db(tmp_path)
+        before = _dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        with patch.object(_pai, "DB_PATH", db_file):
+            _pai._init_ai_tables()
+        after = _dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        conn = sqlite3.connect(str(db_file))
+        rows = conn.execute(
+            "SELECT accepted_at FROM _news_intelligence_acceptance"
+        ).fetchall()
+        conn.close()
+        for (accepted_at,) in rows:
+            assert re.match(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", accepted_at), (
+                f"accepted_at must be ISO UTC string, got {accepted_at!r}"
+            )
+            assert before <= accepted_at <= after, (
+                f"accepted_at={accepted_at!r} outside UTC test window [{before}, {after}]"
+            )
+
+    def test_news_snapshots_table_created_on_init(self, tmp_path):
+        """_init_ai_tables creates news_snapshots table (0610)."""
+        import portfolio_ai as _pai
+        db_file = self._make_fresh_db(tmp_path)
+        with patch.object(_pai, "DB_PATH", db_file):
+            _pai._init_ai_tables()
+        conn = sqlite3.connect(str(db_file))
+        tables = {row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()}
+        conn.close()
+        assert "news_snapshots" in tables, "_init_ai_tables must create news_snapshots (0610)"

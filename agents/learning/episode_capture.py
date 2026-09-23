@@ -58,19 +58,22 @@ def _build_news_state(ticker: str, conn) -> Optional[str]:
         # 0601d: include news_snapshot_hash to close the invariant:
         # summaries hash == events hash == episode hash
         snapshot_hash = events[0].get("news_snapshot_hash") if events else None
-        # 0607: include snapshot_id and snapshot_captured_at from news_summaries
+        # 0610: resolve snapshot_id/captured_at from news_snapshots via hash join.
+        # Avoids the race where persist_events() writes news_events before the
+        # news_summaries row is updated — episode always reads the atomic provenance table.
         snapshot_id = None
         snapshot_captured_at = None
-        try:
-            snap_row = conn.execute(
-                "SELECT snapshot_id, snapshot_captured_at FROM news_summaries WHERE day=?",
-                (today,)
-            ).fetchone()
-            if snap_row:
-                snapshot_id = snap_row[0]
-                snapshot_captured_at = snap_row[1]
-        except Exception:
-            pass
+        if snapshot_hash:
+            try:
+                snap_row = conn.execute(
+                    "SELECT snapshot_id, captured_at FROM news_snapshots WHERE snapshot_hash=?",
+                    (snapshot_hash,)
+                ).fetchone()
+                if snap_row:
+                    snapshot_id = snap_row[0]
+                    snapshot_captured_at = snap_row[1]
+            except Exception:
+                pass
         return json.dumps({
             "as_of":                     today,
             "news_intelligence_version":  NEWS_INTELLIGENCE_VERSION,

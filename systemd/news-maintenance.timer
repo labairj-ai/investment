@@ -1,8 +1,8 @@
 [Unit]
-Description=Run news event-state maintenance daily at 02:00 ET (07:00 UTC)
+Description=Run news event-state maintenance daily at 02:00 America/New_York
 
 [Timer]
-OnCalendar=*-*-* 07:00:00
+OnCalendar=America/New_York *-*-* 02:00:00
 Persistent=true
 
 [Install]
