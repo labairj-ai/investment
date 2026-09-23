@@ -303,12 +303,18 @@ def _init_ai_tables():
         summaries    TEXT,
         generated_at TEXT
     )""")
-    # Add provenance columns to news_summaries for content-addressed cache (0580)
+    # Add provenance columns to news_summaries for content-addressed cache (0580+0589)
     for _ns_col in [
         "ALTER TABLE news_summaries ADD COLUMN news_snapshot_hash TEXT",
         "ALTER TABLE news_summaries ADD COLUMN model_id TEXT",
         "ALTER TABLE news_summaries ADD COLUMN prompt_version TEXT",
         "ALTER TABLE news_summaries ADD COLUMN article_count INTEGER",
+        "ALTER TABLE news_summaries ADD COLUMN input_manifest_json TEXT",
+        # 0589/0593/0594: news_events new columns
+        "ALTER TABLE news_events ADD COLUMN event_fingerprint TEXT",
+        "ALTER TABLE news_events ADD COLUMN article_ids_json TEXT",
+        "ALTER TABLE news_events ADD COLUMN causal_driver TEXT",
+        "ALTER TABLE news_events ADD COLUMN news_intelligence_version TEXT",
     ]:
         try:
             conn.execute(_ns_col)
@@ -2010,12 +2016,16 @@ Be specific. Name the legislation by ID and the matching holding. No generic sta
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if DB_PATH.exists():
         conn = sqlite3.connect(str(DB_PATH), timeout=10)
+        # Persist input_manifest_json for provenance (0589)
+        manifest_json = json.dumps(intel_result.get("_manifest", {})) if intel_result else None
         conn.execute(
             """INSERT OR REPLACE INTO news_summaries
-               (day, summaries, generated_at, news_snapshot_hash, model_id, prompt_version, article_count)
-               VALUES (?,?,?,?,?,?,?)""",
+               (day, summaries, generated_at, news_snapshot_hash, model_id, prompt_version,
+                article_count, input_manifest_json)
+               VALUES (?,?,?,?,?,?,?,?)""",
             (today, json.dumps(summaries), now_str, news_hash,
-             ollama_client.DEFAULT_MODEL, f"news_prose_{_intel.PROMPT_VERSION}", article_count)
+             ollama_client.DEFAULT_MODEL, f"news_prose_{_intel.PROMPT_VERSION}",
+             article_count, manifest_json)
         )
         conn.commit()
         conn.close()

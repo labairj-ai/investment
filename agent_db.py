@@ -683,6 +683,14 @@ def migrate() -> None:
         ("cycle_runs",  "external_fills_observed",   "INTEGER DEFAULT 0"),
         # 0586 — news intelligence state snapshot on decision episodes (observe-only)
         ("decision_episodes", "news_state",          "TEXT"),
+        # 0589 — evidence provenance: stable event identity and article IDs
+        ("news_events",    "event_fingerprint",      "TEXT"),
+        ("news_events",    "article_ids_json",       "TEXT"),
+        ("news_summaries", "input_manifest_json",    "TEXT"),
+        # 0593 — causal portfolio themes: macro/cross-sector driver per event
+        ("news_events",    "causal_driver",          "TEXT"),
+        # 0594 — news intelligence versioning
+        ("news_events",    "news_intelligence_version", "TEXT"),
     ]
     for table, col, col_type in _new_cols:
         try:

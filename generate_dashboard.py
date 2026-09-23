@@ -10654,7 +10654,9 @@ async function rejectThesisProposal(recId) {{
     if (el) el.remove();
   }}
 
-  // ── News Intelligence helpers (0587) ──────────────────────────────────────
+  // ── News Intelligence helpers (0587 + 0588 fixes) ────────────────────────
+  // Thresholds use signal_strength (0-100, absolute event quality) NOT portfolio_priority.
+  // portfolio_priority is used only for ordering within buckets (0588).
   const _EMERGING_RISK_THRESH = 45;
   const _EMERGING_OPP_THRESH  = 45;
   const _THESIS_THRESH        = 25;
@@ -10677,11 +10679,33 @@ async function rejectThesisProposal(recId) {{
     if (dir === 'POSITIVE') return 'opp-card';
     return 'watch-card';
   }}
-  function _bucketClass(dir, hasThesis, score) {{
-    if (dir === 'NEGATIVE' && score >= _EMERGING_RISK_THRESH) return 'risk';
-    if (dir === 'POSITIVE' && score >= _EMERGING_OPP_THRESH)  return 'opp';
-    if (hasThesis && score >= _THESIS_THRESH)                  return 'thesis';
+  // Classify by signal_strength (absolute event quality), not portfolio_priority (0588 fix)
+  function _bucketClass(dir, hasThesis, sig, triggerProx) {{
+    if (dir === 'NEGATIVE' && sig >= _EMERGING_RISK_THRESH) return 'risk';
+    if (dir === 'POSITIVE' && sig >= _EMERGING_OPP_THRESH)  return 'opp';
+    if (hasThesis && (sig >= _THESIS_THRESH || (triggerProx && triggerProx > 0))) return 'thesis';
     return 'watch';
+  }}
+  function _watchNextText(ev) {{
+    const horizon = (ev.expected_horizon || ev.horizon || 'SHORT').toLowerCase();
+    const et = (ev.event_type || '').toUpperCase();
+    const trend = ev.trend_status || 'NEW';
+    const dir = ev.direction || 'NEUTRAL';
+    if (et === 'EARNINGS')
+      return `Watch next earnings to ${{dir === 'NEGATIVE' ? 'confirm stabilization' : 'confirm improvement'}}`;
+    if (et === 'GUIDANCE_CHANGE')
+      return `Watch ${{horizon === 'immediate' ? 'imminent' : 'next'}} management commentary to validate guidance`;
+    if (et === 'DEMAND')
+      return `Track ${{ev.affected_metric || 'revenue trajectory'}} over ${{horizon}} horizon`;
+    if (et === 'REGULATORY' || et === 'LITIGATION')
+      return `Monitor regulatory/legal timeline — ${{horizon}} resolution expected`;
+    if (trend === 'ACCELERATING')
+      return 'Monitor for further acceleration — trend is strengthening';
+    if (trend === 'REVERSING')
+      return 'Confirm reversal holds over next 30 days';
+    if (trend === 'FADING' || trend === 'RESOLVED')
+      return 'No follow-up expected unless concern resurfaces';
+    return `Monitor ${{et.replace(/_/g,' ').toLowerCase()}} development over ${{horizon}} horizon`;
   }}
 
   function _renderIntelCard(ticker, ev, summary, bt) {{
@@ -10691,8 +10715,9 @@ async function rejectThesisProposal(recId) {{
     const sig    = ev.signal_strength || 0;
     const pp     = ev.portfolio_priority || 0;
     const pillar = ev.pillar_name || ev.risk_name || '';
-    const hasThesis = Boolean(pillar);
-    const bucket = _bucketClass(dir, hasThesis, pp);
+    const hasThesis = Boolean(pillar) || Boolean(ev.thesis_relevance > 0.25);
+    // Classify by signal_strength, not portfolio_priority (0588 fix)
+    const bucket = _bucketClass(dir, hasThesis, sig, ev.trigger_proximity || 0);
     const cardClass = _sigClass(dir) + (bucket === 'thesis' ? ' thesis-card' : '');
 
     let dirBadge = '';
@@ -10783,6 +10808,15 @@ async function rejectThesisProposal(recId) {{
       html += `<div class="ai-news-factor"><span class="ai-news-factor-label">${{label}}</span>${{val}}</div>`;
     }}
 
+    // Watch Next (0588)
+    const watchText = _watchNextText(ev);
+    if (watchText) {{
+      html += `<div class="news-intel-section">`;
+      html += `<div class="news-intel-section-label">Watch Next</div>`;
+      html += `<div class="news-intel-section-body" style="font-style:italic;color:#a0aec0;">${{watchText}}</div>`;
+      html += `</div>`;
+    }}
+
     if (titles.length) {{
       const listId = evId + '-ev';
       html += `<span class="news-evidence-toggle" onclick="document.getElementById('${{listId}}').classList.toggle('open');this.textContent=document.getElementById('${{listId}}').classList.contains('open')?'▲ Hide sources':'▼ ${{titles.length}} source${{titles.length>1?'s':''}}">▼ ${{titles.length}} source${{titles.length>1?'s':''}}</span>`;
@@ -10844,7 +10878,7 @@ async function rejectThesisProposal(recId) {{
       const buckets = {{ risk: [], opp: [], thesis: [], watch: [] }};
       const nothingTickers = [];
 
-      // Build cards sorted by portfolio_priority
+      // Build cards: up to 3 events per ticker; all go in the bucket of the top event (0588)
       for (const ticker of tickers) {{
         const tickerEvents = eventsMap[ticker] || [];
         const s = summaries && summaries[ticker];
@@ -10852,10 +10886,17 @@ async function rejectThesisProposal(recId) {{
           nothingTickers.push(ticker);
           continue;
         }}
-        // Use the top event for this ticker's bucket classification
+        // Classify ticker bucket by top event (highest portfolio_priority)
         const topEv = tickerEvents[0];
-        const cardResult = _renderIntelCard(ticker, topEv, s, bt);
-        buckets[cardResult.bucket].push({{ html: cardResult.html, pp: cardResult.pp, ticker }});
+        const topResult = _renderIntelCard(ticker, topEv, s, bt);
+        const tickerBucket = topResult.bucket;
+        buckets[tickerBucket].push({{ html: topResult.html, pp: topResult.pp, ticker }});
+        // Render additional events (up to 2 more) in the same bucket
+        for (let i = 1; i < Math.min(3, tickerEvents.length); i++) {{
+          const ev = tickerEvents[i];
+          const r = _renderIntelCard(ticker, ev, s, bt);
+          buckets[tickerBucket].push({{ html: r.html, pp: r.pp, ticker }});
+        }}
       }}
 
       const BUCKET_CONFIG = [
@@ -10875,10 +10916,10 @@ async function rejectThesisProposal(recId) {{
         html += `</div></div>`;
       }}
 
-      // Nothing Material Changed bucket (collapsed by default)
+      // Nothing Material Changed bucket — starts collapsed (0588 fix)
       if (nothingTickers.length) {{
         const nmId = 'nm-bucket-' + Math.random().toString(36).slice(2,6);
-        html += `<div class="news-bucket news-bucket-nothing" id="${{nmId}}">`;
+        html += `<div class="news-bucket news-bucket-nothing collapsed" id="${{nmId}}">`;
         html += `<div class="news-bucket-header" onclick="document.getElementById('${{nmId}}').classList.toggle('collapsed')">`;
         html += `⬜ Nothing Material Changed<span class="news-bucket-count">${{nothingTickers.length}}</span>`;
         html += `</div>`;

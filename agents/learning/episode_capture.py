@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import time
 import uuid
+from typing import Optional
 
 import agent_db
 
@@ -36,28 +37,33 @@ def _build_macro_snapshot(ticker: str, conn, captured_at=None) -> str:
                            "usable_dimensions": [], "reason": str(exc)})
 
 
-def _build_news_state(ticker: str, conn) -> str | None:
-    """Freeze today's news intelligence state for the ticker (0586, observe-only)."""
+def _build_news_state(ticker: str, conn) -> Optional[str]:
+    """Freeze today's news intelligence state for the ticker (0586+0594, observe-only)."""
     try:
         import datetime
+        from agents.news.intelligence import NEWS_INTELLIGENCE_VERSION, PROMPT_VERSION as _NP_VER
         today = datetime.date.today().isoformat()
         rows = conn.execute(
             "SELECT event_type, direction, magnitude, signal_strength, portfolio_priority, "
             "confirmation_class, thesis_relevance, pillar_name, trend_status, "
-            "occurrence_count_30d "
+            "occurrence_count_30d, event_fingerprint, causal_driver, news_intelligence_version "
             "FROM news_events WHERE ticker=? AND day=? ORDER BY portfolio_priority DESC LIMIT 5",
             (ticker, today),
         ).fetchall()
         if not rows:
             return None
         events = [dict(r) for r in rows]
+        fingerprints = [e.get("event_fingerprint") for e in events if e.get("event_fingerprint")]
         return json.dumps({
-            "as_of": today,
-            "events": events,
-            "top_signal_strength": max(e.get("signal_strength") or 0 for e in events),
-            "top_confirmation": events[0].get("confirmation_class") if events else None,
-            "has_thesis_event": any(e.get("thesis_relevance", 0) > 0.3 for e in events),
-            "event_types": list({e["event_type"] for e in events}),
+            "as_of":                    today,
+            "news_intelligence_version": NEWS_INTELLIGENCE_VERSION,
+            "news_prompt_version":       _NP_VER,
+            "events":                   events,
+            "event_fingerprints":        fingerprints,
+            "top_signal_strength":      max(e.get("signal_strength") or 0 for e in events),
+            "top_confirmation":         events[0].get("confirmation_class") if events else None,
+            "has_thesis_event":         any(e.get("thesis_relevance", 0) > 0.3 for e in events),
+            "event_types":              list({e["event_type"] for e in events}),
         })
     except Exception:
         return None
