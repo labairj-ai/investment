@@ -928,10 +928,17 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
         (cutoff_24h,),
     ).fetchall()
 
+    # Deduplicate: keep only the most recent finding per (agent_type, ticker, finding_type).
+    # The same issue fires on every pipeline run; duplicates inflate attention_items.
     findings_by_type: dict = {}
+    _seen_finding_keys: set = set()
     for r in finding_rows:
-        key = r["agent_type"] or "unknown"
-        findings_by_type.setdefault(key, []).append({
+        agent = r["agent_type"] or "unknown"
+        dedup_key = (agent, r["ticker"] or "", r["finding_type"] or "")
+        if dedup_key in _seen_finding_keys:
+            continue
+        _seen_finding_keys.add(dedup_key)
+        findings_by_type.setdefault(agent, []).append({
             "id": r["id"],
             "ticker": r["ticker"],
             "finding_type": r["finding_type"],
@@ -1133,7 +1140,7 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
     for finding in findings_by_type.get("portfolio_guardian", []):
         sev = finding.get("severity", 0) or 0
         item = {
-            "key": f"guardian:{finding.get('id', '')}",
+            "key": f"guardian:{finding.get('ticker','')}:{finding.get('finding_type','')}",
             "ticker": finding.get("ticker"),
             "signal_type": "guardian_finding",
             "summary": finding.get("summary", ""),
@@ -1142,7 +1149,7 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
             "is_new": True,
             "since": captured_at,
         }
-        if sev >= 50:
+        if sev >= 70:
             attention_items.append(item)
         else:
             watch_items.append(item)
@@ -1194,9 +1201,9 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
         is_positive = direction.upper() in ("POSITIVE", "BULLISH")
         is_negative = direction.upper() in ("NEGATIVE", "BEARISH")
         is_opp_type = event_type.upper() in ("EMERGING_OPPORTUNITY", "MULTI_SIGNAL", "ACCELERATING")
-        if is_positive and is_opp_type:
+        if is_positive and is_opp_type and confidence >= 0.6:
             opportunities.append(base)
-        elif is_negative and confidence >= 0.6 and thesis_rel >= 0.5:
+        elif is_negative and confidence >= 0.7 and thesis_rel >= 0.6:
             attention_items.append(base)
         else:
             watch_items.append(base)
