@@ -1,7 +1,7 @@
 # Strengthen Production Canary Invariants
 
 - **ID:** 0660
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-24
 - **Priority:** normal
 - **Depends:** 0658, 0659

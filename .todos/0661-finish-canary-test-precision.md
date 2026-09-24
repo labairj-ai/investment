@@ -1,7 +1,7 @@
 # Finish Canary and Test Precision
 
 - **ID:** 0661
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-24
 - **Priority:** normal
 - **Depends:** 0655, 0656, 0658

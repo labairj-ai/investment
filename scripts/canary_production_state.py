@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Read-only validator for Portfolio Decision Brief DB invariants.
 
-Checks 7 invariants against the production (or snapshot) investment DB.
+Checks invariants against the production (or snapshot) investment DB.
 Does NOT call build_portfolio_brief_state(), create_portfolio_brief(), or any LLM.
 Reads existing rows only and validates their shape.
 
@@ -20,14 +20,14 @@ import sqlite3
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from portfolio_ai import _derive_portfolio_state, BRIEF_POLICY_VERSION  # noqa: E402
+
 DEFAULT_DB = Path(__file__).resolve().parent.parent / "out" / "investment.db"
 
 VALID_PORTFOLIO_STATES = {"STABLE", "ATTENTION", "URGENT", "UNKNOWN"}
-
-# Rows written before 0648 normalization may have legacy invalid states.
-# We label these differently from new violations so they can be investigated
-# separately without blocking post-deploy canary runs.
-LEGACY_CUTOFF = "2026-09-24"  # date 0648 was deployed
+CURRENT_POLICY_VERSION = BRIEF_POLICY_VERSION  # "v2"
 
 
 def _open_ro(db_path: Path) -> sqlite3.Connection:
@@ -42,6 +42,11 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
     ).fetchone()
     return row is not None
+
+
+def _is_legacy(briefing_output: dict) -> bool:
+    """A row is legacy if it was not written by the current policy version."""
+    return briefing_output.get("brief_policy_version") != CURRENT_POLICY_VERSION
 
 
 def run_invariants(conn: sqlite3.Connection) -> tuple[list[str], list[str]]:
@@ -65,15 +70,16 @@ def run_invariants(conn: sqlite3.Connection) -> tuple[list[str], list[str]]:
                 )
                 continue
             if ps not in VALID_PORTFOLIO_STATES:
-                label = "LEGACY" if (row["captured_at"] or "") < LEGACY_CUTOFF else "VIOLATION"
-                entry = (
-                    f"[INV-1/{label}] brief_id={row['brief_id']} captured_at={row['captured_at']}: "
-                    f"portfolio_state={ps!r} not in {VALID_PORTFOLIO_STATES}"
-                )
-                if label == "LEGACY":
-                    warnings.append(entry)
+                if _is_legacy(output):
+                    warnings.append(
+                        f"[INV-1/LEGACY] brief_id={row['brief_id']} captured_at={row['captured_at']}: "
+                        f"portfolio_state={ps!r} not in {VALID_PORTFOLIO_STATES}"
+                    )
                 else:
-                    violations.append(entry)
+                    violations.append(
+                        f"[INV-1] brief_id={row['brief_id']} captured_at={row['captured_at']}: "
+                        f"portfolio_state={ps!r} not in {VALID_PORTFOLIO_STATES}"
+                    )
 
     # ── Invariant 2 ──────────────────────────────────────────────────────────
     # Rows with attention_items must NOT have portfolio_state=STABLE.
@@ -91,15 +97,16 @@ def run_invariants(conn: sqlite3.Connection) -> tuple[list[str], list[str]]:
             has_attention = bool(snapshot.get("attention_items"))
             ps = output.get("portfolio_state")
             if has_attention and ps == "STABLE":
-                label = "LEGACY" if (row["captured_at"] or "") < LEGACY_CUTOFF else "VIOLATION"
-                entry = (
-                    f"[INV-2/{label}] brief_id={row['brief_id']} captured_at={row['captured_at']}: "
-                    f"portfolio_state=STABLE with non-empty attention_items"
-                )
-                if label == "LEGACY":
-                    warnings.append(entry)
+                if _is_legacy(output):
+                    warnings.append(
+                        f"[INV-2/LEGACY] brief_id={row['brief_id']} captured_at={row['captured_at']}: "
+                        f"portfolio_state=STABLE with non-empty attention_items"
+                    )
                 else:
-                    violations.append(entry)
+                    violations.append(
+                        f"[INV-2] brief_id={row['brief_id']} captured_at={row['captured_at']}: "
+                        f"portfolio_state=STABLE with non-empty attention_items"
+                    )
 
     # ── Invariant 3 ──────────────────────────────────────────────────────────
     # ai_insights: insight.portfolio_state ∈ valid set for all rows.
@@ -115,15 +122,16 @@ def run_invariants(conn: sqlite3.Connection) -> tuple[list[str], list[str]]:
                 )
                 continue
             if ps not in VALID_PORTFOLIO_STATES:
-                label = "LEGACY" if (row["generated_at"] or "") < LEGACY_CUTOFF else "VIOLATION"
-                entry = (
-                    f"[INV-3/{label}] day={row['day']} generated_at={row['generated_at']}: "
-                    f"ai_insights portfolio_state={ps!r} not in {VALID_PORTFOLIO_STATES}"
-                )
-                if label == "LEGACY":
-                    warnings.append(entry)
+                if _is_legacy(insight):
+                    warnings.append(
+                        f"[INV-3/LEGACY] day={row['day']} generated_at={row['generated_at']}: "
+                        f"ai_insights portfolio_state={ps!r} not in {VALID_PORTFOLIO_STATES}"
+                    )
                 else:
-                    violations.append(entry)
+                    violations.append(
+                        f"[INV-3] day={row['day']} generated_at={row['generated_at']}: "
+                        f"ai_insights portfolio_state={ps!r} not in {VALID_PORTFOLIO_STATES}"
+                    )
 
     # ── Invariant 4 ──────────────────────────────────────────────────────────
     # portfolio_brief_provenance: source_refs_json is valid JSON with required fields.
@@ -172,10 +180,8 @@ def run_invariants(conn: sqlite3.Connection) -> tuple[list[str], list[str]]:
                     f"response has no matching provenance row (orphaned response)"
                 )
 
-    # ── Invariant 6 ──────────────────────────────────────────────────────────
-    # Same as 5 from the other direction: brief_id integrity (alias check).
-    # Already covered by INV-5; this invariant confirms no gaps in the other direction.
-    # (All provenance brief_ids referenced in responses must exist — covered above.)
+    # ── Invariant 6 (placeholder for INV-5 mirror) ───────────────────────────
+    # Already covered by INV-5.
 
     # ── Invariant 7 ──────────────────────────────────────────────────────────
     # portfolio_brief_snapshots: if the table exists, snapshot_json is valid JSON.
@@ -190,6 +196,45 @@ def run_invariants(conn: sqlite3.Connection) -> tuple[list[str], list[str]]:
                 violations.append(
                     f"[INV-7] snapshot id={row['id']} captured_at={row['captured_at']}: "
                     f"snapshot_json is not valid JSON"
+                )
+
+    # ── Invariant 8: recomputation (v2 rows only) ────────────────────────────
+    # For every v2 provenance row, _derive_portfolio_state(brief_snapshot) must equal
+    # the persisted portfolio_state.  Any mismatch means a policy violation slipped through.
+    if _table_exists(conn, "portfolio_brief_provenance"):
+        rows = conn.execute(
+            "SELECT brief_id, captured_at, brief_snapshot_json, briefing_output_json "
+            "FROM portfolio_brief_provenance"
+        ).fetchall()
+        for row in rows:
+            try:
+                output = json.loads(row["briefing_output_json"] or "{}")
+                snapshot = json.loads(row["brief_snapshot_json"] or "{}")
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if _is_legacy(output):
+                continue
+            expected = _derive_portfolio_state(snapshot)
+            actual = output.get("portfolio_state")
+            if actual != expected:
+                violations.append(
+                    f"[INV-8] brief_id={row['brief_id']} captured_at={row['captured_at']}: "
+                    f"recomputed state={expected!r} != persisted state={actual!r}"
+                )
+            # Spot check: high-severity attention → must be URGENT
+            attention_items = snapshot.get("attention_items", [])
+            from portfolio_ai import _sev_int, _HIGH_SEVERITY_THRESHOLD  # noqa: E402 (local import ok)
+            has_high = any(_sev_int(i) >= _HIGH_SEVERITY_THRESHOLD for i in attention_items)
+            if has_high and actual != "URGENT":
+                violations.append(
+                    f"[INV-8/HIGH-SEV] brief_id={row['brief_id']}: "
+                    f"high-severity attention present but portfolio_state={actual!r} (expected URGENT)"
+                )
+            # Spot check: no attention + HEALTHY → must be STABLE
+            if not attention_items and snapshot.get("brief_health") == "HEALTHY" and actual != "STABLE":
+                violations.append(
+                    f"[INV-8/STABLE-CEIL] brief_id={row['brief_id']}: "
+                    f"no attention + HEALTHY brief but portfolio_state={actual!r} (expected STABLE)"
                 )
 
     return violations, warnings
@@ -214,7 +259,7 @@ def main() -> int:
         conn.close()
 
     if warnings:
-        print(f"\n=== {len(warnings)} pre-normalization legacy warning(s) (informational) ===")
+        print(f"\n=== {len(warnings)} pre-v2 legacy warning(s) (informational) ===")
         for w in warnings:
             print(f"  {w}")
 

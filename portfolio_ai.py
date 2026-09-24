@@ -2989,10 +2989,23 @@ FRESHNESS_CRITICALITY: dict = {
 
 _HIGH_SEVERITY_THRESHOLD = 70  # must match threshold used in build_portfolio_brief_state
 
-# Severity rank order for deterministic floor comparisons.
-# Higher rank = more action required. UNKNOWN sits above STABLE so a degraded system
-# with no attention never returns to STABLE, but below ATTENTION/URGENT.
-_STATE_RANK: dict = {"STABLE": 0, "UNKNOWN": 1, "ATTENTION": 2, "URGENT": 3}
+BRIEF_POLICY_VERSION = "v2"
+
+
+def _derive_portfolio_state(brief_state: dict) -> str:
+    """Pure function: derive portfolio_state from brief_state facts alone.
+
+    No LLM input. Called unconditionally by _apply_brief_policy.
+    """
+    attention_items = brief_state.get("attention_items", [])
+    brief_health = brief_state.get("brief_health", "UNKNOWN")
+    if any(_sev_int(item) >= _HIGH_SEVERITY_THRESHOLD for item in attention_items):
+        return "URGENT"
+    if attention_items:
+        return "ATTENTION"
+    if brief_health == "HEALTHY":
+        return "STABLE"
+    return "UNKNOWN"
 
 
 def _sev_int(item: dict) -> int:
@@ -3108,11 +3121,9 @@ def _apply_brief_policy(brief_state: dict, briefing_output: dict) -> dict:
         portfolio_state ∈ {STABLE, ATTENTION, URGENT, UNKNOWN}
 
     Policy rules applied in order:
-        1. Normalization FIRST: invalid LLM state → UNKNOWN.  Critical ordering — must run
-           before the floor so "GARBAGE" + medium attention → ATTENTION, not UNKNOWN.
-        2. Deterministic floor: compute minimum required state from brief_state facts
-           (attention severity + brief_health). final = max(normalized_llm, floor) so the
-           LLM can raise above the floor but never below it.
+        1. Normalization FIRST: invalid LLM state → UNKNOWN.
+        2. Deterministic state: _derive_portfolio_state(brief_state) is the sole authority;
+           LLM output never affects portfolio_state.
         3. Final-state narrative: generate deterministic headline/key_question when an override
            occurred. STABLE final state always preserves the LLM headline unchanged.
 
@@ -3132,34 +3143,23 @@ def _apply_brief_policy(brief_state: dict, briefing_output: dict) -> dict:
         output["portfolio_state"] = "UNKNOWN"
     normalized_llm_state = output["portfolio_state"]
 
-    # ── Rule 2: deterministic floor ───────────────────────────────────────────
+    # ── Rule 2: deterministic state ──────────────────────────────────────────
     attention_items = brief_state.get("attention_items", [])
     brief_health = brief_state.get("brief_health", "UNKNOWN")
 
     has_high = any(_sev_int(item) >= _HIGH_SEVERITY_THRESHOLD for item in attention_items)
     has_any = bool(attention_items)
 
-    if has_high:
-        floor_state = "URGENT"
-    elif has_any:
-        floor_state = "ATTENTION"
-    elif brief_health == "HEALTHY":
-        floor_state = "STABLE"
-    else:
-        floor_state = "UNKNOWN"
-
-    # Take the higher-ranked of LLM state and floor: LLM can over-ride the floor upward
-    # (e.g. LLM URGENT with only medium-severity items stays URGENT), but cannot drop below it.
-    floor_rank = _STATE_RANK.get(floor_state, 1)
-    llm_rank = _STATE_RANK.get(normalized_llm_state, 1)
-    deterministic_state = floor_state if floor_rank > llm_rank else normalized_llm_state
+    deterministic_state = _derive_portfolio_state(brief_state)
 
     if deterministic_state != normalized_llm_state:
         output["policy_overrides"].append({
             "field": "portfolio_state",
             "from": normalized_llm_state,
             "to": deterministic_state,
-            "reason": _policy_floor_reason(brief_state, has_high, brief_health, floor_state),
+            "reason": _policy_floor_reason(
+                brief_state, has_high, brief_health, deterministic_state
+            ),
         })
     output["portfolio_state"] = deterministic_state
 
@@ -3196,6 +3196,7 @@ def create_portfolio_brief(conn: sqlite3.Connection, force: bool = False) -> dic
 
     from agents.briefing_agent import _run_briefing_llm
     briefing_output = _enforce_brief_health(brief_state, _run_briefing_llm(brief_state))
+    briefing_output["brief_policy_version"] = BRIEF_POLICY_VERSION
 
     brief_id = str(_uuid.uuid4())
     today = date.today().isoformat()

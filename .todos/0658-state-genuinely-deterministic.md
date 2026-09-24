@@ -1,7 +1,7 @@
 # Make portfolio_state Genuinely Deterministic
 
 - **ID:** 0658
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-24
 - **Priority:** high
 - **Depends:** 0653

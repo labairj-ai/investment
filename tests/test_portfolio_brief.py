@@ -891,37 +891,36 @@ def test_missing_brief_health_treated_as_non_healthy():
     )
 
 
-def test_missing_portfolio_state_defaults_to_unknown():
-    """Missing portfolio_state in briefing_output must be normalized to UNKNOWN by _apply_brief_policy."""
+def test_missing_portfolio_state_llm_ignored():
+    """Missing portfolio_state in LLM output: HEALTHY + no attention → STABLE (LLM ignored)."""
     state = _make_brief_state(brief_health="HEALTHY")
     briefing_output = {"headline": "test"}  # No portfolio_state key
     enforced = portfolio_ai._apply_brief_policy(state, briefing_output)
-    assert enforced.get("portfolio_state") == "UNKNOWN", (
-        f"Missing portfolio_state must be normalized to UNKNOWN, got {enforced.get('portfolio_state')!r}"
+    assert enforced.get("portfolio_state") == "STABLE", (
+        f"HEALTHY + no attention + missing LLM state must produce STABLE, got {enforced.get('portfolio_state')!r}"
     )
+    assert enforced.get("llm_assessed_state") is None, "llm_assessed_state must record original None"
 
 
 # ── 0648: Normalize persisted briefing contract ───────────────────────────────
 
-@pytest.mark.parametrize("raw_state,expected", [
-    (None,        "UNKNOWN"),
-    ("",          "UNKNOWN"),
-    ("stable",    "UNKNOWN"),   # wrong case
-    ("HEALTHY",   "UNKNOWN"),   # not a valid portfolio_state
-    ("garbage",   "UNKNOWN"),
-    ("STABLE",    "STABLE"),
-    ("ATTENTION", "ATTENTION"),
-    ("URGENT",    "URGENT"),
-    ("UNKNOWN",   "UNKNOWN"),
+@pytest.mark.parametrize("raw_state", [
+    None, "", "stable", "HEALTHY", "garbage",
+    "STABLE", "ATTENTION", "URGENT", "UNKNOWN",
 ])
-def test_portfolio_state_normalization(raw_state, expected):
-    """_apply_brief_policy guarantees portfolio_state ∈ {STABLE,ATTENTION,URGENT,UNKNOWN}."""
+def test_portfolio_state_deterministic_ignores_llm(raw_state):
+    """portfolio_state is always from _derive_portfolio_state; LLM input never changes it.
+
+    HEALTHY + no attention → STABLE for every possible LLM input (including ceiling cases
+    like URGENT and normalization cases like None/garbage).
+    """
     state = _make_brief_state(brief_health="HEALTHY")
     output = {"headline": "test", "key_question": "q", "what_changed": [],
               "portfolio_state": raw_state}
     result = portfolio_ai._apply_brief_policy(state, output)
-    assert result["portfolio_state"] == expected, (
-        f"raw={raw_state!r} → expected {expected!r}, got {result['portfolio_state']!r}"
+    assert result["portfolio_state"] == "STABLE", (
+        f"LLM raw_state={raw_state!r} must be ignored; HEALTHY+no attention → STABLE, "
+        f"got {result['portfolio_state']!r}"
     )
 
 
@@ -944,13 +943,14 @@ def test_policy_override_replaces_headline():
 
 
 def test_no_override_policy_overrides_empty():
-    """No policy override → policy_overrides is empty list, original headline unchanged."""
+    """No policy override when LLM matches deterministic state → policy_overrides empty, headline unchanged."""
     state = _make_brief_state(brief_health="HEALTHY")
     original_headline = "Portfolio is in good shape."
+    # LLM says STABLE; _derive_portfolio_state(HEALTHY + no attention) = STABLE → no override
     output = {"headline": original_headline, "key_question": "Watch GRMN.",
-              "what_changed": [], "portfolio_state": "ATTENTION"}
+              "what_changed": [], "portfolio_state": "STABLE"}
     result = portfolio_ai._apply_brief_policy(state, output)
-    assert result["portfolio_state"] == "ATTENTION"
+    assert result["portfolio_state"] == "STABLE"
     assert result.get("policy_overrides", []) == []
     assert result["headline"] == original_headline
 
@@ -964,12 +964,12 @@ def _attn(severity: int, key="guardian:GRMN:risk"):
 
 
 @pytest.mark.parametrize("llm_state,severity,expected_state", [
-    ("STABLE",    80, "URGENT"),    # high-severity → floor to URGENT
-    ("ATTENTION", 80, "URGENT"),    # ATTENTION + high-severity → URGENT
+    ("STABLE",    80, "URGENT"),    # high-severity → URGENT (deterministic)
+    ("ATTENTION", 80, "URGENT"),    # high-severity → URGENT regardless of LLM
     ("STABLE",    50, "ATTENTION"), # ordinary attention → ATTENTION
-    ("URGENT",    80, "URGENT"),    # already URGENT → unchanged
-    ("URGENT",    50, "URGENT"),    # URGENT not downgraded
-    ("STABLE",     0, "STABLE"),    # no attention → STABLE allowed (HEALTHY state)
+    ("URGENT",    80, "URGENT"),    # high-severity → URGENT (matches deterministic)
+    ("URGENT",    50, "ATTENTION"), # medium attention → ATTENTION; LLM URGENT ignored (ceiling)
+    ("STABLE",     0, "STABLE"),    # no attention → STABLE (HEALTHY, deterministic)
 ])
 def test_severity_floor(llm_state, severity, expected_state):
     """Severity floor: high-severity attention → URGENT; any attention + STABLE → ATTENTION."""
@@ -1072,6 +1072,88 @@ def test_attention_floor_produces_attention_headline():
     assert "assessment incomplete" not in hl, (
         f"ATTENTION headline must not say 'assessment incomplete'. Got: {result['headline']!r}"
     )
+
+
+# ── 0658: Deterministic state matrix (v4 LLM shape — no portfolio_state field) ──
+
+_V4_LLM_NO_STATE = {"headline": "LLM says fine.", "what_changed": [], "key_question": "?"}
+
+@pytest.mark.parametrize("brief_health,attention_sev,expected_state", [
+    # Row 1: HEALTHY, no attention, no portfolio_state from LLM → STABLE
+    ("HEALTHY",  None, "STABLE"),
+    # Row 2: HEALTHY, no attention + opportunity seeded (no sev) → STABLE
+    ("HEALTHY",  None, "STABLE"),   # duplicate to label clearly; opportunities don't elevate state
+    # Row 3: HEALTHY, medium attention → ATTENTION
+    ("HEALTHY",  50,   "ATTENTION"),
+    # Row 4: HEALTHY, high attention → URGENT
+    ("HEALTHY",  80,   "URGENT"),
+    # Row 5: DEGRADED, no attention → UNKNOWN
+    ("DEGRADED", None, "UNKNOWN"),
+    # Row 6: DEGRADED, medium attention → ATTENTION
+    ("DEGRADED", 50,   "ATTENTION"),
+    # Row 7: DEGRADED, high attention → URGENT
+    ("DEGRADED", 80,   "URGENT"),
+])
+def test_derive_state_matrix_v4_llm_shape(brief_health, attention_sev, expected_state):
+    """8-row state matrix: v4 LLM output (no portfolio_state field) never contaminates result."""
+    attention = [_attn(attention_sev)] if attention_sev is not None else []
+    state = _make_brief_state(brief_health=brief_health, attention=attention)
+    result = portfolio_ai._apply_brief_policy(state, dict(_V4_LLM_NO_STATE))
+    assert result["portfolio_state"] == expected_state, (
+        f"brief_health={brief_health!r} attention_sev={attention_sev} → "
+        f"expected {expected_state!r}, got {result['portfolio_state']!r}"
+    )
+    # LLM supplied no portfolio_state; llm_assessed_state must be None (not a spoofed value)
+    assert result.get("llm_assessed_state") is None, (
+        f"llm_assessed_state must be None when LLM omits portfolio_state. "
+        f"Got: {result.get('llm_assessed_state')!r}"
+    )
+
+
+def test_healthy_opportunity_only_is_stable():
+    """HEALTHY + opportunity only (no attention) → STABLE, not UNKNOWN."""
+    state = _make_brief_state(
+        brief_health="HEALTHY",
+        attention=[],
+        opps=[{"key": "news:aaa", "ticker": "ANET", "signal_type": "MULTI_SIGNAL",
+               "summary": "opportunity", "source": "news", "severity": 0}],
+    )
+    result = portfolio_ai._apply_brief_policy(state, dict(_V4_LLM_NO_STATE))
+    assert result["portfolio_state"] == "STABLE", (
+        f"HEALTHY + opportunity only must be STABLE (not UNKNOWN). "
+        f"Got: {result['portfolio_state']!r}"
+    )
+
+
+def test_ceiling_urgent_caller_no_attention_healthy_becomes_stable():
+    """Ceiling: caller explicitly passes 'URGENT' + no attention + HEALTHY → STABLE."""
+    state = _make_brief_state(brief_health="HEALTHY", attention=[])
+    output = {"headline": "Caller says urgent.", "what_changed": [], "key_question": "?",
+              "portfolio_state": "URGENT"}
+    result = portfolio_ai._apply_brief_policy(state, output)
+    assert result["portfolio_state"] == "STABLE", (
+        f"Ceiling enforced: URGENT input with no attention + HEALTHY must yield STABLE. "
+        f"Got: {result['portfolio_state']!r}"
+    )
+
+
+def test_derive_portfolio_state_pure_function():
+    """_derive_portfolio_state is a pure function importable from portfolio_ai."""
+    fn = portfolio_ai._derive_portfolio_state
+    assert fn({"brief_health": "HEALTHY", "attention_items": []}) == "STABLE"
+    assert fn({"brief_health": "HEALTHY", "attention_items": [_attn(50)]}) == "ATTENTION"
+    assert fn({"brief_health": "HEALTHY", "attention_items": [_attn(80)]}) == "URGENT"
+    assert fn({"brief_health": "DEGRADED", "attention_items": []}) == "UNKNOWN"
+    assert fn({"brief_health": "DEGRADED", "attention_items": [_attn(50)]}) == "ATTENTION"
+    assert fn({"brief_health": "DEGRADED", "attention_items": [_attn(80)]}) == "URGENT"
+
+
+# ── 0659: Brief policy version ───────────────────────────────────────────────
+
+def test_brief_policy_version_constant_exists():
+    """BRIEF_POLICY_VERSION constant must be defined and equal 'v2'."""
+    assert hasattr(portfolio_ai, "BRIEF_POLICY_VERSION")
+    assert portfolio_ai.BRIEF_POLICY_VERSION == "v2"
 
 
 # ── 0651: Subsystem criticality tiers ────────────────────────────────────────
@@ -1330,10 +1412,14 @@ def test_real_state_canary(tmp_path):
         f"ANET MULTI_SIGNAL event must be in opportunities. Tickers: {opp_tickers}"
     )
 
-    # 3. FADING WMT does NOT appear in attention_items
+    # 3. FADING WMT does NOT appear in attention_items but DOES appear in watch_items
     attn_tickers = [i.get("ticker", "") for i in state.get("attention_items", [])]
     assert "WMT" not in attn_tickers, (
         f"FADING WMT must not be in attention_items. Tickers: {attn_tickers}"
+    )
+    watch_tickers = [i.get("ticker", "") for i in state.get("watch_items", [])]
+    assert "WMT" in watch_tickers, (
+        f"FADING WMT must appear in watch_items. Tickers: {watch_tickers}"
     )
 
     # 4. RESOLVED ITW does NOT appear anywhere
@@ -1401,7 +1487,7 @@ def test_real_state_canary(tmp_path):
     macro_status = macro_fresh.get("status") or (
         "STALE" if macro_fresh.get("is_stale") else "CURRENT"
     )
-    assert macro_status in ("STALE", "UNAVAILABLE"), (
+    assert macro_status == "STALE", (
         f"macro_scores freshness must be STALE (4d > 72h threshold). Got: {macro_fresh}"
     )
 
@@ -1457,6 +1543,7 @@ def test_persistence_chain_policy_corrects_llm_stable(tmp_path, monkeypatch):
     monkeypatch.setattr("agents.briefing_agent._run_briefing_llm", _stub_llm)
 
     portfolio_ai.DB_PATH = db_file
+    agent_db.DB_PATH = db_file
     conn = _conn(db_file)
     try:
         result = portfolio_ai.create_portfolio_brief(conn)
@@ -1464,6 +1551,8 @@ def test_persistence_chain_policy_corrects_llm_stable(tmp_path, monkeypatch):
     finally:
         conn.close()
         portfolio_ai.DB_PATH = old_db
+        if agent_db_old is not None:
+            agent_db.DB_PATH = agent_db_old
 
     brief_id = result["brief_id"]
     brief = result["brief"]
@@ -1528,8 +1617,31 @@ def test_persistence_chain_policy_corrects_llm_stable(tmp_path, monkeypatch):
 
         # 7. portfolio_brief_snapshots has a recent row (existence proof)
         snap = conn2.execute(
-            "SELECT id FROM portfolio_brief_snapshots ORDER BY id DESC LIMIT 1"
+            "SELECT id, snapshot_json FROM portfolio_brief_snapshots ORDER BY id DESC LIMIT 1"
         ).fetchone()
         assert snap is not None, "portfolio_brief_snapshots must have a row"
+
+        # 8. snapshot_json in portfolio_brief_snapshots matches brief_snapshot_json in provenance
+        prov_snap_row = conn2.execute(
+            "SELECT brief_snapshot_json FROM portfolio_brief_provenance WHERE brief_id=?",
+            (brief_id,),
+        ).fetchone()
+        assert prov_snap_row is not None, "Provenance row must exist for snapshot consistency check"
+        snap_from_snapshots = json.loads(snap["snapshot_json"])
+        snap_from_provenance = json.loads(prov_snap_row["brief_snapshot_json"])
+        assert snap_from_snapshots.get("attention_items") == snap_from_provenance.get("attention_items"), (
+            f"attention_items must match between portfolio_brief_snapshots and portfolio_brief_provenance.\n"
+            f"  snapshots: {snap_from_snapshots.get('attention_items')}\n"
+            f"  provenance: {snap_from_provenance.get('attention_items')}"
+        )
+        assert snap_from_snapshots.get("portfolio_state") == snap_from_provenance.get("portfolio_state"), (
+            "portfolio_state in snapshot must match provenance snapshot"
+        )
+
+        # 9. persisted brief includes brief_policy_version == "v2"
+        assert prov_output.get("brief_policy_version") == portfolio_ai.BRIEF_POLICY_VERSION, (
+            f"persisted brief must include brief_policy_version={portfolio_ai.BRIEF_POLICY_VERSION!r}. "
+            f"Got: {prov_output.get('brief_policy_version')!r}"
+        )
     finally:
         conn2.close()
