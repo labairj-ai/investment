@@ -19,15 +19,15 @@ import ollama_client
 from .contracts import AgentContext, Recommendation
 from .orchestrator import register_agent
 
-_PROMPT_VERSION = "briefing_v3"
+_PROMPT_VERSION = "briefing_v4"
 
 
 def _build_brief_prompt(state: dict, date_str: str) -> str:
     """Build the LLM prompt for brief synthesis.
 
-    The LLM produces ONLY headline, what_changed, key_question, and portfolio_state.
-    needs_attention, opportunities, and watch come directly from the deterministic
-    brief_state — the LLM never generates those lists.
+    The LLM produces ONLY headline, what_changed, and key_question.
+    portfolio_state is computed deterministically by _apply_brief_policy — not by the LLM.
+    needs_attention, opportunities, and watch come directly from brief_state.
     """
     lines = [f"PORTFOLIO DECISION BRIEF — {date_str}", ""]
 
@@ -113,7 +113,6 @@ def _build_brief_prompt(state: dict, date_str: str) -> str:
             "headline": f"<1 sentence: overall portfolio state as of {date_str}>",
             "what_changed": ["<bullet: what is genuinely new since the last brief>"],
             "key_question": "<the single most important decision this portfolio faces today>",
-            "portfolio_state": "<STABLE|ATTENTION|URGENT>",
         }, indent=2),
     ]
 
@@ -123,10 +122,11 @@ def _build_brief_prompt(state: dict, date_str: str) -> str:
 def _run_briefing_llm(brief_state: dict) -> dict:
     """Call the LLM with brief_state and return the narrative briefing dict.
 
-    The LLM produces ONLY headline, what_changed, key_question, portfolio_state.
-    needs_attention, opportunities, and watch are NOT generated here — they come
-    directly from brief_state in create_portfolio_brief() / _handle_ai_daily().
-    Returns a dict with those four fields, or a deterministic fallback on failure.
+    The LLM produces ONLY headline, what_changed, and key_question.
+    portfolio_state is NOT produced here — it is computed deterministically by
+    _apply_brief_policy after this call. Returns a dict with those three fields
+    (plus a placeholder portfolio_state for _apply_brief_policy to normalize),
+    or a deterministic fallback on failure.
     """
     date_str = _date.today().isoformat()
 
@@ -160,7 +160,6 @@ def _run_briefing_llm(brief_state: dict) -> dict:
         "headline": "",
         "what_changed": [],
         "key_question": "",
-        "portfolio_state": "UNKNOWN",
     }
 
     try:

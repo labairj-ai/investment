@@ -995,6 +995,85 @@ def test_severity_floor_adds_policy_override():
     assert any(o["field"] == "portfolio_state" and o["to"] == "URGENT" for o in overrides)
 
 
+# ── 0654: Final-state narrative policy ───────────────────────────────────────
+
+def test_urgent_headline_from_severity_floor():
+    """STABLE→URGENT override must produce 'Urgent portfolio attention required' headline."""
+    state = _make_brief_state(brief_health="HEALTHY", attention=[_attn(80)])
+    output = {"headline": "Portfolio stable.", "key_question": "?",
+              "what_changed": [], "portfolio_state": "STABLE"}
+    result = portfolio_ai._apply_brief_policy(state, output)
+    assert result["portfolio_state"] == "URGENT"
+    assert result["headline"].lower().startswith("urgent portfolio attention required"), (
+        f"URGENT override must produce 'Urgent portfolio attention required' headline.\n"
+        f"Got: {result['headline']!r}"
+    )
+    assert "assessment incomplete" not in result["headline"].lower()
+    assert result.get("llm_headline") == "Portfolio stable."
+
+
+def test_unknown_headline_from_health_gate():
+    """STABLE→UNKNOWN from health degradation must produce 'Portfolio assessment incomplete' headline."""
+    state = _make_brief_state(brief_health="DEGRADED",
+                               brief_health_detail=["freshness.news_snapshot:STALE"])
+    output = {"headline": "Portfolio is stable.", "key_question": "No action.",
+              "what_changed": [], "portfolio_state": "STABLE"}
+    result = portfolio_ai._apply_brief_policy(state, output)
+    assert result["portfolio_state"] == "UNKNOWN"
+    assert "assessment incomplete" in result["headline"].lower(), (
+        f"UNKNOWN override must produce 'assessment incomplete' headline.\n"
+        f"Got: {result['headline']!r}"
+    )
+    assert "cannot be confirmed" in result["headline"]
+    assert result.get("llm_headline") == "Portfolio is stable."
+
+
+def test_urgent_with_health_degraded_combined_headline():
+    """URGENT from severity floor + degraded health → combined headline with health note."""
+    state = _make_brief_state(brief_health="DEGRADED",
+                               brief_health_detail=["freshness.guardian_run:STALE"],
+                               attention=[_attn(80)])
+    output = {"headline": "Portfolio stable.", "key_question": "?",
+              "what_changed": [], "portfolio_state": "STABLE"}
+    result = portfolio_ai._apply_brief_policy(state, output)
+    assert result["portfolio_state"] == "URGENT"
+    hl = result["headline"].lower()
+    assert "urgent" in hl, f"Combined headline must contain 'urgent'. Got: {result['headline']!r}"
+    assert "note" in hl or "also active" in hl, (
+        f"Combined headline must reference health note. Got: {result['headline']!r}"
+    )
+    assert result.get("llm_headline") == "Portfolio stable."
+
+
+def test_stable_headline_preserved_when_no_override():
+    """STABLE final state with no override must preserve the LLM headline unchanged."""
+    state = _make_brief_state(brief_health="HEALTHY")
+    original = "Great portfolio — no issues today."
+    output = {"headline": original, "key_question": "Nothing to do.",
+              "what_changed": [], "portfolio_state": "STABLE"}
+    result = portfolio_ai._apply_brief_policy(state, output)
+    assert result["portfolio_state"] == "STABLE"
+    assert result["headline"] == original
+    assert "llm_headline" not in result
+
+
+def test_attention_floor_produces_attention_headline():
+    """STABLE→ATTENTION from floor must produce attention headline, not incomplete-assessment."""
+    state = _make_brief_state(brief_health="HEALTHY",
+                               attention=[_attn(50, key="guardian:GRMN:risk_contribution")])
+    output = {"headline": "Portfolio stable.", "key_question": "?",
+              "what_changed": [], "portfolio_state": "STABLE"}
+    result = portfolio_ai._apply_brief_policy(state, output)
+    assert result["portfolio_state"] == "ATTENTION"
+    hl = result["headline"].lower()
+    assert "attention" in hl, (
+        f"ATTENTION floor must produce attention headline. Got: {result['headline']!r}"
+    )
+    assert "assessment incomplete" not in hl, (
+        f"ATTENTION headline must not say 'assessment incomplete'. Got: {result['headline']!r}"
+    )
+
+
 # ── 0651: Subsystem criticality tiers ────────────────────────────────────────
 
 def test_advisory_source_stale_does_not_degrade_brief_health(tmp_path):
@@ -1053,8 +1132,12 @@ def test_required_source_stale_degrades_health(tmp_path):
 
 # ── 0652: Real-state canary ───────────────────────────────────────────────────
 
-def _seed_canary_db(db_file):
-    """Seed a realistic DB fixture covering all six state categories for the canary."""
+def _seed_canary_db(db_file) -> dict:
+    """Seed a realistic DB fixture covering all six state categories for the canary.
+
+    Returns a dict of key seeded values for assertion in tests:
+        yesterday_str  — completed_at for the learning sweep (ISO string)
+    """
     import time as _t
     import datetime as _dt
     conn = sqlite3.connect(str(db_file), timeout=10)
@@ -1175,11 +1258,11 @@ def _seed_canary_db(db_file):
     )
     conn.execute(
         "INSERT INTO critic_reviews (recommendation_id, verdict, strongest_objection, created_at) "
-        "VALUES (9001, 'APPROVED', NULL, ?)", (now - 3500,),
+        "VALUES (9001, 'APPROVE', NULL, ?)", (now - 3500,),
     )
 
-    # 6. Macro score (stale — 3 days ago) in holding_macro_scores
-    stale_ts = now - 3 * 86400
+    # 6. Macro score (stale — 4 days ago, unambiguously past the 72h threshold)
+    stale_ts = now - 4 * 86400
     stale_str = _dt.datetime.utcfromtimestamp(stale_ts).strftime("%Y-%m-%d %H:%M:%S")
     conn.execute(
         "INSERT OR REPLACE INTO holding_macro_scores (ticker, scores, updated_at) "
@@ -1199,6 +1282,7 @@ def _seed_canary_db(db_file):
 
     conn.commit()
     conn.close()
+    return {"yesterday_str": yesterday_str}
 
 
 @pytest.mark.canary
@@ -1219,7 +1303,7 @@ def test_real_state_canary(tmp_path):
     try:
         agent_db.migrate()
         portfolio_ai._init_ai_tables()
-        _seed_canary_db(db_file)
+        seed_data = _seed_canary_db(db_file)
 
         conn = _conn(db_file)
         state = portfolio_ai.build_portfolio_brief_state(conn)
@@ -1262,20 +1346,34 @@ def test_real_state_canary(tmp_path):
         f"RESOLVED ITW must not appear anywhere. Tickers: {all_tickers}"
     )
 
-    # 5. execution_state mentions UNP PENDING and RIVN FILLED
+    # 5. execution_state mentions UNP PENDING; RIVN (FILLED) and STZ (REJECTED) must be absent
     ex = state.get("execution_state", {})
     pending = ex.get("pending", [])
     pending_tickers = [p.get("ticker", "") for p in pending]
-    # At least UNP should appear; RIVN may appear as a recent fill
     assert "UNP" in pending_tickers or any(
         "UNP" in str(v) for v in ex.values()
     ), f"UNP PENDING must appear in execution_state. Got: {ex}"
+    # FILLED and REJECTED intents must NOT appear in open pending list
+    assert "RIVN" not in pending_tickers, (
+        f"FILLED RIVN must not appear in execution_state.pending. Got: {pending_tickers}"
+    )
+    assert "STZ" not in pending_tickers, (
+        f"REJECTED STZ must not appear in execution_state.pending. Got: {pending_tickers}"
+    )
 
-    # 6. open_decisions contains rec 9001
+    # 6. open_decisions contains rec 9001 (APPROVE Critic verdict exercises the approved path)
     open_dec_ids = [d.get("id") or d.get("rec_id") for d in state.get("open_decisions", [])]
     assert 9001 in open_dec_ids or any(
         str(9001) in str(d) for d in state.get("open_decisions", [])
     ), f"Recommendation 9001 must be in open_decisions. Got: {state.get('open_decisions')}"
+    # RIVN and STZ must also be absent from open_decisions (only PENDING intents should appear)
+    od_tickers = [d.get("ticker", "") for d in state.get("open_decisions", [])]
+    assert "RIVN" not in od_tickers, (
+        f"FILLED RIVN must not appear in open_decisions. Got: {od_tickers}"
+    )
+    assert "STZ" not in od_tickers, (
+        f"REJECTED STZ must not appear in open_decisions. Got: {od_tickers}"
+    )
 
     # 7. _apply_brief_policy upgrades STABLE → URGENT (GRMN severity=80 >= 70)
     assert result["portfolio_state"] == "URGENT", (
@@ -1292,9 +1390,146 @@ def test_real_state_canary(tmp_path):
     assert "freshness.macro_scores:STALE" not in state.get("brief_health_detail", []), (
         "Stale macro_scores must not appear in brief_health_detail (ADVISORY source)"
     )
+    # Macro staleness must appear in context_warnings (advisory path)
+    context_warn = state.get("context_warnings", [])
+    assert any("macro_scores" in w for w in context_warn), (
+        f"Stale macro_scores must appear in context_warnings. Got: {context_warn}"
+    )
+    # Freshness dict must show macro_scores as STALE (4-day offset far past 72h threshold)
+    freshness = state.get("freshness", {})
+    macro_fresh = freshness.get("macro_scores", {})
+    macro_status = macro_fresh.get("status") or (
+        "STALE" if macro_fresh.get("is_stale") else "CURRENT"
+    )
+    assert macro_status in ("STALE", "UNAVAILABLE"), (
+        f"macro_scores freshness must be STALE (4d > 72h threshold). Got: {macro_fresh}"
+    )
 
-    # 10. learning_state reflects completed sweep
+    # 10. learning_state reflects completed sweep — check exact last_sweep timestamp
     ls = state.get("learning_state", {})
-    accepted = ls.get("accepted_count", 0) or ls.get("accepted_events", 0)
-    # The sweep records 18 events — check that learning_state was populated
     assert isinstance(ls, dict), f"learning_state must be a dict, got {type(ls)}"
+    last_sweep = ls.get("last_sweep")
+    assert last_sweep is not None, (
+        f"learning_state.last_sweep must be set from seeded sweep. Got: {ls}"
+    )
+    assert last_sweep == seed_data["yesterday_str"], (
+        f"learning_state.last_sweep must match seeded timestamp.\n"
+        f"  Expected: {seed_data['yesterday_str']!r}\n"
+        f"  Got:      {last_sweep!r}"
+    )
+
+
+# ── 0656: Persistence-chain integration test ─────────────────────────────────
+
+@pytest.mark.canary
+def test_persistence_chain_policy_corrects_llm_stable(tmp_path, monkeypatch):
+    """create_portfolio_brief with LLM returning STABLE while high-severity attention exists
+    must persist URGENT in ai_insights and portfolio_brief_provenance with consistent brief_id,
+    correct source_refs, and a policy_overrides entry recording STABLE→URGENT.
+    """
+    import agent_db
+
+    db_file = tmp_path / "chain_test.db"
+    db_file.touch()
+
+    old_db = portfolio_ai.DB_PATH
+    agent_db_old = getattr(agent_db, "DB_PATH", None)
+    portfolio_ai.DB_PATH = db_file
+    agent_db.DB_PATH = db_file
+    try:
+        agent_db.migrate()
+        portfolio_ai._init_ai_tables()
+        _seed_canary_db(db_file)
+    finally:
+        portfolio_ai.DB_PATH = old_db
+        if agent_db_old is not None:
+            agent_db.DB_PATH = agent_db_old
+
+    # Stub LLM to return deliberately wrong STABLE response
+    def _stub_llm(brief_state):
+        return {
+            "headline": "All good, portfolio is stable.",
+            "what_changed": [],
+            "key_question": "Nothing to do.",
+            "portfolio_state": "STABLE",
+        }
+
+    monkeypatch.setattr("agents.briefing_agent._run_briefing_llm", _stub_llm)
+
+    portfolio_ai.DB_PATH = db_file
+    conn = _conn(db_file)
+    try:
+        result = portfolio_ai.create_portfolio_brief(conn)
+        conn.commit()
+    finally:
+        conn.close()
+        portfolio_ai.DB_PATH = old_db
+
+    brief_id = result["brief_id"]
+    brief = result["brief"]
+
+    # 1. Returned brief has portfolio_state=URGENT (policy corrected STABLE→URGENT)
+    assert brief["portfolio_state"] == "URGENT", (
+        f"Returned brief must have URGENT, policy must correct LLM STABLE. "
+        f"Got: {brief['portfolio_state']!r}"
+    )
+
+    conn2 = _conn(db_file)
+    try:
+        # 2. ai_insights row stores URGENT
+        row = conn2.execute(
+            "SELECT insight FROM ai_insights ORDER BY rowid DESC LIMIT 1"
+        ).fetchone()
+        assert row is not None, "ai_insights must have a row after create_portfolio_brief"
+        insight = json.loads(row["insight"])
+        assert insight["portfolio_state"] == "URGENT", (
+            f"ai_insights must store URGENT, got {insight['portfolio_state']!r}"
+        )
+
+        # 3. portfolio_brief_provenance stores URGENT + matching brief_id
+        prov = conn2.execute(
+            "SELECT brief_id, briefing_output_json, source_refs_json "
+            "FROM portfolio_brief_provenance WHERE brief_id=?",
+            (brief_id,),
+        ).fetchone()
+        assert prov is not None, f"No provenance row for brief_id={brief_id}"
+        prov_output = json.loads(prov["briefing_output_json"])
+        assert prov_output["portfolio_state"] == "URGENT", (
+            f"provenance briefing_output must store URGENT, got {prov_output['portfolio_state']!r}"
+        )
+
+        # 4. source_refs contains guardian and recommendation entries
+        source_refs = json.loads(prov["source_refs_json"])
+        ref_types = {r["source_type"] for r in source_refs}
+        assert "guardian_finding" in ref_types, (
+            f"source_refs must include guardian_finding. Got types: {ref_types}"
+        )
+        assert "recommendation" in ref_types, (
+            f"source_refs must include recommendation. Got types: {ref_types}"
+        )
+        rec_refs = [r for r in source_refs if r["source_type"] == "recommendation"]
+        assert any(str(r.get("source_id")) == "9001" for r in rec_refs), (
+            f"source_refs must reference rec 9001. Got rec refs: {rec_refs}"
+        )
+
+        # 5. policy_overrides records STABLE → URGENT override
+        overrides = prov_output.get("policy_overrides", [])
+        assert any(
+            o.get("field") == "portfolio_state"
+            and o.get("from") == "STABLE"
+            and o.get("to") == "URGENT"
+            for o in overrides
+        ), f"policy_overrides must record STABLE→URGENT. Got: {overrides}"
+
+        # 6. llm_assessed_state records the original LLM value
+        assert prov_output.get("llm_assessed_state") == "STABLE", (
+            f"llm_assessed_state must be STABLE. Got: {prov_output.get('llm_assessed_state')!r}"
+        )
+
+        # 7. portfolio_brief_snapshots has a recent row (existence proof)
+        snap = conn2.execute(
+            "SELECT id FROM portfolio_brief_snapshots ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert snap is not None, "portfolio_brief_snapshots must have a row"
+    finally:
+        conn2.close()

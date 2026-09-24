@@ -2989,99 +2989,188 @@ FRESHNESS_CRITICALITY: dict = {
 
 _HIGH_SEVERITY_THRESHOLD = 70  # must match threshold used in build_portfolio_brief_state
 
+# Severity rank order for deterministic floor comparisons.
+# Higher rank = more action required. UNKNOWN sits above STABLE so a degraded system
+# with no attention never returns to STABLE, but below ATTENTION/URGENT.
+_STATE_RANK: dict = {"STABLE": 0, "UNKNOWN": 1, "ATTENTION": 2, "URGENT": 3}
+
+
+def _sev_int(item: dict) -> int:
+    """Return integer severity for a brief attention item."""
+    v = item.get("severity", 0)
+    if isinstance(v, str):
+        return {"high": 80, "medium": 50, "low": 20}.get(v.lower(), 0)
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _policy_floor_reason(brief_state: dict, has_high: bool, brief_health: str,
+                          floor_state: str) -> str:
+    if floor_state == "URGENT":
+        items = brief_state.get("attention_items", [])
+        first_high = next((i for i in items if _sev_int(i) >= _HIGH_SEVERITY_THRESHOLD), None)
+        if first_high:
+            return (
+                f"high-severity attention item: {first_high.get('key', 'unknown')} "
+                f"(severity={_sev_int(first_high)})"
+            )
+        return f"high-severity attention item present (severity >= {_HIGH_SEVERITY_THRESHOLD})"
+    if floor_state == "ATTENTION":
+        return "attention items present"
+    if floor_state == "UNKNOWN":
+        return f"brief_health={brief_health}; no attention items — cannot confirm stability"
+    return f"deterministic floor: {floor_state}"
+
+
+def _apply_final_narrative(
+    output: dict,
+    brief_state: dict,
+    final_state: str,
+    has_high: bool,
+    has_any: bool,
+    attention_items: list,
+    brief_health: str,
+) -> None:
+    """Set deterministic headline/key_question based on the final portfolio_state.
+
+    Only called when a policy override occurred (final_state != normalized LLM state).
+    STABLE final state never calls this — the LLM headline is always preserved there.
+    """
+    if "llm_headline" not in output:
+        output["llm_headline"] = output.get("headline")
+
+    health_detail = brief_state.get("brief_health_detail") or []
+    health_reason = health_detail[0] if health_detail else f"brief_health={brief_health}"
+    health_degraded = brief_health not in ("HEALTHY",)
+
+    if final_state == "URGENT":
+        first_high = next(
+            (i for i in attention_items if _sev_int(i) >= _HIGH_SEVERITY_THRESHOLD),
+            attention_items[0] if attention_items else None,
+        )
+        if first_high:
+            ticker = first_high.get("ticker", "")
+            ftype = first_high.get("finding_type", "") or first_high.get("signal_type", "")
+            summary = first_high.get("summary") or f"{ticker} {ftype}".strip() or "risk item"
+            ticker_ref = f"{ticker} {ftype}".strip() if (ticker or ftype) else "attention item"
+        else:
+            summary = "high-severity risk item detected"
+            ticker_ref = "attention items"
+        if health_degraded:
+            output["headline"] = (
+                f"Urgent portfolio attention required — {summary}. "
+                f"(Note: {health_reason} also active.)"
+            )
+            output["key_question"] = (
+                f"Review {ticker_ref}. "
+                f"Resolve {health_reason} for a complete assessment."
+            )
+        else:
+            output["headline"] = f"Urgent portfolio attention required — {summary}."
+            output["key_question"] = f"Review {ticker_ref} before making any allocation changes."
+
+    elif final_state == "ATTENTION":
+        first = attention_items[0] if attention_items else None
+        if first:
+            ticker = first.get("ticker", "")
+            summary = first.get("summary") or f"{ticker} attention item".strip()
+        else:
+            summary = "attention items present"
+        output["headline"] = f"Portfolio needs attention — {summary}."
+        output["key_question"] = "Review open attention items before the next trading session."
+
+    elif final_state == "UNKNOWN":
+        output["headline"] = (
+            f"Portfolio assessment incomplete — {health_reason}; "
+            "stability cannot be confirmed."
+        )
+        output["key_question"] = (
+            f"Resolve {health_reason} before relying on today's brief."
+        )
+
 
 def _apply_brief_policy(brief_state: dict, briefing_output: dict) -> dict:
     """Central deterministic postcondition for every persisted Portfolio Decision Brief.
 
     Semantic contract for portfolio_state:
         STABLE    — no attention items and all REQUIRED inputs healthy; user need not act today.
-        ATTENTION — one or more attention items present, or a non-critical input degraded.
+        ATTENTION — one or more attention items present (severity < threshold).
         URGENT    — at least one attention item with severity >= _HIGH_SEVERITY_THRESHOLD.
-        UNKNOWN   — brief_health ERROR/DEGRADED with STABLE (contradicts underlying data), or
-                    LLM returned a missing/invalid portfolio_state.
+        UNKNOWN   — REQUIRED inputs degraded with no deterministic attention evidence; or the
+                    LLM returned a state above the deterministic floor (the higher is kept).
 
-    Semantic definition: portfolio_state means "action/decision state" — does the user need
-    to act today? A BUY opportunity with no attention items and HEALTHY inputs does NOT elevate
-    state above STABLE; opportunities are surfaced separately. An outstanding Critic-approved
-    recommendation or any attention item means at least ATTENTION.
+    Semantic definition: portfolio_state is the "action/decision state" — does the user need
+    to act today? Opportunities do not elevate state; attention items do.
 
     Guarantee (postcondition on every call):
         portfolio_state ∈ {STABLE, ATTENTION, URGENT, UNKNOWN}
 
     Policy rules applied in order:
-        1. Health gate:    DEGRADED/ERROR brief_health + STABLE → UNKNOWN
-        2. Severity floor: high-severity attention items → minimum URGENT
-                           any attention items + STABLE → ATTENTION
-        3. Normalization:  missing / invalid portfolio_state → UNKNOWN
+        1. Normalization FIRST: invalid LLM state → UNKNOWN.  Critical ordering — must run
+           before the floor so "GARBAGE" + medium attention → ATTENTION, not UNKNOWN.
+        2. Deterministic floor: compute minimum required state from brief_state facts
+           (attention severity + brief_health). final = max(normalized_llm, floor) so the
+           LLM can raise above the floor but never below it.
+        3. Final-state narrative: generate deterministic headline/key_question when an override
+           occurred. STABLE final state always preserves the LLM headline unchanged.
+
+    ``llm_assessed_state`` — original LLM value for diagnostics (never rendered in UI).
+    ``policy_overrides``   — structured audit list of each override applied.
+    ``llm_headline``       — original LLM headline preserved when narrative is replaced.
     """
     output = dict(briefing_output)
     output.setdefault("policy_overrides", [])
 
-    def _record_override(field: str, from_val, to_val: str, reason: str) -> None:
-        output["policy_overrides"].append({
-            "field": field, "from": from_val, "to": to_val, "reason": reason,
-        })
-        # Narrative replacement: if the LLM said STABLE and we're overriding away from it,
-        # replace headline/key_question with deterministic text so the user doesn't see a
-        # false "stable" claim alongside a non-STABLE state.
-        if from_val == "STABLE" or (
-            output.get("portfolio_state") not in (from_val,)
-            and "stable" in str(output.get("headline", "")).lower()
-        ):
-            if "llm_headline" not in output:
-                output["llm_headline"] = output.get("headline")
-                output["llm_portfolio_state"] = from_val
-            detail = brief_state.get("brief_health_detail") or []
-            detail_reason = detail[0] if detail else reason
-            output["headline"] = (
-                f"Portfolio assessment incomplete — {detail_reason}; "
-                "stability cannot be confirmed."
-            )
-            output["key_question"] = (
-                f"Resolve {detail_reason} before relying on today's brief."
-            )
+    # Save original LLM state for diagnostics
+    original_llm_state = output.get("portfolio_state")
+    output["llm_assessed_state"] = original_llm_state
 
-    # ── Rule 1: health gate ───────────────────────────────────────────────────
-    brief_health = brief_state.get("brief_health", "UNKNOWN")
-    if brief_health != "HEALTHY" and output.get("portfolio_state") == "STABLE":
-        _record_override("portfolio_state", "STABLE", "UNKNOWN",
-                         f"brief_health={brief_health}")
+    # ── Rule 1: normalize FIRST ───────────────────────────────────────────────
+    if output.get("portfolio_state") not in VALID_PORTFOLIO_STATES:
         output["portfolio_state"] = "UNKNOWN"
+    normalized_llm_state = output["portfolio_state"]
 
-    # ── Rule 2: severity floor ────────────────────────────────────────────────
+    # ── Rule 2: deterministic floor ───────────────────────────────────────────
     attention_items = brief_state.get("attention_items", [])
-
-    def _sev_int(item) -> int:
-        v = item.get("severity", 0)
-        if isinstance(v, str):
-            return {"high": 80, "medium": 50, "low": 20}.get(v.lower(), 0)
-        try:
-            return int(v)
-        except (TypeError, ValueError):
-            return 0
+    brief_health = brief_state.get("brief_health", "UNKNOWN")
 
     has_high = any(_sev_int(item) >= _HIGH_SEVERITY_THRESHOLD for item in attention_items)
     has_any = bool(attention_items)
-    current_state = output.get("portfolio_state", "UNKNOWN")
 
-    # Severity floor: high-severity items mandate URGENT regardless of current state
-    # (even UNKNOWN from the health gate). The floor is a minimum — never downgrade.
-    if has_high and current_state != "URGENT":
-        _record_override(
-            "portfolio_state", current_state, "URGENT",
-            f"high-severity attention item present (severity >= {_HIGH_SEVERITY_THRESHOLD})",
+    if has_high:
+        floor_state = "URGENT"
+    elif has_any:
+        floor_state = "ATTENTION"
+    elif brief_health == "HEALTHY":
+        floor_state = "STABLE"
+    else:
+        floor_state = "UNKNOWN"
+
+    # Take the higher-ranked of LLM state and floor: LLM can over-ride the floor upward
+    # (e.g. LLM URGENT with only medium-severity items stays URGENT), but cannot drop below it.
+    floor_rank = _STATE_RANK.get(floor_state, 1)
+    llm_rank = _STATE_RANK.get(normalized_llm_state, 1)
+    deterministic_state = floor_state if floor_rank > llm_rank else normalized_llm_state
+
+    if deterministic_state != normalized_llm_state:
+        output["policy_overrides"].append({
+            "field": "portfolio_state",
+            "from": normalized_llm_state,
+            "to": deterministic_state,
+            "reason": _policy_floor_reason(brief_state, has_high, brief_health, floor_state),
+        })
+    output["portfolio_state"] = deterministic_state
+
+    # ── Rule 3: final-state narrative ─────────────────────────────────────────
+    # Generate deterministic headline/key_question when the final state was overridden.
+    # STABLE always preserves the LLM headline (it means the LLM was right or agreed).
+    if deterministic_state != normalized_llm_state:
+        _apply_final_narrative(
+            output, brief_state, deterministic_state,
+            has_high, has_any, attention_items, brief_health,
         )
-        output["portfolio_state"] = "URGENT"
-    elif has_any and current_state in ("STABLE", "UNKNOWN"):
-        # Any attention items forbid STABLE and also lift UNKNOWN caused by health gate
-        # (evidence of attention is deterministic even when inputs are degraded)
-        _record_override("portfolio_state", current_state, "ATTENTION",
-                         "attention items present")
-        output["portfolio_state"] = "ATTENTION"
-
-    # ── Rule 3: normalization (unconditional) ─────────────────────────────────
-    if output.get("portfolio_state") not in VALID_PORTFOLIO_STATES:
-        output["portfolio_state"] = "UNKNOWN"
 
     return output
 
