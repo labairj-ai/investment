@@ -1272,7 +1272,13 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
         "news_snapshot":   _freshness_with_error(last_news_snapshot, 48, _news_snapshot_error),
         "learning_sweep":  _freshness_entry(learning_state.get("last_sweep"), stale_hours=168),
     }
-    degraded = any(v["status"] in ("STALE", "UNAVAILABLE", "UNKNOWN", "ERROR") for v in freshness.values())
+    # overall freshness only considers REQUIRED sources — ADVISORY staleness is context-only
+    _degraded_statuses_set = {"STALE", "UNAVAILABLE", "UNKNOWN", "ERROR"}
+    degraded = any(
+        v["status"] in _degraded_statuses_set
+        for k, v in freshness.items()
+        if FRESHNESS_CRITICALITY.get(k, "REQUIRED") == "REQUIRED"
+    )
     freshness["overall"] = "DEGRADED" if degraded else "CURRENT"
 
     # ── 9. Capability state (read once, same conn, same snapshot) ─────────────
@@ -1498,13 +1504,23 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
 
     # Enumerate individual freshness contributors so brief_health_detail is actionable.
     # "freshness.guardian_run:STALE" is more useful than just "freshness".
+    # ADVISORY sources (macro_scores, learning_sweep) add context_warnings but do NOT
+    # degrade brief_health — they are observe-only with production influence = 0.
     _degraded_statuses = {"STALE", "UNAVAILABLE", "UNKNOWN", "ERROR"}
+    context_warnings: list = []
     for _fk, _fv in freshness.items():
         if _fk == "overall":
             continue
         _fst = _fv.get("status", "")
-        if _fst in _degraded_statuses:
-            token = f"freshness.{_fk}:{_fst}"
+        if _fst not in _degraded_statuses:
+            continue
+        tier = FRESHNESS_CRITICALITY.get(_fk, "REQUIRED")
+        token = f"freshness.{_fk}:{_fst}"
+        if tier == "ADVISORY":
+            context_warnings.append(token)
+        elif tier == "EXPERIMENTAL":
+            pass  # silently ignored
+        else:  # REQUIRED
             if _fst == "ERROR":
                 _health_errors.append(token)
             else:
@@ -1525,6 +1541,7 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
         "captured_at": captured_at,
         "brief_health": brief_health,
         "brief_health_detail": brief_health_detail,
+        "context_warnings": context_warnings,
         "changes": changes,
         "attention_items": attention_items,
         "opportunities": opportunities,
@@ -2947,25 +2964,131 @@ def _format_capability_summary(brief_state: dict) -> str:
             if rate is not None:
                 lines.append(f"  {t}: rate_sensitivity={rate:.2f}")
 
+    # Context warnings (ADVISORY staleness — informational only)
+    warnings = brief_state.get("context_warnings", [])
+    if warnings:
+        lines.append(f"CONTEXT WARNINGS (advisory only): {', '.join(warnings)}")
+
     return "\n".join(lines)
 
 
-def _enforce_brief_health(brief_state: dict, briefing_output: dict) -> dict:
-    """Deterministic postcondition: portfolio_state=STABLE is only legal when brief_health=HEALTHY.
+VALID_PORTFOLIO_STATES = {"STABLE", "ATTENTION", "URGENT", "UNKNOWN"}
 
-    Call on every briefing_output — LLM-generated or fallback — before persistence.
-    Returns briefing_output (possibly mutated copy) with portfolio_state corrected.
+# Criticality tiers for freshness sources.
+# REQUIRED  — stale/unavailable degrades brief_health.
+# ADVISORY  — stale adds a context_warning but does NOT affect brief_health.
+#             (observe-only subsystems with production influence = 0)
+# EXPERIMENTAL — silently ignored for health (no sources currently).
+FRESHNESS_CRITICALITY: dict = {
+    "agent_pipeline":  "REQUIRED",
+    "guardian_run":    "REQUIRED",
+    "news_snapshot":   "REQUIRED",
+    "macro_scores":    "ADVISORY",   # observe-only, production influence = 0
+    "learning_sweep":  "ADVISORY",   # observe-only, production influence = 0
+}
 
-    Invariant:
-        HEALTHY  → STABLE / ATTENTION / URGENT allowed
-        DEGRADED → STABLE forbidden; override to UNKNOWN
-        ERROR    → STABLE forbidden; override to UNKNOWN
+_HIGH_SEVERITY_THRESHOLD = 70  # must match threshold used in build_portfolio_brief_state
+
+
+def _apply_brief_policy(brief_state: dict, briefing_output: dict) -> dict:
+    """Central deterministic postcondition for every persisted Portfolio Decision Brief.
+
+    Semantic contract for portfolio_state:
+        STABLE    — no attention items and all REQUIRED inputs healthy; user need not act today.
+        ATTENTION — one or more attention items present, or a non-critical input degraded.
+        URGENT    — at least one attention item with severity >= _HIGH_SEVERITY_THRESHOLD.
+        UNKNOWN   — brief_health ERROR/DEGRADED with STABLE (contradicts underlying data), or
+                    LLM returned a missing/invalid portfolio_state.
+
+    Semantic definition: portfolio_state means "action/decision state" — does the user need
+    to act today? A BUY opportunity with no attention items and HEALTHY inputs does NOT elevate
+    state above STABLE; opportunities are surfaced separately. An outstanding Critic-approved
+    recommendation or any attention item means at least ATTENTION.
+
+    Guarantee (postcondition on every call):
+        portfolio_state ∈ {STABLE, ATTENTION, URGENT, UNKNOWN}
+
+    Policy rules applied in order:
+        1. Health gate:    DEGRADED/ERROR brief_health + STABLE → UNKNOWN
+        2. Severity floor: high-severity attention items → minimum URGENT
+                           any attention items + STABLE → ATTENTION
+        3. Normalization:  missing / invalid portfolio_state → UNKNOWN
     """
-    brief_health = brief_state.get("brief_health", "UNKNOWN")
     output = dict(briefing_output)
+    output.setdefault("policy_overrides", [])
+
+    def _record_override(field: str, from_val, to_val: str, reason: str) -> None:
+        output["policy_overrides"].append({
+            "field": field, "from": from_val, "to": to_val, "reason": reason,
+        })
+        # Narrative replacement: if the LLM said STABLE and we're overriding away from it,
+        # replace headline/key_question with deterministic text so the user doesn't see a
+        # false "stable" claim alongside a non-STABLE state.
+        if from_val == "STABLE" or (
+            output.get("portfolio_state") not in (from_val,)
+            and "stable" in str(output.get("headline", "")).lower()
+        ):
+            if "llm_headline" not in output:
+                output["llm_headline"] = output.get("headline")
+                output["llm_portfolio_state"] = from_val
+            detail = brief_state.get("brief_health_detail") or []
+            detail_reason = detail[0] if detail else reason
+            output["headline"] = (
+                f"Portfolio assessment incomplete — {detail_reason}; "
+                "stability cannot be confirmed."
+            )
+            output["key_question"] = (
+                f"Resolve {detail_reason} before relying on today's brief."
+            )
+
+    # ── Rule 1: health gate ───────────────────────────────────────────────────
+    brief_health = brief_state.get("brief_health", "UNKNOWN")
     if brief_health != "HEALTHY" and output.get("portfolio_state") == "STABLE":
+        _record_override("portfolio_state", "STABLE", "UNKNOWN",
+                         f"brief_health={brief_health}")
         output["portfolio_state"] = "UNKNOWN"
+
+    # ── Rule 2: severity floor ────────────────────────────────────────────────
+    attention_items = brief_state.get("attention_items", [])
+
+    def _sev_int(item) -> int:
+        v = item.get("severity", 0)
+        if isinstance(v, str):
+            return {"high": 80, "medium": 50, "low": 20}.get(v.lower(), 0)
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return 0
+
+    has_high = any(_sev_int(item) >= _HIGH_SEVERITY_THRESHOLD for item in attention_items)
+    has_any = bool(attention_items)
+    current_state = output.get("portfolio_state", "UNKNOWN")
+
+    # Severity floor: high-severity items mandate URGENT regardless of current state
+    # (even UNKNOWN from the health gate). The floor is a minimum — never downgrade.
+    if has_high and current_state != "URGENT":
+        _record_override(
+            "portfolio_state", current_state, "URGENT",
+            f"high-severity attention item present (severity >= {_HIGH_SEVERITY_THRESHOLD})",
+        )
+        output["portfolio_state"] = "URGENT"
+    elif has_any and current_state in ("STABLE", "UNKNOWN"):
+        # Any attention items forbid STABLE and also lift UNKNOWN caused by health gate
+        # (evidence of attention is deterministic even when inputs are degraded)
+        _record_override("portfolio_state", current_state, "ATTENTION",
+                         "attention items present")
+        output["portfolio_state"] = "ATTENTION"
+
+    # ── Rule 3: normalization (unconditional) ─────────────────────────────────
+    if output.get("portfolio_state") not in VALID_PORTFOLIO_STATES:
+        output["portfolio_state"] = "UNKNOWN"
+
     return output
+
+
+def _enforce_brief_health(brief_state: dict, briefing_output: dict) -> dict:
+    """Compatibility shim — delegates to _apply_brief_policy."""
+    return _apply_brief_policy(brief_state, briefing_output)
 
 
 def create_portfolio_brief(conn: sqlite3.Connection, force: bool = False) -> dict:

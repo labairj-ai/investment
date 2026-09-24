@@ -10508,7 +10508,7 @@ async function rejectThesisProposal(recId) {{
     }}
 
     // Evidence Footer
-    if (ins._freshness || ins._evidence) {{
+    if (ins._freshness || ins._evidence || ins.policy_overrides) {{
       const f = ins._freshness || {{}};
       const overall = f.overall || 'UNKNOWN';
       const dotClass = overall === 'CURRENT' ? 'current' : overall === 'DEGRADED' ? 'degraded' : 'stale';
@@ -10521,6 +10521,9 @@ async function rejectThesisProposal(recId) {{
         if (ev.pipeline_time) parts.push(`pipeline: ${{_esc(ev.pipeline_time)}}`);
       }}
       parts.push(`<span class="ai-freshness-dot ${{dotClass}}"></span>data: ${{_esc(overall)}}`);
+      if (ins.policy_overrides && ins.policy_overrides.length > 0) {{
+        parts.push(`<span style="color:#f6ad55;font-weight:600">policy override</span>`);
+      }}
       html += `<div class="ai-evidence-footer">${{parts.join(' · ')}}</div>`;
     }}
 

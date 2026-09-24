@@ -1,7 +1,7 @@
 # Normalize the Persisted Briefing Contract
 
 - **ID:** 0648
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-24
 - **Priority:** high
 - **Depends:** 0644

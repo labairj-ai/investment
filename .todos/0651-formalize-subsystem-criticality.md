@@ -1,7 +1,7 @@
 # Formalize Subsystem Criticality for Freshness and Brief Health
 
 - **ID:** 0651
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-24
 - **Priority:** normal
 - **Depends:** 0647

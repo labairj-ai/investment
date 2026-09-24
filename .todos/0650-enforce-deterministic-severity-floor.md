@@ -1,7 +1,7 @@
 # Enforce Deterministic Severity Floor on portfolio_state
 
 - **ID:** 0650
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-24
 - **Priority:** high
 - **Depends:** 0648, 0649
