@@ -1,7 +1,7 @@
 # End-to-End Real-State Canary
 
 - **ID:** 0652
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-24
 - **Priority:** normal
 - **Depends:** 0648, 0649, 0650, 0651
