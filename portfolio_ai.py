@@ -852,27 +852,33 @@ def _init_ai_tables():
     conn.close()
 
 
-def get_accepted_news_events(conn: sqlite3.Connection) -> list:
-    """Return news_events rows valid under the current v2 acceptance boundary.
+def get_accepted_news_events(conn: sqlite3.Connection, accepted_version: str = "v2") -> list:
+    """Return news_events rows valid under the specified acceptance boundary.
 
-    Enforces:
-      - extracted_at >= MAX(accepted_at) WHERE accepted_version='v2'
-      - news_snapshot_hash IN (SELECT snapshot_hash FROM news_snapshots)
-        — excludes events with missing provenance (0615)
+    Enforces (0618):
+      - extracted_at >= accepted_at for the latest row WHERE accepted_version = requested version
+      - news_intelligence_version = accepted_version
+      - news_snapshot_hash IN (SELECT snapshot_hash FROM news_snapshots WHERE version = accepted_version)
+    Fails closed: returns [] if no acceptance row exists for the requested version.
     Returns a list of sqlite3.Row objects.
     """
     conn.row_factory = sqlite3.Row
-    boundary_row = conn.execute(
-        "SELECT MAX(accepted_at) AS boundary FROM _news_intelligence_acceptance "
-        "WHERE accepted_version='v2'"
+    acceptance_row = conn.execute(
+        "SELECT accepted_at, accepted_version FROM _news_intelligence_acceptance"
+        " WHERE accepted_version = ?"
+        " ORDER BY accepted_at DESC, id DESC LIMIT 1",
+        (accepted_version,),
     ).fetchone()
-    boundary = boundary_row["boundary"] if boundary_row else None
-    if not boundary:
+    if not acceptance_row or not acceptance_row["accepted_at"]:
         return []
+    boundary = acceptance_row["accepted_at"]
+    version = acceptance_row["accepted_version"]
     return conn.execute(
-        "SELECT * FROM news_events WHERE extracted_at >= ?"
-        " AND news_snapshot_hash IN (SELECT snapshot_hash FROM news_snapshots)",
-        (boundary,),
+        "SELECT * FROM news_events"
+        " WHERE extracted_at >= ?"
+        " AND news_intelligence_version = ?"
+        " AND news_snapshot_hash IN (SELECT snapshot_hash FROM news_snapshots WHERE version = ?)",
+        (boundary, version, version),
     ).fetchall()
 
 
@@ -2169,11 +2175,20 @@ Be specific. Name the legislation by ID and the matching holding. No generic sta
     article_count           = intel_result.get("article_count", 0)
 
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    # 0616: do not cache prose generated from a degraded intelligence run — the cache
+    _grounding_degraded_tickers = intel_result.get("_grounding_degraded_tickers") or []
+    if _grounding_degraded_tickers:
+        tickers_str = ", ".join(sorted(_grounding_degraded_tickers))
+        summaries["_grounding_degraded_tickers"] = _grounding_degraded_tickers
+        summaries["_grounding_degraded_note"] = (
+            f"Structured intelligence partially degraded: {tickers_str}"
+            " — last valid events preserved."
+        )
+    # 0616/0618: do not cache prose generated from a degraded intelligence run — the cache
     # entry would block future retries until the snapshot hash changes.
     _intel_degraded = (
         intel_result.get("_extraction_degraded") or
-        intel_result.get("_persistence_degraded")
+        intel_result.get("_persistence_degraded") or
+        bool(_grounding_degraded_tickers)
     )
     if DB_PATH.exists() and not _intel_degraded:
         conn = sqlite3.connect(str(DB_PATH), timeout=10)

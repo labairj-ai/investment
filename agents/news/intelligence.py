@@ -233,7 +233,7 @@ CAUSAL_DRIVERS (optional): {_CAUSAL_DRIVER_LINE}
 NEWS:
 {news_block.strip()}
 
-Return this structure (0-5 events per ticker, only tickers with real events):
+Return this structure (include EVERY input ticker; use [] if no events for that ticker):
 {{
   "TICKER": [
     {{
@@ -253,7 +253,7 @@ Return this structure (0-5 events per ticker, only tickers with real events):
 
 Rules:
 - article_ids must ONLY contain ids that appear as id:... in the input above
-- Only include tickers that appear in the input above
+- Include ALL tickers from the input above; use [] for tickers with no structured event
 - causal_driver: only set when a macro/cross-sector driver clearly explains the event; null otherwise
 - causal_event_key: stable identifier for the underlying business event (e.g. META_FY27_AI_CAPEX_RAISE); max 60 chars uppercase; null if unclear
 - Merge articles about the same underlying fact into one event"""
@@ -1560,13 +1560,13 @@ def run_pipeline(by_ticker: dict,
     grounding_degraded_tickers: list = []
     valid_input_tickers: set = set()
     for t in input_tickers:
-        diag = ticker_diagnostics.get(t, {})
+        diag = ticker_diagnostics.get(t)
         if t in raw_events:
             valid_input_tickers.add(t)  # VALID_EVENTS: accepted events exist
-        elif diag.get("candidate_count", 0) == 0:
-            valid_input_tickers.add(t)  # VALID_EMPTY: model returned no candidates
+        elif diag is not None and diag.get("candidate_count", 0) == 0:
+            valid_input_tickers.add(t)  # VALID_EMPTY: model explicitly returned []
         else:
-            grounding_degraded_tickers.append(t)  # INVALID_EXTRACTION: all candidates rejected
+            grounding_degraded_tickers.append(t)  # INVALID_EXTRACTION: absent or all-rejected
 
     if not raw_events:
         # 0613/0614/0617: success, zero valid events — persist snapshot + clear VALID_EMPTY tickers

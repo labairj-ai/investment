@@ -2556,3 +2556,219 @@ class TestGroundingAwareReplacement:
         assert diag.get("accepted_count") == 1, "Must count 1 accepted event for AAPL"
         assert diag.get("rejected_count") == 1, "Must count 1 rejected event for AAPL"
         assert "zero_valid_article_ids" in diag.get("rejection_reasons", [])
+
+
+# ── Tests: v2 acceptance polish (0618) ───────────────────────────────────────
+
+class TestAcceptancePolish0618:
+    """0618: version enforcement in get_accepted_news_events; grounding-degraded cache gate;
+    absent ticker classified as INVALID_EXTRACTION."""
+
+    def _make_fresh_db(self, tmp_path):
+        db_file = tmp_path / "investment.db"
+        sqlite3.connect(str(db_file)).close()
+        return db_file
+
+    def test_get_accepted_news_events_excludes_wrong_version_events(self, tmp_path):
+        """get_accepted_news_events('v2') excludes events with news_intelligence_version='v3' (0618)."""
+        import uuid as _uuid
+        import portfolio_ai as _pai
+        db_file = self._make_fresh_db(tmp_path)
+        with patch.object(_pai, "DB_PATH", db_file):
+            _pai._init_ai_tables()
+
+        conn = sqlite3.connect(str(db_file))
+        snap_hash = "testhash_v2"
+        conn.execute(
+            "INSERT INTO news_snapshots (snapshot_hash, version, created_at) VALUES (?,?,?)",
+            (snap_hash, "v2", "2026-09-23 10:00:00"),
+        )
+        conn.execute(
+            "INSERT INTO _news_intelligence_acceptance "
+            "(accepted_at, accepted_commit, accepted_version, notes) VALUES (?,?,?,?)",
+            ("2026-09-01 00:00:00", "abc123", "v2", "test"),
+        )
+        _ev_row = lambda ticker, version: (
+            str(_uuid.uuid4()), ticker, "2026-09-23", "EARNINGS", "POSITIVE",
+            "MEDIUM", "SHORT", 0.7, "2026-09-23 11:00:00", version, snap_hash,
+        )
+        # v2 event — should be included
+        conn.execute(
+            "INSERT INTO news_events (event_id, ticker, day, event_type, direction, magnitude, "
+            "expected_horizon, confidence, extracted_at, news_intelligence_version, "
+            "news_snapshot_hash) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            _ev_row("AAPL", "v2"),
+        )
+        # v3 event with same snapshot — should be excluded from v2 query
+        conn.execute(
+            "INSERT INTO news_events (event_id, ticker, day, event_type, direction, magnitude, "
+            "expected_horizon, confidence, extracted_at, news_intelligence_version, "
+            "news_snapshot_hash) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            _ev_row("MSFT", "v3"),
+        )
+        conn.commit()
+
+        rows = _pai.get_accepted_news_events(conn, accepted_version="v2")
+        tickers = {r["ticker"] for r in rows}
+        conn.close()
+        assert "AAPL" in tickers, "v2 event must be included in v2 corpus"
+        assert "MSFT" not in tickers, "v3 event must be excluded from v2 corpus (0618)"
+
+    def test_get_accepted_news_events_fails_closed_no_acceptance_row(self, tmp_path):
+        """get_accepted_news_events returns [] when no acceptance row exists for version (0618)."""
+        import uuid as _uuid
+        import portfolio_ai as _pai
+        db_file = self._make_fresh_db(tmp_path)
+        with patch.object(_pai, "DB_PATH", db_file):
+            _pai._init_ai_tables()
+        conn = sqlite3.connect(str(db_file))
+        # Insert a v2 event with no acceptance row
+        conn.execute(
+            "INSERT INTO news_snapshots (snapshot_hash, version, created_at) VALUES (?,?,?)",
+            ("noaccepthash", "v2", "2026-09-23 10:00:00"),
+        )
+        conn.execute(
+            "INSERT INTO news_events (event_id, ticker, day, event_type, direction, magnitude, "
+            "expected_horizon, confidence, extracted_at, news_intelligence_version, "
+            "news_snapshot_hash) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (str(_uuid.uuid4()), "AAPL", "2026-09-23", "EARNINGS", "POSITIVE", "MEDIUM",
+             "SHORT", 0.7, "2026-09-23 11:00:00", "v2", "noaccepthash"),
+        )
+        conn.commit()
+        rows = _pai.get_accepted_news_events(conn, accepted_version="v2")
+        conn.close()
+        assert rows == [], "Must return [] (fail closed) when no acceptance row exists (0618)"
+
+    def test_absent_ticker_classified_as_invalid_extraction(self):
+        """Ticker absent from LLM output is INVALID_EXTRACTION, not VALID_EMPTY (0618)."""
+        import uuid as _uuid
+        conn = _make_db()
+        today = "2026-09-23"
+        # Prior event for GRMN
+        conn.execute(
+            "INSERT INTO news_events (event_id, ticker, day, event_type, direction, "
+            "extracted_at, news_intelligence_version) VALUES (?,?,?,?,?,?,?)",
+            (str(_uuid.uuid4()), "GRMN", today, "EARNINGS", "POSITIVE", today,
+             intel.NEWS_INTELLIGENCE_VERSION),
+        )
+        conn.commit()
+
+        # LLM output contains only ANET — GRMN absent entirely
+        # _ticker_diagnostics has no entry for GRMN (model never emitted it)
+        art_id = "art_anet_001"
+        manifest = {intel._evidence_id("ANET", art_id): {
+            "title": "ANET news", "ticker": "ANET", "article_id": art_id,
+        }}
+        fake_extraction = {
+            "_extraction_ok": True,
+            "_manifest": manifest,
+            "_ticker_diagnostics": {
+                "ANET": {"candidate_count": 1, "accepted_count": 1,
+                         "rejected_count": 0, "rejection_reasons": []},
+                # GRMN intentionally absent — simulates model skipping the ticker
+            },
+            "ANET": [{"event_type": "EARNINGS", "direction": "POSITIVE", "magnitude": "MEDIUM",
+                      "horizon": "SHORT", "confidence": 0.8, "affected_metric": "revenue",
+                      "evidence": "beat", "article_ids": [art_id], "causal_driver": None,
+                      "causal_event_key": None, "titles": ["ANET news"]}],
+        }
+        arts_a = [_make_article("ANET", "ANET news", body="body " * 5,
+                                url="https://example.com/0618a")]
+        arts_g = [_make_article("GRMN", "GRMN news", body="body " * 5,
+                                url="https://example.com/0618g")]
+        by_ticker = {"ANET": arts_a, "GRMN": arts_g}
+
+        with patch.object(intel, "extract_events_llm", return_value=fake_extraction):
+            result = intel.run_pipeline(by_ticker, {"ANET": 0.1, "GRMN": 0.05}, conn,
+                                        MagicMock(), day=today)
+
+        # GRMN absent from output → INVALID_EXTRACTION → prior events preserved
+        grmn_count = conn.execute(
+            "SELECT count(*) FROM news_events WHERE ticker='GRMN' AND day=?", (today,)
+        ).fetchone()[0]
+        assert grmn_count == 1, (
+            "Absent ticker (GRMN) must be INVALID_EXTRACTION; prior events preserved (0618)"
+        )
+        assert "GRMN" in result.get("_grounding_degraded_tickers", []), (
+            "Absent ticker must appear in _grounding_degraded_tickers (0618)"
+        )
+
+    def test_grounding_degraded_blocks_news_summaries_cache_write(self, tmp_path):
+        """When _grounding_degraded_tickers is non-empty, news_summaries row is not written (0618)."""
+        import sys
+        import portfolio_ai as _pai
+        from agents.news import maintenance as _maint, intelligence as _intel_mod
+
+        db_file = self._make_fresh_db(tmp_path)
+        with patch.object(_pai, "DB_PATH", db_file):
+            _pai._init_ai_tables()
+
+        snap_hash = "grounding_cache_test_hash"
+        fake_snapshot = {
+            "snapshot_hash": snap_hash, "snapshot_id": "sid_gc",
+            "captured_at": "2026-09-23T10:00:00Z", "articles": [],
+        }
+        fake_intel_result = {
+            "events_by_ticker": {}, "themes": [], "news_snapshot_hash": snap_hash,
+            "article_count": 1, "_extraction_degraded": False, "_persistence_degraded": False,
+            "_grounding_degraded_tickers": ["GRMN"],
+        }
+        fake_news_fetcher = MagicMock()
+        fake_news_fetcher.fetch.return_value = {
+            "by_ticker": {"GRMN": [{"ticker": "GRMN", "title": "Garmin news", "source": "R",
+                                     "pub_date": "2026-09-23", "url": "https://x.com/grmn",
+                                     "excerpt": "", "body": "body text"}]}
+        }
+        fake_macro_context = MagicMock()
+        fake_macro_context.fetch.return_value = {
+            "formatted_block": "macro", "fed_funds": "4.5", "yield_10y": "4.2",
+            "cpi_yoy": "3.1", "unemployment": "4.0", "vix": "15.0",
+            "dollar_interp": "neutral", "curve_interp": "flat",
+            "official_bills": [], "legislative_media": [],
+        }
+        # Two stream responses: per-ticker JSON then outlook JSON
+        call_count = {"n": 0}
+        def fake_stream(*args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return iter(['{"GRMN": {"news": "Garmin beat estimates", "stance": "positive"}}'])
+            return iter(['{"top_risk": "none", "top_opportunity": null, "tax_watch": null, "action_items": []}'])
+
+        orig_modules = {}
+        for mod_name in ("news_fetcher", "macro_context"):
+            orig_modules[mod_name] = sys.modules.get(mod_name)
+        try:
+            sys.modules["news_fetcher"] = fake_news_fetcher
+            sys.modules["macro_context"] = fake_macro_context
+            with patch.object(_pai, "DB_PATH", db_file), \
+                 patch.object(_pai, "_load_holdings_csv", return_value=[{"Stock": "GRMN"}]), \
+                 patch.object(_pai.ollama_client, "available", return_value=True), \
+                 patch.object(_pai, "get_cached_news_summaries_today", return_value=(None, None)), \
+                 patch.object(_pai, "_get_holding_prices_from_db", return_value={}), \
+                 patch.object(_pai, "_get_macro_scores_block", return_value=("", "macro scores")), \
+                 patch.object(_intel_mod, "build_news_snapshot", return_value=fake_snapshot), \
+                 patch.object(_intel_mod, "run_pipeline", return_value=fake_intel_result), \
+                 patch.object(_pai.ollama_client, "stream_generate", side_effect=fake_stream), \
+                 patch.object(_maint, "_DB_PATH", db_file):
+                result = _pai.generate_news_summaries()
+        finally:
+            for mod_name, orig in orig_modules.items():
+                if orig is None:
+                    sys.modules.pop(mod_name, None)
+                else:
+                    sys.modules[mod_name] = orig
+
+        conn = sqlite3.connect(str(db_file))
+        row = conn.execute(
+            "SELECT * FROM news_summaries WHERE news_snapshot_hash=?", (snap_hash,)
+        ).fetchone()
+        conn.close()
+        assert row is None, (
+            "news_summaries must NOT be cached when _grounding_degraded_tickers is non-empty (0618)"
+        )
+        assert "GRMN" in result.get("_grounding_degraded_tickers", []), (
+            "result must include _grounding_degraded_tickers"
+        )
+        assert "last valid events preserved" in result.get("_grounding_degraded_note", ""), (
+            "result must include _grounding_degraded_note describing degraded tickers"
+        )
