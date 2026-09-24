@@ -2044,6 +2044,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._handle_invest_chat()
         elif parsed.path == "/api/ai/chat":
             self._handle_portfolio_chat()
+        elif parsed.path == "/api/brief/respond":
+            self._handle_brief_respond()
         elif parsed.path == "/api/candidates":
             self._handle_candidates_post()
         elif parsed.path.startswith("/api/candidates/"):
@@ -4738,7 +4740,54 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         cached, generated_at = portfolio_ai.get_cached_insight_today()
         if cached:
-            self._json({"ok": True, "insight": cached, "date": today, "generated_at": generated_at})
+            # Attach brief_id + freshness/evidence data for the dashboard footer
+            brief_id = None
+            freshness_data = None
+            evidence_data = None
+            try:
+                import sqlite3 as _sql, json as _json
+                bc = _sql.connect(str(portfolio_ai.DB_PATH), timeout=5)
+                bc.row_factory = _sql.Row
+                br = bc.execute(
+                    "SELECT brief_id, brief_snapshot_json FROM portfolio_brief_provenance"
+                    " ORDER BY captured_at DESC LIMIT 1"
+                ).fetchone()
+                bc.close()
+                if br:
+                    brief_id = br["brief_id"]
+                    snap = _json.loads(br["brief_snapshot_json"] or "{}")
+                    freshness_data = snap.get("freshness")
+                    cs = snap.get("critic_summary", {})
+                    evidence_data = {
+                        "agent_count": len(snap.get("thesis_deltas", [])),
+                        "rec_count": len(snap.get("open_decisions", [])),
+                        "news_count": len(snap.get("news_signals", [])),
+                        "critic_approved": cs.get("APPROVE", 0) + cs.get("APPROVE_WITH_CAUTION", 0),
+                    }
+                    # Annotate each attention/opportunity item with dismiss_count from responses
+                    if isinstance(cached, dict):
+                        try:
+                            bc2 = _sql.connect(str(portfolio_ai.DB_PATH), timeout=5)
+                            bc2.row_factory = _sql.Row
+                            dismiss_rows = bc2.execute(
+                                "SELECT item_key, COUNT(*) as n FROM portfolio_brief_responses"
+                                " WHERE action='DISMISS' GROUP BY item_key"
+                            ).fetchall()
+                            bc2.close()
+                            dismiss_map = {r["item_key"]: r["n"] for r in dismiss_rows}
+                            for section in ("needs_attention", "opportunities"):
+                                for item in cached.get(section, []):
+                                    k = item.get("key")
+                                    if k and k in dismiss_map:
+                                        item["_dismiss_count"] = dismiss_map[k]
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            if isinstance(cached, dict) and freshness_data:
+                cached = {**cached, "_freshness": freshness_data, "_evidence": evidence_data}
+            self._json({"ok": True, "insight": cached, "date": today,
+                        "generated_at": generated_at, "brief_id": brief_id})
             return
 
         # No cache and not already running — start background generation
@@ -4760,6 +4809,40 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             threading.Thread(target=_run_bg, daemon=True).start()
 
         self._json({"ok": True, "status": "generating", "date": today})
+
+    def _handle_brief_respond(self):
+        """POST /api/brief/respond — record ACT/DISMISS/DEFER on a brief item.
+        Body: {"brief_id": "...", "item_key": "...", "action": "ACT|DISMISS|DEFER", "note": "..."}
+        """
+        try:
+            body = self._read_body()
+        except Exception:
+            return self._json_error(400, "Invalid JSON body")
+
+        brief_id = body.get("brief_id", "")
+        item_key = body.get("item_key", "")
+        action = body.get("action", "")
+        note = body.get("note", "") or ""
+
+        if not brief_id or not item_key or action not in ("ACT", "DISMISS", "DEFER"):
+            return self._json_error(400, "brief_id, item_key, and action (ACT|DISMISS|DEFER) required")
+
+        try:
+            import portfolio_ai
+            import sqlite3 as _sql
+            from datetime import datetime as _dt
+            portfolio_ai._init_ai_tables()
+            conn = _sql.connect(str(portfolio_ai.DB_PATH), timeout=10)
+            conn.execute(
+                "INSERT INTO portfolio_brief_responses (brief_id, item_key, action, note, responded_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (brief_id, item_key, action, note, _dt.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")),
+            )
+            conn.commit()
+            conn.close()
+            self._json({"ok": True, "brief_id": brief_id, "item_key": item_key, "action": action})
+        except Exception as e:
+            self._json_error(500, f"Could not record response: {e}")
 
     def _handle_portfolio_chat(self):
         """POST /api/ai/chat — SSE streaming chat with portfolio + macro context as system prompt.

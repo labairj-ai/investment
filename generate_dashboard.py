@@ -2096,24 +2096,61 @@ def build_dashboard(portfolio, layers, holdings):
       box-shadow: 0 2px 8px rgba(0,0,0,.12); color: #e2e8f0;
     }}
     #ai-insight-card h2 {{ color: #a0aec0; }}
-    #ai-insight-card.collapsed #ai-insight-body,
-    #ai-insight-card.collapsed #macro-bar {{ display: none; }}
+    #ai-insight-card.collapsed #ai-insight-body {{ display: none; }}
     #ai-collapse-btn {{
       background: none; border: none; color: #718096; cursor: pointer;
       font-size: 16px; padding: 0 4px; line-height: 1; transition: transform .2s;
     }}
     #ai-insight-card.collapsed #ai-collapse-btn {{ transform: rotate(-90deg); }}
-    .ai-section {{ margin-bottom: 12px; }}
+    .ai-section {{ margin-bottom: 14px; }}
     .ai-section-label {{ font-size: 10px; font-weight: 700; text-transform: uppercase;
-      letter-spacing: .08em; color: #718096; margin-bottom: 4px; }}
+      letter-spacing: .08em; color: #718096; margin-bottom: 6px; display: flex;
+      align-items: center; gap: 6px; }}
     .ai-section-body {{ font-size: 13px; line-height: 1.6; color: #e2e8f0; }}
-    .ai-flag {{ background: rgba(252,129,74,.15); border-left: 3px solid #fc814a;
-      padding: 5px 10px; margin-bottom: 4px; border-radius: 4px; font-size: 12px; color: #fbd38d; }}
+    .ai-headline {{ font-size: 14px; font-weight: 600; color: #e2e8f0; margin-bottom: 14px;
+      padding: 10px 14px; border-radius: 8px; background: rgba(255,255,255,.05); }}
+    .ai-state-stable {{ border-left: 3px solid #48bb78; }}
+    .ai-state-attention {{ border-left: 3px solid #f6ad55; }}
+    .ai-state-urgent {{ border-left: 3px solid #fc8181; }}
+    .ai-changed {{ background: rgba(72,187,120,.08); border-left: 3px solid #48bb78;
+      padding: 3px 8px; margin-bottom: 3px; border-radius: 3px; font-size: 12px; color: #9ae6b4; }}
+    .ai-attention-item, .ai-opp-item, .ai-watch-item {{
+      padding: 8px 10px; margin-bottom: 6px; border-radius: 6px; font-size: 12px; }}
+    .ai-attention-item {{ background: rgba(252,129,74,.12); border-left: 3px solid #fc814a; color: #fbd38d; }}
+    .ai-opp-item {{ background: rgba(72,187,120,.12); border-left: 3px solid #48bb78; color: #9ae6b4; }}
+    .ai-watch-item {{ background: rgba(113,128,150,.12); border-left: 3px solid #4a5568; color: #a0aec0; }}
+    .ai-item-ticker {{ font-weight: 700; color: #e2e8f0; margin-right: 6px; }}
+    .ai-item-meta {{ font-size: 10px; color: #718096; margin-top: 3px; }}
+    .ai-new-badge {{ display: inline-block; background: rgba(66,153,225,.25);
+      color: #90cdf4; font-size: 9px; font-weight: 700; padding: 1px 5px;
+      border-radius: 3px; margin-right: 4px; letter-spacing: .05em; }}
+    .ai-dismissed-badge {{ display: inline-block; background: rgba(113,128,150,.2);
+      color: #718096; font-size: 9px; font-weight: 700; padding: 1px 5px;
+      border-radius: 3px; margin-right: 4px; }}
+    .ai-respond-btns {{ display: flex; gap: 4px; margin-top: 5px; }}
+    .ai-respond-btn {{
+      font-size: 10px; padding: 2px 8px; border-radius: 4px; border: none;
+      cursor: pointer; font-weight: 600; transition: background .15s;
+    }}
+    .ai-respond-btn.act {{ background: rgba(72,187,120,.2); color: #9ae6b4; }}
+    .ai-respond-btn.act:hover {{ background: rgba(72,187,120,.4); }}
+    .ai-respond-btn.dismiss {{ background: rgba(113,128,150,.2); color: #718096; }}
+    .ai-respond-btn.dismiss:hover {{ background: rgba(113,128,150,.4); }}
+    .ai-respond-btn.defer {{ background: rgba(246,173,85,.15); color: #f6ad55; }}
+    .ai-respond-btn.defer:hover {{ background: rgba(246,173,85,.3); }}
     .ai-key-question {{
       background: rgba(108,92,231,.18); border: 1px solid rgba(108,92,231,.4);
       border-radius: 8px; padding: 10px 14px; font-size: 13px; color: #c9b8ff;
       font-style: italic; margin-top: 4px;
     }}
+    .ai-evidence-footer {{ font-size: 10px; color: #4a5568; margin-top: 14px;
+      padding-top: 10px; border-top: 1px solid rgba(255,255,255,.06);
+      display: flex; flex-wrap: wrap; gap: 10px; }}
+    .ai-freshness-dot {{ width: 6px; height: 6px; border-radius: 50%;
+      display: inline-block; margin-right: 3px; vertical-align: middle; }}
+    .ai-freshness-dot.current {{ background: #48bb78; }}
+    .ai-freshness-dot.stale {{ background: #f6ad55; }}
+    .ai-freshness-dot.degraded {{ background: #fc8181; }}
     .ai-loading {{ color: #718096; font-size: 13px; }}
     @keyframes ai-spin {{ to {{ transform: rotate(360deg); }} }}
     .ai-spinner {{
@@ -2687,6 +2724,23 @@ def build_dashboard(portfolio, layers, holdings):
 <div id="tab-portfolio" class="dash-tab-content">
 <div class="grid">
 
+  <!-- Portfolio Decision Brief (above Holdings News per 0621) -->
+  <div id="ai-insight-card">
+    <h2 style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+      <span style="display:flex;align-items:center;gap:6px;cursor:pointer;" onclick="toggleAiInsight()">
+        <button id="ai-collapse-btn" tabindex="-1">▾</button>
+        Portfolio Decision Brief
+        <span id="ai-insight-timestamp" style="font-size:10px;font-weight:400;color:#718096;font-style:italic;"></span>
+      </span>
+      <span>
+        <button class="ai-refresh-btn" onclick="loadAiInsight(true)">↻ Refresh</button>
+        <button class="ai-refresh-btn" onclick="openPortfolioChat()" style="margin-left:4px;">💬 Chat</button>
+      </span>
+    </h2>
+    <div id="macro-bar"><span class="macro-bar-loading">Loading indicators…</span></div>
+    <div id="ai-insight-body"><span class="ai-loading">Loading brief…</span></div>
+  </div>
+
   <!-- Holdings News -->
   <div id="ai-news-card">
     <h2 style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
@@ -2700,24 +2754,6 @@ def build_dashboard(portfolio, layers, holdings):
       </span>
     </h2>
     <div id="ai-news-body"><span id="ai-news-loading">Loading news…</span></div>
-  </div>
-
-  <!-- AI Portfolio Insight -->
-  <div id="ai-insight-card">
-    <h2 style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
-      <span style="display:flex;align-items:center;gap:6px;cursor:pointer;" onclick="toggleAiInsight()">
-        <button id="ai-collapse-btn" tabindex="-1">▾</button>
-        AI Portfolio Insight
-        <span id="ai-insight-timestamp" style="font-size:10px;font-weight:400;color:#718096;font-style:italic;"></span>
-      </span>
-      <span>
-        <button class="ai-refresh-btn" onclick="loadAiInsight(true)">↻ Refresh</button>
-        <button class="ai-refresh-btn" onclick="openPortfolioChat()" style="margin-left:4px;">💬 Chat</button>
-      </span>
-    </h2>
-    <div id="macro-bar"><span class="macro-bar-loading">Loading indicators…</span></div>
-    <div style="font-size:11px;color:#718096;margin-bottom:10px;font-style:italic;">Refresh Holdings News first to include today's findings in the analysis.</div>
-    <div id="ai-insight-body"><span class="ai-loading">Analyzing portfolio…</span></div>
   </div>
 
   <!-- KPI row -->
@@ -10395,26 +10431,116 @@ async function rejectThesisProposal(recId) {{
     return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }}
 
+  let _briefId = null;  // track current brief_id for response submissions
+
   function _renderAiInsight(ins) {{
+    // New schema (0621): headline/what_changed/needs_attention/opportunities/watch/key_question/portfolio_state
+    if (!ins.headline && !ins.needs_attention && ins.macro_summary) {{
+      return _renderAiInsightLegacy(ins);
+    }}
+
+    let html = '';
+    const state = ins.portfolio_state || 'STABLE';
+    const stateClass = state === 'URGENT' ? 'ai-state-urgent' : state === 'ATTENTION' ? 'ai-state-attention' : 'ai-state-stable';
+
+    if (ins.headline) {{
+      html += `<div class="ai-headline ${{stateClass}}">${{_esc(ins.headline)}}</div>`;
+    }}
+
+    // What Changed
+    if (ins.what_changed && ins.what_changed.length) {{
+      const bullets = ins.what_changed.map(c => `<div class="ai-changed">• ${{_esc(c)}}</div>`).join('');
+      html += `<div class="ai-section"><div class="ai-section-label">What Changed</div>${{bullets}}</div>`;
+    }}
+
+    // Needs Attention
+    if (ins.needs_attention && ins.needs_attention.length) {{
+      const items = ins.needs_attention.map((a, i) => {{
+        const ticker = a.ticker ? `<span class="ai-item-ticker">${{_esc(a.ticker)}}</span>` : '';
+        const newBadge = a.is_new ? '<span class="ai-new-badge">NEW</span>' : '';
+        const dismissed = (a._dismiss_count || 0) >= 3 ? '<span class="ai-dismissed-badge">previously dismissed</span>' : '';
+        const meta = a.source ? `<div class="ai-item-meta">${{_esc(a.source)}}${{a.link_tab ? ` · <a href="#" onclick="switchTab('${{a.link_tab}}');return false;" style="color:#718096;">${{_esc(a.link_tab)}}</a>` : ''}}</div>` : '';
+        const itemKey = a.key || `attention_${{i}}`;
+        const btns = `<div class="ai-respond-btns">
+          <button class="ai-respond-btn act" onclick="_briefRespond('${{_esc(itemKey)}}','ACT')">ACT</button>
+          <button class="ai-respond-btn dismiss" onclick="_briefRespond('${{_esc(itemKey)}}','DISMISS')">DISMISS</button>
+          <button class="ai-respond-btn defer" onclick="_briefRespond('${{_esc(itemKey)}}','DEFER')">DEFER</button>
+        </div>`;
+        return `<div class="ai-attention-item">${{newBadge}}${{dismissed}}${{ticker}}${{_esc(a.summary || '')}}${{meta}}${{btns}}</div>`;
+      }}).join('');
+      html += `<div class="ai-section"><div class="ai-section-label">⚠ Needs Attention (${{ins.needs_attention.length}})</div>${{items}}</div>`;
+    }}
+
+    // Opportunities
+    if (ins.opportunities && ins.opportunities.length) {{
+      const items = ins.opportunities.map((o, i) => {{
+        const ticker = o.ticker ? `<span class="ai-item-ticker">${{_esc(o.ticker)}}</span>` : '';
+        const newBadge = o.is_new ? '<span class="ai-new-badge">NEW</span>' : '';
+        const meta = o.source ? `<div class="ai-item-meta">${{_esc(o.source)}}</div>` : '';
+        const itemKey = o.key || `opp_${{i}}`;
+        const btns = `<div class="ai-respond-btns">
+          <button class="ai-respond-btn act" onclick="_briefRespond('${{_esc(itemKey)}}','ACT')">ACT</button>
+          <button class="ai-respond-btn dismiss" onclick="_briefRespond('${{_esc(itemKey)}}','DISMISS')">DISMISS</button>
+          <button class="ai-respond-btn defer" onclick="_briefRespond('${{_esc(itemKey)}}','DEFER')">DEFER</button>
+        </div>`;
+        return `<div class="ai-opp-item">${{newBadge}}${{ticker}}${{_esc(o.summary || '')}}${{meta}}${{btns}}</div>`;
+      }}).join('');
+      html += `<div class="ai-section"><div class="ai-section-label">↑ Opportunities (${{ins.opportunities.length}})</div>${{items}}</div>`;
+    }}
+
+    // Watch / No Action
+    if (ins.watch && ins.watch.length) {{
+      const items = ins.watch.map(w => {{
+        const ticker = w.ticker ? `<span class="ai-item-ticker">${{_esc(w.ticker)}}</span>` : '';
+        return `<div class="ai-watch-item">${{ticker}}${{_esc(w.summary || '')}}</div>`;
+      }}).join('');
+      html += `<div class="ai-section"><div class="ai-section-label">· Watch / No Action (${{ins.watch.length}})</div>${{items}}</div>`;
+    }}
+
+    // Stable state compact message
+    if (!ins.needs_attention?.length && !ins.opportunities?.length) {{
+      html += `<div style="color:#48bb78;font-size:13px;padding:8px 0;">Portfolio stable. No decisions required.</div>`;
+    }}
+
+    // Key Question
+    if (ins.key_question) {{
+      html += `<div class="ai-section"><div class="ai-section-label">Key Question</div><div class="ai-key-question">${{_esc(ins.key_question)}}</div></div>`;
+    }}
+
+    // Evidence Footer
+    if (ins._freshness || ins._evidence) {{
+      const f = ins._freshness || {{}};
+      const overall = f.overall || 'UNKNOWN';
+      const dotClass = overall === 'CURRENT' ? 'current' : overall === 'DEGRADED' ? 'degraded' : 'stale';
+      const parts = [];
+      if (ins._evidence) {{
+        const ev = ins._evidence;
+        if (ev.agent_count != null) parts.push(`${{ev.agent_count}} agents`);
+        if (ev.rec_count != null) parts.push(`${{ev.rec_count}} recs`);
+        if (ev.news_count != null) parts.push(`${{ev.news_count}} news signals`);
+        if (ev.pipeline_time) parts.push(`pipeline: ${{_esc(ev.pipeline_time)}}`);
+      }}
+      parts.push(`<span class="ai-freshness-dot ${{dotClass}}"></span>data: ${{_esc(overall)}}`);
+      html += `<div class="ai-evidence-footer">${{parts.join(' · ')}}</div>`;
+    }}
+
+    return html || '<span class="ai-loading">Brief returned no content.</span>';
+  }}
+
+  function _renderAiInsightLegacy(ins) {{
     let html = '';
     if (ins.macro_summary) {{
       html += `<div class="ai-section"><div class="ai-section-label">Macro Regime</div><div class="ai-section-body">${{_esc(ins.macro_summary)}}</div></div>`;
     }}
     if (ins.risk_flags && ins.risk_flags.length) {{
-      const flags = ins.risk_flags.map(f => `<div class="ai-flag">⚠ ${{_esc(f)}}</div>`).join('');
+      const flags = ins.risk_flags.map(f => `<div class="ai-attention-item">⚠ ${{_esc(f)}}</div>`).join('');
       html += `<div class="ai-section"><div class="ai-section-label">Risk Flags</div>${{flags}}</div>`;
     }}
     if (ins.tax_timing_note && ins.tax_timing_note.toLowerCase() !== 'no immediate tax flags') {{
       html += `<div class="ai-section"><div class="ai-section-label">Tax / Timing</div><div class="ai-section-body">${{_esc(ins.tax_timing_note)}}</div></div>`;
     }}
-    if (ins.tax_opportunity && ins.tax_opportunity.toLowerCase() !== 'none this week') {{
-      html += `<div class="ai-section"><div class="ai-section-label">Tax Opportunity</div><div class="ai-section-body">${{_esc(ins.tax_opportunity)}}</div></div>`;
-    }}
-    if (ins.legislative_watch && ins.legislative_watch.toLowerCase() !== 'no material legislation this week') {{
-      html += `<div class="ai-section"><div class="ai-section-label">⚖ Legislative Watch</div><div class="ai-section-body">${{_esc(ins.legislative_watch)}}</div></div>`;
-    }}
     if (ins.key_question) {{
-      html += `<div class="ai-section"><div class="ai-section-label">Key Question This Week</div><div class="ai-key-question">${{_esc(ins.key_question)}}</div></div>`;
+      html += `<div class="ai-section"><div class="ai-section-label">Key Question</div><div class="ai-key-question">${{_esc(ins.key_question)}}</div></div>`;
     }}
     return html || '<span class="ai-loading">Analysis returned no content.</span>';
   }}
@@ -10435,6 +10561,15 @@ async function rejectThesisProposal(recId) {{
     return _aiPollStart ? Math.round((Date.now() - _aiPollStart) / 1000) : 0;
   }}
 
+  function _briefRespond(itemKey, action) {{
+    if (!_briefId) return;
+    fetch('/api/brief/respond', {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{brief_id: _briefId, item_key: itemKey, action: action}}),
+    }}).catch(() => {{}});
+  }}
+
   function _pollAiInsight(attempts) {{
     fetch('/api/ai/daily').then(r => r.json()).then(data => {{
       const body = document.getElementById('ai-insight-body');
@@ -10451,6 +10586,7 @@ async function rejectThesisProposal(recId) {{
       if (!data.ok || !data.insight) {{ body.innerHTML = `<span class="ai-loading">Error: ${{data.error || 'no data'}}</span>`; return; }}
       const ins = data.insight;
       if (ins.error) {{ body.innerHTML = `<span class="ai-loading">AI unavailable: ${{ins.error}}</span>`; return; }}
+      _briefId = data.brief_id || null;
       body.innerHTML = _renderAiInsight(ins);
       const ts = document.getElementById('ai-insight-timestamp');
       if (ts) ts.textContent = _fmtTimestamp(data.generated_at);
@@ -10492,6 +10628,7 @@ async function rejectThesisProposal(recId) {{
       if (!data.ok || !data.insight) {{ body.innerHTML = `<span class="ai-loading">Error: ${{data.error || 'no data'}}</span>`; return; }}
       const ins = data.insight;
       if (ins.error) {{ body.innerHTML = `<span class="ai-loading">AI unavailable: ${{ins.error}}</span>`; return; }}
+      _briefId = data.brief_id || null;
       body.innerHTML = _renderAiInsight(ins);
       const ts = document.getElementById('ai-insight-timestamp');
       if (ts) ts.textContent = _fmtTimestamp(data.generated_at);
