@@ -313,15 +313,19 @@ def test_crashed_guardian_run_does_not_refresh_freshness(tmp_path):
     with _conn(db_file) as conn:
         state = portfolio_ai.build_portfolio_brief_state(conn)
 
-    # Freshness for guardian should be based on the last DONE run, ~48h ago
     freshness = state.get("freshness", {})
-    guardian_f = freshness.get("guardian")
-    if guardian_f:
-        age_h = guardian_f.get("age_hours")
-        if age_h is not None:
-            assert age_h > 24, (
-                f"Guardian freshness should reflect the completed (48h old) run, got {age_h:.1f}h"
-            )
+    # Required contract field — must exist, no optional guard.
+    assert "guardian_run" in freshness, (
+        f"freshness must contain 'guardian_run' key; got keys: {list(freshness.keys())}"
+    )
+    guardian_f = freshness["guardian_run"]
+    assert guardian_f["age_hours"] is not None, "guardian_run.age_hours must not be None for a completed run"
+    assert guardian_f["age_hours"] > 24, (
+        f"Guardian freshness should reflect the completed (~48h old) run, got {guardian_f['age_hours']:.1f}h"
+    )
+    assert guardian_f["status"] == "STALE", (
+        f"A ~48h-old run should be STALE (threshold 28h), got {guardian_f['status']!r}"
+    )
 
 
 # ── Test 7: failed provenance insert rolls back ai_insights ──────────────────
@@ -334,11 +338,13 @@ class _FailOnProvenance(sqlite3.Connection):
         return super().execute(sql, *args, **kwargs)
 
 
-def test_failed_provenance_rolls_back_ai_insights(tmp_path, monkeypatch):
+def test_failed_provenance_rolls_back_all_brief_artifacts(tmp_path, monkeypatch):
+    """All three brief artifacts (snapshots, ai_insights, provenance) roll back together."""
     db_file = _make_brief_db(tmp_path)
 
     stub_state = {
         "captured_at": "2026-09-20T00:00:00Z",
+        "brief_health": "HEALTHY", "brief_health_detail": [],
         "attention_items": [], "opportunities": [], "watch_items": [],
         "thesis_deltas": [], "changes": [],
     }
@@ -351,7 +357,9 @@ def test_failed_provenance_rolls_back_ai_insights(tmp_path, monkeypatch):
     monkeypatch.setattr(portfolio_ai, "DB_PATH", db_file)
 
     with _conn(db_file) as conn:
-        before_count = conn.execute("SELECT COUNT(*) FROM ai_insights").fetchone()[0]
+        before_insights = conn.execute("SELECT COUNT(*) FROM ai_insights").fetchone()[0]
+        before_snapshots = conn.execute("SELECT COUNT(*) FROM portfolio_brief_snapshots").fetchone()[0]
+        before_prov = conn.execute("SELECT COUNT(*) FROM portfolio_brief_provenance").fetchone()[0]
 
     failing_conn = _FailOnProvenance(str(db_file), timeout=10)
     failing_conn.row_factory = sqlite3.Row
@@ -361,10 +369,53 @@ def test_failed_provenance_rolls_back_ai_insights(tmp_path, monkeypatch):
     failing_conn.close()
 
     with _conn(db_file) as conn:
-        after_count = conn.execute("SELECT COUNT(*) FROM ai_insights").fetchone()[0]
-    assert after_count == before_count, (
-        f"ai_insights should be rolled back on provenance failure. "
-        f"Before: {before_count}, after: {after_count}"
+        assert conn.execute("SELECT COUNT(*) FROM ai_insights").fetchone()[0] == before_insights, \
+            "ai_insights must be rolled back on provenance failure"
+        assert conn.execute("SELECT COUNT(*) FROM portfolio_brief_snapshots").fetchone()[0] == before_snapshots, \
+            "portfolio_brief_snapshots must be rolled back on provenance failure"
+        assert conn.execute("SELECT COUNT(*) FROM portfolio_brief_provenance").fetchone()[0] == before_prov, \
+            "portfolio_brief_provenance must be rolled back (simulated failure confirms count stays same)"
+
+
+def test_uncommitted_caller_write_survives_failed_brief(tmp_path, monkeypatch):
+    """An uncommitted write on the same connection must survive a create_portfolio_brief failure."""
+    db_file = _make_brief_db(tmp_path)
+
+    stub_state = {
+        "captured_at": "2026-09-20T00:00:00Z",
+        "brief_health": "HEALTHY", "brief_health_detail": [],
+        "attention_items": [], "opportunities": [], "watch_items": [],
+        "thesis_deltas": [], "changes": [],
+    }
+    stub_output = {"headline": "test"}
+
+    briefing_mod = MagicMock()
+    briefing_mod._run_briefing_llm = MagicMock(return_value=stub_output)
+    monkeypatch.setitem(sys.modules, "agents.briefing_agent", briefing_mod)
+    monkeypatch.setattr(portfolio_ai, "build_portfolio_brief_state", lambda conn: stub_state)
+    monkeypatch.setattr(portfolio_ai, "DB_PATH", db_file)
+
+    failing_conn = _FailOnProvenance(str(db_file), timeout=10)
+    failing_conn.row_factory = sqlite3.Row
+
+    # Write something on the connection before calling create_portfolio_brief
+    sentinel_day = "2099-01-01"
+    failing_conn.execute(
+        "INSERT OR IGNORE INTO ai_insights (day, insight, generated_at) VALUES (?, 'sentinel', 'now')",
+        (sentinel_day,),
+    )
+
+    with pytest.raises(RuntimeError, match="Persistence failed"):
+        portfolio_ai.create_portfolio_brief(failing_conn)
+
+    # Sentinel row is still uncommitted (not rolled back) — commit it and verify
+    failing_conn.commit()
+    failing_conn.close()
+
+    with _conn(db_file) as conn:
+        row = conn.execute("SELECT day FROM ai_insights WHERE day=?", (sentinel_day,)).fetchone()
+    assert row is not None, (
+        "Uncommitted caller write must survive create_portfolio_brief failure — SAVEPOINT must not touch it"
     )
 
 
@@ -510,9 +561,8 @@ def test_review_missing_recommendation_returns_409(tmp_path):
 def test_50_accepted_events_do_not_change_influence(tmp_path):
     """Accepted event count alone must not alter production influence mode.
 
-    The influence mode is determined by the actual acceptance lifecycle state,
-    not by counting rows.  This test verifies that _format_capability_summary()
-    does not auto-promote based on count thresholds.
+    Drives build_portfolio_brief_state() with a real DB containing 50 v2 events,
+    then passes the resulting brief_state to _format_capability_summary().
     """
     db_file = _make_brief_db(tmp_path)
     snap_hash = "hash50"
@@ -520,7 +570,6 @@ def test_50_accepted_events_do_not_change_influence(tmp_path):
     with _conn(db_file) as conn:
         _seed_acceptance(conn, boundary=boundary)
         _seed_snapshot(conn, snap_hash=snap_hash)
-        # Insert 50 accepted v2 events
         for i in range(50):
             conn.execute(
                 """INSERT INTO news_events (event_id, ticker, day, event_type, direction,
@@ -535,21 +584,17 @@ def test_50_accepted_events_do_not_change_influence(tmp_path):
         conn.commit()
 
     portfolio_ai.DB_PATH = db_file
-    # _format_capability_summary reads brief_state["learning_state"]["accepted_count"]
-    # It must not auto-promote to "active" influence when count hits 50.
-    brief_state = {"learning_state": {"accepted_count": 50}, "execution_state": {}, "macro_state": {}}
-    with patch("portfolio_ai.DB_PATH", db_file):
-        summary = portfolio_ai._format_capability_summary(brief_state)
+    with _conn(db_file) as conn:
+        brief_state = portfolio_ai.build_portfolio_brief_state(conn)
 
-    # Must not claim active production influence — "observe-only" must be the influence mode
+    summary = portfolio_ai._format_capability_summary(brief_state)
+
     assert "observe-only" in summary, (
         f"50 accepted events must not promote to active influence.\nSummary:\n{summary}"
     )
-    # The old auto-promotion would produce "CALIBRATING" and "active" as the influence token.
     assert "calibrating" not in summary.lower(), (
         f"CALIBRATING status must not appear — count-based promotion is removed.\nSummary:\n{summary}"
     )
-    # The influence token immediately following "accepted events," must be "observe-only", not "active"
     import re as _re
     m = _re.search(r"accepted events,\s*(\S+)", summary)
     if m:
@@ -557,3 +602,150 @@ def test_50_accepted_events_do_not_change_influence(tmp_path):
         assert influence_token == "observe-only", (
             f"Influence token after 'accepted events,' should be 'observe-only', got {influence_token!r}"
         )
+
+
+# ── Test 11: caller transaction survives apply_brief_response ─────────────────
+
+def test_caller_transaction_survives_apply_brief_response(tmp_path):
+    """apply_brief_response() must not commit the caller's transaction."""
+    db_file = _make_brief_db(tmp_path)
+    brief_id = str(uuid.uuid4())
+    source_refs = [{"item_key": "rec:1", "source_type": "recommendation", "source_id": "1"}]
+
+    with _conn(db_file) as conn:
+        conn.execute(
+            "INSERT INTO portfolio_brief_provenance"
+            " (brief_id, captured_at, brief_snapshot_json, briefing_output_json, source_refs_json)"
+            " VALUES (?, '2026-09-20', '{}', '{}', ?)",
+            (brief_id, json.dumps(source_refs)),
+        )
+        conn.commit()
+
+    conn = _conn(db_file)
+    sentinel_day = "2099-12-31"
+    conn.execute(
+        "INSERT OR IGNORE INTO ai_insights (day, insight, generated_at) VALUES (?, 'sentinel', 'now')",
+        (sentinel_day,),
+    )
+    # Call apply_brief_response on the same connection — it must NOT commit the sentinel row
+    code, result = portfolio_ai.apply_brief_response(conn, brief_id, "rec:1", "DISMISS")
+    assert code == 200, f"Expected 200, got {code}: {result}"
+
+    # Roll back everything — if apply_brief_response had committed, sentinel would persist
+    conn.rollback()
+    conn.close()
+
+    with _conn(db_file) as verify:
+        row = verify.execute("SELECT day FROM ai_insights WHERE day=?", (sentinel_day,)).fetchone()
+    assert row is None, (
+        "apply_brief_response() committed the caller's transaction — it must not call conn.commit()"
+    )
+
+
+def test_invalid_action_returns_400():
+    """apply_brief_response() must validate action vocabulary regardless of call site."""
+    # No DB needed — action validation is the first check
+    import sqlite3 as _s
+    conn = _s.connect(":memory:")
+    conn.row_factory = _s.Row
+    conn.execute("CREATE TABLE IF NOT EXISTS portfolio_brief_provenance (brief_id TEXT, source_refs_json TEXT)")
+    code, result = portfolio_ai.apply_brief_response(conn, "any", "any:key", "EXECUTE")
+    conn.close()
+    assert code == 400, f"Invalid action must return 400, got {code}: {result}"
+    assert "action must be one of" in result.get("error", ""), f"Error should name valid actions: {result}"
+
+
+# ── Test 12: execution ERROR + zero items → NOT STABLE ───────────────────────
+
+def test_execution_error_prevents_stable_headline(tmp_path, monkeypatch):
+    """When execution_state.status is ERROR, brief must not say 'stable'."""
+    db_file = _make_brief_db(tmp_path)
+    portfolio_ai.DB_PATH = db_file
+
+    errored_state = {
+        "captured_at": "2026-09-20T00:00:00Z",
+        "brief_health": "ERROR",
+        "brief_health_detail": ["execution_state"],
+        "attention_items": [], "opportunities": [], "watch_items": [],
+        "open_decisions": [], "thesis_deltas": [], "changes": [],
+        "execution_state": {"status": "ERROR", "error": "no such column: symbol"},
+        "learning_state": {"status": "AVAILABLE", "accepted_count": 0},
+        "thesis_status": "AVAILABLE",
+        "freshness": {"overall": "CURRENT"},
+        "capability_state": {"news_contract": "ACCEPTED", "macro_stage": "no epochs"},
+        "macro_state": {}, "news_signals": [], "portfolio_risks": [], "critic_summary": {},
+    }
+
+    from agents.briefing_agent import _run_briefing_llm
+    result = _run_briefing_llm(errored_state)
+
+    assert result.get("portfolio_state") != "STABLE", (
+        f"execution ERROR + zero items must not produce STABLE. Got: {result.get('portfolio_state')!r}\n"
+        f"Full result: {result}"
+    )
+    assert result.get("portfolio_state") == "UNKNOWN", (
+        f"execution ERROR + zero items must produce UNKNOWN state. Got: {result.get('portfolio_state')!r}"
+    )
+    headline = result.get("headline", "").lower()
+    assert "stable" not in headline, (
+        f"Headline must not claim stability when execution_state is ERROR.\nHeadline: {headline}"
+    )
+    assert "unknown" in headline or "error" in headline or "unavailable" in headline, (
+        f"Headline should express uncertainty/error when subsystems are errored.\nHeadline: {headline}"
+    )
+
+
+# ── Test 13: guardian freshness ERROR vs UNAVAILABLE ─────────────────────────
+
+def test_guardian_freshness_db_error_is_error_not_unavailable(tmp_path, monkeypatch):
+    """A DB exception reading guardian freshness must produce status=ERROR, not UNAVAILABLE."""
+    db_file = _make_brief_db(tmp_path)
+    portfolio_ai.DB_PATH = db_file
+
+    class _FailOnGuardian(sqlite3.Connection):
+        def execute(self, sql, *args, **kwargs):
+            if "portfolio_guardian" in sql and "agent_runs" in sql:
+                raise sqlite3.OperationalError("simulated guardian query failure")
+            return super().execute(sql, *args, **kwargs)
+
+    conn = _FailOnGuardian(str(db_file), timeout=10)
+    conn.row_factory = sqlite3.Row
+    state = portfolio_ai.build_portfolio_brief_state(conn)
+    conn.close()
+
+    freshness = state.get("freshness", {})
+    assert "guardian_run" in freshness, "guardian_run must be a key in freshness"
+    gf = freshness["guardian_run"]
+    assert gf["status"] == "ERROR", (
+        f"A DB failure reading guardian freshness must produce status='ERROR', got {gf['status']!r}"
+    )
+    assert "error" in gf, "guardian_run entry must include an 'error' field on DB failure"
+
+
+# ── Test 14: subsystem ERROR fields set brief_health to ERROR ─────────────────
+
+def test_brief_health_error_when_execution_state_errors(tmp_path):
+    """build_portfolio_brief_state() must set brief_health=ERROR when execution_state is ERROR."""
+    db_file = _make_brief_db(tmp_path)
+    portfolio_ai.DB_PATH = db_file
+
+    class _FailOnTradeIntents(sqlite3.Connection):
+        def execute(self, sql, *args, **kwargs):
+            if "trade_intents" in sql:
+                raise sqlite3.OperationalError("simulated trade_intents failure")
+            return super().execute(sql, *args, **kwargs)
+
+    conn = _FailOnTradeIntents(str(db_file), timeout=10)
+    conn.row_factory = sqlite3.Row
+    state = portfolio_ai.build_portfolio_brief_state(conn)
+    conn.close()
+
+    assert state["execution_state"]["status"] == "ERROR", (
+        f"trade_intents failure must set execution_state.status='ERROR', "
+        f"got {state['execution_state']['status']!r}"
+    )
+    assert state["brief_health"] == "ERROR", (
+        f"execution_state ERROR must propagate to brief_health='ERROR', "
+        f"got {state['brief_health']!r}"
+    )
+    assert "execution_state" in state["brief_health_detail"]

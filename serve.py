@@ -4834,6 +4834,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             conn = _sql.connect(str(portfolio_ai.DB_PATH), timeout=10)
             conn.row_factory = _sql.Row
             status_code, result = portfolio_ai.apply_brief_response(conn, brief_id, item_key, action, note)
+            if status_code == 200:
+                conn.commit()  # apply_brief_response no longer owns the connection
             conn.close()
             if status_code == 200:
                 self._json(result)

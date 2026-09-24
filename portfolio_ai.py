@@ -1214,8 +1214,10 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
 
     # Freshness is measured from subsystem run completion timestamps,
     # not from whether content was produced. 0 findings with a recent run = CURRENT.
+    # Error vs absence distinction: a DB exception sets an explicit error flag so
+    # the entry reads ERROR rather than UNAVAILABLE (= "never ran").
+    _guardian_freshness_error = None  # type: ignore[assignment]
     last_guardian_run = None
-    last_pipeline_run = None
     try:
         # Use finished_at of a completed run — a crashed run with only started_at
         # must not make the subsystem look fresh.
@@ -1225,8 +1227,11 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
         ).fetchone()
         if gr and gr[0]:
             last_guardian_run = _dtu.utcfromtimestamp(float(gr[0])).strftime("%Y-%m-%dT%H:%M:%SZ")
-    except Exception:
-        pass
+    except Exception as _e:
+        _guardian_freshness_error = str(_e)
+
+    _pipeline_freshness_error = None
+    last_pipeline_run = None
     try:
         from pathlib import Path as _Path
         import sqlite3 as _sq3
@@ -1240,8 +1245,10 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
             _wc.close()
             if pr and pr[0]:
                 last_pipeline_run = _dtu.utcfromtimestamp(float(pr[0])).strftime("%Y-%m-%dT%H:%M:%SZ")
-    except Exception:
-        pass
+    except Exception as _e:
+        _pipeline_freshness_error = str(_e)
+
+    _news_snapshot_error = None
     last_news_snapshot = None
     try:
         ns = conn.execute(
@@ -1249,17 +1256,23 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
         ).fetchone()
         if ns and ns[0]:
             last_news_snapshot = ns[0]
-    except Exception:
-        pass
+    except Exception as _e:
+        _news_snapshot_error = str(_e)
+
+    def _freshness_with_error(ts, stale_hours: float, error=None) -> dict:
+        if error:
+            return {"last_updated": None, "age_hours": None, "is_stale": True,
+                    "status": "ERROR", "error": error}
+        return _freshness_entry(ts, stale_hours)
 
     freshness = {
-        "agent_pipeline":  _freshness_entry(last_pipeline_run, stale_hours=28),
-        "guardian_run":    _freshness_entry(last_guardian_run, stale_hours=28),
+        "agent_pipeline":  _freshness_with_error(last_pipeline_run, 28, _pipeline_freshness_error),
+        "guardian_run":    _freshness_with_error(last_guardian_run, 28, _guardian_freshness_error),
         "macro_scores":    _freshness_entry(macro_last_updated, stale_hours=72),
-        "news_snapshot":   _freshness_entry(last_news_snapshot, stale_hours=48),
+        "news_snapshot":   _freshness_with_error(last_news_snapshot, 48, _news_snapshot_error),
         "learning_sweep":  _freshness_entry(learning_state.get("last_sweep"), stale_hours=168),
     }
-    degraded = any(v["status"] in ("STALE", "UNAVAILABLE", "UNKNOWN") for v in freshness.values())
+    degraded = any(v["status"] in ("STALE", "UNAVAILABLE", "UNKNOWN", "ERROR") for v in freshness.values())
     freshness["overall"] = "DEGRADED" if degraded else "CURRENT"
 
     # ── 9. Capability state (read once, same conn, same snapshot) ─────────────
@@ -1454,11 +1467,52 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
                             "type": "thesis_score_change",
                             "summary": f"Health score {old_score:.0f} → {new_score:.0f} ({new_score - old_score:+.0f})",
                         })
-    except Exception:
-        pass
+    except Exception as _e:
+        print(f"[build_portfolio_brief_state] snapshot diff error: {_e}")
+
+    # ── 11. Brief reliability (deterministic, pre-LLM) ───────────────────────
+    # HEALTHY  — all required subsystems are confirmed available/fresh.
+    # DEGRADED — at least one subsystem is STALE/UNAVAILABLE/UNKNOWN/ERROR in freshness,
+    #            or a non-critical subsystem is missing.
+    # ERROR    — at least one critical decision-support subsystem failed with an exception.
+    _health_errors: list = []
+    _health_degraded: list = []
+
+    for _sub_name, _sub_dict in (
+        ("execution_state", execution_state),
+        ("learning_state", learning_state),
+    ):
+        _st = _sub_dict.get("status", "AVAILABLE")
+        if _st == "ERROR":
+            _health_errors.append(_sub_name)
+        elif _st == "UNAVAILABLE":
+            _health_degraded.append(_sub_name)
+
+    if thesis_status == "ERROR":
+        _health_errors.append("thesis")
+
+    if capability_state.get("news_contract") == "ERROR":
+        _health_errors.append("capability.news_contract")
+    if capability_state.get("macro_stage") == "ERROR":
+        _health_errors.append("capability.macro_stage")
+
+    if freshness.get("overall") == "DEGRADED":
+        _health_degraded.append("freshness")
+
+    if _health_errors:
+        brief_health = "ERROR"
+        brief_health_detail = _health_errors
+    elif _health_degraded:
+        brief_health = "DEGRADED"
+        brief_health_detail = _health_degraded
+    else:
+        brief_health = "HEALTHY"
+        brief_health_detail = []
 
     state = {
         "captured_at": captured_at,
+        "brief_health": brief_health,
+        "brief_health_detail": brief_health_detail,
         "changes": changes,
         "attention_items": attention_items,
         "opportunities": opportunities,
@@ -1476,20 +1530,9 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
         "freshness": freshness,
     }
 
-    # ── 11. Store snapshot (keep last 30) ─────────────────────────────────────
-    try:
-        conn.execute(
-            "INSERT INTO portfolio_brief_snapshots (captured_at, snapshot_json) VALUES (?, ?)",
-            (captured_at, json.dumps(state)),
-        )
-        conn.execute(
-            """DELETE FROM portfolio_brief_snapshots WHERE id NOT IN (
-               SELECT id FROM portfolio_brief_snapshots ORDER BY id DESC LIMIT 30
-            )"""
-        )
-        conn.commit()
-    except Exception:
-        pass
+    # Snapshot write is intentionally absent here — state collection is read-only.
+    # portfolio_brief_snapshots is written inside create_portfolio_brief()'s SAVEPOINT
+    # so it is atomic with ai_insights and portfolio_brief_provenance.
 
     return state
 
@@ -2917,10 +2960,25 @@ def create_portfolio_brief(conn: sqlite3.Connection, force: bool = False) -> dic
     now_str = _dt2.now().strftime("%Y-%m-%d %H:%M:%S")
 
     source_refs = _build_source_refs(brief_state)
-    # SAVEPOINT so we don't own the caller's transaction: unrelated uncommitted
-    # writes on this connection survive a brief-persistence failure.
+    captured_at_str = brief_state.get("captured_at", now_str)
+
+    # All three artifacts persisted atomically in one SAVEPOINT so the caller's
+    # transaction is never owned here. portfolio_brief_snapshots is included so
+    # its write is never "ahead" of a failed brief — next run's diff always
+    # reflects a brief that actually completed.
+    _sp_created = False
     try:
         conn.execute("SAVEPOINT brief_write")
+        _sp_created = True
+        conn.execute(
+            "INSERT INTO portfolio_brief_snapshots (captured_at, snapshot_json) VALUES (?, ?)",
+            (captured_at_str, json.dumps(brief_state)),
+        )
+        conn.execute(
+            """DELETE FROM portfolio_brief_snapshots WHERE id NOT IN (
+               SELECT id FROM portfolio_brief_snapshots ORDER BY id DESC LIMIT 30
+            )"""
+        )
         conn.execute(
             "INSERT OR REPLACE INTO ai_insights (day, insight, generated_at) VALUES (?,?,?)",
             (today, json.dumps(briefing_output), now_str),
@@ -2931,7 +2989,7 @@ def create_portfolio_brief(conn: sqlite3.Connection, force: bool = False) -> dic
             "VALUES (?, ?, ?, ?, ?)",
             (
                 brief_id,
-                brief_state.get("captured_at", now_str),
+                captured_at_str,
                 json.dumps(brief_state),
                 json.dumps(briefing_output),
                 json.dumps(source_refs),
@@ -2939,7 +2997,12 @@ def create_portfolio_brief(conn: sqlite3.Connection, force: bool = False) -> dic
         )
         conn.execute("RELEASE SAVEPOINT brief_write")
     except Exception as e:
-        conn.execute("ROLLBACK TO SAVEPOINT brief_write")
+        if _sp_created:
+            try:
+                conn.execute("ROLLBACK TO SAVEPOINT brief_write")
+                conn.execute("RELEASE SAVEPOINT brief_write")
+            except Exception:
+                pass
         raise RuntimeError(f"[create_portfolio_brief] Persistence failed, rolled back: {e}") from e
     return {"brief": briefing_output, "brief_id": brief_id, "brief_state": brief_state}
 
@@ -2992,15 +3055,22 @@ def _build_source_refs(brief_state: dict) -> list:
     return refs
 
 
+_BRIEF_RESPONSE_ACTIONS = {"REVIEW", "DISMISS", "DEFER"}
+
+
 def apply_brief_response(conn: sqlite3.Connection, brief_id: str, item_key: str,
                          action: str, note: str = "") -> tuple:
     """Record a REVIEW/DISMISS/DEFER response on a brief item.
 
-    Returns (http_status_code: int, result: dict). Extracted here so it can be
-    driven directly in tests without importing or starting the HTTP server.
+    Returns (http_status_code: int, result: dict). Does NOT commit — the caller
+    owns the connection's transaction and must commit if appropriate. Validated
+    action vocabulary is enforced here regardless of call site.
     """
     import json as _json
     from datetime import datetime as _dt
+
+    if action not in _BRIEF_RESPONSE_ACTIONS:
+        return 400, {"ok": False, "error": f"action must be one of {sorted(_BRIEF_RESPONSE_ACTIONS)}, got {action!r}"}
 
     prov_row = conn.execute(
         "SELECT source_refs_json FROM portfolio_brief_provenance WHERE brief_id = ?",
@@ -3033,14 +3103,24 @@ def apply_brief_response(conn: sqlite3.Connection, brief_id: str, item_key: str,
         episode_id = rec_row["episode_id"]
 
     responded_at = _dt.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
-    conn.execute("SAVEPOINT brief_respond")
-    conn.execute(
-        "INSERT INTO portfolio_brief_responses (brief_id, item_key, action, note, responded_at) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (brief_id, item_key, action, note, responded_at),
-    )
-    conn.execute("RELEASE SAVEPOINT brief_respond")
-    conn.commit()
+    _sp_created = False
+    try:
+        conn.execute("SAVEPOINT brief_respond")
+        _sp_created = True
+        conn.execute(
+            "INSERT INTO portfolio_brief_responses (brief_id, item_key, action, note, responded_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (brief_id, item_key, action, note, responded_at),
+        )
+        conn.execute("RELEASE SAVEPOINT brief_respond")
+    except Exception as _e:
+        if _sp_created:
+            try:
+                conn.execute("ROLLBACK TO SAVEPOINT brief_respond")
+                conn.execute("RELEASE SAVEPOINT brief_respond")
+            except Exception:
+                pass
+        return 500, {"ok": False, "error": f"Failed to record response: {_e}"}
     return 200, {"ok": True, "brief_id": brief_id, "item_key": item_key,
                  "action": action, "episode_id": episode_id}
 

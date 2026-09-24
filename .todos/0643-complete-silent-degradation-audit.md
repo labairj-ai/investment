@@ -1,7 +1,7 @@
 # Complete Silent-Degradation Audit for Brief Builder
 
 - **ID:** 0643
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-24
 - **Priority:** normal
 - **Depends:** 0639, 0640

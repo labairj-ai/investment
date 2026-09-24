@@ -1,7 +1,7 @@
 # Harden apply_brief_response Transaction Semantics
 
 - **ID:** 0641
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-24
 - **Priority:** high
 - **Depends:** 0639

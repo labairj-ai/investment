@@ -1,7 +1,7 @@
 # Fix Acceptance Test Escapes and Schema Regressions
 
 - **ID:** 0642
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-24
 - **Priority:** high
 - **Depends:** none

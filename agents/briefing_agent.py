@@ -135,11 +135,22 @@ def _run_briefing_llm(brief_state: dict) -> dict:
     total_items = len(attention) + len(opps) + len(brief_state.get("open_decisions", []))
 
     if total_items == 0 and not brief_state.get("changes"):
+        brief_health = brief_state.get("brief_health", "HEALTHY")
+        if brief_health == "HEALTHY":
+            return {
+                "headline": "Portfolio stable — no material signals today.",
+                "what_changed": [],
+                "key_question": "No decisions required today.",
+                "portfolio_state": "STABLE",
+            }
+        # Degraded/errored subsystems — STABLE is not a valid conclusion.
+        degraded_subs = brief_state.get("brief_health_detail", [brief_health])
+        sub_list = ", ".join(degraded_subs) if degraded_subs else brief_health
         return {
-            "headline": "Portfolio stable — no material signals today.",
+            "headline": f"Portfolio health {brief_health} — {sub_list} unavailable; cannot assess.",
             "what_changed": [],
-            "key_question": "No decisions required today.",
-            "portfolio_state": "STABLE",
+            "key_question": f"Investigate before acting: {sub_list}.",
+            "portfolio_state": "UNKNOWN",
         }
 
     prompt = _build_brief_prompt(brief_state, date_str)
