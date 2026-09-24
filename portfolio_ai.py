@@ -2658,10 +2658,8 @@ def generate_daily_insight(force: bool = False) -> dict:
             except Exception:
                 pass
 
-    if not ollama_client.available():
-        return {"error": "AI model unavailable — check MLX server"}
-
     # Build brief state (deterministic — no LLM) then call briefing LLM
+    # (_run_briefing_llm has its own fallback for unavailable LLM)
     conn = sqlite3.connect(str(DB_PATH), timeout=10)
     conn.row_factory = sqlite3.Row
     brief_state = build_portfolio_brief_state(conn)
