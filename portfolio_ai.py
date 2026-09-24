@@ -1496,12 +1496,24 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
     if capability_state.get("macro_stage") == "ERROR":
         _health_errors.append("capability.macro_stage")
 
-    if freshness.get("overall") == "DEGRADED":
-        _health_degraded.append("freshness")
+    # Enumerate individual freshness contributors so brief_health_detail is actionable.
+    # "freshness.guardian_run:STALE" is more useful than just "freshness".
+    _degraded_statuses = {"STALE", "UNAVAILABLE", "UNKNOWN", "ERROR"}
+    for _fk, _fv in freshness.items():
+        if _fk == "overall":
+            continue
+        _fst = _fv.get("status", "")
+        if _fst in _degraded_statuses:
+            token = f"freshness.{_fk}:{_fst}"
+            if _fst == "ERROR":
+                _health_errors.append(token)
+            else:
+                _health_degraded.append(token)
 
     if _health_errors:
         brief_health = "ERROR"
-        brief_health_detail = _health_errors
+        # Include all contributors (errors + degraded) so brief_health_detail is fully actionable.
+        brief_health_detail = _health_errors + _health_degraded
     elif _health_degraded:
         brief_health = "DEGRADED"
         brief_health_detail = _health_degraded
@@ -2938,6 +2950,24 @@ def _format_capability_summary(brief_state: dict) -> str:
     return "\n".join(lines)
 
 
+def _enforce_brief_health(brief_state: dict, briefing_output: dict) -> dict:
+    """Deterministic postcondition: portfolio_state=STABLE is only legal when brief_health=HEALTHY.
+
+    Call on every briefing_output — LLM-generated or fallback — before persistence.
+    Returns briefing_output (possibly mutated copy) with portfolio_state corrected.
+
+    Invariant:
+        HEALTHY  → STABLE / ATTENTION / URGENT allowed
+        DEGRADED → STABLE forbidden; override to UNKNOWN
+        ERROR    → STABLE forbidden; override to UNKNOWN
+    """
+    brief_health = brief_state.get("brief_health", "UNKNOWN")
+    output = dict(briefing_output)
+    if brief_health != "HEALTHY" and output.get("portfolio_state") == "STABLE":
+        output["portfolio_state"] = "UNKNOWN"
+    return output
+
+
 def create_portfolio_brief(conn: sqlite3.Connection, force: bool = False) -> dict:
     """Single function for generating and persisting a Portfolio Decision Brief.
 
@@ -2953,7 +2983,7 @@ def create_portfolio_brief(conn: sqlite3.Connection, force: bool = False) -> dic
     brief_state = build_portfolio_brief_state(conn)
 
     from agents.briefing_agent import _run_briefing_llm
-    briefing_output = _run_briefing_llm(brief_state)
+    briefing_output = _enforce_brief_health(brief_state, _run_briefing_llm(brief_state))
 
     brief_id = str(_uuid.uuid4())
     today = date.today().isoformat()

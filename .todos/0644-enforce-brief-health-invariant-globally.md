@@ -1,7 +1,7 @@
 # Enforce Brief-Health Invariant Globally
 
 - **ID:** 0644
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-24
 - **Priority:** high
 - **Depends:** 0640

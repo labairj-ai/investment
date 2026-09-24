@@ -135,7 +135,8 @@ def _run_briefing_llm(brief_state: dict) -> dict:
     total_items = len(attention) + len(opps) + len(brief_state.get("open_decisions", []))
 
     if total_items == 0 and not brief_state.get("changes"):
-        brief_health = brief_state.get("brief_health", "HEALTHY")
+        # Absence of a brief_health key is not proof of health — treat as UNKNOWN.
+        brief_health = brief_state.get("brief_health") or "UNKNOWN"
         if brief_health == "HEALTHY":
             return {
                 "headline": "Portfolio stable — no material signals today.",
@@ -159,7 +160,7 @@ def _run_briefing_llm(brief_state: dict) -> dict:
         "headline": "",
         "what_changed": [],
         "key_question": "",
-        "portfolio_state": "STABLE",
+        "portfolio_state": "UNKNOWN",
     }
 
     try:
@@ -173,9 +174,14 @@ def _run_briefing_llm(brief_state: dict) -> dict:
         return result
     except Exception as e:
         print(f"[BriefingAgent] LLM failed: {e}")
-        portfolio_state = "URGENT" if any(
-            a.get("severity") == "high" for a in attention
-        ) else ("ATTENTION" if attention else "STABLE")
+        if any(a.get("severity") == "high" for a in attention):
+            portfolio_state = "URGENT"
+        elif attention:
+            portfolio_state = "ATTENTION"
+        else:
+            # No deterministic evidence warrants STABLE; use UNKNOWN so the
+            # enforcer (_enforce_brief_health) has a safe default to work with.
+            portfolio_state = "UNKNOWN"
         return {
             "headline": f"{len(attention)} item(s) need attention — see below.",
             "what_changed": [c.get("summary", "")[:120] for c in brief_state.get("changes", [])[:4]],
@@ -204,7 +210,7 @@ def run_briefing_agent(ctx: AgentContext) -> list[Recommendation]:
         brief_state = result["brief_state"]
     except Exception as e:
         print(f"[BriefingAgent] create_portfolio_brief failed: {e}")
-        briefing_output = {"headline": "Brief generation failed.", "portfolio_state": "STABLE",
+        briefing_output = {"headline": "Brief generation failed.", "portfolio_state": "UNKNOWN",
                            "what_changed": [], "key_question": ""}
         brief_id = "unknown"
         brief_state = {"freshness": {"overall": "UNAVAILABLE"}}
@@ -213,7 +219,7 @@ def run_briefing_agent(ctx: AgentContext) -> list[Recommendation]:
     headline = briefing_output.get("headline", "Daily briefing complete.")
     n_attention = len(brief_state.get("attention_items", []))
     n_opps = len(brief_state.get("opportunities", []))
-    portfolio_state = briefing_output.get("portfolio_state", "STABLE")
+    portfolio_state = briefing_output.get("portfolio_state", "UNKNOWN")
 
     rationale = f"[{portfolio_state}] {headline}"
     why_now = (

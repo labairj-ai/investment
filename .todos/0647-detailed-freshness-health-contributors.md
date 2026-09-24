@@ -1,7 +1,7 @@
 # Surface Detailed Freshness Contributors in Brief Health
 
 - **ID:** 0647
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-24
 - **Priority:** normal
 - **Depends:** 0644

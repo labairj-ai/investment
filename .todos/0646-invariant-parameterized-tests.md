@@ -1,7 +1,7 @@
 # Add Invariant Parameterized Tests for Brief Reliability
 
 - **ID:** 0646
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-24
 - **Priority:** high
 - **Depends:** 0644, 0645

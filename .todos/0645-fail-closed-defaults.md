@@ -1,7 +1,7 @@
 # Make All Failure Defaults Fail Closed
 
 - **ID:** 0645
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-24
 - **Priority:** high
 - **Depends:** 0644
