@@ -4740,7 +4740,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         cached, generated_at = portfolio_ai.get_cached_insight_today()
         if cached:
-            # Attach brief_id + freshness/evidence data for the dashboard footer
+            # Attach brief_id + deterministic items from provenance snapshot.
+            # The LLM output (cached) has headline/what_changed/key_question/portfolio_state.
+            # needs_attention, opportunities, watch come from the brief_state snapshot
+            # so they carry stable item keys regardless of LLM output.
             brief_id = None
             freshness_data = None
             evidence_data = None
@@ -4764,24 +4767,20 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         "news_count": len(snap.get("news_signals", [])),
                         "critic_approved": cs.get("APPROVE", 0) + cs.get("APPROVE_WITH_CAUTION", 0),
                     }
-                    # Annotate each attention/opportunity item with dismiss_count from responses
+                    # Merge deterministic items from brief_state snapshot into the response.
+                    # This gives items stable keys (guardian:X, rec:Y, news:Z, thesis:T)
+                    # rather than relying on LLM regeneration.
                     if isinstance(cached, dict):
-                        try:
-                            bc2 = _sql.connect(str(portfolio_ai.DB_PATH), timeout=5)
-                            bc2.row_factory = _sql.Row
-                            dismiss_rows = bc2.execute(
-                                "SELECT item_key, COUNT(*) as n FROM portfolio_brief_responses"
-                                " WHERE action='DISMISS' GROUP BY item_key"
-                            ).fetchall()
-                            bc2.close()
-                            dismiss_map = {r["item_key"]: r["n"] for r in dismiss_rows}
-                            for section in ("needs_attention", "opportunities"):
-                                for item in cached.get(section, []):
-                                    k = item.get("key")
-                                    if k and k in dismiss_map:
-                                        item["_dismiss_count"] = dismiss_map[k]
-                        except Exception:
-                            pass
+                        cached = dict(cached)
+                        # Sort previously_dismissed to bottom
+                        def _sort_items(items):
+                            return (
+                                [i for i in items if not i.get("previously_dismissed")]
+                                + [i for i in items if i.get("previously_dismissed")]
+                            )
+                        cached["needs_attention"] = _sort_items(snap.get("attention_items", []))
+                        cached["opportunities"] = _sort_items(snap.get("opportunities", []))
+                        cached["watch"] = snap.get("watch_items", [])
             except Exception:
                 pass
             if isinstance(cached, dict) and freshness_data:
@@ -4830,17 +4829,51 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         try:
             import portfolio_ai
             import sqlite3 as _sql
+            import uuid as _uuid
             from datetime import datetime as _dt
             portfolio_ai._init_ai_tables()
             conn = _sql.connect(str(portfolio_ai.DB_PATH), timeout=10)
+            conn.row_factory = _sql.Row
+
+            # Validate brief_id exists in provenance before writing response
+            prov_row = conn.execute(
+                "SELECT brief_id FROM portfolio_brief_provenance WHERE brief_id = ?",
+                (brief_id,)
+            ).fetchone()
+            if not prov_row:
+                conn.close()
+                return self._json_error(400, f"Unknown brief_id: {brief_id}")
+
+            responded_at = _dt.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
             conn.execute(
                 "INSERT INTO portfolio_brief_responses (brief_id, item_key, action, note, responded_at) "
                 "VALUES (?, ?, ?, ?, ?)",
-                (brief_id, item_key, action, note, _dt.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")),
+                (brief_id, item_key, action, note, responded_at),
             )
+
+            # ACT on a recommendation: create a portfolio_brief_episodes row linking the decision
+            episode_id = None
+            if action == "ACT" and item_key.startswith("rec:"):
+                try:
+                    rec_id_str = item_key[4:]
+                    rec_id = int(rec_id_str) if rec_id_str.isdigit() else None
+                    episode_id = str(_uuid.uuid4())
+                    conn.execute(
+                        "INSERT INTO portfolio_brief_episodes "
+                        "(episode_id, brief_id, item_key, rec_id, status, note, created_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (episode_id, brief_id, item_key, rec_id, "review", note, responded_at),
+                    )
+                except Exception as ep_err:
+                    print(f"[brief/respond] Could not create episode for {item_key}: {ep_err}")
+                    episode_id = None
+
             conn.commit()
             conn.close()
-            self._json({"ok": True, "brief_id": brief_id, "item_key": item_key, "action": action})
+            self._json({
+                "ok": True, "brief_id": brief_id, "item_key": item_key,
+                "action": action, "episode_id": episode_id,
+            })
         except Exception as e:
             self._json_error(500, f"Could not record response: {e}")
 

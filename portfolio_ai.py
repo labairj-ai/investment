@@ -869,6 +869,15 @@ def _init_ai_tables():
         note         TEXT,
         responded_at TEXT
     )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS portfolio_brief_episodes (
+        episode_id  TEXT PRIMARY KEY,
+        brief_id    TEXT NOT NULL,
+        item_key    TEXT NOT NULL,
+        rec_id      INTEGER,
+        status      TEXT NOT NULL DEFAULT 'review',
+        note        TEXT,
+        created_at  TEXT NOT NULL
+    )""")
     conn.commit()
     conn.close()
 
@@ -900,6 +909,53 @@ def get_accepted_news_events(conn: sqlite3.Connection, accepted_version: str = "
         " AND news_intelligence_version = ?"
         " AND news_snapshot_hash IN (SELECT snapshot_hash FROM news_snapshots WHERE version = ?)",
         (boundary, version, version),
+    ).fetchall()
+
+
+def get_current_news_intelligence(
+    conn: sqlite3.Connection,
+    accepted_version: str = "v2",
+    recency_days: int = 14,
+) -> list:
+    """Return active/current news_events for the Decision Brief.
+
+    Unlike get_accepted_news_events() (which returns the full calibration corpus),
+    this returns only signals that are current/active within the recency window.
+    Uses news_event_state to filter to ACTIVE/ESCALATED/RECENTLY_RESOLVED states,
+    and limits to events whose last_seen is within recency_days.
+
+    Returns rows with all v2 fields. Does not change get_accepted_news_events().
+    """
+    import time as _t
+    conn.row_factory = sqlite3.Row
+    acceptance_row = conn.execute(
+        "SELECT accepted_at, accepted_version FROM _news_intelligence_acceptance"
+        " WHERE accepted_version = ?"
+        " ORDER BY accepted_at DESC, id DESC LIMIT 1",
+        (accepted_version,),
+    ).fetchone()
+    if not acceptance_row or not acceptance_row["accepted_at"]:
+        return []
+    boundary = acceptance_row["accepted_at"]
+    version = acceptance_row["accepted_version"]
+    recency_cutoff = _t.time() - recency_days * 86400
+    # Convert epoch to ISO string for comparison with text timestamps
+    from datetime import datetime as _dtu
+    recency_iso = _dtu.utcfromtimestamp(recency_cutoff).strftime("%Y-%m-%d %H:%M:%S")
+    return conn.execute(
+        """SELECT ne.*
+           FROM news_events ne
+           LEFT JOIN news_event_state nes
+             ON nes.ticker = ne.ticker AND nes.causal_event_key = ne.causal_event_key
+           WHERE ne.extracted_at >= ?
+             AND ne.news_intelligence_version = ?
+             AND ne.news_snapshot_hash IN (
+                 SELECT snapshot_hash FROM news_snapshots WHERE version = ?
+             )
+             AND (nes.state IS NULL OR nes.state IN ('ACTIVE', 'ESCALATED', 'RECENTLY_RESOLVED'))
+             AND (ne.last_seen >= ? OR ne.extracted_at >= ?)
+           ORDER BY ne.portfolio_priority DESC, ne.signal_strength DESC""",
+        (boundary, version, version, recency_iso, recency_iso),
     ).fetchall()
 
 
@@ -983,8 +1039,8 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
             "created_at": r["created_at"],
         })
 
-    # ── 3. Accepted news events ───────────────────────────────────────────────
-    news_rows = get_accepted_news_events(conn, "v2")
+    # ── 3. Current news signals (active/recent only, all v2 fields) ──────────
+    news_rows = get_current_news_intelligence(conn, "v2", recency_days=14)
     news_signals = []
     last_news_ts = None
     for row in news_rows:
@@ -994,14 +1050,22 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
             last_news_ts = last_seen
         news_signals.append({
             "ticker": d.get("ticker"),
+            "event_id": d.get("event_id"),
             "event_type": d.get("event_type"),
             "direction": d.get("direction"),
             "magnitude": d.get("magnitude"),
             "confidence": d.get("confidence"),
             "thesis_relevance": d.get("thesis_relevance", 0.0),
+            "signal_strength": d.get("signal_strength", 0.0),
+            "trend_status": d.get("trend_status"),
+            "confirmation_class": d.get("confirmation_class", "NEWS_ONLY"),
+            "portfolio_priority": d.get("portfolio_priority", 0.0),
+            "event_trigger_state": d.get("event_trigger_state"),
+            "event_trigger_proximity": d.get("event_trigger_proximity", 0.0),
+            "causal_driver": d.get("causal_driver"),
             "evidence_text": (d.get("evidence_text") or "")[:200],
             "first_seen": d.get("first_seen"),
-            "event_id": d.get("event_id"),
+            "last_seen": last_seen,
         })
 
     # ── 4. Macro scores ───────────────────────────────────────────────────────
@@ -1103,8 +1167,12 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
             return {"last_updated": None, "age_hours": None, "is_stale": True, "status": "UNAVAILABLE"}
         try:
             ts_str = str(last_updated_str).replace("T", " ").rstrip("Z")
-            dt = _dtu.strptime(ts_str[:19], "%Y-%m-%d %H:%M:%S")
-            age_h = round((now_ts - dt.timestamp()) / 3600, 1)
+            if "." in ts_str:
+                # epoch float as string
+                age_h = round((now_ts - float(ts_str)) / 3600, 1)
+            else:
+                dt = _dtu.strptime(ts_str[:19], "%Y-%m-%d %H:%M:%S")
+                age_h = round((now_ts - dt.timestamp()) / 3600, 1)
             is_stale = age_h > stale_hours
             return {
                 "last_updated": last_updated_str,
@@ -1113,23 +1181,54 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
                 "status": "STALE" if is_stale else "CURRENT",
             }
         except Exception:
-            return {"last_updated": last_updated_str, "age_hours": None, "is_stale": False, "status": "CURRENT"}
+            # Fail-closed: unknown timestamp → UNKNOWN/DEGRADED, never CURRENT
+            return {"last_updated": last_updated_str, "age_hours": None, "is_stale": True, "status": "UNKNOWN"}
 
-    last_finding_ts = None
-    if finding_rows:
-        max_ts = max((r["created_at"] or 0) for r in finding_rows)
-        if max_ts:
-            last_finding_ts = _dtu.utcfromtimestamp(float(max_ts)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # Freshness is measured from subsystem run completion timestamps,
+    # not from whether content was produced. 0 findings with a recent run = CURRENT.
+    last_guardian_run = None
+    last_pipeline_run = None
+    try:
+        gr = conn.execute(
+            "SELECT MAX(started_at) FROM agent_runs WHERE agent_type='portfolio_guardian'"
+        ).fetchone()
+        if gr and gr[0]:
+            last_guardian_run = _dtu.utcfromtimestamp(float(gr[0])).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except Exception:
+        pass
+    try:
+        from pathlib import Path as _Path
+        import sqlite3 as _sq3
+        _wdb = _Path(__file__).parent / "out" / "watchdog.db"
+        if _wdb.exists():
+            _wc = _sq3.connect(str(_wdb), timeout=5)
+            pr = _wc.execute(
+                "SELECT MAX(completed_at) FROM watchdog_receipts"
+                " WHERE component='agent_pipeline' AND status='COMPLETE'"
+            ).fetchone()
+            _wc.close()
+            if pr and pr[0]:
+                last_pipeline_run = _dtu.utcfromtimestamp(float(pr[0])).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except Exception:
+        pass
+    last_news_snapshot = None
+    try:
+        ns = conn.execute(
+            "SELECT MAX(captured_at) FROM news_snapshots"
+        ).fetchone()
+        if ns and ns[0]:
+            last_news_snapshot = ns[0]
+    except Exception:
+        pass
 
     freshness = {
-        "agent_findings": _freshness_entry(last_finding_ts, stale_hours=28),
-        "macro_scores":   _freshness_entry(macro_last_updated, stale_hours=72),
-        "news_events":    _freshness_entry(last_news_ts, stale_hours=48),
-        "recommendations": _freshness_entry(
-            open_decisions[0]["created_at"] if open_decisions else None, stale_hours=28
-        ),
+        "agent_pipeline":  _freshness_entry(last_pipeline_run, stale_hours=28),
+        "guardian_run":    _freshness_entry(last_guardian_run, stale_hours=28),
+        "macro_scores":    _freshness_entry(macro_last_updated, stale_hours=72),
+        "news_snapshot":   _freshness_entry(last_news_snapshot, stale_hours=48),
+        "learning_sweep":  _freshness_entry(learning_state.get("last_sweep"), stale_hours=168),
     }
-    degraded = any(v["status"] in ("STALE", "UNAVAILABLE") for v in freshness.values())
+    degraded = any(v["status"] in ("STALE", "UNAVAILABLE", "UNKNOWN") for v in freshness.values())
     freshness["overall"] = "DEGRADED" if degraded else "CURRENT"
 
     # ── 9. Classify attention / opportunity / watch ───────────────────────────
@@ -1137,10 +1236,30 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
     opportunities: list = []
     watch_items: list = []
 
+    # Build previously-dismissed key set before any classification
+    _dismissed_keys: set = set()
+    try:
+        _prev_rows = conn.execute(
+            """SELECT item_key
+               FROM portfolio_brief_responses
+               WHERE action = 'DISMISS'
+               GROUP BY item_key
+               HAVING COUNT(*) >= 3"""
+        ).fetchall()
+        # Exclude keys that have a subsequent ACT
+        _acted_rows = conn.execute(
+            "SELECT DISTINCT item_key FROM portfolio_brief_responses WHERE action='ACT'"
+        ).fetchall()
+        _acted_keys = {r[0] for r in _acted_rows}
+        _dismissed_keys = {r[0] for r in _prev_rows if r[0] not in _acted_keys}
+    except Exception:
+        pass
+
     for finding in findings_by_type.get("portfolio_guardian", []):
         sev = finding.get("severity", 0) or 0
+        item_key = f"guardian:{finding.get('ticker','')}:{finding.get('finding_type','')}"
         item = {
-            "key": f"guardian:{finding.get('ticker','')}:{finding.get('finding_type','')}",
+            "key": item_key,
             "ticker": finding.get("ticker"),
             "signal_type": "guardian_finding",
             "summary": finding.get("summary", ""),
@@ -1148,6 +1267,7 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
             "severity": "high" if sev >= 70 else "medium",
             "is_new": True,
             "since": captured_at,
+            "previously_dismissed": item_key in _dismissed_keys,
         }
         if sev >= 70:
             attention_items.append(item)
@@ -1155,7 +1275,9 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
             watch_items.append(item)
 
     for risk in portfolio_risks:
-        base = {**risk, "is_new": True, "since": captured_at}
+        item_key = risk.get("key", "")
+        base = {**risk, "is_new": True, "since": captured_at,
+                "previously_dismissed": item_key in _dismissed_keys}
         if risk["severity"] == "high":
             attention_items.append(base)
         else:
@@ -1165,8 +1287,9 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
         verdict = r["critic_verdict"]
         action = r["action"]
         is_approved = verdict in ("APPROVE", "APPROVE_WITH_CAUTION")
+        item_key = f"rec:{r['id']}"
         base = {
-            "key": f"rec:{r['id']}",
+            "key": item_key,
             "ticker": r["ticker"],
             "signal_type": "recommendation",
             "summary": f"{action}: {r['rationale'][:100]}",
@@ -1174,6 +1297,7 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
             "critic_verdict": verdict,
             "is_new": True,
             "since": captured_at,
+            "previously_dismissed": item_key in _dismissed_keys,
         }
         if action in ("OPPORTUNITY", "BUY") and is_approved:
             opportunities.append(base)
@@ -1183,27 +1307,45 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
             watch_items.append(base)
 
     for ns in news_signals:
-        direction = ns.get("direction", "") or ""
+        direction = (ns.get("direction") or "").upper()
         confidence = float(ns.get("confidence") or 0)
-        event_type = ns.get("event_type", "") or ""
+        event_type = ns.get("event_type") or ""
         thesis_rel = float(ns.get("thesis_relevance") or 0)
+        signal_strength = float(ns.get("signal_strength") or 0)
+        confirmation_class = (ns.get("confirmation_class") or "NEWS_ONLY").upper()
+        trend_status = (ns.get("trend_status") or "").upper()
+        portfolio_priority = float(ns.get("portfolio_priority") or 0)
+        trigger_proximity = float(ns.get("event_trigger_proximity") or 0)
+        item_key = f"news:{ns.get('event_id', '')}"
         base = {
-            "key": f"news:{ns.get('event_id', '')}",
+            "key": item_key,
             "ticker": ns.get("ticker"),
             "signal_type": "news_signal",
             "summary": f"{event_type} ({direction}): {ns.get('evidence_text', '')[:100]}",
             "source": "news_events",
             "confidence": confidence,
             "thesis_relevance": thesis_rel,
+            "signal_strength": signal_strength,
+            "trend_status": trend_status,
+            "confirmation_class": confirmation_class,
             "is_new": True,
             "since": captured_at,
+            "previously_dismissed": item_key in _dismissed_keys,
         }
-        is_positive = direction.upper() in ("POSITIVE", "BULLISH")
-        is_negative = direction.upper() in ("NEGATIVE", "BEARISH")
-        is_opp_type = event_type.upper() in ("EMERGING_OPPORTUNITY", "MULTI_SIGNAL", "ACCELERATING")
-        if is_positive and is_opp_type and confidence >= 0.6:
+        is_positive = direction in ("POSITIVE", "BULLISH")
+        is_negative = direction in ("NEGATIVE", "BEARISH", "RISK")
+        # Opportunity: positive direction + multi-signal confirmation OR accelerating trend
+        # OR high portfolio priority, with reasonable confidence
+        is_opp_signal = (
+            confirmation_class == "MULTI_SIGNAL"
+            or trend_status == "ACCELERATING"
+            or portfolio_priority >= 0.7
+        )
+        # Attention: negative + strong signal OR near trigger proximity
+        is_attention_signal = signal_strength >= 0.6 or trigger_proximity >= 0.7
+        if is_positive and is_opp_signal and confidence >= 0.6:
             opportunities.append(base)
-        elif is_negative and confidence >= 0.7 and thesis_rel >= 0.6:
+        elif is_negative and is_attention_signal and confidence >= 0.6 and thesis_rel >= 0.5:
             attention_items.append(base)
         else:
             watch_items.append(base)
@@ -1268,6 +1410,7 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
         "news_signals": news_signals,
         "portfolio_risks": portfolio_risks,
         "critic_summary": critic_counts,
+        "macro_state": macro_state,
         "learning_state": learning_state,
         "execution_state": execution_state,
         "freshness": freshness,
@@ -2642,12 +2785,148 @@ def run_news_maintenance(day=None) -> dict:
     return run_daily_sweep(day=day)
 
 
-def generate_daily_insight(force: bool = False) -> dict:
-    """Portfolio Decision Brief — shim that runs the briefing LLM on demand.
+def _format_capability_summary(brief_state: dict) -> str:
+    """Format learning, execution, and macro state as structured text for the LLM prompt."""
+    lines = []
 
-    Returns the brief dict (new schema with headline/needs_attention/etc).
-    Stores in ai_insights keyed by day. Callers that read `macro_summary` will
-    get None; dashboard JS has been updated for the new schema (0621).
+    # Learning state
+    ls = brief_state.get("learning_state", {})
+    accepted = ls.get("accepted_count", 0)
+    news_status = "COLLECTING" if accepted < 50 else "CALIBRATING"
+    news_influence = "observe-only" if accepted < 50 else "active"
+    lines.append("CAPABILITY STATE:")
+    lines.append(f"  News v2 — {news_status}, {accepted} accepted events, {news_influence}")
+    lines.append("  Macro experiment — Stage 0, production influence 0")
+
+    # Execution state
+    ex = brief_state.get("execution_state", {})
+    pending = ex.get("pending", [])
+    if pending:
+        lines.append("EXECUTION:")
+        for p in pending[:5]:
+            lines.append(f"  {p.get('ticker', '?')} {p.get('action', '?')} — {p.get('status', 'unknown')}")
+    else:
+        lines.append("EXECUTION: No open trade intents")
+
+    # Macro state summary
+    macro = brief_state.get("macro_state", {})
+    if macro:
+        lines.append("MACRO (observe-only, no production influence):")
+        tickers_with_macro = list(macro.keys())[:4]
+        for t in tickers_with_macro:
+            scores = macro[t].get("scores", {})
+            rate = scores.get("rate_sensitivity")
+            if rate is not None:
+                lines.append(f"  {t}: rate_sensitivity={rate:.2f}")
+
+    return "\n".join(lines)
+
+
+def create_portfolio_brief(conn: sqlite3.Connection, force: bool = False) -> dict:
+    """Single function for generating and persisting a Portfolio Decision Brief.
+
+    Used by both the pipeline agent and on-demand refresh so that every
+    displayed brief has a matching portfolio_brief_provenance row with the
+    same brief_id. No dual persistence paths.
+
+    Returns {"brief": briefing_output, "brief_id": brief_id, "brief_state": brief_state}.
+    """
+    import uuid as _uuid
+    from datetime import datetime as _dt2
+
+    brief_state = build_portfolio_brief_state(conn)
+
+    from agents.briefing_agent import _run_briefing_llm
+    briefing_output = _run_briefing_llm(brief_state)
+
+    brief_id = str(_uuid.uuid4())
+    today = date.today().isoformat()
+    now_str = _dt2.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # Persist to ai_insights
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO ai_insights (day, insight, generated_at) VALUES (?,?,?)",
+            (today, json.dumps(briefing_output), now_str),
+        )
+    except Exception as e:
+        print(f"[create_portfolio_brief] Could not persist ai_insight: {e}")
+
+    # Persist to portfolio_brief_provenance (deterministic source_refs from item keys)
+    source_refs = _build_source_refs(brief_state)
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO portfolio_brief_provenance "
+            "(brief_id, captured_at, brief_snapshot_json, briefing_output_json, source_refs_json) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                brief_id,
+                brief_state.get("captured_at", now_str),
+                json.dumps(brief_state),
+                json.dumps(briefing_output),
+                json.dumps(source_refs),
+            ),
+        )
+    except Exception as e:
+        print(f"[create_portfolio_brief] Could not persist provenance: {e}")
+
+    conn.commit()
+    return {"brief": briefing_output, "brief_id": brief_id, "brief_state": brief_state}
+
+
+def _build_source_refs(brief_state: dict) -> list:
+    """Deterministically build source_refs from brief_state item keys.
+
+    Each ref carries source_type, source_id, and item_key. Never generated by LLM.
+    """
+    refs = []
+    all_items = (
+        brief_state.get("attention_items", [])
+        + brief_state.get("opportunities", [])
+        + brief_state.get("watch_items", [])
+    )
+    for item in all_items:
+        key = item.get("key", "")
+        if not key:
+            continue
+        if key.startswith("guardian:"):
+            parts = key.split(":", 2)
+            refs.append({
+                "source_type": "guardian_finding",
+                "item_key": key,
+                "ticker": parts[1] if len(parts) > 1 else None,
+                "finding_type": parts[2] if len(parts) > 2 else None,
+            })
+        elif key.startswith("rec:"):
+            rec_id = key[4:]
+            refs.append({
+                "source_type": "recommendation",
+                "item_key": key,
+                "source_id": rec_id,
+            })
+        elif key.startswith("news:"):
+            event_id = key[5:]
+            refs.append({
+                "source_type": "news_event",
+                "item_key": key,
+                "source_id": event_id,
+            })
+        elif key.startswith("thesis:"):
+            ticker = key[7:]
+            refs.append({
+                "source_type": "thesis",
+                "item_key": key,
+                "ticker": ticker,
+            })
+    return refs
+
+
+def generate_daily_insight(force: bool = False) -> dict:
+    """Portfolio Decision Brief — shim calling create_portfolio_brief() on demand.
+
+    Returns the brief dict (headline/needs_attention/etc schema).
+    Uses create_portfolio_brief() so ai_insights and portfolio_brief_provenance
+    are always written together from the same generation — no mismatched brief_ids.
     """
     _init_ai_tables()
     today = date.today().isoformat()
@@ -2665,28 +2944,14 @@ def generate_daily_insight(force: bool = False) -> dict:
             except Exception:
                 pass
 
-    # Build brief state (deterministic — no LLM) then call briefing LLM
-    # (_run_briefing_llm has its own fallback for unavailable LLM)
     conn = sqlite3.connect(str(DB_PATH), timeout=10)
     conn.row_factory = sqlite3.Row
-    brief_state = build_portfolio_brief_state(conn)
-    conn.close()
-
-    from agents.briefing_agent import _run_briefing_llm
-    insight = _run_briefing_llm(brief_state)
-
-    # Persist to DB
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    if DB_PATH.exists():
-        conn = sqlite3.connect(str(DB_PATH), timeout=10)
-        conn.execute(
-            "INSERT OR REPLACE INTO ai_insights (day, insight, generated_at) VALUES (?,?,?)",
-            (today, json.dumps(insight), now_str),
-        )
-        conn.commit()
+    try:
+        result = create_portfolio_brief(conn, force=force)
+    finally:
         conn.close()
 
-    return insight
+    return result["brief"]
 
 
 # ── Holding macro scores ──────────────────────────────────────────────────────

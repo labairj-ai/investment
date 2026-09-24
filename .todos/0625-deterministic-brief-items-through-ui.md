@@ -1,7 +1,7 @@
 # Preserve Deterministic Brief Items Through the UI
 
 - **ID:** 0625
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-24
 - **Priority:** high
 - **Depends:** 0619, 0624

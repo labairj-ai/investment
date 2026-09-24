@@ -10458,11 +10458,11 @@ async function rejectThesisProposal(recId) {{
       const items = ins.needs_attention.map((a, i) => {{
         const ticker = a.ticker ? `<span class="ai-item-ticker">${{_esc(a.ticker)}}</span>` : '';
         const newBadge = a.is_new ? '<span class="ai-new-badge">NEW</span>' : '';
-        const dismissed = (a._dismiss_count || 0) >= 3 ? '<span class="ai-dismissed-badge">previously dismissed</span>' : '';
+        const dismissed = a.previously_dismissed ? '<span class="ai-dismissed-badge">previously dismissed</span>' : '';
         const meta = a.source ? `<div class="ai-item-meta">${{_esc(a.source)}}${{a.link_tab ? ` · <a href="#" onclick="switchTab('${{a.link_tab}}');return false;" style="color:#718096;">${{_esc(a.link_tab)}}</a>` : ''}}</div>` : '';
         const itemKey = a.key || `attention_${{i}}`;
         const btns = `<div class="ai-respond-btns">
-          <button class="ai-respond-btn act" onclick="_briefRespond('${{_esc(itemKey)}}','ACT')">ACT</button>
+          <button class="ai-respond-btn act" onclick="_briefRespond('${{_esc(itemKey)}}','ACT')">REVIEW</button>
           <button class="ai-respond-btn dismiss" onclick="_briefRespond('${{_esc(itemKey)}}','DISMISS')">DISMISS</button>
           <button class="ai-respond-btn defer" onclick="_briefRespond('${{_esc(itemKey)}}','DEFER')">DEFER</button>
         </div>`;
@@ -10479,7 +10479,7 @@ async function rejectThesisProposal(recId) {{
         const meta = o.source ? `<div class="ai-item-meta">${{_esc(o.source)}}</div>` : '';
         const itemKey = o.key || `opp_${{i}}`;
         const btns = `<div class="ai-respond-btns">
-          <button class="ai-respond-btn act" onclick="_briefRespond('${{_esc(itemKey)}}','ACT')">ACT</button>
+          <button class="ai-respond-btn act" onclick="_briefRespond('${{_esc(itemKey)}}','ACT')">REVIEW</button>
           <button class="ai-respond-btn dismiss" onclick="_briefRespond('${{_esc(itemKey)}}','DISMISS')">DISMISS</button>
           <button class="ai-respond-btn defer" onclick="_briefRespond('${{_esc(itemKey)}}','DEFER')">DEFER</button>
         </div>`;

@@ -1,7 +1,7 @@
 # Complete Response Lineage and Unify Brief Persistence
 
 - **ID:** 0626
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-24
 - **Priority:** high
 - **Depends:** 0623, 0625
