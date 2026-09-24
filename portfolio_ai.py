@@ -848,6 +848,27 @@ def _init_ai_tables():
         conn.execute("ALTER TABLE agent_runs ADD COLUMN finished_at REAL")
     except Exception:
         pass
+    # 0619: brief state snapshot + provenance + response tables
+    conn.execute("""CREATE TABLE IF NOT EXISTS portfolio_brief_snapshots (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        captured_at  TEXT NOT NULL,
+        snapshot_json TEXT NOT NULL
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS portfolio_brief_provenance (
+        brief_id            TEXT PRIMARY KEY,
+        captured_at         TEXT,
+        brief_snapshot_json TEXT,
+        briefing_output_json TEXT,
+        source_refs_json    TEXT
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS portfolio_brief_responses (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        brief_id     TEXT,
+        item_key     TEXT,
+        action       TEXT,
+        note         TEXT,
+        responded_at TEXT
+    )""")
     conn.commit()
     conn.close()
 
@@ -880,6 +901,387 @@ def get_accepted_news_events(conn: sqlite3.Connection, accepted_version: str = "
         " AND news_snapshot_hash IN (SELECT snapshot_hash FROM news_snapshots WHERE version = ?)",
         (boundary, version, version),
     ).fetchall()
+
+
+def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> dict:
+    """Collect every subsystem into a single deterministic snapshot (no LLM/network calls).
+
+    Returns the structured state dict and stores a row in portfolio_brief_snapshots.
+    The `changes` list is populated by diffing against the prior stored snapshot.
+    """
+    import time as _time
+    from datetime import datetime as _dtu
+
+    now_ts = now or _time.time()
+    captured_at = _dtu.utcfromtimestamp(now_ts).strftime("%Y-%m-%dT%H:%M:%SZ")
+    conn.row_factory = sqlite3.Row
+    cutoff_24h = now_ts - 86400
+
+    # ── 1. Guardian + specialist findings (last 24h) ──────────────────────────
+    finding_rows = conn.execute(
+        """SELECT af.id, af.ticker, af.finding_type, af.severity, af.confidence,
+                  af.summary, af.why_now, af.created_at, ar.agent_type
+           FROM agent_findings af
+           JOIN agent_runs ar ON ar.id = af.run_id
+           WHERE af.created_at >= ?
+           ORDER BY af.severity DESC, af.created_at DESC""",
+        (cutoff_24h,),
+    ).fetchall()
+
+    findings_by_type: dict = {}
+    for r in finding_rows:
+        key = r["agent_type"] or "unknown"
+        findings_by_type.setdefault(key, []).append({
+            "id": r["id"],
+            "ticker": r["ticker"],
+            "finding_type": r["finding_type"],
+            "severity": r["severity"],
+            "confidence": r["confidence"],
+            "summary": r["summary"],
+            "created_at": r["created_at"],
+        })
+
+    # ── 2. Open recommendations with Critic verdict ───────────────────────────
+    rec_rows = conn.execute(
+        """SELECT r.id, r.ticker, r.action, r.recommendation_score, r.confidence,
+                  r.priority, r.why_now, r.rationale, r.status, r.created_at,
+                  ar.agent_type,
+                  cr.verdict as critic_verdict, cr.strongest_objection
+           FROM recommendations r
+           LEFT JOIN agent_runs ar ON ar.id = r.run_id
+           LEFT JOIN critic_reviews cr ON cr.recommendation_id = r.id
+           WHERE r.status = 'open'
+             AND r.action NOT IN ('NO_ACTION', 'NO_CALL', 'BRIEFING')
+           ORDER BY r.recommendation_score DESC, r.created_at DESC""",
+    ).fetchall()
+
+    open_decisions = []
+    critic_counts = {"APPROVE": 0, "APPROVE_WITH_CAUTION": 0, "CHALLENGE": 0, "VETO": 0}
+    for r in rec_rows:
+        verdict = r["critic_verdict"] or ""
+        if verdict in critic_counts:
+            critic_counts[verdict] += 1
+        open_decisions.append({
+            "id": r["id"],
+            "ticker": r["ticker"],
+            "action": r["action"],
+            "score": r["recommendation_score"],
+            "confidence": r["confidence"],
+            "priority": r["priority"],
+            "agent_type": r["agent_type"],
+            "rationale": (r["rationale"] or "")[:200],
+            "why_now": (r["why_now"] or "")[:200],
+            "critic_verdict": verdict,
+            "critic_objection": (r["strongest_objection"] or "")[:200],
+            "created_at": r["created_at"],
+        })
+
+    # ── 3. Accepted news events ───────────────────────────────────────────────
+    news_rows = get_accepted_news_events(conn, "v2")
+    news_signals = []
+    last_news_ts = None
+    for row in news_rows:
+        d = dict(row)
+        last_seen = d.get("last_seen") or d.get("extracted_at")
+        if last_seen and (last_news_ts is None or last_seen > last_news_ts):
+            last_news_ts = last_seen
+        news_signals.append({
+            "ticker": d.get("ticker"),
+            "event_type": d.get("event_type"),
+            "direction": d.get("direction"),
+            "magnitude": d.get("magnitude"),
+            "confidence": d.get("confidence"),
+            "thesis_relevance": d.get("thesis_relevance", 0.0),
+            "evidence_text": (d.get("evidence_text") or "")[:200],
+            "first_seen": d.get("first_seen"),
+            "event_id": d.get("event_id"),
+        })
+
+    # ── 4. Macro scores ───────────────────────────────────────────────────────
+    macro_rows = conn.execute(
+        "SELECT ticker, scores, updated_at FROM holding_macro_scores"
+    ).fetchall()
+    macro_state: dict = {}
+    macro_last_updated = None
+    for r in macro_rows:
+        try:
+            scores = json.loads(r["scores"] or "{}")
+        except Exception:
+            scores = {}
+        macro_state[r["ticker"]] = {"scores": scores, "updated_at": r["updated_at"]}
+        if r["updated_at"] and (macro_last_updated is None or r["updated_at"] > macro_last_updated):
+            macro_last_updated = r["updated_at"]
+
+    # ── 5. Thesis health ──────────────────────────────────────────────────────
+    holdings = _load_holdings_csv()
+    thesis_deltas = []
+    portfolio_risks = []
+    try:
+        import agent_db as _adb
+        for h in holdings:
+            ticker = str(h.get("Stock", "")).strip().upper()
+            if not ticker:
+                continue
+            t = _adb.get_thesis(ticker)
+            if not t or t.get("status") != "ACTIVE":
+                continue
+            health = t.get("health_score")
+            pillars = t.get("pillars", [])
+            violated = [p["name"] for p in pillars if p.get("status") == "VIOLATED"]
+            warning = [p["name"] for p in pillars if p.get("status") == "WARNING"]
+            thesis_deltas.append({
+                "ticker": ticker,
+                "health_score": health,
+                "violated_pillars": violated,
+                "warning_pillars": warning,
+                "has_critical_violation": t.get("has_critical_violation", False),
+            })
+            if violated or (health is not None and health < 50):
+                severity = "high" if (violated or (health is not None and health < 40)) else "medium"
+                summary = f"Thesis health {health:.0f}/100" if health is not None else "Thesis health unknown"
+                if violated:
+                    summary += f" — VIOLATED: {', '.join(violated)}"
+                portfolio_risks.append({
+                    "key": f"thesis:{ticker}",
+                    "ticker": ticker,
+                    "signal_type": "thesis_health",
+                    "summary": summary,
+                    "source": "thesis_monitor",
+                    "severity": severity,
+                })
+    except Exception:
+        pass
+
+    # ── 6. Learning state ─────────────────────────────────────────────────────
+    learning_state: dict = {"accepted_count": 0, "last_sweep": None}
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) as n FROM news_events WHERE news_intelligence_version='v2'"
+        ).fetchone()
+        learning_state["accepted_count"] = row[0] if row else 0
+        sweep_row = conn.execute(
+            "SELECT MAX(started_at) as last_sweep FROM learning_sweep_runs"
+        ).fetchone()
+        if sweep_row and sweep_row[0]:
+            learning_state["last_sweep"] = sweep_row[0]
+    except Exception:
+        pass
+
+    # ── 7. Execution state (open trade intents) ───────────────────────────────
+    execution_state: dict = {"open_intents": 0, "pending": []}
+    last_intent_ts = None
+    try:
+        intent_rows = conn.execute(
+            """SELECT intent_id, ticker, action, quantity, status, created_at
+               FROM trade_intents
+               WHERE status NOT IN ('filled', 'cancelled', 'expired')
+               ORDER BY created_at DESC LIMIT 20"""
+        ).fetchall()
+        execution_state["open_intents"] = len(intent_rows)
+        for r in intent_rows:
+            execution_state["pending"].append({
+                "ticker": r["ticker"],
+                "action": r["action"],
+                "quantity": r["quantity"],
+                "status": r["status"],
+            })
+            if r["created_at"] and (last_intent_ts is None or r["created_at"] > last_intent_ts):
+                last_intent_ts = r["created_at"]
+    except Exception:
+        pass
+
+    # ── 8. Freshness ─────────────────────────────────────────────────────────
+    def _freshness_entry(last_updated_str, stale_hours: float = 24) -> dict:
+        if not last_updated_str:
+            return {"last_updated": None, "age_hours": None, "is_stale": True, "status": "UNAVAILABLE"}
+        try:
+            ts_str = str(last_updated_str).replace("T", " ").rstrip("Z")
+            dt = _dtu.strptime(ts_str[:19], "%Y-%m-%d %H:%M:%S")
+            age_h = round((now_ts - dt.timestamp()) / 3600, 1)
+            is_stale = age_h > stale_hours
+            return {
+                "last_updated": last_updated_str,
+                "age_hours": age_h,
+                "is_stale": is_stale,
+                "status": "STALE" if is_stale else "CURRENT",
+            }
+        except Exception:
+            return {"last_updated": last_updated_str, "age_hours": None, "is_stale": False, "status": "CURRENT"}
+
+    last_finding_ts = None
+    if finding_rows:
+        max_ts = max((r["created_at"] or 0) for r in finding_rows)
+        if max_ts:
+            last_finding_ts = _dtu.utcfromtimestamp(float(max_ts)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    freshness = {
+        "agent_findings": _freshness_entry(last_finding_ts, stale_hours=28),
+        "macro_scores":   _freshness_entry(macro_last_updated, stale_hours=72),
+        "news_events":    _freshness_entry(last_news_ts, stale_hours=48),
+        "recommendations": _freshness_entry(
+            open_decisions[0]["created_at"] if open_decisions else None, stale_hours=28
+        ),
+    }
+    degraded = any(v["status"] in ("STALE", "UNAVAILABLE") for v in freshness.values())
+    freshness["overall"] = "DEGRADED" if degraded else "CURRENT"
+
+    # ── 9. Classify attention / opportunity / watch ───────────────────────────
+    attention_items: list = []
+    opportunities: list = []
+    watch_items: list = []
+
+    for finding in findings_by_type.get("portfolio_guardian", []):
+        sev = finding.get("severity", 0) or 0
+        item = {
+            "key": f"guardian:{finding.get('id', '')}",
+            "ticker": finding.get("ticker"),
+            "signal_type": "guardian_finding",
+            "summary": finding.get("summary", ""),
+            "source": "portfolio_guardian",
+            "severity": "high" if sev >= 70 else "medium",
+            "is_new": True,
+            "since": captured_at,
+        }
+        if sev >= 50:
+            attention_items.append(item)
+        else:
+            watch_items.append(item)
+
+    for risk in portfolio_risks:
+        base = {**risk, "is_new": True, "since": captured_at}
+        if risk["severity"] == "high":
+            attention_items.append(base)
+        else:
+            watch_items.append(base)
+
+    for r in open_decisions:
+        verdict = r["critic_verdict"]
+        action = r["action"]
+        is_approved = verdict in ("APPROVE", "APPROVE_WITH_CAUTION")
+        base = {
+            "key": f"rec:{r['id']}",
+            "ticker": r["ticker"],
+            "signal_type": "recommendation",
+            "summary": f"{action}: {r['rationale'][:100]}",
+            "source": r["agent_type"] or "unknown",
+            "critic_verdict": verdict,
+            "is_new": True,
+            "since": captured_at,
+        }
+        if action in ("OPPORTUNITY", "BUY") and is_approved:
+            opportunities.append(base)
+        elif is_approved:
+            attention_items.append(base)
+        else:
+            watch_items.append(base)
+
+    for ns in news_signals:
+        direction = ns.get("direction", "") or ""
+        confidence = float(ns.get("confidence") or 0)
+        event_type = ns.get("event_type", "") or ""
+        thesis_rel = float(ns.get("thesis_relevance") or 0)
+        base = {
+            "key": f"news:{ns.get('event_id', '')}",
+            "ticker": ns.get("ticker"),
+            "signal_type": "news_signal",
+            "summary": f"{event_type} ({direction}): {ns.get('evidence_text', '')[:100]}",
+            "source": "news_events",
+            "confidence": confidence,
+            "thesis_relevance": thesis_rel,
+            "is_new": True,
+            "since": captured_at,
+        }
+        is_positive = direction.upper() in ("POSITIVE", "BULLISH")
+        is_negative = direction.upper() in ("NEGATIVE", "BEARISH")
+        is_opp_type = event_type.upper() in ("EMERGING_OPPORTUNITY", "MULTI_SIGNAL", "ACCELERATING")
+        if is_positive and is_opp_type:
+            opportunities.append(base)
+        elif is_negative and confidence >= 0.6 and thesis_rel >= 0.5:
+            attention_items.append(base)
+        else:
+            watch_items.append(base)
+
+    # ── 10. Diff against prior snapshot ──────────────────────────────────────
+    changes: list = []
+    try:
+        prior_row = conn.execute(
+            "SELECT snapshot_json FROM portfolio_brief_snapshots ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        if prior_row and prior_row[0]:
+            prior = json.loads(prior_row[0])
+            prior_keys: dict = {}
+            for section in ("attention_items", "opportunities", "watch_items"):
+                for pitem in prior.get(section, []):
+                    k = pitem.get("key", "")
+                    if k:
+                        prior_keys[k] = pitem
+
+            for section_list in (attention_items, opportunities, watch_items):
+                for item in section_list:
+                    k = item.get("key", "")
+                    if k and k in prior_keys:
+                        item["is_new"] = False
+                        item["since"] = prior_keys[k].get("since", captured_at)
+                    else:
+                        item["is_new"] = True
+                        item["since"] = captured_at
+                        if k:
+                            changes.append({
+                                "key": k,
+                                "ticker": item.get("ticker"),
+                                "type": item.get("signal_type"),
+                                "summary": item.get("summary", "")[:120],
+                            })
+
+            # Thesis score deltas ≥5 points
+            prior_thesis = {t["ticker"]: t for t in prior.get("thesis_deltas", [])}
+            for td in thesis_deltas:
+                ticker = td["ticker"]
+                if ticker in prior_thesis:
+                    old_score = prior_thesis[ticker].get("health_score")
+                    new_score = td.get("health_score")
+                    if old_score is not None and new_score is not None and abs(new_score - old_score) >= 5:
+                        changes.append({
+                            "key": f"thesis_delta:{ticker}",
+                            "ticker": ticker,
+                            "type": "thesis_score_change",
+                            "summary": f"Health score {old_score:.0f} → {new_score:.0f} ({new_score - old_score:+.0f})",
+                        })
+    except Exception:
+        pass
+
+    state = {
+        "captured_at": captured_at,
+        "changes": changes,
+        "attention_items": attention_items,
+        "opportunities": opportunities,
+        "watch_items": watch_items,
+        "open_decisions": open_decisions,
+        "thesis_deltas": thesis_deltas,
+        "news_signals": news_signals,
+        "portfolio_risks": portfolio_risks,
+        "critic_summary": critic_counts,
+        "learning_state": learning_state,
+        "execution_state": execution_state,
+        "freshness": freshness,
+    }
+
+    # ── 11. Store snapshot (keep last 30) ─────────────────────────────────────
+    try:
+        conn.execute(
+            "INSERT INTO portfolio_brief_snapshots (captured_at, snapshot_json) VALUES (?, ?)",
+            (captured_at, json.dumps(state)),
+        )
+        conn.execute(
+            """DELETE FROM portfolio_brief_snapshots WHERE id NOT IN (
+               SELECT id FROM portfolio_brief_snapshots ORDER BY id DESC LIMIT 30
+            )"""
+        )
+        conn.commit()
+    except Exception:
+        pass
+
+    return state
 
 
 MACRO_SCORE_SCHEMA_VERSION = "v3"
@@ -2234,9 +2636,11 @@ def run_news_maintenance(day=None) -> dict:
 
 
 def generate_daily_insight(force: bool = False) -> dict:
-    """
-    Generate today's portfolio briefing by synthesizing specialist agent findings.
-    Returns the insight dict. Stores in DB. Uses cached result if already run today.
+    """Portfolio Decision Brief — shim that runs the briefing LLM on demand.
+
+    Returns the brief dict (new schema with headline/needs_attention/etc).
+    Stores in ai_insights keyed by day. Callers that read `macro_summary` will
+    get None; dashboard JS has been updated for the new schema (0621).
     """
     _init_ai_tables()
     today = date.today().isoformat()
@@ -2257,162 +2661,22 @@ def generate_daily_insight(force: bool = False) -> dict:
     if not ollama_client.available():
         return {"error": "AI model unavailable — check MLX server"}
 
-    import macro_context
-    import agent_db as _adb
-    macro = macro_context.fetch()
-    macro_block = macro.get("formatted_block", "Macro data unavailable.")
+    # Build brief state (deterministic — no LLM) then call briefing LLM
+    conn = sqlite3.connect(str(DB_PATH), timeout=10)
+    conn.row_factory = sqlite3.Row
+    brief_state = build_portfolio_brief_state(conn)
+    conn.close()
 
-    # Portfolio summary: total value + layer weights with drift
-    prices        = _get_holding_prices_from_db()
-    layer_weights = _get_layer_weights_from_db()
-    drift_alerts  = _get_drift_alerts(layer_weights)
-    total_value   = sum(v.get("value", 0) or 0 for v in prices.values())
-
-    layer_lines = ["PORTFOLIO SUMMARY:"]
-    if total_value:
-        layer_lines.append(f"  Total value: ${total_value:,.0f}")
-    for label, data in sorted(layer_weights.items()):
-        wt  = data.get("weight_pct", 0)
-        chg = data.get("chg_pct", 0)
-        layer_lines.append(f"  {label}: {wt:.1f}% actual ({chg:+.1f}% today)")
-    if drift_alerts:
-        layer_lines.append("  Drift alerts (≥5pp from target):")
-        for d in drift_alerts:
-            layer_lines.append(
-                f"    {d['layer']}: {d['current']:.1f}% vs {d['target']:.0f}% target ({d['drift']:+.1f}pp)"
-            )
-    portfolio_summary_block = "\n".join(layer_lines)
-
-    # Specialist agent findings (today's runs) + open recommendations
-    agent_data = _adb.get_todays_findings()
-    findings_by_agent = agent_data["findings"]
-    open_recs = agent_data["recommendations"]
-
-    findings_lines = ["SPECIALIST AGENT FINDINGS (today):"]
-    if findings_by_agent:
-        for agent_type, flist in sorted(findings_by_agent.items()):
-            for f in flist:
-                ticker_tag = f"[{f['ticker']}] " if f["ticker"] else ""
-                sev = f["severity"]
-                summary = (f["summary"] or "")[:200]
-                why = (f["why_now"] or "")[:120]
-                why_part = f" | {why}" if why else ""
-                findings_lines.append(
-                    f"  {agent_type}: {ticker_tag}{f['finding_type']} sev={sev} — {summary}{why_part}"
-                )
-    else:
-        findings_lines.append("  No specialist findings recorded for today.")
-
-    recs_lines = [f"\nOPEN RECOMMENDATIONS ({len(open_recs)} total):"]
-    if open_recs:
-        for r in open_recs[:20]:  # cap to avoid prompt bloat
-            ticker = r["ticker"]
-            action = r["action"]
-            score  = r["score"]
-            conf   = r["confidence"]
-            pri    = r["priority"]
-            agent  = r["agent_type"] or "?"
-            why    = (r["why_now"] or "")[:160]
-            rationale = (r["rationale"] or "")[:160]
-            critic_v = r["critic_verdict"] or ""
-            critic_o = (r["critic_objection"] or "")[:100]
-            critic_part = f" | critic: {critic_v}" + (f" — {critic_o}" if critic_o else "") if critic_v else ""
-            recs_lines.append(
-                f"  [{ticker}] {action} | score={score} conf={conf} pri={pri} | {agent}{critic_part}"
-            )
-            if why:
-                recs_lines.append(f"    why: {why}")
-            if rationale and rationale != why:
-                recs_lines.append(f"    rationale: {rationale}")
-    else:
-        recs_lines.append("  No open recommendations.")
-
-    # News outlook summary (pre-computed — compact, no per-ticker details)
-    news_block = ""
-    news_summaries, _ = get_cached_news_summaries_today()
-    if news_summaries and not news_summaries.get("_failed"):
-        ol = news_summaries.get("_outlook") or {}
-        news_lines = ["NEWS OUTLOOK (pre-computed highlights):"]
-        if ol.get("top_risk"):
-            news_lines.append(f"  Top risk: {ol['top_risk']}")
-        if ol.get("top_opportunity"):
-            news_lines.append(f"  Top opportunity: {ol['top_opportunity']}")
-        if ol.get("tax_watch"):
-            news_lines.append(f"  Tax watch: {ol['tax_watch']}")
-        if ol.get("action_items"):
-            for item in (ol["action_items"] or [])[:4]:
-                news_lines.append(f"  - {item}")
-        if len(news_lines) > 1:
-            news_block = "\n".join(news_lines) + "\n\n"
-
-    specialist_block = "\n".join(findings_lines) + "\n" + "\n".join(recs_lines)
-
-    prompt = f"""You are a sophisticated investment advisor writing a daily portfolio briefing. Your job is to SYNTHESIZE the specialist agent findings below — not re-analyze the portfolio from scratch. Return ONLY valid JSON — no markdown, no extra text.
-
-{macro_block}
-
-{portfolio_summary_block}
-
-{specialist_block}
-
-{news_block}INSTRUCTIONS:
-- Open with the most important issue flagged by specialist agents today
-- Reference agents by name: "Guardian flagged GRMN...", "CC Agent recommends...", "Critic approved/rejected..."
-- If critic reviewed a recommendation, include the verdict and key objection in risk_flags
-- For tax_timing_note and tax_opportunity: use agent findings if available; otherwise note "No agent tax findings today"
-- If no material findings exist, say so concisely ("No material specialist findings today — routine monitoring only")
-- Do not invent risks not grounded in the findings above
-- Do not give generic market commentary — tie every observation to specific tickers from the findings
-
-Return exactly this JSON structure:
-{{
-  "macro_summary": "<2-3 sentence description of today's macro regime and its most relevant implication for this specific portfolio based on layer weights and any flagged drift>",
-  "risk_flags": [
-    "<agent name + ticker: specific risk from findings — e.g. 'Guardian flagged GRMN: 10Y yield at 4.7% compresses its growth multiple'>",
-    "<agent name + ticker: recommendation with critic verdict if reviewed — e.g. 'CC Agent: SELL_CC on EW (score=78) — Critic APPROVED'>",
-    "<additional finding or 'No further material risks flagged'>"
-  ],
-  "tax_timing_note": "<tax agent findings if any, or 'No agent tax findings today'>",
-  "key_question": "<the single most important portfolio decision surfaced by today's agent findings — specific and actionable>",
-  "tax_opportunity": "<specific ticker from tax agent findings, or 'None this week'>",
-  "legislative_watch": "<apply the LEGISLATIVE CONNECTION RULE: only name a bill if it has a direct one-step impact on a specific held ticker's actual industry or business. Name the bill by ID, the holding, the mechanism, and the stage. If no bill qualifies, write 'No material legislation this week'>"
-}}
-
-{_LEG_RULE}"""
-
-    # Log estimated prompt size vs old approach for token reduction verification
-    est_tokens = len(prompt) // 4
-    print(f"[DailyInsight] New prompt ~{est_tokens} tokens "
-          f"({len(findings_by_agent)} agent types, {len(open_recs)} recs)")
-
-    # Collect both reasoning and content tokens: Qwen3 thinking models sometimes
-    # put the final answer in delta.reasoning tail (content stays empty when the
-    # budget runs out). _extract_last_json then picks the LAST valid JSON with
-    # the expected schema keys, skipping reasoning sketches with "..." placeholders.
-    full_text = ""
-    try:
-        for tok in ollama_client.stream_generate(
-            prompt, model=ollama_client.DEFAULT_MODEL,
-            temperature=0.3, num_predict=8000,
-            enable_thinking=True
-        ):
-            full_text += tok
-    except Exception as e:
-        return {"error": f"AI generation failed: {e}"}
-
-    insight = _extract_last_json(full_text, required_keys=["macro_summary", "risk_flags"])
-    if insight is None:
-        print(f"[DailyInsight] Parse failed. Raw output (first 600): {full_text[:600]!r}")
-        return {"error": "AI returned malformed JSON", "raw": full_text[:500]}
+    from agents.briefing_agent import _run_briefing_llm
+    insight = _run_briefing_llm(brief_state)
 
     # Persist to DB
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    macro_snap = {k: v for k, v in macro.items() if k not in ("formatted_block", "headlines")}
     if DB_PATH.exists():
         conn = sqlite3.connect(str(DB_PATH), timeout=10)
         conn.execute(
-            "INSERT OR REPLACE INTO ai_insights (day, insight, macro_snap, generated_at) VALUES (?,?,?,?)",
-            (today, json.dumps(insight), json.dumps(macro_snap), now_str)
+            "INSERT OR REPLACE INTO ai_insights (day, insight, generated_at) VALUES (?,?,?)",
+            (today, json.dumps(insight), now_str),
         )
         conn.commit()
         conn.close()
