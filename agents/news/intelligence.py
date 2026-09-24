@@ -310,6 +310,7 @@ def extract_events_llm(by_ticker: dict, ollama_client_mod,
         return {"_extraction_ok": False, "_manifest": manifest}
 
     valid: dict = {}
+    ticker_diagnostics: dict = {}
     for ticker, events in parsed.items():
         event_ticker = ticker.upper()
 
@@ -320,9 +321,17 @@ def extract_events_llm(by_ticker: dict, ollama_client_mod,
         if not isinstance(events, list):
             continue
 
+        # 0617: per-ticker validation diagnostics
+        candidate_count = len(events)
+        accepted_count = 0
+        rejected_count = 0
+        rejection_reasons: list = []
+
         clean_events = []
         for ev in events:
             if not isinstance(ev, dict):
+                rejected_count += 1
+                rejection_reasons.append("malformed_event_structure")
                 continue
             et = ev.get("event_type", "").upper()
             if et not in EVENT_TAXONOMY:
@@ -350,6 +359,8 @@ def extract_events_llm(by_ticker: dict, ollama_client_mod,
 
             # 0597: reject event with zero valid same-ticker article IDs
             if not validated_ids:
+                rejected_count += 1
+                rejection_reasons.append("zero_valid_article_ids")
                 continue
 
             # causal_driver (0593)
@@ -372,6 +383,7 @@ def extract_events_llm(by_ticker: dict, ollama_client_mod,
                 if _evidence_id(event_ticker, aid) in manifest
             ]
 
+            accepted_count += 1
             clean_events.append({
                 "event_type":      et,
                 "direction":       direction,
@@ -385,9 +397,18 @@ def extract_events_llm(by_ticker: dict, ollama_client_mod,
                 "causal_event_key": cek,
                 "titles":          titles,
             })
+
+        # 0617: record diagnostics for this ticker regardless of whether it has valid events
+        ticker_diagnostics[event_ticker] = {
+            "candidate_count":  candidate_count,
+            "accepted_count":   accepted_count,
+            "rejected_count":   rejected_count,
+            "rejection_reasons": rejection_reasons,
+        }
         if clean_events:
             valid[event_ticker] = clean_events
 
+    valid["_ticker_diagnostics"] = ticker_diagnostics
     valid["_manifest"] = manifest
     valid["_extraction_ok"] = True
     return valid
@@ -963,12 +984,17 @@ def _get_thesis_health(ticker: str) -> Optional[tuple]:
 def _get_macro_score(ticker: str, conn: sqlite3.Connection,
                      snapshot_captured_at: Optional[str] = None) -> dict:
     try:
-        # Point-in-time: use history row at or before snapshot time (0612)
+        # 0615: use epoch for point-in-time comparison to avoid local-time vs UTC text leak.
+        # Rows without scored_at_epoch are from before the migration — fail closed.
         if snapshot_captured_at:
+            snap_epoch = _iso_to_unix(snapshot_captured_at)
+            if snap_epoch is None:
+                return {}
             hist = conn.execute(
                 "SELECT scores FROM holding_macro_scores_history "
-                "WHERE ticker=? AND scored_at <= ? ORDER BY scored_at DESC LIMIT 1",
-                (ticker, snapshot_captured_at),
+                "WHERE ticker=? AND scored_at_epoch IS NOT NULL AND scored_at_epoch <= ? "
+                "ORDER BY scored_at_epoch DESC LIMIT 1",
+                (ticker, snap_epoch),
             ).fetchone()
             if hist and hist[0]:
                 return json.loads(hist[0])
@@ -1315,107 +1341,111 @@ def persist_events(events_by_ticker: dict,
                    snapshot_id: Optional[str] = None,
                    captured_at: Optional[str] = None,
                    input_tickers: Optional[set] = None) -> None:
-    # 0613: write snapshot row first as the transaction prerequisite.
-    # If this INSERT fails, the exception propagates and no events are committed.
-    if news_snapshot_hash:
-        _persist_snapshot(conn, news_snapshot_hash, snapshot_id, captured_at, manifest)
+    try:
+        # 0613: write snapshot row first as the transaction prerequisite.
+        # If this INSERT fails, the exception propagates and no events are committed.
+        if news_snapshot_hash:
+            _persist_snapshot(conn, news_snapshot_hash, snapshot_id, captured_at, manifest)
 
-    now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-    # 0614: on successful extraction, delete all input tickers (not just event-producing ones)
-    tickers_to_delete = list(input_tickers) if input_tickers else list(events_by_ticker.keys())
-    if tickers_to_delete:
-        placeholders = ",".join("?" * len(tickers_to_delete))
-        conn.execute(
-            f"DELETE FROM news_events WHERE day=? AND ticker IN ({placeholders})",
-            [day] + tickers_to_delete,
-        )
-
-    for ticker, events in events_by_ticker.items():
-        for ev in events:
-            fingerprint = _event_fingerprint(
-                ticker, ev["event_type"], ev["direction"],
-                ev.get("affected_metric", "")
+        now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        # 0614: on successful extraction, delete all input tickers (not just event-producing ones)
+        tickers_to_delete = list(input_tickers) if input_tickers else list(events_by_ticker.keys())
+        if tickers_to_delete:
+            placeholders = ",".join("?" * len(tickers_to_delete))
+            conn.execute(
+                f"DELETE FROM news_events WHERE day=? AND ticker IN ({placeholders})",
+                [day] + tickers_to_delete,
             )
 
-            existing = conn.execute(
-                "SELECT first_seen FROM news_events WHERE ticker=? AND event_fingerprint=? "
-                "ORDER BY first_seen ASC LIMIT 1",
-                (ticker, fingerprint)
-            ).fetchone()
-            first_seen = existing[0] if existing else day
+        for ticker, events in events_by_ticker.items():
+            for ev in events:
+                fingerprint = _event_fingerprint(
+                    ticker, ev["event_type"], ev["direction"],
+                    ev.get("affected_metric", "")
+                )
 
-            article_ids = ev.get("article_ids", [])
-            source_count = len(article_ids) if article_ids else 1
+                existing = conn.execute(
+                    "SELECT first_seen FROM news_events WHERE ticker=? AND event_fingerprint=? "
+                    "ORDER BY first_seen ASC LIMIT 1",
+                    (ticker, fingerprint)
+                ).fetchone()
+                first_seen = existing[0] if existing else day
 
+                article_ids = ev.get("article_ids", [])
+                source_count = len(article_ids) if article_ids else 1
+
+                conn.execute(
+                    """INSERT OR REPLACE INTO news_events
+                       (event_id, ticker, day, event_type, direction, magnitude,
+                        expected_horizon, confidence, affected_metric, evidence_text,
+                        source_titles, source_count, first_seen, last_seen,
+                        thesis_relevance, pillar_name, risk_name, catalyst_name,
+                        trigger_proximity,
+                        pillar_health_state, event_trigger_state, event_trigger_proximity,
+                        trend_status, occurrence_count_7d, occurrence_count_30d, occurrence_count_90d,
+                        signal_strength, portfolio_priority, score_decomposition,
+                        confirmation_class, confirmation_signals, skepticism_note,
+                        news_snapshot_hash, extracted_at,
+                        event_fingerprint, article_ids_json, causal_driver, causal_event_key,
+                        news_intelligence_version)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        ev.get("event_id") or str(uuid.uuid4()),
+                        ticker, day,
+                        ev["event_type"], ev["direction"], ev["magnitude"],
+                        ev["horizon"], ev["confidence"],
+                        ev.get("affected_metric", ""),
+                        ev.get("evidence", ""),
+                        json.dumps(ev.get("titles", [])),
+                        source_count,
+                        first_seen, day,
+                        ev.get("thesis_relevance", 0.0),
+                        ev.get("pillar_name"),
+                        ev.get("risk_name"),
+                        ev.get("catalyst_name"),
+                        ev.get("trigger_proximity", 0.0),
+                        ev.get("pillar_health_state"),
+                        ev.get("event_trigger_state", "NONE"),
+                        ev.get("event_trigger_proximity", 0.0),
+                        ev.get("trend_status", "NEW"),
+                        ev.get("occurrence_count_7d", 0),
+                        ev.get("occurrence_count_30d", 0),
+                        ev.get("occurrence_count_90d", 0),
+                        ev.get("signal_strength", 0.0),
+                        ev.get("portfolio_priority", 0.0),
+                        json.dumps(ev.get("score_decomposition", {})),
+                        ev.get("confirmation_class", "NEWS_ONLY"),
+                        json.dumps(ev.get("confirmation_signals", {})),
+                        ev.get("skepticism_note"),
+                        news_snapshot_hash,
+                        now_str,
+                        fingerprint,
+                        json.dumps(article_ids),
+                        ev.get("causal_driver"),
+                        ev.get("causal_event_key"),
+                        NEWS_INTELLIGENCE_VERSION,
+                    ),
+                )
+
+        conn.execute("DELETE FROM news_portfolio_themes WHERE day=?", (day,))
+        for th in themes:
             conn.execute(
-                """INSERT OR REPLACE INTO news_events
-                   (event_id, ticker, day, event_type, direction, magnitude,
-                    expected_horizon, confidence, affected_metric, evidence_text,
-                    source_titles, source_count, first_seen, last_seen,
-                    thesis_relevance, pillar_name, risk_name, catalyst_name,
-                    trigger_proximity,
-                    pillar_health_state, event_trigger_state, event_trigger_proximity,
-                    trend_status, occurrence_count_7d, occurrence_count_30d, occurrence_count_90d,
-                    signal_strength, portfolio_priority, score_decomposition,
-                    confirmation_class, confirmation_signals, skepticism_note,
-                    news_snapshot_hash, extracted_at,
-                    event_fingerprint, article_ids_json, causal_driver, causal_event_key,
-                    news_intelligence_version)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                """INSERT INTO news_portfolio_themes
+                   (theme_id, day, event_type, direction, affected_tickers,
+                    combined_weight, event_count, description, detected_at)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
                 (
-                    ev.get("event_id") or str(uuid.uuid4()),
-                    ticker, day,
-                    ev["event_type"], ev["direction"], ev["magnitude"],
-                    ev["horizon"], ev["confidence"],
-                    ev.get("affected_metric", ""),
-                    ev.get("evidence", ""),
-                    json.dumps(ev.get("titles", [])),
-                    source_count,
-                    first_seen, day,
-                    ev.get("thesis_relevance", 0.0),
-                    ev.get("pillar_name"),
-                    ev.get("risk_name"),
-                    ev.get("catalyst_name"),
-                    ev.get("trigger_proximity", 0.0),
-                    ev.get("pillar_health_state"),
-                    ev.get("event_trigger_state", "NONE"),
-                    ev.get("event_trigger_proximity", 0.0),
-                    ev.get("trend_status", "NEW"),
-                    ev.get("occurrence_count_7d", 0),
-                    ev.get("occurrence_count_30d", 0),
-                    ev.get("occurrence_count_90d", 0),
-                    ev.get("signal_strength", 0.0),
-                    ev.get("portfolio_priority", 0.0),
-                    json.dumps(ev.get("score_decomposition", {})),
-                    ev.get("confirmation_class", "NEWS_ONLY"),
-                    json.dumps(ev.get("confirmation_signals", {})),
-                    ev.get("skepticism_note"),
-                    news_snapshot_hash,
-                    now_str,
-                    fingerprint,
-                    json.dumps(article_ids),
-                    ev.get("causal_driver"),
-                    ev.get("causal_event_key"),
-                    NEWS_INTELLIGENCE_VERSION,
+                    str(uuid.uuid4()), day,
+                    th.get("causal_driver", th["event_type"]), th["direction"],
+                    json.dumps(th["affected_tickers"]),
+                    th["combined_weight"], th["event_count"],
+                    th["description"], now_str,
                 ),
             )
-
-    conn.execute("DELETE FROM news_portfolio_themes WHERE day=?", (day,))
-    for th in themes:
-        conn.execute(
-            """INSERT INTO news_portfolio_themes
-               (theme_id, day, event_type, direction, affected_tickers,
-                combined_weight, event_count, description, detected_at)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
-            (
-                str(uuid.uuid4()), day,
-                th.get("causal_driver", th["event_type"]), th["direction"],
-                json.dumps(th["affected_tickers"]),
-                th["combined_weight"], th["event_count"],
-                th["description"], now_str,
-            ),
-        )
-    conn.commit()
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
 
 
 def _persist_snapshot(conn: sqlite3.Connection,
@@ -1499,6 +1529,7 @@ def run_pipeline(by_ticker: dict,
     extraction_result = extract_events_llm(by_ticker, ollama_client_mod, manifest=manifest)
     manifest = extraction_result.pop("_manifest", manifest or {})
     extraction_ok = extraction_result.pop("_extraction_ok", False)
+    ticker_diagnostics = extraction_result.pop("_ticker_diagnostics", {})
 
     # 0614: extraction failed — preserve existing events, mark degraded, still write snapshot
     if not extraction_ok:
@@ -1508,41 +1539,74 @@ def run_pipeline(by_ticker: dict,
         except Exception as e:
             print(f"[NewsIntelligence] Snapshot persist error (degraded path): {e}")
         return {
-            "events_by_ticker":      {},
-            "themes":                [],
-            "news_snapshot_hash":    news_snapshot_hash,
-            "article_count":         article_count,
-            "_snapshot_id":          snapshot_id,
-            "_snapshot_captured_at": snapshot_captured_at,
-            "_extraction_degraded":  True,
+            "events_by_ticker":          {},
+            "themes":                    [],
+            "news_snapshot_hash":        news_snapshot_hash,
+            "article_count":             article_count,
+            "_snapshot_id":              snapshot_id,
+            "_snapshot_captured_at":     snapshot_captured_at,
+            "_extraction_degraded":      True,
+            "_persistence_degraded":     False,
+            "_grounding_degraded_tickers": [],
         }
 
-    # After popping _manifest and _extraction_ok, extraction_result is now clean ticker->events
+    # After popping internal keys, extraction_result is clean ticker->events
     raw_events = extraction_result
 
+    # 0617: classify each input ticker as VALID_EVENTS, VALID_EMPTY, or INVALID_EXTRACTION.
+    # INVALID_EXTRACTION = model returned candidates but all failed grounding validation.
+    # Only VALID_EVENTS and VALID_EMPTY tickers replace same-day state; INVALID_EXTRACTION
+    # tickers retain prior events.
+    grounding_degraded_tickers: list = []
+    valid_input_tickers: set = set()
+    for t in input_tickers:
+        diag = ticker_diagnostics.get(t, {})
+        if t in raw_events:
+            valid_input_tickers.add(t)  # VALID_EVENTS: accepted events exist
+        elif diag.get("candidate_count", 0) == 0:
+            valid_input_tickers.add(t)  # VALID_EMPTY: model returned no candidates
+        else:
+            grounding_degraded_tickers.append(t)  # INVALID_EXTRACTION: all candidates rejected
+
     if not raw_events:
-        # 0613/0614: success, zero events — still atomically persist snapshot + clear input tickers
+        # 0613/0614/0617: success, zero valid events — persist snapshot + clear VALID_EMPTY tickers
+        _persist_err = None
         try:
             persist_events(
                 {}, [], day, conn, news_snapshot_hash, manifest,
                 snapshot_id=snapshot_id, captured_at=snapshot_captured_at,
-                input_tickers=input_tickers,
+                input_tickers=valid_input_tickers,
             )
         except Exception as e:
+            _persist_err = e
             print(f"[NewsIntelligence] Persist error (empty events): {e}")
+        if _persist_err is not None:
+            return {
+                "events_by_ticker":          {},
+                "themes":                    [],
+                "news_snapshot_hash":        news_snapshot_hash,
+                "article_count":             article_count,
+                "_snapshot_id":              snapshot_id,
+                "_snapshot_captured_at":     snapshot_captured_at,
+                "_extraction_degraded":      False,
+                "_persistence_degraded":     True,
+                "_grounding_degraded_tickers": grounding_degraded_tickers,
+            }
         # 0598: still run sweep even on zero events
         try:
             update_event_state_sweep(day, conn)
         except Exception as e:
             print(f"[NewsIntelligence] Event state sweep error: {e}")
         return {
-            "events_by_ticker":      {},
-            "themes":                [],
-            "news_snapshot_hash":    news_snapshot_hash,
-            "article_count":         article_count,
-            "_snapshot_id":          snapshot_id,
-            "_snapshot_captured_at": snapshot_captured_at,
-            "_extraction_degraded":  False,
+            "events_by_ticker":          {},
+            "themes":                    [],
+            "news_snapshot_hash":        news_snapshot_hash,
+            "article_count":             article_count,
+            "_snapshot_id":              snapshot_id,
+            "_snapshot_captured_at":     snapshot_captured_at,
+            "_extraction_degraded":      False,
+            "_persistence_degraded":     False,
+            "_grounding_degraded_tickers": grounding_degraded_tickers,
         }
 
     enriched: dict = {}
@@ -1582,10 +1646,22 @@ def run_pipeline(by_ticker: dict,
         persist_events(
             enriched, themes, day, conn, news_snapshot_hash, manifest,
             snapshot_id=snapshot_id, captured_at=snapshot_captured_at,
-            input_tickers=input_tickers,
+            input_tickers=valid_input_tickers,
         )
     except Exception as e:
         print(f"[NewsIntelligence] Persist error: {e}")
+        return {
+            "events_by_ticker":          enriched,
+            "themes":                    themes,
+            "news_snapshot_hash":        news_snapshot_hash,
+            "article_count":             article_count,
+            "_manifest":                 manifest,
+            "_snapshot_id":              snapshot_id,
+            "_snapshot_captured_at":     snapshot_captured_at,
+            "_extraction_degraded":      False,
+            "_persistence_degraded":     True,
+            "_grounding_degraded_tickers": grounding_degraded_tickers,
+        }
 
     # 0598: update news_event_state (no synthetic news_events rows)
     try:
@@ -1594,14 +1670,16 @@ def run_pipeline(by_ticker: dict,
         print(f"[NewsIntelligence] Event state sweep error: {e}")
 
     return {
-        "events_by_ticker":      enriched,
-        "themes":                themes,
-        "news_snapshot_hash":    news_snapshot_hash,
-        "article_count":         article_count,
-        "_manifest":             manifest,
-        "_snapshot_id":          snapshot_id,
-        "_snapshot_captured_at": snapshot_captured_at,
-        "_extraction_degraded":  False,
+        "events_by_ticker":          enriched,
+        "themes":                    themes,
+        "news_snapshot_hash":        news_snapshot_hash,
+        "article_count":             article_count,
+        "_manifest":                 manifest,
+        "_snapshot_id":              snapshot_id,
+        "_snapshot_captured_at":     snapshot_captured_at,
+        "_extraction_degraded":      False,
+        "_persistence_degraded":     False,
+        "_grounding_degraded_tickers": grounding_degraded_tickers,
     }
 
 

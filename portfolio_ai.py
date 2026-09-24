@@ -462,12 +462,14 @@ def _init_ai_tables():
         conn.execute("ALTER TABLE holding_macro_scores ADD COLUMN run_id TEXT")
     except Exception:
         pass
-    # Add provenance columns to holding_macro_scores_history if not present (0475)
+    # Add provenance columns to holding_macro_scores_history if not present (0475/0615)
     for col_sql in [
         "ALTER TABLE holding_macro_scores_history ADD COLUMN run_id TEXT",
         "ALTER TABLE holding_macro_scores_history ADD COLUMN model_ver TEXT",
         "ALTER TABLE holding_macro_scores_history ADD COLUMN schema_ver TEXT",
         "ALTER TABLE holding_macro_scores_history ADD COLUMN evidence_hash TEXT",
+        # 0615: epoch for timezone-safe point-in-time comparison
+        "ALTER TABLE holding_macro_scores_history ADD COLUMN scored_at_epoch REAL",
     ]:
         try:
             conn.execute(col_sql)
@@ -829,35 +831,8 @@ def _init_ai_tables():
         accepted_version TEXT NOT NULL,
         notes            TEXT
     )""")
-    _acceptance_notes_base = (
-        "v2 contract baseline: snapshot identity, evidence identity, "
-        "confirmation semantics, state-maintenance behavior. "
-        "Exclude news_events rows with extracted_at before accepted_at "
-        "from learning effectiveness analysis."
-    )
-    # id=1 inserted with UTC (new deployments); existing rows are unaffected by OR IGNORE
-    conn.execute(
-        "INSERT OR IGNORE INTO _news_intelligence_acceptance "
-        "(id, accepted_at, accepted_commit, accepted_version, notes) "
-        "VALUES (1, ?, '94e0575', 'v2', ?)",
-        (datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"), _acceptance_notes_base),
-    )
-    # 0610: final v2 boundary — c5053fb materially changes confirmation contract,
-    # maintenance truthfulness, and provenance. accepted_at UTC so textual comparison
-    # with news_events.extracted_at (also UTC) is consistent.
-    _acceptance_notes_final = (
-        "Final v2 contract boundary: independent confirmation semantics (0606), "
-        "maintenance sweep truthfulness (0605), full canonical manifest (0607). "
-        "Use MAX(accepted_at) WHERE accepted_version='v2' as the filter boundary."
-    )
-    conn.execute(
-        "INSERT OR IGNORE INTO _news_intelligence_acceptance "
-        "(id, accepted_at, accepted_commit, accepted_version, notes) "
-        "VALUES (2, ?, ?, 'v2', ?)",
-        (datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
-         _CODE_COMMIT_SHA or "unknown",
-         _acceptance_notes_final),
-    )
+    # 0615: acceptance rows are written by register_news_intelligence_acceptance() after
+    # deployment validation — not seeded here. _init_ai_tables() only creates the schema.
     # 0610: atomic snapshot provenance table — keyed by snapshot_hash.
     # Populated by run_pipeline() via _persist_snapshot(); read by _build_news_state().
     conn.execute("""CREATE TABLE IF NOT EXISTS news_snapshots (
@@ -880,7 +855,10 @@ def _init_ai_tables():
 def get_accepted_news_events(conn: sqlite3.Connection) -> list:
     """Return news_events rows valid under the current v2 acceptance boundary.
 
-    Enforces: extracted_at >= MAX(accepted_at) WHERE accepted_version='v2'.
+    Enforces:
+      - extracted_at >= MAX(accepted_at) WHERE accepted_version='v2'
+      - news_snapshot_hash IN (SELECT snapshot_hash FROM news_snapshots)
+        — excludes events with missing provenance (0615)
     Returns a list of sqlite3.Row objects.
     """
     conn.row_factory = sqlite3.Row
@@ -892,7 +870,8 @@ def get_accepted_news_events(conn: sqlite3.Connection) -> list:
     if not boundary:
         return []
     return conn.execute(
-        "SELECT * FROM news_events WHERE extracted_at >= ?",
+        "SELECT * FROM news_events WHERE extracted_at >= ?"
+        " AND news_snapshot_hash IN (SELECT snapshot_hash FROM news_snapshots)",
         (boundary,),
     ).fetchall()
 
@@ -913,6 +892,33 @@ _EV_MIN_FOR_USABILITY = {
     "inflation_hedge":    {"full", "partial"},
     "geopolitical_risk":  {"full"},
 }
+
+def register_news_intelligence_acceptance(
+    accepted_version: str = "v2",
+    notes: str = "",
+) -> None:
+    """Append a new acceptance boundary row for the given version.
+
+    Append-only (no fixed id): call after deployment validation, never from _init_ai_tables().
+    Records the runtime CODE_COMMIT_SHA so the boundary is tied to the deployed commit.
+    """
+    if not DB_PATH.exists():
+        return
+    conn = sqlite3.connect(str(DB_PATH), timeout=10)
+    conn.execute(
+        "INSERT INTO _news_intelligence_acceptance "
+        "(accepted_at, accepted_commit, accepted_version, notes) "
+        "VALUES (?, ?, ?, ?)",
+        (
+            datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+            _CODE_COMMIT_SHA or "unknown",
+            accepted_version,
+            notes,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
 
 # Map dim name to its evidence_quality key in the score/evidence dict (0512)
 _DIM_EV_KEY = {
@@ -2163,7 +2169,13 @@ Be specific. Name the legislation by ID and the matching holding. No generic sta
     article_count           = intel_result.get("article_count", 0)
 
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    if DB_PATH.exists():
+    # 0616: do not cache prose generated from a degraded intelligence run — the cache
+    # entry would block future retries until the snapshot hash changes.
+    _intel_degraded = (
+        intel_result.get("_extraction_degraded") or
+        intel_result.get("_persistence_degraded")
+    )
+    if DB_PATH.exists() and not _intel_degraded:
         conn = sqlite3.connect(str(DB_PATH), timeout=10)
         # 0607: store full canonical manifest (model_input_text, content_hash per article)
         # so any future audit can reconstruct exactly what evidence produced a given snapshot hash.
@@ -3055,10 +3067,11 @@ def generate_holding_macro_scores(force: bool = False) -> dict:
                 )
                 _fund_conn.execute(
                     "INSERT INTO holding_macro_scores_history "
-                    "(ticker, scores, scored_at, run_id, model_ver, schema_ver, evidence_hash) "
-                    "VALUES (?,?,?,?,?,?,?)",
+                    "(ticker, scores, scored_at, run_id, model_ver, schema_ver, evidence_hash, scored_at_epoch) "
+                    "VALUES (?,?,?,?,?,?,?,?)",
                     (_ft, _fund_json, run_at, run_id,
-                     ollama_client.DEFAULT_MODEL, MACRO_SCORE_SCHEMA_VERSION, _ev_hash_fund)
+                     ollama_client.DEFAULT_MODEL, MACRO_SCORE_SCHEMA_VERSION, _ev_hash_fund,
+                     time.time())
                 )
                 _fund_conn.execute(
                     "UPDATE macro_scoring_run_items SET status='UNSUPPORTED', completed_at=? WHERE run_id=? AND ticker=?",
@@ -3300,10 +3313,11 @@ def generate_holding_macro_scores(force: bool = False) -> dict:
                     )
                     conn.execute(
                         "INSERT INTO holding_macro_scores_history "
-                        "(ticker, scores, scored_at, run_id, model_ver, schema_ver, evidence_hash) "
-                        "VALUES (?,?,?,?,?,?,?)",
+                        "(ticker, scores, scored_at, run_id, model_ver, schema_ver, evidence_hash, scored_at_epoch) "
+                        "VALUES (?,?,?,?,?,?,?,?)",
                         (ticker, scores_json, now_str, run_id,
-                         ollama_client.DEFAULT_MODEL, MACRO_SCORE_SCHEMA_VERSION, evidence_hash)
+                         ollama_client.DEFAULT_MODEL, MACRO_SCORE_SCHEMA_VERSION, evidence_hash,
+                         time.time())
                     )
                     conn.execute(
                         "UPDATE macro_scoring_run_items SET status='SUPPORTED', completed_at=? WHERE run_id=? AND ticker=?",

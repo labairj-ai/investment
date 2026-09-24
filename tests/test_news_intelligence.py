@@ -105,10 +105,11 @@ def _make_db():
         ticker TEXT PRIMARY KEY, scores TEXT, updated_at TEXT
     )""")
     conn.execute("""CREATE TABLE holding_macro_scores_history (
-        id        INTEGER PRIMARY KEY AUTOINCREMENT,
-        ticker    TEXT NOT NULL,
-        scores    TEXT,
-        scored_at TEXT NOT NULL
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        ticker          TEXT NOT NULL,
+        scores          TEXT,
+        scored_at       TEXT NOT NULL,
+        scored_at_epoch REAL
     )""")
     conn.execute("""CREATE TABLE company_financials (
         ticker TEXT, period_end TEXT, period_type TEXT,
@@ -175,6 +176,13 @@ def _make_db():
         version        TEXT,
         manifest_json  TEXT,
         created_at     TEXT NOT NULL
+    )""")
+    conn.execute("""CREATE TABLE _news_intelligence_acceptance (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        accepted_at      TEXT NOT NULL,
+        accepted_commit  TEXT NOT NULL,
+        accepted_version TEXT NOT NULL,
+        notes            TEXT
     )""")
     return conn
 
@@ -309,7 +317,7 @@ class TestAdversarialValidation:
             }]
         }
         result = intel.extract_events_llm(by_ticker, self._mock_llm(resp))
-        result.pop("_manifest", None); result.pop("_extraction_ok", None)
+        result.pop("_manifest", None); result.pop("_extraction_ok", None); result.pop("_ticker_diagnostics", None)
         assert result == {}, f"Unknown ticker must be rejected, got {result}"
 
     def test_zero_article_ids_rejected(self):
@@ -327,7 +335,7 @@ class TestAdversarialValidation:
             }]
         }
         result = intel.extract_events_llm(by_ticker, self._mock_llm(resp))
-        result.pop("_manifest", None); result.pop("_extraction_ok", None)
+        result.pop("_manifest", None); result.pop("_extraction_ok", None); result.pop("_ticker_diagnostics", None)
         assert "MSFT" not in result, "Event with zero article_ids must be rejected"
 
     def test_cross_ticker_id_stripped_event_rejected(self):
@@ -348,7 +356,7 @@ class TestAdversarialValidation:
             }]
         }
         result = intel.extract_events_llm(by_ticker, self._mock_llm(resp))
-        result.pop("_manifest", None); result.pop("_extraction_ok", None)
+        result.pop("_manifest", None); result.pop("_extraction_ok", None); result.pop("_ticker_diagnostics", None)
         assert "MSFT" not in result, "Cross-ticker ID must strip event; 0 valid IDs → reject"
 
     def test_valid_id_for_correct_ticker_accepted(self):
@@ -368,7 +376,7 @@ class TestAdversarialValidation:
             }]
         }
         result = intel.extract_events_llm(by_ticker, self._mock_llm(resp))
-        result.pop("_manifest", None); result.pop("_extraction_ok", None)
+        result.pop("_manifest", None); result.pop("_extraction_ok", None); result.pop("_ticker_diagnostics", None)
         assert "NFLX" in result, f"Valid event should be accepted, got {result}"
         assert len(result["NFLX"]) == 1
         ev = result["NFLX"][0]
@@ -394,7 +402,7 @@ class TestAdversarialValidation:
             }]
         }
         result = intel.extract_events_llm(by_ticker, self._mock_llm(resp))
-        result.pop("_manifest", None); result.pop("_extraction_ok", None)
+        result.pop("_manifest", None); result.pop("_extraction_ok", None); result.pop("_ticker_diagnostics", None)
         assert "GOOG" in result
         ev = result["GOOG"][0]
         assert "HALLUCINATED TITLE FROM LLM" not in ev["titles"]
@@ -1594,35 +1602,39 @@ class TestProvenanceBoundary:
         sqlite3.connect(str(db_file)).close()  # touch file
         return db_file
 
-    def test_acceptance_table_seeded_on_init(self, tmp_path):
-        """_init_ai_tables seeds _news_intelligence_acceptance with accepted_commit=94e0575."""
+    def test_acceptance_table_created_on_init_no_seeding(self, tmp_path):
+        """_init_ai_tables creates _news_intelligence_acceptance table but does NOT seed rows (0615)."""
         import portfolio_ai as _pai
         db_file = self._make_fresh_db(tmp_path)
         with patch.object(_pai, "DB_PATH", db_file):
             _pai._init_ai_tables()
         conn = sqlite3.connect(str(db_file))
-        row = conn.execute(
-            "SELECT accepted_commit, accepted_version FROM _news_intelligence_acceptance "
-            "WHERE id=1"
-        ).fetchone()
-        conn.close()
-        assert row is not None, "_news_intelligence_acceptance must be seeded"
-        assert row[0] == "94e0575"
-        assert row[1] == "v2"
-
-    def test_acceptance_seed_is_idempotent(self, tmp_path):
-        """Calling _init_ai_tables() twice must not duplicate the acceptance row."""
-        import portfolio_ai as _pai
-        db_file = self._make_fresh_db(tmp_path)
-        with patch.object(_pai, "DB_PATH", db_file):
-            _pai._init_ai_tables()
-            _pai._init_ai_tables()
-        conn = sqlite3.connect(str(db_file))
+        tables = {row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()}
         count = conn.execute(
-            "SELECT COUNT(*) FROM _news_intelligence_acceptance WHERE accepted_commit='94e0575'"
+            "SELECT COUNT(*) FROM _news_intelligence_acceptance"
         ).fetchone()[0]
         conn.close()
-        assert count == 1, "Acceptance row must be idempotent (INSERT OR IGNORE)"
+        assert "_news_intelligence_acceptance" in tables, "Table must be created by _init_ai_tables"
+        assert count == 0, "_init_ai_tables must NOT seed acceptance rows (0615)"
+
+    def test_register_acceptance_appends_row(self, tmp_path):
+        """register_news_intelligence_acceptance() inserts an append-only row with runtime SHA."""
+        import portfolio_ai as _pai
+        db_file = self._make_fresh_db(tmp_path)
+        with patch.object(_pai, "DB_PATH", db_file):
+            _pai._init_ai_tables()
+            _pai.register_news_intelligence_acceptance(accepted_version="v2", notes="test")
+        conn = sqlite3.connect(str(db_file))
+        rows = conn.execute(
+            "SELECT accepted_commit, accepted_version FROM _news_intelligence_acceptance"
+        ).fetchall()
+        conn.close()
+        assert len(rows) == 1, "register_news_intelligence_acceptance must insert exactly one row"
+        expected_sha = _pai._CODE_COMMIT_SHA or "unknown"
+        assert rows[0][0] == expected_sha, "accepted_commit must be runtime SHA"
+        assert rows[0][1] == "v2"
 
     def test_news_summaries_has_snapshot_columns(self, tmp_path):
         """_init_ai_tables adds snapshot_id and snapshot_captured_at to news_summaries."""
@@ -1956,24 +1968,8 @@ class TestAtomicProvenance:
         )
         assert state["snapshot_captured_at"] == snap_cap
 
-    def test_acceptance_row_id2_created_on_init(self, tmp_path):
-        """_init_ai_tables seeds id=2 acceptance row with runtime SHA and v2 (0613)."""
-        import portfolio_ai as _pai
-        db_file = self._make_fresh_db(tmp_path)
-        with patch.object(_pai, "DB_PATH", db_file):
-            _pai._init_ai_tables()
-        conn = sqlite3.connect(str(db_file))
-        row = conn.execute(
-            "SELECT accepted_commit, accepted_version FROM _news_intelligence_acceptance WHERE id=2"
-        ).fetchone()
-        conn.close()
-        assert row is not None, "id=2 acceptance row must be seeded by _init_ai_tables (0613)"
-        expected_sha = _pai._CODE_COMMIT_SHA or "unknown"
-        assert row[0] == expected_sha, f"id=2 accepted_commit must be runtime SHA '{expected_sha}'"
-        assert row[1] == "v2"
-
-    def test_acceptance_rows_use_utc_timestamp(self, tmp_path):
-        """acceptance rows use UTC accepted_at (not local time) (0610)."""
+    def test_register_acceptance_uses_utc_timestamp(self, tmp_path):
+        """register_news_intelligence_acceptance() writes UTC accepted_at (0610/0615)."""
         import portfolio_ai as _pai
         import datetime as _dt
         import re
@@ -1981,12 +1977,14 @@ class TestAtomicProvenance:
         before = _dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
         with patch.object(_pai, "DB_PATH", db_file):
             _pai._init_ai_tables()
+            _pai.register_news_intelligence_acceptance()
         after = _dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
         conn = sqlite3.connect(str(db_file))
         rows = conn.execute(
             "SELECT accepted_at FROM _news_intelligence_acceptance"
         ).fetchall()
         conn.close()
+        assert len(rows) == 1, "register must insert exactly one row"
         for (accepted_at,) in rows:
             assert re.match(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", accepted_at), (
                 f"accepted_at must be ISO UTC string, got {accepted_at!r}"
@@ -1994,6 +1992,21 @@ class TestAtomicProvenance:
             assert before <= accepted_at <= after, (
                 f"accepted_at={accepted_at!r} outside UTC test window [{before}, {after}]"
             )
+
+    def test_register_acceptance_multiple_calls_append(self, tmp_path):
+        """register_news_intelligence_acceptance() appends rows, never replaces (0615)."""
+        import portfolio_ai as _pai
+        db_file = self._make_fresh_db(tmp_path)
+        with patch.object(_pai, "DB_PATH", db_file):
+            _pai._init_ai_tables()
+            _pai.register_news_intelligence_acceptance()
+            _pai.register_news_intelligence_acceptance()
+        conn = sqlite3.connect(str(db_file))
+        count = conn.execute(
+            "SELECT COUNT(*) FROM _news_intelligence_acceptance"
+        ).fetchone()[0]
+        conn.close()
+        assert count == 2, "Each register call must append a new row (append-only)"
 
     def test_news_snapshots_table_created_on_init(self, tmp_path):
         """_init_ai_tables creates news_snapshots table (0610)."""
@@ -2019,13 +2032,18 @@ class TestPointInTimeContract:
         conn = _make_db()
         old_scores = {"rate_sensitivity": 0.3}
         new_scores = {"rate_sensitivity": 0.8}
+        # 0615: scored_at_epoch required; use intel._iso_to_unix for consistent conversion
         conn.execute(
-            "INSERT INTO holding_macro_scores_history (ticker, scores, scored_at) VALUES (?,?,?)",
-            ("AAPL", json.dumps(old_scores), "2026-09-20 10:00:00"),
+            "INSERT INTO holding_macro_scores_history "
+            "(ticker, scores, scored_at, scored_at_epoch) VALUES (?,?,?,?)",
+            ("AAPL", json.dumps(old_scores), "2026-09-20 10:00:00",
+             intel._iso_to_unix("2026-09-20 10:00:00")),
         )
         conn.execute(
-            "INSERT INTO holding_macro_scores_history (ticker, scores, scored_at) VALUES (?,?,?)",
-            ("AAPL", json.dumps(new_scores), "2026-09-23 10:00:00"),
+            "INSERT INTO holding_macro_scores_history "
+            "(ticker, scores, scored_at, scored_at_epoch) VALUES (?,?,?,?)",
+            ("AAPL", json.dumps(new_scores), "2026-09-23 10:00:00",
+             intel._iso_to_unix("2026-09-23 10:00:00")),
         )
         conn.execute(
             "INSERT INTO holding_macro_scores (ticker, scores, updated_at) VALUES (?,?,?)",
@@ -2042,8 +2060,10 @@ class TestPointInTimeContract:
         """_get_macro_score returns {} if no history row predates snapshot."""
         conn = _make_db()
         conn.execute(
-            "INSERT INTO holding_macro_scores_history (ticker, scores, scored_at) VALUES (?,?,?)",
-            ("AAPL", json.dumps({"rate_sensitivity": 0.5}), "2026-09-24 10:00:00"),
+            "INSERT INTO holding_macro_scores_history "
+            "(ticker, scores, scored_at, scored_at_epoch) VALUES (?,?,?,?)",
+            ("AAPL", json.dumps({"rate_sensitivity": 0.5}), "2026-09-24 10:00:00",
+             intel._iso_to_unix("2026-09-24 10:00:00")),
         )
         conn.commit()
         result = intel._get_macro_score("AAPL", conn, snapshot_captured_at="2026-09-23 10:00:00")
@@ -2179,3 +2199,360 @@ class TestAtomicPersistence:
         assert result.get("_extraction_degraded") is False, (
             "run_pipeline must return _extraction_degraded=False on successful extraction (0614)"
         )
+
+
+# ── Tests: macro epoch timezone fix and acceptance corpus upgrade (0615) ────────
+
+class TestMacroEpochFix:
+    """0615: scored_at_epoch used for point-in-time comparison; no local-time text leak."""
+
+    def test_macro_score_fail_closed_when_epoch_missing(self):
+        """Row with scored_at text but no scored_at_epoch is ignored — fail closed (0615)."""
+        conn = _make_db()
+        conn.execute(
+            "INSERT INTO holding_macro_scores_history "
+            "(ticker, scores, scored_at, scored_at_epoch) VALUES (?,?,?,NULL)",
+            ("AAPL", json.dumps({"rate_sensitivity": 0.5}), "2026-09-20 10:00:00"),
+        )
+        conn.commit()
+        # Row predates snapshot by text, but has no epoch — must return {}
+        result = intel._get_macro_score("AAPL", conn, snapshot_captured_at="2026-09-23 10:00:00")
+        assert result == {}, (
+            "_get_macro_score must fail closed for rows missing scored_at_epoch (0615)"
+        )
+
+    def test_macro_epoch_rejects_local_time_score_that_appears_earlier_in_text(self):
+        """Epoch comparison rejects a score whose local-time text looks earlier than snapshot (0615)."""
+        conn = _make_db()
+        # Simulate: score written at 12:30 ET (= 16:30 UTC)
+        # Snapshot is at 14:00 UTC — score was after the snapshot even though text says "12:30"
+        import time as _time
+        snapshot_utc = "2026-09-23 14:00:00"
+        snap_epoch = intel._iso_to_unix(snapshot_utc)
+
+        # scored_at_epoch is 16:30 UTC (after snapshot), scored_at text is "12:30" (local ET)
+        score_epoch_utc = snap_epoch + 9000  # 2.5 hours after snapshot in UTC
+        conn.execute(
+            "INSERT INTO holding_macro_scores_history "
+            "(ticker, scores, scored_at, scored_at_epoch) VALUES (?,?,?,?)",
+            ("AAPL", json.dumps({"rate_sensitivity": 0.9}), "2026-09-23 12:30:00", score_epoch_utc),
+        )
+        conn.commit()
+        result = intel._get_macro_score("AAPL", conn, snapshot_captured_at=snapshot_utc)
+        assert result == {}, (
+            "Epoch-based comparison must reject score with epoch > snap_epoch, "
+            "even if scored_at text appears earlier (local-time timezone leak) (0615)"
+        )
+
+    def test_macro_epoch_accepts_score_genuinely_before_snapshot(self):
+        """A score with scored_at_epoch < snap_epoch is accepted (0615)."""
+        conn = _make_db()
+        snapshot_utc = "2026-09-23 14:00:00"
+        snap_epoch = intel._iso_to_unix(snapshot_utc)
+        score_epoch = snap_epoch - 3600  # 1 hour before snapshot
+
+        conn.execute(
+            "INSERT INTO holding_macro_scores_history "
+            "(ticker, scores, scored_at, scored_at_epoch) VALUES (?,?,?,?)",
+            ("AAPL", json.dumps({"rate_sensitivity": 0.4}), "2026-09-23 12:00:00", score_epoch),
+        )
+        conn.commit()
+        result = intel._get_macro_score("AAPL", conn, snapshot_captured_at=snapshot_utc)
+        assert result == {"rate_sensitivity": 0.4}, (
+            "Score with scored_at_epoch <= snap_epoch must be returned (0615)"
+        )
+
+    def test_get_accepted_news_events_excludes_events_without_snapshot_row(self):
+        """get_accepted_news_events excludes news_events with no news_snapshots row (0615)."""
+        import uuid as _uuid
+        conn = _make_db()
+        today = "2026-09-23 10:00:00"
+        # Acceptance boundary
+        conn.execute(
+            "INSERT INTO _news_intelligence_acceptance "
+            "(accepted_at, accepted_commit, accepted_version, notes) VALUES (?,?,?,?)",
+            ("2026-09-01 00:00:00", "abc123", "v2", "test"),
+        )
+        # Event with a snapshot row
+        snap_hash_good = "goodhash"
+        conn.execute(
+            "INSERT INTO news_snapshots (snapshot_hash, created_at) VALUES (?,?)",
+            (snap_hash_good, today),
+        )
+        conn.execute(
+            "INSERT INTO news_events (event_id, ticker, day, event_type, direction, "
+            "extracted_at, news_intelligence_version, news_snapshot_hash) VALUES (?,?,?,?,?,?,?,?)",
+            (str(_uuid.uuid4()), "AAPL", "2026-09-23", "EARNINGS", "POSITIVE",
+             today, intel.NEWS_INTELLIGENCE_VERSION, snap_hash_good),
+        )
+        # Event WITHOUT a snapshot row (orphaned provenance)
+        conn.execute(
+            "INSERT INTO news_events (event_id, ticker, day, event_type, direction, "
+            "extracted_at, news_intelligence_version, news_snapshot_hash) VALUES (?,?,?,?,?,?,?,?)",
+            (str(_uuid.uuid4()), "MSFT", "2026-09-23", "DEMAND", "NEGATIVE",
+             today, intel.NEWS_INTELLIGENCE_VERSION, "missinghash"),
+        )
+        conn.commit()
+
+        # Replicate get_accepted_news_events SQL (portfolio_ai.get_accepted_news_events)
+        conn.row_factory = sqlite3.Row
+        boundary_row = conn.execute(
+            "SELECT MAX(accepted_at) AS boundary FROM _news_intelligence_acceptance "
+            "WHERE accepted_version='v2'"
+        ).fetchone()
+        boundary = boundary_row["boundary"]
+        rows = conn.execute(
+            "SELECT * FROM news_events WHERE extracted_at >= ?"
+            " AND news_snapshot_hash IN (SELECT snapshot_hash FROM news_snapshots)",
+            (boundary,),
+        ).fetchall()
+        tickers = {r["ticker"] for r in rows}
+        assert "AAPL" in tickers, "Event with snapshot row must be included"
+        assert "MSFT" not in tickers, (
+            "Event without snapshot row must be excluded by get_accepted_news_events (0615)"
+        )
+
+
+# ── Tests: rollback on persist failure and degraded cache gate (0616) ──────────
+
+class TestRollbackOnPersistFailure:
+    """0616: persist_events rolls back on any exception; pipeline returns _persistence_degraded."""
+
+    def test_persist_events_rolls_back_on_mid_insert_failure(self):
+        """Mid-persist failure leaves prior events intact and no partial writes committed (0616)."""
+        import uuid as _uuid
+
+        class FailingConn:
+            """Thin wrapper around a real SQLite connection that raises on the first news_events INSERT."""
+            def __init__(self, real_conn):
+                self._conn = real_conn
+                self._insert_calls = 0
+
+            def execute(self, sql, *args, **kwargs):
+                if "INSERT OR REPLACE INTO news_events" in sql:
+                    self._insert_calls += 1
+                    if self._insert_calls == 1:
+                        raise sqlite3.OperationalError("simulated mid-INSERT failure")
+                return self._conn.execute(sql, *args, **kwargs)
+
+            def commit(self):
+                return self._conn.commit()
+
+            def rollback(self):
+                return self._conn.rollback()
+
+        real_conn = _make_db()
+        today = "2026-09-23"
+        prior_id = str(_uuid.uuid4())
+        real_conn.execute(
+            "INSERT INTO news_events (event_id, ticker, day, event_type, direction, "
+            "extracted_at, news_intelligence_version) VALUES (?,?,?,?,?,?,?)",
+            (prior_id, "AAPL", today, "EARNINGS", "POSITIVE", today,
+             intel.NEWS_INTELLIGENCE_VERSION),
+        )
+        real_conn.commit()
+
+        wrapper = FailingConn(real_conn)
+        with pytest.raises(sqlite3.OperationalError):
+            intel.persist_events(
+                {"AAPL": [{
+                    "event_type": "EARNINGS", "direction": "POSITIVE",
+                    "magnitude": "HIGH", "horizon": "SHORT", "confidence": 0.9,
+                    "affected_metric": "eps", "evidence": "beat", "article_ids": [],
+                    "causal_driver": None, "causal_event_key": None, "titles": [],
+                }]},
+                [], today, wrapper,
+                input_tickers={"AAPL"},
+            )
+
+        # After rollback, prior event must still be present
+        count = real_conn.execute(
+            "SELECT count(*) FROM news_events WHERE ticker='AAPL' AND day=?", (today,)
+        ).fetchone()[0]
+        assert count == 1, "Rollback must restore prior event after mid-INSERT failure (0616)"
+
+    def test_run_pipeline_returns_persistence_degraded_true_when_persist_fails(self):
+        """run_pipeline returns _persistence_degraded=True and skips sweep on persist failure (0616)."""
+        conn = _make_db()
+        today = "2026-09-23"
+        arts = [_make_article("AAPL", "Apple news", body="body " * 5,
+                              url="https://example.com/persfail")]
+        by_ticker = {"AAPL": arts}
+
+        with patch.object(intel, "extract_events_llm",
+                          return_value={"_extraction_ok": True, "_manifest": {}}):
+            with patch.object(intel, "persist_events",
+                              side_effect=Exception("persist boom")):
+                with patch.object(intel, "update_event_state_sweep") as mock_sweep:
+                    result = intel.run_pipeline(by_ticker, {"AAPL": 0.1}, conn,
+                                               MagicMock(), day=today)
+
+        assert result.get("_persistence_degraded") is True, (
+            "run_pipeline must return _persistence_degraded=True when persist_events raises (0616)"
+        )
+        mock_sweep.assert_not_called()
+
+    def test_run_pipeline_returns_persistence_degraded_false_on_success(self):
+        """run_pipeline returns _persistence_degraded=False on normal success (0616)."""
+        conn = _make_db()
+        today = "2026-09-23"
+        arts = [_make_article("AAPL", "Apple news", body="body " * 5,
+                              url="https://example.com/perssuc")]
+        by_ticker = {"AAPL": arts}
+        with patch.object(intel, "extract_events_llm",
+                          return_value={"_extraction_ok": True, "_manifest": {}}):
+            result = intel.run_pipeline(by_ticker, {"AAPL": 0.1}, conn,
+                                        MagicMock(), day=today)
+        assert result.get("_persistence_degraded") is False, (
+            "run_pipeline must return _persistence_degraded=False on successful persist (0616)"
+        )
+
+
+# ── Tests: grounding-aware replacement semantics (0617) ──────────────────────
+
+class TestGroundingAwareReplacement:
+    """0617: INVALID_EXTRACTION tickers retain prior events; VALID_EMPTY tickers are cleared."""
+
+    def _make_manifest_for(self, ticker: str, art_id: str) -> dict:
+        """Build a minimal manifest dict so article ID validation passes."""
+        return {intel._evidence_id(ticker, art_id): {"title": "t", "ticker": ticker,
+                                                       "article_id": art_id}}
+
+    def test_all_rejected_ticker_keeps_prior_events(self):
+        """INVALID_EXTRACTION ticker (all candidates rejected by grounding) keeps prior events (0617)."""
+        import uuid as _uuid
+        conn = _make_db()
+        today = "2026-09-23"
+        # Prior event for AAPL
+        conn.execute(
+            "INSERT INTO news_events (event_id, ticker, day, event_type, direction, "
+            "extracted_at, news_intelligence_version) VALUES (?,?,?,?,?,?,?)",
+            (str(_uuid.uuid4()), "AAPL", today, "EARNINGS", "POSITIVE", today,
+             intel.NEWS_INTELLIGENCE_VERSION),
+        )
+        conn.commit()
+
+        # LLM returns AAPL event with hallucinated article_id (no manifest entry) → rejected
+        fake_extraction = {
+            "_extraction_ok": True,
+            "_manifest": {},  # empty manifest — all article IDs fail validation
+            "_ticker_diagnostics": {
+                "AAPL": {"candidate_count": 1, "accepted_count": 0,
+                         "rejected_count": 1, "rejection_reasons": ["zero_valid_article_ids"]},
+            },
+        }
+        arts = [_make_article("AAPL", "Apple news", body="body " * 5,
+                              url="https://example.com/gr1")]
+        by_ticker = {"AAPL": arts}
+        with patch.object(intel, "extract_events_llm", return_value=fake_extraction):
+            result = intel.run_pipeline(by_ticker, {"AAPL": 0.1}, conn,
+                                        MagicMock(), day=today)
+
+        # Prior event must be preserved
+        count = conn.execute(
+            "SELECT count(*) FROM news_events WHERE ticker='AAPL' AND day=?", (today,)
+        ).fetchone()[0]
+        assert count == 1, (
+            "INVALID_EXTRACTION ticker must retain prior same-day events (0617)"
+        )
+        assert "AAPL" in result.get("_grounding_degraded_tickers", []), (
+            "AAPL must appear in _grounding_degraded_tickers (0617)"
+        )
+
+    def test_valid_empty_ticker_clears_prior_events(self):
+        """VALID_EMPTY ticker (model returned no candidates) clears prior same-day events (0617)."""
+        import uuid as _uuid
+        conn = _make_db()
+        today = "2026-09-23"
+        # Prior event for MSFT
+        conn.execute(
+            "INSERT INTO news_events (event_id, ticker, day, event_type, direction, "
+            "extracted_at, news_intelligence_version) VALUES (?,?,?,?,?,?,?)",
+            (str(_uuid.uuid4()), "MSFT", today, "DEMAND", "NEGATIVE", today,
+             intel.NEWS_INTELLIGENCE_VERSION),
+        )
+        conn.commit()
+
+        # LLM returns no candidates for MSFT (candidate_count=0) → VALID_EMPTY
+        fake_extraction = {
+            "_extraction_ok": True,
+            "_manifest": {},
+            "_ticker_diagnostics": {
+                "MSFT": {"candidate_count": 0, "accepted_count": 0,
+                         "rejected_count": 0, "rejection_reasons": []},
+            },
+        }
+        arts = [_make_article("MSFT", "Microsoft news", body="body " * 5,
+                              url="https://example.com/gr2")]
+        by_ticker = {"MSFT": arts}
+        with patch.object(intel, "extract_events_llm", return_value=fake_extraction):
+            result = intel.run_pipeline(by_ticker, {"MSFT": 0.05}, conn,
+                                        MagicMock(), day=today)
+
+        count = conn.execute(
+            "SELECT count(*) FROM news_events WHERE ticker='MSFT' AND day=?", (today,)
+        ).fetchone()[0]
+        assert count == 0, (
+            "VALID_EMPTY ticker must clear prior same-day events (0617)"
+        )
+        assert "MSFT" not in result.get("_grounding_degraded_tickers", []), (
+            "MSFT must NOT appear in _grounding_degraded_tickers for VALID_EMPTY (0617)"
+        )
+
+    def test_pipeline_returns_grounding_degraded_tickers_list(self):
+        """run_pipeline returns _grounding_degraded_tickers listing INVALID_EXTRACTION tickers (0617)."""
+        conn = _make_db()
+        today = "2026-09-23"
+        fake_extraction = {
+            "_extraction_ok": True,
+            "_manifest": {},
+            "_ticker_diagnostics": {
+                "AAPL": {"candidate_count": 2, "accepted_count": 0,
+                         "rejected_count": 2, "rejection_reasons": ["zero_valid_article_ids"] * 2},
+                "MSFT": {"candidate_count": 0, "accepted_count": 0,
+                         "rejected_count": 0, "rejection_reasons": []},
+            },
+        }
+        arts_a = [_make_article("AAPL", "Apple news", body="body " * 5,
+                                url="https://example.com/gr3a")]
+        arts_m = [_make_article("MSFT", "MSFT news", body="body " * 5,
+                                url="https://example.com/gr3m")]
+        by_ticker = {"AAPL": arts_a, "MSFT": arts_m}
+        with patch.object(intel, "extract_events_llm", return_value=fake_extraction):
+            result = intel.run_pipeline(by_ticker, {"AAPL": 0.1, "MSFT": 0.05}, conn,
+                                        MagicMock(), day=today)
+
+        degraded = result.get("_grounding_degraded_tickers", [])
+        assert "AAPL" in degraded, "AAPL (all-rejected) must be in grounding_degraded_tickers (0617)"
+        assert "MSFT" not in degraded, "MSFT (zero candidates) must NOT be degraded (0617)"
+
+    def test_extract_events_llm_returns_ticker_diagnostics(self):
+        """extract_events_llm returns _ticker_diagnostics with per-ticker counts (0617)."""
+        # Build a manifest with one article for AAPL
+        art_id = "art001"
+        ticker = "AAPL"
+        manifest = {intel._evidence_id(ticker, art_id): {
+            "title": "Apple beats", "ticker": ticker, "article_id": art_id,
+        }}
+        # LLM response: one valid event with valid article_id, one rejected (no valid ids)
+        llm_response = json.dumps({
+            "AAPL": [
+                {"event_type": "EARNINGS", "direction": "POSITIVE", "magnitude": "HIGH",
+                 "horizon": "SHORT", "confidence": 0.9, "affected_metric": "eps",
+                 "evidence": "beat", "article_ids": [art_id]},  # valid
+                {"event_type": "DEMAND", "direction": "NEGATIVE", "magnitude": "LOW",
+                 "horizon": "MEDIUM", "confidence": 0.5, "affected_metric": "rev",
+                 "evidence": "miss", "article_ids": ["fakeid999"]},  # rejected
+            ]
+        })
+        mock_client = MagicMock()
+        mock_client.stream_generate = MagicMock(return_value=iter([llm_response]))
+        by_ticker = {ticker: [_make_article(ticker, "Apple beats", url="https://x.com/1")]}
+        result = intel.extract_events_llm(by_ticker, mock_client, manifest=manifest)
+
+        assert result.get("_extraction_ok") is True
+        diag = result.get("_ticker_diagnostics", {}).get("AAPL", {})
+        assert diag.get("candidate_count") == 2, "Must count 2 raw candidates for AAPL"
+        assert diag.get("accepted_count") == 1, "Must count 1 accepted event for AAPL"
+        assert diag.get("rejected_count") == 1, "Must count 1 rejected event for AAPL"
+        assert "zero_valid_article_ids" in diag.get("rejection_reasons", [])
