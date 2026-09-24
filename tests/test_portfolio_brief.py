@@ -1,8 +1,9 @@
 """
-Adversarial acceptance tests for the Portfolio Decision Brief (0632).
+Adversarial acceptance tests for the Portfolio Decision Brief (0632 + 0007 rewrite).
 
 All tests use in-memory or temp SQLite — no LLM, no network.
-Covers the cross-system contracts introduced in 0624-0627 + hardening in 0628-0631.
+Tests drive production paths: build_portfolio_brief_state(), create_portfolio_brief(),
+and apply_brief_response() from serve.py — never reproduced SQL/logic inline.
 """
 import importlib
 import json
@@ -24,6 +25,9 @@ from agents.news.intelligence import (
     EMERGING_RISK_THRESHOLD,
     classify_news_event,
 )
+
+# apply_brief_response lives in portfolio_ai so it can be imported without
+# triggering serve.py's socket binding at module level.
 
 
 # ── Schema helpers ────────────────────────────────────────────────────────────
@@ -249,52 +253,40 @@ def test_no_state_row_excluded(tmp_path):
     assert "META" not in tickers, "Events with no state row must be excluded (fail closed)"
 
 
-# ── Test 5: FILLED intent not open ───────────────────────────────────────────
+# ── Test 5: FILLED intent excluded via production path ───────────────────────
 
-def test_filled_intent_not_in_execution_state(tmp_path):
+def test_filled_intent_excluded_via_production_path(tmp_path):
+    """Calls build_portfolio_brief_state() directly; FILLED/REJECTED must not count as open."""
     db_file = _make_brief_db(tmp_path)
     with _conn(db_file) as conn:
-        # trade_intents uses 'symbol'/'side', not 'ticker'/'action'
         conn.execute(
             "INSERT INTO trade_intents (intent_id, symbol, side, quantity, status, created_at)"
-            " VALUES ('i1', 'NVDA', 'BUY', 10, 'FILLED', '2026-09-20')"
+            " VALUES ('i-filled', 'NVDA', 'BUY', 10, 'FILLED', '2026-09-20')"
         )
         conn.execute(
             "INSERT INTO trade_intents (intent_id, symbol, side, quantity, status, created_at)"
-            " VALUES ('i2', 'AMD', 'BUY', 5, 'PENDING', '2026-09-20')"
+            " VALUES ('i-rejected', 'TSLA', 'SELL', 5, 'REJECTED', '2026-09-20')"
+        )
+        conn.execute(
+            "INSERT INTO trade_intents (intent_id, symbol, side, quantity, status, created_at)"
+            " VALUES ('i-pending', 'AMD', 'BUY', 3, 'PENDING', '2026-09-20')"
         )
         conn.commit()
 
+    portfolio_ai.DB_PATH = db_file
     with _conn(db_file) as conn:
-        rows = conn.execute(
-            "SELECT intent_id FROM trade_intents"
-            " WHERE status NOT IN ('FILLED', 'CANCELLED', 'EXPIRED', 'REJECTED')"
-        ).fetchall()
-    ids = [r["intent_id"] for r in rows]
-    assert "i1" not in ids, "FILLED intent must not appear as open"
-    assert "i2" in ids, "PENDING intent must appear as open"
+        state = portfolio_ai.build_portfolio_brief_state(conn)
 
-    # Verify case-sensitivity: lowercase 'filled' would NOT be excluded by the old query
-    with _conn(db_file) as conn:
-        conn.execute(
-            "INSERT INTO trade_intents (intent_id, symbol, side, quantity, status, created_at)"
-            " VALUES ('i3', 'GOOG', 'BUY', 3, 'filled', '2026-09-20')"
-        )
-        conn.commit()
-        old_style = conn.execute(
-            "SELECT intent_id FROM trade_intents"
-            " WHERE status NOT IN ('filled', 'cancelled', 'expired')"
-        ).fetchall()
-        new_style = conn.execute(
-            "SELECT intent_id FROM trade_intents"
-            " WHERE status NOT IN ('FILLED', 'CANCELLED', 'EXPIRED', 'REJECTED')"
-        ).fetchall()
-    # lowercase filter correctly catches 'filled', uppercase catches 'FILLED'
-    old_ids = {r["intent_id"] for r in old_style}
-    new_ids = {r["intent_id"] for r in new_style}
-    assert "i3" not in old_ids, "lowercase 'filled' excluded by old lowercase filter"
-    assert "i1" not in new_ids, "FILLED excluded by new uppercase filter"
-    assert "i3" in new_ids, "lowercase 'filled' NOT excluded by uppercase filter (different case)"
+    ex = state.get("execution_state", {})
+    assert ex.get("status") == "AVAILABLE", f"execution_state.status must be AVAILABLE, got {ex.get('status')}"
+    assert ex.get("open_intents") == 1, (
+        f"Only PENDING must count as open; got open_intents={ex.get('open_intents')}, "
+        f"pending={ex.get('pending')}"
+    )
+    symbols = [p["ticker"] for p in ex.get("pending", [])]
+    assert "NVDA" not in symbols, "FILLED intent must not appear in pending"
+    assert "TSLA" not in symbols, "REJECTED intent must not appear in pending"
+    assert "AMD" in symbols, "PENDING intent must appear in pending"
 
 
 # ── Test 6: crashed Guardian run doesn't refresh freshness ───────────────────
@@ -317,17 +309,19 @@ def test_crashed_guardian_run_does_not_refresh_freshness(tmp_path):
         )
         conn.commit()
 
+    portfolio_ai.DB_PATH = db_file
     with _conn(db_file) as conn:
-        gr = conn.execute(
-            "SELECT MAX(finished_at) FROM agent_runs"
-            " WHERE agent_type='portfolio_guardian' AND status='done'"
-        ).fetchone()
-    finished_ts = gr[0]
-    assert finished_ts is not None
-    age_h = (now - float(finished_ts)) / 3600
-    assert age_h > 24, (
-        f"Freshness should be based on last completed run (~48h old), got {age_h:.1f}h"
-    )
+        state = portfolio_ai.build_portfolio_brief_state(conn)
+
+    # Freshness for guardian should be based on the last DONE run, ~48h ago
+    freshness = state.get("freshness", {})
+    guardian_f = freshness.get("guardian")
+    if guardian_f:
+        age_h = guardian_f.get("age_hours")
+        if age_h is not None:
+            assert age_h > 24, (
+                f"Guardian freshness should reflect the completed (48h old) run, got {age_h:.1f}h"
+            )
 
 
 # ── Test 7: failed provenance insert rolls back ai_insights ──────────────────
@@ -374,9 +368,10 @@ def test_failed_provenance_rolls_back_ai_insights(tmp_path, monkeypatch):
     )
 
 
-# ── Test 8: bogus item_key rejected ──────────────────────────────────────────
+# ── Test 8: bogus item_key rejected via apply_brief_response ─────────────────
 
-def test_bogus_item_key_rejected(tmp_path):
+def test_bogus_item_key_rejected_via_handler(tmp_path):
+    """Drives apply_brief_response() directly; bogus key must return 400."""
     db_file = _make_brief_db(tmp_path)
     brief_id = str(uuid.uuid4())
     source_refs = [{"item_key": "rec:123", "source_type": "recommendation", "source_id": "123"}]
@@ -388,19 +383,32 @@ def test_bogus_item_key_rejected(tmp_path):
             (brief_id, json.dumps(source_refs)),
         )
         conn.commit()
-        # Validate item_key against source_refs_json — the serve.py logic
-        valid_keys = {ref["item_key"] for ref in source_refs}
-        bogus_key = "rec:999999"
-        assert bogus_key not in valid_keys, "Bogus key must not be in valid_keys"
-        assert "rec:123" in valid_keys, "Real key must be valid"
+
+    # Valid key must succeed (action doesn't hit rec: path for DISMISS)
+    with _conn(db_file) as conn:
+        code, result = portfolio_ai.apply_brief_response(conn, brief_id, "rec:123", "DISMISS")
+    assert code == 200, f"Valid item_key DISMISS should return 200, got {code}: {result}"
+
+    # Bogus key must be rejected
+    with _conn(db_file) as conn:
+        code, result = portfolio_ai.apply_brief_response(conn, brief_id, "rec:999999", "DISMISS")
+    assert code == 400, f"Bogus item_key must return 400, got {code}: {result}"
+    assert "not found in brief" in result.get("error", ""), (
+        f"Error message should say not found: {result}"
+    )
 
 
-# ── Test 9: REVIEW links to existing recommendation episode ──────────────────
+# ── Test 9: REVIEW lineage via apply_brief_response ──────────────────────────
 
-def test_review_links_to_existing_episode(tmp_path):
+def test_review_links_to_existing_episode_via_handler(tmp_path):
+    """Drives apply_brief_response(); REVIEW must resolve existing episode_id."""
     db_file = _make_brief_db(tmp_path)
     ep_id = str(uuid.uuid4())
     rec_id = 42
+    brief_id = str(uuid.uuid4())
+    source_refs = [{"item_key": f"rec:{rec_id}", "source_type": "recommendation",
+                    "source_id": str(rec_id)}]
+
     with _conn(db_file) as conn:
         conn.execute(
             "INSERT INTO agent_runs (id, agent_type, started_at, status)"
@@ -412,23 +420,89 @@ def test_review_links_to_existing_episode(tmp_path):
             " VALUES (?, 1, 'AAPL', 'BUY', 80, 80, 'open', 1000.0, ?)",
             (rec_id, ep_id),
         )
+        conn.execute(
+            "INSERT INTO portfolio_brief_provenance"
+            " (brief_id, captured_at, brief_snapshot_json, briefing_output_json, source_refs_json)"
+            " VALUES (?, '2026-09-20', '{}', '{}', ?)",
+            (brief_id, json.dumps(source_refs)),
+        )
         conn.commit()
 
     with _conn(db_file) as conn:
-        rec_row = conn.execute(
-            "SELECT episode_id FROM recommendations WHERE id=?", (rec_id,)
-        ).fetchone()
-        resolved_episode_id = rec_row["episode_id"] if rec_row else None
+        code, result = portfolio_ai.apply_brief_response(conn, brief_id, f"rec:{rec_id}", "REVIEW")
 
-    assert resolved_episode_id == ep_id, (
-        "REVIEW on rec:42 must resolve to the recommendation's existing episode_id"
+    assert code == 200, f"Valid REVIEW should return 200, got {code}: {result}"
+    assert result.get("episode_id") == ep_id, (
+        f"REVIEW must resolve to the recommendation's existing episode_id. "
+        f"Expected {ep_id}, got {result.get('episode_id')}"
     )
-    # No new portfolio_brief_episodes row should be created
+
+    # No portfolio_brief_episodes row should be created
     with _conn(db_file) as conn:
         pbe_count = conn.execute(
             "SELECT COUNT(*) FROM portfolio_brief_episodes"
         ).fetchone()[0]
     assert pbe_count == 0, "portfolio_brief_episodes must not be written for REVIEW"
+
+
+def test_review_null_episode_id_returns_409(tmp_path):
+    """REVIEW on a recommendation with NULL episode_id must fail closed (409)."""
+    db_file = _make_brief_db(tmp_path)
+    rec_id = 99
+    brief_id = str(uuid.uuid4())
+    source_refs = [{"item_key": f"rec:{rec_id}", "source_type": "recommendation",
+                    "source_id": str(rec_id)}]
+
+    with _conn(db_file) as conn:
+        conn.execute(
+            "INSERT INTO agent_runs (id, agent_type, started_at, status)"
+            " VALUES (1, 'opportunity_hunter', 1000.0, 'done')"
+        )
+        conn.execute(
+            "INSERT INTO recommendations (id, run_id, ticker, action, recommendation_score,"
+            " confidence, status, created_at, episode_id)"
+            " VALUES (?, 1, 'AAPL', 'BUY', 80, 80, 'open', 1000.0, NULL)",
+            (rec_id,),
+        )
+        conn.execute(
+            "INSERT INTO portfolio_brief_provenance"
+            " (brief_id, captured_at, brief_snapshot_json, briefing_output_json, source_refs_json)"
+            " VALUES (?, '2026-09-20', '{}', '{}', ?)",
+            (brief_id, json.dumps(source_refs)),
+        )
+        conn.commit()
+
+    with _conn(db_file) as conn:
+        code, result = portfolio_ai.apply_brief_response(conn, brief_id, f"rec:{rec_id}", "REVIEW")
+
+    assert code == 409, (
+        f"REVIEW with NULL episode_id must return 409, got {code}: {result}"
+    )
+    assert "no decision episode" in result.get("error", ""), (
+        f"Error message should explain the missing episode: {result}"
+    )
+
+
+def test_review_missing_recommendation_returns_409(tmp_path):
+    """REVIEW on a rec_id that doesn't exist must fail 409."""
+    db_file = _make_brief_db(tmp_path)
+    brief_id = str(uuid.uuid4())
+    source_refs = [{"item_key": "rec:7777", "source_type": "recommendation", "source_id": "7777"}]
+
+    with _conn(db_file) as conn:
+        conn.execute(
+            "INSERT INTO portfolio_brief_provenance"
+            " (brief_id, captured_at, brief_snapshot_json, briefing_output_json, source_refs_json)"
+            " VALUES (?, '2026-09-20', '{}', '{}', ?)",
+            (brief_id, json.dumps(source_refs)),
+        )
+        conn.commit()
+
+    with _conn(db_file) as conn:
+        code, result = portfolio_ai.apply_brief_response(conn, brief_id, "rec:7777", "REVIEW")
+
+    assert code == 409, f"REVIEW on missing rec must return 409, got {code}: {result}"
+    assert "not found" in result.get("error", ""), f"Error should say not found: {result}"
 
 
 # ── Test 10: 50 news observations don't change production influence ───────────

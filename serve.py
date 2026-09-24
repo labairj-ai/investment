@@ -1868,6 +1868,7 @@ def _detect_expiry_from_message(message: str, available_expirations: list) -> "s
 
 from execution_validation import validate_execution_body as _validate_execution_body
 
+
 # ── HTTP Handler ──────────────────────────────────────────────────────────────
 class Handler(http.server.SimpleHTTPRequestHandler):
 
@@ -4810,8 +4811,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self._json({"ok": True, "status": "generating", "date": today})
 
     def _handle_brief_respond(self):
-        """POST /api/brief/respond — record ACT/DISMISS/DEFER on a brief item.
-        Body: {"brief_id": "...", "item_key": "...", "action": "ACT|DISMISS|DEFER", "note": "..."}
+        """POST /api/brief/respond — record REVIEW/DISMISS/DEFER on a brief item.
+        Body: {"brief_id": "...", "item_key": "...", "action": "REVIEW|DISMISS|DEFER", "note": "..."}
         """
         try:
             body = self._read_body()
@@ -4829,54 +4830,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         try:
             import portfolio_ai
             import sqlite3 as _sql
-            from datetime import datetime as _dt
             portfolio_ai._init_ai_tables()
             conn = _sql.connect(str(portfolio_ai.DB_PATH), timeout=10)
             conn.row_factory = _sql.Row
-
-            # Validate brief_id exists in provenance
-            prov_row = conn.execute(
-                "SELECT source_refs_json FROM portfolio_brief_provenance WHERE brief_id = ?",
-                (brief_id,)
-            ).fetchone()
-            if not prov_row:
-                conn.close()
-                return self._json_error(400, f"Unknown brief_id: {brief_id}")
-
-            # Validate item_key belongs to this brief
-            import json as _json
-            source_refs = _json.loads(prov_row["source_refs_json"] or "[]")
-            valid_keys = {ref["item_key"] for ref in source_refs if ref.get("item_key")}
-            if item_key not in valid_keys:
-                conn.close()
-                return self._json_error(400, f"item_key {item_key!r} not found in brief {brief_id}")
-
-            responded_at = _dt.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
-            conn.execute(
-                "INSERT INTO portfolio_brief_responses (brief_id, item_key, action, note, responded_at) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (brief_id, item_key, action, note, responded_at),
-            )
-
-            # For REVIEW on a recommendation: resolve existing decision episode rather than
-            # creating a shadow episode in portfolio_brief_episodes.
-            episode_id = None
-            if action == "REVIEW" and item_key.startswith("rec:"):
-                rec_id_str = item_key[4:]
-                if rec_id_str.isdigit():
-                    rec_row = conn.execute(
-                        "SELECT episode_id FROM recommendations WHERE id=?",
-                        (int(rec_id_str),),
-                    ).fetchone()
-                    if rec_row:
-                        episode_id = rec_row["episode_id"]
-
-            conn.commit()
+            status_code, result = portfolio_ai.apply_brief_response(conn, brief_id, item_key, action, note)
             conn.close()
-            self._json({
-                "ok": True, "brief_id": brief_id, "item_key": item_key,
-                "action": action, "episode_id": episode_id,
-            })
+            if status_code == 200:
+                self._json(result)
+            else:
+                self._json_error(status_code, result.get("error", ""))
         except Exception as e:
             self._json_error(500, f"Could not record response: {e}")
 

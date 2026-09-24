@@ -1105,6 +1105,7 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
     holdings = _load_holdings_csv()
     thesis_deltas = []
     portfolio_risks = []
+    thesis_status = "AVAILABLE"
     try:
         import agent_db as _adb
         for h in holdings:
@@ -1138,11 +1139,14 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
                     "source": "thesis_monitor",
                     "severity": severity,
                 })
-    except Exception:
-        pass
+    except Exception as _e:
+        thesis_status = "ERROR"
+        thesis_deltas = []
+        portfolio_risks = []
+        print(f"[build_portfolio_brief_state] thesis subsystem error: {_e}")
 
     # ── 6. Learning state ─────────────────────────────────────────────────────
-    learning_state: dict = {"accepted_count": 0, "last_sweep": None}
+    learning_state: dict = {"accepted_count": 0, "last_sweep": None, "status": "AVAILABLE"}
     try:
         accepted_rows = get_accepted_news_events(conn, "v2")
         learning_state["accepted_count"] = len(accepted_rows)
@@ -1154,15 +1158,18 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
         ).fetchone()
         if sweep_row and sweep_row[0]:
             learning_state["last_sweep"] = sweep_row[0]
-    except Exception:
-        pass
+    except Exception as _e:
+        learning_state["status"] = "ERROR"
+        learning_state["error"] = str(_e)
+        print(f"[build_portfolio_brief_state] learning state error: {_e}")
 
     # ── 7. Execution state (open trade intents) ───────────────────────────────
-    execution_state: dict = {"open_intents": 0, "pending": []}
+    # trade_intents schema: symbol (not ticker), side (not action)
+    execution_state: dict = {"open_intents": 0, "pending": [], "status": "AVAILABLE"}
     last_intent_ts = None
     try:
         intent_rows = conn.execute(
-            """SELECT intent_id, ticker, action, quantity, status, created_at
+            """SELECT intent_id, symbol, side, quantity, status, created_at
                FROM trade_intents
                WHERE status NOT IN ('FILLED', 'CANCELLED', 'EXPIRED', 'REJECTED')
                ORDER BY created_at DESC LIMIT 20"""
@@ -1170,15 +1177,17 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
         execution_state["open_intents"] = len(intent_rows)
         for r in intent_rows:
             execution_state["pending"].append({
-                "ticker": r["ticker"],
-                "action": r["action"],
+                "ticker": r["symbol"],
+                "action": r["side"],
                 "quantity": r["quantity"],
                 "status": r["status"],
             })
             if r["created_at"] and (last_intent_ts is None or r["created_at"] > last_intent_ts):
                 last_intent_ts = r["created_at"]
-    except Exception:
-        pass
+    except Exception as _e:
+        execution_state["status"] = "ERROR"
+        execution_state["error"] = str(_e)
+        print(f"[build_portfolio_brief_state] execution state error: {_e}")
 
     # ── 8. Freshness ─────────────────────────────────────────────────────────
     def _freshness_entry(last_updated_str, stale_hours: float = 24) -> dict:
@@ -1253,7 +1262,40 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
     degraded = any(v["status"] in ("STALE", "UNAVAILABLE", "UNKNOWN") for v in freshness.values())
     freshness["overall"] = "DEGRADED" if degraded else "CURRENT"
 
-    # ── 9. Classify attention / opportunity / watch ───────────────────────────
+    # ── 9. Capability state (read once, same conn, same snapshot) ─────────────
+    # Captured here so _format_capability_summary() is a pure dict function with
+    # no DB I/O — all three temporal reads come from the same connection/moment.
+    capability_state: dict = {
+        "news_contract": "UNKNOWN",
+        "news_influence": "observe-only",
+        "macro_stage": "unknown",
+        "macro_influence": "0",
+    }
+    try:
+        _acc_row = conn.execute(
+            "SELECT accepted_at FROM _news_intelligence_acceptance"
+            " WHERE accepted_version='v2' ORDER BY accepted_at DESC LIMIT 1"
+        ).fetchone()
+        capability_state["news_contract"] = (
+            "ACCEPTED" if (_acc_row and _acc_row["accepted_at"]) else "FROZEN"
+        )
+    except Exception as _e:
+        capability_state["news_contract"] = "ERROR"
+        capability_state["news_contract_error"] = str(_e)
+    try:
+        _ep_row = conn.execute(
+            "SELECT epoch_id, status FROM macro_experiment_epochs"
+            " ORDER BY rowid DESC LIMIT 1"
+        ).fetchone()
+        capability_state["macro_stage"] = (
+            f"epoch={_ep_row['epoch_id']} status={_ep_row['status']}"
+            if _ep_row else "no epochs"
+        )
+    except Exception as _e:
+        capability_state["macro_stage"] = "ERROR"
+        capability_state["macro_stage_error"] = str(_e)
+
+    # ── 10. Classify attention / opportunity / watch ──────────────────────────
     attention_items: list = []
     opportunities: list = []
     watch_items: list = []
@@ -1268,14 +1310,15 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
                GROUP BY item_key
                HAVING COUNT(*) >= 3"""
         ).fetchall()
-        # Exclude keys that have a subsequent ACT
+        # Exclude keys that have a subsequent REVIEW
         _acted_rows = conn.execute(
-            "SELECT DISTINCT item_key FROM portfolio_brief_responses WHERE action='ACT'"
+            "SELECT DISTINCT item_key FROM portfolio_brief_responses WHERE action='REVIEW'"
         ).fetchall()
         _acted_keys = {r[0] for r in _acted_rows}
         _dismissed_keys = {r[0] for r in _prev_rows if r[0] not in _acted_keys}
-    except Exception:
-        pass
+    except Exception as _e:
+        _dismissed_keys = set()
+        print(f"[build_portfolio_brief_state] dismissed-keys query error: {_e}")
 
     for finding in findings_by_type.get("portfolio_guardian", []):
         sev = finding.get("severity", 0) or 0
@@ -1422,12 +1465,14 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
         "watch_items": watch_items,
         "open_decisions": open_decisions,
         "thesis_deltas": thesis_deltas,
+        "thesis_status": thesis_status,
         "news_signals": news_signals,
         "portfolio_risks": portfolio_risks,
         "critic_summary": critic_counts,
         "macro_state": macro_state,
         "learning_state": learning_state,
         "execution_state": execution_state,
+        "capability_state": capability_state,
         "freshness": freshness,
     }
 
@@ -2801,45 +2846,21 @@ def run_news_maintenance(day=None) -> dict:
 
 
 def _format_capability_summary(brief_state: dict) -> str:
-    """Format learning, execution, and macro state as structured text for the LLM prompt."""
+    """Format capability, execution, and macro state for the LLM prompt.
+
+    Pure function — reads only from brief_state. All DB I/O happens in
+    build_portfolio_brief_state() under capability_state.
+    """
     lines = []
 
-    # Learning state — read actual lifecycle state; never auto-promote based on count alone.
+    # Capability state — all data pre-captured by build_portfolio_brief_state()
+    cap = brief_state.get("capability_state", {})
     ls = brief_state.get("learning_state", {})
     accepted = ls.get("accepted_count", 0)
-    # Read actual News v2 acceptance boundary to determine whether v2 is live
-    try:
-        import sqlite3 as _sq3
-        _db = DB_PATH
-        _lc = _sq3.connect(str(_db), timeout=5)
-        _lc.row_factory = _sq3.Row
-        _acc_row = _lc.execute(
-            "SELECT accepted_at FROM _news_intelligence_acceptance"
-            " WHERE accepted_version='v2' ORDER BY accepted_at DESC LIMIT 1"
-        ).fetchone()
-        news_contract = "ACTIVE" if (_acc_row and _acc_row["accepted_at"]) else "FROZEN"
-        # News v2 is observe-only while evidence is still being collected; the contract
-        # state in _news_intelligence_acceptance controls this, not a count threshold.
-        news_influence = "observe-only"
-        _lc.close()
-    except Exception:
-        news_contract = "UNKNOWN"
-        news_influence = "observe-only"
-
-    # Macro experiment state from DB
-    try:
-        _mc = _sq3.connect(str(DB_PATH), timeout=5)
-        _mc.row_factory = _sq3.Row
-        _ep_row = _mc.execute(
-            "SELECT epoch_id, status FROM macro_experiment_epochs"
-            " ORDER BY rowid DESC LIMIT 1"
-        ).fetchone()
-        macro_stage = f"epoch={_ep_row['epoch_id']} status={_ep_row['status']}" if _ep_row else "no epochs"
-        macro_influence = "0"
-        _mc.close()
-    except Exception:
-        macro_stage = "Stage 0"
-        macro_influence = "0"
+    news_contract = cap.get("news_contract", "UNKNOWN")
+    news_influence = cap.get("news_influence", "observe-only")
+    macro_stage = cap.get("macro_stage", "unknown")
+    macro_influence = cap.get("macro_influence", "0")
 
     lines.append("CAPABILITY STATE:")
     lines.append(
@@ -2847,10 +2868,13 @@ def _format_capability_summary(brief_state: dict) -> str:
     )
     lines.append(f"  Macro experiment — {macro_stage}, production influence {macro_influence}")
 
-    # Execution state
+    # Execution state — distinguish ERROR from legitimate zero
     ex = brief_state.get("execution_state", {})
+    ex_status = ex.get("status", "AVAILABLE")
     pending = ex.get("pending", [])
-    if pending:
+    if ex_status == "ERROR":
+        lines.append(f"EXECUTION: ERROR — {ex.get('error', 'unknown error')}")
+    elif pending:
         lines.append("EXECUTION:")
         for p in pending[:5]:
             lines.append(f"  {p.get('ticker', '?')} {p.get('action', '?')} — {p.get('status', 'unknown')}")
@@ -2893,7 +2917,10 @@ def create_portfolio_brief(conn: sqlite3.Connection, force: bool = False) -> dic
     now_str = _dt2.now().strftime("%Y-%m-%d %H:%M:%S")
 
     source_refs = _build_source_refs(brief_state)
+    # SAVEPOINT so we don't own the caller's transaction: unrelated uncommitted
+    # writes on this connection survive a brief-persistence failure.
     try:
+        conn.execute("SAVEPOINT brief_write")
         conn.execute(
             "INSERT OR REPLACE INTO ai_insights (day, insight, generated_at) VALUES (?,?,?)",
             (today, json.dumps(briefing_output), now_str),
@@ -2910,9 +2937,9 @@ def create_portfolio_brief(conn: sqlite3.Connection, force: bool = False) -> dic
                 json.dumps(source_refs),
             ),
         )
-        conn.commit()
+        conn.execute("RELEASE SAVEPOINT brief_write")
     except Exception as e:
-        conn.rollback()
+        conn.execute("ROLLBACK TO SAVEPOINT brief_write")
         raise RuntimeError(f"[create_portfolio_brief] Persistence failed, rolled back: {e}") from e
     return {"brief": briefing_output, "brief_id": brief_id, "brief_state": brief_state}
 
@@ -2963,6 +2990,59 @@ def _build_source_refs(brief_state: dict) -> list:
                 "ticker": ticker,
             })
     return refs
+
+
+def apply_brief_response(conn: sqlite3.Connection, brief_id: str, item_key: str,
+                         action: str, note: str = "") -> tuple:
+    """Record a REVIEW/DISMISS/DEFER response on a brief item.
+
+    Returns (http_status_code: int, result: dict). Extracted here so it can be
+    driven directly in tests without importing or starting the HTTP server.
+    """
+    import json as _json
+    from datetime import datetime as _dt
+
+    prov_row = conn.execute(
+        "SELECT source_refs_json FROM portfolio_brief_provenance WHERE brief_id = ?",
+        (brief_id,),
+    ).fetchone()
+    if not prov_row:
+        return 400, {"ok": False, "error": f"Unknown brief_id: {brief_id}"}
+
+    source_refs = _json.loads(prov_row["source_refs_json"] or "[]")
+    valid_keys = {ref["item_key"] for ref in source_refs if ref.get("item_key")}
+    if item_key not in valid_keys:
+        return 400, {"ok": False, "error": f"item_key {item_key!r} not found in brief {brief_id}"}
+
+    episode_id = None
+    if action == "REVIEW" and item_key.startswith("rec:"):
+        rec_id_str = item_key[4:]
+        if not rec_id_str.isdigit():
+            return 400, {"ok": False, "error": f"Malformed rec key: {item_key!r}"}
+        rec_row = conn.execute(
+            "SELECT episode_id FROM recommendations WHERE id=?",
+            (int(rec_id_str),),
+        ).fetchone()
+        if not rec_row:
+            return 409, {"ok": False, "error": f"Recommendation {rec_id_str} not found"}
+        if not rec_row["episode_id"]:
+            return 409, {"ok": False, "error": (
+                f"Recommendation {rec_id_str} has no decision episode; "
+                "cannot record REVIEW without lineage"
+            )}
+        episode_id = rec_row["episode_id"]
+
+    responded_at = _dt.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    conn.execute("SAVEPOINT brief_respond")
+    conn.execute(
+        "INSERT INTO portfolio_brief_responses (brief_id, item_key, action, note, responded_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (brief_id, item_key, action, note, responded_at),
+    )
+    conn.execute("RELEASE SAVEPOINT brief_respond")
+    conn.commit()
+    return 200, {"ok": True, "brief_id": brief_id, "item_key": item_key,
+                 "action": action, "episode_id": episode_id}
 
 
 def generate_daily_insight(force: bool = False) -> dict:
