@@ -375,9 +375,9 @@ def _analyze_roll(ctx: AgentContext, ticker: str, position: dict) -> list[Recomm
 
     financial_line = (
         f"{action}: {ticker} ${existing_strike:.2f} exp {existing_expiry} ({dte} DTE). "
-        f"P&L: ${pnl:+.2f}. "
+        f"P&L: {f'${pnl:+.2f}' if pnl is not None else 'N/A'}. "
         f"Premium captured: {f'{pct_captured:.0f}%' if pct_captured is not None else 'N/A'}. "
-        f"Current price: ${current_price:.2f}."
+        f"Current price: {f'${current_price:.2f}' if current_price is not None else 'N/A'}."
     )
     why_now = financial_line + " " + why
 
