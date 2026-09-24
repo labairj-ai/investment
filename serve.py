@@ -2785,6 +2785,30 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                                  (remaining, alloc["lot_id"]))
             conn.commit()
             conn.close()
+
+            # If all lots for this ticker are gone, remove it from holdings.csv
+            remaining_lots = [
+                a for a in allocs
+                if round(a["original_shares"] - a["shares"], 6) >= 1e-4
+            ]
+            if not remaining_lots:
+                holdings_csv = PROJECT_DIR / "holdings.csv"
+                if holdings_csv.exists():
+                    import csv as _csv_sell
+                    rows, fieldnames = [], None
+                    with open(holdings_csv, newline="") as f:
+                        reader = _csv_sell.DictReader(f)
+                        fieldnames = reader.fieldnames
+                        for row in reader:
+                            raw = str(row.get("Stock", "")).strip().upper()
+                            norm = raw.replace(".", "-") if "." in raw else raw
+                            if norm != ticker and raw != ticker:
+                                rows.append(row)
+                    with open(holdings_csv, "w", newline="") as f:
+                        writer = _csv_sell.DictWriter(f, fieldnames=fieldnames)
+                        writer.writeheader()
+                        writer.writerows(rows)
+
             self._json({"ok": True, "id": sell_id, "realized_gain": total_gain,
                         "st_gain": st_gain, "lt_gain": lt_gain, "allocations": allocs})
         except Exception as e:
