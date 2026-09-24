@@ -2,7 +2,7 @@
 Description=Run news event-state maintenance daily at 02:00 America/New_York
 
 [Timer]
-OnCalendar=America/New_York *-*-* 02:00:00
+OnCalendar=*-*-* 02:00:00 America/New_York
 Persistent=true
 
 [Install]

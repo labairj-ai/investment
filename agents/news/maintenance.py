@@ -87,3 +87,5 @@ if __name__ == "__main__":
     args = parser.parse_args()
     out = run_daily_sweep(day=args.day)
     print(f"[NewsMaintenance] {out}")
+    if out.get("status") == "error":
+        sys.exit(1)

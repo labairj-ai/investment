@@ -337,6 +337,16 @@ def collect(conn, state, baseline, now):
     guarded('data_freshness',freshness)
     def news_maintenance_check():
         try:
+            # Immediate YELLOW if the most recent run (any status) failed (0611)
+            latest=conn.execute(
+                "SELECT run_at, status FROM news_maintenance_log ORDER BY run_at DESC LIMIT 1"
+            ).fetchone()
+            if latest and latest['status']=='error':
+                return result('news_maintenance','YELLOW',
+                              'News event-state sweep last run failed',
+                              last_run_at=latest['run_at'],stale=False,latest_status='error',
+                              expected_cadence='Daily at 02:00 ET via systemd; also runs inside generate_news_summaries')
+            # Check 26h staleness on successful runs
             row=conn.execute(
                 "SELECT MAX(run_at) as last_run FROM news_maintenance_log WHERE status='ok'"
             ).fetchone()

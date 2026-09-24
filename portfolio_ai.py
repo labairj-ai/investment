@@ -19,6 +19,11 @@ from strategy_config import (
     LAYER_NAMES, LAYER_LABELS, LAYER_TARGETS, LAYER_DESCRIPTIONS, DRIFT_THRESHOLD,
 )
 
+try:
+    from agent_db import CODE_COMMIT_SHA as _CODE_COMMIT_SHA
+except Exception:
+    _CODE_COMMIT_SHA = None
+
 
 def _normalize_ticker(t: str) -> str:
     """Mirror generate_dashboard.normalize_ticker: BRK.B → BRK-B."""
@@ -848,8 +853,10 @@ def _init_ai_tables():
     conn.execute(
         "INSERT OR IGNORE INTO _news_intelligence_acceptance "
         "(id, accepted_at, accepted_commit, accepted_version, notes) "
-        "VALUES (2, ?, 'c5053fb', 'v2', ?)",
-        (datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"), _acceptance_notes_final),
+        "VALUES (2, ?, ?, 'v2', ?)",
+        (datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+         _CODE_COMMIT_SHA or "unknown",
+         _acceptance_notes_final),
     )
     # 0610: atomic snapshot provenance table — keyed by snapshot_hash.
     # Populated by run_pipeline() via _persist_snapshot(); read by _build_news_state().
@@ -861,8 +868,33 @@ def _init_ai_tables():
         manifest_json  TEXT,
         created_at     TEXT NOT NULL
     )""")
+    # 0612: finished_at on agent_runs enables point-in-time confirmation queries
+    try:
+        conn.execute("ALTER TABLE agent_runs ADD COLUMN finished_at REAL")
+    except Exception:
+        pass
     conn.commit()
     conn.close()
+
+
+def get_accepted_news_events(conn: sqlite3.Connection) -> list:
+    """Return news_events rows valid under the current v2 acceptance boundary.
+
+    Enforces: extracted_at >= MAX(accepted_at) WHERE accepted_version='v2'.
+    Returns a list of sqlite3.Row objects.
+    """
+    conn.row_factory = sqlite3.Row
+    boundary_row = conn.execute(
+        "SELECT MAX(accepted_at) AS boundary FROM _news_intelligence_acceptance "
+        "WHERE accepted_version='v2'"
+    ).fetchone()
+    boundary = boundary_row["boundary"] if boundary_row else None
+    if not boundary:
+        return []
+    return conn.execute(
+        "SELECT * FROM news_events WHERE extracted_at >= ?",
+        (boundary,),
+    ).fetchall()
 
 
 MACRO_SCORE_SCHEMA_VERSION = "v3"

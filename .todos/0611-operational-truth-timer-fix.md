@@ -1,7 +1,7 @@
 # Fix Timer Syntax, Service Exit Code, and Watchdog Immediacy
 
 - **ID:** 0611
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-23
 - **Priority:** high
 - **Depends:** 0608

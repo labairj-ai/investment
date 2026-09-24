@@ -190,7 +190,7 @@ def build_news_snapshot(by_ticker: dict) -> dict:
     snapshot_hash = hashlib.sha256(payload.encode()).hexdigest()[:16]
 
     return {
-        "snapshot_id":   str(uuid.uuid4()),
+        "snapshot_id":   str(uuid.uuid5(uuid.NAMESPACE_URL, snapshot_hash)),
         "captured_at":   datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
         "articles":      articles,
         "snapshot_hash": snapshot_hash,
@@ -269,7 +269,7 @@ def extract_events_llm(by_ticker: dict, ollama_client_mod,
     - No title-string fallback for structured events
     """
     if not by_ticker:
-        return {}
+        return {"_extraction_ok": True, "_manifest": {}}
 
     if manifest is None:
         manifest = _build_article_manifest(by_ticker)
@@ -286,13 +286,13 @@ def extract_events_llm(by_ticker: dict, ollama_client_mod,
             raw += tok
     except Exception as e:
         print(f"[NewsEvents] LLM extraction failed: {e}")
-        return {}
+        return {"_extraction_ok": False, "_manifest": manifest}
 
     raw = raw.strip()
     start = raw.find("{")
     end   = raw.rfind("}") + 1
     if start == -1 or end == 0:
-        return {}
+        return {"_extraction_ok": False, "_manifest": manifest}
     try:
         parsed = json.loads(raw[start:end])
     except Exception:
@@ -300,14 +300,14 @@ def extract_events_llm(by_ticker: dict, ollama_client_mod,
         start = clean.find("{")
         end   = clean.rfind("}") + 1
         if start == -1 or end == 0:
-            return {}
+            return {"_extraction_ok": False, "_manifest": manifest}
         try:
             parsed = json.loads(clean[start:end])
         except Exception:
-            return {}
+            return {"_extraction_ok": False, "_manifest": manifest}
 
     if not isinstance(parsed, dict):
-        return {}
+        return {"_extraction_ok": False, "_manifest": manifest}
 
     valid: dict = {}
     for ticker, events in parsed.items():
@@ -389,6 +389,7 @@ def extract_events_llm(by_ticker: dict, ollama_client_mod,
             valid[event_ticker] = clean_events
 
     valid["_manifest"] = manifest
+    valid["_extraction_ok"] = True
     return valid
 
 
@@ -959,8 +960,20 @@ def _get_thesis_health(ticker: str) -> Optional[tuple]:
     return None
 
 
-def _get_macro_score(ticker: str, conn: sqlite3.Connection) -> dict:
+def _get_macro_score(ticker: str, conn: sqlite3.Connection,
+                     snapshot_captured_at: Optional[str] = None) -> dict:
     try:
+        # Point-in-time: use history row at or before snapshot time (0612)
+        if snapshot_captured_at:
+            hist = conn.execute(
+                "SELECT scores FROM holding_macro_scores_history "
+                "WHERE ticker=? AND scored_at <= ? ORDER BY scored_at DESC LIMIT 1",
+                (ticker, snapshot_captured_at),
+            ).fetchone()
+            if hist and hist[0]:
+                return json.loads(hist[0])
+            return {}  # no qualifying history row → no vote
+        # No snapshot context: use current row (non-learning path)
         row = conn.execute(
             "SELECT scores FROM holding_macro_scores WHERE ticker=?", (ticker,)
         ).fetchone()
@@ -1078,28 +1091,29 @@ def _get_agent_findings_flag(
     not from news articles — so its findings are genuinely independent of news.
     guardian_flags has no production writer and is no longer used as a data source.
 
-    Independence check (0609): only the latest COMPLETED Guardian run whose
-    started_at < snap_ts is eligible. This prevents findings from stale runs from
-    voting indefinitely — if the most recent pre-snapshot run has no finding for
-    this ticker, None is returned regardless of older runs.
+    Independence check (0609/0612): only the latest COMPLETED Guardian run whose
+    finished_at < snap_ts is eligible (0612: finished_at prevents selecting a run that
+    started before but completed after the snapshot). Finding must also have
+    created_at < snap_ts. Expiry evaluated at snapshot time (not now) for historical
+    reproducibility.
 
     Type whitelist (0609): only position_risk and risk_contribution qualify as
     ticker-level independent signals. Portfolio-level findings (sector_concentration,
     portfolio_beta, correlation_cluster, layer_drift) are not credited.
     """
     try:
-        now_unix = time.time()
-        snap_ts = _iso_to_unix(snapshot_captured_at) if snapshot_captured_at else now_unix
+        snap_ts = _iso_to_unix(snapshot_captured_at) if snapshot_captured_at else time.time()
         if snap_ts is None:
-            snap_ts = now_unix
+            snap_ts = time.time()
 
-        # Find the latest completed Guardian run before the snapshot
+        # Find the latest completed Guardian run that fully finished before the snapshot (0612)
         latest_run = conn.execute(
             """SELECT id FROM agent_runs
                WHERE agent_type = 'portfolio_guardian'
                  AND status = 'done'
-                 AND started_at < ?
-               ORDER BY started_at DESC LIMIT 1""",
+                 AND finished_at IS NOT NULL
+                 AND finished_at < ?
+               ORDER BY finished_at DESC LIMIT 1""",
             (snap_ts,),
         ).fetchone()
         if not latest_run:
@@ -1112,9 +1126,10 @@ def _get_agent_findings_flag(
                WHERE af.run_id = ?
                  AND af.ticker = ?
                  AND af.finding_type IN ('position_risk', 'risk_contribution')
+                 AND af.created_at < ?
                  AND (af.expires_at IS NULL OR af.expires_at > ?)
                ORDER BY af.created_at DESC LIMIT 1""",
-            (run_id, ticker, now_unix),
+            (run_id, ticker, snap_ts, snap_ts),
         ).fetchone()
         if row:
             return {
@@ -1146,7 +1161,7 @@ def attach_confirmation(event: dict, ticker: str, conn: sqlite3.Connection,
     th_health    = th_health_result[0] if th_health_result is not None else None
     th_eval_at   = th_health_result[1] if th_health_result is not None else None
     snap_ts      = _iso_to_unix(snapshot_captured_at) if snapshot_captured_at else None
-    macro_sc     = _get_macro_score(ticker, conn)
+    macro_sc     = _get_macro_score(ticker, conn, snapshot_captured_at=snapshot_captured_at)
 
     signals: dict       = {}
     corroborating = 0
@@ -1296,15 +1311,23 @@ def persist_events(events_by_ticker: dict,
                    day: str,
                    conn: sqlite3.Connection,
                    news_snapshot_hash: str = "",
-                   manifest: Optional[dict] = None) -> None:
-    now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-    tickers = list(events_by_ticker.keys())
+                   manifest: Optional[dict] = None,
+                   snapshot_id: Optional[str] = None,
+                   captured_at: Optional[str] = None,
+                   input_tickers: Optional[set] = None) -> None:
+    # 0613: write snapshot row first as the transaction prerequisite.
+    # If this INSERT fails, the exception propagates and no events are committed.
+    if news_snapshot_hash:
+        _persist_snapshot(conn, news_snapshot_hash, snapshot_id, captured_at, manifest)
 
-    if tickers:
-        placeholders = ",".join("?" * len(tickers))
+    now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    # 0614: on successful extraction, delete all input tickers (not just event-producing ones)
+    tickers_to_delete = list(input_tickers) if input_tickers else list(events_by_ticker.keys())
+    if tickers_to_delete:
+        placeholders = ",".join("?" * len(tickers_to_delete))
         conn.execute(
             f"DELETE FROM news_events WHERE day=? AND ticker IN ({placeholders})",
-            [day] + tickers,
+            [day] + tickers_to_delete,
         )
 
     for ticker, events in events_by_ticker.items():
@@ -1401,8 +1424,9 @@ def _persist_snapshot(conn: sqlite3.Connection,
                       captured_at: Optional[str],
                       manifest: Optional[dict]) -> None:
     """
-    Write snapshot identity to news_snapshots (0610). INSERT OR IGNORE — immutable once set.
-    Creates the table if missing so this is safe to call before _init_ai_tables() (e.g. tests).
+    Write snapshot identity to news_snapshots (0610/0613). INSERT OR IGNORE — immutable once set.
+    Creates the table if missing. Does NOT commit — caller is responsible for committing,
+    either explicitly (early-return path) or via persist_events() (normal path).
     """
     conn.execute("""CREATE TABLE IF NOT EXISTS news_snapshots (
         snapshot_hash  TEXT PRIMARY KEY,
@@ -1422,7 +1446,7 @@ def _persist_snapshot(conn: sqlite3.Connection,
          json.dumps(manifest) if manifest is not None else None,
          now_str),
     )
-    conn.commit()
+    # No conn.commit() here — callers commit atomically with their own writes
 
 
 # ── Main pipeline ─────────────────────────────────────────────────────────────
@@ -1470,25 +1494,55 @@ def run_pipeline(by_ticker: dict,
         manifest = None  # built inside extract_events_llm
 
     article_count = sum(len(v) for v in by_ticker.values())
+    input_tickers = set(by_ticker.keys())
 
     extraction_result = extract_events_llm(by_ticker, ollama_client_mod, manifest=manifest)
     manifest = extraction_result.pop("_manifest", manifest or {})
+    extraction_ok = extraction_result.pop("_extraction_ok", False)
 
-    # 0610: persist snapshot identity before any early return so provenance is always recorded
-    try:
-        _persist_snapshot(conn, news_snapshot_hash, snapshot_id, snapshot_captured_at, manifest)
-    except Exception as e:
-        print(f"[NewsIntelligence] Snapshot persist error: {e}")
-
-    raw_events = extraction_result
-    if not raw_events:
+    # 0614: extraction failed — preserve existing events, mark degraded, still write snapshot
+    if not extraction_ok:
+        try:
+            _persist_snapshot(conn, news_snapshot_hash, snapshot_id, snapshot_captured_at, manifest)
+            conn.commit()
+        except Exception as e:
+            print(f"[NewsIntelligence] Snapshot persist error (degraded path): {e}")
         return {
-            "events_by_ticker":     {},
-            "themes":               [],
-            "news_snapshot_hash":   news_snapshot_hash,
-            "article_count":        article_count,
-            "_snapshot_id":         snapshot_id,
+            "events_by_ticker":      {},
+            "themes":                [],
+            "news_snapshot_hash":    news_snapshot_hash,
+            "article_count":         article_count,
+            "_snapshot_id":          snapshot_id,
             "_snapshot_captured_at": snapshot_captured_at,
+            "_extraction_degraded":  True,
+        }
+
+    # After popping _manifest and _extraction_ok, extraction_result is now clean ticker->events
+    raw_events = extraction_result
+
+    if not raw_events:
+        # 0613/0614: success, zero events — still atomically persist snapshot + clear input tickers
+        try:
+            persist_events(
+                {}, [], day, conn, news_snapshot_hash, manifest,
+                snapshot_id=snapshot_id, captured_at=snapshot_captured_at,
+                input_tickers=input_tickers,
+            )
+        except Exception as e:
+            print(f"[NewsIntelligence] Persist error (empty events): {e}")
+        # 0598: still run sweep even on zero events
+        try:
+            update_event_state_sweep(day, conn)
+        except Exception as e:
+            print(f"[NewsIntelligence] Event state sweep error: {e}")
+        return {
+            "events_by_ticker":      {},
+            "themes":                [],
+            "news_snapshot_hash":    news_snapshot_hash,
+            "article_count":         article_count,
+            "_snapshot_id":          snapshot_id,
+            "_snapshot_captured_at": snapshot_captured_at,
+            "_extraction_degraded":  False,
         }
 
     enriched: dict = {}
@@ -1525,7 +1579,11 @@ def run_pipeline(by_ticker: dict,
     themes = detect_portfolio_themes(enriched, portfolio_weights)
 
     try:
-        persist_events(enriched, themes, day, conn, news_snapshot_hash, manifest)
+        persist_events(
+            enriched, themes, day, conn, news_snapshot_hash, manifest,
+            snapshot_id=snapshot_id, captured_at=snapshot_captured_at,
+            input_tickers=input_tickers,
+        )
     except Exception as e:
         print(f"[NewsIntelligence] Persist error: {e}")
 
@@ -1536,13 +1594,14 @@ def run_pipeline(by_ticker: dict,
         print(f"[NewsIntelligence] Event state sweep error: {e}")
 
     return {
-        "events_by_ticker":     enriched,
-        "themes":               themes,
-        "news_snapshot_hash":   news_snapshot_hash,
-        "article_count":        article_count,
-        "_manifest":            manifest,
-        "_snapshot_id":         snapshot_id,
+        "events_by_ticker":      enriched,
+        "themes":                themes,
+        "news_snapshot_hash":    news_snapshot_hash,
+        "article_count":         article_count,
+        "_manifest":             manifest,
+        "_snapshot_id":          snapshot_id,
         "_snapshot_captured_at": snapshot_captured_at,
+        "_extraction_degraded":  False,
     }
 
 

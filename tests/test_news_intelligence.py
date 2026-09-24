@@ -104,6 +104,12 @@ def _make_db():
     conn.execute("""CREATE TABLE holding_macro_scores (
         ticker TEXT PRIMARY KEY, scores TEXT, updated_at TEXT
     )""")
+    conn.execute("""CREATE TABLE holding_macro_scores_history (
+        id        INTEGER PRIMARY KEY AUTOINCREMENT,
+        ticker    TEXT NOT NULL,
+        scores    TEXT,
+        scored_at TEXT NOT NULL
+    )""")
     conn.execute("""CREATE TABLE company_financials (
         ticker TEXT, period_end TEXT, period_type TEXT,
         revenue REAL, gross_profit REAL,
@@ -303,7 +309,7 @@ class TestAdversarialValidation:
             }]
         }
         result = intel.extract_events_llm(by_ticker, self._mock_llm(resp))
-        result.pop("_manifest", None)
+        result.pop("_manifest", None); result.pop("_extraction_ok", None)
         assert result == {}, f"Unknown ticker must be rejected, got {result}"
 
     def test_zero_article_ids_rejected(self):
@@ -321,7 +327,7 @@ class TestAdversarialValidation:
             }]
         }
         result = intel.extract_events_llm(by_ticker, self._mock_llm(resp))
-        result.pop("_manifest", None)
+        result.pop("_manifest", None); result.pop("_extraction_ok", None)
         assert "MSFT" not in result, "Event with zero article_ids must be rejected"
 
     def test_cross_ticker_id_stripped_event_rejected(self):
@@ -342,7 +348,7 @@ class TestAdversarialValidation:
             }]
         }
         result = intel.extract_events_llm(by_ticker, self._mock_llm(resp))
-        result.pop("_manifest", None)
+        result.pop("_manifest", None); result.pop("_extraction_ok", None)
         assert "MSFT" not in result, "Cross-ticker ID must strip event; 0 valid IDs → reject"
 
     def test_valid_id_for_correct_ticker_accepted(self):
@@ -362,7 +368,7 @@ class TestAdversarialValidation:
             }]
         }
         result = intel.extract_events_llm(by_ticker, self._mock_llm(resp))
-        result.pop("_manifest", None)
+        result.pop("_manifest", None); result.pop("_extraction_ok", None)
         assert "NFLX" in result, f"Valid event should be accepted, got {result}"
         assert len(result["NFLX"]) == 1
         ev = result["NFLX"][0]
@@ -388,7 +394,7 @@ class TestAdversarialValidation:
             }]
         }
         result = intel.extract_events_llm(by_ticker, self._mock_llm(resp))
-        result.pop("_manifest", None)
+        result.pop("_manifest", None); result.pop("_extraction_ok", None)
         assert "GOOG" in result
         ev = result["GOOG"][0]
         assert "HALLUCINATED TITLE FROM LLM" not in ev["titles"]
@@ -1246,8 +1252,8 @@ class TestAgentFindings:
     def _insert_guardian_finding(self, conn, ticker, finding_type, created_at_unix,
                                    expires_at_unix=None, summary="Position risk flagged"):
         conn.execute(
-            "INSERT INTO agent_runs (agent_type, ticker, status, started_at) VALUES (?,?,?,?)",
-            ("portfolio_guardian", ticker, "done", created_at_unix - 60),
+            "INSERT INTO agent_runs (agent_type, ticker, status, started_at, finished_at) VALUES (?,?,?,?,?)",
+            ("portfolio_guardian", ticker, "done", created_at_unix - 60, created_at_unix - 30),
         )
         run_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         conn.execute(
@@ -1291,13 +1297,13 @@ class TestAgentFindings:
         assert result is None, "Post-snapshot finding must be rejected (independence)"
 
     def test_expired_finding_not_returned(self):
-        """Expired finding (expires_at < now) is excluded."""
+        """Expired finding (expires_at < snap_ts) is excluded."""
         import time as _time
         conn = _make_db()
         now = _time.time()
         snap_ts = now - 3600
         finding_ts = snap_ts - 7200
-        expires_at = now - 60  # already expired
+        expires_at = snap_ts - 60  # expired before snapshot
         self._insert_guardian_finding(conn, "AAPL", "position_risk", finding_ts,
                                        expires_at_unix=expires_at)
         snap_iso = (
@@ -1726,16 +1732,51 @@ class TestMaintenanceTruthfulness:
             "All-error log must return NULL from watchdog staleness query → YELLOW (0608)"
         )
 
+    def test_watchdog_latest_error_query_sees_error_even_with_prior_ok(self):
+        """Watchdog's immediacy query (ORDER BY run_at DESC LIMIT 1) returns error row when most recent run failed (0611)."""
+        import datetime as _dt
+        import sqlite3 as _sq3
+        conn = _sq3.connect(":memory:")
+        conn.execute("""CREATE TABLE news_maintenance_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_at TEXT NOT NULL, day TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'ok', error TEXT
+        )""")
+        ok_str = (_dt.datetime.utcnow() - _dt.timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S")
+        err_str = _dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        # Prior ok run (recent, within 26h)
+        conn.execute(
+            "INSERT INTO news_maintenance_log (run_at, day, status) VALUES (?,?,?)",
+            (ok_str, "2026-09-22", "ok"),
+        )
+        # Latest run is error
+        conn.execute(
+            "INSERT INTO news_maintenance_log (run_at, day, status, error) VALUES (?,?,?,?)",
+            (err_str, "2026-09-23", "error", "sweep failed"),
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT run_at, status FROM news_maintenance_log ORDER BY run_at DESC LIMIT 1"
+        ).fetchone()
+        conn.close()
+        assert row is not None
+        assert row[1] == "error", (
+            "Watchdog immediacy query must return the error row when latest run failed, "
+            "even when prior ok rows exist (0611)"
+        )
+
 
 # ── Tests: confirmation freshness and fail-closed semantics (0609) ───────────
 
 class TestConfirmationFreshnessFix:
     """0609: Guardian latest-run scoping, thesis fail-closed, fundamentals whitelist."""
 
-    def _insert_guardian_run(self, conn, started_at, status="done"):
+    def _insert_guardian_run(self, conn, started_at, status="done", finished_at=None):
+        if finished_at is None:
+            finished_at = started_at + 120
         conn.execute(
-            "INSERT INTO agent_runs (agent_type, status, started_at) VALUES (?,?,?)",
-            ("portfolio_guardian", status, started_at),
+            "INSERT INTO agent_runs (agent_type, status, started_at, finished_at) VALUES (?,?,?,?)",
+            ("portfolio_guardian", status, started_at, finished_at),
         )
         run_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         conn.commit()
@@ -1915,8 +1956,8 @@ class TestAtomicProvenance:
         )
         assert state["snapshot_captured_at"] == snap_cap
 
-    def test_c5053fb_acceptance_row_created_on_init(self, tmp_path):
-        """_init_ai_tables seeds id=2 acceptance row for c5053fb (final v2 boundary, 0610)."""
+    def test_acceptance_row_id2_created_on_init(self, tmp_path):
+        """_init_ai_tables seeds id=2 acceptance row with runtime SHA and v2 (0613)."""
         import portfolio_ai as _pai
         db_file = self._make_fresh_db(tmp_path)
         with patch.object(_pai, "DB_PATH", db_file):
@@ -1926,8 +1967,9 @@ class TestAtomicProvenance:
             "SELECT accepted_commit, accepted_version FROM _news_intelligence_acceptance WHERE id=2"
         ).fetchone()
         conn.close()
-        assert row is not None, "id=2 acceptance row must be seeded by _init_ai_tables (0610)"
-        assert row[0] == "c5053fb"
+        assert row is not None, "id=2 acceptance row must be seeded by _init_ai_tables (0613)"
+        expected_sha = _pai._CODE_COMMIT_SHA or "unknown"
+        assert row[0] == expected_sha, f"id=2 accepted_commit must be runtime SHA '{expected_sha}'"
         assert row[1] == "v2"
 
     def test_acceptance_rows_use_utc_timestamp(self, tmp_path):
@@ -1965,3 +2007,175 @@ class TestAtomicProvenance:
         ).fetchall()}
         conn.close()
         assert "news_snapshots" in tables, "_init_ai_tables must create news_snapshots (0610)"
+
+
+# ── Tests: point-in-time contract (0612) ─────────────────────────────────────
+
+class TestPointInTimeContract:
+    """0612: macro scores and guardian findings use snapshot time, not current time."""
+
+    def test_macro_score_uses_history_at_snapshot_time(self):
+        """_get_macro_score with snapshot_captured_at returns the score as of that time."""
+        conn = _make_db()
+        old_scores = {"rate_sensitivity": 0.3}
+        new_scores = {"rate_sensitivity": 0.8}
+        conn.execute(
+            "INSERT INTO holding_macro_scores_history (ticker, scores, scored_at) VALUES (?,?,?)",
+            ("AAPL", json.dumps(old_scores), "2026-09-20 10:00:00"),
+        )
+        conn.execute(
+            "INSERT INTO holding_macro_scores_history (ticker, scores, scored_at) VALUES (?,?,?)",
+            ("AAPL", json.dumps(new_scores), "2026-09-23 10:00:00"),
+        )
+        conn.execute(
+            "INSERT INTO holding_macro_scores (ticker, scores, updated_at) VALUES (?,?,?)",
+            ("AAPL", json.dumps(new_scores), "2026-09-23 10:00:00"),
+        )
+        conn.commit()
+        # Snapshot was between old and new scores
+        result = intel._get_macro_score("AAPL", conn, snapshot_captured_at="2026-09-22 10:00:00")
+        assert result == old_scores, (
+            "_get_macro_score must return score as of snapshot time, not current (0612)"
+        )
+
+    def test_macro_score_returns_empty_when_no_history_predates_snapshot(self):
+        """_get_macro_score returns {} if no history row predates snapshot."""
+        conn = _make_db()
+        conn.execute(
+            "INSERT INTO holding_macro_scores_history (ticker, scores, scored_at) VALUES (?,?,?)",
+            ("AAPL", json.dumps({"rate_sensitivity": 0.5}), "2026-09-24 10:00:00"),
+        )
+        conn.commit()
+        result = intel._get_macro_score("AAPL", conn, snapshot_captured_at="2026-09-23 10:00:00")
+        assert result == {}, "No history row predating snapshot → must return {} (0612)"
+
+    def test_macro_score_without_snap_ts_uses_current_scores(self):
+        """_get_macro_score without snapshot_captured_at uses holding_macro_scores (current)."""
+        conn = _make_db()
+        scores = {"rate_sensitivity": 0.7}
+        conn.execute(
+            "INSERT INTO holding_macro_scores (ticker, scores, updated_at) VALUES (?,?,?)",
+            ("AAPL", json.dumps(scores), "2026-09-23 10:00:00"),
+        )
+        conn.commit()
+        result = intel._get_macro_score("AAPL", conn)
+        assert result == scores, (
+            "_get_macro_score without snap_ts must use current holding_macro_scores (0612)"
+        )
+
+    def test_guardian_run_finished_after_snapshot_rejected(self):
+        """Run with finished_at >= snap_ts excluded — run was not complete at snapshot time (0612)."""
+        import time as _time
+        conn = _make_db()
+        snap_ts = _time.time() - 3600
+        conn.execute(
+            "INSERT INTO agent_runs (agent_type, status, started_at, finished_at) VALUES (?,?,?,?)",
+            ("portfolio_guardian", "done", snap_ts - 7200, snap_ts + 60),
+        )
+        run_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            "INSERT INTO agent_findings (run_id, ticker, finding_type, summary, created_at) "
+            "VALUES (?,?,?,?,?)",
+            (run_id, "AAPL", "position_risk", "flagged", snap_ts - 3600),
+        )
+        conn.commit()
+        snap_iso = (
+            __import__("datetime").datetime.utcfromtimestamp(snap_ts)
+            .strftime("%Y-%m-%d %H:%M:%S")
+        )
+        result = intel._get_agent_findings_flag("AAPL", conn, snapshot_captured_at=snap_iso)
+        assert result is None, (
+            "Guardian run finished after snapshot must be excluded (finished_at >= snap_ts) (0612)"
+        )
+
+
+# ── Tests: atomic persistence contract (0613/0614) ───────────────────────────
+
+class TestAtomicPersistence:
+    """0613/0614: persist_events writes snapshot first; input_tickers deletion; degraded path."""
+
+    def test_persist_events_writes_snapshot_row(self):
+        """persist_events writes news_snapshots row as transaction prerequisite (0613)."""
+        conn = _make_db()
+        snap_hash = "abc123snap"
+        snap_id = "snap-id-1"
+        snap_cap = "2026-09-23 10:00:00"
+        intel.persist_events(
+            {}, [], "2026-09-23", conn,
+            news_snapshot_hash=snap_hash,
+            snapshot_id=snap_id, captured_at=snap_cap,
+            input_tickers={"AAPL"},
+        )
+        row = conn.execute(
+            "SELECT snapshot_id, captured_at FROM news_snapshots WHERE snapshot_hash=?",
+            (snap_hash,),
+        ).fetchone()
+        assert row is not None, "persist_events must write news_snapshots row (0613)"
+        assert row[0] == snap_id
+        assert row[1] == snap_cap
+
+    def test_persist_events_deletes_all_input_tickers_not_just_event_producing(self):
+        """persist_events deletes same-day events for all input_tickers including zero-event ones (0614)."""
+        import uuid as _uuid
+        conn = _make_db()
+        today = "2026-09-23"
+        conn.execute(
+            "INSERT INTO news_events (event_id, ticker, day, event_type, direction, "
+            "extracted_at, news_intelligence_version) VALUES (?,?,?,?,?,?,?)",
+            (str(_uuid.uuid4()), "MSFT", today, "EARNINGS", "POSITIVE", today,
+             intel.NEWS_INTELLIGENCE_VERSION),
+        )
+        conn.commit()
+        # AAPL has events in call, MSFT has none but is an input ticker
+        intel.persist_events(
+            {"AAPL": []}, [], today, conn,
+            input_tickers={"AAPL", "MSFT"},
+        )
+        count = conn.execute(
+            "SELECT count(*) FROM news_events WHERE ticker='MSFT' AND day=?", (today,)
+        ).fetchone()[0]
+        assert count == 0, (
+            "persist_events must delete events for all input_tickers, not just event-producing (0614)"
+        )
+
+    def test_run_pipeline_returns_degraded_true_on_extraction_failure(self):
+        """run_pipeline returns _extraction_degraded=True and preserves prior events on failure (0614)."""
+        import uuid as _uuid
+        conn = _make_db()
+        today = "2026-09-23"
+        conn.execute(
+            "INSERT INTO news_events (event_id, ticker, day, event_type, direction, "
+            "extracted_at, news_intelligence_version) VALUES (?,?,?,?,?,?,?)",
+            (str(_uuid.uuid4()), "AAPL", today, "EARNINGS", "POSITIVE", today,
+             intel.NEWS_INTELLIGENCE_VERSION),
+        )
+        conn.commit()
+        arts = [_make_article("AAPL", "Apple news", body="body " * 5,
+                              url="https://example.com/deg1")]
+        by_ticker = {"AAPL": arts}
+        with patch.object(intel, "extract_events_llm",
+                          return_value={"_extraction_ok": False, "_manifest": {}}):
+            result = intel.run_pipeline(by_ticker, {"AAPL": 0.1}, conn,
+                                        MagicMock(), day=today)
+        assert result.get("_extraction_degraded") is True, (
+            "run_pipeline must return _extraction_degraded=True on extraction failure (0614)"
+        )
+        count = conn.execute(
+            "SELECT count(*) FROM news_events WHERE ticker='AAPL' AND day=?", (today,)
+        ).fetchone()[0]
+        assert count == 1, "Prior events must be preserved when extraction fails (0614)"
+
+    def test_run_pipeline_returns_degraded_false_on_success(self):
+        """run_pipeline returns _extraction_degraded=False on successful extraction (0614)."""
+        conn = _make_db()
+        today = "2026-09-23"
+        arts = [_make_article("AAPL", "Apple news", body="body " * 5,
+                              url="https://example.com/suc1")]
+        by_ticker = {"AAPL": arts}
+        with patch.object(intel, "extract_events_llm",
+                          return_value={"_extraction_ok": True, "_manifest": {}}):
+            result = intel.run_pipeline(by_ticker, {"AAPL": 0.1}, conn,
+                                        MagicMock(), day=today)
+        assert result.get("_extraction_degraded") is False, (
+            "run_pipeline must return _extraction_degraded=False on successful extraction (0614)"
+        )

@@ -1,7 +1,7 @@
 # Make Provenance Atomic, Identity Deterministic, and Corpus Queryable
 
 - **ID:** 0613
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-23
 - **Priority:** high
 - **Depends:** 0610
