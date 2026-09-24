@@ -1,7 +1,7 @@
 # Add Delta Tracking and Freshness to Decision Brief
 
 - **ID:** 0622
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-24
 - **Priority:** normal
 - **Depends:** 0619, 0620

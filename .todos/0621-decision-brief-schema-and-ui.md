@@ -1,7 +1,7 @@
 # Replace AI Insight Card with Decision-Oriented Brief UI
 
 - **ID:** 0621
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-24
 - **Priority:** high
 - **Depends:** 0620

@@ -1,7 +1,7 @@
 # Build Deterministic Portfolio Brief State Aggregator
 
 - **ID:** 0619
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-24
 - **Priority:** high
 - **Depends:** 0618

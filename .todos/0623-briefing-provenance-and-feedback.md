@@ -1,7 +1,7 @@
 # Store Briefing Provenance and Connect User Responses to Episodes
 
 - **ID:** 0623
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-24
 - **Priority:** normal
 - **Depends:** 0621, 0622

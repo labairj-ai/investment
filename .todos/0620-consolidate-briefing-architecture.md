@@ -1,7 +1,7 @@
 # Consolidate Briefing Agent as Sole Synthesis Engine
 
 - **ID:** 0620
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-24
 - **Priority:** high
 - **Depends:** 0619
