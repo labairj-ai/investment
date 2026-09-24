@@ -4823,26 +4823,33 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         action = body.get("action", "")
         note = body.get("note", "") or ""
 
-        if not brief_id or not item_key or action not in ("ACT", "DISMISS", "DEFER"):
-            return self._json_error(400, "brief_id, item_key, and action (ACT|DISMISS|DEFER) required")
+        if not brief_id or not item_key or action not in ("REVIEW", "DISMISS", "DEFER"):
+            return self._json_error(400, "brief_id, item_key, and action (REVIEW|DISMISS|DEFER) required")
 
         try:
             import portfolio_ai
             import sqlite3 as _sql
-            import uuid as _uuid
             from datetime import datetime as _dt
             portfolio_ai._init_ai_tables()
             conn = _sql.connect(str(portfolio_ai.DB_PATH), timeout=10)
             conn.row_factory = _sql.Row
 
-            # Validate brief_id exists in provenance before writing response
+            # Validate brief_id exists in provenance
             prov_row = conn.execute(
-                "SELECT brief_id FROM portfolio_brief_provenance WHERE brief_id = ?",
+                "SELECT source_refs_json FROM portfolio_brief_provenance WHERE brief_id = ?",
                 (brief_id,)
             ).fetchone()
             if not prov_row:
                 conn.close()
                 return self._json_error(400, f"Unknown brief_id: {brief_id}")
+
+            # Validate item_key belongs to this brief
+            import json as _json
+            source_refs = _json.loads(prov_row["source_refs_json"] or "[]")
+            valid_keys = {ref["item_key"] for ref in source_refs if ref.get("item_key")}
+            if item_key not in valid_keys:
+                conn.close()
+                return self._json_error(400, f"item_key {item_key!r} not found in brief {brief_id}")
 
             responded_at = _dt.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
             conn.execute(
@@ -4851,22 +4858,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 (brief_id, item_key, action, note, responded_at),
             )
 
-            # ACT on a recommendation: create a portfolio_brief_episodes row linking the decision
+            # For REVIEW on a recommendation: resolve existing decision episode rather than
+            # creating a shadow episode in portfolio_brief_episodes.
             episode_id = None
-            if action == "ACT" and item_key.startswith("rec:"):
-                try:
-                    rec_id_str = item_key[4:]
-                    rec_id = int(rec_id_str) if rec_id_str.isdigit() else None
-                    episode_id = str(_uuid.uuid4())
-                    conn.execute(
-                        "INSERT INTO portfolio_brief_episodes "
-                        "(episode_id, brief_id, item_key, rec_id, status, note, created_at) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                        (episode_id, brief_id, item_key, rec_id, "review", note, responded_at),
-                    )
-                except Exception as ep_err:
-                    print(f"[brief/respond] Could not create episode for {item_key}: {ep_err}")
-                    episode_id = None
+            if action == "REVIEW" and item_key.startswith("rec:"):
+                rec_id_str = item_key[4:]
+                if rec_id_str.isdigit():
+                    rec_row = conn.execute(
+                        "SELECT episode_id FROM recommendations WHERE id=?",
+                        (int(rec_id_str),),
+                    ).fetchone()
+                    if rec_row:
+                        episode_id = rec_row["episode_id"]
 
             conn.commit()
             conn.close()

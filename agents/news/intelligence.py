@@ -1719,3 +1719,37 @@ def load_events_for_day(day: str, conn: sqlite3.Connection) -> dict:
         return {"events_by_ticker": events_by_ticker, "themes": themes}
     except Exception:
         return {"events_by_ticker": {}, "themes": []}
+
+
+# ── Canonical brief classifier (0628) ────────────────────────────────────────
+
+def classify_news_event(event: dict, nes_state: str | None = None) -> str | None:
+    """Canonical v2 news event classifier shared by Holdings News and Decision Brief.
+
+    Returns EMERGING_RISK, EMERGING_OPPORTUNITY, THESIS_CHANGE, WATCH, or None.
+    None means the event should be excluded (RESOLVED state).
+
+    Thresholds are frozen at v2 values (EMERGING_RISK_THRESHOLD, EMERGING_OPP_THRESHOLD,
+    THESIS_CHANGE_THRESHOLD).  Do NOT add inline classification elsewhere — call this.
+    """
+    state = (nes_state or "").upper()
+    if state == "RESOLVED":
+        return None
+    if state == "FADING":
+        return "WATCH"
+
+    direction = (event.get("direction") or "").upper()
+    signal_strength = float(event.get("signal_strength") or 0)
+    confirmation_class = (event.get("confirmation_class") or "NEWS_ONLY").upper()
+
+    is_positive = direction in ("POSITIVE", "BULLISH")
+    is_negative = direction in ("NEGATIVE", "BEARISH", "RISK")
+    is_multi_signal = confirmation_class == "MULTI_SIGNAL_CONFIRMATION"
+
+    if is_negative and signal_strength >= EMERGING_RISK_THRESHOLD:
+        return "EMERGING_RISK"
+    if is_positive and (signal_strength >= EMERGING_OPP_THRESHOLD or is_multi_signal):
+        return "EMERGING_OPPORTUNITY"
+    if signal_strength >= THESIS_CHANGE_THRESHOLD:
+        return "THESIS_CHANGE"
+    return "WATCH"

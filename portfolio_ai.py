@@ -921,8 +921,15 @@ def get_current_news_intelligence(
 
     Unlike get_accepted_news_events() (which returns the full calibration corpus),
     this returns only signals that are current/active within the recency window.
-    Uses news_event_state to filter to ACTIVE/ESCALATED/RECENTLY_RESOLVED states,
-    and limits to events whose last_seen is within recency_days.
+
+    Key invariants (0628):
+    - One latest row per (ticker, causal_event_key) — multiple daily observations of
+      the same persistent event are collapsed to the most recent.
+    - State filter: ACTIVE and FADING only (RESOLVED excluded).  Fail closed: events
+      with no news_event_state row are excluded, not accepted.
+    - Real state vocabulary: ACTIVE / FADING / RESOLVED.
+      ESCALATED and RECENTLY_RESOLVED are not valid states.
+    - Returns each row with an extra 'nes_state' field for downstream classification.
 
     Returns rows with all v2 fields. Does not change get_accepted_news_events().
     """
@@ -939,24 +946,34 @@ def get_current_news_intelligence(
     boundary = acceptance_row["accepted_at"]
     version = acceptance_row["accepted_version"]
     recency_cutoff = _t.time() - recency_days * 86400
-    # Convert epoch to ISO string for comparison with text timestamps
     from datetime import datetime as _dtu
     recency_iso = _dtu.utcfromtimestamp(recency_cutoff).strftime("%Y-%m-%d %H:%M:%S")
-    return conn.execute(
-        """SELECT ne.*
+    # Subquery picks the latest extracted_at row per (ticker, causal_event_key).
+    # INNER JOIN on news_event_state ensures fail-closed: no state row → excluded.
+    raw_rows = conn.execute(
+        """SELECT ne.*, nes.state AS nes_state
            FROM news_events ne
-           LEFT JOIN news_event_state nes
+           INNER JOIN news_event_state nes
              ON nes.ticker = ne.ticker AND nes.causal_event_key = ne.causal_event_key
            WHERE ne.extracted_at >= ?
              AND ne.news_intelligence_version = ?
              AND ne.news_snapshot_hash IN (
                  SELECT snapshot_hash FROM news_snapshots WHERE version = ?
              )
-             AND (nes.state IS NULL OR nes.state IN ('ACTIVE', 'ESCALATED', 'RECENTLY_RESOLVED'))
+             AND nes.state IN ('ACTIVE', 'FADING')
              AND (ne.last_seen >= ? OR ne.extracted_at >= ?)
+             AND ne.causal_event_key IS NOT NULL
+             AND ne.extracted_at = (
+                 SELECT MAX(ne2.extracted_at)
+                 FROM news_events ne2
+                 WHERE ne2.ticker = ne.ticker
+                   AND ne2.causal_event_key = ne.causal_event_key
+                   AND ne2.news_intelligence_version = ?
+             )
            ORDER BY ne.portfolio_priority DESC, ne.signal_strength DESC""",
-        (boundary, version, version, recency_iso, recency_iso),
+        (boundary, version, version, recency_iso, recency_iso, version),
     ).fetchall()
+    return raw_rows
 
 
 def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> dict:
@@ -1066,6 +1083,7 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
             "evidence_text": (d.get("evidence_text") or "")[:200],
             "first_seen": d.get("first_seen"),
             "last_seen": last_seen,
+            "nes_state": d.get("nes_state", "ACTIVE"),
         })
 
     # ── 4. Macro scores ───────────────────────────────────────────────────────
@@ -1126,12 +1144,13 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
     # ── 6. Learning state ─────────────────────────────────────────────────────
     learning_state: dict = {"accepted_count": 0, "last_sweep": None}
     try:
-        row = conn.execute(
-            "SELECT COUNT(*) as n FROM news_events WHERE news_intelligence_version='v2'"
-        ).fetchone()
-        learning_state["accepted_count"] = row[0] if row else 0
+        accepted_rows = get_accepted_news_events(conn, "v2")
+        learning_state["accepted_count"] = len(accepted_rows)
+        # Use latest COMPLETED sweep, not latest started (a started+crashed sweep
+        # should not count as a fresh sweep).
         sweep_row = conn.execute(
-            "SELECT MAX(started_at) as last_sweep FROM learning_sweep_runs"
+            "SELECT MAX(completed_at) as last_sweep FROM learning_sweep_runs"
+            " WHERE status='COMPLETE'"
         ).fetchone()
         if sweep_row and sweep_row[0]:
             learning_state["last_sweep"] = sweep_row[0]
@@ -1145,7 +1164,7 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
         intent_rows = conn.execute(
             """SELECT intent_id, ticker, action, quantity, status, created_at
                FROM trade_intents
-               WHERE status NOT IN ('filled', 'cancelled', 'expired')
+               WHERE status NOT IN ('FILLED', 'CANCELLED', 'EXPIRED', 'REJECTED')
                ORDER BY created_at DESC LIMIT 20"""
         ).fetchall()
         execution_state["open_intents"] = len(intent_rows)
@@ -1189,8 +1208,11 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
     last_guardian_run = None
     last_pipeline_run = None
     try:
+        # Use finished_at of a completed run — a crashed run with only started_at
+        # must not make the subsystem look fresh.
         gr = conn.execute(
-            "SELECT MAX(started_at) FROM agent_runs WHERE agent_type='portfolio_guardian'"
+            "SELECT MAX(finished_at) FROM agent_runs"
+            " WHERE agent_type='portfolio_guardian' AND status='done'"
         ).fetchone()
         if gr and gr[0]:
             last_guardian_run = _dtu.utcfromtimestamp(float(gr[0])).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -1268,6 +1290,7 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
             "is_new": True,
             "since": captured_at,
             "previously_dismissed": item_key in _dismissed_keys,
+            "finding_id": finding.get("id"),
         }
         if sev >= 70:
             attention_items.append(item)
@@ -1306,16 +1329,16 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
         else:
             watch_items.append(base)
 
+    from agents.news.intelligence import classify_news_event as _classify_news_event
     for ns in news_signals:
+        event_type = ns.get("event_type") or ""
         direction = (ns.get("direction") or "").upper()
         confidence = float(ns.get("confidence") or 0)
-        event_type = ns.get("event_type") or ""
         thesis_rel = float(ns.get("thesis_relevance") or 0)
         signal_strength = float(ns.get("signal_strength") or 0)
         confirmation_class = (ns.get("confirmation_class") or "NEWS_ONLY").upper()
         trend_status = (ns.get("trend_status") or "").upper()
-        portfolio_priority = float(ns.get("portfolio_priority") or 0)
-        trigger_proximity = float(ns.get("event_trigger_proximity") or 0)
+        nes_state = ns.get("nes_state", "ACTIVE")
         item_key = f"news:{ns.get('event_id', '')}"
         base = {
             "key": item_key,
@@ -1332,20 +1355,12 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
             "since": captured_at,
             "previously_dismissed": item_key in _dismissed_keys,
         }
-        is_positive = direction in ("POSITIVE", "BULLISH")
-        is_negative = direction in ("NEGATIVE", "BEARISH", "RISK")
-        # Opportunity: positive direction + multi-signal confirmation OR accelerating trend
-        # OR high portfolio priority, with reasonable confidence
-        is_opp_signal = (
-            confirmation_class == "MULTI_SIGNAL"
-            or trend_status == "ACCELERATING"
-            or portfolio_priority >= 0.7
-        )
-        # Attention: negative + strong signal OR near trigger proximity
-        is_attention_signal = signal_strength >= 0.6 or trigger_proximity >= 0.7
-        if is_positive and is_opp_signal and confidence >= 0.6:
+        brief_class = _classify_news_event(ns, nes_state=nes_state)
+        if brief_class is None:
+            continue  # RESOLVED — exclude
+        elif brief_class == "EMERGING_OPPORTUNITY":
             opportunities.append(base)
-        elif is_negative and is_attention_signal and confidence >= 0.6 and thesis_rel >= 0.5:
+        elif brief_class in ("EMERGING_RISK", "THESIS_CHANGE"):
             attention_items.append(base)
         else:
             watch_items.append(base)
@@ -2789,14 +2804,48 @@ def _format_capability_summary(brief_state: dict) -> str:
     """Format learning, execution, and macro state as structured text for the LLM prompt."""
     lines = []
 
-    # Learning state
+    # Learning state — read actual lifecycle state; never auto-promote based on count alone.
     ls = brief_state.get("learning_state", {})
     accepted = ls.get("accepted_count", 0)
-    news_status = "COLLECTING" if accepted < 50 else "CALIBRATING"
-    news_influence = "observe-only" if accepted < 50 else "active"
+    # Read actual News v2 acceptance boundary to determine whether v2 is live
+    try:
+        import sqlite3 as _sq3
+        _db = DB_PATH
+        _lc = _sq3.connect(str(_db), timeout=5)
+        _lc.row_factory = _sq3.Row
+        _acc_row = _lc.execute(
+            "SELECT accepted_at FROM _news_intelligence_acceptance"
+            " WHERE accepted_version='v2' ORDER BY accepted_at DESC LIMIT 1"
+        ).fetchone()
+        news_contract = "ACTIVE" if (_acc_row and _acc_row["accepted_at"]) else "FROZEN"
+        # News v2 is observe-only while evidence is still being collected; the contract
+        # state in _news_intelligence_acceptance controls this, not a count threshold.
+        news_influence = "observe-only"
+        _lc.close()
+    except Exception:
+        news_contract = "UNKNOWN"
+        news_influence = "observe-only"
+
+    # Macro experiment state from DB
+    try:
+        _mc = _sq3.connect(str(DB_PATH), timeout=5)
+        _mc.row_factory = _sq3.Row
+        _ep_row = _mc.execute(
+            "SELECT epoch_id, status FROM macro_experiment_epochs"
+            " ORDER BY rowid DESC LIMIT 1"
+        ).fetchone()
+        macro_stage = f"epoch={_ep_row['epoch_id']} status={_ep_row['status']}" if _ep_row else "no epochs"
+        macro_influence = "0"
+        _mc.close()
+    except Exception:
+        macro_stage = "Stage 0"
+        macro_influence = "0"
+
     lines.append("CAPABILITY STATE:")
-    lines.append(f"  News v2 — {news_status}, {accepted} accepted events, {news_influence}")
-    lines.append("  Macro experiment — Stage 0, production influence 0")
+    lines.append(
+        f"  News v2 — contract={news_contract}, {accepted} accepted events, {news_influence}"
+    )
+    lines.append(f"  Macro experiment — {macro_stage}, production influence {macro_influence}")
 
     # Execution state
     ex = brief_state.get("execution_state", {})
@@ -2843,18 +2892,12 @@ def create_portfolio_brief(conn: sqlite3.Connection, force: bool = False) -> dic
     today = date.today().isoformat()
     now_str = _dt2.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # Persist to ai_insights
+    source_refs = _build_source_refs(brief_state)
     try:
         conn.execute(
             "INSERT OR REPLACE INTO ai_insights (day, insight, generated_at) VALUES (?,?,?)",
             (today, json.dumps(briefing_output), now_str),
         )
-    except Exception as e:
-        print(f"[create_portfolio_brief] Could not persist ai_insight: {e}")
-
-    # Persist to portfolio_brief_provenance (deterministic source_refs from item keys)
-    source_refs = _build_source_refs(brief_state)
-    try:
         conn.execute(
             "INSERT OR REPLACE INTO portfolio_brief_provenance "
             "(brief_id, captured_at, brief_snapshot_json, briefing_output_json, source_refs_json) "
@@ -2867,10 +2910,10 @@ def create_portfolio_brief(conn: sqlite3.Connection, force: bool = False) -> dic
                 json.dumps(source_refs),
             ),
         )
+        conn.commit()
     except Exception as e:
-        print(f"[create_portfolio_brief] Could not persist provenance: {e}")
-
-    conn.commit()
+        conn.rollback()
+        raise RuntimeError(f"[create_portfolio_brief] Persistence failed, rolled back: {e}") from e
     return {"brief": briefing_output, "brief_id": brief_id, "brief_state": brief_state}
 
 
@@ -2896,6 +2939,7 @@ def _build_source_refs(brief_state: dict) -> list:
                 "item_key": key,
                 "ticker": parts[1] if len(parts) > 1 else None,
                 "finding_type": parts[2] if len(parts) > 2 else None,
+                "finding_id": item.get("finding_id"),
             })
         elif key.startswith("rec:"):
             rec_id = key[4:]
