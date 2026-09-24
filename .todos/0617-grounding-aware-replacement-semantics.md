@@ -1,7 +1,7 @@
 # Add Per-Ticker Grounding Diagnostics and Replacement Semantics
 
 - **ID:** 0617
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-23
 - **Priority:** high
 - **Depends:** 0614
@@ -27,9 +27,13 @@
 
 ## Done when
 
-- [ ] `extract_events_llm()` returns `candidate_count`, `accepted_count`, `rejected_count`, `rejection_reasons` per ticker
-- [ ] Each ticker is classified as `VALID_EVENTS`, `VALID_EMPTY`, or `INVALID_EXTRACTION`
-- [ ] `persist_events()` only replaces same-day events for `VALID_EVENTS` and `VALID_EMPTY` tickers
-- [ ] `INVALID_EXTRACTION` tickers retain their prior same-day events after a pipeline run
-- [ ] `run_pipeline()` returns a per-ticker degradation map identifying grounding failures
-- [ ] Tests cover: all-rejected ticker keeps prior events; zero-candidate ticker clears prior events; degraded ticker count surfaces in pipeline result
+- [x] `extract_events_llm()` returns `candidate_count`, `accepted_count`, `rejected_count`, `rejection_reasons` per ticker
+- [x] Each ticker is classified as `VALID_EVENTS`, `VALID_EMPTY`, or `INVALID_EXTRACTION`
+- [x] `persist_events()` only replaces same-day events for `VALID_EVENTS` and `VALID_EMPTY` tickers
+- [x] `INVALID_EXTRACTION` tickers retain their prior same-day events after a pipeline run
+- [x] `run_pipeline()` returns a per-ticker degradation map identifying grounding failures
+- [x] Tests cover: all-rejected ticker keeps prior events; zero-candidate ticker clears prior events; degraded ticker count surfaces in pipeline result
+
+## Outcome
+
+`extract_events_llm()` tracks per-ticker diagnostics in `_ticker_diagnostics`. `run_pipeline()` classifies tickers into VALID_EVENTS / VALID_EMPTY / INVALID_EXTRACTION and passes only `valid_input_tickers` (VALID_EVENTS + VALID_EMPTY) to `persist_events()`. INVALID_EXTRACTION tickers are excluded from the deletion scope, preserving prior good state. `_grounding_degraded_tickers` returned on all paths. 1576 tests passing (commit 2bddb8a).

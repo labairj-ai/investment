@@ -1,7 +1,7 @@
 # Fix Macro Epoch Timezone and Accepted-Corpus Boundary
 
 - **ID:** 0615
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-23
 - **Priority:** high
 - **Depends:** 0612, 0613
@@ -25,10 +25,14 @@ Two corpus-cleanliness gaps. (a) `holding_macro_scores_history.scored_at` is wri
 
 ## Done when
 
-- [ ] `holding_macro_scores_history` has `scored_at_epoch REAL`; all new rows populate it with `time.time()`
-- [ ] `_get_macro_score()` compares epochs; returns `{}` (no vote) for rows missing `scored_at_epoch`
-- [ ] `register_news_intelligence_acceptance()` exists, inserts with auto-id, records runtime SHA
-- [ ] `_init_ai_tables()` no longer seeds fixed-id acceptance rows (table creation only)
-- [ ] `get_accepted_news_events()` requires matching version and valid snapshot provenance
-- [ ] Test: macro score written after snapshot in local time cannot vote for that snapshot
-- [ ] Test: `get_accepted_news_events()` excludes events with no `news_snapshots` row
+- [x] `holding_macro_scores_history` has `scored_at_epoch REAL`; all new rows populate it with `time.time()`
+- [x] `_get_macro_score()` compares epochs; returns `{}` (no vote) for rows missing `scored_at_epoch`
+- [x] `register_news_intelligence_acceptance()` exists, inserts with auto-id, records runtime SHA
+- [x] `_init_ai_tables()` no longer seeds fixed-id acceptance rows (table creation only)
+- [x] `get_accepted_news_events()` requires matching version and valid snapshot provenance
+- [x] Test: macro score written after snapshot in local time cannot vote for that snapshot
+- [x] Test: `get_accepted_news_events()` excludes events with no `news_snapshots` row
+
+## Outcome
+
+`_get_macro_score()` now requires `scored_at_epoch IS NOT NULL AND scored_at_epoch <= snap_epoch`; pre-migration rows fail closed. Both history INSERT sites in `generate_holding_macro_scores()` populate `scored_at_epoch=time.time()`. Fixed-id acceptance seeding removed from `_init_ai_tables()`; `register_news_intelligence_acceptance()` is the only write path. `get_accepted_news_events()` adds snapshot-provenance filter. 1576 tests passing (commit 2bddb8a).

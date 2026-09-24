@@ -1,7 +1,7 @@
 # Rollback on Persist Failure and Block Degraded Cache Writes
 
 - **ID:** 0616
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-23
 - **Priority:** high
 - **Depends:** 0613, 0614
@@ -24,8 +24,12 @@ Two gaps that can corrupt the committed intelligence state. (a) `persist_events(
 
 ## Done when
 
-- [ ] `persist_events()` rolls back and re-raises on any exception; no partial state can be committed by a later caller
-- [ ] `run_pipeline()` returns `_persistence_degraded=True` and skips `update_event_state_sweep()` when `persist_events()` raises
-- [ ] Test proves that a mid-persist failure leaves prior events intact and no partial writes committed
-- [ ] `generate_news_summaries()` does not write a `news_summaries` cache row for a degraded snapshot hash
-- [ ] Dashboard can surface a STALE/DEGRADED indicator when the last structured run was degraded
+- [x] `persist_events()` rolls back and re-raises on any exception; no partial state can be committed by a later caller
+- [x] `run_pipeline()` returns `_persistence_degraded=True` and skips `update_event_state_sweep()` when `persist_events()` raises
+- [x] Test proves that a mid-persist failure leaves prior events intact and no partial writes committed
+- [x] `generate_news_summaries()` does not write a `news_summaries` cache row for a degraded snapshot hash
+- [ ] Dashboard can surface a STALE/DEGRADED indicator when the last structured run was degraded (deferred: requires serve.py UI change)
+
+## Outcome
+
+`persist_events()` body wrapped in `try/except Exception: conn.rollback(); raise`. `run_pipeline()` catches the exception, skips the event-state sweep, and returns `_persistence_degraded=True`. `generate_news_summaries()` gates its `news_summaries` INSERT on `not _intel_degraded` (checks both `_extraction_degraded` and `_persistence_degraded`). Dashboard surfacing deferred. 1576 tests passing (commit 2bddb8a).
