@@ -1,7 +1,7 @@
 # Polish v2 Acceptance Layer Before Calibration Freeze
 
 - **ID:** 0618
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-23
 - **Priority:** high
 - **Depends:** 0615, 0616, 0617
@@ -36,10 +36,14 @@ Three small integration gaps remain before the v2 accepted corpus is safe to tre
 
 ## Done when
 
-- [ ] `get_accepted_news_events(accepted_version='v2')` filters `news_intelligence_version = 'v2'` and `news_snapshots.version = 'v2'`
-- [ ] A v3 event in the DB is excluded from a `get_accepted_news_events('v2')` call
-- [ ] `bool(_grounding_degraded_tickers)` prevents `news_summaries` INSERT in `generate_news_summaries()`
-- [ ] Dashboard/API response includes degradation indicator naming the affected tickers when grounding is partial
-- [ ] Extraction prompt requires every input ticker; `[]` means VALID_EMPTY; absence means INVALID_EXTRACTION
-- [ ] Test: LLM response omitting one input ticker classifies that ticker as INVALID_EXTRACTION
-- [ ] All existing tests still pass
+- [x] `get_accepted_news_events(accepted_version='v2')` filters `news_intelligence_version = 'v2'` and `news_snapshots.version = 'v2'`
+- [x] A v3 event in the DB is excluded from a `get_accepted_news_events('v2')` call
+- [x] `bool(_grounding_degraded_tickers)` prevents `news_summaries` INSERT in `generate_news_summaries()`
+- [x] Dashboard/API response includes degradation indicator naming the affected tickers when grounding is partial
+- [x] Extraction prompt requires every input ticker; `[]` means VALID_EMPTY; absence means INVALID_EXTRACTION
+- [x] Test: LLM response omitting one input ticker classifies that ticker as INVALID_EXTRACTION
+- [x] All existing tests still pass
+
+## Outcome
+
+`get_accepted_news_events()` now accepts `accepted_version` param and enforces version matching on both `news_events.news_intelligence_version` and `news_snapshots.version`. Fails closed when no acceptance row exists. `generate_news_summaries()` adds `_grounding_degraded_tickers` to the `_intel_degraded` gate and surfaces `_grounding_degraded_tickers` + `_grounding_degraded_note` in the return dict. Extraction prompt updated to require every input ticker; absent ticker in output is INVALID_EXTRACTION. 1580 tests passing (commit e3b34e8).
