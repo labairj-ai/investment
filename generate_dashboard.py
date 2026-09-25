@@ -11089,6 +11089,15 @@ async function rejectThesisProposal(recId) {{
           }}
         }} else if (generating) {{
           tickerHtml += `<div style="font-size:11px;color:#4a5568;font-style:italic;padding:2px 0 4px;">Analyzing…</div>`;
+          for (const item of items.slice(0, 3)) {{
+            const title = item.title || '';
+            const url   = item.url   || '';
+            const src   = item.source || '';
+            const link  = url
+              ? `<a class="ai-news-link" href="${{url}}" target="_blank" rel="noopener">${{title}}</a>`
+              : `<span class="ai-news-link" style="color:#a0aec0">${{title}}</span>`;
+            tickerHtml += `<div class="ai-news-item">${{link}}<span class="ai-news-source">${{src}}</span></div>`;
+          }}
         }}
         if (tickerHtml) html += `<div class="ai-news-ticker"><div class="ai-news-ticker-label">${{ticker}}</div>${{tickerHtml}}</div>`;
       }}
@@ -11100,7 +11109,9 @@ async function rejectThesisProposal(recId) {{
   let _newsPollAttempt = 0;
   function _pollNewsSummary(bt, attempts) {{
     if (attempts <= 0) {{
-      _setNewsStatus('AI analysis is taking longer than expected — reload to check status.');
+      // Switch to slow polling (every 60s) rather than giving up entirely
+      _setNewsStatus('AI analysis still running — checking every minute…');
+      _newsSummaryPollTimer = setTimeout(() => _pollNewsSummary(bt, 150), 60000);
       return;
     }}
     _newsPollAttempt++;
@@ -11180,7 +11191,7 @@ async function rejectThesisProposal(recId) {{
       body.innerHTML = html;
       if (generating) {{
         _setNewsStatus(`${{_aiSpinner}} AI analysis generating — will auto-update when ready…`);
-        _newsSummaryPollTimer = setTimeout(() => _pollNewsSummary(bt, 48), 10000);
+        _newsSummaryPollTimer = setTimeout(() => _pollNewsSummary(bt, 150), 10000);
       }} else {{
         _clearNewsStatus();
         const ts = document.getElementById('ai-news-timestamp');
