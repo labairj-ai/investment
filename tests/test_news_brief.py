@@ -238,3 +238,19 @@ def test_current_holdings_quantities_determine_weights():
     assert result['BBB']['weight_pct'] == 75
     assert prices['AAA']['weight_pct'] == 90
     assert brief.current_position_prices(rows, {'AAA':{'price':10}})['AAA']['weight_pct'] is None
+
+
+def test_maintenance_runs_without_optional_dotenv(tmp_path):
+    import sys
+    import portfolio_ai as pai
+    from agents.news import maintenance
+    with patch.dict(sys.modules, {'dotenv':None}), \
+         patch.object(pai, '_init_ai_tables'), \
+         patch.object(pai, '_load_holdings_csv', side_effect=RuntimeError('stop after maintenance')), \
+         patch.object(maintenance, 'run_daily_sweep') as sweep, \
+         patch.object(pai, 'DB_PATH', tmp_path/'investment.db'), \
+         patch('agent_db.DB_PATH', tmp_path/'investment.db'), \
+         patch.object(maintenance, '_DB_PATH', tmp_path/'investment.db'):
+        with pytest.raises(RuntimeError, match='stop after maintenance'):
+            brief.worker({'db_path':str(tmp_path/'investment.db')})
+        sweep.assert_called_once()

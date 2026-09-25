@@ -422,8 +422,11 @@ def publish(conn, summaries, events, themes, snapshot, selected, day):
 
 
 def worker(config):
-    from dotenv import load_dotenv
-    load_dotenv(ROOT / '.env')
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(ROOT / '.env')
+    except ImportError:
+        pass  # Minimal/CI installations can supply configuration via environment.
     import portfolio_ai as pai
     import agent_db
     import ollama_client
