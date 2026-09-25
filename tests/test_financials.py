@@ -16,22 +16,21 @@ def test_fetch_pipeline_records_completion_and_populates_valuation(mem_db, monke
     import financials_fetcher as ff
     import agent_db
     import pandas as pd
-    from datetime import datetime
     monkeypatch.setattr(ff, "DB_PATH", mem_db)
-    clock = [datetime(2026, 9, 21, 10)]
-    class Clock:
-        @staticmethod
-        def now():
-            return clock[0]
-    monkeypatch.setattr(ff, "datetime", Clock)
+    # Patch now_utc_space (used by fetch_all after 0682)
+    monkeypatch.setattr(ff, "now_utc_space", lambda: "2026-09-21 10:00:00")
     quarters = []
     for day in ("2025-09-30", "2025-12-31", "2026-03-31", "2026-06-30"):
         quarters.append(dict(period_end=day, revenue=1e9, gross_profit=4e8, operating_income=2e8,
                              net_income=1e8, eps_diluted=1, free_cash_flow=1e8,
                              total_debt=2e8, cash=1e8, total_equity=5e8,
                              shares_outstanding=1e8, shares_period_end=1e8))
+    call_count = [0]
     def fetch(ticker):
-        clock[0] = datetime(2026, 9, 21, 11)
+        call_count[0] += 1
+        if call_count[0] == 1:
+            # First call within fetch_all: patch to the completion timestamp
+            monkeypatch.setattr(ff, "now_utc_space", lambda: "2026-09-21 11:00:00")
         return quarters, [], {}
     monkeypatch.setattr(ff, "_fetch_one", fetch)
     monkeypatch.setattr(ff, "_write_earnings_and_events", lambda ticker: None)

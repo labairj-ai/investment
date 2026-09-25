@@ -368,35 +368,89 @@ def run_invariants(conn: sqlite3.Connection) -> tuple[list[str], list[str]]:
                     f"(expected {CURRENT_POLICY_VERSION!r} or a known legacy version before {V2_DEPLOY_TIMESTAMP})"
                 )
 
-    # ── INV-T: Timestamp contract ─────────────────────────────────────────────
-    # All timestamp fields in key tables must parse without error via parse_timestamp().
-    # A parse failure indicates a corrupt or unexpected format that cannot be
-    # safely compared against UTC cutoff boundaries.
+    # ── INV-T: Timestamp contract (registry-driven) ───────────────────────────
     # DB timestamp contract:
-    #   portfolio_brief_provenance.captured_at  = UTC  (Z-suffix ISO)
-    #   portfolio_brief_snapshots.captured_at   = UTC  (Z-suffix ISO)
-    #   ai_insights.generated_at               = UTC  (space-sep or Z-suffix)
+    #   portfolio_brief_provenance.captured_at  = UTC  (Z-suffix ISO, utc_canonical)
+    #   portfolio_brief_snapshots.captured_at   = UTC  (Z-suffix ISO, utc_canonical)
+    #   ai_insights.generated_at               = UTC  (space-sep pre-0667, utc_legacy_ok)
+    #
+    # Registry entry: (table, id_col, ts_col, policy)
+    #   utc_canonical — Z-suffix or explicit offset required on post-contract rows;
+    #                   T-sep naive on post-contract row is a violation
+    #   utc_legacy_ok — space-sep accepted; just check parseability
+    _TIMESTAMP_REGISTRY = [
+        ("portfolio_brief_provenance", "brief_id",  "captured_at",  "utc_canonical"),
+        ("portfolio_brief_snapshots",  "id",         "captured_at",  "utc_canonical"),
+        ("ai_insights",                "day",        "generated_at", "utc_legacy_ok"),
+        # news_events.extracted_at: space-sep UTC written by news intelligence pipeline
+        ("news_events",                "event_id",   "extracted_at", "utc_legacy_ok"),
+    ]
     try:
-        from time_utils import parse_timestamp as _pts
-        for table, col, id_col in [
-            ("portfolio_brief_provenance", "captured_at", "brief_id"),
-            ("ai_insights", "generated_at", "day"),
-        ]:
+        from time_utils import parse_timestamp as _pts, now_utc as _now_utc
+        from datetime import timedelta as _td
+        _clock_skew = _td(minutes=5)
+
+        for table, id_col, ts_col, policy in _TIMESTAMP_REGISTRY:
             if not _table_exists(conn, table):
                 continue
+            # Sweep ALL rows (not just latest 50)
             for row in conn.execute(
-                f"SELECT {id_col}, {col} FROM {table} ORDER BY {col} DESC LIMIT 50"
+                f"SELECT {id_col}, {ts_col} FROM {table} ORDER BY {ts_col}"
             ).fetchall():
-                ts_val = row[col]
+                ts_val = row[ts_col]
+                row_id = row[id_col]
+                prefix = f"[INV-T] {table}.{ts_col} {id_col}={row_id!r}"
+
+                # Required presence
                 if not ts_val:
+                    violations.append(f"{prefix}: required timestamp is NULL or empty")
                     continue
+
+                # Parseability (space-sep still accepted via no legacy_utc needed — no T in sep)
                 try:
-                    _pts(ts_val)
+                    parsed = _pts(ts_val, legacy_utc=True)
                 except ValueError as e:
+                    violations.append(f"{prefix}: timestamp {ts_val!r} failed to parse: {e}")
+                    continue
+
+                # Not unreasonably far in the future (clock-skew tolerance: 5 min)
+                if parsed > _now_utc() + _clock_skew:
                     violations.append(
-                        f"[INV-T] {table}.{col} {id_col}={row[id_col]!r}: "
-                        f"timestamp {ts_val!r} failed to parse: {e}"
+                        f"{prefix}: timestamp {ts_val!r} is more than 5 minutes in the future"
                     )
+                    continue
+
+                # utc_canonical policy: T-sep naive on post-contract rows is a violation
+                if policy == "utc_canonical":
+                    ts_str = str(ts_val)
+                    is_naive = "T" in ts_str and not ts_str.endswith("Z") and "+" not in ts_str and (
+                        len(ts_str) < 20 or ts_str[19] not in ("+", "-")
+                    )
+                    if is_naive:
+                        ts_dt = _parse_ts(ts_val)
+                        if ts_dt and ts_dt >= _V2_DEPLOY_DT:
+                            violations.append(
+                                f"{prefix}: post-contract row has T-sep naive timestamp "
+                                f"{ts_val!r} (should have Z suffix)"
+                            )
+                        else:
+                            warnings.append(
+                                f"[INV-T legacy] {table}.{ts_col} {id_col}={row_id!r}: "
+                                f"pre-contract T-sep naive {ts_val!r}"
+                            )
+
+                # utc_legacy_ok: space-sep is expected; just emit a debug note for new rows
+                elif policy == "utc_legacy_ok":
+                    ts_str = str(ts_val)
+                    if " " in ts_str:
+                        ts_dt = _parse_ts(ts_val)
+                        if ts_dt and ts_dt >= _V2_DEPLOY_DT:
+                            warnings.append(
+                                f"[INV-T] {table}.{ts_col} {id_col}={row_id!r}: "
+                                f"post-contract row still using space-sep format {ts_val!r} "
+                                f"(Z-suffix preferred for new rows)"
+                            )
+
     except ImportError:
         warnings.append("[INV-T] time_utils not importable — timestamp contract check skipped")
 

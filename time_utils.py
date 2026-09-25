@@ -56,18 +56,22 @@ def epoch_to_utc(ts: float) -> datetime:
     return datetime.fromtimestamp(ts, tz=TZ_UTC)
 
 
-def parse_timestamp(s) -> datetime:
+def parse_timestamp(s, *, legacy_utc: bool = False) -> datetime:
     """
     Return a timezone-aware UTC datetime from a persisted timestamp string.
 
-    Accepts:
+    Accepted formats:
       - datetime objects (naive assumed UTC per legacy contract; aware converted to UTC)
       - "2026-09-24T23:49:21Z"         (Z-suffix ISO — canonical UTC)
-      - "2026-09-24 23:49:21"          (space-sep naive — legacy UTC, see DB contract above)
+      - "2026-09-24 23:49:21"          (space-sep naive — legacy UTC, ai_insights pre-0667)
       - "2026-09-24T23:49:21+00:00"    (explicit offset)
       - "2026-09-24T19:49:21-04:00"    (explicit offset, any zone)
 
-    Raises ValueError for unrecognized formats rather than silently assuming local time.
+    T-separator naive strings (no Z, no offset) are REJECTED unless legacy_utc=True is
+    passed with a justification comment at the call site. This prevents new code from
+    accidentally persisting ambiguous local-time values that parse silently as UTC.
+
+    Raises ValueError for unknown/ambiguous formats rather than silently assuming local time.
     """
     if isinstance(s, datetime):
         if s.tzinfo is None:
@@ -84,10 +88,18 @@ def parse_timestamp(s) -> datetime:
         dt = datetime.fromisoformat(s)
         if dt.tzinfo is not None:
             return dt.astimezone(TZ_UTC)
-        # Naive string — legacy UTC (space-sep format from pre-contract writes)
+        # Naive string — check separator to decide compatibility
+        if "T" in s and not legacy_utc:
+            raise ValueError(
+                f"parse_timestamp: naive T-separator timestamp {s!r} rejected. "
+                "Add a Z suffix (UTC) or explicit offset, or pass legacy_utc=True "
+                "with a comment justifying the exception."
+            )
+        # Legacy space-sep UTC (known format: ai_insights.generated_at pre-0667,
+        # confirmed written on a UTC host via utcfromtimestamp/utcnow)
         return dt.replace(tzinfo=TZ_UTC)
-    except ValueError:
-        raise ValueError(f"parse_timestamp: unrecognized format {s!r}")
+    except ValueError as _e:
+        raise ValueError(f"parse_timestamp: unrecognized format {s!r}: {_e}") from _e
 
 
 def to_eastern(dt: datetime) -> datetime:
@@ -114,3 +126,13 @@ def format_eastern_short(dt: datetime) -> str:
     """Dense table format: '09/24/26 8:42 PM EDT'"""
     et = to_eastern(dt)
     return et.strftime("%m/%d/%y %-I:%M %p %Z")
+
+
+def now_eastern() -> datetime:
+    """Return the current time in America/New_York — use for Eastern-relative display."""
+    return now_utc().astimezone(TZ_EASTERN)
+
+
+def today_eastern():
+    """Return today's date in America/New_York — use for market-calendar calculations."""
+    return now_utc().astimezone(TZ_EASTERN).date()

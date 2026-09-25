@@ -10,6 +10,7 @@ import sqlite3
 import time
 from datetime import datetime
 from pathlib import Path
+from time_utils import now_utc_space
 
 PROJECT_DIR = Path(__file__).resolve().parent
 DB_PATH     = PROJECT_DIR / "out" / "investment.db"
@@ -225,7 +226,7 @@ def fetch_all(tickers, company_names=None, force=False):
     _init_tables()
     company_names = company_names or {}
     stock_tickers = [t for t in tickers if not _is_fund(t, company_names)]
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now_str = now_utc_space()
     cutoff  = time.time() - CACHE_TTL
 
     conn = sqlite3.connect(str(DB_PATH), timeout=30)
@@ -249,7 +250,7 @@ def fetch_all(tickers, company_names=None, force=False):
             q_rows, a_rows, estimates = _fetch_one(ticker)
             # Availability is when this ticker's fetch completed, not when a
             # potentially long multi-ticker batch began.
-            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            now_str = now_utc_space()
 
             for r in q_rows:
                 conn.execute("""INSERT OR REPLACE INTO company_financials

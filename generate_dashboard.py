@@ -12,6 +12,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import agent_db
+from time_utils import now_utc, epoch_to_utc
 from pandas.tseries.holiday import USFederalHolidayCalendar
 from portfolio_ai import HOLDING_PROFILES
 from strategy_config import LAYER_NAMES, LAYER_LABELS, LAYER_TARGETS
@@ -567,7 +568,7 @@ def _thesis_health_detail_row(ticker: str, t: dict | None) -> str:
     )
     if last_eval:
         try:
-            age = datetime.now() - datetime.fromtimestamp(float(last_eval))
+            age = now_utc() - epoch_to_utc(float(last_eval))
             h = int(age.total_seconds() // 3600)
             age_str = f"{h}h ago" if h >= 1 else "< 1h ago"
             if h >= 48:

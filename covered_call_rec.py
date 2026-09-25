@@ -37,6 +37,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import yfinance as yf
+from time_utils import today_eastern, now_eastern
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -521,7 +522,7 @@ def analyze(ticker: str, avg_cost: float, shares: float):
     already_at_target = current_price >= avg_cost * (1 + R_MIN)
     strike_floor      = avg_cost * (1 + R_MIN)   # kept for UI context
 
-    today = datetime.now().date()
+    today = today_eastern()
 
     try:
         all_options = _yf_retry(lambda: stock.options)
@@ -1366,7 +1367,7 @@ def _suggest_next_call(
     Contracts failing the hard rule are excluded entirely (not just penalised).
     When roll_type is None a generic 14-75 DTE window is used.
     """
-    today = datetime.now().date()
+    today = today_eastern()
     nav   = current_price - existing_call_mark
     best  = None
     try:
@@ -1495,7 +1496,7 @@ def evaluate_open_position(ticker: str, strike: float, expiry: str,
         live_price = float(price_hist["Close"].dropna().iloc[-1])
     current_price = live_price
 
-    today    = datetime.now().date()
+    today    = today_eastern()
     exp_date = datetime.strptime(expiry, "%Y-%m-%d").date()
     dte      = (exp_date - today).days
 
@@ -1795,7 +1796,7 @@ def main():
     holdings = load_holdings()
     tickers  = [t.upper() for t in sys.argv[1:]] or list(holdings.keys())
 
-    print(f"\nCovered Call Recommendations  —  {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    print(f"\nCovered Call Recommendations  —  {now_eastern().strftime('%Y-%m-%d %H:%M %Z')}")
     print(f"Ranked by: multi-factor score (25% cc_alpha, 15% each yield/IV/liquidity/upside/regret)")
     print(f"Floor: K + exec_prem >= cost×{1+R_MIN:.2f}  |  exec = bid + {EXEC_LAMBDA:.0%}×spread")
 

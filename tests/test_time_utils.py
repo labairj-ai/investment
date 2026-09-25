@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 from time_utils import (
     TZ_UTC, TZ_EASTERN,
     now_utc, now_utc_iso, now_utc_space, epoch_to_utc,
-    parse_timestamp, to_eastern, format_eastern,
+    parse_timestamp, to_eastern, format_eastern, today_eastern,
 )
 
 
@@ -200,3 +200,52 @@ def test_eastern_to_utc_round_trip():
     et = to_eastern(utc)
     back = et.astimezone(TZ_UTC)
     assert abs((utc - back).total_seconds()) < 1
+
+
+# ── 0683: parse_timestamp tightened ───────────────────────────────────────────
+
+def test_parse_t_sep_naive_raises():
+    """Canonical T-separator without Z or offset is now rejected (0683)."""
+    with pytest.raises(ValueError, match="naive T-separator"):
+        parse_timestamp("2026-09-25T14:30:00")
+
+
+def test_parse_t_sep_naive_legacy_utc_opt_in():
+    """legacy_utc=True allows T-separator naive strings with explicit justification."""
+    # legacy_utc=True: caller documents this is a known UTC value
+    dt = parse_timestamp("2026-09-25T14:30:00", legacy_utc=True)
+    assert dt.tzinfo == TZ_UTC
+    assert dt.hour == 14
+    assert dt.minute == 30
+
+
+def test_parse_space_sep_still_works_after_tighten():
+    """Space-sep legacy format still parses without legacy_utc flag (0683)."""
+    dt = parse_timestamp("2026-09-24 20:00:00")
+    assert dt.tzinfo == TZ_UTC
+    assert dt.hour == 20
+
+
+def test_parse_z_suffix_still_works_after_tighten():
+    """Z-suffix canonical format unaffected by tightening (0683)."""
+    dt = parse_timestamp("2026-09-25T14:30:00Z")
+    assert dt.tzinfo == TZ_UTC
+    assert dt.hour == 14
+
+
+# ── 0682: today_eastern() ─────────────────────────────────────────────────────
+
+def test_today_eastern_returns_date_object():
+    """today_eastern() returns a date in America/New_York."""
+    import datetime as _dt
+    d = today_eastern()
+    assert isinstance(d, _dt.date)
+    # Result must equal now_utc() converted to Eastern
+    expected = now_utc().astimezone(TZ_EASTERN).date()
+    assert d == expected
+
+
+def test_today_eastern_is_consistent_with_now_eastern():
+    """today_eastern() and now_eastern().date() agree."""
+    from time_utils import now_eastern
+    assert today_eastern() == now_eastern().date()

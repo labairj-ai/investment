@@ -2,8 +2,7 @@
 Description=Run challenger-trainer nightly after outcome labeler (weekdays, 7pm ET)
 
 [Timer]
-TIMEZONE=America/New_York
-OnCalendar=Mon..Fri *-*-* 19:00:00
+OnCalendar=Mon..Fri *-*-* 19:00:00 America/New_York
 Persistent=true
 
 [Install]

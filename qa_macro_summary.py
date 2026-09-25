@@ -10,6 +10,7 @@ import sqlite3
 import sys
 from pathlib import Path
 from datetime import datetime, date, timedelta
+from time_utils import now_utc_space
 
 PROJECT_DIR = Path(__file__).resolve().parent
 DB_PATH = PROJECT_DIR / "out" / "investment.db"
@@ -280,7 +281,7 @@ if DB_PATH.exists() and full_text:
         conn = sqlite3.connect(str(DB_PATH), timeout=10)
         cur = conn.execute(
             "INSERT INTO macro_score_summaries (summary_json, created_at) VALUES (?,?)",
-            (json.dumps(test_payload), datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+            (json.dumps(test_payload), now_utc_space())
         )
         inserted_id = cur.lastrowid
         conn.commit()

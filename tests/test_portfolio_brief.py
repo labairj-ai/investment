@@ -1710,7 +1710,7 @@ def test_canary_detects_v2_state_mismatch():
     # attention_sev=80 → oracle says URGENT; record persists STABLE → should be caught
     snapshot = json.dumps({"brief_health": "HEALTHY", "attention_items": [{"severity": 80}]})
     output = json.dumps({"brief_policy_version": "v2", "portfolio_state": "STABLE"})
-    conn = _make_canary_conn([("bv-mismatch", "2026-09-25T00:00:00", snapshot, output, "[]")])
+    conn = _make_canary_conn([("bv-mismatch", "2026-09-25T00:00:00Z", snapshot, output, "[]")])
     violations, _ = canary_production_state.run_invariants(conn)
     conn.close()
     assert any("bv-mismatch" in v for v in violations), (
@@ -1725,7 +1725,7 @@ def test_canary_current_row_passes():
     """A v2 row with correct state produces no violations."""
     snapshot = json.dumps({"brief_health": "HEALTHY", "attention_items": []})
     output = json.dumps({"brief_policy_version": "v2", "portfolio_state": "STABLE"})
-    conn = _make_canary_conn([("bv-ok", "2026-09-25T00:00:00", snapshot, output, "[]")])
+    conn = _make_canary_conn([("bv-ok", "2026-09-25T00:00:00Z", snapshot, output, "[]")])
     violations, _ = canary_production_state.run_invariants(conn)
     conn.close()
     bv_violations = [v for v in violations if "bv-ok" in v]
@@ -1750,7 +1750,7 @@ def test_canary_missing_version_new_record_is_violation():
     snapshot = json.dumps({"brief_health": "HEALTHY", "attention_items": []})
     output = json.dumps({"portfolio_state": "STABLE"})  # no brief_policy_version
     # captured AFTER V2_DEPLOY_TIMESTAMP (2026-09-24T23:49:21)
-    conn = _make_canary_conn([("bv-new-missing", "2026-09-25T00:00:00", snapshot, output, "[]")])
+    conn = _make_canary_conn([("bv-new-missing", "2026-09-25T00:00:00Z", snapshot, output, "[]")])
     violations, _ = canary_production_state.run_invariants(conn)
     conn.close()
     assert any("bv-new-missing" in v for v in violations), (
@@ -1762,7 +1762,7 @@ def test_canary_unknown_version_is_violation():
     """Unrecognized brief_policy_version string 'v99' → INV-9 violation."""
     snapshot = json.dumps({"brief_health": "HEALTHY", "attention_items": []})
     output = json.dumps({"brief_policy_version": "v99", "portfolio_state": "STABLE"})
-    conn = _make_canary_conn([("bv-v99", "2026-09-25T00:00:00", snapshot, output, "[]")])
+    conn = _make_canary_conn([("bv-v99", "2026-09-25T00:00:00Z", snapshot, output, "[]")])
     violations, _ = canary_production_state.run_invariants(conn)
     conn.close()
     assert any("bv-v99" in v for v in violations), (
@@ -1966,4 +1966,178 @@ def test_garbage_brief_health_is_unknown():
     result = portfolio_ai._derive_portfolio_state(state)
     assert result == "UNKNOWN", (
         f"brief_health='GREAT' with no attention must produce UNKNOWN, got {result!r}"
+    )
+
+
+# ── 0684: Registry-driven timestamp canary ────────────────────────────────────
+
+def _make_canary_conn_ts(prov_rows=None, snapshot_rows=None, insights_rows=None):
+    """Minimal in-memory DB for INV-T registry tests."""
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("""CREATE TABLE portfolio_brief_provenance (
+        brief_id TEXT, captured_at TEXT,
+        brief_snapshot_json TEXT, briefing_output_json TEXT,
+        source_refs_json TEXT
+    )""")
+    conn.execute("""CREATE TABLE portfolio_brief_snapshots (
+        id INTEGER PRIMARY KEY, captured_at TEXT, snapshot_json TEXT
+    )""")
+    conn.execute("""CREATE TABLE ai_insights (
+        day TEXT PRIMARY KEY, insight TEXT, generated_at TEXT
+    )""")
+    conn.execute("""CREATE TABLE portfolio_brief_responses (
+        brief_id TEXT, item_key TEXT, responded_at TEXT
+    )""")
+    for row in (prov_rows or []):
+        conn.execute("INSERT INTO portfolio_brief_provenance VALUES (?,?,?,?,?)", row)
+    for row in (snapshot_rows or []):
+        conn.execute("INSERT INTO portfolio_brief_snapshots (captured_at, snapshot_json) VALUES (?,?)", row)
+    for row in (insights_rows or []):
+        conn.execute("INSERT INTO ai_insights VALUES (?,?,?)", row)
+    return conn
+
+
+def _inv_t_violations(conn):
+    """Run only INV-T checks from the canary and return violations."""
+    violations, _ = canary_production_state.run_invariants(conn)
+    return [v for v in violations if "INV-T" in v]
+
+
+def _inv_t_warnings(conn):
+    _, warnings = canary_production_state.run_invariants(conn)
+    return [w for w in warnings if "INV-T" in w]
+
+
+def test_invt_unparseable_timestamp_is_violation():
+    """INV-T: unparseable captured_at → violation."""
+    conn = _make_canary_conn_ts(
+        prov_rows=[("bid-bad", "NOT-A-DATE", "{}", "{}", "{}")]
+    )
+    violations = _inv_t_violations(conn)
+    assert any("INV-T" in v and "bid-bad" in v for v in violations), (
+        f"Unparseable timestamp must be a violation. Got: {violations}"
+    )
+
+
+def test_invt_null_timestamp_is_violation():
+    """INV-T: NULL captured_at → violation (required field)."""
+    conn = _make_canary_conn_ts(
+        prov_rows=[("bid-null", None, "{}", "{}", "{}")]
+    )
+    violations = _inv_t_violations(conn)
+    assert any("INV-T" in v and "bid-null" in v for v in violations), (
+        f"NULL timestamp must be a violation. Got: {violations}"
+    )
+
+
+def test_invt_z_suffix_passes():
+    """INV-T: Z-suffix canonical timestamp → no violation."""
+    conn = _make_canary_conn_ts(
+        prov_rows=[("bid-ok", "2026-09-24T23:49:21Z", "{}", json.dumps({"brief_policy_version": "v2"}), "{}")]
+    )
+    violations = _inv_t_violations(conn)
+    assert not any("bid-ok" in v for v in violations), (
+        f"Z-suffix canonical timestamp must pass INV-T. Got: {violations}"
+    )
+
+
+def test_invt_space_sep_legacy_is_warning_not_violation():
+    """INV-T: space-sep UTC in ai_insights (utc_legacy_ok policy) is a warning for new rows."""
+    # Post-deploy generated_at with space-sep → warning, not violation
+    conn = _make_canary_conn_ts(
+        insights_rows=[("2026-09-25", "{}", "2026-09-25 01:00:00")]
+    )
+    violations = _inv_t_violations(conn)
+    assert not any("2026-09-25 01:00:00" in v for v in violations), (
+        f"Space-sep in utc_legacy_ok table must be a warning not violation. Got: {violations}"
+    )
+
+
+def test_invt_all_rows_swept_not_just_50(tmp_path):
+    """INV-T: canary sweeps ALL rows, not just the latest 50."""
+    db_path = tmp_path / "test.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    conn.execute("""CREATE TABLE portfolio_brief_provenance (
+        brief_id TEXT, captured_at TEXT,
+        brief_snapshot_json TEXT, briefing_output_json TEXT,
+        source_refs_json TEXT
+    )""")
+    conn.execute("""CREATE TABLE portfolio_brief_snapshots (
+        id INTEGER PRIMARY KEY, captured_at TEXT, snapshot_json TEXT
+    )""")
+    conn.execute("""CREATE TABLE ai_insights (
+        day TEXT PRIMARY KEY, insight TEXT, generated_at TEXT
+    )""")
+    conn.execute("""CREATE TABLE portfolio_brief_responses (
+        brief_id TEXT, item_key TEXT, responded_at TEXT
+    )""")
+    # Insert 60 good rows + 1 bad row (row 61 should be caught even if only 50 were swept before)
+    for i in range(60):
+        conn.execute(
+            "INSERT INTO portfolio_brief_provenance VALUES (?,?,?,?,?)",
+            (f"bid-{i:03}", "2026-09-24T23:49:21Z", "{}", json.dumps({"brief_policy_version": "v2"}), "{}")
+        )
+    conn.execute(
+        "INSERT INTO portfolio_brief_provenance VALUES (?,?,?,?,?)",
+        ("bid-bad-61", "NOT-A-DATE", "{}", "{}", "{}")
+    )
+    conn.commit()
+    violations, _ = canary_production_state.run_invariants(conn)
+    assert any("bid-bad-61" in v for v in violations), (
+        f"Row 61 (beyond 50) must be caught. Got: {violations}"
+    )
+
+
+def test_invt_future_timestamp_is_violation():
+    """INV-T: timestamp more than 5 minutes in the future → violation (0684)."""
+    from time_utils import now_utc
+    future_ts = (now_utc().__class__(
+        now_utc().year + 1, 1, 1, 0, 0, 0,
+        tzinfo=now_utc().tzinfo
+    )).strftime("%Y-%m-%dT%H:%M:%SZ")
+    conn = _make_canary_conn_ts(
+        prov_rows=[("bid-future", future_ts, "{}", "{}", "{}")]
+    )
+    violations = _inv_t_violations(conn)
+    assert any("bid-future" in v and "future" in v for v in violations), (
+        f"Future timestamp must trigger INV-T violation. Got: {violations}"
+    )
+
+
+def test_invt_news_events_extracted_at_checked(tmp_path):
+    """INV-T: news_events.extracted_at is swept by TIMESTAMP_REGISTRY (0684)."""
+    import sqlite3 as _sq3
+    db_path = tmp_path / "ne_test.db"
+    conn = _sq3.connect(str(db_path))
+    conn.row_factory = _sq3.Row
+    conn.execute("""CREATE TABLE portfolio_brief_provenance (
+        brief_id TEXT, captured_at TEXT,
+        brief_snapshot_json TEXT, briefing_output_json TEXT,
+        source_refs_json TEXT
+    )""")
+    conn.execute("""CREATE TABLE portfolio_brief_snapshots (
+        id INTEGER PRIMARY KEY, captured_at TEXT, snapshot_json TEXT
+    )""")
+    conn.execute("""CREATE TABLE ai_insights (
+        day TEXT PRIMARY KEY, insight TEXT, generated_at TEXT
+    )""")
+    conn.execute("""CREATE TABLE portfolio_brief_responses (
+        brief_id TEXT, item_key TEXT, responded_at TEXT
+    )""")
+    conn.execute("""CREATE TABLE news_events (
+        event_id TEXT PRIMARY KEY, extracted_at TEXT
+    )""")
+    # Good row: space-sep UTC (legacy ok)
+    conn.execute("INSERT INTO news_events VALUES (?,?)", ("ev-good", "2026-09-24 01:56:41"))
+    # Bad row: unparseable
+    conn.execute("INSERT INTO news_events VALUES (?,?)", ("ev-bad", "NOT-A-TIMESTAMP"))
+    conn.commit()
+    violations, _ = canary_production_state.run_invariants(conn)
+    assert any("ev-bad" in v and "INV-T" in v for v in violations), (
+        f"Unparseable news_events.extracted_at must trigger INV-T. Got: {violations}"
+    )
+    assert not any("ev-good" in v for v in violations), (
+        f"Valid space-sep news_events.extracted_at must not be a violation. Got: {violations}"
     )

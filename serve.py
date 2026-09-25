@@ -19,7 +19,7 @@ import csv as _csv_mod
 import datetime
 import hmac
 import json
-from time_utils import now_utc, now_utc_iso, now_utc_space, epoch_to_utc, parse_timestamp, to_eastern, format_eastern
+from time_utils import now_utc, now_utc_iso, now_utc_space, now_eastern, today_eastern, epoch_to_utc, parse_timestamp, to_eastern, format_eastern
 # Logging contract (0674): machine/audit log timestamps are UTC (see now_utc_space()).
 # Human-readable operational output may include Eastern context if needed.
 # Log ordering must use UTC values, never Eastern-formatted strings.
@@ -66,16 +66,14 @@ def _cache_valid(cache, ttl):
     with _data_cache_lock:
         if cache["data"] is None or (time.time() - cache["ts"]) > ttl:
             return False
-        from datetime import date
-        return cache.get("date") == date.today().isoformat()
+        return cache.get("date") == today_eastern().isoformat()
 
 
 def _cache_set(cache, data):
     with _data_cache_lock:
-        from datetime import date
         cache["data"] = data
         cache["ts"]   = time.time()
-        cache["date"] = date.today().isoformat()
+        cache["date"] = today_eastern().isoformat()
 
 
 def _cc_analyze_get(ticker):
@@ -938,10 +936,9 @@ def _run_financials_refresh():
 
     def already_ran_this_week():
         try:
-            from datetime import date as _date, timedelta as _td
             last = _date.fromisoformat(FLAG.read_text().strip())
             # Consider "this week" = within 6 days
-            return (_date.today() - last).days < 6
+            return (today_eastern() - last).days < 6
         except Exception:
             return False
 
@@ -986,7 +983,7 @@ def _run_outcome_evaluator():
         try:
             from datetime import date as _date
             last = _date.fromisoformat(FLAG.read_text().strip())
-            return (_date.today() - last).days < 6
+            return (today_eastern() - last).days < 6
         except Exception:
             return False
 
@@ -1089,7 +1086,7 @@ def _run_saturday_sweep():
         try:
             from datetime import date as _date
             last = _date.fromisoformat(FLAG.read_text().strip())
-            return (_date.today() - last).days < 6
+            return (today_eastern() - last).days < 6
         except Exception:
             return False
 
@@ -1626,7 +1623,7 @@ Return this JSON structure:
                         error="AI returned malformed JSON — try again")
             return
 
-        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now_str = now_utc_space()
         conn2 = sqlite3.connect(str(db), timeout=10)
         try:
             conn2.execute(
@@ -1720,7 +1717,7 @@ Return ONLY valid JSON, no other text. Use rank 1 through {n_stocks} only:
             return
 
         # Persist AI ranks back to DB
-        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now_str = now_utc_space()
         conn3 = sqlite3.connect(str(db), timeout=10)
         try:
             # Clear previous ranks for this layer
@@ -1778,7 +1775,7 @@ def _fetch_options_for_chat(ticker: str, expiry: str) -> str:
             hist = stock.history(period="2d")
             price = float(hist["Close"].dropna().iloc[-1]) if not hist.empty else 0.0
 
-        today = _dt.now().date()
+        today = today_eastern()
         exp_date = _dt.strptime(expiry, "%Y-%m-%d").date()
         dte = (exp_date - today).days
 
@@ -1852,7 +1849,7 @@ def _detect_expiry_from_message(message: str, available_expirations: list) -> "s
     if found_month is None:
         return None
 
-    now = _dt.now()
+    now = now_eastern()
     year = now.year
     if found_month < now.month:
         year += 1
@@ -2297,7 +2294,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 price = None
 
             if price and price > 0:
-                today = datetime.date.today().isoformat()
+                today = today_eastern().isoformat()
                 value = shares * price
                 db    = PROJECT_DIR / "out" / "investment.db"
                 if db.exists():
@@ -2347,7 +2344,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # Seed opening lot in cost_lots
             db = PROJECT_DIR / "out" / "investment.db"
             if db.exists():
-                today_str = datetime.date.today().isoformat()
+                today_str = today_eastern().isoformat()
                 conn = sqlite3.connect(str(db), timeout=10)
                 existing = conn.execute(
                     "SELECT COUNT(*) FROM cost_lots WHERE ticker=?", (ticker,)
@@ -2392,7 +2389,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 # Auto-expire any open positions whose expiry date has passed.
                 # Options expire at end of day on the expiry date, so we compare
                 # strictly: expiry < today (i.e. the day after expiry has arrived).
-                today = datetime.date.today().isoformat()
+                today = today_eastern().isoformat()
                 past_open = conn.execute(
                     "SELECT id, premium_per_contract, contracts, expiry "
                     "FROM cc_positions WHERE status = 'open' AND expiry < ?",
@@ -2675,7 +2672,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
             # Update today's holding_day value (price unchanged, just more shares)
             db_conn = sqlite3.connect(str(db), timeout=10)
-            today = datetime.date.today().isoformat()
+            today = today_eastern().isoformat()
             row = db_conn.execute(
                 "SELECT price FROM holding_day WHERE ticker=? AND day=?", (ticker, today)
             ).fetchone()
@@ -3469,7 +3466,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         _window_days = 35  # default: ~5 weeks for generic "shorter" requests
 
                     if _window_days > 0 and all_exps:
-                        cutoff = _dt2.now().date() + _td2(days=_window_days)
+                        cutoff = today_eastern() + _td2(days=_window_days)
                         to_fetch = [
                             e for e in all_exps
                             if _dt2.strptime(e, "%Y-%m-%d").date() <= cutoff and not _already_has(e)
@@ -3582,7 +3579,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return self._json(_timeline_cache["data"])
 
             holdings   = load_holdings()
-            today      = date.today()
+            today      = today_eastern()
             this_year  = today.year
             this_month = today.strftime("%Y-%m")
             months     = [date(this_year, m, 1).strftime("%Y-%m") for m in range(1, 13)]
@@ -3658,7 +3655,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return self._json(_earn_cache["data"])
 
             holdings = load_holdings()
-            today    = date.today()
+            today    = today_eastern()
 
             LAYER_NAMES = {
                 1: "Layer 1: Structural Ballast",
@@ -3746,7 +3743,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             from covered_call_rec import normalize_ticker
             ticker = normalize_ticker(ticker)
 
-            today = date.today()
+            today = today_eastern()
             tk    = yf.Ticker(ticker)
 
             price = None
@@ -3856,7 +3853,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return self._json(_div_cache["data"])
 
             holdings = load_holdings()
-            today    = date.today()
+            today    = today_eastern()
 
             def fetch_one(kv):
                 ticker, meta = kv
@@ -4343,8 +4340,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             total_tickers   = int(meta.get("total_tickers") or 2348)
             if scan_running and tickers_scanned > 0 and meta.get("scan_started"):
                 try:
-                    started = _dt.strptime(meta["scan_started"], "%Y-%m-%d %H:%M:%S")
-                    elapsed = max((_dt.now() - started).total_seconds(), 5.0)
+                    started = parse_timestamp(meta["scan_started"])
+                    elapsed = max((now_utc() - started).total_seconds(), 5.0)
                     rate    = tickers_scanned / elapsed
                     if rate > 0:
                         eta_seconds = int((total_tickers - tickers_scanned) / rate)
@@ -4511,7 +4508,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
 
         tickers = sorted(set(r[1] for r in lots))
-        today = date.today()
+        today = today_eastern()
 
         # fetch current prices
         prices = {}
@@ -4641,7 +4638,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         import portfolio_ai
 
         force = qs.get("force", ["0"])[0] == "1"
-        today = __import__("datetime").date.today().isoformat()
+        today = today_eastern().isoformat()
 
         if force:
             with _news_summary_lock:
@@ -4742,7 +4739,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         import portfolio_ai
 
         force = qs.get("force", ["0"])[0] == "1"
-        today = __import__("datetime").date.today().isoformat()
+        today = today_eastern().isoformat()
 
         if force:
             with _ai_insight_lock:
@@ -5616,7 +5613,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if action in ("EXIT", "TRIM", "SELL_CC") and server_pos_before is None:
             return self._json_error(422, f"{ticker} not found in holdings.csv — cannot verify position size")
 
-        err = _validate_execution_body(action, body, rec, _date.today(),
+        err = _validate_execution_body(action, body, rec, today_eastern(),
                                        server_pos_before=server_pos_before)
         if err:
             code, msg = err

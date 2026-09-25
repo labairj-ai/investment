@@ -12,6 +12,7 @@ from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
+from time_utils import now_utc_space, now_eastern
 
 PROJECT_DIR = Path(__file__).parent
 DB_PATH     = PROJECT_DIR / "out" / "buffett.db"
@@ -574,7 +575,7 @@ def _send_new_winners_email(new_tickers: list[dict]) -> None:
       </p>
     </body></html>"""
 
-    subject = f"📈 Buffett Screener: {count} new winner{'s' if count != 1 else ''} — {datetime.now().strftime('%b %d, %Y')}"
+    subject = f"📈 Buffett Screener: {count} new winner{'s' if count != 1 else ''} — {now_eastern().strftime('%b %d, %Y')}"
 
     msg = MIMEMultipart("alternative")
     msg["From"]    = email_from
@@ -721,7 +722,7 @@ def run():
     }
 
     results = []
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now_str = now_utc_space()
 
     # Record scan start for ETA computation
     conn.execute(

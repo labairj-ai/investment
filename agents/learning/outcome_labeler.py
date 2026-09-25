@@ -41,13 +41,8 @@ _MIN_AGE_DAYS = 7
 
 
 def _entry_date(captured_at: float) -> str:
-    try:
-        from zoneinfo import ZoneInfo
-        et_tz = ZoneInfo("America/New_York")
-    except Exception:
-        from datetime import timedelta
-        et_tz = timezone(timedelta(hours=-4))
-    return datetime.fromtimestamp(captured_at, tz=et_tz).strftime("%Y-%m-%d")
+    from time_utils import TZ_EASTERN
+    return datetime.fromtimestamp(captured_at, tz=TZ_EASTERN).strftime("%Y-%m-%d")
 
 
 def _horizon_date(entry: str, days: int) -> str:
