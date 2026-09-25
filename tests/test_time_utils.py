@@ -67,11 +67,11 @@ def test_parse_space_sep_naive_legacy():
     assert dt.hour == 20
 
 
-def test_parse_bare_datetime_naive():
+def test_parse_bare_datetime_naive_raises():
+    """Naive datetime object without tzinfo is rejected by default (0686)."""
     naive = datetime(2026, 9, 24, 20, 0, 0)
-    dt = parse_timestamp(naive)
-    assert dt.tzinfo == TZ_UTC
-    assert dt.hour == 20
+    with pytest.raises(ValueError, match="naive datetime object rejected"):
+        parse_timestamp(naive)
 
 
 def test_parse_aware_datetime_converts_to_utc():
@@ -200,6 +200,25 @@ def test_eastern_to_utc_round_trip():
     et = to_eastern(utc)
     back = et.astimezone(TZ_UTC)
     assert abs((utc - back).total_seconds()) < 1
+
+
+# ── 0686: naive datetime object rejection ─────────────────────────────────────
+
+def test_parse_naive_datetime_legacy_utc_opt_in():
+    """Naive datetime with legacy_utc=True is promoted to UTC (0686)."""
+    naive = datetime(2026, 9, 24, 20, 0, 0)
+    dt = parse_timestamp(naive, legacy_utc=True)
+    assert dt.tzinfo == TZ_UTC
+    assert dt.hour == 20
+
+
+def test_parse_aware_datetime_still_converts():
+    """Aware datetime still converts to UTC regardless of legacy_utc flag (0686)."""
+    eastern = ZoneInfo("America/New_York")
+    aware = datetime(2026, 9, 24, 20, 0, 0, tzinfo=eastern)
+    dt = parse_timestamp(aware)
+    assert dt.utcoffset().total_seconds() == 0
+    assert dt.day == 25  # 20:00 EDT = 00:00 UTC next day
 
 
 # ── 0683: parse_timestamp tightened ───────────────────────────────────────────

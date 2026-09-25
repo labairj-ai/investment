@@ -13,6 +13,7 @@ import time
 import sqlite3
 from datetime import date as _date
 from pathlib import Path
+from time_utils import today_eastern
 
 import agent_db
 
@@ -194,7 +195,7 @@ def _check_option_expiration(dep: dict, _unused) -> str | None:
         expiry = _date.fromisoformat(expiry_str)
     except ValueError:
         return None
-    today = _date.today()
+    today = today_eastern()
     if today >= expiry:
         return f"Option expired on {expiry_str}"
     days_left = (expiry - today).days
@@ -268,7 +269,7 @@ def _check_earnings_date(dep: dict, periods: dict[str, str]) -> str | None:
         earnings_date = _date.fromisoformat(earnings_str)
     except ValueError:
         return None
-    today = _date.today()
+    today = today_eastern()
     days_to = (earnings_date - today).days
     if today > earnings_date:
         return f"Estimated earnings date {earnings_str} has passed — new data expected"
@@ -294,7 +295,7 @@ def _check_event_calendar(dep: dict, _unused) -> str | None:
     if not events:
         # Stub: no event_calendar data yet
         return None
-    today = _date.today()
+    today = today_eastern()
     for evt in events:
         try:
             evt_date = _date.fromisoformat(evt["event_date"])

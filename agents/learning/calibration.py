@@ -28,6 +28,7 @@ import hashlib
 import json
 import time
 from datetime import date as _date, timedelta as _td, timezone, datetime
+from time_utils import today_eastern
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -1719,16 +1720,16 @@ def compute_data_health(conn, target_horizon_version: str = None) -> dict:
     # 0397: eligible episodes = those old enough to have matured outcomes.
     # Use exchange-session-exact cutoff via market calendar; never a fixed calendar approximation.
     eligible_episodes = 0
-    from datetime import date as _dt_date, datetime as _dt_datetime, timedelta as _dt_td
-    _today_str = _dt_date.today().isoformat()
+    from datetime import datetime as _dt_datetime, timedelta as _dt_td
+    _today_str = today_eastern().isoformat()
     try:
         from trade_engine.market_calendar import nth_trading_session_before
         if target_horizon_version == "sessions_v2":
             _elig_date = nth_trading_session_before(_today_str, 63)
         else:
-            _elig_date = (_dt_date.today() - _dt_td(days=91)).isoformat()
+            _elig_date = (today_eastern() - _dt_td(days=91)).isoformat()
     except Exception:
-        _elig_date = (_dt_date.today() - _dt_td(days=91)).isoformat()
+        _elig_date = (today_eastern() - _dt_td(days=91)).isoformat()
     # Use end-of-day timestamp so episodes captured on the cutoff date are included
     eligible_cutoff_ts = _dt_datetime.strptime(_elig_date, "%Y-%m-%d").replace(
         hour=23, minute=59, second=59
@@ -1818,9 +1819,9 @@ def compute_data_health(conn, target_horizon_version: str = None) -> dict:
                 if ver == "sessions_v2":
                     _ver_elig_date = nth_trading_session_before(_today_str, 63)
                 else:
-                    _ver_elig_date = (_dt_date.today() - _dt_td(days=91)).isoformat()
+                    _ver_elig_date = (today_eastern() - _dt_td(days=91)).isoformat()
             except Exception:
-                _ver_elig_date = (_dt_date.today() - _dt_td(days=91)).isoformat()
+                _ver_elig_date = (today_eastern() - _dt_td(days=91)).isoformat()
             _ver_cutoff_ts = _dt_datetime.strptime(_ver_elig_date, "%Y-%m-%d").replace(
                 hour=23, minute=59, second=59
             ).timestamp()
@@ -1878,7 +1879,7 @@ def compute_data_health(conn, target_horizon_version: str = None) -> dict:
         ).fetchone()
         if pa_row is not None:
             from trade_engine.market_calendar import nth_trading_session_before
-            _today = __import__("datetime").date.today().isoformat()
+            _today = today_eastern().isoformat()
             _stale_cutoff = nth_trading_session_before(_today, 3)
             _last = pa_row["last_shadow_score_at"] if hasattr(pa_row, "__getitem__") else None
             if _last is None or _last < _stale_cutoff:

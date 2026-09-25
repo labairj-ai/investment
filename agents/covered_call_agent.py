@@ -18,6 +18,7 @@ from pathlib import Path
 import agent_db
 import ollama_client
 from .confidence import calculate_confidence
+from time_utils import today_eastern
 from .contracts import AgentContext, EvidenceBundle, Recommendation
 from .orchestrator import register_agent
 
@@ -69,7 +70,7 @@ def _has_open_cc(ticker: str) -> bool:
 
 def _get_open_cc_position(ticker: str) -> dict | None:
     """Return the most recent open cc_positions row for ticker, with DTE added."""
-    from datetime import date as _date
+    from datetime import date as _date  # for fromisoformat only
     alt = ticker.replace(".", "-") if "." in ticker else ticker.replace("-", ".")
     try:
         conn = sqlite3.connect(str(_DB), timeout=5)
@@ -85,7 +86,7 @@ def _get_open_cc_position(ticker: str) -> dict | None:
         pos = dict(row)
         try:
             exp = _date.fromisoformat(pos["expiry"])
-            pos["dte"] = (exp - _date.today()).days
+            pos["dte"] = (exp - today_eastern()).days
         except Exception:
             pos["dte"] = 0
         return pos
@@ -274,7 +275,7 @@ def _analyze_roll(ctx: AgentContext, ticker: str, position: dict) -> list[Recomm
     # Tax friction — use strike + call expiry as disposal date (0157, 0158, 0168, 0169, 0171)
     _expiry_date_parsed: "date | None" = None
     try:
-        from datetime import date as _date
+        from datetime import date as _date  # for fromisoformat only
         _expiry_date_parsed = _date.fromisoformat(existing_expiry)
     except (TypeError, ValueError):
         pass

@@ -12,7 +12,7 @@ import sqlite3
 import sys
 from datetime import datetime, date
 from pathlib import Path
-from time_utils import now_utc_space
+from time_utils import now_utc_space, today_eastern
 
 PROJECT_DIR = Path(__file__).resolve().parent
 DB_PATH = PROJECT_DIR / "out" / "investment.db"
@@ -166,7 +166,7 @@ print("\n── 6. _load_macro_summary round-trip ──────────
 test_payload = {
     "portfolio": "QA test <escape me> & check.",
     "layers": {str(n): f"Layer {n} QA text." for n in range(1, 6)},
-    "scored_date": date.today().isoformat(),
+    "scored_date": today_eastern().isoformat(),
     "scored_count": 99,
 }
 inserted_id = None

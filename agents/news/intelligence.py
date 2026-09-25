@@ -22,7 +22,7 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
-from time_utils import now_utc_space
+from time_utils import now_utc_space, today_eastern
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent.parent
 
@@ -1494,7 +1494,7 @@ def run_pipeline(by_ticker: dict,
     Returns dict with: events_by_ticker, themes, news_snapshot_hash, article_count.
     """
     if day is None:
-        day = date.today().isoformat()
+        day = today_eastern().isoformat()
 
     # 0596/0601c: use canonical snapshot hash; build from by_ticker if not provided.
     # Manifest keys are evidence_id = hash(ticker + article_id) so shared articles

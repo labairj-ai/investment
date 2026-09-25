@@ -120,10 +120,10 @@ def _compute_no_action_state_extras(
     minor intraday moves from generating spurious new rows.
     """
     import agent_db
-    from datetime import date as _date
+    from time_utils import today_eastern as _today_eastern
 
     result: dict = {}
-    today = _date.today()
+    today = _today_eastern()
 
     if agent_type == "covered_call":
         snap = agent_db.get_latest_option_snapshot(ticker)

@@ -936,7 +936,7 @@ def _lot_tax_friction(
                 available=False,
             )
 
-        disposal = disposal_date if disposal_date is not None else date.today()
+        disposal = disposal_date if disposal_date is not None else today_eastern()
         st_gain = 0.0
         soonest_lt_days: "int | None" = None
         lot_schedule: list = []
@@ -1303,8 +1303,7 @@ def _remaining_call_alpha(
     Negative existing_alpha (deep ITM: expected payoff > mark) makes rolling more attractive
     because the existing call is a growing liability, not a retained asset.
     """
-    from datetime import date as _date
-    T_old = max((existing_expiry_date - _date.today()).days, 0) / 365
+    T_old = max((existing_expiry_date - today_eastern()).days, 0) / 365
     if T_old <= 0:
         return max(0.0, current_price - existing_strike)
     return expected_upside_lost(current_price, existing_strike, T_old, sigma, mu)

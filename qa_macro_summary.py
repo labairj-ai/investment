@@ -10,7 +10,7 @@ import sqlite3
 import sys
 from pathlib import Path
 from datetime import datetime, date, timedelta
-from time_utils import now_utc_space
+from time_utils import now_utc_space, today_eastern
 
 PROJECT_DIR = Path(__file__).resolve().parent
 DB_PATH = PROJECT_DIR / "out" / "investment.db"
@@ -272,7 +272,7 @@ if DB_PATH.exists() and full_text:
     test_payload = {
         "portfolio": "QA test entry — safe to delete.",
         "layers": {str(n): f"QA layer {n}" for n in sorted(layer_changes.keys())},
-        "scored_date": date.today().isoformat(),
+        "scored_date": today_eastern().isoformat(),
         "scored_count": 0,
         "_qa_test": True,
     }

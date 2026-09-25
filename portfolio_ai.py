@@ -18,7 +18,7 @@ from pathlib import Path
 from strategy_config import (
     LAYER_NAMES, LAYER_LABELS, LAYER_TARGETS, LAYER_DESCRIPTIONS, DRIFT_THRESHOLD,
 )
-from time_utils import now_utc, now_utc_iso, now_utc_space, epoch_to_utc, parse_timestamp
+from time_utils import now_utc, now_utc_iso, now_utc_space, epoch_to_utc, parse_timestamp, today_eastern
 
 try:
     from agent_db import CODE_COMMIT_SHA as _CODE_COMMIT_SHA
@@ -2185,7 +2185,7 @@ def _get_cc_context() -> str:
     """Build covered call program summary for prompt injection."""
     if not DB_PATH.exists():
         return ""
-    today = date.today()
+    today = today_eastern()
 
     conn = sqlite3.connect(str(DB_PATH), timeout=10)
     conn.row_factory = sqlite3.Row
@@ -2241,7 +2241,7 @@ def _get_lot_context() -> str:
     """Build cost basis, holding periods, and unrealized P&L for prompt injection."""
     if not DB_PATH.exists():
         return ""
-    today = date.today()
+    today = today_eastern()
 
     conn = sqlite3.connect(str(DB_PATH), timeout=10)
     conn.row_factory = sqlite3.Row
@@ -2337,7 +2337,7 @@ def _get_realized_context() -> str:
         if count == 0:
             conn.close()
             return "REALIZED GAINS YTD:\n  No sell transactions recorded — all gains/losses are currently unrealized."
-        year = str(date.today().year)
+        year = str(today_eastern().year)
         rows = conn.execute(
             "SELECT * FROM sell_transactions WHERE strftime('%Y', sell_date) = ?", (year,)
         ).fetchall()
@@ -2499,7 +2499,7 @@ def _build_layer_block(layer_weights: dict, drift_alerts: list[dict]) -> str:
 def get_cached_insight_today():
     """Return (insight_dict, generated_at_str) for today, or (None, None)."""
     _init_ai_tables()
-    today = date.today().isoformat()
+    today = today_eastern().isoformat()
     if not DB_PATH.exists():
         return None, None
     try:
@@ -2520,7 +2520,7 @@ def get_cached_news_summaries_today(news_snapshot_hash=None):
     If news_snapshot_hash is given, cache is considered stale when the stored hash differs.
     Returns (sentinel, generated_at) during error cooldown so caller can distinguish."""
     _init_ai_tables()
-    today = date.today().isoformat()
+    today = today_eastern().isoformat()
     if not DB_PATH.exists():
         return None, None
     try:
@@ -2561,7 +2561,7 @@ def generate_news_summaries(force: bool = False) -> dict:
     Cached in DB; re-runs when news snapshot hash changes (0580).
     """
     _init_ai_tables()
-    today = date.today().isoformat()
+    today = today_eastern().isoformat()
 
     # 0605: run event-state sweep BEFORE any MLX/network checks — state maintenance
     # must be independent of AI availability.  run_daily_sweep() also writes the
@@ -3200,7 +3200,7 @@ def create_portfolio_brief(conn: sqlite3.Connection, force: bool = False) -> dic
     briefing_output["brief_policy_version"] = BRIEF_POLICY_VERSION
 
     brief_id = str(_uuid.uuid4())
-    today = date.today().isoformat()
+    today = today_eastern().isoformat()
     # DB timestamp contract: generated_at is UTC (matches portfolio_brief_provenance.captured_at)
     now_str = _dt2.now(_tz2.utc).strftime("%Y-%m-%d %H:%M:%S")
 
@@ -3378,7 +3378,7 @@ def generate_daily_insight(force: bool = False) -> dict:
     are always written together from the same generation — no mismatched brief_ids.
     """
     _init_ai_tables()
-    today = date.today().isoformat()
+    today = today_eastern().isoformat()
 
     # Return cached result if already generated today
     if not force and DB_PATH.exists():
@@ -3510,7 +3510,7 @@ def _geo_evidence_quality(ticker: str, conn) -> str:
         except (ValueError, TypeError, IndexError):
             print(f"[GeoQuality] {ticker}: unparseable source_date '{source_date}' — downgraded to partial")
             return "partial"
-        today = date.today()
+        today = today_eastern()
         # Future date (impossible) → partial
         if yr > today.year or (yr == today.year and mo > today.month):
             print(f"[GeoQuality] {ticker}: source_date '{source_date}' is in the future — downgraded to partial")
@@ -3973,7 +3973,7 @@ def generate_holding_macro_scores(force: bool = False) -> dict:
             conn = sqlite3.connect(str(DB_PATH), timeout=10)
             conn.execute(
                 "INSERT OR REPLACE INTO macro_regime_snapshots (snapshot_date, regime_json, created_at) VALUES (?,?,?)",
-                (date.today().isoformat(), json.dumps(regime), now_utc_space())
+                (today_eastern().isoformat(), json.dumps(regime), now_utc_space())
             )
             conn.commit()
             conn.close()
@@ -4691,7 +4691,7 @@ Return ONLY valid JSON, no extra text:
     payload = {
         "portfolio":    result.get("portfolio", ""),
         "layers":       result.get("layers", {}),
-        "scored_date":  date.today().isoformat(),
+        "scored_date":  today_eastern().isoformat(),
         "scored_count": sum(len(v) for v in layer_changes.values()),
     }
     conn = None

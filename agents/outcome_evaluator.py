@@ -24,6 +24,7 @@ import time
 from datetime import datetime, date, timedelta, timezone
 
 import agent_db
+from time_utils import today_eastern
 from .contracts import AgentContext, Recommendation
 from .orchestrator import register_agent
 
@@ -614,7 +615,7 @@ def evaluate_matured_recommendations(min_age_days: int = MIN_AGE_DAYS) -> int:
     and has not yet been evaluated. Returns count of new rows written.
     """
     cutoff = time.time() - min_age_days * 86400
-    today  = date.today().isoformat()
+    today  = today_eastern().isoformat()
 
     conn = agent_db._connect()
     recs = conn.execute(

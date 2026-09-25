@@ -39,23 +39,29 @@ KNOWN_LEGACY_VERSIONS: set = {None, "v1"}
 # Rows with missing/unknown version captured at or after this timestamp → UNKNOWN_VERSION violation.
 V2_DEPLOY_TIMESTAMP = "2026-09-24T23:49:21"
 
-# DB timestamp contract (all timestamps stored as UTC, no timezone suffix):
-# portfolio_brief_provenance.captured_at = UTC
-# portfolio_brief_snapshots.captured_at  = UTC
-# ai_insights.generated_at               = UTC
+# DB timestamp contract (all timestamps stored as UTC):
+# portfolio_brief_provenance.captured_at = UTC  (Z-suffix ISO TEXT)
+# portfolio_brief_snapshots.captured_at  = UTC  (Z-suffix ISO TEXT)
+# ai_insights.generated_at               = UTC  (space-sep legacy TEXT)
+# news_events.extracted_at               = UTC  (space-sep legacy TEXT)
+# recommendations.created_at             = UTC  (epoch seconds REAL)
+# decision_episodes.captured_at          = UTC  (epoch seconds REAL)
 
 
 def _parse_ts(ts_str: str | None) -> _datetime | None:
-    """Parse UTC ISO timestamp to datetime; handles Z suffix and space separator."""
+    """Parse UTC ISO timestamp to UTC-aware datetime (lenient, for pre/post-contract checks)."""
     if not ts_str:
         return None
     try:
-        return _datetime.fromisoformat(ts_str.rstrip("Z"))
-    except ValueError:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        from time_utils import parse_timestamp as _pts_inner
+        return _pts_inner(ts_str, legacy_utc=True)
+    except (ValueError, ImportError):
         return None
 
 
 _V2_DEPLOY_DT: _datetime = _parse_ts(V2_DEPLOY_TIMESTAMP)  # type: ignore[assignment]
+# _V2_DEPLOY_DT is UTC-aware (parse_timestamp with legacy_utc=True promotes naive strings to UTC)
 
 
 # ── Independent v2 policy oracle ────────────────────────────────────────────
@@ -370,63 +376,102 @@ def run_invariants(conn: sqlite3.Connection) -> tuple[list[str], list[str]]:
 
     # ── INV-T: Timestamp contract (registry-driven) ───────────────────────────
     # DB timestamp contract:
-    #   portfolio_brief_provenance.captured_at  = UTC  (Z-suffix ISO, utc_canonical)
-    #   portfolio_brief_snapshots.captured_at   = UTC  (Z-suffix ISO, utc_canonical)
-    #   ai_insights.generated_at               = UTC  (space-sep pre-0667, utc_legacy_ok)
+    #   portfolio_brief_provenance.captured_at  = UTC  (Z-suffix ISO,   storage_type=utc_iso)
+    #   portfolio_brief_snapshots.captured_at   = UTC  (Z-suffix ISO,   storage_type=utc_iso)
+    #   ai_insights.generated_at               = UTC  (space-sep legacy, storage_type=utc_space_legacy)
+    #   news_events.extracted_at               = UTC  (space-sep legacy, storage_type=utc_space_legacy)
+    #   recommendations.created_at             = UTC  (epoch seconds REAL, storage_type=epoch_seconds)
+    #   decision_episodes.captured_at          = UTC  (epoch seconds REAL, storage_type=epoch_seconds, monotonic=True)
     #
-    # Registry entry: (table, id_col, ts_col, policy)
-    #   utc_canonical — Z-suffix or explicit offset required on post-contract rows;
-    #                   T-sep naive on post-contract row is a violation
-    #   utc_legacy_ok — space-sep accepted; just check parseability
+    # storage_type semantics:
+    #   utc_iso          — Z-suffix or explicit-offset TEXT; T-sep naive post-contract → violation
+    #   utc_space_legacy — space-sep TEXT known to be UTC; T-sep naive (non-space-sep) → violation
+    #   epoch_seconds    — REAL column; epoch_to_utc(float(val)), must be non-negative, not far-future
     _TIMESTAMP_REGISTRY = [
-        ("portfolio_brief_provenance", "brief_id",  "captured_at",  "utc_canonical"),
-        ("portfolio_brief_snapshots",  "id",         "captured_at",  "utc_canonical"),
-        ("ai_insights",                "day",        "generated_at", "utc_legacy_ok"),
-        # news_events.extracted_at: space-sep UTC written by news intelligence pipeline
-        ("news_events",                "event_id",   "extracted_at", "utc_legacy_ok"),
+        {"table": "portfolio_brief_provenance", "id_col": "brief_id",  "ts_col": "captured_at",  "storage_type": "utc_iso",          "monotonic": False},
+        {"table": "portfolio_brief_snapshots",  "id_col": "id",         "ts_col": "captured_at",  "storage_type": "utc_iso",          "monotonic": False},
+        {"table": "ai_insights",                "id_col": "day",        "ts_col": "generated_at", "storage_type": "utc_space_legacy", "monotonic": False},
+        {"table": "news_events",                "id_col": "event_id",   "ts_col": "extracted_at", "storage_type": "utc_space_legacy", "monotonic": False},
+        {"table": "recommendations",            "id_col": "id",         "ts_col": "created_at",   "storage_type": "epoch_seconds",    "monotonic": False},
+        {"table": "decision_episodes",          "id_col": "episode_id", "ts_col": "captured_at",  "storage_type": "epoch_seconds",    "monotonic": True},
     ]
     try:
-        from time_utils import parse_timestamp as _pts, now_utc as _now_utc
+        from time_utils import parse_timestamp as _pts, now_utc as _now_utc, epoch_to_utc as _epoch_to_utc
         from datetime import timedelta as _td
         _clock_skew = _td(minutes=5)
 
-        for table, id_col, ts_col, policy in _TIMESTAMP_REGISTRY:
+        for entry in _TIMESTAMP_REGISTRY:
+            table     = entry["table"]
+            id_col    = entry["id_col"]
+            ts_col    = entry["ts_col"]
+            storage   = entry["storage_type"]
+            monotonic = entry.get("monotonic", False)
+
             if not _table_exists(conn, table):
                 continue
-            # Sweep ALL rows (not just latest 50)
-            for row in conn.execute(
-                f"SELECT {id_col}, {ts_col} FROM {table} ORDER BY {ts_col}"
-            ).fetchall():
+
+            order_col = id_col if monotonic else ts_col
+            rows = conn.execute(
+                f"SELECT {id_col}, {ts_col} FROM {table} ORDER BY {order_col}"
+            ).fetchall()
+
+            prev_ep = None  # epoch monotonicity tracking
+
+            for row in rows:
                 ts_val = row[ts_col]
                 row_id = row[id_col]
                 prefix = f"[INV-T] {table}.{ts_col} {id_col}={row_id!r}"
 
-                # Required presence
-                if not ts_val:
+                if ts_val is None or ts_val == "":
                     violations.append(f"{prefix}: required timestamp is NULL or empty")
                     continue
 
-                # Parseability (space-sep still accepted via no legacy_utc needed — no T in sep)
-                try:
-                    parsed = _pts(ts_val, legacy_utc=True)
-                except ValueError as e:
-                    violations.append(f"{prefix}: timestamp {ts_val!r} failed to parse: {e}")
-                    continue
+                if storage == "epoch_seconds":
+                    try:
+                        ep = float(ts_val)
+                    except (ValueError, TypeError):
+                        violations.append(
+                            f"{prefix}: timestamp {ts_val!r} is not a valid epoch number"
+                        )
+                        continue
+                    if ep < 0:
+                        violations.append(
+                            f"{prefix}: epoch {ts_val!r} is negative — invalid timestamp"
+                        )
+                        continue
+                    try:
+                        parsed = _epoch_to_utc(ep)
+                    except Exception as exc:
+                        violations.append(
+                            f"{prefix}: epoch_to_utc({ts_val!r}) failed: {exc}"
+                        )
+                        continue
+                    if parsed > _now_utc() + _clock_skew:
+                        violations.append(
+                            f"{prefix}: epoch {ts_val!r} is more than 5 minutes in the future"
+                        )
+                        continue
+                    if monotonic:
+                        if prev_ep is not None and ep < prev_ep:
+                            violations.append(
+                                f"[INV-T mono] {table}.{ts_col} {id_col}={row_id!r}: "
+                                f"timestamp {ep!r} went backward from {prev_ep!r}"
+                            )
+                        prev_ep = ep
 
-                # Not unreasonably far in the future (clock-skew tolerance: 5 min)
-                if parsed > _now_utc() + _clock_skew:
-                    violations.append(
-                        f"{prefix}: timestamp {ts_val!r} is more than 5 minutes in the future"
-                    )
-                    continue
-
-                # utc_canonical policy: T-sep naive on post-contract rows is a violation
-                if policy == "utc_canonical":
+                elif storage == "utc_iso":
                     ts_str = str(ts_val)
-                    is_naive = "T" in ts_str and not ts_str.endswith("Z") and "+" not in ts_str and (
-                        len(ts_str) < 20 or ts_str[19] not in ("+", "-")
+                    # Match only proper YYYY-MM-DDTHH:MM strings, not arbitrary strings with a "T"
+                    is_t_sep_naive = (
+                        len(ts_str) >= 11
+                        and ts_str[4] == "-"
+                        and ts_str[7] == "-"
+                        and ts_str[10] == "T"
+                        and not ts_str.endswith("Z")
+                        and "+" not in ts_str
+                        and (len(ts_str) < 20 or ts_str[19] not in ("+", "-"))
                     )
-                    if is_naive:
+                    if is_t_sep_naive:
                         ts_dt = _parse_ts(ts_val)
                         if ts_dt and ts_dt >= _V2_DEPLOY_DT:
                             violations.append(
@@ -438,17 +483,52 @@ def run_invariants(conn: sqlite3.Connection) -> tuple[list[str], list[str]]:
                                 f"[INV-T legacy] {table}.{ts_col} {id_col}={row_id!r}: "
                                 f"pre-contract T-sep naive {ts_val!r}"
                             )
+                        continue
+                    try:
+                        parsed = _pts(ts_val)
+                    except ValueError as exc:
+                        violations.append(f"{prefix}: timestamp {ts_val!r} failed to parse: {exc}")
+                        continue
+                    if parsed > _now_utc() + _clock_skew:
+                        violations.append(
+                            f"{prefix}: timestamp {ts_val!r} is more than 5 minutes in the future"
+                        )
 
-                # utc_legacy_ok: space-sep is expected; just emit a debug note for new rows
-                elif policy == "utc_legacy_ok":
+                elif storage == "utc_space_legacy":
                     ts_str = str(ts_val)
-                    if " " in ts_str:
+                    is_space_sep = " " in ts_str and "T" not in ts_str
+                    if is_space_sep:
+                        try:
+                            parsed = _pts(ts_val, legacy_utc=True)
+                        except ValueError as exc:
+                            violations.append(
+                                f"{prefix}: legacy space-sep timestamp {ts_val!r} failed to parse: {exc}"
+                            )
+                            continue
+                        if parsed > _now_utc() + _clock_skew:
+                            violations.append(
+                                f"{prefix}: timestamp {ts_val!r} is more than 5 minutes in the future"
+                            )
+                            continue
                         ts_dt = _parse_ts(ts_val)
                         if ts_dt and ts_dt >= _V2_DEPLOY_DT:
                             warnings.append(
                                 f"[INV-T] {table}.{ts_col} {id_col}={row_id!r}: "
                                 f"post-contract row still using space-sep format {ts_val!r} "
                                 f"(Z-suffix preferred for new rows)"
+                            )
+                    else:
+                        # Non-space-sep in a legacy column (including T-sep naive): strict parse
+                        try:
+                            parsed = _pts(ts_val)
+                        except ValueError as exc:
+                            violations.append(
+                                f"{prefix}: timestamp {ts_val!r} failed to parse: {exc}"
+                            )
+                            continue
+                        if parsed > _now_utc() + _clock_skew:
+                            violations.append(
+                                f"{prefix}: timestamp {ts_val!r} is more than 5 minutes in the future"
                             )
 
     except ImportError:

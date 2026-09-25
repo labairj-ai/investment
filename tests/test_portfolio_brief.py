@@ -2141,3 +2141,102 @@ def test_invt_news_events_extracted_at_checked(tmp_path):
     assert not any("ev-good" in v for v in violations), (
         f"Valid space-sep news_events.extracted_at must not be a violation. Got: {violations}"
     )
+
+
+def _make_canary_conn_epoch(rec_rows=None, ep_rows=None):
+    """Minimal in-memory DB for epoch-seconds INV-T tests (0689)."""
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    # Standard tables (empty — canary skips missing tables via _table_exists)
+    conn.execute("CREATE TABLE portfolio_brief_provenance (brief_id TEXT, captured_at TEXT, brief_snapshot_json TEXT, briefing_output_json TEXT, source_refs_json TEXT)")
+    conn.execute("CREATE TABLE portfolio_brief_snapshots (id INTEGER PRIMARY KEY, captured_at TEXT, snapshot_json TEXT)")
+    conn.execute("CREATE TABLE ai_insights (day TEXT PRIMARY KEY, insight TEXT, generated_at TEXT)")
+    conn.execute("CREATE TABLE portfolio_brief_responses (brief_id TEXT, item_key TEXT, responded_at TEXT)")
+    # Epoch-seconds tables
+    conn.execute("CREATE TABLE recommendations (id INTEGER PRIMARY KEY, created_at REAL NOT NULL)")
+    conn.execute("CREATE TABLE decision_episodes (episode_id TEXT PRIMARY KEY, captured_at REAL NOT NULL)")
+    for row in (rec_rows or []):
+        conn.execute("INSERT INTO recommendations (id, created_at) VALUES (?,?)", row)
+    for row in (ep_rows or []):
+        conn.execute("INSERT INTO decision_episodes (episode_id, captured_at) VALUES (?,?)", row)
+    return conn
+
+
+# ── 0688: storage-type-specific parsing (no global legacy_utc=True) ──────────
+
+def test_invt_legacy_ok_t_sep_naive_is_violation(tmp_path):
+    """INV-T 0688: T-sep naive string in utc_space_legacy column → violation (strict parse fails)."""
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE portfolio_brief_provenance (brief_id TEXT, captured_at TEXT, brief_snapshot_json TEXT, briefing_output_json TEXT, source_refs_json TEXT)")
+    conn.execute("CREATE TABLE portfolio_brief_snapshots (id INTEGER PRIMARY KEY, captured_at TEXT, snapshot_json TEXT)")
+    conn.execute("CREATE TABLE ai_insights (day TEXT PRIMARY KEY, insight TEXT, generated_at TEXT)")
+    conn.execute("CREATE TABLE portfolio_brief_responses (brief_id TEXT, item_key TEXT, responded_at TEXT)")
+    conn.execute("CREATE TABLE news_events (event_id TEXT PRIMARY KEY, extracted_at TEXT)")
+    # T-sep naive is not space-sep, not Z-suffix, not explicit-offset → strict parse rejects it
+    conn.execute("INSERT INTO news_events VALUES (?,?)", ("ev-tsep", "2026-09-25T14:30:00"))
+    violations = _inv_t_violations(conn)
+    assert any("ev-tsep" in v and "INV-T" in v for v in violations), (
+        f"T-sep naive in utc_space_legacy column must be INV-T violation. Got: {violations}"
+    )
+
+
+def test_invt_explicit_offset_no_typeerror():
+    """INV-T 0688: explicit-offset timestamp in utc_iso column parses without TypeError."""
+    conn = _make_canary_conn_ts(
+        prov_rows=[("bid-offset", "2026-09-25T10:30:00+00:00", "{}", json.dumps({"brief_policy_version": "v2"}), "{}")]
+    )
+    violations = _inv_t_violations(conn)
+    assert not any("bid-offset" in v for v in violations), (
+        f"Explicit-offset +00:00 timestamp must parse cleanly. Got: {violations}"
+    )
+
+
+# ── 0689: epoch-seconds validation and monotonicity ───────────────────────────
+
+def test_invt_epoch_negative_is_violation():
+    """INV-T 0689: negative epoch in recommendations.created_at → violation."""
+    conn = _make_canary_conn_epoch(rec_rows=[(1, -1.0)])
+    violations = _inv_t_violations(conn)
+    assert any("INV-T" in v and "negative" in v for v in violations), (
+        f"Negative epoch must be INV-T violation. Got: {violations}"
+    )
+
+
+def test_invt_epoch_far_future_is_violation():
+    """INV-T 0689: epoch more than 5 min in the future → violation."""
+    import time as _time
+    far_future_ep = _time.time() + 3600  # 1 hour from now
+    conn = _make_canary_conn_epoch(rec_rows=[(2, far_future_ep)])
+    violations = _inv_t_violations(conn)
+    assert any("INV-T" in v and "future" in v for v in violations), (
+        f"Far-future epoch must be INV-T violation. Got: {violations}"
+    )
+
+
+def test_invt_epoch_valid_passes():
+    """INV-T 0689: valid recent epoch in recommendations.created_at → no violation."""
+    import time as _time
+    ep = _time.time() - 60  # 1 minute ago
+    conn = _make_canary_conn_epoch(rec_rows=[(3, ep)])
+    violations = _inv_t_violations(conn)
+    assert not any("recommendations" in v for v in violations), (
+        f"Valid recent epoch must not be INV-T violation. Got: {violations}"
+    )
+
+
+def test_invt_monotonicity_backward_is_violation():
+    """INV-T 0689: decision_episodes.captured_at going backward → [INV-T mono] violation."""
+    import time as _time
+    base = _time.time() - 120
+    conn = _make_canary_conn_epoch(
+        ep_rows=[
+            ("ep-1", base),
+            ("ep-2", base + 60),
+            ("ep-3", base + 30),  # went backward from ep-2
+        ]
+    )
+    violations = _inv_t_violations(conn)
+    assert any("INV-T mono" in v and "ep-3" in v for v in violations), (
+        f"Backward epoch in monotonic column must be [INV-T mono] violation. Got: {violations}"
+    )

@@ -115,9 +115,9 @@ def build_portfolio_snapshot():
             weight_pct=pdata.get("weight_pct", 0.0),
         ))
 
-    from datetime import date as _date
+    from time_utils import today_eastern as _today_eastern
     return PortfolioSnapshot(
-        date=_date.today().isoformat(),
+        date=_today_eastern().isoformat(),
         total_value=total_value,
         holdings=holdings,
         layer_weights=layer_weights,

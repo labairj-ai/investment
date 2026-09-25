@@ -5,9 +5,8 @@ Callable from systemd or from portfolio_ai.run_news_maintenance().
 """
 import sqlite3
 import sys
-from datetime import date
 from pathlib import Path
-from time_utils import now_utc_space
+from time_utils import now_utc_space, today_eastern
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 _DB_PATH = PROJECT_DIR / "out" / "investment.db"
@@ -33,7 +32,7 @@ def run_daily_sweep(day=None) -> dict:
     Returns {"status", "day", "active", "fading", "resolved"}.
     """
     if day is None:
-        day = date.today().isoformat()
+        day = today_eastern().isoformat()
     if not _DB_PATH.exists():
         return {"status": "skipped", "reason": "db_not_found", "day": day,
                 "active": 0, "fading": 0, "resolved": 0}

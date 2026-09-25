@@ -16,10 +16,11 @@ PROHIBITED = [
     (re.compile(r'\b\w*\.utcnow\(\)'), "utcnow() — use now_utc() from time_utils"),
     (re.compile(r'\butcfromtimestamp\('), "utcfromtimestamp() — use epoch_to_utc() from time_utils"),
     (re.compile(r'timezone\(timedelta\(hours=-[45]\)\)'), "fixed Eastern offset — use TZ_EASTERN from time_utils"),
+    (re.compile(r'\bdate\.today\(\)'), "date.today() — use today_eastern() from time_utils"),
 ]
 
 # Separate list for patterns that need comment/string context exclusion
-_EST_EDT_PATTERN = re.compile(r'(?<![#\'"a-zA-Z])("EST"|"EDT")')
+_EST_EDT_PATTERN = re.compile(r'''(?<![#\'"a-zA-Z])(?:"EST"|'EST'|"EDT"|'EDT')''')
 
 
 def _iter_production_py():
@@ -158,15 +159,14 @@ def test_no_est_edt_timezone_strings():
             text = path.read_text(errors="replace")
         except OSError:
             continue
-        for line_text in text.splitlines():
+        for lineno, line_text in enumerate(text.splitlines(), start=1):
             stripped = line_text.strip()
             if stripped.startswith("#"):
                 continue
             for m in _EST_EDT_PATTERN.finditer(line_text):
-                lineno = text[: text.find(line_text)].count("\n") + 1
                 rel = path.relative_to(PROJECT)
                 violations.append(
-                    f"{rel}:{lineno}: hardcoded {m.group(1)!r} timezone string — "
+                    f"{rel}:{lineno}: hardcoded {m.group()!r} timezone string — "
                     "use format_eastern() from time_utils for abbreviation"
                 )
     assert not violations, (
@@ -175,19 +175,55 @@ def test_no_est_edt_timezone_strings():
     )
 
 
+def test_guard_catches_date_today():
+    """Positive failure test: date.today() in non-test code is caught (0685)."""
+    code_direct = "today = date.today()\n"
+    code_module  = "today = datetime.date.today()\n"
+    found_direct = [m for pat, _ in PROHIBITED for m in pat.finditer(code_direct)]
+    found_module = [m for pat, _ in PROHIBITED for m in pat.finditer(code_module)]
+    assert found_direct, "Guard should catch date.today()"
+    assert found_module, "Guard should catch datetime.date.today()"
+
+
+def test_guard_portfolio_ai_clean():
+    """Integration: portfolio_ai.py should have zero date.today() calls after 0685."""
+    portfolio_ai = PROJECT / "portfolio_ai.py"
+    if not portfolio_ai.exists():
+        return
+    text = portfolio_ai.read_text(errors="replace")
+    date_today_pat = re.compile(r'\bdate\.today\(\)')
+    matches = list(date_today_pat.finditer(text))
+    assert not matches, (
+        "portfolio_ai.py still has date.today() calls:\n"
+        + "\n".join(f"  line {text[:m.start()].count(chr(10))+1}" for m in matches)
+    )
+
+
 def test_guard_catches_est_edt_strings():
-    """Positive failure test: EST/EDT strings in non-comment code are caught."""
+    """Positive failure test: EST/EDT double-quoted strings in non-comment code are caught."""
     code_est = 'tz = pytz.timezone("EST")\n'
     code_edt = 'label = "EDT"\n'
-    assert _EST_EDT_PATTERN.search(code_est), "Guard should catch hardcoded 'EST'"
-    assert _EST_EDT_PATTERN.search(code_edt), "Guard should catch hardcoded 'EDT'"
+    assert _EST_EDT_PATTERN.search(code_est), "Guard should catch hardcoded double-quoted EST"
+    assert _EST_EDT_PATTERN.search(code_edt), "Guard should catch hardcoded double-quoted EDT"
+
+
+def test_guard_catches_est_edt_single_quote():
+    """Positive failure test: EST/EDT single-quoted strings are also caught (0687)."""
+    code_est_sq = "tz = pytz.timezone('EST')\n"
+    code_edt_sq = "label = 'EDT'\n"
+    assert _EST_EDT_PATTERN.search(code_est_sq), "Guard should catch single-quoted 'EST'"
+    assert _EST_EDT_PATTERN.search(code_edt_sq), "Guard should catch single-quoted 'EDT'"
 
 
 def test_guard_est_edt_allows_comments():
-    """Pattern does not flag EST/EDT appearing in comment lines (verified by test logic)."""
-    comment_line = "# America/New_York displays as EST or EDT depending on DST\n"
-    # The scan skips lines that start with # after stripping — this tests the pattern itself
-    # does not match inside strings-that-are-not-tz-strings (pattern anchors on quote chars)
+    """Comment lines (# prefix) are excluded from EST/EDT scanning by the scan loop (0687)."""
+    # Pattern can match 'EST' even in a comment string — comment exclusion is handled by the
+    # scan loop's stripped.startswith("#") guard, not the regex itself.
     in_comment = "# tz = 'EST'\n"
-    # Pattern won't match because '#' precedes the quote (negative lookbehind includes #)
-    assert not _EST_EDT_PATTERN.search(in_comment), "Should not flag EST/EDT inside comments"
+    violations = []
+    for _lineno, line_text in enumerate(in_comment.splitlines(), start=1):
+        if line_text.strip().startswith("#"):
+            continue
+        for m in _EST_EDT_PATTERN.finditer(line_text):
+            violations.append(m.group())
+    assert not violations, "Scan loop should skip EST/EDT in comment lines"

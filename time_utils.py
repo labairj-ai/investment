@@ -75,7 +75,11 @@ def parse_timestamp(s, *, legacy_utc: bool = False) -> datetime:
     """
     if isinstance(s, datetime):
         if s.tzinfo is None:
-            # Legacy naive datetimes from this codebase were written as UTC
+            if not legacy_utc:
+                raise ValueError(
+                    "parse_timestamp: naive datetime object rejected. "
+                    "Add tzinfo or pass legacy_utc=True with a justification comment."
+                )
             return s.replace(tzinfo=TZ_UTC)
         return s.astimezone(TZ_UTC)
     if not isinstance(s, str) or not s:

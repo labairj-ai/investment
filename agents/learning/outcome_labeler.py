@@ -14,6 +14,7 @@ from __future__ import annotations
 import sys
 import time
 from datetime import date, datetime, timedelta, timezone
+from time_utils import today_eastern
 
 import agent_db
 
@@ -306,7 +307,7 @@ def label_mature_episodes(
     Returns {"episodes_checked": n, "horizons_written": m}.
     """
     cutoff = time.time() - (min_age_days * 86400)
-    today  = date.today().isoformat()
+    today  = today_eastern().isoformat()
 
     conn = agent_db._connect()
     episodes = conn.execute(
@@ -394,7 +395,7 @@ def label_risk_counterfactuals(
     Returns {"rejections_checked": n, "horizons_written": m}.
     """
     cutoff = time.time() - (min_age_days * 86400)
-    today  = date.today().isoformat()
+    today  = today_eastern().isoformat()
 
     conn = agent_db._connect()
     base_rows = conn.execute(
@@ -490,7 +491,7 @@ def label_trade_outcomes(
 
     Returns {"fills_checked": n, "horizons_written": m}.
     """
-    today = date.today().isoformat()
+    today = today_eastern().isoformat()
     conn = agent_db._connect()
     rows = conn.execute(
         """SELECT to2.id, to2.fill_id, to2.ticker, to2.fill_date, to2.fill_price,

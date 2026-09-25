@@ -82,15 +82,16 @@ def _check_orphan_observations(conn) -> dict:
 
 def _check_unlabeled_mature(conn) -> dict:
     """PAPER_ACTIVE observations past their 63-session maturity with no outcome."""
-    from datetime import date, timedelta
+    from datetime import timedelta
+    from time_utils import today_eastern as _today_eastern
     from trade_engine.market_calendar import nth_trading_session_before, is_trading_day
 
-    today = date.today().isoformat()
+    today = _today_eastern().isoformat()
     # Cutoff: episodes captured on or before this date should have 63 sessions elapsed
     try:
         cutoff = nth_trading_session_before(today, 63)
     except Exception:
-        cutoff = (date.today() - timedelta(days=95)).isoformat()
+        cutoff = (_today_eastern() - timedelta(days=95)).isoformat()
 
     rows = conn.execute(
         """SELECT COUNT(*) FROM model_observations

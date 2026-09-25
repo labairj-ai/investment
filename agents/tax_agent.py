@@ -13,6 +13,7 @@ Two recommendation types:
 import datetime
 import sqlite3
 from pathlib import Path
+from time_utils import today_eastern
 
 import agent_db
 import ollama_client
@@ -469,7 +470,7 @@ def run_tax_agent(ctx: AgentContext) -> list[Recommendation]:
         return []
 
     price_map = {h.ticker: h.current_price for h in ctx.snapshot.holdings}
-    today = datetime.date.today()
+    today = today_eastern()
     year = str(today.year)
     ytd_st_gains = _ytd_st_gains(year)
     ytd_lt_gains = _ytd_lt_gains(year)

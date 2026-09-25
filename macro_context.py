@@ -15,6 +15,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
 from zoneinfo import ZoneInfo
+from time_utils import today_eastern
 
 
 @dataclass
@@ -51,7 +52,7 @@ def _is_stale(series_id: str, observation_date: Optional[str]) -> bool:
         from datetime import date as _date
         obs = _date.fromisoformat(observation_date)
         cadence = _SERIES_CADENCE_DAYS.get(series_id, _DEFAULT_CADENCE_DAYS)
-        return (_date.today() - obs).days > cadence
+        return (today_eastern() - obs).days > cadence
     except Exception:
         return True
 
@@ -611,7 +612,7 @@ def _fetch_congress_api_bills(api_key: str, days_back: int = 30, max_bills: int 
     CRS summaries fetched for up to 8 bills with hasSummary=true."""
     if not api_key:
         return []
-    from_date = (date.today() - timedelta(days=days_back)).isoformat() + "T00:00:00Z"
+    from_date = (today_eastern() - timedelta(days=days_back)).isoformat() + "T00:00:00Z"
     url = (
         f"{CONGRESS_API_BASE}/bill"
         f"?fromDateTime={from_date}"
@@ -624,7 +625,7 @@ def _fetch_congress_api_bills(api_key: str, days_back: int = 30, max_bills: int 
         req = urllib.request.Request(url, headers={"User-Agent": "investment-ai/1.0"})
         with urllib.request.urlopen(req, timeout=12) as r:
             data = json.loads(r.read())
-        congress_num = (date.today().year - 1789) // 2 + 1
+        congress_num = (today_eastern().year - 1789) // 2 + 1
         for b in data.get("bills", []):
             btype  = b.get("type", "").lower()
             bnum   = str(b.get("number", ""))
@@ -860,7 +861,7 @@ def fetch(force: bool = False) -> dict:
     }
 
     ctx = {
-        "date":          date.today().isoformat(),
+        "date":          today_eastern().isoformat(),
         # VIX
         "vix":           vix_price,
         "vix_chg":       vix_chg,

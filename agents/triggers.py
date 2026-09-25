@@ -14,6 +14,7 @@ import math
 import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
+from time_utils import today_eastern
 
 from .contracts import PortfolioSnapshot
 
@@ -64,7 +65,7 @@ def _load_today_changes(tickers: list[str]) -> dict[str, float]:
     conn = _connect()
     if not conn:
         return {}
-    today = datetime.date.today().isoformat()
+    today = today_eastern().isoformat()
     rows = conn.execute(
         f"SELECT ticker, change_pct FROM holding_day WHERE day=? AND ticker IN ({','.join('?'*len(tickers))})",
         (today, *tickers),
@@ -113,7 +114,7 @@ def _load_open_cc_positions() -> list[dict]:
     conn = _connect()
     if not conn:
         return []
-    today = datetime.date.today()
+    today = today_eastern()
     rows = conn.execute(
         "SELECT ticker, contracts, strike, expiry FROM cc_positions WHERE status='open'"
     ).fetchall()
@@ -188,7 +189,7 @@ def detect_triggers(snapshot: PortfolioSnapshot) -> list[TriggerEvent]:
 
     triggers: list[TriggerEvent] = []
     tickers = [h.ticker for h in snapshot.holdings]
-    today = datetime.date.today()
+    today = today_eastern()
 
     # ── Layer drift → Portfolio Guardian ──────────────────────────────────────
     for layer_num, weight_pct in snapshot.layer_weights.items():

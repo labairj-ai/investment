@@ -13,6 +13,7 @@ import json
 import sqlite3
 from collections import defaultdict
 from datetime import date as _date, datetime as _dt
+from time_utils import today_eastern
 
 import agent_db
 import ollama_client
@@ -128,7 +129,7 @@ def _run_briefing_llm(brief_state: dict) -> dict:
     (plus a placeholder portfolio_state for _apply_brief_policy to normalize),
     or a deterministic fallback on failure.
     """
-    date_str = _date.today().isoformat()
+    date_str = today_eastern().isoformat()
 
     attention = brief_state.get("attention_items", [])
     opps = brief_state.get("opportunities", [])
@@ -190,7 +191,7 @@ def _run_briefing_llm(brief_state: dict) -> dict:
 
 
 def run_briefing_agent(ctx: AgentContext) -> list[Recommendation]:
-    date_str = _date.today().isoformat()
+    date_str = today_eastern().isoformat()
 
     # Use create_portfolio_brief() — the single path that builds state, runs LLM,
     # and persists both ai_insights and portfolio_brief_provenance atomically.

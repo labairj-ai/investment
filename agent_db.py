@@ -10,7 +10,7 @@ import sqlite3
 import subprocess
 import time
 from pathlib import Path
-from time_utils import now_utc_iso
+from time_utils import now_utc_iso, today_eastern, TZ_EASTERN
 
 DB_PATH = Path(__file__).resolve().parent / "out" / "investment.db"
 
@@ -2019,7 +2019,7 @@ def get_lt_lots_count(ticker: str) -> int:
     """
     from datetime import date as _date
     from tax_utils import is_long_term as _is_lt
-    today = _date.today()
+    today = today_eastern()
     conn = _connect()
     try:
         rows = conn.execute(
@@ -2038,8 +2038,7 @@ def get_ytd_realized_gain(ticker: str) -> float:
 
     Returns 0.0 if sell_transactions table doesn't exist or no YTD sales.
     """
-    from datetime import date as _date
-    ytd_start = _date.today().replace(month=1, day=1).isoformat()
+    ytd_start = today_eastern().replace(month=1, day=1).isoformat()
     conn = _connect()
     try:
         row = conn.execute(
@@ -2062,7 +2061,7 @@ def get_st_lots_count(ticker: str) -> int:
     """
     from datetime import date as _date
     from tax_utils import is_long_term as _is_lt
-    today = _date.today()
+    today = today_eastern()
     conn = _connect()
     try:
         rows = conn.execute(
@@ -2083,7 +2082,7 @@ def get_near_lt_lots_count(ticker: str, within_days: int = 45) -> int:
     """
     from datetime import date as _date
     from tax_utils import is_long_term as _is_lt, days_until_lt as _days_lt
-    today = _date.today()
+    today = today_eastern()
     conn = _connect()
     try:
         rows = conn.execute(
@@ -2110,8 +2109,7 @@ def get_ytd_st_realized_gain(ticker: str) -> float:
 
     Returns 0.0 if table absent or no YTD ST sales.
     """
-    from datetime import date as _date
-    ytd_start = _date.today().replace(month=1, day=1).isoformat()
+    ytd_start = today_eastern().replace(month=1, day=1).isoformat()
     conn = _connect()
     try:
         row = conn.execute(
@@ -2131,8 +2129,7 @@ def get_ytd_lt_realized_gain(ticker: str) -> float:
 
     Returns 0.0 if table absent or no YTD LT sales.
     """
-    from datetime import date as _date
-    ytd_start = _date.today().replace(month=1, day=1).isoformat()
+    ytd_start = today_eastern().replace(month=1, day=1).isoformat()
     conn = _connect()
     try:
         row = conn.execute(
@@ -3340,8 +3337,7 @@ def upsert_learned_preference(
 ) -> None:
     """Insert or update a learned preference row."""
     import json as _json
-    from datetime import date as _date
-    today = _date.today().isoformat()
+    today = today_eastern().isoformat()
     confidence = 100.0 * sample_size / (sample_size + 10)
     evidence_json = _json.dumps(evidence) if evidence else None
     conn = _connect()
@@ -3509,9 +3505,9 @@ def get_todays_findings() -> dict:
                                 "critic_objection", "critic_confidence_adj"}, ...]
         }
     """
-    import time as _time
-    from datetime import date as _date
-    today_start = _time.mktime(_date.today().timetuple())
+    from datetime import datetime as _dt_cls
+    _today_et = today_eastern()
+    today_start = _dt_cls(_today_et.year, _today_et.month, _today_et.day, tzinfo=TZ_EASTERN).timestamp()
     today_end = today_start + 86400
 
     conn = _connect()

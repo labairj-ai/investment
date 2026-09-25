@@ -40,9 +40,9 @@ def _build_macro_snapshot(ticker: str, conn, captured_at=None) -> str:
 def _build_news_state(ticker: str, conn) -> Optional[str]:
     """Freeze today's news intelligence state for the ticker (0586+0594, observe-only)."""
     try:
-        import datetime
         from agents.news.intelligence import NEWS_INTELLIGENCE_VERSION, PROMPT_VERSION as _NP_VER
-        today = datetime.date.today().isoformat()
+        from time_utils import today_eastern as _today_eastern
+        today = _today_eastern().isoformat()
         rows = conn.execute(
             "SELECT event_type, direction, magnitude, signal_strength, portfolio_priority, "
             "confirmation_class, thesis_relevance, pillar_name, trend_status, "

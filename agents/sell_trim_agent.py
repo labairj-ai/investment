@@ -28,6 +28,7 @@ import datetime
 import json
 import sqlite3
 from pathlib import Path
+from time_utils import today_eastern
 
 import agent_db
 from agent_db import CAND_OPPORTUNITY_STATUSES
@@ -722,7 +723,7 @@ def _tax_note(ticker: str, current_price: float) -> str:
     conn.close()
     if not lots:
         return "no lots on record"
-    today = datetime.date.today()
+    today = today_eastern()
     total_gain = 0.0
     total_tax  = 0.0
     lt_shares  = 0.0

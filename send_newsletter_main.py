@@ -17,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
+from time_utils import today_eastern
 
 import pandas as pd
 import yfinance as yf
@@ -150,7 +151,7 @@ def _is_market_holiday(check_date=None) -> bool:
     Covers US federal holidays (via USFederalHolidayCalendar) plus NYSE-specific
     closures: Good Friday (not a federal holiday but NYSE always closes).
     """
-    d = check_date or date.today()
+    d = check_date or today_eastern()
     if d.weekday() >= 5:
         return True
     if d == _good_friday(d.year):
@@ -237,7 +238,7 @@ def fetch_last_two_closes(tickers: list[str]) -> pd.DataFrame:
 def fetch_calendar_events(tickers: list[str]) -> tuple[list, list]:
     """Parallel yfinance calendar fetch. Returns (earn_alerts, exdiv_alerts)."""
     warnings.filterwarnings("ignore")
-    today  = date.today()
+    today  = today_eastern()
     window = today + timedelta(days=EVENTS_WINDOW)
     earn_alerts, exdiv_alerts = [], []
     import threading
