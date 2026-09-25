@@ -39,6 +39,11 @@ KNOWN_LEGACY_VERSIONS: set = {None, "v1"}
 # Rows with missing/unknown version captured at or after this timestamp → UNKNOWN_VERSION violation.
 V2_DEPLOY_TIMESTAMP = "2026-09-24T23:49:21"
 
+# DB timestamp contract (all timestamps stored as UTC, no timezone suffix):
+# portfolio_brief_provenance.captured_at = UTC
+# portfolio_brief_snapshots.captured_at  = UTC
+# ai_insights.generated_at               = UTC
+
 
 def _parse_ts(ts_str: str | None) -> _datetime | None:
     """Parse UTC ISO timestamp to datetime; handles Z suffix and space separator."""

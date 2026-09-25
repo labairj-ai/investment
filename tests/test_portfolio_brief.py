@@ -1864,6 +1864,43 @@ def test_canary_inv9b_ai_insights_legacy_no_violation():
     )
 
 
+def test_canary_inv9b_post_cutover_utc_missing_version_is_violation():
+    """0667: post-cutover UTC generated_at + missing version → INV-9b violation."""
+    from datetime import datetime as _dt, timedelta
+    base = _dt.fromisoformat(canary_production_state.V2_DEPLOY_TIMESTAMP)
+    post_utc = (base + timedelta(seconds=1)).strftime("%Y-%m-%d %H:%M:%S")
+    conn = _make_canary_conn()
+    insight = json.dumps({"portfolio_state": "STABLE"})  # no version
+    conn.execute(
+        "INSERT INTO ai_insights (day, insight, generated_at) VALUES (?,?,?)",
+        ("2026-09-25", insight, post_utc),
+    )
+    violations, _ = canary_production_state.run_invariants(conn)
+    conn.close()
+    assert any("INV-9b" in v for v in violations), (
+        f"Post-cutover UTC ai_insights missing version must produce INV-9b violation. Got: {violations}"
+    )
+
+
+def test_canary_inv9b_pre_cutover_utc_missing_version_is_legacy():
+    """0667: pre-cutover UTC generated_at + missing version → legacy warning, not violation."""
+    from datetime import datetime as _dt, timedelta
+    base = _dt.fromisoformat(canary_production_state.V2_DEPLOY_TIMESTAMP)
+    pre_utc = (base - timedelta(seconds=1)).strftime("%Y-%m-%d %H:%M:%S")
+    conn = _make_canary_conn()
+    insight = json.dumps({"portfolio_state": "ATTENTION"})  # no version
+    conn.execute(
+        "INSERT INTO ai_insights (day, insight, generated_at) VALUES (?,?,?)",
+        ("2026-09-24", insight, pre_utc),
+    )
+    violations, _ = canary_production_state.run_invariants(conn)
+    conn.close()
+    inv9b_violations = [v for v in violations if "INV-9b" in v]
+    assert inv9b_violations == [], (
+        f"Pre-cutover UTC ai_insights missing version must not produce INV-9b violation. Got: {inv9b_violations}"
+    )
+
+
 # ── 0665: Complete state-contract tests ───────────────────────────────────────
 
 

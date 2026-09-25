@@ -3190,7 +3190,7 @@ def create_portfolio_brief(conn: sqlite3.Connection, force: bool = False) -> dic
     Returns {"brief": briefing_output, "brief_id": brief_id, "brief_state": brief_state}.
     """
     import uuid as _uuid
-    from datetime import datetime as _dt2
+    from datetime import datetime as _dt2, timezone as _tz2
 
     brief_state = build_portfolio_brief_state(conn)
 
@@ -3200,7 +3200,8 @@ def create_portfolio_brief(conn: sqlite3.Connection, force: bool = False) -> dic
 
     brief_id = str(_uuid.uuid4())
     today = date.today().isoformat()
-    now_str = _dt2.now().strftime("%Y-%m-%d %H:%M:%S")
+    # DB timestamp contract: generated_at is UTC (matches portfolio_brief_provenance.captured_at)
+    now_str = _dt2.now(_tz2.utc).strftime("%Y-%m-%d %H:%M:%S")
 
     source_refs = _build_source_refs(brief_state)
     captured_at_str = brief_state.get("captured_at", now_str)
