@@ -1749,7 +1749,7 @@ def test_canary_missing_version_new_record_is_violation():
     """Missing brief_policy_version on a post-v2-deploy record → INV-9 violation."""
     snapshot = json.dumps({"brief_health": "HEALTHY", "attention_items": []})
     output = json.dumps({"portfolio_state": "STABLE"})  # no brief_policy_version
-    # captured AFTER V2_DEPLOY_TIMESTAMP (2026-09-24T19:26:00)
+    # captured AFTER V2_DEPLOY_TIMESTAMP (2026-09-24T23:49:21)
     conn = _make_canary_conn([("bv-new-missing", "2026-09-25T00:00:00", snapshot, output, "[]")])
     violations, _ = canary_production_state.run_invariants(conn)
     conn.close()
@@ -1767,6 +1767,100 @@ def test_canary_unknown_version_is_violation():
     conn.close()
     assert any("bv-v99" in v for v in violations), (
         f"Unknown version 'v99' must produce an INV-9 violation. Got: {violations}"
+    )
+
+
+# ── 0666: Boundary precision and INV-9b ──────────────────────────────────────
+
+
+def test_canary_classification_boundary_one_second_before():
+    """One second before V2_DEPLOY_TIMESTAMP: missing version → LEGACY, no INV-9 violation."""
+    from datetime import datetime, timedelta
+    base = datetime.fromisoformat(canary_production_state.V2_DEPLOY_TIMESTAMP)
+    before_ts = (base - timedelta(seconds=1)).isoformat()
+    snapshot = json.dumps({"brief_health": "HEALTHY", "attention_items": []})
+    output = json.dumps({"portfolio_state": "STABLE"})  # no brief_policy_version
+    conn = _make_canary_conn([("bv-before", before_ts, snapshot, output, "[]")])
+    violations, _ = canary_production_state.run_invariants(conn)
+    conn.close()
+    inv9_violations = [v for v in violations if "bv-before" in v and "INV-9" in v]
+    assert inv9_violations == [], (
+        f"One second before cutover must be LEGACY (no INV-9 violation). Got: {inv9_violations}"
+    )
+
+
+def test_canary_classification_boundary_exactly_at():
+    """Exactly at V2_DEPLOY_TIMESTAMP: missing version → UNKNOWN_VERSION violation."""
+    snapshot = json.dumps({"brief_health": "HEALTHY", "attention_items": []})
+    output = json.dumps({"portfolio_state": "STABLE"})  # no brief_policy_version
+    conn = _make_canary_conn([
+        ("bv-at", canary_production_state.V2_DEPLOY_TIMESTAMP, snapshot, output, "[]")
+    ])
+    violations, _ = canary_production_state.run_invariants(conn)
+    conn.close()
+    assert any("bv-at" in v for v in violations), (
+        f"Missing version exactly at cutover must be INV-9 violation. Got: {violations}"
+    )
+
+
+def test_canary_classification_boundary_one_second_after():
+    """One second after V2_DEPLOY_TIMESTAMP: missing version → UNKNOWN_VERSION violation."""
+    from datetime import datetime, timedelta
+    base = datetime.fromisoformat(canary_production_state.V2_DEPLOY_TIMESTAMP)
+    after_ts = (base + timedelta(seconds=1)).isoformat()
+    snapshot = json.dumps({"brief_health": "HEALTHY", "attention_items": []})
+    output = json.dumps({"portfolio_state": "STABLE"})  # no brief_policy_version
+    conn = _make_canary_conn([("bv-after", after_ts, snapshot, output, "[]")])
+    violations, _ = canary_production_state.run_invariants(conn)
+    conn.close()
+    assert any("bv-after" in v for v in violations), (
+        f"Missing version one second after cutover must be INV-9 violation. Got: {violations}"
+    )
+
+
+def test_canary_inv9b_ai_insights_unknown_version():
+    """INV-9b: ai_insights row with unrecognized brief_policy_version → violation."""
+    conn = _make_canary_conn()
+    insight = json.dumps({"brief_policy_version": "v99", "portfolio_state": "STABLE"})
+    conn.execute(
+        "INSERT INTO ai_insights (day, insight, generated_at) VALUES (?,?,?)",
+        ("2026-09-25", insight, "2026-09-25 00:00:00"),
+    )
+    violations, _ = canary_production_state.run_invariants(conn)
+    conn.close()
+    assert any("INV-9b" in v for v in violations), (
+        f"Unknown version 'v99' in ai_insights must produce INV-9b violation. Got: {violations}"
+    )
+
+
+def test_canary_inv9b_ai_insights_missing_version_post_deploy():
+    """INV-9b: ai_insights row missing brief_policy_version after deploy → violation."""
+    conn = _make_canary_conn()
+    insight = json.dumps({"portfolio_state": "STABLE"})  # no version
+    conn.execute(
+        "INSERT INTO ai_insights (day, insight, generated_at) VALUES (?,?,?)",
+        ("2026-09-25", insight, "2026-09-25 00:00:00"),
+    )
+    violations, _ = canary_production_state.run_invariants(conn)
+    conn.close()
+    assert any("INV-9b" in v for v in violations), (
+        f"Missing version in post-deploy ai_insights must produce INV-9b violation. Got: {violations}"
+    )
+
+
+def test_canary_inv9b_ai_insights_legacy_no_violation():
+    """INV-9b: pre-v2 ai_insights row missing version → LEGACY warning, not violation."""
+    conn = _make_canary_conn()
+    insight = json.dumps({"portfolio_state": "ATTENTION"})  # no version, pre-v2
+    conn.execute(
+        "INSERT INTO ai_insights (day, insight, generated_at) VALUES (?,?,?)",
+        ("2026-09-24", insight, "2026-09-24 12:00:00"),
+    )
+    violations, warnings = canary_production_state.run_invariants(conn)
+    conn.close()
+    inv9b_violations = [v for v in violations if "INV-9b" in v]
+    assert inv9b_violations == [], (
+        f"Pre-v2 ai_insights row must not produce INV-9b violation. Got: {inv9b_violations}"
     )
 
 

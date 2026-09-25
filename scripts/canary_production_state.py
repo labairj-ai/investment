@@ -18,6 +18,7 @@ import argparse
 import json
 import sqlite3
 import sys
+from datetime import datetime as _datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -32,10 +33,24 @@ CURRENT_POLICY_VERSION = BRIEF_POLICY_VERSION  # "v2"
 # Versions that existed before v2; rows with these versions are historical legacy.
 KNOWN_LEGACY_VERSIONS: set = {None, "v1"}
 
-# UTC timestamp when BRIEF_POLICY_VERSION="v2" was first deployed to production.
-# Rows captured before this timestamp with a missing/None version → LEGACY (historical).
-# Rows captured after this timestamp with a missing/unknown version → UNKNOWN_VERSION violation.
-V2_DEPLOY_TIMESTAMP = "2026-09-24T19:26:00"
+# UTC timestamp of commit 17cd1bb — the first commit containing BRIEF_POLICY_VERSION="v2".
+# All 11 production rows existing at that time have captured_at before this value.
+# Rows with missing/None version captured before this timestamp → LEGACY (historical).
+# Rows with missing/unknown version captured at or after this timestamp → UNKNOWN_VERSION violation.
+V2_DEPLOY_TIMESTAMP = "2026-09-24T23:49:21"
+
+
+def _parse_ts(ts_str: str | None) -> _datetime | None:
+    """Parse UTC ISO timestamp to datetime; handles Z suffix and space separator."""
+    if not ts_str:
+        return None
+    try:
+        return _datetime.fromisoformat(ts_str.rstrip("Z"))
+    except ValueError:
+        return None
+
+
+_V2_DEPLOY_DT: _datetime = _parse_ts(V2_DEPLOY_TIMESTAMP)  # type: ignore[assignment]
 
 
 # ── Independent v2 policy oracle ────────────────────────────────────────────
@@ -81,8 +96,10 @@ def _row_classification(briefing_output: dict, captured_at: str) -> str:
     version = briefing_output.get("brief_policy_version")
     if version == CURRENT_POLICY_VERSION:
         return "CURRENT"
-    if version in KNOWN_LEGACY_VERSIONS and (captured_at or "") < V2_DEPLOY_TIMESTAMP:
-        return "LEGACY"
+    if version in KNOWN_LEGACY_VERSIONS:
+        ts = _parse_ts(captured_at)
+        if ts is not None and ts < _V2_DEPLOY_DT:
+            return "LEGACY"
     return "UNKNOWN_VERSION"
 
 
@@ -321,6 +338,28 @@ def run_invariants(conn: sqlite3.Connection) -> tuple[list[str], list[str]]:
                 violations.append(
                     f"[INV-9] brief_id={row['brief_id']} captured_at={row['captured_at']}: "
                     f"unrecognized or missing brief_policy_version={version!r} on post-v2 record "
+                    f"(expected {CURRENT_POLICY_VERSION!r} or a known legacy version before {V2_DEPLOY_TIMESTAMP})"
+                )
+
+    # ── Invariant 9b: fail-closed version classification for ai_insights ────────
+    # Mirrors INV-9 for the ai_insights table.  The same briefing_output JSON
+    # (including brief_policy_version) is written atomically to both tables, so
+    # divergence here indicates a persistence bug rather than a policy defect.
+    if _table_exists(conn, "ai_insights"):
+        rows = conn.execute(
+            "SELECT day, insight, generated_at FROM ai_insights"
+        ).fetchall()
+        for row in rows:
+            try:
+                insight = json.loads(row["insight"] or "{}")
+            except (json.JSONDecodeError, TypeError):
+                continue
+            classification = _row_classification(insight, row["generated_at"] or "")
+            if classification == "UNKNOWN_VERSION":
+                version = insight.get("brief_policy_version")
+                violations.append(
+                    f"[INV-9b] day={row['day']} generated_at={row['generated_at']}: "
+                    f"unrecognized or missing brief_policy_version={version!r} in ai_insights "
                     f"(expected {CURRENT_POLICY_VERSION!r} or a known legacy version before {V2_DEPLOY_TIMESTAMP})"
                 )
 
