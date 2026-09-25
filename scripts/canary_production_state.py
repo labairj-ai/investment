@@ -22,12 +22,68 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from portfolio_ai import _derive_portfolio_state, BRIEF_POLICY_VERSION  # noqa: E402
+from portfolio_ai import BRIEF_POLICY_VERSION  # noqa: E402
 
 DEFAULT_DB = Path(__file__).resolve().parent.parent / "out" / "investment.db"
 
 VALID_PORTFOLIO_STATES = {"STABLE", "ATTENTION", "URGENT", "UNKNOWN"}
 CURRENT_POLICY_VERSION = BRIEF_POLICY_VERSION  # "v2"
+
+# Versions that existed before v2; rows with these versions are historical legacy.
+KNOWN_LEGACY_VERSIONS: set = {None, "v1"}
+
+# UTC timestamp when BRIEF_POLICY_VERSION="v2" was first deployed to production.
+# Rows captured before this timestamp with a missing/None version → LEGACY (historical).
+# Rows captured after this timestamp with a missing/unknown version → UNKNOWN_VERSION violation.
+V2_DEPLOY_TIMESTAMP = "2026-09-24T19:26:00"
+
+
+# ── Independent v2 policy oracle ────────────────────────────────────────────
+# Deliberately does NOT import _derive_portfolio_state or any other policy
+# function from portfolio_ai.  The duplication is intentional: two independent
+# implementations of the same specification catch bugs in either one.
+# When the policy changes to v3, a new _expected_v3_state() oracle must be
+# written at that time, bound to the v3 specification.
+
+def _expected_v2_state(snapshot: dict) -> str:
+    """Independent re-implementation of the v2 portfolio_state derivation rule.
+
+    Inputs only the brief_state snapshot (no LLM output).
+    Does not import _derive_portfolio_state, _sev_int, or _HIGH_SEVERITY_THRESHOLD.
+    """
+    items = snapshot.get("attention_items", [])
+
+    def sev(item: dict) -> int:
+        v = item.get("severity", 0)
+        if isinstance(v, str):
+            return {"high": 80, "medium": 50, "low": 20}.get(v.lower(), 0)
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return 0
+
+    if any(sev(i) >= 70 for i in items):
+        return "URGENT"
+    if items:
+        return "ATTENTION"
+    if snapshot.get("brief_health") == "HEALTHY":
+        return "STABLE"
+    return "UNKNOWN"
+
+
+def _row_classification(briefing_output: dict, captured_at: str) -> str:
+    """Return 'CURRENT', 'LEGACY', or 'UNKNOWN_VERSION'.
+
+    CURRENT        — brief_policy_version == CURRENT_POLICY_VERSION → validate all invariants
+    LEGACY         — known pre-v2 version on an old record → warning only
+    UNKNOWN_VERSION — unexpected version string, or missing version on a post-v2 record → violation
+    """
+    version = briefing_output.get("brief_policy_version")
+    if version == CURRENT_POLICY_VERSION:
+        return "CURRENT"
+    if version in KNOWN_LEGACY_VERSIONS and (captured_at or "") < V2_DEPLOY_TIMESTAMP:
+        return "LEGACY"
+    return "UNKNOWN_VERSION"
 
 
 def _open_ro(db_path: Path) -> sqlite3.Connection:
@@ -42,11 +98,6 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
     ).fetchone()
     return row is not None
-
-
-def _is_legacy(briefing_output: dict) -> bool:
-    """A row is legacy if it was not written by the current policy version."""
-    return briefing_output.get("brief_policy_version") != CURRENT_POLICY_VERSION
 
 
 def run_invariants(conn: sqlite3.Connection) -> tuple[list[str], list[str]]:
@@ -70,7 +121,8 @@ def run_invariants(conn: sqlite3.Connection) -> tuple[list[str], list[str]]:
                 )
                 continue
             if ps not in VALID_PORTFOLIO_STATES:
-                if _is_legacy(output):
+                classification = _row_classification(output, row["captured_at"] or "")
+                if classification == "LEGACY":
                     warnings.append(
                         f"[INV-1/LEGACY] brief_id={row['brief_id']} captured_at={row['captured_at']}: "
                         f"portfolio_state={ps!r} not in {VALID_PORTFOLIO_STATES}"
@@ -97,7 +149,8 @@ def run_invariants(conn: sqlite3.Connection) -> tuple[list[str], list[str]]:
             has_attention = bool(snapshot.get("attention_items"))
             ps = output.get("portfolio_state")
             if has_attention and ps == "STABLE":
-                if _is_legacy(output):
+                classification = _row_classification(output, row["captured_at"] or "")
+                if classification == "LEGACY":
                     warnings.append(
                         f"[INV-2/LEGACY] brief_id={row['brief_id']} captured_at={row['captured_at']}: "
                         f"portfolio_state=STABLE with non-empty attention_items"
@@ -122,7 +175,8 @@ def run_invariants(conn: sqlite3.Connection) -> tuple[list[str], list[str]]:
                 )
                 continue
             if ps not in VALID_PORTFOLIO_STATES:
-                if _is_legacy(insight):
+                classification = _row_classification(insight, row["generated_at"] or "")
+                if classification == "LEGACY":
                     warnings.append(
                         f"[INV-3/LEGACY] day={row['day']} generated_at={row['generated_at']}: "
                         f"ai_insights portfolio_state={ps!r} not in {VALID_PORTFOLIO_STATES}"
@@ -199,8 +253,10 @@ def run_invariants(conn: sqlite3.Connection) -> tuple[list[str], list[str]]:
                 )
 
     # ── Invariant 8: recomputation (v2 rows only) ────────────────────────────
-    # For every v2 provenance row, _derive_portfolio_state(brief_snapshot) must equal
-    # the persisted portfolio_state.  Any mismatch means a policy violation slipped through.
+    # For every CURRENT (v2) provenance row, _expected_v2_state(brief_snapshot)
+    # must equal the persisted portfolio_state.  Uses the independent oracle —
+    # not _derive_portfolio_state() from production — so a bug in the production
+    # function is detectable here.
     if _table_exists(conn, "portfolio_brief_provenance"):
         rows = conn.execute(
             "SELECT brief_id, captured_at, brief_snapshot_json, briefing_output_json "
@@ -212,29 +268,60 @@ def run_invariants(conn: sqlite3.Connection) -> tuple[list[str], list[str]]:
                 snapshot = json.loads(row["brief_snapshot_json"] or "{}")
             except (json.JSONDecodeError, TypeError):
                 continue
-            if _is_legacy(output):
+            classification = _row_classification(output, row["captured_at"] or "")
+            if classification != "CURRENT":
                 continue
-            expected = _derive_portfolio_state(snapshot)
+            expected = _expected_v2_state(snapshot)
             actual = output.get("portfolio_state")
             if actual != expected:
                 violations.append(
                     f"[INV-8] brief_id={row['brief_id']} captured_at={row['captured_at']}: "
-                    f"recomputed state={expected!r} != persisted state={actual!r}"
+                    f"oracle state={expected!r} != persisted state={actual!r}"
                 )
-            # Spot check: high-severity attention → must be URGENT
+            # Belt-and-suspenders spot checks (still independent — no production imports)
             attention_items = snapshot.get("attention_items", [])
-            from portfolio_ai import _sev_int, _HIGH_SEVERITY_THRESHOLD  # noqa: E402 (local import ok)
-            has_high = any(_sev_int(i) >= _HIGH_SEVERITY_THRESHOLD for i in attention_items)
+
+            def _sev_local(item: dict) -> int:
+                v = item.get("severity", 0)
+                if isinstance(v, str):
+                    return {"high": 80, "medium": 50, "low": 20}.get(v.lower(), 0)
+                try:
+                    return int(v)
+                except (TypeError, ValueError):
+                    return 0
+
+            has_high = any(_sev_local(i) >= 70 for i in attention_items)
             if has_high and actual != "URGENT":
                 violations.append(
                     f"[INV-8/HIGH-SEV] brief_id={row['brief_id']}: "
                     f"high-severity attention present but portfolio_state={actual!r} (expected URGENT)"
                 )
-            # Spot check: no attention + HEALTHY → must be STABLE
             if not attention_items and snapshot.get("brief_health") == "HEALTHY" and actual != "STABLE":
                 violations.append(
                     f"[INV-8/STABLE-CEIL] brief_id={row['brief_id']}: "
                     f"no attention + HEALTHY brief but portfolio_state={actual!r} (expected STABLE)"
+                )
+
+    # ── Invariant 9: fail-closed version classification ──────────────────────
+    # A missing or unrecognized brief_policy_version on a post-v2 record is a
+    # violation, not a legacy warning.  This catches a failure of the versioning
+    # mechanism itself (e.g. a persistence regression that omits the version field).
+    if _table_exists(conn, "portfolio_brief_provenance"):
+        rows = conn.execute(
+            "SELECT brief_id, captured_at, briefing_output_json FROM portfolio_brief_provenance"
+        ).fetchall()
+        for row in rows:
+            try:
+                output = json.loads(row["briefing_output_json"] or "{}")
+            except (json.JSONDecodeError, TypeError):
+                continue
+            classification = _row_classification(output, row["captured_at"] or "")
+            if classification == "UNKNOWN_VERSION":
+                version = output.get("brief_policy_version")
+                violations.append(
+                    f"[INV-9] brief_id={row['brief_id']} captured_at={row['captured_at']}: "
+                    f"unrecognized or missing brief_policy_version={version!r} on post-v2 record "
+                    f"(expected {CURRENT_POLICY_VERSION!r} or a known legacy version before {V2_DEPLOY_TIMESTAMP})"
                 )
 
     return violations, warnings

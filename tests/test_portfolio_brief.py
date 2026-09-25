@@ -20,6 +20,13 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import portfolio_ai
+
+# canary module for 0662/0663 validation tests
+_SCRIPTS_DIR = ROOT / "scripts"
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+import canary_production_state
+
 from agents.news.intelligence import (
     EMERGING_OPP_THRESHOLD,
     EMERGING_RISK_THRESHOLD,
@@ -1078,29 +1085,31 @@ def test_attention_floor_produces_attention_headline():
 
 _V4_LLM_NO_STATE = {"headline": "LLM says fine.", "what_changed": [], "key_question": "?"}
 
-@pytest.mark.parametrize("brief_health,attention_sev,expected_state", [
-    # Row 1: HEALTHY, no attention, no portfolio_state from LLM → STABLE
-    ("HEALTHY",  None, "STABLE"),
-    # Row 2: HEALTHY, no attention + opportunity seeded (no sev) → STABLE
-    ("HEALTHY",  None, "STABLE"),   # duplicate to label clearly; opportunities don't elevate state
+@pytest.mark.parametrize("brief_health,attention_sev,expected_state,has_changes", [
+    # Row 1: HEALTHY, no attention → STABLE
+    ("HEALTHY",  None, "STABLE",    False),
+    # Row 2: HEALTHY, changes only (no attention) → STABLE; changes don't affect state
+    ("HEALTHY",  None, "STABLE",    True),
     # Row 3: HEALTHY, medium attention → ATTENTION
-    ("HEALTHY",  50,   "ATTENTION"),
+    ("HEALTHY",  50,   "ATTENTION", False),
     # Row 4: HEALTHY, high attention → URGENT
-    ("HEALTHY",  80,   "URGENT"),
+    ("HEALTHY",  80,   "URGENT",    False),
     # Row 5: DEGRADED, no attention → UNKNOWN
-    ("DEGRADED", None, "UNKNOWN"),
+    ("DEGRADED", None, "UNKNOWN",   False),
     # Row 6: DEGRADED, medium attention → ATTENTION
-    ("DEGRADED", 50,   "ATTENTION"),
+    ("DEGRADED", 50,   "ATTENTION", False),
     # Row 7: DEGRADED, high attention → URGENT
-    ("DEGRADED", 80,   "URGENT"),
+    ("DEGRADED", 80,   "URGENT",    False),
 ])
-def test_derive_state_matrix_v4_llm_shape(brief_health, attention_sev, expected_state):
-    """8-row state matrix: v4 LLM output (no portfolio_state field) never contaminates result."""
+def test_derive_state_matrix_v4_llm_shape(brief_health, attention_sev, expected_state, has_changes):
+    """State matrix: v4 LLM output (no portfolio_state field) never contaminates result.
+    Row 2 pins the contract that changes-only does not elevate state above STABLE."""
     attention = [_attn(attention_sev)] if attention_sev is not None else []
-    state = _make_brief_state(brief_health=brief_health, attention=attention)
+    changes = [{"key": "chg:k", "summary": "sector rotation"}] if has_changes else []
+    state = _make_brief_state(brief_health=brief_health, attention=attention, changes=changes)
     result = portfolio_ai._apply_brief_policy(state, dict(_V4_LLM_NO_STATE))
     assert result["portfolio_state"] == expected_state, (
-        f"brief_health={brief_health!r} attention_sev={attention_sev} → "
+        f"brief_health={brief_health!r} attention_sev={attention_sev} has_changes={has_changes} → "
         f"expected {expected_state!r}, got {result['portfolio_state']!r}"
     )
     # LLM supplied no portfolio_state; llm_assessed_state must be None (not a spoofed value)
@@ -1622,6 +1631,9 @@ def test_persistence_chain_policy_corrects_llm_stable(tmp_path, monkeypatch):
         assert snap is not None, "portfolio_brief_snapshots must have a row"
 
         # 8. snapshot_json in portfolio_brief_snapshots matches brief_snapshot_json in provenance
+        # Full canonical equality: both tables receive json.dumps(brief_state) for the same call,
+        # so every field must match.  No volatile fields are excluded because brief_state is a
+        # pure snapshot — timestamps live in briefing_output, not brief_state.
         prov_snap_row = conn2.execute(
             "SELECT brief_snapshot_json FROM portfolio_brief_provenance WHERE brief_id=?",
             (brief_id,),
@@ -1629,13 +1641,15 @@ def test_persistence_chain_policy_corrects_llm_stable(tmp_path, monkeypatch):
         assert prov_snap_row is not None, "Provenance row must exist for snapshot consistency check"
         snap_from_snapshots = json.loads(snap["snapshot_json"])
         snap_from_provenance = json.loads(prov_snap_row["brief_snapshot_json"])
-        assert snap_from_snapshots.get("attention_items") == snap_from_provenance.get("attention_items"), (
-            f"attention_items must match between portfolio_brief_snapshots and portfolio_brief_provenance.\n"
-            f"  snapshots: {snap_from_snapshots.get('attention_items')}\n"
-            f"  provenance: {snap_from_provenance.get('attention_items')}"
-        )
-        assert snap_from_snapshots.get("portfolio_state") == snap_from_provenance.get("portfolio_state"), (
-            "portfolio_state in snapshot must match provenance snapshot"
+
+        def _canonical(obj: dict) -> str:
+            return json.dumps(obj, sort_keys=True, separators=(",", ":"))
+
+        assert _canonical(snap_from_snapshots) == _canonical(snap_from_provenance), (
+            "brief_state must be byte-for-byte identical in portfolio_brief_snapshots and "
+            "portfolio_brief_provenance — both are written from the same object in one SAVEPOINT.\n"
+            f"  snapshots keys: {sorted(snap_from_snapshots.keys())}\n"
+            f"  provenance keys: {sorted(snap_from_provenance.keys())}"
         )
 
         # 9. persisted brief includes brief_policy_version == "v2"
@@ -1645,3 +1659,180 @@ def test_persistence_chain_policy_corrects_llm_stable(tmp_path, monkeypatch):
         )
     finally:
         conn2.close()
+
+
+# ── 0662: Canary oracle independence ────────────────────────────────────────
+
+
+def _make_canary_conn(prov_rows=None):
+    """Minimal in-memory DB for canary invariant tests."""
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("""CREATE TABLE portfolio_brief_provenance (
+        brief_id TEXT, captured_at TEXT,
+        brief_snapshot_json TEXT, briefing_output_json TEXT,
+        source_refs_json TEXT
+    )""")
+    conn.execute("""CREATE TABLE portfolio_brief_snapshots (
+        id INTEGER PRIMARY KEY, captured_at TEXT, snapshot_json TEXT
+    )""")
+    conn.execute("""CREATE TABLE ai_insights (
+        day TEXT PRIMARY KEY, insight TEXT, generated_at TEXT
+    )""")
+    conn.execute("""CREATE TABLE portfolio_brief_responses (
+        brief_id TEXT, item_key TEXT, responded_at TEXT
+    )""")
+    for row in (prov_rows or []):
+        conn.execute(
+            "INSERT INTO portfolio_brief_provenance VALUES (?,?,?,?,?)", row
+        )
+    return conn
+
+
+def test_canary_oracle_independent_of_production_function(monkeypatch):
+    """Monkeypatching _derive_portfolio_state must NOT affect the canary oracle result.
+
+    The oracle is independent — it does not import _derive_portfolio_state from production.
+    """
+    snapshot = {"brief_health": "HEALTHY", "attention_items": []}
+    # Cripple the production function so it always returns the wrong answer
+    monkeypatch.setattr(portfolio_ai, "_derive_portfolio_state", lambda s: "ATTENTION")
+    # The oracle must still return the correct value
+    result = canary_production_state._expected_v2_state(snapshot)
+    assert result == "STABLE", (
+        f"Canary oracle must be independent of portfolio_ai._derive_portfolio_state. "
+        f"Got {result!r} — oracle is not independent."
+    )
+
+
+def test_canary_detects_v2_state_mismatch():
+    """INV-8: v2 row whose persisted state contradicts the oracle → violation."""
+    # attention_sev=80 → oracle says URGENT; record persists STABLE → should be caught
+    snapshot = json.dumps({"brief_health": "HEALTHY", "attention_items": [{"severity": 80}]})
+    output = json.dumps({"brief_policy_version": "v2", "portfolio_state": "STABLE"})
+    conn = _make_canary_conn([("bv-mismatch", "2026-09-25T00:00:00", snapshot, output, "[]")])
+    violations, _ = canary_production_state.run_invariants(conn)
+    conn.close()
+    assert any("bv-mismatch" in v for v in violations), (
+        f"Oracle (URGENT) vs persisted (STABLE) must produce an INV-8 violation. Got: {violations}"
+    )
+
+
+# ── 0663: Fail-closed version classification ─────────────────────────────────
+
+
+def test_canary_current_row_passes():
+    """A v2 row with correct state produces no violations."""
+    snapshot = json.dumps({"brief_health": "HEALTHY", "attention_items": []})
+    output = json.dumps({"brief_policy_version": "v2", "portfolio_state": "STABLE"})
+    conn = _make_canary_conn([("bv-ok", "2026-09-25T00:00:00", snapshot, output, "[]")])
+    violations, _ = canary_production_state.run_invariants(conn)
+    conn.close()
+    bv_violations = [v for v in violations if "bv-ok" in v]
+    assert bv_violations == [], f"Valid v2 row must produce no violations. Got: {bv_violations}"
+
+
+def test_canary_legacy_row_is_warning_not_violation():
+    """Missing version + timestamp before deploy → LEGACY, produces no violations."""
+    snapshot = json.dumps({"brief_health": "HEALTHY", "attention_items": []})
+    output = json.dumps({"portfolio_state": "STABLE"})  # no brief_policy_version
+    conn = _make_canary_conn([("bv-legacy", "2026-09-24T12:00:00", snapshot, output, "[]")])
+    violations, warnings = canary_production_state.run_invariants(conn)
+    conn.close()
+    bv_violations = [v for v in violations if "bv-legacy" in v]
+    assert bv_violations == [], (
+        f"Pre-v2 legacy row must not produce violations. Got: {bv_violations}"
+    )
+
+
+def test_canary_missing_version_new_record_is_violation():
+    """Missing brief_policy_version on a post-v2-deploy record → INV-9 violation."""
+    snapshot = json.dumps({"brief_health": "HEALTHY", "attention_items": []})
+    output = json.dumps({"portfolio_state": "STABLE"})  # no brief_policy_version
+    # captured AFTER V2_DEPLOY_TIMESTAMP (2026-09-24T19:26:00)
+    conn = _make_canary_conn([("bv-new-missing", "2026-09-25T00:00:00", snapshot, output, "[]")])
+    violations, _ = canary_production_state.run_invariants(conn)
+    conn.close()
+    assert any("bv-new-missing" in v for v in violations), (
+        f"Missing version on post-v2 record must be a violation (INV-9). Got: {violations}"
+    )
+
+
+def test_canary_unknown_version_is_violation():
+    """Unrecognized brief_policy_version string 'v99' → INV-9 violation."""
+    snapshot = json.dumps({"brief_health": "HEALTHY", "attention_items": []})
+    output = json.dumps({"brief_policy_version": "v99", "portfolio_state": "STABLE"})
+    conn = _make_canary_conn([("bv-v99", "2026-09-25T00:00:00", snapshot, output, "[]")])
+    violations, _ = canary_production_state.run_invariants(conn)
+    conn.close()
+    assert any("bv-v99" in v for v in violations), (
+        f"Unknown version 'v99' must produce an INV-9 violation. Got: {violations}"
+    )
+
+
+# ── 0665: Complete state-contract tests ───────────────────────────────────────
+
+
+def test_healthy_changes_only_is_stable():
+    """HEALTHY + non-empty changes + no attention → STABLE (changes don't affect state)."""
+    state = _make_brief_state(
+        brief_health="HEALTHY",
+        attention=[],
+        changes=[{"key": "chg:sector", "summary": "sector rotation occurred"}],
+    )
+    result = portfolio_ai._derive_portfolio_state(state)
+    assert result == "STABLE", (
+        f"HEALTHY + changes only must produce STABLE, got {result!r}"
+    )
+
+
+@pytest.mark.parametrize("severity,expected_state", [
+    (None,   "ATTENTION"),  # None → _sev_int returns 0; item present → ATTENTION not URGENT
+    ("high", "URGENT"),     # "high" → _sev_int returns 80 → URGENT
+    (-1,     "ATTENTION"),  # -1 → _sev_int returns -1 < 70; item present → ATTENTION
+    (9999,   "URGENT"),     # 9999 → _sev_int returns 9999 >= 70 → URGENT
+])
+def test_malformed_severity_does_not_raise(severity, expected_state):
+    """_derive_portfolio_state must not raise for unusual severity values."""
+    state = _make_brief_state(
+        brief_health="HEALTHY",
+        attention=[{"key": "test:k", "ticker": "X", "signal_type": "t",
+                    "summary": "test", "source": "test", "severity": severity,
+                    "is_new": True, "since": "2026-09-24"}],
+    )
+    result = portfolio_ai._derive_portfolio_state(state)
+    assert result == expected_state, (
+        f"severity={severity!r} must produce {expected_state!r}, got {result!r}"
+    )
+
+
+def test_mixed_severity_one_high_triggers_urgent():
+    """Two attention items (severity=50 and severity=80): single high-sev item → URGENT."""
+    state = _make_brief_state(
+        brief_health="HEALTHY",
+        attention=[_attn(50, key="guardian:ANET:watch"), _attn(80, key="guardian:GRMN:risk")],
+    )
+    result = portfolio_ai._derive_portfolio_state(state)
+    assert result == "URGENT", (
+        f"Mixed severities [50, 80]: one >= 70 must produce URGENT, got {result!r}"
+    )
+
+
+def test_missing_brief_health_is_unknown():
+    """No attention items + brief_health=None → UNKNOWN (not STABLE)."""
+    state = _make_brief_state(brief_health="HEALTHY", attention=[])
+    state["brief_health"] = None  # override
+    result = portfolio_ai._derive_portfolio_state(state)
+    assert result == "UNKNOWN", (
+        f"brief_health=None with no attention must produce UNKNOWN, got {result!r}"
+    )
+
+
+def test_garbage_brief_health_is_unknown():
+    """No attention items + brief_health='GREAT' (unrecognized) → UNKNOWN."""
+    state = _make_brief_state(brief_health="HEALTHY", attention=[])
+    state["brief_health"] = "GREAT"
+    result = portfolio_ai._derive_portfolio_state(state)
+    assert result == "UNKNOWN", (
+        f"brief_health='GREAT' with no attention must produce UNKNOWN, got {result!r}"
+    )
