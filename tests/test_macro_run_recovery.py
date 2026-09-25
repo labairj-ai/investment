@@ -52,7 +52,7 @@ def test_recent_progress_prevents_stale_reconciliation(scoring):
     pai, _, db = scoring
     with sqlite3.connect(db) as c:
         c.execute("INSERT INTO macro_scoring_runs(run_id,run_at,expected_n,status) VALUES ('live','2000-01-01',2,'STARTED')")
-        c.execute("INSERT INTO macro_scoring_run_items(run_id,ticker,status,completed_at) VALUES ('live','XOM','SUPPORTED',datetime('now','localtime'))")
+        c.execute("INSERT INTO macro_scoring_run_items(run_id,ticker,status,completed_at) VALUES ('live','XOM','SUPPORTED',datetime('now'))")
         c.commit()
         assert pai._reconcile_stale_runs(c) == 0
 

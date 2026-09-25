@@ -368,6 +368,38 @@ def run_invariants(conn: sqlite3.Connection) -> tuple[list[str], list[str]]:
                     f"(expected {CURRENT_POLICY_VERSION!r} or a known legacy version before {V2_DEPLOY_TIMESTAMP})"
                 )
 
+    # ── INV-T: Timestamp contract ─────────────────────────────────────────────
+    # All timestamp fields in key tables must parse without error via parse_timestamp().
+    # A parse failure indicates a corrupt or unexpected format that cannot be
+    # safely compared against UTC cutoff boundaries.
+    # DB timestamp contract:
+    #   portfolio_brief_provenance.captured_at  = UTC  (Z-suffix ISO)
+    #   portfolio_brief_snapshots.captured_at   = UTC  (Z-suffix ISO)
+    #   ai_insights.generated_at               = UTC  (space-sep or Z-suffix)
+    try:
+        from time_utils import parse_timestamp as _pts
+        for table, col, id_col in [
+            ("portfolio_brief_provenance", "captured_at", "brief_id"),
+            ("ai_insights", "generated_at", "day"),
+        ]:
+            if not _table_exists(conn, table):
+                continue
+            for row in conn.execute(
+                f"SELECT {id_col}, {col} FROM {table} ORDER BY {col} DESC LIMIT 50"
+            ).fetchall():
+                ts_val = row[col]
+                if not ts_val:
+                    continue
+                try:
+                    _pts(ts_val)
+                except ValueError as e:
+                    violations.append(
+                        f"[INV-T] {table}.{col} {id_col}={row[id_col]!r}: "
+                        f"timestamp {ts_val!r} failed to parse: {e}"
+                    )
+    except ImportError:
+        warnings.append("[INV-T] time_utils not importable — timestamp contract check skipped")
+
     return violations, warnings
 
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 from datetime import datetime as _dt
 from typing import Optional
+from time_utils import epoch_to_utc
 
 # Required fields by action type (0107 / 0132)
 _REQUIRED_FIELDS: dict[str, list[str]] = {
@@ -40,7 +41,7 @@ def validate_execution_body(
     if exec_dt > today:
         return (400, "execution_date cannot be in the future")
 
-    rec_date = _dt.utcfromtimestamp(rec["created_at"]).date()
+    rec_date = epoch_to_utc(rec["created_at"]).date()
     if exec_dt < rec_date:
         return (
             400,

@@ -10,6 +10,7 @@ import sqlite3
 import subprocess
 import time
 from pathlib import Path
+from time_utils import now_utc_iso
 
 DB_PATH = Path(__file__).resolve().parent / "out" / "investment.db"
 
@@ -3378,12 +3379,11 @@ def record_preference_feedback(
     suppressed: bool = False,
 ) -> None:
     """Write a feedback row and optionally set suppressed on the preference."""
-    from datetime import datetime as _dt
     conn = _connect()
     conn.execute(
         """INSERT INTO preference_feedback (preference_id, outcome, suppressed, feedback_at)
            VALUES (?, ?, ?, ?)""",
-        (pref_id, outcome, 1 if suppressed else 0, _dt.utcnow().isoformat()),
+        (pref_id, outcome, 1 if suppressed else 0, now_utc_iso()),
     )
     if suppressed:
         conn.execute(

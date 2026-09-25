@@ -19,6 +19,7 @@ from datetime import datetime
 from pathlib import Path
 
 import agent_db
+from time_utils import now_utc, parse_timestamp
 import ollama_client
 from strategy_config import LAYER_NAMES, LAYER_TARGETS, LAYER_LABELS
 
@@ -224,7 +225,7 @@ def _score_catalyst(w: dict) -> float:
     scanned = w.get("scanned_at")
     if scanned:
         try:
-            age_days = (datetime.now() - datetime.fromisoformat(scanned)).days
+            age_days = (now_utc() - parse_timestamp(scanned)).days
             if age_days <= 7:
                 score += 10.0
             elif age_days <= 30:
@@ -247,7 +248,7 @@ def _score_evidence(w: dict) -> float:
     if scanned:
         try:
             b.macro_class_age_days = float(
-                (datetime.now() - datetime.fromisoformat(scanned)).days
+                (now_utc() - parse_timestamp(scanned)).days
             )
         except ValueError:
             pass

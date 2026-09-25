@@ -10548,8 +10548,10 @@ async function rejectThesisProposal(recId) {{
     return html || '<span class="ai-loading">Analysis returned no content.</span>';
   }}
 
-  function _fmtTimestamp(ts) {{
-    if (!ts) return '';
+  function _fmtTimestamp(ts, ts_et) {{
+    if (!ts && !ts_et) return '';
+    // Prefer the pre-computed Eastern string from the API (_et field)
+    if (ts_et) return 'generated ' + ts_et;
     try {{
       const d = new Date(ts.replace(' ', 'T'));
       return 'generated ' + d.toLocaleTimeString([], {{hour:'numeric', minute:'2-digit'}});
@@ -10592,7 +10594,7 @@ async function rejectThesisProposal(recId) {{
       _briefId = data.brief_id || null;
       body.innerHTML = _renderAiInsight(ins);
       const ts = document.getElementById('ai-insight-timestamp');
-      if (ts) ts.textContent = _fmtTimestamp(data.generated_at);
+      if (ts) ts.textContent = _fmtTimestamp(data.generated_at, data.generated_at_et);
     }}).catch(e => {{
       const body = document.getElementById('ai-insight-body');
       if (body) body.innerHTML = `<span class="ai-loading">Could not reach AI: ${{e.message}}</span>`;
@@ -10634,7 +10636,7 @@ async function rejectThesisProposal(recId) {{
       _briefId = data.brief_id || null;
       body.innerHTML = _renderAiInsight(ins);
       const ts = document.getElementById('ai-insight-timestamp');
-      if (ts) ts.textContent = _fmtTimestamp(data.generated_at);
+      if (ts) ts.textContent = _fmtTimestamp(data.generated_at, data.generated_at_et);
     }}).catch(e => {{
       body.innerHTML = `<span class="ai-loading">Could not reach AI: ${{e.message}}</span>`;
     }});
@@ -11113,7 +11115,7 @@ async function rejectThesisProposal(recId) {{
         const body = document.getElementById('ai-news-body');
         if (body) body.innerHTML = _renderNewsBody(bt, data.summaries, false, data.events, data.themes);
         const ts = document.getElementById('ai-news-timestamp');
-        if (ts) ts.textContent = _fmtTimestamp(data.generated_at);
+        if (ts) ts.textContent = _fmtTimestamp(data.generated_at, data.generated_at_et);
       }} else if (!data.ok && data.error) {{
         _setNewsStatus(`AI analysis failed: ${{data.error}}`);
       }}
@@ -11181,7 +11183,7 @@ async function rejectThesisProposal(recId) {{
       }} else {{
         _clearNewsStatus();
         const ts = document.getElementById('ai-news-timestamp');
-        if (ts && sumData.generated_at) ts.textContent = _fmtTimestamp(sumData.generated_at);
+        if (ts && sumData.generated_at) ts.textContent = _fmtTimestamp(sumData.generated_at, sumData.generated_at_et);
         _saveNewsCache(html, sumData.generated_at);
       }}
     }}).catch(e => {{

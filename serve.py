@@ -19,6 +19,10 @@ import csv as _csv_mod
 import datetime
 import hmac
 import json
+from time_utils import now_utc, now_utc_iso, now_utc_space, epoch_to_utc, parse_timestamp, to_eastern, format_eastern
+# Logging contract (0674): machine/audit log timestamps are UTC (see now_utc_space()).
+# Human-readable operational output may include Eastern context if needed.
+# Log ordering must use UTC values, never Eastern-formatted strings.
 import math
 import http.server
 import os
@@ -784,7 +788,7 @@ def _auto_ai_analyze_winners(log_file=None):
         print(f"[Screener] Auto-AI: DB read error: {e}")
         return
 
-    cutoff = (datetime.datetime.now() - datetime.timedelta(days=STALE_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+    cutoff = (now_utc() - datetime.timedelta(days=STALE_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
     stale = [
         w for w in winners
         if not w.get("ai_analysis") or (w.get("ai_analysis_at") or "") < cutoff
@@ -854,7 +858,7 @@ Return this JSON structure:
                 raise ValueError(f"LLM returned no JSON object. Output: {full_text[:200]!r}")
             analysis, _ = dec.raw_decode(full_text, start)
 
-            now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            now_str = now_utc_space()
             conn2 = sqlite3.connect(str(db), timeout=10)
             try:
                 conn2.execute(
@@ -1446,7 +1450,7 @@ def _run_layer_ai_rankings() -> None:
             start = full_text.index("{")
             result, _ = dec.raw_decode(full_text, start)
 
-            now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            now_str = now_utc_space()
             conn2 = sqlite3.connect(str(db), timeout=10)
             try:
                 conn2.execute(
@@ -3901,7 +3905,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                             info = tk.info or {}
                             ts   = info.get("exDividendDate")
                             if ts:
-                                ex_date = datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d")
+                                ex_date = epoch_to_utc(ts).strftime("%Y-%m-%d")
                         except Exception:
                             pass
                     if not ex_date and last_date:
@@ -4408,7 +4412,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             global _scan_launching_until
             try:
                 with open(LOG, "a") as lf:
-                    lf.write(f"\n=== MANUAL SCAN {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===\n")
+                    lf.write(f"\n=== MANUAL SCAN {now_utc_space()} UTC ===\n")
                     subprocess.run(
                         [str(VENV_PY), str(PROJECT_DIR / "buffett_screener.py")],
                         cwd=str(PROJECT_DIR), stdout=lf, stderr=lf
@@ -4669,6 +4673,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if cached.get("_failed"):
                 self._json({"ok": False, "error": cached.get("_error", "Generation failed"), "date": today})
                 return
+            news_gen_at_et = None
+            if generated_at:
+                try:
+                    news_gen_at_et = format_eastern(parse_timestamp(generated_at))
+                except Exception:
+                    pass
             self._json({
                 "ok": True,
                 "summaries": cached,
@@ -4677,6 +4687,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 "news_hash": cached.get("_news_hash", ""),
                 "date": today,
                 "generated_at": generated_at,
+                "generated_at_et": news_gen_at_et,
             })
             return
 
@@ -4810,8 +4821,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 pass
             if isinstance(cached, dict) and freshness_data:
                 cached = {**cached, "_freshness": freshness_data, "_evidence": evidence_data}
+            generated_at_et = None
+            if generated_at:
+                try:
+                    generated_at_et = format_eastern(parse_timestamp(generated_at))
+                except Exception:
+                    pass
             self._json({"ok": True, "insight": cached, "date": today,
-                        "generated_at": generated_at, "brief_id": brief_id})
+                        "generated_at": generated_at,
+                        "generated_at_et": generated_at_et,
+                        "brief_id": brief_id})
             return
 
         # No cache and not already running — start background generation

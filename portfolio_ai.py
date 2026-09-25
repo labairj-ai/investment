@@ -18,6 +18,7 @@ from pathlib import Path
 from strategy_config import (
     LAYER_NAMES, LAYER_LABELS, LAYER_TARGETS, LAYER_DESCRIPTIONS, DRIFT_THRESHOLD,
 )
+from time_utils import now_utc, now_utc_iso, now_utc_space, epoch_to_utc, parse_timestamp
 
 try:
     from agent_db import CODE_COMMIT_SHA as _CODE_COMMIT_SHA
@@ -722,7 +723,7 @@ def _init_ai_tables():
                     )
             conn.execute(
                 "INSERT INTO _schema_migrations (migration_id, applied_at) VALUES (?,?)",
-                ("M001_stability_split", datetime.utcnow().isoformat())
+                ("M001_stability_split", now_utc_iso())
             )
             conn.execute("RELEASE SAVEPOINT m001")
         except Exception as _mig_err:
@@ -734,7 +735,7 @@ def _init_ai_tables():
             print(f"[InitDB] WARNING: M001 migration failed, new tables left empty: {_mig_err}")
     # Seed initial geo profiles for known foreign companies (0508, 0516)
     # INSERT OR IGNORE — only writes on first creation; retrieved_at reflects actual sourcing date.
-    now_iso = datetime.utcnow().isoformat()
+    now_iso = now_utc_iso()
     _GEO_SEEDS = [
         # ITOCF — Itochu Corp, Japanese general trading company; EM/Asia exposure from annual report
         {
@@ -946,8 +947,8 @@ def get_current_news_intelligence(
     boundary = acceptance_row["accepted_at"]
     version = acceptance_row["accepted_version"]
     recency_cutoff = _t.time() - recency_days * 86400
-    from datetime import datetime as _dtu
-    recency_iso = _dtu.utcfromtimestamp(recency_cutoff).strftime("%Y-%m-%d %H:%M:%S")
+    from time_utils import epoch_to_utc as _epoch_to_utc
+    recency_iso = _epoch_to_utc(recency_cutoff).strftime("%Y-%m-%d %H:%M:%S")
     # Subquery picks the latest extracted_at row per (ticker, causal_event_key).
     # INNER JOIN on news_event_state ensures fail-closed: no state row → excluded.
     raw_rows = conn.execute(
@@ -983,10 +984,10 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
     The `changes` list is populated by diffing against the prior stored snapshot.
     """
     import time as _time
-    from datetime import datetime as _dtu
+    from time_utils import epoch_to_utc as _epoch_to_utc
 
     now_ts = now or _time.time()
-    captured_at = _dtu.utcfromtimestamp(now_ts).strftime("%Y-%m-%dT%H:%M:%SZ")
+    captured_at = _epoch_to_utc(now_ts).strftime("%Y-%m-%dT%H:%M:%SZ")
     conn.row_factory = sqlite3.Row
     cutoff_24h = now_ts - 86400
 
@@ -1199,7 +1200,7 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
                 # epoch float as string
                 age_h = round((now_ts - float(ts_str)) / 3600, 1)
             else:
-                dt = _dtu.strptime(ts_str[:19], "%Y-%m-%d %H:%M:%S")
+                dt = datetime.strptime(ts_str[:19], "%Y-%m-%d %H:%M:%S")
                 age_h = round((now_ts - dt.timestamp()) / 3600, 1)
             is_stale = age_h > stale_hours
             return {
@@ -1226,7 +1227,7 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
             " WHERE agent_type='portfolio_guardian' AND status='done'"
         ).fetchone()
         if gr and gr[0]:
-            last_guardian_run = _dtu.utcfromtimestamp(float(gr[0])).strftime("%Y-%m-%dT%H:%M:%SZ")
+            last_guardian_run = _epoch_to_utc(float(gr[0])).strftime("%Y-%m-%dT%H:%M:%SZ")
     except Exception as _e:
         _guardian_freshness_error = str(_e)
 
@@ -1244,7 +1245,7 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
             ).fetchone()
             _wc.close()
             if pr and pr[0]:
-                last_pipeline_run = _dtu.utcfromtimestamp(float(pr[0])).strftime("%Y-%m-%dT%H:%M:%SZ")
+                last_pipeline_run = _epoch_to_utc(float(pr[0])).strftime("%Y-%m-%dT%H:%M:%SZ")
     except Exception as _e:
         _pipeline_freshness_error = str(_e)
 
@@ -1600,7 +1601,7 @@ def register_news_intelligence_acceptance(
         "(accepted_at, accepted_commit, accepted_version, notes) "
         "VALUES (?, ?, ?, ?)",
         (
-            datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+            now_utc_space(),
             _CODE_COMMIT_SHA or "unknown",
             accepted_version,
             notes,
@@ -1901,8 +1902,8 @@ def _classify_macro_coverage(ticker: str, conn: sqlite3.Connection) -> str:
     if not row:
         return "no_score_available"
     try:
-        scored_dt = datetime.fromisoformat(row[0])
-        if (datetime.now() - scored_dt).days > _STALE_SCORE_DAYS:
+        scored_dt = parse_timestamp(row[0])
+        if (now_utc() - scored_dt).days > _STALE_SCORE_DAYS:
             return "stale_score"
     except Exception:
         return "stale_score"
@@ -2069,7 +2070,7 @@ def _get_macro_scores_block(tickers=None, compact=False, reason_max=120):
     except Exception:
         return {}, ""
 
-    stale_cutoff = (datetime.now() - timedelta(days=SCORE_STALE_DAYS)).strftime("%Y-%m-%d")
+    stale_cutoff = (now_utc() - timedelta(days=SCORE_STALE_DAYS)).strftime("%Y-%m-%d")
     scores: dict = {}
     for r in rows:
         t = _normalize_ticker(r["ticker"])
@@ -2536,8 +2537,8 @@ def get_cached_news_summaries_today(news_snapshot_hash=None):
             if data.get("_failed"):
                 # Allow retry after 30-minute cooldown
                 try:
-                    gen_ts = datetime.strptime(generated_at, "%Y-%m-%d %H:%M:%S")
-                    if (datetime.now() - gen_ts).total_seconds() < 1800:
+                    gen_ts = parse_timestamp(generated_at)
+                    if (now_utc() - gen_ts).total_seconds() < 1800:
                         return data, generated_at  # still in cooldown — block retry
                 except Exception:
                     pass
@@ -2788,7 +2789,7 @@ Return ONLY this JSON object with exactly these four keys:
 Be specific. Name the legislation by ID and the matching holding. No generic statements."""
 
     def _cache_sentinel(error_msg):
-        now_s = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now_s = now_utc_space()
         if DB_PATH.exists():
             try:
                 c = sqlite3.connect(str(DB_PATH), timeout=10)
@@ -2858,7 +2859,7 @@ Be specific. Name the legislation by ID and the matching holding. No generic sta
     summaries["_news_hash"] = news_hash
     article_count           = intel_result.get("article_count", 0)
 
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now_str = now_utc_space()
     _grounding_degraded_tickers = intel_result.get("_grounding_degraded_tickers") or []
     if _grounding_degraded_tickers:
         tickers_str = ", ".join(sorted(_grounding_degraded_tickers))
@@ -3346,7 +3347,7 @@ def apply_brief_response(conn: sqlite3.Connection, brief_id: str, item_key: str,
             )}
         episode_id = rec_row["episode_id"]
 
-    responded_at = _dt.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    responded_at = now_utc_iso()
     _sp_created = False
     try:
         conn.execute("SAVEPOINT brief_respond")
@@ -3651,7 +3652,7 @@ def _compute_equity_betas(ticker: str, lookback_days: int = 365) -> dict:
 
 def _compute_macro_health_snapshot(run_id: str, conn: sqlite3.Connection) -> dict:
     """Compute a health/coverage snapshot for the current scoring run (0492)."""
-    snap: dict = {"run_id": run_id, "captured_at": datetime.now().isoformat()}
+    snap: dict = {"run_id": run_id, "captured_at": now_utc_iso()}
     try:
         rows = conn.execute(
             "SELECT scores FROM holding_macro_scores ORDER BY scored_at DESC LIMIT 200"
@@ -3717,7 +3718,7 @@ def _compute_macro_health_snapshot(run_id: str, conn: sqlite3.Connection) -> dic
 def _reconcile_stale_runs(conn: sqlite3.Connection, stale_threshold_minutes: int = 60) -> int:
     """Transition STARTED runs older than threshold to STALE_FAILED (0493). Returns count updated."""
     try:
-        cutoff = (datetime.now() - timedelta(minutes=stale_threshold_minutes)).strftime("%Y-%m-%d %H:%M:%S")
+        cutoff = (now_utc() - timedelta(minutes=stale_threshold_minutes)).strftime("%Y-%m-%d %H:%M:%S")
         stale = conn.execute(
             "SELECT run_id, expected_n FROM macro_scoring_runs "
             "WHERE status='STARTED' AND run_at < ? "
@@ -3733,7 +3734,7 @@ def _reconcile_stale_runs(conn: sqlite3.Connection, stale_threshold_minutes: int
                 conn.execute(
                     "UPDATE macro_scoring_run_items SET status='FAILED', completed_at=?, error=? "
                     "WHERE run_id=? AND status='PENDING'",
-                    (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "Reconciled after interruption", run_id)
+                    (now_utc_space(), "Reconciled after interruption", run_id)
                 )
                 counts = conn.execute(
                     "SELECT COUNT(*), SUM(status IN ('SUPPORTED','UNSUPPORTED')), "
@@ -3782,7 +3783,7 @@ def _reconcile_stale_runs(conn: sqlite3.Connection, stale_threshold_minutes: int
 
 def compute_macro_health() -> dict:
     """Compute macro health state on demand — does not require a scoring run (0499)."""
-    health: dict = {"computed_at": datetime.now().isoformat()}
+    health: dict = {"computed_at": now_utc_iso()}
 
     if not DB_PATH.exists():
         return {**health, "status": "NO_DB", "error": "Database not found"}
@@ -3802,7 +3803,7 @@ def compute_macro_health() -> dict:
         if latest_run:
             run_id, run_at_str, scored, expected, status = latest_run
             try:
-                run_age_h = (datetime.now() - datetime.fromisoformat(run_at_str)).total_seconds() / 3600
+                run_age_h = (now_utc() - parse_timestamp(run_at_str)).total_seconds() / 3600
             except Exception:
                 run_age_h = None
             health["latest_successful_run"] = {
@@ -3826,7 +3827,7 @@ def compute_macro_health() -> dict:
         ).fetchone()
         if last_snap:
             try:
-                snap_age_h = (datetime.now() - datetime.fromisoformat(last_snap[0])).total_seconds() / 3600
+                snap_age_h = (now_utc() - parse_timestamp(last_snap[0])).total_seconds() / 3600
                 health["last_health_snapshot_age_hours"] = round(snap_age_h, 1)
             except Exception:
                 health["last_health_snapshot_age_hours"] = None
@@ -3857,7 +3858,7 @@ def compute_macro_health() -> dict:
             try:
                 cached = json.loads(cache_file.read_text())
                 fetched_at = cached.get("_fetched_at", 0)
-                cache_age_h = (datetime.now().timestamp() - fetched_at) / 3600
+                cache_age_h = (now_utc().timestamp() - fetched_at) / 3600
                 health["macro_cache_age_hours"] = round(cache_age_h, 1)
                 health["macro_cache_status"] = "STALE" if cache_age_h > 48 else "OK"
             except Exception:
@@ -3948,7 +3949,7 @@ def generate_holding_macro_scores(force: bool = False) -> dict:
         conn.row_factory = sqlite3.Row
         rows = conn.execute("SELECT ticker, scores, updated_at FROM holding_macro_scores").fetchall()
         conn.close()
-        cutoff = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+        cutoff = (now_utc() - timedelta(days=7)).strftime("%Y-%m-%d")
         for r in rows:
             if r["updated_at"] and r["updated_at"][:10] >= cutoff:
                 try:
@@ -3972,7 +3973,7 @@ def generate_holding_macro_scores(force: bool = False) -> dict:
             conn = sqlite3.connect(str(DB_PATH), timeout=10)
             conn.execute(
                 "INSERT OR REPLACE INTO macro_regime_snapshots (snapshot_date, regime_json, created_at) VALUES (?,?,?)",
-                (date.today().isoformat(), json.dumps(regime), datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+                (date.today().isoformat(), json.dumps(regime), now_utc_space())
             )
             conn.commit()
             conn.close()
@@ -3991,7 +3992,7 @@ def generate_holding_macro_scores(force: bool = False) -> dict:
     results = dict(existing)
     BATCH = 1
     run_id = str(uuid.uuid4())  # full UUID (0478)
-    run_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    run_at = now_utc_space()
     scorer_contract_hash = _compute_scorer_contract_hash()
     portfolio_universe_hash = universe["hash"]
     run_scope = "full_refresh" if force and set(to_score) == set(tickers) else "incremental"
@@ -4121,7 +4122,7 @@ def generate_holding_macro_scores(force: bool = False) -> dict:
             with sqlite3.connect(str(DB_PATH), timeout=10) as _fc:
                 _fc.executemany(
                     "UPDATE macro_scoring_run_items SET status='FAILED', completed_at=?, error=? WHERE run_id=? AND ticker=?",
-                    [(datetime.now().strftime("%Y-%m-%d %H:%M:%S"), msg, run_id, t) for t in batch]
+                    [(now_utc_space(), msg, run_id, t) for t in batch]
                 )
             continue
 
@@ -4172,7 +4173,7 @@ def generate_holding_macro_scores(force: bool = False) -> dict:
             with sqlite3.connect(str(DB_PATH), timeout=10) as _fc:
                 _fc.executemany(
                     "UPDATE macro_scoring_run_items SET status='FAILED', completed_at=?, error=? WHERE run_id=? AND ticker=?",
-                    [(datetime.now().strftime("%Y-%m-%d %H:%M:%S"), msg, run_id, t) for t in batch]
+                    [(now_utc_space(), msg, run_id, t) for t in batch]
                 )
             time.sleep(20)
             continue
@@ -4208,13 +4209,13 @@ def generate_holding_macro_scores(force: bool = False) -> dict:
             with sqlite3.connect(str(DB_PATH), timeout=10) as _fc:
                 _fc.executemany(
                     "UPDATE macro_scoring_run_items SET status='FAILED', completed_at=?, error=? WHERE run_id=? AND ticker=?",
-                    [(datetime.now().strftime("%Y-%m-%d %H:%M:%S"), msg, run_id, t) for t in batch]
+                    [(now_utc_space(), msg, run_id, t) for t in batch]
                 )
             continue
 
         # Ticker was confirmed present (checked above in the early-exit)
 
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now_str = now_utc_space()
         if DB_PATH.exists():
             conn = sqlite3.connect(str(DB_PATH), timeout=10)
             try:
@@ -4686,7 +4687,7 @@ Return ONLY valid JSON, no extra text:
         print(f"[MacroSummary] AI call failed: {e}")
         return
 
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now_str = now_utc_space()
     payload = {
         "portfolio":    result.get("portfolio", ""),
         "layers":       result.get("layers", {}),

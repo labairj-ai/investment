@@ -22,6 +22,7 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
+from time_utils import now_utc_space
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent.parent
 
@@ -191,7 +192,7 @@ def build_news_snapshot(by_ticker: dict) -> dict:
 
     return {
         "snapshot_id":   str(uuid.uuid5(uuid.NAMESPACE_URL, snapshot_hash)),
-        "captured_at":   datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+        "captured_at":   now_utc_space(),
         "articles":      articles,
         "snapshot_hash": snapshot_hash,
     }
@@ -770,7 +771,7 @@ def update_event_state_sweep(day: str, conn: sqlite3.Connection) -> dict:
     """
     today_dt = datetime.strptime(day, "%Y-%m-%d")
     d30 = (today_dt - timedelta(days=30)).strftime("%Y-%m-%d")
-    now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    now_str = now_utc_space()
     counts: dict = {"active": 0, "fading": 0, "resolved": 0}
 
     # Exceptions propagate to callers (run_daily_sweep records status='error';
@@ -1347,7 +1348,7 @@ def persist_events(events_by_ticker: dict,
         if news_snapshot_hash:
             _persist_snapshot(conn, news_snapshot_hash, snapshot_id, captured_at, manifest)
 
-        now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        now_str = now_utc_space()
         # 0614: on successful extraction, delete all input tickers (not just event-producing ones)
         tickers_to_delete = list(input_tickers) if input_tickers else list(events_by_ticker.keys())
         if tickers_to_delete:
@@ -1466,7 +1467,7 @@ def _persist_snapshot(conn: sqlite3.Connection,
         manifest_json  TEXT,
         created_at     TEXT NOT NULL
     )""")
-    now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    now_str = now_utc_space()
     conn.execute(
         """INSERT OR IGNORE INTO news_snapshots
            (snapshot_hash, snapshot_id, captured_at, version, manifest_json, created_at)
