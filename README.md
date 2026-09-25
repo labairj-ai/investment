@@ -6,10 +6,43 @@ A personal investment tracking system that sends a daily email newsletter, maint
 
 **Production source of record is the optiplex server** (`192.168.1.178`). `out/investment.db` on optiplex is authoritative for all agent data, theses, and recommendations. The Mac is a dev machine only — never write to the Mac DB and never generate `dashboard.html` locally; always run `generate_dashboard.py` via `ssh optiplex`.
 
-**All AI features use a single model and endpoint** — `Qwen3.6-35B-A3B-4bit` (MoE, ~3B active params) via MLX on an Apple Silicon machine, accessed through an OpenAI-compatible HTTP API (`LLM_URL`). Three logical pipelines share a canonical macro framework (`MACRO_DIMS`):
+**AI features use a shared model** — `Qwen3.6-35B-A3B-4bit` (MoE, ~3B active params) via MLX on an Apple Silicon machine, accessed through an OpenAI-compatible HTTP API (`LLM_URL`). Holdings news uses a dedicated `NEWS_LLM_URL` endpoint with the same model to avoid the background-analysis queue. Three logical pipelines share a canonical macro framework (`MACRO_DIMS`):
 - **Weekly Macro Scorer** (`portfolio_ai.py`) — scores each holding 1–10 on four macro dimensions (rate sensitivity, inflation hedge, dollar sensitivity, geopolitical risk) every Saturday at 1 AM ET using a consistent 50bps rate-move basis. After scoring, generates an AI narrative summary of week-over-week score changes, stored in `macro_score_summaries` and displayed in the Macro Risk tab. These scores are AI-estimated macro exposure scores used as context by downstream AI systems.
 - **Daily Portfolio Intelligence** (`portfolio_ai.py`) — per-ticker news summaries (6 AM / 12 PM / 5 PM) and a Portfolio Decision Brief. News summaries use News Intelligence v2 (accepted prospective corpus from 2026-09-24, `news_intelligence_version=v2`). The brief is assembled deterministically from Guardian findings, thesis scores, accepted news signals, macro state, and execution lifecycle — then an LLM adds a headline and narrative. The LLM is never allowed to override deterministic risk evidence.
 - **Screener/CC AI** (`ollama_client.py`) — Buffett thesis, layer compare, covered call analysis, and stock chat; same `Qwen3.6-35B-A3B-4bit` model, thinking disabled for these structured/mechanical calls.
+
+
+### Holdings news: bounded synthesis
+
+`agents/news/brief.py` is the active path behind `generate_news_summaries()` and
+`/api/news-summary`. It collects public RSS concurrently, ranks and deduplicates
+stories, selects up to 18 articles (at least one per covered holding), and supplies
+up to 850 evidence characters per article plus portfolio weights and thesis
+context to one non-reasoning synthesis call. It distinguishes fresh developments
+from commentary and reports coverage explicitly for every holding.
+
+A supervising process enforces an 86-second refresh limit. The model stage gets
+at most 64 seconds and less if the remaining overall budget requires it. Source
+IDs, ticker coverage, event fields and factual numeric claims are validated before
+snapshot, events and prose are committed in one SQLite transaction. On failure,
+the previous brief remains visible; failure status has a two-minute automatic-retry
+cooldown (manual refresh can retry sooner). No model call is automatically retried.
+Scheduled refreshes remain 6 AM/noon/5 PM ET; restart only considers the latest due
+slot. Successful output includes timing and coverage diagnostics. This is a bounded
+response deadline, not a guarantee of successful synthesis when upstream services
+are unavailable.
+
+Production uses `NEWS_LLM_URL=http://100.73.128.40:8081`; the existing shared
+`LLM_URL` service remains on 8080. `ops/install_news_mlx.py`, run with the model
+host's MLX Python, installs `com.mlx.news` using the already downloaded Qwen model
+and a 512 MB prompt-cache limit. Without `NEWS_LLM_URL`, news falls back to the
+shared endpoint, where queue contention can cause deadline failures.
+
+Diagnostics: `out/news_brief_state.json` (job result),
+`out/news_brief_attempt.json` (latest model output and exact evidence), and
+`out/news_brief_articles.json` (fetch coverage). The legacy multi-call implementation
+remains available as `generate_news_summaries_legacy()` for explicit rollback only;
+it is not called by the dashboard or scheduler.
 
 ---
 

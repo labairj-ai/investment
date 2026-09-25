@@ -36,7 +36,7 @@ EVENT_TAXONOMY = [
     "CUSTOMER_WIN", "CUSTOMER_LOSS", "PRODUCT", "CAPEX",
     "M_AND_A", "MANAGEMENT", "REGULATORY", "LITIGATION",
     "SUPPLY_CHAIN", "COMPETITOR", "PRICING", "CREDIT_DEBT",
-    "DIVIDEND_BUYBACK", "MACRO_EXPOSURE",
+    "DIVIDEND_BUYBACK", "MACRO_EXPOSURE", "ANALYST_RATING", "EARNINGS_CALENDAR",
 ]
 
 CAUSAL_DRIVER_VOCAB = [
@@ -47,6 +47,8 @@ CAUSAL_DRIVER_VOCAB = [
 ]
 
 _MATERIALITY: dict = {
+    "ANALYST_RATING": 0.35,
+    "EARNINGS_CALENDAR": 0.10,
     "GUIDANCE_CHANGE":  0.90,
     "EARNINGS":         0.85,
     "M_AND_A":          0.85,
@@ -167,7 +169,7 @@ def build_news_snapshot(by_ticker: dict) -> dict:
             aid = _article_id(art)
             body    = art.get("body", "") or ""
             excerpt = art.get("excerpt", "") or ""
-            model_input_text = body[:150] if body else excerpt[:100]
+            model_input_text = art.get("model_input_text", body[:150] if body else excerpt[:100])
             content_hash = hashlib.sha256(
                 (art.get("url", "") + model_input_text).encode()
             ).hexdigest()[:16]
@@ -307,6 +309,12 @@ def extract_events_llm(by_ticker: dict, ollama_client_mod,
         except Exception:
             return {"_extraction_ok": False, "_manifest": manifest}
 
+    return validate_extracted_events(parsed, by_ticker, manifest)
+
+
+def validate_extracted_events(parsed: dict, by_ticker: dict, manifest: dict) -> dict:
+    """Shared ticker-scoped evidence validation for legacy and bounded synthesis."""
+    valid_tickers = {t.upper() for t in by_ticker}
     if not isinstance(parsed, dict):
         return {"_extraction_ok": False, "_manifest": manifest}
 
@@ -1341,7 +1349,8 @@ def persist_events(events_by_ticker: dict,
                    manifest: Optional[dict] = None,
                    snapshot_id: Optional[str] = None,
                    captured_at: Optional[str] = None,
-                   input_tickers: Optional[set] = None) -> None:
+                   input_tickers: Optional[set] = None,
+                   commit: bool = True) -> None:
     try:
         # 0613: write snapshot row first as the transaction prerequisite.
         # If this INSERT fails, the exception propagates and no events are committed.
@@ -1443,7 +1452,8 @@ def persist_events(events_by_ticker: dict,
                     th["description"], now_str,
                 ),
             )
-        conn.commit()
+        if commit:
+            conn.commit()
     except Exception:
         conn.rollback()
         raise

@@ -2750,7 +2750,7 @@ class TestAcceptancePolish0618:
                  patch.object(_intel_mod, "run_pipeline", return_value=fake_intel_result), \
                  patch.object(_pai.ollama_client, "stream_generate", side_effect=fake_stream), \
                  patch.object(_maint, "_DB_PATH", db_file):
-                result = _pai.generate_news_summaries()
+                result = _pai.generate_news_summaries_legacy()
         finally:
             for mod_name, orig in orig_modules.items():
                 if orig is None:

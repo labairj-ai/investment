@@ -2553,6 +2553,12 @@ def get_cached_news_summaries_today(news_snapshot_hash=None):
 
 
 def generate_news_summaries(force: bool = False) -> dict:
+    """Generate and atomically publish a source-grounded brief within 88 seconds."""
+    from agents.news.brief import refresh
+    return refresh(force=force, db_path=DB_PATH)
+
+
+def generate_news_summaries_legacy(force: bool = False) -> dict:
     """
     For each holding that has recent news, run the news intelligence pipeline
     (structured event extraction, thesis mapping, trend/scoring, confirmation)

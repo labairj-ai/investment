@@ -10790,7 +10790,7 @@ async function rejectThesisProposal(recId) {{
       const body = document.getElementById('ai-news-body');
       if (body) body.parentNode.insertBefore(el, body);
     }}
-    el.innerHTML = msg;
+    el.textContent = msg;
   }}
   function _clearNewsStatus() {{
     const el = document.getElementById('ai-news-status');
@@ -10974,7 +10974,52 @@ async function rejectThesisProposal(recId) {{
     return {{ html, bucket, pp }};
   }}
 
+  function _newsEscape(value) {{
+    return String(value == null ? '' : value).replace(/[&<>"']/g, c => ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c]));
+  }}
+
+  function _renderBrief(summaries) {{
+    const esc = _newsEscape;
+    const coverage = summaries._coverage || {{}};
+    const articles = summaries._by_ticker || {{}};
+    let html = '';
+    const digest = summaries._digest || [];
+    if (digest.length) {{
+      html += '<div class="news-outlook-panel" style="display:block"><strong>Portfolio developments</strong>';
+      for (const ticker of digest) {{
+        const s = summaries[ticker];
+        if (s) html += `<p><strong>${{esc(ticker)}}</strong> — ${{esc(s.why_it_matters)}}</p>`;
+      }}
+      html += '</div>';
+    }}
+    const statuses = {{no_material_change:'No material development in reviewed coverage', no_recent_articles:'No recent matching articles', unavailable:'Coverage unavailable'}};
+    const quiet = [];
+    for (const [ticker, status] of Object.entries(coverage)) {{
+      const s = summaries[ticker];
+      if (!s || status !== 'material') {{
+        const links = (articles[ticker] || []).map(a => {{
+          const url = String(a.url || '');
+          return url.startsWith('https://') || url.startsWith('http://') ? `<a href="${{esc(url)}}" target="_blank" rel="noopener noreferrer">${{esc(a.source || 'Source')}}</a>` : '';
+        }}).filter(Boolean).join(' · ');
+        quiet.push(`<div style="margin:8px 0"><strong>${{esc(ticker)}}</strong> — ${{esc(statuses[status] || 'Analysis incomplete')}}${{s ? ': '+esc(s.news) : ''}} ${{links}}</div>`);
+        continue;
+      }}
+      html += `<div class="ai-news-ticker"><div class="ai-news-ticker-label">${{esc(ticker)}}</div>`;
+      html += `<div class="ai-news-summary">${{esc(s.news)}}</div>`;
+      html += `<div class="ai-news-factor"><strong>Portfolio impact:</strong> ${{esc(s.why_it_matters)}}</div>`;
+      html += `<div class="ai-news-factor"><strong>Watch next:</strong> ${{esc(s.watch_next)}}</div>`;
+      for (const a of articles[ticker] || []) {{
+        const url = String(a.url || '');
+        if (url.startsWith('https://') || url.startsWith('http://')) html += `<div class="ai-news-item"><a class="ai-news-link" href="${{esc(url)}}" target="_blank" rel="noopener noreferrer">${{esc(a.title)}}</a><span class="ai-news-source">${{esc(a.source)}} · ${{esc(a.pub_date)}}</span></div>`;
+      }}
+      html += '</div>';
+    }}
+    if (quiet.length) html += `<details style="padding:10px"><summary>Other holdings · ${{quiet.length}}</summary>${{quiet.join('')}}</details>`;
+    return html || '<span>No holdings to review.</span>';
+  }}
+
   function _renderNewsBody(bt, summaries, generating, events, themes) {{
+    if (summaries && summaries._brief_version) return _renderBrief(summaries);
     const tickers = Object.keys(bt);
     if (!tickers.length) {{
       return '<span id="ai-news-loading" style="color:#718096;font-size:12px;">No holding-specific news found.</span>';
@@ -11090,9 +11135,10 @@ async function rejectThesisProposal(recId) {{
         }} else if (generating) {{
           tickerHtml += `<div style="font-size:11px;color:#4a5568;font-style:italic;padding:2px 0 4px;">Analyzing…</div>`;
           for (const item of items.slice(0, 3)) {{
-            const title = item.title || '';
-            const url   = item.url   || '';
-            const src   = item.source || '';
+            const title = _newsEscape(item.title || '');
+            const rawUrl = String(item.url || '');
+            const url = rawUrl.startsWith('https://') || rawUrl.startsWith('http://') ? _newsEscape(rawUrl) : '';
+            const src = _newsEscape(item.source || '');
             const link  = url
               ? `<a class="ai-news-link" href="${{url}}" target="_blank" rel="noopener">${{title}}</a>`
               : `<span class="ai-news-link" style="color:#a0aec0">${{title}}</span>`;
@@ -11106,101 +11152,44 @@ async function rejectThesisProposal(recId) {{
     return html || '<span id="ai-news-loading" style="color:#718096;font-size:12px;">No holding-specific news found.</span>';
   }}
 
-  let _newsPollAttempt = 0;
-  function _pollNewsSummary(bt, attempts) {{
-    if (attempts <= 0) {{
-      // Switch to slow polling (every 60s) rather than giving up entirely
-      _setNewsStatus('AI analysis still running — checking every minute…');
-      _newsSummaryPollTimer = setTimeout(() => _pollNewsSummary(bt, 150), 60000);
-      return;
+  let _newsStarted = 0;
+  let _newsRequest = 0;
+  function _applyNewsResponse(data) {{
+    const body = document.getElementById('ai-news-body');
+    const generating = data.status === 'generating';
+    if (body && (data.summaries || Object.keys(data.by_ticker || {{}}).length)) {{
+      body.innerHTML = _renderNewsBody(data.by_ticker || {{}}, data.summaries, true, data.events, data.themes);
     }}
-    _newsPollAttempt++;
-    const elapsed = _newsPollAttempt * 10;
-    _setNewsStatus(`${{_aiSpinner}} AI analysis generating — ${{elapsed}}s elapsed, checking again in 10s…`);
-    fetch('/api/news-summary').then(r => r.json()).then(data => {{
-      if (data.status === 'generating') {{
-        _newsSummaryPollTimer = setTimeout(() => _pollNewsSummary(bt, attempts - 1), 10000);
-        return;
-      }}
-      _clearNewsStatus();
-      if (data.ok && data.summaries) {{
-        const body = document.getElementById('ai-news-body');
-        if (body) body.innerHTML = _renderNewsBody(bt, data.summaries, false, data.events, data.themes);
-        const ts = document.getElementById('ai-news-timestamp');
-        if (ts) ts.textContent = _fmtTimestamp(data.generated_at, data.generated_at_et);
-      }} else if (!data.ok && data.error) {{
-        _setNewsStatus(`AI analysis failed: ${{data.error}}`);
-      }}
-    }}).catch(() => {{ _clearNewsStatus(); }});
+    const ts = document.getElementById('ai-news-timestamp');
+    if (ts && data.generated_at) ts.textContent = _fmtTimestamp(data.generated_at, data.generated_at_et) + (data.stale ? ' · previous brief' : '');
+    if (generating) _setNewsStatus('Synthesizing portfolio news… previous brief remains visible (90-second limit).');
+    else if (data.error) _setNewsStatus('Refresh incomplete: ' + data.error);
+    else _clearNewsStatus();
+    return generating;
   }}
 
-  function _newsSlotKey() {{
-    // Key includes current ET slot so cache auto-invalidates at 6am/12pm/5pm ET
-    const etHour = parseInt(new Date().toLocaleString('en-US', {{ hour: 'numeric', hour12: false, timeZone: 'America/New_York' }}));
-    const etDate = new Date().toLocaleDateString('en-CA', {{ timeZone: 'America/New_York' }});
-    const slot = etHour >= 17 ? '17' : etHour >= 12 ? '12' : etHour >= 6 ? '06' : '00';
-    return 'inv_holding_news_' + etDate + '_' + slot;
-  }}
-  const _NEWS_CACHE_KEY = _newsSlotKey();
-
-  function _saveNewsCache(html, timestamp) {{
+  async function _fetchNews(force, request) {{
     try {{
-      // Clear any previous day's cache entries
-      Object.keys(localStorage).filter(k => k.startsWith('inv_holding_news_') && k !== _NEWS_CACHE_KEY)
-        .forEach(k => localStorage.removeItem(k));
-      localStorage.setItem(_NEWS_CACHE_KEY, JSON.stringify({{ html, timestamp }}));
-    }} catch(e) {{}}
+      const response = await fetch('/api/news-summary' + (force ? '?force=1' : ''), {{signal: AbortSignal.timeout(5000)}});
+      if (!response.ok) throw new Error('News service unavailable');
+      const data = await response.json();
+      if (request !== _newsRequest) return;
+      const generating = _applyNewsResponse(data);
+      if (generating && Date.now() - _newsStarted < 90000) {{
+        _newsSummaryPollTimer = setTimeout(() => _fetchNews(false, request), 1000);
+      }} else if (generating) {{
+        _setNewsStatus('Refresh exceeded 90 seconds; previous brief retained. Refresh to retry.');
+      }}
+    }} catch (e) {{
+      if (request === _newsRequest) _setNewsStatus('News refresh unavailable; previous brief retained.');
+    }}
   }}
 
   window.loadHoldingNews = function(force=false) {{
-    const body = document.getElementById('ai-news-body');
-    if (!body) return;
-    if (_newsSummaryPollTimer) {{ clearTimeout(_newsSummaryPollTimer); _newsSummaryPollTimer = null; }}
-    _newsPollAttempt = 0;
-
-    // Serve from localStorage cache on non-forced loads
-    if (!force) {{
-      try {{
-        const cached = localStorage.getItem(_NEWS_CACHE_KEY);
-        if (cached) {{
-          const {{ html, timestamp }} = JSON.parse(cached);
-          body.innerHTML = html;
-          const ts = document.getElementById('ai-news-timestamp');
-          if (ts && timestamp) ts.textContent = _fmtTimestamp(timestamp) + ' (cached)';
-          return;
-        }}
-      }} catch(e) {{}}
-    }}
-
-    if (force) body.innerHTML = `<div class="ai-loading-wrap">${{_aiSpinner}}<span>Refreshing news…</span></div>`;
-
-    const newsUrl    = force ? '/api/holding-news?force=1' : '/api/holding-news';
-    const summaryUrl = force ? '/api/news-summary?force=1' : '/api/news-summary';
-
-    Promise.all([
-      fetch(newsUrl).then(r => r.json()),
-      fetch(summaryUrl).then(r => r.json()),
-    ]).then(([newsData, sumData]) => {{
-      if (!newsData.ok) {{ body.innerHTML = '<span id="ai-news-loading">News unavailable</span>'; return; }}
-      const bt = newsData.by_ticker || {{}};
-      const generating = sumData.status === 'generating';
-      const summaries = (sumData.ok && sumData.summaries) ? sumData.summaries : null;
-      const events    = (sumData.ok && sumData.events)    ? sumData.events    : {{}};
-      const themes    = (sumData.ok && sumData.themes)    ? sumData.themes    : [];
-      const html = _renderNewsBody(bt, summaries, generating, events, themes);
-      body.innerHTML = html;
-      if (generating) {{
-        _setNewsStatus(`${{_aiSpinner}} AI analysis generating — will auto-update when ready…`);
-        _newsSummaryPollTimer = setTimeout(() => _pollNewsSummary(bt, 150), 10000);
-      }} else {{
-        _clearNewsStatus();
-        const ts = document.getElementById('ai-news-timestamp');
-        if (ts && sumData.generated_at) ts.textContent = _fmtTimestamp(sumData.generated_at, sumData.generated_at_et);
-        _saveNewsCache(html, sumData.generated_at);
-      }}
-    }}).catch(e => {{
-      body.innerHTML = `<span id="ai-news-loading">News fetch failed: ${{e.message}}</span>`;
-    }});
+    if (_newsSummaryPollTimer) clearTimeout(_newsSummaryPollTimer);
+    _newsStarted = Date.now();
+    _newsRequest++;
+    _fetchNews(force, _newsRequest);
   }};
 
   // ── Init ─────────────────────────────────────────────────────────────────

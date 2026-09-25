@@ -692,6 +692,11 @@ def _run_news_refresh():
     # (label, target_hour) — fires when now.hour >= target_hour
     SLOTS = [("06", 6), ("12", 12), ("17", 17)]
     _done = set()  # {(date_str, label)} already run this server session
+    from agents.news.brief import read_json, atomic_json
+    slot_path = PROJECT_DIR / 'out/news_brief_slot.json'
+    last_slot = read_json(slot_path)
+    if last_slot.get('day') and last_slot.get('slot'):
+        _done.add((last_slot['day'], last_slot['slot']))
 
     def _do_refresh(label, today):
         global _news_summary_generating
@@ -699,7 +704,6 @@ def _run_news_refresh():
         print(f"[NewsRefresh] {label}:00 ET refresh starting for {today}…")
         try:
             import csv as _csv
-            import news_fetcher
             import portfolio_ai as _pai
 
             # Load current tickers from holdings.csv
@@ -713,10 +717,7 @@ def _run_news_refresh():
                             tickers.append(t)
             tickers = list(dict.fromkeys(tickers))
 
-            # Step 1: fresh headline + excerpt fetch (force bypasses 30-min cache)
-            news_fetcher.fetch(tickers, force=True)
-
-            # Step 2: AI summaries — respect the lock used by API handlers
+            # One worker owns both evidence collection and synthesis.
             with _news_summary_lock:
                 already = _news_summary_generating
                 if not already:
@@ -724,13 +725,20 @@ def _run_news_refresh():
 
             if already:
                 print(f"[NewsRefresh] {label}: summary already generating, skipping AI step.")
+                return
             else:
                 try:
-                    _pai.generate_news_summaries(force=True)
+                    result = _pai.generate_news_summaries(force=True)
+                    if not result.get('ok'):
+                        raise RuntimeError(result.get('error', 'News refresh failed'))
+                    if result.get('status') != 'ready':
+                        print(f'[NewsRefresh] {label}: another process owns the refresh.')
+                        return
                 except Exception as e:
                     print(f"[NewsRefresh] {label} summary error: {e}")
                     with open(LOG, "a") as lf:
                         lf.write(f"[{_dt.now(TZ)}] {label}:00 summary FAILED: {e}\n")
+                    return
                 finally:
                     with _news_summary_lock:
                         _news_summary_generating = False
@@ -750,10 +758,12 @@ def _run_news_refresh():
         today   = now.date().isoformat()
         weekday = now.weekday()  # 0=Mon … 4=Fri, 5=Sat, 6=Sun
         if weekday < 5:
-            for label, target_hour in SLOTS:
+            due = [(label, hour) for label, hour in SLOTS if now.hour >= hour]
+            for label, target_hour in due[-1:]:
                 key = (today, label)
                 if key not in _done and now.hour >= target_hour:
                     _done.add(key)
+                    atomic_json(slot_path, {'day': today, 'slot': label})
                     _do_refresh(label, today)
         time.sleep(600)  # check every 10 minutes
 
@@ -4632,79 +4642,58 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._json_error(500, f"News fetch failed: {e}")
 
     def _handle_news_summary(self, qs: dict):
-        """GET /api/news-summary — AI-generated per-ticker news summaries + macro angle.
-        ?force=1 triggers regeneration. Returns status='generating' while running."""
+        """One refresh job; serve last-good synthesis during work or failures."""
         global _news_summary_generating
         import portfolio_ai
-
+        from agents.news.brief import latest, read_json, VERSION
         force = qs.get("force", ["0"])[0] == "1"
-        today = today_eastern().isoformat()
-
-        if force:
-            with _news_summary_lock:
-                already = _news_summary_generating
-                if not already:
-                    _news_summary_generating = True
-            if not already:
+        cached, generated_at = latest(portfolio_ai.DB_PATH)
+        state = read_json(PROJECT_DIR / "out/news_brief_state.json")
+        # Process state survives reloads/restarts, but abandoned jobs expire.
+        external_running = (state.get("status") == "generating" and
+                            time.time() - state.get("started_epoch", 0) < 90)
+        cooling_down = (state.get("status") == "error" and
+                        time.time() - state.get("finished_epoch", 0) < 120)
+        fresh = bool(cached and cached.get("_brief_version") == VERSION and
+                     cached.get("_day") == today_eastern().isoformat())
+        if fresh and generated_at:
+            try:
+                fresh = ((now_utc() - parse_timestamp(generated_at)).total_seconds() < 1800 or
+                         (state.get('status') == 'ready' and time.time()-state.get('finished_epoch', 0) < 1800))
+            except Exception:
+                fresh = False
+        # A portfolio change invalidates the brief even within its freshness window.
+        holdings = portfolio_ai._load_holdings_csv()
+        current_tickers = sorted({str(h['Stock']).strip().upper() for h in holdings if h.get('Stock')})
+        import hashlib
+        portfolio_key = hashlib.sha256(json.dumps(holdings, sort_keys=True).encode()).hexdigest()
+        fresh = fresh and cached.get('_holdings') == current_tickers and cached.get('_portfolio_key') == portfolio_key
+        with _news_summary_lock:
+            generating = _news_summary_generating or external_running
+            if (force or (not fresh and not cooling_down)) and not generating:
+                _news_summary_generating = generating = True
                 def _run():
                     global _news_summary_generating
                     try:
-                        portfolio_ai.generate_news_summaries(force=True)
-                    except Exception as e:
-                        print(f"[news-summary] generation failed: {e}")
+                        result = portfolio_ai.generate_news_summaries(force=force)
+                        if not result.get('ok'):
+                            print(f"[news-summary] {result.get('error', 'Refresh failed')}")
                     finally:
                         with _news_summary_lock:
                             _news_summary_generating = False
                 threading.Thread(target=_run, daemon=True).start()
-            self._json({"ok": True, "status": "generating", "date": today})
-            return
-
-        with _news_summary_lock:
-            generating = _news_summary_generating
-        if generating:
-            self._json({"ok": True, "status": "generating", "date": today})
-            return
-
-        cached, generated_at = portfolio_ai.get_cached_news_summaries_today()
-        if cached is not None:
-            if cached.get("_failed"):
-                self._json({"ok": False, "error": cached.get("_error", "Generation failed"), "date": today})
-                return
-            news_gen_at_et = None
-            if generated_at:
-                try:
-                    news_gen_at_et = format_eastern(parse_timestamp(generated_at))
-                except Exception:
-                    pass
-            self._json({
-                "ok": True,
-                "summaries": cached,
-                "events":    cached.get("_events", {}),
-                "themes":    cached.get("_themes", []),
-                "news_hash": cached.get("_news_hash", ""),
-                "date": today,
-                "generated_at": generated_at,
-                "generated_at_et": news_gen_at_et,
-            })
-            return
-
-        # No cache — kick off background generation
-        with _news_summary_lock:
-            already = _news_summary_generating
-            if not already:
-                _news_summary_generating = True
-        if not already:
-            def _run_bg():
-                global _news_summary_generating
-                try:
-                    portfolio_ai.generate_news_summaries(force=False)
-                except Exception as e:
-                    print(f"[news-summary] background generation failed: {e}")
-                finally:
-                    with _news_summary_lock:
-                        _news_summary_generating = False
-            threading.Thread(target=_run_bg, daemon=True).start()
-        self._json({"ok": True, "status": "generating", "date": today})
+        status = 'generating' if generating else ('error' if state.get('status') == 'error' else 'ready')
+        raw = read_json(PROJECT_DIR / 'out/news_brief_articles.json')
+        self._json({
+            'ok': bool(cached) or status != 'error', 'status': status,
+            'summaries': cached, 'events': (cached or {}).get('_events', {}),
+            'themes': (cached or {}).get('_themes', []),
+            'by_ticker': (cached or {}).get('_by_ticker', {}) or raw.get('by_ticker', {}),
+            'generated_at': generated_at,
+            'generated_at_et': format_eastern(parse_timestamp(generated_at)) if generated_at else None,
+            'stale': not fresh or status != 'ready', 'error': state.get('error') if status == 'error' else None,
+            'elapsed_seconds': state.get('elapsed_seconds'),
+        })
 
     def _handle_refresh_financials(self, qs: dict):
         """GET /api/refresh-financials — trigger a background financials fetch for all holdings."""
