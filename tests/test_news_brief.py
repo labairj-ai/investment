@@ -206,6 +206,7 @@ def test_api_does_not_start_second_external_job(tmp_path):
     brief.atomic_json(tmp_path/'out/news_brief_state.json', {'status':'generating','started_epoch':time.time()})
     self = MagicMock()
     with patch.object(brief, 'latest', return_value=(None,None)), \
+         patch.object(brief, 'generation_running', return_value=True), \
          patch.object(portfolio_ai, '_load_holdings_csv', return_value=[]), \
          patch('threading.Thread') as thread:
         handler(self, {'force':['1']})
@@ -254,3 +255,27 @@ def test_maintenance_runs_without_optional_dotenv(tmp_path):
         with pytest.raises(RuntimeError, match='stop after maintenance'):
             brief.worker({'db_path':str(tmp_path/'investment.db')})
         sweep.assert_called_once()
+
+
+def test_orphaned_generation_marker_does_not_block_refresh(tmp_path):
+    import portfolio_ai
+    from unittest.mock import MagicMock
+    handler = api_handler(tmp_path)
+    brief.atomic_json(tmp_path/'out/news_brief_state.json', {'status':'generating','started_epoch':time.time()})
+    self = MagicMock()
+    with patch.object(brief, 'latest', return_value=(None,None)), \
+         patch.object(brief, 'generation_running', return_value=False), \
+         patch.object(portfolio_ai, '_load_holdings_csv', return_value=[]), \
+         patch('threading.Thread') as thread:
+        handler(self, {'force':['1']})
+        thread.return_value.start.assert_called_once()
+
+
+def test_generation_liveness_tracks_lock_not_old_marker(tmp_path):
+    import fcntl
+    db = tmp_path/'investment.db'
+    assert not brief.generation_running(db)
+    with open(tmp_path/'news_brief.lock','a') as lock:
+        fcntl.flock(lock,fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert brief.generation_running(db)
+    assert not brief.generation_running(db)

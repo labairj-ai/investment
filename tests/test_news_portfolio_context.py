@@ -82,7 +82,7 @@ def test_prompt_requires_mechanism_action_and_policy_evidence():
     assert 'business transmission mechanism' in prompt
     assert 'M:rates' in prompt and 'BBB' in prompt
     assert 'Pending bills are not law' in prompt
-    assert '600 words' in prompt
+    assert 'Select source IDs and tickers ONLY' in prompt
 
 
 def test_empty_analysis_is_allowed_rather_than_manufacturing_opportunity():

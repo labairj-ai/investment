@@ -19,12 +19,12 @@ The primary deliverable is a sourced portfolio briefing: risks, opportunities,
 and legislative/policy watch. Each conclusion explains the business mechanism,
 affected holdings, combined position weight, thesis implication, and a specific
 review action or observable condition. Holding-by-holding news remains available
-as supporting detail. The second pass independently writes from the shortlisted sources and affected
-businesses, without inheriting draft prose. Both calls use bounded non-thinking
+as supporting detail. Up to six material topics are shortlisted; the second pass independently writes from their sources and affected
+businesses, without inheriting speculative draft prose. Both calls use bounded non-thinking
 generation and share one time budget. Sampling follows the
 [model guidance](https://huggingface.co/Qwen/Qwen3.6-35B-A3B#best-practices).
 
-A synthesis call receives selected article evidence, current
+A topic-selection call receives selected article evidence, current
 portfolio quantities and cached prices, thesis context for **all holdings**,
 recent supported exposure estimates, fresh cached macro observations, and filtered
 official legislative records. Missing official summaries are fetched concurrently
@@ -43,7 +43,8 @@ snapshot, events and prose are committed atomically. Independently invalid
 conclusions are withheld and disclosed; if all proposed conclusions fail validation,
 the previous brief is retained. Automatic retries have a two-minute cooldown; there is no model
 retry loop. Scheduled refreshes remain 6 AM/noon/5 PM ET and only the latest due
-slot is considered on restart.
+slot is considered on restart. The API checks the generation lock so a service
+restart cannot leave Refresh waiting on an abandoned generating marker.
 
 Production uses `NEWS_LLM_URL=http://100.73.128.40:8081` with the existing Qwen
 model; background analysis uses `LLM_URL` on 8080. `ops/install_news_mlx.py`
@@ -52,7 +53,7 @@ Without `NEWS_LLM_URL`, news falls back to the shared endpoint and may encounter
 queue contention.
 
 Diagnostics: `out/news_brief_state.json` (job result),
-`out/news_brief_attempt.json` (draft and exact input context),
+`out/news_brief_attempt.json` (topic shortlist and exact input context),
 `out/news_brief_review.json` (evidence-reviewed response), and
 `out/news_brief_articles.json` (fetch coverage). The original multi-call version
 remains as `generate_news_summaries_legacy()` for explicit rollback only.
