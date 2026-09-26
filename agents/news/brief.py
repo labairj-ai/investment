@@ -319,7 +319,7 @@ def call_model(prompt, timeout):
     first_token = None
     # Streaming lets the server observe cancellation promptly instead of finishing
     # an abandoned non-streaming request and blocking the next refresh behind it.
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    with urllib.request.urlopen(req, timeout=min(timeout, 45)) as r:
         for line in r:
             if time.monotonic() >= deadline:
                 atomic_json(ROOT / 'out/news_brief_model_response.json', {'text':text, 'usage':usage, 'incomplete':True})

@@ -42,13 +42,18 @@ Source IDs, held tickers, numbers in facts and implications/actions, and policy 
 snapshot, events and prose are committed atomically. Independently invalid
 conclusions are withheld and disclosed; if all proposed conclusions fail validation,
 the previous brief is retained. Automatic retries have a two-minute cooldown; there is no model
-retry loop. Scheduled refreshes remain 6 AM/noon/5 PM ET and only the latest due
+retry loop. Scheduled refreshes run every day at 6 AM/noon/5 PM ET, including weekends.
+Failures retry at five-minute intervals, at most three attempts per slot; only the latest due
 slot is considered on restart. The API checks the generation lock so a service
 restart cannot leave Refresh waiting on an abandoned generating marker.
 
 Production uses `NEWS_LLM_URL=http://100.73.128.40:8081` with the existing Qwen
 model; background analysis uses `LLM_URL` on 8080. `ops/install_news_mlx.py`
-installs the dedicated `com.mlx.news` service with a 512 MB prompt-cache limit.
+installs the dedicated `com.mlx.news` service. Run it with `--bound-shared` to
+bound both model services: 512 MB prompt caches, one active decode/prefill,
+512-token prefill chunks, and a 128 MB allocator cache. A fatal inference-thread
+exception exits the service so launchd restarts it; an HTTP listener alone is not
+considered proof of a working model. Cached weights load offline after restart.
 Without `NEWS_LLM_URL`, news falls back to the shared endpoint and may encounter
 queue contention.
 

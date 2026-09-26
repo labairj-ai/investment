@@ -677,8 +677,8 @@ threading.Thread(target=_run_daily, daemon=True).start()
 def _run_news_refresh():
     """
     Background thread: refresh holding-news headlines + AI summaries at
-    6 AM, 12 PM, and 5 PM ET on weekdays only.
-    Checks every 10 minutes; each slot fires once per calendar day.
+    6 AM, 12 PM, and 5 PM ET every day, including weekends.
+    Checks every 30 seconds; failed slots retry up to three times, five minutes apart.
     """
     import socket
     if socket.gethostname() != "optiplex":
@@ -689,14 +689,8 @@ def _run_news_refresh():
     TZ  = ZoneInfo("America/New_York")
     LOG = PROJECT_DIR / "out" / "news_refresh.log"
 
-    # (label, target_hour) — fires when now.hour >= target_hour
-    SLOTS = [("06", 6), ("12", 12), ("17", 17)]
-    _done = set()  # {(date_str, label)} already run this server session
-    from agents.news.brief import read_json, atomic_json
+    from agents.news.scheduler import run_due_refresh
     slot_path = PROJECT_DIR / 'out/news_brief_slot.json'
-    last_slot = read_json(slot_path)
-    if last_slot.get('day') and last_slot.get('slot'):
-        _done.add((last_slot['day'], last_slot['slot']))
 
     def _do_refresh(label, today):
         global _news_summary_generating
@@ -738,7 +732,7 @@ def _run_news_refresh():
                     print(f"[NewsRefresh] {label} summary error: {e}")
                     with open(LOG, "a") as lf:
                         lf.write(f"[{_dt.now(TZ)}] {label}:00 summary FAILED: {e}\n")
-                    return
+                    return False
                 finally:
                     with _news_summary_lock:
                         _news_summary_generating = False
@@ -748,24 +742,16 @@ def _run_news_refresh():
             with open(LOG, "a") as lf:
                 lf.write(f"[{_dt.now(TZ)}] {label}:00 refresh done — {len(tickers)} tickers\n")
             print(f"[NewsRefresh] {label}:00 refresh done.")
+            return True
         except Exception as exc:
             print(f"[NewsRefresh] {label} refresh failed: {exc}")
             with open(LOG, "a") as lf:
                 lf.write(f"[{_dt.now(TZ)}] {label}:00 refresh FAILED: {exc}\n")
+            return False
 
     while True:
-        now     = _dt.now(TZ)
-        today   = now.date().isoformat()
-        weekday = now.weekday()  # 0=Mon … 4=Fri, 5=Sat, 6=Sun
-        if weekday < 5:
-            due = [(label, hour) for label, hour in SLOTS if now.hour >= hour]
-            for label, target_hour in due[-1:]:
-                key = (today, label)
-                if key not in _done and now.hour >= target_hour:
-                    _done.add(key)
-                    atomic_json(slot_path, {'day': today, 'slot': label})
-                    _do_refresh(label, today)
-        time.sleep(600)  # check every 10 minutes
+        run_due_refresh(_dt.now(TZ), slot_path, _do_refresh)
+        time.sleep(30)
 
 
 threading.Thread(target=_run_news_refresh, daemon=True).start()
