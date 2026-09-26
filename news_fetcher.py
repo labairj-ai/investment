@@ -45,7 +45,7 @@ PUBLIC_FEEDS = [
      "https://feeds.content.dowjones.io/public/rss/RSSWSJD",
      SIMPLE_UA),
     ("Barrons",
-     "https://feeds.content.dowjones.io/public/rss/RSSBarrons",
+     "https://feeds.a.dj.com/rss/BarronsFront.xml",
      SIMPLE_UA),
     ("CNBC",
      "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10001147",
@@ -58,12 +58,14 @@ PUBLIC_FEEDS = [
      SIMPLE_UA),
 ]
 
-# Subscriber RSS feeds — require DJSESSION cookie; fail silently if unavailable
+# Publisher feeds requested with saved subscriber credentials when available.
+# RSS success does not establish full-text subscriber entitlement.
 SUBSCRIBER_FEEDS = [
-    ("WSJ US Business",  "https://feeds.content.dowjones.io/public/rss/WSJUSBusinessFeed"),
-    ("WSJ Markets",      "https://feeds.content.dowjones.io/public/rss/WSJMarketsFeed"),
-    ("WSJ Tech",         "https://feeds.content.dowjones.io/public/rss/WSJTechnologyFeed"),
-    ("Barrons Stocks",   "https://feeds.content.dowjones.io/public/rss/RSSBarronsStocks"),
+    ("WSJ US Business", "https://feeds.content.dowjones.io/public/rss/WSJcomUSBusiness"),
+    ("WSJ Markets", "https://feeds.content.dowjones.io/public/rss/RSSMarketsMain"),
+    ("WSJ Tech", "https://feeds.content.dowjones.io/public/rss/RSSWSJD"),
+    ("MarketWatch", "https://feeds.content.dowjones.io/public/rss/mw_topstories"),
+    ("Barrons", "https://feeds.a.dj.com/rss/BarronsFront.xml"),
 ]
 
 # Article body fetching
@@ -244,7 +246,7 @@ def _build_matcher(ticker, company_name):
 
 # ── DJ Session auth ───────────────────────────────────────────────────────────
 
-def _get_dj_cookies():
+def _get_dj_cookies(allow_login=True):
     """
     Return a full Cookie header string for DJ properties, or None.
     Priority: browser-extracted tokens (WSJ_TAC + WSJ_TR) → WSJ_SESSION →
@@ -283,6 +285,9 @@ def _get_dj_cookies():
                     return f"DJSESSION={cached}"
         except Exception:
             pass
+
+    if not allow_login:
+        return None
 
     # Programmatic DJ SSO login (fallback)
     email    = os.environ.get("WSJ_EMAIL", "").strip()

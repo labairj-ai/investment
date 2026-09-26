@@ -279,3 +279,62 @@ def test_generation_liveness_tracks_lock_not_old_marker(tmp_path):
         fcntl.flock(lock,fcntl.LOCK_EX | fcntl.LOCK_NB)
         assert brief.generation_running(db)
     assert not brief.generation_running(db)
+
+
+def test_subscriber_feeds_and_direct_publisher_duplicate_priority(tmp_path, monkeypatch):
+    import news_fetcher as nf
+    from email.utils import formatdate
+    from urllib.error import HTTPError
+    monkeypatch.setattr(nf, 'SUBSCRIBER_FEEDS', [
+        ('WSJ', 'https://feeds.content.dowjones.io/public/rss/business'),
+        ('Barrons', 'https://feeds.a.dj.com/rss/BarronsFront.xml')])
+    monkeypatch.setattr(nf, 'PUBLIC_FEEDS', [])
+    monkeypatch.setattr(nf, '_get_dj_cookies', lambda allow_login: 'secret' if not allow_login else None)
+    monkeypatch.setattr(nf, '_build_matcher', lambda *a: lambda text: True)
+    monkeypatch.setattr(nf, '_parenthetical_mismatch', lambda *a: False)
+    calls = []
+    class Feed:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def read(self, limit):
+            return ('<rss><channel><item><title>AAA raises guidance</title>'
+                    '<link>https://wsj.com/article</link><pubDate>'+formatdate(usegmt=True)+
+                    '</pubDate><description>Revenue guidance rises.</description>'
+                    '</item></channel></rss>').encode()
+    def fetch(req, timeout):
+        calls.append(req)
+        if 'BarronsFront' in req.full_url:
+            raise HTTPError(req.full_url, 403, 'Forbidden', {}, None)
+        return Feed()
+    monkeypatch.setattr(brief.urllib.request, 'urlopen', fetch)
+    result = brief.fetch_evidence(['AAA'], True, time.monotonic()+1, tmp_path)
+    assert result['by_ticker']['AAA'][0]['source'] == 'WSJ'
+    assert len(result['by_ticker']['AAA']) == 1
+    assert result['subscriber_credentials_available']
+    assert any(h.get('http_status') == 403 for h in result['source_health'])
+    assert 'secret' not in json.dumps(result)
+    for req in calls:
+        if 'finance.yahoo.com' in req.full_url:
+            assert not req.has_header('Cookie')
+        else:
+            assert req.unredirected_hdrs['Cookie'] == 'secret'
+            assert 'Cookie' not in req.headers
+            redirected = brief.urllib.request.HTTPRedirectHandler().redirect_request(
+                req, None, 302, 'Found', {}, 'https://other.example/')
+            assert not redirected.has_header('Cookie')
+
+
+def test_fast_auth_never_attempts_sso(tmp_path, monkeypatch):
+    import news_fetcher as nf
+    import dotenv
+    monkeypatch.setattr(dotenv, 'load_dotenv', lambda *a: None)
+    monkeypatch.setattr(nf, 'SESSION_FILE', tmp_path/'session')
+    for key in ('WSJ_TAC', 'WSJ_TR', 'WSJ_SESSION'):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv('WSJ_EMAIL', 'example@example.com')
+    monkeypatch.setenv('WSJ_PASSWORD', 'secret')
+    with patch.object(nf, '_dj_login') as login:
+        assert nf._get_dj_cookies(allow_login=False) is None
+        login.assert_not_called()
+    monkeypatch.setenv('WSJ_TAC', 'saved-token')
+    assert nf._get_dj_cookies(allow_login=False) == '__tac=saved-token'

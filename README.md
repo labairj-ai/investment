@@ -983,7 +983,7 @@ investment/
 ├── execution_validation.py          # Action-specific execution validation (0092): validate_execution_body(action, body, rec, today) → (code, msg) or None; EXIT/TRIM/ALLOCATE and SELL_CC constraints; imported by serve.py
 ├── macro_context.py                 # Macro data fetcher: yfinance proxies (TLT/GLD/VIX/UUP/TNX/IRX) + FRED API (FEDFUNDS/CPI/T10Y2Y/UNRATE) + RSS headlines; Congress.gov API for official bill tracking + CRS summaries (6-hr cache in out/bills_cache.json); 30-min macro cache in out/macro_cache.json
 ├── portfolio_ai.py                  # Portfolio AI engine: MACRO_DIMS canonical framework; weekly macro scores (Sat 1am ET) + AI narrative summary of score changes stored in macro_score_summaries; per-ticker news summaries (6am/12pm/5pm); daily insight card; portfolio chat; _get_macro_scores_block() injects scores into all prompts; uses Qwen3.6-35B-A3B-4bit via MLX (thinking on for judgment calls, off for mechanical); score history in holding_macro_scores_history
-├── news_fetcher.py                  # Holdings news: fetches from WSJ/Barrons/MarketWatch/Yahoo/CNBC/Reuters RSS; DJ subscriber auth via WSJ_TAC+WSJ_TR in .env; full article body fetching for non-CF-protected sites; 30-min cache in out/news_cache.json
+├── news_fetcher.py                  # Holdings news: fetches from WSJ/Barrons/MarketWatch/Yahoo/CNBC/Reuters RSS; DJ saved credentials via WSJ_TAC+WSJ_TR in .env; full article body fetching for non-CF-protected sites; 30-min cache in out/news_cache.json
 ├── ollama_client.py                 # Thin urllib wrapper for OpenAI-compatible APIs: generate(enable_thinking=False) for JSON batch, stream_generate(enable_thinking=False) for SSE, stream_chat() for multi-turn (thinking always on); resolves LLM_URL lazily at call time (falls back to OLLAMA_URL); handles Qwen3 delta.reasoning tokens
 ├── run_investment.sh                # Manual newsletter entry point
 ├── chart.umd.min.js                 # Bundled Chart.js (no CDN dependency)
@@ -1060,7 +1060,7 @@ investment/
 | `OLLAMA_URL` | Legacy fallback for `LLM_URL`; checked only if `LLM_URL` is unset. Can be used if you still have an Ollama server running the same model. |
 | `FRED_API_KEY` | FRED API key for economic indicators (Fed Funds, CPI, yield spread, unemployment). Free at [fred.stlouisfed.org](https://fred.stlouisfed.org/docs/api/api_key.html). If absent, macro bar shows yfinance-only data. |
 | `CONGRESS_API_KEY` | Congress.gov API key for official bill tracking and CRS summaries. Free at [api.congress.gov/sign-up](https://api.congress.gov/sign-up/). If absent, falls back to GovTrack RSS (no summaries). |
-| `WSJ_TAC` | Piano.io subscriber access JWT for WSJ/Barrons/MarketWatch. Extract from Chrome DevTools: Application → Cookies → wsj.com → `__tac`. Expires ~13 months after login. Enables subscriber-level RSS feed access. |
+| `WSJ_TAC` | Piano.io subscriber access JWT for WSJ/Barrons/MarketWatch. Extract from Chrome DevTools: Application → Cookies → wsj.com → `__tac`. Used with saved credentials on publisher RSS requests; feed responses do not guarantee full subscriber article text. |
 | `WSJ_TR` | Dow Jones user token. Extract from Chrome DevTools: Application → Cookies → wsj.com → `TR`. Paired with `WSJ_TAC`. |
 
 ---
@@ -1089,3 +1089,20 @@ venv/bin/python3 generate_dashboard.py
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.investment.dashboard.plist
 launchctl kickstart gui/$(id -u)/com.investment.dashboard
 ```
+
+### Holding News publisher feeds
+
+The bounded briefing fetch includes WSJ business, markets and technology, MarketWatch,
+and Barron’s publisher endpoints alongside Yahoo and other public sources. Saved
+`WSJ_TAC`/`WSJ_TR`, `WSJ_SESSION`, or a fresh cached DJ session are read locally;
+interactive refresh does not wait for an SSO login. Credentials are sent only to
+allowlisted HTTPS Dow Jones feed hosts and are not forwarded on redirects.
+Publisher feeds use the existing 14-second parallel fetch budget. Direct publisher
+versions win headline duplicates before portfolio relevance and materiality ranking.
+
+`out/news_brief_articles.json` records per-feed status, HTTP failures, article counts,
+and whether credentials were sent, without storing credentials. Successful RSS is
+not evidence of full-text subscription entitlement. On September 26, 2026, WSJ and
+MarketWatch endpoints responded successfully; Barron’s `BarronsFront.xml` returned
+403 even with saved credentials. That failure remains visible in diagnostics; the
+brief uses other available evidence and never bypasses publisher access controls.

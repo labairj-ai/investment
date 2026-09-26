@@ -105,10 +105,13 @@ def fetch_evidence(tickers, force, deadline, out_dir):
     import news_fetcher as nf
     cache_path = out_dir / 'news_brief_articles.json'
     cached = read_json(cache_path)
-    if (not force and cached.get('tickers') == sorted(tickers)
+    if (not force and cached.get('feed_version') == 2 and cached.get('tickers') == sorted(tickers)
             and time.time()-cached.get('_fetched_at', 0) < 900):
         return cached
-    # Never invoke yfinance or subscriber login on the interactive path.
+    # Saved tokens/cache are local reads. Interactive refresh never waits on SSO.
+    cookie = nf._get_dj_cookies(allow_login=False)
+    authenticated_hosts = {'feeds.content.dowjones.io', 'feeds.a.dj.com'}
+    health = {}
     names = read_json(out_dir / '.company_names.json').get('names', {})
     matchers = {t: nf._build_matcher(t, names.get(t)) for t in tickers}
     hosts, host_lock = {}, threading.Lock()
@@ -124,24 +127,49 @@ def fetch_evidence(tickers, force, deadline, out_dir):
             if remaining <= 0:
                 return None
             req = urllib.request.Request(url, headers={'User-Agent': ua})
-            with urllib.request.urlopen(req, timeout=min(4, remaining)) as r:
-                data = r.read(2_000_000)
-            # Empty, valid feeds are distinct from failed responses.
-            root = nf.ET.fromstring(data)
-            if root.tag.split('}')[-1].lower() not in ('rss', 'rdf'):
+            authenticated = bool(cookie and urlsplit(url).scheme == 'https'
+                                 and host in authenticated_hosts)
+            if authenticated:
+                # Never forward subscription credentials through redirects.
+                req.add_unredirected_header('Cookie', cookie)
+            try:
+                with urllib.request.urlopen(req, timeout=min(4, remaining)) as r:
+                    data = r.read(2_000_000)
+            except Exception as exc:
+                health[url] = {'source': source, 'status': 'failed',
+                               'http_status': getattr(exc, 'code', None),
+                               'credentials_sent': authenticated}
                 return None
-            return nf._parse_rss(data, source)
+            # Empty, valid feeds are distinct from failed responses.
+            try:
+                root = nf.ET.fromstring(data)
+                valid = root.tag.split('}')[-1].lower() in ('rss', 'rdf')
+            except nf.ET.ParseError:
+                valid = False
+            if not valid:
+                health[url] = {'source': source, 'status': 'invalid_feed',
+                               'credentials_sent': authenticated}
+                return None
+            items = nf._parse_rss(data, source)
+            health[url] = {'source': source, 'status': 'ok', 'articles': len(items),
+                           'credentials_sent': authenticated}
+            return items
         finally:
             sem.release()
-    jobs = [(t, ('https://feeds.finance.yahoo.com/rss/2.0/headline?s='+t.replace('.', '-')+'&region=US&lang=en-US', 'Yahoo Finance', nf.SIMPLE_UA)) for t in tickers]
-    jobs += [('feed:'+str(i), (url, source, ua)) for i, (source, url, ua) in enumerate(nf.PUBLIC_FEEDS)]
+    jobs = [('subscriber:'+str(i), (url, source, nf.SIMPLE_UA))
+            for i, (source, url) in enumerate(nf.SUBSCRIBER_FEEDS)]
+    publisher_urls = {url for _, url in nf.SUBSCRIBER_FEEDS}
+    jobs += [(t, ('https://feeds.finance.yahoo.com/rss/2.0/headline?s='+t.replace('.', '-')+'&region=US&lang=en-US', 'Yahoo Finance', nf.SIMPLE_UA)) for t in tickers]
+    jobs += [('feed:'+str(i), (url, source, ua)) for i, (source, url, ua) in enumerate(nf.PUBLIC_FEEDS) if url not in publisher_urls]
     results = parallel_until(jobs, feed, deadline, workers=12)
-    broad = [a for k, items in results.items() if k.startswith('feed:') for a in (items or [])]
+    # Stable publisher-first duplicate resolution; completion order is irrelevant.
+    broad = [a for prefix in ('subscriber:', 'feed:') for k, _ in jobs
+             if k.startswith(prefix) for a in (results.get(k) or [])]
     by_ticker, coverage = {}, {}
     cutoff, future = time.time()-86400, time.time()+300
     for t in tickers:
         seen, articles = set(), []
-        for a in (results.get(t) or []) + broad:
+        for a in broad + (results.get(t) or []):
             key = re.sub(r'\W+', ' ', a.get('title', '').lower()).strip()
             if not key or key in seen or not cutoff <= pub_time(a) <= future:
                 continue
@@ -155,7 +183,10 @@ def fetch_evidence(tickers, force, deadline, out_dir):
         if articles:
             by_ticker[t] = articles[:3]
         coverage[t] = 'available' if articles else ('no_recent_articles' if results.get(t) is not None else 'unavailable')
-    result = {'tickers': sorted(tickers), 'by_ticker': by_ticker, 'coverage': coverage,
+    source_health = [dict(health.get(url, {'source': source, 'status': 'timeout'}), url=url)
+                     for _, (url, source, _) in jobs]
+    result = {'feed_version': 2, 'subscriber_credentials_available': bool(cookie),
+              'source_health': source_health, 'tickers': sorted(tickers), 'by_ticker': by_ticker, 'coverage': coverage,
               '_fetched_at': time.time(), 'failed_feeds': [k for k, _ in jobs if results.get(k) is None]}
     atomic_json(cache_path, result)
     return result
