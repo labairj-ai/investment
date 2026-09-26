@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from time_utils import today_eastern
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -875,7 +876,7 @@ class TestEpisodeImmutability:
     def test_news_state_unchanged_after_refresh(self):
         conn = _make_db()
         import datetime
-        today = datetime.date.today().isoformat()
+        today = today_eastern().isoformat()
         _insert_event(conn, "AAPL", "EARNINGS", "NEGATIVE", today, signal_strength=60.0)
         conn.commit()
 
@@ -908,7 +909,7 @@ class TestEpisodeImmutability:
     def test_news_state_includes_version_fields(self):
         conn = _make_db()
         import datetime
-        today = datetime.date.today().isoformat()
+        today = today_eastern().isoformat()
         _insert_event(conn, "TSLA", "DEMAND", "NEGATIVE", today, signal_strength=50.0)
         conn.commit()
 
@@ -937,7 +938,7 @@ class TestVersioning:
     def test_events_stamped_with_version(self):
         conn = _make_db()
         import datetime
-        day = datetime.date.today().isoformat()
+        day = today_eastern().isoformat()
         events = {
             "AAPL": [{
                 "event_type": "EARNINGS", "direction": "NEGATIVE",
@@ -1036,7 +1037,7 @@ class TestCanonicalSnapshot:
         import uuid
         conn = _make_db()
         import datetime as _dt
-        today = _dt.date.today().isoformat()
+        today = today_eastern().isoformat()
         fp = intel._event_fingerprint("META", "EARNINGS", "POSITIVE")
         conn.execute(
             "INSERT INTO news_events "
@@ -1068,8 +1069,8 @@ class TestIndependentEventStateSweep:
         """0602: calling sweep standalone (no run_pipeline) advances FADING for 20d-old event."""
         from datetime import date as _date, timedelta as _td
         conn = _make_db()
-        today = _date.today().isoformat()
-        past_day = (_date.today() - _td(days=20)).isoformat()
+        today = today_eastern().isoformat()
+        past_day = (today_eastern() - _td(days=20)).isoformat()
         _insert_event(conn, "AAPL", "EARNINGS", "NEGATIVE", past_day,
                       causal_event_key="AAPL_FADING_STANDALONE")
         intel.update_event_state_sweep(today, conn)
@@ -1483,7 +1484,7 @@ class TestNewsMaintenance:
             state_as_of TEXT NOT NULL, PRIMARY KEY (ticker, causal_event_key)
         )""")
         import datetime as _dt2
-        today = _dt2.date.today().isoformat()
+        today = today_eastern().isoformat()
         import uuid as _uuid
         conn.execute(
             "INSERT INTO news_events (event_id, ticker, day, event_type, direction, "
@@ -1528,7 +1529,7 @@ class TestNewsMaintenance:
 
         from agents.news import maintenance as _maint
         orig_db = _maint._DB_PATH
-        today = _dt2.date.today().isoformat()
+        today = today_eastern().isoformat()
         try:
             _maint._DB_PATH = db_file
             _maint.run_daily_sweep(day=today)
@@ -1547,7 +1548,7 @@ class TestNewsMaintenance:
         """update_event_state_sweep returns dict with active/fading/resolved keys."""
         conn = _make_db()
         import datetime as _dt2
-        today = _dt2.date.today().isoformat()
+        today = today_eastern().isoformat()
         _insert_event(conn, "AAPL", "EARNINGS", "NEGATIVE", today,
                       causal_event_key="ek_active_test")
         result = intel.update_event_state_sweep(today, conn)
@@ -1570,7 +1571,7 @@ class TestNewsMaintenance:
         conn.close()
 
         import portfolio_ai as _pai
-        today = _dt2.date.today().isoformat()
+        today = today_eastern().isoformat()
         from agents.news import maintenance as _maint
         orig_db_maint = _maint._DB_PATH
         try:
@@ -1705,7 +1706,7 @@ class TestMaintenanceTruthfulness:
         conn.commit()
         conn.close()
         import agents.news.maintenance as maint
-        today = _dt.date.today().isoformat()
+        today = today_eastern().isoformat()
         with patch.object(maint, "_DB_PATH", db_file):
             result = maint.run_daily_sweep(today)
         assert result.get("status") == "error", (
@@ -1940,7 +1941,7 @@ class TestAtomicProvenance:
         import datetime as _dt
         from agents.learning import episode_capture as ep
         conn = _make_db()
-        today = _dt.date.today().isoformat()
+        today = today_eastern().isoformat()
         snap_hash = "provenance_hash_XYZ"
         snap_id = "snap-id-resolved"
         snap_cap = "2026-09-23 08:00:00"
