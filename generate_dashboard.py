@@ -2751,7 +2751,7 @@ def build_dashboard(portfolio, layers, holdings):
         <span id="ai-news-timestamp" style="font-size:10px;font-weight:400;color:#718096;font-style:italic;"></span>
       </span>
       <span>
-        <button class="ai-refresh-btn" onclick="loadHoldingNews(true)">↻ Refresh</button>
+        <button id="ai-news-refresh" class="ai-refresh-btn" onclick="loadHoldingNews(true)">↻ Refresh</button>
       </span>
     </h2>
     <div id="ai-news-body"><span id="ai-news-loading">Loading news…</span></div>
@@ -10978,13 +10978,48 @@ async function rejectThesisProposal(recId) {{
     return String(value == null ? '' : value).replace(/[&<>"']/g, c => ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c]));
   }}
 
+  function _renderPortfolioAnalysis(analysis) {{
+    const esc = _newsEscape;
+    const sources = analysis.sources || {{}};
+    let html = '<div style="margin-bottom:14px;color:#cbd5e0;font-size:12px;">What deserves attention in your portfolio</div>';
+    for (const [kind, label, color] of [['risk','Risks','#fc8181'],['opportunity','Opportunities','#68d391'],['policy','Legislative & policy watch','#c4b5fd']]) {{
+      const items = (analysis.insights || []).filter(item => item.kind === kind);
+      html += `<section style="margin-bottom:20px"><h3 style="color:${{color}};font-size:14px;margin:0 0 10px">${{label}}</h3>`;
+      if (!items.length) {{
+        const available = analysis.context_status && analysis.context_status.policy_count;
+        const text = kind === 'policy' ? (available ? 'Official records reviewed; no material portfolio connection established in this briefing.' : 'No current, sufficiently relevant official policy evidence is available for this briefing.') : 'No additional material '+(kind === 'risk' ? 'risk' : 'opportunity')+' established from the reviewed evidence.';
+        html += `<div style="font-size:12px;color:#94a3b8">${{text}}</div>`;
+      }}
+      for (const item of items) {{
+        const exposure = item.exposure_pct == null ? '' : ` · ${{Number(item.exposure_pct).toFixed(1)}}% of portfolio`;
+        html += `<article style="border-left:3px solid ${{color}};background:rgba(255,255,255,.035);padding:12px 14px;margin-bottom:10px;border-radius:5px">`;
+        html += `<div style="font-weight:700;color:#e2e8f0;margin-bottom:5px">${{esc(item.title)}}</div>`;
+        html += `<div style="font-size:11px;color:${{color}};margin-bottom:8px">${{esc((item.tickers || []).join(', '))}}${{esc(exposure)}}</div>`;
+        html += `<p style="font-size:12px;color:#cbd5e0;line-height:1.6;margin:6px 0">${{esc(item.what_changed)}}</p>`;
+        html += `<p style="font-size:13px;color:#e2e8f0;line-height:1.6;margin:8px 0">${{esc(item.portfolio_impact)}}</p>`;
+        html += `<p style="font-size:12px;line-height:1.6;margin:8px 0"><strong>What to do or watch:</strong> ${{esc(item.watch_or_action)}}</p>`;
+        const links = (item.source_ids || []).map(id => {{
+          const source = sources[id];
+          if (!source) return '';
+          const url = String(source.url || '');
+          return url.startsWith('https://') || url.startsWith('http://') ? `<a class="ai-news-link" href="${{esc(url)}}" target="_blank" rel="noopener noreferrer">${{esc(source.title)}}</a>` : esc(source.title);
+        }}).filter(Boolean);
+        html += `<div style="font-size:10px;color:#94a3b8;margin-top:8px">${{esc(item.evidence_level)}}<div style="margin-top:5px">${{links.join(' · ')}}</div></div></article>`;
+      }}
+      html += '</section>';
+    }}
+    const limits = (analysis.context_status || {{}}).limitations || [];
+    if (limits.length) html += `<details style="font-size:11px;color:#94a3b8;margin-bottom:14px"><summary>Coverage and data limits</summary>${{limits.map(t => '<p>'+esc(t)+'</p>').join('')}}</details>`;
+    return html;
+  }}
+
   function _renderBrief(summaries) {{
     const esc = _newsEscape;
     const coverage = summaries._coverage || {{}};
     const articles = summaries._by_ticker || {{}};
     let html = '';
     const digest = summaries._digest || [];
-    if (digest.length) {{
+    if (digest.length && !summaries._analysis) {{
       html += '<div class="news-outlook-panel" style="display:block"><strong>Portfolio developments</strong>';
       for (const ticker of digest) {{
         const s = summaries[ticker];
@@ -10992,7 +11027,7 @@ async function rejectThesisProposal(recId) {{
       }}
       html += '</div>';
     }}
-    const statuses = {{no_material_change:'No material development in reviewed coverage', no_recent_articles:'No recent matching articles', unavailable:'Coverage unavailable'}};
+    const statuses = {{reviewed:'Reviewed — no separate priority conclusion', no_material_change:'No material development in reviewed coverage', no_recent_articles:'No recent matching articles', unavailable:'Coverage unavailable'}};
     const quiet = [];
     for (const [ticker, status] of Object.entries(coverage)) {{
       const s = summaries[ticker];
@@ -11006,8 +11041,10 @@ async function rejectThesisProposal(recId) {{
       }}
       html += `<div class="ai-news-ticker"><div class="ai-news-ticker-label">${{esc(ticker)}}</div>`;
       html += `<div class="ai-news-summary">${{esc(s.news)}}</div>`;
-      html += `<div class="ai-news-factor"><strong>Portfolio impact:</strong> ${{esc(s.why_it_matters)}}</div>`;
-      html += `<div class="ai-news-factor"><strong>Watch next:</strong> ${{esc(s.watch_next)}}</div>`;
+      if (!summaries._analysis) {{
+        html += `<div class="ai-news-factor"><strong>Portfolio impact:</strong> ${{esc(s.why_it_matters)}}</div>`;
+        html += `<div class="ai-news-factor"><strong>Watch next:</strong> ${{esc(s.watch_next)}}</div>`;
+      }}
       for (const a of articles[ticker] || []) {{
         const url = String(a.url || '');
         if (url.startsWith('https://') || url.startsWith('http://')) html += `<div class="ai-news-item"><a class="ai-news-link" href="${{esc(url)}}" target="_blank" rel="noopener noreferrer">${{esc(a.title)}}</a><span class="ai-news-source">${{esc(a.source)}} · ${{esc(a.pub_date)}}</span></div>`;
@@ -11015,6 +11052,7 @@ async function rejectThesisProposal(recId) {{
       html += '</div>';
     }}
     if (quiet.length) html += `<details style="padding:10px"><summary>Other holdings · ${{quiet.length}}</summary>${{quiet.join('')}}</details>`;
+    if (summaries._analysis) return _renderPortfolioAnalysis(summaries._analysis) + `<details style="margin-top:16px"><summary style="cursor:pointer;color:#a0aec0">Holding-by-holding news and sources</summary><div style="margin-top:12px">${{html}}</div></details>`;
     return html || '<span>No holdings to review.</span>';
   }}
 
@@ -11154,15 +11192,20 @@ async function rejectThesisProposal(recId) {{
 
   let _newsStarted = 0;
   let _newsRequest = 0;
+  function _newsBusy(busy) {{
+    const button = document.getElementById('ai-news-refresh');
+    if (button) {{ button.disabled = busy; button.textContent = busy ? 'Analyzing…' : '↻ Refresh'; }}
+  }}
   function _applyNewsResponse(data) {{
     const body = document.getElementById('ai-news-body');
     const generating = data.status === 'generating';
+    _newsBusy(generating);
     if (body && (data.summaries || Object.keys(data.by_ticker || {{}}).length)) {{
       body.innerHTML = _renderNewsBody(data.by_ticker || {{}}, data.summaries, true, data.events, data.themes);
     }}
     const ts = document.getElementById('ai-news-timestamp');
     if (ts && data.generated_at) ts.textContent = _fmtTimestamp(data.generated_at, data.generated_at_et) + (data.stale ? ' · previous brief' : '');
-    if (generating) _setNewsStatus('Synthesizing portfolio news… previous brief remains visible (90-second limit).');
+    if (generating) _setNewsStatus('Reviewing risks, opportunities and policy… '+Math.round((Date.now()-_newsStarted)/1000)+'s elapsed. The previous brief remains visible.');
     else if (data.error) _setNewsStatus('Refresh incomplete: ' + data.error);
     else _clearNewsStatus();
     return generating;
@@ -11175,13 +11218,14 @@ async function rejectThesisProposal(recId) {{
       const data = await response.json();
       if (request !== _newsRequest) return;
       const generating = _applyNewsResponse(data);
-      if (generating && Date.now() - _newsStarted < 90000) {{
+      if (generating && Date.now() - _newsStarted < 185000) {{
         _newsSummaryPollTimer = setTimeout(() => _fetchNews(false, request), 1000);
       }} else if (generating) {{
-        _setNewsStatus('Refresh exceeded 90 seconds; previous brief retained. Refresh to retry.');
+        _newsBusy(false);
+        _setNewsStatus('Analysis could not finish within 3 minutes; previous brief retained. Refresh to retry.');
       }}
     }} catch (e) {{
-      if (request === _newsRequest) _setNewsStatus('News refresh unavailable; previous brief retained.');
+      if (request === _newsRequest) {{ _newsBusy(false); _setNewsStatus('News refresh unavailable; previous brief retained.'); }}
     }}
   }}
 
@@ -11189,6 +11233,12 @@ async function rejectThesisProposal(recId) {{
     if (_newsSummaryPollTimer) clearTimeout(_newsSummaryPollTimer);
     _newsStarted = Date.now();
     _newsRequest++;
+    if (force) {{
+      const card = document.getElementById('ai-news-card');
+      if (card) card.classList.remove('collapsed');
+      _newsBusy(true);
+      _setNewsStatus('Starting a fresh portfolio analysis…');
+    }}
     _fetchNews(force, _newsRequest);
   }};
 

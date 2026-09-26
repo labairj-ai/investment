@@ -4645,13 +4645,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         """One refresh job; serve last-good synthesis during work or failures."""
         global _news_summary_generating
         import portfolio_ai
-        from agents.news.brief import latest, read_json, VERSION
+        from agents.news.brief import latest, read_json, VERSION, TOTAL_SECONDS
         force = qs.get("force", ["0"])[0] == "1"
         cached, generated_at = latest(portfolio_ai.DB_PATH)
         state = read_json(PROJECT_DIR / "out/news_brief_state.json")
         # Process state survives reloads/restarts, but abandoned jobs expire.
         external_running = (state.get("status") == "generating" and
-                            time.time() - state.get("started_epoch", 0) < 90)
+                            time.time() - state.get("started_epoch", 0) < TOTAL_SECONDS + 5)
         cooling_down = (state.get("status") == "error" and
                         time.time() - state.get("finished_epoch", 0) < 120)
         fresh = bool(cached and cached.get("_brief_version") == VERSION and

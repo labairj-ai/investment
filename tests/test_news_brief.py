@@ -97,7 +97,7 @@ def test_supervisor_timeout_preserves_last_good(tmp_path):
     with patch.object(brief.subprocess, 'run', side_effect=subprocess.TimeoutExpired('worker', 86)) as run:
         result = brief.refresh(True, db)
     assert result['status'] == 'error'
-    assert run.call_args.kwargs['timeout'] == 86
+    assert run.call_args.kwargs['timeout'] == brief.TOTAL_SECONDS
     assert brief.latest(db)[0]['AAA']['news'] == 'previous'
     assert brief.read_json(tmp_path/'news_brief_state.json')['status'] == 'error'
 
@@ -137,11 +137,11 @@ def test_selection_covers_each_holding_before_extra_articles():
     assert all(len(v) == 1 for v in selected.values())
 
 
-def test_model_truncation_is_failure():
+def test_model_truncation_is_failure(tmp_path):
     from unittest.mock import MagicMock
     r = MagicMock()
     r.__enter__.return_value.__iter__.return_value = iter([b'data: '+json.dumps({'choices':[{'finish_reason':'length','delta':{'content':'{}'}}]}).encode()])
-    with patch.object(brief.urllib.request, 'urlopen', return_value=r):
+    with patch.object(brief.urllib.request, 'urlopen', return_value=r), patch.object(brief, 'ROOT', tmp_path):
         with pytest.raises(ValueError, match='output budget'):
             brief.call_model('prompt', 1)
 

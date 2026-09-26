@@ -12,37 +12,50 @@ A personal investment tracking system that sends a daily email newsletter, maint
 - **Screener/CC AI** (`ollama_client.py`) — Buffett thesis, layer compare, covered call analysis, and stock chat; same `Qwen3.6-35B-A3B-4bit` model, thinking disabled for these structured/mechanical calls.
 
 
-### Holdings news: bounded synthesis
+### Holdings news: portfolio intelligence
 
-`agents/news/brief.py` is the active path behind `generate_news_summaries()` and
-`/api/news-summary`. It collects public RSS concurrently, ranks and deduplicates
-stories, selects up to 18 articles (at least one per covered holding), and supplies
-up to 850 evidence characters per article plus portfolio weights and thesis
-context to one non-reasoning synthesis call. It distinguishes fresh developments
-from commentary and reports coverage explicitly for every holding.
+`agents/news/brief.py` powers `generate_news_summaries()` and `/api/news-summary`.
+The primary deliverable is a sourced portfolio briefing: risks, opportunities,
+and legislative/policy watch. Each conclusion explains the business mechanism,
+affected holdings, combined position weight, thesis implication, and a specific
+review action or observable condition. Holding-by-holding news remains available
+as supporting detail. The second pass independently writes from the shortlisted sources and affected
+businesses, without inheriting draft prose. Both calls use bounded non-thinking
+generation and share one time budget. Sampling follows the
+[model guidance](https://huggingface.co/Qwen/Qwen3.6-35B-A3B#best-practices).
 
-A supervising process enforces an 86-second refresh limit. The model stage gets
-at most 64 seconds and less if the remaining overall budget requires it. Source
-IDs, ticker coverage, event fields and factual numeric claims are validated before
-snapshot, events and prose are committed in one SQLite transaction. On failure,
-the previous brief remains visible; failure status has a two-minute automatic-retry
-cooldown (manual refresh can retry sooner). No model call is automatically retried.
-Scheduled refreshes remain 6 AM/noon/5 PM ET; restart only considers the latest due
-slot. Successful output includes timing and coverage diagnostics. This is a bounded
-response deadline, not a guarantee of successful synthesis when upstream services
-are unavailable.
+A synthesis call receives selected article evidence, current
+portfolio quantities and cached prices, thesis context for **all holdings**,
+recent supported exposure estimates, fresh cached macro observations, and filtered
+official legislative records. Missing official summaries are fetched concurrently
+with an eight-second budget and cached separately. It can therefore discuss holdings without direct
+headlines. Stale macro measurements and undated general headlines are excluded.
+Personal-travel bills and ceremonial/committee-funding resolutions are excluded;
+committee votes are not chamber passage. Bills lacking text/CRS summaries are
+explicitly policy-watch items with unverified financial effects, never assumed law.
 
-Production uses `NEWS_LLM_URL=http://100.73.128.40:8081`; the existing shared
-`LLM_URL` service remains on 8080. `ops/install_news_mlx.py`, run with the model
-host's MLX Python, installs `com.mlx.news` using the already downloaded Qwen model
-and a 512 MB prompt-cache limit. Without `NEWS_LLM_URL`, news falls back to the
-shared endpoint, where queue contention can cause deadline failures.
+The refresh aims for roughly one to two minutes, with a 180-second supervisor
+cutoff and at most 150 seconds for the model stage. It fetches public RSS
+concurrently, ranks and deduplicates stories, and selects up to 18 articles
+(at least one per covered holding), with up to 850 evidence characters each.
+Source IDs, held tickers, numbers in facts and implications/actions, and policy stages are validated before
+snapshot, events and prose are committed atomically. Independently invalid
+conclusions are withheld and disclosed; if all proposed conclusions fail validation,
+the previous brief is retained. Automatic retries have a two-minute cooldown; there is no model
+retry loop. Scheduled refreshes remain 6 AM/noon/5 PM ET and only the latest due
+slot is considered on restart.
+
+Production uses `NEWS_LLM_URL=http://100.73.128.40:8081` with the existing Qwen
+model; background analysis uses `LLM_URL` on 8080. `ops/install_news_mlx.py`
+installs the dedicated `com.mlx.news` service with a 512 MB prompt-cache limit.
+Without `NEWS_LLM_URL`, news falls back to the shared endpoint and may encounter
+queue contention.
 
 Diagnostics: `out/news_brief_state.json` (job result),
-`out/news_brief_attempt.json` (latest model output and exact evidence), and
-`out/news_brief_articles.json` (fetch coverage). The legacy multi-call implementation
-remains available as `generate_news_summaries_legacy()` for explicit rollback only;
-it is not called by the dashboard or scheduler.
+`out/news_brief_attempt.json` (draft and exact input context),
+`out/news_brief_review.json` (evidence-reviewed response), and
+`out/news_brief_articles.json` (fetch coverage). The original multi-call version
+remains as `generate_news_summaries_legacy()` for explicit rollback only.
 
 ---
 

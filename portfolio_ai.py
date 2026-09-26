@@ -2553,7 +2553,7 @@ def get_cached_news_summaries_today(news_snapshot_hash=None):
 
 
 def generate_news_summaries(force: bool = False) -> dict:
-    """Generate and atomically publish a source-grounded brief within 88 seconds."""
+    """Generate and atomically publish a source-grounded brief with a bounded 180-second refresh."""
     from agents.news.brief import refresh
     return refresh(force=force, db_path=DB_PATH)
 

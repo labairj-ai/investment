@@ -5,6 +5,7 @@ Pulls yfinance proxy instruments, FRED API indicators, and RSS headlines.
 Results cached in out/macro_cache.json with a 30-minute TTL.
 """
 import json
+import html
 import os
 import re
 import time
@@ -569,7 +570,7 @@ def _bill_stage(action_text: str) -> str:
 
 
 def _fetch_crs_summary(congress: int, bill_type: str, number: str, api_key: str) -> str:
-    """Fetch most recent CRS summary from Congress.gov API. Returns plain text ≤600 chars."""
+    """Fetch most recent CRS summary from Congress.gov API. Returns plain text ≤1800 chars."""
     url = (
         f"{CONGRESS_API_BASE}/bill/{congress}/{bill_type.lower()}/{number}/summaries"
         f"?api_key={api_key}"
@@ -582,8 +583,8 @@ def _fetch_crs_summary(congress: int, bill_type: str, number: str, api_key: str)
         if summaries:
             text = summaries[-1].get("text", "")
             text = re.sub(r"<[^>]+>", " ", text)
-            text = re.sub(r"\s+", " ", text).strip()
-            return text[:600]
+            text = html.unescape(re.sub(r"\s+", " ", text)).strip()
+            return text[:1800]
     except Exception:
         pass
     return ""
@@ -648,7 +649,7 @@ def _fetch_congress_api_bills(api_key: str, days_back: int = 30, max_bills: int 
                 "url":           human_url,
                 "summary":       "",
                 "source":        "Congress.gov",
-                "has_summary":   bool(b.get("hasSummary")),
+                "has_summary":   b.get("hasSummary") is not False,
                 "btype": btype, "bnum": bnum, "cgnum": cgnum,
             })
     except Exception:

@@ -45,3 +45,8 @@ out/*.db-journal
 out/watchdog.db*
 out/watchdog*.json*
 out/watchdog.lock
+
+# Transient holdings-news evidence and generation state
+out/news_brief*.json
+out/news_brief.lock
+out/news_policy_summaries.json
