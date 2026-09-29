@@ -203,8 +203,9 @@ def _fallback_summary(ticker: str, triggers: dict) -> tuple[str, str]:
         pp = triggers["impact"]["impact_pp"]
         parts.append(f"NAV impact {pp:+.2f}pp")
     if "z_score" in triggers:
-        z = triggers["z_score"]["z"]
-        parts.append(f"Z={z:.1f}")
+        z  = triggers["z_score"]["z"]
+        hv = triggers["z_score"]["hv20_pct"]
+        parts.append(f"Z={z:.1f} (daily move is {z:.1f}× its normal daily vol; HV20={hv:.1f}%)")
     summary  = f"{ticker}: flagged — " + ", ".join(parts)
     why_now  = "Deterministic materiality threshold crossed today."
     return summary, why_now

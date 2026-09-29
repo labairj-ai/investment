@@ -10533,6 +10533,17 @@ async function rejectThesisProposal(recId) {{
       html += `<div class="ai-evidence-footer">${{parts.join(' · ')}}</div>`;
     }}
 
+    // Glossary (shown whenever any watch/attention items exist, to define jargon)
+    const hasGuardianItems = (ins.watch || []).concat(ins.needs_attention || [])
+      .some(it => it.signal_type === 'guardian_finding');
+    if (hasGuardianItems) {{
+      html += `<div style="font-size:10px;color:#4a5568;margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,.06);">
+        <span style="color:#718096;font-weight:700;text-transform:uppercase;letter-spacing:.05em;">Glossary · </span>
+        <span title="Z-score: how many of the stock's normal daily standard deviations today's price move represents. Computed as |daily move %| ÷ (20-day historical vol ÷ √252). Flagged when Z ≥ 2.0 (a 2σ+ event)."><span style="color:#a0aec0;font-weight:600;">Z</span> = daily move ÷ normal daily vol (HV20/√252); flagged when Z ≥ 2.0 · </span>
+        <span title="NAV impact in percentage points: position weight × daily change %."><span style="color:#a0aec0;font-weight:600;">NAV impact</span> = weight × daily Δ%</span>
+      </div>`;
+    }}
+
     return html || '<span class="ai-loading">Brief returned no content.</span>';
   }}
 

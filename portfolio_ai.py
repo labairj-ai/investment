@@ -1378,7 +1378,7 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
             "key": item_key,
             "ticker": r["ticker"],
             "signal_type": "recommendation",
-            "summary": f"{action}: {r['rationale'][:100]}",
+            "summary": f"{action}: {r['rationale'][:300]}",
             "source": r["agent_type"] or "unknown",
             "critic_verdict": verdict,
             "is_new": True,
@@ -4365,6 +4365,28 @@ def generate_holding_macro_scores(force: bool = False) -> dict:
             _evidence_conn.close()
         except Exception:
             pass
+
+    # Tickers no longer in to_score (sold, excluded) still have rows in holding_macro_scores.
+    # Without a touch they go stale after SCORE_STALE_DAYS and trigger data_freshness YELLOW.
+    if DB_PATH.exists() and to_score:
+        try:
+            _touch_conn = sqlite3.connect(str(DB_PATH), timeout=10)
+            _all_scored_tickers = {
+                r[0] for r in
+                _touch_conn.execute("SELECT ticker FROM holding_macro_scores").fetchall()
+            }
+            _unprocessed = _all_scored_tickers - set(to_score)
+            if _unprocessed:
+                _ts_touch = now_utc_space()
+                _touch_conn.executemany(
+                    "UPDATE holding_macro_scores SET updated_at=? WHERE ticker=?",
+                    [(_ts_touch, t) for t in sorted(_unprocessed)]
+                )
+                _touch_conn.commit()
+                print(f"[MacroScores] Touched updated_at for {len(_unprocessed)} out-of-scope tickers: {sorted(_unprocessed)}")
+            _touch_conn.close()
+        except Exception as _te:
+            print(f"[MacroScores] WARNING: out-of-scope ticker touch failed: {_te}")
 
     # Update ledger row with final counts — COMPLETE only when scored_n == expected_n (0478, 0485).
     cov = round(scored_n / len(to_score) * 100, 1) if to_score else 100.0
