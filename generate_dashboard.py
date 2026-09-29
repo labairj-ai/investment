@@ -7475,7 +7475,7 @@ function openTxnModal() {{
   const totST   = txns.reduce((s, t) => s + t.st, 0);
   const totLT   = txns.reduce((s, t) => s + t.lt, 0);
   const totAll  = txns.reduce((s, t) => s + t.total, 0);
-  const totTax  = Math.max(0, totST) * (stRate + niit) + Math.max(0, totLT) * (ltRate + niit);
+  const totTax  = totST * (stRate + niit) + totLT * (ltRate + niit);
 
   document.getElementById("txn-subtitle").textContent =
     `${{txns.length}} transaction${{txns.length !== 1 ? "s" : ""}} · ${{yearFilter === "cur" ? curYear : "All Time"}} · ST ${{(stRate*100).toFixed(1)}}%${{niit ? " +3.8% NIIT" : ""}} / LT ${{(ltRate*100).toFixed(1)}}%`;
@@ -7488,9 +7488,14 @@ function openTxnModal() {{
   }}
 
   const rows = txns.map(t => {{
-    const rowST  = Math.max(0, t.st) * (stRate + niit);
-    const rowLT  = Math.max(0, t.lt) * (ltRate + niit);
+    const rowST  = t.st * (stRate + niit);
+    const rowLT  = t.lt * (ltRate + niit);
     const rowTax = rowST + rowLT;
+    const rowTaxCell = rowTax > 0
+      ? `<span style="color:#c0392b;font-weight:600;">~${{fmt2(rowTax)}}</span>`
+      : rowTax < 0
+        ? `<span style="color:#27ae60;font-weight:600;" title="Tax offset from this loss">saves ~${{fmt2(-rowTax)}}</span>`
+        : "—";
     return `<tr style="border-bottom:1px solid #f5f5f5;">
       <td style="padding:7px 8px;">${{t.typeBadge}}</td>
       <td style="padding:7px 8px;font-weight:600;">${{t.ticker}}</td>
@@ -7499,7 +7504,7 @@ function openTxnModal() {{
       <td style="padding:7px 8px;font-weight:700;color:${{gainColor(t.total)}};">${{fmtGain(t.total)}}</td>
       <td style="padding:7px 8px;color:${{t.st !== 0 ? gainColor(t.st) : "#ccc"}};">${{t.st !== 0 ? fmtGain(t.st) : "—"}}</td>
       <td style="padding:7px 8px;color:${{t.lt !== 0 ? gainColor(t.lt) : "#ccc"}};">${{t.lt !== 0 ? fmtGain(t.lt) : "—"}}</td>
-      <td style="padding:7px 8px;color:#c0392b;font-weight:600;">${{rowTax > 0 ? "~" + fmt2(rowTax) : "—"}}</td>
+      <td style="padding:7px 8px;">${{rowTaxCell}}</td>
       <td style="padding:7px 8px;font-size:10px;color:#aaa;max-width:200px;">${{t.notes}}</td>
     </tr>`;
   }}).join("");
@@ -7509,7 +7514,7 @@ function openTxnModal() {{
     <td style="padding:8px;color:${{gainColor(totAll)}};">${{fmtGain(totAll)}}</td>
     <td style="padding:8px;color:${{gainColor(totST)}};">${{fmtGain(totST)}}</td>
     <td style="padding:8px;color:${{totLT !== 0 ? gainColor(totLT) : "#ccc"}};">${{totLT !== 0 ? fmtGain(totLT) : "—"}}</td>
-    <td style="padding:8px;color:#c0392b;">~${{fmt2(totTax)}}</td>
+    <td style="padding:8px;color:${{totTax > 0 ? "#c0392b" : totTax < 0 ? "#27ae60" : "#aaa"}};">${{totTax > 0 ? "~" + fmt2(totTax) : totTax < 0 ? "saves ~" + fmt2(-totTax) : "—"}}</td>
     <td style="padding:8px;"></td>
   </tr>`;
 
