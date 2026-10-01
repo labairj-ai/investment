@@ -223,7 +223,7 @@ def observe_cohort(conn, epoch_id, cohort_id, agent_run_id, candidates, captured
     for c in candidates:
         from .macro_provenance import timestamp
         if c.get("scanned_at"):
-            available_at = timestamp(c["scanned_at"], local=True)
+            available_at = timestamp(c["scanned_at"], local=False)
             if available_at is None or available_at > captured_at:
                 raise ValueError("financial evidence timestamp is invalid or future")
         row = conn.execute("SELECT * FROM decision_episodes WHERE episode_id=?", (c.get("_episode_id"),)).fetchone()
