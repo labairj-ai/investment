@@ -183,7 +183,7 @@ MACRO_DIMS = {
         ),
     },
 }
-SCORE_STALE_DAYS = 5          # scores older than this get a staleness warning in prompts
+SCORE_STALE_DAYS = 7          # scores older than this get a staleness warning in prompts
 SCORE_DIMS   = list(MACRO_DIMS.keys())                      # backwards compat
 SCORE_LABELS = {k: v["short"] for k, v in MACRO_DIMS.items()}  # backwards compat
 
