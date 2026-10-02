@@ -5160,7 +5160,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         def _run():
             try:
+                import financials_fetcher
                 import thesis_engine
+                # Auto-fetch financials if not yet in DB for this ticker
+                if not financials_fetcher.get_financial_summary(ticker):
+                    print(f"[thesis] No financials for {ticker} — fetching now…")
+                    financials_fetcher.fetch_all([ticker], force=False)
                 draft = thesis_engine.draft_thesis(ticker, intake)
                 import agent_db as _adb
                 _adb.save_thesis_draft(
