@@ -2262,7 +2262,29 @@ def learning_readiness_report(conn, model_version: str = None) -> dict:
                 break
 
     if model_version is None:
-        return {"error": "no models found", "canonical_horizon": LEARNING_TARGET_HORIZON}
+        _next_train: str | None = None
+        try:
+            from trade_engine.market_calendar import nth_trading_session_after as _nth_after
+            import datetime as _dt_mod
+            _health_pre = compute_data_health(conn)
+            _elig_pre = _health_pre.get("eligible_episodes", 0)
+            if _elig_pre >= MIN_TRAINING_N:
+                _next_train = "ready"
+            else:
+                _nth_row = conn.execute(
+                    "SELECT captured_at FROM decision_episodes ORDER BY captured_at LIMIT 1 OFFSET ?",
+                    (MIN_TRAINING_N - 1,),
+                ).fetchone()
+                if _nth_row:
+                    _nth_date = _dt_mod.datetime.fromtimestamp(_nth_row[0]).date().isoformat()
+                    _next_train = _nth_after(_nth_date, 63)
+        except Exception:
+            pass
+        return {
+            "error": "no models found",
+            "canonical_horizon": LEARNING_TARGET_HORIZON,
+            "next_training_date": _next_train,
+        }
 
     # Model row
     mv_row = conn.execute("SELECT * FROM learning_models WHERE model_version=?", (model_version,)).fetchone()
