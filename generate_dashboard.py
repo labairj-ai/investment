@@ -3443,6 +3443,10 @@ def build_dashboard(portfolio, layers, holdings):
           <div style="font-size:10px;color:#718096;text-transform:uppercase;letter-spacing:.05em;">Next Maturity</div>
           <div id="learning-status-maturity" style="font-size:13px;font-weight:700;color:#718096;">—</div>
         </div>
+        <div>
+          <div style="font-size:10px;color:#718096;text-transform:uppercase;letter-spacing:.05em;">Next Training</div>
+          <div id="learning-status-next-train" style="font-size:13px;font-weight:700;color:#718096;">—</div>
+        </div>
       </div>
     </div>
 
@@ -9554,6 +9558,16 @@ function loadLearningPanel(btn) {{
       if (_sbDH) {{ _sbDH.textContent = (rp.data_health||'—').toUpperCase(); _sbDH.style.color = dhColor; }}
       var _sbMat = document.getElementById('learning-status-maturity');
       if (_sbMat) _sbMat.textContent = rp.next_maturity_date || '—';
+      var _sbTrain = document.getElementById('learning-status-next-train');
+      if (_sbTrain) {{
+        if (rp.next_training_date === 'ready') {{
+          _sbTrain.textContent = 'Ready now';
+          _sbTrain.style.color = '#38a169';
+        }} else {{
+          _sbTrain.textContent = rp.next_training_date || '—';
+          _sbTrain.style.color = '#4a5568';
+        }}
+      }}
       var incSpread = rp.incremental_ranking_spread;
       var incStr = incSpread !== null && incSpread !== undefined ? ((incSpread*100).toFixed(2)+'%') : '—';
       var incColor = incSpread > 0 ? '#38a169' : (incSpread < 0 ? '#e53e3e' : '#4a5568');

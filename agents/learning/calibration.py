@@ -2321,6 +2321,30 @@ def learning_readiness_report(conn, model_version: str = None) -> dict:
     except Exception:
         pass
 
+    # Next training date: the date when the MIN_TRAINING_N-th oldest episode will be eligible.
+    # Uses nth_trading_session_after so it respects the market calendar exactly.
+    next_training_date: str | None = None
+    try:
+        from trade_engine.market_calendar import nth_trading_session_after as _nth_after
+        if eligible_episodes >= MIN_TRAINING_N:
+            next_training_date = "ready"
+        else:
+            # Find the date of the MIN_TRAINING_N-th oldest episode (0-indexed offset = MIN_TRAINING_N - 1)
+            _nth_row = conn.execute(
+                "SELECT captured_at FROM decision_episodes ORDER BY captured_at LIMIT 1 OFFSET ?",
+                (MIN_TRAINING_N - 1,),
+            ).fetchone()
+            if _nth_row:
+                import datetime as _dt_mod
+                _nth_date = _dt_mod.datetime.fromtimestamp(_nth_row[0]).date().isoformat()
+                if thv == "sessions_v2":
+                    next_training_date = _nth_after(_nth_date, 63)
+                else:
+                    _elig = _dt_mod.date.fromisoformat(_nth_date) + _dt_mod.timedelta(days=91)
+                    next_training_date = _elig.isoformat()
+    except Exception:
+        pass
+
     n_div = pm.get("n_divergent_cohorts", 0)
     return {
         "canonical_horizon": LEARNING_TARGET_HORIZON,
@@ -2364,6 +2388,7 @@ def learning_readiness_report(conn, model_version: str = None) -> dict:
         "data_health": health["overall"],
         "data_health_metrics": health["metrics"],
         "next_maturity_date": next_maturity_date,
+        "next_training_date": next_training_date,
         # 0415: pipeline observability
         "last_shadow_score_at": last_shadow_score_at,
         "last_shadow_cohort_id": last_shadow_cohort_id,
