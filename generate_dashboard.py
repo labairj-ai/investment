@@ -9557,7 +9557,12 @@ function loadLearningPanel(btn) {{
       var _sbDH = document.getElementById('learning-status-health');
       if (_sbDH) {{ _sbDH.textContent = (rp.data_health||'—').toUpperCase(); _sbDH.style.color = dhColor; }}
       var _sbMat = document.getElementById('learning-status-maturity');
-      if (_sbMat) _sbMat.textContent = rp.next_maturity_date || '—';
+      if (_sbMat) {{
+        var _matLabel = rp.next_maturity_date || '—';
+        if (rp.next_maturity_estimated && rp.next_maturity_date) _matLabel = 'est. ' + rp.next_maturity_date;
+        _sbMat.textContent = _matLabel;
+        if (rp.next_maturity_estimated) _sbMat.style.color = '#a0aec0';
+      }}
       var _sbTrain = document.getElementById('learning-status-next-train');
       if (_sbTrain) {{
         if (rp.next_training_date === 'ready') {{

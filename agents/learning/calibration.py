@@ -2263,6 +2263,7 @@ def learning_readiness_report(conn, model_version: str = None) -> dict:
 
     if model_version is None:
         _next_train: str | None = None
+        _est_maturity: str | None = None
         try:
             from trade_engine.market_calendar import nth_trading_session_after as _nth_after
             import datetime as _dt_mod
@@ -2278,12 +2279,16 @@ def learning_readiness_report(conn, model_version: str = None) -> dict:
                 if _nth_row:
                     _nth_date = _dt_mod.datetime.fromtimestamp(_nth_row[0]).date().isoformat()
                     _next_train = _nth_after(_nth_date, 63)
+            if _next_train and _next_train != "ready":
+                _est_maturity = _nth_after(_next_train, 63)
         except Exception:
             pass
         return {
             "error": "no models found",
             "canonical_horizon": LEARNING_TARGET_HORIZON,
             "next_training_date": _next_train,
+            "next_maturity_date": _est_maturity,
+            "next_maturity_estimated": True,
         }
 
     # Model row
