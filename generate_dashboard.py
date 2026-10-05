@@ -1372,6 +1372,21 @@ def build_dashboard(portfolio, layers, holdings):
     import datetime as _dt_mod
 
     # Step 1: TWR over all rows.
+    # Pre-load sell proceeds by date so that sells too small to cross the
+    # unreliable-CF threshold are still detected as capital outflows rather
+    # than being misread as market losses (which would erase realized gains).
+    _sell_proceeds_by_day: dict[str, float] = {}
+    try:
+        _spconn = sqlite3.connect(str(DB_PATH), timeout=5)
+        for _spr in _spconn.execute(
+            "SELECT sell_date, shares_sold * sell_price FROM sell_transactions"
+        ):
+            _spd, _spp = _spr[0], float(_spr[1])
+            _sell_proceeds_by_day[_spd] = _sell_proceeds_by_day.get(_spd, 0.0) + _spp
+        _spconn.close()
+    except Exception:
+        pass
+
     _twr_cum_by_day: dict[str, float] = {}
     _twr_factor = 1.0
     _sub_start  = portfolio[0]["total_value"] if portfolio else 1.0
@@ -1385,7 +1400,21 @@ def build_dashboard(portfolio, layers, holdings):
             _val_ex_cf    = _prev + _pchg
             _cf           = _curr - _val_ex_cf
             _pchg_reliable = _pchg != 0 and abs(_pchg) >= abs(actual_delta) * 0.10
-            _threshold    = (max(1000.0, 0.005 * _prev) if _pchg_reliable
+            # When a sell was recorded on this day or the prior day and the
+            # implied negative flow is at least 30% of the sell proceeds, use
+            # the tighter reliable threshold so the outflow is detected even
+            # when daily_change is small relative to the sold position's value.
+            _d0 = portfolio[_i]["day"]
+            _d1 = portfolio[_i - 1]["day"]
+            _known_sell = (_sell_proceeds_by_day.get(_d0, 0.0)
+                           + _sell_proceeds_by_day.get(_d1, 0.0))
+            _sell_confirms_flow = (
+                _known_sell > 100
+                and _cf < 0
+                and abs(_cf) >= 0.3 * _known_sell
+            )
+            _threshold    = (max(1000.0, 0.005 * _prev)
+                             if (_pchg_reliable or _sell_confirms_flow)
                              else max(10000.0, 0.05 * _prev))
             if abs(_cf) > _threshold:
                 if _sub_start:
