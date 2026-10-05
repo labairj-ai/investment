@@ -2212,7 +2212,13 @@ def build_dashboard(portfolio, layers, holdings):
       font-size: 13px; line-height: 1.55; white-space: pre-wrap; word-break: break-word;
     }}
     .pc-msg-user {{ align-self: flex-end; background: #1a2340; color: #e2e8f0; border-bottom-right-radius: 3px; }}
-    .pc-msg-ai {{ align-self: flex-start; background: #f0f2f8; color: #1a2340; border-bottom-left-radius: 3px; }}
+    .pc-msg-ai {{ align-self: flex-start; background: #f0f2f8; color: #1a2340; border-bottom-left-radius: 3px; line-height: 1.55; }}
+    .pc-msg-ai p {{ margin: .25rem 0; }}
+    .pc-msg-ai ul {{ margin: .3rem 0 .3rem 1.1rem; padding: 0; }}
+    .pc-msg-ai li {{ margin-bottom: .25rem; }}
+    .pc-thinking {{ color: #888; font-style: italic; }}
+    .pc-thinking::after {{ content: ''; animation: pcDots 1.2s steps(4,end) infinite; }}
+    @keyframes pcDots {{ 0%,20% {{ content:''; }} 40% {{ content:'.'; }} 60% {{ content:'..'; }} 80%,100% {{ content:'...'; }} }}
     #pc-input-area {{
       border-top: 1px solid #e8edf4; padding: .65rem;
       display: flex; flex-direction: column; gap: .5rem;
@@ -10755,12 +10761,28 @@ async function rejectThesisProposal(recId) {{
     const body = document.getElementById('pc-body');
     if (body) body.scrollTop = body.scrollHeight;
   }}
+  function pcMarkdown(text) {{
+    // Simple markdown → HTML: headers, bold, bullets, line breaks
+    let html = text
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      .replace(/^#{1,3} (.+)$/gm, '<div style="font-weight:700;margin:.6rem 0 .2rem;font-size:13px;color:#1a2340">$1</div>')
+      .replace(/^[-•] (.+)$/gm, '<li style="margin-bottom:.25rem">$1</li>')
+      .replace(/(<li[\s\S]+?<\/li>)/g, '<ul style="margin:.3rem 0 .3rem 1.1rem;padding:0">$1</ul>')
+      .replace(/\n\n+/g, '</p><p style="margin:.5rem 0">')
+      .replace(/\n/g, '<br>');
+    return '<p style="margin:.25rem 0">' + html + '</p>';
+  }}
   function pcAddMsg(role, text) {{
     const msgs = document.getElementById('pc-messages');
     const div = document.createElement('div');
     div.className = 'pc-msg ' + (role === 'user' ? 'pc-msg-user' : 'pc-msg-ai');
-    div.textContent = text;
-    if (role === 'assistant') div.dataset.streaming = '1';
+    if (role === 'user') {{
+      div.textContent = text;
+    }} else {{
+      div.innerHTML = text;
+      div.dataset.streaming = '1';
+    }}
     msgs.appendChild(div);
     document.getElementById('pc-empty').style.display = 'none';
     document.getElementById('pc-clear-btn').style.display = '';
@@ -10776,7 +10798,7 @@ async function rejectThesisProposal(recId) {{
     inp.value = '';
     pcMessages.push({{ role: 'user', content: text }});
     pcAddMsg('user', text);
-    const aiDiv = pcAddMsg('assistant', '…');
+    const aiDiv = pcAddMsg('assistant', '<span class="pc-thinking">Thinking…</span>');
     document.getElementById('pc-error').style.display = 'none';
     pcStreaming = true;
     document.getElementById('pc-send').disabled = true;
@@ -10787,13 +10809,13 @@ async function rejectThesisProposal(recId) {{
       headers: {{ 'Content-Type': 'application/json' }},
       body: JSON.stringify({{ messages: pcMessages }}),
     }}).then(resp => {{
-      if (resp.status === 429) {{ pcShowError('AI advisor is busy — try again in a moment.'); finishPc(aiDiv, ''); return; }}
+      if (resp.status === 429) {{ pcShowError('AI advisor is busy — try again in a moment.'); finishPc(aiDiv, '', ''); return; }}
       const reader = resp.body.getReader();
       const dec = new TextDecoder();
-      let buf = '', fullText = '';
+      let buf = '', fullText = '', answering = false;
       function pump() {{
         return reader.read().then(({{ done, value }}) => {{
-          if (done) {{ finishPc(aiDiv, fullText); return; }}
+          if (done) {{ finishPc(aiDiv, fullText, fullText); return; }}
           buf += dec.decode(value, {{ stream: true }});
           const parts = buf.split('\\n\\n');
           buf = parts.pop();
@@ -10801,21 +10823,40 @@ async function rejectThesisProposal(recId) {{
             if (!part.startsWith('data: ')) continue;
             try {{
               const evt = JSON.parse(part.slice(6));
-              if (evt.token) {{ fullText += evt.token; aiDiv.textContent = fullText; pcScrollBottom(); }}
-              else if (evt.status === 'done') {{ finishPc(aiDiv, fullText); return; }}
-              else if (evt.error) {{ pcShowError(evt.error); finishPc(aiDiv, fullText); return; }}
+              if (evt.status === 'thinking' && !answering) {{
+                aiDiv.innerHTML = '<span class="pc-thinking">Thinking…</span>';
+              }} else if (evt.status === 'answer') {{
+                answering = true;
+                aiDiv.innerHTML = '';
+              }} else if (evt.token) {{
+                if (!answering) {{ answering = true; aiDiv.innerHTML = ''; }}
+                fullText += evt.token;
+                aiDiv.innerHTML = pcMarkdown(fullText);
+                pcScrollBottom();
+              }} else if (evt.status === 'done') {{
+                finishPc(aiDiv, fullText, fullText);
+                return;
+              }} else if (evt.error) {{
+                pcShowError(evt.error);
+                finishPc(aiDiv, fullText, fullText);
+                return;
+              }}
             }} catch(e) {{}}
           }}
           return pump();
         }});
       }}
-      pump().catch(e => {{ pcShowError(e.message); finishPc(aiDiv, fullText); }});
-    }}).catch(e => {{ pcShowError(e.message); finishPc(aiDiv, ''); }});
+      pump().catch(e => {{ pcShowError(e.message); finishPc(aiDiv, fullText, fullText); }});
+    }}).catch(e => {{ pcShowError(e.message); finishPc(aiDiv, '', ''); }});
   }};
 
-  function finishPc(div, text) {{
-    if (text) {{ div.textContent = text; pcMessages.push({{ role: 'assistant', content: text }}); }}
-    else if (div.textContent === '…') div.textContent = '(no response)';
+  function finishPc(div, text, rawText) {{
+    if (text) {{
+      div.innerHTML = pcMarkdown(text);
+      pcMessages.push({{ role: 'assistant', content: rawText || text }});
+    }} else {{
+      div.innerHTML = '<em style="color:#999">(no response)</em>';
+    }}
     pcStreaming = false;
     document.getElementById('pc-send').disabled = false;
     document.querySelectorAll('.pc-chip').forEach(b => b.disabled = false);

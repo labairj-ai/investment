@@ -4898,7 +4898,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             try:
                 for tok in ollama_client.stream_chat(
                     full_messages, model=ollama_client.DEFAULT_MODEL,
-                    temperature=0.4, num_predict=3500
+                    temperature=0.4, num_predict=3500, content_only=True
                 ):
                     _tok_q.put(("token", tok))
                 _tok_q.put(("done", None))
@@ -4917,13 +4917,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             )
             self.wfile.flush()
             threading.Thread(target=_generate, daemon=True).start()
+            thinking_sent = False
             while True:
                 try:
-                    kind, val = _tok_q.get(timeout=10)
+                    kind, val = _tok_q.get(timeout=2)
                 except _queue.Empty:
                     _sse({"status": "thinking"})
+                    thinking_sent = True
                     continue
                 if kind == "token":
+                    if thinking_sent:
+                        _sse({"status": "answer"})
+                        thinking_sent = False
                     _sse({"token": val})
                 elif kind == "done":
                     _sse({"status": "done"})

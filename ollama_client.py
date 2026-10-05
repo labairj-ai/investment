@@ -178,8 +178,13 @@ def stream_generate(prompt, model=DEFAULT_MODEL, temperature=0.3, num_predict=70
                     yield token
 
 
-def stream_chat(messages, model=DEFAULT_MODEL, temperature=0.4, num_predict=1000):
-    """Multi-turn conversational chat — yields text tokens. messages = [{role, content}, ...]"""
+def stream_chat(messages, model=DEFAULT_MODEL, temperature=0.4, num_predict=1000,
+                content_only=False):
+    """Multi-turn conversational chat — yields text tokens. messages = [{role, content}, ...]
+
+    content_only=True: skip delta.reasoning tokens and yield only delta.content.
+    The model still thinks (better quality) but the chain-of-thought is not surfaced.
+    """
     import time as _time
     payload = json.dumps({
         "model": model,
@@ -216,9 +221,11 @@ def stream_chat(messages, model=DEFAULT_MODEL, temperature=0.4, num_predict=1000
             if line.startswith(b"data: "):
                 chunk = json.loads(line[6:])
                 delta = chunk["choices"][0]["delta"]
-                # Qwen3 thinking models emit reasoning tokens before content tokens;
-                # yield both so chat shows the thinking process then the answer.
-                token = delta.get("content") or delta.get("reasoning", "")
+                if content_only:
+                    token = delta.get("content", "")
+                else:
+                    # Yield both reasoning and content so callers see thinking + answer.
+                    token = delta.get("content") or delta.get("reasoning", "")
                 token = _SPECIAL_TOKENS.sub('', token)
                 if token:
                     yield token
