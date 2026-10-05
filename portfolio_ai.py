@@ -1304,11 +1304,11 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
         capability_state["news_contract_error"] = str(_e)
     try:
         _ep_row = conn.execute(
-            "SELECT epoch_id, status FROM macro_experiment_epochs"
+            "SELECT epoch_id, macro_config_version FROM macro_experiment_epochs"
             " ORDER BY rowid DESC LIMIT 1"
         ).fetchone()
         capability_state["macro_stage"] = (
-            f"epoch={_ep_row['epoch_id']} status={_ep_row['status']}"
+            f"epoch={_ep_row['epoch_id']} version={_ep_row['macro_config_version']}"
             if _ep_row else "no epochs"
         )
     except Exception as _e:
