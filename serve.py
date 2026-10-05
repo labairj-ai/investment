@@ -4965,6 +4965,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                                 t = str(row.get("Stock", "")).strip().upper()
                                 if t:
                                     held.append(t)
+                    # Insert not-held thesis tickers first, then sync owned status
+                    agent_db.sync_thesis_candidates(held)
                     agent_db.sync_owned_candidates(held)
                 except Exception:
                     pass

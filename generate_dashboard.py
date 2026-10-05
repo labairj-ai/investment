@@ -8030,7 +8030,7 @@ function addCandidate() {{
 const _CAND_STATUS_COLOR = {{
   active:'#27ae60', watch:'#f39c12', owned:'#3498db', rejected:'#e74c3c'
 }};
-const _CAND_SOURCE_LABEL = {{ BUFFETT:'Buffett', MANUAL:'Manual' }};
+const _CAND_SOURCE_LABEL = {{ BUFFETT:'Buffett', MANUAL:'Manual', THESIS:'Thesis' }};
 
 function _candHistId(ticker) {{ return 'cand-hist-' + ticker.replace(/[^A-Z0-9]/g,'_'); }}
 

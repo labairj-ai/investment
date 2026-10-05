@@ -3114,6 +3114,46 @@ def sync_owned_candidates(holdings_tickers: list[str]) -> None:
     conn.close()
 
 
+def sync_thesis_candidates(holdings_tickers: list[str]) -> None:
+    """Add ACTIVE-thesis tickers to candidate_universe when not held, so sold
+    thesis positions surface for re-evaluation. Held thesis tickers are skipped
+    here — sync_owned_candidates() manages the owned/active cycle for those.
+
+    Rules:
+    - Not held + not yet in candidate_universe → INSERT with source='THESIS'
+    - Not held + already exists (any source/status) → no change (respect existing record)
+    - Held → skip (sync_owned_candidates marks them owned if already tracked)
+    - Thesis rows are NEVER modified; they persist across sell→rebuy cycles.
+    """
+    held = set(t.upper() for t in holdings_tickers)
+    conn = _connect()
+
+    thesis_tickers = {
+        row[0].upper()
+        for row in conn.execute(
+            "SELECT DISTINCT ticker FROM investment_theses WHERE status='ACTIVE'"
+        ).fetchall()
+    }
+
+    now = time.time()
+    for ticker in thesis_tickers:
+        if ticker in held:
+            continue
+        existing = conn.execute(
+            "SELECT status FROM candidate_universe WHERE ticker=?", (ticker,)
+        ).fetchone()
+        if not existing:
+            conn.execute(
+                """INSERT OR IGNORE INTO candidate_universe
+                   (ticker, source, added_at, status, notes)
+                   VALUES (?, 'THESIS', ?, 'active', 'Active investment thesis')""",
+                (ticker, now),
+            )
+
+    conn.commit()
+    conn.close()
+
+
 def mark_candidate_evaluated(ticker: str) -> None:
     conn = _connect()
     conn.execute(
