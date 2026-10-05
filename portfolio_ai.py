@@ -3074,6 +3074,8 @@ def _apply_final_narrative(
             ticker = first_high.get("ticker", "")
             ftype = first_high.get("finding_type", "") or first_high.get("signal_type", "")
             summary = first_high.get("summary") or f"{ticker} {ftype}".strip() or "risk item"
+            if ticker and ticker not in summary:
+                summary = f"{ticker}: {summary}"
             ticker_ref = f"{ticker} {ftype}".strip() if (ticker or ftype) else "attention item"
         else:
             summary = "high-severity risk item detected"
@@ -3096,6 +3098,8 @@ def _apply_final_narrative(
         if first:
             ticker = first.get("ticker", "")
             summary = first.get("summary") or f"{ticker} attention item".strip()
+            if ticker and ticker not in summary:
+                summary = f"{ticker}: {summary}"
         else:
             summary = "attention items present"
         output["headline"] = f"Portfolio needs attention — {summary}."
