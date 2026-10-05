@@ -1050,10 +1050,10 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
             "confidence": r["confidence"],
             "priority": r["priority"],
             "agent_type": r["agent_type"],
-            "rationale": (r["rationale"] or "")[:200],
-            "why_now": (r["why_now"] or "")[:200],
+            "rationale": (r["rationale"] or "")[:400],
+            "why_now": (r["why_now"] or "")[:400],
             "critic_verdict": verdict,
-            "critic_objection": (r["strongest_objection"] or "")[:200],
+            "critic_objection": (r["strongest_objection"] or "")[:400],
             "created_at": r["created_at"],
         })
 
@@ -1378,7 +1378,7 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
             "key": item_key,
             "ticker": r["ticker"],
             "signal_type": "recommendation",
-            "summary": f"{action}: {r['rationale'][:300]}",
+            "summary": f"{action}: {r['rationale'][:400]}",
             "source": r["agent_type"] or "unknown",
             "critic_verdict": verdict,
             "is_new": True,
