@@ -10520,8 +10520,16 @@ async function rejectThesisProposal(recId) {{
     // Watch / No Action — one card per ticker, color-coded by direction
     if (ins.watch && ins.watch.length) {{
       function _wDir(w) {{
-        if (w.signal_type === 'thesis_health' || w.signal_type === 'recommendation') return 'neg';
         const s = w.summary || '';
+        if (w.signal_type === 'thesis_health') return 'neg';
+        if (w.signal_type === 'recommendation') {{
+          const action = s.split(':')[0].trim().toUpperCase();
+          const positiveActions = ['SELL_CC','BUY','OPPORTUNITY'];
+          const negativeActions = ['EXIT','TRIM','SELL'];
+          if (positiveActions.includes(action)) return 'pos';
+          if (negativeActions.includes(action)) return 'neg';
+          return 'neu'; // HOLD_CALL, HOLD, ROLL_OUT, ROLL_UP_AND_OUT, BUY_TO_CLOSE, etc.
+        }}
         if (s.includes('(POSITIVE)')) return 'pos';
         if (s.includes('(NEGATIVE)')) return 'neg';
         return 'neu';
