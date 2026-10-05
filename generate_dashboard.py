@@ -10541,7 +10541,15 @@ async function rejectThesisProposal(recId) {{
         if (!byTicker.has(key)) byTicker.set(key, []);
         byTicker.get(key).push(w);
       }});
-      const cards = Array.from(byTicker.entries()).map(([ticker, items]) => {{
+      const sortedEntries = Array.from(byTicker.entries()).sort(([, a], [, b]) => {{
+        function cardRank(items) {{
+          const dirs = items.map(_wDir);
+          const hasNeg = dirs.includes('neg'), hasPos = dirs.includes('pos');
+          return hasPos && !hasNeg ? 0 : hasNeg ? 2 : 1;
+        }}
+        return cardRank(a) - cardRank(b);
+      }});
+      const cards = sortedEntries.map(([ticker, items]) => {{
         const dirs = items.map(_wDir);
         const hasNeg = dirs.includes('neg'), hasPos = dirs.includes('pos');
         const borderColor = hasNeg && hasPos ? '#f6ad55' : hasNeg ? '#e05252' : hasPos ? '#48bb78' : '#4a5568';
