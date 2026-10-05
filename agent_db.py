@@ -3126,6 +3126,10 @@ def sync_thesis_candidates(holdings_tickers: list[str]) -> None:
     - Thesis rows are NEVER modified; they persist across sell→rebuy cycles.
     """
     held = set(t.upper() for t in holdings_tickers)
+    # Normalize held set to handle BRK.B ↔ BRK-B style variants so a thesis
+    # written with one convention isn't treated as "not held" when the holding
+    # uses the other.
+    held_normalized = held | {t.replace(".", "-") for t in held} | {t.replace("-", ".") for t in held}
     conn = _connect()
 
     thesis_tickers = {
@@ -3137,7 +3141,7 @@ def sync_thesis_candidates(holdings_tickers: list[str]) -> None:
 
     now = time.time()
     for ticker in thesis_tickers:
-        if ticker in held:
+        if ticker in held_normalized:
             continue
         existing = conn.execute(
             "SELECT status FROM candidate_universe WHERE ticker=?", (ticker,)
