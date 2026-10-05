@@ -179,11 +179,11 @@ def stream_generate(prompt, model=DEFAULT_MODEL, temperature=0.3, num_predict=70
 
 
 def stream_chat(messages, model=DEFAULT_MODEL, temperature=0.4, num_predict=1000,
-                content_only=False):
+                yield_type=False):
     """Multi-turn conversational chat — yields text tokens. messages = [{role, content}, ...]
 
-    content_only=True: skip delta.reasoning tokens and yield only delta.content.
-    The model still thinks (better quality) but the chain-of-thought is not surfaced.
+    yield_type=True: yield (is_reasoning, token) tuples so callers can separate
+    chain-of-thought from the final answer without discarding either.
     """
     import time as _time
     payload = json.dumps({
@@ -221,14 +221,11 @@ def stream_chat(messages, model=DEFAULT_MODEL, temperature=0.4, num_predict=1000
             if line.startswith(b"data: "):
                 chunk = json.loads(line[6:])
                 delta = chunk["choices"][0]["delta"]
-                if content_only:
-                    token = delta.get("content", "")
-                else:
-                    # Yield both reasoning and content so callers see thinking + answer.
-                    token = delta.get("content") or delta.get("reasoning", "")
+                is_reasoning = "reasoning" in delta and "content" not in delta
+                token = delta.get("content") or delta.get("reasoning", "")
                 token = _SPECIAL_TOKENS.sub('', token)
                 if token:
-                    yield token
+                    yield (is_reasoning, token) if yield_type else token
 
 
 def get_model_id() -> str:

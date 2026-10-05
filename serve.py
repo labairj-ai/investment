@@ -4896,11 +4896,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         def _generate():
             try:
-                for tok in ollama_client.stream_chat(
+                for is_reasoning, tok in ollama_client.stream_chat(
                     full_messages, model=ollama_client.DEFAULT_MODEL,
-                    temperature=0.4, num_predict=3500, content_only=True
+                    temperature=0.4, num_predict=3500, yield_type=True
                 ):
-                    _tok_q.put(("token", tok))
+                    _tok_q.put(("thinking" if is_reasoning else "token", tok))
                 _tok_q.put(("done", None))
             except Exception as exc:
                 _tok_q.put(("error", str(exc)))
@@ -4917,18 +4917,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             )
             self.wfile.flush()
             threading.Thread(target=_generate, daemon=True).start()
-            thinking_sent = False
+            answering = False
             while True:
                 try:
-                    kind, val = _tok_q.get(timeout=2)
+                    kind, val = _tok_q.get(timeout=10)
                 except _queue.Empty:
                     _sse({"status": "thinking"})
-                    thinking_sent = True
                     continue
-                if kind == "token":
-                    if thinking_sent:
+                if kind == "thinking":
+                    _sse({"status": "thinking"})
+                elif kind == "token":
+                    if not answering:
                         _sse({"status": "answer"})
-                        thinking_sent = False
+                        answering = True
                     _sse({"token": val})
                 elif kind == "done":
                     _sse({"status": "done"})
