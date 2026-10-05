@@ -10517,8 +10517,24 @@ async function rejectThesisProposal(recId) {{
       html += `<div class="ai-section"><div class="ai-section-label">↑ Opportunities (${{ins.opportunities.length}})</div>${{items}}</div>`;
     }}
 
-    // Watch / No Action — one card per ticker
+    // Watch / No Action — one card per ticker, color-coded by direction
     if (ins.watch && ins.watch.length) {{
+      function _wDir(w) {{
+        if (w.signal_type === 'thesis_health' || w.signal_type === 'recommendation') return 'neg';
+        const s = w.summary || '';
+        if (s.includes('(POSITIVE)')) return 'pos';
+        if (s.includes('(NEGATIVE)')) return 'neg';
+        return 'neu';
+      }}
+      function _wSignalHtml(w) {{
+        const dir = _wDir(w);
+        const textColor = dir === 'pos' ? '#68d391' : dir === 'neg' ? '#fc8181' : '#a0aec0';
+        // Highlight the direction tag in bold, escape the rest
+        let escaped = _esc(w.summary || '');
+        if (dir === 'pos') escaped = escaped.replace('(POSITIVE)', '<strong>(POSITIVE)</strong>');
+        if (dir === 'neg') escaped = escaped.replace('(NEGATIVE)', '<strong>(NEGATIVE)</strong>');
+        return `<div class="ai-watch-signal" style="color:${{textColor}}">${{escaped}}</div>`;
+      }}
       const byTicker = new Map();
       ins.watch.forEach(w => {{
         const key = w.ticker || '—';
@@ -10526,9 +10542,13 @@ async function rejectThesisProposal(recId) {{
         byTicker.get(key).push(w);
       }});
       const cards = Array.from(byTicker.entries()).map(([ticker, items]) => {{
-        const tickerLabel = ticker !== '—' ? `<span class="ai-item-ticker">${{_esc(ticker)}}</span>` : '';
-        const signals = items.map(w => `<div class="ai-watch-signal">${{_esc(w.summary || '')}}</div>`).join('');
-        return `<div class="ai-watch-item">${{tickerLabel}}${{signals}}</div>`;
+        const dirs = items.map(_wDir);
+        const hasNeg = dirs.includes('neg'), hasPos = dirs.includes('pos');
+        const borderColor = hasNeg && hasPos ? '#f6ad55' : hasNeg ? '#e05252' : hasPos ? '#48bb78' : '#4a5568';
+        const tickerColor = hasNeg && hasPos ? '#f6ad55' : hasNeg ? '#fc8181' : hasPos ? '#68d391' : '#e2e8f0';
+        const tickerLabel = ticker !== '—' ? `<span class="ai-item-ticker" style="color:${{tickerColor}}">${{_esc(ticker)}}</span>` : '';
+        const signals = items.map(_wSignalHtml).join('');
+        return `<div class="ai-watch-item" style="border-left-color:${{borderColor}}">${{tickerLabel}}${{signals}}</div>`;
       }}).join('');
       html += `<div class="ai-section"><div class="ai-section-label">· Watch / No Action (${{byTicker.size}} stock${{byTicker.size === 1 ? '' : 's'}} · ${{ins.watch.length}} signal${{ins.watch.length === 1 ? '' : 's'}})</div>${{cards}}</div>`;
     }}
