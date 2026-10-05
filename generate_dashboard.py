@@ -2120,7 +2120,11 @@ def build_dashboard(portfolio, layers, holdings):
     .ai-attention-item {{ background: rgba(252,129,74,.12); border-left: 3px solid #fc814a; color: #fbd38d; }}
     .ai-opp-item {{ background: rgba(72,187,120,.12); border-left: 3px solid #48bb78; color: #9ae6b4; }}
     .ai-watch-item {{ background: rgba(113,128,150,.12); border-left: 3px solid #4a5568; color: #a0aec0; }}
+    .ai-watch-signal {{ font-size: 12px; line-height: 1.5; padding: 3px 0; word-break: break-word;
+      border-top: 1px solid rgba(255,255,255,.05); margin-top: 4px; }}
+    .ai-watch-signal:first-child {{ border-top: none; margin-top: 0; }}
     .ai-item-ticker {{ font-weight: 700; color: #e2e8f0; margin-right: 6px; }}
+    .ai-watch-item .ai-item-ticker {{ display: block; margin-right: 0; margin-bottom: 4px; font-size: 12px; letter-spacing: .04em; }}
     .ai-item-meta {{ font-size: 10px; color: #718096; margin-top: 3px; }}
     .ai-new-badge {{ display: inline-block; background: rgba(66,153,225,.25);
       color: #90cdf4; font-size: 9px; font-weight: 700; padding: 1px 5px;
@@ -10513,13 +10517,20 @@ async function rejectThesisProposal(recId) {{
       html += `<div class="ai-section"><div class="ai-section-label">↑ Opportunities (${{ins.opportunities.length}})</div>${{items}}</div>`;
     }}
 
-    // Watch / No Action
+    // Watch / No Action — one card per ticker
     if (ins.watch && ins.watch.length) {{
-      const items = ins.watch.map(w => {{
-        const ticker = w.ticker ? `<span class="ai-item-ticker">${{_esc(w.ticker)}}</span>` : '';
-        return `<div class="ai-watch-item">${{ticker}}${{_esc(w.summary || '')}}</div>`;
+      const byTicker = new Map();
+      ins.watch.forEach(w => {{
+        const key = w.ticker || '—';
+        if (!byTicker.has(key)) byTicker.set(key, []);
+        byTicker.get(key).push(w);
+      }});
+      const cards = Array.from(byTicker.entries()).map(([ticker, items]) => {{
+        const tickerLabel = ticker !== '—' ? `<span class="ai-item-ticker">${{_esc(ticker)}}</span>` : '';
+        const signals = items.map(w => `<div class="ai-watch-signal">${{_esc(w.summary || '')}}</div>`).join('');
+        return `<div class="ai-watch-item">${{tickerLabel}}${{signals}}</div>`;
       }}).join('');
-      html += `<div class="ai-section"><div class="ai-section-label">· Watch / No Action (${{ins.watch.length}})</div>${{items}}</div>`;
+      html += `<div class="ai-section"><div class="ai-section-label">· Watch / No Action (${{byTicker.size}} stock${{byTicker.size === 1 ? '' : 's'}} · ${{ins.watch.length}} signal${{ins.watch.length === 1 ? '' : 's'}})</div>${{cards}}</div>`;
     }}
 
     // Stable state compact message

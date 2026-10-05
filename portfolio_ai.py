@@ -1407,7 +1407,7 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
             "key": item_key,
             "ticker": ns.get("ticker"),
             "signal_type": "news_signal",
-            "summary": f"{event_type} ({direction}): {ns.get('evidence_text', '')[:100]}",
+            "summary": f"{event_type} ({direction}): {ns.get('evidence_text', '')[:300]}",
             "source": "news_events",
             "confidence": confidence,
             "thesis_relevance": thesis_rel,
