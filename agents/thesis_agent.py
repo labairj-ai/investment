@@ -511,13 +511,14 @@ def run_thesis_monitor(ctx: AgentContext) -> list[Recommendation]:
                 confidence=calculate_confidence(_evidence(fin_rows)),
                 priority="high",
                 why_now=f"Composite thesis health {composite:.0f}/100 below exit threshold ({_EXIT_THRESHOLD:.0f}).",
-                rationale=rule_cond or overall_summary,
+                rationale=overall_summary,
                 counter_case="Confirm metrics are not distorted by one-time items before exiting.",
                 action_payload={
                     "thesis_id":       thesis_id,
                     "composite_score": round(composite, 1),
                     "trigger":         "low_composite_score",
                     "violated_pillars": [p["name"] for p in updated_pillars if p["det_status"] == "VIOLATED"],
+                    "exit_rule_condition": rule_cond or None,
                 },
                 dependencies=[{
                     "dependency_type": "THESIS_VERSION",
@@ -548,13 +549,14 @@ def run_thesis_monitor(ctx: AgentContext) -> list[Recommendation]:
                     f"Composite health {composite:.0f}/100; "
                     f"{violated_fraction*100:.0f}% of thesis weight in violated pillars."
                 ),
-                rationale=rule_cond or overall_summary,
+                rationale=overall_summary,
                 counter_case="Monitor for thesis recovery before trimming.",
                 action_payload={
                     "thesis_id":              thesis_id,
                     "composite_score":        round(composite, 1),
                     "violated_weight_fraction": round(violated_fraction, 2),
                     "trigger":                "trim_rule",
+                    "trim_rule_condition": rule_cond or None,
                 },
                 dependencies=[{
                     "dependency_type": "THESIS_VERSION",

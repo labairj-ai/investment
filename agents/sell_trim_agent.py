@@ -769,6 +769,7 @@ def _call_llm(
     decision_quality_note: str = "",
     critical_pillar_violated: bool = False,
     trim_fraction: float | None = None,
+    violated_pillar_names: list[str] | None = None,
 ) -> dict | None:
     claim_lines = "\n".join(
         f"  [{d['status'].upper()}] {d['claim']} (weight={d['weight']:.1f})"
@@ -776,10 +777,14 @@ def _call_llm(
     ) or "  no claims in deteriorated state"
 
     dq_section = f"\nHISTORICAL DECISION QUALITY NOTE: {decision_quality_note}" if decision_quality_note else ""
-    hard_exit_note = (
-        "\nHARD EXIT TRIGGER: A critical investment pillar is VIOLATED. "
-        "Action is EXIT regardless of composite score."
-    ) if critical_pillar_violated else ""
+    if critical_pillar_violated:
+        pillar_names = ", ".join(violated_pillar_names) if violated_pillar_names else "see T detail above"
+        hard_exit_note = (
+            f"\nHARD EXIT TRIGGER: Critical thesis pillar(s) VIOLATED: {pillar_names}. "
+            "Action is EXIT because a critical pillar failure is confirmed by other signals."
+        )
+    else:
+        hard_exit_note = ""
     trim_note = (
         f"\nTRIM FRACTION: {trim_fraction:.0%} of position "
         f"(scaled {ss:.0f}/100 in 48–67 TRIM band)"
@@ -800,17 +805,21 @@ TAX NOTE (separate — never changes the action): {tax_note}
 {hard_exit_note}
 Rules:
 - action must be HOLD, REVIEW, TRIM, or EXIT (not NO_ACTION)
-- primary_rationale from: THESIS_BREAK, FUNDAMENTAL_DETERIORATION, VALUATION, \
+- primary_rationale: pick the DOMINANT driver from T, F, V, P, O based on which score is highest
+  Options: THESIS_BREAK, FUNDAMENTAL_DETERIORATION, VALUATION, \
 PORTFOLIO_CONCENTRATION, CAPITAL_REALLOCATION, RISK_CHANGE, TAX_STRATEGY
-- what_would_cause_exit: name a specific observable metric + threshold
+- why_now: describe what is CURRENTLY TRUE in the data — specific metrics that have already \
+deteriorated, scores that have already crossed thresholds. Do NOT write hypothetical future \
+conditions ("if X falls below Y") — state what has already happened.
+- what_would_cause_exit: name a specific observable metric + threshold (forward-looking is OK here)
 - Do not recommend selling purely for tax efficiency
 
 Return ONLY this JSON (no markdown):
 {{
   "action": "{suggested_action}",
-  "primary_rationale": "PORTFOLIO_CONCENTRATION",
-  "summary": "<one-sentence plain-English summary>",
-  "why_now": "<what changed or what threshold was crossed>",
+  "primary_rationale": "<dominant driver>",
+  "summary": "<one-sentence plain-English summary of current conditions>",
+  "why_now": "<current facts: what has already deteriorated or crossed a threshold>",
   "what_would_cause_exit": "<specific observable condition>",
   "counter_case": "<strongest argument against selling>",
   "tax_note": "<copy the tax note provided above>",
@@ -891,7 +900,9 @@ def _run(ctx: AgentContext) -> list[Recommendation]:
 
         # 0188: graduated critical pillar bypass — EXIT only when other signals confirm;
         # violation alone (thesis only) → REVIEW so analyst can assess severity.
-        _other_signal = (F > 20 or V > 50 or P > 50 or O > 40)
+        # P (concentration) intentionally excluded: overweight alone should drive TRIM
+        # to resize, not EXIT — concentration is a sizing issue, not a thesis break.
+        _other_signal = (F > 20 or V > 50 or O > 40)
         if critical_pillar_violated:
             if _other_signal:
                 suggested = "EXIT"
@@ -925,6 +936,7 @@ def _run(ctx: AgentContext) -> list[Recommendation]:
         except Exception:
             pass
 
+        violated_names = [d["claim"] for d in t_detail if d["status"].upper() == "VIOLATED"]
         try:
             result = _call_llm(
                 ticker, ss, T, F, V, P, O,
@@ -933,6 +945,7 @@ def _run(ctx: AgentContext) -> list[Recommendation]:
                 decision_quality_note=dq_note,
                 critical_pillar_violated=critical_pillar_violated,
                 trim_fraction=trim_fraction,
+                violated_pillar_names=violated_names,
             )
         except Exception as _llm_err:
             print(f"[SellTrim] LLM failed for {ticker}: {_llm_err}")
