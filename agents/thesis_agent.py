@@ -618,12 +618,13 @@ def run_thesis_monitor(ctx: AgentContext) -> list[Recommendation]:
                     f"All thesis pillars HEALTHY/STRONG (composite {composite:.0f}/100) — "
                     "ADD conditions met."
                 ),
-                rationale=rule_cond or overall_summary,
+                rationale=overall_summary or rule_cond,
                 counter_case="Check position sizing — may already be at target weight.",
                 action_payload={
                     "thesis_id":          thesis_id,
                     "composite_score":    round(composite, 1),
                     "trigger":            "add_rule",
+                    "add_rule_condition": rule_cond or None,
                     "valuation_unverified": True if _valuation_unverified else None,
                 },
                 dependencies=[{
