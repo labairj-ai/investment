@@ -1390,7 +1390,12 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
         elif is_approved:
             attention_items.append(base)
         else:
-            watch_items.append(base)
+            objection = r.get("critic_objection") or ""
+            if objection:
+                watch_base = {**base, "summary": f"{action} ({verdict}): {objection}"}
+            else:
+                watch_base = base
+            watch_items.append(watch_base)
 
     from agents.news.intelligence import classify_news_event as _classify_news_event
     for ns in news_signals:
