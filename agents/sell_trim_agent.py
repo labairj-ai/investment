@@ -850,6 +850,10 @@ Return ONLY this JSON (no markdown):
 def _run(ctx: AgentContext) -> list[Recommendation]:
     recs: list[Recommendation] = []
 
+    if ctx.trigger_type == "earnings" and ctx.ticker:
+        import financials_fetcher
+        financials_fetcher.fetch_all([ctx.ticker], force=True)
+
     for holding in ctx.snapshot.holdings:
         ticker        = holding.ticker
         weight_pct    = holding.weight_pct

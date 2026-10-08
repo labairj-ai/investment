@@ -25,7 +25,7 @@ _DB = Path(__file__).resolve().parent.parent / "out" / "investment.db"
 class TriggerEvent:
     trigger_type: str           # layer_drift | price_move | nav_impact | macro_score_change |
                                 # cc_eligible | cc_mgmt_dte | tax_lt_crossover | tax_loss_harvest |
-                                # layer_underweight | portfolio_scope
+                                # layer_underweight | portfolio_scope | earnings
     agent_type: str             # which agent should handle this trigger
     trigger_key: str | None = None    # human-readable identifier (e.g. "L1", ticker)
     ticker: str | None = None         # None for portfolio-scope triggers
@@ -163,6 +163,31 @@ def _hv20_daily(prices: list[float]) -> float | None:
     mean = sum(last_20) / len(last_20)
     variance = sum((r - mean) ** 2 for r in last_20) / (len(last_20) - 1)
     return math.sqrt(variance * 252)
+
+
+# ── Earnings date loader ───────────────────────────────────────────────────────
+
+def _load_recent_earnings(tickers: list[str], lookback_days: int = 3) -> dict[str, str]:
+    """Return {ticker: event_date} for tickers whose earnings date fell within
+    the last `lookback_days` days (i.e. report just published)."""
+    conn = _connect()
+    if not conn:
+        return {}
+    today = today_eastern()
+    cutoff = (today - datetime.timedelta(days=lookback_days)).isoformat()
+    today_str = today.isoformat()
+    result: dict[str, str] = {}
+    for ticker in tickers:
+        row = conn.execute(
+            """SELECT event_date FROM earnings_dates
+               WHERE ticker=? AND event_date >= ? AND event_date <= ?
+               ORDER BY event_date DESC LIMIT 1""",
+            (ticker, cutoff, today_str),
+        ).fetchone()
+        if row:
+            result[ticker] = row["event_date"]
+    conn.close()
+    return result
 
 
 # ── Layer number extractor ─────────────────────────────────────────────────────
@@ -376,6 +401,26 @@ def detect_triggers(snapshot: PortfolioSnapshot) -> list[TriggerEvent]:
                          "avg_deficit_pp": avg_deficit,
                          "consecutive_days": TRIGGER_LAYER_UNDERWEIGHT_DAYS},
             ))
+
+    # ── Recent earnings → force-refresh financials + re-evaluate thesis ──────────
+    recent_earnings = _load_recent_earnings(tickers, lookback_days=3)
+    for ticker, event_date in recent_earnings.items():
+        triggers.append(TriggerEvent(
+            trigger_type="earnings",
+            agent_type="thesis_monitor",
+            trigger_key=ticker,
+            ticker=ticker,
+            trigger_value=None,
+            context={"earnings_date": event_date},
+        ))
+        triggers.append(TriggerEvent(
+            trigger_type="earnings",
+            agent_type="sell_trim",
+            trigger_key=ticker,
+            ticker=ticker,
+            trigger_value=None,
+            context={"earnings_date": event_date},
+        ))
 
     # ── Thesis monitoring (daily portfolio sweep) ─────────────────────────────
     triggers.append(TriggerEvent(
