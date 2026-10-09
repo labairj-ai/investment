@@ -11,6 +11,7 @@ Designed to run from Optiplex via systemd timer (outcome-labeler.timer).
 """
 from __future__ import annotations
 
+import math
 import sys
 import time
 from datetime import date, datetime, timedelta, timezone
@@ -37,8 +38,11 @@ _HORIZONS_SESSIONS: list[tuple[str, int]] = [
     ("12m", 252),
 ]
 
-# Episodes must be at least this old before their 1w label is written.
-_MIN_AGE_DAYS = 7
+# Episodes must be at least this old before labeling is attempted.
+# 6 days (not 7) so that evening captures (after market close) clear the gate
+# on the calendar day their 5-session 1w horizon matures, before the watchdog
+# deadline fires at 19:00 ET on that same day.
+_MIN_AGE_DAYS = 6
 
 
 def _entry_date(captured_at: float) -> str:
@@ -92,12 +96,16 @@ def _yf_price(ticker: str, target_date: str) -> float | None:
         hist  = yf.Ticker(ticker).history(start=start, end=end, auto_adjust=True)
         if hist.empty:
             return None
-        # Walk back up to 5 days to find a trading day
+        # Walk back up to 5 days to find a trading day with a valid close.
+        # yfinance can return NaN for the current trading day before data settles;
+        # skip those rows so we don't silently produce invalid outcomes.
         for delta in range(6):
             candidate = (date.fromisoformat(target_date) - timedelta(days=delta)).isoformat()
             for idx, row in hist.iterrows():
                 if idx.strftime("%Y-%m-%d") == candidate:
-                    return float(row["Close"])
+                    close = float(row["Close"])
+                    if math.isfinite(close) and close > 0:
+                        return close
     except Exception as e:
         print(f"[outcome_labeler] yfinance fetch failed for {ticker} @ {target_date}: {e}")
     return None
