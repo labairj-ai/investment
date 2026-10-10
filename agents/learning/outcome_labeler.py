@@ -208,7 +208,10 @@ def _label_one_episode(
         h_price     = _get_ticker_price(ticker, h_date)
         if entry_price is None or h_price is None or entry_price == 0:
             print(f"[outcome_labeler] missing price for {ticker} "
-                  f"entry={entry} horizon={h_date} — skipping")
+                  f"entry={entry} horizon={h_date} — writing unevaluable placeholder")
+            if not dry_run:
+                _insert_outcome(conn, episode_id, horizon_label, None, None, None, None, None, "calendar_v1")
+                conn.commit()
             continue
 
         ticker_return = (h_price / entry_price) - 1.0
@@ -266,6 +269,11 @@ def _label_one_episode(
             entry_price = _get_ticker_price(ticker, entry)
             h_price_sv2 = _get_ticker_price(ticker, h_date_sv2)
             if entry_price is None or h_price_sv2 is None or entry_price == 0:
+                print(f"[outcome_labeler] missing price for {ticker} "
+                      f"entry={entry} horizon={h_date_sv2} (sessions_v2) — writing unevaluable placeholder")
+                if not dry_run:
+                    _insert_outcome(conn, episode_id, horizon_label, None, None, None, None, None, "sessions_v2")
+                    conn.commit()
                 continue
 
             tr_sv2 = (h_price_sv2 / entry_price) - 1.0

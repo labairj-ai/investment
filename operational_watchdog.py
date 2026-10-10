@@ -237,7 +237,14 @@ def outcomes_and_marks(conn, baseline, now):
                 continue
             due_n += 1
             if _outcome(conn, ep['episode_id'], horizon, now) is None:
-                missing.append(dict(episode_id=ep['episode_id'], horizon=horizon, reason='missing_or_invalid_outcome'))
+                # Distinguish truly missing (no row) from unevaluable (row exists but NULL returns = no price data)
+                has_placeholder = conn.execute(
+                    "SELECT 1 FROM episode_outcomes WHERE episode_id=? AND horizon=? "
+                    "AND horizon_definition_version='sessions_v2'",
+                    (ep['episode_id'], horizon),
+                ).fetchone()
+                if not has_placeholder:
+                    missing.append(dict(episode_id=ep['episode_id'], horizon=horizon, reason='missing_or_invalid_outcome'))
     for cohort in conn.execute("SELECT * FROM macro_experiment_cohorts WHERE epoch_id=? AND status='OBSERVED'", (baseline['epoch_id'],)):
         for horizon in ('1w','1m','3m'):
             day = maturity_date(cohort['decision_date'], 'sessions_v2', horizon)
