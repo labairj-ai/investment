@@ -1976,6 +1976,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             from covered_call_accrual import accrual_health
             from strategy_config import CC_V3_CONFIG
             self._json(accrual_health(CC_V3_CONFIG))
+        elif parsed.path == "/api/learning/cc-experiment-version":
+            from covered_call_change_control import experiment_version_info
+            from strategy_config import CC_V3_CONFIG
+            self._json(experiment_version_info(CC_V3_CONFIG))
         elif parsed.path == "/api/learning/stats":
             _valid_horizons = {"1w", "1m", "3m", "6m", "12m"}
             _h = parse_qs(parsed.query).get("horizon", ["3m"])[0]
