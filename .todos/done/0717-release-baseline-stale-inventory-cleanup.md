@@ -1,7 +1,7 @@
 # Clean Resolved Release-Baseline Failures and Restore Green CI
 
 - **ID:** 0717
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-10-13
 - **Priority:** high
 - **Depends:** 0710

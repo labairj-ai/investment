@@ -1,14 +1,14 @@
 # Normalize Completed TODO Status Metadata and Audit Trail
 
 - **ID:** 0722
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-10-13
 - **Priority:** normal
 - **Depends:** none
 
 ## Problem
 
-Several completed CC TODO files under `.todos/done/` still contain `**Status:** backlog` even though their implementations are on `main`.
+Several completed CC TODO files under `.todos/done/` still contain `**Status:** done` even though their implementations are on `main`.
 
 This does not affect runtime behavior, but it weakens the repository audit trail and makes automated status reporting ambiguous.
 
