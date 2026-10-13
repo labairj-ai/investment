@@ -129,17 +129,16 @@ def test_behavioral_hash_change_with_version_bump_and_manifest_passes(monkeypatc
     # Capture real state before patching (this becomes the baseline/prior)
     real_state = current_contract_state(CC_V3_CONFIG)
     write_baseline(CC_V3_CONFIG)
-    # Define proposed state
+    # Only engine_hash changes (not sim_contract_hash) → model_version is the correct bump
     proposed = dict(real_state, engine_hash='new-hash-after-bump',
-                    simulator_contract_version='simulator-contract-2',
-                    simulator_contract_hash=real_state['simulator_contract_hash'])
+                    model_version='cc-v3.3')
     _make_transition_manifest(manifests_dir, prior_state=real_state, proposed_state=proposed)
     monkeypatch.setattr(cc, 'current_contract_state', lambda config: proposed)
     result = cc.check_contract_consistency(CC_V3_CONFIG)
     assert result['hash_changed'] is True
     assert result['version_bumped'] is True
     assert result['has_manifest'] is True
-    assert result['ok'] is True
+    assert result['ok'] is True, result['findings']
     assert result['applicable_manifest'] is not None
     assert result['applicable_manifest']['manifest_id'] == '20261013-test-change'
 
