@@ -238,7 +238,7 @@ def check_contract_consistency(config, *, _baseline_file=None, _manifests_dir=No
     Returns a dict with:
       ok                  — True if no issues found
       hash_changed        — whether engine_hash or simulator_contract_hash changed
-      version_bumped      — whether simulator_contract_version changed
+      version_bumped      — whether every required component moved forward
       has_manifest        — whether an applicable transition manifest was found
       applicable_manifest — parsed manifest dict (if exactly one found), else None
       findings            — list of issue strings (empty if ok)
@@ -286,11 +286,15 @@ def check_contract_consistency(config, *, _baseline_file=None, _manifests_dir=No
         current['engine_hash'] != baseline.get('engine_hash') or
         current['simulator_contract_hash'] != baseline.get('simulator_contract_hash')
     )
-    version_bumped = (
-        current['simulator_contract_version'] != baseline.get('simulator_contract_version') or
-        current['model_version'] != baseline.get('model_version') or
-        current['simulator_version'] != baseline.get('simulator_version')
-    )
+    required_components = []
+    if current['engine_hash'] != baseline['engine_hash']:
+        required_components.append('model_version')
+    if current['simulator_contract_hash'] != baseline['simulator_contract_hash']:
+        required_components.append('simulator_contract_version')
+    version_bumped = bool(required_components) and all(
+        version_transition(field, baseline[field], current[field]) == 'FORWARD'
+        for field in required_components)
+
 
     manifest_result = find_applicable_manifests(baseline, current, _manifests_dir)
     applicable = manifest_result['applicable']

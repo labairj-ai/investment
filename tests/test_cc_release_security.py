@@ -39,9 +39,12 @@ def test_approved_promotion_and_missing_candidate(transition):
     assert any('CANDIDATE_BASELINE_MISMATCH' in f for f in check()['findings'])
 
 
-@pytest.mark.parametrize('text', ['{', '{}', '{"schema_version":"unknown"}'])
+@pytest.mark.parametrize('text', ['{', '{}', 'unknown-schema'])
 def test_invalid_prior_rejected(transition, text):
     *_, pf, md, check = transition
+    if text == 'unknown-schema':
+        data=json.loads(pf.read_text()); data['schema_version']='unknown'
+        text=json.dumps(data)
     pf.write_text(text)
     assert not check()['ok']
 
@@ -215,4 +218,6 @@ def test_matching_candidate_invalid_bump_rejected(transition, value, code):
     current['model_version']=value
     bf.write_text(json.dumps(dict(current,schema_version=cc.BASELINE_SCHEMA_VERSION)))
     _make_manifest(md,prior,current)
-    assert any(code in f for f in check()['findings'])
+    result=check()
+    assert result['version_bumped'] is False
+    assert any(code in f for f in result['findings'])

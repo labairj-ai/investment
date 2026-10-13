@@ -115,6 +115,7 @@ def test_unknown_schema_version_exits_1_subprocess(tmp_path):
     assert result.returncode == 1
     out = json.loads(result.stdout)
     assert out['baseline_malformed'] is True
+    assert any('schema_version' in f for f in out['findings'])
 
 
 def test_unchanged_contract_exits_0_subprocess(tmp_path):
