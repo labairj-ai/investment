@@ -141,6 +141,29 @@ Opportunity classification in the brief uses the actual v2 field set: `confirmat
 
 **Acceptance registered:** 2026-09-24 01:33:02 UTC, commit `30720f0`. The accepted corpus is append-only; `register_news_intelligence_acceptance()` is called once per deployment validation, never from `_init_ai_tables()`.
 
+## Timestamp contract
+
+`time_utils.py` defines one time contract (TODOs 0667–0689). Persisted timestamps
+are UTC. Dashboard, email, API and log output render in `America/New_York`, and so
+do market schedules and business-date keys (`today_eastern()`). Learning math uses
+UTC-aware datetimes.
+
+- **Parsing:** `parse_timestamp()` accepts Z-suffix ISO, explicit offsets and the
+  legacy space-separated UTC format. It rejects naive `T`-separated strings and
+  naive `datetime` objects unless the call site passes `legacy_utc=True` and
+  explains why.
+- **CI guard:** `tests/test_ci_datetime_guard.py` uses AST analysis and has tests
+  showing it catches each banned pattern. It blocks naive `datetime.now()`,
+  `utcnow()`, `utcfromtimestamp()`, `date.today()`, fixed `-04:00`/`-05:00` offsets
+  and hardcoded `"EST"`/`"EDT"` strings in production code.
+- **Production canary:** INV-T in `scripts/canary_production_state.py` checks every
+  row of each registered column. Each registry entry has a `storage_type`:
+  `utc_iso`, `utc_space_legacy` or `epoch_seconds`. Text columns must parse under
+  their policy. Epoch columns (`recommendations.created_at`,
+  `decision_episodes.captured_at`) must be non-negative and no more than 5 minutes
+  in the future. `decision_episodes` must also be monotonic, and a timestamp that
+  goes backward is reported as `[INV-T mono]`.
+
 ## Help and glossary
 
 Macro Risk, Learning Lab and Agent Engine column headers have explanations on

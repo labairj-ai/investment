@@ -2131,7 +2131,7 @@ class TestStateSpecificPromotionGates0355:
     def test_observe_to_paper_active_passes_after_14_days(self, mem_db, monkeypatch):
         """Model that has been in OBSERVE for 15 days with 5+ fresh episodes can promote."""
         import agent_db
-        from agents.learning.calibration import _check_promotion_gates, OBSERVE_MIN_DAYS
+        from agents.learning.calibration import _check_promotion_gates, OBSERVE_MIN_DAYS, LEDGER_ROLLOUT_CUTOFF
 
         monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
         monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
@@ -2146,7 +2146,8 @@ class TestStateSpecificPromotionGates0355:
                (model_version,training_cutoff,feature_schema_hash,training_n,validation_metrics,
                 created_at,unique_tickers,unique_decision_dates,unique_weeks,raw_n,lifecycle_state)
                VALUES ('mv_355d','cut','h',80,?,?,20,40,8,80,'OBSERVE')""",
-            (json.dumps(vm), observe_at),
+            # Legacy (pre-ledger) model so unledgered observations stay eligible regardless of today's date
+            (json.dumps(vm), min(observe_at, LEDGER_ROLLOUT_CUTOFF - 1000)),
         )
         conn.execute(
             """INSERT INTO model_promotion_log
@@ -2427,7 +2428,7 @@ class TestObserveShadowScoring0360:
     def test_paper_active_gate_passes_with_mature_observations(self, mem_db, monkeypatch):
         """OBSERVE→PAPER_ACTIVE passes when 5+ mature model_observations exist."""
         import agent_db
-        from agents.learning.calibration import _check_promotion_gates
+        from agents.learning.calibration import _check_promotion_gates, LEDGER_ROLLOUT_CUTOFF
 
         monkeypatch.setattr(agent_db, "DB_PATH", mem_db)
         monkeypatch.setattr(agent_db, "_connect", lambda: _make_conn(mem_db))
@@ -2442,7 +2443,8 @@ class TestObserveShadowScoring0360:
                (model_version,training_cutoff,feature_schema_hash,training_n,validation_metrics,
                 created_at,unique_tickers,unique_decision_dates,unique_weeks,raw_n,lifecycle_state)
                VALUES ('mv_obs_pass','cut','h',80,?,?,20,40,8,80,'OBSERVE')""",
-            (json.dumps(vm), observe_at),
+            # Legacy (pre-ledger) model so unledgered observations stay eligible regardless of today's date
+            (json.dumps(vm), min(observe_at, LEDGER_ROLLOUT_CUTOFF - 1000)),
         )
         conn.execute(
             """INSERT INTO model_promotion_log
