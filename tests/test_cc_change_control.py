@@ -1,4 +1,4 @@
-"""Tests for CC V3 Model Freeze and Change-Control Policy (0716/0718)."""
+"""Tests for CC V3 Model Freeze and Change-Control Policy (0716/0718/0719)."""
 from __future__ import annotations
 from copy import deepcopy
 from pathlib import Path
@@ -8,8 +8,10 @@ from strategy_config import CC_V3_CONFIG
 from covered_call_change_control import (
     current_contract_state, check_contract_consistency,
     write_baseline, read_baseline, list_manifests, experiment_version_info,
+    parse_manifest, find_applicable_manifests, _manifest_valid, _manifest_applies,
     CHANGE_CATEGORY_NON_BEHAVIORAL, CHANGE_CATEGORY_EVIDENCE_INFRASTRUCTURE,
     CHANGE_CATEGORY_BEHAVIORAL, BASELINE_SCHEMA_VERSION, BASELINE_REQUIRED_KEYS,
+    MANIFEST_REQUIRED_FIELDS,
 )
 
 
@@ -89,36 +91,57 @@ def test_behavioral_hash_change_without_manifest_fails_ci(monkeypatch, tmp_path)
     assert any('MANIFEST' in f for f in result['findings'])
 
 
+def _make_transition_manifest(manifests_dir, prior_state, proposed_state, manifest_id='20261013-test-change',
+                              operator_acknowledged='true'):
+    """Create a properly formatted transition manifest file."""
+    content = f"""---
+manifest_id: {manifest_id}
+date: 2026-10-13
+category: BEHAVIORAL_MODEL_CHANGE
+author: test
+related_commit_or_pr: test-pr-123
+prior_model_version: {prior_state['model_version']}
+prior_simulator_version: {prior_state['simulator_version']}
+prior_simulator_contract_version: {prior_state['simulator_contract_version']}
+prior_simulator_contract_hash: {prior_state['simulator_contract_hash']}
+prior_engine_hash: {prior_state['engine_hash']}
+proposed_model_version: {proposed_state['model_version']}
+proposed_simulator_version: {proposed_state['simulator_version']}
+proposed_simulator_contract_version: {proposed_state['simulator_contract_version']}
+proposed_simulator_contract_hash: {proposed_state['simulator_contract_hash']}
+proposed_engine_hash: {proposed_state['engine_hash']}
+cohort_reset_required: true
+open_chain_policy: VERSION_CENSORED
+operator_acknowledged: {operator_acknowledged}
+---
+
+# Test change
+"""
+    (manifests_dir / f'{manifest_id}.md').write_text(content)
+
+
 def test_behavioral_hash_change_with_version_bump_and_manifest_passes(monkeypatch, tmp_path):
     import covered_call_change_control as cc
     monkeypatch.setattr(cc, 'BASELINE_FILE', tmp_path / '.cc_contract_baseline.json')
     manifests_dir = tmp_path / 'manifests'
     manifests_dir.mkdir()
-    # Create a fake manifest
-    (manifests_dir / '20261013-test-change.md').write_text('# Change Manifest\n')
     monkeypatch.setattr(cc, 'MANIFESTS_DIR', manifests_dir)
+    # Capture real state before patching (this becomes the baseline/prior)
+    real_state = current_contract_state(CC_V3_CONFIG)
     write_baseline(CC_V3_CONFIG)
-    from covered_call_validation import management_contract
-    from covered_call_virtual import SIMULATOR_CONTRACT_VERSION
-    def fake_mc():
-        r = management_contract()
-        return dict(r, engine_hash='new-hash-after-bump')
-    # Simulate version bump + hash change
-    monkeypatch.setattr('covered_call_change_control.management_contract', fake_mc)
-    original_scv = cc.current_contract_state.__wrapped__ if hasattr(cc.current_contract_state, '__wrapped__') else None
-    def fake_current(config):
-        s = dict(current_contract_state.__wrapped__(config) if original_scv else _real_state(config))
-        s['engine_hash'] = 'new-hash-after-bump'
-        s['simulator_contract_version'] = 'simulator-contract-2'  # bumped
-        return s
-    # Actually monkeypatch the get-state call
-    _real_state = current_contract_state
-    monkeypatch.setattr(cc, 'current_contract_state', fake_current)
+    # Define proposed state
+    proposed = dict(real_state, engine_hash='new-hash-after-bump',
+                    simulator_contract_version='simulator-contract-2',
+                    simulator_contract_hash=real_state['simulator_contract_hash'])
+    _make_transition_manifest(manifests_dir, prior_state=real_state, proposed_state=proposed)
+    monkeypatch.setattr(cc, 'current_contract_state', lambda config: proposed)
     result = cc.check_contract_consistency(CC_V3_CONFIG)
     assert result['hash_changed'] is True
     assert result['version_bumped'] is True
     assert result['has_manifest'] is True
     assert result['ok'] is True
+    assert result['applicable_manifest'] is not None
+    assert result['applicable_manifest']['manifest_id'] == '20261013-test-change'
 
 
 def test_experiment_version_info_has_dashboard_fields(tmp_path, monkeypatch):
@@ -248,3 +271,179 @@ def test_ci_guard_rejects_update_baseline_in_ci_env(monkeypatch, tmp_path):
     )
     assert result.returncode == 1
     assert 'must not be invoked in CI' in result.stderr
+
+
+# ── 0719: transition-bound manifests ─────────────────────────────────────────
+
+def test_parse_manifest_valid_front_matter(tmp_path):
+    state = current_contract_state(CC_V3_CONFIG)
+    proposed = dict(state, engine_hash='new-abc123')
+    md = tmp_path / 'test.md'
+    md.write_text(f"""---
+manifest_id: test-001
+date: 2026-10-13
+category: BEHAVIORAL_MODEL_CHANGE
+author: tester
+related_commit_or_pr: pr-1
+prior_model_version: {state['model_version']}
+prior_simulator_version: {state['simulator_version']}
+prior_simulator_contract_version: {state['simulator_contract_version']}
+prior_simulator_contract_hash: {state['simulator_contract_hash']}
+prior_engine_hash: {state['engine_hash']}
+proposed_model_version: {proposed['model_version']}
+proposed_simulator_version: {proposed['simulator_version']}
+proposed_simulator_contract_version: {proposed['simulator_contract_version']}
+proposed_simulator_contract_hash: {proposed['simulator_contract_hash']}
+proposed_engine_hash: {proposed['engine_hash']}
+cohort_reset_required: true
+open_chain_policy: VERSION_CENSORED
+operator_acknowledged: true
+---
+# Change
+""")
+    fm = parse_manifest(md)
+    assert 'parse_error' not in fm
+    assert fm['manifest_id'] == 'test-001'
+    assert fm['prior_engine_hash'] == state['engine_hash']
+    assert fm['operator_acknowledged'] == 'true'
+
+
+def test_parse_manifest_no_front_matter(tmp_path):
+    md = tmp_path / 'test.md'
+    md.write_text('# Just a heading\nNo front matter.\n')
+    fm = parse_manifest(md)
+    assert 'parse_error' in fm
+
+
+def test_parse_manifest_unclosed_delimiter(tmp_path):
+    md = tmp_path / 'test.md'
+    md.write_text('---\nmanifest_id: test\n# No closing delimiter\n')
+    fm = parse_manifest(md)
+    assert 'parse_error' in fm
+
+
+def test_manifest_valid_rejects_missing_fields(tmp_path):
+    md = tmp_path / 'test.md'
+    md.write_text('---\nmanifest_id: x\noperator_acknowledged: true\n---\n')
+    fm = parse_manifest(md)
+    valid, reasons = _manifest_valid(fm)
+    assert not valid
+    assert any('missing' in r for r in reasons)
+
+
+def test_manifest_valid_rejects_unacknowledged(tmp_path):
+    state = current_contract_state(CC_V3_CONFIG)
+    proposed = dict(state, engine_hash='new-xyz')
+    md = tmp_path / 'test.md'
+    _make_transition_manifest(tmp_path, prior_state=state, proposed_state=proposed,
+                               manifest_id='test-unack', operator_acknowledged='false')
+    fm = parse_manifest(tmp_path / 'test-unack.md')
+    valid, reasons = _manifest_valid(fm)
+    assert not valid
+    assert any('operator_acknowledged' in r for r in reasons)
+
+
+def test_exact_transition_manifest_applies(tmp_path):
+    state = current_contract_state(CC_V3_CONFIG)
+    proposed = dict(state, engine_hash='new-xyz-exact')
+    _make_transition_manifest(tmp_path, prior_state=state, proposed_state=proposed)
+    fm = parse_manifest(tmp_path / '20261013-test-change.md')
+    assert _manifest_applies(fm, baseline=state, current=proposed)
+
+
+def test_old_manifest_does_not_authorize_later_transition(tmp_path):
+    """A manifest for A→B cannot authorize B→C."""
+    state_a = current_contract_state(CC_V3_CONFIG)
+    state_b = dict(state_a, engine_hash='hash-b')
+    state_c = dict(state_a, engine_hash='hash-c')
+    _make_transition_manifest(tmp_path, prior_state=state_a, proposed_state=state_b, manifest_id='ab')
+    fm = parse_manifest(tmp_path / 'ab.md')
+    assert not _manifest_applies(fm, baseline=state_b, current=state_c)
+
+
+def test_wrong_prior_hash_does_not_qualify(tmp_path):
+    state = current_contract_state(CC_V3_CONFIG)
+    proposed = dict(state, engine_hash='new-proposed')
+    wrong_prior = dict(state, engine_hash='wrong-prior')
+    _make_transition_manifest(tmp_path, prior_state=wrong_prior, proposed_state=proposed, manifest_id='wrong')
+    fm = parse_manifest(tmp_path / 'wrong.md')
+    assert not _manifest_applies(fm, baseline=state, current=proposed)
+
+
+def test_duplicate_applicable_manifests_fail(monkeypatch, tmp_path):
+    import covered_call_change_control as cc
+    monkeypatch.setattr(cc, 'BASELINE_FILE', tmp_path / '.cc_contract_baseline.json')
+    manifests_dir = tmp_path / 'manifests'
+    manifests_dir.mkdir()
+    monkeypatch.setattr(cc, 'MANIFESTS_DIR', manifests_dir)
+    real_state = current_contract_state(CC_V3_CONFIG)
+    write_baseline(CC_V3_CONFIG)
+    proposed = dict(real_state, engine_hash='dup-proposed')
+    _make_transition_manifest(manifests_dir, prior_state=real_state, proposed_state=proposed, manifest_id='dup-1')
+    _make_transition_manifest(manifests_dir, prior_state=real_state, proposed_state=proposed, manifest_id='dup-2')
+    monkeypatch.setattr(cc, 'current_contract_state', lambda config: proposed)
+    result = cc.check_contract_consistency(CC_V3_CONFIG)
+    assert result['ok'] is False
+    assert any('DUPLICATE_APPLICABLE' in f for f in result['findings'])
+
+
+def test_duplicate_manifest_ids_fail(monkeypatch, tmp_path):
+    import covered_call_change_control as cc
+    monkeypatch.setattr(cc, 'BASELINE_FILE', tmp_path / '.cc_contract_baseline.json')
+    manifests_dir = tmp_path / 'manifests'
+    manifests_dir.mkdir()
+    monkeypatch.setattr(cc, 'MANIFESTS_DIR', manifests_dir)
+    real_state = current_contract_state(CC_V3_CONFIG)
+    write_baseline(CC_V3_CONFIG)
+    proposed_a = dict(real_state, engine_hash='hash-a')
+    proposed_b = dict(real_state, engine_hash='hash-b')
+    _make_transition_manifest(manifests_dir, prior_state=real_state, proposed_state=proposed_a,
+                               manifest_id='same-id')
+    # Write second manifest with same ID but different filename
+    content = (manifests_dir / 'same-id.md').read_text().replace('same-id', 'same-id')
+    (manifests_dir / 'different-file-same-id.md').write_text(content.replace(
+        f'proposed_engine_hash: {proposed_a["engine_hash"]}',
+        f'proposed_engine_hash: {proposed_b["engine_hash"]}',
+    ))
+    result = find_applicable_manifests(real_state, proposed_a, manifests_dir)
+    assert result['duplicate_ids']
+
+
+def test_behavioral_drift_with_only_unrelated_manifest_fails(monkeypatch, tmp_path):
+    """Old A→B manifest must not authorize an unrelated B→C change."""
+    import covered_call_change_control as cc
+    monkeypatch.setattr(cc, 'BASELINE_FILE', tmp_path / '.cc_contract_baseline.json')
+    manifests_dir = tmp_path / 'manifests'
+    manifests_dir.mkdir()
+    monkeypatch.setattr(cc, 'MANIFESTS_DIR', manifests_dir)
+    real_state = current_contract_state(CC_V3_CONFIG)
+    write_baseline(CC_V3_CONFIG)
+    proposed_current = dict(real_state, engine_hash='current-new-hash')
+    unrelated_proposed = dict(real_state, engine_hash='unrelated-hash')
+    _make_transition_manifest(manifests_dir, prior_state=real_state, proposed_state=unrelated_proposed,
+                               manifest_id='unrelated')
+    monkeypatch.setattr(cc, 'current_contract_state', lambda config: proposed_current)
+    result = cc.check_contract_consistency(CC_V3_CONFIG)
+    assert result['ok'] is False
+    assert result['has_manifest'] is False
+    assert any('APPLICABLE_MANIFEST' in f for f in result['findings'])
+
+
+def test_non_behavioral_unchanged_contract_passes_without_manifest(monkeypatch, tmp_path):
+    import covered_call_change_control as cc
+    monkeypatch.setattr(cc, 'BASELINE_FILE', tmp_path / '.cc_contract_baseline.json')
+    manifests_dir = tmp_path / 'manifests'
+    manifests_dir.mkdir()
+    monkeypatch.setattr(cc, 'MANIFESTS_DIR', manifests_dir)
+    write_baseline(CC_V3_CONFIG)
+    result = cc.check_contract_consistency(CC_V3_CONFIG)
+    assert result['ok'] is True
+    assert result['hash_changed'] is False
+    assert result['has_manifest'] is False  # no manifest needed; no change
+
+
+def test_manifest_required_fields_constant():
+    assert 'operator_acknowledged' in MANIFEST_REQUIRED_FIELDS
+    assert 'prior_engine_hash' in MANIFEST_REQUIRED_FIELDS
+    assert 'proposed_engine_hash' in MANIFEST_REQUIRED_FIELDS
+    assert 'manifest_id' in MANIFEST_REQUIRED_FIELDS

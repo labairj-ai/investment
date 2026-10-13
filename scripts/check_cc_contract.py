@@ -70,7 +70,11 @@ def main():
         else:
             hc = result['hash_changed']
             vb = result['version_bumped']
-            print(f'  hash_changed={hc}  version_bumped={vb}  has_manifest={result["has_manifest"]}')
+            hm = result['has_manifest']
+            print(f'  hash_changed={hc}  version_bumped={vb}  has_manifest={hm}')
+            am = result.get('applicable_manifest')
+            if am:
+                print(f'  applicable_manifest={am.get("manifest_id")}  path={am["path"].name}')
         for finding in result['findings']:
             print(f'  FINDING: {finding}')
 
