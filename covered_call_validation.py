@@ -12,6 +12,10 @@ from covered_call_virtual import SIMULATOR_VERSION, management_contract, evaluat
 ROOT=Path(__file__).resolve().parent
 
 
+def current_git_sha():
+    return subprocess.run(['git','rev-parse','HEAD'],cwd=ROOT,capture_output=True,text=True,check=True).stdout.strip()
+
+
 def migrate(db):
     db.executescript('''
     CREATE TABLE IF NOT EXISTS cc_simulator_validation_runs (
@@ -69,11 +73,22 @@ def compare(actual,simulated):
         intervention_timing_error=first_b-first_a if first_a is not None and first_b is not None else 0 if first_a is first_b is None else None,
         roll_type_agreement=sum(rolls)/len(rolls) if rolls else None,roll_comparison_n=len(rolls),
         strike_differences=strike_errors,expiry_day_differences=expiry_errors,
-        pnl_difference=simulated['total_option_pnl']-actual['total_option_pnl'],alpha_absolute_error=alpha_error,
+        pnl_difference=simulated['total_option_pnl']-actual['total_option_pnl'],incremental_alpha_difference=simulated['incremental_alpha']-actual['incremental_alpha'],alpha_absolute_error=alpha_error,
         actual_alpha_absolute=abs(actual['incremental_alpha']),execution_cost_difference=simulated['execution_cost']-actual['execution_cost'],
         management_cost_difference=simulated['management_cost']-actual['management_cost'],human_overrides=overrides,
         net_roll_credit_difference=simulated.get('net_roll_credit',0)-actual.get('net_roll_credit',0),
         lookahead_violations=simulated.get('lookahead_violations',0),state_contamination=simulated.get('state_contamination',0))
+
+
+def divergence_category(case):
+    if case.get('human_overrides'):return 'DISCRETIONARY_HUMAN_ACTION'
+    if case.get('lookahead_violations') or case.get('state_contamination'):return 'BUG'
+    if case.get('entry_fill_spread_error') is None:return 'QUOTE_QUALITY'
+    if case.get('action_agreement') is not None and case['action_agreement']<1:return 'POLICY_MISMATCH'
+    if case.get('intervention_timing_error'):return 'DATA_TIMING'
+    if any(case.get('strike_differences',[])) or any(case.get('expiry_day_differences',[])):return 'POLICY_MISMATCH'
+    if case.get('alpha_absolute_error') or case.get('entry_fill_spread_error') or case.get('fee_error'):return 'EXECUTION_MODEL_ERROR'
+    return 'MATCH'
 
 
 def acceptance(cases,policy):
@@ -175,7 +190,7 @@ def run_validation(config,path=None):
                 incremental_alpha=outcome['cc_incremental_alpha'],total_option_pnl=outcome['total_option_pnl'],
                 execution_cost=outcome['realized_execution_cost'],management_cost=outcome['realized_management_cost'],net_roll_credit=outcome.get('roll_net_credit') or 0)
             case=compare(actual_view,simulated)
-            cases.append(case);cohort.append(episode);details.append(dict(episode_id=episode,metrics=case,divergence_category='HUMAN_OVERRIDE' if case['human_overrides'] else 'EXECUTION_MODEL_ERROR' if case['alpha_absolute_error'] else 'MATCH'))
+            cases.append(case);cohort.append(episode);details.append(dict(episode_id=episode,metrics=case,divergence_category=divergence_category(case)))
         except Exception as exc:
             excluded[str(exc)]+=1;details.append(dict(episode_id=episode,exclusion=str(exc)))
     result=acceptance(cases,config['simulator_validation'])
@@ -184,7 +199,11 @@ def run_validation(config,path=None):
         validation_policy_version=config['simulator_validation']['version'],management_contract=management_contract(),
         cohort_ids=cohort,cases=cases,total_actual_records=len(actual_records),legacy_completed_position_n=len(legacy_positions),
         legacy_case_review=[dict(r,category='MISSING_ASOF_EVIDENCE',review='Cannot replay or classify simulator divergence without original decision/options/policy snapshots') for r in legacy_positions[:10]],exclusions=dict(excluded),details=details,
-        source_composition={'actual':'ACTUAL_EXECUTION','replay':'ESTIMATED_COUNTERFACTUAL'},out_of_sample=True)
+        source_composition={'actual':'ACTUAL_EXECUTION','replay':'ESTIMATED_COUNTERFACTUAL'},out_of_sample=True,
+        simulator_bias=dict(n=len(cases),mean_alpha_error=mean(c['incremental_alpha_difference'] for c in cases) if cases else None,
+            interpretation='OPTIMISTIC' if cases and mean(c['incremental_alpha_difference'] for c in cases)>0 else 'CONSERVATIVE' if cases and mean(c['incremental_alpha_difference'] for c in cases)<0 else 'MATCHED' if cases else 'UNAVAILABLE'),
+        divergent_cases=[d for d in details if d.get('divergence_category') not in (None,'MATCH')],
+        actual_divergent_review_available_n=sum(d.get('divergence_category') not in (None,'MATCH') for d in details))
     identifier=digest(result)
     with db:db.execute('INSERT OR IGNORE INTO cc_simulator_validation_runs VALUES(?,?,?,?,?,?)',(identifier,now_utc_iso(),SIMULATOR_VERSION,config_digest(config),sha,json.dumps(result,sort_keys=True)))
     result['id']=identifier;db.close();return result
@@ -197,7 +216,7 @@ def certify(run_id,config,path=None):
     if not row:db.close();raise ValueError('unknown validation run')
     result=json.loads(row[0])
     checked=acceptance(result.get('cases',[]),config['simulator_validation'])
-    if not checked['eligible'] or not result.get('eligible') or not result.get('out_of_sample') or result['simulator_version']!=SIMULATOR_VERSION or result['config_hash']!=config_digest(config) or result['management_contract']!=management_contract():
+    if result.get('git_sha')!=current_git_sha() or not checked['eligible'] or not result.get('eligible') or not result.get('out_of_sample') or result['simulator_version']!=SIMULATOR_VERSION or result['config_hash']!=config_digest(config) or result['management_contract']!=management_contract():
         db.close();raise ValueError('simulator validation gate not met')
     certificate=dict(validation_run_id=run_id,simulator_version=SIMULATOR_VERSION,config_hash=config_digest(config),
         management_contract=management_contract(),validation_policy_version=config['simulator_validation']['version'],
@@ -214,7 +233,7 @@ def certification(config,path=None):
     db.close()
     for row in rows:
         c=json.loads(row['certificate_json'])
-        if c['simulator_version']==SIMULATOR_VERSION and c['config_hash']==config_digest(config) and c['management_contract']==management_contract() and c['validation_policy_version']==config['simulator_validation']['version']:
+        if c.get('git_sha')==current_git_sha() and c['simulator_version']==SIMULATOR_VERSION and c['config_hash']==config_digest(config) and c['management_contract']==management_contract() and c['validation_policy_version']==config['simulator_validation']['version']:
             return dict(c,id=row['id'])
     return None
 

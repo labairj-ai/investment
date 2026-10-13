@@ -23,7 +23,8 @@ class DataUnavailable(ValueError):
 
 def management_contract():
     import covered_call_rec as cc
-    functions = (cc.evaluate_cc_management_state, cc._check_assignment_eligible,
+    from covered_call_v3 import execution
+    functions = (fill_model,evaluate_snapshot,missed_intervals,execution,cc.evaluate_cc_management_state, cc._check_assignment_eligible,
                  cc._suggest_next_call, cc._remaining_call_alpha, cc._friction_at_expiry,
                  cc.call_delta, cc.expected_upside_lost, cc.itm_prob_real, cc._exec_premium)
     return dict(engine_hash=digest([inspect.getsource(f) for f in functions]),

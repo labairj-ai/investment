@@ -74,9 +74,11 @@ def run(path,tickers=None,baseline='e0bbb99'):
             spec=importlib.util.spec_from_file_location('cc_previous',old_path);previous=importlib.util.module_from_spec(spec);spec.loader.exec_module(previous)
             for ticker in tickers:
                 try:
-                    with sqlite3.connect(path) as db:
-                        row=db.execute('SELECT shares,avg_cost FROM holding_day WHERE ticker=? ORDER BY day DESC LIMIT 1',(ticker,)).fetchone()
-                    if not row:raise ValueError('holding data unavailable')
+                    from portfolio_positions import load_positions
+                    holdings=load_positions(Path(__file__).resolve().parent.parent/'holdings.csv')
+                    holding=holdings.get(ticker.upper()) or holdings.get(ticker.replace('-','.').upper())
+                    if holding is None:raise ValueError('holding data unavailable')
+                    row=(holding.shares,holding.avg_cost)
                     analysis=cc.analyze(ticker,float(row[1]),float(row[0]))
                     if analysis is None:raise ValueError('current option data unavailable')
                     from agents import covered_call_agent
@@ -102,7 +104,8 @@ def run(path,tickers=None,baseline='e0bbb99'):
                         entered=dict(episode_id=eid,chain_id=chain[0] if chain else None,ticker=ticker,decision=decision)
                 except Exception as exc:current.append(dict(ticker=ticker,error=str(exc)))
     result['current_chains']=current;result['real_current_virtual_entry']=entered
-    result['real_entry_state']='CREATED_QA_ONLY' if entered else 'NO_CURRENT_QUALIFYING_CHALLENGER_CALL' if tickers else 'NOT_REQUESTED'
+    result['market_qa_errors']=sum('error' in c for c in current)
+    result['real_entry_state']='CREATED_QA_ONLY' if entered else 'MARKET_QA_INCOMPLETE' if result['market_qa_errors'] else 'NO_CURRENT_QUALIFYING_CHALLENGER_CALL' if tickers else 'NOT_REQUESTED'
     db=ledger.connect(path);final=fingerprint(db);db.close();assert final==before
     result['actual_tables_unchanged_after_all_qa']=True
     return result
@@ -115,5 +118,6 @@ if __name__=='__main__':
     Path(args.report).write_text(json.dumps(result,indent=2))
     print(json.dumps(dict(actual_tables_unchanged=result['actual_tables_unchanged_after_all_qa'],
         synthetic_lifecycle=result['synthetic_lifecycle']['result'],validation_status=result['validation']['status'],
-        validation_n=result['validation']['metrics']['n'],current_chain_n=len(result['current_chains']),
+        validation_n=result['validation']['metrics']['n'],current_chain_n=len(result['current_chains']),market_qa_errors=result['market_qa_errors'],
         real_entry_state=result['real_entry_state']),indent=2))
+    if result['market_qa_errors']:sys.exit(1)

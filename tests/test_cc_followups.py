@@ -398,8 +398,8 @@ def test_certification_immutable_and_version_invalidation(episode):
         alpha_absolute_error=.01,actual_alpha_absolute=1,lookahead_violations=0,state_contamination=0)
     result=validation.acceptance([case]*20,cfg['simulator_validation'])
     result.update(cases=[case]*20,out_of_sample=True,simulator_version=book.SIMULATOR_VERSION,config_hash=ledger.config_digest(cfg),
-        management_contract=book.management_contract(),git_sha='test-sha',cohort_ids=[str(i) for i in range(20)])
-    with db:db.execute('INSERT INTO cc_simulator_validation_runs VALUES(?,?,?,?,?,?)',('valid-run',START,book.SIMULATOR_VERSION,ledger.config_digest(cfg),'test-sha',json.dumps(result)))
+        management_contract=book.management_contract(),git_sha=validation.current_git_sha(),cohort_ids=[str(i) for i in range(20)])
+    with db:db.execute('INSERT INTO cc_simulator_validation_runs VALUES(?,?,?,?,?,?)',('valid-run',START,book.SIMULATOR_VERSION,ledger.config_digest(cfg),validation.current_git_sha(),json.dumps(result)))
     db.close()
     certificate=validation.certify('valid-run',cfg,path)
     assert validation.certification(cfg,path)['id']==certificate['id']

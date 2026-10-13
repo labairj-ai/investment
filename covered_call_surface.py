@@ -4,7 +4,7 @@ import math
 from collections import defaultdict
 from statistics import median
 from datetime import date
-from time_utils import now_utc, parse_timestamp
+from time_utils import now_utc, parse_timestamp, TZ_EASTERN
 
 VERSION='local-total-variance-2'
 
@@ -74,7 +74,7 @@ def candidate_metrics(candidate,points,spot,as_of):
     event_inputs=None
     if not events:variance=raw_variance=contribution=0.;premium=0.;event_quality='NO_KNOWN_EVENT'
     elif event_dates and usable:
-        snapshot_day=parse_timestamp(as_of).date()
+        snapshot_day=parse_timestamp(as_of).astimezone(TZ_EASTERN).date()
         event_dte=(min(event_dates)-snapshot_day).days
         pre=sorted((r for r in references if r['dte']<event_dte),key=lambda r:r['dte'])
         post=min((r for r in references if r['dte']>=event_dte),key=lambda r:r['dte'],default=None)
