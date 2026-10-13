@@ -2472,30 +2472,83 @@ def _build_thesis_health_block(holdings: list[dict]) -> str:
 
 
 def _build_portfolio_block(holdings: list[dict], prices: dict) -> str:
-    lines = ["PORTFOLIO HOLDINGS:"]
-    lines.append(f"{'Ticker':<8} {'Layer':<6} {'Value':>10} {'Day%':>7} {'Wt%':>6}")
-    lines.append("-" * 45)
+    # Pull cost lot data for unrealized P&L
+    lot_data: dict = {}
+    try:
+        if DB_PATH.exists():
+            _conn = sqlite3.connect(str(DB_PATH), timeout=5)
+            for r in _conn.execute(
+                "SELECT ticker, SUM(shares) AS sh, SUM(shares*cost_per_share)/SUM(shares) AS avg, MIN(purchase_date) AS oldest "
+                "FROM cost_lots GROUP BY ticker"
+            ):
+                lot_data[r[0]] = {"shares": r[1], "avg_cost": r[2], "oldest": r[3]}
+            _conn.close()
+    except Exception:
+        pass
+
+    today = today_eastern()
+    lines = ["CURRENT HOLDINGS (by layer):"]
+    lines.append(f"{'Ticker':<7} {'L':<2} {'Shares':>7} {'AvgCost':>8} {'Price':>8} {'Value':>10} {'Unrlzd':>8} {'Tax':>3} {'Wt%':>5}")
+    lines.append("-" * 68)
     for h in sorted(holdings, key=lambda x: int(x.get("Layer", 5))):
         t = str(h.get("Stock", "")).strip().upper()
         layer = h.get("Layer", "?")
         p = prices.get(t, {})
+        price = p.get("price", 0) or 0
         value = p.get("value", 0) or 0
-        chg   = p.get("change_pct", 0) or 0
         wt    = p.get("weight_pct", 0) or 0
-        lines.append(f"{t:<8} L{layer:<5} ${value:>9,.0f} {chg:>+6.1f}% {wt:>5.1f}%")
+        ld    = lot_data.get(t, {})
+        shares   = ld.get("shares") or p.get("shares") or 0
+        avg_cost = ld.get("avg_cost") or 0
+        unrlzd_pct = ((price - avg_cost) / avg_cost * 100) if avg_cost and price else 0
+        sign = "+" if unrlzd_pct >= 0 else ""
+        # Tax status of oldest lot
+        tax_label = ""
+        if ld.get("oldest"):
+            try:
+                from tax_utils import is_long_term as _is_lt
+                tax_label = "LT" if _is_lt(date.fromisoformat(ld["oldest"]), today) else "ST"
+            except Exception:
+                pass
+        avg_str  = f"${avg_cost:.2f}"  if avg_cost else "n/a"
+        price_str = f"${price:.2f}"   if price    else "n/a"
+        unrlzd_str = f"{sign}{unrlzd_pct:.0f}%" if avg_cost and price else "n/a"
+        lines.append(
+            f"{t:<7} {layer:<2} {shares:>7.1f} {avg_str:>8} {price_str:>8} ${value:>9,.0f} {unrlzd_str:>7} {tax_label:>3} {wt:>4.1f}%"
+        )
     return "\n".join(lines)
 
 
 def _build_layer_block(layer_weights: dict, drift_alerts: list[dict]) -> str:
-    lines = ["LAYER WEIGHTS vs TARGETS:"]
+    # Total portfolio value for dollar headroom calculations
+    total_value = sum(d.get("value", 0) or 0 for d in layer_weights.values())
+    _targets_by_label = {LAYER_LABELS[n]: LAYER_TARGETS[n] for n in LAYER_TARGETS}
+
+    lines = ["LAYER ALLOCATION (actual vs target):"]
+    lines.append(f"  {'Layer':<38} {'Actual':>7} {'Target':>7} {'Drift':>7} {'$Headroom':>12}")
+    lines.append("  " + "-" * 75)
     for label, data in sorted(layer_weights.items()):
-        wt  = data.get("weight_pct", 0)
-        chg = data.get("chg_pct", 0)
-        lines.append(f"  {label}: {wt:.1f}% actual ({chg:+.1f}% today)")
+        wt     = data.get("weight_pct", 0)
+        target = _targets_by_label.get(label, 0)
+        drift  = wt - target
+        # Headroom: positive = can add more, negative = overfilled by that $
+        headroom = (target - wt) / 100 * total_value if total_value else 0
+        drift_flag = " ◄" if abs(drift) >= DRIFT_THRESHOLD else ""
+        lines.append(
+            f"  {label:<38} {wt:>6.1f}% {target:>6.0f}% {drift:>+6.1f}pp ${headroom:>+10,.0f}{drift_flag}"
+        )
+    if total_value:
+        lines.append(f"\n  Total portfolio value: ${total_value:,.0f}")
+
     if drift_alerts:
-        lines.append("\nDRIFT ALERTS (≥5pp from target):")
+        lines.append("\nACTIONABLE DRIFT (≥5pp from target — rebalance candidates):")
         for d in drift_alerts:
-            lines.append(f"  {d['layer']}: {d['current']:.1f}% vs {d['target']:.0f}% target ({d['drift']:+.1f}pp)")
+            direction = "TRIM" if d["drift"] > 0 else "ADD"
+            dollar_move = abs(d["drift"]) / 100 * total_value
+            lines.append(
+                f"  {direction} {d['layer']}: {d['current']:.1f}% → {d['target']:.0f}% target "
+                f"({d['drift']:+.1f}pp, ~${dollar_move:,.0f} to move)"
+            )
     return "\n".join(lines)
 
 
@@ -4835,47 +4888,150 @@ def compute_regime_adjusted_risk(scores: dict, regime_stress: dict):
 
 # ── Portfolio chat ────────────────────────────────────────────────────────────
 
+def _build_candidate_universe_block(held_tickers: set) -> str:
+    """Build a candidate universe block for the advisor prompt.
+
+    Shows top candidates by Buffett score, flags which are already held, and
+    pulls quality/valuation data from buffett_winners where available.
+    """
+    try:
+        import agent_db as _adb
+        candidates = _adb.get_candidates(include_rejected=False)
+    except Exception:
+        return ""
+    if not candidates:
+        return ""
+
+    # Pull enrichment data from buffett_winners
+    enrichment: dict = {}
+    try:
+        bdb = PROJECT_DIR / "out" / "buffett.db"
+        if bdb.exists():
+            _bc = sqlite3.connect(str(bdb), timeout=5)
+            _bc.row_factory = sqlite3.Row
+            tickers_in = [c["ticker"] for c in candidates]
+            for chunk in [tickers_in[i:i+50] for i in range(0, len(tickers_in), 50)]:
+                placeholders = ",".join("?" * len(chunk))
+                for r in _bc.execute(
+                    f"SELECT ticker, quality_score, dividend_yield, pe_ratio, layer_rec, ai_analysis "
+                    f"FROM buffett_winners WHERE ticker IN ({placeholders})", chunk
+                ):
+                    ai = {}
+                    try:
+                        import json as _j
+                        ai = _j.loads(r["ai_analysis"]) if r["ai_analysis"] else {}
+                    except Exception:
+                        pass
+                    enrichment[r["ticker"]] = {
+                        "quality": r["quality_score"],
+                        "yield":   r["dividend_yield"],
+                        "pe":      r["pe_ratio"],
+                        "layer":   r["layer_rec"],
+                        "thesis":  ai.get("thesis", ""),
+                    }
+            _bc.close()
+    except Exception:
+        pass
+
+    # Sort by score desc, put held candidates first
+    scored = sorted(
+        [c for c in candidates if c.get("buffett_score")],
+        key=lambda x: (-int(x.get("ticker") in held_tickers), -x["buffett_score"])
+    )
+
+    # Group by recommended layer
+    by_layer: dict = {}
+    no_layer = []
+    for c in scored[:40]:  # cap at 40 to keep prompt lean
+        t = c["ticker"]
+        e = enrichment.get(t, {})
+        layer = e.get("layer")
+        entry = {
+            "ticker": t,
+            "score":  c["buffett_score"],
+            "held":   t in held_tickers,
+            **e,
+        }
+        if layer:
+            by_layer.setdefault(layer, []).append(entry)
+        else:
+            no_layer.append(entry)
+
+    def _fmt(e: dict) -> str:
+        t     = e["ticker"]
+        score = e.get("score", "?")
+        held  = " [HELD]" if e.get("held") else ""
+        q     = f" q={e['quality']}" if e.get("quality") else ""
+        pe    = f" PE={e['pe']:.0f}" if e.get("pe") else ""
+        yld   = f" yld={e['yield']:.1f}%" if e.get("yield") else ""
+        thesis = f" | {e['thesis'][:70]}" if e.get("thesis") else ""
+        return f"  {t}{held}: score={score}{q}{pe}{yld}{thesis}"
+
+    lines = ["CANDIDATE UNIVERSE (Buffett-screened watchlist, top by score):"]
+    for layer_num in sorted(by_layer.keys()):
+        label = LAYER_LABELS.get(layer_num, f"Layer {layer_num}")
+        lines.append(f"\n  [{label}]")
+        for e in by_layer[layer_num]:
+            lines.append(_fmt(e))
+    if no_layer:
+        lines.append("\n  [Layer unassigned]")
+        for e in no_layer:
+            lines.append(_fmt(e))
+
+    # Watch-list tickers without scores
+    unscored = [c["ticker"] for c in candidates if not c.get("buffett_score")]
+    if unscored:
+        lines.append(f"\n  Also on watchlist (no score yet): {', '.join(unscored[:20])}")
+
+    return "\n".join(lines)
+
+
 def build_portfolio_system_prompt() -> str:
     """Build the system prompt for portfolio-level AI chat."""
     import macro_context
     macro = macro_context.fetch()
 
-    holdings = _load_holdings_csv()
-    prices   = _get_holding_prices_from_db()
+    holdings      = _load_holdings_csv()
+    prices        = _get_holding_prices_from_db()
     layer_weights = _get_layer_weights_from_db()
     drift_alerts  = _get_drift_alerts(layer_weights)
+    held_tickers  = {str(h.get("Stock", "")).strip().upper() for h in holdings if h.get("Stock")}
 
-    # Load macro scores for context (compact=True omits per-dim reasons to keep prompt short)
     _, scores_block = _get_macro_scores_block(compact=True)
 
-    cc_block       = _get_cc_context()
-    lot_block      = _get_lot_context()
-    realized_block = _get_realized_context()
-    patterns_block = _get_behavior_patterns()
-    personal_blocks = "\n\n".join(b for b in [cc_block, lot_block, realized_block, patterns_block] if b)
+    cc_block        = _get_cc_context()
+    realized_block  = _get_realized_context()
+    candidate_block = _build_candidate_universe_block(held_tickers)
 
     framework = "\n".join(f"  {k}: {v}" for k, v in _LAYER_NAMES_LONG.items())
 
-    system = f"""You are a sophisticated investment advisor helping the investor understand and manage their personal portfolio. You have deep knowledge of macro economics, geopolitics, tax strategy, and the portfolio framework below.
+    system = f"""You are a personal portfolio advisor with full read access to this investor's portfolio, cost basis, tax lots, layer allocation targets, and a pre-screened candidate universe. Your job is to give SPECIFIC, ACTIONABLE guidance — not general market commentary.
 
-INVESTMENT FRAMEWORK:
+INVESTMENT FRAMEWORK (5-layer structure):
 {framework}
 
 {_build_portfolio_block(holdings, prices)}
 
 {_build_layer_block(layer_weights, drift_alerts)}
 
+{candidate_block}
+
+{realized_block}
+
+{cc_block}
+
 {macro.get('formatted_block', 'Macro data unavailable.')}
 {scores_block}
-{personal_blocks}
 
-Rules for your responses:
-- Always ground analysis in THIS specific portfolio — cite actual held tickers and their layers
-- When discussing macro risks, connect them to specific positions the investor holds
-- For CC questions, reference actual open positions by ticker and strike price
-- For tax questions, reference actual lot dates and LT thresholds you have above
-- Be direct and actionable; avoid vague generalities
-- Keep responses focused and under ~300 words unless asked to elaborate"""
+HOW TO RESPOND:
+- Be inward-looking: every answer must reference actual held tickers and/or candidates from the universe above — never generic stock suggestions
+- For reallocation questions (trim X to fund Y): specify ticker, approximate shares/dollars, and tax impact (ST vs LT gain/loss based on lot dates above)
+- For "what should I add to L4" or similar: rank candidates from the L4 section of the candidate universe, explain fit vs existing holdings, and suggest a size relative to current portfolio weight
+- For "what should I trim": identify the weakest-fit positions in the relevant layer, note unrealized gain/loss and tax status, and suggest trim size
+- When asked for alternatives: compare candidates head-to-head on score, yield, PE, and layer fit vs what the investor already holds in that layer
+- Reallocation math: if the investor wants to move $X from one layer to another, calculate which positions to trim and by how much, considering LT tax preference
+- Keep responses concise and structured; use bullet points for trade ideas
+- If a question is ambiguous, ask one clarifying question before proceeding"""
 
     return system
 
