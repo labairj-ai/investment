@@ -1,7 +1,7 @@
 # Fix CC Dependency original_value: None — Checker Silently Passes
 
 - **ID:** 0122
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-07
 - **Priority:** high
 - **Depends:** none

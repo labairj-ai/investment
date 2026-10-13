@@ -1,7 +1,7 @@
 # Fix financials_fetcher.py Standalone Migration Edge Case
 
 - **ID:** 0131
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-07
 - **Priority:** normal
 - **Depends:** none

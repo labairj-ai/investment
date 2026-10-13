@@ -1,7 +1,7 @@
 # Remove Silent EV/EBITDA-to-EV/EBIT Substitution in Thesis Valuation
 
 - **ID:** 0109
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-07
 - **Priority:** normal
 - **Depends:** none

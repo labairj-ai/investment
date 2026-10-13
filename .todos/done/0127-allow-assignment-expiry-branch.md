@@ -1,7 +1,7 @@
 # ALLOW_ASSIGNMENT Must Branch on Actual Expiry Price
 
 - **ID:** 0127
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-07
 - **Priority:** high
 - **Depends:** 0125

@@ -1,7 +1,7 @@
 # Add CC Calibration Skill Diagnostics Against Naive References
 
 - **ID:** 0715
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-10-13
 - **Priority:** normal
 - **Depends:** 0701, 0713

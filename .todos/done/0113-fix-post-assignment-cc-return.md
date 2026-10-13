@@ -1,7 +1,7 @@
 # Fix Post-Assignment CC Return for Post-Expiry Horizons
 
 - **ID:** 0113
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-07
 - **Priority:** high
 - **Depends:** 0106

@@ -1,7 +1,7 @@
 # CC Trade State Machine: Link ROLL Legs into Evaluation Chain
 
 - **ID:** 0130
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-07
 - **Priority:** normal
 - **Depends:** 0125, 0127

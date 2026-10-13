@@ -18,7 +18,8 @@
       "review_date": "2026-11-12",
       "waiver_version": "baseline-debt-1",
       "signature_sha256": "a8fcaeb09f01516031c227faa981adc76a1dae454dcefd1750adb560955fc44c",
-      "status": "active"
+      "status": "resolved",
+      "resolution": "Test now passes after session-maturity fixture fields were updated in 0360/0365/0381 follow-up work. Verified passing on optiplex 2026-10-13."
     },
     {
       "node_id": "tests/test_calibration.py::TestStateSpecificPromotionGates0355::test_observe_to_paper_active_passes_after_14_days",
@@ -37,7 +38,8 @@
       "review_date": "2026-11-12",
       "waiver_version": "baseline-debt-1",
       "signature_sha256": "50ae8385725ac63c2e4a1073593695cdb6184269dec060302b8cfc4a9d1f34b3",
-      "status": "active"
+      "status": "resolved",
+      "resolution": "Test now passes after session-maturity fixture fields were updated in 0355/0365/0381 follow-up work. Verified passing on optiplex 2026-10-13."
     },
     {
       "node_id": "tests/test_fill_hardening.py::test_sync_fill_preserved_when_process_new_intents_halts[BrokerStateIntegrityError]",

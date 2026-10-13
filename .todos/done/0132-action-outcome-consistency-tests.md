@@ -1,7 +1,7 @@
 # Add Action/Outcome/Validation Schema Consistency Tests
 
 - **ID:** 0132
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-07
 - **Priority:** normal
 - **Depends:** 0128

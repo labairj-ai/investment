@@ -1,7 +1,7 @@
 # Store Contract-Specific Evidence References on Recommendations
 
 - **ID:** 0129
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-07
 - **Priority:** normal
 - **Depends:** none

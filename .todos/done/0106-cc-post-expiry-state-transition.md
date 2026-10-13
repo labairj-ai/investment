@@ -1,7 +1,7 @@
 # Fix Post-Expiration CC State-Transition Math for 30d/90d Horizons
 
 - **ID:** 0106
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-07
 - **Priority:** normal
 - **Depends:** 0105

@@ -1,7 +1,7 @@
 # Define Open Virtual CC Chain Version-Survivability Policy
 
 - **ID:** 0712
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-10-13
 - **Priority:** high
 - **Depends:** 0711

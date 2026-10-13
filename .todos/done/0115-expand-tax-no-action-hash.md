@@ -1,7 +1,7 @@
 # Expand Tax Agent NO ACTION State Hash with Full Lot/Gain Picture
 
 - **ID:** 0115
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-07
 - **Priority:** normal
 - **Depends:** 0108

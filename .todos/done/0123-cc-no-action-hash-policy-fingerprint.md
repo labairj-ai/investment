@@ -1,7 +1,7 @@
 # Add CC Thesis Policy Fingerprint to CC NO ACTION Hash
 
 - **ID:** 0123
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-07
 - **Priority:** normal
 - **Depends:** 0093

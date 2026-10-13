@@ -1,7 +1,7 @@
 # Deprecate Mislabeled EV/EBITDA Storage in Historical Valuation Metrics
 
 - **ID:** 0118
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-07
 - **Priority:** low
 - **Depends:** 0109

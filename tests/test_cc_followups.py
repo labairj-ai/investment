@@ -295,17 +295,28 @@ def test_exact_release_inventory_contract(tmp_path):
     spec=importlib.util.spec_from_file_location('gate',str(Path(__file__).resolve().parent.parent/'scripts/check_release_baseline.py'))
     gate=importlib.util.module_from_spec(spec);spec.loader.exec_module(gate)
     inventory=gate.load_inventory(Path(__file__).resolve().parent.parent/'config/release_baseline_failures.json')
+    # historical: all 4 items forced active to verify known-debt detection
     historical=deepcopy(inventory)
     for item in historical['failures']:item['status']='active';item['permitted_in_release']=True
     historical_results={f['node_id']:dict(signature=f['signature']) for f in historical['failures']}
     assert len(gate.compare(historical_results,historical,date(2026,10,13))['known_debt'])==4
+    # current real inventory: all resolved → no active items → gate passes with empty current failures
     current={f['node_id']:dict(signature=f['signature']) for f in inventory['failures'] if f.get('status')!='resolved'}
     assert gate.compare(current,inventory,date(2026,10,13))['passed']
-    current['newtest']=dict(signature='new');assert not gate.compare(current,inventory,date(2026,10,13))['passed'];current.pop('newtest')
-    key=next(iter(current));current[key]['signature']='changed';assert gate.compare(current,inventory,date(2026,10,13))['changed_failures']
-    current.pop(key);assert gate.compare(current,inventory,date(2026,10,13))['resolved_stale_inventory']
-    assert gate.compare(current,inventory,date(2027,1,1))['expired_waivers']
-    path=tmp_path/'bad.json';inventory['failures'].append(inventory['failures'][0]);path.write_text(json.dumps(inventory))
+    # use a synthetic one-item inventory to verify rejection cases without real active debt
+    syn_inv={'version':inventory['version'],'failures':[deepcopy(historical['failures'][0])]}
+    syn_id=syn_inv['failures'][0]['node_id'];syn_sig=syn_inv['failures'][0]['signature']
+    syn_ok={syn_id:dict(signature=syn_sig)}
+    # new failure
+    assert not gate.compare(dict(syn_ok,**{'newtest::extra':dict(signature='new')}),syn_inv,date(2026,10,13))['passed']
+    # changed signature
+    assert gate.compare({syn_id:dict(signature='different sig')},syn_inv,date(2026,10,13))['changed_failures']
+    # resolved stale inventory (active item no longer failing)
+    assert gate.compare({},syn_inv,date(2026,10,13))['resolved_stale_inventory']
+    # expired waiver
+    assert gate.compare(syn_ok,syn_inv,date(2027,1,1))['expired_waivers']
+    # duplicate ID fails on load
+    path=tmp_path/'bad.json';dup_inv=deepcopy(inventory);dup_inv['failures'].append(dup_inv['failures'][0]);path.write_text(json.dumps(dup_inv))
     with pytest.raises(ValueError):gate.load_inventory(path)
 
 

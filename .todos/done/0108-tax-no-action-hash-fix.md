@@ -1,7 +1,7 @@
 # Fix Tax Agent NO ACTION State Hash to Use Real Tax Infrastructure
 
 - **ID:** 0108
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-07
 - **Priority:** normal
 - **Depends:** none

@@ -1,7 +1,7 @@
 # Add Volatility and Risk-Contribution Buckets to Guardian NO ACTION Hash
 
 - **ID:** 0119
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-07
 - **Priority:** normal
 - **Depends:** 0093

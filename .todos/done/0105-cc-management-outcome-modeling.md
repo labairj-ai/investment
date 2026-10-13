@@ -1,7 +1,7 @@
 # Add Outcome Evaluator Support for CC Management Actions
 
 - **ID:** 0105
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-07
 - **Priority:** normal
 - **Depends:** 0104

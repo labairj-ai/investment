@@ -1,7 +1,7 @@
 # Enrich Agent-Run Audit Manifest with Reference IDs
 
 - **ID:** 0120
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-07
 - **Priority:** normal
 - **Depends:** 0078

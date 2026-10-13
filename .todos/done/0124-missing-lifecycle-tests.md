@@ -1,7 +1,7 @@
 # Add Five Missing Lifecycle Tests From Reviewer Checklist
 
 - **ID:** 0124
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-07
 - **Priority:** normal
 - **Depends:** 0114

@@ -1,7 +1,7 @@
 # Make All Execution + CC State Updates One SQLite Transaction
 
 - **ID:** 0104
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-07
 - **Priority:** high
 - **Depends:** none

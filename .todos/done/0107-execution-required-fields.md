@@ -1,7 +1,7 @@
 # Require Action-Specific Execution Fields; Derive Position Size Server-Side
 
 - **ID:** 0107
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-07
 - **Priority:** normal
 - **Depends:** none

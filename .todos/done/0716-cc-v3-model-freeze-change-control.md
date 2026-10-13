@@ -1,7 +1,7 @@
 # Establish CC V3 Model Freeze and Change-Control Policy
 
 - **ID:** 0716
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-10-13
 - **Priority:** high
 - **Depends:** 0711, 0712, 0713, 0714, 0715

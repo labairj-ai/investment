@@ -1,7 +1,7 @@
 # Use Period-End Shares Outstanding for Market-Cap Calculation
 
 - **ID:** 0111
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-07
 - **Priority:** low
 - **Depends:** none

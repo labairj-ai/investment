@@ -1,7 +1,7 @@
 # Validate CC Simulator Cadence Comparability
 
 - **ID:** 0714
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-10-13
 - **Priority:** high
 - **Depends:** 0707, 0713

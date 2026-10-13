@@ -1,7 +1,7 @@
 # Add CC Evidence Accrual Health and Promotion Progress Monitoring
 
 - **ID:** 0713
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-10-13
 - **Priority:** high
 - **Depends:** 0706, 0707, 0712

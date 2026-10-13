@@ -1,7 +1,7 @@
 # Fix extreme_threshold to Use Primary Metric, Not Always P/E
 
 - **ID:** 0116
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-07
 - **Priority:** normal
 - **Depends:** none

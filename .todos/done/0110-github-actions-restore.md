@@ -1,7 +1,7 @@
 # Restore GitHub Actions and Require Tests to Pass on Every Push
 
 - **ID:** 0110
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-07
 - **Priority:** normal
 - **Depends:** none

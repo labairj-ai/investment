@@ -1,7 +1,7 @@
 # Exclude CC Management Actions from Decision Quality + Add outcome_math_version
 
 - **ID:** 0128
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-07
 - **Priority:** high
 - **Depends:** none
