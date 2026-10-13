@@ -100,6 +100,14 @@ def validate_execution_body(
                     f"contracts*100 ({int(contracts)*100}) exceeds covered shares ({pos_before:.0f})",
                 )
 
+        # An entry execution cannot exceed the recommendation's authorized coverage.
+        import json
+        payload = rec.get('action_payload') or rec.get('action_payload_json') or {}
+        if isinstance(payload,str): payload=json.loads(payload)
+        authorized = payload.get('contracts')
+        if authorized is not None and contracts is not None and int(contracts)>int(authorized):
+            return (400, 'contracts exceed recommendation-authorized share coverage')
+
     elif action in ("ROLL_OUT", "ROLL_UP", "ROLL_UP_AND_OUT"):
         btc_price  = body.get("btc_price")
         sto_premium = body.get("sto_premium")

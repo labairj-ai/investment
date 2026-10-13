@@ -617,3 +617,5 @@ if __name__ == "__main__":
     label_mature_episodes(dry_run=dry)
     label_risk_counterfactuals(dry_run=dry)
     label_trade_outcomes(dry_run=dry)
+    from covered_call_ledger import refresh_labels
+    print("[covered_call_labeler]", refresh_labels(dry_run=dry))

@@ -3510,6 +3510,11 @@ def build_dashboard(portfolio, layers, holdings):
       <div id="learning-cc-portfolio" style="color:#718096;font-size:13px;">Loading…</div>
     </div>
 
+    <div style="background:#fff;border-radius:10px;padding:18px 22px;margin-bottom:16px;">
+      <h3>Covered Call Learning Lab</h3>
+      <p style="font-size:12px;color:#718096;">Decision snapshots, coverage, utility and path outcomes. Daily delta is reconstructed; open paths and unreconciled chains are censored. Low sample sizes remain visible.</p>
+      <div id="learning-covered-calls">Loading…</div>
+    </div>
     <!-- ── Zone 4: Calibration Evidence (tabbed) ── -->
     <div style="background:#fff;border-radius:10px;padding:18px 22px;box-shadow:0 1px 4px rgba(0,0,0,.07);margin-bottom:16px;">
       <h3 style="margin:0 0 12px;font-size:14px;font-weight:700;color:#2d3748;">Calibration Evidence</h3>
@@ -9378,7 +9383,48 @@ function showLCalTab(name) {{
   }});
 }}
 
+function loadCoveredCallLab() {{
+  var el = document.getElementById('learning-covered-calls');
+  if (!el) return;
+  fetch('/api/learning/covered-calls').then(function(r) {{ return r.json(); }}).then(function(d) {{
+    el.replaceChildren();
+    function line(text, parent) {{ var p=document.createElement('p'); p.textContent=text; (parent || el).appendChild(p); }}
+    function number(x) {{ return x == null ? 'unavailable' : Number(x).toFixed(4); }}
+    line('Scorer: ' + d.mode + ' · Decisions: ' + d.decision_n + ' · Independent sessions: ' + d.independent_n);
+    line('Promotion: ' + (d.promotion.eligible ? 'eligible for explicit promotion' : d.promotion.failures.join(', ')));
+    Object.entries(d.calibration).forEach(function(entry) {{
+      var name=entry[0], c=entry[1];
+      var details=document.createElement('details'); var summary=document.createElement('summary');
+      summary.textContent=name+' · N='+c.n+' · Brier='+number(c.brier)+' · Reliability error='+number(c.reliability_error);
+      details.appendChild(summary); el.appendChild(details);
+      c.buckets.forEach(function(b) {{ line(b.band.join('–')+' · N='+b.n+' · Predicted='+number(b.predicted)+' · Realized='+number(b.frequency)+(b.minimum_n_met?'':' · low N'),details); }});
+    }});
+    var table=document.createElement('table'); table.style.width='100%';
+    var head=document.createElement('tr');
+    ['Cohort','Bucket','N','Eligible','Censored','Roll N / rate','Alpha N / USD per share'].forEach(function(x) {{ var th=document.createElement('th');th.textContent=x;head.appendChild(th); }});table.appendChild(head);
+    d.cohorts.forEach(function(c) {{ var tr=document.createElement('tr');
+      [c.dimension,c.bucket,c.n,c.eligible_n,c.censored_n,c.roll_n+' / '+number(c.roll_rate),c.alpha_n+' / '+number(c.incremental_alpha)].forEach(function(x) {{var td=document.createElement('td');td.textContent=x;tr.appendChild(td);}}); table.appendChild(tr);
+    }}); el.appendChild(table);
+    d.decisions.forEach(function(dec) {{
+      var details=document.createElement('details'); var summary=document.createElement('summary');
+      summary.textContent=dec.ticker+' · '+dec.timestamp+' · '+dec.divergence+(dec.independent_cohort?'':' · duplicate session');details.appendChild(summary);el.appendChild(details);
+      line('Champion: '+JSON.stringify(dec.champion)+' · Challenger: '+JSON.stringify(dec.challenger),details);
+      dec.candidates.forEach(function(c) {{
+        var inner=document.createElement('details');var title=document.createElement('summary');var f=c.features;
+        title.textContent=c.id+' · '+(c.selected_v2?'Champion ':'')+(c.selected_v3?'Challenger ':'')+' · V2 '+number(f.score)+' · V3 margin '+number(f.utility_margin)+' · '+(f.eligible?'eligible':f.rejection_reasons.join(', '));
+        inner.appendChild(title); details.appendChild(inner);
+        line('Coverage '+number(f.overwrite_fraction)+' · Premium '+number(f.expected_premium)+' − upside '+number(f.expected_upside_surrendered)+' − management '+number(f.expected_management_cost)+' − execution '+number(f.expected_execution_cost)+' − tax '+number(f.expected_tax_cost)+' = alpha '+number(f.adjusted_cc_alpha),inner);
+        line('Terminal regret base / conservative '+number(f.regret_prob_base)+' / '+number(f.regret_prob_conservative)+' · Strike touch '+number(f.strike_touch_prob)+' · Delta 30 / 50 touch '+number(f.delta30_touch_prob)+' / '+number(f.delta50_touch_prob),inner);
+        line('Realized / estimated / censored: '+JSON.stringify(c.labels),inner);
+        var raw=document.createElement('pre');raw.style.whiteSpace='pre-wrap';raw.textContent=JSON.stringify(f,null,2);inner.appendChild(raw);
+      }});
+    }});
+    if (!d.decision_n) line('No prospective covered-call episodes yet. The next entry scan will capture them.');
+  }}).catch(function(e) {{el.textContent='Covered-call diagnostics unavailable: '+e.message;}});
+}}
+
 function loadLearningPanel(btn) {{
+  loadCoveredCallLab();
   var _t0 = Date.now();
   if (btn) {{ btn.textContent = 'Refreshing…'; btn.disabled = true; }}
   var _restoreBtn = function() {{

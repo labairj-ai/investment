@@ -37,7 +37,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import yfinance as yf
-from time_utils import today_eastern, now_eastern
+from time_utils import now_utc, today_eastern, now_eastern
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -188,16 +188,8 @@ def _estimate_drift(ret) -> float:
     """Blended real-world annualised drift from dividend-adjusted Close.pct_change().
     yfinance auto_adjust=True (default) means returns are total-return drift.
     Caller must subtract q (annual dividend yield) when computing real-world d2."""
-    n = len(ret)
-    values, weights = [], []
-    if n >= 60:
-        values.append(float(ret.iloc[-60:].mean()  * 252)); weights.append(DRIFT_WEIGHT_60D)
-    if n >= 252:
-        values.append(float(ret.iloc[-252:].mean() * 252)); weights.append(DRIFT_WEIGHT_252D)
-    values.append(DRIFT_MKT_LONG_RUN); weights.append(DRIFT_WEIGHT_MKT)
-    total_w = sum(weights)
-    mu = sum(v * w for v, w in zip(values, weights)) / total_w
-    return max(-DRIFT_CAP, min(DRIFT_CAP, mu))
+    from covered_call_v3 import drift_model
+    return drift_model(ret)['mu_center']
 
 
 def compute_vol_model(hist_df) -> dict:
@@ -228,7 +220,7 @@ def compute_vol_model(hist_df) -> dict:
         "hv120":       hv120,
         "hv_ewma":     round(hv_ewma, 4),
         "hv_forecast": round(hv_forecast, 4),
-        "mu":          _estimate_drift(ret),
+        **__import__("covered_call_v3").drift_model(ret),
     }
 
 
@@ -455,7 +447,7 @@ def _compute_opp_score(df) -> "pd.Series":
     V = ((df["iv_richness"].clip(-0.5, 1.0) + 0.5) / 1.5)
     L = df["liquidity_score"] / 100.0
     R = (1.0 - df["regret_prob"] / 0.40).clip(0, 1)
-    return (100 * (0.30*A + 0.20*Y + 0.20*V + 0.15*L + 0.15*R)).round(1)
+    return 100 * (0.30*A + 0.20*Y + 0.20*V + 0.15*L + 0.15*R)
 
 
 def _compute_scores(df):
@@ -468,7 +460,7 @@ def _compute_scores(df):
         return series.rank(pct=True, method="average")
 
     A = pct_rank(df["cc_alpha"])                          # 25% — core metric
-    Y = pct_rank(df["premium_pct"])                       # 15% — yield
+    Y = pct_rank(df["annualized_ret"])                       # 15% — yield
     V = pct_rank(df["iv_richness"].clip(lower=-1))        # 15% — IV richness
     L = df["liquidity_score"] / 100.0                     # 15% — liquidity (absolute)
     U = pct_rank(df["z_strike"])                          # 15% — upside room
@@ -498,7 +490,7 @@ def analyze(ticker: str, avg_cost: float, shares: float):
         week52_high    = current_price
         week52_high_dt = "n/a"
         vol_model      = {"hv20": None, "hv60": None, "hv120": None,
-                          "hv_ewma": 0.40, "hv_forecast": 0.40, "mu": 0.10}
+                          "hv_ewma": 0.40, "hv_forecast": 0.40, **__import__("covered_call_v3").drift_model([])}
         hv_rank        = None
     else:
         hist52 = hist.iloc[-252:] if len(hist) >= 252 else hist
@@ -549,6 +541,9 @@ def analyze(ticker: str, avg_cost: float, shares: float):
         return [e for e in all_options
                 if min_exp <= datetime.strptime(e, "%Y-%m-%d").date() <= max_exp]
 
+    surface_points = []
+    raw_quote_snapshot = {}
+
     def _build_rows(expirations, mid_mode):
         import pandas as pd
         rows = []
@@ -561,6 +556,14 @@ def analyze(ticker: str, avg_cost: float, shares: float):
                 continue
 
             T = dte / 365
+            for _, raw in calls.iterrows():
+                raw_strike=float(raw['strike'])
+                raw_quote_snapshot[(exp,raw_strike)]=dict(expiration=exp,strike=raw_strike,dte=dte,
+                    bid=float(raw.get('bid',0) or 0),ask=float(raw.get('ask',0) or 0),
+                    impliedVolatility=float(raw.get('impliedVolatility',0) or 0),
+                    openInterest=_safe_int(raw.get('openInterest',0)),volume=_safe_int(raw.get('volume',0)),
+                    contract_symbol=raw.get('contractSymbol'),quote_timestamp=now_utc().isoformat(),
+                    last_trade_timestamp=str(raw.get('lastTradeDate','')),raw_quote_only=True)
 
             if mid_mode == "live":
                 calls = calls[calls["bid"] >= MIN_BID].copy()
@@ -591,10 +594,18 @@ def analyze(ticker: str, avg_cost: float, shares: float):
             if calls.empty:
                 continue
 
+            risk_for_exp = get_risk_events(stock, current_price, today, exp_date)
+            # Surface neighbors include ATM/ITM calls even though entry is OTM-only.
+            for _, point in calls.iterrows():
+                raw_iv = float(point.get('impliedVolatility', 0) or 0)
+                if raw_iv > .01:
+                    surface_points.append(dict(expiration=exp, dte=dte, strike=float(point['strike']),
+                        bid=float(point.get('bid',0) or 0), ask=float(point.get('ask',0) or 0),
+                        impliedVolatility=raw_iv, delta=call_delta(current_price,float(point['strike']),T,raw_iv),
+                        quote_timestamp=now_utc().isoformat(), iv_source='chain',risk_events=risk_for_exp))
             calls = calls[calls["strike"] >  current_price].copy()  # OTM only
             calls = calls[calls["strike"] <= current_price * MAX_STRIKE_MULTIPLIER].copy()
-            # Fetch calendar/earnings data once per expiry (not per contract).
-            risk_for_exp = get_risk_events(stock, current_price, today, exp_date)
+            # Calendar/earnings fetched once per expiry above.
             metrics = []
             for _, row in calls.iterrows():
                 K   = float(row["strike"])
@@ -626,27 +637,34 @@ def analyze(ticker: str, avg_cost: float, shares: float):
 
                 metrics.append({
                     "expiration":        exp,
+                    "contract_symbol": row.get("contractSymbol"),
+                    "quote_timestamp": now_utc().isoformat(),
+                    "quote_time_source": "CAPTURE_TIME_NOT_EXCHANGE",
+                    "last_trade_timestamp": str(row.get("lastTradeDate", "")),
+                    "iv_source": "chain" if iv > .01 else "historical_fallback",
+                    "theta": -current_price * _norm_pdf(_bs_d1d2(current_price,K,T,eff_iv)[0]) * eff_iv / (2*math.sqrt(T)*365),
+                    "vega": current_price * _norm_pdf(_bs_d1d2(current_price,K,T,eff_iv)[0]) * math.sqrt(T) / 100,
                     "strike":            K,
                     "dte":               dte,
                     "bid":               bid,
                     "ask":               ask,
                     "mid":               mid,
-                    "exec_premium":      round(exec_prem, 2),
+                    "exec_premium":      exec_prem,
                     "premium_pct":       exec_prem / current_price * 100,
                     "annualized_ret":    exec_prem / current_price * 100 * (365 / dte),
                     "profit_if_called":  (K + exec_prem - avg_cost) / avg_cost * 100,
-                    "delta":             round(delta_val, 3),
-                    "gamma":             round(gamma_val, 4),
-                    "itm_prob_rn":       round(itm_rn, 3),
-                    "itm_prob_real":     round(itm_real, 3),
-                    "regret_prob":       round(reg_p, 3),
-                    "regret_threshold":  round(K + exec_prem, 2),
-                    "cc_alpha":          round(cc_alpha, 3),
-                    "cc_alpha_pct":      round(cc_alpha / current_price, 6),
-                    "upside_lost":       round(up_lost, 3),
-                    "expected_move":     round(exp_move, 2),
-                    "z_strike":          round(z_k, 2),
-                    "iv_richness":       round(iv_rich, 3),
+                    "delta":             delta_val,
+                    "gamma":             gamma_val,
+                    "itm_prob_rn":       itm_rn,
+                    "itm_prob_real":     itm_real,
+                    "regret_prob":       reg_p,
+                    "regret_threshold":  K + exec_prem,
+                    "cc_alpha":          cc_alpha,
+                    "cc_alpha_pct":      cc_alpha / current_price,
+                    "upside_lost":       up_lost,
+                    "expected_move":     exp_move,
+                    "z_strike":          z_k,
+                    "iv_richness":       iv_rich,
                     "liquidity_score":   liq,
                     "openInterest":      oi,
                     "volume":            vol,
@@ -655,7 +673,7 @@ def analyze(ticker: str, avg_cost: float, shares: float):
                     "has_avoid":         any(e["severity"] == "avoid"   for e in risk),
                     "has_caution":       any(e["severity"] == "caution" for e in risk),
                     "passes_floor":      passes,
-                    "spread_width":      round(ask - bid, 2),
+                    "spread_width":      ask - bid,
                 })
 
             if metrics:
@@ -714,7 +732,7 @@ def analyze(ticker: str, avg_cost: float, shares: float):
 
     # Floor-passing contracts ranked by within-ticker score (shown in "All" view)
     recs_df  = all_calls[all_calls["passes_floor"]].sort_values(
-                    "score", ascending=False).head(20)
+                    "opp_score", ascending=False)
     # Floor-failing contracts (below-floor accordion in "All" view)
     floor_fail_df = all_calls[~all_calls["passes_floor"]].sort_values(
                     "score", ascending=False).head(10)
@@ -749,6 +767,13 @@ def analyze(ticker: str, avg_cost: float, shares: float):
         print(f"  [{ticker}] option snapshot write failed: {_e}")
 
     return {
+        "all_calls":         all_calls,
+        "surface_points": surface_points,
+        "raw_rejected_quotes": [raw for key,raw in raw_quote_snapshot.items()
+            if key not in {(r['expiration'],float(r['strike'])) for r in all_calls.to_dict('records')}],
+        "snapshot_timestamp": now_utc().isoformat(),
+        "dividend_yield": q,
+        "regime": __import__("covered_call_v3").regime_model(hist["Close"].tolist() if not hist.empty else [], {}),
         "ticker":            ticker,
         "current_price":     current_price,
         "avg_cost":          avg_cost,

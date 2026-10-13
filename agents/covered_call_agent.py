@@ -162,7 +162,7 @@ def _build_candidates(ticker: str, recs_df) -> tuple[list[dict], dict[str, dict]
     if eligible.empty:
         return [], {}
 
-    eligible = eligible.sort_values("score", ascending=False).head(5)
+    eligible = eligible.sort_values("opp_score" if "opp_score" in eligible.columns else "score", ascending=False).head(5)
 
     candidates: list[dict] = []
     id_to_row: dict[str, dict] = {}
@@ -174,14 +174,15 @@ def _build_candidates(ticker: str, recs_df) -> tuple[list[dict], dict[str, dict]
             "expiration": row["expiration"],
             "dte": int(row["dte"]),
             "strike": float(row["strike"]),
-            "exec_premium": round(float(row["exec_premium"]), 2),
-            "cc_alpha": round(float(row["cc_alpha"]), 4),
-            "cc_alpha_pct": round(float(row.get("cc_alpha_pct", 0)), 2),
-            "regret_prob": round(float(row["regret_prob"]), 3),
-            "delta": round(float(row["delta"]), 3),
-            "iv_richness": round(float(row["iv_richness"]), 3),
-            "liquidity_score": round(float(row["liquidity_score"]), 3),
-            "score": round(float(row["score"]), 2),
+            "exec_premium": float(row["exec_premium"]),
+            "cc_alpha": float(row["cc_alpha"]),
+            "cc_alpha_pct": float(row.get("cc_alpha_pct", 0)),
+            "regret_prob": float(row["regret_prob"]),
+            "delta": float(row["delta"]),
+            "iv_richness": float(row["iv_richness"]),
+            "liquidity_score": float(row["liquidity_score"]),
+            "score": float(row["score"]),
+            "opp_score": float(row.get("opp_score",row["score"])),
             "has_caution": bool(row.get("has_caution", False)),
         })
     return candidates, id_to_row
@@ -215,7 +216,7 @@ def _build_evidence(result: dict, candidates: list[dict]) -> EvidenceBundle:
         recommendation_direction="sell",
         rule_support=0.8 if data_mode == "live" else 0.5,
         has_live_option_quote=(data_mode == "live"),
-        option_liquidity_good=(data_mode == "live" and best_liquidity >= 0.7),
+        option_liquidity_good=(data_mode == "live" and best_liquidity >= 70),
         uses_ask_proxy=(data_mode == "ask_proxy"),
         uses_theoretical_pricing=(data_mode == "theoretical"),
     )
@@ -549,6 +550,10 @@ def _analyze_ticker(ctx: AgentContext, ticker: str) -> list[Recommendation]:
     policy = _get_cc_policy(ticker)
 
     if policy["strategy"] == "NONE":
+        from covered_call_ledger import record_episode
+        from strategy_config import CC_V3_CONFIG
+        record_episode(ticker,ctx.run_id,[],{'action':'NO_CALL','reason':'STRATEGY_NONE','contracts':0},
+                       {'action':'NO_CALL','contracts':0},policy,CC_V3_CONFIG)
         print(f"[covered_call] {ticker}: thesis cc_policy=NONE — CC writing not permitted")
         return []
 
@@ -566,57 +571,45 @@ def _analyze_ticker(ctx: AgentContext, ticker: str) -> list[Recommendation]:
     result = covered_call_rec.analyze(ticker, holding.avg_cost, holding.shares)
     if result is None:
         print(f"[covered_call] {ticker}: analyze() returned None")
+        from covered_call_ledger import record_episode
+        from strategy_config import CC_V3_CONFIG
+        record_episode(ticker,ctx.run_id,[],{'action':'NO_CALL','reason':'NO_MARKET_DATA','contracts':0},
+                       {'action':'NO_CALL','reason':'NO_MARKET_DATA','contracts':0},policy,CC_V3_CONFIG)
         return []
 
-    recs_df = result.get("recs")
-    if recs_df is None or recs_df.empty:
-        print(f"[covered_call] {ticker}: no contracts from analyze()")
+    from covered_call_v3 import prepare
+    from covered_call_ledger import record_episode, execution_history, surface_history, active_scorer
+    from strategy_config import CC_V3_CONFIG
+    import pandas as pd
+    # Resolve explicit thesis policy before any truncation; keep every alternative.
+    bands = CC_V3_CONFIG['preferred_dte_bands'].get(policy['strategy'], [21,60])
+    policy = dict(policy)
+    for key, default in zip(('preferred_dte_min','preferred_dte_max'),bands):
+        if policy.get(key) is None: policy[key] = default
+    thesis = agent_db.get_active_thesis(ticker) or {}
+    policy['conviction'] = thesis.get('conviction')
+    pillars = [p for p in (thesis.get('pillars') or []) if p.get('score') is not None]
+    weights = sum(p.get('importance',0) for p in pillars)
+    policy['thesis_health'] = sum(p.get('importance',0)*p['score'] for p in pillars)/weights if weights else None
+    policy['portfolio_weight'] = getattr(holding,'weight_pct',None)
+    policy['max_position_pct'] = thesis.get('max_position_pct')
+    policy['is_overweight'] = (policy['portfolio_weight'] is not None and policy['max_position_pct'] is not None
+                              and policy['portfolio_weight'] > policy['max_position_pct'])
+    episode_rows, challenger = prepare(ticker, result, policy, holding.shares,
+                                       CC_V3_CONFIG, execution_history(), surface_history(ticker))
+    def persist_cc_decision(champion):
+        return record_episode(ticker, ctx.run_id, episode_rows, champion, challenger,
+                              policy, CC_V3_CONFIG, result.get('snapshot_timestamp'))
+    recs_df = pd.DataFrame([r for r in episode_rows if r['eligible']])
+    if recs_df.empty:
+        persist_cc_decision({'action':'NO_CALL','reason':'NO_ELIGIBLE_CONTRACTS','contracts':0})
+        agent_db.insert_finding(run_id=ctx.run_id, finding_type='cc_no_call', ticker=ticker,
+            summary=f"{ticker}: NO_CALL — no contract passes hard entry policy", severity=20, confidence=90)
         return []
-
-    # Policy: avoid_earnings — veto entire ticker if any AVOID event risk
-    current_price_for_otm = holding.current_price or holding.avg_cost
-    if policy["avoid_earnings"]:
-        floor_passing_all = recs_df[recs_df["passes_floor"]]
-        if not floor_passing_all.empty and floor_passing_all["has_avoid"].any():
-            print(f"[covered_call] {ticker}: VETOED by policy avoid_earnings — AVOID event present")
-            return []
-
-    # Deterministic AVOID gate — veto entire ticker if all floor-passing contracts are AVOID
-    floor_passing = recs_df[recs_df["passes_floor"]]
-    if not floor_passing.empty and floor_passing["has_avoid"].all():
-        print(f"[covered_call] {ticker}: VETOED — all floor-passing contracts carry AVOID event risk")
-        agent_db.insert_finding(
-            run_id=ctx.run_id,
-            finding_type="cc_avoid_veto",
-            ticker=ticker,
-            summary=(f"{ticker}: all {len(floor_passing)} floor-passing contracts blocked by "
-                     "AVOID-level event risk — CC writing vetoed for this cycle"),
-            severity=60,
-            confidence=90,
-        )
-        return []
-
-    # Apply per-thesis policy filters to narrow the candidate universe
-    policy_filtered = recs_df.copy()
-    max_delta = policy["max_preferred_delta"]
-    if max_delta is not None:
-        policy_filtered = policy_filtered[policy_filtered["delta"] <= max_delta]
-    min_otm = policy["minimum_otm_pct"]
-    if min_otm is not None and current_price_for_otm > 0:
-        min_strike = current_price_for_otm * (1 + min_otm)
-        policy_filtered = policy_filtered[policy_filtered["strike"] >= min_strike]
-    if not policy_filtered.empty:
-        recs_df = policy_filtered
-        print(f"[covered_call] {ticker}: policy={policy['strategy']} "
-              f"delta<={max_delta} OTM>={min_otm*100:.0f}% → "
-              f"{len(recs_df)} contract(s) remain")
-    else:
-        print(f"[covered_call] {ticker}: policy filters left 0 contracts — "
-              f"falling back to unfiltered universe")
 
     candidates, id_to_row = _build_candidates(ticker, recs_df)
     if not candidates:
-        print(f"[covered_call] {ticker}: no eligible contracts after AVOID filter")
+        persist_cc_decision({"action":"NO_CALL","reason":"NO_ELIGIBLE_CONTRACTS","contracts":0})
         return []
 
     # Build vol context for LLM prompt
@@ -640,7 +633,7 @@ def _analyze_ticker(ctx: AgentContext, ticker: str) -> list[Recommendation]:
         f"  {c['id']}: DTE={c['dte']}, strike=${c['strike']:.2f}, "
         f"premium=${c['exec_premium']:.2f}, cc_alpha={c['cc_alpha']:.4f}, "
         f"regret_prob={c['regret_prob']:.1%}, delta={c['delta']:.3f}, "
-        f"iv_richness={c['iv_richness']:.3f}, score={c['score']:.2f}"
+        f"iv_richness={c['iv_richness']:.3f}, opp_score={c['opp_score']:.2f}, v2_relative_score={c['score']:.2f}"
         + (" [CAUTION event]" if c["has_caution"] else "")
         for c in candidates
     )
@@ -651,7 +644,7 @@ def _analyze_ticker(ctx: AgentContext, ticker: str) -> list[Recommendation]:
         f"Shares: {holding.shares:.0f}  Avg cost: ${holding.avg_cost:.2f}  "
         f"Layer: {holding.layer}  Data mode: {data_mode}\n"
         f"Volatility: {vol_ctx}\n\n"
-        f"Eligible contracts (AVOID contracts already removed, sorted by score):\n"
+        f"Eligible contracts (AVOID contracts already removed, sorted by absolute opp_score):\n"
         f"{contract_lines}\n\n"
         "Select the best contract ID, or recommend NO_CALL if premium environment "
         "doesn't justify writing. Return JSON matching the schema exactly."
@@ -669,19 +662,40 @@ def _analyze_ticker(ctx: AgentContext, ticker: str) -> list[Recommendation]:
         )
     except Exception as e:
         print(f"[covered_call] {ticker}: LLM call failed: {e}")
+        persist_cc_decision({"action":"NO_CALL","reason":"LLM_UNAVAILABLE","contracts":0})
         return []
 
     if not llm_out or not isinstance(llm_out, dict):
         print(f"[covered_call] {ticker}: LLM returned invalid output")
+        persist_cc_decision({"action":"NO_CALL","reason":"LLM_INVALID","contracts":0})
         return []
 
     action = llm_out.get("action", "NO_CALL")
+    if action not in ("SELL_CC","NO_CALL"):
+        persist_cc_decision({"action":"NO_CALL","reason":"INVALID_ACTION","contracts":0})
+        return []
     contract_id = llm_out.get("contract_id")
     why = llm_out.get("why", "")
     main_tradeoff = llm_out.get("main_tradeoff", "")
     no_call_case = llm_out.get("no_call_case", "")
 
+    production_v3 = active_scorer(CC_V3_CONFIG) == 'v3'
+    if production_v3:
+        champion_before_promotion = {'action': 'NO_CALL', 'reason': why, 'contracts': 0}
+        champion_row = id_to_row.get(contract_id) if action == 'SELL_CC' else None
+        if champion_row is not None:
+            champion_before_promotion = dict(action='SELL_CC',strike=champion_row['strike'],expiration=champion_row['expiration'],
+                contracts=int(holding.shares//100),overwrite_fraction=int(holding.shares//100)*100/holding.shares)
+        episode_id = persist_cc_decision(champion_before_promotion)
+        if challenger['action'] == 'NO_CALL': return []
+        row = next(r for r in episode_rows if r['strike']==challenger['strike'] and r['expiration']==challenger['expiration'])
+        contract_id = _make_contract_id(ticker,row['expiration'],row['strike'])
+        id_to_row[contract_id] = row
+        action = 'SELL_CC'
+        why = f"V3 utility margin ${row['utility_margin']:.4f}/share clears the absolute hurdle."
+        main_tradeoff = f"Strike touch probability {row['strike_touch_prob']:.1%}; coverage {row['overwrite_fraction']:.0%}."
     if action == "NO_CALL" or not contract_id:
+        persist_cc_decision({"action":"NO_CALL","reason":why,"contracts":0})
         print(f"[covered_call] {ticker}: LLM recommends NO_CALL")
         agent_db.insert_finding(
             run_id=ctx.run_id,
@@ -696,32 +710,44 @@ def _analyze_ticker(ctx: AgentContext, ticker: str) -> list[Recommendation]:
     row = id_to_row.get(contract_id)
     if row is None:
         print(f"[covered_call] {ticker}: LLM selected unknown contract_id={contract_id!r}")
+        persist_cc_decision({"action":"NO_CALL","reason":"UNKNOWN_CONTRACT_ID","contracts":0})
         return []
 
-    evidence = _build_evidence(result, candidates)
+    champion = {"action":"SELL_CC", "strike":float(row['strike']),
+                "expiration":str(row['expiration']), "contracts":int(holding.shares//100),
+                "overwrite_fraction":int(holding.shares//100)*100/holding.shares}
+    if not production_v3:
+        episode_id = persist_cc_decision(champion)
+    evidence = _build_evidence(result, [row])
     confidence = calculate_confidence(evidence)
 
     action_payload = {
         "contract_id": contract_id,
         "expiration": row["expiration"],
         "strike": float(row["strike"]),
-        "exec_premium": round(float(row["exec_premium"]), 2),
-        "cc_alpha": round(float(row["cc_alpha"]), 4),
-        "cc_alpha_pct": round(float(row.get("cc_alpha_pct", 0)), 2),
-        "regret_prob": round(float(row["regret_prob"]), 3),
-        "delta": round(float(row["delta"]), 3),
+        "exec_premium": float(row["exec_premium"]),
+        "cc_alpha": float(row["cc_alpha"]),
+        "cc_alpha_pct": float(row.get("cc_alpha_pct", 0)),
+        "regret_prob": float(row["regret_prob"]),
+        "delta": float(row["delta"]),
         "dte": int(row["dte"]),
         "shares": int(holding.shares),
-        "contracts": int(holding.shares // 100),
+        "contracts": int(row["recommended_contracts"]) if production_v3 else int(holding.shares // 100),
+        "cc_episode_id": episode_id,
+        "scorer": "v3" if production_v3 else "v2",
+        "overwrite_fraction": row["overwrite_fraction"] if production_v3 else int(holding.shares//100)*100/holding.shares,
+        "eligible_contracts_max": int(holding.shares//100),
+        "challenger": challenger,
+        "v3_utility": {k:row.get(k) for k in ("adjusted_cc_alpha","expected_upside_surrendered","expected_management_cost","expected_execution_cost","expected_tax_cost","strike_touch_prob","delta30_touch_prob","delta50_touch_prob")},
         "avg_cost": holding.avg_cost,
         "current_price": holding.current_price,
         "data_mode": data_mode,
         "hv_rank": hv_rank,
         "atm_iv": atm_iv,
         "has_caution": bool(row.get("has_caution", False)),
-        "liquidity_score": round(float(row.get("liquidity_score", 0)), 3),
-        "iv_richness": round(float(row.get("iv_richness", 0)), 3),
-        "score": round(float(row["score"]), 2),
+        "liquidity_score": float(row.get("liquidity_score", 0)),
+        "iv_richness": float(row.get("iv_richness", 0)),
+        "score": float(row["score"]),
         "candidates_evaluated": len(candidates),
     }
 
@@ -735,7 +761,7 @@ def _analyze_ticker(ctx: AgentContext, ticker: str) -> list[Recommendation]:
     annual_pct     = round((ep / cur_price) * (365 / dte) * 100, 1) if cur_price and dte else 0
     financial_line = (
         f"Income: ${total_income:,.0f} ({contracts} contract{'s' if contracts != 1 else ''} "
-        f"× ${ep:.2f} premium). Break-even: ${breakeven:.2f}. "
+        f"× ${ep:.2f} premium; {action_payload['overwrite_fraction']:.0%} coverage). Break-even: ${breakeven:.2f}. "
         f"Annualized: {annual_pct:.1f}%."
     )
     why = financial_line + " " + why
@@ -875,7 +901,7 @@ def _analyze_ticker(ctx: AgentContext, ticker: str) -> list[Recommendation]:
     # All subsequent management recs for this position will inherit this chain ID.
     _expiry_str = action_payload.get("expiration", "")
     _strike_int = int(float(action_payload.get("strike", 0)))
-    _tc_id = f"cc-{ticker}-{_strike_int}-{_expiry_str}"
+    _tc_id = f"cc-{ticker}-{_strike_int}-{_expiry_str}-{episode_id}"
 
     rec = Recommendation(
         ticker=ticker,

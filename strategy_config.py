@@ -118,3 +118,6 @@ def get_hash() -> str:
 
 if not os.environ.get("SKIP_CONFIG_VALIDATION"):
     validate_config()
+
+# V3 is an observer; promotion state lives in the evidence-bound CC ledger.
+CC_V3_CONFIG = _cfg["covered_call_v3"]

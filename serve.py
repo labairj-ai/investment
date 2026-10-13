@@ -1966,6 +1966,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         elif parsed.path.startswith("/api/shadow/risk/"):
             intent_id = parsed.path.split("/api/shadow/risk/", 1)[1]
             self._handle_shadow_risk(intent_id)
+        elif parsed.path == "/api/learning/covered-calls":
+            from covered_call_ledger import report, promotion_evidence
+            from strategy_config import CC_V3_CONFIG
+            data = report()
+            data['promotion'] = promotion_evidence(CC_V3_CONFIG)
+            self._json(data)
         elif parsed.path == "/api/learning/stats":
             _valid_horizons = {"1w", "1m", "3m", "6m", "12m"}
             _h = parse_qs(parsed.query).get("horizon", ["3m"])[0]

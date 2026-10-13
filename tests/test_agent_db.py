@@ -814,3 +814,29 @@ def test_get_ytd_realized_gain_missing_table_returns_zero(mem_db):
     import agent_db
     gain = agent_db.get_ytd_realized_gain("ANET")
     assert gain == 0.0
+
+
+@pytest.mark.parametrize('bad_quote',[False,True])
+def test_cc_entry_fill_calibration_atomic_with_execution(mem_db,bad_quote):
+    import agent_db
+    import covered_call_ledger as ledger
+    from strategy_config import CC_V3_CONFIG
+    _create_cc_positions_table(mem_db)
+    candidate=dict(strike=110.,expiration='2026-11-12',bid=1.8,ask=2.,dte=30,delta=.15,
+                   quote_timestamp='2026-10-13T17:00:00+00:00')
+    decision=dict(action='SELL_CC',strike=110.,expiration='2026-11-12',contracts=1)
+    eid=ledger.record_episode('TEST',None,[candidate],decision,{'action':'NO_CALL'}, {},CC_V3_CONFIG,path=mem_db)
+    rid=agent_db.insert_recommendation('TEST','SELL_CC',action_payload=dict(cc_episode_id=eid,contract_id='TEST:20261112:110',current_price=100))
+    body=dict(strike=110.,expiration='2026-11-12',premium=1.9,contracts=1,
+              execution_quote=dict(bid=1.8,ask=2.,quote_timestamp='2026-10-13T17:00:00+00:00',
+                                   execution_timestamp='2026-10-13T18:00:00+00:00' if bad_quote else '2026-10-13T17:01:00+00:00'))
+    if bad_quote:
+        with pytest.raises(ValueError):
+            agent_db.record_execution_transaction(rid,'TEST','SELL_CC','2026-10-13',body,fill_id='cc-actual1')
+    else:
+        agent_db.record_execution_transaction(rid,'TEST','SELL_CC','2026-10-13',body,fill_id='cc-actual1')
+    db=agent_db._connect()
+    assert db.execute('SELECT count(*) FROM cc_fills').fetchone()[0]==(0 if bad_quote else 1)
+    assert db.execute("SELECT count(*) FROM executed_actions WHERE ticker='TEST'").fetchone()[0]==(0 if bad_quote else 1)
+    assert db.execute("SELECT count(*) FROM cc_positions WHERE ticker='TEST'").fetchone()[0]==(0 if bad_quote else 1)
+    db.close()

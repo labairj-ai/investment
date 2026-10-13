@@ -3768,6 +3768,19 @@ def record_execution_transaction(
     Returns {"exec_id": int, "exec_id_sto": int | None, "cc_pos_id": int | None}.
     """
     _is_roll = action in ("ROLL_OUT", "ROLL_UP", "ROLL_UP_AND_OUT")
+    cc_quote = body.get('execution_quote') if action == 'SELL_CC' else None
+    cc_payload = None
+    if cc_quote:
+        from covered_call_ledger import migrate as cc_migrate
+        migration_conn = _connect()
+        try:
+            cc_migrate(migration_conn)
+        finally:
+            migration_conn.close()
+        rec = get_recommendation_by_id(rec_id)
+        cc_payload = json.loads(rec.get('action_payload_json') or '{}')
+        if not cc_payload.get('cc_episode_id'):
+            raise ValueError('execution_quote requires a CC decision episode')
 
     conn = _connect()
     conn.isolation_level = None  # manual transaction control
@@ -3899,6 +3912,13 @@ def record_execution_transaction(
             )
             result["exec_id"] = exec_id
 
+        if cc_quote:
+            from covered_call_ledger import record_fill
+            record_fill(fill_id or str(result['exec_id']), cc_payload['cc_episode_id'], cc_payload['contract_id'],
+                float(body['premium']), float(cc_quote['bid']), float(cc_quote['ask']),
+                cc_quote['execution_timestamp'], float(body.get('fees') or 0),
+                cc_payload.get('current_price'), cc_quote.get('underlying_price'),
+                cc_quote.get('quote_timestamp'), connection=conn)
         conn.execute("COMMIT")
         return result
 
