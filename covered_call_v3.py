@@ -337,7 +337,7 @@ def prepare(ticker, result, policy, shares, config, fills=(), history=()):
     for row,sf,sf2 in zip(rows,surfaces,surfaces_v2):
         row.update(sf2)
         row.update(sf);row.update(regime);row.update(coverage);row.update(vm)
-        row['spot']=spot; row['policy_snapshot']=policy;row['data_mode']=result.get('data_mode')
+        row['spot']=spot; row['origin_holding_shares']=float(shares); row['policy_snapshot']=policy;row['data_mode']=result.get('data_mode')
         row['quote_timestamp']=row.get('quote_timestamp') or result.get('snapshot_timestamp')
         row['otm_pct']=row['strike']/spot-1
         # Comparable-delta/DTE percentiles require independent historical sessions.

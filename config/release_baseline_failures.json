@@ -17,7 +17,8 @@
       "permitted_in_release": true,
       "review_date": "2026-11-12",
       "waiver_version": "baseline-debt-1",
-      "signature_sha256": "a8fcaeb09f01516031c227faa981adc76a1dae454dcefd1750adb560955fc44c"
+      "signature_sha256": "a8fcaeb09f01516031c227faa981adc76a1dae454dcefd1750adb560955fc44c",
+      "status": "active"
     },
     {
       "node_id": "tests/test_calibration.py::TestStateSpecificPromotionGates0355::test_observe_to_paper_active_passes_after_14_days",
@@ -35,7 +36,8 @@
       "permitted_in_release": true,
       "review_date": "2026-11-12",
       "waiver_version": "baseline-debt-1",
-      "signature_sha256": "50ae8385725ac63c2e4a1073593695cdb6184269dec060302b8cfc4a9d1f34b3"
+      "signature_sha256": "50ae8385725ac63c2e4a1073593695cdb6184269dec060302b8cfc4a9d1f34b3",
+      "status": "active"
     },
     {
       "node_id": "tests/test_fill_hardening.py::test_sync_fill_preserved_when_process_new_intents_halts[BrokerStateIntegrityError]",
@@ -47,13 +49,15 @@
       "subsystem": "broker fill hardening",
       "owner": "investment-maintainer",
       "category": "active_fixture_bug",
-      "reason": "Reproduced on unchanged dfc011d and prior b90b525; fixed-date marks are stale, so intent submission is skipped before the injected halt.",
+      "reason": "Unchanged baseline failed offline and passed on Optiplex with current quote refresh. This network-dependent fixture is now repaired; the historical signature is retained but never waived.",
       "remediation_link": "docs/release_baseline_failures.md#failure-3",
-      "expected_resolution": "Make broker-halt fixtures use fresh marks so the intended error path executes.",
-      "permitted_in_release": true,
+      "expected_resolution": "Implemented: deterministic fresh marks in the test fixture; production freshness protection unchanged.",
+      "permitted_in_release": false,
       "review_date": "2026-11-12",
       "waiver_version": "baseline-debt-1",
-      "signature_sha256": "76cd43b4651e82b42c4397b13e93bece5078a608fbb7caa9bbaaa428d82f8338"
+      "signature_sha256": "76cd43b4651e82b42c4397b13e93bece5078a608fbb7caa9bbaaa428d82f8338",
+      "status": "resolved",
+      "resolution": "This release supplies explicit fresh quote fixtures, removing network-dependent market refresh from the halt-path test. Any recurrence is a regression."
     },
     {
       "node_id": "tests/test_fill_hardening.py::test_sync_fill_preserved_when_process_new_intents_halts[BrokerSubmissionIndeterminate]",
@@ -65,13 +69,15 @@
       "subsystem": "broker fill hardening",
       "owner": "investment-maintainer",
       "category": "active_fixture_bug",
-      "reason": "Reproduced on unchanged dfc011d and prior b90b525; fixed-date marks are stale, so intent submission is skipped before the injected halt.",
+      "reason": "Unchanged baseline failed offline and passed on Optiplex with current quote refresh. This network-dependent fixture is now repaired; the historical signature is retained but never waived.",
       "remediation_link": "docs/release_baseline_failures.md#failure-4",
-      "expected_resolution": "Make broker-halt fixtures use fresh marks so the intended error path executes.",
-      "permitted_in_release": true,
+      "expected_resolution": "Implemented: deterministic fresh marks in the test fixture; production freshness protection unchanged.",
+      "permitted_in_release": false,
       "review_date": "2026-11-12",
       "waiver_version": "baseline-debt-1",
-      "signature_sha256": "76cd43b4651e82b42c4397b13e93bece5078a608fbb7caa9bbaaa428d82f8338"
+      "signature_sha256": "76cd43b4651e82b42c4397b13e93bece5078a608fbb7caa9bbaaa428d82f8338",
+      "status": "resolved",
+      "resolution": "This release supplies explicit fresh quote fixtures, removing network-dependent market refresh from the halt-path test. Any recurrence is a regression."
     }
   ]
 }

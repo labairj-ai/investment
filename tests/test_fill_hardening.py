@@ -424,8 +424,11 @@ def test_all_success_cycle_metrics_via_progress(setup):
 
 
 @pytest.mark.parametrize('exc_type', [eng.BrokerSubmissionIndeterminate, eng.BrokerStateIntegrityError])
-def test_sync_fill_preserved_when_process_new_intents_halts(setup, exc_type):
+def test_sync_fill_preserved_when_process_new_intents_halts(setup, exc_type, monkeypatch):
     # 0576: sync applies fill, then process_new_intents halts — fill must still appear in result
+    # Explicit fresh marks keep this halt-path test independent of Yahoo/network access.
+    timestamp=datetime.now(timezone.utc).isoformat()
+    monkeypatch.setattr(eng,'_get_quote',lambda symbol:eng.Quote(100.,100.,timestamp,market_timestamp=timestamp,retrieved_at=timestamp,source='test_fixture'))
     conn, broker = setup
     bf = fill()
     oid, cid = local_order(conn, bf)

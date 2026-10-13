@@ -200,7 +200,7 @@ def label_path(features,bars,as_of=None,chain=None,chain_id=None):
         strike_touched=touched,regret_barrier_touched=regret,ever_itm=touched,
         days_to_first_touch=first,maximum_reconstructed_delta=max((d for _,d in deltas),default=None),
         delta_source='RECONSTRUCTED_DAILY_CLOSE_ENTRY_IV',path_source='OBSERVED_DAILY_OHLC',
-        label_model_version='cc-path-label-1',trade_chain_id=chain_id)
+        label_model_version='cc-path-label-2-share-basis',trade_chain_id=chain_id)
     for threshold in (.30,.50):
         hits=[b for b,d in deltas if d>=threshold]
         initial=call_delta(features['spot'],features['strike'],max(0,(expiry-start).days)/365,features['impliedVolatility'])>=threshold
@@ -232,7 +232,9 @@ def label_path(features,bars,as_of=None,chain=None,chain_id=None):
             # Actual assignment equity cost must be supplied/reconciled too.
             assigned=output['assigned']
             assigned_costs=[x.get('equity_opportunity_cost') for x in chain if x['action']=='ASSIGNED']
-            delivered_shares=(features.get('champion_contracts') or features.get('recommended_contracts') or 0)*100
+            actual_entry_contracts=sum(float(x.get('contracts') or 0) for x in chain
+                if x['action'] in ('SELL_CC','SELL_TO_OPEN') and x.get('recommendation_action','SELL_CC')=='SELL_CC')
+            delivered_shares=actual_entry_contracts*100 or (features.get('champion_contracts') or features.get('recommended_contracts') or 0)*100
             if not delivered_shares:delivered_shares=features.get('shares_potentially_delivered',0)
             if delivered_shares>0 and (not assigned or all(x is not None for x in assigned_costs)):
                 output['cc_incremental_alpha']=(pnl-sum(assigned_costs))/delivered_shares
@@ -263,6 +265,9 @@ def record_chain_costs(episode,chain_id,management_cost,execution_cost,assignmen
         db.close();raise ValueError('chain must match originating decision')
     actual_chain,_=reconcile_chain(db,episode)
     identifiers=[x['execution_id'] for x in (actual_chain or []) if x.get('execution_id')]
+    actual_shares=sum(float(x.get('contracts') or 0)*100 for x in (actual_chain or []) if x['action'] in ('SELL_CC','SELL_TO_OPEN') and x.get('recommendation_action','SELL_CC')=='SELL_CC')
+    if actual_shares and shares!=actual_shares:
+        db.close();raise ValueError('measured costs must use actual originating covered share count')
     evidence=dict(outcome_source='ACTUAL_EXECUTION' if identifiers else 'ESTIMATED_COUNTERFACTUAL',
         prospective=False,execution_ids=identifiers,execution_reconciled=bool(identifiers),broker_reconciled=False,
         management_cost_total=management_cost,execution_cost_total=execution_cost,

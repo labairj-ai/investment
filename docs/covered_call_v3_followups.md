@@ -98,7 +98,10 @@ Paired promotion requires actual champion + prospective virtual challenger on th
 same decision lineage, or a zero-alpha/zero-cost NO_CALL arm. Both arms must be
 complete on a compatible comparison horizon. The first forward opportunity per
 ticker/Eastern session is canonical, preventing cherry-picking a later successful
-or uncensored duplicate. Reports include every exclusion and exact cohort IDs.
+or uncensored duplicate. Reports include every exclusion and exact cohort IDs. Paired alpha and costs are
+normalized to the original holding share count, so different overwrite fractions
+change full-position economics rather than silently cancelling through a per-covered-share denominator.
+Stored chain values retain explicit covered-share units; unknown share bases are excluded.
 
 The existing 100-pair, 30-divergence, 90-day gate now additionally requires a
 certified simulator and no execution-cost regression. It retains positive paired
@@ -153,7 +156,8 @@ data remain visible.
 
 The exact inventory and remediation decisions are in
 `config/release_baseline_failures.json` and `release_baseline_failures.md`.
-Baseline `dfc011d`: four known failures, reproduced unchanged; temporary waivers
-expire 2026-11-12. CI runs the whole suite, then matches exact test IDs and normalized
+Baseline `dfc011d`: four known signatures, reproduced unchanged. Two network-dependent
+broker fixtures are repaired and their waivers retired; two calibration waivers
+remain and expire 2026-11-12. CI runs the whole suite, then matches exact test IDs and normalized
 assertion/error signatures. New/changed failures, expired waivers or stale resolved
 inventory fail. No covered-call failures can be waived by this inventory.

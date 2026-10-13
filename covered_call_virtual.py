@@ -187,6 +187,7 @@ def start_from_decision(db, episode, created_at=None, arm='challenger', replay=F
     chain_id = 'virtual-cc-'+digest([episode,arm,kind])[:32]
     origin = dict(episode_id=episode,candidate_id=candidate['candidate_id'],ticker=decision['ticker'],
         entry_timestamp=decision['timestamp'],entry_spot=features['spot'],contracts=n,
+        origin_holding_shares=features.get('origin_holding_shares'),
         policy=json.loads(decision['policy_json']),config=config,config_hash=decision['config_hash'],
         model_version=decision['model_version'],simulator_version=SIMULATOR_VERSION,
         entry_quote_inputs={k:features.get(k) for k in ('bid','ask','strike','expiration','impliedVolatility','quote_timestamp')},
@@ -311,7 +312,8 @@ def terminal_outcome(db,origin,current,chain_id,snapshot_id,evaluation):
         prospective=origin['prospective'],complete=True,censored=bool(intervals or current['coverage_censored']),
         market_data_coverage_verified=not bool(intervals or current['coverage_censored']),
         chain_censored=bool(intervals or current['coverage_censored']),data_quality_unresolved=bool(intervals or current['coverage_censored']),
-        terminal_state=current['status'],total_option_pnl=cash_pnl,
+        terminal_state=current['status'],total_option_pnl=cash_pnl,economic_share_basis='COVERED_SHARES',
+        covered_shares=shares,origin_holding_shares=origin.get('origin_holding_shares'),
         cc_incremental_alpha=alpha,realized_execution_cost=current['execution_cost_total']/shares,
         realized_management_cost=current['management_cost_total']/shares,assignment_policy_violation=current['assignment_policy_violation'],
         roll_hops=current['roll_hops'],rolled=current['roll_hops']>0,total_fees=current['fees_total'],

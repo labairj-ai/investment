@@ -3,6 +3,8 @@
 Baseline: `dfc011d`, reproduced on an unchanged checkout on 2026-10-13.
 Prior independent reproduction: `b90b525`. First failing commits are not known;
 these records do not pretend the first observation proves introduction history.
+The original four signatures are retained. Two broker fixture failures are resolved
+in this release and are never waived; only the two calibration failures remain active.
 The machine inventory is `config/release_baseline_failures.json`. Full normalized
 tracebacks and exact assertion/error signatures are stored for each failure.
 
@@ -32,10 +34,11 @@ time alone qualifies them. Category: active test-fixture bug; equity learning.
 
 `tests/test_fill_hardening.py::test_sync_fill_preserved_when_process_new_intents_halts[BrokerStateIntegrityError]`
 
-Fixed-date market marks are stale at the current date; submission is blocked
+Baseline market marks become stale when network refresh is unavailable; submission is blocked
 before the injected halt path executes. Remediation: inject fresh marks and a
-controlled clock in the fixture. Keep stale-mark submission protection in live
-code. Category: active test-fixture bug; broker fill hardening.
+controlled clock in the fixture. **Resolved in this release:** the exact halt-path
+test supplies fresh quote fixtures, so it no longer depends on network refresh.
+Keep stale-mark submission protection in live code. Category: active test-fixture bug; broker fill hardening.
 
 ## Failure 4
 
@@ -43,7 +46,8 @@ code. Category: active test-fixture bug; broker fill hardening.
 
 Same stale-mark fixture problem for the other indeterminate submission error.
 Remediation: fresh market fixtures and controlled clock, preserving actual broker
-halt behavior. Category: active test-fixture bug; broker fill hardening.
+halt behavior. **Resolved in this release:** the shared parametrized test now uses
+explicit fresh quotes. Any recurrence fails the gate as a new regression. Category: active test-fixture bug; broker fill hardening.
 
 ## Release gate
 

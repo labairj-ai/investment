@@ -52,7 +52,7 @@ def load_inventory(path):
 def compare(current,inventory,as_of=None):
     as_of=as_of or date.today()
     known=[];new=[];changed=[];expired=[];resolved=[]
-    approved={f['node_id']:f for f in inventory['failures']}
+    approved={f['node_id']:f for f in inventory['failures'] if f.get('status','active')!='resolved'}
     for node,observed in current.items():
         item=approved.get(node)
         if item is None:new.append(node)

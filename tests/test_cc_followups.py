@@ -21,7 +21,7 @@ START='2026-10-13T17:00:00+00:00'
 def candidate(**kw):
     data=dict(strike=110.,expiration='2026-11-12',dte=30,spot=100.,bid=1.8,ask=2.,impliedVolatility=.3,
         delta=.15,quote_timestamp=START,eligible=True,eligible_contracts_max=3,recommended_contracts=1,
-        tax_data_available=True,assignment_lot_schedule=[dict(purchase_date='2025-01-01',allocated_shares=100,cost_per_share=90)],
+        origin_holding_shares=300.,tax_data_available=True,assignment_lot_schedule=[dict(purchase_date='2025-01-01',allocated_shares=100,cost_per_share=90)],
         expected_fill_fraction=.15,mu_center=.08,hv_forecast=.25,score=70,opp_score=70,regret_prob=.02,
         strike_touch_prob=.1,management_risk=.1,rejection_reasons=[],otm_pct=.1)
     data.update(kw);return data
@@ -155,7 +155,7 @@ def typed(episode,source='PROSPECTIVE_VIRTUAL',**kw):
     row.update(chain_identifier='virtual-chain' if source=='PROSPECTIVE_VIRTUAL' else 'actual-chain',simulator_version=book.SIMULATOR_VERSION,
         config_hash='cfg',execution_source='VIRTUAL_MODEL' if source=='PROSPECTIVE_VIRTUAL' else 'ACTUAL',execution_ids=[1] if source=='ACTUAL_EXECUTION' else [],
         execution_reconciled=source=='ACTUAL_EXECUTION',prospective=source=='PROSPECTIVE_VIRTUAL',complete=True,censored=False,
-        market_data_coverage_verified=True,chain_censored=False,data_quality_unresolved=False,cc_incremental_alpha=1.,realized_management_cost=.1,realized_execution_cost=.02,
+        market_data_coverage_verified=True,economic_share_basis='COVERED_SHARES',covered_shares=100.,origin_holding_shares=300.,chain_censored=False,data_quality_unresolved=False,cc_incremental_alpha=1.,realized_management_cost=.1,realized_execution_cost=.02,
         assignment_policy_violation=False,rolled=False,roll_hops=0)
     row.update(kw);return row
 
@@ -212,7 +212,7 @@ def test_no_call_pairs(episode,monkeypatch,champ,chall):
     assert report['n']==1
     assert report['divergent_n']==(0 if champ==chall else 1)
     expected=1 if champ=='NO_CALL' and chall=='SELL_CC' else -1 if chall=='NO_CALL' and champ=='SELL_CC' else 0
-    assert report['alpha_improvement']==expected
+    assert report['alpha_improvement']==pytest.approx(expected/3)
 
 
 def test_uncertified_duplicate_and_wrong_source_exclusions(episode,monkeypatch):
@@ -295,7 +295,11 @@ def test_exact_release_inventory_contract(tmp_path):
     spec=importlib.util.spec_from_file_location('gate',str(Path(__file__).resolve().parent.parent/'scripts/check_release_baseline.py'))
     gate=importlib.util.module_from_spec(spec);spec.loader.exec_module(gate)
     inventory=gate.load_inventory(Path(__file__).resolve().parent.parent/'config/release_baseline_failures.json')
-    current={f['node_id']:dict(signature=f['signature']) for f in inventory['failures']}
+    historical=deepcopy(inventory)
+    for item in historical['failures']:item['status']='active';item['permitted_in_release']=True
+    historical_results={f['node_id']:dict(signature=f['signature']) for f in historical['failures']}
+    assert len(gate.compare(historical_results,historical,date(2026,10,13))['known_debt'])==4
+    current={f['node_id']:dict(signature=f['signature']) for f in inventory['failures'] if f.get('status')!='resolved'}
     assert gate.compare(current,inventory,date(2026,10,13))['passed']
     current['newtest']=dict(signature='new');assert not gate.compare(current,inventory,date(2026,10,13))['passed'];current.pop('newtest')
     key=next(iter(current));current[key]['signature']='changed';assert gate.compare(current,inventory,date(2026,10,13))['changed_failures']

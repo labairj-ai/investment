@@ -29,7 +29,8 @@ def create_decision_contract(db,episode,rows,config,prospective,qa_only=False,re
     payload=dict(market_snapshot_lineage=digest(snapshot_inputs),recorded_at=recorded.isoformat(),
         forward_created=forward,qa_only=qa_only,promotion_policy_version=config['promotion']['version'],
         simulator_version=SIMULATOR_VERSION,policy_committed=committed_policy(decision['git_sha'],config),
-        management_contract=management_contract(),legacy=False)
+        management_contract=management_contract(),legacy=False,
+        origin_holding_shares=next((r.get('origin_holding_shares') for r in rows if r.get('origin_holding_shares') is not None),None))
     db.execute('INSERT INTO cc_decision_contracts VALUES(?,?)',(episode,json.dumps(payload,sort_keys=True)))
     return payload
 
@@ -68,6 +69,9 @@ def classify_label(db,episode,candidate,labels,source):
     actual.update(labels,execution_ids=execution_ids,execution_reconciled=not labels.get('chain_censored',True),
         execution_source='RECONCILED_MANUAL_OR_BROKER',management_source='ACTUAL_TRADE_CHAIN',price_path_source='OBSERVED_DAILY_OHLC',
         cost_source='RECONCILED_OBSERVATION' if labels.get('measured_cost_evidence') else 'UNAVAILABLE',
+        economic_share_basis='COVERED_SHARES',
+        origin_holding_shares=metadata.get('origin_holding_shares') if metadata else None,
+        covered_shares=sum(float(x.get('contracts') or 0)*100 for x in (chain or []) if x['action'] in ('SELL_CC','SELL_TO_OPEN') and x.get('recommendation_action','SELL_CC')=='SELL_CC'),
         prospective=bool(decision['prospective']),chain_identifier=chain_id,market_data_coverage_verified=bool(labels.get('path_coverage_verified')),
         complete=not labels.get('chain_censored',True) and not labels.get('censored',True) and all(labels.get(k) is not None for k in ('cc_incremental_alpha','realized_management_cost','realized_execution_cost','assignment_policy_violation')),
         censored=labels.get('chain_censored',True) or labels.get('censored',True),
@@ -128,13 +132,24 @@ def pair_outcomes(db,decision,metadata,as_of):
             return None,'CHALLENGER_VERSION_MISMATCH'
         required=('cc_incremental_alpha','realized_management_cost','realized_execution_cost','assignment_policy_violation','rolled','roll_hops')
         if any(value.get(k) is None for k in required):return None,'INCOMPLETE_'+name+'_ECONOMICS'
+        original=metadata.get('origin_holding_shares')
+        if not original or not value.get('covered_shares') or value.get('covered_shares')>original or value.get('origin_holding_shares')!=original or value.get('economic_share_basis')!='COVERED_SHARES':
+            return None,'UNKNOWN_'+name+'_SHARE_BASIS'
+
     # Different terminal dates require a separately reconciled common-horizon
     # valuation. Do not compare different holding periods silently.
     if a['outcome_source']!='NO_CALL' and b['outcome_source']!='NO_CALL':
         if a['source_timestamp_end'][:10]!=b['source_timestamp_end'][:10]:
             if not (a.get('comparison_horizon')==b.get('comparison_horizon') and a.get('comparison_horizon')):
                 return None,'COMPARISON_HORIZON_MISMATCH'
-    return (a,b),None
+    normalized=[]
+    for value in (a,b):
+        item=dict(value)
+        if value['outcome_source']!='NO_CALL':
+            factor=value['covered_shares']/value['origin_holding_shares']
+            for key in ('cc_incremental_alpha','realized_management_cost','realized_execution_cost'):item[key]=value[key]*factor
+        item['economic_share_basis']='ORIGIN_HOLDING_SHARES';normalized.append(item)
+    return tuple(normalized),None
 
 
 def promotion_report(config,path=None,as_of=None):
@@ -200,4 +215,4 @@ def promotion_report(config,path=None,as_of=None):
         promotion_policy_version=gate['version'],model_version=VERSION,simulator_version=SIMULATOR_VERSION,
         simulator_certification_id=certificate['id'] if certificate else None,cohort_ids=[d['id'] for d,_,_ in pairs],
         source_composition=dict(composition),excluded_n=sum(excluded.values()),exclusions=dict(excluded),exclusion_details=details,
-        total_opportunities=len(decisions),units='USD_PER_SHARE',independence_policy='FIRST_FORWARD_OPPORTUNITY_PER_TICKER_EASTERN_SESSION')
+        total_opportunities=len(decisions),units='USD_PER_SHARE',economic_share_basis='ORIGIN_HOLDING_SHARES',independence_policy='FIRST_FORWARD_OPPORTUNITY_PER_TICKER_EASTERN_SESSION')
