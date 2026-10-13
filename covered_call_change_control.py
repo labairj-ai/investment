@@ -1,4 +1,4 @@
-"""CC V3 Model Freeze and Change-Control Policy (0716).
+"""CC V3 Model Freeze and Change-Control Policy (0716/0718).
 
 Three change categories:
   NON_BEHAVIORAL          — dashboard, docs, logging; no version bump needed
@@ -19,6 +19,13 @@ CHANGE_CATEGORY_NON_BEHAVIORAL = 'NON_BEHAVIORAL'
 CHANGE_CATEGORY_EVIDENCE_INFRASTRUCTURE = 'EVIDENCE_INFRASTRUCTURE'
 CHANGE_CATEGORY_BEHAVIORAL = 'BEHAVIORAL_MODEL_CHANGE'
 
+BASELINE_SCHEMA_VERSION = 'cc-contract-v1'
+BASELINE_REQUIRED_KEYS = frozenset({
+    'schema_version', 'model_version', 'simulator_version',
+    'simulator_contract_version', 'simulator_contract_hash',
+    'engine_hash', 'policy_version', 'cadence_comparability_policy_version',
+})
+
 
 def current_contract_state(config):
     """Return current contract identity dict."""
@@ -38,15 +45,32 @@ def current_contract_state(config):
 
 
 def read_baseline():
-    """Read the committed contract baseline. Returns None if no baseline exists."""
+    """Read the committed contract baseline.
+
+    Returns None if no baseline file exists.
+    Returns a dict with key 'malformed'=True if the file cannot be parsed or is missing required keys.
+    Returns the baseline dict on success (includes 'schema_version').
+    """
     if not BASELINE_FILE.exists():
         return None
-    return json.loads(BASELINE_FILE.read_text())
+    try:
+        data = json.loads(BASELINE_FILE.read_text())
+    except (json.JSONDecodeError, OSError):
+        return dict(malformed=True, reason='JSON parse error')
+    if not isinstance(data, dict):
+        return dict(malformed=True, reason='baseline is not a JSON object')
+    missing = BASELINE_REQUIRED_KEYS - set(data.keys())
+    if missing:
+        return dict(malformed=True, reason=f'missing required keys: {sorted(missing)}')
+    if data.get('schema_version') != BASELINE_SCHEMA_VERSION:
+        return dict(malformed=True, reason=f"unknown schema_version '{data.get('schema_version')}'")
+    return data
 
 
 def write_baseline(config):
     """Write current contract state as the new baseline. Call this when bumping versions."""
     state = current_contract_state(config)
+    state['schema_version'] = BASELINE_SCHEMA_VERSION
     BASELINE_FILE.write_text(json.dumps(state, indent=2, sort_keys=True) + '\n')
     return state
 
@@ -81,9 +105,18 @@ def check_contract_consistency(config):
     findings = []
 
     if baseline is None:
-        return dict(ok=True, hash_changed=False, version_bumped=False,
-                    has_manifest=False, findings=[], current=current, baseline=None,
-                    note='No baseline on file — run write_baseline() after first deployment.')
+        return dict(ok=False, hash_changed=False, version_bumped=False,
+                    has_manifest=False, baseline_missing=True,
+                    findings=['MISSING_BASELINE: no .cc_contract_baseline.json committed. '
+                              'Run: python scripts/check_cc_contract.py --update-baseline'],
+                    current=current, baseline=None)
+
+    if baseline.get('malformed'):
+        return dict(ok=False, hash_changed=False, version_bumped=False,
+                    has_manifest=False, baseline_missing=False, baseline_malformed=True,
+                    findings=[f"MALFORMED_BASELINE: {baseline.get('reason', 'unknown')}. "
+                              'Delete and regenerate with: python scripts/check_cc_contract.py --update-baseline'],
+                    current=current, baseline=baseline)
 
     hash_changed = (
         current['engine_hash'] != baseline.get('engine_hash') or
@@ -111,6 +144,8 @@ def check_contract_consistency(config):
         version_bumped=version_bumped,
         has_manifest=has_manifest,
         manifest_count=len(manifests),
+        baseline_missing=False,
+        baseline_malformed=False,
         findings=findings,
         current=current,
         baseline=baseline,

@@ -28,6 +28,9 @@ jobs:
         if: always()
         run: python scripts/check_release_baseline.py test-results.xml
 
+      - name: Check CC V3 behavioral contract
+        run: python scripts/check_cc_contract.py
+
       - name: Preserve test results
         if: always()
         uses: actions/upload-artifact@v4
