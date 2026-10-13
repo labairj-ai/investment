@@ -254,6 +254,43 @@ def check_contract_consistency(config):
                         'is required that matches the exact prior→proposed contract state. '
                         'Copy cc_change_manifests/.template.md and fill in prior/proposed hashes.')
 
+    if hash_changed:
+        # ── 0720: category consistency ──────────────────────────────────────
+        declared_category = applicable_manifest.get('category', '') if applicable_manifest else ''
+        if declared_category == CHANGE_CATEGORY_NON_BEHAVIORAL:
+            findings.append('CATEGORY_MISMATCH_NON_BEHAVIORAL: manifest declares NON_BEHAVIORAL but '
+                            'engine_hash or simulator_contract_hash changed. '
+                            'Reclassify as BEHAVIORAL_MODEL_CHANGE.')
+        elif declared_category == CHANGE_CATEGORY_EVIDENCE_INFRASTRUCTURE:
+            findings.append('CATEGORY_MISMATCH_EVIDENCE_INFRASTRUCTURE: manifest declares '
+                            'EVIDENCE_INFRASTRUCTURE but engine_hash or simulator_contract_hash changed. '
+                            'Reclassify as BEHAVIORAL_MODEL_CHANGE.')
+
+        # ── 0720: component-specific version bump ───────────────────────────
+        sim_hash_changed = current['simulator_contract_hash'] != baseline['simulator_contract_hash']
+        engine_hash_changed = current['engine_hash'] != baseline['engine_hash']
+        sim_ver_bumped = (
+            current['simulator_contract_version'] != baseline.get('simulator_contract_version')
+        )
+        mdl_ver_bumped = current['model_version'] != baseline.get('model_version')
+
+        if sim_hash_changed and not sim_ver_bumped:
+            findings.append(
+                'WRONG_COMPONENT_VERSION_BUMP: simulator_contract_hash changed but '
+                'SIMULATOR_CONTRACT_VERSION was not incremented. '
+                'Fill-model, management-policy, and virtual-execution changes require '
+                'a SIMULATOR_CONTRACT_VERSION bump.')
+        if engine_hash_changed and not sim_hash_changed and not mdl_ver_bumped:
+            findings.append(
+                'WRONG_COMPONENT_VERSION_BUMP: engine_hash changed (simulator_contract_hash unchanged) '
+                'but model_version was not incremented. '
+                'Utility/ranking changes require a model_version bump.')
+        if engine_hash_changed and sim_hash_changed and not mdl_ver_bumped:
+            findings.append(
+                'WRONG_COMPONENT_VERSION_BUMP: both engine_hash and simulator_contract_hash changed; '
+                'model_version bump is also required alongside SIMULATOR_CONTRACT_VERSION '
+                'for multi-component changes.')
+
     return dict(
         ok=not findings,
         hash_changed=hash_changed,

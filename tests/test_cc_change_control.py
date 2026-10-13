@@ -447,3 +447,150 @@ def test_manifest_required_fields_constant():
     assert 'prior_engine_hash' in MANIFEST_REQUIRED_FIELDS
     assert 'proposed_engine_hash' in MANIFEST_REQUIRED_FIELDS
     assert 'manifest_id' in MANIFEST_REQUIRED_FIELDS
+
+
+# ── 0720: category and component-specific version enforcement ─────────────────
+
+def _setup_change(monkeypatch, tmp_path, prior_state, proposed_state,
+                  manifest_category='BEHAVIORAL_MODEL_CHANGE',
+                  include_manifest=True, manifest_id='test-change'):
+    """Helper: write baseline + optional manifest and monkeypatch current state."""
+    import covered_call_change_control as cc
+    monkeypatch.setattr(cc, 'BASELINE_FILE', tmp_path / '.cc_contract_baseline.json')
+    manifests_dir = tmp_path / 'manifests'
+    manifests_dir.mkdir()
+    monkeypatch.setattr(cc, 'MANIFESTS_DIR', manifests_dir)
+    write_baseline(CC_V3_CONFIG)
+    if include_manifest:
+        manifest_with_category = dict(proposed_state, _category_override=manifest_category)
+        content = f"""---
+manifest_id: {manifest_id}
+date: 2026-10-13
+category: {manifest_category}
+author: test
+related_commit_or_pr: test
+prior_model_version: {prior_state['model_version']}
+prior_simulator_version: {prior_state['simulator_version']}
+prior_simulator_contract_version: {prior_state['simulator_contract_version']}
+prior_simulator_contract_hash: {prior_state['simulator_contract_hash']}
+prior_engine_hash: {prior_state['engine_hash']}
+proposed_model_version: {proposed_state['model_version']}
+proposed_simulator_version: {proposed_state['simulator_version']}
+proposed_simulator_contract_version: {proposed_state['simulator_contract_version']}
+proposed_simulator_contract_hash: {proposed_state['simulator_contract_hash']}
+proposed_engine_hash: {proposed_state['engine_hash']}
+cohort_reset_required: true
+open_chain_policy: VERSION_CENSORED
+operator_acknowledged: true
+---
+# Test
+"""
+        (manifests_dir / f'{manifest_id}.md').write_text(content)
+    monkeypatch.setattr(cc, 'current_contract_state', lambda config: proposed_state)
+    return cc
+
+
+def test_non_behavioral_with_unchanged_hashes_passes(monkeypatch, tmp_path):
+    """NON_BEHAVIORAL declared with unchanged hashes (no manifest needed) passes."""
+    import covered_call_change_control as cc
+    monkeypatch.setattr(cc, 'BASELINE_FILE', tmp_path / '.cc_contract_baseline.json')
+    manifests_dir = tmp_path / 'manifests'
+    manifests_dir.mkdir()
+    monkeypatch.setattr(cc, 'MANIFESTS_DIR', manifests_dir)
+    write_baseline(CC_V3_CONFIG)
+    result = cc.check_contract_consistency(CC_V3_CONFIG)
+    assert result['ok'] is True
+    assert result['hash_changed'] is False
+
+
+def test_non_behavioral_with_changed_hash_fails(monkeypatch, tmp_path):
+    """NON_BEHAVIORAL declared in manifest but hash changed → category mismatch."""
+    real_state = current_contract_state(CC_V3_CONFIG)
+    proposed = dict(real_state, engine_hash='new-non-behavioral-hash',
+                    model_version='cc-v3.3')
+    cc = _setup_change(monkeypatch, tmp_path, real_state, proposed,
+                       manifest_category='NON_BEHAVIORAL')
+    result = cc.check_contract_consistency(CC_V3_CONFIG)
+    assert result['ok'] is False
+    assert any('CATEGORY_MISMATCH_NON_BEHAVIORAL' in f for f in result['findings'])
+
+
+def test_evidence_infrastructure_with_unchanged_hashes_passes(monkeypatch, tmp_path):
+    """EVIDENCE_INFRASTRUCTURE change with unchanged hashes passes (no manifest needed)."""
+    import covered_call_change_control as cc
+    monkeypatch.setattr(cc, 'BASELINE_FILE', tmp_path / '.cc_contract_baseline.json')
+    manifests_dir = tmp_path / 'manifests'
+    manifests_dir.mkdir()
+    monkeypatch.setattr(cc, 'MANIFESTS_DIR', manifests_dir)
+    write_baseline(CC_V3_CONFIG)
+    result = cc.check_contract_consistency(CC_V3_CONFIG)
+    assert result['ok'] is True
+
+
+def test_evidence_infrastructure_with_changed_hash_fails(monkeypatch, tmp_path):
+    """EVIDENCE_INFRASTRUCTURE declared in manifest but hash changed → mismatch."""
+    real_state = current_contract_state(CC_V3_CONFIG)
+    proposed = dict(real_state, engine_hash='new-evidence-hash',
+                    simulator_contract_version='simulator-contract-2')
+    cc = _setup_change(monkeypatch, tmp_path, real_state, proposed,
+                       manifest_category='EVIDENCE_INFRASTRUCTURE')
+    result = cc.check_contract_consistency(CC_V3_CONFIG)
+    assert result['ok'] is False
+    assert any('CATEGORY_MISMATCH_EVIDENCE_INFRASTRUCTURE' in f for f in result['findings'])
+
+
+def test_sim_contract_hash_change_requires_sim_ver_bump(monkeypatch, tmp_path):
+    """simulator_contract_hash changed without simulator_contract_version bump → fail."""
+    real_state = current_contract_state(CC_V3_CONFIG)
+    # Only sim hash changed, no sim_contract_version bump, but model_version bumped
+    proposed = dict(real_state,
+                    simulator_contract_hash='new-sim-hash-only',
+                    model_version='cc-v3.3')  # wrong component
+    cc = _setup_change(monkeypatch, tmp_path, real_state, proposed)
+    result = cc.check_contract_consistency(CC_V3_CONFIG)
+    assert result['ok'] is False
+    assert any('WRONG_COMPONENT_VERSION_BUMP' in f and 'SIMULATOR_CONTRACT_VERSION' in f
+               for f in result['findings'])
+
+
+def test_engine_only_hash_change_requires_model_ver_bump(monkeypatch, tmp_path):
+    """engine_hash changed (sim unchanged) without model_version bump → fail."""
+    real_state = current_contract_state(CC_V3_CONFIG)
+    # Only engine hash changed, no model_version bump, but sim_contract_version bumped
+    proposed = dict(real_state,
+                    engine_hash='new-engine-only-hash',
+                    simulator_contract_version='simulator-contract-2')  # wrong component
+    cc = _setup_change(monkeypatch, tmp_path, real_state, proposed)
+    result = cc.check_contract_consistency(CC_V3_CONFIG)
+    assert result['ok'] is False
+    assert any('WRONG_COMPONENT_VERSION_BUMP' in f and 'model_version' in f
+               for f in result['findings'])
+
+
+def test_multi_component_change_requires_both_bumps(monkeypatch, tmp_path):
+    """Both hashes changed but only sim_contract_version bumped → need model_version too."""
+    real_state = current_contract_state(CC_V3_CONFIG)
+    proposed = dict(real_state,
+                    engine_hash='new-engine-hash',
+                    simulator_contract_hash='new-sim-hash',
+                    simulator_contract_version='simulator-contract-2')  # only one bump
+    cc = _setup_change(monkeypatch, tmp_path, real_state, proposed)
+    result = cc.check_contract_consistency(CC_V3_CONFIG)
+    assert result['ok'] is False
+    assert any('WRONG_COMPONENT_VERSION_BUMP' in f and 'model_version' in f
+               for f in result['findings'])
+
+
+def test_correct_behavioral_change_all_bumps_passes(monkeypatch, tmp_path):
+    """Both hashes changed + both versions bumped + exact manifest → pass."""
+    real_state = current_contract_state(CC_V3_CONFIG)
+    proposed = dict(real_state,
+                    engine_hash='new-engine',
+                    simulator_contract_hash='new-sim',
+                    simulator_contract_version='simulator-contract-2',
+                    model_version='cc-v3.3')
+    cc = _setup_change(monkeypatch, tmp_path, real_state, proposed)
+    result = cc.check_contract_consistency(CC_V3_CONFIG)
+    assert result['ok'] is True
+    assert result['hash_changed'] is True
+    assert result['has_manifest'] is True
