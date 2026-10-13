@@ -3,14 +3,18 @@ from __future__ import annotations
 import json
 import subprocess
 from collections import Counter
+from datetime import timedelta
 from statistics import mean, median
 from pathlib import Path
-from time_utils import now_utc_iso, parse_timestamp
+from time_utils import now_utc_iso, parse_timestamp, TZ_EASTERN
 from covered_call_outcomes import digest, latest, validate
 from covered_call_virtual import (SIMULATOR_VERSION, SIMULATOR_CONTRACT_VERSION,
     management_contract, evaluate_snapshot, fill_model, simulator_contract_hash)
 
 ROOT=Path(__file__).resolve().parent
+
+# Incremented when classification logic changes — invalidates existing certifications
+CADENCE_COMPARABILITY_POLICY_VERSION='cadence-v1'
 
 
 def current_git_sha():
@@ -47,6 +51,62 @@ def migrate(db):
 
 def normalize_action(action):
     return 'HOLD_CALL' if action in ('NO_ACTION','HOLD','HOLD_CALL','ALLOW_ASSIGNMENT') else action
+
+
+_MARKET_OPEN_HOUR=9
+_MARKET_CLOSE_HOUR=16
+
+
+def _generate_cadence_slots(entry_ts, expiry_date, cadence_minutes):
+    """Generate all expected virtual evaluation slots during the option period."""
+    from datetime import datetime,date
+    slots=[]
+    cursor=parse_timestamp(entry_ts).astimezone(TZ_EASTERN)
+    expiry_dt=datetime(expiry_date.year,expiry_date.month,expiry_date.day,16,0,tzinfo=TZ_EASTERN)
+    step=timedelta(minutes=cadence_minutes)
+    while cursor<=expiry_dt:
+        if _MARKET_OPEN_HOUR<=cursor.hour<_MARKET_CLOSE_HOUR and cursor.weekday()<5:
+            slots.append(cursor)
+        cursor+=step
+    return slots
+
+
+def classify_cadence_comparability(actual_timestamps, entry_ts, expiry_date, cadence_minutes, tolerance_minutes=None):
+    """Classify actual management observations against expected virtual cadence slots.
+
+    Returns per-slot classification and summary counts for diagnostics.
+    Classification values:
+      COMPARABLE_DIRECT   — actual observation matches a cadence slot (within tolerance)
+      VIRTUAL_ONLY        — cadence slot had no actual observation (→ VIRTUAL_EARLIER_OPPORTUNITY candidate)
+      ACTUAL_ONLY         — actual observation has no corresponding cadence slot
+    """
+    tolerance=timedelta(minutes=tolerance_minutes if tolerance_minutes is not None else cadence_minutes)
+    actual_parsed=sorted(parse_timestamp(t).astimezone(TZ_EASTERN) for t in actual_timestamps)
+    slots=_generate_cadence_slots(entry_ts,expiry_date,cadence_minutes)
+    slot_class=[]
+    used_actual=set()
+    for slot in slots:
+        match=next((i for i,at in enumerate(actual_parsed) if i not in used_actual and abs((at-slot).total_seconds())<=tolerance.total_seconds()),None)
+        if match is not None:
+            used_actual.add(match);slot_class.append(dict(slot=slot.isoformat(),classification='COMPARABLE_DIRECT',actual_timestamp=actual_parsed[match].isoformat()))
+        else:
+            slot_class.append(dict(slot=slot.isoformat(),classification='VIRTUAL_ONLY'))
+    actual_only=[dict(actual_timestamp=at.isoformat(),classification='ACTUAL_ONLY') for i,at in enumerate(actual_parsed) if i not in used_actual]
+    comparable_n=sum(1 for s in slot_class if s['classification']=='COMPARABLE_DIRECT')
+    virtual_only_n=sum(1 for s in slot_class if s['classification']=='VIRTUAL_ONLY')
+    actual_only_n=len(actual_only)
+    return dict(
+        cadence_mode='STRICT_MATCHED_CADENCE',
+        cadence_comparability_policy_version=CADENCE_COMPARABILITY_POLICY_VERSION,
+        expected_cadence_slots=len(slots),
+        actual_observation_n=len(actual_timestamps),
+        comparable_n=comparable_n,
+        virtual_only_n=virtual_only_n,
+        actual_only_n=actual_only_n,
+        pct_comparable=round(comparable_n/len(slots)*100,1) if slots else None,
+        slots=slot_class,
+        actual_only=actual_only,
+    )
 
 
 def compare(actual,simulated):
@@ -94,6 +154,9 @@ def divergence_category(case):
     if case.get('lookahead_violations') or case.get('state_contamination'):return 'BUG'
     if case.get('entry_fill_spread_error') is None:return 'QUOTE_QUALITY'
     if case.get('action_agreement') is not None and case['action_agreement']<1:return 'POLICY_MISMATCH'
+    # Intervention timing errors explained by cadence difference are a cadence effect, not a policy mismatch.
+    cadence=case.get('cadence_comparability',{})
+    if case.get('intervention_timing_error') and cadence.get('virtual_only_n',0)>0:return 'VIRTUAL_EARLIER_OPPORTUNITY'
     if case.get('intervention_timing_error'):return 'DATA_TIMING'
     if any(case.get('strike_differences',[])) or any(case.get('expiry_day_differences',[])):return 'POLICY_MISMATCH'
     if case.get('alpha_absolute_error') or case.get('entry_fill_spread_error') or case.get('fee_error'):return 'EXECUTION_MODEL_ERROR'
@@ -198,18 +261,37 @@ def run_validation(config,path=None):
             actual_view=dict(actions=actual_actions,fills=[dict(price=f['fill'],bid=f['bid'],ask=f['ask'],fees_total=f['fees']) for f in fills],
                 incremental_alpha=outcome['cc_incremental_alpha'],total_option_pnl=outcome['total_option_pnl'],
                 execution_cost=outcome['realized_execution_cost'],management_cost=outcome['realized_management_cost'],net_roll_credit=outcome.get('roll_net_credit') or 0)
+            from datetime import datetime
+            expiry_date=datetime.strptime(origin['entry_quote_inputs']['expiration'],'%Y-%m-%d').date()
+            cadence_cmp=classify_cadence_comparability(
+                [s['evaluation_timestamp'] for s in snapshots],
+                origin['entry_timestamp'],expiry_date,
+                origin['config'].get('virtual',{}).get('cadence_minutes',30))
             case=compare(actual_view,simulated)
-            cases.append(case);cohort.append(episode);details.append(dict(episode_id=episode,metrics=case,divergence_category=divergence_category(case)))
+            case['cadence_comparability']=cadence_cmp
+            cases.append(case);cohort.append(episode);details.append(dict(episode_id=episode,metrics=case,divergence_category=divergence_category(case),cadence_comparability=cadence_cmp))
         except Exception as exc:
             excluded[str(exc)]+=1;details.append(dict(episode_id=episode,exclusion=str(exc)))
     result=acceptance(cases,config['simulator_validation'])
     sha=subprocess.run(['git','rev-parse','HEAD'],cwd=ROOT,capture_output=True,text=True,check=True).stdout.strip()
+    cadence_summary=dict(
+        cadence_mode='STRICT_MATCHED_CADENCE',
+        cadence_comparability_policy_version=CADENCE_COMPARABILITY_POLICY_VERSION,
+        total_comparable_n=sum(c.get('cadence_comparability',{}).get('comparable_n',0) for c in cases),
+        total_virtual_only_n=sum(c.get('cadence_comparability',{}).get('virtual_only_n',0) for c in cases),
+        total_actual_only_n=sum(c.get('cadence_comparability',{}).get('actual_only_n',0) for c in cases),
+        virtual_earlier_opportunity_n=sum(1 for d in details if d.get('divergence_category')=='VIRTUAL_EARLIER_OPPORTUNITY'),
+        cadence_divergence_n=sum(1 for d in details if d.get('divergence_category') in ('VIRTUAL_EARLIER_OPPORTUNITY','DATA_TIMING')),
+        true_policy_mismatch_n=sum(1 for d in details if d.get('divergence_category')=='POLICY_MISMATCH'),
+    )
     result.update(simulator_version=SIMULATOR_VERSION,config_hash=config_digest(config),git_sha=sha,
         simulator_contract_hash=simulator_contract_hash(config),simulator_contract_version=SIMULATOR_CONTRACT_VERSION,
+        cadence_comparability_policy_version=CADENCE_COMPARABILITY_POLICY_VERSION,
         validation_policy_version=config['simulator_validation']['version'],management_contract=management_contract(),
         cohort_ids=cohort,cases=cases,total_actual_records=len(actual_records),legacy_completed_position_n=len(legacy_positions),
         legacy_case_review=[dict(r,category='MISSING_ASOF_EVIDENCE',review='Cannot replay or classify simulator divergence without original decision/options/policy snapshots') for r in legacy_positions[:10]],exclusions=dict(excluded),details=details,
         source_composition={'actual':'ACTUAL_EXECUTION','replay':'ESTIMATED_COUNTERFACTUAL'},out_of_sample=True,
+        cadence_analysis=cadence_summary,
         simulator_bias=dict(n=len(cases),mean_alpha_error=mean(c['incremental_alpha_difference'] for c in cases) if cases else None,
             interpretation='OPTIMISTIC' if cases and mean(c['incremental_alpha_difference'] for c in cases)>0 else 'CONSERVATIVE' if cases and mean(c['incremental_alpha_difference'] for c in cases)<0 else 'MATCHED' if cases else 'UNAVAILABLE'),
         divergent_cases=[d for d in details if d.get('divergence_category') not in (None,'MATCH')],
@@ -246,8 +328,10 @@ def certify(run_id,config,path=None):
         config_contract_hash=_config_contract_hash(config),
         config_hash=config_digest(config),
         validation_policy_version=config['simulator_validation']['version'],
+        cadence_comparability_policy_version=CADENCE_COMPARABILITY_POLICY_VERSION,
         cohort_ids=result['cohort_ids'],
         metrics=result['metrics'],
+        cadence_analysis=result.get('cadence_analysis'),
         git_sha=certified_git_sha,  # backward compat alias
     )
     identifier=digest(certificate)
@@ -270,7 +354,8 @@ def certification(config,path=None):
             contract_valid=c['simulator_contract_hash']==contract_hash
         else:
             contract_valid=c.get('git_sha')==current_git_sha()
-        if contract_valid and c.get('simulator_contract_version',SIMULATOR_CONTRACT_VERSION)==SIMULATOR_CONTRACT_VERSION and c['simulator_version']==SIMULATOR_VERSION and c['config_hash']==config_digest(config) and c['management_contract']==mc and c['validation_policy_version']==config['simulator_validation']['version']:
+        cadence_version_valid=c.get('cadence_comparability_policy_version',CADENCE_COMPARABILITY_POLICY_VERSION)==CADENCE_COMPARABILITY_POLICY_VERSION
+        if contract_valid and cadence_version_valid and c.get('simulator_contract_version',SIMULATOR_CONTRACT_VERSION)==SIMULATOR_CONTRACT_VERSION and c['simulator_version']==SIMULATOR_VERSION and c['config_hash']==config_digest(config) and c['management_contract']==mc and c['validation_policy_version']==config['simulator_validation']['version']:
             return dict(c,id=row['id'],current_git_sha=current_git_sha())
     return None
 
