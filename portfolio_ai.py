@@ -2242,6 +2242,74 @@ def _get_cc_context() -> str:
     return "\n".join(lines)
 
 
+def _get_cc_threshold_block() -> str:
+    """Summarise CC eligibility status relative to the 100-share standard lot threshold.
+
+    Shows: which positions are CC-eligible (≥100 shares), which are approaching
+    the threshold (within 25 shares), open calls that could conflict with a sell,
+    and positions previously written on (historical CC program participants).
+    """
+    if not DB_PATH.exists():
+        return ""
+    try:
+        conn = sqlite3.connect(str(DB_PATH), timeout=5)
+        conn.row_factory = sqlite3.Row
+
+        # Current shares per ticker from cost_lots
+        lot_rows = conn.execute(
+            "SELECT ticker, SUM(shares) AS total FROM cost_lots GROUP BY ticker"
+        ).fetchall()
+        shares_by_ticker = {r["ticker"]: r["total"] for r in lot_rows}
+
+        # CC program history: open positions and all-time tickers
+        cc_rows = conn.execute("SELECT ticker, status, strike, expiry, contracts FROM cc_positions").fetchall()
+        open_cc = {r["ticker"]: dict(r) for r in cc_rows if r["status"] == "open"}
+        cc_history_tickers = set(r["ticker"] for r in cc_rows)
+        conn.close()
+    except Exception:
+        return ""
+
+    eligible   = []  # ≥100 shares
+    approaching = []  # 75-99 shares — within striking distance
+    for ticker, shares in sorted(shares_by_ticker.items()):
+        if shares >= 100:
+            lots_needed = 0
+            extra = shares - 100
+            in_program = ticker in cc_history_tickers
+            has_open   = ticker in open_cc
+            eligible.append((ticker, shares, in_program, has_open, extra))
+        elif shares >= 75:
+            needed = 100 - shares
+            approaching.append((ticker, shares, needed))
+
+    lines = ["COVERED CALL ELIGIBILITY (100-share standard lot threshold):"]
+
+    if eligible:
+        lines.append("\nCC-eligible positions (≥100 shares):")
+        for ticker, shares, in_program, has_open, extra in eligible:
+            flags = []
+            if has_open:
+                cc = open_cc[ticker]
+                flags.append(f"OPEN CALL: ${cc['strike']:.0f} strike exp {cc['expiry']} × {cc['contracts']}c — selling shares risks uncovered position")
+            elif in_program:
+                flags.append("prev. in CC program — rewrite opportunity")
+            else:
+                flags.append("no CC history — untapped income opportunity")
+            contracts = int(shares // 100)
+            flag_str = "; ".join(flags)
+            lines.append(f"  {ticker}: {shares:.0f} sh → {contracts} contract(s). {flag_str}")
+
+    if approaching:
+        lines.append("\nApproaching CC eligibility (75-99 shares — buy to unlock):")
+        for ticker, shares, needed in approaching:
+            lines.append(f"  {ticker}: {shares:.0f} sh, need {needed} more to reach 100 (1 contract)")
+
+    if not eligible and not approaching:
+        lines.append("  No positions currently at or near the 100-share CC threshold.")
+
+    return "\n".join(lines)
+
+
 def _get_lot_context() -> str:
     """Build cost basis, holding periods, and unrealized P&L for prompt injection."""
     if not DB_PATH.exists():
@@ -5000,6 +5068,7 @@ def build_portfolio_system_prompt() -> str:
     _, scores_block = _get_macro_scores_block(compact=True)
 
     cc_block        = _get_cc_context()
+    cc_thresh_block = _get_cc_threshold_block()
     realized_block  = _get_realized_context()
     candidate_block = _build_candidate_universe_block(held_tickers)
 
@@ -5019,6 +5088,8 @@ INVESTMENT FRAMEWORK (5-layer structure):
 {realized_block}
 
 {cc_block}
+
+{cc_thresh_block}
 
 {macro.get('formatted_block', 'Macro data unavailable.')}
 {scores_block}
@@ -5045,6 +5116,11 @@ Additional rules:
 - Be inward-looking: every answer must reference actual held tickers and/or candidates from the universe above — never generic suggestions
 - Use the Unrlzd% and Tax columns to assess tax impact on any trim
 - For layer fit: use actual current weights vs targets from the LAYER ALLOCATION section
+- CC implications — always flag when relevant:
+  * Trade brings a position to ≥100 shares → note the covered call opportunity unlocked (contracts available, whether ticker has prior CC history, rough premium potential relative to position size)
+  * Trade brings a position below 100 shares → note that CC writing is lost; if there is an OPEN CALL on that ticker (see CC Eligibility section), flag it explicitly as a conflict that must be resolved before selling
+  * Trade eliminates a position entirely → note any loss of CC income and open call conflict
+  * If selling to fund a position already at 100 shares → note whether that funder position had or could have CC value being forfeited
 - Keep each section tight: 2-3 bullets max; do not pad or repeat
 - If a question is ambiguous, ask one clarifying question before proceeding"""
 
