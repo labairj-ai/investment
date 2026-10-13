@@ -5038,6 +5038,7 @@ Additional rules:
 - Use the Unrlzd% and Tax columns in the holdings table to inform tax impact on any trim
 - For layer fit: reference actual current weights vs targets — tell the investor if the trade moves them toward or away from their targets and by how much
 - When suggesting alternatives: compare head-to-head on score, yield, PE, layer fit, and current portfolio weight
+- Keep each section tight: 2-3 bullets max per section; do not pad or repeat — quality over length
 - If a question is ambiguous, ask one clarifying question before proceeding"""
 
     return system
