@@ -105,11 +105,15 @@ prior_simulator_version: {prior_state['simulator_version']}
 prior_simulator_contract_version: {prior_state['simulator_contract_version']}
 prior_simulator_contract_hash: {prior_state['simulator_contract_hash']}
 prior_engine_hash: {prior_state['engine_hash']}
+prior_policy_version: {prior_state['policy_version']}
+prior_cadence_comparability_policy_version: {prior_state['cadence_comparability_policy_version']}
 proposed_model_version: {proposed_state['model_version']}
 proposed_simulator_version: {proposed_state['simulator_version']}
 proposed_simulator_contract_version: {proposed_state['simulator_contract_version']}
 proposed_simulator_contract_hash: {proposed_state['simulator_contract_hash']}
 proposed_engine_hash: {proposed_state['engine_hash']}
+proposed_policy_version: {proposed_state['policy_version']}
+proposed_cadence_comparability_policy_version: {proposed_state['cadence_comparability_policy_version']}
 cohort_reset_required: true
 open_chain_policy: VERSION_CENSORED
 operator_acknowledged: {operator_acknowledged}
@@ -304,7 +308,7 @@ operator_acknowledged: true
     assert 'parse_error' not in fm
     assert fm['manifest_id'] == 'test-001'
     assert fm['prior_engine_hash'] == state['engine_hash']
-    assert fm['operator_acknowledged'] == 'true'
+    assert fm['operator_acknowledged'] is True
 
 
 def test_parse_manifest_no_front_matter(tmp_path):
@@ -473,11 +477,15 @@ prior_simulator_version: {prior_state['simulator_version']}
 prior_simulator_contract_version: {prior_state['simulator_contract_version']}
 prior_simulator_contract_hash: {prior_state['simulator_contract_hash']}
 prior_engine_hash: {prior_state['engine_hash']}
+prior_policy_version: {prior_state['policy_version']}
+prior_cadence_comparability_policy_version: {prior_state['cadence_comparability_policy_version']}
 proposed_model_version: {proposed_state['model_version']}
 proposed_simulator_version: {proposed_state['simulator_version']}
 proposed_simulator_contract_version: {proposed_state['simulator_contract_version']}
 proposed_simulator_contract_hash: {proposed_state['simulator_contract_hash']}
 proposed_engine_hash: {proposed_state['engine_hash']}
+proposed_policy_version: {proposed_state['policy_version']}
+proposed_cadence_comparability_policy_version: {proposed_state['cadence_comparability_policy_version']}
 cohort_reset_required: true
 open_chain_policy: VERSION_CENSORED
 operator_acknowledged: true

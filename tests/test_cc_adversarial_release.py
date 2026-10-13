@@ -27,11 +27,14 @@ def _run(args, baseline_file=None, manifests_dir=None, ci_env=False):
     """Run check_cc_contract.py as a subprocess and return CompletedProcess."""
     cmd = list(CHECKER) + ['--json']
     if baseline_file:
-        cmd += ['--baseline-file', str(baseline_file)]
+        cmd += ['--baseline-file', str(baseline_file), '--trusted-prior-file', str(baseline_file)]
     if manifests_dir:
         cmd += ['--manifests-dir', str(manifests_dir)]
     cmd += args
     env = __import__('os').environ.copy()
+    # Isolate event metadata for offline CLI fixtures; retain both CI guards.
+    env.pop('GITHUB_EVENT_PATH', None)
+    env.pop('GITHUB_EVENT_NAME', None)
     if ci_env:
         env['GITHUB_ACTIONS'] = 'true'
     return subprocess.run(cmd, capture_output=True, text=True, env=env, cwd=str(ROOT))
@@ -40,11 +43,9 @@ def _run(args, baseline_file=None, manifests_dir=None, ci_env=False):
 def _good_baseline(tmp_path):
     """Write a valid baseline from current code; return path."""
     bf = tmp_path / 'baseline.json'
-    result = subprocess.run(
-        CHECKER + ['--update-baseline', '--baseline-file', str(bf)],
-        capture_output=True, text=True, cwd=str(ROOT),
-    )
-    assert result.returncode == 0, result.stderr
+    from covered_call_change_control import write_baseline
+    from strategy_config import CC_V3_CONFIG
+    write_baseline(CC_V3_CONFIG, path=bf)
     assert bf.exists()
     return bf
 
@@ -64,11 +65,15 @@ prior_simulator_version: {prior_state['simulator_version']}
 prior_simulator_contract_version: {prior_state['simulator_contract_version']}
 prior_simulator_contract_hash: {prior_state['simulator_contract_hash']}
 prior_engine_hash: {prior_state['engine_hash']}
+prior_policy_version: {prior_state['policy_version']}
+prior_cadence_comparability_policy_version: {prior_state['cadence_comparability_policy_version']}
 proposed_model_version: {proposed_state['model_version']}
 proposed_simulator_version: {proposed_state['simulator_version']}
 proposed_simulator_contract_version: {proposed_state['simulator_contract_version']}
 proposed_simulator_contract_hash: {proposed_state['simulator_contract_hash']}
 proposed_engine_hash: {proposed_state['engine_hash']}
+proposed_policy_version: {proposed_state['policy_version']}
+proposed_cadence_comparability_policy_version: {proposed_state['cadence_comparability_policy_version']}
 cohort_reset_required: true
 open_chain_policy: VERSION_CENSORED
 operator_acknowledged: {operator_acknowledged}

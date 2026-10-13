@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -35,6 +36,8 @@ def main():
                         help='Override baseline file path (for testing only)')
     parser.add_argument('--manifests-dir', default=None,
                         help='Override manifests directory path (for testing only)')
+    parser.add_argument('--prior-ref', help='Exact trusted prior Git commit SHA')
+    parser.add_argument('--trusted-prior-file', help='Explicit prior baseline for offline validation')
     args = parser.parse_args()
 
     from strategy_config import CC_V3_CONFIG
@@ -58,9 +61,34 @@ def main():
             print(f'  simulator_contract_hash={state["simulator_contract_hash"][:16]}...')
         return 0
 
+    expected = None
+    event_path = os.environ.get('GITHUB_EVENT_PATH')
+    if _in_ci() and event_path:
+        try:
+            event = json.loads(Path(event_path).read_text())
+            if os.environ.get('GITHUB_EVENT_NAME') == 'pull_request':
+                expected = event['pull_request']['base']['sha']
+            elif os.environ.get('GITHUB_EVENT_NAME') == 'push':
+                expected = event['before']
+            else:
+                raise ValueError('unsupported CI event')
+            if not isinstance(expected, str) or not re.fullmatch(r'[0-9a-f]{40}', expected) or expected == '0' * 40:
+                raise ValueError('no trusted prior; initialize baseline locally before enabling CI')
+            if args.trusted_prior_file or (args.prior_ref and args.prior_ref != expected):
+                raise ValueError('prior override differs from event authority')
+            args.prior_ref = expected
+        except (KeyError, ValueError, OSError) as exc:
+            print(json.dumps(dict(ok=False, findings=[f'TRUSTED_PRIOR_ERROR: {exc}'])))
+            return 1
+    elif _in_ci() and not (args.prior_ref or args.trusted_prior_file):
+        print(json.dumps(dict(ok=False, findings=['TRUSTED_PRIOR_ERROR: CI event authority required'])))
+        return 1
+
     from pathlib import Path as _Path
     result = check_contract_consistency(CC_V3_CONFIG,
         _baseline_file=args.baseline_file,
+        trusted_prior_file=args.trusted_prior_file, prior_ref=args.prior_ref,
+        expected_prior_ref=expected,
         _manifests_dir=_Path(args.manifests_dir) if args.manifests_dir else None)
 
     if args.json:
@@ -70,6 +98,10 @@ def main():
     else:
         status = 'OK' if result['ok'] else 'FAIL'
         print(f'[CC_CONTRACT] {status}')
+        print(f'  trusted_prior_ref={result.get("trusted_prior_ref")}')
+        for side in ('baseline', 'current'):
+            state = result.get(side) or {}
+            print(f'  {side}: engine={str(state.get("engine_hash", ""))[:16]} simulator={str(state.get("simulator_contract_hash", ""))[:16]}')
         if result.get('baseline_missing'):
             print('  No baseline committed — run locally: python scripts/check_cc_contract.py --update-baseline')
         elif result.get('baseline_malformed'):

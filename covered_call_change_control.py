@@ -7,6 +7,8 @@ Three change categories:
 """
 from __future__ import annotations
 import json
+import re
+import subprocess
 from pathlib import Path
 
 from covered_call_validation import management_contract
@@ -34,6 +36,53 @@ MANIFEST_REQUIRED_FIELDS = frozenset({
     'proposed_simulator_contract_hash', 'proposed_engine_hash',
     'cohort_reset_required', 'open_chain_policy', 'operator_acknowledged',
 })
+
+
+IDENTITY_FIELDS = BASELINE_REQUIRED_KEYS - {'schema_version'}
+MANIFEST_REQUIRED_FIELDS |= frozenset(
+    f'{side}_{field}' for side in ('prior', 'proposed') for field in IDENTITY_FIELDS)
+VERSION_PATTERNS = {
+    'model_version': r'cc-v((?:0|[1-9][0-9]*))\.((?:0|[1-9][0-9]*))',
+    'simulator_version': r'cc-virtual-((?:0|[1-9][0-9]*))',
+    'simulator_contract_version': r'simulator-contract-((?:0|[1-9][0-9]*))',
+    'policy_version': r'shared-live-management-asof-((?:0|[1-9][0-9]*))',
+    'cadence_comparability_policy_version': r'cadence-v((?:0|[1-9][0-9]*))',
+}
+
+
+def version_transition(field, prior, proposed):
+    """Compare canonical numeric component versions without normalization."""
+    a = re.fullmatch(VERSION_PATTERNS[field], prior or '')
+    b = re.fullmatch(VERSION_PATTERNS[field], proposed or '')
+    if not a or not b:
+        return 'MALFORMED_VERSION'
+    av, bv = tuple(map(int, a.groups())), tuple(map(int, b.groups()))
+    return 'FORWARD' if bv > av else 'BACKWARD_VERSION' if bv < av else 'NO_VERSION_BUMP'
+
+
+def baseline_at_ref(ref, repo):
+    """Read an exact immutable Git commit baseline; no network or writes."""
+    if not re.fullmatch(r'[0-9a-f]{40}', ref or ''):
+        raise ValueError('trusted prior must be an exact 40-character commit SHA')
+    result = subprocess.run(['git', 'show', f'{ref}:.cc_contract_baseline.json'],
+                            cwd=repo, capture_output=True, text=True)
+    if result.returncode:
+        raise ValueError('trusted prior baseline cannot be resolved')
+    return validate_baseline_text(result.stdout)
+
+
+def validate_baseline_text(text):
+    try:
+        data = json.loads(text)
+    except (ValueError, TypeError):
+        return dict(malformed=True, reason='JSON parse error')
+    if not isinstance(data, dict) or not BASELINE_REQUIRED_KEYS <= data.keys():
+        return dict(malformed=True, reason='missing required baseline fields')
+    if data['schema_version'] != BASELINE_SCHEMA_VERSION:
+        return dict(malformed=True, reason='unknown schema_version')
+    if any(not isinstance(data[k], str) or not data[k] for k in BASELINE_REQUIRED_KEYS):
+        return dict(malformed=True, reason='baseline fields must be non-empty strings')
+    return data
 
 
 def current_contract_state(config):
@@ -64,17 +113,9 @@ def read_baseline(path=None):
     if not bf.exists():
         return None
     try:
-        data = json.loads(bf.read_text())
-    except (json.JSONDecodeError, OSError):
-        return dict(malformed=True, reason='JSON parse error')
-    if not isinstance(data, dict):
-        return dict(malformed=True, reason='baseline is not a JSON object')
-    missing = BASELINE_REQUIRED_KEYS - set(data.keys())
-    if missing:
-        return dict(malformed=True, reason=f'missing required keys: {sorted(missing)}')
-    if data.get('schema_version') != BASELINE_SCHEMA_VERSION:
-        return dict(malformed=True, reason=f"unknown schema_version '{data.get('schema_version')}'")
-    return data
+        return validate_baseline_text(bf.read_text())
+    except OSError:
+        return dict(malformed=True, reason='baseline read error')
 
 
 def write_baseline(config, path=None):
@@ -123,7 +164,12 @@ def parse_manifest(path):
         k = key.strip()
         v = val.strip()
         if k:
+            if k in fm:
+                fm['parse_error'] = f'duplicate field: {k}'
             fm[k] = v
+    for key in ('cohort_reset_required', 'operator_acknowledged'):
+        if fm.get(key) in ('true', 'false'):
+            fm[key] = fm[key] == 'true'
     return fm
 
 
@@ -134,12 +180,27 @@ def _manifest_valid(fm):
     missing = MANIFEST_REQUIRED_FIELDS - set(fm.keys())
     if missing:
         return False, [f'missing required fields: {sorted(missing)}']
-    empty = [k for k in MANIFEST_REQUIRED_FIELDS if not fm.get(k)]
+    reasons = []
+    empty = [k for k in MANIFEST_REQUIRED_FIELDS if fm.get(k) in ('', None)]
     if empty:
-        return False, [f'empty required fields: {sorted(empty)}']
-    if fm.get('operator_acknowledged', '').lower() != 'true':
-        return False, ['operator_acknowledged must be "true"']
-    return True, []
+        reasons.append(f'empty required fields: {sorted(empty)}')
+    categories = (CHANGE_CATEGORY_NON_BEHAVIORAL, CHANGE_CATEGORY_EVIDENCE_INFRASTRUCTURE,
+                  CHANGE_CATEGORY_BEHAVIORAL)
+    if fm.get('category') not in categories:
+        reasons.append(f'INVALID_CHANGE_CATEGORY: category expected {categories}')
+    for key in ('cohort_reset_required', 'operator_acknowledged'):
+        if type(fm.get(key)) is not bool:
+            reasons.append(f'INVALID_BOOLEAN: {key} expected true or false')
+    if fm.get('operator_acknowledged') is not True:
+        reasons.append('OPERATOR_NOT_ACKNOWLEDGED: operator_acknowledged must be true')
+    if fm.get('category') == CHANGE_CATEGORY_BEHAVIORAL and fm.get('cohort_reset_required') is not True:
+        reasons.append('COHORT_RESET_REQUIRED: cohort_reset_required must be true for behavioral changes')
+    # 0712 implements one survivability policy: censor old-version open chains.
+    from covered_call_virtual import OPEN_CHAIN_POLICY
+    OPEN_CHAIN_POLICIES = frozenset({OPEN_CHAIN_POLICY})
+    if fm.get('open_chain_policy') not in OPEN_CHAIN_POLICIES:
+        reasons.append(f'INVALID_OPEN_CHAIN_POLICY: open_chain_policy expected {sorted(OPEN_CHAIN_POLICIES)}')
+    return not reasons, reasons
 
 
 def _manifest_applies(fm, baseline, current):
@@ -147,21 +208,9 @@ def _manifest_applies(fm, baseline, current):
     valid, _ = _manifest_valid(fm)
     if not valid:
         return False
-    prior_match = (
-        fm.get('prior_engine_hash') == baseline.get('engine_hash') and
-        fm.get('prior_simulator_contract_hash') == baseline.get('simulator_contract_hash') and
-        fm.get('prior_model_version') == baseline.get('model_version') and
-        fm.get('prior_simulator_version') == baseline.get('simulator_version') and
-        fm.get('prior_simulator_contract_version') == baseline.get('simulator_contract_version')
-    )
-    proposed_match = (
-        fm.get('proposed_engine_hash') == current.get('engine_hash') and
-        fm.get('proposed_simulator_contract_hash') == current.get('simulator_contract_hash') and
-        fm.get('proposed_model_version') == current.get('model_version') and
-        fm.get('proposed_simulator_version') == current.get('simulator_version') and
-        fm.get('proposed_simulator_contract_version') == current.get('simulator_contract_version')
-    )
-    return prior_match and proposed_match
+    return all(fm.get(f'{side}_{field}') == state.get(field)
+               for side, state in (('prior', baseline), ('proposed', current))
+               for field in IDENTITY_FIELDS)
 
 
 def find_applicable_manifests(baseline, current, manifests_dir=None):
@@ -182,7 +231,8 @@ def find_applicable_manifests(baseline, current, manifests_dir=None):
     return dict(applicable=applicable, all_parsed=all_parsed, duplicate_ids=duplicate_ids)
 
 
-def check_contract_consistency(config, *, _baseline_file=None, _manifests_dir=None):
+def check_contract_consistency(config, *, _baseline_file=None, _manifests_dir=None,
+                               trusted_prior_file=None, prior_ref=None, expected_prior_ref=None, repo=ROOT):
     """Verify behavioral hash consistency against the baseline.
 
     Returns a dict with:
@@ -202,8 +252,19 @@ def check_contract_consistency(config, *, _baseline_file=None, _manifests_dir=No
       4. Duplicate manifest_ids → CI failure
     """
     current = current_contract_state(config)
-    baseline = read_baseline(_baseline_file)
+    candidate = read_baseline(_baseline_file)
     findings = []
+    trusted = trusted_prior_file is not None or prior_ref is not None
+    baseline = candidate
+    if prior_ref:
+        try:
+            if expected_prior_ref and prior_ref != expected_prior_ref:
+                raise ValueError('prior SHA differs from event authority')
+            baseline = baseline_at_ref(prior_ref, repo)
+        except ValueError as exc:
+            baseline = dict(malformed=True, reason=str(exc))
+    elif trusted_prior_file:
+        baseline = read_baseline(trusted_prior_file)
 
     if baseline is None:
         return dict(ok=False, hash_changed=False, version_bumped=False,
@@ -211,7 +272,7 @@ def check_contract_consistency(config, *, _baseline_file=None, _manifests_dir=No
                     baseline_missing=True,
                     findings=['MISSING_BASELINE: no .cc_contract_baseline.json committed. '
                               'Run: python scripts/check_cc_contract.py --update-baseline'],
-                    current=current, baseline=None)
+                    current=current, baseline=None, trusted_prior_ref=prior_ref)
 
     if baseline.get('malformed'):
         return dict(ok=False, hash_changed=False, version_bumped=False,
@@ -219,7 +280,7 @@ def check_contract_consistency(config, *, _baseline_file=None, _manifests_dir=No
                     baseline_missing=False, baseline_malformed=True,
                     findings=[f"MALFORMED_BASELINE: {baseline.get('reason', 'unknown')}. "
                               'Delete and regenerate with: python scripts/check_cc_contract.py --update-baseline'],
-                    current=current, baseline=baseline)
+                    current=current, baseline=baseline, trusted_prior_ref=prior_ref)
 
     hash_changed = (
         current['engine_hash'] != baseline.get('engine_hash') or
@@ -246,6 +307,34 @@ def check_contract_consistency(config, *, _baseline_file=None, _manifests_dir=No
         ids = [fm.get('manifest_id', str(fm['path'].name)) for fm in applicable]
         findings.append(f'DUPLICATE_APPLICABLE_MANIFESTS: {len(applicable)} manifests authorize '
                         f'this transition — ambiguous: {ids}')
+
+    protected_changed = any(current[k] != baseline[k] for k in IDENTITY_FIELDS)
+    if trusted and candidate and candidate.get('malformed'):
+        findings.append(f'MALFORMED_CANDIDATE_BASELINE: {candidate["reason"]}')
+    if trusted and candidate != dict(current, schema_version=BASELINE_SCHEMA_VERSION):
+        findings.append('CANDIDATE_BASELINE_MISMATCH: candidate must exactly equal computed current state; promotion required')
+    for fm in manifest_result['all_parsed']:
+        valid, reasons = _manifest_valid(fm)
+        if not valid:
+            findings.extend(f'{reason} ({fm["path"].name})' for reason in reasons)
+    drivers = {
+        'model_version': current['engine_hash'] != baseline['engine_hash'],
+        'simulator_contract_version': current['simulator_contract_hash'] != baseline['simulator_contract_hash'],
+        'simulator_version': current['simulator_contract_hash'] != baseline['simulator_contract_hash'],
+        'policy_version': current['simulator_contract_hash'] != baseline['simulator_contract_hash'],
+        'cadence_comparability_policy_version': current['simulator_contract_hash'] != baseline['simulator_contract_hash'],
+    }
+    for field, driver in drivers.items():
+        changed = current[field] != baseline[field]
+        required = driver and field in ('model_version', 'simulator_contract_version')
+        if changed or required:
+            rule = version_transition(field, baseline[field], current[field])
+            if rule != 'FORWARD':
+                findings.append(f'{rule}: {field} prior={baseline[field]} proposed={current[field]}; expected forward numeric transition')
+            if changed and not driver:
+                findings.append(f'UNJUSTIFIED_VERSION_DRIFT: {field} prior={baseline[field]} proposed={current[field]}; corresponding behavior unchanged')
+    if protected_changed and not has_manifest and not hash_changed:
+        findings.append('PROTECTED_STATE_CHANGED_WITHOUT_APPLICABLE_MANIFEST: exact transition authorization required')
 
     if hash_changed and not version_bumped:
         findings.append('BEHAVIORAL_HASH_CHANGED_WITHOUT_VERSION_BUMP: engine_hash or simulator_contract_hash '
@@ -305,6 +394,7 @@ def check_contract_consistency(config, *, _baseline_file=None, _manifests_dir=No
         findings=findings,
         current=current,
         baseline=baseline,
+        trusted_prior_ref=prior_ref,
     )
 
 

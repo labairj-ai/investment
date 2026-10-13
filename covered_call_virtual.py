@@ -13,6 +13,9 @@ import pandas as pd
 from time_utils import now_utc, now_utc_iso, parse_timestamp, TZ_EASTERN
 from covered_call_outcomes import digest, base, persist, contract
 
+# Canonical 0712 policy shared with release authorization.
+OPEN_CHAIN_POLICY = 'VERSION_CENSORED'
+
 SIMULATOR_VERSION = 'cc-virtual-1'
 POLICY_VERSION = 'shared-live-management-asof-1'
 # Incremented when the composition of simulator_contract_hash changes.
@@ -377,9 +380,9 @@ def censor_version_mismatch(db,chain_id,current_contract_hash,evaluation):
             return dict(terminal=True)
         chain=db.execute('SELECT * FROM cc_virtual_chains WHERE id=?',(chain_id,)).fetchone()
         origin=json.loads(chain['origin_json']);origin['arm']=chain['arm']
-        after=dict(current,status='VERSION_CENSORED')
-        action_id=digest([chain_id,evaluation,'VERSION_CENSORED'])
-        audit=dict(action='VERSION_CENSORED',reason='simulator_contract_changed',
+        after=dict(current,status=OPEN_CHAIN_POLICY)
+        action_id=digest([chain_id,evaluation,OPEN_CHAIN_POLICY])
+        audit=dict(action=OPEN_CHAIN_POLICY,reason='simulator_contract_changed',
             evaluation_timestamp=evaluation,state_before=current,state_after=after,
             origin_contract_hash=origin.get('simulator_contract_hash',''),
             current_contract_hash=current_contract_hash,
@@ -390,7 +393,7 @@ def censor_version_mismatch(db,chain_id,current_contract_hash,evaluation):
             (action_id,chain_id,evaluation,'','VERSION_CENSORED',json.dumps(audit,sort_keys=True)))
         write_state(db,chain_id,evaluation,after)
         terminal_outcome(db,origin,after,chain_id,None,evaluation)
-    return dict(action='VERSION_CENSORED',chain_id=chain_id,status='VERSION_CENSORED')
+    return dict(action=OPEN_CHAIN_POLICY,chain_id=chain_id,status=OPEN_CHAIN_POLICY)
 
 
 def missed_intervals(db,chain_id,start,end,cadence):
