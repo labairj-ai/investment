@@ -712,6 +712,33 @@ def main(send_email_flag: bool = False):
     holdings["Stock"]  = holdings["Stock"].astype(str).str.strip().str.upper().map(normalize_ticker)
     holdings["Shares"] = holdings["Shares"].astype(float)
     holdings["Layer"]  = holdings["Layer"].astype(int)
+
+    # Override Shares from cost_lots when available — cost_lots is the authoritative
+    # share count; holdings.csv can fall behind when lots are added via the agent
+    # system or other paths that write directly to cost_lots without syncing the CSV.
+    try:
+        import sqlite3 as _sql
+        _db = PROJECT_DIR / "out" / "investment.db"
+        if _db.exists():
+            _conn = _sql.connect(str(_db), timeout=5)
+            _lot_shares = {
+                r[0]: r[1]
+                for r in _conn.execute(
+                    "SELECT ticker, SUM(shares) FROM cost_lots GROUP BY ticker"
+                )
+            }
+            _conn.close()
+            if _lot_shares:
+                def _resolve_shares(row):
+                    t = row["Stock"]
+                    lot_count = _lot_shares.get(t)
+                    if lot_count is not None and abs(lot_count - row["Shares"]) > 0.001:
+                        print(f"[Newsletter] Shares override for {t}: CSV={row['Shares']:.3f} → cost_lots={lot_count:.3f}")
+                        return float(lot_count)
+                    return row["Shares"]
+                holdings["Shares"] = holdings.apply(_resolve_shares, axis=1)
+    except Exception as _e:
+        print(f"[Newsletter] cost_lots share override failed (non-fatal): {_e}")
     holdings["LayerName"]  = holdings["Layer"].map(lambda x: LAYER_NAMES.get(int(x), f"Layer {x}"))
     holdings["LayerLabel"] = holdings.apply(lambda r: f"Layer {int(r['Layer'])}: {r['LayerName']}", axis=1)
 
