@@ -1972,6 +1972,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             data = report()
             data['promotion'] = promotion_evidence(CC_V3_CONFIG)
             self._json(data)
+        elif parsed.path == "/api/learning/cc-evidence-health":
+            from covered_call_accrual import accrual_health
+            from strategy_config import CC_V3_CONFIG
+            self._json(accrual_health(CC_V3_CONFIG))
         elif parsed.path == "/api/learning/stats":
             _valid_horizons = {"1w", "1m", "3m", "6m", "12m"}
             _h = parse_qs(parsed.query).get("horizon", ["3m"])[0]
