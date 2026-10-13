@@ -15,6 +15,10 @@ __pycache__/
 # Numbers spreadsheet (CSV is source of truth)
 *.numbers
 
+# holdings.csv is live data managed by the dashboard — not tracked in git
+# (backed up daily via backup_data.sh → investment-data repo)
+holdings.csv
+
 # Generated outputs
 out/investment.db
 out/investment.db-shm
