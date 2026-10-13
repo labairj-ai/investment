@@ -1,7 +1,7 @@
 # Enforce CC V3 Behavioral Contract Checks in CI
 
 - **ID:** 0718
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-10-13
 - **Priority:** critical
 - **Depends:** 0716, 0717

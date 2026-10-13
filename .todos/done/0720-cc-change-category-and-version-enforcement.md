@@ -1,7 +1,7 @@
 # Enforce CC Change Category and Component-Specific Version Semantics
 
 - **ID:** 0720
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-10-13
 - **Priority:** critical
 - **Depends:** 0719
