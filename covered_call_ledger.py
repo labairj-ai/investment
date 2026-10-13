@@ -143,8 +143,14 @@ def record_fill(fill_id,episode,candidate,fill,bid,ask,execution_timestamp,fees=
                  fill_fraction=fraction,bucket=bucket,execution_timestamp=execution_timestamp,
                  quote_timestamp=quote_timestamp,fees=fees,underlying_at_rec=underlying_at_rec,
                  underlying_at_fill=underlying_at_fill,underlying_move=underlying_at_fill-underlying_at_rec if underlying_at_fill is not None and underlying_at_rec is not None else None)
-    db.execute('INSERT INTO cc_fills VALUES(?,?,?,?)',(str(fill_id),episode,candidate,encode(payload)))
-    if connection is None:db.commit();db.close()
+    try:
+        db.execute('INSERT INTO cc_fills VALUES(?,?,?,?)',(str(fill_id),episode,candidate,encode(payload)))
+        if connection is None:db.commit()
+    except Exception:
+        if connection is None:db.rollback()
+        raise
+    finally:
+        if connection is None:db.close()
     return payload
 
 
