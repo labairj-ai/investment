@@ -11,9 +11,42 @@ from covered_call_virtual import SIMULATOR_VERSION, management_contract, evaluat
 
 ROOT=Path(__file__).resolve().parent
 
+# Incremented when the composition of simulator_contract_hash changes.
+SIMULATOR_CONTRACT_VERSION = 'simulator-contract-1'
+
+# Config keys whose values affect simulator behaviour.
+_CONTRACT_CONFIG_KEYS = (
+    'management_cost_per_contract', 'path_count', 'max_regret_probability',
+    'utility_hurdle_annual_pct', 'fill_prior', 'fill_prior_strength',
+    'fill_min_n', 'regime_enabled',
+)
+
 
 def current_git_sha():
     return subprocess.run(['git','rev-parse','HEAD'],cwd=ROOT,capture_output=True,text=True,check=True).stdout.strip()
+
+
+def _config_contract_hash(config):
+    """Hash of the simulator-relevant config subset (cc_v3 section)."""
+    cc_cfg = config.get('cc_v3', {})
+    subset = {k: cc_cfg.get(k) for k in _CONTRACT_CONFIG_KEYS}
+    return digest(subset)
+
+
+def simulator_contract_hash(config):
+    """Deterministic hash of all simulator-relevant code and config.
+
+    Changes when and only when CC virtual book behaviour can change.
+    Unrelated commits (docs, dashboard copy, etc.) do not affect this hash.
+    """
+    mc = management_contract()
+    return digest({
+        'simulator_contract_version': SIMULATOR_CONTRACT_VERSION,
+        'simulator_version': SIMULATOR_VERSION,
+        'management_contract_hash': mc['engine_hash'],
+        'policy_version': mc['policy_version'],
+        'config_contract_hash': _config_contract_hash(config),
+    })
 
 
 def migrate(db):
@@ -196,6 +229,7 @@ def run_validation(config,path=None):
     result=acceptance(cases,config['simulator_validation'])
     sha=subprocess.run(['git','rev-parse','HEAD'],cwd=ROOT,capture_output=True,text=True,check=True).stdout.strip()
     result.update(simulator_version=SIMULATOR_VERSION,config_hash=config_digest(config),git_sha=sha,
+        simulator_contract_hash=simulator_contract_hash(config),simulator_contract_version=SIMULATOR_CONTRACT_VERSION,
         validation_policy_version=config['simulator_validation']['version'],management_contract=management_contract(),
         cohort_ids=cohort,cases=cases,total_actual_records=len(actual_records),legacy_completed_position_n=len(legacy_positions),
         legacy_case_review=[dict(r,category='MISSING_ASOF_EVIDENCE',review='Cannot replay or classify simulator divergence without original decision/options/policy snapshots') for r in legacy_positions[:10]],exclusions=dict(excluded),details=details,
@@ -216,11 +250,30 @@ def certify(run_id,config,path=None):
     if not row:db.close();raise ValueError('unknown validation run')
     result=json.loads(row[0])
     checked=acceptance(result.get('cases',[]),config['simulator_validation'])
-    if result.get('git_sha')!=current_git_sha() or not checked['eligible'] or not result.get('eligible') or not result.get('out_of_sample') or result['simulator_version']!=SIMULATOR_VERSION or result['config_hash']!=config_digest(config) or result['management_contract']!=management_contract():
+    mc=management_contract()
+    contract_hash=simulator_contract_hash(config)
+    # Validity: contract-relevant components must match; git SHA is provenance only.
+    run_contract=result.get('simulator_contract_hash')
+    if run_contract is not None and run_contract!=contract_hash:
+        db.close();raise ValueError('simulator contract changed since validation run')
+    if not checked['eligible'] or not result.get('eligible') or not result.get('out_of_sample') or result['simulator_version']!=SIMULATOR_VERSION or result['config_hash']!=config_digest(config) or result['management_contract']!=mc:
         db.close();raise ValueError('simulator validation gate not met')
-    certificate=dict(validation_run_id=run_id,simulator_version=SIMULATOR_VERSION,config_hash=config_digest(config),
-        management_contract=management_contract(),validation_policy_version=config['simulator_validation']['version'],
-        cohort_ids=result['cohort_ids'],metrics=result['metrics'],git_sha=result['git_sha'])
+    certified_git_sha=result.get('git_sha','')
+    certificate=dict(
+        validation_run_id=run_id,
+        simulator_version=SIMULATOR_VERSION,
+        simulator_contract_version=SIMULATOR_CONTRACT_VERSION,
+        simulator_contract_hash=contract_hash,
+        certified_at_git_sha=certified_git_sha,
+        management_contract=mc,
+        management_contract_hash=mc['engine_hash'],
+        config_contract_hash=_config_contract_hash(config),
+        config_hash=config_digest(config),
+        validation_policy_version=config['simulator_validation']['version'],
+        cohort_ids=result['cohort_ids'],
+        metrics=result['metrics'],
+        git_sha=certified_git_sha,  # backward compat alias
+    )
     identifier=digest(certificate)
     with db:db.execute('INSERT OR IGNORE INTO cc_simulator_certifications VALUES(?,?,?,?)',(identifier,run_id,now_utc_iso(),json.dumps(certificate,sort_keys=True)))
     db.close();return dict(certificate,id=identifier)
@@ -231,10 +284,18 @@ def certification(config,path=None):
     db=connect(path);ledger_migrate(db);migrate(db)
     rows=db.execute('SELECT id,certificate_json FROM cc_simulator_certifications ORDER BY timestamp DESC').fetchall()
     db.close()
+    contract_hash=simulator_contract_hash(config)
+    mc=management_contract()
     for row in rows:
         c=json.loads(row['certificate_json'])
-        if c.get('git_sha')==current_git_sha() and c['simulator_version']==SIMULATOR_VERSION and c['config_hash']==config_digest(config) and c['management_contract']==management_contract() and c['validation_policy_version']==config['simulator_validation']['version']:
-            return dict(c,id=row['id'])
+        # New certs: validate by simulator_contract_hash (git SHA is provenance only).
+        # Legacy certs (no simulator_contract_hash): fall back to git_sha match.
+        if c.get('simulator_contract_hash') is not None:
+            contract_valid=c['simulator_contract_hash']==contract_hash
+        else:
+            contract_valid=c.get('git_sha')==current_git_sha()
+        if contract_valid and c.get('simulator_contract_version',SIMULATOR_CONTRACT_VERSION)==SIMULATOR_CONTRACT_VERSION and c['simulator_version']==SIMULATOR_VERSION and c['config_hash']==config_digest(config) and c['management_contract']==mc and c['validation_policy_version']==config['simulator_validation']['version']:
+            return dict(c,id=row['id'],current_git_sha=current_git_sha())
     return None
 
 

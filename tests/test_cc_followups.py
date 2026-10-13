@@ -413,6 +413,78 @@ def test_certification_immutable_and_version_invalidation(episode):
     db.close()
 
 
+def test_simulator_contract_hash_properties(episode):
+    """0711: simulator_contract_hash decouples cert validity from repo git SHA."""
+    _,cfg,_=episode
+    h1=validation.simulator_contract_hash(cfg)
+    # Same config → same hash (deterministic).
+    assert validation.simulator_contract_hash(cfg)==h1
+    # Changing a non-simulator config key must not change the hash.
+    cfg_copy=dict(cfg,config_version='unrelated_dashboard_change')
+    assert validation.simulator_contract_hash(cfg_copy)==h1
+    # Changing a simulator-relevant config value must change the hash.
+    import copy
+    cfg_changed=copy.deepcopy(cfg)
+    cfg_changed.setdefault('cc_v3',{})['management_cost_per_contract']=99999
+    assert validation.simulator_contract_hash(cfg_changed)!=h1
+
+
+def test_cert_valid_across_git_sha(episode,monkeypatch):
+    """0711: a cert is valid when contract hash matches even if git SHA differs."""
+    path,cfg,create=episode;create();db=ledger.connect(path)
+    case=dict(entry_fill_spread_error=.1,action_agreement=1,intervention_timing_error=0,roll_type_agreement=1,
+        alpha_absolute_error=.01,actual_alpha_absolute=1,lookahead_violations=0,state_contamination=0)
+    result=validation.acceptance([case]*20,cfg['simulator_validation'])
+    result.update(cases=[case]*20,out_of_sample=True,simulator_version=book.SIMULATOR_VERSION,config_hash=ledger.config_digest(cfg),
+        management_contract=book.management_contract(),git_sha='old-sha-before-unrelated-commit',cohort_ids=[str(i) for i in range(20)])
+    with db:db.execute('INSERT INTO cc_simulator_validation_runs VALUES(?,?,?,?,?,?)',('valid-run2',START,book.SIMULATOR_VERSION,ledger.config_digest(cfg),'old-sha-before-unrelated-commit',json.dumps(result)))
+    db.close()
+    certificate=validation.certify('valid-run2',cfg,path)
+    # Simulate an unrelated commit by monkeypatching git SHA.
+    monkeypatch.setattr(validation,'current_git_sha',lambda:'new-unrelated-sha')
+    found=validation.certification(cfg,path)
+    assert found is not None and found['id']==certificate['id']
+    assert found['certified_at_git_sha']=='old-sha-before-unrelated-commit'
+    assert found['current_git_sha']=='new-unrelated-sha'
+
+
+def test_cert_invalidated_by_contract_change(episode,monkeypatch):
+    """0711: cert becomes invalid when simulator_contract_hash changes."""
+    path,cfg,create=episode;create();db=ledger.connect(path)
+    case=dict(entry_fill_spread_error=.1,action_agreement=1,intervention_timing_error=0,roll_type_agreement=1,
+        alpha_absolute_error=.01,actual_alpha_absolute=1,lookahead_violations=0,state_contamination=0)
+    result=validation.acceptance([case]*20,cfg['simulator_validation'])
+    result.update(cases=[case]*20,out_of_sample=True,simulator_version=book.SIMULATOR_VERSION,config_hash=ledger.config_digest(cfg),
+        management_contract=book.management_contract(),git_sha=validation.current_git_sha(),cohort_ids=[str(i) for i in range(20)])
+    with db:db.execute('INSERT INTO cc_simulator_validation_runs VALUES(?,?,?,?,?,?)',('valid-run3',START,book.SIMULATOR_VERSION,ledger.config_digest(cfg),validation.current_git_sha(),json.dumps(result)))
+    db.close()
+    certificate=validation.certify('valid-run3',cfg,path)
+    assert certificate['simulator_contract_hash']==validation.simulator_contract_hash(cfg)
+    # Simulate a simulator-relevant code change by returning a different contract hash.
+    monkeypatch.setattr(validation,'simulator_contract_hash',lambda *a:'changed-hash')
+    assert validation.certification(cfg,path) is None
+
+
+def test_missing_contract_metadata_fails_closed(episode):
+    """0711: a cert without simulator_contract_hash with wrong git SHA is rejected."""
+    path,cfg,create=episode;create();db=ledger.connect(path)
+    # Insert a legacy cert with an old git SHA and no simulator_contract_hash.
+    legacy_cert=dict(validation_run_id='legacy-run',simulator_version=book.SIMULATOR_VERSION,
+        config_hash=ledger.config_digest(cfg),management_contract=book.management_contract(),
+        validation_policy_version=cfg['simulator_validation']['version'],
+        cohort_ids=[],metrics={},git_sha='old-git-sha-no-longer-current')
+    from covered_call_outcomes import digest as od
+    cert_id=od(legacy_cert)
+    with db:
+        db.execute('INSERT INTO cc_simulator_validation_runs VALUES(?,?,?,?,?,?)',
+            ('legacy-run',START,book.SIMULATOR_VERSION,ledger.config_digest(cfg),'old-git-sha-no-longer-current','{}'))
+        db.execute('INSERT INTO cc_simulator_certifications VALUES(?,?,?,?)',
+            (cert_id,'legacy-run',START,json.dumps(legacy_cert,sort_keys=True)))
+    db.close()
+    # No simulator_contract_hash → falls back to git_sha; old SHA ≠ current → rejected.
+    assert validation.certification(cfg,path) is None
+
+
 def test_actual_virtual_metrics_separated_in_report(episode):
     path,cfg,create=episode;eid=create();seed_pair(path,cfg,eid)
     report=ledger.report(path)
