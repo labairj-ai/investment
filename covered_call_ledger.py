@@ -7,7 +7,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from time_utils import today_eastern, now_utc
+from time_utils import today_eastern, now_utc, parse_timestamp, TZ_EASTERN
 import sqlite3
 import subprocess
 import time
@@ -79,10 +79,16 @@ def migrate(db):
     for table in ('cc_decisions','cc_candidates','cc_labels','cc_fills','cc_promotions','cc_chain_costs'):
         for action in ('UPDATE','DELETE'):
             db.execute(f"CREATE TRIGGER IF NOT EXISTS {table}_immutable_{action.lower()} BEFORE {action} ON {table} BEGIN SELECT RAISE(ABORT,'immutable CC evidence'); END")
+    from covered_call_outcomes import migrate as migrate_outcomes
+    from covered_call_virtual import migrate as migrate_virtual
+    migrate_outcomes(db)
+    migrate_virtual(db)
+    from covered_call_validation import migrate as migrate_validation
+    migrate_validation(db)
     db.commit()
 
 
-def record_episode(ticker,run_id,rows,champion,challenger,policy,config,timestamp=None,path=None):
+def record_episode(ticker,run_id,rows,champion,challenger,policy,config,timestamp=None,path=None,prospective=True,qa_only=False):
     from covered_call_v3 import VERSION,divergence
     db=connect(path);migrate(db)
     timestamp=timestamp or now_utc().isoformat()
@@ -92,18 +98,23 @@ def record_episode(ticker,run_id,rows,champion,challenger,policy,config,timestam
     champion=dict(champion)
     if champion.get('action')=='SELL_CC':
         champion['trade_chain_id']=f"cc-{ticker}-{int(champion['strike'])}-{champion['expiration']}-{episode}"
-    cohort=f'{ticker}:{timestamp[:10]}'
+    cohort=f'{ticker}:{parse_timestamp(timestamp).astimezone(TZ_EASTERN).date().isoformat()}'
     def selected(row,decision):
         return int(decision.get('action')=='SELL_CC' and row['strike']==decision.get('strike') and row['expiration']==decision.get('expiration'))
     with db:
-        db.execute('INSERT INTO cc_decisions VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,1)',
-            (episode,ticker,str(run_id),timestamp,cohort,sha,cfg_hash,VERSION,encode(policy),encode(config),encode(champion),encode(challenger),divergence(champion,challenger)))
+        db.execute('INSERT INTO cc_decisions VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            (episode,ticker,str(run_id),timestamp,cohort,sha,cfg_hash,VERSION,encode(policy),encode(config),encode(champion),encode(challenger),divergence(champion,challenger),int(prospective)))
         for r in rows:
             cid=f"{ticker}:{r['expiration'].replace('-','')}:{float(r['strike']):g}"
             features=dict(r,champion_contracts=champion.get('contracts',0) if selected(r,champion) else None,
                           champion_overwrite_fraction=champion.get('overwrite_fraction') if selected(r,champion) else None,
                           selected_action='SELL_CC' if selected(r,champion) else 'ALTERNATIVE')
             db.execute('INSERT INTO cc_candidates VALUES(?,?,?,?,?)',(episode,cid,encode(features),selected(r,champion),selected(r,challenger)))
+        from covered_call_evidence import create_decision_contract
+        from covered_call_virtual import start_from_decision
+        create_decision_contract(db,episode,rows,config,prospective,qa_only)
+        start_from_decision(db,episode)
+
     db.close();return episode
 
 
@@ -139,7 +150,7 @@ def record_fill(fill_id,episode,candidate,fill,bid,ask,execution_timestamp,fees=
         if connection is None:db.close()
         raise ValueError('unknown CC fill candidate')
     rec_features=json.loads(candidate_row[0])
-    payload=dict(recommendation_features={k:rec_features.get(k) for k in ('bid','ask','mid','dte','delta','otm_pct','impliedVolatility','openInterest','volume','quote_timestamp')},actual=True,fill=fill,bid=bid,ask=ask,mid=(bid+ask)/2,
+    payload=dict(outcome_source='ACTUAL_EXECUTION',broker_reconciled=False,execution_source='RECONCILED_MANUAL_OR_BROKER',recommendation_features={k:rec_features.get(k) for k in ('bid','ask','mid','dte','delta','otm_pct','impliedVolatility','openInterest','volume','quote_timestamp')},actual=True,fill=fill,bid=bid,ask=ask,mid=(bid+ask)/2,
                  fill_fraction=fraction,bucket=bucket,execution_timestamp=execution_timestamp,
                  quote_timestamp=quote_timestamp,fees=fees,underlying_at_rec=underlying_at_rec,
                  underlying_at_fill=underlying_at_fill,underlying_move=underlying_at_fill-underlying_at_rec if underlying_at_fill is not None and underlying_at_rec is not None else None)
@@ -250,7 +261,11 @@ def record_chain_costs(episode,chain_id,management_cost,execution_cost,assignmen
     decision=db.execute('SELECT champion_json FROM cc_decisions WHERE id=?',(episode,)).fetchone()
     if decision is None or json.loads(decision[0]).get('trade_chain_id')!=chain_id:
         db.close();raise ValueError('chain must match originating decision')
-    evidence=dict(management_cost_total=management_cost,execution_cost_total=execution_cost,
+    actual_chain,_=reconcile_chain(db,episode)
+    identifiers=[x['execution_id'] for x in (actual_chain or []) if x.get('execution_id')]
+    evidence=dict(outcome_source='ACTUAL_EXECUTION' if identifiers else 'ESTIMATED_COUNTERFACTUAL',
+        prospective=False,execution_ids=identifiers,execution_reconciled=bool(identifiers),broker_reconciled=False,
+        management_cost_total=management_cost,execution_cost_total=execution_cost,
         assignment_cost_total=assignment_cost,assignment_policy_violation=assignment_policy_violation,
         shares=shares,terminal_underlying_price=terminal_underlying_price,source=source,
         units='USD_TOTAL',cost_source='RECONCILED_OBSERVATION')
@@ -260,15 +275,26 @@ def record_chain_costs(episode,chain_id,management_cost,execution_cost,assignmen
 
 
 def append_label(episode,candidate,labels,source,path=None):
+    from covered_call_evidence import classify_label, CHAIN_FIELDS
+    from covered_call_outcomes import OutcomeSource
+    if labels.get('outcome_source'):
+        OutcomeSource(labels['outcome_source'])  # Unknown sources fail closed.
     db=connect(path);migrate(db)
-    h=hashlib.sha256(encode({'source':source,'labels':labels}).encode()).hexdigest()
-    with db:db.execute('INSERT OR IGNORE INTO cc_labels(episode_id,candidate_id,labeled_at,labels_json,source_hash) VALUES(?,?,?,?,?)',
-        (episode,candidate,now_utc().isoformat(),encode(labels),h))
-    db.close()
+    pure_path={k:v for k,v in labels.items() if k not in CHAIN_FIELDS and not k.startswith('estimated_')}
+    pure_path.update(outcome_source='MARKET_PATH_ONLY',provenance_version='cc-outcome-provenance-1')
+    h=hashlib.sha256(encode({'source':source,'labels':pure_path}).encode()).hexdigest()
+    try:
+        with db:
+            db.execute('INSERT OR IGNORE INTO cc_labels(episode_id,candidate_id,labeled_at,labels_json,source_hash) VALUES(?,?,?,?,?)',
+                (episode,candidate,now_utc().isoformat(),encode(pure_path),h))
+            classify_label(db,episode,candidate,labels,source)
+    finally:db.close()
 
 
 def calibration(samples,predicted,event,min_n=20):
-    usable=[(float(f[predicted]),bool(l[event])) for f,l in samples if f.get(predicted) is not None and l.get(event) is not None and not l.get('censored',True)]
+    usable=[(float(f[predicted]),bool(l[event])) for f,l in samples if f.get(predicted) is not None and l.get(event) is not None and not l.get('censored',True)
+        and l.get('outcome_source','MARKET_PATH_ONLY') in ('ACTUAL_EXECUTION','PROSPECTIVE_VIRTUAL','MARKET_PATH_ONLY')
+        and (event!='rolled' or (l.get('outcome_source') in ('ACTUAL_EXECUTION','PROSPECTIVE_VIRTUAL') and not l.get('chain_censored',True)))]
     buckets=[]
     for i in range(5):
         rows=[(p,y) for p,y in usable if min(4,int(p*5))==i]
@@ -286,14 +312,29 @@ def report(path=None,limit=100):
     # All rows feed cohort metrics, only detail output is bounded.
     rows=db.execute('SELECT * FROM cc_decisions ORDER BY timestamp DESC').fetchall()
     seen=set()
+    from covered_call_outcomes import latest, contract
+    source_counts=defaultdict(int)
+    canonical={}
+    for decision in reversed(rows):
+        key=(decision['ticker'],parse_timestamp(decision['timestamp']).astimezone(TZ_EASTERN).date())
+        canonical.setdefault(key,decision['id'])
     for d in rows:
         decision=dict(d);decision['champion']=json.loads(d['champion_json']);decision['challenger']=json.loads(d['challenger_json'])
-        candidates=[]; independent=d['cohort_key'] not in seen;seen.add(d['cohort_key'])
+        key=(d['ticker'],parse_timestamp(d['timestamp']).astimezone(TZ_EASTERN).date())
+        candidates=[]; independent=canonical[key]==d['id'];seen.add(key)
         decision['independent_cohort']=independent
+        decision['outcomes']={arm:latest(db,d['id'],arm) for arm in ('champion','challenger')}
+        decision['evidence_contract']=contract(db,d['id'])
+        for outcome in decision['outcomes'].values():
+            if outcome:source_counts[outcome['outcome_source']]+=1
         for r in db.execute('SELECT * FROM cc_candidates WHERE episode_id=?',(d['id'],)):
             f=json.loads(r['features_json'])
             l=db.execute('SELECT labels_json FROM cc_labels WHERE episode_id=? AND candidate_id=? ORDER BY id DESC LIMIT 1',(d['id'],r['candidate_id'])).fetchone()
-            labels=json.loads(l[0]) if l else {'censored':True}
+            labels=json.loads(l[0]) if l else {'censored':True,'outcome_source':'MARKET_PATH_ONLY'}
+            actual=decision['outcomes']['champion']
+            performance=dict(labels)
+            if actual and actual['outcome_source']=='ACTUAL_EXECUTION' and r['selected_v2']:
+                performance.update(actual)
             candidates.append(dict(id=r['candidate_id'],features=f,labels=labels,selected_v2=bool(r['selected_v2']),selected_v3=bool(r['selected_v3'])))
             # Avoid counting all correlated alternatives as independent outcomes.
             if independent and r['selected_v2']:
@@ -303,23 +344,28 @@ def report(path=None,limit=100):
                     ('overwrite',str(decision['champion'].get('overwrite_fraction'))),
                     ('vrp',str(round(f.get('vrp_estimate') or 0,1))),('strategy',f.get('policy_snapshot',{}).get('strategy')),
                     ('regime',f.get('regime_state')),('divergence',d['divergence'])]:
-                    cohorts[(key,value)].append((f,labels))
+                    cohorts[(key,value)].append((f,performance))
         decision['candidates']=candidates
         if len(decisions)<limit: decisions.append(decision)
     cohort_rows=[]
     for (key,value),items in cohorts.items():
-        roll=[l['rolled'] for f,l in items if l.get('rolled') is not None and not l.get('chain_censored',True)]
-        alpha=[l['cc_incremental_alpha'] for f,l in items if l.get('cc_incremental_alpha') is not None and not l.get('chain_censored',True)]
-        cohort_rows.append(dict(dimension=key,bucket=value,n=len(items),eligible_n=sum(bool(f['eligible']) for f,l in items),
+        roll=[l['rolled'] for f,l in items if l.get('outcome_source')=='ACTUAL_EXECUTION' and l.get('complete') and l.get('rolled') is not None and not l.get('chain_censored',True)]
+        alpha=[l['cc_incremental_alpha'] for f,l in items if l.get('outcome_source')=='ACTUAL_EXECUTION' and l.get('complete') and l.get('cc_incremental_alpha') is not None and not l.get('chain_censored',True)]
+        cohort_rows.append(dict(outcome_source='ACTUAL_EXECUTION',dimension=key,bucket=value,n=len(items),eligible_n=sum(bool(f['eligible']) for f,l in items),
             censored_n=sum(l.get('censored',True) for f,l in items),roll_n=len(roll),roll_rate=sum(roll)/len(roll) if roll else None,
             alpha_n=len(alpha),incremental_alpha=sum(alpha)/len(alpha) if alpha else None))
-    state=dict(db.execute('SELECT * FROM cc_scorer_state').fetchone());db.close()
-    return dict(mode='observe_only' if state['scorer']=='v2' else 'promoted_v3',state=state,decisions=decisions,decision_n=len(rows),independent_n=len(seen),
+    state=dict(db.execute('SELECT * FROM cc_scorer_state').fetchone())
+    from covered_call_virtual import metrics
+    virtual=metrics(db)
+    validation_row=db.execute('SELECT run_json FROM cc_simulator_validation_runs ORDER BY timestamp DESC LIMIT 1').fetchone()
+    validation=json.loads(validation_row[0]) if validation_row else {'status':'INSUFFICIENT_EVIDENCE','metrics':{'n':0}}
+    db.close()
+    return dict(virtual_book=virtual,simulator_validation=validation,outcome_source_counts=dict(source_counts),mode='observe_only' if state['scorer']=='v2' else 'promoted_v3',state=state,decisions=decisions,decision_n=len(rows),independent_n=len(seen),
         cohorts=cohort_rows,calibration={p:calibration(samples,p,e) for p,e in (
             ('strike_touch_prob','strike_touched'),('regret_barrier_touch_prob','regret_barrier_touched'),
             ('delta30_touch_prob','delta30_event'),('delta50_touch_prob','delta50_event'),('management_risk','rolled'))},
         management_risk_semantics='bounded management proxy; roll-frequency comparison is diagnostic, not a calibrated roll probability',
-        sample_policy='latest decision per ticker/session; champion selected contract; management risk is a proxy, compared diagnostically with roll frequency')
+        sample_policy='first decision per ticker/Eastern session; champion selected contract; management risk is a proxy, compared diagnostically with roll frequency')
 
 
 def active_scorer(config,path=None):
@@ -331,51 +377,18 @@ def active_scorer(config,path=None):
     snap=json.loads(state['snapshot_json'])
     sha=subprocess.run(['git','rev-parse','HEAD'],cwd=ROOT,capture_output=True,text=True,check=True).stdout.strip()
     config_hash=config_digest(config)
-    return 'v3' if snap.get('git_sha')==sha and snap.get('config_hash')==config_hash else 'v2'
+    from covered_call_validation import certification
+    from covered_call_virtual import SIMULATOR_VERSION
+    from covered_call_v3 import VERSION
+    certificate=certification(config,path)
+    return 'v3' if (snap.get('git_sha')==sha and snap.get('config_hash')==config_hash
+        and snap.get('model_version')==VERSION and snap.get('simulator_version')==SIMULATOR_VERSION
+        and certificate is not None and snap.get('simulator_certification_id')==certificate['id']) else 'v2'
 
 
 def promotion_evidence(config,path=None):
-    """Paired prospective same-opportunity comparisons, deduplicated by session.
-
-    A missing challenger/hold outcome cannot count as a successful comparison.
-    Evidence must match the current config and scorer before an explicit transition.
-    """
-    data=report(path,limit=100000);gate=config['promotion'];pairs=[]
-    current_hash=config_digest(config)
-    for d in data['decisions']:
-        if not d['prospective'] or not d['independent_cohort'] or d['config_hash']!=current_hash or d['model_version']!=__import__('covered_call_v3').VERSION:continue
-        selected={name:next((c for c in d['candidates'] if c['selected_'+key]),None) for name,key in [('champion','v2'),('challenger','v3')]}
-        def outcome(name):
-            if d[name]['action']=='NO_CALL':return dict(cc_incremental_alpha=0,rolled=False,expected_management_cost=0,assignment_policy_violation=False)
-            c=selected[name]
-            if not c or c['labels'].get('chain_censored',True) or c['labels'].get('censored',True):return None
-            l=c['labels']
-            required=('cc_incremental_alpha','realized_management_cost','assignment_policy_violation','realized_execution_cost')
-            if any(l.get(k) is None for k in required):return None
-            return l
-        a,b=outcome('champion'),outcome('challenger')
-        if a is not None and b is not None:
-            pairs.append((d,a,b))
-    n=len(pairs);divergent=sum(d['divergence'] not in ('SAME_NO_CALL','SAME_CONTRACT') for d,a,b in pairs)
-    delta=sum(b['cc_incremental_alpha']-a['cc_incremental_alpha'] for d,a,b in pairs)/n if n else None
-    roll_delta=sum(bool(b['rolled'])-bool(a['rolled']) for d,a,b in pairs)/n if n else None
-    cost_delta=sum(b.get('realized_management_cost',0)-a.get('realized_management_cost',0) for d,a,b in pairs)/n if n else None
-    violations=sum(bool(b.get('assignment_policy_violation')) for d,a,b in pairs)
-    days=(date.fromisoformat(max(d['timestamp'][:10] for d,a,b in pairs))-date.fromisoformat(min(d['timestamp'][:10] for d,a,b in pairs))).days if n else 0
-    calibrated=[(c['features'],c['labels']) for d,a,b in pairs for c in d['candidates'] if c['selected_v3']]
-    cal=calibration(calibrated,'strike_touch_prob','strike_touched')
-    failures=[]
-    for ok,reason in [(n>=gate['minimum_n'],'MINIMUM_N'),(divergent>=gate['minimum_divergent_n'],'DIVERGENT_N'),(days>=gate['minimum_days'],'PROSPECTIVE_DURATION'),
-        (delta is not None and delta>gate['minimum_alpha_improvement'],'ALPHA_IMPROVEMENT'),
-        (roll_delta is not None and roll_delta<=gate['max_roll_rate_increase'],'ROLL_REGRESSION'),
-        (cost_delta is not None and cost_delta<=gate['max_management_cost_increase'],'MANAGEMENT_COST_REGRESSION'),
-        (violations<=gate['max_assignment_violations'],'ASSIGNMENT_VIOLATIONS'),
-        (cal['n']>=gate['minimum_n'] and cal['brier'] is not None and cal['brier']<=gate['max_brier'],'CALIBRATION')]:
-        if not ok:failures.append(reason)
-    return dict(eligible=not failures,failures=failures,n=n,divergent_n=divergent,prospective_days=days,
-                alpha_improvement=delta,roll_rate_delta=roll_delta,management_cost_delta=cost_delta,
-                assignment_violations=violations,calibration=cal,config_hash=current_hash,
-                gate_version=gate['version'],cohort_ids=[d['id'] for d,a,b in pairs])
+    from covered_call_evidence import promotion_report
+    return promotion_report(config,path)
 
 
 def transition(scorer,config,path=None):
@@ -467,6 +480,7 @@ def refresh_labels(path=None,as_of=None,fetch=None,dry_run=False):
             chain,chain_id=reconcile_chain(db,row['episode_id']) if row['selected_v2'] else (None,None)
             measured=db.execute('SELECT evidence_json FROM cc_chain_costs WHERE episode_id=? ORDER BY timestamp DESC LIMIT 1',(row['episode_id'],)).fetchone()
             cost_evidence=json.loads(measured[0]) if measured else None
+            if cost_evidence and cost_evidence.get('outcome_source')!='ACTUAL_EXECUTION':cost_evidence=None
             if chain and cost_evidence:
                 assignments=[x for x in chain if x['action']=='ASSIGNED']
                 if assignments:

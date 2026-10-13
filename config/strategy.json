@@ -91,7 +91,7 @@
   },
   "covered_call_v3": {
     "mode": "observe_only",
-    "config_version": "cc-v3-policy-1",
+    "config_version": "cc-v3-policy-2",
     "path_count": 2048,
     "management_cost_per_contract": 5.0,
     "fee_per_contract": 0.65,
@@ -121,7 +121,7 @@
       ]
     },
     "promotion": {
-      "version": "prospective-gate-1",
+      "version": "paired-prospective-gate-2",
       "minimum_n": 100,
       "minimum_divergent_n": 30,
       "minimum_days": 90,
@@ -129,7 +129,31 @@
       "max_assignment_violations": 0,
       "minimum_alpha_improvement": 0.0,
       "max_roll_rate_increase": 0.0,
-      "max_management_cost_increase": 0.0
+      "max_management_cost_increase": 0.0,
+      "max_execution_cost_increase": 0.0
+    },
+    "virtual": {
+      "version": "cc-virtual-policy-1",
+      "creation_grace_seconds": 300,
+      "maximum_quote_age_seconds": 900,
+      "cadence_minutes": 30,
+      "maximum_missing_intervals": 0
+    },
+    "simulator_validation": {
+      "version": "cc-simulator-certification-1",
+      "minimum_n": 20,
+      "maximum_entry_spread_error": 0.2,
+      "minimum_action_agreement": 0.8,
+      "maximum_median_timing_sessions": 1,
+      "minimum_roll_type_agreement": 0.75,
+      "maximum_alpha_absolute_error": 0.25,
+      "maximum_alpha_relative_error": 0.2
+    },
+    "duration_utility": {
+      "version": "duration-utility-2",
+      "flexibility_lambda": 0.5,
+      "second_cycle_availability": 0.5,
+      "second_cycle_alpha_retention": 0.5
     }
   }
 }

@@ -1,0 +1,11 @@
+[Unit]
+Description=Run isolated virtual CC management after current snapshot refresh
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 09..15:15,45:00 America/New_York
+OnCalendar=Mon..Fri *-*-* 16:15:00 America/New_York
+Persistent=false
+Unit=cc-virtual-management.service
+
+[Install]
+WantedBy=timers.target

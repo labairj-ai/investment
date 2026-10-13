@@ -9392,6 +9392,19 @@ function loadCoveredCallLab() {{
     function number(x) {{ return x == null ? 'unavailable' : Number(x).toFixed(4); }}
     line('Scorer: ' + d.mode + ' · Decisions: ' + d.decision_n + ' · Independent sessions: ' + d.independent_n);
     line('Promotion: ' + (d.promotion.eligible ? 'eligible for explicit promotion' : d.promotion.failures.join(', ')));
+    line('Paired evidence: N='+d.promotion.n+' · Divergent N='+d.promotion.divergent_n+' · Days='+d.promotion.prospective_days+' · Excluded='+d.promotion.excluded_n);
+    line('Sources: '+JSON.stringify(d.promotion.source_composition)+' · Exclusions: '+JSON.stringify(d.promotion.exclusions));
+    line('Exact cohort IDs: '+d.promotion.cohort_ids.join(', '));
+    line('Simulator: '+d.simulator_validation.status+' · Validation N='+(d.simulator_validation.metrics.n || 0));
+    line('Prospective virtual book: open '+d.virtual_book.open_chains+' · completed '+d.virtual_book.completed_chains+' · censored intervals '+d.virtual_book.censored_intervals);
+    d.virtual_book.chains.forEach(function(c) {{
+      var detail=document.createElement('details');var title=document.createElement('summary');
+      title.textContent='Virtual · '+c.ticker+' · '+c.state.status+' · '+c.chain_id;detail.appendChild(title);el.appendChild(detail);
+      line('Source: '+c.outcome_source+' · Simulator: '+c.simulator_version+' · Censored intervals: '+c.censored_intervals,detail);
+      line('Modeled option cash / fees / management USD total: '+number(c.state.option_cash_total)+' / '+number(c.state.fees_total)+' / '+number(c.state.management_cost_total),detail);
+      var raw=document.createElement('pre');raw.style.whiteSpace='pre-wrap';raw.textContent=JSON.stringify(c.actions,null,2);detail.appendChild(raw);
+    }});
+
     Object.entries(d.calibration).forEach(function(entry) {{
       var name=entry[0], c=entry[1];
       var details=document.createElement('details'); var summary=document.createElement('summary');
@@ -9401,21 +9414,24 @@ function loadCoveredCallLab() {{
     }});
     var table=document.createElement('table'); table.style.width='100%';
     var head=document.createElement('tr');
-    ['Cohort','Bucket','N','Eligible','Censored','Roll N / rate','Alpha N / USD per share'].forEach(function(x) {{ var th=document.createElement('th');th.textContent=x;head.appendChild(th); }});table.appendChild(head);
+    ['Source','Cohort','Bucket','N','Eligible','Censored','Roll N / rate','Alpha N / USD per share'].forEach(function(x) {{ var th=document.createElement('th');th.textContent=x;head.appendChild(th); }});table.appendChild(head);
     d.cohorts.forEach(function(c) {{ var tr=document.createElement('tr');
-      [c.dimension,c.bucket,c.n,c.eligible_n,c.censored_n,c.roll_n+' / '+number(c.roll_rate),c.alpha_n+' / '+number(c.incremental_alpha)].forEach(function(x) {{var td=document.createElement('td');td.textContent=x;tr.appendChild(td);}}); table.appendChild(tr);
+      [c.outcome_source,c.dimension,c.bucket,c.n,c.eligible_n,c.censored_n,c.roll_n+' / '+number(c.roll_rate),c.alpha_n+' / '+number(c.incremental_alpha)].forEach(function(x) {{var td=document.createElement('td');td.textContent=x;tr.appendChild(td);}}); table.appendChild(tr);
     }}); el.appendChild(table);
     d.decisions.forEach(function(dec) {{
       var details=document.createElement('details'); var summary=document.createElement('summary');
       summary.textContent=dec.ticker+' · '+dec.timestamp+' · '+dec.divergence+(dec.independent_cohort?'':' · duplicate session');details.appendChild(summary);el.appendChild(details);
-      line('Champion: '+JSON.stringify(dec.champion)+' · Challenger: '+JSON.stringify(dec.challenger),details);
+      line('Champion actual decision: '+JSON.stringify(dec.champion)+' · Challenger virtual decision: '+JSON.stringify(dec.challenger),details);
+      line('Outcome provenance: '+JSON.stringify(dec.outcomes),details);
       dec.candidates.forEach(function(c) {{
         var inner=document.createElement('details');var title=document.createElement('summary');var f=c.features;
         title.textContent=c.id+' · '+(c.selected_v2?'Champion ':'')+(c.selected_v3?'Challenger ':'')+' · V2 '+number(f.score)+' · V3 margin '+number(f.utility_margin)+' · '+(f.eligible?'eligible':f.rejection_reasons.join(', '));
         inner.appendChild(title); details.appendChild(inner);
         line('Coverage '+number(f.overwrite_fraction)+' · Premium '+number(f.expected_premium)+' − upside '+number(f.expected_upside_surrendered)+' − management '+number(f.expected_management_cost)+' − execution '+number(f.expected_execution_cost)+' − tax '+number(f.expected_tax_cost)+' = alpha '+number(f.adjusted_cc_alpha),inner);
         line('Terminal regret base / conservative '+number(f.regret_prob_base)+' / '+number(f.regret_prob_conservative)+' · Strike touch '+number(f.strike_touch_prob)+' · Delta 30 / 50 touch '+number(f.delta30_touch_prob)+' / '+number(f.delta50_touch_prob),inner);
-        line('Realized / estimated / censored: '+JSON.stringify(c.labels),inner);
+        line('Market path / reconstructed delta / censoring: '+JSON.stringify(c.labels),inner);
+        line('Surface IV: observed '+number(f.impliedVolatility)+' / expected '+number(f.surface_expected_iv)+' · '+f.surface_interpolation_quality+' · Event variance '+number(f.event_variance_estimate_v2)+' · '+f.event_variance_quality,inner);
+        line('Flexibility cost '+number(f.flexibility_cost)+' · Duration-adjusted alpha '+number(f.duration_adjusted_alpha)+' · Benchmark '+(f.benchmark_available?JSON.stringify(f.benchmark_candidate_reference):'unavailable')+' · '+f.sequential_benchmark_assumptions,inner);
         var raw=document.createElement('pre');raw.style.whiteSpace='pre-wrap';raw.textContent=JSON.stringify(f,null,2);inner.appendChild(raw);
       }});
     }});

@@ -20,4 +20,17 @@ jobs:
         run: pip install pytest yfinance requests python-dotenv
 
       - name: Run tests
-        run: pytest tests/ -v --tb=short
+        id: pytest
+        continue-on-error: true
+        run: pytest tests/ -v --tb=short --junitxml=test-results.xml
+
+      - name: Check exact baseline failure inventory
+        if: always()
+        run: python scripts/check_release_baseline.py test-results.xml
+
+      - name: Preserve test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: investment-test-results
+          path: test-results.xml

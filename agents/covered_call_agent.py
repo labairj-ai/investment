@@ -334,6 +334,8 @@ def _analyze_roll(ctx: AgentContext, ticker: str, position: dict) -> list[Recomm
         tax_friction_detail=_tax_detail,
         expiry_date=_expiry_date_parsed,
     )
+    from time_utils import now_utc
+    _actual_evaluation_at=now_utc().isoformat()
     action, _mgmt_action_reason = covered_call_rec.evaluate_cc_management_state(_mgmt_ctx)
     print(f"[covered_call] {ticker}: evaluate_cc_management_state → {action} — {_mgmt_action_reason}")
 
@@ -430,6 +432,7 @@ def _analyze_roll(ctx: AgentContext, ticker: str, position: dict) -> list[Recomm
     # 0130: inherit trade_chain_id from the originating SELL_CC rec for this position.
     _mgmt_chain_id: str | None = None
     _mgmt_parent_id: int | None = None
+    _origin = None
     try:
         _origin = agent_db.get_sell_cc_rec_for_position(ticker, existing_strike, existing_expiry)
         if _origin:
@@ -440,6 +443,20 @@ def _analyze_roll(ctx: AgentContext, ticker: str, position: dict) -> list[Recomm
             _mgmt_chain_id = f"cc-{ticker}-{int(float(existing_strike))}-{existing_expiry}"
     except Exception:
         pass
+
+    # Observe the exact data already fetched, without changing live management.
+    try:
+        if _origin and eval_result.get('management_market_snapshot'):
+            import json
+            episode=json.loads(_origin.get('action_payload_json') or '{}').get('cc_episode_id')
+            if episode:
+                from covered_call_validation import record_actual_evaluation
+                record_actual_evaluation(episode,_actual_evaluation_at,eval_result['management_market_snapshot'],
+                    dict(action=action,reason=_mgmt_action_reason,source='DETERMINISTIC_POLICY',
+                         strike=(eval_result.get('next_contract') or {}).get('strike'),
+                         expiration=(eval_result.get('next_contract') or {}).get('expiry')))
+    except Exception as exc:
+        print(f'[ACTUAL_CC] evidence capture unavailable: {exc}')
 
     rec = Recommendation(
         ticker=ticker,

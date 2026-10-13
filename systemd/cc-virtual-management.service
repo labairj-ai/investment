@@ -1,0 +1,14 @@
+[Unit]
+Description=Prospective virtual CC book — refresh snapshots then evaluate
+After=network-online.target investment.service
+ConditionPathExists=/home/optiplex/investment/out/investment.db
+
+[Service]
+Type=oneshot
+User=optiplex
+WorkingDirectory=/home/optiplex/investment
+ExecStart=/home/optiplex/investment/venv/bin/python3 scripts/cc_virtual_job.py
+TimeoutStartSec=900
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=virtual-cc

@@ -10,7 +10,7 @@ from statistics import NormalDist
 from datetime import date
 import numpy as np
 
-VERSION = 'cc-v3.1'
+VERSION = 'cc-v3.2'
 N = NormalDist()
 
 
@@ -332,7 +332,10 @@ def prepare(ticker, result, policy, shares, config, fills=(), history=()):
     coverage=overwrite(shares,policy,regime,config)
     peer_rows=result.get('surface_points', [])
     surfaces=surface(rows+peer_rows,spot,vm['hv_forecast'],result.get('snapshot_timestamp'))[:len(rows)]
-    for row,sf in zip(rows,surfaces):
+    from covered_call_surface import surface_v2, duration_adjust
+    surfaces_v2=surface_v2(rows+peer_rows,spot,result.get('snapshot_timestamp'))[:len(rows)]
+    for row,sf,sf2 in zip(rows,surfaces,surfaces_v2):
+        row.update(sf2)
         row.update(sf);row.update(regime);row.update(coverage);row.update(vm)
         row['spot']=spot; row['policy_snapshot']=policy;row['data_mode']=result.get('data_mode')
         row['quote_timestamp']=row.get('quote_timestamp') or result.get('snapshot_timestamp')
@@ -366,18 +369,13 @@ def prepare(ticker, result, policy, shares, config, fills=(), history=()):
         if coverage['recommended_contracts']==0:row['v3_rejection_reasons'].append('ZERO_POLICY_COVERAGE')
         if row['regret_prob_conservative']>config['max_regret_probability']:row['v3_rejection_reasons'].append('CONSERVATIVE_REGRET_LIMIT')
         if row['surface_quality']=='INSUFFICIENT':row['v3_rejection_reasons'].append('INSUFFICIENT_SURFACE')
-    # Conservative second-cycle availability + IV-richness decay; diagnostic only.
-    for row in rows:
-        shorter=[r for r in rows if r['eligible'] and r['dte']<=row['dte']/2 and r['adjusted_cc_alpha'] is not None]
-        peer=max(shorter,key=lambda r:r['adjusted_cc_alpha_per_day'],default=None)
-        row['sequential_short_cycle_benchmark']=max(0,peer['adjusted_cc_alpha'])*1.25 if peer else None
-        row['sequential_benchmark_assumptions']='one observed short cycle + 50% availability * 50% alpha retention; no negative alpha improvement'
-        row['duration_model_version']='conservative-cycle-1'
+        if row['surface_interpolation_quality'] in ('INSUFFICIENT','CANDIDATE_UNUSABLE'):row['v3_rejection_reasons'].append('INSUFFICIENT_SURFACE_V2')
+    duration_adjust(rows,config)
     v2=sorted([r for r in rows if r['eligible']],key=lambda r:(-float(r.get('opp_score',r['score'])),r['expiration'],r['strike']))
-    v3=sorted([r for r in rows if not r['v3_rejection_reasons'] and r['utility_margin'] is not None],key=lambda r:(-r['utility_margin']/r['dte'],r['expiration'],r['strike']))
+    v3=sorted([r for r in rows if not r['v3_rejection_reasons'] and r['duration_adjusted_utility_margin'] is not None],key=lambda r:(-r['duration_adjusted_utility_margin']/r['dte'],r['expiration'],r['strike']))
     for rank,r in enumerate(v2,1):r['v2_rank']=rank
     for rank,r in enumerate(v3,1):r['v3_rank']=rank
-    best=v3[0] if v3 and v3[0]['utility_margin']>0 else None
+    best=v3[0] if v3 and v3[0]['duration_adjusted_utility_margin']>0 else None
     challenger=dict(action='SELL_CC',strike=best['strike'],expiration=best['expiration'],contracts=best['recommended_contracts'],overwrite_fraction=best['overwrite_fraction']) if best else dict(action='NO_CALL',contracts=0,overwrite_fraction=0)
     for raw in result.get('raw_rejected_quotes',[]):
         reasons=['OUTSIDE_SCOREABLE_ENTRY_UNIVERSE']

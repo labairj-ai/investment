@@ -1320,6 +1320,7 @@ def _remaining_call_alpha(
     existing_expiry_date,
     sigma: float,
     mu: float,
+    *, as_of=None,
 ) -> float:
     """Expected alpha of the existing short call from today to its expiry.
 
@@ -1328,7 +1329,7 @@ def _remaining_call_alpha(
     Negative existing_alpha (deep ITM: expected payoff > mark) makes rolling more attractive
     because the existing call is a growing liability, not a retained asset.
     """
-    T_old = max((existing_expiry_date - today_eastern()).days, 0) / 365
+    T_old = max((existing_expiry_date - (as_of or today_eastern())).days, 0) / 365
     if T_old <= 0:
         return max(0.0, current_price - existing_strike)
     return expected_upside_lost(current_price, existing_strike, T_old, sigma, mu)
@@ -1374,6 +1375,8 @@ def _suggest_next_call(
     lot_schedule: "list[dict] | None" = None,   # 0179: per-lot friction schedule
     current_tax_friction: float = 0.0,          # 0179: friction at current expiry
     assignment_price: "float | None" = None,    # 0179: strike used for tax gain calc
+    as_of=None,                              # explicit replay date; live default unchanged
+    quote_collector=None,                     # observe quotes already fetched; no extra requests
 ) -> dict | None:
     """Suggest the best replacement contract, ranked by incremental roll alpha.
 
@@ -1391,7 +1394,7 @@ def _suggest_next_call(
     Contracts failing the hard rule are excluded entirely (not just penalised).
     When roll_type is None a generic 14-75 DTE window is used.
     """
-    today = today_eastern()
+    today = as_of or today_eastern()
     nav   = current_price - existing_call_mark
     best  = None
     try:
@@ -1424,6 +1427,7 @@ def _suggest_next_call(
 
             try:
                 calls = _yf_retry(lambda: stock.option_chain(exp).calls)
+                if quote_collector is not None:_capture_quote_rows(calls,exp,quote_collector)
                 calls = calls[calls["strike"] >= min_strike]
                 calls = calls[(calls["bid"] > 0) & (calls["ask"] > 0)]
                 if calls.empty:
@@ -1458,7 +1462,7 @@ def _suggest_next_call(
                     # existing_alpha = mark - E[max(S_T-K_old,0)]; negative when deep ITM (liability).
                     if existing_strike is not None and existing_expiry_date is not None:
                         _old_exp_payoff = _remaining_call_alpha(
-                            current_price, existing_strike, existing_expiry_date, sigma, mu
+                            current_price, existing_strike, existing_expiry_date, sigma, mu, **({"as_of": as_of} if as_of is not None else {})
                         )
                         _existing_alpha = existing_call_mark - _old_exp_payoff
                     else:
@@ -1501,6 +1505,17 @@ def _suggest_next_call(
     return best
 
 
+def _capture_quote_rows(frame,expiration,collector):
+    """Observation of already-fetched quotes; invalid rows remain unusable."""
+    observed=now_utc().isoformat()
+    for _,raw in frame.iterrows():
+        try:
+            values={key:float(raw.get(key,0) or 0) for key in ('strike','bid','ask','impliedVolatility')}
+            if all(math.isfinite(v) for v in values.values()):
+                collector.append(dict(values,expiration=expiration,observed_at=observed,available_at=observed))
+        except (TypeError,ValueError):continue
+
+
 def evaluate_open_position(ticker: str, strike: float, expiry: str,
                             original_premium: float, current_mark,
                             contracts: int = 1) -> dict:
@@ -1519,6 +1534,8 @@ def evaluate_open_position(ticker: str, strike: float, expiry: str,
             raise ValueError(f"No price data for {ticker}")
         live_price = float(price_hist["Close"].dropna().iloc[-1])
     current_price = live_price
+    _observed_underlying_at=now_utc().isoformat()
+    _captured_options=[]
 
     today    = today_eastern()
     exp_date = datetime.strptime(expiry, "%Y-%m-%d").date()
@@ -1541,6 +1558,7 @@ def evaluate_open_position(ticker: str, strike: float, expiry: str,
     live_mark = current_mark
     try:
         chain = _yf_retry(lambda: stock.option_chain(expiry).calls)
+        _capture_quote_rows(chain,expiry,_captured_options)
         exact = chain[abs(chain["strike"] - strike) < 0.01]
         row   = exact if not exact.empty else chain.iloc[(chain["strike"] - strike).abs().argsort()[:1]]
         if not row.empty:
@@ -1557,6 +1575,7 @@ def evaluate_open_position(ticker: str, strike: float, expiry: str,
         pass
 
     risk_events = get_risk_events(stock, current_price, today, exp_date, strike, live_mark)
+    _events_known_at=now_utc().isoformat()
     has_avoid   = any(e["severity"] == "avoid" for e in risk_events)
 
     # Earliest avoid-event date (used as ROLL_OUT expiry floor)
@@ -1644,6 +1663,7 @@ def evaluate_open_position(ticker: str, strike: float, expiry: str,
                 lot_schedule=_lot_sched,
                 current_tax_friction=_current_friction,
                 assignment_price=strike,
+                quote_collector=_captured_options,
             )
         else:
             min_s = max(strike, current_price * 1.01)
@@ -1658,6 +1678,7 @@ def evaluate_open_position(ticker: str, strike: float, expiry: str,
                 lot_schedule=_lot_sched,
                 current_tax_friction=_current_friction,
                 assignment_price=strike,
+                quote_collector=_captured_options,
             )
     elif action == "BUY_TO_CLOSE":
         # Suggest a fresh replacement call after closing
@@ -1666,9 +1687,18 @@ def evaluate_open_position(ticker: str, strike: float, expiry: str,
             hv_forecast=hv_forecast,
             mu=mu_drift,
             existing_call_mark=_existing_mark,
+            quote_collector=_captured_options,
         )
 
+    _snapshot_available_at=now_utc().isoformat()
     return {
+        "management_market_snapshot":dict(ticker=ticker,spot=round(current_price,2),
+            underlying_timestamp=_observed_underlying_at,captured_at=_observed_underlying_at,
+            available_at=_snapshot_available_at,options=_captured_options,
+            hv_forecast=hv_forecast,mu_center=mu_drift,forecast_available_at=_snapshot_available_at,
+            events=[dict(e,known_at=_events_known_at) for e in risk_events],
+            coverage_verified=bool(_captured_options),quote_timing_verified=True,
+            provider_quote_timestamp_verified=False,quote_time_source='CAPTURE_TIME_NOT_EXCHANGE'),
         "current_price":              round(current_price, 2),
         "current_mark":               round(live_mark, 2) if live_mark is not None else None,
         "delta":                      round(delta, 3) if delta is not None else None,

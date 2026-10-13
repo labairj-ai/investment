@@ -1,5 +1,9 @@
 # Covered Call V3
 
+The evidence, simulator, surface and duration follow-ups are documented in
+[Covered Call V3 follow-ups](covered_call_v3_followups.md); that contract supersedes
+the original V1 descriptions below where noted.
+
 The source requirements are preserved in `covered_call_v3_todos/` (0690–0703).
 Deployment starts in **observe_only** mode. Corrected V2 remains the live entry
 champion; management and roll-selection rules are unchanged. No broker orders are
