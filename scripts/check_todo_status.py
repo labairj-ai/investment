@@ -40,6 +40,7 @@ def parse_todo_file(path):
 def check_consistency(todos_dir=None, done_dir=None):
     todos_dir = todos_dir or TODOS_DIR
     done_dir = done_dir or DONE_DIR
+    base = todos_dir.parent  # relative paths in violation reports are relative to this
     violations = []
 
     # Check done/ folder
@@ -50,7 +51,7 @@ def check_consistency(todos_dir=None, done_dir=None):
                 continue
             if meta['status'] in OPEN_STATES:
                 violations.append(dict(
-                    path=str(md.relative_to(ROOT)),
+                    path=str(md.relative_to(base)),
                     todo_id=meta['todo_id'],
                     status=meta['status'],
                     rule='DONE_FOLDER_OPEN_STATUS',
@@ -65,7 +66,7 @@ def check_consistency(todos_dir=None, done_dir=None):
                 continue
             if meta['status'] in DONE_STATES:
                 violations.append(dict(
-                    path=str(md.relative_to(ROOT)),
+                    path=str(md.relative_to(base)),
                     todo_id=meta['todo_id'],
                     status=meta['status'],
                     rule='OPEN_FOLDER_DONE_STATUS',
