@@ -4932,7 +4932,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             try:
                 for is_reasoning, tok in ollama_client.stream_chat(
                     full_messages, model=ollama_client.DEFAULT_MODEL,
-                    temperature=0.4, num_predict=6000, yield_type=True
+                    temperature=0.2, num_predict=6000, yield_type=True
                 ):
                     _tok_q.put(("thinking" if is_reasoning else "token", tok))
                 _tok_q.put(("done", None))

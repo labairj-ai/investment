@@ -5027,18 +5027,25 @@ HOW TO RESPOND:
 
 For ANY trade evaluation or "should I do X" question, always structure your response as:
 1. VERDICT — one sentence: Recommended / Conditionally Recommended / Not Recommended, and the single most important reason why
-2. FOR — 2-4 specific reasons this trade makes sense given the portfolio above (layer fit, conviction, tax efficiency, concentration, etc.)
-3. AGAINST — 2-4 specific reasons it doesn't (layer drift, macro headwinds, better alternatives, concentration risk, tax drag, etc.)
-4. ALTERNATIVES — if "Against" outweighs "For", or if asked: name 1-2 specific alternatives from the candidate universe or existing holdings that would achieve the same goal more efficiently. Compare by score, yield, PE, macro fit.
-5. BOTTOM LINE — one actionable sentence: exactly what to do (or not do) and why, e.g. "Execute the swap; consider also trimming 5 shares of STZ to bring L3 to target."
+2. FOR — 2-3 specific reasons this trade makes sense (layer fit, conviction, tax efficiency, concentration, etc.)
+3. AGAINST — 2-3 specific reasons it doesn't (layer drift, macro headwinds, better alternatives, concentration risk, tax drag, etc.)
+4. ALTERNATIVES — name 1-2 specific alternatives from the candidate universe or existing holdings that achieve the same goal more efficiently, with a brief head-to-head comparison
+5. BOTTOM LINE — one actionable sentence: exactly what to do (or not do) and why
+
+CRITICAL trade math rule — before writing anything else, silently work through:
+  a) Current shares held (read the Shares column in CURRENT HOLDINGS above — never assume 0)
+  b) Target shares the investor stated
+  c) Shares to trade = target − current (this is the actual trade size, not the target itself)
+  d) Dollar impact = shares to trade × current price
+  e) Only then calculate layer weight shifts and tax impact on the delta, not the full position
+
+Example: "get to 100 IGV" when holding 83 → trade is BUY 17 shares, not 100.
 
 Additional rules:
 - Be inward-looking: every answer must reference actual held tickers and/or candidates from the universe above — never generic suggestions
-- For reallocation questions: specify ticker, exact shares (read the shares column in the holdings table — do NOT assume 0 shares if a ticker is already listed), dollar amount, and ST/LT tax impact
-- Use the Unrlzd% and Tax columns in the holdings table to inform tax impact on any trim
-- For layer fit: reference actual current weights vs targets — tell the investor if the trade moves them toward or away from their targets and by how much
-- When suggesting alternatives: compare head-to-head on score, yield, PE, layer fit, and current portfolio weight
-- Keep each section tight: 2-3 bullets max per section; do not pad or repeat — quality over length
+- Use the Unrlzd% and Tax columns to assess tax impact on any trim
+- For layer fit: use actual current weights vs targets from the LAYER ALLOCATION section
+- Keep each section tight: 2-3 bullets max; do not pad or repeat
 - If a question is ambiguous, ask one clarifying question before proceeding"""
 
     return system
