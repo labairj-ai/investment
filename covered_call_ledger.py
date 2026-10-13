@@ -365,10 +365,12 @@ def report(path=None,limit=100):
     validation_row=db.execute('SELECT run_json FROM cc_simulator_validation_runs ORDER BY timestamp DESC LIMIT 1').fetchone()
     validation=json.loads(validation_row[0]) if validation_row else {'status':'INSUFFICIENT_EVIDENCE','metrics':{'n':0}}
     db.close()
+    from covered_call_calibration import all_calibration_skills
     return dict(virtual_book=virtual,simulator_validation=validation,outcome_source_counts=dict(source_counts),mode='observe_only' if state['scorer']=='v2' else 'promoted_v3',state=state,decisions=decisions,decision_n=len(rows),independent_n=len(seen),
         cohorts=cohort_rows,calibration={p:calibration(samples,p,e) for p,e in (
             ('strike_touch_prob','strike_touched'),('regret_barrier_touch_prob','regret_barrier_touched'),
             ('delta30_touch_prob','delta30_event'),('delta50_touch_prob','delta50_event'),('management_risk','rolled'))},
+        calibration_skill=all_calibration_skills(samples),
         management_risk_semantics='bounded management proxy; roll-frequency comparison is diagnostic, not a calibrated roll probability',
         sample_policy='first decision per ticker/Eastern session; champion selected contract; management risk is a proxy, compared diagnostically with roll frequency')
 

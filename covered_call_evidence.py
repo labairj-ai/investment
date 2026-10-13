@@ -209,9 +209,11 @@ def promotion_report(config,path=None,as_of=None):
     for passed,reason in checks:
         if not passed:failures.append(reason)
     db.close()
+    from covered_call_calibration import all_calibration_skills
     return dict(eligible=not failures,failures=failures,n=n,divergent_n=divergent,prospective_days=days,
         alpha_improvement=alpha,roll_rate_delta=roll,management_cost_delta=management,execution_cost_delta=execution,
-        assignment_violations=violations,calibration=cal,config_hash=current_hash,gate_version=gate['version'],
+        assignment_violations=violations,calibration=cal,calibration_skill=all_calibration_skills(samples),
+        config_hash=current_hash,gate_version=gate['version'],
         promotion_policy_version=gate['version'],model_version=VERSION,simulator_version=SIMULATOR_VERSION,
         simulator_certification_id=certificate['id'] if certificate else None,cohort_ids=[d['id'] for d,_,_ in pairs],
         source_composition=dict(composition),excluded_n=sum(excluded.values()),exclusions=dict(excluded),exclusion_details=details,
