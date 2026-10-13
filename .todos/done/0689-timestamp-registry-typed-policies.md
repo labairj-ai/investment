@@ -1,7 +1,7 @@
 # Finish Timestamp Registry with Typed Policies and Monotonicity
 
 - **ID:** 0689
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-25
 - **Priority:** normal
 - **Depends:** 0688
@@ -34,9 +34,9 @@ The TIMESTAMP_REGISTRY in `scripts/canary_production_state.py` covers four text-
 
 ## Done when
 
-- [ ] TIMESTAMP_REGISTRY entries include a `storage_type` field understood by the sweep loop
-- [ ] Epoch-seconds columns validated with `epoch_to_utc()`: negative or impossibly-future value → violation
-- [ ] `recommendations.created_at` and `decision_episodes.captured_at` covered by INV-T
-- [ ] Optional monotonicity check implemented; backward timestamp in a `monotonic=True` column → `[INV-T mono]` violation
-- [ ] Tests for epoch validation and monotonicity
-- [ ] All existing canary tests pass
+- [x] TIMESTAMP_REGISTRY entries include a `storage_type` field understood by the sweep loop
+- [x] Epoch-seconds columns validated with `epoch_to_utc()`: negative or impossibly-future value → violation
+- [x] `recommendations.created_at` and `decision_episodes.captured_at` covered by INV-T
+- [x] Optional monotonicity check implemented; backward timestamp in a `monotonic=True` column → `[INV-T mono]` violation
+- [x] Tests for epoch validation and monotonicity
+- [x] All existing canary tests pass

@@ -1,7 +1,7 @@
 # Remove Global legacy_utc Opt-In from INV-T Canary
 
 - **ID:** 0688
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-25
 - **Priority:** high
 - **Depends:** 0684, 0686
@@ -34,10 +34,14 @@ There is also a separate bug: the canary's internal `_parse_ts()` returns naive 
 
 ## Done when
 
-- [ ] `utc_canonical` columns: T-separator naive string on post-contract row → violation (no `legacy_utc=True` escape)
-- [ ] `utc_legacy_ok` columns: known space-sep UTC → warning/accepted; T-separator naive → violation
-- [ ] `_parse_ts()` always returns UTC-aware datetimes
-- [ ] `_V2_DEPLOY_DT` is UTC-aware; comparison with explicit-offset timestamps raises no TypeError
-- [ ] Test: new T-sep naive in `utc_legacy_ok` column → INV-T violation
-- [ ] Test: explicit-offset timestamp processed without TypeError
-- [ ] All existing canary tests pass
+- [x] `utc_canonical` columns: T-separator naive string on post-contract row → violation (no `legacy_utc=True` escape)
+- [x] `utc_legacy_ok` columns: known space-sep UTC → warning/accepted; T-separator naive → violation
+- [x] `_parse_ts()` always returns UTC-aware datetimes
+- [x] `_V2_DEPLOY_DT` is UTC-aware; comparison with explicit-offset timestamps raises no TypeError
+- [x] Test: new T-sep naive in `utc_legacy_ok` column → INV-T violation
+- [x] Test: explicit-offset timestamp processed without TypeError
+- [x] All existing canary tests pass
+
+## Completion — 2026-10-13
+
+Verified in code: the policy split shipped under the 0689 `storage_type` names (`utc_iso` = canonical, `utc_space_legacy` = legacy-ok) in `scripts/canary_production_state.py`. `_parse_ts()` and `_V2_DEPLOY_DT` are UTC-aware. Covered by `test_invt_legacy_ok_t_sep_naive_is_violation` and `test_invt_explicit_offset_no_typeerror`.

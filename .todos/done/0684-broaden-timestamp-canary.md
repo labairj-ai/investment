@@ -1,7 +1,7 @@
 # Broaden Timestamp Contract Canary
 
 - **ID:** 0684
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-24
 - **Priority:** normal
 - **Depends:** 0678, 0683

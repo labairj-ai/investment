@@ -1,7 +1,7 @@
 # Tighten parse_timestamp() Legacy Compatibility
 
 - **ID:** 0683
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-24
 - **Priority:** high
 - **Depends:** 0669

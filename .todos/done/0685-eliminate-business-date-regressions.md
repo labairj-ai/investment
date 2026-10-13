@@ -1,7 +1,7 @@
 # Eliminate Business-Date Regressions from date.today()
 
 - **ID:** 0685
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-25
 - **Priority:** high
 - **Depends:** 0682
@@ -45,8 +45,8 @@ today = today_eastern().isoformat()
 
 ## Done when
 
-- [ ] `create_portfolio_brief()` uses `today_eastern()` for the `ai_insights.day` key
-- [ ] CI guard catches `date.today()` and `datetime.date.today()` in production code
-- [ ] Positive failure test: `test_guard_catches_date_today()` passes
-- [ ] Integration test: `portfolio_ai.py` has zero `date.today()` violations
-- [ ] All existing tests pass
+- [x] `create_portfolio_brief()` uses `today_eastern()` for the `ai_insights.day` key
+- [x] CI guard catches `date.today()` and `datetime.date.today()` in production code
+- [x] Positive failure test: `test_guard_catches_date_today()` passes
+- [x] Integration test: `portfolio_ai.py` has zero `date.today()` violations
+- [x] All existing tests pass

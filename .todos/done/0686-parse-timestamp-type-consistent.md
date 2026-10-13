@@ -1,7 +1,7 @@
 # Make parse_timestamp() Type-Consistent for Naive Inputs
 
 - **ID:** 0686
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-25
 - **Priority:** high
 - **Depends:** 0683
@@ -44,8 +44,8 @@ Audit all callers of `parse_timestamp()` that may pass naive datetime objects â€
 
 ## Done when
 
-- [ ] Naive `datetime` object without tzinfo raises `ValueError` unless `legacy_utc=True`
-- [ ] Naive `datetime` with `legacy_utc=True` returns UTC-aware datetime
-- [ ] Aware `datetime` input still converts to UTC correctly
-- [ ] All existing callers audited; none silently depend on old behavior
-- [ ] Tests pass
+- [x] Naive `datetime` object without tzinfo raises `ValueError` unless `legacy_utc=True`
+- [x] Naive `datetime` with `legacy_utc=True` returns UTC-aware datetime
+- [x] Aware `datetime` input still converts to UTC correctly
+- [x] All existing callers audited; none silently depend on old behavior
+- [x] Tests pass

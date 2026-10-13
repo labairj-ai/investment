@@ -1,7 +1,7 @@
 # Tighten CI EST/EDT Guard for Single Quotes and Line Numbers
 
 - **ID:** 0687
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-25
 - **Priority:** normal
 - **Depends:** 0681
@@ -41,9 +41,9 @@ _EST_EDT_PATTERN = re.compile(r'''(?<![#\'"a-zA-Z])(?:"EST"|'EST'|"EDT"|'EDT')''
 
 ## Done when
 
-- [ ] `'EST'` and `'EDT'` single-quoted strings caught by the guard
-- [ ] `"EST"` and `"EDT"` double-quoted strings still caught
-- [ ] Positive failure tests for both quote styles pass
-- [ ] Line-number reporting uses `enumerate(splitlines())` — no first-match false reports
-- [ ] Comment-exclusion test still passes
-- [ ] All existing CI guard tests pass
+- [x] `'EST'` and `'EDT'` single-quoted strings caught by the guard
+- [x] `"EST"` and `"EDT"` double-quoted strings still caught
+- [x] Positive failure tests for both quote styles pass
+- [x] Line-number reporting uses `enumerate(splitlines())` — no first-match false reports
+- [x] Comment-exclusion test still passes
+- [x] All existing CI guard tests pass

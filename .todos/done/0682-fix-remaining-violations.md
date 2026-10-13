@@ -1,7 +1,7 @@
 # Fix Remaining Concrete Timezone Violations
 
 - **ID:** 0682
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-24
 - **Priority:** high
 - **Depends:** 0669
