@@ -1,7 +1,7 @@
 # Add Adversarial Release QA for CC V3 Change Control
 
 - **ID:** 0721
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-10-13
 - **Priority:** high
 - **Depends:** 0718, 0719, 0720
