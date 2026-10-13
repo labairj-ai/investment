@@ -31,6 +31,10 @@ def main():
     parser.add_argument('--update-baseline', action='store_true',
                         help='Write current state as new baseline (local use only — never in CI)')
     parser.add_argument('--json', action='store_true', help='Output JSON instead of human-readable')
+    parser.add_argument('--baseline-file', default=None,
+                        help='Override baseline file path (for testing only)')
+    parser.add_argument('--manifests-dir', default=None,
+                        help='Override manifests directory path (for testing only)')
     args = parser.parse_args()
 
     from strategy_config import CC_V3_CONFIG
@@ -42,7 +46,7 @@ def main():
                   file=sys.stderr)
             print('Baseline updates require a local intentional commit.', file=sys.stderr)
             return 1
-        state = write_baseline(CC_V3_CONFIG)
+        state = write_baseline(CC_V3_CONFIG, path=args.baseline_file)
         if args.json:
             print(json.dumps(state, indent=2))
         else:
@@ -54,7 +58,10 @@ def main():
             print(f'  simulator_contract_hash={state["simulator_contract_hash"][:16]}...')
         return 0
 
-    result = check_contract_consistency(CC_V3_CONFIG)
+    from pathlib import Path as _Path
+    result = check_contract_consistency(CC_V3_CONFIG,
+        _baseline_file=args.baseline_file,
+        _manifests_dir=_Path(args.manifests_dir) if args.manifests_dir else None)
 
     if args.json:
         safe = dict(result, current={k: v[:16]+'...' if isinstance(v, str) and len(v) > 20 else v

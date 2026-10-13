@@ -53,17 +53,18 @@ def current_contract_state(config):
     )
 
 
-def read_baseline():
+def read_baseline(path=None):
     """Read the committed contract baseline.
 
     Returns None if no baseline file exists.
     Returns a dict with key 'malformed'=True if the file cannot be parsed or is missing required keys.
     Returns the baseline dict on success (includes 'schema_version').
     """
-    if not BASELINE_FILE.exists():
+    bf = Path(path) if path else BASELINE_FILE
+    if not bf.exists():
         return None
     try:
-        data = json.loads(BASELINE_FILE.read_text())
+        data = json.loads(bf.read_text())
     except (json.JSONDecodeError, OSError):
         return dict(malformed=True, reason='JSON parse error')
     if not isinstance(data, dict):
@@ -76,11 +77,12 @@ def read_baseline():
     return data
 
 
-def write_baseline(config):
+def write_baseline(config, path=None):
     """Write current contract state as the new baseline. Call this when bumping versions."""
     state = current_contract_state(config)
     state['schema_version'] = BASELINE_SCHEMA_VERSION
-    BASELINE_FILE.write_text(json.dumps(state, indent=2, sort_keys=True) + '\n')
+    bf = Path(path) if path else BASELINE_FILE
+    bf.write_text(json.dumps(state, indent=2, sort_keys=True) + '\n')
     return state
 
 
@@ -180,7 +182,7 @@ def find_applicable_manifests(baseline, current, manifests_dir=None):
     return dict(applicable=applicable, all_parsed=all_parsed, duplicate_ids=duplicate_ids)
 
 
-def check_contract_consistency(config):
+def check_contract_consistency(config, *, _baseline_file=None, _manifests_dir=None):
     """Verify behavioral hash consistency against the baseline.
 
     Returns a dict with:
@@ -200,7 +202,7 @@ def check_contract_consistency(config):
       4. Duplicate manifest_ids → CI failure
     """
     current = current_contract_state(config)
-    baseline = read_baseline()
+    baseline = read_baseline(_baseline_file)
     findings = []
 
     if baseline is None:
@@ -229,7 +231,7 @@ def check_contract_consistency(config):
         current['simulator_version'] != baseline.get('simulator_version')
     )
 
-    manifest_result = find_applicable_manifests(baseline, current)
+    manifest_result = find_applicable_manifests(baseline, current, _manifests_dir)
     applicable = manifest_result['applicable']
     duplicate_ids = manifest_result['duplicate_ids']
 
