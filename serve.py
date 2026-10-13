@@ -2783,28 +2783,56 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             conn.commit()
             conn.close()
 
-            # If all lots for this ticker are gone, remove it from holdings.csv
-            remaining_lots = [
-                a for a in allocs
-                if round(a["original_shares"] - a["shares"], 6) >= 1e-4
-            ]
-            if not remaining_lots:
-                holdings_csv = PROJECT_DIR / "holdings.csv"
-                if holdings_csv.exists():
-                    import csv as _csv_sell
-                    rows, fieldnames = [], None
-                    with open(holdings_csv, newline="") as f:
-                        reader = _csv_sell.DictReader(f)
-                        fieldnames = reader.fieldnames
-                        for row in reader:
-                            raw = str(row.get("Stock", "")).strip().upper()
-                            norm = raw.replace(".", "-") if "." in raw else raw
-                            if norm != ticker and raw != ticker:
-                                rows.append(row)
-                    with open(holdings_csv, "w", newline="") as f:
-                        writer = _csv_sell.DictWriter(f, fieldnames=fieldnames)
-                        writer.writeheader()
-                        writer.writerows(rows)
+            # Update holdings.csv: remove ticker if fully sold, or update shares if partial sell
+            import csv as _csv_sell
+            holdings_csv = PROJECT_DIR / "holdings.csv"
+            if holdings_csv.exists():
+                # Recompute remaining shares from cost_lots (authoritative)
+                conn2 = sqlite3.connect(str(db), timeout=10)
+                remaining_shares = conn2.execute(
+                    "SELECT SUM(shares) FROM cost_lots WHERE ticker=?", (ticker,)
+                ).fetchone()[0] or 0
+                conn2.close()
+
+                rows, fieldnames = [], None
+                with open(holdings_csv, newline="") as f:
+                    reader = _csv_sell.DictReader(f)
+                    fieldnames = reader.fieldnames
+                    for row in reader:
+                        raw = str(row.get("Stock", "")).strip().upper()
+                        norm = raw.replace(".", "-") if "." in raw else raw
+                        if norm == ticker or raw == ticker:
+                            if remaining_shares < 1e-4:
+                                continue  # drop fully-sold position
+                            row["Shares"] = str(round(remaining_shares, 6))
+                        rows.append(row)
+                with open(holdings_csv, "w", newline="") as f:
+                    writer = _csv_sell.DictWriter(f, fieldnames=fieldnames)
+                    writer.writeheader()
+                    writer.writerows(rows)
+
+            # Also update today's holding_day row if it exists
+            conn3 = sqlite3.connect(str(db), timeout=10)
+            today_str = today_eastern().isoformat()
+            hrow = conn3.execute(
+                "SELECT price FROM holding_day WHERE ticker=? AND day=?", (ticker, today_str)
+            ).fetchone()
+            if hrow and remaining_shares >= 1e-4:
+                new_value = remaining_shares * hrow[0]
+                conn3.execute(
+                    "UPDATE holding_day SET shares=?, value=? WHERE ticker=? AND day=?",
+                    (remaining_shares, new_value, ticker, today_str)
+                )
+                total_val = conn3.execute(
+                    "SELECT SUM(value) FROM holding_day WHERE day=?", (today_str,)
+                ).fetchone()[0] or 0
+                if total_val:
+                    conn3.execute(
+                        "UPDATE holding_day SET weight_pct=ROUND(value*100.0/?,4) WHERE day=?",
+                        (total_val, today_str)
+                    )
+            conn3.commit()
+            conn3.close()
 
             self._json({"ok": True, "id": sell_id, "realized_gain": total_gain,
                         "st_gain": st_gain, "lt_gain": lt_gain, "allocations": allocs})
