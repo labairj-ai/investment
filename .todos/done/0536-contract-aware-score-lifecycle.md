@@ -1,7 +1,7 @@
 # Enforce Scorer Contract on Cached Macro Scores
 
 - **ID:** 0536
-- **Status:** in-progress
+- **Status:** done
 - **Created:** 2026-09-20
 - **Priority:** high
 - **Depends:** 0535

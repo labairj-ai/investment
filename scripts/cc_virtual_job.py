@@ -8,7 +8,7 @@ from datetime import timedelta,datetime
 sys.path.insert(0,str(Path(__file__).resolve().parent.parent))
 from time_utils import now_utc,parse_timestamp,TZ_EASTERN
 from covered_call_ledger import connect,migrate
-from covered_call_virtual import state,store_snapshot,advance,record_interval,metrics
+from covered_call_virtual import state,store_snapshot,advance,record_interval,metrics,simulator_contract_hash,censor_version_mismatch
 
 
 def capture_snapshot(ticker,current):
@@ -69,7 +69,11 @@ def run(path=None,capture=None,clock=None):
             last=parse_timestamp(current['last_evaluation']).astimezone(TZ_EASTERN)
             if et.date()==last.date() and 9<=et.hour<=16 and (et-last).total_seconds()>cadence*60*2:
                 with db:record_interval(db,chain['id'],(last+timedelta(minutes=cadence)).isoformat(),None,'MISSED_SCHEDULED_INTERVAL',{'censored':True})
-            result=advance(db,chain['id'],snapshot_id,evaluation,cycle_key=cycle)
+            current_hash=simulator_contract_hash(origin['config'])
+            if origin.get('simulator_contract_hash') and origin['simulator_contract_hash']!=current_hash:
+                result=censor_version_mismatch(db,chain['id'],current_hash,evaluation)
+            else:
+                result=advance(db,chain['id'],snapshot_id,evaluation,cycle_key=cycle)
             results.append(result)
             print('[VIRTUAL_CC]',json.dumps(result),flush=True)
         except Exception as exc:
@@ -78,6 +82,7 @@ def run(path=None,capture=None,clock=None):
             print('[VIRTUAL_CC] ERROR',str(exc),flush=True)
     summary=metrics(db);db.close()
     return dict(results=results,open_chains=summary['open_chains'],completed_chains=summary['completed_chains'],
+                version_censored_chains=summary['version_censored_chains'],
                 censored_intervals=summary['censored_intervals'],errors=sum('error' in r for r in results))
 
 

@@ -1,7 +1,7 @@
 # Covered Call Learning Lab Dashboard
 
 - **ID:** 0703
-- **Status:** pending
+- **Status:** done
 - **Created:** 2026-10-13
 - **Priority:** normal
 - **Depends:** 0700, 0701, 0702

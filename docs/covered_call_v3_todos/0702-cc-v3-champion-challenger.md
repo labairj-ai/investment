@@ -1,7 +1,7 @@
 # Covered Call V3 Champion/Challenger and Promotion Gate
 
 - **ID:** 0702
-- **Status:** pending
+- **Status:** done
 - **Created:** 2026-10-13
 - **Priority:** critical
 - **Depends:** 0700, 0701

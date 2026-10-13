@@ -1,7 +1,7 @@
 # Calibrate Covered Call Execution and Fill Model
 
 - **ID:** 0699
-- **Status:** pending
+- **Status:** done
 - **Created:** 2026-10-13
 - **Priority:** high
 - **Depends:** 0690

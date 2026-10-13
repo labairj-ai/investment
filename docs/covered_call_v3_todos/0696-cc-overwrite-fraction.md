@@ -1,7 +1,7 @@
 # Add Dynamic Covered Call Overwrite Fraction
 
 - **ID:** 0696
-- **Status:** pending
+- **Status:** done
 - **Created:** 2026-10-13
 - **Priority:** critical
 - **Depends:** 0694

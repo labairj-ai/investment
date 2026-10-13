@@ -1,7 +1,7 @@
 # Replace Covered Call Composite Score With Risk-Adjusted Utility
 
 - **ID:** 0694
-- **Status:** pending
+- **Status:** done
 - **Created:** 2026-10-13
 - **Priority:** critical
 - **Depends:** 0691, 0692, 0693

@@ -1,7 +1,7 @@
 # Formalize Covered Call Release Baseline Failure Inventory
 
 - **ID:** 0710
-- **Status:** pending
+- **Status:** done
 - **Created:** 2026-10-13
 - **Priority:** normal
 - **Depends:** none

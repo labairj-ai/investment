@@ -1,7 +1,7 @@
 # Separate System Acceptance from Dimension Eligibility
 
 - **ID:** 0539
-- **Status:** in-progress
+- **Status:** done
 - **Created:** 2026-09-20
 - **Priority:** high
 - **Depends:** 0536, 0537, 0538

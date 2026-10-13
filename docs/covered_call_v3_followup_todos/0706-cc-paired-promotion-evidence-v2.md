@@ -1,7 +1,7 @@
 # Build Paired Covered Call Promotion Evidence V2
 
 - **ID:** 0706
-- **Status:** pending
+- **Status:** done
 - **Created:** 2026-10-13
 - **Priority:** critical
 - **Depends:** 0704, 0705, 0707

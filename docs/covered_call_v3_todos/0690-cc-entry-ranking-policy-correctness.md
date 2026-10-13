@@ -1,7 +1,7 @@
 # Correct Covered Call Entry Ranking and Policy Enforcement
 
 - **ID:** 0690
-- **Status:** pending
+- **Status:** done
 - **Created:** 2026-10-13
 - **Priority:** critical
 - **Depends:** none

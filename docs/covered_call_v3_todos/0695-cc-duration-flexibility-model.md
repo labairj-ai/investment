@@ -1,7 +1,7 @@
 # Add Covered Call Duration and Flexibility Economics
 
 - **ID:** 0695
-- **Status:** pending
+- **Status:** done
 - **Created:** 2026-10-13
 - **Priority:** high
 - **Depends:** 0693, 0694

@@ -1,7 +1,7 @@
 # Stabilize Covered Call Physical Drift and Probability Estimation
 
 - **ID:** 0691
-- **Status:** pending
+- **Status:** done
 - **Created:** 2026-10-13
 - **Priority:** critical
 - **Depends:** 0690

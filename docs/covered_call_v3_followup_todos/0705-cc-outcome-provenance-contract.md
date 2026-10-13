@@ -1,7 +1,7 @@
 # Define Covered Call Outcome Provenance Contract
 
 - **ID:** 0705
-- **Status:** pending
+- **Status:** done
 - **Created:** 2026-10-13
 - **Priority:** critical
 - **Depends:** 0704

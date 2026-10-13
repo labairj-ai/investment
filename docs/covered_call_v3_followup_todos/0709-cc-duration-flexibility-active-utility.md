@@ -1,7 +1,7 @@
 # Activate Covered Call Duration and Flexibility Economics in V3 Utility
 
 - **ID:** 0709
-- **Status:** pending
+- **Status:** done
 - **Created:** 2026-10-13
 - **Priority:** high
 - **Depends:** 0695, 0708

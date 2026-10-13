@@ -1,7 +1,7 @@
 # Build Covered Call Volatility Surface and Term-Structure Model
 
 - **ID:** 0693
-- **Status:** pending
+- **Status:** done
 - **Created:** 2026-10-13
 - **Priority:** high
 - **Depends:** 0690

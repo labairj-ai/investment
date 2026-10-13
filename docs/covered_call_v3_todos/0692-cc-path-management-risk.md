@@ -1,7 +1,7 @@
 # Add Path-Dependent Covered Call Management Risk
 
 - **ID:** 0692
-- **Status:** pending
+- **Status:** done
 - **Created:** 2026-10-13
 - **Priority:** critical
 - **Depends:** 0691

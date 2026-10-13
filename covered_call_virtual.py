@@ -15,6 +15,14 @@ from covered_call_outcomes import digest, base, persist, contract
 
 SIMULATOR_VERSION = 'cc-virtual-1'
 POLICY_VERSION = 'shared-live-management-asof-1'
+# Incremented when the composition of simulator_contract_hash changes.
+SIMULATOR_CONTRACT_VERSION = 'simulator-contract-1'
+# Config keys whose values affect simulator behaviour.
+_CONTRACT_CONFIG_KEYS = (
+    'management_cost_per_contract', 'path_count', 'max_regret_probability',
+    'utility_hurdle_annual_pct', 'fill_prior', 'fill_prior_strength',
+    'fill_min_n', 'regime_enabled',
+)
 
 
 class DataUnavailable(ValueError):
@@ -32,6 +40,24 @@ def management_contract():
                 risk_free_rate=cc.RISK_FREE_RATE, exec_lambda=cc.EXEC_LAMBDA,
                 assignment_tax_friction_threshold=cc.CC_ASSIGNMENT_TAX_FRICTION_THRESHOLD,
                 policy_version=POLICY_VERSION)
+
+
+def simulator_contract_hash(config):
+    """Deterministic hash of all simulator-relevant code and config.
+
+    Changes when and only when CC virtual book behaviour can change.
+    Unrelated commits (docs, dashboard copy, etc.) do not affect this hash.
+    """
+    mc = management_contract()
+    cc_cfg = config.get('cc_v3', {})
+    config_subset = {k: cc_cfg.get(k) for k in _CONTRACT_CONFIG_KEYS}
+    return digest({
+        'simulator_contract_version': SIMULATOR_CONTRACT_VERSION,
+        'simulator_version': SIMULATOR_VERSION,
+        'management_contract_hash': mc['engine_hash'],
+        'policy_version': mc['policy_version'],
+        'config_contract_hash': digest(config_subset),
+    })
 
 
 def migrate(db):
@@ -185,14 +211,17 @@ def start_from_decision(db, episode, created_at=None, arm='challenger', replay=F
     if n<=0 or n>int(features.get('eligible_contracts_max',n)):
         raise ValueError('virtual coverage invalid')
     chain_id = 'virtual-cc-'+digest([episode,arm,kind])[:32]
+    _mc=management_contract()
     origin = dict(episode_id=episode,candidate_id=candidate['candidate_id'],ticker=decision['ticker'],
         entry_timestamp=decision['timestamp'],entry_spot=features['spot'],contracts=n,
         origin_holding_shares=features.get('origin_holding_shares'),
         policy=json.loads(decision['policy_json']),config=config,config_hash=decision['config_hash'],
         model_version=decision['model_version'],simulator_version=SIMULATOR_VERSION,
+        simulator_contract_version=SIMULATOR_CONTRACT_VERSION,
+        simulator_contract_hash=simulator_contract_hash(config),
         entry_quote_inputs={k:features.get(k) for k in ('bid','ask','strike','expiration','impliedVolatility','quote_timestamp')},
         origin_git_sha=decision['git_sha'],market_snapshot_lineage=metadata['market_snapshot_lineage'] if metadata else digest(features),
-        management_contract=management_contract(),lot_schedule=features.get('assignment_lot_schedule',[]),
+        management_contract=_mc,lot_schedule=features.get('assignment_lot_schedule',[]),
         tax_data_available=bool(features.get('tax_data_available')),
         mu=features.get('mu_center',.08),hv_forecast=features.get('hv_forecast',.3),
         frozen_fill_fraction=features.get('expected_fill_fraction',config['fill_prior']),
@@ -303,29 +332,65 @@ def terminal_outcome(db,origin,current,chain_id,snapshot_id,evaluation):
     alpha=(cash_pnl-current['assignment_cost_total']-current['management_cost_total'])/shares
     intervals=db.execute('SELECT count(*) FROM cc_virtual_intervals WHERE chain_id=?',(chain_id,)).fetchone()[0]
     source='PROSPECTIVE_VIRTUAL' if origin['prospective'] else 'ESTIMATED_COUNTERFACTUAL'
+    version_censored=current['status']=='VERSION_CENSORED'
+    data_censored=bool(intervals or current['coverage_censored'])
+    any_censored=bool(version_censored or data_censored)
     outcome=base(origin['episode_id'],source,origin['entry_timestamp'],stamp(evaluation),origin['market_snapshot_lineage'],
                  dict(state=current,snapshot_id=snapshot_id,intervals=intervals))
     outcome.update(chain_identifier=chain_id,simulator_version=origin['simulator_version'],model_version=origin['model_version'],
         config_hash=origin['config_hash'],promotion_policy_version=origin['promotion_policy_version'],origin_git_sha=origin['origin_git_sha'],
+        simulator_contract_hash=origin.get('simulator_contract_hash'),
+        simulator_contract_version=origin.get('simulator_contract_version'),
         execution_source='VIRTUAL_MODEL',management_source='SHARED_DETERMINISTIC_POLICY',price_path_source='CAPTURED_ASOF_SNAPSHOTS',
         cost_source='VERSIONED_MODEL',assignment_source='MODELED_EXPIRY_SETTLEMENT',
-        prospective=origin['prospective'],complete=True,censored=bool(intervals or current['coverage_censored']),
-        market_data_coverage_verified=not bool(intervals or current['coverage_censored']),
-        chain_censored=bool(intervals or current['coverage_censored']),data_quality_unresolved=bool(intervals or current['coverage_censored']),
+        prospective=origin['prospective'],complete=True,censored=any_censored,
+        version_censored=version_censored,promotion_eligible=not any_censored,
+        censor_source='SIMULATOR_CONTRACT_CHANGE' if version_censored else ('DATA_QUALITY' if data_censored else None),
+        market_data_coverage_verified=not data_censored,
+        chain_censored=any_censored,data_quality_unresolved=data_censored,
         terminal_state=current['status'],total_option_pnl=cash_pnl,economic_share_basis='COVERED_SHARES',
         covered_shares=shares,origin_holding_shares=origin.get('origin_holding_shares'),
         cc_incremental_alpha=alpha,realized_execution_cost=current['execution_cost_total']/shares,
         realized_management_cost=current['management_cost_total']/shares,assignment_policy_violation=current['assignment_policy_violation'],
         roll_hops=current['roll_hops'],rolled=current['roll_hops']>0,total_fees=current['fees_total'],
         comparison_horizon=parse_timestamp(evaluation).astimezone(TZ_EASTERN).date().isoformat(),
-        chain_hold_return=current['terminal_spot']/origin['entry_spot']-1,
-        cc_strategy_return=current['terminal_spot']/origin['entry_spot']-1+alpha/origin['entry_spot'],
+        chain_hold_return=current.get('terminal_spot',origin['entry_spot'])/origin['entry_spot']-1,
+        cc_strategy_return=current.get('terminal_spot',origin['entry_spot'])/origin['entry_spot']-1+alpha/origin['entry_spot'],
         source_snapshot_ids=[r[0] for r in db.execute('SELECT snapshot_id FROM cc_virtual_actions WHERE chain_id=?',(chain_id,))])
     if source=='ESTIMATED_COUNTERFACTUAL':
-        # Replay output is stored in validation tables, never mislabeled realized.
         return outcome
     persist(db,origin['episode_id'],origin['candidate_id'],origin.get('arm','challenger'),outcome)
     return outcome
+
+
+def censor_version_mismatch(db,chain_id,current_contract_hash,evaluation):
+    """Close an open chain because the simulator contract changed.
+
+    Idempotent: if the chain is already not OPEN/AWAIT_ASSIGNMENT, does nothing.
+    Exactly one VERSION_CENSORED action is written; subsequent scheduler runs see
+    terminal=True and skip the chain.
+    """
+    evaluation=stamp(evaluation)
+    with db:
+        current=state(db,chain_id)
+        if current['status'] not in ('OPEN','AWAIT_ASSIGNMENT'):
+            return dict(terminal=True)
+        chain=db.execute('SELECT * FROM cc_virtual_chains WHERE id=?',(chain_id,)).fetchone()
+        origin=json.loads(chain['origin_json']);origin['arm']=chain['arm']
+        after=dict(current,status='VERSION_CENSORED')
+        action_id=digest([chain_id,evaluation,'VERSION_CENSORED'])
+        audit=dict(action='VERSION_CENSORED',reason='simulator_contract_changed',
+            evaluation_timestamp=evaluation,state_before=current,state_after=after,
+            origin_contract_hash=origin.get('simulator_contract_hash',''),
+            current_contract_hash=current_contract_hash,
+            censor_source='SIMULATOR_CONTRACT_CHANGE',promotion_eligible=False,
+            outcome_source='PROSPECTIVE_VIRTUAL',simulator_version=origin['simulator_version'],
+            model_version=origin['model_version'],config_hash=origin['config_hash'])
+        db.execute('INSERT OR IGNORE INTO cc_virtual_actions VALUES(?,?,?,?,?,?)',
+            (action_id,chain_id,evaluation,'','VERSION_CENSORED',json.dumps(audit,sort_keys=True)))
+        write_state(db,chain_id,evaluation,after)
+        terminal_outcome(db,origin,after,chain_id,None,evaluation)
+    return dict(action='VERSION_CENSORED',chain_id=chain_id,status='VERSION_CENSORED')
 
 
 def missed_intervals(db,chain_id,start,end,cadence):
@@ -418,6 +483,8 @@ def metrics(db):
         intervals=[dict(r) for r in db.execute('SELECT * FROM cc_virtual_intervals WHERE chain_id=?',(row['id'],))]
         chains.append(dict(chain_id=row['id'],episode_id=row['episode_id'],ticker=origin['ticker'],state=current,
                           outcome_source='PROSPECTIVE_VIRTUAL',simulator_version=origin['simulator_version'],
+                          simulator_contract_hash=origin.get('simulator_contract_hash'),
+                          simulator_contract_version=origin.get('simulator_contract_version'),
                           config_hash=origin['config_hash'],origin_git_sha=origin['origin_git_sha'],censored_intervals=len(intervals),
                           actions=[json.loads(r[0]) for r in db.execute('SELECT action_json FROM cc_virtual_actions WHERE chain_id=? ORDER BY evaluation_timestamp',(row['id'],))]))
     completed_outcomes=[]
@@ -426,10 +493,13 @@ def metrics(db):
         outcome=latest(db,chain['episode_id'],'challenger')
         if outcome and outcome['outcome_source']=='PROSPECTIVE_VIRTUAL':completed_outcomes.append(outcome)
     eligible=[o for o in completed_outcomes if o.get('complete') and not o.get('censored')]
+    version_censored_n=sum(bool(o.get('version_censored')) for o in completed_outcomes)
     return dict(virtual_economics=dict(outcome_source='PROSPECTIVE_VIRTUAL',n=len(eligible),censored_n=sum(bool(o.get('censored')) for o in completed_outcomes),
+                version_censored_n=version_censored_n,
                 modeled_incremental_alpha_mean=sum(o['cc_incremental_alpha'] for o in eligible)/len(eligible) if eligible else None,units='USD_PER_SHARE'),
                 open_chains=sum(c['state']['status'] in ('OPEN','AWAIT_ASSIGNMENT') for c in chains),
                 completed_chains=sum(c['state']['status'] not in ('OPEN','AWAIT_ASSIGNMENT') for c in chains),
+                version_censored_chains=sum(c['state']['status']=='VERSION_CENSORED' for c in chains),
                 censored_intervals=sum(c['censored_intervals'] for c in chains),
                 errors=db.execute("SELECT count(*) FROM cc_virtual_intervals WHERE reason='CAPTURE_OR_CYCLE_ERROR'").fetchone()[0],chains=chains,
-                simulator_version=SIMULATOR_VERSION)
+                simulator_version=SIMULATOR_VERSION,simulator_contract_version=SIMULATOR_CONTRACT_VERSION)

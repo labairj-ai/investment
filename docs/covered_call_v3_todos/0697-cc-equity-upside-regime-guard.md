@@ -1,7 +1,7 @@
 # Add Covered Call Equity-Upside and Regime Guard
 
 - **ID:** 0697
-- **Status:** pending
+- **Status:** done
 - **Created:** 2026-10-13
 - **Priority:** high
 - **Depends:** 0694

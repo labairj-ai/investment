@@ -1,7 +1,7 @@
 # Run Formal N=20 Macro Scorer Acceptance
 
 - **ID:** 0535
-- **Status:** backlog
+- **Status:** done
 - **Created:** 2026-09-19
 - **Priority:** normal
 - **Depends:** 0529, 0530, 0531, 0532, 0533, 0534, 0536, 0537, 0538, 0539, 0540, 0541, 0542, 0543, 0544, 0545, 0546
@@ -48,3 +48,7 @@ The v1.4 N=20 run completed with `verdict=BLOCK` and `activated=false`. The bloc
 ## Operational result — 2026-09-20
 
 Formal run `c0eaa1d3-276c-48fb-a3a8-0bbb0a18ce18` (`out/macro_validation_33f7de1_n20.json` on optiplex) completed all 160 responses. Eleven gates passed; unexplained drift blocked activation on DSGX, NFLX, STZ, and VLY. Repeatability classified 23 stable, 7 borderline, and 2 unstable cells. No acceptance rows were manually patched. The blocked artifact remains immutable. Follow-up uses temperature 0 for structural scoring, with a new scorer hash, fresh production certification, and a new formal run; thresholds remain unchanged.
+
+## Verification — 2026-10-13
+
+Active acceptance `c7cb2b88-7539-476d-9a33-5d472af4e915` (`out/macro_validation_v18_20260921T110011Z.json`) verified against all Done-when criteria: `run_type=acceptance`, `N=20`, `verdict=PASS`, `activated=true`; scorer hash `efb44fff…` matches current production contract; exactly one acceptance pointer; exactly 32 dimension-validation rows all sharing the same `acceptance_record_id`, `config_hash`, `model_identity`, and `scorer_contract_hash`; no manual DB patching.

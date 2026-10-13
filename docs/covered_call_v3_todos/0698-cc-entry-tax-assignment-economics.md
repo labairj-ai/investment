@@ -1,7 +1,7 @@
 # Add Covered Call Entry-Time Tax and Assignment Economics
 
 - **ID:** 0698
-- **Status:** pending
+- **Status:** done
 - **Created:** 2026-10-13
 - **Priority:** high
 - **Depends:** 0690

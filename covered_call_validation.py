@@ -7,19 +7,10 @@ from statistics import mean, median
 from pathlib import Path
 from time_utils import now_utc_iso, parse_timestamp
 from covered_call_outcomes import digest, latest, validate
-from covered_call_virtual import SIMULATOR_VERSION, management_contract, evaluate_snapshot, fill_model
+from covered_call_virtual import (SIMULATOR_VERSION, SIMULATOR_CONTRACT_VERSION,
+    management_contract, evaluate_snapshot, fill_model, simulator_contract_hash)
 
 ROOT=Path(__file__).resolve().parent
-
-# Incremented when the composition of simulator_contract_hash changes.
-SIMULATOR_CONTRACT_VERSION = 'simulator-contract-1'
-
-# Config keys whose values affect simulator behaviour.
-_CONTRACT_CONFIG_KEYS = (
-    'management_cost_per_contract', 'path_count', 'max_regret_probability',
-    'utility_hurdle_annual_pct', 'fill_prior', 'fill_prior_strength',
-    'fill_min_n', 'regime_enabled',
-)
 
 
 def current_git_sha():
@@ -28,25 +19,10 @@ def current_git_sha():
 
 def _config_contract_hash(config):
     """Hash of the simulator-relevant config subset (cc_v3 section)."""
+    from covered_call_virtual import _CONTRACT_CONFIG_KEYS
     cc_cfg = config.get('cc_v3', {})
     subset = {k: cc_cfg.get(k) for k in _CONTRACT_CONFIG_KEYS}
     return digest(subset)
-
-
-def simulator_contract_hash(config):
-    """Deterministic hash of all simulator-relevant code and config.
-
-    Changes when and only when CC virtual book behaviour can change.
-    Unrelated commits (docs, dashboard copy, etc.) do not affect this hash.
-    """
-    mc = management_contract()
-    return digest({
-        'simulator_contract_version': SIMULATOR_CONTRACT_VERSION,
-        'simulator_version': SIMULATOR_VERSION,
-        'management_contract_hash': mc['engine_hash'],
-        'policy_version': mc['policy_version'],
-        'config_contract_hash': _config_contract_hash(config),
-    })
 
 
 def migrate(db):

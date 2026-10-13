@@ -1,7 +1,7 @@
 # Label Covered Call Path Outcomes and Probability Calibration
 
 - **ID:** 0701
-- **Status:** pending
+- **Status:** done
 - **Created:** 2026-10-13
 - **Priority:** critical
 - **Depends:** 0700

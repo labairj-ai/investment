@@ -561,3 +561,98 @@ def test_scheduler_duplicate_runs_and_restart(episode):
     assert first['open_chains']==1 and second['results'][0]['duplicate']
     db=ledger.connect(path);ledger.migrate(db)
     assert book.metrics(db)['open_chains']==1;db.close()
+
+
+def test_version_censored_closes_chain(episode):
+    path,cfg,create=episode;eid=create()
+    db=ledger.connect(path);ledger.migrate(db)
+    chain_id=book.start_from_decision(db,eid)
+    current=book.state(db,chain_id)
+    assert current['status']=='OPEN'
+    evaluation='2026-10-13T18:00:00+00:00'
+    result=book.censor_version_mismatch(db,chain_id,'different-hash-abc',evaluation)
+    assert result['action']=='VERSION_CENSORED'
+    after=book.state(db,chain_id)
+    assert after['status']=='VERSION_CENSORED'
+    db.close()
+
+
+def test_version_censored_terminal_outcome(episode):
+    path,cfg,create=episode;eid=create()
+    db=ledger.connect(path);ledger.migrate(db)
+    chain_id=book.start_from_decision(db,eid)
+    evaluation='2026-10-13T18:00:00+00:00'
+    book.censor_version_mismatch(db,chain_id,'hash-b',evaluation)
+    from covered_call_outcomes import latest
+    outcome=latest(db,eid,'challenger')
+    assert outcome is not None
+    assert outcome['version_censored']==True
+    assert outcome['promotion_eligible']==False
+    assert outcome['censor_source']=='SIMULATOR_CONTRACT_CHANGE'
+    assert outcome['complete']==True
+    db.close()
+
+
+def test_version_censored_idempotent(episode):
+    path,cfg,create=episode;eid=create()
+    db=ledger.connect(path);ledger.migrate(db)
+    chain_id=book.start_from_decision(db,eid)
+    evaluation='2026-10-13T18:00:00+00:00'
+    book.censor_version_mismatch(db,chain_id,'hash-b',evaluation)
+    result2=book.censor_version_mismatch(db,chain_id,'hash-b',evaluation)
+    assert result2['terminal']==True
+    actions=db.execute('SELECT count(*) FROM cc_virtual_actions WHERE chain_id=? AND action="VERSION_CENSORED"',(chain_id,)).fetchone()[0]
+    assert actions==1
+    db.close()
+
+
+def test_version_censored_blocks_further_advance(episode):
+    path,cfg,create=episode;eid=create()
+    db=ledger.connect(path);ledger.migrate(db)
+    chain_id=book.start_from_decision(db,eid)
+    evaluation='2026-10-13T18:00:00+00:00'
+    book.censor_version_mismatch(db,chain_id,'hash-b',evaluation)
+    snap=snapshot(at='2026-10-13T19:00:00+00:00')
+    with db:sid=book.store_snapshot(db,snap)
+    result=book.advance(db,chain_id,sid,snap['available_at'])
+    assert result.get('terminal')==True
+    db.close()
+
+
+def test_scheduler_routes_contract_mismatch_to_censor(episode,monkeypatch):
+    import scripts.cc_virtual_job as vjob
+    from scripts.cc_virtual_job import run
+    path,cfg,create=episode;eid=create()
+    db=ledger.connect(path);ledger.migrate(db)
+    chain_id=book.start_from_decision(db,eid);db.close()
+    monkeypatch.setattr(vjob,'simulator_contract_hash',lambda config:'new-contract-xyz')
+    at=parse_timestamp('2026-10-13T17:15:00Z')
+    result=run(path,capture=lambda ticker,current:snapshot(),clock=lambda:at)
+    assert result['results'][0]['action']=='VERSION_CENSORED'
+    assert result['version_censored_chains']==1
+    assert result['open_chains']==0
+
+
+def test_scheduler_no_censor_when_contract_matches(episode,monkeypatch):
+    from scripts.cc_virtual_job import run
+    path,cfg,create=episode;eid=create()
+    original_hash=book.simulator_contract_hash(cfg)
+    at=parse_timestamp('2026-10-13T17:15:00Z')
+    result=run(path,capture=lambda ticker,current:snapshot(),clock=lambda:at)
+    assert 'action' not in result['results'][0] or result['results'][0].get('action')!='VERSION_CENSORED'
+    assert result['version_censored_chains']==0
+    assert result['open_chains']==1
+
+
+def test_metrics_version_censored_count(episode):
+    path,cfg,create=episode;eid=create()
+    db=ledger.connect(path);ledger.migrate(db)
+    chain_id=book.start_from_decision(db,eid)
+    m_before=book.metrics(db)
+    assert m_before['version_censored_chains']==0
+    book.censor_version_mismatch(db,chain_id,'hash-new','2026-10-13T18:00:00+00:00')
+    m_after=book.metrics(db)
+    assert m_after['version_censored_chains']==1
+    assert m_after['open_chains']==0
+    assert m_after['virtual_economics']['version_censored_n']==1
+    db.close()

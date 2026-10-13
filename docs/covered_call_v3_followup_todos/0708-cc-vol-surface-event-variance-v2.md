@@ -1,7 +1,7 @@
 # Refine Covered Call Volatility Surface and Event Variance Model
 
 - **ID:** 0708
-- **Status:** pending
+- **Status:** done
 - **Created:** 2026-10-13
 - **Priority:** high
 - **Depends:** 0693, 0707
