@@ -1,4 +1,4 @@
-"""Tests for CC V3 Model Freeze and Change-Control Policy (0716)."""
+"""Tests for CC V3 Model Freeze and Change-Control Policy (0716/0718)."""
 from __future__ import annotations
 from copy import deepcopy
 from pathlib import Path
@@ -9,7 +9,7 @@ from covered_call_change_control import (
     current_contract_state, check_contract_consistency,
     write_baseline, read_baseline, list_manifests, experiment_version_info,
     CHANGE_CATEGORY_NON_BEHAVIORAL, CHANGE_CATEGORY_EVIDENCE_INFRASTRUCTURE,
-    CHANGE_CATEGORY_BEHAVIORAL,
+    CHANGE_CATEGORY_BEHAVIORAL, BASELINE_SCHEMA_VERSION, BASELINE_REQUIRED_KEYS,
 )
 
 
@@ -30,12 +30,14 @@ def test_dashboard_text_change_is_non_behavioral(monkeypatch, tmp_path):
     assert state_before['simulator_contract_hash'] == state_after['simulator_contract_hash']
 
 
-def test_no_baseline_returns_ok(monkeypatch, tmp_path):
+def test_no_baseline_fails_closed(monkeypatch, tmp_path):
     import covered_call_change_control as cc
     monkeypatch.setattr(cc, 'BASELINE_FILE', tmp_path / '.cc_contract_baseline.json')
     result = check_contract_consistency(CC_V3_CONFIG)
-    assert result['ok'] is True
+    assert result['ok'] is False
+    assert result['baseline_missing'] is True
     assert result['baseline'] is None
+    assert any('MISSING_BASELINE' in f for f in result['findings'])
 
 
 def test_unchanged_hash_returns_ok(monkeypatch, tmp_path):
@@ -168,3 +170,81 @@ def test_change_category_constants_defined():
     assert CHANGE_CATEGORY_NON_BEHAVIORAL == 'NON_BEHAVIORAL'
     assert CHANGE_CATEGORY_EVIDENCE_INFRASTRUCTURE == 'EVIDENCE_INFRASTRUCTURE'
     assert CHANGE_CATEGORY_BEHAVIORAL == 'BEHAVIORAL_MODEL_CHANGE'
+
+
+# ── 0718: fail-closed baseline enforcement ────────────────────────────────────
+
+def test_malformed_json_baseline_fails_ci(monkeypatch, tmp_path):
+    import covered_call_change_control as cc
+    bf = tmp_path / '.cc_contract_baseline.json'
+    bf.write_text('{ not valid json }')
+    monkeypatch.setattr(cc, 'BASELINE_FILE', bf)
+    result = check_contract_consistency(CC_V3_CONFIG)
+    assert result['ok'] is False
+    assert result.get('baseline_malformed') is True
+    assert any('MALFORMED_BASELINE' in f for f in result['findings'])
+
+
+def test_missing_required_keys_fails_ci(monkeypatch, tmp_path):
+    import covered_call_change_control as cc
+    bf = tmp_path / '.cc_contract_baseline.json'
+    bf.write_text(json.dumps({'schema_version': BASELINE_SCHEMA_VERSION, 'engine_hash': 'x'}))
+    monkeypatch.setattr(cc, 'BASELINE_FILE', bf)
+    result = check_contract_consistency(CC_V3_CONFIG)
+    assert result['ok'] is False
+    assert result.get('baseline_malformed') is True
+
+
+def test_unknown_schema_version_fails_ci(monkeypatch, tmp_path):
+    import covered_call_change_control as cc
+    bf = tmp_path / '.cc_contract_baseline.json'
+    state = current_contract_state(CC_V3_CONFIG)
+    state['schema_version'] = 'cc-contract-v999'
+    bf.write_text(json.dumps(state))
+    monkeypatch.setattr(cc, 'BASELINE_FILE', bf)
+    result = check_contract_consistency(CC_V3_CONFIG)
+    assert result['ok'] is False
+    assert result.get('baseline_malformed') is True
+    assert any('schema_version' in f for f in result['findings'])
+
+
+def test_write_baseline_includes_schema_version(monkeypatch, tmp_path):
+    import covered_call_change_control as cc
+    monkeypatch.setattr(cc, 'BASELINE_FILE', tmp_path / '.cc_contract_baseline.json')
+    state = write_baseline(CC_V3_CONFIG)
+    assert state['schema_version'] == BASELINE_SCHEMA_VERSION
+    # read_baseline also validates and returns the full dict
+    read = read_baseline()
+    assert read is not None
+    assert not read.get('malformed')
+    assert read['schema_version'] == BASELINE_SCHEMA_VERSION
+
+
+def test_baseline_contains_all_required_fields(monkeypatch, tmp_path):
+    import covered_call_change_control as cc
+    monkeypatch.setattr(cc, 'BASELINE_FILE', tmp_path / '.cc_contract_baseline.json')
+    state = write_baseline(CC_V3_CONFIG)
+    for key in BASELINE_REQUIRED_KEYS:
+        assert key in state, f'baseline missing required key: {key}'
+
+
+def test_baseline_generation_is_deterministic(monkeypatch, tmp_path):
+    import covered_call_change_control as cc
+    bf = tmp_path / '.cc_contract_baseline.json'
+    monkeypatch.setattr(cc, 'BASELINE_FILE', bf)
+    first = write_baseline(CC_V3_CONFIG)
+    second = write_baseline(CC_V3_CONFIG)
+    assert first == second
+
+
+def test_ci_guard_rejects_update_baseline_in_ci_env(monkeypatch, tmp_path):
+    """--update-baseline must fail when GITHUB_ACTIONS=true."""
+    import subprocess, sys
+    env = dict(__import__('os').environ, GITHUB_ACTIONS='true')
+    result = subprocess.run(
+        [sys.executable, 'scripts/check_cc_contract.py', '--update-baseline'],
+        capture_output=True, text=True, env=env,
+        cwd=str(__import__('pathlib').Path(__file__).parent.parent),
+    )
+    assert result.returncode == 1
+    assert 'must not be invoked in CI' in result.stderr

@@ -1,0 +1,10 @@
+{
+  "cadence_comparability_policy_version": "cadence-v1",
+  "engine_hash": "7e6a8a4cbc5ee2d5ca5b824e9d94be8addad49c9de52d364a8eb3a3727281b6d",
+  "model_version": "cc-v3.2",
+  "policy_version": "shared-live-management-asof-1",
+  "schema_version": "cc-contract-v1",
+  "simulator_contract_hash": "9ac625ac79d8ecf860b5994778337ae5f4628e515d09cae2c1444ccd64970e39",
+  "simulator_contract_version": "simulator-contract-1",
+  "simulator_version": "cc-virtual-1"
+}
