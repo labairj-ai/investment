@@ -6365,17 +6365,16 @@ function renderCCPositions() {{
             const visible = data.datasets.filter((ds, idx) => chart.isDatasetVisible(idx));
             const positive = visible.reduce((s, ds) => s + Math.max(0, ds.data[i] || 0), 0);
             const negative = visible.reduce((s, ds) => s + Math.min(0, ds.data[i] || 0), 0);
-            // Chart.js stacks gains and losses on opposite sides of zero.
-            // Label each visible stack at its actual endpoint, not their net.
+            if (!positive && !negative) return;
+            // One monthly net total, placed outside the visible stack so a
+            // mixed-sign month never puts its label inside a positive bar.
+            const net = positive + negative;
             const x = scales.x.getPixelForValue(i);
-            if (positive) {{
-              ctx.textBaseline = "bottom";
-              ctx.fillText(incomeMoney(positive), x, scales.y.getPixelForValue(positive) - 4);
-            }}
-            if (negative) {{
-              ctx.textBaseline = "top";
-              ctx.fillText(incomeMoney(negative), x, scales.y.getPixelForValue(negative) + 4);
-            }}
+            const above = positive > 0;
+            ctx.textBaseline = above ? "bottom" : "top";
+            const endpoint = above ? positive : negative;
+            ctx.fillText("Net " + incomeMoney(net), x,
+              scales.y.getPixelForValue(endpoint) + (above ? -4 : 4));
           }});
           ctx.restore();
         }},
