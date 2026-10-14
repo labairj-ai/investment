@@ -34,6 +34,28 @@ def captured():
 def parsed(text,captured): return request_parser.parse_request(text,captured,use_llm=False)
 def impact(text,captured): return trade_impact.simulate(parsed(text,captured),captured)
 
+@pytest.mark.parametrize('text',['Dsgx buy','buy DSGX','add DSGX','DSGX add'])
+def test_unsized_buy_asks_for_quantity_without_model_or_trade(captured,monkeypatch,text):
+    monkeypatch.setattr(service,'build_advisor_decision_context',lambda *a,**kw:captured)
+    model=Mock(side_effect=AssertionError('Clarification must not call a model'))
+    result=service.run_decision(sqlite3.connect(':memory:'),text,persist=False,allow_llm=True,
+                                parser=model,reviewer=model,renderer=model,risk=lambda *a:{'decision':'UNKNOWN'})
+    assert result['request']['needs_clarification']
+    assert result['request']['issues']==['QUANTITY_REQUIRED:DSGX']
+    assert result['impact']['legs']==[]
+    assert 'How many DSGX shares' in result['explanation']
+    assert 'No trade has been evaluated' in result['explanation']
+    assert not result['execution_ready']
+    model.assert_not_called()
+
+def test_deterministic_explanation_preserves_useful_trade_details(captured,monkeypatch):
+    monkeypatch.setattr(service,'build_advisor_decision_context',lambda *a,**kw:captured)
+    result=service.run_decision(sqlite3.connect(':memory:'),'Buy 17 IGV',persist=False,allow_llm=False,
+                              risk=lambda *a:{'decision':'UNKNOWN'})
+    assert 'BUY 17 IGV: 83 → 100 shares' in result['explanation']
+    assert '$170.00' in result['explanation']
+    assert 'Portfolio weight: 8.30% → 10.00%' in result['explanation']
+
 
 @pytest.mark.parametrize('text,intent,side,quantity',[
  ('Get IGV to 100 shares','TARGET_POSITION','TARGET',100),

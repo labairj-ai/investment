@@ -47,6 +47,10 @@ def parse_request(raw, context, *, extractor=None, use_llm=True):
                 return AdvisorDecisionRequest(raw,'REALLOCATE',needs_clarification=True,issues=('FUNDING_SEMANTICS_UNRESOLVED',))
             legs=[legs[0]]+[AdvisorTradeLegRequest(l.ticker,l.semantics,l.quantity,l.side,legs[0].ticker) for l in legs[1:]]
         return _validate(raw,'REALLOCATE' if len(legs)>1 else legs[0].semantics,legs,context)
+    missing_quantity = re.fullmatch(r'(?:buy|add)\s+'+TICKER,raw,re.I) or re.fullmatch(TICKER+r'\s+(?:buy|add)',raw,re.I)
+    if missing_quantity:
+        return AdvisorDecisionRequest(raw,'TRADE_DELTA',needs_clarification=True,
+                                      issues=('QUANTITY_REQUIRED:'+_normalize(missing_quantity[1]),))
     if not use_llm:
         return AdvisorDecisionRequest(raw,'RESEARCH',needs_clarification=True,issues=('QUANTITY_SEMANTICS_UNRESOLVED',))
     import ollama_client

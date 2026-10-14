@@ -12,6 +12,13 @@ Critic vetoes remain binding review gates, with their actual objection and missi
 evidence displayed explicitly. A missing-evidence veto does not establish that the
 proposed investment is economically unattractive.
 
+Unsized requests such as “DSGX buy” ask for a share quantity or final target
+holding without a model call or a guessed trade. The panel shows a clarification
+instead of empty impact/risk accordions. Use Explore for an open-ended investment
+question before choosing a size. If explanation rendering fails for a resolved
+trade, deterministic fallback text still includes share math, reference notional,
+before/after portfolio weight, and available Critic objections.
+
 The versioned pipeline is captured context → typed request → deterministic impact
 → exact tax lots → shared Critic → shared risk preview → deterministic policy →
 immutable lineage → explanation. Model output cannot set quantities, policy state,

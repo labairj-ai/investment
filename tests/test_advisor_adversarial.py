@@ -166,6 +166,13 @@ assert(text.includes('Thesis metrics are unknown.'));
 assert(text.includes('Evidence requested: Fund growth data'));
 assert(incomplete.children[0].children.find(e=>e.tagName==='button').disabled);
 renderAdvisorDecision(new Element('div'),{error:'Required evidence unavailable'});
+const clarify=new Element('div');
+renderAdvisorDecision(clarify,{policy:{decision_state:'REVIEW_REQUIRED'},request:{raw_request:'Dsgx buy',needs_clarification:true}});
+const clarificationText=walk(clarify).map(e=>e.textContent).join('\n');
+assert(clarificationText.includes('How many DSGX shares'));
+assert(clarificationText.includes('No trade has been evaluated'));
+assert(!walk(clarify).some(e=>e.tagName==='details'));
+assert(!clarificationText.includes('Exact trade preview'));
 '''
     result=subprocess.run(['node','-'],input=harness+js+scenario,text=True,capture_output=True)
     assert result.returncode==0,result.stderr

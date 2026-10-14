@@ -88,6 +88,19 @@ function renderAdvisorDecision(target, decision) {
   const root=document.createElement('div');root.className='ad-decision';target.appendChild(root);
   const add=(tag,text,cls)=>{const e=document.createElement(tag);e.textContent=text;if(cls)e.className=cls;root.appendChild(e);return e;};
   if (!decision.policy) {add('strong','REVIEW_REQUIRED · Decision unavailable');add('p',decision.error||'Required evidence is unavailable.');return;}
+  if(decision.request?.needs_clarification){
+    add('span','Clarification needed','ad-state');
+    add('p','Request: '+decision.request.raw_request);
+    const raw=decision.request.raw_request||'';
+    const match=raw.match(/^(?:buy|add)\s+([a-z][a-z0-9./-]*)$|^([a-z][a-z0-9./-]*)\s+(?:buy|add)$/i);
+    const ticker=match?(match[1]||match[2]).toUpperCase():null;
+    add('h4',ticker?'How many '+ticker+' shares would you like to buy?':'What exact trade would you like reviewed?');
+    add('p','Enter an additional share quantity, or specify your final target holding. No trade has been evaluated yet.');
+    add('p',ticker?'Use “Buy [quantity] '+ticker+'” or “Get '+ticker+' to [target] shares”.':'For example: “Buy 17 IGV” or “Get IGV to 100 shares”.');
+    add('p','For an open question such as “Should I buy '+(ticker||'this stock')+'?”, use Explore to discuss the investment before choosing a trade size.');
+    add('p','No order was submitted.');
+    return;
+  }
   add('span',decision.policy.decision_state,'ad-state');
   add('p','Decision-grade review only. Execution ready: no.');
   add('small','Decision '+decision.advisor_decision_id+' · '+(decision.lifecycle_status||'VALID')+' · expires '+decision.valid_until);
