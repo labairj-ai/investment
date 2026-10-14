@@ -1725,6 +1725,7 @@ def build_dashboard(portfolio, layers, holdings):
     macro_attr_html = _load_macro_attribution_html()
 
     from site_help import render_glossary, help_assets
+    from dashboard_cc_income import income_assets
     generated_at = datetime.now(TZ).strftime("%A, %B %d, %Y at %I:%M %p ET")
     chg_class_main = "pos" if total_chg >= 0 else "neg"
     spy_class = "pos" if spy_chg >= 0 else "neg"
@@ -1737,6 +1738,7 @@ def build_dashboard(portfolio, layers, holdings):
   <title>Investment Dashboard — {today_date}</title>
   <link rel="icon" type="image/svg+xml" href="../favicon.svg">
   <script src="../chart.umd.min.js"></script>
+  {income_assets()}
   <style>
     *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
     html {{ overflow-x: hidden; }}
@@ -3237,9 +3239,9 @@ def build_dashboard(portfolio, layers, holdings):
 
   <!-- Covered Call Position Tracker -->
   <div class="card" id="cc-tracker-card">
-    <h2 style="display:flex;align-items:center;justify-content:space-between;">
+    <h2 class="cc-tracker-heading">
       Covered Call Position Tracker
-      <span style="display:flex;gap:6px;align-items:center;">
+      <span class="cc-tracker-actions">
         <button onclick="evaluateCCPositions()" id="cc-eval-btn" style="font-size:11px;padding:4px 12px;background:#e8f5e9;border:1px solid #a5d6a7;border-radius:5px;cursor:pointer;color:#2e7d32;font-weight:600;">🔄 Evaluate Positions</button>
         <button onclick="importCCFromCSV()" style="font-size:11px;padding:4px 12px;background:#f4f6f9;border:1px solid #dde;border-radius:5px;cursor:pointer;color:#555;font-weight:500;">⬆ Import CSV</button>
         <button onclick="loadCCPositions()" style="font-size:11px;padding:4px 12px;background:#f4f6f9;border:1px solid #dde;border-radius:5px;cursor:pointer;color:#555;font-weight:500;">↻ Refresh</button>
@@ -6145,14 +6147,6 @@ function renderCCPositions() {{
   const open   = positions.filter(p => p.status === "open");
   const closed = positions.filter(p => p.status !== "open");
 
-  const openGross     = open.reduce((s,p)   => s + p.premium_per_contract * p.contracts * 100, 0);
-  const netRealized   = closed.reduce((s,p) => s + (p.net_premium ?? 0), 0);
-  const grossRealized = closed.reduce((s,p) => s + p.premium_per_contract * p.contracts * 100, 0);
-  const buybackCost   = grossRealized - netRealized;
-  const thisYear      = new Date().getFullYear().toString();
-  const ytdClosed     = closed.filter(p => (p.closed_date || p.expiry || "").startsWith(thisYear));
-  const ytdNet        = ytdClosed.reduce((s,p) => s + (p.net_premium ?? 0), 0);
-  const openMtmTotal  = open.filter(p => p.pnl_total != null && !isNaN(p.pnl_total)).reduce((s,p) => s + p.pnl_total, 0);
   const openMtmDay    = open.filter(p => p.pnl_day   != null && !isNaN(p.pnl_day)).reduce((s,p)  => s + p.pnl_day,   0);
   const hasMtm        = open.some(p => p.current_mark != null && p.pnl_total != null && !isNaN(p.pnl_total));
 
@@ -6256,19 +6250,6 @@ function renderCCPositions() {{
     </tr>`;
   }};
 
-  const fmtPnl = v => (v == null || isNaN(v)) ? `<span style="color:#ccc;">—</span>` : (v >= 0 ? `<span style="color:#27ae60;">+$${{v.toFixed(2)}}</span>` : `<span style="color:#e74c3c;">-$${{Math.abs(v).toFixed(2)}}</span>`);
-
-  const summaryHtml = `
-    <div style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:14px;padding:12px 16px;background:#f8fafc;border-radius:8px;font-size:13px;">
-      <span>Open: <b>${{open.length}}</b></span>
-      <span>Open gross premium: <b style="color:#1a6e38;">$${{openGross.toFixed(2)}}</b></span>
-      ${{hasMtm ? `<span>Unrealized P&amp;L: <b>${{fmtPnl(openMtmTotal)}}</b></span>` : ""}}
-      ${{hasMtm ? `<span>Today's option P&amp;L: <b>${{fmtPnl(openMtmDay)}}</b></span>` : ""}}
-      <span style="border-left:1px solid #dde;padding-left:16px;">YTD net: <b style="color:${{ytdNet >= 0 ? '#27ae60' : '#e74c3c'}};">${{ytdNet >= 0 ? '+' : '−'}}$${{Math.abs(ytdNet).toFixed(2)}}</b></span>
-      <span style="color:#aaa;font-size:12px;">All-time: ${{netRealized >= 0 ? '' : '−'}}$${{Math.abs(netRealized).toFixed(2)}}</span>
-      ${{buybackCost > 0 ? `<span style="color:#aaa;font-size:12px;">($${{grossRealized.toFixed(2)}} gross − $${{buybackCost.toFixed(2)}} buybacks)</span>` : ""}}
-    </div>`;
-
   const th  = s => `<th style="padding:7px 10px;text-align:left;font-size:11px;color:#7f8c8d;text-transform:uppercase;">${{s}}</th>`;
   const thG = s => `<th style="padding:7px 10px;text-align:left;font-size:11px;color:#27ae60;text-transform:uppercase;">${{s}}</th>`;
   const COLS = 14;
@@ -6280,7 +6261,7 @@ function renderCCPositions() {{
     ${{th("Status")}}${{th("Opened")}}${{th("Notes")}}${{th("")}}
   </tr></thead>`;
 
-  let html = summaryHtml + `<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:13px;">${{thead}}<tbody>`;
+  let html = `<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:13px;">${{thead}}<tbody>`;
   if (open.length) {{
     html += `<tr><td colspan="${{COLS}}" style="padding:5px 10px;font-size:11px;font-weight:700;color:#1a2340;background:#f0f7ff;">Open Positions</td></tr>`;
     html += open.map(p => makeRow(p)).join("");
@@ -6327,120 +6308,8 @@ function renderCCPositions() {{
   renderClosedAccordion(expiredPos, "Expired Worthless", "cc-exp-",
     "#fffdf5", "#8a6d00", "#ffe082", p => p.expiry);
   html += `</tbody></table></div>`;
-  if (closed.length || open.length) {{
-    html = `<div style="position:relative;height:240px;margin-bottom:16px;"><canvas id="cc-income-chart" style="max-height:none;"></canvas></div>` + html;
-  }}
+  html = `<section id="cc-income-overview" aria-label="Covered call income summary">${{renderCCIncome(positions)}}</section><h3 class="cc-position-detail-heading">Positions &amp; management</h3>` + html;
   results.innerHTML = html;
-  if (closed.length || open.length) {{
-    (function() {{
-      const monthData = {{}};
-      function addToMonth(p, type, raw, amount) {{
-        if (!raw) return;
-        const d = new Date(raw + "T00:00:00");
-        const key = d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0");
-        if (!monthData[key]) monthData[key] = {{expired:0, closed:0, pending:0}};
-        monthData[key][type] += amount;
-      }}
-      const isPreSystem = p => p.notes === "pre-system income entry";
-      otherClosed.filter(p => !isPreSystem(p)).forEach(p => addToMonth(p, "closed",  p.closed_date || p.expiry, p.net_premium ?? 0));
-      expiredPos.filter(p  => !isPreSystem(p)).forEach(p => addToMonth(p, "expired", p.expiry,                  p.net_premium ?? 0));
-      open.forEach(p        => addToMonth(p, "pending", p.opened_date,              p.premium_per_contract * p.contracts * 100));
-      const months = Object.keys(monthData).sort();
-      const moNames = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-      const labels = months.map(k => {{
-        const [yr, mo] = k.split("-");
-        return moNames[parseInt(mo)-1] + " '" + yr.slice(2);
-      }});
-      const incomeMoney = v => (v < 0 ? "-$" : "$") + Math.abs(v).toLocaleString("en-US", {{maximumFractionDigits:0}});
-      const tooltipMoney = v => (v < 0 ? "-$" : "+$") + Math.abs(v).toFixed(2);
-      const _ccTotalLabelPlugin = {{
-        id: "ccTotalLabels",
-        afterDatasetsDraw(chart) {{
-          const {{ ctx, data, scales }} = chart;
-          ctx.save();
-          ctx.font = "bold 10px sans-serif";
-          ctx.fillStyle = "#555";
-          ctx.textAlign = "center";
-          data.labels.forEach((_, i) => {{
-            const visible = data.datasets.filter((ds, idx) => chart.isDatasetVisible(idx));
-            const positive = visible.reduce((s, ds) => s + Math.max(0, ds.data[i] || 0), 0);
-            const negative = visible.reduce((s, ds) => s + Math.min(0, ds.data[i] || 0), 0);
-            if (!positive && !negative) return;
-            // One monthly net total, placed outside the visible stack so a
-            // mixed-sign month never puts its label inside a positive bar.
-            const net = positive + negative;
-            const x = scales.x.getPixelForValue(i);
-            const above = positive > 0;
-            ctx.textBaseline = above ? "bottom" : "top";
-            const endpoint = above ? positive : negative;
-            ctx.fillText("Net " + incomeMoney(net), x,
-              scales.y.getPixelForValue(endpoint) + (above ? -4 : 4));
-          }});
-          ctx.restore();
-        }},
-      }};
-      if (window._ccIncomeChart) window._ccIncomeChart.destroy();
-      window._ccIncomeChart = new Chart(document.getElementById("cc-income-chart"), {{
-        type: "bar",
-        data: {{
-          labels,
-          datasets: [
-            {{
-              label: "Expired Worthless",
-              data: months.map(k => monthData[k].expired),
-              backgroundColor: "rgba(255,193,7,0.75)",
-              borderColor: "#f0c000",
-              borderWidth: 1,
-              stack: "income",
-            }},
-            {{
-              label: "Closed / Assigned",
-              data: months.map(k => monthData[k].closed),
-              backgroundColor: "rgba(90,120,190,0.65)",
-              borderColor: "#8aa0d0",
-              borderWidth: 1,
-              stack: "income",
-            }},
-            {{
-              label: "Pending (Open)",
-              data: months.map(k => monthData[k].pending),
-              backgroundColor: "rgba(120,140,180,0.18)",
-              borderColor: "rgba(90,120,190,0.6)",
-              borderWidth: 2,
-              stack: "income",
-            }},
-          ],
-        }},
-        plugins: [_ccTotalLabelPlugin],
-        options: {{
-          responsive: true,
-          maintainAspectRatio: false,
-          layout: {{padding: {{top:18, bottom:18}}}},
-          plugins: {{
-            legend: {{position:"bottom", labels:{{font:{{size:11}}}}}},
-            tooltip: {{
-              callbacks: {{
-                label: ctx => {{
-                  const v = ctx.parsed.y;
-                  if (!v) return null;
-                  const prefix = ctx.dataset.label === "Pending (Open)" ? " (gross) " : " ";
-                  return prefix + ctx.dataset.label + ": " + tooltipMoney(v);
-                }},
-                footer: items => {{
-                  const tot = items.reduce((s,i) => s + i.parsed.y, 0);
-                  return items.length ? " Net total: " + tooltipMoney(tot) : null;
-                }},
-              }},
-            }},
-          }},
-          scales: {{
-            x: {{stacked:true, grid:{{display:false}}, ticks:{{font:{{size:11}}}}}},
-            y: {{stacked:true, beginAtZero:true, grace:"15%", ticks:{{callback: incomeMoney, font:{{size:11}}}}, grid:{{color:"#f0f0f0"}}}},
-          }},
-        }},
-      }});
-    }})();
-  }}
 }}
 
 function toggleCCMonth(id) {{
