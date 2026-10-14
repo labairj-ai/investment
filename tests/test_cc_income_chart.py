@@ -143,7 +143,7 @@ def test_dashboard_integration_and_mobile_numeric_layout():
 
 def test_full_tracker_renders_position_rows_and_income_summary_together():
     source=(ROOT/'generate_dashboard.py').read_text()
-    start=source.index('function renderCCPositions() {{')
+    start=source.index('function renderCCPositions(')
     end=source.index('\nfunction toggleCCMonth',start)
     renderer=source[start:end].replace('{{','{').replace('}}','}')
     run_js(renderer+r'''
@@ -163,4 +163,48 @@ assert(!results.innerHTML.includes('NaN'));
 _allCCPositions=[];
 renderCCPositions();
 assert(results.innerHTML.includes('No positions logged yet'));
+''')
+
+
+def test_daily_headline_is_incomplete_for_missing_data_and_session_mismatch():
+    run_js(r'''
+const nodes={
+ 'kpi-daily-value':{dataset:{stockChg:'100',stockSession:'2026-10-13'},style:{}},
+ 'kpi-daily-label':{},'kpi-daily-pct':{},'kpi-daily-status':{}
+};
+const document={getElementById:id=>nodes[id]};
+renderCCDailyPnl([],null);
+assert.strictEqual(nodes['kpi-daily-value'].textContent,'—');
+assert(nodes['kpi-daily-label'].textContent.includes('incomplete'));
+assert(nodes['kpi-daily-pct'].textContent.includes('Stocks $100.00'));
+assert(nodes['kpi-daily-pct'].textContent.includes('options unavailable'));
+const report={session:'2026-10-13',complete:false,options_pnl:null,priced_count:6,open_count:7};
+renderCCDailyPnl([],report);
+assert(nodes['kpi-daily-pct'].textContent.includes('6/7 open calls'));
+assert.strictEqual(nodes['kpi-daily-value'].textContent,'—');
+renderCCDailyPnl([],{...report,session:'2026-10-12',complete:true,options_pnl:-25});
+assert.strictEqual(nodes['kpi-daily-value'].textContent,'—');
+assert(nodes['kpi-daily-status'].textContent.includes('session mismatch'));
+renderCCDailyPnl([],{...report,complete:false,closed_this_session:1});
+assert(nodes['kpi-daily-status'].textContent.includes('excludes 1 calls closed'));
+''')
+
+
+def test_daily_estimate_includes_signed_options_and_legitimate_zero():
+    run_js(r'''
+const nodes={
+ 'kpi-daily-value':{dataset:{stockChg:'100',stockSession:'2026-10-13'},style:{}},
+ 'kpi-daily-label':{},'kpi-daily-pct':{},'kpi-daily-status':{}
+};
+const document={getElementById:id=>nodes[id]};
+const report={session:'2026-10-13',complete:true,options_pnl:-25,priced_count:7,open_count:7};
+renderCCDailyPnl([],report);
+assert.strictEqual(nodes['kpi-daily-value'].textContent,'$75.00');
+assert(nodes['kpi-daily-label'].textContent.includes('estimate'));
+assert(nodes['kpi-daily-pct'].textContent.includes('options −$25.00'));
+assert(nodes['kpi-daily-status'].textContent.includes('not reconciled to brokerage'));
+renderCCDailyPnl([],{...report,options_pnl:0});
+assert.strictEqual(nodes['kpi-daily-value'].textContent,'$100.00');
+renderCCDailyPnl([],{...report,options_pnl:-150});
+assert.strictEqual(nodes['kpi-daily-value'].textContent,'−$50.00');
 ''')

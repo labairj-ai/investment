@@ -160,6 +160,39 @@ function renderCCIncome(positions, now = new Date()) {
   <p class="cc-income-footnote">Realized income is grouped by closing month (expiry if no close date). Open premium covers currently open positions, grouped by opening month; it is not added to realized income. Bars share the same scale within the selected period. ${caveats}</p>`;
 }
 
+function renderCCDailyPnl(positions, report) {
+  const value = document.getElementById('kpi-daily-value');
+  if (!value) return;
+  const label = document.getElementById('kpi-daily-label');
+  const breakdown = document.getElementById('kpi-daily-pct');
+  const status = document.getElementById('kpi-daily-status');
+  const stock = Number(value.dataset.stockChg);
+  const matched = report && report.session === value.dataset.stockSession;
+  const complete = matched && report.complete && Number.isFinite(report.options_pnl) && Number.isFinite(stock);
+  value.textContent = complete ? ccIncomeMoney(stock+report.options_pnl) : '—';
+  value.style.color = complete ? (stock+report.options_pnl<0?'#bd3e44':'#167352') : '#7a8697';
+  if (label) label.textContent = complete ? 'Daily P&L · estimate' : 'Daily P&L · incomplete';
+  const coverage = report ? report.priced_count+'/'+report.open_count+' open calls' : 'coverage unavailable';
+  if (breakdown) breakdown.textContent = 'Stocks '+(Number.isFinite(stock)?ccIncomeMoney(stock):'unavailable')+' · options '+(matched && Number.isFinite(report.options_pnl) ? ccIncomeMoney(report.options_pnl) : 'unavailable')+' ('+coverage+')';
+  if (status) {
+    const notes = ['Stock session '+value.dataset.stockSession];
+    if (report && !matched) notes.push('option session mismatch');
+    if (report && report.closed_this_session) notes.push('excludes '+report.closed_this_session+' calls closed this session');
+    if (report && report.statuses) {
+      const missing = Object.entries(report.statuses).filter(([reason])=>reason!=='ESTIMATED').map(([reason,count])=>count+' '+reason.toLowerCase().replaceAll('_',' '));
+      if (missing.length) notes.push(missing.join(', '));
+    }
+    notes.push('Midpoint vs prior close estimate; not reconciled to brokerage');
+    const asofs = positions.map(p=>p.pnl_day_as_of).filter(Boolean).sort();
+    const observed = positions.map(p=>p.pnl_day_observed_at).filter(Boolean).sort();
+    const timeLabel = stamp => new Date(stamp).toLocaleTimeString('en-US',{timeZone:'America/New_York',hour:'numeric',minute:'2-digit'});
+    if (observed.length) notes.push('Options observed '+timeLabel(observed[observed.length-1])+' ET');
+    if (asofs.length) notes.push('Last trades '+timeLabel(asofs[0])+'–'+timeLabel(asofs[asofs.length-1])+' ET');
+    status.textContent = notes.join(' · ');
+    status.title = 'Source: '+(report ? report.source : 'unavailable')+'; last trade times: '+(asofs.length?asofs[0]+' to '+asofs[asofs.length-1]:'unavailable')+'; observed: '+(observed.length?observed[observed.length-1]:'unavailable');
+  }
+}
+
 function setCCIncomeRange(range) {
   if (!['6','12','all'].includes(String(range))) return;
   _ccIncomeRange = String(range);

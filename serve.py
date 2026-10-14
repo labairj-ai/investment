@@ -2420,22 +2420,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 positions = [dict(r) for r in conn.execute(
                     "SELECT * FROM cc_positions ORDER BY opened_date DESC, id DESC"
                 )]
+                from covered_call_daily_pnl import annotate_positions
+                daily_report = annotate_positions(conn, positions)
             finally:
                 conn.close()
             # Compute mark-to-market P&L for open positions
             for p in positions:
                 if p["status"] == "open" and p.get("current_mark") is not None:
                     mark  = p["current_mark"]
-                    prev  = p.get("prev_mark")
                     c     = p["contracts"]
                     prem  = p["premium_per_contract"]
                     p["pnl_total"] = round((prem - mark) * c * 100, 2)
-                    p["pnl_day"]   = round((prev - mark) * c * 100, 2) if prev is not None else None
                 else:
                     p["pnl_total"] = None
-                    p["pnl_day"]   = None
             auto_expired = [r["id"] for r in past_open]
-            self._json({"ok": True, "positions": positions, "auto_expired": auto_expired})
+            self._json({"ok": True, "positions": positions, "auto_expired": auto_expired, "daily_pnl": daily_report})
         except Exception as e:
             self._json_error(500, str(e))
 

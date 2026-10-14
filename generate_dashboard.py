@@ -2811,9 +2811,10 @@ def build_dashboard(portfolio, layers, holdings):
       <div class="value">{money(total_v)}</div>
     </div>
     <div class="kpi">
-      <div class="label">Daily Change</div>
-      <div class="value {chg_class_main}" id="kpi-daily-value" data-stock-chg="{round(total_chg, 2)}" data-total-value="{round(total_v, 2)}">{money(total_chg)}</div>
-      <div class="sub {chg_class_main}" id="kpi-daily-pct">{pct(total_chg_pct)}</div>
+      <div class="label" id="kpi-daily-label">Daily P&amp;L · loading</div>
+      <div class="value" id="kpi-daily-value" data-stock-chg="{round(total_chg, 2)}" data-stock-session="{today_date}">—</div>
+      <div class="sub" id="kpi-daily-pct">Stocks {money(total_chg)} · option data loading</div>
+      <details style="font-size:11px;color:#7f8c8d;line-height:1.5;margin-top:5px;"><summary style="cursor:pointer;">Sources &amp; coverage</summary><div id="kpi-daily-status">Session {today_date} · tracked holdings</div></details>
     </div>
     <div class="kpi">
       <div class="label">SPY Change</div>
@@ -6123,10 +6124,10 @@ async function loadCCPositions() {{
   try {{
     const res  = await fetch("/api/cc-positions");
     const data = await res.json();
-    if (!data.ok) {{ status.textContent = "Error: " + data.error; return; }}
+    if (!data.ok) {{ renderCCDailyPnl([], null); status.textContent = "Error: " + data.error; return; }}
     _allCCPositions = data.positions || [];
     status.textContent = "";
-    renderCCPositions();
+    renderCCPositions(data.daily_pnl);
     renderRealizedGains();
     const autoExpired = data.auto_expired || [];
     if (autoExpired.length) {{
@@ -6137,13 +6138,15 @@ async function loadCCPositions() {{
       setTimeout(() => {{ if (status.innerHTML.includes("auto-recorded")) status.textContent = ""; }}, 8000);
     }}
   }} catch(e) {{
+    renderCCDailyPnl([], null);
     status.textContent = "Error: " + e.message;
   }}
 }}
 
-function renderCCPositions() {{
+function renderCCPositions(dailyPnl = null) {{
   const results = document.getElementById("cc-tracker-results");
   const positions = _allCCPositions;
+  renderCCDailyPnl(positions, dailyPnl);
 
   if (!positions.length) {{
     results.innerHTML = `<p style="color:#888;font-size:13px;margin-top:8px;">No positions logged yet. Use the form above to add your first covered call.</p>`;
@@ -6152,27 +6155,6 @@ function renderCCPositions() {{
 
   const open   = positions.filter(p => p.status === "open");
   const closed = positions.filter(p => p.status !== "open");
-
-  const openMtmDay    = open.filter(p => p.pnl_day   != null && !isNaN(p.pnl_day)).reduce((s,p)  => s + p.pnl_day,   0);
-  const hasMtm        = open.some(p => p.current_mark != null && p.pnl_total != null && !isNaN(p.pnl_total));
-
-  // Adjust the daily change KPI to include today's option P&L
-  (function() {{
-    const el  = document.getElementById("kpi-daily-value");
-    const pct = document.getElementById("kpi-daily-pct");
-    if (!el || !hasMtm) return;
-    const stockChg  = parseFloat(el.dataset.stockChg  || 0);
-    const totalVal  = parseFloat(el.dataset.totalValue || 0);
-    const adjChg    = stockChg + openMtmDay;
-    const prevTotal = totalVal - adjChg;
-    const adjPct    = prevTotal > 0 ? adjChg / prevTotal * 100 : 0;
-    el.textContent  = (adjChg >= 0 ? "+" : "") + "$" + Math.abs(Math.round(adjChg)).toLocaleString("en-US");
-    el.style.color  = adjChg >= 0 ? "" : "#e74c3c";
-    if (pct) {{
-      pct.textContent = (adjPct >= 0 ? "+" : "") + adjPct.toFixed(2) + "%";
-      pct.style.color = adjPct >= 0 ? "" : "#e74c3c";
-    }}
-  }})();
 
   function statusBadge(p) {{
     const map = {{
