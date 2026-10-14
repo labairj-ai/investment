@@ -1,7 +1,7 @@
 # Build Deterministic Advisor Trade Impact Simulator
 
 - **ID:** 0734
-- **Status:** in-progress
+- **Status:** done
 - **Created:** 2026-10-13
 - **Priority:** high
 - **Depends:** 0732, 0733
@@ -39,11 +39,20 @@ Trade math must be deterministic and computed before the LLM writes a verdict.
 
 ## Done when
 
-- [ ] A fixture holding 83 IGV shares with a 100-share target deterministically produces BUY 17.
-- [ ] Before/after position weights and layer weights reconcile to the same captured NAV plus modeled cash movement.
-- [ ] Two-leg reallocations report gross sell, gross buy and net cash consistently regardless of input-leg ordering.
-- [ ] Crossing 99→100 shares reports one newly available standard CC contract; crossing 100→99 reports loss of eligibility.
-- [ ] Selling shares covered by an open call produces an explicit conflict instead of an actionable result.
-- [ ] Oversells, missing prices and contradictory targets fail closed with typed errors.
-- [ ] Tests prove the simulator performs zero mutations to portfolio, recommendation, intent, order and fill tables.
-- [ ] QA evaluation conducted: arithmetic/property-style fixtures plus full `pytest tests/ -v --tb=short` pass with no regressions introduced.
+- [x] A fixture holding 83 IGV shares with a 100-share target deterministically produces BUY 17.
+- [x] Before/after position weights and layer weights reconcile to the same captured NAV plus modeled cash movement.
+- [x] Two-leg reallocations report gross sell, gross buy and net cash consistently regardless of input-leg ordering.
+- [x] Crossing 99→100 shares reports one newly available standard CC contract; crossing 100→99 reports loss of eligibility.
+- [x] Selling shares covered by an open call produces an explicit conflict instead of an actionable result.
+- [x] Oversells, missing prices and contradictory targets fail closed with typed errors.
+- [x] Tests prove the simulator performs zero mutations to portfolio, recommendation, intent, order and fill tables.
+- [x] QA evaluation conducted: arithmetic/property-style fixtures plus full `pytest tests/ -v --tb=short` pass with no regressions introduced.
+
+## Completion evidence
+
+Completed 2026-10-14. Implementation and acceptance fixtures are documented in
+`docs/advisor-decision.md`; focused advisor QA: 55 passed. Full local suite:
+2,529 passed, 16 existing skips, no failures. Exact baseline and CC behavioral
+contract gates passed. Read-only production-snapshot canary passed with trading
+state unchanged and degraded evidence held in review. Real GitHub Actions passed:
+https://github.com/labairj-ai/investment/actions/runs/38552153244

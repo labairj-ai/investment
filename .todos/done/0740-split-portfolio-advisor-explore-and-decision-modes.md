@@ -1,7 +1,7 @@
 # Split Portfolio Advisor Explore And Decision Modes
 
 - **ID:** 0740
-- **Status:** in-progress
+- **Status:** done
 - **Created:** 2026-10-13
 - **Priority:** high
 - **Depends:** 0736, 0737, 0738, 0739
@@ -40,10 +40,19 @@ The UI/API should make that boundary explicit.
 
 ## Done when
 
-- [ ] Portfolio Advisor visibly offers Explore and Decision modes with distinct descriptions.
-- [ ] Existing `/api/ai/chat` continues to work for Explore mode.
-- [ ] Decision endpoint returns a persisted `advisor_decision_id` plus structured decision payload and rendered explanation.
-- [ ] Decision rendering shows exact trade delta, before/after portfolio effects, tax-lot result, Critic, risk preview, CC implications, decision state, reasons and expiry/invalidation conditions.
-- [ ] A forced LLM rendering failure does not erase the structured decision; the UI can still display authoritative fields.
-- [ ] No Decision-mode request creates a trade intent, order or fill.
-- [ ] QA evaluation conducted: API/UI integration tests plus full `pytest tests/ -v --tb=short` pass with no regressions introduced.
+- [x] Portfolio Advisor visibly offers Explore and Decision modes with distinct descriptions.
+- [x] Existing `/api/ai/chat` continues to work for Explore mode.
+- [x] Decision endpoint returns a persisted `advisor_decision_id` plus structured decision payload and rendered explanation.
+- [x] Decision rendering shows exact trade delta, before/after portfolio effects, tax-lot result, Critic, risk preview, CC implications, decision state, reasons and expiry/invalidation conditions.
+- [x] A forced LLM rendering failure does not erase the structured decision; the UI can still display authoritative fields.
+- [x] No Decision-mode request creates a trade intent, order or fill.
+- [x] QA evaluation conducted: API/UI integration tests plus full `pytest tests/ -v --tb=short` pass with no regressions introduced.
+
+## Completion evidence
+
+Completed 2026-10-14. Implementation and acceptance fixtures are documented in
+`docs/advisor-decision.md`; focused advisor QA: 55 passed. Full local suite:
+2,529 passed, 16 existing skips, no failures. Exact baseline and CC behavioral
+contract gates passed. Read-only production-snapshot canary passed with trading
+state unchanged and degraded evidence held in review. Real GitHub Actions passed:
+https://github.com/labairj-ai/investment/actions/runs/38552153244

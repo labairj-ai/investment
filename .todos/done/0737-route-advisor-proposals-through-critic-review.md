@@ -1,7 +1,7 @@
 # Route Advisor Proposals Through Critic Review
 
 - **ID:** 0737
-- **Status:** in-progress
+- **Status:** done
 - **Created:** 2026-10-13
 - **Priority:** high
 - **Depends:** 0733, 0736
@@ -39,10 +39,19 @@ Advisor proposals need first-class governed review without pretending they origi
 
 ## Done when
 
-- [ ] An advisor proposal that violates an existing deterministic veto receives the same veto class as the equivalent governed recommendation fixture.
-- [ ] Critic `VETO` can never result in advisor `ACTIONABLE`.
-- [ ] Critic `CHALLENGE` produces at most `REVIEW_REQUIRED`.
-- [ ] Critic runtime/LLM failure in Decision mode is fail-closed and visibly identified.
-- [ ] Existing producer-agent Critic tests continue to pass unchanged.
-- [ ] Advisor proposals are distinguishable from producer-agent recommendations in persisted/audit structures if persistence is introduced.
-- [ ] QA evaluation conducted: deterministic-veto parity, Critic failure-path tests and full `pytest tests/ -v --tb=short` pass with no regressions introduced.
+- [x] An advisor proposal that violates an existing deterministic veto receives the same veto class as the equivalent governed recommendation fixture.
+- [x] Critic `VETO` can never result in advisor `ACTIONABLE`.
+- [x] Critic `CHALLENGE` produces at most `REVIEW_REQUIRED`.
+- [x] Critic runtime/LLM failure in Decision mode is fail-closed and visibly identified.
+- [x] Existing producer-agent Critic tests continue to pass unchanged.
+- [x] Advisor proposals are distinguishable from producer-agent recommendations in persisted/audit structures if persistence is introduced.
+- [x] QA evaluation conducted: deterministic-veto parity, Critic failure-path tests and full `pytest tests/ -v --tb=short` pass with no regressions introduced.
+
+## Completion evidence
+
+Completed 2026-10-14. Implementation and acceptance fixtures are documented in
+`docs/advisor-decision.md`; focused advisor QA: 55 passed. Full local suite:
+2,529 passed, 16 existing skips, no failures. Exact baseline and CC behavioral
+contract gates passed. Read-only production-snapshot canary passed with trading
+state unchanged and degraded evidence held in review. Real GitHub Actions passed:
+https://github.com/labairj-ai/investment/actions/runs/38552153244

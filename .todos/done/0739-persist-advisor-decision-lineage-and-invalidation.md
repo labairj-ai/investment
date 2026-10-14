@@ -1,7 +1,7 @@
 # Persist Advisor Decision Lineage And Invalidation
 
 - **ID:** 0739
-- **Status:** in-progress
+- **Status:** done
 - **Created:** 2026-10-13
 - **Priority:** high
 - **Depends:** 0732, 0733, 0734, 0735, 0736, 0737, 0738
@@ -39,10 +39,19 @@ Without lineage and invalidation, an old recommendation can look current after i
 
 ## Done when
 
-- [ ] Every Decision-mode answer has a unique `advisor_decision_id` and deterministic source/context hashes.
-- [ ] The persisted record can reconstruct the actionability state, exact trade delta, evidence references, Critic result and risk preview without re-calling the LLM.
-- [ ] Changing a referenced thesis version, position/share state, required price snapshot, CC coverage state or advisor policy version invalidates the applicable decision.
-- [ ] Invalidated decisions are visibly non-actionable and never reactivated without a new decision id.
-- [ ] Retry/idempotency tests do not duplicate decision records.
-- [ ] Migration tests pass on a pre-advisor schema fixture.
-- [ ] QA evaluation conducted: lifecycle/invalidation tests plus full `pytest tests/ -v --tb=short` pass with no regressions introduced.
+- [x] Every Decision-mode answer has a unique `advisor_decision_id` and deterministic source/context hashes.
+- [x] The persisted record can reconstruct the actionability state, exact trade delta, evidence references, Critic result and risk preview without re-calling the LLM.
+- [x] Changing a referenced thesis version, position/share state, required price snapshot, CC coverage state or advisor policy version invalidates the applicable decision.
+- [x] Invalidated decisions are visibly non-actionable and never reactivated without a new decision id.
+- [x] Retry/idempotency tests do not duplicate decision records.
+- [x] Migration tests pass on a pre-advisor schema fixture.
+- [x] QA evaluation conducted: lifecycle/invalidation tests plus full `pytest tests/ -v --tb=short` pass with no regressions introduced.
+
+## Completion evidence
+
+Completed 2026-10-14. Implementation and acceptance fixtures are documented in
+`docs/advisor-decision.md`; focused advisor QA: 55 passed. Full local suite:
+2,529 passed, 16 existing skips, no failures. Exact baseline and CC behavioral
+contract gates passed. Read-only production-snapshot canary passed with trading
+state unchanged and degraded evidence held in review. Real GitHub Actions passed:
+https://github.com/labairj-ai/investment/actions/runs/38552153244

@@ -1,7 +1,7 @@
 # Add Read-Only Advisor Risk Preview
 
 - **ID:** 0738
-- **Status:** in-progress
+- **Status:** done
 - **Created:** 2026-10-13
 - **Priority:** high
 - **Depends:** 0734, 0736
@@ -37,9 +37,18 @@ A decision preview must answer “would current policy permit this?” while rem
 
 ## Done when
 
-- [ ] For equivalent fixtures, preview and persisted evaluation return the same result for all rules that are evaluable in both modes.
-- [ ] Running preview leaves all trade/risk/order/fill row counts unchanged.
-- [ ] A position-limit failure, insufficient-cash failure and stale-risk-state failure all prevent advisor ACTIONABLE.
-- [ ] Admission-only or execution-only rules that cannot be evaluated are identified explicitly rather than silently passed.
-- [ ] Existing execution risk tests remain green and persisted `evaluate()` still writes exactly the expected audit rows.
-- [ ] QA evaluation conducted: parity/mutation tests plus full `pytest tests/ -v --tb=short` pass with no regressions introduced.
+- [x] For equivalent fixtures, preview and persisted evaluation return the same result for all rules that are evaluable in both modes.
+- [x] Running preview leaves all trade/risk/order/fill row counts unchanged.
+- [x] A position-limit failure, insufficient-cash failure and stale-risk-state failure all prevent advisor ACTIONABLE.
+- [x] Admission-only or execution-only rules that cannot be evaluated are identified explicitly rather than silently passed.
+- [x] Existing execution risk tests remain green and persisted `evaluate()` still writes exactly the expected audit rows.
+- [x] QA evaluation conducted: parity/mutation tests plus full `pytest tests/ -v --tb=short` pass with no regressions introduced.
+
+## Completion evidence
+
+Completed 2026-10-14. Implementation and acceptance fixtures are documented in
+`docs/advisor-decision.md`; focused advisor QA: 55 passed. Full local suite:
+2,529 passed, 16 existing skips, no failures. Exact baseline and CC behavioral
+contract gates passed. Read-only production-snapshot canary passed with trading
+state unchanged and degraded evidence held in review. Real GitHub Actions passed:
+https://github.com/labairj-ai/investment/actions/runs/38552153244

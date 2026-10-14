@@ -1,7 +1,7 @@
 # Add Structured Advisor Decision Request Contract
 
 - **ID:** 0733
-- **Status:** in-progress
+- **Status:** done
 - **Created:** 2026-10-13
 - **Priority:** high
 - **Depends:** 0732
@@ -39,11 +39,20 @@ Decision mode needs a typed request contract before any calculations or recommen
 
 ## Done when
 
-- [ ] “Get IGV to 100 shares” parses as a target-position request with target quantity 100, not a 100-share buy.
-- [ ] “Buy 17 IGV” parses as a trade-delta request for +17 shares.
-- [ ] “Sell 10 STZ and use it to get IGV to 100” parses as a linked multi-leg reallocation with one explicit sell leg and one target-position leg.
-- [ ] Held/candidate ticker validation is deterministic and unknown symbols are surfaced explicitly.
-- [ ] Ambiguous target-vs-delta requests return `needs_clarification` without a fabricated trade.
-- [ ] Parser output includes raw request, parser version and model identity when an LLM was used.
-- [ ] Adversarial prompt text cannot set actionability, risk status or Critic verdict fields because those fields do not exist in the request schema.
-- [ ] QA evaluation conducted: table-driven parser tests plus full `pytest tests/ -v --tb=short` pass with no regressions introduced.
+- [x] “Get IGV to 100 shares” parses as a target-position request with target quantity 100, not a 100-share buy.
+- [x] “Buy 17 IGV” parses as a trade-delta request for +17 shares.
+- [x] “Sell 10 STZ and use it to get IGV to 100” parses as a linked multi-leg reallocation with one explicit sell leg and one target-position leg.
+- [x] Held/candidate ticker validation is deterministic and unknown symbols are surfaced explicitly.
+- [x] Ambiguous target-vs-delta requests return `needs_clarification` without a fabricated trade.
+- [x] Parser output includes raw request, parser version and model identity when an LLM was used.
+- [x] Adversarial prompt text cannot set actionability, risk status or Critic verdict fields because those fields do not exist in the request schema.
+- [x] QA evaluation conducted: table-driven parser tests plus full `pytest tests/ -v --tb=short` pass with no regressions introduced.
+
+## Completion evidence
+
+Completed 2026-10-14. Implementation and acceptance fixtures are documented in
+`docs/advisor-decision.md`; focused advisor QA: 55 passed. Full local suite:
+2,529 passed, 16 existing skips, no failures. Exact baseline and CC behavioral
+contract gates passed. Read-only production-snapshot canary passed with trading
+state unchanged and degraded evidence held in review. Real GitHub Actions passed:
+https://github.com/labairj-ai/investment/actions/runs/38552153244

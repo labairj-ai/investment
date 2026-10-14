@@ -1,7 +1,7 @@
 # Build Canonical Advisor Decision Context
 
 - **ID:** 0732
-- **Status:** in-progress
+- **Status:** done
 - **Created:** 2026-10-13
 - **Priority:** high
 - **Depends:** none
@@ -39,11 +39,20 @@ A decision-grade advisor needs one read-only, deterministic snapshot that all la
 
 ## Done when
 
-- [ ] `build_advisor_decision_context(conn)` returns one structured snapshot containing canonical portfolio state, open governed recommendations with Critic state, thesis health, Guardian findings, execution state, freshness/capability state, holdings/marks, exact lots, layer allocation, CC state and deterministic candidate ranks.
-- [ ] Candidate ordering and component scores exactly match the canonical comparison scorer for the same fixture.
-- [ ] Repeated builds from an unchanged fixture produce the same `context_hash`.
-- [ ] No Ollama/MLX call, network call or write statement occurs while building context; tests fail if one is attempted.
-- [ ] Required unavailable/stale sources are preserved in the context and never silently converted to healthy values.
-- [ ] Existing `score_for_comparison()`, Decision Brief and advisor Explore behavior remain backward compatible.
-- [ ] Focused tests cover healthy, degraded, missing-thesis, missing-price, empty-candidate and open-CC fixtures.
-- [ ] QA evaluation conducted: focused tests plus full `pytest tests/ -v --tb=short` pass with no regressions introduced.
+- [x] `build_advisor_decision_context(conn)` returns one structured snapshot containing canonical portfolio state, open governed recommendations with Critic state, thesis health, Guardian findings, execution state, freshness/capability state, holdings/marks, exact lots, layer allocation, CC state and deterministic candidate ranks.
+- [x] Candidate ordering and component scores exactly match the canonical comparison scorer for the same fixture.
+- [x] Repeated builds from an unchanged fixture produce the same `context_hash`.
+- [x] No Ollama/MLX call, network call or write statement occurs while building context; tests fail if one is attempted.
+- [x] Required unavailable/stale sources are preserved in the context and never silently converted to healthy values.
+- [x] Existing `score_for_comparison()`, Decision Brief and advisor Explore behavior remain backward compatible.
+- [x] Focused tests cover healthy, degraded, missing-thesis, missing-price, empty-candidate and open-CC fixtures.
+- [x] QA evaluation conducted: focused tests plus full `pytest tests/ -v --tb=short` pass with no regressions introduced.
+
+## Completion evidence
+
+Completed 2026-10-14. Implementation and acceptance fixtures are documented in
+`docs/advisor-decision.md`; focused advisor QA: 55 passed. Full local suite:
+2,529 passed, 16 existing skips, no failures. Exact baseline and CC behavioral
+contract gates passed. Read-only production-snapshot canary passed with trading
+state unchanged and degraded evidence held in review. Real GitHub Actions passed:
+https://github.com/labairj-ai/investment/actions/runs/38552153244

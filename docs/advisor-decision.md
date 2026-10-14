@@ -69,3 +69,13 @@ Canary PASS describes mutation safety, not production evidence readiness.
 Decision IDs are immutable at the database layer alongside their stored contents.
 The identity trigger is additive, so rerunning the migration also protects databases
 that already have the advisor tables and earlier immutability triggers.
+
+The full local suite passes: 2,529 passed, 16 skipped, no failures. The existing
+exact baseline inventory and covered-call behavioral contract gates also pass.
+Two legacy covered-call surface tests now use the fixed fixture's capture time
+instead of wall-clock freshness; production freshness behavior is unchanged.
+
+GitHub Actions passed the full test job, TODO consistency check, exact baseline
+inventory gate and covered-call behavioral contract gate on the implementation
+commit: https://github.com/labairj-ai/investment/actions/runs/38552153244.
+TODOs 0732–0741 are complete and archived under `.todos/done/`.

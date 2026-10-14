@@ -1,7 +1,7 @@
 # Add Tax-Lot-Aware Advisor Disposition Planning
 
 - **ID:** 0735
-- **Status:** in-progress
+- **Status:** done
 - **Created:** 2026-10-13
 - **Priority:** high
 - **Depends:** 0734
@@ -39,10 +39,19 @@ Decision-grade sell/trim advice must evaluate the actual lots that could satisfy
 
 ## Done when
 
-- [ ] Mixed ST/LT fixtures produce correct per-lot holding-period classification using canonical date utilities.
-- [ ] A 40-share trim from 60 LT + 40 ST shares reports the actual selected-lot mix for each supported strategy rather than labeling all 40 shares from the oldest lot.
-- [ ] Partial-lot selection reconciles exactly to requested shares and realized gain/loss math.
-- [ ] When no configured tax rates exist, output contains ST/LT realized amounts but no invented tax-liability dollar estimate.
-- [ ] Broker-lot-selection capability is represented separately from the planning recommendation.
-- [ ] The old advisor prompt no longer relies on oldest-lot “Tax” as sufficient evidence for a sell/trim decision.
-- [ ] QA evaluation conducted: tax-lot edge cases plus full `pytest tests/ -v --tb=short` pass with no regressions introduced.
+- [x] Mixed ST/LT fixtures produce correct per-lot holding-period classification using canonical date utilities.
+- [x] A 40-share trim from 60 LT + 40 ST shares reports the actual selected-lot mix for each supported strategy rather than labeling all 40 shares from the oldest lot.
+- [x] Partial-lot selection reconciles exactly to requested shares and realized gain/loss math.
+- [x] When no configured tax rates exist, output contains ST/LT realized amounts but no invented tax-liability dollar estimate.
+- [x] Broker-lot-selection capability is represented separately from the planning recommendation.
+- [x] The old advisor prompt no longer relies on oldest-lot “Tax” as sufficient evidence for a sell/trim decision.
+- [x] QA evaluation conducted: tax-lot edge cases plus full `pytest tests/ -v --tb=short` pass with no regressions introduced.
+
+## Completion evidence
+
+Completed 2026-10-14. Implementation and acceptance fixtures are documented in
+`docs/advisor-decision.md`; focused advisor QA: 55 passed. Full local suite:
+2,529 passed, 16 existing skips, no failures. Exact baseline and CC behavioral
+contract gates passed. Read-only production-snapshot canary passed with trading
+state unchanged and degraded evidence held in review. Real GitHub Actions passed:
+https://github.com/labairj-ai/investment/actions/runs/38552153244
