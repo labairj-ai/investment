@@ -1005,6 +1005,17 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None, *, 
     conn.row_factory = sqlite3.Row
     cutoff_24h = now_ts - 86400
 
+    # Load current holdings early so findings and recs can be filtered by held tickers.
+    _holdings_early = (
+        snapshot_inputs["holdings"] if snapshot_inputs is not None else _load_holdings_csv()
+    ) or []
+    _held_tickers: set[str] = {
+        str(h.get("Stock", "")).strip().upper()
+        for h in _holdings_early if h.get("Stock")
+    }
+    # Buy-type actions are valid for non-held tickers (new position proposals).
+    _BUY_ACTIONS = {"BUY", "ACCUMULATE", "INITIATE", "WRITE_CC"}
+
     # ── 1. Guardian + specialist findings (last 24h) ──────────────────────────
     finding_rows = conn.execute(
         """SELECT af.id, af.ticker, af.finding_type, af.severity, af.confidence,
@@ -1021,6 +1032,10 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None, *, 
     findings_by_type: dict = {}
     _seen_finding_keys: set = set()
     for r in finding_rows:
+        # Skip findings for tickers that are no longer held (position was exited).
+        _fticker = (r["ticker"] or "").strip().upper()
+        if _fticker and _fticker not in _held_tickers:
+            continue
         agent = r["agent_type"] or "unknown"
         dedup_key = (agent, r["ticker"] or "", r["finding_type"] or "")
         if dedup_key in _seen_finding_keys:
@@ -1053,6 +1068,11 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None, *, 
     open_decisions = []
     critic_counts = {"APPROVE": 0, "APPROVE_WITH_CAUTION": 0, "CHALLENGE": 0, "VETO": 0}
     for r in rec_rows:
+        # Skip hold/trim/sell/exit recommendations for tickers no longer held.
+        _rticker = (r["ticker"] or "").strip().upper()
+        _raction = (r["action"] or "").strip().upper()
+        if _rticker and _rticker not in _held_tickers and _raction not in _BUY_ACTIONS:
+            continue
         verdict = r["critic_verdict"] or ""
         if verdict in critic_counts:
             critic_counts[verdict] += 1
@@ -1117,7 +1137,7 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None, *, 
             macro_last_updated = r["updated_at"]
 
     # ── 5. Thesis health ──────────────────────────────────────────────────────
-    holdings = snapshot_inputs["holdings"] if snapshot_inputs is not None else _load_holdings_csv()
+    holdings = _holdings_early  # already loaded above for held-ticker filtering
     thesis_deltas = []
     portfolio_risks = []
     thesis_status = "AVAILABLE"
