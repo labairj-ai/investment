@@ -4909,10 +4909,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def _handle_advisor_decision(self):
         from agents.advisor.api import decision_response
+        from agents.advisor.sqlite_guard import GuardedConnection
         conn = None
         try:
             body = self._read_body()
-            conn = sqlite3.connect(str(PROJECT_DIR / "out" / "investment.db"), timeout=10)
+            conn = sqlite3.connect(str(PROJECT_DIR / "out" / "investment.db"), timeout=10, factory=GuardedConnection)
             conn.row_factory = sqlite3.Row
             result = decision_response(conn, body)
             self._json(result)
@@ -4926,9 +4927,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def _handle_advisor_decision_get(self, decision_id):
         from agents.advisor.api import get_decision
+        from agents.advisor.sqlite_guard import GuardedConnection
         conn = None
         try:
-            conn = sqlite3.connect(str(PROJECT_DIR / "out" / "investment.db"), timeout=10)
+            conn = sqlite3.connect(str(PROJECT_DIR / "out" / "investment.db"), timeout=10, factory=GuardedConnection)
             conn.row_factory = sqlite3.Row
             result = get_decision(conn, decision_id)
             if result is None: self._json_error(404,"Advisor decision not found")
@@ -4942,7 +4944,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def _handle_advisor_health(self):
         from agents.advisor.persistence import health
         from agents.advisor.context import build_advisor_decision_context
-        conn = sqlite3.connect(f"file:{PROJECT_DIR}/out/investment.db?mode=ro", uri=True, timeout=10)
+        from agents.advisor.sqlite_guard import GuardedConnection
+        conn = sqlite3.connect(f"file:{PROJECT_DIR}/out/investment.db?mode=ro", uri=True, timeout=10, factory=GuardedConnection)
         conn.row_factory = sqlite3.Row
         try:
             context = build_advisor_decision_context(conn)

@@ -6,7 +6,7 @@ import json
 import math
 
 ADVISOR_CONTRACT_VERSION = 'advisor-decision-v1'
-ADVISOR_POLICY_VERSION = 'advisor-policy-v1'
+ADVISOR_POLICY_VERSION = 'advisor-policy-v2'
 PARSER_VERSION = 'advisor-parser-v1'
 PROMPT_VERSION = 'advisor-explanation-v1'
 SCORER_VERSION = 'canonical-comparison-6-v1'

@@ -1183,12 +1183,17 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None, *, 
     execution_state: dict = {"open_intents": 0, "pending": [], "status": "AVAILABLE"}
     last_intent_ts = None
     try:
+        scope = snapshot_inputs is not None and 'execution_account_id' in snapshot_inputs
         intent_rows = conn.execute(
             """SELECT intent_id, symbol, side, quantity, status, created_at
                FROM trade_intents
                WHERE status NOT IN ('FILLED', 'CANCELLED', 'EXPIRED', 'REJECTED')
-               ORDER BY created_at DESC LIMIT 20"""
+            """ + (' AND account_id=?' if scope else '') +
+            ' ORDER BY created_at DESC, intent_id LIMIT 20',
+            (snapshot_inputs['execution_account_id'],) if scope else (),
         ).fetchall()
+        if scope and snapshot_inputs['execution_account_id'] is None:
+            execution_state['status'] = 'UNAVAILABLE'
         execution_state["open_intents"] = len(intent_rows)
         for r in intent_rows:
             execution_state["pending"].append({

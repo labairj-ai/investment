@@ -1,6 +1,8 @@
 """Read-only risk preview over the engine's shared rule core."""
 from datetime import timedelta
-from .context import ReadView, rows
+from .context import ReadView
+from .risk_snapshot import build_risk_snapshot
+from .sqlite_guard import read_only
 from .contracts import digest
 from time_utils import parse_timestamp
 from trade_engine.models import TradingAccount, TradeIntent, InstrumentType, Side, OrderType, TimeInForce
@@ -9,15 +11,25 @@ from trade_engine import risk_engine
 
 
 def preview(impact, context, conn, *, policy=None):
+    owns_snapshot=not conn.in_transaction
+    if owns_snapshot: conn.execute('BEGIN')
+    try:
+        with read_only(conn):
+            return _preview(impact,context,conn,policy=policy)
+    finally:
+        if owns_snapshot: conn.rollback()
+
+
+def _preview(impact, context, conn, *, policy=None):
     if not impact['valid'] or not context.get('account'):
         return dict(decision='UNKNOWN',preview_only=True,reasons=['ACCOUNT_OR_VALID_IMPACT_UNAVAILABLE'],execution_ready=False)
     view=ReadView(conn)
-    snapshot={name:rows(view,name) for name in ('trading_accounts','position_snapshots','orders','fills','trade_intents')}
+    snapshot=build_risk_snapshot(view,context['account']['account_id'])
     snapshot_hash=digest(snapshot)
     if snapshot_hash!=context['risk_state_hash']:
         return dict(decision='UNKNOWN',preview_only=True,reasons=['RISK_SNAPSHOT_CHANGED'],account_snapshot_hash=snapshot_hash,execution_ready=False)
-    account=TradingAccount.from_db_row(context['account'])
     try:
+        account=TradingAccount.from_db_row(context['account'])
         policy=policy or load_policy(account.account_id)
         results=[]
         for leg in impact['legs']:

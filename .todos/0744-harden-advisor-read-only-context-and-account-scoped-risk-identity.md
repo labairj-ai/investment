@@ -1,7 +1,7 @@
 # Harden Advisor Read-Only Context and Canonical Account-Scoped Risk Identity
 
 - **ID:** 0744
-- **Status:** backlog
+- **Status:** in-progress
 - **Created:** 2026-10-14
 - **Priority:** high
 - **Depends:** 0732, 0734, 0738, 0739, 0741

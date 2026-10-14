@@ -3,6 +3,7 @@ import json
 from .context import ReadView
 from trade_engine.market_calendar import is_market_open
 from time_utils import parse_timestamp
+from agents.critic_review import CriticReviewInput
 
 
 def review(proposal, context, conn, *, llm=None, allow_llm=True):
@@ -13,8 +14,12 @@ def review(proposal, context, conn, *, llm=None, allow_llm=True):
     results=[]
     for leg in proposal.impact['legs']:
         if leg['side']=='NO_CHANGE': continue
-        rec=dict(ticker=leg['ticker'],action=leg['side'],confidence=50,recommendation_score=50,
-                 why_now='Advisor-originated reference-price preview, not an execution instruction.',
+        rec=CriticReviewInput(origin='advisor',ticker=leg['ticker'],action=leg['side'],
+                 decision_kind='ALLOCATION_CHANGE',trade_impact=proposal.impact,
+                 thesis=context['theses'].get(leg['ticker']),context_hash=proposal.context_hash,
+                 layer_before=context.get('layer_weights',{}),
+                 layer_after=proposal.impact.get('layer_weights_after',{})).to_dict()
+        rec.update(why_now='Advisor-originated reference-price preview, not an execution instruction.',
                  rationale=json.dumps({'trade':leg,'thesis':context['theses'].get(leg['ticker']),
                                        'context_hash':proposal.context_hash},sort_keys=True),
                  action_payload_json=json.dumps(leg))

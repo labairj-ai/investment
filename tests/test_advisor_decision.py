@@ -151,7 +151,8 @@ def test_source_authority_and_missing_thesis(captured):
 def canonical_db(tmp_path):
     from test_portfolio_brief import _make_brief_db
     path=_make_brief_db(tmp_path)
-    conn=sqlite3.connect(path);conn.row_factory=sqlite3.Row
+    from agents.advisor.sqlite_guard import GuardedConnection
+    conn=sqlite3.connect(path,factory=GuardedConnection);conn.row_factory=sqlite3.Row
     conn.executescript('''
     CREATE TABLE IF NOT EXISTS holding_day(day TEXT,ticker TEXT,shares REAL,price REAL,value REAL,layer TEXT);
     CREATE TABLE IF NOT EXISTS layer_day(day TEXT,layer TEXT,weight_pct REAL);
@@ -311,7 +312,7 @@ def test_production_canary_is_read_only(canonical_db):
     from scripts.canary_advisor_decision import run_canary
     before=canonical_db.total_changes
     result=run_canary(canonical_db)
-    assert result['health']=='PASS' and result['production_state_unchanged']
+    assert result['health']=='PASS' and result['production_state_unchanged'],result['failed_invariants']
     assert canonical_db.total_changes==before
     assert all(r['state']!='ACTIONABLE' for r in result['outcomes'])
 

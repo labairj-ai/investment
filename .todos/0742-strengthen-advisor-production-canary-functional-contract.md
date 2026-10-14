@@ -1,7 +1,7 @@
 # Strengthen Advisor Production Canary Functional Contract
 
 - **ID:** 0742
-- **Status:** backlog
+- **Status:** in-progress
 - **Created:** 2026-10-14
 - **Priority:** high
 - **Depends:** 0740, 0741

@@ -1,7 +1,7 @@
 # Close Advisor Critic Semantic-Parity Gaps
 
 - **ID:** 0743
-- **Status:** backlog
+- **Status:** in-progress
 - **Created:** 2026-10-14
 - **Priority:** high
 - **Depends:** 0737, 0741

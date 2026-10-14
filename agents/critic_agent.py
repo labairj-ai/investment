@@ -124,7 +124,7 @@ def _deterministic_veto(rec: dict, *, context=None) -> tuple[bool, str]:
         return True, "AVOID-level event risk present for this covered call contract"
 
     # Veto 2: Layer targets invalid for allocation recommendations
-    if action in _ALLOC_ACTIONS:
+    if action in _ALLOC_ACTIONS or rec.get('decision_kind') == 'ALLOCATION_CHANGE':
         target_sum = sum(LAYER_TARGETS.values())
         if abs(target_sum - 100) > 0.5:
             return True, (
@@ -204,17 +204,27 @@ def _llm_critique(rec: dict) -> dict | None:
     ticker  = rec.get("ticker", "UNKNOWN")
     payload = _payload(rec)
 
+    advisor = rec.get('origin') == 'advisor'
+    score = 'unavailable — advisor proposal' if advisor and rec.get('recommendation_score') is None else f"{rec.get('recommendation_score', '?')}/100"
+    confidence = 'unavailable — advisor proposal' if advisor and rec.get('confidence') is None else str(rec.get('confidence', '?'))
     prompt = (
         f"{_SYSTEM}\n\n"
         f"Recommendation to review:\n"
         f"  Ticker:  {ticker}\n"
         f"  Action:  {action}\n"
-        f"  Score:   {rec.get('recommendation_score', '?')}/100\n"
-        f"  Confidence (pre-critic): {rec.get('confidence', '?')}\n"
+        f"  Score:   {score}\n"
+        f"  Confidence (pre-critic): {confidence}\n"
         f"  Why now: {rec.get('why_now') or '(none)'}\n"
         f"  Rationale: {rec.get('rationale') or '(none)'}\n"
         f"  Counter case: {rec.get('counter_case') or '(none)'}\n"
     )
+    if advisor:
+        prompt += ('  Origin: advisor; excluded from producer learning. Missing producer score/confidence '
+                   'are unavailable evidence, never neutral 50 or inferred conviction. '
+                   'Review the captured deterministic proposal; do not change ticker, side, quantity or authorize execution.\n'
+                   '  Structured review evidence: '+json.dumps({k:rec.get(k) for k in (
+                       'review_contract_version','decision_kind','trade_impact','layer_before',
+                       'layer_after','thesis','context_hash')},sort_keys=True)+'\n')
     if payload:
         payload_summary = {k: v for k, v in payload.items()
                            if k in ("data_mode", "dte", "strike", "exec_premium",

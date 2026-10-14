@@ -2,6 +2,7 @@
 from __future__ import annotations
 import json
 import sqlite3
+import re
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -9,6 +10,8 @@ from .contracts import ADVISOR_CONTRACT_VERSION, ADVISOR_POLICY_VERSION, SCORER_
 from portfolio_positions import _normalize
 from strategy_config import LAYER_LABELS, LAYER_TARGETS
 from time_utils import now_utc, TZ_EASTERN
+from .sqlite_guard import read_only,READ_PRAGMAS
+from .risk_snapshot import build_risk_snapshot
 
 
 class ReadView:
@@ -18,8 +21,13 @@ class ReadView:
     @row_factory.setter
     def row_factory(self, value): self.conn.row_factory = value
     def execute(self, sql, parameters=()):
-        if sql.lstrip().split(None,1)[0].upper() not in {'SELECT','PRAGMA','WITH'}:
+        token=sql.lstrip().split(None,1)[0].upper()
+        if token not in {'SELECT','PRAGMA','WITH'}:
             raise ValueError('ADVISOR_READ_ONLY')
+        if token=='PRAGMA':
+            name=re.match(r'\s*PRAGMA\s+(\w+)',sql,re.I)
+            if not name or name[1].lower() not in READ_PRAGMAS or '=' in sql:
+                raise ValueError('ADVISOR_READ_ONLY_PRAGMA')
         return self.conn.execute(sql, parameters)
 
 
@@ -49,7 +57,8 @@ def build_advisor_decision_context(conn, *, now=None, account_id=None):
     view=ReadView(conn)
     now=now or now_utc()
     try:
-        return _build(view, now, account_id, portfolio_ai, agent_db, rank_candidates)
+        with read_only(conn):
+            return _build(view, now, account_id, portfolio_ai, agent_db, rank_candidates)
     finally:
         if owns_snapshot: conn.rollback()
         conn.row_factory=previous_factory
@@ -68,12 +77,13 @@ def _build(conn, now, account_id, brief_api, thesis_api, rank_candidates):
     if candidates is not None: candidates=[dict(c,ticker=_normalize(c['ticker'])) for c in candidates]
     cc=rows(conn,'cc_positions',"WHERE status='open' ORDER BY id")
     if cc is not None: cc=[dict(c,ticker=_normalize(c['ticker'])) for c in cc]
-    accounts=rows(conn,'trading_accounts','ORDER BY account_id')
+    accounts=rows(conn,'trading_accounts','WHERE account_id=? ORDER BY account_id',(account_id,))
     account=next((a for a in accounts or [] if a['account_id']==account_id),None)
     positions=rows(conn,'position_snapshots','WHERE account_id=? ORDER BY symbol',(account_id,)) if account else None
     layer_rows=rows(conn,'layer_day','WHERE day=(SELECT MAX(day) FROM layer_day) ORDER BY layer')
     layer_weights={layers[r['layer']]:r['weight_pct'] for r in layer_rows or [] if r['layer'] in layers}
-    intents=rows(conn,'trade_intents',"WHERE status NOT IN ('FILLED','CANCELLED','EXPIRED','REJECTED') ORDER BY intent_id")
+    risk_tables=build_risk_snapshot(conn,account_id,now=now)
+    intents=risk_tables['trade_intents'] if account else None
     theses={}
     for ticker in sorted(set(holdings)|{_normalize(c['ticker']) for c in candidates or []}):
         try: theses[ticker]=thesis_api.get_thesis(ticker,conn=conn)
@@ -84,7 +94,8 @@ def _build(conn, now, account_id, brief_api, thesis_api, rank_candidates):
         completed=datetime.fromtimestamp(completed,timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
     try:
         brief=brief_api.build_portfolio_brief_state(conn,now=now.timestamp(),snapshot_inputs={
-      'holdings':[{'Stock':t} for t in holdings], 'pipeline_completed_at':completed})
+      'holdings':[{'Stock':t} for t in holdings], 'pipeline_completed_at':completed,
+      'execution_account_id':account['account_id'] if account else None})
     except (sqlite3.Error, KeyError) as error:
         brief=dict(brief_health='ERROR',brief_health_detail=['canonical_brief_unavailable'],error=type(error).__name__,
                    freshness={'overall':'UNAVAILABLE'},capability_state={},open_decisions=[],thesis_deltas=[],portfolio_risks=[])
@@ -140,7 +151,8 @@ def _build(conn, now, account_id, brief_api, thesis_api, rank_candidates):
       'learning':{'status':'OBSERVE_ONLY','authority':'EXPERIMENTAL','production_influence':0}}
     for name,entry in brief.get('freshness',{}).items():
         if isinstance(entry,dict): sources[name]=dict(entry,authority=brief_api.FRESHNESS_CRITICALITY.get(name,'REQUIRED'))
-    risk_tables={name:rows(conn,name) for name in ('trading_accounts','position_snapshots','orders','fills','trade_intents')}
+    sources['risk_state']={'authority':'REQUIRED','status':'AVAILABLE' if account and all(
+        risk_tables[name] is not None for name in ('position_snapshots','orders','fills','trade_intents')) else 'UNAVAILABLE'}
     risk_policy=None
     if account:
         try:
@@ -153,7 +165,8 @@ def _build(conn, now, account_id, brief_api, thesis_api, rank_candidates):
       portfolio_state=brief,holdings=holdings,prices=prices,price_freshness=price_freshness,lots=lots,covered_calls=cc,
       layer_weights=layer_weights,layer_targets=LAYER_TARGETS,nav=nav,nav_scope=nav_scope,cash=account.get('current_cash') if account else None,
       candidates=candidates,candidate_ranks=ranks,theses=theses,sources=sources,open_intents=intents,
-      account=account,account_positions=positions,risk_state_hash=digest(risk_tables),risk_policy=risk_policy,
+      account=account,account_positions=risk_tables['position_snapshots'] if account else None,
+      risk_snapshot=risk_tables,risk_state_hash=digest(risk_tables),risk_policy=risk_policy,
       broker_capabilities={'tax_lot_selection':'UNKNOWN','execution_ready':False})
     result['context_hash']=digest(semantic(result))
     # Advisory values remain visible but cannot change the authorization identity.
