@@ -79,7 +79,8 @@ def test_surface_distinct_term_skew(slope):
     for days in (28,56,84):
         for delta in (.2,.25,.3,.5,.6):
             rows.append(row(expiration=f'2026-{days}',dte=days,delta=delta,impliedVolatility=.25+slope*days+.05*(delta-.5)))
-    values=v.surface(rows,100,.2)
+    # Evaluate the fixed quote fixture at its captured time, not the wall clock.
+    values=v.surface(rows,100,.2,now='2026-10-13T17:00:00+00:00')
     assert values[1]['term_richness'] is not None
     if slope==0:assert abs(values[1]['term_richness'])<1e-10
     else:assert values[1]['term_richness']*slope<0
@@ -345,7 +346,7 @@ def test_event_distorted_surface_explicit_estimate():
         for delta in (.2,.25,.3,.5,.6):
             rows.append(row(expiration=f'event-{days}',dte=days,delta=delta,
                 impliedVolatility=iv,risk_events=[{'type':'earnings'}] if event else []))
-    out=v.surface(rows,100,.2)
+    out=v.surface(rows,100,.2,now='2026-10-13T17:00:00+00:00')
     assert out[6]['event_variance_estimate']>0
     assert out[6]['event_premium']>0
     assert out[6]['event_variance_state']=='LOCAL_PRE_EVENT_BASELINE_ESTIMATE'

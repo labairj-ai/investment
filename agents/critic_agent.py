@@ -113,7 +113,7 @@ def _holdings_avg_cost(ticker: str) -> float | None:
 # Deterministic vetoes (no LLM)
 # ---------------------------------------------------------------------------
 
-def _deterministic_veto(rec: dict) -> tuple[bool, str]:
+def _deterministic_veto(rec: dict, *, context=None) -> tuple[bool, str]:
     """Return (is_vetoed, reason_string). No LLM call."""
     action  = rec.get("action", "")
     payload = _payload(rec)
@@ -124,7 +124,7 @@ def _deterministic_veto(rec: dict) -> tuple[bool, str]:
         return True, "AVOID-level event risk present for this covered call contract"
 
     # Veto 2: Layer targets invalid for allocation recommendations
-    if action in _ALLOC_ACTIONS:
+    if action in _ALLOC_ACTIONS or rec.get('decision_kind') == 'ALLOCATION_CHANGE':
         target_sum = sum(LAYER_TARGETS.values())
         if abs(target_sum - 100) > 0.5:
             return True, (
@@ -134,11 +134,11 @@ def _deterministic_veto(rec: dict) -> tuple[bool, str]:
 
     # Veto 3: Missing cost basis for tax-specific recommendations
     if action in _TAX_ACTIONS:
-        conn = agent_db._connect()
+        conn = context.get('_conn') if context is not None else agent_db._connect()
         has_lots = conn.execute(
             "SELECT 1 FROM cost_lots WHERE ticker=? LIMIT 1", (ticker,)
         ).fetchone()
-        conn.close()
+        if context is None: conn.close()
         if not has_lots:
             return True, (
                 f"No cost-basis lots found for {ticker} — "
@@ -156,7 +156,7 @@ def _deterministic_veto(rec: dict) -> tuple[bool, str]:
     if action == "SELL_CC":
         strike = payload.get("strike")
         if strike is not None:
-            current_price = _holding_current_price(ticker)
+            current_price = context['prices'].get(ticker) if context is not None else _holding_current_price(ticker)
             if current_price is not None and float(strike) < current_price:
                 return True, (
                     f"Strike ${strike} is below the current price of ${current_price:.2f} "
@@ -167,7 +167,7 @@ def _deterministic_veto(rec: dict) -> tuple[bool, str]:
     if action == "SELL_CC":
         strike = payload.get("strike")
         if strike is not None:
-            avg_cost = _holdings_avg_cost(ticker)
+            avg_cost = context.get('avg_costs',{}).get(ticker) if context is not None else _holdings_avg_cost(ticker)
             if avg_cost is not None and float(strike) < avg_cost:
                 return True, (
                     f"Strike ${strike} is below your cost basis of ${avg_cost:.2f} — "
@@ -175,13 +175,17 @@ def _deterministic_veto(rec: dict) -> tuple[bool, str]:
                 )
 
     # Veto 5: Stale price data during market hours
-    if action in _PRICE_SENSITIVE_ACTIONS and _is_market_hours():
-        conn = agent_db._connect()
-        latest_day = conn.execute(
-            "SELECT MAX(day) FROM holding_day WHERE ticker=?", (ticker,)
-        ).fetchone()[0]
-        conn.close()
-        today = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+    if action in _PRICE_SENSITIVE_ACTIONS and (context['market_hours'] if context is not None else _is_market_hours()):
+        if context is not None:
+            latest_day=context.get('price_days',{}).get(ticker)
+            today=context['today']
+        else:
+            conn = agent_db._connect()
+            latest_day = conn.execute(
+                "SELECT MAX(day) FROM holding_day WHERE ticker=?", (ticker,)
+            ).fetchone()[0]
+            conn.close()
+            today = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
         if latest_day and latest_day < today:
             return True, (
                 f"Price data for {ticker} is from {latest_day} — "
@@ -200,17 +204,27 @@ def _llm_critique(rec: dict) -> dict | None:
     ticker  = rec.get("ticker", "UNKNOWN")
     payload = _payload(rec)
 
+    advisor = rec.get('origin') == 'advisor'
+    score = 'unavailable — advisor proposal' if advisor and rec.get('recommendation_score') is None else f"{rec.get('recommendation_score', '?')}/100"
+    confidence = 'unavailable — advisor proposal' if advisor and rec.get('confidence') is None else str(rec.get('confidence', '?'))
     prompt = (
         f"{_SYSTEM}\n\n"
         f"Recommendation to review:\n"
         f"  Ticker:  {ticker}\n"
         f"  Action:  {action}\n"
-        f"  Score:   {rec.get('recommendation_score', '?')}/100\n"
-        f"  Confidence (pre-critic): {rec.get('confidence', '?')}\n"
+        f"  Score:   {score}\n"
+        f"  Confidence (pre-critic): {confidence}\n"
         f"  Why now: {rec.get('why_now') or '(none)'}\n"
         f"  Rationale: {rec.get('rationale') or '(none)'}\n"
         f"  Counter case: {rec.get('counter_case') or '(none)'}\n"
     )
+    if advisor:
+        prompt += ('  Origin: advisor; excluded from producer learning. Missing producer score/confidence '
+                   'are unavailable evidence, never neutral 50 or inferred conviction. '
+                   'Review the captured deterministic proposal; do not change ticker, side, quantity or authorize execution.\n'
+                   '  Structured review evidence: '+json.dumps({k:rec.get(k) for k in (
+                       'review_contract_version','decision_kind','trade_impact','layer_before',
+                       'layer_after','thesis','context_hash')},sort_keys=True)+'\n')
     if payload:
         payload_summary = {k: v for k, v in payload.items()
                            if k in ("data_mode", "dte", "strike", "exec_premium",

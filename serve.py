@@ -1997,6 +1997,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         elif parsed.path == "/api/watchdog":
             from operational_watchdog import report
             self._json({"ok": True, "report": report()})
+        elif parsed.path.startswith("/api/ai/decision/"):
+            self._handle_advisor_decision_get(parsed.path.rsplit('/',1)[-1])
+        elif parsed.path == "/api/ai/advisor-health":
+            self._handle_advisor_health()
         elif parsed.path == "/api/learning/readiness":
             self._handle_learning_readiness()
         elif parsed.path == "/api/learning/champion-challenger":
@@ -2054,6 +2058,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._handle_trade_engine_run_alpaca()
         elif parsed.path == "/api/invest-chat":
             self._handle_invest_chat()
+        elif parsed.path == "/api/ai/decision":
+            self._handle_advisor_decision()
         elif parsed.path == "/api/ai/chat":
             self._handle_portfolio_chat()
         elif parsed.path == "/api/brief/respond":
@@ -4900,6 +4906,54 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self._json_error(status_code, result.get("error", ""))
         except Exception as e:
             self._json_error(500, f"Could not record response: {e}")
+
+    def _handle_advisor_decision(self):
+        from agents.advisor.api import decision_response
+        from agents.advisor.sqlite_guard import GuardedConnection
+        conn = None
+        try:
+            body = self._read_body()
+            conn = sqlite3.connect(str(PROJECT_DIR / "out" / "investment.db"), timeout=10, factory=GuardedConnection)
+            conn.row_factory = sqlite3.Row
+            result = decision_response(conn, body)
+            self._json(result)
+        except ValueError as error:
+            self._json_error(400, str(error))
+        except Exception:
+            self._json({"available":False,"decision_state":"REVIEW_REQUIRED","execution_ready":False,
+                        "error":"Advisor Decision unavailable; no execution was authorized."})
+        finally:
+            if conn is not None: conn.close()
+
+    def _handle_advisor_decision_get(self, decision_id):
+        from agents.advisor.api import get_decision
+        from agents.advisor.sqlite_guard import GuardedConnection
+        conn = None
+        try:
+            conn = sqlite3.connect(str(PROJECT_DIR / "out" / "investment.db"), timeout=10, factory=GuardedConnection)
+            conn.row_factory = sqlite3.Row
+            result = get_decision(conn, decision_id)
+            if result is None: self._json_error(404,"Advisor decision not found")
+            else: self._json(result)
+        except Exception:
+            self._json({"available":False,"decision_state":"REVIEW_REQUIRED","execution_ready":False,
+                        "error":"Decision validity unavailable; recomputation required."})
+        finally:
+            if conn is not None: conn.close()
+
+    def _handle_advisor_health(self):
+        from agents.advisor.persistence import health
+        from agents.advisor.context import build_advisor_decision_context
+        from agents.advisor.sqlite_guard import GuardedConnection
+        conn = sqlite3.connect(f"file:{PROJECT_DIR}/out/investment.db?mode=ro", uri=True, timeout=10, factory=GuardedConnection)
+        conn.row_factory = sqlite3.Row
+        try:
+            context = build_advisor_decision_context(conn)
+            result = health(conn,context_for_account=lambda account: build_advisor_decision_context(conn,account_id=account))
+            result['risk_accounts'] = [dict(account_id=r['account_id'],name=r['name'],mode=r['mode'])
+                for r in conn.execute('SELECT account_id,name,mode FROM trading_accounts ORDER BY account_id')]
+            self._json(result)
+        finally: conn.close()
 
     def _handle_portfolio_chat(self):
         """POST /api/ai/chat — SSE streaming chat with portfolio + macro context as system prompt.

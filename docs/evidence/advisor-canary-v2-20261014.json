@@ -1,0 +1,1055 @@
+{
+  "canary_contract": "advisor-canary-v2",
+  "captured_at": "2026-10-14T11:49:10.662205+00:00",
+  "context_hash": "975b16d593e9a7013ed5ecd992843467f2732c9517db231f2588af3d9b52940b",
+  "denied_mutations": [],
+  "execution_ready": false,
+  "expected_unavailability": [
+    "Critic LLM disabled",
+    "Risk account not selected; account alignment remains unavailable"
+  ],
+  "failed_invariants": [],
+  "functional_contract": "PASS",
+  "health": "PASS",
+  "mutation_safety": "PASS",
+  "network_free": true,
+  "outcomes": [
+    {
+      "contract_version": "advisor-decision-v1",
+      "execution_ready": false,
+      "failed_invariants": [],
+      "intent": "TARGET_POSITION",
+      "observed_delta": 17.0,
+      "reasons": [
+        "CRITIC_REVIEW_REQUIRED",
+        "REFERENCE_PRICE_NOT_CURRENT:BP",
+        "REQUIRED_SOURCE_NOT_CURRENT:account_alignment",
+        "REQUIRED_SOURCE_NOT_CURRENT:agent_pipeline",
+        "REQUIRED_SOURCE_NOT_CURRENT:risk_state",
+        "RISK_PREVIEW_REQUIRED",
+        "THESIS_VETO:BP"
+      ],
+      "request": "Get BP to 117 shares",
+      "scenario": "target",
+      "state": "BLOCKED"
+    },
+    {
+      "contract_version": "advisor-decision-v1",
+      "execution_ready": false,
+      "failed_invariants": [],
+      "intent": "TRADE_DELTA",
+      "observed_delta": 17.0,
+      "reasons": [
+        "CRITIC_REVIEW_REQUIRED",
+        "REFERENCE_PRICE_NOT_CURRENT:BP",
+        "REQUIRED_SOURCE_NOT_CURRENT:account_alignment",
+        "REQUIRED_SOURCE_NOT_CURRENT:agent_pipeline",
+        "REQUIRED_SOURCE_NOT_CURRENT:risk_state",
+        "RISK_PREVIEW_REQUIRED",
+        "THESIS_VETO:BP"
+      ],
+      "request": "Buy 17.0 BP",
+      "scenario": "delta",
+      "state": "BLOCKED"
+    }
+  ],
+  "production_state_unchanged": true,
+  "protected_state_after": {
+    "schema_hash": "47ef3bdc309cfd4185a41c3a3359bfa8d7bf98b08ec83aee038aeb8eea99212e",
+    "tables": {
+      "_news_intelligence_acceptance": {
+        "count": 1,
+        "hash": "7ac13af849308d0a3a156740e396aa8ac065a777385fa2c5d92d5316ff3aeaca"
+      },
+      "_schema_migrations": {
+        "count": 1,
+        "hash": "6e234d3c5471275f9a9fcdc6ff1ae67c97421d7bb738a47dcdcb2bf55e634bfe"
+      },
+      "account_snapshots": {
+        "count": 120,
+        "hash": "91648d021a4e7e86e30d317528d1f2718ab8e6318eb881c577126877dae9d1b8"
+      },
+      "agent_findings": {
+        "count": 5401,
+        "hash": "45ee38e939db96d8a99f079bb4218f7c8667c6d2abb9b57a35e649aea6766cf5"
+      },
+      "agent_runs": {
+        "count": 1054,
+        "hash": "426c61a16bccece9cb11f9d1ae93f4cd948b08ab2716316ed87142787fb64937"
+      },
+      "ai_insights": {
+        "count": 51,
+        "hash": "59c696f04cca65e899b5a35ac2496226a10fb1c9177dcdba02302388add8eb2e"
+      },
+      "broker_api_log": {
+        "count": 665,
+        "hash": "3c2dfe83c1aafb0043e580439db2b51a3a2c0ea499d0e84bf1e91fcae80495c9"
+      },
+      "buffett_cache": {
+        "count": 299,
+        "hash": "0ad4b705949929624cdb5ac3afdd281c8f4085fccf98b8c316e4a0f27b29798b"
+      },
+      "buffett_meta": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "buffett_winners": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "candidate_decisions": {
+        "count": 81,
+        "hash": "1f01eaf177fc5b0e6dd84cf49463372856e5d54a4cd9081878dca5a8cbd381e5"
+      },
+      "candidate_universe": {
+        "count": 85,
+        "hash": "0f416bc00ec8e0db66512e959bd84e933573c8efc3d8c97a78ec83b5d37b2041"
+      },
+      "cc_actual_fill_evidence": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "cc_actual_policy_evaluations": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "cc_candidates": {
+        "count": 20,
+        "hash": "8d50c8dfce317d8e8e85f445484eb44e9a86d554495403b0f323153adec0eda8"
+      },
+      "cc_chain_costs": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "cc_daily_pnl_marks": {
+        "count": 7,
+        "hash": "9c558e7f1886febd058d7eebefbf3982e77de1973040716c8e2ccf59f231c2e4"
+      },
+      "cc_decision_contracts": {
+        "count": 14,
+        "hash": "e5bd19bbe83abd476b32330e59b2b3fe546bc614326377387c571208bfa8db21"
+      },
+      "cc_decisions": {
+        "count": 14,
+        "hash": "57eab1e602693e3ab4d9c8c7726d3d23f306acc92f36826c5510ffe2e0f0bee1"
+      },
+      "cc_fills": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "cc_labels": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "cc_market_snapshots": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "cc_outcomes": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "cc_positions": {
+        "count": 57,
+        "hash": "b7079ac7b20754cb69c424cede7ffd6c2dbbc8b2b80d6ed8911b71be8a9d05a7"
+      },
+      "cc_promotions": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "cc_scorer_state": {
+        "count": 1,
+        "hash": "3ee93ef6cbecf2ba28d8917d7189648a4113a484a1b4466d910893d9d8384bf5"
+      },
+      "cc_simulator_certifications": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "cc_simulator_validation_runs": {
+        "count": 1,
+        "hash": "15efa7de00a960e11d42d4c59a7952463dc8318bc57ef8be93bd9a5edb33ee55"
+      },
+      "cc_virtual_actions": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "cc_virtual_chains": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "cc_virtual_fills": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "cc_virtual_intervals": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "cc_virtual_positions": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "company_estimates": {
+        "count": 45,
+        "hash": "d61cdb7b400bd337227d64905495e273c7c6eb752fcecc99ac09c72c5accf6fd"
+      },
+      "company_financials": {
+        "count": 477,
+        "hash": "2d6a79f4fa5af1426990b58e9dc6f9372705b85c226b9160ca10d9eb271a4fe2"
+      },
+      "company_geo_profile": {
+        "count": 2,
+        "hash": "d0daa2ec5bd3dee707cf4f0db8623db7603db9927ab0eaa211319125cbebfbc3"
+      },
+      "cost_lots": {
+        "count": 233,
+        "hash": "62f7b9b41e06127c07e706b71c277462fb7bf649444388e68f8329dc6e2e5808"
+      },
+      "critic_reviews": {
+        "count": 1651,
+        "hash": "3717ccca3d9d708caf1a6cf88ffd793a3d74ee3f2b87818a65b43e47e5ec59b5"
+      },
+      "cycle_runs": {
+        "count": 66,
+        "hash": "59db4bb3e76a28573bd903a019546038978df5e3c27138739c157f452808a305"
+      },
+      "decision_episodes": {
+        "count": 4230,
+        "hash": "8f15c08505ccbe2acb9fae33312f3799784d4c157f491146dc53f5087f566cef"
+      },
+      "decision_variants": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "earnings_dates": {
+        "count": 40,
+        "hash": "5c931682218524b5d2f1bcb402037d5563c47d8a00f87baf420ba46d86ec5862"
+      },
+      "episode_outcomes": {
+        "count": 8460,
+        "hash": "dc205fdd44ef46b2a9fe641b3a917440be3c00e5dd8f988668819afa6a654c1f"
+      },
+      "estimate_history": {
+        "count": 184,
+        "hash": "369bf7092dc74e34503a62a7734526aab9ee539508d91a04c4f501aa99ae02df"
+      },
+      "event_calendar": {
+        "count": 68,
+        "hash": "799608e27613c772fdffe3ef25e0ce1dd9b83b9565b9a6944fd5f111d83f8abf"
+      },
+      "executed_actions": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "execution_leases": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "fills": {
+        "count": 9,
+        "hash": "79fd1ae67239982feb3b7275b5419f9d7472115bff6a38e0f80b2ef8a33f7bcc"
+      },
+      "guardian_flags": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "historical_valuation_metrics": {
+        "count": 81,
+        "hash": "d341bf6fa75be88c4c3369d21da08024131cc4b581bb68d1908b8bda0c925e79"
+      },
+      "holding_day": {
+        "count": 4341,
+        "hash": "dd9e5d50cbcee0326414b23dade3229b5ef3628e14d00a9762526fcb6dbec220"
+      },
+      "holding_macro_scores": {
+        "count": 29,
+        "hash": "aa740d751b9b123c74c783fa99a71eb32677e98bd11a4e38e583688c3eed09ce"
+      },
+      "holding_macro_scores_history": {
+        "count": 519,
+        "hash": "c9f4df0c0ad98d8077b9b7282ab75c014bf6b0046e96ff7c4f097c2cef1ac1d4"
+      },
+      "investment_theses": {
+        "count": 46,
+        "hash": "9e382f898b6ac403e87f1420e3a81520d172ef0fc24ac62b7592fad016fc047f"
+      },
+      "layer_day": {
+        "count": 873,
+        "hash": "0274e585abe9d438f399834a2b3a6853f49ad70b5ea9cc89372fde07f92a7409"
+      },
+      "learned_preferences": {
+        "count": 15,
+        "hash": "753182f538ba925e208c8cef629da2e29f03b7f4020e51bc13f37623c333b8d3"
+      },
+      "learning_models": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "learning_sweep_runs": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "macro_acceptance_state": {
+        "count": 1,
+        "hash": "b56ab23152510a7826c0e133e4222e03a29a8282b32e74447098f0833266f4ba"
+      },
+      "macro_candidate_score_history": {
+        "count": 254,
+        "hash": "5bbae0671a99bb0b57c37241f8da04aad051c40fa0a1f990b308decd932f6244"
+      },
+      "macro_candidate_scores": {
+        "count": 20,
+        "hash": "ad8a09e6078895fc971b3d4d4b89b6eea9563390f7ad3e275f444004eab085c2"
+      },
+      "macro_candidate_scoring_run_items": {
+        "count": 276,
+        "hash": "9c5a33a28ac320c988da29e85694de2d92987391e07ffff47c93e1b6b6485e05"
+      },
+      "macro_candidate_scoring_runs": {
+        "count": 18,
+        "hash": "0cae9f2d95dd39a2b8384915c773554ed648c4b7fbbd2bb6e1ed59a860f2aa4a"
+      },
+      "macro_coverage_certifications": {
+        "count": 6,
+        "hash": "0a35f0c784382b66597d9b676eebe7af12eff14c6d22050d154ba774f9957b0d"
+      },
+      "macro_coverage_validation": {
+        "count": 80,
+        "hash": "849428f3e5541c21f4df527b2c161f85b21399ebf427d6ce9cbc2f4498c7bd5d"
+      },
+      "macro_dimension_runtime_stability": {
+        "count": 72,
+        "hash": "ee593c6c89d95620bc9cc39f501ce4c0329c46b7fc4e9c7e54178aef14a43c46"
+      },
+      "macro_dimension_stability": {
+        "count": 32,
+        "hash": "53db2fdbf62c9b7cda827166fc0e1d2020a7090571dc2bc6e035b8b3c88e80b7"
+      },
+      "macro_dimension_validation": {
+        "count": 128,
+        "hash": "d8bf42ba8422e0bd4b0dd8c294bb62794d574715b571247efb60c39f5a446698"
+      },
+      "macro_experiment_canaries": {
+        "count": 1,
+        "hash": "3e3692353a6daa9f377c3d364931138c6cf8960adde234788eb3b04853c2d2a0"
+      },
+      "macro_experiment_candidates": {
+        "count": 2826,
+        "hash": "9695cceaccae3526e6b823c020fe2baef180c63bfc3159a3406d11a144206519"
+      },
+      "macro_experiment_cohorts": {
+        "count": 36,
+        "hash": "d3aa4ee43cf46e369e57459ee6171af79389e5a3d2ff1647f115efae6b913f0b"
+      },
+      "macro_experiment_coverage": {
+        "count": 35,
+        "hash": "ee79f604151f5f362386274b10a41c9923215cb86add63eec5ef0f57fef511f5"
+      },
+      "macro_experiment_epochs": {
+        "count": 4,
+        "hash": "21eb2fae5789705c0242e0b0b43a021437e7ca3602429c19c38b5c1de0e02147"
+      },
+      "macro_experiment_labels": {
+        "count": 35,
+        "hash": "e678bf7c4bd2c30aebf2255ac769f179d4fe9d7f07603b602d24fca5407dfb4c"
+      },
+      "macro_health_snapshots": {
+        "count": 15,
+        "hash": "a1636a2ca3686c353f6f86e119c6a8b784f40c0df09485b7f9a28e6028d36ebf"
+      },
+      "macro_regime_snapshots": {
+        "count": 6,
+        "hash": "39ef2eeb411b7ca173f9c14a766a09ba4fd171bd1839666c65e45c61b839fca1"
+      },
+      "macro_score_summaries": {
+        "count": 17,
+        "hash": "851859284e6aa5898da1272664593e2d279cb355695f8fe4353c6665e93d0589"
+      },
+      "macro_scoring_run_items": {
+        "count": 329,
+        "hash": "5275f265b139fd4046c1bd8a1209e767b23e2afc27e4fdc4b1e770caf2032322"
+      },
+      "macro_scoring_runs": {
+        "count": 16,
+        "hash": "996182367894b91e3dda1527428bf52a999ee535221da76a88abcc139b743489"
+      },
+      "macro_validation_runs": {
+        "count": 4,
+        "hash": "97b1348a7e6956d8761e3c2b872f1493f1aac1ef4f3266ed4419cdb468b120d8"
+      },
+      "model_observations": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "model_performance_snapshots": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "model_promotion_log": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "news_event_state": {
+        "count": 89,
+        "hash": "81b8858954197cafa2690c0cc6f3b2ef1b00ee4672c8b440a80361568d75c3de"
+      },
+      "news_events": {
+        "count": 37,
+        "hash": "0929600e684eb524c882c29a87a41966fc09d01cc13704f6cdae255604afa51b"
+      },
+      "news_maintenance_log": {
+        "count": 212,
+        "hash": "8d42f749c0deb9a25fd4bbf2e3185d68c88e992980dbf06b1c0089ae5d0b87ed"
+      },
+      "news_portfolio_themes": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "news_snapshots": {
+        "count": 143,
+        "hash": "061ee9b0e24300817f8401633434b5cc7bca8df2eb614cbd1f2075f57b3b84bd"
+      },
+      "news_summaries": {
+        "count": 52,
+        "hash": "66d9fe30c02d277ad11a1129e92bffdede88ef38e5a0231e3a755c36f658542a"
+      },
+      "notification_events": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "option_quote_snapshots": {
+        "count": 1113,
+        "hash": "1fd53f06a42ea0ed42bb3064dee4d628161ec825d39157657e7881cb5fb60258"
+      },
+      "orders": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "portfolio_brief_episodes": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "portfolio_brief_provenance": {
+        "count": 85,
+        "hash": "6e829c5cfb60186a9ae2df87246ec35f15f37117023435c6445b13bf493f24c6"
+      },
+      "portfolio_brief_responses": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "portfolio_brief_snapshots": {
+        "count": 30,
+        "hash": "c1247d86b62b4a8f9a3f83417a6715cfde27c95420e444324e483076f1cfc07d"
+      },
+      "portfolio_day": {
+        "count": 175,
+        "hash": "6a4f3c399f8125472b451c1eb7167b1f2fd3b043032928ae6232329aa87e6f9a"
+      },
+      "position_snapshots": {
+        "count": 1,
+        "hash": "0de2c75f4b7deb7b8e8103375b69da4bbd4a044829fc3ed9e65c3bf8effb44e7"
+      },
+      "preference_feedback": {
+        "count": 4,
+        "hash": "cad091833209ec3af498a9317102297fa125efbf2d6909bf759015e046076899"
+      },
+      "recommendation_dependencies": {
+        "count": 4405,
+        "hash": "17bbceebf75aabe6bad1246170bdd30f6a7695232fd73b2e865059bdb29279fb"
+      },
+      "recommendation_outcomes": {
+        "count": 75,
+        "hash": "4c052dbf78047b08b9b3a54ede1ba5b4251407b0e7d1053c3bf9316cf8d9deb5"
+      },
+      "recommendations": {
+        "count": 6849,
+        "hash": "7e9d4f0db30d54aa8883077efd2f3f52207ce22d8d53c19668c63cd252e4b09e"
+      },
+      "risk_counterfactual_outcomes": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "risk_decisions": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "sell_transactions": {
+        "count": 6,
+        "hash": "c88b45cb0d857e50493de7088d727cd21039897dc698d66ff6ba1bec27be5082"
+      },
+      "spy_prices": {
+        "count": 37,
+        "hash": "8c7584743531244869099675d5b98d31a5bb855c43e53dacdcc417c706c6663b"
+      },
+      "sqlite_sequence": {
+        "count": 19,
+        "hash": "34d5b8515c566d90631a4196fca7bee76bbff38095764cafb1a49971279a7543"
+      },
+      "test": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "thesis_catalysts": {
+        "count": 39,
+        "hash": "e0e17d3a96981d9aaf3284f9e9f2443d951e71d62aef5ee42a270318797c0468"
+      },
+      "thesis_claims": {
+        "count": 1,
+        "hash": "0ad08844a0475e2ebacd1624412ecb9b4dc9fbf2a1e415e8f44fb57b64b0f44f"
+      },
+      "thesis_metrics": {
+        "count": 160,
+        "hash": "86ee06fccf40f0af87e20d4f7ab19e05817012ccf8d24f4a7ada2c892a83a781"
+      },
+      "thesis_pillars": {
+        "count": 142,
+        "hash": "a2718b0feeda1db5d1067ac173ae36c1a8f328125ed1a440f5ead61dd503205d"
+      },
+      "thesis_risks": {
+        "count": 45,
+        "hash": "383179ad548c8ec3b9a6b381293e098a0b56af98d33d96120977b9e56c168926"
+      },
+      "thesis_rules": {
+        "count": 89,
+        "hash": "5b9eb1dd649f54505ee1c48ae19c7addcbafd437a86438e9e2d101e0051f19e8"
+      },
+      "ticker_metadata": {
+        "count": 42,
+        "hash": "dc4f09c5e4cf1ff7c79239d0c8bbb204ab6877406497f0bb74ba6bcf6b291c8f"
+      },
+      "trade_intents": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "trade_outcomes": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "trading_accounts": {
+        "count": 2,
+        "hash": "6366d8ae2e13b1604059676dcf0298dbdce4d28e3b4d4f737f90e9a002ccdbc1"
+      },
+      "user_decisions": {
+        "count": 159,
+        "hash": "401b38578195a552b9ed1294d8b3ada01e2d19bd3ccede7f4ae034c44cfcc507"
+      },
+      "virtual_book_nav": {
+        "count": 114,
+        "hash": "84902b00a947998888cd598c911132afc35c27785356fbfffd804a3147e2e98d"
+      },
+      "virtual_books": {
+        "count": 8,
+        "hash": "9c3ec15160eeb79d7d4c17c7ada1fcd1d5d2b916022cac74658e2ee1f3647f9e"
+      },
+      "virtual_fills": {
+        "count": 10,
+        "hash": "5f6f23ec1302d4617550a79abdcf1f6640317b2d15b3265d202b650bd8cdaf0e"
+      }
+    }
+  },
+  "protected_state_before": {
+    "schema_hash": "47ef3bdc309cfd4185a41c3a3359bfa8d7bf98b08ec83aee038aeb8eea99212e",
+    "tables": {
+      "_news_intelligence_acceptance": {
+        "count": 1,
+        "hash": "7ac13af849308d0a3a156740e396aa8ac065a777385fa2c5d92d5316ff3aeaca"
+      },
+      "_schema_migrations": {
+        "count": 1,
+        "hash": "6e234d3c5471275f9a9fcdc6ff1ae67c97421d7bb738a47dcdcb2bf55e634bfe"
+      },
+      "account_snapshots": {
+        "count": 120,
+        "hash": "91648d021a4e7e86e30d317528d1f2718ab8e6318eb881c577126877dae9d1b8"
+      },
+      "agent_findings": {
+        "count": 5401,
+        "hash": "45ee38e939db96d8a99f079bb4218f7c8667c6d2abb9b57a35e649aea6766cf5"
+      },
+      "agent_runs": {
+        "count": 1054,
+        "hash": "426c61a16bccece9cb11f9d1ae93f4cd948b08ab2716316ed87142787fb64937"
+      },
+      "ai_insights": {
+        "count": 51,
+        "hash": "59c696f04cca65e899b5a35ac2496226a10fb1c9177dcdba02302388add8eb2e"
+      },
+      "broker_api_log": {
+        "count": 665,
+        "hash": "3c2dfe83c1aafb0043e580439db2b51a3a2c0ea499d0e84bf1e91fcae80495c9"
+      },
+      "buffett_cache": {
+        "count": 299,
+        "hash": "0ad4b705949929624cdb5ac3afdd281c8f4085fccf98b8c316e4a0f27b29798b"
+      },
+      "buffett_meta": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "buffett_winners": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "candidate_decisions": {
+        "count": 81,
+        "hash": "1f01eaf177fc5b0e6dd84cf49463372856e5d54a4cd9081878dca5a8cbd381e5"
+      },
+      "candidate_universe": {
+        "count": 85,
+        "hash": "0f416bc00ec8e0db66512e959bd84e933573c8efc3d8c97a78ec83b5d37b2041"
+      },
+      "cc_actual_fill_evidence": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "cc_actual_policy_evaluations": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "cc_candidates": {
+        "count": 20,
+        "hash": "8d50c8dfce317d8e8e85f445484eb44e9a86d554495403b0f323153adec0eda8"
+      },
+      "cc_chain_costs": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "cc_daily_pnl_marks": {
+        "count": 7,
+        "hash": "9c558e7f1886febd058d7eebefbf3982e77de1973040716c8e2ccf59f231c2e4"
+      },
+      "cc_decision_contracts": {
+        "count": 14,
+        "hash": "e5bd19bbe83abd476b32330e59b2b3fe546bc614326377387c571208bfa8db21"
+      },
+      "cc_decisions": {
+        "count": 14,
+        "hash": "57eab1e602693e3ab4d9c8c7726d3d23f306acc92f36826c5510ffe2e0f0bee1"
+      },
+      "cc_fills": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "cc_labels": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "cc_market_snapshots": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "cc_outcomes": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "cc_positions": {
+        "count": 57,
+        "hash": "b7079ac7b20754cb69c424cede7ffd6c2dbbc8b2b80d6ed8911b71be8a9d05a7"
+      },
+      "cc_promotions": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "cc_scorer_state": {
+        "count": 1,
+        "hash": "3ee93ef6cbecf2ba28d8917d7189648a4113a484a1b4466d910893d9d8384bf5"
+      },
+      "cc_simulator_certifications": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "cc_simulator_validation_runs": {
+        "count": 1,
+        "hash": "15efa7de00a960e11d42d4c59a7952463dc8318bc57ef8be93bd9a5edb33ee55"
+      },
+      "cc_virtual_actions": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "cc_virtual_chains": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "cc_virtual_fills": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "cc_virtual_intervals": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "cc_virtual_positions": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "company_estimates": {
+        "count": 45,
+        "hash": "d61cdb7b400bd337227d64905495e273c7c6eb752fcecc99ac09c72c5accf6fd"
+      },
+      "company_financials": {
+        "count": 477,
+        "hash": "2d6a79f4fa5af1426990b58e9dc6f9372705b85c226b9160ca10d9eb271a4fe2"
+      },
+      "company_geo_profile": {
+        "count": 2,
+        "hash": "d0daa2ec5bd3dee707cf4f0db8623db7603db9927ab0eaa211319125cbebfbc3"
+      },
+      "cost_lots": {
+        "count": 233,
+        "hash": "62f7b9b41e06127c07e706b71c277462fb7bf649444388e68f8329dc6e2e5808"
+      },
+      "critic_reviews": {
+        "count": 1651,
+        "hash": "3717ccca3d9d708caf1a6cf88ffd793a3d74ee3f2b87818a65b43e47e5ec59b5"
+      },
+      "cycle_runs": {
+        "count": 66,
+        "hash": "59db4bb3e76a28573bd903a019546038978df5e3c27138739c157f452808a305"
+      },
+      "decision_episodes": {
+        "count": 4230,
+        "hash": "8f15c08505ccbe2acb9fae33312f3799784d4c157f491146dc53f5087f566cef"
+      },
+      "decision_variants": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "earnings_dates": {
+        "count": 40,
+        "hash": "5c931682218524b5d2f1bcb402037d5563c47d8a00f87baf420ba46d86ec5862"
+      },
+      "episode_outcomes": {
+        "count": 8460,
+        "hash": "dc205fdd44ef46b2a9fe641b3a917440be3c00e5dd8f988668819afa6a654c1f"
+      },
+      "estimate_history": {
+        "count": 184,
+        "hash": "369bf7092dc74e34503a62a7734526aab9ee539508d91a04c4f501aa99ae02df"
+      },
+      "event_calendar": {
+        "count": 68,
+        "hash": "799608e27613c772fdffe3ef25e0ce1dd9b83b9565b9a6944fd5f111d83f8abf"
+      },
+      "executed_actions": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "execution_leases": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "fills": {
+        "count": 9,
+        "hash": "79fd1ae67239982feb3b7275b5419f9d7472115bff6a38e0f80b2ef8a33f7bcc"
+      },
+      "guardian_flags": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "historical_valuation_metrics": {
+        "count": 81,
+        "hash": "d341bf6fa75be88c4c3369d21da08024131cc4b581bb68d1908b8bda0c925e79"
+      },
+      "holding_day": {
+        "count": 4341,
+        "hash": "dd9e5d50cbcee0326414b23dade3229b5ef3628e14d00a9762526fcb6dbec220"
+      },
+      "holding_macro_scores": {
+        "count": 29,
+        "hash": "aa740d751b9b123c74c783fa99a71eb32677e98bd11a4e38e583688c3eed09ce"
+      },
+      "holding_macro_scores_history": {
+        "count": 519,
+        "hash": "c9f4df0c0ad98d8077b9b7282ab75c014bf6b0046e96ff7c4f097c2cef1ac1d4"
+      },
+      "investment_theses": {
+        "count": 46,
+        "hash": "9e382f898b6ac403e87f1420e3a81520d172ef0fc24ac62b7592fad016fc047f"
+      },
+      "layer_day": {
+        "count": 873,
+        "hash": "0274e585abe9d438f399834a2b3a6853f49ad70b5ea9cc89372fde07f92a7409"
+      },
+      "learned_preferences": {
+        "count": 15,
+        "hash": "753182f538ba925e208c8cef629da2e29f03b7f4020e51bc13f37623c333b8d3"
+      },
+      "learning_models": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "learning_sweep_runs": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "macro_acceptance_state": {
+        "count": 1,
+        "hash": "b56ab23152510a7826c0e133e4222e03a29a8282b32e74447098f0833266f4ba"
+      },
+      "macro_candidate_score_history": {
+        "count": 254,
+        "hash": "5bbae0671a99bb0b57c37241f8da04aad051c40fa0a1f990b308decd932f6244"
+      },
+      "macro_candidate_scores": {
+        "count": 20,
+        "hash": "ad8a09e6078895fc971b3d4d4b89b6eea9563390f7ad3e275f444004eab085c2"
+      },
+      "macro_candidate_scoring_run_items": {
+        "count": 276,
+        "hash": "9c5a33a28ac320c988da29e85694de2d92987391e07ffff47c93e1b6b6485e05"
+      },
+      "macro_candidate_scoring_runs": {
+        "count": 18,
+        "hash": "0cae9f2d95dd39a2b8384915c773554ed648c4b7fbbd2bb6e1ed59a860f2aa4a"
+      },
+      "macro_coverage_certifications": {
+        "count": 6,
+        "hash": "0a35f0c784382b66597d9b676eebe7af12eff14c6d22050d154ba774f9957b0d"
+      },
+      "macro_coverage_validation": {
+        "count": 80,
+        "hash": "849428f3e5541c21f4df527b2c161f85b21399ebf427d6ce9cbc2f4498c7bd5d"
+      },
+      "macro_dimension_runtime_stability": {
+        "count": 72,
+        "hash": "ee593c6c89d95620bc9cc39f501ce4c0329c46b7fc4e9c7e54178aef14a43c46"
+      },
+      "macro_dimension_stability": {
+        "count": 32,
+        "hash": "53db2fdbf62c9b7cda827166fc0e1d2020a7090571dc2bc6e035b8b3c88e80b7"
+      },
+      "macro_dimension_validation": {
+        "count": 128,
+        "hash": "d8bf42ba8422e0bd4b0dd8c294bb62794d574715b571247efb60c39f5a446698"
+      },
+      "macro_experiment_canaries": {
+        "count": 1,
+        "hash": "3e3692353a6daa9f377c3d364931138c6cf8960adde234788eb3b04853c2d2a0"
+      },
+      "macro_experiment_candidates": {
+        "count": 2826,
+        "hash": "9695cceaccae3526e6b823c020fe2baef180c63bfc3159a3406d11a144206519"
+      },
+      "macro_experiment_cohorts": {
+        "count": 36,
+        "hash": "d3aa4ee43cf46e369e57459ee6171af79389e5a3d2ff1647f115efae6b913f0b"
+      },
+      "macro_experiment_coverage": {
+        "count": 35,
+        "hash": "ee79f604151f5f362386274b10a41c9923215cb86add63eec5ef0f57fef511f5"
+      },
+      "macro_experiment_epochs": {
+        "count": 4,
+        "hash": "21eb2fae5789705c0242e0b0b43a021437e7ca3602429c19c38b5c1de0e02147"
+      },
+      "macro_experiment_labels": {
+        "count": 35,
+        "hash": "e678bf7c4bd2c30aebf2255ac769f179d4fe9d7f07603b602d24fca5407dfb4c"
+      },
+      "macro_health_snapshots": {
+        "count": 15,
+        "hash": "a1636a2ca3686c353f6f86e119c6a8b784f40c0df09485b7f9a28e6028d36ebf"
+      },
+      "macro_regime_snapshots": {
+        "count": 6,
+        "hash": "39ef2eeb411b7ca173f9c14a766a09ba4fd171bd1839666c65e45c61b839fca1"
+      },
+      "macro_score_summaries": {
+        "count": 17,
+        "hash": "851859284e6aa5898da1272664593e2d279cb355695f8fe4353c6665e93d0589"
+      },
+      "macro_scoring_run_items": {
+        "count": 329,
+        "hash": "5275f265b139fd4046c1bd8a1209e767b23e2afc27e4fdc4b1e770caf2032322"
+      },
+      "macro_scoring_runs": {
+        "count": 16,
+        "hash": "996182367894b91e3dda1527428bf52a999ee535221da76a88abcc139b743489"
+      },
+      "macro_validation_runs": {
+        "count": 4,
+        "hash": "97b1348a7e6956d8761e3c2b872f1493f1aac1ef4f3266ed4419cdb468b120d8"
+      },
+      "model_observations": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "model_performance_snapshots": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "model_promotion_log": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "news_event_state": {
+        "count": 89,
+        "hash": "81b8858954197cafa2690c0cc6f3b2ef1b00ee4672c8b440a80361568d75c3de"
+      },
+      "news_events": {
+        "count": 37,
+        "hash": "0929600e684eb524c882c29a87a41966fc09d01cc13704f6cdae255604afa51b"
+      },
+      "news_maintenance_log": {
+        "count": 212,
+        "hash": "8d42f749c0deb9a25fd4bbf2e3185d68c88e992980dbf06b1c0089ae5d0b87ed"
+      },
+      "news_portfolio_themes": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "news_snapshots": {
+        "count": 143,
+        "hash": "061ee9b0e24300817f8401633434b5cc7bca8df2eb614cbd1f2075f57b3b84bd"
+      },
+      "news_summaries": {
+        "count": 52,
+        "hash": "66d9fe30c02d277ad11a1129e92bffdede88ef38e5a0231e3a755c36f658542a"
+      },
+      "notification_events": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "option_quote_snapshots": {
+        "count": 1113,
+        "hash": "1fd53f06a42ea0ed42bb3064dee4d628161ec825d39157657e7881cb5fb60258"
+      },
+      "orders": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "portfolio_brief_episodes": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "portfolio_brief_provenance": {
+        "count": 85,
+        "hash": "6e829c5cfb60186a9ae2df87246ec35f15f37117023435c6445b13bf493f24c6"
+      },
+      "portfolio_brief_responses": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "portfolio_brief_snapshots": {
+        "count": 30,
+        "hash": "c1247d86b62b4a8f9a3f83417a6715cfde27c95420e444324e483076f1cfc07d"
+      },
+      "portfolio_day": {
+        "count": 175,
+        "hash": "6a4f3c399f8125472b451c1eb7167b1f2fd3b043032928ae6232329aa87e6f9a"
+      },
+      "position_snapshots": {
+        "count": 1,
+        "hash": "0de2c75f4b7deb7b8e8103375b69da4bbd4a044829fc3ed9e65c3bf8effb44e7"
+      },
+      "preference_feedback": {
+        "count": 4,
+        "hash": "cad091833209ec3af498a9317102297fa125efbf2d6909bf759015e046076899"
+      },
+      "recommendation_dependencies": {
+        "count": 4405,
+        "hash": "17bbceebf75aabe6bad1246170bdd30f6a7695232fd73b2e865059bdb29279fb"
+      },
+      "recommendation_outcomes": {
+        "count": 75,
+        "hash": "4c052dbf78047b08b9b3a54ede1ba5b4251407b0e7d1053c3bf9316cf8d9deb5"
+      },
+      "recommendations": {
+        "count": 6849,
+        "hash": "7e9d4f0db30d54aa8883077efd2f3f52207ce22d8d53c19668c63cd252e4b09e"
+      },
+      "risk_counterfactual_outcomes": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "risk_decisions": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "sell_transactions": {
+        "count": 6,
+        "hash": "c88b45cb0d857e50493de7088d727cd21039897dc698d66ff6ba1bec27be5082"
+      },
+      "spy_prices": {
+        "count": 37,
+        "hash": "8c7584743531244869099675d5b98d31a5bb855c43e53dacdcc417c706c6663b"
+      },
+      "sqlite_sequence": {
+        "count": 19,
+        "hash": "34d5b8515c566d90631a4196fca7bee76bbff38095764cafb1a49971279a7543"
+      },
+      "test": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "thesis_catalysts": {
+        "count": 39,
+        "hash": "e0e17d3a96981d9aaf3284f9e9f2443d951e71d62aef5ee42a270318797c0468"
+      },
+      "thesis_claims": {
+        "count": 1,
+        "hash": "0ad08844a0475e2ebacd1624412ecb9b4dc9fbf2a1e415e8f44fb57b64b0f44f"
+      },
+      "thesis_metrics": {
+        "count": 160,
+        "hash": "86ee06fccf40f0af87e20d4f7ab19e05817012ccf8d24f4a7ada2c892a83a781"
+      },
+      "thesis_pillars": {
+        "count": 142,
+        "hash": "a2718b0feeda1db5d1067ac173ae36c1a8f328125ed1a440f5ead61dd503205d"
+      },
+      "thesis_risks": {
+        "count": 45,
+        "hash": "383179ad548c8ec3b9a6b381293e098a0b56af98d33d96120977b9e56c168926"
+      },
+      "thesis_rules": {
+        "count": 89,
+        "hash": "5b9eb1dd649f54505ee1c48ae19c7addcbafd437a86438e9e2d101e0051f19e8"
+      },
+      "ticker_metadata": {
+        "count": 42,
+        "hash": "dc4f09c5e4cf1ff7c79239d0c8bbb204ab6877406497f0bb74ba6bcf6b291c8f"
+      },
+      "trade_intents": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "trade_outcomes": {
+        "count": 0,
+        "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "trading_accounts": {
+        "count": 2,
+        "hash": "6366d8ae2e13b1604059676dcf0298dbdce4d28e3b4d4f737f90e9a002ccdbc1"
+      },
+      "user_decisions": {
+        "count": 159,
+        "hash": "401b38578195a552b9ed1294d8b3ada01e2d19bd3ccede7f4ae034c44cfcc507"
+      },
+      "virtual_book_nav": {
+        "count": 114,
+        "hash": "84902b00a947998888cd598c911132afc35c27785356fbfffd804a3147e2e98d"
+      },
+      "virtual_books": {
+        "count": 8,
+        "hash": "9c3ec15160eeb79d7d4c17c7ada1fcd1d5d2b916022cac74658e2ee1f3647f9e"
+      },
+      "virtual_fills": {
+        "count": 10,
+        "hash": "5f6f23ec1302d4617550a79abdcf1f6640317b2d15b3265d202b650bd8cdaf0e"
+      }
+    }
+  },
+  "read_only": true,
+  "selected_scenario": {
+    "captured_shares": 100.0,
+    "delta_request": "Buy 17.0 BP",
+    "expected_delta": 17.0,
+    "fractional_shares_policy": "Preserve captured fraction; whole-share target, exact fractional delta.",
+    "reference_price": 48.529998779296875,
+    "target_request": "Get BP to 117 shares",
+    "target_shares": 117.0,
+    "ticker": "BP"
+  },
+  "source_health": "DEGRADED"
+}

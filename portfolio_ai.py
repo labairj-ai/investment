@@ -977,7 +977,21 @@ def get_current_news_intelligence(
     return raw_rows
 
 
-def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> dict:
+def source_freshness(last_updated, now_ts, stale_hours=24):
+    """Canonical persisted-source freshness; legacy timestamps have UTC semantics."""
+    if last_updated is None or last_updated=='':
+        return dict(last_updated=None,age_hours=None,is_stale=True,status='UNAVAILABLE')
+    try:
+        from time_utils import parse_timestamp
+        try: stamp=float(last_updated)
+        except (ValueError,TypeError): stamp=parse_timestamp(str(last_updated),legacy_utc=True).timestamp()
+        age=round((now_ts-stamp)/3600,1)
+        return dict(last_updated=last_updated,age_hours=age,is_stale=age>stale_hours,status='STALE' if age>stale_hours else 'CURRENT')
+    except (ValueError,TypeError,OverflowError):
+        return dict(last_updated=last_updated,age_hours=None,is_stale=True,status='UNKNOWN')
+
+
+def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None, *, snapshot_inputs=None) -> dict:
     """Collect every subsystem into a single deterministic snapshot (no LLM/network calls).
 
     Returns the structured state dict and stores a row in portfolio_brief_snapshots.
@@ -1103,7 +1117,7 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
             macro_last_updated = r["updated_at"]
 
     # ── 5. Thesis health ──────────────────────────────────────────────────────
-    holdings = _load_holdings_csv()
+    holdings = snapshot_inputs["holdings"] if snapshot_inputs is not None else _load_holdings_csv()
     thesis_deltas = []
     portfolio_risks = []
     thesis_status = "AVAILABLE"
@@ -1113,7 +1127,7 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
             ticker = str(h.get("Stock", "")).strip().upper()
             if not ticker:
                 continue
-            t = _adb.get_thesis(ticker)
+            t = _adb.get_thesis(ticker, conn=conn) if snapshot_inputs is not None else _adb.get_thesis(ticker)
             if not t or t.get("status") != "ACTIVE":
                 continue
             health = t.get("health_score")
@@ -1169,12 +1183,17 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
     execution_state: dict = {"open_intents": 0, "pending": [], "status": "AVAILABLE"}
     last_intent_ts = None
     try:
+        scope = snapshot_inputs is not None and 'execution_account_id' in snapshot_inputs
         intent_rows = conn.execute(
             """SELECT intent_id, symbol, side, quantity, status, created_at
                FROM trade_intents
                WHERE status NOT IN ('FILLED', 'CANCELLED', 'EXPIRED', 'REJECTED')
-               ORDER BY created_at DESC LIMIT 20"""
+            """ + (' AND account_id=?' if scope else '') +
+            ' ORDER BY created_at DESC, intent_id LIMIT 20',
+            (snapshot_inputs['execution_account_id'],) if scope else (),
         ).fetchall()
+        if scope and snapshot_inputs['execution_account_id'] is None:
+            execution_state['status'] = 'UNAVAILABLE'
         execution_state["open_intents"] = len(intent_rows)
         for r in intent_rows:
             execution_state["pending"].append({
@@ -1192,26 +1211,7 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
 
     # ── 8. Freshness ─────────────────────────────────────────────────────────
     def _freshness_entry(last_updated_str, stale_hours: float = 24) -> dict:
-        if not last_updated_str:
-            return {"last_updated": None, "age_hours": None, "is_stale": True, "status": "UNAVAILABLE"}
-        try:
-            ts_str = str(last_updated_str).replace("T", " ").rstrip("Z")
-            if "." in ts_str:
-                # epoch float as string
-                age_h = round((now_ts - float(ts_str)) / 3600, 1)
-            else:
-                dt = datetime.strptime(ts_str[:19], "%Y-%m-%d %H:%M:%S")
-                age_h = round((now_ts - dt.timestamp()) / 3600, 1)
-            is_stale = age_h > stale_hours
-            return {
-                "last_updated": last_updated_str,
-                "age_hours": age_h,
-                "is_stale": is_stale,
-                "status": "STALE" if is_stale else "CURRENT",
-            }
-        except Exception:
-            # Fail-closed: unknown timestamp → UNKNOWN/DEGRADED, never CURRENT
-            return {"last_updated": last_updated_str, "age_hours": None, "is_stale": True, "status": "UNKNOWN"}
+        return source_freshness(last_updated_str, now_ts, stale_hours)
 
     # Freshness is measured from subsystem run completion timestamps,
     # not from whether content was produced. 0 findings with a recent run = CURRENT.
@@ -1237,7 +1237,9 @@ def build_portfolio_brief_state(conn: sqlite3.Connection, now: float = None) -> 
         from pathlib import Path as _Path
         import sqlite3 as _sq3
         _wdb = _Path(__file__).parent / "out" / "watchdog.db"
-        if _wdb.exists():
+        if snapshot_inputs is not None:
+            last_pipeline_run = snapshot_inputs.get("pipeline_completed_at")
+        elif _wdb.exists():
             _wc = _sq3.connect(str(_wdb), timeout=5)
             pr = _wc.execute(
                 "SELECT MAX(completed_at) FROM watchdog_receipts"
@@ -4957,101 +4959,15 @@ def compute_regime_adjusted_risk(scores: dict, regime_stress: dict):
 # ── Portfolio chat ────────────────────────────────────────────────────────────
 
 def _build_candidate_universe_block(held_tickers: set) -> str:
-    """Build a candidate universe block for the advisor prompt.
-
-    Shows top candidates by Buffett score, flags which are already held, and
-    pulls quality/valuation data from buffett_winners where available.
-    """
+    """Explore uses the same deterministic comparison ranks as Decision mode."""
+    from agents.advisor.context import build_advisor_decision_context
     try:
-        import agent_db as _adb
-        candidates = _adb.get_candidates(include_rejected=False)
+        conn = sqlite3.connect(DB_PATH.resolve().as_uri()+'?mode=ro',uri=True)
+        try: context=build_advisor_decision_context(conn)
+        finally: conn.close()
+        return 'CANDIDATE UNIVERSE (canonical Q/V/PF/C/R/EC comparison; not authorization):\n'+json.dumps(context['candidate_ranks'][:40],sort_keys=True)
     except Exception:
-        return ""
-    if not candidates:
-        return ""
-
-    # Pull enrichment data from buffett_winners
-    enrichment: dict = {}
-    try:
-        bdb = PROJECT_DIR / "out" / "buffett.db"
-        if bdb.exists():
-            _bc = sqlite3.connect(str(bdb), timeout=5)
-            _bc.row_factory = sqlite3.Row
-            tickers_in = [c["ticker"] for c in candidates]
-            for chunk in [tickers_in[i:i+50] for i in range(0, len(tickers_in), 50)]:
-                placeholders = ",".join("?" * len(chunk))
-                for r in _bc.execute(
-                    f"SELECT ticker, quality_score, dividend_yield, pe_ratio, layer_rec, ai_analysis "
-                    f"FROM buffett_winners WHERE ticker IN ({placeholders})", chunk
-                ):
-                    ai = {}
-                    try:
-                        import json as _j
-                        ai = _j.loads(r["ai_analysis"]) if r["ai_analysis"] else {}
-                    except Exception:
-                        pass
-                    enrichment[r["ticker"]] = {
-                        "quality": r["quality_score"],
-                        "yield":   r["dividend_yield"],
-                        "pe":      r["pe_ratio"],
-                        "layer":   r["layer_rec"],
-                        "thesis":  ai.get("thesis", ""),
-                    }
-            _bc.close()
-    except Exception:
-        pass
-
-    # Sort by score desc, put held candidates first
-    scored = sorted(
-        [c for c in candidates if c.get("buffett_score")],
-        key=lambda x: (-int(x.get("ticker") in held_tickers), -x["buffett_score"])
-    )
-
-    # Group by recommended layer
-    by_layer: dict = {}
-    no_layer = []
-    for c in scored[:40]:  # cap at 40 to keep prompt lean
-        t = c["ticker"]
-        e = enrichment.get(t, {})
-        layer = e.get("layer")
-        entry = {
-            "ticker": t,
-            "score":  c["buffett_score"],
-            "held":   t in held_tickers,
-            **e,
-        }
-        if layer:
-            by_layer.setdefault(layer, []).append(entry)
-        else:
-            no_layer.append(entry)
-
-    def _fmt(e: dict) -> str:
-        t     = e["ticker"]
-        score = e.get("score", "?")
-        held  = " [HELD]" if e.get("held") else ""
-        q     = f" q={e['quality']}" if e.get("quality") else ""
-        pe    = f" PE={e['pe']:.0f}" if e.get("pe") else ""
-        yld   = f" yld={e['yield']:.1f}%" if e.get("yield") else ""
-        thesis = f" | {e['thesis'][:70]}" if e.get("thesis") else ""
-        return f"  {t}{held}: score={score}{q}{pe}{yld}{thesis}"
-
-    lines = ["CANDIDATE UNIVERSE (Buffett-screened watchlist, top by score):"]
-    for layer_num in sorted(by_layer.keys()):
-        label = LAYER_LABELS.get(layer_num, f"Layer {layer_num}")
-        lines.append(f"\n  [{label}]")
-        for e in by_layer[layer_num]:
-            lines.append(_fmt(e))
-    if no_layer:
-        lines.append("\n  [Layer unassigned]")
-        for e in no_layer:
-            lines.append(_fmt(e))
-
-    # Watch-list tickers without scores
-    unscored = [c["ticker"] for c in candidates if not c.get("buffett_score")]
-    if unscored:
-        lines.append(f"\n  Also on watchlist (no score yet): {', '.join(unscored[:20])}")
-
-    return "\n".join(lines)
+        return 'CANDIDATE UNIVERSE: unavailable; do not invent rankings.'
 
 
 def build_portfolio_system_prompt() -> str:
@@ -5074,7 +4990,7 @@ def build_portfolio_system_prompt() -> str:
 
     framework = "\n".join(f"  {k}: {v}" for k, v in _LAYER_NAMES_LONG.items())
 
-    system = f"""You are a personal portfolio advisor with full read access to this investor's portfolio, cost basis, tax lots, layer allocation targets, and a pre-screened candidate universe. Your job is to give SPECIFIC, ACTIONABLE guidance — not general market commentary.
+    system = f"""You are a personal portfolio advisor with full read access to this investor's portfolio, cost basis, tax lots, layer allocation targets, and a pre-screened candidate universe. This is Explore mode: conversational analysis, not decision authority or execution approval. Use Decision mode for governed trade previews.
 
 INVESTMENT FRAMEWORK (5-layer structure):
 {framework}
@@ -5097,11 +5013,11 @@ INVESTMENT FRAMEWORK (5-layer structure):
 HOW TO RESPOND:
 
 For ANY trade evaluation or "should I do X" question, always structure your response as:
-1. VERDICT — one sentence: Recommended / Conditionally Recommended / Not Recommended, and the single most important reason why
+1. EXPLORATORY VIEW — a tentative assessment with its most important uncertainty; this mode does not establish ACTIONABLE or execution approval
 2. FOR — 2-3 specific reasons this trade makes sense (layer fit, conviction, tax efficiency, concentration, etc.)
 3. AGAINST — 2-3 specific reasons it doesn't (layer drift, macro headwinds, better alternatives, concentration risk, tax drag, etc.)
 4. ALTERNATIVES — name 1-2 specific alternatives from the candidate universe or existing holdings that achieve the same goal more efficiently, with a brief head-to-head comparison
-5. BOTTOM LINE — one actionable sentence: exactly what to do (or not do) and why
+5. NEXT CHECK — one concrete research or verification step; do not imply policy or execution approval
 
 CRITICAL trade math rule — before writing anything else, silently work through:
   a) Current shares held (read the Shares column in CURRENT HOLDINGS above — never assume 0)
@@ -5114,7 +5030,7 @@ Example: "get to 100 IGV" when holding 83 → trade is BUY 17 shares, not 100.
 
 Additional rules:
 - Be inward-looking: every answer must reference actual held tickers and/or candidates from the universe above — never generic suggestions
-- Use the Unrlzd% and Tax columns to assess tax impact on any trim
+- For any trim, the oldest-lot Tax label is insufficient: require exact per-lot disposition analysis in Decision mode before making a tax-specific recommendation
 - For layer fit: use actual current weights vs targets from the LAYER ALLOCATION section
 - CC implications — always flag when relevant:
   * Trade brings a position to ≥100 shares → note the covered call opportunity unlocked (contracts available, whether ticker has prior CC history, rough premium potential relative to position size)
