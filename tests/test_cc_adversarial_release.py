@@ -25,19 +25,8 @@ CHECKER = [sys.executable, str(ROOT / 'scripts' / 'check_cc_contract.py')]
 
 def _run(args, baseline_file=None, manifests_dir=None, ci_env=False):
     """Run check_cc_contract.py as a subprocess and return CompletedProcess."""
-    cmd = list(CHECKER) + ['--json']
-    if baseline_file:
-        cmd += ['--baseline-file', str(baseline_file), '--trusted-prior-file', str(baseline_file)]
-    if manifests_dir:
-        cmd += ['--manifests-dir', str(manifests_dir)]
-    cmd += args
-    env = __import__('os').environ.copy()
-    # Isolate event metadata for offline CLI fixtures; retain both CI guards.
-    env.pop('GITHUB_EVENT_PATH', None)
-    env.pop('GITHUB_EVENT_NAME', None)
-    if ci_env:
-        env['GITHUB_ACTIONS'] = 'true'
-    return subprocess.run(cmd, capture_output=True, text=True, env=env, cwd=str(ROOT))
+    from cc_cli_fixtures import run_checker
+    return run_checker(args, baseline_file, manifests_dir, ci_env)
 
 
 def _good_baseline(tmp_path):
@@ -65,6 +54,7 @@ prior_simulator_version: {prior_state['simulator_version']}
 prior_simulator_contract_version: {prior_state['simulator_contract_version']}
 prior_simulator_contract_hash: {prior_state['simulator_contract_hash']}
 prior_engine_hash: {prior_state['engine_hash']}
+prior_fingerprint_version: {prior_state['fingerprint_version']}
 prior_policy_version: {prior_state['policy_version']}
 prior_cadence_comparability_policy_version: {prior_state['cadence_comparability_policy_version']}
 proposed_model_version: {proposed_state['model_version']}
@@ -72,6 +62,7 @@ proposed_simulator_version: {proposed_state['simulator_version']}
 proposed_simulator_contract_version: {proposed_state['simulator_contract_version']}
 proposed_simulator_contract_hash: {proposed_state['simulator_contract_hash']}
 proposed_engine_hash: {proposed_state['engine_hash']}
+proposed_fingerprint_version: {proposed_state['fingerprint_version']}
 proposed_policy_version: {proposed_state['policy_version']}
 proposed_cadence_comparability_policy_version: {proposed_state['cadence_comparability_policy_version']}
 cohort_reset_required: true

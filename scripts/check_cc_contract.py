@@ -38,10 +38,8 @@ def main():
                         help='Override manifests directory path (for testing only)')
     parser.add_argument('--prior-ref', help='Exact trusted prior Git commit SHA')
     parser.add_argument('--trusted-prior-file', help='Explicit prior baseline for offline validation')
+    parser.add_argument('--fingerprint-inventory', action='store_true', help='List canonical protected component names')
     args = parser.parse_args()
-
-    from strategy_config import CC_V3_CONFIG
-    from covered_call_change_control import check_contract_consistency, write_baseline, current_contract_state
 
     if args.update_baseline:
         if _in_ci():
@@ -49,6 +47,8 @@ def main():
                   file=sys.stderr)
             print('Baseline updates require a local intentional commit.', file=sys.stderr)
             return 1
+        from strategy_config import CC_V3_CONFIG
+        from covered_call_change_control import write_baseline
         state = write_baseline(CC_V3_CONFIG, path=args.baseline_file)
         if args.json:
             print(json.dumps(state, indent=2))
@@ -63,9 +63,15 @@ def main():
 
     expected = None
     event_path = os.environ.get('GITHUB_EVENT_PATH')
-    if _in_ci() and event_path:
+    if _in_ci():
         try:
+            if not event_path:
+                raise ValueError('CI event authority required: missing GITHUB_EVENT_PATH')
+            if args.trusted_prior_file or args.prior_ref:
+                raise ValueError('CI computes authority; caller prior-ref/prior-file inputs are prohibited')
             event = json.loads(Path(event_path).read_text())
+            if not isinstance(event, dict):
+                raise ValueError('event payload must be a JSON object')
             if os.environ.get('GITHUB_EVENT_NAME') == 'pull_request':
                 expected = event['pull_request']['base']['sha']
             elif os.environ.get('GITHUB_EVENT_NAME') == 'push':
@@ -74,15 +80,13 @@ def main():
                 raise ValueError('unsupported CI event')
             if not isinstance(expected, str) or not re.fullmatch(r'[0-9a-f]{40}', expected) or expected == '0' * 40:
                 raise ValueError('no trusted prior; initialize baseline locally before enabling CI')
-            if args.trusted_prior_file or (args.prior_ref and args.prior_ref != expected):
-                raise ValueError('prior override differs from event authority')
             args.prior_ref = expected
-        except (KeyError, ValueError, OSError) as exc:
+        except (KeyError, TypeError, ValueError, OSError) as exc:
             print(json.dumps(dict(ok=False, findings=[f'TRUSTED_PRIOR_ERROR: {exc}'])))
             return 1
-    elif _in_ci() and not (args.prior_ref or args.trusted_prior_file):
-        print(json.dumps(dict(ok=False, findings=['TRUSTED_PRIOR_ERROR: CI event authority required'])))
-        return 1
+
+    from strategy_config import CC_V3_CONFIG
+    from covered_call_change_control import check_contract_consistency
 
     from pathlib import Path as _Path
     result = check_contract_consistency(CC_V3_CONFIG,
@@ -90,6 +94,10 @@ def main():
         trusted_prior_file=args.trusted_prior_file, prior_ref=args.prior_ref,
         expected_prior_ref=expected,
         _manifests_dir=_Path(args.manifests_dir) if args.manifests_dir else None)
+
+    if args.fingerprint_inventory:
+        from covered_call_fingerprint import inventory
+        result['fingerprint_inventory'] = inventory()
 
     if args.json:
         safe = dict(result, current={k: v[:16]+'...' if isinstance(v, str) and len(v) > 20 else v
@@ -99,13 +107,14 @@ def main():
         status = 'OK' if result['ok'] else 'FAIL'
         print(f'[CC_CONTRACT] {status}')
         print(f'  trusted_prior_ref={result.get("trusted_prior_ref")}')
+        print(f'  fingerprint_version={result["current"].get("fingerprint_version", "unavailable")}  definition_migration={result.get("fingerprint_definition_migration", False)}')
         for side in ('baseline', 'current'):
             state = result.get(side) or {}
             print(f'  {side}: engine={str(state.get("engine_hash", ""))[:16]} simulator={str(state.get("simulator_contract_hash", ""))[:16]}')
         if result.get('baseline_missing'):
-            print('  No baseline committed — run locally: python scripts/check_cc_contract.py --update-baseline')
+            print('  Required baseline is missing — restore reviewed prior history; repository bootstrap is local only')
         elif result.get('baseline_malformed'):
-            print('  Baseline is malformed — delete and regenerate locally with --update-baseline')
+            print('  Baseline is malformed — restore the reviewed trusted state; regeneration cannot authorize a transition')
         else:
             hc = result['hash_changed']
             vb = result['version_bumped']
@@ -114,6 +123,8 @@ def main():
             am = result.get('applicable_manifest')
             if am:
                 print(f'  applicable_manifest={am.get("manifest_id")}  path={am["path"].name}')
+        if args.fingerprint_inventory:
+            print(json.dumps(result['fingerprint_inventory'], indent=2))
         for finding in result['findings']:
             print(f'  FINDING: {finding}')
 

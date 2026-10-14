@@ -32,13 +32,11 @@ class DataUnavailable(ValueError):
     pass
 
 
-def management_contract():
+def management_contract(config=None):
     import covered_call_rec as cc
-    from covered_call_v3 import execution
-    functions = (fill_model,evaluate_snapshot,missed_intervals,execution,cc.evaluate_cc_management_state, cc._check_assignment_eligible,
-                 cc._suggest_next_call, cc._remaining_call_alpha, cc._friction_at_expiry,
-                 cc.call_delta, cc.expected_upside_lost, cc.itm_prob_real, cc._exec_premium)
-    return dict(engine_hash=digest([inspect.getsource(f) for f in functions]),
+    from strategy_config import CC_V3_CONFIG
+    from covered_call_fingerprint import model_fingerprint
+    return dict(engine_hash=model_fingerprint(CC_V3_CONFIG if config is None else config),
                 tax_st_rate=cc.TAX_ST_RATE, tax_lt_rate=cc.TAX_LT_RATE,
                 risk_free_rate=cc.RISK_FREE_RATE, exec_lambda=cc.EXEC_LAMBDA,
                 assignment_tax_friction_threshold=cc.CC_ASSIGNMENT_TAX_FRICTION_THRESHOLD,
@@ -46,21 +44,9 @@ def management_contract():
 
 
 def simulator_contract_hash(config):
-    """Deterministic hash of all simulator-relevant code and config.
-
-    Changes when and only when CC virtual book behaviour can change.
-    Unrelated commits (docs, dashboard copy, etc.) do not affect this hash.
-    """
-    mc = management_contract()
-    cc_cfg = config.get('cc_v3', {})
-    config_subset = {k: cc_cfg.get(k) for k in _CONTRACT_CONFIG_KEYS}
-    return digest({
-        'simulator_contract_version': SIMULATOR_CONTRACT_VERSION,
-        'simulator_version': SIMULATOR_VERSION,
-        'management_contract_hash': mc['engine_hash'],
-        'policy_version': mc['policy_version'],
-        'config_contract_hash': digest(config_subset),
-    })
+    """Named simulator source, policy constants and actual behavioral config."""
+    from covered_call_fingerprint import simulator_fingerprint
+    return simulator_fingerprint(config)
 
 
 def migrate(db):

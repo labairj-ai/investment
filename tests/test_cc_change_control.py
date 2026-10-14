@@ -62,7 +62,7 @@ def test_behavioral_hash_change_without_version_bump_fails_ci(monkeypatch, tmp_p
     # Now simulate an engine_hash change without version bump
     original_mc = cc.management_contract if hasattr(cc, 'management_contract') else None
     from covered_call_validation import management_contract
-    def fake_mc():
+    def fake_mc(config=None):
         r = management_contract()
         return dict(r, engine_hash='changed-hash-abc')
     monkeypatch.setattr('covered_call_change_control.management_contract', fake_mc)
@@ -80,7 +80,7 @@ def test_behavioral_hash_change_without_manifest_fails_ci(monkeypatch, tmp_path)
     monkeypatch.setattr(cc, 'MANIFESTS_DIR', manifests_dir)
     write_baseline(CC_V3_CONFIG)
     from covered_call_validation import management_contract
-    def fake_mc():
+    def fake_mc(config=None):
         r = management_contract()
         return dict(r, engine_hash='changed-hash-xyz')
     monkeypatch.setattr('covered_call_change_control.management_contract', fake_mc)
@@ -105,6 +105,7 @@ prior_simulator_version: {prior_state['simulator_version']}
 prior_simulator_contract_version: {prior_state['simulator_contract_version']}
 prior_simulator_contract_hash: {prior_state['simulator_contract_hash']}
 prior_engine_hash: {prior_state['engine_hash']}
+prior_fingerprint_version: {prior_state['fingerprint_version']}
 prior_policy_version: {prior_state['policy_version']}
 prior_cadence_comparability_policy_version: {prior_state['cadence_comparability_policy_version']}
 proposed_model_version: {proposed_state['model_version']}
@@ -112,6 +113,7 @@ proposed_simulator_version: {proposed_state['simulator_version']}
 proposed_simulator_contract_version: {proposed_state['simulator_contract_version']}
 proposed_simulator_contract_hash: {proposed_state['simulator_contract_hash']}
 proposed_engine_hash: {proposed_state['engine_hash']}
+proposed_fingerprint_version: {proposed_state['fingerprint_version']}
 proposed_policy_version: {proposed_state['policy_version']}
 proposed_cadence_comparability_policy_version: {proposed_state['cadence_comparability_policy_version']}
 cohort_reset_required: true
@@ -293,11 +295,13 @@ prior_simulator_version: {state['simulator_version']}
 prior_simulator_contract_version: {state['simulator_contract_version']}
 prior_simulator_contract_hash: {state['simulator_contract_hash']}
 prior_engine_hash: {state['engine_hash']}
+prior_fingerprint_version: {state['fingerprint_version']}
 proposed_model_version: {proposed['model_version']}
 proposed_simulator_version: {proposed['simulator_version']}
 proposed_simulator_contract_version: {proposed['simulator_contract_version']}
 proposed_simulator_contract_hash: {proposed['simulator_contract_hash']}
 proposed_engine_hash: {proposed['engine_hash']}
+proposed_fingerprint_version: {proposed['fingerprint_version']}
 cohort_reset_required: true
 open_chain_policy: VERSION_CENSORED
 operator_acknowledged: true
@@ -477,6 +481,7 @@ prior_simulator_version: {prior_state['simulator_version']}
 prior_simulator_contract_version: {prior_state['simulator_contract_version']}
 prior_simulator_contract_hash: {prior_state['simulator_contract_hash']}
 prior_engine_hash: {prior_state['engine_hash']}
+prior_fingerprint_version: {prior_state['fingerprint_version']}
 prior_policy_version: {prior_state['policy_version']}
 prior_cadence_comparability_policy_version: {prior_state['cadence_comparability_policy_version']}
 proposed_model_version: {proposed_state['model_version']}
@@ -484,6 +489,7 @@ proposed_simulator_version: {proposed_state['simulator_version']}
 proposed_simulator_contract_version: {proposed_state['simulator_contract_version']}
 proposed_simulator_contract_hash: {proposed_state['simulator_contract_hash']}
 proposed_engine_hash: {proposed_state['engine_hash']}
+proposed_fingerprint_version: {proposed_state['fingerprint_version']}
 proposed_policy_version: {proposed_state['policy_version']}
 proposed_cadence_comparability_policy_version: {proposed_state['cadence_comparability_policy_version']}
 cohort_reset_required: true

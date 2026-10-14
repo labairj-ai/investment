@@ -163,7 +163,7 @@ def test_real_cli_git_transition_and_manifest_replay(tmp_path, event_name):
     import os, sys, shutil
     repo=tmp_path/'repo'; (repo/'scripts').mkdir(parents=True)
     root=Path(__file__).resolve().parent.parent
-    for name in ('covered_call_change_control.py','scripts/check_cc_contract.py'):
+    for name in ('covered_call_change_control.py','covered_call_fingerprint.py','scripts/check_cc_contract.py'):
         shutil.copyfile(root/name,repo/name)
     state=cc.current_contract_state(CC_V3_CONFIG)
     def write_state(value):
@@ -171,7 +171,7 @@ def test_real_cli_git_transition_and_manifest_replay(tmp_path, event_name):
         (repo/'.cc_contract_baseline.json').write_text(json.dumps(dict(value,schema_version=cc.BASELINE_SCHEMA_VERSION)))
     loader="import json\nfrom pathlib import Path\ns=json.loads(Path(__file__).with_name('state.json').read_text())\n"
     (repo/'strategy_config.py').write_text('CC_V3_CONFIG={}\n')
-    (repo/'covered_call_validation.py').write_text(loader+"CADENCE_COMPARABILITY_POLICY_VERSION=s['cadence_comparability_policy_version']\ndef management_contract(): return s\n")
+    (repo/'covered_call_validation.py').write_text(loader+"CADENCE_COMPARABILITY_POLICY_VERSION=s['cadence_comparability_policy_version']\ndef management_contract(config=None): return s\n")
     (repo/'covered_call_v3.py').write_text(loader+"VERSION=s['model_version']\n")
     (repo/'covered_call_virtual.py').write_text(loader+"OPEN_CHAIN_POLICY='VERSION_CENSORED'\nSIMULATOR_VERSION=s['simulator_version']\nSIMULATOR_CONTRACT_VERSION=s['simulator_contract_version']\ndef simulator_contract_hash(config): return s['simulator_contract_hash']\n")
     def git(*args):

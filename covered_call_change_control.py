@@ -21,11 +21,12 @@ CHANGE_CATEGORY_NON_BEHAVIORAL = 'NON_BEHAVIORAL'
 CHANGE_CATEGORY_EVIDENCE_INFRASTRUCTURE = 'EVIDENCE_INFRASTRUCTURE'
 CHANGE_CATEGORY_BEHAVIORAL = 'BEHAVIORAL_MODEL_CHANGE'
 
-BASELINE_SCHEMA_VERSION = 'cc-contract-v1'
+BASELINE_SCHEMA_VERSION = 'cc-contract-v2'
+LEGACY_BASELINE_SCHEMA_VERSION = 'cc-contract-v1'
 BASELINE_REQUIRED_KEYS = frozenset({
     'schema_version', 'model_version', 'simulator_version',
     'simulator_contract_version', 'simulator_contract_hash',
-    'engine_hash', 'policy_version', 'cadence_comparability_policy_version',
+    'engine_hash', 'policy_version', 'cadence_comparability_policy_version', 'fingerprint_version',
 })
 
 MANIFEST_REQUIRED_FIELDS = frozenset({
@@ -67,7 +68,10 @@ def baseline_at_ref(ref, repo):
     result = subprocess.run(['git', 'show', f'{ref}:.cc_contract_baseline.json'],
                             cwd=repo, capture_output=True, text=True)
     if result.returncode:
-        raise ValueError('trusted prior baseline cannot be resolved')
+        exists = subprocess.run(['git', 'cat-file', '-e', ref + '^{commit}'], cwd=repo, capture_output=True)
+        if exists.returncode:
+            raise ValueError('trusted prior Git commit cannot be resolved')
+        return None
     return validate_baseline_text(result.stdout)
 
 
@@ -76,9 +80,14 @@ def validate_baseline_text(text):
         data = json.loads(text)
     except (ValueError, TypeError):
         return dict(malformed=True, reason='JSON parse error')
+    if isinstance(data, dict) and data.get('schema_version') == LEGACY_BASELINE_SCHEMA_VERSION:
+        from covered_call_fingerprint import LEGACY_FINGERPRINT_VERSION
+        if 'fingerprint_version' in data and data['fingerprint_version'] != LEGACY_FINGERPRINT_VERSION:
+            return dict(malformed=True, reason='legacy baseline cannot claim a new fingerprint version')
+        data['fingerprint_version'] = LEGACY_FINGERPRINT_VERSION
     if not isinstance(data, dict) or not BASELINE_REQUIRED_KEYS <= data.keys():
         return dict(malformed=True, reason='missing required baseline fields')
-    if data['schema_version'] != BASELINE_SCHEMA_VERSION:
+    if data['schema_version'] not in (BASELINE_SCHEMA_VERSION, LEGACY_BASELINE_SCHEMA_VERSION):
         return dict(malformed=True, reason='unknown schema_version')
     if any(not isinstance(data[k], str) or not data[k] for k in BASELINE_REQUIRED_KEYS):
         return dict(malformed=True, reason='baseline fields must be non-empty strings')
@@ -90,8 +99,10 @@ def current_contract_state(config):
     from covered_call_virtual import SIMULATOR_VERSION, SIMULATOR_CONTRACT_VERSION, simulator_contract_hash
     from covered_call_validation import CADENCE_COMPARABILITY_POLICY_VERSION
     from covered_call_v3 import VERSION as MODEL_VERSION
-    mc = management_contract()
+    from covered_call_fingerprint import FINGERPRINT_VERSION
+    mc = management_contract(config)
     return dict(
+        fingerprint_version=FINGERPRINT_VERSION,
         model_version=MODEL_VERSION,
         simulator_version=SIMULATOR_VERSION,
         simulator_contract_version=SIMULATOR_CONTRACT_VERSION,
@@ -251,7 +262,12 @@ def check_contract_consistency(config, *, _baseline_file=None, _manifests_dir=No
       3. Duplicate applicable manifests → ambiguity failure
       4. Duplicate manifest_ids → CI failure
     """
-    current = current_contract_state(config)
+    try:
+        current = current_contract_state(config)
+    except (ValueError, OSError, SyntaxError) as exc:
+        return dict(ok=False, hash_changed=False, version_bumped=False, has_manifest=False,
+                    applicable_manifest=None, current={}, baseline=None, trusted_prior_ref=prior_ref,
+                    findings=[f'INVALID_BEHAVIORAL_SOURCE: {exc}'])
     candidate = read_baseline(_baseline_file)
     findings = []
     trusted = trusted_prior_file is not None or prior_ref is not None
@@ -270,8 +286,8 @@ def check_contract_consistency(config, *, _baseline_file=None, _manifests_dir=No
         return dict(ok=False, hash_changed=False, version_bumped=False,
                     has_manifest=False, applicable_manifest=None,
                     baseline_missing=True,
-                    findings=['MISSING_BASELINE: no .cc_contract_baseline.json committed. '
-                              'Run: python scripts/check_cc_contract.py --update-baseline'],
+                    findings=['MISSING_BASELINE: required reviewed baseline is unavailable. '
+                              'Restore trusted prior history; initialize a new repository locally before enabling CI.'],
                     current=current, baseline=None, trusted_prior_ref=prior_ref)
 
     if baseline.get('malformed'):
@@ -279,7 +295,7 @@ def check_contract_consistency(config, *, _baseline_file=None, _manifests_dir=No
                     has_manifest=False, applicable_manifest=None,
                     baseline_missing=False, baseline_malformed=True,
                     findings=[f"MALFORMED_BASELINE: {baseline.get('reason', 'unknown')}. "
-                              'Delete and regenerate with: python scripts/check_cc_contract.py --update-baseline'],
+                              'Restore the reviewed baseline from trusted history; do not regenerate a malformed prior.'],
                     current=current, baseline=baseline, trusted_prior_ref=prior_ref)
 
     hash_changed = (
@@ -312,6 +328,20 @@ def check_contract_consistency(config, *, _baseline_file=None, _manifests_dir=No
         findings.append(f'DUPLICATE_APPLICABLE_MANIFESTS: {len(applicable)} manifests authorize '
                         f'this transition — ambiguous: {ids}')
 
+    # A definition migration is deliberately separate from behavioral release.
+    # It is allowed only for legacy→v1, with an exact infrastructure manifest,
+    # immutable prior Git source, and identical protected behavior/config/versions.
+    definition_changed = current['fingerprint_version'] != baseline['fingerprint_version']
+    definition_migration = False
+    if definition_changed:
+        from covered_call_fingerprint import verify_definition_migration
+        proved, reasons = verify_definition_migration(prior_ref, repo, baseline, current, config)
+        definition_migration = bool(proved and applicable_manifest and
+                                    applicable_manifest['category'] == CHANGE_CATEGORY_EVIDENCE_INFRASTRUCTURE and
+                                    applicable_manifest.get('fingerprint_migration') == 'legacy-to-named-v1')
+        if not definition_migration:
+            findings.append(f'UNAUTHORIZED_FINGERPRINT_DEFINITION_CHANGE: explicit exact legacy migration required; {reasons}')
+
     protected_changed = any(current[k] != baseline[k] for k in IDENTITY_FIELDS)
     if trusted and candidate and candidate.get('malformed'):
         findings.append(f'MALFORMED_CANDIDATE_BASELINE: {candidate["reason"]}')
@@ -330,7 +360,7 @@ def check_contract_consistency(config, *, _baseline_file=None, _manifests_dir=No
     }
     for field, driver in drivers.items():
         changed = current[field] != baseline[field]
-        required = driver and field in ('model_version', 'simulator_contract_version')
+        required = driver and field in ('model_version', 'simulator_contract_version') and not definition_migration
         if changed or required:
             rule = version_transition(field, baseline[field], current[field])
             if rule != 'FORWARD':
@@ -340,16 +370,16 @@ def check_contract_consistency(config, *, _baseline_file=None, _manifests_dir=No
     if protected_changed and not has_manifest and not hash_changed:
         findings.append('PROTECTED_STATE_CHANGED_WITHOUT_APPLICABLE_MANIFEST: exact transition authorization required')
 
-    if hash_changed and not version_bumped:
+    if hash_changed and not version_bumped and not definition_migration:
         findings.append('BEHAVIORAL_HASH_CHANGED_WITHOUT_VERSION_BUMP: engine_hash or simulator_contract_hash '
-                        'changed but no version constant was incremented. Increment SIMULATOR_CONTRACT_VERSION '
-                        'or SIMULATOR_VERSION.')
+                        'changed without all required forward component versions. Engine changes require '
+                        'model_version; simulator changes require SIMULATOR_CONTRACT_VERSION; shared changes require both.')
     if hash_changed and not has_manifest:
         findings.append('BEHAVIORAL_HASH_CHANGED_WITHOUT_APPLICABLE_MANIFEST: a transition-bound manifest '
                         'is required that matches the exact prior→proposed contract state. '
                         'Copy cc_change_manifests/.template.md and fill in prior/proposed hashes.')
 
-    if hash_changed:
+    if hash_changed and not definition_migration:
         # ── 0720: category consistency ──────────────────────────────────────
         declared_category = applicable_manifest.get('category', '') if applicable_manifest else ''
         if declared_category == CHANGE_CATEGORY_NON_BEHAVIORAL:
@@ -399,6 +429,7 @@ def check_contract_consistency(config, *, _baseline_file=None, _manifests_dir=No
         current=current,
         baseline=baseline,
         trusted_prior_ref=prior_ref,
+        fingerprint_definition_migration=definition_migration,
     )
 
 

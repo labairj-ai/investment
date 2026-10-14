@@ -26,3 +26,17 @@ increase; simulator changes require simulator contract version to increase.
 Policy and cadence updates require a corresponding simulator identity change,
 its contract bump, and exact manifest. Metadata-only behavioral version changes
 are rejected; there is no implicit migration exception.
+
+## Mandatory CI event authority (0731)
+
+When either CI guard flag is true, GITHUB_EVENT_PATH and a supported
+GITHUB_EVENT_NAME are mandatory. Missing/unreadable/malformed/non-object events,
+unsupported event types, missing/invalid prior SHA and zero prior SHA reject.
+All explicit --prior-ref and --trusted-prior-file inputs reject in CI, including
+an equal ref. Offline inputs are usable only outside CI. Fixture subprocesses in
+CI use isolated genuine temporary Git commits/event payloads and retain CI flags.
+
+The fingerprint-definition migration and inventories are documented in
+[cc-behavior-fingerprints.md](cc-behavior-fingerprints.md). Diagnostics identify the
+required model_version or simulator_contract_version; simulator_version alone
+cannot satisfy a required simulator contract bump.

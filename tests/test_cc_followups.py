@@ -436,7 +436,7 @@ def test_simulator_contract_hash_properties(episode):
     # Changing a simulator-relevant config value must change the hash.
     import copy
     cfg_changed=copy.deepcopy(cfg)
-    cfg_changed.setdefault('cc_v3',{})['management_cost_per_contract']=99999
+    cfg_changed['management_cost_per_contract']=99999
     assert validation.simulator_contract_hash(cfg_changed)!=h1
 
 
