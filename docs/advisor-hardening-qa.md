@@ -58,3 +58,14 @@ Canonical snapshot fields: `snapshot_version`, `account_id`, `risk_day_utc`,
 version/hash. Nested guards restore authorizers and query_only on success/error,
 and leave caller-owned transactions uncommitted. External screener access is
 explicitly mode=ro.
+
+Final local full-suite verification on implementation `ad52bb5`:
+`pytest tests/ -v --tb=short --junitxml=test-results.xml` — 2,595 passed,
+16 existing skips, no failures. Exact release baseline inventory has no new,
+changed or waived failures. TODO consistency and CC behavioral contract gates
+pass; both covered-call behavioral fingerprints are unchanged. JUnit output is
+retained locally as `/private/tmp/investment-advisor-v2-final-results.xml`.
+
+Real GitHub Actions passed the implementation and all release gates without new
+waivers: https://github.com/labairj-ai/investment/actions/runs/38559356644.
+TODOs 0742–0744 are complete and archived in `.todos/done/`.
