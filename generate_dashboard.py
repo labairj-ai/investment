@@ -1732,6 +1732,7 @@ def build_dashboard(portfolio, layers, holdings):
 
     from site_help import render_glossary, help_assets
     from dashboard_cc_income import income_assets
+    from dashboard_advisor import advisor_assets
     generated_at = datetime.now(TZ).strftime("%A, %B %d, %Y at %I:%M %p ET")
     chg_class_main = "pos" if total_chg >= 0 else "neg"
     spy_class = "pos" if spy_chg >= 0 else "neg"
@@ -1745,6 +1746,7 @@ def build_dashboard(portfolio, layers, holdings):
   <link rel="icon" type="image/svg+xml" href="../favicon.svg">
   <script src="../chart.umd.min.js"></script>
   {income_assets()}
+  {advisor_assets()}
   <style>
     *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
     html {{ overflow-x: hidden; }}
@@ -10342,6 +10344,14 @@ async function rejectThesisProposal(recId) {{
       <button id="pc-close" onclick="closePortfolioChat()">×</button>
     </div>
   </div>
+  <div class="advisor-mode-controls" role="group" aria-label="Advisor mode">
+    <button type="button" data-advisor-mode="explore" aria-pressed="true" onclick="setAdvisorMode('explore')">Explore</button>
+    <button type="button" data-advisor-mode="decision" aria-pressed="false" onclick="setAdvisorMode('decision')">Decision</button>
+  </div>
+  <label id="ad-account-label" style="display:none;padding:6px 14px;font-size:11px;">Risk-preview account (optional)
+    <select id="ad-risk-account"><option value="">Unspecified · review required</option></select>
+  </label>
+  <div id="ad-mode-description">Explore: conversational analysis. Not a governed decision or execution approval.</div>
   <div id="pc-body">
     <div id="pc-empty">Ask anything about your portfolio — macro risks, rebalancing, tax strategy, position analysis.</div>
     <div id="pc-messages"></div>
@@ -10755,13 +10765,28 @@ async function rejectThesisProposal(recId) {{
     const text = inp.value.trim();
     if (!text) return;
     inp.value = '';
-    pcMessages.push({{ role: 'user', content: text }});
+    if (window.advisorMode !== 'decision') pcMessages.push({{ role: 'user', content: text }});
     pcAddMsg('user', text);
     const aiDiv = pcAddMsg('assistant', '<span class="pc-thinking">Thinking…</span>');
     document.getElementById('pc-error').style.display = 'none';
     pcStreaming = true;
     document.getElementById('pc-send').disabled = true;
     document.querySelectorAll('.pc-chip').forEach(b => b.disabled = true);
+
+    if (window.advisorMode === 'decision') {{
+      sendAdvisorDecision(text, aiDiv).then(() => {{
+        pcStreaming = false;
+        document.getElementById('pc-send').disabled = false;
+        document.querySelectorAll('.pc-chip').forEach(b => b.disabled = false);
+        pcScrollBottom();
+      }}).catch(e => {{
+        aiDiv.textContent = 'REVIEW_REQUIRED · Decision unavailable: ' + e.message;
+        pcStreaming = false;
+        document.getElementById('pc-send').disabled = false;
+        document.querySelectorAll('.pc-chip').forEach(b => b.disabled = false);
+      }});
+      return;
+    }}
 
     fetch('/api/ai/chat', {{
       method: 'POST',

@@ -201,7 +201,7 @@ def _score_portfolio_fit(
     return max(0.0, min(100.0, score)), meta
 
 
-def _score_catalyst(w: dict) -> float:
+def _score_catalyst(w: dict, as_of=None) -> float:
     score = 50.0
 
     trap = (w.get("value_trap_risk") or "").lower()
@@ -225,7 +225,7 @@ def _score_catalyst(w: dict) -> float:
     scanned = w.get("scanned_at")
     if scanned:
         try:
-            age_days = (now_utc() - parse_timestamp(scanned)).days
+            age_days = ((as_of or now_utc()) - parse_timestamp(scanned)).days
             if age_days <= 7:
                 score += 10.0
             elif age_days <= 30:
@@ -236,7 +236,7 @@ def _score_catalyst(w: dict) -> float:
     return max(0.0, min(100.0, score))
 
 
-def _score_evidence(w: dict) -> float:
+def _score_evidence(w: dict, as_of=None) -> float:
     b = EvidenceBundle(
         has_price=w.get("price") is not None,
         financial_quarters=4 if w.get("last_quarter_date") else 0,
@@ -248,7 +248,7 @@ def _score_evidence(w: dict) -> float:
     if scanned:
         try:
             b.macro_class_age_days = float(
-                (now_utc() - parse_timestamp(scanned)).days
+                ((as_of or now_utc()) - parse_timestamp(scanned)).days
             )
         except ValueError:
             pass
@@ -774,21 +774,11 @@ def _llm_compare(candidates: list[dict], layer_weights: dict[int, float]) -> dic
     return None
 
 
-def score_for_comparison(db_candidates: list[dict]) -> dict:
-    """Score and rank active/watch candidates for the comparison table.
-
-    db_candidates: rows from candidate_universe.
-    Returns dict with keys: comparison_available, candidates (scored+ranked), recommendation.
-    """
-    winners = _get_buffett_winners()
-    winner_map = {w["ticker"]: w for w in winners}
-    held = _get_current_tickers()
-    layer_weights = _get_layer_weights()
-
-    eligible = [c for c in db_candidates if c.get("status") in ("active", "watch")]
-    if len(eligible) < 2:
-        return {"comparison_available": False, "candidates": [], "recommendation": None}
-
+def rank_candidates(db_candidates, winners, held, layer_weights, *, as_of=None):
+    """Pure canonical Q/V/PF/C/R/EC ranking; no I/O or LLM selection."""
+    winner_map = {}
+    for winner in winners: winner_map.setdefault(winner['ticker'],winner)
+    eligible = [c for c in db_candidates if c.get('status') in ('active', 'watch')]
     scored: list[dict] = []
     for cand in eligible:
         ticker = cand["ticker"]
@@ -799,9 +789,9 @@ def score_for_comparison(db_candidates: list[dict]) -> dict:
         q            = _score_quality(w)
         v            = _score_valuation(w)
         pf, pf_meta  = _score_portfolio_fit(w, held, layer_weights)
-        c            = _score_catalyst(w)
+        c            = _score_catalyst(w, as_of)
         r            = _score_risk(w)
-        ec           = _score_evidence(w)
+        ec           = _score_evidence(w, as_of)
         composite    = _composite_6(q, v, pf, c, r, ec)
 
         scored.append({
@@ -821,9 +811,27 @@ def score_for_comparison(db_candidates: list[dict]) -> dict:
             "_composite6": composite,
         })
 
-    scored.sort(key=lambda x: x["_composite6"], reverse=True)
+    scored.sort(key=lambda x: (-x["_composite6"], x["ticker"]))
     for i, s in enumerate(scored):
         s["rank"] = i + 1
+
+    return scored
+
+
+def score_for_comparison(db_candidates: list[dict]) -> dict:
+    """Score and rank active/watch candidates for the comparison table.
+
+    db_candidates: rows from candidate_universe.
+    Returns dict with keys: comparison_available, candidates (scored+ranked), recommendation.
+    """
+    winners = _get_buffett_winners()
+    winner_map = {w["ticker"]: w for w in winners}
+    held = _get_current_tickers()
+    layer_weights = _get_layer_weights()
+
+    if len([c for c in db_candidates if c.get('status') in ('active', 'watch')]) < 2:
+        return {'comparison_available': False, 'candidates': [], 'recommendation': None}
+    scored = rank_candidates(db_candidates, winners, held, layer_weights)
 
     # LLM picks among top 3 — deterministic fallback if unavailable
     top3 = scored[:3]

@@ -235,6 +235,22 @@ def evaluate(
     phase: str = "PRE_ORDER",
     remaining_quantity: Optional[float] = None,
 ) -> RiskDecision:
+    """Persisted execution evaluation; existing audit behavior is unchanged."""
+    return _evaluate_rules(intent, policy, account, conn, strict_all, exclude_order_id,
+                           phase, remaining_quantity, finalize=_finalize)
+
+
+def _evaluate_rules(
+    intent: TradeIntent,
+    policy: TradingPolicy,
+    account: TradingAccount,
+    conn: sqlite3.Connection,
+    strict_all: bool = False,
+    exclude_order_id: Optional[str] = None,
+    phase: str = "PRE_ORDER",
+    remaining_quantity: Optional[float] = None,
+    *, finalize,
+) -> RiskDecision:
     """Run all pre-trade risk checks. Fail-fast unless strict_all=True.
 
     Rule classification (0229):
@@ -276,7 +292,7 @@ def evaluate(
                 result=_FAIL,
                 reason=f"stale market price for positions: {stale_symbols} (limit {stale_minutes} min)",
             ))
-            return _finalize(intent.intent_id, checks, conn, policy, account, _nav(account, conn), phase=phase)
+            return finalize(intent.intent_id, checks, conn, policy, account, _nav(account, conn), phase=phase)
 
     # Precompute shared values
     nav = _nav(account, conn)
@@ -293,7 +309,7 @@ def evaluate(
         reason=None if policy.trading_enabled() else "circuit_breakers.trading_enabled is false",
     ))
     if not ok and not strict_all:
-        return _finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
+        return finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
 
     # ── 2. VALID_ACCOUNT ──────────────────────────────────────────────────────
     acct_row = conn.execute(
@@ -306,7 +322,7 @@ def evaluate(
         reason=None if acct_row else f"account {account.account_id!r} not found or disabled",
     ))
     if not ok and not strict_all:
-        return _finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
+        return finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
 
     # ── 3. INTENT_NOT_EXPIRED ─────────────────────────────────────────────────
     expired = intent.is_expired()
@@ -316,7 +332,7 @@ def evaluate(
         reason=f"valid_until={intent.valid_until} is in the past" if expired else None,
     ))
     if not ok and not strict_all:
-        return _finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
+        return finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
 
     # ── 4. NO_DUPLICATE_INTENT ────────────────────────────────────────────────
     if intent.recommendation_id is not None:
@@ -332,7 +348,7 @@ def evaluate(
             reason=f"recommendation {intent.recommendation_id} already has intent {dup['intent_id']}" if dup else None,
         ))
         if not ok and not strict_all:
-            return _finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
+            return finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
     else:
         add(RuleCheck(rule="NO_DUPLICATE_INTENT", result=_SKIP, reason="no recommendation_id"))
 
@@ -346,7 +362,7 @@ def evaluate(
             reason=f"instrument_type={intent.instrument_type.value!r} is not EQUITY and options are disabled by policy",
         ))
         if not ok and not strict_all:
-            return _finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
+            return finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
 
     allowed = True
     reason_ia = None
@@ -367,7 +383,7 @@ def evaluate(
         reason=reason_ia,
     ))
     if not ok and not strict_all:
-        return _finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
+        return finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
 
     # ── 6. NO_MARKET_ORDER ────────────────────────────────────────────────────
     is_market = intent.order_type == OrderType.MARKET
@@ -378,7 +394,7 @@ def evaluate(
         reason="MARKET orders are not permitted by policy" if (is_market and not market_allowed) else None,
     ))
     if not ok and not strict_all:
-        return _finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
+        return finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
 
     # ── 7. SUFFICIENT_CASH ────────────────────────────────────────────────────
     if intent.side in (Side.BUY, Side.BUY_TO_CLOSE):
@@ -398,7 +414,7 @@ def evaluate(
             reason=None if cash_after >= min_cash else f"available cash after trade ${cash_after:.2f} < minimum ${min_cash:.2f} (${reserved:.2f} reserved by open orders)",
         ))
         if not ok and not strict_all:
-            return _finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
+            return finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
     else:
         add(RuleCheck(rule="SUFFICIENT_CASH", result=_SKIP, reason="sell order does not require cash"))
 
@@ -417,7 +433,7 @@ def evaluate(
             reason=None if weight_after <= limit else f"position weight {weight_after:.1f}% > limit {limit}%",
         ))
         if not ok and not strict_all:
-            return _finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
+            return finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
     else:
         add(RuleCheck(rule="MAX_POSITION_WEIGHT", result=_SKIP, reason="not a BUY or nav=0"))
 
@@ -434,7 +450,7 @@ def evaluate(
             reason=None if new_weight <= limit else f"new position weight {new_weight:.1f}% > limit {limit}%",
         ))
         if not ok and not strict_all:
-            return _finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
+            return finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
     else:
         add(RuleCheck(rule="MAX_NEW_POSITION_WEIGHT", result=_SKIP, reason="not a new position or not a BUY"))
 
@@ -458,7 +474,7 @@ def evaluate(
                 else f"daily notional ${daily_notional_after:.0f} > limit ${limit_notional:.0f} (includes ${open_notional:.0f} in open orders)",
         ))
         if not ok and not strict_all:
-            return _finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
+            return finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
     else:
         add(RuleCheck(rule="MAX_DAILY_NOTIONAL", result=_SKIP, reason="nav=0"))
 
@@ -483,7 +499,7 @@ def evaluate(
                 else f"orders today {orders_today} >= limit {limit_orders}",
         ))
         if not ok and not strict_all:
-            return _finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
+            return finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
 
     # ── 12. SELL_QUANTITY_COVERED ─────────────────────────────────────────────
     if intent.side in (Side.SELL, Side.BUY_TO_CLOSE):
@@ -499,7 +515,7 @@ def evaluate(
             reason=None if covered else f"available qty {available_qty} < sell qty {trade_qty} ({pending_sells} already committed to open sell orders)",
         ))
         if not ok and not strict_all:
-            return _finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
+            return finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
     else:
         add(RuleCheck(rule="SELL_QUANTITY_COVERED", result=_SKIP, reason="not a sell order"))
 
@@ -517,7 +533,7 @@ def evaluate(
                 else f"underlying shares {underlying_qty} < required {required} for {contracts} contract(s)",
         ))
         if not ok and not strict_all:
-            return _finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
+            return finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
     else:
         add(RuleCheck(rule="NO_NAKED_OPTIONS", result=_SKIP, reason="not SELL_TO_OPEN"))
 
@@ -536,7 +552,7 @@ def evaluate(
                 else f"open+requested contracts {open_c}+{requested_c} > limit {limit_c}",
         ))
         if not ok and not strict_all:
-            return _finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
+            return finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
     else:
         add(RuleCheck(rule="MAX_CONTRACTS_PER_SYMBOL", result=_SKIP, reason="not an option sell"))
 
@@ -600,7 +616,7 @@ def evaluate(
             reason=f"earnings event on {earnings['event_date']} before expiry {intent.expiration}" if earnings else None,
         ))
         if not ok and not strict_all:
-            return _finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
+            return finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
     else:
         add(RuleCheck(rule="NO_EARNINGS_CONFLICT", result=_SKIP, reason="equity or no expiration"))
 
@@ -623,7 +639,7 @@ def evaluate(
             else f"daily loss ${daily_loss:.2f} >= limit ${max_daily_loss_abs:.2f}",
     ))
     if not ok and not strict_all:
-        return _finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
+        return finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
 
     # ── 18. MAX_DRAWDOWN ─────────────────────────────────────────────────────
     acct_row = conn.execute(
@@ -645,7 +661,7 @@ def evaluate(
             else f"drawdown {drawdown_pct:.1f}% > limit {limit_dd}%",
     ))
     if not ok and not strict_all:
-        return _finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
+        return finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
 
     # ── 19. MIN_LIMIT_PRICE ──────────────────────────────────────────────────
     if intent.limit_price is not None:
@@ -662,7 +678,27 @@ def evaluate(
     else:
         add(RuleCheck(rule="MIN_LIMIT_PRICE", result=_SKIP, reason="no limit_price on intent"))
 
-    return _finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
+    return finalize(intent.intent_id, checks, conn, policy, account, nav, phase=phase)
+
+
+def preview(intent, policy, account, conn):
+    """Same rule core with no persistence, orders, counterfactuals or broker I/O.
+
+    A reference-priced equity intent is a hypothetical policy query, not an order.
+    Admission/order-price assertions are explicitly unknown in a preview.
+    """
+    def finish(intent_id, checks, _conn, _policy, _account, nav, **kwargs):
+        execution_only={'INTENT_NOT_EXPIRED','NO_DUPLICATE_INTENT','NO_MARKET_ORDER','MIN_LIMIT_PRICE','MAX_ORDERS_PER_DAY'}
+        projected=[]
+        for check in checks:
+            if check.rule in execution_only:
+                check=RuleCheck(rule=check.rule,result=_SKIP,reason='UNKNOWN: execution/admission assertion requires an actual order')
+            projected.append(check)
+        return dict(preview_only=True,decision='REJECTED' if any(c.result==_FAIL for c in projected) else 'PREVIEW_PASS',
+                    checks=[c.to_dict() for c in projected],policy_version=policy.policy_version,
+                    policy_hash=policy.policy_hash(),account_id=account.account_id,account_cash=account.current_cash,
+                    account_nav=nav,execution_ready=False)
+    return _evaluate_rules(intent,policy,account,conn,strict_all=True,finalize=finish)
 
 
 def _finalize(

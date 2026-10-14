@@ -2921,15 +2921,17 @@ def get_thesis_rules(thesis_id: int, rule_type: str | None = None) -> list[dict]
     return [dict(r) for r in rows]
 
 
-def get_thesis(ticker: str) -> dict | None:
-    conn = _connect()
+def get_thesis(ticker: str, *, conn=None) -> dict | None:
+    owns_connection = conn is None
+    conn = conn if conn is not None else _connect()
     row = conn.execute(
         "SELECT * FROM investment_theses WHERE ticker=? "
         "ORDER BY version DESC LIMIT 1",
         (ticker,),
     ).fetchone()
     if not row:
-        conn.close()
+        if owns_connection:
+            conn.close()
         return None
     result = dict(row)
 
@@ -2937,7 +2939,8 @@ def get_thesis(ticker: str) -> dict | None:
         "SELECT * FROM thesis_pillars WHERE thesis_id=? ORDER BY importance DESC",
         (row["id"],),
     ).fetchall()
-    conn.close()
+    if owns_connection:
+        conn.close()
 
     result["pillars"] = [dict(p) for p in pillars]
 

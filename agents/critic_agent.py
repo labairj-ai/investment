@@ -113,7 +113,7 @@ def _holdings_avg_cost(ticker: str) -> float | None:
 # Deterministic vetoes (no LLM)
 # ---------------------------------------------------------------------------
 
-def _deterministic_veto(rec: dict) -> tuple[bool, str]:
+def _deterministic_veto(rec: dict, *, context=None) -> tuple[bool, str]:
     """Return (is_vetoed, reason_string). No LLM call."""
     action  = rec.get("action", "")
     payload = _payload(rec)
@@ -134,11 +134,11 @@ def _deterministic_veto(rec: dict) -> tuple[bool, str]:
 
     # Veto 3: Missing cost basis for tax-specific recommendations
     if action in _TAX_ACTIONS:
-        conn = agent_db._connect()
+        conn = context.get('_conn') if context is not None else agent_db._connect()
         has_lots = conn.execute(
             "SELECT 1 FROM cost_lots WHERE ticker=? LIMIT 1", (ticker,)
         ).fetchone()
-        conn.close()
+        if context is None: conn.close()
         if not has_lots:
             return True, (
                 f"No cost-basis lots found for {ticker} — "
@@ -156,7 +156,7 @@ def _deterministic_veto(rec: dict) -> tuple[bool, str]:
     if action == "SELL_CC":
         strike = payload.get("strike")
         if strike is not None:
-            current_price = _holding_current_price(ticker)
+            current_price = context['prices'].get(ticker) if context is not None else _holding_current_price(ticker)
             if current_price is not None and float(strike) < current_price:
                 return True, (
                     f"Strike ${strike} is below the current price of ${current_price:.2f} "
@@ -167,7 +167,7 @@ def _deterministic_veto(rec: dict) -> tuple[bool, str]:
     if action == "SELL_CC":
         strike = payload.get("strike")
         if strike is not None:
-            avg_cost = _holdings_avg_cost(ticker)
+            avg_cost = context.get('avg_costs',{}).get(ticker) if context is not None else _holdings_avg_cost(ticker)
             if avg_cost is not None and float(strike) < avg_cost:
                 return True, (
                     f"Strike ${strike} is below your cost basis of ${avg_cost:.2f} — "
@@ -175,13 +175,17 @@ def _deterministic_veto(rec: dict) -> tuple[bool, str]:
                 )
 
     # Veto 5: Stale price data during market hours
-    if action in _PRICE_SENSITIVE_ACTIONS and _is_market_hours():
-        conn = agent_db._connect()
-        latest_day = conn.execute(
-            "SELECT MAX(day) FROM holding_day WHERE ticker=?", (ticker,)
-        ).fetchone()[0]
-        conn.close()
-        today = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+    if action in _PRICE_SENSITIVE_ACTIONS and (context['market_hours'] if context is not None else _is_market_hours()):
+        if context is not None:
+            latest_day=context.get('price_days',{}).get(ticker)
+            today=context['today']
+        else:
+            conn = agent_db._connect()
+            latest_day = conn.execute(
+                "SELECT MAX(day) FROM holding_day WHERE ticker=?", (ticker,)
+            ).fetchone()[0]
+            conn.close()
+            today = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
         if latest_day and latest_day < today:
             return True, (
                 f"Price data for {ticker} is from {latest_day} — "
