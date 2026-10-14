@@ -6328,7 +6328,7 @@ function renderCCPositions() {{
     "#fffdf5", "#8a6d00", "#ffe082", p => p.expiry);
   html += `</tbody></table></div>`;
   if (closed.length || open.length) {{
-    html = `<canvas id="cc-income-chart" style="max-height:185px;margin-bottom:16px;"></canvas>` + html;
+    html = `<div style="position:relative;height:240px;margin-bottom:16px;"><canvas id="cc-income-chart" style="max-height:none;"></canvas></div>` + html;
   }}
   results.innerHTML = html;
   if (closed.length || open.length) {{
@@ -6351,25 +6351,31 @@ function renderCCPositions() {{
         const [yr, mo] = k.split("-");
         return moNames[parseInt(mo)-1] + " '" + yr.slice(2);
       }});
+      const incomeMoney = v => (v < 0 ? "-$" : "$") + Math.abs(v).toLocaleString("en-US", {{maximumFractionDigits:0}});
+      const tooltipMoney = v => (v < 0 ? "-$" : "+$") + Math.abs(v).toFixed(2);
       const _ccTotalLabelPlugin = {{
         id: "ccTotalLabels",
         afterDatasetsDraw(chart) {{
           const {{ ctx, data, scales }} = chart;
-          const totals = data.labels.map((_, i) =>
-            chart.data.datasets.reduce((s, ds) => s + (ds.data[i] || 0), 0)
-          );
           ctx.save();
           ctx.font = "bold 10px sans-serif";
           ctx.fillStyle = "#555";
           ctx.textAlign = "center";
-          ctx.textBaseline = "bottom";
           data.labels.forEach((_, i) => {{
-            const tot = totals[i];
-            if (!tot) return;
-            const meta = chart.getDatasetMeta(chart.data.datasets.length - 1);
-            const bar  = meta.data[i];
-            if (!bar) return;
-            ctx.fillText("$" + tot.toFixed(0), bar.x, scales.y.getPixelForValue(tot) - 2);
+            const visible = data.datasets.filter((ds, idx) => chart.isDatasetVisible(idx));
+            const positive = visible.reduce((s, ds) => s + Math.max(0, ds.data[i] || 0), 0);
+            const negative = visible.reduce((s, ds) => s + Math.min(0, ds.data[i] || 0), 0);
+            // Chart.js stacks gains and losses on opposite sides of zero.
+            // Label each visible stack at its actual endpoint, not their net.
+            const x = scales.x.getPixelForValue(i);
+            if (positive) {{
+              ctx.textBaseline = "bottom";
+              ctx.fillText(incomeMoney(positive), x, scales.y.getPixelForValue(positive) - 4);
+            }}
+            if (negative) {{
+              ctx.textBaseline = "top";
+              ctx.fillText(incomeMoney(negative), x, scales.y.getPixelForValue(negative) + 4);
+            }}
           }});
           ctx.restore();
         }},
@@ -6409,6 +6415,8 @@ function renderCCPositions() {{
         plugins: [_ccTotalLabelPlugin],
         options: {{
           responsive: true,
+          maintainAspectRatio: false,
+          layout: {{padding: {{top:18, bottom:18}}}},
           plugins: {{
             legend: {{position:"bottom", labels:{{font:{{size:11}}}}}},
             tooltip: {{
@@ -6417,18 +6425,18 @@ function renderCCPositions() {{
                   const v = ctx.parsed.y;
                   if (!v) return null;
                   const prefix = ctx.dataset.label === "Pending (Open)" ? " (gross) " : " ";
-                  return prefix + ctx.dataset.label + ": +$" + v.toFixed(2);
+                  return prefix + ctx.dataset.label + ": " + tooltipMoney(v);
                 }},
                 footer: items => {{
                   const tot = items.reduce((s,i) => s + i.parsed.y, 0);
-                  return tot ? ` Total: +$${{tot.toFixed(2)}}` : null;
+                  return items.length ? " Net total: " + tooltipMoney(tot) : null;
                 }},
               }},
             }},
           }},
           scales: {{
             x: {{stacked:true, grid:{{display:false}}, ticks:{{font:{{size:11}}}}}},
-            y: {{stacked:true, ticks:{{callback: v => "$" + v, font:{{size:11}}}}, grid:{{color:"#f0f0f0"}}, afterFit: s => {{ s.paddingTop = 18; }}}},
+            y: {{stacked:true, beginAtZero:true, grace:"15%", ticks:{{callback: incomeMoney, font:{{size:11}}}}, grid:{{color:"#f0f0f0"}}}},
           }},
         }},
       }});
