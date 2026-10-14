@@ -20,7 +20,7 @@ import ollama_client
 from .contracts import AgentContext, Recommendation
 from .orchestrator import register_agent
 
-_PROMPT_VERSION = "briefing_v4"
+_PROMPT_VERSION = "briefing_v5"
 
 
 def _build_brief_prompt(state: dict, date_str: str) -> str:
@@ -109,10 +109,18 @@ def _build_brief_prompt(state: dict, date_str: str) -> str:
     lines += [
         "Based on the portfolio state above, produce a concise decision-oriented narrative.",
         "Do NOT reproduce the attention/opportunity/watch lists — those are already shown to the user.",
+        "",
+        "STRICT RULES for what_changed:",
+        "  1. Each bullet MUST correspond directly to a [NEW] item listed above in CHANGED SINCE LAST BRIEF.",
+        "     If there are no [NEW] items, return an empty list [].",
+        "  2. Describe only signal/metric/thesis changes that appear in the input — never invent portfolio",
+        "     actions (trades executed, positions exited, losses harvested, positions trimmed, etc.).",
+        "  3. Do NOT describe portfolio management decisions or recommendations as if they already happened.",
+        "     Use factual language: 'X signal triggered for TICKER' not 'Exited TICKER'.",
         "Return ONLY this JSON (no markdown):",
         json.dumps({
             "headline": f"<1 sentence: overall portfolio state as of {date_str}>",
-            "what_changed": ["<bullet: what is genuinely new since the last brief>"],
+            "what_changed": ["<bullet: factual signal/metric change from [NEW] items only>"],
             "key_question": "<the single most important decision this portfolio faces today>",
         }, indent=2),
     ]
@@ -167,7 +175,7 @@ def _run_briefing_llm(brief_state: dict) -> dict:
         result = ollama_client.generate_structured(
             prompt, schema,
             temperature=0.3, num_predict=600,
-            _caller="briefing_v4",
+            _caller="briefing_v5",
         )
         if not isinstance(result, dict) or "headline" not in result:
             raise ValueError("schema mismatch")
