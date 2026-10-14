@@ -6187,6 +6187,12 @@ function renderCCPositions() {{
     return `<span style="color:${{c}};font-weight:600;font-size:11px;">${{d}}d</span>`;
   }}
 
+  const fmtPnl = v => (v == null || isNaN(v))
+    ? `<span style="color:#ccc;">—</span>`
+    : (v >= 0
+      ? `<span style="color:#27ae60;">+$${{v.toFixed(2)}}</span>`
+      : `<span style="color:#e74c3c;">-$${{Math.abs(v).toFixed(2)}}</span>`);
+
   const makeRow = (p, ccMonthId, ccHidden) => {{
     const gross    = p.premium_per_contract * p.contracts * 100;
     const isOpen   = p.status === "open";

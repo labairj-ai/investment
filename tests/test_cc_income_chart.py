@@ -139,3 +139,28 @@ def test_dashboard_integration_and_mobile_numeric_layout():
     assert '.cc-income-months .cc-income-trend { display: none; }' in assets
     assert 'grid-template-columns: repeat(2,minmax(0,1fr))' in assets
     assert ':focus-visible' in assets
+
+
+def test_full_tracker_renders_position_rows_and_income_summary_together():
+    source=(ROOT/'generate_dashboard.py').read_text()
+    start=source.index('function renderCCPositions() {{')
+    end=source.index('\nfunction toggleCCMonth',start)
+    renderer=source[start:end].replace('{{','{').replace('}}','}')
+    run_js(renderer+r'''
+const results={innerHTML:''};
+const document={getElementById:id=>id==='cc-tracker-results'?results:null};
+let _allCCPositions=positions.map((p,i)=>Object.assign({id:i+1,ticker:'TEST',strike:100,premium_per_contract:1,contracts:1,expiry:'2026-12-18',opened_date:'2026-10-01',pnl_day:-3},p));
+renderCCPositions();
+assert(results.innerHTML.includes('Monthly realized income'));
+assert(results.innerHTML.includes('Positions &amp; management'));
+assert(results.innerHTML.includes('Unrealized P&L'));
+assert(results.innerHTML.includes('+$42.00'));
+assert(results.innerHTML.includes('-$3.00'));
+assert(results.innerHTML.includes('Open Positions'));
+assert(results.innerHTML.includes('Closed / Assigned'));
+assert(results.innerHTML.includes('Expired Worthless'));
+assert(!results.innerHTML.includes('NaN'));
+_allCCPositions=[];
+renderCCPositions();
+assert(results.innerHTML.includes('No positions logged yet'));
+''')
