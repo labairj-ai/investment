@@ -5,6 +5,13 @@ Explore remains the conversational `/api/ai/chat` interface. Decision uses
 submits orders. ACTIONABLE means decision-grade for user review, never execution
 approval. Conversion to a paper intent is disabled.
 
+The panel separates review readiness (stale prices, unavailable sources and
+incomplete account risk checks) from proposal assessment. Readiness limitations
+mean the system cannot finish its review; they are not investment objections.
+Critic vetoes remain binding review gates, with their actual objection and missing
+evidence displayed explicitly. A missing-evidence veto does not establish that the
+proposed investment is economically unattractive.
+
 The versioned pipeline is captured context → typed request → deterministic impact
 → exact tax lots → shared Critic → shared risk preview → deterministic policy →
 immutable lineage → explanation. Model output cannot set quantities, policy state,

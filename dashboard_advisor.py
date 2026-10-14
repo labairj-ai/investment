@@ -50,7 +50,34 @@ function renderAdvisorDecision(target, decision) {
   (decision.impact.legs||[]).forEach(leg=>{
     add('div',leg.side+' '+Math.abs(leg.delta_shares)+' '+leg.ticker+' · '+leg.before_shares+' → '+leg.after_shares+' shares · reference $'+leg.reference_price+' · notional $'+leg.notional,'ad-trade');
   });
-  add('h4','Reasons');add('p',decision.policy.reasons.join('; ')||'All decision-review gates passed.');
+  const technical = reason => /^(REFERENCE_PRICE_NOT_CURRENT|REQUIRED_SOURCE_|CANONICAL_BRIEF_UNAVAILABLE|THESIS_SOURCE_ERROR|EXECUTION_SOURCE_ERROR|RISK_PREVIEW_REQUIRED|CRITIC_REVIEW_REQUIRED|EXACT_TAX_LOTS_UNAVAILABLE)/.test(reason);
+  const reasons=decision.policy.reasons||[];
+  const readiness=reasons.filter(technical);
+  const objections=reasons.filter(reason=>!technical(reason));
+  const readable=reason=>{
+    const [code,subject]=reason.split(':');
+    if(code==='REFERENCE_PRICE_NOT_CURRENT') return subject+': a current reference price is unavailable.';
+    if(code==='REQUIRED_SOURCE_NOT_CURRENT') return subject.replaceAll('_',' ')+': required evidence is stale or unavailable.';
+    if(code==='RISK_PREVIEW_REQUIRED') return 'Account risk review is incomplete'+((decision.risk_preview.reasons||[]).includes('ACCOUNT_POSITION_MISMATCH')?' because the selected account positions do not match the portfolio.':'.');
+    if(code==='CRITIC_REVIEW_REQUIRED') return 'Critic review is unavailable or requires further review.';
+    return reason.replaceAll('_',' ');
+  };
+  if(readiness.length){
+    add('h4','Review readiness · technical / evidence limitations');
+    add('p','These limitations prevent a complete review; they are not investment reasons to avoid the trade.');
+    readiness.forEach(reason=>add('p',readable(reason)));
+  }
+  add('h4','Proposal assessment');
+  if(!objections.length) add('p',readiness.length?'No separate proposal rejection is recorded. The assessment remains incomplete.':'All decision-review gates passed.');
+  objections.forEach(reason=>{
+    if(reason==='CRITIC_VETO'){
+      add('p','Critic veto · review gate. See the objection and missing evidence below; a veto is not necessarily an adverse investment finding.');
+      (decision.critic.reviews||[]).filter(review=>review.verdict==='VETO').forEach(review=>{
+        if(review.strongest_objection) add('p',(review.ticker?review.ticker+': ':'')+review.strongest_objection);
+        if((review.missing_evidence||[]).length) add('p','Evidence requested: '+review.missing_evidence.join('; '));
+      });
+    } else add('p',readable(reason));
+  });
   const sections=[['Portfolio / layer impact',decision.impact],['Tax-lot scenarios',decision.tax_lots],
     ['Thesis / candidate evidence',{theses:decision.context.theses,candidate_ranks:decision.context.candidate_ranks}],
     ['Critic',decision.critic],['Risk preview',decision.risk_preview],

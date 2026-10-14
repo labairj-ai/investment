@@ -138,6 +138,19 @@ assert(root.children.some(e=>e.textContent.includes('BUY 17 IGV')));
 assert(root.children.some(e=>e.textContent==='<img src=x onerror=alert(1)>'));
 assert(root.children.find(e=>e.tagName==='button').disabled);
 assert.equal(root.children.filter(e=>e.tagName==='details').length,7);
+const incomplete=new Element('div');
+renderAdvisorDecision(incomplete,{
+ policy:{decision_state:'BLOCKED',reasons:['CRITIC_VETO','REFERENCE_PRICE_NOT_CURRENT:IGV','REQUIRED_SOURCE_NOT_CURRENT:agent_pipeline','RISK_PREVIEW_REQUIRED']},
+ impact:{legs:[]},context:{theses:{},candidate_ranks:[]},tax_lots:{},
+ critic:{reviews:[{verdict:'VETO',ticker:'IGV',strongest_objection:'Thesis metrics are unknown.',missing_evidence:['Fund growth data']}]},
+ risk_preview:{reasons:['ACCOUNT_POSITION_MISMATCH']},invalidating_conditions:[],explanation:'Review incomplete'});
+const text=incomplete.children[0].children.map(e=>e.textContent).join('\n');
+assert(text.includes('not investment reasons to avoid the trade'));
+assert(text.includes('IGV: a current reference price is unavailable'));
+assert(text.includes('selected account positions do not match'));
+assert(text.includes('Thesis metrics are unknown.'));
+assert(text.includes('Evidence requested: Fund growth data'));
+assert(incomplete.children[0].children.find(e=>e.tagName==='button').disabled);
 renderAdvisorDecision(new Element('div'),{error:'Required evidence unavailable'});
 '''
     result=subprocess.run(['node','-'],input=harness+js+scenario,text=True,capture_output=True)
