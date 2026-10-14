@@ -138,6 +138,20 @@ assert(root.children.some(e=>e.textContent.includes('BUY 17 IGV')));
 assert(root.children.some(e=>e.textContent==='<img src=x onerror=alert(1)>'));
 assert(root.children.find(e=>e.tagName==='button').disabled);
 assert.equal(root.children.filter(e=>e.tagName==='details').length,7);
+const walk=e=>[e,...e.children.flatMap(walk)];
+assert(!walk(root).some(e=>e.tagName==='pre'));
+assert(walk(root).some(e=>e.tagName==='table'));
+assert(walk(root).some(e=>e.textContent==='$170.00'));
+assert(walk(root).some(e=>e.textContent==='No sale proposed; tax-lot disposition does not apply.'));
+const evidence=new Element('div');
+renderAdvisorEvidence(evidence,{cash_before:null,execution_ready:false,weight_after:12.345,reasons:['ACCOUNT_POSITION_MISMATCH'],reviews:[{strongest_objection:'<script>unsafe</script>'}]});
+const formatted=walk(evidence).map(e=>e.textContent).join('\n');
+assert(formatted.includes('Unavailable'));
+assert(formatted.includes('12.35%'));
+assert(formatted.includes('No'));
+assert(formatted.includes('ACCOUNT POSITION MISMATCH'));
+assert(walk(evidence).some(e=>e.textContent==='<script>unsafe</script>'));
+assert(!walk(evidence).some(e=>e.tagName==='script'));
 const incomplete=new Element('div');
 renderAdvisorDecision(incomplete,{
  policy:{decision_state:'BLOCKED',reasons:['CRITIC_VETO','REFERENCE_PRICE_NOT_CURRENT:IGV','REQUIRED_SOURCE_NOT_CURRENT:agent_pipeline','RISK_PREVIEW_REQUIRED']},

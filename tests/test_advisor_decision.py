@@ -327,6 +327,7 @@ def test_endpoint_and_mode_integration_wiring():
     assert 'data-advisor-mode="explore"' in page
     from dashboard_advisor import advisor_assets
     js=advisor_assets()
-    assert 'pre.textContent=JSON.stringify(data,null,2)' in js
+    assert 'renderAdvisorEvidence(details,data' in js
+    assert 'e.textContent=text' in js
     assert 'button.disabled=true' in js
     assert 'root.innerHTML' not in js
