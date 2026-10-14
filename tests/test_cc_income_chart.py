@@ -166,7 +166,7 @@ assert(results.innerHTML.includes('No positions logged yet'));
 ''')
 
 
-def test_daily_headline_is_incomplete_for_missing_data_and_session_mismatch():
+def test_daily_headline_preserves_known_pnl_for_missing_data_and_session_mismatch():
     run_js(r'''
 const nodes={
  'kpi-daily-value':{dataset:{stockChg:'100',stockSession:'2026-10-13'},style:{}},
@@ -174,19 +174,28 @@ const nodes={
 };
 const document={getElementById:id=>nodes[id]};
 renderCCDailyPnl([],null);
-assert.strictEqual(nodes['kpi-daily-value'].textContent,'—');
-assert(nodes['kpi-daily-label'].textContent.includes('incomplete'));
+assert.strictEqual(nodes['kpi-daily-value'].textContent,'$100.00');
+assert(nodes['kpi-daily-label'].textContent.includes('partial'));
 assert(nodes['kpi-daily-pct'].textContent.includes('Stocks $100.00'));
 assert(nodes['kpi-daily-pct'].textContent.includes('options unavailable'));
-const report={session:'2026-10-13',complete:false,options_pnl:null,priced_count:6,open_count:7};
+const report={session:'2026-10-13',complete:false,options_pnl:null,partial_options_pnl:-50.5,priced_count:6,open_count:7};
 renderCCDailyPnl([],report);
 assert(nodes['kpi-daily-pct'].textContent.includes('6/7 open calls'));
-assert.strictEqual(nodes['kpi-daily-value'].textContent,'—');
+assert.strictEqual(nodes['kpi-daily-value'].textContent,'$49.50');
+assert(nodes['kpi-daily-pct'].textContent.includes('options −$50.50 known'));
+assert(nodes['kpi-daily-status'].textContent.includes('1 open calls missing daily P&L'));
 renderCCDailyPnl([],{...report,session:'2026-10-12',complete:true,options_pnl:-25});
-assert.strictEqual(nodes['kpi-daily-value'].textContent,'—');
+assert.strictEqual(nodes['kpi-daily-value'].textContent,'$100.00');
 assert(nodes['kpi-daily-status'].textContent.includes('session mismatch'));
 renderCCDailyPnl([],{...report,complete:false,closed_this_session:1});
 assert(nodes['kpi-daily-status'].textContent.includes('excludes 1 calls closed'));
+renderCCDailyPnl([],{...report,partial_options_pnl:0});
+assert.strictEqual(nodes['kpi-daily-value'].textContent,'$100.00');
+assert(nodes['kpi-daily-pct'].textContent.includes('options $0.00 known'));
+nodes['kpi-daily-value'].dataset.stockChg='unavailable';
+renderCCDailyPnl([],null);
+assert.strictEqual(nodes['kpi-daily-value'].textContent,'—');
+assert(nodes['kpi-daily-label'].textContent.includes('incomplete'));
 ''')
 
 

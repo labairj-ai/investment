@@ -169,13 +169,20 @@ function renderCCDailyPnl(positions, report) {
   const stock = Number(value.dataset.stockChg);
   const matched = report && report.session === value.dataset.stockSession;
   const complete = matched && report.complete && Number.isFinite(report.options_pnl) && Number.isFinite(stock);
-  value.textContent = complete ? ccIncomeMoney(stock+report.options_pnl) : '—';
-  value.style.color = complete ? (stock+report.options_pnl<0?'#bd3e44':'#167352') : '#7a8697';
-  if (label) label.textContent = complete ? 'Daily P&L · estimate' : 'Daily P&L · incomplete';
+  const options = matched ? (complete ? report.options_pnl : report.partial_options_pnl) : null;
+  const hasOptions = Number.isFinite(options);
+  const hasStock = Number.isFinite(stock);
+  const known = hasStock || hasOptions;
+  const total = (hasStock ? stock : 0) + (hasOptions ? options : 0);
+  value.textContent = known ? ccIncomeMoney(total) : '—';
+  value.style.color = known ? (total<0?'#bd3e44':'#167352') : '#7a8697';
+  if (label) label.textContent = complete ? 'Daily P&L · estimate' : known ? 'Daily P&L · partial' : 'Daily P&L · incomplete';
   const coverage = report ? report.priced_count+'/'+report.open_count+' open calls' : 'coverage unavailable';
-  if (breakdown) breakdown.textContent = 'Stocks '+(Number.isFinite(stock)?ccIncomeMoney(stock):'unavailable')+' · options '+(matched && Number.isFinite(report.options_pnl) ? ccIncomeMoney(report.options_pnl) : 'unavailable')+' ('+coverage+')';
+  if (breakdown) breakdown.textContent = 'Stocks '+(hasStock?ccIncomeMoney(stock):'unavailable')+' · options '+(hasOptions ? ccIncomeMoney(options)+(complete?'':' known') : 'unavailable')+' ('+coverage+')';
   if (status) {
     const notes = ['Stock session '+value.dataset.stockSession];
+    if (!complete && known) notes.push('Partial total; unavailable contributions are excluded');
+    if (report && report.open_count > report.priced_count) notes.push((report.open_count-report.priced_count)+' open calls missing daily P&L');
     if (report && !matched) notes.push('option session mismatch');
     if (report && report.closed_this_session) notes.push('excludes '+report.closed_this_session+' calls closed this session');
     if (report && report.statuses) {
