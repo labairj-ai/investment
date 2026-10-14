@@ -86,6 +86,11 @@ LAYER_COLORS = {
     "Layer 4: L4 Convexity":          "#E74C3C",
     "Layer 5: L5 Shock Absorbers":    "#9B59B6",
 }
+# The same layer identity colors feed Python-rendered views and browser UI.
+LAYER_COLORS_BY_NUM = {
+    int(label.split()[1].rstrip(":")): color
+    for label, color in LAYER_COLORS.items()
+}
 LAYER_SHORT = {
     "Layer 1: L1 Structural Ballast": "L1 Structural Ballast",
     "Layer 2: L2 Cash-Flow Engines":  "L2 Cash-Flow Engines",
@@ -1676,6 +1681,7 @@ def build_dashboard(portfolio, layers, holdings):
         "layerWeightDatasets": layer_weight_datasets,
         "layerWeightsByNum":   layer_weights_by_num,
         "layerTargets":        layer_targets_data,
+        "layerColorsByNum":    LAYER_COLORS_BY_NUM,
         "l4Positions":         l4_positions,
         "totalValue":          round(total_value_csv, 2),
         "holdings":            [{"ticker": h["ticker"], "layer": h["layer_num"]} for h in today_holdings],
@@ -4214,11 +4220,11 @@ function renderGoalsCard() {{
   const total   = D.totalValue       || 0;
 
   const ALLOC_META = {{
-    1: {{ name: "L1 Structural Ballast",  color: "#4A90D9" }},
-    2: {{ name: "L2 Cash-Flow Engines",   color: "#27ae60" }},
-    3: {{ name: "L3 Compounders",         color: "#e67e22" }},
-    4: {{ name: "L4 Convexity",           color: "#7c3aed", band: "10–15% band" }},
-    5: {{ name: "L5 Shock Absorbers",     color: "#9B59B6" }},
+    1: {{ name: "L1 Structural Ballast",  color: D.layerColorsByNum[1] }},
+    2: {{ name: "L2 Cash-Flow Engines",   color: D.layerColorsByNum[2] }},
+    3: {{ name: "L3 Compounders",         color: D.layerColorsByNum[3] }},
+    4: {{ name: "L4 Convexity",           color: D.layerColorsByNum[4], band: "10–15% band" }},
+    5: {{ name: "L5 Shock Absorbers",     color: D.layerColorsByNum[5] }},
   }};
 
   const allocEl = document.getElementById("goal-layer-alloc");
@@ -6612,9 +6618,7 @@ window.addEventListener("load", function() {{
 }});
 
 // ── Layer Reassignment ────────────────────────────────────────────────────
-const _LAYER_COLORS = {{
-  1: "#4A90D9", 2: "#50C878", 3: "#F5A623", 4: "#E74C3C", 5: "#9B59B6"
-}};
+const _LAYER_COLORS = D.layerColorsByNum;
 const _LAYER_LABELS = {{
   1: "L1 Structural Ballast",
   2: "L2 Cash-Flow Engines",
