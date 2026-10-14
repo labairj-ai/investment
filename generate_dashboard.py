@@ -2162,8 +2162,12 @@ def build_dashboard(portfolio, layers, holdings):
     .ai-watch-signal {{ font-size: 12px; line-height: 1.5; padding: 3px 0; word-break: break-word;
       border-top: 1px solid rgba(255,255,255,.05); margin-top: 4px; }}
     .ai-watch-signal:first-child {{ border-top: none; margin-top: 0; }}
+    .ai-attention-signal {{ font-size: 12px; line-height: 1.5; padding: 3px 0; word-break: break-word;
+      border-top: 1px solid rgba(252,129,74,.15); margin-top: 4px; }}
+    .ai-attention-signal:first-child {{ border-top: none; margin-top: 0; }}
     .ai-item-ticker {{ font-weight: 700; color: #e2e8f0; margin-right: 6px; }}
-    .ai-watch-item .ai-item-ticker {{ display: block; margin-right: 0; margin-bottom: 4px; font-size: 12px; letter-spacing: .04em; }}
+    .ai-watch-item .ai-item-ticker,
+    .ai-attention-item .ai-item-ticker {{ display: block; margin-right: 0; margin-bottom: 4px; font-size: 12px; letter-spacing: .04em; }}
     .ai-item-meta {{ font-size: 10px; color: #718096; margin-top: 3px; }}
     .ai-new-badge {{ display: inline-block; background: rgba(66,153,225,.25);
       color: #90cdf4; font-size: 9px; font-weight: 700; padding: 1px 5px;
@@ -10457,22 +10461,32 @@ async function rejectThesisProposal(recId) {{
       html += `<div class="ai-section"><div class="ai-section-label">What Changed</div>${{bullets}}</div>`;
     }}
 
-    // Needs Attention
+    // Needs Attention — grouped by ticker (same pattern as Watch)
     if (ins.needs_attention && ins.needs_attention.length) {{
-      const items = ins.needs_attention.map((a, i) => {{
-        const ticker = a.ticker ? `<span class="ai-item-ticker">${{_esc(a.ticker)}}</span>` : '';
-        const newBadge = a.is_new ? '<span class="ai-new-badge">NEW</span>' : '';
-        const dismissed = a.previously_dismissed ? '<span class="ai-dismissed-badge">previously dismissed</span>' : '';
-        const meta = a.source ? `<div class="ai-item-meta">${{_esc(a.source)}}${{a.link_tab ? ` · <a href="#" onclick="switchTab('${{a.link_tab}}');return false;" style="color:#718096;">${{_esc(a.link_tab)}}</a>` : ''}}</div>` : '';
-        const itemKey = a.key || `attention_${{i}}`;
-        const btns = `<div class="ai-respond-btns">
-          <button class="ai-respond-btn act" onclick="_briefRespond('${{_esc(itemKey)}}','ACT')">REVIEW</button>
-          <button class="ai-respond-btn dismiss" onclick="_briefRespond('${{_esc(itemKey)}}','DISMISS')">DISMISS</button>
-          <button class="ai-respond-btn defer" onclick="_briefRespond('${{_esc(itemKey)}}','DEFER')">DEFER</button>
-        </div>`;
-        return `<div class="ai-attention-item">${{newBadge}}${{dismissed}}${{ticker}}${{_esc(a.summary || '')}}${{meta}}${{btns}}</div>`;
+      const byTicker = new Map();
+      ins.needs_attention.forEach((a, i) => {{
+        const key = a.ticker || `__noticker_${{i}}`;
+        if (!byTicker.has(key)) byTicker.set(key, []);
+        byTicker.get(key).push(a);
+      }});
+      const cards = Array.from(byTicker.entries()).map(([key, items]) => {{
+        const ticker = items[0].ticker;
+        const tickerLabel = ticker ? `<span class="ai-item-ticker">${{_esc(ticker)}}</span>` : '';
+        const signals = items.map((a, si) => {{
+          const newBadge = a.is_new ? '<span class="ai-new-badge">NEW</span>' : '';
+          const dismissed = a.previously_dismissed ? '<span class="ai-dismissed-badge">previously dismissed</span>' : '';
+          const meta = a.source ? `<div class="ai-item-meta">${{_esc(a.source)}}${{a.link_tab ? ` · <a href="#" onclick="switchTab('${{a.link_tab}}');return false;" style="color:#718096;">${{_esc(a.link_tab)}}</a>` : ''}}</div>` : '';
+          const itemKey = a.key || `attention_${{key}}_${{si}}`;
+          const btns = `<div class="ai-respond-btns">
+            <button class="ai-respond-btn act" onclick="_briefRespond('${{_esc(itemKey)}}','ACT')">REVIEW</button>
+            <button class="ai-respond-btn dismiss" onclick="_briefRespond('${{_esc(itemKey)}}','DISMISS')">DISMISS</button>
+            <button class="ai-respond-btn defer" onclick="_briefRespond('${{_esc(itemKey)}}','DEFER')">DEFER</button>
+          </div>`;
+          return `<div class="ai-attention-signal">${{newBadge}}${{dismissed}}${{_esc(a.summary || '')}}${{meta}}${{btns}}</div>`;
+        }}).join('');
+        return `<div class="ai-attention-item">${{tickerLabel}}${{signals}}</div>`;
       }}).join('');
-      html += `<div class="ai-section"><div class="ai-section-label">⚠ Needs Attention (${{ins.needs_attention.length}})</div>${{items}}</div>`;
+      html += `<div class="ai-section"><div class="ai-section-label">⚠ Needs Attention (${{byTicker.size}} stock${{byTicker.size === 1 ? '' : 's'}} · ${{ins.needs_attention.length}} item${{ins.needs_attention.length === 1 ? '' : 's'}})</div>${{cards}}</div>`;
     }}
 
     // Opportunities
