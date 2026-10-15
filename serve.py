@@ -2765,6 +2765,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             sell_price  = float(data.get("sell_price", 0))
             sell_date   = (data.get("sell_date") or "").strip()
             notes       = (data.get("notes") or "").strip()
+            print(f"[Sell] {ticker} {shares_sold} shares @ {sell_price} on {sell_date}")
             if not ticker or shares_sold <= 0 or sell_price <= 0 or not sell_date:
                 self._json({"ok": False, "error": "ticker, shares_sold, sell_price, and sell_date required"})
                 return
@@ -2778,6 +2779,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             allocs, error = _fifo_allocate(lots, shares_sold, sell_price, sell_date)
             if error:
                 conn.close()
+                print(f"[Sell] {ticker} FIFO error: {error}")
                 self._json({"ok": False, "error": error})
                 return
             total_gain = round(sum(a["gain"] for a in allocs), 6)
@@ -2801,6 +2803,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                                  (remaining, alloc["lot_id"]))
             conn.commit()
             conn.close()
+            print(f"[Sell] {ticker} sell_id={sell_id} committed to DB (gain={total_gain})")
 
             # Update holdings.csv: remove ticker if fully sold, or update shares if partial sell
             import csv as _csv_sell
@@ -2829,6 +2832,20 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     writer = _csv_sell.DictWriter(f, fieldnames=fieldnames)
                     writer.writeheader()
                     writer.writerows(rows)
+                print(f"[Sell] {ticker} holdings.csv updated (remaining_shares={remaining_shares})")
+            else:
+                print(f"[Sell] {ticker} WARNING: holdings.csv not found at {holdings_csv}")
+
+            # Delete any holding_day rows for this ticker after the sell date — belt-and-suspenders
+            # so a future daily run that reads a stale CSV cannot re-inflate historical values.
+            conn4 = sqlite3.connect(str(db), timeout=10)
+            purged = conn4.execute(
+                "DELETE FROM holding_day WHERE ticker=? AND day > ?", (ticker, sell_date)
+            ).rowcount
+            if purged:
+                print(f"[Sell] {ticker} purged {purged} stale holding_day row(s) after {sell_date}")
+            conn4.commit()
+            conn4.close()
 
             # Also update today's holding_day row if it exists
             conn3 = sqlite3.connect(str(db), timeout=10)
@@ -2853,9 +2870,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             conn3.commit()
             conn3.close()
 
+            print(f"[Sell] {ticker} sell_id={sell_id} complete")
             self._json({"ok": True, "id": sell_id, "realized_gain": total_gain,
                         "st_gain": st_gain, "lt_gain": lt_gain, "allocations": allocs})
         except Exception as e:
+            import traceback
+            print(f"[Sell] ERROR: {e}\n{traceback.format_exc()}")
             self._json_error(500, str(e))
 
     def _handle_sell_undo(self, sell_id: int):
