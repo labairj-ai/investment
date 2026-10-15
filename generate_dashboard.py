@@ -2818,7 +2818,7 @@ def build_dashboard(portfolio, layers, holdings):
     </div>
     <div class="kpi">
       <div class="label" id="kpi-daily-label">Daily P&amp;L · loading</div>
-      <div class="value" id="kpi-daily-value" data-stock-chg="{round(total_chg, 2)}" data-stock-session="{today_date}">—</div>
+      <div class="value" id="kpi-daily-value" data-stock-chg="{round(total_chg, 2)}" data-stock-session="{today_date}" data-prev-total="{round(prev_total, 2)}">—</div>
       <div class="sub" id="kpi-daily-pct">Stocks {money(total_chg)} · option data loading</div>
       <details style="font-size:11px;color:#7f8c8d;line-height:1.5;margin-top:5px;"><summary style="cursor:pointer;">Sources &amp; coverage</summary><div id="kpi-daily-status">Session {today_date} · tracked holdings</div></details>
     </div>

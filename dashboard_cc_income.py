@@ -167,6 +167,7 @@ function renderCCDailyPnl(positions, report) {
   const breakdown = document.getElementById('kpi-daily-pct');
   const status = document.getElementById('kpi-daily-status');
   const stock = Number(value.dataset.stockChg);
+  const prevTotal = Number(value.dataset.prevTotal);
   const matched = report && report.session === value.dataset.stockSession;
   const complete = matched && report.complete && Number.isFinite(report.options_pnl) && Number.isFinite(stock);
   const options = matched ? (complete ? report.options_pnl : report.partial_options_pnl) : null;
@@ -174,7 +175,10 @@ function renderCCDailyPnl(positions, report) {
   const hasStock = Number.isFinite(stock);
   const known = hasStock || hasOptions;
   const total = (hasStock ? stock : 0) + (hasOptions ? options : 0);
-  value.textContent = known ? ccIncomeMoney(total) : '—';
+  const pctStr = (known && prevTotal > 0)
+    ? ' (' + (total >= 0 ? '+' : '') + (total / prevTotal * 100).toFixed(2) + '%)'
+    : '';
+  value.textContent = known ? ccIncomeMoney(total) + pctStr : '—';
   value.style.color = known ? (total<0?'#bd3e44':'#167352') : '#7a8697';
   if (label) label.textContent = complete ? 'Daily P&L · estimate' : known ? 'Daily P&L · partial' : 'Daily P&L · incomplete';
   const coverage = report ? report.priced_count+'/'+report.open_count+' open calls' : 'coverage unavailable';
