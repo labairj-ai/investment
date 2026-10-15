@@ -5196,7 +5196,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def _handle_recommendations_get(self):
         """Return open recommendations with critic verdicts attached."""
         try:
-            recs = agent_db.list_recommendations(status="open")
+            held_tickers = None
+            csv_path = PROJECT_DIR / "holdings.csv"
+            if csv_path.exists():
+                with open(csv_path, newline="") as _f:
+                    held_tickers = {
+                        str(r.get("Stock", "")).strip().upper()
+                        for r in _csv.DictReader(_f)
+                        if str(r.get("Stock", "")).strip()
+                    }
+            recs = agent_db.list_recommendations(status="open", held_tickers=held_tickers or None)
             self._json({"ok": True, "recommendations": recs})
         except Exception as e:
             self._json_error(500, str(e))
@@ -5532,7 +5541,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if len(parts) == 4 and parts[3] == "recommendations":
             qs = parse_qs(parsed.query)
             status = qs.get("status", ["open"])[0]
-            recs = agent_db.list_recommendations(status=status)
+            held_tickers = None
+            if status == "open":
+                _csv_path = PROJECT_DIR / "holdings.csv"
+                if _csv_path.exists():
+                    with open(_csv_path, newline="") as _f:
+                        held_tickers = {
+                            str(r.get("Stock", "")).strip().upper()
+                            for r in _csv.DictReader(_f)
+                            if str(r.get("Stock", "")).strip()
+                        }
+            recs = agent_db.list_recommendations(status=status, held_tickers=held_tickers or None)
             return self._json({"ok": True, "recommendations": recs})
         # /api/agents/recommendations/{ticker}/lineage
         if (len(parts) == 6 and parts[3] == "recommendations"

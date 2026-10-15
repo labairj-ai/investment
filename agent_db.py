@@ -3262,17 +3262,31 @@ def _compute_trend_note(conn: "sqlite3.Connection", ticker: str, agent_type: str
     return f"Concern escalating over {run} assessments: {chain}"
 
 
-def list_recommendations(status: str = "open") -> list[dict]:
-    """Return recommendations filtered by status, with critic verdict, trend note, and preference fit."""
+def list_recommendations(status: str = "open", held_tickers: set | None = None) -> list[dict]:
+    """Return recommendations filtered by status, with critic verdict, trend note, and preference fit.
+
+    If held_tickers is provided, only recommendations for those tickers are returned.
+    """
     conn = _connect()
-    rows = conn.execute(
-        """SELECT r.*, ar.agent_type
-           FROM recommendations r
-           LEFT JOIN agent_runs ar ON ar.id = r.run_id
-           WHERE r.status=?
-           ORDER BY r.recommendation_score DESC, r.created_at DESC""",
-        (status,),
-    ).fetchall()
+    if held_tickers:
+        placeholders = ",".join("?" * len(held_tickers))
+        rows = conn.execute(
+            f"""SELECT r.*, ar.agent_type
+               FROM recommendations r
+               LEFT JOIN agent_runs ar ON ar.id = r.run_id
+               WHERE r.status=? AND r.ticker IN ({placeholders})
+               ORDER BY r.recommendation_score DESC, r.created_at DESC""",
+            (status, *held_tickers),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """SELECT r.*, ar.agent_type
+               FROM recommendations r
+               LEFT JOIN agent_runs ar ON ar.id = r.run_id
+               WHERE r.status=?
+               ORDER BY r.recommendation_score DESC, r.created_at DESC""",
+            (status,),
+        ).fetchall()
 
     # Load preferences once for the whole batch
     pref_rows = conn.execute("SELECT * FROM learned_preferences WHERE COALESCE(suppressed, 0) = 0").fetchall()
