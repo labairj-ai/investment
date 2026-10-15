@@ -2247,6 +2247,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             shares    = float(body.get("shares", 0))
             avg_cost  = float(body.get("avg_cost", 0))
             layer_num = int(body.get("layer_num", 0))
+            print(f"[AddHolding] {ticker} {shares} shares @ {avg_cost} layer={layer_num}")
 
             if not ticker:
                 return self._json_error(400, "ticker is required")
@@ -2291,6 +2292,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 writer = _csv_mod.DictWriter(f, fieldnames=fieldnames)
                 writer.writeheader()
                 writer.writerows(rows)
+            print(f"[AddHolding] {ticker} written to holdings.csv")
 
             # Fetch current price from yfinance and seed holding_day for today
             price = None
@@ -2383,6 +2385,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 timeout=30,
             )
 
+            print(f"[AddHolding] {ticker} complete")
             self._json({
                 "ok":        True,
                 "ticker":    ticker,
@@ -2391,6 +2394,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 "value":     round(shares * price, 2) if price else None,
             })
         except Exception as e:
+            import traceback
+            print(f"[AddHolding] ERROR: {e}\n{traceback.format_exc()}")
             self._json_error(500, str(e))
 
     # ── CC positions ──────────────────────────────────────────────────────────
@@ -2622,6 +2627,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             ticker     = body["ticker"].upper()
             new_shares = float(body["shares"])
             new_cost   = float(body["cost_per_share"])
+            print(f"[AddLot] {ticker} {new_shares} shares @ {new_cost} date={body.get('purchase_date')}")
 
             db   = PROJECT_DIR / "out" / "investment.db"
             conn = sqlite3.connect(str(db), timeout=10)
@@ -2710,8 +2716,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 db_conn.commit()
             db_conn.close()
 
+            print(f"[AddLot] {ticker} complete (total_shares={total_shares})")
             self._json({"ok": True, "id": pos_id, "total_shares": total_shares, "avg_cost": round(avg_cost, 4)})
         except Exception as e:
+            import traceback
+            print(f"[AddLot] ERROR: {e}\n{traceback.format_exc()}")
             self._json_error(500, str(e))
 
     def _handle_lot_delete(self, lot_id: int):
