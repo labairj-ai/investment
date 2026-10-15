@@ -198,7 +198,10 @@ def compute_vol_model(hist_df) -> dict:
     n   = len(ret)
 
     def hv_n(days):
-        return float(ret.iloc[-days:].std() * math.sqrt(252)) if n >= days else None
+        if n < days:
+            return None
+        v = float(ret.iloc[-days:].std() * math.sqrt(252))
+        return v if math.isfinite(v) else None
 
     hv20  = hv_n(20)
     hv60  = hv_n(60)
@@ -207,7 +210,8 @@ def compute_vol_model(hist_df) -> dict:
     lam, var = 0.94, float(ret.iloc[0] ** 2) if n > 0 else 0.04
     for r in ret.iloc[1:]:
         var = lam * var + (1 - lam) * r ** 2
-    hv_ewma = math.sqrt(var * 252)
+    _hv_ewma_raw = math.sqrt(var * 252)
+    hv_ewma = _hv_ewma_raw if math.isfinite(_hv_ewma_raw) else None
 
     components = [x for x in [hv20, hv_ewma, hv60] if x is not None]
     w_raw      = [0.40, 0.35, 0.25][:len(components)]
@@ -218,7 +222,7 @@ def compute_vol_model(hist_df) -> dict:
         "hv20":        hv20,
         "hv60":        hv60,
         "hv120":       hv120,
-        "hv_ewma":     round(hv_ewma, 4),
+        "hv_ewma":     round(hv_ewma, 4) if hv_ewma is not None else None,
         "hv_forecast": round(hv_forecast, 4),
         **__import__("covered_call_v3").drift_model(ret),
     }
