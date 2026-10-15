@@ -1397,7 +1397,9 @@ def test_real_state_canary(tmp_path):
         seed_data = _seed_canary_db(db_file)
 
         conn = _conn(db_file)
-        state = portfolio_ai.build_portfolio_brief_state(conn)
+        state = portfolio_ai.build_portfolio_brief_state(conn, snapshot_inputs={
+            "holdings": [{"Stock": "GRMN"}, {"Stock": "ANET"}, {"Stock": "WMT"}, {"Stock": "ITW"}],
+        })
         conn.close()
     finally:
         portfolio_ai.DB_PATH = old_db
@@ -1550,6 +1552,9 @@ def test_persistence_chain_policy_corrects_llm_stable(tmp_path, monkeypatch):
         }
 
     monkeypatch.setattr("agents.briefing_agent._run_briefing_llm", _stub_llm)
+    monkeypatch.setattr(portfolio_ai, "_load_holdings_csv", lambda: [
+        {"Stock": "GRMN"}, {"Stock": "ANET"}, {"Stock": "WMT"}, {"Stock": "ITW"},
+    ])
 
     portfolio_ai.DB_PATH = db_file
     agent_db.DB_PATH = db_file
