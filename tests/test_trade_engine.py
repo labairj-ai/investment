@@ -1272,12 +1272,15 @@ class TestRiskEngineRules14to18:
         """Earnings event between today and expiry → FAIL."""
         conn = _make_conn()
         self._seed_underlying(conn)
+        from datetime import date, timedelta
+        earnings_date = (date.today() + timedelta(days=7)).isoformat()
+        expiry_date = (date.today() + timedelta(days=45)).isoformat()
         conn.execute(
             "INSERT INTO event_calendar (ticker, event_type, event_date) VALUES (?,?,?)",
-            ("ANET", "earnings", "2026-10-15"),
+            ("ANET", "earnings", earnings_date),
         )
         conn.commit()
-        intent = _make_option_intent(expiration="2026-11-21")
+        intent = _make_option_intent(expiration=expiry_date)
         _insert_intent(conn, intent)
         dec = risk_engine.evaluate(intent, _make_policy(), _make_account(cash=9800.0), conn, strict_all=True)
         check = next(c for c in dec.checks if c.rule == "NO_EARNINGS_CONFLICT")
