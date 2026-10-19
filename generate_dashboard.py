@@ -1324,6 +1324,8 @@ def build_dashboard(portfolio, layers, holdings):
     today_date = today.get("day", "")
 
     csv_holdings = load_csv_holdings()
+    _holdings_mtime = datetime.fromtimestamp(os.path.getmtime(HOLDINGS_CSV), tz=ZoneInfo("America/New_York"))
+    holdings_updated_str = _holdings_mtime.strftime("%b %d, %Y %I:%M %p ET")
     today_holdings, today_layers, total_value_csv = rebuild_today_holdings(today_date, holdings, csv_holdings)
     macro_scores = _load_macro_scores()
     macro_history = _load_macro_score_history()
@@ -1346,6 +1348,19 @@ def build_dashboard(portfolio, layers, holdings):
     )
 
     total_v = total_value_csv
+    # Subtract open covered-call mark values — short call positions are a
+    # portfolio liability that brokerage accounts deduct from account value.
+    _cc_marks_liability = 0.0
+    try:
+        _cc_conn = sqlite3.connect(str(DB_PATH), timeout=5)
+        for _cc in _cc_conn.execute(
+            "SELECT current_mark, contracts FROM cc_positions WHERE status='open'"
+        ):
+            _cc_marks_liability += (_cc[0] or 0.0) * (_cc[1] or 1) * 100
+        _cc_conn.close()
+    except Exception:
+        pass
+    total_v -= _cc_marks_liability
     total_chg = sum(h["change_dollars"] for h in today_holdings)
     prev_total = total_v - total_chg
     total_chg_pct = (total_chg / prev_total * 100.0) if prev_total else 0.0
@@ -2965,7 +2980,7 @@ def build_dashboard(portfolio, layers, holdings):
 
   <!-- Holdings table -->
   <div class="card">
-    <h2>Holdings — {today_date}</h2>
+    <h2 style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;">Holdings — {today_date}<span style="font-size:11px;font-weight:400;color:#aaa;">holdings.csv updated {holdings_updated_str}</span></h2>
     {_portfolio_health_chip(portfolio_health["portfolio"])}
 
     <!-- Add position form -->
@@ -7188,8 +7203,10 @@ function renderCC(d) {{
 }}
 
 // ── Sticky table headers ────────────────────────────────────────────────────
-// Watches a set of (theadId, wrapperId) pairs. For dynamic tables (div/screener)
-// the thead is injected by JS after load, so we poll until found then attach.
+// Creates a fixed-position ghost thead that mirrors the real thead when the
+// user scrolls past it.  The ghost is a clip-div (overflow:hidden) containing
+// an inner table so that horizontal scrolling inside the scroll-wrapper is
+// reflected via translateX — columns track the live table exactly.
 window.addEventListener("load", function() {{
   // [theadId, scrollWrapperId or null (use thead's closest table parent)]
   const TABLES = [
@@ -7201,27 +7218,52 @@ window.addEventListener("load", function() {{
 
   const ghosts = {{}};
 
-  function makeOrUpdateGhost(id, thead) {{
-    const parent = thead.closest("div[style*='overflow-x']") || thead.closest(".table-scroll") || thead.parentElement.parentElement;
-    const wrapRect = parent.getBoundingClientRect();
+  function getScrollParent(thead, wrapperId) {{
+    return (wrapperId && document.getElementById(wrapperId))
+      || thead.closest("div[style*='overflow-x']")
+      || thead.closest(".table-scroll")
+      || thead.parentElement.parentElement;
+  }}
+
+  function makeOrUpdateGhost(id, thead, wrapperId) {{
+    const parent     = getScrollParent(thead, wrapperId);
+    const wrapRect   = parent.getBoundingClientRect();
+    const scrollLeft = parent.scrollLeft || 0;
 
     if (!ghosts[id]) {{
-      const g = document.createElement("table");
-      g.id = id + "-ghost";
-      g.style.cssText =
-        "position:fixed;top:0;z-index:200;background:#fff;border-collapse:collapse;" +
+      // Clip div — overflow:hidden keeps ghost within the visible scroll area
+      const clip = document.createElement("div");
+      clip.id = id + "-ghost";
+      clip.style.cssText =
+        "position:fixed;top:0;z-index:200;overflow:hidden;background:#fff;" +
         "box-shadow:0 2px 6px rgba(0,0,0,.12);pointer-events:none;";
+
+      // Inner table — full natural width, shifted by scrollLeft
+      const g = document.createElement("table");
+      g.style.cssText = "background:#fff;border-collapse:collapse;";
       g.appendChild(thead.cloneNode(true));
       const liveThs  = thead.querySelectorAll("th");
       const ghostThs = g.querySelectorAll("th");
       liveThs.forEach((th, i) => {{
         if (ghostThs[i]) ghostThs[i].style.width = th.offsetWidth + "px";
       }});
-      document.body.appendChild(g);
-      ghosts[id] = g;
+      clip.appendChild(g);
+      document.body.appendChild(clip);
+      ghosts[id] = clip;
+
+      // Keep columns in sync during horizontal scrolling
+      parent.addEventListener("scroll", function() {{
+        const c = ghosts[id];
+        if (!c) return;
+        const tbl = c.querySelector("table");
+        if (tbl) tbl.style.transform = "translateX(-" + parent.scrollLeft + "px)";
+      }}, {{ passive: true }});
     }}
+
     ghosts[id].style.left  = wrapRect.left + "px";
     ghosts[id].style.width = wrapRect.width + "px";
+    const innerTable = ghosts[id].querySelector("table");
+    if (innerTable) innerTable.style.transform = "translateX(-" + scrollLeft + "px)";
   }}
 
   function removeGhost(id) {{
@@ -7229,14 +7271,14 @@ window.addEventListener("load", function() {{
   }}
 
   function onScroll() {{
-    TABLES.forEach(([theadId]) => {{
+    TABLES.forEach(([theadId, wrapperId]) => {{
       const thead = document.getElementById(theadId);
       if (!thead) return;
       const theadRect = thead.getBoundingClientRect();
       const table     = thead.closest("table");
       const tableRect = table ? table.getBoundingClientRect() : theadRect;
       if (theadRect.top < 0 && tableRect.bottom > 40) {{
-        makeOrUpdateGhost(theadId, thead);
+        makeOrUpdateGhost(theadId, thead, wrapperId);
       }} else {{
         removeGhost(theadId);
       }}
@@ -10455,10 +10497,29 @@ async function rejectThesisProposal(recId) {{
       html += `<div class="ai-headline ${{stateClass}}">${{_esc(ins.headline)}}</div>`;
     }}
 
-    // What Changed
+    // What Changed — grouped by ticker (multiple items for same ticker → single card)
     if (ins.what_changed && ins.what_changed.length) {{
-      const bullets = ins.what_changed.map(c => `<div class="ai-changed">• ${{_esc(c)}}</div>`).join('');
-      html += `<div class="ai-section"><div class="ai-section-label">What Changed</div>${{bullets}}</div>`;
+      const _tcRe = /^([A-Z][A-Z0-9.\-]{{1,9}})\s/;
+      const byTicker = new Map();
+      ins.what_changed.forEach((c, i) => {{
+        const m = c.match(_tcRe);
+        const key = m ? m[1] : `__${{i}}`;
+        if (!byTicker.has(key)) byTicker.set(key, []);
+        byTicker.get(key).push({{ ticker: m ? m[1] : null, text: c }});
+      }});
+      const cards = Array.from(byTicker.entries()).map(([, items]) => {{
+        const ticker = items[0].ticker;
+        const tickerLabel = ticker
+          ? `<div style="font-weight:700;color:#9ae6b4;font-size:11px;letter-spacing:.05em;margin-bottom:4px;">${{_esc(ticker)}}</div>`
+          : '';
+        const lines = items.map((item, idx) => {{
+          const text = ticker ? item.text.replace(new RegExp('^' + ticker + '\\s+'), '') : item.text;
+          const sep = idx > 0 ? 'padding-top:3px;margin-top:3px;border-top:1px solid rgba(72,187,120,.15);' : '';
+          return `<div style="font-size:12px;color:#9ae6b4;line-height:1.5;${{sep}}">• ${{_esc(text)}}</div>`;
+        }}).join('');
+        return `<div class="ai-changed" style="padding:6px 8px;">${{tickerLabel}}${{lines}}</div>`;
+      }}).join('');
+      html += `<div class="ai-section"><div class="ai-section-label">What Changed</div>${{cards}}</div>`;
     }}
 
     // Needs Attention — grouped by ticker (same pattern as Watch)
