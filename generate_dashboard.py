@@ -3737,7 +3737,7 @@ const DQ_TOTAL_POSITIONS = {len(today_holdings)};
 // Cumulative return chart — with timeframe controls
 let _cumChart = null;
 
-// Pre-build transaction lookup: date string → [{type,ticker,shares,price}]
+// Pre-build transaction lookup: date string → [{{type,ticker,shares,price}}]
 const _txnByDate = {{}};
 for (const t of (D.txns || [])) {{
   if (!_txnByDate[t.date]) _txnByDate[t.date] = [];
