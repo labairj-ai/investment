@@ -2958,7 +2958,12 @@ def build_dashboard(portfolio, layers, holdings):
   <!-- Layer weight drift + today bar -->
   <div class="two-col">
     <div class="card">
-      <h2>Layer Weight Over Time (%)</h2>
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:4px;">
+        <h2 style="margin:0;">Layer Weight Over Time (%)</h2>
+        <div id="wt-tf-btns" style="display:flex;gap:4px;">
+          {{''.join(f'<button class="wt-tf" data-tf="{tf}" style="padding:3px 9px;border-radius:12px;border:1px solid #dde;background:#f5f6fa;color:#555;font-size:11px;font-weight:600;cursor:pointer;transition:all .15s" onclick="setWeightTf(this)">{tf}</button>' for tf in ["1M","3M","6M","YTD","1Y","All"])}}
+        </div>
+      </div>
       <canvas id="weightChart"></canvas>
     </div>
     <div class="card">
@@ -3748,24 +3753,58 @@ new Chart(document.getElementById("cumChart"), {{
   }}
 }});
 
-// Pie chart
-// Layer weight over time
-new Chart(document.getElementById("weightChart"), {{
-  type: "line",
-  data: {{ labels: D.dates, datasets: D.layerWeightDatasets }},
-  options: {{
-    responsive: true,
-    interaction: {{ mode: "index", intersect: false }},
-    plugins: {{ legend: {{ position: "bottom", labels: {{ font: {{ size: 11 }}, boxWidth: 12 }} }} }},
-    scales: {{
-      y: {{
-        ticks: {{ callback: v => v.toFixed(0) + "%" }},
-        grid: {{ color: "#f0f0f0" }}
-      }},
-      x: {{ grid: {{ display: false }}, ticks: {{ maxTicksLimit: 8 }} }}
+// Layer weight over time — with timeframe controls
+let _wtChart = null;
+function _wtFilterData(tf) {{
+  const allDates = D.dates;
+  if (!allDates || !allDates.length) return {{ labels: [], datasets: [] }};
+  const last = new Date(allDates[allDates.length - 1]);
+  let cutoff = null;
+  if (tf === "1M") {{ cutoff = new Date(last); cutoff.setMonth(cutoff.getMonth() - 1); }}
+  else if (tf === "3M") {{ cutoff = new Date(last); cutoff.setMonth(cutoff.getMonth() - 3); }}
+  else if (tf === "6M") {{ cutoff = new Date(last); cutoff.setMonth(cutoff.getMonth() - 6); }}
+  else if (tf === "YTD") {{ cutoff = new Date(last.getFullYear(), 0, 1); }}
+  else if (tf === "1Y") {{ cutoff = new Date(last); cutoff.setFullYear(cutoff.getFullYear() - 1); }}
+  const idxStart = cutoff ? allDates.findIndex(d => new Date(d) >= cutoff) : 0;
+  const labels = allDates.slice(idxStart);
+  const datasets = (D.layerWeightDatasets || []).map(ds => ({{
+    ...ds, data: ds.data.slice(idxStart)
+  }}));
+  return {{ labels, datasets }};
+}}
+function buildWeightChart(tf) {{
+  const {{ labels, datasets }} = _wtFilterData(tf);
+  if (_wtChart) {{ _wtChart.destroy(); }}
+  _wtChart = new Chart(document.getElementById("weightChart"), {{
+    type: "line",
+    data: {{ labels, datasets }},
+    options: {{
+      responsive: true,
+      interaction: {{ mode: "index", intersect: false }},
+      plugins: {{ legend: {{ position: "bottom", labels: {{ font: {{ size: 11 }}, boxWidth: 12 }} }} }},
+      scales: {{
+        y: {{
+          ticks: {{ callback: v => v.toFixed(0) + "%" }},
+          grid: {{ color: "#f0f0f0" }}
+        }},
+        x: {{ grid: {{ display: false }}, ticks: {{ maxTicksLimit: 8 }} }}
+      }}
     }}
-  }}
-}});
+  }});
+}}
+function setWeightTf(btn) {{
+  document.querySelectorAll(".wt-tf").forEach(b => {{
+    b.style.background = "#f5f6fa"; b.style.color = "#555"; b.style.borderColor = "#dde";
+  }});
+  btn.style.background = "#1a2340"; btn.style.color = "#fff"; btn.style.borderColor = "#1a2340";
+  buildWeightChart(btn.dataset.tf);
+}}
+// default: 6M
+(function() {{
+  const def = document.querySelector('.wt-tf[data-tf="6M"]');
+  if (def) setWeightTf(def);
+  else buildWeightChart("All");
+}})();
 
 // Today's layer bar
 new Chart(document.getElementById("layerBar"), {{
