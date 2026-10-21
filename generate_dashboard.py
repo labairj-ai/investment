@@ -1756,6 +1756,10 @@ def build_dashboard(portfolio, layers, holdings):
         f'<button class="wt-tf" data-tf="{tf}" style="{_btn_style}" onclick="setWeightTf(this)">{tf}</button>'
         for tf in ["1M", "3M", "6M", "YTD", "1Y", "All"]
     )
+    cum_tf_buttons_html = "".join(
+        f'<button class="cum-tf" data-tf="{tf}" style="{_btn_style}" onclick="setCumTf(this)">{tf}</button>'
+        for tf in ["1M", "3M", "6M", "YTD", "1Y", "All"]
+    )
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -2956,7 +2960,12 @@ def build_dashboard(portfolio, layers, holdings):
 
   <!-- Main charts row -->
   <div class="card">
-    <h2>Portfolio vs SPY — Cumulative Return <span style="font-size:11px;font-weight:400;color:#aaa;">(time-weighted, since Feb 11 2026)</span></h2>
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:4px;">
+      <h2 style="margin:0;">Portfolio vs SPY — Cumulative Return <span style="font-size:11px;font-weight:400;color:#aaa;">(time-weighted, since Feb 11 2026)</span></h2>
+      <div id="cum-tf-btns" style="display:flex;gap:4px;">
+        {cum_tf_buttons_html}
+      </div>
+    </div>
     <canvas id="cumChart"></canvas>
   </div>
 
@@ -3716,47 +3725,87 @@ def build_dashboard(portfolio, layers, holdings):
 const D = {chart_data};
 const DQ_TOTAL_POSITIONS = {len(today_holdings)};
 
-// Cumulative return chart
-new Chart(document.getElementById("cumChart"), {{
-  type: "line",
-  data: {{
-    labels: D.dates,
-    datasets: [
-      {{
-        label: "Portfolio",
-        data: D.portCum,
-        borderColor: "#4A90D9",
-        backgroundColor: "rgba(74,144,217,0.08)",
-        fill: true,
-        tension: 0.3,
-        pointRadius: 1,
-        borderWidth: 2,
-      }},
-      {{
-        label: "SPY",
-        data: D.spyCum,
-        borderColor: "#e67e22",
-        backgroundColor: "transparent",
-        tension: 0.3,
-        pointRadius: 1,
-        borderWidth: 1.5,
-        borderDash: [5,3],
+// Cumulative return chart — with timeframe controls
+let _cumChart = null;
+function _cumFilterData(tf) {{
+  const allDates = D.dates;
+  if (!allDates || !allDates.length) return {{ labels: [], portCum: [], spyCum: [] }};
+  const last = new Date(allDates[allDates.length - 1]);
+  let cutoff = null;
+  if (tf === "1M") {{ cutoff = new Date(last); cutoff.setMonth(cutoff.getMonth() - 1); }}
+  else if (tf === "3M") {{ cutoff = new Date(last); cutoff.setMonth(cutoff.getMonth() - 3); }}
+  else if (tf === "6M") {{ cutoff = new Date(last); cutoff.setMonth(cutoff.getMonth() - 6); }}
+  else if (tf === "YTD") {{ cutoff = new Date(last.getFullYear(), 0, 1); }}
+  else if (tf === "1Y") {{ cutoff = new Date(last); cutoff.setFullYear(cutoff.getFullYear() - 1); }}
+  const idxStart = cutoff ? allDates.findIndex(d => new Date(d) >= cutoff) : 0;
+  // Re-base cumulative returns to 0 at the start of the window
+  const portSlice = (D.portCum || []).slice(idxStart);
+  const spySlice  = (D.spyCum  || []).slice(idxStart);
+  const portBase  = portSlice[0] ?? 0;
+  const spyBase   = spySlice[0]  ?? 0;
+  return {{
+    labels:  allDates.slice(idxStart),
+    portCum: portSlice.map(v => Math.round((v - portBase) * 10000) / 10000),
+    spyCum:  spySlice.map(v  => Math.round((v - spyBase)  * 10000) / 10000),
+  }};
+}}
+function buildCumChart(tf) {{
+  const {{ labels, portCum, spyCum }} = _cumFilterData(tf);
+  if (_cumChart) {{ _cumChart.destroy(); }}
+  _cumChart = new Chart(document.getElementById("cumChart"), {{
+    type: "line",
+    data: {{
+      labels,
+      datasets: [
+        {{
+          label: "Portfolio",
+          data: portCum,
+          borderColor: "#4A90D9",
+          backgroundColor: "rgba(74,144,217,0.08)",
+          fill: true,
+          tension: 0.3,
+          pointRadius: 1,
+          borderWidth: 2,
+        }},
+        {{
+          label: "SPY",
+          data: spyCum,
+          borderColor: "#e67e22",
+          backgroundColor: "transparent",
+          tension: 0.3,
+          pointRadius: 1,
+          borderWidth: 1.5,
+          borderDash: [5,3],
+        }}
+      ]
+    }},
+    options: {{
+      responsive: true,
+      interaction: {{ mode: "index", intersect: false }},
+      plugins: {{ legend: {{ position: "top" }} }},
+      scales: {{
+        y: {{
+          ticks: {{ callback: v => v.toFixed(1) + "%" }},
+          grid: {{ color: "#f0f0f0" }}
+        }},
+        x: {{ grid: {{ display: false }}, ticks: {{ maxTicksLimit: 8 }} }}
       }}
-    ]
-  }},
-  options: {{
-    responsive: true,
-    interaction: {{ mode: "index", intersect: false }},
-    plugins: {{ legend: {{ position: "top" }} }},
-    scales: {{
-      y: {{
-        ticks: {{ callback: v => v.toFixed(1) + "%" }},
-        grid: {{ color: "#f0f0f0" }}
-      }},
-      x: {{ grid: {{ display: false }}, ticks: {{ maxTicksLimit: 8 }} }}
     }}
-  }}
-}});
+  }});
+}}
+function setCumTf(btn) {{
+  document.querySelectorAll(".cum-tf").forEach(b => {{
+    b.style.background = "#f5f6fa"; b.style.color = "#555"; b.style.borderColor = "#dde";
+  }});
+  btn.style.background = "#1a2340"; btn.style.color = "#fff"; btn.style.borderColor = "#1a2340";
+  buildCumChart(btn.dataset.tf);
+}}
+// default: All (full history)
+(function() {{
+  const def = document.querySelector('.cum-tf[data-tf="All"]');
+  if (def) setCumTf(def);
+  else buildCumChart("All");
+}})();
 
 // Layer weight over time — with timeframe controls
 let _wtChart = null;
