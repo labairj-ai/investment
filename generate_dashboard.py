@@ -1751,6 +1751,11 @@ def build_dashboard(portfolio, layers, holdings):
     generated_at = datetime.now(TZ).strftime("%A, %B %d, %Y at %I:%M %p ET")
     chg_class_main = "pos" if total_chg >= 0 else "neg"
     spy_class = "pos" if spy_chg >= 0 else "neg"
+    _btn_style = "padding:3px 9px;border-radius:12px;border:1px solid #dde;background:#f5f6fa;color:#555;font-size:11px;font-weight:600;cursor:pointer;transition:all .15s"
+    wt_tf_buttons_html = "".join(
+        f'<button class="wt-tf" data-tf="{tf}" style="{_btn_style}" onclick="setWeightTf(this)">{tf}</button>'
+        for tf in ["1M", "3M", "6M", "YTD", "1Y", "All"]
+    )
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -2961,7 +2966,7 @@ def build_dashboard(portfolio, layers, holdings):
       <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:4px;">
         <h2 style="margin:0;">Layer Weight Over Time (%)</h2>
         <div id="wt-tf-btns" style="display:flex;gap:4px;">
-          {{''.join(f'<button class="wt-tf" data-tf="{tf}" style="padding:3px 9px;border-radius:12px;border:1px solid #dde;background:#f5f6fa;color:#555;font-size:11px;font-weight:600;cursor:pointer;transition:all .15s" onclick="setWeightTf(this)">{tf}</button>' for tf in ["1M","3M","6M","YTD","1Y","All"])}}
+          {wt_tf_buttons_html}
         </div>
       </div>
       <canvas id="weightChart"></canvas>
