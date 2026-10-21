@@ -1404,9 +1404,10 @@ def build_dashboard(portfolio, layers, holdings):
         ):
             _spd, _spp = _spr[0], float(_spr[1])
             _sell_proceeds_by_day[_spd] = _sell_proceeds_by_day.get(_spd, 0.0) + _spp
-            _txn_markers.append({"date": _spr[0], "type": "sell", "ticker": _spr[2], "shares": float(_spr[3]), "price": float(_spr[4])})
+            if float(_spr[1]) >= 500:
+                _txn_markers.append({"date": _spr[0], "type": "sell", "ticker": _spr[2], "shares": float(_spr[3]), "price": float(_spr[4])})
         for _bpr in _spconn.execute(
-            "SELECT ticker, purchase_date, shares, cost_per_share FROM cost_lots ORDER BY purchase_date"
+            "SELECT ticker, purchase_date, shares, cost_per_share FROM cost_lots WHERE shares * cost_per_share >= 500 ORDER BY purchase_date"
         ):
             _txn_markers.append({"date": _bpr[1], "type": "buy", "ticker": _bpr[0], "shares": float(_bpr[2]), "price": float(_bpr[3])})
         _spconn.close()
