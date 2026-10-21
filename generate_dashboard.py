@@ -1396,13 +1396,19 @@ def build_dashboard(portfolio, layers, holdings):
     # unreliable-CF threshold are still detected as capital outflows rather
     # than being misread as market losses (which would erase realized gains).
     _sell_proceeds_by_day: dict[str, float] = {}
+    _txn_markers: list[dict] = []
     try:
         _spconn = sqlite3.connect(str(DB_PATH), timeout=5)
         for _spr in _spconn.execute(
-            "SELECT sell_date, shares_sold * sell_price FROM sell_transactions"
+            "SELECT sell_date, shares_sold * sell_price, ticker, shares_sold, sell_price FROM sell_transactions"
         ):
             _spd, _spp = _spr[0], float(_spr[1])
             _sell_proceeds_by_day[_spd] = _sell_proceeds_by_day.get(_spd, 0.0) + _spp
+            _txn_markers.append({"date": _spr[0], "type": "sell", "ticker": _spr[2], "shares": float(_spr[3]), "price": float(_spr[4])})
+        for _bpr in _spconn.execute(
+            "SELECT ticker, purchase_date, shares, cost_per_share FROM cost_lots ORDER BY purchase_date"
+        ):
+            _txn_markers.append({"date": _bpr[1], "type": "buy", "ticker": _bpr[0], "shares": float(_bpr[2]), "price": float(_bpr[3])})
         _spconn.close()
     except Exception:
         pass
@@ -1700,6 +1706,7 @@ def build_dashboard(portfolio, layers, holdings):
         "l4Positions":         l4_positions,
         "totalValue":          round(total_value_csv, 2),
         "holdings":            [{"ticker": h["ticker"], "layer": h["layer_num"]} for h in today_holdings],
+        "txns":                _txn_markers,
     }, default=float)
 
     # Covered call ticker dropdown — all holdings sorted alphabetically
@@ -1835,6 +1842,8 @@ def build_dashboard(portfolio, layers, holdings):
     .neg {{ color: #e74c3c; }}
 
     canvas {{ max-height: 260px; }}
+    #cumChart {{ max-height: 320px; }}
+    @media (max-width: 600px) {{ #cumChart {{ max-height: 240px; }} }}
 
     .table-scroll {{ overflow-x: auto; -webkit-overflow-scrolling: touch; }}
     table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
@@ -3727,9 +3736,17 @@ const DQ_TOTAL_POSITIONS = {len(today_holdings)};
 
 // Cumulative return chart — with timeframe controls
 let _cumChart = null;
+
+// Pre-build transaction lookup: date string → [{type,ticker,shares,price}]
+const _txnByDate = {{}};
+for (const t of (D.txns || [])) {{
+  if (!_txnByDate[t.date]) _txnByDate[t.date] = [];
+  _txnByDate[t.date].push(t);
+}}
+
 function _cumFilterData(tf) {{
   const allDates = D.dates;
-  if (!allDates || !allDates.length) return {{ labels: [], portCum: [], spyCum: [] }};
+  if (!allDates || !allDates.length) return {{ labels: [], portCum: [], spyCum: [], buyData: [], sellData: [] }};
   const last = new Date(allDates[allDates.length - 1]);
   let cutoff = null;
   if (tf === "1M") {{ cutoff = new Date(last); cutoff.setMonth(cutoff.getMonth() - 1); }}
@@ -3743,14 +3760,16 @@ function _cumFilterData(tf) {{
   const spySlice  = (D.spyCum  || []).slice(idxStart);
   const portBase  = portSlice[0] ?? 0;
   const spyBase   = spySlice[0]  ?? 0;
-  return {{
-    labels:  allDates.slice(idxStart),
-    portCum: portSlice.map(v => Math.round((v - portBase) * 10000) / 10000),
-    spyCum:  spySlice.map(v  => Math.round((v - spyBase)  * 10000) / 10000),
-  }};
+  const labels    = allDates.slice(idxStart);
+  const portCum   = portSlice.map(v => Math.round((v - portBase) * 10000) / 10000);
+  const spyCum    = spySlice.map(v  => Math.round((v - spyBase)  * 10000) / 10000);
+  // Transaction markers — sparse arrays aligned to portCum for the window
+  const buyData  = labels.map((d, i) => {{ const ts = _txnByDate[d]; return ts?.some(t => t.type==='buy')  ? portCum[i] : null; }});
+  const sellData = labels.map((d, i) => {{ const ts = _txnByDate[d]; return ts?.some(t => t.type==='sell') ? portCum[i] : null; }});
+  return {{ labels, portCum, spyCum, buyData, sellData }};
 }}
 function buildCumChart(tf) {{
-  const {{ labels, portCum, spyCum }} = _cumFilterData(tf);
+  const {{ labels, portCum, spyCum, buyData, sellData }} = _cumFilterData(tf);
   if (_cumChart) {{ _cumChart.destroy(); }}
   _cumChart = new Chart(document.getElementById("cumChart"), {{
     type: "line",
@@ -3776,13 +3795,52 @@ function buildCumChart(tf) {{
           pointRadius: 1,
           borderWidth: 1.5,
           borderDash: [5,3],
+        }},
+        {{
+          label: "Buy",
+          data: buyData,
+          showLine: false,
+          pointStyle: "triangle",
+          pointRadius: 7,
+          pointHoverRadius: 10,
+          pointRotation: 0,
+          backgroundColor: "rgba(39,174,96,0.9)",
+          borderColor: "#27ae60",
+          borderWidth: 1.5,
+        }},
+        {{
+          label: "Sell",
+          data: sellData,
+          showLine: false,
+          pointStyle: "triangle",
+          pointRadius: 7,
+          pointHoverRadius: 10,
+          pointRotation: 180,
+          backgroundColor: "rgba(231,76,60,0.9)",
+          borderColor: "#e74c3c",
+          borderWidth: 1.5,
         }}
       ]
     }},
     options: {{
       responsive: true,
       interaction: {{ mode: "index", intersect: false }},
-      plugins: {{ legend: {{ position: "top" }} }},
+      plugins: {{
+        legend: {{ position: "top", labels: {{ font: {{ size: 11 }}, boxWidth: 12, usePointStyle: true }} }},
+        tooltip: {{
+          filter: item => item.raw !== null,
+          callbacks: {{
+            label: ctx => {{
+              if (ctx.dataset.label === "Buy" || ctx.dataset.label === "Sell") {{
+                const isBuy = ctx.dataset.label === "Buy";
+                const txns  = (_txnByDate[ctx.label] || []).filter(t => t.type === (isBuy ? "buy" : "sell"));
+                return txns.map(t => `${{isBuy ? "▲ Buy" : "▼ Sell"}} ${{t.ticker}}: ${{t.shares % 1 ? t.shares.toFixed(3) : t.shares}} sh @ $${{t.price.toFixed(2)}}`);
+              }}
+              return `${{ctx.dataset.label}}: ${{ctx.parsed.y.toFixed(2)}}%`;
+            }}
+          }}
+        }}
+      }},
       scales: {{
         y: {{
           ticks: {{ callback: v => v.toFixed(1) + "%" }},
