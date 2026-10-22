@@ -73,7 +73,7 @@ def authorize_start(root,store,cid,mode,technical,protections,*,human=None,now=N
     if candidate['state']!='APPROVED' or not approvals or not approvals[-1].get('authentication_source') or approvals[-1]['context']!=context or context.get('mode')!=mode:
         raise ValueError('fresh frozen mode/scope/base approval required')
     if not technical_current(root,technical,now): raise ValueError('current technical certification required')
-    if protections.get('status')!='PASS' or not 0<=now-protections.get('created',0)<=300: raise ValueError('fresh effective GitHub protection required')
+    if protections.get('status')!='PASS' or not 0<=now-protections.get('created',0)<=min(300,config.get('github_evidence_max_age_seconds',300)): raise ValueError('fresh effective GitHub protection required')
     risk=int(context['risk'][1:])
     if risk>=4: raise ValueError('L4/L5 unavailable to generic Builder')
     if mode=='SUPERVISED':

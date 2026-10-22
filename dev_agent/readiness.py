@@ -20,7 +20,7 @@ def readiness(root,store,now=None):
     if not 0<=now-protection.get('created',0)<=min(300,config.get('github_evidence_max_age_seconds',300)):
         protection=dict(status='UNAVAILABLE',failures=['fresh effective-protection evidence unavailable'])
     snapshot=evidence.get('snapshot',{})
-    if not 0<=now-snapshot.get('backup_timestamp',0)<=86400:
+    if not 0<=now-snapshot.get('backup_timestamp',0)<=min(24,config.get('snapshot_max_age_hours',24))*3600:
         snapshot=dict(status='UNAVAILABLE',reason='authenticated recent backup unavailable')
     progress=eligibility(root,store,now)
     blockers=[]

@@ -467,3 +467,49 @@ def test_readiness_exposes_invalid_auto_merge_configuration(store,monkeypatch):
     state=readiness.readiness(ROOT,store)
     assert state['auto_merge'] is True and 'human merge policy violation' in state['blockers']
     assert not state['autonomous_starts_allowed']
+
+
+@pytest.mark.parametrize('path,risk',[('docs/note.md','L0'),('static/pilot.css','L2')])
+def test_eligible_low_risk_pipeline_reaches_verified_pr_fixture(repo,store,monkeypatch,path,risk):
+    from dev_agent import autonomy
+    from dev_agent.worktrees import Worktrees
+    from dev_agent.providers import ReplayProvider
+    config=json.loads((ROOT/'config/development_agent.json').read_text());config['autonomous_implementation']=True
+    (repo/'config').mkdir();(repo/'config/development_agent.json').write_text(json.dumps(config))
+    if path.startswith('static/'):(repo/'static').mkdir();(repo/path).write_text('body { color: black; }\n')
+    commit(repo)
+    cid=store.discover(proposal(files=[path]))
+    plan(repo,store,cid,['The requested low-risk presentation or documentation change is visible.'],mode='AUTONOMOUS')
+    commit(repo);ctx=refresh_plan(repo,store,cid)
+    assert ctx['risk']==risk
+    store.decide(cid,'approve','fixture-human',ctx,'auto-'+cid,identity=dashboard_identity())
+    manager=Worktrees(repo,store.path.parent/'worktrees');record=manager.create(ctx['todo'],ctx['head']);store.event(cid,'WORKTREE',record)
+    monkeypatch.setattr(certification,'technical_current',lambda *a,**k:True)
+    monkeypatch.setattr(certification,'harness_hash',lambda root:'fixture-certified-harness')
+    monkeypatch.setattr(operations,'eligibility',lambda *a,**k:dict(eligible=True))
+    monkeypatch.setattr(autonomy,'current',lambda *a,**k:True)
+    validator=ContainerValidator('fixture@sha256:'+'a'*64)
+    validator.run=lambda root,name,command:dict(name=name,command=command,exit_code=0,status='PASS',inventory=dict(total=2,passed=2,failures=[],skipped=[]))
+    class Client:
+        repository='owner/repo'
+        published=None
+        def protections(self):return dict(status='PASS',created=time.time())
+        def publish(self,root,branch,head):self.published=(branch,head)
+        def handoff(self,branch,title,body,draft):
+            assert not draft and 'execution mode AUTONOMOUS' in body
+            return dict(number=1,url='https://github.com/owner/repo/pull/1')
+        def pr_identity(self,number):return remote(headRefName=self.published[0],headRefOid=self.published[1])
+    client=Client()
+    content='After: documented fixture detail\n' if risk=='L0' else 'body { color: navy; }\n'
+    result=autonomy.progress(repo,store,cid,ReplayProvider([dict(actions=[dict(type='write',path=path,content=content)])]),ReplayProvider([dict(disposition='PASS',findings=[]),dict(disposition='PASS',findings=[])]),validator,client)
+    assert result['status']=='PR_OPEN',result
+    assert result['mode']=='AUTONOMOUS' and result['grants_merge'] is False and result['grants_deployment'] is False
+    assert store.get(cid)['state']=='PR_OPEN'
+    assert not operations.operational_runs(ROOT,store)['qualifying']
+
+
+def test_stricter_snapshot_freshness_policy_is_honored(tmp_path):
+    path,_=signed_snapshot(tmp_path)
+    proof=snapshot.sign_backup(path,key=KEY,source_sha='a'*40,now=time.time()-13*3600)
+    assert snapshot.check_snapshot(path,tmp_path,proof,key=KEY)['status']=='PASS'
+    assert snapshot.check_snapshot(path,tmp_path,proof,key=KEY,max_age_hours=12)['status']=='FAIL'

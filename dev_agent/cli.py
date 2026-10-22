@@ -53,7 +53,9 @@ def main(argv=None):
         store.event(args.candidate, "WORKTREE", result)
     elif args.command == "protections": result = GitHub(args.repository).protections()
     elif args.command == "verify-receipt": result = dict(valid=verify(root, data))
-    elif args.command == "snapshot": result = check_snapshot(data["snapshot"], root, data.get("provenance"))
+    elif args.command == "snapshot":
+        config=json.loads((root/'config/development_agent.json').read_text())
+        result = check_snapshot(data["snapshot"], root, data.get("provenance"),max_age_hours=config.get('snapshot_max_age_hours',24))
     elif args.command == "observe": result = observe(store, args.candidate, data)
     elif args.command == "effectiveness":
         result = effectiveness(store.get(args.candidate), data["observation"], data["dimensions"])

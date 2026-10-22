@@ -125,7 +125,7 @@ def certify(root, validator, github_client, snapshot, actor=None, *, provenance=
     sandbox=validator.run(root,'focused_tests',['python','-m','pytest','tests/test_development_agent.py','tests/test_development_agent_hardening.py','-q'])
     protections=github_client.protections()
     with tempfile.TemporaryDirectory(prefix='development-snapshot-guard-') as workspace:
-        observation=check_snapshot(snapshot,workspace,provenance)
+        observation=check_snapshot(snapshot,workspace,provenance,max_age_hours=json.loads((Path(root)/'config/development_agent.json').read_text()).get('snapshot_max_age_hours',24))
     data['components']['os_validation_sandbox']='PASS' if sandbox.get('status')=='PASS' and sandbox.get('exit_code')==0 and sandbox.get('inventory',{}).get('total',0)>0 and not sandbox.get('inventory',{}).get('failures') else sandbox.get('status','UNAVAILABLE')
     data['components']['github_protection']=protections['status']
     data['components']['production_snapshot']=observation['status']

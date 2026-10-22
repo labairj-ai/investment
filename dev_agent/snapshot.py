@@ -39,7 +39,7 @@ def sign_backup(snapshot, *, key, source_sha, source_identity=SOURCE, now=None):
     return receipt
 
 
-def check_snapshot(snapshot, workspace, provenance=None, *, key=None, now=None):
+def check_snapshot(snapshot, workspace, provenance=None, *, key=None, now=None, max_age_hours=24):
     """HMAC verifier is trusted application config; callers cannot nominate a key via JSON."""
     result=dict(status='FAIL', investment_state_mutated=False, provenance_status='UNAVAILABLE')
     if provenance is None: return dict(result, reason='authenticated backup provenance required')
@@ -59,7 +59,7 @@ def check_snapshot(snapshot, workspace, provenance=None, *, key=None, now=None):
         if any(Path(str(snapshot)+suffix).exists() for suffix in ('-wal','-shm','-journal')): raise ValueError('consistent closed backup without WAL/journal required')
         now=time.time() if now is None else now
         stamp=provenance.get('backup_timestamp',0)
-        if not isinstance(stamp,(int,float)) or not 0<=now-stamp<=MAX_AGE: raise ValueError('backup expired or future dated')
+        if not isinstance(stamp,(int,float)) or not 0<=now-stamp<=min(MAX_AGE,max(1,max_age_hours)*3600): raise ValueError('backup expired or future dated')
         if provenance.get('source_environment')!=SOURCE or provenance.get('version')!=VERSION or provenance.get('mechanism')!='sqlite-online-backup-1' or provenance.get('integrity')!='ok': raise ValueError('backup source/mechanism mismatch')
         before=hashlib.sha256(snapshot.read_bytes()).hexdigest()
         if before!=provenance.get('backup_sha256'): raise ValueError('backup hash mismatch')
