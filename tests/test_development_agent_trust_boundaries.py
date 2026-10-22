@@ -357,3 +357,8 @@ def test_timeout_probe_rejects_a_container_left_behind(monkeypatch):
     monkeypatch.setattr(containment.subprocess,'run',invoke)
     result=containment.probe('fixture@sha256:'+'a'*64)
     assert result['status']=='FAIL' and not result['cleanup_verified']
+
+
+@pytest.mark.parametrize('text',['<body background="https://evil.test/pixel">x</body>','<a href="https://evil.test/">x</a>','<a href="custom-app:execute">x</a>'])
+def test_external_or_unknown_navigation_and_legacy_resources_escalate(text):
+    assert policy.classify(['static/a.html'],content={'static/a.html':('<p>old</p>',text)})['risk']=='L3'

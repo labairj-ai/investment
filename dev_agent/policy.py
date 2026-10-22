@@ -49,10 +49,10 @@ class PassiveContent(HTMLParser):
         for key, value in attrs:
             value = unescape(unquote(value or '')).lower()
             compact = re.sub(r'\s|[\x00-\x1f]', '', value)
-            if (key.startswith('on') or key in {'src', 'srcset', 'action', 'formaction', 'srcdoc', 'http-equiv'} or
+            if (key.startswith('on') or key in {'src', 'srcset', 'action', 'formaction', 'srcdoc', 'http-equiv', 'background', 'lowsrc', 'dynsrc', 'poster', 'ping', 'manifest', 'codebase', 'archive'} or
                 'javascript:' in compact or 'vbscript:' in compact or 'data:' in compact or
                 '\\' in value or re.search(r'url\s*\(|@import|expression\s*\(|\bimport\s*\(', value) or
-                (key in {'href', 'xlink:href'} and tag != 'a' and not value.startswith('#'))):
+                (key in {'href', 'xlink:href'} and not value.startswith('#'))):
                 self.active = True
 
     handle_startendtag = handle_starttag
