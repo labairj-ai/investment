@@ -48,3 +48,10 @@ def run_checker(args, baseline_file, manifests_dir=None, ci_env=False):
             command += ['--trusted-prior-file', str(baseline_file)]
         cwd=ROOT
     return subprocess.run(command+args,cwd=cwd,env=env,capture_output=True,text=True)
+
+
+def next_model_version(steps=1):
+    """A future test release relative to the actual runtime, never a fixed baseline."""
+    from covered_call_v3 import VERSION
+    major, minor = VERSION.removeprefix('cc-v').split('.')
+    return f'cc-v{major}.{int(minor) + steps}'

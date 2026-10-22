@@ -10,6 +10,7 @@ Design rules:
   - Parallel tests cannot contaminate one another.
 """
 from __future__ import annotations
+from cc_cli_fixtures import next_model_version
 import json
 import subprocess
 import sys
@@ -213,7 +214,7 @@ class TestVersionBypasses:
         from strategy_config import CC_V3_CONFIG
         real = current_contract_state(CC_V3_CONFIG)
         proposed = dict(real, simulator_contract_hash='sim-change-wrong-bump',
-                        model_version='cc-v3.4')
+                        model_version=next_model_version())
         cc, _ = self._setup(monkeypatch, tmp_path, proposed)
         result = cc.check_contract_consistency(CC_V3_CONFIG)
         assert result['ok'] is False
@@ -252,7 +253,7 @@ class TestManifestBypasses:
         from covered_call_change_control import current_contract_state
         from strategy_config import CC_V3_CONFIG
         real = current_contract_state(CC_V3_CONFIG)
-        proposed = dict(real, engine_hash='no-manifest-test', model_version='cc-v3.4')
+        proposed = dict(real, engine_hash='no-manifest-test', model_version=next_model_version())
         cc, _ = self._setup(monkeypatch, tmp_path, proposed)
         result = cc.check_contract_consistency(CC_V3_CONFIG)
         assert result['ok'] is False
@@ -263,8 +264,8 @@ class TestManifestBypasses:
         from covered_call_change_control import current_contract_state
         from strategy_config import CC_V3_CONFIG
         real = current_contract_state(CC_V3_CONFIG)
-        state_b = dict(real, engine_hash='hash-b', model_version='cc-v3.4')
-        state_c = dict(real, engine_hash='hash-c', model_version='cc-v3.5')
+        state_b = dict(real, engine_hash='hash-b', model_version=next_model_version())
+        state_c = dict(real, engine_hash='hash-c', model_version=next_model_version(2))
         cc, md = self._setup(monkeypatch, tmp_path, state_c)
         # Put only the A→B manifest in the dir
         _make_manifest(md, prior_state=real, proposed_state=state_b, manifest_id='a-to-b')
@@ -276,8 +277,8 @@ class TestManifestBypasses:
         from covered_call_change_control import current_contract_state
         from strategy_config import CC_V3_CONFIG
         real = current_contract_state(CC_V3_CONFIG)
-        proposed_actual = dict(real, engine_hash='actual-proposed', model_version='cc-v3.4')
-        proposed_wrong = dict(real, engine_hash='wrong-proposed', model_version='cc-v3.4')
+        proposed_actual = dict(real, engine_hash='actual-proposed', model_version=next_model_version())
+        proposed_wrong = dict(real, engine_hash='wrong-proposed', model_version=next_model_version())
         cc, md = self._setup(monkeypatch, tmp_path, proposed_actual)
         _make_manifest(md, prior_state=real, proposed_state=proposed_wrong, manifest_id='wrong-hashes')
         result = cc.check_contract_consistency(CC_V3_CONFIG)
@@ -288,7 +289,7 @@ class TestManifestBypasses:
         from covered_call_change_control import current_contract_state
         from strategy_config import CC_V3_CONFIG
         real = current_contract_state(CC_V3_CONFIG)
-        proposed = dict(real, engine_hash='dup-test', model_version='cc-v3.4')
+        proposed = dict(real, engine_hash='dup-test', model_version=next_model_version())
         cc, md = self._setup(monkeypatch, tmp_path, proposed)
         _make_manifest(md, prior_state=real, proposed_state=proposed, manifest_id='dup-1')
         _make_manifest(md, prior_state=real, proposed_state=proposed, manifest_id='dup-2')
@@ -300,7 +301,7 @@ class TestManifestBypasses:
         from covered_call_change_control import current_contract_state
         from strategy_config import CC_V3_CONFIG
         real = current_contract_state(CC_V3_CONFIG)
-        proposed = dict(real, engine_hash='no-ack-test', model_version='cc-v3.4')
+        proposed = dict(real, engine_hash='no-ack-test', model_version=next_model_version())
         cc, md = self._setup(monkeypatch, tmp_path, proposed)
         _make_manifest(md, prior_state=real, proposed_state=proposed,
                        manifest_id='no-ack', operator_acknowledged='false')
@@ -313,7 +314,7 @@ class TestManifestBypasses:
         from covered_call_change_control import current_contract_state
         from strategy_config import CC_V3_CONFIG
         real = current_contract_state(CC_V3_CONFIG)
-        proposed = dict(real, engine_hash='template-only-test', model_version='cc-v3.4')
+        proposed = dict(real, engine_hash='template-only-test', model_version=next_model_version())
         cc, md = self._setup(monkeypatch, tmp_path, proposed)
         # Write a template-named file — starts with '.' so list_manifests excludes it
         (md / '.template.md').write_text('---\nmanifest_id: template\n---\n')
@@ -341,7 +342,7 @@ class TestClassificationBypasses:
         from covered_call_change_control import current_contract_state
         from strategy_config import CC_V3_CONFIG
         real = current_contract_state(CC_V3_CONFIG)
-        proposed = dict(real, engine_hash='behavioral-misclassified', model_version='cc-v3.4')
+        proposed = dict(real, engine_hash='behavioral-misclassified', model_version=next_model_version())
         cc, md = self._setup(monkeypatch, tmp_path, proposed)
         _make_manifest(md, prior_state=real, proposed_state=proposed,
                        manifest_id='misclassified', category='NON_BEHAVIORAL')
@@ -390,7 +391,7 @@ def test_approved_behavioral_transition_exits_0(monkeypatch, tmp_path):
     md.mkdir()
     real_state = write_baseline(CC_V3_CONFIG, path=bf)
     # Only engine hash changed → correct bump is model_version
-    proposed = dict(real_state, engine_hash='approved-test-hash', model_version='cc-v3.4')
+    proposed = dict(real_state, engine_hash='approved-test-hash', model_version=next_model_version())
     _make_manifest(md, prior_state=real_state, proposed_state=proposed, manifest_id='approved')
 
     # Use subprocess with overridden paths and monkeypatched current_contract_state

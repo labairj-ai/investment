@@ -32,7 +32,7 @@ MODEL_BEHAVIOR_FUNCTIONS = (
     *_names('agent_db', 'select_fifo_lots'),
     *_names('portfolio_positions', '_normalize load_positions get_position get_lots'),
     *_names('covered_call_ledger', 'surface_history execution_history active_scorer promotion_evidence transition'),
-    *_names('agents.covered_call_agent', '_has_open_cc _get_open_cc_position _get_cc_policy _make_contract_id _build_candidates _build_evidence _analyze_roll _mgmt_iv_at_rec _build_mgmt_deps _analyze_ticker run_covered_call_agent'),
+    *_names('agents.covered_call_agent', '_safe_float _sanitize_payload _has_open_cc _get_open_cc_position _get_cc_policy _make_contract_id _build_candidates _build_evidence _analyze_roll _mgmt_iv_at_rec _build_mgmt_deps _analyze_ticker run_covered_call_agent'),
     *_names('time_utils', 'parse_timestamp now_utc now_utc_iso now_eastern today_eastern'),
 )
 SIMULATOR_BEHAVIOR_FUNCTIONS = (
