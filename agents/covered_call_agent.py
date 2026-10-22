@@ -51,6 +51,16 @@ _CC_ELIGIBLE_LAYERS = {1, 2, 3}
 _CC_MIN_SHARES = 100
 
 
+def _safe_float(v):
+    """Return v as float, replacing NaN/inf with None for JSON safety."""
+    import math
+    try:
+        f = float(v)
+        return None if (math.isnan(f) or math.isinf(f)) else f
+    except (TypeError, ValueError):
+        return None
+
+
 def _has_open_cc(ticker: str) -> bool:
     """Return True if an open covered call position exists for this ticker.
     Checks both the raw ticker and the dot→dash normalized form (BRK.B ↔ BRK-B).
@@ -758,7 +768,7 @@ def _analyze_ticker(ctx: AgentContext, ticker: str) -> list[Recommendation]:
         "overwrite_fraction": row["overwrite_fraction"] if production_v3 else int(holding.shares//100)*100/holding.shares,
         "eligible_contracts_max": int(holding.shares//100),
         "challenger": challenger,
-        "v3_utility": {k:row.get(k) for k in ("adjusted_cc_alpha","expected_upside_surrendered","expected_management_cost","expected_execution_cost","expected_tax_cost","strike_touch_prob","delta30_touch_prob","delta50_touch_prob")},
+        "v3_utility": {k:_safe_float(row.get(k)) for k in ("adjusted_cc_alpha","expected_upside_surrendered","expected_management_cost","expected_execution_cost","expected_tax_cost","strike_touch_prob","delta30_touch_prob","delta50_touch_prob")},
         "avg_cost": holding.avg_cost,
         "current_price": holding.current_price,
         "data_mode": data_mode,
@@ -911,8 +921,8 @@ def _analyze_ticker(ctx: AgentContext, ticker: str) -> list[Recommendation]:
             "dependency_type": "MACRO_STATE",
             "dependency_key": ticker,
             "original_value": _json.dumps({
-                k: v for k, v in macro_scores.items()
-                if isinstance(v, (int, float))
+                k: _safe_float(v) for k, v in macro_scores.items()
+                if isinstance(v, (int, float)) and _safe_float(v) is not None
             }),
             "tolerance": 15.0,
             "invalidating_event": "MACRO_SHIFT",
