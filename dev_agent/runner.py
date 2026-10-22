@@ -51,15 +51,17 @@ class ContainerValidator:
         if not shutil.which("docker"):
             return dict(name=name, command=command, exit_code=None, status="UNAVAILABLE", reason="sandbox runtime unavailable")
         root = Path(root)
+        test_root=Path(getattr(self,'trusted_test_root',root))
+        test_base=getattr(self,'trusted_test_base',None) or getattr(self,'prior_base',None)
         if test_command and name!='supplemental_tests' and not _base_collection:
             from .test_oracle import files
-            trusted_paths=files(root,getattr(self,'prior_base',None))
+            trusted_paths=files(test_root,test_base)
             paths=[arg for arg in command[3:] if arg.startswith('tests/') and arg!='tests/']
             if any(arg.split('::')[0] not in trusted_paths for arg in paths):
                 command=command[:3]+['tests/']+[arg for arg in command[3:] if arg.startswith('-')]
         expected=None
         if test_command and name!='supplemental_tests' and not _base_collection:
-            key=(getattr(self,'prior_base',None),tuple(command))
+            key=(str(test_root),test_base,tuple(command))
             cache=getattr(self,'_oracle_inventories',{})
             if key not in cache:
                 collection=self.run(root,'regression_inventory',command+['--collect-only'],_base_collection=True)
@@ -80,26 +82,26 @@ class ContainerValidator:
             if _base_collection:
                 from .test_oracle import application_files
                 shutil.rmtree(snapshot);snapshot.mkdir()
-                for rel,data in application_files(root,self.prior_base).items():
+                for rel,data in application_files(test_root,test_base).items():
                     target=snapshot/rel;target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(data)
             # Mandatory tests/configuration come only from the exact approved base.
             from .test_oracle import materialize, files, CONFIG
             authority=Path(temp)/'authority';authority.mkdir()
             trusted_hash=None
             if name != 'supplemental_tests':
-                prior=getattr(self,'prior_base',None)
+                prior=test_base
                 if not prior: raise ValueError('approved prior base required')
                 trusted=Path(temp)/'trusted';trusted.mkdir()
-                trusted_hash=materialize(root,prior,trusted)
-                (authority/'oracle-files.json').write_text(json.dumps({p:hashlib.sha256(data).hexdigest() for p,data in files(root,prior).items()}))
+                trusted_hash=materialize(test_root,prior,trusted)
+                (authority/'oracle-files.json').write_text(json.dumps({p:hashlib.sha256(data).hexdigest() for p,data in files(test_root,prior).items()}))
                 if (snapshot/'tests').exists(): shutil.rmtree(snapshot/'tests')
                 for path in list(snapshot.rglob('*')):
                     if path.is_file() and path.name in CONFIG: path.unlink()
-                for rel,data in files(root,prior).items():
+                for rel,data in files(test_root,prior).items():
                     target=snapshot/rel;target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(data)
                 # Trusted release orchestration also comes from the approved base.
                 for script in scripts.values():
-                    try: data=git_output(root,'show',prior+':'+script,text=False)
+                    try: data=git_output(test_root,'show',prior+':'+script,text=False)
                     except subprocess.CalledProcessError: raise ValueError('trusted release gate unavailable') from None
                     target=snapshot/script;target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(data)
             if name == 'release_baseline':
@@ -260,6 +262,8 @@ class Runner:
                     if isinstance(self.validator, ContainerValidator):
                         self.validator.timeout = min(self.validator.timeout, remaining)
                         self.validator.prior_base=record['base']
+                        self.validator.trusted_test_base=record['base']
+                        self.validator.trusted_test_root=root
                     validations.append(self.validator.run(root, name, cmd))
                 final = review(root, original, base_files, self.reviewer, validations, context["risk"], self.seconds - (time.monotonic()-start), final.get("findings", []))
                 current = {f["id"] for f in final["findings"]}

@@ -127,6 +127,8 @@ def certify(root, validator, github_client, snapshot, actor=None, *, provenance=
     if type(validator) is not ContainerValidator: raise ValueError('trusted sandbox validator required')
     if git(root,'status','--porcelain'):raise ValueError('clean approved harness commit required')
     validator.prior_base=git(root,'rev-parse','HEAD')
+    validator.trusted_test_base=validator.prior_base
+    validator.trusted_test_root=root
     data=canary(root)
     from .containment import probe
     confinement=probe(validator.image)

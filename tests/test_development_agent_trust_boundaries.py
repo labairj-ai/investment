@@ -294,3 +294,26 @@ def test_candidate_plugin_cannot_shadow_installed_or_base_plugin(tmp_path):
     check_plugin('pytest_example',oracle,tmp_path)
     plugin.write_text('raise RuntimeError("changed after approval")\n')
     with pytest.raises(ValueError):check_plugin('pytest_example',oracle,tmp_path)
+
+
+def test_reviewed_ci_oracle_cannot_override_financial_event_prior(repo,tmp_path,monkeypatch):
+    import shutil
+    import dev_agent.runner as module
+    (repo/'.cc_contract_baseline.json').write_text('{"reviewed":"event-prior"}')
+    event_base=commit(repo)
+    trusted=tmp_path/'trusted-controller';shutil.copytree(repo,trusted)
+    (trusted/'.cc_contract_baseline.json').write_text('{"oracle":"not-financial-authority"}')
+    oracle_base=commit(trusted)
+    (repo/'.cc_contract_baseline.json').write_text('{"candidate":"untrusted"}')
+    real=subprocess.run
+    def invoke(argv,**kwargs):
+        if argv[0]!='docker':return real(argv,**kwargs)
+        mounts=[argv[i+1] for i,a in enumerate(argv[:-1]) if a=='--mount']
+        authority=next(m for m in mounts if 'dst=/authority,' in m)
+        path=Path(authority.split('src=',1)[1].split(',')[0])
+        assert json.loads((path/'prior-cc-baseline.json').read_text())=={'reviewed':'event-prior'}
+        return subprocess.CompletedProcess(argv,0)
+    monkeypatch.setattr(module.shutil,'which',lambda name:'/fixture/docker');monkeypatch.setattr(module.subprocess,'run',invoke)
+    validator=ContainerValidator('fixture@sha256:'+'a'*64)
+    validator.prior_base=event_base;validator.trusted_test_root=trusted;validator.trusted_test_base=oracle_base
+    assert validator.run(repo,'cc_contract',['python','scripts/check_cc_contract.py','--trusted-prior-file','/authority/prior-cc-baseline.json'])['status']=='PASS'

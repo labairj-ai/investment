@@ -27,14 +27,20 @@ def main():
     containment=probe(args.image)
     if containment['status']!='PASS':raise ValueError('OS containment '+containment['status'])
     validator=ContainerValidator(args.image,timeout=1800);validator.prior_base=args.base
-    oracle_hash=tree_hash(files(root,args.base));records=[]
-    for name,command in manifest(['tests/test_agent_contract.py'],args.base,root=root):
+    # CI's reviewed orchestration commit is also its independently approved test
+    # base. A candidate cannot change this ref; the financial prior remains the
+    # exact GitHub event base and cannot be replaced by the oracle promotion.
+    trusted_root=Path(__file__).resolve().parents[1]
+    trusted_base=output(trusted_root,'rev-parse','HEAD').strip()
+    validator.trusted_test_root=trusted_root;validator.trusted_test_base=trusted_base
+    oracle_hash=tree_hash(files(trusted_root,trusted_base));records=[]
+    for name,command in manifest(['tests/test_agent_contract.py'],trusted_base,root=trusted_root):
         result=validator.run(root,name,command);records.append(result)
     # Only one approved, bounded, parsed artifact crosses the execution boundary.
     if validator._full_junit is None:raise ValueError('mandatory JUnit unavailable')
     destination=out/'test-results.xml';destination.write_bytes(validator._full_junit)
     inventory=junit(destination)
-    report=dict(head=args.head,base=args.base,image=args.image,orchestrator_sha=output(Path(__file__).resolve().parents[1],'rev-parse','HEAD').strip(),trusted_test_tree_hash=oracle_hash,containment=containment,
+    report=dict(head=args.head,base=args.base,trusted_test_base=trusted_base,image=args.image,orchestrator_sha=trusted_base,trusted_test_tree_hash=oracle_hash,containment=containment,
                 inventory=inventory,gates=records,status='PASS' if all(r['status']=='PASS' and r['exit_code']==0 for r in records) else 'FAIL')
     # Candidate tests execute in a fresh sandbox and cannot overwrite mandatory XML.
     supplemental=validator.run(root,'supplemental_tests',['python','-m','pytest','tests/','-v','--tb=short'])

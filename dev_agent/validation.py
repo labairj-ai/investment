@@ -73,6 +73,8 @@ def execute(root, store, cid, validator, *, fixture=False):
             try:
                 validator.timeout=min(1800,max(1,deadline-time.monotonic()))
                 validator.prior_base=binding['base']
+                validator.trusted_test_base=binding['base']
+                validator.trusted_test_root=root
                 result = validator.run(root, name, command)
             except Exception as exc:
                 result = dict(status='UNAVAILABLE', exit_code=None, reason=type(exc).__name__)

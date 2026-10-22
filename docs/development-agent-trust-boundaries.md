@@ -61,10 +61,20 @@ Configure these repository variables out-of-band:
   `scripts/run_contained_ci.py` and the hardened harness.
 
 The orchestration SHA must contain the new code; an old main without these scripts
-cannot bootstrap it. Do not point this variable automatically at PR head. The
-approved regression base must also include the trusted release gates required by
-that harness. Main must first receive the independently reviewed harness baseline;
-missing base gates fail closed rather than falling back to candidate scripts.
+cannot bootstrap it. Do not point this variable automatically at PR head. For CI,
+this independently reviewed commit also supplies the explicitly approved test base
+and trusted release orchestration. Human approval of an oracle migration is separate
+from candidate publication; the candidate cannot promote its own tests. Both the
+approved test-base SHA and its tree hash are recorded. The exact GitHub event base
+remains the financial-contract prior and cannot be overridden by oracle promotion.
+Ordinary Development Agent receipts always force their test base to the immutable
+approved PLAN base, even if the validator previously served another CI workspace.
+
+PR #6 contains the already acknowledged cc-v3.4 baseline and remains unmerged.
+Review/merge that prerequisite before requiring the cc-v3.4 → cc-v3.5 candidate to
+pass against main; refresh the candidate and require a new exact-head CI event after
+that base update. Do not reuse an earlier event or manufacture a combined transition
+to hide the missing reviewed prior.
 
 On ephemeral hosted runners, a trusted provisioning step fetches only the
 operator-approved immutable image before candidate execution. Agent validation
