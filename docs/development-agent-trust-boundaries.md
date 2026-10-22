@@ -119,7 +119,7 @@ The dashboard exposes the full PROTECTION history through its existing audit vie
 ## Human dashboard identity
 
 Shared-token possession alone cannot authorize supervised decisions. For Tailscale
-Serve identity, an operator must set `INVESTMENT_BIND_HOST=127.0.0.1` (or loopback IPv6),
+Serve identity, an operator must set `INVESTMENT_BIND_HOST=127.0.0.1`,
 `DEV_AGENT_IDENTITY_SOURCE=tailscale-serve`, and a comma-separated allowlist in
 `DEV_AGENT_OPERATORS`. The trusted Serve proxy must be the sole ingress to that
 loopback-only backend and must strip/repopulate Tailscale identity headers. Local

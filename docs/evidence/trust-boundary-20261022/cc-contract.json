@@ -1,0 +1,37 @@
+{
+  "ok": false,
+  "hash_changed": true,
+  "version_bumped": true,
+  "has_manifest": false,
+  "applicable_manifest": null,
+  "manifest_count": 3,
+  "baseline_missing": false,
+  "baseline_malformed": false,
+  "findings": [
+    "CANDIDATE_BASELINE_MISMATCH: candidate must exactly equal computed current state; promotion required",
+    "BEHAVIORAL_HASH_CHANGED_WITHOUT_APPLICABLE_MANIFEST: a transition-bound manifest is required that matches the exact prior\u2192proposed contract state. Copy cc_change_manifests/.template.md and fill in prior/proposed hashes."
+  ],
+  "current": {
+    "fingerprint_version": "cc-behavior-v1",
+    "model_version": "cc-v3.5",
+    "simulator_version": "cc-virtual-1",
+    "simulator_contract_version": "simulator-contract-2",
+    "simulator_contract_hash": "b8be3b06388cb68c...",
+    "engine_hash": "e4e3f614db63eb10...",
+    "policy_version": "shared-live-mana...",
+    "cadence_comparability_policy_version": "cadence-v1"
+  },
+  "baseline": {
+    "fingerprint_version": "cc-behavior-v1",
+    "model_version": "cc-v3.4",
+    "simulator_version": "cc-virtual-1",
+    "simulator_contract_version": "simulator-contract-2",
+    "simulator_contract_hash": "b8be3b06388cb68c7be9e53488ca6f473cc3bee15f81ed93461c802e951ce8f2",
+    "engine_hash": "5f9fc49b8b13f7cce7672d94358c07ed188218597d9da9d9b807585176facd9f",
+    "policy_version": "shared-live-management-asof-1",
+    "cadence_comparability_policy_version": "cadence-v1",
+    "schema_version": "cc-contract-v2"
+  },
+  "trusted_prior_ref": "0c775008ad9ec0fa8ed32cc61a1d9c3215ce80ce",
+  "fingerprint_definition_migration": false
+}

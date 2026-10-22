@@ -1,0 +1,13 @@
+{
+  "passed": false,
+  "known_debt": [],
+  "new_failures": [
+    "tests/test_cc_behavior_fingerprint.py::test_cli_inventory_reports_all_canonical_component_names",
+    "tests/test_cc_release_security.py::test_cli_exact_event_sha[push]",
+    "tests/test_cc_release_security.py::test_cli_exact_event_sha[pull_request]"
+  ],
+  "changed_failures": [],
+  "expired_waivers": [],
+  "resolved_stale_inventory": [],
+  "resolution_policy": "resolved failures require inventory cleanup before release"
+}

@@ -61,3 +61,5 @@ User-supplied 2026-10-22 development-agent operational acceptance phase. Require
 ## Additional trust-boundary gates — 2026-10-22
 
 0803 and 0804 must PASS before technical certification. Candidate-controlled tests and unconstrained CI execution cannot supply certification evidence.
+
+The current `authority-adversarial-3` suite includes every required authority-adversarial-2 attack and adds seven trust-boundary probes. Its fixture PASS does not close real environmental acceptance.

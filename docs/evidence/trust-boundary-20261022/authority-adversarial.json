@@ -1,0 +1,30 @@
+{
+  "version": "authority-adversarial-3",
+  "components": {
+    "forged_validation": "PASS",
+    "synthetic_supervision": "PASS",
+    "arbitrary_snapshot": "PASS",
+    "forged_provenance": "PASS",
+    "remote_sha_mismatch": "PASS",
+    "stale_validation": "PASS",
+    "mixed_candidate": "PASS",
+    "mixed_commit": "PASS",
+    "trusted_oracle_isolation": "PASS",
+    "runner_configuration_risk": "PASS",
+    "active_content_risk": "PASS",
+    "git_hook_isolation": "PASS",
+    "unique_dashboard_identity": "PASS",
+    "stale_lifecycle_protection": "PASS",
+    "forged_supplemental": "PASS",
+    "stale_backup": "PASS",
+    "stale_certification": "PASS",
+    "replayed_supervision": "PASS",
+    "autonomy_disabled": "PASS",
+    "mode_confusion": "PASS",
+    "stale_remote_head": "PASS",
+    "ruleset_bypass": "PASS",
+    "incomplete_protection_visibility": "PASS"
+  },
+  "status": "PASS",
+  "fixture_only": true
+}
