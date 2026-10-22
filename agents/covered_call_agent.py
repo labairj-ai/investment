@@ -51,6 +51,28 @@ _CC_ELIGIBLE_LAYERS = {1, 2, 3}
 _CC_MIN_SHARES = 100
 
 
+def _safe_float(v):
+    """Return v as float, replacing NaN/inf with None for JSON safety."""
+    import math
+    try:
+        f = float(v)
+        return None if (math.isnan(f) or math.isinf(f)) else f
+    except (TypeError, ValueError):
+        return None
+
+
+def _sanitize_payload(obj):
+    """Recursively replace NaN/inf floats with None so the payload is JSON-safe."""
+    import math
+    if isinstance(obj, dict):
+        return {k: _sanitize_payload(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_payload(v) for v in obj]
+    if isinstance(obj, float):
+        return None if (math.isnan(obj) or math.isinf(obj)) else obj
+    return obj
+
+
 def _has_open_cc(ticker: str) -> bool:
     """Return True if an open covered call position exists for this ticker.
     Checks both the raw ticker and the dot→dash normalized form (BRK.B ↔ BRK-B).
@@ -475,7 +497,7 @@ def _analyze_roll(ctx: AgentContext, ticker: str, position: dict) -> list[Recomm
             if action == "HOLD_CALL" else
             f"Instead of {action}, hold the position and reassess closer to expiration."
         ),
-        action_payload=action_payload,
+        action_payload=_sanitize_payload(action_payload),
         dependencies=_build_mgmt_deps(
             ticker, current_price, existing_strike, existing_expiry, current_mark,
             current_iv=_mgmt_iv_at_rec(ticker, existing_strike, existing_expiry),
@@ -758,7 +780,7 @@ def _analyze_ticker(ctx: AgentContext, ticker: str) -> list[Recommendation]:
         "overwrite_fraction": row["overwrite_fraction"] if production_v3 else int(holding.shares//100)*100/holding.shares,
         "eligible_contracts_max": int(holding.shares//100),
         "challenger": challenger,
-        "v3_utility": {k:row.get(k) for k in ("adjusted_cc_alpha","expected_upside_surrendered","expected_management_cost","expected_execution_cost","expected_tax_cost","strike_touch_prob","delta30_touch_prob","delta50_touch_prob")},
+        "v3_utility": {k:_safe_float(row.get(k)) for k in ("adjusted_cc_alpha","expected_upside_surrendered","expected_management_cost","expected_execution_cost","expected_tax_cost","strike_touch_prob","delta30_touch_prob","delta50_touch_prob")},
         "avg_cost": holding.avg_cost,
         "current_price": holding.current_price,
         "data_mode": data_mode,
@@ -911,8 +933,8 @@ def _analyze_ticker(ctx: AgentContext, ticker: str) -> list[Recommendation]:
             "dependency_type": "MACRO_STATE",
             "dependency_key": ticker,
             "original_value": _json.dumps({
-                k: v for k, v in macro_scores.items()
-                if isinstance(v, (int, float))
+                k: _safe_float(v) for k, v in macro_scores.items()
+                if isinstance(v, (int, float)) and _safe_float(v) is not None
             }),
             "tolerance": 15.0,
             "invalidating_event": "MACRO_SHIFT",
@@ -933,7 +955,7 @@ def _analyze_ticker(ctx: AgentContext, ticker: str) -> list[Recommendation]:
         rationale=main_tradeoff,
         counter_case=no_call_case,
         no_action_case=no_call_case,
-        action_payload=action_payload,
+        action_payload=_sanitize_payload(action_payload),
         dependencies=deps,
         trade_chain_id=_tc_id,
     )
