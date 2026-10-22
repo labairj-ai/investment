@@ -59,7 +59,7 @@ def _safe_float(v):
     try:
         f = float(v)
         return None if (math.isnan(f) or math.isinf(f)) else f
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
 
 
@@ -74,8 +74,9 @@ def _sanitize_payload(obj):
     if isinstance(obj, (list, tuple)):
         return [_sanitize_payload(v) for v in obj]
     if isinstance(obj, Real) and not isinstance(obj, bool):
+        if isinstance(obj,Integral):return int(obj)
         if not math.isfinite(obj): return None
-        return int(obj) if isinstance(obj, Integral) else float(obj)
+        return float(obj)
     return obj
 
 
@@ -87,17 +88,22 @@ def _decision_inputs(values, *, positive=(), probabilities=(), integers=()):
             reasons.append('MISSING_DECISION_INPUT_'+key.upper())
         elif isinstance(value,bool) or not isinstance(value,Real):
             reasons.append('INVALID_DECISION_INPUT_'+key.upper())
-        elif not math.isfinite(value):
-            reasons.append('NON_FINITE_DECISION_INPUT_'+key.upper())
-        elif ((key in positive and value<=0) or
-              (key in probabilities and not 0<=value<=1) or
-              (key in integers and value!=int(value))):
-            reasons.append('OUT_OF_RANGE_DECISION_INPUT_'+key.upper())
+        else:
+            try:
+                if not math.isfinite(value):
+                    reasons.append('NON_FINITE_DECISION_INPUT_'+key.upper())
+                elif ((key in positive and value<=0) or
+                      (key in probabilities and not 0<=value<=1) or
+                      (key in integers and value!=int(value))):
+                    reasons.append('OUT_OF_RANGE_DECISION_INPUT_'+key.upper())
+            except OverflowError:
+                reasons.append('UNREPRESENTABLE_DECISION_INPUT_'+key.upper())
     return reasons
 
 
 def _row_input_failures(row):
-    keys=('cc_alpha','exec_premium','regret_prob','delta','strike','dte','score')
+    keys=('cc_alpha','exec_premium','regret_prob','delta','strike','dte','score',
+          'impliedVolatility','bid','ask','liquidity_score')
     values={k:row.get(k) for k in keys}
     values['opp_score']=row.get('opp_score',row.get('score'))
     return _decision_inputs(values,positive=('strike','dte'),
@@ -672,6 +678,12 @@ def _analyze_ticker(ctx: AgentContext, ticker: str) -> list[Recommendation]:
     from strategy_config import CC_V3_CONFIG
     import pandas as pd
     failures=_decision_inputs(dict(current_price=result.get('current_price')),positive=('current_price',))
+    model=result.get('vol_model') or {}
+    failures+=_decision_inputs(dict(hv_forecast=model.get('hv_forecast')),positive=('hv_forecast',))
+    if 'mu_center' in model:
+        failures+=_decision_inputs({k:model.get(k) for k in ('mu_center','mu_low','mu_high')})
+    if 'dividend_yield' in result:
+        failures+=_decision_inputs(dict(dividend_yield=result['dividend_yield']))
     for raw in result.get('all_calls',result.get('recs',pd.DataFrame())).to_dict('records'):
         failures+=_row_input_failures(raw)
     if failures: return _insufficient_inputs(ctx,ticker,failures)

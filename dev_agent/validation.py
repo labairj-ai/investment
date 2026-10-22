@@ -18,13 +18,20 @@ VERSION = "development-validation-3"
 GATES = ("focused_tests", "full_suite", "release_baseline", "cc_contract", "agent_contract", "todo_consistency", "development_governance")
 
 
-def manifest(focused, base):
+def manifest(focused, base, *, root=None):
     if not focused or not isinstance(focused, list):
         raise ValueError("approved focused test paths required")
     for path in focused:
         safe_relative(path.split('::')[0])
         if not path.startswith("tests/") or not path.split('::')[0].endswith('.py'):
             raise ValueError("focused tests must be explicit repository test paths")
+    if root is not None:
+        from .test_oracle import files
+        trusted=files(root,base)
+        focused=[p for p in focused if p.split('::')[0] in trusted]
+        # Newly added tests are supplemental; they cannot define the oracle.
+        # When no approved-base focused test exists, run the complete trusted set.
+        if not focused:focused=['tests/']
     return [
         ("focused_tests", ["python", "-m", "pytest", *focused, "-v", "--tb=short"]),
         ("full_suite", ["python", "-m", "pytest", "tests/", "-v", "--tb=short"]),
@@ -52,7 +59,7 @@ def execute(root, store, cid, validator, *, fixture=False):
     if binding['head'] == binding['base']:
         raise ValueError('committed implementation required')
     focused = plan.get('focused_tests', ['tests/test_development_agent.py'])
-    commands = manifest(focused, binding['base'])
+    commands = manifest(focused, binding['base'],root=root)
     batch = str(uuid.uuid4())
     records = []
     deadline=time.monotonic()+2400
@@ -108,7 +115,7 @@ def reconstruct(root, store, cid):
     expected.update(trusted_test_tree_hash=tree_hash(files(root,ctx['head'])),candidate_source_tree_hash=expected['source_hash'])
     if any(batch.get(k) != v for k,v in expected.items()) or batch.get('fixture_only'):
         raise ValueError('stale, mixed or fixture validation evidence')
-    commands = manifest(plans[-1].get('focused_tests', ['tests/test_development_agent.py']), ctx['head'])
+    commands = manifest(plans[-1].get('focused_tests', ['tests/test_development_agent.py']), ctx['head'],root=root)
     records = [e['payload'] for e in candidate['events'] if e['kind']=='VALIDATION' and e['payload'].get('batch')==batch['batch']]
     if len(records)!=len(GATES) or {r['name'] for r in records}!=set(GATES):
         raise ValueError('missing or duplicate mandatory validation')

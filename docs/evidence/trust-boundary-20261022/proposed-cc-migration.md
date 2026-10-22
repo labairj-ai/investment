@@ -17,7 +17,7 @@ proposed_model_version: cc-v3.5
 proposed_simulator_version: cc-virtual-1
 proposed_simulator_contract_version: simulator-contract-2
 proposed_simulator_contract_hash: b8be3b06388cb68c7be9e53488ca6f473cc3bee15f81ed93461c802e951ce8f2
-proposed_engine_hash: e7fcc056ad509fbcedca4cae7efaff1a848bdbed7030b8667a687f1ad46e0f5c
+proposed_engine_hash: e4e3f614db63eb106eae3dbe2de7e1e6120bd99a0d0f43f8a8b894fbb0caa6ce
 proposed_policy_version: shared-live-management-asof-1
 proposed_cadence_comparability_policy_version: cadence-v1
 cohort_reset_required: true

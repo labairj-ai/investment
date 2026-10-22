@@ -28,13 +28,13 @@ def main():
     if containment['status']!='PASS':raise ValueError('OS containment '+containment['status'])
     validator=ContainerValidator(args.image,timeout=1800);validator.prior_base=args.base
     oracle_hash=tree_hash(files(root,args.base));records=[]
-    for name,command in manifest(['tests/test_agent_contract.py'],args.base):
+    for name,command in manifest(['tests/test_agent_contract.py'],args.base,root=root):
         result=validator.run(root,name,command);records.append(result)
     # Only one approved, bounded, parsed artifact crosses the execution boundary.
     if validator._full_junit is None:raise ValueError('mandatory JUnit unavailable')
     destination=out/'test-results.xml';destination.write_bytes(validator._full_junit)
     inventory=junit(destination)
-    report=dict(head=args.head,base=args.base,image=args.image,trusted_test_tree_hash=oracle_hash,containment=containment,
+    report=dict(head=args.head,base=args.base,image=args.image,orchestrator_sha=output(Path(__file__).resolve().parents[1],'rev-parse','HEAD').strip(),trusted_test_tree_hash=oracle_hash,containment=containment,
                 inventory=inventory,gates=records,status='PASS' if all(r['status']=='PASS' and r['exit_code']==0 for r in records) else 'FAIL')
     # Candidate tests execute in a fresh sandbox and cannot overwrite mandatory XML.
     supplemental=validator.run(root,'supplemental_tests',['python','-m','pytest','tests/','-v','--tb=short'])

@@ -41,6 +41,7 @@ def operational_runs(root,store,now=None):
             elif item.get('fixture_only') or item.get('mode')!='SUPERVISED': reason='fixture or wrong mode'
             elif not receipt or receipt[-1].get('head')!=item.get('head'): reason='receipt missing'
             elif not latest_plan or latest_plan[-1]!=item.get('context'): reason='scope changed'
+            elif any(e['kind']=='PROTECTION' and e['payload'].get('context_hash')==digest(item.get('context')) and e['payload'].get('status')!='PASS' for e in events): reason='protection drift recorded; fresh human scope required'
             elif candidate['state'] not in {'DEPLOYED','CLOSED'} or not deployments or deployments[-1]['status']!='HEALTHY': reason='not observed healthy or rolled back'
             elif item.get('created',now+1)>now: reason='future evidence'
             (rejected if reason else accepted).append(dict(item, reason=reason) if reason else item)

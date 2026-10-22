@@ -50,6 +50,8 @@ def environment(monkeypatch):
     ('regret_prob',float('nan'),'NON_FINITE_DECISION_INPUT_REGRET_PROB'),
     ('delta',np.float64('nan'),'NON_FINITE_DECISION_INPUT_DELTA'),
     ('dte',float('inf'),'NON_FINITE_DECISION_INPUT_DTE'),
+    ('impliedVolatility',float('inf'),'NON_FINITE_DECISION_INPUT_IMPLIEDVOLATILITY'),
+    ('liquidity_score',float('nan'),'NON_FINITE_DECISION_INPUT_LIQUIDITY_SCORE'),
 ])
 def test_raw_invalid_inputs_do_not_reach_prepare_or_recommendation(environment,monkeypatch,field,value,reason):
     import covered_call_v3
@@ -112,3 +114,19 @@ def test_management_rejects_invalid_contract_before_price_math(environment,monke
     position=dict(strike=110.,expiry='2026-11-12',premium_per_contract=float('inf'),contracts=3)
     assert agent._analyze_roll(ctx,'TEST',position)==[]
     assert 'NON_FINITE_DECISION_INPUT_PREMIUM' in findings[-1]['summary']
+
+
+def test_nonfinite_volatility_model_stops_before_challenger_math(environment,monkeypatch):
+    import covered_call_v3
+    ctx,result,_,findings,_=environment
+    result['vol_model']['hv_forecast']=np.float64('nan')
+    monkeypatch.setattr(covered_call_v3,'prepare',lambda *a:pytest.fail('invalid forecast reached math'))
+    assert agent._analyze_ticker(ctx,'TEST')==[]
+    assert 'NON_FINITE_DECISION_INPUT_HV_FORECAST' in findings[-1]['summary']
+
+
+def test_unrepresentable_decision_values_fail_closed_but_json_integers_remain_exact():
+    value=10**400
+    assert agent._decision_inputs({'shares':value})==['UNREPRESENTABLE_DECISION_INPUT_SHARES']
+    assert agent._safe_float(value) is None
+    assert json.loads(json.dumps(agent._sanitize_payload({'evidence_integer':value})))['evidence_integer']==value

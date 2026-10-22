@@ -18,19 +18,22 @@ CONFIG = TEST_RUNNER_FILES
 
 def application_files(root,base):
     """Exact approved-base source for independent collection; never candidate code."""
-    expected=set()
+    expected={}
     for row in filter(None,output(root,'ls-tree','-rz','--full-tree',base,text=False).split(b'\0')):
         metadata,name=row.split(b'\t',1);name=name.decode();safe_relative(name)
         if matches(name,FORBIDDEN):continue
         if metadata.split()[0] not in {b'100644',b'100755'}:raise ValueError('unsafe base source')
-        expected.add(name)
+        expected[name]=metadata.split()[2].decode()
     result={}
     with tarfile.open(fileobj=io.BytesIO(output(root,'archive',base,text=False))) as archive:
         for item in archive:
             if item.name not in expected:continue
             if not item.isfile() or item.size>2_000_000:raise ValueError('incomplete base source')
-            result[item.name]=archive.extractfile(item).read()
-    if set(result)!=expected:raise ValueError('base source omitted by archive attributes')
+            data=archive.extractfile(item).read()
+            if hashlib.sha1(('blob '+str(len(data))+'\0').encode()+data).hexdigest()!=expected[item.name]:
+                raise ValueError('base source transformed by archive attributes')
+            result[item.name]=data
+    if set(result)!=set(expected):raise ValueError('base source omitted by archive attributes')
     return result
 
 

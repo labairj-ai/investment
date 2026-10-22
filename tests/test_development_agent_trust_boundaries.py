@@ -253,3 +253,32 @@ def test_missing_runtime_is_unavailable_not_pass(monkeypatch):
     from dev_agent import containment
     monkeypatch.setattr(containment.shutil,'which',lambda name:None)
     assert containment.probe('fixture@sha256:'+'a'*64)['status']=='UNAVAILABLE'
+
+
+def test_restored_policy_does_not_erase_drift_or_requalify_old_pilot(store):
+    from test_development_agent_hardening import seed_completed_pilot
+    from dev_agent import operations
+    cid,adapter=seed_completed_pilot(store)
+    operations.record_success(ROOT,store,cid,adapter,human=human())
+    assert operations.operational_runs(ROOT,store)['qualifying']
+    good=adapter.protections
+    adapter.protections=lambda:protection_observation(status='FAIL')
+    with pytest.raises(ValueError):github.record_merge(store,cid,adapter)
+    adapter.protections=good
+    with pytest.raises(ValueError,match='fresh human scope'):operations.record_success(ROOT,store,cid,adapter,human=human())
+    assert not operations.operational_runs(ROOT,store)['qualifying']
+    assert store.get(cid)['state']=='NEEDS_HUMAN'
+
+
+def test_candidate_added_test_is_supplemental_without_replacing_base_focus(repo):
+    from dev_agent.validation import manifest
+    base=run(repo,'rev-parse','HEAD').stdout.strip()
+    (repo/'tests/test_new.py').write_text('def test_new(): assert True\n')
+    focused=manifest(['tests/test_new.py'],base,root=repo)[0]
+    assert focused[0]=='focused_tests' and focused[1][3]=='tests/'
+    assert 'tests/test_new.py' not in focused[1]
+    assert 'tests/test_oracle.py' in test_oracle.files(repo,base)
+
+
+def test_ambiguous_content_representation_cannot_be_classified_passive():
+    with pytest.raises(ValueError):policy.classify(['static/a.svg'],content={'static/a.svg':'<script/>'})

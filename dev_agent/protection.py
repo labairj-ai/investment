@@ -22,12 +22,15 @@ def require(store, cid, client, stage, *, root=None, observation=None, now=None)
     receipts=[e['payload']['receipt'] for e in candidate['events'] if e['kind']=='RECEIPT']
     head=(scope[-1].get('head') if scope else None) if stage=='start' else (receipts[-1]['head'] if receipts else scope[-1].get('head') if scope else None)
     prior = [e['payload'] for e in candidate['events'] if e['kind']=='PROTECTION' and e['payload'].get('context_hash')==context_hash and e['payload'].get('status')=='PASS']
+    failures=[e for e in candidate['events'] if e['kind']=='PROTECTION' and e['payload'].get('context_hash')==context_hash and e['payload'].get('status')!='PASS']
     reason = None
     if (data.get('status')!='PASS' or not isinstance(raw,dict) or digest(raw)!=data.get('evidence_hash') or
         not isinstance(data.get('created'), (int,float)) or not 0<=now-data['created']<=maximum or
         not data.get('identity') or data.get('repository')!=client.repository or
         not isinstance(data.get('effective'),dict) or not data['effective'] or not all(data['effective'].values())):
         reason = 'fresh attributable effective-protection PASS required'
+    elif failures:
+        reason='protection failure requires fresh human scope approval'
     elif prior and any(p['identity']!=data['identity'] or p['repository']!=client.repository or p['policy_hash']!=policy_hash for p in prior):
         reason = 'effective protection or coding-agent identity changed'
     elif stage!='start' and not any(p['stage']=='start' for p in prior):

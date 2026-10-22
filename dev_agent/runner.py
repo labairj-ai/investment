@@ -51,6 +51,12 @@ class ContainerValidator:
         if not shutil.which("docker"):
             return dict(name=name, command=command, exit_code=None, status="UNAVAILABLE", reason="sandbox runtime unavailable")
         root = Path(root)
+        if test_command and name!='supplemental_tests' and not _base_collection:
+            from .test_oracle import files
+            trusted_paths=files(root,getattr(self,'prior_base',None))
+            paths=[arg for arg in command[3:] if arg.startswith('tests/') and arg!='tests/']
+            if any(arg.split('::')[0] not in trusted_paths for arg in paths):
+                command=command[:3]+['tests/']+[arg for arg in command[3:] if arg.startswith('-')]
         expected=None
         if test_command and name!='supplemental_tests' and not _base_collection:
             key=(getattr(self,'prior_base',None),tuple(command))
@@ -250,7 +256,9 @@ class Runner:
                 for name, cmd in validation_commands:
                     remaining = self.seconds - (time.monotonic()-start)
                     if remaining <= 0: raise ValueError("wall-time budget exhausted")
-                    if isinstance(self.validator, ContainerValidator): self.validator.timeout = min(self.validator.timeout, remaining)
+                    if isinstance(self.validator, ContainerValidator):
+                        self.validator.timeout = min(self.validator.timeout, remaining)
+                        self.validator.prior_base=record['base']
                     validations.append(self.validator.run(root, name, cmd))
                 final = review(root, original, base_files, self.reviewer, validations, context["risk"], self.seconds - (time.monotonic()-start), final.get("findings", []))
                 current = {f["id"] for f in final["findings"]}

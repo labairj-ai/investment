@@ -137,6 +137,7 @@ def whole_diff(root, base):
     content = {}
     for path in filter(None, paths):
         if path.endswith(('.html', '.svg')):
+            if (Path(root)/path).is_symlink():continue
             try: old = git_output(root, 'show', base+':'+path)
             except subprocess.CalledProcessError: old = ''
             new = (Path(root)/path).read_text() if (Path(root)/path).is_file() else ''
@@ -145,6 +146,8 @@ def whole_diff(root, base):
 
 
 def classify(paths, *, graphs=(), declared=0, model=0, manifest=None, diff="", content=None):
+    if content is not None and (not isinstance(content,dict) or any(not isinstance(pair,(tuple,list)) or len(pair)!=2 or not all(isinstance(text,str) for text in pair) for pair in content.values())):
+        raise ValueError('unproven whole-content representation; human review required')
     paths = sorted(set(paths))
     floor = max(int(declared), int(model))
     if not 0 <= floor <= 5:
