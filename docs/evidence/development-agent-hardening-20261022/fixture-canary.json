@@ -1,0 +1,47 @@
+{
+  "adversarial": {
+    "version": "authority-adversarial-2",
+    "components": {
+      "forged_validation": "PASS",
+      "synthetic_supervision": "PASS",
+      "arbitrary_snapshot": "PASS",
+      "forged_provenance": "PASS",
+      "remote_sha_mismatch": "PASS",
+      "stale_validation": "PASS",
+      "mixed_candidate": "PASS",
+      "mixed_commit": "PASS",
+      "stale_backup": "PASS",
+      "stale_certification": "PASS",
+      "replayed_supervision": "PASS",
+      "autonomy_disabled": "PASS",
+      "mode_confusion": "PASS",
+      "stale_remote_head": "PASS",
+      "ruleset_bypass": "PASS",
+      "incomplete_protection_visibility": "PASS"
+    },
+    "status": "PASS",
+    "fixture_only": true
+  },
+  "version": "harness-canary-2",
+  "kind": "TECHNICAL",
+  "harness_hash": "0402653b5dd804e105cbe01b23dd3acd30b8ba5b21c1fb6c7dfc06e9e3aeb6ab",
+  "created": 1792673898.688341,
+  "components": {
+    "workspace_isolation": "PASS",
+    "reviewer_independence": "PASS",
+    "evidence_binding": "PASS",
+    "fixture_pr_handoff": "PASS",
+    "production_mutation_denial": "PASS",
+    "financial_detection": "PASS",
+    "human_gate": "PASS",
+    "audit_lineage": "PASS",
+    "os_validation_sandbox": "NOT_RUN",
+    "github_protection": "NOT_RUN",
+    "production_snapshot": "NOT_RUN",
+    "authority_adversarial": "PASS"
+  },
+  "status": "PARTIAL",
+  "supervised": false,
+  "external_mutation": false,
+  "id": "45c283842a7f90cb827f42905ec123d3bfe2f9ac34eed41f7b0417a46dd145ad"
+}

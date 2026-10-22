@@ -1,0 +1,40 @@
+{
+  "focused_command": "pytest tests/test_development_agent.py tests/test_development_agent_hardening.py tests/test_agent_contract.py tests/test_operational_watchdog.py -q --tb=short",
+  "focused_passed": 223,
+  "agent_contract": "PASS",
+  "development_governance": "PASS",
+  "todo_consistency": "PASS",
+  "shell_syntax": "PASS",
+  "diff_whitespace": "PASS",
+  "browser_widths": [
+    360,
+    390,
+    430,
+    1280
+  ],
+  "browser_status": "PASS",
+  "physical_devices": "NOT_RUN",
+  "operational_sandbox": "UNAVAILABLE: Docker not installed",
+  "github_protection": "FAIL: no classic protection or active branch rules",
+  "authentic_production_backup": "NOT_RUN: operator provisioning required",
+  "qualifying_real_pilots": 0,
+  "autonomous_implementation": false,
+  "auto_merge": false,
+  "known_main_cc_engine_expected": "bfdf6e9d15d452d8",
+  "known_main_cc_engine_observed": "68ac6cf2d11d825c",
+  "inherited_cc_test_failures_reproduced": 7,
+  "todos_done": [],
+  "full_suite_implementation_sha": "82ac63b79b4777d5b41036d200136446ec194f93",
+  "full_suite_passed": 2831,
+  "full_suite_failed": 7,
+  "full_suite_skipped": 18,
+  "implementation_ci": "https://github.com/labairj-ai/investment/actions/runs/39781778744",
+  "review_pr": "https://github.com/labairj-ai/investment/pull/5",
+  "github_agent_identity": "labairj-ai",
+  "github_agent_has_administrative_authority": true,
+  "eligible_fixture_lifecycle_risks": [
+    "L0",
+    "L2"
+  ],
+  "stricter_snapshot_freshness_test": "PASS"
+}

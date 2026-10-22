@@ -20,6 +20,11 @@ fi
 # ── Copy binary files ─────────────────────────────────────────────────────────
 # SQLite's online backup includes committed WAL content; raw cp can omit it.
 "$PROJECT_DIR/venv/bin/python3" "$PROJECT_DIR/scripts/watchdog_backup_snapshot.py" "$PROJECT_DIR/out/investment.db" "$BACKUP_DIR/investment.db"
+# Optional authenticated provenance; absent signer config leaves backup unchanged.
+# The key is provisioned by the operator, never committed or passed to the Builder.
+if [ -n "${DEV_AGENT_BACKUP_SIGNING_KEY:-}" ]; then
+  "$PROJECT_DIR/venv/bin/python3" "$PROJECT_DIR/scripts/backup_provenance.py" "$BACKUP_DIR/investment.db"
+fi
 cp "$PROJECT_DIR/holdings.csv"       "$BACKUP_DIR/holdings.csv"
 
 if [ -f "$PROJECT_DIR/out/buffett.db" ]; then
@@ -74,6 +79,9 @@ PYEOF
 # ── Commit and push if anything changed ───────────────────────────────────────
 cd "$BACKUP_DIR"
 git add investment.db holdings.csv theses.json 2>/dev/null
+if [ -n "${DEV_AGENT_BACKUP_SIGNING_KEY:-}" ]; then
+  git add investment.provenance.json
+fi
 git add buffett.db 2>/dev/null || true
 
 if git diff --cached --quiet; then

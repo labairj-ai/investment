@@ -1,0 +1,1386 @@
+{
+  "status": "INCOMPLETE_PENDING_REVIEWED_CONTRACT_MIGRATION",
+  "base_sha": "6cb6fde0471c207cdec48e648331caff8d8e68c0",
+  "test_inventory": [
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-agent_db.select_fifo_lots]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-agents.covered_call_agent._analyze_roll]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-agents.covered_call_agent._analyze_ticker]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-agents.covered_call_agent._build_candidates]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-agents.covered_call_agent._build_evidence]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-agents.covered_call_agent._build_mgmt_deps]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-agents.covered_call_agent._get_cc_policy]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-agents.covered_call_agent._get_open_cc_position]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-agents.covered_call_agent._has_open_cc]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-agents.covered_call_agent._make_contract_id]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-agents.covered_call_agent._mgmt_iv_at_rec]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-agents.covered_call_agent._safe_float]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-agents.covered_call_agent._sanitize_payload]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-agents.covered_call_agent.run_covered_call_agent]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_ledger.active_scorer]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_ledger.execution_history]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_ledger.promotion_evidence]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_ledger.surface_history]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_ledger.transition]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_rec._bs_d1d2]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_rec._build_mgmt_context_from_db]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_rec._capture_quote_rows]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_rec._check_assignment_eligible]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_rec._clears_profit_floor]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_rec._compute_opp_score]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_rec._compute_scores]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_rec._estimate_drift]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_rec._exec_premium]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_rec._expiry_implied_move]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_rec._friction_at_expiry]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_rec._liquidity_score]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_rec._lot_tax_friction]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_rec._market_price]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_rec._norm_cdf]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_rec._norm_pdf]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_rec._remaining_call_alpha]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_rec._safe_int]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_rec._spread_pct]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_rec._suggest_next_call]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_rec._yf_retry]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_rec.analyze]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_rec.bs_call_price]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_rec.call_delta]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_rec.call_extrinsic]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_rec.call_gamma]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_rec.compute_vol_model]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_rec.evaluate_cc_management_state]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_rec.evaluate_cc_roll_chain]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_rec.evaluate_open_position]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_rec.expected_upside_lost]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_rec.get_risk_events]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_rec.itm_prob_real]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_rec.itm_prob_rn]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_rec.load_holdings]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_rec.normalize_ticker]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_rec.regret_prob]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_surface.candidate_metrics]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_surface.duration_adjust]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_surface.interpolate_delta]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_surface.surface_v2]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_surface.valid_points]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_v3.bounded]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_v3.divergence]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_v3.drift_model]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_v3.eligibility]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_v3.execution]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_v3.overwrite]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_v3.path_metrics]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_v3.path_oracle]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_v3.prepare]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_v3.regime_model]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_v3.surface]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_v3.tax_metrics]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_v3.touch_probability]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_v3.utility]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-portfolio_positions._normalize]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-portfolio_positions.get_lots]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-portfolio_positions.get_position]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-portfolio_positions.load_positions]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-tax_utils.days_until_lt]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-tax_utils.is_long_term]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-tax_utils.lt_threshold]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-time_utils.now_eastern]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-time_utils.now_utc]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-time_utils.now_utc_iso]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-time_utils.parse_timestamp]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-time_utils.today_eastern]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_rec.ManagementPolicyContext]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-covered_call_rec.TaxFrictionDetail]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-portfolio_positions.Lot]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[model-portfolio_positions.Position]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_evidence._selected_id]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_evidence.classify_label]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_evidence.committed_policy]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_evidence.create_decision_contract]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_evidence.migrate_legacy]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_evidence.no_call]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_evidence.pair_outcomes]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_evidence.promotion_report]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_ledger.calibration]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_ledger.clean]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_ledger.config_digest]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_ledger.encode]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_ledger.execution_history]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_ledger.migrate]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_ledger.reconcile_chain]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_ledger.record_episode]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_outcomes.base]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_outcomes.contract]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_outcomes.digest]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_outcomes.latest]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_outcomes.migrate]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_outcomes.persist]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_outcomes.validate]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_rec._bs_d1d2]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_rec._capture_quote_rows]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_rec._check_assignment_eligible]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_rec._exec_premium]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_rec._friction_at_expiry]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_rec._norm_cdf]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_rec._norm_pdf]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_rec._remaining_call_alpha]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_rec._suggest_next_call]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_rec._yf_retry]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_rec.call_delta]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_rec.evaluate_cc_management_state]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_rec.expected_upside_lost]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_rec.itm_prob_real]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_v3.bounded]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_v3.execution]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_validation._config_contract_hash]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_validation._generate_cadence_slots]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_validation.acceptance]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_validation.certification]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_validation.certify]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_validation.classify_cadence_comparability]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_validation.compare]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_validation.current_git_sha]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_validation.divergence_category]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_validation.migrate]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_validation.normalize_action]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_validation.record_actual_evaluation]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_validation.record_actual_fill]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_validation.replay]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_validation.run_validation]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_virtual.advance]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_virtual.censor_version_mismatch]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_virtual.context_for]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_virtual.enforce_asof]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_virtual.evaluate_snapshot]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_virtual.fill_model]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_virtual.metrics]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_virtual.migrate]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_virtual.missed_intervals]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_virtual.record_interval]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_virtual.stamp]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_virtual.start_from_decision]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_virtual.state]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_virtual.store_snapshot]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_virtual.terminal_outcome]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_virtual.write_state]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-tax_utils.days_until_lt]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-tax_utils.is_long_term]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-tax_utils.lt_threshold]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-time_utils.now_eastern]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-time_utils.now_utc]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-time_utils.now_utc_iso]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-time_utils.parse_timestamp]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-time_utils.today_eastern]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_outcomes.OutcomeSource]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_rec.ManagementPolicyContext]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_rec.TaxFrictionDetail]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_function_and_type_contributes_and_restores[simulator-covered_call_virtual.DataUnavailable]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_constant_contributes_and_restores[model-agents.covered_call_agent._CC_ELIGIBLE_LAYERS]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_constant_contributes_and_restores[model-agents.covered_call_agent._CC_MIN_SHARES]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_constant_contributes_and_restores[model-agents.covered_call_agent._PROMPT_VERSION]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_constant_contributes_and_restores[model-agents.covered_call_agent._SCHEMA]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_constant_contributes_and_restores[model-agents.covered_call_agent._SYSTEM]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_constant_contributes_and_restores[model-covered_call_rec.CC_ASSIGNMENT_TAX_FRICTION_THRESHOLD]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_constant_contributes_and_restores[model-covered_call_rec.DRIFT_CAP]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_constant_contributes_and_restores[model-covered_call_rec.DRIFT_MKT_LONG_RUN]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_constant_contributes_and_restores[model-covered_call_rec.DRIFT_WEIGHT_252D]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_constant_contributes_and_restores[model-covered_call_rec.DRIFT_WEIGHT_60D]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_constant_contributes_and_restores[model-covered_call_rec.DRIFT_WEIGHT_MKT]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_constant_contributes_and_restores[model-covered_call_rec.EXEC_LAMBDA]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_constant_contributes_and_restores[model-covered_call_rec.MAX_DTE]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_constant_contributes_and_restores[model-covered_call_rec.MAX_DTE_EXTENDED]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_constant_contributes_and_restores[model-covered_call_rec.MAX_STRIKE_MULTIPLIER]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_constant_contributes_and_restores[model-covered_call_rec.MIN_BID]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_constant_contributes_and_restores[model-covered_call_rec.MIN_DTE]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_constant_contributes_and_restores[model-covered_call_rec.RISK_FREE_RATE]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_constant_contributes_and_restores[model-covered_call_rec.R_FORWARD]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_constant_contributes_and_restores[model-covered_call_rec.R_MIN]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_constant_contributes_and_restores[model-covered_call_rec.TAX_LT_RATE]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_constant_contributes_and_restores[model-covered_call_rec.TAX_ST_RATE]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_constant_contributes_and_restores[model-covered_call_rec.TOP_N]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_constant_contributes_and_restores[model-covered_call_surface.VERSION]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_constant_contributes_and_restores[model-covered_call_v3.N]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_constant_contributes_and_restores[model-portfolio_positions._TICKER_ALIASES]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_constant_contributes_and_restores[model-time_utils.TZ_EASTERN]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_constant_contributes_and_restores[model-time_utils.TZ_UTC]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_constant_contributes_and_restores[simulator-covered_call_evidence.CHAIN_FIELDS]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_constant_contributes_and_restores[simulator-covered_call_outcomes.PROVENANCE_VERSION]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_constant_contributes_and_restores[simulator-covered_call_rec.CC_ASSIGNMENT_TAX_FRICTION_THRESHOLD]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_constant_contributes_and_restores[simulator-covered_call_rec.EXEC_LAMBDA]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_constant_contributes_and_restores[simulator-covered_call_rec.RISK_FREE_RATE]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_constant_contributes_and_restores[simulator-covered_call_rec.TAX_LT_RATE]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_constant_contributes_and_restores[simulator-covered_call_rec.TAX_ST_RATE]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_constant_contributes_and_restores[simulator-covered_call_validation.CADENCE_COMPARABILITY_POLICY_VERSION]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_constant_contributes_and_restores[simulator-covered_call_validation._MARKET_CLOSE_HOUR]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_constant_contributes_and_restores[simulator-covered_call_validation._MARKET_OPEN_HOUR]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_constant_contributes_and_restores[simulator-covered_call_virtual.OPEN_CHAIN_POLICY]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_constant_contributes_and_restores[simulator-covered_call_virtual.POLICY_VERSION]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_constant_contributes_and_restores[simulator-covered_call_virtual.SIMULATOR_CONTRACT_VERSION]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_constant_contributes_and_restores[simulator-covered_call_virtual.SIMULATOR_VERSION]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_constant_contributes_and_restores[simulator-time_utils.TZ_EASTERN]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_named_constant_contributes_and_restores[simulator-time_utils.TZ_UTC]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_config_key_contributes[model-duration_utility.flexibility_lambda]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_config_key_contributes[model-duration_utility.second_cycle_alpha_retention]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_config_key_contributes[model-duration_utility.second_cycle_availability]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_config_key_contributes[model-duration_utility.version]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_config_key_contributes[model-fee_per_contract]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_config_key_contributes[model-fill_min_n]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_config_key_contributes[model-fill_prior]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_config_key_contributes[model-fill_prior_strength]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_config_key_contributes[model-management_cost_per_contract]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_config_key_contributes[model-max_overwrite_fraction]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_config_key_contributes[model-max_regret_probability]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_config_key_contributes[model-mode]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_config_key_contributes[model-path_count]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_config_key_contributes[model-preferred_dte_bands]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_config_key_contributes[model-regime_enabled]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_config_key_contributes[model-utility_hurdle_annual_pct]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_config_key_contributes[simulator-fee_per_contract]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_config_key_contributes[simulator-fill_min_n]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_config_key_contributes[simulator-fill_prior]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_config_key_contributes[simulator-fill_prior_strength]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_config_key_contributes[simulator-management_cost_per_contract]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_config_key_contributes[simulator-promotion.max_assignment_violations]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_config_key_contributes[simulator-promotion.max_brier]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_config_key_contributes[simulator-promotion.max_execution_cost_increase]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_config_key_contributes[simulator-promotion.max_management_cost_increase]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_config_key_contributes[simulator-promotion.max_roll_rate_increase]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_config_key_contributes[simulator-promotion.minimum_alpha_improvement]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_config_key_contributes[simulator-promotion.minimum_days]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_config_key_contributes[simulator-promotion.minimum_divergent_n]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_config_key_contributes[simulator-promotion.minimum_n]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_config_key_contributes[simulator-promotion.version]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_config_key_contributes[simulator-simulator_validation.maximum_alpha_absolute_error]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_config_key_contributes[simulator-simulator_validation.maximum_alpha_relative_error]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_config_key_contributes[simulator-simulator_validation.maximum_entry_spread_error]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_config_key_contributes[simulator-simulator_validation.maximum_median_timing_sessions]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_config_key_contributes[simulator-simulator_validation.minimum_action_agreement]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_config_key_contributes[simulator-simulator_validation.minimum_n]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_config_key_contributes[simulator-simulator_validation.minimum_roll_type_agreement]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_config_key_contributes[simulator-simulator_validation.version]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_config_key_contributes[simulator-virtual.cadence_minutes]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_config_key_contributes[simulator-virtual.creation_grace_seconds]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_config_key_contributes[simulator-virtual.maximum_missing_intervals]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_config_key_contributes[simulator-virtual.maximum_quote_age_seconds]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_every_config_key_contributes[simulator-virtual.version]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_independent_inventory_and_all_guarded_functions_classified",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_removed_required_registry_function_fails_completeness",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_unclassified_addition_requires_deliberate_classification",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_invalid_missing_duplicate_canonical_components_reject[names0]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_invalid_missing_duplicate_canonical_components_reject[names1]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_invalid_missing_duplicate_canonical_components_reject[names2]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_invalid_missing_duplicate_canonical_components_reject[names3]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_registry_order_is_canonical_and_repeated_generation_deterministic",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_runtime_monkeypatch_objects_do_not_enter_source_hash",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_nonbehavioral_source_comments_docs_and_files_stay_stable",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_irrelevant_config_and_flat_wrapped_equivalence",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_real_fingerprint_mutations_require_exact_component_release[covered_call_v3.utility-versions0]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_real_fingerprint_mutations_require_exact_component_release[covered_call_virtual.advance-versions1]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_real_fingerprint_mutations_require_exact_component_release[covered_call_v3.execution-versions2]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_definition_implementation_mutation_is_release_visible",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_source_proven_definition_migration_keeps_runtime_versions",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_definition_migration_cannot_hide_actual_behavior_edit",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_definition_migration_cannot_authorize_runtime_version_change",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_definition_migration_requires_trusted_git_source",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_cli_inventory_reports_all_canonical_component_names",
+      "status": "failed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_module_initialization_cannot_hide_function_replacement[utility = lambda *args: 999]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_module_initialization_cannot_hide_function_replacement[utility.__defaults__ = (999,)]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_module_initialization_cannot_hide_function_replacement[globals()[\"utility\"] = lambda *args: 999]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_module_initialization_cannot_hide_function_replacement[if True:\\n    utility = lambda *args: 999]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_behavior_fingerprint::test_constant_source_loader_changes_are_visible",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_release_security::test_candidate_rewrite_cannot_hide_drift",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_release_security::test_approved_promotion_and_missing_candidate",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_release_security::test_invalid_prior_rejected[{]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_release_security::test_invalid_prior_rejected[{}]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_release_security::test_invalid_prior_rejected[unknown-schema]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_release_security::test_missing_prior_rejected",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_release_security::test_invalid_manifest_semantics[category-WHATEVER-INVALID_CHANGE_CATEGORY]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_release_security::test_invalid_manifest_semantics[cohort_reset_required-false-COHORT_RESET_REQUIRED]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_release_security::test_invalid_manifest_semantics[cohort_reset_required-banana-INVALID_BOOLEAN]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_release_security::test_invalid_manifest_semantics[operator_acknowledged-no-INVALID_BOOLEAN]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_release_security::test_invalid_manifest_semantics[open_chain_policy-anything-INVALID_OPEN_CHAIN_POLICY]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_release_security::test_every_identity_field_bound[prior-cadence_comparability_policy_version]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_release_security::test_every_identity_field_bound[prior-engine_hash]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_release_security::test_every_identity_field_bound[prior-fingerprint_version]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_release_security::test_every_identity_field_bound[prior-model_version]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_release_security::test_every_identity_field_bound[prior-policy_version]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_release_security::test_every_identity_field_bound[prior-simulator_contract_hash]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_release_security::test_every_identity_field_bound[prior-simulator_contract_version]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_release_security::test_every_identity_field_bound[prior-simulator_version]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_release_security::test_every_identity_field_bound[proposed-cadence_comparability_policy_version]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_release_security::test_every_identity_field_bound[proposed-engine_hash]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_release_security::test_every_identity_field_bound[proposed-fingerprint_version]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_release_security::test_every_identity_field_bound[proposed-model_version]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_release_security::test_every_identity_field_bound[proposed-policy_version]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_release_security::test_every_identity_field_bound[proposed-simulator_contract_hash]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_release_security::test_every_identity_field_bound[proposed-simulator_contract_version]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_release_security::test_every_identity_field_bound[proposed-simulator_version]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_release_security::test_component_versions_forward_backward_malformed[cadence_comparability_policy_version]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_release_security::test_component_versions_forward_backward_malformed[model_version]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_release_security::test_component_versions_forward_backward_malformed[policy_version]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_release_security::test_component_versions_forward_backward_malformed[simulator_contract_version]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_release_security::test_component_versions_forward_backward_malformed[simulator_version]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_release_security::test_unchanged_behavior_version_drift_rejected[cadence_comparability_policy_version]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_release_security::test_unchanged_behavior_version_drift_rejected[model_version]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_release_security::test_unchanged_behavior_version_drift_rejected[policy_version]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_release_security::test_unchanged_behavior_version_drift_rejected[simulator_contract_version]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_release_security::test_unchanged_behavior_version_drift_rejected[simulator_version]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_release_security::test_ci_generic_guard",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_release_security::test_template_has_complete_machine_fields",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_release_security::test_real_git_history_candidate_tamper_and_exact_sha",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_release_security::test_cli_exact_event_sha[push]",
+      "status": "failed"
+    },
+    {
+      "name": "tests.test_cc_release_security::test_cli_exact_event_sha[pull_request]",
+      "status": "failed"
+    },
+    {
+      "name": "tests.test_cc_release_security::test_real_cli_git_transition_and_manifest_replay[push]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_release_security::test_real_cli_git_transition_and_manifest_replay[pull_request]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_release_security::test_candidate_tampering_with_unchanged_behavior_rejected[malformed]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_release_security::test_candidate_tampering_with_unchanged_behavior_rejected[stale]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_release_security::test_candidate_tampering_with_unchanged_behavior_rejected[missing]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_release_security::test_matching_candidate_invalid_bump_rejected[cc-v3.1-BACKWARD_VERSION]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_release_security::test_matching_candidate_invalid_bump_rejected[banana-MALFORMED_VERSION]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_release_security::test_matching_candidate_invalid_bump_rejected[cc-v3.02-MALFORMED_VERSION]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_payload_serialization::test_unavailable_numeric_metrics_do_not_become_fabricated_zero[nan]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_payload_serialization::test_unavailable_numeric_metrics_do_not_become_fabricated_zero[inf]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_payload_serialization::test_unavailable_numeric_metrics_do_not_become_fabricated_zero[-inf]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_payload_serialization::test_unavailable_numeric_metrics_do_not_become_fabricated_zero[None]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_payload_serialization::test_unavailable_numeric_metrics_do_not_become_fabricated_zero[missing]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_payload_serialization::test_finite_numeric_metrics_keep_their_value[0-0.0]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_payload_serialization::test_finite_numeric_metrics_keep_their_value[-1.25--1.25]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_payload_serialization::test_finite_numeric_metrics_keep_their_value[2.5-2.5]",
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cc_payload_serialization::test_nested_entry_and_management_payloads_are_strict_json_without_input_mutation",
+      "status": "passed"
+    }
+  ]
+}

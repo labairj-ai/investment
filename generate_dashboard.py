@@ -2787,6 +2787,7 @@ def build_dashboard(portfolio, layers, holdings):
 </header>
 
 <nav id="dash-tab-nav">
+  <a href="/development-agent" style="padding:10px;color:inherit;">Development Agent</a>
   <button class="dash-tab-btn active" id="tab-btn-portfolio" onclick="showDashTab('portfolio')">Portfolio</button>
   <button class="dash-tab-btn" id="tab-btn-decisions" onclick="showDashTab('decisions')">Decisions</button>
   <button class="dash-tab-btn" id="tab-btn-macro" onclick="showDashTab('macro')">📊 Macro Risk</button>
