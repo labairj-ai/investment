@@ -21,11 +21,12 @@ def committed_policy(sha,config):
 
 def create_decision_contract(db,episode,rows,config,prospective,qa_only=False,recorded_at=None):
     from covered_call_virtual import SIMULATOR_VERSION, management_contract
+    from covered_call_ledger import clean as _clean
     decision=db.execute('SELECT * FROM cc_decisions WHERE id=?',(episode,)).fetchone()
     recorded=recorded_at or now_utc()
     delay=(recorded-parse_timestamp(decision['timestamp'])).total_seconds()
     forward=bool(prospective and 0<=delay<=config.get('virtual',{}).get('creation_grace_seconds',300))
-    snapshot_inputs=[{k:r.get(k) for k in ('contract_symbol','strike','expiration','spot','bid','ask','impliedVolatility','quote_timestamp','risk_events')} for r in rows]
+    snapshot_inputs=_clean([{k:r.get(k) for k in ('contract_symbol','strike','expiration','spot','bid','ask','impliedVolatility','quote_timestamp','risk_events')} for r in rows])
     payload=dict(market_snapshot_lineage=digest(snapshot_inputs),recorded_at=recorded.isoformat(),
         forward_created=forward,qa_only=qa_only,promotion_policy_version=config['promotion']['version'],
         simulator_version=SIMULATOR_VERSION,policy_committed=committed_policy(decision['git_sha'],config),
