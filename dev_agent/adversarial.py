@@ -95,8 +95,8 @@ def probe(root):
         results['git_hook_isolation']='PASS' if not marker.exists() else 'FAIL'
         try:dashboard_identity(SimpleNamespace(client_address=('192.0.2.1',1),server=SimpleNamespace(server_address=('0.0.0.0',5001)),headers={}));results['unique_dashboard_identity']='FAIL'
         except ValueError:results['unique_dashboard_identity']='PASS'
-        raw={'fixture_only':True}
-        stale=dict(status='PASS',created=time.time()-301,identity='fixture-agent',repository='fixture/repo',evidence=raw,evidence_hash=digest(raw),effective={'pr':True})
+        raw={'fixture_only':True,'identity':{'login':'fixture-agent','id':1},'repository':{'full_name':'fixture/repo','id':2}}
+        stale=dict(status='PASS',created=time.time()-301,identity='fixture-agent',repository='fixture/repo',evidence=raw,evidence_hash=digest(raw),effective={k:True for k in ('pr','checks','review','stale','last_push','conversation','no_force','no_delete','admin')},agent_capabilities={k:False for k in ('direct_push','bypass_review','bypass_checks','force_push','delete_ref','bypass_conversations','self_approve')})
         try:require(store,cid,SimpleNamespace(repository='fixture/repo'),'start',root=root,observation=stale);results['stale_lifecycle_protection']='FAIL'
         except ValueError:results['stale_lifecycle_protection']='PASS'
         try:store.event(cid,'SUPPLEMENTAL_VALIDATION',{'status':'PASS'});results['forged_supplemental']='FAIL'
@@ -122,7 +122,8 @@ def probe(root):
         proof=dict(proof,harness_hash=harness_hash(root));proof['id']=digest({k:v for k,v in proof.items() if k!='id'})
         for name,mode in [('autonomy_disabled','AUTONOMOUS'),('mode_confusion','SUPERVISED')]:
             try:
-                authorize_start(root,store,auto,mode,[proof],dict(status='PASS',created=time.time()),human=fixture_human())
+                valid=dict(stale,status='PASS',created=time.time())
+                authorize_start(root,store,auto,mode,[proof],valid,human=fixture_human())
                 results[name]='FAIL'
             except ValueError:results[name]='PASS'
         try:

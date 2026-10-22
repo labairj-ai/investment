@@ -185,7 +185,12 @@ def test_execution_admission_denials(repo,store,monkeypatch,variant):
     monkeypatch.setattr(certification,'technical_current',lambda *a:variant!='technical')
     if variant not in {'history'}:monkeypatch.setattr(operations,'eligibility',lambda *a,**k:dict(eligible=True))
     if variant=='history':monkeypatch.setattr(operations,'eligibility',lambda *a,**k:dict(eligible=False))
-    with pytest.raises(ValueError):operations.authorize_start(repo,store,cid,'SUPERVISED' if variant=='mode' else mode,[],{'status':'FAIL' if variant=='protection' else 'PASS','created':time.time()},human=None)
+    reasons={'disabled':'autonomous starts disabled','history':'supervised observation requirements','risk':'L4/L5 unavailable','mode':'fresh frozen mode/scope/base approval','human':'authenticated approval and explicit human invocation','technical':'current technical certification','protection':'fresh attributable effective-protection'}
+    with pytest.raises(ValueError,match=reasons[variant]):
+        operations.authorize_start(repo,store,cid,'SUPERVISED' if variant=='mode' else mode,[],protection_observation(status='FAIL' if variant=='protection' else 'PASS'),human=None)
+    if variant=='protection':
+        assert store.get(cid)['state']=='NEEDS_HUMAN'
+        assert [e for e in store.get(cid)['events'] if e['kind']=='PROTECTION'][-1]['payload']['status']=='FAIL'
 
 
 def remote(**changes):

@@ -59,7 +59,7 @@ class GitHub:
             result.update(created=time.time(),repository=self.repository,evidence_hash=digest(raw),evidence=raw)
             return result
         except Exception:
-            return dict(status='UNAVAILABLE',failures=['GitHub identity/protection visibility incomplete'],auto_merge=False,created=time.time(),evidence_hash=digest(raw))
+            return dict(status='UNAVAILABLE',repository=self.repository,failures=['GitHub identity/protection visibility incomplete'],auto_merge=False,created=time.time(),evidence_hash=digest(raw),evidence=raw)
 
     def pr_identity(self, number):
         result=subprocess.run(['gh','pr','view',str(number),'--repo',self.repository,'--json','number,url,headRefName,headRefOid,headRepository,headRepositoryOwner,baseRefName,isDraft,state,reviewDecision,mergeCommit'],check=True,capture_output=True,text=True,timeout=30)

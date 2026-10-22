@@ -317,3 +317,20 @@ def test_reviewed_ci_oracle_cannot_override_financial_event_prior(repo,tmp_path,
     validator=ContainerValidator('fixture@sha256:'+'a'*64)
     validator.prior_base=event_base;validator.trusted_test_root=trusted;validator.trusted_test_base=oracle_base
     assert validator.run(repo,'cc_contract',['python','scripts/check_cc_contract.py','--trusted-prior-file','/authority/prior-cc-baseline.json'])['status']=='PASS'
+
+
+def test_incomplete_policy_cannot_use_bare_pass_status(repo,store):
+    from dev_agent.discovery import plan
+    cid=store.discover(proposal());plan(repo,store,cid,['The documentation is complete.'])
+    adapter=client();adapter.protections=lambda:protection_observation(effective={'pr':True})
+    with pytest.raises(ValueError,match='fresh attributable'):start_protection(store,cid,adapter,ROOT)
+
+
+def test_same_login_with_changed_github_account_id_requires_human(repo,store):
+    from dev_agent.discovery import plan
+    cid=store.discover(proposal());plan(repo,store,cid,['The documentation is complete.'])
+    adapter=client();start_protection(store,cid,adapter,ROOT)
+    observation=protection_observation();observation['evidence']['identity']['id']=99
+    observation['evidence_hash']=digest(observation['evidence'])
+    adapter.protections=lambda:observation
+    with pytest.raises(ValueError,match='identity changed'):protection.require(store,cid,adapter,'merge',root=ROOT)

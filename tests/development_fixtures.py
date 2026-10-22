@@ -10,8 +10,8 @@ def human(actor='alice@example.test'):
 
 
 def protection_observation(repository='owner/repo',identity='agent',created=None,**changes):
-    raw={'identity':{'login':identity},'repository':{'full_name':repository},'fixture_only':True}
-    return dict(dict(status='PASS',created=time.time() if created is None else created,repository=repository,identity=identity,evidence=raw,evidence_hash=digest(raw),effective={'pr':True,'checks':True,'review':True,'no_bypass':True},required_checks=['test'],agent_capabilities={'direct_push':False}),**changes)
+    raw={'identity':{'login':identity,'id':1},'repository':{'full_name':repository,'id':2},'fixture_only':True}
+    return dict(dict(status='PASS',created=time.time() if created is None else created,repository=repository,identity=identity,evidence=raw,evidence_hash=digest(raw),effective={k:True for k in ('pr','checks','review','stale','last_push','conversation','no_force','no_delete','admin')},required_checks=['test'],agent_capabilities={k:False for k in ('direct_push','bypass_review','bypass_checks','force_push','delete_ref','bypass_conversations','self_approve')}),**changes)
 
 
 def client():
