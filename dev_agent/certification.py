@@ -1,6 +1,8 @@
 """Disposable deterministic canary; technical certification is never merge authority."""
 from __future__ import annotations
 
+from .git_exec import run as git_run, output as git_output
+
 import hashlib
 import json
 import subprocess
@@ -27,6 +29,8 @@ def harness_hash(root):
     files += [root/"scripts/backup_provenance.py", root/"backup_data.sh"]
     files += sorted((root / "scripts").glob("check_development_agent*"))
     files += sorted((root / "systemd").glob("development-scout.*"))
+    files += [root/'scripts/run_contained_ci.py',root/'scripts/check_validation_containment.py']
+    files += sorted(p for p in (root/'ops/validator').glob('*') if p.is_file())
     return digest({str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest() for p in files})
 
 
@@ -55,19 +59,19 @@ def canary(root):
     components = {}
     with tempfile.TemporaryDirectory(prefix="development-canary-") as temp:
         temp = Path(temp); repo = temp / "repo"; repo.mkdir(); (repo / "docs").mkdir()
-        subprocess.run(["git", "init", "-b", "fixture", str(repo)], check=True, capture_output=True)
+        git_run(repo, "init", "-b", "fixture")
         for key, value in [("user.email", "fixture@example.invalid"), ("user.name", "Fixture")]:
-            subprocess.run(["git", "-C", str(repo), "config", key, value], check=True)
+            git_run(repo, "config", key, value)
         (repo / "AGENTS.md").write_text((Path(root) / "AGENTS.md").read_text())
         (repo / "docs/note.md").write_text("Before\n")
-        subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
-        subprocess.run(["git", "-C", str(repo), "commit", "-m", "fixture"], check=True, capture_output=True)
+        git_run(repo, "add", ".")
+        git_run(repo, "commit", "-m", "fixture")
         store = Store(temp / "control/development-control.sqlite3"); store.migrate()
         proposal = dict(source="user", title="Improve fixture documentation", problem="Fixture instructions omit a needed detail", evidence=["docs/note.md:1"], outcome="Document the missing detail", files=["docs/note.md"], category="DOCUMENT")
         cid = store.discover(proposal)
         plan(repo, store, cid, ["The fixture documentation includes the missing detail."])
-        subprocess.run(["git", "-C", str(repo), "add", ".todos"], check=True)
-        subprocess.run(["git", "-C", str(repo), "commit", "-m", "plan"], check=True, capture_output=True)
+        git_run(repo, "add", ".todos")
+        git_run(repo, "commit", "-m", "plan")
         context = refresh_plan(repo, store, cid)
         store.decide(cid, "approve", "supervised-fixture", context, "fixture-approval")
         manager = Worktrees(repo, temp / "trees"); record = manager.create(context["todo"], context["head"])
@@ -86,8 +90,8 @@ def canary(root):
         intact = verify(work, proof); (work / "docs/note.md").write_text("tampered\n")
         components["evidence_binding"] = "PASS" if intact and not verify(work, proof) else "FAIL"
         (work / "docs/note.md").write_text("After: missing detail\n")
-        subprocess.run(["git", "-C", str(work), "add", "docs/note.md"], check=True)
-        subprocess.run(["git", "-C", str(work), "commit", "-m", "fixture reviewed change"], check=True, capture_output=True)
+        git_run(work, "add", "docs/note.md")
+        git_run(work, "commit", "-m", "fixture reviewed change")
         proof = receipt(work, cid, context["todo"], context["head"], 1, validations, result["review"], result["review"]["risk"], builder.identity, {"contract":"fixture"})
         # Fixture-only receipts cannot enter operational PR handoff.
         components["fixture_pr_handoff"] = "PASS" if proof['status']=='PARTIAL' and not proof.get('trusted_validation') else "FAIL"
@@ -121,15 +125,20 @@ def certify(root, validator, github_client, snapshot, actor=None, *, provenance=
     from .snapshot import check_snapshot
     from .runner import ContainerValidator
     if type(validator) is not ContainerValidator: raise ValueError('trusted sandbox validator required')
+    if git(root,'status','--porcelain'):raise ValueError('clean approved harness commit required')
+    validator.prior_base=git(root,'rev-parse','HEAD')
     data=canary(root)
+    from .containment import probe
+    confinement=probe(validator.image)
     sandbox=validator.run(root,'focused_tests',['python','-m','pytest','tests/test_development_agent.py','tests/test_development_agent_hardening.py','-q'])
     protections=github_client.protections()
     with tempfile.TemporaryDirectory(prefix='development-snapshot-guard-') as workspace:
         observation=check_snapshot(snapshot,workspace,provenance,max_age_hours=json.loads((Path(root)/'config/development_agent.json').read_text()).get('snapshot_max_age_hours',24))
     data['components']['os_validation_sandbox']='PASS' if sandbox.get('status')=='PASS' and sandbox.get('exit_code')==0 and sandbox.get('inventory',{}).get('total',0)>0 and not sandbox.get('inventory',{}).get('failures') else sandbox.get('status','UNAVAILABLE')
+    if confinement['status']!='PASS':data['components']['os_validation_sandbox']=confinement['status']
     data['components']['github_protection']=protections['status']
     data['components']['production_snapshot']=observation['status']
-    data.update(supervised=False,evidence=dict(sandbox=sandbox,github=protections,snapshot=observation))
+    data.update(supervised=False,evidence=dict(sandbox=sandbox,containment=confinement,github=protections,snapshot=observation))
     data['status']='PASS' if TECHNICAL_COMPONENTS<=data['components'].keys() and all(data['components'][k]=='PASS' for k in TECHNICAL_COMPONENTS) else 'PARTIAL'
     data['id']=digest({k:v for k,v in data.items() if k!='id'})
     if store is not None:

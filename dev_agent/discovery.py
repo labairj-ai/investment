@@ -21,7 +21,8 @@ SCORE_VERSION = "value-risk-1"
 
 
 def git(root, *args):
-    return subprocess.check_output(["git", "-C", str(root), *args], text=True, timeout=30).rstrip("\n")
+    from .git_exec import output
+    return output(root, *args).rstrip("\n")
 
 
 def score(candidate, risk):

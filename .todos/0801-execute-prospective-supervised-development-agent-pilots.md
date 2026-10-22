@@ -4,7 +4,7 @@
 - **Status:** backlog
 - **Created:** 2026-10-22
 - **Priority:** high
-- **Depends:** 0800
+- **Depends:** 0800, 0805, 0807, 0808, 0809
 - **Supersedes / completes operational portion of:** 0793
 
 ## Problem
@@ -59,3 +59,7 @@ The development agent needs prospective, real-world operating evidence. Fixture 
 ## Source
 
 User-supplied 2026-10-22 development-agent operational acceptance phase. Requirements and dependencies preserved; backlog creation does not authorize implementation or activation.
+
+## Additional trust-boundary gates — 2026-10-22
+
+0803/0804 must PASS through 0800. 0805, 0807, 0808 and 0809 must also PASS before pilots count as certification evidence. Resolve the documented 0807/0794 sequencing conflict before pilot execution.

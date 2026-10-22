@@ -1,0 +1,11 @@
+{
+  "fingerprint_version": "cc-behavior-v1",
+  "model_version": "cc-v3.5",
+  "simulator_version": "cc-virtual-1",
+  "simulator_contract_version": "simulator-contract-2",
+  "simulator_contract_hash": "b8be3b06388cb68c7be9e53488ca6f473cc3bee15f81ed93461c802e951ce8f2",
+  "engine_hash": "e7fcc056ad509fbcedca4cae7efaff1a848bdbed7030b8667a687f1ad46e0f5c",
+  "policy_version": "shared-live-management-asof-1",
+  "cadence_comparability_policy_version": "cadence-v1",
+  "schema_version": "cc-contract-v2"
+}

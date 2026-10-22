@@ -56,7 +56,7 @@ def main(argv=None):
     elif args.command == "snapshot":
         config=json.loads((root/'config/development_agent.json').read_text())
         result = check_snapshot(data["snapshot"], root, data.get("provenance"),max_age_hours=config.get('snapshot_max_age_hours',24))
-    elif args.command == "observe": result = observe(store, args.candidate, data)
+    elif args.command == "observe": result = observe(store, args.candidate, data, client=GitHub(args.repository))
     elif args.command == "effectiveness":
         result = effectiveness(store.get(args.candidate), data["observation"], data["dimensions"])
         store.event(args.candidate, "EFFECTIVENESS", result)

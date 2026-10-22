@@ -6,45 +6,61 @@ on:
   pull_request:
     branches: [ main ]
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      # These operator-managed variables are independent of candidate source.
+      # Provision the already-reviewed digest before any candidate execution.
+      - name: Provision approved immutable validation runtime
+        env:
+          VALIDATOR_IMAGE: ${{ vars.DEV_AGENT_VALIDATOR_IMAGE }}
+          ORCHESTRATOR_SHA: ${{ vars.DEV_AGENT_ORCHESTRATOR_SHA }}
+        run: |
+          python3 -I - <<'PY'
+          import os,re,subprocess
+          image=os.environ['VALIDATOR_IMAGE'];sha=os.environ['ORCHESTRATOR_SHA']
+          if not re.fullmatch(r'ghcr.io/labairj-ai/investment-validator@sha256:[a-f0-9]{64}',image):
+              raise SystemExit('UNAVAILABLE: approved validator image digest not provisioned')
+          if not re.fullmatch(r'[a-f0-9]{40}',sha):
+              raise SystemExit('UNAVAILABLE: reviewed orchestration SHA not configured')
+          subprocess.run(['docker','pull',image],check=True)
+          PY
+      - name: Checkout reviewed trusted orchestration
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # reviewed official v4 ref
         with:
+          ref: ${{ vars.DEV_AGENT_ORCHESTRATOR_SHA }}
+          path: trusted
+          persist-credentials: false
           fetch-depth: 0
-
-      - uses: actions/setup-python@v5
+      - name: Checkout exact candidate head as data
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          python-version: "3.12"
-
-      - name: Install dependencies
-        run: pip install pytest yfinance requests python-dotenv
-
-      - name: Check TODO folder and status consistency
-        run: python scripts/check_todo_status.py
-
-      - name: Check repository coding-agent contract
-        run: python scripts/check_agent_contract.py
-
-      - name: Check development-agent governance
-        run: python scripts/check_development_agent.py
-
-      - name: Run tests
-        id: pytest
-        continue-on-error: true
-        run: pytest tests/ -v --tb=short --junitxml=test-results.xml
-
-      - name: Check exact baseline failure inventory
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          path: candidate
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Run mandatory regression and release gates in isolation
+        env:
+          VALIDATOR_IMAGE: ${{ vars.DEV_AGENT_VALIDATOR_IMAGE }}
+          CANDIDATE_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          APPROVED_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          python3 -I "$GITHUB_WORKSPACE/trusted/scripts/run_contained_ci.py" \
+            --root "$GITHUB_WORKSPACE/candidate" --head "$CANDIDATE_HEAD" \
+            --base "$APPROVED_BASE" --image "$VALIDATOR_IMAGE" \
+            --output "$RUNNER_TEMP/approved-validation-artifacts"
+      - name: Preserve approved evidence
         if: always()
-        run: python scripts/check_release_baseline.py test-results.xml
-
-      - name: Check CC V3 behavioral contract
-        run: python scripts/check_cc_contract.py
-
-      - name: Preserve test results
-        if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # reviewed official v4 ref
         with:
           name: investment-test-results
-          path: test-results.xml
+          path: |
+            ${{ runner.temp }}/approved-validation-artifacts/test-results.xml
+            ${{ runner.temp }}/approved-validation-artifacts/validation.json
+            ${{ runner.temp }}/approved-validation-artifacts/supplemental.json
+          if-no-files-found: error

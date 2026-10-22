@@ -13,6 +13,8 @@ Flow:
   5. Python resolves contract_id → actual financial values; builds Recommendation
 """
 import sqlite3
+import math
+from numbers import Real, Integral
 from pathlib import Path
 
 import agent_db
@@ -63,14 +65,50 @@ def _safe_float(v):
 
 def _sanitize_payload(obj):
     """Recursively replace NaN/inf floats with None so the payload is JSON-safe."""
-    import math
+    import pandas as pd
+    import numpy as np
+    if obj is pd.NA or obj is pd.NaT: return None
+    if isinstance(obj,np.bool_): return bool(obj)
     if isinstance(obj, dict):
         return {k: _sanitize_payload(v) for k, v in obj.items()}
-    if isinstance(obj, list):
+    if isinstance(obj, (list, tuple)):
         return [_sanitize_payload(v) for v in obj]
-    if isinstance(obj, float):
-        return None if (math.isnan(obj) or math.isinf(obj)) else obj
+    if isinstance(obj, Real) and not isinstance(obj, bool):
+        if not math.isfinite(obj): return None
+        return int(obj) if isinstance(obj, Integral) else float(obj)
     return obj
+
+
+def _decision_inputs(values, *, positive=(), probabilities=(), integers=()):
+    """Validate required metrics before any recommendation arithmetic/comparison."""
+    reasons=[]
+    for key,value in values.items():
+        if value is None:
+            reasons.append('MISSING_DECISION_INPUT_'+key.upper())
+        elif isinstance(value,bool) or not isinstance(value,Real):
+            reasons.append('INVALID_DECISION_INPUT_'+key.upper())
+        elif not math.isfinite(value):
+            reasons.append('NON_FINITE_DECISION_INPUT_'+key.upper())
+        elif ((key in positive and value<=0) or
+              (key in probabilities and not 0<=value<=1) or
+              (key in integers and value!=int(value))):
+            reasons.append('OUT_OF_RANGE_DECISION_INPUT_'+key.upper())
+    return reasons
+
+
+def _row_input_failures(row):
+    keys=('cc_alpha','exec_premium','regret_prob','delta','strike','dte','score')
+    values={k:row.get(k) for k in keys}
+    values['opp_score']=row.get('opp_score',row.get('score'))
+    return _decision_inputs(values,positive=('strike','dte'),
+                            probabilities=('regret_prob','delta'),integers=('dte',))
+
+
+def _insufficient_inputs(ctx, ticker, reasons):
+    """Explicit missing-data outcome; never invent zero-valued economics."""
+    agent_db.insert_finding(run_id=ctx.run_id,finding_type='cc_insufficient_data',ticker=ticker,
+        summary='INSUFFICIENT_DATA: '+','.join(sorted(set(reasons))),severity=80,confidence=100)
+    return []
 
 
 def _has_open_cc(ticker: str) -> bool:
@@ -257,6 +295,11 @@ def _analyze_roll(ctx: AgentContext, ticker: str, position: dict) -> list[Recomm
         print(f"[covered_call] {ticker}: not in snapshot, cannot manage")
         return []
 
+    failures=_decision_inputs(dict(strike=position.get('strike'),premium=position.get('premium_per_contract'),
+        contracts=position.get('contracts')),positive=('strike','contracts'),integers=('contracts',))
+    if position.get('current_mark') is not None:
+        failures+=_decision_inputs(dict(current_mark=position['current_mark']))
+    if failures: return _insufficient_inputs(ctx,ticker,failures)
     existing_strike  = float(position["strike"])
     existing_expiry  = position["expiry"]
     existing_premium = float(position["premium_per_contract"])
@@ -279,6 +322,8 @@ def _analyze_roll(ctx: AgentContext, ticker: str, position: dict) -> list[Recomm
         print(f"[covered_call] {ticker}: evaluate_open_position failed: {e}")
         return []
 
+    failures=_decision_inputs({k:eval_result.get(k) for k in ('current_price','current_mark','dte','delta','pct_captured','remaining_extrinsic')},positive=('current_price',),probabilities=('delta',),integers=('dte',))
+    if failures: return _insufficient_inputs(ctx,ticker,failures)
     current_price = eval_result["current_price"]
     current_mark  = eval_result["current_mark"] if eval_result["current_mark"] is not None else stored_mark
     dte           = eval_result["dte"]
@@ -589,6 +634,9 @@ def _analyze_ticker(ctx: AgentContext, ticker: str) -> list[Recommendation]:
         print(f"[covered_call] {ticker}: not found in snapshot — skipping")
         return []
 
+    failures=_decision_inputs(dict(current_price=holding.current_price,avg_cost=holding.avg_cost,shares=holding.shares),positive=('current_price','shares'))
+    if failures: return _insufficient_inputs(ctx,ticker,failures)
+
     policy = _get_cc_policy(ticker)
 
     if policy["strategy"] == "NONE":
@@ -623,6 +671,10 @@ def _analyze_ticker(ctx: AgentContext, ticker: str) -> list[Recommendation]:
     from covered_call_ledger import record_episode, execution_history, surface_history, active_scorer
     from strategy_config import CC_V3_CONFIG
     import pandas as pd
+    failures=_decision_inputs(dict(current_price=result.get('current_price')),positive=('current_price',))
+    for raw in result.get('all_calls',result.get('recs',pd.DataFrame())).to_dict('records'):
+        failures+=_row_input_failures(raw)
+    if failures: return _insufficient_inputs(ctx,ticker,failures)
     # Resolve explicit thesis policy before any truncation; keep every alternative.
     bands = CC_V3_CONFIG['preferred_dte_bands'].get(policy['strategy'], [21,60])
     policy = dict(policy)
@@ -639,6 +691,12 @@ def _analyze_ticker(ctx: AgentContext, ticker: str) -> list[Recommendation]:
                               and policy['portfolio_weight'] > policy['max_position_pct'])
     episode_rows, challenger = prepare(ticker, result, policy, holding.shares,
                                        CC_V3_CONFIG, execution_history(), surface_history(ticker))
+    failures=[]
+    for raw in episode_rows:
+        if raw.get('eligible'): failures+=_row_input_failures(raw)
+    if challenger.get('action')!='NO_CALL':
+        failures+=_decision_inputs({k:challenger.get(k) for k in ('strike','contracts','overwrite_fraction')},positive=('strike','contracts'),probabilities=('overwrite_fraction',),integers=('contracts',))
+    if failures: return _insufficient_inputs(ctx,ticker,failures)
     def persist_cc_decision(champion):
         return record_episode(ticker, ctx.run_id, episode_rows, champion, challenger,
                               policy, CC_V3_CONFIG, result.get('snapshot_timestamp'))
@@ -754,6 +812,20 @@ def _analyze_ticker(ctx: AgentContext, ticker: str) -> list[Recommendation]:
         print(f"[covered_call] {ticker}: LLM selected unknown contract_id={contract_id!r}")
         persist_cc_decision({"action":"NO_CALL","reason":"UNKNOWN_CONTRACT_ID","contracts":0})
         return []
+
+    failures=_row_input_failures(row)
+    if production_v3:
+        failures+=_decision_inputs(dict(contracts=row.get('recommended_contracts'),overwrite_fraction=row.get('overwrite_fraction')),positive=('contracts',),probabilities=('overwrite_fraction',),integers=('contracts',))
+    if failures: return _insufficient_inputs(ctx,ticker,failures)
+    _contracts=int(row['recommended_contracts']) if production_v3 else int(holding.shares//100)
+    failures=_decision_inputs(dict(contracts=_contracts),positive=('contracts',),integers=('contracts',))
+    if failures:return _insufficient_inputs(ctx,ticker,failures)
+    _premium=float(row['exec_premium']);_spot=holding.current_price;_days=int(row['dte'])
+    _derived=dict(income=_premium*_contracts*100,breakeven=_spot-_premium,
+                  annualized_return=(_premium/_spot)*(365/_days)*100,
+                  recommendation_score=50+float(row['cc_alpha'])*1000)
+    failures=_decision_inputs(_derived)
+    if failures:return _insufficient_inputs(ctx,ticker,failures)
 
     champion = {"action":"SELL_CC", "strike":float(row['strike']),
                 "expiration":str(row['expiration']), "contracts":int(holding.shares//100),

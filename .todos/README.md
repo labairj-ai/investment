@@ -94,8 +94,8 @@ additional agent-feature phase. 0795 is **in-progress**; 0796–0802 remain **ba
 | [0797](0797-configure-non-bypass-github-protection.md) | Configure and Verify Non-Bypass GitHub Protection for Development-Agent Changes | critical | 0790, 0796 |
 | [0798](0798-provision-digest-pinned-validation-sandbox.md) | Provision Digest-Pinned Development-Agent Sandbox Runtime | critical | 0796 |
 | [0799](0799-certify-authentic-production-backup-snapshot.md) | Produce and Certify an Authentic Production Backup Snapshot | critical | 0786, 0796 |
-| [0800](0800-complete-development-agent-technical-certification-v2.md) | Complete Development-Agent Technical Certification v2 | critical | 0796, 0797, 0798, 0799, 0792 |
-| [0801](0801-execute-prospective-supervised-development-agent-pilots.md) | Execute Three Prospective Supervised Development-Agent Pilots | high | 0800 |
+| [0800](0800-complete-development-agent-technical-certification-v2.md) | Complete Development-Agent Technical Certification v2 | critical | 0796, 0797, 0798, 0799, 0792, 0803, 0804 |
+| [0801](0801-execute-prospective-supervised-development-agent-pilots.md) | Execute Three Prospective Supervised Development-Agent Pilots | high | 0800, 0805, 0807, 0808, 0809 |
 | [0802](0802-authorize-bounded-low-risk-autonomous-operation.md) | Review and Explicitly Authorize Bounded L0–L2 Autonomous Operation | critical | 0801, 0794 |
 
 Critical path: **0795 CC failures → 0796 green CI → 0797 GitHub protection +
@@ -109,3 +109,21 @@ Existing hardening dependencies 0786, 0790 and 0792 remain required; deployed co
 is not a substitute for their independent acceptance evidence. Protection changes
 belong to a human administrator; autonomy activation requires a separate reviewed
 human decision. Creating these files grants neither authority.
+
+## Trust-boundary review follow-up — 0803–0809
+
+All seven items are in-progress; none is operationally accepted yet. 0803/0804 additionally block 0800; 0805/0807/0808/0809 block qualifying 0801 evidence. 0806 is a parallel CC workstream that blocks production promotion of cc-v3.4.
+
+| ID | Task | Depends | Blocks |
+|---|---|---|---|
+| [0803](0803-isolate-trusted-regression-tests.md) | Isolate Trusted Regression Tests from Agent-Modified Test Code | 0785, 0798 | 0800, 0801 |
+| [0804](0804-harden-github-actions-agent-code.md) | Harden GitHub Actions Against Agent-Generated Code | 0796, 0798 | 0800, 0801 |
+| [0805](0805-revalidate-protection-through-pilot-success.md) | Revalidate GitHub Protection Through Merge and Pilot Success | 0797 | 0801 |
+| [0806](0806-reject-non-finite-covered-call-decision-inputs.md) | Fail Closed on Non-Finite Covered-Call Decision Inputs Before Recommendation Math | 0795 | production promotion of cc-v3.4 |
+| [0807](0807-classify-active-html-svg-risk.md) | Tighten Risk Classification for Active HTML and SVG Content | 0746, 0794 | future autonomous L2 presentation work |
+| [0808](0808-disable-hooks-ambient-agent-git-config.md) | Disable Git Hooks and Ambient Git Configuration for Agent Git Operations | 0751, 0771 | 0801 |
+| [0809](0809-bind-dashboard-decisions-operator-identity.md) | Bind Dashboard Human Decisions to a Unique Authenticated Operator Identity | 0768 | strong 0801 supervision evidence |
+
+Requested workstream order: **0803 → 0804 → 0805 → 0808 → 0797/0798/0799 → 0800 → 0801 → 0802**. Run 0806 in parallel; complete 0807/0809 before pilots count.
+
+Dependency review required before execution: the explicit prerequisites remain authoritative. 0803 and 0804 require 0798, and 0805 requires 0797, so those environmental prerequisites must precede their completion despite the requested workstream order. 0807 retains the supplied dependency on 0794, while 0794 requires the pilots that 0807 must precede; this sequencing conflict must be resolved explicitly before certification/pilot progression. No dependencies were silently removed.

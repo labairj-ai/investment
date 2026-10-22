@@ -5,6 +5,8 @@ entry point cannot approve candidates, merge, deploy or modify GitHub protection
 """
 from __future__ import annotations
 
+from .git_exec import run as git_run, output as git_output
+
 from pathlib import Path
 import subprocess
 
@@ -34,13 +36,14 @@ def progress(root,store,cid,builder,reviewer,validator,client):
     try:
         if not ready():raise ValueError('autonomy disabled or certification/protection changed')
         if int(whole_diff(work,context['head'])['risk'][1:])>2:raise ValueError('risk exceeds L2; human reauthorization required')
-        subprocess.run(['git','-C',str(work),'add','--',*candidate['files']],check=True,capture_output=True,timeout=30)
-        subprocess.run(['git','-C',str(work),'commit','-m',f"[agent] TODO {context['todo']}: {candidate['title']}"],check=True,capture_output=True,timeout=30)
+        git_run(work,'add','--',*candidate['files'])
+        git_run(work,'commit','-m',f"[agent] TODO {context['todo']}: {candidate['title']}")
+        store.event(cid,'GIT_INTENT',dict(operation='stage-and-commit',files=candidate['files'],head=git(work,'rev-parse','HEAD'),hooks_disabled=True,ambient_config_disabled=True))
         review=validate_and_review(work,store,cid,validator,reviewer)
         if review['disposition']!='PASS':raise ValueError('mandatory validation/review incomplete')
         proof=seal(work,store,cid)
         if proof['status']!='PASS' or not ready():raise ValueError('fresh mandatory evidence and current authority required')
-        client.publish(work,record['branch'],proof['head'])
+        client.publish(work,record['branch'],proof['head'],store=store,cid=cid)
         pr=prepare_pr(work,store,cid,proof,client)
         return dict(status='PR_OPEN',candidate=cid,head=proof['head'],pr=pr,mode='AUTONOMOUS',grants_merge=False,grants_deployment=False)
     except Exception as exc:

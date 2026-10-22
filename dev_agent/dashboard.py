@@ -52,8 +52,8 @@ def handle(handler, path, mutation=False):
     try:
         store = configured_store()
         from .identity import dashboard_identity
-        human=dashboard_identity()
         if not mutation: return send(summary(store))
+        human=dashboard_identity(handler)
         if path not in {"/api/development-agent/decision", "/api/development-agent/review"}: return send(dict(ok=False, error="unknown operation"), 404)
         length = int(handler.headers.get("Content-Length", "0"))
         if not 0 < length <= 16384: raise ValueError("bounded request required")
@@ -63,9 +63,9 @@ def handle(handler, path, mutation=False):
             if payload['stage']=='PR_DISPOSITION':
                 from .github import GitHub,recheck_pr
                 if recheck_pr(store,payload['candidate'],GitHub(os.environ.get('DEV_AGENT_REPOSITORY','labairj-ai/investment')))['status']!='PASS': raise ValueError('remote PR head changed')
-            store.review_decision(payload["candidate"], payload["stage"], payload["decision"], "dashboard-authenticated-human", payload["context"], payload["nonce"], payload.get("rationale", ""), identity=human)
+            store.review_decision(payload["candidate"], payload["stage"], payload["decision"], human.actor, payload["context"], payload["nonce"], payload.get("rationale", ""), identity=human)
         else:
-            store.decide(payload["candidate"], payload["decision"], "dashboard-authenticated-human", payload["context"], payload["nonce"], payload.get("rationale", ""), identity=human)
+            store.decide(payload["candidate"], payload["decision"], human.actor, payload["context"], payload["nonce"], payload.get("rationale", ""), identity=human)
         return send(dict(ok=True))
     except (ValueError, KeyError, TypeError, json.JSONDecodeError):
         return send(dict(ok=False, error="invalid, stale or replayed decision"), 409)

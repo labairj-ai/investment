@@ -4,7 +4,7 @@
 - **Status:** backlog
 - **Created:** 2026-10-22
 - **Priority:** critical
-- **Depends:** 0796, 0797, 0798, 0799, 0792
+- **Depends:** 0796, 0797, 0798, 0799, 0792, 0803, 0804
 
 ## Problem
 
@@ -57,3 +57,7 @@ A complete technical certificate is required before real supervised pilots begin
 ## Source
 
 User-supplied 2026-10-22 development-agent operational acceptance phase. Requirements and dependencies preserved; backlog creation does not authorize implementation or activation.
+
+## Additional trust-boundary gates — 2026-10-22
+
+0803 and 0804 must PASS before technical certification. Candidate-controlled tests and unconstrained CI execution cannot supply certification evidence.

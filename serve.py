@@ -6532,7 +6532,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
 
-server = http.server.ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
+server = http.server.ThreadingHTTPServer((os.environ.get("INVESTMENT_BIND_HOST", "0.0.0.0"), PORT), Handler)
 
 # Regenerate dashboard on startup so changes to generate_dashboard.py take
 # effect immediately after a deploy + service restart.

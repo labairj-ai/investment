@@ -1,15 +1,22 @@
 """Conservative whole-diff classification, protected dependency reachability."""
 from __future__ import annotations
 
+from .git_exec import run as git_run, output as git_output
+
 import ast
 import io
 import fnmatch
 import re
 import subprocess
 import tarfile
+from html.parser import HTMLParser
+from html import unescape
+from urllib.parse import unquote
 from pathlib import Path, PurePosixPath
 
-VERSION = "risk-surface-1"
+VERSION = "risk-surface-2"
+TEST_RUNNER_FILES = {'conftest.py','pytest.ini','.pytest.ini','pytest.toml','.pytest.toml',
+                     'pyproject.toml','setup.cfg','tox.ini','sitecustomize.py','usercustomize.py'}
 FINANCIAL = ("portfolio*", "covered_call*", "tax*", "thesis*", "agents/advisor/*", "agents/learning/*", "agents/*agent.py", "agents/critic*", "strategy*", "macro*", "financials*", "config/*")
 EXECUTION = ("trade_engine/*", "agent_db.py", "schema.sql", "serve.py", "dev_agent/*", "scripts/dev_agent*", "systemd/*", "ops/*")
 GOVERNANCE = ("AGENTS.md", "docs/development-agent.md", ".github/*", "scripts/check_*", "config/*", "cc_change_manifests/*")
@@ -22,6 +29,45 @@ PRINCIPLES = {
     "P5": "Mobile usability and explicit human review for protected behavior.",
     "P6": "Fail closed; never relax gates, tests or this contract to obtain PASS.",
 }
+
+
+def test_runner_surface(path, text=''):
+    """Runner and plugin declarations cannot be approved as ordinary L1 tests."""
+    return (Path(path).name in TEST_RUNNER_FILES or
+            (path.endswith(('.py','.toml','.cfg','.ini')) and bool(re.search(r'pytest_plugins|pytest\.hookimpl|def\s+pytest_|pytest11', text))))
+
+
+class PassiveContent(HTMLParser):
+    SAFE = set('html head body title meta main section article div span p a h1 h2 h3 h4 h5 h6 ul ol li dl dt dd strong em b i small br hr pre code blockquote table thead tbody tr th td caption svg g path rect circle ellipse line polyline polygon text tspan defs desc'.split())
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.active = False
+
+    def handle_starttag(self, tag, attrs):
+        if tag not in self.SAFE: self.active = True
+        for key, value in attrs:
+            value = unescape(unquote(value or '')).lower()
+            compact = re.sub(r'\s|[\x00-\x1f]', '', value)
+            if (key.startswith('on') or key in {'src', 'srcset', 'action', 'formaction', 'srcdoc', 'http-equiv'} or
+                'javascript:' in compact or 'vbscript:' in compact or 'data:' in compact or
+                '\\' in value or re.search(r'url\s*\(|@import|expression\s*\(|\bimport\s*\(', value) or
+                (key in {'href', 'xlink:href'} and tag != 'a' and not value.startswith('#'))):
+                self.active = True
+
+    handle_startendtag = handle_starttag
+
+    def unknown_decl(self, data): self.active = True
+
+
+def passive_content(text):
+    if not text or re.search(r'<\?|<!\[|<!ENTITY', text, re.I): return False
+    parser = PassiveContent()
+    try:
+        parser.feed(text); parser.close()
+    except Exception:
+        return False
+    return not parser.active
 
 
 def matches(path, patterns):
@@ -79,19 +125,26 @@ def protected_graph(root, sources=None):
 
 def whole_diff(root, base):
     if not re.fullmatch(r"[a-f0-9]{40}", base): raise ValueError("full base SHA required")
-    subprocess.run(["git", "-C", str(root), "merge-base", "--is-ancestor", base, "HEAD"], check=True, capture_output=True, timeout=30)
-    paths = subprocess.check_output(["git", "-C", str(root), "diff", "--name-only", "--no-renames", "-z", base], timeout=30).decode().split("\0")
-    archive = subprocess.check_output(["git", "-C", str(root), "archive", base], timeout=30)
+    git_run(root, "merge-base", "--is-ancestor", base, "HEAD")
+    paths = git_output(root, "diff", "--no-ext-diff", "--no-textconv", "--name-only", "--no-renames", "-z", base).split("\0")
+    archive = git_output(root, "archive", base, text=False)
     sources = {}
     with tarfile.open(fileobj=io.BytesIO(archive)) as stream:
         for entry in stream:
             if entry.isfile() and entry.name.endswith(".py") and entry.size <= 2_000_000:
                 sources[entry.name] = stream.extractfile(entry).read().decode(errors="replace")
-    diff = subprocess.check_output(["git", "-C", str(root), "diff", base], text=True, timeout=30)
-    return classify([p for p in paths if p], graphs=[protected_graph(root, sources), protected_graph(root)], diff=diff)
+    diff = git_output(root, "diff", "--no-ext-diff", "--no-textconv", base)
+    content = {}
+    for path in filter(None, paths):
+        if path.endswith(('.html', '.svg')):
+            try: old = git_output(root, 'show', base+':'+path)
+            except subprocess.CalledProcessError: old = ''
+            new = (Path(root)/path).read_text() if (Path(root)/path).is_file() else ''
+            content[path] = (old, new)
+    return classify([p for p in paths if p], graphs=[protected_graph(root, sources), protected_graph(root)], diff=diff, content=content)
 
 
-def classify(paths, *, graphs=(), declared=0, model=0, manifest=None, diff=""):
+def classify(paths, *, graphs=(), declared=0, model=0, manifest=None, diff="", content=None):
     paths = sorted(set(paths))
     floor = max(int(declared), int(model))
     if not 0 <= floor <= 5:
@@ -117,9 +170,18 @@ def classify(paths, *, graphs=(), declared=0, model=0, manifest=None, diff=""):
         elif matches(path, FINANCIAL): level, reason = 4, "financial surface"
         elif matches(path, GOVERNANCE): level, reason = 5, "safety contract"
         elif path in protected: level, reason = protected[path], "protected import reachability"
+        elif test_runner_surface(path, '\n'.join((content or {}).get(path, ())) or diff): level, reason = 3, "protected test runner or plugin configuration"
+        elif path.endswith(('.js', '.mjs', '.cjs', '.ts')): level, reason = 3, "human-started browser/application execution"
+        elif path.startswith("static/") and path.endswith('.css'):
+            text='\n'.join((content or {}).get(path, ())) or diff
+            active=bool(re.search(r'url\s*\(|@import|expression\s*\(|\\',text,re.I))
+            level,reason=(3,'active CSS resource behavior') if active else (2,'presentation')
+        elif path.endswith(('.html', '.svg')):
+            versions = (content or {}).get(path)
+            passive = versions is not None and all(passive_content(t) for t in versions if t)
+            level, reason = (2, "inspected passive presentation") if passive else (3, "active or unproven HTML/SVG content")
         elif path.startswith(("docs/", ".todos/")) or path == "README.md": level, reason = 0, "documentation"
         elif path.startswith("tests/"): level, reason = 1, "tests"
-        elif path.startswith("static/") and path.endswith((".css", ".html", ".svg")): level, reason = 2, "presentation"
         elif path.startswith("scripts/"): level, reason = 3, "application tooling"
         else: level, reason = 5, "unknown surface; human review required"
         reasons.append(dict(path=path, level=f"L{level}", reason=reason))

@@ -175,3 +175,14 @@ trusted host harness from the exact approved base SHA and mounted read-only sepa
 The command receipt still binds that immutable base and exact source/head identity.
 Financial definition migrations remain outside the generic Builder's authority; no CC
 gate implementation, version, baseline or threshold is altered for this validation path.
+
+## Trust-boundary acceptance (0803–0809)
+
+The [trusted validation and operator-boundary contract](development-agent-trust-boundaries.md)
+adds approved-base regression isolation, separately bound oracle/source hashes,
+contained least-privilege GitHub CI, lifecycle protection continuity, unique dashboard
+operator identity, deterministic active-content risk and process-local hardened Git.
+Validation command contract is `development-validation-3`; authority adversarial
+contract is `authority-adversarial-3`. Old harness certificates are stale after these
+changes. New source/fixture checks do not satisfy Docker/image/protection/snapshot
+acceptance; 0800/0801 remain gated until the real operational prerequisites pass.

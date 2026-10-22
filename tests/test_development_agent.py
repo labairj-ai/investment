@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+from development_fixtures import protection_observation, start_protection, client as protection_client
 
 from dev_agent import certification, dashboard, discovery, evidence, github, outcomes, policy, scheduler
 from dev_agent.guard import WorkspaceGuard
@@ -28,6 +29,13 @@ def repo(tmp_path):
         subprocess.run(["git", "-C", str(root), "config", key, val], check=True)
     (root / "AGENTS.md").write_text((ROOT / "AGENTS.md").read_text())
     (root / "docs").mkdir(); (root / "docs/note.md").write_text("Before\n")
+    (root/'tests').mkdir()
+    (root/'tests/test_oracle.py').write_text('def test_oracle(): assert True\n')
+    (root/'config').mkdir()
+    (root/'config/development_agent.json').write_text((ROOT/'config/development_agent.json').read_text())
+    (root/'scripts').mkdir()
+    for script in ('check_release_baseline','check_cc_contract','check_agent_contract','check_todo_status','check_development_agent'):
+        (root/f'scripts/{script}.py').write_text((ROOT/f'scripts/{script}.py').read_text())
     commit(root)
     return root
 
@@ -404,9 +412,23 @@ def test_dashboard_http_decision_and_replay(repo,store,monkeypatch):
         def send_response(self,code):self.code=code
         def send_header(self,*args):pass
         def end_headers(self):pass
-    body=dict(candidate=cid,decision="approve",context=ctx,nonce="http-once")
+    from email.message import Message
+    from types import SimpleNamespace
+    init=Handler.__init__
+    def authenticated(self,*a,**k):
+        init(self,*a,**k)
+        headers=Message()
+        for key,value in self.headers.items():headers[key]=value
+        headers['Tailscale-User-Login']='alice@example.test'
+        self.headers=headers;self.client_address=('127.0.0.1',12345)
+        self.server=SimpleNamespace(server_address=('127.0.0.1',5001))
+    Handler.__init__=authenticated
+    monkeypatch.setenv('DEV_AGENT_IDENTITY_SOURCE','tailscale-serve')
+    monkeypatch.setenv('DEV_AGENT_OPERATORS','alice@example.test')
+    body=dict(candidate=cid,decision="approve",context=ctx,nonce="http-once",actor="mallory@example.test")
     denied=Handler(body,"https://attacker.test");dashboard.handle(denied,"/api/development-agent/decision",True);assert denied.code==403
     good=Handler(body);dashboard.handle(good,"/api/development-agent/decision",True);assert good.code==200
+    assert [e["payload"] for e in store.get(cid)["events"] if e["kind"]=="APPROVAL"][-1]["actor"]=="alice@example.test"
     replay=Handler(body);dashboard.handle(replay,"/api/development-agent/decision",True);assert replay.code==409
     before=store.path.read_bytes();read=Handler({});dashboard.handle(read,"/api/development-agent");assert read.code==200 and store.path.read_bytes()==before
 
@@ -431,13 +453,15 @@ def test_deployment_observations_and_mutation_safety(repo,store):
     cid,ctx=approved(repo,store)
     store.event(cid,"PR",dict(result=dict(url="https://github.com/o/r/pull/1"),head=ctx["head"]))
     store.event(cid,"MERGE",dict(merge_sha="a"*40,pr="https://github.com/o/r/pull/1",actor="operator"))
+    adapter=protection_client();start_protection(store,cid,adapter,ROOT)
+    def observed(record):return outcomes.observe(store,cid,record,client=adapter)
     now=time.time();record=dict(merge_sha="a"*40,deployed_sha="a"*40,environment="fixture",deployed_at=now-100,observed_at=now,window_seconds=60,metrics=dict(errors=0),evidence=["fixture-canary"],status="HEALTHY")
-    assert outcomes.observe(store,cid,record)["status"]=="HEALTHY"
-    assert outcomes.observe(store,cid,dict(record,deployed_sha="b"*40))["status"]=="INSUFFICIENT_DATA"
-    assert outcomes.observe(store,cid,dict(record,window_seconds=1000))["status"]=="INSUFFICIENT_DATA"
-    with pytest.raises(ValueError):outcomes.observe(store,cid,dict(record,status="ROLLED_BACK"))
-    with pytest.raises(ValueError):outcomes.observe(store,cid,dict(record,metrics=dict(portfolio_return=10)))
-    assert outcomes.observe(store,cid,dict(record,status="ROLLED_BACK",rollback_cause="regression",rollback_target="b"*40))["status"]=="ROLLED_BACK"
+    assert observed(record)["status"]=="HEALTHY"
+    assert observed(dict(record,deployed_sha="b"*40))["status"]=="INSUFFICIENT_DATA"
+    assert observed(dict(record,window_seconds=1000))["status"]=="INSUFFICIENT_DATA"
+    with pytest.raises(ValueError):observed(dict(record,status="ROLLED_BACK"))
+    with pytest.raises(ValueError):observed(dict(record,metrics=dict(portfolio_return=10)))
+    assert observed(dict(record,status="ROLLED_BACK",rollback_cause="regression",rollback_target="b"*40))["status"]=="ROLLED_BACK"
 
 
 def test_pr_ready_binds_committed_candidate_and_recovers(repo,store,tmp_path):
@@ -451,15 +475,17 @@ def test_pr_ready_binds_committed_candidate_and_recovers(repo,store,tmp_path):
     proof=make_trusted_proof(path,store,cid)
     class Client:
         repository='o/r'
-        def protections(self):return dict(status="PASS")
+        def protections(self):return protection_observation(repository=self.repository)
         def pr_identity(self,number):
             return dict(number=number,headRefName=discovery.git(path,'branch','--show-current'),headRefOid=proof['head'],baseRefName='main',headRepository={'nameWithOwner':'o/r'},isDraft=False)
         def handoff(self,branch,title,body,draft):
             assert branch.startswith("agent/") and cid in body and "human merge" in body and not draft
             return dict(url="https://github.com/o/r/pull/1",number=1)
-    assert github.prepare_pr(path,store,cid,proof,Client())["number"]==1
+    adapter=Client();start_protection(store,cid,adapter,ROOT)
+    assert github.prepare_pr(path,store,cid,proof,adapter)["number"]==1
     assert store.get(cid)["state"]=="PR_OPEN"
-    assert github.prepare_pr(path,store,cid,proof,Client())["number"]==1
+    adapter=Client();start_protection(store,cid,adapter,ROOT)
+    assert github.prepare_pr(path,store,cid,proof,adapter)["number"]==1
     assert len([e for e in store.get(cid)["events"] if e["kind"]=="PR"])==1
     with pytest.raises(ValueError):github.prepare_pr(path,store,"different",proof,Client())
     (path/"docs/note.md").write_text("Changed after evidence")

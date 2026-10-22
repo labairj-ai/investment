@@ -7,12 +7,16 @@ import time
 from pathlib import Path
 
 import pytest
+from development_fixtures import protection_observation, start_protection
 
 from test_development_agent import repo, store, proposal, approved, commit, protection, run_fixture, write_action
 from dev_agent import evidence, validation, certification, operations, github, snapshot, readiness
 from dev_agent.runner import ContainerValidator
 from dev_agent.store import digest
-from dev_agent.identity import dashboard_identity
+from dev_agent.identity import HumanIdentity, _PROOF
+
+def fixture_human():
+    return HumanIdentity('fixture-human', 'fixture-only', _PROOF)
 from dev_agent.discovery import git, plan, refresh_plan
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -156,17 +160,17 @@ def start_candidate(repo,store,mode='SUPERVISED',risk='L0'):
         ctx=dict(ctx,risk=risk)
         old=[e['payload'] for e in store.get(cid)['events'] if e['kind']=='PLAN'][-1]
         store.event(cid,'PLAN',dict(old,context=ctx))
-    store.decide(cid,'approve','human',ctx,'approve-'+cid,'Explicit fixture approval',identity=dashboard_identity())
+    store.decide(cid,'approve','human',ctx,'approve-'+cid,'Explicit fixture approval',identity=fixture_human())
     return cid,ctx
 
 
 def test_supervised_admission_does_not_require_autonomy(repo,store,monkeypatch):
     cid,ctx=start_candidate(repo,store)
-    (repo/'config').mkdir();(repo/'config/development_agent.json').write_text((ROOT/'config/development_agent.json').read_text())
+    (repo/'config').mkdir(exist_ok=True);(repo/'config/development_agent.json').write_text((ROOT/'config/development_agent.json').read_text())
     monkeypatch.setattr(operations,'policy',lambda root:json.loads((ROOT/'config/development_agent.json').read_text()))
     monkeypatch.setattr(certification,'harness_hash',lambda root:'fixture-harness')
     cert=dict(version='harness-canary-2',kind='TECHNICAL',status='PASS',harness_hash='fixture-harness',created=time.time(),components={k:'PASS' for k in certification.TECHNICAL_COMPONENTS});cert['id']=digest(cert)
-    record=operations.authorize_start(repo,store,cid,'SUPERVISED',[cert],{'status':'PASS','created':time.time()},human=dashboard_identity())
+    record=operations.authorize_start(repo,store,cid,'SUPERVISED',[cert],protection_observation(),human=fixture_human())
     assert record['mode']=='SUPERVISED' and record['context']==ctx
     assert operations.eligibility(ROOT,store)['completed']==0
 
@@ -254,14 +258,21 @@ def seed_completed_pilot(store, *, created=None, harness=None):
         for i,(kind,payload) in enumerate(records):store._append(db,cid,kind,payload,f'fixture-lineage:{cid}:{i}')
     class Client:
         repository='owner/repo'
+        def protections(self):return protection_observation()
         def pr_identity(self,number):return dict(remote(),state='MERGED',reviewDecision='APPROVED',mergeCommit={'oid':'c'*40})
-    return cid,Client()
+    adapter=Client();start_protection(store,cid,adapter,ROOT)
+    from dev_agent.protection import require
+    authority=None
+    for stage in ('publish','pr_handoff','pr_disposition','merge','deployment_observation'):
+        authority=require(store,cid,adapter,stage,root=ROOT)
+    store.event(cid,'MERGE',dict(head=head,merge_sha='c'*40,source='github-verified-merge',protection_policy=authority['policy_hash']))
+    return cid,adapter
 
 
 def test_real_qualifying_lineage_counts_once_and_rollback_invalidates(store):
     cid,client=seed_completed_pilot(store)
-    first=operations.record_success(ROOT,store,cid,client,human=dashboard_identity())
-    assert operations.record_success(ROOT,store,cid,client,human=dashboard_identity())==first
+    first=operations.record_success(ROOT,store,cid,client,human=fixture_human())
+    assert operations.record_success(ROOT,store,cid,client,human=fixture_human())==first
     assert operations.eligibility(ROOT,store)['completed']==1
     with store.connect(True) as db:
         store._append(db,cid,'DEPLOYMENT',dict(status='ROLLED_BACK'),'fixture-rollback')
@@ -283,7 +294,7 @@ def test_incomplete_or_synthetic_pilots_never_count(store,mutation):
     if mutation=='deployed':latest('DEPLOYMENT')['deployed_sha']='d'*40
     if mutation=='scope':latest('PLAN')['context']=dict(latest('PLAN')['context'],scope_hash='changed')
     store.get=lambda ident:candidate if ident==cid else original(ident)
-    with pytest.raises(ValueError):operations.record_success(ROOT,store,cid,client,human=dashboard_identity())
+    with pytest.raises(ValueError):operations.record_success(ROOT,store,cid,client,human=fixture_human())
     assert not operations.eligibility(ROOT,store)['eligible']
 
 
@@ -292,12 +303,12 @@ def test_three_runs_require_seven_calendar_days_and_exact_harness(store,monkeypa
     for delta in [0,86400,2*86400]:
         cid,client=seed_completed_pilot(store)
         monkeypatch.setattr(operations.time,'time',lambda value=now+delta:value)
-        operations.record_success(ROOT,store,cid,client,human=dashboard_identity())
+        operations.record_success(ROOT,store,cid,client,human=fixture_human())
     result=operations.eligibility(ROOT,store,now=now+3*86400)
     assert result['completed']==3 and result['observation_days']==2 and not result['eligible']
     cid,client=seed_completed_pilot(store)
     monkeypatch.setattr(operations.time,'time',lambda:now+8*86400)
-    operations.record_success(ROOT,store,cid,client,human=dashboard_identity())
+    operations.record_success(ROOT,store,cid,client,human=fixture_human())
     assert operations.eligibility(ROOT,store,now=now+9*86400)['eligible']
     monkeypatch.setattr(certification,'harness_hash',lambda root:'changed-config-contract')
     assert operations.eligibility(ROOT,store,now=now+9*86400)['completed']==0
@@ -310,7 +321,7 @@ def test_autonomy_budget_and_emergency_stop(repo,store,monkeypatch):
     monkeypatch.setattr(operations,'eligibility',lambda *a,**k:dict(eligible=True))
     monkeypatch.setattr(certification,'technical_current',lambda *a:True)
     monkeypatch.setattr(certification,'harness_hash',lambda root:'fixture-harness')
-    protections=dict(status='PASS',created=time.time())
+    protections=protection_observation()
     assert operations.authorize_start(repo,store,cid,'AUTONOMOUS',[],protections)['mode']=='AUTONOMOUS'
     with pytest.raises(ValueError,match='daily implementation'):operations.authorize_start(repo,store,cid,'AUTONOMOUS',[],protections)
     monkeypatch.setenv('DEV_AGENT_KILL_SWITCH','1')
@@ -340,7 +351,7 @@ def test_disabling_autonomy_stops_pipeline_before_builder(repo,store,tmp_path):
     class NeverBuilder:
         def respond(self,*args):raise AssertionError('Builder must not be invoked')
     class Client:
-        def protections(self):return dict(status='PASS',created=time.time())
+        def protections(self):return protection_observation()
     # Missing certificates/config in the disposable fixture fails closed before
     # any provider action. A real disabled installation is separately covered by
     # admission tests with all other gates passing.
@@ -349,9 +360,9 @@ def test_disabling_autonomy_stops_pipeline_before_builder(repo,store,tmp_path):
     assert store.get(cid)['state']=='APPROVED'
 
 
-def test_publishing_cannot_target_main_or_unreviewed_repository(repo,monkeypatch):
+def test_publishing_cannot_target_main_or_unreviewed_repository(repo,store,monkeypatch):
     client=github.GitHub('owner/repo')
-    with pytest.raises(ValueError):client.publish(repo,'main',git(repo,'rev-parse','HEAD'))
+    with pytest.raises(ValueError):client.publish(repo,'main',git(repo,'rev-parse','HEAD'),store=store,cid='invalid')
 
 
 def test_approval_validation_scope_is_frozen(repo,store,monkeypatch):
@@ -360,7 +371,7 @@ def test_approval_validation_scope_is_frozen(repo,store,monkeypatch):
     store.event(cid,'PLAN',dict(event,focused_tests=['tests/different.py']))
     monkeypatch.setattr(operations,'policy',lambda root:json.loads((ROOT/'config/development_agent.json').read_text()))
     with pytest.raises(ValueError,match='validation scope changed'):
-        operations.authorize_start(repo,store,cid,'SUPERVISED',[],dict(status='PASS',created=time.time()),human=dashboard_identity())
+        operations.authorize_start(repo,store,cid,'SUPERVISED',[],protection_observation(),human=fixture_human())
 
 
 def test_new_failed_certification_invalidates_prior_success():
@@ -376,7 +387,7 @@ def test_readiness_eligible_fixture_requires_enabled_policy_and_fresh_evidence(s
         cid,client=seed_completed_pilot(store)
         with monkeypatch.context() as clock:
             clock.setattr(operations.time,'time',lambda age=days:now-age*86400)
-            operations.record_success(ROOT,store,cid,client,human=dashboard_identity())
+            operations.record_success(ROOT,store,cid,client,human=fixture_human())
     cert=technical(ROOT,now)
     cert['evidence']=dict(sandbox={'status':'PASS'},snapshot=dict(status='PASS',backup_timestamp=now,schema_fingerprint='schema'),github=dict(status='PASS',created=now))
     cert['id']=digest({k:v for k,v in cert.items() if k!='id'})
@@ -401,10 +412,10 @@ def test_disposition_recheck_invalidates_advanced_remote_head(repo,store,tmp_pat
     class Client:
         repository='owner/repo'
         head=proof['head']
-        def protections(self):return {'status':'PASS'}
+        def protections(self):return protection_observation()
         def handoff(self,*args):return dict(number=1,url='https://github.com/owner/repo/pull/1')
         def pr_identity(self,number):return remote(headRefName=branch,headRefOid=self.head)
-    client=Client();github.prepare_pr(root,store,cid,proof,client)
+    client=Client();start_protection(store,cid,client,ROOT);github.prepare_pr(root,store,cid,proof,client)
     assert github.recheck_pr(store,cid,client)['status']=='PASS'
     client.head='b'*40
     assert github.recheck_pr(store,cid,client)['status']=='NEEDS_HUMAN'
@@ -430,13 +441,19 @@ def test_validation_container_excludes_host_git_and_secrets(repo,monkeypatch):
         mounts=[command[i+1] for i,value in enumerate(command[:-1]) if value=='--mount']
         src=next(m for m in mounts if 'dst=/source,' in m)
         source=Path(src.split('src=',1)[1].split(',')[0])
-        assert src.endswith('readonly') and not (source/'.git').exists() and not (source/'.env').exists()
+        assert src.endswith('readonly') and (source/'.git').is_dir() and not (source/'.env').exists()
+        assert not (source/'.git/objects/info/alternates').exists()
         assert not list(source.glob('*.bundle'))
         assert '--network=none' in command and '--pull=never' in command
         assert not any('/var/run' in value for value in command)
+        if '--collect-base' in command:
+            artifact=next(m for m in mounts if 'dst=/artifacts' in m)
+            output=Path(artifact.split('src=',1)[1].split(',')[0])
+            (output/'inventory.json').write_text(json.dumps(['tests.test_oracle::test_oracle']))
         return subprocess.CompletedProcess(command,0)
     monkeypatch.setattr(runner_module.subprocess,'run',invoke)
     validator=ContainerValidator('fixture@sha256:'+'a'*64)
+    validator.prior_base=git(repo,'rev-parse','HEAD')
     result=validator.run(repo,'full_suite',['python','-m','pytest','tests/'])
     assert result['status']=='PARTIAL' and observed  # no JUnit despite exit zero
 
@@ -475,14 +492,14 @@ def test_eligible_low_risk_pipeline_reaches_verified_pr_fixture(repo,store,monke
     from dev_agent.worktrees import Worktrees
     from dev_agent.providers import ReplayProvider
     config=json.loads((ROOT/'config/development_agent.json').read_text());config['autonomous_implementation']=True
-    (repo/'config').mkdir();(repo/'config/development_agent.json').write_text(json.dumps(config))
+    (repo/'config').mkdir(exist_ok=True);(repo/'config/development_agent.json').write_text(json.dumps(config))
     if path.startswith('static/'):(repo/'static').mkdir();(repo/path).write_text('body { color: black; }\n')
     commit(repo)
     cid=store.discover(proposal(files=[path]))
     plan(repo,store,cid,['The requested low-risk presentation or documentation change is visible.'],mode='AUTONOMOUS')
     commit(repo);ctx=refresh_plan(repo,store,cid)
     assert ctx['risk']==risk
-    store.decide(cid,'approve','fixture-human',ctx,'auto-'+cid,identity=dashboard_identity())
+    store.decide(cid,'approve','fixture-human',ctx,'auto-'+cid,identity=fixture_human())
     manager=Worktrees(repo,store.path.parent/'worktrees');record=manager.create(ctx['todo'],ctx['head']);store.event(cid,'WORKTREE',record)
     monkeypatch.setattr(certification,'technical_current',lambda *a,**k:True)
     monkeypatch.setattr(certification,'harness_hash',lambda root:'fixture-certified-harness')
@@ -493,8 +510,8 @@ def test_eligible_low_risk_pipeline_reaches_verified_pr_fixture(repo,store,monke
     class Client:
         repository='owner/repo'
         published=None
-        def protections(self):return dict(status='PASS',created=time.time())
-        def publish(self,root,branch,head):self.published=(branch,head)
+        def protections(self):return protection_observation()
+        def publish(self,root,branch,head,**kwargs):self.published=(branch,head)
         def handoff(self,branch,title,body,draft):
             assert not draft and 'execution mode AUTONOMOUS' in body
             return dict(number=1,url='https://github.com/owner/repo/pull/1')

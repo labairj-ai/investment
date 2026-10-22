@@ -1,6 +1,8 @@
 """Versioned deterministic authority attacks; fixture success is never operational success."""
 from __future__ import annotations
 
+from .git_exec import run as git_run, output as git_output
+
 import sqlite3
 import tempfile
 import json
@@ -13,8 +15,8 @@ from .github import verify_remote_pr, effective_protections
 from .snapshot import check_snapshot
 from .store import Store
 
-VERSION='authority-adversarial-2'
-COMPONENTS={'forged_validation','stale_validation','mixed_candidate','mixed_commit','arbitrary_snapshot','forged_provenance','stale_backup','synthetic_supervision','replayed_supervision','autonomy_disabled','mode_confusion','remote_sha_mismatch','stale_remote_head','ruleset_bypass','incomplete_protection_visibility','stale_certification'}
+VERSION='authority-adversarial-3'
+COMPONENTS={'trusted_oracle_isolation','runner_configuration_risk','active_content_risk','git_hook_isolation','unique_dashboard_identity','stale_lifecycle_protection','forged_supplemental','forged_validation','stale_validation','mixed_candidate','mixed_commit','arbitrary_snapshot','forged_provenance','stale_backup','synthetic_supervision','replayed_supervision','autonomy_disabled','mode_confusion','remote_sha_mismatch','stale_remote_head','ruleset_bypass','incomplete_protection_visibility','stale_certification'}
 
 
 def probe(root):
@@ -40,28 +42,65 @@ def probe(root):
         from .snapshot import REQUIRED_TABLES, sign_backup
         from .certification import harness_hash, technical_current, TECHNICAL_COMPONENTS
         from .operations import authorize_start
-        from .identity import dashboard_identity
+        from .identity import HumanIdentity, _PROOF
+        fixture_human = lambda: HumanIdentity('fixture-human', 'fixture-only', _PROOF)
         repo=temp/'repo';repo.mkdir()
-        subprocess.run(['git','init','-b','fixture',str(repo)],check=True,capture_output=True)
+        git_run(repo,'init','-b','fixture')
         (repo/'note.md').write_text('before')
-        subprocess.run(['git','-C',str(repo),'add','.'],check=True,capture_output=True)
-        subprocess.run(['git','-C',str(repo),'-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','-m','fixture'],check=True,capture_output=True)
-        head=subprocess.check_output(['git','-C',str(repo),'rev-parse','HEAD'],text=True).strip()
-        commands=manifest(['tests/test_fixture.py'],'a'*40)
+        (repo/'tests').mkdir();(repo/'tests/test_fixture.py').write_text('def test_fixture(): assert True\n')
+        git_run(repo,'add','.')
+        git_run(repo,'commit','-m','fixture')
+        base=git_output(repo,'rev-parse','HEAD').strip()
+        (repo/'note.md').write_text('after');git_run(repo,'add','.');git_run(repo,'commit','-m','candidate')
+        head=git_output(repo,'rev-parse','HEAD').strip()
+        from .test_oracle import files,tree_hash
+        oracle_hash=tree_hash(files(repo,base))
+        commands=manifest(['tests/test_fixture.py'],base)
         for attack in ('stale_validation','mixed_candidate','mixed_commit'):
             candidate=store.discover(dict(source='user',title='Fixture '+attack,problem=attack,evidence=['fixture'],outcome='Deny forged evidence',files=['docs/note.md'],category='TEST'))
-            ctx=dict(todo='0001',head='a'*40,mode='SUPERVISED')
+            ctx=dict(todo='0001',head=base,mode='SUPERVISED')
             store.event(candidate,'PLAN',dict(context=ctx,focused_tests=['tests/test_fixture.py']))
-            binding=dict(candidate=candidate,todo='0001',base='a'*40,head=head,mode='SUPERVISED',source_hash=source_hash(repo))
+            binding=dict(candidate=candidate,todo='0001',base=base,head=head,mode='SUPERVISED',source_hash=source_hash(repo),trusted_test_tree_hash=oracle_hash,candidate_source_tree_hash=source_hash(repo))
             records=[dict(binding,name=name,command=cmd,batch=attack,command_contract=COMMAND_VERSION,manifest_hash=digest(commands),fixture_only=False,status='PASS',exit_code=0) for name,cmd in commands]
-            if attack=='mixed_candidate':records[0]['candidate']='another-candidate'
-            if attack=='mixed_commit':records[0]['head']='b'*40
             with store.connect(True) as db:
                 for r in records:store._append(db,candidate,'VALIDATION',r,attack+':'+r['name'])
                 store._append(db,candidate,'VALIDATION_BATCH',dict(binding,batch=attack,records=[digest(r) for r in records]),attack+':batch')
+                store._append(db,candidate,'SUPPLEMENTAL_VALIDATION',dict(binding,batch=attack,result=dict(status='PASS',exit_code=0)),attack+':supplemental')
+            reconstruct(repo,store,candidate)
+            if attack in {'mixed_candidate','mixed_commit'}:
+                bad_batch=attack+'-corrupt'
+                corrupt=[dict(r,batch=bad_batch) for r in records]
+                corrupt[0].update(candidate='another-candidate') if attack=='mixed_candidate' else corrupt[0].update(head='b'*40)
+                with store.connect(True) as db:
+                    for r in corrupt:store._append(db,candidate,'VALIDATION',r,bad_batch+':'+r['name'])
+                    store._append(db,candidate,'VALIDATION_BATCH',dict(binding,batch=bad_batch,records=[digest(r) for r in corrupt]),bad_batch+':batch')
+                    store._append(db,candidate,'SUPPLEMENTAL_VALIDATION',dict(binding,batch=bad_batch,result=dict(status='PASS',exit_code=0)),bad_batch+':supplemental')
             if attack=='stale_validation':(repo/'note.md').write_text('changed')
             try: reconstruct(repo,store,candidate);results[attack]='FAIL'
             except ValueError:results[attack]='PASS'
+            (repo/'note.md').write_text('after')
+        # New boundaries exercise the production adapters on disposable state.
+        from .policy import classify
+        from .identity import dashboard_identity
+        from types import SimpleNamespace
+        from .protection import require
+        before=files(repo,base)
+        (repo/'tests/conftest.py').write_text('raise RuntimeError("untrusted plugin")\n')
+        results['trusted_oracle_isolation']='PASS' if files(repo,base)==before else 'FAIL'
+        results['runner_configuration_risk']='PASS' if int(classify(['tests/conftest.py'])['risk'][1:])>=3 else 'FAIL'
+        results['active_content_risk']='PASS' if int(classify(['static/view.svg'],content={'static/view.svg':('', '<svg><script/></svg>')})['risk'][1:])>=3 else 'FAIL'
+        hooks=repo/'.git/hooks';hooks.mkdir(exist_ok=True);marker=temp/'hook-executed'
+        hook=hooks/'pre-commit';hook.write_text('#!/bin/sh\ntouch '+str(marker)+'\nexit 1\n');hook.chmod(0o755)
+        git_run(repo,'add','.');git_run(repo,'commit','-m','hook isolation')
+        results['git_hook_isolation']='PASS' if not marker.exists() else 'FAIL'
+        try:dashboard_identity(SimpleNamespace(client_address=('192.0.2.1',1),server=SimpleNamespace(server_address=('0.0.0.0',5001)),headers={}));results['unique_dashboard_identity']='FAIL'
+        except ValueError:results['unique_dashboard_identity']='PASS'
+        raw={'fixture_only':True}
+        stale=dict(status='PASS',created=time.time()-301,identity='fixture-agent',repository='fixture/repo',evidence=raw,evidence_hash=digest(raw),effective={'pr':True})
+        try:require(store,cid,SimpleNamespace(repository='fixture/repo'),'start',root=root,observation=stale);results['stale_lifecycle_protection']='FAIL'
+        except ValueError:results['stale_lifecycle_protection']='PASS'
+        try:store.event(cid,'SUPPLEMENTAL_VALIDATION',{'status':'PASS'});results['forged_supplemental']='FAIL'
+        except ValueError:results['forged_supplemental']='PASS'
         valid=temp/'closed.db'
         with sqlite3.connect(valid) as db:
             for name in REQUIRED_TABLES:db.execute('CREATE TABLE '+name+'(x)')
@@ -79,11 +118,11 @@ def probe(root):
         auto=store.discover(dict(source='user',title='Fixture autonomous denial',problem='autonomy disabled',evidence=['fixture'],outcome='Deny automatic start',files=['docs/note.md'],category='TEST'))
         context=dict(todo='0001',head=head,scope_hash=digest(['docs/note.md']),risk='L0',acceptance_hash='fixture',mode='AUTONOMOUS',validation_hash=digest(['tests/test_fixture.py']))
         store.event(auto,'PLAN',dict(context=context,focused_tests=['tests/test_fixture.py']))
-        store.transition(auto,'PLANNED');store.decide(auto,'approve','fixture',context,'fixture-mode',identity=dashboard_identity())
+        store.transition(auto,'PLANNED');store.decide(auto,'approve','fixture',context,'fixture-mode',identity=fixture_human())
         proof=dict(proof,harness_hash=harness_hash(root));proof['id']=digest({k:v for k,v in proof.items() if k!='id'})
         for name,mode in [('autonomy_disabled','AUTONOMOUS'),('mode_confusion','SUPERVISED')]:
             try:
-                authorize_start(root,store,auto,mode,[proof],dict(status='PASS',created=time.time()),human=dashboard_identity())
+                authorize_start(root,store,auto,mode,[proof],dict(status='PASS',created=time.time()),human=fixture_human())
                 results[name]='FAIL'
             except ValueError:results[name]='PASS'
         try:

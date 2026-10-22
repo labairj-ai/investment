@@ -10,7 +10,9 @@ from .store import digest
 VERSION = "software-effectiveness-1"
 
 
-def observe(store, cid, observation):
+def observe(store, cid, observation, *, client):
+    from .protection import require
+    authority=require(store,cid,client,'deployment_observation')
     required = {"merge_sha", "deployed_sha", "environment", "deployed_at", "observed_at", "window_seconds", "metrics", "evidence", "status"}
     if not required <= observation.keys(): raise ValueError("incomplete deployment observation")
     if any(re.search(r"(?i)(pnl|return|alpha|profit|portfolio)", key) for key in observation["metrics"]):
@@ -33,7 +35,7 @@ def observe(store, cid, observation):
         status = "INSUFFICIENT_DATA"
     if status == "ROLLED_BACK" and not (observation.get("rollback_cause") and re.fullmatch(r"[a-f0-9]{40}", observation.get("rollback_target", ""))):
         raise ValueError("rollback cause and target required")
-    result = dict(observation, status=status, pr=prs[-1]["result"])
+    result = dict(observation, status=status, pr=prs[-1]["result"], protection_policy=authority['policy_hash'], protection_identity=authority['identity'])
     with store.connect(True) as db:
         key = "deployment:" + digest(result)
         store._append(db, cid, "DEPLOYMENT", result, key)
