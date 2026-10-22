@@ -31,25 +31,7 @@ def config_digest(config):
     return hashlib.sha256(encode({k:v for k,v in config.items() if k!='mode'}).encode()).hexdigest()
 
 
-def _find_nan_path(obj, path=''):
-    """Debug helper: print all paths where NaN/Inf floats survive after clean()."""
-    if isinstance(obj, dict):
-        for k, v in obj.items():
-            _find_nan_path(v, f'{path}.{k}')
-    elif isinstance(obj, (list, tuple)):
-        for i, v in enumerate(obj):
-            _find_nan_path(v, f'{path}[{i}]')
-    elif isinstance(obj, float) and not math.isfinite(obj):
-        print(f'[encode] NaN/Inf survived clean() at {path!r}: type={type(obj).__name__} value={obj!r}')
-
-
-def encode(value):
-    cleaned = clean(value)
-    try:
-        return json.dumps(cleaned, sort_keys=True, allow_nan=False, separators=(',', ':'))
-    except ValueError:
-        _find_nan_path(cleaned)
-        raise
+def encode(value): return json.dumps(clean(value),sort_keys=True,allow_nan=False,separators=(',',':'))
 
 
 def connect(path=None):
