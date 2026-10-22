@@ -56,6 +56,6 @@ def probe(image):
         # Source was intentionally extended before the timeout test. The guard
         # verifies identity across both real runs, independent of test claims.
         immutable=first_unchanged and source_hash(root)==timeout_before
-        remaining=subprocess.run(['docker','ps','-a','--filter','name=^'+validator.last_container+'$','--format','{{.Names}}'],capture_output=True,text=True,check=True,timeout=15).stdout.strip()
+        remaining=subprocess.run(['docker','ps','-a','--filter','name='+validator.last_container,'--format','{{.Names}}'],capture_output=True,text=True,check=True,timeout=15).stdout.strip()
         return dict(status='PASS' if immutable and not remaining and timeout.get('reason')=='timeout' else 'FAIL',
                     confinement=result,timeout=timeout,source_unchanged=immutable,cleanup_verified=not remaining,fixture_only=False)

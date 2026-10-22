@@ -334,3 +334,26 @@ def test_same_login_with_changed_github_account_id_requires_human(repo,store):
     observation['evidence_hash']=digest(observation['evidence'])
     adapter.protections=lambda:observation
     with pytest.raises(ValueError,match='identity changed'):protection.require(store,cid,adapter,'merge',root=ROOT)
+
+
+def test_timeout_probe_rejects_a_container_left_behind(monkeypatch):
+    import re
+    from dev_agent import containment
+    real=subprocess.run
+    class Validator:
+        last_container='dev-validation-fixture'
+        def __init__(self,*a,**k):self.timeout=k.get('timeout')
+        def run(self,*a,**k):
+            return {'status':'PASS'} if self.timeout==120 else {'status':'FAIL','reason':'timeout'}
+    def invoke(argv,**kwargs):
+        if argv[0]!='docker':return real(argv,**kwargs)
+        pattern=argv[argv.index('--filter')+1].split('=',1)[1]
+        # Docker stores names with a leading slash. An incorrectly anchored
+        # name filter would miss the surviving container and falsely PASS.
+        present=bool(re.search(pattern,'/dev-validation-fixture'))
+        return subprocess.CompletedProcess(argv,0,stdout='dev-validation-fixture\n' if present else '')
+    monkeypatch.setattr(containment.shutil,'which',lambda name:'/fixture/docker')
+    monkeypatch.setattr(containment,'ContainerValidator',Validator)
+    monkeypatch.setattr(containment.subprocess,'run',invoke)
+    result=containment.probe('fixture@sha256:'+'a'*64)
+    assert result['status']=='FAIL' and not result['cleanup_verified']
