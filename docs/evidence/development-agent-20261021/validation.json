@@ -28,7 +28,7 @@
     "0783",
     "0784"
   ],
-  "harness_hash": "bd064fdb9cdd3089baf8a0446d769bce3527796913a39bec96576eaf68d386d1",
+  "harness_hash": "9631ebb13ed059ed9bfb53c5f1437b0c3bd760ad0d509096b618aa23b26bb929",
   "source_hashes": {
     "dev_agent/store.py": "f75ad4f35f139ecc13898b5962826de0a810caa1a9f2629616fbcde2adbcd58e",
     "dev_agent/runner.py": "258918c1584116e07702fdd90611744cbf666f32939592f79bbeb94c9bfd6a80",
@@ -36,7 +36,7 @@
     "dev_agent/discovery.py": "38dd8ebea701090dce67fc21be4ff2eb8170c7c34825881b111f84a6ee6ee5c3",
     "dev_agent/policy.py": "57aef89f071784b7f09f4bd67ab0b9936ab082ed6e5501e8d7776f5a4d27ef67",
     "dev_agent/__init__.py": "e1fd6b37eaaa4bc5f3c278694fbfca10abebea5e9acf83bb8ffe97533a4c9129",
-    "dev_agent/dashboard.py": "af9734b7e0e422deb1569be5fb3a59fb2d1a72efc0a7a37f7a524d4830a5f88a",
+    "dev_agent/dashboard.py": "39cadfff9b88fce710fb2ec10aa73a1b65c3bd1b3d2d5ff905d866ff60fd9482",
     "dev_agent/providers.py": "661b09f011de0d87cad39d59abdef648d1d1038e977dd09c48e0cc094fad0fcd",
     "dev_agent/cli.py": "1cbb6b478cc1f28c513cb2abeb6ec9c976496db32cfefb41e9f66aef0512631d",
     "dev_agent/outcomes.py": "2eabfe07efe7f7c3a7eb438da0071029b715820e537a6cb8c7fbe4db32ee90b8",
@@ -48,7 +48,7 @@
     "dev_agent/worktrees.py": "331512f543addf5b76231375fc7ab99f9c2334895fe884461c129ec72739fc6d",
     "config/development_agent.json": "4262c5fc39c3ecb3e015eb042cf469357d541de1c6c93ad1a63ab74b05ae00cf",
     "scripts/check_development_agent.py": "546573266437ef8a9a4bbb33b088dacbf57c823d10211b468ea34317b9099418",
-    "scripts/check_development_agent_browser.mjs": "ed2db052aab24137e77232d1b4f0d4a7a0b38cb67fc0ee50dcae81ce7f679664",
+    "scripts/check_development_agent_browser.mjs": "9c41bbdb52f0134d5ef14bad1c85976962aa2507b995422b7f2fdca063bd9cd6",
     "tests/test_development_agent.py": "a8765fc2bf116516b7b3decf6e3d55c918b179ca7499cd3946f3d9564983cc01"
   },
   "local_full_suite_checkpoint": {

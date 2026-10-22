@@ -13,7 +13,10 @@
       ],
       "warning": "Human review required — protected or unresolved work",
       "confirmation": true,
-      "dialogOverflow": false
+      "reviewChoiceHidden": true,
+      "dialogOverflow": false,
+      "reviewChoiceShown": true,
+      "reviewDecisionRouted": true
     },
     {
       "width": 390,
@@ -27,7 +30,10 @@
       ],
       "warning": "Human review required — protected or unresolved work",
       "confirmation": true,
-      "dialogOverflow": false
+      "reviewChoiceHidden": true,
+      "dialogOverflow": false,
+      "reviewChoiceShown": true,
+      "reviewDecisionRouted": true
     },
     {
       "width": 430,
@@ -41,7 +47,10 @@
       ],
       "warning": "Human review required — protected or unresolved work",
       "confirmation": true,
-      "dialogOverflow": false
+      "reviewChoiceHidden": true,
+      "dialogOverflow": false,
+      "reviewChoiceShown": true,
+      "reviewDecisionRouted": true
     },
     {
       "width": 1280,
@@ -55,7 +64,10 @@
       ],
       "warning": "Human review required — protected or unresolved work",
       "confirmation": true,
-      "dialogOverflow": false
+      "reviewChoiceHidden": true,
+      "dialogOverflow": false,
+      "reviewChoiceShown": true,
+      "reviewDecisionRouted": true
     }
   ],
   "physical_devices": "NOT_RUN"

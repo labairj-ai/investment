@@ -25,9 +25,16 @@ for(const width of [360,390,430,1280]){
  const result=await evalJS('JSON.parse(document.getElementById("viewport-result").textContent)');
  await evalJS('document.querySelector("article button").click()');
  result.confirmation=await evalJS('document.getElementById("confirmation").open');
+ result.reviewChoiceHidden=await evalJS('getComputedStyle(document.getElementById("review-choice")).display === "none"');
  result.dialogOverflow=await evalJS('document.documentElement.scrollWidth > innerWidth');
  const screenshot=await call('Page.captureScreenshot',{format:'png'});await fs.writeFile(path.join(artifacts,`viewport-${width}.png`),Buffer.from(screenshot.data,'base64'));
- if(result.width!==width||result.overflow||result.unsafe||result.buttons.some(h=>h<44)||!result.confirmation||result.dialogOverflow)throw Error(JSON.stringify(result));
+ if(result.width!==width||result.overflow||result.unsafe||result.buttons.some(h=>h<44)||!result.confirmation||!result.reviewChoiceHidden||result.dialogOverflow)throw Error(JSON.stringify(result));
+ await evalJS('document.getElementById("cancel").click();records[0].state="NEEDS_HUMAN";render();document.querySelector("article button").click()');
+ result.reviewChoiceShown=await evalJS('getComputedStyle(document.getElementById("review-choice")).display !== "none"');
+ await evalJS('request=async(path,body)=>{if(body)window.fixtureDecision={path,body};return {candidates:[],certification:"NOT_RUN"}};document.getElementById("rationale").value="Explicit supervised fixture review";document.getElementById("review-decision").value="accept";document.getElementById("confirm").click()');
+ const decision=await evalJS('window.fixtureDecision');
+ result.reviewDecisionRouted=decision.path==='/api/development-agent/review'&&decision.body.decision==='accept'&&decision.body.context.risk==='L5';
+ if(!result.reviewChoiceShown||!result.reviewDecisionRouted)throw Error(JSON.stringify(result));
  results.push(result);
 }
 await fs.writeFile(path.join(artifacts,'results.json'),JSON.stringify({status:'PASS',results,physical_devices:'NOT_RUN'},null,2));
