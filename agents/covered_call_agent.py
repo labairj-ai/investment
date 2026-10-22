@@ -61,6 +61,18 @@ def _safe_float(v):
         return None
 
 
+def _sanitize_payload(obj):
+    """Recursively replace NaN/inf floats with None so the payload is JSON-safe."""
+    import math
+    if isinstance(obj, dict):
+        return {k: _sanitize_payload(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_payload(v) for v in obj]
+    if isinstance(obj, float):
+        return None if (math.isnan(obj) or math.isinf(obj)) else obj
+    return obj
+
+
 def _has_open_cc(ticker: str) -> bool:
     """Return True if an open covered call position exists for this ticker.
     Checks both the raw ticker and the dot→dash normalized form (BRK.B ↔ BRK-B).
@@ -485,7 +497,7 @@ def _analyze_roll(ctx: AgentContext, ticker: str, position: dict) -> list[Recomm
             if action == "HOLD_CALL" else
             f"Instead of {action}, hold the position and reassess closer to expiration."
         ),
-        action_payload=action_payload,
+        action_payload=_sanitize_payload(action_payload),
         dependencies=_build_mgmt_deps(
             ticker, current_price, existing_strike, existing_expiry, current_mark,
             current_iv=_mgmt_iv_at_rec(ticker, existing_strike, existing_expiry),
@@ -943,7 +955,7 @@ def _analyze_ticker(ctx: AgentContext, ticker: str) -> list[Recommendation]:
         rationale=main_tradeoff,
         counter_case=no_call_case,
         no_action_case=no_call_case,
-        action_payload=action_payload,
+        action_payload=_sanitize_payload(action_payload),
         dependencies=deps,
         trade_chain_id=_tc_id,
     )
