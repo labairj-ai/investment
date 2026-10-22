@@ -75,6 +75,7 @@ class GitHub:
             raise ValueError('unexpected push repository')
         from .protection import require
         authority=require(store,cid,self,'publish',root=root)
+        store.event(cid,'GIT_INTENT',dict(operation='publish',status='REQUESTED',head=head,branch=branch,repository=self.repository,hooks_disabled=True,ambient_config_disabled=True))
         git_run(root,'push','origin',head+':refs/heads/'+branch,timeout=60)
         store.event(cid,'GIT_INTENT',dict(operation='publish',head=head,branch=branch,protection=authority['raw_evidence_hash'],hooks_disabled=True))
 

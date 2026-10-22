@@ -36,6 +36,7 @@ def progress(root,store,cid,builder,reviewer,validator,client):
     try:
         if not ready():raise ValueError('autonomy disabled or certification/protection changed')
         if int(whole_diff(work,context['head'])['risk'][1:])>2:raise ValueError('risk exceeds L2; human reauthorization required')
+        store.event(cid,'GIT_INTENT',dict(operation='stage-and-commit',status='REQUESTED',files=candidate['files'],parent=git(work,'rev-parse','HEAD'),hooks_disabled=True,ambient_config_disabled=True))
         git_run(work,'add','--',*candidate['files'])
         git_run(work,'commit','-m',f"[agent] TODO {context['todo']}: {candidate['title']}")
         store.event(cid,'GIT_INTENT',dict(operation='stage-and-commit',files=candidate['files'],head=git(work,'rev-parse','HEAD'),hooks_disabled=True,ambient_config_disabled=True))

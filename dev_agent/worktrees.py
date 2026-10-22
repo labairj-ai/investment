@@ -30,6 +30,7 @@ class Worktrees:
             fcntl.flock(lock, fcntl.LOCK_EX)
             run = uuid.uuid4().hex; path = self.directory / run
             record = dict(todo=todo, base=base, branch=f"agent/{todo}/{run}", path=str(path), run=run, status="CREATING")
+            record['git_intent']=dict(operation='worktree-add',branch=record['branch'],base=base,hooks_disabled=True,ambient_config_disabled=True)
             manifest = self.directory / (run + ".json")
             manifest.write_text(json.dumps(record, sort_keys=True))
             git_run(self.repo, "worktree", "add", "-b", record["branch"], str(path), base)

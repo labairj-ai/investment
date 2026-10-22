@@ -163,3 +163,12 @@ Sources: [GitHub secure use](https://docs.github.com/en/actions/reference/securi
 [pytest plugin loading](https://pytest.org/en/latest/how-to/writing_plugins.html),
 [Tailscale Serve identity headers](https://tailscale.com/docs/features/tailscale-serve),
 [Git configuration](https://git-scm.com/docs/git-config).
+
+Mandatory plugin loading also rejects candidate repository modules that shadow an
+installed pytest plugin, and requires repository plugin code and package initializers
+to match the immutable oracle hashes. Plugins outside the reconstructable oracle fail
+closed; new plugin-dependent tests remain supplemental until their test infrastructure
+is independently approved. An added focused test absent from base triggers full base
+regression rather than replacing the oracle or banning the new supplemental test.
+Provisioning is still pending: both required repository variables were inspected and
+are unset. The real OS probe reports UNAVAILABLE because Docker is absent locally.

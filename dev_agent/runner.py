@@ -91,6 +91,7 @@ class ContainerValidator:
                 if not prior: raise ValueError('approved prior base required')
                 trusted=Path(temp)/'trusted';trusted.mkdir()
                 trusted_hash=materialize(root,prior,trusted)
+                (authority/'oracle-files.json').write_text(json.dumps({p:hashlib.sha256(data).hexdigest() for p,data in files(root,prior).items()}))
                 if (snapshot/'tests').exists(): shutil.rmtree(snapshot/'tests')
                 for path in list(snapshot.rglob('*')):
                     if path.is_file() and path.name in CONFIG: path.unlink()

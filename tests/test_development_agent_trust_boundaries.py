@@ -282,3 +282,15 @@ def test_candidate_added_test_is_supplemental_without_replacing_base_focus(repo)
 
 def test_ambiguous_content_representation_cannot_be_classified_passive():
     with pytest.raises(ValueError):policy.classify(['static/a.svg'],content={'static/a.svg':'<script/>'})
+
+
+def test_candidate_plugin_cannot_shadow_installed_or_base_plugin(tmp_path):
+    import hashlib
+    from dev_agent.sandbox_entry import check_plugin
+    plugin=tmp_path/'pytest_example.py';plugin.write_text('raise RuntimeError("candidate plugin")\n')
+    with pytest.raises(ValueError):check_plugin('pytest_example',{},tmp_path)
+    # Explicitly immutable approved test plugins remain supported.
+    oracle={'pytest_example.py':hashlib.sha256(plugin.read_bytes()).hexdigest()}
+    check_plugin('pytest_example',oracle,tmp_path)
+    plugin.write_text('raise RuntimeError("changed after approval")\n')
+    with pytest.raises(ValueError):check_plugin('pytest_example',oracle,tmp_path)
