@@ -398,8 +398,10 @@ def _run_single_agent(
         agent_db.finish_agent_run(run_id, status="done")
         return inserted, run_id
     except Exception as e:
+        import traceback as _tb
         agent_db.finish_agent_run(run_id, status="error", error=str(e))
         print(f"[Orchestrator] {agent_type} failed: {e}")
+        print(f"[Orchestrator] traceback: {''.join(_tb.format_tb(e.__traceback__))}")
         return [], run_id
 
 
