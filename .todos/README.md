@@ -64,3 +64,20 @@ Renumbered after completed task 0759. These are separate from the completed inve
 | [0782](0782-schedule-daily-improvement-agent-discovery.md) | Schedule Daily Improvement-Agent Discovery | in-progress |
 | [0783](0783-add-human-approval-and-escalation-workflow.md) | Add Human Approval and Escalation Workflow | in-progress |
 | [0784](0784-certify-the-coding-agent-harness-with-canary-and-adversarial-qa.md) | Certify the Coding-Agent Harness with Canary and Adversarial QA | in-progress |
+
+## Coding-agent hardening and rollout (0785–0794)
+
+Captured from the [shared conversation](https://chatgpt.com/s/t_6ad9755089988191970329e796b72a9c). These are backlog entries only. Complete trust-chain hardening (0785–0790), then readiness/adversarial work (0791–0792), then prospective supervised pilots (0793). Task 0794 remains dependent on successful pilots and the required observation period; creating these tasks grants no autonomy, merge or deployment authority.
+
+| ID | Task | Depends |
+|---|---|---|
+| [0785](0785-trusted-validation-evidence.md) | Make Validation Evidence Harness-Generated and Non-Spoofable | 0770, 0784 |
+| [0786](0786-authenticate-production-snapshot-provenance.md) | Bind Production Snapshot Certification to Authentic Backup Provenance | 0784 |
+| [0787](0787-separate-supervised-autonomous-execution.md) | Separate Supervised and Autonomous Coding-Agent Execution Modes | 0767, 0783, 0784, 0785 |
+| [0788](0788-authenticate-supervised-operational-evidence.md) | Replace Synthetic Supervision with Authenticated Operational Run Evidence | 0775, 0783, 0787 |
+| [0789](0789-verify-sealed-pr-head-sha.md) | Bind GitHub Pull Requests to the Exact Sealed Head SHA | 0771, 0785 |
+| [0790](0790-verify-effective-github-protection.md) | Verify Effective GitHub Protection Across Branch Protection and Rulesets | 0772 |
+| [0791](0791-display-agent-certification-readiness.md) | Surface Real Coding-Agent Certification and Readiness in the Dashboard | 0776, 0777, 0785, 0786, 0787, 0788, 0790 |
+| [0792](0792-expand-agent-authority-adversarial-certification.md) | Expand Development-Agent Adversarial Certification for Evidence and Authority Bypasses | 0785, 0786, 0787, 0788, 0789, 0790, 0791 |
+| [0793](0793-run-three-supervised-low-risk-pilots.md) | Run and Evaluate Three Supervised Low-Risk Development-Agent Pilots | 0785, 0786, 0787, 0788, 0789, 0790, 0791, 0792 |
+| [0794](0794-enable-bounded-low-risk-autonomy.md) | Enable Bounded L0–L2 Autonomous Implementation-to-PR | 0793 |
