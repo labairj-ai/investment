@@ -210,7 +210,21 @@ it does not reuse investment-learning tables. The initial queue is empty until
 development candidates are recorded; repository TODOs are listed in the
 [backlog index](.todos/README.md).
 
-**Deployed October 21, 2026 (ET):** OptiPlex runs `fd0a6c6` on
+**Current deployment — October 22, 2026 (ET):** OptiPlex runs hardening SHA
+`3e0d6d55377df1239c90824091ebf3a5fc26262a` on
+`release/development-agent-hardening-3e0d6d5`, from [draft PR #5](https://github.com/labairj-ai/investment/pull/5),
+under explicit user deployment authorization. The normal HTTPS dashboard and
+authenticated API pass; unauthorized API reads return 403. The Advisor functional
+and mutation-safety canary passes, with holdings, the development ledger and service
+configuration unchanged. [Deployment receipt](docs/evidence/development-agent-hardening-20261022/deployment.json).
+[Exact-source CI](https://github.com/labairj-ai/investment/actions/runs/39782796105)
+records 2,834 passed, seven CC failures reproduced on unchanged main, and 18 existing
+skips. Those failures remain open; deployment is not operational certification.
+Autonomy, auto-merge and scheduled discovery remain disabled. Three real supervised
+pilots spanning seven calendar days, a provisioned validation sandbox, authenticated
+recent backup and effective non-bypass GitHub protection remain unmet.
+
+**Previous deployment — October 21, 2026 (ET):** OptiPlex ran `fd0a6c6` on
 `release/development-agent-fd0a6c6`, from [draft PR #3](https://github.com/labairj-ai/investment/pull/3).
 [Exact-commit CI](https://github.com/labairj-ai/investment/actions/runs/39710052924)
 passed with **2,760 tests passed and 18 skipped**. Deployment checks verified the
@@ -222,7 +236,7 @@ for the harness design and commands.
 
 | Capability | Current state |
 |---|---|
-| Candidate discovery, planning, review and evidence tooling | Initial implementation deployed; follow-up hardening remains open |
+| Candidate discovery, planning, review and evidence tooling | Hardening controls deployed; independent operational acceptance remains open |
 | Autonomous implementation | Disabled |
 | Auto-merge | Disabled; human merge authority retained |
 | Daily discovery timer | Supplied but inactive |
@@ -243,14 +257,11 @@ request, fresh scope/SHA context and a single-use nonce.
 | `POST /api/development-agent/decision` | Explicit candidate/TODO approval, rejection or deferral |
 | `POST /api/development-agent/review` | Human review, escalation or observed-outcome acceptance |
 
-The dashboard currently reports placeholder readiness fields (`NOT_RUN` and disabled
-autonomy); these are not a complete live certification assessment. Follow-up tasks
-**0785–0794**, captured in [PR #4](https://github.com/labairj-ai/investment/pull/4),
-cover trusted validation evidence, authentic snapshot provenance, supervised versus
-autonomous modes, authenticated supervision, exact remote PR identity, effective
-GitHub protections, real readiness reporting and adversarial certification. Complete
-0785–0792 before the three supervised low-risk pilots in 0793; 0794 depends on their
-qualifying evidence and observation period. All ten remain backlog entries.
+The dashboard now projects readiness from current configuration, technical certificates,
+protected GitHub evidence and immutable supervised-run lineage. Missing, expired or stale
+evidence is shown explicitly; it cannot authorize implementation. Tasks **0785–0794**
+remain open for their independent QA/operational acceptance. Hardening code is deployed;
+0793's prospective real pilots have not run, and 0794 remains disabled.
 
 ## Deployment
 
@@ -263,10 +274,10 @@ The recommended setup is an always-on home server (e.g. a mini PC or Raspberry P
 - **Deploy flow:** commit + push on dev machine, `git pull` on server; restart the service when `serve.py` or an imported Python module changes. On startup, `serve.py` automatically regenerates `out/dashboard.html` if `generate_dashboard.py` is newer than the existing file — so changes to the dashboard generator take effect on the next service restart without a manual regeneration step.
 
 The current Development Agent deployment is pinned to the release branch/SHA above;
-PR #3 remains draft rather than merged into `main`. Verify the intended branch and
+PR #5 remains draft rather than merged into `main`. Verify the intended branch and
 exact tested SHA before updating that checkout. Its database/dashboard backups and
 deployment receipt are outside the HTTP root under
-`~/.local/share/investment-releases/development-agent-20261022T022634Z/`.
+`~/.local/share/investment-releases/development-hardening-20261022T131752Z/`.
 
 The old macOS launchd agents are archived in `launchd-disabled-on-mac/`.
 
