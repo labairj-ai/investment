@@ -1,0 +1,23 @@
+{
+  "version": "harness-canary-1",
+  "harness_hash": "b9e1a9e716d8a5926f3d16d891c76d75b88bb897044a6680f1dd5a1c1a8537fa",
+  "created": 1792635117.483139,
+  "components": {
+    "workspace_isolation": "PASS",
+    "reviewer_independence": "PASS",
+    "evidence_binding": "PASS",
+    "fixture_pr_handoff": "PASS",
+    "production_mutation_denial": "PASS",
+    "financial_detection": "PASS",
+    "human_gate": "PASS",
+    "audit_lineage": "PASS",
+    "os_validation_sandbox": "NOT_RUN",
+    "github_protection": "NOT_RUN",
+    "supervised_observation": "NOT_RUN",
+    "production_snapshot": "NOT_RUN"
+  },
+  "status": "PARTIAL",
+  "supervised": false,
+  "external_mutation": false,
+  "id": "ac6d48473a17da5ea2f30c51645b60e68050291c304f44736660047395bdf6d9"
+}

@@ -1,0 +1,45 @@
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import {execFileSync} from 'node:child_process';
+import {fileURLToPath,pathToFileURL} from 'node:url';
+const root=fileURLToPath(new URL('../',import.meta.url));
+const artifacts=process.argv[2]||await fs.mkdtemp(path.join(os.tmpdir(),'development-agent-browser-'));
+await fs.mkdir(artifacts,{recursive:true});
+const html=execFileSync('python3',['-c','from dev_agent.dashboard import HTML; print(HTML)'],{cwd:root,encoding:'utf8'});
+const fixture={id:'fixture',title:'<img src=x onerror=alert(1)> '+ 'Long candidate title '.repeat(20),problem:'Problem '+ 'x'.repeat(200),outcome:'A measured software improvement',state:'PLANNED',source:'user',category:'FIX',created:1,evidence:['fixture'],files:['docs/note.md'],events:[],latest:{PLAN:{context:{risk:'L5',todo:'0785',head:'a'.repeat(40)}},ITERATION:{review:{disposition:'REQUEST_CHANGES'}}}};
+const state={status:'SUPERVISED_ONLY',technical_certification:'PASS',sandbox_runtime:'PASS',supervised:{completed:2,required:3,observation_days:2,required_days:7},autonomous_implementation:false,certification_stale:true,blockers:['Stale harness/config certification','Human pilot review required'],harness_hash:'f'.repeat(64),auto_merge:false};
+const inject='<script>request=async()=>('+JSON.stringify({candidates:[fixture],readiness:state,certification:'PARTIAL'}).replaceAll('<','\\u003c')+');el("load").click();requestAnimationFrame(()=>{const p=document.createElement("pre");p.id="viewport-result";p.textContent=JSON.stringify({width:innerWidth,scroll:document.documentElement.scrollWidth,overflow:document.documentElement.scrollWidth>innerWidth,unsafe:document.querySelectorAll("article img").length,buttons:[...document.querySelectorAll("article button")].map(b=>b.getBoundingClientRect().height),warning:document.querySelector("article .notice").textContent});document.body.append(p)});</script>';
+const fixturePath=path.join(artifacts,'fixture.html');
+await fs.writeFile(fixturePath,html.replace('</body>',inject+'</body>'));
+const tabs = await (await fetch(`http://127.0.0.1:${process.env.DEV_AGENT_BROWSER_PORT||9237}/json/list`)).json();
+const target=tabs.find(tab=>tab.type==='page' && tab.url==='about:blank')||tabs.find(tab=>tab.type==='page');
+if(!target)throw Error('Isolated browser page unavailable');
+const socket = new WebSocket(target.webSocketDebuggerUrl);
+await new Promise((resolve,reject)=>{socket.onopen=resolve;socket.onerror=reject});
+let counter=0;const waiting=new Map();socket.onmessage=e=>{const m=JSON.parse(e.data);if(m.id){const p=waiting.get(m.id);waiting.delete(m.id);m.error?p.reject(Error(JSON.stringify(m.error))):p.resolve(m.result)}};
+const call=(method,params={})=>new Promise((resolve,reject)=>{const id=++counter;waiting.set(id,{resolve,reject});socket.send(JSON.stringify({id,method,params}))});
+const evalJS=async expression=>(await call('Runtime.evaluate',{expression,returnByValue:true,awaitPromise:true})).result.value;
+const results=[];
+for(const width of [360,390,430,1280]){
+ await call('Emulation.setDeviceMetricsOverride',{width,height:900,deviceScaleFactor:1,mobile:width<500});
+ await call('Page.navigate',{url:pathToFileURL(fixturePath).href});
+ for(let i=0;i<50;i++){if(await evalJS('Boolean(document.getElementById("viewport-result"))'))break;await new Promise(r=>setTimeout(r,50))}
+ const result=await evalJS('JSON.parse(document.getElementById("viewport-result").textContent)');
+ await evalJS('document.querySelector("article button").click()');
+ result.readiness=await evalJS('document.getElementById("readiness").textContent.includes("2 / 3") && document.getElementById("readiness").textContent.includes("Stale harness")');
+ result.confirmation=await evalJS('document.getElementById("confirmation").open');
+ result.reviewChoiceHidden=await evalJS('getComputedStyle(document.getElementById("review-choice")).display === "none"');
+ result.dialogOverflow=await evalJS('document.documentElement.scrollWidth > innerWidth');
+ const screenshot=await call('Page.captureScreenshot',{format:'png'});await fs.writeFile(path.join(artifacts,`viewport-${width}.png`),Buffer.from(screenshot.data,'base64'));
+ if(!result.readiness||result.width!==width||result.overflow||result.unsafe||result.buttons.some(h=>h<44)||!result.confirmation||!result.reviewChoiceHidden||result.dialogOverflow)throw Error(JSON.stringify(result));
+ await evalJS('document.getElementById("cancel").click();records[0].state="NEEDS_HUMAN";render();document.querySelector("article button").click()');
+ result.reviewChoiceShown=await evalJS('getComputedStyle(document.getElementById("review-choice")).display !== "none"');
+ await evalJS('request=async(path,body)=>{if(body)window.fixtureDecision={path,body};return {candidates:[],certification:"NOT_RUN"}};document.getElementById("rationale").value="Explicit supervised fixture review";document.getElementById("review-decision").value="accept";document.getElementById("confirm").click()');
+ const decision=await evalJS('window.fixtureDecision');
+ result.reviewDecisionRouted=decision.path==='/api/development-agent/review'&&decision.body.decision==='accept'&&decision.body.context.risk==='L5';
+ if(!result.reviewChoiceShown||!result.reviewDecisionRouted)throw Error(JSON.stringify(result));
+ results.push(result);
+}
+await fs.writeFile(path.join(artifacts,'results.json'),JSON.stringify({status:'PASS',results,physical_devices:'NOT_RUN'},null,2));
+console.log(JSON.stringify(results));socket.close();

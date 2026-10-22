@@ -1871,6 +1871,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urlparse(self.path)
+        if parsed.path in ("/development-agent", "/api/development-agent"):
+            from dev_agent.dashboard import handle
+            return handle(self, parsed.path)
         if parsed.path in ("/", ""):
             self.send_response(302)
             self.send_header("Location", "/out/dashboard.html")
@@ -2032,6 +2035,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
+        if parsed.path in ("/api/development-agent/decision", "/api/development-agent/review", "/api/development-agent/owner-review"):
+            from dev_agent.dashboard import handle
+            return handle(self, parsed.path, mutation=True)
         if parsed.path == "/api/cc-positions":
             self._handle_cc_add()
         elif parsed.path == "/api/cc-import":
@@ -6526,7 +6532,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
 
-server = http.server.ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
+server = http.server.ThreadingHTTPServer((os.environ.get("INVESTMENT_BIND_HOST", "0.0.0.0"), PORT), Handler)
 
 # Regenerate dashboard on startup so changes to generate_dashboard.py take
 # effect immediately after a deploy + service restart.

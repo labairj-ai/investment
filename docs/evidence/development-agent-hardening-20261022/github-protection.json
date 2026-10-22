@@ -1,0 +1,40 @@
+{
+  "status": "FAIL",
+  "failures": [
+    "coding-agent identity has administrative authority",
+    "missing effective protection: pr",
+    "missing effective protection: checks",
+    "missing effective protection: review",
+    "missing effective protection: stale",
+    "missing effective protection: last_push",
+    "missing effective protection: conversation",
+    "missing effective protection: no_force",
+    "missing effective protection: no_delete",
+    "missing effective protection: admin"
+  ],
+  "auto_merge": false,
+  "identity": "labairj-ai",
+  "required_checks": [],
+  "effective": {
+    "pr": false,
+    "checks": false,
+    "review": false,
+    "stale": false,
+    "last_push": false,
+    "conversation": false,
+    "no_force": false,
+    "no_delete": false,
+    "admin": false
+  },
+  "agent_capabilities": {
+    "direct_push": "UNVERIFIED",
+    "bypass_review": "UNVERIFIED",
+    "bypass_checks": "UNVERIFIED",
+    "force_push": "UNVERIFIED",
+    "delete_ref": "UNVERIFIED",
+    "bypass_conversations": "UNVERIFIED",
+    "self_approve": "UNVERIFIED"
+  },
+  "created": 1792673495.181877,
+  "evidence_hash": "16e865d0b8c4ef296bc4ebf76dba01d8ecc138b1f140330f86ea7506836436b3"
+}

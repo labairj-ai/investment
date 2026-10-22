@@ -27,6 +27,9 @@ jobs:
       - name: Check repository coding-agent contract
         run: python scripts/check_agent_contract.py
 
+      - name: Check development-agent governance
+        run: python scripts/check_development_agent.py
+
       - name: Run tests
         id: pytest
         continue-on-error: true

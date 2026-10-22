@@ -1,0 +1,464 @@
+........................................................................ [ 21%]
+........................................................................ [ 43%]
+........................................................................ [ 64%]
+...........................................F.F............F..FF......... [ 86%]
+....................................FF........                           [100%]
+=================================== FAILURES ===================================
+_______ test_independent_inventory_and_all_guarded_functions_classified ________
+tests/test_cc_behavior_fingerprint.py:85: in test_independent_inventory_and_all_guarded_functions_classified
+    assert fp.classification_findings()==[]
+E   AssertionError: assert ['UNCLASSIFIE...tize_payload'] == []
+E     
+E     Left contains 2 more items, first extra item: 'UNCLASSIFIED_FUNCTION: agents.covered_call_agent._safe_float'
+E     Use -v to get more diff
+________ test_unclassified_addition_requires_deliberate_classification _________
+tests/test_cc_behavior_fingerprint.py:106: in test_unclassified_addition_requires_deliberate_classification
+    assert fp.classification_findings(source,exclusions=exclusions)==[]
+E   AssertionError: assert ['UNCLASSIFIE...tize_payload'] == []
+E     
+E     Left contains 2 more items, first extra item: 'UNCLASSIFIED_FUNCTION: agents.covered_call_agent._safe_float'
+E     Use -v to get more diff
+________ test_source_proven_definition_migration_keeps_runtime_versions ________
+tests/test_cc_behavior_fingerprint.py:251: in test_source_proven_definition_migration_keeps_runtime_versions
+    assert result['ok'],result['findings']
+E   AssertionError: ["UNAUTHORIZED_FINGERPRINT_DEFINITION_CHANGE: explicit exact legacy migration required; ['UNCLASSIFIED_FUNCTION: agent...emented. Fill-model, management-policy, and virtual-execution changes require a SIMULATOR_CONTRACT_VERSION bump.', ...]
+E   assert False
+____________ test_definition_migration_requires_trusted_git_source _____________
+tests/test_cc_behavior_fingerprint.py:279: in test_definition_migration_requires_trusted_git_source
+    assert check()['ok']
+E   assert False
+___________ test_cli_inventory_reports_all_canonical_component_names ___________
+tests/test_cc_behavior_fingerprint.py:293: in test_cli_inventory_reports_all_canonical_component_names
+    assert result.returncode==0,result.stdout+result.stderr
+E   AssertionError: {
+E       "ok": false,
+E       "hash_changed": true,
+E       "version_bumped": false,
+E       "has_manifest": false,
+E       "applicable_manifest": null,
+E       "manifest_count": 2,
+E       "baseline_missing": false,
+E       "baseline_malformed": false,
+E       "findings": [
+E         "NO_VERSION_BUMP: model_version prior=cc-v3.3 proposed=cc-v3.3; expected forward numeric transition",
+E         "BEHAVIORAL_HASH_CHANGED_WITHOUT_VERSION_BUMP: engine_hash or simulator_contract_hash changed without all required forward component versions. Engine changes require model_version; simulator changes require SIMULATOR_CONTRACT_VERSION; shared changes require both.",
+E         "BEHAVIORAL_HASH_CHANGED_WITHOUT_APPLICABLE_MANIFEST: a transition-bound manifest is required that matches the exact prior\u2192proposed contract state. Copy cc_change_manifests/.template.md and fill in prior/proposed hashes.",
+E         "WRONG_COMPONENT_VERSION_BUMP: engine_hash changed (simulator_contract_hash unchanged) but model_version was not incremented. Utility/ranking changes require a model_version bump."
+E       ],
+E       "current": {
+E         "fingerprint_version": "cc-behavior-v1",
+E         "model_version": "cc-v3.3",
+E         "simulator_version": "cc-virtual-1",
+E         "simulator_contract_version": "simulator-contract-2",
+E         "simulator_contract_hash": "b8be3b06388cb68c...",
+E         "engine_hash": "68ac6cf2d11d825c...",
+E         "policy_version": "shared-live-mana...",
+E         "cadence_comparability_policy_version": "cadence-v1"
+E       },
+E       "baseline": {
+E         "cadence_comparability_policy_version": "cadence-v1",
+E         "engine_hash": "bfdf6e9d15d452d82426975483d009b57d17827d5da9866883da1e67bd4d0193",
+E         "fingerprint_version": "cc-behavior-v1",
+E         "model_version": "cc-v3.3",
+E         "policy_version": "shared-live-management-asof-1",
+E         "schema_version": "cc-contract-v2",
+E         "simulator_contract_hash": "b8be3b06388cb68c7be9e53488ca6f473cc3bee15f81ed93461c802e951ce8f2",
+E         "simulator_contract_version": "simulator-contract-2",
+E         "simulator_version": "cc-virtual-1"
+E       },
+E       "trusted_prior_ref": null,
+E       "fingerprint_definition_migration": false,
+E       "fingerprint_inventory": {
+E         "fingerprint_version": "cc-behavior-v1",
+E         "model": {
+E           "functions": [
+E             "agent_db.select_fifo_lots",
+E             "agents.covered_call_agent._analyze_roll",
+E             "agents.covered_call_agent._analyze_ticker",
+E             "agents.covered_call_agent._build_candidates",
+E             "agents.covered_call_agent._build_evidence",
+E             "agents.covered_call_agent._build_mgmt_deps",
+E             "agents.covered_call_agent._get_cc_policy",
+E             "agents.covered_call_agent._get_open_cc_position",
+E             "agents.covered_call_agent._has_open_cc",
+E             "agents.covered_call_agent._make_contract_id",
+E             "agents.covered_call_agent._mgmt_iv_at_rec",
+E             "agents.covered_call_agent.run_covered_call_agent",
+E             "covered_call_ledger.active_scorer",
+E             "covered_call_ledger.execution_history",
+E             "covered_call_ledger.promotion_evidence",
+E             "covered_call_ledger.surface_history",
+E             "covered_call_ledger.transition",
+E             "covered_call_rec._bs_d1d2",
+E             "covered_call_rec._build_mgmt_context_from_db",
+E             "covered_call_rec._capture_quote_rows",
+E             "covered_call_rec._check_assignment_eligible",
+E             "covered_call_rec._clears_profit_floor",
+E             "covered_call_rec._compute_opp_score",
+E             "covered_call_rec._compute_scores",
+E             "covered_call_rec._estimate_drift",
+E             "covered_call_rec._exec_premium",
+E             "covered_call_rec._expiry_implied_move",
+E             "covered_call_rec._friction_at_expiry",
+E             "covered_call_rec._liquidity_score",
+E             "covered_call_rec._lot_tax_friction",
+E             "covered_call_rec._market_price",
+E             "covered_call_rec._norm_cdf",
+E             "covered_call_rec._norm_pdf",
+E             "covered_call_rec._remaining_call_alpha",
+E             "covered_call_rec._safe_int",
+E             "covered_call_rec._spread_pct",
+E             "covered_call_rec._suggest_next_call",
+E             "covered_call_rec._yf_retry",
+E             "covered_call_rec.analyze",
+E             "covered_call_rec.bs_call_price",
+E             "covered_call_rec.call_delta",
+E             "covered_call_rec.call_extrinsic",
+E             "covered_call_rec.call_gamma",
+E             "covered_call_rec.compute_vol_model",
+E             "covered_call_rec.evaluate_cc_management_state",
+E             "covered_call_rec.evaluate_cc_roll_chain",
+E             "covered_call_rec.evaluate_open_position",
+E             "covered_call_rec.expected_upside_lost",
+E             "covered_call_rec.get_risk_events",
+E             "covered_call_rec.itm_prob_real",
+E             "covered_call_rec.itm_prob_rn",
+E             "covered_call_rec.load_holdings",
+E             "covered_call_rec.normalize_ticker",
+E             "covered_call_rec.regret_prob",
+E             "covered_call_surface.candidate_metrics",
+E             "covered_call_surface.duration_adjust",
+E             "covered_call_surface.interpolate_delta",
+E             "covered_call_surface.surface_v2",
+E             "covered_call_surface.valid_points",
+E             "covered_call_v3.bounded",
+E             "covered_call_v3.divergence",
+E             "covered_call_v3.drift_model",
+E             "covered_call_v3.eligibility",
+E             "covered_call_v3.execution",
+E             "covered_call_v3.overwrite",
+E             "covered_call_v3.path_metrics",
+E             "covered_call_v3.path_oracle",
+E             "covered_call_v3.prepare",
+E             "covered_call_v3.regime_model",
+E             "covered_call_v3.surface",
+E             "covered_call_v3.tax_metrics",
+E             "covered_call_v3.touch_probability",
+E             "covered_call_v3.utility",
+E             "portfolio_positions._normalize",
+E             "portfolio_positions.get_lots",
+E             "portfolio_positions.get_position",
+E             "portfolio_positions.load_positions",
+E             "tax_utils.days_until_lt",
+E             "tax_utils.is_long_term",
+E             "tax_utils.lt_threshold",
+E             "time_utils.now_eastern",
+E             "time_utils.now_utc",
+E             "time_utils.now_utc_iso",
+E             "time_utils.parse_timestamp",
+E             "time_utils.today_eastern"
+E           ],
+E           "types": [
+E             "covered_call_rec.ManagementPolicyContext",
+E             "covered_call_rec.TaxFrictionDetail",
+E             "portfolio_positions.Lot",
+E             "portfolio_positions.Position"
+E           ],
+E           "constants": [
+E             "agents.covered_call_agent._CC_ELIGIBLE_LAYERS",
+E             "agents.covered_call_agent._CC_MIN_SHARES",
+E             "agents.covered_call_agent._PROMPT_VERSION",
+E             "agents.covered_call_agent._SCHEMA",
+E             "agents.covered_call_agent._SYSTEM",
+E             "covered_call_rec.CC_ASSIGNMENT_TAX_FRICTION_THRESHOLD",
+E             "covered_call_rec.DRIFT_CAP",
+E             "covered_call_rec.DRIFT_MKT_LONG_RUN",
+E             "covered_call_rec.DRIFT_WEIGHT_252D",
+E             "covered_call_rec.DRIFT_WEIGHT_60D",
+E             "covered_call_rec.DRIFT_WEIGHT_MKT",
+E             "covered_call_rec.EXEC_LAMBDA",
+E             "covered_call_rec.MAX_DTE",
+E             "covered_call_rec.MAX_DTE_EXTENDED",
+E             "covered_call_rec.MAX_STRIKE_MULTIPLIER",
+E             "covered_call_rec.MIN_BID",
+E             "covered_call_rec.MIN_DTE",
+E             "covered_call_rec.RISK_FREE_RATE",
+E             "covered_call_rec.R_FORWARD",
+E             "covered_call_rec.R_MIN",
+E             "covered_call_rec.TAX_LT_RATE",
+E             "covered_call_rec.TAX_ST_RATE",
+E             "covered_call_rec.TOP_N",
+E             "covered_call_surface.VERSION",
+E             "covered_call_v3.N",
+E             "portfolio_positions._TICKER_ALIASES",
+E             "time_utils.TZ_EASTERN",
+E             "time_utils.TZ_UTC"
+E           ],
+E           "config_keys": [
+E             "duration_utility.flexibility_lambda",
+E             "duration_utility.second_cycle_alpha_retention",
+E             "duration_utility.second_cycle_availability",
+E             "duration_utility.version",
+E             "fee_per_contract",
+E             "fill_min_n",
+E             "fill_prior",
+E             "fill_prior_strength",
+E             "management_cost_per_contract",
+E             "max_overwrite_fraction",
+E             "max_regret_probability",
+E             "mode",
+E             "path_count",
+E             "preferred_dte_bands",
+E             "regime_enabled",
+E             "utility_hurdle_annual_pct"
+E           ]
+E         },
+E         "simulator": {
+E           "functions": [
+E             "covered_call_evidence._selected_id",
+E             "covered_call_evidence.classify_label",
+E             "covered_call_evidence.committed_policy",
+E             "covered_call_evidence.create_decision_contract",
+E             "covered_call_evidence.migrate_legacy",
+E             "covered_call_evidence.no_call",
+E             "covered_call_evidence.pair_outcomes",
+E             "covered_call_evidence.promotion_report",
+E             "covered_call_ledger.calibration",
+E             "covered_call_ledger.clean",
+E             "covered_call_ledger.config_digest",
+E             "covered_call_ledger.encode",
+E             "covered_call_ledger.execution_history",
+E             "covered_call_ledger.migrate",
+E             "covered_call_ledger.reconcile_chain",
+E             "covered_call_ledger.record_episode",
+E             "covered_call_outcomes.base",
+E             "covered_call_outcomes.contract",
+E             "covered_call_outcomes.digest",
+E             "covered_call_outcomes.latest",
+E             "covered_call_outcomes.migrate",
+E             "covered_call_outcomes.persist",
+E             "covered_call_outcomes.validate",
+E             "covered_call_rec._bs_d1d2",
+E             "covered_call_rec._capture_quote_rows",
+E             "covered_call_rec._check_assignment_eligible",
+E             "covered_call_rec._exec_premium",
+E             "covered_call_rec._friction_at_expiry",
+E             "covered_call_rec._norm_cdf",
+E             "covered_call_rec._norm_pdf",
+E             "covered_call_rec._remaining_call_alpha",
+E             "covered_call_rec._suggest_next_call",
+E             "covered_call_rec._yf_retry",
+E             "covered_call_rec.call_delta",
+E             "covered_call_rec.evaluate_cc_management_state",
+E             "covered_call_rec.expected_upside_lost",
+E             "covered_call_rec.itm_prob_real",
+E             "covered_call_v3.bounded",
+E             "covered_call_v3.execution",
+E             "covered_call_validation._config_contract_hash",
+E             "covered_call_validation._generate_cadence_slots",
+E             "covered_call_validation.acceptance",
+E             "covered_call_validation.certification",
+E             "covered_call_validation.certify",
+E             "covered_call_validation.classify_cadence_comparability",
+E             "covered_call_validation.compare",
+E             "covered_call_validation.current_git_sha",
+E             "covered_call_validation.divergence_category",
+E             "covered_call_validation.migrate",
+E             "covered_call_validation.normalize_action",
+E             "covered_call_validation.record_actual_evaluation",
+E             "covered_call_validation.record_actual_fill",
+E             "covered_call_validation.replay",
+E             "covered_call_validation.run_validation",
+E             "covered_call_virtual.advance",
+E             "covered_call_virtual.censor_version_mismatch",
+E             "covered_call_virtual.context_for",
+E             "covered_call_virtual.enforce_asof",
+E             "covered_call_virtual.evaluate_snapshot",
+E             "covered_call_virtual.fill_model",
+E             "covered_call_virtual.metrics",
+E             "covered_call_virtual.migrate",
+E             "covered_call_virtual.missed_intervals",
+E             "covered_call_virtual.record_interval",
+E             "covered_call_virtual.stamp",
+E             "covered_call_virtual.start_from_decision",
+E             "covered_call_virtual.state",
+E             "covered_call_virtual.store_snapshot",
+E             "covered_call_virtual.terminal_outcome",
+E             "covered_call_virtual.write_state",
+E             "tax_utils.days_until_lt",
+E             "tax_utils.is_long_term",
+E             "tax_utils.lt_threshold",
+E             "time_utils.now_eastern",
+E             "time_utils.now_utc",
+E             "time_utils.now_utc_iso",
+E             "time_utils.parse_timestamp",
+E             "time_utils.today_eastern"
+E           ],
+E           "types": [
+E             "covered_call_outcomes.OutcomeSource",
+E             "covered_call_rec.ManagementPolicyContext",
+E             "covered_call_rec.TaxFrictionDetail",
+E             "covered_call_virtual.DataUnavailable"
+E           ],
+E           "constants": [
+E             "covered_call_evidence.CHAIN_FIELDS",
+E             "covered_call_outcomes.PROVENANCE_VERSION",
+E             "covered_call_rec.CC_ASSIGNMENT_TAX_FRICTION_THRESHOLD",
+E             "covered_call_rec.EXEC_LAMBDA",
+E             "covered_call_rec.RISK_FREE_RATE",
+E             "covered_call_rec.TAX_LT_RATE",
+E             "covered_call_rec.TAX_ST_RATE",
+E             "covered_call_validation.CADENCE_COMPARABILITY_POLICY_VERSION",
+E             "covered_call_validation._MARKET_CLOSE_HOUR",
+E             "covered_call_validation._MARKET_OPEN_HOUR",
+E             "covered_call_virtual.OPEN_CHAIN_POLICY",
+E             "covered_call_virtual.POLICY_VERSION",
+E             "covered_call_virtual.SIMULATOR_CONTRACT_VERSION",
+E             "covered_call_virtual.SIMULATOR_VERSION",
+E             "time_utils.TZ_EASTERN",
+E             "time_utils.TZ_UTC"
+E           ],
+E           "config_keys": [
+E             "fee_per_contract",
+E             "fill_min_n",
+E             "fill_prior",
+E             "fill_prior_strength",
+E             "management_cost_per_contract",
+E             "promotion.max_assignment_violations",
+E             "promotion.max_brier",
+E             "promotion.max_execution_cost_increase",
+E             "promotion.max_management_cost_increase",
+E             "promotion.max_roll_rate_increase",
+E             "promotion.minimum_alpha_improvement",
+E             "promotion.minimum_days",
+E             "promotion.minimum_divergent_n",
+E             "promotion.minimum_n",
+E             "promotion.version",
+E             "simulator_validation.maximum_alpha_absolute_error",
+E             "simulator_validation.maximum_alpha_relative_error",
+E             "simulator_validation.maximum_entry_spread_error",
+E             "simulator_validation.maximum_median_timing_sessions",
+E             "simulator_validation.minimum_action_agreement",
+E             "simulator_validation.minimum_n",
+E             "simulator_validation.minimum_roll_type_agreement",
+E             "simulator_validation.version",
+E             "virtual.cadence_minutes",
+E             "virtual.creation_grace_seconds",
+E             "virtual.maximum_missing_intervals",
+E             "virtual.maximum_quote_age_seconds",
+E             "virtual.version"
+E           ]
+E         },
+E         "nonbehavioral_functions": {
+E           "covered_call_rec.print_report": "Console rendering only.",
+E           "covered_call_rec.ai_context": "Operator narrative, no recommendation selection.",
+E           "covered_call_rec.main": "Console orchestration of already protected analyze().",
+E           "covered_call_virtual.management_contract": "Fingerprint composition, covered by definition identity.",
+E           "covered_call_virtual.simulator_contract_hash": "Fingerprint composition, covered by definition identity."
+E         }
+E       }
+E     }
+E     
+E   assert 1 == 0
+E    +  where 1 = CompletedProcess(args=['/Users/ai_lab/investment/venv/bin/python', '/Users/ai_lab/investment-0795-repro/scripts/check_...tual.simulator_contract_hash": "Fingerprint composition, covered by definition identity."\n    }\n  }\n}\n', stderr='').returncode
+________________________ test_cli_exact_event_sha[push] ________________________
+tests/test_cc_release_security.py:154: in test_cli_exact_event_sha
+    assert result.returncode==0, result.stdout+result.stderr
+E   AssertionError: {
+E       "ok": false,
+E       "hash_changed": true,
+E       "version_bumped": false,
+E       "has_manifest": false,
+E       "applicable_manifest": null,
+E       "manifest_count": 2,
+E       "baseline_missing": false,
+E       "baseline_malformed": false,
+E       "findings": [
+E         "CANDIDATE_BASELINE_MISMATCH: candidate must exactly equal computed current state; promotion required",
+E         "NO_VERSION_BUMP: model_version prior=cc-v3.3 proposed=cc-v3.3; expected forward numeric transition",
+E         "BEHAVIORAL_HASH_CHANGED_WITHOUT_VERSION_BUMP: engine_hash or simulator_contract_hash changed without all required forward component versions. Engine changes require model_version; simulator changes require SIMULATOR_CONTRACT_VERSION; shared changes require both.",
+E         "BEHAVIORAL_HASH_CHANGED_WITHOUT_APPLICABLE_MANIFEST: a transition-bound manifest is required that matches the exact prior\u2192proposed contract state. Copy cc_change_manifests/.template.md and fill in prior/proposed hashes.",
+E         "WRONG_COMPONENT_VERSION_BUMP: engine_hash changed (simulator_contract_hash unchanged) but model_version was not incremented. Utility/ranking changes require a model_version bump."
+E       ],
+E       "current": {
+E         "fingerprint_version": "cc-behavior-v1",
+E         "model_version": "cc-v3.3",
+E         "simulator_version": "cc-virtual-1",
+E         "simulator_contract_version": "simulator-contract-2",
+E         "simulator_contract_hash": "b8be3b06388cb68c...",
+E         "engine_hash": "68ac6cf2d11d825c...",
+E         "policy_version": "shared-live-mana...",
+E         "cadence_comparability_policy_version": "cadence-v1"
+E       },
+E       "baseline": {
+E         "cadence_comparability_policy_version": "cadence-v1",
+E         "engine_hash": "bfdf6e9d15d452d82426975483d009b57d17827d5da9866883da1e67bd4d0193",
+E         "fingerprint_version": "cc-behavior-v1",
+E         "model_version": "cc-v3.3",
+E         "policy_version": "shared-live-management-asof-1",
+E         "schema_version": "cc-contract-v2",
+E         "simulator_contract_hash": "b8be3b06388cb68c7be9e53488ca6f473cc3bee15f81ed93461c802e951ce8f2",
+E         "simulator_contract_version": "simulator-contract-2",
+E         "simulator_version": "cc-virtual-1"
+E       },
+E       "trusted_prior_ref": "6cb6fde0471c207cdec48e648331caff8d8e68c0",
+E       "fingerprint_definition_migration": false
+E     }
+E     
+E   assert 1 == 0
+E    +  where 1 = CompletedProcess(args=['/Users/ai_lab/investment/venv/bin/python', 'scripts/check_cc_contract.py', '--json'], returnco..._prior_ref": "6cb6fde0471c207cdec48e648331caff8d8e68c0",\n  "fingerprint_definition_migration": false\n}\n', stderr='').returncode
+____________________ test_cli_exact_event_sha[pull_request] ____________________
+tests/test_cc_release_security.py:154: in test_cli_exact_event_sha
+    assert result.returncode==0, result.stdout+result.stderr
+E   AssertionError: {
+E       "ok": false,
+E       "hash_changed": true,
+E       "version_bumped": false,
+E       "has_manifest": false,
+E       "applicable_manifest": null,
+E       "manifest_count": 2,
+E       "baseline_missing": false,
+E       "baseline_malformed": false,
+E       "findings": [
+E         "CANDIDATE_BASELINE_MISMATCH: candidate must exactly equal computed current state; promotion required",
+E         "NO_VERSION_BUMP: model_version prior=cc-v3.3 proposed=cc-v3.3; expected forward numeric transition",
+E         "BEHAVIORAL_HASH_CHANGED_WITHOUT_VERSION_BUMP: engine_hash or simulator_contract_hash changed without all required forward component versions. Engine changes require model_version; simulator changes require SIMULATOR_CONTRACT_VERSION; shared changes require both.",
+E         "BEHAVIORAL_HASH_CHANGED_WITHOUT_APPLICABLE_MANIFEST: a transition-bound manifest is required that matches the exact prior\u2192proposed contract state. Copy cc_change_manifests/.template.md and fill in prior/proposed hashes.",
+E         "WRONG_COMPONENT_VERSION_BUMP: engine_hash changed (simulator_contract_hash unchanged) but model_version was not incremented. Utility/ranking changes require a model_version bump."
+E       ],
+E       "current": {
+E         "fingerprint_version": "cc-behavior-v1",
+E         "model_version": "cc-v3.3",
+E         "simulator_version": "cc-virtual-1",
+E         "simulator_contract_version": "simulator-contract-2",
+E         "simulator_contract_hash": "b8be3b06388cb68c...",
+E         "engine_hash": "68ac6cf2d11d825c...",
+E         "policy_version": "shared-live-mana...",
+E         "cadence_comparability_policy_version": "cadence-v1"
+E       },
+E       "baseline": {
+E         "cadence_comparability_policy_version": "cadence-v1",
+E         "engine_hash": "bfdf6e9d15d452d82426975483d009b57d17827d5da9866883da1e67bd4d0193",
+E         "fingerprint_version": "cc-behavior-v1",
+E         "model_version": "cc-v3.3",
+E         "policy_version": "shared-live-management-asof-1",
+E         "schema_version": "cc-contract-v2",
+E         "simulator_contract_hash": "b8be3b06388cb68c7be9e53488ca6f473cc3bee15f81ed93461c802e951ce8f2",
+E         "simulator_contract_version": "simulator-contract-2",
+E         "simulator_version": "cc-virtual-1"
+E       },
+E       "trusted_prior_ref": "6cb6fde0471c207cdec48e648331caff8d8e68c0",
+E       "fingerprint_definition_migration": false
+E     }
+E     
+E   assert 1 == 0
+E    +  where 1 = CompletedProcess(args=['/Users/ai_lab/investment/venv/bin/python', 'scripts/check_cc_contract.py', '--json'], returnco..._prior_ref": "6cb6fde0471c207cdec48e648331caff8d8e68c0",\n  "fingerprint_definition_migration": false\n}\n', stderr='').returncode
+=========================== short test summary info ============================
+FAILED tests/test_cc_behavior_fingerprint.py::test_independent_inventory_and_all_guarded_functions_classified
+FAILED tests/test_cc_behavior_fingerprint.py::test_unclassified_addition_requires_deliberate_classification
+FAILED tests/test_cc_behavior_fingerprint.py::test_source_proven_definition_migration_keeps_runtime_versions
+FAILED tests/test_cc_behavior_fingerprint.py::test_definition_migration_requires_trusted_git_source
+FAILED tests/test_cc_behavior_fingerprint.py::test_cli_inventory_reports_all_canonical_component_names
+FAILED tests/test_cc_release_security.py::test_cli_exact_event_sha[push] - As...
+FAILED tests/test_cc_release_security.py::test_cli_exact_event_sha[pull_request]
+7 failed, 327 passed in 66.97s (0:01:06)

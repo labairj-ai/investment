@@ -1,0 +1,11 @@
+{
+  "status": "PASS",
+  "snapshot_sha256_before": "3a63959f2eef8fedb27055b8898290d39d94b694c751f5b7a8836a1a0a2e1870",
+  "snapshot_sha256_after": "3a63959f2eef8fedb27055b8898290d39d94b694c751f5b7a8836a1a0a2e1870",
+  "table_count": 123,
+  "readonly_sql_denied": true,
+  "runner_write_denied": true,
+  "investment_state_mutated": false,
+  "release_backup_unchanged": true,
+  "live_database_accessed": false
+}

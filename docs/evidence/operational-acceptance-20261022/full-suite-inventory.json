@@ -1,0 +1,86 @@
+{
+  "status": "FAIL",
+  "candidate_source": "guarded-helper-classification-and-json-regressions; active release contract unchanged",
+  "base_sha": "6cb6fde0471c207cdec48e648331caff8d8e68c0",
+  "command": "/Users/ai_lab/investment/venv/bin/python -m pytest tests/ -q --tb=short --junitxml=/private/tmp/0795-full.xml",
+  "passed": 2685,
+  "failed": [
+    "tests.test_cc_behavior_fingerprint::test_cli_inventory_reports_all_canonical_component_names",
+    "tests.test_cc_release_security::test_cli_exact_event_sha[push]",
+    "tests.test_cc_release_security::test_cli_exact_event_sha[pull_request]"
+  ],
+  "skipped": [
+    {
+      "name": "tests.test_alpaca_integration.TestReadOnlyBinding::test_get_account_id_returns_string",
+      "reason": "ALPACA_API_KEY / ALPACA_API_SECRET not set \u2014 skipping live integration tests"
+    },
+    {
+      "name": "tests.test_alpaca_integration.TestReadOnlyBinding::test_get_broker_account_has_positive_values",
+      "reason": "ALPACA_API_KEY / ALPACA_API_SECRET not set \u2014 skipping live integration tests"
+    },
+    {
+      "name": "tests.test_alpaca_integration.TestReadOnlyBinding::test_get_positions_returns_list",
+      "reason": "ALPACA_API_KEY / ALPACA_API_SECRET not set \u2014 skipping live integration tests"
+    },
+    {
+      "name": "tests.test_alpaca_integration.TestReadOnlyBinding::test_get_open_orders_returns_list",
+      "reason": "ALPACA_API_KEY / ALPACA_API_SECRET not set \u2014 skipping live integration tests"
+    },
+    {
+      "name": "tests.test_alpaca_integration.TestReadOnlyBinding::test_get_fills_returns_list",
+      "reason": "ALPACA_API_KEY / ALPACA_API_SECRET not set \u2014 skipping live integration tests"
+    },
+    {
+      "name": "tests.test_alpaca_integration.TestReadOnlyBinding::test_get_quote_aapl_returns_valid_quote",
+      "reason": "ALPACA_API_KEY / ALPACA_API_SECRET not set \u2014 skipping live integration tests"
+    },
+    {
+      "name": "tests.test_alpaca_integration.TestReadOnlyBinding::test_initialize_trading_session_reaches_trading_ready",
+      "reason": "ALPACA_API_KEY / ALPACA_API_SECRET not set \u2014 skipping live integration tests"
+    },
+    {
+      "name": "tests.test_alpaca_integration.TestGoNoGoMatrix::test_get_fills_idempotent",
+      "reason": "ALPACA_API_KEY / ALPACA_API_SECRET not set \u2014 skipping live integration tests"
+    },
+    {
+      "name": "tests.test_alpaca_integration.TestGoNoGoMatrix::test_fill_account_id_never_none",
+      "reason": "ALPACA_API_KEY / ALPACA_API_SECRET not set \u2014 skipping live integration tests"
+    },
+    {
+      "name": "tests.test_alpaca_integration.TestGoNoGoMatrix::test_poll_order_events_seeds_from_open_orders",
+      "reason": "ALPACA_API_KEY / ALPACA_API_SECRET not set \u2014 skipping live integration tests"
+    },
+    {
+      "name": "tests.test_alpaca_integration.TestLiveOrderRoundTrip::test_submit_limit_below_market_then_cancel",
+      "reason": "ALPACA_API_KEY / ALPACA_API_SECRET not set \u2014 skipping live integration tests"
+    },
+    {
+      "name": "tests.test_alpaca_integration.TestLiveOrderRoundTrip::test_poll_order_events_detects_cancelled_order",
+      "reason": "ALPACA_API_KEY / ALPACA_API_SECRET not set \u2014 skipping live integration tests"
+    },
+    {
+      "name": "tests.test_alpaca_integration.TestLiveOrderRoundTrip::test_initialize_trading_session_with_open_order_reaches_trading_ready",
+      "reason": "ALPACA_API_KEY / ALPACA_API_SECRET not set \u2014 skipping live integration tests"
+    },
+    {
+      "name": "tests.test_alpaca_integration.TestMarketableFill::test_marketable_fill_settles_db_and_replay_is_idempotent",
+      "reason": "ALPACA_API_KEY / ALPACA_API_SECRET not set \u2014 skipping live integration tests"
+    },
+    {
+      "name": "tests.test_alpaca_integration::test_get_market_clock_real_endpoint",
+      "reason": "ALPACA_API_KEY / ALPACA_API_SECRET not set \u2014 skipping live integration tests"
+    },
+    {
+      "name": "tests.test_dashboard_js::test_dashboard_html_exists",
+      "reason": "out/dashboard.html not found \u2014 run generate_dashboard.py locally to verify"
+    },
+    {
+      "name": "tests.test_dashboard_js::test_script_blocks_have_balanced_braces",
+      "reason": "node available \u2014 deferring to test_node_check_on_dashboard_script_blocks"
+    },
+    {
+      "name": "tests.test_dashboard_js::test_node_check_on_dashboard_script_blocks",
+      "reason": "dashboard.html not present \u2014 run generate_dashboard.py first"
+    }
+  ]
+}

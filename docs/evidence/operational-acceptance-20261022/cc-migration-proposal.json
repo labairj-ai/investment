@@ -1,0 +1,34 @@
+{
+  "status": "PENDING_HUMAN_ACKNOWLEDGMENT_AND_INDEPENDENT_REVIEW",
+  "base_sha": "6cb6fde0471c207cdec48e648331caff8d8e68c0",
+  "prior": {
+    "cadence_comparability_policy_version": "cadence-v1",
+    "engine_hash": "bfdf6e9d15d452d82426975483d009b57d17827d5da9866883da1e67bd4d0193",
+    "fingerprint_version": "cc-behavior-v1",
+    "model_version": "cc-v3.3",
+    "policy_version": "shared-live-management-asof-1",
+    "schema_version": "cc-contract-v2",
+    "simulator_contract_hash": "b8be3b06388cb68c7be9e53488ca6f473cc3bee15f81ed93461c802e951ce8f2",
+    "simulator_contract_version": "simulator-contract-2",
+    "simulator_version": "cc-virtual-1"
+  },
+  "classified_source": {
+    "fingerprint_version": "cc-behavior-v1",
+    "model_version": "cc-v3.3",
+    "simulator_version": "cc-virtual-1",
+    "simulator_contract_version": "simulator-contract-2",
+    "simulator_contract_hash": "b8be3b06388cb68c7be9e53488ca6f473cc3bee15f81ed93461c802e951ce8f2",
+    "engine_hash": "5f9fc49b8b13f7cce7672d94358c07ed188218597d9da9d9b807585176facd9f",
+    "policy_version": "shared-live-management-asof-1",
+    "cadence_comparability_policy_version": "cadence-v1"
+  },
+  "proposed_model_version": "cc-v3.4",
+  "simulator_unchanged": true,
+  "guarded_helpers_added": [
+    "agents.covered_call_agent._safe_float",
+    "agents.covered_call_agent._sanitize_payload"
+  ],
+  "cohort_reset_required": true,
+  "open_chain_policy": "VERSION_CENSORED",
+  "operator_acknowledged": false
+}
