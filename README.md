@@ -200,15 +200,73 @@ book/date marks. Exact-date prices are required, and same-day repairs preserve
 returns relative to the preceding complete trading-day mark.
 See [operational checks, schedules and deployment](docs/operational-watchdog.md).
 
+## Development Agent
+
+The [Development Agent dashboard](https://optiplex.tailb97cdb.ts.net/development-agent)
+tracks software-improvement candidates, review findings, evidence and deployment
+outcomes separately from portfolio recommendations. Its dedicated append-only ledger
+is `~/.local/share/investment-development/development-control.sqlite3` on OptiPlex;
+it does not reuse investment-learning tables. The initial queue is empty until
+development candidates are recorded; repository TODOs are listed in the
+[backlog index](.todos/README.md).
+
+**Deployed October 21, 2026 (ET):** OptiPlex runs `fd0a6c6` on
+`release/development-agent-fd0a6c6`, from [draft PR #3](https://github.com/labairj-ai/investment/pull/3).
+[Exact-commit CI](https://github.com/labairj-ai/investment/actions/runs/39710052924)
+passed with **2,760 tests passed and 18 skipped**. Deployment checks verified the
+dashboard, authenticated API, unchanged holdings and Advisor mutation-safety canary.
+Chrome checks passed at 360, 390, 430 and 1280px. See the
+[implementation evidence](docs/evidence/development-agent-20261021/validation.json)
+for earlier local checkpoints and the [operator guide](docs/development-agent.md)
+for the harness design and commands.
+
+| Capability | Current state |
+|---|---|
+| Candidate discovery, planning, review and evidence tooling | Initial implementation deployed; follow-up hardening remains open |
+| Autonomous implementation | Disabled |
+| Auto-merge | Disabled; human merge authority retained |
+| Daily discovery timer | Supplied but inactive |
+| Operational certification | Incomplete; fixture canary PASS is not operational certification |
+| GitHub protection / validation sandbox | Required protection not verified; Docker runtime/image not provisioned |
+| Supervised eligibility / physical-device QA | Qualifying operational evidence and seven-day period unmet; iPhone/Android acceptance unobserved |
+
+Enter the configured review token in the dashboard's access field. The private
+service configuration is `~/.local/share/investment-development/service.env` on
+OptiPlex; token values must not be committed or included in logs. Reads and decisions
+require `X-Development-Agent-Token`; decisions also require a same-origin JSON
+request, fresh scope/SHA context and a single-use nonce.
+
+| Route | Purpose |
+|---|---|
+| `GET /development-agent` | Review page |
+| `GET /api/development-agent` | Authenticated candidate and event listing |
+| `POST /api/development-agent/decision` | Explicit candidate/TODO approval, rejection or deferral |
+| `POST /api/development-agent/review` | Human review, escalation or observed-outcome acceptance |
+
+The dashboard currently reports placeholder readiness fields (`NOT_RUN` and disabled
+autonomy); these are not a complete live certification assessment. Follow-up tasks
+**0785–0794**, captured in [PR #4](https://github.com/labairj-ai/investment/pull/4),
+cover trusted validation evidence, authentic snapshot provenance, supervised versus
+autonomous modes, authenticated supervision, exact remote PR identity, effective
+GitHub protections, real readiness reporting and adversarial certification. Complete
+0785–0792 before the three supervised low-risk pilots in 0793; 0794 depends on their
+qualifying evidence and observation period. All ten remain backlog entries.
+
 ## Deployment
 
-The recommended setup is a always-on home server (e.g. a mini PC or Raspberry Pi running Ubuntu) with a systemd service for `serve.py`. The Mac/dev machine is for development only.
+The recommended setup is an always-on home server (e.g. a mini PC or Raspberry Pi running Ubuntu) with a systemd service for `serve.py`. The Mac/dev machine is for development only.
 
 - **Server:** clone repo, build venv from `requirements.txt`, run `serve.py` as a systemd service on port 5001
 - **Newsletter:** serve.py's built-in scheduler sends at ~7:15 AM ET; `run_investment.sh` via a systemd timer at 8 AM acts as a backstop (flag file `out/last_run_date.txt` prevents double sends)
 - **LAN / remote access:** by default `serve.py` binds to `localhost`; change to `0.0.0.0` to expose on the LAN; use [Tailscale Funnel](https://tailscale.com/kb/1223/funnel) or a reverse proxy for remote access
 - **Data backup:** `backup_data.sh` pushes DB + CSV to a separate private GitHub repo
 - **Deploy flow:** commit + push on dev machine, `git pull` on server; restart the service when `serve.py` or an imported Python module changes. On startup, `serve.py` automatically regenerates `out/dashboard.html` if `generate_dashboard.py` is newer than the existing file — so changes to the dashboard generator take effect on the next service restart without a manual regeneration step.
+
+The current Development Agent deployment is pinned to the release branch/SHA above;
+PR #3 remains draft rather than merged into `main`. Verify the intended branch and
+exact tested SHA before updating that checkout. Its database/dashboard backups and
+deployment receipt are outside the HTTP root under
+`~/.local/share/investment-releases/development-agent-20261022T022634Z/`.
 
 The old macOS launchd agents are archived in `launchd-disabled-on-mac/`.
 
@@ -1099,6 +1157,8 @@ investment/
 | `OLLAMA_URL` | Legacy fallback for `LLM_URL`; checked only if `LLM_URL` is unset. Can be used if you still have an Ollama server running the same model. |
 | `FRED_API_KEY` | FRED API key for economic indicators (Fed Funds, CPI, yield spread, unemployment). Free at [fred.stlouisfed.org](https://fred.stlouisfed.org/docs/api/api_key.html). If absent, macro bar shows yfinance-only data. |
 | `CONGRESS_API_KEY` | Congress.gov API key for official bill tracking and CRS summaries. Free at [api.congress.gov/sign-up](https://api.congress.gov/sign-up/). If absent, falls back to GovTrack RSS (no summaries). |
+| `DEV_AGENT_API_TOKEN` | Review token for Development Agent API reads and explicit human decisions. Configured privately on OptiPlex; never embedded in the page. |
+| `DEVELOPMENT_CONTROL_DB` | Dedicated development ledger path; defaults to `~/.local/share/investment-development/development-control.sqlite3`, separate from investment databases. |
 | `WSJ_TAC` | Piano.io subscriber access JWT for WSJ/Barrons/MarketWatch. Extract from Chrome DevTools: Application → Cookies → wsj.com → `__tac`. Used with saved credentials on publisher RSS requests; feed responses do not guarantee full subscriber article text. |
 | `WSJ_TR` | Dow Jones user token. Extract from Chrome DevTools: Application → Cookies → wsj.com → `TR`. Paired with `WSJ_TAC`. |
 
