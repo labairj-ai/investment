@@ -39,6 +39,13 @@ REQUIRED = {
         'Do not treat missing evidence, user silence or model judgment as approval.',
         'Existing release, CI, production, canary and investment safety controls remain mandatory.',
     ),
+    'Solo-owner governance': (
+        'A second human reviewer is optional unless explicitly required by the owner',
+        'Coding agents cannot approve their own work.',
+        'Authorship is not approval; a new head invalidates prior approval.',
+        'auto_merge=false and required_human_merge=true remain mandatory.',
+        'The owner performs the final merge.',
+    ),
     'Investment-sensitive changes': (
         'Recommendations, risk policy, position sizing, covered calls, learning/promotion, order/fill generation and account mutation are elevated-risk domains.',
         'Investment-sensitive changes require explicit human review before merge.',
