@@ -1,6 +1,8 @@
 """Bounded builder/reviewer orchestration with no arbitrary host execution."""
 from __future__ import annotations
 
+from .git_exec import run as git_run, output as git_output
+
 import json
 import hashlib
 import os
@@ -32,7 +34,7 @@ class ContainerValidator:
         self.image, self.timeout = image, min(1800, max(1, timeout))
         self._full_junit = None
 
-    def run(self, root, name, command):
+    def run(self, root, name, command, *, _base_collection=False):
         test_command = command[:3] == ["python", "-m", "pytest"]
         scripts = {"release_baseline": "scripts/check_release_baseline.py", "cc_contract": "scripts/check_cc_contract.py", "agent_contract": "scripts/check_agent_contract.py", "todo_consistency": "scripts/check_todo_status.py", "development_governance": "scripts/check_development_agent.py"}
         script_command = len(command) >= 2 and command[:2] == ["python", scripts.get(name)]
@@ -49,6 +51,23 @@ class ContainerValidator:
         if not shutil.which("docker"):
             return dict(name=name, command=command, exit_code=None, status="UNAVAILABLE", reason="sandbox runtime unavailable")
         root = Path(root)
+        test_root=Path(getattr(self,'trusted_test_root',root))
+        test_base=getattr(self,'trusted_test_base',None) or getattr(self,'prior_base',None)
+        if test_command and name!='supplemental_tests' and not _base_collection:
+            from .test_oracle import files
+            trusted_paths=files(test_root,test_base)
+            paths=[arg for arg in command[3:] if arg.startswith('tests/') and arg!='tests/']
+            if any(arg.split('::')[0] not in trusted_paths for arg in paths):
+                command=command[:3]+['tests/']+[arg for arg in command[3:] if arg.startswith('-')]
+        expected=None
+        if test_command and name!='supplemental_tests' and not _base_collection:
+            key=(str(test_root),test_base,tuple(command))
+            cache=getattr(self,'_oracle_inventories',{})
+            if key not in cache:
+                collection=self.run(root,'regression_inventory',command+['--collect-only'],_base_collection=True)
+                if collection.get('status')!='PASS':return dict(name=name,status='UNAVAILABLE',exit_code=None,reason='trusted base inventory unavailable',image=self.image)
+                cache[key]=collection['test_ids'];self._oracle_inventories=cache
+            expected=cache[key]
         # Build a separate source copy. Container writes never touch source or host.
         with tempfile.TemporaryDirectory(prefix="dev-validation-") as temp:
             snapshot = Path(temp) / "source"; snapshot.mkdir()
@@ -60,37 +79,75 @@ class ContainerValidator:
                 if not path.is_file(): continue
                 if path.stat().st_size > 2_000_000: raise ValueError("source copy incomplete: oversized file")
                 target = snapshot / rel; target.parent.mkdir(parents=True, exist_ok=True); target.write_bytes(path.read_bytes())
+            if _base_collection:
+                from .test_oracle import application_files
+                shutil.rmtree(snapshot);snapshot.mkdir()
+                for rel,data in application_files(test_root,test_base).items():
+                    target=snapshot/rel;target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(data)
+            # Mandatory tests/configuration come only from the exact approved base.
+            from .test_oracle import materialize, files, CONFIG
+            authority=Path(temp)/'authority';authority.mkdir()
+            trusted_hash=None
+            if name != 'supplemental_tests':
+                prior=test_base
+                if not prior: raise ValueError('approved prior base required')
+                trusted=Path(temp)/'trusted';trusted.mkdir()
+                trusted_hash=materialize(test_root,prior,trusted)
+                (authority/'oracle-files.json').write_text(json.dumps({p:hashlib.sha256(data).hexdigest() for p,data in files(test_root,prior).items()}))
+                if (snapshot/'tests').exists(): shutil.rmtree(snapshot/'tests')
+                for path in list(snapshot.rglob('*')):
+                    if path.is_file() and path.name in CONFIG: path.unlink()
+                for rel,data in files(test_root,prior).items():
+                    target=snapshot/rel;target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(data)
+                # Trusted release orchestration also comes from the approved base.
+                for script in scripts.values():
+                    try: data=git_output(test_root,'show',prior+':'+script,text=False)
+                    except subprocess.CalledProcessError: raise ValueError('trusted release gate unavailable') from None
+                    target=snapshot/script;target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(data)
             if name == 'release_baseline':
                 if self._full_junit is None:
                     return dict(name=name, command=command, exit_code=None, status='NOT_RUN', reason='full-suite JUnit unavailable', image=self.image)
                 (snapshot/'test-results.xml').write_bytes(self._full_junit)
-            # No host Git metadata or historical blobs enter the sandbox. Export
-            # only the exact approved prior CC baseline through a separate RO mount.
-            authority=Path(temp)/'authority';authority.mkdir()
             if name=='cc_contract':
-                prior=getattr(self,'prior_base',None)
-                if not prior or not re.fullmatch(r'[a-f0-9]{40}',prior): raise ValueError('approved prior base required')
-                prior_bytes=subprocess.check_output(['git','-C',str(root),'show',prior+':.cc_contract_baseline.json'],timeout=30)
-                (authority/'prior-cc-baseline.json').write_bytes(prior_bytes)
+                (authority/'prior-cc-baseline.json').write_bytes(git_output(root,'show',self.prior_base+':.cc_contract_baseline.json',text=False))
+            # Create fresh Git metadata; no host history, hooks or credentials enter.
+            git_run(snapshot,'init','-b','validation')
+            git_run(snapshot,'add','.')
+            git_run(snapshot,'commit','-m','isolated validation source')
+            bootstrap=Path(__file__).with_name('sandbox_entry.py').read_bytes()
+            (authority/'entry.py').write_bytes(bootstrap)
             container = "dev-validation-" + uuid.uuid4().hex
-            args = ["docker", "run", "--pull=never", "--rm", "--name", container, "--network=none", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--pids-limit=64", "--memory=512m", "--cpus=1", "--user=65534:65534", "--tmpfs", "/tmp:rw,nosuid,nodev,size=128m,mode=1777", "--tmpfs", "/workspace:rw,nosuid,nodev,size=128m,mode=1777", "--mount", f"type=bind,src={snapshot},dst=/source,readonly", "--workdir=/workspace", self.image,
-                    "python", "-c", "import shutil,subprocess,sys; shutil.copytree('/source','/workspace',dirs_exist_ok=True); subprocess.run(['git','init','-b','validation','/workspace'],check=True); subprocess.run(['git','-C','/workspace','add','.'],check=True); subprocess.run(['git','-C','/workspace','-c','user.name=Validation Harness','-c','user.email=validation@example.invalid','commit','-m','isolated validation source'],check=True); sys.exit(subprocess.call(sys.argv[1:]))", *command, *(["--junitxml=/artifacts/results.xml"] if test_command else [])]
-            args[args.index("--workdir=/workspace"):args.index("--workdir=/workspace")] = ["--mount", f"type=bind,src={artifacts},dst=/artifacts", "--mount", f"type=bind,src={authority},dst=/authority,readonly"]
+            self.last_container=container
+            uid=os.getuid() if os.getuid()!=0 else 65534
+            gid=os.getgid() if os.getuid()!=0 else 65534
+            args = ["docker", "run", "--pull=never", "--rm", "--name", container, "--network=none", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--pids-limit=128", "--memory=1g", "--cpus=1", f"--user={uid}:{gid}", "--tmpfs", "/tmp:rw,nosuid,nodev,size=256m,mode=1777", "--mount", f"type=bind,src={snapshot},dst=/source,readonly", "--mount", f"type=bind,src={artifacts},dst=/artifacts", "--mount", f"type=bind,src={authority},dst=/authority,readonly", "--workdir=/source", self.image,
+                    "python", "-I", "/authority/entry.py", *(['--collect-base'] if _base_collection else []), *command, *(["--junitxml=/artifacts/results.xml"] if test_command else [])]
             try:
                 # Discard untrusted logs; pytest XML/count receipts may be exported
                 # through a separately reviewed artifact protocol, never stdout claims.
                 result = subprocess.run(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=self.timeout)
+                if _base_collection:
+                    path=artifacts/'inventory.json'
+                    if not path.is_file() or path.is_symlink() or path.stat().st_size>2_000_000:raise ValueError('trusted inventory unavailable')
+                    identities=json.loads(path.read_text())
+                    if result.returncode or not identities or len(set(identities))!=len(identities) or any(not isinstance(x,str) for x in identities):raise ValueError('invalid trusted inventory')
+                    return dict(status='PASS',exit_code=0,test_ids=identities)
                 if not test_command:
                     return dict(name=name, command=command, exit_code=result.returncode, status='PASS' if result.returncode==0 else 'FAIL', image=self.image)
                 xml = artifacts / "results.xml"
                 if not xml.is_file() or xml.is_symlink() or xml.stat().st_size > 2_000_000:
                     return dict(name=name, command=command, exit_code=result.returncode, status="PARTIAL", reason="missing or oversized test inventory", image=self.image)
                 inventory = junit(xml)
+                if expected is not None:
+                    import xml.etree.ElementTree as ET
+                    actual=sorted(c.get('classname','')+'::'+c.get('name','') for c in ET.parse(xml).getroot().iter('testcase'))
+                    if actual!=expected:raise ValueError('trusted regression inventory changed')
                 if name == 'full_suite': self._full_junit = xml.read_bytes()
-                return dict(name=name, command=command + ["--junitxml=/artifacts/results.xml"], exit_code=result.returncode, status="PASS" if result.returncode == 0 and inventory["total"] > 0 and not inventory["failures"] else "FAIL", inventory=inventory, artifact_hash=hashlib.sha256(xml.read_bytes()).hexdigest(), image=self.image)
-            except (subprocess.TimeoutExpired, ValueError, OSError):
+                return dict(name=name, command=command + ["--junitxml=/artifacts/results.xml"], exit_code=result.returncode, status="PASS" if result.returncode == 0 and inventory["total"] > 0 and not inventory["failures"] else "FAIL", inventory=inventory, artifact_hash=hashlib.sha256(xml.read_bytes()).hexdigest(), trusted_test_tree_hash=trusted_hash, candidate_source_tree_hash=source_hash(root), image=self.image)
+            except (subprocess.TimeoutExpired, ValueError, OSError) as error:
                 subprocess.run(["docker", "rm", "-f", container], capture_output=True, timeout=15)
-                return dict(name=name, command=command, exit_code=None, status="FAIL", reason="timeout")
+                reason='timeout' if isinstance(error,subprocess.TimeoutExpired) else 'sandbox artifact/protocol validation failed'
+                return dict(name=name, command=command, exit_code=None, status="FAIL", reason=reason)
 
 
 def review(root, original, base_files, provider, validation, declared_risk, timeout=60, prior_findings=()):
@@ -101,7 +158,9 @@ def review(root, original, base_files, provider, validation, declared_risk, time
         except FileNotFoundError: new = ""
         if old != new: changed[path] = (old, new)
     deterministic = engineering_checks(changed)
-    risk = classify(changed, graphs=[protected_graph(root)], declared=int(declared_risk[1:]))
+    risk = classify(changed, graphs=[protected_graph(root)], declared=int(declared_risk[1:]),content=changed)
+    if int(risk['risk'][1:])>int(declared_risk[1:]):
+        deterministic.append(dict(id='risk-increased',severity='HIGH',file='',principle='P6',evidence='whole content exceeds approved risk; fresh human scope approval required'))
     before = source_hash(root)
     if deterministic:
         return dict(disposition="NEEDS_HUMAN", findings=deterministic, risk=risk, provider=provider.identity)
@@ -200,7 +259,11 @@ class Runner:
                 for name, cmd in validation_commands:
                     remaining = self.seconds - (time.monotonic()-start)
                     if remaining <= 0: raise ValueError("wall-time budget exhausted")
-                    if isinstance(self.validator, ContainerValidator): self.validator.timeout = min(self.validator.timeout, remaining)
+                    if isinstance(self.validator, ContainerValidator):
+                        self.validator.timeout = min(self.validator.timeout, remaining)
+                        self.validator.prior_base=record['base']
+                        self.validator.trusted_test_base=record['base']
+                        self.validator.trusted_test_root=root
                     validations.append(self.validator.run(root, name, cmd))
                 final = review(root, original, base_files, self.reviewer, validations, context["risk"], self.seconds - (time.monotonic()-start), final.get("findings", []))
                 current = {f["id"] for f in final["findings"]}

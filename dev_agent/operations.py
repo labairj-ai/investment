@@ -41,6 +41,7 @@ def operational_runs(root,store,now=None):
             elif item.get('fixture_only') or item.get('mode')!='SUPERVISED': reason='fixture or wrong mode'
             elif not receipt or receipt[-1].get('head')!=item.get('head'): reason='receipt missing'
             elif not latest_plan or latest_plan[-1]!=item.get('context'): reason='scope changed'
+            elif any(e['kind']=='PROTECTION' and e['payload'].get('context_hash')==digest(item.get('context')) and e['payload'].get('status')!='PASS' for e in events): reason='protection drift recorded; fresh human scope required'
             elif candidate['state'] not in {'DEPLOYED','CLOSED'} or not deployments or deployments[-1]['status']!='HEALTHY': reason='not observed healthy or rolled back'
             elif item.get('created',now+1)>now: reason='future evidence'
             (rejected if reason else accepted).append(dict(item, reason=reason) if reason else item)
@@ -73,7 +74,9 @@ def authorize_start(root,store,cid,mode,technical,protections,*,human=None,now=N
     if candidate['state']!='APPROVED' or not approvals or not approvals[-1].get('authentication_source') or approvals[-1]['context']!=context or context.get('mode')!=mode:
         raise ValueError('fresh frozen mode/scope/base approval required')
     if not technical_current(root,technical,now): raise ValueError('current technical certification required')
-    if protections.get('status')!='PASS' or not 0<=now-protections.get('created',0)<=min(300,config.get('github_evidence_max_age_seconds',300)): raise ValueError('fresh effective GitHub protection required')
+    from .protection import require
+    from types import SimpleNamespace
+    authority=require(store,cid,SimpleNamespace(repository=protections.get('repository')),'start',root=root,observation=protections,now=now)
     risk=int(context['risk'][1:])
     if risk>=4: raise ValueError('L4/L5 unavailable to generic Builder')
     if mode=='SUPERVISED':
@@ -84,7 +87,7 @@ def authorize_start(root,store,cid,mode,technical,protections,*,human=None,now=N
         if risk>2: raise ValueError('L3 requires human-started supervised mode')
         if not eligibility(root,store,now)['eligible']: raise ValueError('supervised observation requirements not met')
     slot=datetime.fromtimestamp(now,ZoneInfo('America/New_York')).date().isoformat()
-    payload=dict(candidate=cid,context=context,mode=mode,harness_hash=harness_hash(root),created=now,slot=slot,**(human.audit() if human else {'actor':'policy-admission','authentication_source':'autonomy-policy','nonce':str(uuid.uuid4())}))
+    payload=dict(candidate=cid,context=context,mode=mode,harness_hash=harness_hash(root),created=now,slot=slot,protection_policy=authority['policy_hash'],protection_identity=authority['identity'],**(human.audit() if human else {'actor':'policy-admission','authentication_source':'autonomy-policy','nonce':str(uuid.uuid4())}))
     with store.connect(True) as db:
         if mode=='AUTONOMOUS':
             count=db.execute("SELECT COUNT(*) FROM dev_events WHERE kind='START_AUTHORIZATION' AND json_extract(payload,'$.mode')='AUTONOMOUS' AND json_extract(payload,'$.slot')=?",(slot,)).fetchone()[0]
@@ -98,6 +101,8 @@ def record_success(root,store,cid,client,*,human):
     from .certification import harness_hash
     from .github import verify_remote_pr
     if type(human) is not HumanIdentity: raise ValueError('authenticated human required')
+    from .protection import require
+    authority=require(store,cid,client,'pilot_success',root=root)
     candidate=store.get(cid);events=candidate['events']
     def latest(kind):
         rows=[e['payload'] for e in events if e['kind']==kind]
@@ -115,16 +120,22 @@ def record_success(root,store,cid,client,*,human):
     if len(records)!=len(GATES) or {r['name'] for r in records}!=set(GATES) or any(r.get('status')!='PASS' or r.get('exit_code')!=0 or r.get('candidate')!=cid or r.get('head')!=proof['head'] for r in records): raise ValueError('complete exact-head trusted gate inventory required')
     if not any(e['kind']=='VALIDATION_BATCH' and e['payload']['batch']==proof.get('batch') and not e['payload'].get('fixture_only') for e in events): raise ValueError('trusted validation batch required')
     if decision.get('stage')!='PR_DISPOSITION' or decision.get('decision')!='accept' or not decision.get('authentication_source') or decision['context'].get('head')!=proof['head']: raise ValueError('authenticated exact-head human PR disposition required')
+    observations=[e['payload'] for e in store.get(cid)['events'] if e['kind']=='PROTECTION' and e['payload'].get('context_hash')==digest(context)]
+    required_stages={'start','publish','pr_handoff','pr_disposition','merge','deployment_observation','pilot_success'}
+    if (required_stages-{o['stage'] for o in observations} or
+        any(o['status']!='PASS' or o['identity']!=authority['identity'] or o['policy_hash']!=authority['policy_hash'] or
+            (o['stage']!='start' and o.get('head')!=proof['head']) for o in observations)):
+        raise ValueError('complete stable exact-head protection lifecycle required')
+    merged=latest('MERGE')
+    if merged.get('source')!='github-verified-merge' or merged.get('head')!=proof['head'] or merged.get('protection_policy')!=authority['policy_hash']:
+        raise ValueError('fresh protection-bound verified merge required')
     if int(context['risk'][1:])>2 or proof['head']!=pr['head'] or proof.get('mode')!='SUPERVISED': raise ValueError('low-risk exact-head pilot required')
     remote=client.pr_identity(pr['result']['number'])
     verify_remote_pr(remote,repository=client.repository,branch=pr['verified']['headRefName'],head=proof['head'])
-    from .owner_review import require as require_owner
-    owner_approval=require_owner(store,client,remote['number'])
-    if remote.get('state')!='MERGED' or not remote.get('mergeCommit',{}).get('oid'): raise ValueError('independently approved merged PR required')
-    from .owner_review import verify_merge_actor
-    verify_merge_actor(client,remote['number'],proof['head'],remote['mergeCommit']['oid'])
+    if remote.get('reviewDecision')!='APPROVED' or remote.get('state')!='MERGED' or not remote.get('mergeCommit',{}).get('oid'): raise ValueError('independently approved merged PR required')
     if candidate['state'] not in {'DEPLOYED','CLOSED'} or deployment['status']!='HEALTHY' or deployment['deployed_sha']!=remote['mergeCommit']['oid'] or deployment['merge_sha']!=remote['mergeCommit']['oid']: raise ValueError('exact deployed-SHA healthy observation required')
-    item=dict(candidate=cid,run_id=run['run_id'],context=context,mode='SUPERVISED',head=proof['head'],receipt=proof['id'],owner_review_hash=digest(owner_approval['review']),harness_hash=harness_hash(root),created=time.time(),fixture_only=False,**human.audit())
+    if merged['merge_sha']!=remote['mergeCommit']['oid']:raise ValueError('merge identity changed')
+    item=dict(candidate=cid,run_id=run['run_id'],context=context,mode='SUPERVISED',head=proof['head'],receipt=proof['id'],harness_hash=harness_hash(root),created=time.time(),fixture_only=False,protection_policy=authority['policy_hash'],protection_identity=authority['identity'],**human.audit())
     with store.connect(True) as db:
         old=db.execute("SELECT payload FROM dev_events WHERE event_id=?",('operational-success:'+run['run_id'],)).fetchone()
         if old: return json.loads(old[0])

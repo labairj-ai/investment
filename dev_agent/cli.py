@@ -21,14 +21,13 @@ from .snapshot import check_snapshot
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["owner-context", "owner-review", "owner-state", "init", "list", "show", "scout", "plan", "bind-plan", "decide", "worktree", "build", "recover", "seal", "validate", "pilot-success", "review-decision", "sync-merge", "autonomous-cycle", "readiness", "observe", "effectiveness", "snapshot", "verify-receipt", "pr", "protections", "canary", "certify"])
+    parser.add_argument("command", choices=["init", "list", "show", "scout", "plan", "bind-plan", "decide", "worktree", "build", "recover", "seal", "validate", "pilot-success", "review-decision", "sync-merge", "autonomous-cycle", "readiness", "observe", "effectiveness", "snapshot", "verify-receipt", "pr", "protections", "canary", "certify"])
     parser.add_argument("--root", type=Path, default=Path.cwd())
     parser.add_argument("--candidate")
     parser.add_argument("--input", type=Path)
     parser.add_argument("--decision", choices=["approve", "reject", "defer"])
     parser.add_argument("--rationale", default="")
     parser.add_argument("--nonce")
-    parser.add_argument("--risk",choices=["L0","L1","L2","L3","L4","L5"],default="L5")
     parser.add_argument("--model")
     parser.add_argument("--review-model")
     parser.add_argument("--image")
@@ -37,18 +36,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     store = configured_store(); root = args.root.resolve()
     data = json.loads(args.input.read_text()) if args.input else {}
-    if args.command in {'owner-context','owner-review','owner-state'}:
-        from . import owner_review
-        client=GitHub(args.repository)
-        if args.command=='owner-context': result=owner_review.context(client,data['pr'],risk=args.risk)
-        elif args.command=='owner-state': result=owner_review.state(store,client,data['pr'])
-        else:
-            human=owner_review.owner_identity()
-            # Deliberate terminal confirmation is separate from JSON and authorship.
-            expected=data['context']; challenge=f"{data['decision']} {args.repository}#{expected['pr']} {expected['head']}"
-            if input('Review complete? Type '+challenge+'\n')!=challenge: raise ValueError('explicit owner confirmation required')
-            result=owner_review.attest(store,client,expected,data['decision'],args.nonce,args.rationale,human=human,financial_ack=data.get('financial_ack'),execution_ack=data.get('execution_ack'))
-    elif args.command == "init": store.migrate(); result = dict(status="INITIALIZED")
+    if args.command == "init": store.migrate(); result = dict(status="INITIALIZED")
     elif args.command == "list": result = store.list()
     elif args.command == "show": result = store.get(args.candidate)
     elif args.command == "scout": result = discover_daily(root, store, signals=data.get("signals", []))
@@ -68,7 +56,7 @@ def main(argv=None):
     elif args.command == "snapshot":
         config=json.loads((root/'config/development_agent.json').read_text())
         result = check_snapshot(data["snapshot"], root, data.get("provenance"),max_age_hours=config.get('snapshot_max_age_hours',24))
-    elif args.command == "observe": result = observe(store, args.candidate, data)
+    elif args.command == "observe": result = observe(store, args.candidate, data, client=GitHub(args.repository))
     elif args.command == "effectiveness":
         result = effectiveness(store.get(args.candidate), data["observation"], data["dimensions"])
         store.event(args.candidate, "EFFECTIVENESS", result)

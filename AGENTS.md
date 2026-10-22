@@ -1,6 +1,6 @@
 # Repository Coding-Agent Contract
 
-Contract version: 2 (solo-owner-1). This contract applies equally to Codex, Claude and every other
+Contract version: 1. This contract applies equally to Codex, Claude and every other
 approved model, tool or runner working in this repository. It grants no execution,
 production or deployment authority by itself.
 
@@ -37,7 +37,7 @@ procedures require separate explicit authorization outside development work.
 5. Record exact implementation SHA, commands, results, skip/waiver inventory and
    real CI workflow URL before claiming PR readiness. Evidence is valid only for
    the tested source/configuration; changed code requires refreshed evidence.
-6. Use PR-based changes; satisfy required owner/human review and existing
+6. Use PR-based changes; satisfy required independent/human review and existing
    branch protections. Move a TODO to `.todos/done/` only after every acceptance
    and QA requirement is met with implementation and CI evidence. Incomplete or
    unavailable checks remain explicitly open, never silently marked PASS.
@@ -62,34 +62,6 @@ brokers, mutate accounts or alter live trading state.
 
 Existing release, CI, production, canary and investment safety controls remain
 mandatory. This contract cannot authorize exceptions to those controls.
-
-## Solo-owner governance
-
-For this personal repository, the repository owner may serve as the human reviewer
-and approver, including for changes authored through the owner's GitHub account.
-Independent review separates human authority from AI and automation authority.
-A second human reviewer is optional unless explicitly required by the owner for a
-specific change. Coding agents cannot approve their own work. Reviewer models, CI
-and autonomous workflows cannot grant merge authority. The human repository owner
-retains final merge authority and must explicitly review and approve the exact
-current PR head before merge. Authorship is not approval; a new head invalidates
-prior approval. This is an intentional permanent owner governance decision, not a
-PR #6 exemption. The existing rule against agent self-approval remains in force.
-
-- L0–L2: owner review plus required CI/evidence.
-- L3: explicit owner review and rationale.
-- L4: explicit owner financial-domain review, financial canaries, behavioral-contract
-  evidence and applicable observation gates.
-- L5: explicit owner approval, execution/account-mutation safeguards and required
-  deployment confirmation; financial acknowledgment where financial scope applies.
-
-Owner review must be an authenticated deliberate action, separate from Builder and
-Reviewer evidence, bound to repository, PR, exact head, risk, timestamp, nonce and
-required acknowledgments. Agents must never generate that action. auto_merge=false
-and required_human_merge=true remain mandatory. The owner performs the final merge.
-Automated systems may recommend, test, review or prepare PRs, but may not approve,
-merge, deploy, lower safety gates or alter governance requirements on their own.
-Explicitly owner-authorized deployment still requires existing deployment gates.
 
 ## Investment-sensitive changes
 

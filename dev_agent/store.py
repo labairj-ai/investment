@@ -14,12 +14,12 @@ from pathlib import Path
 STATES = {
     "DISCOVERED": {"PLANNED", "REJECTED", "DEFERRED"},
     "PLANNED": {"APPROVED", "REJECTED", "DEFERRED"},
-    "APPROVED": {"BUILDING", "DEFERRED"},
+    "APPROVED": {"BUILDING", "DEFERRED", "NEEDS_HUMAN"},
     "BUILDING": {"PR_OPEN", "NEEDS_HUMAN"},
     "NEEDS_HUMAN": {"PLANNED", "REJECTED", "DEFERRED"},
     "DEFERRED": {"PLANNED", "REJECTED"},
     "PR_OPEN": {"DEPLOYED", "NEEDS_HUMAN"},
-    "DEPLOYED": {"ROLLED_BACK", "CLOSED"},
+    "DEPLOYED": {"ROLLED_BACK", "CLOSED", "NEEDS_HUMAN"},
     "ROLLED_BACK": {"CLOSED"}, "REJECTED": set(), "CLOSED": set(),
 }
 CATEGORIES = {"FIX", "SIMPLIFY", "REMOVE", "CONSOLIDATE", "REFACTOR", "OPTIMIZE", "TEST", "DOCUMENT", "ADD"}
@@ -131,7 +131,7 @@ class Store:
         return json.loads(row[0])["state"]
 
     def event(self, cid, kind, payload, key=None):
-        if kind in {"OWNER_REVIEW", "STATE", "APPROVAL", "VALIDATION", "VALIDATION_BATCH", "RECEIPT", "OPERATIONAL_SUCCESS", "AUTHORIZATION", "START_AUTHORIZATION", "TECHNICAL_CERTIFICATION"}:
+        if kind in {"STATE", "APPROVAL", "VALIDATION", "VALIDATION_BATCH", "SUPPLEMENTAL_VALIDATION", "RECEIPT", "OPERATIONAL_SUCCESS", "AUTHORIZATION", "START_AUTHORIZATION", "TECHNICAL_CERTIFICATION", "PROTECTION"}:
             raise ValueError("use transition/decide")
         with self.connect(True) as db:
             self._append(db, cid, kind, payload, key or str(uuid.uuid4()))
@@ -223,7 +223,7 @@ class Store:
                 from .identity import HumanIdentity
                 if type(identity) is not HumanIdentity: raise ValueError('authenticated human identity required')
                 audit=identity.audit()
-            self._append(db, cid, "HUMAN_REVIEW", dict(stage=stage, decision=decision, actor=actor, context=context, rationale=rationale, grants_merge=False, grants_deployment=False, **{k:v for k,v in audit.items() if k!='actor'}), "review-decision:"+nonce)
+            self._append(db, cid, "HUMAN_REVIEW", dict(stage=stage, decision=decision, actor=audit.get('actor',actor), context=context, rationale=rationale, decision_nonce=nonce, grants_merge=False, grants_deployment=False, **{k:v for k,v in audit.items() if k!='actor'}), "review-decision:"+nonce)
             if close: self._append(db, cid, "STATE", {"state":"CLOSED"}, "close:"+nonce)
 
     def run_event(self, cid, run_id, role, status, data, parent=None):

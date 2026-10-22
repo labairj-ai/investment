@@ -1,6 +1,8 @@
 """Pinned development worktrees with crash-recoverable manifests."""
 from __future__ import annotations
 
+from .git_exec import run as git_run, output as git_output
+
 import fcntl
 import json
 import re
@@ -28,9 +30,10 @@ class Worktrees:
             fcntl.flock(lock, fcntl.LOCK_EX)
             run = uuid.uuid4().hex; path = self.directory / run
             record = dict(todo=todo, base=base, branch=f"agent/{todo}/{run}", path=str(path), run=run, status="CREATING")
+            record['git_intent']=dict(operation='worktree-add',branch=record['branch'],base=base,hooks_disabled=True,ambient_config_disabled=True)
             manifest = self.directory / (run + ".json")
             manifest.write_text(json.dumps(record, sort_keys=True))
-            subprocess.run(["git", "-C", str(self.repo), "worktree", "add", "-b", record["branch"], str(path), base], check=True, capture_output=True, timeout=30)
+            git_run(self.repo, "worktree", "add", "-b", record["branch"], str(path), base)
             record["status"] = "READY"; manifest.write_text(json.dumps(record, sort_keys=True))
             return record
 
@@ -49,7 +52,7 @@ class Worktrees:
         if git(path, "rev-parse", "HEAD") != record["base"]:
             if not allow_committed:
                 raise ValueError("unexpected head; fresh approval required")
-            subprocess.run(["git", "-C", str(path), "merge-base", "--is-ancestor", record["base"], "HEAD"], check=True, capture_output=True, timeout=30)
+            git_run(path, "merge-base", "--is-ancestor", record["base"], "HEAD")
         return path
 
     def recover(self):
@@ -75,6 +78,6 @@ class Worktrees:
             raise ValueError("dirty worktree retained with evidence")
         # Never force removal or delete branches/evidence automatically.
         final_head = git(path, "rev-parse", "HEAD")
-        subprocess.run(["git", "-C", str(self.repo), "worktree", "remove", str(path)], check=True, capture_output=True, timeout=30)
+        git_run(self.repo, "worktree", "remove", str(path))
         record = dict(record, status="RETIRED", final_head=final_head)
         (self.directory / (record["run"] + ".json")).write_text(json.dumps(record, sort_keys=True))

@@ -1,6 +1,8 @@
 """Immutable receipts bound to committed SHA and complete worktree contents."""
 from __future__ import annotations
 
+from .git_exec import run as git_run, output as git_output
+
 import hashlib
 import json
 import subprocess
@@ -16,7 +18,7 @@ REQUIRED = {"focused_tests", "full_suite", "release_baseline", "cc_contract", "a
 
 def source_hash(root):
     root = Path(root).resolve()
-    names = subprocess.check_output(["git", "-C", str(root), "ls-files", "-z", "--cached", "--others", "--exclude-standard"], timeout=30).decode().split("\0")
+    names = git_output(root, "ls-files", "-z", "--cached", "--others", "--exclude-standard").split("\0")
     sha = hashlib.sha256()
     for name in sorted(set(filter(None, names))):
         path = root / name

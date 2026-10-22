@@ -14,17 +14,24 @@ from .evidence import source_hash
 from .policy import safe_relative
 from .store import digest
 
-VERSION = "development-validation-2"
+VERSION = "development-validation-3"
 GATES = ("focused_tests", "full_suite", "release_baseline", "cc_contract", "agent_contract", "todo_consistency", "development_governance")
 
 
-def manifest(focused, base):
+def manifest(focused, base, *, root=None):
     if not focused or not isinstance(focused, list):
         raise ValueError("approved focused test paths required")
     for path in focused:
         safe_relative(path.split('::')[0])
         if not path.startswith("tests/") or not path.split('::')[0].endswith('.py'):
             raise ValueError("focused tests must be explicit repository test paths")
+    if root is not None:
+        from .test_oracle import files
+        trusted=files(root,base)
+        focused=[p for p in focused if p.split('::')[0] in trusted]
+        # Newly added tests are supplemental; they cannot define the oracle.
+        # When no approved-base focused test exists, run the complete trusted set.
+        if not focused:focused=['tests/']
     return [
         ("focused_tests", ["python", "-m", "pytest", *focused, "-v", "--tb=short"]),
         ("full_suite", ["python", "-m", "pytest", "tests/", "-v", "--tb=short"]),
@@ -46,11 +53,13 @@ def execute(root, store, cid, validator, *, fixture=False):
     if git(root, 'status', '--porcelain'):
         raise ValueError("commit candidate before mandatory validation")
     binding = dict(candidate=cid, todo=ctx['todo'], base=ctx['head'], head=git(root, 'rev-parse', 'HEAD'), source_hash=source_hash(root), mode=ctx.get('mode', 'SUPERVISED'))
+    from .test_oracle import files, tree_hash
+    binding.update(trusted_test_tree_hash=tree_hash(files(root,binding['base'])), candidate_source_tree_hash=binding['source_hash'])
     if ctx.get('validation_hash')!=digest(plan.get('focused_tests',['tests/test_development_agent.py'])): raise ValueError('approved validation scope changed')
     if binding['head'] == binding['base']:
         raise ValueError('committed implementation required')
     focused = plan.get('focused_tests', ['tests/test_development_agent.py'])
-    commands = manifest(focused, binding['base'])
+    commands = manifest(focused, binding['base'],root=root)
     batch = str(uuid.uuid4())
     records = []
     deadline=time.monotonic()+2400
@@ -64,6 +73,8 @@ def execute(root, store, cid, validator, *, fixture=False):
             try:
                 validator.timeout=min(1800,max(1,deadline-time.monotonic()))
                 validator.prior_base=binding['base']
+                validator.trusted_test_base=binding['base']
+                validator.trusted_test_root=root
                 result = validator.run(root, name, command)
             except Exception as exc:
                 result = dict(status='UNAVAILABLE', exit_code=None, reason=type(exc).__name__)
@@ -84,6 +95,14 @@ def execute(root, store, cid, validator, *, fixture=False):
     complete = dict(binding, batch=batch, command_contract=VERSION, manifest_hash=digest(commands), records=[digest(r) for r in records], fixture_only=fixture)
     with store.connect(True) as db:
         store._append(db, cid, 'VALIDATION_BATCH', complete, 'validation-batch:'+batch)
+    # Candidate-written tests never replace an oracle test or contribute to the
+    # mandatory seven-gate result. They run in a separate container/artifact namespace.
+    try:
+        supplemental=validator.run(root,'supplemental_tests',['python','-m','pytest','tests/','-v','--tb=short'])
+    except Exception as exc:
+        supplemental=dict(status='UNAVAILABLE',reason=type(exc).__name__)
+    with store.connect(True) as db:
+        store._append(db,cid,'SUPPLEMENTAL_VALIDATION',dict(binding,batch=batch,result=supplemental), 'supplemental:'+batch)
     return records
 
 
@@ -94,13 +113,18 @@ def reconstruct(root, store, cid):
     if not plans or not batches: raise ValueError('trusted validation batch missing')
     ctx = plans[-1]['context']; batch = batches[-1]
     expected = dict(candidate=cid, todo=ctx['todo'], base=ctx['head'], head=git(root, 'rev-parse', 'HEAD'), source_hash=source_hash(root), mode=ctx.get('mode', 'SUPERVISED'))
+    from .test_oracle import files, tree_hash
+    expected.update(trusted_test_tree_hash=tree_hash(files(root,ctx['head'])),candidate_source_tree_hash=expected['source_hash'])
     if any(batch.get(k) != v for k,v in expected.items()) or batch.get('fixture_only'):
         raise ValueError('stale, mixed or fixture validation evidence')
-    commands = manifest(plans[-1].get('focused_tests', ['tests/test_development_agent.py']), ctx['head'])
+    commands = manifest(plans[-1].get('focused_tests', ['tests/test_development_agent.py']), ctx['head'],root=root)
     records = [e['payload'] for e in candidate['events'] if e['kind']=='VALIDATION' and e['payload'].get('batch')==batch['batch']]
     if len(records)!=len(GATES) or {r['name'] for r in records}!=set(GATES):
         raise ValueError('missing or duplicate mandatory validation')
     if batch.get('records') != [digest(r) for r in records]: raise ValueError('validation batch altered')
+    supplemental=[e['payload'] for e in candidate['events'] if e['kind']=='SUPPLEMENTAL_VALIDATION' and e['payload'].get('batch')==batch['batch']]
+    if len(supplemental)!=1 or any(supplemental[0].get(k)!=v for k,v in expected.items()) or supplemental[0]['result'].get('status')!='PASS' or supplemental[0]['result'].get('exit_code')!=0:
+        raise ValueError('supplemental test evidence missing, failed or stale')
     for record, (name, command) in zip(records, commands):
         actual = record.get('command', [])
         if actual != command and actual != command+['--junitxml=/artifacts/results.xml']:
@@ -121,7 +145,8 @@ def validate_and_review(root,store,cid,validator,reviewer):
         try: old[name]=git(root,'show',context['head']+':'+name)
         except Exception: old[name]=''
     prior=[e['payload'] for e in candidate['events'] if e['kind']=='ITERATION']
-    result=review(root,(Path(root)/plan['path']).read_text(),old,reviewer,records,context['risk'],prior_findings=prior[-1].get('review',{}).get('findings',[]) if prior else [])
+    supplemental=[e['payload']['result'] for e in candidate['events'] if e['kind']=='SUPPLEMENTAL_VALIDATION'][-1]
+    result=review(root,(Path(root)/plan['path']).read_text(),old,reviewer,records+[supplemental],context['risk'],prior_findings=prior[-1].get('review',{}).get('findings',[]) if prior else [])
     store.run_event(cid,str(uuid.uuid4()),'reviewer','PASS' if result['disposition']=='PASS' else 'NEEDS_HUMAN',dict(head=git(root,'rev-parse','HEAD'),source_hash=source_hash(root),mode=context.get('mode','SUPERVISED'),provider=result.get('provider'),independent_context=result.get('independent_context')))
     store.event(cid,'ITERATION',dict(iteration=len(prior)+1,source_hash=source_hash(root),review=result,mode=context.get('mode','SUPERVISED'),fixture_only=False,provider=prior[-1].get('provider',{}) if prior else {}))
     return result

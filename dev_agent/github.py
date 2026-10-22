@@ -1,6 +1,8 @@
 """GitHub handoff; never changes rulesets, merges or enables auto-merge."""
 from __future__ import annotations
 
+from .git_exec import run as git_run, output as git_output
+
 import json
 import re
 import subprocess
@@ -42,7 +44,7 @@ class GitHub:
                 classic=None
             raw['classic']=classic
             user=self.read('user');raw['identity']={k:user[k] for k in ('login','id') if k in user}
-            repo=self.read(f'repos/{self.repository}');raw['repository']={k:repo[k] for k in ('id','full_name','permissions','default_branch','owner') if k in repo}
+            repo=self.read(f'repos/{self.repository}');raw['repository']={k:repo[k] for k in ('id','full_name','permissions','default_branch') if k in repo}
             raw['permission']=self.read(f"repos/{self.repository}/collaborators/{raw['identity']['login']}/permission")
             active=self.read_all(f'repos/{self.repository}/rules/branches/main')
             inventory=self.read_all(f'repos/{self.repository}/rulesets?includes_parents=true')
@@ -53,28 +55,29 @@ class GitHub:
                 if not {'rules','bypass_actors','enforcement'}<=detail.keys(): raise ValueError('incomplete ruleset detail')
                 details.append(detail)
             raw.update(active_rules=active,rulesets=details)
-            import os
-            from .solo_protection import verify as verify_solo
-            collaborators=self.read_all(f'repos/{self.repository}/collaborators?affiliation=all')
-            raw['administrators']=[{k:c[k] for k in ('id','login')} for c in collaborators if c.get('permissions',{}).get('admin')]
-            result=verify_solo(active,details,raw['identity'],raw['repository'],administrators=raw['administrators'],owner_check_app_id=int(os.environ.get('DEV_AGENT_OWNER_CHECK_APP_ID','0')),classic=classic)
-            result.update(created=time.time(),evidence_hash=digest(raw),evidence=raw)
+            result=effective_protections(classic,active,details,raw['identity'],raw['repository'],visibility=True)
+            result.update(created=time.time(),repository=self.repository,evidence_hash=digest(raw),evidence=raw)
             return result
         except Exception:
-            return dict(status='UNAVAILABLE',failures=['GitHub identity/protection visibility incomplete'],auto_merge=False,created=time.time(),evidence_hash=digest(raw))
+            return dict(status='UNAVAILABLE',repository=self.repository,failures=['GitHub identity/protection visibility incomplete'],auto_merge=False,created=time.time(),evidence_hash=digest(raw),evidence=raw)
 
     def pr_identity(self, number):
         result=subprocess.run(['gh','pr','view',str(number),'--repo',self.repository,'--json','number,url,headRefName,headRefOid,headRepository,headRepositoryOwner,baseRefName,isDraft,state,reviewDecision,mergeCommit'],check=True,capture_output=True,text=True,timeout=30)
         return json.loads(result.stdout)
 
-    def publish(self,root,branch,head):
+    def publish(self,root,branch,head,*,store,cid):
         if not branch.startswith('agent/') or git(root,'branch','--show-current')!=branch or git(root,'rev-parse','HEAD')!=head or git(root,'status','--porcelain'):
             raise ValueError('clean exact-head isolated branch required')
         remote=git(root,'remote','get-url','origin')
         allowed={f'git@github.com:{self.repository}.git',f'https://github.com/{self.repository}.git'}
         if remote not in allowed:raise ValueError('unexpected publishing repository')
-        if self.protections().get('status')!='PASS':raise ValueError('effective protection required before publish')
-        subprocess.run(['git','-C',str(root),'push','origin',head+':refs/heads/'+branch],check=True,capture_output=True,timeout=60)
+        if git(root,'remote','get-url','--push','--all','origin').splitlines() not in [[value] for value in allowed]:
+            raise ValueError('unexpected push repository')
+        from .protection import require
+        authority=require(store,cid,self,'publish',root=root)
+        store.event(cid,'GIT_INTENT',dict(operation='publish',status='REQUESTED',head=head,branch=branch,repository=self.repository,hooks_disabled=True,ambient_config_disabled=True))
+        git_run(root,'push','origin',head+':refs/heads/'+branch,timeout=60)
+        store.event(cid,'GIT_INTENT',dict(operation='publish',head=head,branch=branch,protection=authority['raw_evidence_hash'],hooks_disabled=True))
 
     def handoff(self, branch, title, body, draft):
         query = subprocess.run(["gh", "pr", "list", "--repo", self.repository, "--head", branch, "--state", "open", "--json", "number,url,isDraft"], check=True, capture_output=True, text=True, timeout=30)
@@ -123,7 +126,8 @@ def prepare_pr(root, store, cid, data, client):
     if git(root, "status", "--porcelain"): raise ValueError("commit candidate before PR")
     branch = git(root, "branch", "--show-current")
     if not branch.startswith("agent/") or git(root, "rev-parse", "HEAD") == data["base"]: raise ValueError("isolated committed branch required")
-    if client.protections().get("status") != "PASS": raise ValueError("repository protections unavailable/failed")
+    from .protection import require
+    require(store,cid,client,'pr_handoff',root=root)
     records = data["validations"]
     mandatory = {r["name"] for r in records if r["status"] == "PASS" and r["exit_code"] == 0}
     if not REQUIRED <= mandatory or data["review"].get("disposition") != "PASS": raise ValueError("mandatory PR gates failed")
@@ -162,6 +166,8 @@ def verify_remote_pr(remote, *, repository, branch, head):
 
 
 def recheck_pr(store,cid,client):
+    from .protection import require
+    require(store,cid,client,'pr_disposition')
     candidate=store.get(cid)
     pr=[e['payload'] for e in candidate['events'] if e['kind']=='PR'][-1]
     try:
@@ -216,18 +222,16 @@ def effective_protections(classic, active_rules, rulesets, identity, repository,
 
 def record_merge(store,cid,client):
     """Read GitHub's completed human merge; never perform a merge."""
+    from .protection import require
+    authority=require(store,cid,client,'merge')
     candidate=store.get(cid)
     pr=[e['payload'] for e in candidate['events'] if e['kind']=='PR'][-1]
     remote=client.pr_identity(pr['result']['number'])
     verify_remote_pr(remote,repository=client.repository,branch=pr['verified']['headRefName'],head=pr['head'])
-    from .owner_review import require as require_owner
-    owner_approval=require_owner(store,client,remote['number'])
     sha=(remote.get('mergeCommit') or {}).get('oid','')
-    if remote.get('state')!='MERGED' or not re.fullmatch(r'[a-f0-9]{40}',sha):
+    if remote.get('state')!='MERGED' or remote.get('reviewDecision')!='APPROVED' or not re.fullmatch(r'[a-f0-9]{40}',sha):
         raise ValueError('independently approved completed GitHub merge required')
-    from .owner_review import verify_merge_actor
-    merge_actor=verify_merge_actor(client,remote['number'],pr['head'],sha)
-    payload=dict(merge_actor=merge_actor,merge_sha=sha,head=pr['head'],pr=remote.get('url',pr['result']['url']),source='github-verified-merge',number=remote['number'],owner_review_hash=digest(owner_approval['review']))
+    payload=dict(merge_sha=sha,head=pr['head'],pr=remote.get('url',pr['result']['url']),source='github-verified-merge',number=remote['number'],protection_policy=authority['policy_hash'],protection_identity=authority['identity'])
     with store.connect(True) as db:
         store._append(db,cid,'MERGE',payload,'github-merge:'+sha)
     return payload
