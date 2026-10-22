@@ -24,8 +24,8 @@
   },
   "version": "harness-canary-2",
   "kind": "TECHNICAL",
-  "harness_hash": "3a67fc2db890c4ab46dc2ca8336818aa0ffa0dc8ef5f55ada9564ff6c92374ea",
-  "created": 1792673423.3710332,
+  "harness_hash": "4320434c58eb0490df438e55c04028d903ff3ab9d4435c48913678e808fa248f",
+  "created": 1792673675.953732,
   "components": {
     "workspace_isolation": "PASS",
     "reviewer_independence": "PASS",
@@ -43,5 +43,5 @@
   "status": "PARTIAL",
   "supervised": false,
   "external_mutation": false,
-  "id": "f26c0b5dfd91158940b78353a65952bf4e8fdf0bc6732d13b3d167e67a24910b"
+  "id": "3f7e3805c937622aefe80aaa5940ab94864fd26e13c07988b736a4c5e38d4dcf"
 }

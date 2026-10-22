@@ -459,3 +459,11 @@ def test_cc_gate_prior_file_is_extracted_from_exact_approved_commit(repo,monkeyp
     validator=ContainerValidator('fixture@sha256:'+'a'*64);validator.prior_base=base
     result=validator.run(repo,'cc_contract',['python','scripts/check_cc_contract.py','--trusted-prior-file','/authority/prior-cc-baseline.json'])
     assert result['status']=='PASS'
+
+
+def test_readiness_exposes_invalid_auto_merge_configuration(store,monkeypatch):
+    config=json.loads((ROOT/'config/development_agent.json').read_text());config['auto_merge']=True
+    monkeypatch.setattr(readiness,'policy',lambda root:config)
+    state=readiness.readiness(ROOT,store)
+    assert state['auto_merge'] is True and 'human merge policy violation' in state['blockers']
+    assert not state['autonomous_starts_allowed']
