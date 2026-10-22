@@ -92,3 +92,22 @@ The existing deployed hardening code is integrated, preventing a dashboard/harne
 Fresh focused/full-suite and exact-head CI evidence are required before deployment.
 Independent review remains required before any merge; this operator-authorized branch
 deployment does not activate autonomy or count as a supervised pilot.
+
+## Verified rollout — 2026-10-22
+
+Deployed `0c775008ad9ec0fa8ed32cc61a1d9c3215ce80ce` on OptiPlex.
+[Exact-head CI](https://github.com/labairj-ai/investment/actions/runs/39817307304)
+is SUCCESS. Local and CI test inventories match: **2852 passed, 18 skipped, zero
+failures**; all required release gates pass. See [green validation](green-validation.json),
+[complete full-suite output](green-full-suite.txt), and [deployment receipt](deployment.json).
+
+Service active; normal HTTPS endpoint 200; authenticated API 200 and unauthenticated
+API 403. Read-only Advisor health, mutation-safety and functional-contract checks PASS.
+Holdings, development ledger and service configuration hashes remain unchanged.
+Backups and rollback source are retained outside the HTTP root in the receipt's
+backup directory. No live data restoration or autonomy activation occurred.
+
+The agent dashboard continues to report missing operational certification, effective
+GitHub protection, authenticated snapshot and sandbox evidence. The pilot history
+and seven-day requirement remain unmet. This deployment is not technical certification
+or a supervised pilot. Independent PR review remains outstanding before merge.

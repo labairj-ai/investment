@@ -55,3 +55,13 @@ Clean main `6cb6fde` reproduces 7 failures (327 passing focused cases). See
 Both JSON helpers are now classified as protected model behavior. Nine strict JSON
 regression cases pass. The baseline and runtime model version remain unchanged
 pending human acknowledgment and independent review. This TODO remains open.
+
+## Green deployment checkpoint — 2026-10-22
+
+The user acknowledged cc-v3.4 and explicitly authorized deployment. Exact source
+`0c775008ad9ec0fa8ed32cc61a1d9c3215ce80ce` passes all 408 focused release tests and
+the full suite (2852 passed, 18 unchanged skips, zero failures), release baseline
+and CC contract. GitHub Actions run 39817307304 is SUCCESS on that SHA. Deployment
+and read-only canary verification PASS. See the linked evidence directory for current
+green validation and deployment receipts; previous red receipts are historical.
+Independent review of PR #6 remains outstanding before merge; task remains open.
