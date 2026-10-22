@@ -1,7 +1,7 @@
 # Surface Real Coding-Agent Certification and Readiness in the Dashboard
 
 - **ID:** 0791
-- **Status:** backlog
+- **Status:** in-progress
 - **Created:** 2026-10-21
 - **Priority:** high
 - **Depends:** 0776, 0777, 0785, 0786, 0787, 0788, 0790
@@ -58,3 +58,19 @@ Operators need a trustworthy view of what remains before supervised or autonomou
 ## Source
 
 Captured from the [shared hardening and rollout plan](https://chatgpt.com/s/t_6ad9755089988191970329e796b72a9c). Requirements and dependencies preserved from the supplied plan.
+
+## Implementation progress — 2026-10-22
+
+Implementation: `dev_agent/readiness.py; dev_agent/dashboard.py`. Read-only actual readiness projection with exact blockers, stale/expired certification, sandbox/backup/protection evidence, qualifying pilot count/dates, calendar-day progress, disabled autonomy and auto-merge. Browser coverage includes 360/390/430/1280px.
+
+See [hardening plan](../docs/plans/development-agent-hardening-0785-0794.md),
+[operator contract](../docs/development-agent.md) and
+[prospective pilot protocol](../docs/development-agent-pilots.md).
+
+Focused, adversarial and browser results are recorded in the PR evidence.
+Acceptance remains open pending exact-head CI, unchanged release/CC gates and
+applicable operational evidence. Current main reproduces seven CC contract/test
+failures. Docker is unavailable on this development machine; GitHub main has no
+classic protection or active rules. No live pilot, production backup authenticity,
+physical-device acceptance or autonomy activation is claimed. No TODO is moved to
+done based solely on fixture success.

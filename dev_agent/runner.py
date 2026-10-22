@@ -29,11 +29,23 @@ class ContainerValidator:
     def __init__(self, image, timeout=120):
         if not re.fullmatch(r"[a-zA-Z0-9_./:-]+@sha256:[a-f0-9]{64}", image):
             raise ValueError("operator-provisioned digest-pinned image required")
-        self.image, self.timeout = image, min(300, max(1, timeout))
+        self.image, self.timeout = image, min(1800, max(1, timeout))
+        self._full_junit = None
 
     def run(self, root, name, command):
-        if not command or command[:3] != ["python", "-m", "pytest"] or any(not re.fullmatch(r"[A-Za-z0-9_./:=+-]+", x) for x in command):
-            raise ValueError("only structured pytest validation supported")
+        test_command = command[:3] == ["python", "-m", "pytest"]
+        scripts = {"release_baseline": "scripts/check_release_baseline.py", "cc_contract": "scripts/check_cc_contract.py", "agent_contract": "scripts/check_agent_contract.py", "todo_consistency": "scripts/check_todo_status.py", "development_governance": "scripts/check_development_agent.py"}
+        script_command = len(command) >= 2 and command[:2] == ["python", scripts.get(name)]
+        if not command or not (test_command or script_command) or any(not re.fullmatch(r"[A-Za-z0-9_./:=+-]+", x) for x in command):
+            raise ValueError("only structured canonical validation supported")
+        if script_command:
+            suffix = command[2:]
+            if name == 'release_baseline' and suffix != ['test-results.xml']: raise ValueError('release command')
+            if name == 'cc_contract' and (len(suffix)!=2 or suffix[0]!='--trusted-prior-file' or suffix[1]!='/authority/prior-cc-baseline.json'): raise ValueError('CC authority command')
+            if name not in {'release_baseline','cc_contract'} and suffix: raise ValueError('script arguments denied')
+        if test_command and any(x.startswith(('--junitxml','--override-ini','-o','--confcutdir','--ignore')) for x in command[3:]):
+            raise ValueError('validation inventory/gate overrides denied')
+        if name == 'full_suite': self._full_junit = None
         if not shutil.which("docker"):
             return dict(name=name, command=command, exit_code=None, status="UNAVAILABLE", reason="sandbox runtime unavailable")
         root = Path(root)
@@ -45,22 +57,38 @@ class ContainerValidator:
             for rel in git(root, "ls-files", "--cached", "--others", "--exclude-standard").splitlines():
                 try: path = guard.resolve(rel)
                 except ValueError: continue
-                if not path.is_file() or path.stat().st_size > 2_000_000: continue
+                if not path.is_file(): continue
+                if path.stat().st_size > 2_000_000: raise ValueError("source copy incomplete: oversized file")
                 target = snapshot / rel; target.parent.mkdir(parents=True, exist_ok=True); target.write_bytes(path.read_bytes())
+            if name == 'release_baseline':
+                if self._full_junit is None:
+                    return dict(name=name, command=command, exit_code=None, status='NOT_RUN', reason='full-suite JUnit unavailable', image=self.image)
+                (snapshot/'test-results.xml').write_bytes(self._full_junit)
+            # No host Git metadata or historical blobs enter the sandbox. Export
+            # only the exact approved prior CC baseline through a separate RO mount.
+            authority=Path(temp)/'authority';authority.mkdir()
+            if name=='cc_contract':
+                prior=getattr(self,'prior_base',None)
+                if not prior or not re.fullmatch(r'[a-f0-9]{40}',prior): raise ValueError('approved prior base required')
+                prior_bytes=subprocess.check_output(['git','-C',str(root),'show',prior+':.cc_contract_baseline.json'],timeout=30)
+                (authority/'prior-cc-baseline.json').write_bytes(prior_bytes)
             container = "dev-validation-" + uuid.uuid4().hex
             args = ["docker", "run", "--pull=never", "--rm", "--name", container, "--network=none", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--pids-limit=64", "--memory=512m", "--cpus=1", "--user=65534:65534", "--tmpfs", "/tmp:rw,nosuid,nodev,size=128m,mode=1777", "--tmpfs", "/workspace:rw,nosuid,nodev,size=128m,mode=1777", "--mount", f"type=bind,src={snapshot},dst=/source,readonly", "--workdir=/workspace", self.image,
-                    "python", "-c", "import shutil,subprocess,sys; shutil.copytree('/source','/workspace',dirs_exist_ok=True); sys.exit(subprocess.call(sys.argv[1:]))", *command, "--junitxml=/artifacts/results.xml"]
-            args[args.index("--workdir=/workspace"):args.index("--workdir=/workspace")] = ["--mount", f"type=bind,src={artifacts},dst=/artifacts"]
+                    "python", "-c", "import shutil,subprocess,sys; shutil.copytree('/source','/workspace',dirs_exist_ok=True); subprocess.run(['git','init','-b','validation','/workspace'],check=True); subprocess.run(['git','-C','/workspace','add','.'],check=True); subprocess.run(['git','-C','/workspace','-c','user.name=Validation Harness','-c','user.email=validation@example.invalid','commit','-m','isolated validation source'],check=True); sys.exit(subprocess.call(sys.argv[1:]))", *command, *(["--junitxml=/artifacts/results.xml"] if test_command else [])]
+            args[args.index("--workdir=/workspace"):args.index("--workdir=/workspace")] = ["--mount", f"type=bind,src={artifacts},dst=/artifacts", "--mount", f"type=bind,src={authority},dst=/authority,readonly"]
             try:
                 # Discard untrusted logs; pytest XML/count receipts may be exported
                 # through a separately reviewed artifact protocol, never stdout claims.
                 result = subprocess.run(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=self.timeout)
+                if not test_command:
+                    return dict(name=name, command=command, exit_code=result.returncode, status='PASS' if result.returncode==0 else 'FAIL', image=self.image)
                 xml = artifacts / "results.xml"
                 if not xml.is_file() or xml.is_symlink() or xml.stat().st_size > 2_000_000:
                     return dict(name=name, command=command, exit_code=result.returncode, status="PARTIAL", reason="missing or oversized test inventory", image=self.image)
                 inventory = junit(xml)
+                if name == 'full_suite': self._full_junit = xml.read_bytes()
                 return dict(name=name, command=command + ["--junitxml=/artifacts/results.xml"], exit_code=result.returncode, status="PASS" if result.returncode == 0 and inventory["total"] > 0 and not inventory["failures"] else "FAIL", inventory=inventory, artifact_hash=hashlib.sha256(xml.read_bytes()).hexdigest(), image=self.image)
-            except subprocess.TimeoutExpired:
+            except (subprocess.TimeoutExpired, ValueError, OSError):
                 subprocess.run(["docker", "rm", "-f", container], capture_output=True, timeout=15)
                 return dict(name=name, command=command, exit_code=None, status="FAIL", reason="timeout")
 
@@ -98,7 +126,7 @@ def review(root, original, base_files, provider, validation, declared_risk, time
         if response["disposition"] == "PASS" and response["findings"]:
             raise ValueError("PASS with unresolved findings")
         if source_hash(root) != before: raise ValueError("reviewer changed workspace")
-        return dict(response, risk=risk, provider=provider.identity)
+        return dict(response, risk=risk, provider=provider.identity, independent_context=uuid.uuid4().hex)
     except Exception:
         return dict(disposition="NEEDS_HUMAN", findings=[dict(id="review-unavailable", severity="HIGH", file="", requirement="independent review", evidence="review failed or workspace changed", principle="P3")], risk=risk, provider=provider.identity)
 
@@ -118,15 +146,20 @@ class Runner:
             self.store.transition(cid, "NEEDS_HUMAN", dict(reason="interrupted run"))
         return dict(recovered=[r["run_id"] for r in interrupted], status="NEEDS_HUMAN" if interrupted else "UNCHANGED")
 
-    def run(self, cid, context, worktrees, record, validation_commands, *, certification, protections):
+    def run(self, cid, context, worktrees, record, validation_commands, *, certification, protections, mode="SUPERVISED", fixture=False):
         # Certification cannot be replaced by a boolean/model assertion. A verifier
         # supplied by the trusted application must check exact harness source hash.
-        if not certification() or protections.get("status") != "PASS":
+        if certification() is not True or protections.get("status") != "PASS":
             return dict(status="NEEDS_HUMAN", reason="current certification and protections required")
         root = worktrees.verify(record)
         if git(root, "status", "--porcelain") or context["head"] != record["base"]:
             raise ValueError("dirty/unapproved worktree")
         candidate = self.store.get(cid)
+        if mode not in {'SUPERVISED','AUTONOMOUS'} or context.get('mode','SUPERVISED')!=mode: raise ValueError('execution mode changed after approval')
+        if not fixture:
+            starts=[e['payload'] for e in candidate['events'] if e['kind']=='START_AUTHORIZATION']
+            if not starts or starts[-1]['context']!=context or starts[-1]['mode']!=mode: raise ValueError('trusted start authorization required')
+            if any(e['kind']=='RUN' and e['payload']['data'].get('start_nonce')==starts[-1]['nonce'] for e in candidate['events']): raise ValueError('start authorization already consumed')
         plans = [e["payload"] for e in candidate["events"] if e["kind"] == "PLAN"]
         if not plans or plans[-1]["context"] != context: raise ValueError("stale plan")
         todo_path = plans[-1]["path"]
@@ -142,10 +175,15 @@ class Runner:
         guard = WorkspaceGuard(root, allowed)
         base_files = {name: guard.read(name) if (root / name).exists() else "" for name in allowed}
         run_id = str(uuid.uuid4()); self.store.begin(cid, context, run_id)
-        self.store.run_event(cid, run_id, "builder", "RUNNING", dict(base=record["base"], worktree=record, provider=self.builder.identity))
+        self.store.run_event(cid, run_id, "builder", "RUNNING", dict(base=record["base"], worktree=record, provider=self.builder.identity, mode=mode, fixture_only=fixture, start_nonce=None if fixture else starts[-1]["nonce"]))
         start = time.monotonic(); unresolved = set(); seen = set(); final = {}; cumulative = 0
         try:
             for iteration in range(1, self.iterations + 1):
+                if mode=='AUTONOMOUS':
+                    from .operations import policy
+                    config=policy(worktrees.repo)
+                    if not config.get('autonomous_implementation') or config.get('emergency_stop') or os.environ.get('DEV_AGENT_KILL_SWITCH','').lower() not in {'','0','false'} or certification() is not True:
+                        raise ValueError('autonomous operation disabled or certification stale')
                 if time.monotonic() - start >= self.seconds: raise ValueError("wall-time budget exhausted")
                 response = respond_bounded(self.builder, dict(role="builder", todo=original, files={name: guard.read(name) if (root / name).exists() else "" for name in allowed}, contract=guard.read("AGENTS.md"), principles=PRINCIPLES, principle_version="engineering-principles-1", findings=final.get("findings", [])), self.seconds - (time.monotonic()-start))
                 actions = response.get("actions")
@@ -166,11 +204,11 @@ class Runner:
                     validations.append(self.validator.run(root, name, cmd))
                 final = review(root, original, base_files, self.reviewer, validations, context["risk"], self.seconds - (time.monotonic()-start), final.get("findings", []))
                 current = {f["id"] for f in final["findings"]}
-                event = dict(iteration=iteration, source_hash=source_hash(root), changed_files=sorted(changed), actions_summary=["write:"+a["path"] for a in actions], validations=validations, review=final, resolved=sorted(unresolved-current), new=sorted(current-unresolved), cumulative_lines=cumulative)
+                event = dict(mode=mode, fixture_only=fixture, provider=self.builder.identity, iteration=iteration, source_hash=source_hash(root), changed_files=sorted(changed), actions_summary=["write:"+a["path"] for a in actions], validations=validations, review=final, resolved=sorted(unresolved-current), new=sorted(current-unresolved), cumulative_lines=cumulative)
                 self.store.event(cid, "ITERATION", event, f"{run_id}:{iteration}")
                 if final["disposition"] == "PASS":
                     self.store.run_event(cid, run_id, "builder", "PASS", dict(head=git(root, "rev-parse", "HEAD"), evidence=event))
-                    return dict(status="REVIEW_PASS", run_id=run_id, validation=validations, review=final, iterations=iteration)
+                    return dict(status="REVIEW_PASS", mode=mode, run_id=run_id, validation=validations, review=final, iterations=iteration)
                 fingerprint = digest(final["findings"])
                 high = {f["id"] for f in final["findings"] if f["severity"] in {"HIGH", "CRITICAL"}}
                 if final["disposition"] == "NEEDS_HUMAN" or fingerprint in seen or high & unresolved:

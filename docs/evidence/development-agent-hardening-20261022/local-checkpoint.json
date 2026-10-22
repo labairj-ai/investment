@@ -1,0 +1,27 @@
+{
+  "focused_command": "pytest tests/test_development_agent.py tests/test_development_agent_hardening.py tests/test_agent_contract.py tests/test_operational_watchdog.py -q --tb=short",
+  "focused_passed": 219,
+  "agent_contract": "PASS",
+  "development_governance": "PASS",
+  "todo_consistency": "PASS",
+  "shell_syntax": "PASS",
+  "diff_whitespace": "PASS",
+  "browser_widths": [
+    360,
+    390,
+    430,
+    1280
+  ],
+  "browser_status": "PASS",
+  "physical_devices": "NOT_RUN",
+  "operational_sandbox": "UNAVAILABLE: Docker not installed",
+  "github_protection": "FAIL: no classic protection or active branch rules",
+  "authentic_production_backup": "NOT_RUN: operator provisioning required",
+  "qualifying_real_pilots": 0,
+  "autonomous_implementation": false,
+  "auto_merge": false,
+  "known_main_cc_engine_expected": "bfdf6e9d15d452d8",
+  "known_main_cc_engine_observed": "68ac6cf2d11d825c",
+  "inherited_cc_test_failures_reproduced": 7,
+  "todos_done": []
+}

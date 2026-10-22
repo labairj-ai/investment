@@ -61,3 +61,19 @@ The system needs prospective supervised evidence before autonomy is enabled.
 ## Source
 
 Captured from the [shared hardening and rollout plan](https://chatgpt.com/s/t_6ad9755089988191970329e796b72a9c). Requirements and dependencies preserved from the supplied plan.
+
+## Implementation progress — 2026-10-22
+
+Implementation: `docs/development-agent-pilots.md; dev_agent/operations.py`. Selected three proposed low-risk pilot scopes and documented the exact prospective lifecycle. Implemented authenticated single-count success capture and progress reporting. No real pilot success is claimed; human decisions, deployed observations and seven calendar days remain required.
+
+See [hardening plan](../docs/plans/development-agent-hardening-0785-0794.md),
+[operator contract](../docs/development-agent.md) and
+[prospective pilot protocol](../docs/development-agent-pilots.md).
+
+Focused, adversarial and browser results are recorded in the PR evidence.
+Acceptance remains open pending exact-head CI, unchanged release/CC gates and
+applicable operational evidence. Current main reproduces seven CC contract/test
+failures. Docker is unavailable on this development machine; GitHub main has no
+classic protection or active rules. No live pilot, production backup authenticity,
+physical-device acceptance or autonomy activation is claimed. No TODO is moved to
+done based solely on fixture success.

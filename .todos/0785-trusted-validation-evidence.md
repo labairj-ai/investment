@@ -1,7 +1,7 @@
 # Make Validation Evidence Harness-Generated and Non-Spoofable
 
 - **ID:** 0785
-- **Status:** backlog
+- **Status:** in-progress
 - **Created:** 2026-10-21
 - **Priority:** critical
 - **Depends:** 0770, 0784
@@ -65,3 +65,19 @@ A coding-agent PR must never become PR-ready based on caller-supplied PASS metad
 ## Source
 
 Captured from the [shared hardening and rollout plan](https://chatgpt.com/s/t_6ad9755089988191970329e796b72a9c). Requirements and dependencies preserved from the supplied plan.
+
+## Implementation progress — 2026-10-22
+
+Implementation: `dev_agent/validation.py; dev_agent/evidence.py; dev_agent/runner.py`. Canonical seven-gate execution manifest, immediate immutable results, SHA/source/command/image binding, ledger-only sealing and final independent review. Forged caller PASS and stale/mixed/duplicate inventories are rejected.
+
+See [hardening plan](../docs/plans/development-agent-hardening-0785-0794.md),
+[operator contract](../docs/development-agent.md) and
+[prospective pilot protocol](../docs/development-agent-pilots.md).
+
+Focused, adversarial and browser results are recorded in the PR evidence.
+Acceptance remains open pending exact-head CI, unchanged release/CC gates and
+applicable operational evidence. Current main reproduces seven CC contract/test
+failures. Docker is unavailable on this development machine; GitHub main has no
+classic protection or active rules. No live pilot, production backup authenticity,
+physical-device acceptance or autonomy activation is claimed. No TODO is moved to
+done based solely on fixture success.

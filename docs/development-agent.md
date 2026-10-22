@@ -91,15 +91,87 @@ investment P&L or changes risk/approval thresholds. Critical receipts remain for
 transient operator logs expire after 14 days. Downstream UI is read-only except
 explicit approval operations. No outcome collector can deploy.
 
-`canary` exercises isolated fixture planning/build/review/evidence and adversarial
-guards. Its result remains PARTIAL until actual OS validation, GitHub identity/
-protection, read-only production-snapshot checks and supervised observation pass.
-`certify --image IMAGE@sha256:DIGEST --input supervised.json` performs one explicit
-supervised run. Input names the isolated snapshot and supervising human actor; the
-tool executes the OS-sandbox test and GitHub verification itself. It never converts
-a fixture PASS into an operational PASS. `current` independently enforces the
-required count and elapsed period across distinct, current-hash supervised receipts.
-Autonomous implementation is disabled by configuration. Enabling it requires a
-reviewed change, three supervised successful certifications under identical harness
-hashes spanning at least seven days. Changes to harness/config/contract invalidate
-prior certificates. Certification never authorizes financial/execution autonomy.
+`canary` exercises isolated fixture planning/build/review and authority attacks.
+Its result remains PARTIAL until real OS validation, effective GitHub protection
+and authenticated production-snapshot checks pass. `certify` performs technical
+checks only; it does not record a supervised operational success. The current
+hash, three real operational successes spanning seven calendar days, and explicit
+autonomy configuration are separate requirements. See the hardening contract below.
+
+## Hardening contract — TODOs 0785–0794
+
+The canonical manifest is `development-validation-2`: focused tests, full suite,
+exact release-baseline, CC behavioral contract, agent contract, TODO consistency
+and development-governance checks. `validate --image IMAGE@sha256:DIGEST
+--review-model MODEL --candidate ID` executes every gate through the application-owned
+networkless sandbox. Each result is immediately ledger-persisted with candidate,
+TODO, base/head SHA, complete source hash, command version, image digest, timestamps,
+exit code and JUnit inventory. Every batch must be complete and current. Model stdout,
+zero exit without passing JUnit, or caller-supplied PASS JSON cannot seal evidence.
+`seal --candidate ID` accepts no validation/provider payload. Independent review is
+refreshed using the complete trusted gate inventory before sealing.
+
+Snapshot certification now requires an authenticated `production-backup-provenance-1`
+receipt and matching isolated `.db`. An operator provisions `DEV_AGENT_BACKUP_SIGNING_KEY`
+through the existing environment configuration on the backup/verifier processes;
+the Builder receives neither that key nor host environment variables. When configured,
+the established backup script invokes the OptiPlex-only signer after its online backup.
+Without signer configuration the existing backup path is unchanged. An unavailable
+verifier means UNAVAILABLE. Never send a signing key in CLI JSON or commit it.
+Copy the closed backup and its receipt out of runtime paths before certification.
+HMAC authenticates the trusted backup mechanism, source, hash, canonical schema,
+migration fingerprint, integrity result, application SHA and timestamp. Backups older
+than 24 hours, future timestamps, WAL/journal companions and schema mismatches fail.
+Changing backup signing material requires operator provisioning and is not an agent task.
+
+Execution modes are frozen into plan/approval and recorded in start/run/iteration/
+receipt/PR lineage. SUPERVISED requires authenticated explicit human invocation,
+current technical certification, exact approved base/scope and effective GitHub
+protection. It does not require accrued autonomous history. AUTONOMOUS additionally
+requires enabled configuration, three real qualifying pilots over seven calendar days,
+a current hash, a risk ceiling of L2 and a bounded daily admission reservation.
+L3 remains human-started; L4/L5 cannot enter the generic Builder in either mode.
+`autonomous_implementation=false`, `emergency_stop=true`, or
+`DEV_AGENT_KILL_SWITCH=1` denies autonomous starts. No mode grants merge/deployment
+or GitHub configuration authority; `auto_merge` remains false.
+
+Technical `harness-canary-2` receipts are distinct from operational supervision.
+An arbitrary actor string cannot create either an authenticated human decision or a
+qualifying success. Interactive CLI identity comes from the authenticated OS account;
+dashboard identity comes from server-side token/origin verification, not request JSON.
+Only complete real Builder/independent Reviewer/validation/seal/verified PR/human
+review/deployment-observation lineage counts, once per run and only for the current
+harness hash. See [prospective pilots](development-agent-pilots.md).
+
+GitHub handoff checks head repository, branch, exact head SHA, protected main base
+and actual draft state after creation/update. Later dispositions recheck identity.
+A stale remote head needs new validation, review and a new receipt; the agent never
+force-pushes or edits evidence to match it. Effective protection combines classic
+branch protections with all active branch rules, including inherited rulesets.
+Missing bypass visibility is UNAVAILABLE. Active bypass actors or administrative
+agent authority stop promotion. Fresh independent last-push review, stale dismissal,
+strict current-head CI, conversation resolution and force/delete protection are
+mandatory; repository role names alone never establish effective permission.
+
+The dashboard computes readiness from configuration and immutable certificates/run
+history. It shows exact blockers, hash staleness, sandbox/snapshot/protection status,
+supervised counts/dates, observation period, disabled autonomy and auto-merge. It does
+not infer installed scheduler status: discovery units remain operator-managed and
+installation is explicitly unavailable until observed. No dashboard read mutates state.
+
+`autonomous-cycle --candidate ID` progresses only an already frozen, human-approved
+AUTONOMOUS L0–L2 scope. It never approves its own discovery/plan proposals. All admission
+gates are checked before Builder, again before commit/validation, and before publishing
+the exact sealed SHA to the configured repository's agent branch. It runs mandatory
+validation and independent review, then verifies remote PR identity. Each validation
+command has a bounded timeout and the complete batch is bounded to 40 minutes.
+Automatic policy approval of newly discovered candidates is deliberately unavailable;
+this phase consumes the explicit approved queue and cannot expand its scope.
+
+The validation container receives a source-only copy and a fresh isolated Git repository,
+never host Git configuration, hooks, credentials or historical data blobs. The CC gate
+uses its existing `--trusted-prior-file` interface with the baseline extracted by the
+trusted host harness from the exact approved base SHA and mounted read-only separately.
+The command receipt still binds that immutable base and exact source/head identity.
+Financial definition migrations remain outside the generic Builder's authority; no CC
+gate implementation, version, baseline or threshold is altered for this validation path.

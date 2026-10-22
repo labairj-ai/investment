@@ -233,7 +233,7 @@ class Validator:
 def run_fixture(repo,store,tmp_path,builder,replies,**kwargs):
     cid,context=approved(repo,store);manager=Worktrees(repo,tmp_path/"trees");record=manager.create(context["todo"],context["head"])
     runner=Runner(store,ReplayProvider(builder),ReplayProvider(replies),kwargs.pop("validator",Validator()),**kwargs)
-    result=runner.run(cid,context,manager,record,[("focused_tests",["fixture"])],certification=lambda:True,protections={"status":"PASS"})
+    result=runner.run(cid,context,manager,record,[("focused_tests",["fixture"])],certification=lambda:True,protections={"status":"PASS"},fixture=True)
     return result,cid,Path(record["path"])
 
 
@@ -270,7 +270,7 @@ def test_runner_fail_closed(repo,store,tmp_path,variant):
 def test_runner_disabled_without_certification(repo,store,tmp_path):
     cid,context=approved(repo,store);manager=Worktrees(repo,tmp_path/"trees");record=manager.create(context["todo"],context["head"])
     runner=Runner(store,ReplayProvider([]),ReplayProvider([]),Validator())
-    assert runner.run(cid,context,manager,record,[],certification=lambda:False,protections={"status":"PASS"})["status"]=="NEEDS_HUMAN"
+    assert runner.run(cid,context,manager,record,[],certification=lambda:False,protections={"status":"PASS"},fixture=True)["status"]=="NEEDS_HUMAN"
     assert store.get(cid)["state"]=="APPROVED"
 
 
@@ -286,7 +286,7 @@ def test_sandbox_missing_and_command_restrictions(repo,monkeypatch):
 def test_evidence_hashes_counts_and_tampering(repo,tmp_path):
     vals=[dict(name=n,command=["fixture",n],exit_code=0,status="PASS",inventory=dict(total=1,passed=1,failures=[],skipped=[])) for n in evidence.REQUIRED]
     data=evidence.receipt(repo,"candidate","0001",discovery.git(repo,"rev-parse","HEAD"),1,vals,{"disposition":"PASS"},{"risk":"L0"},{"provider":"fixture"},{"contract":"1"})
-    assert data["status"]=="PASS" and evidence.verify(repo,data)
+    assert data["status"]=="PARTIAL" and not data["trusted_validation"] and evidence.verify(repo,data)
     path=evidence.persist(tmp_path/"receipts",data);assert evidence.persist(path.parent,data)==path
     tampered=dict(data,status="FAIL");assert not evidence.verify(repo,tampered)
     (repo/"docs/note.md").write_text("tampered");assert not evidence.verify(repo,data)
@@ -445,9 +445,15 @@ def test_pr_ready_binds_committed_candidate_and_recovers(repo,store,tmp_path):
     commit(path)
     context=[e["payload"]["context"] for e in store.get(cid)["events"] if e["kind"]=="PLAN"][-1]
     vals=[dict(name=n,command=["fixture",n],exit_code=0,status="PASS",inventory=dict(total=1,passed=1,failures=[],skipped=[])) for n in evidence.REQUIRED]
+    # Operator-supplied results cannot authorize PR handoff, even if all claim PASS.
     proof=evidence.receipt(path,cid,context["todo"],context["head"],1,vals,result["review"],result["review"]["risk"],{}, {})
+    from test_development_agent_hardening import make_trusted_proof
+    proof=make_trusted_proof(path,store,cid)
     class Client:
+        repository='o/r'
         def protections(self):return dict(status="PASS")
+        def pr_identity(self,number):
+            return dict(number=number,headRefName=discovery.git(path,'branch','--show-current'),headRefOid=proof['head'],baseRefName='main',headRepository={'nameWithOwner':'o/r'},isDraft=False)
         def handoff(self,branch,title,body,draft):
             assert branch.startswith("agent/") and cid in body and "human merge" in body and not draft
             return dict(url="https://github.com/o/r/pull/1",number=1)
@@ -466,7 +472,13 @@ def test_snapshot_is_read_only(tmp_path):
     with sqlite3.connect(snapshot) as db:
         db.execute("CREATE TABLE holdings(ticker,shares)");db.execute("INSERT INTO holdings VALUES ('TEST',100)")
     workspace=tmp_path/"workspace";workspace.mkdir();before=snapshot.read_bytes()
-    assert check_snapshot(snapshot,workspace)["status"]=="PASS"
+    from dev_agent.snapshot import REQUIRED_TABLES, sign_backup
+    with sqlite3.connect(snapshot) as db:
+        for name in REQUIRED_TABLES: db.execute('CREATE TABLE '+name+'(x)')
+    before=snapshot.read_bytes()
+    key=b'fixture-backup-key-never-production-1234'
+    provenance=sign_backup(snapshot,key=key,source_sha='a'*40)
+    assert check_snapshot(snapshot,workspace,provenance,key=key)["status"]=="PASS"
     assert snapshot.read_bytes()==before
 
 
@@ -534,11 +546,10 @@ def test_supervised_certification_cannot_promote_missing_external_gates(tmp_path
     with sqlite3.connect(snapshot) as db:db.execute("CREATE TABLE holdings(x)")
     class Client:
         def protections(self):return dict(status="FAIL",failures=["unprotected main"])
-    result=certification.certify(ROOT,Validator("UNAVAILABLE"),Client(),snapshot,"supervising-human")
-    assert result["status"]=="PARTIAL" and result["supervised"] is True
-    assert result["components"]["production_snapshot"]=="PASS"
-    assert result["components"]["os_validation_sandbox"]=="UNAVAILABLE"
-    assert not certification.current(ROOT,[result])
+    with pytest.raises(ValueError,match='trusted sandbox'):
+        certification.certify(ROOT,Validator("UNAVAILABLE"),Client(),snapshot,"supervising-human")
+    # A free-form human name or a fake validator cannot establish supervision.
+    assert not certification.current(ROOT,[])
 
 
 def test_committed_worktree_cleanup_preserves_branch_and_evidence(repo,tmp_path):

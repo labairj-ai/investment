@@ -131,7 +131,7 @@ class Store:
         return json.loads(row[0])["state"]
 
     def event(self, cid, kind, payload, key=None):
-        if kind in {"STATE", "APPROVAL"}:
+        if kind in {"STATE", "APPROVAL", "VALIDATION", "VALIDATION_BATCH", "RECEIPT", "OPERATIONAL_SUCCESS", "AUTHORIZATION", "START_AUTHORIZATION", "TECHNICAL_CERTIFICATION"}:
             raise ValueError("use transition/decide")
         with self.connect(True) as db:
             self._append(db, cid, kind, payload, key or str(uuid.uuid4()))
@@ -166,7 +166,7 @@ class Store:
         results = [self.get(cid) for cid in ids]
         return [r for r in results if all(r.get(k) == v for k, v in filters.items())][:max(0, min(int(limit), 500))]
 
-    def decide(self, cid, decision, actor, context, nonce, rationale=""):
+    def decide(self, cid, decision, actor, context, nonce, rationale="", *, identity=None):
         if decision not in {"approve", "reject", "defer"} or not actor or not nonce:
             raise ValueError("explicit human decision required")
         if not {"todo", "head", "scope_hash", "risk", "acceptance_hash"} <= context.keys():
@@ -184,6 +184,11 @@ class Store:
             if int(context["risk"][1:]) >= 3 and not rationale.strip():
                 raise ValueError("high-risk rationale required")
             payload = dict(actor=actor, decision=decision, context=context, prior=prior, rationale=rationale)
+            if identity is not None:
+                from .identity import HumanIdentity
+                if type(identity) is not HumanIdentity: raise ValueError('authenticated human identity required')
+                payload.update(identity.audit())
+                payload['decision_nonce']=nonce
             self._append(db, cid, "APPROVAL", payload, "decision:" + nonce)
             self._append(db, cid, "STATE", {"state": target}, str(uuid.uuid4()))
 
@@ -194,7 +199,7 @@ class Store:
                 raise ValueError("fresh exact approval required")
             self._append(db, cid, "STATE", {"state": "BUILDING", "run_id": run_id}, "begin:" + run_id)
 
-    def review_decision(self, cid, stage, decision, actor, context, nonce, rationale):
+    def review_decision(self, cid, stage, decision, actor, context, nonce, rationale, *, identity=None):
         """Review dispositions are audit annotations, never merge/deploy authority."""
         if stage not in {"REVIEW_OVERRIDE", "ESCALATION", "PR_DISPOSITION", "OUTCOME_ACCEPTANCE"} or decision not in {"accept", "reject", "defer", "escalate"}:
             raise ValueError("invalid human review decision")
@@ -213,7 +218,12 @@ class Store:
                 outcome = db.execute("SELECT payload FROM dev_events WHERE candidate=? AND kind='DEPLOYMENT' ORDER BY seq DESC LIMIT 1", (cid,)).fetchone()
                 if prior not in {"DEPLOYED", "ROLLED_BACK"} or not outcome or json.loads(outcome[0])["status"] not in {"HEALTHY", "ROLLED_BACK"}:
                     raise ValueError("observed healthy/rollback outcome required before closure")
-            self._append(db, cid, "HUMAN_REVIEW", dict(stage=stage, decision=decision, actor=actor, context=context, rationale=rationale, grants_merge=False, grants_deployment=False), "review-decision:"+nonce)
+            audit={}
+            if identity is not None:
+                from .identity import HumanIdentity
+                if type(identity) is not HumanIdentity: raise ValueError('authenticated human identity required')
+                audit=identity.audit()
+            self._append(db, cid, "HUMAN_REVIEW", dict(stage=stage, decision=decision, actor=actor, context=context, rationale=rationale, grants_merge=False, grants_deployment=False, **{k:v for k,v in audit.items() if k!='actor'}), "review-decision:"+nonce)
             if close: self._append(db, cid, "STATE", {"state":"CLOSED"}, "close:"+nonce)
 
     def run_event(self, cid, run_id, role, status, data, parent=None):

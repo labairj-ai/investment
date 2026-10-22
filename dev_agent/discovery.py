@@ -143,7 +143,8 @@ def task_index(root):
     return records
 
 
-def plan(root, store, cid, criteria, dependencies=()):
+def plan(root, store, cid, criteria, dependencies=(), *, mode="SUPERVISED", focused_tests=None):
+    if mode not in {"SUPERVISED","AUTONOMOUS"}: raise ValueError("explicit execution mode required")
     root = Path(root).resolve(); candidate = store.get(cid)
     if candidate["state"] not in {"DISCOVERED", "DEFERRED", "NEEDS_HUMAN"}:
         raise ValueError("candidate is not plannable")
@@ -174,8 +175,12 @@ def plan(root, store, cid, criteria, dependencies=()):
         body += f"\n\n## QA requirements\n\n- [ ] Focused tests, full suite and release gates pass with fresh evidence.\n\n## Implementation guardrails\n\nRisk {risk['risk']}; human scope and merge approval required. AGENTS.md and engineering-principles-1 apply.\n\n## Source\n\nDevelopment candidate {cid}. Evidence: {json.dumps(candidate['evidence'])}\n"
         with path.open("x") as stream:
             stream.write(body); stream.flush(); os.fsync(stream.fileno())
-        context = dict(todo=tid, head=head, scope_hash=digest(candidate["files"]), risk=risk["risk"], acceptance_hash=digest(body))
-        store.event(cid, "PLAN", dict(context=context, path=str(path.relative_to(root)), criteria=criteria, risk=risk))
+        focused_tests=focused_tests or ['tests/test_development_agent.py']
+        context = dict(validation_hash=digest(focused_tests), todo=tid, head=head, scope_hash=digest(candidate["files"]), risk=risk["risk"], acceptance_hash=digest(body), mode=mode)
+        from .validation import manifest
+        focused_tests=focused_tests or ['tests/test_development_agent.py']
+        manifest(focused_tests,head)
+        store.event(cid, "PLAN", dict(context=context, path=str(path.relative_to(root)), criteria=criteria, focused_tests=focused_tests, risk=risk))
         store.transition(cid, "PLANNED")
     return context
 
@@ -189,6 +194,6 @@ def refresh_plan(root, store, cid):
     old = [e["payload"] for e in candidate["events"] if e["kind"] == "PLAN"][-1]
     path = root / old["path"]
     risk = classify(candidate["files"], graphs=[protected_graph(root)])
-    context = dict(todo=old["context"]["todo"], head=git(root, "rev-parse", "HEAD"), scope_hash=digest(candidate["files"]), risk=risk["risk"], acceptance_hash=digest(path.read_text()))
+    context = dict(validation_hash=digest(old.get("focused_tests", ["tests/test_development_agent.py"])), todo=old["context"]["todo"], head=git(root, "rev-parse", "HEAD"), scope_hash=digest(candidate["files"]), risk=risk["risk"], acceptance_hash=digest(path.read_text()), mode=old["context"].get("mode", "SUPERVISED"))
     store.event(cid, "PLAN", dict(old, context=context, risk=risk))
     return context

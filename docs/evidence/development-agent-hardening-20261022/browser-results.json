@@ -1,0 +1,78 @@
+{
+  "status": "PASS",
+  "results": [
+    {
+      "width": 360,
+      "scroll": 360,
+      "overflow": false,
+      "unsafe": 0,
+      "buttons": [
+        44,
+        44,
+        44
+      ],
+      "warning": "Human review required — protected or unresolved work",
+      "readiness": true,
+      "confirmation": true,
+      "reviewChoiceHidden": true,
+      "dialogOverflow": false,
+      "reviewChoiceShown": true,
+      "reviewDecisionRouted": true
+    },
+    {
+      "width": 390,
+      "scroll": 390,
+      "overflow": false,
+      "unsafe": 0,
+      "buttons": [
+        44,
+        44,
+        44
+      ],
+      "warning": "Human review required — protected or unresolved work",
+      "readiness": true,
+      "confirmation": true,
+      "reviewChoiceHidden": true,
+      "dialogOverflow": false,
+      "reviewChoiceShown": true,
+      "reviewDecisionRouted": true
+    },
+    {
+      "width": 430,
+      "scroll": 430,
+      "overflow": false,
+      "unsafe": 0,
+      "buttons": [
+        44,
+        44,
+        44
+      ],
+      "warning": "Human review required — protected or unresolved work",
+      "readiness": true,
+      "confirmation": true,
+      "reviewChoiceHidden": true,
+      "dialogOverflow": false,
+      "reviewChoiceShown": true,
+      "reviewDecisionRouted": true
+    },
+    {
+      "width": 1280,
+      "scroll": 1280,
+      "overflow": false,
+      "unsafe": 0,
+      "buttons": [
+        44,
+        44,
+        44
+      ],
+      "warning": "Human review required — protected or unresolved work",
+      "readiness": true,
+      "confirmation": true,
+      "reviewChoiceHidden": true,
+      "dialogOverflow": false,
+      "reviewChoiceShown": true,
+      "reviewDecisionRouted": true
+    }
+  ],
+  "physical_devices": "NOT_RUN"
+}

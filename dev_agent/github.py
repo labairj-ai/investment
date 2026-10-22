@@ -5,10 +5,11 @@ import json
 import re
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 from .discovery import git
-from .evidence import REQUIRED, verify
+from .evidence import REQUIRED, verify, trusted_receipt
 from .store import bounded, digest
 from .policy import whole_diff
 
@@ -22,23 +23,54 @@ class GitHub:
         result = subprocess.run(["gh", "api", endpoint], check=True, capture_output=True, text=True, timeout=30)
         return json.loads(result.stdout)
 
+    def read_all(self, endpoint):
+        rows=[]
+        for page in range(1,101):
+            batch=self.read(endpoint+('&' if '?' in endpoint else '?')+f'per_page=100&page={page}')
+            if not isinstance(batch,list): raise ValueError('API inventory unavailable')
+            rows.extend(batch)
+            if len(batch)<100: return rows
+        raise ValueError('API pagination incomplete')
+
     def protections(self):
+        raw={}
         try:
-            data = self.read(f"repos/{self.repository}/branches/main/protection")
-            identity = self.read("user")["login"]
-            permission = self.read(f"repos/{self.repository}/collaborators/{identity}/permission")
-            rulesets = self.read(f"repos/{self.repository}/rulesets?includes_parents=true")
-            bypass = False
-            for ruleset in rulesets:
-                detail = self.read(f"repos/{self.repository}/rulesets/{ruleset['id']}")
-                # Conservative: any active bypass actor requires a separately
-                # audited identity/role resolution, so automated promotion stops.
-                if detail.get("enforcement") == "active" and detail.get("bypass_actors"):
-                    bypass = True
-            data["agent_identity_no_bypass_verified"] = permission.get("permission") in {"write", "maintain"} and not bypass
-            return verify_protections(data)
+            # A 404 on classic protection alone is legitimate for ruleset-only repos.
+            try: classic=self.read(f'repos/{self.repository}/branches/main/protection')
+            except subprocess.CalledProcessError as exc:
+                if '404' not in str(exc.stderr): raise
+                classic=None
+            raw['classic']=classic
+            user=self.read('user');raw['identity']={k:user[k] for k in ('login','id') if k in user}
+            repo=self.read(f'repos/{self.repository}');raw['repository']={k:repo[k] for k in ('id','full_name','permissions','default_branch') if k in repo}
+            raw['permission']=self.read(f"repos/{self.repository}/collaborators/{raw['identity']['login']}/permission")
+            active=self.read_all(f'repos/{self.repository}/rules/branches/main')
+            inventory=self.read_all(f'repos/{self.repository}/rulesets?includes_parents=true')
+            details=[]
+            for item in inventory:
+                # Include inherited details; absence of visibility is UNAVAILABLE.
+                detail=self.read(f"repos/{self.repository}/rulesets/{item['id']}?includes_parents=true")
+                if not {'rules','bypass_actors','enforcement'}<=detail.keys(): raise ValueError('incomplete ruleset detail')
+                details.append(detail)
+            raw.update(active_rules=active,rulesets=details)
+            result=effective_protections(classic,active,details,raw['identity'],raw['repository'],visibility=True)
+            result.update(created=time.time(),evidence_hash=digest(raw),evidence=raw)
+            return result
         except Exception:
-            return dict(status="UNAVAILABLE", reason="GitHub protection could not be verified", auto_merge=False)
+            return dict(status='UNAVAILABLE',failures=['GitHub identity/protection visibility incomplete'],auto_merge=False,created=time.time(),evidence_hash=digest(raw))
+
+    def pr_identity(self, number):
+        result=subprocess.run(['gh','pr','view',str(number),'--repo',self.repository,'--json','number,url,headRefName,headRefOid,headRepository,headRepositoryOwner,baseRefName,isDraft,state,reviewDecision,mergeCommit'],check=True,capture_output=True,text=True,timeout=30)
+        return json.loads(result.stdout)
+
+    def publish(self,root,branch,head):
+        if not branch.startswith('agent/') or git(root,'branch','--show-current')!=branch or git(root,'rev-parse','HEAD')!=head or git(root,'status','--porcelain'):
+            raise ValueError('clean exact-head isolated branch required')
+        remote=git(root,'remote','get-url','origin')
+        allowed={f'git@github.com:{self.repository}.git',f'https://github.com/{self.repository}.git'}
+        if remote not in allowed:raise ValueError('unexpected publishing repository')
+        if self.protections().get('status')!='PASS':raise ValueError('effective protection required before publish')
+        subprocess.run(['git','-C',str(root),'push','origin',head+':refs/heads/'+branch],check=True,capture_output=True,timeout=60)
 
     def handoff(self, branch, title, body, draft):
         query = subprocess.run(["gh", "pr", "list", "--repo", self.repository, "--head", branch, "--state", "open", "--json", "number,url,isDraft"], check=True, capture_output=True, text=True, timeout=30)
@@ -83,7 +115,7 @@ def verify_protections(data):
 
 def prepare_pr(root, store, cid, data, client):
     if data.get("candidate") != cid: raise ValueError("receipt belongs to another candidate")
-    if not verify(root, data): raise ValueError("stale/tampered receipt")
+    if not trusted_receipt(root, store, cid, data): raise ValueError("stale, untrusted or tampered receipt")
     if git(root, "status", "--porcelain"): raise ValueError("commit candidate before PR")
     branch = git(root, "branch", "--show-current")
     if not branch.startswith("agent/") or git(root, "rev-parse", "HEAD") == data["base"]: raise ValueError("isolated committed branch required")
@@ -100,13 +132,94 @@ def prepare_pr(root, store, cid, data, client):
     if int(actual_risk["risk"][1:]) > int(data["risk"]["risk"][1:]): raise ValueError("complete diff risk increased")
     latest_plan = [e["payload"] for e in candidate["events"] if e["kind"] == "PLAN"][-1]
     if data["todo"] != latest_plan["context"]["todo"] or data["base"] != latest_plan["context"]["head"]: raise ValueError("receipt does not match original approved scope")
-    body = f"Candidate {cid}; TODO {data['todo']}\n\n{candidate['problem']}\n\nScope: {candidate['outcome']}\n\nRisk: {data['risk']['risk']}; human merge approval required. No auto-merge.\n\nChanged files: {', '.join(candidate['files'])}\n\nAcceptance: see original TODO and immutable PLAN event.\n\nTests and review: {json.dumps(records)}; {data['review']['disposition']}\n\nEvidence: {data['id']}; tested head {data['head']}\n\nLimitations: no production deployment authorized.\n\nRollback: revert implementation through the reviewed deployment workflow.\n"
+    body = f"Candidate {cid}; TODO {data['todo']}\n\n{candidate['problem']}\n\nScope: {candidate['outcome']}\n\nRisk: {data['risk']['risk']}; human merge approval required. No auto-merge.\n\nChanged files: {', '.join(candidate['files'])}\n\nAcceptance: see original TODO and immutable PLAN event.\n\nTests and review: {json.dumps(records)}; {data['review']['disposition']}\n\nEvidence: {data['id']}; tested head {data['head']}; approved base {data['base']}; execution mode {data.get('mode', 'UNKNOWN')}\n\nLimitations: no production deployment authorized.\n\nRollback: revert implementation through the reviewed deployment workflow.\n"
     bounded(body)
     result = client.handoff(branch, f"[agent][{data['risk']['risk']}] TODO {data['todo']}: {candidate['title']}", body, data["status"] != "PASS")
+    remote=client.pr_identity(result['number'])
+    verified=verify_remote_pr(remote,repository=client.repository,branch=branch,head=data['head'])
+    if remote['isDraft'] != (data['status']!='PASS'): raise ValueError('remote draft/readiness mismatch')
     with store.connect(True) as db:
         prior = store._state(db, cid)
         if prior not in {"BUILDING", "PR_OPEN"}: raise ValueError("candidate state changed during handoff")
-        event = dict(result=result, head=data["head"], receipt=data["id"])
+        event = dict(result=result, verified=verified, mode=data.get("mode"), head=data["head"], receipt=data["id"])
         store._append(db, cid, "PR", event, "pr:" + digest(event))
         if prior == "BUILDING": store._append(db, cid, "STATE", {"state": "PR_OPEN"}, "pr-state:" + data["head"])
     return result
+
+
+def verify_remote_pr(remote, *, repository, branch, head):
+    owner=remote.get('headRepositoryOwner') or {}
+    repo=remote.get('headRepository') or {}
+    identity=repo.get('nameWithOwner') or (owner.get('login','')+'/'+repo.get('name',''))
+    if remote.get('headRefOid')!=head or remote.get('headRefName')!=branch or remote.get('baseRefName')!='main' or identity.lower()!=repository.lower():
+        raise ValueError('NEEDS_HUMAN: remote PR identity differs from sealed evidence')
+    if not isinstance(remote.get('isDraft'),bool) or not isinstance(remote.get('number'),int): raise ValueError('remote PR metadata unavailable')
+    return {k:remote[k] for k in ('number','headRefName','headRefOid','baseRefName','isDraft')} | {'headRepository':identity}
+
+
+def recheck_pr(store,cid,client):
+    candidate=store.get(cid)
+    pr=[e['payload'] for e in candidate['events'] if e['kind']=='PR'][-1]
+    try:
+        result=verify_remote_pr(client.pr_identity(pr['result']['number']),repository=client.repository,branch=pr['verified']['headRefName'],head=pr['head'])
+        return dict(status='PASS',identity=result)
+    except (ValueError,KeyError):
+        if candidate['state']=='PR_OPEN': store.transition(cid,'NEEDS_HUMAN',dict(reason='remote head changed; fresh validation and review required'))
+        return dict(status='NEEDS_HUMAN',reason='remote head changed; fresh validation and review required')
+
+
+def effective_protections(classic, active_rules, rulesets, identity, repository, *, visibility):
+    failures=[]
+    if not visibility or not identity.get('login') or not isinstance(repository.get('permissions'),dict):
+        return dict(status='UNAVAILABLE',failures=['incomplete authenticated policy visibility'],auto_merge=False)
+    required=dict(pr=False,checks=False,review=False,stale=False,last_push=False,conversation=False,no_force=False,no_delete=False,admin=False)
+    contexts=set()
+    if classic is not None:
+        checked=verify_protections(dict(classic,agent_identity_no_bypass_verified=True))
+        checks=classic.get('required_status_checks') or {}
+        contexts.update(checks.get('contexts',[]));contexts.update(c['context'] for c in checks.get('checks',[]))
+        review=classic.get('required_pull_request_reviews') or {}
+        required.update(pr=bool(review),checks=bool(checks.get('strict') and 'test' in contexts),review=review.get('required_approving_review_count',0)>=1,stale=bool(review.get('dismiss_stale_reviews')),last_push=bool(review.get('require_last_push_approval')),conversation=bool((classic.get('required_conversation_resolution') or {}).get('enabled')),no_force=not (classic.get('allow_force_pushes') or {}).get('enabled',False),no_delete=not (classic.get('allow_deletions') or {}).get('enabled',False),admin=bool((classic.get('enforce_admins') or {}).get('enabled')))
+        bypass=review.get('bypass_pull_request_allowances') or {}
+        if any(bypass.get(k) for k in ('users','teams','apps')): failures.append('classic review bypass actors require independent audit')
+        restrictions=classic.get('restrictions') or {}
+        if any(u.get('login')==identity['login'] for u in restrictions.get('users',[])): failures.append('agent directly allowed on protected branch')
+    ids={r.get('ruleset_id') for r in active_rules}
+    visible={r.get('id') for r in rulesets if r.get('enforcement')=='active'}
+    if ids-visible: return dict(status='UNAVAILABLE',failures=['inherited ruleset details inaccessible'],auto_merge=False)
+    for rule in rulesets:
+        if rule.get('enforcement')=='active' and rule.get('id') in ids:
+            if 'bypass_actors' not in rule: return dict(status='UNAVAILABLE',failures=['bypass actors not visible'],auto_merge=False)
+            if rule['bypass_actors']: failures.append('active ruleset bypass actor: '+str(rule['id']))
+            required['admin']=True
+    for rule in active_rules:
+        kind=rule['type'];p=rule.get('parameters') or {}
+        if kind=='pull_request':
+            required['pr']=True
+            required['review'] |= p.get('required_approving_review_count',0)>=1
+            required['stale'] |= bool(p.get('dismiss_stale_reviews_on_push'))
+            required['last_push'] |= bool(p.get('require_last_push_approval'))
+            required['conversation'] |= bool(p.get('required_review_thread_resolution'))
+        elif kind=='required_status_checks':
+            names={c['context'] for c in p.get('required_status_checks',[])};contexts|=names
+            required['checks'] |= bool(p.get('strict_required_status_checks_policy') and not p.get('do_not_enforce_on_create',False) and 'test' in names)
+        elif kind=='non_fast_forward': required['no_force']=True
+        elif kind=='deletion': required['no_delete']=True
+    if repository['permissions'].get('admin'): failures.append('coding-agent identity has administrative authority')
+    failures += ['missing effective protection: '+k for k,v in required.items() if not v]
+    return dict(status='PASS' if not failures else 'FAIL',failures=failures,auto_merge=False,identity=identity['login'],required_checks=sorted(contexts),effective=required,agent_capabilities={k:False if not failures else 'UNVERIFIED' for k in ('direct_push','bypass_review','bypass_checks','force_push','delete_ref','bypass_conversations','self_approve')})
+
+
+def record_merge(store,cid,client):
+    """Read GitHub's completed human merge; never perform a merge."""
+    candidate=store.get(cid)
+    pr=[e['payload'] for e in candidate['events'] if e['kind']=='PR'][-1]
+    remote=client.pr_identity(pr['result']['number'])
+    verify_remote_pr(remote,repository=client.repository,branch=pr['verified']['headRefName'],head=pr['head'])
+    sha=(remote.get('mergeCommit') or {}).get('oid','')
+    if remote.get('state')!='MERGED' or remote.get('reviewDecision')!='APPROVED' or not re.fullmatch(r'[a-f0-9]{40}',sha):
+        raise ValueError('independently approved completed GitHub merge required')
+    payload=dict(merge_sha=sha,head=pr['head'],pr=remote.get('url',pr['result']['url']),source='github-verified-merge',number=remote['number'])
+    with store.connect(True) as db:
+        store._append(db,cid,'MERGE',payload,'github-merge:'+sha)
+    return payload

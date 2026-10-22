@@ -1,7 +1,7 @@
 # Expand Development-Agent Adversarial Certification for Evidence and Authority Bypasses
 
 - **ID:** 0792
-- **Status:** backlog
+- **Status:** in-progress
 - **Created:** 2026-10-21
 - **Priority:** critical
 - **Depends:** 0785, 0786, 0787, 0788, 0789, 0790, 0791
@@ -53,3 +53,19 @@ The existing adversarial suite covers important isolation and governance failure
 ## Source
 
 Captured from the [shared hardening and rollout plan](https://chatgpt.com/s/t_6ad9755089988191970329e796b72a9c). Requirements and dependencies preserved from the supplied plan.
+
+## Implementation progress — 2026-10-22
+
+Implementation: `dev_agent/adversarial.py; dev_agent/certification.py; tests/test_development_agent_hardening.py`. Versioned harness-canary-2 and authority-adversarial-2 cover forged/stale/mixed receipts, snapshot/provenance/freshness, synthetic/replayed supervision, mode/disable gates, remote SHA, rulesets and stale certification. Fixture success cannot grant operational PASS.
+
+See [hardening plan](../docs/plans/development-agent-hardening-0785-0794.md),
+[operator contract](../docs/development-agent.md) and
+[prospective pilot protocol](../docs/development-agent-pilots.md).
+
+Focused, adversarial and browser results are recorded in the PR evidence.
+Acceptance remains open pending exact-head CI, unchanged release/CC gates and
+applicable operational evidence. Current main reproduces seven CC contract/test
+failures. Docker is unavailable on this development machine; GitHub main has no
+classic protection or active rules. No live pilot, production backup authenticity,
+physical-device acceptance or autonomy activation is claimed. No TODO is moved to
+done based solely on fixture success.

@@ -17,6 +17,9 @@ def check(root=ROOT):
     config = json.loads((root/"config/development_agent.json").read_text())
     if config["auto_merge"] or not config["required_human_merge"]: findings.append("human merge boundary weakened")
     if config["minimum_supervised_successes"] < 3 or config["minimum_observation_days"] < 7: findings.append("certification minima weakened")
+    if config.get('autonomous_max_risk','L2')!='L2': findings.append('autonomous risk ceiling changed')
+    if not 0<=config.get('daily_implementation_cap',1)<=3: findings.append('daily implementation cap out of bounds')
+    if config.get('technical_certificate_max_age_hours',24)>24 or config.get('github_evidence_max_age_seconds',300)>300 or config.get('snapshot_max_age_hours',24)>24: findings.append('evidence freshness policy weakened')
     document=(root/"docs/development-agent.md").read_text()
     for key,text in PRINCIPLES.items():
         if f"{key}: {text}" not in document: findings.append("principle missing: "+key)

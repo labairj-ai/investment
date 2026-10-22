@@ -1,7 +1,7 @@
 # Replace Synthetic Supervision with Authenticated Operational Run Evidence
 
 - **ID:** 0788
-- **Status:** backlog
+- **Status:** in-progress
 - **Created:** 2026-10-21
 - **Priority:** critical
 - **Depends:** 0775, 0783, 0787
@@ -55,3 +55,19 @@ Autonomy eligibility must be based on actual governed development outcomes, not 
 ## Source
 
 Captured from the [shared hardening and rollout plan](https://chatgpt.com/s/t_6ad9755089988191970329e796b72a9c). Requirements and dependencies preserved from the supplied plan.
+
+## Implementation progress — 2026-10-22
+
+Implementation: `dev_agent/operations.py; dev_agent/certification.py; dev_agent/identity.py`. Technical certificates no longer count as supervision. A real exact-head Builder/independent Reviewer/trusted validation/PR/human review/deployment lineage counts at most once and is invalidated by rollback, changed scope or harness hash.
+
+See [hardening plan](../docs/plans/development-agent-hardening-0785-0794.md),
+[operator contract](../docs/development-agent.md) and
+[prospective pilot protocol](../docs/development-agent-pilots.md).
+
+Focused, adversarial and browser results are recorded in the PR evidence.
+Acceptance remains open pending exact-head CI, unchanged release/CC gates and
+applicable operational evidence. Current main reproduces seven CC contract/test
+failures. Docker is unavailable on this development machine; GitHub main has no
+classic protection or active rules. No live pilot, production backup authenticity,
+physical-device acceptance or autonomy activation is claimed. No TODO is moved to
+done based solely on fixture success.

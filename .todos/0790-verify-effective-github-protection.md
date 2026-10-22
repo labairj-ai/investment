@@ -1,7 +1,7 @@
 # Verify Effective GitHub Protection Across Branch Protection and Rulesets
 
 - **ID:** 0790
-- **Status:** backlog
+- **Status:** in-progress
 - **Created:** 2026-10-21
 - **Priority:** critical
 - **Depends:** 0772
@@ -58,3 +58,19 @@ The coding agent needs to know the effective permissions of its actual identity.
 ## Source
 
 Captured from the [shared hardening and rollout plan](https://chatgpt.com/s/t_6ad9755089988191970329e796b72a9c). Requirements and dependencies preserved from the supplied plan.
+
+## Implementation progress — 2026-10-22
+
+Implementation: `dev_agent/github.py`. Effective classic plus active repository/inherited rules evaluation, pagination, identity/admin/bypass visibility, strict CI and independent last-push review. Unknown visibility is UNAVAILABLE. No protection-setting mutation.
+
+See [hardening plan](../docs/plans/development-agent-hardening-0785-0794.md),
+[operator contract](../docs/development-agent.md) and
+[prospective pilot protocol](../docs/development-agent-pilots.md).
+
+Focused, adversarial and browser results are recorded in the PR evidence.
+Acceptance remains open pending exact-head CI, unchanged release/CC gates and
+applicable operational evidence. Current main reproduces seven CC contract/test
+failures. Docker is unavailable on this development machine; GitHub main has no
+classic protection or active rules. No live pilot, production backup authenticity,
+physical-device acceptance or autonomy activation is claimed. No TODO is moved to
+done based solely on fixture success.

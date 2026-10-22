@@ -1,7 +1,7 @@
 # Bind GitHub Pull Requests to the Exact Sealed Head SHA
 
 - **ID:** 0789
-- **Status:** backlog
+- **Status:** in-progress
 - **Created:** 2026-10-21
 - **Priority:** high
 - **Depends:** 0771, 0785
@@ -50,3 +50,19 @@ A PR description must never claim evidence for commit B while GitHub is actually
 ## Source
 
 Captured from the [shared hardening and rollout plan](https://chatgpt.com/s/t_6ad9755089988191970329e796b72a9c). Requirements and dependencies preserved from the supplied plan.
+
+## Implementation progress — 2026-10-22
+
+Implementation: `dev_agent/github.py`. Remote PR repository, branch, exact head, base and draft state are verified before PR_OPEN. Later dispositions recheck the head; stale heads require fresh evidence. No force push or evidence rewrite.
+
+See [hardening plan](../docs/plans/development-agent-hardening-0785-0794.md),
+[operator contract](../docs/development-agent.md) and
+[prospective pilot protocol](../docs/development-agent-pilots.md).
+
+Focused, adversarial and browser results are recorded in the PR evidence.
+Acceptance remains open pending exact-head CI, unchanged release/CC gates and
+applicable operational evidence. Current main reproduces seven CC contract/test
+failures. Docker is unavailable on this development machine; GitHub main has no
+classic protection or active rules. No live pilot, production backup authenticity,
+physical-device acceptance or autonomy activation is claimed. No TODO is moved to
+done based solely on fixture success.
