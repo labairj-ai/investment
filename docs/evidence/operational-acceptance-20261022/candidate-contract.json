@@ -1,0 +1,39 @@
+{
+  "ok": false,
+  "hash_changed": true,
+  "version_bumped": false,
+  "has_manifest": false,
+  "applicable_manifest": null,
+  "manifest_count": 2,
+  "baseline_missing": false,
+  "baseline_malformed": false,
+  "findings": [
+    "NO_VERSION_BUMP: model_version prior=cc-v3.3 proposed=cc-v3.3; expected forward numeric transition",
+    "BEHAVIORAL_HASH_CHANGED_WITHOUT_VERSION_BUMP: engine_hash or simulator_contract_hash changed without all required forward component versions. Engine changes require model_version; simulator changes require SIMULATOR_CONTRACT_VERSION; shared changes require both.",
+    "BEHAVIORAL_HASH_CHANGED_WITHOUT_APPLICABLE_MANIFEST: a transition-bound manifest is required that matches the exact prior\u2192proposed contract state. Copy cc_change_manifests/.template.md and fill in prior/proposed hashes.",
+    "WRONG_COMPONENT_VERSION_BUMP: engine_hash changed (simulator_contract_hash unchanged) but model_version was not incremented. Utility/ranking changes require a model_version bump."
+  ],
+  "current": {
+    "fingerprint_version": "cc-behavior-v1",
+    "model_version": "cc-v3.3",
+    "simulator_version": "cc-virtual-1",
+    "simulator_contract_version": "simulator-contract-2",
+    "simulator_contract_hash": "b8be3b06388cb68c...",
+    "engine_hash": "5f9fc49b8b13f7cc...",
+    "policy_version": "shared-live-mana...",
+    "cadence_comparability_policy_version": "cadence-v1"
+  },
+  "baseline": {
+    "cadence_comparability_policy_version": "cadence-v1",
+    "engine_hash": "bfdf6e9d15d452d82426975483d009b57d17827d5da9866883da1e67bd4d0193",
+    "fingerprint_version": "cc-behavior-v1",
+    "model_version": "cc-v3.3",
+    "policy_version": "shared-live-management-asof-1",
+    "schema_version": "cc-contract-v2",
+    "simulator_contract_hash": "b8be3b06388cb68c7be9e53488ca6f473cc3bee15f81ed93461c802e951ce8f2",
+    "simulator_contract_version": "simulator-contract-2",
+    "simulator_version": "cc-virtual-1"
+  },
+  "trusted_prior_ref": null,
+  "fingerprint_definition_migration": false
+}

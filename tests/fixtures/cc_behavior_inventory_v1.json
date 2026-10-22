@@ -61,6 +61,8 @@
       "agents.covered_call_agent._has_open_cc",
       "agents.covered_call_agent._make_contract_id",
       "agents.covered_call_agent._mgmt_iv_at_rec",
+      "agents.covered_call_agent._safe_float",
+      "agents.covered_call_agent._sanitize_payload",
       "agents.covered_call_agent.run_covered_call_agent",
       "covered_call_ledger.active_scorer",
       "covered_call_ledger.execution_history",

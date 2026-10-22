@@ -32,3 +32,31 @@ All listed items passed local validation. The dependency column records the impl
 ## Completion rules
 
 Keep items here while backlog/in-progress. Add regression and validation receipts before marking done and moving them into `done/`. Run `venv/bin/python scripts/check_todo_status.py`. Any protected covered-call behavior change must satisfy the existing release authorization gates. Production-data diagnosis/repair and deployment must be recorded separately from local code completion.
+
+## Development-agent operational acceptance — 0795–0802
+
+Created 2026-10-22. This phase proves the environment and controls; it is not an
+additional agent-feature phase. 0795 is **in-progress**; 0796–0802 remain **backlog**.
+
+| ID | Task | Priority | Dependencies |
+|---|---|---|---|
+| [0795](0795-resolve-covered-call-ci-and-behavioral-contract-failures.md) | Resolve Existing Covered-Call CI and Behavioral-Contract Failures | critical | none |
+| [0796](0796-restore-exact-head-green-repository-ci.md) | Restore Exact-Head Green Repository CI | critical | 0795 |
+| [0797](0797-configure-non-bypass-github-protection.md) | Configure and Verify Non-Bypass GitHub Protection for Development-Agent Changes | critical | 0790, 0796 |
+| [0798](0798-provision-digest-pinned-validation-sandbox.md) | Provision Digest-Pinned Development-Agent Sandbox Runtime | critical | 0796 |
+| [0799](0799-certify-authentic-production-backup-snapshot.md) | Produce and Certify an Authentic Production Backup Snapshot | critical | 0786, 0796 |
+| [0800](0800-complete-development-agent-technical-certification-v2.md) | Complete Development-Agent Technical Certification v2 | critical | 0796, 0797, 0798, 0799, 0792 |
+| [0801](0801-execute-prospective-supervised-development-agent-pilots.md) | Execute Three Prospective Supervised Development-Agent Pilots | high | 0800 |
+| [0802](0802-authorize-bounded-low-risk-autonomous-operation.md) | Review and Explicitly Authorize Bounded L0–L2 Autonomous Operation | critical | 0801, 0794 |
+
+Critical path: **0795 CC failures → 0796 green CI → 0797 GitHub protection +
+0798 sandbox + 0799 authentic snapshot → 0800 technical certification →
+0801 three real supervised pilots over ≥7 America/New_York calendar days →
+0802 explicit autonomy decision**.
+
+Do not start 0801 until 0795–0800 are truly PASS. 0801 completes the operational
+portion of 0793; 0802 also retains dependency on the disabled controls in 0794.
+Existing hardening dependencies 0786, 0790 and 0792 remain required; deployed code
+is not a substitute for their independent acceptance evidence. Protection changes
+belong to a human administrator; autonomy activation requires a separate reviewed
+human decision. Creating these files grants neither authority.

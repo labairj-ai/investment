@@ -1,0 +1,14 @@
+{
+  "compared_source": "agents/covered_call_agent.py",
+  "before_ref": "468cb64b107a962e06cf0d20366eb37732677c18",
+  "after_ref": "6cb6fde0471c207cdec48e648331caff8d8e68c0",
+  "added_functions": [
+    "_safe_float",
+    "_sanitize_payload"
+  ],
+  "removed_functions": [],
+  "changed_functions": [
+    "_analyze_roll",
+    "_analyze_ticker"
+  ]
+}
