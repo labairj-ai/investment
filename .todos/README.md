@@ -32,3 +32,18 @@ All listed items passed local validation. The dependency column records the impl
 ## Completion rules
 
 Keep items here while backlog/in-progress. Add regression and validation receipts before marking done and moving them into `done/`. Run `venv/bin/python scripts/check_todo_status.py`. Any protected covered-call behavior change must satisfy the existing release authorization gates. Production-data diagnosis/repair and deployment must be recorded separately from local code completion.
+
+## Solo-owner governance migration — 0810–0815
+
+Created 2026-10-22. 0810–0812 and 0815 are **in-progress**; 0813/0814 remain **backlog** pending human governance adoption, review and merge. These are a repository-wide governance migration, not a PR #6 exemption. Recording these tasks does not change the active governance policy or authorize an approval event.
+
+| ID | Task | Priority | Dependencies |
+|---|---|---|---|
+| [0810](0810-adopt-solo-owner-governance-model.md) | Adopt Solo-Owner Governance Model | critical | none |
+| [0811](0811-enforce-solo-owner-approval.md) | Update AGENTS.md and Governance Checks for Solo-Owner Approval | critical | 0810 |
+| [0812](0812-explicit-owner-review-attestation.md) | Add Explicit Owner Review Attestation | high | 0811 |
+| [0813](0813-revalidate-pr-6-solo-owner-governance.md) | Revalidate PR #6 Under Solo-Owner Governance | critical | 0810, 0811, 0812 |
+| [0814](0814-owner-controlled-pr-6-merge-deploy.md) | Merge and Deploy PR #6 Using Owner-Controlled Workflow | high | 0813 |
+| [0815](0815-align-github-protection-solo-owner.md) | Align GitHub Protection With Solo-Owner Governance | high | 0811 |
+
+Operational sequence: **0810 → 0811 → 0812 → 0815 → 0813 → 0814**. The supplied formal dependencies are preserved; 0815 precedes PR #6 revalidation operationally. Owner review must be an explicit authenticated action bound to the exact head. AI review and CI cannot supply merge authority. Financial/execution gates, human merge, disabled autonomy and disabled auto-merge remain mandatory.
