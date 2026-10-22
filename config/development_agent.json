@@ -1,0 +1,22 @@
+{
+  "version": "development-agent-2",
+  "autonomous_implementation": false,
+  "auto_merge": false,
+  "daily_candidate_cap": 5,
+  "active_backlog_limit": 50,
+  "minimum_supervised_successes": 3,
+  "minimum_observation_days": 7,
+  "principles_version": "engineering-principles-1",
+  "required_human_merge": true,
+  "retention": {
+    "transient_logs_days": 14,
+    "critical_receipts": "indefinite"
+  },
+  "architecture_exclusions": {},
+  "emergency_stop": false,
+  "daily_implementation_cap": 1,
+  "autonomous_max_risk": "L2",
+  "technical_certificate_max_age_hours": 24,
+  "github_evidence_max_age_seconds": 300,
+  "snapshot_max_age_hours": 24
+}

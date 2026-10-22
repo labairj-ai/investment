@@ -8,6 +8,7 @@ venv/
 __pycache__/
 *.pyc
 *.pyo
+.todos/.allocation.lock
 
 # macOS
 .DS_Store
