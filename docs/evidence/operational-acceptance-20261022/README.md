@@ -78,3 +78,17 @@ were waived. The complete skipped inventory and reasons are in
 [full-suite-inventory.json](full-suite-inventory.json). TODO consistency and the
 repository agent contract pass. The release baseline and CC contract correctly
 remain FAIL; no CI or readiness success is claimed.
+
+## Acknowledged deployment candidate
+
+The user explicitly acknowledged the proposed transition after authorizing deployment.
+The active manifest is now `cc_change_manifests/20261022-cc-json-missing-metrics.md`;
+the runtime is cc-v3.4 and the baseline matches the reviewed classified source.
+The proposal files and earlier failure logs above are historical evidence.
+The exact trusted-prior CC gate passes against main `6cb6fde`.
+Release fixtures now derive a future model version from the runtime version, preserving
+all positive/negative release assertions after cc-v3.4 becomes current.
+The existing deployed hardening code is integrated, preventing a dashboard/harness downgrade.
+Fresh focused/full-suite and exact-head CI evidence are required before deployment.
+Independent review remains required before any merge; this operator-authorized branch
+deployment does not activate autonomy or count as a supervised pilot.
