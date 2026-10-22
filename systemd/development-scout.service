@@ -1,0 +1,15 @@
+[Unit]
+Description=Investment development discovery only (no implementation)
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/investment
+ExecStart=%h/investment/venv/bin/python -m dev_agent.cli scout --root %h/investment
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/share/investment-development
+PrivateTmp=true
+PrivateNetwork=true
+TimeoutStartSec=180

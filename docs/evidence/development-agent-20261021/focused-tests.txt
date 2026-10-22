@@ -1,0 +1,15 @@
+........................................................................ [ 75%]
+........................                                                 [100%]
+=============================== warnings summary ===============================
+tests/test_ci_datetime_guard.py::test_no_naive_now_calls
+  <unknown>:1766: DeprecationWarning: invalid escape sequence \-
+
+tests/test_ci_datetime_guard.py::test_no_naive_now_calls
+tests/test_ci_datetime_guard.py::test_no_naive_now_calls
+  <unknown>:1766: DeprecationWarning: invalid escape sequence \s
+
+tests/test_ci_datetime_guard.py::test_no_naive_now_calls
+  <unknown>:1766: DeprecationWarning: invalid escape sequence \*
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+96 passed, 4 warnings in 7.77s

@@ -1,0 +1,62 @@
+{
+  "status": "PASS",
+  "results": [
+    {
+      "width": 360,
+      "scroll": 360,
+      "overflow": false,
+      "unsafe": 0,
+      "buttons": [
+        44,
+        44,
+        44
+      ],
+      "warning": "Human review required — protected or unresolved work",
+      "confirmation": true,
+      "dialogOverflow": false
+    },
+    {
+      "width": 390,
+      "scroll": 390,
+      "overflow": false,
+      "unsafe": 0,
+      "buttons": [
+        44,
+        44,
+        44
+      ],
+      "warning": "Human review required — protected or unresolved work",
+      "confirmation": true,
+      "dialogOverflow": false
+    },
+    {
+      "width": 430,
+      "scroll": 430,
+      "overflow": false,
+      "unsafe": 0,
+      "buttons": [
+        44,
+        44,
+        44
+      ],
+      "warning": "Human review required — protected or unresolved work",
+      "confirmation": true,
+      "dialogOverflow": false
+    },
+    {
+      "width": 1280,
+      "scroll": 1280,
+      "overflow": false,
+      "unsafe": 0,
+      "buttons": [
+        44,
+        44,
+        44
+      ],
+      "warning": "Human review required — protected or unresolved work",
+      "confirmation": true,
+      "dialogOverflow": false
+    }
+  ],
+  "physical_devices": "NOT_RUN"
+}

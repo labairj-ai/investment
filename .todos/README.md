@@ -32,3 +32,35 @@ All listed items passed local validation. The dependency column records the impl
 ## Completion rules
 
 Keep items here while backlog/in-progress. Add regression and validation receipts before marking done and moving them into `done/`. Run `venv/bin/python scripts/check_todo_status.py`. Any protected covered-call behavior change must satisfy the existing release authorization gates. Production-data diagnosis/repair and deployment must be recorded separately from local code completion.
+
+## Coding-agent implementation backlog (0760–0784)
+
+Renumbered after completed task 0759. These are separate from the completed investment fixes above.
+
+| ID | Task | Status |
+|---|---|---|
+| [0760](0760-establish-repository-coding-agent-contract.md) | Establish Repository Coding-Agent Contract | in-progress |
+| [0761](0761-classify-coding-agent-change-risk.md) | Classify Coding-Agent Change Risk | in-progress |
+| [0762](0762-add-improvement-candidate-schema-and-ledger.md) | Add Improvement Candidate Schema and Ledger | in-progress |
+| [0763](0763-build-improvement-scout.md) | Build Improvement Scout | in-progress |
+| [0764](0764-score-improvement-candidate-value-and-risk.md) | Score Improvement Candidate Value and Risk | in-progress |
+| [0765](0765-build-todo-planner-for-approved-candidates.md) | Build TODO Planner for Approved Candidates | in-progress |
+| [0766](0766-add-isolated-git-worktree-manager.md) | Add Isolated Git Worktree Manager | in-progress |
+| [0767](0767-build-bounded-coding-agent-runner.md) | Build Bounded Coding-Agent Runner | in-progress |
+| [0768](0768-add-independent-coding-agent-reviewer.md) | Add Independent Coding-Agent Reviewer | in-progress |
+| [0769](0769-build-builder-reviewer-correction-loop.md) | Build Builder-Reviewer Correction Loop | in-progress |
+| [0770](0770-collect-coding-agent-test-and-evidence-receipts.md) | Collect Coding-Agent Test and Evidence Receipts | in-progress |
+| [0771](0771-create-coding-agent-pull-requests-with-evidence.md) | Create Coding-Agent Pull Requests with Evidence | in-progress |
+| [0772](0772-enforce-github-branch-and-ruleset-protection-for-agent-changes.md) | Enforce GitHub Branch and Ruleset Protection for Agent Changes | in-progress |
+| [0773](0773-add-production-mutability-guard-for-development-agents.md) | Add Production-Mutability Guard for Development Agents | in-progress |
+| [0774](0774-detect-financial-logic-changes-in-agent-diffs.md) | Detect Financial-Logic Changes in Agent Diffs | in-progress |
+| [0775](0775-persist-coding-agent-run-ledger-and-audit-history.md) | Persist Coding-Agent Run Ledger and Audit History | in-progress |
+| [0776](0776-add-development-agent-dashboard.md) | Add Development Agent Dashboard | in-progress |
+| [0777](0777-make-development-agent-review-mobile-friendly.md) | Make Development Agent Review Mobile Friendly | in-progress |
+| [0778](0778-capture-deployment-outcomes-for-agent-changes.md) | Capture Deployment Outcomes for Agent Changes | in-progress |
+| [0779](0779-score-coding-agent-improvement-effectiveness.md) | Score Coding-Agent Improvement Effectiveness | in-progress |
+| [0780](0780-scan-architecture-and-technical-debt-for-improvement-candidates.md) | Scan Architecture and Technical Debt for Improvement Candidates | in-progress |
+| [0781](0781-enforce-coding-agent-golden-engineering-principles.md) | Enforce Coding-Agent Golden Engineering Principles | in-progress |
+| [0782](0782-schedule-daily-improvement-agent-discovery.md) | Schedule Daily Improvement-Agent Discovery | in-progress |
+| [0783](0783-add-human-approval-and-escalation-workflow.md) | Add Human Approval and Escalation Workflow | in-progress |
+| [0784](0784-certify-the-coding-agent-harness-with-canary-and-adversarial-qa.md) | Certify the Coding-Agent Harness with Canary and Adversarial QA | in-progress |
