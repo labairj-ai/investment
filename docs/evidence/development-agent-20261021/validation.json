@@ -28,11 +28,11 @@
     "0783",
     "0784"
   ],
-  "harness_hash": "9631ebb13ed059ed9bfb53c5f1437b0c3bd760ad0d509096b618aa23b26bb929",
+  "harness_hash": "b9e1a9e716d8a5926f3d16d891c76d75b88bb897044a6680f1dd5a1c1a8537fa",
   "source_hashes": {
-    "dev_agent/store.py": "f75ad4f35f139ecc13898b5962826de0a810caa1a9f2629616fbcde2adbcd58e",
+    "dev_agent/store.py": "38c897dfadb1e839852d442e293209cd2b2b47e374bd93cc90a0862e3b24b942",
     "dev_agent/runner.py": "258918c1584116e07702fdd90611744cbf666f32939592f79bbeb94c9bfd6a80",
-    "dev_agent/certification.py": "72909c433a0b15dce98b3d154fdcc2a5ce62fcbc78ca39b9bb4933960212e14c",
+    "dev_agent/certification.py": "c43649db2a2cdfcc660598568d2b9b7f809ed8c66e99aed2d8d324a9b3f3f266",
     "dev_agent/discovery.py": "38dd8ebea701090dce67fc21be4ff2eb8170c7c34825881b111f84a6ee6ee5c3",
     "dev_agent/policy.py": "57aef89f071784b7f09f4bd67ab0b9936ab082ed6e5501e8d7776f5a4d27ef67",
     "dev_agent/__init__.py": "e1fd6b37eaaa4bc5f3c278694fbfca10abebea5e9acf83bb8ffe97533a4c9129",
@@ -42,18 +42,18 @@
     "dev_agent/outcomes.py": "2eabfe07efe7f7c3a7eb438da0071029b715820e537a6cb8c7fbe4db32ee90b8",
     "dev_agent/guard.py": "a8a38b38dccfe275cc4b2d98fe4f5b8d9e01b2b656652a6e31bec72100694513",
     "dev_agent/scheduler.py": "b4e7126efca979141c079b1d641f78402c6e64d6d98ed1b1ff2060b07b6526fb",
-    "dev_agent/github.py": "0eece0a9cbf23cb3e440240c64bbc0b44589e2b10e8b4e6615865cf5f4f07554",
+    "dev_agent/github.py": "a08c074716a9370e94fc0f7c2cda7e80dd924c770fa96fbbbdceed2a87cccea1",
     "dev_agent/evidence.py": "33c899a38b7cc05de29487ebedb32ae43350ea304cbdf791ca52fcd7bd826dd0",
     "dev_agent/snapshot.py": "fe25c8e62ea6a44aa8fd0b276c65f1128c3f5678a3add101d16f772c28ca35d8",
-    "dev_agent/worktrees.py": "331512f543addf5b76231375fc7ab99f9c2334895fe884461c129ec72739fc6d",
+    "dev_agent/worktrees.py": "6865d19ac8e2aacf2f30c61edcdd776b7a1beee0472195002236541bb7edb157",
     "config/development_agent.json": "4262c5fc39c3ecb3e015eb042cf469357d541de1c6c93ad1a63ab74b05ae00cf",
     "scripts/check_development_agent.py": "546573266437ef8a9a4bbb33b088dacbf57c823d10211b468ea34317b9099418",
     "scripts/check_development_agent_browser.mjs": "9c41bbdb52f0134d5ef14bad1c85976962aa2507b995422b7f2fdca063bd9cd6",
-    "tests/test_development_agent.py": "a8765fc2bf116516b7b3decf6e3d55c918b179ca7499cd3946f3d9564983cc01"
+    "tests/test_development_agent.py": "cbb638e83985257e62716bb7c71705de2a3f3d802ec279479f0239ad5a0622be"
   },
   "local_full_suite_checkpoint": {
-    "total": 2774,
-    "passed": 2756,
+    "total": 2776,
+    "passed": 2758,
     "failures": [],
     "skipped": [
       "tests.test_alpaca_integration.TestReadOnlyBinding::test_get_account_id_returns_string",
@@ -76,8 +76,8 @@
       "tests.test_dashboard_js::test_node_check_on_dashboard_script_blocks"
     ]
   },
-  "local_full_suite_note": "2756 passed, 18 skipped; final code refinements covered by 96 focused checks. Exact final-commit full suite is provided by GitHub PR CI.",
-  "focused": "96 passed",
+  "local_full_suite_note": "2758 passed, 18 skipped at a4fc6c7. Final recovery/closure/handoff refinements pass 98 focused checks; exact final-commit full suite is provided by PR CI.",
+  "focused": "98 passed",
   "browser": "PASS at 360,390,430,1280; physical devices NOT_RUN",
   "snapshot": "PASS on isolated production backup copy; live DB never opened",
   "cc_contract": "PASS; model/simulator hashes unchanged",

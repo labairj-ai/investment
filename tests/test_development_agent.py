@@ -539,3 +539,26 @@ def test_supervised_certification_cannot_promote_missing_external_gates(tmp_path
     assert result["components"]["production_snapshot"]=="PASS"
     assert result["components"]["os_validation_sandbox"]=="UNAVAILABLE"
     assert not certification.current(ROOT,[result])
+
+
+def test_committed_worktree_cleanup_preserves_branch_and_evidence(repo,tmp_path):
+    manager=Worktrees(repo,tmp_path/"trees");record=manager.create("0001",discovery.git(repo,"rev-parse","HEAD"))
+    path=Path(record["path"]);(path/"docs/note.md").write_text("Completed change")
+    head=commit(path)
+    with pytest.raises(ValueError):manager.verify(record) # cannot reuse stale base for a new run
+    manager.cleanup(record)
+    assert discovery.git(repo,"rev-parse",record["branch"])==head
+    retired=manager.recover()[0]
+    assert retired["status"]=="RETIRED" and retired["final_head"]==head and retired["observed"]=="ABSENT"
+
+
+def test_candidate_closure_requires_observed_outcome(repo,store):
+    cid,ctx=approved(repo,store)
+    with pytest.raises(ValueError):store.review_decision(cid,"OUTCOME_ACCEPTANCE","accept","human",ctx,"early","No observation yet")
+    # Fixture explicitly seeds the specialized PR/deploy history; a general
+    # transition call still cannot manufacture deployment/closure.
+    with store.connect(True) as db:
+        store._append(db,cid,"STATE",{"state":"DEPLOYED"},"fixture-deploy")
+        store._append(db,cid,"DEPLOYMENT",{"status":"HEALTHY","deployed_sha":ctx["head"]},"fixture-observed")
+    store.review_decision(cid,"OUTCOME_ACCEPTANCE","accept","human",ctx,"accepted","Verified observation window and accepted outcome")
+    assert store.get(cid)["state"]=="CLOSED"

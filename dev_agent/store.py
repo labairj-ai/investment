@@ -207,7 +207,14 @@ class Store:
             if proof: expected = dict(expected, head=json.loads(proof[0])["receipt"]["head"])
             if context != expected or db.execute("SELECT 1 FROM dev_events WHERE event_id=?", ("review-decision:"+nonce,)).fetchone():
                 raise ValueError("stale/replayed review")
+            close = stage == "OUTCOME_ACCEPTANCE" and decision == "accept"
+            if close:
+                prior = self._state(db, cid)
+                outcome = db.execute("SELECT payload FROM dev_events WHERE candidate=? AND kind='DEPLOYMENT' ORDER BY seq DESC LIMIT 1", (cid,)).fetchone()
+                if prior not in {"DEPLOYED", "ROLLED_BACK"} or not outcome or json.loads(outcome[0])["status"] not in {"HEALTHY", "ROLLED_BACK"}:
+                    raise ValueError("observed healthy/rollback outcome required before closure")
             self._append(db, cid, "HUMAN_REVIEW", dict(stage=stage, decision=decision, actor=actor, context=context, rationale=rationale, grants_merge=False, grants_deployment=False), "review-decision:"+nonce)
+            if close: self._append(db, cid, "STATE", {"state":"CLOSED"}, "close:"+nonce)
 
     def run_event(self, cid, run_id, role, status, data, parent=None):
         if role not in {"planner", "builder", "reviewer", "validation", "scout"} or status not in {"RUNNING", "PASS", "FAIL", "NEEDS_HUMAN"}:

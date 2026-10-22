@@ -91,6 +91,9 @@ def prepare_pr(root, store, cid, data, client):
     records = data["validations"]
     mandatory = {r["name"] for r in records if r["status"] == "PASS" and r["exit_code"] == 0}
     if not REQUIRED <= mandatory or data["review"].get("disposition") != "PASS": raise ValueError("mandatory PR gates failed")
+    for record in records:
+        if record["name"] in {"focused_tests", "full_suite"} and (record.get("inventory",{}).get("total",0)<=0 or record["inventory"].get("failures") or "skipped" not in record["inventory"]):
+            raise ValueError("mandatory test inventory missing or failing")
     candidate = store.get(cid)
     if candidate["state"] not in {"BUILDING", "PR_OPEN"}: raise ValueError("candidate not eligible for PR handoff")
     actual_risk = whole_diff(root, data["base"])

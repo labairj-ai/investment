@@ -34,7 +34,7 @@ class Worktrees:
             record["status"] = "READY"; manifest.write_text(json.dumps(record, sort_keys=True))
             return record
 
-    def verify(self, record):
+    def verify(self, record, allow_committed=False):
         if not re.fullmatch(r"[a-f0-9]{32}", record.get("run", "")) or not re.fullmatch(r"\d{4}", record.get("todo", "")):
             raise ValueError("invalid worktree identity")
         path = Path(record["path"])
@@ -47,7 +47,9 @@ class Worktrees:
         if git(path, "branch", "--show-current") != record["branch"] or not record["branch"].startswith("agent/"):
             raise ValueError("writable branch mismatch")
         if git(path, "rev-parse", "HEAD") != record["base"]:
-            raise ValueError("unexpected head; fresh approval required")
+            if not allow_committed:
+                raise ValueError("unexpected head; fresh approval required")
+            subprocess.run(["git", "-C", str(path), "merge-base", "--is-ancestor", record["base"], "HEAD"], check=True, capture_output=True, timeout=30)
         return path
 
     def recover(self):
@@ -68,10 +70,11 @@ class Worktrees:
         return result
 
     def cleanup(self, record):
-        path = self.verify(record)
+        path = self.verify(record, allow_committed=True)
         if git(path, "status", "--porcelain"):
             raise ValueError("dirty worktree retained with evidence")
         # Never force removal or delete branches/evidence automatically.
+        final_head = git(path, "rev-parse", "HEAD")
         subprocess.run(["git", "-C", str(self.repo), "worktree", "remove", str(path)], check=True, capture_output=True, timeout=30)
-        record = dict(record, status="RETIRED")
+        record = dict(record, status="RETIRED", final_head=final_head)
         (self.directory / (record["run"] + ".json")).write_text(json.dumps(record, sort_keys=True))

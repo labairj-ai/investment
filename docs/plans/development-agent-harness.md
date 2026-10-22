@@ -80,3 +80,5 @@ changes. All tasks remain in-progress pending their full independent acceptance;
 no unobserved QA checkbox is marked done. This PR does not deploy the harness.
 
 Implementation evidence: [validation receipt](../evidence/development-agent-20261021/validation.json). Final local checkpoint: 2,756 passed and 18 skipped; final focused checks: 96 passed. Exact-head CI remains the final full-suite authority.
+
+Final lifecycle refinements: completed worktrees retire without losing commits/branches; human acceptance closes only observed outcomes; fixture canary includes PR handoff. Latest local checkpoints: 2,758 passed / 18 skipped and 98 focused checks.
