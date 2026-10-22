@@ -19,7 +19,7 @@ OPEN_CHAIN_POLICY = 'VERSION_CENSORED'
 SIMULATOR_VERSION = 'cc-virtual-1'
 POLICY_VERSION = 'shared-live-management-asof-1'
 # Incremented when the composition of simulator_contract_hash changes.
-SIMULATOR_CONTRACT_VERSION = 'simulator-contract-1'
+SIMULATOR_CONTRACT_VERSION = 'simulator-contract-2'
 # Config keys whose values affect simulator behaviour.
 _CONTRACT_CONFIG_KEYS = (
     'management_cost_per_contract', 'path_count', 'max_regret_probability',

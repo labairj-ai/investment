@@ -1409,9 +1409,11 @@ def _suggest_next_call(
 
             # ── Hard eligibility by roll type ────────────────────────────────
             if roll_type == "ROLL_OUT":
-                ref = risk_event_date or existing_expiry_date
-                if ref and exp_date <= ref:
-                    continue  # must clear the risk event
+                # Must clear past both the risk event AND the existing expiry
+                floors = [x for x in [risk_event_date, existing_expiry_date] if x is not None]
+                floor = max(floors) if floors else None
+                if floor and exp_date <= floor:
+                    continue
                 if dte_candidate < 7:
                     continue
             elif roll_type == "ROLL_UP" and existing_expiry_date:
@@ -1438,6 +1440,9 @@ def _suggest_next_call(
                     continue
                 for _, row in calls.iterrows():
                     s   = float(row["strike"])
+                    # Exclude legacy pre-split contracts (inflated IV distorts delta/alpha)
+                    if s > current_price * MAX_STRIKE_MULTIPLIER:
+                        continue
                     # 0156: ROLL_UP and ROLL_UP_AND_OUT must move to a strictly higher strike
                     if roll_type in ("ROLL_UP", "ROLL_UP_AND_OUT") and existing_strike is not None:
                         if s <= existing_strike:
@@ -1459,8 +1464,9 @@ def _suggest_next_call(
                     sigma    = iv if iv > 0.01 else hv_forecast
                     up_lost  = expected_upside_lost(current_price, s, T, sigma, mu, 0.0)
                     cc_alpha = exec_prem - up_lost
-                    if cc_alpha <= 0:
-                        continue  # never suggest negative-alpha replacement
+                    # Don't hard-gate on cc_alpha > 0 — when all roll candidates have
+                    # negative alpha (high-IV environment), we still need to suggest the
+                    # least-bad option. The score function picks the best available.
 
                     # 0153: compare vs remaining expected alpha of existing call, not just its mark.
                     # existing_alpha = mark - E[max(S_T-K_old,0)]; negative when deep ITM (liability).
@@ -1495,7 +1501,7 @@ def _suggest_next_call(
                             "mid":                 round((bid + ask) / 2, 2),
                             "exec":                round(exec_prem, 2),
                             "delta":               round(d, 3),
-                            "premium_pct":         round(exec_prem / s * 100, 2),
+                            "premium_pct":         round(exec_prem / current_price * 100, 2),
                             "cc_alpha":            round(cc_alpha, 3),
                             "tax_benefit_at_expiry": round(tax_benefit, 2),
                             "_score":              score,
@@ -1616,10 +1622,13 @@ def evaluate_open_position(ticker: str, strike: float, expiry: str,
         try:
             _prow = _conn_p.execute(
                 "SELECT cc_policy FROM investment_theses "
-                "WHERE ticker=? AND status='active' ORDER BY version DESC LIMIT 1",
+                "WHERE ticker=? AND UPPER(status)='ACTIVE' ORDER BY version DESC LIMIT 1",
                 (ticker,),
             ).fetchone()
-            if _prow and _prow["cc_policy"]:
+            _active_count = _conn_p.execute("SELECT COUNT(*) FROM investment_theses WHERE ticker=? AND UPPER(status)='ACTIVE'", (ticker,)).fetchone()[0]
+            if _active_count > 1:
+                _policy = {'strategy':'NONE','assignment_policy':{'allowed':False}}
+            elif _prow and _prow["cc_policy"]:
                 _policy = _json.loads(_prow["cc_policy"])
         finally:
             _conn_p.close()

@@ -1,0 +1,14 @@
+{
+  "date": "2026-10-21",
+  "reproduced_scenarios": 17,
+  "findings": 15,
+  "existing_tests": {
+    "passed": 570,
+    "failed": 2,
+    "known_date_sensitive_failures": [
+      "tests/test_portfolio_brief.py::test_same_causal_event_three_days_yields_one_item",
+      "tests/test_portfolio_brief.py::test_get_current_news_intelligence_includes_fading"
+    ]
+  },
+  "scope": "Offline isolated fixtures; production-data impact unverified; fixes remain backlog"
+}

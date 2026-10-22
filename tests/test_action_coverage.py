@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 import sys
 from pathlib import Path
+from time_utils import today_eastern
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -144,8 +145,8 @@ def test_evaluator_sets_outcome_math_version_on_all_rows(mem_db):
     conn = sqlite3.connect(str(mem_db), timeout=10)
     conn.row_factory = sqlite3.Row
 
-    entry_date = (date.today() - timedelta(days=100)).isoformat()
-    h_date = (date.today() - timedelta(days=70)).isoformat()
+    entry_date = (today_eastern() - timedelta(days=100)).isoformat()
+    h_date = (today_eastern() - timedelta(days=70)).isoformat()
     entry_ts = time.time() - 100 * 86400
 
     # Seed a simple HOLD rec (equity horizons, minimal setup)

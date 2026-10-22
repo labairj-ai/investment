@@ -42,7 +42,7 @@ def _latest_thesis_versions() -> dict[str, int]:
     rows = conn.execute(
         """SELECT ticker, MAX(version) as version
            FROM investment_theses
-           WHERE status='active'
+           WHERE UPPER(status)='ACTIVE'
            GROUP BY ticker"""
     ).fetchall()
     conn.close()

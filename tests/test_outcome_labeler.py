@@ -3,6 +3,7 @@ import sys
 import time
 from datetime import date, timedelta
 from pathlib import Path
+from time_utils import today_eastern
 from unittest.mock import patch
 
 import pytest
@@ -16,7 +17,7 @@ def _days_ago(n: int) -> float:
 
 
 def _date_n_days_ago(n: int) -> str:
-    return (date.today() - timedelta(days=n)).isoformat()
+    return (today_eastern() - timedelta(days=n)).isoformat()
 
 
 def _insert_episode(conn, ticker="ANET", days_old=30, ep_id=None):
@@ -234,7 +235,7 @@ class TestRiskCounterfactualPipeline:
     def _insert_base_rejection(self, conn, ticker="AAPL", days_old=10, intent_id=None):
         import uuid
         intent_id = intent_id or str(uuid.uuid4())
-        decision_date = (date.today() - timedelta(days=days_old)).isoformat()
+        decision_date = (today_eastern() - timedelta(days=days_old)).isoformat()
         conn.execute("PRAGMA foreign_keys=OFF")
         # Dummy trade_intent row so FK on risk_counterfactual_outcomes resolves
         conn.execute(
@@ -379,7 +380,7 @@ class TestTradeOutcomePipeline:
     def _insert_trade_outcome(self, conn, ticker="ANET", days_old=10, fill_id=None, fill_price=200.0):
         import uuid
         fill_id = fill_id or f"fill-{uuid.uuid4()}"
-        fill_date = (date.today() - timedelta(days=days_old)).isoformat()
+        fill_date = (today_eastern() - timedelta(days=days_old)).isoformat()
         conn.execute("PRAGMA foreign_keys=OFF")
         conn.execute(
             """INSERT OR IGNORE INTO trade_outcomes
@@ -514,7 +515,7 @@ class TestDirectionAwareOutcomes0338:
     def _insert_trade_outcome_with_action(self, conn, action, days_old=10, fill_price=100.0):
         import uuid
         fill_id = f"fill-{uuid.uuid4()}"
-        fill_date = (date.today() - timedelta(days=days_old)).isoformat()
+        fill_date = (today_eastern() - timedelta(days=days_old)).isoformat()
         conn.execute("PRAGMA foreign_keys=OFF")
         conn.execute(
             """INSERT OR IGNORE INTO trade_outcomes
@@ -589,7 +590,7 @@ class TestDirectionAwareOutcomes0338:
         conn = _make_conn(mem_db)
         import uuid
         intent_id = str(uuid.uuid4())
-        decision_date = (date.today() - timedelta(days=10)).isoformat()
+        decision_date = (today_eastern() - timedelta(days=10)).isoformat()
         conn.execute("PRAGMA foreign_keys=OFF")
         conn.execute(
             """INSERT OR IGNORE INTO trade_intents
@@ -645,7 +646,7 @@ class TestDirectionAwareOutcomes0338:
         conn = _make_conn(mem_db)
         import uuid
         intent_id = str(uuid.uuid4())
-        decision_date = (date.today() - timedelta(days=10)).isoformat()
+        decision_date = (today_eastern() - timedelta(days=10)).isoformat()
         conn.execute("PRAGMA foreign_keys=OFF")
         conn.execute(
             """INSERT OR IGNORE INTO trade_intents
@@ -699,7 +700,7 @@ class TestExecutionCostAccounting0339:
                                         days_old=10):
         import uuid
         fill_id = f"fill-{uuid.uuid4()}"
-        fill_date = (date.today() - timedelta(days=days_old)).isoformat()
+        fill_date = (today_eastern() - timedelta(days=days_old)).isoformat()
         conn.execute("PRAGMA foreign_keys=OFF")
         conn.execute(
             """INSERT OR IGNORE INTO trade_outcomes

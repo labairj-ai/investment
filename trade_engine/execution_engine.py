@@ -513,7 +513,6 @@ def process_intent(
             elapsed_ms=int((time.monotonic() - t0) * 1000),
         )
 
-    _update_intent_status(intent_id, IntentStatus.APPROVED, conn)
 
     # ── Quote gate — must pass before order submission (0251) ─────────────────
     stale_minutes = policy.halt_on_data_stale_minutes()
@@ -599,6 +598,7 @@ def process_intent(
             now_str, now_str, 0.0, 0.0, expires_at, client_order_id,
         ),
     )
+    conn.execute("UPDATE trade_intents SET status='APPROVED' WHERE intent_id=?", (intent_id,))
     conn.commit()
 
     # Resolve actual local order_id: INSERT OR IGNORE may have been a no-op if an order
@@ -813,7 +813,7 @@ def process_new_intents(
 ) -> list[ExecutionResult]:
     """Submit at most one PENDING intent per cycle, oldest-first (0292)."""
     rows = conn.execute(
-        "SELECT intent_id FROM trade_intents WHERE account_id=? AND status='PENDING'"
+        "SELECT intent_id FROM trade_intents WHERE account_id=? AND (status='PENDING' OR (status='APPROVED' AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.intent_id=trade_intents.intent_id)))"
         " ORDER BY created_at ASC LIMIT 1",
         (account_id,),
     ).fetchall()

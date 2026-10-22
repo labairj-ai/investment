@@ -1,0 +1,147 @@
+{
+  "undo_earlier_sale": {
+    "expected_shares": 40,
+    "actual_shares": 100,
+    "csv": "Stock,Shares,AvgCost,Layer\n"
+  },
+  "full_sale_snapshot": {
+    "expected_shares": 0,
+    "actual_shares": 100,
+    "actual_value": 15000
+  },
+  "undo_csv": {
+    "lot_shares": 100,
+    "csv_rows": 0
+  },
+  "fifo_average_cost": {
+    "expected_avg_cost": 200,
+    "actual_avg_cost": 150.0
+  },
+  "backdated_sale_history": {
+    "expected_today_shares": 80,
+    "actual_today_rows": 0
+  },
+  "delete_lot_csv": {
+    "lot_count": 0,
+    "csv": "Stock,Shares,AvgCost,Layer\nABC,100,100,3\n"
+  },
+  "stale_outcome_price": {
+    "target_date": "2026-10-21",
+    "cached_date": "2026-01-02",
+    "actual_price": 100.0,
+    "available_fallback_price": 200,
+    "fallback_called": false
+  },
+  "new_position_reservations": {
+    "decision": "APPROVED",
+    "limit_pct": 5,
+    "actual_committed_pct": 10
+  },
+  "option_coverage_reservations": {
+    "decision": "APPROVED",
+    "shares_owned": 100,
+    "shares_required_for_both": 200
+  },
+  "sell_covered_underlying": {
+    "decision": "APPROVED",
+    "shares_after": 0,
+    "open_calls": 1
+  },
+  "newsletter_multiple_lots": {
+    "expected_value": 10000,
+    "actual_value": 20000.0,
+    "actual_csv_row_shares": [
+      100.0,
+      100.0
+    ]
+  },
+  "market_holiday_disagreement": {
+    "day": "2026-10-12",
+    "newsletter_closed": true,
+    "canonical_market_open": true
+  },
+  "quote_retry_stranded": {
+    "first_result": "QUOTE_UNAVAILABLE",
+    "status": "APPROVED",
+    "next_cycle_processed": 0,
+    "orders": 0
+  },
+  "negative_lot_accepted": {
+    "response": {
+      "ok": true,
+      "id": 2,
+      "total_shares": 80.0,
+      "avg_cost": 100.0
+    },
+    "negative_lots": 1
+  },
+  "concurrent_oversell": {
+    "starting_shares": 100,
+    "sold_shares": 140.0,
+    "remaining_shares": 30.0,
+    "responses": [
+      [
+        {
+          "ok": true,
+          "id": 2,
+          "realized_gain": 3500.0,
+          "st_gain": 0,
+          "lt_gain": 3500.0,
+          "allocations": [
+            {
+              "lot_id": 1,
+              "purchase_date": "2025-01-01",
+              "cost_per_share": 100,
+              "original_shares": 100,
+              "notes": "",
+              "shares": 70.0,
+              "days_held": 658,
+              "term": "LT",
+              "cost_basis": 7000.0,
+              "proceeds": 10500.0,
+              "gain": 3500.0
+            }
+          ]
+        }
+      ],
+      [
+        {
+          "ok": true,
+          "id": 1,
+          "realized_gain": 3500.0,
+          "st_gain": 0,
+          "lt_gain": 3500.0,
+          "allocations": [
+            {
+              "lot_id": 1,
+              "purchase_date": "2025-01-01",
+              "cost_per_share": 100,
+              "original_shares": 100,
+              "notes": "",
+              "shares": 70.0,
+              "days_held": 658,
+              "term": "LT",
+              "cost_basis": 7000.0,
+              "proceeds": 10500.0,
+              "gain": 3500.0
+            }
+          ]
+        }
+      ]
+    ]
+  },
+  "approved_thesis_ignored": {
+    "stored_strategy": "NONE",
+    "actual_strategy": "INCOME",
+    "stored_assignment_allowed": false,
+    "actual_assignment_allowed": true,
+    "dependency_versions": {}
+  },
+  "mtm_future_fill_leakage": {
+    "target_date": "2026-09-21",
+    "purchase_date": "2026-10-20",
+    "expected_nav": 1000,
+    "actual_nav": 1400.0,
+    "is_complete": 1
+  }
+}

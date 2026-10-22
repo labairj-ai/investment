@@ -12,6 +12,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import agent_db
+from dashboard_transactions import purchase_markers
 from time_utils import now_utc, epoch_to_utc
 from pandas.tseries.holiday import USFederalHolidayCalendar
 from portfolio_ai import HOLDING_PROFILES
@@ -36,12 +37,8 @@ def _good_friday(year: int):
 
 
 def _is_market_holiday(d) -> bool:
-    if d.weekday() >= 5:
-        return True
-    if d == _good_friday(d.year):
-        return True
-    cal = USFederalHolidayCalendar()
-    return len(cal.holidays(start=str(d), end=str(d))) > 0
+    from trade_engine.market_calendar import is_trading_day
+    return not is_trading_day(d)
 
 _FUND_TICKERS: frozenset[str] = frozenset(
     t for t, v in HOLDING_PROFILES.items() if v.get("is_fund")
@@ -1406,10 +1403,7 @@ def build_dashboard(portfolio, layers, holdings):
             _sell_proceeds_by_day[_spd] = _sell_proceeds_by_day.get(_spd, 0.0) + _spp
             if float(_spr[1]) >= 500:
                 _txn_markers.append({"date": _spr[0], "type": "sell", "ticker": _spr[2], "shares": float(_spr[3]), "price": float(_spr[4])})
-        for _bpr in _spconn.execute(
-            "SELECT ticker, purchase_date, shares, cost_per_share FROM cost_lots WHERE shares * cost_per_share >= 500 ORDER BY purchase_date"
-        ):
-            _txn_markers.append({"date": _bpr[1], "type": "buy", "ticker": _bpr[0], "shares": float(_bpr[2]), "price": float(_bpr[3])})
+        _txn_markers.extend(purchase_markers(_spconn))
         _spconn.close()
     except Exception:
         pass
@@ -3762,8 +3756,8 @@ function _cumFilterData(tf) {{
   const portBase  = portSlice[0] ?? 0;
   const spyBase   = spySlice[0]  ?? 0;
   const labels    = allDates.slice(idxStart);
-  const portCum   = portSlice.map(v => Math.round((v - portBase) * 10000) / 10000);
-  const spyCum    = spySlice.map(v  => Math.round((v - spyBase)  * 10000) / 10000);
+  const portCum   = portSlice.map(v => Math.round(((100 + v) / (100 + portBase) - 1) * 1000000) / 10000);
+  const spyCum    = spySlice.map(v  => Math.round(((100 + v) / (100 + spyBase) - 1) * 1000000) / 10000);
   // Transaction markers — sparse arrays aligned to portCum for the window
   const buyData  = labels.map((d, i) => {{ const ts = _txnByDate[d]; return ts?.some(t => t.type==='buy')  ? portCum[i] : null; }});
   const sellData = labels.map((d, i) => {{ const ts = _txnByDate[d]; return ts?.some(t => t.type==='sell') ? portCum[i] : null; }});

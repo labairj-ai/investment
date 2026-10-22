@@ -59,13 +59,13 @@ def _already_labeled(conn, episode_id: str, horizon: str,
     try:
         row = conn.execute(
             """SELECT 1 FROM episode_outcomes
-               WHERE episode_id=? AND horizon=? AND horizon_definition_version=? LIMIT 1""",
+               WHERE episode_id=? AND horizon=? AND horizon_definition_version=? AND ticker_return IS NOT NULL AND spy_return IS NOT NULL LIMIT 1""",
             (episode_id, horizon, version),
         ).fetchone()
     except Exception:
         # Older DB without version column — fall back to unversioned check
         row = conn.execute(
-            "SELECT 1 FROM episode_outcomes WHERE episode_id=? AND horizon=? LIMIT 1",
+            "SELECT 1 FROM episode_outcomes WHERE episode_id=? AND horizon=? AND ticker_return IS NOT NULL AND spy_return IS NOT NULL LIMIT 1",
             (episode_id, horizon),
         ).fetchone()
     return row is not None
@@ -76,16 +76,19 @@ def _get_ticker_price(ticker: str, target_date: str) -> float | None:
 
     Tries holding_day first (fast, cached), then yfinance (network, fallback).
     """
+    from trade_engine.market_calendar import is_trading_day
+    session = date.fromisoformat(target_date)
+    while not is_trading_day(session):
+        session -= timedelta(days=1)
     conn = agent_db._connect()
-    row = conn.execute(
-        "SELECT price FROM holding_day WHERE ticker=? AND day<=? AND price>0 "
-        "ORDER BY day DESC LIMIT 1",
-        (ticker, target_date),
-    ).fetchone()
-    conn.close()
-    if row:
+    try:
+        row = conn.execute("SELECT price FROM holding_day WHERE ticker=? AND day=? AND price>0",
+                           (ticker,session.isoformat())).fetchone()
+    finally:
+        conn.close()
+    if row and math.isfinite(float(row["price"])):
         return float(row["price"])
-    return _yf_price(ticker, target_date)
+    return _yf_price(ticker, session.isoformat())
 
 
 def _yf_price(ticker: str, target_date: str) -> float | None:
@@ -93,19 +96,17 @@ def _yf_price(ticker: str, target_date: str) -> float | None:
         import yfinance as yf
         start = (date.fromisoformat(target_date) - timedelta(days=5)).isoformat()
         end   = (date.fromisoformat(target_date) + timedelta(days=2)).isoformat()
-        hist  = yf.Ticker(ticker).history(start=start, end=end, auto_adjust=True)
+        hist  = yf.Ticker(ticker).history(start=start, end=end, auto_adjust=False)
         if hist.empty:
             return None
-        # Walk back up to 5 days to find a trading day with a valid close.
-        # yfinance can return NaN for the current trading day before data settles;
-        # skip those rows so we don't silently produce invalid outcomes.
-        for delta in range(6):
-            candidate = (date.fromisoformat(target_date) - timedelta(days=delta)).isoformat()
-            for idx, row in hist.iterrows():
-                if idx.strftime("%Y-%m-%d") == candidate:
-                    close = float(row["Close"])
-                    if math.isfinite(close) and close > 0:
-                        return close
+        from trade_engine.market_calendar import is_trading_day
+        session=date.fromisoformat(target_date)
+        while not is_trading_day(session):
+            session-=timedelta(days=1)
+        for idx,row in hist.iterrows():
+            if idx.strftime('%Y-%m-%d')==session.isoformat():
+                close=float(row['Close'])
+                return close if math.isfinite(close) and close>0 else None
     except Exception as e:
         print(f"[outcome_labeler] yfinance fetch failed for {ticker} @ {target_date}: {e}")
     return None
@@ -122,7 +123,7 @@ def _fetch_price_series(ticker: str, start: str, end: str) -> dict[str, float]:
     """Return {date_str: close_price} for ticker in [start, end] window."""
     try:
         import yfinance as yf
-        hist = yf.Ticker(ticker).history(start=start, end=end, auto_adjust=True)
+        hist = yf.Ticker(ticker).history(start=start, end=(date.fromisoformat(end)+timedelta(days=1)).isoformat(), auto_adjust=False)
         return {idx.strftime("%Y-%m-%d"): float(r["Close"]) for idx, r in hist.iterrows()}
     except Exception as e:
         print(f"[outcome_labeler] price series fetch failed for {ticker}: {e}")
@@ -160,23 +161,32 @@ def _insert_outcome(
     mae: float | None,
     horizon_definition_version: str = "calendar_v1",
 ) -> None:
-    try:
-        conn.execute(
-            """INSERT OR IGNORE INTO episode_outcomes
-               (episode_id, horizon, ticker_return, spy_return, alpha, mfe, mae, labeled_at,
-                horizon_definition_version)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
-            (episode_id, horizon, ticker_return, spy_return, alpha, mfe, mae, time.time(),
-             horizon_definition_version),
-        )
-    except Exception:
-        # Older DB without horizon_definition_version column — fall back
-        conn.execute(
-            """INSERT OR IGNORE INTO episode_outcomes
-               (episode_id, horizon, ticker_return, spy_return, alpha, mfe, mae, labeled_at)
-               VALUES (?,?,?,?,?,?,?,?)""",
-            (episode_id, horizon, ticker_return, spy_return, alpha, mfe, mae, time.time()),
-        )
+    columns={r[1] for r in conn.execute('PRAGMA table_info(episode_outcomes)')}
+    versioned='horizon_definition_version' in columns
+    where='episode_id=? AND horizon=?'+(' AND horizon_definition_version=?' if versioned else '')
+    identity=(episode_id,horizon,horizon_definition_version) if versioned else (episode_id,horizon)
+    values=(ticker_return,spy_return,alpha,mfe,mae,time.time())
+    conn.execute('UPDATE episode_outcomes SET ticker_return=?,spy_return=?,alpha=?,mfe=?,mae=?,labeled_at=? WHERE '+where+
+                 ' AND (ticker_return IS NULL OR spy_return IS NULL)',(*values,*identity))
+    names=['episode_id','horizon','ticker_return','spy_return','alpha','mfe','mae','labeled_at']
+    values=(episode_id,horizon,*values)
+    if versioned:
+        names.append('horizon_definition_version');values=(*values,horizon_definition_version)
+    conn.execute('INSERT OR IGNORE INTO episode_outcomes('+','.join(names)+') VALUES('+','.join('?' for _ in names)+')',values)
+    if ticker_return is not None and spy_return is not None:
+        tables={r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if 'decision_episodes' in tables:
+            row=conn.execute('SELECT captured_at FROM decision_episodes WHERE episode_id=?',(episode_id,)).fetchone()
+            if row:
+                from trade_engine.market_calendar import maturity_date,is_trading_day
+                entry=_entry_date(row[0]);end=maturity_date(entry,horizon_definition_version,horizon)
+                def session(day):
+                    day=date.fromisoformat(day)
+                    while not is_trading_day(day):day-=timedelta(days=1)
+                    return day.isoformat()
+                conn.execute('CREATE TABLE IF NOT EXISTS episode_outcome_price_basis (episode_id TEXT,horizon TEXT,horizon_definition_version TEXT,price_basis TEXT,entry_session TEXT,horizon_session TEXT,recorded_at REAL,PRIMARY KEY(episode_id,horizon,horizon_definition_version))')
+                conn.execute('INSERT OR IGNORE INTO episode_outcome_price_basis VALUES(?,?,?,?,?,?,?)',
+                    (episode_id,horizon,horizon_definition_version,'UNADJUSTED_CLOSE_SESSION_V1',session(entry),session(end),time.time()))
 
 
 def _label_one_episode(

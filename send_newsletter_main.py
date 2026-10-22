@@ -108,18 +108,8 @@ def _good_friday(year: int) -> date:
 
 
 def _is_market_holiday(check_date=None) -> bool:
-    """Return True if check_date (default: today) is a weekend or US market holiday.
-    Covers US federal holidays (via USFederalHolidayCalendar) plus NYSE-specific
-    closures: Good Friday (not a federal holiday but NYSE always closes).
-    """
-    d = check_date or today_eastern()
-    if d.weekday() >= 5:
-        return True
-    if d == _good_friday(d.year):
-        return True
-    cal = USFederalHolidayCalendar()
-    holidays = cal.holidays(start=str(d), end=str(d))
-    return len(holidays) > 0
+    from trade_engine.market_calendar import is_trading_day
+    return not is_trading_day(check_date or today_eastern())
 
 
 def _stale_after_close(series: pd.Series) -> bool:
@@ -669,7 +659,10 @@ def main(send_email_flag: bool = False):
     if missing:
         raise ValueError(f"holdings.csv missing columns: {sorted(missing)}")
 
-    holdings = raw.copy()
+    from portfolio_positions import load_positions
+    holdings = pd.DataFrame([dict(Stock=p.ticker, Shares=p.shares, AvgCost=p.avg_cost, Layer=p.layer)
+                             for p in load_positions(HOLDINGS_CSV).values()],
+                            columns=["Stock", "Shares", "AvgCost", "Layer"])
     holdings["Stock"]  = holdings["Stock"].astype(str).str.strip().str.upper().map(normalize_ticker)
     holdings["Shares"] = holdings["Shares"].astype(float)
     holdings["Layer"]  = holdings["Layer"].astype(int)

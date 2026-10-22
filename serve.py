@@ -2238,165 +2238,29 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._json_error(500, str(e))
 
     def _handle_holding_add(self):
-        """POST /api/holdings — add a new position to holdings.csv and seed today's DB row."""
+        body = self._read_body()
+        from portfolio_mutations import number, purchase_day
         try:
-            body      = self._read_body()
-            raw_ticker = str(body.get("ticker", "")).strip().upper()
-            # Normalize BRK.B → BRK-B
-            ticker = raw_ticker.replace(".", "-") if "." in raw_ticker else raw_ticker
-            shares    = float(body.get("shares", 0))
-            avg_cost  = float(body.get("avg_cost", 0))
-            layer_num = int(body.get("layer_num", 0))
-            print(f"[AddHolding] {ticker} {shares} shares @ {avg_cost} layer={layer_num}")
-
-            if not ticker:
-                return self._json_error(400, "ticker is required")
-            if shares <= 0:
-                return self._json_error(400, "shares must be > 0")
-            if avg_cost <= 0:
-                return self._json_error(400, "avg_cost must be > 0")
-            if layer_num not in self._LAYER_NAMES:
-                return self._json_error(400, "layer_num must be 1–5")
-
-            holdings_csv = PROJECT_DIR / "holdings.csv"
-            layer_label  = self._LAYER_NAMES[layer_num]
-
-            # Check for duplicate
-            existing_tickers = set()
-            rows, fieldnames = [], None
-            if holdings_csv.exists():
-                with open(holdings_csv, newline="") as f:
-                    reader = _csv_mod.DictReader(f)
-                    fieldnames = reader.fieldnames
-                    for row in reader:
-                        raw = str(row["Stock"]).strip().upper()
-                        norm = raw.replace(".", "-") if "." in raw else raw
-                        existing_tickers.add(norm)
-                        rows.append(row)
-
-            if ticker in existing_tickers:
-                return self._json_error(409, f"{ticker} is already in your holdings. Use the Lots form to add shares.")
-
-            # Append new row to CSV
-            new_row = {
-                "Stock":   ticker,
-                "Shares":  str(shares),
-                "AvgCost": str(avg_cost),
-                "Layer":   str(layer_num),
-            }
-            rows.append(new_row)
-            if not fieldnames:
-                fieldnames = ["Stock", "Shares", "AvgCost", "Layer"]
-
-            with open(holdings_csv, "w", newline="") as f:
-                writer = _csv_mod.DictWriter(f, fieldnames=fieldnames)
-                writer.writeheader()
-                writer.writerows(rows)
-            print(f"[AddHolding] {ticker} written to holdings.csv")
-
-            # Fetch current price from yfinance and seed holding_day for today
-            price = None
-            try:
-                import yfinance as yf
-                import warnings
-                warnings.filterwarnings("ignore")
-                # yfinance expects the original dot notation for some tickers (BRK-B → BRK-B is fine)
-                tk = yf.Ticker(ticker)
-                info = tk.fast_info
-                price = float(info.get("last_price") or info.get("previous_close") or 0) or None
-                if not price:
-                    hist = tk.history(period="2d")
-                    if not hist.empty:
-                        price = float(hist["Close"].iloc[-1])
-            except Exception:
-                price = None
-
-            if price and price > 0:
-                today = today_eastern().isoformat()
-                value = shares * price
-                db    = PROJECT_DIR / "out" / "investment.db"
-                if db.exists():
-                    conn = sqlite3.connect(str(db), timeout=10)
-                    conn.row_factory = sqlite3.Row
-
-                    conn.execute(
-                        "INSERT OR REPLACE INTO holding_day "
-                        "(day, ticker, layer, shares, price, value, change_dollars, change_pct, weight_pct) "
-                        "VALUES (?,?,?,?,?,?,0,0,0)",
-                        (today, ticker, layer_label, shares, price, value)
-                    )
-
-                    # Recompute today's layer_day and portfolio_day weights
-                    hrows = conn.execute(
-                        "SELECT layer, value, change_dollars FROM holding_day WHERE day=?", (today,)
-                    ).fetchall()
-
-                    day_layer = collections.defaultdict(lambda: {"value": 0.0, "change": 0.0})
-                    total_val = 0.0
-                    for r in hrows:
-                        day_layer[r["layer"]]["value"]  += r["value"]
-                        day_layer[r["layer"]]["change"] += r["change_dollars"]
-                        total_val += r["value"]
-
-                    # Recompute weight_pct for every holding today in one SQL pass
-                    if total_val:
-                        conn.execute(
-                            "UPDATE holding_day SET weight_pct=ROUND(value*100.0/?,4) WHERE day=?",
-                            (total_val, today)
-                        )
-
-                    # Recompute layer_day for today
-                    for layer, d in day_layer.items():
-                        w        = (d["value"] / total_val * 100) if total_val else 0
-                        prev_val = d["value"] - d["change"]
-                        chg_pct  = (d["change"] / prev_val * 100) if prev_val else 0.0
-                        conn.execute(
-                            "INSERT OR REPLACE INTO layer_day "
-                            "(day, layer, value, change_dollars, change_pct, weight_pct) VALUES (?,?,?,?,?,?)",
-                            (today, layer, d["value"], d["change"], chg_pct, w)
-                        )
-
-                    conn.commit()
-                    conn.close()
-
-            # Seed opening lot in cost_lots
-            db = PROJECT_DIR / "out" / "investment.db"
-            if db.exists():
-                today_str = today_eastern().isoformat()
-                conn = sqlite3.connect(str(db), timeout=10)
-                existing = conn.execute(
-                    "SELECT COUNT(*) FROM cost_lots WHERE ticker=?", (ticker,)
-                ).fetchone()[0]
-                if existing == 0:
-                    conn.execute(
-                        "INSERT INTO cost_lots (ticker, shares, cost_per_share, purchase_date, notes) "
-                        "VALUES (?, ?, ?, ?, ?)",
-                        (ticker, shares, avg_cost, today_str, "Opening lot (auto-created)")
-                    )
-                    conn.commit()
-                conn.close()
-
-            # Regenerate dashboard
-            import subprocess
-            subprocess.run(
-                ["python3", "generate_dashboard.py"],
-                cwd=str(PROJECT_DIR),
-                capture_output=True,
-                timeout=30,
-            )
-
-            print(f"[AddHolding] {ticker} complete")
-            self._json({
-                "ok":        True,
-                "ticker":    ticker,
-                "layer":     layer_label,
-                "price":     price,
-                "value":     round(shares * price, 2) if price else None,
-            })
-        except Exception as e:
-            import traceback
-            print(f"[AddHolding] ERROR: {e}\n{traceback.format_exc()}")
-            self._json_error(500, str(e))
+            from portfolio_positions import _normalize
+            ticker = _normalize(str(body.get('ticker', '')))
+            shares = number(body.get('shares'), 'shares')
+            cost = number(body.get('avg_cost'), 'avg_cost', zero=True)
+            layer = int(body.get('layer_num', 0))
+            if layer not in self._LAYER_NAMES:
+                raise ValueError('layer_num must be 1–5')
+            day = purchase_day(body.get('purchase_date') or today_eastern().isoformat())
+        except (ValueError, TypeError) as error:
+            return self._json_error(400, str(error))
+        price = None
+        try:
+            import yfinance as yf
+            info = yf.Ticker(ticker).fast_info
+            price = number(info.get('last_price') or info.get('previous_close'), 'price')
+        except Exception:
+            pass
+        return self._inventory_mutation('add_holding', dict(ticker=ticker, shares=shares,
+            cost_per_share=cost, layer_num=layer, purchase_date=day, price=price,
+            notes='Opening lot', request_id=body.get('request_id')))
 
     # ── CC positions ──────────────────────────────────────────────────────────
     def _handle_cc_positions_get(self):
@@ -2617,122 +2481,25 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         except Exception as e:
             self._json_error(500, str(e))
 
-    def _handle_lot_add(self):
+    def _inventory_mutation(self, action, body):
+        from portfolio_mutations import mutate, ProjectionPending
         try:
-            body     = self._read_body()
-            required = ["ticker", "shares", "cost_per_share", "purchase_date"]
-            missing  = [f for f in required if not body.get(f)]
-            if missing:
-                return self._json_error(400, f"Missing: {', '.join(missing)}")
-            ticker     = body["ticker"].upper()
-            new_shares = float(body["shares"])
-            new_cost   = float(body["cost_per_share"])
-            print(f"[AddLot] {ticker} {new_shares} shares @ {new_cost} date={body.get('purchase_date')}")
+            result = mutate(PROJECT_DIR, action, body,
+                            request_id=self.headers.get('Idempotency-Key'))
+            self._json(result)
+        except ProjectionPending as error:
+            self._send_json(dict(ok=False, committed=True, request_id=error.mutation_id,
+                                 error=str(error)), 503)
+        except (ValueError, TypeError, KeyError) as error:
+            self._json_error(400, str(error))
+        except Exception as error:
+            self._json_error(500, str(error))
 
-            db   = PROJECT_DIR / "out" / "investment.db"
-            conn = sqlite3.connect(str(db), timeout=10)
-            cur  = conn.execute(
-                "INSERT INTO cost_lots (ticker, shares, cost_per_share, purchase_date, notes) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (ticker, new_shares, new_cost, body["purchase_date"], body.get("notes", ""))
-            )
-            pos_id = cur.lastrowid
-
-            # Recompute totals from all lots and sync to holdings.csv + holding_day
-            lots = conn.execute(
-                "SELECT shares, cost_per_share FROM cost_lots WHERE ticker=?", (ticker,)
-            ).fetchall()
-            total_shares = sum(r[0] for r in lots)
-            avg_cost     = sum(r[0] * r[1] for r in lots) / total_shares if total_shares else new_cost
-
-            conn.commit()
-            conn.close()
-
-            # Update holdings.csv — update existing row or insert if ticker absent
-            holdings_csv = PROJECT_DIR / "holdings.csv"
-            if holdings_csv.exists():
-                rows, fieldnames, found = [], None, False
-                with open(holdings_csv, newline="") as f:
-                    reader = _csv_mod.DictReader(f)
-                    fieldnames = reader.fieldnames
-                    for row in reader:
-                        if row["Stock"].strip().upper() == ticker:
-                            row["Shares"]  = str(total_shares)
-                            row["AvgCost"] = str(round(avg_cost, 4))
-                            found = True
-                        rows.append(row)
-                if not found:
-                    # Ticker was absent (e.g. closed then re-bought via lot form) — insert it
-                    layer_row = conn_layer = None
-                    try:
-                        conn_layer = sqlite3.connect(str(db), timeout=10)
-                        layer_row = conn_layer.execute(
-                            "SELECT layer FROM holding_day WHERE ticker=? ORDER BY day DESC LIMIT 1", (ticker,)
-                        ).fetchone()
-                    except Exception:
-                        pass
-                    finally:
-                        if conn_layer:
-                            conn_layer.close()
-                    layer_num = 3  # default to Layer 3 (Core Compounders) if unknown
-                    if layer_row:
-                        # layer stored as "Layer N: ..." — extract N
-                        import re as _re
-                        m = _re.search(r"Layer (\d)", layer_row[0])
-                        if m:
-                            layer_num = int(m.group(1))
-                    new_row = {"Stock": ticker, "Shares": str(total_shares),
-                               "AvgCost": str(round(avg_cost, 4)), "Layer": str(layer_num)}
-                    if fieldnames and "PurchaseDate" in fieldnames:
-                        new_row["PurchaseDate"] = body.get("purchase_date", "")
-                    rows.append(new_row)
-                with open(holdings_csv, "w", newline="") as f:
-                    writer = _csv_mod.DictWriter(f, fieldnames=fieldnames)
-                    writer.writeheader()
-                    writer.writerows(rows)
-
-            # Update today's holding_day value (price unchanged, just more shares)
-            db_conn = sqlite3.connect(str(db), timeout=10)
-            today = today_eastern().isoformat()
-            row = db_conn.execute(
-                "SELECT price FROM holding_day WHERE ticker=? AND day=?", (ticker, today)
-            ).fetchone()
-            if row:
-                price = row[0]
-                new_value = total_shares * price
-                db_conn.execute(
-                    "UPDATE holding_day SET shares=?, value=? WHERE ticker=? AND day=?",
-                    (total_shares, new_value, ticker, today)
-                )
-                # Recompute weight_pct for all holdings today
-                total_val = db_conn.execute(
-                    "SELECT SUM(value) FROM holding_day WHERE day=?", (today,)
-                ).fetchone()[0] or 0
-                if total_val:
-                    db_conn.execute(
-                        "UPDATE holding_day SET weight_pct=ROUND(value*100.0/?,4) WHERE day=?",
-                        (total_val, today)
-                    )
-                db_conn.commit()
-            db_conn.close()
-
-            print(f"[AddLot] {ticker} complete (total_shares={total_shares})")
-            self._json({"ok": True, "id": pos_id, "total_shares": total_shares, "avg_cost": round(avg_cost, 4)})
-        except Exception as e:
-            import traceback
-            print(f"[AddLot] ERROR: {e}\n{traceback.format_exc()}")
-            self._json_error(500, str(e))
+    def _handle_lot_add(self):
+        return self._inventory_mutation('add_lot', self._read_body())
 
     def _handle_lot_delete(self, lot_id: int):
-        try:
-            db   = PROJECT_DIR / "out" / "investment.db"
-            conn = sqlite3.connect(str(db), timeout=10)
-            conn.execute("DELETE FROM cost_lots WHERE id = ?", (lot_id,))
-            conn.commit()
-            conn.close()
-            self._json({"ok": True})
-        except Exception as e:
-            self._json_error(500, str(e))
+        return self._inventory_mutation('delete_lot', {'id': lot_id})
 
     # ── Sell transactions ─────────────────────────────────────────────────────
     def _handle_sells_get(self, ticker=None):
@@ -2762,168 +2529,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._json_error(500, str(e))
 
     def _handle_sell_add(self):
-        try:
-            import json as _json
-            try:
-                length = int(self.headers.get("Content-Length", 0))
-            except (TypeError, ValueError):
-                length = 0
-            data   = _json.loads(self.rfile.read(length))
-            ticker      = (data.get("ticker") or "").upper().strip()
-            shares_sold = float(data.get("shares_sold", 0))
-            sell_price  = float(data.get("sell_price", 0))
-            sell_date   = (data.get("sell_date") or "").strip()
-            notes       = (data.get("notes") or "").strip()
-            print(f"[Sell] {ticker} {shares_sold} shares @ {sell_price} on {sell_date}")
-            if not ticker or shares_sold <= 0 or sell_price <= 0 or not sell_date:
-                self._json({"ok": False, "error": "ticker, shares_sold, sell_price, and sell_date required"})
-                return
-            db   = PROJECT_DIR / "out" / "investment.db"
-            conn = sqlite3.connect(str(db), timeout=10)
-            conn.row_factory = sqlite3.Row
-            lots = [dict(r) for r in conn.execute(
-                "SELECT * FROM cost_lots WHERE ticker=? ORDER BY purchase_date ASC, id ASC",
-                (ticker,)
-            ).fetchall()]
-            allocs, error = _fifo_allocate(lots, shares_sold, sell_price, sell_date)
-            if error:
-                conn.close()
-                print(f"[Sell] {ticker} FIFO error: {error}")
-                self._json({"ok": False, "error": error})
-                return
-            total_gain = round(sum(a["gain"] for a in allocs), 6)
-            st_gain    = round(sum(a["gain"] for a in allocs if a["term"] == "ST"), 6)
-            lt_gain    = round(sum(a["gain"] for a in allocs if a["term"] == "LT"), 6)
-            cur = conn.execute(
-                """INSERT INTO sell_transactions
-                   (ticker, shares_sold, sell_price, sell_date, realized_gain, st_gain, lt_gain, fifo_detail, notes)
-                   VALUES (?,?,?,?,?,?,?,?,?)""",
-                (ticker, shares_sold, sell_price, sell_date,
-                 total_gain, st_gain, lt_gain, _json.dumps(allocs), notes)
-            )
-            sell_id = cur.lastrowid
-            # Mutate lots: reduce partially consumed, delete fully consumed
-            for alloc in allocs:
-                remaining = round(alloc["original_shares"] - alloc["shares"], 6)
-                if remaining < 1e-4:
-                    conn.execute("DELETE FROM cost_lots WHERE id=?", (alloc["lot_id"],))
-                else:
-                    conn.execute("UPDATE cost_lots SET shares=? WHERE id=?",
-                                 (remaining, alloc["lot_id"]))
-            conn.commit()
-            conn.close()
-            print(f"[Sell] {ticker} sell_id={sell_id} committed to DB (gain={total_gain})")
-
-            # Update holdings.csv: remove ticker if fully sold, or update shares if partial sell
-            import csv as _csv_sell
-            holdings_csv = PROJECT_DIR / "holdings.csv"
-            if holdings_csv.exists():
-                # Recompute remaining shares from cost_lots (authoritative)
-                conn2 = sqlite3.connect(str(db), timeout=10)
-                remaining_shares = conn2.execute(
-                    "SELECT SUM(shares) FROM cost_lots WHERE ticker=?", (ticker,)
-                ).fetchone()[0] or 0
-                conn2.close()
-
-                rows, fieldnames = [], None
-                with open(holdings_csv, newline="") as f:
-                    reader = _csv_sell.DictReader(f)
-                    fieldnames = reader.fieldnames
-                    for row in reader:
-                        raw = str(row.get("Stock", "")).strip().upper()
-                        norm = raw.replace(".", "-") if "." in raw else raw
-                        if norm == ticker or raw == ticker:
-                            if remaining_shares < 1e-4:
-                                continue  # drop fully-sold position
-                            row["Shares"] = str(round(remaining_shares, 6))
-                        rows.append(row)
-                with open(holdings_csv, "w", newline="") as f:
-                    writer = _csv_sell.DictWriter(f, fieldnames=fieldnames)
-                    writer.writeheader()
-                    writer.writerows(rows)
-                print(f"[Sell] {ticker} holdings.csv updated (remaining_shares={remaining_shares})")
-            else:
-                print(f"[Sell] {ticker} WARNING: holdings.csv not found at {holdings_csv}")
-
-            # Delete any holding_day rows for this ticker after the sell date — belt-and-suspenders
-            # so a future daily run that reads a stale CSV cannot re-inflate historical values.
-            conn4 = sqlite3.connect(str(db), timeout=10)
-            purged = conn4.execute(
-                "DELETE FROM holding_day WHERE ticker=? AND day > ?", (ticker, sell_date)
-            ).rowcount
-            if purged:
-                print(f"[Sell] {ticker} purged {purged} stale holding_day row(s) after {sell_date}")
-            conn4.commit()
-            conn4.close()
-
-            # Also update today's holding_day row if it exists
-            conn3 = sqlite3.connect(str(db), timeout=10)
-            today_str = today_eastern().isoformat()
-            hrow = conn3.execute(
-                "SELECT price FROM holding_day WHERE ticker=? AND day=?", (ticker, today_str)
-            ).fetchone()
-            if hrow and remaining_shares >= 1e-4:
-                new_value = remaining_shares * hrow[0]
-                conn3.execute(
-                    "UPDATE holding_day SET shares=?, value=? WHERE ticker=? AND day=?",
-                    (remaining_shares, new_value, ticker, today_str)
-                )
-                total_val = conn3.execute(
-                    "SELECT SUM(value) FROM holding_day WHERE day=?", (today_str,)
-                ).fetchone()[0] or 0
-                if total_val:
-                    conn3.execute(
-                        "UPDATE holding_day SET weight_pct=ROUND(value*100.0/?,4) WHERE day=?",
-                        (total_val, today_str)
-                    )
-            conn3.commit()
-            conn3.close()
-
-            print(f"[Sell] {ticker} sell_id={sell_id} complete")
-            self._json({"ok": True, "id": sell_id, "realized_gain": total_gain,
-                        "st_gain": st_gain, "lt_gain": lt_gain, "allocations": allocs})
-        except Exception as e:
-            import traceback
-            print(f"[Sell] ERROR: {e}\n{traceback.format_exc()}")
-            self._json_error(500, str(e))
+        return self._inventory_mutation('sell', self._read_body())
 
     def _handle_sell_undo(self, sell_id: int):
-        """Undo a sell: restore lots from fifo_detail snapshot, delete the sell record."""
-        try:
-            import json as _json
-            db   = PROJECT_DIR / "out" / "investment.db"
-            conn = sqlite3.connect(str(db), timeout=10)
-            conn.row_factory = sqlite3.Row
-            row = conn.execute(
-                "SELECT * FROM sell_transactions WHERE id=?", (sell_id,)
-            ).fetchone()
-            if not row:
-                conn.close()
-                self._json({"ok": False, "error": "Sell not found"})
-                return
-            allocs = _json.loads(row["fifo_detail"] or "[]")
-            for alloc in allocs:
-                existing = conn.execute(
-                    "SELECT id, shares FROM cost_lots WHERE id=?", (alloc["lot_id"],)
-                ).fetchone()
-                if existing:
-                    # Lot still exists (was partially consumed) — add shares back
-                    conn.execute("UPDATE cost_lots SET shares=? WHERE id=?",
-                                 (round(existing["shares"] + alloc["shares"], 6), alloc["lot_id"]))
-                else:
-                    # Lot was deleted (fully consumed) — re-create it
-                    conn.execute(
-                        """INSERT INTO cost_lots (id, ticker, shares, cost_per_share, purchase_date, notes)
-                           VALUES (?,?,?,?,?,?)""",
-                        (alloc["lot_id"], row["ticker"], alloc["original_shares"],
-                         alloc["cost_per_share"], alloc["purchase_date"], alloc.get("notes") or "")
-                    )
-            conn.execute("DELETE FROM sell_transactions WHERE id=?", (sell_id,))
-            conn.commit()
-            conn.close()
-            self._json({"ok": True})
-        except Exception as e:
-            self._json_error(500, str(e))
+        return self._inventory_mutation('undo_sell', {'id': sell_id})
 
     # ── Covered calls ─────────────────────────────────────────────────────────
     def _handle_covered_calls(self, params):
@@ -5224,6 +4833,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def _handle_recommendations_get(self):
         """Return open recommendations with critic verdicts attached."""
+        import csv as _csv
         try:
             held_tickers = None
             csv_path = PROJECT_DIR / "holdings.csv"
@@ -5564,6 +5174,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def _handle_agents_get(self, parsed):
         """Route GET /api/agents/* requests."""
+        import csv as _csv
         from urllib.parse import parse_qs
         parts = parsed.path.rstrip("/").split("/")
         # /api/agents/recommendations

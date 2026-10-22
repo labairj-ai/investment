@@ -18,6 +18,8 @@ START='2026-10-13T17:00:00+00:00'
 def accrual_episode(tmp_path,monkeypatch):
     monkeypatch.setattr(evidence,'committed_policy',lambda *a:True)
     monkeypatch.setattr(evidence,'now_utc',lambda:parse_timestamp(START)+timedelta(seconds=1))
+    import covered_call_accrual
+    monkeypatch.setattr(covered_call_accrual,'now_utc',lambda:parse_timestamp(START)+timedelta(seconds=1))
     path=tmp_path/'cc.db';cfg=deepcopy(CC_V3_CONFIG)
     def create(timestamp=START,config=None,prospective=True):
         from test_cc_followups import candidate

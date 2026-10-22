@@ -12,7 +12,7 @@ from test_cc_adversarial_release import _make_manifest, _run
 @pytest.fixture
 def transition(tmp_path, monkeypatch):
     prior = cc.current_contract_state(CC_V3_CONFIG)
-    current = dict(prior, engine_hash='engine-b', model_version='cc-v3.3')
+    current = dict(prior, engine_hash='engine-b', model_version='cc-v3.4')
     bf, pf, md = tmp_path/'candidate.json', tmp_path/'prior.json', tmp_path/'manifests'
     md.mkdir()
     pf.write_text(json.dumps(dict(prior, schema_version=cc.BASELINE_SCHEMA_VERSION)))
@@ -178,7 +178,7 @@ def test_real_cli_git_transition_and_manifest_replay(tmp_path, event_name):
         return subprocess.run(['git',*args],cwd=repo,check=True,capture_output=True,text=True).stdout.strip()
     git('init');git('config','user.name','Test');git('config','user.email','test@example.com')
     write_state(state);git('add','.');git('commit','-m','A');a=git('rev-parse','HEAD')
-    b_state=dict(state,engine_hash='b',model_version='cc-v3.3')
+    b_state=dict(state,engine_hash='b',model_version='cc-v3.4')
     write_state(b_state)
     md=repo/'cc_change_manifests';md.mkdir()
     event_path=tmp_path/'event.json'
@@ -193,7 +193,7 @@ def test_real_cli_git_transition_and_manifest_replay(tmp_path, event_name):
     approved=run(a)
     assert approved.returncode==0, approved.stdout+approved.stderr
     git('add','.');git('commit','-m','B');b=git('rev-parse','HEAD')
-    write_state(dict(b_state,engine_hash='c',model_version='cc-v3.4'))
+    write_state(dict(b_state,engine_hash='c',model_version='cc-v3.5'))
     replay=run(b)
     assert replay.returncode==1
     assert any('APPLICABLE_MANIFEST' in f for f in json.loads(replay.stdout)['findings'])

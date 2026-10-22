@@ -10,7 +10,7 @@ from statistics import NormalDist
 from datetime import date
 import numpy as np
 
-VERSION = 'cc-v3.2'
+VERSION = 'cc-v3.3'
 N = NormalDist()
 
 

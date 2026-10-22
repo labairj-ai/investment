@@ -63,54 +63,60 @@ _ACCEPTED_NO_EXEC_NULL = {*EXIT_ACTIONS, "TRIM", "ALLOCATE", "REBALANCE"}
 
 def _ticker_price_at(ticker: str, date_str: str) -> float | None:
     """Holding_day price on or before date_str."""
-    conn = agent_db._connect()
-    row = conn.execute(
-        "SELECT price FROM holding_day WHERE ticker=? AND day<=? ORDER BY day DESC LIMIT 1",
-        (ticker, date_str),
-    ).fetchone()
-    conn.close()
-    return float(row["price"]) if row else None
+    from agents.learning.outcome_labeler import _get_ticker_price
+    return _get_ticker_price(ticker, date_str)
 
 
 def _ensure_spy_prices(dates: list[str]) -> None:
     """Fetch and cache SPY prices for any dates not already stored."""
     if not dates:
         return
-    stored = agent_db.get_spy_prices(dates)
-    missing = [d for d in dates if d not in stored]
-    if not missing:
-        return
+    # Legacy spy_prices rows may be dividend adjusted. Keep them intact and use
+    # a separate explicitly unadjusted cache for session-close outcome math.
+    import math
+    from trade_engine.market_calendar import is_trading_day
+    conn=agent_db._connect()
     try:
+        conn.execute("""CREATE TABLE IF NOT EXISTS outcome_spy_close_cache
+            (day TEXT PRIMARY KEY,price REAL NOT NULL,session TEXT NOT NULL,
+             price_basis TEXT NOT NULL CHECK(price_basis='UNADJUSTED_CLOSE_SESSION_V1'))""")
+        stored={r[0] for r in conn.execute('SELECT day FROM outcome_spy_close_cache')}
+        conn.commit()
+        missing=[d for d in dates if d not in stored]
+        if not missing:return
         import yfinance as yf
-        earliest = min(missing)
-        # Fetch a window starting one day before earliest to handle weekends
-        start = (date.fromisoformat(earliest) - timedelta(days=5)).isoformat()
-        end   = (date.fromisoformat(max(missing)) + timedelta(days=2)).isoformat()
-        hist  = yf.Ticker("SPY").history(start=start, end=end, auto_adjust=True)
-        if hist.empty:
-            return
-        price_map: dict[str, float] = {}
-        for idx, row in hist.iterrows():
-            price_map[idx.strftime("%Y-%m-%d")] = float(row["Close"])
-        # For each missing date, use the closest available price on or before
-        for d in missing:
-            # Try exact match first, then walk back up to 5 days
-            for delta in range(6):
-                candidate = (date.fromisoformat(d) - timedelta(days=delta)).isoformat()
-                if candidate in price_map:
-                    agent_db.upsert_spy_price(d, price_map[candidate])
-                    break
-    except Exception as e:
-        print(f"[OutcomeEval] SPY fetch failed: {e}")
+        hist=yf.Ticker('SPY').history(start=(date.fromisoformat(min(missing))-timedelta(days=7)).isoformat(),
+            end=(date.fromisoformat(max(missing))+timedelta(days=1)).isoformat(),auto_adjust=False)
+        if hist is None or hist.empty:return
+        prices={idx.strftime('%Y-%m-%d'):float(row['Close']) for idx,row in hist.iterrows()}
+        for day in missing:
+            session=date.fromisoformat(day)
+            while not is_trading_day(session):session-=timedelta(days=1)
+            price=prices.get(session.isoformat())
+            if price is not None and math.isfinite(price) and price>0:
+                conn.execute("INSERT OR IGNORE INTO outcome_spy_close_cache VALUES(?,?,?,'UNADJUSTED_CLOSE_SESSION_V1')",
+                    (day,price,session.isoformat()))
+        conn.commit()
+    except Exception as error:
+        print(f'[OutcomeEval] SPY fetch failed: {error}')
+    finally:
+        conn.close()
 
 
 def _spy_price_at(date_str: str) -> float | None:
-    prices = agent_db.get_spy_prices([date_str])
-    return prices.get(date_str)
+    conn=agent_db._connect()
+    try:
+        row=conn.execute("SELECT price FROM outcome_spy_close_cache WHERE day=? AND price_basis='UNADJUSTED_CLOSE_SESSION_V1'",(date_str,)).fetchone()
+        return float(row[0]) if row else None
+    except Exception:
+        return None
+    finally:
+        conn.close()
 
 
 def _date_of(ts: float) -> str:
-    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
+    from time_utils import TZ_EASTERN
+    return datetime.fromtimestamp(ts, tz=TZ_EASTERN).strftime("%Y-%m-%d")
 
 
 def _horizon_date(rec_date: str, days: int) -> str:
@@ -741,6 +747,7 @@ def evaluate_matured_recommendations(min_age_days: int = MIN_AGE_DAYS) -> int:
                 else _OUTCOME_MATH_VERSION_DEFAULT
             )
 
+            notes = (notes or "") + " | price_basis=UNADJUSTED_CLOSE_SESSION_V1; calendar=EASTERN_NYSE"
             agent_db.insert_outcome(
                 recommendation_id=rec["id"],
                 actual_return=round(actual_r, 6) if actual_r is not None else None,

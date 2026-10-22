@@ -1,0 +1,24 @@
+........................................................................ [ 97%]
+.........................................................                [100%]
+=============================== warnings summary ===============================
+venv/lib/python3.9/site-packages/urllib3/__init__.py:35
+  /Users/ai_lab/Desktop/investment/venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+    warnings.warn(
+
+tests/test_alpaca_integration.py:41
+  /Users/ai_lab/Desktop/investment/tests/test_alpaca_integration.py:41: PytestUnknownMarkWarning: Unknown pytest.mark.integration - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+    integration = pytest.mark.integration
+
+tests/test_ci_datetime_guard.py::test_no_naive_now_calls
+  <unknown>:1766: DeprecationWarning: invalid escape sequence \-
+
+tests/test_ci_datetime_guard.py::test_no_naive_now_calls
+tests/test_ci_datetime_guard.py::test_no_naive_now_calls
+  <unknown>:1766: DeprecationWarning: invalid escape sequence \s
+
+tests/test_ci_datetime_guard.py::test_no_naive_now_calls
+  <unknown>:1766: DeprecationWarning: invalid escape sequence \*
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+-------- generated xml file: /private/tmp/investment-backlog-final.xml ---------
+2633 passed, 16 skipped, 6 warnings in 168.41s (0:02:48)

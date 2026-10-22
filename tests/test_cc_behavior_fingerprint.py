@@ -169,9 +169,9 @@ def test_irrelevant_config_and_flat_wrapped_equivalence():
 
 
 @pytest.mark.parametrize('target,versions', [
-    ('covered_call_v3.utility',{'model_version':'cc-v3.3'}),
-    ('covered_call_virtual.advance',{'simulator_contract_version':'simulator-contract-2'}),
-    ('covered_call_v3.execution',{'model_version':'cc-v3.3','simulator_contract_version':'simulator-contract-2'}),
+    ('covered_call_v3.utility',{'model_version':'cc-v3.4'}),
+    ('covered_call_virtual.advance',{'simulator_contract_version':'simulator-contract-3'}),
+    ('covered_call_v3.execution',{'model_version':'cc-v3.4','simulator_contract_version':'simulator-contract-3'}),
 ])
 def test_real_fingerprint_mutations_require_exact_component_release(tmp_path,monkeypatch,target,versions):
     prior=cc.current_contract_state(CC_V3_CONFIG)
@@ -269,7 +269,7 @@ def test_definition_migration_cannot_hide_actual_behavior_edit(definition_transi
 
 def test_definition_migration_cannot_authorize_runtime_version_change(definition_transition):
     repo,current,prior,sha,check=definition_transition
-    current['model_version']='cc-v3.3'
+    current['model_version']='cc-v3.4'
     assert not check()['fingerprint_definition_migration']
     assert not check()['ok']
 

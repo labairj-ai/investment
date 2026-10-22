@@ -52,16 +52,18 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _get_holdings(conn, book_id: str) -> dict[str, dict]:
+def _fills_through(conn, book_id=None, as_of=None):
+    from time_utils import parse_timestamp, TZ_EASTERN
+    rows=conn.execute("SELECT * FROM virtual_fills WHERE (? IS NULL OR book_id=?) ORDER BY filled_at,rowid",(book_id,book_id)).fetchall()
+    return [r for r in rows if as_of is None or parse_timestamp(r['filled_at'],legacy_utc=True).astimezone(TZ_EASTERN).date().isoformat()<=as_of]
+
+
+def _get_holdings(conn, book_id: str, as_of: str | None = None) -> dict[str, dict]:
     """Reconstruct net holdings from virtual_fills.
 
     Returns {ticker: {qty, first_buy_date, avg_cost}} for all tickers with qty > 0.
     """
-    rows = conn.execute(
-        """SELECT ticker, action, qty, price, filled_at FROM virtual_fills
-           WHERE book_id=? ORDER BY filled_at""",
-        (book_id,),
-    ).fetchall()
+    rows = _fills_through(conn,book_id,as_of)
 
     holdings: dict[str, dict] = {}
     for row in rows:
@@ -69,7 +71,8 @@ def _get_holdings(conn, book_id: str) -> dict[str, dict]:
         a = (row["action"] or "BUY").upper()
         q = float(row["qty"])
         p = float(row["price"])
-        date_str = (row["filled_at"] or "")[:10]
+        from time_utils import parse_timestamp,TZ_EASTERN
+        date_str = parse_timestamp(row['filled_at'],legacy_utc=True).astimezone(TZ_EASTERN).date().isoformat()
 
         if a == "BUY":
             if t not in holdings:
@@ -101,14 +104,14 @@ def _emit_synthetic_sell(conn, book_id: str, ticker: str, qty: float, price: flo
     """
     from agents.learning.book_simulator import _DEFAULT_SLIPPAGE_PCT
     fill_price = round(price * (1 - _DEFAULT_SLIPPAGE_PCT / 100), 2)
-    proceeds = int(qty) * fill_price
-    now = _now_iso()
+    proceeds = qty * fill_price
+    now = datetime.fromisoformat(date_str).replace(hour=16,tzinfo=ZoneInfo("America/New_York")).astimezone(timezone.utc).isoformat()
     conn.execute(
         """INSERT INTO virtual_fills
            (book_id, episode_id, ticker, action, price, qty, fees, filled_at,
             decision_origin, created_at)
            VALUES (?,?,?,?,?,?,?,?,?,?)""",
-        (book_id, None, ticker, "SELL", fill_price, int(qty), 0.0, now, origin, time.time()),
+        (book_id, None, ticker, "SELL", fill_price, qty, 0.0, now, origin, time.time()),
     )
     conn.execute(
         """UPDATE virtual_books
@@ -135,6 +138,7 @@ def run_mark_to_market(date_str: str | None = None) -> dict:
     if not is_market_open_on_date(date_str):
         return {"books_updated": 0, "holds_expired": 0, "errors": [], "skipped_non_market": True}
 
+    historical = date_str < datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
     errors: list[str] = []
     books_updated = 0
     holds_expired = 0
@@ -153,11 +157,10 @@ def run_mark_to_market(date_str: str | None = None) -> dict:
         # Get SPY close at the earliest virtual_fills date (anchor for SPY NAV series)
         spy_anchor: float | None = None
         try:
-            first_fill_row = conn.execute(
-                "SELECT filled_at FROM virtual_fills ORDER BY filled_at ASC LIMIT 1"
-            ).fetchone()
-            if first_fill_row:
-                anchor_date = (first_fill_row["filled_at"] or "")[:10]
+            from time_utils import parse_timestamp,TZ_EASTERN
+            anchor_fills=_fills_through(conn,as_of=date_str)
+            if anchor_fills:
+                anchor_date=parse_timestamp(anchor_fills[0]['filled_at'],legacy_utc=True).astimezone(TZ_EASTERN).date().isoformat()
                 spy_anchor = _get_closing_price("SPY", anchor_date)
                 if spy_anchor is None:
                     # try a few days forward in case anchor fell on a holiday
@@ -175,7 +178,7 @@ def run_mark_to_market(date_str: str | None = None) -> dict:
 
             try:
                 # 1. Reconstruct current holdings
-                holdings = _get_holdings(conn, book_id)
+                holdings = _get_holdings(conn, book_id, date_str)
 
                 # 0366: any_incomplete must cover expiry failures too
                 any_incomplete = False
@@ -183,7 +186,7 @@ def run_mark_to_market(date_str: str | None = None) -> dict:
                 # 2. Expire positions older than BOOK_HOLD_SESSIONS trading sessions (0361)
                 for ticker, info in list(holdings.items()):
                     sessions = trading_sessions_between(info["first_buy_date"], date_str)
-                    if sessions >= BOOK_HOLD_SESSIONS:
+                    if sessions >= BOOK_HOLD_SESSIONS and not historical:
                         exit_price = _get_closing_price(ticker, date_str)
                         if exit_price is None:
                             # 0366: no price → retain position, mark row incomplete
@@ -200,7 +203,13 @@ def run_mark_to_market(date_str: str | None = None) -> dict:
                 cash_row = conn.execute(
                     "SELECT current_cash FROM virtual_books WHERE book_id=?", (book_id,)
                 ).fetchone()
-                current_cash = float(cash_row["current_cash"]) if cash_row else starting_cash
+                # Historical valuation must use only the cash flows known by that date.
+                current_cash = starting_cash
+                for fill in _fills_through(conn,book_id,date_str):
+                    amount = float(fill['qty'])*float(fill['price'])
+                    current_cash += (-amount if fill['action']=='BUY' else amount) - float(fill['fees'] or 0)
+                if not historical:
+                    conn.execute('UPDATE virtual_books SET current_cash=?,as_of=? WHERE book_id=?',(current_cash,date_str,book_id))
 
                 # 3. Mark open positions to exact-date closing prices (0364)
                 prices: dict[str, float] = {}
@@ -224,7 +233,7 @@ def run_mark_to_market(date_str: str | None = None) -> dict:
                 if spy_close is not None and spy_anchor and spy_anchor > 0:
                     spy_nav = (spy_close / spy_anchor) * starting_cash
                 elif spy_close is not None:
-                    spy_nav = spy_close  # raw fallback
+                    spy_nav = starting_cash if not holdings else None
 
                 # 5. Daily return vs previous *complete* row (0366: never use incomplete prior nav)
                 prev_row = conn.execute(
@@ -257,6 +266,12 @@ def run_mark_to_market(date_str: str | None = None) -> dict:
                     (book_id, date_str, current_cash, positions_json,
                      total_nav, spy_nav, daily_return, is_complete, time.time()),
                 )
+                # Repair the next complete return when an earlier NAV changes.
+                next_row=conn.execute("SELECT date,total_nav FROM virtual_book_nav WHERE book_id=? AND date>? AND is_complete=1 ORDER BY date LIMIT 1",(book_id,date_str)).fetchone()
+                if next_row:
+                    prior=conn.execute("SELECT total_nav FROM virtual_book_nav WHERE book_id=? AND date<? AND is_complete=1 ORDER BY date DESC LIMIT 1",(book_id,next_row['date'])).fetchone()
+                    conn.execute('UPDATE virtual_book_nav SET daily_return=? WHERE book_id=? AND date=?',
+                        ((next_row['total_nav']/prior['total_nav']-1) if prior and prior['total_nav'] else None,book_id,next_row['date']))
                 books_updated += 1
 
             except Exception as e:

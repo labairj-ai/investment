@@ -1,0 +1,9 @@
+/Users/ai_lab/Desktop/investment/venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+[CC_CONTRACT] OK
+  trusted_prior_ref=ac6642c02070524ac27e15b19c062147359c9c4c
+  fingerprint_version=cc-behavior-v1  definition_migration=False
+  baseline: engine=fccf8fce066e0dc5 simulator=36094c7261e2f313
+  current: engine=bfdf6e9d15d452d8 simulator=b8be3b06388cb68c
+  hash_changed=True  version_bumped=True  has_manifest=True
+  applicable_manifest=20261021-roll-candidate-hardening  path=20261021-roll-candidate-hardening.md

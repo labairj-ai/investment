@@ -123,7 +123,7 @@ def migrate() -> None:
             ticker      TEXT    NOT NULL,
             version     INTEGER NOT NULL DEFAULT 1,
             summary     TEXT    NOT NULL,
-            status      TEXT    NOT NULL DEFAULT 'draft',
+            status      TEXT    NOT NULL DEFAULT 'DRAFT',
             created_at  REAL    NOT NULL,
             approved_at REAL,
             closed_at   REAL
@@ -428,6 +428,8 @@ def migrate() -> None:
             fetched_at   REAL    NOT NULL DEFAULT (unixepoch())
         );
     """)
+    # Canonicalize only thesis lifecycle states, preserving candidate status semantics.
+    conn.execute("UPDATE investment_theses SET status=UPPER(status) WHERE status!=UPPER(status)")
     conn.commit()
 
     # 0190/0215 — trade engine tables must exist BEFORE _new_cols ALTER TABLE loop
@@ -1716,7 +1718,7 @@ def compute_agent_hash(
 def _get_thesis_version_for_hash(ticker: str) -> int:
     conn = _connect()
     row = conn.execute(
-        "SELECT version FROM investment_theses WHERE ticker=? AND status='active' "
+        "SELECT version FROM investment_theses WHERE ticker=? AND UPPER(status)='ACTIVE' "
         "ORDER BY id DESC LIMIT 1",
         (ticker,),
     ).fetchone()
@@ -1867,14 +1869,14 @@ def insert_critic_review(
 def upsert_thesis(
     ticker: str,
     summary: str,
-    status: str = "draft",
+    status: str = "DRAFT",
     version: int = 1,
 ) -> int:
     conn = _connect()
     cur = conn.execute(
         """INSERT INTO investment_theses (ticker, version, summary, status, created_at)
            VALUES (?,?,?,?,?)""",
-        (ticker, version, summary, status, time.time()),
+        (ticker, version, summary, status.upper(), time.time()),
     )
     thesis_id = cur.lastrowid
     conn.commit()
@@ -2181,11 +2183,16 @@ def get_ticker_realized_vol(ticker: str, lookback: int = 25) -> float | None:
 _CC_POLICY_HASH_KEYS = (
     "strategy", "max_preferred_delta", "minimum_otm_pct",
     "avoid_earnings", "preferred_dte_min", "preferred_dte_max",
+    "acceptable_assignment_min_price", "assignment_policy",
 )
 _CC_POLICY_DEFAULTS_FOR_HASH: dict = {
     "strategy": "INCOME", "max_preferred_delta": 0.30,
     "minimum_otm_pct": 0.03, "avoid_earnings": False,
     "preferred_dte_min": None, "preferred_dte_max": None,
+    "acceptable_assignment_min_price": None,
+    "assignment_policy": {"allowed":True,"only_if_overweight":False,
+        "min_thesis_health_for_preservation":80,"preserve_high_conviction":False,
+        "min_conviction_to_preserve":4},
 }
 
 
@@ -2203,11 +2210,15 @@ def get_cc_policy_hash(ticker: str) -> str:
     policy = dict(_CC_POLICY_DEFAULTS_FOR_HASH)
     conn = _connect()
     try:
-        row = conn.execute(
+        rows = conn.execute(
             "SELECT cc_policy FROM investment_theses "
-            "WHERE ticker=? AND status='active' ORDER BY version DESC LIMIT 1",
+            "WHERE ticker=? AND UPPER(status)='ACTIVE' ORDER BY version DESC",
             (ticker,),
-        ).fetchone()
+        ).fetchall()
+        if len(rows)>1:
+            policy['strategy']='NONE'
+            policy['assignment_policy']={'allowed':False,'ambiguous_active_thesis':True}
+        row=rows[0] if len(rows)==1 else None
         if row and row["cc_policy"]:
             stored = _json.loads(row["cc_policy"])
             for k in _CC_POLICY_HASH_KEYS:
@@ -2516,7 +2527,7 @@ def save_thesis_draft(ticker: str, intake_json: str, draft_json: str) -> int:
     """Insert or replace the DRAFT thesis for ticker. Only one DRAFT per ticker."""
     conn = _connect()
     existing = conn.execute(
-        "SELECT id FROM investment_theses WHERE ticker=? AND status='DRAFT' "
+        "SELECT id FROM investment_theses WHERE ticker=? AND UPPER(status)='DRAFT' "
         "ORDER BY version DESC LIMIT 1",
         (ticker,),
     ).fetchone()
@@ -2545,7 +2556,7 @@ def get_thesis_full(ticker: str) -> dict | None:
     conn = _connect()
     row = conn.execute(
         "SELECT * FROM investment_theses WHERE ticker=? "
-        "ORDER BY CASE WHEN status='DRAFT' THEN 1 ELSE 0 END DESC, id DESC LIMIT 1",
+        "ORDER BY CASE WHEN UPPER(status)='DRAFT' THEN 1 ELSE 0 END DESC, id DESC LIMIT 1",
         (ticker,),
     ).fetchone()
     if not row:
@@ -2640,18 +2651,18 @@ def approve_thesis(ticker: str, final_draft_json: str) -> int:
     conn = _connect()
     # Record the current max approved version before superseding
     prior_max = conn.execute(
-        "SELECT MAX(version) FROM investment_theses WHERE ticker=? AND status='ACTIVE'",
+        "SELECT MAX(version) FROM investment_theses WHERE ticker=? AND UPPER(status)='ACTIVE'",
         (ticker,),
     ).fetchone()[0] or 0
     # Supersede old active thesis if one exists
     conn.execute(
         "UPDATE investment_theses SET status='SUPERSEDED', closed_at=? "
-        "WHERE ticker=? AND status='ACTIVE'",
+        "WHERE ticker=? AND UPPER(status)='ACTIVE'",
         (time.time(), ticker),
     )
     # Find the draft
     draft = conn.execute(
-        "SELECT id, version FROM investment_theses WHERE ticker=? AND status='DRAFT' "
+        "SELECT id, version FROM investment_theses WHERE ticker=? AND UPPER(status)='DRAFT' "
         "ORDER BY version DESC LIMIT 1",
         (ticker,),
     ).fetchone()
@@ -2711,7 +2722,7 @@ def accept_thesis_change_proposal(recommendation_id: int) -> bool:
 
     # Load active thesis
     thesis = conn.execute(
-        "SELECT * FROM investment_theses WHERE ticker=? AND status='ACTIVE' "
+        "SELECT * FROM investment_theses WHERE ticker=? AND UPPER(status)='ACTIVE' "
         "ORDER BY version DESC LIMIT 1",
         (ticker,),
     ).fetchone()
@@ -2962,7 +2973,7 @@ def get_active_thesis(ticker: str) -> dict | None:
     """Return the ACTIVE thesis for a ticker with pillars, or None."""
     conn = _connect()
     row = conn.execute(
-        "SELECT * FROM investment_theses WHERE ticker=? AND status='ACTIVE' "
+        "SELECT * FROM investment_theses WHERE ticker=? AND UPPER(status)='ACTIVE' "
         "ORDER BY version DESC LIMIT 1",
         (ticker,),
     ).fetchone()
@@ -3138,7 +3149,7 @@ def sync_thesis_candidates(holdings_tickers: list[str]) -> None:
     thesis_tickers = {
         row[0].upper()
         for row in conn.execute(
-            "SELECT DISTINCT ticker FROM investment_theses WHERE status='ACTIVE'"
+            "SELECT DISTINCT ticker FROM investment_theses WHERE UPPER(status)='ACTIVE'"
         ).fetchall()
     }
 

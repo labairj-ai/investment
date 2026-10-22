@@ -132,12 +132,15 @@ def _get_cc_policy(ticker: str) -> dict:
     try:
         conn = sqlite3.connect(str(_DB), timeout=5)
         conn.row_factory = sqlite3.Row
-        row = conn.execute(
+        rows = conn.execute(
             "SELECT cc_policy FROM investment_theses "
-            "WHERE ticker=? AND status='active' ORDER BY version DESC LIMIT 1",
+            "WHERE ticker=? AND UPPER(status)='ACTIVE' ORDER BY version DESC",
             (ticker,),
-        ).fetchone()
+        ).fetchall()
         conn.close()
+        if len(rows)>1:
+            return {**_CC_POLICY_DEFAULTS, 'strategy':'NONE', 'assignment_policy':{'allowed':False}}
+        row = rows[0] if rows else None
         if row and row["cc_policy"]:
             stored = _json.loads(row["cc_policy"])
             return {**_CC_POLICY_DEFAULTS, **stored}

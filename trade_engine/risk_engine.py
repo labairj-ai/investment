@@ -108,7 +108,7 @@ def _open_buy_notional(
     """
     sql = """SELECT SUM((COALESCE(quantity,0) - COALESCE(fill_qty,0)) * COALESCE(limit_price,0)) AS t
              FROM orders
-             WHERE account_id=? AND state IN ('WORKING','PARTIALLY_FILLED')
+             WHERE account_id=? AND state IN ('PENDING_SUBMIT','WORKING','PARTIALLY_FILLED','CANCEL_REQUESTED')
                AND side IN ('BUY','BUY_TO_CLOSE')"""
     params: list = [account_id]
     if symbol:
@@ -134,8 +134,8 @@ def _open_sell_qty(
     sql = """SELECT SUM(COALESCE(quantity,0) - COALESCE(fill_qty,0)) AS t
              FROM orders
              WHERE account_id=? AND symbol=?
-               AND state IN ('WORKING','PARTIALLY_FILLED')
-               AND side IN ('SELL','SELL_TO_OPEN')"""
+               AND state IN ('PENDING_SUBMIT','WORKING','PARTIALLY_FILLED','CANCEL_REQUESTED')
+               AND side='SELL'"""
     params: list = [account_id, symbol]
     if exclude_order_id:
         sql += " AND order_id != ?"
@@ -156,7 +156,7 @@ def _open_sell_notional(
     """
     sql = """SELECT SUM((COALESCE(quantity,0) - COALESCE(fill_qty,0)) * COALESCE(limit_price,0)) AS t
              FROM orders
-             WHERE account_id=? AND state IN ('WORKING','PARTIALLY_FILLED')
+             WHERE account_id=? AND state IN ('PENDING_SUBMIT','WORKING','PARTIALLY_FILLED','CANCEL_REQUESTED')
                AND side IN ('SELL','SELL_TO_OPEN')"""
     params: list = [account_id]
     if exclude_order_id:
@@ -186,6 +186,15 @@ def _open_contracts(account_id: str, symbol: str, conn: sqlite3.Connection) -> i
     open_qty = float(row["total"] if row else 0)
     closed_qty = float(closed["total"] if closed else 0)
     return max(0, int(open_qty - closed_qty))
+
+
+def _reserved_call_contracts(account_id, symbol, conn, exclude_order_id=None):
+    """Unfilled calls still reserve coverage, including indeterminate submissions."""
+    row = conn.execute("""SELECT COALESCE(SUM(MAX(0, COALESCE(quantity,contracts,0)-COALESCE(fill_qty,0))),0)
+        FROM orders WHERE account_id=? AND symbol=? AND contracts IS NOT NULL
+        AND side='SELL_TO_OPEN' AND state IN ('PENDING_SUBMIT','WORKING','PARTIALLY_FILLED','CANCEL_REQUESTED')
+        AND (? IS NULL OR order_id!=?)""", (account_id,symbol,exclude_order_id,exclude_order_id)).fetchone()
+    return float(row[0])
 
 
 def _stale_position_symbols(
@@ -438,8 +447,12 @@ def _evaluate_rules(
         add(RuleCheck(rule="MAX_POSITION_WEIGHT", result=_SKIP, reason="not a BUY or nav=0"))
 
     # ── 9. MAX_NEW_POSITION_WEIGHT ────────────────────────────────────────────
-    if intent.side == Side.BUY and current_pos_qty == 0 and nav > 0:
-        new_weight = trade_cost / nav * 100
+    initial_filled = conn.execute("""SELECT COALESCE(SUM(fill_qty),0) FROM orders
+        WHERE account_id=? AND symbol=? AND side='BUY' AND state IN ('PENDING_SUBMIT','WORKING','PARTIALLY_FILLED','CANCEL_REQUESTED')
+        """, (account.account_id,intent.symbol)).fetchone()[0] or 0
+    if intent.side == Side.BUY and (current_pos_qty == 0 or (initial_filled > 0 and current_pos_qty <= initial_filled)) and nav > 0:
+        reserved_new = _open_buy_notional(account.account_id,conn,intent.symbol,exclude_order_id=exclude_order_id)
+        new_weight = (current_pos_value + reserved_new + trade_cost) / nav * 100
         limit = policy.max_new_position_pct()
         ok = add(RuleCheck(
             rule="MAX_NEW_POSITION_WEIGHT",
@@ -504,7 +517,11 @@ def _evaluate_rules(
     # ── 12. SELL_QUANTITY_COVERED ─────────────────────────────────────────────
     if intent.side in (Side.SELL, Side.BUY_TO_CLOSE):
         pending_sells = _open_sell_qty(account.account_id, intent.symbol, conn, exclude_order_id=exclude_order_id)
-        available_qty = current_pos_qty - pending_sells
+        call_shares = 0
+        if intent.instrument_type == InstrumentType.EQUITY and intent.side == Side.SELL:
+            call_shares = 100 * (_open_contracts(account.account_id,intent.symbol,conn)
+                + _reserved_call_contracts(account.account_id,intent.symbol,conn))
+        available_qty = current_pos_qty - pending_sells - call_shares
         covered = available_qty >= trade_qty
         ok = add(RuleCheck(
             rule="SELL_QUANTITY_COVERED",
@@ -521,9 +538,11 @@ def _evaluate_rules(
 
     # ── 13. NO_NAKED_OPTIONS ─────────────────────────────────────────────────
     if intent.side == Side.SELL_TO_OPEN:
-        contracts = intent.contracts or 1
+        contracts = (remaining_quantity if remaining_quantity is not None else intent.contracts) or 1
         underlying_qty = _position_qty(account.account_id, intent.symbol, conn)
-        required = contracts * 100
+        committed = _open_contracts(account.account_id,intent.symbol,conn) + _reserved_call_contracts(
+            account.account_id,intent.symbol,conn,exclude_order_id)
+        required = (contracts + committed) * 100 + _open_sell_qty(account.account_id,intent.symbol,conn)
         ok = add(RuleCheck(
             rule="NO_NAKED_OPTIONS",
             result=_PASS if underlying_qty >= required else _FAIL,
@@ -539,8 +558,9 @@ def _evaluate_rules(
 
     # ── 14. MAX_CONTRACTS_PER_SYMBOL ─────────────────────────────────────────
     if intent.instrument_type == InstrumentType.OPTION and intent.side == Side.SELL_TO_OPEN:
-        open_c = _open_contracts(account.account_id, intent.symbol, conn)
-        requested_c = intent.contracts or 1
+        open_c = _open_contracts(account.account_id, intent.symbol, conn) + _reserved_call_contracts(
+            account.account_id,intent.symbol,conn,exclude_order_id)
+        requested_c = (remaining_quantity if remaining_quantity is not None else intent.contracts) or 1
         limit_c = policy.max_contracts_per_symbol()
         ok = add(RuleCheck(
             rule="MAX_CONTRACTS_PER_SYMBOL",

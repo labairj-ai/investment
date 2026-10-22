@@ -1,11 +1,11 @@
 {
   "cadence_comparability_policy_version": "cadence-v1",
-  "engine_hash": "fccf8fce066e0dc582b5838fa001c63a8e73cfcb3237677fe6264668dd0216bb",
+  "engine_hash": "bfdf6e9d15d452d82426975483d009b57d17827d5da9866883da1e67bd4d0193",
   "fingerprint_version": "cc-behavior-v1",
-  "model_version": "cc-v3.2",
+  "model_version": "cc-v3.3",
   "policy_version": "shared-live-management-asof-1",
   "schema_version": "cc-contract-v2",
-  "simulator_contract_hash": "36094c7261e2f31307ca43635cc29ce23e5b6ea55dd5be85e2ccae586118c13f",
-  "simulator_contract_version": "simulator-contract-1",
+  "simulator_contract_hash": "b8be3b06388cb68c7be9e53488ca6f473cc3bee15f81ed93461c802e951ce8f2",
+  "simulator_contract_version": "simulator-contract-2",
   "simulator_version": "cc-virtual-1"
 }

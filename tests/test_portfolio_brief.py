@@ -115,7 +115,10 @@ def _set_state(conn, ticker, causal_key, state="ACTIVE"):
 
 # ── Test 1: same causal event on 3 days → one brief item ─────────────────────
 
-def test_same_causal_event_three_days_yields_one_item(tmp_path):
+def test_same_causal_event_three_days_yields_one_item(tmp_path, monkeypatch):
+    # The seeded corpus is September 2026; pin the query clock to that corpus.
+    from time_utils import parse_timestamp
+    monkeypatch.setattr(time, "time", lambda: parse_timestamp("2026-09-21T12:00:00Z").timestamp())
     db_file = _make_brief_db(tmp_path)
     with _conn(db_file) as conn:
         _seed_acceptance(conn)
@@ -227,7 +230,10 @@ def test_get_current_news_intelligence_excludes_resolved(tmp_path):
     assert "TSLA" not in tickers, "RESOLVED events must be excluded from brief"
 
 
-def test_get_current_news_intelligence_includes_fading(tmp_path):
+def test_get_current_news_intelligence_includes_fading(tmp_path, monkeypatch):
+    # The seeded corpus is September 2026; pin the query clock to that corpus.
+    from time_utils import parse_timestamp
+    monkeypatch.setattr(time, "time", lambda: parse_timestamp("2026-09-21T12:00:00Z").timestamp())
     db_file = _make_brief_db(tmp_path)
     with _conn(db_file) as conn:
         _seed_acceptance(conn)

@@ -11,6 +11,7 @@ import sys
 import time
 from datetime import date, timedelta
 from pathlib import Path
+from time_utils import today_eastern
 from unittest.mock import patch
 
 import pytest
@@ -44,6 +45,10 @@ def _seed_decision(conn, rec_id, decision):
 
 def _seed_price(conn, ticker, day, price):
     """Seed a price into holding_day (created ad-hoc if needed for integration tests)."""
+    from trade_engine.market_calendar import is_trading_day
+    session=date.fromisoformat(day)
+    while not is_trading_day(session):session-=timedelta(days=1)
+    day=session.isoformat()
     conn.execute(
         """CREATE TABLE IF NOT EXISTS holding_day
            (ticker TEXT, day TEXT, price REAL, value REAL, weight_pct REAL, shares REAL,
@@ -63,6 +68,11 @@ def _seed_spy(conn, day, price):
         "INSERT OR REPLACE INTO spy_prices (day, price) VALUES (?, ?)",
         (day, price),
     )
+    from trade_engine.market_calendar import is_trading_day
+    session=date.fromisoformat(day)
+    while not is_trading_day(session):session-=timedelta(days=1)
+    conn.execute("CREATE TABLE IF NOT EXISTS outcome_spy_close_cache(day TEXT PRIMARY KEY,price REAL,session TEXT,price_basis TEXT)")
+    conn.execute("INSERT OR REPLACE INTO outcome_spy_close_cache VALUES(?,?,?,'UNADJUSTED_CLOSE_SESSION_V1')",(day,price,session.isoformat()))
     conn.commit()
 
 
@@ -287,8 +297,8 @@ def test_full_lifecycle_hold_rec_to_outcome(mem_db):
 
     # 100 days ago entry date
     entry_ts = time.time() - 100 * 86400
-    entry_date = (date.today() - timedelta(days=100)).isoformat()
-    h_date_1m = (date.today() - timedelta(days=70)).isoformat()  # 1-month horizon = 30d after entry
+    entry_date = (today_eastern() - timedelta(days=100)).isoformat()
+    h_date_1m = (today_eastern() - timedelta(days=70)).isoformat()  # 1-month horizon = 30d after entry
 
     # Seed a HOLD recommendation
     rec_id = _seed_rec(conn, ticker="ANET", action="HOLD", created_at=entry_ts, status="accepted")
@@ -576,7 +586,7 @@ def _seed_price_series(conn, ticker, base_price, daily_move, n_days=22):
     )
     price = base_price
     for i in range(n_days):
-        day = (date.today() - timedelta(days=n_days - i)).isoformat()
+        day = (today_eastern() - timedelta(days=n_days - i)).isoformat()
         price = base_price + (daily_move if i % 2 == 0 else -daily_move)
         conn.execute(
             "INSERT OR REPLACE INTO holding_day (ticker, day, price, value, weight_pct, shares) "
@@ -598,7 +608,7 @@ def test_guardian_vol_bucket_unknown_when_insufficient_history(mem_db):
             PRIMARY KEY (ticker, day))"""
     )
     for i in range(5):
-        day = (date.today() - timedelta(days=5 - i)).isoformat()
+        day = (today_eastern() - timedelta(days=5 - i)).isoformat()
         conn.execute(
             "INSERT OR REPLACE INTO holding_day (ticker, day, price, value, weight_pct, shares) "
             "VALUES ('ANET', ?, 300.0, 30000.0, 15.0, 100)",
@@ -887,10 +897,10 @@ def test_sell_cc_assigned_lifecycle_locks_at_assignment_return(mem_db):
     strike = 190.0
     premium = 3.0
     # Dates: entry 200 days ago, expiry 140 days ago, 30d_post 110 days ago
-    entry_date   = (date.today() - timedelta(days=200)).isoformat()
-    expiry_date  = (date.today() - timedelta(days=140)).isoformat()
-    post30_date  = (date.today() - timedelta(days=110)).isoformat()
-    exec_date    = (date.today() - timedelta(days=199)).isoformat()
+    entry_date   = (today_eastern() - timedelta(days=200)).isoformat()
+    expiry_date  = (today_eastern() - timedelta(days=140)).isoformat()
+    post30_date  = (today_eastern() - timedelta(days=110)).isoformat()
+    exec_date    = (today_eastern() - timedelta(days=199)).isoformat()
     entry_ts     = time.time() - 200 * 86400
 
     rec_id = _seed_rec(conn, ticker="ANET", action="SELL_CC", created_at=entry_ts, status="accepted",
@@ -949,10 +959,10 @@ def test_sell_cc_expired_lifecycle_uses_uncapped_formula(mem_db):
     entry_price = 180.0
     strike = 190.0
     premium = 3.0
-    entry_date   = (date.today() - timedelta(days=200)).isoformat()
-    expiry_date  = (date.today() - timedelta(days=140)).isoformat()
-    post30_date  = (date.today() - timedelta(days=110)).isoformat()
-    exec_date    = (date.today() - timedelta(days=199)).isoformat()
+    entry_date   = (today_eastern() - timedelta(days=200)).isoformat()
+    expiry_date  = (today_eastern() - timedelta(days=140)).isoformat()
+    post30_date  = (today_eastern() - timedelta(days=110)).isoformat()
+    exec_date    = (today_eastern() - timedelta(days=199)).isoformat()
     entry_ts     = time.time() - 200 * 86400
 
     rec_id = _seed_rec(conn, ticker="JOBY", action="SELL_CC", created_at=entry_ts, status="accepted",
@@ -1091,9 +1101,9 @@ def test_trim_two_fills_lifecycle_uses_vwap(mem_db):
     f_total = (f1_qty + f2_qty) / pos_shares  # 0.50
 
     entry_ts = time.time() - 100 * 86400
-    entry_date = (date.today() - timedelta(days=100)).isoformat()
-    h1m_date = (date.today() - timedelta(days=70)).isoformat()
-    exec_date = (date.today() - timedelta(days=99)).isoformat()
+    entry_date = (today_eastern() - timedelta(days=100)).isoformat()
+    h1m_date = (today_eastern() - timedelta(days=70)).isoformat()
+    exec_date = (today_eastern() - timedelta(days=99)).isoformat()
 
     rec_id = _seed_rec(conn, ticker="ANET", action="TRIM", created_at=entry_ts,
                        status="accepted", payload={"trim_fraction": 0.5})
@@ -1262,8 +1272,8 @@ def test_btc_management_rec_evaluated_at_maturity(mem_db):
     btc_mark = 2.5
     horizon_price = 190.0
     entry_ts = time.time() - 100 * 86400
-    entry_date = (date.today() - timedelta(days=100)).isoformat()
-    h1m_date = (date.today() - timedelta(days=70)).isoformat()
+    entry_date = (today_eastern() - timedelta(days=100)).isoformat()
+    h1m_date = (today_eastern() - timedelta(days=70)).isoformat()
 
     rec_id = _seed_rec(conn, ticker="NVDA", action="BUY_TO_CLOSE", created_at=entry_ts,
                        status="accepted", payload={"btc_price": btc_mark})
