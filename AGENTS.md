@@ -1,0 +1,104 @@
+# Repository Coding-Agent Contract
+
+Contract version: 1. This contract applies equally to Codex, Claude and every other
+approved model, tool or runner working in this repository. It grants no execution,
+production or deployment authority by itself.
+
+## Mission
+
+Implement approved, evidence-backed repository improvements with the smallest
+necessary change. Inspect existing architecture, relevant TODOs, tests and domain
+contracts before proposing changes. Development-agent evidence and learning must
+remain separate from investment recommendations and portfolio learning cohorts.
+
+## Source of record
+
+The OptiPlex production database is authoritative for investment state.
+Development tasks must not write authoritative production data.
+Do not write investment data to a Mac development database or generate production
+artifacts (including dashboard.html) locally. Tests may use disposable synthetic
+fixtures and temporary databases; an explicitly authorized read-only snapshot must
+remain read-only and isolated from runtime paths. Never substitute a local copy
+for the production source of record. Existing documented production generation
+procedures require separate explicit authorization outside development work.
+
+## Required workflow
+
+1. Start from verified current main in an isolated task branch or worktree; inspect
+   working-tree state and preserve unrelated work. Record the base SHA and TODO.
+2. Plan before code for non-trivial work: state the problem, acceptance criteria,
+   scope, risk, tests and required human decisions. Implement the smallest scope.
+3. Run focused tests and required regression tests. Review the complete candidate
+   diff, including generated/configuration files and all commits, for scope,
+   safety, test integrity and secret exposure.
+4. Run the existing TODO consistency, exact release-baseline and CC behavioral
+   contract gates unchanged, plus the full suite used in CI:
+   `pytest tests/ -v --tb=short --junitxml=test-results.xml`.
+5. Record exact implementation SHA, commands, results, skip/waiver inventory and
+   real CI workflow URL before claiming PR readiness. Evidence is valid only for
+   the tested source/configuration; changed code requires refreshed evidence.
+6. Use PR-based changes; satisfy required independent/human review and existing
+   branch protections. Move a TODO to `.todos/done/` only after every acceptance
+   and QA requirement is met with implementation and CI evidence. Incomplete or
+   unavailable checks remain explicitly open, never silently marked PASS.
+
+## Authority boundaries
+
+The coding agent may inspect source and prepare reversible development changes
+and PRs within the approved task. It may run isolated fixture tests. This is not
+permission to deploy, schedule autonomous execution, access secrets, call external
+brokers, mutate accounts or alter live trading state.
+
+## Forbidden actions
+
+- Do not implement directly on main or push implementation directly to main.
+- Do not self-approve or bypass independent review or required human approval.
+- Do not delete or weaken tests to obtain PASS.
+- Do not silently rewrite baselines or reduce acceptance thresholds.
+- Do not modify secrets or log credentials.
+- Do not call brokers or change live trading state.
+- Do not deploy or mutate authoritative production data from development work.
+- Do not treat missing evidence, user silence or model judgment as approval.
+
+Existing release, CI, production, canary and investment safety controls remain
+mandatory. This contract cannot authorize exceptions to those controls.
+
+## Investment-sensitive changes
+
+Recommendations, risk policy, position sizing, covered calls, learning/promotion,
+order/fill generation and account mutation are elevated-risk domains.
+Investment-sensitive changes require explicit human review before merge.
+Evaluate the whole change and its indirect effects; file names, small diffs and
+splitting changes across commits do not make financial behavior low risk. Unknown
+or mixed scope receives the highest applicable controls pending human review.
+Existing Advisor, Critic, CC, execution and release canaries remain mandatory when
+applicable. Neither this contract nor a passing test grants execution authority.
+
+## Precedence and escalation
+
+Follow applicable system/user authority and preserve existing mandatory safety
+controls. AGENTS.md supplies repository-wide agent boundaries; architecture and
+domain documents supply behavioral invariants; TODOs supply task-specific scope
+and acceptance criteria. A TODO cannot silently override this contract or domain
+safety constraints. Legacy helper instructions cannot authorize a weaker workflow
+or keeping completed TODOs outside `.todos/done/`.
+On safety-relevant conflicts, fail closed and escalate to the human.
+Stop the affected operation, preserve the safer existing behavior, and report the
+conflicting documents, concrete requirement, impact and decision needed. Do not
+choose a permissive interpretation. Independent safe inspection may continue.
+Unexpected scope expansion, unavailable mandatory evidence, ambiguous authority or
+repeated validation failure must be reported with an explicit unresolved state.
+Changes to this contract or its validation require human review; an agent cannot
+relax its own authority or self-authorize an exception.
+
+## Representative applications
+
+A CSS-only mobile layout fix uses a task branch, a scoped plan, viewport checks,
+focused and required regression tests, diff review, SHA-bound evidence and a PR.
+It grants no database-write or deployment permission. If a UI edit also changes a
+recommendation calculation, apply investment-sensitive controls to the full diff.
+
+A covered-call sizing or risk-policy change requires explicit human review,
+existing financial behavioral contracts and applicable canaries in addition to the
+normal workflow. A conflicting TODO requesting weaker thresholds is blocked and
+escalated; preserve the existing thresholds. Never merge it on self-approval.

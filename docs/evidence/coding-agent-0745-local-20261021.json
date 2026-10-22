@@ -1,0 +1,99 @@
+{
+  "todo": "0745",
+  "implementation_sha": "93389c050deb7a4f8b6ac3cc7c64aa58bbe9d381",
+  "base_sha": "ac6642c02070524ac27e15b19c062147359c9c4c",
+  "python": "3.12.12",
+  "command": "pytest tests/ -v --tb=short --junitxml=test-results.xml",
+  "passed": 2635,
+  "failed": 7,
+  "skipped": 18,
+  "failures": [
+    "tests/test_cc_accrual_health.py::test_velocity_section_counts_opportunities",
+    "tests/test_cc_accrual_health.py::test_velocity_excludes_non_prospective",
+    "tests/test_cc_behavior_fingerprint.py::test_cli_inventory_reports_all_canonical_component_names",
+    "tests/test_cc_release_security.py::test_cli_exact_event_sha[push]",
+    "tests/test_cc_release_security.py::test_cli_exact_event_sha[pull_request]",
+    "tests/test_portfolio_brief.py::test_same_causal_event_three_days_yields_one_item",
+    "tests/test_portfolio_brief.py::test_get_current_news_intelligence_includes_fading"
+  ],
+  "skips": [
+    {
+      "test": "tests.test_alpaca_integration.TestReadOnlyBinding.test_get_account_id_returns_string",
+      "reason": "ALPACA_API_KEY / ALPACA_API_SECRET not set \u2014 skipping live integration tests"
+    },
+    {
+      "test": "tests.test_alpaca_integration.TestReadOnlyBinding.test_get_broker_account_has_positive_values",
+      "reason": "ALPACA_API_KEY / ALPACA_API_SECRET not set \u2014 skipping live integration tests"
+    },
+    {
+      "test": "tests.test_alpaca_integration.TestReadOnlyBinding.test_get_positions_returns_list",
+      "reason": "ALPACA_API_KEY / ALPACA_API_SECRET not set \u2014 skipping live integration tests"
+    },
+    {
+      "test": "tests.test_alpaca_integration.TestReadOnlyBinding.test_get_open_orders_returns_list",
+      "reason": "ALPACA_API_KEY / ALPACA_API_SECRET not set \u2014 skipping live integration tests"
+    },
+    {
+      "test": "tests.test_alpaca_integration.TestReadOnlyBinding.test_get_fills_returns_list",
+      "reason": "ALPACA_API_KEY / ALPACA_API_SECRET not set \u2014 skipping live integration tests"
+    },
+    {
+      "test": "tests.test_alpaca_integration.TestReadOnlyBinding.test_get_quote_aapl_returns_valid_quote",
+      "reason": "ALPACA_API_KEY / ALPACA_API_SECRET not set \u2014 skipping live integration tests"
+    },
+    {
+      "test": "tests.test_alpaca_integration.TestReadOnlyBinding.test_initialize_trading_session_reaches_trading_ready",
+      "reason": "ALPACA_API_KEY / ALPACA_API_SECRET not set \u2014 skipping live integration tests"
+    },
+    {
+      "test": "tests.test_alpaca_integration.TestGoNoGoMatrix.test_get_fills_idempotent",
+      "reason": "ALPACA_API_KEY / ALPACA_API_SECRET not set \u2014 skipping live integration tests"
+    },
+    {
+      "test": "tests.test_alpaca_integration.TestGoNoGoMatrix.test_fill_account_id_never_none",
+      "reason": "ALPACA_API_KEY / ALPACA_API_SECRET not set \u2014 skipping live integration tests"
+    },
+    {
+      "test": "tests.test_alpaca_integration.TestGoNoGoMatrix.test_poll_order_events_seeds_from_open_orders",
+      "reason": "ALPACA_API_KEY / ALPACA_API_SECRET not set \u2014 skipping live integration tests"
+    },
+    {
+      "test": "tests.test_alpaca_integration.TestLiveOrderRoundTrip.test_submit_limit_below_market_then_cancel",
+      "reason": "ALPACA_API_KEY / ALPACA_API_SECRET not set \u2014 skipping live integration tests"
+    },
+    {
+      "test": "tests.test_alpaca_integration.TestLiveOrderRoundTrip.test_poll_order_events_detects_cancelled_order",
+      "reason": "ALPACA_API_KEY / ALPACA_API_SECRET not set \u2014 skipping live integration tests"
+    },
+    {
+      "test": "tests.test_alpaca_integration.TestLiveOrderRoundTrip.test_initialize_trading_session_with_open_order_reaches_trading_ready",
+      "reason": "ALPACA_API_KEY / ALPACA_API_SECRET not set \u2014 skipping live integration tests"
+    },
+    {
+      "test": "tests.test_alpaca_integration.TestMarketableFill.test_marketable_fill_settles_db_and_replay_is_idempotent",
+      "reason": "ALPACA_API_KEY / ALPACA_API_SECRET not set \u2014 skipping live integration tests"
+    },
+    {
+      "test": "tests.test_alpaca_integration.test_get_market_clock_real_endpoint",
+      "reason": "ALPACA_API_KEY / ALPACA_API_SECRET not set \u2014 skipping live integration tests"
+    },
+    {
+      "test": "tests.test_dashboard_js.test_dashboard_html_exists",
+      "reason": "out/dashboard.html not found \u2014 run generate_dashboard.py locally to verify"
+    },
+    {
+      "test": "tests.test_dashboard_js.test_script_blocks_have_balanced_braces",
+      "reason": "node available \u2014 deferring to test_node_check_on_dashboard_script_blocks"
+    },
+    {
+      "test": "tests.test_dashboard_js.test_node_check_on_dashboard_script_blocks",
+      "reason": "dashboard.html not present \u2014 run generate_dashboard.py first"
+    }
+  ],
+  "focused_contract_tests": 44,
+  "all_seven_failures_reproduced_on_base": true,
+  "ci_url": "https://github.com/labairj-ai/investment/actions/runs/39698833027",
+  "ci_status_at_recording": "in_progress",
+  "todo_status": "in-progress",
+  "production_mutated": false
+}
