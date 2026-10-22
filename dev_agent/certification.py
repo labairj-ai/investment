@@ -132,7 +132,9 @@ def certify(root, validator, github_client, snapshot, actor=None, *, provenance=
     data=canary(root)
     from .containment import probe
     confinement=probe(validator.image)
-    sandbox=validator.run(root,'focused_tests',['python','-m','pytest','tests/test_development_agent.py','tests/test_development_agent_hardening.py','-q'])
+    focused=sorted('tests/'+p.name for p in (Path(root)/'tests').glob('test_development_agent*.py'))
+    if not focused:raise ValueError('complete development-agent regression scope unavailable')
+    sandbox=validator.run(root,'focused_tests',['python','-m','pytest',*focused,'-q'])
     protections=github_client.protections()
     with tempfile.TemporaryDirectory(prefix='development-snapshot-guard-') as workspace:
         observation=check_snapshot(snapshot,workspace,provenance,max_age_hours=json.loads((Path(root)/'config/development_agent.json').read_text()).get('snapshot_max_age_hours',24))

@@ -372,3 +372,20 @@ def test_unknown_attributes_and_encoded_navigation_fail_closed(text):
 @pytest.mark.parametrize('text',['<!--[if IE]><script>alert(1)</script><![endif]-->','<!DOCTYPE svg SYSTEM "https://evil.test/external.dtd"><svg/>'])
 def test_ambiguous_comment_and_external_declaration_are_not_passive(text):
     assert policy.classify(['static/a.html'],content={'static/a.html':('<p>old</p>',text)})['risk']=='L3'
+
+
+def test_technical_certification_includes_every_trust_boundary_test_module(monkeypatch,tmp_path):
+    from dev_agent import certification,snapshot,containment
+    observed=[]
+    validator=ContainerValidator('fixture@sha256:'+'a'*64)
+    validator.run=lambda root,name,command:(observed.append(command) or dict(status='UNAVAILABLE',exit_code=None))
+    original=certification.git
+    monkeypatch.setattr(certification,'git',lambda root,*args:'' if args==('status','--porcelain') else original(root,*args))
+    monkeypatch.setattr(certification,'canary',lambda root:dict(components={},status='PARTIAL'))
+    monkeypatch.setattr(containment,'probe',lambda image:dict(status='UNAVAILABLE'))
+    monkeypatch.setattr(snapshot,'check_snapshot',lambda *a,**k:dict(status='UNAVAILABLE'))
+    adapter=SimpleNamespace(protections=lambda:dict(status='UNAVAILABLE'))
+    result=certification.certify(ROOT,validator,adapter,tmp_path/'absent.db')
+    expected={'tests/'+p.name for p in (ROOT/'tests').glob('test_development_agent*.py')}
+    assert expected<=set(observed[0]) and 'tests/test_development_agent_trust_boundaries.py' in observed[0]
+    assert result['status']=='PARTIAL'
