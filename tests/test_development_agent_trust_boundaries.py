@@ -362,3 +362,13 @@ def test_timeout_probe_rejects_a_container_left_behind(monkeypatch):
 @pytest.mark.parametrize('text',['<body background="https://evil.test/pixel">x</body>','<a href="https://evil.test/">x</a>','<a href="custom-app:execute">x</a>'])
 def test_external_or_unknown_navigation_and_legacy_resources_escalate(text):
     assert policy.classify(['static/a.html'],content={'static/a.html':('<p>old</p>',text)})['risk']=='L3'
+
+
+@pytest.mark.parametrize('text',['<svg xml:base="https://evil.test"><a href="#target">x</a></svg>','<a href="%23not-a-fragment">x</a>','<div data-action="execute">x</div>'])
+def test_unknown_attributes_and_encoded_navigation_fail_closed(text):
+    assert policy.classify(['static/a.html'],content={'static/a.html':('<p>old</p>',text)})['risk']=='L3'
+
+
+@pytest.mark.parametrize('text',['<!--[if IE]><script>alert(1)</script><![endif]-->','<!DOCTYPE svg SYSTEM "https://evil.test/external.dtd"><svg/>'])
+def test_ambiguous_comment_and_external_declaration_are_not_passive(text):
+    assert policy.classify(['static/a.html'],content={'static/a.html':('<p>old</p>',text)})['risk']=='L3'

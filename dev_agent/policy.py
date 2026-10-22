@@ -39,6 +39,7 @@ def test_runner_surface(path, text=''):
 
 class PassiveContent(HTMLParser):
     SAFE = set('html head body title meta main section article div span p a h1 h2 h3 h4 h5 h6 ul ol li dl dt dd strong em b i small br hr pre code blockquote table thead tbody tr th td caption svg g path rect circle ellipse line polyline polygon text tspan defs desc'.split())
+    ATTRIBUTES=set('id class role title lang dir style charset name content tabindex colspan rowspan scope headers href xlink:href xmlns xmlns:xlink viewbox preserveaspectratio d fill stroke stroke-width width height x y cx cy r rx ry x1 y1 x2 y2 points transform font-family font-size text-anchor'.split())
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
@@ -47,17 +48,23 @@ class PassiveContent(HTMLParser):
     def handle_starttag(self, tag, attrs):
         if tag not in self.SAFE: self.active = True
         for key, value in attrs:
+            raw_value=value or ''
+            if key not in self.ATTRIBUTES and not key.startswith('aria-'):self.active=True
             value = unescape(unquote(value or '')).lower()
             compact = re.sub(r'\s|[\x00-\x1f]', '', value)
             if (key.startswith('on') or key in {'src', 'srcset', 'action', 'formaction', 'srcdoc', 'http-equiv', 'background', 'lowsrc', 'dynsrc', 'poster', 'ping', 'manifest', 'codebase', 'archive'} or
                 'javascript:' in compact or 'vbscript:' in compact or 'data:' in compact or
                 '\\' in value or re.search(r'url\s*\(|@import|expression\s*\(|\bimport\s*\(', value) or
-                (key in {'href', 'xlink:href'} and not value.startswith('#'))):
+                (key=='charset' and value not in {'utf-8','utf8'}) or
+                (key in {'href', 'xlink:href'} and not raw_value.lstrip().startswith('#'))):
                 self.active = True
 
     handle_startendtag = handle_starttag
 
     def unknown_decl(self, data): self.active = True
+    def handle_comment(self, data): self.active = True
+    def handle_decl(self, data):
+        if data.strip().lower()!='doctype html':self.active=True
 
 
 def passive_content(text):
