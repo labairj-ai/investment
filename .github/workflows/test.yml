@@ -24,6 +24,9 @@ jobs:
       - name: Check TODO folder and status consistency
         run: python scripts/check_todo_status.py
 
+      - name: Check repository coding-agent contract
+        run: python scripts/check_agent_contract.py
+
       - name: Run tests
         id: pytest
         continue-on-error: true
