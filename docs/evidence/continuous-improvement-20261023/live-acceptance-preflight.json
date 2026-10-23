@@ -1,0 +1,18 @@
+{
+  "version": "live-acceptance-preflight-1",
+  "observed_at": "2026-10-23T18:11:39.847565+00:00",
+  "environment": "OptiPlex",
+  "source_sha": "15df8960b7c376da8b15fd80dad1bfb19aaede9b",
+  "service": "active",
+  "docker_on_path": false,
+  "default_oracle_socket_present": false,
+  "separate_controller_installed": false,
+  "scout_timer": "not-found",
+  "activation": {
+    "autonomous_implementation": false,
+    "supervised_loop_enabled": false,
+    "supervised_publish_pr": false,
+    "auto_merge": false
+  },
+  "authority": "READ_ONLY_PREFLIGHT_NOT_CERTIFICATION"
+}

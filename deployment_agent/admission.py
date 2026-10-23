@@ -36,4 +36,11 @@ def authorize(store,client,object_id,*,emergency_stop=False,mirror_owner=False):
     runs=client.read(f'repos/{client.repository}/commits/{data["merge_sha"]}/check-runs?per_page=100')
     tests=[r for r in runs.get('check_runs',[]) if r.get('name')=='test' and r.get('head_sha')==data['merge_sha']]
     if runs.get('total_count',0)>100 or not tests or max(tests,key=lambda r:r['id']).get('conclusion')!='success':raise ValueError('merged main exact-SHA CI required')
-    return dict(data,authorization_id=object_id,authorization_url=obj['html_url'],owner_review=owner['owner_review'],ci_url=owner.get('ci_url'),deployment_actor=user['login'])
+    from .evidence import ci_record
+    main=client.read(f'repos/{client.repository}/branches/main')
+    if main.get('commit',{}).get('sha')!=data['merge_sha']:raise ValueError('current main differs from owner-authorized merge')
+    latest=max(tests,key=lambda r:r['id'])
+    if latest.get('status')!='completed':raise ValueError('merged main CI is not complete')
+    head_ci=ci_record(client.repository,data['head'],owner.get('ci_url'))
+    merge_ci=ci_record(client.repository,data['merge_sha'],latest.get('html_url'))
+    return dict(data,main_sha=data['merge_sha'],head_ci=head_ci,merge_ci=merge_ci,authorization_id=object_id,authorization_url=obj['html_url'],owner_review=owner['owner_review'],ci_url=owner.get('ci_url'),deployment_actor=user['login'])

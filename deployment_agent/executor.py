@@ -66,11 +66,24 @@ class Executor:
                 return h.hexdigest()
             return dict(schema=hashlib.sha256(json.dumps(schema,sort_keys=True).encode()).hexdigest(),events=events,candidates=candidates,event_hash=hash_rows('SELECT seq,event_id,candidate,kind,created,payload FROM dev_events WHERE seq<=? ORDER BY seq',events),candidate_hash=hash_rows('SELECT rowid,id,identity,created,payload FROM dev_candidates WHERE rowid<=? ORDER BY rowid',candidates))
 
+    def investment_identity(self):
+        # Deployment role only; return a digest, never database contents.
+        path=self.root/'out/investment.db'
+        if path.is_symlink() or not path.is_file():raise ValueError('authoritative database must be a regular existing file')
+        with sqlite3.connect(path.as_uri()+'?mode=ro',uri=True) as db:
+            db.execute('BEGIN');h=hashlib.sha256()
+            encode=lambda row:json.dumps([{'blob':v.hex()} if isinstance(v,bytes) else v for v in row],sort_keys=True,separators=(',',':'))
+            for row in db.execute('SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name'):h.update(encode(row).encode())
+            for name, in db.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"):
+                h.update(name.encode())
+                for row in sorted(encode(r) for r in db.execute('SELECT * FROM "'+name.replace('"','""')+'"')):h.update(row.encode()+b'\n')
+            return h.hexdigest()
+
     def protected(self):
-        return dict(holdings_sha256=self.hash_file(self.root/'holdings.csv'),ledger=self.ledger_snapshot())
+        return dict(holdings_sha256=self.hash_file(self.root/'holdings.csv'),ledger=self.ledger_snapshot(),investment=self.investment_identity())
 
     def protected_unchanged(self,before,after):
-        if before['holdings_sha256']!=after['holdings_sha256']:return False
+        if before['holdings_sha256']!=after['holdings_sha256'] or before['investment']!=after['investment']:return False
         old=before['ledger'];new=after['ledger']
         if new['events']<old['events'] or new['candidates']<old['candidates']:return False
         prefix=self.ledger_snapshot(event_limit=old['events'],candidate_limit=old['candidates'])
@@ -106,7 +119,7 @@ class Executor:
     def health(self):
         def http(path,expected):
             try:
-                with urllib.request.urlopen('http://127.0.0.1:8000'+path,timeout=10) as response:code=response.status
+                with urllib.request.urlopen('http://127.0.0.1:5001'+path,timeout=10) as response:code=response.status
             except urllib.error.HTTPError as error:code=error.code
             return code==expected
         process=self.invoke([str(self.root/'venv/bin/python'),str(self.root/'scripts/canary_advisor_decision.py'),'--db',str(self.root/'out/investment.db')],capture_output=True,text=True,check=True,timeout=180,env=self.env)
@@ -121,6 +134,6 @@ class Executor:
         if token_file:
             credential_path=Path(token_file)
             if credential_path.is_symlink() or credential_path.stat().st_mode&0o077:raise ValueError('private local API credential required')
-            request=urllib.request.Request('http://127.0.0.1:8000/api/development-agent',headers={'X-Development-Agent-Token':credential_path.read_text().strip()})
+            request=urllib.request.Request('http://127.0.0.1:5001/api/development-agent',headers={'X-Development-Agent-Token':credential_path.read_text().strip()})
             with urllib.request.urlopen(request,timeout=10) as response:checks['authenticated_api']=response.status==200
-        return dict(checks=checks,canary=canary,autonomous_implementation=cfg.get('autonomous_implementation'))
+        return dict(checks=checks,canary=canary,activation={k:cfg.get(k) for k in ('autonomous_implementation','supervised_loop_enabled','supervised_publish_pr','auto_merge')},autonomous_implementation=cfg.get('autonomous_implementation'))

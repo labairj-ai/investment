@@ -15,14 +15,24 @@ def observe(executor,receipt,*,key,now=None,window=300):
     now=time.time() if now is None else now
     if not isinstance(key,bytes) or len(key)<32 or not 60<=window<=3600:raise ValueError('operator observation key/window required')
     if receipt.get('status') not in {'DEPLOYED_VERIFIED','ROLLED_BACK','DEPLOYED_DEGRADED','FAILED_PRECHECK'} or not all(receipt.get(k) for k in ('head','pr','merge_sha','finished')):raise ValueError('verified deployment receipt required')
+    if type(receipt['pr']) is not int or receipt['pr']<=0:raise ValueError('integer transaction PR identity required')
     if receipt['status']=='DEPLOYED_VERIFIED' and now-receipt['finished']<window:return dict(status='OBSERVATION_PENDING',remaining=window-(now-receipt['finished']))
     head='0'*40;available=True
     try:
         head=executor.git('rev-parse','HEAD');health=executor.health();same_state=protected_matches(executor,receipt.get('holdings_after',receipt.get('holdings_before')),executor.protected())
     except Exception:
         available=False;health=dict(checks=dict(observation_available=False));same_state=False
-    healthy=receipt['status']=='DEPLOYED_VERIFIED' and available and head==receipt['merge_sha'] and all(health['checks'].values()) and same_state
-    payload=dict(protocol='software-observation-1',repository=receipt['repository'],pr=receipt['pr'],head=receipt['head'],deployment_intent_id=receipt['authorization_id'],merge_sha=receipt['merge_sha'],deployed_sha=head,environment='OptiPlex',deployed_at=receipt['finished'],observed_at=now,window_seconds=window,metrics=dict(observation_available=available,service_healthy=all(health['checks'].values()),protected_state_unchanged=same_state),evidence=['deployment-receipt:'+hashlib.sha256(canonical(receipt)).hexdigest()],status='HEALTHY' if healthy else 'DEGRADED')
+    from dev_agent.deployment_evidence import qualifying
+    evidence=receipt.get('deployment_evidence')
+    if receipt['status']=='DEPLOYED_VERIFIED':
+        inner=qualifying(evidence,repository=receipt['repository'],pr=receipt['pr'],head=receipt['head'],merge_sha=receipt['merge_sha'])
+        if (receipt.get('protected_state_verified') is not True or receipt.get('deployed_sha')!=receipt['merge_sha']
+            or inner['main_sha']!=receipt.get('main_sha') or inner['deployed_sha']!=receipt['deployed_sha']):
+            raise ValueError('deployment evidence differs from successful fixed transaction')
+        # Unavailable/wrong actual HEAD remains DEGRADED, never signed HEALTHY.
+        if head!=inner['deployed_sha']:available=False
+    healthy=receipt['status']=='DEPLOYED_VERIFIED' and available and head==receipt['merge_sha'] and bool(health['checks']) and all(health['checks'].values()) and same_state
+    payload=dict(deployment_evidence=evidence,protocol='software-observation-1',repository=receipt['repository'],pr=receipt['pr'],head=receipt['head'],deployment_intent_id=receipt['authorization_id'],merge_sha=receipt['merge_sha'],deployed_sha=head,environment='OptiPlex',deployed_at=receipt['finished'],observed_at=now,window_seconds=window,metrics=dict(observation_available=available,service_healthy=all(health['checks'].values()),protected_state_unchanged=same_state),evidence=['deployment-receipt:'+hashlib.sha256(canonical(receipt)).hexdigest()],status='HEALTHY' if healthy else 'DEGRADED')
     return dict(observation=payload,signature=hmac.new(key,canonical(payload),hashlib.sha256).hexdigest())
 
 

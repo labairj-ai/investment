@@ -27,7 +27,7 @@ def deploy(executor,authorization,*,origin,admit_again):
         if (directory/(nonce_name+'.json')).exists():raise ValueError('deployment nonce already consumed')
         pending=directory/'pending.json'
         if pending.exists():raise ValueError('interrupted deployment must be recovered before new admission')
-        receipt=dict(repository=authorization['repository'],deployment_service_uid=os.getuid(),authorization_id=authorization['authorization_id'],authorization_url=authorization['authorization_url'],authorization_nonce=authorization['nonce'],pr=authorization['pr'],head=authorization['head'],merge_sha=authorization['merge_sha'],deployed_sha=None,created=time.time(),deployment_actor=authorization['deployment_actor'],ci_url=authorization.get('ci_url'),status='FAILED_PRECHECK')
+        receipt=dict(repository=authorization['repository'],deployment_service_uid=os.getuid(),authorization_id=authorization['authorization_id'],authorization_url=authorization['authorization_url'],authorization_nonce=authorization['nonce'],pr=authorization['pr'],head=authorization['head'],merge_sha=authorization['merge_sha'],deployed_sha=None,created=time.time(),main_sha=authorization['main_sha'],head_ci=authorization['head_ci'],merge_ci=authorization['merge_ci'],deployment_actor=authorization['deployment_actor'],ci_url=authorization.get('ci_url'),status='FAILED_PRECHECK')
         write_final(directory,nonce_name,dict(authorization_id=authorization['authorization_id'],created=time.time()))
         before=None;stopped=False
         try:
@@ -45,7 +45,10 @@ def deploy(executor,authorization,*,origin,admit_again):
             health=executor.health();receipt['health']=health
             receipt['holdings_after']=executor.protected()
             if not all(health['checks'].values()) or health['autonomous_implementation']!=cfg.get('autonomous_implementation') or not protected_matches(executor,receipt['holdings_before'],receipt['holdings_after']) or executor.config_hash()!=before['service_configuration_hash']:raise ValueError('post-deployment health, authority, config or protected state failed')
-            receipt.update(status='DEPLOYED_VERIFIED',deployed_sha=authorization['merge_sha'],finished=time.time())
+            if admit_again()!=authorization:raise ValueError('owner/main/CI admission changed during deployment')
+            receipt.update(status='DEPLOYED_VERIFIED',deployed_sha=authorization['merge_sha'],finished=time.time(),protected_state_verified=True)
+            from .evidence import normalize
+            receipt['deployment_evidence']=normalize(receipt)
         except Exception as error:
             receipt.update(failure=type(error).__name__,finished=time.time())
             if stopped and before:

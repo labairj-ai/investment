@@ -10,7 +10,7 @@ from deployment_agent.service import deploy,recover
 class FakeExecutor:
     def __init__(self,tmp_path,*,failure=None):
         self.root=tmp_path/'source';self.root.mkdir();(self.root/'config').mkdir()
-        (self.root/'config/development_agent.json').write_text(json.dumps(dict(auto_merge=False,required_human_merge=True,autonomous_implementation=False)))
+        (self.root/'config/development_agent.json').write_text(json.dumps(dict(auto_merge=False,required_human_merge=True,autonomous_implementation=False,supervised_loop_enabled=False,supervised_publish_pr=False)))
         self.receipts=tmp_path/'receipts';self.sha='a'*40;self.active=True;self.failure=failure;self.operations=[];self.mutated=False
     def git(self,*args):
         if args==('rev-parse','HEAD'):return self.sha
@@ -22,22 +22,25 @@ class FakeExecutor:
         if self.failure=='restart' and self.sha=='b'*40 and verb=='start':raise ValueError('restart failed')
         self.active=verb!='stop';return ''
     def config_hash(self):return 'configuration'
-    def protected(self):return dict(holdings='mutated' if self.mutated else 'unchanged',ledger='unchanged')
+    def protected(self):return dict(holdings_sha256='mutated' if self.mutated else 'unchanged',ledger='unchanged',investment='unchanged')
     def preflight(self,origin):
         if self.failure=='dirty':raise ValueError('tracked dirty')
         return dict(prior_sha=self.sha,service='active',service_configuration_hash=self.config_hash(),protected=self.protected(),untracked=['runtime-overlay'])
     def backup(self,path):
         if self.failure=='backup':raise ValueError('backup failed')
-        return dict(sha256='fixture-backup',integrity='ok')
+        return dict(sha256='f'*64,integrity='ok')
     def checkout(self,sha,origin):
         self.operations.append(('checkout',sha));self.sha=sha
         if self.failure=='holdings' and sha=='b'*40:self.mutated=True
     def health(self):
         good=not (self.sha=='b'*40 and self.failure in {'dashboard','canary'})
-        return dict(checks=dict(service=self.active,dashboard=good,advisor=good,authenticated_api=True),autonomous_implementation=False)
+        return dict(checks=dict(service=self.active,dashboard=good,development_dashboard=good,unauthorized_api_denied=True,advisor=good,authenticated_api=True),canary=dict(functional_contract='PASS',mutation_safety='PASS',production_state_unchanged=True),activation=dict(autonomous_implementation=False,supervised_loop_enabled=False,supervised_publish_pr=False,auto_merge=False),autonomous_implementation=False)
 
 
-def authorization():return dict(repository='owner/repo',authorization_id=123,authorization_url='https://github.com/owner/repo/pull/1#issuecomment-123',pr=1,head='c'*40,merge_sha='b'*40,nonce='unique-deployment-nonce-0001',deployment_actor='owner')
+def authorization():
+    from development_fixtures import deployment_evidence
+    e=deployment_evidence(head='c'*40,merge='b'*40)['receipt']
+    return dict(main_sha='b'*40,head_ci=e['head_ci'],merge_ci=e['merge_ci'],repository='owner/repo',authorization_id=123,authorization_url='https://github.com/owner/repo/pull/1#issuecomment-123',pr=1,head='c'*40,merge_sha='b'*40,nonce='unique-deployment-nonce-0001',deployment_actor='owner')
 
 
 def test_successful_exact_merge_deploy_and_idempotence(tmp_path):
@@ -100,8 +103,9 @@ def authorized_owner(owner_setup):
         if '/issues/comments/' in endpoint:return obj
         if '/check-runs' in endpoint:
             sha='c'*40 if '/commits/'+('c'*40) in endpoint else client.head
-            return dict(total_count=1,check_runs=[dict(id=1,name='test',head_sha=sha,status='completed',conclusion='success')])
+            return dict(total_count=1,check_runs=[dict(id=1,name='test',head_sha=sha,status='completed',conclusion='success',html_url='https://github.com/owner/repo/actions/runs/1/job/2')])
         if '/compare/' in endpoint:return dict(status='ahead')
+        if '/branches/main' in endpoint:return dict(commit=dict(sha='c'*40))
         return original(endpoint)
     client.read=read
     return store,client,obj,data
@@ -186,6 +190,8 @@ def test_ledger_append_only_development_records_are_expected_but_mutation_is_not
     from dev_agent.store import Store
     import sqlite3
     root=tmp_path/'source';root.mkdir();(root/'holdings.csv').write_text('ticker,shares\nFIXTURE,10\n')
+    (root/'out').mkdir();
+    with sqlite3.connect(root/'out/investment.db') as db:db.execute('CREATE TABLE financial(value)')
     ledger=Store(tmp_path/'authority/development-control.sqlite3');ledger.migrate()
     executor=Executor(root,tmp_path/'receipts',ledger.path)
     before=executor.protected();ledger.event(None,'SCHEDULE',dict(status='COLLECTED'))

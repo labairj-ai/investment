@@ -44,8 +44,20 @@ def operational_runs(root,store,now=None):
             elif any(e['kind']=='PROTECTION' and e['payload'].get('context_hash')==digest(item.get('context')) and e['payload'].get('status')!='PASS' for e in events): reason='protection drift recorded; fresh human scope required'
             elif candidate['state'] not in {'DEPLOYED','CLOSED'} or not deployments or deployments[-1]['status']!='HEALTHY': reason='not observed healthy or rolled back'
             elif item.get('created',now+1)>now: reason='future evidence'
+            if reason is None:
+                try:
+                    from .deployment_evidence import qualifying
+                    d=deployments[-1];p=next(e['payload'] for e in reversed(events) if e['kind']=='PR')
+                    qualifying(d.get('deployment_evidence'),repository=d['deployment_evidence']['receipt']['repository'],pr=p['result']['number'],head=item['head'],merge_sha=d['merge_sha'],expected_sha256=item.get('deployment_evidence_sha256',''))
+                except (ValueError,KeyError,TypeError,StopIteration):reason='missing or invalid deployment receipt'
             (rejected if reason else accepted).append(dict(item, reason=reason) if reason else item)
-    unique={r['run_id']:r for r in accepted}
+    unique={};releases=set()
+    for item in accepted:
+        candidate=store.get(item['candidate'])
+        deployment=next(e['payload'] for e in reversed(candidate['events']) if e['kind']=='DEPLOYMENT')
+        r=deployment['deployment_evidence']['receipt'];release=(r['repository'],r['pr'],r['merge_sha'])
+        if release in releases or item['run_id'] in unique:rejected.append(dict(item,reason='duplicate operational run or PR release'))
+        else:unique[item['run_id']]=item;releases.add(release)
     return dict(qualifying=list(unique.values()),non_qualifying=rejected)
 
 
@@ -153,7 +165,10 @@ def record_success(root,store,cid,client,*,human):
     if remote.get('state')!='MERGED' or not remote.get('mergeCommit',{}).get('oid'): raise ValueError('exact-head owner-approved merged PR required')
     if candidate['state'] not in {'DEPLOYED','CLOSED'} or deployment['status']!='HEALTHY' or deployment['deployed_sha']!=remote['mergeCommit']['oid'] or deployment['merge_sha']!=remote['mergeCommit']['oid']: raise ValueError('exact deployed-SHA healthy observation required')
     if merged['merge_sha']!=remote['mergeCommit']['oid']:raise ValueError('merge identity changed')
-    item=dict(candidate=cid,run_id=run['run_id'],context=context,mode='SUPERVISED',head=proof['head'],receipt=proof['id'],owner_review_hash=digest(owner_approval['review']),owner_review_origin=owner_approval['review'].get('origin'),harness_hash=harness_hash(root),created=time.time(),fixture_only=False,protection_policy=authority['policy_hash'],protection_identity=authority['identity'],**human.audit())
+    from .deployment_evidence import qualifying
+    deployment_proof=deployment.get('deployment_evidence')
+    qualifying(deployment_proof,repository=client.repository,pr=remote['number'],head=proof['head'],merge_sha=remote['mergeCommit']['oid'])
+    item=dict(deployment_evidence_sha256=deployment_proof['sha256'],candidate=cid,run_id=run['run_id'],context=context,mode='SUPERVISED',head=proof['head'],receipt=proof['id'],owner_review_hash=digest(owner_approval['review']),owner_review_origin=owner_approval['review'].get('origin'),harness_hash=harness_hash(root),created=time.time(),fixture_only=False,protection_policy=authority['policy_hash'],protection_identity=authority['identity'],**human.audit())
     with store.connect(True) as db:
         old=db.execute("SELECT payload FROM dev_events WHERE event_id=?",('operational-success:'+run['run_id'],)).fetchone()
         if old: return json.loads(old[0])
