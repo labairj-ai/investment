@@ -21,3 +21,10 @@ def client():
 def start_protection(store,cid,adapter=None,root=None):
     from dev_agent.protection import require
     return require(store,cid,adapter or client(),'start',root=root)
+
+
+def deployment_evidence(repository='owner/repo',pr=1,head='a'*40,merge='c'*40):
+    """Synthetic isolated ledger adapter; never persisted to operational paths."""
+    from dev_agent.deployment_evidence import seal
+    def ci(sha,run):return dict(head=sha,run_id=run,status='PASS',url=f'https://github.com/{repository}/actions/runs/{run}')
+    return seal(dict(repository=repository,pr=pr,head=head,merge_sha=merge,deployed_sha=merge,prior_sha='b'*40,main_sha=merge,deployed_at='2020-01-01T00:00:00+00:00',actor='deployment-agent',fixture_only=False,head_ci=ci(head,1),merge_ci=ci(merge,2),health=dict(service_active=True,dashboard_http=200,development_dashboard_http=200,authenticated_api_http=200,unauthorized_api_http=403,advisor_functional='PASS',advisor_mutation_safety='PASS'),backup=dict(exists=True,integrity='ok',sha256='f'*64),activation=dict(autonomous_implementation=False,supervised_loop_enabled=False,supervised_publish_pr=False,auto_merge=False),state_safety=dict(holdings_unchanged=True,investment_state_unchanged=True,development_ledger_unchanged=True)))

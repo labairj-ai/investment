@@ -1,0 +1,53 @@
+{
+  "schema": "deployment-evidence-1",
+  "receipt": {
+    "repository": "labairj-ai/investment",
+    "pr": 10,
+    "head": "c54bcf24d9a5b5c6ee03ee9832dd95bd55c4ebaa",
+    "merge_sha": "15df8960b7c376da8b15fd80dad1bfb19aaede9b",
+    "deployed_sha": "15df8960b7c376da8b15fd80dad1bfb19aaede9b",
+    "prior_sha": "3b497914270fe53beaecba9c8d2fdd0b80f427fe",
+    "main_sha": "15df8960b7c376da8b15fd80dad1bfb19aaede9b",
+    "deployed_at": "2026-10-23T17:56:41.642001+00:00",
+    "actor": "manual-owner-authorized",
+    "fixture_only": false,
+    "head_ci": {
+      "run_id": 39994931332,
+      "head": "c54bcf24d9a5b5c6ee03ee9832dd95bd55c4ebaa",
+      "status": "PASS",
+      "url": "https://github.com/labairj-ai/investment/actions/runs/39994931332"
+    },
+    "merge_ci": {
+      "run_id": 39997737221,
+      "head": "15df8960b7c376da8b15fd80dad1bfb19aaede9b",
+      "status": "PASS",
+      "url": "https://github.com/labairj-ai/investment/actions/runs/39997737221"
+    },
+    "health": {
+      "service_active": true,
+      "dashboard_http": 200,
+      "development_dashboard_http": 200,
+      "authenticated_api_http": 200,
+      "unauthorized_api_http": 403,
+      "advisor_functional": "PASS",
+      "advisor_mutation_safety": "PASS"
+    },
+    "backup": {
+      "exists": true,
+      "integrity": "ok",
+      "sha256": "edaf9dc2d4e445db2604b7c7b58c22938d538ab32f13d9228adab756af44c14b"
+    },
+    "activation": {
+      "autonomous_implementation": false,
+      "supervised_loop_enabled": false,
+      "supervised_publish_pr": false,
+      "auto_merge": false
+    },
+    "state_safety": {
+      "holdings_unchanged": true,
+      "investment_state_unchanged": true,
+      "development_ledger_unchanged": true
+    }
+  },
+  "sha256": "9d0ff69b181b9b2a63401816b4d992b17fcb56e32b0d624e5f1f3caa0837eda3"
+}

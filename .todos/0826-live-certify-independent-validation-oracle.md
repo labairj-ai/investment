@@ -1,7 +1,7 @@
 # TODO 0826 — Live-Certify the Independent Validation Oracle
 
 - **ID:** 0826
-- **Status:** backlog
+- **Status:** in-progress
 - **Priority:** critical
 - **Risk:** L5 — validation trust boundary
 - **Depends:** 0818 implementation, 0825
@@ -106,3 +106,9 @@ Every adversarial case must fail closed.
 - [ ] Live adversarial suite passes.
 - [ ] Non-fixture technical certificate is recorded.
 - [ ] Dashboard reports current oracle/certificate health.
+
+## Implementation / acceptance handoff — 2026-10-23
+
+Live preflight found runtime/oracle unavailable. The current client is not an independent oracle backend. No backend, signing key, certificate or live adversarial PASS was fabricated; live certification is blocked pending the reviewed independent implementation and provisioning.
+
+See [live operational acceptance](../docs/live-operational-acceptance.md) and the [sanitized live preflight](../docs/evidence/continuous-improvement-20261023/live-acceptance-preflight.json). This task remains in progress until every required live acceptance and release gate is satisfied.

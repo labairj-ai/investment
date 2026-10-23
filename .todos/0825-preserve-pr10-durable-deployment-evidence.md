@@ -1,7 +1,7 @@
 # TODO 0825 — Preserve PR #10 Durable Deployment Evidence
 
 - **ID:** 0825
-- **Status:** backlog
+- **Status:** in-progress
 - **Priority:** high
 - **Risk:** L1 — evidence / release history
 - **Depends:** PR #10 deployment
@@ -79,3 +79,9 @@ The Development Agent needs durable, sanitized, immutable deployment evidence so
 - [ ] Sanitized receipt is committed.
 - [ ] Receipt-schema test passes.
 - [ ] Exact-head CI remains green.
+
+## Implementation / acceptance handoff — 2026-10-23
+
+Implemented schema, canonical and file hashes, authentic sanitized PR10 evidence, consumer rejection and regression checks. The manual release is explicitly excluded from Deployment Agent pilot qualification. Pending exact-head CI and repository merge.
+
+See [live operational acceptance](../docs/live-operational-acceptance.md) and the [sanitized live preflight](../docs/evidence/continuous-improvement-20261023/live-acceptance-preflight.json). This task remains in progress until every required live acceptance and release gate is satisfied.

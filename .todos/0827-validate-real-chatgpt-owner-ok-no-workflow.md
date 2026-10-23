@@ -1,7 +1,7 @@
 # TODO 0827 — Validate the Real ChatGPT Owner OK/NO Workflow
 
 - **ID:** 0827
-- **Status:** backlog
+- **Status:** in-progress
 - **Priority:** critical
 - **Risk:** L5 — owner authority
 - **Depends:** 0819 implementation, PR #10 deployment
@@ -91,3 +91,9 @@ Also exercise a non-production/fixed test version of:
 - [ ] Real NO/stale-head paths fail correctly.
 - [ ] Evidence is recorded in Development Agent ledger.
 - [ ] No GitHub UI action is required from the owner.
+
+## Implementation / acceptance handoff — 2026-10-23
+
+Preserved connector/human identity boundaries and strengthened exact CI identity in deployment admission. Real owner OK/NO, external bindings and live negative acceptance remain pending; no owner event was synthesized.
+
+See [live operational acceptance](../docs/live-operational-acceptance.md) and the [sanitized live preflight](../docs/evidence/continuous-improvement-20261023/live-acceptance-preflight.json). This task remains in progress until every required live acceptance and release gate is satisfied.

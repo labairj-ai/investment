@@ -1,7 +1,7 @@
 # TODO 0829 — Execute First Real Supervised Improvement Journey
 
 - **ID:** 0829
-- **Status:** backlog
+- **Status:** in-progress
 - **Priority:** critical strategic
 - **Risk:** L3 — supervised agent software development
 - **Depends:** 0826, 0827, 0828
@@ -107,3 +107,9 @@ At `AWAITING_OWNER`:
 - [ ] Owner OK/NO flow succeeds.
 - [ ] PR merges only after exact-head OK.
 - [ ] Pilot is ready for deployment-agent validation.
+
+## Implementation / acceptance handoff — 2026-10-23
+
+Existing supervised pipeline stays gated on live prerequisites and separate activation. Successful qualification now requires a valid bound Deployment Agent receipt. No real pilot or Builder run occurred.
+
+See [live operational acceptance](../docs/live-operational-acceptance.md) and the [sanitized live preflight](../docs/evidence/continuous-improvement-20261023/live-acceptance-preflight.json). This task remains in progress until every required live acceptance and release gate is satisfied.

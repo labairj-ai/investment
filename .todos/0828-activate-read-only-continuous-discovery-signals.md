@@ -1,7 +1,7 @@
 # TODO 0828 — Activate Read-Only Continuous Discovery and Signal Collection
 
 - **ID:** 0828
-- **Status:** backlog
+- **Status:** in-progress
 - **Priority:** high
 - **Risk:** L3 — production scheduler / read-only observation
 - **Depends:** 0825
@@ -118,3 +118,9 @@ Expose:
 - [ ] Scheduler health is PASS.
 - [ ] No production-state mutation observed.
 - [ ] Durable run receipts exist.
+
+## Implementation / acceptance handoff — 2026-10-23
+
+Corrected fixed loopback port and HTTP failure observation; discovery failures/duplicates retain source/trigger/timing. Installation, incomplete signal collectors and three actual scheduled runs remain pending. Nothing enabled.
+
+See [live operational acceptance](../docs/live-operational-acceptance.md) and the [sanitized live preflight](../docs/evidence/continuous-improvement-20261023/live-acceptance-preflight.json). This task remains in progress until every required live acceptance and release gate is satisfied.

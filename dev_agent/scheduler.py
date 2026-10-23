@@ -37,6 +37,8 @@ def trigger():
 
 def discover_daily(root, store, *, now=None, cap=None, backlog_limit=None, signals=()):
     started=time.time();origin=trigger()
+    from .discovery import git
+    source_head=git(root,'rev-parse','HEAD')
     enabled_sources=[]
     policy_path = Path(root) / "config/development_agent.json"
     policy = json.loads(policy_path.read_text()) if policy_path.exists() else {}
@@ -50,7 +52,7 @@ def discover_daily(root, store, *, now=None, cap=None, backlog_limit=None, signa
         with store.connect() as db:
             prior = db.execute("SELECT payload FROM dev_events WHERE event_id=?", (key,)).fetchone()
         if prior:
-            duplicate=dict(status='DUPLICATE',slot=key,created=0,trigger=origin,duration_seconds=time.time()-started)
+            duplicate=dict(status='DUPLICATE',slot=key,head=source_head,created=0,candidates=[],deduplicated=0,suppressed=0,unavailable=[],trigger=origin,started_at=started,ended_at=time.time(),duration_seconds=time.time()-started)
             if origin['source']=='systemd-observed-timer':store.event(None,'SCHEDULE_DUPLICATE',duplicate,key+':duplicate:'+origin['invocation'])
             return duplicate
         existing = store.list(500)
@@ -60,10 +62,10 @@ def discover_daily(root, store, *, now=None, cap=None, backlog_limit=None, signa
             attempts = db.execute("SELECT count(*) FROM dev_events WHERE event_id LIKE ?", (key+":attempt:%",)).fetchone()[0]
         if attempts >= 2: return dict(status="NEEDS_HUMAN", reason="daily retry budget exhausted", slot=key)
         attempt = attempts+1
-        store.event(None, "SCHEDULE_ATTEMPT", dict(slot=key, attempt=attempt, status="STARTED"), key+":attempt:"+str(attempt))
+        store.event(None, "SCHEDULE_ATTEMPT", dict(slot=key,head=source_head,trigger=origin,started_at=started,attempt=attempt,status="STARTED"), key+":attempt:"+str(attempt))
         budget = max(0, min(10, cap, backlog_limit-active))
         if not budget:
-            result = dict(status="BACKLOG_FULL", slot=key, created=0)
+            result = dict(status="BACKLOG_FULL",slot=key,head=source_head,created=0,candidates=[],unavailable=[])
         else:
             try:
                 if os.environ.get('DEVELOPMENT_SIGNAL_SPOOL'):
@@ -84,7 +86,7 @@ def discover_daily(root, store, *, now=None, cap=None, backlog_limit=None, signa
                     store.event(cid, "SCORE", score(proposal, classify(proposal["files"], graphs=[graph])))
                 result = dict(status="COLLECTED", slot=key, candidates=ids, created=len(set(ids)-previous), head=found["head"], unavailable=found["unavailable"],deduplicated=deduplicated,suppressed=signal_suppressed)
             except Exception as error:
-                result = dict(status="FAILED", slot=key, attempt=attempt, reason=type(error).__name__)
+                result = dict(status="FAILED",slot=key,head=source_head,trigger=origin,started_at=started,ended_at=time.time(),duration_seconds=time.time()-started,candidates=[],created=0,deduplicated=0,suppressed=0,unavailable=enabled_sources,attempt=attempt,reason=type(error).__name__)
                 store.event(None, "SCHEDULE_FAILURE", result, key+":failure:"+str(attempt))
                 return result
         result.update(trigger=origin,started_at=started,ended_at=time.time(),duration_seconds=time.time()-started,deduplicated=result.get('deduplicated',0),suppressed=result.get('suppressed',0))

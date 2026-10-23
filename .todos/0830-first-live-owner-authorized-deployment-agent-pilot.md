@@ -1,7 +1,7 @@
 # TODO 0830 — Execute First Live Owner-Authorized Deployment-Agent Pilot
 
 - **ID:** 0830
-- **Status:** backlog
+- **Status:** in-progress
 - **Priority:** critical strategic
 - **Risk:** L5 — production deployment
 - **Depends:** 0827, 0829
@@ -115,3 +115,9 @@ No failure may produce `DEPLOYED_VERIFIED`.
 - [ ] No manual SSH deployment commands are needed.
 - [ ] Durable receipt exists.
 - [ ] Signed post-deployment observation is HEALTHY.
+
+## Implementation / acceptance handoff — 2026-10-23
+
+Corrected fixed health endpoints, added complete investment-state identity and standard receipt export, and revalidated owner/main/CI before successful completion. Dedicated installation, permission proof, failure matrix and real pilot remain pending.
+
+See [live operational acceptance](../docs/live-operational-acceptance.md) and the [sanitized live preflight](../docs/evidence/continuous-improvement-20261023/live-acceptance-preflight.json). This task remains in progress until every required live acceptance and release gate is satisfied.

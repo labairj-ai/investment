@@ -3,7 +3,7 @@
 Only bounded metadata is persisted; no raw log, broker endpoint or financial DB.
 """
 from __future__ import annotations
-import argparse,json,os,subprocess,sys,time,urllib.request
+import argparse,json,os,subprocess,sys,time,urllib.request,urllib.error
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from dev_agent.github import GitHub
@@ -27,7 +27,9 @@ def collect(repository,*,invoke=subprocess.run,open_url=urllib.request.urlopen):
     except Exception:unavailable.append('telemetry')
     try:
         started=time.monotonic()
-        with open_url('http://127.0.0.1:8000/development-agent',timeout=5) as response:status=response.status;response.read(1024)
+        try:
+            with open_url('http://127.0.0.1:5001/development-agent',timeout=5) as response:status=response.status;response.read(1024)
+        except urllib.error.HTTPError as error:status=error.code
         elapsed=time.monotonic()-started;enabled.append('performance')
         if status>=500:observations.append(dict(kind='http_failure',component='development-dashboard',problem='Dashboard HTTP health failed',files=['serve.py'],evidence_location='loopback GET /development-agent',observed_at=now,recurrence=1,outcome='Restore dashboard health',validation='read-only HTTP health check',synthetic=False))
         # Persist duration as bounded observation only; a single slow event is not

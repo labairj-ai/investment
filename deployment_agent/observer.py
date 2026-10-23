@@ -21,8 +21,11 @@ def observe(executor,receipt,*,key,now=None,window=300):
         head=executor.git('rev-parse','HEAD');health=executor.health();same_state=protected_matches(executor,receipt.get('holdings_after',receipt.get('holdings_before')),executor.protected())
     except Exception:
         available=False;health=dict(checks=dict(observation_available=False));same_state=False
+    from dev_agent.deployment_evidence import validate
+    evidence=receipt.get('deployment_evidence')
+    if receipt['status']=='DEPLOYED_VERIFIED':validate(evidence)
     healthy=receipt['status']=='DEPLOYED_VERIFIED' and available and head==receipt['merge_sha'] and all(health['checks'].values()) and same_state
-    payload=dict(protocol='software-observation-1',repository=receipt['repository'],pr=receipt['pr'],head=receipt['head'],deployment_intent_id=receipt['authorization_id'],merge_sha=receipt['merge_sha'],deployed_sha=head,environment='OptiPlex',deployed_at=receipt['finished'],observed_at=now,window_seconds=window,metrics=dict(observation_available=available,service_healthy=all(health['checks'].values()),protected_state_unchanged=same_state),evidence=['deployment-receipt:'+hashlib.sha256(canonical(receipt)).hexdigest()],status='HEALTHY' if healthy else 'DEGRADED')
+    payload=dict(deployment_evidence=evidence,protocol='software-observation-1',repository=receipt['repository'],pr=receipt['pr'],head=receipt['head'],deployment_intent_id=receipt['authorization_id'],merge_sha=receipt['merge_sha'],deployed_sha=head,environment='OptiPlex',deployed_at=receipt['finished'],observed_at=now,window_seconds=window,metrics=dict(observation_available=available,service_healthy=all(health['checks'].values()),protected_state_unchanged=same_state),evidence=['deployment-receipt:'+hashlib.sha256(canonical(receipt)).hexdigest()],status='HEALTHY' if healthy else 'DEGRADED')
     return dict(observation=payload,signature=hmac.new(key,canonical(payload),hashlib.sha256).hexdigest())
 
 

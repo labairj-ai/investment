@@ -38,6 +38,11 @@ def check(root=ROOT):
             if isinstance(node,ast.ImportFrom):imports=[node.module or ""]
             if any(name.split(".")[0] in {"agent_db","trade_engine","portfolio_ai","covered_call_rec","deployment_agent","owner_gateway"} for name in imports):
                 findings.append("investment runtime import: "+path.name)
+    receipt=root/'docs/evidence/continuous-improvement-20261023/deployment-pr10.json'
+    if receipt.exists():
+        from scripts.check_deployment_receipt import check as check_receipt
+        try:check_receipt(receipt)
+        except (ValueError,OSError,TypeError,KeyError):findings.append('deployment receipt schema or digest invalid')
     try:task_index(root)
     except ValueError as error:findings.append(str(error))
     return dict(status="PASS" if not findings else "FAIL",findings=findings,operational_certification="NOT_EVALUATED")

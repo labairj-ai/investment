@@ -258,13 +258,14 @@ def seed_completed_pilot(store, *, created=None, harness=None):
     operational certificate directory or the application store.
     """
     cid=store.discover(proposal(problem='Prospective pilot '+str(time.time_ns())))
+    number=int(cid.replace('-','')[:8],16)+1
     head='a'*40;base='b'*40
     ctx=dict(todo='0795',head=base,scope_hash=digest(['docs/note.md']),risk='L0',acceptance_hash='frozen',mode='SUPERVISED')
     proof=dict(id='sealed-'+cid,head=head,base=base,source_hash='source',mode='SUPERVISED',trusted_validation=True,status='PASS',batch='batch-'+cid,validations=[dict(name=n,candidate=cid,head=head,status='PASS',exit_code=0) for n in validation.GATES])
-    pr=dict(result=dict(number=1,url='https://github.com/owner/repo/pull/1'),head=head,verified=dict(headRefName='agent/0001/fixture'))
+    pr=dict(result=dict(number=number,url=f'https://github.com/owner/repo/pull/{number}'),head=head,verified=dict(headRefName='agent/0001/fixture'))
     start=dict(mode='SUPERVISED',authentication_source='os-interactive-cli',context=ctx,harness_hash=harness or certification.harness_hash(ROOT))
     with store.connect(True) as db:
-        records=[('PLAN',{'context':ctx}),('APPROVAL',dict(context=ctx,actor='human',authentication_source='os-interactive-cli')),('START_AUTHORIZATION',start),('RUN',dict(run_id='real-'+cid,role='builder',status='PASS',data=dict(mode='SUPERVISED',fixture_only=False,provider=dict(provider='ollama')))),('RUN',dict(run_id='review-'+cid,role='reviewer',status='PASS',data=dict(head=head,source_hash='source',independent_context='review-context'))),('ITERATION',dict(review=dict(disposition='PASS'),fixture_only=False)),('VALIDATION_BATCH',dict(batch=proof['batch'],fixture_only=False)),('RECEIPT',dict(receipt=proof)),('PR',pr),('HUMAN_REVIEW',dict(stage='PR_DISPOSITION',decision='accept',authentication_source='os-interactive-cli',context=dict(ctx,head=head))),('DEPLOYMENT',dict(status='HEALTHY',deployed_sha='c'*40,merge_sha='c'*40)),('STATE',dict(state='DEPLOYED'))]
+        records=[('PLAN',{'context':ctx}),('APPROVAL',dict(context=ctx,actor='human',authentication_source='os-interactive-cli')),('START_AUTHORIZATION',start),('RUN',dict(run_id='real-'+cid,role='builder',status='PASS',data=dict(mode='SUPERVISED',fixture_only=False,provider=dict(provider='ollama')))),('RUN',dict(run_id='review-'+cid,role='reviewer',status='PASS',data=dict(head=head,source_hash='source',independent_context='review-context'))),('ITERATION',dict(review=dict(disposition='PASS'),fixture_only=False)),('VALIDATION_BATCH',dict(batch=proof['batch'],fixture_only=False)),('RECEIPT',dict(receipt=proof)),('PR',pr),('HUMAN_REVIEW',dict(stage='PR_DISPOSITION',decision='accept',authentication_source='os-interactive-cli',context=dict(ctx,head=head))),('DEPLOYMENT',dict(status='HEALTHY',deployed_sha='c'*40,merge_sha='c'*40,deployment_evidence=__import__('development_fixtures').deployment_evidence(pr=number))),('STATE',dict(state='DEPLOYED'))]
         for i,(kind,payload) in enumerate(records):store._append(db,cid,kind,payload,f'fixture-lineage:{cid}:{i}')
     class Client:
         repository='owner/repo'
@@ -274,7 +275,7 @@ def seed_completed_pilot(store, *, created=None, harness=None):
             if '/pulls/' in endpoint:return dict(merged=True,head=dict(sha='a'*40),merge_commit_sha='c'*40,auto_merge=None,merged_by=dict(id=10,login='owner',type='User'))
             return dict(full_name=self.repository,owner=dict(login='owner',id=10,type='User'))
         def read_all(self,endpoint):return [dict(filename='docs/pilot.md',patch='+Pilot')]
-        def pr_identity(self,number):return dict(remote(),state='MERGED',reviewDecision='APPROVED',mergeCommit={'oid':'c'*40})
+        def pr_identity(self,number):return dict(remote(),number=number,state='MERGED',reviewDecision='APPROVED',mergeCommit={'oid':'c'*40})
     adapter=Client();start_protection(store,cid,adapter,ROOT)
     from dev_agent.protection import require
     authority=None
@@ -282,7 +283,7 @@ def seed_completed_pilot(store, *, created=None, harness=None):
         authority=require(store,cid,adapter,stage,root=ROOT)
     with store.connect(True) as db:store._append(db,cid,'MERGE',dict(head=head,merge_sha='c'*40,source='github-verified-merge',protection_policy=authority['policy_hash']),'fixture-merge-observed:'+cid)
     from dev_agent.owner_review import attest,context
-    attest(store,adapter,context(adapter,1,risk='L0'),'APPROVE','fixture-owner-'+cid,'Reviewed fixture',human=HumanIdentity('fixture-owner','os-interactive-cli',_PROOF))
+    attest(store,adapter,context(adapter,number,risk='L0'),'APPROVE','fixture-owner-'+cid,'Reviewed fixture',human=HumanIdentity('fixture-owner','os-interactive-cli',_PROOF))
     return cid,adapter
 
 

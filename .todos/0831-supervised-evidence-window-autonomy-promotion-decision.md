@@ -1,7 +1,7 @@
 # TODO 0831 — Complete Supervised Evidence Window and Prepare Autonomy Promotion Decision
 
 - **ID:** 0831
-- **Status:** backlog
+- **Status:** in-progress
 - **Priority:** high strategic
 - **Risk:** L5 — autonomy promotion
 - **Depends:** 0825, 0826, 0827, 0828, 0829, 0830
@@ -157,3 +157,9 @@ with:
 - [ ] Promotion report is generated.
 - [ ] Owner receives a clear GO/NO-GO recommendation.
 - [ ] Autonomy remains disabled until a separate explicit owner decision.
+
+## Implementation / acceptance handoff — 2026-10-23
+
+Implemented read-only promotion report and dashboard projection with real run linkage, rejected attempts, metrics, current certificates, incidents and seven-day checks. Report grants no authority. No prospective qualifying success or elapsed observation was fabricated.
+
+See [live operational acceptance](../docs/live-operational-acceptance.md) and the [sanitized live preflight](../docs/evidence/continuous-improvement-20261023/live-acceptance-preflight.json). This task remains in progress until every required live acceptance and release gate is satisfied.
