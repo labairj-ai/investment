@@ -55,6 +55,16 @@ class Worktrees:
             git_run(path, "merge-base", "--is-ancestor", record["base"], "HEAD")
         return path
 
+    def freeze_plan(self,record,plan_path):
+        """Rebind only an orchestrator-written plan commit, never candidate source."""
+        path=self.verify(record,allow_committed=True)
+        if not plan_path.startswith('.todos/') or '..' in Path(plan_path).parts:raise ValueError('trusted plan path required')
+        changed=git(path,'diff','--name-only',record['base'],'HEAD').splitlines()
+        if changed!=[plan_path] or git(path,'status','--porcelain'):raise ValueError('plan freeze includes unexpected source changes')
+        updated=dict(record,discovery_base=record.get('discovery_base',record['base']),base=git(path,'rev-parse','HEAD'))
+        (self.directory/(record['run']+'.json')).write_text(json.dumps(updated,sort_keys=True))
+        return updated
+
     def recover(self):
         result = []
         for manifest in sorted(self.directory.glob("*.json")):

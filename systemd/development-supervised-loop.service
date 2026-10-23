@@ -1,0 +1,14 @@
+[Unit]
+Description=Bounded owner-delegated supervised development cycle (PR only)
+[Service]
+Type=oneshot
+WorkingDirectory=%h/.local/share/investment-development/checkout
+ExecStart=%h/.local/share/investment-development/checkout/venv/bin/python scripts/run_supervised_cycle.py
+EnvironmentFile=%h/.config/investment-development/supervised.env
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/share/investment-development
+PrivateTmp=true
+UMask=0077
+TimeoutStartSec=3600

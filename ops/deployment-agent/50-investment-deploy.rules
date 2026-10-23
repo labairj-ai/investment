@@ -1,0 +1,10 @@
+// Human administrator installs this root-owned polkit rule after review.
+// No manage-unit-files, daemon-reload, other services, shell or sudo authority.
+polkit.addRule(function(action, subject) {
+  if (action.id === 'org.freedesktop.systemd1.manage-units' &&
+      subject.user === 'investment-deploy' &&
+      action.lookup('unit') === 'investment.service' &&
+      ['start', 'stop', 'restart'].indexOf(action.lookup('verb')) >= 0) {
+    return polkit.Result.YES;
+  }
+});

@@ -1,0 +1,14 @@
+[Unit]
+Description=Read-only observation of development discovery timer
+[Service]
+Type=oneshot
+WorkingDirectory=%h/investment
+ExecStart=%h/investment/venv/bin/python -m dev_agent.cli scheduler-status --root %h/investment
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/share/investment-development
+PrivateTmp=true
+PrivateNetwork=true
+TimeoutStartSec=30

@@ -1,50 +1,47 @@
 name: Tests
-
 on:
   push:
     branches: [ main ]
   pull_request:
     branches: [ main ]
-
+permissions:
+  contents: read
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
-
-      - uses: actions/setup-python@v5
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
-          python-version: "3.12"
-
-      - name: Install dependencies
+          python-version: '3.12'
+      - name: Install repository test dependencies
         run: pip install pytest yfinance requests python-dotenv
-
-      - name: Check TODO folder and status consistency
-        run: python scripts/check_todo_status.py
-
-      - name: Check repository coding-agent contract
-        run: python scripts/check_agent_contract.py
-
-      - name: Check development-agent governance
-        run: python scripts/check_development_agent.py
-
-      - name: Run tests
-        id: pytest
-        continue-on-error: true
-        run: pytest tests/ -v --tb=short --junitxml=test-results.xml
-
-      - name: Check exact baseline failure inventory
+      - name: Aggregate independent repository diagnostics
+        env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          PRIOR_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: python scripts/aggregate_release_validation.py --out validation-results --head "$CANDIDATE_SHA" --prior "$PRIOR_SHA"
+      - name: Human-readable exact-head summary
         if: always()
-        run: python scripts/check_release_baseline.py test-results.xml
-
-      - name: Check CC V3 behavioral contract
-        run: python scripts/check_cc_contract.py
-
-      - name: Preserve test results
+        run: |
+          if test -f validation-results/validation-summary.md; then
+            cat validation-results/validation-summary.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'FAIL: mandatory aggregate summary missing' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+      - name: Preserve diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: investment-test-results
-          path: test-results.xml
+          name: exact-head-repository-validation
+          path: |
+            validation-results/test-results.xml
+            validation-results/validation-summary.json
+            validation-results/validation-summary.md
+            validation-results/*.log
+          if-no-files-found: error

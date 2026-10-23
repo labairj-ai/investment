@@ -1,0 +1,33 @@
+{
+  "status": "APPROVED_APPLIED",
+  "operator_acknowledged": true,
+  "prior": {
+    "fingerprint_version": "cc-behavior-v1",
+    "model_version": "cc-v3.4",
+    "simulator_version": "cc-virtual-1",
+    "simulator_contract_version": "simulator-contract-2",
+    "simulator_contract_hash": "b8be3b06388cb68c7be9e53488ca6f473cc3bee15f81ed93461c802e951ce8f2",
+    "engine_hash": "5f9fc49b8b13f7cce7672d94358c07ed188218597d9da9d9b807585176facd9f",
+    "policy_version": "shared-live-management-asof-1",
+    "cadence_comparability_policy_version": "cadence-v1",
+    "schema_version": "cc-contract-v2"
+  },
+  "current_observed_simulator_hash": "08b5154611c621f1689a453b2a09bd5e8dfcef442f6db67b5ee24c39413b3f5e",
+  "proposed": {
+    "fingerprint_version": "cc-behavior-v1",
+    "model_version": "cc-v3.4",
+    "simulator_version": "cc-virtual-1",
+    "simulator_contract_version": "simulator-contract-3",
+    "simulator_contract_hash": "7f5b57c1502c8eae2b4b6170ee9d287334c8b22ac1c1e2355e713b06a6affcd9",
+    "engine_hash": "5f9fc49b8b13f7cce7672d94358c07ed188218597d9da9d9b807585176facd9f",
+    "policy_version": "shared-live-management-asof-1",
+    "cadence_comparability_policy_version": "cadence-v1",
+    "schema_version": "cc-contract-v2"
+  },
+  "affected_behavior": "Existing main snapshot-input lineage normalization: non-finite snapshot evidence becomes null before digest, rather than raising; finite evidence unchanged",
+  "recommendation_math_changed": false,
+  "prospective_cohort_reset_required": true,
+  "open_chain_policy": "VERSION_CENSORED",
+  "source_change_already_on_main": "bb4c9a8",
+  "financial_source_modified_by_this_branch": false
+}

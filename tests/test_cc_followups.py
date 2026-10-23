@@ -667,3 +667,30 @@ def test_metrics_version_censored_count(episode):
     assert m_after['open_chains']==0
     assert m_after['virtual_economics']['version_censored_n']==1
     db.close()
+
+
+def test_contract_three_reset_excludes_old_cohort_and_censors_open_chain(episode,monkeypatch):
+    """The approved reset is prospective; old evidence is never relabeled."""
+    path,cfg,create=episode
+    assert cfg['prospective_cohort_version']=='simulator-contract-3'
+    old_cfg=deepcopy(cfg);old_cfg.pop('prospective_cohort_version')
+    assert ledger.config_digest(old_cfg)!=ledger.config_digest(cfg)
+    with monkeypatch.context() as prior:
+        prior.setattr(book,'SIMULATOR_CONTRACT_VERSION','simulator-contract-2')
+        prior.setattr(book,'simulator_contract_hash',lambda config:'b8be3b06388cb68c7be9e53488ca6f473cc3bee15f81ed93461c802e951ce8f2')
+        old_id=create(config=old_cfg)
+        db=ledger.connect(path);ledger.migrate(db)
+        chain=book.start_from_decision(db,old_id)
+        db.close()
+    report=evidence.promotion_report(cfg,path,as_of=parse_timestamp(START)+timedelta(days=1))
+    assert report['n']==0
+    assert report['exclusions']['CONFIG_MISMATCH']==1
+    import scripts.cc_virtual_job as job
+    result=job.run(path,capture=lambda *args:snapshot(),clock=lambda:parse_timestamp('2026-10-13T17:15:00Z'))
+    assert result['version_censored_chains']==1
+    db=ledger.connect(path)
+    assert book.state(db,chain)['status']=='VERSION_CENSORED'
+    outcome=outcomes.latest(db,old_id,'challenger')
+    assert outcome['promotion_eligible'] is False and outcome['version_censored'] is True
+    assert json.loads(db.execute('SELECT origin_json FROM cc_virtual_chains WHERE id=?',(chain,)).fetchone()[0])['simulator_contract_version']=='simulator-contract-2'
+    db.close()

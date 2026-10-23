@@ -1,0 +1,8 @@
+[Unit]
+Description=Collect bounded read-only operational metadata hourly
+[Timer]
+OnCalendar=hourly
+Persistent=true
+Unit=development-signal-collector.service
+[Install]
+WantedBy=timers.target

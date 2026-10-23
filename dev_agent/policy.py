@@ -18,8 +18,8 @@ VERSION = "risk-surface-2"
 TEST_RUNNER_FILES = {'conftest.py','pytest.ini','.pytest.ini','pytest.toml','.pytest.toml',
                      'pyproject.toml','setup.cfg','tox.ini','sitecustomize.py','usercustomize.py'}
 FINANCIAL = ("portfolio*", "covered_call*", "tax*", "thesis*", "agents/advisor/*", "agents/learning/*", "agents/*agent.py", "agents/critic*", "strategy*", "macro*", "financials*", "config/*")
-EXECUTION = ("trade_engine/*", "agent_db.py", "schema.sql", "serve.py", "dev_agent/*", "scripts/dev_agent*", "systemd/*", "ops/*")
-GOVERNANCE = ("AGENTS.md", "docs/development-agent.md", ".github/*", "scripts/check_*", "config/*", "cc_change_manifests/*")
+EXECUTION = ("config/development_agent.json","owner_gateway/*","deployment_agent/*","trade_engine/*", "agent_db.py", "schema.sql", "serve.py", "dev_agent/*", "scripts/dev_agent*", "systemd/*", "ops/*")
+GOVERNANCE = ("owner_gateway/*","deployment_agent/*","AGENTS.md", "docs/development-agent.md", ".github/*", "scripts/check_*", "config/*", "cc_change_manifests/*")
 FORBIDDEN = (".env*", "*/.env*", "*credential*", "*token.json", "*.db", "*.sqlite*", "holdings.csv", "*/holdings.csv", "covered_calls.csv", "out/*", "*/out/*", "venv/*", ".git/*", "*/.git/*")
 PRINCIPLES = {
     "P1": "Single source of truth; never mutate authoritative investment state.",

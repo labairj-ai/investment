@@ -55,3 +55,10 @@ def next_model_version(steps=1):
     from covered_call_v3 import VERSION
     major, minor = VERSION.removeprefix('cc-v').split('.')
     return f'cc-v{major}.{int(minor) + steps}'
+
+
+def next_simulator_contract_version(steps=1):
+    """Future fixture version relative to the approved runtime contract."""
+    from covered_call_virtual import SIMULATOR_CONTRACT_VERSION
+    prefix,number=SIMULATOR_CONTRACT_VERSION.rsplit('-',1)
+    return f'{prefix}-{int(number)+steps}'

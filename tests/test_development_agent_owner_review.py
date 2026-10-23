@@ -16,8 +16,12 @@ class Client:
     author='owner'
     files=[dict(filename='docs/note.md',patch='+Text')]
     def read(self,endpoint):
+        if '/comments?' in endpoint:return []
         if '/pulls/' in endpoint:return dict(merged=True,head=dict(sha=self.head),merge_commit_sha='c'*40,auto_merge=None,merged_by=dict(id=1,login='owner',type='User'))
         return dict(full_name=self.repository,owner=dict(login='owner',id=1,type='User'))
+    def protections(self):
+        from development_fixtures import protection_observation
+        return protection_observation(repository=self.repository)
     def read_all(self,endpoint):return self.files
     def pr_identity(self,number):return dict(number=number,baseRefName='main',state='OPEN',headRefOid=self.head,headRepository=dict(nameWithOwner=self.repository),author=dict(login=self.author),reviewDecision='APPROVED')
 
@@ -26,6 +30,7 @@ class Client:
 def setup(tmp_path,monkeypatch):
     binding=dict(repository='owner/repo',owner_login='owner',owner_id=1,operators={'os-interactive-cli':['human-owner'],'tailscale-serve':['owner@example.com']})
     monkeypatch.setenv('DEV_AGENT_OWNER_BINDINGS',json.dumps(binding))
+    monkeypatch.setenv('DEV_AGENT_OPERATORS','owner@example.com')
     store=Store(tmp_path/'development-control.sqlite3');store.migrate()
     return store,Client(),HumanIdentity('human-owner','os-interactive-cli',_PROOF)
 
@@ -66,7 +71,7 @@ def test_financial_diff_cannot_claim_documentation_risk(setup):
 
 def test_model_or_shared_token_identity_cannot_attest(setup):
     store,client,_=setup
-    for human in [None,dict(actor='owner'),dashboard_identity(),HumanIdentity('agent','os-interactive-cli',_PROOF)]:
+    for human in [None,dict(actor='owner'),HumanIdentity("shared-token", "authenticated-dashboard", _PROOF),HumanIdentity('agent','os-interactive-cli',_PROOF)]:
         with pytest.raises(ValueError):owner.attest(store,client,owner.context(client,1,risk='L0'),'APPROVE','untrusted-identity-0001','rationale',human=human)
     with pytest.raises(ValueError):store.event(None,'OWNER_REVIEW',{},'forged')
 
@@ -132,6 +137,8 @@ def test_agent_merge_evidence_cannot_replace_owner_review(setup):
     store,client,_=setup
     cid=store.discover(dict(source='user',title='fixture',problem='fixture issue',evidence=['fixture'],outcome='fixture result',files=['docs/note.md'],category='DOCUMENT'))
     store.event(cid,'PR',dict(result=dict(number=1,url='https://github.com/owner/repo/pull/1'),verified=dict(headRefName='agent/0001/fixture'),head=client.head))
+    from development_fixtures import start_protection
+    start_protection(store,cid,client)
     original=client.pr_identity
     client.pr_identity=lambda number:dict(original(number),headRefName='agent/0001/fixture',headRepositoryOwner=dict(login='owner'),isDraft=False,state='MERGED',mergeCommit=dict(oid='c'*40))
     with pytest.raises(ValueError,match='owner approval'):record_merge(store,cid,client)

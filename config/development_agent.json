@@ -19,5 +19,8 @@
   "technical_certificate_max_age_hours": 24,
   "github_evidence_max_age_seconds": 300,
   "snapshot_max_age_hours": 24,
-  "governance_model": "solo-owner-1"
+  "governance_model": "solo-owner-1",
+  "supervised_loop_enabled": false,
+  "autonomy_stage": "SHADOW",
+  "supervised_publish_pr": false
 }

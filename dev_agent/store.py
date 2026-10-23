@@ -131,7 +131,7 @@ class Store:
         return json.loads(row[0])["state"]
 
     def event(self, cid, kind, payload, key=None):
-        if kind in {"STATE", "APPROVAL", "VALIDATION", "VALIDATION_BATCH", "SUPPLEMENTAL_VALIDATION", "RECEIPT", "OPERATIONAL_SUCCESS", "AUTHORIZATION", "START_AUTHORIZATION", "TECHNICAL_CERTIFICATION", "PROTECTION"}:
+        if kind in {"MERGE", "AUTONOMY_RESUME", "STAGE_OBSERVATION", "AUTONOMY_PAUSE", "BUILD_POLICY", "POLICY_ADMISSION", "PIPELINE", "SCHEDULER_OBSERVATION", "OWNER_REVIEW", "STATE", "APPROVAL", "VALIDATION", "VALIDATION_BATCH", "SUPPLEMENTAL_VALIDATION", "RECEIPT", "OPERATIONAL_SUCCESS", "AUTHORIZATION", "START_AUTHORIZATION", "TECHNICAL_CERTIFICATION", "PROTECTION"}:
             raise ValueError("use transition/decide")
         with self.connect(True) as db:
             self._append(db, cid, kind, payload, key or str(uuid.uuid4()))
@@ -157,6 +157,13 @@ class Store:
             for e in events:
                 e["payload"] = json.loads(e["payload"])
             return dict(id=cid, created=row["created"], **json.loads(row["payload"]), state=self._state(db, cid), events=events)
+
+    def events(self,kind,limit=1000):
+        if not isinstance(kind,str) or not kind.isidentifier():raise ValueError('event kind required')
+        if not self.path.exists():return []
+        with self.connect() as db:
+            rows=db.execute('SELECT kind,created,payload FROM dev_events WHERE kind=? ORDER BY seq DESC LIMIT ?',(kind,min(1000,max(1,limit)))).fetchall()
+        return [dict(kind=r[0],created=r[1],payload=json.loads(r[2])) for r in rows]
 
     def list(self, limit=100, **filters):
         if not self.path.exists():
@@ -194,7 +201,7 @@ class Store:
 
     def begin(self, cid, context, run_id):
         with self.connect(True) as db:
-            row = db.execute("SELECT payload FROM dev_events WHERE candidate=? AND kind='APPROVAL' ORDER BY seq DESC LIMIT 1", (cid,)).fetchone()
+            row = db.execute("SELECT payload FROM dev_events WHERE candidate=? AND kind IN ('APPROVAL','POLICY_ADMISSION') ORDER BY seq DESC LIMIT 1", (cid,)).fetchone()
             if self._state(db, cid) != "APPROVED" or not row or json.loads(row[0])["context"] != context:
                 raise ValueError("fresh exact approval required")
             self._append(db, cid, "STATE", {"state": "BUILDING", "run_id": run_id}, "begin:" + run_id)

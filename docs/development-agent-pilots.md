@@ -23,7 +23,7 @@ The operator commits the bounded implementation, then runs `validate` with the
 independent reviewer model and `seal` with no input JSON. Push only the scoped agent
 branch and invoke `pr`; remote identity is checked after creation/update. Record
 human PR disposition at the exact sealed SHA. Merge and deploy remain separate
-human actions. `sync-merge` reads and records the independently approved GitHub merge
+human actions. `sync-merge` reads and records the exact-head owner-approved GitHub merge
 without performing it. Follow this with an exact deployed-SHA HEALTHY observation. Finally,
 `pilot-success --candidate ID` verifies GitHub review, merge SHA and complete ledger
 lineage before appending a single operational-success event. It never merges or deploys.

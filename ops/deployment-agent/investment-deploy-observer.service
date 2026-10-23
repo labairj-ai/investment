@@ -1,0 +1,20 @@
+[Unit]
+Description=Read-only signed post-deployment software health observations
+[Service]
+Type=oneshot
+User=investment-deploy
+Group=investment-deploy
+WorkingDirectory=/opt/investment-deployment-controller
+ExecStart=/opt/investment-deployment-controller/venv/bin/python -I /usr/local/libexec/investment-deploy-observer.py
+EnvironmentFile=/etc/investment-deploy/service.env
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/investment-deploy
+ReadOnlyPaths=/home/optiplex/investment /home/optiplex/.local/share/investment-development/development-control.sqlite3
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+UMask=0077
+TimeoutStartSec=300

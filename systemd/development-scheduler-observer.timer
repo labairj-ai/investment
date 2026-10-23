@@ -1,0 +1,8 @@
+[Unit]
+Description=Observe discovery health every 15 minutes
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=15min
+Unit=development-scheduler-observer.service
+[Install]
+WantedBy=timers.target
