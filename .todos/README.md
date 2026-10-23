@@ -175,7 +175,7 @@ Created October 23, 2026 from owner-supplied requirements. Initial tasks were cr
 
 | ID | Task | Status | Dependencies |
 |---|---|---|---|
-| [0835](0835-verify-pr13-production-foundation-deployment.md) | Verify PR #13 Production Foundation Deployment | in-progress | PR #13 merged |
+| [0835](done/0835-verify-pr13-production-foundation-deployment.md) | Verify PR #13 Production Foundation Deployment | done | PR #13 merged |
 | [0836](0836-implement-independent-validation-oracle-backend.md) | Select and Implement Independent Validation Oracle Backend | in-progress | 0835 |
 | [0837](0837-provision-live-certify-independent-oracle.md) | Provision and Live-Certify Independent Oracle | backlog | 0836 |
 | [0838](0838-complete-real-chatgpt-owner-ok-no-acceptance.md) | Complete Real ChatGPT Owner OK/NO Acceptance | backlog | 0835 |

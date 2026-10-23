@@ -1,6 +1,6 @@
 """Read-only verification of deliberate owner promotion objects on current GitHub.
 
-No issuer writes GitHub objects. The owner submits the documented protocol through
+This ingestion module never writes GitHub objects. The owner submits the protocol through
 an allowlisted connector; ingestion records provenance, never grants activation.
 """
 from __future__ import annotations

@@ -6,7 +6,7 @@ Source foundation: PR13 merge `d12dcf3746dc7266ef4de02f06a48c2b629580e6`. The [s
 
 | TODO | Prepared source/evidence | Remaining acceptance |
 |---|---|---|
-| 0835 | Exact deployed source, tracked-clean check, service/HTTP/API verification, backup integrity, prior Advisor/state-safety observations, sanitized receipt, owner comment and CI linkage | Exact implementation/CI evidence for durable receipt review |
+| 0835 | Exact deployed source, tracked-clean check, service/HTTP/API verification, backup integrity, prior Advisor/state-safety observations, sanitized receipt, owner comment and CI linkage | Foundation verification complete; current source QA/CI recorded in PR14 before readiness |
 | 0836 | External L0 static backend, exact authority/runtime bindings, signed distinct protocol, no candidate execution, adversarial tests, scope/installation design | Owner review; supported L1/L2 backends and integration before claiming general supervised validation |
 | 0837 | Dedicated-identity hardened systemd template, private configuration/socket/key design and live certification matrix | Reviewed backend, actual host provisioning, real containment/adversarial run and non-fixture scoped certificate; executable Builder admission remains unavailable |
 | 0838 | Existing real PR13 review/deployment comment provenance preserved; current owner workflow and non-production deployment tests remain | Disposable pilot PR and deliberate owner OK/NO on distinct actual heads, real ledger/merge evidence and negative acceptance; PR13 observations do not substitute for these pilots |

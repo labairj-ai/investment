@@ -85,3 +85,44 @@ def authorize_deployment(store,client,number,*,head,merge_sha,nonce,rationale,ex
     payload=dict(repository=client.repository,pr=number,head=head,merge_sha=merge_sha,nonce=nonce,expires_at=expires_at,rationale=rationale,execution_ack=True)
     obj=client.write(f'repos/{client.repository}/issues/{number}/comments',dict(body='OWNER-DEPLOY deployment-1\n'+json.dumps(payload,sort_keys=True),_pr=number),'POST')
     return dict(status='OWNER_DEPLOYMENT_AUTHORIZED',authorization_id=obj['id'],merge_sha=merge_sha,executed=False)
+
+
+def authorize_autonomy_promotion(root,store,client,expected,*,decision,nonce,rationale,explicit_owner_promotion=False):
+    """Owner-side issuer only, after a deliberate separate human stage decision.
+
+    This function is never called by Scout/Builder/runtime. It issues and ingests
+    an owner object; it does not edit configuration, start services or grant merge.
+    """
+    import time
+    from dev_agent import owner_promotion,promotion_github
+    owner_actor(client)
+    if explicit_owner_promotion is not True or decision not in {'APPROVE','REVOKE'}:
+        raise ValueError('separate deliberate owner promotion decision required')
+    number=expected.get('activation_pr')
+    if promotion_github.context(root,number,client)!=expected:
+        raise ValueError('owner promotion context changed; review again')
+    p=policy()
+    if not any(a['id']==1144995 and a['slug']=='chatgpt-codex-connector' for a in p.get('allowed_github_apps',[])):
+        raise ValueError('explicit owner connector allowlist required')
+    binding=dict(expected,protocol=owner_promotion.PROTOCOL,created=time.time(),nonce=nonce,rationale=rationale)
+    owner_promotion.validate_binding(binding,expected)
+    with store.connect() as db:
+        if db.execute('SELECT 1 FROM dev_events WHERE event_id=?',('owner-promotion:'+nonce,)).fetchone():
+            raise ValueError('owner promotion nonce already used')
+    # Current remote inventory also prevents replay when a prior POST succeeded
+    # but local ingestion was interrupted. Fail closed on malformed own objects.
+    from dev_agent.structured_json import loads
+    for obj in client.read_all(f'repos/{client.repository}/issues/{number}/comments'):
+        actor=obj.get('user') or {};body=obj.get('body','')
+        if actor.get('id')==p['owner_id'] and isinstance(body,str) and body.startswith(promotion_github.HEADER):
+            if len(body.encode())>16000:raise ValueError('oversized owner promotion object')
+            data=loads(body[len(promotion_github.HEADER):])
+            if not isinstance(data,dict) or data.get('nonce')==nonce:
+                raise ValueError('owner promotion nonce already issued or inventory malformed')
+    if promotion_github.context(root,number,client)!=expected:
+        raise ValueError('owner promotion context changed before issuance')
+    obj=client.write(f'repos/{client.repository}/issues/{number}/comments',dict(body=promotion_github.HEADER+json.dumps(dict(binding,decision=decision),sort_keys=True),_pr=number),'POST')
+    accepted=promotion_github.ingest(root,store,number,client=client)
+    if accepted['origin']['id']!=obj.get('id'):
+        raise ValueError('issued owner promotion was superseded')
+    return dict(status='OWNER_PROMOTION_RECORDED',decision=decision,origin=accepted['origin'],enables_autonomy=False)

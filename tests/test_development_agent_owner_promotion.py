@@ -145,3 +145,32 @@ def test_real_context_checks_repository_pr_and_exact_runtime_source(tmp_path,mon
         c.pr[field]=old
     c.repo['owner']['type']='Bot'
     with pytest.raises(ValueError):pg.context(tmp_path,21,c)
+
+
+def test_owner_side_issuer_requires_separate_action_and_never_enables(setup):
+    from owner_gateway.core import authorize_autonomy_promotion
+    ctx,payload,obj,client,store,now=setup
+    original=client.read;actions=[];client.rows=[]
+    client.read=lambda path:dict(login='owner',id=10,type='User') if path=='user' else original(path)
+    def write(path,data,method):
+        actions.append((path,data,method))
+        emitted=copy.deepcopy(obj);emitted['body']=data['body']
+        client.rows.append(emitted)
+        return emitted
+    client.write=write
+    args=dict(decision='APPROVE',nonce='issuer-owner-promotion-0001',rationale='Deliberate reviewed next stage')
+    with pytest.raises(ValueError):authorize_autonomy_promotion('.',store,client,ctx,**args)
+    assert actions==[]
+    result=authorize_autonomy_promotion('.',store,client,ctx,explicit_owner_promotion=True,**args)
+    assert result['status']=='OWNER_PROMOTION_RECORDED' and result['enables_autonomy'] is False
+    assert len(actions)==1 and actions[0][2]=='POST'
+    with pytest.raises(ValueError):authorize_autonomy_promotion('.',store,client,ctx,explicit_owner_promotion=True,**args)
+    assert len(actions)==1
+
+
+def test_issuer_rejects_nonowner_before_any_write(setup):
+    from owner_gateway.core import authorize_autonomy_promotion
+    ctx,payload,obj,client,store,now=setup
+    client.read=lambda path:dict(login='agent',id=20,type='User')
+    client.write=lambda *a:pytest.fail('no write before deliberate owner authentication')
+    with pytest.raises(ValueError):authorize_autonomy_promotion('.',store,client,ctx,decision='APPROVE',nonce='issuer-owner-promotion-0001',rationale='No authority',explicit_owner_promotion=True)
