@@ -86,7 +86,7 @@ def discover_daily(root, store, *, now=None, cap=None, backlog_limit=None, signa
                     store.event(cid, "SCORE", score(proposal, classify(proposal["files"], graphs=[graph])))
                 result = dict(status="COLLECTED", slot=key, candidates=ids, created=len(set(ids)-previous), head=found["head"], unavailable=found["unavailable"],deduplicated=deduplicated,suppressed=signal_suppressed)
             except Exception as error:
-                result = dict(status="FAILED",slot=key,head=source_head,trigger=origin,started_at=started,ended_at=time.time(),duration_seconds=time.time()-started,candidates=[],created=0,deduplicated=0,suppressed=0,unavailable=enabled_sources,attempt=attempt,reason=type(error).__name__)
+                result = dict(status="FAILED",slot=key,head=source_head,trigger=origin,started_at=started,ended_at=time.time(),duration_seconds=time.time()-started,candidates=[],created=0,deduplicated=0,suppressed=0,unavailable=[],availability_status="UNKNOWN_DUE_TO_RUN_FAILURE",attempt=attempt,reason=type(error).__name__)
                 store.event(None, "SCHEDULE_FAILURE", result, key+":failure:"+str(attempt))
                 return result
         result.update(trigger=origin,started_at=started,ended_at=time.time(),duration_seconds=time.time()-started,deduplicated=result.get('deduplicated',0),suppressed=result.get('suppressed',0))

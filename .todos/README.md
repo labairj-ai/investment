@@ -149,7 +149,7 @@ Created October 23, 2026. These tasks preserve deployment evidence and prove the
 
 | ID | Task | Status | Dependencies |
 |---|---|---|---|
-| [0825](0825-preserve-pr10-durable-deployment-evidence.md) | Preserve PR #10 Durable Deployment Evidence | in-progress | PR #10 deployment |
+| [0825](done/0825-preserve-pr10-durable-deployment-evidence.md) | Preserve PR #10 Durable Deployment Evidence | done | PR #10 deployment |
 | [0826](0826-live-certify-independent-validation-oracle.md) | Live-Certify the Independent Validation Oracle | in-progress | 0818 implementation, 0825 |
 | [0827](0827-validate-real-chatgpt-owner-ok-no-workflow.md) | Validate the Real ChatGPT Owner OK/NO Workflow | in-progress | 0819 implementation, PR #10 deployment |
 | [0828](0828-activate-read-only-continuous-discovery-signals.md) | Activate Read-Only Continuous Discovery and Signal Collection | in-progress | 0825 |

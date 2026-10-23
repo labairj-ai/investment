@@ -35,9 +35,11 @@ def report(root,store,now=None):
     if any(e['kind']=='DEPLOYMENT' and e['payload'].get('status') in {'DEGRADED','ROLLED_BACK'} and e['payload'].get('observed_at',0)>=resume for e in events):blockers.append('abnormal deployment observation')
     failures=sorted([e for e in events if e['kind']=='PIPELINE' and e['payload'].get('stage') in {'FAILED','NEEDS_HUMAN'}],key=lambda e:e['created'],reverse=True)
     if len([e for e in failures[:3] if e['created']>=resume])>=3:blockers.append('repeated failure condition')
-    if any(e['kind']=='SIGNAL_OBSERVATION' and e['payload'].get('recurrence',1)>1 for e in events):blockers.append('observed recurrence requires owner assessment')
     qualifying=[]
     for run in runs['qualifying']:
         c=store.get(run['candidate']);deploy=[e['payload'] for e in c['events'] if e['kind']=='DEPLOYMENT'][-1];r=deploy['deployment_evidence']
+        metrics=deploy.get('metrics',{})
+        if metrics.get('defect_recurrence_checked') is not True:blockers.append('post-fix recurrence observation unavailable: '+run['run_id'])
+        elif metrics.get('defect_recurred') is not False:blockers.append('post-fix defect recurrence requires owner assessment: '+run['run_id'])
         qualifying.append(dict(run_id=run['run_id'],candidate=run['candidate'],created=run['created'],risk=run['context']['risk'],pr=r['receipt']['pr'],head=r['receipt']['head'],merge_sha=r['receipt']['merge_sha'],deployed_sha=r['receipt']['deployed_sha'],deployment_receipt_sha256=r['sha256'],observed_at=deploy.get('observed_at'),evidence=deploy.get('evidence',[])))
     return dict(version='software-promotion-report-1',created=now,harness_hash=bound,safety_configuration=config,recommendation='NO-GO' if blockers else 'GO_FOR_OWNER_STAGE_REVIEW',recommended_stage='SHADOW' if blockers else 'BUILD_ONLY',blockers=list(dict.fromkeys(blockers)),qualifying_runs=qualifying,non_qualifying_attempts=[{k:r.get(k) for k in ('candidate','run_id','head','created','reason')} for r in runs['non_qualifying']],failed_attempts=[dict(candidate=e.get('candidate'),created=e['created'],stage=e['payload']['stage']) for e in failures],observation_window=window,scheduler=scheduler_health(store,now),metrics=software_metrics(store),enables_autonomy=False,grants_merge=False,grants_deployment=False,investment_performance_used=False)

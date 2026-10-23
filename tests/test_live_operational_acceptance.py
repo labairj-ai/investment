@@ -160,3 +160,16 @@ def test_promotion_can_only_recommend_stage_after_real_shape_window(store,monkey
     assert result['recommended_stage']=='BUILD_ONLY' and len(result['qualifying_runs'])==3
     assert not result['enables_autonomy'] and result['safety_configuration']['autonomous_implementation'] is False
     assert result['observation_window']['observation_days']>=7
+
+
+def test_missing_post_fix_measurement_is_not_inferred_from_health(store,monkeypatch):
+    from test_development_agent_hardening import seed_completed_pilot,fixture_human
+    from dev_agent import operations,promotion
+    monkeypatch.setenv('DEV_AGENT_OWNER_BINDINGS',json.dumps(dict(repository='owner/repo',owner_login='owner',owner_id=10,operators={'os-interactive-cli':['fixture-owner']})))
+    cid,client=seed_completed_pilot(store);operations.record_success(ROOT,store,cid,client,human=fixture_human())
+    with store.connect(True) as db:
+        db.execute('DROP TRIGGER dev_events_update')
+        seq,payload=db.execute("SELECT seq,payload FROM dev_events WHERE candidate=? AND kind='DEPLOYMENT'",(cid,)).fetchone()
+        value=json.loads(payload);value.pop('metrics');db.execute('UPDATE dev_events SET payload=? WHERE seq=?',(json.dumps(value),seq))
+    result=promotion.report(ROOT,store)
+    assert any('recurrence observation unavailable' in reason for reason in result['blockers'])

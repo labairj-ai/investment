@@ -4,7 +4,7 @@ This phase proves operation; it does not equate source deployment or unit tests 
 
 | TODO | Source/evidence in this change | Remaining live acceptance |
 |---|---|---|
-| 0825 | Authentic sanitized PR10 receipt, versioned schema, canonical payload digest, file digest, required-field checks and consumer rejection | Exact-head CI and owner review/merge of durable repository evidence |
+| 0825 | Authentic sanitized PR10 receipt, versioned schema, canonical payload digest, file digest, required-field checks and consumer rejection | Source/evidence acceptance complete on cd266a9; owner review/merge remains the repository promotion step |
 | 0826 | Preserve fail-closed oracle boundary; expose missing real oracle certificate in promotion report | Implement/review an independent oracle backend, provision isolated runtime/socket/key, clean candidate and full adversarial live matrix, current non-fixture certificate |
 | 0827 | Existing connector ID/slug and owner identity checks preserved; new release admission requires observed head/main CI run identities | Real L0 PR, deliberate owner OK and NO, connector objects and read-only ingestion under external owner bindings, stale/replay/domain-ack negative acceptance |
 | 0828 | Correct actual HTTP port and 5xx evidence; complete discovery run identity/timing for failures and duplicates | Reviewed unit installation, all requested signal collectors, three actual scheduled slots, protected-state observation and dashboard acceptance |
@@ -59,3 +59,5 @@ venv/bin/python scripts/development_acceptance_report.py --ledger ~/.local/share
 This command reads the dedicated ledger and source/configuration; it neither installs services nor writes implementation, attestations, certificates or configuration. A NO-GO report exits nonzero and lists missing tasks, current certificates, protection, incidents and the real seven-day/three-run deficit. Its output is also available in the dashboard API's `operational_acceptance` field. Even `GO_FOR_OWNER_STAGE_REVIEW` is a recommendation only. It cannot enable autonomy, merge or deploy.
 
 After qualifying prospective evidence, the first recommendation is an owner-reviewed BUILD_ONLY stage, followed by observed stage acceptance before PR autonomy. Autonomy activation is a separate L5 reviewed change. Keep autonomous implementation, supervised loop, supervised publication and auto-merge false throughout this unreviewed implementation branch. No investment P&L is used in software promotion metrics.
+
+A healthy service is not evidence that a particular defect stayed fixed. Promotion requires explicit trusted post-fix measurements (`defect_recurrence_checked=true`, `defect_recurred=false`) in each deployment observation. The current generic health observer does not supply those candidate-specific measurements, so promotion remains NO-GO until they are implemented and live-accepted. Repeated discovery signals before a fix are not mislabeled as post-fix recurrence.
