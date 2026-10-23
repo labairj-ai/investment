@@ -129,7 +129,7 @@ def test_shared_gate_qualifies_read_only_but_cannot_enable_or_authorize(complete
     assert inventory(x['store'])==before
 
 
-BLOCKERS=['task','runs','days','harness','technical','oracle_missing','oracle_fixture','oracle_stale','oracle_harness','oracle_expired','deployment_missing','deployment_fixture','deployment_expired','deployment_stale','deployment_harness','protection','snapshot','snapshot_unsigned','snapshot_future','stop','kill','pause','incident','repeat','receipt','recurrence_missing','recurrence_true','scheduler','scheduler_two','scheduler_duplicates','human_merge','auto_merge','risk','cap','cap_bool']
+BLOCKERS=['task','runs','days','harness','technical','oracle_missing','oracle_fixture','oracle_stale','oracle_harness','oracle_expired','deployment_missing','deployment_fixture','deployment_expired','deployment_stale','deployment_harness','protection','snapshot','snapshot_unsigned','snapshot_future','stop','kill','pause','incident','incident_global','repeat','repeat_global','receipt','recurrence_missing','recurrence_true','scheduler','scheduler_two','scheduler_duplicates','human_merge','auto_merge','risk','cap','cap_bool']
 @pytest.mark.parametrize('fault',BLOCKERS)
 def test_every_shared_safety_failure_blocks_both_report_and_runtime(complete_evidence,monkeypatch,fault):
     x=complete_evidence;store=x['store'];now=x['now'];cert=x['cert'];e=cert['evidence'];config=x['config'];cid=x['ids'][0]
@@ -152,9 +152,10 @@ def test_every_shared_safety_failure_blocks_both_report_and_runtime(complete_evi
     elif fault=='stop':config['emergency_stop']=True
     elif fault=='kill':monkeypatch.setenv('DEV_AGENT_KILL_SWITCH','1')
     elif fault=='pause':append(store,'AUTONOMY_PAUSE',dict(created=now-1))
+    elif fault=='incident_global':append(store,'DEPLOYMENT',dict(status='DEGRADED',observed_at=now-1))
     elif fault=='incident':append(store,'DEPLOYMENT',dict(status='DEGRADED',observed_at=now-1),cid=cid)
-    elif fault=='repeat':
-        for _ in range(3):append(store,'PIPELINE',dict(stage='FAILED',created=now-1),cid=cid)
+    elif fault in {'repeat','repeat_global'}:
+        for _ in range(3):append(store,'PIPELINE',dict(stage='FAILED',created=now-1),cid=cid if fault=='repeat' else None)
     elif fault=='receipt':alter_deployment(store,cid,lambda d:d['deployment_evidence']['receipt'].update(pr=99))
     elif fault=='recurrence_missing':alter_deployment(store,cid,lambda d:d.pop('metrics'))
     elif fault=='recurrence_true':alter_deployment(store,cid,lambda d:d['metrics'].update(defect_recurred=True))
@@ -332,3 +333,13 @@ def test_stage_order_and_owner_authentication_remain_stricter_than_shared_eviden
             p=json.loads(payload);p['fixture_only']=True;db.execute('UPDATE dev_events SET payload=? WHERE seq=?',(json.dumps(p),seq))
     r=stage_control.report(ROOT,store,x['now'])
     assert not r['eligible'] and any('shadow cycles' in b for b in r['blockers'])
+
+
+def test_timer_duplicate_cannot_refresh_expired_success_window(store):
+    now=time.time();scheduled_store(store,now)
+    p=schedule_payload(now-37*3600)
+    append(store,'SCHEDULE',p)
+    append(store,'SCHEDULE_DUPLICATE',schedule_payload(now,status='DUPLICATE',invocation='b'*32))
+    r=scheduler_health.health(store,now+1)
+    assert r['successful_runs']==1 and r['duplicate_runs']==1
+    assert r['status']=='STALE' and r['last_success']==p['ended_at']

@@ -2,6 +2,7 @@
 from __future__ import annotations
 import os
 import math
+import json
 import re
 import time
 from .operations import policy,certificates,operational_runs,eligibility
@@ -39,8 +40,11 @@ def evaluate(root,store,now=None,*,protections=None,technical=None):
     scheduler=scheduler_health(store,now)
     if scheduler.get('status')!='SCHEDULED' or scheduler.get('enabled') is not True or scheduler.get('active')!='active' or scheduler.get('inventory_complete') is not True or type(scheduler.get('successful_runs')) is not int or scheduler.get('successful_runs',0)<3:blockers.append('healthy scheduler with three genuine scheduled runs required')
     events=[]
-    for candidate in store.list(500):events+=candidate['events']
-    events+=store.events('AUTONOMY_PAUSE')+store.events('AUTONOMY_RESUME')
+    if store.path.exists():
+        with store.connect() as db:
+            rows=db.execute("SELECT kind,created,payload,candidate FROM dev_events WHERE kind IN ('PIPELINE','AUTONOMY_PAUSE','AUTONOMY_RESUME','DEPLOYMENT') ORDER BY seq DESC LIMIT 1001").fetchall()
+        if len(rows)>1000:blockers.append('incident evidence inventory incomplete')
+        events=[dict(kind=r[0],created=r[1],payload=json.loads(r[2]),candidate=r[3]) for r in rows]
     resume=max([e['payload'].get('created',0) for e in events if e['kind']=='AUTONOMY_RESUME']+[0])
     if any(e['kind']=='AUTONOMY_PAUSE' and e['payload'].get('created',0)>=resume for e in events):blockers.append('unresolved autonomy pause')
     if any(e['kind']=='DEPLOYMENT' and e['payload'].get('status') in {'DEGRADED','ROLLED_BACK'} and e['payload'].get('observed_at',0)>=resume for e in events):blockers.append('abnormal deployment observation')
