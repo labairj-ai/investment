@@ -142,3 +142,19 @@ Created 2026-10-23. All nine items are **in-progress**; implementation does not 
 | [0824](0824-certify-bounded-low-risk-autonomous-implementation.md) | Certify and Enable Bounded L0–L2 Autonomous Implementation | high strategic | 0816, 0817, 0818, 0819, 0820, 0821, 0822, 0823 |
 
 Sequence: **0816 governance reconciliation → 0817 exact-SHA CI → 0818 validation integrity + 0819 owner OK/NO workflow + 0820 observed discovery → 0821 operational signals → 0822 supervised loop**, with **0823 owner-authorized deployment** following 0816/0817/0819. **0824 autonomy certification and activation** follows every item 0816–0823 and prospective supervised evidence. Autonomy activation remains a separate owner-approved change; creating these tasks does not enable implementation, merging, deployment or scheduling.
+
+## Live operational acceptance backlog (0825–0831)
+
+Created October 23, 2026. These tasks preserve deployment evidence and prove the real oracle, owner workflow, discovery, supervised improvement and separate deployment boundaries. Creating these TODOs activates no service or implementation policy. PR #11 proposes an initial repository deployment receipt; 0825 still requires its schema, digest and evidence-consumer validation.
+
+| ID | Task | Status | Dependencies |
+|---|---|---|---|
+| [0825](0825-preserve-pr10-durable-deployment-evidence.md) | Preserve PR #10 Durable Deployment Evidence | backlog | PR #10 deployment |
+| [0826](0826-live-certify-independent-validation-oracle.md) | Live-Certify the Independent Validation Oracle | backlog | 0818 implementation, 0825 |
+| [0827](0827-validate-real-chatgpt-owner-ok-no-workflow.md) | Validate the Real ChatGPT Owner OK/NO Workflow | backlog | 0819 implementation, PR #10 deployment |
+| [0828](0828-activate-read-only-continuous-discovery-signals.md) | Activate Read-Only Continuous Discovery and Signal Collection | backlog | 0825 |
+| [0829](0829-execute-first-real-supervised-improvement-journey.md) | Execute First Real Supervised Improvement Journey | backlog | 0826, 0827, 0828 |
+| [0830](0830-first-live-owner-authorized-deployment-agent-pilot.md) | Execute First Live Owner-Authorized Deployment-Agent Pilot | backlog | 0827, 0829 |
+| [0831](0831-supervised-evidence-window-autonomy-promotion-decision.md) | Complete Supervised Evidence Window and Prepare Autonomy Promotion Decision | backlog | 0825, 0826, 0827, 0828, 0829, 0830 |
+
+Order: start 0825 and 0827 when their prerequisites are satisfied; 0825 unlocks 0826 and 0828, then 0826 / 0827 / 0828 → 0829 → 0830 → 0831. Respect the implementation dependencies in each task. 0831 produces a promotion recommendation only; autonomy activation requires a separate L5 owner-reviewed change.
