@@ -24,9 +24,10 @@ from .github import prepare_pr
 def harness_hash(root):
     root = Path(root)
     files = [root / p for p in ("AGENTS.md", "config/development_agent.json", "docs/development-agent.md", "serve.py", "generate_dashboard.py", "scripts/check_development_agent.py", "scripts/check_agent_contract.py", "tests/test_development_agent.py", ".github/workflows/test.yml")]
+    files += [root/"docs/owner-autonomy-promotion.md"] if (root/"docs/owner-autonomy-promotion.md").is_file() else []
     files += sorted((root / "dev_agent").glob("*.py"))
     files += sorted((root / "tests").glob("test_development_agent*.py"))
-    files += [root/'tests'/n for n in ('test_continuous_improvement.py','test_deployment_agent.py','test_owner_gateway.py','test_live_operational_acceptance.py') if (root/'tests'/n).is_file()]
+    files += [root/'tests'/n for n in ('test_continuous_improvement.py','test_deployment_agent.py','test_owner_gateway.py','test_live_operational_acceptance.py','test_pr13_evidence_integrity.py') if (root/'tests'/n).is_file()]
     files += [root/"scripts/backup_provenance.py", root/"backup_data.sh"]
     files += sorted((root / "scripts").glob("check_development_agent*"))
     files += sorted((root / "systemd").glob("development-*"))
@@ -147,7 +148,7 @@ def certify(root, validator, github_client, snapshot, actor=None, *, provenance=
     from .containment import probe
     confinement=probe(validator.image)
     focused=sorted('tests/'+p.name for p in (Path(root)/'tests').glob('test_development_agent*.py'))
-    focused+=['tests/'+n for n in ('test_continuous_improvement.py','test_deployment_agent.py','test_owner_gateway.py','test_live_operational_acceptance.py') if (Path(root)/'tests'/n).is_file()]
+    focused+=['tests/'+n for n in ('test_continuous_improvement.py','test_deployment_agent.py','test_owner_gateway.py','test_live_operational_acceptance.py','test_pr13_evidence_integrity.py') if (Path(root)/'tests'/n).is_file()]
     if not focused:raise ValueError('complete development-agent regression scope unavailable')
     sandbox=validator.run(root,'focused_tests',['python','-m','pytest',*focused,'-q'])
     protections=github_client.protections()

@@ -155,6 +155,31 @@ def accept_observation(root,store,cid,client,signed,*,key):
     if body.get('repository')!=client.repository or body.get('pr')!=pr['result']['number'] or body.get('head')!=pr['head']:raise ValueError('deployment observation belongs to another PR/head')
     merge=[e['payload'] for e in candidate['events'] if e['kind']=='MERGE'][-1]
     if body['merge_sha']!=merge['merge_sha']:raise ValueError('observation refers to another merge')
+    # Cross-bind before *any* event, state, protection, owner-ingestion or success
+    # mutation. Internally consistent digests alone are not candidate identity.
+    from .deployment_evidence import qualifying
+    qualifying(body.get('deployment_evidence'),repository=client.repository,pr=pr['result']['number'],head=pr['head'],merge_sha=merge['merge_sha'])
+    if merge.get('head')!=pr['head'] or body.get('deployed_sha')!=merge['merge_sha']:
+        raise ValueError('observation differs from candidate approved head/deployed merge')
+    phases=[e['payload']['stage'] for e in candidate['events'] if e['kind']=='PIPELINE']
+    if not phases or phases[-1] not in {'DEPLOYMENT_PENDING','CLOSED'}:raise ValueError('deployment-pending lineage required')
+    if candidate['state'] not in {'PR_OPEN','DEPLOYED','CLOSED'}:raise ValueError('candidate is not awaiting a deployment observation')
+    if phases[-1]=='CLOSED' and candidate['state']!='CLOSED':raise ValueError('candidate closure lineage mismatch')
+    with store.connect() as db:
+        rows=db.execute("SELECT candidate,payload FROM dev_events WHERE kind='PR' ORDER BY seq DESC LIMIT 1001").fetchall()
+    if len(rows)>1000:raise ValueError('candidate PR inventory incomplete')
+    latest_pr={}
+    for row in rows:latest_pr.setdefault(row[0],json.loads(row[1]))
+    matches=[other for other,p in latest_pr.items() if p.get('result',{}).get('number')==body['pr'] and p.get('head')==body['head']]
+    if matches!=[cid]:raise ValueError('ambiguous or cross-candidate PR observation')
+    import math,re
+    required={'deployed_at','observed_at','window_seconds','environment','metrics','evidence','status'}
+    if not required<=body.keys() or body['status'] not in {'HEALTHY','DEGRADED','ROLLED_BACK','NOT_DEPLOYED','INSUFFICIENT_DATA'}:raise ValueError('complete deployment observation required')
+    clocks=[body[k] for k in ('deployed_at','observed_at','window_seconds')]
+    if any(type(v) not in (int,float) or not math.isfinite(v) for v in clocks):raise ValueError('finite observation clocks required')
+    if body['window_seconds']<=0 or body['observed_at']<body['deployed_at'] or body['status']=='HEALTHY' and body['observed_at']-body['deployed_at']<body['window_seconds']:raise ValueError('completed observation window required')
+    if not isinstance(body['metrics'],dict) or not body['metrics'] or any(re.search(r'(?i)(pnl|return|alpha|profit|portfolio)',k) for k in body['metrics']):raise ValueError('software observation metrics required')
+    if not isinstance(body['evidence'],list) or not body['evidence']:raise ValueError('observation evidence required')
     prior=[e['payload'] for e in candidate['events'] if e['kind']=='DEPLOYMENT']
     if prior and body['observed_at']<=max(p.get('observed_at',0) for p in prior):return dict(status='OBSERVATION_ALREADY_RECORDED',idempotent=True)
     if body['status']!='HEALTHY' or body['deployed_sha']!=merge['merge_sha']:

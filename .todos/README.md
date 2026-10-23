@@ -158,3 +158,13 @@ Created October 23, 2026. These tasks preserve deployment evidence and prove the
 | [0831](0831-supervised-evidence-window-autonomy-promotion-decision.md) | Complete Supervised Evidence Window and Prepare Autonomy Promotion Decision | in-progress | 0825, 0826, 0827, 0828, 0829, 0830 |
 
 Order: start 0825 and 0827 when their prerequisites are satisfied; 0825 unlocks 0826 and 0828, then 0826 / 0827 / 0828 → 0829 → 0830 → 0831. Respect the implementation dependencies in each task. 0831 produces a promotion recommendation only; autonomy activation requires a separate L5 owner-reviewed change.
+
+## PR #13 evidence-integrity merge gates (0832–0834)
+
+| ID | Task | Status | Dependencies |
+|---|---|---|---|
+| [0832](0832-prevent-duplicate-scheduler-success-credit.md) | Prevent duplicate timer events from receiving scheduled-discovery success credit | in-progress | 0828 implementation |
+| [0833](0833-unify-promotion-runtime-autonomy-evidence.md) | Share promotion/runtime safety qualification and require separate owner promotion | in-progress | 0831 design; existing stage and promotion controls |
+| [0834](0834-cross-bind-deployment-evidence-before-state-advancement.md) | Cross-bind signed deployment evidence before candidate state advancement | in-progress | Deployment evidence schema and observer |
+
+PR #13 stays draft until these three tasks, focused/full tests and all eight exact-head gates pass. No financial behavior or production-state changes; all four activation flags remain false, SHADOW/L2 and required human merge remain unchanged. 0826–0831 require actual live acceptance and remain open. No fixture is promoted to live evidence. PR #12's TODO history is integrated into PR #13; do not merge PR #12 separately.

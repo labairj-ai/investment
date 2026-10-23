@@ -139,23 +139,9 @@ def test_same_pr_release_cannot_manufacture_multiple_successes(store,monkeypatch
     assert any('duplicate' in r['reason'] for r in result['non_qualifying'])
 
 
-def test_promotion_can_only_recommend_stage_after_real_shape_window(store,monkeypatch):
-    import time
-    from test_development_agent_hardening import seed_completed_pilot,fixture_human
-    from dev_agent import operations,promotion
-    monkeypatch.setenv('DEV_AGENT_OWNER_BINDINGS',json.dumps(dict(repository='owner/repo',owner_login='owner',owner_id=10,operators={'os-interactive-cli':['fixture-owner']})))
-    now=time.time()
-    for age in (8,4,0):
-        with monkeypatch.context() as clock:
-            clock.setattr(operations.time,'time',lambda age=age:now-age*86400)
-            cid,client=seed_completed_pilot(store);operations.record_success(ROOT,store,cid,client,human=fixture_human())
-    bound=promotion.harness_hash(ROOT)
-    cert=dict(evidence={k:dict(status='PASS',fixture_only=False,harness_hash=bound,created=now-1,expires_at=now+3600) for k in ('oracle','deployment_agent')})
-    cert['evidence']['github']=dict(status='PASS',created=now-1)
-    monkeypatch.setattr(promotion,'certificates',lambda store:[cert])
-    monkeypatch.setattr(promotion,'technical_current',lambda *a:True)
-    monkeypatch.setattr(promotion,'task_index',lambda root:{f'{n:04d}':dict(status='done') for n in range(825,831)})
-    result=promotion.report(ROOT,store,now)
+def test_promotion_can_only_recommend_stage_after_real_shape_window(store,monkeypatch,complete_evidence):
+    from dev_agent import promotion
+    result=promotion.report(ROOT,store,complete_evidence['now'])
     assert result['recommendation']=='GO_FOR_OWNER_STAGE_REVIEW'
     assert result['recommended_stage']=='BUILD_ONLY' and len(result['qualifying_runs'])==3
     assert not result['enables_autonomy'] and result['safety_configuration']['autonomous_implementation'] is False
@@ -173,3 +159,5 @@ def test_missing_post_fix_measurement_is_not_inferred_from_health(store,monkeypa
         value=json.loads(payload);value.pop('metrics');db.execute('UPDATE dev_events SET payload=? WHERE seq=?',(json.dumps(value),seq))
     result=promotion.report(ROOT,store)
     assert any('recurrence observation unavailable' in reason for reason in result['blockers'])
+
+from test_pr13_evidence_integrity import complete_evidence

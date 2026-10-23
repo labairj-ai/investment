@@ -101,7 +101,8 @@ def test_scheduler_actual_observation_and_staleness(store):
     observed=scheduler_health.observe(invoke=invoke);assert observed['status']=='SCHEDULED'
     scheduler_health.record(store,observed)
     assert scheduler_health.health(store)['status']=='AWAITING_FIRST_RUN'
-    store.event(None,'SCHEDULE',dict(status='COLLECTED',created=1,slot='fixture-day',trigger=dict(source='systemd-observed-timer',invocation='a'*32)))
+    from test_pr13_evidence_integrity import schedule_payload
+    store.event(None,'SCHEDULE',schedule_payload(time.time()))
     assert scheduler_health.health(store)['status']=='SCHEDULED'
     assert scheduler_health.health(store,now=time.time()+3601)['status']=='STALE'
     scheduler_health.record(store,dict(observed,status='DISABLED',enabled=False))
@@ -138,7 +139,7 @@ def test_pipeline_state_machine_cannot_skip_owner_boundary(store):
 def test_autonomy_remains_disabled_without_real_evidence(store):
     result=stage_control.report(ROOT,store)
     assert result['stage']=='SHADOW' and not result['eligible'] and not result['autonomous_implementation']
-    assert 'current deployment-agent certification required' in result['blockers']
+    assert 'current real deployment_agent certificate not PASS' in result['blockers']
     with pytest.raises(ValueError):stage_control.require(ROOT,store)
 
 
@@ -168,18 +169,11 @@ def test_owner_policy_cannot_admit_governance_or_financial_work(owner_setup):
         with pytest.raises(ValueError):build_policy.admit(ROOT,store,cid)
 
 
-def test_stage_admission_needs_order_current_evidence_and_valid_caps(store,monkeypatch):
-    original=Path.read_text;config=json.loads((ROOT/'config/development_agent.json').read_text());config.update(autonomous_implementation=True,autonomy_stage='PR')
-    monkeypatch.setattr(Path,'read_text',lambda path,*a,**k:json.dumps(config) if path==ROOT/'config/development_agent.json' else original(path,*a,**k))
-    monkeypatch.setattr(stage_control,'harness_hash',lambda root:'fixture-harness')
-    monkeypatch.setattr(stage_control,'technical_current',lambda *a,**k:True)
-    monkeypatch.setattr(stage_control,'eligibility',lambda *a,**k:dict(eligible=True,blockers=[]))
-    monkeypatch.setattr(stage_control,'certificates',lambda store:[dict(evidence=dict(snapshot=dict(status='PASS',backup_timestamp=time.time()-1),github=dict(status='PASS',created=time.time()-1),deployment_agent=dict(status='PASS',harness_hash='fixture-harness',created=time.time()-1)))])
-    monkeypatch.setattr(stage_control,'task_index',lambda root:{f'{n:04d}':dict(status='done') for n in range(816,824)})
-    assert not stage_control.report(ROOT,store)['eligible']
-    with store.connect(True) as db:
-        for stage in ('SHADOW','BUILD_ONLY'):
-            for n in range(3):store._append(db,None,'STAGE_OBSERVATION',dict(stage=stage,candidate=f'fixture-{stage}-{n}',harness_hash='fixture-harness',fixture_only=False),f'trusted-fixture-stage:{stage}:{n}')
+def test_stage_admission_needs_order_current_evidence_and_valid_caps(store,monkeypatch,complete_evidence):
+    from dev_agent import owner_promotion
+    config=complete_evidence['config'];config.update(autonomous_implementation=True,autonomy_stage='PR')
+    assert not stage_control.report(ROOT,store)['eligible'] # Config cannot create owner authority.
+    monkeypatch.setattr(owner_promotion,'authorization',lambda *a,**k:dict(status='PASS',authenticated=True,fixture_only=True))
     assert stage_control.require(ROOT,store)['eligible']
     config['daily_implementation_cap']=4
     with pytest.raises(ValueError):stage_control.require(ROOT,store)
@@ -329,3 +323,5 @@ def test_aggregate_leaves_ci_prior_authority_to_event_checker(monkeypatch,ci_var
     assert aggregate.cc_command('python','a'*40)==['python','scripts/check_cc_contract.py','--prior-ref','a'*40]
     monkeypatch.setenv(ci_variable,'true')
     assert aggregate.cc_command('python','attacker-prior')==['python','scripts/check_cc_contract.py']
+
+from test_pr13_evidence_integrity import complete_evidence
