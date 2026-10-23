@@ -1,8 +1,7 @@
-"""Owner promotion contract only. No ingestion/issuer; runtime remains fail-closed.
+"""Owner-promotion binding and fail-closed, current GitHub authorization adapter.
 
-A structurally matching payload is not an authenticated owner decision. A future
-reviewed owner-side issuer/verifier must establish that proof before this adapter
-can ever return PASS. Neither configuration nor ledger JSON is an authority source.
+Shape checks grant no authority. Runtime requires deliberate owner objects from
+an allowlisted connector, verified ingestion and independently reconstructed context.
 """
 import re
 import os

@@ -174,6 +174,9 @@ def test_stage_admission_needs_order_current_evidence_and_valid_caps(store,monke
     config=complete_evidence['config'];config.update(autonomous_implementation=True,autonomy_stage='PR')
     assert not stage_control.report(ROOT,store)['eligible'] # Config cannot create owner authority.
     monkeypatch.setattr(owner_promotion,'authorization',lambda *a,**k:dict(status='PASS',authenticated=True,fixture_only=True))
+    with pytest.raises(ValueError):stage_control.require(ROOT,store)
+    from development_fixtures import isolated_owner_promotion
+    isolated_owner_promotion(monkeypatch)
     assert stage_control.require(ROOT,store)['eligible']
     config['daily_implementation_cap']=4
     with pytest.raises(ValueError):stage_control.require(ROOT,store)

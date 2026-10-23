@@ -1,0 +1,32 @@
+{
+  "source": "read-only deployed PR13 promotion report on OptiPlex",
+  "deployed_sha": "d12dcf3746dc7266ef4de02f06a48c2b629580e6",
+  "recommendation": "NO-GO",
+  "recommended_stage": "SHADOW",
+  "enables_autonomy": false,
+  "qualifying_runs": [],
+  "observation_window": {"completed": 0, "required": 3, "observation_days": 0, "required_days": 7},
+  "blockers": [
+    "TODO 0816 operational acceptance incomplete",
+    "TODO 0817 operational acceptance incomplete",
+    "TODO 0818 operational acceptance incomplete",
+    "TODO 0819 operational acceptance incomplete",
+    "TODO 0820 operational acceptance incomplete",
+    "TODO 0821 operational acceptance incomplete",
+    "TODO 0822 operational acceptance incomplete",
+    "TODO 0823 operational acceptance incomplete",
+    "TODO 0826 operational acceptance incomplete",
+    "TODO 0827 operational acceptance incomplete",
+    "TODO 0828 operational acceptance incomplete",
+    "TODO 0829 operational acceptance incomplete",
+    "TODO 0830 operational acceptance incomplete",
+    "insufficient qualifying supervised runs",
+    "seven-day prospective observation incomplete",
+    "current technical certificate not PASS",
+    "current real oracle certificate not PASS",
+    "current real deployment_agent certificate not PASS",
+    "current effective GitHub protection not PASS",
+    "current authenticated snapshot evidence required",
+    "healthy scheduler with three genuine scheduled runs required"
+  ]
+}
