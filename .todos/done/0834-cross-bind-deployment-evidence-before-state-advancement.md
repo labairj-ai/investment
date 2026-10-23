@@ -57,10 +57,12 @@ Do not weaken signature checks, trust paths/filenames as identity, accept intern
 ## Implementation and validation evidence
 
 - Implemented on PR #13 from verified starting head `df64c4e5813d1cf2fe675d7358e940d3c2b5e3aa`.
-- Validated final application code head: `07875aad350b3b1dad113b74cd029db382bae79b`.
+- Validated application implementation head: `07875aad350b3b1dad113b74cd029db382bae79b`.
 - [Exact-head CI PASS](https://github.com/labairj-ai/investment/actions/runs/40014960716): all eight mandatory gates PASS.
 - Focused agent suite: 379 passed. Full suite: 3,078 passed, zero failed, 18 existing skips.
 - New scheduler/shared-gate/observer adversarial tests: 84 passed in disposable ledgers. No synthetic evidence was issued as a live certificate or operational success.
 - All seven requested policy settings remain unchanged; no financial source, investment state, production data, service or timer was changed.
 - Owner promotion is an explicitly unavailable authenticated interface, not a completed issuer; config cannot activate runtime. 0826–0831 remain open for their actual live acceptance.
 - PR #13 remains draft, and PR #12 is not merged separately.
+
+Additional strict scalar/payload checks reject boolean PR aliases, non-object observations and the wrong environment before mutation. The expanded targeted suite has 88 evidence-integrity cases; together with deployment tests, 116 pass. Final current-head receipts are recorded in PR #13 and its workflow artifacts after the rerun.

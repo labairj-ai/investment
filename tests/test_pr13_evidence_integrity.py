@@ -222,11 +222,12 @@ def observed_transaction(tmp_path):
     return executor,raw
 
 
-@pytest.mark.parametrize('fault',['pr','repository','head','merge','fixture','manual','outer_main','outer_deployed','not_verified','digest'])
+@pytest.mark.parametrize('fault',['pr','repository','head','merge','fixture','manual','outer_main','outer_deployed','not_verified','digest','outer_pr_bool'])
 def test_observer_cross_binding_rejects_internally_valid_wrong_receipts(observed_transaction,fault):
     from deployment_agent.observer import observe
     executor,raw=observed_transaction
-    if fault=='outer_main':raw['main_sha']='d'*40
+    if fault=='outer_pr_bool':raw['pr']=True
+    elif fault=='outer_main':raw['main_sha']='d'*40
     elif fault=='outer_deployed':raw['deployed_sha']='d'*40
     elif fault=='not_verified':raw['protected_state_verified']=False
     elif fault=='digest':raw['deployment_evidence']['sha256']='d'*64
@@ -264,11 +265,13 @@ def candidate_observation(store,monkeypatch):
 def sign(body):return dict(observation=body,signature=hmac.new(KEY,canonical(body),hashlib.sha256).hexdigest())
 
 
-@pytest.mark.parametrize('fault',['pr','repository','head','merge','fixture','manual','outer_pr','outer_repository','outer_head','outer_merge','outer_deployed','digest','signature','clock','empty_metrics','missing_evidence'])
+@pytest.mark.parametrize('fault',['pr','repository','head','merge','fixture','manual','outer_pr','outer_repository','outer_head','outer_merge','outer_deployed','digest','signature','clock','empty_metrics','missing_evidence','outer_pr_bool','outer_environment','outer_shape'])
 def test_signed_mismatched_observation_has_zero_state_or_event_mutation(candidate_observation,fault):
     from dev_agent.improvement_loop import accept_observation
     store,cid,client,body=candidate_observation
     if fault in {'pr','repository','head','merge','fixture','manual'}:body['deployment_evidence']=changed_evidence(body['deployment_evidence'],fault)
+    elif fault=='outer_pr_bool':body['pr']=True
+    elif fault=='outer_environment':body['environment']='staging'
     elif fault=='outer_pr':body['pr']+=1
     elif fault=='outer_repository':body['repository']='other/repo'
     elif fault=='outer_head':body['head']='d'*40
@@ -278,7 +281,7 @@ def test_signed_mismatched_observation_has_zero_state_or_event_mutation(candidat
     elif fault=='clock':body['window_seconds']=-1
     elif fault=='empty_metrics':body['metrics']={}
     elif fault=='missing_evidence':body.pop('deployment_evidence')
-    signed=sign(body)
+    signed=sign([] if fault=='outer_shape' else body)
     if fault=='signature':signed['signature']='d'*64
     before=inventory(store);state=store.get(cid)['state']
     with pytest.raises(ValueError):accept_observation(ROOT,store,cid,client,signed,key=KEY)

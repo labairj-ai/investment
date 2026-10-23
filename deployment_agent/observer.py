@@ -15,6 +15,7 @@ def observe(executor,receipt,*,key,now=None,window=300):
     now=time.time() if now is None else now
     if not isinstance(key,bytes) or len(key)<32 or not 60<=window<=3600:raise ValueError('operator observation key/window required')
     if receipt.get('status') not in {'DEPLOYED_VERIFIED','ROLLED_BACK','DEPLOYED_DEGRADED','FAILED_PRECHECK'} or not all(receipt.get(k) for k in ('head','pr','merge_sha','finished')):raise ValueError('verified deployment receipt required')
+    if type(receipt['pr']) is not int or receipt['pr']<=0:raise ValueError('integer transaction PR identity required')
     if receipt['status']=='DEPLOYED_VERIFIED' and now-receipt['finished']<window:return dict(status='OBSERVATION_PENDING',remaining=window-(now-receipt['finished']))
     head='0'*40;available=True
     try:

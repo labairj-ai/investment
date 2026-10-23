@@ -149,8 +149,10 @@ def accept_observation(root,store,cid,client,signed,*,key):
     from .operations import record_success
     if not isinstance(key,bytes) or len(key)<32 or not isinstance(signed,dict) or set(signed)!={'observation','signature'}:raise ValueError('signed deployment observation required')
     body=signed['observation']
+    if not isinstance(body,dict):raise ValueError('structured software observation required')
     if not hmac.compare_digest(hmac.new(key,canonical(body),hashlib.sha256).hexdigest(),str(signed['signature'])):raise ValueError('deployment observer signature mismatch')
     if body.get('protocol')!='software-observation-1' or not 0<=time.time()-body.get('observed_at',0)<=3600:raise ValueError('fresh deployment observation required')
+    if type(body.get('pr')) is not int or body['pr']<=0 or body.get('environment')!='OptiPlex':raise ValueError('exact PR and production environment identity required')
     candidate=store.get(cid);pr=[e['payload'] for e in candidate['events'] if e['kind']=='PR'][-1]
     if body.get('repository')!=client.repository or body.get('pr')!=pr['result']['number'] or body.get('head')!=pr['head']:raise ValueError('deployment observation belongs to another PR/head')
     merge=[e['payload'] for e in candidate['events'] if e['kind']=='MERGE'][-1]
