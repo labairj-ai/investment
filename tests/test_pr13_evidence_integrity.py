@@ -328,7 +328,7 @@ def test_stage_order_and_owner_authentication_remain_stricter_than_shared_eviden
     monkeypatch.setattr(owner_promotion,'authorization',lambda *a,**k:dict(status='PASS',authenticated=False))
     assert not stage_control.report(ROOT,store,x['now'])['eligible']
     monkeypatch.setattr(owner_promotion,'authorization',lambda *a,**k:dict(status='PASS',authenticated=True,fixture_only=True))
-    assert stage_control.report(ROOT,store,x['now'])['eligible']
+    assert not stage_control.report(ROOT,store,x['now'])['eligible']  # fixture adapter cannot authorize runtime
     with store.connect(True) as db:
         db.execute('DROP TRIGGER dev_events_update')
         rows=db.execute("SELECT seq,payload FROM dev_events WHERE kind='STAGE_OBSERVATION'").fetchall()

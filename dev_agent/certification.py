@@ -36,7 +36,7 @@ def harness_hash(root):
     files += sorted(p for p in (root/'ops/deployment-agent').glob('*') if p.is_file())
     files += sorted((root/'deployment_agent').glob('*.py'))
     files += sorted((root/'owner_gateway').glob('*.py'))
-    files += [root/p for p in ('scripts/aggregate_release_validation.py','scripts/collect_development_signals.py','scripts/check_owner_review.py','scripts/run_supervised_cycle.py') if (root/p).is_file()]
+    files += [root/p for p in ('scripts/aggregate_release_validation.py','scripts/collect_development_signals.py','scripts/check_owner_review.py','scripts/run_supervised_cycle.py','scripts/ingest_owner_promotion.py') if (root/p).is_file()]
     payload={str(p.relative_to(root)):hashlib.sha256(p.read_bytes()).hexdigest() for p in files}
     # Activation state is a separately owner-reviewed control, not a new harness.
     # Without this fixed, explicit normalization, flipping the enable bit would

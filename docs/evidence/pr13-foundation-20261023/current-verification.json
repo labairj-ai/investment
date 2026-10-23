@@ -1,0 +1,22 @@
+{
+  "source": "read-only OptiPlex verification during 0835 implementation",
+  "head": "d12dcf3746dc7266ef4de02f06a48c2b629580e6",
+  "tracked_clean": true,
+  "service": "active",
+  "activation": {
+    "autonomous_implementation": false,
+    "supervised_loop_enabled": false,
+    "supervised_publish_pr": false,
+    "auto_merge": false,
+    "autonomy_stage": "SHADOW"
+  },
+  "backup_integrity": {
+    "investment.db": "ok",
+    "buffett.db": "ok",
+    "development-control.sqlite3": "ok"
+  },
+  "dashboard_http": 200,
+  "development_http": 200,
+  "authenticated_api_http": 200,
+  "unauthorized_api_http": 403
+}

@@ -31,7 +31,11 @@ def report(root,store,now=None,*,protections=None,technical=None):
     if enabled and stage!='PR':findings.append('autonomous implementation allowed only at PR stage')
     from .owner_promotion import authorization
     owner=authorization(root,store,now=now)
-    if owner.get('status')!='PASS' or owner.get('authenticated') is not True:findings.append(owner.get('reason','authenticated owner autonomy promotion required'))
+    try:
+        from .owner_promotion import require_runtime_binding
+        require_runtime_binding(root,store,owner,now=now)
+    except Exception:
+        findings.append(owner.get('reason','authenticated owner autonomy promotion binding required'))
     from .store import digest
     return dict(evidence=evidence,owner_promotion=owner,runtime_policy_hash=digest(config),stage=stage,autonomous_implementation=enabled,eligible=enabled and stage=='PR' and not findings,blockers=list(dict.fromkeys(findings)),stage_counts=counts,daily_cap=cap,hard_maximum=3,grants_merge=False,grants_deployment=False)
 

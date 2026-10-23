@@ -168,3 +168,22 @@ Order: start 0825 and 0827 when their prerequisites are satisfied; 0825 unlocks 
 | [0834](done/0834-cross-bind-deployment-evidence-before-state-advancement.md) | Cross-bind signed deployment evidence before candidate state advancement | done | Deployment evidence schema and observer |
 
 PR #13 stays draft until these three tasks, focused/full tests and all eight exact-head gates pass. No financial behavior or production-state changes; all four activation flags remain false, SHADOW/L2 and required human merge remain unchanged. 0826–0831 require actual live acceptance and remain open. No fixture is promoted to live evidence. PR #12's TODO history is integrated into PR #13; do not merge PR #12 separately.
+
+## Production foundation and operational rollout backlog (0835–0844)
+
+Created October 23, 2026 from owner-supplied requirements. Initial tasks were created in backlog; current execution status is recorded below. These refine the open 0826–0831 acceptance work; creating them grants no runtime activation or autonomy authority.
+
+| ID | Task | Status | Dependencies |
+|---|---|---|---|
+| [0835](0835-verify-pr13-production-foundation-deployment.md) | Verify PR #13 Production Foundation Deployment | in-progress | PR #13 merged |
+| [0836](0836-implement-independent-validation-oracle-backend.md) | Select and Implement Independent Validation Oracle Backend | in-progress | 0835 |
+| [0837](0837-provision-live-certify-independent-oracle.md) | Provision and Live-Certify Independent Oracle | backlog | 0836 |
+| [0838](0838-complete-real-chatgpt-owner-ok-no-acceptance.md) | Complete Real ChatGPT Owner OK/NO Acceptance | backlog | 0835 |
+| [0839](0839-install-read-only-continuous-discovery.md) | Install Read-Only Continuous Discovery | backlog | 0835 |
+| [0840](0840-install-dedicated-deployment-controller.md) | Install Dedicated Deployment Controller | backlog | 0835, 0838 |
+| [0841](0841-execute-first-real-supervised-improvement-journey.md) | Execute First Real Supervised Improvement Journey | backlog | 0837, 0838, 0839 |
+| [0842](0842-execute-first-deployment-agent-production-pilot.md) | Execute First Deployment Agent Production Pilot | backlog | 0840, 0841 |
+| [0843](0843-implement-authenticated-owner-autonomy-promotion-verifier.md) | Implement Authenticated Owner Autonomy-Promotion Verifier | in-progress | PR #13 owner-promotion interface |
+| [0844](0844-complete-three-journey-seven-day-supervised-evidence-window.md) | Complete Three-Journey / Seven-Day Supervised Evidence Window | backlog | 0837–0843 |
+
+0835 verifies the PR #13 foundation. Oracle implementation/certification, real owner acceptance and read-only discovery precede the supervised journey; the dedicated controller precedes its production pilot. 0843 implements owner-promotion authentication without enabling autonomy. 0844 requires real three-journey/seven-day evidence and produces an owner review decision only.

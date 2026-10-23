@@ -1,0 +1,35 @@
+[Unit]
+Description=Independent investment L0 static validation oracle
+After=local-fs.target
+
+[Service]
+Type=simple
+User=investment-oracle
+Group=investment-oracle
+ExecStart=/usr/bin/python3 -I -S /opt/investment-static-oracle/static_oracle.py /etc/investment-static-oracle/config.json
+WorkingDirectory=/
+UMask=0077
+RuntimeDirectory=investment-static-oracle
+RuntimeDirectoryMode=0700
+NoNewPrivileges=true
+PrivateNetwork=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX
+CapabilityBoundingSet=
+ReadOnlyPaths=/var/lib/investment-static-oracle/authority.git
+ReadWritePaths=/run/investment-static-oracle
+InaccessiblePaths=-/home/optiplex/investment -/run/docker.sock -/var/run/docker.sock
+MemoryMax=256M
+TasksMax=16
+CPUQuota=100%
+TimeoutStopSec=10
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

@@ -5,6 +5,7 @@ reviewed owner-side issuer/verifier must establish that proof before this adapte
 can ever return PASS. Neither configuration nor ledger JSON is an authority source.
 """
 import re
+import os
 import time
 
 PROTOCOL='autonomy-promotion-1'
@@ -26,6 +27,36 @@ def validate_binding(record,context,now=None):
     return dict(binding_valid=True,authenticated=False,grants_authority=False)
 
 
+def selected_pr():
+    raw=os.environ.get('DEV_AGENT_PROMOTION_PR','')
+    if not re.fullmatch(r'[1-9][0-9]{0,8}',raw):raise ValueError('operator-selected activation PR unavailable')
+    return int(raw)
+
+
 def authorization(root,store,*,now=None):
-    # Deliberately do not accept request JSON, env vars or OWNER_REVIEW as proof.
-    return dict(status='UNAVAILABLE',authenticated=False,protocol=PROTOCOL,reason='authenticated owner autonomy-promotion verifier not implemented; runtime activation unavailable',grants_authority=False)
+    # Selection is not authority: every result requires current GitHub verification.
+    try:
+        from .promotion_github import verify_current
+        return verify_current(root,store,selected_pr(),now=now)
+    except Exception as error:
+        return dict(status='UNAVAILABLE',authenticated=False,fixture_only=False,protocol=PROTOCOL,
+                    reason='authenticated owner autonomy promotion unavailable: '+type(error).__name__,grants_authority=False)
+
+
+def require_runtime_binding(root,store,result,*,now=None):
+    """Defense in depth against incomplete/generic adapter PASS responses."""
+    from .promotion_github import context
+    if (not isinstance(result,dict) or result.get('status')!='PASS'
+            or result.get('authenticated') is not True or result.get('fixture_only') is not False
+            or result.get('protocol')!=PROTOCOL or result.get('revocation_checked') is not True
+            or result.get('replay_checked') is not True):
+        raise ValueError('authenticated non-fixture contextual owner promotion required')
+    expected=context(root,selected_pr())
+    validate_binding(result.get('binding'),expected,now)
+    # The context above is independently reconstructed, not copied from a result.
+    if not isinstance(result.get('origin'),dict) or type(result['origin'].get('id')) is not int:
+        raise ValueError('verified GitHub promotion origin required')
+    from .promotion_github import verify_current
+    if verify_current(root,store,expected['activation_pr'],now=now)!=result:
+        raise ValueError('runtime owner promotion provenance mismatch')
+    return True
