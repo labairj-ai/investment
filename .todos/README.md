@@ -163,8 +163,8 @@ Order: start 0825 and 0827 when their prerequisites are satisfied; 0825 unlocks 
 
 | ID | Task | Status | Dependencies |
 |---|---|---|---|
-| [0832](0832-prevent-duplicate-scheduler-success-credit.md) | Prevent duplicate timer events from receiving scheduled-discovery success credit | in-progress | 0828 implementation |
-| [0833](0833-unify-promotion-runtime-autonomy-evidence.md) | Share promotion/runtime safety qualification and require separate owner promotion | in-progress | 0831 design; existing stage and promotion controls |
-| [0834](0834-cross-bind-deployment-evidence-before-state-advancement.md) | Cross-bind signed deployment evidence before candidate state advancement | in-progress | Deployment evidence schema and observer |
+| [0832](done/0832-prevent-duplicate-scheduler-success-credit.md) | Prevent duplicate timer events from receiving scheduled-discovery success credit | done | 0828 implementation |
+| [0833](done/0833-unify-promotion-runtime-autonomy-evidence.md) | Share promotion/runtime safety qualification and require separate owner promotion | done | 0831 design; existing stage and promotion controls |
+| [0834](done/0834-cross-bind-deployment-evidence-before-state-advancement.md) | Cross-bind signed deployment evidence before candidate state advancement | done | Deployment evidence schema and observer |
 
 PR #13 stays draft until these three tasks, focused/full tests and all eight exact-head gates pass. No financial behavior or production-state changes; all four activation flags remain false, SHADOW/L2 and required human merge remain unchanged. 0826–0831 require actual live acceptance and remain open. No fixture is promoted to live evidence. PR #12's TODO history is integrated into PR #13; do not merge PR #12 separately.

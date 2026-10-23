@@ -148,7 +148,7 @@ def test_every_shared_safety_failure_blocks_both_report_and_runtime(complete_evi
     elif fault=='protection':e['github']['created']=now-301
     elif fault=='snapshot':e['snapshot']['backup_timestamp']=now-86401
     elif fault=='snapshot_unsigned':e['snapshot'].pop('provenance_status')
-    elif fault=='snapshot_future':e['snapshot']['backup_timestamp']=now+1
+    elif fault=='snapshot_future':e['snapshot']['backup_timestamp']=now+3600
     elif fault=='stop':config['emergency_stop']=True
     elif fault=='kill':monkeypatch.setenv('DEV_AGENT_KILL_SWITCH','1')
     elif fault=='pause':append(store,'AUTONOMY_PAUSE',dict(created=now-1))
