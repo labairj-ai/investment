@@ -1,0 +1,53 @@
+{
+  "pr": 10,
+  "pr_head": "c54bcf24d9a5b5c6ee03ee9832dd95bd55c4ebaa",
+  "merge_sha": "15df8960b7c376da8b15fd80dad1bfb19aaede9b",
+  "deployed_sha": "15df8960b7c376da8b15fd80dad1bfb19aaede9b",
+  "prior_sha": "3b497914270fe53beaecba9c8d2fdd0b80f427fe",
+  "head_ci": "https://github.com/labairj-ai/investment/actions/runs/39994931332",
+  "merge_ci": "https://github.com/labairj-ai/investment/actions/runs/39997737221",
+  "status": "DEPLOYED_VERIFIED",
+  "backup_directory": "/home/optiplex/.local/share/investment-releases/pr10-20261023T175628Z",
+  "health": {
+    "service": "active",
+    "dashboard_http": 200,
+    "development_dashboard_http": 200,
+    "heartbeat": true,
+    "authenticated_api_http": 200,
+    "unauthorized_api_http": 403,
+    "readiness": "UNAVAILABLE"
+  },
+  "advisor_before": {
+    "health": "PASS",
+    "mutation_safety": "PASS",
+    "functional_contract": "PASS",
+    "production_state_unchanged": true
+  },
+  "advisor_after": {
+    "health": "PASS",
+    "mutation_safety": "PASS",
+    "functional_contract": "PASS",
+    "production_state_unchanged": true
+  },
+  "activation": {
+    "autonomous_implementation": false,
+    "supervised_loop_enabled": false,
+    "supervised_publish_pr": false,
+    "auto_merge": false
+  },
+  "holdings_unchanged": true,
+  "development_ledger_unchanged": true,
+  "investment_state_unchanged": true,
+  "service_configuration_unchanged": true,
+  "new_services_activated": false,
+  "production_data_restore_performed": false,
+  "started_at": "2026-10-23T17:56:29.021005+00:00",
+  "finished_at": "2026-10-23T17:56:41.642001+00:00",
+  "receipt_path": "/home/optiplex/.local/share/investment-releases/pr10-20261023T175628Z/deployment.json",
+  "public_https": {
+    "dashboard_http": 200,
+    "development_agent_http": 200,
+    "url": "https://optiplex.tailb97cdb.ts.net/development-agent"
+  },
+  "operational_certification": "INCOMPLETE"
+}
