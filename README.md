@@ -210,45 +210,54 @@ it does not reuse investment-learning tables. The initial queue is empty until
 development candidates are recorded; repository TODOs are listed in the
 [backlog index](.todos/README.md).
 
-**Current deployment — October 22, 2026 (ET):** OptiPlex runs hardening SHA
-`3e0d6d55377df1239c90824091ebf3a5fc26262a` on
-`release/development-agent-hardening-3e0d6d5`, from [draft PR #5](https://github.com/labairj-ai/investment/pull/5),
-under explicit user deployment authorization. The normal HTTPS dashboard and
-authenticated API pass; unauthorized API reads return 403. The Advisor functional
-and mutation-safety canary passes, with holdings, the development ledger and service
-configuration unchanged. [Deployment receipt](docs/evidence/development-agent-hardening-20261022/deployment.json).
-[Exact-source CI](https://github.com/labairj-ai/investment/actions/runs/39782796105)
-records 2,834 passed, seven CC failures reproduced on unchanged main, and 18 existing
-skips. Those failures remain open; deployment is not operational certification.
-Autonomy, auto-merge and scheduled discovery remain disabled. Three real supervised
-pilots spanning seven calendar days, a provisioned validation sandbox, authenticated
-recent backup and effective non-bypass GitHub protection remain unmet.
+**Verified deployment — October 23, 2026 (ET):** OptiPlex runs merged `main` SHA
+`15df8960b7c376da8b15fd80dad1bfb19aaede9b` from
+[PR #10](https://github.com/labairj-ai/investment/pull/10).
+[Exact-head CI](https://github.com/labairj-ai/investment/actions/runs/39994931332)
+and [merged-main CI](https://github.com/labairj-ai/investment/actions/runs/39997737221)
+passed. Complete release validation recorded **2,969 passed, zero failures and 18
+unchanged skips**, with all eight mandatory gates passing. The public dashboards,
+service and authenticated API pass health checks; unauthorized API access returns
+403. Advisor functional and mutation-safety canaries pass. Holdings, investment
+state, the development ledger and service configuration remained unchanged.
+[Deployment receipt](docs/evidence/continuous-improvement-20261023/deployment-pr10.json).
 
-**Previous deployment — October 21, 2026 (ET):** OptiPlex ran `fd0a6c6` on
-`release/development-agent-fd0a6c6`, from [draft PR #3](https://github.com/labairj-ai/investment/pull/3).
-[Exact-commit CI](https://github.com/labairj-ai/investment/actions/runs/39710052924)
-passed with **2,760 tests passed and 18 skipped**. Deployment checks verified the
-dashboard, authenticated API, unchanged holdings and Advisor mutation-safety canary.
-Chrome checks passed at 360, 390, 430 and 1280px. See the
-[implementation evidence](docs/evidence/development-agent-20261021/validation.json)
-for earlier local checkpoints and the [operator guide](docs/development-agent.md)
-for the harness design and commands.
+PR #10 reconciles solo-owner governance, adds owner-authenticated ChatGPT connector
+attestations, and supplies guarded discovery, supervised improvement and separate
+deployment components. The approved simulator-contract-2 → simulator-contract-3
+migration keeps model `cc-v3.4`, simulator `cc-virtual-1` and the engine hash
+unchanged. The new cohort identity resets prospective eligibility; old open chains
+retain the `VERSION_CENSORED` policy and evidence from the two contracts must not be
+combined. Recommendation arithmetic is unchanged.
+
+`autonomous_implementation`, `supervised_loop_enabled`, `supervised_publish_pr` and
+`auto_merge` remain **false**. No new timer or automation service was activated.
+Deployment is not operational certification: the isolated validation oracle/runtime,
+verified protection and snapshot evidence, real owner-workflow acceptance and
+prospective supervised pilots remain open. See the
+[implementation and operational acceptance inventory](docs/continuous-improvement-operator.md)
+and [validation artifact boundary](docs/development-agent-artifact-integrity.md).
 
 | Capability | Current state |
 |---|---|
-| Candidate discovery, planning, review and evidence tooling | Hardening controls deployed; independent operational acceptance remains open |
+| Candidate discovery, planning, review and evidence tooling | PR #10 source deployed; real operational acceptance remains open |
 | Autonomous implementation | Disabled |
-| Auto-merge | Disabled; human merge authority retained |
+| Supervised implementation / PR publication | Disabled |
+| Auto-merge | Disabled; owner approval and human merge authority retained |
 | Daily discovery timer | Supplied but inactive |
 | Operational certification | Incomplete; fixture canary PASS is not operational certification |
-| GitHub protection / validation sandbox | Required protection not verified; Docker runtime/image not provisioned |
+| GitHub protection / validation sandbox | Real protection acceptance and digest-pinned runtime/oracle provisioning remain required |
 | Supervised eligibility / physical-device QA | Qualifying operational evidence and seven-day period unmet; iPhone/Android acceptance unobserved |
 
 Enter the configured review token in the dashboard's access field. The private
 service configuration is `~/.local/share/investment-development/service.env` on
 OptiPlex; token values must not be committed or included in logs. Reads and decisions
 require `X-Development-Agent-Token`; decisions also require a same-origin JSON
-request, fresh scope/SHA context and a single-use nonce.
+request, fresh scope/SHA context and a single-use nonce. Human mutations also require
+a unique verified operator identity; token possession alone is insufficient. Owner
+GitHub attestations require the configured owner ID/login. App-mediated comments
+are accepted only when the ChatGPT connector ID and slug are explicitly allowlisted
+in operator-controlled owner bindings; see the operator inventory above.
 
 | Route | Purpose |
 |---|---|
@@ -256,12 +265,14 @@ request, fresh scope/SHA context and a single-use nonce.
 | `GET /api/development-agent` | Authenticated candidate and event listing |
 | `POST /api/development-agent/decision` | Explicit candidate/TODO approval, rejection or deferral |
 | `POST /api/development-agent/review` | Human review, escalation or observed-outcome acceptance |
+| `POST /api/development-agent/owner-review` | Authenticated exact-head owner attestation with risk-specific acknowledgments |
 
 The dashboard now projects readiness from current configuration, technical certificates,
 protected GitHub evidence and immutable supervised-run lineage. Missing, expired or stale
-evidence is shown explicitly; it cannot authorize implementation. Tasks **0785–0794**
-remain open for their independent QA/operational acceptance. Hardening code is deployed;
-0793's prospective real pilots have not run, and 0794 remains disabled.
+evidence is shown explicitly; it cannot authorize implementation. Tasks **0816–0824**
+remain in progress for their remaining acceptance requirements. A deployed component
+or fixture PASS does not count as a real supervised pilot, technical certificate or
+authorization to enable autonomy.
 
 ## Deployment
 
@@ -271,13 +282,15 @@ The recommended setup is an always-on home server (e.g. a mini PC or Raspberry P
 - **Newsletter:** serve.py's built-in scheduler sends at ~7:15 AM ET; `run_investment.sh` via a systemd timer at 8 AM acts as a backstop (flag file `out/last_run_date.txt` prevents double sends)
 - **LAN / remote access:** by default `serve.py` binds to `localhost`; change to `0.0.0.0` to expose on the LAN; use [Tailscale Funnel](https://tailscale.com/kb/1223/funnel) or a reverse proxy for remote access
 - **Data backup:** `backup_data.sh` pushes DB + CSV to a separate private GitHub repo
-- **Deploy flow:** commit + push on dev machine, `git pull` on server; restart the service when `serve.py` or an imported Python module changes. On startup, `serve.py` automatically regenerates `out/dashboard.html` if `generate_dashboard.py` is newer than the existing file — so changes to the dashboard generator take effect on the next service restart without a manual regeneration step.
+- **Deploy flow:** use an owner-approved PR, passing exact-SHA release validation and the merged `main` SHA. Back up production, verify the worktree and runtime overlays, deploy that exact commit, then restart and verify the service when `serve.py` or an imported Python module changes. On startup, `serve.py` automatically regenerates `out/dashboard.html` if `generate_dashboard.py` is newer than the existing file — so changes to the dashboard generator take effect on the next service restart without a manual regeneration step.
 
-The current Development Agent deployment is pinned to the release branch/SHA above;
-PR #5 remains draft rather than merged into `main`. Verify the intended branch and
-exact tested SHA before updating that checkout. Its database/dashboard backups and
-deployment receipt are outside the HTTP root under
-`~/.local/share/investment-releases/development-hardening-20261022T131752Z/`.
+The current Development Agent release is the owner-merged `main` SHA above. Deploy
+only the approved merged SHA after exact-SHA release gates pass; preserve runtime
+overlays and verify health, authentication, canaries and protected-state integrity.
+Code rollback must not restore or overwrite production investment data. The PR #10
+backup and deployment receipt are outside the HTTP root under
+`~/.local/share/investment-releases/pr10-20261023T175628Z/`. Automation service
+installation and activation require separate operational acceptance and owner approval.
 
 The old macOS launchd agents are archived in `launchd-disabled-on-mac/`.
 
