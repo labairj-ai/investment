@@ -321,3 +321,11 @@ def test_connector_allowlist_never_bypasses_owner_review_guards(owner_setup,monk
     comment=dict(owner_comment(client),performed_via_github_app=dict(CONNECTOR_APP));comment.update(mutation);original=client.read
     client.read=lambda endpoint:comment if '/issues/comments/' in endpoint else [comment] if '/issues/1/comments?' in endpoint else original(endpoint)
     with pytest.raises(ValueError):github_owner.ingest(store,client,123)
+
+
+@pytest.mark.parametrize('ci_variable',['GITHUB_ACTIONS','CI'])
+def test_aggregate_leaves_ci_prior_authority_to_event_checker(monkeypatch,ci_variable):
+    monkeypatch.delenv('GITHUB_ACTIONS',raising=False);monkeypatch.delenv('CI',raising=False)
+    assert aggregate.cc_command('python','a'*40)==['python','scripts/check_cc_contract.py','--prior-ref','a'*40]
+    monkeypatch.setenv(ci_variable,'true')
+    assert aggregate.cc_command('python','attacker-prior')==['python','scripts/check_cc_contract.py']

@@ -35,11 +35,20 @@ def integrity(summary):
             and summary.get('pytest',{}).get('total',0)>0 and summary['pytest'].get('failed')==0)
 
 
+def cc_command(py,prior):
+    # In CI only the checker may derive authority from the GitHub event.
+    # A local caller may provide an explicit reviewed prior reference.
+    command=[py,'scripts/check_cc_contract.py']
+    if os.environ.get('GITHUB_ACTIONS')!='true' and os.environ.get('CI')!='true':
+        command+=['--prior-ref',prior]
+    return command
+
+
 def run(root,out,expected_head,prior,*,invoke=subprocess.run):
     root=Path(root).resolve();out=Path(out).resolve();out.mkdir(parents=True,exist_ok=True)
     head=subprocess.check_output(['git','-C',str(root),'rev-parse','HEAD'],text=True).strip()
     py=sys.executable; junit=out/'test-results.xml';junit.unlink(missing_ok=True)
-    commands=[('todo_consistency',[py,'scripts/check_todo_status.py']),('agent_contract',[py,'scripts/check_agent_contract.py']),('development_governance',[py,'scripts/check_development_agent.py']),('focused_agent_tests',[py,'-m','pytest',*[str(p.relative_to(root)) for p in sorted(set((root/'tests').glob('test_development_agent*.py')) | {root/'tests'/n for n in ('test_continuous_improvement.py','test_deployment_agent.py','test_owner_gateway.py') if (root/'tests'/n).is_file()})],'-q','--tb=short']),('full_suite',[py,'-m','pytest','tests/','-v','--tb=short','--junitxml='+str(junit)]),('release_baseline',[py,'scripts/check_release_baseline.py',str(junit)]),('cc_contract',[py,'scripts/check_cc_contract.py','--prior-ref',prior])]
+    commands=[('todo_consistency',[py,'scripts/check_todo_status.py']),('agent_contract',[py,'scripts/check_agent_contract.py']),('development_governance',[py,'scripts/check_development_agent.py']),('focused_agent_tests',[py,'-m','pytest',*[str(p.relative_to(root)) for p in sorted(set((root/'tests').glob('test_development_agent*.py')) | {root/'tests'/n for n in ('test_continuous_improvement.py','test_deployment_agent.py','test_owner_gateway.py') if (root/'tests'/n).is_file()})],'-q','--tb=short']),('full_suite',[py,'-m','pytest','tests/','-v','--tb=short','--junitxml='+str(junit)]),('release_baseline',[py,'scripts/check_release_baseline.py',str(junit)]),('cc_contract',cc_command(py,prior))]
     clean_before=subprocess.run(['git','-C',str(root),'diff','--quiet','HEAD','--'],capture_output=True).returncode==0
     result=dict(version='repository-validation-1',head=head,expected_head=expected_head,authority='repository-ci-diagnostics-only',trusted_agent_certification=False,gates=[],pytest={},created=time.time())
     for name,command in commands:
