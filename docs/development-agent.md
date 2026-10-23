@@ -179,3 +179,7 @@ gate implementation, version, baseline or threshold is altered for this validati
 ## Solo-owner human authority
 
 The repository owner may review and approve AI-assisted changes authored through the owner's own GitHub account. A second human is optional unless designated. Independence between Builder and Reviewer models remains required; neither model, CI nor automation grants merge authority. Authorship does not count as review. Owner approval must be an authenticated deliberate action bound to exact PR head, risk and required domain acknowledgments. New commits invalidate approval. All financial/execution safeguards remain. auto_merge=false and required_human_merge=true. See [operator workflow](solo-owner-governance.md).
+
+## Continuous supervised improvement
+
+See [continuous improvement operations](continuous-improvement-operator.md). Source reconciliation restores one owner-authority model and keeps hardened identity/protection/oracle/Git boundaries. Owner build delegation permits only frozen L0–L2 supervised scope; it never creates OWNER_REVIEW or grants merge/deploy authority. Owner OK/NO reaches a separately authenticated GitHub object through the owner-side gateway. All activation controls remain disabled/shadow until separately reviewed real acceptance. Repository CI diagnostics are not technical certification. Missing independent artifact-oracle authority blocks agent validation rather than accepting candidate-controlled PASS output.

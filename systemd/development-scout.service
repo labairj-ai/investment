@@ -5,6 +5,7 @@ Description=Investment development discovery only (no implementation)
 Type=oneshot
 WorkingDirectory=%h/investment
 ExecStart=%h/investment/venv/bin/python -m dev_agent.cli scout --root %h/investment
+EnvironmentFile=-%h/.config/investment-development/discovery.env
 UMask=0077
 NoNewPrivileges=true
 ProtectSystem=strict

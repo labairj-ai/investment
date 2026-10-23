@@ -22,13 +22,17 @@ from .worktrees import Worktrees
 
 
 def progress(root,store,cid,builder,reviewer,validator,client):
+    from .stage_control import require as require_stage
+    require_stage(root,store,protections=client.protections())
     candidate=store.get(cid)
     context=[e['payload']['context'] for e in candidate['events'] if e['kind']=='PLAN'][-1]
     record=[e['payload'] for e in candidate['events'] if e['kind']=='WORKTREE'][-1]
     manager=Worktrees(root,store.path.parent/'worktrees')
     work=manager.verify(record)
     def ready():
-        return current(root,certificates(store),store=store) and client.protections().get('status')=='PASS'
+        from .stage_control import report as stage_report
+        protection=client.protections()
+        return current(root,certificates(store),store=store,protections=protection) and protection.get('status')=='PASS' and stage_report(root,store,protections=protection)['eligible']
     authorize_start(root,store,cid,'AUTONOMOUS',certificates(store),client.protections())
     runner=Runner(store,builder,reviewer,validator)
     result=runner.run(cid,context,manager,record,[('focused_tests',['python','-m','pytest',*[e['payload'] for e in candidate['events'] if e['kind']=='PLAN'][-1]['focused_tests'],'-q'])],certification=ready,protections=client.protections(),mode='AUTONOMOUS')

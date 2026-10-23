@@ -1,0 +1,14 @@
+[Unit]
+Description=Read-only bounded operational metadata collector (no model/build)
+[Service]
+Type=oneshot
+WorkingDirectory=%h/investment
+ExecStart=%h/investment/venv/bin/python scripts/collect_development_signals.py --out %h/.local/share/investment-development/operational-signals.json
+EnvironmentFile=-%h/.config/investment-development/collector.env
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/share/investment-development
+PrivateTmp=true
+TimeoutStartSec=120

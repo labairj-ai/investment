@@ -1,0 +1,9 @@
+[Unit]
+Description=Check for one bounded supervised improvement every hour
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=120
+Unit=development-supervised-loop.service
+[Install]
+WantedBy=timers.target

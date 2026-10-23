@@ -44,7 +44,7 @@ class GitHub:
                 classic=None
             raw['classic']=classic
             user=self.read('user');raw['identity']={k:user[k] for k in ('login','id') if k in user}
-            repo=self.read(f'repos/{self.repository}');raw['repository']={k:repo[k] for k in ('id','full_name','permissions','default_branch') if k in repo}
+            repo=self.read(f'repos/{self.repository}');raw['repository']={k:repo[k] for k in ('id','full_name','permissions','default_branch','owner') if k in repo}
             raw['permission']=self.read(f"repos/{self.repository}/collaborators/{raw['identity']['login']}/permission")
             active=self.read_all(f'repos/{self.repository}/rules/branches/main')
             inventory=self.read_all(f'repos/{self.repository}/rulesets?includes_parents=true')
@@ -55,7 +55,11 @@ class GitHub:
                 if not {'rules','bypass_actors','enforcement'}<=detail.keys(): raise ValueError('incomplete ruleset detail')
                 details.append(detail)
             raw.update(active_rules=active,rulesets=details)
-            result=effective_protections(classic,active,details,raw['identity'],raw['repository'],visibility=True)
+            import os
+            from .solo_protection import verify as verify_solo
+            collaborators=self.read_all(f'repos/{self.repository}/collaborators?affiliation=all')
+            raw['administrators']=[{k:c[k] for k in ('id','login')} for c in collaborators if c.get('permissions',{}).get('admin')]
+            result=verify_solo(active,details,raw['identity'],raw['repository'],administrators=raw['administrators'],owner_check_app_id=int(os.environ.get('DEV_AGENT_OWNER_CHECK_APP_ID','0')),classic=classic)
             result.update(created=time.time(),repository=self.repository,evidence_hash=digest(raw),evidence=raw)
             return result
         except Exception:
@@ -228,10 +232,13 @@ def record_merge(store,cid,client):
     pr=[e['payload'] for e in candidate['events'] if e['kind']=='PR'][-1]
     remote=client.pr_identity(pr['result']['number'])
     verify_remote_pr(remote,repository=client.repository,branch=pr['verified']['headRefName'],head=pr['head'])
+    from .owner_review import require as require_owner, verify_merge_actor
+    owner_approval=require_owner(store,client,remote['number'])
     sha=(remote.get('mergeCommit') or {}).get('oid','')
-    if remote.get('state')!='MERGED' or remote.get('reviewDecision')!='APPROVED' or not re.fullmatch(r'[a-f0-9]{40}',sha):
-        raise ValueError('independently approved completed GitHub merge required')
-    payload=dict(merge_sha=sha,head=pr['head'],pr=remote.get('url',pr['result']['url']),source='github-verified-merge',number=remote['number'],protection_policy=authority['policy_hash'],protection_identity=authority['identity'])
+    if remote.get('state')!='MERGED' or not re.fullmatch(r'[a-f0-9]{40}',sha):
+        raise ValueError('exact-head owner-approved completed GitHub merge required')
+    merge_actor=verify_merge_actor(client,remote['number'],pr['head'],sha)
+    payload=dict(owner_review_hash=digest(owner_approval['review']),merge_actor=merge_actor,merge_sha=sha,head=pr['head'],pr=remote.get('url',pr['result']['url']),source='github-verified-merge',number=remote['number'],protection_policy=authority['policy_hash'],protection_identity=authority['identity'])
     with store.connect(True) as db:
         store._append(db,cid,'MERGE',payload,'github-merge:'+sha)
     return payload

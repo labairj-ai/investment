@@ -24,6 +24,9 @@ def check(root=ROOT):
     from scripts.check_agent_contract import validate_contract
     try:findings.extend(validate_contract((root/'AGENTS.md').read_text()))
     except OSError:findings.append('repository governance contract unavailable')
+    for name in ('autonomous_implementation','supervised_loop_enabled','supervised_publish_pr'):
+        if type(config.get(name,False)) is not bool:findings.append('non-boolean runtime policy: '+name)
+    if config.get('autonomy_stage','SHADOW') not in {'SHADOW','BUILD_ONLY','PR'}:findings.append('invalid autonomy promotion stage')
     document=(root/"docs/development-agent.md").read_text()
     for key,text in PRINCIPLES.items():
         if f"{key}: {text}" not in document: findings.append("principle missing: "+key)
@@ -33,7 +36,7 @@ def check(root=ROOT):
             imports=[]
             if isinstance(node,ast.Import):imports=[a.name for a in node.names]
             if isinstance(node,ast.ImportFrom):imports=[node.module or ""]
-            if any(name.split(".")[0] in {"agent_db","trade_engine","portfolio_ai","covered_call_rec"} for name in imports):
+            if any(name.split(".")[0] in {"agent_db","trade_engine","portfolio_ai","covered_call_rec","deployment_agent","owner_gateway"} for name in imports):
                 findings.append("investment runtime import: "+path.name)
     try:task_index(root)
     except ValueError as error:findings.append(str(error))

@@ -23,7 +23,7 @@ def policy():
         if set(data)!={'repository','owner_login','owner_id','operators'}: raise ValueError()
         if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+',data['repository']): raise ValueError()
         if not re.fullmatch(r'[A-Za-z0-9-]+',data['owner_login']) or type(data['owner_id']) is not int or data['owner_id']<=0: raise ValueError()
-        if not isinstance(data['operators'],dict) or not data['operators']: raise ValueError()
+        if not isinstance(data['operators'],dict) : raise ValueError()
         for source,actors in data['operators'].items():
             if source not in SOURCES or not isinstance(actors,list) or not actors or any(not isinstance(a,str) or not a.strip() for a in actors): raise ValueError()
         return data
@@ -35,12 +35,9 @@ def owner_identity(handler=None):
         from .identity import cli_identity
         human=cli_identity()
     else:
-        import ipaddress
-        if os.environ.get('DEV_AGENT_IDENTITY_SOURCE')!='tailscale-serve': raise ValueError('trusted identity boundary required')
-        if not ipaddress.ip_address(handler.client_address[0]).is_loopback or not ipaddress.ip_address(handler.server.server_address[0]).is_loopback: raise ValueError('loopback-only proxy boundary required')
-        logins=handler.headers.get_all('Tailscale-User-Login') or []
-        if len(logins)!=1 or not re.fullmatch(r'[^\s\x00-\x1f\x7f]{1,254}',logins[0]): raise ValueError('unique verified operator required')
-        human=HumanIdentity(logins[0],'tailscale-serve',_PROOF)
+        from .identity import dashboard_identity
+        verified=dashboard_identity(handler)
+        human=HumanIdentity(verified.actor,'tailscale-serve',_PROOF)
     p=policy()
     if human.actor not in p['operators'].get(human.source,[]): raise ValueError('authenticated operator is not repository owner')
     return human
@@ -99,6 +96,17 @@ def state(store,client,number):
     current=context(client,number,risk=item['context']['risk'] if item else 'L5')
     if not item:return dict(status='MISSING',context=current)
     if item['context']!=current:return dict(status='STALE',context=current,review=item)
+    if item.get('authentication_source')!='github-owner-object':
+        from datetime import datetime,timezone
+        from .github_owner import latest_object
+        since=datetime.fromtimestamp(int(item['created']),tz=timezone.utc).isoformat()
+        try:
+            if latest_object(client,number,current['head'],since,required=False) is not None:return dict(status='STALE',context=current,review=item,reason='new GitHub owner decision must be ingested')
+        except Exception:return dict(status='UNAVAILABLE',context=current,review=item)
+    if item.get('authentication_source')=='github-owner-object':
+        from .github_owner import still_valid
+        if not still_valid(item,client):return dict(status='STALE',context=current,review=item)
+        return dict(status=item['decision'],context=current,review=item)
     if item['decision']!='APPROVE':return dict(status=item['decision'],context=current,review=item)
     if item.get('authentication_source') not in SOURCES or item.get('actor') not in p['operators'].get(item.get('authentication_source'),[]) or int(current['risk'][1:])>=4 and not item.get('financial_ack') or int(current['risk'][1:])>=5 and not item.get('execution_ack'):
         return dict(status='INVALID',context=current,review=item)

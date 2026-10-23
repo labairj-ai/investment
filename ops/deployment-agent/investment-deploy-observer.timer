@@ -1,0 +1,8 @@
+[Unit]
+Description=Observe deployed health and protected state every five minutes
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+Unit=investment-deploy-observer.service
+[Install]
+WantedBy=timers.target

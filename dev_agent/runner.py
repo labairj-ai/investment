@@ -142,8 +142,19 @@ class ContainerValidator:
                     import xml.etree.ElementTree as ET
                     actual=sorted(c.get('classname','')+'::'+c.get('name','') for c in ET.parse(xml).getroot().iter('testcase'))
                     if actual!=expected:raise ValueError('trusted regression inventory changed')
+                from .result_collector import OracleClient,write_final
+                binding=dict(run=container,base=test_base,head=git(root,'rev-parse','HEAD'),candidate_source_tree_hash=source_hash(root),trusted_test_tree_hash=trusted_hash,image=self.image)
+                integrity=dict(status='UNAVAILABLE',reason='independent isolated oracle not provisioned')
+                if expected is not None and os.environ.get('DEV_AGENT_ORACLE_SOCKET') and os.environ.get('DEV_AGENT_ORACLE_KEY_FILE'):
+                    adapter=OracleClient(os.environ['DEV_AGENT_ORACLE_SOCKET'],os.environ['DEV_AGENT_ORACLE_KEY_FILE'])
+                    integrity=adapter.observe(binding,expected,result.returncode)
+                # The candidate-mounted XML is diagnostic, never the final receipt.
+                final=Path(temp)/'collector';final.mkdir(mode=0o700)
+                write_final(final,'validation',dict(binding=binding,artifact_integrity=integrity,diagnostic_junit_sha256=hashlib.sha256(xml.read_bytes()).hexdigest()))
+                if name!='supplemental_tests' and integrity['status']!='PASS':
+                    return dict(name=name,command=command,exit_code=result.returncode,status='UNAVAILABLE',reason=integrity['reason'],inventory=inventory,artifact_integrity=integrity,image=self.image)
                 if name == 'full_suite': self._full_junit = xml.read_bytes()
-                return dict(name=name, command=command + ["--junitxml=/artifacts/results.xml"], exit_code=result.returncode, status="PASS" if result.returncode == 0 and inventory["total"] > 0 and not inventory["failures"] else "FAIL", inventory=inventory, artifact_hash=hashlib.sha256(xml.read_bytes()).hexdigest(), trusted_test_tree_hash=trusted_hash, candidate_source_tree_hash=source_hash(root), image=self.image)
+                return dict(name=name, command=command + ["--junitxml=/artifacts/results.xml"], exit_code=result.returncode, status="PASS" if result.returncode == 0 and inventory["total"] > 0 and not inventory["failures"] else "FAIL", inventory=inventory, artifact_integrity=integrity, artifact_hash=hashlib.sha256(xml.read_bytes()).hexdigest(), trusted_test_tree_hash=trusted_hash, candidate_source_tree_hash=source_hash(root), image=self.image)
             except (subprocess.TimeoutExpired, ValueError, OSError) as error:
                 subprocess.run(["docker", "rm", "-f", container], capture_output=True, timeout=15)
                 reason='timeout' if isinstance(error,subprocess.TimeoutExpired) else 'sandbox artifact/protocol validation failed'
@@ -238,6 +249,7 @@ class Runner:
         start = time.monotonic(); unresolved = set(); seen = set(); final = {}; cumulative = 0
         try:
             for iteration in range(1, self.iterations + 1):
+                if certification() is not True:raise ValueError("execution certificate or delegated policy revoked")
                 if mode=='AUTONOMOUS':
                     from .operations import policy
                     config=policy(worktrees.repo)

@@ -127,7 +127,7 @@ Operational sequence: **0810 → 0811 → 0812 → 0815 → 0813 → 0814**. The
 
 ## Continuous improvement and operational trust — 0816–0824
 
-Created 2026-10-23. All nine items are **backlog**. Preserve the supplied dependencies and acceptance criteria; deployment or merged code alone does not close them.
+Created 2026-10-23. All nine items are **in-progress**; implementation does not imply operational acceptance. Preserve the supplied dependencies and acceptance criteria; deployment or merged code alone does not close them.
 
 | ID | Task | Priority | Dependencies |
 |---|---|---|---|

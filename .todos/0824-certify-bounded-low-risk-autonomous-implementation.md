@@ -1,7 +1,7 @@
 # TODO 0824 — Certify and Enable Bounded L0–L2 Autonomous Implementation
 
 - **ID:** 0824
-- **Status:** backlog
+- **Status:** in-progress
 - **Priority:** high strategic
 - **Risk:** L5 — autonomy policy
 - **Depends:** 0816, 0817, 0818, 0819, 0820, 0821, 0822, 0823

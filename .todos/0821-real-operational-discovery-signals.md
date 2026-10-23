@@ -1,7 +1,7 @@
 # TODO 0821 — Add Real Operational Signals to Development-Agent Discovery
 
 - **ID:** 0821
-- **Status:** backlog
+- **Status:** in-progress
 - **Priority:** high
 - **Risk:** L2/L3 — read-only observability
 - **Depends:** 0820

@@ -1,7 +1,7 @@
 # TODO 0818 — Make Trusted Validation Results Candidate-Nonwritable
 
 - **ID:** 0818
-- **Status:** backlog
+- **Status:** in-progress
 - **Priority:** critical before autonomy
 - **Risk:** L5 — Development Agent trust boundary
 - **Depends:** 0816, 0817

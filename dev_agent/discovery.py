@@ -86,7 +86,7 @@ def architecture_signals(root, exclusions=None):
     return signals
 
 
-def scout(root, signals=(), cap=5, exclusions=None, suppressed=()):
+def scout(root, signals=(), cap=5, exclusions=None, suppressed=(), enabled_sources=()):
     root = Path(root).resolve(); head = git(root, "rev-parse", "HEAD")
     proposals = []
     tracked = git(root, "ls-files").splitlines()
@@ -102,12 +102,12 @@ def scout(root, signals=(), cap=5, exclusions=None, suppressed=()):
     proposals.extend(architecture_signals(root, exclusions))
     proposals.extend(signals)
     chosen, seen, per_category = [], set(), Counter()
-    for proposal in sorted(proposals, key=lambda p: (p.get("category") == "ADD", p.get("category", ""), p.get("title", ""))):
+    for proposal in sorted(proposals, key=lambda p: (p.get("source")!="user", -p.get("impact",0), p.get("category") == "ADD", p.get("category", ""), p.get("title", ""))):
         if proposal.get("category") not in CATEGORIES or proposal.get("source") not in SOURCES or not proposal.get("evidence") or not proposal.get("validation"):
             continue
         bounded(proposal)
         identity = digest({k: proposal.get(k) for k in ("source", "problem", "files", "evidence")})
-        if identity in seen or identity in suppressed or per_category[proposal["category"]] >= max(1, cap // 2): continue
+        if identity in seen or identity in suppressed and not proposal.get("signal_id") or per_category[proposal["category"]] >= max(1, cap // 2): continue
         seen.add(identity); per_category[proposal["category"]] += 1; chosen.append(proposal)
         if len(chosen) >= max(0, cap): break
     active_todos = []
@@ -117,12 +117,13 @@ def scout(root, signals=(), cap=5, exclusions=None, suppressed=()):
             active_todos.append(dict(path=str(path.relative_to(root)), hash=digest(text)))
     recent = git(root, "log", "-5", "--format=%H %s").splitlines()
     completed = [str(p.relative_to(root)) for p in sorted((root / ".todos/done").glob("*.md"))[-10:]]
-    return dict(head=head, proposals=chosen if cap > 0 else [], context=dict(active_todos=active_todos, recent_commits=recent, recent_completed=completed), unavailable=["CI", "telemetry", "performance", "user_feedback"], source="tracked repository plus explicitly supplied signals")
+    return dict(head=head, proposals=chosen if cap > 0 else [], context=dict(active_todos=active_todos, recent_commits=recent, recent_completed=completed), unavailable=[label for label,source in [("CI","ci"),("telemetry","telemetry"),("performance","performance"),("user_feedback","user")] if source not in enabled_sources and not any(p.get("source")==source for p in signals)], source="tracked repository plus explicitly supplied signals")
 
 
 def task_index(root):
     records = {}
     for p in sorted((Path(root) / ".todos").rglob("*.md")):
+        if p.is_symlink():raise ValueError("symlink TODO denied")
         text = p.read_text(); match = re.search(r"\*\*ID:\*\*\s*(\d+)", text)
         if not match: continue
         tid = match[1]

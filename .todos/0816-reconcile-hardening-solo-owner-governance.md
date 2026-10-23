@@ -1,7 +1,7 @@
 # TODO 0816 — Reconcile Development-Agent Hardening with Solo-Owner Governance
 
 - **ID:** 0816
-- **Status:** backlog
+- **Status:** in-progress
 - **Priority:** critical
 - **Risk:** L5 — governance / development-agent authority
 - **Depends:** 0810, 0811, 0812, 0815

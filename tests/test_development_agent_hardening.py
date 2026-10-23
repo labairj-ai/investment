@@ -7,12 +7,16 @@ import time
 from pathlib import Path
 
 import pytest
+from development_fixtures import protection_observation, start_protection
 
 from test_development_agent import repo, store, proposal, approved, commit, protection, run_fixture, write_action
 from dev_agent import evidence, validation, certification, operations, github, snapshot, readiness
 from dev_agent.runner import ContainerValidator
 from dev_agent.store import digest
-from dev_agent.identity import dashboard_identity
+from dev_agent.identity import HumanIdentity, _PROOF
+
+def fixture_human():
+    return HumanIdentity('fixture-human', 'fixture-only', _PROOF)
 from dev_agent.discovery import git, plan, refresh_plan
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -25,7 +29,7 @@ def make_trusted_proof(root,store,cid):
     prior=[e['payload'] for e in candidate['events'] if e['kind']=='ITERATION'][-1]
     store.event(cid,'ITERATION',dict(prior,fixture_only=False))
     validator=ContainerValidator('fixture@sha256:'+'a'*64)
-    validator.run=lambda root,name,command:dict(name=name,command=command,exit_code=0,status='PASS',inventory=dict(total=2,passed=2,failures=[],skipped=[]))
+    validator.run=lambda root,name,command:dict(name=name,command=command,exit_code=0,status='PASS',artifact_integrity=dict(status='PASS',fixture_only=True),inventory=dict(total=2,passed=2,failures=[],skipped=[]))
     validation.execute(root,store,cid,validator)
     return evidence.seal(root,store,cid)
 
@@ -39,7 +43,7 @@ def built(repo,store,tmp_path):
 
 
 def technical(root,now=None):
-    data=dict(version='harness-canary-2',kind='TECHNICAL',status='PASS',harness_hash=certification.harness_hash(root),created=time.time() if now is None else now,components={k:'PASS' for k in certification.TECHNICAL_COMPONENTS})
+    data=dict(version='harness-canary-2',kind='TECHNICAL',status='PASS',harness_hash=certification.harness_hash(root),created=time.time() if now is None else now,components={k:'PASS' for k in certification.TECHNICAL_COMPONENTS},evidence=dict(snapshot=dict(status='PASS',backup_timestamp=time.time()-1)))
     data['id']=digest(data);return data
 
 
@@ -156,17 +160,17 @@ def start_candidate(repo,store,mode='SUPERVISED',risk='L0'):
         ctx=dict(ctx,risk=risk)
         old=[e['payload'] for e in store.get(cid)['events'] if e['kind']=='PLAN'][-1]
         store.event(cid,'PLAN',dict(old,context=ctx))
-    store.decide(cid,'approve','human',ctx,'approve-'+cid,'Explicit fixture approval',identity=dashboard_identity())
+    store.decide(cid,'approve','human',ctx,'approve-'+cid,'Explicit fixture approval',identity=fixture_human())
     return cid,ctx
 
 
 def test_supervised_admission_does_not_require_autonomy(repo,store,monkeypatch):
     cid,ctx=start_candidate(repo,store)
-    (repo/'config').mkdir();(repo/'config/development_agent.json').write_text((ROOT/'config/development_agent.json').read_text())
+    (repo/'config').mkdir(exist_ok=True);(repo/'config/development_agent.json').write_text((ROOT/'config/development_agent.json').read_text())
     monkeypatch.setattr(operations,'policy',lambda root:json.loads((ROOT/'config/development_agent.json').read_text()))
     monkeypatch.setattr(certification,'harness_hash',lambda root:'fixture-harness')
-    cert=dict(version='harness-canary-2',kind='TECHNICAL',status='PASS',harness_hash='fixture-harness',created=time.time(),components={k:'PASS' for k in certification.TECHNICAL_COMPONENTS});cert['id']=digest(cert)
-    record=operations.authorize_start(repo,store,cid,'SUPERVISED',[cert],{'status':'PASS','created':time.time()},human=dashboard_identity())
+    cert=dict(version='harness-canary-2',kind='TECHNICAL',status='PASS',harness_hash='fixture-harness',created=time.time()-1,components={k:'PASS' for k in certification.TECHNICAL_COMPONENTS},evidence=dict(snapshot=dict(status='PASS',backup_timestamp=time.time()-1)));cert['id']=digest(cert)
+    record=operations.authorize_start(repo,store,cid,'SUPERVISED',[cert],protection_observation(),human=fixture_human())
     assert record['mode']=='SUPERVISED' and record['context']==ctx
     assert operations.eligibility(ROOT,store)['completed']==0
 
@@ -181,7 +185,12 @@ def test_execution_admission_denials(repo,store,monkeypatch,variant):
     monkeypatch.setattr(certification,'technical_current',lambda *a:variant!='technical')
     if variant not in {'history'}:monkeypatch.setattr(operations,'eligibility',lambda *a,**k:dict(eligible=True))
     if variant=='history':monkeypatch.setattr(operations,'eligibility',lambda *a,**k:dict(eligible=False))
-    with pytest.raises(ValueError):operations.authorize_start(repo,store,cid,'SUPERVISED' if variant=='mode' else mode,[],{'status':'FAIL' if variant=='protection' else 'PASS','created':time.time()},human=None)
+    reasons={'disabled':'autonomous starts disabled','history':'supervised observation requirements','risk':'L4/L5 unavailable','mode':'fresh frozen mode/scope/base approval','human':'authenticated approval and explicit human invocation','technical':'current technical certification','protection':'fresh attributable effective-protection'}
+    with pytest.raises(ValueError,match=reasons[variant]):
+        operations.authorize_start(repo,store,cid,'SUPERVISED' if variant=='mode' else mode,[dict(evidence=dict(snapshot=dict(status='PASS',backup_timestamp=time.time()-1)))],protection_observation(status='FAIL' if variant=='protection' else 'PASS'),human=None)
+    if variant=='protection':
+        assert store.get(cid)['state']=='NEEDS_HUMAN'
+        assert [e for e in store.get(cid)['events'] if e['kind']=='PROTECTION'][-1]['payload']['status']=='FAIL'
 
 
 def remote(**changes):
@@ -238,9 +247,8 @@ def test_stale_or_partial_technical_receipts_never_pass():
 
 
 @pytest.fixture(autouse=True)
-def owner_bindings_fixture(monkeypatch):
-    # Temporary operator configuration; no operational identity is provisioned.
-    monkeypatch.setenv('DEV_AGENT_OWNER_BINDINGS',json.dumps(dict(repository='owner/repo',owner_login='owner',owner_id=1,operators={'os-interactive-cli':['fixture-owner']})))
+def owner_binding(monkeypatch):
+    monkeypatch.setenv('DEV_AGENT_OWNER_BINDINGS',json.dumps(dict(repository='owner/repo',owner_login='owner',owner_id=10,operators={'os-interactive-cli':['fixture-owner']})))
 
 
 def seed_completed_pilot(store, *, created=None, harness=None):
@@ -260,22 +268,28 @@ def seed_completed_pilot(store, *, created=None, harness=None):
         for i,(kind,payload) in enumerate(records):store._append(db,cid,kind,payload,f'fixture-lineage:{cid}:{i}')
     class Client:
         repository='owner/repo'
+        def protections(self):return protection_observation()
         def read(self,endpoint):
-            if '/pulls/' in endpoint:return dict(merged=True,head=dict(sha='a'*40),merge_commit_sha='c'*40,auto_merge=None,merged_by=dict(id=1,login='owner',type='User'))
-            return dict(full_name=self.repository,owner=dict(login='owner',id=1,type='User'))
+            if '/comments?' in endpoint:return []
+            if '/pulls/' in endpoint:return dict(merged=True,head=dict(sha='a'*40),merge_commit_sha='c'*40,auto_merge=None,merged_by=dict(id=10,login='owner',type='User'))
+            return dict(full_name=self.repository,owner=dict(login='owner',id=10,type='User'))
         def read_all(self,endpoint):return [dict(filename='docs/pilot.md',patch='+Pilot')]
         def pr_identity(self,number):return dict(remote(),state='MERGED',reviewDecision='APPROVED',mergeCommit={'oid':'c'*40})
+    adapter=Client();start_protection(store,cid,adapter,ROOT)
+    from dev_agent.protection import require
+    authority=None
+    for stage in ('publish','pr_handoff','pr_disposition','merge','deployment_observation'):
+        authority=require(store,cid,adapter,stage,root=ROOT)
+    with store.connect(True) as db:store._append(db,cid,'MERGE',dict(head=head,merge_sha='c'*40,source='github-verified-merge',protection_policy=authority['policy_hash']),'fixture-merge-observed:'+cid)
     from dev_agent.owner_review import attest,context
-    from dev_agent.identity import HumanIdentity,_PROOF
-    client=Client()
-    attest(store,client,context(client,1,risk='L0'),'APPROVE','fixture-owner-'+cid,'Reviewed prospective fixture',human=HumanIdentity('fixture-owner','os-interactive-cli',_PROOF))
-    return cid,client
+    attest(store,adapter,context(adapter,1,risk='L0'),'APPROVE','fixture-owner-'+cid,'Reviewed fixture',human=HumanIdentity('fixture-owner','os-interactive-cli',_PROOF))
+    return cid,adapter
 
 
 def test_real_qualifying_lineage_counts_once_and_rollback_invalidates(store):
     cid,client=seed_completed_pilot(store)
-    first=operations.record_success(ROOT,store,cid,client,human=dashboard_identity())
-    assert operations.record_success(ROOT,store,cid,client,human=dashboard_identity())==first
+    first=operations.record_success(ROOT,store,cid,client,human=fixture_human())
+    assert operations.record_success(ROOT,store,cid,client,human=fixture_human())==first
     assert operations.eligibility(ROOT,store)['completed']==1
     with store.connect(True) as db:
         store._append(db,cid,'DEPLOYMENT',dict(status='ROLLED_BACK'),'fixture-rollback')
@@ -297,7 +311,7 @@ def test_incomplete_or_synthetic_pilots_never_count(store,mutation):
     if mutation=='deployed':latest('DEPLOYMENT')['deployed_sha']='d'*40
     if mutation=='scope':latest('PLAN')['context']=dict(latest('PLAN')['context'],scope_hash='changed')
     store.get=lambda ident:candidate if ident==cid else original(ident)
-    with pytest.raises(ValueError):operations.record_success(ROOT,store,cid,client,human=dashboard_identity())
+    with pytest.raises(ValueError):operations.record_success(ROOT,store,cid,client,human=fixture_human())
     assert not operations.eligibility(ROOT,store)['eligible']
 
 
@@ -306,12 +320,12 @@ def test_three_runs_require_seven_calendar_days_and_exact_harness(store,monkeypa
     for delta in [0,86400,2*86400]:
         cid,client=seed_completed_pilot(store)
         monkeypatch.setattr(operations.time,'time',lambda value=now+delta:value)
-        operations.record_success(ROOT,store,cid,client,human=dashboard_identity())
+        operations.record_success(ROOT,store,cid,client,human=fixture_human())
     result=operations.eligibility(ROOT,store,now=now+3*86400)
     assert result['completed']==3 and result['observation_days']==2 and not result['eligible']
     cid,client=seed_completed_pilot(store)
     monkeypatch.setattr(operations.time,'time',lambda:now+8*86400)
-    operations.record_success(ROOT,store,cid,client,human=dashboard_identity())
+    operations.record_success(ROOT,store,cid,client,human=fixture_human())
     assert operations.eligibility(ROOT,store,now=now+9*86400)['eligible']
     monkeypatch.setattr(certification,'harness_hash',lambda root:'changed-config-contract')
     assert operations.eligibility(ROOT,store,now=now+9*86400)['completed']==0
@@ -319,16 +333,25 @@ def test_three_runs_require_seven_calendar_days_and_exact_harness(store,monkeypa
 
 def test_autonomy_budget_and_emergency_stop(repo,store,monkeypatch):
     cid,_=start_candidate(repo,store,mode='AUTONOMOUS')
-    config=json.loads((ROOT/'config/development_agent.json').read_text());config.update(autonomous_implementation=True,daily_implementation_cap=1)
+    config=json.loads((ROOT/'config/development_agent.json').read_text());config.update(autonomous_implementation=True,autonomy_stage='PR',daily_implementation_cap=1)
     monkeypatch.setattr(operations,'policy',lambda root:config)
     monkeypatch.setattr(operations,'eligibility',lambda *a,**k:dict(eligible=True))
     monkeypatch.setattr(certification,'technical_current',lambda *a:True)
     monkeypatch.setattr(certification,'harness_hash',lambda root:'fixture-harness')
-    protections=dict(status='PASS',created=time.time())
-    assert operations.authorize_start(repo,store,cid,'AUTONOMOUS',[],protections)['mode']=='AUTONOMOUS'
-    with pytest.raises(ValueError,match='daily implementation'):operations.authorize_start(repo,store,cid,'AUTONOMOUS',[],protections)
+    from dev_agent import stage_control
+    monkeypatch.setattr(stage_control,'technical_current',lambda *a,**k:True)
+    monkeypatch.setattr(stage_control,'harness_hash',lambda root:'fixture-harness')
+    monkeypatch.setattr(stage_control,'eligibility',lambda *a,**k:dict(eligible=True,blockers=[]))
+    monkeypatch.setattr(stage_control,'task_index',lambda root:{f'{n:04d}':dict(status='done') for n in range(816,824)})
+    with store.connect(True) as db:
+        for stage in ('SHADOW','BUILD_ONLY'):
+            for n in range(3):store._append(db,None,'STAGE_OBSERVATION',dict(stage=stage,candidate=f'budget-fixture-{stage}-{n}',harness_hash='fixture-harness',fixture_only=False),f'budget-stage:{stage}:{n}')
+    proofs=[dict(evidence=dict(snapshot=dict(status='PASS',backup_timestamp=time.time()-1),deployment_agent=dict(status='PASS',harness_hash='fixture-harness',created=time.time()-1)))]
+    protections=protection_observation()
+    assert operations.authorize_start(repo,store,cid,'AUTONOMOUS',proofs,protections)['mode']=='AUTONOMOUS'
+    with pytest.raises(ValueError,match='daily implementation'):operations.authorize_start(repo,store,cid,'AUTONOMOUS',proofs,protections)
     monkeypatch.setenv('DEV_AGENT_KILL_SWITCH','1')
-    with pytest.raises(ValueError,match='disabled'):operations.authorize_start(repo,store,cid,'AUTONOMOUS',[],protections)
+    with pytest.raises(ValueError,match='disabled'):operations.authorize_start(repo,store,cid,'AUTONOMOUS',proofs,protections)
 
 
 @pytest.mark.parametrize('document',[
@@ -354,7 +377,7 @@ def test_disabling_autonomy_stops_pipeline_before_builder(repo,store,tmp_path):
     class NeverBuilder:
         def respond(self,*args):raise AssertionError('Builder must not be invoked')
     class Client:
-        def protections(self):return dict(status='PASS',created=time.time())
+        def protections(self):return protection_observation()
     # Missing certificates/config in the disposable fixture fails closed before
     # any provider action. A real disabled installation is separately covered by
     # admission tests with all other gates passing.
@@ -363,9 +386,9 @@ def test_disabling_autonomy_stops_pipeline_before_builder(repo,store,tmp_path):
     assert store.get(cid)['state']=='APPROVED'
 
 
-def test_publishing_cannot_target_main_or_unreviewed_repository(repo,monkeypatch):
+def test_publishing_cannot_target_main_or_unreviewed_repository(repo,store,monkeypatch):
     client=github.GitHub('owner/repo')
-    with pytest.raises(ValueError):client.publish(repo,'main',git(repo,'rev-parse','HEAD'))
+    with pytest.raises(ValueError):client.publish(repo,'main',git(repo,'rev-parse','HEAD'),store=store,cid='invalid')
 
 
 def test_approval_validation_scope_is_frozen(repo,store,monkeypatch):
@@ -374,7 +397,7 @@ def test_approval_validation_scope_is_frozen(repo,store,monkeypatch):
     store.event(cid,'PLAN',dict(event,focused_tests=['tests/different.py']))
     monkeypatch.setattr(operations,'policy',lambda root:json.loads((ROOT/'config/development_agent.json').read_text()))
     with pytest.raises(ValueError,match='validation scope changed'):
-        operations.authorize_start(repo,store,cid,'SUPERVISED',[],dict(status='PASS',created=time.time()),human=dashboard_identity())
+        operations.authorize_start(repo,store,cid,'SUPERVISED',[],protection_observation(),human=fixture_human())
 
 
 def test_new_failed_certification_invalidates_prior_success():
@@ -390,7 +413,7 @@ def test_readiness_eligible_fixture_requires_enabled_policy_and_fresh_evidence(s
         cid,client=seed_completed_pilot(store)
         with monkeypatch.context() as clock:
             clock.setattr(operations.time,'time',lambda age=days:now-age*86400)
-            operations.record_success(ROOT,store,cid,client,human=dashboard_identity())
+            operations.record_success(ROOT,store,cid,client,human=fixture_human())
     cert=technical(ROOT,now)
     cert['evidence']=dict(sandbox={'status':'PASS'},snapshot=dict(status='PASS',backup_timestamp=now,schema_fingerprint='schema'),github=dict(status='PASS',created=now))
     cert['id']=digest({k:v for k,v in cert.items() if k!='id'})
@@ -399,6 +422,17 @@ def test_readiness_eligible_fixture_requires_enabled_policy_and_fresh_evidence(s
     config=json.loads((ROOT/'config/development_agent.json').read_text());config['autonomous_implementation']=True
     monkeypatch.setattr(readiness,'policy',lambda root:config)
     monkeypatch.setattr(operations,'policy',lambda root:config)
+    from dev_agent import stage_control
+    monkeypatch.setattr(stage_control,'task_index',lambda root:{f'{n:04d}':dict(status='done') for n in range(816,824)})
+    config['autonomy_stage']='PR'
+    original_read=Path.read_text
+    monkeypatch.setattr(Path,'read_text',lambda path,*a,**k:json.dumps(config) if path==ROOT/'config/development_agent.json' else original_read(path,*a,**k))
+    cert['evidence']['deployment_agent']=dict(status='PASS',harness_hash=certification.harness_hash(ROOT),created=now)
+    cert['id']=digest({k:v for k,v in cert.items() if k!='id'})
+    monkeypatch.setattr(stage_control,'certificates',lambda store:[cert])
+    with store.connect(True) as db:
+        for stage in ('SHADOW','BUILD_ONLY'):
+            for n in range(3):store._append(db,None,'STAGE_OBSERVATION',dict(stage=stage,candidate=f'readiness-fixture-{stage}-{n}',harness_hash=cert['harness_hash'],fixture_only=False),f'readiness-stage:{stage}:{n}')
     result=readiness.readiness(ROOT,store,now)
     assert result['status']=='AUTONOMY_ELIGIBLE' and result['autonomous_starts_allowed']
     config['autonomous_implementation']=False
@@ -415,10 +449,10 @@ def test_disposition_recheck_invalidates_advanced_remote_head(repo,store,tmp_pat
     class Client:
         repository='owner/repo'
         head=proof['head']
-        def protections(self):return {'status':'PASS'}
+        def protections(self):return protection_observation()
         def handoff(self,*args):return dict(number=1,url='https://github.com/owner/repo/pull/1')
         def pr_identity(self,number):return remote(headRefName=branch,headRefOid=self.head)
-    client=Client();github.prepare_pr(root,store,cid,proof,client)
+    client=Client();start_protection(store,cid,client,ROOT);github.prepare_pr(root,store,cid,proof,client)
     assert github.recheck_pr(store,cid,client)['status']=='PASS'
     client.head='b'*40
     assert github.recheck_pr(store,cid,client)['status']=='NEEDS_HUMAN'
@@ -444,13 +478,19 @@ def test_validation_container_excludes_host_git_and_secrets(repo,monkeypatch):
         mounts=[command[i+1] for i,value in enumerate(command[:-1]) if value=='--mount']
         src=next(m for m in mounts if 'dst=/source,' in m)
         source=Path(src.split('src=',1)[1].split(',')[0])
-        assert src.endswith('readonly') and not (source/'.git').exists() and not (source/'.env').exists()
+        assert src.endswith('readonly') and (source/'.git').is_dir() and not (source/'.env').exists()
+        assert not (source/'.git/objects/info/alternates').exists()
         assert not list(source.glob('*.bundle'))
         assert '--network=none' in command and '--pull=never' in command
         assert not any('/var/run' in value for value in command)
+        if '--collect-base' in command:
+            artifact=next(m for m in mounts if 'dst=/artifacts' in m)
+            output=Path(artifact.split('src=',1)[1].split(',')[0])
+            (output/'inventory.json').write_text(json.dumps(['tests.test_oracle::test_oracle']))
         return subprocess.CompletedProcess(command,0)
     monkeypatch.setattr(runner_module.subprocess,'run',invoke)
     validator=ContainerValidator('fixture@sha256:'+'a'*64)
+    validator.prior_base=git(repo,'rev-parse','HEAD')
     result=validator.run(repo,'full_suite',['python','-m','pytest','tests/'])
     assert result['status']=='PARTIAL' and observed  # no JUnit despite exit zero
 
@@ -488,27 +528,39 @@ def test_eligible_low_risk_pipeline_reaches_verified_pr_fixture(repo,store,monke
     from dev_agent import autonomy
     from dev_agent.worktrees import Worktrees
     from dev_agent.providers import ReplayProvider
-    config=json.loads((ROOT/'config/development_agent.json').read_text());config['autonomous_implementation']=True
-    (repo/'config').mkdir();(repo/'config/development_agent.json').write_text(json.dumps(config))
+    config=json.loads((ROOT/'config/development_agent.json').read_text());config['autonomous_implementation']=True;config['autonomy_stage']='PR'
+    (repo/'config').mkdir(exist_ok=True);(repo/'config/development_agent.json').write_text(json.dumps(config))
     if path.startswith('static/'):(repo/'static').mkdir();(repo/path).write_text('body { color: black; }\n')
     commit(repo)
     cid=store.discover(proposal(files=[path]))
     plan(repo,store,cid,['The requested low-risk presentation or documentation change is visible.'],mode='AUTONOMOUS')
     commit(repo);ctx=refresh_plan(repo,store,cid)
     assert ctx['risk']==risk
-    store.decide(cid,'approve','fixture-human',ctx,'auto-'+cid,identity=dashboard_identity())
+    store.decide(cid,'approve','fixture-human',ctx,'auto-'+cid,identity=fixture_human())
     manager=Worktrees(repo,store.path.parent/'worktrees');record=manager.create(ctx['todo'],ctx['head']);store.event(cid,'WORKTREE',record)
     monkeypatch.setattr(certification,'technical_current',lambda *a,**k:True)
     monkeypatch.setattr(certification,'harness_hash',lambda root:'fixture-certified-harness')
     monkeypatch.setattr(operations,'eligibility',lambda *a,**k:dict(eligible=True))
     monkeypatch.setattr(autonomy,'current',lambda *a,**k:True)
+    monkeypatch.setattr(autonomy,'certificates',lambda store:[dict(evidence=dict(snapshot=dict(status='PASS',backup_timestamp=time.time()-1),deployment_agent=dict(status='PASS',harness_hash='fixture-certified-harness',created=time.time()-1)))])
+    from dev_agent import stage_control
+    monkeypatch.setattr(stage_control,'task_index',lambda root:{f'{n:04d}':dict(status='done') for n in range(816,824)})
+    monkeypatch.setattr(stage_control,'technical_current',lambda *a,**k:True)
+    monkeypatch.setattr(stage_control,'harness_hash',lambda root:'fixture-certified-harness')
+    monkeypatch.setattr(stage_control,'certificates',lambda store:[dict(evidence=dict(snapshot=dict(status='PASS',backup_timestamp=time.time()-1),github=dict(status='PASS',created=time.time()-1),deployment_agent=dict(status='PASS',harness_hash='fixture-certified-harness',created=time.time()-1)))])
+    monkeypatch.setattr(stage_control,'eligibility',lambda *a,**k:dict(eligible=True,blockers=[]))
+    # Synthetic trusted stage adapters in this disposable ledger; no production
+    # pilot/certificate directory is touched and no success is qualified.
+    with store.connect(True) as db:
+        for stage in ('SHADOW','BUILD_ONLY'):
+            for n in range(3):store._append(db,None,'STAGE_OBSERVATION',dict(stage=stage,candidate=f'fixture-{stage}-{n}',harness_hash='fixture-certified-harness',created=time.time()-1,fixture_only=False),f'fixture-stage:{stage}:{n}')
     validator=ContainerValidator('fixture@sha256:'+'a'*64)
-    validator.run=lambda root,name,command:dict(name=name,command=command,exit_code=0,status='PASS',inventory=dict(total=2,passed=2,failures=[],skipped=[]))
+    validator.run=lambda root,name,command:dict(name=name,command=command,exit_code=0,status='PASS',artifact_integrity=dict(status='PASS',fixture_only=True),inventory=dict(total=2,passed=2,failures=[],skipped=[]))
     class Client:
         repository='owner/repo'
         published=None
-        def protections(self):return dict(status='PASS',created=time.time())
-        def publish(self,root,branch,head):self.published=(branch,head)
+        def protections(self):return protection_observation()
+        def publish(self,root,branch,head,**kwargs):self.published=(branch,head)
         def handoff(self,branch,title,body,draft):
             assert not draft and 'execution mode AUTONOMOUS' in body
             return dict(number=1,url='https://github.com/owner/repo/pull/1')

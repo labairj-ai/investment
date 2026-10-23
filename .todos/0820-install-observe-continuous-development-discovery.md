@@ -1,7 +1,7 @@
 # TODO 0820 — Install and Observe Continuous Development Discovery
 
 - **ID:** 0820
-- **Status:** backlog
+- **Status:** in-progress
 - **Priority:** high
 - **Risk:** L3 — operational scheduler
 - **Depends:** 0816, 0817

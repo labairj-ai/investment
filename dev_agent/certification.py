@@ -26,15 +26,28 @@ def harness_hash(root):
     files = [root / p for p in ("AGENTS.md", "config/development_agent.json", "docs/development-agent.md", "serve.py", "generate_dashboard.py", "scripts/check_development_agent.py", "scripts/check_agent_contract.py", "tests/test_development_agent.py", ".github/workflows/test.yml")]
     files += sorted((root / "dev_agent").glob("*.py"))
     files += sorted((root / "tests").glob("test_development_agent*.py"))
+    files += [root/'tests'/n for n in ('test_continuous_improvement.py','test_deployment_agent.py','test_owner_gateway.py') if (root/'tests'/n).is_file()]
     files += [root/"scripts/backup_provenance.py", root/"backup_data.sh"]
     files += sorted((root / "scripts").glob("check_development_agent*"))
-    files += sorted((root / "systemd").glob("development-scout.*"))
+    files += sorted((root / "systemd").glob("development-*"))
     files += [root/'scripts/run_contained_ci.py',root/'scripts/check_validation_containment.py']
     files += sorted(p for p in (root/'ops/validator').glob('*') if p.is_file())
-    return digest({str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest() for p in files})
+    files += sorted(p for p in (root/'ops/deployment-agent').glob('*') if p.is_file())
+    files += sorted((root/'deployment_agent').glob('*.py'))
+    files += sorted((root/'owner_gateway').glob('*.py'))
+    files += [root/p for p in ('scripts/aggregate_release_validation.py','scripts/collect_development_signals.py','scripts/check_owner_review.py','scripts/run_supervised_cycle.py') if (root/p).is_file()]
+    payload={str(p.relative_to(root)):hashlib.sha256(p.read_bytes()).hexdigest() for p in files}
+    # Activation state is a separately owner-reviewed control, not a new harness.
+    # Without this fixed, explicit normalization, flipping the enable bit would
+    # invalidate the very prospective evidence required to flip it. Every risk,
+    # authority, freshness, budget, image and implementation change remains bound.
+    config=json.loads((root/'config/development_agent.json').read_text())
+    for key,value in {'autonomous_implementation':False,'autonomy_stage':'SHADOW','supervised_loop_enabled':False,'supervised_publish_pr':False}.items():config[key]=value
+    payload['config/development_agent.json']=digest(config)
+    return digest(payload)
 
 
-TECHNICAL_COMPONENTS = {"workspace_isolation", "reviewer_independence", "evidence_binding", "production_mutation_denial", "financial_detection", "human_gate", "audit_lineage", "fixture_pr_handoff", "os_validation_sandbox", "github_protection", "production_snapshot", "authority_adversarial"}
+TECHNICAL_COMPONENTS = {"workspace_isolation", "reviewer_independence", "evidence_binding", "production_mutation_denial", "financial_detection", "human_gate", "audit_lineage", "fixture_pr_handoff", "os_validation_sandbox", "github_protection", "production_snapshot", "authority_adversarial", "artifact_integrity"}
 
 
 def technical_current(root, certificates, now=None):
@@ -47,11 +60,12 @@ def technical_current(root, certificates, now=None):
     return bool(c.get('version')=='harness-canary-2' and c.get('kind')=='TECHNICAL' and c.get('status')=='PASS' and c.get('harness_hash')==bound and 0<=now-c.get('created',0)<=age and TECHNICAL_COMPONENTS<=c.get('components',{}).keys() and all(c['components'][k]=='PASS' for k in TECHNICAL_COMPONENTS) and c.get('id')==digest({k:v for k,v in c.items() if k!='id'}))
 
 
-def current(root, certificates, now=None, *, store=None):
+def current(root, certificates, now=None, *, store=None, protections=None):
     from .operations import eligibility, policy
     import os
     config=policy(root)
-    return bool(store is not None and config.get('autonomous_implementation') and not config.get('emergency_stop') and os.environ.get('DEV_AGENT_KILL_SWITCH','').lower() in {'','0','false'} and technical_current(root,certificates,now) and eligibility(root,store,now)['eligible'])
+    from .stage_control import report as stage_report
+    return bool(store is not None and config.get('autonomous_implementation') and not config.get('emergency_stop') and os.environ.get('DEV_AGENT_KILL_SWITCH','').lower() in {'','0','false'} and technical_current(root,certificates,now) and eligibility(root,store,now)['eligible'] and stage_report(root,store,now,protections=protections,technical=certificates)['eligible'])
 
 
 def canary(root):
@@ -111,11 +125,11 @@ def canary(root):
         components["audit_lineage"] = "PASS" if all(any(e["kind"]==kind for e in store.get(cid)["events"]) for kind in ("PLAN","APPROVAL","ITERATION")) else "FAIL"
     # Passing the replay canary is not proof of OS confinement, GitHub settings or
     # successful supervised operation. Those are separate mandatory components.
-    components.update(os_validation_sandbox="NOT_RUN", github_protection="NOT_RUN", production_snapshot="NOT_RUN")
+    components.update(os_validation_sandbox="NOT_RUN", github_protection="NOT_RUN", production_snapshot="NOT_RUN", artifact_integrity="NOT_RUN")
     from .adversarial import probe
     adversarial=probe(root)
     components['authority_adversarial']=adversarial['status']
-    data = dict(adversarial=adversarial, version="harness-canary-2", kind="TECHNICAL", harness_hash=harness_hash(root), created=time.time(), components=components, status="PASS" if all(v == "PASS" for v in components.values()) else "PARTIAL", supervised=False, external_mutation=False)
+    data = dict(adversarial=adversarial, version="harness-canary-2", kind="TECHNICAL", runtime_policy_hash=digest(json.loads((Path(root)/"config/development_agent.json").read_text())), harness_hash=harness_hash(root), created=time.time(), components=components, status="PASS" if all(v == "PASS" for v in components.values()) else "PARTIAL", supervised=False, external_mutation=False)
     data["id"] = digest(data)
     return data
 
@@ -133,6 +147,7 @@ def certify(root, validator, github_client, snapshot, actor=None, *, provenance=
     from .containment import probe
     confinement=probe(validator.image)
     focused=sorted('tests/'+p.name for p in (Path(root)/'tests').glob('test_development_agent*.py'))
+    focused+=['tests/'+n for n in ('test_continuous_improvement.py','test_deployment_agent.py','test_owner_gateway.py') if (Path(root)/'tests'/n).is_file()]
     if not focused:raise ValueError('complete development-agent regression scope unavailable')
     sandbox=validator.run(root,'focused_tests',['python','-m','pytest',*focused,'-q'])
     protections=github_client.protections()
@@ -140,6 +155,7 @@ def certify(root, validator, github_client, snapshot, actor=None, *, provenance=
         observation=check_snapshot(snapshot,workspace,provenance,max_age_hours=json.loads((Path(root)/'config/development_agent.json').read_text()).get('snapshot_max_age_hours',24))
     data['components']['os_validation_sandbox']='PASS' if sandbox.get('status')=='PASS' and sandbox.get('exit_code')==0 and sandbox.get('inventory',{}).get('total',0)>0 and not sandbox.get('inventory',{}).get('failures') else sandbox.get('status','UNAVAILABLE')
     if confinement['status']!='PASS':data['components']['os_validation_sandbox']=confinement['status']
+    data['components']['artifact_integrity']=sandbox.get('artifact_integrity',{}).get('status','UNAVAILABLE')
     data['components']['github_protection']=protections['status']
     data['components']['production_snapshot']=observation['status']
     data.update(supervised=False,evidence=dict(sandbox=sandbox,containment=confinement,github=protections,snapshot=observation))

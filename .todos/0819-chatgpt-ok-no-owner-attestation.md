@@ -1,7 +1,7 @@
 # TODO 0819 — Add ChatGPT OK/NO Owner-Attestation Workflow
 
 - **ID:** 0819
-- **Status:** backlog
+- **Status:** in-progress
 - **Priority:** high
 - **Risk:** L5 — human authority / merge governance
 - **Depends:** 0816, 0817

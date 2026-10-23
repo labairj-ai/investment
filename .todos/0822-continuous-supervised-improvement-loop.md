@@ -1,7 +1,7 @@
 # TODO 0822 — Build the Continuous Supervised Improvement Loop
 
 - **ID:** 0822
-- **Status:** backlog
+- **Status:** in-progress
 - **Priority:** critical strategic
 - **Risk:** L3 — automated software development
 - **Depends:** 0816, 0817, 0818, 0819, 0820, 0821

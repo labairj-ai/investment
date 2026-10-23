@@ -83,10 +83,13 @@ def execute(root, store, cid, validator, *, fixture=False):
         if result.get('exit_code') != 0 and status == 'PASS': status = 'FAIL'
         if name in {'focused_tests', 'full_suite'}:
             inv = result.get('inventory', {})
+            if not fixture and result.get('artifact_integrity',{}).get('status')!='PASS':
+                status='UNAVAILABLE'
+                result['reason']='independent isolated-oracle result integrity unavailable'
             if inv.get('total', 0) <= 0 or inv.get('failures') or not isinstance(inv.get('skipped'), list):
                 status = 'FAIL' if inv.get('failures') else 'PARTIAL'
         record = dict(binding, name=name, command=result.get('command', command), command_contract=VERSION, manifest_hash=digest(commands), sandbox_image_digest=validator.image, started_at=start, ended_at=time.time(), exit_code=result.get('exit_code'), status=status, batch=batch, fixture_only=fixture)
-        for key in ('inventory', 'artifact_hash', 'reason'):
+        for key in ('inventory', 'artifact_hash', 'reason', 'artifact_integrity'):
             if key in result: record[key] = result[key]
         # Write each result immediately, even if a subsequent gate crashes.
         with store.connect(True) as db:
@@ -126,6 +129,7 @@ def reconstruct(root, store, cid):
     if len(supplemental)!=1 or any(supplemental[0].get(k)!=v for k,v in expected.items()) or supplemental[0]['result'].get('status')!='PASS' or supplemental[0]['result'].get('exit_code')!=0:
         raise ValueError('supplemental test evidence missing, failed or stale')
     for record, (name, command) in zip(records, commands):
+        if name in {'focused_tests','full_suite'} and record.get('status')=='PASS' and record.get('artifact_integrity',{}).get('status')!='PASS':raise ValueError('independent result integrity required')
         actual = record.get('command', [])
         if actual != command and actual != command+['--junitxml=/artifacts/results.xml']:
             raise ValueError('validation command changed')

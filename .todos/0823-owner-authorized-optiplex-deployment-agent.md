@@ -1,7 +1,7 @@
 # TODO 0823 — Build an Owner-Authorized OptiPlex Deployment Agent
 
 - **ID:** 0823
-- **Status:** backlog
+- **Status:** in-progress
 - **Priority:** critical strategic
 - **Risk:** L5 — production deployment
 - **Depends:** 0816, 0817, 0819

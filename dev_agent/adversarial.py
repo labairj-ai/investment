@@ -61,7 +61,7 @@ def probe(root):
             ctx=dict(todo='0001',head=base,mode='SUPERVISED')
             store.event(candidate,'PLAN',dict(context=ctx,focused_tests=['tests/test_fixture.py']))
             binding=dict(candidate=candidate,todo='0001',base=base,head=head,mode='SUPERVISED',source_hash=source_hash(repo),trusted_test_tree_hash=oracle_hash,candidate_source_tree_hash=source_hash(repo))
-            records=[dict(binding,name=name,command=cmd,batch=attack,command_contract=COMMAND_VERSION,manifest_hash=digest(commands),fixture_only=False,status='PASS',exit_code=0) for name,cmd in commands]
+            records=[dict(binding,name=name,command=cmd,batch=attack,command_contract=COMMAND_VERSION,manifest_hash=digest(commands),fixture_only=False,status='PASS',exit_code=0,artifact_integrity=dict(status='PASS',fixture_only=True)) for name,cmd in commands]
             with store.connect(True) as db:
                 for r in records:store._append(db,candidate,'VALIDATION',r,attack+':'+r['name'])
                 store._append(db,candidate,'VALIDATION_BATCH',dict(binding,batch=attack,records=[digest(r) for r in records]),attack+':batch')

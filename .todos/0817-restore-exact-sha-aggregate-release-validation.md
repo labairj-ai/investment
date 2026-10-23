@@ -1,7 +1,7 @@
 # TODO 0817 — Restore Exact-SHA CI and Aggregate Release Validation
 
 - **ID:** 0817
-- **Status:** backlog
+- **Status:** in-progress
 - **Priority:** critical
 - **Risk:** L3 — CI / release tooling
 - **Depends:** 0816

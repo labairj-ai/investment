@@ -16,7 +16,7 @@ class WorkspaceGuard:
         self.allowed = frozenset(allowed)
         for name in self.allowed:
             safe_relative(name)
-            if matches(name, FORBIDDEN) or matches(name, GOVERNANCE) or name.startswith(("dev_agent/", "systemd/", "ops/")):
+            if matches(name, FORBIDDEN) or matches(name, GOVERNANCE) or name.startswith((".todos/", "docs/plans/", "owner_gateway/", "deployment_agent/", "dev_agent/", "systemd/", "ops/")):
                 raise ValueError("protected write scope")
         self.max_bytes = max_bytes
 

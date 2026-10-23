@@ -21,13 +21,14 @@ from .snapshot import check_snapshot
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["init", "list", "show", "scout", "plan", "bind-plan", "decide", "worktree", "build", "recover", "seal", "validate", "pilot-success", "review-decision", "sync-merge", "autonomous-cycle", "readiness", "observe", "effectiveness", "snapshot", "verify-receipt", "pr", "protections", "canary", "certify"])
+    parser.add_argument("command", choices=["resume-autonomy", "owner-feedback", "supervised-cycle", "stage-report", "approve-build-policy", "scheduler-status", "owner-ingest", "owner-context", "owner-review", "owner-state", "init", "list", "show", "scout", "plan", "bind-plan", "decide", "worktree", "build", "recover", "seal", "validate", "pilot-success", "review-decision", "sync-merge", "autonomous-cycle", "readiness", "observe", "effectiveness", "snapshot", "verify-receipt", "pr", "protections", "canary", "certify"])
     parser.add_argument("--root", type=Path, default=Path.cwd())
     parser.add_argument("--candidate")
     parser.add_argument("--input", type=Path)
     parser.add_argument("--decision", choices=["approve", "reject", "defer"])
     parser.add_argument("--rationale", default="")
     parser.add_argument("--nonce")
+    parser.add_argument("--risk",choices=["L0","L1","L2","L3","L4","L5"],default="L5")
     parser.add_argument("--model")
     parser.add_argument("--review-model")
     parser.add_argument("--image")
@@ -36,7 +37,55 @@ def main(argv=None):
     args = parser.parse_args(argv)
     store = configured_store(); root = args.root.resolve()
     data = json.loads(args.input.read_text()) if args.input else {}
-    if args.command == "init": store.migrate(); result = dict(status="INITIALIZED")
+    if args.command=='resume-autonomy':
+        from .owner_review import owner_identity
+        from .stage_control import resume
+        human=owner_identity()
+        if input('Record pause review (does not enable autonomy)? Type REVIEW PAUSE\n')!='REVIEW PAUSE':raise ValueError('explicit owner action required')
+        result=resume(root,store,human=human,rationale=args.rationale,nonce=args.nonce)
+    elif args.command=='owner-feedback':
+        from .owner_review import owner_identity
+        from .signals import signal,ingest
+        owner_identity()
+        item=signal('user',data['component'],data['problem'],data['files'],data['evidence_location'],outcome=data['outcome'],validation=data['validation'],confidence=1,impact=5)
+        result=ingest(store,[item])
+    elif args.command=='stage-report':
+        from .stage_control import report
+        result=report(root,store)
+    elif args.command=='approve-build-policy':
+        from .owner_review import owner_identity
+        from .build_policy import approve
+        human=owner_identity()
+        if input('Delegate bounded L0-L2 supervised builds (no merge/deploy)? Type DELEGATE BUILD ONLY\n')!='DELEGATE BUILD ONLY':raise ValueError('explicit owner delegation required')
+        result=approve(root,store,data['patterns'],human=human,nonce=args.nonce,rationale=args.rationale,expires_at=data['expires_at'])
+    elif args.command=='supervised-cycle':
+        if not all((args.model,args.review_model,args.image)):parser.error('separate Builder/Reviewer and pinned image required')
+        from .improvement_loop import cycle,reconcile_prs,reconcile_observations
+        client=GitHub(args.repository);reconciled=reconcile_prs(root,store,client);outcomes=[]
+        if os.environ.get('DEV_AGENT_DEPLOYMENT_OBSERVATIONS') and os.environ.get('DEV_AGENT_DEPLOYMENT_OBSERVATION_KEY_FILE'):
+            key_path=Path(os.environ['DEV_AGENT_DEPLOYMENT_OBSERVATION_KEY_FILE'])
+            if key_path.is_symlink() or key_path.stat().st_mode&0o077:raise ValueError('private observer verification key required')
+            outcomes=reconcile_observations(root,store,client,os.environ['DEV_AGENT_DEPLOYMENT_OBSERVATIONS'],key_path.read_bytes())
+        result=cycle(root,store,OllamaProvider(args.model),OllamaProvider(args.review_model),ContainerValidator(args.image,timeout=1800),client)
+        result.update(reconciled_prs=reconciled,observed_outcomes=outcomes)
+    elif args.command=='scheduler-status':
+        from .scheduler_health import observe,record
+        result=record(store,observe())
+    elif args.command=='owner-ingest':
+        from .github_owner import ingest
+        result=ingest(store,GitHub(args.repository),data['object_id'])
+    elif args.command in {'owner-context','owner-review','owner-state'}:
+        from . import owner_review
+        client=GitHub(args.repository)
+        if args.command=='owner-context': result=owner_review.context(client,data['pr'],risk=args.risk)
+        elif args.command=='owner-state': result=owner_review.state(store,client,data['pr'])
+        else:
+            human=owner_review.owner_identity()
+            # Deliberate terminal confirmation is separate from JSON and authorship.
+            expected=data['context']; challenge=f"{data['decision']} {args.repository}#{expected['pr']} {expected['head']}"
+            if input('Review complete? Type '+challenge+'\n')!=challenge: raise ValueError('explicit owner confirmation required')
+            result=owner_review.attest(store,client,expected,data['decision'],args.nonce,args.rationale,human=human,financial_ack=data.get('financial_ack'),execution_ack=data.get('execution_ack'))
+    elif args.command == "init": store.migrate(); result = dict(status="INITIALIZED")
     elif args.command == "list": result = store.list()
     elif args.command == "show": result = store.get(args.candidate)
     elif args.command == "scout": result = discover_daily(root, store, signals=data.get("signals", []))

@@ -3,6 +3,10 @@ from __future__ import annotations
 
 import fcntl
 import json
+import time
+import os
+import subprocess
+import re
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -18,7 +22,22 @@ def slot(now=None):
     return now.astimezone(ZoneInfo("America/New_York")).date().isoformat()
 
 
+def trigger():
+    invocation=os.environ.get('INVOCATION_ID','')
+    if re.fullmatch(r'[a-f0-9]{32}',invocation):
+        try:
+            service=subprocess.run(['systemctl','--user','show','development-scout.service','--no-pager','--property=InvocationID,MainPID'],check=True,capture_output=True,text=True,timeout=10)
+            values=dict(line.split('=',1) for line in service.stdout.splitlines() if '=' in line)
+            timer=subprocess.run(['systemctl','--user','show','development-scout.timer','--value','--property=LastTriggerUSecMonotonic'],check=True,capture_output=True,text=True,timeout=10)
+            recent=0<=time.monotonic()-int(timer.stdout.strip())/1_000_000<=180
+            if values.get('InvocationID')==invocation and int(values.get('MainPID','0'))==os.getpid() and recent:return dict(source='systemd-observed-timer',invocation=invocation)
+        except (OSError,ValueError,subprocess.SubprocessError):pass
+    return dict(source='operator',invocation=None)
+
+
 def discover_daily(root, store, *, now=None, cap=None, backlog_limit=None, signals=()):
+    started=time.time();origin=trigger()
+    enabled_sources=[]
     policy_path = Path(root) / "config/development_agent.json"
     policy = json.loads(policy_path.read_text()) if policy_path.exists() else {}
     cap = policy.get("daily_candidate_cap", 5) if cap is None else cap
@@ -30,7 +49,10 @@ def discover_daily(root, store, *, now=None, cap=None, backlog_limit=None, signa
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         with store.connect() as db:
             prior = db.execute("SELECT payload FROM dev_events WHERE event_id=?", (key,)).fetchone()
-        if prior: return dict(status="DUPLICATE", slot=key)
+        if prior:
+            duplicate=dict(status='DUPLICATE',slot=key,created=0,trigger=origin,duration_seconds=time.time()-started)
+            if origin['source']=='systemd-observed-timer':store.event(None,'SCHEDULE_DUPLICATE',duplicate,key+':duplicate:'+origin['invocation'])
+            return duplicate
         existing = store.list(500)
         active = len([c for c in existing if c["state"] not in {"CLOSED", "REJECTED"}])
         suppressed = {digest({k:c[k] for k in ("source", "problem", "files", "evidence")}) for c in existing}
@@ -44,15 +66,27 @@ def discover_daily(root, store, *, now=None, cap=None, backlog_limit=None, signa
             result = dict(status="BACKLOG_FULL", slot=key, created=0)
         else:
             try:
-                found = scout(root, signals, budget, policy.get("architecture_exclusions", {}), suppressed); graph = protected_graph(root); ids = []
+                if os.environ.get('DEVELOPMENT_SIGNAL_SPOOL'):
+                    from .signals import load_spool
+                    loaded,enabled_sources=load_spool(os.environ['DEVELOPMENT_SIGNAL_SPOOL'])
+                    signals=[*signals,*loaded]
+                deduplicated=0;signal_suppressed=0
+                found = scout(root, signals, budget, policy.get("architecture_exclusions", {}), suppressed,enabled_sources=enabled_sources); graph = protected_graph(root); ids = []
                 previous = {c["id"] for c in existing}
                 for proposal in found["proposals"]:
-                    cid = store.discover(proposal); ids.append(cid)
+                    if proposal.get('signal_id'):
+                        from .signals import ingest
+                        signal_result=ingest(store,[proposal]);deduplicated+=signal_result['deduplicated'];signal_suppressed+=signal_result['suppressed']
+                        if not signal_result['candidates']:continue
+                        cid=signal_result['candidates'][0]
+                    else:cid=store.discover(proposal)
+                    ids.append(cid)
                     store.event(cid, "SCORE", score(proposal, classify(proposal["files"], graphs=[graph])))
-                result = dict(status="COLLECTED", slot=key, candidates=ids, created=len(set(ids)-previous), head=found["head"], unavailable=found["unavailable"])
+                result = dict(status="COLLECTED", slot=key, candidates=ids, created=len(set(ids)-previous), head=found["head"], unavailable=found["unavailable"],deduplicated=deduplicated,suppressed=signal_suppressed)
             except Exception as error:
                 result = dict(status="FAILED", slot=key, attempt=attempt, reason=type(error).__name__)
                 store.event(None, "SCHEDULE_FAILURE", result, key+":failure:"+str(attempt))
                 return result
+        result.update(trigger=origin,started_at=started,ended_at=time.time(),duration_seconds=time.time()-started,deduplicated=result.get('deduplicated',0),suppressed=result.get('suppressed',0))
         store.event(None, "SCHEDULE", result, key)
         return result
