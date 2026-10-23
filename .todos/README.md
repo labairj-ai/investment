@@ -124,3 +124,21 @@ Created 2026-10-22. 0810–0812 and 0815 are **in-progress**; 0813/0814 remain *
 | [0815](0815-align-github-protection-solo-owner.md) | Align GitHub Protection With Solo-Owner Governance | high | 0811 |
 
 Operational sequence: **0810 → 0811 → 0812 → 0815 → 0813 → 0814**. The supplied formal dependencies are preserved; 0815 precedes PR #6 revalidation operationally. Owner review must be an explicit authenticated action bound to the exact head. AI review and CI cannot supply merge authority. Financial/execution gates, human merge, disabled autonomy and disabled auto-merge remain mandatory.
+
+## Continuous improvement and operational trust — 0816–0824
+
+Created 2026-10-23. All nine items are **backlog**. Preserve the supplied dependencies and acceptance criteria; deployment or merged code alone does not close them.
+
+| ID | Task | Priority | Dependencies |
+|---|---|---|---|
+| [0816](0816-reconcile-hardening-solo-owner-governance.md) | Reconcile Development-Agent Hardening with Solo-Owner Governance | critical | 0810, 0811, 0812, 0815 |
+| [0817](0817-restore-exact-sha-aggregate-release-validation.md) | Restore Exact-SHA CI and Aggregate Release Validation | critical | 0816 |
+| [0818](0818-make-trusted-validation-results-candidate-nonwritable.md) | Make Trusted Validation Results Candidate-Nonwritable | critical before autonomy | 0816, 0817 |
+| [0819](0819-chatgpt-ok-no-owner-attestation.md) | Add ChatGPT OK/NO Owner-Attestation Workflow | high | 0816, 0817 |
+| [0820](0820-install-observe-continuous-development-discovery.md) | Install and Observe Continuous Development Discovery | high | 0816, 0817 |
+| [0821](0821-real-operational-discovery-signals.md) | Add Real Operational Signals to Development-Agent Discovery | high | 0820 |
+| [0822](0822-continuous-supervised-improvement-loop.md) | Build the Continuous Supervised Improvement Loop | critical strategic | 0816, 0817, 0818, 0819, 0820, 0821 |
+| [0823](0823-owner-authorized-optiplex-deployment-agent.md) | Build an Owner-Authorized OptiPlex Deployment Agent | critical strategic | 0816, 0817, 0819 |
+| [0824](0824-certify-bounded-low-risk-autonomous-implementation.md) | Certify and Enable Bounded L0–L2 Autonomous Implementation | high strategic | 0816, 0817, 0818, 0819, 0820, 0821, 0822, 0823 |
+
+Sequence: **0816 governance reconciliation → 0817 exact-SHA CI → 0818 validation integrity + 0819 owner OK/NO workflow + 0820 observed discovery → 0821 operational signals → 0822 supervised loop**, with **0823 owner-authorized deployment** following 0816/0817/0819. **0824 autonomy certification and activation** follows every item 0816–0823 and prospective supervised evidence. Autonomy activation remains a separate owner-approved change; creating these tasks does not enable implementation, merging, deployment or scheduling.
