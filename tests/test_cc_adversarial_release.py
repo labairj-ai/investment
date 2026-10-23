@@ -10,7 +10,7 @@ Design rules:
   - Parallel tests cannot contaminate one another.
 """
 from __future__ import annotations
-from cc_cli_fixtures import next_model_version
+from cc_cli_fixtures import next_model_version, next_simulator_contract_version
 import json
 import subprocess
 import sys
@@ -201,7 +201,7 @@ class TestVersionBypasses:
         real = current_contract_state(CC_V3_CONFIG)
         # engine_hash changed (no sim_contract_hash change), wrong bump
         proposed = dict(real, engine_hash='engine-change-wrong-bump',
-                        simulator_contract_version='simulator-contract-3')
+                        simulator_contract_version=next_simulator_contract_version())
         cc, _ = self._setup(monkeypatch, tmp_path, proposed)
         result = cc.check_contract_consistency(CC_V3_CONFIG)
         assert result['ok'] is False
@@ -227,7 +227,7 @@ class TestVersionBypasses:
         from strategy_config import CC_V3_CONFIG
         real = current_contract_state(CC_V3_CONFIG)
         proposed = dict(real, engine_hash='engine-multi', simulator_contract_hash='sim-multi',
-                        simulator_contract_version='simulator-contract-3')  # model_version not bumped
+                        simulator_contract_version=next_simulator_contract_version())  # model_version not bumped
         cc, _ = self._setup(monkeypatch, tmp_path, proposed)
         result = cc.check_contract_consistency(CC_V3_CONFIG)
         assert result['ok'] is False
@@ -355,7 +355,7 @@ class TestClassificationBypasses:
         from strategy_config import CC_V3_CONFIG
         real = current_contract_state(CC_V3_CONFIG)
         proposed = dict(real, engine_hash='evidence-misclassified',
-                        simulator_contract_version='simulator-contract-3')
+                        simulator_contract_version=next_simulator_contract_version())
         cc, md = self._setup(monkeypatch, tmp_path, proposed)
         _make_manifest(md, prior_state=real, proposed_state=proposed,
                        manifest_id='evidence-misclassified', category='EVIDENCE_INFRASTRUCTURE')
