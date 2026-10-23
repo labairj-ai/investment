@@ -193,3 +193,24 @@ def test_ledger_append_only_development_records_are_expected_but_mutation_is_not
     assert before!=after and executor.protected_unchanged(before,after)
     with sqlite3.connect(ledger.path) as db:db.execute('DROP TRIGGER dev_events_update');db.execute("UPDATE dev_events SET payload='{}'")
     assert not executor.protected_unchanged(before,executor.protected())
+
+
+@pytest.mark.parametrize('mutation',[None,{'performed_via_github_app':dict(id=1144995,slug='other-app')},{'performed_via_github_app':dict(id=9,slug='chatgpt-codex-connector')},{'user':dict(id=2,login='agent',type='User')},{'user':dict(id=1,login='owner',type='Bot')},{'updated_at':'edited'}])
+def test_real_shape_connector_owner_deploy_keeps_all_admission_guards(authorized_owner,monkeypatch,mutation):
+    from test_continuous_improvement import CONNECTOR_APP,allow_connector
+    from deployment_agent.admission import authorize
+    store,client,obj,data=authorized_owner
+    obj['performed_via_github_app']=dict(CONNECTOR_APP)
+    with pytest.raises(ValueError):authorize(store,client,999)
+    allow_connector(monkeypatch)
+    # Approval policy is SHA-bound and policy-bound: refresh under explicit app policy.
+    from test_development_agent_owner_review import approve
+    from dev_agent.identity import HumanIdentity,_PROOF
+    approve((store,client,HumanIdentity('human-owner','os-interactive-cli',_PROOF)),nonce='connector-policy-review-0002')
+    if mutation:
+        obj.update(mutation)
+        with pytest.raises(ValueError):authorize(store,client,999)
+    else:
+        assert authorize(store,client,999)['merge_sha']==data['merge_sha']
+        obj['body']='OWNER-DEPLOY deployment-1\n'+json.dumps(dict(data,head='f'*40))
+        with pytest.raises(ValueError):authorize(store,client,999)

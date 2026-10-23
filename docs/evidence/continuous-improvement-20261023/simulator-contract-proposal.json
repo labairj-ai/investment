@@ -1,6 +1,6 @@
 {
-  "status": "PROPOSED_NOT_APPLIED",
-  "operator_acknowledged": false,
+  "status": "APPROVED_APPLIED",
+  "operator_acknowledged": true,
   "prior": {
     "fingerprint_version": "cc-behavior-v1",
     "model_version": "cc-v3.4",

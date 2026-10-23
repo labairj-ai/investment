@@ -5,7 +5,7 @@ import json
 import re
 import time
 from datetime import datetime
-from .owner_review import policy,context
+from .owner_review import policy,context,allowed_owner_app
 from .result_collector import canonical
 
 HEADER='OWNER-REVIEW solo-owner-2\n'
@@ -17,7 +17,7 @@ def verified_object(client,object_id):
     p=policy();obj=client.read(f'repos/{client.repository}/issues/comments/{object_id}')
     user=obj.get('user') or {}
     if (client.repository!=p['repository'] or obj.get('id')!=object_id or user.get('id')!=p['owner_id']
-        or user.get('login')!=p['owner_login'] or user.get('type')!='User' or obj.get('performed_via_github_app') is not None):raise ValueError('owner-authored human object required')
+        or user.get('login')!=p['owner_login'] or user.get('type')!='User' or not allowed_owner_app(obj,p)):raise ValueError('owner-authored human object required')
     try:created=datetime.fromisoformat(obj['created_at'].replace('Z','+00:00')).timestamp()
     except (ValueError,KeyError,TypeError):raise ValueError('GitHub decision timestamp required') from None
     if not 0<=time.time()-created<=86400:raise ValueError('GitHub owner decision expired')
@@ -38,7 +38,7 @@ def verified_object(client,object_id):
     level=int(data['risk'][1:])
     if data['decision']=='APPROVE' and (level>=3 and not data['rationale'].strip() or level>=4 and not data['financial_ack'] or level>=5 and not data['execution_ack']):raise ValueError('risk acknowledgments missing')
     # No conversation, OAuth token or private credential enters the ledger.
-    selected={k:obj.get(k) for k in ('id','html_url','issue_url','body','created_at','updated_at')};selected['user']={k:user[k] for k in ('id','login','type')}
+    selected={k:obj.get(k) for k in ('id','html_url','issue_url','body','created_at','updated_at')};selected['user']={k:user[k] for k in ('id','login','type')};selected['performed_via_github_app']=obj.get('performed_via_github_app')
     return data,current,dict(id=object_id,url=obj['html_url'],created_at=obj['created_at'],sha256=hashlib.sha256(canonical(selected)).hexdigest())
 
 

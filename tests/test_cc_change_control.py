@@ -545,7 +545,7 @@ def test_evidence_infrastructure_with_changed_hash_fails(monkeypatch, tmp_path):
     """EVIDENCE_INFRASTRUCTURE declared in manifest but hash changed → mismatch."""
     real_state = current_contract_state(CC_V3_CONFIG)
     proposed = dict(real_state, engine_hash='new-evidence-hash',
-                    simulator_contract_version='simulator-contract-3')
+                    simulator_contract_version='simulator-contract-'+str(int(real_state['simulator_contract_version'].rsplit('-',1)[1])+1))
     cc = _setup_change(monkeypatch, tmp_path, real_state, proposed,
                        manifest_category='EVIDENCE_INFRASTRUCTURE')
     result = cc.check_contract_consistency(CC_V3_CONFIG)
@@ -573,7 +573,7 @@ def test_engine_only_hash_change_requires_model_ver_bump(monkeypatch, tmp_path):
     # Only engine hash changed, no model_version bump, but sim_contract_version bumped
     proposed = dict(real_state,
                     engine_hash='new-engine-only-hash',
-                    simulator_contract_version='simulator-contract-3')  # wrong component
+                    simulator_contract_version='simulator-contract-'+str(int(real_state['simulator_contract_version'].rsplit('-',1)[1])+1))  # wrong component
     cc = _setup_change(monkeypatch, tmp_path, real_state, proposed)
     result = cc.check_contract_consistency(CC_V3_CONFIG)
     assert result['ok'] is False
@@ -587,7 +587,7 @@ def test_multi_component_change_requires_both_bumps(monkeypatch, tmp_path):
     proposed = dict(real_state,
                     engine_hash='new-engine-hash',
                     simulator_contract_hash='new-sim-hash',
-                    simulator_contract_version='simulator-contract-3')  # only one bump
+                    simulator_contract_version='simulator-contract-'+str(int(real_state['simulator_contract_version'].rsplit('-',1)[1])+1))  # only one bump
     cc = _setup_change(monkeypatch, tmp_path, real_state, proposed)
     result = cc.check_contract_consistency(CC_V3_CONFIG)
     assert result['ok'] is False
@@ -601,7 +601,7 @@ def test_correct_behavioral_change_all_bumps_passes(monkeypatch, tmp_path):
     proposed = dict(real_state,
                     engine_hash='new-engine',
                     simulator_contract_hash='new-sim',
-                    simulator_contract_version='simulator-contract-3',
+                    simulator_contract_version='simulator-contract-'+str(int(real_state['simulator_contract_version'].rsplit('-',1)[1])+1),
                     model_version=next_model_version())
     cc = _setup_change(monkeypatch, tmp_path, real_state, proposed)
     result = cc.check_contract_consistency(CC_V3_CONFIG)

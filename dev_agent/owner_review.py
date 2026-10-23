@@ -20,7 +20,9 @@ def policy():
     raw=os.environ.get('DEV_AGENT_OWNER_BINDINGS','')
     try:
         data=json.loads(raw)
-        if set(data)!={'repository','owner_login','owner_id','operators'}: raise ValueError()
+        if set(data)-{'repository','owner_login','owner_id','operators','allowed_github_apps'} or not {'repository','owner_login','owner_id','operators'} <= set(data): raise ValueError()
+        apps=data.get('allowed_github_apps',[])
+        if not isinstance(apps,list) or any(not isinstance(a,dict) or set(a)!={'id','slug'} or type(a['id']) is not int or a['id']!=1144995 or a['slug']!='chatgpt-codex-connector' for a in apps): raise ValueError()
         if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+',data['repository']): raise ValueError()
         if not re.fullmatch(r'[A-Za-z0-9-]+',data['owner_login']) or type(data['owner_id']) is not int or data['owner_id']<=0: raise ValueError()
         if not isinstance(data['operators'],dict) : raise ValueError()
@@ -130,3 +132,12 @@ def verify_merge_actor(client,number,head,merge_sha):
         or actor.get('id')!=p['owner_id'] or actor.get('login')!=p['owner_login']):
         raise ValueError('exact-head owner-performed non-automated GitHub merge required')
     return dict(id=actor['id'],login=actor['login'],source='github-merged-by')
+
+
+def allowed_owner_app(obj, bindings):
+    """Transport allowlist only; caller must still verify the human owner actor."""
+    app=obj.get('performed_via_github_app')
+    if app is None:return True
+    return (isinstance(app,dict) and type(app.get('id')) is int
+            and any(app.get('id')==a['id'] and app.get('slug')==a['slug']
+                    for a in bindings.get('allowed_github_apps',[])))

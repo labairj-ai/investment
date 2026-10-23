@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 import time
-from dev_agent.owner_review import policy,require,verify_merge_actor
+from dev_agent.owner_review import policy,require,verify_merge_actor,allowed_owner_app
 from scripts.check_owner_review import check
 
 
@@ -11,7 +11,7 @@ def authorize(store,client,object_id,*,emergency_stop=False,mirror_owner=False):
     if type(object_id) is not int or object_id<=0:raise ValueError('positive deployment authorization ID required')
     if emergency_stop:raise ValueError('deployment emergency stop active')
     p=policy();obj=client.read(f'repos/{client.repository}/issues/comments/{object_id}');user=obj.get('user') or {}
-    if client.repository!=p['repository'] or obj.get('id')!=object_id or user.get('type')!='User' or user.get('id')!=p['owner_id'] or user.get('login')!=p['owner_login'] or obj.get('performed_via_github_app') is not None:raise ValueError('owner deployment actor required')
+    if client.repository!=p['repository'] or obj.get('id')!=object_id or user.get('type')!='User' or user.get('id')!=p['owner_id'] or user.get('login')!=p['owner_login'] or not allowed_owner_app(obj,p):raise ValueError('owner deployment actor required')
     body=obj.get('body','');prefix='OWNER-DEPLOY deployment-1\n'
     if not isinstance(body,str) or len(body)>16000 or not body.startswith(prefix) or obj.get('created_at')!=obj.get('updated_at'):raise ValueError('unedited versioned deployment object required')
     from dev_agent.structured_json import loads

@@ -281,3 +281,43 @@ def test_software_metrics_never_infer_user_acceptance_or_use_financial_pnl(store
 
 def test_missing_foundation_acceptance_blocks_supervised_implementation(repo):
     with pytest.raises(ValueError):improvement_loop.require_completed(repo)
+
+
+CONNECTOR_APP=dict(id=1144995,slug='chatgpt-codex-connector',node_id='A_fixture',name='ChatGPT Codex Connector',owner=dict(login='openai',type='Organization'))
+
+
+def allow_connector(monkeypatch):
+    import os
+    bindings=json.loads(os.environ['DEV_AGENT_OWNER_BINDINGS'])
+    bindings['allowed_github_apps']=[dict(id=1144995,slug='chatgpt-codex-connector')]
+    monkeypatch.setenv('DEV_AGENT_OWNER_BINDINGS',json.dumps(bindings))
+
+
+@pytest.mark.parametrize('decision',['APPROVE','REQUEST_CHANGES','DEFER'])
+def test_real_shape_connector_owner_review_requires_explicit_allowlist(owner_setup,monkeypatch,decision):
+    store,client,_=owner_setup;comment=owner_comment(client,decision)
+    comment['performed_via_github_app']=dict(CONNECTOR_APP);original=client.read
+    client.read=lambda endpoint:comment if '/issues/comments/' in endpoint else [comment] if '/issues/1/comments?' in endpoint else original(endpoint)
+    with pytest.raises(ValueError):github_owner.ingest(store,client,123)
+    allow_connector(monkeypatch)
+    first=github_owner.ingest(store,client,123)
+    assert github_owner.ingest(store,client,123)==first
+    from dev_agent.owner_review import state
+    assert state(store,client,1)['status']==decision
+    client.head='f'*40
+    with pytest.raises(ValueError):github_owner.ingest(store,client,123)
+
+
+@pytest.mark.parametrize('mutation',[
+    {'performed_via_github_app':dict(CONNECTOR_APP,id=99)},
+    {'performed_via_github_app':dict(CONNECTOR_APP,slug='other-app')},
+    {'performed_via_github_app':dict(CONNECTOR_APP,id='1144995')},
+    {'user':dict(id=2,login='agent',type='User')},
+    {'user':dict(id=1,login='owner',type='Bot')},
+    {'updated_at':'edited'},
+])
+def test_connector_allowlist_never_bypasses_owner_review_guards(owner_setup,monkeypatch,mutation):
+    store,client,_=owner_setup;allow_connector(monkeypatch)
+    comment=dict(owner_comment(client),performed_via_github_app=dict(CONNECTOR_APP));comment.update(mutation);original=client.read
+    client.read=lambda endpoint:comment if '/issues/comments/' in endpoint else [comment] if '/issues/1/comments?' in endpoint else original(endpoint)
+    with pytest.raises(ValueError):github_owner.ingest(store,client,123)

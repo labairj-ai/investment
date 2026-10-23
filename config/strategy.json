@@ -90,6 +90,7 @@
     }
   },
   "covered_call_v3": {
+    "prospective_cohort_version": "simulator-contract-3",
     "mode": "observe_only",
     "config_version": "cc-v3-policy-2",
     "path_count": 2048,
