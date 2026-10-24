@@ -1,0 +1,33 @@
+[Unit]
+Description=Trusted read-only discovery safety bookends
+After=local-fs.target
+[Service]
+Type=simple
+User=root
+Group=optiplex
+ExecStart=/usr/bin/python3 -I -S /opt/investment-discovery-observer/observer.py serve
+WorkingDirectory=/
+UMask=0022
+RuntimeDirectory=investment-discovery-observer
+RuntimeDirectoryMode=0750
+StateDirectory=investment-development-acceptance
+StateDirectoryMode=0755
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+PrivateNetwork=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_SETUID CAP_SETGID
+ReadWritePaths=/var/lib/investment-development-acceptance /run/investment-discovery-observer
+InaccessiblePaths=-/home/optiplex/.ssh -/home/optiplex/.aws -/home/optiplex/.config/gh -/home/optiplex/investment/.env
+RestrictAddressFamilies=AF_UNIX
+MemoryMax=512M
+TasksMax=16
+Restart=on-failure
+[Install]
+WantedBy=multi-user.target

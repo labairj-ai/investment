@@ -8,6 +8,7 @@ Group=investment-deploy
 WorkingDirectory=/opt/investment-deployment-controller
 ExecStart=/opt/investment-deployment-controller/venv/bin/python -I /usr/local/libexec/investment-deploy.py --authorization-id %i
 EnvironmentFile=/etc/investment-deploy/service.env
+ExecStartPre=/opt/investment-deployment-controller/venv/bin/python -I /usr/local/libexec/investment-deploy-preflight.py
 NoNewPrivileges=true
 PrivateTmp=true
 PrivateDevices=true
@@ -20,3 +21,8 @@ RestrictSUIDSGID=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 UMask=0077
 TimeoutStartSec=1800
+
+# Read-only protected state is separate from exact-code checkout authority.
+ReadOnlyPaths=/home/optiplex/investment/out /home/optiplex/investment/holdings.csv
+InaccessiblePaths=-/home/optiplex/investment/.env -/home/optiplex/.ssh -/home/optiplex/.aws -/home/optiplex/.config/gh -/home/optiplex/.local/share/investment-development/service.env
+InaccessiblePaths=-/home/optiplex/.netrc -/home/optiplex/.git-credentials -/home/optiplex/.gnupg

@@ -8,6 +8,10 @@ import re
 import subprocess
 import tempfile
 import time
+import os
+import stat
+import urllib.request
+from urllib.parse import urlsplit
 from pathlib import Path
 
 from .discovery import git
@@ -16,12 +20,39 @@ from .store import bounded, digest
 from .policy import whole_diff
 
 
+class _ReadOnlyGitHubRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self,request,fp,code,message,headers,newurl):
+        target=urlsplit(newurl)
+        if target.scheme!='https' or target.netloc!='api.github.com':
+            raise ValueError('cross-origin GitHub credential redirect denied')
+        return super().redirect_request(request,fp,code,message,headers,newurl)
+
+
 class GitHub:
     def __init__(self, repository):
         if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository): raise ValueError("repository")
         self.repository = repository
 
     def read(self, endpoint):
+        # Installed read-only collectors/controllers need no owner CLI credentials.
+        # Their separately provisioned token file never enters candidate mounts.
+        token_path=os.environ.get('DEV_AGENT_GITHUB_READ_TOKEN_FILE')
+        if token_path:
+            path=Path(token_path)
+            info=path.lstat()
+            if path.is_symlink() or not stat.S_ISREG(info.st_mode) or info.st_uid not in {0,os.getuid()} or info.st_mode&0o077 or not 1<=info.st_size<=4096:
+                raise ValueError('private operator-controlled GitHub read credential required')
+            for parent in path.absolute().parents:
+                if parent.is_symlink() or parent.stat().st_mode&0o022:raise ValueError('protected credential ancestry required')
+            token=path.read_text().strip()
+            if not token or any(c.isspace() for c in token):raise ValueError('invalid GitHub read credential')
+            if not isinstance(endpoint,str) or endpoint.startswith('/') or '://' in endpoint or any(c in endpoint for c in '\r\n'):
+                raise ValueError('relative GitHub API endpoint required')
+            request=urllib.request.Request('https://api.github.com/'+endpoint,headers={'Authorization':'Bearer '+token,'Accept':'application/vnd.github+json'})
+            with urllib.request.build_opener(_ReadOnlyGitHubRedirect()).open(request,timeout=30) as response:raw=response.read(20_000_001)
+            if len(raw)>20_000_000:raise ValueError('GitHub response exceeds inventory limit')
+            from .structured_json import loads
+            return loads(raw)
         result = subprocess.run(["gh", "api", endpoint], check=True, capture_output=True, text=True, timeout=30)
         return json.loads(result.stdout)
 
@@ -66,8 +97,32 @@ class GitHub:
             return dict(status='UNAVAILABLE',repository=self.repository,failures=['GitHub identity/protection visibility incomplete'],auto_merge=False,created=time.time(),evidence_hash=digest(raw),evidence=raw)
 
     def pr_identity(self, number):
-        result=subprocess.run(['gh','pr','view',str(number),'--repo',self.repository,'--json','number,url,headRefName,headRefOid,headRepository,headRepositoryOwner,baseRefName,isDraft,state,reviewDecision,mergeCommit'],check=True,capture_output=True,text=True,timeout=30)
-        return json.loads(result.stdout)
+        """Normalize canonical REST identity; never infer an empty CLI repo name.
+
+        `gh pr view` can return nameWithOwner="" even for a same-repository PR.
+        The REST head/base repositories and immutable SHA are authoritative facts.
+        A deleted/incomplete repository is unavailable, never a guessed identity.
+        """
+        if type(number) is not int or number<=0:raise ValueError('positive PR number required')
+        raw=self.read(f'repos/{self.repository}/pulls/{number}')
+        try:
+            head=raw['head'];base=raw['base'];repo=head['repo'];owner=repo['owner']
+            if (raw['number']!=number or type(raw['number']) is not int
+                or base['repo']['full_name']!=self.repository
+                or raw['html_url']!=f'https://github.com/{self.repository}/pull/{number}'
+                or raw['state'] not in {'open','closed'} or type(raw['merged']) is not bool
+                or type(raw['draft']) is not bool or raw['merged'] and raw['state']!='closed'
+                or not re.fullmatch(r'[a-f0-9]{40}',head['sha'])
+                or not all(isinstance(v,str) and v for v in (head['ref'],base['ref'],repo['name'],owner['login']))
+                or repo['full_name']!=owner['login']+'/'+repo['name']):
+                raise ValueError('canonical PR identity mismatch')
+            merge=raw['merge_commit_sha'] if raw['merged'] else None
+            if raw['merged'] and not re.fullmatch(r'[a-f0-9]{40}',merge):raise ValueError('exact merge identity unavailable')
+            return dict(number=number,url=raw['html_url'],headRefName=head['ref'],headRefOid=head['sha'],
+                        headRepository=dict(nameWithOwner=repo['full_name']),headRepositoryOwner=dict(login=owner['login']),
+                        baseRefName=base['ref'],isDraft=raw['draft'],state='MERGED' if raw['merged'] else raw['state'].upper(),
+                        mergeCommit=dict(oid=merge) if merge else None)
+        except (KeyError,TypeError,AttributeError):raise ValueError('complete canonical PR identity unavailable') from None
 
     def publish(self,root,branch,head,*,store,cid):
         if not branch.startswith('agent/') or git(root,'branch','--show-current')!=branch or git(root,'rev-parse','HEAD')!=head or git(root,'status','--porcelain'):

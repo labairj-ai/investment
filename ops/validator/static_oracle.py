@@ -10,6 +10,8 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import re
+import socket
+import errno
 import socketserver
 import stat
 import subprocess
@@ -42,8 +44,8 @@ def loads(raw):return json.loads(raw,object_pairs_hook=unique,parse_constant=lam
 def private_file(path):
     path=Path(path)
     info=path.lstat()
-    if path.is_symlink() or not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid() or info.st_mode&0o077:
-        raise ValueError('private controller-owned regular file required')
+    if path.is_symlink() or not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid() or info.st_mode&0o077 or info.st_size>16384:
+        raise ValueError('private bounded controller-owned regular file required')
     # All ancestors must resist candidate-controlled replacement.
     for parent in path.absolute().parents:
         info=parent.lstat()
@@ -53,7 +55,7 @@ def private_file(path):
 
 def git(authority,*args):
     env={'PATH':'/usr/bin:/bin','HOME':'/nonexistent','GIT_CONFIG_NOSYSTEM':'1','GIT_CONFIG_GLOBAL':'/dev/null','GIT_NO_REPLACE_OBJECTS':'1','GIT_TERMINAL_PROMPT':'0','GIT_OPTIONAL_LOCKS':'0'}
-    return subprocess.run(['/usr/bin/git','--git-dir='+authority,'-c','core.hooksPath=/dev/null','-c','core.attributesFile=/dev/null',*args],env=env,cwd='/',capture_output=True,check=True,timeout=20).stdout
+    return subprocess.run(['/usr/bin/git','--git-dir='+authority,'-c','core.hooksPath=/dev/null','-c','core.attributesFile=/dev/null','-c','core.fsmonitor=false','-c','safe.directory='+authority,*args],env=env,cwd='/',capture_output=True,check=True,timeout=20).stdout
 
 
 def tree(authority,sha):
@@ -128,6 +130,23 @@ def evaluate(config,request,*,timeout=5):
                 containment='no-candidate-code-execution',fixture_only=False,grants_pytest_authority=False)
 
 
+def clear_stale_socket(path):
+    """Recover only our private, refused socket. Never unlink a live listener."""
+    if not path.exists() and not path.is_symlink():return
+    before=path.lstat()
+    if path.is_symlink() or not stat.S_ISSOCK(before.st_mode) or before.st_uid!=os.getuid() or before.st_mode&0o077:
+        raise ValueError('unsafe existing socket path')
+    with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as client:
+        client.settimeout(1)
+        try:client.connect(str(path))
+        except OSError as error:
+            if error.errno!=errno.ECONNREFUSED:raise ValueError('existing socket availability unknown') from None
+        else:raise ValueError('oracle socket already active')
+    after=path.lstat()
+    if (after.st_dev,after.st_ino)!=(before.st_dev,before.st_ino):raise ValueError('socket changed during recovery')
+    path.unlink()
+
+
 def serve(config_path):
     config=loads(private_file(config_path));key=private_file(config['signing_key'])
     if len(key)<32:raise ValueError('private signing material required')
@@ -135,7 +154,7 @@ def serve(config_path):
     parent=socket_path.parent
     if not parent.is_dir() or parent.is_symlink() or parent.stat().st_uid!=os.getuid() or parent.stat().st_mode&0o077:
         raise ValueError('private owned socket directory required')
-    if socket_path.exists() or socket_path.is_symlink():raise ValueError('refusing existing socket path')
+    clear_stale_socket(socket_path)
     class Handler(socketserver.StreamRequestHandler):
         def handle(self):
             self.connection.settimeout(30)
@@ -148,10 +167,14 @@ def serve(config_path):
             self.wfile.write(canonical(result)+b'\n')
     old=os.umask(0o077)
     try:
-        with socketserver.UnixStreamServer(str(socket_path),Handler) as server:server.serve_forever()
+        with socketserver.UnixStreamServer(str(socket_path),Handler) as server:
+            owned_socket=socket_path.lstat()
+            server.serve_forever()
     finally:
         os.umask(old)
-        if socket_path.is_socket():socket_path.unlink()
+        if socket_path.is_socket() and 'owned_socket' in locals():
+            current=socket_path.lstat()
+            if (current.st_dev,current.st_ino)==(owned_socket.st_dev,owned_socket.st_ino):socket_path.unlink()
 
 
 if __name__=='__main__':

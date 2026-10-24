@@ -71,6 +71,13 @@ def ready_inputs(owner_setup,monkeypatch):
     monkeypatch.setattr(improvement_loop,'require_completed',lambda root:None)
     monkeypatch.setattr(build_policy,'current',lambda *a:dict(source='isolated-test'))
     client.protections=lambda:protection_observation(created=now)
+    # Synthetic discovery/host boundary for this service-entry component fixture.
+    from test_development_agent_live_rollout import qualifying_payload
+    from dev_agent.discovery import git
+    source=git(ROOT,'rev-parse','HEAD')
+    for age,char in enumerate('abc'):
+        with store.connect(True) as db:store._append(db,None,'SCHEDULE',qualifying_payload(now,head=source,age=age,invocation=char*32),'entry-fixture:'+char)
+    monkeypatch.setattr(scheduler_health,'host_safety',lambda *a:True)
     return store,client,config,evidence,now
 
 

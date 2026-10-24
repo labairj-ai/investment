@@ -35,7 +35,8 @@ def supervised_admission(root,store,client,*,now=None):
     from .operations import policy,certificates
     from .certification import technical_current,harness_hash
     from .build_policy import current
-    from .scheduler_health import health
+    from .scheduler_health import acceptance
+    from .discovery import git
     now=time.time() if now is None else now
     cfg=policy(root)
     if cfg.get('emergency_stop') or os.environ.get('DEV_AGENT_KILL_SWITCH','').lower() not in {'','0','false'}:raise ValueError('safety stop is active')
@@ -52,8 +53,8 @@ def supervised_admission(root,store,client,*,now=None):
     if not observation_valid(protection,client.repository,min(300,cfg.get('github_evidence_max_age_seconds',300)),now):raise ValueError('GitHub safety check is unavailable')
     snapshot=evidence.get('snapshot',{})
     if snapshot.get('status')!='PASS' or not 0<=now-snapshot.get('backup_timestamp',0)<=min(24,cfg.get('snapshot_max_age_hours',24))*3600:raise ValueError('protected-state backup is unavailable')
-    scheduler=health(store,now)
-    if scheduler.get('status')!='SCHEDULED' or scheduler.get('enabled') is not True or scheduler.get('active')!='active' or scheduler.get('inventory_complete') is not True or scheduler.get('successful_runs',0)<3:raise ValueError('discovery service has not completed acceptance')
+    scheduler=acceptance(store,git(root,'rev-parse','HEAD'),now)
+    if scheduler['status']!='READY':raise ValueError('discovery service has not completed acceptance')
     require_completed(root)
     current(root,store)
     from datetime import datetime
@@ -95,12 +96,15 @@ def cycle(root,store,builder,reviewer,validator,client):
     graph=protected_graph(root)
     for candidate in candidates:
         cid=candidate['id'];risk=classify(candidate['files'],graphs=[graph])
-        if int(risk['risk'][1:])>2:continue
+        if risk['risk']!='L0':continue
+        from .scheduler_health import require_candidate
+        try:discovery=require_candidate(store,cid,git(root,'rev-parse','HEAD'))
+        except ValueError:continue
         # Dependencies remain hard gates, never model estimates.
         from .discovery import task_index
         tasks=task_index(root);deps=candidate.get('dependencies',[])
         if any(dep not in tasks or tasks[dep]['status'] not in {'done','completed','resolved'} for dep in deps):continue
-        record(store,cid,'DISCOVERED',signal=candidate.get('signal_id'),risk=risk['risk'])
+        record(store,cid,'DISCOVERED',signal=candidate.get('signal_id'),risk=risk['risk'],discovery=discovery)
         try:
             manager=Worktrees(root,store.path.parent/'worktrees')
             # Reservation uses the repository TODO index; worktree branch ID is a

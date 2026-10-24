@@ -221,7 +221,8 @@ def test_supervised_policy_journey_reaches_exact_head_pr_fixture(repo,owner_setu
     monkeypatch.setattr(build_policy,'harness_hash',lambda root:'trusted-fixture-harness')
     monkeypatch.setattr(certification,'technical_current',lambda *a,**k:True)
     monkeypatch.setattr(operations,'certificates',lambda store:[dict(evidence=dict(snapshot=dict(status='PASS',backup_timestamp=time.time()-1)))])
-    from dev_agent import static_validation
+    from dev_agent import static_validation,scheduler_health
+    monkeypatch.setattr(scheduler_health,'require_candidate',lambda *a,**k:dict(fixture_only=True,source_head='a'*40))
     monkeypatch.setattr(static_validation,'installed',lambda *a:dict(status='PASS',fixture_only=True))
     # Isolated pipeline component test; shared live admission has its own parity tests.
     monkeypatch.setattr(improvement_loop,'supervised_admission',lambda *a,**k:dict(status='READY'))
@@ -236,6 +237,10 @@ def test_supervised_policy_journey_reaches_exact_head_pr_fixture(repo,owner_setu
         def handoff(self,branch,title,body,draft):return dict(number=1,url='https://github.com/owner/repo/pull/1')
         def pr_identity(self,number):return dict(number=number,headRefName=self.published[0],headRefOid=self.published[1],baseRefName='main',headRepository=dict(nameWithOwner=self.repository),isDraft=False)
     result=improvement_loop.cycle(repo,store,ReplayProvider([dict(actions=[dict(type='write',path=path,content=content)])]),ReplayProvider([dict(disposition='PASS',findings=[]),dict(disposition='PASS',findings=[])]),validator,Client())
+    if risk!='L0':
+        assert result['status']=='NO_ELIGIBLE_CANDIDATE' and store.get(cid)['state']=='DISCOVERED'
+        assert not any(e['kind']=='RUN' for e in store.get(cid)['events'])
+        return
     assert result['status']=='AWAITING_OWNER',result
     assert not result['grants_merge'] and not result['grants_deployment']
     assert store.get(cid)['state']=='PR_OPEN'

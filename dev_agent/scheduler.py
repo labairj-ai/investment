@@ -89,6 +89,6 @@ def discover_daily(root, store, *, now=None, cap=None, backlog_limit=None, signa
                 result = dict(status="FAILED",slot=key,head=source_head,trigger=origin,started_at=started,ended_at=time.time(),duration_seconds=time.time()-started,candidates=[],created=0,deduplicated=0,suppressed=0,unavailable=[],availability_status="UNKNOWN_DUE_TO_RUN_FAILURE",attempt=attempt,reason=type(error).__name__)
                 store.event(None, "SCHEDULE_FAILURE", result, key+":failure:"+str(attempt))
                 return result
-        result.update(trigger=origin,started_at=started,ended_at=time.time(),duration_seconds=time.time()-started,deduplicated=result.get('deduplicated',0),suppressed=result.get('suppressed',0))
+        result.update(trigger=origin,started_at=started,ended_at=time.time(),duration_seconds=time.time()-started,deduplicated=result.get('deduplicated',0),suppressed=result.get('suppressed',0),enabled_sources=enabled_sources,signal_count=len(signals),proposal_count=len(found['proposals']) if budget else 0)
         store.event(None, "SCHEDULE", result, key)
         return result
