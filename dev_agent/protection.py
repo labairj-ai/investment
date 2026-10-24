@@ -11,6 +11,22 @@ REQUIRED={'pr','checks','review','stale','last_push','conversation','no_force','
 DENIED={'direct_push','bypass_review','bypass_checks','force_push','delete_ref','bypass_conversations','self_approve'}
 
 
+def observation_valid(data,repository_name,maximum,now):
+    if not isinstance(data,dict):return False
+    raw=data.get('evidence')
+    details=raw if isinstance(raw,dict) else {}
+    account=details.get('identity') if isinstance(details.get('identity'),dict) else {}
+    repository=details.get('repository') if isinstance(details.get('repository'),dict) else {}
+    identity_id=account.get('id');repository_id=repository.get('id')
+    return not (data.get('status')!='PASS' or not isinstance(raw,dict) or digest(raw)!=data.get('evidence_hash') or
+        not isinstance(data.get('created'), (int,float)) or not 0<=now-data['created']<=maximum or
+        not data.get('identity') or data.get('repository')!=repository_name or
+        not isinstance(data.get('effective'),dict) or not REQUIRED<=data['effective'].keys() or not all(v is True for v in data['effective'].values()) or
+        not isinstance(data.get('agent_capabilities'),dict) or not DENIED<=data['agent_capabilities'].keys() or not all(v is False for v in data['agent_capabilities'].values()) or
+        type(identity_id) is not int or identity_id<=0 or type(repository_id) is not int or repository_id<=0 or
+        raw['identity'].get('login')!=data['identity'] or raw['repository'].get('full_name')!=repository_name)
+
+
 def require(store, cid, client, stage, *, root=None, observation=None, now=None):
     root = Path(root or Path(__file__).resolve().parents[1])
     maximum = min(300, json.loads((root/'config/development_agent.json').read_text()).get('github_evidence_max_age_seconds',300))
@@ -33,13 +49,7 @@ def require(store, cid, client, stage, *, root=None, observation=None, now=None)
     prior = [e['payload'] for e in candidate['events'] if e['kind']=='PROTECTION' and e['payload'].get('context_hash')==context_hash and e['payload'].get('status')=='PASS']
     failures=[e for e in candidate['events'] if e['kind']=='PROTECTION' and e['payload'].get('context_hash')==context_hash and e['payload'].get('status')!='PASS']
     reason = None
-    if (data.get('status')!='PASS' or not isinstance(raw,dict) or digest(raw)!=data.get('evidence_hash') or
-        not isinstance(data.get('created'), (int,float)) or not 0<=now-data['created']<=maximum or
-        not data.get('identity') or data.get('repository')!=client.repository or
-        not isinstance(data.get('effective'),dict) or not REQUIRED<=data['effective'].keys() or not all(v is True for v in data['effective'].values()) or
-        not isinstance(data.get('agent_capabilities'),dict) or not DENIED<=data['agent_capabilities'].keys() or not all(v is False for v in data['agent_capabilities'].values()) or
-        type(identity_id) is not int or identity_id<=0 or type(repository_id) is not int or repository_id<=0 or
-        raw['identity'].get('login')!=data['identity'] or raw['repository'].get('full_name')!=client.repository):
+    if not observation_valid(data,client.repository,maximum,now):
         reason = 'fresh attributable effective-protection PASS required'
     elif failures:
         reason='protection failure requires fresh human scope approval'

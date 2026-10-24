@@ -1,7 +1,7 @@
 # TODO 0846 — Replace Complex Owner Readiness with READY / NOT READY
 
 - **ID:** 0846
-- **Status:** backlog
+- **Status:** in-progress
 - **Priority:** high
 - **Risk:** L2 — observability/UI
 - **Depends:** existing Development Agent dashboard
@@ -42,3 +42,11 @@ Presentation simplification only. Never weaken a runtime gate to make the dashbo
 ## Done when
 
 The owner can understand readiness without knowing internal Development Agent protocols.
+
+## PR #14 source progress (simplified workflow)
+
+One exact-head owner Go is the authority for merge and downstream deployment;
+No-Go/stale-head and all technical gates remain fail-closed. No service is installed,
+no live owner decision is created, and all activation flags remain disabled.
+See `docs/solo-owner-governance.md` for the active workflow. Source tests are not
+live acceptance. This TODO remains open until all its acceptance evidence exists.

@@ -221,6 +221,10 @@ def test_supervised_policy_journey_reaches_exact_head_pr_fixture(repo,owner_setu
     monkeypatch.setattr(build_policy,'harness_hash',lambda root:'trusted-fixture-harness')
     monkeypatch.setattr(certification,'technical_current',lambda *a,**k:True)
     monkeypatch.setattr(operations,'certificates',lambda store:[dict(evidence=dict(snapshot=dict(status='PASS',backup_timestamp=time.time()-1)))])
+    from dev_agent import static_validation
+    monkeypatch.setattr(static_validation,'installed',lambda *a:dict(status='PASS',fixture_only=True))
+    # Isolated pipeline component test; shared live admission has its own parity tests.
+    monkeypatch.setattr(improvement_loop,'supervised_admission',lambda *a,**k:dict(status='READY'))
     build_policy.approve(repo,store,['docs/*','tests/*','static/*'],human=human,nonce='owner-delegated-test-0001',rationale='Synthetic bounded operator policy',expires_at=time.time()+3600)
     cid=store.discover(proposal(files=[path],problem='Observed missing detail: '+path,focused_tests=['tests/test_oracle.py']))
     validator=ContainerValidator('fixture@sha256:'+'a'*64)

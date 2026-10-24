@@ -20,7 +20,9 @@ def verified_object(client,object_id):
         or user.get('login')!=p['owner_login'] or user.get('type')!='User' or not allowed_owner_app(obj,p)):raise ValueError('owner-authored human object required')
     try:created=datetime.fromisoformat(obj['created_at'].replace('Z','+00:00')).timestamp()
     except (ValueError,KeyError,TypeError):raise ValueError('GitHub decision timestamp required') from None
-    if not 0<=time.time()-created<=86400:raise ValueError('GitHub owner decision expired')
+    # Authority expires on changed context or revocation, not a daily owner ceremony.
+    # Technical evidence retains its independent TTL and is rechecked downstream.
+    if not 0<created<=time.time():raise ValueError('valid GitHub owner decision timestamp required')
     body=obj.get('body','')
     if not isinstance(body,str) or len(body.encode())>16000 or not body.startswith(HEADER):raise ValueError('versioned structured owner review required')
     raw=body[len(HEADER):]
@@ -94,7 +96,7 @@ def still_valid(item,client):
 
 def newest_review(client,number,head):
     from datetime import timezone,timedelta
-    since=(datetime.now(timezone.utc)-timedelta(hours=24)).isoformat()
+    since='1970-01-01T00:00:01+00:00'
     return latest_object(client,number,head,since)
 
 

@@ -42,4 +42,16 @@ def readiness(root,store,now=None):
     improvement=dict(stage_report(root,store,now),supervised_loop_enabled=config.get('supervised_loop_enabled',False))
     if enabled and not improvement['eligible']:
         status='BLOCKED';blockers.extend(improvement['blockers'])
-    return dict(improvement=improvement,status=status,harness_hash=bound,technical_certification='PASS' if technical else ('STALE' if latest and latest.get('harness_hash')!=bound else 'EXPIRED' if latest and now-latest.get('created',0)>86400 else 'NOT_RUN' if not latest else 'FAIL'),certification_stale=bool(latest and latest.get('harness_hash')!=bound),sandbox_runtime=runtime,production_snapshot={k:v for k,v in snapshot.items() if k in {'status','reason','backup_timestamp','schema_fingerprint','source_environment'}},github_protection={k:v for k,v in protection.items() if k in {'status','failures','created','identity'}},supervised=progress,operational_runs=operational_runs(root,store,now),autonomous_implementation=enabled,autonomous_starts_allowed=not blockers and improvement['eligible'] and current(root,certs,now,store=store),auto_merge=config.get('auto_merge',False),scheduled_discovery=scheduler_health(store,now),blockers=blockers+([] if enabled else ['autonomous implementation disabled'])+progress['blockers'])
+    owner=owner_status(root,store,now=now)
+    return dict(owner=owner,improvement=improvement,status=status,harness_hash=bound,technical_certification='PASS' if technical else ('STALE' if latest and latest.get('harness_hash')!=bound else 'EXPIRED' if latest and now-latest.get('created',0)>86400 else 'NOT_RUN' if not latest else 'FAIL'),certification_stale=bool(latest and latest.get('harness_hash')!=bound),sandbox_runtime=runtime,production_snapshot={k:v for k,v in snapshot.items() if k in {'status','reason','backup_timestamp','schema_fingerprint','source_environment'}},github_protection={k:v for k,v in protection.items() if k in {'status','failures','created','identity'}},supervised=progress,operational_runs=operational_runs(root,store,now),autonomous_implementation=enabled,autonomous_starts_allowed=not blockers and improvement['eligible'] and current(root,certs,now,store=store),auto_merge=config.get('auto_merge',False),scheduled_discovery=scheduler_health(store,now),blockers=blockers+([] if enabled else ['autonomous implementation disabled'])+progress['blockers'])
+
+
+def owner_status(root,store,*,client=None,now=None):
+    from .improvement_loop import supervised_admission
+    from .github import GitHub
+    try:
+        from .owner_review import policy as owner_policy
+        client=client or GitHub(owner_policy()['repository'])
+        return supervised_admission(root,store,client,now=now)
+    except ValueError as error:return dict(status='NOT READY',reason=str(error))
+    except Exception:return dict(status='NOT READY',reason='safety check is unavailable')

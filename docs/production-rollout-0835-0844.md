@@ -1,3 +1,5 @@
+> Historical design, superseded by TODOs 0845–0850 and the [one Go / No-Go workflow](solo-owner-governance.md). Separate owner deployment/promotion actions and manual stage ceremonies below are retired; retained only as historical diagnostics.
+
 # Production rollout acceptance and remaining execution gates
 
 Source foundation: PR13 merge `d12dcf3746dc7266ef4de02f06a48c2b629580e6`. The [sanitized foundation receipt](evidence/pr13-foundation-20261023/deployment.json) records manual deployment, exact owner deployment comment 6375211303, merge CI run 40026606075, verified backup integrity, HTTP/API and Advisor canaries, state invariance and disabled activation. PR12 is already MERGED; it cannot be closed as an open superseded PR. This historic manual release never counts as an automated controller pilot.

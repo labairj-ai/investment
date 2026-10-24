@@ -1,7 +1,7 @@
 # TODO 0847 — Make the Bounded L0 Validator Operational
 
 - **ID:** 0847
-- **Status:** backlog
+- **Status:** in-progress
 - **Priority:** critical
 - **Risk:** L5 — validation trust boundary
 - **Depends:** PR #14 bounded static oracle implementation
@@ -57,3 +57,11 @@ Static PASS never replaces full repository CI and never authorizes executable co
 ## Done when
 
 A real non-fixture L0 validator is installed, healthy and usable for the first low-risk pilot.
+
+## PR #14 source progress (simplified workflow)
+
+One exact-head owner Go is the authority for merge and downstream deployment;
+No-Go/stale-head and all technical gates remain fail-closed. No service is installed,
+no live owner decision is created, and all activation flags remain disabled.
+See `docs/solo-owner-governance.md` for the active workflow. Source tests are not
+live acceptance. This TODO remains open until all its acceptance evidence exists.

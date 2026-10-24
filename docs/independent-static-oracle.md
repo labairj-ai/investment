@@ -33,3 +33,19 @@ The actual Python executable hash is independently recomputed on every request. 
 No service was installed by this development change. No live certificate exists. After review/provisioning, execute a real passing document candidate and a known failing active-markup candidate; execute every 0836 adversarial attempt against the installed endpoint, confirming rejection of unsupported executable surfaces before any execution. Also stage timeout/crash recovery, check host-source/config integrity and verify no residual child/socket/container. Observe actual UID, network, credential, key, production DB and Docker access denial with the candidate service identity. Unit tests do not prove those OS boundaries.
 
 Preserve a non-fixture certificate with harness hash, backend/protocol/source/runtime identities, creation/expiry, exact static inventory and candidate matrix, process/timeout observations and artifact-integrity PASS. It must explicitly state `scope=L0_STATIC_TEXT`, `grants_pytest_authority=false`. It must never be relabeled as the general executable oracle certificate consumed by current supervised admission. Until a supported reviewed backend is integrated into that admission and certified, 0837/0826 and the supervised Builder remain blocked.
+
+## Simplified rollout adapter (0847)
+
+The trusted supervisor's `static_validation.installed` uses its private configured
+socket/key and pinned runtime/source identities. L0 mandatory validation records
+an exact-base/head static receipt before the full test gates; sealing requires that
+receipt. It never replaces independent test-result integrity or repository CI.
+Missing installation stays unavailable. `DEV_AGENT_STATIC_ORACLE_SOCKET`,
+`DEV_AGENT_STATIC_ORACLE_KEY_FILE`, `DEV_AGENT_STATIC_ORACLE_RUNTIME_IDENTITY` and
+`DEV_AGENT_STATIC_ORACLE_SOURCE_SHA256` are supervisor configuration only, never
+owner-facing inputs or Builder environment. No L1/L2 backend was added.
+
+The remaining operational integration must demonstrate that the installed bounded
+L0 service and mandatory validation path work together on a real candidate. Until
+then, the existing independent pytest-result oracle requirement remains fail-closed;
+source tests alone neither unblock the first pilot nor certify that boundary.

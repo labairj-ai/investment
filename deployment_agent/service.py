@@ -22,7 +22,7 @@ def deploy(executor,authorization,*,origin,admit_again):
             previous=json.loads(completed.read_text())
             if previous.get('merge_sha')!=authorization['merge_sha']:raise ValueError('authorization replay with different target')
             if previous.get('status')=='DEPLOYED_VERIFIED' and executor.git('rev-parse','HEAD')==authorization['merge_sha'] and executor.service('is-active')=='active':return dict(previous,idempotent=True)
-            raise ValueError('used authorization requires a fresh deliberate owner action')
+            raise ValueError('used release requires technical failure recovery before retry')
         nonce_name='nonce-'+hashlib.sha256(authorization['nonce'].encode()).hexdigest()
         if (directory/(nonce_name+'.json')).exists():raise ValueError('deployment nonce already consumed')
         pending=directory/'pending.json'

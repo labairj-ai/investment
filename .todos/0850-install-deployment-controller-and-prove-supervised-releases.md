@@ -1,7 +1,7 @@
 # TODO 0850 — Install Deployment Controller and Complete Three Successful Supervised Releases
 
 - **ID:** 0850
-- **Status:** backlog
+- **Status:** in-progress
 - **Priority:** critical strategic
 - **Risk:** L5
 - **Depends:** 0849
@@ -64,3 +64,11 @@ No autonomous merge, deployment, L3+, financial logic, governance changes or inv
 ## Done when
 
 The system has demonstrated reliable supervised operation and the only remaining decision is whether to allow automatic creation of low-risk PRs.
+
+## PR #14 source progress (simplified workflow)
+
+One exact-head owner Go is the authority for merge and downstream deployment;
+No-Go/stale-head and all technical gates remain fail-closed. No service is installed,
+no live owner decision is created, and all activation flags remain disabled.
+See `docs/solo-owner-governance.md` for the active workflow. Source tests are not
+live acceptance. This TODO remains open until all its acceptance evidence exists.

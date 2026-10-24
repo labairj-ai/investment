@@ -1,7 +1,7 @@
 # TODO 0845 — Simplify Owner Approval to One Go / No-Go Decision
 
 - **ID:** 0845
-- **Status:** backlog
+- **Status:** in-progress
 - **Priority:** critical
 - **Risk:** L5 — owner authority
 - **Depends:** PR #14 current implementation
@@ -59,3 +59,11 @@ Keep auto_merge=false, exact-SHA enforcement, autonomous merge disabled and auto
 ## Done when
 
 Normal owner operation requires only Go or No-Go.
+
+## PR #14 source progress (simplified workflow)
+
+One exact-head owner Go is the authority for merge and downstream deployment;
+No-Go/stale-head and all technical gates remain fail-closed. No service is installed,
+no live owner decision is created, and all activation flags remain disabled.
+See `docs/solo-owner-governance.md` for the active workflow. Source tests are not
+live acceptance. This TODO remains open until all its acceptance evidence exists.

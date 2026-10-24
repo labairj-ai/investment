@@ -59,3 +59,7 @@ def isolated_owner_promotion(monkeypatch):
     monkeypatch.setattr(promotion_github,'context',lambda *a,**k:dict(context))
     monkeypatch.setattr(promotion_github,'verify_current',proof)
     monkeypatch.setattr(owner_promotion,'authorization',proof)
+
+    # New normal authority adapter for isolated stage/budget component tests.
+    # Exact owner-Go verification is covered separately without this adapter.
+    monkeypatch.setattr(owner_promotion,'activation_authority',proof)

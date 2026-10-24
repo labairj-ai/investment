@@ -59,3 +59,27 @@ def require_runtime_binding(root,store,result,*,now=None):
     if verify_current(root,store,expected['activation_pr'],now=now)!=result:
         raise ValueError('runtime owner promotion provenance mismatch')
     return True
+
+
+def activation_authority(root,store,*,now=None):
+    """Normal activation uses the activation PR's ordinary exact-head owner Go.
+
+    Historical promotion objects are not consumed. Runtime source/configuration,
+    repository, owner, connector, revocation and exact CI are reverified each time.
+    """
+    from .promotion_github import context
+    from .owner_review import policy
+    from .github import GitHub
+    from scripts.check_owner_review import check
+    from .operations import policy as runtime_policy
+    from .store import digest
+    cfg=runtime_policy(root)
+    if cfg.get('autonomous_max_risk')!='L2' or type(cfg.get('daily_implementation_cap')) is not int or not 1<=cfg['daily_implementation_cap']<=3:
+        raise ValueError('bounded activation policy required')
+    number=selected_pr();client=GitHub(policy()['repository'])
+    expected=context(root,number,client)
+    approved=check(store,client,number,expected['head'])
+    if approved['owner_review']['context']['risk']!='L5':raise ValueError('activation requires reviewed governance risk')
+    if context(root,number,client)!=expected:raise ValueError('activation source changed')
+    return dict(status='PASS',binding=expected,owner_review_hash=digest(approved['owner_review']),
+                origin=approved['owner_review'].get('origin'),grants_merge=False,grants_deployment=False)

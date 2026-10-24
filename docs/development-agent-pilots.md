@@ -1,3 +1,5 @@
+> Historical design, superseded by TODOs 0845–0850 and the [one Go / No-Go workflow](solo-owner-governance.md). Separate owner deployment/promotion actions and manual stage ceremonies below are retired; retained only as historical diagnostics.
+
 # Prospective supervised pilot protocol — TODO 0793
 
 No real pilot has been claimed or completed by the hardening implementation.

@@ -161,11 +161,10 @@ def test_owner_side_issuer_requires_separate_action_and_never_enables(setup):
     args=dict(decision='APPROVE',nonce='issuer-owner-promotion-0001',rationale='Deliberate reviewed next stage')
     with pytest.raises(ValueError):authorize_autonomy_promotion('.',store,client,ctx,**args)
     assert actions==[]
-    result=authorize_autonomy_promotion('.',store,client,ctx,explicit_owner_promotion=True,**args)
-    assert result['status']=='OWNER_PROMOTION_RECORDED' and result['enables_autonomy'] is False
-    assert len(actions)==1 and actions[0][2]=='POST'
-    with pytest.raises(ValueError):authorize_autonomy_promotion('.',store,client,ctx,explicit_owner_promotion=True,**args)
-    assert len(actions)==1
+    # Superseded issuer cannot manufacture a second authority path.
+    with pytest.raises(ValueError,match='retired'):
+        authorize_autonomy_promotion('.',store,client,ctx,explicit_owner_promotion=True,**args)
+    assert actions==[]
 
 
 def test_issuer_rejects_nonowner_before_any_write(setup):

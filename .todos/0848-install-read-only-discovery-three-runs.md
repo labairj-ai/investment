@@ -1,7 +1,7 @@
 # TODO 0848 — Install Read-Only Discovery and Prove Three Real Runs
 
 - **ID:** 0848
-- **Status:** backlog
+- **Status:** in-progress
 - **Priority:** high
 - **Risk:** L3
 - **Depends:** deployed PR #14 foundation
@@ -43,3 +43,11 @@ Keep supervised_loop_enabled=false, autonomous_implementation=false, supervised_
 ## Done when
 
 The system has safely discovered real improvement opportunities on its own.
+
+## PR #14 source progress (simplified workflow)
+
+One exact-head owner Go is the authority for merge and downstream deployment;
+No-Go/stale-head and all technical gates remain fail-closed. No service is installed,
+no live owner decision is created, and all activation flags remain disabled.
+See `docs/solo-owner-governance.md` for the active workflow. Source tests are not
+live acceptance. This TODO remains open until all its acceptance evidence exists.

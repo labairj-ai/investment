@@ -1,3 +1,5 @@
+> Historical design, superseded by TODOs 0845–0850 and the [one Go / No-Go workflow](solo-owner-governance.md). Separate owner deployment/promotion actions and manual stage ceremonies below are retired; retained only as historical diagnostics.
+
 # Owner autonomy promotion contract and authenticated verifier
 
 `OWNER-AUTONOMY-PROMOTION autonomy-promotion-1` is a future owner-authenticated authorization distinct from PR review, build policy and a promotion recommendation. Required binding: repository, structural harness SHA256, activation PR number, exact activation head SHA, requested stage, L2 maximum risk, bounded daily cap, verified owner login and numeric ID, timestamp, single-use nonce and rationale. The decision must follow a qualifying evidence report and must be reverified on current GitHub APIs. New harness, head, policy, owner identity or stage invalidates the binding. A stale approval cannot authorize activation. Revocation and replay rejection are mandatory.

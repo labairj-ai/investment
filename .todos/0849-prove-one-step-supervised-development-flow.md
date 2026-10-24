@@ -1,7 +1,7 @@
 # TODO 0849 — Prove the One-Step Supervised Development Flow
 
 - **ID:** 0849
-- **Status:** backlog
+- **Status:** in-progress
 - **Priority:** critical strategic
 - **Risk:** L3
 - **Depends:** 0845, 0847, 0848
@@ -52,3 +52,11 @@ Owner must not copy SHAs, create GitHub comments, issue deployment/promotion app
 ## Done when
 
 A real agent-generated PR reaches merge eligibility using only one owner Go.
+
+## PR #14 source progress (simplified workflow)
+
+One exact-head owner Go is the authority for merge and downstream deployment;
+No-Go/stale-head and all technical gates remain fail-closed. No service is installed,
+no live owner decision is created, and all activation flags remain disabled.
+See `docs/solo-owner-governance.md` for the active workflow. Source tests are not
+live acceptance. This TODO remains open until all its acceptance evidence exists.

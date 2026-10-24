@@ -68,3 +68,21 @@ def observe(socket_path,key_path,request,*,runtime_identity,validator_source_dig
             if len(data)>2_000_000:raise ValueError('oversized static oracle result')
     from .structured_json import loads
     return verify(loads(data),request,key=key,runtime_identity=runtime_identity,validator_source_digest=validator_source_digest)
+
+
+def installed(root,base,head):
+    """Trusted supervisor adapter; no candidate-configurable endpoint or identity.
+
+    Environment is supplied to the installed supervisor outside candidate source;
+    none of these values or the signing key enter Builder/container environments.
+    This proves static scope only. All mandatory test/CI gates remain separate.
+    """
+    from .owner_review import policy
+    import re
+    source=os.environ.get('DEV_AGENT_STATIC_ORACLE_SOURCE_SHA256','')
+    runtime=os.environ.get('DEV_AGENT_STATIC_ORACLE_RUNTIME_IDENTITY','')
+    if not re.fullmatch('[a-f0-9]{64}',source) or not re.fullmatch('python@sha256:[a-f0-9]{64}',runtime):
+        raise ValueError('installed L0 validator identity unavailable')
+    request=dict(protocol=PROTOCOL,repository=policy()['repository'],base=base,head=head)
+    return observe(os.environ['DEV_AGENT_STATIC_ORACLE_SOCKET'],os.environ['DEV_AGENT_STATIC_ORACLE_KEY_FILE'],
+                   request,runtime_identity=runtime,validator_source_digest=source)
