@@ -235,16 +235,21 @@ def refresh(root,head,old,repository='labairj-ai/investment',*,apply=False,invok
                 replace_config(backup)
                 if CONFIG.read_bytes()!=plan['raw']:raise ValueError('rollback configuration mismatch')
                 config_restored=True
-                service(invoke,'start');wait_socket(plan['observed']['socket']);boundary(plan['current'],invoke);no_discovery(invoke)
-                restored=True
+                service(invoke,'start');wait_socket(plan['observed']['socket'])
+                previous=boundary(plan['current'],invoke)
+                if previous['runtime_sha256']!=plan['observed']['runtime_sha256'] or previous['invocation']==plan['observed']['invocation'] or previous['socket']==plan['observed']['socket']:raise ValueError('rollback runtime/restart not verified')
+                flags_disabled(ROOT);no_discovery(invoke);restored=True
             except Exception:
                 try:stop_verified(invoke);stopped=True
                 except Exception:stopped=False
             if not config_restored:
                 try:
-                    quarantine=CONFIG.parent/('config.failed-refresh-'+head+'.json')
-                    if quarantine.exists() or quarantine.is_symlink():raise ValueError('existing quarantine refused')
-                    os.replace(CONFIG,quarantine);sync_directory()
+                    protected(CONFIG)
+                    if CONFIG.read_bytes()==plan['raw']:config_restored=True
+                    else:
+                        quarantine=CONFIG.parent/('config.failed-refresh-'+head+'.json')
+                        if quarantine.exists() or quarantine.is_symlink():raise ValueError('existing quarantine refused')
+                        os.replace(CONFIG,quarantine);sync_directory()
                 except (OSError,ValueError):pass  # Stop/NOT READY is mandatory even if storage cannot recover.
             try:temp.unlink(missing_ok=True)
             except OSError:pass  # Recovery material is never treated as authoritative config.

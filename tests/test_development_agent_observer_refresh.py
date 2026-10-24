@@ -80,6 +80,7 @@ def host(monkeypatch):
                         if h.fail=='socket':h.SOCKET.chmod(0o666)
                         if h.fail=='config':h.CONFIG.write_text('{}')
                         if h.fail=='digest':h.SOURCE.write_text('tampered')
+                        if h.fail=='runtime':h.RUNTIME.write_bytes(b'changed runtime')
                 return SimpleNamespace(returncode=0,stdout='')
             assert args[1]=='show'
             values=dict(User='root',Group='optiplex',FragmentPath=str(h.UNIT),DropInPaths='',NeedDaemonReload='no',ActiveState='active' if h.active else 'inactive',SubState='running' if h.active else 'dead',PrivateNetwork='yes',PrivateTmp='yes',PrivateDevices='yes',ProtectSystem='strict',ProtectHome='read-only',NoNewPrivileges='yes',ProtectKernelTunables='yes',ProtectKernelModules='yes',ProtectControlGroups='yes',RestrictSUIDSGID='yes',RestrictAddressFamilies='AF_UNIX',ReadWritePaths=str(h.STATE)+' '+str(h.SOCKET.parent),InaccessiblePaths='-/home/optiplex/.ssh -/home/optiplex/.aws -/home/optiplex/.config/gh -/home/optiplex/investment/.env',MainPID=str(h.pid),InvocationID=f'{h.pid:032x}',CapabilityBoundingSet='cap_dac_read_search cap_setgid cap_setuid',EnvironmentFiles='')
@@ -160,7 +161,7 @@ def test_failure_restores_exact_configuration_and_old_boundary(host,failure):
     assert not list(host.STATE.iterdir()) and not list(host.USER_UNITS.iterdir())
 
 
-@pytest.mark.parametrize('failure',['digest','rollback'])
+@pytest.mark.parametrize('failure',['digest','rollback','runtime'])
 def test_unverifiable_rollback_stops_observer_not_ready(host,failure):
     host.fail=failure
     result=host.run(apply=True)
@@ -270,7 +271,7 @@ def test_service_stop_must_be_verified(host):
         return original(args,**kw)
     result=r.refresh(host.ROOT,host.head,host.old,apply=True,invoke=unconfirmed)
     assert result['status']=='FAILED_STOP_UNCONFIRMED' and not result['rollback_boundary_verified']
-    assert host.starts==0
+    assert host.starts==0 and host.CONFIG.read_bytes()==host.raw
 
 
 def test_post_restart_manifest_change_rolls_back(host,monkeypatch):
