@@ -105,3 +105,13 @@ No live acceptance is claimed. All operational checkboxes remain open. See
 ### PR #15 operational usability follow-up
 
 The protected automatic observation daemon and authenticated before/after Scout hooks now generate measured host-safety evidence. Installation primes and validates the read-only signal spool before enabling any timer. The producer cannot invent timer events; three genuine observed runs remain outstanding.
+
+### Explicit public reader source support
+
+An explicit unauthenticated public mode is proposed separately from the dedicated
+private-token mode. Only reviewed GitHub metadata/workflow HTTPS GETs are reachable;
+canonical public visibility is reverified on every collection, credentials and gh
+are never consulted, and rate-limit/privacy failures invalidate the old spool and
+stop Scout before candidate discovery. Private mode retains independent read-only
+permission verification. No mode is installed/activated by source tests, and no
+real timer acceptance or implementation authority is granted. See the rollout guide.

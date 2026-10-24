@@ -33,10 +33,11 @@ class GitHub:
         if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository): raise ValueError("repository")
         self.repository = repository
 
-    def read(self, endpoint):
+    def read(self, endpoint, *, require_token=False):
         # Installed read-only collectors/controllers need no owner CLI credentials.
         # Their separately provisioned token file never enters candidate mounts.
         token_path=os.environ.get('DEV_AGENT_GITHUB_READ_TOKEN_FILE')
+        if require_token and not token_path:raise ValueError('dedicated read-only GitHub credential unavailable')
         if token_path:
             path=Path(token_path)
             info=path.lstat()
