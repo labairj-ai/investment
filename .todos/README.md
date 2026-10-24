@@ -187,3 +187,19 @@ Created October 23, 2026 from owner-supplied requirements. Initial tasks were cr
 | [0844](0844-complete-three-journey-seven-day-supervised-evidence-window.md) | Complete Three-Journey / Seven-Day Supervised Evidence Window | backlog | 0837–0843 |
 
 0835 verifies the PR #13 foundation. Oracle implementation/certification, real owner acceptance and read-only discovery precede the supervised journey; the dedicated controller precedes its production pilot. 0843 implements owner-promotion authentication without enabling autonomy. 0844 requires real three-journey/seven-day evidence and produces an owner review decision only.
+
+
+## Simplified Development Agent live rollout — 0851–0854
+
+Created October 24, 2026 to execute the simplified solo-owner workflow already established by 0845–0850. These are operational acceptance tasks, not a new governance layer.
+
+| ID | Task | Priority | Dependencies |
+|---|---|---|---|
+| [0851](0851-live-certify-bounded-l0-validator.md) | Live-Certify the Bounded L0 Validator | critical | PR #14 source foundation |
+| [0852](0852-enable-read-only-discovery-and-prove-three-runs.md) | Enable Read-Only Discovery and Prove Three Scheduled Runs | high | PR #14 source foundation |
+| [0853](0853-run-first-one-go-supervised-l0-improvement.md) | Run the First One-Go Supervised L0 Improvement | critical strategic | 0851, 0852 |
+| [0854](0854-install-deployment-controller-and-prove-three-one-go-releases.md) | Install the Deployment Controller and Prove Three One-Go Releases | critical strategic | 0853 |
+
+Execution order: **0851 + 0852 → 0853 → 0854**.
+
+Owner experience remains exactly: **ChatGPT reviews the actual PR and CI → recommends GO or NO-GO → owner replies Go or No-Go**. No second deployment/promotion approval is introduced. These tasks do not enable autonomous implementation, auto-merge, financial/execution changes, or any model installation.
