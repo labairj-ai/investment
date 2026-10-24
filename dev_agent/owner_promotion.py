@@ -89,6 +89,16 @@ def activation_authority(root,store,*,now=None):
         if len(numbers)!=1:raise ValueError('unambiguous approved runtime PR required')
         number=numbers.pop()
     expected=context(root,number,client)
+    from .git_exec import output
+    remote=client.pr_identity(number)
+    merge=(remote.get('mergeCommit') or {}).get('oid')
+    if remote.get('state')!='MERGED' or output(root,'rev-parse','HEAD').strip()!=merge:
+        raise ValueError('activation requires the exact deployed owner merge')
+    runs=client.read(f'repos/{client.repository}/commits/{merge}/check-runs?per_page=100')
+    tests=[r for r in runs.get('check_runs',[]) if r.get('name')=='test' and r.get('head_sha')==merge]
+    if runs.get('total_count',0)>100 or not tests:raise ValueError('activation merged-main CI unavailable')
+    latest=max(tests,key=lambda r:r['id'])
+    if latest.get('status')!='completed' or latest.get('conclusion')!='success':raise ValueError('activation merged-main CI must pass')
     approved=check(store,client,number,expected['head'])
     # owner_review.context enforces the deterministic risk floor, including L5
     # for configuration/governance changes. A later approved documentation-only

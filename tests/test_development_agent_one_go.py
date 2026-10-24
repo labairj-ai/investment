@@ -211,3 +211,21 @@ def test_runtime_follows_approved_document_release_without_promotion_pointer(aut
     cfg=operations.policy(ROOT);cfg['autonomous_max_risk']='L3'
     monkeypatch.setattr(operations,'policy',lambda root:cfg)
     with pytest.raises(ValueError):owner_promotion.activation_authority(ROOT,store)
+
+
+@pytest.mark.parametrize('failure',['unmerged','merge-ci','wrong-installed-source'])
+def test_runtime_activation_does_not_skip_release_transition(authorized_owner,monkeypatch,failure):
+    from dev_agent import owner_promotion,github,git_exec
+    store,client,obj,data=authorized_owner
+    original=client.read;identity=client.pr_identity
+    def read(endpoint):
+        result=copy.deepcopy(original(endpoint))
+        if failure=='merge-ci' and '/commits/'+('c'*40)+'/check-runs' in endpoint:
+            result['check_runs'][0]['conclusion']='failure'
+        return result
+    client.read=read
+    if failure=='unmerged':client.pr_identity=lambda n:dict(identity(n),state='OPEN')
+    monkeypatch.setenv('DEV_AGENT_PROMOTION_PR','1')
+    monkeypatch.setattr(github,'GitHub',lambda repository:client)
+    monkeypatch.setattr(git_exec,'output',lambda *a:'d'*40 if failure=='wrong-installed-source' else 'c'*40)
+    with pytest.raises(ValueError):owner_promotion.activation_authority(ROOT,store)
