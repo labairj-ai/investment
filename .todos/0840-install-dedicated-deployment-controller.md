@@ -1,7 +1,7 @@
 # TODO 0840 — Install Dedicated Deployment Controller
 
 - **ID:** 0840
-- **Status:** backlog
+- **Status:** superseded
 - **Priority:** critical
 - **Risk:** L5
 - **Parent:** 0830
@@ -56,3 +56,8 @@ Controller is installed but no qualifying production pilot has yet been claimed.
 ## Implementation and acceptance tracking
 
 See [rollout implementation and exact remaining gates](../docs/production-rollout-0835-0844.md) and the [plan](../docs/plans/production-foundation-0835-0844.md). Source preparation is not live operational acceptance. This task remains open until all requirements above have real evidence.
+
+
+## Superseded
+
+Superseded by TODO 0850 under the simplified solo-owner workflow. Internal safety controls remain, but owner-facing operation is reduced to Go / No-Go. Preserve this file as historical design context.
