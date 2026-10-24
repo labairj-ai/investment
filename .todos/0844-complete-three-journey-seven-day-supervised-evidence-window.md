@@ -1,7 +1,7 @@
 # TODO 0844 — Complete Three-Journey / Seven-Day Supervised Evidence Window
 
 - **ID:** 0844
-- **Status:** backlog
+- **Status:** superseded
 - **Priority:** critical strategic
 - **Risk:** L5
 - **Parent:** 0831
@@ -78,3 +78,8 @@ The first future activation should be a separate L5 owner-reviewed change moving
 ## Implementation and acceptance tracking
 
 See [rollout implementation and exact remaining gates](../docs/production-rollout-0835-0844.md) and the [plan](../docs/plans/production-foundation-0835-0844.md). Source preparation is not live operational acceptance. This task remains open until all requirements above have real evidence.
+
+
+## Superseded
+
+Superseded by TODO 0850 under the simplified solo-owner workflow. Internal safety controls remain, but owner-facing operation is reduced to Go / No-Go. Preserve this file as historical design context.
