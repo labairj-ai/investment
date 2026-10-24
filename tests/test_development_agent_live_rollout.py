@@ -192,7 +192,7 @@ def test_installation_source_plan_and_wrong_head_are_bound(tmp_path):
     root=tmp_path/'repo';root.mkdir()
     def git(*args):return subprocess.check_output(['git','-C',str(root),*args],text=True).strip()
     git('init','-q');git('config','user.name','fixture');git('config','user.email','fixture@example.invalid')
-    names=['ops/validator/static_oracle.py','ops/validator/investment-static-oracle.service','config/development_agent.json',*['systemd/'+n for n in UNITS]]
+    names=['ops/validator/static_oracle.py','ops/validator/investment-static-oracle.service','ops/validator/live_acceptance.py','ops/validator/investment-static-oracle-acceptance.service','config/development_agent.json',*['systemd/'+n for n in UNITS]]
     for name in names:
         p=root/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes((ROOT/name).read_bytes())
     git('add','.');git('commit','-qm','synthetic reviewed source');head=git('rev-parse','HEAD')
@@ -275,7 +275,7 @@ def test_low_risk_auto_pr_recommendation_never_changes_activation(store,monkeypa
 @pytest.mark.parametrize('stop_ok',[True,False])
 def test_oracle_partial_bootstrap_never_removes_files_under_running_service(tmp_path,monkeypatch,stop_ok):
     from ops.validator import install
-    for name in ('SOURCE','CONFIG','STATE','UNIT'):
+    for name in ('SOURCE','CONFIG','STATE','UNIT','ACCEPTANCE_UNIT'):
         monkeypatch.setattr(install,name,tmp_path/name.lower())
     monkeypatch.setattr(install,'RUNTIME',Path(__file__))
     monkeypatch.setattr(install.sys,'platform','linux')
@@ -289,13 +289,14 @@ def test_oracle_partial_bootstrap_never_removes_files_under_running_service(tmp_
         if args[:2]==('bundle','create'):Path(args[2]).write_bytes(b'fixture');return b''
         return ('a'*40+' HEAD\n').encode()
     monkeypatch.setattr(install,'git',git)
+    monkeypatch.setattr(install,'acceptance_head',lambda *a:'e'*40)
     calls=[]
     def invoke(command,**kwargs):
         calls.append(command)
         if 'init' in command:Path(command[-1]).mkdir()
         if 'is-active' in command:raise subprocess.CalledProcessError(1,command)
         return SimpleNamespace(returncode=0 if 'stop' not in command or stop_ok else 1)
-    plan=dict(root=str(tmp_path),head='a'*40,repository='owner/repo',files={'ops/validator/static_oracle.py':b'fixture','ops/validator/investment-static-oracle.service':b'fixture'})
+    plan=dict(root=str(tmp_path),head='a'*40,repository='owner/repo',files={'ops/validator/static_oracle.py':b'fixture','ops/validator/investment-static-oracle.service':b'fixture','ops/validator/live_acceptance.py':b'fixture','ops/validator/investment-static-oracle-acceptance.service':b'fixture'})
     with pytest.raises(subprocess.CalledProcessError):install.apply(plan,invoke=invoke)
     assert any('stop' in c for c in calls)
     assert install.SOURCE.exists() is (not stop_ok)

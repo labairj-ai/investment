@@ -1,0 +1,241 @@
+#!/usr/bin/python3
+"""Installed fixed discovery bookends. No application imports or execution API.
+
+Root server measures state; a pinned client runs only as Scout's systemd control
+process. Requests contain sandbox probe booleans, never paths, hashes or commands.
+"""
+import hashlib
+import json
+import os
+from pathlib import Path
+import pwd
+import re
+import socket
+import socketserver
+import sqlite3
+import stat
+import struct
+import subprocess
+import sys
+import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+SOURCE=Path('/opt/investment-discovery-observer/observer.py')
+CONFIG=Path('/etc/investment-discovery-observer/config.json')
+SOCKET=Path('/run/investment-discovery-observer/observer.sock')
+STATE=Path('/var/lib/investment-development-acceptance')
+ROOT=Path('/home/optiplex/investment')
+LEDGER=Path('/home/optiplex/.local/share/investment-development/development-control.sqlite3')
+WORKTREES=LEDGER.parent/'worktrees'
+CHECKS={'source_read_only','state_inaccessible','credentials_inaccessible','network_isolated'}
+
+
+def encoded(value):return json.dumps(value,sort_keys=True,separators=(',',':'),allow_nan=False).encode()
+def digest(value):return hashlib.sha256(encoded(value)).hexdigest()
+def unique(pairs):
+    result={}
+    for k,v in pairs:
+        if k in result:raise ValueError('duplicate observation field')
+        result[k]=v
+    return result
+def loads(raw):return json.loads(raw,object_pairs_hook=unique,parse_constant=lambda s:(_ for _ in ()).throw(ValueError('nonfinite observation')))
+
+
+def protected(path):
+    for p in [path,*path.parents]:
+        info=p.lstat()
+        if p.is_symlink() or info.st_uid!=0 or info.st_mode&0o022:raise ValueError('protected observer installation required')
+
+
+def atomic(path,data):
+    temporary=path.with_suffix('.new')
+    fd=os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o644)
+    try:
+        with os.fdopen(fd,'wb') as f:f.write(encoded(data)+b'\n');f.flush();os.fsync(f.fileno())
+        os.replace(temporary,path)
+    finally:temporary.unlink(missing_ok=True)
+
+
+def denied(path):
+    try:
+        fd=os.open(path,os.O_RDONLY|os.O_NONBLOCK);os.close(fd);return False
+    except PermissionError:return True
+    except FileNotFoundError:return True
+
+
+def probes():
+    # Read/open checks only: never attempt a database write or connect to a broker.
+    credentials=[ROOT/'.env',ROOT.parent/'.ssh',ROOT.parent/'.aws',ROOT.parent/'.config/gh',ROOT.parent/'.config/investment-development/github-read.token',LEDGER.parent/'service.env']
+    flags=os.statvfs(ROOT).f_flag
+    return dict(source_read_only=bool(flags&os.ST_RDONLY),
+                state_inaccessible=all(denied(p) for p in [ROOT/'out',ROOT/'holdings.csv']),
+                credentials_inaccessible=all(denied(p) for p in credentials),
+                network_isolated=not Path('/proc/net/route').read_text().splitlines()[1:])
+
+
+def file_hash(path):
+    if path.is_symlink() or not path.is_file():raise ValueError('regular observed file required')
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def database_hash(path):
+    if path.is_symlink() or not path.is_file():raise ValueError('protected database unavailable')
+    h=hashlib.sha256()
+    with sqlite3.connect(path.as_uri()+'?mode=ro',uri=True) as db:
+        db.execute('PRAGMA query_only=ON');db.execute('BEGIN')
+        for line in db.iterdump():h.update(line.encode());h.update(b'\n')
+    return h.hexdigest()
+
+
+def ledger_snapshot():
+    if LEDGER.is_symlink() or not LEDGER.is_file():raise ValueError('real discovery ledger unavailable')
+    with sqlite3.connect(LEDGER.as_uri()+'?mode=ro',uri=True) as db:
+        db.execute('PRAGMA query_only=ON');db.execute('BEGIN')
+        rows=db.execute('SELECT seq,event_id,candidate,kind,created,payload FROM dev_events ORDER BY seq').fetchall()
+        if len(rows)>100000:raise ValueError('bounded observation ledger required')
+        schema=db.execute("SELECT type,name,sql FROM sqlite_master ORDER BY type,name").fetchall()
+        return dict(seq=rows[-1][0] if rows else 0,prefix=digest(rows),schema=digest(schema)),rows
+
+
+def snapshot(config):
+    source={name:file_hash(ROOT/name) for name in config['files']}
+    if source!=config['files']:raise ValueError('reviewed discovery source changed')
+    gitdir=ROOT/'.git'
+    if not gitdir.is_dir() or gitdir.is_symlink():raise ValueError('fixed live Git directory required')
+    head=(gitdir/'HEAD').read_text().strip()
+    if head.startswith('ref: '):
+        ref=head[5:]
+        if not re.fullmatch(r'refs/heads/[A-Za-z0-9_./-]+',ref) or '..' in ref:raise ValueError('invalid current source ref')
+        refpath=gitdir/ref
+        if refpath.is_file():head=refpath.read_text().strip()
+        else:
+            packed=dict((line.split()[1],line.split()[0]) for line in (gitdir/'packed-refs').read_text().splitlines() if line and line[0] not in '#^')
+            head=packed.get(ref)
+    if head!=config['head']:raise ValueError('discovery head changed')
+    cfg=loads((ROOT/'config/development_agent.json').read_bytes())
+    if any(cfg[k] is not False for k in ('autonomous_implementation','supervised_loop_enabled','supervised_publish_pr','auto_merge')) or cfg['autonomy_stage']!='SHADOW' or cfg['required_human_merge'] is not True:raise ValueError('discovery-only activation required')
+    ledger,rows=ledger_snapshot()
+    return dict(holdings=file_hash(ROOT/'holdings.csv'),investment=database_hash(ROOT/'out/investment.db'),
+                auxiliary=database_hash(ROOT/'out/buffett.db') if (ROOT/'out/buffett.db').exists() or (ROOT/'out/buffett.db').is_symlink() else None,
+                source=digest(source),worktrees=sorted(str(p.relative_to(WORKTREES)) for p in WORKTREES.rglob('*')) if WORKTREES.exists() else [],ledger=ledger),rows
+
+
+def systemd(config,pid,phase):
+    account=pwd.getpwnam('optiplex')
+    command=['/usr/bin/systemctl','--user','show']
+    options=dict(timeout=10,env={'PATH':'/usr/bin:/bin','HOME':'/nonexistent','XDG_RUNTIME_DIR':'/run/user/'+str(account.pw_uid)},user=account.pw_uid,group=account.pw_gid,extra_groups=[])
+    properties='ControlPID,InvocationID,FragmentPath,DropInPaths,NeedDaemonReload,Result,PrivateNetwork,NoNewPrivileges,ProtectSystem,ProtectHome'
+    raw=subprocess.check_output(command+['development-scout.service','--no-pager','--property='+properties],**options).decode()
+    values=dict(line.split('=',1) for line in raw.splitlines() if '=' in line)
+    unit=Path('/home/optiplex/.config/systemd/user/development-scout.service')
+    if (values.get('ControlPID')!=str(pid) or values.get('FragmentPath')!=str(unit) or values.get('DropInPaths')!='' or values.get('NeedDaemonReload')!='no' or file_hash(unit)!=config['unit_digest']):raise ValueError('unverified Scout control process')
+    if any(values.get(k)!=v for k,v in {'PrivateNetwork':'yes','NoNewPrivileges':'yes','ProtectSystem':'strict','ProtectHome':'read-only'}.items()):raise ValueError('loaded Scout sandbox is incomplete')
+    invocation=values.get('InvocationID','')
+    if not re.fullmatch('[a-f0-9]{32}',invocation):raise ValueError('systemd invocation unavailable')
+    args=Path('/proc')/str(pid)/'cmdline'
+    if args.read_bytes().split(b'\0')[:-1]!=[b'/usr/bin/python3',b'-I',b'-S',str(SOURCE).encode(),phase.encode()]:raise ValueError('fixed observer client required')
+    if phase=='begin':
+        raw=subprocess.check_output(command+['development-scout.timer','--no-pager','--property=LastTriggerUSecMonotonic,FragmentPath,DropInPaths,NeedDaemonReload,ActiveState,UnitFileState'],**options).decode()
+        timer=dict(line.split('=',1) for line in raw.splitlines() if '=' in line)
+        path=Path('/home/optiplex/.config/systemd/user/development-scout.timer')
+        if timer.get('FragmentPath')!=str(path) or timer.get('DropInPaths')!='' or timer.get('NeedDaemonReload')!='no' or timer.get('ActiveState')!='active' or timer.get('UnitFileState') not in {'enabled','enabled-runtime'} or file_hash(path)!=config['timer_digest']:raise ValueError('loaded discovery timer is not verified')
+        fired=int(timer['LastTriggerUSecMonotonic'])
+        if not 0<=time.monotonic()-fired/1_000_000<=180:raise ValueError('genuine recent timer invocation required')
+        boot=Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+        if not re.fullmatch('[a-f0-9-]{36}',boot):raise ValueError('actual boot identity required')
+        return dict(invocation=invocation,timer_fire=boot+':'+str(fired))
+    elif values.get('Result')!='success':raise ValueError('unsuccessful Scout execution')
+    return dict(invocation=invocation)
+
+
+class Observer:
+    def __init__(self,config):self.config=config
+    def handle(self,uid,pid,request):
+        if uid!=pwd.getpwnam('optiplex').pw_uid:raise ValueError('discovery identity required')
+        if not isinstance(request,dict) or set(request)!={'phase','checks'} or request['phase'] not in {'begin','end'}:raise ValueError('fixed bookend required')
+        if request['checks']!={k:True for k in CHECKS}:raise ValueError('sandbox denial probes failed')
+        phase=request['phase'];authority=systemd(self.config,pid,phase);invocation=authority['invocation'];pending=STATE/(invocation+'.pending')
+        if phase=='begin':
+            fires=STATE/'timer-fires.json';used=loads(fires.read_bytes()) if fires.exists() else []
+            if authority['timer_fire'] in used:raise ValueError('timer firing already observed')
+            atomic(fires,(used+[authority['timer_fire']])[-256:])
+        current,rows=snapshot(self.config);now=time.time()
+        if phase=='begin':
+            if pending.exists():raise ValueError('replayed discovery begin')
+            atomic(pending,dict(invocation=invocation,head=self.config['head'],started=now,before=current))
+            return
+        if not pending.is_file():raise ValueError('no trusted before observation')
+        before=loads(pending.read_bytes());pending.unlink()
+        if before['head']!=self.config['head'] or not 0<=now-before['started']<=240:raise ValueError('expired bookend')
+        old=before['before'];prefix=[r for r in rows if r[0]<=old['ledger']['seq']];new=[r for r in rows if r[0]>old['ledger']['seq']]
+        if digest(prefix)!=old['ledger']['prefix'] or current['ledger']['schema']!=old['ledger']['schema']:raise ValueError('discovery ledger history changed')
+        for r in new:
+            if r[3] not in {'STATE','SCORE','SIGNAL_OBSERVATION','SCHEDULE_ATTEMPT','SCHEDULE','SCHEDULER_OBSERVATION'}:raise ValueError('unexpected discovery authority activity')
+            if r[3]=='STATE' and loads(r[5]).get('state')!='DISCOVERED':raise ValueError('implementation state entered')
+        runs=[loads(r[5]) for r in new if r[3]=='SCHEDULE']
+        if len(runs)!=1:raise ValueError('one successful scheduled run required')
+        run=runs[0]
+        if (run.get('status')!='COLLECTED' or run.get('head')!=self.config['head'] or run.get('fixture_only') is True or run.get('trigger')!=dict(source='systemd-observed-timer',invocation=invocation)
+            or not before['started']<=run['started_at']<=run['ended_at']<=now):raise ValueError('genuine bookended run required')
+        if (not isinstance(run.get('enabled_sources'),list) or not {'ci','telemetry','performance'}<=set(run['enabled_sources'])
+            or not isinstance(run.get('unavailable'),list) or set(run['unavailable'])&{'CI','ci','telemetry','performance'}
+            or run.get('availability_status')=='UNKNOWN_DUE_TO_RUN_FAILURE'
+            or any(type(run.get(k)) is not int or run[k]<0 for k in ('created','deduplicated','suppressed','signal_count','proposal_count'))
+            or run.get('slot')!='scout:'+datetime.fromtimestamp(run['started_at'],ZoneInfo('America/New_York')).date().isoformat()):raise ValueError('incomplete scheduled discovery evidence')
+        for k in ('holdings','investment','auxiliary','source','worktrees'):
+            if old[k]!=current[k]:raise ValueError('protected state or source changed')
+        receipt=STATE/'discovery.json'
+        data=loads(receipt.read_bytes()) if receipt.exists() else dict(runs=[])
+        records=data['runs'] if data.get('source_head')==self.config['head'] else []
+        if any(r['invocation']==invocation or r['slot']==run['slot'] for r in records):raise ValueError('duplicate observed invocation or slot')
+        record=dict(invocation=invocation,slot=run['slot'],observed_at=now,**{k:True for k in ('no_builder','no_worktree','no_source_mutation','no_pr','no_deploy','no_financial_execution')})
+        for k in ('holdings','investment'):record.update({k+'_before':old[k],k+'_after':current[k]})
+        atomic(receipt,dict(source_head=self.config['head'],fixture_only=False,os_boundary_verified=True,observed_at=now,runs=(records+[record])[-30:],grants_implementation=False))
+
+
+def client(phase):
+    with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as channel:
+        channel.settimeout(60);channel.connect(str(SOCKET));channel.sendall(encoded(dict(phase=phase,checks=probes()))+b'\n')
+        if channel.recv(1024)!=b'OK\n':raise ValueError('trusted discovery observation failed')
+
+
+def serve():
+    if sys.platform!='linux' or os.geteuid()!=0:raise ValueError('installed root observer required')
+    protected(SOURCE);protected(CONFIG);protected(STATE)
+    config=loads(CONFIG.read_bytes())
+    if file_hash(SOURCE)!=config['observer_digest']:raise ValueError('observer source changed')
+    observer=Observer(config)
+    class Handler(socketserver.StreamRequestHandler):
+        def handle(self):
+            self.connection.settimeout(60)
+            try:
+                pid,uid,gid=struct.unpack('3i',self.connection.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,12))
+                raw=self.rfile.readline(4097)
+                if len(raw)>4096 or not raw.endswith(b'\n'):raise ValueError('bounded request required')
+                observer.handle(uid,pid,loads(raw));self.wfile.write(b'OK\n')
+            except Exception:self.wfile.write(b'FAILED\n')
+    if SOCKET.exists():
+        if not SOCKET.is_socket() or SOCKET.is_symlink() or SOCKET.stat().st_uid!=0:raise ValueError('unsafe observer socket')
+        with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as old:
+            try:old.connect(str(SOCKET))
+            except ConnectionRefusedError:SOCKET.unlink()
+            else:raise ValueError('observer already active')
+    with socketserver.UnixStreamServer(str(SOCKET),Handler) as server:
+        os.chown(SOCKET,0,pwd.getpwnam('optiplex').pw_gid);SOCKET.chmod(0o660);server.serve_forever()
+
+
+def scout():
+    # Fixed unprivileged entry point, system Python with site hooks disabled.
+    # No forwarding of caller commands/arguments and no model/tool selection.
+    if os.getuid()!=pwd.getpwnam('optiplex').pw_uid:raise ValueError('discovery service identity required')
+    sys.path.insert(0,str(ROOT))
+    from dev_agent.cli import main
+    return main(['scout','--root',str(ROOT)])
+
+
+if __name__=='__main__':
+    if len(sys.argv)!=2 or sys.argv[1] not in {'serve','begin','end','scout'}:raise SystemExit('fixed observer mode required')
+    if sys.argv[1]=='serve':serve()
+    elif sys.argv[1]=='scout':raise SystemExit(scout())
+    else:client(sys.argv[1])

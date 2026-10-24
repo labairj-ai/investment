@@ -101,3 +101,7 @@ Read-only bootstrap, dedicated GitHub reader transport, complete signal counts a
 
 No live acceptance is claimed. All operational checkboxes remain open. See
 [the rollout guide](../docs/development-agent-pr15-rollout.md) for internal prerequisites.
+
+### PR #15 operational usability follow-up
+
+The protected automatic observation daemon and authenticated before/after Scout hooks now generate measured host-safety evidence. Installation primes and validates the read-only signal spool before enabling any timer. The producer cannot invent timer events; three genuine observed runs remain outstanding.

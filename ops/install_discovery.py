@@ -12,9 +12,13 @@ from pathlib import Path
 import pwd
 import subprocess
 import sys
+import time
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from ops.validator.install import prepare as reviewed_source,git
 from dev_agent.github import GitHub
+from dev_agent.signals import load_spool
+from dev_agent.store import Store
+from ops.validator.install import protected_parents
 
 SERVICES=('development-scout','development-scheduler-observer','development-signal-collector')
 UNITS=tuple(name+suffix for name in SERVICES for suffix in ('.service','.timer'))
@@ -46,6 +50,10 @@ def apply(plan,*,invoke=subprocess.run):
         if directory.exists() and (directory.stat().st_uid!=os.getuid() or directory.stat().st_mode&0o022):raise ValueError('operator-owned installation paths required')
     token=settings/'github-read.token'
     if not token.is_file() or token.is_symlink():raise ValueError('dedicated read-only GitHub credential unavailable')
+    observer=Path('/etc/investment-discovery-observer/config.json')
+    protected_parents(observer)
+    if json.loads(observer.read_text()).get('head')!=plan['head']:raise ValueError('current trusted discovery observer is required')
+    invoke(['/bin/systemctl','is-active','--quiet','investment-discovery-observer.service'],check=True)
     old_token=os.environ.get('DEV_AGENT_GITHUB_READ_TOKEN_FILE')
     try:
         os.environ['DEV_AGENT_GITHUB_READ_TOKEN_FILE']=str(token)
@@ -64,6 +72,16 @@ def apply(plan,*,invoke=subprocess.run):
             with path.open('xb') as f:f.write(data)
             path.chmod(0o600 if path.suffix=='.env' else 0o644);created.append(path)
         invoke(['systemctl','--user','daemon-reload'],check=True)
+        Store(state/'development-control.sqlite3').migrate()
+        # Collect real read-only metadata synchronously before any timer can fire.
+        # A successful command alone is insufficient: validate the actual spool.
+        priming_started=time.time()
+        invoke(['systemctl','--user','start','development-signal-collector.service'],check=True)
+        spool=state/'operational-signals.json'
+        _,sources=load_spool(spool)
+        payload=json.loads(spool.read_text())
+        if not {'ci','telemetry','performance'}<=set(sources) or payload.get('unavailable')!=[] or not priming_started<=payload.get('created',0)<=time.time():
+            raise ValueError('required read-only signal sources unavailable during priming')
         # No manual scout invocation; real timers determine accepted schedule slots.
         for name in ('development-signal-collector','development-scheduler-observer','development-scout'):
             enabled.append(name);invoke(['systemctl','--user','enable','--now',name+'.timer'],check=True)

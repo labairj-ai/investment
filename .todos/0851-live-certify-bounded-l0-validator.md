@@ -113,3 +113,7 @@ Pinned first-install tooling and a live functional probe are implemented. Stale 
 
 No live acceptance is claimed. All operational checkboxes remain open. See
 [the rollout guide](../docs/development-agent-pr15-rollout.md) for internal prerequisites.
+
+### PR #15 operational usability follow-up
+
+The fixed installed live matrix, automatic off-identity denial probe and sanitized receipt producer are now implemented. These have only been tested in isolated source fixtures; reviewed host installation and actual acceptance remain outstanding.
