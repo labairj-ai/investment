@@ -11,7 +11,7 @@ from .dashboard import configured_store
 from .discovery import plan, refresh_plan
 from .evidence import persist, verify, seal
 from .github import GitHub, prepare_pr
-from .providers import OllamaProvider
+from .providers import OllamaProvider,configured_provider
 from .runner import ContainerValidator, Runner
 from .scheduler import discover_daily
 from .worktrees import Worktrees
@@ -66,7 +66,7 @@ def main(argv=None):
             key_path=Path(os.environ['DEV_AGENT_DEPLOYMENT_OBSERVATION_KEY_FILE'])
             if key_path.is_symlink() or key_path.stat().st_mode&0o077:raise ValueError('private observer verification key required')
             outcomes=reconcile_observations(root,store,client,os.environ['DEV_AGENT_DEPLOYMENT_OBSERVATIONS'],key_path.read_bytes())
-        result=cycle(root,store,OllamaProvider(args.model),OllamaProvider(args.review_model),ContainerValidator(args.image,timeout=1800),client)
+        result=cycle(root,store,configured_provider(args.model,'builder'),configured_provider(args.review_model,'reviewer'),ContainerValidator(args.image,timeout=1800),client)
         result.update(reconciled_prs=reconciled,observed_outcomes=outcomes)
     elif args.command=='scheduler-status':
         from .scheduler_health import observe,record
@@ -134,11 +134,11 @@ def main(argv=None):
     elif args.command == 'validate':
         if not args.image or not args.review_model: parser.error('digest-pinned image and independent review model required')
         from .validation import validate_and_review
-        result=validate_and_review(root,store,args.candidate,ContainerValidator(args.image,timeout=1800),OllamaProvider(args.review_model))
+        result=validate_and_review(root,store,args.candidate,ContainerValidator(args.image,timeout=1800),configured_provider(args.review_model,'reviewer'))
     elif args.command == 'autonomous-cycle':
         if not all((args.model,args.review_model,args.image)):parser.error('builder/reviewer and digest-pinned image required')
         from .autonomy import progress
-        result=progress(root,store,args.candidate,OllamaProvider(args.model),OllamaProvider(args.review_model),ContainerValidator(args.image,timeout=1800),GitHub(args.repository))
+        result=progress(root,store,args.candidate,configured_provider(args.model,'builder'),configured_provider(args.review_model,'reviewer'),ContainerValidator(args.image,timeout=1800),GitHub(args.repository))
     elif args.command == "pr": result = prepare_pr(root, store, args.candidate, data, GitHub(args.repository))
     elif args.command == "canary":
         result = canary(root); persist(store.path.parent / "certificates", result)
@@ -159,7 +159,7 @@ def main(argv=None):
         human=cli_identity() if args.mode=='SUPERVISED' else None
         Worktrees(root,store.path.parent/'worktrees').verify(record)
         authorize_start(root,store,args.candidate,args.mode,certificates,protections,human=human)
-        runner = Runner(store, OllamaProvider(args.model), OllamaProvider(args.review_model), ContainerValidator(args.image))
+        runner = Runner(store, configured_provider(args.model,'builder'), configured_provider(args.review_model,'reviewer'), ContainerValidator(args.image))
         result = runner.run(args.candidate, context, Worktrees(root, store.path.parent / "worktrees"), record, [("focused_tests", ["python", "-m", "pytest", "tests/", "-q"])], certification=lambda: technical_current(root, load_certificates(store)) if args.mode=='SUPERVISED' else current(root,load_certificates(store),store=store) and GitHub(args.repository).protections().get('status')=='PASS', protections=protections, mode=args.mode)
     print(json.dumps(result, indent=2))
     return 0

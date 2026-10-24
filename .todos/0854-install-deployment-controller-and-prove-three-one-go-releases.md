@@ -1,7 +1,7 @@
 # TODO 0854 — Install the Deployment Controller and Prove Three One-Go Releases
 
 - **ID:** 0854
-- **Status:** backlog
+- **Status:** in-progress
 - **Priority:** critical strategic
 - **Risk:** L5 — production deployment
 - **Parent:** 0850
@@ -133,3 +133,10 @@ Run controller-specific unit/adversarial tests plus the full repository release 
 ## Done when
 
 Three supervised one-Go releases complete successfully with zero authority violations and zero investment-state mutations, and 0850 can be closed on real operational evidence.
+
+## PR #15 source progress
+
+Deployment-role preflight, credential/state isolation, auxiliary database backup/identity and legitimate append-only owner/static audit records are implemented. Existing exact-head one-Go admission remains authoritative. Installation, fixed checkout privileges, least-privilege credential provisioning, live failure acceptance and three genuine controller releases remain outstanding.
+
+No live acceptance is claimed. All operational checkboxes remain open. See
+[the rollout guide](../docs/development-agent-pr15-rollout.md) for internal prerequisites.

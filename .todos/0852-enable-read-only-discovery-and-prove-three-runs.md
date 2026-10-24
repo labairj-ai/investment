@@ -1,7 +1,7 @@
 # TODO 0852 — Enable Read-Only Discovery and Prove Three Scheduled Runs
 
 - **ID:** 0852
-- **Status:** backlog
+- **Status:** in-progress
 - **Priority:** high
 - **Risk:** L3
 - **Parent:** 0848
@@ -94,3 +94,10 @@ Confirm scheduler idempotency, duplicate-run rejection, freshness handling, boun
 ## Done when
 
 Three real scheduled discovery runs are accepted with zero authority or investment-state violations and 0848 can be closed.
+
+## PR #15 source progress
+
+Read-only bootstrap, dedicated GitHub reader transport, complete signal counts and exact-source scheduled-run acceptance are implemented. Acceptance requires three distinct real slots plus protected host safety observations; source fixtures cannot qualify. Installation and all three genuine runs remain outstanding.
+
+No live acceptance is claimed. All operational checkboxes remain open. See
+[the rollout guide](../docs/development-agent-pr15-rollout.md) for internal prerequisites.

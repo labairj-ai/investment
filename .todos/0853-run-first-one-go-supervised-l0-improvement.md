@@ -1,7 +1,7 @@
 # TODO 0853 — Run the First One-Go Supervised L0 Improvement
 
 - **ID:** 0853
-- **Status:** backlog
+- **Status:** in-progress
 - **Priority:** critical strategic
 - **Risk:** L3
 - **Parent:** 0849
@@ -102,3 +102,10 @@ Exercise at least one negative/stale-head path in non-production acceptance and 
 ## Done when
 
 One real L0 candidate reaches successful merged-main CI through a single owner Go, or a real No-Go correctly stops the flow, and 0849 can be closed on actual evidence.
+
+## PR #15 source progress
+
+The supervised path is restricted to L0 and requires accepted scheduled candidate provenance before creating a worktree. Canonical GitHub REST identity replaces incomplete CLI identity. An optional bounded adapter supports the existing shared Qwen MLX endpoint without touching the news endpoint or installing a model. Live validator/pytest authority integration, accepted discovery and the genuine owner-reviewed pilot remain outstanding.
+
+No live acceptance is claimed. All operational checkboxes remain open. See
+[the rollout guide](../docs/development-agent-pr15-rollout.md) for internal prerequisites.

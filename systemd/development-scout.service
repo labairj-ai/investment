@@ -14,3 +14,7 @@ ReadWritePaths=%h/.local/share/investment-development
 PrivateTmp=true
 PrivateNetwork=true
 TimeoutStartSec=180
+
+# Discovery never receives portfolio, broker, owner or SSH credentials.
+InaccessiblePaths=-%h/.ssh -%h/.aws -%h/.config/gh -%h/investment/.env -%h/investment/out -%h/investment/holdings.csv -%h/.local/share/investment-development/service.env
+InaccessiblePaths=-%h/.netrc -%h/.git-credentials -%h/.gnupg

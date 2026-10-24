@@ -1,7 +1,7 @@
 # TODO 0851 — Live-Certify the Bounded L0 Validator
 
 - **ID:** 0851
-- **Status:** backlog
+- **Status:** in-progress
 - **Priority:** critical
 - **Risk:** L5 — validation trust boundary
 - **Parent:** 0847
@@ -106,3 +106,10 @@ Run focused Development Agent tests, full repository tests, TODO consistency, De
 ## Done when
 
 The installed live L0 validator is independently verified READY and 0847 can be closed on real evidence.
+
+## PR #15 source progress
+
+Pinned first-install tooling and a live functional probe are implemented. Stale socket restart now preserves live listeners and refuses unsafe paths. Installation, OS denial matrix and sanitized real acceptance receipt remain outstanding; a functional probe explicitly does not certify the host.
+
+No live acceptance is claimed. All operational checkboxes remain open. See
+[the rollout guide](../docs/development-agent-pr15-rollout.md) for internal prerequisites.

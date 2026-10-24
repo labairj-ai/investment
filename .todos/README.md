@@ -203,3 +203,7 @@ Created October 24, 2026 to execute the simplified solo-owner workflow already e
 Execution order: **0851 + 0852 → 0853 → 0854**.
 
 Owner experience remains exactly: **ChatGPT reviews the actual PR and CI → recommends GO or NO-GO → owner replies Go or No-Go**. No second deployment/promotion approval is introduced. These tasks do not enable autonomous implementation, auto-merge, financial/execution changes, or any model installation.
+
+PR #15 source support for 0851–0854 is in progress. These operational tasks remain
+open until actual host acceptance; fixtures and source CI do not close them. See
+[internal rollout prerequisites](../docs/development-agent-pr15-rollout.md).

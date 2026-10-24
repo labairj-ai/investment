@@ -66,9 +66,10 @@ class Executor:
                 return h.hexdigest()
             return dict(schema=hashlib.sha256(json.dumps(schema,sort_keys=True).encode()).hexdigest(),events=events,candidates=candidates,event_hash=hash_rows('SELECT seq,event_id,candidate,kind,created,payload FROM dev_events WHERE seq<=? ORDER BY seq',events),candidate_hash=hash_rows('SELECT rowid,id,identity,created,payload FROM dev_candidates WHERE rowid<=? ORDER BY rowid',candidates))
 
-    def investment_identity(self):
+    def investment_identity(self,name="investment.db"):
         # Deployment role only; return a digest, never database contents.
-        path=self.root/'out/investment.db'
+        if name not in {'investment.db','buffett.db'}:raise ValueError('fixed protected database required')
+        path=self.root/'out'/name
         if path.is_symlink() or not path.is_file():raise ValueError('authoritative database must be a regular existing file')
         with sqlite3.connect(path.as_uri()+'?mode=ro',uri=True) as db:
             db.execute('BEGIN');h=hashlib.sha256()
@@ -80,15 +81,15 @@ class Executor:
             return h.hexdigest()
 
     def protected(self):
-        return dict(holdings_sha256=self.hash_file(self.root/'holdings.csv'),ledger=self.ledger_snapshot(),investment=self.investment_identity())
+        return dict(holdings_sha256=self.hash_file(self.root/'holdings.csv'),ledger=self.ledger_snapshot(),investment=self.investment_identity(),auxiliary=dict(buffett=self.investment_identity('buffett.db') if (self.root/'out/buffett.db').exists() or (self.root/'out/buffett.db').is_symlink() else None))
 
     def protected_unchanged(self,before,after):
-        if before['holdings_sha256']!=after['holdings_sha256'] or before['investment']!=after['investment']:return False
+        if before['holdings_sha256']!=after['holdings_sha256'] or before['investment']!=after['investment'] or before.get('auxiliary')!=after.get('auxiliary'):return False
         old=before['ledger'];new=after['ledger']
         if new['events']<old['events'] or new['candidates']<old['candidates']:return False
         prefix=self.ledger_snapshot(event_limit=old['events'],candidate_limit=old['candidates'])
         if any(prefix[k]!=old[k] for k in ('schema','event_hash','candidate_hash')):return False
-        allowed={'STATE','PLAN','TODO_RESERVATION','APPROVAL','OWNER_REVIEW','HUMAN_REVIEW','BUILD_POLICY','POLICY_ADMISSION','START_AUTHORIZATION','WORKTREE','RUN','ITERATION','VALIDATION','VALIDATION_BATCH','SUPPLEMENTAL_VALIDATION','RECEIPT','PR','MERGE','DEPLOYMENT','OPERATIONAL_SUCCESS','EFFECTIVENESS','SCORE','SIGNAL_OBSERVATION','SCHEDULE','SCHEDULE_ATTEMPT','SCHEDULE_FAILURE','SCHEDULE_DUPLICATE','SCHEDULER_OBSERVATION','PROTECTION','PIPELINE','OWNER_NOTIFICATION','TECHNICAL_CERTIFICATION','STAGE_OBSERVATION','AUTONOMY_PAUSE','AUTONOMY_RESUME','GIT_INTENT','AUTHORIZATION'}
+        allowed={'STATIC_VALIDATION','OWNER_MERGE','STATE','PLAN','TODO_RESERVATION','APPROVAL','OWNER_REVIEW','HUMAN_REVIEW','BUILD_POLICY','POLICY_ADMISSION','START_AUTHORIZATION','WORKTREE','RUN','ITERATION','VALIDATION','VALIDATION_BATCH','SUPPLEMENTAL_VALIDATION','RECEIPT','PR','MERGE','DEPLOYMENT','OPERATIONAL_SUCCESS','EFFECTIVENESS','SCORE','SIGNAL_OBSERVATION','SCHEDULE','SCHEDULE_ATTEMPT','SCHEDULE_FAILURE','SCHEDULE_DUPLICATE','SCHEDULER_OBSERVATION','PROTECTION','PIPELINE','OWNER_NOTIFICATION','TECHNICAL_CERTIFICATION','STAGE_OBSERVATION','AUTONOMY_PAUSE','AUTONOMY_RESUME','GIT_INTENT','AUTHORIZATION'}
         with sqlite3.connect(self.ledger.as_uri()+'?mode=ro',uri=True) as db:
             kinds={r[0] for r in db.execute('SELECT DISTINCT kind FROM dev_events WHERE seq>? AND seq<=?',(old['events'],new['events']))}
         # Only append-only development/control activity is expected. Existing
@@ -105,10 +106,18 @@ class Executor:
     def backup(self,directory):
         directory=Path(directory);directory.mkdir(mode=0o700,parents=True,exist_ok=False)
         source=self.root/'out/investment.db';target=directory/'investment-backup.sqlite3'
-        with sqlite3.connect(source.as_uri()+'?mode=ro',uri=True) as live,sqlite3.connect(target) as copy:
-            live.backup(copy)
-            if copy.execute('PRAGMA integrity_check').fetchone()[0]!='ok':raise ValueError('backup integrity failure')
-        return dict(path=str(target),sha256=self.hash_file(target),integrity='ok',mechanism='sqlite-online-backup-1')
+        backups={}
+        for name in ('investment.db','buffett.db'):
+            source=self.root/'out'/name
+            if source.is_symlink():raise ValueError('protected backup symlink denied')
+            if name=='buffett.db' and not source.exists():continue
+            if source.is_symlink() or not source.is_file():raise ValueError('regular protected backup source required')
+            target=directory/(name+'.sqlite3')
+            with sqlite3.connect(source.as_uri()+'?mode=ro',uri=True) as live,sqlite3.connect(target) as copy:
+                live.backup(copy)
+                if copy.execute('PRAGMA integrity_check').fetchone()[0]!='ok':raise ValueError('backup integrity failure')
+            backups[name]=dict(path=str(target),sha256=self.hash_file(target),integrity='ok')
+        return dict(**backups['investment.db'],mechanism='sqlite-online-backup-1',databases=backups)
 
     def checkout(self,sha,origin):
         if len(sha)!=40 or any(c not in '0123456789abcdef' for c in sha):raise ValueError('exact SHA required')
