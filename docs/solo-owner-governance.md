@@ -26,7 +26,7 @@ remain distinct. The owner sees DEPLOYED or FAILED, with diagnostics for failure
 No arbitrary shell, broker function or investment-data rollback is permitted.
 
 An activation PR receives the same ordinary exact-head Go. Runtime re-verifies
-its source, reviewed L5 risk, owner, current GitHub decision and CI; it does not
+its installed source, deterministic reviewed risk, owner, current GitHub decision and CI; it does not
 request a promotion object. Its configuration and technical evidence must still
 admit. Owner-facing modes are Supervised and, after proven acceptance and a
 reviewed activation change, Low-risk Auto-PR. Both require owner Go before main.

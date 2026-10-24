@@ -195,3 +195,19 @@ def test_missing_static_installation_cannot_be_certified(monkeypatch):
     from dev_agent.static_validation import installed
     monkeypatch.delenv('DEV_AGENT_STATIC_ORACLE_SOURCE_SHA256',raising=False)
     with pytest.raises(ValueError,match='unavailable'):installed(ROOT,'a'*40,'b'*40)
+
+
+def test_runtime_follows_approved_document_release_without_promotion_pointer(authorized_owner,monkeypatch):
+    from dev_agent import owner_promotion,github,git_exec
+    store,client,obj,data=authorized_owner
+    original=client.read
+    client.read=lambda endpoint:[dict(number=1,merge_commit_sha='c'*40)] if '/pulls?per_page=100' in endpoint else original(endpoint)
+    monkeypatch.delenv('DEV_AGENT_PROMOTION_PR',raising=False)
+    monkeypatch.setattr(github,'GitHub',lambda repository:client)
+    monkeypatch.setattr(git_exec,'output',lambda *a:'c'*40)
+    assert owner_promotion.activation_authority(ROOT,store)['status']=='PASS'
+    # Low-risk owner review cannot increase the runtime risk ceiling.
+    from dev_agent import operations
+    cfg=operations.policy(ROOT);cfg['autonomous_max_risk']='L3'
+    monkeypatch.setattr(operations,'policy',lambda root:cfg)
+    with pytest.raises(ValueError):owner_promotion.activation_authority(ROOT,store)

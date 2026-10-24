@@ -58,7 +58,7 @@ def probe(root):
         commands=manifest(['tests/test_fixture.py'],base)
         for attack in ('stale_validation','mixed_candidate','mixed_commit'):
             candidate=store.discover(dict(source='user',title='Fixture '+attack,problem=attack,evidence=['fixture'],outcome='Deny forged evidence',files=['docs/note.md'],category='TEST'))
-            ctx=dict(todo='0001',head=base,mode='SUPERVISED')
+            ctx=dict(todo='0001',head=base,mode='SUPERVISED',risk='L3')
             store.event(candidate,'PLAN',dict(context=ctx,focused_tests=['tests/test_fixture.py']))
             binding=dict(candidate=candidate,todo='0001',base=base,head=head,mode='SUPERVISED',source_hash=source_hash(repo),trusted_test_tree_hash=oracle_hash,candidate_source_tree_hash=source_hash(repo))
             records=[dict(binding,name=name,command=cmd,batch=attack,command_contract=COMMAND_VERSION,manifest_hash=digest(commands),fixture_only=False,status='PASS',exit_code=0,artifact_integrity=dict(status='PASS',fixture_only=True)) for name,cmd in commands]

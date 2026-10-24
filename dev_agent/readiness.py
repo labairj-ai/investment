@@ -53,5 +53,10 @@ def owner_status(root,store,*,client=None,now=None):
         from .owner_review import policy as owner_policy
         client=client or GitHub(owner_policy()['repository'])
         return supervised_admission(root,store,client,now=now)
-    except ValueError as error:return dict(status='NOT READY',reason=str(error))
+    except ValueError as error:
+        reason=str(error)
+        if 'owner bindings' in reason:reason='GitHub authorization is unavailable'
+        elif 'TODOs' in reason:reason='discovery service has not completed acceptance'
+        elif 'build policy' in reason:reason='supervised scope safety check is unavailable'
+        return dict(status='NOT READY',reason=reason)
     except Exception:return dict(status='NOT READY',reason='safety check is unavailable')

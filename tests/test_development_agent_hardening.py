@@ -30,7 +30,9 @@ def make_trusted_proof(root,store,cid):
     store.event(cid,'ITERATION',dict(prior,fixture_only=False))
     validator=ContainerValidator('fixture@sha256:'+'a'*64)
     validator.run=lambda root,name,command:dict(name=name,command=command,exit_code=0,status='PASS',artifact_integrity=dict(status='PASS',fixture_only=True),inventory=dict(total=2,passed=2,failures=[],skipped=[]))
-    validation.execute(root,store,cid,validator)
+    from unittest.mock import patch
+    with patch('dev_agent.static_validation.installed',return_value=dict(status='PASS',fixture_only=True)):
+        validation.execute(root,store,cid,validator)
     return evidence.seal(root,store,cid)
 
 
@@ -88,7 +90,9 @@ def test_mixed_or_missing_validation_rejected(repo,store,tmp_path,mutation):
 
 
 @pytest.mark.parametrize('inventory,status',[({},'PARTIAL'),({'total':1,'passed':0,'failures':['bad'],'skipped':[]},'FAIL')])
-def test_zero_exit_without_passing_junit_is_not_pass(repo,store,tmp_path,inventory,status):
+def test_zero_exit_without_passing_junit_is_not_pass(repo,store,tmp_path,inventory,status,monkeypatch):
+    from dev_agent import static_validation
+    monkeypatch.setattr(static_validation,'installed',lambda *a:dict(status='PASS',fixture_only=True))
     cid,root=built(repo,store,tmp_path);validator=ContainerValidator('fixture@sha256:'+'a'*64)
     validator.run=lambda root,name,cmd:dict(command=cmd,status='PASS',exit_code=0,inventory=inventory)
     records=validation.execute(root,store,cid,validator)
@@ -337,6 +341,8 @@ def test_three_runs_require_seven_calendar_days_and_exact_harness(store,monkeypa
 
 def test_autonomy_budget_and_emergency_stop(repo,store,monkeypatch):
     from development_fixtures import isolated_runtime_admission
+    from dev_agent import static_validation
+    monkeypatch.setattr(static_validation,'installed',lambda *a:dict(status='PASS',fixture_only=True))
     isolated_runtime_admission(monkeypatch)
     cid,_=start_candidate(repo,store,mode='AUTONOMOUS')
     config=json.loads((ROOT/'config/development_agent.json').read_text());config.update(autonomous_implementation=True,autonomy_stage='PR',daily_implementation_cap=1)
@@ -415,6 +421,8 @@ def test_new_failed_certification_invalidates_prior_success():
 
 def test_readiness_eligible_fixture_requires_enabled_policy_and_fresh_evidence(store,monkeypatch):
     from development_fixtures import isolated_runtime_admission
+    from dev_agent import static_validation
+    monkeypatch.setattr(static_validation,'installed',lambda *a:dict(status='PASS',fixture_only=True))
     isolated_runtime_admission(monkeypatch)
     now=time.time()
     for days in [8,4,0]:
@@ -534,6 +542,8 @@ def test_readiness_exposes_invalid_auto_merge_configuration(store,monkeypatch):
 @pytest.mark.parametrize('path,risk',[('docs/note.md','L0'),('static/pilot.css','L2')])
 def test_eligible_low_risk_pipeline_reaches_verified_pr_fixture(repo,store,monkeypatch,path,risk):
     from development_fixtures import isolated_runtime_admission
+    from dev_agent import static_validation
+    monkeypatch.setattr(static_validation,'installed',lambda *a:dict(status='PASS',fixture_only=True))
     isolated_runtime_admission(monkeypatch)
     from dev_agent import autonomy
     from dev_agent.worktrees import Worktrees
