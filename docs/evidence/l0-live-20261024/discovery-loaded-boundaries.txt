@@ -1,0 +1,9 @@
+CapabilityBoundingSet=cap_dac_read_search cap_setgid cap_setuid
+User=root
+Group=optiplex
+ReadWritePaths=/var/lib/investment-development-acceptance /run/investment-discovery-observer
+PrivateNetwork=yes
+ProtectHome=read-only
+ProtectSystem=strict
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_UNIX

@@ -105,3 +105,20 @@ No live acceptance is claimed. All operational checkboxes remain open. See
 ### PR #15 operational usability follow-up
 
 The protected automatic observation daemon and authenticated before/after Scout hooks now generate measured host-safety evidence. Installation primes and validates the read-only signal spool before enabling any timer. The producer cannot invent timer events; three genuine observed runs remain outstanding.
+
+## Actual host progress — 2026-10-24
+
+The reviewed root observer is installed outside application source, active and
+read-only over investment/source state. The reviewed discovery installer failed
+closed at `dedicated read-only GitHub credential unavailable`, before writing
+user units, priming a spool or enabling timers. The backup/owner credential was
+not reused. Scout, collector and scheduler observer remain uninstalled/disabled.
+
+Genuine discovery: **0/3**. No timer invocation, generated candidate or automatic
+bookend observation exists. No discovery.json was manufactured. The next actual
+timer cannot be reported until installation/priming succeeds. The reviewed
+calendar remains 08:15 America/New_York with up to 120 seconds random delay.
+
+See [live evidence](../docs/evidence/l0-live-20261024/README.md). Holdings, both
+investment databases, the control ledger and activation flags remained unchanged.
+Discovery: NOT READY — dedicated read-only GitHub credential unavailable.

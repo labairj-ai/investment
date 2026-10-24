@@ -195,7 +195,7 @@ Created October 24, 2026 to execute the simplified solo-owner workflow already e
 
 | ID | Task | Priority | Dependencies |
 |---|---|---|---|
-| [0851](0851-live-certify-bounded-l0-validator.md) | Live-Certify the Bounded L0 Validator | critical | PR #14 source foundation |
+| [0851](done/0851-live-certify-bounded-l0-validator.md) | Live-Certify the Bounded L0 Validator — live accepted 2026-10-24 | critical | PR #14 source foundation |
 | [0852](0852-enable-read-only-discovery-and-prove-three-runs.md) | Enable Read-Only Discovery and Prove Three Scheduled Runs | high | PR #14 source foundation |
 | [0853](0853-run-first-one-go-supervised-l0-improvement.md) | Run the First One-Go Supervised L0 Improvement | critical strategic | 0851, 0852 |
 | [0854](0854-install-deployment-controller-and-prove-three-one-go-releases.md) | Install the Deployment Controller and Prove Three One-Go Releases | critical strategic | 0853 |
@@ -207,3 +207,8 @@ Owner experience remains exactly: **ChatGPT reviews the actual PR and CI → rec
 PR #15 source support for 0851–0854 is in progress. These operational tasks remain
 open until actual host acceptance; fixtures and source CI do not close them. See
 [internal rollout prerequisites](../docs/development-agent-pr15-rollout.md).
+
+Actual live acceptance: **0847/0851 accepted** on approved production SHA
+`05d6cccf734d4604d1a8c10406d9e3d7598e9c6f`; see
+[live evidence](../docs/evidence/l0-live-20261024/README.md). **0852 remains 0/3**:
+root observer installed, reader credential absent, no Scout/user timers enabled.

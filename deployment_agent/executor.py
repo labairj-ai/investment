@@ -39,8 +39,29 @@ class Executor:
         return process.stdout.strip()
 
     def config_hash(self):
-        result=self.invoke(['/bin/systemctl','show','investment.service','--property=FragmentPath,DropInPaths,ExecStart,User,EnvironmentFiles'],capture_output=True,text=True,check=True,timeout=15,env=self.env)
-        return hashlib.sha256(result.stdout.encode()).hexdigest()
+        # ExecStart's systemctl representation includes PID/start/exit bookkeeping,
+        # which changes on restart or daemon-reload without a configuration edit.
+        # Bind the complete configured commands/drop-ins via `cat`, and reject
+        # stale or changing loaded metadata rather than hashing process history.
+        fields=('FragmentPath','DropInPaths','User','Group','EnvironmentFiles','NeedDaemonReload')
+        def loaded():
+            result=self.invoke(['/bin/systemctl','show','investment.service','--property='+','.join(fields)],capture_output=True,text=True,check=True,timeout=15,env=self.env)
+            if not isinstance(result.stdout,str) or len(result.stdout)>65536:raise ValueError('bounded loaded service configuration required')
+            values={}
+            for line in result.stdout.splitlines():
+                if '=' not in line:raise ValueError('complete loaded service configuration required')
+                key,value=line.split('=',1)
+                if key in values:raise ValueError('duplicate loaded service property')
+                values[key]=value
+            if set(values)!=set(fields) or values['NeedDaemonReload']!='no' or not values['FragmentPath'].startswith('/'):
+                raise ValueError('current loaded service configuration required')
+            return values
+        before=loaded()
+        result=self.invoke(['/bin/systemctl','cat','investment.service','--no-pager'],capture_output=True,text=True,check=True,timeout=15,env=self.env)
+        if not isinstance(result.stdout,str) or not result.stdout.strip() or len(result.stdout)>1_000_000:raise ValueError('complete bounded service unit text required')
+        if loaded()!=before:raise ValueError('service configuration changed during observation')
+        payload=dict(loaded=before,unit_text=result.stdout)
+        return hashlib.sha256(json.dumps(payload,sort_keys=True,separators=(',',':')).encode()).hexdigest()
 
     @staticmethod
     def hash_file(path):

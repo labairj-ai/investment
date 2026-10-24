@@ -1,0 +1,12 @@
+CapabilityBoundingSet=
+User=investment-oracle
+Group=investment-oracle
+ReadWritePaths=/run/investment-static-oracle
+ReadOnlyPaths=/var/lib/investment-static-oracle/authority.git
+InaccessiblePaths=-/home/optiplex/investment -/run/docker.sock -/var/run/docker.sock
+PrivateNetwork=yes
+ProtectHome=yes
+ProtectSystem=strict
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_UNIX
+InvocationID=df3e51c3783e40ad987a8bdae37032cb
