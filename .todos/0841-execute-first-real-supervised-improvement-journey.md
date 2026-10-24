@@ -1,7 +1,7 @@
 # TODO 0841 — Execute First Real Supervised Improvement Journey
 
 - **ID:** 0841
-- **Status:** backlog
+- **Status:** superseded
 - **Priority:** critical
 - **Risk:** L3
 - **Parent:** 0829
@@ -55,3 +55,8 @@ Then:
 ## Implementation and acceptance tracking
 
 See [rollout implementation and exact remaining gates](../docs/production-rollout-0835-0844.md) and the [plan](../docs/plans/production-foundation-0835-0844.md). Source preparation is not live operational acceptance. This task remains open until all requirements above have real evidence.
+
+
+## Superseded
+
+Superseded by TODO 0849 under the simplified solo-owner workflow. Internal safety controls remain, but owner-facing operation is reduced to Go / No-Go. Preserve this file as historical design context.
