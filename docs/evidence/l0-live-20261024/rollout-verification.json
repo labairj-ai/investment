@@ -1,0 +1,78 @@
+{
+  "application_sha": "05d6cccf734d4604d1a8c10406d9e3d7598e9c6f",
+  "observed_at": 1792865551.6378858,
+  "kind": "operator-rollout-verification-not-discovery-run",
+  "fixture_only": false,
+  "before_protected": {
+    "holdings_sha256": "1b05c299a53af4b417587511cfb2be99f823dbe9dd8e562dc8b90cc411e8a882",
+    "ledger": {
+      "schema": "a004946097c47fb7628415653097f6e167efe8f91084d92df146d8ce042affe0",
+      "events": 0,
+      "candidates": 0,
+      "event_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "candidate_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "investment": "1d912b3e5e16c10fa87102c77a882210dbff202989a81d292c9d110d655b13f4",
+    "auxiliary": {
+      "buffett": "f061955e097954ed6e8bf7d8e998cb23362fc63ffb095720476ca435d1d4977c"
+    }
+  },
+  "after_protected": {
+    "holdings_sha256": "1b05c299a53af4b417587511cfb2be99f823dbe9dd8e562dc8b90cc411e8a882",
+    "ledger": {
+      "schema": "a004946097c47fb7628415653097f6e167efe8f91084d92df146d8ce042affe0",
+      "events": 0,
+      "candidates": 0,
+      "event_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "candidate_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "investment": "1d912b3e5e16c10fa87102c77a882210dbff202989a81d292c9d110d655b13f4",
+    "auxiliary": {
+      "buffett": "f061955e097954ed6e8bf7d8e998cb23362fc63ffb095720476ca435d1d4977c"
+    }
+  },
+  "protected_state_unchanged": true,
+  "private_service_environment_unchanged": true,
+  "persistent_service_configuration_unchanged": true,
+  "persistent_service_configuration_sha256": "4c0f7a82ebb4662aa6d560f1c7a017215807870c4c9f940d68b2d1f3197d8d6d",
+  "investment_service_process": {
+    "MainPID": "1611800",
+    "ExecMainStartTimestamp": "Sat 2026-10-24 13:50:08 EDT",
+    "ActiveEnterTimestamp": "Sat 2026-10-24 13:50:08 EDT"
+  },
+  "activation": {
+    "autonomous_implementation": false,
+    "supervised_loop_enabled": false,
+    "supervised_publish_pr": false,
+    "auto_merge": false,
+    "autonomy_stage": "SHADOW",
+    "autonomous_max_risk": "L2",
+    "required_human_merge": true
+  },
+  "legacy_fingerprint_check": {
+    "status": "FAIL",
+    "before": "5e129204b4ffe4df5b18f30e4959e481a95cae84c3b0d25025549958d6336557",
+    "after": "5ae3d19a00091be5f756b39e4f21d423091b92432e0cb2e59dc0e862ef431ecc",
+    "cause": "ExecStart runtime PID/timestamp metadata cleared by systemd daemon-reload; persistent unit/drop-in contents and running service process unchanged"
+  },
+  "validator": {
+    "status": "READY",
+    "matrix_passed": 22,
+    "receipt_path": "/var/lib/investment-static-oracle-acceptance/live-acceptance.json",
+    "receipt_sha256": "6b0c2a5f9dcc9030c44940a4ab91c0e5ee526285f3abeae021d39b4f35e3fbcd"
+  },
+  "discovery": {
+    "status": "NOT READY",
+    "reason": "dedicated read-only GitHub credential unavailable",
+    "observer": "installed and running",
+    "scout": "not installed or enabled",
+    "collector": "not installed or primed",
+    "scheduler_observer": "not installed",
+    "genuine_runs": 0,
+    "required_runs": 3,
+    "candidates": [],
+    "host_safety": "NOT OBSERVED: no genuine timer runs",
+    "first_real_timer": null,
+    "grants_implementation": false
+  }
+}
