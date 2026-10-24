@@ -1,7 +1,7 @@
 # TODO 0843 — Implement Authenticated Owner Autonomy-Promotion Verifier
 
 - **ID:** 0843
-- **Status:** in-progress
+- **Status:** superseded
 - **Priority:** critical
 - **Risk:** L5 — autonomy authority
 - **Depends:** PR #13 owner-promotion interface
@@ -81,3 +81,8 @@ The verifier exists and passes tests, but autonomy remains disabled.
 ## Implementation and acceptance tracking
 
 See [rollout implementation and exact remaining gates](../docs/production-rollout-0835-0844.md) and the [plan](../docs/plans/production-foundation-0835-0844.md). Source preparation is not live operational acceptance. This task remains open until all requirements above have real evidence.
+
+
+## Superseded
+
+Superseded by TODO 0845 under the simplified solo-owner workflow. Internal safety controls remain, but owner-facing operation is reduced to Go / No-Go. Preserve this file as historical design context.
