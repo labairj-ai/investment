@@ -177,3 +177,47 @@ failure leaves no usable old spool. Scout rejects spools lacking CI, telemetry o
 performance availability before candidate discovery. The unchanged real timer
 requirements, independent host bookends, L0 scope and all activation flags remain
 mandatory. Source tests do not install/enable the reader or count as live runs.
+
+
+## Pre-discovery observer pin refresh (source only; not applied)
+
+The root observer was bootstrapped at `05d6cccf734d4604d1a8c10406d9e3d7598e9c6f`.
+PR17 merged as `88f1757af1ed090983ce262a1936a41dbf8a279b`; neither that release
+nor this refresh change has been deployed. The discovery installer must continue
+to reject a different config.head; bootstrap must continue to refuse an existing
+observer. This refresh does not bypass either guard.
+
+After a separately owner-reviewed merged release is deployed through the normal
+release path, an internal release operator may plan the bounded transition with
+`ops/install_discovery_observer.py --root /home/optiplex/investment --head NEW_MAIN
+--refresh-from EXPECTED_OLD_MAIN`. Without `--apply` it performs no filesystem or
+service mutation. This is internal release tooling, not an additional owner
+approval, promotion or manual owner workflow. It never installs discovery units.
+
+Apply is only supported on the fixed Linux root layout with a clean exact target
+HEAD equal to origin/main, protected exact old Git-derived config, and unchanged
+observer executable, root unit and Scout service/timer Git objects. It verifies
+loaded systemd protections, process/runtime identity and the private socket; a
+fixed rejected root request cannot invoke Scout or produce a host bookend. It
+requires no user discovery units, spool, worktree, timer history or acceptance
+artifacts. A pending SQLite ledger journal is refused; the ledger is inspected in
+memory without side files. No accepted runs are migrated, erased or reset.
+
+Under an exclusive root lock it rechecks preconditions, durably saves the exact
+prior config, verifies the observer stopped, fsyncs a new file and atomically
+replaces only config.json. It restarts only the root observer and independently
+checks its new invocation/socket, runtime, config, unit digests, full target
+manifest and unchanged disabled/SHADOW/human-merge controls. No daemon-reload,
+source writes, investment writes, user-unit install or timer enable is permitted.
+
+Failure restores the exact saved config and revalidates the old observer. That
+result is explicitly NOT READY against a new source checkout. If rollback cannot
+be verified, the tool attempts and verifies a stop; if even stop is unconfirmed it
+reports that explicitly. An unrestored configuration is quarantined away from the
+authoritative path when possible, never treated as trusted recovery. Recovery
+material is retained for diagnosis; the tool never deletes an existing observer
+or starts bootstrap to bypass the upgrade guard. Executable/unit changes require
+a separately reviewed full upgrade, outside this config-only mechanism.
+
+Operational acceptance remains 0/3. No host refresh or discovery installation has
+been performed by this source work. L0-only scope and one Go/No-Go authority remain.

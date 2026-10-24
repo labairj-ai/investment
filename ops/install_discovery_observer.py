@@ -17,15 +17,20 @@ CONFIG=Path('/etc/investment-discovery-observer')
 UNIT=Path('/etc/systemd/system/investment-discovery-observer.service')
 
 
-def prepare(root,head,repository):
-    plan=reviewed_source(root,head,repository)
-    names=['ops/discovery/observer.py','ops/discovery/investment-discovery-observer.service','systemd/development-scout.service']
-    plan['files']={n:git(root,'show',head+':'+n) for n in names}
+def source_manifest(root,head):
     tracked=git(root,'ls-tree','-rz','--full-tree',head).split(b'\0');manifest={}
     for row in filter(None,tracked):
         meta,name=row.split(b'\t',1);mode,kind,oid=meta.decode().split();name=name.decode()
         if kind!='blob' or mode not in {'100644','100755'}:raise ValueError('regular pinned source required')
         manifest[name]=hashlib.sha256(git(root,'cat-file','blob',oid)).hexdigest()
+    return manifest
+
+
+def prepare(root,head,repository):
+    plan=reviewed_source(root,head,repository)
+    names=['ops/discovery/observer.py','ops/discovery/investment-discovery-observer.service','systemd/development-scout.service']
+    plan['files']={n:git(root,'show',head+':'+n) for n in names}
+    manifest=source_manifest(root,head)
     plan['manifest']=manifest
     return plan
 
@@ -62,6 +67,12 @@ def apply(plan,*,invoke=subprocess.run):
 
 
 if __name__=='__main__':
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--root',type=Path,required=True);p.add_argument('--head',required=True);p.add_argument('--repository',default='labairj-ai/investment');p.add_argument('--apply',action='store_true');a=p.parse_args()
-    plan=prepare(a.root,a.head,a.repository)
-    print(json.dumps(apply(plan) if a.apply else dict(status='PLAN_ONLY',source_head=plan['head'],starts_services=False,grants_implementation=False),indent=2))
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--root',type=Path,required=True);p.add_argument('--head',required=True);p.add_argument('--repository',default='labairj-ai/investment');p.add_argument('--refresh-from',metavar='EXPECTED_OLD_HEAD');p.add_argument('--apply',action='store_true');a=p.parse_args()
+    if a.refresh_from:
+        from ops.discovery.pin_refresh import refresh
+        result=refresh(a.root,a.head,a.refresh_from,a.repository,apply=a.apply)
+    else:
+        plan=prepare(a.root,a.head,a.repository)
+        result=apply(plan) if a.apply else dict(status='PLAN_ONLY',source_head=plan['head'],starts_services=False,grants_implementation=False)
+    print(json.dumps(result,indent=2))
+    if result.get('status','').startswith('FAILED') or result.get('status')=='ROLLED_BACK_NOT_READY':raise SystemExit(1)
