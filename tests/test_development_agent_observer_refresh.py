@@ -259,6 +259,7 @@ def test_symlinked_or_writable_protected_files(host,path):
 
 def test_wrong_layout_and_nonroot_rejected(host,monkeypatch):
     with pytest.raises(ValueError,match='Linux root'):r.refresh(host.base,host.head,host.old,apply=True,invoke=host.invoke)
+    with pytest.raises(ValueError,match='Linux root'):r.refresh(host.ROOT,host.head,host.old,repository='other/repository',apply=True,invoke=host.invoke)
     monkeypatch.setattr(r.os,'geteuid',lambda:os.getuid()+1)
     with pytest.raises(ValueError,match='Linux root'):host.run(apply=True)
     assert host.starts==host.stops==0

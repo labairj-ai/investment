@@ -144,7 +144,7 @@ def boundary(config,invoke):
 
 
 def inspect(root,head,old,repository,invoke):
-    if sys.platform!='linux' or os.geteuid()!=ROOT_UID or Path(root)!=ROOT:raise ValueError('fixed OptiPlex Linux root refresh required')
+    if sys.platform!='linux' or os.geteuid()!=ROOT_UID or Path(root)!=ROOT or repository!='labairj-ai/investment':raise ValueError('fixed investment OptiPlex Linux root refresh required')
     if not re.fullmatch('[a-f0-9]{40}',str(old)) or not re.fullmatch('[a-f0-9]{40}',str(head)) or old==head:raise ValueError('distinct exact old and target heads required')
     if ROOT.is_symlink() or ROOT.resolve(strict=True)!=ROOT:raise ValueError('fixed nonsymlinked live checkout required')
     target=prepare(root,head,repository);git(root,'merge-base','--is-ancestor',old,head)
