@@ -29,7 +29,7 @@ def main(argv=None):
         cfg=configuration();executor=Executor(cfg['root'],cfg['receipts'],cfg['ledger'])
         if a.recover:result=recover(executor,cfg['origin'])
         else:
-            if not a.authorization_id or a.authorization_id<=0:raise ValueError('owner authorization object required')
+            if not a.authorization_id or a.authorization_id<=0:raise ValueError('original exact-head owner Go object required')
             store=Store(Path(cfg['receipts'])/'authority'/'development-control.sqlite3');store.migrate();client=GitHub(cfg['repository'])
             def admit():
                 current=configuration()

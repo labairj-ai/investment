@@ -29,9 +29,12 @@ def report(root,store,now=None,*,protections=None,technical=None):
     cap=config.get('daily_implementation_cap',1)
     enabled=config.get('autonomous_implementation') is True
     if enabled and stage!='PR':findings.append('autonomous implementation allowed only at PR stage')
-    from .owner_promotion import authorization
-    owner=authorization(root,store,now=now)
-    if owner.get('status')!='PASS' or owner.get('authenticated') is not True:findings.append(owner.get('reason','authenticated owner autonomy promotion required'))
+    # Stages are internal evidence, not a sequence of owner approvals.
+    from .owner_promotion import activation_authority
+    try:owner=activation_authority(root,store,now=now)
+    except Exception:
+        owner=dict(status='UNAVAILABLE',reason='exact-head activation PR owner Go unavailable')
+        findings.append(owner['reason'])
     from .store import digest
     return dict(evidence=evidence,owner_promotion=owner,runtime_policy_hash=digest(config),stage=stage,autonomous_implementation=enabled,eligible=enabled and stage=='PR' and not findings,blockers=list(dict.fromkeys(findings)),stage_counts=counts,daily_cap=cap,hard_maximum=3,grants_merge=False,grants_deployment=False)
 

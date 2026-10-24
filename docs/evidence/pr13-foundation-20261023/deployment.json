@@ -1,0 +1,78 @@
+{
+  "pr": 13,
+  "pr_head": "c13d9ea9db66c79cf50dc5d50b0417d6a4cb2287",
+  "merge_sha": "d12dcf3746dc7266ef4de02f06a48c2b629580e6",
+  "prior_sha": "15df8960b7c376da8b15fd80dad1bfb19aaede9b",
+  "head_ci": "https://github.com/labairj-ai/investment/actions/runs/40017889713",
+  "merge_ci": "https://github.com/labairj-ai/investment/actions/runs/40026606075",
+  "status": "DEPLOYED_VERIFIED",
+  "health": {
+    "service": "active",
+    "dashboard_http": 200,
+    "development_dashboard_http": 200,
+    "heartbeat": true,
+    "authenticated_api_http": 200,
+    "unauthorized_api_http": 403,
+    "readiness": "UNAVAILABLE"
+  },
+  "advisor_before": {
+    "health": "PASS",
+    "mutation_safety": "PASS",
+    "functional_contract": "PASS",
+    "production_state_unchanged": true
+  },
+  "advisor_after": {
+    "health": "PASS",
+    "mutation_safety": "PASS",
+    "functional_contract": "PASS",
+    "production_state_unchanged": true
+  },
+  "activation": {
+    "autonomous_implementation": false,
+    "supervised_loop_enabled": false,
+    "supervised_publish_pr": false,
+    "auto_merge": false
+  },
+  "deployed_sha": "d12dcf3746dc7266ef4de02f06a48c2b629580e6",
+  "holdings_unchanged": true,
+  "development_ledger_unchanged": true,
+  "investment_state_unchanged": true,
+  "service_configuration_unchanged": true,
+  "new_services_activated": false,
+  "finished_at": "2026-10-23T21:59:54.549033+00:00",
+  "schema": "manual-foundation-deployment-1",
+  "actor": "manual-owner-authorized",
+  "fixture_only": false,
+  "autonomy_stage": "SHADOW",
+  "tracked_worktree_clean": true,
+  "authorization": {
+    "comment_id": 6375211303,
+    "url": "https://github.com/labairj-ai/investment/pull/13#issuecomment-6375211303",
+    "owner_login": "labairj-ai",
+    "owner_id": 260142791,
+    "connector_id": 1144995,
+    "connector_slug": "chatgpt-codex-connector"
+  },
+  "rollback_backups": {
+    "investment.db": {
+      "integrity": "ok",
+      "sha256": "0ba2420230b698a6d482bada4e8f3b6a88521b8c0d05f92441d8551a3fe1bdcd",
+      "mechanism": "sqlite-online-backup"
+    },
+    "buffett.db": {
+      "integrity": "ok",
+      "sha256": "c3923ab1160909b070dae2bdf6860f477e691fd716bd7a962fc351e1e2c875ac",
+      "mechanism": "sqlite-online-backup"
+    },
+    "development-control.sqlite3": {
+      "integrity": "ok",
+      "sha256": "c081c0cd314cfeaf8f9abea8d7b5f53df4be9050e3155611aebe7326b61381ab",
+      "mechanism": "sqlite-online-backup"
+    }
+  },
+  "superseded_pr12": {
+    "state": "MERGED",
+    "action": "no close action possible or required"
+  },
+  "authority": "historical manual foundation deployment only; not a Deployment Agent pilot or operational certificate"
+}

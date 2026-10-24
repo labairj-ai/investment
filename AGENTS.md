@@ -81,15 +81,22 @@ PR #6 exemption. The existing rule against agent self-approval remains in force.
 - L4: explicit owner financial-domain review, financial canaries, behavioral-contract
   evidence and applicable observation gates.
 - L5: explicit owner approval, execution/account-mutation safeguards and required
-  deployment confirmation; financial acknowledgment where financial scope applies.
+  technical deployment gates; financial risk must be surfaced in the review.
 
 Owner review must be an authenticated deliberate action, separate from Builder and
-Reviewer evidence, bound to repository, PR, exact head, risk, timestamp, nonce and
-required acknowledgments. Agents must never generate that action. auto_merge=false
-and required_human_merge=true remain mandatory. The owner performs the final merge.
-Automated systems may recommend, test, review or prepare PRs, but may not approve,
-merge, deploy, lower safety gates or alter governance requirements on their own.
-Explicitly owner-authorized deployment still requires existing deployment gates.
+Reviewer evidence, bound to repository, PR, exact head, reviewed risk, timestamp
+and nonce. Agents must never manufacture that action. auto_merge=false and
+required_human_merge=true remain mandatory. The owner performs the final merge.
+The owner may authorize the isolated owner connector to perform that exact merge
+by saying Go after ChatGPT reviews the actual PR and CI. That same Go authorizes
+the resulting exact merge SHA to deploy after merged-main CI and all technical
+safety gates pass. A No-Go blocks both merge and deployment. A changed head
+requires a fresh review and Go. No additional deployment, financial, execution or
+autonomy-promotion phrase is required. Elevated financial, execution, deployment,
+governance and autonomy risks must be clearly surfaced before Go. Internal review,
+merge and deployment receipts remain separate; none bypasses technical controls.
+Builder/Reviewer and discovery have no owner credentials, merge or deployment
+capability. Internal staging is automatic safety evidence, not owner ceremony.
 
 ## Investment-sensitive changes
 

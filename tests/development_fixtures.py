@@ -38,4 +38,28 @@ def isolated_runtime_admission(monkeypatch):
     """
     from dev_agent import qualification,owner_promotion
     monkeypatch.setattr(qualification,'evaluate',lambda *a,**k:dict(status='PASS',blockers=[],fixture_only=True,grants_authority=False))
-    monkeypatch.setattr(owner_promotion,'authorization',lambda *a,**k:dict(status='PASS',authenticated=True,fixture_only=True,grants_authority=False))
+    isolated_owner_promotion(monkeypatch)
+
+
+def isolated_owner_promotion(monkeypatch):
+    """Fake authenticated GitHub boundary for budget/pipeline component tests only.
+
+    Runtime binding checks stay real. Authentication and every negative binding
+    are tested against fake GitHub objects in test_development_agent_owner_promotion.
+    No JSON from this helper is stored as live operational evidence.
+    """
+    from dev_agent import owner_promotion,promotion_github
+    context=dict(repository='owner/repo',harness_hash='a'*64,activation_pr=1,head='b'*40,stage='PR',maximum_risk='L2',daily_cap=1,owner_login='owner',owner_id=10)
+    def proof(*args,**kwargs):
+        now=kwargs.get('now')
+        now=time.time() if now is None else now
+        binding=dict(context,protocol=owner_promotion.PROTOCOL,created=now,nonce='isolated-owner-adapter-0001',rationale='Synthetic boundary for isolated component testing')
+        return dict(status='PASS',authenticated=True,fixture_only=False,protocol=owner_promotion.PROTOCOL,binding=binding,origin=dict(id=1,url='https://github.com/owner/repo/pull/1#issuecomment-1',sha256='c'*64),revocation_checked=True,replay_checked=True,grants_authority=False)
+    monkeypatch.setenv('DEV_AGENT_PROMOTION_PR','1')
+    monkeypatch.setattr(promotion_github,'context',lambda *a,**k:dict(context))
+    monkeypatch.setattr(promotion_github,'verify_current',proof)
+    monkeypatch.setattr(owner_promotion,'authorization',proof)
+
+    # New normal authority adapter for isolated stage/budget component tests.
+    # Exact owner-Go verification is covered separately without this adapter.
+    monkeypatch.setattr(owner_promotion,'activation_authority',proof)

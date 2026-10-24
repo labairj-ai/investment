@@ -1,4 +1,4 @@
-"""Owner connector actions after explicit human OK/NO. No background entry point.
+"""Owner connector actions after explicit human Go / No-Go. No background entry point.
 
 Only the authenticated owner-side connector invokes this module. Development
 Agent has read-only ingestion, never these write/merge methods or credentials.
@@ -67,21 +67,70 @@ def merge_after_ok(store,client,number,*,expected_head,explicit_owner_merge=Fals
     return dict(status='OWNER_MERGED',head=expected_head,merge_sha=result['sha'],owner_review=proof['owner_review'],deployment_authorized=False)
 
 
-def authorize_deployment(store,client,number,*,head,merge_sha,nonce,rationale,execution_ack=False,explicit_owner_deployment=False,expires_at=None):
-    """A separate owner action after merge CI; does not execute deployment."""
-    import re,time
-    owner_actor(client)
-    if explicit_owner_deployment is not True or execution_ack is not True or not rationale.strip() or not re.fullmatch(r'[A-Za-z0-9-]{16,128}',str(nonce)):raise ValueError('separate explicit owner deployment authorization required')
-    check(store,client,number,head)
+def authorize_deployment(*args,**kwargs):
+    raise ValueError('retired: deployment derives from the original owner Go')
+
+
+def authorize_autonomy_promotion(*args,**kwargs):
+    raise ValueError('retired: activation uses the activation PR owner Go')
+
+
+def go_no_go(store,client,reviewed,answer):
+    """Trusted owner connector entry point after ChatGPT's exact-head review.
+
+    `reviewed` is the frozen context already displayed to the owner, including
+    elevated risk. Only the authenticated owner connector can invoke this API;
+    it must never be exposed to Builder/Reviewer or inferred from model output.
+    """
+    import uuid
+    if answer not in {'Go','No-Go'}:raise ValueError('explicit Go or No-Go required')
+    recorded=record_decision(store,client,reviewed,
+        decision='APPROVE' if answer=='Go' else 'REQUEST_CHANGES',
+        nonce=str(uuid.uuid4()),rationale='Owner '+answer+' after exact-head ChatGPT review ('+reviewed['risk']+')',
+        financial_ack=int(reviewed['risk'][1:])>=4,execution_ack=int(reviewed['risk'][1:])>=5)
+
+    if answer=='No-Go':return dict(status='NO_GO',review=recorded)
+    try:next_step=advance_approved(store,client,reviewed['pr'])
+    except ValueError as error:next_step=dict(status='WAITING_OR_BLOCKED',reason=str(error))
+    return dict(status='GO_RECORDED',review=recorded,next_step=next_step)
+
+
+def advance_approved(store,client,number):
+    """Owner-side continuation; the persisted Go authorizes merge once CI passes.
+
+    A timer may retry this fixed action. No user prompt, no agent credential,
+    no GitHub auto-merge and no authority to select a different head.
+    """
+    from dev_agent.owner_review import require
+    approved=require(store,client,number)
+    head=approved['context']['head']
     remote=client.pr_identity(number)
-    if remote.get('state')!='MERGED' or remote.get('headRefOid')!=head or (remote.get('mergeCommit') or {}).get('oid')!=merge_sha:raise ValueError('exact observed owner merge required')
-    from dev_agent.owner_review import verify_merge_actor
-    verify_merge_actor(client,number,head,merge_sha)
-    runs=client.read(f'repos/{client.repository}/commits/{merge_sha}/check-runs?per_page=100')
-    tests=[r for r in runs.get('check_runs',[]) if r.get('name')=='test' and r.get('head_sha')==merge_sha]
-    if runs.get('total_count',0)>100 or not tests or max(tests,key=lambda r:r['id']).get('conclusion')!='success':raise ValueError('wait for exact merged main CI before authorizing deployment')
-    expires_at=time.time()+3600 if expires_at is None else expires_at
-    if not time.time()<expires_at<=time.time()+86400:raise ValueError('bounded deployment expiration required')
-    payload=dict(repository=client.repository,pr=number,head=head,merge_sha=merge_sha,nonce=nonce,expires_at=expires_at,rationale=rationale,execution_ack=True)
-    obj=client.write(f'repos/{client.repository}/issues/{number}/comments',dict(body='OWNER-DEPLOY deployment-1\n'+json.dumps(payload,sort_keys=True),_pr=number),'POST')
-    return dict(status='OWNER_DEPLOYMENT_AUTHORIZED',authorization_id=obj['id'],merge_sha=merge_sha,executed=False)
+    if remote.get('state')=='MERGED':return dict(status='MERGED_WAITING_FOR_MAIN_CI',head=head)
+    result=merge_after_ok(store,client,number,expected_head=head,explicit_owner_merge=True)
+    with store.connect(True) as db:
+        from dev_agent.store import digest
+        store._append(db,None,'OWNER_MERGE',dict(result,owner_review_hash=digest(approved['review'])),
+                      'owner-merge:'+str(number)+':'+head)
+    return result
+
+
+def reconcile_approved(store,client):
+    """Fixed owner-connector retry operation; no additional human decision.
+
+    The isolated owner connector calls this periodically after Go. Builder and
+    discovery cannot invoke it or access its credential. It selects only existing
+    authenticated owner reviews and rechecks current GitHub authority and CI.
+    """
+    owner_actor(client)
+    from dev_agent.owner_review import state
+    with store.connect() as db:
+        rows=db.execute("SELECT payload FROM dev_events WHERE kind='OWNER_REVIEW' ORDER BY seq DESC LIMIT 100").fetchall()
+    numbers=list(dict.fromkeys(json.loads(r[0])['context']['pr'] for r in rows
+                             if json.loads(r[0])['context']['repository']==client.repository))
+    results=[]
+    for number in numbers:
+        try:
+            if state(store,client,number)['status']!='APPROVE':continue
+            results.append(dict(pr=number,result=advance_approved(store,client,number)))
+        except ValueError as error:results.append(dict(pr=number,status='WAITING_OR_BLOCKED',reason=str(error)))
+    return results

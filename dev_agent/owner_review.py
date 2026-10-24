@@ -68,7 +68,7 @@ def context(client,number,*,risk):
     if any(n.rsplit('/',1)[-1] in {'conftest.py','pytest.ini','pyproject.toml','setup.cfg','sitecustomize.py','usercustomize.py'} for n in names):floor=max(floor,3)
     # Documentation/CSS/tests are the only low-risk surfaces; ambiguous content
     # requires explicit owner rationale even when a model labels it presentation.
-    if any(not (n.endswith('.md') or n.endswith('.css') or n.startswith('tests/') and n.endswith('.py')) for n in names):floor=max(floor,3)
+    if any(not (n.endswith('.md') or n.startswith('docs/help/') and n.endswith('.txt') or n.endswith('.css') or n.startswith('tests/') and n.endswith('.py')) for n in names):floor=max(floor,3)
     if client.pr_identity(number).get('headRefOid')!=pr['headRefOid']: raise ValueError('PR changed during owner context inspection')
     if int(risk[1:])<floor: raise ValueError('owner review understates deterministic risk')
     return dict(model=MODEL,repository=client.repository,pr=number,head=pr['headRefOid'],risk=risk,owner_login=p['owner_login'],owner_id=p['owner_id'],policy_hash=digest(p))

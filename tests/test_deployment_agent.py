@@ -94,20 +94,27 @@ def test_executor_exposes_no_arbitrary_service_command(tmp_path):
 def authorized_owner(owner_setup):
     from test_development_agent_owner_review import approve
     import time
-    store,client,human=owner_setup;approve(owner_setup)
-    data=dict(repository=client.repository,pr=1,head=client.head,merge_sha='c'*40,nonce='fixture-deployment-owner-0001',expires_at=time.time()+3600,rationale='Deploy the reviewed merged SHA',execution_ack=True)
-    obj=dict(id=999,user=dict(id=1,login='owner',type='User'),performed_via_github_app=None,body='OWNER-DEPLOY deployment-1\n'+json.dumps(data),created_at='unchanged',updated_at='unchanged',issue_url='https://api.github.com/repos/owner/repo/issues/1',html_url='https://github.com/owner/repo/pull/1#issuecomment-999')
+    store,client,human=owner_setup
+    import datetime
+    from dev_agent.owner_review import context
+    from dev_agent.github_owner import HEADER,ingest
+    data=dict(repository=client.repository,pr=1,head=client.head,risk='L0',decision='APPROVE',nonce='fixture-single-go-owner-0001',rationale='Reviewed exact head',financial_ack=False,execution_ack=False)
+    stamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
+    obj=dict(id=999,user=dict(id=1,login='owner',type='User'),performed_via_github_app=None,body=HEADER+json.dumps(data),created_at=stamp,updated_at=stamp,issue_url='https://api.github.com/repos/owner/repo/issues/1',html_url='https://github.com/owner/repo/pull/1#issuecomment-999')
     original=client.read;pr=client.pr_identity
     client.pr_identity=lambda number:dict(pr(number),state='MERGED',mergeCommit=dict(oid='c'*40))
     def read(endpoint):
         if '/issues/comments/' in endpoint:return obj
+        if '/issues/1/comments?' in endpoint:return [obj]
         if '/check-runs' in endpoint:
             sha='c'*40 if '/commits/'+('c'*40) in endpoint else client.head
             return dict(total_count=1,check_runs=[dict(id=1,name='test',head_sha=sha,status='completed',conclusion='success',html_url='https://github.com/owner/repo/actions/runs/1/job/2')])
         if '/compare/' in endpoint:return dict(status='ahead')
         if '/branches/main' in endpoint:return dict(commit=dict(sha='c'*40))
+        if '/pulls?per_page=100' in endpoint:return []
         return original(endpoint)
     client.read=read
+    ingest(store,client,999)
     return store,client,obj,data
 
 
@@ -124,11 +131,11 @@ def test_deployment_admission_requires_owner_review_and_both_exact_ci_heads(auth
     with pytest.raises(ValueError):authorize(store,client,999)
 
 
-@pytest.mark.parametrize('mutation',[dict(head='b'*40),dict(merge_sha='b'*40),dict(execution_ack=False),dict(expires_at=1),dict(repository='other/repo')])
+@pytest.mark.parametrize('mutation',[dict(head='b'*40),dict(pr=2),dict(decision='REQUEST_CHANGES'),dict(nonce='replayed-nonce-0001'),dict(repository='other/repo')])
 def test_deployment_wrong_or_stale_authorization_never_admits(authorized_owner,mutation):
     from deployment_agent.admission import authorize
     store,client,obj,data=authorized_owner
-    obj['body']='OWNER-DEPLOY deployment-1\n'+json.dumps(dict(data,**mutation))
+    obj['body']='OWNER-REVIEW solo-owner-2\n'+json.dumps(dict(data,**mutation))
     with pytest.raises(ValueError):authorize(store,client,999)
 
 
@@ -175,14 +182,15 @@ def test_signed_post_deploy_observation_requires_real_time_window(tmp_path):
     assert observe(executor,receipt,key=key,now=receipt['finished']+303)['observation']['status']=='DEGRADED'
 
 
-def test_deployment_queue_ignores_agents_and_limits_one_fixed_job(owner_setup,tmp_path):
+def test_deployment_queue_ignores_agents_and_limits_one_fixed_job(authorized_owner,tmp_path):
     from deployment_agent.poller import pending
-    store,client,_=owner_setup
-    rows=[dict(id=1,user=dict(id=2,login='agent',type='User'),body='OWNER-DEPLOY deployment-1\n{}'),dict(id=2,user=dict(id=1,login='owner',type='User'),body='OWNER-DEPLOY deployment-1\n{}'),dict(id=3,user=dict(id=1,login='owner',type='User'),body='OWNER-DEPLOY deployment-1\n{}')]
-    client.read=lambda endpoint:rows
-    assert pending(client,tmp_path)==[2]
-    (tmp_path/'deploy-2.json').write_text('{}')
-    assert pending(client,tmp_path)==[3]
+    store,client,obj,data=authorized_owner
+    rows=[dict(id=1,user=dict(id=2,login='agent',type='User'),body='OWNER-REVIEW solo-owner-2\n{}'),dict(id=2,user=dict(id=1,login='owner',type='User'),body='OWNER-DEPLOY deployment-1\n{}'),obj]
+    original=client.read
+    client.read=lambda endpoint:rows if '/issues/comments?' in endpoint else original(endpoint)
+    assert pending(client,tmp_path)==[999]
+    (tmp_path/'deploy-999.json').write_text('{}')
+    assert pending(client,tmp_path)==[]
 
 
 def test_ledger_append_only_development_records_are_expected_but_mutation_is_not(tmp_path):
@@ -210,13 +218,16 @@ def test_real_shape_connector_owner_deploy_keeps_all_admission_guards(authorized
     with pytest.raises(ValueError):authorize(store,client,999)
     allow_connector(monkeypatch)
     # Approval policy is SHA-bound and policy-bound: refresh under explicit app policy.
-    from test_development_agent_owner_review import approve
-    from dev_agent.identity import HumanIdentity,_PROOF
-    approve((store,client,HumanIdentity('human-owner','os-interactive-cli',_PROOF)),nonce='connector-policy-review-0002')
+    from dev_agent.github_owner import ingest
+    if not mutation:
+        data['nonce']='connector-policy-review-0002'
+        obj['body']='OWNER-REVIEW solo-owner-2\n'+json.dumps(data)
+        ingest(store,client,999)
+    # Invalid current connector objects cannot refresh authority.
     if mutation:
         obj.update(mutation)
         with pytest.raises(ValueError):authorize(store,client,999)
     else:
-        assert authorize(store,client,999)['merge_sha']==data['merge_sha']
+        assert authorize(store,client,999)['merge_sha']=='c'*40
         obj['body']='OWNER-DEPLOY deployment-1\n'+json.dumps(dict(data,head='f'*40))
         with pytest.raises(ValueError):authorize(store,client,999)

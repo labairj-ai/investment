@@ -79,6 +79,7 @@ def authorize_start(root,store,cid,mode,technical,protections,*,human=None,now=N
     if mode not in MODES: raise ValueError('explicit execution mode required')
     now=time.time() if now is None else now
     config=policy(root); candidate=store.get(cid)
+    if config.get('emergency_stop') or os.environ.get('DEV_AGENT_KILL_SWITCH','').lower() not in {'','0','false'}:raise ValueError('starts disabled: emergency stop active')
     if config.get('auto_merge') or not config.get('required_human_merge'): raise ValueError('human merge boundary must remain enforced')
     context=[e['payload']['context'] for e in candidate['events'] if e['kind']=='PLAN'][-1]
     approvals=[e['payload'] for e in candidate['events'] if e['kind'] in {'APPROVAL','POLICY_ADMISSION'}]
@@ -137,6 +138,10 @@ def record_success(root,store,cid,client,*,human):
         policies=[e['payload'] for e in store.events('BUILD_POLICY')]
         parent=next((p for p in policies if digest(p)==approval.get('policy_hash')),None)
         owner=owner_policy()
+        if parent is None:
+            from .build_policy import current as source_build_policy
+            proposed=source_build_policy(root,store)
+            if proposed.get('source')=='reviewed-supervised-scope' and digest(proposed)==approval.get('policy_hash'):parent=proposed
         if not parent or parent['owner_policy_hash']!=digest(owner) or parent['harness_hash']!=harness_hash(root) or not parent['created']<=start['created']<parent['expires_at']:raise ValueError('authenticated delegated owner build lineage required')
     if start['harness_hash']!=harness_hash(root) or run['data'].get('fixture_only') or run['data'].get('mode')!='SUPERVISED' or run['status']!='PASS' or run['data'].get('provider',{}).get('provider')=='replay': raise ValueError('real supervised builder run required')
     reviews=[e['payload'] for e in events if e['kind']=='RUN' and e['payload']['role']=='reviewer']

@@ -1,3 +1,5 @@
+> Historical design, superseded by TODOs 0845–0850 and the [one Go / No-Go workflow](solo-owner-governance.md). Separate owner deployment/promotion actions and manual stage ceremonies below are retired; retained only as historical diagnostics.
+
 # Continuous improvement: authority and operator acceptance
 
 This implementation reconciles 0816–0824 on base main `3b497914270fe53beaecba9c8d2fdd0b80f427fe`. Every task remains in-progress until its complete live acceptance passes. No implementation flag, timer, owner approval, protection rule or deployment is activated by building the code.

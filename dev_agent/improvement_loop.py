@@ -24,6 +24,48 @@ def require_completed(root):
     if any(tasks.get(f'{n:04d}',{}).get('status') not in {'done','completed','resolved'} for n in range(816,822)):raise ValueError('supervised foundation TODOs 0816-0821 require operational acceptance')
 
 
+def supervised_admission(root,store,client,*,now=None):
+    """Shared read-only admission for the dashboard and real supervised cycle.
+
+    Candidate-specific scope, validation, daily cap and protection lineage remain
+    mandatory later. READY means this real entry point admits, not that any
+    proposed candidate or release is approved.
+    """
+    import os
+    from .operations import policy,certificates
+    from .certification import technical_current,harness_hash
+    from .build_policy import current
+    from .scheduler_health import health
+    now=time.time() if now is None else now
+    cfg=policy(root)
+    if cfg.get('emergency_stop') or os.environ.get('DEV_AGENT_KILL_SWITCH','').lower() not in {'','0','false'}:raise ValueError('safety stop is active')
+    if cfg.get('auto_merge') is not False or cfg.get('required_human_merge') is not True:raise ValueError('human approval safety check failed')
+    if cfg.get('supervised_loop_enabled') is not True or cfg.get('supervised_publish_pr') is not True:raise ValueError('supervised workflow is disabled')
+    certs=certificates(store);evidence=certs[-1].get('evidence',{}) if certs else {}
+    if not technical_current(root,certs,now):raise ValueError('L0 validator is unavailable or acceptance is incomplete')
+    for component,label in [('oracle','L0 validator'),('deployment_agent','deployment controller')]:
+        item=evidence.get(component,{})
+        if (item.get('status')!='PASS' or item.get('fixture_only') is not False or item.get('harness_hash')!=harness_hash(root)
+            or not 0<=now-item.get('created',0)<=86400 or not now<item.get('expires_at',0)<=now+86400):raise ValueError(label+' is unavailable')
+    protection=client.protections()
+    from .protection import observation_valid
+    if not observation_valid(protection,client.repository,min(300,cfg.get('github_evidence_max_age_seconds',300)),now):raise ValueError('GitHub safety check is unavailable')
+    snapshot=evidence.get('snapshot',{})
+    if snapshot.get('status')!='PASS' or not 0<=now-snapshot.get('backup_timestamp',0)<=min(24,cfg.get('snapshot_max_age_hours',24))*3600:raise ValueError('protected-state backup is unavailable')
+    scheduler=health(store,now)
+    if scheduler.get('status')!='SCHEDULED' or scheduler.get('enabled') is not True or scheduler.get('active')!='active' or scheduler.get('inventory_complete') is not True or scheduler.get('successful_runs',0)<3:raise ValueError('discovery service has not completed acceptance')
+    require_completed(root)
+    current(root,store)
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    slot=datetime.fromtimestamp(now,ZoneInfo('America/New_York')).date().isoformat()
+    with store.connect() as db:
+        count=db.execute("SELECT count(*) FROM dev_events WHERE kind='START_AUTHORIZATION' AND json_extract(payload,'$.slot')=?",(slot,)).fetchone()[0]
+    cap=cfg.get('daily_implementation_cap',1)
+    if type(cap) is not int or not 1<=cap<=3 or count>=cap:raise ValueError('daily supervised work limit reached')
+    return dict(status='READY',reason='low-risk supervised PR workflow available')
+
+
 def cycle(root,store,builder,reviewer,validator,client):
     from .certification import technical_current,harness_hash as technical_hash
     from .operations import certificates,authorize_start
@@ -48,8 +90,7 @@ def cycle(root,store,builder,reviewer,validator,client):
             store._append(db,None,'STAGE_OBSERVATION',dict(stage='SHADOW',cycle=str(time.time_ns()),harness_hash=technical_hash(root),created=time.time(),fixture_only=False),'shadow-cycle:'+str(time.time_ns()))
         return dict(status='SHADOW',plans=previews,eligible_candidates=len(previews),implementation_started=False)
     if config.get('emergency_stop') or config.get('auto_merge') or not config.get('required_human_merge'):raise ValueError('owner authority policy violation')
-    require_completed(root)
-    current(root,store)
+    supervised_admission(root,store,client)
     if not technical_current(root,certificates(store)):raise ValueError('current technical certification including artifact integrity required')
     graph=protected_graph(root)
     for candidate in candidates:
@@ -100,7 +141,7 @@ def cycle(root,store,builder,reviewer,validator,client):
             pr=prepare_pr(work,store,cid,proof,client)
             record(store,cid,'AWAITING_OWNER',pr=pr,head=proof['head'])
             if config.get('autonomous_implementation') is True:observe_stage(store,'PR',candidate=cid,head=proof['head'],harness=harness_hash(root),receipt=proof['id'],fixture=builder.identity.get('provider')=='replay' or builder.identity.get('fixture_only',False))
-            store.event(cid,'OWNER_NOTIFICATION',dict(pr=pr,head=proof['head'],channel='development-dashboard',decision_required='OK/NO'))
+            store.event(cid,'OWNER_NOTIFICATION',dict(pr=pr,head=proof['head'],channel='development-dashboard',decision_required='Go / No-Go'))
             return dict(status='AWAITING_OWNER',candidate=cid,pr=pr,grants_merge=False,grants_deployment=False)
         except Exception as error:
             record(store,cid,'NEEDS_HUMAN',reason=type(error).__name__)
@@ -129,10 +170,10 @@ def reconcile_prs(root,store,client):
                 if store.get(cid)['state']=='PR_OPEN':store.transition(cid,'NEEDS_HUMAN',dict(reason='owner requested changes or deferred'))
                 results.append(dict(candidate=cid,status='NEEDS_HUMAN'));continue
             owner_approval(store,client,pr['result']['number'])
-            if client.pr_identity(pr['result']['number']).get('state')!='MERGED':results.append(dict(candidate=cid,status='AWAITING_OWNER_MERGE'));continue
+            if client.pr_identity(pr['result']['number']).get('state')!='MERGED':results.append(dict(candidate=cid,status='AWAITING_OWNER_CONNECTOR'));continue
             merge=record_merge(store,cid,client)
             record(store,cid,'MERGED',merge_sha=merge['merge_sha'],owner_review_hash=merge['owner_review_hash'])
-            record(store,cid,'DEPLOYMENT_PENDING',merge_sha=merge['merge_sha'],owner_deployment_authorization_required=True)
+            record(store,cid,'DEPLOYMENT_PENDING',merge_sha=merge['merge_sha'],owner_deployment_authorization_required=False)
             results.append(dict(candidate=cid,status='DEPLOYMENT_PENDING',merge_sha=merge['merge_sha']))
         except ValueError as error:
             # Missing owner decision is a normal wait, not a synthetic approval.

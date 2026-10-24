@@ -58,6 +58,12 @@ def execute(root, store, cid, validator, *, fixture=False):
     if ctx.get('validation_hash')!=digest(plan.get('focused_tests',['tests/test_development_agent.py'])): raise ValueError('approved validation scope changed')
     if binding['head'] == binding['base']:
         raise ValueError('committed implementation required')
+    if ctx['risk']=='L0' and not fixture:
+        from .static_validation import installed
+        static=installed(root,binding['base'],binding['head'])
+        with store.connect(True) as db:
+            store._append(db,cid,'STATIC_VALIDATION',dict(binding,result=static),
+                          'static-validation:'+cid+':'+binding['head']+':'+str(uuid.uuid4()))
     focused = plan.get('focused_tests', ['tests/test_development_agent.py'])
     commands = manifest(focused, binding['base'],root=root)
     batch = str(uuid.uuid4())
@@ -120,6 +126,10 @@ def reconstruct(root, store, cid):
     expected.update(trusted_test_tree_hash=tree_hash(files(root,ctx['head'])),candidate_source_tree_hash=expected['source_hash'])
     if any(batch.get(k) != v for k,v in expected.items()) or batch.get('fixture_only'):
         raise ValueError('stale, mixed or fixture validation evidence')
+    if ctx['risk']=='L0':
+        static=[e['payload'] for e in candidate['events'] if e['kind']=='STATIC_VALIDATION']
+        if not static or any(static[-1].get(k)!=v for k,v in expected.items()) or static[-1].get('result',{}).get('status')!='PASS':
+            raise ValueError('exact-head installed L0 validation required')
     commands = manifest(plans[-1].get('focused_tests', ['tests/test_development_agent.py']), ctx['head'],root=root)
     records = [e['payload'] for e in candidate['events'] if e['kind']=='VALIDATION' and e['payload'].get('batch')==batch['batch']]
     if len(records)!=len(GATES) or {r['name'] for r in records}!=set(GATES):
