@@ -15,7 +15,7 @@ import sys
 import time
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from ops.validator.install import prepare as reviewed_source,git
-from dev_agent.github import GitHub
+from dev_agent.discovery_reader import DiscoveryReader,MODES,verify_repository
 from dev_agent.signals import load_spool
 from dev_agent.store import Store
 from ops.validator.install import protected_parents
@@ -24,20 +24,20 @@ SERVICES=('development-scout','development-scheduler-observer','development-sign
 UNITS=tuple(name+suffix for name in SERVICES for suffix in ('.service','.timer'))
 
 
-def prepare(root,head,repository):
+def prepare(root,head,repository,reader_mode='token'):
+    if reader_mode not in MODES:raise ValueError('explicit reviewed discovery reader mode required')
     plan=reviewed_source(root,head,repository)
     config=json.loads(git(root,'show',head+':config/development_agent.json'))
     if any(config.get(k) is not False for k in ('autonomous_implementation','supervised_loop_enabled','supervised_publish_pr','auto_merge')) or config.get('required_human_merge') is not True:
         raise ValueError('discovery bootstrap requires implementation/publication/auto-merge disabled')
+    plan['reader_mode']=reader_mode
     plan['files']={name:git(root,'show',head+':systemd/'+name) for name in UNITS}
     if any(b'supervised-cycle' in data or b'--command' in data for data in plan['files'].values()):raise ValueError('only fixed read-only discovery units may be installed')
     return plan
 
 
 def verify_reader(client):
-    repo=client.read('repos/'+client.repository);permissions=repo.get('permissions',{})
-    if repo.get('full_name')!=client.repository or permissions.get('pull') is not True or any(permissions.get(k) is not False for k in ('push','admin','maintain')):
-        raise ValueError('independently verified read-only GitHub identity required')
+    verify_repository(client.read('repos/'+client.repository),client.repository,getattr(client,'mode','token'))
 
 
 def apply(plan,*,invoke=subprocess.run):
@@ -48,21 +48,28 @@ def apply(plan,*,invoke=subprocess.run):
     for directory in [unit_dir,settings,state]:
         if directory.is_symlink():raise ValueError('private installation paths required')
         if directory.exists() and (directory.stat().st_uid!=os.getuid() or directory.stat().st_mode&0o022):raise ValueError('operator-owned installation paths required')
+    mode=plan.get('reader_mode','token')
+    if mode not in MODES:raise ValueError('explicit reviewed discovery reader mode required')
     token=settings/'github-read.token'
-    if not token.is_file() or token.is_symlink():raise ValueError('dedicated read-only GitHub credential unavailable')
+    if mode=='token' and (not token.is_file() or token.is_symlink()):raise ValueError('dedicated read-only GitHub credential unavailable')
     observer=Path('/etc/investment-discovery-observer/config.json')
     protected_parents(observer)
     if json.loads(observer.read_text()).get('head')!=plan['head']:raise ValueError('current trusted discovery observer is required')
     invoke(['/bin/systemctl','is-active','--quiet','investment-discovery-observer.service'],check=True)
-    old_token=os.environ.get('DEV_AGENT_GITHUB_READ_TOKEN_FILE')
-    try:
-        os.environ['DEV_AGENT_GITHUB_READ_TOKEN_FILE']=str(token)
-        verify_reader(GitHub(plan['repository']))
-    finally:
-        if old_token is None:os.environ.pop('DEV_AGENT_GITHUB_READ_TOKEN_FILE',None)
-        else:os.environ['DEV_AGENT_GITHUB_READ_TOKEN_FILE']=old_token
+    if mode=='public':
+        verify_reader(DiscoveryReader(plan['repository'],mode))
+    else:
+        old_token=os.environ.get('DEV_AGENT_GITHUB_READ_TOKEN_FILE')
+        try:
+            os.environ['DEV_AGENT_GITHUB_READ_TOKEN_FILE']=str(token)
+            verify_reader(DiscoveryReader(plan['repository'],mode))
+        finally:
+            if old_token is None:os.environ.pop('DEV_AGENT_GITHUB_READ_TOKEN_FILE',None)
+            else:os.environ['DEV_AGENT_GITHUB_READ_TOKEN_FILE']=old_token
+    collector=f"DEV_AGENT_DISCOVERY_READER_MODE={mode}\nDEV_AGENT_DISCOVERY_REPOSITORY={plan['repository']}\n"
+    if mode=='token':collector+=f'DEV_AGENT_GITHUB_READ_TOKEN_FILE={token}\n'
     envs={'discovery.env':f'DEVELOPMENT_CONTROL_DB={state}/development-control.sqlite3\nDEVELOPMENT_SIGNAL_SPOOL={state}/operational-signals.json\n',
-          'collector.env':f'DEV_AGENT_GITHUB_READ_TOKEN_FILE={token}\n'}
+          'collector.env':collector}
     targets={**{unit_dir/name:data for name,data in plan['files'].items()},**{settings/name:data.encode() for name,data in envs.items()}}
     if any(p.exists() or p.is_symlink() for p in targets):raise ValueError('existing discovery installation requires reviewed upgrade, not bootstrap')
     created=[];enabled=[];old=os.umask(0o077)
@@ -95,7 +102,7 @@ def apply(plan,*,invoke=subprocess.run):
 
 
 if __name__=='__main__':
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--root',type=Path,required=True);p.add_argument('--head',required=True);p.add_argument('--repository',default='labairj-ai/investment');p.add_argument('--apply',action='store_true');a=p.parse_args()
-    plan=prepare(a.root,a.head,a.repository)
-    result=apply(plan) if a.apply else dict(status='PLAN_ONLY',source_head=plan['head'],units=list(UNITS),starts_services=False,implementation_enabled=False)
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--root',type=Path,required=True);p.add_argument('--head',required=True);p.add_argument('--repository',default='labairj-ai/investment');p.add_argument('--reader-mode',choices=sorted(MODES),default='token');p.add_argument('--apply',action='store_true');a=p.parse_args()
+    plan=prepare(a.root,a.head,a.repository,a.reader_mode)
+    result=apply(plan) if a.apply else dict(status='PLAN_ONLY',source_head=plan['head'],reader_mode=plan['reader_mode'],units=list(UNITS),starts_services=False,implementation_enabled=False)
     print(json.dumps(result,indent=2))

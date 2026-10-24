@@ -91,4 +91,5 @@ def load_spool(path):
     if data.get('version')!='development-signals-1' or not 0<=time.time()-data.get('created',0)<=36*3600:raise ValueError('stale or unrecognized signal spool')
     enabled=data.get('enabled_sources',[])
     if not isinstance(enabled,list) or not set(enabled)<=SOURCES:raise ValueError('signal source inventory invalid')
+    if not {'ci','telemetry','performance'}<=set(enabled) or not isinstance(data.get('unavailable'),list) or set(data['unavailable'])&{'ci','CI','telemetry','performance'}:raise ValueError('required discovery signal sources unavailable')
     return runtime(data['observations']),enabled

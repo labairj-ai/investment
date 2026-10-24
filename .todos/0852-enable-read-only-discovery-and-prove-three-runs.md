@@ -122,3 +122,13 @@ calendar remains 08:15 America/New_York with up to 120 seconds random delay.
 See [live evidence](../docs/evidence/l0-live-20261024/README.md). Holdings, both
 investment databases, the control ledger and activation flags remained unchanged.
 Discovery: NOT READY — dedicated read-only GitHub credential unavailable.
+
+### Explicit public reader source support
+
+An explicit unauthenticated public mode is proposed separately from the dedicated
+private-token mode. Only reviewed GitHub metadata/workflow HTTPS GETs are reachable;
+canonical public visibility is reverified on every collection, credentials and gh
+are never consulted, and rate-limit/privacy failures invalidate the old spool and
+stop Scout before candidate discovery. Private mode retains independent read-only
+permission verification. No mode is installed/activated by source tests, and no
+real timer acceptance or implementation authority is granted. See the rollout guide.

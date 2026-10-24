@@ -138,3 +138,42 @@ modified prefixes/schema or protected-state mutations still fail. The actual
 installation, live failure/interruption matrix, delayed observations and three
 controller releases remain outstanding. LOW-RISK AUTO-PR readiness is presentation
 of existing evidence, never activation or autonomous merge/deploy permission.
+
+## Explicit public discovery reader (source addition; not activated)
+
+Discovery has two explicit operator-installed modes. `token` remains the default
+and requires the existing dedicated private token plus independent
+pull=true/push=false/admin=false/maintain=false verification. It cannot borrow gh
+or owner credentials. `public` is an explicit choice for a verified public repo;
+it never reads a token/config credential, sends Authorization, uses gh, or falls
+back to authenticated access. This does not change owner/protection/CI/deployment
+clients or grant merge, PR publication, implementation or deployment authority.
+
+The internal installer accepts `--reader-mode public`; its default remains token.
+It persists `DEV_AGENT_DISCOVERY_READER_MODE` and the verified target
+`DEV_AGENT_DISCOVERY_REPOSITORY` in collector.env. Public mode omits token settings.
+The owner does not need to operate this configuration or supply structured comments.
+
+Public transport uses fresh credential-free urllib openers with ambient proxies
+and authentication handlers excluded. Only these exact HTTPS GETs are permitted:
+
+- `https://api.github.com/repos/{reviewed-owner}/{reviewed-repo}`
+- `https://api.github.com/repos/{reviewed-owner}/{reviewed-repo}/actions/runs?per_page=10`
+
+Redirects must stay within those exact URLs at api.github.com. Other hosts,
+schemes, repositories, queries, write routes and methods are rejected. Repository
+metadata must have the exact canonical full_name, private=false and visibility=public
+before and after every workflow collection. No visibility cache or authenticated
+retry exists. A private/missing repository or HTTP403/429 stops that collection.
+GitHub documents public unauthenticated access for these
+[repository](https://docs.github.com/en/rest/repos/repos#get-a-repository) and
+[workflow-list](https://docs.github.com/en/rest/actions/workflow-runs#list-workflow-runs-for-a-repository)
+GETs; [rate limits](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api)
+remain binding, never a reason to borrow another identity.
+
+Collection invalidates the old spool before attempting network access. A failed
+collection persists unavailable sources and exits nonzero; interruption/publish
+failure leaves no usable old spool. Scout rejects spools lacking CI, telemetry or
+performance availability before candidate discovery. The unchanged real timer
+requirements, independent host bookends, L0 scope and all activation flags remain
+mandatory. Source tests do not install/enable the reader or count as live runs.
