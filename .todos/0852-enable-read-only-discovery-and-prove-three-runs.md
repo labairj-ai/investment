@@ -132,3 +132,16 @@ are never consulted, and rate-limit/privacy failures invalidate the old spool an
 stop Scout before candidate discovery. Private mode retains independent read-only
 permission verification. No mode is installed/activated by source tests, and no
 real timer acceptance or implementation authority is granted. See the rollout guide.
+
+
+### Observer pin transition source follow-up
+
+PR17 merged at `88f1757af1ed090983ce262a1936a41dbf8a279b` without deployment.
+The installed root observer and live checkout remain at `05d6cccf734d4604d1a8c10406d9e3d7598e9c6f`.
+A separate source PR adds a plan-only-by-default, config-only trust-pin refresh
+for the pre-discovery zero-run state. It requires unchanged observer/Scout boundary
+Git objects, exact clean target main, protected installed identities and verified
+rollback; it cannot migrate acceptance or install/enable user discovery units.
+Neither this change nor PR17 has been applied on OptiPlex. Genuine runs remain
+**0/3**. Both the historical failed token installation and explicit public-reader
+source support above remain separate facts. See the rollout guide for boundaries.
