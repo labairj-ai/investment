@@ -111,11 +111,11 @@ Keep the existing daily entry and add exactly one absolute entry:
 
 ```
 OnCalendar=*-*-* 08:15:00 America/New_York
-OnCalendar=2026-10-25 18:30:00 America/New_York
+OnCalendar=2026-10-25 21:00:00 America/New_York
 ```
 
 Persistent=true and RandomizedDelaySec=120 remain. The proposed recovery is
-October 25 at 18:30 Eastern plus the reviewed delay. Deployment must finish and
+October 25 at 21:00 Eastern plus the reviewed delay. Deployment must finish and
 be independently verified before that window. The upgrade refuses a recovery
 less than ten minutes away or already elapsed. If review misses the window,
 change source and repeat validation/review; never force a service start.
@@ -372,20 +372,40 @@ JSON/DB/CSV/env authority, executable/import targets, dynamic paths and wrapper 
 and authority inside runtime folders. All prior source, import, Git, systemd, provenance,
 replay, isolated interpreter and whole-worktree protections remain unchanged.
 
-The one-time recovery remains October 25 18:30 America/New_York, daily 08:15,
+The one-time recovery remains October 25 21:00 America/New_York, daily 08:15,
 Persistent=true and RandomizedDelaySec=120. No merge/deployment is authorized by
 this review task; the ten-minute cutoff is unchanged. The final real inventory
 audit follows exact-head validation and must stop on any rejection, with no
 post-result exception.
 
 
-## PR21 recovery-window update
+## Earlier recovery-window update (superseded by PR22)
 
-The prior 16:30 source-only entry was never installed. The operator source
-deployment rolled back before observer upgrade. Replace that entry with exactly
-one October 25 18:30 Eastern recovery; do not retain the earlier absolute entry.
-This prevents an expired recovery calendar from participating in Persistent=true
-catch-up when the reviewed boundary is installed. Normal daily 08:15, persistence
-and 120-second randomized delay remain. Complete independent upgrade verification
-before 18:20 Eastern. No provenance, acceptance or financial semantics change.
-0852 remains 0/3 until genuine root-bookended timer evidence qualifies.
+PR21 moved the source-only 16:30 recovery to 18:30 Eastern. Neither entry was
+installed. The later receipt-finalization interruption left the observer and live
+daily-only timer unchanged. Both earlier windows are abandoned. PR22 replaces the
+single source entry with 21:00; it retains neither earlier absolute calendar.
+
+## PR22 current recovery window and receipt corroboration
+
+The 16:30 and 18:30 windows are abandoned and were never installed. The current
+reviewed recovery entry is exactly October 25 21:00 Eastern, with the normal
+daily 08:15 entry, Persistent=true and RandomizedDelaySec=120 retained. No earlier
+absolute entry may be installed. Complete boundary APPLY and independent
+verification before 20:50 Eastern; never adjust that cutoff during execution.
+
+PR21 application source is already deployed; do not redeploy it. Its retained
+source/manifest/worktree/backups/five-minute-health/protected-state evidence
+allowed truthful receipt finalization using a newly queried matching A1, without
+changing historical timestamps. The freshness defect was operator-only: A0 is
+checked before source mutation; a separate new A1 after health must be consumed
+within 300 seconds and match immutable repository/PR/head/merge/main/owner/CI
+authority. Neither observation TTL is extended by the health window. Tracked
+deployment-controller admission already performs fresh before/after queries.
+No deployment-controller, observer, provenance, influence, scheduler, acceptance
+or financial behavior changes are included here. Operator receipt/worktree tests
+remain separate fixture evidence.
+
+For PR22, the application source transition begins at merged PR21 3d50af9...;
+the installed observer boundary still begins at 19fd140.... These baselines are
+intentionally distinct. Both target the exact reviewed PR22 merged main.
