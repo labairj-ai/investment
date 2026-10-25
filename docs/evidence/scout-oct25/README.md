@@ -111,11 +111,11 @@ Keep the existing daily entry and add exactly one absolute entry:
 
 ```
 OnCalendar=*-*-* 08:15:00 America/New_York
-OnCalendar=2026-10-25 16:30:00 America/New_York
+OnCalendar=2026-10-25 18:30:00 America/New_York
 ```
 
 Persistent=true and RandomizedDelaySec=120 remain. The proposed recovery is
-October 25 at 16:30 Eastern plus the reviewed delay. Deployment must finish and
+October 25 at 18:30 Eastern plus the reviewed delay. Deployment must finish and
 be independently verified before that window. The upgrade refuses a recovery
 less than ten minutes away or already elapsed. If review misses the window,
 change source and repeat validation/review; never force a service start.
@@ -372,8 +372,20 @@ JSON/DB/CSV/env authority, executable/import targets, dynamic paths and wrapper 
 and authority inside runtime folders. All prior source, import, Git, systemd, provenance,
 replay, isolated interpreter and whole-worktree protections remain unchanged.
 
-The one-time recovery remains October 25 16:30 America/New_York, daily 08:15,
+The one-time recovery remains October 25 18:30 America/New_York, daily 08:15,
 Persistent=true and RandomizedDelaySec=120. No merge/deployment is authorized by
 this review task; the ten-minute cutoff is unchanged. The final real inventory
 audit follows exact-head validation and must stop on any rejection, with no
 post-result exception.
+
+
+## PR21 recovery-window update
+
+The prior 16:30 source-only entry was never installed. The operator source
+deployment rolled back before observer upgrade. Replace that entry with exactly
+one October 25 18:30 Eastern recovery; do not retain the earlier absolute entry.
+This prevents an expired recovery calendar from participating in Persistent=true
+catch-up when the reviewed boundary is installed. Normal daily 08:15, persistence
+and 120-second randomized delay remain. Complete independent upgrade verification
+before 18:20 Eastern. No provenance, acceptance or financial semantics change.
+0852 remains 0/3 until genuine root-bookended timer evidence qualifies.
