@@ -1,0 +1,378 @@
+Unit=development-scout.service
+TimersCalendar={ OnCalendar=*-*-* 08:15:00 America/New_York ; next_elapse=Mon 2026-10-26 08:15:00 EDT }
+OnClockChange=no
+OnTimezoneChange=no
+NextElapseUSecRealtime=Mon 2026-10-26 08:16:45 EDT
+NextElapseUSecMonotonic=0
+LastTriggerUSec=Sun 2026-10-25 08:16:47 EDT
+LastTriggerUSecMonotonic=2month 1w 6d 14h 7min 28.893213s
+Result=success
+AccuracyUSec=1min
+RandomizedDelayUSec=2min
+FixedRandomDelay=no
+Persistent=yes
+WakeSystem=no
+RemainAfterElapse=yes
+Id=development-scout.timer
+Names=development-scout.timer
+WantedBy=timers.target
+Conflicts=shutdown.target
+Before=development-scout.service shutdown.target timers.target
+Triggers=development-scout.service
+Description=Daily bounded development discovery at 08:15 Eastern
+LoadState=loaded
+ActiveState=active
+FreezerState=running
+SubState=waiting
+FragmentPath=/home/optiplex/.config/systemd/user/development-scout.timer
+UnitFileState=enabled
+UnitFilePreset=enabled
+StateChangeTimestamp=Sun 2026-10-25 08:16:48 EDT
+StateChangeTimestampMonotonic=6433649032231
+InactiveExitTimestamp=Sat 2026-10-24 20:05:25 EDT
+InactiveExitTimestampMonotonic=6389766745758
+ActiveEnterTimestamp=Sat 2026-10-24 20:05:25 EDT
+ActiveEnterTimestampMonotonic=6389766745758
+ActiveExitTimestampMonotonic=0
+InactiveEnterTimestampMonotonic=0
+CanStart=yes
+CanStop=yes
+CanReload=no
+CanIsolate=no
+CanClean=state
+CanFreeze=no
+StopWhenUnneeded=no
+RefuseManualStart=no
+RefuseManualStop=no
+AllowIsolate=no
+DefaultDependencies=yes
+SurviveFinalKillSignal=no
+OnSuccessJobMode=fail
+OnFailureJobMode=replace
+IgnoreOnIsolate=no
+NeedDaemonReload=no
+JobTimeoutUSec=infinity
+JobRunningTimeoutUSec=infinity
+JobTimeoutAction=none
+ConditionResult=yes
+AssertResult=yes
+ConditionTimestamp=Sat 2026-10-24 20:05:25 EDT
+ConditionTimestampMonotonic=6389766744825
+AssertTimestamp=Sat 2026-10-24 20:05:25 EDT
+AssertTimestampMonotonic=6389766744827
+Transient=no
+Perpetual=no
+StartLimitIntervalUSec=10s
+StartLimitBurst=5
+StartLimitAction=none
+FailureAction=none
+SuccessAction=none
+InvocationID=cbd67ab35dac4878b0f57abc3353de0b
+CollectMode=inactive
+Type=oneshot
+ExitType=main
+Restart=no
+RestartMode=normal
+NotifyAccess=none
+RestartUSec=100ms
+RestartSteps=0
+RestartMaxDelayUSec=infinity
+RestartUSecNext=100ms
+TimeoutStartUSec=3min
+TimeoutStopUSec=1min 30s
+TimeoutAbortUSec=1min 30s
+TimeoutStartFailureMode=terminate
+TimeoutStopFailureMode=terminate
+RuntimeMaxUSec=infinity
+RuntimeRandomizedExtraUSec=0
+WatchdogUSec=0
+WatchdogTimestampMonotonic=0
+RootDirectoryStartOnly=no
+RemainAfterExit=no
+GuessMainPID=yes
+MainPID=0
+ControlPID=0
+FileDescriptorStoreMax=0
+NFileDescriptorStore=0
+FileDescriptorStorePreserve=restart
+StatusErrno=0
+Result=exit-code
+ReloadResult=success
+CleanResult=success
+UID=[not set]
+GID=[not set]
+NRestarts=0
+OOMPolicy=stop
+ReloadSignal=1
+ExecMainStartTimestampMonotonic=0
+ExecMainExitTimestampMonotonic=0
+ExecMainPID=0
+ExecMainCode=0
+ExecMainStatus=0
+ExecStartPre={ path=/usr/bin/python3 ; argv[]=/usr/bin/python3 -I -S /opt/investment-discovery-observer/observer.py begin ; ignore_errors=no ; start_time=[Sun 2026-10-25 08:16:47 EDT] ; stop_time=[Sun 2026-10-25 08:16:47 EDT] ; pid=1720763 ; code=exited ; status=1 }
+ExecStartPreEx={ path=/usr/bin/python3 ; argv[]=/usr/bin/python3 -I -S /opt/investment-discovery-observer/observer.py begin ; flags= ; start_time=[Sun 2026-10-25 08:16:47 EDT] ; stop_time=[Sun 2026-10-25 08:16:47 EDT] ; pid=1720763 ; code=exited ; status=1 }
+ExecStart={ path=/usr/bin/python3 ; argv[]=/usr/bin/python3 -I -S /opt/investment-discovery-observer/observer.py scout ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }
+ExecStartEx={ path=/usr/bin/python3 ; argv[]=/usr/bin/python3 -I -S /opt/investment-discovery-observer/observer.py scout ; flags= ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }
+ExecStopPost={ path=/usr/bin/python3 ; argv[]=/usr/bin/python3 -I -S /opt/investment-discovery-observer/observer.py end ; ignore_errors=no ; start_time=[Sun 2026-10-25 08:16:47 EDT] ; stop_time=[Sun 2026-10-25 08:16:48 EDT] ; pid=1720767 ; code=exited ; status=1 }
+ExecStopPostEx={ path=/usr/bin/python3 ; argv[]=/usr/bin/python3 -I -S /opt/investment-discovery-observer/observer.py end ; flags= ; start_time=[Sun 2026-10-25 08:16:47 EDT] ; stop_time=[Sun 2026-10-25 08:16:48 EDT] ; pid=1720767 ; code=exited ; status=1 }
+Slice=app.slice
+ControlGroupId=2195990
+MemoryCurrent=[not set]
+MemoryPeak=[not set]
+MemorySwapCurrent=[not set]
+MemorySwapPeak=[not set]
+MemoryZSwapCurrent=[not set]
+MemoryAvailable=16603000832
+CPUUsageNSec=114502000
+TasksCurrent=[not set]
+IPIngressBytes=[no data]
+IPIngressPackets=[no data]
+IPEgressBytes=[no data]
+IPEgressPackets=[no data]
+IOReadBytes=[not set]
+IOReadOperations=[not set]
+IOWriteBytes=[not set]
+IOWriteOperations=[not set]
+Delegate=no
+CPUAccounting=yes
+CPUWeight=[not set]
+StartupCPUWeight=[not set]
+CPUShares=[not set]
+StartupCPUShares=[not set]
+CPUQuotaPerSecUSec=infinity
+CPUQuotaPeriodUSec=infinity
+IOAccounting=no
+IOWeight=[not set]
+StartupIOWeight=[not set]
+BlockIOAccounting=no
+BlockIOWeight=[not set]
+StartupBlockIOWeight=[not set]
+MemoryAccounting=yes
+DefaultMemoryLow=0
+DefaultStartupMemoryLow=0
+DefaultMemoryMin=0
+MemoryMin=0
+MemoryLow=0
+StartupMemoryLow=0
+MemoryHigh=infinity
+StartupMemoryHigh=infinity
+MemoryMax=infinity
+StartupMemoryMax=infinity
+MemorySwapMax=infinity
+StartupMemorySwapMax=infinity
+MemoryZSwapMax=infinity
+StartupMemoryZSwapMax=infinity
+MemoryLimit=infinity
+DevicePolicy=auto
+TasksAccounting=yes
+TasksMax=18885
+IPAccounting=no
+ManagedOOMSwap=auto
+ManagedOOMMemoryPressure=auto
+ManagedOOMMemoryPressureLimit=0
+ManagedOOMPreference=none
+MemoryPressureWatch=auto
+MemoryPressureThresholdUSec=200ms
+CoredumpReceive=no
+EnvironmentFiles=/home/optiplex/.config/investment-development/discovery.env (ignore_errors=yes)
+UMask=0077
+LimitCPU=infinity
+LimitCPUSoft=infinity
+LimitFSIZE=infinity
+LimitFSIZESoft=infinity
+LimitDATA=infinity
+LimitDATASoft=infinity
+LimitSTACK=infinity
+LimitSTACKSoft=8388608
+LimitCORE=infinity
+LimitCORESoft=0
+LimitRSS=infinity
+LimitRSSSoft=infinity
+LimitNOFILE=1048576
+LimitNOFILESoft=1024
+LimitAS=infinity
+LimitASSoft=infinity
+LimitNPROC=62950
+LimitNPROCSoft=62950
+LimitMEMLOCK=2078494720
+LimitMEMLOCKSoft=2078494720
+LimitLOCKS=infinity
+LimitLOCKSSoft=infinity
+LimitSIGPENDING=62950
+LimitSIGPENDINGSoft=62950
+LimitMSGQUEUE=819200
+LimitMSGQUEUESoft=819200
+LimitNICE=0
+LimitNICESoft=0
+LimitRTPRIO=0
+LimitRTPRIOSoft=0
+LimitRTTIME=infinity
+LimitRTTIMESoft=infinity
+WorkingDirectory=/home/optiplex/investment
+RootEphemeral=no
+OOMScoreAdjust=200
+CoredumpFilter=0x33
+Nice=0
+IOSchedulingClass=2
+IOSchedulingPriority=4
+CPUSchedulingPolicy=0
+CPUSchedulingPriority=0
+CPUAffinityFromNUMA=no
+NUMAPolicy=n/a
+TimerSlackNSec=50000
+CPUSchedulingResetOnFork=no
+NonBlocking=no
+StandardInput=null
+StandardOutput=journal
+StandardError=inherit
+TTYReset=no
+TTYVHangup=no
+TTYVTDisallocate=no
+SyslogPriority=30
+SyslogLevelPrefix=yes
+SyslogLevel=6
+SyslogFacility=3
+LogLevelMax=-1
+LogRateLimitIntervalUSec=0
+LogRateLimitBurst=0
+SecureBits=0
+CapabilityBoundingSet=cap_chown cap_dac_override cap_dac_read_search cap_fowner cap_fsetid cap_kill cap_setgid cap_setuid cap_setpcap cap_linux_immutable cap_net_bind_service cap_net_broadcast cap_net_admin cap_net_raw cap_ipc_lock cap_ipc_owner cap_sys_module cap_sys_rawio cap_sys_chroot cap_sys_ptrace cap_sys_pacct cap_sys_admin cap_sys_boot cap_sys_nice cap_sys_resource cap_sys_time cap_sys_tty_config cap_mknod cap_lease cap_audit_write cap_audit_control cap_setfcap cap_mac_override cap_mac_admin cap_syslog cap_wake_alarm cap_block_suspend cap_audit_read cap_perfmon cap_bpf cap_checkpoint_restore
+DynamicUser=no
+SetLoginEnvironment=no
+RemoveIPC=no
+ReadWritePaths=/home/optiplex/.local/share/investment-development
+InaccessiblePaths=-/home/optiplex/.ssh -/home/optiplex/.aws -/home/optiplex/.config/gh -/home/optiplex/investment/.env -/home/optiplex/investment/out -/home/optiplex/investment/holdings.csv -/home/optiplex/.local/share/investment-development/service.env -/home/optiplex/.netrc -/home/optiplex/.git-credentials -/home/optiplex/.gnupg -/home/optiplex/.config/investment-development/github-read.token
+PrivateTmp=yes
+PrivateDevices=no
+ProtectClock=no
+ProtectKernelTunables=no
+ProtectKernelModules=no
+ProtectKernelLogs=no
+ProtectControlGroups=no
+PrivateNetwork=yes
+PrivateUsers=no
+PrivateMounts=no
+PrivateIPC=no
+ProtectHome=read-only
+ProtectSystem=strict
+SameProcessGroup=no
+UtmpMode=init
+IgnoreSIGPIPE=yes
+NoNewPrivileges=yes
+SystemCallErrorNumber=2147483646
+LockPersonality=no
+RuntimeDirectoryPreserve=no
+RuntimeDirectoryMode=0755
+StateDirectoryMode=0755
+CacheDirectoryMode=0755
+LogsDirectoryMode=0755
+ConfigurationDirectoryMode=0755
+TimeoutCleanUSec=infinity
+MemoryDenyWriteExecute=no
+RestrictRealtime=no
+RestrictSUIDSGID=no
+RestrictNamespaces=no
+MountAPIVFS=no
+KeyringMode=inherit
+ProtectProc=default
+ProcSubset=all
+ProtectHostname=no
+MemoryKSM=no
+RootImagePolicy=root=verity+signed+encrypted+unprotected+absent:usr=verity+signed+encrypted+unprotected+absent:home=encrypted+unprotected+absent:srv=encrypted+unprotected+absent:tmp=encrypted+unprotected+absent:var=encrypted+unprotected+absent
+MountImagePolicy=root=verity+signed+encrypted+unprotected+absent:usr=verity+signed+encrypted+unprotected+absent:home=encrypted+unprotected+absent:srv=encrypted+unprotected+absent:tmp=encrypted+unprotected+absent:var=encrypted+unprotected+absent
+ExtensionImagePolicy=root=verity+signed+encrypted+unprotected+absent:usr=verity+signed+encrypted+unprotected+absent:home=encrypted+unprotected+absent:srv=encrypted+unprotected+absent:tmp=encrypted+unprotected+absent:var=encrypted+unprotected+absent
+KillMode=control-group
+KillSignal=15
+RestartKillSignal=15
+FinalKillSignal=9
+SendSIGKILL=yes
+SendSIGHUP=no
+WatchdogSignal=6
+Id=development-scout.service
+Names=development-scout.service
+Requires=basic.target app.slice
+Conflicts=shutdown.target
+Before=shutdown.target
+After=basic.target -.mount app.slice development-scout.timer
+TriggeredBy=development-scout.timer
+RequiresMountsFor=/home/optiplex/investment
+Description=Investment development discovery only (no implementation)
+LoadState=loaded
+ActiveState=failed
+FreezerState=running
+SubState=failed
+FragmentPath=/home/optiplex/.config/systemd/user/development-scout.service
+UnitFileState=static
+UnitFilePreset=enabled
+StateChangeTimestamp=Sun 2026-10-25 08:16:48 EDT
+StateChangeTimestampMonotonic=6433649030621
+InactiveExitTimestamp=Sun 2026-10-25 08:16:47 EDT
+InactiveExitTimestampMonotonic=6433648908160
+ActiveEnterTimestampMonotonic=0
+ActiveExitTimestampMonotonic=0
+InactiveEnterTimestamp=Sun 2026-10-25 08:16:48 EDT
+InactiveEnterTimestampMonotonic=6433649030621
+CanStart=yes
+CanStop=yes
+CanReload=no
+CanIsolate=no
+CanFreeze=yes
+StopWhenUnneeded=no
+RefuseManualStart=no
+RefuseManualStop=no
+AllowIsolate=no
+DefaultDependencies=yes
+SurviveFinalKillSignal=no
+OnSuccessJobMode=fail
+OnFailureJobMode=replace
+IgnoreOnIsolate=no
+NeedDaemonReload=no
+JobTimeoutUSec=infinity
+JobRunningTimeoutUSec=infinity
+JobTimeoutAction=none
+ConditionResult=yes
+AssertResult=yes
+ConditionTimestamp=Sun 2026-10-25 08:16:47 EDT
+ConditionTimestampMonotonic=6433648893272
+AssertTimestamp=Sun 2026-10-25 08:16:47 EDT
+AssertTimestampMonotonic=6433648893279
+Transient=no
+Perpetual=no
+StartLimitIntervalUSec=10s
+StartLimitBurst=5
+StartLimitAction=none
+FailureAction=none
+SuccessAction=none
+InvocationID=8dba10d6822449aaa99d8bd1dfdfe78c
+CollectMode=inactive
+-- No entries --
+Oct 25 08:16:47 optiplex systemd[309413]: Starting development-scout.service - Investment development discovery only (no implementation)...
+Oct 25 08:16:47 optiplex python3[1720763]: Traceback (most recent call last):
+Oct 25 08:16:47 optiplex python3[1720763]:   File "/opt/investment-discovery-observer/observer.py", line 241, in <module>
+Oct 25 08:16:47 optiplex python3[1720763]:     else:client(sys.argv[1])
+Oct 25 08:16:47 optiplex python3[1720763]:          ^^^^^^^^^^^^^^^^^^^
+Oct 25 08:16:47 optiplex python3[1720763]:   File "/opt/investment-discovery-observer/observer.py", line 200, in client
+Oct 25 08:16:47 optiplex python3[1720763]:     if channel.recv(1024)!=b'OK\n':raise ValueError('trusted discovery observation failed')
+Oct 25 08:16:47 optiplex python3[1720763]:                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Oct 25 08:16:47 optiplex python3[1720763]: ValueError: trusted discovery observation failed
+Oct 25 08:16:47 optiplex systemd[309413]: development-scout.service: Control process exited, code=exited, status=1/FAILURE
+Oct 25 08:16:47 optiplex (python3)[1720767]: development-scout.service: PrivateNetwork=yes is configured, but network namespace setup not permitted, proceeding without: Operation not permitted
+Oct 25 08:16:48 optiplex python3[1720767]: Traceback (most recent call last):
+Oct 25 08:16:48 optiplex python3[1720767]:   File "/opt/investment-discovery-observer/observer.py", line 241, in <module>
+Oct 25 08:16:48 optiplex python3[1720767]:     else:client(sys.argv[1])
+Oct 25 08:16:48 optiplex python3[1720767]:          ^^^^^^^^^^^^^^^^^^^
+Oct 25 08:16:48 optiplex python3[1720767]:   File "/opt/investment-discovery-observer/observer.py", line 200, in client
+Oct 25 08:16:48 optiplex python3[1720767]:     if channel.recv(1024)!=b'OK\n':raise ValueError('trusted discovery observation failed')
+Oct 25 08:16:48 optiplex python3[1720767]:                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Oct 25 08:16:48 optiplex python3[1720767]: ValueError: trusted discovery observation failed
+Oct 25 08:16:48 optiplex systemd[309413]: development-scout.service: Control process exited, code=exited, status=1/FAILURE
+Oct 25 08:16:48 optiplex systemd[309413]: development-scout.service: Failed with result 'exit-code'.
+Oct 25 08:16:48 optiplex systemd[309413]: Failed to start development-scout.service - Investment development discovery only (no implementation).
+investment-development-acceptance root optiplex 755 4096 bytes
+t 6433648893213
+e061d845506cb4976420ba728ea6fbd26a92eaa3be6a64f6f02d2600916061a1  /home/optiplex/investment/config/development_agent.json
+1b05c299a53af4b417587511cfb2be99f823dbe9dd8e562dc8b90cc411e8a882  /home/optiplex/investment/holdings.csv
+f03c4b723ef236e8eb9f51a8b5e13b863e6d3b6bbd5778b65aabbde9cb3a63d8  /home/optiplex/investment/out/investment.db
+cb145b68f3fa6e69946a32aa64d31a3d4526bf211a85d07121f102c3f9013734  /home/optiplex/investment/out/buffett.db
+19fd140227a5b9b3cec27e6a2f91e610842e9947
+ActivationDetails=[unprintable]

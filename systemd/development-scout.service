@@ -1,6 +1,8 @@
 [Unit]
 Description=Investment development discovery only (no implementation)
 
+RefuseManualStart=yes
+
 [Service]
 Type=oneshot
 WorkingDirectory=%h/investment

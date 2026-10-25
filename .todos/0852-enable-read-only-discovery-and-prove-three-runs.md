@@ -145,3 +145,17 @@ rollback; it cannot migrate acceptance or install/enable user discovery units.
 Neither this change nor PR17 has been applied on OptiPlex. Genuine runs remain
 **0/3**. Both the historical failed token installation and explicit public-reader
 source support above remain separate facts. See the rollout guide for boundaries.
+
+
+### October 25 timer failure / reviewed recovery proposal
+
+The genuine 08:16 EDT timer attempt failed in ExecStartPre; ExecStart did not run.
+Acceptance remains **0/3**. The installed parser cannot consume systemd's actual
+formatted LastTriggerUSecMonotonic value; root exception suppression prevents
+proving whether an earlier historical check rejected first. No failed attempt is
+converted to credit. See [incident evidence and proposed recovery](../docs/evidence/scout-oct25/README.md).
+A separate source proposal adds typed timer provenance, sanitized diagnostics,
+a bounded exact-boundary upgrade and one October 25 12:15 Eastern recovery entry.
+These are source changes pending review, merge and deployment; no operational
+checkbox is complete and PR #19 remains held. Any genuine recovery must qualify
+against the new exact merged source and retain all three-run safety requirements.

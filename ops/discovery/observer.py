@@ -115,35 +115,94 @@ def snapshot(config):
     if head!=config['head']:raise ValueError('discovery head changed')
     cfg=loads((ROOT/'config/development_agent.json').read_bytes())
     if any(cfg[k] is not False for k in ('autonomous_implementation','supervised_loop_enabled','supervised_publish_pr','auto_merge')) or cfg['autonomy_stage']!='SHADOW' or cfg['required_human_merge'] is not True:raise ValueError('discovery-only activation required')
-    ledger,rows=ledger_snapshot()
+    ledger,rows=guarded('LEDGER_SNAPSHOT_INVALID',ledger_snapshot)
     return dict(holdings=file_hash(ROOT/'holdings.csv'),investment=database_hash(ROOT/'out/investment.db'),
                 auxiliary=database_hash(ROOT/'out/buffett.db') if (ROOT/'out/buffett.db').exists() or (ROOT/'out/buffett.db').is_symlink() else None,
                 source=digest(source),worktrees=sorted(str(p.relative_to(WORKTREES)) for p in WORKTREES.rglob('*')) if WORKTREES.exists() else [],ledger=ledger),rows
+
+
+class TrustFailure(ValueError):
+    """Only reviewed constants cross the root journal boundary."""
+    def __init__(self,code):
+        self.code=code
+        super().__init__(code)
+
+
+REASONS=frozenset({'SANDBOX_PROBE_FAILED','SCOUT_CONTROL_PROCESS_INVALID',
+    'SCOUT_SANDBOX_INVALID','INVOCATION_INVALID','TIMER_UNIT_INVALID',
+    'TIMER_TRIGGER_INVALID','SOURCE_SNAPSHOT_INVALID','LEDGER_SNAPSHOT_INVALID',
+    'BOOKEND_INVALID','REQUEST_INVALID'})
+
+
+def guarded(code,operation,*args):
+    try:return operation(*args)
+    except TrustFailure:raise
+    except Exception:raise TrustFailure(code) from None
+
+
+def root_failure(error):
+    code=error.code if type(error) is TrustFailure and error.code in REASONS else 'BOOKEND_INVALID'
+    print('DISCOVERY_OBSERVER_FAILURE '+code,file=sys.stderr,flush=True)
+
+
+def timer_timestamp(options):
+    # busctl retains the D-Bus type. systemctl show renders this as a duration.
+    raw=subprocess.check_output(['/usr/bin/busctl','--user','get-property',
+        'org.freedesktop.systemd1',
+        '/org/freedesktop/systemd1/unit/development_2dscout_2etimer',
+        'org.freedesktop.systemd1.Timer','LastTriggerUSecMonotonic'],**options)
+    if not re.fullmatch(rb't [0-9]{1,20}\n',raw):raise TrustFailure('TIMER_TRIGGER_INVALID')
+    value=int(raw[2:])
+    if not 0<value<2**64:raise TrustFailure('TIMER_TRIGGER_INVALID')
+    return value
+
+
+def activation(options,pid,invocation,fired):
+    # Read manager-owned activation details, not caller-controlled environment.
+    # Metadata is corroboration only: missing best-effort data fails closed.
+    raw=subprocess.check_output(['/usr/bin/busctl','--user','--json=short','get-property',
+        'org.freedesktop.systemd1',
+        '/org/freedesktop/systemd1/unit/development_2dscout_2eservice',
+        'org.freedesktop.systemd1.Unit','ActivationDetails'],**options)
+    if len(raw)>4096:raise TrustFailure('TIMER_TRIGGER_INVALID')
+    value=loads(raw)
+    if set(value)!={'type','data'} or value['type']!='a(ss)' or not isinstance(value['data'],list):raise TrustFailure('TIMER_TRIGGER_INVALID')
+    pairs=value['data']
+    if any(not isinstance(p,list) or len(p)!=2 or any(type(v) is not str for v in p) for p in pairs):raise TrustFailure('TIMER_TRIGGER_INVALID')
+    details=unique(pairs)
+    if details.get('trigger_unit')!='development-scout.timer' or details.get('trigger_timer_monotonic_usec')!=str(fired):raise TrustFailure('TIMER_TRIGGER_INVALID')
+    # Bind this manager metadata to the same control process and invocation.
+    raw=subprocess.check_output(['/usr/bin/systemctl','--user','show','development-scout.service',
+        '--no-pager','--property=ControlPID,InvocationID'],**options).decode()
+    values=unique(line.split('=',1) for line in raw.splitlines() if '=' in line)
+    if values!={'ControlPID':str(pid),'InvocationID':invocation}:raise TrustFailure('INVOCATION_INVALID')
 
 
 def systemd(config,pid,phase):
     account=pwd.getpwnam('optiplex')
     command=['/usr/bin/systemctl','--user','show']
     options=dict(timeout=10,env={'PATH':'/usr/bin:/bin','HOME':'/nonexistent','XDG_RUNTIME_DIR':'/run/user/'+str(account.pw_uid)},user=account.pw_uid,group=account.pw_gid,extra_groups=[])
-    properties='ControlPID,InvocationID,FragmentPath,DropInPaths,NeedDaemonReload,Result,PrivateNetwork,NoNewPrivileges,ProtectSystem,ProtectHome'
+    properties='ControlPID,InvocationID,FragmentPath,DropInPaths,NeedDaemonReload,Result,PrivateNetwork,NoNewPrivileges,ProtectSystem,ProtectHome,RefuseManualStart,TriggeredBy'
     raw=subprocess.check_output(command+['development-scout.service','--no-pager','--property='+properties],**options).decode()
     values=dict(line.split('=',1) for line in raw.splitlines() if '=' in line)
     unit=Path('/home/optiplex/.config/systemd/user/development-scout.service')
-    if (values.get('ControlPID')!=str(pid) or values.get('FragmentPath')!=str(unit) or values.get('DropInPaths')!='' or values.get('NeedDaemonReload')!='no' or file_hash(unit)!=config['unit_digest']):raise ValueError('unverified Scout control process')
-    if any(values.get(k)!=v for k,v in {'PrivateNetwork':'yes','NoNewPrivileges':'yes','ProtectSystem':'strict','ProtectHome':'read-only'}.items()):raise ValueError('loaded Scout sandbox is incomplete')
+    if (values.get('ControlPID')!=str(pid) or values.get('FragmentPath')!=str(unit) or values.get('DropInPaths')!='' or values.get('NeedDaemonReload')!='no' or file_hash(unit)!=config['unit_digest']):raise TrustFailure('SCOUT_CONTROL_PROCESS_INVALID')
+    if any(values.get(k)!=v for k,v in {'PrivateNetwork':'yes','NoNewPrivileges':'yes','ProtectSystem':'strict','ProtectHome':'read-only'}.items()):raise TrustFailure('SCOUT_SANDBOX_INVALID')
     invocation=values.get('InvocationID','')
-    if not re.fullmatch('[a-f0-9]{32}',invocation):raise ValueError('systemd invocation unavailable')
+    if not re.fullmatch('[a-f0-9]{32}',invocation):raise TrustFailure('INVOCATION_INVALID')
     args=Path('/proc')/str(pid)/'cmdline'
-    if args.read_bytes().split(b'\0')[:-1]!=[b'/usr/bin/python3',b'-I',b'-S',str(SOURCE).encode(),phase.encode()]:raise ValueError('fixed observer client required')
+    if args.read_bytes().split(b'\0')[:-1]!=[b'/usr/bin/python3',b'-I',b'-S',str(SOURCE).encode(),phase.encode()]:raise TrustFailure('SCOUT_CONTROL_PROCESS_INVALID')
     if phase=='begin':
+        if values.get('RefuseManualStart')!='yes' or values.get('TriggeredBy')!='development-scout.timer':raise TrustFailure('TIMER_UNIT_INVALID')
         raw=subprocess.check_output(command+['development-scout.timer','--no-pager','--property=LastTriggerUSecMonotonic,FragmentPath,DropInPaths,NeedDaemonReload,ActiveState,UnitFileState'],**options).decode()
         timer=dict(line.split('=',1) for line in raw.splitlines() if '=' in line)
         path=Path('/home/optiplex/.config/systemd/user/development-scout.timer')
-        if timer.get('FragmentPath')!=str(path) or timer.get('DropInPaths')!='' or timer.get('NeedDaemonReload')!='no' or timer.get('ActiveState')!='active' or timer.get('UnitFileState') not in {'enabled','enabled-runtime'} or file_hash(path)!=config['timer_digest']:raise ValueError('loaded discovery timer is not verified')
-        fired=int(timer['LastTriggerUSecMonotonic'])
-        if not 0<=time.monotonic()-fired/1_000_000<=180:raise ValueError('genuine recent timer invocation required')
+        if timer.get('FragmentPath')!=str(path) or timer.get('DropInPaths')!='' or timer.get('NeedDaemonReload')!='no' or timer.get('ActiveState')!='active' or timer.get('UnitFileState') not in {'enabled','enabled-runtime'} or file_hash(path)!=config['timer_digest']:raise TrustFailure('TIMER_UNIT_INVALID')
+        fired=guarded('TIMER_TRIGGER_INVALID',timer_timestamp,options)
+        if not 0<=time.monotonic()-fired/1_000_000<=180:raise TrustFailure('TIMER_TRIGGER_INVALID')
+        guarded('TIMER_TRIGGER_INVALID',activation,options,pid,invocation,fired)
         boot=Path('/proc/sys/kernel/random/boot_id').read_text().strip()
-        if not re.fullmatch('[a-f0-9-]{36}',boot):raise ValueError('actual boot identity required')
+        if not re.fullmatch('[a-f0-9-]{36}',boot):raise TrustFailure('TIMER_TRIGGER_INVALID')
         return dict(invocation=invocation,timer_fire=boot+':'+str(fired))
     elif values.get('Result')!='success':raise ValueError('unsuccessful Scout execution')
     return dict(invocation=invocation)
@@ -154,13 +213,13 @@ class Observer:
     def handle(self,uid,pid,request):
         if uid!=pwd.getpwnam('optiplex').pw_uid:raise ValueError('discovery identity required')
         if not isinstance(request,dict) or set(request)!={'phase','checks'} or request['phase'] not in {'begin','end'}:raise ValueError('fixed bookend required')
-        if request['checks']!={k:True for k in CHECKS}:raise ValueError('sandbox denial probes failed')
-        phase=request['phase'];authority=systemd(self.config,pid,phase);invocation=authority['invocation'];pending=STATE/(invocation+'.pending')
+        if request['checks']!={k:True for k in CHECKS}:raise TrustFailure('SANDBOX_PROBE_FAILED')
+        phase=request['phase'];authority=guarded('SCOUT_CONTROL_PROCESS_INVALID',systemd,self.config,pid,phase);invocation=authority['invocation'];pending=STATE/(invocation+'.pending')
         if phase=='begin':
             fires=STATE/'timer-fires.json';used=loads(fires.read_bytes()) if fires.exists() else []
             if authority['timer_fire'] in used:raise ValueError('timer firing already observed')
             atomic(fires,(used+[authority['timer_fire']])[-256:])
-        current,rows=snapshot(self.config);now=time.time()
+        current,rows=guarded('SOURCE_SNAPSHOT_INVALID',snapshot,self.config);now=time.time()
         if phase=='begin':
             if pending.exists():raise ValueError('replayed discovery begin')
             atomic(pending,dict(invocation=invocation,head=self.config['head'],started=now,before=current))
@@ -200,6 +259,16 @@ def client(phase):
         if channel.recv(1024)!=b'OK\n':raise ValueError('trusted discovery observation failed')
 
 
+def respond(observer,uid,pid,raw):
+    try:
+        if len(raw)>4096 or not raw.endswith(b'\n'):raise TrustFailure('REQUEST_INVALID')
+        observer.handle(uid,pid,loads(raw))
+        return b'OK\n'
+    except Exception as error:
+        root_failure(error)
+        return b'FAILED\n'
+
+
 def serve():
     if sys.platform!='linux' or os.geteuid()!=0:raise ValueError('installed root observer required')
     protected(SOURCE);protected(CONFIG);protected(STATE)
@@ -212,9 +281,9 @@ def serve():
             try:
                 pid,uid,gid=struct.unpack('3i',self.connection.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,12))
                 raw=self.rfile.readline(4097)
-                if len(raw)>4096 or not raw.endswith(b'\n'):raise ValueError('bounded request required')
-                observer.handle(uid,pid,loads(raw));self.wfile.write(b'OK\n')
-            except Exception:self.wfile.write(b'FAILED\n')
+                self.wfile.write(respond(observer,uid,pid,raw))
+            except Exception as error:
+                root_failure(error);self.wfile.write(b'FAILED\n')
     if SOCKET.exists():
         if not SOCKET.is_socket() or SOCKET.is_symlink() or SOCKET.stat().st_uid!=0:raise ValueError('unsafe observer socket')
         with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as old:
