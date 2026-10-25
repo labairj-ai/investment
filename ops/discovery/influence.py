@@ -294,6 +294,8 @@ def path_references(root,source_items,cli_modes=()):
             return frozenset()
         if isinstance(node,ast.BinOp) and isinstance(node.op,(ast.Div,ast.Add)):
             left=evaluate(node.left,env);right=evaluate(node.right,env);out=[]
+            sequence=lambda n:isinstance(n,(ast.List,ast.Tuple)) or isinstance(n,ast.Call) and qname(n.func) in {'list','tuple'}
+            if isinstance(node.op,ast.Add) and (sequence(node.left) or sequence(node.right)):return bounded(left|right)
             if isinstance(node.op,ast.Add) and all(v[0]=='string' for v in left|right):
                 return bounded(string(a[1]+b[1]) for a in left for b in right)
             for base in as_paths(left):
@@ -560,6 +562,7 @@ def audit(root,head,*,tracked=None,untracked=None):
         cache='__pycache__' in parts and p.suffix=='.pyc'
         if not reason and executed and name not in venv_interpreters:reason='SYSTEMD_EXECUTION'
         elif not reason and reference:reason='REVIEWED_SOURCE_REFERENCE'
+        elif not reason and evidence and not proof['verified']:reason='PROTECTED_EVIDENCE_SANDBOX_UNPROVEN'
         elif not reason and cache:category='non_authoritative_cache'
         elif not reason and parts[0] in runtime_roots and len(parts)==2 and p.name.startswith('__init__.'):reason='RUNTIME_PACKAGE_INJECTION'
         elif not reason and parts[0] in runtime_roots:category='non_authoritative_runtime'

@@ -225,3 +225,28 @@ def test_runtime_location_cannot_override_authority_usage(repo,suffix):
     add(root,name)
     result=a.audit(root,head)
     assert {'path':name,'reason':'REVIEWED_SOURCE_REFERENCE'} in result['rejected_paths']
+
+
+def test_command_sequence_concatenation_is_not_a_filesystem_join():
+    source='''import subprocess
+def output(root,*args):
+    prefix=['/usr/bin/git','-C',str(root)]
+    return subprocess.run(prefix+list(args))
+value=output(root,'ls-tree','HEAD')
+'''
+    assert model(source)['ambiguous']==[]
+
+
+def test_dynamic_filesystem_join_remains_ambiguous():
+    source='''from pathlib import Path
+import os
+value=(Path(root)/('config/'+os.environ['POLICY'])).read_text()
+'''
+    assert model(source)['ambiguous']
+
+
+def test_runtime_location_does_not_bypass_evidence_sandbox_requirements(repo):
+    root,_=repo
+    head=commit_reader(root,HASH+'\nvalue=file_hash(Path(root)/"out/state.csv")\n',scout='[Service]\n')
+    add(root,'out/state.csv')
+    assert {'path':'out/state.csv','reason':'PROTECTED_EVIDENCE_SANDBOX_UNPROVEN'} in a.audit(root,head)['rejected_paths']
