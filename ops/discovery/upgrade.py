@@ -82,8 +82,8 @@ def protected_state():
 
 def recovery_schedule(data):
     entries=[line for line in data.decode().splitlines() if line.startswith('OnCalendar=')]
-    if entries!=['OnCalendar=*-*-* 08:15:00 America/New_York','OnCalendar=2026-10-25 12:15:00 America/New_York']:raise ValueError('exact normal and single recovery calendar required')
-    recovery=datetime(2026,10,25,12,15,tzinfo=ZoneInfo('America/New_York')).timestamp()
+    if entries!=['OnCalendar=*-*-* 08:15:00 America/New_York','OnCalendar=2026-10-25 10:15:00 America/New_York']:raise ValueError('exact normal and single recovery calendar required')
+    recovery=datetime(2026,10,25,10,15,tzinfo=ZoneInfo('America/New_York')).timestamp()
     if recovery-time.time()<600:raise ValueError('reviewed recovery window has passed or is too close')
 
 

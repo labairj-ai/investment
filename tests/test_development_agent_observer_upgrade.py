@@ -14,7 +14,7 @@ def upgrade_host(host,monkeypatch):
     monkeypatch.setattr(u.time,'time',lambda:1792929600.0)
     h.git('branch','-M','main')
     for name in u.CHANGED:(h.ROOT/name).write_text('new reviewed '+name+'\n')
-    (h.ROOT/r.IDENTITIES[3]).write_text('OnCalendar=*-*-* 08:15:00 America/New_York\nOnCalendar=2026-10-25 12:15:00 America/New_York\n')
+    (h.ROOT/r.IDENTITIES[3]).write_text('OnCalendar=*-*-* 08:15:00 America/New_York\nOnCalendar=2026-10-25 10:15:00 America/New_York\n')
     h.git('add','.');h.git('commit','-qm','reviewed boundary');h.head=h.git('rev-parse','HEAD');h.git('update-ref','refs/remotes/origin/main',h.head)
     monkeypatch.setattr(u,'OLD_HEAD',h.old)
     monkeypatch.setattr(u,'OLD_EXECUTABLE',h.old_config['observer_digest'])
@@ -119,7 +119,7 @@ def test_config_only_refresh_still_refuses_boundary_upgrade(upgrade_host):
 
 @pytest.mark.parametrize('attack',['extra','missing','wrong_day','late'])
 def test_recovery_calendar_is_exact_and_future(monkeypatch,attack):
-    data=b'OnCalendar=*-*-* 08:15:00 America/New_York\nOnCalendar=2026-10-25 12:15:00 America/New_York\n'
+    data=b'OnCalendar=*-*-* 08:15:00 America/New_York\nOnCalendar=2026-10-25 10:15:00 America/New_York\n'
     monkeypatch.setattr(u.time,'time',lambda:1792929600.0)
     if attack=='extra':data+=b'OnCalendar=2026-10-25 15:00:00 America/New_York\n'
     if attack=='missing':data=data.splitlines()[0]+b'\n'

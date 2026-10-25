@@ -111,11 +111,11 @@ Keep the existing daily entry and add exactly one absolute entry:
 
 ```
 OnCalendar=*-*-* 08:15:00 America/New_York
-OnCalendar=2026-10-25 12:15:00 America/New_York
+OnCalendar=2026-10-25 10:15:00 America/New_York
 ```
 
 Persistent=true and RandomizedDelaySec=120 remain. The proposed recovery is
-October 25 at 12:15 Eastern plus the reviewed delay. Deployment must finish and
+October 25 at 10:15 Eastern plus the reviewed delay. Deployment must finish and
 be independently verified before that window. The upgrade refuses a recovery
 less than ten minutes away or already elapsed. If review misses the window,
 change source and repeat validation/review; never force a service start.

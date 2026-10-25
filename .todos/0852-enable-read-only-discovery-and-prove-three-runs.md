@@ -155,7 +155,7 @@ formatted LastTriggerUSecMonotonic value; root exception suppression prevents
 proving whether an earlier historical check rejected first. No failed attempt is
 converted to credit. See [incident evidence and proposed recovery](../docs/evidence/scout-oct25/README.md).
 A separate source proposal adds typed timer provenance, sanitized diagnostics,
-a bounded exact-boundary upgrade and one October 25 12:15 Eastern recovery entry.
+a bounded exact-boundary upgrade and one October 25 10:15 Eastern recovery entry.
 These are source changes pending review, merge and deployment; no operational
 checkbox is complete and PR #19 remains held. Any genuine recovery must qualify
 against the new exact merged source and retain all three-run safety requirements.
