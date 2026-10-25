@@ -155,7 +155,7 @@ formatted LastTriggerUSecMonotonic value; root exception suppression prevents
 proving whether an earlier historical check rejected first. No failed attempt is
 converted to credit. See [incident evidence and proposed recovery](../docs/evidence/scout-oct25/README.md).
 A separate source proposal adds typed timer provenance, sanitized diagnostics,
-a bounded exact-boundary upgrade and one October 25 18:30 Eastern recovery entry.
+a bounded exact-boundary upgrade and one October 25 21:00 Eastern recovery entry.
 These are source changes pending review, merge and deployment; no operational
 checkbox is complete and PR #19 remains held. Any genuine recovery must qualify
 against the new exact merged source and retain all three-run safety requirements.
@@ -171,7 +171,7 @@ remain conservative and unchanged. Influence classification now follows actual
 import/execution/configuration reachability, including the collector, rather than
 arbitrary data stems or every file below a package root. No production inventory
 item is modified or individually whitelisted. The proposed recovery is October 25
-18:30 Eastern, still source-only. The exact-head audit and all checks must be
+21:00 Eastern, still source-only. The exact-head audit and all checks must be
 reviewed before any merge; production remains 19fd140... and genuine credit 0/3.
 
 ### Reviewed path-use correction (PR #20, pre-merge review)

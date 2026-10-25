@@ -16,7 +16,7 @@ def upgrade_host(host,monkeypatch):
     monkeypatch.setattr(u.time,'time',lambda:1792929600.0)
     h.git('branch','-M','main')
     for name in u.CHANGED:(h.ROOT/name).write_text('new reviewed '+name+'\n')
-    (h.ROOT/r.IDENTITIES[3]).write_text('OnCalendar=*-*-* 08:15:00 America/New_York\nOnCalendar=2026-10-25 18:30:00 America/New_York\n')
+    (h.ROOT/r.IDENTITIES[3]).write_text('OnCalendar=*-*-* 08:15:00 America/New_York\nOnCalendar=2026-10-25 21:00:00 America/New_York\n')
     h.git('add','.');h.git('commit','-qm','reviewed boundary');h.head=h.git('rev-parse','HEAD');h.git('update-ref','refs/remotes/origin/main',h.head)
     monkeypatch.setattr(u,'OLD_HEAD',h.old)
     monkeypatch.setattr(u,'OLD_EXECUTABLE',h.old_config['observer_digest'])
@@ -118,15 +118,16 @@ def test_config_only_refresh_still_refuses_boundary_upgrade(upgrade_host):
     with pytest.raises(ValueError,match='separately reviewed full upgrade'):upgrade_host.run()
 
 
-@pytest.mark.parametrize('attack',['extra','missing','wrong_day','late','obsolete_recovery'])
+@pytest.mark.parametrize('attack',['extra','missing','wrong_day','late','obsolete_recovery','obsolete_1830'])
 def test_recovery_calendar_is_exact_and_future(monkeypatch,attack):
-    data=b'OnCalendar=*-*-* 08:15:00 America/New_York\nOnCalendar=2026-10-25 18:30:00 America/New_York\n'
+    data=b'OnCalendar=*-*-* 08:15:00 America/New_York\nOnCalendar=2026-10-25 21:00:00 America/New_York\n'
     monkeypatch.setattr(u.time,'time',lambda:1792929600.0)
     if attack=='extra':data+=b'OnCalendar=2026-10-25 15:00:00 America/New_York\n'
-    if attack=='obsolete_recovery':data=data.replace(b'18:30:00',b'16:30:00')
+    if attack=='obsolete_recovery':data=data.replace(b'21:00:00',b'16:30:00')
+    if attack=='obsolete_1830':data=data.replace(b'21:00:00',b'18:30:00')
     if attack=='missing':data=data.splitlines()[0]+b'\n'
     if attack=='wrong_day':data=data.replace(b'2026-10-25',b'2026-10-26')
-    if attack=='late':monkeypatch.setattr(u.time,'time',lambda:u.datetime(2026,10,25,18,30,tzinfo=u.ZoneInfo('America/New_York')).timestamp()-599)
+    if attack=='late':monkeypatch.setattr(u.time,'time',lambda:u.datetime(2026,10,25,21,0,tzinfo=u.ZoneInfo('America/New_York')).timestamp()-599)
     with pytest.raises(ValueError):u.recovery_schedule(data)
 
 
