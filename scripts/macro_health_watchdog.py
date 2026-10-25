@@ -73,6 +73,17 @@ def main():
             value=status.stdout.strip()
             severity='INFO' if status.returncode==0 and value=='success' else ('RED' if value else 'YELLOW')
             checks.append(wd.result(unit,severity,'Last service execution succeeded' if severity=='INFO' else 'Service execution failed or unavailable',result=value))
+        # Discovery is independent of investment DB/baseline availability. It
+        # receives read-only observations, never a producer/remediation interface.
+        try:
+            from dev_agent.discovery_watchdog_reader import observe
+            from dev_agent.discovery_watchdog import evaluate
+            prior=state.execute("SELECT detail FROM system_watchdog_state WHERE component='development_discovery'").fetchone()
+            previous=json.loads(prior[0]).get('evidence',{}).get('failure_invocations',{}) if prior else {}
+            observed=observe(ROOT,previous=previous)
+            checks.extend(evaluate(observed,observed['observed_at']))
+        except Exception:
+            checks.append(wd.result('development_discovery','RED','Development discovery evidence could not be inspected',code='unavailable',grants_implementation=False))
         wd.persist(state,checks,now)
         wd.deliver(state,now,wd.email_transport,enabled=args.notify)
         failures=wd.delivery_failures(state,now)
