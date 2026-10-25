@@ -173,3 +173,12 @@ arbitrary data stems or every file below a package root. No production inventory
 item is modified or individually whitelisted. The proposed recovery is October 25
 16:30 Eastern, still source-only. The exact-head audit and all checks must be
 reviewed before any merge; production remains 19fd140... and genuine credit 0/3.
+
+### Reviewed path-use correction (PR #20, pre-merge review)
+
+Bare filename literals no longer imply source authority. The audit resolves exact
+reviewed path constructions and distinguishes protected read-only evidence from
+configuration/source/execution consumption. Authority dominates mixed uses; dynamic
+unresolved authority fails closed. No production filename is individually exempted.
+The real inventory must pass the final exact-head audit before later review/merge.
+No source deployment, timer manipulation or acceptance credit is claimed; 0/3 remains.

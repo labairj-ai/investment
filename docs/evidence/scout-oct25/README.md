@@ -315,3 +315,65 @@ If any path still fails, stop for ChatGPT review without a post-result exception
 This task stops before merge even if the proposed new boundary passes. Production
 remains at 19fd140... and 0852 stays 0/3 until a later reviewed deployment and real
 bookended timer executions; no acceptance is manufactured by source tests.
+
+## Exact-path and usage-aware references (current reference contract)
+
+The bare-literal model is removed. A filename in a forbidden tuple, diagnostic,
+label or basename comparison is POLICY_LITERAL_ONLY: it creates no filesystem
+reference and does not participate in path disposition. There is no basename or
+stem authority match and no exemption for the three previously rejected names.
+
+The bounded AST analysis resolves repository-relative path constructions, aliases,
+constant joins, bounded literal loops and helper parameters. It preserves complete
+path context: ROOT/'out/investment.db' refers only to out/investment.db. It cannot
+create a root investment.db reference. Calls and source lines are retained in the
+review evidence. No analyzed Python or production file content is evaluated.
+
+References have two consuming effects:
+
+- SOURCE_OR_EXECUTION_AUTHORITY: content/config reads, database decision inputs,
+  import/load/execute targets, and data-derived values passed into those mechanisms.
+  Any such use dominates evidence uses of the same exact path and rejects an
+  untracked supplier, including files below otherwise permitted runtime locations.
+- PROTECTED_RUNTIME_EVIDENCE: metadata, sandbox denial predicates and structurally
+  verified read-only hash/logical-hash helpers. Helper names alone grant no privilege.
+  Digest helpers cannot parse/execute configuration, write files or have unknown
+  calls; database hashes require read-only URI/query-only/dump-to-digest behavior;
+  denial helpers must return booleans and use only read-only open/close. A hash result
+  used to choose configuration or an executable propagates authority back to its input.
+
+Evidence is allowed only with reviewed sandbox proof: strict/read-only repository
+mount policy, no writable repository carve-out, denied probe paths actually listed
+as inaccessible, no import/execution/source/config use, and no content observation
+of a path that the root observer itself must be denied. Existing loaded-unit/pin
+verification remains independently mandatory before an upgrade. The model does not
+run probes, open a credential or read financial data to prove these properties.
+
+Dynamic rooted paths and unresolved source/config path constructors fail closed.
+Parameter effects propagate through reviewed helpers; bounded analysis that cannot
+converge fails closed. Fixed discovery CLI modes derive from reviewed observer argv
+and reviewed discovery unit commands, so unrelated interactive owner commands do not
+become recovery inputs. An unresolved observer CLI entry mode fails closed. This
+entrypoint distinction does not change the conservative worktree policy.
+
+The current reviewed usage is generic, not filename-specific:
+
+| Exact path | Role |
+|---|---|
+| repository .env | Denial-probe inventory, no content read; Scout and root-observer unit deny access |
+| holdings.csv | Scout denial plus root before/after hashing and read-only protection checks |
+| out/investment.db | Root logical/file hashing and state integrity, with Scout denied access |
+| root investment.db | No exact path consumer derived; a basename in validation is policy-only |
+
+Tests cover literal-only false positives, two equal basenames in distinct directories,
+constant joins/aliases, file/database hashing and denial proofs, mixed authority and
+evidence, credentials that must not be content-read, fake helper names/side effects,
+JSON/DB/CSV/env authority, executable/import targets, dynamic paths and wrapper effects,
+and authority inside runtime folders. All prior source, import, Git, systemd, provenance,
+replay, isolated interpreter and whole-worktree protections remain unchanged.
+
+The one-time recovery remains October 25 16:30 America/New_York, daily 08:15,
+Persistent=true and RandomizedDelaySec=120. No merge/deployment is authorized by
+this review task; the ten-minute cutoff is unchanged. The final real inventory
+audit follows exact-head validation and must stop on any rejection, with no
+post-result exception.

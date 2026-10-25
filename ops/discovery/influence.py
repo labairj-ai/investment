@@ -97,7 +97,7 @@ def reviewed_graph(root,head,tracked):
         module=name[:-3].replace('/','.')
         if module.endswith('.__init__'):module=module[:-9]
         modules[module]=name;sources[name]=raw
-    queue=list(ENTRY_MODULES);seen=set();imports=set();dynamic=[];root_configs=set();literals=set();import_names=set();policy_literals=set()
+    queue=list(ENTRY_MODULES);seen=set();imports=set();dynamic=[];import_names=set()
     while queue:
         module=queue.pop()
         if module in seen or module not in modules:continue
@@ -106,9 +106,6 @@ def reviewed_graph(root,head,tracked):
         package=module if name.endswith('/__init__.py') else module.rpartition('.')[0]
         for node in ast.walk(tree):
             targets=[]
-            if isinstance(node,ast.Constant) and type(node.value) is str:
-                (policy_literals if name=='ops/discovery/influence.py' else literals).add(node.value)
-            if isinstance(node,ast.Constant) and type(node.value) is str and '/' not in node.value and node.value.endswith(('.json','.toml','.ini','.yaml','.yml')):root_configs.add(node.value)
             if isinstance(node,ast.Import):targets=[a.name for a in node.names]
             elif isinstance(node,ast.ImportFrom):
                 parts=package.split('.') if package else []
@@ -132,8 +129,7 @@ def reviewed_graph(root,head,tracked):
     for name in tracked:
         if '/' in name and name.endswith(('.py','.sh','.service','.timer')):namespaces.add(name.split('/')[0])
     return dict(modules=sorted(seen),import_roots=sorted(imports|set(sys.stdlib_module_names)),
-                namespaces=sorted(namespaces),dynamic_import_sources=sorted(set(dynamic)),root_configuration_names=sorted(root_configs),sources=sources,
-                literals=literals,policy_literals=policy_literals,import_names=sorted(import_names))
+                namespaces=sorted(namespaces),dynamic_import_sources=sorted(set(dynamic)),sources=sources,import_names=sorted(import_names))
 
 
 def code_shape(path):
@@ -208,6 +204,284 @@ def execution_references(root,head,tracked):
     return {k:sorted(set(v)) for k,v in refs.items()},sorted(set(ambiguous))
 
 
+# Abstract path values contain (anchor, exact relative suffix, unresolved).
+# No filesystem content or Python source is evaluated by this analysis.
+def path_references(root,source_items,cli_modes=()):
+    root=str(root);trees={name:ast.parse(raw,filename=name) for name,raw in source_items.items()}
+    functions={};globals_by_source={};aliases={}
+    def qname(node):
+        if isinstance(node,ast.Name):return node.id
+        if isinstance(node,ast.Attribute):return qname(node.value)+'.'+node.attr
+        return ''
+    def path(anchor,rel='',dynamic=False):return ('path',anchor,rel,dynamic)
+    def string(value):return ('string',value)
+    def bounded(values):
+        values=set(values)
+        if len(values)>256:raise ValueError('bounded reviewed path alternatives required')
+        return frozenset(values)
+    def absolute(value):
+        if value==root:return path('repo')
+        if value.startswith(root+'/'):return path('repo',value[len(root)+1:])
+        if value.startswith('/'):return path('external',value)
+        return path('repo',value)
+    def as_paths(values):return bounded(absolute(v[1]) if v[0]=='string' else ('path',*v[1:]) if v[0]=='taint' else v for v in values if v[0] in {'path','string','taint'})
+    def compose(base,suffix,dynamic=False):
+        if suffix.startswith('/'):return absolute(suffix)
+        rel='/'.join(x for x in (base[2],suffix) if x)
+        if any(p in {'.','..'} for p in rel.split('/')):dynamic=True
+        return path(base[1],rel,base[3] or dynamic)
+    def lookup(source,node):
+        name=qname(node);first,*rest=name.split('.')
+        target=aliases[source].get(first)
+        if target:return '.'.join([target,*rest])
+        return source[:-3].replace('/','.')+'.'+name if '.' not in name else name
+    for source,tree in trees.items():
+        module=source[:-3].replace('/','.')
+        package=module.rpartition('.')[0];aliases[source]={}
+        for node in ast.walk(tree):
+            if isinstance(node,(ast.FunctionDef,ast.AsyncFunctionDef)):
+                functions.setdefault(module+'.'+node.name,(source,node))
+            if isinstance(node,ast.Import):
+                for a in node.names:aliases[source][a.asname or a.name]=a.name
+            if isinstance(node,ast.ImportFrom):
+                parts=package.split('.') if package else []
+                base='.'.join(parts[:len(parts)-node.level+1]) if node.level else ''
+                prefix='.'.join(filter(None,(base,node.module or '')))
+                for a in node.names:aliases[source][a.asname or a.name]='.'.join(filter(None,(prefix,a.name)))
+    digest_helpers=set();evidence_helpers=set();denial_helpers=set()
+    dangerous={'loads','load','run','Popen','check_output','check_call','import_module','run_path','run_module','exec','eval','__import__','write','write_text','write_bytes','unlink','rename','replace','remove','mkdir','rmdir','system'}
+    digest_calls={'sha256','sha512','sha1','hexdigest','digest','read_bytes','read_text','is_file','is_symlink','stat','lstat','exists','ValueError'}
+    for key,(source,node) in functions.items():
+        calls=[qname(n.func) for n in ast.walk(node) if isinstance(n,ast.Call)]
+        leaves={c.rsplit('.',1)[-1] for c in calls}
+        returns=[n.value for n in ast.walk(node) if isinstance(n,ast.Return) and n.value is not None]
+        constants={n.value for n in ast.walk(node) if isinstance(n,ast.Constant) and type(n.value) is str}
+        digest=bool(returns) and all(isinstance(n,ast.Call) and isinstance(n.func,ast.Attribute) and n.func.attr in {'hexdigest','digest'} for n in returns)
+        if digest and any(c.startswith('hashlib.') for c in calls) and not leaves&dangerous and leaves<=digest_calls:
+            digest_helpers.add(key)
+            if leaves&{'read_bytes','read_text'}:evidence_helpers.add(key)
+        if digest and 'sqlite3.connect' in calls and any('mode=ro' in c for c in constants) and any('query_only=ON' in c for c in constants) and not leaves&dangerous and 'iterdump' in leaves and leaves<=digest_calls|{'connect','execute','iterdump','as_uri','update','encode'}:
+            evidence_helpers.add(key)
+        # A denial predicate must return only booleans, use read-only open/close,
+        # and must neither read contents nor invoke an execution/config mechanism.
+        attrs={n.attr for n in ast.walk(node) if isinstance(n,ast.Attribute)}
+        if returns and all(isinstance(n,ast.Constant) and type(n.value) is bool for n in returns) and {'os.open','os.close'}<=set(calls) and 'O_RDONLY' in attrs and not attrs&{'O_WRONLY','O_RDWR','O_CREAT','O_TRUNC'} and not leaves&({'read','read_bytes','read_text'}|dangerous) and set(calls)<={'os.open','os.close'}:
+            evidence_helpers.add(key);denial_helpers.add(key)
+    unverified_digests=set()
+    for key,(_,node) in functions.items():
+        returns=[n.value for n in ast.walk(node) if isinstance(n,ast.Return) and n.value is not None]
+        if returns and all(isinstance(n,ast.Call) and isinstance(n.func,ast.Attribute) and n.func.attr in {'hexdigest','digest'} for n in returns) and key not in digest_helpers|evidence_helpers:unverified_digests.add(key)
+    refs=[];ambiguous=[];summaries={key:set() for key in functions}
+    reads={'read_bytes','read_text','read','readlines','read_csv','read_json','read_sql','loadtxt'}
+    metadata={'exists','is_file','is_dir','is_symlink','stat','lstat','statvfs','access'}
+    execution={'run','Popen','check_output','check_call','execv','execve','execl','run_path','run_module','import_module','SourceFileLoader','ExtensionFileLoader','spec_from_file_location'}
+    core={'dev_agent/cli.py','dev_agent/discovery.py','dev_agent/scheduler.py','ops/discovery/observer.py','ops/discovery/upgrade.py'}
+    def active(source,node):
+        if source=='dev_agent/discovery.py':return node.name in {'git','score','scout','architecture_signals'}
+        return True
+    def evaluate(node,env):
+        if node is None:return frozenset()
+        if isinstance(node,ast.Constant) and type(node.value) is str:return frozenset([string(node.value)])
+        if isinstance(node,ast.Name):return env.get(node.id,frozenset())
+        if isinstance(node,(ast.List,ast.Tuple,ast.Set)):
+            return bounded(v for n in node.elts for v in evaluate(n,env))
+        if isinstance(node,ast.Attribute):
+            name=qname(node)
+            if name.endswith('.ROOT'):return frozenset([path('repo')])
+            values=evaluate(node.value,env)
+            if node.attr=='parent':return bounded(path(v[1],v[2].rsplit('/',1)[0] if '/' in v[2] else '',v[3]) for v in values if v[0]=='path')
+            if node.attr=='name':return bounded(string(v[2].rsplit('/',1)[-1]) for v in values if v[0]=='path' and not v[3])
+            return frozenset()
+        if isinstance(node,ast.BinOp) and isinstance(node.op,(ast.Div,ast.Add)):
+            left=evaluate(node.left,env);right=evaluate(node.right,env);out=[]
+            if isinstance(node.op,ast.Add) and all(v[0]=='string' for v in left|right):
+                return bounded(string(a[1]+b[1]) for a in left for b in right)
+            for base in as_paths(left):
+                if not right:out.append(compose(base,'<dynamic>',True))
+                for v in right:
+                    if v[0]=='string':out.append(base if isinstance(node.op,ast.Add) and v[1].startswith(('?','&')) else compose(base,v[1]))
+                    else:out.append(compose(base,'<dynamic>',True))
+            return bounded(out)
+        if isinstance(node,ast.Subscript):return bounded(v for v in evaluate(node.value,env) if v[0]=='taint')
+        if isinstance(node,ast.JoinedStr):return frozenset([path('unknown','',True)])
+        if isinstance(node,ast.Call):
+            name=qname(node.func);leaf=name.rsplit('.',1)[-1]
+            if leaf=='Path':
+                if not node.args:return frozenset([path('repo')])
+                value=as_paths(evaluate(node.args[0],env)) or frozenset([path('unknown','',True)])
+                for arg in node.args[1:]:
+                    values=evaluate(arg,env)
+                    value=bounded(compose(base,v[1]) if v[0]=='string' else compose(base,'<dynamic>',True) for base in value for v in (values or {('unknown',)}))
+                return value
+            if leaf in {'str','resolve','absolute','as_uri','as_posix'}:
+                return evaluate(node.args[0],env) if node.args else evaluate(node.func.value,env) if isinstance(node.func,ast.Attribute) else frozenset()
+            if isinstance(node.func,ast.Attribute) and leaf=='joinpath':
+                value=as_paths(evaluate(node.func.value,env))
+                for arg in node.args:
+                    values=evaluate(arg,env);value=bounded(compose(b,v[1]) if v[0]=='string' else compose(b,'<dynamic>',True) for b in value for v in (values or {('unknown',)}))
+                return value
+            if isinstance(node.func,ast.Attribute) and leaf in {'with_name','with_suffix'}:
+                bases=as_paths(evaluate(node.func.value,env));values=evaluate(node.args[0],env) if node.args else frozenset();out=[]
+                for b in bases:
+                    for v in values:
+                        if v[0]!='string':continue
+                        parent=b[2].rsplit('/',1)[0] if '/' in b[2] else ''
+                        leafname=v[1] if leaf=='with_name' else b[2].rsplit('/',1)[-1].rsplit('.',1)[0]+v[1]
+                        out.append(path(b[1],'/'.join(filter(None,(parent,leafname))),b[3]))
+                return bounded(out)
+            if leaf in {'tuple','list','set','sorted','iter','enumerate','zip'}:return bounded(v for arg in node.args for v in evaluate(arg,env))
+            if isinstance(node.func,ast.Attribute) and leaf in {'read_bytes','read_text','read','readlines'}:
+                return bounded(('taint',*v[1:]) for v in as_paths(evaluate(node.func.value,env)))
+            if leaf in {name.rsplit('.',1)[-1] for name in evidence_helpers}:
+                return bounded(('taint',*v[1:]) for arg in node.args for v in as_paths(evaluate(arg,env)))
+            return bounded(v for arg in node.args for v in evaluate(arg,env) if v[0]=='taint')
+        return frozenset()
+    def bind(target,values,env):
+        if isinstance(target,ast.Name):env[target.id]=bounded(env.get(target.id,frozenset())|values)
+        elif isinstance(target,(ast.Tuple,ast.List)):
+            for child in target.elts:bind(child,values,env)
+    for source,tree in trees.items():
+        env={'root':frozenset([path('repo')])}
+        assigned={t.id for n in tree.body if isinstance(n,(ast.Assign,ast.AnnAssign)) for t in (n.targets if isinstance(n,ast.Assign) else [n.target]) if isinstance(t,ast.Name)}
+        if 'ROOT' not in assigned:env['ROOT']=frozenset([path('repo')])
+        for _ in range(4):
+            for n in tree.body:
+                if isinstance(n,(ast.Assign,ast.AnnAssign)):
+                    for target in n.targets if isinstance(n,ast.Assign) else [n.target]:bind(target,evaluate(n.value,env),env)
+        globals_by_source[source]=env
+    def add(values,usage,source,node,operation,key):
+        for v in as_paths(values):
+            if v[1].startswith('param:'):
+                summaries[key].add((v[1][6:],v[2],v[3],usage,operation));continue
+            if v[1]=='external':continue
+            if v[3]:
+                # Git interpretation and exact reviewed manifests are independently
+                # verified; dynamic evidence observations do not select source.
+                if usage=='SOURCE_OR_EXECUTION_AUTHORITY' and (source in core or key=='<module>') and not v[2].startswith('.git/'):
+                    ambiguous.append(dict(source=source,line=node.lineno,operation=operation,prefix=v[2],reason='UNRESOLVED_AUTHORITY_PATH'))
+                elif usage=='SOURCE_OR_EXECUTION_AUTHORITY' and v[1]=='unknown' and key in summaries:summaries[key].add((None,v[2],True,usage,operation))
+                continue
+            if not v[2]:continue
+            refs.append(dict(path=v[2],usage=usage,source=source,line=node.lineno,operation=operation,reads_contents=operation not in metadata|{'denied','permission_probe'}))
+    modes=set(cli_modes)
+    observer_tree=trees.get('ops/discovery/observer.py')
+    if observer_tree:
+        for function in observer_tree.body:
+            if isinstance(function,ast.FunctionDef) and function.name=='scout':
+                for call in ast.walk(function):
+                    if isinstance(call,ast.Call) and qname(call.func)=='main':
+                        if call.args and isinstance(call.args[0],ast.List) and call.args[0].elts and isinstance(call.args[0].elts[0],ast.Constant) and type(call.args[0].elts[0].value) is str:modes.add(call.args[0].elts[0].value)
+                        else:ambiguous.append(dict(source='ops/discovery/observer.py',line=call.lineno,operation='main',prefix='',reason='UNRESOLVED_CLI_ENTRY_MODE'))
+    def branch_truth(node):
+        if not modes or not isinstance(node,ast.Compare) or len(node.ops)!=1 or qname(node.left)!='args.command':return None
+        right=node.comparators[0]
+        if isinstance(right,ast.Constant) and isinstance(node.ops[0],(ast.Eq,ast.NotEq)):
+            results={m==right.value for m in modes}
+            if isinstance(node.ops[0],ast.NotEq):results={not v for v in results}
+        elif isinstance(right,(ast.Tuple,ast.List,ast.Set)) and isinstance(node.ops[0],(ast.In,ast.NotIn)) and all(isinstance(v,ast.Constant) for v in right.elts):
+            results={m in {v.value for v in right.elts} for m in modes}
+            if isinstance(node.ops[0],ast.NotIn):results={not v for v in results}
+        else:return None
+        return next(iter(results)) if len(results)==1 else None
+    def walk(node,dispatch=False):
+        yield node
+        if isinstance(node,(ast.FunctionDef,ast.AsyncFunctionDef,ast.ClassDef)):return
+        if dispatch and isinstance(node,ast.If):
+            yield from walk(node.test,dispatch)
+            truth=branch_truth(node.test)
+            for child in ([] if truth is False else node.body)+([] if truth is True else node.orelse):yield from walk(child,dispatch)
+            return
+        for child in ast.iter_child_nodes(node):yield from walk(child,dispatch)
+    def process(source,owner,body,env,key):
+        # Bind constant joins and bounded literal loops to a fixed point.
+        nodes=[n for statement in body for n in walk(statement,source=='dev_agent/cli.py' and owner is not None and owner.name=='main')]
+        for _ in range(6):
+            previous=dict(env)
+            for n in nodes:
+                if isinstance(n,(ast.Assign,ast.AnnAssign)):
+                    for target in n.targets if isinstance(n,ast.Assign) else [n.target]:bind(target,evaluate(n.value,env),env)
+                if isinstance(n,(ast.For,ast.comprehension)):bind(n.target,evaluate(n.iter,env),env)
+            if env==previous:break
+        parents={child:n for n in nodes for child in ast.iter_child_nodes(n)}
+        for n in nodes:
+            if not isinstance(n,ast.Call):continue
+            name=qname(n.func);leaf=name.rsplit('.',1)[-1];qualified=lookup(source,n.func)
+            args=n.args
+            if qualified in evidence_helpers:
+                if args:add(evaluate(args[0],env),'PROTECTED_RUNTIME_EVIDENCE',source,n,'permission_probe' if qualified in denial_helpers else 'readonly_hash',key)
+                continue
+            if leaf in reads and isinstance(n.func,ast.Attribute):
+                parent=parents.get(n);hashed=key not in unverified_digests and (key in evidence_helpers or isinstance(parent,ast.Call) and (lookup(source,parent.func) in digest_helpers or qname(parent.func).startswith('hashlib.')))
+                add(evaluate(n.func.value,env),'PROTECTED_RUNTIME_EVIDENCE' if hashed else 'SOURCE_OR_EXECUTION_AUTHORITY',source,n,'readonly_hash' if hashed else leaf,key)
+            elif leaf in metadata:
+                value=evaluate(n.func.value,env) if isinstance(n.func,ast.Attribute) and not name.startswith('os.') else evaluate(args[0],env) if args else frozenset()
+                add(value,'PROTECTED_RUNTIME_EVIDENCE',source,n,leaf,key)
+            elif name=='os.open' and args:
+                add(evaluate(args[0],env),'PROTECTED_RUNTIME_EVIDENCE' if key in evidence_helpers else 'SOURCE_OR_EXECUTION_AUTHORITY',source,n,'permission_probe' if key in evidence_helpers else 'open_descriptor',key)
+            elif leaf=='open' and (args or isinstance(n.func,ast.Attribute)) and not name.startswith(('os.','urllib.')):
+                add(evaluate(n.func.value,env) if isinstance(n.func,ast.Attribute) and name not in {'io.open'} else evaluate(args[0],env),'SOURCE_OR_EXECUTION_AUTHORITY',source,n,'open',key)
+            elif name=='sqlite3.connect' and args:
+                add(evaluate(args[0],env),'PROTECTED_RUNTIME_EVIDENCE' if key in evidence_helpers else 'SOURCE_OR_EXECUTION_AUTHORITY',source,n,'database_hash' if key in evidence_helpers else 'database_input',key)
+            elif leaf in execution:
+                for arg in args:add(evaluate(arg,env),'SOURCE_OR_EXECUTION_AUTHORITY',source,n,'execution_target',key)
+            if qualified in summaries:
+                _,callee=functions[qualified];parameters=[a.arg for a in callee.args.args]
+                for param,suffix,dynamic,usage,operation in list(summaries[qualified]):
+                    if param is None:
+                        add(frozenset([path('unknown',suffix,True)]),usage,source,n,operation,key);continue
+                    if param not in parameters or parameters.index(param)>=len(args):continue
+                    values=as_paths(evaluate(args[parameters.index(param)],env))
+                    add(bounded(compose(v,suffix,dynamic) for v in values),usage,source,n,operation,key)
+    # Parameters carry effects to exact call-site paths; no parameter name is a
+    # filename exception. Unknown rooted authority joins fail closed.
+    for _ in range(6):
+        before={k:frozenset(v) for k,v in summaries.items()}
+        for key,(source,node) in functions.items():
+            if source=='ops/discovery/influence.py' or not active(source,node):continue
+            env=dict(globals_by_source[source])
+            for arg in node.args.args:
+                env[arg.arg]=frozenset([path('repo') if arg.arg in {'root','ROOT'} and source in core else path('param:'+arg.arg)])
+            process(source,node,node.body,env,key)
+        if before=={k:frozenset(v) for k,v in summaries.items()}:break
+    else:raise ValueError('reviewed path summary convergence bound exceeded')
+    for source,tree in trees.items():
+        if source=='ops/discovery/influence.py':continue
+        process(source,None,[n for n in tree.body if not isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef,ast.ClassDef))],dict(globals_by_source[source]),'<module>')
+    unique={json.dumps(r,sort_keys=True):r for r in refs}
+    uncertain={json.dumps(r,sort_keys=True):r for r in ambiguous}
+    return dict(references=sorted(unique.values(),key=lambda r:(r['path'],r['source'],r['line'],r['usage'])),
+                ambiguous=sorted(uncertain.values(),key=lambda r:(r['source'],r['line'],r['operation'])),
+                evidence_helpers=sorted(evidence_helpers),literal_usage='POLICY_LITERAL_ONLY unless an exact path reaches a consuming operation')
+
+
+def evidence_sandbox(root,service,observer_unit):
+    def properties(raw):
+        values={}
+        for line in raw.decode('utf-8','replace').splitlines():
+            if '=' in line and not line.startswith('#'):
+                k,v=line.split('=',1);values.setdefault(k,[]).append(v.replace('%h','/home/optiplex'))
+        return values
+    values=properties(service);obs=properties(observer_unit);root=str(root)
+    safe=(values.get('ProtectSystem')==['strict'] and values.get('ProtectHome')==['read-only']
+          and values.get('NoNewPrivileges') in (['true'],['yes'])
+          and not any(p.lstrip('-+').startswith(root) for v in values.get('ReadWritePaths',[]) for p in v.split()))
+    def denied(config):return sorted({p.lstrip('-') for value in config.get('InaccessiblePaths',[]) for p in value.split()})
+    return dict(repo_read_only=safe,scout_denied=denied(values),observer_denied=denied(obs))
+
+
+def evidence_proof(root,name,uses,sandbox):
+    full=str(root/name)
+    under=lambda p:full==p or full.startswith(p+'/')
+    source=any(r['usage']=='SOURCE_OR_EXECUTION_AUTHORITY' for r in uses)
+    denial=any(r['operation'] in {'denied','permission_probe'} for r in uses)
+    content=any(r['reads_contents'] for r in uses)
+    scout_denied=any(under(p) for p in sandbox['scout_denied'])
+    observer_denied=any(under(p) for p in sandbox['observer_denied'])
+    allowed=not source and sandbox['repo_read_only'] and (not denial or scout_denied) and not (content and observer_denied)
+    return dict(verified=allowed,read_only_evidence=not source,scout_not_writable=sandbox['repo_read_only'],
+                scout_denied=scout_denied,denial_probe_only=denial and not content,
+                observer_denied=observer_denied,contents_observed=content)
+
 def audit(root,head,*,tracked=None,untracked=None):
     root=Path(root)
     if not re.fullmatch('[a-f0-9]{40}',str(head)) or root.is_symlink() or root.resolve(strict=True)!=root:raise ValueError('exact reviewed head and nonsymlinked absolute checkout required')
@@ -228,6 +502,19 @@ def audit(root,head,*,tracked=None,untracked=None):
     reachable_roots={m.split('.')[0] for m in graph['modules']}|set(MIN_NAMESPACES)
     authority=tracked_discovery_contract(graph)
     unit_refs,ambiguous_units=execution_references(root,head,tracked)
+    cli_modes=set()
+    for unit_name in tracked:
+        if unit_name.endswith('.service'):
+            unit_source=git(root,'show',head+':'+unit_name).decode('utf-8','replace')
+            cli_modes.update(re.findall(r'-m\s+dev_agent\.cli\s+([a-z-]+)',unit_source))
+    # Only discovery's reviewed fixed modes enter this recovery analysis; an
+    # installed supervised loop is separately forbidden by activation boundaries.
+    cli_modes&={'scout','scheduler-status'}
+    reference_model=path_references(root,{name:graph['sources'][name] for name in graph['sources'] if name[:-3].replace('/','.').removesuffix('.__init__') in graph['modules']},cli_modes=cli_modes)
+    reference_map={}
+    for item in reference_model['references']:reference_map.setdefault(item['path'],[]).append(item)
+    sandbox=evidence_sandbox(root,git(root,'show',head+':systemd/development-scout.service') if 'systemd/development-scout.service' in tracked else b'',
+        git(root,'show',head+':ops/discovery/investment-discovery-observer.service') if 'ops/discovery/investment-discovery-observer.service' in tracked else b'')
     trusted={root/name for name in tracked}
     trusted.update({Path('/opt/investment-discovery-observer/observer.py'),Path('/etc/investment-discovery-observer'),
                     Path('/etc/systemd/system/investment-discovery-observer.service'),
@@ -250,7 +537,10 @@ def audit(root,head,*,tracked=None,untracked=None):
     for name in sorted(entries):
         p=root/name;parts=Path(name).parts;reason=None;category=None
         module=import_name(name);native=any(p.name.endswith(s) for s in EXTENSION_SUFFIXES) or p.suffix in {'.so','.pyd','.dll','.dylib'}
-        reference=name in graph['literals'] or str(root/name) in graph['literals']
+        uses=reference_map.get(name,[])
+        reference=any(r['usage']=='SOURCE_OR_EXECUTION_AUTHORITY' for r in uses)
+        evidence=bool(uses) and not reference
+        proof=evidence_proof(root,name,uses,sandbox) if evidence else None
         executed=bool(unit_refs.get(name))
         reachable=bool(module and (module.split('.')[0] in imports or module.split('.')[0] in reachable_roots))
         if name in tracked:reason='TRACKED_COLLISION'
@@ -269,7 +559,7 @@ def audit(root,head,*,tracked=None,untracked=None):
         # .pyc outside __pycache__ remains executable source and is rejected.
         cache='__pycache__' in parts and p.suffix=='.pyc'
         if not reason and executed and name not in venv_interpreters:reason='SYSTEMD_EXECUTION'
-        elif not reason and reference and code_shape(p):reason='REVIEWED_SOURCE_REFERENCE'
+        elif not reason and reference:reason='REVIEWED_SOURCE_REFERENCE'
         elif not reason and cache:category='non_authoritative_cache'
         elif not reason and parts[0] in runtime_roots and len(parts)==2 and p.name.startswith('__init__.'):reason='RUNTIME_PACKAGE_INJECTION'
         elif not reason and parts[0] in runtime_roots:category='non_authoritative_runtime'
@@ -281,6 +571,8 @@ def audit(root,head,*,tracked=None,untracked=None):
         elif not reason and module and p.name.startswith('__init__.'):reason='PACKAGE_INITIALIZER'
         elif not reason and native:reason='NATIVE_CODE_REVIEW_REQUIRED'
         elif not reason and reachable:reason='IMPORT_SHADOW'
+        elif not reason and evidence and not proof['verified']:reason='PROTECTED_EVIDENCE_SANDBOX_UNPROVEN'
+        elif not reason and evidence:category='protected_runtime_evidence'
         elif not reason and parts[0] in {'config','systemd','.github'}:reason='REVIEWED_CONFIGURATION_NAMESPACE'
         elif not reason and parts[0]=='.claude':
             if name=='.claude/settings.local.json' and info and stat.S_ISREG(info.st_mode) and not info.st_mode&0o111:
@@ -296,19 +588,21 @@ def audit(root,head,*,tracked=None,untracked=None):
         elif not reason and len(parts)>1:
             if parts[0] in roots and p.suffix in {'.json','.csv','.txt','.md'} and authority:category='non_authoritative_package_data'
             else:reason='UNCLASSIFIED_NAMESPACE'
-        elif not reason and p.name in graph['root_configuration_names']:reason='REVIEWED_CONFIGURATION_INFLUENCE'
         elif not reason and p.suffix in {'.md','.html','.log','.txt'}:category='non_authoritative_root_document'
         elif not reason and (p.suffix in {'.json','.db','.sqlite3','.csv','.numbers'} or p.name in {'.env','.DS_Store'}):category='non_authoritative_root_data'
         elif not reason:reason='UNCLASSIFIED_ROOT_CONFIGURATION'
         if category not in {'non_authoritative_cache','non_authoritative_runtime','non_authoritative_tool_cache'}:
             dispositions.append(dict(path=name,classification=reason or category,python_importable=module is not None,
                 import_name=module,reachable_import=reachable,reviewed_unit_execution=unit_refs.get(name,[]),
-                reviewed_source_reference=reference,audit_policy_name_reference=name in graph['policy_literals'],live_discovery_reads_untracked_source=not authority,
+                reviewed_source_reference=reference,exact_path_references=uses,evidence_proof=proof,live_discovery_reads_untracked_source=not authority,
                 git_interpretation=reason in {'GIT_INFLUENCE','EXECUTION_CONFIGURATION'} and p.name.startswith('.git'),
                 python_startup_or_import=bool(reachable or native or p.suffix=='.pth' or p.name in {'sitecustomize.py','usercustomize.py'} or module and p.name.startswith('__init__.'))))
         if reason:
             rejected[reason]+=1;details.append(dict(path=name,reason=reason))
         else:allowed[category]+=1
+    if reference_model['ambiguous']:
+        rejected['AMBIGUOUS_REVIEWED_PATH']+=len(reference_model['ambiguous'])
+        details.extend(dict(path=r['prefix'],reason='AMBIGUOUS_REVIEWED_PATH',source=r['source'],line=r['line']) for r in reference_model['ambiguous'])
     if ambiguous_units:
         rejected['AMBIGUOUS_UNIT_EXECUTION']+=len(ambiguous_units)
         details.extend(dict(path=x,reason='AMBIGUOUS_UNIT_EXECUTION') for x in ambiguous_units)
@@ -318,10 +612,10 @@ def audit(root,head,*,tracked=None,untracked=None):
     result.update(untracked_source_influence='FAIL' if rejected else 'PASS',scanned=len(entries),visible_untracked=len(visible),
                   allowed_categories=dict(sorted(allowed.items())),rejected_categories=dict(sorted(rejected.items())),
                   rejected_paths=details,trusted_namespaces=sorted(roots),trusted_module_count=len(graph['modules']),
-                  trusted_modules=graph['modules'],runtime_roots=sorted(runtime_roots),cache_roots=sorted(cache_roots),root_configuration_names=graph['root_configuration_names'],
+                  trusted_modules=graph['modules'],runtime_roots=sorted(runtime_roots),cache_roots=sorted(cache_roots),
                   reviewed_module_graph_sha256=hashlib.sha256(json.dumps([(m,hashlib.sha256(graph['sources'].get(m.replace('.','/')+'.py',graph['sources'].get(m.replace('.','/')+'/__init__.py',b''))).hexdigest()) for m in graph['modules']]).encode()).hexdigest(),
                   discovery_source_authority='reviewed-git-source-1' if authority else 'UNPROVEN',
-                  path_dispositions=dispositions,git_boundary='PASS',unit_execution_coverage='reviewed Git and installed system/user service/drop-in commands')
+                  path_dispositions=dispositions,reviewed_path_references=reference_model,sandbox_evidence=sandbox,git_boundary='PASS',unit_execution_coverage='reviewed Git and installed system/user service/drop-in commands')
     return result
 
 
