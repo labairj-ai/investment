@@ -234,10 +234,21 @@ def test_noncode_package_data_requires_no_reviewed_reader(repo,monkeypatch):
     assert a.audit(root,head)['untracked_source_influence']=='FAIL'
 
 
-def test_dynamic_unit_execution_fails_closed(repo):
+@pytest.mark.parametrize("shell",["/bin/sh","/usr/bin/env bash"])
+def test_dynamic_unit_execution_fails_closed(repo,shell):
     root,head=repo
-    (root/'systemd/tool.service').write_text('[Service]\nWorkingDirectory='+str(root)+'\nExecStart=/bin/sh -c "python3 $SCRIPT"\n')
+    (root/'systemd/tool.service').write_text('[Service]\nWorkingDirectory='+str(root)+'\nExecStart='+shell+' -c "python3 $SCRIPT"\n')
     subprocess.run(['git','-C',str(root),'add','.'],check=True)
     subprocess.run(['git','-C',str(root),'-c','user.name=fixture','-c','user.email=fixture@invalid','commit','-qm','ambiguous unit'],check=True)
     head=subprocess.check_output(['git','-C',str(root),'rev-parse','HEAD'],text=True).strip()
     assert a.audit(root,head)['rejected_categories']=={'AMBIGUOUS_UNIT_EXECUTION':1}
+
+
+def test_unit_module_execution_is_not_unreachable_legacy(repo,monkeypatch):
+    root,head=repo;monkeypatch.setattr(a,'tracked_discovery_contract',lambda graph:True)
+    (root/'systemd/tool.service').write_text('[Service]\nExecStart=/usr/bin/python3 -m legacy_module\n')
+    subprocess.run(['git','-C',str(root),'add','.'],check=True)
+    subprocess.run(['git','-C',str(root),'-c','user.name=fixture','-c','user.email=fixture@invalid','commit','-qm','module unit'],check=True)
+    head=subprocess.check_output(['git','-C',str(root),'rev-parse','HEAD'],text=True).strip()
+    add(root,'legacy_module.py',b'pass')
+    assert {'path':'legacy_module.py','reason':'SYSTEMD_EXECUTION'} in a.audit(root,head)['rejected_paths']

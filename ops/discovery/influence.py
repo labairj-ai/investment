@@ -188,8 +188,16 @@ def execution_references(root,head,tracked):
             try:tokens=shlex.split(line.split('=',1)[1])
             except ValueError:ambiguous.append(label);continue
             if any(Path(token).name in {'claude','claude-code','codex'} for token in tokens):ambiguous.append(label+':DEVELOPER_TOOL_EXECUTION')
-            if tokens and Path(tokens[0]).name in {'sh','bash','zsh'} and any(t in {'-c','-lc'} for t in tokens):
+            if any(Path(token).name in {'sh','bash','zsh'} for token in tokens) and any(t in {'-c','-lc'} for t in tokens):
                 if str(root) in line or 'WorkingDirectory='+str(root) in text:ambiguous.append(label+':DYNAMIC_SHELL_EXECUTION')
+            python=any(re.fullmatch(r'python(?:3(?:\.\d+)?)?',Path(token).name) for token in tokens)
+            if python and '-c' in tokens and (str(root) in line or 'WorkingDirectory='+str(root) in text):ambiguous.append(label+':DYNAMIC_PYTHON_EXECUTION')
+            if python and '-m' in tokens:
+                i=tokens.index('-m')
+                if i+1==len(tokens) or not all(p.isidentifier() for p in tokens[i+1].split('.')):ambiguous.append(label+':DYNAMIC_MODULE_EXECUTION')
+                else:
+                    module=tokens[i+1].replace('.','/')
+                    for rel in (module+'.py',module+'/__init__.py',module+'/__main__.py'):refs.setdefault(rel,[]).append(label)
             for token in tokens:
                 token=token.replace('%h','/home/optiplex')
                 if token.startswith(str(root)+'/'):rel=token[len(str(root))+1:]
