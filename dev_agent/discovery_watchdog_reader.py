@@ -25,7 +25,7 @@ PROC=Path('/proc')
 NAMES=('development-scout','development-signal-collector','development-scheduler-observer','development-supervised-loop')
 USER_UNITS=frozenset(n+s for n in NAMES for s in ('.service','.timer'))
 SYSTEM_UNITS=frozenset(('macro-health-watchdog.timer','macro-health-watchdog.service','investment-discovery-observer.service'))
-FIELDS=('LoadState','UnitFileState','ActiveState','SubState','FragmentPath','DropInPaths','NeedDaemonReload','Result','InvocationID','MainPID','NextElapseUSecRealtime','LastTriggerUSec','LastTriggerUSecMonotonic','TimersCalendar','RandomizedDelayUSec','AccuracyUSec')
+FIELDS=('LoadState','UnitFileState','ActiveState','SubState','FragmentPath','DropInPaths','NeedDaemonReload','Result','InvocationID','MainPID','NextElapseUSecRealtime','LastTriggerUSec','LastTriggerUSecMonotonic','TimersCalendar','Persistent','RandomizedDelayUSec','AccuracyUSec')
 CODE_FILES=('operational_watchdog.py','scripts/macro_health_watchdog.py','dev_agent/discovery_watchdog.py','dev_agent/discovery_watchdog_reader.py','dev_agent/watchdog_gate.py','config/development_watchdog.json')
 ENV=dict(PATH='/usr/bin:/bin',HOME='/nonexistent',LANG='C',TZ='UTC',GIT_CONFIG_NOSYSTEM='1',GIT_CONFIG_GLOBAL='/dev/null',GIT_NO_REPLACE_OBJECTS='1',GIT_OPTIONAL_LOCKS='0',GIT_TERMINAL_PROMPT='0')
 

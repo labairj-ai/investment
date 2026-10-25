@@ -225,6 +225,7 @@ def test_systemd_adapter_only_fixed_read_commands(monkeypatch):
     for bad in ['development-scout.service; restart','investment.service','start','../../service']:
         with pytest.raises(ValueError):api.show(bad)
     assert len(calls)==1 and calls[0][1:3]==['--user','show']
+    assert 'Persistent' in calls[0][-1].split('=',1)[1].split(',')
     assert not any(hasattr(api,n) for n in ['start','restart','enable','disable','repair','run'])
 
 
