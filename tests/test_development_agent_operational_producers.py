@@ -212,11 +212,14 @@ def test_standalone_harness_cannot_overwrite_receipt(tmp_path,monkeypatch):
 
 
 def test_fixed_discovery_launcher_has_no_command_forwarding(monkeypatch):
+    monkeypatch.setattr(observer.sys,'pycache_prefix',observer.sys.pycache_prefix)
+    monkeypatch.setattr(observer.sys,'dont_write_bytecode',observer.sys.dont_write_bytecode)
     from dev_agent import cli
     monkeypatch.setattr(observer.pwd,'getpwnam',lambda n:SimpleNamespace(pw_uid=os.getuid()))
     calls=[];monkeypatch.setattr(cli,'main',lambda args:calls.append(args) or 0)
     assert observer.scout()==0
     assert calls==[['scout','--root','/home/optiplex/investment']]
+    assert observer.sys.dont_write_bytecode and observer.sys.pycache_prefix=='/run/investment-discovery-observer/reviewed-pycache'
 
 
 def test_observer_root_bootstrap_has_no_development_authority(monkeypatch):

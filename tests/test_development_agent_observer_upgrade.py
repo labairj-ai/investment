@@ -11,10 +11,12 @@ from test_development_agent_observer_refresh import host
 @pytest.fixture
 def upgrade_host(host,monkeypatch):
     h=host
+    monkeypatch.setattr(u,'isolated',lambda:True)
+    monkeypatch.setattr(u,'audit',lambda *a,**k:dict(untracked_source_influence='PASS'))
     monkeypatch.setattr(u.time,'time',lambda:1792929600.0)
     h.git('branch','-M','main')
     for name in u.CHANGED:(h.ROOT/name).write_text('new reviewed '+name+'\n')
-    (h.ROOT/r.IDENTITIES[3]).write_text('OnCalendar=*-*-* 08:15:00 America/New_York\nOnCalendar=2026-10-25 10:15:00 America/New_York\n')
+    (h.ROOT/r.IDENTITIES[3]).write_text('OnCalendar=*-*-* 08:15:00 America/New_York\nOnCalendar=2026-10-25 14:30:00 America/New_York\n')
     h.git('add','.');h.git('commit','-qm','reviewed boundary');h.head=h.git('rev-parse','HEAD');h.git('update-ref','refs/remotes/origin/main',h.head)
     monkeypatch.setattr(u,'OLD_HEAD',h.old)
     monkeypatch.setattr(u,'OLD_EXECUTABLE',h.old_config['observer_digest'])
@@ -51,7 +53,7 @@ def test_plan_only_preserves_all_files(upgrade_host):
     assert not list(h.CONFIG.parent.glob('observer-upgrade*'))
 
 
-@pytest.mark.parametrize('attack',['old_head','old_digest','old_unit','dirty','wrong_checkout','not_origin_main','untracked','accepted_history'])
+@pytest.mark.parametrize('attack',['old_head','old_digest','old_unit','dirty','wrong_checkout','not_origin_main','accepted_history'])
 def test_bad_upgrade_source_fails_before_stop(upgrade_host,monkeypatch,attack):
     h=upgrade_host
     if attack=='old_head':monkeypatch.setattr(u,'OLD_HEAD','0'*40)
@@ -60,7 +62,6 @@ def test_bad_upgrade_source_fails_before_stop(upgrade_host,monkeypatch,attack):
     if attack=='dirty':(h.ROOT/'docs/help.md').write_text('dirty')
     if attack=='wrong_checkout':h.git('checkout','--detach','-q')
     if attack=='not_origin_main':h.git('update-ref','refs/remotes/origin/main',h.old)
-    if attack=='untracked':(h.ROOT/'untracked').write_text('extra')
     if attack=='accepted_history':(h.STATE/'discovery.json').write_text('{"runs":[{"invocation":"actual"}]}')
     with pytest.raises(ValueError):h.upgrade(apply=True)
     assert h.starts==h.stops==h.reloads==0
@@ -119,12 +120,12 @@ def test_config_only_refresh_still_refuses_boundary_upgrade(upgrade_host):
 
 @pytest.mark.parametrize('attack',['extra','missing','wrong_day','late'])
 def test_recovery_calendar_is_exact_and_future(monkeypatch,attack):
-    data=b'OnCalendar=*-*-* 08:15:00 America/New_York\nOnCalendar=2026-10-25 10:15:00 America/New_York\n'
+    data=b'OnCalendar=*-*-* 08:15:00 America/New_York\nOnCalendar=2026-10-25 14:30:00 America/New_York\n'
     monkeypatch.setattr(u.time,'time',lambda:1792929600.0)
     if attack=='extra':data+=b'OnCalendar=2026-10-25 15:00:00 America/New_York\n'
     if attack=='missing':data=data.splitlines()[0]+b'\n'
     if attack=='wrong_day':data=data.replace(b'2026-10-25',b'2026-10-26')
-    if attack=='late':monkeypatch.setattr(u.time,'time',lambda:1792944900.0)
+    if attack=='late':monkeypatch.setattr(u.time,'time',lambda:u.datetime(2026,10,25,14,30,tzinfo=u.ZoneInfo('America/New_York')).timestamp()-599)
     with pytest.raises(ValueError):u.recovery_schedule(data)
 
 
@@ -138,3 +139,21 @@ def test_financial_change_during_upgrade_fails_closed(upgrade_host,monkeypatch):
     monkeypatch.setattr(u,'reload_scout',reload)
     result=h.upgrade(apply=True)
     assert not result['ready'] and result['observer_stopped']
+
+
+def test_allowed_untracked_runtime_does_not_fail_tracked_cleanliness(upgrade_host):
+    h=upgrade_host;(h.ROOT/'out/runtime.json').write_text('{}')
+    assert h.upgrade()['status']=='PLAN_ONLY'
+
+
+def test_influence_failure_blocks_upgrade_before_stop(upgrade_host,monkeypatch):
+    h=upgrade_host
+    monkeypatch.setattr(u,'audit',lambda *a,**k:dict(untracked_source_influence='FAIL'))
+    with pytest.raises(ValueError,match='influence audit failed'):h.upgrade(apply=True)
+    assert h.stops==h.starts==0
+
+
+def test_nonisolated_upgrade_rejected_before_mutation(upgrade_host,monkeypatch):
+    h=upgrade_host;monkeypatch.setattr(u,'isolated',lambda:False)
+    with pytest.raises(ValueError,match='isolated system Python'):h.upgrade(apply=True)
+    assert h.stops==h.starts==0

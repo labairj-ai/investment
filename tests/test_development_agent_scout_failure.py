@@ -126,10 +126,27 @@ def test_normal_and_exactly_one_recovery_schedule_in_reviewed_source():
     timer=Path('systemd/development-scout.timer').read_text()
     assert [l for l in timer.splitlines() if l.startswith('OnCalendar=')]==[
         'OnCalendar=*-*-* 08:15:00 America/New_York',
-        'OnCalendar=2026-10-25 10:15:00 America/New_York']
+        'OnCalendar=2026-10-25 14:30:00 America/New_York']
     assert 'RefuseManualStart=yes' in Path('systemd/development-scout.service').read_text()
 
 
 def test_first_nonzero_activation_is_accepted_in_its_clock_domain(system):
     system.fired=1
     assert system.run()['timer_fire'].endswith(':1')
+
+
+@pytest.mark.parametrize('raw,recent,expected',[
+    ('t 6433648893213\n',True,'systemd-observed-timer'),
+    ('t 6433648893213\n',False,'operator'),
+    (LIVE,True,'operator'),('t 0\n',True,'operator'),
+    ('t 18446744073709551616\n',True,'operator'),('s 123\n',True,'operator')])
+def test_scout_scheduler_uses_same_typed_timestamp(monkeypatch,raw,recent,expected):
+    from dev_agent import scheduler
+    monkeypatch.setenv('INVOCATION_ID','a'*32)
+    monkeypatch.setattr(scheduler.os,'getpid',lambda:123)
+    monkeypatch.setattr(scheduler.time,'monotonic',lambda:6433648893213/1e6+(1 if recent else 181))
+    def run(command,**kwargs):
+        if command[0]=='/usr/bin/busctl':return SimpleNamespace(stdout=raw)
+        return SimpleNamespace(stdout='InvocationID='+('a'*32)+'\nMainPID=123\n')
+    monkeypatch.setattr(scheduler.subprocess,'run',run)
+    assert scheduler.trigger()['source']==expected

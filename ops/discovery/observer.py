@@ -298,6 +298,9 @@ def scout():
     # Fixed unprivileged entry point, system Python with site hooks disabled.
     # No forwarding of caller commands/arguments and no model/tool selection.
     if os.getuid()!=pwd.getpwnam('optiplex').pw_uid:raise ValueError('discovery service identity required')
+    # Checkout bytecode is writable governance/runtime state, never authority.
+    sys.pycache_prefix='/run/investment-discovery-observer/reviewed-pycache'
+    sys.dont_write_bytecode=True
     sys.path.insert(0,str(ROOT))
     from dev_agent.cli import main
     return main(['scout','--root',str(ROOT)])

@@ -28,8 +28,12 @@ def trigger():
         try:
             service=subprocess.run(['systemctl','--user','show','development-scout.service','--no-pager','--property=InvocationID,MainPID'],check=True,capture_output=True,text=True,timeout=10)
             values=dict(line.split('=',1) for line in service.stdout.splitlines() if '=' in line)
-            timer=subprocess.run(['systemctl','--user','show','development-scout.timer','--value','--property=LastTriggerUSecMonotonic'],check=True,capture_output=True,text=True,timeout=10)
-            recent=0<=time.monotonic()-int(timer.stdout.strip())/1_000_000<=180
+            timer=subprocess.run(['/usr/bin/busctl','--user','get-property','org.freedesktop.systemd1',
+                '/org/freedesktop/systemd1/unit/development_2dscout_2etimer',
+                'org.freedesktop.systemd1.Timer','LastTriggerUSecMonotonic'],check=True,capture_output=True,text=True,timeout=10)
+            if not re.fullmatch(r't [0-9]{1,20}\n',timer.stdout):raise ValueError('typed timer trigger required')
+            fired=int(timer.stdout[2:])
+            recent=0<fired<2**64 and 0<=time.monotonic()-fired/1_000_000<=180
             if values.get('InvocationID')==invocation and int(values.get('MainPID','0'))==os.getpid() and recent:return dict(source='systemd-observed-timer',invocation=invocation)
         except (OSError,ValueError,subprocess.SubprocessError):pass
     return dict(source='operator',invocation=None)

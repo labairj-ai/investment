@@ -111,11 +111,11 @@ Keep the existing daily entry and add exactly one absolute entry:
 
 ```
 OnCalendar=*-*-* 08:15:00 America/New_York
-OnCalendar=2026-10-25 10:15:00 America/New_York
+OnCalendar=2026-10-25 14:30:00 America/New_York
 ```
 
 Persistent=true and RandomizedDelaySec=120 remain. The proposed recovery is
-October 25 at 10:15 Eastern plus the reviewed delay. Deployment must finish and
+October 25 at 14:30 Eastern plus the reviewed delay. Deployment must finish and
 be independently verified before that window. The upgrade refuses a recovery
 less than ten minutes away or already elapsed. If review misses the window,
 change source and repeat validation/review; never force a service start.
@@ -124,14 +124,14 @@ future execution is October 26 daily plus delay after observing recovery.
 
 ## Separate upgrade and rollback
 
-`python -m ops.discovery.upgrade --root /home/optiplex/investment --head <reviewed-new-merged-main> --expected-old-head 19fd140227a5b9b3cec27e6a2f91e610842e9947`
+`/usr/bin/python3 -I -S ops/discovery/influence.py --root /home/optiplex/investment --head <reviewed-new-merged-main> --upgrade --expected-old-head 19fd140227a5b9b3cec27e6a2f91e610842e9947`
 
 Default is plan-only. This is intentionally separate from the unchanged
 config-only refresh. Only a reviewed operator adds `--apply` after review.
 Do not manually copy the observer executable.
 
 The root-only fixed-layout tool requires exact old source/config/executable/root
-unit/Scout unit identities, clean main==origin/main and old ancestry. It permits
+unit/Scout unit identities, tracked-clean main==origin/main and old ancestry. It permits
 only the explicitly reviewed observer/Scout service/timer boundary changes; the
 root observer unit must be unchanged. It verifies old running runtime/process/
 socket, quiescent Scout and a quiet timer window, disabled activation and no
@@ -156,7 +156,7 @@ under a stopped observer, with individual atomic renames and verified rollback.
 
 ## Required deployment/recovery evidence (not yet performed)
 
-After concrete human review: exact-head CI and eight gates, merge, clean exact
+After concrete human review: exact-head CI and eight gates, merge, tracked-clean exact
 merged-main checkout, plan-only result, explicit apply result, independent
 observer/config/units/flags/financial verification, healthy collector/scheduler
 observer and all required signal sources. Confirm 0/3 before firing, then leave
@@ -165,3 +165,73 @@ run should produce NOT READY, successful_runs=1, required_runs=3,
 host_safety_accepted=false and slot scout:2026-10-25. Otherwise preserve the reason
 and 0/3; never grant credit manually. PR #19 must later be refreshed/rebased and
 fully revalidated against changed main. Do not begin 0853.
+
+
+## Revised production source/influence boundary
+
+The all-untracked-empty prerequisite was incompatible with the established
+OptiPlex layout. It has been replaced, not bypassed: require empty
+`git status --porcelain --untracked-files=no`, branch main, exact HEAD/origin/main,
+old ancestry and exact reviewed tracked manifest. Production runtime/data files
+remain in place. The previous 9,367-item metadata inventory and zero-move manifest
+remain unchanged at `/private/tmp/scout-recovery-current/` on the review workstation.
+No file is deleted/quarantined or hidden with excludes.
+
+`ops/discovery/influence.py` is a bounded standard-library-only standalone audit.
+It inspects **all** Git-untracked paths, including ignored files, so `.gitignore`
+cannot conceal an attack. Bounds: 100,000 paths, 24 MB path listings, 16 MB reviewed
+Python source and 250,000 Git metadata nodes. It emits only path/reason/count and
+reviewed-module metadata, never credentials, financial contents or raw requests.
+It examines Git metadata/config before running hardened Git commands, rejecting
+active hooks, executable config overrides, alternate objects, replacement refs,
+grafts, attributes overrides and symlinked Git interpretation paths.
+
+The closed import graph is computed with AST from exact reviewed Git blobs, seeded
+by ops.discovery.upgrade, ops.discovery.observer and dev_agent.cli, including
+relative imports and package initializers. All reviewed Python/executable package
+roots plus dev_agent/ops/scripts/config/systemd/.github are protected, including
+namespace packages. Untracked extensions inside those namespaces, root modules/
+packages/native code, execution configuration, collisions, unresolved parents and
+symlinks into tracked source or fixed observer/config/Scout unit paths fail closed.
+Unknown root/nested configuration fails closed. Reachable dynamic import machinery
+requires explicit new review; it is not inferred safe from extension or filename.
+
+State directories are derived from reviewed observer data paths; virtual environment
+roots are identified by actual pyvenv.cfg layout with no tracked source beneath.
+Their files are **non-authoritative**: they cannot supply Python code to the fixed
+observer/Scout/upgrade interpreter. Root data/document/backup files may remain only
+when they do not match reviewed import/configuration names or executable shapes.
+Validated CACHEDIR.TAG tool caches are outside tracked/import namespaces, and cannot
+disguise executable code. A virtual-environment marker cannot authorize a root
+package initializer. Excluded runtime paths do not become trusted source.
+
+Audit-only uses system Python `-I -S`, before any repository package import. The
+standalone launcher audits first and only then imports the fixed upgrade module;
+apply additionally requires the fixed system interpreter and protected cache
+ancestry. Direct ambient `python -m` is not a safe entrypoint: untracked package
+initializers or site hooks could run before an in-module guard. The isolated
+launcher above invokes the same plan/apply implementation without that bootstrap
+gap. This remains plan-only unless `--apply` is explicit.
+
+Scout also sets a protected pycache prefix before importing repository code, and
+disables bytecode writes. Thus existing checkout __pycache__ files are runtime
+data, never executable authority; `.pth`, sitecustomize, usercustomize and venv
+site-packages are not loaded under system Python -I -S. Sourceless `.pyc`, native
+extensions and package/module additions in trusted namespaces remain rejected.
+The upgrade repeats the influence audit under lock and after applying. Existing
+loaded Scout digest/drop-in properties remain separately verified.
+
+A second instance of the same formatted-duration bug was found in
+`dev_agent.scheduler.trigger()`. It now uses the same fixed typed uint64 query,
+nonzero/range/freshness requirements and existing exact MainPID/InvocationID check.
+Root timer provenance and before/after acceptance remain independently mandatory.
+Without this correction a genuine run could pass begin but be labelled operator
+and fail the existing end-bookend acceptance. No acceptance rule was loosened.
+
+Before merge the actual host must pass this new audit against the candidate's
+reviewed module graph. If any current source/configuration path still fails, stop
+for ChatGPT review without automatically loosening the classification. Tests cover
+allowed databases/backups/caches/large venv inventories, namespace and root-module
+shadowing, native/extensionless execution, package initializers, symlinks, ignored
+attacks, Git hooks/config/object interpretation, unit/drop-in attacks, and dirty
+tracked source despite a passing untracked audit.

@@ -16,6 +16,7 @@ import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from ops.discovery import pin_refresh as r
+from ops.discovery.influence import audit,isolated
 
 OLD_HEAD='19fd140227a5b9b3cec27e6a2f91e610842e9947'
 OLD_EXECUTABLE='8537f44523e434052dfa2379796f43bf85c9c6919ef9e99362c20de682801888'
@@ -31,7 +32,7 @@ def state():
     for p in r.STATE.iterdir():
         r.protected(p)
         if p.stat().st_size>2_000_000:raise ValueError('bounded failure evidence required')
-        if p.name not in {'timer-fires.json','discovery.json'} and not re.fullmatch('[a-f0-9]{32}\\.pending',p.name):raise ValueError('unreviewed acceptance evidence')
+        if p.name not in {'timer-fires.json','discovery.json'} and not re.fullmatch(r'[a-f0-9]{32}\.pending',p.name):raise ValueError('unreviewed acceptance evidence')
         result[p.name]=p.read_bytes()
     if 'discovery.json' in result and r.loads(result['discovery.json']).get('runs')!=[]:raise ValueError('zero accepted runs required; migration forbidden')
     return result
@@ -82,16 +83,19 @@ def protected_state():
 
 def recovery_schedule(data):
     entries=[line for line in data.decode().splitlines() if line.startswith('OnCalendar=')]
-    if entries!=['OnCalendar=*-*-* 08:15:00 America/New_York','OnCalendar=2026-10-25 10:15:00 America/New_York']:raise ValueError('exact normal and single recovery calendar required')
-    recovery=datetime(2026,10,25,10,15,tzinfo=ZoneInfo('America/New_York')).timestamp()
+    if entries!=['OnCalendar=*-*-* 08:15:00 America/New_York','OnCalendar=2026-10-25 14:30:00 America/New_York']:raise ValueError('exact normal and single recovery calendar required')
+    recovery=datetime(2026,10,25,14,30,tzinfo=ZoneInfo('America/New_York')).timestamp()
     if recovery-time.time()<600:raise ValueError('reviewed recovery window has passed or is too close')
 
 
 def inspect(root,head,old,invoke):
     if sys.platform!='linux' or os.geteuid()!=r.ROOT_UID or Path(root)!=r.ROOT or r.ROOT.is_symlink():raise ValueError('fixed root-only OptiPlex layout required')
     if old!=OLD_HEAD or not re.fullmatch('[a-f0-9]{40}',head) or head==old:raise ValueError('exact reviewed old and new heads required')
+    if not isolated():raise ValueError('isolated system Python with protected cache prefix required; use standalone influence launcher')
+    influence=audit(root,head)
+    if influence['untracked_source_influence']!='PASS':raise ValueError('untracked source influence audit failed')
     target=r.prepare(root,head,'labairj-ai/investment')
-    if r.git(root,'status','--porcelain').strip() or r.git(root,'branch','--show-current').strip()!=b'main':raise ValueError('clean main checkout required')
+    if r.git(root,'status','--porcelain','--untracked-files=no').strip() or r.git(root,'branch','--show-current').strip()!=b'main':raise ValueError('clean tracked main checkout required')
     r.git(root,'merge-base','--is-ancestor',old,head)
     before=r.source_manifest(root,old);after=target['manifest']
     if {n for n in r.IDENTITIES if before[n]!=after[n]}!=set(CHANGED):raise ValueError('only explicitly reviewed executable and Scout service/timer changes allowed')
@@ -108,7 +112,7 @@ def inspect(root,head,old,invoke):
     recovery_schedule(r.git(root,'show',head+':'+r.IDENTITIES[3]))
     desired=r.configuration(head,after)
     new=(r.git(root,'show',head+':'+CHANGED[0]),r.encoded(desired),r.git(root,'show',head+':'+CHANGED[1]),r.git(root,'show',head+':'+CHANGED[2]))
-    return dict(current=current,desired=desired,observed=observed,evidence=evidence,files=files,new=new,fingerprints=fingerprints)
+    return dict(current=current,desired=desired,observed=observed,evidence=evidence,files=files,new=new,fingerprints=fingerprints,influence=influence)
 
 
 def sync(path):
@@ -139,7 +143,7 @@ def upgrade(root,head,old,*,apply=False,invoke=subprocess.run):
     summary=dict(expected_old_head=old,target_head=head,accepted_runs=0,grants_implementation=False,ready=False,
         expected_old_observer=OLD_EXECUTABLE,expected_old_scout_service=OLD_SCOUT_SERVICE,expected_old_scout_timer=OLD_SCOUT_TIMER,
         target_observer=plan['desired']['observer_digest'],target_scout_service=plan['desired']['unit_digest'],target_scout_timer=plan['desired']['timer_digest'],
-        fingerprints=plan['fingerprints'],changed_boundary_files=list(CHANGED),runtime_sha256=plan['observed']['runtime_sha256'])
+        fingerprints=plan['fingerprints'],changed_boundary_files=list(CHANGED),untracked_source_influence=plan['influence'],runtime_sha256=plan['observed']['runtime_sha256'])
     if not apply:return dict(summary,status='PLAN_ONLY',changes_applied=False)
     lock=r.CONFIG.parent/'observer-upgrade.lock'
     fd=os.open(lock,os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)
@@ -168,6 +172,7 @@ def upgrade(root,head,old,*,apply=False,invoke=subprocess.run):
             fresh=r.prepare(root,head,'labairj-ai/investment');r.manifest_matches(root,fresh['manifest']);r.flags_disabled(root)
             if fresh['manifest']!=plan['desired']['files'] or state()!=plan['evidence'] or protected_state()!=plan['fingerprints']:raise ValueError('source/evidence changed')
             scouts(invoke,plan['desired']['files'])
+            if audit(root,head)['untracked_source_influence']!='PASS':raise ValueError('post-upgrade source influence changed')
             return dict(summary,status='UPGRADED_AWAITING_GENUINE_TIMER_RUNS',changes_applied=True,backup=str(backup))
         except Exception:
             restored=False;stopped=False
