@@ -15,6 +15,7 @@ from datetime import date
 from time_utils import today_eastern
 
 from .policy import classify, protected_graph
+from .reviewed_source import reviewed_sources,current
 from .store import CATEGORIES, SOURCES, bounded, digest
 
 SCORE_VERSION = "value-risk-1"
@@ -43,16 +44,17 @@ def score(candidate, risk):
     return dict(version=SCORE_VERSION, components=values, bonus=bonus, score=total, confidence="EVIDENCED" if evidence else "UNAVAILABLE", disposition=disposition, risk=risk, rationale="bounded benefit minus complexity/uncertainty; risk gates independent")
 
 
-def architecture_signals(root, exclusions=None):
-    root = Path(root); exclusions = exclusions or {}
+def architecture_signals(root, exclusions=None, *, reviewed=None):
+    root = Path(root); reviewed = reviewed or reviewed_sources(root,git(root,"rev-parse","HEAD"))
+    exclusions=reviewed.configuration().get("architecture_exclusions",{}) if exclusions is None else exclusions
     for path, exception in exclusions.items():
         if not isinstance(exception, dict) or not all(exception.get(k) for k in ("owner", "rationale", "expires")) or date.fromisoformat(exception["expires"]) < today_eastern():
             raise ValueError("architecture exclusions require owner, rationale and current expiry")
-    signals = []; graph = protected_graph(root); duplicate_bodies = {}
+    signals = []; graph = reviewed.graph(root); duplicate_bodies = {}
     for rel in sorted(graph):
         if rel.startswith("tests/") or rel in exclusions:
             continue
-        path = root / rel; text = path.read_text(errors="replace"); lines = text.splitlines()
+        text = reviewed.texts[rel]; lines = text.splitlines()
         try:
             tree = ast.parse(text)
         except SyntaxError:
@@ -83,23 +85,27 @@ def architecture_signals(root, exclusions=None):
     for signature, locations in sorted(duplicate_bodies.items()):
         if len({p for p,_,_ in locations}) < 2: continue
         signals.append(dict(source="architecture",category="CONSOLIDATE",title="Review duplicated helper implementation",problem="Identical nontrivial function bodies can diverge when maintained separately",files=sorted({p for p,_,_ in locations}),evidence=[f"{p}:{line}:{name}" for p,name,line in locations],outcome="Confirm common semantics before consolidating duplicate logic",validation="shared-helper parity and regression tests"))
+    current(root,reviewed.head)
     return signals
 
 
-def scout(root, signals=(), cap=5, exclusions=None, suppressed=(), enabled_sources=()):
+def scout(root, signals=(), cap=5, exclusions=None, suppressed=(), enabled_sources=(), *, reviewed=None):
     root = Path(root).resolve(); head = git(root, "rev-parse", "HEAD")
+    reviewed = reviewed or reviewed_sources(root,head)
+    if reviewed.head!=head:raise ValueError("reviewed Scout source mismatch")
+    configured_exclusions=reviewed.configuration().get("architecture_exclusions",{})
+    if exclusions is not None and exclusions!=configured_exclusions:raise ValueError("architecture exclusions must match reviewed configuration")
+    exclusions=configured_exclusions
     proposals = []
-    tracked = git(root, "ls-files").splitlines()
+    tracked = reviewed.paths
     for rel in tracked:
         if not rel.endswith(".py") or rel.startswith("tests/"):
             continue
-        path = root / rel
-        if path.is_symlink(): continue
-        for number, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
+        for number, line in enumerate(reviewed.texts[rel].splitlines(), 1):
             marker = re.match(r"\s*#\s*(TODO|FIXME)\s*:?\s*(.{8,})", line)
             if marker:
                 proposals.append(dict(source="todo", category="FIX" if marker[1] == "FIXME" else "SIMPLIFY", title=marker[2][:120], problem=marker[2], evidence=[f"{head}:{rel}:{number}"], files=[rel], outcome="Resolve the cited source marker with regression evidence", validation="focused regression and full suite"))
-    proposals.extend(architecture_signals(root, exclusions))
+    proposals.extend(architecture_signals(root, exclusions,reviewed=reviewed))
     proposals.extend(signals)
     chosen, seen, per_category = [], set(), Counter()
     for proposal in sorted(proposals, key=lambda p: (p.get("source")!="user", -p.get("impact",0), p.get("category") == "ADD", p.get("category", ""), p.get("title", ""))):
@@ -111,12 +117,14 @@ def scout(root, signals=(), cap=5, exclusions=None, suppressed=(), enabled_sourc
         seen.add(identity); per_category[proposal["category"]] += 1; chosen.append(proposal)
         if len(chosen) >= max(0, cap): break
     active_todos = []
-    for path in sorted((root / ".todos").glob("*.md")):
-        text = path.read_text()
+    for rel in reviewed.paths:
+        if not rel.startswith('.todos/') or rel.count('/')!=1 or not rel.endswith('.md'):continue
+        text = reviewed.texts[rel]
         if "**Status:** backlog" in text or "**Status:** in-progress" in text:
-            active_todos.append(dict(path=str(path.relative_to(root)), hash=digest(text)))
-    recent = git(root, "log", "-5", "--format=%H %s").splitlines()
-    completed = [str(p.relative_to(root)) for p in sorted((root / ".todos/done").glob("*.md"))[-10:]]
+            active_todos.append(dict(path=rel, hash=digest(text)))
+    recent = git(root, "--no-replace-objects", "log", "-5", "--format=%H %s",head).splitlines()
+    completed = [p for p in reviewed.paths if p.startswith('.todos/done/') and p.count('/')==2 and p.endswith('.md')][-10:]
+    current(root,head)
     return dict(head=head, proposals=chosen if cap > 0 else [], context=dict(active_todos=active_todos, recent_commits=recent, recent_completed=completed), unavailable=[label for label,source in [("CI","ci"),("telemetry","telemetry"),("performance","performance"),("user_feedback","user")] if source not in enabled_sources and not any(p.get("source")==source for p in signals)], source="tracked repository plus explicitly supplied signals")
 
 

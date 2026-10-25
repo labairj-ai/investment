@@ -111,11 +111,11 @@ Keep the existing daily entry and add exactly one absolute entry:
 
 ```
 OnCalendar=*-*-* 08:15:00 America/New_York
-OnCalendar=2026-10-25 14:30:00 America/New_York
+OnCalendar=2026-10-25 16:30:00 America/New_York
 ```
 
 Persistent=true and RandomizedDelaySec=120 remain. The proposed recovery is
-October 25 at 14:30 Eastern plus the reviewed delay. Deployment must finish and
+October 25 at 16:30 Eastern plus the reviewed delay. Deployment must finish and
 be independently verified before that window. The upgrade refuses a recovery
 less than ten minutes away or already elapsed. If review misses the window,
 change source and repeat validation/review; never force a service start.
@@ -167,7 +167,7 @@ and 0/3; never grant credit manually. PR #19 must later be refreshed/rebased and
 fully revalidated against changed main. Do not begin 0853.
 
 
-## Revised production source/influence boundary
+## Earlier conservative influence proposal (superseded below)
 
 The all-untracked-empty prerequisite was incompatible with the established
 OptiPlex layout. It has been replaced, not bypassed: require empty
@@ -235,3 +235,83 @@ allowed databases/backups/caches/large venv inventories, namespace and root-modu
 shadowing, native/extensionless execution, package initializers, symlinks, ignored
 attacks, Git hooks/config/object interpretation, unit/drop-in attacks, and dirty
 tracked source despite a passing untracked audit.
+
+## Tracked-source discovery authority (supersedes filename-only exclusions)
+
+Review found that both architecture_signals and daily scoring used unrestricted
+protected_graph(root), so untracked files could alter architecture proposals,
+cycles, duplicates and candidate risk. Tracked TODO names also used working-tree
+bytes, TODO context used filesystem globs, and scheduler policy used working-tree
+JSON. The former source label therefore overstated the actual authority boundary.
+
+`dev_agent.reviewed_source.reviewed_sources(root, head)` now obtains its canonical
+inventory from exact Git ls-tree objects and source/context bytes from regular
+blobs. It uses the existing hardened Git execution contract with replacement
+objects disabled. It requires a full lowercase 40-character current HEAD, regular
+blob modes, unique canonical paths, bounded tree/file/byte counts and matching
+blob object hashes. It never opens a source working-tree path or follows an
+untracked source symlink. The immutable view includes reviewed Python, TODO
+Markdown, development configuration, all tracked path names and a source-view
+identity. A changing HEAD fails closed. Limits: 10,000 files, 4 MB tree listing,
+2 MB per source file and 16 MB aggregate selected source.
+
+Scout TODO/FIXME bytes, architecture graph, repeated exception/debt analysis,
+duplicate-function bodies, cycle detection, active/completed TODO context,
+architecture exclusions and scheduler risk graph use that same view. Recent
+commit context is pinned to that head. The scheduler reads policy/caps from its
+reviewed configuration rather than an untracked or dirty working-tree file.
+Externally supplied signals remain explicit runtime inputs, never implicit source.
+
+| Input | Authority |
+|---|---|
+| Python analysis, TODO/FIXME markers, dependency graph, duplicate/exception/debt/cycle analysis | Exact reviewed Git blobs |
+| .todos/*.md and .todos/done/*.md context, exclusions and discovery configuration | Exact reviewed Git blobs |
+| Recent history and repository path inventory | Exact reviewed Git head/objects |
+| Operational signal spool, explicit signals, Development Agent ledger | Runtime evidence; existing validation and bounds unchanged |
+| Before/after financial/source hashes, systemd process/timer identities, worktree inventory, discovery.json | Root observer evidence; existing trust/acceptance unchanged |
+
+protected_graph(root) itself is unchanged. Planning, whole-diff and worktree
+classification retain conservative filesystem coverage. Live discovery invokes
+its existing sources= argument through the reviewed view, never its unrestricted
+rglob mode. Runtime ledger/spool handling and all acceptance thresholds are unchanged.
+
+The influence audit now distinguishes actual import and execution resolution
+from filenames alone. Import shadows use Python's source/bytecode/native loader
+suffixes and package identity, not arbitrary data stems. token.json/csv/txt/md/bak
+cannot shadow token just by name; token.py, applicable token.pyc/native modules and
+token/__init__.py remain rejected. Package initializers, site hooks, native code,
+reachable package/module additions, explicit unit execution, configuration/Git/unit
+changes and ambiguous dynamic execution still fail closed.
+
+After the tracked-source contract is established in reviewed source, legacy Python
+outside the reachable production import roots can remain non-authoritative when
+it is neither imported, consumed by reviewed source nor executed by reviewed or
+installed units. No individual legacy-file whitelist is used. Non-code data and
+inert backups below package directories are evaluated by these same influence
+conditions. Merely having an executable mode does not make an unreferenced .bak a
+Python import; an actual unit/script reference still rejects it. Runtime directories
+cannot conceal a unit execution target. The audit includes the collector entrypoint
+and inspects bounded reviewed/installed service/drop-in command references without
+emitting command or environment contents. Ambiguous shell/model-tool execution
+requires review. Policy labels themselves are distinguished from file-content reads.
+
+The only developer-metadata category is a regular, nonsymlinked, non-executable
+.claude/settings.local.json, provided production source/units do not consume it.
+There is no .claude/** exemption. Interactive Claude Code settings do not configure
+system Python -I -S, the root observer, Scout, public-reader collector, scheduler
+observer, systemd or the isolated upgrade launcher. The file is never read or
+promoted to trusted source by this classification. Other .claude paths fail closed.
+
+New tests inject untracked agents/evil.py, orchestrator.py, tests and TODOs and
+prove identical Scout proposals/context, reviewed graph, risk, score, candidate
+identity/files/evidence. Committing Git blob changes changes analysis. Dirty
+working-tree source cannot replace reviewed bytes and still fails root observer/
+upgrade verification. A separate conservative graph test proves an untracked
+import bridge still increases worktree classification risk. Existing tests that
+intend authoritative architecture source now commit their fixtures explicitly.
+
+The real inventory will be re-audited only against the final exact candidate head.
+If any path still fails, stop for ChatGPT review without a post-result exception.
+This task stops before merge even if the proposed new boundary passes. Production
+remains at 19fd140... and 0852 stays 0/3 until a later reviewed deployment and real
+bookended timer executions; no acceptance is manufactured by source tests.

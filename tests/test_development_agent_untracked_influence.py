@@ -39,7 +39,7 @@ def test_runtime_data_backups_and_caches_are_not_source(repo):
     add(root,'venv/pyvenv.cfg');add(root,'venv/lib/python3.12/site-packages/runtime.pth',b'import arbitrary_site_hook')
     result=a.audit(root,head)
     assert result['untracked_source_influence']=='PASS' and result['scanned']==8
-    assert result['allowed_categories']=={'non_authoritative_cache':1,'non_authoritative_root_backup':1,'non_authoritative_runtime':6}
+    assert result['allowed_categories']=={'non_authoritative_cache':1,'non_authoritative_backup':1,'non_authoritative_runtime':6}
     assert 'dev_agent.cli' in result['trusted_modules']
 
 
@@ -153,3 +153,91 @@ def test_venv_marker_cannot_inject_importable_package(repo):
     root,head=repo;add(root,'venv/pyvenv.cfg');add(root,'venv/__init__.py',b'raise RuntimeError')
     result=a.audit(root,head)
     assert {'path':'venv/__init__.py','reason':'RUNTIME_PACKAGE_INJECTION'} in result['rejected_paths']
+
+
+@pytest.mark.parametrize('name',['token.json','token.csv','token.txt','token.md','token.bak'])
+def test_nonimportable_data_stem_is_not_an_import_shadow(repo,name):
+    root,head=repo;add(root,name)
+    result=a.audit(root,head)
+    assert result['untracked_source_influence']=='PASS'
+    assert not result['rejected_paths']
+
+
+@pytest.mark.parametrize('name',['token.py','token.pyc','token/__init__.py','token.so'])
+def test_real_import_forms_still_fail(repo,name):
+    root,head=repo;add(root,name)
+    assert a.audit(root,head)['untracked_source_influence']=='FAIL'
+
+
+@pytest.mark.parametrize('mode',[0o644,0o755])
+def test_developer_metadata_is_narrow_and_not_executable(repo,mode):
+    root,head=repo;add(root,'.claude/settings.local.json',b'{"metadata":"not production input"}',mode)
+    result=a.audit(root,head)
+    assert (result['untracked_source_influence']=='PASS')==(mode==0o644)
+    if mode==0o644:assert result['allowed_categories']=={'non_authoritative_developer_tool_config':1}
+    add(root,'.claude/other.json',b'{}')
+    assert a.audit(root,head)['untracked_source_influence']=='FAIL'
+
+
+def test_unreachable_legacy_source_requires_tracked_discovery_contract(repo,monkeypatch):
+    root,head=repo;add(root,'legacy/orchestrator.py',b'import math\n')
+    assert a.audit(root,head)['untracked_source_influence']=='FAIL'
+    monkeypatch.setattr(a,'tracked_discovery_contract',lambda graph:True)
+    result=a.audit(root,head)
+    assert result['untracked_source_influence']=='PASS'
+    assert result['allowed_categories']=={'non_authoritative_legacy_source':1}
+    add(root,'dev_agent/reachable.py')
+    assert a.audit(root,head)['untracked_source_influence']=='FAIL'
+
+
+def test_inert_backup_in_package_is_not_executable_authority(repo):
+    root,head=repo;add(root,'ops/old.py.bak',b'not imported',0o755)
+    assert a.audit(root,head)['allowed_categories']=={'non_authoritative_backup':1}
+
+
+def test_reviewed_unit_reference_blocks_even_nonimportable_backup(repo):
+    root,head=repo
+    (root/'systemd/tool.service').write_text('[Service]\nExecStart=/usr/bin/python3 ops/old.py.bak\n')
+    subprocess.run(['git','-C',str(root),'add','.'],check=True)
+    subprocess.run(['git','-C',str(root),'-c','user.name=fixture','-c','user.email=fixture@invalid','commit','-qm','reviewed unit'],check=True)
+    head=subprocess.check_output(['git','-C',str(root),'rev-parse','HEAD'],text=True).strip()
+    add(root,'ops/old.py.bak',b'not imported')
+    result=a.audit(root,head)
+    assert {'path':'ops/old.py.bak','reason':'SYSTEMD_EXECUTION'} in result['rejected_paths']
+
+
+def test_runtime_directory_cannot_hide_a_reviewed_execution_target(repo):
+    root,head=repo
+    (root/'systemd/tool.service').write_text('[Service]\nExecStart=/usr/bin/python3 out/unsafe.py\n')
+    subprocess.run(['git','-C',str(root),'add','.'],check=True)
+    subprocess.run(['git','-C',str(root),'-c','user.name=fixture','-c','user.email=fixture@invalid','commit','-qm','reviewed runtime target'],check=True)
+    head=subprocess.check_output(['git','-C',str(root),'rev-parse','HEAD'],text=True).strip()
+    add(root,'out/unsafe.py',b'print("unsafe")')
+    assert {'path':'out/unsafe.py','reason':'SYSTEMD_EXECUTION'} in a.audit(root,head)['rejected_paths']
+
+
+def test_developer_metadata_read_by_reviewed_code_is_not_exempt(repo):
+    root,head=repo
+    (root/'dev_agent/cli.py').write_text('from pathlib import Path\nvalue=Path(".claude/settings.local.json").read_text()\n')
+    subprocess.run(['git','-C',str(root),'add','.'],check=True)
+    subprocess.run(['git','-C',str(root),'-c','user.name=fixture','-c','user.email=fixture@invalid','commit','-qm','explicit metadata reader'],check=True)
+    head=subprocess.check_output(['git','-C',str(root),'rev-parse','HEAD'],text=True).strip()
+    add(root,'.claude/settings.local.json',b'{}')
+    assert {'path':'.claude/settings.local.json','reason':'REVIEWED_SOURCE_REFERENCE'} in a.audit(root,head)['rejected_paths']
+
+
+def test_noncode_package_data_requires_no_reviewed_reader(repo,monkeypatch):
+    root,head=repo;monkeypatch.setattr(a,'tracked_discovery_contract',lambda graph:True)
+    add(root,'dev_agent/unrelated.json',b'{}')
+    assert a.audit(root,head)['allowed_categories']=={'non_authoritative_package_data':1}
+    add(root,'dev_agent/unrelated.py',b'pass')
+    assert a.audit(root,head)['untracked_source_influence']=='FAIL'
+
+
+def test_dynamic_unit_execution_fails_closed(repo):
+    root,head=repo
+    (root/'systemd/tool.service').write_text('[Service]\nWorkingDirectory='+str(root)+'\nExecStart=/bin/sh -c "python3 $SCRIPT"\n')
+    subprocess.run(['git','-C',str(root),'add','.'],check=True)
+    subprocess.run(['git','-C',str(root),'-c','user.name=fixture','-c','user.email=fixture@invalid','commit','-qm','ambiguous unit'],check=True)
+    head=subprocess.check_output(['git','-C',str(root),'rev-parse','HEAD'],text=True).strip()
+    assert a.audit(root,head)['rejected_categories']=={'AMBIGUOUS_UNIT_EXECUTION':1}

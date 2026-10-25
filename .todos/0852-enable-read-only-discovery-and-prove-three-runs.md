@@ -155,7 +155,21 @@ formatted LastTriggerUSecMonotonic value; root exception suppression prevents
 proving whether an earlier historical check rejected first. No failed attempt is
 converted to credit. See [incident evidence and proposed recovery](../docs/evidence/scout-oct25/README.md).
 A separate source proposal adds typed timer provenance, sanitized diagnostics,
-a bounded exact-boundary upgrade and one October 25 14:30 Eastern recovery entry.
+a bounded exact-boundary upgrade and one October 25 16:30 Eastern recovery entry.
 These are source changes pending review, merge and deployment; no operational
 checkbox is complete and PR #19 remains held. Any genuine recovery must qualify
 against the new exact merged source and retain all three-run safety requirements.
+
+
+### Tracked-source authority correction (PR #20, review only)
+
+Review identified that filesystem-wide architecture/scoring scans could consume
+untracked production source despite the tracked-source discovery label. Live
+Scout now uses a bounded exact-head Git-blob representation for Python analysis,
+TODO context and reviewed policy; candidate/worktree protected_graph semantics
+remain conservative and unchanged. Influence classification now follows actual
+import/execution/configuration reachability, including the collector, rather than
+arbitrary data stems or every file below a package root. No production inventory
+item is modified or individually whitelisted. The proposed recovery is October 25
+16:30 Eastern, still source-only. The exact-head audit and all checks must be
+reviewed before any merge; production remains 19fd140... and genuine credit 0/3.

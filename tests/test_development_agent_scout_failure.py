@@ -126,7 +126,7 @@ def test_normal_and_exactly_one_recovery_schedule_in_reviewed_source():
     timer=Path('systemd/development-scout.timer').read_text()
     assert [l for l in timer.splitlines() if l.startswith('OnCalendar=')]==[
         'OnCalendar=*-*-* 08:15:00 America/New_York',
-        'OnCalendar=2026-10-25 14:30:00 America/New_York']
+        'OnCalendar=2026-10-25 16:30:00 America/New_York']
     assert 'RefuseManualStart=yes' in Path('systemd/development-scout.service').read_text()
 
 

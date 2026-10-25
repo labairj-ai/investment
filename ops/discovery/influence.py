@@ -8,6 +8,8 @@ import ast
 from collections import Counter
 import configparser
 import hashlib
+from importlib.machinery import SOURCE_SUFFIXES,BYTECODE_SUFFIXES,EXTENSION_SUFFIXES
+import shlex
 import json
 import os
 from pathlib import Path
@@ -21,7 +23,7 @@ MAX_LIST_BYTES=24000000
 MAX_SOURCE_BYTES=16000000
 CACHE_PREFIX='/run/investment-discovery-observer/reviewed-pycache'
 MIN_NAMESPACES={'dev_agent','ops','scripts','config','systemd','.github'}
-ENTRY_MODULES=('ops.discovery.upgrade','ops.discovery.observer','dev_agent.cli')
+ENTRY_MODULES=('ops.discovery.upgrade','ops.discovery.observer','dev_agent.cli','scripts.collect_development_signals')
 ENV={'PATH':'/usr/bin:/bin','HOME':'/nonexistent','GIT_CONFIG_NOSYSTEM':'1',
      'GIT_CONFIG_GLOBAL':'/dev/null','GIT_NO_REPLACE_OBJECTS':'1','GIT_ATTR_NOSYSTEM':'1',
      'GIT_TERMINAL_PROMPT':'0','LANG':'C.UTF-8'}
@@ -95,7 +97,7 @@ def reviewed_graph(root,head,tracked):
         module=name[:-3].replace('/','.')
         if module.endswith('.__init__'):module=module[:-9]
         modules[module]=name;sources[name]=raw
-    queue=list(ENTRY_MODULES);seen=set();imports=set();dynamic=[];root_configs=set()
+    queue=list(ENTRY_MODULES);seen=set();imports=set();dynamic=[];root_configs=set();literals=set();import_names=set();policy_literals=set()
     while queue:
         module=queue.pop()
         if module in seen or module not in modules:continue
@@ -104,6 +106,8 @@ def reviewed_graph(root,head,tracked):
         package=module if name.endswith('/__init__.py') else module.rpartition('.')[0]
         for node in ast.walk(tree):
             targets=[]
+            if isinstance(node,ast.Constant) and type(node.value) is str:
+                (policy_literals if name=='ops/discovery/influence.py' else literals).add(node.value)
             if isinstance(node,ast.Constant) and type(node.value) is str and '/' not in node.value and node.value.endswith(('.json','.toml','.ini','.yaml','.yml')):root_configs.add(node.value)
             if isinstance(node,ast.Import):targets=[a.name for a in node.names]
             elif isinstance(node,ast.ImportFrom):
@@ -117,7 +121,7 @@ def reviewed_graph(root,head,tracked):
                 if isinstance(f,ast.Attribute) and f.attr in {'import_module','run_module','run_path','SourceFileLoader','ExtensionFileLoader','spec_from_file_location'}:dynamic.append(name)
             for target in targets:
                 if not target:continue
-                imports.add(target.split('.')[0])
+                imports.add(target.split('.')[0]);import_names.add(target)
                 if target in modules:queue.append(target)
                 # Package __init__ modules execute before children.
                 for i in range(1,len(target.split('.'))):
@@ -128,13 +132,72 @@ def reviewed_graph(root,head,tracked):
     for name in tracked:
         if '/' in name and name.endswith(('.py','.sh','.service','.timer')):namespaces.add(name.split('/')[0])
     return dict(modules=sorted(seen),import_roots=sorted(imports|set(sys.stdlib_module_names)),
-                namespaces=sorted(namespaces),dynamic_import_sources=sorted(set(dynamic)),root_configuration_names=sorted(root_configs),sources=sources)
+                namespaces=sorted(namespaces),dynamic_import_sources=sorted(set(dynamic)),root_configuration_names=sorted(root_configs),sources=sources,
+                literals=literals,policy_literals=policy_literals,import_names=sorted(import_names))
 
 
 def code_shape(path):
     name=path.name.lower()
     return (name.endswith(('.py','.pyc','.pyo','.pyw','.pth','.so','.pyd','.dll','.dylib','.sh','.bash','.zsh'))
             or '.so.' in name or name in {'sitecustomize','usercustomize','__init__'})
+
+
+def import_name(name):
+    """Normal source/bytecode/native PathFinder forms, not arbitrary data stems."""
+    p=Path(name);suffix=next((s for s in sorted(set(SOURCE_SUFFIXES+BYTECODE_SUFFIXES+EXTENSION_SUFFIXES),key=len,reverse=True) if p.name.endswith(s)),None)
+    if suffix is None:return None
+    leaf=p.name[:-len(suffix)];parts=[*p.parts[:-1],leaf]
+    if leaf=='__init__':parts=parts[:-1]
+    if not parts or not all(x.isidentifier() for x in parts):return None
+    return '.'.join(parts)
+
+
+def tracked_discovery_contract(graph):
+    helper=graph['sources'].get('dev_agent/reviewed_source.py',b'')
+    if b"CONTRACT='reviewed-git-source-1'" not in helper:return False
+    for source,function in [('dev_agent/discovery.py','scout'),('dev_agent/scheduler.py','discover_daily')]:
+        tree=ast.parse(graph['sources'].get(source,b''))
+        functions=[n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name==function]
+        if len(functions)!=1 or not any(isinstance(n,ast.Call) and isinstance(n.func,ast.Name) and n.func.id=='reviewed_sources' for n in ast.walk(functions[0])):return False
+    return True
+
+
+def execution_references(root,head,tracked):
+    """Reviewed unit commands plus read-only installed unit/drop-in references.
+
+    Emit only file names and matched repository paths, never command/env contents.
+    """
+    units=[];total=0
+    for name in tracked:
+        if name.endswith('.service'):units.append((name,git(root,'show',head+':'+name).decode('utf-8','replace')))
+    for directory in (Path('/etc/systemd/system'),Path('/home/optiplex/.config/systemd/user')):
+        if not directory.exists():continue
+        count=0
+        for path in directory.rglob('*'):
+            count+=1
+            if count>10000:raise ValueError('bounded unit resolution inventory required')
+            if path.is_symlink() or not path.is_file() or not (path.suffix=='.service' or path.suffix=='.conf' and '.service.d' in str(path)):continue
+            size=path.stat().st_size;total+=size
+            if size>262144 or total>4000000:raise ValueError('bounded unit source required')
+            units.append((str(path),path.read_text(errors='replace')))
+    refs={};ambiguous=[]
+    for label,text in units:
+        text=text.replace("%h","/home/optiplex")
+        for line in text.splitlines():
+            if not re.match(r'^Exec(?:Start|StartPre|StartPost|Stop|StopPost|Reload)=',line):continue
+            try:tokens=shlex.split(line.split('=',1)[1])
+            except ValueError:ambiguous.append(label);continue
+            if any(Path(token).name in {'claude','claude-code','codex'} for token in tokens):ambiguous.append(label+':DEVELOPER_TOOL_EXECUTION')
+            if tokens and Path(tokens[0]).name in {'sh','bash','zsh'} and any(t in {'-c','-lc'} for t in tokens):
+                if str(root) in line or 'WorkingDirectory='+str(root) in text:ambiguous.append(label+':DYNAMIC_SHELL_EXECUTION')
+            for token in tokens:
+                token=token.replace('%h','/home/optiplex')
+                if token.startswith(str(root)+'/'):rel=token[len(str(root))+1:]
+                elif not token.startswith(('/','-')) and '/' in token and not any(c in token for c in ('=','$','%')):rel=token
+                elif token.endswith(('.py','.sh','.bak')) and '/' not in token:rel=token
+                else:continue
+                refs.setdefault(rel,[]).append(label)
+    return {k:sorted(set(v)) for k,v in refs.items()},sorted(set(ambiguous))
 
 
 def audit(root,head,*,tracked=None,untracked=None):
@@ -154,6 +217,9 @@ def audit(root,head,*,tracked=None,untracked=None):
     if len(entries)>MAX_PATHS:raise ValueError('untracked inventory count exceeded')
     graph=reviewed_graph(root,head,tracked)
     roots=set(graph['namespaces']);imports=set(graph['import_roots'])
+    reachable_roots={m.split('.')[0] for m in graph['modules']}|set(MIN_NAMESPACES)
+    authority=tracked_discovery_contract(graph)
+    unit_refs,ambiguous_units=execution_references(root,head,tracked)
     trusted={root/name for name in tracked}
     trusted.update({Path('/opt/investment-discovery-observer/observer.py'),Path('/etc/investment-discovery-observer'),
                     Path('/etc/systemd/system/investment-discovery-observer.service'),
@@ -166,14 +232,19 @@ def audit(root,head,*,tracked=None,untracked=None):
     for child in root.iterdir():
         cfg=child/'pyvenv.cfg'
         if child.is_dir() and not child.is_symlink() and cfg.is_file() and not cfg.is_symlink() and not any(n==child.name or n.startswith(child.name+'/') for n in tracked):runtime_roots.add(child.name)
+    venv_interpreters={r+'/bin/'+p for r in runtime_roots if (root/r/'pyvenv.cfg').is_file() for p in ('python','python3','python3.12')}
     cache_roots=set()
     for child in root.iterdir():
         marker=child/'CACHEDIR.TAG'
         if child.is_dir() and not child.is_symlink() and child.name not in roots|imports and not any(n.startswith(child.name+'/') for n in tracked) and marker.is_file() and not marker.is_symlink() and marker.stat().st_size<4096:
             if b'Signature: 8a477f597d28d172789f06886806bc55' in marker.read_bytes():cache_roots.add(child.name)
-    allowed=Counter();rejected=Counter();details=[]
+    allowed=Counter();rejected=Counter();details=[];dispositions=[]
     for name in sorted(entries):
         p=root/name;parts=Path(name).parts;reason=None;category=None
+        module=import_name(name);native=any(p.name.endswith(s) for s in EXTENSION_SUFFIXES) or p.suffix in {'.so','.pyd','.dll','.dylib'}
+        reference=name in graph['literals'] or str(root/name) in graph['literals']
+        executed=bool(unit_refs.get(name))
+        reachable=bool(module and (module.split('.')[0] in imports or module.split('.')[0] in reachable_roots))
         if name in tracked:reason='TRACKED_COLLISION'
         if parts[0]=='.git':reason='GIT_INFLUENCE'
         for parent in p.parents:
@@ -189,24 +260,50 @@ def audit(root,head,*,tracked=None,untracked=None):
         # Isolated launch never reads checkout __pycache__; legacy sourceless
         # .pyc outside __pycache__ remains executable source and is rejected.
         cache='__pycache__' in parts and p.suffix=='.pyc'
-        if not reason and cache:category='non_authoritative_cache'
+        if not reason and executed and name not in venv_interpreters:reason='SYSTEMD_EXECUTION'
+        elif not reason and reference and code_shape(p):reason='REVIEWED_SOURCE_REFERENCE'
+        elif not reason and cache:category='non_authoritative_cache'
         elif not reason and parts[0] in runtime_roots and len(parts)==2 and p.name.startswith('__init__.'):reason='RUNTIME_PACKAGE_INJECTION'
         elif not reason and parts[0] in runtime_roots:category='non_authoritative_runtime'
         elif not reason and parts[0] in cache_roots and (code_shape(p) or info and info.st_mode&0o111):reason='TOOL_CACHE_EXECUTABLE'
         elif not reason and parts[0] in cache_roots:category='non_authoritative_tool_cache'
-        elif not reason and parts[0] in roots:reason='TRUSTED_NAMESPACE_EXTENSION'
         elif not reason and (p.name in {'.gitattributes','.gitmodules','.gitconfig','.envrc','sitecustomize.py','usercustomize.py','pyproject.toml','setup.cfg','setup.py'} or p.suffix in {'.pth','.service','.timer','.socket'} or '.service.d' in name or '.timer.d' in name):reason='EXECUTION_CONFIGURATION'
-        elif not reason and (code_shape(p) or info and info.st_mode&0o111):reason='UNREVIEWED_EXECUTABLE_NAMESPACE'
-        elif not reason and len(parts)>1:reason='UNCLASSIFIED_NAMESPACE'
-        elif not reason and (p.stem in imports or p.name in imports):reason='IMPORT_SHADOW'
+        elif not reason and executed and name not in venv_interpreters:reason='SYSTEMD_EXECUTION'
+        elif not reason and reference:reason='REVIEWED_SOURCE_REFERENCE'
+        elif not reason and module and p.name.startswith('__init__.'):reason='PACKAGE_INITIALIZER'
+        elif not reason and native:reason='NATIVE_CODE_REVIEW_REQUIRED'
+        elif not reason and reachable:reason='IMPORT_SHADOW'
+        elif not reason and parts[0] in {'config','systemd','.github'}:reason='REVIEWED_CONFIGURATION_NAMESPACE'
+        elif not reason and parts[0]=='.claude':
+            if name=='.claude/settings.local.json' and info and stat.S_ISREG(info.st_mode) and not info.st_mode&0o111:
+                category='non_authoritative_developer_tool_config'
+            else:reason='UNCLASSIFIED_DEVELOPER_TOOL_PATH'
+        elif not reason and module and parts[0] in reachable_roots:reason='TRUSTED_NAMESPACE_EXTENSION'
+        elif not reason and not module and parts[0] in reachable_roots and (code_shape(p) or info and info.st_mode&0o111) and p.suffix not in {'.bak','.before','.patch'}:reason='TRUSTED_EXECUTION_NAMESPACE'
+        elif not reason and p.suffix in {'.bak','.before','.patch'}:category='non_authoritative_backup'
+        elif not reason and code_shape(p):
+            if authority and p.suffix in {'.py','.pyw','.pyc'}:category='non_authoritative_legacy_source'
+            else:reason='UNREVIEWED_EXECUTABLE_NAMESPACE'
+        elif not reason and info and info.st_mode&0o111:reason='UNREVIEWED_EXECUTABLE_NAMESPACE'
+        elif not reason and len(parts)>1:
+            if parts[0] in roots and p.suffix in {'.json','.csv','.txt','.md'} and authority:category='non_authoritative_package_data'
+            else:reason='UNCLASSIFIED_NAMESPACE'
         elif not reason and p.name in graph['root_configuration_names']:reason='REVIEWED_CONFIGURATION_INFLUENCE'
-        elif not reason and (p.name.endswith(('.bak','.before','.patch'))):category='non_authoritative_root_backup'
         elif not reason and p.suffix in {'.md','.html','.log','.txt'}:category='non_authoritative_root_document'
         elif not reason and (p.suffix in {'.json','.db','.sqlite3','.csv','.numbers'} or p.name in {'.env','.DS_Store'}):category='non_authoritative_root_data'
         elif not reason:reason='UNCLASSIFIED_ROOT_CONFIGURATION'
+        if category not in {'non_authoritative_cache','non_authoritative_runtime','non_authoritative_tool_cache'}:
+            dispositions.append(dict(path=name,classification=reason or category,python_importable=module is not None,
+                import_name=module,reachable_import=reachable,reviewed_unit_execution=unit_refs.get(name,[]),
+                reviewed_source_reference=reference,audit_policy_name_reference=name in graph['policy_literals'],live_discovery_reads_untracked_source=not authority,
+                git_interpretation=reason in {'GIT_INFLUENCE','EXECUTION_CONFIGURATION'} and p.name.startswith('.git'),
+                python_startup_or_import=bool(reachable or native or p.suffix=='.pth' or p.name in {'sitecustomize.py','usercustomize.py'} or module and p.name.startswith('__init__.'))))
         if reason:
             rejected[reason]+=1;details.append(dict(path=name,reason=reason))
         else:allowed[category]+=1
+    if ambiguous_units:
+        rejected['AMBIGUOUS_UNIT_EXECUTION']+=len(ambiguous_units)
+        details.extend(dict(path=x,reason='AMBIGUOUS_UNIT_EXECUTION') for x in ambiguous_units)
     if graph['dynamic_import_sources']:
         for name in graph['dynamic_import_sources']:details.append(dict(path=name,reason='DYNAMIC_IMPORT_REVIEW_REQUIRED'))
         rejected['DYNAMIC_IMPORT_REVIEW_REQUIRED']+=len(graph['dynamic_import_sources'])
@@ -214,7 +311,9 @@ def audit(root,head,*,tracked=None,untracked=None):
                   allowed_categories=dict(sorted(allowed.items())),rejected_categories=dict(sorted(rejected.items())),
                   rejected_paths=details,trusted_namespaces=sorted(roots),trusted_module_count=len(graph['modules']),
                   trusted_modules=graph['modules'],runtime_roots=sorted(runtime_roots),cache_roots=sorted(cache_roots),root_configuration_names=graph['root_configuration_names'],
-                  reviewed_module_graph_sha256=hashlib.sha256(json.dumps(graph['modules']).encode()).hexdigest())
+                  reviewed_module_graph_sha256=hashlib.sha256(json.dumps([(m,hashlib.sha256(graph['sources'].get(m.replace('.','/')+'.py',graph['sources'].get(m.replace('.','/')+'/__init__.py',b''))).hexdigest()) for m in graph['modules']]).encode()).hexdigest(),
+                  discovery_source_authority='reviewed-git-source-1' if authority else 'UNPROVEN',
+                  path_dispositions=dispositions,git_boundary='PASS',unit_execution_coverage='reviewed Git and installed system/user service/drop-in commands')
     return result
 
 
