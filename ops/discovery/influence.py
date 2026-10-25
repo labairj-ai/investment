@@ -402,11 +402,24 @@ def path_references(root,source_items,cli_modes=()):
             for n in nodes:
                 if isinstance(n,(ast.Assign,ast.AnnAssign)):
                     for target in n.targets if isinstance(n,ast.Assign) else [n.target]:bind(target,evaluate(n.value,env),env)
-                if isinstance(n,(ast.For,ast.comprehension)):bind(n.target,evaluate(n.iter,env),env)
+                if isinstance(n,ast.For):bind(n.target,evaluate(n.iter,env),env)
             if env==previous:break
         parents={child:n for n in nodes for child in ast.iter_child_nodes(n)}
+        base_env=env
         for n in nodes:
             if not isinstance(n,ast.Call):continue
+            env=base_env;ancestors=[];cursor=n
+            while cursor in parents:
+                cursor=parents[cursor]
+                if isinstance(cursor,(ast.GeneratorExp,ast.ListComp,ast.SetComp,ast.DictComp)):ancestors.append(cursor)
+            if ancestors:
+                env=dict(base_env)
+                def local_bind(target,values):
+                    if isinstance(target,ast.Name):env[target.id]=bounded(values)
+                    elif isinstance(target,(ast.Tuple,ast.List)):
+                        for child in target.elts:local_bind(child,values)
+                for scope in reversed(ancestors):
+                    for generator in scope.generators:local_bind(generator.target,evaluate(generator.iter,env))
             name=qname(n.func);leaf=name.rsplit('.',1)[-1];qualified=lookup(source,n.func)
             args=n.args
             if qualified in evidence_helpers:

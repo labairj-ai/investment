@@ -250,3 +250,9 @@ def test_runtime_location_does_not_bypass_evidence_sandbox_requirements(repo):
     head=commit_reader(root,HASH+'\nvalue=file_hash(Path(root)/"out/state.csv")\n',scout='[Service]\n')
     add(root,'out/state.csv')
     assert {'path':'out/state.csv','reason':'PROTECTED_EVIDENCE_SANDBOX_UNPROVEN'} in a.audit(root,head)['rejected_paths']
+
+
+def test_comprehension_scopes_cannot_mix_evidence_and_configuration_paths():
+    result=model(HASH+'\nROOT=Path("/reviewed")\na=[file_hash(p) for p in [ROOT/"state.csv"]]\nb=[p.read_text() for p in [ROOT/"policy.json"]]\n')
+    assert {r['usage'] for r in uses(result,'state.csv')}=={'PROTECTED_RUNTIME_EVIDENCE'}
+    assert {r['usage'] for r in uses(result,'policy.json')}=={'SOURCE_OR_EXECUTION_AUTHORITY'}
