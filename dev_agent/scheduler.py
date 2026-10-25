@@ -12,7 +12,8 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from .discovery import scout, score
-from .policy import classify, protected_graph
+from .policy import classify
+from .reviewed_source import reviewed_sources
 from .store import digest
 
 
@@ -28,8 +29,12 @@ def trigger():
         try:
             service=subprocess.run(['systemctl','--user','show','development-scout.service','--no-pager','--property=InvocationID,MainPID'],check=True,capture_output=True,text=True,timeout=10)
             values=dict(line.split('=',1) for line in service.stdout.splitlines() if '=' in line)
-            timer=subprocess.run(['systemctl','--user','show','development-scout.timer','--value','--property=LastTriggerUSecMonotonic'],check=True,capture_output=True,text=True,timeout=10)
-            recent=0<=time.monotonic()-int(timer.stdout.strip())/1_000_000<=180
+            timer=subprocess.run(['/usr/bin/busctl','--user','get-property','org.freedesktop.systemd1',
+                '/org/freedesktop/systemd1/unit/development_2dscout_2etimer',
+                'org.freedesktop.systemd1.Timer','LastTriggerUSecMonotonic'],check=True,capture_output=True,text=True,timeout=10)
+            if not re.fullmatch(r't [0-9]{1,20}\n',timer.stdout):raise ValueError('typed timer trigger required')
+            fired=int(timer.stdout[2:])
+            recent=0<fired<2**64 and 0<=time.monotonic()-fired/1_000_000<=180
             if values.get('InvocationID')==invocation and int(values.get('MainPID','0'))==os.getpid() and recent:return dict(source='systemd-observed-timer',invocation=invocation)
         except (OSError,ValueError,subprocess.SubprocessError):pass
     return dict(source='operator',invocation=None)
@@ -40,8 +45,8 @@ def discover_daily(root, store, *, now=None, cap=None, backlog_limit=None, signa
     from .discovery import git
     source_head=git(root,'rev-parse','HEAD')
     enabled_sources=[]
-    policy_path = Path(root) / "config/development_agent.json"
-    policy = json.loads(policy_path.read_text()) if policy_path.exists() else {}
+    reviewed=reviewed_sources(root,source_head)
+    policy=reviewed.configuration()
     cap = policy.get("daily_candidate_cap", 5) if cap is None else cap
     backlog_limit = policy.get("active_backlog_limit", 50) if backlog_limit is None else backlog_limit
     if not 0 <= cap <= 10 or not 1 <= backlog_limit <= 500: raise ValueError("bounded discovery policy required")
@@ -73,7 +78,7 @@ def discover_daily(root, store, *, now=None, cap=None, backlog_limit=None, signa
                     loaded,enabled_sources=load_spool(os.environ['DEVELOPMENT_SIGNAL_SPOOL'])
                     signals=[*signals,*loaded]
                 deduplicated=0;signal_suppressed=0
-                found = scout(root, signals, budget, policy.get("architecture_exclusions", {}), suppressed,enabled_sources=enabled_sources); graph = protected_graph(root); ids = []
+                found = scout(root, signals, budget, policy.get("architecture_exclusions", {}), suppressed,enabled_sources=enabled_sources,reviewed=reviewed); graph = reviewed.graph(root); ids = []
                 previous = {c["id"] for c in existing}
                 for proposal in found["proposals"]:
                     if proposal.get('signal_id'):

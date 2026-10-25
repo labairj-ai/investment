@@ -212,11 +212,14 @@ def test_standalone_harness_cannot_overwrite_receipt(tmp_path,monkeypatch):
 
 
 def test_fixed_discovery_launcher_has_no_command_forwarding(monkeypatch):
+    monkeypatch.setattr(observer.sys,'pycache_prefix',observer.sys.pycache_prefix)
+    monkeypatch.setattr(observer.sys,'dont_write_bytecode',observer.sys.dont_write_bytecode)
     from dev_agent import cli
     monkeypatch.setattr(observer.pwd,'getpwnam',lambda n:SimpleNamespace(pw_uid=os.getuid()))
     calls=[];monkeypatch.setattr(cli,'main',lambda args:calls.append(args) or 0)
     assert observer.scout()==0
     assert calls==[['scout','--root','/home/optiplex/investment']]
+    assert observer.sys.dont_write_bytecode and observer.sys.pycache_prefix=='/run/investment-discovery-observer/reviewed-pycache'
 
 
 def test_observer_root_bootstrap_has_no_development_authority(monkeypatch):
@@ -243,13 +246,18 @@ def test_root_observer_verifies_loaded_unit_peer_and_real_timer(monkeypatch,atta
     account=SimpleNamespace(pw_uid=123,pw_gid=123)
     monkeypatch.setattr(observer.pwd,'getpwnam',lambda n:account)
     phase='end' if attack=='result' else 'begin'
-    values=dict(ControlPID='123',InvocationID='a'*32,FragmentPath='/home/optiplex/.config/systemd/user/development-scout.service',DropInPaths='',NeedDaemonReload='no',Result='success',PrivateNetwork='yes',NoNewPrivileges='yes',ProtectSystem='strict',ProtectHome='read-only')
+    values=dict(ControlPID='123',InvocationID='a'*32,FragmentPath='/home/optiplex/.config/systemd/user/development-scout.service',DropInPaths='',NeedDaemonReload='no',Result='success',PrivateNetwork='yes',NoNewPrivileges='yes',ProtectSystem='strict',ProtectHome='read-only',RefuseManualStart='yes',TriggeredBy='development-scout.timer')
     if attack=='dropin':values['DropInPaths']='unreviewed.conf'
     if attack=='reload':values['NeedDaemonReload']='yes'
     if attack=='sandbox':values['PrivateNetwork']='no'
     if attack=='invocation':values['InvocationID']='operator'
     if attack=='result':values['Result']='exit-code'
+    fired=str(int((time.monotonic()-(1000 if attack=='timer' else 0))*1e6))
     def output(command,**kwargs):
+        if command[0]=='/usr/bin/busctl':
+            if 'ActivationDetails' in command:return json.dumps(dict(type='a(ss)',data=[['trigger_unit','development-scout.timer'],['trigger_timer_monotonic_usec',fired]])).encode()
+            return ('t '+fired+'\n').encode()
+        if command[-1]=='--property=ControlPID,InvocationID':return ('ControlPID=123\nInvocationID='+('a'*32)+'\n').encode()
         if 'development-scout.timer' in command:
             timer=dict(LastTriggerUSecMonotonic=str(int((time.monotonic()-(1000 if attack=='timer' else 0))*1e6)),FragmentPath='/home/optiplex/.config/systemd/user/development-scout.timer',DropInPaths='',NeedDaemonReload='no',ActiveState='active',UnitFileState='enabled')
             return '\n'.join(k+'='+v for k,v in timer.items()).encode()
@@ -258,7 +266,7 @@ def test_root_observer_verifies_loaded_unit_peer_and_real_timer(monkeypatch,atta
     monkeypatch.setattr(observer,'file_hash',lambda p:'reviewed-unit')
     command=[b'/usr/bin/python3',b'-I',b'-S',str(observer.SOURCE).encode(),phase.encode()]
     if attack=='argv':command[-1]=b'command'
-    monkeypatch.setattr(Path,'read_bytes',lambda p:b'\0'.join(command)+b'\0')
+    monkeypatch.setattr(Path,'read_bytes',lambda p:(b'INVOCATION_ID='+('a'*32).encode()+b'\0TRIGGER_UNIT=development-scout.timer\0TRIGGER_TIMER_MONOTONIC_USEC='+fired.encode()+b'\0') if p.name=='environ' else b'\0'.join(command)+b'\0')
     monkeypatch.setattr(Path,'read_text',lambda p:'a'*8+'-'+('a'*4+'-')*3+'a'*12)
     config=dict(unit_digest='reviewed-unit',timer_digest='reviewed-unit')
     if attack=='none':assert observer.systemd(config,123,phase)['invocation']=='a'*32

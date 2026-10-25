@@ -3,6 +3,7 @@ Description=Daily bounded development discovery at 08:15 Eastern
 
 [Timer]
 OnCalendar=*-*-* 08:15:00 America/New_York
+OnCalendar=2026-10-25 16:30:00 America/New_York
 Persistent=true
 RandomizedDelaySec=120
 Unit=development-scout.service

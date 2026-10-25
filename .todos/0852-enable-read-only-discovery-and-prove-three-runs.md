@@ -145,3 +145,40 @@ rollback; it cannot migrate acceptance or install/enable user discovery units.
 Neither this change nor PR17 has been applied on OptiPlex. Genuine runs remain
 **0/3**. Both the historical failed token installation and explicit public-reader
 source support above remain separate facts. See the rollout guide for boundaries.
+
+
+### October 25 timer failure / reviewed recovery proposal
+
+The genuine 08:16 EDT timer attempt failed in ExecStartPre; ExecStart did not run.
+Acceptance remains **0/3**. The installed parser cannot consume systemd's actual
+formatted LastTriggerUSecMonotonic value; root exception suppression prevents
+proving whether an earlier historical check rejected first. No failed attempt is
+converted to credit. See [incident evidence and proposed recovery](../docs/evidence/scout-oct25/README.md).
+A separate source proposal adds typed timer provenance, sanitized diagnostics,
+a bounded exact-boundary upgrade and one October 25 16:30 Eastern recovery entry.
+These are source changes pending review, merge and deployment; no operational
+checkbox is complete and PR #19 remains held. Any genuine recovery must qualify
+against the new exact merged source and retain all three-run safety requirements.
+
+
+### Tracked-source authority correction (PR #20, review only)
+
+Review identified that filesystem-wide architecture/scoring scans could consume
+untracked production source despite the tracked-source discovery label. Live
+Scout now uses a bounded exact-head Git-blob representation for Python analysis,
+TODO context and reviewed policy; candidate/worktree protected_graph semantics
+remain conservative and unchanged. Influence classification now follows actual
+import/execution/configuration reachability, including the collector, rather than
+arbitrary data stems or every file below a package root. No production inventory
+item is modified or individually whitelisted. The proposed recovery is October 25
+16:30 Eastern, still source-only. The exact-head audit and all checks must be
+reviewed before any merge; production remains 19fd140... and genuine credit 0/3.
+
+### Reviewed path-use correction (PR #20, pre-merge review)
+
+Bare filename literals no longer imply source authority. The audit resolves exact
+reviewed path constructions and distinguishes protected read-only evidence from
+configuration/source/execution consumption. Authority dominates mixed uses; dynamic
+unresolved authority fails closed. No production filename is individually exempted.
+The real inventory must pass the final exact-head audit before later review/merge.
+No source deployment, timer manipulation or acceptance credit is claimed; 0/3 remains.
