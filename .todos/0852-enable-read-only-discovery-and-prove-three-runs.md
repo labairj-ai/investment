@@ -182,3 +182,13 @@ configuration/source/execution consumption. Authority dominates mixed uses; dyna
 unresolved authority fails closed. No production filename is individually exempted.
 The real inventory must pass the final exact-head audit before later review/merge.
 No source deployment, timer manipulation or acceptance credit is claimed; 0/3 remains.
+
+### PR23 proposed system-manager boundary (not deployed/migrated)
+
+The genuine October25 21:00 timer failed closed before Scout: control-process
+trust then stop-post namespace/probe failure. Both October25 failures remain0/3.
+PR23 moves only Scout to PID1 as optiplex, daily-only timer, per-command execution
+records, sanitized subcodes, and dedicated transactional migration with separate
+three-phase test-only OS certification. Collector/scheduler-observer stay user
+units. See docs/scout-system-manager.md. Source/fixture/CI evidence cannot grant
+acceptance; stop for review before production migration. PR19 and0853 remain held.

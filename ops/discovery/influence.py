@@ -23,7 +23,7 @@ MAX_LIST_BYTES=24000000
 MAX_SOURCE_BYTES=16000000
 CACHE_PREFIX='/run/investment-discovery-observer/reviewed-pycache'
 MIN_NAMESPACES={'dev_agent','ops','scripts','config','systemd','.github'}
-ENTRY_MODULES=('ops.discovery.upgrade','ops.discovery.observer','dev_agent.cli','scripts.collect_development_signals')
+ENTRY_MODULES=('ops.discovery.migrate','ops.discovery.sandbox_certify','ops.discovery.upgrade','ops.discovery.observer','dev_agent.cli','scripts.collect_development_signals')
 ENV={'PATH':'/usr/bin:/bin','HOME':'/nonexistent','GIT_CONFIG_NOSYSTEM':'1',
      'GIT_CONFIG_GLOBAL':'/dev/null','GIT_NO_REPLACE_OBJECTS':'1','GIT_ATTR_NOSYSTEM':'1',
      'GIT_TERMINAL_PROMPT':'0','LANG':'C.UTF-8'}
@@ -533,6 +533,7 @@ def audit(root,head,*,tracked=None,untracked=None):
     trusted={root/name for name in tracked}
     trusted.update({Path('/opt/investment-discovery-observer/observer.py'),Path('/etc/investment-discovery-observer'),
                     Path('/etc/systemd/system/investment-discovery-observer.service'),
+                    Path('/etc/systemd/system/development-scout.service'),Path('/etc/systemd/system/development-scout.timer'),
                     Path('/home/optiplex/.config/systemd/user/development-scout.service'),
                     Path('/home/optiplex/.config/systemd/user/development-scout.timer')})
     # Actual reviewed source identifies out as state, not an import root. Venv
@@ -642,13 +643,14 @@ def isolated():
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--root',type=Path,required=True);parser.add_argument('--head',required=True)
-    parser.add_argument('--upgrade',action='store_true');parser.add_argument('--expected-old-head');parser.add_argument('--apply',action='store_true')
+    parser.add_argument('--migrate-scout',action='store_true');parser.add_argument('--upgrade',action='store_true');parser.add_argument('--expected-old-head');parser.add_argument('--apply',action='store_true')
     args=parser.parse_args()
-    if args.apply and not args.upgrade:parser.error('--apply requires --upgrade')
+    if args.upgrade and args.migrate_scout:parser.error('one boundary operation required')
+    if args.apply and not (args.upgrade or args.migrate_scout):parser.error('--apply requires a reviewed boundary operation')
     if sys.flags.isolated!=1 or sys.flags.no_site!=1:raise SystemExit('system Python -I -S required')
     sys.pycache_prefix=CACHE_PREFIX;sys.dont_write_bytecode=True
     result=audit(args.root,args.head)
-    if not args.upgrade or result['untracked_source_influence']!='PASS':
+    if not (args.upgrade or args.migrate_scout) or result['untracked_source_influence']!='PASS':
         print(json.dumps(result,indent=2));raise SystemExit(0 if result['untracked_source_influence']=='PASS' else 1)
     if not args.expected_old_head:parser.error('--expected-old-head required for upgrade')
     if not isolated():raise SystemExit('fixed isolated system Python required for upgrade')
@@ -660,8 +662,12 @@ def main():
     if prefix.exists() and (prefix.is_symlink() or prefix.stat().st_uid!=0 or prefix.stat().st_mode&0o022):raise SystemExit('protected cache prefix required')
     # No repository package is imported until the standalone audit passes.
     sys.path.insert(0,str(args.root))
-    from ops.discovery.upgrade import upgrade
-    outcome=upgrade(args.root,args.head,args.expected_old_head,apply=args.apply)
+    if args.migrate_scout:
+        from ops.discovery.migrate import migrate
+        outcome=migrate(args.root,args.head,args.expected_old_head,apply=args.apply)
+    else:
+        from ops.discovery.upgrade import upgrade
+        outcome=upgrade(args.root,args.head,args.expected_old_head,apply=args.apply)
     print(json.dumps(outcome,indent=2))
     raise SystemExit(1 if 'NOT_READY' in outcome['status'] else 0)
 

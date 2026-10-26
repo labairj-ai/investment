@@ -131,11 +131,14 @@ class TrustFailure(ValueError):
 REASONS=frozenset({'SANDBOX_PROBE_FAILED','SCOUT_CONTROL_PROCESS_INVALID',
     'SCOUT_SANDBOX_INVALID','INVOCATION_INVALID','TIMER_UNIT_INVALID',
     'TIMER_TRIGGER_INVALID','SOURCE_SNAPSHOT_INVALID','LEDGER_SNAPSHOT_INVALID',
-    'BOOKEND_INVALID','REQUEST_INVALID'})
+    'BOOKEND_INVALID','REQUEST_INVALID','SCOUT_CONTROL_PID_MISMATCH',
+    'SCOUT_FRAGMENT_MISMATCH','SCOUT_DROP_IN_UNEXPECTED','SCOUT_RELOAD_REQUIRED',
+    'SCOUT_UNIT_DIGEST_MISMATCH','SCOUT_ARGV_MISMATCH','SCOUT_EXECUTION_RECORD_INVALID',
+    'SCOUT_MANAGER_QUERY_FAILED'})
 
 
-def guarded(code,operation,*args):
-    try:return operation(*args)
+def guarded(code,operation,*args,**kwargs):
+    try:return operation(*args,**kwargs)
     except TrustFailure:raise
     except Exception:raise TrustFailure(code) from None
 
@@ -147,7 +150,7 @@ def root_failure(error):
 
 def timer_timestamp(options):
     # busctl retains the D-Bus type. systemctl show renders this as a duration.
-    raw=subprocess.check_output(['/usr/bin/busctl','--user','get-property',
+    raw=subprocess.check_output(['/usr/bin/busctl','--system','get-property',
         'org.freedesktop.systemd1',
         '/org/freedesktop/systemd1/unit/development_2dscout_2etimer',
         'org.freedesktop.systemd1.Timer','LastTriggerUSecMonotonic'],**options)
@@ -160,7 +163,7 @@ def timer_timestamp(options):
 def activation(options,pid,invocation,fired):
     # Read manager-owned activation details, not caller-controlled environment.
     # Metadata is corroboration only: missing best-effort data fails closed.
-    raw=subprocess.check_output(['/usr/bin/busctl','--user','--json=short','get-property',
+    raw=subprocess.check_output(['/usr/bin/busctl','--system','--json=short','get-property',
         'org.freedesktop.systemd1',
         '/org/freedesktop/systemd1/unit/development_2dscout_2eservice',
         'org.freedesktop.systemd1.Unit','ActivationDetails'],**options)
@@ -171,32 +174,68 @@ def activation(options,pid,invocation,fired):
     if any(not isinstance(p,list) or len(p)!=2 or any(type(v) is not str for v in p) for p in pairs):raise TrustFailure('TIMER_TRIGGER_INVALID')
     details=unique(pairs)
     if details.get('trigger_unit')!='development-scout.timer' or details.get('trigger_timer_monotonic_usec')!=str(fired):raise TrustFailure('TIMER_TRIGGER_INVALID')
-    # Bind this manager metadata to the same control process and invocation.
-    raw=subprocess.check_output(['/usr/bin/systemctl','--user','show','development-scout.service',
-        '--no-pager','--property=ControlPID,InvocationID'],**options).decode()
+    # Revalidate the same active per-command record and invocation.
+    command_record(options,pid,invocation,'begin')
+
+
+def manager_property(options,interface,name):
+    raw=subprocess.check_output(['/usr/bin/busctl','--system','--json=short','get-property',
+        'org.freedesktop.systemd1','/org/freedesktop/systemd1/unit/development_2dscout_2eservice',interface,name],**options)
+    if len(raw)>8192:raise TrustFailure('SCOUT_EXECUTION_RECORD_INVALID')
+    value=loads(raw)
+    if set(value)!={'type','data'}:raise TrustFailure('SCOUT_EXECUTION_RECORD_INVALID')
+    return value
+
+
+def command_record(options,pid,invocation,phase):
+    name={'begin':'ExecStartPre','end':'ExecStopPost'}[phase]
+    value=manager_property(options,'org.freedesktop.systemd1.Service',name)
+    if value['type']!='a(sasbttttuii)' or not isinstance(value['data'],list) or len(value['data'])!=1:raise TrustFailure('SCOUT_EXECUTION_RECORD_INVALID')
+    row=value['data'][0]
+    if not isinstance(row,list) or len(row)!=10:raise TrustFailure('SCOUT_EXECUTION_RECORD_INVALID')
+    binary,argv,ignore,start_real,start_mono,finish_real,finish_mono,command_pid,code,status=row
+    if binary!='/usr/bin/python3' or argv!=['/usr/bin/python3','-I','-S',str(SOURCE),phase]:raise TrustFailure('SCOUT_ARGV_MISMATCH')
+    if ignore is not False or any(type(x) is not int for x in row[3:]) or command_pid!=pid or pid<=0:raise TrustFailure('SCOUT_EXECUTION_RECORD_INVALID')
+    if min(start_real,start_mono)<=0 or any((finish_real,finish_mono,code,status)):raise TrustFailure('SCOUT_EXECUTION_RECORD_INVALID')
+    entered=manager_property(options,'org.freedesktop.systemd1.Unit','InactiveExitTimestampMonotonic')
+    # v255 timestamps start-pre fork just before entering ACTIVATING (28us on
+    # this host). Bound that manager ordering, never accept an old completed row.
+    if entered['type']!='t' or type(entered['data']) is not int or entered['data']<=0 or start_mono<entered['data']-1_000_000:raise TrustFailure('SCOUT_EXECUTION_RECORD_INVALID')
+    if not 0<=time.monotonic()-start_mono/1e6<=240 or not -5<=time.time()-start_real/1e6<=240:raise TrustFailure('SCOUT_EXECUTION_RECORD_INVALID')
+    raw=subprocess.check_output(['/usr/bin/systemctl','--system','show','development-scout.service','--no-pager',
+        '--property=InvocationID,ControlPID,ActiveState,SubState'],**options).decode()
     values=unique(line.split('=',1) for line in raw.splitlines() if '=' in line)
-    if values!={'ControlPID':str(pid),'InvocationID':invocation}:raise TrustFailure('INVOCATION_INVALID')
+    if values.get('InvocationID')!=invocation:raise TrustFailure('INVOCATION_INVALID')
+    if values.get('ControlPID') not in {'0',str(pid)}:raise TrustFailure('SCOUT_CONTROL_PID_MISMATCH')
+    expected=('activating','start-pre') if phase=='begin' else ('deactivating','stop-post')
+    if (values.get('ActiveState'),values.get('SubState'))!=expected:raise TrustFailure('SCOUT_EXECUTION_RECORD_INVALID')
+    again=manager_property(options,'org.freedesktop.systemd1.Service',name)
+    if again!=value:raise TrustFailure('SCOUT_EXECUTION_RECORD_INVALID')
 
 
 def systemd(config,pid,phase):
-    account=pwd.getpwnam('optiplex')
-    command=['/usr/bin/systemctl','--user','show']
-    options=dict(timeout=10,env={'PATH':'/usr/bin:/bin','HOME':'/nonexistent','XDG_RUNTIME_DIR':'/run/user/'+str(account.pw_uid)},user=account.pw_uid,group=account.pw_gid,extra_groups=[])
-    properties='ControlPID,InvocationID,FragmentPath,DropInPaths,NeedDaemonReload,Result,PrivateNetwork,NoNewPrivileges,ProtectSystem,ProtectHome,RefuseManualStart,TriggeredBy'
-    raw=subprocess.check_output(command+['development-scout.service','--no-pager','--property='+properties],**options).decode()
-    values=dict(line.split('=',1) for line in raw.splitlines() if '=' in line)
-    unit=Path('/home/optiplex/.config/systemd/user/development-scout.service')
-    if (values.get('ControlPID')!=str(pid) or values.get('FragmentPath')!=str(unit) or values.get('DropInPaths')!='' or values.get('NeedDaemonReload')!='no' or file_hash(unit)!=config['unit_digest']):raise TrustFailure('SCOUT_CONTROL_PROCESS_INVALID')
-    if any(values.get(k)!=v for k,v in {'PrivateNetwork':'yes','NoNewPrivileges':'yes','ProtectSystem':'strict','ProtectHome':'read-only'}.items()):raise TrustFailure('SCOUT_SANDBOX_INVALID')
+    options=dict(timeout=10,env={'PATH':'/usr/bin:/bin','HOME':'/nonexistent'})
+    command=['/usr/bin/systemctl','--system','show']
+    properties='ControlPID,InvocationID,FragmentPath,DropInPaths,NeedDaemonReload,Result,PrivateNetwork,NoNewPrivileges,ProtectSystem,ProtectHome,RefuseManualStart,TriggeredBy,User,Group,WorkingDirectory'
+    raw=guarded('SCOUT_MANAGER_QUERY_FAILED',subprocess.check_output,command+['development-scout.service','--no-pager','--property='+properties],**options).decode()
+    values=unique(line.split('=',1) for line in raw.splitlines() if '=' in line)
+    unit=Path('/etc/systemd/system/development-scout.service')
+    for code,ok in [('SCOUT_CONTROL_PID_MISMATCH',values.get('ControlPID') in {'0',str(pid)}),
+                    ('SCOUT_FRAGMENT_MISMATCH',values.get('FragmentPath')==str(unit)),
+                    ('SCOUT_DROP_IN_UNEXPECTED',values.get('DropInPaths')==''),
+                    ('SCOUT_RELOAD_REQUIRED',values.get('NeedDaemonReload')=='no')]:
+        if not ok:raise TrustFailure(code)
+    if guarded('SCOUT_UNIT_DIGEST_MISMATCH',file_hash,unit)!=config['unit_digest']:raise TrustFailure('SCOUT_UNIT_DIGEST_MISMATCH')
+    expected={'PrivateNetwork':'yes','NoNewPrivileges':'yes','ProtectSystem':'strict','ProtectHome':'read-only','User':'optiplex','Group':'optiplex','WorkingDirectory':str(ROOT)}
+    if any(values.get(k)!=v for k,v in expected.items()):raise TrustFailure('SCOUT_SANDBOX_INVALID')
     invocation=values.get('InvocationID','')
     if not re.fullmatch('[a-f0-9]{32}',invocation):raise TrustFailure('INVOCATION_INVALID')
-    args=Path('/proc')/str(pid)/'cmdline'
-    if args.read_bytes().split(b'\0')[:-1]!=[b'/usr/bin/python3',b'-I',b'-S',str(SOURCE).encode(),phase.encode()]:raise TrustFailure('SCOUT_CONTROL_PROCESS_INVALID')
+    guarded('SCOUT_EXECUTION_RECORD_INVALID',command_record,options,pid,invocation,phase)
     if phase=='begin':
         if values.get('RefuseManualStart')!='yes' or values.get('TriggeredBy')!='development-scout.timer':raise TrustFailure('TIMER_UNIT_INVALID')
-        raw=subprocess.check_output(command+['development-scout.timer','--no-pager','--property=LastTriggerUSecMonotonic,FragmentPath,DropInPaths,NeedDaemonReload,ActiveState,UnitFileState'],**options).decode()
-        timer=dict(line.split('=',1) for line in raw.splitlines() if '=' in line)
-        path=Path('/home/optiplex/.config/systemd/user/development-scout.timer')
+        raw=subprocess.check_output(command+['development-scout.timer','--no-pager','--property=FragmentPath,DropInPaths,NeedDaemonReload,ActiveState,UnitFileState'],**options).decode()
+        timer=unique(line.split('=',1) for line in raw.splitlines() if '=' in line)
+        path=Path('/etc/systemd/system/development-scout.timer')
         if timer.get('FragmentPath')!=str(path) or timer.get('DropInPaths')!='' or timer.get('NeedDaemonReload')!='no' or timer.get('ActiveState')!='active' or timer.get('UnitFileState') not in {'enabled','enabled-runtime'} or file_hash(path)!=config['timer_digest']:raise TrustFailure('TIMER_UNIT_INVALID')
         fired=guarded('TIMER_TRIGGER_INVALID',timer_timestamp,options)
         if not 0<=time.monotonic()-fired/1_000_000<=180:raise TrustFailure('TIMER_TRIGGER_INVALID')
@@ -204,7 +243,7 @@ def systemd(config,pid,phase):
         boot=Path('/proc/sys/kernel/random/boot_id').read_text().strip()
         if not re.fullmatch('[a-f0-9-]{36}',boot):raise TrustFailure('TIMER_TRIGGER_INVALID')
         return dict(invocation=invocation,timer_fire=boot+':'+str(fired))
-    elif values.get('Result')!='success':raise ValueError('unsuccessful Scout execution')
+    if values.get('Result')!='success':raise TrustFailure('BOOKEND_INVALID')
     return dict(invocation=invocation)
 
 
@@ -273,6 +312,7 @@ def serve():
     if sys.platform!='linux' or os.geteuid()!=0:raise ValueError('installed root observer required')
     protected(SOURCE);protected(CONFIG);protected(STATE)
     config=loads(CONFIG.read_bytes())
+    if config.get('scout_manager')!='system':raise ValueError('system Scout configuration required')
     if file_hash(SOURCE)!=config['observer_digest']:raise ValueError('observer source changed')
     observer=Observer(config)
     class Handler(socketserver.StreamRequestHandler):

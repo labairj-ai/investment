@@ -15,7 +15,7 @@ def test_exact_production_representation_is_not_an_integer():
 @pytest.mark.parametrize('raw',[b't 6433648893213\n',b't 1\n'])
 def test_typed_first_nonzero_trigger(monkeypatch,raw):
     def output(command,**options):
-        assert command==['/usr/bin/busctl','--user','get-property','org.freedesktop.systemd1','/org/freedesktop/systemd1/unit/development_2dscout_2etimer','org.freedesktop.systemd1.Timer','LastTriggerUSecMonotonic']
+        assert command==['/usr/bin/busctl','--system','get-property','org.freedesktop.systemd1','/org/freedesktop/systemd1/unit/development_2dscout_2etimer','org.freedesktop.systemd1.Timer','LastTriggerUSecMonotonic']
         return raw
     monkeypatch.setattr(o.subprocess,'check_output',output)
     assert o.timer_timestamp({})==int(raw[2:])
@@ -29,18 +29,20 @@ def test_zero_absent_malformed_timer_fails_closed(monkeypatch,raw):
 
 @pytest.fixture
 def system(monkeypatch):
-    h=SimpleNamespace(fired=6433648893213,invocation='a'*32,env=None,timer={})
-    h.values=dict(ControlPID='123',InvocationID=h.invocation,FragmentPath='/home/optiplex/.config/systemd/user/development-scout.service',DropInPaths='',NeedDaemonReload='no',Result='success',PrivateNetwork='yes',NoNewPrivileges='yes',ProtectSystem='strict',ProtectHome='read-only',RefuseManualStart='yes',TriggeredBy='development-scout.timer')
+    h=SimpleNamespace(fired=6433648893213,invocation='a'*32,env=None,timer={},real=int(o.time.time()*1e6))
+    h.values=dict(ControlPID='123',InvocationID=h.invocation,FragmentPath='/etc/systemd/system/development-scout.service',DropInPaths='',NeedDaemonReload='no',Result='success',PrivateNetwork='yes',NoNewPrivileges='yes',ProtectSystem='strict',ProtectHome='read-only',RefuseManualStart='yes',TriggeredBy='development-scout.timer',User='optiplex',Group='optiplex',WorkingDirectory=str(o.ROOT))
     monkeypatch.setattr(o.pwd,'getpwnam',lambda n:SimpleNamespace(pw_uid=123,pw_gid=123))
     monkeypatch.setattr(o.time,'monotonic',lambda:h.fired/1e6+1)
     monkeypatch.setattr(o,'file_hash',lambda p:'reviewed')
     def output(cmd,**kw):
-        assert kw['user']==123 and kw['extra_groups']==[]
+        assert '--user' not in cmd and 'user' not in kw and 'XDG_RUNTIME_DIR' not in kw['env']
         if cmd[0]=='/usr/bin/busctl':
+            if 'ExecStartPre' in cmd or 'ExecStopPost' in cmd:return json.dumps(dict(type='a(sasbttttuii)',data=[['/usr/bin/python3',['/usr/bin/python3','-I','-S',str(o.SOURCE),'end' if 'ExecStopPost' in cmd else 'begin'],False,h.real,h.fired,0,0,123,0,0]])).encode()
+            if 'InactiveExitTimestampMonotonic' in cmd:return json.dumps(dict(type='t',data=h.fired)).encode()
             if 'ActivationDetails' in cmd:return h.env if h.env is not None else json.dumps(dict(type='a(ss)',data=[['trigger_unit','development-scout.timer'],['trigger_timer_monotonic_usec',str(h.fired)]])).encode()
             return f't {h.fired}\n'.encode()
-        if cmd[-1]=='--property=ControlPID,InvocationID':return f'ControlPID=123\nInvocationID={h.invocation}\n'.encode()
-        data=dict(LastTriggerUSecMonotonic=LIVE,FragmentPath='/home/optiplex/.config/systemd/user/development-scout.timer',DropInPaths='',NeedDaemonReload='no',ActiveState='active',UnitFileState='enabled',**h.timer) if 'development-scout.timer' in cmd else h.values
+        if cmd[-1]=='--property=InvocationID,ControlPID,ActiveState,SubState':return f'ControlPID=123\nInvocationID={h.invocation}\nActiveState=activating\nSubState=start-pre\n'.encode()
+        data=dict(LastTriggerUSecMonotonic=LIVE,FragmentPath='/etc/systemd/system/development-scout.timer',DropInPaths='',NeedDaemonReload='no',ActiveState='active',UnitFileState='enabled',**h.timer) if 'development-scout.timer' in cmd else h.values
         return '\n'.join(k+'='+v for k,v in data.items()).encode()
     monkeypatch.setattr(o.subprocess,'check_output',output)
     def read(p):
@@ -122,11 +124,10 @@ def test_root_response_emits_only_fixed_reason_and_failed(capsys):
     assert capsys.readouterr().err=='DISCOVERY_OBSERVER_FAILURE BOOKEND_INVALID\n'
 
 
-def test_normal_and_exactly_one_recovery_schedule_in_reviewed_source():
+def test_system_scout_daily_only_schedule_in_reviewed_source():
     timer=Path('systemd/development-scout.timer').read_text()
     assert [l for l in timer.splitlines() if l.startswith('OnCalendar=')]==[
-        'OnCalendar=*-*-* 08:15:00 America/New_York',
-        'OnCalendar=2026-10-25 21:00:00 America/New_York']
+        'OnCalendar=*-*-* 10:00:00 America/New_York']
     assert 'RefuseManualStart=yes' in Path('systemd/development-scout.service').read_text()
 
 
@@ -146,6 +147,7 @@ def test_scout_scheduler_uses_same_typed_timestamp(monkeypatch,raw,recent,expect
     monkeypatch.setattr(scheduler.os,'getpid',lambda:123)
     monkeypatch.setattr(scheduler.time,'monotonic',lambda:6433648893213/1e6+(1 if recent else 181))
     def run(command,**kwargs):
+        if 'ActivationDetails' in command:return SimpleNamespace(stdout=json.dumps(dict(type='a(ss)',data=[['trigger_unit','development-scout.timer'],['trigger_timer_monotonic_usec','6433648893213']])))
         if command[0]=='/usr/bin/busctl':return SimpleNamespace(stdout=raw)
         return SimpleNamespace(stdout='InvocationID='+('a'*32)+'\nMainPID=123\n')
     monkeypatch.setattr(scheduler.subprocess,'run',run)

@@ -5,22 +5,24 @@ RefuseManualStart=yes
 
 [Service]
 Type=oneshot
-WorkingDirectory=%h/investment
+User=optiplex
+Group=optiplex
+WorkingDirectory=/home/optiplex/investment
 ExecStartPre=/usr/bin/python3 -I -S /opt/investment-discovery-observer/observer.py begin
 ExecStopPost=/usr/bin/python3 -I -S /opt/investment-discovery-observer/observer.py end
 ExecStart=/usr/bin/python3 -I -S /opt/investment-discovery-observer/observer.py scout
-EnvironmentFile=-%h/.config/investment-development/discovery.env
+EnvironmentFile=-/home/optiplex/.config/investment-development/discovery.env
 UMask=0077
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=%h/.local/share/investment-development
+ReadWritePaths=/home/optiplex/.local/share/investment-development
 PrivateTmp=true
 PrivateNetwork=true
 TimeoutStartSec=180
 
 # Discovery never receives portfolio, broker, owner or SSH credentials.
-InaccessiblePaths=-%h/.ssh -%h/.aws -%h/.config/gh -%h/investment/.env -%h/investment/out -%h/investment/holdings.csv -%h/.local/share/investment-development/service.env
-InaccessiblePaths=-%h/.netrc -%h/.git-credentials -%h/.gnupg
+InaccessiblePaths=-/home/optiplex/.ssh -/home/optiplex/.aws -/home/optiplex/.config/gh -/home/optiplex/investment/.env -/home/optiplex/investment/out -/home/optiplex/investment/holdings.csv -/home/optiplex/.local/share/investment-development/service.env
+InaccessiblePaths=-/home/optiplex/.netrc -/home/optiplex/.git-credentials -/home/optiplex/.gnupg
 
-InaccessiblePaths=-%h/.config/investment-development/github-read.token
+InaccessiblePaths=-/home/optiplex/.config/investment-development/github-read.token
