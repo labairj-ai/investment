@@ -8,10 +8,33 @@ import pytest
 from ops.discovery import migrate as m,pin_refresh as r,observer as o
 from test_development_agent_observer_refresh import host
 
+def executor_checkout(h,target,remote=None):
+ """Actual Executor checkout; replace only HTTPS transport with private bare Git."""
+ from deployment_agent.executor import Executor
+ origin='https://github.com/labairj-ai/investment.git'
+ if remote is None:
+  remote=h.base/'reviewed-remote.git'
+  subprocess.run(['git','init','--bare','--quiet','--initial-branch=main',str(remote)],check=True)
+  h.git('push','--quiet',str(remote),target+':refs/heads/main')
+ h.checkout_calls=[]
+ def transport(args,**kwargs):
+  h.checkout_calls.append(list(args))
+  if 'fetch' in args:
+   args=list(args);index=args.index('fetch')
+   assert args[index:]==['fetch','--no-tags',origin,'main']
+   args[index+2]=str(remote)
+   args=args[:index]+['-c','protocol.file.allow=always']+args[index:]
+  return subprocess.run(args,**kwargs)
+ executor=Executor(h.ROOT,h.base/'deployment-receipts',h.CONTROL/'development-control.sqlite3',invoke=transport)
+ executor.checkout(target,origin)
+ assert h.git('rev-parse','HEAD')==target and h.git('branch','--show-current')==''
+ return executor
+
+
 @pytest.fixture
 def migration(host,monkeypatch):
  monkeypatch.setattr(m.time,'time',lambda:eastern('07:00:00'))
- h=host;h.CONFIG.write_bytes(r.encoded(h.old_config));h.git('branch','-M','main');h.user_active=h.user_enabled=True;h.system_active=h.system_enabled=False;h.cert_started=False;h.failure=None;h.timeline=[];h.next_offset=0
+ h=host;h.CONFIG.write_bytes(r.encoded(h.old_config));h.user_active=h.user_enabled=True;h.system_active=h.system_enabled=False;h.cert_started=False;h.failure=None;h.timeline=[];h.next_offset=0
  system=h.base/'system';system.mkdir();monkeypatch.setattr(m,'SYSTEM',system);monkeypatch.setattr(m,'STAMP',h.base/'system-stamp');monkeypatch.setattr(m,'CERT_SOURCE',h.SOURCE.parent/'sandbox_certify.py')
  monkeypatch.setattr(m,'OLD_HEAD',h.old)
  for name,key in [('OLD_OBSERVER','observer_digest'),('OLD_SERVICE','unit_digest'),('OLD_TIMER','timer_digest')]:monkeypatch.setattr(m,name,h.old_config[key])
@@ -27,7 +50,7 @@ def migration(host,monkeypatch):
  (h.CONTROL/'operational-signals.json').write_text('{}')
  ledger=h.CONTROL/'development-control.sqlite3';monkeypatch.setattr(o,'LEDGER',ledger)
  with sqlite3.connect(ledger) as db:db.execute('CREATE TABLE dev_events(seq INTEGER PRIMARY KEY,event_id TEXT,candidate TEXT,kind TEXT,created REAL,payload TEXT)');db.execute("INSERT INTO dev_events VALUES(1,'observation',NULL,'SCHEDULER_OBSERVATION',1,'{}')")
- h.git('add','.');h.git('commit','-qm','reviewed system migration');h.head=h.git('rev-parse','HEAD');h.git('update-ref','refs/remotes/origin/main',h.head)
+ h.git('add','.');h.git('commit','-qm','reviewed system migration');h.head=h.git('rev-parse','HEAD');executor_checkout(h,h.head)
  original=h.invoke
  def invoke(args,**kw):
   if args[:2]==['/bin/systemctl','stop']:
