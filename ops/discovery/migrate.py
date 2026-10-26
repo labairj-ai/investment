@@ -11,6 +11,8 @@ import stat
 import subprocess
 import sys
 import time
+import uuid
+import re
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from ops.discovery import pin_refresh as r,upgrade as u,observer as o
@@ -52,17 +54,17 @@ def quiescent(invoke,user):
 
 
 def first_activation_slot(now=None):
-    """Authorize only today's pre-09:50 Eastern window; never roll to tomorrow."""
+    """Authorize only today's pre-11:50 Eastern window; never roll to tomorrow."""
     now=time.time() if now is None else now
     local=datetime.fromtimestamp(now,ZoneInfo('America/New_York'))
-    slot=local.replace(hour=10,minute=0,second=0,microsecond=0).timestamp()
-    if now>=slot-600:raise ValueError('first system timer activation requires today before 09:50 Eastern')
+    slot=local.replace(hour=12,minute=0,second=0,microsecond=0).timestamp()
+    if now>=slot-600:raise ValueError('first system timer activation requires today before 11:50 Eastern')
     return slot
 
 
 def daily_only(raw):
     lines=raw.decode().splitlines()
-    if [s for s in lines if s.startswith('OnCalendar=')]!=['OnCalendar=*-*-* 10:00:00 America/New_York']:raise ValueError('daily-only calendar required; elapsed recovery forbidden')
+    if [s for s in lines if s.startswith('OnCalendar=')]!=['OnCalendar=*-*-* 12:00:00 America/New_York']:raise ValueError('daily-only calendar required; elapsed recovery forbidden')
     for line in ('Persistent=true','RandomizedDelaySec=120','Unit=development-scout.service'):
         if lines.count(line)!=1:raise ValueError('exact reviewed timer settings required')
 
@@ -91,9 +93,42 @@ def ledger_unchanged(before):
     if o.digest(prefix)!=before['prefix'] or current['schema']!=before['schema'] or any(v[3]!='SCHEDULER_OBSERVATION' for v in rows if v[0]>before['seq']):raise ValueError('ledger prefix/schema/authority changed')
 
 
+def stopped_observer(config,invoke):
+    # A stopped boundary is verified statically; never start old code to probe it.
+    for path in (r.SOURCE,r.CONFIG,r.UNIT):r.protected(path)
+    if r.CONFIG.read_bytes()!=r.encoded(config) or r.sha(r.SOURCE.read_bytes())!=config['observer_digest'] or r.sha(r.UNIT.read_bytes())!=config['files'][r.IDENTITIES[1]]:raise ValueError('exact restored observer boundary required')
+    runtime=r.RUNTIME.resolve(strict=True);r.protected(runtime)
+    if r.RUNTIME.is_symlink() and r.RUNTIME.lstat().st_uid!=r.ROOT_UID:raise ValueError('root runtime required')
+    p=r.properties(r.command(invoke,['/bin/systemctl','show',r.SERVICE,'--property=ActiveState,SubState,MainPID,FragmentPath,DropInPaths,NeedDaemonReload'],check=True).stdout)
+    if p!={'ActiveState':'inactive','SubState':'dead','MainPID':'0','FragmentPath':str(r.UNIT),'DropInPaths':'','NeedDaemonReload':'no'}:raise ValueError('exact stopped observer required')
+    if r.SOCKET.exists() or r.SOCKET.is_symlink():raise ValueError('no stopped observer socket permitted')
+    processes=list(r.PROC.iterdir())
+    if len(processes)>65536:raise ValueError('bounded process inventory required')
+    for process in processes:
+        if not process.name.isdecimal():continue
+        try:
+            with (process/'cmdline').open('rb') as stream:raw=stream.read(8193)
+            if len(raw)>8192:raise ValueError('bounded observer process identity required')
+            argv=raw.split(b'\0')
+        except (FileNotFoundError,ProcessLookupError):continue
+        if str(r.SOURCE).encode() in argv:raise ValueError('observer process remains')
+    return dict(invocation=None,pid=0,socket=None,runtime_sha256=r.sha(runtime.read_bytes()))
+
+
+def start_boundary(config,invoke):
+    p=r.properties(r.command(invoke,['/bin/systemctl','show',r.SERVICE,'--property=ActiveState,SubState,MainPID'],check=True).stdout)
+    timer=properties(invoke,'development-scout.timer',True)
+    if p.get('ActiveState')=='active' and timer.get('ActiveState')=='active' and timer.get('UnitFileState') in {'enabled','enabled-runtime'}:
+        return 'NORMAL_ACTIVE',r.boundary(config,invoke)
+    if p=={'ActiveState':'inactive','SubState':'dead','MainPID':'0'} and timer.get('ActiveState')=='inactive' and timer.get('UnitFileState')=='disabled':
+        return 'STOPPED_ROLLBACK',stopped_observer(config,invoke)
+    raise ValueError('mixed old observer/timer state rejected')
+
+
 def inspect(root,head,old,invoke):
     if sys.platform!='linux' or os.geteuid()!=r.ROOT_UID or Path(root)!=r.ROOT or r.ROOT.is_symlink() or old!=OLD_HEAD or head==old or not isolated():raise ValueError('fixed root isolated exact migration required')
-    slot=first_activation_slot()
+    try:slot=first_activation_slot()
+    except Exception:raise MigrationFailure('PREFLIGHT_VERIFIED','ACTIVATION_WINDOW_EXPIRED') from None
     influence=audit(root,head)
     if influence['untracked_source_influence']!='PASS':raise ValueError('source influence failed')
     target=r.prepare(root,head,'labairj-ai/investment');r.git(root,'merge-base','--is-ancestor',old,head)
@@ -101,7 +136,7 @@ def inspect(root,head,old,invoke):
     before=r.source_manifest(root,old)
     if [before[k] for k in r.IDENTITIES]!=[OLD_OBSERVER,OLD_UNIT,OLD_SERVICE,OLD_TIMER]:raise ValueError('old exact boundary identities required')
     if target['manifest'][r.IDENTITIES[1]]!=OLD_UNIT:raise ValueError('root observer unit must not change')
-    current=r.configuration(old,before);observed=r.boundary(current,invoke)
+    current=r.configuration(old,before);start_mode,observed=start_boundary(current,invoke)
     evidence=u.state()
     if 'discovery.json' in evidence:raise ValueError('no discovery receipt permitted before migration')
     fingerprints=u.protected_state();ledger,rows=o.ledger_snapshot()
@@ -112,9 +147,10 @@ def inspect(root,head,old,invoke):
         path=r.USER_UNITS/name;item=source_file(path);p=properties(invoke,name,True)
         if r.sha(item['data'])!=before[key] or p.get('FragmentPath')!=str(path) or p.get('DropInPaths')!='' or p.get('NeedDaemonReload')!='no':raise ValueError('old user Scout boundary mismatch')
         oldfiles.append(item)
-    timer_state(invoke,True,True);quiescent(invoke,True);next_timer(invoke,True)
+    timer_state(invoke,True,start_mode=='NORMAL_ACTIVE');quiescent(invoke,True)
+    if start_mode=='NORMAL_ACTIVE':next_timer(invoke,True)
     r.protected(STAMP.parent,directory=True)
-    if STAMP.exists() or STAMP.is_symlink():raise ValueError('new system timer must have no prior persistent history; never reset it')
+    if STAMP.exists() or STAMP.is_symlink():raise MigrationFailure('PREFLIGHT_VERIFIED','PERSISTENT_TIMER_STAMP_PRESENT')
     desired=r.configuration(head,target['manifest']);desired['scout_manager']='system'
     targets=[(r.SOURCE,r.git(root,'show',head+':'+r.IDENTITIES[0]),oldfiles[0]['mode']),
              (r.CONFIG,r.encoded(desired),oldfiles[1]['mode']),
@@ -129,8 +165,8 @@ def inspect(root,head,old,invoke):
         r.protected(path.parent,directory=True)
     for name in ('development-scout.service','development-scout.timer',CERT_UNIT):
         p=properties(invoke,name)
-        if p.get('LoadState')!='not-found' or p.get('DropInPaths','')!='':raise ValueError('unexpected loaded system unit')
-    return dict(slot=slot,current=current,desired=desired,observed=observed,evidence=evidence,fingerprints=fingerprints,ledger=ledger,oldfiles=oldfiles,targets=targets,influence=influence)
+        if p.get('LoadState')!='not-found' or p.get('DropInPaths','')!='' or p.get('ActiveState')!='inactive' or p.get('MainPID')!='0' or p.get('ControlPID')!='0':raise ValueError('unexpected loaded system unit')
+    return dict(start_mode=start_mode,slot=slot,current=current,desired=desired,observed=observed,evidence=evidence,fingerprints=fingerprints,ledger=ledger,oldfiles=oldfiles,targets=targets,influence=influence)
 
 
 def system_boundary(invoke,desired):
@@ -181,66 +217,189 @@ def install_new(path,data,mode,installed):
         if temporary.exists():temporary.unlink();u.sync(path.parent)
 
 
-def migrate(root,head,old,*,apply=False,invoke=subprocess.run):
-    plan=inspect(root,head,old,invoke)
-    summary=dict(status='PLAN_ONLY',changes_applied=False,source_head=head,expected_old_head=old,accepted_runs=0,grants_implementation=False,scout_manager='system',untracked_source_influence=plan['influence'],old_boundary={k:plan['current'][k] for k in ('observer_digest','unit_digest','timer_digest')},new_boundary={k:plan['desired'][k] for k in ('observer_digest','unit_digest','timer_digest')},changed_files=[str(p) for p,_,_ in plan['targets']])
+STAGES=('PREFLIGHT_VERIFIED','BACKUP_CREATED','OLD_SCOUT_QUIESCENT','OLD_USER_TIMER_DISABLED','OLD_OBSERVER_STOPPED','SYSTEM_BOUNDARY_INSTALLED','SYSTEM_DAEMON_RELOADED','SYSTEM_BOUNDARY_VERIFIED','SANDBOX_CERTIFICATION_STARTED','SANDBOX_CERTIFICATION_PASSED','POST_CERT_LEDGER_VERIFIED','POST_CERT_ACCEPTANCE_STATE_VERIFIED','POST_CERT_PROTECTED_STATE_VERIFIED','OLD_USER_TIMER_DISABLED_VERIFIED','ACTIVATION_WINDOW_VERIFIED','SYSTEM_TIMER_ENABLED','SYSTEM_TIMER_STATE_VERIFIED','NEXT_ELAPSE_VERIFIED','NEW_OBSERVER_STARTED','FINAL_BOUNDARY_VERIFIED','MIGRATION_COMPLETE','ROLLBACK_STARTED','ROLLBACK_COMPLETE')
+FAILURE_CODES=frozenset(('LEDGER_CONTINUITY_CHANGED','ACCEPTANCE_STATE_CHANGED','PROTECTED_STATE_CHANGED','OLD_USER_TIMER_STATE_INVALID','ACTIVATION_WINDOW_EXPIRED','PERSISTENT_TIMER_STAMP_PRESENT','SYSTEM_TIMER_ENABLE_FAILED','SYSTEM_TIMER_STATE_INVALID','NEXT_ELAPSE_INVALID','OBSERVER_START_FAILED','OBSERVER_BOUNDARY_INVALID','SYSTEM_BOUNDARY_CHANGED','SANDBOX_CERTIFICATION_FAILED','ROLLBACK_FAILED','UNCLASSIFIED_MIGRATION_FAILURE'))
+
+
+class MigrationFailure(ValueError):
+    def __init__(self,stage,code):
+        if stage not in STAGES or code not in FAILURE_CODES:raise ValueError('allowlisted migration failure required')
+        self.stage=stage;self.code=code
+        super().__init__(code)
+
+
+class Progress:
+    def __init__(self,backup,head,old,mode):
+        self.backup=backup;self.events=[];self.stage='PREFLIGHT_VERIFIED'
+        self.identity=dict(schema='scout-system-migration-progress-1',attempt_id=uuid.uuid4().hex,source_target_sha=head,old_boundary_sha=old,start_mode=mode)
+
+    def record(self,stage,result,started,code=None):
+        if stage not in STAGES or result not in {'STARTED','PASS','FAIL'} or code is not None and code not in FAILURE_CODES:raise ValueError('allowlisted progress required')
+        self.stage=stage
+        row=dict(stage=stage,stage_started_at=started,stage_completed_at=None if result=='STARTED' else time.time(),result=result,sanitized_failure_code=code)
+        self.events.append(row)
+        if len(self.events)>128:raise ValueError('bounded progress required')
+        temp=self.backup/'progress.next';target=self.backup/'progress.json'
+        if temp.exists() or temp.is_symlink() or target.is_symlink():raise ValueError('progress path collision')
+        u.write(temp,r.encoded(dict(self.identity,stages=self.events)),0o600,r.ROOT_UID,os.getgid())
+        os.replace(temp,target);u.sync(self.backup)
+
+    def run(self,stage,code,action):
+        started=time.time();self.record(stage,'STARTED',started)
+        try:value=action()
+        except Exception as error:
+            failure=error if isinstance(error,MigrationFailure) else MigrationFailure(stage,code)
+            self.record(stage,'FAIL',started,failure.code)
+            raise failure from None
+        self.record(stage,'PASS',started)
+        return value
+
+
+def require(condition,stage,code):
+    if not condition:raise MigrationFailure(stage,code)
+
+
+def activation_window(plan):
+    stage='ACTIVATION_WINDOW_VERIFIED'
+    try:slot=first_activation_slot()
+    except Exception:raise MigrationFailure(stage,'ACTIVATION_WINDOW_EXPIRED') from None
+    require(slot==plan['slot'],stage,'ACTIVATION_WINDOW_EXPIRED')
+    require(not (STAMP.exists() or STAMP.is_symlink()),stage,'PERSISTENT_TIMER_STAMP_PRESENT')
+
+
+def _migrate(root,head,old,*,apply=False,invoke=subprocess.run):
+    preflight_started=time.time()
+    base=dict(status='PREFLIGHT_FAILED_NOT_READY',changes_applied=False,accepted_runs=0,grants_implementation=False)
+    try:
+        # Do not echo invalid caller arguments into failure evidence.
+        if not all(isinstance(v,str) and re.fullmatch('[a-f0-9]{40}',v) for v in (head,old)):raise ValueError('exact SHA required')
+        base.update(source_head=head,expected_old_head=old)
+        plan=inspect(root,head,old,invoke)
+    except Exception as error:
+        code=error.code if isinstance(error,MigrationFailure) else 'UNCLASSIFIED_MIGRATION_FAILURE'
+        return dict(base,failure_stage='PREFLIGHT_VERIFIED',failure_code=code)
+    summary=dict(base,status='PLAN_ONLY',start_mode=plan['start_mode'],scout_manager='system',untracked_source_influence=plan['influence'],old_boundary={k:plan['current'][k] for k in ('observer_digest','unit_digest','timer_digest')},new_boundary={k:plan['desired'][k] for k in ('observer_digest','unit_digest','timer_digest')},changed_files=[str(p) for p,_,_ in plan['targets']])
     if not apply:return summary
-    lock=r.CONFIG.parent/'scout-system-migration.lock';fd=os.open(lock,os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)
+    backup=None;progress=None;installed=[];units_changed=False;backup_complete=False
+    lock=r.CONFIG.parent/'scout-system-migration.lock'
+    fd=os.open(lock,os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)
     with os.fdopen(fd,'a') as handle:
         r.protected(lock);fcntl.flock(handle,fcntl.LOCK_EX|fcntl.LOCK_NB)
-        if inspect(root,head,old,invoke)!=plan:raise ValueError('migration preflight changed')
-        if first_activation_slot()!=plan['slot']:raise ValueError('migration activation window changed')
-        backup=r.CONFIG.parent/('scout-system-migration-backup-'+head);backup.mkdir(mode=0o700);u.sync(backup.parent)
-        for i,item in enumerate(plan['oldfiles']):u.write(backup/str(i),item['data'],item['mode'],item['uid'],item['gid'])
-        u.write(backup/'manifest.json',r.encoded(dict(old=old,head=head,old_files=[{k:str(v) if k=='path' else v for k,v in f.items() if k!='data'}|{'sha256':r.sha(f['data'])} for f in plan['oldfiles']],new_paths=[str(p) for p,_,_ in plan['targets'][2:]],evidence={name:r.sha(data) for name,data in plan['evidence'].items()},old_user_timer_enabled=True)),0o600,r.ROOT_UID,os.getgid())
-        for name,data in plan['evidence'].items():u.write(backup/('evidence-'+name),data,0o600,r.ROOT_UID,os.getgid())
-        quiescent(invoke,True)
-        if first_activation_slot()!=plan['slot']:raise ValueError('migration activation window changed before timer stop')
-        started=time.time();installed=[]
         try:
-            u.user(invoke,['disable','--now','development-scout.timer']);timer_state(invoke,True,False);quiescent(invoke,True)
-            r.stop_verified(invoke)
-            for path,data,mode in plan['targets']:
-                if path in {r.SOURCE,r.CONFIG}:
-                    original=next(f for f in plan['oldfiles'] if f['path']==path);u.replace(path,data,mode,original['uid'],original['gid'])
-                else:install_new(path,data,mode,installed)
-            system(invoke,'daemon-reload');timer_state(invoke,False,False);system_boundary(invoke,plan['desired'])
-            cert=certify(invoke,started)
-            ledger_unchanged(plan['ledger'])
-            if u.state()!=plan['evidence'] or u.protected_state()!=plan['fingerprints']:raise ValueError('certification touched protected state')
-            timer_state(invoke,True,False)
-            # Reauthorize today's pre-slot window after certification. Never
-            # rely on tomorrow's calendar or edit/copy persistent timer history.
-            if first_activation_slot()!=plan['slot'] or STAMP.exists() or STAMP.is_symlink():raise ValueError('quiet first system timer activation required')
-            system(invoke,'enable','--now','development-scout.timer');timer_state(invoke,False,True);timer_state(invoke,True,False)
-            nxt=next_timer(invoke,False)
-            if not plan['slot']<=nxt<=plan['slot']+120:raise ValueError('new timer must target next normal Eastern slot')
-            quiescent(invoke,False)
-            r.service(invoke,'start');r.wait_socket(plan['observed']['socket']);seen=r.boundary(plan['desired'],invoke)
-            if seen['invocation']==plan['observed']['invocation'] or seen['socket']==plan['observed']['socket'] or seen['runtime_sha256']!=plan['observed']['runtime_sha256']:raise ValueError('new observer restart verification failed')
-            ledger_unchanged(plan['ledger']);r.manifest_matches(root,plan['desired']['files'])
-            if u.state()!=plan['evidence'] or u.protected_state()!=plan['fingerprints'] or audit(root,head)['untracked_source_influence']!='PASS':raise ValueError('post-migration protected state changed')
-            for path,data,_ in plan['targets']:
-                if path.read_bytes()!=data:raise ValueError('installed boundary changed')
-            timer_state(invoke,True,False);timer_state(invoke,False,True);system_boundary(invoke,plan['desired'])
-            result=dict(summary,status='MIGRATED_AWAITING_GENUINE_SYSTEM_TIMER_RUNS',changes_applied=True,backup=str(backup),certification=cert,observer=seen)
-        except Exception:
+            require(inspect(root,head,old,invoke)==plan,'PREFLIGHT_VERIFIED','OBSERVER_BOUNDARY_INVALID')
+            activation_window(plan)
+            candidate=r.CONFIG.parent/('scout-system-migration-backup-'+head)
+            if candidate.exists() or candidate.is_symlink():raise MigrationFailure('PREFLIGHT_VERIFIED','UNCLASSIFIED_MIGRATION_FAILURE')
+            candidate.mkdir(mode=0o700);backup=candidate;u.sync(backup.parent)
+            progress=Progress(backup,head,old,plan['start_mode'])
+            progress.record('PREFLIGHT_VERIFIED','PASS',preflight_started)
+            def backups():
+                for i,item in enumerate(plan['oldfiles']):u.write(backup/str(i),item['data'],item['mode'],item['uid'],item['gid'])
+                u.write(backup/'manifest.json',r.encoded(dict(old=old,head=head,start_mode=plan['start_mode'],attempt_id=progress.identity['attempt_id'],old_files=[{k:str(v) if k=='path' else v for k,v in f.items() if k!='data'}|{'sha256':r.sha(f['data'])} for f in plan['oldfiles']],new_paths=[str(p) for p,_,_ in plan['targets'][2:]],evidence={name:r.sha(data) for name,data in plan['evidence'].items()},old_user_timer_enabled=plan['start_mode']=='NORMAL_ACTIVE')),0o600,r.ROOT_UID,os.getgid())
+                for name,data in plan['evidence'].items():u.write(backup/('evidence-'+name),data,0o600,r.ROOT_UID,os.getgid())
+            progress.run('BACKUP_CREATED','UNCLASSIFIED_MIGRATION_FAILURE',backups)
+            backup_complete=True
+            progress.run('OLD_SCOUT_QUIESCENT','OBSERVER_BOUNDARY_INVALID',lambda:quiescent(invoke,True))
+            # Reauthorize immediately before any old-boundary transition.
+            activation_window(plan)
+            def disable_old():
+                if plan['start_mode']=='NORMAL_ACTIVE':u.user(invoke,['disable','--now','development-scout.timer'])
+                timer_state(invoke,True,False);quiescent(invoke,True)
+            progress.run('OLD_USER_TIMER_DISABLED','OLD_USER_TIMER_STATE_INVALID',disable_old)
+            progress.run('OLD_OBSERVER_STOPPED','OBSERVER_BOUNDARY_INVALID',lambda:r.stop_verified(invoke) if plan['start_mode']=='NORMAL_ACTIVE' else stopped_observer(plan['current'],invoke))
+            def install():
+                nonlocal units_changed
+                for path,data,mode in plan['targets']:
+                    if path in {r.SOURCE,r.CONFIG}:
+                        original=next(f for f in plan['oldfiles'] if f['path']==path);u.replace(path,data,mode,original['uid'],original['gid'])
+                    else:
+                        install_new(path,data,mode,installed)
+                        if path.parent==SYSTEM:units_changed=True
+            progress.run('SYSTEM_BOUNDARY_INSTALLED','SYSTEM_BOUNDARY_CHANGED',install)
+            progress.run('SYSTEM_DAEMON_RELOADED','SYSTEM_BOUNDARY_CHANGED',lambda:system(invoke,'daemon-reload'))
+            def boundary():timer_state(invoke,False,False);system_boundary(invoke,plan['desired'])
+            progress.run('SYSTEM_BOUNDARY_VERIFIED','SYSTEM_BOUNDARY_CHANGED',boundary)
+            cert_started=time.time()
+            progress.run('SANDBOX_CERTIFICATION_STARTED','SANDBOX_CERTIFICATION_FAILED',lambda:None)
+            cert=progress.run('SANDBOX_CERTIFICATION_PASSED','SANDBOX_CERTIFICATION_FAILED',lambda:certify(invoke,cert_started))
+            progress.run('POST_CERT_LEDGER_VERIFIED','LEDGER_CONTINUITY_CHANGED',lambda:ledger_unchanged(plan['ledger']))
+            progress.run('POST_CERT_ACCEPTANCE_STATE_VERIFIED','ACCEPTANCE_STATE_CHANGED',lambda:require(u.state()==plan['evidence'],'POST_CERT_ACCEPTANCE_STATE_VERIFIED','ACCEPTANCE_STATE_CHANGED'))
+            progress.run('POST_CERT_PROTECTED_STATE_VERIFIED','PROTECTED_STATE_CHANGED',lambda:require(u.protected_state()==plan['fingerprints'],'POST_CERT_PROTECTED_STATE_VERIFIED','PROTECTED_STATE_CHANGED'))
+            progress.run('OLD_USER_TIMER_DISABLED_VERIFIED','OLD_USER_TIMER_STATE_INVALID',lambda:timer_state(invoke,True,False))
+            progress.run('ACTIVATION_WINDOW_VERIFIED','ACTIVATION_WINDOW_EXPIRED',lambda:activation_window(plan))
+            progress.run('SYSTEM_TIMER_ENABLED','SYSTEM_TIMER_ENABLE_FAILED',lambda:system(invoke,'enable','--now','development-scout.timer'))
+            def timer_states():
+                timer_state(invoke,False,True)
+                try:timer_state(invoke,True,False)
+                except Exception:raise MigrationFailure('SYSTEM_TIMER_STATE_VERIFIED','OLD_USER_TIMER_STATE_INVALID') from None
+            progress.run('SYSTEM_TIMER_STATE_VERIFIED','SYSTEM_TIMER_STATE_INVALID',timer_states)
+            def elapse():
+                nxt=next_timer(invoke,False)
+                require(plan['slot']<=nxt<=plan['slot']+120,'NEXT_ELAPSE_VERIFIED','NEXT_ELAPSE_INVALID');quiescent(invoke,False)
+                return nxt
+            nxt=progress.run('NEXT_ELAPSE_VERIFIED','NEXT_ELAPSE_INVALID',elapse)
+            def start_observer():r.service(invoke,'start');r.wait_socket(plan['observed']['socket'])
+            progress.run('NEW_OBSERVER_STARTED','OBSERVER_START_FAILED',start_observer)
+            def final():
+                seen=r.boundary(plan['desired'],invoke)
+                require(seen['invocation']!=plan['observed']['invocation'] and seen['socket']!=plan['observed']['socket'] and seen['runtime_sha256']==plan['observed']['runtime_sha256'],'FINAL_BOUNDARY_VERIFIED','OBSERVER_BOUNDARY_INVALID')
+                try:ledger_unchanged(plan['ledger'])
+                except Exception:raise MigrationFailure('FINAL_BOUNDARY_VERIFIED','LEDGER_CONTINUITY_CHANGED') from None
+                r.manifest_matches(root,plan['desired']['files'])
+                require(u.state()==plan['evidence'],'FINAL_BOUNDARY_VERIFIED','ACCEPTANCE_STATE_CHANGED')
+                require(u.protected_state()==plan['fingerprints'],'FINAL_BOUNDARY_VERIFIED','PROTECTED_STATE_CHANGED')
+                require(audit(root,head)['untracked_source_influence']=='PASS','FINAL_BOUNDARY_VERIFIED','SYSTEM_BOUNDARY_CHANGED')
+                for path,data,_ in plan['targets']:require(path.read_bytes()==data,'FINAL_BOUNDARY_VERIFIED','SYSTEM_BOUNDARY_CHANGED')
+                timer_states();system_boundary(invoke,plan['desired'])
+                return seen
+            seen=progress.run('FINAL_BOUNDARY_VERIFIED','OBSERVER_BOUNDARY_INVALID',final)
+            result=dict(summary,status='MIGRATED_AWAITING_GENUINE_SYSTEM_TIMER_RUNS',changes_applied=True,backup=str(backup),progress=str(backup/'progress.json'),certification=cert,observer=seen,next_elapse=nxt)
+            progress.run('MIGRATION_COMPLETE','UNCLASSIFIED_MIGRATION_FAILURE',lambda:u.write(backup/'result.json',r.encoded(result),0o600,r.ROOT_UID,os.getgid()))
+            return result
+        except Exception as error:
+            failure=error if isinstance(error,MigrationFailure) else MigrationFailure(progress.stage if progress else 'PREFLIGHT_VERIFIED','UNCLASSIFIED_MIGRATION_FAILURE')
+            if backup is None:
+                return dict(summary,status='PREFLIGHT_FAILED_NOT_READY',failure_stage=failure.stage,failure_code=failure.code)
             restored=False;stopped=False
             try:
-                system(invoke,'disable','--now','development-scout.timer',check=False);u.user(invoke,['disable','--now','development-scout.timer'])
-                r.stop_verified(invoke);stopped=True
-                for i,item in enumerate(plan['oldfiles']):
-                    if (backup/str(i)).read_bytes()!=item['data']:raise ValueError('old backup integrity failed')
-                    u.replace(item['path'],item['data'],item['mode'],item['uid'],item['gid'])
-                for path in reversed(installed):path.unlink();u.sync(path.parent)
-                system(invoke,'daemon-reload')
-                timer_state(invoke,True,False);quiescent(invoke,True)
-                restored=not any(path.exists() or path.is_symlink() for path,_,_ in plan['targets'][2:]) and all(f['path'].read_bytes()==f['data'] and stat.S_IMODE(f['path'].stat().st_mode)==f['mode'] and f['path'].stat().st_uid==f['uid'] and f['path'].stat().st_gid==f['gid'] for f in plan['oldfiles'])
+                if progress:progress.run('ROLLBACK_STARTED','ROLLBACK_FAILED',lambda:None)
+                def rollback():
+                    nonlocal stopped,restored
+                    system(invoke,'disable','--now','development-scout.timer',check=False);u.user(invoke,['disable','--now','development-scout.timer'])
+                    r.stop_verified(invoke);stopped=True
+                    if backup_complete:
+                        for i,item in enumerate(plan['oldfiles']):
+                            if (backup/str(i)).read_bytes()!=item['data']:raise ValueError('backup integrity invalid')
+                            u.replace(item['path'],item['data'],item['mode'],item['uid'],item['gid'])
+                    else:
+                        # No boundary transition is allowed before backup PASS.
+                        require(not installed and all(f['path'].read_bytes()==f['data'] for f in plan['oldfiles']),'ROLLBACK_COMPLETE','ROLLBACK_FAILED')
+                    for path in reversed(installed):path.unlink();u.sync(path.parent)
+                    if units_changed:system(invoke,'daemon-reload')
+                    timer_state(invoke,True,False);quiescent(invoke,True)
+                    require(not any(path.exists() or path.is_symlink() for path,_,_ in plan['targets'][2:]),'ROLLBACK_COMPLETE','ROLLBACK_FAILED')
+                    require(all(f['path'].read_bytes()==f['data'] and stat.S_IMODE(f['path'].stat().st_mode)==f['mode'] and f['path'].stat().st_uid==f['uid'] and f['path'].stat().st_gid==f['gid'] for f in plan['oldfiles']),'ROLLBACK_COMPLETE','ROLLBACK_FAILED')
+                    stopped_observer(plan['current'],invoke);restored=True
+                progress.run('ROLLBACK_COMPLETE','ROLLBACK_FAILED',rollback)
             except Exception:
+                for stop in (lambda:system(invoke,'disable','--now','development-scout.timer',check=False),lambda:u.user(invoke,['disable','--now','development-scout.timer'])):
+                    try:stop()
+                    except Exception:pass
                 try:r.stop_verified(invoke);stopped=True
                 except Exception:pass
-            # Both timers/observer remain stopped. Restored old observer pins old
-            # source, so never present it as ready against the new checkout.
-            result=dict(summary,status='ROLLED_BACK_STOPPED_NOT_READY' if restored else 'FAILED_STOPPED_NOT_READY' if stopped else 'FAILED_STOP_UNCONFIRMED_NOT_READY',changes_applied=False,backup=str(backup),old_files_restored=restored,observer_stopped=stopped)
-        u.write(backup/'result.json',r.encoded(result),0o600,r.ROOT_UID,os.getgid())
+            result=dict(summary,status='ROLLED_BACK_STOPPED_NOT_READY' if restored else 'FAILED_STOPPED_NOT_READY' if stopped else 'FAILED_STOP_UNCONFIRMED_NOT_READY',changes_applied=False,backup=str(backup),progress=str(backup/'progress.json'),old_files_restored=restored,observer_stopped=stopped,failure_stage=failure.stage if restored else 'ROLLBACK_COMPLETE',failure_code=failure.code if restored else 'ROLLBACK_FAILED')
+            if not restored:result.update(initial_failure_stage=failure.stage,initial_failure_code=failure.code)
+        try:
+            if (backup/'result.json').exists():u.replace(backup/'result.json',r.encoded(result),0o600,r.ROOT_UID,os.getgid())
+            else:u.write(backup/'result.json',r.encoded(result),0o600,r.ROOT_UID,os.getgid())
+        except Exception:
+            result.update(result_receipt_persisted=False)
         return result
+
+
+def migrate(root,head,old,*,apply=False,invoke=subprocess.run):
+    try:return _migrate(root,head,old,apply=apply,invoke=invoke)
+    except Exception:
+        # Includes malformed locks/arguments before an inspectable transaction.
+        # Never return arbitrary exception text or unsafe caller strings.
+        return dict(status='PREFLIGHT_FAILED_NOT_READY',changes_applied=False,accepted_runs=0,grants_implementation=False,failure_stage='PREFLIGHT_VERIFIED',failure_code='UNCLASSIFIED_MIGRATION_FAILURE')

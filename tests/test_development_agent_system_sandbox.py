@@ -75,7 +75,7 @@ def test_system_units_have_only_daily_calendar_and_cert_is_not_scout():
  scout=Path('systemd/development-scout.service').read_text();timer=Path('systemd/development-scout.timer').read_text();cert=Path('ops/discovery/development-scout-sandbox-certification.service').read_text()
  for line in ['User=optiplex','Group=optiplex','PrivateNetwork=true','PrivateTmp=true','ProtectSystem=strict','ProtectHome=read-only','NoNewPrivileges=true','WorkingDirectory=/home/optiplex/investment']:
   assert line in scout and line in cert
- assert [l for l in timer.splitlines() if l.startswith('OnCalendar=')]==['OnCalendar=*-*-* 10:00:00 America/New_York']
+ assert [l for l in timer.splitlines() if l.startswith('OnCalendar=')]==['OnCalendar=*-*-* 12:00:00 America/New_York']
  assert 'observer.py' not in cert and 'sandbox_certify.py' in cert and 'development-control.sqlite3' in cert
  assert '--user' not in Path('ops/discovery/observer.py').read_text() and 'XDG_RUNTIME_DIR' not in Path('ops/discovery/observer.py').read_text()
 

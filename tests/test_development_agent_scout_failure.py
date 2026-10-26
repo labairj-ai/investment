@@ -127,7 +127,7 @@ def test_root_response_emits_only_fixed_reason_and_failed(capsys):
 def test_system_scout_daily_only_schedule_in_reviewed_source():
     timer=Path('systemd/development-scout.timer').read_text()
     assert [l for l in timer.splitlines() if l.startswith('OnCalendar=')]==[
-        'OnCalendar=*-*-* 10:00:00 America/New_York']
+        'OnCalendar=*-*-* 12:00:00 America/New_York']
     assert 'RefuseManualStart=yes' in Path('systemd/development-scout.service').read_text()
 
 

@@ -192,3 +192,7 @@ records, sanitized subcodes, and dedicated transactional migration with separate
 three-phase test-only OS certification. Collector/scheduler-observer stay user
 units. See docs/scout-system-manager.md. Source/fixture/CI evidence cannot grant
 acceptance; stop for review before production migration. PR19 and0853 remain held.
+
+PR24 prepares explicit STOPPED_ROLLBACK recovery, root-fsynced stage/failure receipts,
+and daily noon qualification with an11:50 Eastern cutoff. No prior failed attempt
+or sandbox certification grants credit;0852 remains open at0/3 until genuine runs.
