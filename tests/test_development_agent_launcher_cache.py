@@ -64,8 +64,9 @@ def test_stopped_launcher_enters_real_migration_without_observer_runtime(stopped
     assert not list(h.STATE.iterdir()) and not h.SOCKET.exists()
     # Audit reviewed repository source for real; redirect only the synthetic host
     # transaction arguments/transport. All launcher validation runs before import.
-    root=Path(__file__).resolve().parents[1]
-    import subprocess
+    source=Path(__file__).resolve().parents[1]
+    root=h.base/'audited-source'
+    subprocess.run(['git','clone','--no-local','--quiet',str(source),str(root)],check=True)
     head=subprocess.check_output(['git','-C',str(root),'rev-parse','HEAD'],text=True).strip()
     audit=a.audit(root,head)
     assert audit['untracked_source_influence']=='PASS' and not audit['rejected_paths']
@@ -90,5 +91,6 @@ def test_real_isolated_system_python_stopped_launch():
     # runs the same portable host fixture; /var is a symlink on that platform.
     script="import sys,os; sys.path.extend("+repr([str(p) for p in sys.path if p])+ "); import pytest; raise SystemExit(pytest.main(["+repr(str(Path(__file__).resolve()))+"+'::test_stopped_launcher_enters_real_migration_without_observer_runtime','-q','--tb=short']))"
     env=dict(os.environ,SCOUT_ISOLATED_FIXTURE='1' if sys.platform=='linux' else 'portable')
-    result=subprocess.run(['/usr/bin/python3','-I','-S','-c',script],capture_output=True,text=True,env=env)
+    executable='/usr/bin/python3' if sys.platform=='linux' else sys.executable
+    result=subprocess.run([executable,'-I','-S','-c',script],capture_output=True,text=True,env=env)
     assert result.returncode==0,result.stdout+result.stderr
