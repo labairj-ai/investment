@@ -21,7 +21,7 @@ import sys
 MAX_PATHS=100000
 MAX_LIST_BYTES=24000000
 MAX_SOURCE_BYTES=16000000
-CACHE_PREFIX='/run/investment-discovery-observer/reviewed-pycache'
+CACHE_PREFIX='/var/cache/investment-discovery-reviewed-pycache'
 MIN_NAMESPACES={'dev_agent','ops','scripts','config','systemd','.github'}
 ENTRY_MODULES=('ops.discovery.migrate','ops.discovery.sandbox_certify','ops.discovery.upgrade','ops.discovery.observer','dev_agent.cli','scripts.collect_development_signals')
 ENV={'PATH':'/usr/bin:/bin','HOME':'/nonexistent','GIT_CONFIG_NOSYSTEM':'1',
@@ -654,12 +654,7 @@ def main():
         print(json.dumps(result,indent=2));raise SystemExit(0 if result['untracked_source_influence']=='PASS' else 1)
     if not args.expected_old_head:parser.error('--expected-old-head required for upgrade')
     if not isolated():raise SystemExit('fixed isolated system Python required for upgrade')
-    parent=Path(CACHE_PREFIX).parent
-    for path in [parent,*parent.parents]:
-        info=path.lstat()
-        if path.is_symlink() or info.st_uid!=0 or info.st_mode&0o022:raise SystemExit('protected cache ancestry required')
-    prefix=Path(CACHE_PREFIX)
-    if prefix.exists() and (prefix.is_symlink() or prefix.stat().st_uid!=0 or prefix.stat().st_mode&0o022):raise SystemExit('protected cache prefix required')
+    protected_cache()
     # No repository package is imported until the standalone audit passes.
     sys.path.insert(0,str(args.root))
     if args.migrate_scout:
@@ -670,6 +665,17 @@ def main():
         outcome=upgrade(args.root,args.head,args.expected_old_head,apply=args.apply)
     print(json.dumps(outcome,indent=2))
     raise SystemExit(1 if 'NOT_READY' in outcome['status'] else 0)
+
+
+def protected_cache():
+    """Validate without creating paths, independently of observer lifecycle."""
+    if not isolated():raise SystemExit('fixed isolated system Python required for upgrade')
+    parent=Path(CACHE_PREFIX).parent
+    for path in [parent,*parent.parents]:
+        info=path.lstat()
+        if path.is_symlink() or info.st_uid!=0 or info.st_mode&0o022:raise SystemExit('protected cache ancestry required')
+    prefix=Path(CACHE_PREFIX)
+    if (prefix.exists() or prefix.is_symlink()) and (prefix.is_symlink() or prefix.stat().st_uid!=0 or prefix.stat().st_mode&0o022):raise SystemExit('protected cache prefix required')
 
 
 if __name__=='__main__':main()
