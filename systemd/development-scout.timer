@@ -1,8 +1,8 @@
 [Unit]
-Description=Daily bounded development discovery at 10:00 Eastern
+Description=Daily bounded development discovery at 12:00 Eastern
 
 [Timer]
-OnCalendar=*-*-* 10:00:00 America/New_York
+OnCalendar=*-*-* 12:00:00 America/New_York
 Persistent=true
 RandomizedDelaySec=120
 Unit=development-scout.service
