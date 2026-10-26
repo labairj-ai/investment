@@ -11,7 +11,7 @@ import stat
 import subprocess
 import sys
 import time
-from datetime import datetime,timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 from ops.discovery import pin_refresh as r,upgrade as u,observer as o
 from ops.discovery.influence import audit,isolated
@@ -51,10 +51,13 @@ def quiescent(invoke,user):
     return p
 
 
-def next_slot(now):
+def first_activation_slot(now=None):
+    """Authorize only today's pre-08:05 Eastern window; never roll to tomorrow."""
+    now=time.time() if now is None else now
     local=datetime.fromtimestamp(now,ZoneInfo('America/New_York'))
-    slot=local.replace(hour=8,minute=15,second=0,microsecond=0)
-    return (slot if slot.timestamp()>now else slot+timedelta(days=1)).timestamp()
+    slot=local.replace(hour=8,minute=15,second=0,microsecond=0).timestamp()
+    if now>=slot-600:raise ValueError('first system timer activation requires today before 08:05 Eastern')
+    return slot
 
 
 def daily_only(raw):
@@ -90,6 +93,7 @@ def ledger_unchanged(before):
 
 def inspect(root,head,old,invoke):
     if sys.platform!='linux' or os.geteuid()!=r.ROOT_UID or Path(root)!=r.ROOT or r.ROOT.is_symlink() or old!=OLD_HEAD or head==old or not isolated():raise ValueError('fixed root isolated exact migration required')
+    slot=first_activation_slot()
     influence=audit(root,head)
     if influence['untracked_source_influence']!='PASS':raise ValueError('source influence failed')
     target=r.prepare(root,head,'labairj-ai/investment');r.git(root,'merge-base','--is-ancestor',old,head)
@@ -119,14 +123,14 @@ def inspect(root,head,old,invoke):
              (CERT_SOURCE,r.git(root,'show',head+':'+CERT_FILES[0]),0o755),
              (SYSTEM/CERT_UNIT,r.git(root,'show',head+':'+CERT_FILES[1]),0o644)]
     daily_only(targets[3][1])
-    if next_slot(time.time())-time.time()<=600:raise ValueError('daily migration window too close')
+    if first_activation_slot()!=slot:raise ValueError('migration local date changed')
     for path,_,_ in targets[2:]:
         if path.exists() or path.is_symlink():raise ValueError('new system boundary collision')
         r.protected(path.parent,directory=True)
     for name in ('development-scout.service','development-scout.timer',CERT_UNIT):
         p=properties(invoke,name)
         if p.get('LoadState')!='not-found' or p.get('DropInPaths','')!='':raise ValueError('unexpected loaded system unit')
-    return dict(current=current,desired=desired,observed=observed,evidence=evidence,fingerprints=fingerprints,ledger=ledger,oldfiles=oldfiles,targets=targets,influence=influence)
+    return dict(slot=slot,current=current,desired=desired,observed=observed,evidence=evidence,fingerprints=fingerprints,ledger=ledger,oldfiles=oldfiles,targets=targets,influence=influence)
 
 
 def system_boundary(invoke,desired):
@@ -185,13 +189,15 @@ def migrate(root,head,old,*,apply=False,invoke=subprocess.run):
     with os.fdopen(fd,'a') as handle:
         r.protected(lock);fcntl.flock(handle,fcntl.LOCK_EX|fcntl.LOCK_NB)
         if inspect(root,head,old,invoke)!=plan:raise ValueError('migration preflight changed')
+        if first_activation_slot()!=plan['slot']:raise ValueError('migration activation window changed')
         backup=r.CONFIG.parent/('scout-system-migration-backup-'+head);backup.mkdir(mode=0o700);u.sync(backup.parent)
         for i,item in enumerate(plan['oldfiles']):u.write(backup/str(i),item['data'],item['mode'],item['uid'],item['gid'])
         u.write(backup/'manifest.json',r.encoded(dict(old=old,head=head,old_files=[{k:str(v) if k=='path' else v for k,v in f.items() if k!='data'}|{'sha256':r.sha(f['data'])} for f in plan['oldfiles']],new_paths=[str(p) for p,_,_ in plan['targets'][2:]],evidence={name:r.sha(data) for name,data in plan['evidence'].items()},old_user_timer_enabled=True)),0o600,r.ROOT_UID,os.getgid())
         for name,data in plan['evidence'].items():u.write(backup/('evidence-'+name),data,0o600,r.ROOT_UID,os.getgid())
+        quiescent(invoke,True)
+        if first_activation_slot()!=plan['slot']:raise ValueError('migration activation window changed before timer stop')
         started=time.time();installed=[]
         try:
-            quiescent(invoke,True)
             u.user(invoke,['disable','--now','development-scout.timer']);timer_state(invoke,True,False);quiescent(invoke,True)
             r.stop_verified(invoke)
             for path,data,mode in plan['targets']:
@@ -203,12 +209,12 @@ def migrate(root,head,old,*,apply=False,invoke=subprocess.run):
             ledger_unchanged(plan['ledger'])
             if u.state()!=plan['evidence'] or u.protected_state()!=plan['fingerprints']:raise ValueError('certification touched protected state')
             timer_state(invoke,True,False)
-            # v255 with no persistent stamp schedules from activation time.
-            # Never create/edit/delete a stamp or copy user-manager LastTrigger.
-            if STAMP.exists() or STAMP.is_symlink() or next_slot(time.time())-time.time()<=600:raise ValueError('quiet first system timer activation required')
+            # Reauthorize today's pre-slot window after certification. Never
+            # rely on tomorrow's calendar or edit/copy persistent timer history.
+            if first_activation_slot()!=plan['slot'] or STAMP.exists() or STAMP.is_symlink():raise ValueError('quiet first system timer activation required')
             system(invoke,'enable','--now','development-scout.timer');timer_state(invoke,False,True);timer_state(invoke,True,False)
             nxt=next_timer(invoke,False)
-            if not next_slot(time.time())<=nxt<=next_slot(time.time())+120:raise ValueError('new timer must target next normal Eastern slot')
+            if not plan['slot']<=nxt<=plan['slot']+120:raise ValueError('new timer must target next normal Eastern slot')
             quiescent(invoke,False)
             r.service(invoke,'start');r.wait_socket(plan['observed']['socket']);seen=r.boundary(plan['desired'],invoke)
             if seen['invocation']==plan['observed']['invocation'] or seen['socket']==plan['observed']['socket'] or seen['runtime_sha256']!=plan['observed']['runtime_sha256']:raise ValueError('new observer restart verification failed')

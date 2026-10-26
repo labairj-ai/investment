@@ -1,6 +1,8 @@
 """Synthetic migration transaction. No host systemd, Scout or financial writes."""
 import json,sqlite3,time,subprocess
 from pathlib import Path
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from types import SimpleNamespace
 import pytest
 from ops.discovery import migrate as m,pin_refresh as r,observer as o
@@ -8,7 +10,8 @@ from test_development_agent_observer_refresh import host
 
 @pytest.fixture
 def migration(host,monkeypatch):
- h=host;h.git('branch','-M','main');h.user_active=h.user_enabled=True;h.system_active=h.system_enabled=False;h.cert_started=False;h.failure=None;h.timeline=[]
+ monkeypatch.setattr(m.time,'time',lambda:eastern('07:00:00'))
+ h=host;h.git('branch','-M','main');h.user_active=h.user_enabled=True;h.system_active=h.system_enabled=False;h.cert_started=False;h.failure=None;h.timeline=[];h.next_offset=0
  system=h.base/'system';system.mkdir();monkeypatch.setattr(m,'SYSTEM',system);monkeypatch.setattr(m,'STAMP',h.base/'system-stamp');monkeypatch.setattr(m,'CERT_SOURCE',h.SOURCE.parent/'sandbox_certify.py')
  monkeypatch.setattr(m,'OLD_HEAD',h.old)
  for name,key in [('OLD_OBSERVER','observer_digest'),('OLD_SERVICE','unit_digest'),('OLD_TIMER','timer_digest')]:monkeypatch.setattr(m,name,h.old_config[key])
@@ -31,7 +34,7 @@ def migration(host,monkeypatch):
    keys=['network_namespace_isolated','repository_read_only','protected_state_inaccessible','credentials_inaccessible','process_uid_expected','system_manager_readable','execution_record_current','test_evidence_only'];report={k:True for k in keys};report['accepted_scout_run']=False
    if h.failure=='runtime_route':report['network_namespace_isolated']=False
    return SimpleNamespace(returncode=0,stdout='\n'.join(json.dumps(dict(MESSAGE=json.dumps(report))) for _ in range(3)))
-  if args[0]=='/usr/bin/busctl':return SimpleNamespace(returncode=0,stdout='t '+str(int(((time.time()+86400) if '--user' in args else m.next_slot(time.time()))*1e6))+'\n')
+  if args[0]=='/usr/bin/busctl':return SimpleNamespace(returncode=0,stdout='t '+str(int(((time.time()+86400) if '--user' in args else (m.first_activation_slot()+h.next_offset))*1e6))+'\n')
   if args[:2] in [['/usr/bin/systemctl','--system'],['/usr/bin/systemctl','--user']]:
    h.calls.append(args);user=args[1]=='--user';action=args[2];name=args[3] if len(args)>3 else ''
    if action=='daemon-reload':return SimpleNamespace(returncode=0,stdout='')
@@ -117,3 +120,58 @@ def test_new_file_atomic_install_refuses_collision_without_overwrite(tmp_path):
  target=tmp_path/'unit';target.write_bytes(b'foreign');created=[]
  with pytest.raises(FileExistsError):m.install_new(target,b'reviewed',0o644,created)
  assert target.read_bytes()==b'foreign' and not created and not list(tmp_path.glob('*.scout-migrating'))
+
+
+def eastern(clock):
+ return datetime.fromisoformat('2026-10-26T'+clock).replace(tzinfo=ZoneInfo('America/New_York')).timestamp()
+
+@pytest.mark.parametrize('clock',['07:00:00','08:04:59'])
+def test_first_activation_window_valid(clock):
+ assert m.first_activation_slot(eastern(clock))==eastern('08:15:00')
+
+@pytest.mark.parametrize('clock',['08:05:00','08:10:00','08:15:00','09:00:00','23:00:00'])
+def test_first_activation_window_never_rolls_to_tomorrow(clock):
+ with pytest.raises(ValueError,match='before 08:05'):m.first_activation_slot(eastern(clock))
+
+@pytest.mark.parametrize('offset',[0,60,120])
+def test_enabled_next_elapse_is_today_in_reviewed_interval(migration,offset):
+ h=migration;h.next_offset=offset
+ assert h.migrate(apply=True)['status']=='MIGRATED_AWAITING_GENUINE_SYSTEM_TIMER_RUNS'
+
+@pytest.mark.parametrize('offset',[-1,-3600,121,86400])
+def test_wrong_next_elapse_rolls_back_without_scout(migration,offset):
+ h=migration;h.next_offset=offset
+ result=h.migrate(apply=True)
+ assert 'NOT_READY' in result['status'] and not h.system_active and not h.user_active
+ assert not any(a[2:]==['start','development-scout.service'] for a in h.calls)
+
+def test_plan_before_cutoff_apply_at_cutoff_refuses_without_mutation(migration,monkeypatch):
+ h=migration;monkeypatch.setattr(m.time,'time',lambda:eastern('08:04:00'))
+ assert h.migrate()['status']=='PLAN_ONLY'
+ before=h.snapshot();names=set(h.CONFIG.parent.iterdir());calls=list(h.calls)
+ monkeypatch.setattr(m.time,'time',lambda:eastern('08:05:00'))
+ with pytest.raises(ValueError,match='before 08:05'):h.migrate(apply=True)
+ assert h.snapshot()==before and set(h.CONFIG.parent.iterdir())==names and h.calls==calls and h.user_active and not h.system_active
+
+def test_cutoff_rechecked_under_lock_before_backup_or_timer_mutation(migration,monkeypatch):
+ h=migration;original=m.inspect;count=0
+ def inspect(*args):
+  nonlocal count
+  count+=1;result=original(*args)
+  if count==2:monkeypatch.setattr(m.time,'time',lambda:eastern('08:05:00'))
+  return result
+ monkeypatch.setattr(m,'inspect',inspect)
+ before=h.snapshot();config=h.CONFIG.read_bytes()
+ with pytest.raises(ValueError,match='before 08:05'):h.migrate(apply=True)
+ assert h.snapshot()==before and h.CONFIG.read_bytes()==config and not list(h.CONFIG.parent.glob('scout-system-migration-backup-*'))
+ assert h.user_active and not h.system_active and not h.cert_started and h.stops==0
+
+def test_certification_crossing_cutoff_rolls_back_without_timer_enable(migration,monkeypatch):
+ h=migration;original=m.certify
+ def certify(*args):
+  result=original(*args);monkeypatch.setattr(m.time,'time',lambda:eastern('08:05:00'));return result
+ monkeypatch.setattr(m,'certify',certify)
+ result=h.migrate(apply=True)
+ assert result['status']=='ROLLED_BACK_STOPPED_NOT_READY' and not h.user_active and not h.system_active
+ assert ['/usr/bin/systemctl','--system','enable','--now','development-scout.timer'] not in h.calls
+ assert not any(a[2:]==['start','development-scout.service'] for a in h.calls)

@@ -104,9 +104,14 @@ There is never an intentional state with both Scout timers active.
 
 The new system timer must have no existing system persistent stamp or loaded
 system-unit history/configuration. No stamp is edited/deleted/copied or fabricated.
-In v255, with no last-trigger stamp the calendar is based on activation time;
-starting this daily-only timer therefore targets the next normal slot. A quiet
->10-minute window and the native future next-elapse are checked. Existing system
+First activation is authorized only before **08:05:00 America/New_York on the
+current local date**. At or after the cutoff it fails closed, including after
+08:15; authorization never rolls to tomorrow. This guard runs in inspect, again
+under the lock immediately before boundary mutation, and after certification
+immediately before timer enable. Crossing the cutoff during certification uses
+the stopped/not-ready rollback. Native next-elapse must be today’s 08:15–08:17
+Eastern interval, never tomorrow or an immediate/past trigger. Persistent=true
+is retained; no catch-up behavior is relied upon to authorize activation. Existing system
 history or any elapsed recovery entry fails closed, never reset to force a pass.
 
 Failure stops/disables both timers, stops observer and restores verified old
