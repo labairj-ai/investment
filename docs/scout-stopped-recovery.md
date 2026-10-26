@@ -1,4 +1,4 @@
-# Stopped Scout migration recovery and noon qualification
+# Stopped Scout migration recovery and 16:00 Eastern qualification
 
 PR24 starts from application/main a8f0a9a9f1932a18383e33c212061204713b233c.
 The restored observer boundary remains43d4fda5d7c032290d51574a6d2f283d09127ee4,
@@ -78,16 +78,16 @@ stable codes. Unknown failures are UNCLASSIFIED_MIGRATION_FAILURE. Failed rollba
 returns ROLLBACK_FAILED and retains original stage/code separately. Preflight
 rejection does not create a backup or mutate the installed boundary.
 
-## Daily noon contract
+## Daily 16:00 Eastern contract
 
-Exactly one calendar: OnCalendar=*-*-* 12:00:00 America/New_York.
+Exactly one calendar: OnCalendar=*-*-* 16:00:00 America/New_York.
 Persistent=true, RandomizedDelaySec=120, Unit=development-scout.service remain.
-No10:00/08:15/absolute recovery entry. Keep noon throughout3/3 qualification.
+No10:00/08:15/absolute recovery entry. Keep 16:00 Eastern throughout3/3 qualification.
 
-First activation requires today's time strictly before11:50:00 Eastern. Inspect,
+First activation requires today's time strictly before15:50:00 Eastern. Inspect,
 under-lock, pre-old-transition and post-certification checks enforce the same
 current-date slot. No rollover authorization. First native next-elapse must be
-TODAY12:00–12:02 inclusive. Old10:00, past, tomorrow, early or late values fail.
+TODAY16:00–16:02 inclusive. Old10:00, past, tomorrow, early or late values fail.
 No persistent stamp is created/copied/edited/reset by migration code.
 
 System Scout still runs User=optiplex/Group=optiplex with RefuseManualStart,
@@ -97,3 +97,16 @@ tracked Git source authority and acceptance rules remain unchanged. Certificatio
 is test-only and cannot grant acceptance. No Builder/PR/merge/deploy/financial
 execution authority is added to Scout. Three genuine root-bookended daily slots
 are still required; no failed attempt receives credit.
+
+
+## PR26 stable qualification schedule
+
+From base b94e6d4a2203329f9654d71d7161479ce1afe8b2, the owner explicitly
+moves daily qualification to 16:00 America/New_York, with a strict same-day
+15:50 cutoff and today's 16:00–16:02 next-elapse interval. Keep this schedule
+through all three genuine daily runs. The system timer runs independently;
+no manual Scout invocation or user reminder is required. No one-time calendar
+or persistent history manipulation is permitted. PR25's lifecycle-independent
+launcher cache and every stopped-recovery, certification and acceptance
+contract remain unchanged. 0852 remains at zero until real accepted runs;
+PR19 remains held and 0853 blocked.
