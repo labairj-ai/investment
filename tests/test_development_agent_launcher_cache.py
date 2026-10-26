@@ -28,9 +28,9 @@ def ancestry(monkeypatch, attack=None, final=False):
         def lstat(self):
             if str(self).startswith('/var') or str(self)=='/':
                 mode=0o40755
-                if str(self)=='/var/cache' and attack=='group':mode|=0o020
-                if str(self)=='/var/cache' and attack=='world':mode|=0o002
-                return SimpleNamespace(st_uid=1000 if str(self)=='/var/cache' and attack=='owner' else 0,st_mode=mode)
+                if (str(self)=='/var/cache' and attack=='group') or (str(self)==PREFIX and attack=='final_group'):mode|=0o020
+                if (str(self)=='/var/cache' and attack=='world') or (str(self)==PREFIX and attack=='final_world'):mode|=0o002
+                return SimpleNamespace(st_uid=1000 if (str(self)=='/var/cache' and attack=='owner') or (str(self)==PREFIX and attack=='final_owner') else 0,st_mode=mode)
             return real(self).lstat()
         def stat(self, **kw):
             return self.lstat() if str(self).startswith('/var') or str(self)=='/' else real(self).stat(**kw)
@@ -42,9 +42,9 @@ def ancestry(monkeypatch, attack=None, final=False):
     monkeypatch.setattr(a,'Path',CachePath)
 
 
-@pytest.mark.parametrize('attack',['symlink','group','world','owner','final_symlink'])
+@pytest.mark.parametrize('attack',['symlink','group','world','owner','final_symlink','final_group','final_world','final_owner'])
 def test_cache_ancestry_rejected(monkeypatch,attack):
-    interpreter(monkeypatch);ancestry(monkeypatch,attack)
+    interpreter(monkeypatch);ancestry(monkeypatch,attack,final=attack.startswith('final_'))
     with pytest.raises(SystemExit,match='protected cache'):a.protected_cache()
 
 
@@ -76,6 +76,12 @@ def test_stopped_launcher_enters_real_migration_without_observer_runtime(stopped
         interpreter(monkeypatch);ancestry(monkeypatch)
     monkeypatch.setattr(m,'isolated',a.isolated)
     monkeypatch.setattr(sys,'argv',['influence.py','--root',str(root),'--head',head,'--expected-old-head',h.old,'--migrate-scout'])
+    assert not a.Path('/run/investment-discovery-observer').exists()
+    # Reproduce PR24's stopped-state failure through the same launcher, then
+    # prove that changing only the reviewed prefix permits structured PLAN.
+    monkeypatch.setattr(a,'CACHE_PREFIX','/run/investment-discovery-observer/reviewed-pycache')
+    with pytest.raises(FileNotFoundError):a.main()
+    monkeypatch.setattr(a,'CACHE_PREFIX',PREFIX)
     with pytest.raises(SystemExit) as result:a.main()
     assert result.value.code==0
     output=json.loads(capsys.readouterr().out)
