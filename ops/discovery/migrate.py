@@ -16,7 +16,7 @@ import re
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from ops.discovery import pin_refresh as r,upgrade as u,observer as o
-from ops.discovery.influence import audit,isolated
+from ops.discovery.influence import audit,isolated,git_boundary,git as reviewed_git
 
 OLD_HEAD='43d4fda5d7c032290d51574a6d2f283d09127ee4'
 OLD_OBSERVER='a7f2217b18fa4c23d432cba5c0213e3e9efed6d3ed91ef7dbf6e9b2ff1416743'
@@ -115,57 +115,106 @@ def stopped_observer(config,invoke):
     return dict(invocation=None,pid=0,socket=None,runtime_sha256=r.sha(runtime.read_bytes()))
 
 
+def preflight(code,action):
+    """Keep rejected invariants distinct without leaking exception text."""
+    try:return action()
+    except MigrationFailure:raise
+    except Exception:raise MigrationFailure('PREFLIGHT_VERIFIED',code) from None
+
+
+def source_require(condition,code):
+    require(condition,'PREFLIGHT_VERIFIED',code)
+
+
+def deployed_source(root,head,old):
+    """Read exact deployed objects; owner/main/CI authority precedes migration.
+
+    Executor.checkout deliberately detaches HEAD and fetches into FETCH_HEAD.
+    Branch names and cached remote refs cannot attest deployment authority.
+    No network or credential use here. User-owned release receipts cannot be
+    promoted to root authority; the preceding verified deployment is mandatory.
+    """
+    root=Path(root)
+    source_require(root==r.ROOT and not root.is_symlink() and root.resolve(strict=True)==root,'DEPLOYED_SOURCE_AUTHORITY_INVALID')
+    source_require(isinstance(head,str) and re.fullmatch('[a-f0-9]{40}',head) is not None,'DEPLOYED_SOURCE_SHA_INVALID')
+    source_require(not git_boundary(root),'DEPLOYED_SOURCE_AUTHORITY_INVALID')
+    def exact():
+        source_require(reviewed_git(root,'cat-file','-t',head).strip()==b'commit','DEPLOYED_SOURCE_SHA_INVALID')
+        source_require(reviewed_git(root,'rev-parse','HEAD').decode().strip()==head,'DEPLOYED_SOURCE_SHA_INVALID')
+    preflight('DEPLOYED_SOURCE_SHA_INVALID',exact)
+    source_require(not reviewed_git(root,'status','--porcelain','--untracked-files=no').strip(),'DEPLOYED_SOURCE_DIRTY')
+    origin=preflight('REPOSITORY_ORIGIN_INVALID',lambda:reviewed_git(root,'remote','get-url','origin').decode().strip())
+    source_require(origin in {'https://github.com/labairj-ai/investment.git','git@github.com:labairj-ai/investment.git'},'REPOSITORY_ORIGIN_INVALID')
+    preflight('OLD_BOUNDARY_INVALID',lambda:reviewed_git(root,'merge-base','--is-ancestor',old,head))
+    manifest=preflight('DEPLOYED_SOURCE_AUTHORITY_INVALID',lambda:r.source_manifest(root,head))
+    preflight('DEPLOYED_SOURCE_AUTHORITY_INVALID',lambda:r.manifest_matches(root,manifest))
+    return dict(root=str(root),head=head,repository='labairj-ai/investment',manifest=manifest)
+
+
 def start_boundary(config,invoke):
-    p=r.properties(r.command(invoke,['/bin/systemctl','show',r.SERVICE,'--property=ActiveState,SubState,MainPID'],check=True).stdout)
-    timer=properties(invoke,'development-scout.timer',True)
+    p=preflight('STOPPED_OBSERVER_INVALID',lambda:r.properties(r.command(invoke,['/bin/systemctl','show',r.SERVICE,'--property=ActiveState,SubState,MainPID'],check=True).stdout))
+    timer=preflight('OLD_USER_SCOUT_BOUNDARY_INVALID',lambda:properties(invoke,'development-scout.timer',True))
     if p.get('ActiveState')=='active' and timer.get('ActiveState')=='active' and timer.get('UnitFileState') in {'enabled','enabled-runtime'}:
-        return 'NORMAL_ACTIVE',r.boundary(config,invoke)
-    if p=={'ActiveState':'inactive','SubState':'dead','MainPID':'0'} and timer.get('ActiveState')=='inactive' and timer.get('UnitFileState')=='disabled':
-        return 'STOPPED_ROLLBACK',stopped_observer(config,invoke)
-    raise ValueError('mixed old observer/timer state rejected')
+        return 'NORMAL_ACTIVE',preflight('OLD_BOUNDARY_INVALID',lambda:r.boundary(config,invoke))
+    if p=={'ActiveState':'inactive','SubState':'dead','MainPID':'0'}:
+        source_require(timer.get('ActiveState')=='inactive' and timer.get('UnitFileState')=='disabled','OLD_USER_SCOUT_BOUNDARY_INVALID')
+        return 'STOPPED_ROLLBACK',preflight('STOPPED_OBSERVER_INVALID',lambda:stopped_observer(config,invoke))
+    raise MigrationFailure('PREFLIGHT_VERIFIED','STOPPED_OBSERVER_INVALID')
 
 
 def inspect(root,head,old,invoke):
-    if sys.platform!='linux' or os.geteuid()!=r.ROOT_UID or Path(root)!=r.ROOT or r.ROOT.is_symlink() or old!=OLD_HEAD or head==old or not isolated():raise ValueError('fixed root isolated exact migration required')
+    source_require(sys.platform=='linux' and os.geteuid()==r.ROOT_UID and isolated(),'DEPLOYED_SOURCE_AUTHORITY_INVALID')
+    source_require(old==OLD_HEAD,'OLD_BOUNDARY_INVALID')
+    source_require(head!=old,'DEPLOYED_SOURCE_SHA_INVALID')
     try:slot=first_activation_slot()
     except Exception:raise MigrationFailure('PREFLIGHT_VERIFIED','ACTIVATION_WINDOW_EXPIRED') from None
-    influence=audit(root,head)
-    if influence['untracked_source_influence']!='PASS':raise ValueError('source influence failed')
-    target=r.prepare(root,head,'labairj-ai/investment');r.git(root,'merge-base','--is-ancestor',old,head)
-    if r.git(root,'branch','--show-current').strip()!=b'main':raise ValueError('exact merged main required')
-    before=r.source_manifest(root,old)
-    if [before[k] for k in r.IDENTITIES]!=[OLD_OBSERVER,OLD_UNIT,OLD_SERVICE,OLD_TIMER]:raise ValueError('old exact boundary identities required')
-    if target['manifest'][r.IDENTITIES[1]]!=OLD_UNIT:raise ValueError('root observer unit must not change')
-    current=r.configuration(old,before);start_mode,observed=start_boundary(current,invoke)
-    evidence=u.state()
-    if 'discovery.json' in evidence:raise ValueError('no discovery receipt permitted before migration')
-    fingerprints=u.protected_state();ledger,rows=o.ledger_snapshot()
-    if any(v[3] not in {'SCHEDULER_OBSERVATION'} for v in rows):raise ValueError('zero discovery/implementation history required')
-    if not (r.CONTROL/'operational-signals.json').is_file():raise ValueError('existing spool required')
-    oldfiles=[source_file(r.SOURCE),source_file(r.CONFIG)]
-    for name,key in [('development-scout.service',r.IDENTITIES[2]),('development-scout.timer',r.IDENTITIES[3])]:
-        path=r.USER_UNITS/name;item=source_file(path);p=properties(invoke,name,True)
-        if r.sha(item['data'])!=before[key] or p.get('FragmentPath')!=str(path) or p.get('DropInPaths')!='' or p.get('NeedDaemonReload')!='no':raise ValueError('old user Scout boundary mismatch')
-        oldfiles.append(item)
-    timer_state(invoke,True,start_mode=='NORMAL_ACTIVE');quiescent(invoke,True)
-    if start_mode=='NORMAL_ACTIVE':next_timer(invoke,True)
-    r.protected(STAMP.parent,directory=True)
+    target=preflight('DEPLOYED_SOURCE_AUTHORITY_INVALID',lambda:deployed_source(root,head,old))
+    influence=preflight('DEPLOYED_SOURCE_AUTHORITY_INVALID',lambda:audit(root,head))
+    source_require(influence['untracked_source_influence']=='PASS','DEPLOYED_SOURCE_AUTHORITY_INVALID')
+    before=preflight('OLD_BOUNDARY_INVALID',lambda:r.source_manifest(root,old))
+    def old_boundary():
+        source_require([before[k] for k in r.IDENTITIES]==[OLD_OBSERVER,OLD_UNIT,OLD_SERVICE,OLD_TIMER],'OLD_BOUNDARY_INVALID')
+        source_require(target['manifest'][r.IDENTITIES[1]]==OLD_UNIT,'OLD_BOUNDARY_INVALID')
+        current=r.configuration(old,before)
+        for path in (r.SOURCE,r.CONFIG,r.UNIT):r.protected(path)
+        source_require(r.CONFIG.read_bytes()==r.encoded(current) and r.sha(r.SOURCE.read_bytes())==current['observer_digest'] and r.sha(r.UNIT.read_bytes())==current['files'][r.IDENTITIES[1]],'OLD_BOUNDARY_INVALID')
+        return current
+    current=preflight('OLD_BOUNDARY_INVALID',old_boundary)
+    start_mode,observed=start_boundary(current,invoke)
+    evidence=preflight('ACCEPTANCE_PRECONDITION_INVALID',u.state)
+    source_require('discovery.json' not in evidence,'ACCEPTANCE_PRECONDITION_INVALID')
+    fingerprints=preflight('PROTECTED_STATE_CHANGED',u.protected_state)
+    ledger,rows=preflight('ACCEPTANCE_PRECONDITION_INVALID',o.ledger_snapshot)
+    source_require(all(v[3]=='SCHEDULER_OBSERVATION' for v in rows),'ACCEPTANCE_PRECONDITION_INVALID')
+    source_require((r.CONTROL/'operational-signals.json').is_file(),'OPERATIONAL_SIGNALS_MISSING')
+    oldfiles=preflight('OLD_BOUNDARY_INVALID',lambda:[source_file(r.SOURCE),source_file(r.CONFIG)])
+    def old_scout():
+        for name,key in [('development-scout.service',r.IDENTITIES[2]),('development-scout.timer',r.IDENTITIES[3])]:
+            path=r.USER_UNITS/name;item=source_file(path);p=properties(invoke,name,True)
+            source_require(r.sha(item['data'])==before[key] and p.get('FragmentPath')==str(path) and p.get('DropInPaths')=='' and p.get('NeedDaemonReload')=='no','OLD_USER_SCOUT_BOUNDARY_INVALID')
+            oldfiles.append(item)
+        timer_state(invoke,True,start_mode=='NORMAL_ACTIVE');quiescent(invoke,True)
+        if start_mode=='NORMAL_ACTIVE':next_timer(invoke,True)
+    preflight('OLD_USER_SCOUT_BOUNDARY_INVALID',old_scout)
+    preflight('SYSTEM_UNIT_STATE_INVALID',lambda:r.protected(STAMP.parent,directory=True))
     if STAMP.exists() or STAMP.is_symlink():raise MigrationFailure('PREFLIGHT_VERIFIED','PERSISTENT_TIMER_STAMP_PRESENT')
     desired=r.configuration(head,target['manifest']);desired['scout_manager']='system'
-    targets=[(r.SOURCE,r.git(root,'show',head+':'+r.IDENTITIES[0]),oldfiles[0]['mode']),
-             (r.CONFIG,r.encoded(desired),oldfiles[1]['mode']),
-             (SYSTEM/'development-scout.service',r.git(root,'show',head+':'+r.IDENTITIES[2]),0o644),
-             (SYSTEM/'development-scout.timer',r.git(root,'show',head+':'+r.IDENTITIES[3]),0o644),
-             (CERT_SOURCE,r.git(root,'show',head+':'+CERT_FILES[0]),0o755),
-             (SYSTEM/CERT_UNIT,r.git(root,'show',head+':'+CERT_FILES[1]),0o644)]
-    daily_only(targets[3][1])
-    if first_activation_slot()!=slot:raise ValueError('migration local date changed')
+    def target_files():
+        return [(r.SOURCE,r.git(root,'show',head+':'+r.IDENTITIES[0]),oldfiles[0]['mode']),
+                (r.CONFIG,r.encoded(desired),oldfiles[1]['mode']),
+                (SYSTEM/'development-scout.service',r.git(root,'show',head+':'+r.IDENTITIES[2]),0o644),
+                (SYSTEM/'development-scout.timer',r.git(root,'show',head+':'+r.IDENTITIES[3]),0o644),
+                (CERT_SOURCE,r.git(root,'show',head+':'+CERT_FILES[0]),0o755),
+                (SYSTEM/CERT_UNIT,r.git(root,'show',head+':'+CERT_FILES[1]),0o644)]
+    targets=preflight('DEPLOYED_SOURCE_AUTHORITY_INVALID',target_files)
+    preflight('SYSTEM_UNIT_STATE_INVALID',lambda:daily_only(targets[3][1]))
+    source_require(preflight('ACTIVATION_WINDOW_EXPIRED',first_activation_slot)==slot,'ACTIVATION_WINDOW_EXPIRED')
     for path,_,_ in targets[2:]:
-        if path.exists() or path.is_symlink():raise ValueError('new system boundary collision')
-        r.protected(path.parent,directory=True)
+        source_require(not (path.exists() or path.is_symlink()),'SYSTEM_BOUNDARY_COLLISION')
+        preflight('SYSTEM_UNIT_STATE_INVALID',lambda:r.protected(path.parent,directory=True))
     for name in ('development-scout.service','development-scout.timer',CERT_UNIT):
-        p=properties(invoke,name)
-        if p.get('LoadState')!='not-found' or p.get('DropInPaths','')!='' or p.get('ActiveState')!='inactive' or p.get('MainPID')!='0' or p.get('ControlPID')!='0':raise ValueError('unexpected loaded system unit')
+        p=preflight('SYSTEM_UNIT_STATE_INVALID',lambda:properties(invoke,name))
+        source_require(p.get('LoadState')=='not-found' and p.get('DropInPaths','')=='' and p.get('ActiveState')=='inactive' and p.get('MainPID')=='0' and p.get('ControlPID')=='0','SYSTEM_UNIT_STATE_INVALID')
     return dict(start_mode=start_mode,slot=slot,current=current,desired=desired,observed=observed,evidence=evidence,fingerprints=fingerprints,ledger=ledger,oldfiles=oldfiles,targets=targets,influence=influence)
 
 
@@ -218,7 +267,7 @@ def install_new(path,data,mode,installed):
 
 
 STAGES=('PREFLIGHT_VERIFIED','BACKUP_CREATED','OLD_SCOUT_QUIESCENT','OLD_USER_TIMER_DISABLED','OLD_OBSERVER_STOPPED','SYSTEM_BOUNDARY_INSTALLED','SYSTEM_DAEMON_RELOADED','SYSTEM_BOUNDARY_VERIFIED','SANDBOX_CERTIFICATION_STARTED','SANDBOX_CERTIFICATION_PASSED','POST_CERT_LEDGER_VERIFIED','POST_CERT_ACCEPTANCE_STATE_VERIFIED','POST_CERT_PROTECTED_STATE_VERIFIED','OLD_USER_TIMER_DISABLED_VERIFIED','ACTIVATION_WINDOW_VERIFIED','SYSTEM_TIMER_ENABLED','SYSTEM_TIMER_STATE_VERIFIED','NEXT_ELAPSE_VERIFIED','NEW_OBSERVER_STARTED','FINAL_BOUNDARY_VERIFIED','MIGRATION_COMPLETE','ROLLBACK_STARTED','ROLLBACK_COMPLETE')
-FAILURE_CODES=frozenset(('LEDGER_CONTINUITY_CHANGED','ACCEPTANCE_STATE_CHANGED','PROTECTED_STATE_CHANGED','OLD_USER_TIMER_STATE_INVALID','ACTIVATION_WINDOW_EXPIRED','PERSISTENT_TIMER_STAMP_PRESENT','SYSTEM_TIMER_ENABLE_FAILED','SYSTEM_TIMER_STATE_INVALID','NEXT_ELAPSE_INVALID','OBSERVER_START_FAILED','OBSERVER_BOUNDARY_INVALID','SYSTEM_BOUNDARY_CHANGED','SANDBOX_CERTIFICATION_FAILED','ROLLBACK_FAILED','UNCLASSIFIED_MIGRATION_FAILURE'))
+FAILURE_CODES=frozenset(('LEDGER_CONTINUITY_CHANGED','ACCEPTANCE_STATE_CHANGED','PROTECTED_STATE_CHANGED','OLD_USER_TIMER_STATE_INVALID','ACTIVATION_WINDOW_EXPIRED','PERSISTENT_TIMER_STAMP_PRESENT','SYSTEM_TIMER_ENABLE_FAILED','SYSTEM_TIMER_STATE_INVALID','NEXT_ELAPSE_INVALID','OBSERVER_START_FAILED','OBSERVER_BOUNDARY_INVALID','SYSTEM_BOUNDARY_CHANGED','SANDBOX_CERTIFICATION_FAILED','ROLLBACK_FAILED','UNCLASSIFIED_MIGRATION_FAILURE','DEPLOYED_SOURCE_SHA_INVALID','DEPLOYED_SOURCE_DIRTY','DEPLOYED_SOURCE_AUTHORITY_INVALID','REPOSITORY_ORIGIN_INVALID','OLD_BOUNDARY_INVALID','STOPPED_OBSERVER_INVALID','OLD_USER_SCOUT_BOUNDARY_INVALID','ACCEPTANCE_PRECONDITION_INVALID','OPERATIONAL_SIGNALS_MISSING','SYSTEM_BOUNDARY_COLLISION','SYSTEM_UNIT_STATE_INVALID'))
 
 
 class MigrationFailure(ValueError):
@@ -272,7 +321,8 @@ def _migrate(root,head,old,*,apply=False,invoke=subprocess.run):
     base=dict(status='PREFLIGHT_FAILED_NOT_READY',changes_applied=False,accepted_runs=0,grants_implementation=False)
     try:
         # Do not echo invalid caller arguments into failure evidence.
-        if not all(isinstance(v,str) and re.fullmatch('[a-f0-9]{40}',v) for v in (head,old)):raise ValueError('exact SHA required')
+        source_require(isinstance(head,str) and re.fullmatch('[a-f0-9]{40}',head) is not None,'DEPLOYED_SOURCE_SHA_INVALID')
+        source_require(isinstance(old,str) and re.fullmatch('[a-f0-9]{40}',old) is not None,'OLD_BOUNDARY_INVALID')
         base.update(source_head=head,expected_old_head=old)
         plan=inspect(root,head,old,invoke)
     except Exception as error:
