@@ -101,3 +101,12 @@ def test_scheduler_manager_environment_cannot_redirect_system_bus(monkeypatch):
   calls.append(kw);assert kw['env']=={'PATH':'/usr/bin:/bin','HOME':'/nonexistent'};raise OSError('unavailable')
  monkeypatch.setattr(scheduler.subprocess,'run',run)
  assert scheduler.trigger()=={'source':'operator','invocation':None} and calls
+
+
+def test_cert_manager_exception_stays_sanitized(monkeypatch,capsys):
+ from ops.discovery import sandbox_certify as c
+ def broken():raise RuntimeError("secret SQL private path")
+ monkeypatch.setattr(c,"checks",broken);monkeypatch.setattr(c,"active_record",broken)
+ assert c.main()==1
+ out=capsys.readouterr().out
+ assert "secret" not in out and "SQL" not in out and json.loads(out)["execution_record_current"] is False

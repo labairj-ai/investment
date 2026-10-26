@@ -49,7 +49,7 @@ def checks():
 
 def main():
     try:result=checks()
-    except Exception:result={k:False for k in ('network_namespace_isolated','repository_read_only','protected_state_inaccessible','credentials_inaccessible','process_uid_expected','system_manager_readable','execution_record_current')};result.update(execution_record_current=active_record(),test_evidence_only=True,accepted_scout_run=False)
+    except Exception:result={k:False for k in ('network_namespace_isolated','repository_read_only','protected_state_inaccessible','credentials_inaccessible','process_uid_expected','system_manager_readable','execution_record_current')};result.update(test_evidence_only=True,accepted_scout_run=False)
     print(json.dumps(result,sort_keys=True),flush=True)
     return 0 if all(v for k,v in result.items() if k!='accepted_scout_run') and result['accepted_scout_run'] is False else 1
 
