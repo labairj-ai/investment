@@ -77,7 +77,7 @@ never trusted timer origin. Fixed filesystem AF_UNIX system-bus access is tested
 inside the cert sandbox; no caller-env fallback or weaker bridge is installed.
 Scheduler health labels Scout system scope and both companion timers user scope.
 
-The target timer has only daily12:00 America/New_York, Persistent=true,
+The target timer has only daily16:00 America/New_York, Persistent=true,
 RandomizedDelaySec=120 and Unit=development-scout.service. No absolute October25
 entry remains in the timer. Earlier recovery documentation is historical only.
 
@@ -106,12 +106,12 @@ There is never an intentional state with both Scout timers active.
 
 The new system timer must have no existing system persistent stamp or loaded
 system-unit history/configuration. No stamp is edited/deleted/copied or fabricated.
-First activation is authorized only before **11:50:00 America/New_York on the
+First activation is authorized only before **15:50:00 America/New_York on the
 current local date**. At or after the cutoff it fails closed, including after
-12:00; authorization never rolls to tomorrow. This guard runs in inspect, again
+16:00; authorization never rolls to tomorrow. This guard runs in inspect, again
 under the lock immediately before boundary mutation, and after certification
 immediately before timer enable. Crossing the cutoff during certification uses
-the stopped/not-ready rollback. Native next-elapse must be today’s 12:00–12:02
+the stopped/not-ready rollback. Native next-elapse must be today’s 16:00–16:02
 Eastern interval, never tomorrow or an immediate/past trigger. Persistent=true
 is retained; no catch-up behavior is relied upon to authorize activation. Existing system
 history or any elapsed recovery entry fails closed, never reset to force a pass.

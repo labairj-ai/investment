@@ -19,6 +19,6 @@ Tests exercise the launcher with real source influence auditing and the existing
 synthetic stopped host transaction (disabled user timer, absent system timer,
 zero acceptance). Linux runs the regression in system Python -I -S with real
 /var/cache ancestry; portable tests model ancestry attacks without host changes.
-The production PLAN_ONLY remains subject to the existing strict 11:50 cutoff;
+The production PLAN_ONLY remains subject to the existing strict 15:50 cutoff;
 after that time it must return ACTIVATION_WINDOW_EXPIRED, never bypass the guard.
 No schedule, acceptance, migration stages or recovery boundaries change.
