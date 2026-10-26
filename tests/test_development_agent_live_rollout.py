@@ -194,7 +194,11 @@ def test_installation_source_plan_and_wrong_head_are_bound(tmp_path):
     git('init','-q');git('config','user.name','fixture');git('config','user.email','fixture@example.invalid')
     names=['ops/validator/static_oracle.py','ops/validator/investment-static-oracle.service','ops/validator/live_acceptance.py','ops/validator/investment-static-oracle-acceptance.service','config/development_agent.json',*['systemd/'+n for n in UNITS]]
     for name in names:
-        p=root/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes((ROOT/name).read_bytes())
+        p=root/name;p.parent.mkdir(parents=True,exist_ok=True);data=(ROOT/name).read_bytes()
+        # This fixture exercises the historical user-only bootstrap contract.
+        # System-Scout templates must instead use the separately tested migration.
+        if name=='systemd/development-scout.service':data=data.replace(b'User=optiplex\n',b'').replace(b'Group=optiplex\n',b'')
+        p.write_bytes(data)
     git('add','.');git('commit','-qm','synthetic reviewed source');head=git('rev-parse','HEAD')
     git('remote','add','origin','https://github.com/owner/repo.git');git('update-ref','refs/remotes/origin/main',head)
     assert prepare(root,head,'owner/repo')['head']==head
