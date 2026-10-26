@@ -52,17 +52,17 @@ def quiescent(invoke,user):
 
 
 def first_activation_slot(now=None):
-    """Authorize only today's pre-08:05 Eastern window; never roll to tomorrow."""
+    """Authorize only today's pre-09:50 Eastern window; never roll to tomorrow."""
     now=time.time() if now is None else now
     local=datetime.fromtimestamp(now,ZoneInfo('America/New_York'))
-    slot=local.replace(hour=8,minute=15,second=0,microsecond=0).timestamp()
-    if now>=slot-600:raise ValueError('first system timer activation requires today before 08:05 Eastern')
+    slot=local.replace(hour=10,minute=0,second=0,microsecond=0).timestamp()
+    if now>=slot-600:raise ValueError('first system timer activation requires today before 09:50 Eastern')
     return slot
 
 
 def daily_only(raw):
     lines=raw.decode().splitlines()
-    if [s for s in lines if s.startswith('OnCalendar=')]!=['OnCalendar=*-*-* 08:15:00 America/New_York']:raise ValueError('daily-only calendar required; elapsed recovery forbidden')
+    if [s for s in lines if s.startswith('OnCalendar=')]!=['OnCalendar=*-*-* 10:00:00 America/New_York']:raise ValueError('daily-only calendar required; elapsed recovery forbidden')
     for line in ('Persistent=true','RandomizedDelaySec=120','Unit=development-scout.service'):
         if lines.count(line)!=1:raise ValueError('exact reviewed timer settings required')
 

@@ -19,7 +19,7 @@ def migration(host,monkeypatch):
  monkeypatch.setattr(m,'isolated',lambda:True);monkeypatch.setattr(m,'audit',lambda *a,**k:dict(untracked_source_influence='PASS'))
  for name in r.IDENTITIES[2:]:(h.USER_UNITS/Path(name).name).write_bytes(r.git(h.ROOT,'show',h.old+':'+name))
  for name in [r.IDENTITIES[0],r.IDENTITIES[2]]:(h.ROOT/name).write_text('new reviewed '+name)
- (h.ROOT/r.IDENTITIES[3]).write_text('OnCalendar=*-*-* 08:15:00 America/New_York\nPersistent=true\nRandomizedDelaySec=120\nUnit=development-scout.service\n')
+ (h.ROOT/r.IDENTITIES[3]).write_text('OnCalendar=*-*-* 10:00:00 America/New_York\nPersistent=true\nRandomizedDelaySec=120\nUnit=development-scout.service\n')
  for name in m.CERT_FILES:
   p=h.ROOT/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_text('new fixed certification '+name)
  (h.ROOT/'holdings.csv').write_text('synthetic holdings');(h.ROOT/'out').mkdir()
@@ -125,20 +125,20 @@ def test_new_file_atomic_install_refuses_collision_without_overwrite(tmp_path):
 def eastern(clock):
  return datetime.fromisoformat('2026-10-26T'+clock).replace(tzinfo=ZoneInfo('America/New_York')).timestamp()
 
-@pytest.mark.parametrize('clock',['07:00:00','08:04:59'])
+@pytest.mark.parametrize('clock',['08:30:00','09:30:00','09:49:59'])
 def test_first_activation_window_valid(clock):
- assert m.first_activation_slot(eastern(clock))==eastern('08:15:00')
+ assert m.first_activation_slot(eastern(clock))==eastern('10:00:00')
 
-@pytest.mark.parametrize('clock',['08:05:00','08:10:00','08:15:00','09:00:00','23:00:00'])
+@pytest.mark.parametrize('clock',['09:50:00','09:55:00','10:00:00','11:00:00','23:00:00'])
 def test_first_activation_window_never_rolls_to_tomorrow(clock):
- with pytest.raises(ValueError,match='before 08:05'):m.first_activation_slot(eastern(clock))
+ with pytest.raises(ValueError,match='before 09:50'):m.first_activation_slot(eastern(clock))
 
 @pytest.mark.parametrize('offset',[0,60,120])
 def test_enabled_next_elapse_is_today_in_reviewed_interval(migration,offset):
  h=migration;h.next_offset=offset
  assert h.migrate(apply=True)['status']=='MIGRATED_AWAITING_GENUINE_SYSTEM_TIMER_RUNS'
 
-@pytest.mark.parametrize('offset',[-1,-3600,121,86400])
+@pytest.mark.parametrize('offset',[-1,-6300,121,86400])
 def test_wrong_next_elapse_rolls_back_without_scout(migration,offset):
  h=migration;h.next_offset=offset
  result=h.migrate(apply=True)
@@ -146,11 +146,11 @@ def test_wrong_next_elapse_rolls_back_without_scout(migration,offset):
  assert not any(a[2:]==['start','development-scout.service'] for a in h.calls)
 
 def test_plan_before_cutoff_apply_at_cutoff_refuses_without_mutation(migration,monkeypatch):
- h=migration;monkeypatch.setattr(m.time,'time',lambda:eastern('08:04:00'))
+ h=migration;monkeypatch.setattr(m.time,'time',lambda:eastern('09:49:00'))
  assert h.migrate()['status']=='PLAN_ONLY'
  before=h.snapshot();names=set(h.CONFIG.parent.iterdir());calls=list(h.calls)
- monkeypatch.setattr(m.time,'time',lambda:eastern('08:05:00'))
- with pytest.raises(ValueError,match='before 08:05'):h.migrate(apply=True)
+ monkeypatch.setattr(m.time,'time',lambda:eastern('09:50:00'))
+ with pytest.raises(ValueError,match='before 09:50'):h.migrate(apply=True)
  assert h.snapshot()==before and set(h.CONFIG.parent.iterdir())==names and h.calls==calls and h.user_active and not h.system_active
 
 def test_cutoff_rechecked_under_lock_before_backup_or_timer_mutation(migration,monkeypatch):
@@ -158,18 +158,18 @@ def test_cutoff_rechecked_under_lock_before_backup_or_timer_mutation(migration,m
  def inspect(*args):
   nonlocal count
   count+=1;result=original(*args)
-  if count==2:monkeypatch.setattr(m.time,'time',lambda:eastern('08:05:00'))
+  if count==2:monkeypatch.setattr(m.time,'time',lambda:eastern('09:50:00'))
   return result
  monkeypatch.setattr(m,'inspect',inspect)
  before=h.snapshot();config=h.CONFIG.read_bytes()
- with pytest.raises(ValueError,match='before 08:05'):h.migrate(apply=True)
+ with pytest.raises(ValueError,match='before 09:50'):h.migrate(apply=True)
  assert h.snapshot()==before and h.CONFIG.read_bytes()==config and not list(h.CONFIG.parent.glob('scout-system-migration-backup-*'))
  assert h.user_active and not h.system_active and not h.cert_started and h.stops==0
 
 def test_certification_crossing_cutoff_rolls_back_without_timer_enable(migration,monkeypatch):
  h=migration;original=m.certify
  def certify(*args):
-  result=original(*args);monkeypatch.setattr(m.time,'time',lambda:eastern('08:05:00'));return result
+  result=original(*args);monkeypatch.setattr(m.time,'time',lambda:eastern('09:50:00'));return result
  monkeypatch.setattr(m,'certify',certify)
  result=h.migrate(apply=True)
  assert result['status']=='ROLLED_BACK_STOPPED_NOT_READY' and not h.user_active and not h.system_active
