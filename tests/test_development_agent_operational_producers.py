@@ -106,8 +106,8 @@ def test_observer_authentication_rejects_wrong_control_process_before_reading_st
         calls.append((command,kwargs));return b'ControlPID=999\n'
     monkeypatch.setattr(observer.subprocess,'check_output',output)
     with pytest.raises(ValueError):observer.systemd({},123,'begin')
-    assert calls[0][0][:3]==['/usr/bin/systemctl','--user','show']
-    assert calls[0][1]['user']==123 and calls[0][1]['extra_groups']==[]
+    assert calls[0][0][:3]==['/usr/bin/systemctl','--system','show']
+    assert 'user' not in calls[0][1] and 'XDG_RUNTIME_DIR' not in calls[0][1]['env']
 
 
 def test_acceptance_harness_has_no_development_host_authority():
@@ -246,20 +246,23 @@ def test_root_observer_verifies_loaded_unit_peer_and_real_timer(monkeypatch,atta
     account=SimpleNamespace(pw_uid=123,pw_gid=123)
     monkeypatch.setattr(observer.pwd,'getpwnam',lambda n:account)
     phase='end' if attack=='result' else 'begin'
-    values=dict(ControlPID='123',InvocationID='a'*32,FragmentPath='/home/optiplex/.config/systemd/user/development-scout.service',DropInPaths='',NeedDaemonReload='no',Result='success',PrivateNetwork='yes',NoNewPrivileges='yes',ProtectSystem='strict',ProtectHome='read-only',RefuseManualStart='yes',TriggeredBy='development-scout.timer')
+    values=dict(ControlPID='123',InvocationID='a'*32,FragmentPath='/etc/systemd/system/development-scout.service',DropInPaths='',NeedDaemonReload='no',Result='success',PrivateNetwork='yes',NoNewPrivileges='yes',ProtectSystem='strict',ProtectHome='read-only',RefuseManualStart='yes',TriggeredBy='development-scout.timer',User='optiplex',Group='optiplex',WorkingDirectory=str(observer.ROOT))
     if attack=='dropin':values['DropInPaths']='unreviewed.conf'
     if attack=='reload':values['NeedDaemonReload']='yes'
     if attack=='sandbox':values['PrivateNetwork']='no'
     if attack=='invocation':values['InvocationID']='operator'
     if attack=='result':values['Result']='exit-code'
     fired=str(int((time.monotonic()-(1000 if attack=='timer' else 0))*1e6))
+    record_real=int(time.time()*1e6);record_mono=int(time.monotonic()*1e6)
     def output(command,**kwargs):
         if command[0]=='/usr/bin/busctl':
+            if 'ExecStartPre' in command or 'ExecStopPost' in command:return json.dumps(dict(type='a(sasbttttuii)',data=[['/usr/bin/python3',['/usr/bin/python3','-I','-S',str(observer.SOURCE),'wrong' if attack=='argv' else phase],False,record_real,record_mono,0,0,123,0,0]])).encode()
+            if 'InactiveExitTimestampMonotonic' in command:return json.dumps(dict(type='t',data=record_mono)).encode()
             if 'ActivationDetails' in command:return json.dumps(dict(type='a(ss)',data=[['trigger_unit','development-scout.timer'],['trigger_timer_monotonic_usec',fired]])).encode()
             return ('t '+fired+'\n').encode()
-        if command[-1]=='--property=ControlPID,InvocationID':return ('ControlPID=123\nInvocationID='+('a'*32)+'\n').encode()
+        if command[-1]=='--property=InvocationID,ControlPID,ActiveState,SubState':return ('ControlPID=123\nInvocationID='+('a'*32)+'\nActiveState='+('deactivating' if phase=='end' else 'activating')+'\nSubState='+('stop-post' if phase=='end' else 'start-pre')+'\n').encode()
         if 'development-scout.timer' in command:
-            timer=dict(LastTriggerUSecMonotonic=str(int((time.monotonic()-(1000 if attack=='timer' else 0))*1e6)),FragmentPath='/home/optiplex/.config/systemd/user/development-scout.timer',DropInPaths='',NeedDaemonReload='no',ActiveState='active',UnitFileState='enabled')
+            timer=dict(LastTriggerUSecMonotonic=str(int((time.monotonic()-(1000 if attack=='timer' else 0))*1e6)),FragmentPath='/etc/systemd/system/development-scout.timer',DropInPaths='',NeedDaemonReload='no',ActiveState='active',UnitFileState='enabled')
             return '\n'.join(k+'='+v for k,v in timer.items()).encode()
         return '\n'.join(k+'='+v for k,v in values.items()).encode()
     monkeypatch.setattr(observer.subprocess,'check_output',output)

@@ -1,4 +1,4 @@
-"""Observed user-systemd discovery health; read-only, never installs or starts."""
+"""Observed system Scout / user collector discovery health; read-only, never installs or starts."""
 from __future__ import annotations
 import json
 import math
@@ -14,11 +14,11 @@ PROPERTIES=('LoadState','UnitFileState','ActiveState','NextElapseUSecRealtime','
 def observe(*,invoke=subprocess.run,now=None):
     now=time.time() if now is None else now
     try:
-        process=invoke(['systemctl','--user','show','development-scout.timer','--no-pager','--property='+','.join(PROPERTIES)],check=True,capture_output=True,text=True,timeout=10)
+        process=invoke(['/usr/bin/systemctl','--system','show','development-scout.timer','--no-pager','--property='+','.join(PROPERTIES)],check=True,capture_output=True,text=True,timeout=10,env={'PATH':'/usr/bin:/bin','HOME':'/nonexistent'})
         values=dict(line.split('=',1) for line in process.stdout.splitlines() if '=' in line)
         if values.get('LoadState')!='loaded':return dict(status='UNAVAILABLE',reason='discovery timer not installed',created=now)
         enabled=values.get('UnitFileState') in {'enabled','enabled-runtime'}
-        return dict(status='SCHEDULED' if enabled and values.get('ActiveState')=='active' else 'DISABLED',created=now,enabled=enabled,active=values.get('ActiveState'),next_run=values.get('NextElapseUSecRealtime'),last_trigger=values.get('LastTriggerUSec'),unit='development-scout.timer',implementation_scheduled=False)
+        return dict(status='SCHEDULED' if enabled and values.get('ActiveState')=='active' else 'DISABLED',created=now,enabled=enabled,active=values.get('ActiveState'),next_run=values.get('NextElapseUSecRealtime'),last_trigger=values.get('LastTriggerUSec'),unit='development-scout.timer',manager='system',collector_manager='user',scheduler_observer_manager='user',implementation_scheduled=False)
     except (OSError,ValueError,subprocess.SubprocessError):return dict(status='UNAVAILABLE',reason='systemd discovery observation unavailable',created=now)
 
 

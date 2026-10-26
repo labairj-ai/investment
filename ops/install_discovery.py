@@ -24,6 +24,13 @@ SERVICES=('development-scout','development-scheduler-observer','development-sign
 UNITS=tuple(name+suffix for name in SERVICES for suffix in ('.service','.timer'))
 
 
+def legacy_user_units_only(files):
+    # System-manager Scout templates cannot be installed by the legacy user
+    # bootstrap. Existing installations require the dedicated root migration.
+    if any(line.startswith(b'User=') for line in files['development-scout.service'].splitlines()):
+        raise ValueError('system Scout requires reviewed root migration; user bootstrap refused')
+
+
 def prepare(root,head,repository,reader_mode='token'):
     if reader_mode not in MODES:raise ValueError('explicit reviewed discovery reader mode required')
     plan=reviewed_source(root,head,repository)
@@ -32,6 +39,7 @@ def prepare(root,head,repository,reader_mode='token'):
         raise ValueError('discovery bootstrap requires implementation/publication/auto-merge disabled')
     plan['reader_mode']=reader_mode
     plan['files']={name:git(root,'show',head+':systemd/'+name) for name in UNITS}
+    legacy_user_units_only(plan['files'])
     if any(b'supervised-cycle' in data or b'--command' in data for data in plan['files'].values()):raise ValueError('only fixed read-only discovery units may be installed')
     return plan
 
@@ -41,6 +49,7 @@ def verify_reader(client):
 
 
 def apply(plan,*,invoke=subprocess.run):
+    legacy_user_units_only(plan['files'])
     account=pwd.getpwuid(os.getuid());home=Path(account.pw_dir)
     if sys.platform!='linux' or account.pw_name!='optiplex' or Path(plan['root'])!=home/'investment':raise ValueError('reviewed OptiPlex user installation required')
     unit_dir=home/'.config/systemd/user';settings=home/'.config/investment-development'

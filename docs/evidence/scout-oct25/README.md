@@ -409,3 +409,12 @@ remain separate fixture evidence.
 For PR22, the application source transition begins at merged PR21 3d50af9...;
 the installed observer boundary still begins at 19fd140.... These baselines are
 intentionally distinct. Both target the exact reviewed PR22 merged main.
+
+## PR23 supersedes all October25 recovery calendars (not applied)
+
+The21:00 genuine timer also failed closed before ExecStart. Both failed attempts
+received zero credit. No further October25 retry is authorized. Proposed PR23
+removes the absolute entry, moves Scout to the system manager as optiplex, and adds
+per-command provenance plus a separately reviewed migration/certification path.
+See [system-manager design](../../scout-system-manager.md). Earlier16:30/18:30/21:00
+rollout instructions above are historical and must not be used for PR23.

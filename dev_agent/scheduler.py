@@ -25,17 +25,29 @@ def slot(now=None):
 
 def trigger():
     invocation=os.environ.get('INVOCATION_ID','')
+    manager_env={'PATH':'/usr/bin:/bin','HOME':'/nonexistent'}
     if re.fullmatch(r'[a-f0-9]{32}',invocation):
         try:
-            service=subprocess.run(['systemctl','--user','show','development-scout.service','--no-pager','--property=InvocationID,MainPID'],check=True,capture_output=True,text=True,timeout=10)
+            service=subprocess.run(['/usr/bin/systemctl','--system','show','development-scout.service','--no-pager','--property=InvocationID,MainPID'],check=True,capture_output=True,text=True,timeout=10,env=manager_env)
             values=dict(line.split('=',1) for line in service.stdout.splitlines() if '=' in line)
-            timer=subprocess.run(['/usr/bin/busctl','--user','get-property','org.freedesktop.systemd1',
+            timer=subprocess.run(['/usr/bin/busctl','--system','get-property','org.freedesktop.systemd1',
                 '/org/freedesktop/systemd1/unit/development_2dscout_2etimer',
-                'org.freedesktop.systemd1.Timer','LastTriggerUSecMonotonic'],check=True,capture_output=True,text=True,timeout=10)
+                'org.freedesktop.systemd1.Timer','LastTriggerUSecMonotonic'],check=True,capture_output=True,text=True,timeout=10,env=manager_env)
             if not re.fullmatch(r't [0-9]{1,20}\n',timer.stdout):raise ValueError('typed timer trigger required')
             fired=int(timer.stdout[2:])
             recent=0<fired<2**64 and 0<=time.monotonic()-fired/1_000_000<=180
-            if values.get('InvocationID')==invocation and int(values.get('MainPID','0'))==os.getpid() and recent:return dict(source='systemd-observed-timer',invocation=invocation)
+            if values.get('InvocationID')==invocation and int(values.get('MainPID','0'))==os.getpid() and recent:
+                detail=subprocess.run(['/usr/bin/busctl','--system','--json=short','get-property','org.freedesktop.systemd1','/org/freedesktop/systemd1/unit/development_2dscout_2eservice','org.freedesktop.systemd1.Unit','ActivationDetails'],check=True,capture_output=True,text=True,timeout=10,env=manager_env)
+                if len(detail.stdout)>4096:raise ValueError('bounded manager metadata required')
+                data=json.loads(detail.stdout)
+                if set(data)!={'type','data'} or data['type']!='a(ss)' or not isinstance(data['data'],list):raise ValueError('typed manager metadata required')
+                pairs=data['data']
+                if any(not isinstance(p,list) or len(p)!=2 or any(type(x) is not str for x in p) for p in pairs):raise ValueError('fixed metadata pairs required')
+                meta=dict(pairs)
+                if len(meta)!=len(pairs) or meta.get('trigger_unit')!='development-scout.timer' or meta.get('trigger_timer_monotonic_usec')!=str(fired):raise ValueError('exact timer activation required')
+                again=subprocess.run(['/usr/bin/systemctl','--system','show','development-scout.service','--no-pager','--property=InvocationID,MainPID'],check=True,capture_output=True,text=True,timeout=10,env=manager_env)
+                if again.stdout!=service.stdout:raise ValueError('invocation changed')
+                return dict(source='systemd-observed-timer',invocation=invocation)
         except (OSError,ValueError,subprocess.SubprocessError):pass
     return dict(source='operator',invocation=None)
 
