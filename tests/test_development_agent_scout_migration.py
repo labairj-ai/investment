@@ -90,7 +90,10 @@ def migration(host,monkeypatch):
    else:pytest.fail('must never invoke Scout service '+str(args))
    return SimpleNamespace(returncode=0,stdout='')
   return original(args,**kw)
- h.invoke=invoke;h.migrate=lambda **kw:m.migrate(h.ROOT,h.head,h.old,invoke=h.invoke,**kw)
+ h.invoke=invoke
+ def run_migration(**kw):
+  return m.migrate(h.ROOT,h.head,h.old,invoke=h.invoke,**kw)
+ h.migrate=run_migration
  return h
 
 def test_migration_plan_only_preserves_existing_installed_discovery(migration):

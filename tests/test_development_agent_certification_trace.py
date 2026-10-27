@@ -19,6 +19,38 @@ CASES=[('identity','UNIT_IDENTITY_INVALID'),('start','START_FAILED'),('result','
  ('two','REPORT_COUNT_INVALID'),('four','REPORT_COUNT_INVALID')]
 
 
+def test_harness_dispatches_current_invoke(stopped):
+ h=stopped;original=h.invoke;calls=[]
+ def replacement(args,**kw):
+  calls.append(list(args))
+  return original(args,**kw)
+ h.invoke=replacement
+ result=h.migrate()
+ assert result['status']=='PLAN_ONLY' and calls
+ assert not h.cert_started
+
+
+def test_harness_observes_replacement_certification_error(stopped):
+ h=stopped;original=h.invoke;reached=[];before=u.protected_state()
+ def replacement(args,**kw):
+  if args==['/usr/bin/systemctl','--system','start',m.CERT_UNIT]:
+   reached.append(list(args))
+   raise RuntimeError('controlled certification fixture failure')
+  return original(args,**kw)
+ h.invoke=replacement
+ result=h.migrate(apply=True)
+ assert len(reached)==1
+ assert result['status']=='ROLLED_BACK_STOPPED_NOT_READY'
+ assert result['failure_code']=='CERTIFICATION_START_FAILED'
+ assert result['accepted_runs']==0 and not result['grants_implementation']
+ trace=json.loads((Path(result['backup'])/'certification-trace.json').read_text())
+ assert trace['failure_code']=='CERTIFICATION_START_FAILED'
+ assert trace['completed_subchecks']==['unit_identity']
+ progress=json.loads(Path(result['progress']).read_text())
+ assert any(e['stage']=='ROLLBACK_COMPLETE' and e['result']=='PASS' for e in progress['stages'])
+ assert u.protected_state()==before and not list(h.STATE.iterdir())
+
+
 def inject(h,attack):
  original=h.invoke
  def invoke(args,**kw):
