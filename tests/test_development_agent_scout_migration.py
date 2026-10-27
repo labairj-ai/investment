@@ -90,7 +90,7 @@ def migration(host,monkeypatch):
    else:pytest.fail('must never invoke Scout service '+str(args))
    return SimpleNamespace(returncode=0,stdout='')
   return original(args,**kw)
- h.invoke=invoke;h.migrate=lambda **kw:m.migrate(h.ROOT,h.head,h.old,invoke=invoke,**kw)
+ h.invoke=invoke;h.migrate=lambda **kw:m.migrate(h.ROOT,h.head,h.old,invoke=h.invoke,**kw)
  return h
 
 def test_migration_plan_only_preserves_existing_installed_discovery(migration):
@@ -141,7 +141,7 @@ def test_failed_observer_restart_restores_old_bytes_and_stops(migration):
 
 def test_wrong_backup_prevents_claiming_successful_rollback(migration,monkeypatch):
  h=migration;original=m.certify
- def corrupt(invoke,start):
+ def corrupt(invoke,start,progress):
   backup=next(h.CONFIG.parent.glob('scout-system-migration-backup-*'));(backup/'0').write_text('corrupt')
   raise ValueError('fixture certificate failure')
  monkeypatch.setattr(m,'certify',corrupt);result=h.migrate(apply=True)

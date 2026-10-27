@@ -98,7 +98,7 @@ def test_persistent_stamp_gets_distinct_code_and_is_not_deleted(stopped,monkeypa
 
 def test_rollback_failure_is_explicit(stopped,monkeypatch):
  h=stopped
- def corrupt(invoke,start):
+ def corrupt(invoke,start,progress):
   (next(h.CONFIG.parent.glob('scout-system-migration-backup-*'))/'0').write_text('corrupt');raise ValueError('private')
  monkeypatch.setattr(m,'certify',corrupt);result=h.migrate(apply=True)
  assert result['failure_stage']=='ROLLBACK_COMPLETE' and result['failure_code']=='ROLLBACK_FAILED' and result['initial_failure_code']=='SANDBOX_CERTIFICATION_FAILED'
