@@ -332,6 +332,7 @@ def certify_steps(invoke,start,trace):
             message=entry.get('MESSAGE','')
         except Exception:trace.decision('journal_decode',False,'CERTIFICATION_JOURNAL_DECODE_INVALID')
         counters['total_journal_json_lines']+=1
+        trace.observe('journal_decode',parsing_counters=dict(counters))
         if message.startswith('{'):
             counters['json_message_candidates']+=1
             trace.observe('report_decode',parsing_counters=dict(counters))

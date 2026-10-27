@@ -13,7 +13,7 @@ from test_development_agent_stopped_recovery import stopped
 CASES=[('identity','UNIT_IDENTITY_INVALID'),('start','START_FAILED'),('result','RESULT_INVALID'),
  ('exec','EXEC_STATUS_INVALID'),('missing_invocation','INVOCATION_INVALID'),('malformed_invocation','INVOCATION_INVALID'),('empty_invocation','INVOCATION_INVALID'),
  ('journal','JOURNAL_QUERY_FAILED'),('oversize','JOURNAL_OVERSIZE'),('journal_json','JOURNAL_DECODE_INVALID'),
- ('message_json','JOURNAL_DECODE_INVALID'),('schema','REPORT_SCHEMA_INVALID'),*[(
+ ('message_json','JOURNAL_DECODE_INVALID'),('later_journal_json','JOURNAL_DECODE_INVALID'),('schema','REPORT_SCHEMA_INVALID'),*[(
  'boolean:'+key,'REPORT_BOOLEAN_INVALID') for key in ('network_namespace_isolated','repository_read_only','protected_state_inaccessible','credentials_inaccessible','process_uid_expected','system_manager_readable','execution_record_current','test_evidence_only')],
  ('credit','REPORT_BOOLEAN_INVALID'),('zero','REPORT_COUNT_INVALID'),('one','REPORT_COUNT_INVALID'),
  ('two','REPORT_COUNT_INVALID'),('four','REPORT_COUNT_INVALID')]
@@ -42,6 +42,7 @@ def inject(h,attack):
    if attack=='journal':return SimpleNamespace(returncode=1,stdout='',stderr='secret-do-not-retain')
    if attack=='oversize':result.stdout='x'*65537
    elif attack=='journal_json':result.stdout='not-json'
+   elif attack=='later_journal_json':result.stdout=json.dumps(dict(MESSAGE='secret-do-not-retain'))+'\nnot-json'
    elif attack=='message_json':result.stdout=json.dumps(dict(MESSAGE='{bad'))
    elif attack in {'schema','credit'} or attack.startswith('boolean:'):
     rows=[json.loads(v) for v in result.stdout.splitlines()];report=json.loads(rows[0]['MESSAGE'])
@@ -69,6 +70,7 @@ def test_specific_failure_retains_trace_after_stopped_rollback(stopped,attack,su
  progress=json.loads(Path(result['progress']).read_text())
  assert trace['attempt_id']==progress['attempt_id'] and trace['source_target_sha']==h.head
  assert any(e['stage']=='ROLLBACK_COMPLETE' and e['result']=='PASS' for e in progress['stages'])
+ if attack=='later_journal_json':assert trace['observations']['parsing_counters']['total_journal_json_lines']==1
  if attack=='empty_invocation':assert trace['observations']['post_run_properties']['InvocationID']==''
  assert trace['completed_subchecks'] or attack=='identity'
  assert u.protected_state()==before and not h.system_active and not h.user_active
