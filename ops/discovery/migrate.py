@@ -243,27 +243,115 @@ def system_boundary(invoke,desired):
             quiescent(invoke,False)
 
 
-def certify(invoke,start):
-    # No application source import and no Scout call. Three separate sandboxed
-    # phases must all execute, covering the former stop-post namespace failure.
-    p=properties(invoke,CERT_UNIT)
-    if p.get('FragmentPath')!=str(SYSTEM/CERT_UNIT) or p.get('DropInPaths')!='' or p.get('NeedDaemonReload')!='no' or p.get('User')!='optiplex' or p.get('Group')!='optiplex':raise ValueError('certification unit identity invalid')
-    system(invoke,'start',CERT_UNIT)
-    p=properties(invoke,CERT_UNIT)
-    if p.get('Result')!='success' or p.get('ExecMainStatus')!='0':raise ValueError('runtime namespace certification failed')
+CERTIFICATION_CODES=tuple('CERTIFICATION_'+name for name in (
+    'UNIT_IDENTITY_INVALID','START_FAILED','RESULT_INVALID','EXEC_STATUS_INVALID',
+    'INVOCATION_INVALID','JOURNAL_QUERY_FAILED','JOURNAL_OVERSIZE','JOURNAL_DECODE_INVALID',
+    'REPORT_SCHEMA_INVALID','REPORT_BOOLEAN_INVALID','REPORT_COUNT_INVALID','TRACE_PERSIST_FAILED'))
+
+
+class CertificationTrace:
+    """Fixed bounded decision evidence, retained independently of installed units."""
+    def __init__(self,progress,start):
+        self.path=progress.backup/'certification-trace.json'
+        self.data=dict(schema='scout-certification-trace-1',attempt_id=progress.identity['attempt_id'],
+            source_target_sha=progress.identity['source_target_sha'],certification_started_at=start,
+            certification_started_at_repr=repr(start),current_step='INITIALIZED',completed_subchecks=[],
+            observations={},certification_result='RUNNING',failure_code=None)
+        self.persist()
+
+    def persist(self):
+        try:
+            r.protected(self.path.parent,directory=True)
+            if self.path.exists() or self.path.is_symlink():
+                r.protected(self.path)
+                if stat.S_IMODE(self.path.stat().st_mode)!=0o600:raise ValueError('trace mode')
+            raw=r.encoded(self.data)
+            if len(raw)>16384:raise ValueError('trace bound')
+            temp=self.path.with_name('certification-trace.next')
+            u.write(temp,raw,0o600,r.ROOT_UID,os.getgid())
+            os.replace(temp,self.path);u.sync(self.path.parent)
+        except Exception:
+            raise MigrationFailure('SANDBOX_CERTIFICATION_PASSED','CERTIFICATION_TRACE_PERSIST_FAILED') from None
+
+    def observe(self,step,**values):
+        self.data['current_step']=step;self.data['observations'].update(values);self.persist()
+
+    def decision(self,step,valid,code):
+        self.data['current_step']=step
+        self.data['observations'][step]='PASS' if valid else 'FAIL'
+        if valid:self.data['completed_subchecks'].append(step)
+        else:self.data.update(certification_result='FAIL',failure_code=code)
+        self.persist()
+        if not valid:raise MigrationFailure('SANDBOX_CERTIFICATION_PASSED',code)
+
+
+def certify(invoke,start,progress):
+    # Preserve the reviewed sequence and journal time filter. Never call Scout.
+    trace=CertificationTrace(progress,start)
+    try:return certify_steps(invoke,start,trace)
+    except MigrationFailure:raise
+    except Exception:
+        trace.decision('unexpected_failure',False,'SANDBOX_CERTIFICATION_FAILED')
+
+
+def certify_steps(invoke,start,trace):
+    def query(step,code,action):
+        trace.observe(step)
+        try:return action()
+        except Exception:
+            trace.decision(step,False,code)
+    identity=dict(FragmentPath=str(SYSTEM/CERT_UNIT),DropInPaths='',NeedDaemonReload='no',User='optiplex',Group='optiplex')
+    p=query('unit_identity_query','CERTIFICATION_UNIT_IDENTITY_INVALID',lambda:properties(invoke,CERT_UNIT))
+    # Invalid arbitrary property contents are classified, never copied to evidence.
+    trace.observe('unit_identity',unit_identity_properties={k:(p.get(k) if p.get(k)==v else None if k not in p else '<unexpected>') for k,v in identity.items()})
+    trace.decision('unit_identity',all(p.get(k)==v for k,v in identity.items()),'CERTIFICATION_UNIT_IDENTITY_INVALID')
+    completed=query('start','CERTIFICATION_START_FAILED',lambda:system(invoke,'start',CERT_UNIT,check=False))
+    trace.observe('start',start_returncode=completed.returncode,start_stdout_length=len(getattr(completed,'stdout','') or ''),start_stderr_length=len(getattr(completed,'stderr','') or ''))
+    trace.decision('start_result',completed.returncode==0,'CERTIFICATION_START_FAILED')
+    p=query('post_run_properties','CERTIFICATION_RESULT_INVALID',lambda:properties(invoke,CERT_UNIT))
+    patterns=dict(ActiveState=r'[a-z-]{1,40}',SubState=r'[a-z-]{1,40}',Result=r'[a-z-]{1,40}',ExecMainStatus=r'[0-9]{1,20}',InvocationID=r'[a-f0-9]{32}',MainPID=r'[0-9]{1,20}',ControlPID=r'[0-9]{1,20}')
+    trace.observe('post_run_properties',post_run_properties={k:(None if k not in p else p[k] if p[k]=='' or re.fullmatch(pattern,p[k]) else '<invalid>') for k,pattern in patterns.items()})
+    trace.decision('result_property_valid',p.get('Result')=='success','CERTIFICATION_RESULT_INVALID')
+    trace.decision('exec_main_status_valid',p.get('ExecMainStatus')=='0','CERTIFICATION_EXEC_STATUS_INVALID')
     inv=p.get('InvocationID','')
-    import re
-    if not re.fullmatch('[a-f0-9]{32}',inv):raise ValueError('real certification invocation required')
-    raw=invoke(['/usr/bin/journalctl','--no-pager','-o','json','_SYSTEMD_INVOCATION_ID='+inv,'--since=@'+str(start)],capture_output=True,text=True,check=True,timeout=30,env=r.ENV).stdout
-    if len(raw)>65536:raise ValueError('bounded certification journal required')
+    trace.decision('invocation_id_valid',re.fullmatch('[a-f0-9]{32}',inv) is not None,'CERTIFICATION_INVOCATION_INVALID')
+    command=['/usr/bin/journalctl','--no-pager','-o','json','_SYSTEMD_INVOCATION_ID='+inv,'--since=@'+str(start)]
+    trace.observe('journal_query',journal_query=dict(invocation=inv,since_argument=command[-1],query_type='invocation-and-realtime',arguments=command))
+    completed=query('journal_query','CERTIFICATION_JOURNAL_QUERY_FAILED',lambda:invoke(command,capture_output=True,text=True,check=False,timeout=30,env=r.ENV))
+    raw=completed.stdout
+    trace.observe('journal_query',journal_returncode=completed.returncode,stdout_length=len(raw),stderr_length=len(getattr(completed,'stderr','') or ''),journal_line_count=raw.count('\n')+int(bool(raw) and not raw.endswith('\n')))
+    trace.decision('journal_query_result',completed.returncode==0,'CERTIFICATION_JOURNAL_QUERY_FAILED')
+    trace.decision('journal_output_bounded',len(raw)<=65536,'CERTIFICATION_JOURNAL_OVERSIZE')
     expected={'network_namespace_isolated','repository_read_only','protected_state_inaccessible','credentials_inaccessible','process_uid_expected','system_manager_readable','execution_record_current','test_evidence_only','accepted_scout_run'};reports=[]
+    counters=dict(total_journal_json_lines=0,json_message_candidates=0,decoded_candidate_reports=0,exact_schema_reports=0,valid_boolean_reports=0,final_accepted_reports=0)
+    trace.observe('journal_decode',parsing_counters=dict(counters))
     for line in raw.splitlines():
-        message=r.loads(line).get('MESSAGE','')
+        try:
+            entry=r.loads(line)
+            if not isinstance(entry,dict) or not isinstance(entry.get('MESSAGE',''),str):raise ValueError('journal shape')
+            message=entry.get('MESSAGE','')
+        except Exception:trace.decision('journal_decode',False,'CERTIFICATION_JOURNAL_DECODE_INVALID')
+        counters['total_journal_json_lines']+=1
+        trace.observe('journal_decode',parsing_counters=dict(counters))
         if message.startswith('{'):
-            report=r.loads(message)
-            if set(report)!=expected or any(v is not True for k,v in report.items() if k!='accepted_scout_run') or report['accepted_scout_run'] is not False:raise ValueError('certification runtime booleans failed')
-            reports.append(report)
-    if len(reports)!=3:raise ValueError('pre/main/post certification reports required')
+            counters['json_message_candidates']+=1
+            trace.observe('report_decode',parsing_counters=dict(counters))
+            try:report=r.loads(message)
+            except Exception:trace.decision('report_decode',False,'CERTIFICATION_JOURNAL_DECODE_INVALID')
+            counters['decoded_candidate_reports']+=1
+            trace.observe('report_schema',parsing_counters=dict(counters))
+            trace.decision('report_schema_'+str(len(reports)+1),isinstance(report,dict) and set(report)==expected,'CERTIFICATION_REPORT_SCHEMA_INVALID')
+            counters['exact_schema_reports']+=1
+            trace.observe('report_booleans',parsing_counters=dict(counters))
+            trace.decision('report_booleans_'+str(len(reports)+1),all(v is True for k,v in report.items() if k!='accepted_scout_run') and report['accepted_scout_run'] is False,'CERTIFICATION_REPORT_BOOLEAN_INVALID')
+            counters['valid_boolean_reports']+=1;reports.append(report)
+            counters['final_accepted_reports']+=1
+            trace.observe('report_parsed',parsing_counters=dict(counters))
+            # Stop beyond the exact contract; never grow trace with arbitrary reports.
+            if len(reports)>3:trace.decision('report_count_valid',False,'CERTIFICATION_REPORT_COUNT_INVALID')
+    trace.observe('report_count',parsing_counters=dict(counters))
+    trace.decision('report_count_valid',len(reports)==3,'CERTIFICATION_REPORT_COUNT_INVALID')
+    trace.data['certification_result']='PASS';trace.data['current_step']='COMPLETE';trace.persist()
     return dict(invocation=inv,test_evidence_only=True,accepted_scout_run=False,reports=reports)
 
 
@@ -280,7 +368,7 @@ def install_new(path,data,mode,installed):
 
 
 STAGES=('PREFLIGHT_VERIFIED','BACKUP_CREATED','OLD_SCOUT_QUIESCENT','OLD_USER_TIMER_DISABLED','OLD_OBSERVER_STOPPED','SYSTEM_BOUNDARY_INSTALLED','SYSTEM_DAEMON_RELOADED','SYSTEM_BOUNDARY_VERIFIED','SANDBOX_CERTIFICATION_STARTED','SANDBOX_CERTIFICATION_PASSED','POST_CERT_LEDGER_VERIFIED','POST_CERT_ACCEPTANCE_STATE_VERIFIED','POST_CERT_PROTECTED_STATE_VERIFIED','OLD_USER_TIMER_DISABLED_VERIFIED','ACTIVATION_WINDOW_VERIFIED','SYSTEM_TIMER_ENABLED','SYSTEM_TIMER_STATE_VERIFIED','NEXT_ELAPSE_VERIFIED','NEW_OBSERVER_STARTED','FINAL_BOUNDARY_VERIFIED','MIGRATION_COMPLETE','ROLLBACK_STARTED','ROLLBACK_COMPLETE')
-FAILURE_CODES=frozenset(('LEDGER_CONTINUITY_CHANGED','ACCEPTANCE_STATE_CHANGED','PROTECTED_STATE_CHANGED','OLD_USER_TIMER_STATE_INVALID','ACTIVATION_WINDOW_EXPIRED','PERSISTENT_TIMER_STAMP_PRESENT','SYSTEM_TIMER_ENABLE_FAILED','SYSTEM_TIMER_STATE_INVALID','NEXT_ELAPSE_INVALID','OBSERVER_START_FAILED','OBSERVER_BOUNDARY_INVALID','SYSTEM_BOUNDARY_CHANGED','SANDBOX_CERTIFICATION_FAILED','ROLLBACK_FAILED','UNCLASSIFIED_MIGRATION_FAILURE','DEPLOYED_SOURCE_SHA_INVALID','DEPLOYED_SOURCE_DIRTY','DEPLOYED_SOURCE_AUTHORITY_INVALID','REPOSITORY_ORIGIN_INVALID','OLD_BOUNDARY_INVALID','STOPPED_OBSERVER_INVALID','OLD_USER_SCOUT_BOUNDARY_INVALID','ACCEPTANCE_PRECONDITION_INVALID','OPERATIONAL_SIGNALS_MISSING','SYSTEM_BOUNDARY_COLLISION','SYSTEM_UNIT_STATE_INVALID','SYSTEM_SCOUT_SERVICE_PRESTATE_INVALID','SYSTEM_SCOUT_TIMER_PRESTATE_INVALID','CERTIFICATION_SERVICE_PRESTATE_INVALID'))
+FAILURE_CODES=frozenset(('LEDGER_CONTINUITY_CHANGED','ACCEPTANCE_STATE_CHANGED','PROTECTED_STATE_CHANGED','OLD_USER_TIMER_STATE_INVALID','ACTIVATION_WINDOW_EXPIRED','PERSISTENT_TIMER_STAMP_PRESENT','SYSTEM_TIMER_ENABLE_FAILED','SYSTEM_TIMER_STATE_INVALID','NEXT_ELAPSE_INVALID','OBSERVER_START_FAILED','OBSERVER_BOUNDARY_INVALID','SYSTEM_BOUNDARY_CHANGED','SANDBOX_CERTIFICATION_FAILED','ROLLBACK_FAILED','UNCLASSIFIED_MIGRATION_FAILURE','DEPLOYED_SOURCE_SHA_INVALID','DEPLOYED_SOURCE_DIRTY','DEPLOYED_SOURCE_AUTHORITY_INVALID','REPOSITORY_ORIGIN_INVALID','OLD_BOUNDARY_INVALID','STOPPED_OBSERVER_INVALID','OLD_USER_SCOUT_BOUNDARY_INVALID','ACCEPTANCE_PRECONDITION_INVALID','OPERATIONAL_SIGNALS_MISSING','SYSTEM_BOUNDARY_COLLISION','SYSTEM_UNIT_STATE_INVALID','SYSTEM_SCOUT_SERVICE_PRESTATE_INVALID','SYSTEM_SCOUT_TIMER_PRESTATE_INVALID','CERTIFICATION_SERVICE_PRESTATE_INVALID')) | frozenset(CERTIFICATION_CODES)
 
 
 class MigrationFailure(ValueError):
@@ -384,7 +472,7 @@ def _migrate(root,head,old,*,apply=False,invoke=subprocess.run):
             progress.run('SYSTEM_BOUNDARY_VERIFIED','SYSTEM_BOUNDARY_CHANGED',boundary)
             cert_started=time.time()
             progress.run('SANDBOX_CERTIFICATION_STARTED','SANDBOX_CERTIFICATION_FAILED',lambda:None)
-            cert=progress.run('SANDBOX_CERTIFICATION_PASSED','SANDBOX_CERTIFICATION_FAILED',lambda:certify(invoke,cert_started))
+            cert=progress.run('SANDBOX_CERTIFICATION_PASSED','SANDBOX_CERTIFICATION_FAILED',lambda:certify(invoke,cert_started,progress))
             progress.run('POST_CERT_LEDGER_VERIFIED','LEDGER_CONTINUITY_CHANGED',lambda:ledger_unchanged(plan['ledger']))
             progress.run('POST_CERT_ACCEPTANCE_STATE_VERIFIED','ACCEPTANCE_STATE_CHANGED',lambda:require(u.state()==plan['evidence'],'POST_CERT_ACCEPTANCE_STATE_VERIFIED','ACCEPTANCE_STATE_CHANGED'))
             progress.run('POST_CERT_PROTECTED_STATE_VERIFIED','PROTECTED_STATE_CHANGED',lambda:require(u.protected_state()==plan['fingerprints'],'POST_CERT_PROTECTED_STATE_VERIFIED','PROTECTED_STATE_CHANGED'))
