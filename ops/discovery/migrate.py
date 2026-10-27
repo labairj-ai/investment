@@ -39,6 +39,20 @@ def properties(invoke,name,user=False):
     return r.properties((u.user(invoke,args) if user else system(invoke,*args)).stdout)
 
 
+def system_prestate(invoke,name):
+    """Require absent inactive units; service process fields do not apply to timers."""
+    code={
+        'development-scout.service':'SYSTEM_SCOUT_SERVICE_PRESTATE_INVALID',
+        'development-scout.timer':'SYSTEM_SCOUT_TIMER_PRESTATE_INVALID',
+        CERT_UNIT:'CERTIFICATION_SERVICE_PRESTATE_INVALID',
+    }[name]
+    p=preflight(code,lambda:properties(invoke,name))
+    source_require(p.get('LoadState')=='not-found' and p.get('DropInPaths')=='' and p.get('ActiveState')=='inactive',code)
+    if name.endswith('.service'):
+        source_require(p.get('MainPID')=='0' and p.get('ControlPID')=='0',code)
+    return p
+
+
 def timer_state(invoke,user,active):
     p=properties(invoke,'development-scout.timer',user)
     if active:
@@ -213,8 +227,7 @@ def inspect(root,head,old,invoke):
         source_require(not (path.exists() or path.is_symlink()),'SYSTEM_BOUNDARY_COLLISION')
         preflight('SYSTEM_UNIT_STATE_INVALID',lambda:r.protected(path.parent,directory=True))
     for name in ('development-scout.service','development-scout.timer',CERT_UNIT):
-        p=preflight('SYSTEM_UNIT_STATE_INVALID',lambda:properties(invoke,name))
-        source_require(p.get('LoadState')=='not-found' and p.get('DropInPaths','')=='' and p.get('ActiveState')=='inactive' and p.get('MainPID')=='0' and p.get('ControlPID')=='0','SYSTEM_UNIT_STATE_INVALID')
+        system_prestate(invoke,name)
     return dict(start_mode=start_mode,slot=slot,current=current,desired=desired,observed=observed,evidence=evidence,fingerprints=fingerprints,ledger=ledger,oldfiles=oldfiles,targets=targets,influence=influence)
 
 
@@ -267,7 +280,7 @@ def install_new(path,data,mode,installed):
 
 
 STAGES=('PREFLIGHT_VERIFIED','BACKUP_CREATED','OLD_SCOUT_QUIESCENT','OLD_USER_TIMER_DISABLED','OLD_OBSERVER_STOPPED','SYSTEM_BOUNDARY_INSTALLED','SYSTEM_DAEMON_RELOADED','SYSTEM_BOUNDARY_VERIFIED','SANDBOX_CERTIFICATION_STARTED','SANDBOX_CERTIFICATION_PASSED','POST_CERT_LEDGER_VERIFIED','POST_CERT_ACCEPTANCE_STATE_VERIFIED','POST_CERT_PROTECTED_STATE_VERIFIED','OLD_USER_TIMER_DISABLED_VERIFIED','ACTIVATION_WINDOW_VERIFIED','SYSTEM_TIMER_ENABLED','SYSTEM_TIMER_STATE_VERIFIED','NEXT_ELAPSE_VERIFIED','NEW_OBSERVER_STARTED','FINAL_BOUNDARY_VERIFIED','MIGRATION_COMPLETE','ROLLBACK_STARTED','ROLLBACK_COMPLETE')
-FAILURE_CODES=frozenset(('LEDGER_CONTINUITY_CHANGED','ACCEPTANCE_STATE_CHANGED','PROTECTED_STATE_CHANGED','OLD_USER_TIMER_STATE_INVALID','ACTIVATION_WINDOW_EXPIRED','PERSISTENT_TIMER_STAMP_PRESENT','SYSTEM_TIMER_ENABLE_FAILED','SYSTEM_TIMER_STATE_INVALID','NEXT_ELAPSE_INVALID','OBSERVER_START_FAILED','OBSERVER_BOUNDARY_INVALID','SYSTEM_BOUNDARY_CHANGED','SANDBOX_CERTIFICATION_FAILED','ROLLBACK_FAILED','UNCLASSIFIED_MIGRATION_FAILURE','DEPLOYED_SOURCE_SHA_INVALID','DEPLOYED_SOURCE_DIRTY','DEPLOYED_SOURCE_AUTHORITY_INVALID','REPOSITORY_ORIGIN_INVALID','OLD_BOUNDARY_INVALID','STOPPED_OBSERVER_INVALID','OLD_USER_SCOUT_BOUNDARY_INVALID','ACCEPTANCE_PRECONDITION_INVALID','OPERATIONAL_SIGNALS_MISSING','SYSTEM_BOUNDARY_COLLISION','SYSTEM_UNIT_STATE_INVALID'))
+FAILURE_CODES=frozenset(('LEDGER_CONTINUITY_CHANGED','ACCEPTANCE_STATE_CHANGED','PROTECTED_STATE_CHANGED','OLD_USER_TIMER_STATE_INVALID','ACTIVATION_WINDOW_EXPIRED','PERSISTENT_TIMER_STAMP_PRESENT','SYSTEM_TIMER_ENABLE_FAILED','SYSTEM_TIMER_STATE_INVALID','NEXT_ELAPSE_INVALID','OBSERVER_START_FAILED','OBSERVER_BOUNDARY_INVALID','SYSTEM_BOUNDARY_CHANGED','SANDBOX_CERTIFICATION_FAILED','ROLLBACK_FAILED','UNCLASSIFIED_MIGRATION_FAILURE','DEPLOYED_SOURCE_SHA_INVALID','DEPLOYED_SOURCE_DIRTY','DEPLOYED_SOURCE_AUTHORITY_INVALID','REPOSITORY_ORIGIN_INVALID','OLD_BOUNDARY_INVALID','STOPPED_OBSERVER_INVALID','OLD_USER_SCOUT_BOUNDARY_INVALID','ACCEPTANCE_PRECONDITION_INVALID','OPERATIONAL_SIGNALS_MISSING','SYSTEM_BOUNDARY_COLLISION','SYSTEM_UNIT_STATE_INVALID','SYSTEM_SCOUT_SERVICE_PRESTATE_INVALID','SYSTEM_SCOUT_TIMER_PRESTATE_INVALID','CERTIFICATION_SERVICE_PRESTATE_INVALID'))
 
 
 class MigrationFailure(ValueError):

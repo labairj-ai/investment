@@ -129,3 +129,47 @@ def test_existing_backup_is_preserved_without_old_transition(stopped):
  h=stopped;backup=h.CONFIG.parent/('scout-system-migration-backup-'+h.head);backup.mkdir();(backup/'keep').write_text('retained')
  before=h.snapshot();result=h.migrate(apply=True)
  assert result['status']=='PREFLIGHT_FAILED_NOT_READY' and (backup/'keep').read_text()=='retained' and h.snapshot()==before and h.starts==h.stops==0
+
+
+@pytest.mark.parametrize('unit,code',[
+ ('development-scout.service','SYSTEM_SCOUT_SERVICE_PRESTATE_INVALID'),
+ (m.CERT_UNIT,'CERTIFICATION_SERVICE_PRESTATE_INVALID'),
+])
+@pytest.mark.parametrize('field',['MainPID','ControlPID'])
+@pytest.mark.parametrize('value',[None,'123'])
+def test_service_prestate_requires_explicit_zero_pids(stopped,monkeypatch,unit,code,field,value):
+ h=stopped;original=m.properties
+ def properties(invoke,name,user=False):
+  p=original(invoke,name,user)
+  if not user and name==unit:
+   if value is None:p.pop(field)
+   else:p[field]=value
+  return p
+ monkeypatch.setattr(m,'properties',properties)
+ before=h.snapshot();ledger=(h.CONTROL/'development-control.sqlite3').read_bytes()
+ result=h.migrate()
+ assert result['status']=='PREFLIGHT_FAILED_NOT_READY' and result['failure_stage']=='PREFLIGHT_VERIFIED' and result['failure_code']==code
+ assert h.snapshot()==before and (h.CONTROL/'development-control.sqlite3').read_bytes()==ledger
+ assert not h.active and not h.user_active and not h.system_active and h.starts==h.stops==0
+
+
+@pytest.mark.parametrize('unit,code',[
+ ('development-scout.service','SYSTEM_SCOUT_SERVICE_PRESTATE_INVALID'),
+ ('development-scout.timer','SYSTEM_SCOUT_TIMER_PRESTATE_INVALID'),
+ (m.CERT_UNIT,'CERTIFICATION_SERVICE_PRESTATE_INVALID'),
+])
+@pytest.mark.parametrize('field,value',[
+ ('LoadState','loaded'),('ActiveState','active'),('DropInPaths','/unexpected.conf'),('DropInPaths',None),
+])
+def test_system_prestate_common_invariants_fail_closed(stopped,monkeypatch,unit,code,field,value):
+ h=stopped;original=m.properties
+ def properties(invoke,name,user=False):
+  p=original(invoke,name,user)
+  if not user and name==unit:
+   if value is None:p.pop(field)
+   else:p[field]=value
+  return p
+ monkeypatch.setattr(m,'properties',properties)
+ before=h.snapshot();result=h.migrate()
+ assert result['status']=='PREFLIGHT_FAILED_NOT_READY' and result['failure_code']==code and result['changes_applied'] is False
+ assert h.snapshot()==before and h.starts==h.stops==0 and not h.active and not h.user_active and not h.system_active
