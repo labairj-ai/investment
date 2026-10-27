@@ -37,6 +37,9 @@ def test_executor_detached_checkout_enters_stopped_plan(stopped,monkeypatch,cach
  for name in ['investment.db','buffett.db']:(root/'out'/name).write_bytes(b'synthetic protected financial state')
  monkeypatch.setattr(m,'audit',a.audit)
  before=h.snapshot();config=h.CONFIG.read_bytes();inventory=set(h.CONFIG.parent.iterdir());ledger=(h.CONTROL/'development-control.sqlite3').read_bytes()
+ timer=m.properties(h.invoke,'development-scout.timer')
+ assert timer==dict(LoadState='not-found',FragmentPath='',DropInPaths='',NeedDaemonReload='no',ActiveState='inactive',SubState='dead',UnitFileState='',InvocationID='',Result='success',RefuseManualStart='no')
+ assert not {'MainPID','ControlPID','ExecMainStatus','User','Group'} & timer.keys()
  result=h.migrate()
  assert result['status']=='PLAN_ONLY' and result['start_mode']=='STOPPED_ROLLBACK' and result['changes_applied'] is False and result['accepted_runs']==0
  assert result['untracked_source_influence']['untracked_source_influence']=='PASS' and not result['untracked_source_influence']['rejected_paths']
@@ -76,7 +79,7 @@ def test_deployed_source_attacks_fail_closed(stopped,monkeypatch,attack,code):
 @pytest.mark.parametrize('attack,code',[
  ('old_bytes','OLD_BOUNDARY_INVALID'),('socket','STOPPED_OBSERVER_INVALID'),('user_unit','OLD_USER_SCOUT_BOUNDARY_INVALID'),
  ('acceptance','ACCEPTANCE_PRECONDITION_INVALID'),('signals','OPERATIONAL_SIGNALS_MISSING'),
- ('collision','SYSTEM_BOUNDARY_COLLISION'),('loaded','SYSTEM_UNIT_STATE_INVALID'),
+ ('collision','SYSTEM_BOUNDARY_COLLISION'),('loaded','SYSTEM_SCOUT_SERVICE_PRESTATE_INVALID'),
 ])
 def test_precise_host_preflight_failures(stopped,monkeypatch,attack,code):
  h=stopped

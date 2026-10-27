@@ -70,6 +70,10 @@ def migration(host,monkeypatch):
     active=(h.user_active if user else h.system_active) if is_timer else False
     enabled=(h.user_enabled if user else h.system_enabled) if is_timer else False
     data=dict(LoadState='loaded' if loaded else 'not-found',FragmentPath=str((h.USER_UNITS if user else system)/name) if loaded else '',DropInPaths='/bad' if (h.failure=='dropin' and user or h.failure=='system_dropin' and not user and loaded) else '',NeedDaemonReload='no',ActiveState='active' if active else 'inactive',SubState='waiting' if active else 'dead',UnitFileState='enabled' if enabled else 'disabled',MainPID='0',ControlPID='0',InvocationID='c'*32 if cert and h.cert_started else '0'*32,Result='success',ExecMainStatus='0',User='optiplex',Group='optiplex',RefuseManualStart='yes',PrivateNetwork='yes',PrivateTmp='yes',ProtectSystem='strict',ProtectHome='read-only',NoNewPrivileges='yes',WorkingDirectory=str(h.ROOT))
+    if is_timer:
+     for key in ('MainPID','ControlPID','ExecMainStatus','User','Group','PrivateNetwork','PrivateTmp','ProtectSystem','ProtectHome','NoNewPrivileges','WorkingDirectory'):data.pop(key)
+    if not loaded:
+     data.update(UnitFileState='',InvocationID='',RefuseManualStart='no')
     return SimpleNamespace(returncode=0,stdout='\n'.join(k+'='+v for k,v in data.items()))
    if name==m.CERT_UNIT and action=='start':
     h.cert_started=True
