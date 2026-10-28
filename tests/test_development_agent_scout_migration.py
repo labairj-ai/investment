@@ -39,6 +39,7 @@ def migration(host,monkeypatch):
  monkeypatch.setattr(m,'OLD_HEAD',h.old)
  for name,key in [('OLD_OBSERVER','observer_digest'),('OLD_SERVICE','unit_digest'),('OLD_TIMER','timer_digest')]:monkeypatch.setattr(m,name,h.old_config[key])
  monkeypatch.setattr(m,'OLD_UNIT',h.old_config['files'][r.IDENTITIES[1]])
+ boot=h.base/'boot-id';boot.write_text('f0ea0f99-d0fa-4b06-84ce-c1c430cdb35e\n');monkeypatch.setattr(m,'BOOT_ID',boot,raising=False)
  monkeypatch.setattr(m,'isolated',lambda:True);monkeypatch.setattr(m,'audit',lambda *a,**k:dict(untracked_source_influence='PASS'))
  for name in r.IDENTITIES[2:]:(h.USER_UNITS/Path(name).name).write_bytes(r.git(h.ROOT,'show',h.old+':'+name))
  for name in [r.IDENTITIES[0],r.IDENTITIES[2]]:(h.ROOT/name).write_text('new reviewed '+name)
@@ -60,7 +61,7 @@ def migration(host,monkeypatch):
   if args[0]=='/usr/bin/journalctl':
    keys=['network_namespace_isolated','repository_read_only','protected_state_inaccessible','credentials_inaccessible','process_uid_expected','system_manager_readable','execution_record_current','test_evidence_only'];report={k:True for k in keys};report['accepted_scout_run']=False
    if h.failure=='runtime_route':report['network_namespace_isolated']=False
-   return SimpleNamespace(returncode=0,stdout='\n'.join(json.dumps(dict(MESSAGE=json.dumps(report))) for _ in range(3)))
+   return SimpleNamespace(returncode=0,stdout='\n'.join(json.dumps(dict(MESSAGE=json.dumps(report),_SYSTEMD_INVOCATION_ID='c'*32,_SYSTEMD_UNIT=m.CERT_UNIT,_BOOT_ID=boot.read_text().strip().replace('-',''),_UID=str(__import__('os').getuid()),_PID=str(2213790+i),_TRANSPORT='stdout',__REALTIME_TIMESTAMP=str(int(time.time()*1e6)),__MONOTONIC_TIMESTAMP=str(h.cert_mono+i))) for i in range(3)))
   if args[0]=='/usr/bin/busctl':return SimpleNamespace(returncode=0,stdout='t '+str(int(((time.time()+86400) if '--user' in args else (m.first_activation_slot()+h.next_offset))*1e6))+'\n')
   if args[:2] in [['/usr/bin/systemctl','--system'],['/usr/bin/systemctl','--user']]:
    h.calls.append(args);user=args[1]=='--user';action=args[2];name=args[3] if len(args)>3 else ''
@@ -76,7 +77,8 @@ def migration(host,monkeypatch):
      data.update(UnitFileState='',InvocationID='',RefuseManualStart='no')
     return SimpleNamespace(returncode=0,stdout='\n'.join(k+'='+v for k,v in data.items()))
    if name==m.CERT_UNIT and action=='start':
-    h.cert_started=True
+    h.cert_started=True;h.cert_mono=int(time.monotonic()*1e6)
+    time.sleep(0.001)  # Model elapsed Pre/Main/Post time inside the start call.
     if h.failure=='namespace':raise subprocess.CalledProcessError(1,args)
    elif 'development-scout.timer' in args:
     if action=='disable':

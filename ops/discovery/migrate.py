@@ -27,6 +27,7 @@ SYSTEM=Path('/etc/systemd/system')
 STAMP=Path('/var/lib/systemd/timers/stamp-development-scout.timer')
 CERT_SOURCE=Path('/opt/investment-discovery-observer/sandbox_certify.py')
 CERT_UNIT='development-scout-sandbox-certification.service'
+BOOT_ID=Path('/proc/sys/kernel/random/boot_id')
 CERT_FILES=('ops/discovery/sandbox_certify.py','ops/discovery/'+CERT_UNIT)
 
 
@@ -246,7 +247,9 @@ def system_boundary(invoke,desired):
 CERTIFICATION_CODES=tuple('CERTIFICATION_'+name for name in (
     'UNIT_IDENTITY_INVALID','START_FAILED','RESULT_INVALID','EXEC_STATUS_INVALID',
     'INVOCATION_INVALID','JOURNAL_QUERY_FAILED','JOURNAL_OVERSIZE','JOURNAL_DECODE_INVALID',
-    'REPORT_SCHEMA_INVALID','REPORT_BOOLEAN_INVALID','REPORT_COUNT_INVALID','TRACE_PERSIST_FAILED'))
+    'REPORT_SCHEMA_INVALID','REPORT_BOOLEAN_INVALID','REPORT_COUNT_INVALID','TRACE_PERSIST_FAILED',
+    'EXECUTION_WINDOW_INVALID','JOURNAL_IDENTITY_INVALID','JOURNAL_UNIT_INVALID','JOURNAL_BOOT_INVALID',
+    'JOURNAL_UID_INVALID','JOURNAL_WINDOW_INVALID','REPORT_PROCESS_INVALID','INVOCATION_MISMATCH'))
 
 
 class CertificationTrace:
@@ -305,7 +308,15 @@ def certify_steps(invoke,start,trace):
     # Invalid arbitrary property contents are classified, never copied to evidence.
     trace.observe('unit_identity',unit_identity_properties={k:(p.get(k) if p.get(k)==v else None if k not in p else '<unexpected>') for k,v in identity.items()})
     trace.decision('unit_identity',all(p.get(k)==v for k,v in identity.items()),'CERTIFICATION_UNIT_IDENTITY_INVALID')
+    # Capture host-owned context before the one synchronous start. A completed
+    # oneshot may lose its manager InvocationID; never manufacture retained state.
+    def context():
+        boot=BOOT_ID.read_text().strip().replace('-','')
+        if re.fullmatch('[a-f0-9]{32}',boot) is None or boot=='0'*32:raise ValueError('boot identity')
+        return boot,str(r.pwd.getpwnam('optiplex').pw_uid),int(time.monotonic()*1e6)
+    boot,uid,mono_start=query('execution_context','CERTIFICATION_EXECUTION_WINDOW_INVALID',context)
     completed=query('start','CERTIFICATION_START_FAILED',lambda:system(invoke,'start',CERT_UNIT,check=False))
+    end=time.time();mono_end=int(time.monotonic()*1e6)
     trace.observe('start',start_returncode=completed.returncode,start_stdout_length=len(getattr(completed,'stdout','') or ''),start_stderr_length=len(getattr(completed,'stderr','') or ''))
     trace.decision('start_result',completed.returncode==0,'CERTIFICATION_START_FAILED')
     p=query('post_run_properties','CERTIFICATION_RESULT_INVALID',lambda:properties(invoke,CERT_UNIT))
@@ -314,15 +325,21 @@ def certify_steps(invoke,start,trace):
     trace.decision('result_property_valid',p.get('Result')=='success','CERTIFICATION_RESULT_INVALID')
     trace.decision('exec_main_status_valid',p.get('ExecMainStatus')=='0','CERTIFICATION_EXEC_STATUS_INVALID')
     inv=p.get('InvocationID','')
-    trace.decision('invocation_id_valid',re.fullmatch('[a-f0-9]{32}',inv) is not None,'CERTIFICATION_INVOCATION_INVALID')
-    command=['/usr/bin/journalctl','--no-pager','-o','json','_SYSTEMD_INVOCATION_ID='+inv,'--since=@'+str(start)]
-    trace.observe('journal_query',journal_query=dict(invocation=inv,since_argument=command[-1],query_type='invocation-and-realtime',arguments=command))
+    trace.observe('manager_identity',manager_invocation_presence='omitted' if 'InvocationID' not in p else 'empty' if inv=='' else 'present')
+    trace.decision('manager_invocation_valid',inv=='' or re.fullmatch('[a-f0-9]{32}',inv) is not None and inv!='0'*32,'CERTIFICATION_INVOCATION_INVALID')
+    trace.decision('execution_window_valid',start<=end and 0<mono_start<=mono_end and context()[0]==boot,'CERTIFICATION_EXECUTION_WINDOW_INVALID')
+    trace.observe('execution_window',execution_window=dict(realtime_start=start,realtime_end=end,monotonic_start=mono_start,monotonic_end=mono_end))
+    # Do not filter by a caller or manager invocation: doing so could hide a
+    # competing invocation. Inspect every unit record in the current interval.
+    command=['/usr/bin/journalctl','--no-pager','-o','json','_SYSTEMD_UNIT='+CERT_UNIT,'--since=@'+str(start),'--until=@'+str(end)]
+    trace.observe('journal_query',journal_query=dict(since_argument=command[-2],until_argument=command[-1],query_type='unit-and-execution-window',arguments=command))
     completed=query('journal_query','CERTIFICATION_JOURNAL_QUERY_FAILED',lambda:invoke(command,capture_output=True,text=True,check=False,timeout=30,env=r.ENV))
     raw=completed.stdout
     trace.observe('journal_query',journal_returncode=completed.returncode,stdout_length=len(raw),stderr_length=len(getattr(completed,'stderr','') or ''),journal_line_count=raw.count('\n')+int(bool(raw) and not raw.endswith('\n')))
     trace.decision('journal_query_result',completed.returncode==0,'CERTIFICATION_JOURNAL_QUERY_FAILED')
     trace.decision('journal_output_bounded',len(raw)<=65536,'CERTIFICATION_JOURNAL_OVERSIZE')
     expected={'network_namespace_isolated','repository_read_only','protected_state_inaccessible','credentials_inaccessible','process_uid_expected','system_manager_readable','execution_record_current','test_evidence_only','accepted_scout_run'};reports=[]
+    journal_inv=None;report_pids=set();last_realtime=last_monotonic=0
     counters=dict(total_journal_json_lines=0,json_message_candidates=0,decoded_candidate_reports=0,exact_schema_reports=0,valid_boolean_reports=0,final_accepted_reports=0)
     trace.observe('journal_decode',parsing_counters=dict(counters))
     for line in raw.splitlines():
@@ -333,7 +350,24 @@ def certify_steps(invoke,start,trace):
         except Exception:trace.decision('journal_decode',False,'CERTIFICATION_JOURNAL_DECODE_INVALID')
         counters['total_journal_json_lines']+=1
         trace.observe('journal_decode',parsing_counters=dict(counters))
+        # Only journald-owned fields authorize identity; MESSAGE and unprefixed
+        # INVOCATION_ID/UNIT/PID fields are never provenance.
+        observed=entry.get('_SYSTEMD_INVOCATION_ID')
+        trace.decision('journal_invocation_valid',isinstance(observed,str) and re.fullmatch('[a-f0-9]{32}',observed) is not None and observed!='0'*32,'CERTIFICATION_JOURNAL_IDENTITY_INVALID')
+        trace.decision('journal_invocation_unique',journal_inv is None or observed==journal_inv,'CERTIFICATION_JOURNAL_IDENTITY_INVALID')
+        journal_inv=observed
+        trace.decision('journal_unit_valid',entry.get('_SYSTEMD_UNIT')==CERT_UNIT,'CERTIFICATION_JOURNAL_UNIT_INVALID')
+        trace.decision('journal_boot_valid',entry.get('_BOOT_ID')==boot,'CERTIFICATION_JOURNAL_BOOT_INVALID')
+        trace.decision('journal_uid_valid',entry.get('_UID')==uid,'CERTIFICATION_JOURNAL_UID_INVALID')
+        def uint(name):
+            value=entry.get(name)
+            return int(value) if isinstance(value,str) and re.fullmatch('[1-9][0-9]{0,19}',value) and int(value)<2**64 else None
+        realtime=uint('__REALTIME_TIMESTAMP');monotonic=uint('__MONOTONIC_TIMESTAMP');pid=uint('_PID')
+        trace.decision('journal_window_valid',realtime is not None and monotonic is not None and int(start*1e6)<=realtime<=int(end*1e6) and mono_start<=monotonic<=mono_end,'CERTIFICATION_JOURNAL_WINDOW_INVALID')
+        trace.decision('journal_process_valid',pid is not None and entry.get('_TRANSPORT')=='stdout','CERTIFICATION_REPORT_PROCESS_INVALID')
         if message.startswith('{'):
+            trace.decision('report_process_unique',pid not in report_pids and realtime>=last_realtime and monotonic>last_monotonic,'CERTIFICATION_REPORT_PROCESS_INVALID')
+            report_pids.add(pid);last_realtime=realtime;last_monotonic=monotonic
             counters['json_message_candidates']+=1
             trace.observe('report_decode',parsing_counters=dict(counters))
             try:report=r.loads(message)
@@ -351,8 +385,10 @@ def certify_steps(invoke,start,trace):
             if len(reports)>3:trace.decision('report_count_valid',False,'CERTIFICATION_REPORT_COUNT_INVALID')
     trace.observe('report_count',parsing_counters=dict(counters))
     trace.decision('report_count_valid',len(reports)==3,'CERTIFICATION_REPORT_COUNT_INVALID')
+    trace.observe('journal_identity',trusted_journal_invocation=journal_inv,identity_source='manager-and-trusted-journal' if inv else 'trusted-journal-only',matching_report_count=len(reports))
+    trace.decision('final_identity_valid',journal_inv is not None and (inv=='' or inv==journal_inv),'CERTIFICATION_INVOCATION_MISMATCH')
     trace.data['certification_result']='PASS';trace.data['current_step']='COMPLETE';trace.persist()
-    return dict(invocation=inv,test_evidence_only=True,accepted_scout_run=False,reports=reports)
+    return dict(invocation=journal_inv,test_evidence_only=True,accepted_scout_run=False,reports=reports)
 
 
 def install_new(path,data,mode,installed):

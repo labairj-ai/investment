@@ -11,7 +11,7 @@ from test_development_agent_observer_refresh import host
 from test_development_agent_stopped_recovery import stopped
 
 CASES=[('identity','UNIT_IDENTITY_INVALID'),('start','START_FAILED'),('result','RESULT_INVALID'),
- ('exec','EXEC_STATUS_INVALID'),('missing_invocation','INVOCATION_INVALID'),('malformed_invocation','INVOCATION_INVALID'),('empty_invocation','INVOCATION_INVALID'),
+ ('exec','EXEC_STATUS_INVALID'),('malformed_invocation','INVOCATION_INVALID'),
  ('journal','JOURNAL_QUERY_FAILED'),('oversize','JOURNAL_OVERSIZE'),('journal_json','JOURNAL_DECODE_INVALID'),
  ('message_json','JOURNAL_DECODE_INVALID'),('later_journal_json','JOURNAL_DECODE_INVALID'),('schema','REPORT_SCHEMA_INVALID'),*[(
  'boolean:'+key,'REPORT_BOOLEAN_INVALID') for key in ('network_namespace_isolated','repository_read_only','protected_state_inaccessible','credentials_inaccessible','process_uid_expected','system_manager_readable','execution_record_current','test_evidence_only')],
@@ -69,13 +69,15 @@ def inject(h,attack):
    assert kw['check'] is False
    if attack=='start':return SimpleNamespace(returncode=1,stdout='secret-do-not-retain',stderr='secret-do-not-retain')
   if args[0]=='/usr/bin/journalctl':
-   assert kw['check'] is False and args[-2]=='_SYSTEMD_INVOCATION_ID='+'c'*32
-   assert args[-1].startswith('--since=@')
+   assert kw['check'] is False and args[-3]=='_SYSTEMD_UNIT='+m.CERT_UNIT
+   assert args[-2].startswith('--since=@') and args[-1].startswith('--until=@')
    if attack=='journal':return SimpleNamespace(returncode=1,stdout='',stderr='secret-do-not-retain')
    if attack=='oversize':result.stdout='x'*65537
    elif attack=='journal_json':result.stdout='not-json'
-   elif attack=='later_journal_json':result.stdout=json.dumps(dict(MESSAGE='secret-do-not-retain'))+'\nnot-json'
-   elif attack=='message_json':result.stdout=json.dumps(dict(MESSAGE='{bad'))
+   elif attack=='later_journal_json':
+    row=json.loads(result.stdout.splitlines()[0]);row['MESSAGE']='secret-do-not-retain';result.stdout=json.dumps(row)+'\nnot-json'
+   elif attack=='message_json':
+    row=json.loads(result.stdout.splitlines()[0]);row['MESSAGE']='{bad';result.stdout=json.dumps(row)
    elif attack in {'schema','credit'} or attack.startswith('boolean:'):
     rows=[json.loads(v) for v in result.stdout.splitlines()];report=json.loads(rows[0]['MESSAGE'])
     if attack=='schema':report['arbitrary']='secret-do-not-retain'
@@ -83,7 +85,9 @@ def inject(h,attack):
     else:report['accepted_scout_run']=True
     rows[0]['MESSAGE']=json.dumps(report);result.stdout='\n'.join(json.dumps(v) for v in rows)
    elif attack in {'zero','one','two','four'}:
-    count={'zero':0,'one':1,'two':2,'four':4}[attack];line=result.stdout.splitlines()[0];result.stdout='\n'.join([line]*count)
+    count={'zero':0,'one':1,'two':2,'four':4}[attack];rows=[json.loads(line) for line in result.stdout.splitlines()]
+    rows=rows[:count] if count<=3 else rows+[dict(rows[-1],_PID='2213801',__MONOTONIC_TIMESTAMP=str(int(rows[-1]['__MONOTONIC_TIMESTAMP'])+1))]
+    result.stdout='\n'.join(json.dumps(row) for row in rows)
   return result
  h.invoke=invoke
 
@@ -111,17 +115,17 @@ def test_specific_failure_retains_trace_after_stopped_rollback(stopped,attack,su
 
 def test_success_retains_exact_query_and_zero_credit(stopped,monkeypatch):
  h=stopped;original=m.certify;clock=1793103560.3052843
- def certify(invoke,start,progress):return original(invoke,clock,progress)
- monkeypatch.setattr(m,'certify',certify)
+ monkeypatch.setattr(m.time,'time',lambda:clock)
  result=h.migrate(apply=True)
- assert result['status']=='MIGRATED_AWAITING_GENUINE_SYSTEM_TIMER_RUNS'
+ assert result['status']=='MIGRATED_AWAITING_GENUINE_SYSTEM_TIMER_RUNS',result
  trace=json.loads((Path(result['backup'])/'certification-trace.json').read_text());obs=trace['observations']
  assert trace['certification_result']=='PASS' and trace['failure_code'] is None
  assert trace['certification_started_at_repr']==repr(clock)
  assert obs['start_returncode']==obs['journal_returncode']==0
  assert obs['post_run_properties']['Result']=='success' and obs['post_run_properties']['ExecMainStatus']=='0'
  assert obs['journal_query']['since_argument']=='--since=@'+str(clock)
- assert obs['journal_query']['arguments'][-2]=='_SYSTEMD_INVOCATION_ID='+'c'*32
+ assert obs['journal_query']['arguments'][-3]=='_SYSTEMD_UNIT='+m.CERT_UNIT
+ assert obs['trusted_journal_invocation']=='c'*32 and obs['final_identity_valid']=='PASS'
  assert obs['parsing_counters']==dict(total_journal_json_lines=3,json_message_candidates=3,decoded_candidate_reports=3,exact_schema_reports=3,valid_boolean_reports=3,final_accepted_reports=3)
  assert result['accepted_runs']==0 and result['certification']['accepted_scout_run'] is False
  assert not list(h.STATE.iterdir())
