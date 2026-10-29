@@ -1,7 +1,7 @@
 # TODO 0864 — Complete End-to-End Acceptance and Controlled Investment UI Rollout
 
 - **ID:** 0864
-- **Status:** backlog
+- **Status:** in-progress
 - **Created:** 2026-10-29
 - **Priority:** critical strategic
 - **Risk:** L5 (conservative; verify via deterministic whole-diff policy)
@@ -58,3 +58,5 @@ Integrate the new Control Center into Investment's existing deployment only afte
 ## Done when
 
 New Investment-only Control Center is approved, deployed and externally accepted with verified health/rollback receipts, parity, security and mobile QA. If any required observation is unavailable, status stays open.
+
+Source implementation and prepared acceptance matrix: `docs/engineering-control-center.md`. Browser fixtures do not close physical-device, live connector, independent review or rollout acceptance. No deployment is authorized.

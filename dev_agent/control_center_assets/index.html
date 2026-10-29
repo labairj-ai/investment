@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light"><title>Investment · Engineering Control Center</title>
+<link rel="stylesheet" href="/engineering/assets/control-center.css">
+<script src="/engineering/assets/control-center.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#workspace">Skip to workspace</a>
+<aside class="sidebar" aria-label="Investment engineering">
+<a class="brand" href="/engineering/projects/investment"><span class="brand-mark" aria-hidden="true">I</span><span>INVESTMENT<small>ENGINEERING</small></span></a>
+<p class="nav-caption">CONTROL CENTER</p>
+<nav class="desktop-nav" aria-label="Workspace">
+<button data-view="overview" aria-current="page"><span aria-hidden="true">◫</span>Overview</button>
+<button data-view="candidates"><span aria-hidden="true">▤</span>Candidates</button>
+<button data-view="prs"><span aria-hidden="true">⑂</span>Pull requests</button>
+<button data-view="validation"><span aria-hidden="true">✓</span>Validation</button>
+<button data-view="certification"><span aria-hidden="true">◇</span>Certification</button>
+<button data-view="audit"><span aria-hidden="true">◷</span>Audit history</button>
+</nav>
+<div class="sidebar-foot"><span class="read-only">READ ONLY</span><p>Investment-owned evidence.<br>Existing owner authority.</p><a href="/development-agent">Legacy Development Agent ↗</a><a href="/out/dashboard.html">Investment dashboard ↗</a></div>
+</aside>
+<div class="app">
+<header class="topbar"><div><span class="eyebrow">INVESTMENT / ENGINEERING</span><p id="connection">Waiting for authenticated source</p></div><button id="refresh" class="secondary">Refresh evidence <span aria-hidden="true">↻</span></button></header>
+<main id="workspace" tabindex="-1">
+<div class="page-heading"><div><p class="eyebrow">ENGINEERING CONTROL CENTER</p><h1 id="page-title">Overview</h1><p id="page-description">A clear view of readiness, work and the evidence behind it.</p></div><span class="mode-label">Read-only workspace</span></div>
+<p id="message" role="status" aria-live="polite">Loading current evidence…</p>
+<section id="content" aria-label="Current workspace" aria-busy="true"></section>
+<footer>Investment Development Agent · Source-backed views · <a href="/development-agent">Legacy view</a></footer>
+</main>
+</div>
+<nav class="mobile-nav" aria-label="Mobile workspace"><button data-view="overview">Home</button><button data-view="candidates">Queue</button><button data-view="prs">PRs</button><button data-view="validation">Gates</button><button id="more">More</button></nav>
+<dialog id="more-dialog" aria-labelledby="more-title"><div class="dialog-heading"><h2 id="more-title">More workspaces</h2><button data-close="more-dialog" aria-label="Close more workspaces">✕</button></div><div class="more-links"><button data-view="certification">Certification</button><button data-view="audit">Audit history</button><a href="/development-agent">Legacy Development Agent</a><a href="/out/dashboard.html">Investment dashboard</a></div></dialog>
+<dialog id="detail" aria-labelledby="detail-title"><div class="dialog-heading"><div><p class="eyebrow">EVIDENCE INSPECTION</p><h2 id="detail-title">Details</h2></div><button data-close="detail" aria-label="Close inspection">✕</button></div><div id="detail-content" aria-live="polite"></div></dialog>
+</body>
+</html>

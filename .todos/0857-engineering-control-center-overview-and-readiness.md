@@ -1,7 +1,7 @@
 # TODO 0857 — Build Investment Engineering Overview and Readiness Dashboard
 
 - **ID:** 0857
-- **Status:** backlog
+- **Status:** in-progress
 - **Created:** 2026-10-29
 - **Priority:** high
 - **Risk:** L5 (conservative governance/UI boundary; verify against deterministic risk policy)
@@ -56,3 +56,5 @@ Replace the prototype overview with a live, Investment-only entry page that answ
 The Investment overview is source-backed, mobile-responsive, fails visibly on stale evidence and preserves preexisting routes with zero activation changes.
 
 **Evidence:** link exact SHA, focused/full suite, all eight established release gates, reviewer outcome, adversarial/browser artifacts and external acceptance state. Checked boxes require real observed evidence, not fixtures or planned work.
+
+Source implementation and prepared acceptance matrix: `docs/engineering-control-center.md`. Browser fixtures do not close physical-device, live connector, independent review or rollout acceptance. No deployment is authorized.

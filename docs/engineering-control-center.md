@@ -18,7 +18,7 @@ token in its header. The UI receives no service/owner token. Cross-origin and
 cross-site requests are denied, responses are no-store, and all new mutation
 routes refuse before reaching legacy financial handlers. Only the dedicated
 `development-control.sqlite3` can be read, with SQLite query-only and query budgets.
-No GET calls a scheduler producer, approval writer, host command, merge or deploy.
+No GET calls a scheduler producer, approval writer, service-control command, merge or deploy. Fixed Git metadata reads and existing read-only GitHub adapters may use subprocesses.
 Existing readiness may perform its existing read-only GitHub checks.
 
 Endpoints under `/api/engineering/v1/projects/investment/`:
@@ -73,3 +73,79 @@ UI/browser, independent reviewer, real Oracle/host provenance, physical iPhone a
 Android, legacy/live parity and post-deploy health remain separate evidence. The
 TODOs stay open until their actual required observations exist. Deployment is not
 authorized by the implementation request.
+
+## Interface and source acceptance (0857–0864)
+
+The dependent interface commit adds six destinations at
+`/engineering/projects/investment`: Overview, Candidates, Pull requests,
+Validation, Certification and Audit. Desktop uses a sidebar. At phone widths the
+five-item navigation exposes Certification and Audit under More. Candidate and
+PR inspection use native dialogs with explicit keyboard containment, Escape,
+focus restoration and address-bar inspection links. Untrusted text uses DOM text
+nodes only. Assets are same-origin under a strict CSP, gated like the API; direct
+static-source URLs are blocked from the legacy static fallback.
+
+Overview delegates the owner-facing supervised admission judgment to existing
+readiness code. Active backlog excludes terminal states; historical candidates
+remain searchable. Current owner-decision count stays **Not observed** until a
+complete current inventory exists. Historical PR links are not that count. CI is
+shown separately from Oracle, effective protection, owner disposition and health.
+The PR preview rechecks GitHub head after its read. Both owner actions remain
+disabled with an explanation: the existing connector has no accepted live UI
+handoff, and this implementation does not create a competing action endpoint.
+
+Read projections cannot display affirmative evidence against dirty tracked source.
+Configuration comes from the recorded Git commit, not a mutable host config file.
+The view lifetime is capped by the earliest available proof deadline. Expired or
+unauthorized refreshes clear prior readiness. Navigation/filter generations reject
+late responses. Detail previews expire too. Scope truncation is explicit; latest
+frozen plans are fetched independently of the bounded timeline page. Audit JSON
+and CSV exports can share the same exact snapshot/page cursor even during appends.
+Actor identity strings in historical events are labeled claims; current owner
+verification remains in the existing owner-governance adapter.
+
+The validator view invokes the existing receipt reconstruction against the
+reader's current source. A different candidate source or unavailable isolated
+Oracle stays STALE/UNAVAILABLE. It does not load executable code from arbitrary
+candidate/worktree paths, open signing keys, or promote a digest/JUnit claim into
+independent proof. A later trusted remote-receipt presentation bridge, if needed,
+requires a separately reviewed provenance boundary; there is no permissive
+fallback in this page.
+
+`node scripts/check_development_agent_browser.mjs OUTSIDE_SOURCE_DIRECTORY`
+launches its own temporary headless Chromium profile and a synthetic localhost
+fixture server. `DEV_AGENT_BROWSER_EXECUTABLE` can select the installed Chromium
+binary. It never connects to Investment production or posts owner actions. The
+script requires committed clean source, records the exact head, checks all seven
+required widths (320/360/390/430/768/1280/1440), literal malicious text, modal
+keyboard behavior, disabled Go/No-Go, deep links, lost/stale evidence, late-response
+races, 44px controls and the retained legacy page. Screenshots/results are fixture
+QA, not host/Oracle/physical-device acceptance. The former script's selectors for
+retired legacy decision dialogs were replaced with assertions against the current
+legacy read-only view; all existing owner/governance backend tests remain required.
+
+## Prepared parity and rollback matrix
+
+| Surface | Compare against | Required real observation before rollout |
+| --- | --- | --- |
+| Owner READY / reason | Legacy `readiness.owner` / real supervised admission | Same live source, time and identity; differences block release |
+| Candidate / frozen plan | Dedicated ledger IDs, scope/base and original events | Matching count/filter/timeline and no read mutations |
+| PR / CI / owner | Current GitHub head, complete checks and existing owner verifier | Head drift, missing Oracle, replay/revocation and concurrent decisions fail closed |
+| Validation | Current trusted receipt reconstruction and complete gate manifest | Real independently verified source/test-tree/image identity |
+| Technical / operation / autonomy | Existing three independent backend projections | Real Scout slots, supervised releases and calendar window; no synthetic credit |
+| History / export | Original sequence, UTC timestamp, redacted fields and snapshot | No lost failure/denial history; unchanged dedicated and financial state |
+| Mobile | Seven browser widths plus actual iPhone/Android | Touch, VoiceOver/TalkBack, keyboard, focus and contrast observations |
+
+This work prepares source and QA only. Nothing is installed, enabled, merged,
+restarted or deployed. A later authorized rollout must use the existing fixed
+controller and one owner decision on the exact reviewed source. Keep the feature
+off initially, preserve the legacy interface, and collect its normal canaries,
+protected-state checks and delayed health evidence. Never create a second owner
+approval protocol to make this UI work. Do not mark 0864 shipped without actual
+host and physical-device acceptance.
+
+Rollback preparation is limited to removing/withholding the optional route gate
+or reverting reviewed UI/API source through the existing release path. It must
+preserve investment databases, holdings, append-only development/acceptance
+history, Scout timers, current autonomy configuration and owner receipts. No
+rollback command is executed by this change or by the browser test.

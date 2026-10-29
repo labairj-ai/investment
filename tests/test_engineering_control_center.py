@@ -297,3 +297,124 @@ def test_pr_preview_uses_read_only_current_apis_and_never_enables_action(center,
     assert result['url']=='https://github.com/labairj-ai/investment/pull/31'
     Reader.pr_identity=lambda self,number:dict(headRefOid='c'*40)
     with pytest.raises(ValueError):center.pr('31')
+
+
+def test_assets_are_gated_no_tokens_or_inline_script(monkeypatch):
+    for path in (cc.PAGE,'/engineering/assets/control-center.js','/engineering/assets/control-center.css'):
+        monkeypatch.delenv('DEV_AGENT_ECC_ENABLED',raising=False)
+        h=Handler();cc.handle(h,path);assert h.code==404
+        monkeypatch.setenv('DEV_AGENT_ECC_ENABLED','1')
+        h=Handler();cc.handle(h,path);assert h.code==403
+        monkeypatch.setenv('DEV_AGENT_API_TOKEN','fixture-actual-service-value')
+        h=Handler(X_Development_Agent_Token='fixture-actual-service-value');cc.handle(h,path)
+        assert h.code==200 and b'fixture-actual-service-value' not in h.wfile.getvalue()
+        assert 'unsafe-inline' not in h.response_headers['Content-Security-Policy']
+    html=(ROOT/'dev_agent/control_center_assets/index.html').read_text()
+    js=(ROOT/'dev_agent/control_center_assets/control-center.js').read_text()
+    assert '<script src=' in html and 'type="password"' not in html
+    assert 'innerHTML' not in js and 'X-Development-Agent-Token' not in js
+
+
+@pytest.mark.parametrize('path',['/dev_agent/control_center_assets/index.html','/dev_agent/%63ontrol_center_assets/control-center.js','/foo/../dev_agent/control_center_assets/control-center.css','/%64ev_agent/control_center_assets/index.html'])
+def test_static_fallback_cannot_bypass_flag(path):
+    assert cc.source_asset_request(path)
+    assert not cc.source_asset_request('/out/dashboard.html')
+
+
+def test_head_response_has_no_body(monkeypatch):
+    monkeypatch.setenv('DEV_AGENT_ECC_ENABLED','1')
+    h=Handler();h.command='HEAD';cc.handle(h,cc.PAGE,mutation=True)
+    assert h.code==405 and h.wfile.getvalue()==b''
+
+
+def test_export_formats_share_the_exact_snapshot_page(center,store):
+    cid=candidate(store)
+    for n in range(8):store.event(cid,'NOTE',{'status':'FAIL'},f'note-{n}')
+    original=center.audit('kind=NOTE&limit=3')
+    store.event(cid,'NOTE',{'status':'FAIL'},'newer-note')
+    csv_page=center.audit(urlencode(dict(kind='NOTE',limit=3,format='csv',cursor=original['page_cursor'])))
+    assert [i['seq'] for i in original['items']]==[i['seq'] for i in csv_page['items']]
+    second=center.audit(urlencode(dict(kind='NOTE',limit=3,cursor=original['next_cursor'])))
+    csv_second=center.audit(urlencode(dict(kind='NOTE',limit=3,format='csv',cursor=second['page_cursor'])))
+    assert [i['seq'] for i in second['items']]==[i['seq'] for i in csv_second['items']]
+
+
+def test_scope_truncation_is_explicit():
+    view=cc.safe_detail({'files':['docs/note.md']*80,'problem':'x'*2000})
+    assert view['files']['complete'] is False and view['files']['total']==80
+    assert 'truncated' in view['problem']
+
+
+def test_committed_configuration_is_not_dirty_host_file(root,store):
+    cfg=root/'config/development_agent.json'
+    value=json.loads(cfg.read_text());value['autonomous_implementation']=True;cfg.write_text(json.dumps(value))
+    current=cc.ControlCenter(root,store)
+    assert not current.source_clean
+    assert current.configuration()['values']['autonomous_implementation'] is False
+    assert current.judgment('READY','TEST','Test',observed=current.now,verifier='EXISTING_GATE')['status']=='UNAVAILABLE'
+
+
+def test_projection_cannot_outlive_underlying_proof(center):
+    assert center.projection_deadline({'github_protection':{'created':center.now-299}})==center.now+1
+    assert center.projection_deadline({})==center.now+60
+
+
+def test_legacy_and_new_owner_gate_parity(center,store,root,monkeypatch):
+    from dev_agent import dashboard,readiness,promotion,software_metrics
+    state=dict(owner={'status':'NOT READY','reason':'Fixture supervised safety stop'},technical_certification='NOT_RUN',autonomous_implementation=False,blockers=['Fixture supervised safety stop'])
+    monkeypatch.setattr(readiness,'readiness',lambda *a,**kw:state)
+    monkeypatch.setattr(promotion,'report',lambda *a,**kw:{'fixture_only':True})
+    monkeypatch.setattr(software_metrics,'summary',lambda *a,**kw:{'fixture_only':True})
+    legacy=dashboard.summary(store,root)
+    current=center.overview()
+    assert current['readiness']['status']==legacy['readiness']['owner']['status']
+    assert current['readiness']['reason_summary']==legacy['readiness']['owner']['reason']
+
+
+def test_reads_never_open_financial_database_or_change_sentinels(center,store,root,monkeypatch):
+    import sqlite3
+    (root/'out').mkdir()
+    protected=[root/'holdings.csv',root/'out/investment.db',root/'out/buffett.db']
+    for p in protected:p.write_bytes(b'DISPOSABLE SYNTHETIC SENTINEL ONLY')
+    before={p:p.read_bytes() for p in protected}; ledger=fingerprint(store)
+    original=sqlite3.connect;opened=[]
+    def connect(path,*a,**kw):
+        opened.append(str(path));assert 'development-control.sqlite3' in str(path)
+        return original(path,*a,**kw)
+    monkeypatch.setattr(sqlite3,'connect',connect)
+    cid=candidate(store)
+    ledger=fingerprint(store)
+    for endpoint in ('overview','certification','candidates','candidates/'+cid,'validations/'+cid,'audit','prs'):
+        center.dispatch(endpoint)
+    assert opened and fingerprint(store)==ledger and {p:p.read_bytes() for p in protected}==before
+
+
+def test_overview_excludes_terminal_candidates_from_active_backlog(center,store,monkeypatch):
+    closed=candidate(store,1);open_id=candidate(store,2)
+    with store.connect(True) as db:store._append(db,closed,'STATE',{'state':'CLOSED'},'closed-fixture')
+    monkeypatch.setattr(center,'projections',lambda:dict(owner={'status':'NOT READY','reason':'Fixture'},blockers=[]))
+    d=center.overview()
+    assert d['metrics']['candidate_backlog']==1 and [c['id'] for c in d['priority_queue']]==[open_id]
+    assert center.candidates()['total']==2
+    with pytest.raises(ValueError):center.candidates('active=bogus')
+
+
+def test_old_frozen_plan_is_retained_beyond_timeline_page(center,store):
+    cid=candidate(store)
+    store.event(cid,'PLAN',{'context':{'risk':'L5','head':'a'*40},'criteria':['Measured acceptance']},'frozen-plan')
+    for n in range(120):store.event(cid,'NOTE',{'status':'FAIL'},f'n-{n}')
+    detail=center.candidate(cid)
+    assert not detail['timeline_complete'] and detail['latest']['PLAN']['context']['head']=='a'*40
+    assert detail['latest']['PLAN']['criteria']==['Measured acceptance']
+
+
+def test_audit_owner_context_and_disposition_are_inspectable_claims(center,store):
+    with store.connect(True) as db:
+        store._append(db,None,'OWNER_REVIEW',dict(context={'pr':31,'head':'a'*40,'risk':'L5'},decision='REQUEST_CHANGES',actor='owner',authentication_source='github-owner-object',origin={'id':123}),'fixture-owner-no-go')
+    d=center.audit('pr=31&status=REQUEST_CHANGES')
+    assert len(d['items'])==1
+    e=d['items'][0]
+    assert e['pr']==31 and e['head_sha']=='a'*40 and e['risk']=='L5'
+    assert e['details']['decision']=='REQUEST_CHANGES' and e['receipt_id']=='123'
+    assert e['claimed_identity_source']=='github-owner-object' and e['actor_identity_source']=='UNVERIFIED_LEDGER_CLAIM'
+    assert e['status']['status']=='UNAVAILABLE'

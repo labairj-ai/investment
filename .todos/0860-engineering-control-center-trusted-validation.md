@@ -1,7 +1,7 @@
 # TODO 0860 — Build Trusted Validation and Gate Evidence Workspace
 
 - **ID:** 0860
-- **Status:** backlog
+- **Status:** in-progress
 - **Created:** 2026-10-29
 - **Priority:** critical
 - **Risk:** L5 (provisional governance-adjacent; verify with deterministic classifier)
@@ -55,3 +55,5 @@ Expose real gate evidence and independent verifier outcomes so a user can distin
 ## Done when
 
 All authoritative validation details and blockers are inspectable with independently verifiable source-bound receipts, including negative/adversarial cases.
+
+Source implementation and prepared acceptance matrix: `docs/engineering-control-center.md`. Browser fixtures do not close physical-device, live connector, independent review or rollout acceptance. No deployment is authorized.

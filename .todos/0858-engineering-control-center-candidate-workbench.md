@@ -1,7 +1,7 @@
 # TODO 0858 — Implement Candidate Workbench, Drilldown and Evidence Timeline
 
 - **ID:** 0858
-- **Status:** backlog
+- **Status:** in-progress
 - **Created:** 2026-10-29
 - **Priority:** high
 - **Risk:** L5 (conservative governance/UI boundary; verify against deterministic risk policy)
@@ -57,3 +57,5 @@ Give the owner an auditable, fast way to triage improvement proposals and inspec
 Candidate triage and drilldown are complete with immutable evidence linking, deterministic filtering, authenticated optional plan decisions and observed accessibility/negative QA.
 
 **Evidence:** link exact SHA, focused/full suite, all eight established release gates, reviewer outcome, adversarial/browser artifacts and external acceptance state. Checked boxes require real observed evidence, not fixtures or planned work.
+
+Source implementation and prepared acceptance matrix: `docs/engineering-control-center.md`. Browser fixtures do not close physical-device, live connector, independent review or rollout acceptance. No deployment is authorized.

@@ -9,11 +9,12 @@ import io
 import json
 import math
 import os
+import posixpath
 from pathlib import Path
 import re
 import sqlite3
 import time
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from .store import Store, STATES, SOURCES, CATEGORIES
 from .policy import VERSION as POLICY_VERSION
@@ -30,6 +31,7 @@ SAFE_ID = re.compile(r'[A-Za-z0-9_-]{1,128}')
 SHA = re.compile(r'[a-f0-9]{40}')
 SENSITIVE = re.compile(r'(?i)bearer\s|gh[pousr]_|sk-[A-Za-z0-9]|(?:token|password|secret|api[_-]?key|authorization|cookie)\s*[:=]')
 ALLOWED_DETAIL = {'problem', 'outcome', 'files', 'evidence', 'dependencies', 'acceptance', 'criteria', 'todo', 'head', 'base', 'risk', 'reasons', 'scope_hash', 'acceptance_hash', 'mode', 'iteration', 'disposition', 'findings', 'status', 'role', 'provider', 'model', 'context', 'review', 'source', 'observed_at', 'recurrence', 'confidence', 'evidence_location', 'stage', 'created', 'result', 'number', 'url', 'merge_sha', 'receipt', 'run_id', 'time_budget', 'action_budget', 'max_iterations', 'version', 'score', 'quality', 'component'}
+ALLOWED_DETAIL |= {'run', 'branch', 'source_hash', 'trusted_test_tree_hash', 'time_budget_seconds', 'max_actions', 'risk_reasons', 'frozen_scope', 'allowed_files', 'protected_files', 'worker', 'acceptance_criteria', 'decision', 'policy_hash'}
 
 
 class NotFound(ValueError):
@@ -41,7 +43,8 @@ def text(value, limit=1000):
         return None
     if SENSITIVE.search(value):
         return '[redacted]'
-    return ''.join(c for c in value if c >= ' ' or c in '\n\t')[:limit]
+    value = ''.join(c for c in value if c >= ' ' or c in '\n\t')
+    return value[:limit]+('… [truncated]' if len(value)>limit else '')
 
 
 def safe_detail(value, depth=0):
@@ -51,7 +54,8 @@ def safe_detail(value, depth=0):
     if isinstance(value, dict):
         return {k: safe_detail(v, depth+1) for k, v in value.items() if k in ALLOWED_DETAIL}
     if isinstance(value, list):
-        return [safe_detail(v, depth+1) for v in value[:40]]
+        items = [safe_detail(v, depth+1) for v in value[:40]]
+        return items if len(value)<=40 else dict(items=items, total=len(value), complete=False)
     if isinstance(value, str):
         return text(value)
     if value is None or type(value) is bool or type(value) in (int, float) and math.isfinite(value):
@@ -100,8 +104,10 @@ class ControlCenter:
         self.store = ReadStore(store.path)
         self.now = time.time() if now is None else now
         from .discovery import git
+        self.source_clean = False
         try:
             self.head = git(self.root, 'rev-parse', 'HEAD')
+            self.source_clean = not git(self.root, 'status', '--porcelain', '--untracked-files=no').strip()
             if not SHA.fullmatch(self.head):
                 self.head = None
         except Exception:
@@ -112,7 +118,7 @@ class ControlCenter:
             status = 'UNAVAILABLE'
         observed = stamp(observed)
         expires = observed+ttl if observed is not None and ttl is not None else None
-        if status in {'PASS', 'READY'} and (observed is None or verifier in {'UNAVAILABLE', 'UNVERIFIED'} or not isinstance(head or self.head, str) or not SHA.fullmatch(head or self.head)):
+        if status in {'PASS', 'READY'} and (not self.source_clean or observed is None or verifier in {'UNAVAILABLE', 'UNVERIFIED'} or not isinstance(head or self.head, str) or not SHA.fullmatch(head or self.head)):
             status, code, reason, verifier = 'UNAVAILABLE', 'PROVENANCE_INCOMPLETE', 'Current verified source and observation identity are required.', 'UNAVAILABLE'
         if observed is not None and (observed > self.now or expires is not None and expires < self.now):
             status, code, reason, verifier = 'STALE', 'EVIDENCE_STALE', 'Evidence is future-dated or expired.', 'UNAVAILABLE'
@@ -160,10 +166,12 @@ class ControlCenter:
         return base64.urlsafe_b64encode(json.dumps(dict(seq=seq, key=key, binding=binding), separators=(',', ':')).encode()).decode()
 
     def envelope(self, **values):
-        return dict(dict(version=VERSION, repository=REPOSITORY, head_sha=self.head, read_at=self.now), **values)
+        return dict(dict(version=VERSION, repository=REPOSITORY, head_sha=self.head, source_clean=self.source_clean, read_at=self.now), **values)
 
     def candidates(self, query=''):
-        q, limit = self.options(query, {'search', 'state', 'risk', 'category', 'source', 'sort'})
+        q, limit = self.options(query, {'search', 'state', 'risk', 'category', 'source', 'sort', 'active'})
+        if 'active' in q and q['active'] not in {'true', 'false'}:
+            raise ValueError('invalid active filter')
         for field, allowed in [('state', STATES), ('risk', {f'L{i}' for i in range(6)} | {'UNKNOWN'}), ('category', CATEGORIES), ('source', SOURCES)]:
             if field in q and q[field] not in allowed:
                 raise ValueError('unknown filter')
@@ -182,18 +190,21 @@ class ControlCenter:
                 {event('SCORE', '$.score')} AS value,
                 {event('SCORE', '$.version')} AS score_version,
                 {event('SCORE', '$.confidence')} AS evidence_quality,
+                (SELECT max(e.created) FROM dev_events e WHERE e.candidate=c.id AND e.seq<=?) AS updated,
                 json_extract(c.payload,'$.title') AS title,
                 json_extract(c.payload,'$.category') AS category,
                 json_extract(c.payload,'$.source') AS source FROM dev_candidates c),
                 ranked AS (SELECT *, CASE WHEN risk GLOB 'L[0-5]' THEN cast(substr(risk,2) AS INTEGER) ELSE -1 END AS risk_order,
                     CASE WHEN typeof(value) IN ('real','integer') THEN value ELSE -1 END AS value_order FROM rows WHERE state IS NOT NULL) """
-            conditions = ['1=1']; args = [seq]*5
+            conditions = ['1=1']; args = [seq]*6
+            if q.get('active')=='true':
+                conditions.append("state NOT IN ('CLOSED','REJECTED','ROLLED_BACK')")
             for field in ('state', 'risk', 'category', 'source'):
                 if field in q:
                     conditions.append(field+'=?'); args.append(q[field])
             if q.get('search'):
-                conditions.append("(instr(lower(title),lower(?))>0 OR instr(id,?)>0 OR instr(lower(json_extract(payload,'$.files')),lower(?))>0)")
-                args.extend([q['search']]*3)
+                conditions.append("(instr(lower(title),lower(?))>0 OR instr(id,?)>0 OR instr(lower(json_extract(payload,'$.files')),lower(?))>0 OR instr(lower(json_extract(payload,'$.component')),lower(?))>0)")
+                args.extend([q['search']]*4)
             order = {'newest': '-created', 'oldest': 'created', 'risk': '-risk_order', 'value': '-value_order'}[sort]
             total = db.execute(cte+'SELECT count(*) FROM ranked WHERE '+' AND '.join(conditions), args).fetchone()[0]
             if key is not None:
@@ -210,12 +221,12 @@ class ControlCenter:
         if row['state'] not in STATES or row['category'] not in CATEGORIES or row['source'] not in SOURCES or row['risk'] not in {f'L{i}' for i in range(6)} | {'UNKNOWN'}:
             raise ValueError('unknown candidate schema')
         value = row['value'] if type(row['value']) in (int, float) and math.isfinite(row['value']) else None
-        return dict(id=row['id'], title=text(p.get('title')), created_at=stamp(row['created']), state=row['state'], risk=row['risk'],
+        return dict(id=row['id'], title=text(p.get('title')), created_at=stamp(row['created']), updated_at=stamp(row['updated']), state=row['state'], risk=row['risk'],
                     category=row['category'], source=row['source'], value_score=value, score_version=text(row['score_version'], 80) if value is not None else None,
                     evidence_quality=text(row['evidence_quality'], 80),
                     component=text(p.get('component')), files=safe_detail(p.get('files', [])),
                     blocker='Review financial, execution and governance consequences.' if row['risk'] in {'L4', 'L5'} else 'Inspect frozen scope and current evidence before any action.',
-                    evidence=self.judgment('UNAVAILABLE', 'CLAIM_ONLY', 'Candidate content is a proposal, not independent verification.', observed=row['created'], verifier='UNVERIFIED'))
+                    evidence=self.judgment('UNAVAILABLE', 'CLAIM_ONLY', 'Candidate content is a proposal, not independent verification.', observed=row['updated'], verifier='UNVERIFIED'))
 
     def candidate(self, cid, query=''):
         identifier(cid)
@@ -228,9 +239,11 @@ class ControlCenter:
                 raise NotFound('candidate missing')
             p = decode(row['payload'])
             events = db.execute('SELECT seq,event_id,candidate,kind,created,payload FROM dev_events WHERE candidate=? ORDER BY seq DESC LIMIT 101', (cid,)).fetchall()
-        latest = {}
-        for e in reversed(events[:100]):
-            latest[e['kind']] = safe_detail(decode(e['payload']))
+            latest = {}
+            for kind in ('PLAN', 'ITERATION', 'RUN', 'PR', 'DEPLOYMENT', 'WORKTREE', 'SIGNAL_OBSERVATION', 'RECEIPT'):
+                row = db.execute('SELECT payload FROM dev_events WHERE candidate=? AND kind=? ORDER BY seq DESC LIMIT 1', (cid, kind)).fetchone()
+                if row is not None:
+                    latest[kind] = safe_detail(decode(row['payload']))
         return self.envelope(id=cid, title=text(p.get('title')), proposal=safe_detail(p), latest=latest,
                              timeline=[self.event_row(e) for e in reversed(events[:100])], timeline_complete=len(events)<=100,
                              timeline_query='candidate='+cid,
@@ -240,17 +253,26 @@ class ControlCenter:
         p = decode(row['payload'])
         # An actor string in a payload is a historical claim, never owner proof.
         observed = stamp(row['created'])
+        context = p.get('context') if isinstance(p.get('context'), dict) else {}
+        result = p.get('result') if isinstance(p.get('result'), dict) else {}
+        pr = p.get('pr', context.get('pr', result.get('number')))
+        risk = p.get('risk', context.get('risk'))
+        head = p.get('head', context.get('head'))
+        origin = p.get('origin') if isinstance(p.get('origin'), dict) else {}
         return dict(seq=row['seq'], event_id=text(row['event_id'], 160), candidate=text(row['candidate'], 128), kind=text(row['kind'], 80),
                     created_at=observed, actor=text(p.get('actor'), 200), actor_identity_source='UNVERIFIED_LEDGER_CLAIM',
-                    pr=p.get('pr') if type(p.get('pr')) is int else None,
-                    risk=p.get('risk') if p.get('risk') in {f'L{i}' for i in range(6)} else None,
-                    head_sha=p.get('head') if isinstance(p.get('head'), str) and SHA.fullmatch(p['head']) else None,
+                    claimed_identity_source=text(p.get('authentication_source'), 128),
+                    recorded_disposition=text(p.get('status', p.get('decision', p.get('disposition'))), 80),
+                    receipt_id=str(origin['id']) if type(origin.get('id')) is int and origin['id']>0 else None,
+                    pr=pr if type(pr) is int else None,
+                    risk=risk if isinstance(risk, str) and risk in {f'L{i}' for i in range(6)} else None,
+                    head_sha=head if isinstance(head, str) and SHA.fullmatch(head) else None,
                     status=self.judgment('UNAVAILABLE', 'HISTORICAL_EVENT', 'Historical ledger observation; not a current authorization.', observed=observed, verifier='UNVERIFIED'),
                     details=safe_detail(p))
 
     def audit(self, query=''):
         q, limit = self.options(query, {'kind', 'candidate', 'actor', 'pr', 'status', 'since', 'until', 'format'})
-        output = q.get('format', 'json')
+        output = q.pop('format', 'json')
         if output not in {'json', 'csv'}:
             raise ValueError('invalid format')
         for k in ('kind', 'candidate', 'status'):
@@ -272,7 +294,12 @@ class ControlCenter:
                     conditions.append(field+'=?'); args.append(q[field])
             for field in ('actor', 'pr', 'status'):
                 if field in q:
-                    conditions.append("json_extract(payload,'$."+field+"')=?"); args.append(int(q[field]) if field=='pr' else q[field])
+                    expr = "json_extract(payload,'$."+field+"')"
+                    if field=='pr':
+                        expr = "coalesce(json_extract(payload,'$.pr'),json_extract(payload,'$.context.pr'),json_extract(payload,'$.result.number'))"
+                    if field=='status':
+                        expr = "coalesce(json_extract(payload,'$.status'),json_extract(payload,'$.decision'),json_extract(payload,'$.disposition'))"
+                    conditions.append(expr+'=?'); args.append(int(q[field]) if field=='pr' else q[field])
             for field, operator in [('since', '>='), ('until', '<=')]:
                 if field in q:
                     v = float(q[field])
@@ -281,7 +308,7 @@ class ControlCenter:
                     conditions.append('created'+operator+'?'); args.append(v)
             rows = db.execute('SELECT seq,event_id,candidate,kind,created,payload FROM dev_events WHERE '+' AND '.join(conditions)+' ORDER BY seq DESC LIMIT ?', [*args, limit+1]).fetchall()
             next_page = self.next_cursor(seq, rows[limit-1]['seq'], binding) if len(rows)>limit else None
-        return self.envelope(items=[self.event_row(r) for r in rows[:limit]], next_cursor=next_page, snapshot_seq=seq)
+        return self.envelope(items=[self.event_row(r) for r in rows[:limit]], next_cursor=next_page, page_cursor=self.next_cursor(seq, key, binding), snapshot_seq=seq)
 
     def projections(self):
         # Existing admission/qualification code assumes complete inventories. Refuse
@@ -297,11 +324,12 @@ class ControlCenter:
     def overview(self):
         counts = None
         try:
-            candidates = self.candidates('limit=5&sort=risk')
+            candidates = self.candidates('limit=5&sort=risk&active=true')
             counts = candidates['total']
             state = self.projections()
             owner = state.get('owner', {})
             ready = self.judgment(owner.get('status'), 'SUPERVISED_ADMISSION', owner.get('reason', 'Admission unavailable.'), source='readiness.owner_status', observed=self.now, ttl=60, verifier='EXISTING_ADMISSION_GATE')
+            ready['expires_at'] = self.projection_deadline(state)
             reasons = list(dict.fromkeys([owner.get('reason')]+state.get('blockers', [])))
             blockers = [dict(reason=text(s), destination='certification') for s in reasons if isinstance(s, str)][:3]
         except Exception:
@@ -314,12 +342,33 @@ class ControlCenter:
                              priority_queue=candidates['items'], autonomy_configuration=self.configuration(),
                              scheduler=self.judgment('PASS' if state.get('scheduled_discovery', {}).get('status')=='SCHEDULED' else 'UNAVAILABLE', 'SCHEDULER_OBSERVATION', state.get('scheduled_discovery', {}).get('reason', 'Scheduled discovery observation; qualification remains separate.'), source='scheduler_health.health', observed=state.get('scheduled_discovery', {}).get('created'), ttl=1800, verifier='EXISTING_SCHEDULER_GATE'))
 
+    def projection_deadline(self, state):
+        """A view cannot outlive the earliest underlying proof it presents."""
+        deadlines = [self.now+60]
+        for item, key, ttl in ((state.get('github_protection', {}), 'created', 300), (state.get('production_snapshot', {}), 'backup_timestamp', 86400), (state.get('scheduled_discovery', {}), 'created', 1800)):
+            if stamp(item.get(key)):
+                deadlines.append(item[key]+ttl)
+        from .operations import certificates, policy
+        certs = certificates(self.store)
+        if certs:
+            latest = certs[-1]
+            hours = policy(self.root).get('technical_certificate_max_age_hours', 24)
+            if stamp(latest.get('created')):
+                deadlines.append(latest['created']+min(24, max(1, hours))*3600)
+            for item in latest.get('evidence', {}).values():
+                if isinstance(item, dict) and stamp(item.get('expires_at')):
+                    deadlines.append(item['expires_at'])
+        return min(deadlines)
+
     def configuration(self):
-        from .operations import policy
+        from .discovery import git
         try:
-            cfg = policy(self.root)
+            cfg = loads(git(self.root, 'show', self.head+':config/development_agent.json'))
             allowed = ('autonomous_implementation', 'auto_merge', 'required_human_merge', 'supervised_loop_enabled', 'supervised_publish_pr', 'autonomy_stage', 'autonomous_max_risk', 'daily_implementation_cap', 'emergency_stop')
-            return dict(source='committed-configuration-not-host-observation', values={k:cfg.get(k) for k in allowed}, head_sha=self.head)
+            values = {k:cfg.get(k) for k in allowed}
+            if any(type(v) not in (bool, int, str) and v is not None for v in values.values()):
+                raise ValueError('scalar configuration required')
+            return dict(source='committed-configuration-not-host-observation', values=values, head_sha=self.head)
         except Exception:
             return dict(source='committed-configuration-not-host-observation', values=None, head_sha=self.head)
 
@@ -331,6 +380,7 @@ class ControlCenter:
             latest = certs[-1] if certs else {}
             evidence = latest.get('evidence', {})
             technical = self.judgment(s.get('technical_certification'), 'TECHNICAL_CERTIFICATE', 'Existing technical certificate verification; separate from operational credit.', source='readiness.technical_certification', observed=self.now, ttl=60, verifier='EXISTING_CERTIFICATE_CHECK')
+            technical['expires_at'] = self.projection_deadline(s)
             supervised = s.get('supervised', {})
             from .scheduler_health import acceptance
             scout = acceptance(self.store, self.head, self.now) if self.head else {}
@@ -494,7 +544,7 @@ def reader_authorized(handler):
             if u.scheme not in {'https', 'http'} or u.netloc != handler.headers.get('Host') or u.path not in {'', '/'} or u.query or u.fragment:
                 return False
     except ValueError:
-            return False
+        return False
     if handler.headers.get('Sec-Fetch-Site') not in (None, 'same-origin', 'none'):
         return False
     if authorized(handler.headers, os.environ.get('DEV_AGENT_API_TOKEN', '')):
@@ -507,6 +557,12 @@ def reader_authorized(handler):
         return False
 
 
+def source_asset_request(path):
+    """Do not let SimpleHTTPRequestHandler's fallback bypass the opt-in route."""
+    canonical = posixpath.normpath('/'+unquote(path).lstrip('/'))
+    return canonical=='/dev_agent/control_center_assets' or canonical.startswith('/dev_agent/control_center_assets/')
+
+
 def handle(handler, path, query='', *, mutation=False):
     def send(data, code=200, content_type='application/json; charset=utf-8', cursor=None):
         raw = data if isinstance(data, bytes) else json.dumps(data, allow_nan=False).encode()
@@ -517,13 +573,23 @@ def handle(handler, path, query='', *, mutation=False):
             handler.send_header(k, v)
         if cursor:
             handler.send_header('X-Next-Cursor', cursor)
-        handler.end_headers(); handler.wfile.write(raw)
+        handler.end_headers()
+        if getattr(handler, 'command', 'GET')!='HEAD':
+            handler.wfile.write(raw)
     if os.environ.get('DEV_AGENT_ECC_ENABLED')!='1':
         return send(dict(ok=False, error='route unavailable'), 404)
     if mutation:
         return send(dict(ok=False, error='read-only interface'), 405)
     if not reader_authorized(handler):
         return send(dict(ok=False, error='authenticated same-origin reader required'), 403)
+    assets = {PAGE: ('index.html', 'text/html; charset=utf-8'),
+              '/engineering/assets/control-center.css': ('control-center.css', 'text/css; charset=utf-8'),
+              '/engineering/assets/control-center.js': ('control-center.js', 'text/javascript; charset=utf-8')}
+    if path in assets:
+        if query:
+            return send(dict(ok=False, error='query not allowed'), 400)
+        name, content_type = assets[path]
+        return send((Path(__file__).parent/'control_center_assets'/name).read_bytes(), content_type=content_type)
     if not path.startswith(API):
         return send(dict(ok=False, error='route unavailable'), 404)
     try:

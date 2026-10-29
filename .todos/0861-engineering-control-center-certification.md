@@ -1,7 +1,7 @@
 # TODO 0861 — Implement Technical, Supervised and Autonomy Certification Panels
 
 - **ID:** 0861
-- **Status:** backlog
+- **Status:** in-progress
 - **Created:** 2026-10-29
 - **Priority:** high
 - **Risk:** L5 (provisional governance-adjacent; verify with deterministic classifier)
@@ -55,3 +55,5 @@ Separate technical harness certification, real supervised operating history and 
 ## Done when
 
 The certification workspace demonstrates independent, source-bound technical, operational and autonomy states with accurate blockers and no ability to self-promote.
+
+Source implementation and prepared acceptance matrix: `docs/engineering-control-center.md`. Browser fixtures do not close physical-device, live connector, independent review or rollout acceptance. No deployment is authorized.

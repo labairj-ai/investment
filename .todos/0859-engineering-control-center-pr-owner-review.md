@@ -1,7 +1,7 @@
 # TODO 0859 — Build PR Review and Existing Owner Go/No-Go Experience
 
 - **ID:** 0859
-- **Status:** backlog
+- **Status:** in-progress
 - **Created:** 2026-10-29
 - **Priority:** critical
 - **Risk:** L5 (provisional governance-adjacent; verify with deterministic classifier)
@@ -58,3 +58,5 @@ Deliver a concise, trustworthy PR review screen while keeping all real approval 
 ## Done when
 
 PR review shows complete exact-head evidence and only the current trusted owner connector can accept Go/No-Go; replay, head drift and insufficient evidence demonstrably fail closed.
+
+Source implementation and prepared acceptance matrix: `docs/engineering-control-center.md`. Browser fixtures do not close physical-device, live connector, independent review or rollout acceptance. No deployment is authorized.

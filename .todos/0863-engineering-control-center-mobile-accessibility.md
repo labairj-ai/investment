@@ -1,7 +1,7 @@
 # TODO 0863 — Harden Mobile UX, Accessibility and UI Security
 
 - **ID:** 0863
-- **Status:** backlog
+- **Status:** in-progress
 - **Created:** 2026-10-29
 - **Priority:** high
 - **Risk:** L5 (conservative; verify via deterministic whole-diff policy)
@@ -54,3 +54,5 @@ Provide a reliable mobile-first experience for reviewing Investment engineering 
 ## Done when
 
 Desktop and mobile meet viewport, accessibility, security and physical device acceptance; no displayed blocker or authority step disappears at narrow widths.
+
+Source implementation and prepared acceptance matrix: `docs/engineering-control-center.md`. Browser fixtures do not close physical-device, live connector, independent review or rollout acceptance. No deployment is authorized.

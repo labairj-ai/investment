@@ -1,7 +1,7 @@
 # TODO 0862 — Create Immutable Audit History, Filters and Safe Export
 
 - **ID:** 0862
-- **Status:** backlog
+- **Status:** in-progress
 - **Created:** 2026-10-29
 - **Priority:** high
 - **Risk:** L5 (conservative; verify via deterministic whole-diff policy)
@@ -53,3 +53,5 @@ Show the evidence-backed chronological record of every candidate/run/review/appr
 ## Done when
 
 Every audited step is securely searchable and traceable to source-backed evidence; sanitized exports and negative tests pass without mutations.
+
+Source implementation and prepared acceptance matrix: `docs/engineering-control-center.md`. Browser fixtures do not close physical-device, live connector, independent review or rollout acceptance. No deployment is authorized.

@@ -2027,6 +2027,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             intent_id = parsed.path.split("/api/alpaca/risk/", 1)[1]
             self._handle_alpaca_risk(intent_id)
         else:
+            from dev_agent.control_center import source_asset_request
+            if source_asset_request(parsed.path):
+                self.send_error(404)
+                return
             # Restrict static file fallback to safe extensions only — prevents
             # serving .env, .py, .db, .csv, and other sensitive project files.
             _safe_exts = ('.html', '.ico', '.png', '.jpg', '.gif', '.svg', '.css', '.js', '.woff', '.woff2')
@@ -2035,6 +2039,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.end_headers()
                 return
             super().do_GET()
+
+    def do_HEAD(self):
+        parsed = urlparse(self.path)
+        from dev_agent.control_center import handle, source_asset_request
+        if source_asset_request(parsed.path):
+            self.send_error(404)
+            return
+        if parsed.path.startswith("/api/engineering/") or parsed.path.startswith("/engineering/"):
+            return handle(self, parsed.path, parsed.query, mutation=True)
+        return super().do_HEAD()
 
     def do_POST(self):
         parsed = urlparse(self.path)
