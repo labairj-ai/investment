@@ -297,3 +297,9 @@ def test_pr_preview_uses_read_only_current_apis_and_never_enables_action(center,
     assert result['url']=='https://github.com/labairj-ai/investment/pull/31'
     Reader.pr_identity=lambda self,number:dict(headRefOid='c'*40)
     with pytest.raises(ValueError):center.pr('31')
+
+
+@pytest.mark.parametrize('head',[123,False,'',{'raw_prompt':'PRIVATE'},['PRIVATE']])
+def test_untrusted_head_metadata_is_never_echoed_or_credited(center,head):
+    d=center.judgment('PASS','TEST','Test',observed=center.now,head=head,verifier='EXISTING_GATE')
+    assert d['head_sha'] is None and d['status']=='UNAVAILABLE' and 'PRIVATE' not in json.dumps(d)
