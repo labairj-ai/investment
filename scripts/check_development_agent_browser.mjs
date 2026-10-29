@@ -79,10 +79,11 @@ try{
   assert(await evaluate('document.querySelectorAll("article img, article script").length===0 && !window.injected'),'unsafe HTML rendered');
   assert(await evaluate('document.documentElement.scrollWidth<=innerWidth'),'overview overflow '+width);
   const contrast=await evaluate(`(${contrastCheck.toString()})()`);assert(contrast.failures.length===0,'text contrast below AA: '+JSON.stringify(contrast.failures));
+  const viewContrasts=[{view:'overview',...contrast}];const checkViewContrast=async view=>{const c=await evaluate(`(${contrastCheck.toString()})()`);assert(c.failures.length===0,'text contrast '+view+': '+JSON.stringify(c.failures));viewContrasts.push({view,...c});};
   const screenshot=await call('Page.captureScreenshot',{format:'png'});await fs.writeFile(path.join(artifacts,`overview-${width}.png`),Buffer.from(screenshot.data,'base64'));
   await evaluate('document.querySelector(".candidate button").focus();document.querySelector(".candidate button").click()');
   await until('document.getElementById("detail").open && document.getElementById("detail-content").textContent.includes("Literal <script>")');
-  assert(await evaluate('document.documentElement.scrollWidth<=innerWidth'),'detail overflow '+width);
+  assert(await evaluate('document.documentElement.scrollWidth<=innerWidth'),'detail overflow '+width);await checkViewContrast('candidate inspection');
   assert(await evaluate('document.getElementById("detail").contains(document.activeElement)'),'focus outside modal');
   for(let i=0;i<10;i++){await call('Input.dispatchKeyEvent',{type:'keyDown',key:'Tab',code:'Tab',windowsVirtualKeyCode:9});await call('Input.dispatchKeyEvent',{type:'keyUp',key:'Tab',code:'Tab',windowsVirtualKeyCode:9});assert(await evaluate('document.getElementById("detail").contains(document.activeElement)'),'focus escaped modal');}
   await call('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});await call('Input.dispatchKeyEvent',{type:'keyUp',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});
@@ -93,16 +94,16 @@ try{
   await until('document.getElementById("detail-content").textContent.includes("Go · unavailable")');
   assert(await evaluate('[...document.querySelectorAll("#detail-content button")].filter(b=>b.textContent.includes("Go")).every(b=>b.disabled)'),'owner action enabled');
   assert(await evaluate('document.getElementById("owner-disabled-reason").textContent.includes("unavailable")'),'owner disabled reason missing');
-  assert(await evaluate('document.documentElement.scrollWidth<=innerWidth'),'PR overflow '+width);await evaluate('closeDetail()');
+  assert(await evaluate('document.documentElement.scrollWidth<=innerWidth'),'PR overflow '+width);await checkViewContrast('PR inspection');await evaluate('closeDetail()');
   await evaluate('navigate("validation")');await until('document.querySelector("#content article button")');await evaluate('document.querySelector("#content article button").click()');await until('document.getElementById("detail-content").textContent.includes("summary_integrity")');
-  assert(await evaluate('document.querySelectorAll("#detail-content .state-card").length===7'),'required trusted gate omitted');await evaluate('closeDetail()');
-  await evaluate('navigate("certification")');await until('document.getElementById("content").textContent.includes("Scout: 2 / 3")');assert(await evaluate('document.getElementById("content").textContent.includes("2 / 7 days")'),'calendar qualification missing');
-  await evaluate('navigate("audit")');await until('document.getElementById("audit-results")?.textContent.includes("UNVERIFIED_LEDGER_CLAIM")');assert(await evaluate('document.documentElement.scrollWidth<=innerWidth'),'audit overflow '+width);
+  assert(await evaluate('document.querySelectorAll("#detail-content .state-card").length===7'),'required trusted gate omitted');await checkViewContrast('validation inspection');await evaluate('closeDetail()');
+  await evaluate('navigate("certification")');await until('document.getElementById("content").textContent.includes("Scout: 2 / 3")');assert(await evaluate('document.getElementById("content").textContent.includes("2 / 7 days")'),'calendar qualification missing');await checkViewContrast('certification');
+  await evaluate('navigate("audit")');await until('document.getElementById("audit-results")?.textContent.includes("UNVERIFIED_LEDGER_CLAIM")');assert(await evaluate('document.documentElement.scrollWidth<=innerWidth'),'audit overflow '+width);await checkViewContrast('audit');
   const tap=await evaluate('[...document.querySelectorAll("button,input,select")].filter(e=>e.getClientRects().length&&!e.closest("dialog:not([open])")).map(e=>e.getBoundingClientRect().height).every(h=>h>=44)');assert(tap,'tap target smaller than 44px');
   if(width<768){await evaluate('document.getElementById("more").click()');assert(await evaluate('document.getElementById("more-dialog").open'),'mobile More unavailable');await evaluate('document.querySelector("#more-dialog [data-view=certification]").click()');await until('document.getElementById("content").textContent.includes("Scout: 2 / 3")');}
   // The retained legacy interface still renders its own backend gate.
   await call('Page.navigate',{url:origin+'/development-agent'});await until('Boolean(document.getElementById("load"))');await evaluate('document.getElementById("load").click()');await until('document.querySelector("#queue article")');assert(await evaluate('document.getElementById("readiness").textContent.includes("Fixture safety stop")'),'legacy readiness changed');assert(await evaluate('document.documentElement.scrollWidth<=innerWidth'),'legacy overflow '+width);
-  results.push({width,status:'PASS',readiness:'backend fixture matched',overflow:false,unsafe_html:false,modal_focus:'PASS',tap_targets:'>=44px',text_contrast:contrast,legacy:'PASS'});
+  results.push({width,status:'PASS',readiness:'backend fixture matched',overflow:false,unsafe_html:false,modal_focus:'PASS',tap_targets:'>=44px',text_contrast:viewContrasts,legacy:'PASS'});
  }
  mode='normal';await call('Page.navigate',{url:origin+'/engineering/projects/investment#overview/candidates/'+candidate.id});await until('document.getElementById("detail")?.open');assert(await evaluate('document.getElementById("detail-content").textContent.includes("Read-only")'),'deep link unavailable');await evaluate('closeDetail()');
  mode='latency';await evaluate('navigate("overview");navigate("audit")');await until('document.getElementById("audit-results")?.textContent.includes("UNVERIFIED_LEDGER_CLAIM")');await new Promise(r=>setTimeout(r,400));assert(await evaluate('document.getElementById("page-title").textContent==="Audit history"&&!document.querySelector(".hero")'),'older request overwrote active view');
