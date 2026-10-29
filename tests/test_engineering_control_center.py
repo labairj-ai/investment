@@ -418,3 +418,9 @@ def test_audit_owner_context_and_disposition_are_inspectable_claims(center,store
     assert e['details']['decision']=='REQUEST_CHANGES' and e['receipt_id']=='123'
     assert e['claimed_identity_source']=='github-owner-object' and e['actor_identity_source']=='UNVERIFIED_LEDGER_CLAIM'
     assert e['status']['status']=='UNAVAILABLE'
+
+
+@pytest.mark.parametrize('head',[123,False,'',{'raw_prompt':'PRIVATE'},['PRIVATE']])
+def test_untrusted_head_metadata_is_never_echoed_or_credited(center,head):
+    d=center.judgment('PASS','TEST','Test',observed=center.now,head=head,verifier='EXISTING_GATE')
+    assert d['head_sha'] is None and d['status']=='UNAVAILABLE' and 'PRIVATE' not in json.dumps(d)

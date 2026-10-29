@@ -118,12 +118,13 @@ class ControlCenter:
             status = 'UNAVAILABLE'
         observed = stamp(observed)
         expires = observed+ttl if observed is not None and ttl is not None else None
-        if status in {'PASS', 'READY'} and (not self.source_clean or observed is None or verifier in {'UNAVAILABLE', 'UNVERIFIED'} or not isinstance(head or self.head, str) or not SHA.fullmatch(head or self.head)):
+        bound_head = self.head if head is None else head if isinstance(head, str) and SHA.fullmatch(head) else None
+        if status in {'PASS', 'READY'} and (not self.source_clean or observed is None or verifier in {'UNAVAILABLE', 'UNVERIFIED'} or not isinstance(bound_head, str) or not SHA.fullmatch(bound_head)):
             status, code, reason, verifier = 'UNAVAILABLE', 'PROVENANCE_INCOMPLETE', 'Current verified source and observation identity are required.', 'UNAVAILABLE'
         if observed is not None and (observed > self.now or expires is not None and expires < self.now):
             status, code, reason, verifier = 'STALE', 'EVIDENCE_STALE', 'Evidence is future-dated or expired.', 'UNAVAILABLE'
-        return dict(status=status, reason_code=code, reason_summary=text(reason), observed_at=observed, expires_at=expires,
-                    source=source, policy_version=POLICY_VERSION, repository=REPOSITORY, head_sha=head or self.head,
+        return dict(status=status, reason_code=code, reason_summary=text(reason) or 'Current evidence unavailable.', observed_at=observed, expires_at=expires,
+                    source=source, policy_version=POLICY_VERSION, repository=REPOSITORY, head_sha=bound_head,
                     receipt_id=text(receipt, 128), verifier_status=verifier)
 
     @contextmanager
