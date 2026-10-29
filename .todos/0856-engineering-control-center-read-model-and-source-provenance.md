@@ -1,7 +1,7 @@
 # TODO 0856 — Implement Investment-Owned Read Model and Provenance Contract
 
 - **ID:** 0856
-- **Status:** backlog
+- **Status:** in-progress
 - **Created:** 2026-10-29
 - **Priority:** critical
 - **Risk:** L5 (conservative governance/UI boundary; verify against deterministic risk policy)
@@ -59,3 +59,5 @@ Create a bounded, authenticated, Investment-owned presentation read model for th
 A read-only Investment API returns complete source-labeled bounded data, existing dashboard API remains compatible and independent tests prove no authority/data mutation.
 
 **Evidence:** link exact SHA, focused/full suite, all eight established release gates, reviewer outcome, adversarial/browser artifacts and external acceptance state. Checked boxes require real observed evidence, not fixtures or planned work.
+
+Implementation source: `dev_agent/control_center.py`; API contract and open external acceptance: `docs/engineering-control-center.md`. Source tests do not close live acceptance.
