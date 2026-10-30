@@ -429,12 +429,12 @@ def ready_watchdog_fixture(monkeypatch,tmp_path,config,source,now):
     """
     from datetime import timedelta
     s=healthy_snapshot(now);local=datetime.fromtimestamp(now,w.ET)
-    day=local.date() if local.hour>8 or local.hour==8 and local.minute>=17 else local.date()-timedelta(days=1)
+    day=local.date() if local.hour>16 or local.hour==16 and local.minute>=2 else local.date()-timedelta(days=1)
     runs=[run(now,(day-timedelta(days=i)).isoformat(),chr(98+i)*32) for i in range(3)]
     for p in runs:p['head']=source
     safety=proof(runs,now);safety['source_head']=source
     s.update(head=source,observer_head=source,config=copy.deepcopy(config),reviewed_config=copy.deepcopy(config),runs=runs,host_proof=safety,installed_at=now-5*86400)
-    next_time=local.replace(hour=8,minute=16,second=0,microsecond=0)
+    next_time=local.replace(hour=16,minute=1,second=0,microsecond=0)
     if next_time.timestamp()<=now:next_time+=timedelta(days=1)
     s['units']['development-scout.timer'].update(next_at=next_time.timestamp(),last_at=runs[0]['started_at'])
     s['spool']['created']=s['scheduler']['created']=now-10
