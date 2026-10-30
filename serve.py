@@ -1871,6 +1871,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/engineering/") or parsed.path.startswith("/engineering/"):
+            from dev_agent.control_center import handle
+            return handle(self, parsed.path, parsed.query)
         if parsed.path in ("/development-agent", "/api/development-agent"):
             from dev_agent.dashboard import handle
             return handle(self, parsed.path)
@@ -2035,6 +2038,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/engineering/") or parsed.path.startswith("/engineering/"):
+            from dev_agent.control_center import handle
+            return handle(self, parsed.path, parsed.query, mutation=True)
         if parsed.path in ("/api/development-agent/decision", "/api/development-agent/review", "/api/development-agent/owner-review"):
             from dev_agent.dashboard import handle
             return handle(self, parsed.path, mutation=True)
@@ -2107,6 +2113,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_PUT(self):
         parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/engineering/") or parsed.path.startswith("/engineering/"):
+            from dev_agent.control_center import handle
+            return handle(self, parsed.path, parsed.query, mutation=True)
         if parsed.path.startswith("/api/theses/"):
             parts = parsed.path.rstrip("/").split("/")
             if len(parts) == 5 and parts[4] == "draft":     # PUT /api/theses/<t>/draft
@@ -2120,6 +2129,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_DELETE(self):
         parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/engineering/") or parsed.path.startswith("/engineering/"):
+            from dev_agent.control_center import handle
+            return handle(self, parsed.path, parsed.query, mutation=True)
         parts  = parsed.path.rstrip("/").split("/")
         if len(parts) == 4 and parts[1] == "api" and parts[2] == "lots" and parts[3].isdigit():
             self._handle_lot_delete(int(parts[3]))
@@ -2133,6 +2145,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_PATCH(self):
         parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/engineering/") or parsed.path.startswith("/engineering/"):
+            from dev_agent.control_center import handle
+            return handle(self, parsed.path, parsed.query, mutation=True)
         parts  = parsed.path.rstrip("/").split("/")
         if len(parts) == 4 and parts[1] == "api" and parts[2] == "cc-positions" and parts[3].isdigit():
             self._handle_cc_update(int(parts[3]))
