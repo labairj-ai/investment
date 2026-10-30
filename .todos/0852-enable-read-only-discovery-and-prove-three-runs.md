@@ -196,3 +196,33 @@ acceptance; stop for review before production migration. PR19 and0853 remain hel
 PR24 prepares explicit STOPPED_ROLLBACK recovery, root-fsynced stage/failure receipts,
 and daily noon qualification with an11:50 Eastern cutoff. No prior failed attempt
 or sandbox certification grants credit;0852 remains open at0/3 until genuine runs.
+
+### October 30 Scout recovery implementation — PR #34 (not deployed)
+
+Production remains `a27bed1ebd3a69df5723212784842df456e153b3`. October 29's genuine
+accepted invocation `8608a7c10e9b4c23b96cf91bcc8fa51f` remains historical **1/3**;
+October 30's rejected invocation `77541c9232d74e578d6d0f596cce954d` earns no credit.
+The five existing candidates and both days' evidence must remain unchanged.
+
+PR #34 corrects both provenance consumers using the current manager-owned Job,
+with repeated manager/command/identity reads. A disposable native systemd v255
+fixture proves fresh Job metadata during Pre/Main across three activations while
+Unit metadata remains stale. Adversarial fixtures never grant live credit.
+The separately scoped SYSTEM-to-SYSTEM transaction archives old receipts, failure
+records, candidates and ledger history in a sealed content-verified archive, then
+selects a new exact-source epoch at 0/3. PLAN_ONLY is passive; APPLY requires a new
+scoped authenticated L5 decision, merged-main CI, influence PASS and exclusive
+one-attempt/rollback controls. See [recovery runbook](../docs/scout-current-job-epoch.md).
+
+Outstanding operational acceptance (this TODO stays incomplete):
+
+- [ ] Independent exact-head owner review and separate merge Go/No-Go.
+- [ ] Separately authenticated L5 production transition authorization; fresh PLAN_ONLY.
+- [ ] Verified source transition and rollback readiness without Scout execution.
+- [ ] Three new distinct genuine daily timer runs on the corrected deployed SHA,
+      each with matching protected observer receipts and all safety/collection gates.
+- [ ] Final authoritative 3/3 review before any further implementation authority.
+
+PR #19 remains unmerged/disabled; TODO 0853 remains blocked. No certification,
+fixture, manual execution, October 30 failure or prior-source receipt supplies
+new-source qualification credit. No deployment or operational completion is claimed.

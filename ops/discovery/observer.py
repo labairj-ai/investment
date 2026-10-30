@@ -299,12 +299,41 @@ def receipt_path(config):
     return parent/'discovery.json'
 
 
+HISTORY_FILES={'discovery.json','timer-fires.json','october30-failure.json','ledger-history.json','candidates.json'}
+
+
+def verify_history(history):
+    if not isinstance(history,dict) or set(history)!={'source_head','accepted_slots','accepted_count','manifest_sha256'}:raise ValueError('fixed historical epoch metadata required')
+    if not re.fullmatch('[a-f0-9]{40}',str(history['source_head'])) or not re.fullmatch('[a-f0-9]{64}',str(history['manifest_sha256'])):raise ValueError('historical content identity required')
+    slots=history['accepted_slots']
+    if not isinstance(slots,list) or not slots or len(slots)!=len(set(slots)) or history['accepted_count']!=len(slots) or any(not isinstance(v,str) or not re.fullmatch('scout:[0-9]{4}-[0-9]{2}-[0-9]{2}',v) for v in slots):raise ValueError('historical slots required')
+    directory=STATE/'history'/(history['source_head']+'-'+history['manifest_sha256'])
+    protected(directory)
+    if not directory.is_dir() or stat.S_IMODE(directory.stat().st_mode)!=0o500:raise ValueError('sealed history directory required')
+    manifest=directory/'manifest.json';protected(manifest)
+    if not manifest.is_file() or stat.S_IMODE(manifest.stat().st_mode)!=0o400 or manifest.stat().st_size>16000:raise ValueError('sealed manifest required')
+    raw=manifest.read_bytes()
+    if hashlib.sha256(raw).hexdigest()!=history['manifest_sha256']:raise ValueError('historical manifest hash mismatch')
+    data=loads(raw)
+    if set(data)!={'schema','source_head','accepted_slots','accepted_count','files'} or data['schema']!='scout-history-archive-1' or any(data[k]!=history[k] for k in ('source_head','accepted_slots','accepted_count')) or set(data['files'])!=HISTORY_FILES:raise ValueError('complete historical archive required')
+    if {p.name for p in directory.iterdir()}!=HISTORY_FILES|{'manifest.json'}:raise ValueError('unexpected archive member')
+    for name,identity in data['files'].items():
+        path=directory/name;protected(path)
+        if not path.is_file() or stat.S_IMODE(path.stat().st_mode)!=0o400 or set(identity)!={'sha256','size'} or type(identity['size']) is not int or not 0<=identity['size']<=64_000_000 or path.stat().st_size!=identity['size']:raise ValueError('sealed bounded archive member required')
+        if hashlib.sha256(path.read_bytes()).hexdigest()!=identity['sha256']:raise ValueError('archive member hash mismatch')
+    receipt=loads((directory/'discovery.json').read_bytes())
+    if receipt.get('source_head')!=history['source_head'] or sorted(r['slot'] for r in receipt['runs'])!=slots:raise ValueError('archive receipt identity mismatch')
+    return directory
+
+
 def epoch_ready(config):
     if config.get('acceptance_epoch') is None:return
     marker=receipt_path(config).parent/'transition.json';protected(marker)
     if not marker.is_file() or marker.stat().st_size>4096:raise ValueError('committed epoch transition required')
     data=loads(marker.read_bytes())
-    if set(data)!={'status','source_head','old_head','nonce'} or data['status']!='COMMITTED' or data['source_head']!=config['head'] or not re.fullmatch('[a-f0-9]{40}',str(data['old_head'])) or not re.fullmatch('[A-Za-z0-9-]{16,128}',str(data['nonce'])):raise ValueError('committed exact source epoch required')
+    if set(data)!={'status','source_head','old_head','nonce','history'} or data['status']!='COMMITTED' or data['source_head']!=config['head'] or not re.fullmatch('[a-f0-9]{40}',str(data['old_head'])) or not re.fullmatch('[A-Za-z0-9-]{16,128}',str(data['nonce'])):raise ValueError('committed exact source epoch required')
+    if data['history'].get('source_head')!=data['old_head'] or data['old_head']==data['source_head']:raise ValueError('historical/current epoch separation required')
+    if os.geteuid()==0:verify_history(data['history'])
 
 
 class Observer:

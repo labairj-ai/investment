@@ -9,7 +9,7 @@ from ops.discovery import epoch_upgrade as e
 @pytest.fixture
 def host(tmp_path,monkeypatch):
     config=tmp_path/'etc';config.mkdir();state=tmp_path/'state';state.mkdir()
-    monkeypatch.setattr(e.r,'CONFIG',config/'config.json');monkeypatch.setattr(e.r,'STATE',state)
+    monkeypatch.setattr(e.r,'CONFIG',config/'config.json');monkeypatch.setattr(e.r,'STATE',state);monkeypatch.setattr(e.o,'STATE',state);monkeypatch.setattr(e.o,'protected',lambda p:None)
     # Ownership trust is a fixture boundary; real byte replacement/fsync/archives
     # and lock/nonce behavior remain active. Never monkeypatch the engine itself.
     monkeypatch.setattr(e.r,'protected',lambda *a,**k:None)
@@ -21,7 +21,7 @@ def host(tmp_path,monkeypatch):
         old=e.OLD;head='b'*40
         def __init__(self):
             self.calls=[];self.active=True;self.source=self.old;self.config=self.old;self.fail=None;self.stop_fail=False;self.verify_fail=False
-            self.plan=dict(old=self.old,head=self.head,receipt=e.r.encoded(dict(runs=[dict(slot='scout:2026-10-29',invocation='8608a7c10e9b4c23b96cf91bcc8fa51f')])),fires=b'["old-genuine-fire"]',failure=b'[{"code":"TIMER_TRIGGER_INVALID"},{"code":"BOOKEND_INVALID"}]',source=b'old-observer',config=b'old-config',new_source=b'new-observer',new_config=b'new-epoch-config')
+            self.plan=dict(old=self.old,head=self.head,receipt=e.r.encoded(dict(source_head=self.old,runs=[dict(slot='scout:2026-10-29',invocation='8608a7c10e9b4c23b96cf91bcc8fa51f')])),fires=b'["old-genuine-fire"]',failure=b'[{"code":"TIMER_TRIGGER_INVALID"},{"code":"BOOKEND_INVALID"}]',ledger_history=b'[]',candidates=b'[]',before=dict(candidate_count=5,candidates_sha256='d'*64,protected={},ledger={}),source=b'old-observer',config=b'old-config',new_source=b'new-observer',new_config=b'new-epoch-config')
             self.nonce='fresh-owner-authorization-20261030'
             self.financial=b'live protected synthetic financial fixture';self.ledger=b'append-only synthetic ledger'
         def inspect(self):self.calls.append('inspect');return copy.deepcopy(self.plan)
@@ -52,7 +52,10 @@ def host(tmp_path,monkeypatch):
             assert not self.active;self.calls.append('restore');self.source=self.config=self.old
             if self.fail=='restore':raise ValueError('restore failed')
         def recovery_guard(self,p):self.calls.append('recovery-guard')
-    return Fake()
+    value=Fake()
+    yield value
+    for directory in state.rglob('*'):
+        if directory.is_dir():directory.chmod(0o700)
 
 
 def test_plan_only_is_read_only_and_does_not_consume_go(host,tmp_path):
@@ -64,7 +67,7 @@ def test_plan_only_is_read_only_and_does_not_consume_go(host,tmp_path):
 def test_success_archives_history_and_starts_zero_new_epoch(host):
     result=e.transaction(host,apply=True)
     assert result['status']=='NEW_EPOCH_AWAITING_GENUINE_SYSTEM_TIMER_RUNS' and result['historical_runs']==1 and result['current_epoch_runs']==0
-    archive=e.r.STATE/'history'/(host.old+'-'+e.r.sha(host.plan['receipt']))
+    archive=next(p for p in (e.r.STATE/'history').iterdir() if not p.name.startswith('.'))
     assert (archive/'discovery.json').read_bytes()==host.plan['receipt']
     assert (archive/'october30-failure.json').read_bytes()==host.plan['failure']
     assert [p.name for p in (e.r.STATE/'epochs'/host.head).iterdir()]==['transition.json']
@@ -164,7 +167,9 @@ def test_quiet_gate_requires_no_job_even_with_zero_pids(monkeypatch):
 
 def test_release_adapter_never_opens_financial_sqlite_database():
     source=Path(e.__file__).read_text()
-    assert 'o.snapshot(' not in source and 'sqlite3.connect' not in source
+    assert 'o.snapshot(' not in source
+    assert source.count('sqlite3.connect(')==1
+    assert "sqlite3.connect(':memory:')" in source
     assert 'u.protected_state()' in source
 
 
@@ -188,6 +193,7 @@ def test_real_git_and_file_commit_restore_preserve_financial_and_history(host,tm
     financial=root/'holdings.csv';financial.write_bytes(b'private synthetic holdings; never checkout or restore')
     ledger=tmp_path/'ledger.sqlite3';ledger.write_bytes(b'synthetic authoritative ledger remains unchanged')
     host.old=old;host.head=new;host.plan.update(old=old,head=new,config=e.r.encoded(dict(head=old)),new_config=e.r.encoded(dict(head=new,acceptance_epoch=new)))
+    data=e.r.loads(host.plan['receipt']);data['source_head']=old;host.plan['receipt']=e.r.encoded(data)
     host.source=host.config=old
     source=tmp_path/'installed-observer.py';source.write_bytes(host.plan['source']);e.r.CONFIG.write_bytes(host.plan['config'])
     monkeypatch.setattr(e.r,'ROOT',root);monkeypatch.setattr(e.r,'SOURCE',source)
@@ -217,7 +223,7 @@ def test_real_git_and_file_commit_restore_preserve_financial_and_history(host,tm
     result=e.transaction(host,apply=True)
     assert result['status']==('ROLLED_BACK_NOT_READY' if fail_selector else 'NEW_EPOCH_AWAITING_GENUINE_SYSTEM_TIMER_RUNS')
     assert git('rev-parse','HEAD')==(old if fail_selector else new)
-    archived=e.r.STATE/'history'/(old+'-'+e.r.sha(host.plan['receipt']))
+    archived=next(p for p in (e.r.STATE/'history').iterdir() if not p.name.startswith('.'))
     assert (archived/'discovery.json').read_bytes()==host.plan['receipt']
 
 
@@ -254,3 +260,110 @@ def test_legacy_boundary_is_bound_to_git_objects_not_only_config_claims(field):
     e.legacy_configuration(current,manifest)
     current[field]='unexpected'
     with pytest.raises(ValueError,match='exact reviewed legacy'):e.legacy_configuration(current,manifest)
+
+@pytest.mark.parametrize('member',['discovery.json','timer-fires.json','october30-failure.json','ledger-history.json','candidates.json','manifest.json'])
+def test_archived_member_corruption_is_detected_and_never_repaired(host,member):
+    meta=e.archive_history(host.plan,host.nonce)
+    directory=e.o.verify_history(meta)
+    assert directory.stat().st_mode&0o777==0o500
+    path=directory/member;assert path.stat().st_mode&0o777==0o400
+    path.chmod(0o600);path.write_bytes(b'corrupted synthetic fixture');path.chmod(0o400)
+    with pytest.raises(ValueError):e.o.verify_history(meta)
+    assert path.read_bytes()==b'corrupted synthetic fixture'
+    assert host.calls==[]
+
+
+@pytest.mark.parametrize('failure',['create','member','manifest','verify'])
+def test_archive_failures_roll_back_without_installing_or_losing_history(host,monkeypatch,failure):
+    write=e.u.write;verify=e.o.verify_history;receipt=host.plan['receipt']
+    def injected(path,*args,**kwargs):
+        if (failure=='member' and path.name=='timer-fires.json' or failure=='manifest' and path.name=='manifest.json'):
+            raise OSError('archive write fault')
+        return write(path,*args,**kwargs)
+    monkeypatch.setattr(e.u,'write',injected)
+    if failure=='create':
+        directory=e.r.STATE/'history';directory.mkdir();(directory/('.staging-'+host.nonce)).mkdir()
+    if failure=='verify':monkeypatch.setattr(e.o,'verify_history',lambda *a:(_ for _ in ()).throw(ValueError('hash mismatch')))
+    result=e.transaction(host,apply=True)
+    assert result['status']=='ROLLED_BACK_NOT_READY'
+    assert host.plan['receipt']==receipt and host.source==host.old and host.active
+    assert 'install' not in host.calls
+    with pytest.raises(FileExistsError):e.transaction(host,apply=True)
+
+
+def test_archive_has_no_overwrite_or_unlisted_member_authority(host):
+    meta=e.archive_history(host.plan,host.nonce);directory=e.o.verify_history(meta)
+    with pytest.raises(ValueError):e.archive_history(host.plan,'different-nonce-no-overwrite')
+    assert e.o.verify_history(meta)==directory
+    directory.chmod(0o700);(directory/'unreviewed.json').write_text('{}');directory.chmod(0o500)
+    with pytest.raises(ValueError):e.o.verify_history(meta)
+
+
+def test_plan_reports_epoch_and_protected_preservation(host):
+    result=e.transaction(host)
+    assert result['production_head']==e.OLD and result['proposed_target_head']==host.head
+    assert result['historical_slots']==['scout:2026-10-29'] and result['existing_candidate_count']==5
+    assert result['epoch_transition']['new_accepted_runs']==0
+    assert result['epoch_transition']['historical_credit_transferred'] is False
+    assert result['readiness_failures']==[] and not result['changes_applied']
+    assert result['archive_requirements'] and result['rollback_requirements'] and result['protected_state_fingerprints']
+
+@pytest.fixture
+def live_go(approved,monkeypatch):
+    from dev_agent import github_owner
+    _,a=approved
+    data=dict(pr=34,head=a['reviewed_head'],decision='APPROVE',risk='L5',financial_ack=True,execution_ack=True,nonce=a['nonce'],rationale=e.SCOPE+':'+a['old_head']+':'+a['target_head'])
+    origin=dict(url=a['owner_object'],created_at='2026-10-30T20:00:00Z')
+    monkeypatch.setattr(github_owner,'verified_object',lambda *args:(data,dict(head=a['reviewed_head']),origin))
+    monkeypatch.setattr(github_owner,'latest_object',lambda *args:123)
+    class Client:
+        def __init__(self):
+            self.identity=dict(state='MERGED',mergeCommit=dict(oid=a['target_head']))
+            self.runs=dict(total_count=1,workflow_runs=[dict(id=7,path='.github/workflows/test.yml',head_branch='main',head_sha=a['target_head'],event='push',status='completed',conclusion='success')])
+            self.jobs=dict(total_count=2,jobs=[dict(name=n,conclusion='success') for n in ('native-systemd255','test')])
+        def pr_identity(self,n):return self.identity
+        def read(self,endpoint):return self.jobs if '/jobs?' in endpoint else self.runs
+    return a,data,Client(),github_owner
+
+
+def test_apply_independently_verifies_live_owner_and_merged_main_gates(live_go):
+    a,_,client,_=live_go
+    assert e.live_authorization(a,client)==dict(owner_object_id=123,ci_run_id=7,head=a['target_head'])
+
+
+@pytest.mark.parametrize('failure',['scope','nonce','risk','ack','decision','revoked','notmerged','wrongmerge','wrongci','failedci','missingnative','failedgate','incompletejobs'])
+def test_live_owner_and_ci_fail_closed(live_go,monkeypatch,failure):
+    a,data,client,owner=live_go
+    if failure=='scope':data['rationale']='generic deployment approval'
+    if failure=='nonce':data['nonce']='old-consumed-authorization'
+    if failure=='risk':data['risk']='L4'
+    if failure=='ack':data['execution_ack']=False
+    if failure=='decision':data['decision']='DEFER'
+    if failure=='revoked':monkeypatch.setattr(owner,'latest_object',lambda *a:124)
+    if failure=='notmerged':client.identity['state']='OPEN'
+    if failure=='wrongmerge':client.identity['mergeCommit']['oid']='c'*40
+    if failure=='wrongci':client.runs['workflow_runs'][0]['head_sha']='c'*40
+    if failure=='failedci':client.runs['workflow_runs'][0]['conclusion']='failure'
+    if failure=='missingnative':client.jobs['jobs'][0]['name']='other'
+    if failure=='failedgate':client.jobs['jobs'][1]['conclusion']='failure'
+    if failure=='incompletejobs':client.jobs['total_count']=3
+    with pytest.raises(ValueError):e.live_authorization(a,client)
+
+
+def test_plan_failure_reports_readiness_and_never_authorizes(host):
+    host.inspect=lambda:(_ for _ in ()).throw(ValueError('source identity mismatch'))
+    result=e.transaction(host)
+    assert result['status']=='PLAN_ONLY_BLOCKED' and result['changes_applied'] is False
+    assert result['readiness_failures']==['source identity mismatch'] and host.calls==[]
+    with pytest.raises(ValueError):e.transaction(host,apply=True)
+
+
+def test_authorization_issuer_requires_live_scoped_owner_and_never_overwrites(host,live_go,monkeypatch):
+    a,data,client,owner=live_go
+    host.head=a['target_head'];host.plan['head']=host.head
+    monkeypatch.setattr(e,'AUTH',e.r.CONFIG.parent/'authorization.json')
+    result=e.issue_authorization(host,123,client)
+    assert result['status']=='AUTHORIZATION_RECORDED' and not result['changes_applied']
+    assert e.authorization(e.AUTH,host.old,host.head)['nonce']==data['nonce']
+    with pytest.raises(FileExistsError):e.issue_authorization(host,123,client)
+    assert 'install' not in host.calls and 'stop' not in host.calls

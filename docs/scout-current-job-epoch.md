@@ -76,14 +76,12 @@ The adapter verifies the fixed staging root and hashes every loaded repository
 module against target Git blobs. Never import this root tool from the live
 user-writable checkout. PLAN_ONLY inspects; APPLY additionally requires the root
 release-controller capability at /etc/investment-discovery-observer/
-scout-epoch-authorization.json. There is no authorization writer in this PR.
+scout-epoch-authorization.json. The explicit --authorize-owner-object <comment-id> mode can mint this capability only after authenticating the actual owner object and rechecking production preflight. It does not APPLY or stop any service. Existing capability files are never overwritten.
 
 The capability's exact schema is checked by authorization(): solo-owner-1 verified
 human GitHub object URL, repository, scope=scout-source-epoch-transition-once,
 old_head, reviewed PR head, merged target/CI SHA, PASS, fresh timestamp, nonce,
-APPROVE, L5, the exact historical receipt hash/count and both domain acknowledgments. The existing owner connector/release
-controller must authenticate the human object, check revocation/current context,
-verify main/CI and mint this root-only capability immediately before transition.
+APPROVE, L5, the exact historical receipt hash/count and both domain acknowledgments. Both capability issuance and APPLY independently authenticate the human object through existing solo-owner governance, check revocation/current context and verify merged-main CI. The owner rationale must be exactly `scout-source-epoch-transition-once:<old SHA>:<merged target SHA>`; its nonce must match. GitHub access requires the separately provisioned read-only credential and protected owner bindings, never owner CLI credentials. The latest exact merged-main Tests run must pass both native-systemd255 and test; the latter enforces all eight release gates.
 A root attestation is a privileged release capability, not an application JSON
 claim; a user/model cannot create it. Controller integration and its actual owner
 receipt are mandatory operational review gates. This PR does not manufacture one.
@@ -122,7 +120,7 @@ an observer outage fails Pre and receives no credit; no catch-up is manufactured
 
 ## Validation and operational exclusions
 
-Fixtures cover two consecutive daily activations with retained Unit metadata,
+Fixtures cover three consecutive daily activations with retained Unit metadata,
 both consumers, manager/identity/phase/clock/race attacks, zero receipt on rejection,
 replay/duplicate controls, source epoch separation, root capability rejection,
 archive preservation, every transaction stage failure, crash recovery and failed
@@ -146,3 +144,36 @@ wrapper and CLI entry points outside the unit. Production discovery rejects an
 operator-classified trigger before migrate/event/candidate writes, including
 alternate root spellings or a caller pointing a different root at the production
 ledger. Disposable nonproduction fixtures retain their existing manual test path.
+
+## Sealed history and status consumers
+
+The archive is published exclusively at
+`/var/lib/investment-development-acceptance/history/<old SHA>-<manifest SHA256>`.
+Its directory mode is 0500; files are 0400 and root-owned. The canonical manifest
+contains exact hashes and sizes for discovery.json, timer-fires.json, sanitized
+October 30 failure evidence, ledger-history.json and candidates.json. Every member
+and the complete inventory are checked before epoch commit and by the root observer
+on subsequent bookends. Existing archives and incomplete staging evidence are never
+replaced or deleted. These are sealed, content-verified historical artifacts, not a
+claim that root cannot change storage. Any mismatch fails closed.
+
+The public root-owned COMMITTED marker includes the old source, slots, count and
+manifest hash. Status/watchdog consumers receive explicit `epochs.historical`,
+`epochs.current_source` and `current_epoch_accepted_runs`. Historical 1/3 is displayed
+separately and cannot satisfy the new-source threshold. In a new epoch even the
+first credit requires the root receipt to join the exact source's successful ledger
+collection; missing/invalid transition or observer evidence reports zero credit.
+
+Native proof uses Ubuntu's pinned systemd 255.4-1ubuntu8.18 in a disposable Docker
+container in CI, no host mounts or production data. The fixture is RefuseManualStart
+and receives three natural short-interval timer activations. Both Pre and Main read
+actual D-Bus Job/Unit/Timer and execution records; a separate validator proves fresh
+Jobs, unique invocations, current commands and retained Unit activation metadata.
+Artifact `scout-systemd255-native-proof` preserves raw non-sensitive fixture records
+and the result. The runner refuses the production layout. Fixture metadata explicitly
+states `fixture_only=true` and `accepted_scout_run=false`; it creates no Scout credit.
+
+PLAN_ONLY never probes the observer socket or consumes approval. A blocked preflight
+returns `PLAN_ONLY_BLOCKED`, `changes_applied=false`, and readiness failure details;
+a successful plan lists source, historical slots, candidate count, fingerprints,
+timer/observer identities, intended changes and archive/rollback requirements.

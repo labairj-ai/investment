@@ -8,12 +8,12 @@ from dev_agent import scheduler,discovery
 from test_development_agent_scout_failure import system
 BASELINE_GIT_OUTPUT=o.subprocess.check_output
 
-@pytest.mark.parametrize('day',[1,2])
+@pytest.mark.parametrize('day',[1,2,3])
 @pytest.mark.parametrize('consumer',['observer','scheduler'])
-def test_two_day_current_job_ignores_retained_unit_metadata(system,monkeypatch,day,consumer):
-    h=system;h.fired=6807047895028 if day==1 else 6893457894997
-    h.invocation='8608a7c10e9b4c23b96cf91bcc8fa51f' if day==1 else '77541c9232d74e578d6d0f596cce954d';h.values['InvocationID']=h.invocation
-    h.real={1:1793304006896140,2:1793390416896108}[day]
+def test_three_day_current_job_ignores_retained_unit_metadata(system,monkeypatch,day,consumer):
+    h=system;h.fired={1:6807047895028,2:6893457894997,3:6979857894997}[day]
+    h.invocation='8608a7c10e9b4c23b96cf91bcc8fa51f' if day==1 else '77541c9232d74e578d6d0f596cce954d' if day==2 else 'c'*32;h.values['InvocationID']=h.invocation
+    h.real={1:1793304006896140,2:1793390416896108,3:1793476816896108}[day]
     monkeypatch.setattr(o.time,'time',lambda:h.real/1e6+1)
     h.job_id=77+day;queries=[];base=o.subprocess.check_output
     def output(cmd,**kw):
@@ -29,7 +29,7 @@ def test_two_day_current_job_ignores_retained_unit_metadata(system,monkeypatch,d
         old=BASELINE_GIT_OUTPUT(['git','show','a27bed1ebd3a69df5723212784842df456e153b3:ops/discovery/observer.py'])
         definition=next(n for n in ast.parse(old).body if isinstance(n,ast.FunctionDef) and n.name=='activation')
         scope=dict(vars(o));exec(compile(ast.Module(body=[definition],type_ignores=[]),'reviewed-a27-activation','exec'),scope)
-        if day==2:
+        if day>=2:
             with pytest.raises(o.TrustFailure,match='TIMER_TRIGGER_INVALID'):scope['activation'](dict(env={'PATH':'/usr/bin:/bin','HOME':'/nonexistent'}),123,h.invocation,h.fired)
         else:scope['activation'](dict(env={'PATH':'/usr/bin:/bin','HOME':'/nonexistent'}),123,h.invocation,h.fired)
         queries.clear()
@@ -129,7 +129,7 @@ def test_uncommitted_epoch_cannot_authorize_scout(tmp_path,monkeypatch,status):
     monkeypatch.setattr(o,'STATE',tmp_path);monkeypatch.setattr(o,'protected',lambda p:None)
     epoch=tmp_path/'epochs'/('a'*40);epoch.mkdir(parents=True)
     config=dict(head='a'*40,acceptance_epoch='a'*40)
-    if status:(epoch/'transition.json').write_text(json.dumps(dict(status=status,source_head='a'*40,old_head='b'*40,nonce='fresh-owner-authorization-123')))
+    if status:(epoch/'transition.json').write_text(json.dumps(dict(status=status,source_head='a'*40,old_head='b'*40,nonce='fresh-owner-authorization-123',history=dict(source_head='b'*40,accepted_slots=['scout:2026-10-29'],accepted_count=1,manifest_sha256='d'*64))))
     if status=='COMMITTED':o.epoch_ready(config)
     else:
         with pytest.raises((OSError,ValueError)):o.epoch_ready(config)
