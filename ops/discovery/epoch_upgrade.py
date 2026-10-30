@@ -32,7 +32,7 @@ def authorization(path,old,head):
     r.protected(path)
     require(path.stat().st_size<=16000,'bounded authorization required')
     raw=path.read_bytes();a=r.loads(raw)
-    fields={'version','repository','scope','old_head','target_head','reviewed_head','merge_sha','risk','decision','nonce','created','financial_ack','execution_ack','authentication_source','owner_object','owner_verified','ci_head','ci_status'}
+    fields={'version','repository','scope','old_head','target_head','reviewed_head','merge_sha','risk','decision','nonce','created','financial_ack','execution_ack','authentication_source','owner_object','owner_verified','ci_head','ci_status','historical_receipt_sha256','historical_runs'}
     require(set(a)==fields,'exact release authorization schema required')
     require(a['version']=='scout-epoch-authorization-1' and a['repository']=='labairj-ai/investment' and a['scope']==SCOPE,'fixed authorization scope required')
     require(a['old_head']==old and a['target_head']==a['merge_sha']==a['ci_head']==head and a['ci_status']=='PASS','exact merged target and CI required')
@@ -40,6 +40,7 @@ def authorization(path,old,head):
     require(a['risk']=='L5' and a['decision']=='APPROVE' and a['financial_ack'] is True and a['execution_ack'] is True,'explicit L5 domain acknowledgments required')
     require(a['authentication_source']=='solo-owner-1' and a['owner_verified'] is True and re.fullmatch(r'https://github.com/labairj-ai/investment/pull/[1-9][0-9]*#issuecomment-[1-9][0-9]*',str(a['owner_object'])) is not None,'verified authenticated owner object required')
     require(type(a['created']) in (int,float) and 0<=time.time()-a['created']<=3600 and re.fullmatch('[A-Za-z0-9-]{16,128}',str(a['nonce'])) is not None,'fresh single-use authorization required')
+    require(re.fullmatch('[a-f0-9]{64}',str(a['historical_receipt_sha256'])) is not None and type(a['historical_runs']) is int and 1<=a['historical_runs']<=30,'exact historical acceptance binding required')
     require(path.read_bytes()==raw,'authorization changed')
     return a
 
@@ -184,7 +185,9 @@ def transaction(host,*,apply=False):
     plan=host.inspect()
     summary=dict(old_head=host.old,source_head=host.head,historical_runs=len(r.loads(plan['receipt'])['runs']),current_epoch_runs=0,grants_implementation=False)
     if not apply:return dict(summary,status='PLAN_ONLY',changes_applied=False)
-    a=host.authorize();base=r.CONFIG.parent/'epoch-transitions';r.protected(base.parent)
+    a=host.authorize()
+    require(a['historical_receipt_sha256']==r.sha(plan['receipt']) and a['historical_runs']==summary['historical_runs'],'owner authorization historical state changed')
+    base=r.CONFIG.parent/'epoch-transitions';r.protected(base.parent)
     if not base.exists():base.mkdir(mode=0o700);u.sync(base.parent)
     r.protected(base,directory=True)
     lock=base/'lock'

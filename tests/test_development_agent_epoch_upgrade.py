@@ -28,7 +28,7 @@ def host(tmp_path,monkeypatch):
         def authorize(self):
             self.calls.append('authorize')
             if self.fail=='authorize':raise ValueError('unauthorized')
-            return dict(nonce=self.nonce)
+            return dict(nonce=self.nonce,historical_receipt_sha256=e.r.sha(self.plan['receipt']),historical_runs=len(e.r.loads(self.plan['receipt'])['runs']))
         def guard(self,p):
             self.calls.append('guard')
             if self.fail=='guard' and not self.active:raise ValueError('timer or receipt changed')
@@ -130,11 +130,11 @@ def test_process_crash_at_each_stage_has_durable_backup_and_explicit_rollback(ho
 @pytest.fixture
 def approved(tmp_path,monkeypatch):
     p=tmp_path/'authorization.json';monkeypatch.setattr(e.r,'protected',lambda *a,**k:None)
-    data=dict(version='scout-epoch-authorization-1',repository='labairj-ai/investment',scope=e.SCOPE,old_head=e.OLD,target_head='b'*40,reviewed_head='c'*40,merge_sha='b'*40,risk='L5',decision='APPROVE',nonce='new-deliberate-owner-nonce-123',created=e.time.time(),financial_ack=True,execution_ack=True,authentication_source='solo-owner-1',owner_object='https://github.com/labairj-ai/investment/pull/34#issuecomment-123',owner_verified=True,ci_head='b'*40,ci_status='PASS')
+    data=dict(version='scout-epoch-authorization-1',repository='labairj-ai/investment',scope=e.SCOPE,old_head=e.OLD,target_head='b'*40,reviewed_head='c'*40,merge_sha='b'*40,risk='L5',decision='APPROVE',nonce='new-deliberate-owner-nonce-123',created=e.time.time(),financial_ack=True,execution_ack=True,authentication_source='solo-owner-1',owner_object='https://github.com/labairj-ai/investment/pull/34#issuecomment-123',owner_verified=True,ci_head='b'*40,ci_status='PASS',historical_receipt_sha256='d'*64,historical_runs=1)
     return p,data
 
 
-@pytest.mark.parametrize('field,value',[('scope','old-migration'),('old_head','a'*40),('target_head','c'*40),('reviewed_head','bad'),('merge_sha','c'*40),('risk','L2'),('decision','DEFER'),('nonce','short'),('created',1),('financial_ack',False),('execution_ack',False),('owner_verified',False),('authentication_source','model'),('owner_object','https://evil.invalid'),('ci_head','c'*40),('ci_status','FAIL')])
+@pytest.mark.parametrize('field,value',[('scope','old-migration'),('old_head','a'*40),('target_head','c'*40),('reviewed_head','bad'),('merge_sha','c'*40),('risk','L2'),('decision','DEFER'),('nonce','short'),('created',1),('financial_ack',False),('execution_ack',False),('owner_verified',False),('authentication_source','model'),('owner_object','https://evil.invalid'),('ci_head','c'*40),('ci_status','FAIL'),('historical_receipt_sha256','bad'),('historical_runs',0)])
 def test_untrusted_or_stale_authority_rejected(approved,field,value):
     p,data=approved;data[field]=value;p.write_bytes(e.r.encoded(data))
     with pytest.raises(ValueError):e.authorization(p,e.OLD,'b'*40)
@@ -218,3 +218,11 @@ def test_real_git_and_file_commit_restore_preserve_financial_and_history(host,tm
     assert git('rev-parse','HEAD')==(old if fail_selector else new)
     archived=e.r.STATE/'history'/(old+'-'+e.r.sha(host.plan['receipt']))
     assert (archived/'discovery.json').read_bytes()==host.plan['receipt']
+
+
+def test_owner_capability_cannot_apply_after_historical_acceptance_changes(host):
+    approved=host.authorize()
+    host.authorize=lambda:approved
+    host.plan['receipt']=e.r.encoded(dict(runs=[dict(slot='scout:2026-10-29'),dict(slot='scout:2026-10-31')]))
+    with pytest.raises(ValueError,match='historical state changed'):e.transaction(host,apply=True)
+    assert 'stop' not in host.calls and 'install' not in host.calls

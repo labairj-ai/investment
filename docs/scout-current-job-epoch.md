@@ -79,7 +79,7 @@ scout-epoch-authorization.json. There is no authorization writer in this PR.
 The capability's exact schema is checked by authorization(): solo-owner-1 verified
 human GitHub object URL, repository, scope=scout-source-epoch-transition-once,
 old_head, reviewed PR head, merged target/CI SHA, PASS, fresh timestamp, nonce,
-APPROVE, L5 and both domain acknowledgments. The existing owner connector/release
+APPROVE, L5, the exact historical receipt hash/count and both domain acknowledgments. The existing owner connector/release
 controller must authenticate the human object, check revocation/current context,
 verify main/CI and mint this root-only capability immediately before transition.
 A root attestation is a privileged release capability, not an application JSON
