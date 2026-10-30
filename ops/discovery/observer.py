@@ -90,11 +90,17 @@ def database_hash(path):
 
 def ledger_snapshot():
     if LEDGER.is_symlink() or not LEDGER.is_file():raise ValueError('real discovery ledger unavailable')
-    with sqlite3.connect(LEDGER.as_uri()+'?mode=ro',uri=True) as db:
-        db.execute('PRAGMA query_only=ON');db.execute('BEGIN')
+    for suffix in ('-wal','-journal'):
+        if LEDGER.with_name(LEDGER.name+suffix).exists():raise ValueError('stable ledger snapshot required')
+    raw=LEDGER.read_bytes()
+    if len(raw)>32_000_000 or raw!=LEDGER.read_bytes():raise ValueError('bounded stable ledger required')
+    for suffix in ('-wal','-journal'):
+        if LEDGER.with_name(LEDGER.name+suffix).exists():raise ValueError('ledger transaction raced')
+    with sqlite3.connect(':memory:') as db:
+        db.deserialize(raw);db.execute('PRAGMA query_only=ON');db.execute('BEGIN')
         rows=db.execute('SELECT seq,event_id,candidate,kind,created,payload FROM dev_events ORDER BY seq').fetchall()
         if len(rows)>100000:raise ValueError('bounded observation ledger required')
-        schema=db.execute("SELECT type,name,sql FROM sqlite_master ORDER BY type,name").fetchall()
+        schema=db.execute('SELECT type,name,sql FROM sqlite_master ORDER BY type,name').fetchall()
         return dict(seq=rows[-1][0] if rows else 0,prefix=digest(rows),schema=digest(schema)),rows
 
 
@@ -160,22 +166,46 @@ def timer_timestamp(options):
     return value
 
 
-def activation(options,pid,invocation,fired):
-    # Read manager-owned activation details, not caller-controlled environment.
-    # Metadata is corroboration only: missing best-effort data fails closed.
-    raw=subprocess.check_output(['/usr/bin/busctl','--system','--json=short','get-property',
-        'org.freedesktop.systemd1',
-        '/org/freedesktop/systemd1/unit/development_2dscout_2eservice',
-        'org.freedesktop.systemd1.Unit','ActivationDetails'],**options)
-    if len(raw)>4096:raise TrustFailure('TIMER_TRIGGER_INVALID')
-    value=loads(raw)
-    if set(value)!={'type','data'} or value['type']!='a(ss)' or not isinstance(value['data'],list):raise TrustFailure('TIMER_TRIGGER_INVALID')
-    pairs=value['data']
-    if any(not isinstance(p,list) or len(p)!=2 or any(type(v) is not str for v in p) for p in pairs):raise TrustFailure('TIMER_TRIGGER_INVALID')
-    details=unique(pairs)
-    if details.get('trigger_unit')!='development-scout.timer' or details.get('trigger_timer_monotonic_usec')!=str(fired):raise TrustFailure('TIMER_TRIGGER_INVALID')
-    # Revalidate the same active per-command record and invocation.
-    command_record(options,pid,invocation,'begin')
+def activation(options,pid,invocation,fired,phase='begin'):
+    # Unit.ActivationDetails is retained across v255 invocations. Only the
+    # current installed start Job can attest this activation. No fallback.
+    service='/org/freedesktop/systemd1/unit/development_2dscout_2eservice'
+    timer='/org/freedesktop/systemd1/unit/development_2dscout_2etimer'
+    def prop(path,interface,name,kind):
+        raw=subprocess.check_output(['/usr/bin/busctl','--system','--json=short','get-property',
+            'org.freedesktop.systemd1',path,'org.freedesktop.systemd1.'+interface,name],**options)
+        if len(raw)>8192:raise TrustFailure('TIMER_TRIGGER_INVALID')
+        value=loads(raw)
+        if set(value)!={'type','data'} or value['type']!=kind:raise TrustFailure('TIMER_TRIGGER_INVALID')
+        return value['data']
+    def capture():
+        boot=Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+        if not re.fullmatch('[a-f0-9-]{36}',boot):raise TrustFailure('TIMER_TRIGGER_INVALID')
+        job=prop(service,'Unit','Job','(uo)')
+        if (not isinstance(job,list) or len(job)!=2 or type(job[0]) is not int or not 0<job[0]<2**32
+            or job[1]!='/org/freedesktop/systemd1/job/'+str(job[0])):raise TrustFailure('TIMER_TRIGGER_INVALID')
+        path=job[1]
+        identity=(prop(path,'Job','Id','u'),prop(path,'Job','Unit','(so)'),
+                  prop(path,'Job','JobType','s'),prop(path,'Job','State','s'))
+        if identity!=(job[0],['development-scout.service',service],'start','running'):raise TrustFailure('TIMER_TRIGGER_INVALID')
+        pairs=prop(path,'Job','ActivationDetails','a(ss)')
+        if not isinstance(pairs,list) or any(not isinstance(p,list) or len(p)!=2 or any(type(v) is not str for v in p) for p in pairs):raise TrustFailure('TIMER_TRIGGER_INVALID')
+        details=unique(pairs)
+        if set(details)!={'trigger_unit','trigger_timer_monotonic_usec','trigger_timer_realtime_usec'} or details['trigger_unit']!='development-scout.timer':raise TrustFailure('TIMER_TRIGGER_INVALID')
+        stamps=[]
+        for name,key in [('LastTriggerUSecMonotonic','trigger_timer_monotonic_usec'),('LastTriggerUSec','trigger_timer_realtime_usec')]:
+            stamp=prop(timer,'Timer',name,'t')
+            if type(stamp) is not int or not 0<stamp<2**64 or details[key]!=str(stamp):raise TrustFailure('TIMER_TRIGGER_INVALID')
+            stamps.append(stamp)
+        if stamps[0]!=fired or not 0<=time.monotonic()-stamps[0]/1e6<=180 or not -5<=time.time()-stamps[1]/1e6<=180:raise TrustFailure('TIMER_TRIGGER_INVALID')
+        return dict(job_id=job[0],boot_id=boot,timer_monotonic_usec=stamps[0],timer_realtime_usec=stamps[1])
+    first=capture()
+    command_record(options,pid,invocation,phase)
+    record=manager_property(options,'org.freedesktop.systemd1.Service',{'begin':'ExecStartPre','scout':'ExecStart'}[phase])['data'][0]
+    if first['timer_monotonic_usec']>record[4] or first['timer_realtime_usec']>record[3]:raise TrustFailure('TIMER_TRIGGER_INVALID')
+    if capture()!=first:raise TrustFailure('TIMER_TRIGGER_INVALID')
+    command_record(options,pid,invocation,phase)
+    return first
 
 
 def manager_property(options,interface,name):
@@ -188,7 +218,7 @@ def manager_property(options,interface,name):
 
 
 def command_record(options,pid,invocation,phase):
-    name={'begin':'ExecStartPre','end':'ExecStopPost'}[phase]
+    name={'begin':'ExecStartPre','scout':'ExecStart','end':'ExecStopPost'}[phase]
     value=manager_property(options,'org.freedesktop.systemd1.Service',name)
     if value['type']!='a(sasbttttuii)' or not isinstance(value['data'],list) or len(value['data'])!=1:raise TrustFailure('SCOUT_EXECUTION_RECORD_INVALID')
     row=value['data'][0]
@@ -203,11 +233,12 @@ def command_record(options,pid,invocation,phase):
     if entered['type']!='t' or type(entered['data']) is not int or entered['data']<=0 or start_mono<entered['data']-1_000_000:raise TrustFailure('SCOUT_EXECUTION_RECORD_INVALID')
     if not 0<=time.monotonic()-start_mono/1e6<=240 or not -5<=time.time()-start_real/1e6<=240:raise TrustFailure('SCOUT_EXECUTION_RECORD_INVALID')
     raw=subprocess.check_output(['/usr/bin/systemctl','--system','show','development-scout.service','--no-pager',
-        '--property=InvocationID,ControlPID,ActiveState,SubState'],**options).decode()
+        '--property=InvocationID,ControlPID,ActiveState,SubState'+(',MainPID' if phase=='scout' else '')],**options).decode()
     values=unique(line.split('=',1) for line in raw.splitlines() if '=' in line)
     if values.get('InvocationID')!=invocation:raise TrustFailure('INVOCATION_INVALID')
     if values.get('ControlPID') not in {'0',str(pid)}:raise TrustFailure('SCOUT_CONTROL_PID_MISMATCH')
-    expected=('activating','start-pre') if phase=='begin' else ('deactivating','stop-post')
+    if phase=='scout' and values.get('MainPID')!=str(pid):raise TrustFailure('SCOUT_CONTROL_PID_MISMATCH')
+    expected={'begin':('activating','start-pre'),'scout':('activating','start'),'end':('deactivating','stop-post')}[phase]
     if (values.get('ActiveState'),values.get('SubState'))!=expected:raise TrustFailure('SCOUT_EXECUTION_RECORD_INVALID')
     again=manager_property(options,'org.freedesktop.systemd1.Service',name)
     if again!=value:raise TrustFailure('SCOUT_EXECUTION_RECORD_INVALID')
@@ -216,7 +247,7 @@ def command_record(options,pid,invocation,phase):
 def systemd(config,pid,phase):
     options=dict(timeout=10,env={'PATH':'/usr/bin:/bin','HOME':'/nonexistent'})
     command=['/usr/bin/systemctl','--system','show']
-    properties='ControlPID,InvocationID,FragmentPath,DropInPaths,NeedDaemonReload,Result,PrivateNetwork,NoNewPrivileges,ProtectSystem,ProtectHome,RefuseManualStart,TriggeredBy,User,Group,WorkingDirectory'
+    properties='ControlPID,InvocationID,FragmentPath,DropInPaths,NeedDaemonReload,Result,PrivateNetwork,NoNewPrivileges,ProtectSystem,ProtectHome,RefuseManualStart,TriggeredBy,User,Group,WorkingDirectory,RequiredBy,WantedBy,UpheldBy,BoundBy,ConsistsOf'
     raw=guarded('SCOUT_MANAGER_QUERY_FAILED',subprocess.check_output,command+['development-scout.service','--no-pager','--property='+properties],**options).decode()
     values=unique(line.split('=',1) for line in raw.splitlines() if '=' in line)
     unit=Path('/etc/systemd/system/development-scout.service')
@@ -231,7 +262,8 @@ def systemd(config,pid,phase):
     invocation=values.get('InvocationID','')
     if not re.fullmatch('[a-f0-9]{32}',invocation):raise TrustFailure('INVOCATION_INVALID')
     guarded('SCOUT_EXECUTION_RECORD_INVALID',command_record,options,pid,invocation,phase)
-    if phase=='begin':
+    if phase in {'begin','scout'}:
+        if any(values.get(k)!='' for k in ('RequiredBy','WantedBy','UpheldBy','BoundBy','ConsistsOf')):raise TrustFailure('TIMER_UNIT_INVALID')
         if values.get('RefuseManualStart')!='yes' or values.get('TriggeredBy')!='development-scout.timer':raise TrustFailure('TIMER_UNIT_INVALID')
         raw=subprocess.check_output(command+['development-scout.timer','--no-pager','--property=FragmentPath,DropInPaths,NeedDaemonReload,ActiveState,UnitFileState'],**options).decode()
         timer=unique(line.split('=',1) for line in raw.splitlines() if '=' in line)
@@ -239,12 +271,35 @@ def systemd(config,pid,phase):
         if timer.get('FragmentPath')!=str(path) or timer.get('DropInPaths')!='' or timer.get('NeedDaemonReload')!='no' or timer.get('ActiveState')!='active' or timer.get('UnitFileState') not in {'enabled','enabled-runtime'} or file_hash(path)!=config['timer_digest']:raise TrustFailure('TIMER_UNIT_INVALID')
         fired=guarded('TIMER_TRIGGER_INVALID',timer_timestamp,options)
         if not 0<=time.monotonic()-fired/1_000_000<=180:raise TrustFailure('TIMER_TRIGGER_INVALID')
-        guarded('TIMER_TRIGGER_INVALID',activation,options,pid,invocation,fired)
+        provenance=guarded('TIMER_TRIGGER_INVALID',activation,options,pid,invocation,fired,phase)
         boot=Path('/proc/sys/kernel/random/boot_id').read_text().strip()
         if not re.fullmatch('[a-f0-9-]{36}',boot):raise TrustFailure('TIMER_TRIGGER_INVALID')
-        return dict(invocation=invocation,timer_fire=boot+':'+str(fired))
+        # Repeat immutable boundary checks after the manager reads.
+        if file_hash(unit)!=config['unit_digest'] or file_hash(path)!=config['timer_digest']:raise TrustFailure('TIMER_UNIT_INVALID')
+        again=subprocess.check_output(command+['development-scout.service','--no-pager','--property='+properties],**options).decode()
+        if unique(line.split('=',1) for line in again.splitlines() if '=' in line)!=values:raise TrustFailure('INVOCATION_INVALID')
+        if boot!=provenance['boot_id']:raise TrustFailure('TIMER_TRIGGER_INVALID')
+        return dict(invocation=invocation,timer_fire=boot+':'+str(fired),provenance=provenance)
     if values.get('Result')!='success':raise TrustFailure('BOOKEND_INVALID')
     return dict(invocation=invocation)
+
+
+def receipt_path(config):
+    epoch=config.get('acceptance_epoch')
+    if epoch is None:return STATE/'discovery.json'
+    if not isinstance(epoch,str) or not re.fullmatch('[a-f0-9]{40}',epoch) or epoch!=config.get('head'):raise ValueError('exact qualification epoch required')
+    parent=STATE/'epochs'/epoch
+    protected(parent)
+    if not parent.is_dir():raise ValueError('installed qualification epoch required')
+    return parent/'discovery.json'
+
+
+def epoch_ready(config):
+    if config.get('acceptance_epoch') is None:return
+    marker=receipt_path(config).parent/'transition.json';protected(marker)
+    if not marker.is_file() or marker.stat().st_size>4096:raise ValueError('committed epoch transition required')
+    data=loads(marker.read_bytes())
+    if set(data)!={'status','source_head','old_head','nonce'} or data['status']!='COMMITTED' or data['source_head']!=config['head'] or not re.fullmatch('[a-f0-9]{40}',str(data['old_head'])) or not re.fullmatch('[A-Za-z0-9-]{16,128}',str(data['nonce'])):raise ValueError('committed exact source epoch required')
 
 
 class Observer:
@@ -253,7 +308,7 @@ class Observer:
         if uid!=pwd.getpwnam('optiplex').pw_uid:raise ValueError('discovery identity required')
         if not isinstance(request,dict) or set(request)!={'phase','checks'} or request['phase'] not in {'begin','end'}:raise ValueError('fixed bookend required')
         if request['checks']!={k:True for k in CHECKS}:raise TrustFailure('SANDBOX_PROBE_FAILED')
-        phase=request['phase'];authority=guarded('SCOUT_CONTROL_PROCESS_INVALID',systemd,self.config,pid,phase);invocation=authority['invocation'];pending=STATE/(invocation+'.pending')
+        phase=request['phase'];epoch_ready(self.config);authority=guarded('SCOUT_CONTROL_PROCESS_INVALID',systemd,self.config,pid,phase);invocation=authority['invocation'];pending=STATE/(invocation+'.pending')
         if phase=='begin':
             fires=STATE/'timer-fires.json';used=loads(fires.read_bytes()) if fires.exists() else []
             if authority['timer_fire'] in used:raise ValueError('timer firing already observed')
@@ -261,7 +316,7 @@ class Observer:
         current,rows=guarded('SOURCE_SNAPSHOT_INVALID',snapshot,self.config);now=time.time()
         if phase=='begin':
             if pending.exists():raise ValueError('replayed discovery begin')
-            atomic(pending,dict(invocation=invocation,head=self.config['head'],started=now,before=current))
+            atomic(pending,dict(invocation=invocation,head=self.config['head'],started=now,before=current,provenance=authority.get('provenance')))
             return
         if not pending.is_file():raise ValueError('no trusted before observation')
         before=loads(pending.read_bytes());pending.unlink()
@@ -283,11 +338,13 @@ class Observer:
             or run.get('slot')!='scout:'+datetime.fromtimestamp(run['started_at'],ZoneInfo('America/New_York')).date().isoformat()):raise ValueError('incomplete scheduled discovery evidence')
         for k in ('holdings','investment','auxiliary','source','worktrees'):
             if old[k]!=current[k]:raise ValueError('protected state or source changed')
-        receipt=STATE/'discovery.json'
+        receipt=receipt_path(self.config)
         data=loads(receipt.read_bytes()) if receipt.exists() else dict(runs=[])
-        records=data['runs'] if data.get('source_head')==self.config['head'] else []
+        if receipt.exists() and data.get('source_head')!=self.config['head']:raise ValueError('historical acceptance cannot be replaced')
+        records=data['runs']
         if any(r['invocation']==invocation or r['slot']==run['slot'] for r in records):raise ValueError('duplicate observed invocation or slot')
-        record=dict(invocation=invocation,slot=run['slot'],observed_at=now,**{k:True for k in ('no_builder','no_worktree','no_source_mutation','no_pr','no_deploy','no_financial_execution')})
+        if self.config.get('acceptance_epoch') and not isinstance(before.get('provenance'),dict):raise ValueError('authenticated job evidence required')
+        record=dict(invocation=invocation,slot=run['slot'],observed_at=now,provenance=before.get('provenance'),**{k:True for k in ('no_builder','no_worktree','no_source_mutation','no_pr','no_deploy','no_financial_execution')})
         for k in ('holdings','investment'):record.update({k+'_before':old[k],k+'_after':current[k]})
         atomic(receipt,dict(source_head=self.config['head'],fixture_only=False,os_boundary_verified=True,observed_at=now,runs=(records+[record])[-30:],grants_implementation=False))
 

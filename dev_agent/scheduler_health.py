@@ -95,6 +95,25 @@ def accepted_runs(store,source_head,now=None):
     return sorted(accepted,key=lambda p:p['started_at'])
 
 
+def receipt_path(source_head):
+    from pathlib import Path
+    import stat
+    base=Path('/var/lib/investment-development-acceptance')
+    config=Path('/etc/investment-discovery-observer/config.json')
+    if not config.exists() and not config.is_symlink():return base/'discovery.json'
+    from .structured_json import loads
+    for p in (config,*config.parents):
+        info=p.lstat()
+        if p.is_symlink() or info.st_uid!=0 or info.st_mode&0o022:raise ValueError('protected epoch selector required')
+    if not stat.S_ISREG(config.stat().st_mode) or config.stat().st_size>2_000_000:raise ValueError('bounded epoch selector required')
+    raw=config.read_bytes();data=loads(raw)
+    if config.read_bytes()!=raw or data.get('head')!=source_head:raise ValueError('current source selector required')
+    epoch=data.get('acceptance_epoch')
+    if epoch is None:return base/'discovery.json'
+    if epoch!=source_head or not re.fullmatch('[a-f0-9]{40}',epoch):raise ValueError('exact qualification epoch required')
+    return base/'epochs'/epoch/'discovery.json'
+
+
 def host_safety(source_head,runs,now):
     """Operator-owned OS/state observations outside discovery's writable state.
 
@@ -103,8 +122,8 @@ def host_safety(source_head,runs,now):
     """
     from pathlib import Path
     import os,stat
-    path=Path('/var/lib/investment-development-acceptance/discovery.json')
     try:
+        path=receipt_path(source_head)
         info=path.lstat()
         if path.is_symlink() or not stat.S_ISREG(info.st_mode) or info.st_uid!=0 or info.st_mode&0o022 or info.st_size>64000:return False
         for parent in path.parents:
