@@ -173,7 +173,7 @@ def activation(options,pid,invocation,fired,phase='begin'):
     timer='/org/freedesktop/systemd1/unit/development_2dscout_2etimer'
     def prop(path,interface,name,kind):
         raw=subprocess.check_output(['/usr/bin/busctl','--system','--json=short','get-property',
-            'org.freedesktop.systemd1',path,'org.freedesktop.systemd1.'+interface,name],**options)
+            'org.freedesktop.systemd1',path,interface,name],**options)
         if len(raw)>8192:raise TrustFailure('TIMER_TRIGGER_INVALID')
         value=loads(raw)
         if set(value)!={'type','data'} or value['type']!=kind:raise TrustFailure('TIMER_TRIGGER_INVALID')
@@ -181,20 +181,20 @@ def activation(options,pid,invocation,fired,phase='begin'):
     def capture():
         boot=Path('/proc/sys/kernel/random/boot_id').read_text().strip()
         if not re.fullmatch('[a-f0-9-]{36}',boot):raise TrustFailure('TIMER_TRIGGER_INVALID')
-        job=prop(service,'Unit','Job','(uo)')
+        job=prop(service,'org.freedesktop.systemd1.Unit','Job','(uo)')
         if (not isinstance(job,list) or len(job)!=2 or type(job[0]) is not int or not 0<job[0]<2**32
             or job[1]!='/org/freedesktop/systemd1/job/'+str(job[0])):raise TrustFailure('TIMER_TRIGGER_INVALID')
         path=job[1]
-        identity=(prop(path,'Job','Id','u'),prop(path,'Job','Unit','(so)'),
-                  prop(path,'Job','JobType','s'),prop(path,'Job','State','s'))
+        identity=(prop(path,'org.freedesktop.systemd1.Job','Id','u'),prop(path,'org.freedesktop.systemd1.Job','Unit','(so)'),
+                  prop(path,'org.freedesktop.systemd1.Job','JobType','s'),prop(path,'org.freedesktop.systemd1.Job','State','s'))
         if identity!=(job[0],['development-scout.service',service],'start','running'):raise TrustFailure('TIMER_TRIGGER_INVALID')
-        pairs=prop(path,'Job','ActivationDetails','a(ss)')
+        pairs=prop(path,'org.freedesktop.systemd1.Job','ActivationDetails','a(ss)')
         if not isinstance(pairs,list) or any(not isinstance(p,list) or len(p)!=2 or any(type(v) is not str for v in p) for p in pairs):raise TrustFailure('TIMER_TRIGGER_INVALID')
         details=unique(pairs)
         if set(details)!={'trigger_unit','trigger_timer_monotonic_usec','trigger_timer_realtime_usec'} or details['trigger_unit']!='development-scout.timer':raise TrustFailure('TIMER_TRIGGER_INVALID')
         stamps=[]
         for name,key in [('LastTriggerUSecMonotonic','trigger_timer_monotonic_usec'),('LastTriggerUSec','trigger_timer_realtime_usec')]:
-            stamp=prop(timer,'Timer',name,'t')
+            stamp=prop(timer,'org.freedesktop.systemd1.Timer',name,'t')
             if type(stamp) is not int or not 0<stamp<2**64 or details[key]!=str(stamp):raise TrustFailure('TIMER_TRIGGER_INVALID')
             stamps.append(stamp)
         if stamps[0]!=fired or not 0<=time.monotonic()-stamps[0]/1e6<=180 or not -5<=time.time()-stamps[1]/1e6<=180:raise TrustFailure('TIMER_TRIGGER_INVALID')
