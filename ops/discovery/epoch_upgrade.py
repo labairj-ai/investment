@@ -45,6 +45,11 @@ def authorization(path,old,head):
     return a
 
 
+def legacy_configuration(current,manifest):
+    expected=r.configuration(OLD,manifest);expected['scout_manager']='system'
+    require(current==expected,'exact reviewed legacy observer configuration required')
+
+
 def no_scout_processes(proc):
     paths=list(proc.iterdir())
     require(len(paths)<=65536,'bounded Scout process inventory required')
@@ -95,7 +100,7 @@ class Host:
         stage=Path(__file__).resolve().parents[2]
         require(stage==Path('/var/cache/investment-discovery-epoch-source')/self.head,'fixed protected release source required')
         for name,module in tuple(sys.modules.items()):
-            if name.startswith(('ops.','dev_agent.')) and getattr(module,'__file__',None):
+            if (name in {'ops','dev_agent'} or name.startswith(('ops.','dev_agent.'))) and getattr(module,'__file__',None):
                 path=Path(module.__file__);r.protected(path)
                 rel=str(path.relative_to(stage))
                 require(rel in target and r.sha(path.read_bytes())==target[rel],'exact staged release module required')
@@ -112,6 +117,7 @@ class Host:
         require(changed and all(n in ALLOWED or n.startswith(('tests/','docs/')) for n in changed),'narrow nonfinancial Scout release required')
         r.flags_disabled(r.ROOT)
         r.protected(r.CONFIG);current=r.loads(r.CONFIG.read_bytes())
+        legacy_configuration(current,r.source_manifest(r.ROOT,self.old))
         require(current.get('head')==self.old and current.get('scout_manager')=='system' and 'acceptance_epoch' not in current,'exact legacy SYSTEM boundary required')
         r.boundary(current,self.invoke);self.unit_boundary(current)
         r.manifest_matches(r.ROOT,current['files'])

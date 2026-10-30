@@ -245,3 +245,12 @@ def test_observer_and_other_processes_are_not_scout(tmp_path):
     for number,argv in enumerate(([b'python',str(e.r.SOURCE).encode(),b'serve'],[b'python',b'serve.py']),1):
         proc=tmp_path/str(number);proc.mkdir();(proc/'cmdline').write_bytes(b'\0'.join(argv)+b'\0')
     e.no_scout_processes(tmp_path)
+
+
+@pytest.mark.parametrize('field',['observer_digest','unit_digest','timer_digest','head','files','scout_manager','acceptance_epoch'])
+def test_legacy_boundary_is_bound_to_git_objects_not_only_config_claims(field):
+    manifest={name:chr(97+i)*64 for i,name in enumerate(e.r.IDENTITIES)}
+    current=e.r.configuration(e.OLD,manifest);current['scout_manager']='system'
+    e.legacy_configuration(current,manifest)
+    current[field]='unexpected'
+    with pytest.raises(ValueError,match='exact reviewed legacy'):e.legacy_configuration(current,manifest)
