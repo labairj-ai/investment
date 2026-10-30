@@ -165,3 +165,11 @@ def test_release_adapter_never_opens_financial_sqlite_database():
     source=Path(e.__file__).read_text()
     assert 'o.snapshot(' not in source and 'sqlite3.connect' not in source
     assert 'u.protected_state()' in source
+
+
+def test_recovery_ci_keeps_all_eight_release_gates_and_adds_influence_audit():
+    workflow=Path('.github/workflows/test.yml').read_text()
+    assert 'python -I -S ops/discovery/influence.py' in workflow
+    assert workflow.index('Exact-head Scout source influence audit')<workflow.index('Aggregate independent repository diagnostics')
+    from scripts.aggregate_release_validation import GATES
+    assert GATES==('todo_consistency','agent_contract','development_governance','focused_agent_tests','full_suite','release_baseline','cc_contract','summary_integrity')

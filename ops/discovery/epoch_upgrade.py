@@ -20,7 +20,7 @@ from ops.discovery.influence import audit, git_boundary, git as reviewed_git, is
 OLD='a27bed1ebd3a69df5723212784842df456e153b3'
 AUTH=r.CONFIG.parent/'scout-epoch-authorization.json'
 STAMP=Path('/var/lib/systemd/timers/stamp-development-scout.timer')
-ALLOWED={'ops/discovery/observer.py','ops/discovery/epoch_upgrade.py','ops/discovery/influence.py','dev_agent/scheduler.py','dev_agent/scheduler_health.py'}
+ALLOWED={'.github/workflows/test.yml','ops/discovery/observer.py','ops/discovery/epoch_upgrade.py','ops/discovery/influence.py','dev_agent/scheduler.py','dev_agent/scheduler_health.py'}
 SCOPE='scout-source-epoch-transition-once'
 
 
@@ -70,10 +70,22 @@ class Host:
         actual=r.properties(m.system(self.invoke,'show','development-scout.service','--property='+','.join(expected)).stdout)
         require(all(actual.get(k)==v for k,v in expected.items()),'unchanged SYSTEM sandbox required')
         m.quiescent(self.invoke,False)
+    def staged_boundary(self,target):
+        # Root release tooling itself must come from the reviewed protected
+        # staging tree, never the user-writable live checkout or bytecode.
+        stage=Path(__file__).resolve().parents[2]
+        require(stage==Path('/var/cache/investment-discovery-epoch-source')/self.head,'fixed protected release source required')
+        for name,module in tuple(sys.modules.items()):
+            if name.startswith(('ops.','dev_agent.')) and getattr(module,'__file__',None):
+                path=Path(module.__file__);r.protected(path)
+                rel=str(path.relative_to(stage))
+                require(rel in target and r.sha(path.read_bytes())==target[rel],'exact staged release module required')
     def inspect(self):
         require(sys.platform=='linux' and os.geteuid()==0 and str(r.ROOT)=='/home/optiplex/investment' and isolated(),'fixed isolated Linux root release path required')
         require(self.old==OLD and re.fullmatch('[a-f0-9]{40}',self.head) is not None and self.head!=self.old,'exact reviewed transition required')
         require(not git_boundary(r.ROOT),'reviewed Git boundary required')
+        for head in (self.old,self.head):
+            require(audit(r.ROOT,head)['untracked_source_influence']=='PASS','old and target source influence required before transition')
         require(self.git('rev-parse','HEAD').decode().strip()==self.old and not self.git('status','--porcelain','--untracked-files=no').strip(),'clean exact old source required')
         require(self.git('rev-parse','origin/main').decode().strip()==self.head,'exact merged main target required')
         self.git('merge-base','--is-ancestor',self.old,self.head)
@@ -89,10 +101,12 @@ class Host:
         receipt=r.STATE/'discovery.json';r.protected(receipt)
         data=r.loads(receipt.read_bytes())
         require(data.get('source_head')==self.old and data.get('fixture_only') is False and data.get('os_boundary_verified') is True and data.get('grants_implementation') is False,'historical source authority required')
-        require(len(data.get('runs',[]))>=1,'nonempty historical acceptance required')
+        require(type(data.get('runs')) is list and 1<=len(data['runs'])<=30,'bounded nonempty historical acceptance required')
         require(len({x['slot'] for x in data['runs']})==len(data['runs'])==len({x['invocation'] for x in data['runs']}),'distinct historical records required')
         require(any(x['slot']=='scout:2026-10-29' and x['invocation']=='8608a7c10e9b4c23b96cf91bcc8fa51f' for x in data['runs']),'October 29 history required')
         for x in data['runs']:
+            matched=[r.loads(row[5]) for row in rows if row[3]=='SCHEDULE' and r.loads(row[5]).get('slot')==x['slot']]
+            require(len(matched)==1 and matched[0].get('head')==self.old and matched[0].get('status')=='COLLECTED' and matched[0].get('trigger')==dict(source='systemd-observed-timer',invocation=x['invocation']),'historical receipt must join original collection')
             require(all(x.get(k) is True for k in ('no_builder','no_worktree','no_source_mutation','no_pr','no_deploy','no_financial_execution')) and all(x.get(k+'_before')==x.get(k+'_after') and re.fullmatch('[a-f0-9]{64}',str(x.get(k+'_before'))) for k in ('holdings','investment')),'historical safety required')
         # Archive the exact observed failed invocation, sanitized trusted fields only.
         raw=r.command(self.invoke,['/usr/bin/journalctl','--no-pager','-o','json','_SYSTEMD_INVOCATION_ID=77541c9232d74e578d6d0f596cce954d'],check=True).stdout
@@ -113,15 +127,7 @@ class Host:
         require({c['code'] for c in codes}=={'TIMER_TRIGGER_INVALID','BOOKEND_INVALID'},'retained rejected bookends required')
         failure=dict(service=failure,observer=codes)
         target=r.source_manifest(r.ROOT,self.head)
-        # Root release tooling itself must come from the reviewed protected
-        # staging tree, never the user-writable live checkout or bytecode.
-        stage=Path(__file__).resolve().parents[2]
-        require(stage==Path('/var/cache/investment-discovery-epoch-source')/self.head,'fixed protected release source required')
-        for name,module in tuple(sys.modules.items()):
-            if name.startswith(('ops.','dev_agent.')) and getattr(module,'__file__',None):
-                path=Path(module.__file__);r.protected(path)
-                rel=str(path.relative_to(stage))
-                require(rel in target and r.sha(path.read_bytes())==target[rel],'exact staged release module required')
+        self.staged_boundary(target)
         for name in r.IDENTITIES[1:]:require(target[name]==current['files'][name],'all unit bytes must remain unchanged')
         desired=r.configuration(self.head,target);desired.update(scout_manager='system',acceptance_epoch=self.head)
         self.quiet()
@@ -130,6 +136,7 @@ class Host:
         require(sys.platform=='linux' and os.geteuid()==0 and isolated() and str(r.ROOT)=='/home/optiplex/investment','fixed isolated root recovery required')
         require(plan['old']==self.old and plan['head']==self.head and self.old==OLD,'exact recovery source required')
         require(not git_boundary(r.ROOT),'reviewed Git recovery boundary required')
+        self.staged_boundary(r.source_manifest(r.ROOT,self.head))
     def authorize(self):
         a=authorization(AUTH,self.old,self.head)
         # The protected release-controller attestation cannot substitute a different
@@ -190,8 +197,8 @@ def transaction(host,*,apply=False):
         u.write(attempt/'plan.json',r.encoded(encode_plan(plan)),0o600,0,os.getgid())
         u.write(attempt/'authorization.json',r.encoded(a),0o600,0,os.getgid())
         events=[]
-        def stage(name):
-            events.append(dict(stage=name,at=time.time()))
+        def stage(name,**detail):
+            events.append(dict(stage=name,at=time.time(),**detail))
             u.replace(attempt/'journal.json',r.encoded(dict(events=events,head=host.head,old=host.old)),0o600,0,os.getgid())
         stage('BACKUP_DURABLE')
         def preserved():
@@ -199,8 +206,10 @@ def transaction(host,*,apply=False):
                 r.protected(archive/name);require((archive/name).read_bytes()==plan[key],'permanent archive changed')
             r.protected(epoch,directory=True)
             require(not (epoch/'discovery.json').exists() and not (epoch/'discovery.json').is_symlink(),'new epoch must have zero runs before genuine timer')
+        operation='QUIET_WINDOW'
         try:
-            host.guard(plan);host.stop();stage('OBSERVER_STOPPED');host.guard(plan)
+            host.guard(plan);operation='STOP_OBSERVER';host.stop();stage('OBSERVER_STOPPED');host.guard(plan)
+            operation='ARCHIVE_HISTORY'
             # Archives and epochs are created once, never rewritten or cleaned up.
             history=r.STATE/'history'
             if not history.exists():history.mkdir(mode=0o755);u.sync(r.STATE)
@@ -211,23 +220,24 @@ def transaction(host,*,apply=False):
             if not epochs.exists():epochs.mkdir(mode=0o755);u.sync(r.STATE)
             r.protected(epochs,directory=True)
             epoch=epochs/host.head;epoch.mkdir(mode=0o755);u.sync(epochs)
-            stage('HISTORY_ARCHIVED');preserved();host.guard(plan);host.install(plan);stage('SOURCE_COMMITTED')
-            host.verify(plan,True);preserved();stage('NEW_BOUNDARY_VERIFIED');host.start(plan,True);host.verify(plan,True);preserved()
+            stage('HISTORY_ARCHIVED');preserved();host.guard(plan);operation='INSTALL_SOURCE';host.install(plan);stage('SOURCE_COMMITTED')
+            operation='VERIFY_SOURCE';host.verify(plan,True);preserved();stage('NEW_BOUNDARY_VERIFIED');operation='START_OBSERVER';host.start(plan,True);operation='VERIFY_STARTED_OBSERVER';host.verify(plan,True);preserved()
+            operation='COMMIT_EPOCH'
             u.write(epoch/'transition.json',r.encoded(dict(status='COMMITTED',source_head=host.head,old_head=host.old,nonce=a['nonce'])),0o644,0,os.getgid())
             stage('COMPLETE')
             return dict(summary,status='NEW_EPOCH_AWAITING_GENUINE_SYSTEM_TIMER_RUNS',changes_applied=True,attempt=str(attempt))
-        except Exception:
-            try:stage('FAILED_NO_RETRY')
+        except Exception as error:
+            try:stage('FAILED_NO_RETRY',failed_operation=operation,failure_type=type(error).__name__)
             except OSError:pass
             try:
                 # Stop even if initial stop verification failed: never install over
                 # a possibly live observer or old/new Scout invocation.
                 host.stop();host.restore(plan);host.verify(plan,False);host.start(plan,False);host.verify(plan,False);stage('ROLLED_BACK')
                 return dict(summary,status='ROLLED_BACK_NOT_READY',changes_applied=False,attempt=str(attempt))
-            except Exception:
+            except Exception as rollback_error:
                 try:host.stop()
                 except Exception:pass
-                try:stage('ROLLBACK_UNVERIFIED_STOP_REQUIRED')
+                try:stage('ROLLBACK_UNVERIFIED_STOP_REQUIRED',failure_type=type(rollback_error).__name__)
                 except OSError:pass
                 return dict(summary,status='FAILED_CLOSED_REQUIRES_INTERVENTION',changes_applied=False,attempt=str(attempt))
 
