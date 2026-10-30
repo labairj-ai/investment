@@ -187,7 +187,7 @@ def activation(options,pid,invocation,fired,phase='begin'):
         path=job[1]
         identity=(prop(path,'org.freedesktop.systemd1.Job','Id','u'),prop(path,'org.freedesktop.systemd1.Job','Unit','(so)'),
                   prop(path,'org.freedesktop.systemd1.Job','JobType','s'),prop(path,'org.freedesktop.systemd1.Job','State','s'))
-        if identity!=(job[0],['development-scout.service',service],'start','running'):raise TrustFailure('TIMER_TRIGGER_INVALID')
+        if type(identity[0]) is not int or identity!=(job[0],['development-scout.service',service],'start','running'):raise TrustFailure('TIMER_TRIGGER_INVALID')
         pairs=prop(path,'org.freedesktop.systemd1.Job','ActivationDetails','a(ss)')
         if not isinstance(pairs,list) or any(not isinstance(p,list) or len(p)!=2 or any(type(v) is not str for v in p) for p in pairs):raise TrustFailure('TIMER_TRIGGER_INVALID')
         details=unique(pairs)
@@ -260,7 +260,7 @@ def systemd(config,pid,phase):
     expected={'PrivateNetwork':'yes','NoNewPrivileges':'yes','ProtectSystem':'strict','ProtectHome':'read-only','User':'optiplex','Group':'optiplex','WorkingDirectory':str(ROOT)}
     if any(values.get(k)!=v for k,v in expected.items()):raise TrustFailure('SCOUT_SANDBOX_INVALID')
     invocation=values.get('InvocationID','')
-    if not re.fullmatch('[a-f0-9]{32}',invocation):raise TrustFailure('INVOCATION_INVALID')
+    if not re.fullmatch('[a-f0-9]{32}',invocation) or invocation=='0'*32:raise TrustFailure('INVOCATION_INVALID')
     guarded('SCOUT_EXECUTION_RECORD_INVALID',command_record,options,pid,invocation,phase)
     if phase in {'begin','scout'}:
         if any(values.get(k)!='' for k in ('RequiredBy','WantedBy','UpheldBy','BoundBy','ConsistsOf')):raise TrustFailure('TIMER_UNIT_INVALID')

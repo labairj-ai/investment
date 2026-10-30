@@ -6,12 +6,15 @@ import pytest
 from ops.discovery import observer as o
 from dev_agent import scheduler,discovery
 from test_development_agent_scout_failure import system
+BASELINE_GIT_OUTPUT=o.subprocess.check_output
 
 @pytest.mark.parametrize('day',[1,2])
 @pytest.mark.parametrize('consumer',['observer','scheduler'])
 def test_two_day_current_job_ignores_retained_unit_metadata(system,monkeypatch,day,consumer):
     h=system;h.fired=6807047895028 if day==1 else 6893457894997
     h.invocation='8608a7c10e9b4c23b96cf91bcc8fa51f' if day==1 else '77541c9232d74e578d6d0f596cce954d';h.values['InvocationID']=h.invocation
+    h.real={1:1793304006896140,2:1793390416896108}[day]
+    monkeypatch.setattr(o.time,'time',lambda:h.real/1e6+1)
     h.job_id=77+day;queries=[];base=o.subprocess.check_output
     def output(cmd,**kw):
         queries.append(cmd)
@@ -19,7 +22,18 @@ def test_two_day_current_job_ignores_retained_unit_metadata(system,monkeypatch,d
             return json.dumps(dict(type='a(ss)',data=[['trigger_unit','development-scout.timer'],['trigger_timer_monotonic_usec','6807047895028']])).encode()
         return base(cmd,**kw)
     monkeypatch.setattr(o.subprocess,'check_output',output)
-    if consumer=='observer':assert h.run()['invocation']==h.invocation
+    if consumer=='observer':
+        # Execute only the exact reviewed baseline function in the isolated fake
+        # manager namespace: demonstrate red against a27, green against repair.
+        import ast,subprocess
+        old=BASELINE_GIT_OUTPUT(['git','show','a27bed1ebd3a69df5723212784842df456e153b3:ops/discovery/observer.py'])
+        definition=next(n for n in ast.parse(old).body if isinstance(n,ast.FunctionDef) and n.name=='activation')
+        scope=dict(vars(o));exec(compile(ast.Module(body=[definition],type_ignores=[]),'reviewed-a27-activation','exec'),scope)
+        if day==2:
+            with pytest.raises(o.TrustFailure,match='TIMER_TRIGGER_INVALID'):scope['activation'](dict(env={'PATH':'/usr/bin:/bin','HOME':'/nonexistent'}),123,h.invocation,h.fired)
+        else:scope['activation'](dict(env={'PATH':'/usr/bin:/bin','HOME':'/nonexistent'}),123,h.invocation,h.fired)
+        queries.clear()
+        assert h.run()['invocation']==h.invocation
     else:
         h.phase='scout';monkeypatch.setenv('INVOCATION_ID',h.invocation);monkeypatch.setattr(o.os,'getpid',lambda:123)
         monkeypatch.setattr(o,'protected',lambda p:None);config=dict(head='a'*40,observer_digest='reviewed',unit_digest='reviewed',timer_digest='reviewed')
@@ -28,11 +42,12 @@ def test_two_day_current_job_ignores_retained_unit_metadata(system,monkeypatch,d
     assert not any(c[-2:]==['org.freedesktop.systemd1.Unit','ActivationDetails'] for c in queries)
     assert any(c[-2:]==['org.freedesktop.systemd1.Job','ActivationDetails'] for c in queries)
 
-@pytest.mark.parametrize('attack',['operator_dependency','manual','replay','stale_job','wrong_job_id','wrong_job_path','wrong_service','wrong_timer','missing_job','wrong_type','job_waiting','conflicting','missing_realtime','wrong_pid','wrong_phase','changed_invocation','boot_changed','stale_clock','future_clock','future_real','metadata_changed','timer_changed','malformed','unavailable'])
+@pytest.mark.parametrize('attack',['zero_invocation','operator_dependency','manual','replay','stale_job','wrong_job_id','wrong_job_path','wrong_service','wrong_timer','missing_job','wrong_type','job_waiting','conflicting','missing_realtime','wrong_pid','wrong_phase','changed_invocation','boot_changed','stale_clock','future_clock','future_real','metadata_changed','timer_changed','malformed','unavailable'])
 @pytest.mark.parametrize('consumer',['observer','scheduler'])
 def test_current_job_attacks_reject_without_receipt(system,monkeypatch,tmp_path,attack,consumer):
     h=system;original=o.subprocess.check_output;calls={}
     if attack=='operator_dependency':h.values['WantedBy']='operator.target'
+    if attack=='zero_invocation':h.invocation='0'*32;h.values['InvocationID']=h.invocation
     def output(cmd,**kw):
         key=cmd[-1];calls[key]=calls.get(key,0)+1
         if attack=='unavailable' and key=='Job':raise OSError('private failure omitted')
