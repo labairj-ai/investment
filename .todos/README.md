@@ -212,3 +212,22 @@ Actual live acceptance: **0847/0851 accepted** on approved production SHA
 `05d6cccf734d4604d1a8c10406d9e3d7598e9c6f`; see
 [live evidence](../docs/evidence/l0-live-20261024/README.md). **0852 remains 0/3**:
 root observer installed, reader credential absent, no Scout/user timers enabled.
+
+
+## Investment Engineering Control Center — UI backlog (0856–0864)
+
+Created 2026-10-29 from [Investment ECC v2 implementation contract](../docs/plans/engineering-control-center-investment-v2.md). These are backlog-only scoped UX/read-model/governance integration tasks, **not permission to enable agent execution**. This work stays inside the existing Investment project and never connects it to the separate Qwen-only `engineering-agent` microservice. Existing owner **one Go/No-Go** and deployment gate remain authoritative. PR #19 watchdog and 0852 Scout migration are separate ongoing work.
+
+| ID | Task | Priority | Status | Dependencies |
+|---|---|---|---|---|
+| [0856](0856-engineering-control-center-read-model-and-source-provenance.md) | Investment-owned read model and source provenance | critical | backlog | Existing Development Agent |
+| [0857](0857-engineering-control-center-overview-and-readiness.md) | Overview / exact admission blockers | high | backlog | 0856 |
+| [0858](0858-engineering-control-center-candidate-workbench.md) | Candidate queue, detail and timeline | high | backlog | 0856, 0857 |
+| [0859](0859-engineering-control-center-pr-owner-review.md) | PR detail and existing Go/No-Go gateway | critical | backlog | 0856, 0860 |
+| [0860](0860-engineering-control-center-trusted-validation.md) | Trusted gate evidence and Oracle verification | critical | backlog | 0856 |
+| [0861](0861-engineering-control-center-certification.md) | Technical, supervised and autonomy readiness | high | backlog | 0856, 0860 |
+| [0862](0862-engineering-control-center-audit-history.md) | Append-only audit and sanitized export | high | backlog | 0856 |
+| [0863](0863-engineering-control-center-mobile-accessibility.md) | Mobile, accessibility and security acceptance | high | backlog | 0857–0862 |
+| [0864](0864-engineering-control-center-release-acceptance.md) | Exact-head QA, controlled rollout and rollback | critical strategic | backlog | 0856–0863 |
+
+**Execution path:** 0856 → 0857/0860/0862 → 0858/0859/0861 → 0863 → 0864. Development QA may use fixtures, but genuine live certification and physical-device observations remain separate required acceptance. All implementation/activation flags remain unchanged by creating these TODOs.
