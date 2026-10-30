@@ -133,3 +133,8 @@ influence PASS; reviewed staging/rollback rehearsal and a quiet natural timer wi
 After transition, observe three independently genuine daily runs in the new source
 epoch. Keep ECC, Builder, autonomous implementation, publishing and auto-merge off.
 October 31 must stand on its actual evidence and cannot inherit October 30 credit.
+
+CI's source audit uses a fresh Git-object clone because actions/checkout adds
+temporary credential/worktree Git interpretation settings. The auditor still
+rejects those settings; no production rule is relaxed. Host preflight separately
+audits the actual production checkout for both old and target source graphs.

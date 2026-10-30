@@ -169,7 +169,52 @@ def test_release_adapter_never_opens_financial_sqlite_database():
 
 def test_recovery_ci_keeps_all_eight_release_gates_and_adds_influence_audit():
     workflow=Path('.github/workflows/test.yml').read_text()
-    assert 'python -I -S ops/discovery/influence.py' in workflow
+    assert 'python -I -S "$AUDIT_ROOT/ops/discovery/influence.py"' in workflow
+    assert 'git clone --no-hardlinks --no-checkout' in workflow
     assert workflow.index('Exact-head Scout source influence audit')<workflow.index('Aggregate independent repository diagnostics')
     from scripts.aggregate_release_validation import GATES
     assert GATES==('todo_consistency','agent_contract','development_governance','focused_agent_tests','full_suite','release_baseline','cc_contract','summary_integrity')
+
+
+@pytest.mark.parametrize('fail_selector',[False,True])
+def test_real_git_and_file_commit_restore_preserve_financial_and_history(host,tmp_path,monkeypatch,fail_selector):
+    import subprocess
+    from types import SimpleNamespace
+    root=tmp_path/'checkout';root.mkdir();(root/'safe.py').write_text('OLD=True\n')
+    def git(*args):return subprocess.check_output(['git','-C',str(root),*args],stderr=subprocess.DEVNULL).decode().strip()
+    git('init','-q');git('config','user.name','Fixture');git('config','user.email','fixture@invalid');git('add','safe.py');git('commit','-qm','old')
+    old=git('rev-parse','HEAD');(root/'safe.py').write_text('NEW=True\n');git('commit','-qam','new');new=git('rev-parse','HEAD');git('checkout','--detach',old)
+    financial=root/'holdings.csv';financial.write_bytes(b'private synthetic holdings; never checkout or restore')
+    ledger=tmp_path/'ledger.sqlite3';ledger.write_bytes(b'synthetic authoritative ledger remains unchanged')
+    host.old=old;host.head=new;host.plan.update(old=old,head=new,config=e.r.encoded(dict(head=old)),new_config=e.r.encoded(dict(head=new,acceptance_epoch=new)))
+    host.source=host.config=old
+    source=tmp_path/'installed-observer.py';source.write_bytes(host.plan['source']);e.r.CONFIG.write_bytes(host.plan['config'])
+    monkeypatch.setattr(e.r,'ROOT',root);monkeypatch.setattr(e.r,'SOURCE',source)
+    monkeypatch.setattr(e.r.pwd,'getpwnam',lambda n:SimpleNamespace(pw_uid=os.getuid(),pw_gid=os.getgid()))
+    def invoke(args,**kw):
+        for key in ('user','group','extra_groups'):kw.pop(key,None)
+        return subprocess.run(args,**kw)
+    host.invoke=invoke
+    def checkout(head):e.Host.checkout(host,head);host.source=head
+    host.checkout=checkout
+    def install(plan):e.Host.install(host,plan);host.config=new
+    def restore(plan):e.Host.restore(host,plan);host.config=old
+    host.install=install;host.restore=restore
+    def verify(plan,is_new):
+        expected=new if is_new else old
+        assert git('rev-parse','HEAD')==expected
+        assert source.read_bytes()==plan['new_source' if is_new else 'source']
+        assert e.r.CONFIG.read_bytes()==plan['new_config' if is_new else 'config']
+        assert financial.read_bytes()==b'private synthetic holdings; never checkout or restore'
+        assert ledger.read_bytes()==b'synthetic authoritative ledger remains unchanged'
+    host.verify=verify
+    original=e.u.replace
+    def replace(path,data,*args):
+        if fail_selector and path==e.r.CONFIG and data==host.plan['new_config']:raise OSError('synthetic selector failure')
+        return original(path,data,*args)
+    monkeypatch.setattr(e.u,'replace',replace)
+    result=e.transaction(host,apply=True)
+    assert result['status']==('ROLLED_BACK_NOT_READY' if fail_selector else 'NEW_EPOCH_AWAITING_GENUINE_SYSTEM_TIMER_RUNS')
+    assert git('rev-parse','HEAD')==(old if fail_selector else new)
+    archived=e.r.STATE/'history'/(old+'-'+e.r.sha(host.plan['receipt']))
+    assert (archived/'discovery.json').read_bytes()==host.plan['receipt']

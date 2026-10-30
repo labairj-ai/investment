@@ -25,7 +25,12 @@ jobs:
           CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           mkdir -p validation-results
-          python -I -S ops/discovery/influence.py --root "$PWD" --head "$CANDIDATE_SHA" > validation-results/source-influence.json
+          # checkout's temporary credential/worktree Git settings are not a
+          # production boundary and must not be whitelisted by the auditor.
+          AUDIT_ROOT="$RUNNER_TEMP/scout-influence-source-$CANDIDATE_SHA"
+          git clone --no-hardlinks --no-checkout "$PWD" "$AUDIT_ROOT"
+          git -C "$AUDIT_ROOT" checkout --detach "$CANDIDATE_SHA"
+          python -I -S "$AUDIT_ROOT/ops/discovery/influence.py" --root "$AUDIT_ROOT" --head "$CANDIDATE_SHA" > validation-results/source-influence.json
       - name: Aggregate independent repository diagnostics
         env:
           CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
