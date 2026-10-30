@@ -42,12 +42,13 @@ def test_two_day_current_job_ignores_retained_unit_metadata(system,monkeypatch,d
     assert not any(c[-2:]==['org.freedesktop.systemd1.Unit','ActivationDetails'] for c in queries)
     assert any(c[-2:]==['org.freedesktop.systemd1.Job','ActivationDetails'] for c in queries)
 
-@pytest.mark.parametrize('attack',['zero_invocation','operator_dependency','manual','replay','stale_job','wrong_job_id','wrong_job_path','wrong_service','wrong_timer','missing_job','wrong_type','job_waiting','conflicting','missing_realtime','wrong_pid','wrong_phase','changed_invocation','boot_changed','stale_clock','future_clock','future_real','metadata_changed','timer_changed','malformed','unavailable'])
+@pytest.mark.parametrize('attack',['outside_calendar','timer_restarted','zero_invocation','operator_dependency','manual','replay','stale_job','wrong_job_id','wrong_job_path','wrong_service','wrong_timer','missing_job','wrong_type','job_waiting','conflicting','missing_realtime','wrong_pid','wrong_phase','changed_invocation','boot_changed','stale_clock','future_clock','future_real','metadata_changed','timer_changed','malformed','unavailable'])
 @pytest.mark.parametrize('consumer',['observer','scheduler'])
 def test_current_job_attacks_reject_without_receipt(system,monkeypatch,tmp_path,attack,consumer):
     h=system;original=o.subprocess.check_output;calls={}
     if attack=='operator_dependency':h.values['WantedBy']='operator.target'
     if attack=='zero_invocation':h.invocation='0'*32;h.values['InvocationID']=h.invocation
+    if attack=='outside_calendar':h.real+=3600_000_000
     def output(cmd,**kw):
         key=cmd[-1];calls[key]=calls.get(key,0)+1
         if attack=='unavailable' and key=='Job':raise OSError('private failure omitted')
@@ -58,6 +59,7 @@ def test_current_job_attacks_reject_without_receipt(system,monkeypatch,tmp_path,
             if key=='Job':
                 if attack=='missing_job':value['data']=[0,'/']
                 if attack=='wrong_job_path':value['data']=[77,'/org/freedesktop/systemd1/job/78']
+            if key=='InactiveExitTimestampMonotonic' and attack=='timer_restarted' and '/org/freedesktop/systemd1/unit/development_2dscout_2etimer' in cmd:value['data']=h.fired-60_000_000
             if key=='Id' and attack=='wrong_job_id':value['data']=78
             if key=='Unit' and attack=='wrong_service':value['data'][0]='other.service'
             if key=='JobType' and attack=='wrong_type':value['data']='restart'

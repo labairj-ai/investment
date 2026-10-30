@@ -30,7 +30,9 @@ refusal and no incoming activation dependencies; current command PID, argv, phas
 manager InvocationID and execution bounds; current Unit.Job ID/canonical object
 path; Job.Id/Unit/JobType=start/State=running; exactly one timer trigger with typed
 realtime and monotonic values equal to the current timer; current boot and clock
-bounds. It rereads all job/fire identities and the active command record and
+bounds. Timer firing must fall within the reviewed 16:00–16:02:59 Eastern window,
+and the timer must already have been active before the 15:50 cutoff. A manually
+restarted persistent catch-up cannot substitute for the natural daily slot. It rereads all job/fire identities and the active command record and
 revalidates the service properties and installed file hashes. Missing, stale,
 conflicting, malformed, unavailable or racing evidence fails closed. No fallback
 to Unit.ActivationDetails, caller-supplied environment or timestamp proximity exists.

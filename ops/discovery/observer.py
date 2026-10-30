@@ -198,7 +198,12 @@ def activation(options,pid,invocation,fired,phase='begin'):
             if type(stamp) is not int or not 0<stamp<2**64 or details[key]!=str(stamp):raise TrustFailure('TIMER_TRIGGER_INVALID')
             stamps.append(stamp)
         if stamps[0]!=fired or not 0<=time.monotonic()-stamps[0]/1e6<=180 or not -5<=time.time()-stamps[1]/1e6<=180:raise TrustFailure('TIMER_TRIGGER_INVALID')
-        return dict(job_id=job[0],boot_id=boot,timer_monotonic_usec=stamps[0],timer_realtime_usec=stamps[1])
+        local=datetime.fromtimestamp(stamps[1]/1e6,ZoneInfo('America/New_York'))
+        calendar=local.replace(hour=16,minute=0,second=0,microsecond=0)
+        offset=local.timestamp()-calendar.timestamp()
+        since=prop(timer,'org.freedesktop.systemd1.Unit','InactiveExitTimestampMonotonic','t')
+        if not 0<=offset<180 or type(since) is not int or not 0<since<=stamps[0]-int((offset+600)*1e6):raise TrustFailure('TIMER_TRIGGER_INVALID')
+        return dict(job_id=job[0],boot_id=boot,timer_monotonic_usec=stamps[0],timer_realtime_usec=stamps[1],timer_active_since_monotonic_usec=since)
     first=capture()
     command_record(options,pid,invocation,phase)
     record=manager_property(options,'org.freedesktop.systemd1.Service',{'begin':'ExecStartPre','scout':'ExecStart'}[phase])['data'][0]

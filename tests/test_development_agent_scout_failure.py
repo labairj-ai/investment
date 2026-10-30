@@ -29,16 +29,17 @@ def test_zero_absent_malformed_timer_fails_closed(monkeypatch,raw):
 
 @pytest.fixture
 def system(monkeypatch):
-    h=SimpleNamespace(fired=6433648893213,invocation='a'*32,env=None,timer={},real=int(o.time.time()*1e6),phase='begin',job_id=77,job_changes={})
+    h=SimpleNamespace(fired=6433648893213,invocation='a'*32,env=None,timer={},real=1793304006896140,phase='begin',job_id=77,job_changes={})
     h.values=dict(RequiredBy='',WantedBy='',UpheldBy='',BoundBy='',ConsistsOf='',ControlPID='123',InvocationID=h.invocation,FragmentPath='/etc/systemd/system/development-scout.service',DropInPaths='',NeedDaemonReload='no',Result='success',PrivateNetwork='yes',NoNewPrivileges='yes',ProtectSystem='strict',ProtectHome='read-only',RefuseManualStart='yes',TriggeredBy='development-scout.timer',User='optiplex',Group='optiplex',WorkingDirectory=str(o.ROOT))
     monkeypatch.setattr(o.pwd,'getpwnam',lambda n:SimpleNamespace(pw_uid=123,pw_gid=123))
     monkeypatch.setattr(o.time,'monotonic',lambda:h.fired/1e6+1)
+    monkeypatch.setattr(o.time,'time',lambda:h.real/1e6+1)
     monkeypatch.setattr(o,'file_hash',lambda p:'reviewed')
     def output(cmd,**kw):
         assert '--user' not in cmd and 'user' not in kw and 'XDG_RUNTIME_DIR' not in kw['env']
         if cmd[0]=='/usr/bin/busctl':
             if any(n in cmd for n in ('ExecStartPre','ExecStopPost','ExecStart')):return json.dumps(dict(type='a(sasbttttuii)',data=[['/usr/bin/python3',['/usr/bin/python3','-I','-S',str(o.SOURCE),'end' if 'ExecStopPost' in cmd else 'scout' if 'ExecStart' in cmd else 'begin'],False,h.real,h.fired,0,0,123,0,0]])).encode()
-            if 'InactiveExitTimestampMonotonic' in cmd:return json.dumps(dict(type='t',data=h.fired)).encode()
+            if 'InactiveExitTimestampMonotonic' in cmd:return json.dumps(dict(type='t',data=h.fired-3600_000_000 if '/org/freedesktop/systemd1/unit/development_2dscout_2etimer' in cmd else h.fired)).encode()
             if '--json=short' in cmd:
                 prop=cmd[-1]
                 defaults={'Job':('(uo)',[h.job_id,'/org/freedesktop/systemd1/job/'+str(h.job_id)]),'Id':('u',h.job_id),'Unit':('(so)',['development-scout.service','/org/freedesktop/systemd1/unit/development_2dscout_2eservice']),'JobType':('s','start'),'State':('s','running'),'LastTriggerUSecMonotonic':('t',h.fired),'LastTriggerUSec':('t',h.real)}
@@ -59,7 +60,7 @@ def system(monkeypatch):
 
 
 def test_genuine_activation_uses_typed_value_despite_live_formatted_show(system):
-    assert system.run()==dict(invocation='a'*32,timer_fire='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:6433648893213',provenance=dict(job_id=77,boot_id='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',timer_monotonic_usec=system.fired,timer_realtime_usec=system.real))
+    assert system.run()==dict(invocation='a'*32,timer_fire='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:6433648893213',provenance=dict(job_id=77,boot_id='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',timer_monotonic_usec=system.fired,timer_realtime_usec=system.real,timer_active_since_monotonic_usec=system.fired-3600_000_000))
 
 
 @pytest.mark.parametrize('attack',['manual','stale','wrong_timer','wrong_pid','wrong_invocation','missing_metadata','wrong_metadata','manual_allowed'])
@@ -135,9 +136,10 @@ def test_system_scout_daily_only_schedule_in_reviewed_source():
     assert 'RefuseManualStart=yes' in Path('systemd/development-scout.service').read_text()
 
 
-def test_first_nonzero_activation_is_accepted_in_its_clock_domain(system):
+def test_typed_first_nonzero_value_does_not_authorize_early_boot_catchup(system):
     system.fired=1
-    assert system.run()['timer_fire'].endswith(':1')
+    assert o.timer_timestamp(dict(env={'PATH':'/usr/bin:/bin','HOME':'/nonexistent'}))==1
+    with pytest.raises(o.TrustFailure,match='TIMER_TRIGGER_INVALID'):system.run()
 
 
 @pytest.mark.parametrize('raw,recent,expected',[
