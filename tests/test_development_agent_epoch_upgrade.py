@@ -152,6 +152,7 @@ def test_no_scout_or_timer_control_commands_in_release_adapter():
 
 
 def test_quiet_gate_requires_no_job_even_with_zero_pids(monkeypatch):
+    monkeypatch.setattr(e,'no_scout_processes',lambda *a:None)
     monkeypatch.setattr(e.m,'quiescent',lambda *a:None);monkeypatch.setattr(e.m,'timer_state',lambda *a:None);monkeypatch.setattr(e.m,'next_timer',lambda *a:123)
     from types import SimpleNamespace
     for data in ([0,'/'],[77,'/org/freedesktop/systemd1/job/77']):
@@ -226,3 +227,21 @@ def test_owner_capability_cannot_apply_after_historical_acceptance_changes(host)
     host.plan['receipt']=e.r.encoded(dict(runs=[dict(slot='scout:2026-10-29'),dict(slot='scout:2026-10-31')]))
     with pytest.raises(ValueError,match='historical state changed'):e.transaction(host,apply=True)
     assert 'stop' not in host.calls and 'install' not in host.calls
+
+
+@pytest.mark.parametrize('argv',[
+    [b'/usr/bin/python3',b'-I',b'-S',str(e.r.SOURCE).encode(),b'begin'],
+    [b'/usr/bin/python3',b'-I',b'-S',str(e.r.SOURCE).encode(),b'scout'],
+    [b'/usr/bin/python3',b'-I',b'-S',str(e.r.SOURCE).encode(),b'end'],
+    [b'python',b'-m',b'dev_agent.cli',b'scout'],
+    [b'python',b'-mdev_agent.cli',b'scout'],
+    [b'python',b'/home/optiplex/investment/dev_agent/cli.py',b'scout']])
+def test_stray_scout_process_blocks_transition_even_if_manager_pids_zero(tmp_path,argv):
+    proc=tmp_path/'123';proc.mkdir();(proc/'cmdline').write_bytes(b'\0'.join(argv)+b'\0')
+    with pytest.raises(ValueError,match='no Scout process'):e.no_scout_processes(tmp_path)
+
+
+def test_observer_and_other_processes_are_not_scout(tmp_path):
+    for number,argv in enumerate(([b'python',str(e.r.SOURCE).encode(),b'serve'],[b'python',b'serve.py']),1):
+        proc=tmp_path/str(number);proc.mkdir();(proc/'cmdline').write_bytes(b'\0'.join(argv)+b'\0')
+    e.no_scout_processes(tmp_path)

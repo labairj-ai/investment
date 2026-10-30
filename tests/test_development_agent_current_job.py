@@ -134,3 +134,16 @@ def test_uncommitted_epoch_cannot_authorize_scout(tmp_path,monkeypatch,status):
     else:
         with pytest.raises((OSError,ValueError)):o.epoch_ready(config)
     assert not (epoch/'discovery.json').exists()
+
+
+@pytest.mark.parametrize('target',['root','alternate_root_spelling','ledger'])
+def test_manual_production_discovery_stops_before_any_writer(tmp_path,monkeypatch,target):
+    root=tmp_path/'production';root.mkdir();ledger=tmp_path/'production.sqlite3'
+    monkeypatch.setattr(o,'ROOT',root);monkeypatch.setattr(o,'LEDGER',ledger)
+    monkeypatch.setattr(scheduler,'trigger',lambda:dict(source='operator',invocation=None))
+    class ForbiddenStore:
+        path=ledger if target=='ledger' else tmp_path/'fixture.sqlite3'
+        def migrate(self):pytest.fail('manual production discovery reached writer')
+    actual=root if target=='root' else root/'..'/'production' if target=='alternate_root_spelling' else tmp_path/'other'
+    with pytest.raises(ValueError,match='genuine SYSTEM timer'):scheduler.discover_daily(actual,ForbiddenStore())
+    assert not ledger.exists()

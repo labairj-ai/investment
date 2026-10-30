@@ -45,11 +45,29 @@ def authorization(path,old,head):
     return a
 
 
+def no_scout_processes(proc):
+    paths=list(proc.iterdir())
+    require(len(paths)<=65536,'bounded Scout process inventory required')
+    for path in paths:
+        if not path.name.isdecimal():continue
+        try:
+            with (path/'cmdline').open('rb') as stream:raw=stream.read(8193)
+        except (FileNotFoundError,ProcessLookupError):continue
+        require(len(raw)<=8192,'bounded process arguments required')
+        args=raw.split(b'\0')
+        for i,arg in enumerate(args[:-1]):
+            following=args[i+1]
+            wrapper=arg==str(r.SOURCE).encode() and following in {b'begin',b'scout',b'end'}
+            cli=following==b'scout' and (arg in {b'dev_agent.cli',b'-mdev_agent.cli',b'dev_agent/cli.py'} or arg.endswith(b'/dev_agent/cli.py'))
+            require(not (wrapper or cli),'no Scout process outside or inside the unit permitted')
+
+
 class Host:
     """Fixed privileged release adapter. No Scout/timer control method exists."""
     def __init__(self,head,old=OLD,invoke=subprocess.run):self.head=head;self.old=old;self.invoke=invoke
     def git(self,*args):return reviewed_git(r.ROOT,*args)
     def quiet(self):
+        no_scout_processes(r.PROC)
         m.quiescent(self.invoke,False);m.timer_state(self.invoke,False,True);m.timer_state(self.invoke,True,False)
         value=m.next_timer(self.invoke,False)
         # Prove no queued current start job, even before ControlPID is published.

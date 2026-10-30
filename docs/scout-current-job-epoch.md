@@ -140,3 +140,9 @@ CI's source audit uses a fresh Git-object clone because actions/checkout adds
 temporary credential/worktree Git interpretation settings. The auditor still
 rejects those settings; no production rule is relaxed. Host preflight separately
 audits the actual production checkout for both old and target source graphs.
+
+Transition quiescence also inspects bounded process arguments for fixed Scout
+wrapper and CLI entry points outside the unit. Production discovery rejects an
+operator-classified trigger before migrate/event/candidate writes, including
+alternate root spellings or a caller pointing a different root at the production
+ledger. Disposable nonproduction fixtures retain their existing manual test path.

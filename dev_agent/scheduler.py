@@ -48,6 +48,9 @@ def trigger():
 
 def discover_daily(root, store, *, now=None, cap=None, backlog_limit=None, signals=()):
     started=time.time();origin=trigger()
+    from ops.discovery import observer as authority
+    if origin['source']!='systemd-observed-timer' and (Path(root).resolve()==authority.ROOT.resolve() or store.path.resolve()==authority.LEDGER.resolve()):
+        raise ValueError('production discovery requires the genuine SYSTEM timer')
     from .discovery import git
     source_head=git(root,'rev-parse','HEAD')
     enabled_sources=[]
