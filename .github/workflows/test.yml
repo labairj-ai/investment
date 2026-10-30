@@ -7,7 +7,24 @@ on:
 permissions:
   contents: read
 jobs:
+  native-systemd255:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Native v255 Pre and Main current-Job proof (isolated fixture only)
+        run: bash tests/native_systemd255/run.sh native-systemd255-results
+      - name: Preserve native fixture proof
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: scout-systemd255-native-proof
+          path: native-systemd255-results/
+          if-no-files-found: error
   test:
+    needs: native-systemd255
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
