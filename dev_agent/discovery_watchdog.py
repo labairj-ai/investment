@@ -49,7 +49,7 @@ def required_slot(now,installed):
     """Latest due Eastern calendar slot since real installation observation."""
     if not finite(installed) or not 0<installed<=now:raise ValueError('real scheduler installation observation required')
     day=datetime.fromtimestamp(now,ET).date()
-    scheduled=datetime(day.year,day.month,day.day,8,15,tzinfo=ET)
+    scheduled=datetime(day.year,day.month,day.day,16,0,tzinfo=ET)
     if scheduled.timestamp()>now:scheduled-=timedelta(days=1)
     return scheduled if scheduled.timestamp()>=installed else None
 
@@ -63,8 +63,8 @@ def next_trigger_valid(timer,now):
     value=timer.get('next_at');last=timer.get('last_at')
     if not finite(value) or not now<value<=now+27*3600 or last is not None and (not finite(last) or not 0<=last<=now):return False
     try:
-        today=datetime.fromtimestamp(now,ET).replace(hour=8,minute=15,second=0,microsecond=0)
-        target=datetime.fromtimestamp(value,ET);base=target.replace(hour=8,minute=15,second=0,microsecond=0)
+        today=datetime.fromtimestamp(now,ET).replace(hour=16,minute=0,second=0,microsecond=0)
+        target=datetime.fromtimestamp(value,ET);base=target.replace(hour=16,minute=0,second=0,microsecond=0)
         days={today.date()} if now<today.timestamp() else {today.date(),(today+timedelta(days=1)).date()} if now<=today.timestamp()+180 else {(today+timedelta(days=1)).date()}
         if target.date() in days and 0<=value-base.timestamp()<=180:return True
         # A genuine Persistent catch-up may be queued outside calendar time.
@@ -76,7 +76,7 @@ def next_trigger_valid(timer,now):
 def good_run(p,head,now):
     from .scheduler_health import successful_execution,timer_invocation
     if not isinstance(p,dict) or not successful_execution(dict(kind='SCHEDULE',payload=p),set(),now):return False
-    return (p.get('head')==head and p.get('fixture_only') is not True and p.get('synthetic') is not True and p.get('status')=='COLLECTED' and p.get('unavailable')==[]
+    return (p.get('head')==head and p.get('fixture_only') is not True and p.get('synthetic') is not True and p.get('status')=='COLLECTED' and isinstance(p.get('unavailable'),list) and not REQUIRED & set(p['unavailable'])
             and isinstance(p.get('enabled_sources'),list) and REQUIRED<=set(p['enabled_sources']) and p['duration_seconds']<=240
             and isinstance(p.get('candidates'),list) and all(isinstance(c,str) and c for c in p['candidates'])
             and all(type(p.get(k)) is int and p[k]>=0 for k in ('created','deduplicated','suppressed','signal_count','proposal_count'))

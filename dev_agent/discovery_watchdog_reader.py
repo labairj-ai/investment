@@ -23,8 +23,8 @@ ROOT_UID=0
 SYSTEM_UNIT_DIR=Path('/etc/systemd/system')
 PROC=Path('/proc')
 NAMES=('development-scout','development-signal-collector','development-scheduler-observer','development-supervised-loop')
-USER_UNITS=frozenset(n+s for n in NAMES for s in ('.service','.timer'))
-SYSTEM_UNITS=frozenset(('macro-health-watchdog.timer','macro-health-watchdog.service','investment-discovery-observer.service'))
+USER_UNITS=frozenset(n+s for n in NAMES if n!='development-scout' for s in ('.service','.timer'))
+SYSTEM_UNITS=frozenset(('macro-health-watchdog.timer','macro-health-watchdog.service','investment-discovery-observer.service','development-scout.service','development-scout.timer'))
 FIELDS=('LoadState','UnitFileState','ActiveState','SubState','FragmentPath','DropInPaths','NeedDaemonReload','Result','InvocationID','MainPID','NextElapseUSecRealtime','LastTriggerUSec','LastTriggerUSecMonotonic','TimersCalendar','Persistent','RandomizedDelayUSec','AccuracyUSec')
 CODE_FILES=('operational_watchdog.py','scripts/macro_health_watchdog.py','dev_agent/discovery_watchdog.py','dev_agent/discovery_watchdog_reader.py','dev_agent/watchdog_gate.py','config/development_watchdog.json')
 ENV=dict(PATH='/usr/bin:/bin',HOME='/nonexistent',LANG='C',TZ='UTC',GIT_CONFIG_NOSYSTEM='1',GIT_CONFIG_GLOBAL='/dev/null',GIT_NO_REPLACE_OBJECTS='1',GIT_OPTIONAL_LOCKS='0',GIT_TERMINAL_PROMPT='0')
@@ -136,6 +136,14 @@ def pinned_unit(root,unit,props,uid):
     return (actual==expected and props.get('FragmentPath')==str(path) and not props.get('DropInPaths') and props.get('NeedDaemonReload')=='no')
 
 
+def epoch_receipt(head):
+    config=protected_json(OBSERVER)
+    epoch=config.get('acceptance_epoch')
+    if epoch is None:return HOST_PROOF
+    if not valid_hex(head,HEX40) or epoch!=head or config.get('head')!=head:raise ValueError('exact current qualification epoch required')
+    return HOST_PROOF.parent/'epochs'/epoch/'discovery.json'
+
+
 def observe(root,*,now=None,previous=None):
     """Read-only adapter. Catches unavailable evidence as explicit component RED."""
     root=Path(root);fixed_now=now;now=time.time() if now is None else now;uid=os.getuid()
@@ -160,7 +168,7 @@ def observe(root,*,now=None,previous=None):
             props['next_at']=read(unit+':next',lambda props=props:timestamp(props.get('NextElapseUSecRealtime')))
             props['last_at']=read(unit+':last',lambda props=props:timestamp(props.get('LastTriggerUSec')))
     scout=out['units'].get('development-scout.timer',{})
-    scout['calendar_valid']=read('calendar',lambda:scout.get('Persistent')=='yes' and duration(scout.get('RandomizedDelayUSec'))==120 and duration(scout.get('AccuracyUSec'))==60 and re.fullmatch(r'\{ OnCalendar=\*-\*-\* 08:15:00 America/New_York ; next_elapse=[^{}]+ \}',scout.get('TimersCalendar','')) is not None) is True
+    scout['calendar_valid']=read('calendar',lambda:scout.get('Persistent')=='yes' and duration(scout.get('RandomizedDelayUSec'))==120 and duration(scout.get('AccuracyUSec'))==60 and re.fullmatch(r'\{ OnCalendar=\*-\*-\* 16:00:00 America/New_York ; next_elapse=[^{}]+ \}',scout.get('TimersCalendar','')) is not None) is True
     def observer_socket():
         value=OBSERVER_SOCKET.lstat();parent=OBSERVER_SOCKET.parent.lstat()
         if OBSERVER_SOCKET.is_symlink() or OBSERVER_SOCKET.parent.is_symlink() or not stat.S_ISSOCK(value.st_mode) or value.st_uid!=ROOT_UID or value.st_gid!=pwd.getpwuid(uid).pw_gid or stat.S_IMODE(value.st_mode)!=0o660 or parent.st_uid!=ROOT_UID or parent.st_mode&0o022:raise ValueError('private observer socket boundary unavailable')
@@ -211,8 +219,9 @@ def observe(root,*,now=None,previous=None):
         if read_bytes(path,64000,uid=uid,private=True)!=raw:raise ValueError('signal snapshot changed')
         out['spool_valid']=True
     read('spool',spool)
-    if HOST_PROOF.exists() or HOST_PROOF.is_symlink():
-        proof=read('host-safety',lambda:read_json(HOST_PROOF,limit=64000,uid=ROOT_UID,root_protected=True))
+    proof_path=read('epoch',lambda:epoch_receipt(out.get('head')))
+    if proof_path is not None and (proof_path.exists() or proof_path.is_symlink()):
+        proof=read('host-safety',lambda:read_json(proof_path,limit=64000,uid=ROOT_UID,root_protected=True))
         if proof:out.update(host_proof=proof,host_proof_protected=True)
         else:out['host_proof_invalid']=True
     producer=out['units'].get('macro-health-watchdog.service',{})

@@ -229,3 +229,22 @@ Discovery subchecks retain per-component incidents. The aggregate dashboard row
 does not duplicate an equal/worse child notification; aggregate-only inspection
 failures still alert. Existing delivery keys, retry intervals and YELLOW digest
 behavior are reused unchanged for all pre-existing components.
+
+### October 30 source refresh: deployment remains blocked
+
+Scout is a SYSTEM service/timer at 16:00 America/New_York (120s randomized delay).
+Collector and scheduler observer remain USER units. This observational PR neither
+repairs timer provenance nor starts Scout, changes scheduling, installs its own
+observer, or grants acceptance. A failed Pre with no SCHEDULE remains RED even if
+Unit.ActivationDetails still describes a prior success. Current Job provenance is
+validated by the separately reviewed Scout repair, never inferred by this display.
+
+A protected acceptance_epoch must equal the exact deployed head. Its receipt is
+read only from the corresponding root-owned epochs/<head>/discovery.json; the old
+receipt is historical evidence and never a fallback for new-source credit. Missing
+new receipt means pending qualification; malformed/cross-source selection fails
+closed. A separately authorized transactional source transition must permanently
+archive the old 1/3 evidence and establish the new 0/3 epoch before deployment.
+PR #19 stays separate from that transition, cannot be deployed under a Scout GO,
+and requires its own exact-head owner approval plus later qualification/rollout
+review. TODO 0853 remains blocked; no remediation or implementation authority.

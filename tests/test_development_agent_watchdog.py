@@ -24,7 +24,7 @@ def at(text):return datetime.fromisoformat(text).replace(tzinfo=w.ET).timestamp(
 
 
 def run(now,slot='2026-10-25',invocation=I):
-    start=at(slot+'T08:16:00')
+    start=at(slot+'T16:01:00')
     return dict(head=H,slot='scout:'+slot,trigger=dict(source='systemd-observed-timer',invocation=invocation),started_at=start,ended_at=start+2,duration_seconds=2,status='COLLECTED',enabled_sources=['ci','telemetry','performance'],unavailable=[],signal_count=0,proposal_count=0,created=0,deduplicated=0,suppressed=0,candidates=[])
 
 
@@ -33,13 +33,13 @@ def proof(runs,now):
 
 
 def healthy_snapshot(now=None):
-    now=at('2026-10-25T09:00:00') if now is None else now
+    now=at('2026-10-25T17:00:00') if now is None else now
     config=dict(autonomous_implementation=False,auto_merge=False,supervised_loop_enabled=False,supervised_publish_pr=False,autonomy_stage='SHADOW',autonomous_max_risk='L2',required_human_merge=True)
     units={}
     for name in ('development-scout','development-signal-collector','development-scheduler-observer','macro-health-watchdog'):
         units[name+'.timer']=dict(LoadState='loaded',UnitFileState='enabled',ActiveState='active',pinned=True)
         units[name+'.service']=dict(Result='success')
-    units['development-scout.timer'].update(calendar_valid=True,next_at=at('2026-10-26T08:16:00'),last_at=at('2026-10-25T08:16:00'))
+    units['development-scout.timer'].update(calendar_valid=True,next_at=at('2026-10-26T16:01:00'),last_at=at('2026-10-25T16:01:00'))
     units['investment-discovery-observer.service']=dict(ActiveState='active',SubState='running',pinned=True)
     r=run(now)
     return dict(observer_socket_ok=True,observed_at=now,head=H,observer_head=H,source_ok=True,policy=dict(w.DEFAULTS),config=config,reviewed_config=copy.deepcopy(config),supervised_units_absent=True,worktree_present=False,builder_processes=0,implementation_events=False,units=units,spool=dict(created=now-600,enabled_sources=['ci','telemetry','performance'],unavailable=[]),spool_valid=True,scheduler=dict(status='SCHEDULED',created=now-300,enabled=True,active='active'),installed_at=at('2026-10-24T20:00:00'),runs=[r],failed_runs=[],host_proof=proof([r],now),host_proof_protected=True,producer_verified=True,producer_invocation=I,producer_pid=os.getpid(),acceptance=dict(source_head=H,status='NOT READY',successful_runs=1,required_runs=3,runs=[r],host_safety_accepted=False),errors=[],code_identity='f'*64)
@@ -67,8 +67,8 @@ def test_acceptance_only_projects_existing_calculation(healthy,count):
     healthy['runs']=runs;healthy['host_proof']=proof(runs,now) if runs else None
     healthy['acceptance'].update(successful_runs=count,runs=runs,host_safety_accepted=count==3,status='READY' if count==3 else 'NOT READY')
     if count==0:
-        healthy['observed_at']=at('2026-10-25T07:00:00');healthy['installed_at']=at('2026-10-24T20:00:00');healthy['spool']['created']=healthy['observed_at']-60;healthy['scheduler']['created']=healthy['observed_at']-60
-        healthy['units']['development-scout.timer'].update(last_at=None,next_at=at('2026-10-25T08:16:00'))
+        healthy['observed_at']=at('2026-10-25T15:00:00');healthy['installed_at']=at('2026-10-24T20:00:00');healthy['spool']['created']=healthy['observed_at']-60;healthy['scheduler']['created']=healthy['observed_at']-60
+        healthy['units']['development-scout.timer'].update(last_at=None,next_at=at('2026-10-25T16:01:00'))
     e=summary(healthy)['evidence']
     assert e['acceptance']==('READY 3/3' if count==3 else f'ACCEPTING {count}/3') and e['accepted_runs']==count
     assert e['grants_implementation'] is False
@@ -82,7 +82,7 @@ def test_bad_scout_timer_red(healthy,field,value):
 
 @pytest.mark.parametrize('minutes,severity',[(5,'INFO'),(23,'YELLOW'),(129,'RED')])
 def test_missing_run_completion_grace_then_red(healthy,minutes,severity):
-    now=at('2026-10-25T08:15:00')+minutes*60
+    now=at('2026-10-25T16:00:00')+minutes*60
     healthy.update(observed_at=now,runs=[],host_proof=None)
     healthy['acceptance'].update(runs=[],successful_runs=0)
     healthy['spool']['created']=healthy['scheduler']['created']=now-60
@@ -91,13 +91,13 @@ def test_missing_run_completion_grace_then_red(healthy,minutes,severity):
 
 def test_required_slots_are_eastern_and_dst_aware():
     since=at('2026-10-30T20:00:00')
-    a=w.required_slot(at('2026-10-31T09:00:00'),since)
-    b=w.required_slot(at('2026-11-01T09:00:00'),since)
-    assert a.hour==b.hour==8 and (b.timestamp()-a.timestamp())==25*3600
-    assert w.required_slot(at('2026-10-25T07:00:00'),at('2026-10-24T20:00:00')) is None
-    assert w.required_slot(at('2026-10-25T09:00:00'),at('2026-10-24T20:00:00')).date().isoformat()=='2026-10-25'
-    spring_a=w.required_slot(at('2026-03-07T09:00:00'),at('2026-03-06T20:00:00'))
-    spring_b=w.required_slot(at('2026-03-08T09:00:00'),at('2026-03-06T20:00:00'))
+    a=w.required_slot(at('2026-10-31T17:00:00'),since)
+    b=w.required_slot(at('2026-11-01T17:00:00'),since)
+    assert a.hour==b.hour==16 and (b.timestamp()-a.timestamp())==25*3600
+    assert w.required_slot(at('2026-10-25T15:00:00'),at('2026-10-24T20:00:00')) is None
+    assert w.required_slot(at('2026-10-25T17:00:00'),at('2026-10-24T20:00:00')).date().isoformat()=='2026-10-25'
+    spring_a=w.required_slot(at('2026-03-07T17:00:00'),at('2026-03-06T20:00:00'))
+    spring_b=w.required_slot(at('2026-03-08T17:00:00'),at('2026-03-06T20:00:00'))
     assert spring_b.timestamp()-spring_a.timestamp()==23*3600
 
 
@@ -224,7 +224,7 @@ def test_systemd_adapter_only_fixed_read_commands(monkeypatch):
     assert api.show('development-scout.timer')['LoadState']=='loaded'
     for bad in ['development-scout.service; restart','investment.service','start','../../service']:
         with pytest.raises(ValueError):api.show(bad)
-    assert len(calls)==1 and calls[0][1:3]==['--user','show']
+    assert len(calls)==1 and calls[0][1:3]==['show','development-scout.timer']
     assert 'Persistent' in calls[0][-1].split('=',1)[1].split(',')
     assert not any(hasattr(api,n) for n in ['start','restart','enable','disable','repair','run'])
 
@@ -373,7 +373,7 @@ def test_observe_real_read_adapters_never_mutate_or_receive_producer(monkeypatch
         tracked=git('ls-files').splitlines();manifest={n:reader.digest((root/n).read_bytes()) for n in tracked}
         observer=base/'observer.json';observer.write_text(json.dumps(dict(head=head,files=manifest,observer_digest=manifest['ops/discovery/observer.py'])))
         state=home/'.local/share/investment-development';state.mkdir(parents=True);ledger=Store(state/'development-control.sqlite3');ledger.migrate()
-        now=__import__('time').time();next_day=datetime.fromtimestamp(now,w.ET).replace(hour=8,minute=15,second=0,microsecond=0)
+        now=__import__('time').time();next_day=datetime.fromtimestamp(now,w.ET).replace(hour=16,minute=0,second=0,microsecond=0)
         if next_day.timestamp()<=now:next_day+=timedelta(days=1)
         observation=dict(status='SCHEDULED',created=now-30,enabled=True,active='active')
         with ledger.connect(True) as db:ledger._append(db,None,'SCHEDULER_OBSERVATION',observation,'fixture-observer')
@@ -389,7 +389,7 @@ def test_observe_real_read_adapters_never_mutate_or_receive_producer(monkeypatch
             calls.append(unit);assert unit in reader.USER_UNITS|reader.SYSTEM_UNITS
             if unit.startswith('development-supervised'):return dict(LoadState='not-found',ActiveState='inactive')
             props=dict(LoadState='loaded',UnitFileState='enabled',ActiveState='active',FragmentPath=str((user if unit in reader.USER_UNITS else system)/unit),DropInPaths='',NeedDaemonReload='no',Result='success')
-            if unit=='development-scout.timer':props.update(NextElapseUSecRealtime=datetime.fromtimestamp(next_day.timestamp(),timezone.utc).strftime('%a %Y-%m-%d %H:%M:%S UTC'),LastTriggerUSec='',TimersCalendar='{ OnCalendar=*-*-* 08:15:00 America/New_York ; next_elapse=future }',RandomizedDelayUSec='2min',AccuracyUSec='1min',Persistent='yes')
+            if unit=='development-scout.timer':props.update(NextElapseUSecRealtime=datetime.fromtimestamp(next_day.timestamp(),timezone.utc).strftime('%a %Y-%m-%d %H:%M:%S UTC'),LastTriggerUSec='',TimersCalendar='{ OnCalendar=*-*-* 16:00:00 America/New_York ; next_elapse=future }',RandomizedDelayUSec='2min',AccuracyUSec='1min',Persistent='yes')
             if unit=='macro-health-watchdog.service':props.update(InvocationID=I,MainPID=str(os.getpid()))
             if unit=='investment-discovery-observer.service':props['SubState']='running'
             return props
@@ -460,7 +460,7 @@ def test_unresolved_red_incident_cannot_be_hidden_by_projection(coverage):
 def test_next_trigger_drift_and_real_persistent_metadata(healthy):
     timer=healthy['units']['development-scout.timer'];timer['next_at']=healthy['observed_at']+3600
     assert component(healthy,'schedule')['status']=='RED'
-    timer.update(Persistent='yes',last_at=at('2026-10-24T08:16:00'),next_at=healthy['observed_at']+60)
+    timer.update(Persistent='yes',last_at=at('2026-10-24T16:01:00'),next_at=healthy['observed_at']+60)
     assert component(healthy,'schedule')['status']=='INFO'
     healthy.update(runs=[],host_proof=None);healthy['acceptance'].update(runs=[],successful_runs=0)
     assert component(healthy,'execution')['status']=='YELLOW'  # queued catch-up is not success
@@ -484,7 +484,7 @@ def test_inflight_bookend_waits_bounded_window_but_cannot_clear_overdue(healthy)
     healthy['observed_at']=p['started_at']+241
     assert component(healthy,'host_safety')['status']=='RED'
     # A late unproven/manual retry must not clear the existing missed-slot alarm.
-    now=at('2026-10-25T12:00:00');healthy['observed_at']=now;p.update(started_at=now-3,ended_at=now-1,duration_seconds=2)
+    now=at('2026-10-25T20:00:00');healthy['observed_at']=now;p.update(started_at=now-3,ended_at=now-1,duration_seconds=2)
     assert component(healthy,'execution')['status']=='RED'
 
 
@@ -499,3 +499,27 @@ def test_watchdog_execution_failure_after_scan_blocks_until_fresh_scan(coverage)
     with pytest.raises(ValueError,match='watchdog coverage'):gate.require_coverage(Path('.'),now=s['observed_at']+2)
     marker.write_text(json.dumps(dict(overall='RED',checked_at=s['observed_at']-1,error='older fixture')))
     assert gate.require_coverage(Path('.'),now=s['observed_at']+2)['status']=='PASS'
+
+
+def test_new_epoch_never_selects_historical_receipt(monkeypatch,tmp_path):
+    old=tmp_path/'discovery.json';old.write_text('{"historical":true}')
+    monkeypatch.setattr(reader,'HOST_PROOF',old)
+    monkeypatch.setattr(reader,'protected_json',lambda p:dict(head=H,acceptance_epoch=H))
+    assert reader.epoch_receipt(H)==tmp_path/'epochs'/H/'discovery.json'
+    assert old.read_text()=='{"historical":true}'
+    with pytest.raises(ValueError):reader.epoch_receipt('c'*40)
+
+
+def test_failed_second_prestart_remains_red_with_stale_unit_metadata(healthy):
+    healthy['units']['development-scout.service'].update(Result='exit-code',InvocationID='c'*32,
+        ActivationDetails={'trigger_timer_monotonic_usec':'old-day'})
+    assert component(healthy,'execution')['status']=='RED'
+    assert summary(healthy)['evidence']['acceptance']=='BLOCKED'
+    assert healthy['acceptance']['successful_runs']==1
+
+
+def test_optional_unavailable_source_does_not_invalidate_genuine_collection(healthy):
+    healthy['runs'][0]['unavailable']=['user_feedback']
+    assert w.good_run(healthy['runs'][0],H,healthy['observed_at'])
+    healthy['runs'][0]['unavailable']=['ci']
+    assert not w.good_run(healthy['runs'][0],H,healthy['observed_at'])
