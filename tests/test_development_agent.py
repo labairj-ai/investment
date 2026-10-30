@@ -204,6 +204,7 @@ def test_scout_read_only_dedup_diversity(repo,store):
 def test_architecture_cycles_no_size_only(repo):
     (repo/"a.py").write_text("import b\n");(repo/"b.py").write_text("import a\n")
     (repo/"large.py").write_text("# intentional line\n"*1600)
+    commit(repo)  # Architecture discovery now consumes reviewed Git blobs.
     found=discovery.architecture_signals(repo)
     assert len(found)==1 and found[0]["category"]=="CONSOLIDATE"
 
@@ -564,6 +565,7 @@ def test_todo_reservations_span_worktrees(repo,store,tmp_path):
 
 def test_large_function_scan_does_not_apply_metadata_payload_limit(repo):
     (repo/"large_function.py").write_text("def build():\n"+"".join(f"    value_{i} = {i}\n" for i in range(1500)))
+    commit(repo)  # Keep the large-function assertion on authoritative source.
     assert discovery.architecture_signals(repo)==[]
 
 

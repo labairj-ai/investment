@@ -1,0 +1,83 @@
+{
+  "evidence_kind": "retrospective-read-only-not-acceptance",
+  "source_sha": "dd1ef4d4de581ada1d29fc451f3872b6b1e43cf0",
+  "attempt_id": "892e9a2780be414285f948bc50c55cd2",
+  "recorded_start": 1793188035.173696,
+  "recorded_failure_completion": 1793188035.5526938,
+  "manager_invocation_id": "",
+  "root_trace_failure": "CERTIFICATION_INVOCATION_INVALID",
+  "unique_trusted_invocation": "407a9628d7ba4abf90b0ef6ab0968487",
+  "report_count": 3,
+  "reports": [
+    {
+      "trusted_fields": {
+        "_SYSTEMD_INVOCATION_ID": "407a9628d7ba4abf90b0ef6ab0968487",
+        "_SYSTEMD_UNIT": "development-scout-sandbox-certification.service",
+        "_BOOT_ID": "f0ea0f99d0fa4b0684cec1c430cdb35e",
+        "_UID": "1000",
+        "_PID": "2213790",
+        "__REALTIME_TIMESTAMP": "1793188035333256",
+        "__MONOTONIC_TIMESTAMP": "6691076332143",
+        "_TRANSPORT": "stdout"
+      },
+      "report": {
+        "accepted_scout_run": false,
+        "credentials_inaccessible": true,
+        "execution_record_current": true,
+        "network_namespace_isolated": true,
+        "process_uid_expected": true,
+        "protected_state_inaccessible": true,
+        "repository_read_only": true,
+        "system_manager_readable": true,
+        "test_evidence_only": true
+      }
+    },
+    {
+      "trusted_fields": {
+        "_SYSTEMD_INVOCATION_ID": "407a9628d7ba4abf90b0ef6ab0968487",
+        "_SYSTEMD_UNIT": "development-scout-sandbox-certification.service",
+        "_BOOT_ID": "f0ea0f99d0fa4b0684cec1c430cdb35e",
+        "_UID": "1000",
+        "_PID": "2213794",
+        "__REALTIME_TIMESTAMP": "1793188035410529",
+        "__MONOTONIC_TIMESTAMP": "6691076409417",
+        "_TRANSPORT": "stdout"
+      },
+      "report": {
+        "accepted_scout_run": false,
+        "credentials_inaccessible": true,
+        "execution_record_current": true,
+        "network_namespace_isolated": true,
+        "process_uid_expected": true,
+        "protected_state_inaccessible": true,
+        "repository_read_only": true,
+        "system_manager_readable": true,
+        "test_evidence_only": true
+      }
+    },
+    {
+      "trusted_fields": {
+        "_SYSTEMD_INVOCATION_ID": "407a9628d7ba4abf90b0ef6ab0968487",
+        "_SYSTEMD_UNIT": "development-scout-sandbox-certification.service",
+        "_BOOT_ID": "f0ea0f99d0fa4b0684cec1c430cdb35e",
+        "_UID": "1000",
+        "_PID": "2213801",
+        "__REALTIME_TIMESTAMP": "1793188035492470",
+        "__MONOTONIC_TIMESTAMP": "6691076491358",
+        "_TRANSPORT": "stdout"
+      },
+      "report": {
+        "accepted_scout_run": false,
+        "credentials_inaccessible": true,
+        "execution_record_current": true,
+        "network_namespace_isolated": true,
+        "process_uid_expected": true,
+        "protected_state_inaccessible": true,
+        "repository_read_only": true,
+        "system_manager_readable": true,
+        "test_evidence_only": true
+      }
+    }
+  ],
+  "acceptance_credit": 0
+}

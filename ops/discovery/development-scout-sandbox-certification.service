@@ -1,0 +1,28 @@
+[Unit]
+Description=TEST ONLY system Scout sandbox certification; never acceptance
+
+
+[Service]
+Type=oneshot
+User=optiplex
+Group=optiplex
+WorkingDirectory=/home/optiplex/investment
+ExecStartPre=/usr/bin/python3 -I -S /opt/investment-discovery-observer/sandbox_certify.py
+ExecStopPost=/usr/bin/python3 -I -S /opt/investment-discovery-observer/sandbox_certify.py
+ExecStart=/usr/bin/python3 -I -S /opt/investment-discovery-observer/sandbox_certify.py
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/optiplex/.local/share/investment-development
+PrivateTmp=true
+PrivateNetwork=true
+TimeoutStartSec=180
+
+# Discovery never receives portfolio, broker, owner or SSH credentials.
+InaccessiblePaths=-/home/optiplex/.ssh -/home/optiplex/.aws -/home/optiplex/.config/gh -/home/optiplex/investment/.env -/home/optiplex/investment/out -/home/optiplex/investment/holdings.csv -/home/optiplex/.local/share/investment-development/service.env
+InaccessiblePaths=-/home/optiplex/.netrc -/home/optiplex/.git-credentials -/home/optiplex/.gnupg
+
+InaccessiblePaths=-/home/optiplex/.config/investment-development/github-read.token
+
+InaccessiblePaths=-/home/optiplex/.local/share/investment-development/development-control.sqlite3 -/var/lib/investment-development-acceptance
