@@ -147,3 +147,54 @@ def test_manual_production_discovery_stops_before_any_writer(tmp_path,monkeypatc
     actual=root if target=='root' else root/'..'/'production' if target=='alternate_root_spelling' else tmp_path/'other'
     with pytest.raises(ValueError,match='genuine SYSTEM timer'):scheduler.discover_daily(actual,ForbiddenStore())
     assert not ledger.exists()
+
+
+# Capture filesystem methods before the synthetic manager fixture replaces them.
+REAL_READ_BYTES=Path.read_bytes
+REAL_READ_TEXT=Path.read_text
+
+
+def test_three_consecutive_days_collect_and_bookend_without_historical_metadata_credit(system,tmp_path,monkeypatch):
+    import copy
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from dev_agent.store import Store
+    h=system;state=tmp_path/'observer';state.mkdir();store=Store(tmp_path/'development-control.sqlite3');store.migrate()
+    config=dict(head='a'*40,observer_digest='reviewed',unit_digest='reviewed',timer_digest='reviewed')
+    monkeypatch.setattr(o,'STATE',state);monkeypatch.setattr(o,'protected',lambda p:None)
+    monkeypatch.setattr(o.os,'getpid',lambda:123)
+    monkeypatch.setattr(Path,'read_bytes',lambda p:o.encoded(config) if p==o.CONFIG else REAL_READ_BYTES(p))
+    monkeypatch.setattr(Path,'read_text',lambda p,*a,**kw:'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' if str(p)=='/proc/sys/kernel/random/boot_id' else REAL_READ_TEXT(p,*a,**kw))
+    monkeypatch.setattr(discovery,'git',lambda *a:'a'*40)
+    reviewed=SimpleNamespace(configuration=lambda:{},graph=lambda root:None)
+    monkeypatch.setattr(scheduler,'reviewed_sources',lambda *a:reviewed)
+    monkeypatch.setattr(scheduler,'scout',lambda *a,**k:dict(head='a'*40,proposals=[],unavailable=[]))
+    monkeypatch.setenv('DEVELOPMENT_SIGNAL_SPOOL','isolated-fixture-only')
+    from dev_agent import signals
+    monkeypatch.setattr(signals,'load_spool',lambda path:([{'fixture_only':True}]*3,['ci','telemetry','performance']))
+    stable=dict(holdings='a'*64,investment='b'*64,auxiliary='c'*64,source='d'*64,worktrees=[])
+    def snapshot(c):
+        with store.connect() as db:rows=[list(r) for r in db.execute('SELECT seq,event_id,candidate,kind,created,payload FROM dev_events ORDER BY seq')]
+        return dict(stable,ledger=dict(seq=rows[-1][0] if rows else 0,prefix=o.digest(rows),schema='fixture-schema')),copy.deepcopy(rows)
+    monkeypatch.setattr(o,'snapshot',snapshot)
+    output=o.subprocess.check_output
+    def retained(cmd,**kw):
+        if cmd[-2:]==['org.freedesktop.systemd1.Unit','ActivationDetails']:
+            return json.dumps(dict(type='a(ss)',data=[['trigger_unit','development-scout.timer'],['trigger_timer_monotonic_usec','6807047895028']])).encode()
+        return output(cmd,**kw)
+    monkeypatch.setattr(o.subprocess,'check_output',retained)
+    server=o.Observer(config)
+    for day,char in enumerate('abc'):
+        h.real=1793304006896140+day*86400_000_000;h.fired=6807047895028+day*86400_000_000;h.job_id=77+day
+        h.invocation=char*32;h.values['InvocationID']=h.invocation;monkeypatch.setenv('INVOCATION_ID',h.invocation)
+        h.phase='begin';server.handle(123,123,dict(phase='begin',checks={k:True for k in o.CHECKS}))
+        h.phase='scout'
+        result=scheduler.discover_daily(tmp_path/'source',store,now=datetime.fromtimestamp(h.real/1e6,ZoneInfo('America/New_York')))
+        assert result['status']=='COLLECTED' and result['trigger']==dict(source='systemd-observed-timer',invocation=h.invocation)
+        assert result['signal_count']==3 and result['proposal_count']==result['created']==0
+        h.phase='end';server.handle(123,123,dict(phase='end',checks={k:True for k in o.CHECKS}))
+        receipt=json.loads((state/'discovery.json').read_bytes())
+        assert len(receipt['runs'])==day+1 and receipt['grants_implementation'] is False
+    assert [r['slot'] for r in receipt['runs']]==['scout:2026-10-29','scout:2026-10-30','scout:2026-10-31']
+    assert len({r['provenance']['job_id'] for r in receipt['runs']})==3
+    assert not list(state.glob('*.pending'))
