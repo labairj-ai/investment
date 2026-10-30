@@ -118,7 +118,7 @@ def socket_probe(pid,gid):
     return (info.st_dev,info.st_ino,info.st_ctime_ns)
 
 
-def boundary(config,invoke):
+def boundary(config,invoke,*,query_only=False):
     for p in (SOURCE,CONFIG,UNIT):protected(p)
     if loads(CONFIG.read_bytes())!=config:raise ValueError('installed observer configuration mismatch')
     if sha(SOURCE.read_bytes())!=config['observer_digest']:raise ValueError('installed observer source mismatch')
@@ -138,7 +138,16 @@ def boundary(config,invoke):
     status=dict(line.split(':',1) for line in (process/'status').read_text().splitlines() if ':' in line)
     if status.get('Uid','').split()!=[str(ROOT_UID)]*4 or status.get('Gid','').split()!=[str(gid)]*4:raise ValueError('observer process identity mismatch')
     if (process/'exe').resolve(strict=True)!=runtime or (process/'exe').stat().st_ino!=runtime.stat().st_ino:raise ValueError('running Python runtime mismatch')
-    observed=socket_probe(pid,gid)
+    if query_only:
+        # Passive release preflight: do not send even a rejected observer request.
+        protected(SOCKET.parent,directory=True)
+        info=SOCKET.lstat()
+        if SOCKET.is_symlink() or not stat.S_ISSOCK(info.st_mode) or info.st_uid!=ROOT_UID or info.st_gid!=gid or stat.S_IMODE(info.st_mode)!=0o660:raise ValueError('private trusted observer socket required')
+        observed=(info.st_dev,info.st_ino,info.st_ctime_ns)
+        again=properties(command(invoke,['/bin/systemctl','show',SERVICE,'--property='+','.join(fields)],check=True).stdout)
+        if again!=p:raise ValueError('observer changed during passive verification')
+    else:
+        observed=socket_probe(pid,gid)
     if loads(CONFIG.read_bytes())!=config:raise ValueError('configuration changed during socket verification')
     return dict(invocation=p['InvocationID'],pid=pid,socket=observed,runtime_sha256=sha(runtime.read_bytes()))
 
