@@ -15,6 +15,9 @@ import stat
 import subprocess
 import sys
 import time
+import urllib.request
+from urllib.parse import urlsplit, parse_qsl
+from dev_agent.github import GitHub
 from ops.discovery import observer as o, pin_refresh as r, upgrade as u, migrate as m
 from ops.discovery.influence import audit, git_boundary, git as reviewed_git, isolated
 
@@ -46,14 +49,61 @@ def authorization(path,old,head):
     return a
 
 
+class PublicGitHub(GitHub):
+    """Fixed public GET transport; never consults CLI login, tokens or proxies.
+
+    GitHub's HTTPS response authenticates public evidence. Owner/app policy and
+    all object/source/CI checks remain in the existing verifier above this layer.
+    """
+    def __init__(self,repository):
+        require(repository=='labairj-ai/investment','fixed public repository required')
+        super().__init__(repository)
+
+    def read(self,endpoint,**kwargs):
+        require(isinstance(endpoint,str) and len(endpoint)<=2048,'bounded public endpoint required')
+        parts=urlsplit(endpoint)
+        prefix='repos/'+self.repository
+        require(not parts.scheme and not parts.netloc and not parts.fragment and not parts.path.startswith('/'),'relative public endpoint required')
+        pairs=parse_qsl(parts.query,keep_blank_values=True,strict_parsing=True)
+        query=dict(pairs)
+        require(len(query)==len(pairs),'duplicate public query field')
+        path=parts.path
+        if path==prefix:
+            require(not query,'repository query denied')
+        elif re.fullmatch(re.escape(prefix)+r'/pulls/[1-9][0-9]*',path) or re.fullmatch(re.escape(prefix)+r'/issues/comments/[1-9][0-9]*',path):
+            require(not query,'identity query denied')
+        elif re.fullmatch(re.escape(prefix)+r'/pulls/[1-9][0-9]*/files',path):
+            require(set(query)=={'per_page','page'} and query['per_page']=='100' and re.fullmatch(r'[1-9][0-9]{0,2}',query['page']) is not None,'bounded files inventory required')
+        elif re.fullmatch(re.escape(prefix)+r'/issues/[1-9][0-9]*/comments',path):
+            require(set(query)=={'since','per_page','page'} and query['per_page']=='30' and query['page'] in {'1','2','3','4'} and len(query['since'])<=64,'bounded decision inventory required')
+        elif path==prefix+'/actions/runs':
+            require(set(query)=={'head_sha','event','per_page'} and re.fullmatch('[a-f0-9]{40}',query['head_sha']) is not None and query['event']=='push' and query['per_page']=='10','exact merged CI query required')
+        elif re.fullmatch(re.escape(prefix)+r'/actions/runs/[1-9][0-9]*/jobs',path):
+            require(query=={'per_page':'100'},'bounded job inventory required')
+        else:
+            raise ValueError('public epoch endpoint denied')
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self,*args,**kwargs):
+                raise ValueError('public evidence redirect denied')
+        request=urllib.request.Request('https://api.github.com/'+endpoint,method='GET',headers={
+            'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28',
+            'User-Agent':'investment-scout-epoch-verifier'})
+        opener=urllib.request.build_opener(urllib.request.ProxyHandler({}),NoRedirect())
+        with opener.open(request,timeout=30) as response:
+            require(response.status==200 and response.geturl()==request.full_url,'canonical successful public response required')
+            require(response.headers.get_content_type()=='application/json','public JSON response required')
+            raw=response.read(20_000_001)
+        require(len(raw)<=20_000_000,'bounded public evidence required')
+        value=r.loads(raw)
+        require(type(value) in (dict,list),'public object or inventory required')
+        return value
+
+
 def live_authorization(a,client=None):
     # Fresh read-only GitHub verification; a root JSON boolean is insufficient.
-    from dev_agent.github import GitHub
     from dev_agent.github_owner import verified_object,latest_object
     if client is None:
-        class ReadOnly(GitHub):
-            def read(self,endpoint,**kwargs):return super().read(endpoint,require_token=True)
-        client=ReadOnly(a['repository'])
+        client=PublicGitHub(a['repository'])
     object_id=int(a['owner_object'].rsplit('-',1)[1])
     data,current,origin=verified_object(client,object_id)
     require(origin['url']==a['owner_object'] and current['head']==a['reviewed_head'],'owner source binding changed')
@@ -80,12 +130,9 @@ def live_authorization(a,client=None):
 def issue_authorization(host,object_id,client=None):
     """Future root operator entrypoint; only an actual scoped owner object can mint."""
     plan=host.inspect() # All fixed root/staging/production protections still apply.
-    from dev_agent.github import GitHub
     from dev_agent.github_owner import verified_object
     if client is None:
-        class ReadOnly(GitHub):
-            def read(self,endpoint,**kwargs):return super().read(endpoint,require_token=True)
-        client=ReadOnly('labairj-ai/investment')
+        client=PublicGitHub('labairj-ai/investment')
     data,current,origin=verified_object(client,object_id)
     a=dict(version='scout-epoch-authorization-1',repository='labairj-ai/investment',scope=SCOPE,
         old_head=host.old,target_head=host.head,reviewed_head=current['head'],merge_sha=host.head,

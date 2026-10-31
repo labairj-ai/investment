@@ -367,3 +367,147 @@ def test_authorization_issuer_requires_live_scoped_owner_and_never_overwrites(ho
     assert e.authorization(e.AUTH,host.old,host.head)['nonce']==data['nonce']
     with pytest.raises(FileExistsError):e.issue_authorization(host,123,client)
     assert 'install' not in host.calls and 'stop' not in host.calls
+
+@pytest.fixture
+def public_evidence(approved,monkeypatch):
+    """Real owner/parser/policy/CI stack; only HTTPS responses are disposable."""
+    import io
+    from email.message import Message
+    from datetime import datetime, timezone
+    _,a=approved
+    a['owner_object']='https://github.com/labairj-ai/investment/pull/36#issuecomment-123'
+    bindings=dict(repository='labairj-ai/investment',owner_login='labairj-ai',owner_id=260142791,
+                  operators={},allowed_github_apps=[dict(id=1144995,slug='chatgpt-codex-connector')])
+    monkeypatch.setenv('DEV_AGENT_OWNER_BINDINGS',json.dumps(bindings))
+    # Ambient CLI/token/proxy settings must never be consulted by this transport.
+    monkeypatch.setenv('DEV_AGENT_GITHUB_READ_TOKEN_FILE','/must/not/be/read')
+    monkeypatch.setenv('GH_TOKEN','disposable-unusable-ambient-value')
+    monkeypatch.setenv('HTTPS_PROXY','http://invalid.invalid:1')
+    repo=dict(full_name=a['repository'],name='investment',owner=dict(type='User',id=260142791,login='labairj-ai'))
+    pr=dict(number=36,html_url='https://github.com/'+a['repository']+'/pull/36',state='closed',merged=True,draft=False,
+            merge_commit_sha=a['target_head'],head=dict(sha=a['reviewed_head'],ref='correction',repo=repo),base=dict(ref='main',repo=repo))
+    payload=dict(repository=a['repository'],pr=36,head=a['reviewed_head'],risk='L5',decision='APPROVE',nonce=a['nonce'],
+                 rationale=e.SCOPE+':'+a['old_head']+':'+a['target_head'],financial_ack=True,execution_ack=True)
+    now=datetime.now(timezone.utc).isoformat()
+    comment=dict(id=123,user=repo['owner'].copy(),performed_via_github_app=bindings['allowed_github_apps'][0].copy(),
+                 html_url=a['owner_object'],issue_url='https://api.github.com/repos/'+a['repository']+'/issues/36',
+                 created_at=now,updated_at=now)
+    runs=dict(total_count=1,workflow_runs=[dict(id=7,path='.github/workflows/test.yml',head_branch='main',head_sha=a['target_head'],event='push',status='completed',conclusion='success')])
+    jobs=dict(total_count=2,jobs=[dict(name=n,conclusion='success') for n in ('native-systemd255','test')])
+    state=dict(a=a,repo=repo,pr=pr,payload=payload,comment=comment,runs=runs,jobs=jobs,calls=[],headers=[],superseded=False,error=None)
+    class Response(io.BytesIO):
+        status=200
+        headers=Message()
+        headers['Content-Type']='application/json; charset=utf-8'
+        def geturl(self):return self.url
+    def open_request(request,timeout):
+        assert timeout==30 and request.method=='GET'
+        state['headers'].append(dict(request.header_items()))
+        assert not request.has_header('Authorization')
+        if state['error']:raise state['error']
+        endpoint=request.full_url.removeprefix('https://api.github.com/')
+        state['calls'].append(endpoint)
+        prefix='repos/'+a['repository']
+        comment['body']='OWNER-REVIEW solo-owner-2\n'+json.dumps(payload)
+        if endpoint==prefix:value=repo
+        elif endpoint==prefix+'/pulls/36':value=pr
+        elif '/files?' in endpoint:value=[dict(filename='ops/discovery/epoch_upgrade.py',patch='public GET transport')]
+        elif endpoint==prefix+'/issues/comments/123':value=comment
+        elif '/comments?' in endpoint:
+            value=[comment]
+            if state['superseded']:value.append(dict(comment,id=124))
+        elif '/actions/runs?' in endpoint:value=runs
+        elif '/jobs?' in endpoint:value=jobs
+        else:raise AssertionError(endpoint)
+        response=Response(json.dumps(value).encode());response.url=request.full_url
+        return response
+    def build(*handlers):
+        from types import SimpleNamespace
+        assert any(isinstance(h,e.urllib.request.ProxyHandler) and h.proxies=={} for h in handlers)
+        state['handlers']=handlers
+        return SimpleNamespace(open=open_request)
+    monkeypatch.setattr(e.urllib.request,'build_opener',build)
+    return state
+
+
+def test_anonymous_transport_preserves_real_owner_app_scope_and_ci_verification(public_evidence):
+    s=public_evidence
+    assert e.live_authorization(s['a'])==dict(owner_object_id=123,ci_run_id=7,head=s['a']['target_head'])
+    assert s['calls'] and all('Authorization' not in h for h in s['headers'])
+
+
+@pytest.mark.parametrize('failure',['owner','app','appslug','pr','head','merge','scope','nonce','edited','superseded','missing','api','rate_limit','ci','native','merge_only'])
+def test_public_evidence_security_rejections(public_evidence,failure):
+    import urllib.error
+    s=public_evidence
+    if failure=='owner':s['comment']['user']['id']=1234
+    if failure=='app':s['comment']['performed_via_github_app']['id']=1
+    if failure=='appslug':s['comment']['performed_via_github_app']['slug']='wrong'
+    if failure=='pr':s['payload']['pr']=35
+    if failure=='head':s['payload']['head']='d'*40
+    if failure=='merge':s['pr']['merge_commit_sha']='d'*40
+    if failure=='scope':s['payload']['rationale']='MERGE_ONLY'
+    if failure=='nonce':s['payload']['nonce']='a-different-owner-nonce'
+    if failure=='edited':s['comment']['updated_at']='2026-01-01T00:00:00Z'
+    if failure=='superseded':s['superseded']=True
+    if failure=='missing':s['error']=urllib.error.HTTPError('https://api.github.com',404,'missing',{},None)
+    if failure=='api':s['error']=urllib.error.URLError('unavailable')
+    if failure=='rate_limit':s['error']=urllib.error.HTTPError('https://api.github.com',403,'rate limited',{},None)
+    if failure=='ci':s['runs']['workflow_runs'][0]['conclusion']='failure'
+    if failure=='native':s['jobs']['jobs'][0]['conclusion']='failure'
+    if failure=='merge_only':s['payload']['action']='MERGE_ONLY'
+    with pytest.raises((ValueError,urllib.error.URLError)):e.live_authorization(s['a'])
+
+
+@pytest.mark.parametrize('endpoint',[
+    'https://evil.invalid/repos/labairj-ai/investment','//evil.invalid/path',
+    'repos/other/project','repos/labairj-ai/investment/deployments',
+    'repos/labairj-ai/investment/actions/workflows/1/dispatches',
+    'repos/labairj-ai/investment/../other','repos/labairj-ai/investment#fragment',
+    'repos/labairj-ai/investment?x=1','repos/labairj-ai/investment/pulls/34?token=x',
+    'repos/labairj-ai/investment/actions/runs?head_sha=x&event=push&per_page=10',
+    'repos/labairj-ai/investment/actions/runs/7/jobs?per_page=100&per_page=100'])
+def test_public_transport_rejects_noncontract_endpoints(public_evidence,endpoint):
+    with pytest.raises(ValueError):e.PublicGitHub('labairj-ai/investment').read(endpoint)
+    assert public_evidence['calls']==[]
+
+
+def test_public_transport_rejects_redirects_and_never_uses_shared_cli(public_evidence,monkeypatch):
+    from dev_agent.github import GitHub
+    monkeypatch.setattr(GitHub,'read',lambda *a,**kw:pytest.fail('shared credential/CLI fallback'))
+    e.live_authorization(public_evidence['a'])
+    handler=next(h for h in public_evidence['handlers'] if isinstance(h,e.urllib.request.HTTPRedirectHandler))
+    with pytest.raises(ValueError):handler.redirect_request(None,None,302,'redirect',{},'https://api.github.com/elsewhere')
+
+
+@pytest.mark.parametrize('raw',[b'not json',b'{"id":1,"id":2}',b'null',b'NaN',b'"scalar"',b'['+b' '*20_000_001+b']'])
+def test_public_transport_rejects_malformed_or_oversized_responses(monkeypatch,raw):
+    import io
+    from email.message import Message
+    from types import SimpleNamespace
+    class Response(io.BytesIO):
+        status=200;headers=Message();headers['Content-Type']='application/json'
+        def geturl(self):return 'https://api.github.com/repos/labairj-ai/investment'
+    monkeypatch.setattr(e.urllib.request,'build_opener',lambda *h:SimpleNamespace(open=lambda *a,**kw:Response(raw)))
+    with pytest.raises((ValueError,UnicodeError)):e.PublicGitHub('labairj-ai/investment').read('repos/labairj-ai/investment')
+
+
+def test_issuer_uses_public_evidence_without_dedicated_credentials(host,public_evidence,monkeypatch):
+    s=public_evidence;host.head=s['a']['target_head'];host.plan['head']=host.head
+    monkeypatch.setattr(e,'AUTH',e.r.CONFIG.parent/'authorization.json')
+    result=e.issue_authorization(host,123)
+    assert result['status']=='AUTHORIZATION_RECORDED' and result['changes_applied'] is False
+    assert e.authorization(e.AUTH,host.old,host.head)['reviewed_head']==s['a']['reviewed_head']
+    assert 'install' not in host.calls and 'stop' not in host.calls
+
+
+@pytest.mark.parametrize('status,content_type,url',[(403,'application/json','https://api.github.com/repos/labairj-ai/investment'),(200,'text/html','https://api.github.com/repos/labairj-ai/investment'),(200,'application/json','https://evil.invalid/')])
+def test_public_transport_rejects_unsuccessful_or_noncanonical_response(monkeypatch,status,content_type,url):
+    import io
+    from email.message import Message
+    from types import SimpleNamespace
+    class Response(io.BytesIO):
+        def geturl(self):return url
+    response=Response(b'{}');response.status=status;response.headers=Message();response.headers['Content-Type']=content_type
+    monkeypatch.setattr(e.urllib.request,'build_opener',lambda *h:SimpleNamespace(open=lambda *a,**kw:response))
+    with pytest.raises(ValueError):e.PublicGitHub('labairj-ai/investment').read('repos/labairj-ai/investment')
