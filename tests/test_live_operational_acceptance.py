@@ -161,3 +161,7 @@ def test_missing_post_fix_measurement_is_not_inferred_from_health(store,monkeypa
     assert any('recurrence observation unavailable' in reason for reason in result['blockers'])
 
 from test_pr13_evidence_integrity import complete_evidence
+
+
+# Imported deployment transaction fixtures require explicit isolated scoped policy.
+from test_deployment_agent import scoped_transaction_policy

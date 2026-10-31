@@ -346,3 +346,7 @@ def test_timer_duplicate_cannot_refresh_expired_success_window(store):
     r=scheduler_health.health(store,now+1)
     assert r['successful_runs']==1 and r['duplicate_runs']==1
     assert r['status']=='STALE' and r['last_success']==p['ended_at']
+
+
+# Imported deployment transaction fixtures require explicit isolated scoped policy.
+from test_deployment_agent import scoped_transaction_policy
