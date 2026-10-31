@@ -60,7 +60,10 @@ The new poller filters the v3 header, verifies the deployment action before queu
 and never queues MERGE_ONLY. The transaction boundary independently validates the
 embedded action and identity and repeats current admission before any receipt,
 service or source mutation; it checks scope again before stopping the service.
-Changing a top-level action flag cannot alter the embedded authenticated binding.
+The outer and embedded action must match the independently retained authenticated
+owner-review binding and exact GitHub owner object. Relabeling both action flags
+in faulty upstream admission cannot turn an authenticated MERGE_ONLY review into
+deployment authority.
 Interrupted-recovery journals retain the original scope and recovery validates it
 before service/source mutations. Legacy or unscoped pending journals require
 explicit intervention; they cannot silently become v3 deployment authority.

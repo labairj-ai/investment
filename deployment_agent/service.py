@@ -96,6 +96,13 @@ def require_deployment_scope(authorization):
     """Transaction boundary independently denies generic or merge-only admission."""
     from dev_agent.github_owner import validate_action
     data=authorization.get('action_authorization')
+    proof=authorization.get('owner_review')
+    if (not isinstance(proof,dict) or proof.get('authentication_source')!='github-owner-object'
+            or proof.get('action_binding')!=data):
+        raise ValueError('deployment scope must match authenticated owner review evidence')
+    origin=proof.get('origin') or {}
+    if origin.get('id')!=authorization.get('authorization_id') or origin.get('url')!=authorization.get('authorization_url'):
+        raise ValueError('deployment action owner object differs from admission')
     validate_action(data,'DEPLOY')
     if authorization.get('authorization_contract')!='solo-owner-3' or authorization.get('action')!='MERGE_AND_DEPLOY':
         raise ValueError('explicit deployment action required before mutations')

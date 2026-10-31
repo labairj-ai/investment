@@ -45,7 +45,7 @@ def authorization():
     from test_development_agent_owner_review import Client
     data=action_binding(context(Client(),1,risk='L5'),'MERGE_AND_DEPLOY','unique-deployment-nonce-0001','Scoped fixture',financial_ack=True,execution_ack=True)
     data['head']='c'*40
-    return dict(action='MERGE_AND_DEPLOY',authorization_contract='solo-owner-3',action_authorization=data,main_sha='b'*40,head_ci=e['head_ci'],merge_ci=e['merge_ci'],repository='owner/repo',authorization_id=123,authorization_url='https://github.com/owner/repo/pull/1#issuecomment-123',pr=1,head='c'*40,merge_sha='b'*40,nonce='unique-deployment-nonce-0001',deployment_actor='owner')
+    return dict(owner_review=dict(authentication_source='github-owner-object',action_binding=copy.deepcopy(data),origin=dict(id=123,url='https://github.com/owner/repo/pull/1#issuecomment-123')),action='MERGE_AND_DEPLOY',authorization_contract='solo-owner-3',action_authorization=data,main_sha='b'*40,head_ci=e['head_ci'],merge_ci=e['merge_ci'],repository='owner/repo',authorization_id=123,authorization_url='https://github.com/owner/repo/pull/1#issuecomment-123',pr=1,head='c'*40,merge_sha='b'*40,nonce='unique-deployment-nonce-0001',deployment_actor='owner')
 
 
 def test_successful_exact_merge_deploy_and_idempotence(tmp_path):
@@ -150,7 +150,8 @@ def test_deployment_wrong_or_stale_authorization_never_admits(authorized_owner,m
 def test_deployment_nonce_cannot_be_reused_for_another_owner_object(tmp_path):
     executor=FakeExecutor(tmp_path);auth=authorization()
     assert deploy(executor,auth,origin='https://github.com/owner/repo.git',admit_again=lambda:auth)['status']=='DEPLOYED_VERIFIED'
-    changed=dict(auth,authorization_id=124)
+    changed=copy.deepcopy(auth);changed.update(authorization_id=124,authorization_url='https://github.com/owner/repo/pull/1#issuecomment-124')
+    changed['owner_review']['origin']=dict(id=124,url=changed['authorization_url'])
     with pytest.raises(ValueError):deploy(executor,changed,origin='https://github.com/owner/repo.git',admit_again=lambda:changed)
 
 

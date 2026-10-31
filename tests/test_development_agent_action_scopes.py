@@ -320,3 +320,22 @@ def test_remote_nonce_cannot_be_reissued_by_a_fresh_owner_ledger(authorized_owne
     client.write=lambda *a:pytest.fail('remote replay must stop before issuance')
     with pytest.raises(ValueError,match='nonce replay'):
         record_decision(fresh,client,o.context(client,1,risk='L5'),decision='APPROVE',nonce=data['nonce'],rationale='replay',action='MERGE_ONLY',financial_ack=True,execution_ack=True)
+
+
+def test_executor_rejects_upstream_relabeling_even_when_both_action_flags_say_deploy(owner_setup,tmp_path):
+    executor=FakeExecutor(tmp_path);auth=authorization()
+    auth['owner_review']['action_binding']['action']='MERGE_ONLY'
+    # Faulty upstream asserts deployment in both outer and embedded fields. The
+    # independently retained authenticated review still binds MERGE_ONLY.
+    assert auth['action']==auth['action_authorization']['action']=='MERGE_AND_DEPLOY'
+    with pytest.raises(ValueError,match='authenticated owner review'):
+        deploy(executor,auth,origin='https://github.com/owner/repo.git',admit_again=lambda:auth)
+    assert executor.operations==[] and not executor.receipts.exists()
+
+
+def test_executor_rejects_owner_object_substitution(owner_setup,tmp_path):
+    executor=FakeExecutor(tmp_path);auth=authorization()
+    auth['owner_review']['origin']['id']=124
+    with pytest.raises(ValueError,match='owner object differs'):
+        deploy(executor,auth,origin='https://github.com/owner/repo.git',admit_again=lambda:auth)
+    assert executor.operations==[] and not executor.receipts.exists()
