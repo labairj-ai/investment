@@ -95,7 +95,26 @@ def accepted_runs(store,source_head,now=None):
     return sorted(accepted,key=lambda p:p['started_at'])
 
 
-def host_safety(source_head,runs,now):
+def receipt_path(source_head):
+    from pathlib import Path
+    import stat
+    base=Path('/var/lib/investment-development-acceptance')
+    config=Path('/etc/investment-discovery-observer/config.json')
+    if not config.exists() and not config.is_symlink():return base/'discovery.json'
+    from .structured_json import loads
+    for p in (config,*config.parents):
+        info=p.lstat()
+        if p.is_symlink() or info.st_uid!=0 or info.st_mode&0o022:raise ValueError('protected epoch selector required')
+    if not stat.S_ISREG(config.stat().st_mode) or config.stat().st_size>2_000_000:raise ValueError('bounded epoch selector required')
+    raw=config.read_bytes();data=loads(raw)
+    if config.read_bytes()!=raw or data.get('head')!=source_head:raise ValueError('current source selector required')
+    epoch=data.get('acceptance_epoch')
+    if epoch is None:return base/'discovery.json'
+    if epoch!=source_head or not re.fullmatch('[a-f0-9]{40}',epoch):raise ValueError('exact qualification epoch required')
+    return base/'epochs'/epoch/'discovery.json'
+
+
+def host_safety(source_head,runs,now,*,required=3):
     """Operator-owned OS/state observations outside discovery's writable state.
 
     This reads actual host acceptance only. It does not issue a certificate,
@@ -103,8 +122,8 @@ def host_safety(source_head,runs,now):
     """
     from pathlib import Path
     import os,stat
-    path=Path('/var/lib/investment-development-acceptance/discovery.json')
     try:
+        path=receipt_path(source_head)
         info=path.lstat()
         if path.is_symlink() or not stat.S_ISREG(info.st_mode) or info.st_uid!=0 or info.st_mode&0o022 or info.st_size>64000:return False
         for parent in path.parents:
@@ -124,13 +143,39 @@ def host_safety(source_head,runs,now):
                 before=r.get(kind+'_before');after=r.get(kind+'_after')
                 if not isinstance(before,str) or not re.fullmatch('[a-f0-9]{64}',before) or before!=after:return False
             seen.add(invocation)
-        return len(seen)>=3
+        return len(seen)==len(runs) and len(seen)>=required
     except (OSError,ValueError,TypeError,KeyError,AttributeError):return False
+
+
+def qualification_epochs(source_head):
+    """Public root-owned epoch summary; historical data never grants current credit."""
+    import stat
+    path=receipt_path(source_head)
+    if path.parent.name!=source_head:return dict(current_source=source_head,historical=[],epoch_transition=False)
+    marker=path.parent/'transition.json'
+    for p in (marker,*marker.parents):
+        info=p.lstat()
+        if p.is_symlink() or info.st_uid!=0 or info.st_mode&0o022:raise ValueError('protected epoch marker required')
+    if not stat.S_ISREG(marker.stat().st_mode) or marker.stat().st_size>4096:raise ValueError('bounded epoch marker required')
+    from .structured_json import loads
+    raw=marker.read_bytes();data=loads(raw)
+    if raw!=marker.read_bytes() or set(data)!={'status','source_head','old_head','nonce','history'} or data['status']!='COMMITTED' or data['source_head']!=source_head:raise ValueError('committed current epoch required')
+    h=data['history']
+    if not isinstance(h,dict) or set(h)!={'source_head','accepted_slots','accepted_count','manifest_sha256'}:raise ValueError('historical epoch identity required')
+    if h['source_head']!=data['old_head'] or h['source_head']==source_head or not re.fullmatch('[a-f0-9]{40}',str(h['source_head'])) or not re.fullmatch('[a-f0-9]{64}',str(h['manifest_sha256'])):raise ValueError('distinct content-bound historical epoch required')
+    slots=h['accepted_slots']
+    if not isinstance(slots,list) or any(not isinstance(slot,str) or not re.fullmatch('scout:[0-9]{4}-[0-9]{2}-[0-9]{2}',slot) for slot in slots) or len(slots)!=len(set(slots)) or type(h['accepted_count']) is not int or h['accepted_count']!=len(slots):raise ValueError('exact historical slots required')
+    return dict(current_source=source_head,historical=[h],epoch_transition=True)
 
 
 def acceptance(store,source_head,now=None):
     now=time.time() if now is None else now
     runs=accepted_runs(store,source_head,now)
+    try:
+        epochs=qualification_epochs(source_head)
+        if epochs['epoch_transition'] and (not runs or not host_safety(source_head,runs,now,required=1)):runs=[]
+    except (OSError,ValueError,TypeError,KeyError,AttributeError):
+        epochs=dict(current_source=source_head,historical=[],epoch_transition=True,error='epoch authority unavailable');runs=[]
     observed=health(store,now)
     current=(observed.get('status')=='SCHEDULED' and observed.get('inventory_complete') is True
              and observed.get('enabled') is True and observed.get('active')=='active')
@@ -138,7 +183,7 @@ def acceptance(store,source_head,now=None):
     ready=current and len(runs)>=3 and safe
     reason='three genuine scheduled runs and host safety accepted' if ready else 'discovery host safety acceptance is incomplete' if current and len(runs)>=3 else 'discovery service has not completed three current scheduled runs'
     return dict(status='READY' if ready else 'NOT READY',reason=reason,
-                source_head=source_head,successful_runs=len(runs),required_runs=3,runs=runs,host_safety_accepted=safe,scheduled_discovery=observed,grants_implementation=False)
+                source_head=source_head,successful_runs=len(runs),required_runs=3,runs=runs,epochs=epochs,current_epoch_accepted_runs=len(runs),host_safety_accepted=safe,scheduled_discovery=observed,grants_implementation=False)
 
 
 def require_candidate(store,candidate_id,source_head,now=None):

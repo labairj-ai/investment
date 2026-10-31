@@ -1,0 +1,15 @@
+[Unit]
+Description=Isolated native Job-property fixture; never Scout or acceptance
+RefuseManualStart=yes
+[Service]
+Type=oneshot
+User=fixture
+Group=fixture
+ExecStartPre=/usr/bin/python3 -I -S /opt/provenance-proof/probe.py pre
+ExecStart=/usr/bin/python3 -I -S /opt/provenance-proof/probe.py main
+NoNewPrivileges=yes
+PrivateNetwork=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/provenance-proof

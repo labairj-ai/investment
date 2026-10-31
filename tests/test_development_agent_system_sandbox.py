@@ -99,7 +99,12 @@ def test_scheduler_manager_environment_cannot_redirect_system_bus(monkeypatch):
  calls=[]
  def run(cmd,**kw):
   calls.append(kw);assert kw['env']=={'PATH':'/usr/bin:/bin','HOME':'/nonexistent'};raise OSError('unavailable')
- monkeypatch.setattr(scheduler.subprocess,'run',run)
+ monkeypatch.setattr(o,'protected',lambda p:None)
+ monkeypatch.setattr(Path,'read_bytes',lambda p:o.encoded(dict(head='a'*40,observer_digest='reviewed')))
+ monkeypatch.setattr(o,'file_hash',lambda p:'reviewed')
+ from dev_agent import discovery
+ monkeypatch.setattr(discovery,'git',lambda *a:'a'*40)
+ monkeypatch.setattr(o.subprocess,'check_output',run)
  assert scheduler.trigger()=={'source':'operator','invocation':None} and calls
 
 

@@ -1,0 +1,7 @@
+[Unit]
+Description=Disposable repeated natural timer fixture; no Scout authority
+[Timer]
+OnActiveSec=2s
+OnUnitInactiveSec=2s
+AccuracySec=1ms
+Unit=provenance-proof.service
