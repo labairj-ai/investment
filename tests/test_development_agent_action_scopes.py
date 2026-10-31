@@ -113,7 +113,7 @@ def test_frozen_deployed_poller_never_discovers_v3_merge_only(authorized_owner,t
 def test_new_poller_never_queues_merge_only_after_merge_or_ci(authorized_owner,tmp_path):
     store,client,obj,data=authorized_owner;data['nonce']='new-scoped-only-0001';replace(store,client,obj,data,action='MERGE_ONLY')
     old=client.read;client.read=lambda ep:[obj] if '/issues/comments?' in ep else [dict(number=1,merge_commit_sha='c'*40)] if '/pulls?per_page=100' in ep else old(ep)
-    read_all=client.read_all;client.read_all=lambda ep:[obj] if ep.endswith('/comments') else read_all(ep)
+    read_all=client.read_all;client.read_all=lambda ep:[obj] if '/comments' in ep else read_all(ep)
     for _ in range(4):assert pending(client,tmp_path)==[]
     with pytest.raises(ValueError,match='MERGE_ONLY'):authorize(store,client,999)
 
@@ -211,7 +211,7 @@ def test_bootstrap_refuses_prior_generic_approval_even_if_v3_would_supersede_it(
 
 def test_bootstrap_detects_concurrent_legacy_review_after_issuance(bootstrap):
     store,client,state,writes,b=bootstrap;reviewed=b.inspect(client);original=client.read_all
-    client.read_all=lambda ep:([dict(body=g.HEADER+'{}')] if writes else []) if ep.endswith('/comments') else original(ep)
+    client.read_all=lambda ep:([dict(body=g.HEADER+'{}')] if writes else []) if ep=='repos/'+b.REPOSITORY+'/issues/34/comments' else original(ep)
     with pytest.raises(ValueError,match='legacy owner object'):
         b.merge_once(store,client,reviewed,deliberate_action='MERGE_ONLY',nonce='concurrent-owner-scope-0001',rationale='Merge only',financial_ack=True,execution_ack=True)
     assert len(writes)==1 and writes[0][2]=='POST'
@@ -301,3 +301,22 @@ def test_interrupted_recovery_cannot_mutate_from_merge_only_or_unscoped_evidence
     write_final(executor.receipts,'pending',dict(prior_sha='a'*40,target='b'*40,authorization_id=123,protected=executor.protected(),scope=auth))
     with pytest.raises(ValueError):recover(executor,'https://github.com/owner/repo.git')
     assert executor.operations==[] and executor.sha=='a'*40
+
+
+def test_duplicate_remote_nonce_is_rejected_without_a_local_ingestion_record(authorized_owner):
+    store,client,obj,data=authorized_owner
+    older=copy.deepcopy(obj);older['id']=998
+    original=client.read_all
+    client.read_all=lambda ep:[older,obj] if '/comments' in ep else original(ep)
+    with pytest.raises(ValueError,match='nonce replay'):g.verified_object(client,999)
+
+
+def test_remote_nonce_cannot_be_reissued_by_a_fresh_owner_ledger(authorized_owner):
+    from owner_gateway.core import record_decision
+    from dev_agent.store import Store
+    store,client,obj,data=authorized_owner;original=client.read
+    fresh=Store(store.path.parent/'fresh'/'development-control.sqlite3');fresh.migrate()
+    client.read=lambda ep:dict(login='owner',id=1,type='User') if ep=='user' else original(ep)
+    client.write=lambda *a:pytest.fail('remote replay must stop before issuance')
+    with pytest.raises(ValueError,match='nonce replay'):
+        record_decision(fresh,client,o.context(client,1,risk='L5'),decision='APPROVE',nonce=data['nonce'],rationale='replay',action='MERGE_ONLY',financial_ack=True,execution_ack=True)

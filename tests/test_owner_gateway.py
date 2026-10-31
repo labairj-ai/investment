@@ -16,6 +16,8 @@ def test_owner_ok_records_native_object_but_never_implicitly_merges(owner_setup)
         obj=dict(id=123,user=dict(login='owner',id=1,type='User'),performed_via_github_app=None,body=payload['body'],created_at=now,updated_at=now,issue_url='https://api.github.com/repos/owner/repo/issues/1',html_url='https://github.com/owner/repo/pull/1#issuecomment-123')
         objects['repos/owner/repo/issues/comments/123']=obj;return obj
     client.write=write
+    original_all=client.read_all
+    client.read_all=lambda ep:list(objects.values()) if '/comments' in ep else original_all(ep)
     result=record_decision(store,client,context(client,1,risk='L5'),decision='APPROVE',nonce='explicit-owner-ok-0001',rationale='Owner reviewed',action='MERGE_ONLY',financial_ack=True,execution_ack=True)
     assert result['decision']=='APPROVE' and len(actions)==1 and actions[0][2]=='POST'
     with pytest.raises(ValueError):merge_after_ok(store,client,1,expected_head=client.head)

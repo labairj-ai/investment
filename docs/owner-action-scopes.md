@@ -26,7 +26,10 @@ GitHub supplies the authenticated human actor, allowed application, canonical
 comment URL and PR association, and immutable creation timestamp. Edited objects,
 wrong owner/app/PR/head, duplicate JSON keys, nonfinite data, invalid acknowledgments,
 source/policy changes and superseding decisions fail closed. The object is reread
-after validation. The append-only isolated authority ledger rejects nonce reuse
+after validation. Complete bounded authenticated GitHub history is checked for nonce reuse before
+issuance and during verification, including duplicate objects not ingested by this
+controller. Incomplete visibility fails closed. The append-only isolated authority
+ledger also rejects nonce reuse
 with a different object/context; same-object ingestion is idempotent evidence,
 not a second merge. The merge action expires after one hour and is exact-head and
 immediate; successful merge is recorded and cannot be replayed. Delayed deployment

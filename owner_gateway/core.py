@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 from dev_agent.owner_review import policy,context
-from dev_agent.github_owner import ACTION_HEADER,ingest,action_binding
+from dev_agent.github_owner import ACTION_HEADER,ingest,action_binding,nonce_inventory
 from scripts.check_owner_review import check
 
 
@@ -56,6 +56,7 @@ def record_decision(store,client,expected,*,decision,nonce,rationale,action=None
     if not isinstance(nonce,str) or not re.fullmatch(r'[A-Za-z0-9-]{16,128}',nonce):raise ValueError('single-use owner nonce required')
     with store.connect() as db:
         if db.execute('SELECT 1 FROM dev_events WHERE event_id=?',('owner-review:'+nonce,)).fetchone():raise ValueError('owner decision nonce already used')
+    nonce_inventory(client,nonce)
     payload=action_binding(expected,action,nonce,rationale,financial_ack=financial_ack,execution_ack=execution_ack)
     payload['decision']=decision
     obj=client.write(f'repos/{client.repository}/issues/{expected["pr"]}/comments',dict(body=ACTION_HEADER+json.dumps(payload,sort_keys=True),_pr=expected['pr']),'POST')

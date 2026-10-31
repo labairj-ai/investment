@@ -192,5 +192,7 @@ def scoped_approve(setup,*,number=1,action='MERGE_AND_DEPLOY'):
     stamp=datetime.now(timezone.utc).isoformat()
     obj=dict(id=991,user=dict(id=1,login='owner',type='User'),performed_via_github_app=None,body=ACTION_HEADER+json.dumps(data),created_at=stamp,updated_at=stamp,issue_url=f'https://api.github.com/repos/owner/repo/issues/{number}',html_url=f'https://github.com/owner/repo/pull/{number}#issuecomment-991')
     previous=client.read
+    original_all=client.read_all
+    client.read_all=lambda endpoint:[obj] if '/comments' in endpoint else original_all(endpoint)
     client.read=lambda endpoint:obj if '/issues/comments/991' in endpoint else [obj] if f'/issues/{number}/comments?' in endpoint else previous(endpoint)
     return ingest(store,client,991)

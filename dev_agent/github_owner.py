@@ -50,6 +50,23 @@ def validate_action(data,operation):
     return data['action']
 
 
+def nonce_inventory(client,nonce,object_id=None):
+    """Check complete remote history, not only one controller's local ledger."""
+    from .structured_json import loads
+    rows=client.read_all('repos/'+client.repository+'/issues/comments')
+    if not isinstance(rows,list) or len(rows)>=10000:raise ValueError('complete bounded owner nonce inventory required')
+    p=policy();matches=[]
+    for row in rows:
+        actor=row.get('user') or {};body=row.get('body','')
+        if (actor.get('id')!=p['owner_id'] or actor.get('login')!=p['owner_login'] or actor.get('type')!='User'
+                or not isinstance(body,str) or not body.startswith((HEADER,ACTION_HEADER))):continue
+        if len(body.encode())>16000:raise ValueError('bounded owner object required')
+        data=loads(body[len(ACTION_HEADER if body.startswith(ACTION_HEADER) else HEADER):])
+        if not isinstance(data,dict):raise ValueError('typed owner nonce inventory required')
+        if data.get('nonce')==nonce:matches.append(row.get('id'))
+    if matches!=([object_id] if object_id is not None else []):raise ValueError('owner nonce replay or incomplete remote inventory')
+
+
 def verified_object(client,object_id):
     if type(object_id) is not int or object_id<=0:raise ValueError('GitHub comment ID required')
     p=policy();obj=client.read(f'repos/{client.repository}/issues/comments/{object_id}')
@@ -79,6 +96,7 @@ def verified_object(client,object_id):
     level=int(data['risk'][1:])
     if data['decision']=='APPROVE' and (level>=3 and not data['rationale'].strip() or level>=4 and not data['financial_ack'] or level>=5 and not data['execution_ack']):raise ValueError('risk acknowledgments missing')
     if scoped:
+        nonce_inventory(client,data['nonce'],object_id)
         validate_action(data,'MERGE')
         if abs(data['issued_at']-created)>60:raise ValueError('fresh issuance bound to GitHub timestamp required')
     # No conversation, OAuth token or private credential enters the ledger.

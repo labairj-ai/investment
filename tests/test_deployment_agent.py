@@ -120,6 +120,8 @@ def authorized_owner(owner_setup):
         if '/pulls?per_page=100' in endpoint:return []
         return original(endpoint)
     client.read=read
+    original_all=client.read_all
+    client.read_all=lambda endpoint:[obj] if '/comments' in endpoint else original_all(endpoint)
     ingest(store,client,999)
     return store,client,obj,data
 
