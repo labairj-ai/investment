@@ -93,6 +93,9 @@ def test_frozen_deployed_poller_never_discovers_v3_merge_only(authorized_owner,t
     monkeypatch.setattr(g,'verified_object',lambda *a:pytest.fail('legacy header admitted new object'))
     original=client.read;identity=client.pr_identity
     def read(ep):
+        if '/check-runs' in ep:
+            sha=data['head'] if stage=='before_merge' else 'c'*40
+            return dict(total_count=1,check_runs=[dict(id=1,name='test',head_sha=sha,status='in_progress' if stage=='ci_pending' else 'completed',conclusion=None if stage=='ci_pending' else 'success')])
         if '/issues/comments?' in ep:return [copy.deepcopy(obj)]
         if '/pulls?per_page=100' in ep:return [dict(number=1,merge_commit_sha='c'*40)]
         return original(ep)
@@ -246,3 +249,41 @@ def test_object_replacement_during_validation_is_rejected(authorized_owner):
         return old(ep)
     client.read=read
     with pytest.raises(ValueError,match='changed during'):g.verified_object(client,999)
+
+
+@pytest.mark.parametrize('writer',['agent','owner'])
+def test_actual_write_transport_owner_is_checked_before_mutation(owner_setup,monkeypatch,writer):
+    from owner_gateway import core
+    from types import SimpleNamespace
+    store,reader,_=owner_setup;client=core.OwnerClient(reader);calls=[]
+    def run(args,**kw):
+        calls.append(args)
+        return SimpleNamespace(stdout=json.dumps(dict(type='User',login=writer,id=1 if writer=='owner' else 2)) if args==['gh','api','user'] else json.dumps(dict(merged=True,sha='c'*40)))
+    monkeypatch.setattr(core.subprocess,'run',run)
+    payload=dict(sha=reader.head,merge_method='merge',_pr=1)
+    if writer=='agent':
+        with pytest.raises(ValueError,match='actual GitHub write'):client.write('repos/owner/repo/pulls/1/merge',payload,'PUT')
+        assert calls==[['gh','api','user']]
+    else:
+        assert client.write('repos/owner/repo/pulls/1/merge',payload,'PUT')['merged']
+        assert calls[1][:4]==['gh','api','--method','PUT']
+
+
+def test_merge_action_must_be_fresh_even_if_original_deployment_decision_stays_valid(authorized_owner):
+    from datetime import datetime,timezone,timedelta
+    from owner_gateway.core import advance_approved
+    store,client,obj,data=authorized_owner
+    stamp=datetime.now(timezone.utc)-timedelta(hours=2)
+    data.update(issued_at=stamp.timestamp(),nonce='stale-merge-new-nonce-0001')
+    obj.update(created_at=stamp.isoformat(),updated_at=stamp.isoformat())
+    replace(store,client,obj,data)
+    original=client.read;identity=client.pr_identity
+    client.read=lambda ep:dict(login='owner',id=1,type='User') if ep=='user' else original(ep)
+    client.pr_identity=lambda n:dict(identity(n),state='OPEN',isDraft=False)
+    client.write=lambda *a:pytest.fail('expired merge action cannot write')
+    with pytest.raises(ValueError,match='fresh merge action'):advance_approved(store,client,1)
+
+
+def test_frozen_legacy_and_scout_verifiers_have_exact_reviewed_content():
+    expected={'legacy_deployment_poller_a27.py': '0d00fb1d714da011275c0ef590bfa31104d7b41b11f406b3eb33f9e88e601e08', 'legacy_github_owner_a27.py': '7942ec78729f9e30237cda32e795a39b76ff7d325735fcf839e4e2da5e74d332', 'scout_epoch_authorization_1f25.py': 'cac3f8a707c75b0c0835ee8708bb172d6a8e6010f9e781025689fabeef211054'}
+    for name,sha in expected.items():assert hashlib.sha256((Path(__file__).parent/'frozen'/name).read_bytes()).hexdigest()==sha

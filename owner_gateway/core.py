@@ -28,6 +28,12 @@ class OwnerClient:
             if payload['merge_method']!='merge' or not re.fullmatch(r'[a-f0-9]{40}',str(payload['sha'])):raise ValueError('exact immediate merge scope required')
             allowed={f'repos/{self.repository}/pulls/{number}/merge':'PUT'}
         if allowed.get(endpoint)!=method:raise ValueError('fixed owner action endpoint required')
+        # Reader credentials can differ from gh's writer credential. Authenticate
+        # the actual write transport before any comment or merge mutation.
+        actor=json.loads(subprocess.run(['gh','api','user'],check=True,capture_output=True,text=True,timeout=30).stdout)
+        p=policy()
+        if actor.get('type')!='User' or actor.get('login')!=p['owner_login'] or actor.get('id')!=p['owner_id']:
+            raise ValueError('actual GitHub write transport must be the authenticated owner')
         with tempfile.TemporaryDirectory(prefix='owner-action-') as tmp:
             path=Path(tmp)/'request.json';path.write_text(json.dumps(payload));path.chmod(0o600)
             result=subprocess.run(['gh','api','--method',method,endpoint,'--input',str(path)],check=True,capture_output=True,text=True,timeout=30)

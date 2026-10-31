@@ -48,7 +48,9 @@ must have neither owner credentials nor connector filesystem/process access.
 The owner connector emits only v3 objects with an explicitly selected action.
 The merge gate requires current authenticated v3 authority, exact-head successful
 CI and the existing human merge policy. GitHub receives one immediate merge PUT
-with the expected head; its actual owner merge actor is verified afterward.
+with the expected head; its actual owner merge actor is verified afterward. The actual gh write transport
+is independently authenticated before POST/PUT; a separate read credential cannot
+substitute an owner identity for a different writer.
 
 Deployment admission requires MERGE_AND_DEPLOY before any authority-ledger write.
 The new poller filters the v3 header, verifies the deployment action before queueing,

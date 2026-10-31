@@ -23,7 +23,7 @@ MAX_LIST_BYTES=24000000
 MAX_SOURCE_BYTES=16000000
 CACHE_PREFIX='/var/cache/investment-discovery-reviewed-pycache'
 MIN_NAMESPACES={'dev_agent','ops','scripts','config','systemd','.github'}
-ENTRY_MODULES=('ops.discovery.migrate','ops.discovery.sandbox_certify','ops.discovery.upgrade','ops.discovery.observer','dev_agent.cli','scripts.collect_development_signals')
+ENTRY_MODULES=('owner_gateway.core','owner_gateway.scout_merge_only','deployment_agent.admission','deployment_agent.poller','deployment_agent.service','ops.discovery.migrate','ops.discovery.sandbox_certify','ops.discovery.upgrade','ops.discovery.observer','dev_agent.cli','scripts.collect_development_signals')
 ENV={'PATH':'/usr/bin:/bin','HOME':'/nonexistent','GIT_CONFIG_NOSYSTEM':'1',
      'GIT_CONFIG_GLOBAL':'/dev/null','GIT_NO_REPLACE_OBJECTS':'1','GIT_ATTR_NOSYSTEM':'1',
      'GIT_TERMINAL_PROMPT':'0','LANG':'C.UTF-8'}
