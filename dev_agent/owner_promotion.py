@@ -99,6 +99,8 @@ def activation_authority(root,store,*,now=None):
     if runs.get('total_count',0)>100 or not tests:raise ValueError('activation merged-main CI unavailable')
     latest=max(tests,key=lambda r:r['id'])
     if latest.get('status')!='completed' or latest.get('conclusion')!='success':raise ValueError('activation merged-main CI must pass')
+    from .owner_review import require_action
+    require_action(store,client,number,'DEPLOY')
     approved=check(store,client,number,expected['head'])
     # owner_review.context enforces the deterministic risk floor, including L5
     # for configuration/governance changes. A later approved documentation-only

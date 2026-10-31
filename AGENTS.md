@@ -88,9 +88,13 @@ Reviewer evidence, bound to repository, PR, exact head, reviewed risk, timestamp
 and nonce. Agents must never manufacture that action. auto_merge=false and
 required_human_merge=true remain mandatory. The owner performs the final merge.
 The owner may authorize the isolated owner connector to perform that exact merge
-by saying Go after ChatGPT reviews the actual PR and CI. That same Go authorizes
-the resulting exact merge SHA to deploy after merged-main CI and all technical
-safety gates pass. A No-Go blocks both merge and deployment. A changed head
+after ChatGPT reviews the actual PR and CI. A versioned authenticated decision
+must explicitly select MERGE_ONLY or policy-supported MERGE_AND_DEPLOY.
+MERGE_ONLY grants no deployment, production transition or activation authority.
+Only MERGE_AND_DEPLOY can authorize the resulting exact merge SHA to deploy after
+merged-main CI and all technical safety gates pass. No rationale text, legacy
+object, missing scope or successful CI can expand an action. A No-Go blocks both
+merge and deployment. A changed head
 requires a fresh review and Go. No additional deployment, financial, execution or
 autonomy-promotion phrase is required. Elevated financial, execution, deployment,
 governance and autonomy risks must be clearly surfaced before Go. Internal review,

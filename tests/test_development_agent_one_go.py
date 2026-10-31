@@ -52,7 +52,7 @@ def test_one_go_never_bypasses_technical_gates(authorized_owner,failure):
     if failure=='head':client.head='d'*40
     if failure in {'no-go','other-pr'}:
         changed=dict(data,decision='REQUEST_CHANGES') if failure=='no-go' else dict(data,pr=2)
-        obj['body']='OWNER-REVIEW solo-owner-2\n'+json.dumps(changed)
+        obj['body']='OWNER-AUTHORIZATION solo-owner-3\n'+json.dumps(changed)
     with pytest.raises(ValueError):authorize(store,client,999,emergency_stop=failure=='emergency')
 
 
@@ -133,7 +133,7 @@ def test_activation_derives_authority_from_ordinary_review(authorized_owner,monk
     from dev_agent.github_owner import ingest
     store,client,obj,data=authorized_owner
     data.update(risk='L5',financial_ack=True,execution_ack=True,nonce='activation-single-go-0001')
-    obj['body']='OWNER-REVIEW solo-owner-2\n'+json.dumps(data)
+    obj['body']='OWNER-AUTHORIZATION solo-owner-3\n'+json.dumps(data)
     ingest(store,client,999)
     monkeypatch.setenv('DEV_AGENT_PROMOTION_PR','1')
     monkeypatch.setattr(github,'GitHub',lambda repository:client)
@@ -180,7 +180,7 @@ def test_original_go_remains_valid_without_daily_owner_renewal(authorized_owner)
     store,client,obj,data=authorized_owner
     stamp=(datetime.now(timezone.utc)-timedelta(days=2)).isoformat()
     obj.update(created_at=stamp,updated_at=stamp)
-    data['nonce']='older-owner-go-0001';obj['body']='OWNER-REVIEW solo-owner-2\n'+json.dumps(data)
+    data['issued_at']=(datetime.now(timezone.utc)-timedelta(days=2)).timestamp();data['nonce']='older-owner-go-0001';obj['body']='OWNER-AUTHORIZATION solo-owner-3\n'+json.dumps(data)
     ingest(store,client,999)
     assert authorize(store,client,999)['authorization_id']==999
 

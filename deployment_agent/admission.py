@@ -12,6 +12,8 @@ def authorize(store,client,object_id,*,emergency_stop=False,mirror_owner=False):
     # Derive release identity from current GitHub, never a second deployment act.
     from dev_agent.github_owner import verified_object,ingest
     decision,current,origin=verified_object(client,object_id)
+    from dev_agent.github_owner import validate_action
+    validate_action(decision,'DEPLOY')
     if decision['decision']!='APPROVE':raise ValueError('owner No-Go blocks deployment')
     if mirror_owner:ingest(store,client,object_id)
     owner=check(store,client,current['pr'],current['head'])
@@ -37,4 +39,4 @@ def authorize(store,client,object_id,*,emergency_stop=False,mirror_owner=False):
     if latest.get('status')!='completed':raise ValueError('merged main CI is not complete')
     head_ci=ci_record(client.repository,data['head'],owner.get('ci_url'))
     merge_ci=ci_record(client.repository,data['merge_sha'],latest.get('html_url'))
-    return dict(data,main_sha=data['merge_sha'],head_ci=head_ci,merge_ci=merge_ci,authorization_id=object_id,authorization_url=origin['url'],owner_review=owner['owner_review'],ci_url=owner.get('ci_url'),deployment_actor=current['owner_login'])
+    return dict(data,action=decision['action'],authorization_contract='solo-owner-3',action_authorization=decision,main_sha=data['merge_sha'],head_ci=head_ci,merge_ci=merge_ci,authorization_id=object_id,authorization_url=origin['url'],owner_review=owner['owner_review'],ci_url=owner.get('ci_url'),deployment_actor=current['owner_login'])

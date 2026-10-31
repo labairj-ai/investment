@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 from dev_agent.owner_review import policy,context
-from dev_agent.github_owner import HEADER,ingest
+from dev_agent.github_owner import ACTION_HEADER,ingest,action_binding,nonce_inventory
 from scripts.check_owner_review import check
 
 
@@ -28,6 +28,12 @@ class OwnerClient:
             if payload['merge_method']!='merge' or not re.fullmatch(r'[a-f0-9]{40}',str(payload['sha'])):raise ValueError('exact immediate merge scope required')
             allowed={f'repos/{self.repository}/pulls/{number}/merge':'PUT'}
         if allowed.get(endpoint)!=method:raise ValueError('fixed owner action endpoint required')
+        # Reader credentials can differ from gh's writer credential. Authenticate
+        # the actual write transport before any comment or merge mutation.
+        actor=json.loads(subprocess.run(['gh','api','user'],check=True,capture_output=True,text=True,timeout=30).stdout)
+        p=policy()
+        if actor.get('type')!='User' or actor.get('login')!=p['owner_login'] or actor.get('id')!=p['owner_id']:
+            raise ValueError('actual GitHub write transport must be the authenticated owner')
         with tempfile.TemporaryDirectory(prefix='owner-action-') as tmp:
             path=Path(tmp)/'request.json';path.write_text(json.dumps(payload));path.chmod(0o600)
             result=subprocess.run(['gh','api','--method',method,endpoint,'--input',str(path)],check=True,capture_output=True,text=True,timeout=30)
@@ -40,7 +46,7 @@ def owner_actor(client):
     return actor
 
 
-def record_decision(store,client,expected,*,decision,nonce,rationale,financial_ack=False,execution_ack=False):
+def record_decision(store,client,expected,*,decision,nonce,rationale,action=None,financial_ack=False,execution_ack=False):
     owner_actor(client)
     if context(client,expected['pr'],risk=expected['risk'])!=expected:raise ValueError('owner decision context changed; review again')
     if decision not in {'APPROVE','REQUEST_CHANGES','DEFER'}:raise ValueError('explicit owner OK/NO decision required')
@@ -50,8 +56,10 @@ def record_decision(store,client,expected,*,decision,nonce,rationale,financial_a
     if not isinstance(nonce,str) or not re.fullmatch(r'[A-Za-z0-9-]{16,128}',nonce):raise ValueError('single-use owner nonce required')
     with store.connect() as db:
         if db.execute('SELECT 1 FROM dev_events WHERE event_id=?',('owner-review:'+nonce,)).fetchone():raise ValueError('owner decision nonce already used')
-    payload=dict(repository=client.repository,pr=expected['pr'],head=expected['head'],risk=expected['risk'],decision=decision,nonce=nonce,rationale=rationale,financial_ack=financial_ack,execution_ack=execution_ack)
-    obj=client.write(f'repos/{client.repository}/issues/{expected["pr"]}/comments',dict(body=HEADER+json.dumps(payload,sort_keys=True),_pr=expected['pr']),'POST')
+    nonce_inventory(client,nonce)
+    payload=action_binding(expected,action,nonce,rationale,financial_ack=financial_ack,execution_ack=execution_ack)
+    payload['decision']=decision
+    obj=client.write(f'repos/{client.repository}/issues/{expected["pr"]}/comments',dict(body=ACTION_HEADER+json.dumps(payload,sort_keys=True),_pr=expected['pr']),'POST')
     return ingest(store,client,obj['id'])
 
 
@@ -59,11 +67,18 @@ def merge_after_ok(store,client,number,*,expected_head,explicit_owner_merge=Fals
     if explicit_owner_merge is not True:raise ValueError('current owner workflow must explicitly authorize immediate merge')
     owner_actor(client)
     proof=check(store,client,number,expected_head)
+    issued=proof['owner_review']['action_binding']['issued_at']
+    import time
+    if not 0<=time.time()-issued<=3600:raise ValueError('fresh merge action required')
+    with store.connect() as db:
+        if db.execute("SELECT 1 FROM dev_events WHERE event_id=?",('owner-merge:'+str(number)+':'+expected_head,)).fetchone():raise ValueError('merge action already consumed')
     remote=client.pr_identity(number)
     if remote.get('headRefOid')!=expected_head or remote.get('state')!='OPEN' or remote.get('baseRefName')!='main' or remote.get('isDraft'):raise ValueError('exact open reviewed PR head required')
     result=client.write(f'repos/{client.repository}/pulls/{number}/merge',dict(sha=expected_head,merge_method='merge',_pr=number),'PUT')
     import re
     if result.get('merged') is not True or not re.fullmatch(r'[a-f0-9]{40}',result.get('sha','')):raise ValueError('GitHub rejected exact-head owner merge')
+    from dev_agent.owner_review import verify_merge_actor
+    verify_merge_actor(client,number,expected_head,result['sha'])
     return dict(status='OWNER_MERGED',head=expected_head,merge_sha=result['sha'],owner_review=proof['owner_review'],deployment_authorized=False)
 
 
@@ -75,7 +90,7 @@ def authorize_autonomy_promotion(*args,**kwargs):
     raise ValueError('retired: activation uses the activation PR owner Go')
 
 
-def go_no_go(store,client,reviewed,answer):
+def go_no_go(store,client,reviewed,answer,*,action=None):
     """Trusted owner connector entry point after ChatGPT's exact-head review.
 
     `reviewed` is the frozen context already displayed to the owner, including
@@ -86,7 +101,7 @@ def go_no_go(store,client,reviewed,answer):
     if answer not in {'Go','No-Go'}:raise ValueError('explicit Go or No-Go required')
     recorded=record_decision(store,client,reviewed,
         decision='APPROVE' if answer=='Go' else 'REQUEST_CHANGES',
-        nonce=str(uuid.uuid4()),rationale='Owner '+answer+' after exact-head ChatGPT review ('+reviewed['risk']+')',
+        action=action,nonce=str(uuid.uuid4()),rationale='Owner '+answer+' after exact-head ChatGPT review ('+reviewed['risk']+')',
         financial_ack=int(reviewed['risk'][1:])>=4,execution_ack=int(reviewed['risk'][1:])>=5)
 
     if answer=='No-Go':return dict(status='NO_GO',review=recorded)
@@ -101,8 +116,8 @@ def advance_approved(store,client,number):
     A timer may retry this fixed action. No user prompt, no agent credential,
     no GitHub auto-merge and no authority to select a different head.
     """
-    from dev_agent.owner_review import require
-    approved=require(store,client,number)
+    from dev_agent.owner_review import require_action
+    approved=require_action(store,client,number,'MERGE')
     head=approved['context']['head']
     remote=client.pr_identity(number)
     if remote.get('state')=='MERGED':return dict(status='MERGED_WAITING_FOR_MAIN_CI',head=head)

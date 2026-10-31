@@ -28,7 +28,7 @@ class Client:
 
 @pytest.fixture
 def setup(tmp_path,monkeypatch):
-    binding=dict(repository='owner/repo',owner_login='owner',owner_id=1,operators={'os-interactive-cli':['human-owner'],'tailscale-serve':['owner@example.com']})
+    binding=dict(issuer_source_head='f'*40,authorized_actions=['MERGE_ONLY','MERGE_AND_DEPLOY'],repository='owner/repo',owner_login='owner',owner_id=1,operators={'os-interactive-cli':['human-owner'],'tailscale-serve':['owner@example.com']})
     monkeypatch.setenv('DEV_AGENT_OWNER_BINDINGS',json.dumps(binding))
     monkeypatch.setenv('DEV_AGENT_OPERATORS','owner@example.com')
     store=Store(tmp_path/'development-control.sqlite3');store.migrate()
@@ -122,7 +122,7 @@ def test_required_owner_check_cannot_be_spoofed_by_another_app(setup):
 def test_owner_gate_requires_latest_exact_head_ci(setup):
     from scripts.check_owner_review import check
     store,client,_=setup
-    approve(setup)
+    scoped_approve(setup)
     original=client.read
     runs=[dict(id=1,name='test',head_sha=client.head,status='completed',conclusion='success',html_url='https://github.com/owner/repo/actions/runs/1')]
     client.read=lambda endpoint:dict(total_count=len(runs),check_runs=runs) if 'check-runs' in endpoint else original(endpoint)
@@ -151,7 +151,7 @@ def test_handoff_requires_owner_merge_and_actual_main_ancestry(setup):
     store,client,human=setup
     original_read=client.read
     client.read=lambda endpoint:dict(total_count=1,check_runs=[dict(id=1,name='test',head_sha=client.head,status='completed',conclusion='success')]) if 'check-runs' in endpoint else dict(status='ahead') if '/compare/' in endpoint else original_read(endpoint)
-    owner.attest(store,client,owner.context(client,6,risk='L0'),'APPROVE','owner-reviewed-pr-six-0001','Reviewed',human=human)
+    scoped_approve(setup,number=6)
     assert handoff(store,client)['status']=='READY_FOR_HUMAN_MERGE'
     original_pr=client.pr_identity
     client.pr_identity=lambda number:dict(original_pr(number),state='MERGED',mergeCommit=dict(oid='c'*40))
@@ -182,3 +182,17 @@ def test_automated_or_wrong_identity_merge_is_rejected(setup,mutation):
     original=client.read
     client.read=lambda endpoint:dict(original(endpoint),**mutation) if '/pulls/' in endpoint else original(endpoint)
     with pytest.raises(ValueError):owner.verify_merge_actor(client,1,client.head,'c'*40)
+
+
+def scoped_approve(setup,*,number=1,action='MERGE_AND_DEPLOY'):
+    from dev_agent.github_owner import ACTION_HEADER,action_binding,ingest
+    from datetime import datetime,timezone
+    store,client,_=setup
+    data=action_binding(owner.context(client,number,risk='L5'),action,'scoped-fixture-nonce-'+str(number),'Reviewed scoped exact head',financial_ack=True,execution_ack=True)
+    stamp=datetime.now(timezone.utc).isoformat()
+    obj=dict(id=991,user=dict(id=1,login='owner',type='User'),performed_via_github_app=None,body=ACTION_HEADER+json.dumps(data),created_at=stamp,updated_at=stamp,issue_url=f'https://api.github.com/repos/owner/repo/issues/{number}',html_url=f'https://github.com/owner/repo/pull/{number}#issuecomment-991')
+    previous=client.read
+    original_all=client.read_all
+    client.read_all=lambda endpoint:[obj] if '/comments' in endpoint else original_all(endpoint)
+    client.read=lambda endpoint:obj if '/issues/comments/991' in endpoint else [obj] if f'/issues/{number}/comments?' in endpoint else previous(endpoint)
+    return ingest(store,client,991)

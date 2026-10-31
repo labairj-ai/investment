@@ -67,3 +67,15 @@ No-Go/stale-head and all technical gates remain fail-closed. No service is insta
 no live owner decision is created, and all activation flags remain disabled.
 See `docs/solo-owner-governance.md` for the active workflow. Source tests are not
 live acceptance. This TODO remains open until all its acceptance evidence exists.
+
+
+## Action-scope correction (source-only; rollout pending)
+
+The explicit owner request for enforced MERGE_ONLY supersedes the generic Go
+semantics above. New action objects require L5 acknowledgments and explicitly
+select MERGE_ONLY or policy-supported MERGE_AND_DEPLOY. The latter retains the
+one-decision merge/deploy flow; the former grants no deployment, activation or
+Scout transition authority. Legacy objects remain historical evidence, never new
+action admission. See [action-scope runbook](../docs/owner-action-scopes.md).
+This TODO remains incomplete pending reviewed isolated controller installation
+and real owner acceptance. TODO0852 remains incomplete; 0853 stays blocked.
