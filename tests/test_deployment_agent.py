@@ -77,7 +77,7 @@ def test_changed_admission_prevents_deployment(tmp_path):
 def test_interrupted_deploy_requires_recovery(tmp_path):
     executor=FakeExecutor(tmp_path);executor.receipts.mkdir(mode=0o700)
     from dev_agent.result_collector import write_final
-    write_final(executor.receipts,'pending',dict(prior_sha='a'*40,target='b'*40,authorization_id=123,protected=executor.protected()))
+    write_final(executor.receipts,'pending',dict(prior_sha='a'*40,target='b'*40,authorization_id=123,protected=executor.protected(),scope=authorization()))
     executor.sha='b'*40;auth=authorization()
     with pytest.raises(ValueError):deploy(executor,auth,origin='https://github.com/owner/repo.git',admit_again=lambda:auth)
     receipt=recover(executor,'https://github.com/owner/repo.git')

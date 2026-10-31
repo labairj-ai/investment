@@ -58,6 +58,9 @@ and never queues MERGE_ONLY. The transaction boundary independently validates th
 embedded action and identity and repeats current admission before any receipt,
 service or source mutation; it checks scope again before stopping the service.
 Changing a top-level action flag cannot alter the embedded authenticated binding.
+Interrupted-recovery journals retain the original scope and recovery validates it
+before service/source mutations. Legacy or unscoped pending journals require
+explicit intervention; they cannot silently become v3 deployment authority.
 Activation consumers also require deployment-authorizing scope. Existing financial,
 source, backup, CI, health, runtime and rollback controls remain mandatory.
 

@@ -287,3 +287,17 @@ def test_merge_action_must_be_fresh_even_if_original_deployment_decision_stays_v
 def test_frozen_legacy_and_scout_verifiers_have_exact_reviewed_content():
     expected={'legacy_deployment_poller_a27.py': '0d00fb1d714da011275c0ef590bfa31104d7b41b11f406b3eb33f9e88e601e08', 'legacy_github_owner_a27.py': '7942ec78729f9e30237cda32e795a39b76ff7d325735fcf839e4e2da5e74d332', 'scout_epoch_authorization_1f25.py': 'cac3f8a707c75b0c0835ee8708bb172d6a8e6010f9e781025689fabeef211054'}
     for name,sha in expected.items():assert hashlib.sha256((Path(__file__).parent/'frozen'/name).read_bytes()).hexdigest()==sha
+
+
+@pytest.mark.parametrize('scope',['MERGE_ONLY',None,'legacy'])
+def test_interrupted_recovery_cannot_mutate_from_merge_only_or_unscoped_evidence(owner_setup,tmp_path,scope):
+    from deployment_agent.service import recover
+    from dev_agent.result_collector import write_final
+    executor=FakeExecutor(tmp_path);executor.receipts.mkdir(mode=0o700)
+    auth=authorization()
+    if scope=='MERGE_ONLY':auth['action_authorization']['action']=auth['action']='MERGE_ONLY'
+    if scope is None:auth['action_authorization'].pop('action')
+    if scope=='legacy':auth={}
+    write_final(executor.receipts,'pending',dict(prior_sha='a'*40,target='b'*40,authorization_id=123,protected=executor.protected(),scope=auth))
+    with pytest.raises(ValueError):recover(executor,'https://github.com/owner/repo.git')
+    assert executor.operations==[] and executor.sha=='a'*40
