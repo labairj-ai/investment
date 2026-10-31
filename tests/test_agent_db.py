@@ -221,11 +221,13 @@ def test_upsert_event_calendar_deduplicates(mem_db):
 def test_upsert_earnings_date_creates_row(mem_db):
     """upsert_earnings_date stores an earnings_dates row."""
     import agent_db
-    agent_db.upsert_earnings_date("ANET", "2026-10-28", confirmed_by="yfinance",
+    from datetime import date,timedelta
+    future_date=(date.today()+timedelta(days=30)).isoformat()
+    agent_db.upsert_earnings_date("ANET", future_date, confirmed_by="yfinance",
                                    confidence="provider_estimated", source="yfinance.calendar")
     row = agent_db.get_latest_earnings_date("ANET")
     assert row is not None
-    assert row["event_date"] == "2026-10-28"
+    assert row["event_date"] == future_date
     assert row["confirmed_by"] == "yfinance"
 
 

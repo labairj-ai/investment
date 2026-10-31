@@ -19,6 +19,7 @@ def handoff(store,client):
     verify_merge_actor(client,6,remote['headRefOid'],merged['oid'])
     main=client.read(f'repos/{client.repository}/compare/{merged["oid"]}...main')
     if main.get('status') not in {'identical','ahead'}:raise ValueError('merge SHA not present on main')
+    if proof['owner_review']['action_binding']['action']=='MERGE_ONLY':return dict(result,status='MERGED_ONLY',merge_sha=merged['oid'],deployed=False)
     return dict(result,status='MERGED_DEPLOYMENT_PENDING',merge_sha=merged['oid'],required_deploy_sha=merged['oid'],deployed=False)
 
 

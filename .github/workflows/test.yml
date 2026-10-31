@@ -20,6 +20,15 @@ jobs:
           python-version: '3.12'
       - name: Install repository test dependencies
         run: pip install pytest yfinance requests python-dotenv
+      - name: Exact-head source influence audit
+        env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          mkdir -p validation-results
+          AUDIT_ROOT="$RUNNER_TEMP/owner-action-influence-$CANDIDATE_SHA"
+          git clone --no-hardlinks --no-checkout "$PWD" "$AUDIT_ROOT"
+          git -C "$AUDIT_ROOT" checkout --detach "$CANDIDATE_SHA"
+          python -I -S "$AUDIT_ROOT/ops/discovery/influence.py" --root "$AUDIT_ROOT" --head "$CANDIDATE_SHA" > validation-results/source-influence.json
       - name: Aggregate independent repository diagnostics
         env:
           CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -40,6 +49,7 @@ jobs:
         with:
           name: exact-head-repository-validation
           path: |
+            validation-results/source-influence.json
             validation-results/test-results.xml
             validation-results/validation-summary.json
             validation-results/validation-summary.md

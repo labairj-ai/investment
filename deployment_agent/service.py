@@ -10,6 +10,8 @@ from dev_agent.result_collector import write_final
 
 
 def deploy(executor,authorization,*,origin,admit_again):
+    require_deployment_scope(authorization)
+    if admit_again()!=authorization:raise ValueError('independent current deployment admission required')
     directory=executor.receipts
     if directory.is_symlink():raise ValueError('symlink deployment receipt directory')
     directory.mkdir(mode=0o700,parents=True,exist_ok=True)
@@ -36,9 +38,11 @@ def deploy(executor,authorization,*,origin,admit_again):
             if cfg.get('auto_merge') or not cfg.get('required_human_merge'):raise ValueError('human merge policy invalid')
             if admit_again()!=authorization:raise ValueError('deployment admission changed before transaction')
             write_final(directory,'pending',dict(prior_sha=before['prior_sha'],target=authorization['merge_sha'],authorization_id=authorization['authorization_id'],protected=before['protected']))
+            require_deployment_scope(authorization)
             executor.service('stop');stopped=True
             receipt['backup']=executor.backup(directory/(name+'-rollback'))
             receipt['holdings_before']=executor.protected()
+            require_deployment_scope(authorization)
             executor.checkout(authorization['merge_sha'],origin)
             if executor.git('rev-parse','HEAD')!=authorization['merge_sha'] or executor.git('status','--porcelain','--untracked-files=no'):raise ValueError('deployed files differ from approved merge SHA')
             executor.service('start')
@@ -84,3 +88,14 @@ def exit_code(receipt,*,recovery=False):
 def protected_matches(executor,before,after):
     compare=getattr(executor,'protected_unchanged',None)
     return compare(before,after) if compare is not None else before==after
+
+
+def require_deployment_scope(authorization):
+    """Transaction boundary independently denies generic or merge-only admission."""
+    from dev_agent.github_owner import validate_action
+    data=authorization.get('action_authorization')
+    validate_action(data,'DEPLOY')
+    if authorization.get('authorization_contract')!='solo-owner-3' or authorization.get('action')!='MERGE_AND_DEPLOY':
+        raise ValueError('explicit deployment action required before mutations')
+    if data['decision']!='APPROVE' or any(authorization.get(k)!=data[k] for k in ('repository','pr','head','nonce')):
+        raise ValueError('deployment scope and admitted identity differ')

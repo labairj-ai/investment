@@ -20,7 +20,11 @@ def policy():
     raw=os.environ.get('DEV_AGENT_OWNER_BINDINGS','')
     try:
         data=json.loads(raw)
-        if set(data)-{'repository','owner_login','owner_id','operators','allowed_github_apps'} or not {'repository','owner_login','owner_id','operators'} <= set(data): raise ValueError()
+        if set(data)-{'repository','owner_login','owner_id','operators','allowed_github_apps','issuer_source_head','authorized_actions'} or not {'repository','owner_login','owner_id','operators'} <= set(data): raise ValueError()
+        if 'issuer_source_head' in data and not re.fullmatch('[a-f0-9]{40}',str(data['issuer_source_head'])):raise ValueError()
+        if 'authorized_actions' in data:
+            actions=data['authorized_actions']
+            if not isinstance(actions,list) or not actions or len(actions)!=len(set(actions)) or any(a not in {'MERGE_ONLY','MERGE_AND_DEPLOY'} for a in actions):raise ValueError()
         apps=data.get('allowed_github_apps',[])
         if not isinstance(apps,list) or any(not isinstance(a,dict) or set(a)!={'id','slug'} or type(a['id']) is not int or a['id']!=1144995 or a['slug']!='chatgpt-codex-connector' for a in apps): raise ValueError()
         if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+',data['repository']): raise ValueError()
@@ -141,3 +145,17 @@ def allowed_owner_app(obj, bindings):
     return (isinstance(app,dict) and type(app.get('id')) is int
             and any(app.get('id')==a['id'] and app.get('slug')==a['slug']
                     for a in bindings.get('allowed_github_apps',[])))
+
+
+def require_action(store,client,number,action):
+    """Legacy review remains historical evidence, never scoped action authority."""
+    from .github_owner import verified_object,validate_action
+    result=require(store,client,number)
+    item=result['review']
+    if item.get('authentication_source')!='github-owner-object' or not isinstance(item.get('action_binding'),dict):
+        raise ValueError('authenticated versioned action authorization required')
+    data,current,origin=verified_object(client,item['origin']['id'])
+    if data!=item['action_binding'] or current!=result['context'] or origin!=item['origin']:
+        raise ValueError('action authorization changed')
+    validate_action(data,action)
+    return result

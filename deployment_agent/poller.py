@@ -33,10 +33,12 @@ def pending(client,receipts,*,now=None):
     chosen=[]
     for obj in rows:
         user=obj.get('user') or {};body=obj.get('body','');object_id=obj.get('id')
-        if type(object_id) is not int or object_id<=0 or user.get('id')!=p['owner_id'] or user.get('login')!=p['owner_login'] or user.get('type')!='User' or not isinstance(body,str) or not body.startswith('OWNER-REVIEW solo-owner-2\n'):continue
+        if type(object_id) is not int or object_id<=0 or user.get('id')!=p['owner_id'] or user.get('login')!=p['owner_login'] or user.get('type')!='User' or not isinstance(body,str) or not body.startswith('OWNER-AUTHORIZATION solo-owner-3\n'):continue
         from dev_agent.github_owner import verified_object
         try:
             decision,context,origin=verified_object(client,object_id)
+            from dev_agent.github_owner import validate_action
+            validate_action(decision,'DEPLOY')
             if decision['decision']!='APPROVE' or client.pr_identity(context['pr']).get('state')!='MERGED':continue
             # Wait for CI without consuming an authorization or writing failure receipts.
             from .admission import authorize

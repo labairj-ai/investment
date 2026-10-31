@@ -40,7 +40,12 @@ class FakeExecutor:
 def authorization():
     from development_fixtures import deployment_evidence
     e=deployment_evidence(head='c'*40,merge='b'*40)['receipt']
-    return dict(main_sha='b'*40,head_ci=e['head_ci'],merge_ci=e['merge_ci'],repository='owner/repo',authorization_id=123,authorization_url='https://github.com/owner/repo/pull/1#issuecomment-123',pr=1,head='c'*40,merge_sha='b'*40,nonce='unique-deployment-nonce-0001',deployment_actor='owner')
+    from dev_agent.github_owner import action_binding
+    from dev_agent.owner_review import context
+    from test_development_agent_owner_review import Client
+    data=action_binding(context(Client(),1,risk='L5'),'MERGE_AND_DEPLOY','unique-deployment-nonce-0001','Scoped fixture',financial_ack=True,execution_ack=True)
+    data['head']='c'*40
+    return dict(action='MERGE_AND_DEPLOY',authorization_contract='solo-owner-3',action_authorization=data,main_sha='b'*40,head_ci=e['head_ci'],merge_ci=e['merge_ci'],repository='owner/repo',authorization_id=123,authorization_url='https://github.com/owner/repo/pull/1#issuecomment-123',pr=1,head='c'*40,merge_sha='b'*40,nonce='unique-deployment-nonce-0001',deployment_actor='owner')
 
 
 def test_successful_exact_merge_deploy_and_idempotence(tmp_path):
@@ -64,8 +69,9 @@ def test_failures_never_report_success_and_keep_financial_data(tmp_path,failure)
 
 def test_changed_admission_prevents_deployment(tmp_path):
     executor=FakeExecutor(tmp_path);auth=authorization()
-    receipt=deploy(executor,auth,origin='https://github.com/owner/repo.git',admit_again=lambda:dict(auth,merge_sha='d'*40))
-    assert receipt['status']=='FAILED_PRECHECK' and 'stop' not in executor.operations
+    with pytest.raises(ValueError,match='independent current'):
+        deploy(executor,auth,origin='https://github.com/owner/repo.git',admit_again=lambda:dict(auth,merge_sha='d'*40))
+    assert not executor.operations and not executor.receipts.exists()
 
 
 def test_interrupted_deploy_requires_recovery(tmp_path):
@@ -97,8 +103,8 @@ def authorized_owner(owner_setup):
     store,client,human=owner_setup
     import datetime
     from dev_agent.owner_review import context
-    from dev_agent.github_owner import HEADER,ingest
-    data=dict(repository=client.repository,pr=1,head=client.head,risk='L0',decision='APPROVE',nonce='fixture-single-go-owner-0001',rationale='Reviewed exact head',financial_ack=False,execution_ack=False)
+    from dev_agent.github_owner import ACTION_HEADER as HEADER,ingest,action_binding
+    data=action_binding(context(client,1,risk='L5'),'MERGE_AND_DEPLOY','fixture-single-go-owner-0001','Reviewed exact head',financial_ack=True,execution_ack=True)
     stamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
     obj=dict(id=999,user=dict(id=1,login='owner',type='User'),performed_via_github_app=None,body=HEADER+json.dumps(data),created_at=stamp,updated_at=stamp,issue_url='https://api.github.com/repos/owner/repo/issues/1',html_url='https://github.com/owner/repo/pull/1#issuecomment-999')
     original=client.read;pr=client.pr_identity
@@ -135,7 +141,7 @@ def test_deployment_admission_requires_owner_review_and_both_exact_ci_heads(auth
 def test_deployment_wrong_or_stale_authorization_never_admits(authorized_owner,mutation):
     from deployment_agent.admission import authorize
     store,client,obj,data=authorized_owner
-    obj['body']='OWNER-REVIEW solo-owner-2\n'+json.dumps(dict(data,**mutation))
+    obj['body']='OWNER-AUTHORIZATION solo-owner-3\n'+json.dumps(dict(data,**mutation))
     with pytest.raises(ValueError):authorize(store,client,999)
 
 
@@ -220,8 +226,10 @@ def test_real_shape_connector_owner_deploy_keeps_all_admission_guards(authorized
     # Approval policy is SHA-bound and policy-bound: refresh under explicit app policy.
     from dev_agent.github_owner import ingest
     if not mutation:
+        from dev_agent.owner_review import context
+        data['policy_hash']=context(client,1,risk='L5')['policy_hash']
         data['nonce']='connector-policy-review-0002'
-        obj['body']='OWNER-REVIEW solo-owner-2\n'+json.dumps(data)
+        obj['body']='OWNER-AUTHORIZATION solo-owner-3\n'+json.dumps(data)
         ingest(store,client,999)
     # Invalid current connector objects cannot refresh authority.
     if mutation:
@@ -231,3 +239,12 @@ def test_real_shape_connector_owner_deploy_keeps_all_admission_guards(authorized
         assert authorize(store,client,999)['merge_sha']=='c'*40
         obj['body']='OWNER-DEPLOY deployment-1\n'+json.dumps(dict(data,head='f'*40))
         with pytest.raises(ValueError):authorize(store,client,999)
+
+
+@pytest.fixture(autouse=True)
+def scoped_transaction_policy(monkeypatch):
+    # Disposable service fixtures have the same explicit deployment policy as the
+    # authenticated owner fixture; this never configures a live controller.
+    import os
+    if not os.environ.get('DEV_AGENT_OWNER_BINDINGS'):
+        monkeypatch.setenv('DEV_AGENT_OWNER_BINDINGS',json.dumps(dict(repository='owner/repo',owner_login='owner',owner_id=1,operators={},issuer_source_head='f'*40,authorized_actions=['MERGE_ONLY','MERGE_AND_DEPLOY'])))

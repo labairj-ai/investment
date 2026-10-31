@@ -8,11 +8,11 @@ from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from dev_agent.github import GitHub
 from dev_agent.store import Store
-from dev_agent.owner_review import require
+from dev_agent.owner_review import require_action
 
 
 def check(store,client,number,head):
-    result=require(store,client,number)
+    result=require_action(store,client,number,'MERGE')
     if result['context']['head']!=head:raise ValueError('check head differs from owner-approved PR head')
     runs=client.read(f'repos/{client.repository}/commits/{head}/check-runs?per_page=100')
     if runs.get('total_count',0)>100:raise ValueError('check inventory incomplete')
