@@ -1,11 +1,70 @@
 """Synthetic regression for October 25; never live acceptance."""
 import json
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 import pytest
 from ops.discovery import observer as o
 
 LIVE='2month 1w 6d 14h 7min 28.893213s'
+
+
+def test_clean_wal_hash_never_creates_sidecars(tmp_path,monkeypatch):
+    path=tmp_path/'protected.db'
+    db=sqlite3.connect(path);db.execute('PRAGMA journal_mode=WAL')
+    db.execute('CREATE TABLE evidence(value)');db.execute('INSERT INTO evidence VALUES (42)')
+    db.commit();db.close()
+    before=path.read_bytes();connect=sqlite3.connect;calls=[]
+    def readonly(database,**kwargs):
+        calls.append(database)
+        assert database.endswith('?mode=ro&immutable=1')
+        return connect(database,**kwargs)
+    monkeypatch.setattr(o.sqlite3,'connect',readonly)
+    result=o.stable_database_hash(path)
+    assert len(result)==64 and len(calls)==1
+    assert path.read_bytes()==before and list(tmp_path.iterdir())==[path]
+    assert result==o.database_hash(path,immutable=True)
+
+
+def test_live_wal_hash_includes_committed_wal_rows(tmp_path,monkeypatch):
+    path=tmp_path/'protected.db';db=sqlite3.connect(path)
+    db.execute('PRAGMA journal_mode=WAL');db.execute('CREATE TABLE evidence(value)');db.commit()
+    db.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+    old=o.database_hash(path,immutable=True)
+    db.execute('INSERT INTO evidence VALUES (42)');db.commit()
+    expected=o.database_hash(path)
+    assert expected!=old
+    real=o.database_hash;calls=[]
+    def observed(p,immutable=False):
+        calls.append(immutable);return real(p,immutable)
+    monkeypatch.setattr(o,'database_hash',observed)
+    assert o.stable_database_hash(path)==expected and calls==[False]
+    db.close()
+
+
+@pytest.mark.parametrize('change',['database','-wal','-shm','-journal','dangling-wal','replace','symlink'])
+def test_sidecar_free_hash_rejects_racing_state(tmp_path,monkeypatch,change):
+    path=tmp_path/'protected.db';db=sqlite3.connect(path)
+    db.execute('CREATE TABLE evidence(value)');db.commit();db.close()
+    real=o.database_hash
+    def changed(p,immutable=False):
+        result=real(p,immutable)
+        if change=='database':
+            db=sqlite3.connect(p);db.execute('INSERT INTO evidence VALUES (99)');db.commit();db.close()
+        elif change=='replace':
+            other=tmp_path/'replacement';other.write_bytes(p.read_bytes());other.replace(p)
+        elif change=='symlink':
+            other=tmp_path/'other';p.rename(other);p.symlink_to(other)
+        elif change=='dangling-wal':p.with_name(p.name+'-wal').symlink_to(tmp_path/'missing')
+        else:p.with_name(p.name+change).write_bytes(b'concurrent state')
+        return result
+    monkeypatch.setattr(o,'database_hash',changed)
+    with pytest.raises(ValueError):o.stable_database_hash(path)
+
+
+def test_corrupt_database_is_not_accepted_as_stable(tmp_path):
+    path=tmp_path/'protected.db';path.write_bytes(b'not a SQLite database')
+    with pytest.raises(sqlite3.DatabaseError):o.stable_database_hash(path)
 
 
 def test_exact_production_representation_is_not_an_integer():
