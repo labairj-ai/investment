@@ -26,6 +26,7 @@ AUTH=r.CONFIG.parent/'scout-epoch-authorization.json'
 STAMP=Path('/var/lib/systemd/timers/stamp-development-scout.timer')
 ALLOWED={'.github/workflows/test.yml','ops/discovery/observer.py','ops/discovery/epoch_upgrade.py','ops/discovery/influence.py','ops/discovery/pin_refresh.py','.todos/0852-enable-read-only-discovery-and-prove-three-runs.md','dev_agent/scheduler.py','dev_agent/scheduler_health.py'}
 SCOPE='scout-source-epoch-transition-once'
+AUTH_FIELDS={'version','repository','scope','old_head','target_head','reviewed_head','merge_sha','risk','decision','nonce','created','financial_ack','execution_ack','authentication_source','owner_object','owner_verified','ci_head','ci_status','historical_receipt_sha256','historical_runs'}
 
 
 def require(ok,message):
@@ -36,8 +37,7 @@ def authorization(path,old,head):
     r.protected(path)
     require(path.stat().st_size<=16000,'bounded authorization required')
     raw=path.read_bytes();a=r.loads(raw)
-    fields={'version','repository','scope','old_head','target_head','reviewed_head','merge_sha','risk','decision','nonce','created','financial_ack','execution_ack','authentication_source','owner_object','owner_verified','ci_head','ci_status','historical_receipt_sha256','historical_runs'}
-    require(set(a)==fields,'exact release authorization schema required')
+    require(set(a)==AUTH_FIELDS,'exact release authorization schema required')
     require(a['version']=='scout-epoch-authorization-1' and a['repository']=='labairj-ai/investment' and a['scope']==SCOPE,'fixed authorization scope required')
     require(a['old_head']==old and a['target_head']==a['merge_sha']==a['ci_head']==head and a['ci_status']=='PASS','exact merged target and CI required')
     require(re.fullmatch('[a-f0-9]{40}',str(a['reviewed_head'])) is not None,'reviewed PR head required')
@@ -148,6 +148,54 @@ def issue_authorization(host,object_id,client=None):
     authorization(AUTH,host.old,host.head)
     return dict(status='AUTHORIZATION_RECORDED',changes_applied=False,nonce=a['nonce'],owner_object=a['owner_object'],target_head=host.head,risk='L5')
 
+
+
+def retire_unused_authorization(host,expected_sha256):
+    """Preserve one exact unused receipt, including expired receipts, as evidence.
+
+    This reduces authority; it never approves a replacement or changes source.
+    The root caller supplies the reviewed old receipt hash. The existing APPLY
+    lock prevents a concurrent transaction from consuming the retiring nonce.
+    """
+    require(re.fullmatch('[a-f0-9]{64}',str(expected_sha256)) is not None,'exact old receipt hash required')
+    plan=host.inspect()
+    require(r.protected(AUTH).st_size<=16000,'bounded old receipt required')
+    raw=AUTH.read_bytes()
+    require(len(raw)<=16000 and r.sha(raw)==expected_sha256 and AUTH.read_bytes()==raw,'exact unchanged old receipt required')
+    a=r.loads(raw)
+    require(set(a)==AUTH_FIELDS and a['version']=='scout-epoch-authorization-1' and a['repository']=='labairj-ai/investment' and a['scope']==SCOPE,'reviewed epoch receipt required')
+    require(a['old_head']==host.old==OLD and re.fullmatch('[a-f0-9]{40}',str(a['target_head'])) is not None and a['target_head']==a['merge_sha']==a['ci_head'] and a['target_head']!=host.head,'different exact previous target required')
+    require(a['decision']=='APPROVE' and a['risk']=='L5' and a['financial_ack'] is True and a['execution_ack'] is True and a['owner_verified'] is True and a['authentication_source']=='solo-owner-1','previous authenticated L5 receipt required')
+    require(re.fullmatch('[A-Za-z0-9-]{16,128}',str(a['nonce'])) is not None,'bounded previous nonce required')
+    require(a['historical_receipt_sha256']==r.sha(plan['receipt']) and a['historical_runs']==len(r.loads(plan['receipt'])['runs']),'historical acceptance binding required')
+    base=r.CONFIG.parent/'epoch-transitions';r.protected(base.parent,directory=True)
+    if not base.exists():base.mkdir(mode=0o700);u.sync(base.parent)
+    r.protected(base,directory=True)
+    fd=os.open(base/'lock',os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)
+    with os.fdopen(fd,'a') as stream:
+        r.protected(base/'lock');fcntl.flock(stream,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        require(set(p.name for p in base.iterdir())=={'lock'},'no consumed nonce or previous transition attempt permitted')
+        epoch=r.STATE/'epochs'/a['target_head']
+        require(not epoch.exists() and not epoch.is_symlink(),'previous epoch must not exist')
+        require(encode_plan(host.inspect())==encode_plan(plan),'preflight changed before retirement')
+        r.protected(AUTH);require(AUTH.read_bytes()==raw,'receipt changed before retirement')
+        # Reserve the retired nonce in the existing exclusive attempt namespace.
+        # This is a retirement record, not an APPLY journal or acceptance credit.
+        entry=base/a['nonce']
+        entry.mkdir(mode=0o700);u.sync(base)
+        destination=entry/'retired-authorization.json'
+        # Same filesystem, locked root-only private destination. Rename preserves
+        # the original inode/bytes; no receipt is overwritten or discarded.
+        os.rename(AUTH,destination);u.sync(entry);u.sync(AUTH.parent)
+        r.protected(destination);require(destination.read_bytes()==raw,'archived receipt hash mismatch')
+        destination.chmod(0o400)
+        with destination.open('rb') as receipt_stream:os.fsync(receipt_stream.fileno())
+        require(encode_plan(host.inspect())==encode_plan(plan),'protected state changed during retirement')
+        record=dict(version='scout-unused-receipt-retirement-1',status='RETIRED_UNUSED',receipt_sha256=expected_sha256,nonce=a['nonce'],old_target=a['target_head'],proposed_target=host.head,owner_object=a['owner_object'],retired_at=time.time(),grants_implementation=False)
+        u.write(entry/'retirement.json',r.encoded(record),0o400,0,os.getgid())
+        entry.chmod(0o500);u.sync(entry);u.sync(base)
+        require(not AUTH.exists() and not AUTH.is_symlink() and r.sha(destination.read_bytes())==expected_sha256,'retirement verification failed')
+        return dict(status='UNUSED_AUTHORIZATION_RETIRED',changes_applied=False,receipt_sha256=expected_sha256,archive=str(entry),nonce=a['nonce'],previous_target=a['target_head'],proposed_target=host.head,grants_implementation=False)
 
 
 def candidate_snapshot():
@@ -370,7 +418,7 @@ def transaction(host,*,apply=False):
             rollback_requirements=['durable exact old source/config/observer backup','one consumed nonce','exclusive lock','observer stopped on unverified rollback','never restore financial data'])
     a=host.authorize()
     require(a['historical_receipt_sha256']==r.sha(plan['receipt']) and a['historical_runs']==summary['historical_runs'],'owner authorization historical state changed')
-    base=r.CONFIG.parent/'epoch-transitions';r.protected(base.parent)
+    base=r.CONFIG.parent/'epoch-transitions';r.protected(base.parent,directory=True)
     if not base.exists():base.mkdir(mode=0o700);u.sync(base.parent)
     r.protected(base,directory=True)
     lock=base/'lock'
@@ -452,8 +500,8 @@ def rollback(host,nonce):
 
 
 if __name__=='__main__':
-    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--head',required=True);parser.add_argument('--apply',action='store_true');parser.add_argument('--rollback');parser.add_argument('--authorize-owner-object',type=int)
-    args=parser.parse_args();require(sum(bool(x) for x in (args.apply,args.rollback,args.authorize_owner_object))<=1,'choose one transition mode')
+    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--head',required=True);parser.add_argument('--apply',action='store_true');parser.add_argument('--rollback');parser.add_argument('--authorize-owner-object',type=int);parser.add_argument('--retire-unused-authorization',metavar='EXPECTED_RECEIPT_SHA256')
+    args=parser.parse_args();require(sum(bool(x) for x in (args.apply,args.rollback,args.authorize_owner_object,args.retire_unused_authorization))<=1,'choose one transition mode')
     host=Host(args.head)
-    result=issue_authorization(host,args.authorize_owner_object) if args.authorize_owner_object else rollback(host,args.rollback) if args.rollback else transaction(host,apply=args.apply)
-    print(json.dumps(result,indent=2));raise SystemExit(0 if result['status'] in {'PLAN_ONLY','AUTHORIZATION_RECORDED','NEW_EPOCH_AWAITING_GENUINE_SYSTEM_TIMER_RUNS'} else 1)
+    result=retire_unused_authorization(host,args.retire_unused_authorization) if args.retire_unused_authorization else issue_authorization(host,args.authorize_owner_object) if args.authorize_owner_object else rollback(host,args.rollback) if args.rollback else transaction(host,apply=args.apply)
+    print(json.dumps(result,indent=2));raise SystemExit(0 if result['status'] in {'PLAN_ONLY','AUTHORIZATION_RECORDED','UNUSED_AUTHORIZATION_RETIRED','NEW_EPOCH_AWAITING_GENUINE_SYSTEM_TIMER_RUNS'} else 1)
