@@ -79,13 +79,31 @@ def file_hash(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def database_hash(path):
+def database_hash(path,immutable=False):
     if path.is_symlink() or not path.is_file():raise ValueError('protected database unavailable')
     h=hashlib.sha256()
-    with sqlite3.connect(path.as_uri()+'?mode=ro',uri=True) as db:
+    with sqlite3.connect(path.as_uri()+('?mode=ro&immutable=1' if immutable else '?mode=ro'),uri=True) as db:
         db.execute('PRAGMA query_only=ON');db.execute('BEGIN')
         for line in db.iterdump():h.update(line.encode());h.update(b'\n')
     return h.hexdigest()
+
+
+def stable_database_hash(path):
+    # A cleanly closed WAL database has no sidecars. mode=ro can still try to
+    # create them, which the observer's read-only mount correctly prohibits.
+    # Never ignore a live WAL: immutable is only safe for a verified stable,
+    # sidecar-free read. Retain exactly the same logical dump/hash contract.
+    sides=[path.with_name(path.name+suffix) for suffix in ('-wal','-shm','-journal')]
+    if any(p.is_symlink() for p in sides):raise ValueError('protected database sidecar symlink refused')
+    if any(p.exists() for p in sides):return database_hash(path)
+    before=path.stat();raw=file_hash(path)
+    result=database_hash(path,immutable=True)
+    observed=file_hash(path);after=path.stat()
+    if ((before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns,before.st_ctime_ns)
+        !=(after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns)
+        or raw!=observed or any(p.exists() or p.is_symlink() for p in sides)):
+        raise ValueError('protected database changed during sidecar-free observation')
+    return result
 
 
 def ledger_snapshot():
@@ -122,8 +140,8 @@ def snapshot(config):
     cfg=loads((ROOT/'config/development_agent.json').read_bytes())
     if any(cfg[k] is not False for k in ('autonomous_implementation','supervised_loop_enabled','supervised_publish_pr','auto_merge')) or cfg['autonomy_stage']!='SHADOW' or cfg['required_human_merge'] is not True:raise ValueError('discovery-only activation required')
     ledger,rows=guarded('LEDGER_SNAPSHOT_INVALID',ledger_snapshot)
-    return dict(holdings=file_hash(ROOT/'holdings.csv'),investment=database_hash(ROOT/'out/investment.db'),
-                auxiliary=database_hash(ROOT/'out/buffett.db') if (ROOT/'out/buffett.db').exists() or (ROOT/'out/buffett.db').is_symlink() else None,
+    return dict(holdings=file_hash(ROOT/'holdings.csv'),investment=stable_database_hash(ROOT/'out/investment.db'),
+                auxiliary=stable_database_hash(ROOT/'out/buffett.db') if (ROOT/'out/buffett.db').exists() or (ROOT/'out/buffett.db').is_symlink() else None,
                 source=digest(source),worktrees=sorted(str(p.relative_to(WORKTREES)) for p in WORKTREES.rglob('*')) if WORKTREES.exists() else [],ledger=ledger),rows
 
 
