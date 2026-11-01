@@ -217,8 +217,8 @@ class TestGeoEvidenceQualityFailClosed:
         p.unlink(missing_ok=True)
 
     def test_high_confidence_fresh_date_returns_full(self):
-        from datetime import date
-        recent = date.today().strftime("%Y-%m")
+        from time_utils import today_eastern
+        recent = today_eastern().strftime("%Y-%m")
         p, conn = _fresh_db()
         _seed_geo(conn, "XOM", "high", recent)
         import portfolio_ai
@@ -227,9 +227,27 @@ class TestGeoEvidenceQualityFailClosed:
         conn.close()
         p.unlink(missing_ok=True)
 
+    def test_utc_midnight_before_eastern_midnight_uses_business_month(self, monkeypatch):
+        from datetime import date, datetime, timezone
+        import time_utils
+        import portfolio_ai
+        instant = datetime(2026, 11, 1, 0, 5, tzinfo=timezone.utc)
+        monkeypatch.setattr(time_utils, "now_utc", lambda: instant)
+        assert time_utils.today_eastern() == date(2026, 10, 31)
+        p, conn = _fresh_db()
+        try:
+            _seed_geo(conn, "XOM", "high", time_utils.today_eastern().strftime("%Y-%m"))
+            assert portfolio_ai._geo_evidence_quality("XOM", conn) == "full"
+            # The UTC month is still future business evidence and must fail closed.
+            _seed_geo(conn, "XOM", "high", instant.strftime("%Y-%m"))
+            assert portfolio_ai._geo_evidence_quality("XOM", conn) == "partial"
+        finally:
+            conn.close()
+            p.unlink(missing_ok=True)
+
     def test_medium_confidence_fresh_date_returns_partial(self):
-        from datetime import date
-        recent = date.today().strftime("%Y-%m")
+        from time_utils import today_eastern
+        recent = today_eastern().strftime("%Y-%m")
         p, conn = _fresh_db()
         _seed_geo(conn, "ITOCF", "medium", recent)
         import portfolio_ai

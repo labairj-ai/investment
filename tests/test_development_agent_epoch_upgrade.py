@@ -511,3 +511,200 @@ def test_public_transport_rejects_unsuccessful_or_noncanonical_response(monkeypa
     response=Response(b'{}');response.status=status;response.headers=Message();response.headers['Content-Type']=content_type
     monkeypatch.setattr(e.urllib.request,'build_opener',lambda *h:SimpleNamespace(open=lambda *a,**kw:response))
     with pytest.raises(ValueError):e.PublicGitHub('labairj-ai/investment').read('repos/labairj-ai/investment')
+
+# Preserve the real implementation before the older synthetic host fixture swaps
+# it. Only the fixture owner's UID changes; mode/type/ancestry checks stay real.
+from ops.discovery.pin_refresh import protected as REAL_PROTECTED
+
+@pytest.fixture
+def real_protection_host(host,monkeypatch):
+    import tempfile
+    with tempfile.TemporaryDirectory(prefix='scout-protection-fixture-',dir=Path.home()) as directory:
+        root=Path(directory).resolve();root.chmod(0o700)
+        config=root/'etc';config.mkdir(mode=0o700);state=root/'state';state.mkdir(mode=0o700)
+        monkeypatch.setattr(e.r,'CONFIG',config/'config.json');monkeypatch.setattr(e.r,'STATE',state);monkeypatch.setattr(e.o,'STATE',state)
+        monkeypatch.setattr(e.r,'ROOT_UID',os.getuid())
+        monkeypatch.setattr(e.r,'protected',REAL_PROTECTED)
+        try:yield host,root
+        finally:
+            for p in root.rglob('*'):
+                if p.is_dir() and not p.is_symlink():p.chmod(0o700)
+
+
+def test_real_protection_accepts_protected_directory_and_rejects_file_default(real_protection_host):
+    _,root=real_protection_host
+    assert REAL_PROTECTED(root,directory=True).st_uid==os.getuid()
+    with pytest.raises(ValueError,match='protected'):REAL_PROTECTED(root)
+
+
+@pytest.mark.parametrize('mode',[0o770,0o777,0o702])
+def test_real_protection_rejects_writable_directories(real_protection_host,mode):
+    _,root=real_protection_host;p=root/'writable';p.mkdir(mode=mode);p.chmod(mode)
+    with pytest.raises(ValueError,match='protected'):REAL_PROTECTED(p,directory=True)
+
+
+def test_real_protection_rejects_directory_symlinks_and_writable_ancestry(real_protection_host):
+    _,root=real_protection_host;target=root/'target';target.mkdir(mode=0o700);link=root/'link';link.symlink_to(target,target_is_directory=True)
+    with pytest.raises(ValueError,match='protected'):REAL_PROTECTED(link,directory=True)
+    parent=root/'unsafe';parent.mkdir(mode=0o700);child=parent/'safe';child.mkdir(mode=0o700);parent.chmod(0o777)
+    with pytest.raises(ValueError,match='ancestry'):REAL_PROTECTED(child,directory=True)
+
+
+def test_apply_initialization_uses_real_directory_protection_and_preserves_nonce(real_protection_host):
+    host,_=real_protection_host
+    result=e.transaction(host,apply=True)
+    assert result['status']=='NEW_EPOCH_AWAITING_GENUINE_SYSTEM_TIMER_RUNS'
+    base=e.r.CONFIG.parent/'epoch-transitions'
+    REAL_PROTECTED(base,directory=True);REAL_PROTECTED(base/'lock')
+    REAL_PROTECTED(base/host.nonce,directory=True)
+    with pytest.raises(FileExistsError):e.transaction(host,apply=True)
+    assert host.calls.count('install')==1
+
+
+def test_apply_real_protection_rejects_bad_parent_before_attempt_or_stop(real_protection_host):
+    host,_=real_protection_host;e.r.CONFIG.parent.chmod(0o777)
+    with pytest.raises(ValueError,match='protected'):e.transaction(host,apply=True)
+    assert not (e.r.CONFIG.parent/'epoch-transitions').exists()
+    assert 'stop' not in host.calls and 'install' not in host.calls
+
+
+def test_rollback_real_directory_and_file_protection_is_not_mocked(real_protection_host):
+    host,_=real_protection_host;host.fail='install'
+    result=e.transaction(host,apply=True)
+    assert result['status']=='ROLLED_BACK_NOT_READY'
+    assert host.source==host.config==host.old and host.active
+    with pytest.raises(FileExistsError):e.transaction(host,apply=True)
+
+@pytest.fixture
+def unused_receipt(real_protection_host,approved,monkeypatch):
+    host,root=real_protection_host;_,original=approved;a=copy.deepcopy(original)
+    monkeypatch.setattr(e.r,'protected',REAL_PROTECTED)
+    monkeypatch.setattr(e,'AUTH',e.r.CONFIG.parent/'scout-epoch-authorization.json')
+    a.update(target_head='c'*40,merge_sha='c'*40,ci_head='c'*40,nonce='previous-unused-receipt-nonce-123',historical_receipt_sha256=e.r.sha(host.plan['receipt']),historical_runs=1)
+    raw=e.r.encoded(a);e.AUTH.write_bytes(raw);e.AUTH.chmod(0o600)
+    return host,a,raw,e.r.sha(raw)
+
+
+def test_retire_unused_receipt_preserves_bytes_and_permanently_reserves_nonce(unused_receipt):
+    import stat
+    host,a,raw,digest=unused_receipt;before=copy.deepcopy(host.plan)
+    result=e.retire_unused_authorization(host,digest);archive=Path(result['archive'])
+    assert result['status']=='UNUSED_AUTHORIZATION_RETIRED' and not result['changes_applied']
+    assert not e.AUTH.exists() and (archive/'retired-authorization.json').read_bytes()==raw
+    assert stat.S_IMODE(archive.stat().st_mode)==0o500
+    for p in archive.iterdir():
+        assert stat.S_IMODE(p.stat().st_mode)==0o400;REAL_PROTECTED(p)
+    metadata=e.r.loads((archive/'retirement.json').read_bytes())
+    assert metadata['status']=='RETIRED_UNUSED' and metadata['receipt_sha256']==digest
+    assert metadata['nonce']==a['nonce'] and metadata['grants_implementation'] is False
+    assert host.plan==before and 'stop' not in host.calls and 'install' not in host.calls
+    # Existing O_EXCL nonce protection rejects reuse even after retirement.
+    host.nonce=a['nonce']
+    with pytest.raises(FileExistsError):e.transaction(host,apply=True)
+    assert 'stop' not in host.calls
+
+
+def test_retirement_allows_expired_receipt_without_reviving_authority(unused_receipt):
+    host,a,_,_=unused_receipt;a['created']=1;raw=e.r.encoded(a);e.AUTH.write_bytes(raw)
+    with pytest.raises(ValueError,match='fresh'):e.authorization(e.AUTH,host.old,a['target_head'])
+    result=e.retire_unused_authorization(host,e.r.sha(raw))
+    assert (Path(result['archive'])/'retired-authorization.json').read_bytes()==raw
+    assert result['grants_implementation'] is False
+
+
+@pytest.mark.parametrize('failure',['wronghash','currenttarget','history','scope','nonce','writable','symlink','consumed','previousepoch','changedpreflight','locked'])
+def test_retirement_rejects_unsafe_or_used_receipts(unused_receipt,monkeypatch,failure):
+    import fcntl
+    host,a,raw,digest=unused_receipt;lock=None
+    if failure=='wronghash':digest='0'*64
+    if failure=='currenttarget':a.update(target_head=host.head,merge_sha=host.head,ci_head=host.head)
+    if failure=='history':a['historical_receipt_sha256']='0'*64
+    if failure=='scope':a['scope']='MERGE_ONLY'
+    if failure=='nonce':a['nonce']='../bad'
+    if failure in {'currenttarget','history','scope','nonce'}:
+        raw=e.r.encoded(a);e.AUTH.write_bytes(raw);digest=e.r.sha(raw)
+    if failure=='writable':e.AUTH.chmod(0o666)
+    if failure=='symlink':
+        target=e.AUTH.with_name('actual-receipt');e.AUTH.rename(target);e.AUTH.symlink_to(target)
+    if failure in {'consumed','locked'}:
+        base=e.r.CONFIG.parent/'epoch-transitions';base.mkdir(mode=0o700)
+        if failure=='consumed':(base/a['nonce']).mkdir(mode=0o700)
+        else:
+            lock=(base/'lock').open('w');(base/'lock').chmod(0o600);fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+    if failure=='previousepoch':(e.r.STATE/'epochs'/a['target_head']).mkdir(mode=0o700,parents=True)
+    if failure=='changedpreflight':
+        original=host.inspect;calls=[]
+        def changed():
+            p=original();calls.append(1)
+            if len(calls)>1:p['before']['protected']['synthetic']='changed'
+            return p
+        host.inspect=changed
+    try:
+        with pytest.raises((ValueError,OSError)):e.retire_unused_authorization(host,digest)
+        assert e.AUTH.read_bytes()==raw and 'stop' not in host.calls and 'install' not in host.calls
+    finally:
+        if lock:lock.close()
+
+
+@pytest.mark.parametrize('failure',['mkdir','rename','sync','metadata','statechange'])
+def test_retirement_faults_never_lose_old_evidence_or_grant_new_authority(unused_receipt,monkeypatch,failure):
+    host,a,raw,digest=unused_receipt;archive=e.r.CONFIG.parent/'epoch-transitions'/a['nonce']
+    if failure=='mkdir':
+        original=Path.mkdir
+        def mkdir(p,*args,**kwargs):
+            if p==archive:raise OSError('archive creation failure')
+            return original(p,*args,**kwargs)
+        monkeypatch.setattr(Path,'mkdir',mkdir)
+    if failure=='rename':monkeypatch.setattr(e.os,'rename',lambda *args:(_ for _ in ()).throw(OSError('rename failure')))
+    if failure=='sync':
+        original=e.u.sync
+        def sync(p):
+            if (archive/'retired-authorization.json').exists():raise OSError('fsync interrupted after rename')
+            return original(p)
+        monkeypatch.setattr(e.u,'sync',sync)
+    if failure=='metadata':monkeypatch.setattr(e.u,'write',lambda *args:(_ for _ in ()).throw(OSError('retirement audit write failed')))
+    if failure=='statechange':
+        original=host.inspect
+        def inspect():
+            p=original()
+            if not e.AUTH.exists():p['before']['protected']['synthetic']='changed'
+            return p
+        host.inspect=inspect
+    with pytest.raises((ValueError,OSError)):e.retire_unused_authorization(host,digest)
+    evidence=e.AUTH if e.AUTH.exists() else archive/'retired-authorization.json'
+    assert evidence.read_bytes()==raw
+    assert 'stop' not in host.calls and 'install' not in host.calls
+    assert not (archive/'retirement.json').exists()
+
+
+def test_retired_receipt_cannot_reauthorize_but_fresh_new_source_approval_can(unused_receipt,public_evidence,monkeypatch):
+    host,a,raw,digest=unused_receipt;e.retire_unused_authorization(host,digest)
+    with pytest.raises(FileNotFoundError):e.authorization(e.AUTH,host.old,host.head)
+    s=public_evidence;host.head=s['a']['target_head'];host.plan['head']=host.head
+    result=e.issue_authorization(host,123)
+    assert result['status']=='AUTHORIZATION_RECORDED' and result['nonce']==s['a']['nonce']!=a['nonce']
+    assert e.authorization(e.AUTH,host.old,host.head)['target_head']==host.head
+    host.authorize=lambda:e.authorization(e.AUTH,host.old,host.head)
+    assert e.transaction(host,apply=True)['status']=='NEW_EPOCH_AWAITING_GENUINE_SYSTEM_TIMER_RUNS'
+    with pytest.raises(FileExistsError):e.transaction(host,apply=True)
+    assert (e.r.CONFIG.parent/'epoch-transitions'/a['nonce']/'retired-authorization.json').read_bytes()==raw
+    with pytest.raises(ValueError):e.retire_unused_authorization(host,digest)
+    assert e.authorization(e.AUTH,host.old,host.head)['nonce']==s['a']['nonce']
+
+
+def test_retirement_archive_hash_mismatch_stops_without_discarding_original_bytes(unused_receipt,monkeypatch):
+    host,a,raw,digest=unused_receipt;original=Path.read_bytes
+    def read(p):
+        if p.name=='retired-authorization.json':return b'unexpected read corruption'
+        return original(p)
+    monkeypatch.setattr(Path,'read_bytes',read)
+    with pytest.raises(ValueError,match='archived receipt hash mismatch'):e.retire_unused_authorization(host,digest)
+    archive=e.r.CONFIG.parent/'epoch-transitions'/a['nonce']
+    assert original(archive/'retired-authorization.json')==raw
+    assert not (archive/'retirement.json').exists() and 'stop' not in host.calls
+
+
+def test_retirement_record_is_never_interpreted_as_interrupted_apply(unused_receipt):
+    host,a,_,digest=unused_receipt;e.retire_unused_authorization(host,digest)
+    with pytest.raises(FileNotFoundError):e.rollback(host,a['nonce'])
+    assert 'stop' not in host.calls and 'restore' not in host.calls
