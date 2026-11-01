@@ -57,7 +57,7 @@ def test_one_go_never_bypasses_technical_gates(authorized_owner,failure):
 
 
 @pytest.fixture
-def ready_inputs(owner_setup,monkeypatch):
+def ready_inputs(owner_setup,monkeypatch,tmp_path):
     from dev_agent import operations,certification,scheduler_health,improvement_loop,build_policy
     store,client,_=owner_setup;now=time.time()
     config=json.loads((ROOT/'config/development_agent.json').read_text());config.update(supervised_loop_enabled=True,supervised_publish_pr=True)
@@ -78,6 +78,8 @@ def ready_inputs(owner_setup,monkeypatch):
     for age,char in enumerate('abc'):
         with store.connect(True) as db:store._append(db,None,'SCHEDULE',qualifying_payload(now,head=source,age=age,invocation=char*32),'entry-fixture:'+char)
     monkeypatch.setattr(scheduler_health,'host_safety',lambda *a:True)
+    from test_development_agent_watchdog import ready_watchdog_fixture
+    ready_watchdog_fixture(monkeypatch,tmp_path,config,source,now)
     return store,client,config,evidence,now
 
 
@@ -93,7 +95,7 @@ def test_owner_ready_implies_real_runtime_entry_admits(ready_inputs):
     with pytest.raises(ValueError):supervised_admission(ROOT,store,client,now=now)
 
 
-@pytest.mark.parametrize('failure',['oracle','deployment_agent','github','kill','discovery'])
+@pytest.mark.parametrize('failure',['oracle','deployment_agent','github','kill','discovery','watchdog'])
 def test_owner_not_ready_has_plain_reason_and_runtime_refuses(ready_inputs,monkeypatch,failure):
     from dev_agent.readiness import owner_status
     from dev_agent.improvement_loop import supervised_admission
@@ -103,6 +105,9 @@ def test_owner_not_ready_has_plain_reason_and_runtime_refuses(ready_inputs,monke
     if failure=='github':client.protections=lambda:protection_observation(created=now-301)
     if failure=='kill':monkeypatch.setenv('DEV_AGENT_KILL_SWITCH','1')
     if failure=='discovery':monkeypatch.setattr(scheduler_health,'health',lambda *a:dict(successful_runs=2))
+    if failure=='watchdog':
+        from dev_agent.watchdog_gate import coverage_path
+        coverage_path(ROOT).unlink()
     result=owner_status(ROOT,store,client=client,now=now)
     assert result['status']=='NOT READY' and result['reason']
     with pytest.raises(ValueError):supervised_admission(ROOT,store,client,now=now)
@@ -236,3 +241,22 @@ def test_runtime_activation_does_not_skip_release_transition(authorized_owner,mo
     monkeypatch.setattr(github,'GitHub',lambda repository:client)
     monkeypatch.setattr(git_exec,'output',lambda *a:'d'*40 if failure=='wrong-installed-source' else 'c'*40)
     with pytest.raises(ValueError):owner_promotion.activation_authority(ROOT,store)
+
+
+def test_missing_watchdog_blocks_supervised_cycle_before_worktree_or_builder(ready_inputs,tmp_path,monkeypatch):
+    from dev_agent import improvement_loop,discovery
+    from dev_agent.watchdog_gate import coverage_path
+    from dev_agent.worktrees import Worktrees
+    store,client,config,_,now=ready_inputs
+    runtime=tmp_path/'runtime';(runtime/'config').mkdir(parents=True)
+    (runtime/'config/development_agent.json').write_text(json.dumps(config))
+    with store.connect() as db:head=json.loads(db.execute("SELECT payload FROM dev_events WHERE kind='SCHEDULE' LIMIT 1").fetchone()[0])['head']
+    monkeypatch.setattr(discovery,'git',lambda *a:head)
+    store.discover(dict(source='discovery',title='Static help correction',problem='Documentation drift',evidence=['genuine-fixture-signal'],outcome='Accurate static help',files=['docs/help.md'],category='DOCUMENT'))
+    coverage_path(ROOT).unlink()
+    monkeypatch.setattr(Worktrees,'create',lambda *a:pytest.fail('worktree created before monitoring admission'))
+    builder=SimpleNamespace(identity={},build=lambda *a:pytest.fail('Builder invoked'))
+    with store.connect() as db:before=db.execute('SELECT count(*) FROM dev_events').fetchone()[0]
+    with pytest.raises(ValueError,match='watchdog coverage'):improvement_loop.cycle(runtime,store,builder,object(),object(),client)
+    with store.connect() as db:assert db.execute('SELECT count(*) FROM dev_events').fetchone()[0]==before
+    assert not (store.path.parent/'worktrees').exists()

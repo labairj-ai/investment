@@ -5,7 +5,7 @@
 - **Priority:** critical strategic
 - **Risk:** L3
 - **Parent:** 0849
-- **Depends:** 0851, 0852
+- **Depends:** 0851, 0852, 0855
 - **Blocks:** 0854
 
 ## Objective
@@ -30,6 +30,30 @@ Eligible examples:
 - user-facing documentation drift.
 
 Do not use a fixture-only task as the final acceptance candidate.
+
+## Operational monitoring prerequisite — TODO 0855
+
+This pilot remains blocked until [the Development Agent watchdog epic](0855-development-agent-operational-watchdog.md)
+is implemented, deployed and live-verified **after** current 0852 acceptance is READY.
+Do not change the current pinned source or deploy watchdog changes during its
+three-genuine-run sequence.
+
+Before any pilot worktree or Builder invocation require:
+
+- [ ] Authoritative current-source 0852 READY, 3/3 genuine Eastern-date slots and
+      root host safety accepted; no old-head credit migrated to a new head.
+- [ ] Development Agent coverage installed in the existing independent watchdog.
+- [ ] Existing watchdog timer active and at least one real successful inspection
+      of Development Agent discovery, with trusted/current source-bound evidence.
+- [ ] No unresolved Development Agent RED incident.
+- [ ] Activation controls valid for the approved supervised phase; no automatic
+      implementation, PR publication or merge authority introduced.
+
+The implementation must enforce these conditions in runtime admission, before
+side effects; this backlog edit does not claim that runtime gate exists already.
+Watchdog HEALTHY grants no implementation authority and cannot replace owner Go,
+Reviewer, L0 validator, CI, human merge or any existing protected-state controls.
+No second approval, promotion or deployment ceremony is added.
 
 ## Required flow
 

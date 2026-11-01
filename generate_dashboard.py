@@ -9408,11 +9408,23 @@ function loadWatchdogPanel() {{
     var extra = document.createElement('details');
     var extraTitle = document.createElement('summary');
     extraTitle.textContent = 'Additional checks and timing'; extra.style.marginTop = '10px'; extra.appendChild(extraTitle);
-    var primary = ['serve','macro_acceptance','influence_lock','opportunity_hunter','macro_experiment','outcome_completeness','learning_continuity','mtm_completeness','backup'];
+    var primary = ['development_discovery','serve','macro_acceptance','influence_lock','opportunity_hunter','macro_experiment','outcome_completeness','learning_continuity','mtm_completeness','backup'];
     (report.components || []).forEach(function(c) {{
       var row = document.createElement('div'); row.style.marginTop = '7px';
       var detail = JSON.parse(c.detail), evidence = detail.evidence || {{}};
       row.textContent = c.component.replaceAll('_',' ') + ' · ' + c.status + ' · ' + detail.reason;
+      if (c.component === 'development_discovery') {{
+        row.textContent = 'Development Discovery · ' + (report.stale ? 'RED (stale inspection)' : evidence.status || 'RED') +
+          ' · Acceptance: ' + (evidence.acceptance || 'BLOCKED') + ' · Source: ' + (evidence.source_head || 'unavailable').slice(0,12) +
+          ' · Last Scout: ' + (evidence.last_success_at ? new Date(evidence.last_success_at*1000).toLocaleString() : 'Never') +
+          ' · Next Scout: ' + (evidence.next_scout ? new Date(evidence.next_scout*1000).toLocaleString() : 'Unknown') +
+          ' · Signals: ' + (evidence.signals || 'DEGRADED') + ' · Host Safety: ' + (evidence.host_safety || 'PENDING') +
+          ' · Builder: ' + (evidence.builder || 'UNVERIFIED');
+        var da = document.createElement('details'), ds = document.createElement('summary'), dd = document.createElement('pre');
+        ds.textContent = 'Discovery inspection details';
+        dd.textContent = JSON.stringify({{invocation:evidence.last_invocation,slot:evidence.expected_slot,collector_age_seconds:evidence.spool_age_seconds,scheduler_age_seconds:evidence.scheduler_age_seconds,unavailable:evidence.unavailable,candidate_count:evidence.candidate_count,incident:c.incident_id}}, null, 2);
+        da.appendChild(ds); da.appendChild(dd); row.appendChild(da);
+      }}
       if (c.component === 'macro_experiment') row.textContent += ' · ' + evidence.epoch_observed + ' total observed · since activation: expected ' + evidence.expected + ', observed ' + evidence.observed + ', excluded ' + evidence.excluded + ', unexplained ' + evidence.unexplained_missing;
       if (c.component === 'influence_lock' && evidence.current) row.textContent += c.status === 'INFO' ? ' · Stage 0 · production macro weight 0 (pinned source)' : ' · production influence UNVERIFIED';
       if (c.component === 'macro_acceptance' && evidence.current && evidence.current.acceptance) row.textContent += ' · ' + evidence.current.acceptance.config_version;
