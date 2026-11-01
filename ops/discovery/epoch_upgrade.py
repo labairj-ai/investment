@@ -22,11 +22,18 @@ from ops.discovery import observer as o, pin_refresh as r, upgrade as u, migrate
 from ops.discovery.influence import audit, git_boundary, git as reviewed_git, isolated
 
 OLD='a27bed1ebd3a69df5723212784842df456e153b3'
+REPAIRED='47e9236d605a6153bbc538b8dd5ceabd4c3b81ac'
 AUTH=r.CONFIG.parent/'scout-epoch-authorization.json'
 STAMP=Path('/var/lib/systemd/timers/stamp-development-scout.timer')
 ALLOWED={'.github/workflows/test.yml','ops/discovery/observer.py','ops/discovery/epoch_upgrade.py','ops/discovery/influence.py','ops/discovery/pin_refresh.py','.todos/0852-enable-read-only-discovery-and-prove-three-runs.md','dev_agent/scheduler.py','dev_agent/scheduler_health.py'}
 SCOPE='scout-source-epoch-transition-once'
 AUTH_FIELDS={'version','repository','scope','old_head','target_head','reviewed_head','merge_sha','risk','decision','nonce','created','financial_ack','execution_ack','authentication_source','owner_object','owner_verified','ci_head','ci_status','historical_receipt_sha256','historical_runs'}
+
+
+def authorization_path(host):
+    # Keep the consumed bootstrap authorization intact. A later exact-source
+    # correction receives its own exclusive capability under the same policy.
+    return AUTH if host.old==OLD else AUTH.with_name('scout-epoch-authorization-'+host.head+'.json')
 
 
 def require(ok,message):
@@ -144,8 +151,9 @@ def issue_authorization(host,object_id,client=None):
     live_authorization(a,client)
     require(encode_plan(host.inspect())==encode_plan(plan),'preflight changed during authentication')
     r.protected(AUTH.parent,directory=True)
-    u.write(AUTH,r.encoded(a),0o600,0,os.getgid()) # Exclusive, never replace old approval.
-    authorization(AUTH,host.old,host.head)
+    path=authorization_path(host)
+    u.write(path,r.encoded(a),0o600,0,os.getgid()) # Exclusive, never replace old approval.
+    authorization(path,host.old,host.head)
     return dict(status='AUTHORIZATION_RECORDED',changes_applied=False,nonce=a['nonce'],owner_object=a['owner_object'],target_head=host.head,risk='L5')
 
 
@@ -214,6 +222,9 @@ def candidate_snapshot():
 def archive_history(plan,nonce):
     # Exclusive publication, content address and read-only sealing. No archive
     # writer ever replaces/deletes an existing history member or directory.
+    if 'previous_epoch' in plan:
+        history=r.loads(plan['previous_epoch'])['history'];o.verify_history(history)
+        return history
     receipt=r.loads(plan['receipt']);slots=sorted(x['slot'] for x in receipt['runs'])
     files={'discovery.json':plan['receipt'],'timer-fires.json':plan['fires'],'october30-failure.json':plan['failure'],'ledger-history.json':plan['ledger_history'],'candidates.json':plan['candidates']}
     manifest=dict(schema='scout-history-archive-1',source_head=plan['old'],accepted_slots=slots,accepted_count=len(slots),files={name:dict(sha256=r.sha(raw),size=len(raw)) for name,raw in files.items()})
@@ -235,6 +246,20 @@ def archive_history(plan,nonce):
 def legacy_configuration(current,manifest):
     expected=r.configuration(OLD,manifest);expected['scout_manager']='system'
     require(current==expected,'exact reviewed legacy observer configuration required')
+
+
+def zero_epoch_configuration(current,manifest):
+    expected=r.configuration(REPAIRED,manifest);expected.update(scout_manager='system',acceptance_epoch=REPAIRED)
+    require(current==expected,'exact reviewed committed observer configuration required')
+    o.epoch_ready(current)
+    directory=r.STATE/'epochs'/REPAIRED;r.protected(directory,directory=True)
+    require({p.name for p in directory.iterdir()}=={'transition.json'},'only an uncredited committed epoch may be corrected')
+    marker=directory/'transition.json';r.protected(marker)
+    raw=marker.read_bytes();data=r.loads(raw)
+    require(data['old_head']==OLD and data['history']['source_head']==OLD,'original historical source must remain unchanged')
+    archive=o.verify_history(data['history'])
+    require((r.STATE/'discovery.json').read_bytes()==(archive/'discovery.json').read_bytes(),'historical receipt changed after epoch commit')
+    return raw
 
 
 def no_scout_processes(proc):
@@ -293,7 +318,7 @@ class Host:
                 require(rel in target and r.sha(path.read_bytes())==target[rel],'exact staged release module required')
     def inspect(self):
         require(sys.platform=='linux' and os.geteuid()==0 and str(r.ROOT)=='/home/optiplex/investment' and isolated(),'fixed isolated Linux root release path required')
-        require(self.old==OLD and re.fullmatch('[a-f0-9]{40}',self.head) is not None and self.head!=self.old,'exact reviewed transition required')
+        require(self.old in {OLD,REPAIRED} and re.fullmatch('[a-f0-9]{40}',self.head) is not None and self.head!=self.old,'exact reviewed transition required')
         require(not git_boundary(r.ROOT),'reviewed Git boundary required')
         for head in (self.old,self.head):
             require(audit(r.ROOT,head)['untracked_source_influence']=='PASS','old and target source influence required before transition')
@@ -304,21 +329,25 @@ class Host:
         require(changed and all(n in ALLOWED or n.startswith(('tests/','docs/')) for n in changed),'narrow nonfinancial Scout release required')
         r.flags_disabled(r.ROOT)
         r.protected(r.CONFIG);current=r.loads(r.CONFIG.read_bytes())
-        legacy_configuration(current,r.source_manifest(r.ROOT,self.old))
-        require(current.get('head')==self.old and current.get('scout_manager')=='system' and 'acceptance_epoch' not in current,'exact legacy SYSTEM boundary required')
+        previous_epoch=None
+        if self.old==OLD:
+            legacy_configuration(current,r.source_manifest(r.ROOT,self.old))
+            require('acceptance_epoch' not in current,'exact legacy SYSTEM boundary required')
+        else:previous_epoch=zero_epoch_configuration(current,r.source_manifest(r.ROOT,self.old))
+        require(current.get('head')==self.old and current.get('scout_manager')=='system','exact SYSTEM source boundary required')
         r.boundary(current,self.invoke,query_only=True);self.unit_boundary(current)
         r.manifest_matches(r.ROOT,current['files'])
         ledger,rows=o.ledger_snapshot();candidates=candidate_snapshot();before=dict(ledger=ledger,protected=u.protected_state(),candidate_count=len(candidates),candidates_sha256=o.digest(candidates))
         require(not list(r.STATE.glob('*.pending')) and not (r.CONTROL/'worktrees').is_symlink() and not ((r.CONTROL/'worktrees').exists() and any((r.CONTROL/'worktrees').iterdir())),'no pending bookends/worktrees permitted')
         receipt=r.STATE/'discovery.json';r.protected(receipt)
         data=r.loads(receipt.read_bytes())
-        require(data.get('source_head')==self.old and data.get('fixture_only') is False and data.get('os_boundary_verified') is True and data.get('grants_implementation') is False,'historical source authority required')
+        require(data.get('source_head')==OLD and data.get('fixture_only') is False and data.get('os_boundary_verified') is True and data.get('grants_implementation') is False,'historical source authority required')
         require(type(data.get('runs')) is list and 1<=len(data['runs'])<=30,'bounded nonempty historical acceptance required')
         require(len({x['slot'] for x in data['runs']})==len(data['runs'])==len({x['invocation'] for x in data['runs']}),'distinct historical records required')
         require(any(x['slot']=='scout:2026-10-29' and x['invocation']=='8608a7c10e9b4c23b96cf91bcc8fa51f' for x in data['runs']),'October 29 history required')
         for x in data['runs']:
             matched=[r.loads(row[5]) for row in rows if row[3]=='SCHEDULE' and r.loads(row[5]).get('slot')==x['slot']]
-            require(len(matched)==1 and matched[0].get('head')==self.old and matched[0].get('status')=='COLLECTED' and matched[0].get('trigger')==dict(source='systemd-observed-timer',invocation=x['invocation']),'historical receipt must join original collection')
+            require(len(matched)==1 and matched[0].get('head')==OLD and matched[0].get('status')=='COLLECTED' and matched[0].get('trigger')==dict(source='systemd-observed-timer',invocation=x['invocation']),'historical receipt must join original collection')
             require(all(x.get(k) is True for k in ('no_builder','no_worktree','no_source_mutation','no_pr','no_deploy','no_financial_execution')) and all(x.get(k+'_before')==x.get(k+'_after') and re.fullmatch('[a-f0-9]{64}',str(x.get(k+'_before'))) for k in ('holdings','investment')),'historical safety required')
         # Archive the exact observed failed invocation, sanitized trusted fields only.
         raw=r.command(self.invoke,['/usr/bin/journalctl','--no-pager','-o','json','_SYSTEMD_INVOCATION_ID=77541c9232d74e578d6d0f596cce954d'],check=True).stdout
@@ -343,14 +372,31 @@ class Host:
         for name in r.IDENTITIES[1:]:require(target[name]==current['files'][name],'all unit bytes must remain unchanged')
         desired=r.configuration(self.head,target);desired.update(scout_manager='system',acceptance_epoch=self.head)
         self.quiet()
-        return dict(old=self.old,head=self.head,current=current,desired=desired,before=before,timer=self.timer_identity(),receipt=receipt.read_bytes(),fires=(r.STATE/'timer-fires.json').read_bytes(),failure=r.encoded(failure),ledger_history=r.encoded(rows),candidates=r.encoded(candidates),source=r.SOURCE.read_bytes(),config=r.CONFIG.read_bytes(),new_source=self.git('show',self.head+':ops/discovery/observer.py'),new_config=r.encoded(desired))
+        plan=dict(old=self.old,head=self.head,current=current,desired=desired,before=before,timer=self.timer_identity(),receipt=receipt.read_bytes(),fires=(r.STATE/'timer-fires.json').read_bytes(),failure=r.encoded(failure),ledger_history=r.encoded(rows),candidates=r.encoded(candidates),source=r.SOURCE.read_bytes(),config=r.CONFIG.read_bytes(),new_source=self.git('show',self.head+':ops/discovery/observer.py'),new_config=r.encoded(desired))
+        if previous_epoch is not None:
+            plan['previous_epoch']=previous_epoch
+            raw=r.command(self.invoke,['/usr/bin/journalctl','--no-pager','-o','json','_SYSTEMD_INVOCATION_ID=ec64de828d304e608b8113e3fc3d7e59'],check=True).stdout
+            require(0<len(raw)<=2_000_000,'retained November 1 failure journal required')
+            fields=('_SYSTEMD_UNIT','_SYSTEMD_INVOCATION_ID','_BOOT_ID','_PID','_UID','__REALTIME_TIMESTAMP','__MONOTONIC_TIMESTAMP')
+            service=[{k:v for k,v in r.loads(line).items() if k in fields} for line in raw.splitlines()]
+            raw=r.command(self.invoke,['/usr/bin/journalctl','--no-pager','-o','json','_SYSTEMD_UNIT=investment-discovery-observer.service','--since','2026-11-01 21:01:00 UTC','--until','2026-11-01 21:02:00 UTC'],check=True).stdout
+            require(len(raw)<=2_000_000,'bounded November 1 observer failure journal required')
+            codes=[]
+            for line in raw.splitlines():
+                record=r.loads(line)
+                if record.get('_UID')=='0':
+                    for code in re.findall(r'DISCOVERY_OBSERVER_FAILURE (SOURCE_SNAPSHOT_INVALID|BOOKEND_INVALID)',record.get('MESSAGE','')):
+                        codes.append(dict(code=code,boot=record.get('_BOOT_ID'),at=record.get('__REALTIME_TIMESTAMP')))
+            require({c['code'] for c in codes}=={'SOURCE_SNAPSHOT_INVALID','BOOKEND_INVALID'},'retained November 1 rejected bookends required')
+            plan['previous_failure']=r.encoded(dict(service=service,observer=codes))
+        return plan
     def recovery_guard(self,plan):
         require(sys.platform=='linux' and os.geteuid()==0 and isolated() and str(r.ROOT)=='/home/optiplex/investment','fixed isolated root recovery required')
-        require(plan['old']==self.old and plan['head']==self.head and self.old==OLD,'exact recovery source required')
+        require(plan['old']==self.old and plan['head']==self.head and self.old in {OLD,REPAIRED},'exact recovery source required')
         require(not git_boundary(r.ROOT),'reviewed Git recovery boundary required')
         self.staged_boundary(r.source_manifest(r.ROOT,self.head))
     def authorize(self):
-        a=authorization(AUTH,self.old,self.head)
+        a=authorization(authorization_path(self),self.old,self.head)
         # The protected release-controller attestation cannot substitute a different
         # PR head into a target: reviewed head must be in this merged source.
         self.git('merge-base','--is-ancestor',a['reviewed_head'],self.head)
@@ -359,6 +405,8 @@ class Host:
     def guard(self,plan):
         self.quiet();require(self.timer_identity()==plan['timer'],'persistent timer history changed')
         require((r.STATE/'discovery.json').read_bytes()==plan['receipt'] and (r.STATE/'timer-fires.json').read_bytes()==plan['fires'],'historical evidence changed')
+        if 'previous_epoch' in plan:
+            require(zero_epoch_configuration(plan['current'],plan['current']['files'])==plan['previous_epoch'],'previous zero-credit epoch changed')
         m.ledger_unchanged(plan['before']['ledger']);r.flags_disabled(r.ROOT)
         require(o.digest(candidate_snapshot())==plan['before']['candidates_sha256'],'existing candidates changed')
     def stop(self):
@@ -411,7 +459,7 @@ def transaction(host,*,apply=False):
             existing_candidate_count=plan['before']['candidate_count'],
             protected_state_fingerprints=plan['before'],timer=plan.get('timer'),
             observer=dict(state='ACTIVE',source_head=plan['old']),
-            epoch_transition=dict(historical_source=plan['old'],new_source=plan['head'],new_accepted_runs=0,historical_credit_transferred=False),
+            epoch_transition=dict(historical_source=r.loads(plan['receipt'])['source_head'],new_source=plan['head'],new_accepted_runs=0,historical_credit_transferred=False),
             intended_changes=['detached exact target source','installed observer source','protected source/epoch selector','sealed content-addressed historical archive','new epoch COMMITTED marker'],
             unchanged=['SYSTEM service and timer bytes','timer schedule and persistent history','legacy acceptance receipts','candidates','ledger history','financial state'],
             archive_requirements=['root-owned 0500 directory and 0400 files','exclusive content-addressed publication','SHA256 manifest verified before commit'],
@@ -452,7 +500,7 @@ def transaction(host,*,apply=False):
             stage('HISTORY_ARCHIVED');preserved();host.guard(plan);operation='INSTALL_SOURCE';host.install(plan);stage('SOURCE_COMMITTED')
             operation='VERIFY_SOURCE';host.verify(plan,True);preserved();stage('NEW_BOUNDARY_VERIFIED');operation='START_OBSERVER';host.start(plan,True);operation='VERIFY_STARTED_OBSERVER';host.verify(plan,True);preserved()
             operation='COMMIT_EPOCH'
-            u.write(epoch/'transition.json',r.encoded(dict(status='COMMITTED',source_head=host.head,old_head=host.old,nonce=a['nonce'],history=history)),0o644,0,os.getgid())
+            u.write(epoch/'transition.json',r.encoded(dict(status='COMMITTED',source_head=host.head,old_head=history['source_head'],nonce=a['nonce'],history=history)),0o644,0,os.getgid())
             stage('COMPLETE')
             return dict(summary,status='NEW_EPOCH_AWAITING_GENUINE_SYSTEM_TIMER_RUNS',changes_applied=True,attempt=str(attempt))
         except Exception as error:
@@ -500,8 +548,8 @@ def rollback(host,nonce):
 
 
 if __name__=='__main__':
-    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--head',required=True);parser.add_argument('--apply',action='store_true');parser.add_argument('--rollback');parser.add_argument('--authorize-owner-object',type=int);parser.add_argument('--retire-unused-authorization',metavar='EXPECTED_RECEIPT_SHA256')
+    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--head',required=True);parser.add_argument('--old-head',choices=(OLD,REPAIRED),default=OLD);parser.add_argument('--apply',action='store_true');parser.add_argument('--rollback');parser.add_argument('--authorize-owner-object',type=int);parser.add_argument('--retire-unused-authorization',metavar='EXPECTED_RECEIPT_SHA256')
     args=parser.parse_args();require(sum(bool(x) for x in (args.apply,args.rollback,args.authorize_owner_object,args.retire_unused_authorization))<=1,'choose one transition mode')
-    host=Host(args.head)
+    host=Host(args.head,old=args.old_head)
     result=retire_unused_authorization(host,args.retire_unused_authorization) if args.retire_unused_authorization else issue_authorization(host,args.authorize_owner_object) if args.authorize_owner_object else rollback(host,args.rollback) if args.rollback else transaction(host,apply=args.apply)
     print(json.dumps(result,indent=2));raise SystemExit(0 if result['status'] in {'PLAN_ONLY','AUTHORIZATION_RECORDED','UNUSED_AUTHORIZATION_RETIRED','NEW_EPOCH_AWAITING_GENUINE_SYSTEM_TIMER_RUNS'} else 1)

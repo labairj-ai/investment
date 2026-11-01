@@ -78,6 +78,148 @@ def test_success_archives_history_and_starts_zero_new_epoch(host):
     assert host.calls.count('install')==1
 
 
+@pytest.fixture
+def zero_epoch(host):
+    receipt=e.r.loads(host.plan['receipt']);receipt.update(fixture_only=False,os_boundary_verified=True,grants_implementation=False)
+    run=receipt['runs'][0]
+    run.update({k:True for k in ('no_builder','no_worktree','no_source_mutation','no_pr','no_deploy','no_financial_execution')})
+    run.update(holdings_before='a'*64,holdings_after='a'*64,investment_before='b'*64,investment_after='b'*64)
+    host.plan['receipt']=e.r.encoded(receipt)
+    history=e.archive_history(host.plan,'initial-history-nonce-123456')
+    (e.r.STATE/'discovery.json').write_bytes(host.plan['receipt'])
+    (e.r.STATE/'timer-fires.json').write_bytes(host.plan['fires'])
+    directory=e.r.STATE/'epochs'/e.REPAIRED;directory.mkdir(parents=True)
+    marker=e.r.encoded(dict(status='COMMITTED',source_head=e.REPAIRED,old_head=e.OLD,
+        nonce='prior-completed-epoch-nonce',history=history))
+    (directory/'transition.json').write_bytes(marker)
+    host.old=host.source=host.config=e.REPAIRED
+    manifest={name:chr(97+i)*64 for i,name in enumerate(e.r.IDENTITIES)}
+    current=e.r.configuration(e.REPAIRED,manifest);current.update(scout_manager='system',acceptance_epoch=e.REPAIRED)
+    host.plan.update(old=e.REPAIRED,current=current,previous_epoch=marker,previous_failure=b'[{"retained":"November 1"}]')
+    return host,directory,history
+
+
+def test_zero_credit_correction_preserves_both_epochs_and_exact_history(zero_epoch):
+    host,prior,history=zero_epoch
+    archived=e.o.verify_history(history);before={p.name:p.read_bytes() for p in archived.iterdir()}
+    old_marker=(prior/'transition.json').read_bytes()
+    result=e.transaction(host,apply=True)
+    assert result['status']=='NEW_EPOCH_AWAITING_GENUINE_SYSTEM_TIMER_RUNS'
+    assert result['historical_runs']==1 and result['current_epoch_runs']==0
+    new=e.r.loads((e.r.STATE/'epochs'/host.head/'transition.json').read_bytes())
+    assert new['history']==history and new['old_head']==e.OLD and new['source_head']==host.head
+    assert (prior/'transition.json').read_bytes()==old_marker
+    assert {p.name:p.read_bytes() for p in archived.iterdir()}==before
+    assert len(list((e.r.STATE/'history').iterdir()))==1
+    assert not list((e.r.STATE/'epochs').rglob('discovery.json'))
+    plan=e.decode_plan(e.r.loads((e.r.CONFIG.parent/'epoch-transitions'/host.nonce/'plan.json').read_bytes()))
+    assert plan['previous_epoch']==old_marker and plan['previous_failure']==host.plan['previous_failure']
+
+
+@pytest.mark.parametrize('fault',['guard','checkout','install','verify','start'])
+def test_zero_credit_correction_rolls_back_without_losing_evidence(zero_epoch,fault):
+    host,prior,history=zero_epoch;marker=(prior/'transition.json').read_bytes()
+    archived=e.o.verify_history(history);before={p.name:p.read_bytes() for p in archived.iterdir()}
+    host.fail=fault;result=e.transaction(host,apply=True)
+    assert result['status']=='ROLLED_BACK_NOT_READY' and host.source==host.config==e.REPAIRED
+    assert (prior/'transition.json').read_bytes()==marker
+    assert {p.name:p.read_bytes() for p in archived.iterdir()}==before
+
+
+@pytest.mark.parametrize('attack',['none','receipt','pending','bad-marker','wrong-history','wrong-config','corrupt-archive','changed-legacy'])
+def test_current_epoch_admission_preserves_or_rejects_existing_evidence(zero_epoch,attack):
+    host,directory,history=zero_epoch
+    manifest={name:chr(97+i)*64 for i,name in enumerate(e.r.IDENTITIES)}
+    config=e.r.configuration(e.REPAIRED,manifest);config.update(scout_manager='system',acceptance_epoch=e.REPAIRED)
+    if attack=='receipt':(directory/'discovery.json').write_text('{"runs":[{"accepted":true}]}')
+    if attack=='pending':(directory/'unexpected.pending').write_text('{}')
+    if attack in {'bad-marker','wrong-history'}:
+        marker=e.r.loads((directory/'transition.json').read_bytes())
+        marker['status' if attack=='bad-marker' else 'old_head']='changed'
+        (directory/'transition.json').write_bytes(e.r.encoded(marker))
+    if attack=='wrong-config':config['observer_digest']='0'*64
+    if attack=='changed-legacy':(e.r.STATE/'discovery.json').write_bytes(b'changed retained receipt')
+    if attack=='corrupt-archive':
+        path=e.o.verify_history(history)/'candidates.json';path.chmod(0o600);path.write_bytes(b'changed');path.chmod(0o400)
+    if attack=='none':assert e.zero_epoch_configuration(config,manifest)==host.plan['previous_epoch']
+    else:
+        with pytest.raises(ValueError):e.zero_epoch_configuration(config,manifest)
+
+
+def test_later_authorization_does_not_overwrite_consumed_bootstrap(host,public_evidence,monkeypatch):
+    s=public_evidence;host.old=e.REPAIRED;host.head=s['a']['target_head'];host.plan.update(old=host.old,head=host.head)
+    s['payload']['rationale']=e.SCOPE+':'+host.old+':'+host.head
+    monkeypatch.setattr(e,'AUTH',e.r.CONFIG.parent/'authorization.json')
+    e.AUTH.write_bytes(b'consumed bootstrap approval remains intact')
+    result=e.issue_authorization(host,123)
+    path=e.authorization_path(host)
+    assert result['status']=='AUTHORIZATION_RECORDED' and path!=e.AUTH
+    assert e.authorization(path,host.old,host.head)['old_head']==e.REPAIRED
+    assert e.AUTH.read_bytes()==b'consumed bootstrap approval remains intact'
+    with pytest.raises(FileExistsError):e.issue_authorization(host,123)
+
+
+def test_live_guard_rechecks_zero_credit_epoch_before_every_source_mutation(zero_epoch,monkeypatch):
+    host,directory,_=zero_epoch;plan=host.plan;plan['timer']={}
+    host.quiet=lambda:None;host.timer_identity=lambda:{}
+    (e.r.STATE/'discovery.json').write_bytes(plan['receipt'])
+    (e.r.STATE/'timer-fires.json').write_bytes(plan['fires'])
+    monkeypatch.setattr(e.m,'ledger_unchanged',lambda *args:None)
+    monkeypatch.setattr(e.r,'flags_disabled',lambda *args:None)
+    monkeypatch.setattr(e,'candidate_snapshot',lambda:[])
+    plan['before']['candidates_sha256']=e.o.digest([])
+    e.Host.guard(host,plan)
+    (directory/'discovery.json').write_text('{"runs":[{"accepted":true}]}')
+    with pytest.raises(ValueError,match='uncredited'):e.Host.guard(host,plan)
+    assert 'install' not in host.calls
+
+
+def test_real_preflight_builds_current_epoch_plan_without_mutation(zero_epoch,tmp_path,monkeypatch):
+    from types import SimpleNamespace
+    fake,_,history=zero_epoch;current=fake.plan['current'];old_manifest=current['files']
+    target=dict(old_manifest);target[e.r.IDENTITIES[0]]='e'*64
+    # Replace external host/Git/systemd observations only; exercise the real
+    # preflight, epoch validation, receipt join and plan assembly together.
+    monkeypatch.setattr(e.sys,'platform','linux');monkeypatch.setattr(e.os,'geteuid',lambda:0)
+    monkeypatch.setattr(e,'isolated',lambda:True);monkeypatch.setattr(e,'git_boundary',lambda root:[])
+    monkeypatch.setattr(e,'audit',lambda *args:dict(untracked_source_influence='PASS'))
+    monkeypatch.setattr(e.r,'source_manifest',lambda root,head:old_manifest if head==e.REPAIRED else target)
+    monkeypatch.setattr(e.r,'flags_disabled',lambda root:None);monkeypatch.setattr(e.r,'manifest_matches',lambda *args:None)
+    monkeypatch.setattr(e.r,'boundary',lambda *args,**kw:None)
+    monkeypatch.setattr(e.u,'protected_state',lambda:dict(synthetic_protected_sha256='f'*64))
+    monkeypatch.setattr(e.r,'CONTROL',tmp_path/'control')
+    monkeypatch.setattr(e.r,'SOURCE',tmp_path/'installed-observer.py');e.r.SOURCE.write_bytes(b'installed old observer')
+    e.r.CONFIG.write_bytes(e.r.encoded(current))
+    trigger=dict(source='systemd-observed-timer',invocation='8608a7c10e9b4c23b96cf91bcc8fa51f')
+    collection=dict(head=e.OLD,status='COLLECTED',slot='scout:2026-10-29',trigger=trigger)
+    monkeypatch.setattr(e.o,'ledger_snapshot',lambda:({},[(1,'event',None,'SCHEDULE',1,json.dumps(collection))]))
+    monkeypatch.setattr(e,'candidate_snapshot',lambda:[])
+    def command(invoke,args,**kwargs):
+        if any('INVOCATION_ID=' in a for a in args):
+            invocation=args[-1].split('=',1)[1]
+            record=dict(_SYSTEMD_UNIT='development-scout.service',_SYSTEMD_INVOCATION_ID=invocation,_UID='1000')
+        else:
+            first='SOURCE_SNAPSHOT_INVALID' if '2026-11-01 21:01:00 UTC' in args else 'TIMER_TRIGGER_INVALID'
+            record=dict(_UID='0',MESSAGE='DISCOVERY_OBSERVER_FAILURE '+first+'; DISCOVERY_OBSERVER_FAILURE BOOKEND_INVALID')
+        return SimpleNamespace(stdout=json.dumps(record)+'\n')
+    monkeypatch.setattr(e.r,'command',command)
+    real=e.Host(fake.head,old=e.REPAIRED)
+    def git(*args):
+        if args[:1]==('rev-parse',):return (e.REPAIRED if args[1]=='HEAD' else fake.head).encode()
+        if args[:1]==('diff',):return b'ops/discovery/observer.py\nops/discovery/epoch_upgrade.py\n'
+        if args[:1]==('show',):return b'new reviewed observer'
+        return b''
+    real.git=git;real.unit_boundary=lambda c:None;real.staged_boundary=lambda t:None
+    real.quiet=lambda:None;real.timer_identity=lambda:dict(unchanged=True)
+    before={str(p):p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
+    plan=real.inspect()
+    assert plan['old']==e.REPAIRED and plan['desired']['acceptance_epoch']==fake.head
+    assert plan['previous_epoch']==fake.plan['previous_epoch']
+    assert e.r.loads(plan['previous_epoch'])['history']==history
+    assert {r['code'] for r in e.r.loads(plan['previous_failure'])['observer']}=={'SOURCE_SNAPSHOT_INVALID','BOOKEND_INVALID'}
+    assert before=={str(p):p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
+
+
 @pytest.mark.parametrize('fault',['guard','checkout','install','verify','start'])
 def test_every_install_failure_restores_old_boundary_without_retry(host,fault):
     host.fail=fault;result=e.transaction(host,apply=True)
