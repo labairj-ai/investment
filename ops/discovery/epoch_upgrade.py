@@ -26,6 +26,42 @@ REPAIRED='47e9236d605a6153bbc538b8dd5ceabd4c3b81ac'
 AUTH=r.CONFIG.parent/'scout-epoch-authorization.json'
 STAMP=Path('/var/lib/systemd/timers/stamp-development-scout.timer')
 ALLOWED={'.github/workflows/test.yml','ops/discovery/observer.py','ops/discovery/epoch_upgrade.py','ops/discovery/influence.py','ops/discovery/pin_refresh.py','.todos/0852-enable-read-only-discovery-and-prove-three-runs.md','dev_agent/scheduler.py','dev_agent/scheduler_health.py'}
+# The separately merged read-only Control Center is included in this release.
+# Its files must remain byte-identical to that exact merged main, rather than
+# granting the Scout adapter general application-source deployment authority.
+CONTROL_CENTER='defef3044891548622bc5d399069e70f064ac699'
+CONTROL_CENTER_FILES={
+    'serve.py','dev_agent/control_center.py',
+    'dev_agent/control_center_assets/index.html',
+    'dev_agent/control_center_assets/control-center.css',
+    'dev_agent/control_center_assets/control-center.js',
+    'scripts/check_development_agent_browser.mjs','.todos/README.md',
+    *{'.todos/'+name for name in (
+        '0856-engineering-control-center-read-model-and-source-provenance.md',
+        '0857-engineering-control-center-overview-and-readiness.md',
+        '0858-engineering-control-center-candidate-workbench.md',
+        '0859-engineering-control-center-pr-owner-review.md',
+        '0860-engineering-control-center-trusted-validation.md',
+        '0861-engineering-control-center-certification.md',
+        '0862-engineering-control-center-audit-history.md',
+        '0863-engineering-control-center-mobile-accessibility.md',
+        '0864-engineering-control-center-release-acceptance.md')}
+}
+
+
+def release_scope(git,old,head,changed):
+    require(bool(changed),'nonempty release required')
+    application=[n for n in changed if n in CONTROL_CENTER_FILES]
+    if application:
+        require(old==REPAIRED,'Control Center rollout requires the committed zero-credit source')
+        git('merge-base','--is-ancestor',CONTROL_CENTER,head)
+        for name in application:
+            require(git('show',head+':'+name)==git('show',CONTROL_CENTER+':'+name),
+                    'Control Center must match its exact merged reviewed source')
+    require(all(n in ALLOWED or n in application or n.startswith(('tests/','docs/')) for n in changed),
+            'narrow nonfinancial Scout release required')
+
+
 SCOPE='scout-source-epoch-transition-once'
 AUTH_FIELDS={'version','repository','scope','old_head','target_head','reviewed_head','merge_sha','risk','decision','nonce','created','financial_ack','execution_ack','authentication_source','owner_object','owner_verified','ci_head','ci_status','historical_receipt_sha256','historical_runs'}
 
@@ -326,7 +362,7 @@ class Host:
         require(self.git('rev-parse','origin/main').decode().strip()==self.head,'exact merged main target required')
         self.git('merge-base','--is-ancestor',self.old,self.head)
         changed=self.git('diff','--name-only',self.old,self.head).decode().splitlines()
-        require(changed and all(n in ALLOWED or n.startswith(('tests/','docs/')) for n in changed),'narrow nonfinancial Scout release required')
+        release_scope(self.git,self.old,self.head,changed)
         r.flags_disabled(r.ROOT)
         r.protected(r.CONFIG);current=r.loads(r.CONFIG.read_bytes())
         previous_epoch=None

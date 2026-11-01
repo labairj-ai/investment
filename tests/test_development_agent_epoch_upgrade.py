@@ -850,3 +850,21 @@ def test_retirement_record_is_never_interpreted_as_interrupted_apply(unused_rece
     host,a,_,digest=unused_receipt;e.retire_unused_authorization(host,digest)
     with pytest.raises(FileNotFoundError):e.rollback(host,a['nonce'])
     assert 'stop' not in host.calls and 'restore' not in host.calls
+
+
+@pytest.mark.parametrize('attack',[None,'modified','financial','legacy','ancestry'])
+def test_combined_release_admits_only_exact_merged_control_center(attack):
+    calls=[]
+    def git(*args):
+        calls.append(args)
+        if attack=='ancestry' and args[0]=='merge-base':raise ValueError('not contained')
+        return b'modified' if attack=='modified' and args[0]=='show' and args[1].startswith('f'*40) else b'exact merged bytes'
+    changed=['ops/discovery/observer.py','serve.py','dev_agent/control_center.py','.todos/README.md']
+    if attack=='financial':changed.append('trade_engine/risk_engine.py')
+    old=e.OLD if attack=='legacy' else e.REPAIRED
+    if attack:
+        with pytest.raises(ValueError):e.release_scope(git,old,'f'*40,changed)
+    else:
+        e.release_scope(git,old,'f'*40,changed)
+        assert calls[0]==('merge-base','--is-ancestor',e.CONTROL_CENTER,'f'*40)
+        assert len(calls)==7

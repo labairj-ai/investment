@@ -140,3 +140,18 @@ pass every existing provenance, collection, bookend and acceptance check. Tests
 grant no qualification credit. Latest manager reading is November 2 16:01:26 EST;
 the prior 16:00:45 estimate is superseded. Calendar remains 16:00 Eastern with
 120 seconds randomized delay; no timer changes were made.
+
+## Resumed combined deployment
+
+The owner explicitly authorized implementation, merges and deployment on November
+1. Control Center PR #33 (including its planning/API stack) is now merged at
+`defef3044891548622bc5d399069e70f064ac699`. The observer pins the complete source
+tree, so switching application source alone would invalidate its existing epoch.
+Use the existing transaction once for the combined source. The only additionally
+admitted application paths must match that exact independently merged Control
+Center commit byte for byte; unrelated financial changes remain denied. No new
+installer, timer, watchdog, approval protocol or qualification evidence is added.
+After the source/observer transaction, restart the existing application with the
+read-only Control Center enabled and verify authenticated endpoints, the legacy
+interface, financial canaries and preserved history. Device/connector acceptance
+remains open; owner action buttons stay disabled.
