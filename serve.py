@@ -1871,6 +1871,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/engineering/") or parsed.path.startswith("/engineering/"):
+            from dev_agent.control_center import handle
+            return handle(self, parsed.path, parsed.query)
         if parsed.path in ("/development-agent", "/api/development-agent"):
             from dev_agent.dashboard import handle
             return handle(self, parsed.path)
@@ -2024,6 +2027,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             intent_id = parsed.path.split("/api/alpaca/risk/", 1)[1]
             self._handle_alpaca_risk(intent_id)
         else:
+            from dev_agent.control_center import source_asset_request
+            if source_asset_request(parsed.path):
+                self.send_error(404)
+                return
             # Restrict static file fallback to safe extensions only — prevents
             # serving .env, .py, .db, .csv, and other sensitive project files.
             _safe_exts = ('.html', '.ico', '.png', '.jpg', '.gif', '.svg', '.css', '.js', '.woff', '.woff2')
@@ -2033,8 +2040,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return
             super().do_GET()
 
+    def do_HEAD(self):
+        parsed = urlparse(self.path)
+        from dev_agent.control_center import handle, source_asset_request
+        if source_asset_request(parsed.path):
+            self.send_error(404)
+            return
+        if parsed.path.startswith("/api/engineering/") or parsed.path.startswith("/engineering/"):
+            return handle(self, parsed.path, parsed.query, mutation=True)
+        return super().do_HEAD()
+
     def do_POST(self):
         parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/engineering/") or parsed.path.startswith("/engineering/"):
+            from dev_agent.control_center import handle
+            return handle(self, parsed.path, parsed.query, mutation=True)
         if parsed.path in ("/api/development-agent/decision", "/api/development-agent/review", "/api/development-agent/owner-review"):
             from dev_agent.dashboard import handle
             return handle(self, parsed.path, mutation=True)
@@ -2107,6 +2127,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_PUT(self):
         parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/engineering/") or parsed.path.startswith("/engineering/"):
+            from dev_agent.control_center import handle
+            return handle(self, parsed.path, parsed.query, mutation=True)
         if parsed.path.startswith("/api/theses/"):
             parts = parsed.path.rstrip("/").split("/")
             if len(parts) == 5 and parts[4] == "draft":     # PUT /api/theses/<t>/draft
@@ -2120,6 +2143,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_DELETE(self):
         parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/engineering/") or parsed.path.startswith("/engineering/"):
+            from dev_agent.control_center import handle
+            return handle(self, parsed.path, parsed.query, mutation=True)
         parts  = parsed.path.rstrip("/").split("/")
         if len(parts) == 4 and parts[1] == "api" and parts[2] == "lots" and parts[3].isdigit():
             self._handle_lot_delete(int(parts[3]))
@@ -2133,6 +2159,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_PATCH(self):
         parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/engineering/") or parsed.path.startswith("/engineering/"):
+            from dev_agent.control_center import handle
+            return handle(self, parsed.path, parsed.query, mutation=True)
         parts  = parsed.path.rstrip("/").split("/")
         if len(parts) == 4 and parts[1] == "api" and parts[2] == "cc-positions" and parts[3].isdigit():
             self._handle_cc_update(int(parts[3]))
