@@ -17,6 +17,20 @@ from dev_agent.store import Store
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.mark.parametrize('host,expected', [
+    ('optiplex.tailb97cdb.ts.net:9443', True),
+    ('OPTIplex.tailb97cdb.ts.net:9443', True),
+    ('optiplex.tailb97cdb.ts.net', False),
+    ('optiplex.tailb97cdb.ts.net:443', False),
+    ('optiplex.tailb97cdb.ts.net.evil.test:9443', False),
+    ('attacker.test:9443', False),
+    ('optiplex.tailb97cdb.ts.net:bad', False),
+    ('owner@optiplex.tailb97cdb.ts.net:9443', False),
+])
+def test_private_home_shortcut_is_limited_to_tailnet_listener(host, expected):
+    assert cc.private_root_redirect(host) is expected
+
+
 @pytest.fixture
 def store(tmp_path):
     s = Store(tmp_path/'control/development-control.sqlite3'); s.migrate(); return s
