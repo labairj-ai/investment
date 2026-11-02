@@ -27,6 +27,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from contextlib import closing
 from datetime import date as _date, timedelta as _td, timezone, datetime
 from time_utils import today_eastern
 from pathlib import Path
@@ -479,12 +480,11 @@ class ChallengerModel:
         shadows an active one because this query filters by lifecycle_state.
         """
         try:
-            conn = agent_db._connect()
-            row = conn.execute(
-                "SELECT * FROM learning_models WHERE lifecycle_state=? ORDER BY created_at DESC LIMIT 1",
-                (LIFECYCLE_PAPER_ACTIVE,),
-            ).fetchone()
-            conn.close()
+            with closing(agent_db._connect()) as conn:
+                row = conn.execute(
+                    "SELECT * FROM learning_models WHERE lifecycle_state=? ORDER BY created_at DESC LIMIT 1",
+                    (LIFECYCLE_PAPER_ACTIVE,),
+                ).fetchone()
             return cls._from_row(row)
         except Exception:
             return None
@@ -496,11 +496,10 @@ class ChallengerModel:
         Use for admin/training workflows only.  Scoring must use load_paper_active().
         """
         try:
-            conn = agent_db._connect()
-            row = conn.execute(
-                "SELECT * FROM learning_models ORDER BY created_at DESC LIMIT 1"
-            ).fetchone()
-            conn.close()
+            with closing(agent_db._connect()) as conn:
+                row = conn.execute(
+                    "SELECT * FROM learning_models ORDER BY created_at DESC LIMIT 1"
+                ).fetchone()
             return cls._from_row(row)
         except Exception:
             return None
