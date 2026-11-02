@@ -4443,13 +4443,15 @@ def get_valuation_ratio_history(ticker: str, ratio: str) -> list[float]:
     conn = _connect()
     if not conn:
         return []
-    rows = conn.execute(
-        f"SELECT {ratio} FROM historical_valuation_metrics "
-        f"WHERE ticker=? AND {ratio} IS NOT NULL AND {ratio} > 0 "
-        f"ORDER BY period_end DESC",
-        (ticker,),
-    ).fetchall()
-    conn.close()
+    try:
+        rows = conn.execute(
+            f"SELECT {ratio} FROM historical_valuation_metrics "
+            f"WHERE ticker=? AND {ratio} IS NOT NULL AND {ratio} > 0 "
+            f"ORDER BY period_end DESC",
+            (ticker,),
+        ).fetchall()
+    finally:
+        conn.close()
     return [float(r[0]) for r in rows]
 
 
@@ -4534,11 +4536,13 @@ def get_latest_valuation_metric(ticker: str) -> dict | None:
     conn = _connect()
     if not conn:
         return None
-    row = conn.execute(
-        "SELECT * FROM historical_valuation_metrics WHERE ticker=? ORDER BY period_end DESC LIMIT 1",
-        (ticker,),
-    ).fetchone()
-    conn.close()
+    try:
+        row = conn.execute(
+            "SELECT * FROM historical_valuation_metrics WHERE ticker=? ORDER BY period_end DESC LIMIT 1",
+            (ticker,),
+        ).fetchone()
+    finally:
+        conn.close()
     return dict(row) if row else None
 
 
@@ -4598,13 +4602,15 @@ def get_estimate_history(ticker: str, period: str, estimate_type: str) -> list[d
     conn = _connect()
     if not conn:
         return []
-    rows = conn.execute(
-        """SELECT * FROM estimate_history
-           WHERE ticker=? AND period=? AND estimate_type=?
-           ORDER BY captured_at DESC""",
-        (ticker, period, estimate_type),
-    ).fetchall()
-    conn.close()
+    try:
+        rows = conn.execute(
+            """SELECT * FROM estimate_history
+               WHERE ticker=? AND period=? AND estimate_type=?
+               ORDER BY captured_at DESC""",
+            (ticker, period, estimate_type),
+        ).fetchall()
+    finally:
+        conn.close()
     return [dict(r) for r in rows]
 
 
