@@ -104,6 +104,36 @@ def test_authenticated_proxy_reader_has_no_browser_token(monkeypatch):
     h.client_address=('127.0.0.1',123); h.headers['Tailscale-User-Login']='owner@example.test'; assert not cc.reader_authorized(h)
 
 
+def test_portfolio_link_opens_private_page(monkeypatch):
+    monkeypatch.setenv('DEV_AGENT_ECC_ENABLED', '1')
+    monkeypatch.setenv('DEV_AGENT_IDENTITY_SOURCE', 'tailscale-serve')
+    monkeypatch.setenv('DEV_AGENT_OPERATORS', 'owner@example.test')
+    headers = dict(Host='optiplex.tailb97cdb.ts.net:9443',
+                   Tailscale_User_Login='owner@example.test',
+                   Sec_Fetch_Site='same-site', Sec_Fetch_Mode='navigate',
+                   Sec_Fetch_Dest='document')
+    h = Handler(**headers)
+    cc.handle(h, cc.PAGE)
+    assert h.code == 200
+    assert h.response_headers['Content-Type'].startswith('text/html')
+    # Following the link must not admit cross-origin API or asset reads.
+    for path in (cc.API+'overview', '/engineering/assets/control-center.js'):
+        h = Handler(**headers); cc.handle(h, path); assert h.code == 403
+    for changed in ({'Sec_Fetch_Site': 'cross-site'},
+                    {'Sec_Fetch_Mode': 'cors'}, {'Sec_Fetch_Dest': 'iframe'},
+                    {'Host': 'optiplex.tailb97cdb.ts.net'},
+                    {'Tailscale_User_Login': 'other@example.test'},
+                    {'Origin': 'https://optiplex.tailb97cdb.ts.net'}):
+        h = Handler(**(headers | changed))
+        cc.handle(h, cc.PAGE); assert h.code == 403
+    h = Handler(**headers); h.client_address = ('192.0.2.1', 123)
+    cc.handle(h, cc.PAGE); assert h.code == 403
+    monkeypatch.setenv('DEV_AGENT_API_TOKEN', 'fixture')
+    headers.pop('Tailscale_User_Login')
+    h = Handler(**headers, X_Development_Agent_Token='fixture')
+    cc.handle(h, cc.PAGE); assert h.code == 403
+
+
 def test_read_route_and_cross_project_denied(monkeypatch, store):
     from dev_agent import dashboard
     monkeypatch.setenv('DEV_AGENT_ECC_ENABLED','1'); monkeypatch.setenv('DEV_AGENT_API_TOKEN','fixture')
