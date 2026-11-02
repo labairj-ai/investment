@@ -28,7 +28,7 @@ REPAIRED='47e9236d605a6153bbc538b8dd5ceabd4c3b81ac'
 CURRENT='33e9d13791fd25a589bbdac75078bc654f028ab4'
 AUTH=r.CONFIG.parent/'scout-epoch-authorization.json'
 STAMP=Path('/var/lib/systemd/timers/stamp-development-scout.timer')
-ALLOWED={'.github/workflows/test.yml','ops/discovery/observer.py','ops/discovery/epoch_upgrade.py','ops/discovery/influence.py','ops/discovery/pin_refresh.py','.todos/0852-enable-read-only-discovery-and-prove-three-runs.md','dev_agent/scheduler.py','dev_agent/scheduler_health.py'}
+ALLOWED={'AGENTS.md','owner_gateway/core.py','scripts/check_agent_contract.py','.github/workflows/test.yml','ops/discovery/observer.py','ops/discovery/epoch_upgrade.py','ops/discovery/influence.py','ops/discovery/pin_refresh.py','.todos/0852-enable-read-only-discovery-and-prove-three-runs.md','dev_agent/scheduler.py','dev_agent/scheduler_health.py'}
 # The separately merged read-only Control Center is included in this release.
 # Its files must remain byte-identical to that exact merged main, rather than
 # granting the Scout adapter general application-source deployment authority.

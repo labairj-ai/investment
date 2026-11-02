@@ -875,7 +875,7 @@ def test_private_home_route_may_advance_the_exact_current_zero_credit_epoch():
     def git(*args):
         calls.append(args)
         return b'exact merged bytes'
-    changed=['ops/discovery/observer.py','serve.py','dev_agent/control_center.py']
+    changed=['ops/discovery/observer.py','serve.py','dev_agent/control_center.py','AGENTS.md','owner_gateway/core.py','scripts/check_agent_contract.py']
     e.release_scope(git,e.CURRENT,'f'*40,changed)
     assert calls[0]==('merge-base','--is-ancestor',e.CONTROL_CENTER,'f'*40)
     assert ('show','f'*40+':serve.py') not in calls
