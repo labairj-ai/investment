@@ -35,12 +35,15 @@ def deploy(executor,authorization,*,origin,admit_again):
             cfg=json.loads((executor.root/'config/development_agent.json').read_text())
             if cfg.get('auto_merge') or not cfg.get('required_human_merge'):raise ValueError('human merge policy invalid')
             if admit_again()!=authorization:raise ValueError('deployment admission changed before transaction')
+            if hasattr(executor,'synchronize_scout_source'):
+                executor.synchronize_scout_source(authorization['merge_sha'],stage_only=True)
             write_final(directory,'pending',dict(prior_sha=before['prior_sha'],target=authorization['merge_sha'],authorization_id=authorization['authorization_id'],protected=before['protected']))
             executor.service('stop');stopped=True
             receipt['backup']=executor.backup(directory/(name+'-rollback'))
             receipt['holdings_before']=executor.protected()
             executor.checkout(authorization['merge_sha'],origin)
             if executor.git('rev-parse','HEAD')!=authorization['merge_sha'] or executor.git('status','--porcelain','--untracked-files=no'):raise ValueError('deployed files differ from approved merge SHA')
+            receipt['scout_source']=getattr(executor,'scout_source',None)
             executor.service('start')
             health=executor.health();receipt['health']=health
             receipt['holdings_after']=executor.protected()

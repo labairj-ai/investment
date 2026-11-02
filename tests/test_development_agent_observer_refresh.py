@@ -377,3 +377,15 @@ def test_failed_deployed_refresh_can_retry_without_deleting_evidence(epoch_host,
     failed_history=h.history();h.fail=None
     assert h.refresh(apply=True)['status']=='SOURCE_SYNCHRONIZED'
     assert all(h.history()[name]==value for name,value in failed_history.items())
+
+
+
+def test_deployed_refresh_can_reselect_previous_committed_epoch(epoch_host):
+    h=epoch_host
+    assert h.refresh(apply=True)['status']=='SOURCE_SYNCHRONIZED'
+    before=h.history();prior=h.old
+    h.git('checkout','--detach',prior);h.head=prior
+    result=h.refresh(apply=True)
+    assert result['source_snapshot']=='PASS'
+    assert json.loads(h.CONFIG.read_bytes())==h.old_config
+    assert h.history()==before

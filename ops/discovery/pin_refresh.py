@@ -285,9 +285,10 @@ def staged_release(head):
 def deployed_inspect(root,head,invoke):
     """Config-only refresh after an owner-authorized deployment, never Scout."""
     from ops.discovery import observer as o, migrate as m, upgrade as u
-    from ops.discovery.influence import audit, isolated
+    from ops.discovery.influence import audit, isolated, git_boundary
     if sys.platform!='linux' or os.geteuid()!=ROOT_UID or Path(root)!=ROOT or not isolated():
         raise ValueError('fixed isolated root deployed refresh required')
+    if git_boundary(ROOT):raise ValueError('reviewed Git boundary required')
     protected(CONFIG);raw=CONFIG.read_bytes();current=loads(raw);old=current['head']
     staged_release(head)
     manifest=source_manifest(ROOT,old)

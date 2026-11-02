@@ -144,10 +144,11 @@ class Executor:
         if len(sha)!=40 or any(c not in '0123456789abcdef' for c in sha):raise ValueError('exact SHA required')
         self.git('fetch','--no-tags',origin,'main')
         self.git('merge-base','--is-ancestor',sha,'FETCH_HEAD')
+        self.synchronize_scout_source(sha,stage_only=True)
         self.git('checkout','--detach',sha)
         self.synchronize_scout_source(sha)
 
-    def synchronize_scout_source(self,sha):
+    def synchronize_scout_source(self,sha,*,stage_only=False):
         # The release operator stages reviewed source under the existing protected
         # epoch-release path before checkout. Never execute root code from checkout.
         if self.root!=Path('/home/optiplex/investment'):return
@@ -164,14 +165,17 @@ for p in (*stage.rglob('*'),stage,*stage.parents,Path('/var/cache/investment-dis
 sys.pycache_prefix='/var/cache/investment-discovery-reviewed-pycache'
 sys.dont_write_bytecode=True
 sys.path.insert(0,str(stage))
-from ops.discovery.pin_refresh import deployed_refresh
+from ops.discovery.pin_refresh import deployed_refresh,staged_release
 import json
+if sys.argv[2]=='stage-only':
+ staged_release(stage.name)
+ print('{"staging":"PASS"}');raise SystemExit(0)
 result=deployed_refresh(Path('/home/optiplex/investment'),sys.argv[2],apply=True)
 print(json.dumps(result))
 if result.get('source_snapshot')!='PASS':raise SystemExit(1)
 """
         result=self.invoke(['/usr/bin/sudo','-n','/usr/bin/python3','-I','-S','-B','-c',launcher,
-                            '/var/cache/investment-discovery-epoch-source/'+stage,sha],
+                            '/var/cache/investment-discovery-epoch-source/'+stage,'stage-only' if stage_only else sha],
                            capture_output=True,text=True,check=True,timeout=600,env=self.env)
         self.scout_source=json.loads(result.stdout)
 

@@ -238,7 +238,8 @@ def test_production_checkout_synchronizes_scout_and_propagates_failure(tmp_path,
     executor=Executor(tmp_path/'source',tmp_path/'receipts',tmp_path/'ledger')
     calls=[]
     monkeypatch.setattr(executor,'git',lambda *args:calls.append(args))
-    def sync(sha):
+    def sync(sha,*,stage_only=False):
+        if stage_only:return
         assert calls[-1]==('checkout','--detach',sha)
         raise ValueError('Scout snapshot blocked')
     monkeypatch.setattr(executor,'synchronize_scout_source',sync)
@@ -270,3 +271,14 @@ def test_unavailable_scout_refresh_cannot_be_ignored(tmp_path):
     executor=Executor('/home/optiplex/investment',tmp_path/'receipts',tmp_path/'ledger',invoke=invoke)
     executor.root=Path('/home/optiplex/investment')
     with pytest.raises(subprocess.CalledProcessError):executor.synchronize_scout_source('b'*40)
+
+
+def test_missing_scout_release_stage_fails_before_application_stop(tmp_path):
+    executor=FakeExecutor(tmp_path);auth=authorization()
+    def unavailable(sha,*,stage_only=False):
+        assert stage_only
+        raise ValueError('missing protected release staging')
+    executor.synchronize_scout_source=unavailable
+    receipt=deploy(executor,auth,origin='https://github.com/owner/repo.git',admit_again=lambda:auth)
+    assert receipt['status']=='FAILED_PRECHECK'
+    assert executor.active and 'stop' not in executor.operations
