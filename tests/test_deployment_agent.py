@@ -282,3 +282,16 @@ def test_missing_scout_release_stage_fails_before_application_stop(tmp_path):
     receipt=deploy(executor,auth,origin='https://github.com/owner/repo.git',admit_again=lambda:auth)
     assert receipt['status']=='FAILED_PRECHECK'
     assert executor.active and 'stop' not in executor.operations
+
+
+def test_interrupted_release_reuses_approved_target_tool_for_source_rollback(tmp_path):
+    executor=FakeExecutor(tmp_path);executor.receipts.mkdir(mode=0o700)
+    from dev_agent.result_collector import write_final
+    write_final(executor.receipts,'pending',dict(prior_sha='a'*40,target='b'*40,authorization_id=123,protected=executor.protected()))
+    executor.sha='b'*40
+    def stage(sha,*,stage_only=False):
+        assert executor.active and stage_only and sha=='b'*40
+        executor.operations.append(('stage',sha))
+    executor.synchronize_scout_source=stage
+    assert recover(executor,'https://github.com/owner/repo.git')['status']=='ROLLED_BACK'
+    assert executor.operations.index(('stage','b'*40))<executor.operations.index('stop')

@@ -72,7 +72,10 @@ def recover(executor,origin):
     if pending.is_symlink() or pending.stat().st_mode&0o077:raise ValueError('private interrupted deployment receipt required')
     with (directory/'.deployment.lock').open('a') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
-        state=json.loads(pending.read_text());executor.service('stop');executor.checkout(state['prior_sha'],origin);executor.service('start');health=executor.health()
+        state=json.loads(pending.read_text())
+        if hasattr(executor,'synchronize_scout_source'):
+            executor.synchronize_scout_source(state['target'],stage_only=True)
+        executor.service('stop');executor.checkout(state['prior_sha'],origin);executor.service('start');health=executor.health()
         result=dict(status='ROLLED_BACK' if all(health['checks'].values()) and protected_matches(executor,state.get('protected'),executor.protected()) else 'DEPLOYED_DEGRADED',authorization_id=state['authorization_id'],prior_sha=state['prior_sha'],deployed_sha=executor.git('rev-parse','HEAD'),health=health,created=time.time())
         write_final(directory,'recovery-'+str(time.time_ns()),result)
         if result['status']=='ROLLED_BACK':pending.unlink()
