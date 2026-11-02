@@ -15,8 +15,11 @@ the `/api/development-agent` backend and its operations remain unchanged.
 
 A reader uses the existing authenticated loopback Tailscale Serve operator
 identity. Existing programmatic readers may supply the existing development API
-token in its header. The UI receives no service/owner token. Cross-origin and
-cross-site requests are denied, responses are no-store, and all new mutation
+token in its header. The UI receives no service/owner token. Cross-origin API and
+cross-site requests are denied. A same-site top-level GET navigation to the private
+9443 page is allowed only with the existing authenticated loopback operator identity;
+this admits the portfolio link from port 443 without admitting API or asset reads.
+Responses are no-store, and all new mutation
 routes refuse before reaching legacy financial handlers. Only the dedicated
 `development-control.sqlite3` can be read, with SQLite query-only and query budgets.
 No GET calls a scheduler producer, approval writer, service-control command, merge or deploy. Fixed Git metadata reads and existing read-only GitHub adapters may use subprocesses.

@@ -544,7 +544,7 @@ def csv_export(data):
     return out.getvalue().encode()
 
 
-def reader_authorized(handler):
+def reader_authorized(handler, path=None):
     """Reuse existing reader token or authenticated loopback Serve identity.
 
     The page receives neither service tokens nor owner credentials. Programmatic
@@ -552,7 +552,7 @@ def reader_authorized(handler):
     """
     from .dashboard import authorized
     try:
-        for name in ('Origin', 'Host', 'X-Development-Agent-Token'):
+        for name in ('Origin', 'Host', 'X-Development-Agent-Token', 'Sec-Fetch-Site', 'Sec-Fetch-Mode', 'Sec-Fetch-Dest'):
             if hasattr(handler.headers, 'get_all') and len(handler.headers.get_all(name, []))>1:
                 return False
         origin = handler.headers.get('Origin')
@@ -562,9 +562,20 @@ def reader_authorized(handler):
                 return False
     except ValueError:
         return False
-    if handler.headers.get('Sec-Fetch-Site') not in (None, 'same-origin', 'none'):
+    # The portfolio links from HTTPS port 443 to the private port 9443.
+    # Browsers label that document navigation same-site, not same-origin.
+    private_navigation = (
+        handler.headers.get('Sec-Fetch-Site') == 'same-site'
+        and path == PAGE
+        and private_root_redirect(handler.headers.get('Host', ''))
+        and getattr(handler, 'command', 'GET') == 'GET'
+        and handler.headers.get('Sec-Fetch-Mode') == 'navigate'
+        and handler.headers.get('Sec-Fetch-Dest') == 'document'
+        and not origin
+    )
+    if handler.headers.get('Sec-Fetch-Site') not in (None, 'same-origin', 'none') and not private_navigation:
         return False
-    if authorized(handler.headers, os.environ.get('DEV_AGENT_API_TOKEN', '')):
+    if not private_navigation and authorized(handler.headers, os.environ.get('DEV_AGENT_API_TOKEN', '')):
         return True
     try:
         from .identity import dashboard_identity
@@ -597,7 +608,7 @@ def handle(handler, path, query='', *, mutation=False):
         return send(dict(ok=False, error='route unavailable'), 404)
     if mutation:
         return send(dict(ok=False, error='read-only interface'), 405)
-    if not reader_authorized(handler):
+    if not reader_authorized(handler, path):
         return send(dict(ok=False, error='authenticated same-origin reader required'), 403)
     assets = {PAGE: ('index.html', 'text/html; charset=utf-8'),
               '/engineering/assets/control-center.css': ('control-center.css', 'text/css; charset=utf-8'),
