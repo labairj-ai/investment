@@ -67,8 +67,12 @@ def apply(plan,*,invoke=subprocess.run):
 
 
 if __name__=='__main__':
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--root',type=Path,required=True);p.add_argument('--head',required=True);p.add_argument('--repository',default='labairj-ai/investment');p.add_argument('--refresh-from',metavar='EXPECTED_OLD_HEAD');p.add_argument('--apply',action='store_true');a=p.parse_args()
-    if a.refresh_from:
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--root',type=Path,required=True);p.add_argument('--head',required=True);p.add_argument('--repository',default='labairj-ai/investment');p.add_argument('--refresh-from',metavar='EXPECTED_OLD_HEAD');p.add_argument('--sync-deployed',action='store_true');p.add_argument('--apply',action='store_true');a=p.parse_args()
+    if a.sync_deployed:
+        if a.refresh_from:raise ValueError('select one refresh mode')
+        from ops.discovery.pin_refresh import deployed_refresh
+        result=deployed_refresh(a.root,a.head,apply=a.apply)
+    elif a.refresh_from:
         from ops.discovery.pin_refresh import refresh
         result=refresh(a.root,a.head,a.refresh_from,a.repository,apply=a.apply)
     else:

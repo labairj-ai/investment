@@ -289,3 +289,91 @@ def test_post_restart_manifest_change_rolls_back(host,monkeypatch):
 def test_actual_activation_flags_fail_closed(host):
     path=host.ROOT/'config/development_agent.json';cfg=json.loads(path.read_bytes());cfg['supervised_loop_enabled']=True;path.write_text(json.dumps(cfg))
     with pytest.raises(ValueError,match='disabled SHADOW'):r.flags_disabled(host.ROOT)
+
+
+@pytest.fixture
+def epoch_host(host,monkeypatch):
+    from ops.discovery import observer as o, migrate as m, upgrade as u, epoch_upgrade as e
+    from ops.discovery import influence
+    h=host
+    h.old_config.update(scout_manager='system',acceptance_epoch=h.old)
+    h.raw=r.encoded(h.old_config);h.CONFIG.write_bytes(h.raw)
+    epoch=h.STATE/'epochs'/h.old;epoch.mkdir(parents=True)
+    history=dict(source_head='a'*40,accepted_slots=['scout:2026-10-29'],accepted_count=1,manifest_sha256='b'*64)
+    (epoch/'transition.json').write_bytes(r.encoded(dict(status='COMMITTED',source_head=h.old,old_head='a'*40,nonce='original-epoch-nonce',history=history)))
+    # An accepted current-epoch receipt is retained too; never carried forward.
+    (epoch/'discovery.json').write_bytes(r.encoded(dict(source_head=h.old,runs=[dict(slot='scout:2026-11-01')])))
+    (h.STATE/'timer-fires.json').write_text('["historical-fire"]')
+    monkeypatch.setattr(influence,'isolated',lambda:True)
+    monkeypatch.setattr(influence,'audit',lambda *a:dict(untracked_source_influence='PASS'))
+    monkeypatch.setattr(r,'staged_release',lambda head:None)
+    monkeypatch.setattr(m,'deployed_source',lambda root,head,old:dict(manifest=r.source_manifest(root,head)))
+    monkeypatch.setattr(o,'epoch_ready',lambda config:None)
+    monkeypatch.setattr(o,'snapshot',lambda config:({'source':config['head']},[]))
+    monkeypatch.setattr(o,'ledger_snapshot',lambda:({'seq':1},[]))
+    monkeypatch.setattr(m,'ledger_unchanged',lambda before:None)
+    monkeypatch.setattr(u,'protected_state',lambda:dict(financial='unchanged'))
+    monkeypatch.setattr(e.Host,'unit_boundary',lambda *a:None)
+    monkeypatch.setattr(e.Host,'quiet',lambda *a:None)
+    monkeypatch.setattr(e.Host,'timer_identity',lambda *a:dict(stamp='unchanged'))
+    h.refresh=lambda **kwargs:r.deployed_refresh(h.ROOT,h.head,invoke=h.invoke,**kwargs)
+    h.history=lambda:{str(p.relative_to(h.STATE)):p.read_bytes() for p in h.STATE.rglob('*') if p.is_file()}
+    return h
+
+
+def test_deployed_epoch_plan_preserves_all_history(epoch_host):
+    h=epoch_host;before=h.history();raw=h.CONFIG.read_bytes()
+    assert h.refresh()['status']=='PLAN_ONLY'
+    assert h.history()==before and h.CONFIG.read_bytes()==raw and h.stops==0
+
+
+def test_deployed_refresh_retains_accepted_receipts_and_starts_zero_credit_epoch(epoch_host):
+    h=epoch_host;before=h.history()
+    result=h.refresh(apply=True)
+    assert result['status']=='SOURCE_SYNCHRONIZED' and result['source_snapshot']=='PASS'
+    assert result['accepted_runs_carried']==0 and not result['grants_implementation']
+    assert all(h.history()[name]==value for name,value in before.items())
+    target=h.STATE/'epochs'/h.head
+    assert not (target/'discovery.json').exists()
+    marker=json.loads((target/'transition.json').read_bytes())
+    assert marker['history']['accepted_count']==1 and marker['source_head']==h.head
+    assert json.loads(h.CONFIG.read_bytes())['acceptance_epoch']==h.head
+    calls=len(h.calls)
+    assert h.refresh(apply=True)['changes_applied'] is False
+    assert not any(c[1] in {'stop','start'} for c in h.calls[calls:])
+
+
+@pytest.mark.parametrize('failure',['unit','config','financial','history','snapshot','restart'])
+def test_deployed_refresh_fails_closed_preserving_old_configuration(epoch_host,monkeypatch,failure):
+    from ops.discovery import observer as o, upgrade as u
+    h=epoch_host;before=h.history()
+    if failure=='unit':
+        (h.ROOT/r.IDENTITIES[2]).write_text('changed boundary')
+        h.git('add','.');h.git('commit','-qm','changed unit');h.head=h.git('rev-parse','HEAD')
+    elif failure=='config':h.CONFIG.write_text('{}')
+    elif failure=='financial':
+        n=[0]
+        def financial():
+            n[0]+=1
+            return dict(financial='changed' if n[0]>2 else 'unchanged')
+        monkeypatch.setattr(u,'protected_state',financial)
+    elif failure=='history':
+        original=r.stop_verified
+        def stop(invoke):
+            original(invoke)
+            (h.STATE/'timer-fires.json').write_text('unexpected mutation')
+        monkeypatch.setattr(r,'stop_verified',stop)
+    elif failure=='snapshot':monkeypatch.setattr(o,'snapshot',lambda config:(_ for _ in ()).throw(ValueError('snapshot failed')))
+    elif failure=='restart':h.fail='restart'
+    with pytest.raises((ValueError,KeyError,subprocess.CalledProcessError)):h.refresh(apply=True)
+    assert h.CONFIG.read_bytes()==(b'{}' if failure=='config' else h.raw)
+    if failure not in {'history','config'}:assert all(h.history()[name]==value for name,value in before.items())
+
+
+def test_failed_deployed_refresh_can_retry_without_deleting_evidence(epoch_host,monkeypatch):
+    from ops.discovery import observer as o
+    h=epoch_host;h.fail='restart'
+    with pytest.raises(subprocess.CalledProcessError):h.refresh(apply=True)
+    failed_history=h.history();h.fail=None
+    assert h.refresh(apply=True)['status']=='SOURCE_SYNCHRONIZED'
+    assert all(h.history()[name]==value for name,value in failed_history.items())

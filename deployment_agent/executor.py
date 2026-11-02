@@ -145,6 +145,43 @@ class Executor:
         self.git('fetch','--no-tags',origin,'main')
         self.git('merge-base','--is-ancestor',sha,'FETCH_HEAD')
         self.git('checkout','--detach',sha)
+        self.synchronize_scout_source(sha)
+
+    def synchronize_scout_source(self,sha):
+        # The release operator stages reviewed source under the existing protected
+        # epoch-release path before checkout. Never execute root code from checkout.
+        if self.root!=Path('/home/optiplex/investment'):return
+        stage=getattr(self,'_scout_release_stage',sha)
+        import re
+        if not re.fullmatch('[a-f0-9]{40}',stage):raise ValueError('exact staged release required')
+        self._scout_release_stage=stage # Same reviewed tool handles code rollback.
+        launcher="""import os,sys
+from pathlib import Path
+stage=Path(sys.argv[1])
+for p in (*stage.rglob('*'),stage,*stage.parents,Path('/var/cache/investment-discovery-reviewed-pycache')):
+ s=p.lstat()
+ if p.is_symlink() or s.st_uid!=0 or s.st_mode&0o022:raise ValueError('protected staged release required')
+sys.pycache_prefix='/var/cache/investment-discovery-reviewed-pycache'
+sys.dont_write_bytecode=True
+sys.path.insert(0,str(stage))
+from ops.discovery.pin_refresh import deployed_refresh
+import json
+result=deployed_refresh(Path('/home/optiplex/investment'),sys.argv[2],apply=True)
+print(json.dumps(result))
+if result.get('source_snapshot')!='PASS':raise SystemExit(1)
+"""
+        result=self.invoke(['/usr/bin/sudo','-n','/usr/bin/python3','-I','-S','-B','-c',launcher,
+                            '/var/cache/investment-discovery-epoch-source/'+stage,sha],
+                           capture_output=True,text=True,check=True,timeout=600,env=self.env)
+        self.scout_source=json.loads(result.stdout)
+
+    def scout_source_ready(self):
+        if self.root!=Path('/home/optiplex/investment'):return True
+        try:
+            config=json.loads(Path('/etc/investment-discovery-observer/config.json').read_text())
+            return (config['head']==config['acceptance_epoch']==self.git('rev-parse','HEAD')
+                    and all(self.hash_file(self.root/name)==digest for name,digest in config['files'].items()))
+        except (OSError,ValueError,KeyError):return False
 
     def health(self):
         def http(path,expected):
@@ -156,7 +193,7 @@ class Executor:
         raw=json.loads(process.stdout)
         canary={k:raw.get(k) for k in ('health','mutation_safety','functional_contract','production_state_unchanged')}
         cfg=json.loads((self.root/'config/development_agent.json').read_text())
-        checks=dict(service=self.service('is-active')=='active',dashboard=http('/out/dashboard.html',200),development_dashboard=http('/development-agent',200),unauthorized_api_denied=http('/api/development-agent',403),advisor=all(canary.get(k)=='PASS' for k in ('health','mutation_safety','functional_contract')) and canary.get('production_state_unchanged') is True,auto_merge_disabled=cfg.get('auto_merge') is False)
+        checks=dict(scout_source_synchronized=self.scout_source_ready(),service=self.service('is-active')=='active',dashboard=http('/out/dashboard.html',200),development_dashboard=http('/development-agent',200),unauthorized_api_denied=http('/api/development-agent',403),advisor=all(canary.get(k)=='PASS' for k in ('health','mutation_safety','functional_contract')) and canary.get('production_state_unchanged') is True,auto_merge_disabled=cfg.get('auto_merge') is False)
         # Authenticated API must be exercised with a separately provisioned local
         # credential by the operator service; no fallback to unauthenticated PASS.
         token_file=os.environ.get('INVESTMENT_DEPLOY_API_CREDENTIAL_FILE')
