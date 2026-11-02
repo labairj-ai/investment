@@ -231,3 +231,67 @@ def test_real_shape_connector_owner_deploy_keeps_all_admission_guards(authorized
         assert authorize(store,client,999)['merge_sha']=='c'*40
         obj['body']='OWNER-DEPLOY deployment-1\n'+json.dumps(dict(data,head='f'*40))
         with pytest.raises(ValueError):authorize(store,client,999)
+
+
+def test_production_checkout_synchronizes_scout_and_propagates_failure(tmp_path,monkeypatch):
+    from deployment_agent.executor import Executor
+    executor=Executor(tmp_path/'source',tmp_path/'receipts',tmp_path/'ledger')
+    calls=[]
+    monkeypatch.setattr(executor,'git',lambda *args:calls.append(args))
+    def sync(sha,*,stage_only=False):
+        if stage_only:return
+        assert calls[-1]==('checkout','--detach',sha)
+        raise ValueError('Scout snapshot blocked')
+    monkeypatch.setattr(executor,'synchronize_scout_source',sync)
+    with pytest.raises(ValueError,match='Scout snapshot blocked'):
+        executor.checkout('b'*40,'https://github.com/labairj-ai/investment.git')
+
+
+def test_scout_refresh_uses_protected_release_tool_for_checkout_and_rollback(tmp_path):
+    from deployment_agent.executor import Executor
+    commands=[]
+    def invoke(command,**kw):
+        commands.append(command)
+        assert kw['check'] is True and kw['timeout']==600
+        return SimpleNamespace(stdout=json.dumps(dict(source_snapshot='PASS')))
+    executor=Executor('/home/optiplex/investment',tmp_path/'receipts',tmp_path/'ledger',invoke=invoke)
+    executor.root=Path('/home/optiplex/investment')
+    executor.synchronize_scout_source('b'*40)
+    executor.synchronize_scout_source('a'*40)
+    assert commands[0][:6]==['/usr/bin/sudo','-n','/usr/bin/python3','-I','-S','-B']
+    assert commands[0][-2:]==['/var/cache/investment-discovery-epoch-source/'+'b'*40,'b'*40]
+    assert commands[1][-2:]==['/var/cache/investment-discovery-epoch-source/'+'b'*40,'a'*40]
+    assert 'systemctl' not in commands[0][7] and 'development-scout.service' not in commands[0][7]
+
+
+def test_unavailable_scout_refresh_cannot_be_ignored(tmp_path):
+    import subprocess
+    from deployment_agent.executor import Executor
+    def invoke(command,**kw):raise subprocess.CalledProcessError(1,command)
+    executor=Executor('/home/optiplex/investment',tmp_path/'receipts',tmp_path/'ledger',invoke=invoke)
+    executor.root=Path('/home/optiplex/investment')
+    with pytest.raises(subprocess.CalledProcessError):executor.synchronize_scout_source('b'*40)
+
+
+def test_missing_scout_release_stage_fails_before_application_stop(tmp_path):
+    executor=FakeExecutor(tmp_path);auth=authorization()
+    def unavailable(sha,*,stage_only=False):
+        assert stage_only
+        raise ValueError('missing protected release staging')
+    executor.synchronize_scout_source=unavailable
+    receipt=deploy(executor,auth,origin='https://github.com/owner/repo.git',admit_again=lambda:auth)
+    assert receipt['status']=='FAILED_PRECHECK'
+    assert executor.active and 'stop' not in executor.operations
+
+
+def test_interrupted_release_reuses_approved_target_tool_for_source_rollback(tmp_path):
+    executor=FakeExecutor(tmp_path);executor.receipts.mkdir(mode=0o700)
+    from dev_agent.result_collector import write_final
+    write_final(executor.receipts,'pending',dict(prior_sha='a'*40,target='b'*40,authorization_id=123,protected=executor.protected()))
+    executor.sha='b'*40
+    def stage(sha,*,stage_only=False):
+        assert executor.active and stage_only and sha=='b'*40
+        executor.operations.append(('stage',sha))
+    executor.synchronize_scout_source=stage
+    assert recover(executor,'https://github.com/owner/repo.git')['status']=='ROLLED_BACK'
+    assert executor.operations.index(('stage','b'*40))<executor.operations.index('stop')

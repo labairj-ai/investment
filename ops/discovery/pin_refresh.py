@@ -264,3 +264,121 @@ def refresh(root,head,old,repository='labairj-ai/investment',*,apply=False,invok
             except OSError:pass  # Recovery material is never treated as authoritative config.
             if restored:return dict(summary,status='ROLLED_BACK_NOT_READY',changes_applied=False,prior_exact_configuration_restored=True,reason=type(error).__name__)
             return dict(summary,status='FAILED_STOPPED' if stopped else 'FAILED_STOP_UNCONFIRMED',changes_applied=False,prior_exact_configuration_restored=config_restored,rollback_boundary_verified=False,reason=type(error).__name__)
+
+
+
+def staged_release(head):
+    stage=Path(__file__).resolve().parents[2]
+    stage_head=stage.name
+    if not re.fullmatch('[a-f0-9]{40}',stage_head) or stage.parent!=Path('/var/cache/investment-discovery-epoch-source'):
+        raise ValueError('protected reviewed release staging required')
+    staged=source_manifest(ROOT,stage_head)
+    for name,module in tuple(sys.modules.items()):
+        if name in {'ops','dev_agent'} or name.startswith(('ops.','dev_agent.')):
+            path=getattr(module,'__file__',None)
+            if path:
+                path=Path(path);protected(path);rel=str(path.relative_to(stage))
+                if rel not in staged or sha(path.read_bytes())!=staged[rel]:raise ValueError('staged release module mismatch')
+    git(ROOT,'merge-base','--is-ancestor',head,stage_head)
+
+
+def deployed_inspect(root,head,invoke):
+    """Config-only refresh after an owner-authorized deployment, never Scout."""
+    from ops.discovery import observer as o, migrate as m, upgrade as u
+    from ops.discovery.influence import audit, isolated, git_boundary
+    if sys.platform!='linux' or os.geteuid()!=ROOT_UID or Path(root)!=ROOT or not isolated():
+        raise ValueError('fixed isolated root deployed refresh required')
+    if git_boundary(ROOT):raise ValueError('reviewed Git boundary required')
+    protected(CONFIG);raw=CONFIG.read_bytes();current=loads(raw);old=current['head']
+    staged_release(head)
+    manifest=source_manifest(ROOT,old)
+    expected=configuration(old,manifest);expected.update(scout_manager='system',acceptance_epoch=old)
+    if current!=expected:raise ValueError('exact committed observer configuration required')
+    o.epoch_ready(current)
+    # Recovery may reselect an existing, independently committed earlier epoch.
+    # A new source must descend from the installed pin; no arbitrary rollback pin.
+    destination=STATE/'epochs'/head
+    existing=destination.exists()
+    target=m.deployed_source(ROOT,head,head if existing else old)['manifest']
+    if existing and old!=head:
+        try:git(ROOT,'merge-base','--is-ancestor',old,head)
+        except subprocess.CalledProcessError:git(ROOT,'merge-base','--is-ancestor',head,old)
+    for name in IDENTITIES:
+        if manifest[name]!=target[name]:raise ValueError('observer/Scout bytes changed; full upgrade required')
+    if audit(ROOT,head)['untracked_source_influence']!='PASS':raise ValueError('source influence failed')
+    flags_disabled(ROOT);observed=boundary(current,invoke,query_only=True)
+    from ops.discovery.epoch_upgrade import Host
+    host=Host(head,old,invoke);host.unit_boundary(current);host.quiet()
+    if list(STATE.glob('*.pending')):raise ValueError('pending Scout bookend refused')
+    desired=configuration(head,target);desired.update(scout_manager='system',acceptance_epoch=head)
+    marker=loads((STATE/'epochs'/old/'transition.json').read_bytes())
+    if existing:o.epoch_ready(desired)
+    # Byte identities are only compared; financial files are never opened writable.
+    history={}
+    for path in STATE.rglob('*'):
+        protected(path,directory=path.is_dir())
+        if path.is_file():history[str(path.relative_to(STATE))]=sha(path.read_bytes())
+    ledger,_=o.ledger_snapshot()
+    return dict(raw=raw,current=current,desired=desired,observed=observed,old=old,head=head,
+                mode=stat.S_IMODE(CONFIG.stat().st_mode),gid=CONFIG.stat().st_gid,
+                history=history,history_marker=marker['history'],existing=existing,
+                financial=u.protected_state(),ledger=ledger,timer=host.timer_identity())
+
+
+def deployed_refresh(root,head,*,apply=False,invoke=subprocess.run):
+    """Preserve every epoch/receipt; select a new zero-credit source when needed."""
+    from ops.discovery import observer as o, upgrade as u
+    from ops.discovery.epoch_upgrade import Host
+    plan=deployed_inspect(root,head,invoke)
+    summary=dict(source_head=head,old_head=plan['old'],grants_implementation=False,
+                 accepted_runs_carried=0,changes_applied=False)
+    if plan['old']==head:
+        o.snapshot(plan['desired'])
+        return dict(summary,status='SOURCE_SYNCHRONIZED',source_snapshot='PASS')
+    if not apply:return dict(summary,status='PLAN_ONLY')
+    lock=CONFIG.parent/'pin-refresh.lock'
+    fd=os.open(lock,os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)
+    with os.fdopen(fd,'a') as handle:
+        protected(lock);fcntl.flock(handle,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        if deployed_inspect(root,head,invoke)!=plan:raise ValueError('deployed refresh preflight changed')
+        nonce=str(time.time_ns());backup=CONFIG.parent/('pin-refresh-backup-'+nonce+'.json')
+        temp=CONFIG.parent/('config.json.refreshing-'+nonce)
+        durable_file(backup,plan['raw'],plan['mode'],plan['gid'])
+        host=Host(head,plan['old'],invoke)
+        def preserved():
+            for name,digest in plan['history'].items():
+                path=STATE/name
+                if path.is_symlink() or not path.is_file() or sha(path.read_bytes())!=digest:raise ValueError('historical Scout evidence changed')
+            if u.protected_state()!=plan['financial']:raise ValueError('financial state changed; never restore it')
+            if host.timer_identity()!=plan['timer']:raise ValueError('Scout timer history changed')
+            host.unit_boundary(plan['current']);host.quiet();flags_disabled(ROOT)
+            from ops.discovery.migrate import ledger_unchanged
+            ledger_unchanged(plan['ledger'])
+        try:
+            stop_verified(invoke);preserved()
+            if not plan['existing']:
+                epoch=STATE/'epochs'/head;epoch.mkdir(mode=0o755);u.sync(epoch.parent)
+                history=plan['history_marker']
+                u.write(epoch/'transition.json',encoded(dict(status='COMMITTED',source_head=head,
+                    old_head=history['source_head'],nonce='source-refresh-'+nonce,history=history)),0o644,ROOT_UID,plan['gid'])
+            if CONFIG.read_bytes()!=plan['raw']:raise ValueError('observer config changed')
+            durable_file(temp,encoded(plan['desired']),plan['mode'],plan['gid']);replace_config(temp)
+            o.epoch_ready(plan['desired']);o.snapshot(plan['desired']);preserved()
+            service(invoke,'start');wait_socket(plan['observed']['socket'])
+            boundary(plan['desired'],invoke,query_only=True);preserved()
+            o.snapshot(plan['desired'])
+            return dict(summary,status='SOURCE_SYNCHRONIZED',changes_applied=True,
+                        source_snapshot='PASS',backup=str(backup))
+        except Exception:
+            # Never restore financial state or remove old/new epoch evidence.
+            stop_verified(invoke)
+            if backup.read_bytes()!=plan['raw']:raise ValueError('refresh rollback backup changed')
+            recovery=CONFIG.parent/('config.json.rollback-'+nonce)
+            durable_file(recovery,plan['raw'],plan['mode'],plan['gid']);replace_config(recovery)
+            try:
+                service(invoke,'start');wait_socket(plan['observed']['socket'])
+                boundary(plan['current'],invoke,query_only=True)
+            except Exception:
+                stop_verified(invoke)
+                raise
+            raise

@@ -52,3 +52,34 @@ state and zero-credit acceptance rules. Daily schedule remains exactly one
 `OnCalendar=*-*-* 16:00:00 America/New_York`, Persistent=true,
 RandomizedDelaySec=120, Unit=development-scout.service. Cutoff remains 15:50;
 first next elapse must be today16:00–16:02. No history reset or one-time calendar.
+
+## Application release source synchronization
+
+Normal authorized releases now call the existing config-only pin refresh from
+`Executor.checkout`, before application health can succeed. Stage the exact approved
+merged release under the existing root-protected
+`/var/cache/investment-discovery-epoch-source/<SHA>` path before deployment, as for
+existing epoch releases. All staged files and ancestry must be protected; root
+never imports from the application checkout. Missing staging, unavailable existing
+operator privilege, changed observer/unit bytes or any failed integrity check fails
+the release rather than silently leaving Scout blocked. No privilege is granted to
+the separately unqualified autonomous deployment identity.
+
+`pin_refresh.deployed_refresh` supports already-deployed detached releases and
+arbitrary verified committed epochs. It derives complete manifests from exact Git
+objects, checks ancestry, actual checkout bytes, source influence, disabled SHADOW
+controls, installed process/socket and unchanged observer/Scout/unit identities.
+It preserves every historical file, timer fire/stamp, financial file and ledger
+prefix. Only the observer is restarted. The previous config is durably backed up;
+a failed refresh restores it and propagates failure to application rollback.
+Existing committed rollback epochs may be reselected without rewriting receipts.
+
+A new source gets its own COMMITTED epoch marker referencing the existing sealed
+history. No discovery receipt is written, old credit is not transferred, and no
+Scout invocation or timer reset occurs. Read-only plan/validation is available
+through the existing installer `--sync-deployed` mode, from protected reviewed
+staging with isolated system Python and the existing reviewed cache prefix.
+The observer's actual read-only snapshot is checked during apply and on an already
+synchronized no-op. Application health also requires matching Scout source identity
+and file hashes. A changed observer executable or systemd unit still requires the
+separate existing full-upgrade procedure.
