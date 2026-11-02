@@ -868,3 +868,24 @@ def test_combined_release_admits_only_exact_merged_control_center(attack):
         e.release_scope(git,old,'f'*40,changed)
         assert calls[0]==('merge-base','--is-ancestor',e.CONTROL_CENTER,'f'*40)
         assert len(calls)==7
+
+
+def test_private_home_route_may_advance_the_exact_current_zero_credit_epoch():
+    calls=[]
+    def git(*args):
+        calls.append(args)
+        return b'exact merged bytes'
+    changed=['ops/discovery/observer.py','serve.py','dev_agent/control_center.py']
+    e.release_scope(git,e.CURRENT,'f'*40,changed)
+    assert calls[0]==('merge-base','--is-ancestor',e.CONTROL_CENTER,'f'*40)
+    assert ('show','f'*40+':serve.py') not in calls
+    assert len(calls)==3
+
+
+def test_current_zero_credit_epoch_does_not_admit_unrelated_control_center_edits():
+    def git(*args):
+        if args[:2]==('show','f'*40+':dev_agent/control_center.py'):
+            return b'changed bytes'
+        return b'exact merged bytes'
+    changed=['serve.py','dev_agent/control_center.py']
+    with pytest.raises(ValueError):e.release_scope(git,e.CURRENT,'f'*40,changed)

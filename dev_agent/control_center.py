@@ -29,6 +29,20 @@ MAX_BYTES = 512_000
 MAX_RECORD = 32768
 SAFE_ID = re.compile(r'[A-Za-z0-9_-]{1,128}')
 SHA = re.compile(r'[a-f0-9]{40}')
+
+
+def private_root_redirect(host):
+    """Only the tailnet Control Center listener gets the short home route."""
+    if not isinstance(host, str) or len(host) > 300:
+        return False
+    try:
+        parsed = urlsplit('//' + host)
+        return (parsed.hostname == 'optiplex.tailb97cdb.ts.net'
+                and parsed.port == 9443 and not parsed.username
+                and not parsed.password and parsed.path == ''
+                and not parsed.query and not parsed.fragment)
+    except ValueError:
+        return False
 SENSITIVE = re.compile(r'(?i)bearer\s|gh[pousr]_|sk-[A-Za-z0-9]|(?:token|password|secret|api[_-]?key|authorization|cookie)\s*[:=]')
 ALLOWED_DETAIL = {'problem', 'outcome', 'files', 'evidence', 'dependencies', 'acceptance', 'criteria', 'todo', 'head', 'base', 'risk', 'reasons', 'scope_hash', 'acceptance_hash', 'mode', 'iteration', 'disposition', 'findings', 'status', 'role', 'provider', 'model', 'context', 'review', 'source', 'observed_at', 'recurrence', 'confidence', 'evidence_location', 'stage', 'created', 'result', 'number', 'url', 'merge_sha', 'receipt', 'run_id', 'time_budget', 'action_budget', 'max_iterations', 'version', 'score', 'quality', 'component'}
 ALLOWED_DETAIL |= {'run', 'branch', 'source_hash', 'trusted_test_tree_hash', 'time_budget_seconds', 'max_actions', 'risk_reasons', 'frozen_scope', 'allowed_files', 'protected_files', 'worker', 'acceptance_criteria', 'decision', 'policy_hash'}

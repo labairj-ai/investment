@@ -1874,6 +1874,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if parsed.path.startswith("/api/engineering/") or parsed.path.startswith("/engineering/"):
             from dev_agent.control_center import handle
             return handle(self, parsed.path, parsed.query)
+        if parsed.path in ("", "/"):
+            from dev_agent.control_center import private_root_redirect
+            if private_root_redirect(self.headers.get("Host", "")):
+                self.send_response(302)
+                self.send_header("Location", "/engineering/projects/investment")
+                self.end_headers()
+                return
         if parsed.path in ("/development-agent", "/api/development-agent"):
             from dev_agent.dashboard import handle
             return handle(self, parsed.path)

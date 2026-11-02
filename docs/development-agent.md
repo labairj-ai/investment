@@ -32,24 +32,24 @@ bounded artifact export is configured; do not infer test counts from model outpu
 Runner budgets cover action count, written lines, iterations, wall time and repeated
 high-severity findings. Exact head/source hashes invalidate stale evidence. The reviewer
 receives original requirements, diff and validation, never builder private rationale.
-It has no write tools. High-risk financial/execution/governance changes remain in the
-supervised human workflow even with model PASS. Review PASS is not PR-ready or merge
-approval. PR handoff requires every mandatory test/gate, SHA-bound receipt and verified
-protection. It never pushes, merges or enables auto-merge. The operator pushes only
-the scoped task branch before handoff. Existing PRs are updated, never duplicated.
+It has no write tools. High-risk financial/execution/governance changes remain subject
+to their existing safety gates even with model PASS. An explicit user task authorizes
+routine in-scope implementation, tests, merge and deployment through the existing
+owner release path; do not ask for an intermediate Go. PR handoff requires every
+mandatory test/gate, SHA-bound receipt and verified protection. The owner connector
+never enables GitHub auto-merge. Existing PRs are updated, never duplicated.
 
 ## GitHub protections and break glass
 
-Required main protection: PR, at least one independent review, dismissal of stale
-reviews, last-push approval, strict current-head `test`, conversation resolution,
-restricted push, no force push/deletion, no admin or agent bypass. `protections`
-reports FAIL/UNAVAILABLE when absent or unauditable. A human administrator must
-configure protection and independently audit the agent identity and active rulesets;
-the agent never grants itself permissions or edits rulesets. Break glass requires
-a human administrator, incident rationale, before/after settings, a separately
-reviewed emergency PR and restoration evidence. It cannot silently count as agent
-approval. Auto-merge stays disabled for every level; possible future L0–L1 support
-requires a separately reviewed policy change and new evidence.
+When main protections are configured, preserve PR-only updates, stale-review
+dismissal, strict current-head `test`, conversation resolution, restricted push,
+no force push/deletion, and no admin or agent bypass. The existing `owner-review`
+check records the initiating task authorization for the exact PR head; do not add
+a second approving-review requirement for routine in-scope work. `protections`
+reports FAIL/UNAVAILABLE when protections are absent or unauditable. A human
+administrator owns protection changes; the agent never edits rulesets. Break glass
+requires a human administrator, incident rationale, before/after settings, a
+separately reviewed emergency PR and restoration evidence. Auto-merge stays disabled.
 
 ## Golden engineering principles — engineering-principles-1
 
@@ -178,7 +178,7 @@ gate implementation, version, baseline or threshold is altered for this validati
 
 ## Solo-owner human authority
 
-The repository owner may review and approve AI-assisted changes authored through the owner's own GitHub account. A second human is optional unless designated. Independence between Builder and Reviewer models remains required; neither model, CI nor automation grants merge authority. Authorship does not count as review. Owner approval must be an authenticated deliberate action bound to exact PR head, risk and required domain acknowledgments. New commits invalidate approval. All financial/execution safeguards remain. auto_merge=false and required_human_merge=true. See [operator workflow](solo-owner-governance.md).
+The repository owner may authorize a task and the existing owner connector carries that authorization through routine in-scope release. A second human is optional unless designated. Independence between Builder and Reviewer models remains required; neither model nor CI can broaden task scope or grant trading authority. The owner process records authenticated authorization against exact PR head and risk. New commits require refreshed technical checks. High-risk actions outside the task require a new owner decision. All financial/execution safeguards remain. auto_merge=false and required_human_merge=true. See [operator workflow](solo-owner-governance.md).
 
 ## Continuous supervised improvement
 
