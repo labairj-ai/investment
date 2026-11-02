@@ -33,6 +33,7 @@ ALLOWED={'AGENTS.md','owner_gateway/core.py','scripts/check_agent_contract.py','
 # Its files must remain byte-identical to that exact merged main, rather than
 # granting the Scout adapter general application-source deployment authority.
 CONTROL_CENTER='defef3044891548622bc5d399069e70f064ac699'
+PRIVATE_ROOT_REDIRECT='741fb7fb97d5f479dfa81dfdb8e7310910207b2a'
 CONTROL_CENTER_FILES={
     'serve.py','dev_agent/control_center.py',
     'dev_agent/control_center_assets/index.html',
@@ -58,10 +59,14 @@ def release_scope(git,old,head,changed):
     if application:
         require(old in {REPAIRED,CURRENT},'Control Center rollout requires the committed zero-credit source')
         git('merge-base','--is-ancestor',CONTROL_CENTER,head)
+        redirect_files={'serve.py','dev_agent/control_center.py'}
+        if old==CURRENT and any(name in redirect_files for name in application):
+            # Bind the private root redirect to the exact reviewed PR #39 source.
+            git('merge-base','--is-ancestor',PRIVATE_ROOT_REDIRECT,head)
         for name in application:
-            if name=='serve.py' and old==CURRENT:
-                # This reviewed route makes the existing private UI discoverable.
-                # The PR's exact approved head, tests and release gates bind it.
+            if name in redirect_files and old==CURRENT:
+                require(git('show',head+':'+name)==git('show',PRIVATE_ROOT_REDIRECT+':'+name),
+                        'private root redirect must match its exact reviewed source')
                 continue
             require(git('show',head+':'+name)==git('show',CONTROL_CENTER+':'+name),
                     'Control Center must match its exact merged reviewed source')
