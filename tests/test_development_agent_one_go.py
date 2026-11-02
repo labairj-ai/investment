@@ -113,9 +113,22 @@ def test_no_go_connector_never_calls_merge(owner_setup,monkeypatch):
     store,client,_=owner_setup;calls=[]
     monkeypatch.setattr(core,'record_decision',lambda *a,**k:calls.append(k) or dict(decision=k['decision']))
     monkeypatch.setattr(core,'advance_approved',lambda *a:pytest.fail('No-Go cannot merge'))
-    assert core.go_no_go(store,client,dict(risk='L5',pr=1),'No-Go')['status']=='NO_GO'
+    assert core.go_no_go(store,client,dict(risk='L5',pr=1),'No-Go',task_authorized=True)['status']=='NO_GO'
     assert calls[0]['decision']=='REQUEST_CHANGES'
     assert calls[0]['financial_ack'] and calls[0]['execution_ack'] # internal reviewed-risk metadata
+
+
+def test_authorized_task_continues_without_an_intermediate_go(owner_setup,monkeypatch):
+    from owner_gateway import core
+    store,client,_=owner_setup;calls=[]
+    monkeypatch.setattr(core,'record_decision',lambda *a,**k:calls.append(k) or dict(decision=k['decision']))
+    monkeypatch.setattr(core,'advance_approved',lambda *a:dict(status='WAITING_OR_BLOCKED',reason='CI pending'))
+    result=core.go_no_go(store,client,dict(risk='L2',pr=1),task_authorized=True)
+    assert result['status']=='GO_RECORDED'
+    assert result['review']['decision']=='APPROVE'
+    assert calls[0]['decision']=='APPROVE'
+    assert 'Task authorization' in calls[0]['rationale']
+    with pytest.raises(ValueError):core.go_no_go(store,client,dict(risk='L2',pr=1))
 
 
 def test_normal_stage_path_does_not_consume_legacy_promotion(monkeypatch,owner_setup):

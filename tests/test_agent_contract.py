@@ -29,7 +29,7 @@ def test_required_clause_cannot_be_removed_or_hidden(title, clause):
 @pytest.mark.parametrize('old,new', [
     ('Do not delete or weaken tests', 'You may delete or weaken tests'),
     ('Do not silently rewrite baselines', 'You may silently rewrite baselines'),
-    ('require explicit human review before merge', 'may skip human review before merge'),
+    ('An explicit user task authorizes its normal implementation', 'An explicit user task does not authorize its normal implementation'),
     ('fail closed and escalate to the human', 'continue without human review'),
 ])
 def test_weakened_safety_language_fails(old, new):

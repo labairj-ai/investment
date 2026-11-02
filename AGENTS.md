@@ -19,8 +19,9 @@ Do not write investment data to a Mac development database or generate productio
 artifacts (including dashboard.html) locally. Tests may use disposable synthetic
 fixtures and temporary databases; an explicitly authorized read-only snapshot must
 remain read-only and isolated from runtime paths. Never substitute a local copy
-for the production source of record. Existing documented production generation
-procedures require separate explicit authorization outside development work.
+for the production source of record. Production generation that writes investment
+data requires explicit authorization in the task; ordinary application deployment
+remains part of an authorized software task.
 
 ## Required workflow
 
@@ -37,27 +38,34 @@ procedures require separate explicit authorization outside development work.
 5. Record exact implementation SHA, commands, results, skip/waiver inventory and
    real CI workflow URL before claiming PR readiness. Evidence is valid only for
    the tested source/configuration; changed code requires refreshed evidence.
-6. Use PR-based changes; satisfy required owner/human review and existing
-   branch protections. Move a TODO to `.todos/done/` only after every acceptance
-   and QA requirement is met with implementation and CI evidence. Incomplete or
-   unavailable checks remain explicitly open, never silently marked PASS.
+6. Use PR-based changes and satisfy required CI, security checks and existing
+   branch protections. An explicit user task authorizes its normal implementation,
+   testing, merging and deployment within that task's scope; do not request an
+   intermediate owner approval for routine work. Use the existing owner process
+   to carry that authorization through the release. Move a TODO to `.todos/done/`
+   only after every acceptance and QA requirement is met with implementation and
+   CI evidence. Incomplete or unavailable checks remain explicitly open, never
+   silently marked PASS.
 
 ## Authority boundaries
 
-The coding agent may inspect source and prepare reversible development changes
-and PRs within the approved task. It may run isolated fixture tests. This is not
-permission to deploy, schedule autonomous execution, access secrets, call external
-brokers, mutate accounts or alter live trading state.
+The coding agent may implement, test, merge and deploy changes within an explicitly
+authorized task through the existing release path. This does not authorize live
+trading, autonomous execution, secret access or exposure, broker calls, account
+mutation or changes to financial safety controls unless the user explicitly
+authorizes that specific high-risk action and all existing safeguards admit it.
 
 ## Forbidden actions
 
 - Do not implement directly on main or push implementation directly to main.
-- Do not self-approve or bypass independent review or required human approval.
+- Do not fabricate owner approval evidence, self-approve or bypass CI, security
+  checks or existing GitHub protections.
 - Do not delete or weaken tests to obtain PASS.
 - Do not silently rewrite baselines or reduce acceptance thresholds.
 - Do not modify secrets or log credentials.
 - Do not call brokers or change live trading state.
-- Do not deploy or mutate authoritative production data from development work.
+- Do not deploy outside the authorized task and existing release path, or mutate
+  authoritative production investment data from development work.
 - Do not treat missing evidence, user silence or model judgment as approval.
 
 Existing release, CI, production, canary and investment safety controls remain
@@ -71,30 +79,33 @@ Independent review separates human authority from AI and automation authority.
 A second human reviewer is optional unless explicitly required by the owner for a
 specific change. Coding agents cannot approve their own work. Reviewer models, CI
 and autonomous workflows cannot grant merge authority. The human repository owner
-retains final merge authority and must explicitly review and approve the exact
-current PR head before merge. Authorship is not approval; a new head invalidates
-prior approval. This is an intentional permanent owner governance decision, not a
-PR #6 exemption. The existing rule against agent self-approval remains in force.
+retains final merge authority. An explicit task authorization covers routine
+changes within its stated scope through merge and deployment; the existing
+authenticated owner process records and carries that authorization for the exact
+PR head after technical review. No additional user decision is requested for
+routine continuation. A new head requires refreshed technical checks. This is an
+intentional permanent owner governance decision, not a PR #6 exemption. The
+existing rule against agent self-approval remains in force.
 
-- L0–L2: owner review plus required CI/evidence.
-- L3: explicit owner review and rationale.
-- L4: explicit owner financial-domain review, financial canaries, behavioral-contract
-  evidence and applicable observation gates.
-- L5: explicit owner approval, execution/account-mutation safeguards and required
-  technical deployment gates; financial risk must be surfaced in the review.
+- L0–L2: task authorization plus required CI/evidence.
+- L3: task authorization, risk rationale and required technical evidence.
+- L4: task authorization, financial canaries, behavioral-contract evidence and
+  applicable observation gates.
+- L5: task authorization, execution/account-mutation safeguards and required
+  technical deployment gates; financial risk must be surfaced in the task context.
 
-Owner review must be an authenticated deliberate action, separate from Builder and
-Reviewer evidence, bound to repository, PR, exact head, reviewed risk, timestamp
-and nonce. Agents must never manufacture that action. auto_merge=false and
-required_human_merge=true remain mandatory. The owner performs the final merge.
-The owner may authorize the isolated owner connector to perform that exact merge
-by saying Go after ChatGPT reviews the actual PR and CI. That same Go authorizes
-the resulting exact merge SHA to deploy after merged-main CI and all technical
-safety gates pass. A No-Go blocks both merge and deployment. A changed head
-requires a fresh review and Go. No additional deployment, financial, execution or
-autonomy-promotion phrase is required. Elevated financial, execution, deployment,
-governance and autonomy risks must be clearly surfaced before Go. Internal review,
-merge and deployment receipts remain separate; none bypasses technical controls.
+The existing owner process records task authorization against the repository, PR,
+exact head and risk, authenticated owner, timestamp and nonce. The initiating task
+authorization is the owner decision for routine in-scope work; agents must never
+invent or broaden it. auto_merge=false and required_human_merge=true remain
+mandatory, and the owner retains final merge authority through the existing
+connector. The same task authorization covers the resulting exact merge SHA's
+deployment after merged-main CI and all technical safety gates pass. A new user
+decision is required only when the proposed action is genuinely high-risk and
+outside the original scope, including live-trading activation, financial-safety
+control changes or secret exposure. A No-Go blocks the action. Owner, merge and
+deployment receipts remain separate; none bypasses CI, GitHub protections or
+technical controls.
 Builder/Reviewer and discovery have no owner credentials, merge or deployment
 capability. Internal staging is automatic safety evidence, not owner ceremony.
 
@@ -102,7 +113,9 @@ capability. Internal staging is automatic safety evidence, not owner ceremony.
 
 Recommendations, risk policy, position sizing, covered calls, learning/promotion,
 order/fill generation and account mutation are elevated-risk domains.
-Investment-sensitive changes require explicit human review before merge.
+Investment-sensitive behavior must be explicitly included in the original task
+authorization and retain its existing financial review and canary gates. Ask for a
+new decision only if proposed behavior exceeds that authorization.
 Evaluate the whole change and its indirect effects; file names, small diffs and
 splitting changes across commits do not make financial behavior low risk. Unknown
 or mixed scope receives the highest applicable controls pending human review.
@@ -123,8 +136,8 @@ conflicting documents, concrete requirement, impact and decision needed. Do not
 choose a permissive interpretation. Independent safe inspection may continue.
 Unexpected scope expansion, unavailable mandatory evidence, ambiguous authority or
 repeated validation failure must be reported with an explicit unresolved state.
-Changes to this contract or its validation require human review; an agent cannot
-relax its own authority or self-authorize an exception.
+Changes to this contract or its validation require explicit owner authorization;
+an agent cannot relax its own authority or self-authorize an exception.
 
 ## Representative applications
 

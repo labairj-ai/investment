@@ -1,17 +1,26 @@
-# One Go / No-Go owner workflow
+# Standing task authorization and owner release workflow
 
-ChatGPT reviews the actual PR diff, exact head, risk and current CI and recommends
-GO or NO-GO. The owner replies **Go** or **No-Go**. No SHA copying, structured
-comments, scripts, promotion decision or second deployment approval is required.
-For L4/L5, the review clearly surfaces financial behavior, execution, deployment,
-governance or autonomy effects before asking for that same decision.
+An explicit owner task authorizes normal implementation, testing, merging and
+deployment within the requested scope. ChatGPT reviews the resulting PR diff, exact
+head, risk and current CI. The existing owner connector records the initiating task
+authorization against that exact PR and continues automatically when its technical
+checks pass. No intermediate Go/No-Go request, SHA copying, structured comments,
+script or second deployment approval is required for routine in-scope work.
+
+Pause for a new owner decision when a proposed action is both genuinely high-risk
+and outside the task scope, including live-trading activation, changes to financial
+safety controls, or secret access/exposure. Preserve all applicable domain canaries,
+CI, security controls and GitHub protections in every case.
 
 The isolated owner connector freezes the reviewed context, authenticates the
-personal owner's GitHub ID/login, and calls `go_no_go`. It generates nonce and
-structured audit metadata internally. A Go persists an exact-head review and
-attempts the fixed expected-SHA merge after exact-head CI passes. Its
-`reconcile_approved` operation retries while CI is pending; the owner need not
-repeat Go. No-Go stops the continuation. A new head invalidates the decision. Review authority does not need daily renewal; technical certificates, protection evidence and health still expire independently and are rechecked.
+personal owner's GitHub ID/login, and uses the existing `go_no_go`/continuation
+path to record task authorization against the current exact PR head. It generates
+nonce and audit metadata internally. The fixed expected-SHA merge runs after
+exact-head CI passes. `reconcile_approved` retries while CI is pending. A changed
+head requires refreshed technical checks and a new exact-head authorization record
+derived from the same task scope; it does not require another user prompt. Technical
+certificates, protection evidence and health still expire independently and are
+rechecked.
 The connector must be installed outside candidate source with credentials that
 Builder, Reviewer, Scout and the implementation service cannot access.
 
@@ -25,11 +34,12 @@ rollback and interruption recovery. Owner review, merge and deployment receipts
 remain distinct. The owner sees DEPLOYED or FAILED, with diagnostics for failures.
 No arbitrary shell, broker function or investment-data rollback is permitted.
 
-An activation PR receives the same ordinary exact-head Go. Runtime re-verifies
+An activation PR cannot result from routine code task authorization. Runtime re-verifies
 its installed source, deterministic reviewed risk, owner, current GitHub decision and CI; it does not
 request a promotion object. Its configuration and technical evidence must still
 admit. Owner-facing modes are Supervised and, after proven acceptance and a
-reviewed activation change, Low-risk Auto-PR. Both require owner Go before main.
+reviewed activation change, Low-risk Auto-PR. Both retain the existing explicit
+authorization requirement before main.
 Internal SHADOW/BUILD_ONLY/PR observations are diagnostics, not manual steps.
 
 The dashboard shows Development Agent: READY or NOT READY with a plain reason.
