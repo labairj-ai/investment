@@ -64,15 +64,18 @@ Planner, builder and reviewer use this version. Principle changes are protected
 governance changes requiring human review. Exceptions must include exact scope,
 human owner, rationale and expiry; there are no agent-authorized exceptions.
 
-## Review dashboard
+## Engineering Control Center
 
-Visit `/development-agent` from the Investment Dashboard. Set `DEV_AGENT_API_TOKEN`
-through existing server configuration; it is never embedded in HTML. Enter it in the
-password field for authenticated reads/decisions. `DEVELOPMENT_CONTROL_DB` may select
+Visit the [Engineering Control Center](https://optiplex.tailb97cdb.ts.net:9443/engineering/projects/investment).
+The private Tailscale `/development-agent` page redirects there. Set `DEV_AGENT_API_TOKEN`
+through existing server configuration; it is never embedded in HTML. The Control Center
+uses the existing authenticated reader. `DEVELOPMENT_CONTROL_DB` may select
 the dedicated ledger. Decisions require a same-origin JSON request, token and a
 single-use nonce; they grant no merge/deploy authority. Risk and failed-gate warnings
 remain visible on mobile. Evidence is text-rendered; external links are restricted
 to HTTPS GitHub. Physical iPhone/Android acceptance remains open until observed.
+The `/api/development-agent` backend and its existing decision, review and owner-review
+routes remain supported for integrations and operational health checks.
 
 ## Scheduling, outcomes and certification
 

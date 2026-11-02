@@ -3,14 +3,15 @@
 Requirements: PR #31, TODOs 0856–0864 and
 [the v2 contract](plans/engineering-control-center-investment-v2.md).
 Risk is provisionally L5: this is a presentation layer over governance evidence.
-No rollout, merge, host acceptance or independent review is implied by source tests.
+Source tests are distinct from host acceptance and independent technical evidence.
 
 ## API foundation (0856)
 
 `dev_agent/control_center.py` exposes Investment-only GET projections through
 `serve.py`. `DEV_AGENT_ECC_ENABLED=1` is required; unset, empty and every other
-value leave all new routes unavailable. This change provisions no flag.
-The existing `/development-agent` and `/api/development-agent` are unchanged.
+value leave all new routes unavailable. The existing feature flag remains in force.
+On the private Tailscale service, `/development-agent` redirects to the Control Center;
+the `/api/development-agent` backend and its operations remain unchanged.
 
 A reader uses the existing authenticated loopback Tailscale Serve operator
 identity. Existing programmatic readers may supply the existing development API
@@ -69,10 +70,11 @@ with concurrent appends, bounds, injection/redaction, stale/forged evidence and
 read-only database fingerprints. Existing governance/owner suites remain required.
 Record exact-head aggregate results and the real CI workflow URL in the PR.
 
-UI/browser, independent reviewer, real Oracle/host provenance, physical iPhone and
-Android, legacy/live parity and post-deploy health remain separate evidence. The
-TODOs stay open until their actual required observations exist. Deployment is not
-authorized by the implementation request.
+UI/browser fixtures, independent technical review, real Oracle/host provenance,
+physical iPhone and Android, and post-deploy health remain separate evidence.
+Routine UI replacement is covered by the initiating task authorization and still
+requires the existing technical release gates. The TODOs stay open until their
+remaining acceptance observations exist.
 
 ## Interface and source acceptance (0857–0864)
 
@@ -119,16 +121,15 @@ binary. It never connects to Investment production or posts owner actions. The
 script requires committed clean source, records the exact head, checks all seven
 required widths (320/360/390/430/768/1280/1440), literal malicious text, modal
 keyboard behavior, disabled Go/No-Go, deep links, lost/stale evidence, late-response
-races, 44px controls and the retained legacy page. Screenshots/results are fixture
-QA, not host/Oracle/physical-device acceptance. The former script's selectors for
-retired legacy decision dialogs were replaced with assertions against the current
-legacy read-only view; all existing owner/governance backend tests remain required.
+races, 44px controls and `/development-agent` redirect behavior. Screenshots/results
+are fixture QA, not host/Oracle/physical-device acceptance. Existing backend API,
+owner and governance tests remain required.
 
 ## Prepared parity and rollback matrix
 
 | Surface | Compare against | Required real observation before rollout |
 | --- | --- | --- |
-| Owner READY / reason | Legacy `readiness.owner` / real supervised admission | Same live source, time and identity; differences block release |
+| Owner READY / reason | Existing `readiness.owner` API / real supervised admission | Same live source, time and identity; differences block release |
 | Candidate / frozen plan | Dedicated ledger IDs, scope/base and original events | Matching count/filter/timeline and no read mutations |
 | PR / CI / owner | Current GitHub head, complete checks and existing owner verifier | Head drift, missing Oracle, replay/revocation and concurrent decisions fail closed |
 | Validation | Current trusted receipt reconstruction and complete gate manifest | Real independently verified source/test-tree/image identity |
@@ -136,16 +137,14 @@ legacy read-only view; all existing owner/governance backend tests remain requir
 | History / export | Original sequence, UTC timestamp, redacted fields and snapshot | No lost failure/denial history; unchanged dedicated and financial state |
 | Mobile | Seven browser widths plus actual iPhone/Android | Touch, VoiceOver/TalkBack, keyboard, focus and contrast observations |
 
-This work prepares source and QA only. Nothing is installed, enabled, merged,
-restarted or deployed. A later authorized rollout must use the existing fixed
-controller and one owner decision on the exact reviewed source. Keep the feature
-off initially, preserve the legacy interface, and collect its normal canaries,
-protected-state checks and delayed health evidence. Never create a second owner
-approval protocol to make this UI work. Do not mark 0864 shipped without actual
-host and physical-device acceptance.
+The private service now uses the Control Center as its single Development Agent
+interface. Routine route replacement follows the existing task authorization,
+fixed controller and technical release gates; it does not require a second owner
+Go. Preserve the backend APIs, authentication, canaries and protected-state checks.
+Do not mark 0864 shipped without its remaining host and physical-device acceptance.
 
-Rollback preparation is limited to removing/withholding the optional route gate
-or reverting reviewed UI/API source through the existing release path. It must
+Rollback is limited to reverting the reviewed route/UI source through the existing
+release path. It must
 preserve investment databases, holdings, append-only development/acceptance
 history, Scout timers, current autonomy configuration and owner receipts. No
 rollback command is executed by this change or by the browser test.

@@ -202,7 +202,7 @@ See [operational checks, schedules and deployment](docs/operational-watchdog.md)
 
 ## Development Agent
 
-The [Development Agent dashboard](https://optiplex.tailb97cdb.ts.net/development-agent)
+The [Development Agent Control Center](https://optiplex.tailb97cdb.ts.net:9443/engineering/projects/investment)
 tracks software-improvement candidates, review findings, evidence and deployment
 outcomes separately from portfolio recommendations. Its dedicated append-only ledger
 is `~/.local/share/investment-development/development-control.sqlite3` on OptiPlex;
@@ -243,7 +243,7 @@ and [validation artifact boundary](docs/development-agent-artifact-integrity.md)
 | Candidate discovery, planning, review and evidence tooling | PR #10 source deployed; real operational acceptance remains open |
 | Autonomous implementation | Disabled |
 | Supervised implementation / PR publication | Disabled |
-| Auto-merge | Disabled; owner approval and human merge authority retained |
+| Auto-merge | Disabled; routine authorized tasks use the existing owner connector without per-PR Go prompts |
 | Daily discovery timer | Supplied but inactive |
 | Operational certification | Incomplete; fixture canary PASS is not operational certification |
 | GitHub protection / validation sandbox | Real protection acceptance and digest-pinned runtime/oracle provisioning remain required |
@@ -261,7 +261,7 @@ in operator-controlled owner bindings; see the operator inventory above.
 
 | Route | Purpose |
 |---|---|
-| `GET /development-agent` | Review page |
+| `GET /development-agent` | Private Tailscale service redirects to the Engineering Control Center |
 | `GET /api/development-agent` | Authenticated candidate and event listing |
 | `POST /api/development-agent/decision` | Explicit candidate/TODO approval, rejection or deferral |
 | `POST /api/development-agent/review` | Human review, escalation or observed-outcome acceptance |
@@ -282,7 +282,7 @@ The recommended setup is an always-on home server (e.g. a mini PC or Raspberry P
 - **Newsletter:** serve.py's built-in scheduler sends at ~7:15 AM ET; `run_investment.sh` via a systemd timer at 8 AM acts as a backstop (flag file `out/last_run_date.txt` prevents double sends)
 - **LAN / remote access:** by default `serve.py` binds to `localhost`; change to `0.0.0.0` to expose on the LAN; use [Tailscale Funnel](https://tailscale.com/kb/1223/funnel) or a reverse proxy for remote access
 - **Data backup:** `backup_data.sh` pushes DB + CSV to a separate private GitHub repo
-- **Deploy flow:** use an owner-approved PR, passing exact-SHA release validation and the merged `main` SHA. Back up production, verify the worktree and runtime overlays, deploy that exact commit, then restart and verify the service when `serve.py` or an imported Python module changes. On startup, `serve.py` automatically regenerates `out/dashboard.html` if `generate_dashboard.py` is newer than the existing file — so changes to the dashboard generator take effect on the next service restart without a manual regeneration step.
+- **Deploy flow:** use the existing owner connector and exact-SHA release validation. The initiating task authorization covers routine implementation, merge and deployment; no second per-PR Go is required. Back up production, verify the worktree and runtime overlays, deploy that exact commit, then restart and verify the service when `serve.py` or an imported Python module changes. On startup, `serve.py` automatically regenerates `out/dashboard.html` if `generate_dashboard.py` is newer than the existing file — so changes to the dashboard generator take effect on the next service restart without a manual regeneration step.
 
 The current Development Agent release is the owner-merged `main` SHA above. Deploy
 only the approved merged SHA after exact-SHA release gates pass; preserve runtime

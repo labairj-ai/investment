@@ -31,6 +31,17 @@ def test_private_home_shortcut_is_limited_to_tailnet_listener(host, expected):
     assert cc.private_root_redirect(host) is expected
 
 
+@pytest.mark.parametrize('host,path,expected', [
+    ('optiplex.tailb97cdb.ts.net:9443','/development-agent',True),
+    ('optiplex.tailb97cdb.ts.net:443','/development-agent',False),
+    ('optiplex.tailb97cdb.ts.net:9443','/api/development-agent',False),
+    ('optiplex.tailb97cdb.ts.net:9443','/development-agent/decision',False),
+    ('optiplex.tailb97cdb.ts.net:9443','/',True),
+])
+def test_private_development_agent_route_reuses_control_center(host,path,expected):
+    assert cc.private_root_redirect(host,path) is expected
+
+
 @pytest.fixture
 def store(tmp_path):
     s = Store(tmp_path/'control/development-control.sqlite3'); s.migrate(); return s
@@ -325,6 +336,10 @@ def test_assets_are_gated_no_tokens_or_inline_script(monkeypatch):
         assert 'unsafe-inline' not in h.response_headers['Content-Security-Policy']
     html=(ROOT/'dev_agent/control_center_assets/index.html').read_text()
     js=(ROOT/'dev_agent/control_center_assets/control-center.js').read_text()
+    dashboard=(ROOT/'generate_dashboard.py').read_text()
+    assert 'href="/development-agent"' not in html
+    assert 'href="https://optiplex.tailb97cdb.ts.net:9443/engineering/projects/investment"' in html
+    assert 'href="https://optiplex.tailb97cdb.ts.net:9443/engineering/projects/investment"' in dashboard
     assert '<script src=' in html and 'type="password"' not in html
     assert 'innerHTML' not in js and 'X-Development-Agent-Token' not in js
 

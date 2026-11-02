@@ -1,4 +1,4 @@
-# TODO 0864 — Complete End-to-End Acceptance and Controlled Investment UI Rollout
+# TODO 0864 — Complete End-to-End Acceptance and Investment UI Replacement
 
 - **ID:** 0864
 - **Status:** in-progress
@@ -10,13 +10,13 @@
 
 ## Problem and objective
 
-Integrate the new Control Center into Investment's existing deployment only after exact-head security, API/UX, governed owner workflow and protected-state acceptance, preserving rollback and old UI until proven.
+Make the Engineering Control Center the single private Development Agent interface while preserving backend APIs, authentication and protected state. Complete technical and device acceptance through the existing release workflow.
 
 ## Target files / interfaces
 
 - `serve.py and Investment-owned route wiring`
-- `generate_dashboard.py (navigation link only)`
-- `dev_agent/dashboard.py`
+- `generate_dashboard.py and Control Center navigation`
+- `dev_agent/control_center.py and dev_agent/control_center_assets/index.html`
 - `scripts/check_development_agent_browser.mjs`
 - `tests/test_engineering_control_center.py`
 - `docs/plans/engineering-control-center-investment-v2.md`
@@ -24,13 +24,13 @@ Integrate the new Control Center into Investment's existing deployment only afte
 
 ## Scope and acceptance
 
-- [ ] Feature flag/route gate defaults off. Ship read-only first behind Investment's current authenticated API; retain `/development-agent` unchanged for parallel reconciliation until a separate owner-reviewed retirement.
-- [ ] Prepare a matrix comparing legacy and new UI for same current candidate/event, exact SHA, readiness blockers, CI status, certification and owner decision; any discrepancy is reported, never silently reconciled by changing source.
-- [ ] Use current fixed Investment deployment controller and one owner Go after exact reviewed PR SHA; do not add new owner deployment/promotion objects.
+- [ ] On the private Tailscale service, redirect `/development-agent` to `/engineering/projects/investment`; preserve `/api/development-agent` and all existing backend operations.
+- [ ] Verify the Control Center displays the exact current source SHA, readiness blockers, CI status, certification and owner decisions from existing read APIs; discrepancies remain visible and are never silently reconciled by changing source.
+- [ ] Use the existing fixed Investment deployment controller and technical checks. The initiating task authorization covers routine UI implementation, merge and deployment; do not request a separate per-PR Go or add owner deployment/promotion objects.
 - [ ] Document migration/rollback plan limited to UI/static route: disable new route or revert reviewed code while preserving append-only evidence and production databases. Never roll back financial data.
 - [ ] Full regression suite, TODO consistency, development governance and independent oracle/canary gates must pass on exact head with reviewer PASS. Record skipped tests as unchanged/justified and separate operational from fixture checks.
-- [ ] Post-deploy verification: authenticated UI/API smoke, legacy route, candidate/PR read consistency, protected database fingerprint equality, Advisor/trading canary, performance and error budget, delayed observation if controller requires it.
-- [ ] Audit source-to-UI-to-GitHub owner Go/No-Go flow using non-production/approved test PR; fail closed on stale head, unavailable oracle, wrong owner and deployment interruption.
+- [ ] Post-deploy verification: authenticated Control Center UI/API smoke, private legacy-route redirect, preserved backend API, candidate/PR read consistency, protected database fingerprint equality, Advisor/trading canary, performance and error budget, delayed observation if controller requires it.
+- [ ] Preserve source-to-UI-to-GitHub owner-decision behavior for actions that require it; fail closed on stale head, unavailable oracle, wrong owner and deployment interruption. Routine UI replacement uses the task authorization already given.
 - [ ] Do not mark shipped until genuine iOS and Android acceptance from 0863 is observed and real source freshness/host readiness is displayed correctly.
 
 ## QA requirements and negative paths
@@ -39,12 +39,12 @@ Integrate the new Control Center into Investment's existing deployment only afte
 - [ ] Canary route against missing ledger, stale cert, expired source, GitHub outage and partial oracle: UI renders NOT READY/UNAVAILABLE and blocks inappropriate Go.
 - [ ] Replay/conflicting owner decisions, wrong head, unauthorized reader and action, fake signed receipt and cross-service/Investment-to-Qwen requests denied.
 - [ ] Run baseline parity/latency tests and compare portfolio/holdings/trading SQL/data checksums before/after; do not read financial data into model context.
-- [ ] After owner-approved deploy, independently check fixed service, UI, canary, protected-state invariants and delayed health receipt. Retain failed evidence.
+- [ ] After task-authorized deploy, independently check fixed service, UI, canary, protected-state invariants and delayed health receipt. Retain failed evidence.
 
 ## Task-specific guardrails
 
-- This backlog PR itself is documentation-only and must not install, enable, restart, merge, deploy or change production flags.
-- Do not retire current dashboard until verified parity and separate explicit owner approval.
+- The ordinary route replacement may proceed through implementation, tests, merge and deployment under the initiating task authorization and existing technical gates.
+- Retain all backend API behavior, authentication, append-only evidence and financial protections.
 - Independent backend remains source of truth; UI cannot authorize via cached state.
 
 ## Non-negotiable boundaries
@@ -57,6 +57,6 @@ Integrate the new Control Center into Investment's existing deployment only afte
 
 ## Done when
 
-New Investment-only Control Center is approved, deployed and externally accepted with verified health/rollback receipts, parity, security and mobile QA. If any required observation is unavailable, status stays open.
+The private Development Agent route opens the deployed Control Center; required host, security, API and protected-state checks pass; remaining mobile acceptance is recorded. If any required technical observation is unavailable, status stays open.
 
-Source implementation and prepared acceptance matrix: `docs/engineering-control-center.md`. Browser fixtures do not close physical-device, live connector, independent review or rollout acceptance. No deployment is authorized.
+Implementation contract and remaining acceptance evidence: `docs/engineering-control-center.md`. Browser fixtures do not close physical-device or operational acceptance. Routine UI replacement is covered by the task authorization; high-risk actions outside scope still require the applicable owner decision.

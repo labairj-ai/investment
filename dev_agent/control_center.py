@@ -31,8 +31,10 @@ SAFE_ID = re.compile(r'[A-Za-z0-9_-]{1,128}')
 SHA = re.compile(r'[a-f0-9]{40}')
 
 
-def private_root_redirect(host):
-    """Only the tailnet Control Center listener gets the short home route."""
+def private_root_redirect(host, path='/'):
+    """Allow private root and legacy UI routes only on the tailnet listener."""
+    if path not in {'/', '/development-agent'}:
+        return False
     if not isinstance(host, str) or len(host) > 300:
         return False
     try:
