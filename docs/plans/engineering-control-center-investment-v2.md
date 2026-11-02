@@ -2,14 +2,14 @@
 
 **Created:** 2026-10-29  
 **Scope:** Existing `labairj-ai/investment` Development Agent only  
-**Status:** Design and TODO backlog; no implementation or deployment
+**Status:** Control Center implemented; private legacy-route replacement is in progress
 **Related TODOs:** 0856–0864
 
 ## 1. Fundamental separation
 
 Investment keeps the authoritative `dev_agent`, its `development-control.sqlite3` ledger, scheduler, GitHub credentials, owner gateway, validator/oracle, certification and fixed deployment controller. The separately developed Qwen-only Engineering Agent microservice must not access, monitor, schedule, validate, write to, approve, merge or deploy Investment. This page is implemented in the Investment web stack, not in that standalone service.
 
-Keep existing `/development-agent` and `GET /api/development-agent` compatible until actual supervised parity and separate retirement approval. Add the proposed `/engineering/projects/investment` interface behind an OFF-by-default route/feature gate. Existing source/ledger/approval policies take precedence over any visual design mockup.
+Use `/engineering/projects/investment` as the primary Development Agent interface. On the private Tailscale service, redirect `/development-agent` there while preserving `GET /api/development-agent` and all existing backend operations. No separate owner approval is required for this routine UI replacement under an authorized task; the existing CI, security and deployment gates remain mandatory.
 
 ## 2. Verified source context versus operational proof
 
@@ -54,7 +54,7 @@ Every critical status has `status`, `reason_code`, `reason_summary`, `observed_a
 - Browser checks and synthetic fixtures do not substitute for physical iPhone/Android observation, live GitHub protection, host sandbox/Oracle qualification or supervised operational evidence.
 - Security negative tests: forged owner IDs, replayed/stale Go, concurrent Go/No-Go, wrong head, tampered Oracle evidence, candidate-provided JUnit, unavailable API/cache, cross-origin/cross-project access, malicious HTML and export CSV formula injection.
 - Existing Investment full suite, focused Development Agent tests, all eight exact-head release gates, owner review and production canary remain mandatory for change acceptance. No disabling or relaxing checks to obtain PASS.
-- No deployment of these backlog files. UI rollout must be separately owner-reviewed, initially read-only, old dashboard remains functional, and rollback changes only UI source while preserving financial data and append-only ledger.
+- Routine UI replacement follows the standing task authorization and existing release workflow; do not request a second per-PR Go. Keep the Control Center read-only, preserve backend APIs and authentication, and limit rollback to reviewed UI source while preserving financial data and append-only ledger.
 
 ## 6. Ordered implementation
 
@@ -74,4 +74,4 @@ Initial recommendation: implement 0856 read-only and 0857 overview before introd
 
 ## 7. Design tradeoff
 
-Prefer Investment-owned read-model presentation over a separate shared microservice. This avoids cross-project authority and minimizes changes to existing governance, but carries a short-term duplicate-view maintenance burden. Retain legacy page until measured parity and explicitly approved retirement.
+Keep the Investment-owned read-model presentation in the existing application. The private Development Agent route redirects to this primary interface; preserve the backend API for integrations and health checks without maintaining a second private UI.
