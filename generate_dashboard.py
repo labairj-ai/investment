@@ -1344,22 +1344,25 @@ def build_dashboard(portfolio, layers, holdings):
         today_holdings_sorted, portfolio_health, macro_health_snap,
     )
 
-    total_v = total_value_csv
-    # Subtract open covered-call mark values — short call positions are a
-    # portfolio liability that brokerage accounts deduct from account value.
-    _cc_marks_liability = 0.0
+    from portfolio_valuation import value_portfolio
+    _valuation_conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, timeout=5)
     try:
-        _cc_conn = sqlite3.connect(str(DB_PATH), timeout=5)
-        for _cc in _cc_conn.execute(
-            "SELECT current_mark, contracts FROM cc_positions WHERE status='open'"
-        ):
-            _cc_marks_liability += (_cc[0] or 0.0) * (_cc[1] or 1) * 100
-        _cc_conn.close()
-    except Exception:
-        pass
-    total_v -= _cc_marks_liability
+        _valuation_conn.execute('BEGIN')
+        valuation = value_portfolio(_valuation_conn, total_value_csv, today_date)
+    finally:
+        _valuation_conn.close()
+    total_v = valuation["net_value"]
+    valuation_note = (
+        f"{valuation['priced_count']}/{valuation['open_count']} open calls priced · "
+        f"session {valuation['session']}. "
+        + (f"Call liability {money(valuation['call_liability'])}. " if valuation['complete'] else
+           "Net value unavailable: " + "; ".join(valuation['issues']) + ". ")
+        + "Estimate excludes cash and untracked instruments."
+        + (" Quotes observed " + ", ".join(sorted(set(valuation['observations']))) + "."
+           if valuation['observations'] else "")
+    )
     total_chg = sum(h["change_dollars"] for h in today_holdings)
-    prev_total = total_v - total_chg
+    prev_total = total_value_csv - total_chg
     total_chg_pct = (total_chg / prev_total * 100.0) if prev_total else 0.0
     spy_chg = today.get("spy_change_pct", 0)
 
@@ -1699,7 +1702,9 @@ def build_dashboard(portfolio, layers, holdings):
         "layerTargets":        layer_targets_data,
         "layerColorsByNum":    LAYER_COLORS_BY_NUM,
         "l4Positions":         l4_positions,
-        "totalValue":          round(total_value_csv, 2),
+        "totalValue":          total_v,
+        "grossStockValue":     round(total_value_csv, 2),
+        "valuation":          valuation,
         "holdings":            [{"ticker": h["ticker"], "layer": h["layer_num"]} for h in today_holdings],
         "txns":                _txn_markers,
     }, default=float)
@@ -1713,7 +1718,7 @@ def build_dashboard(portfolio, layers, holdings):
 
     # Total gain vs cost basis
     total_cost_basis  = sum(h["cost_basis"] for h in today_holdings)
-    total_gain_dollars = total_v - total_cost_basis
+    total_gain_dollars = total_value_csv - total_cost_basis
     total_gain_pct     = (total_gain_dollars / total_cost_basis * 100.0) if total_cost_basis else 0.0
     gain_class_main    = "pos" if total_gain_dollars >= 0 else "neg"
 
@@ -1750,6 +1755,7 @@ def build_dashboard(portfolio, layers, holdings):
     from site_help import render_glossary, help_assets
     from dashboard_cc_income import income_assets
     from dashboard_advisor import advisor_assets
+    valuation_js = (PROJECT_DIR / 'static' / 'portfolio_valuation.js').read_text()
     generated_at = datetime.now(TZ).strftime("%A, %B %d, %Y at %I:%M %p ET")
     chg_class_main = "pos" if total_chg >= 0 else "neg"
     spy_class = "pos" if spy_chg >= 0 else "neg"
@@ -1772,6 +1778,7 @@ def build_dashboard(portfolio, layers, holdings):
   <link rel="icon" type="image/svg+xml" href="../favicon.svg">
   <script src="../chart.umd.min.js"></script>
   {income_assets()}
+  <script>{valuation_js}</script>
   {advisor_assets()}
   <style>
     *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
@@ -2842,12 +2849,14 @@ def build_dashboard(portfolio, layers, holdings):
   <!-- KPI row -->
   <div class="kpi-row">
     <div class="kpi">
-      <div class="label">Portfolio Value</div>
-      <div class="value">{money(total_v)}</div>
+      <div class="label">Tracked Net Value · estimate</div>
+      <div class="value" id="kpi-net-value">{f'${total_v:,.2f}' if total_v is not None else "Unavailable"}</div>
+      <div class="sub">Gross stocks {money(total_value_csv)}</div>
+      <details style="font-size:11px;line-height:1.5;margin-top:5px;"><summary>Sources &amp; coverage</summary><div id="kpi-net-status">{_html.escape(valuation_note)}</div></details>
     </div>
     <div class="kpi">
       <div class="label" id="kpi-daily-label">Daily P&amp;L · loading</div>
-      <div class="value" id="kpi-daily-value" data-stock-chg="{round(total_chg, 2)}" data-stock-session="{today_date}" data-prev-total="{round(prev_total, 2)}">—</div>
+      <div class="value" id="kpi-daily-value" data-stock-chg="{round(total_chg, 2)}" data-stock-session="{today_date}" data-prev-total="{round(prev_total, 2) if valuation['open_count'] == 0 else ''}">—</div>
       <div class="sub" id="kpi-daily-pct">Stocks {money(total_chg)} · option data loading</div>
       <details style="font-size:11px;color:#7f8c8d;line-height:1.5;margin-top:5px;"><summary style="cursor:pointer;">Sources &amp; coverage</summary><div id="kpi-daily-status">Session {today_date} · tracked holdings</div></details>
     </div>
@@ -2856,7 +2865,7 @@ def build_dashboard(portfolio, layers, holdings):
       <div class="value {spy_class}">{pct(spy_chg)}</div>
     </div>
     <div class="kpi kpi-link" onclick="document.getElementById('holdings-table').scrollIntoView({{behavior:'smooth',block:'start'}})">
-      <div class="label">Total Gain vs Cost</div>
+      <div class="label">Stock Gain vs Cost</div>
       <div class="value {gain_class_main}">{money(total_gain_dollars)}</div>
       <div class="sub {gain_class_main}">{pct(total_gain_pct)}</div>
     </div>
@@ -2966,7 +2975,7 @@ def build_dashboard(portfolio, layers, holdings):
   <!-- Main charts row -->
   <div class="card">
     <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:4px;">
-      <h2 style="margin:0;">Portfolio vs SPY — Cumulative Return <span style="font-size:11px;font-weight:400;color:#aaa;">(time-weighted, since Feb 11 2026)</span></h2>
+      <h2 style="margin:0;">Stocks vs SPY — Cumulative Return <span style="font-size:11px;font-weight:400;color:#aaa;">(time-weighted stock history; excludes options and cash, since Feb 11 2026)</span></h2>
       <div id="cum-tf-btns" style="display:flex;gap:4px;">
         {cum_tf_buttons_html}
       </div>
@@ -3728,6 +3737,15 @@ def build_dashboard(portfolio, layers, holdings):
 
 <script>
 const D = {chart_data};
+function checkPortfolioValuation() {{
+  if (expirePortfolioValuation(D, Date.now())) {{
+    renderGoalsCard();
+    if (_divData) renderDividendTable();
+  }}
+}}
+document.addEventListener('DOMContentLoaded', checkPortfolioValuation);
+document.addEventListener('visibilitychange', checkPortfolioValuation);
+setInterval(checkPortfolioValuation, 10000);
 const DQ_TOTAL_POSITIONS = {len(today_holdings)};
 
 // Cumulative return chart — with timeframe controls
@@ -4084,7 +4102,7 @@ function renderDividendTable() {{
 
   const totalAnnual   = _divData.results.reduce((s, r) => s + (r.annual_income || 0), 0);
   const totalAfterTax = _divData.results.reduce((s, r) => s + (r.annual_income || 0) * (1 - effectiveRate(r.tax_type || "qualified")), 0);
-  const totalPort     = {total_v};
+  const totalPort     = D.totalValue;
   document.getElementById("kpi-div-value").textContent =
     "$" + Math.round(totalAfterTax).toLocaleString("en-US");
   document.getElementById("kpi-div-yield").textContent =
@@ -4276,13 +4294,13 @@ function renderGoalsCard() {{
   if (pbEl) pbEl.style.width = portPct + "%";
   const ppEl = document.getElementById("goal-port-pct");
   if (ppEl) {{
-    ppEl.textContent = portVal > 0 ? portPct.toFixed(1) + "% of $2M target" : "0% of target";
+    ppEl.textContent = portVal > 0 ? portPct.toFixed(1) + "% of $2M target" : "Net value unavailable";
     ppEl.style.color = portPct >= 50 ? "#27ae60" : "#2980b9";
   }}
   const pcEl = document.getElementById("goal-port-cagr");
   if (pcEl) pcEl.textContent = portCagr != null
     ? `Required CAGR: ${{portCagr.toFixed(1)}}%/yr · ${{fmt$(portGap)}} still needed`
-    : "No portfolio data";
+    : "Waiting for complete option valuation";
 
   // Quarterly targets with recommendations
   const today        = new Date();
@@ -4386,7 +4404,7 @@ function renderGoalsCard() {{
   // ── Layer Allocation vs Target ──
   const lw      = D.layerWeightsByNum || {{}};
   const targets = D.layerTargets     || {{}};
-  const total   = D.totalValue       || 0;
+  const total   = D.grossStockValue  || 0;
 
   const ALLOC_META = {{
     1: {{ name: "L1 Structural Ballast",  color: D.layerColorsByNum[1] }},
