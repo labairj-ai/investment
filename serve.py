@@ -6598,6 +6598,10 @@ def _startup_regen():
 
 threading.Thread(target=_startup_regen, daemon=True).start()
 
+# Market-data display refresh only; independent of model/execution pipelines.
+from portfolio_quote_refresh import run as _run_display_quotes
+threading.Thread(target=_run_display_quotes, args=(PROJECT_DIR,), daemon=True).start()
+
 url = f"http://localhost:{PORT}/out/dashboard.html"
 if sys.stdout.isatty():
     threading.Timer(0.5, lambda: webbrowser.open(url)).start()

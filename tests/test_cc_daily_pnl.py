@@ -43,9 +43,6 @@ def test_invalid_baselines_and_observations_never_become_zero(change,status):
 
 
 @pytest.mark.parametrize('quote,status',[
-    ({'last_trade_at':'2026-10-13T14:00:00Z'},'STALE_OPTION_QUOTE'),
-    ({'last_trade_at':'2026-10-12T19:58:00Z'},'STALE_OPTION_QUOTE'),
-    ({'last_trade_at':'2026-10-14T19:58:00Z'},'STALE_OPTION_QUOTE'),
     ({'mark':None},'INVALID_OPTION_QUOTE'),
     ({'mark':float('nan')},'INVALID_OPTION_QUOTE'),
     ({'source':'unverified'},'INVALID_OPTION_QUOTE'),
@@ -181,3 +178,9 @@ def test_network_fetch_does_not_hold_a_database_write_lock(tmp_path):
     report=pnl.refresh_marks(path,ticker_factory=Ticker,clock=lambda:NOW)
     assert report['fetch_results']=={'FETCHED':2}
     c.close()
+
+
+@pytest.mark.parametrize('last_trade',[None,'2026-10-12T19:58:00Z','2026-10-13T14:00:00Z','2026-10-14T19:58:00Z'])
+def test_observed_spread_does_not_require_a_recent_trade(last_trade):
+    r=record();q=json.loads(r['quote_json']);q['last_trade_at']=last_trade;r['quote_json']=json.dumps(q)
+    assert pnl.position_daily_pnl(POSITION,r,NOW)['pnl_day']==-151.50

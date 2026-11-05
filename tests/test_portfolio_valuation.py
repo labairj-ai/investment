@@ -25,6 +25,8 @@ def fixture():
     pnl.migrate(conn)
     quote = dict(mark=4.5, last_trade_at=NOW.isoformat(), source=pnl.SOURCE)
     pnl.save_quote(conn, POSITION, SESSION, quote, None, NOW.isoformat())
+    # Legacy-only fixture; archive fallback is exercised separately.
+    conn.execute('DELETE FROM cc_display_quote_observations')
     conn.commit()
     return conn
 
@@ -144,8 +146,6 @@ def test_dashboard_fixture_uses_shared_nullable_net_and_emits_valid_javascript(t
     ({'mark':float('nan')}, 'INVALID_OPTION_QUOTE'),
     ({'mark':-1.}, 'INVALID_OPTION_QUOTE'),
     ({'source':'legacy'}, 'INVALID_OPTION_QUOTE'),
-    ({'last_trade_at':'2026-11-05T14:00:00Z'}, 'STALE_OPTION_QUOTE'),
-    ({'last_trade_at':'2026-11-05T16:05:00Z'}, 'STALE_OPTION_QUOTE'),
     ({'error':'QUOTE_FETCH_FAILED'}, 'QUOTE_FETCH_FAILED'),
 ])
 def test_bad_quotes_fail_closed(quote_change, reason):
@@ -170,7 +170,9 @@ def test_refresh_reports_zero_bid_ask_without_overwriting_legacy_marks(tmp_path)
     assert report['fetch_results'] == {'INVALID_OPTION_QUOTE':1}
     with sqlite3.connect(path) as disk:
         assert disk.execute('SELECT current_mark FROM cc_positions').fetchone()[0] == 999.
-        assert value_portfolio(disk, 10000., SESSION, NOW)['net_value'] is None
+        assert value_portfolio(disk, 10000., SESSION, NOW)['net_value'] == 9100.
+        later = datetime(2026,11,5,16,31,tzinfo=timezone.utc)
+        assert value_portfolio(disk, 10000., SESSION, later)['net_value'] is None
 
 
 def test_after_close_quotes_expire_at_next_open_not_midnight():

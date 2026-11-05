@@ -1345,10 +1345,12 @@ def build_dashboard(portfolio, layers, holdings):
     )
 
     from portfolio_valuation import value_portfolio
+    from portfolio_value_history import historical_values
     _valuation_conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, timeout=5)
     try:
         _valuation_conn.execute('BEGIN')
         valuation = value_portfolio(_valuation_conn, total_value_csv, today_date)
+        value_history = historical_values(_valuation_conn, portfolio)
     finally:
         _valuation_conn.close()
     total_v = valuation["net_value"]
@@ -1358,6 +1360,7 @@ def build_dashboard(portfolio, layers, holdings):
         + (f"Call liability {money(valuation['call_liability'])}. " if valuation['complete'] else
            "Net value unavailable: " + "; ".join(valuation['issues']) + ". ")
         + "Estimate excludes cash and untracked instruments."
+        + " Uses a reported mark when available, otherwise bid/ask midpoint."
         + (" Quotes observed " + ", ".join(sorted(set(valuation['observations']))) + "."
            if valuation['observations'] else "")
     )
@@ -1475,6 +1478,11 @@ def build_dashboard(portfolio, layers, holdings):
     ]
     port_dates   = [r["day"]              for r in _chart_rows]
     port_values  = [r["total_value"]      for r in _chart_rows]
+    _net_history = {r['day']:r for r in value_history}
+    history_net_values = [_net_history[d]['net_value'] for d in port_dates]
+    history_coverage = [f"{_net_history[d]['priced_count']}/{_net_history[d]['open_count']} calls priced"
+                        for d in port_dates]
+    history_complete = sum(v is not None for v in history_net_values)
     port_chg_pct = [r["total_change_pct"] for r in _chart_rows]
     spy_chg_pct  = [r["spy_change_pct"]   for r in _chart_rows]
     port_cum     = [_twr_cum_by_day.get(r["day"], 0.0) for r in _chart_rows]
@@ -1687,6 +1695,8 @@ def build_dashboard(portfolio, layers, holdings):
     chart_data = json.dumps({
         "dates": port_dates,
         "portValues": port_values,
+        "historyNetValues": history_net_values,
+        "historyCoverage": history_coverage,
         "portCum": port_cum,
         "spyCum": spy_cum,
         "portChgPct": port_chg_pct,
@@ -2974,6 +2984,11 @@ def build_dashboard(portfolio, layers, holdings):
 
   <!-- Main charts row -->
   <div class="card">
+    <h2>Tracked Net Value — History</h2>
+    <p style="font-size:12px;color:#7f8c8d;">Stocks less open covered-call liabilities. {history_complete}/{len(port_dates)} dates supported by dated records. Reported marks and contract daily closes take priority; saved bid/ask midpoints are estimates and may be intraday. Gaps mean historical quotes are missing. Cash and untracked instruments are excluded. Original stock snapshots are preserved.</p>
+    <div style="height:260px;"><canvas id="net-value-history"></canvas></div>
+  </div>
+  <div class="card">
     <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:4px;">
       <h2 style="margin:0;">Stocks vs SPY — Cumulative Return <span style="font-size:11px;font-weight:400;color:#aaa;">(time-weighted stock history; excludes options and cash, since Feb 11 2026)</span></h2>
       <div id="cum-tf-btns" style="display:flex;gap:4px;">
@@ -3737,6 +3752,16 @@ def build_dashboard(portfolio, layers, holdings):
 
 <script>
 const D = {chart_data};
+const netHistoryCanvas = document.getElementById('net-value-history');
+if (netHistoryCanvas) new Chart(netHistoryCanvas, {{
+  type:'line',
+  data:{{labels:D.dates,datasets:[{{label:'Tracked net value · estimate',data:D.historyNetValues,
+       borderColor:'#1a6e87',backgroundColor:'#1a6e8720',spanGaps:false,pointRadius:2,tension:0.1}}]}},
+  options:{{responsive:true,maintainAspectRatio:false,
+    plugins:{{tooltip:{{callbacks:{{afterLabel:ctx=>D.historyCoverage[ctx.dataIndex]}}}}}},
+    scales:{{y:{{ticks:{{callback:v=>'$'+Number(v).toLocaleString('en-US')}}}}}}
+  }}
+}});
 function checkPortfolioValuation() {{
   if (expirePortfolioValuation(D, Date.now())) {{
     renderGoalsCard();

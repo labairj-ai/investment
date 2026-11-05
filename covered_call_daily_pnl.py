@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import sqlite3
 from collections import Counter
@@ -48,6 +49,19 @@ def migrate(conn):
         previous_session TEXT NOT NULL, previous_close REAL,
         quote_json TEXT NOT NULL, observed_at TEXT NOT NULL, position_identity TEXT NOT NULL,
         PRIMARY KEY(position_id, session))''')
+    conn.execute('''CREATE TABLE IF NOT EXISTS cc_display_quote_observations (
+        evidence_id TEXT PRIMARY KEY, position_id INTEGER NOT NULL, session TEXT NOT NULL,
+        previous_session TEXT NOT NULL, previous_close REAL, quote_json TEXT NOT NULL,
+        observed_at TEXT NOT NULL, position_identity TEXT NOT NULL)''')
+    conn.execute('CREATE INDEX IF NOT EXISTS cc_display_quote_by_session ON cc_display_quote_observations(session,position_id)')
+    for row in conn.execute('SELECT position_id,session,previous_session,previous_close,quote_json,observed_at,position_identity FROM cc_daily_pnl_marks').fetchall():
+        archive_quote(conn, tuple(row))
+
+
+def archive_quote(conn, values):
+    evidence_id = hashlib.sha256(json.dumps(values, separators=(',', ':')).encode()).hexdigest()
+    conn.execute('INSERT OR IGNORE INTO cc_display_quote_observations VALUES(?,?,?,?,?,?,?,?)',
+                 (evidence_id, *values))
 
 
 def save_quote(conn, position, session, quote, previous_close, observed_at):
@@ -60,6 +74,8 @@ def save_quote(conn, position, session, quote, previous_close, observed_at):
         quote = dict(quote, error='POSITION_CHANGED')
     if old and old[0] is not None and previous_close is not None and abs(old[0]-previous_close) > 0.000001:
         quote = dict(quote, error='BASELINE_CONFLICT')
+    archive_quote(conn, (position_id,session,previous,previous_close,
+                        json.dumps(quote,allow_nan=False),observed_at,identity))
     cursor = conn.execute('''INSERT INTO cc_daily_pnl_marks VALUES (?,?,?,?,?,?,?)
         ON CONFLICT(position_id,session) DO UPDATE SET
         previous_close=COALESCE(cc_daily_pnl_marks.previous_close,excluded.previous_close),
@@ -78,14 +94,21 @@ def fetch_quote(position, session, previous_close, ticker_factory, normalize):
         raise ValueError('OPTION_CONTRACT_UNAVAILABLE')
     row = match.iloc[0]
     bid, ask = number(row.get('bid')), number(row.get('ask'))
-    if bid is None or ask is None or ask < bid or ask <= 0:
+    actual = number(row.get('mark'))
+    if actual is None and (bid is None or ask is None or ask < bid or ask <= 0):
         raise ValueError('INVALID_OPTION_QUOTE')
     symbol = str(row['contractSymbol'])
     traded = row.get('lastTradeDate')
     if hasattr(traded, 'to_pydatetime'):
         traded = traded.to_pydatetime()
-    traded = parse_timestamp(traded)
-    quote = dict(mark=(bid+ask)/2, last_trade_at=traded.isoformat(), contract_symbol=symbol, source=SOURCE)
+    try:
+        traded = parse_timestamp(traded).isoformat()
+    except (TypeError, ValueError):
+        traded = None
+    # Last trade is not the timestamp of the currently displayed bid/ask.
+    quote = dict(mark=actual if actual is not None else (bid+ask)/2,
+                 bid=bid, ask=ask, mark_basis='PROVIDER_MARK' if actual is not None else 'BID_ASK_MIDPOINT',
+                 last_trade_at=traded, contract_symbol=symbol, source=SOURCE)
     if previous_close is None:
         previous = nth_trading_session_before(session, 1)
         try:
@@ -190,16 +213,13 @@ def position_daily_pnl(position, record, now):
             raise ValueError('PREVIOUS_CLOSE_UNAVAILABLE')
         if mark is None or quote.get('source') != SOURCE:
             raise ValueError('INVALID_OPTION_QUOTE')
-        traded = parse_timestamp(quote['last_trade_at'])
         observed = parse_timestamp(record['observed_at'])
         day = date.fromisoformat(session)
         opened = datetime.combine(day, time(9,30), TZ_EASTERN)
         closed = datetime.combine(day, session_close_time(day), TZ_EASTERN)
         reference = min(now, closed)
-        # A recent trade is only a conservative activity/freshness check. The
-        # midpoint was observed at fetch time; it has no exchange quote timestamp.
-        if traded < opened or traded > reference + timedelta(seconds=5) or (reference-traded).total_seconds() > MAX_TRADE_LAG_SECONDS:
-            raise ValueError('STALE_OPTION_QUOTE')
+        # Quote retrieval and last execution are different events. A live spread
+        # remains usable even if nobody has traded this contract recently.
         if observed > now + timedelta(seconds=5) or observed < opened or (reference-observed).total_seconds() > MAX_TRADE_LAG_SECONDS:
             raise ValueError('STALE_OPTION_OBSERVATION')
         contracts = number(position.get('contracts'))
