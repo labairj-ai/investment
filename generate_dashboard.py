@@ -7,6 +7,7 @@ import html as _html
 import json
 import os
 import sqlite3
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -1316,7 +1317,7 @@ def _build_macro_risk_section(macro_scores, macro_history, wow_deltas,
   </div>'''
 
 
-def build_dashboard(portfolio, layers, holdings):
+def build_dashboard(portfolio, layers, holdings, *, include_valuation=False):
     today = portfolio[-1] if portfolio else {}
     today_date = today.get("day", "")
 
@@ -2861,7 +2862,7 @@ def build_dashboard(portfolio, layers, holdings):
     <div class="kpi">
       <div class="label">Tracked Net Value · estimate</div>
       <div class="value" id="kpi-net-value">{f'${total_v:,.2f}' if total_v is not None else "Unavailable"}</div>
-      <div class="sub">Gross stocks {money(total_value_csv)}</div>
+      <div class="sub" id="kpi-gross-value">Gross stocks {money(total_value_csv)}</div>
       <details style="font-size:11px;line-height:1.5;margin-top:5px;"><summary>Sources &amp; coverage</summary><div id="kpi-net-status">{_html.escape(valuation_note)}</div></details>
     </div>
     <div class="kpi">
@@ -3771,6 +3772,16 @@ function checkPortfolioValuation() {{
 document.addEventListener('DOMContentLoaded', checkPortfolioValuation);
 document.addEventListener('visibilitychange', checkPortfolioValuation);
 setInterval(checkPortfolioValuation, 10000);
+async function updateLivePortfolioValuation() {{
+  if (await pullPortfolioValuation(D)) {{
+    renderGoalsCard();
+    if (_divData) renderDividendTable();
+  }}
+  checkPortfolioValuation();
+}}
+document.addEventListener('DOMContentLoaded', updateLivePortfolioValuation);
+document.addEventListener('visibilitychange', updateLivePortfolioValuation);
+setInterval(updateLivePortfolioValuation, 60000);
 const DQ_TOTAL_POSITIONS = {len(today_holdings)};
 
 // Cumulative return chart — with timeframe controls
@@ -11626,13 +11637,27 @@ async function rejectThesisProposal(recId) {{
 </body>
 </html>
 """
-    return html
+    return (html, valuation) if include_valuation else html
+
+
+def _atomic_dashboard_write(path, text):
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w',encoding='utf-8',dir=path.parent,delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(text)
+        os.chmod(temporary,0o644)
+        os.replace(temporary,path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def main():
     portfolio, layers, holdings = load_data()
-    html = build_dashboard(portfolio, layers, holdings)
-    OUT_PATH.write_text(html, encoding="utf-8")
+    html, valuation = build_dashboard(portfolio, layers, holdings,include_valuation=True)
+    _atomic_dashboard_write(OUT_PATH.parent/'portfolio-valuation.json',json.dumps(valuation,allow_nan=False))
+    _atomic_dashboard_write(OUT_PATH,html)
     print(f"Dashboard written to: {OUT_PATH}")
 
 
