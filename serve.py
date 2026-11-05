@@ -1921,6 +1921,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._handle_cc_evaluate()
         elif parsed.path == "/api/cc-positions":
             self._handle_cc_positions_get()
+        elif parsed.path == "/api/portfolio-valuation":
+            try:
+                snapshot = json.loads((PROJECT_DIR/'out'/'portfolio-valuation.json').read_text())
+                self._json({"ok": True, "valuation": snapshot})
+            except (OSError,ValueError):
+                self._json_error(503,"Valuation snapshot unavailable")
         elif parsed.path == "/api/lots":
             self._handle_lots_get(parse_qs(parsed.query).get("ticker", [None])[0])
         elif parsed.path == "/api/sells":
