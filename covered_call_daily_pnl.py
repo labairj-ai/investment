@@ -88,8 +88,13 @@ def fetch_quote(position, session, previous_close, ticker_factory, normalize):
     quote = dict(mark=(bid+ask)/2, last_trade_at=traded.isoformat(), contract_symbol=symbol, source=SOURCE)
     if previous_close is None:
         previous = nth_trading_session_before(session, 1)
-        history = ticker_factory(symbol).history(start=previous, end=session, interval='1d',
-                                                 auto_adjust=False, actions=False, timeout=8)
+        try:
+            history = ticker_factory(symbol).history(start=previous, end=session, interval='1d',
+                                                     auto_adjust=False, actions=False, timeout=8)
+        except Exception:
+            # Current valuation remains usable even if daily history is down.
+            quote['error'] = 'PREVIOUS_CLOSE_UNAVAILABLE'
+            return quote, None
         matches = []
         for index, bar in history.iterrows():
             stamp = index.to_pydatetime() if hasattr(index, 'to_pydatetime') else index
@@ -130,9 +135,13 @@ def refresh_marks(path, ticker_factory=None, normalize=lambda ticker: ticker, cl
                 if key not in cache:
                     cache[key] = fetch_quote(position, session, prior, ticker_factory, normalize)
                 quote, baseline = cache[key]
-            except Exception:
+            except Exception as error:
                 # Never fabricate zero, use entry premium, or roll the baseline on errors.
-                quote, baseline = {'error':'QUOTE_FETCH_FAILED', 'source':SOURCE}, prior
+                reason = str(error) if isinstance(error, ValueError) else 'QUOTE_FETCH_FAILED'
+                if reason not in {'OPTION_CONTRACT_UNAVAILABLE', 'INVALID_OPTION_QUOTE',
+                                  'AMBIGUOUS_PREVIOUS_CLOSE_DATE'}:
+                    reason = 'QUOTE_FETCH_FAILED'
+                quote, baseline = {'error':reason, 'source':SOURCE}, prior
             pending.append((position, quote, baseline, clock().isoformat()))
             results[quote.get('error', 'FETCHED')] += 1
         # Network calls complete before any write transaction starts. Keep the
