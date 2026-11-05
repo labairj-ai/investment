@@ -5,12 +5,12 @@
 - **Created:** 2026-11-05
 - **Priority:** high
 - **Risk:** L5 per risk-surface-2 whole-diff classification (unknown dashboard surface and unresolved dynamic protected dependency); display valuation and shared legacy mark refresh, no policy or execution changes
-- **Source:** Owner request to reconcile recurring portfolio value mismatch; reference approximately $221,170.15
+- **Source:** Owner request to make recurring portfolio-value reconciliation reliable
 - **Base:** d36b7b415517424b5c20bbfe952c98a1d294d502
 
 ## Plan and acceptance
 
-The existing dashboard subtracts undated legacy marks, substitutes zero for missing marks, and uses gross stock value for goals. Latest production observations had seven failed refreshes, a missing NFLX mark, gross stocks $229,636.27400569533 and legacy liability $5,735.00. These observations do not establish brokerage equity or authorize changing stored investment state.
+The existing dashboard subtracts undated legacy marks, substitutes zero for missing marks, and uses gross stock value for goals. Failed quote refreshes and missing marks can therefore produce a misleading complete valuation. Diagnostic observations do not establish brokerage equity or authorize changing stored investment state.
 
 - [x] Use read-only session/identity/freshness-verified quotes for every open call; reject incomplete coverage rather than substituting zero, old marks or entry premiums.
 - [x] Separate current midpoint availability from previous-close history availability; never fabricate daily P&L.

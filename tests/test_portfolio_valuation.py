@@ -61,7 +61,7 @@ def test_missing_failed_or_stale_quotes_cannot_become_zero_liabilities(mutation,
 
 def test_one_missing_call_invalidates_entire_net_not_just_missing_contract():
     conn = fixture()
-    conn.execute("INSERT INTO cc_positions VALUES (2,'NFLX',1,73,'2026-12-18','2026-11-04','open',NULL)")
+    conn.execute("INSERT INTO cc_positions VALUES (2,'MISSING',1,100,'2026-12-18','2026-11-04','open',NULL)")
     result = value_portfolio(conn, 10000., SESSION, NOW)
     assert result['priced_count'] == 1
     assert result['open_count'] == 2
