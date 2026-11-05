@@ -546,6 +546,19 @@ def test_discovery_retry_budget_and_duplicate_suppression(repo,store,monkeypatch
     assert scheduler.discover_daily(repo,store,now=now)["status"]=="NEEDS_HUMAN"
 
 
+def test_discovery_failure_preserves_exception_message_and_traceback(repo,store,monkeypatch):
+    now=datetime(2026,10,21,12,tzinfo=timezone.utc)
+    def fail(*args,**kwargs): raise ValueError("reproduction detail")
+    monkeypatch.setattr(scheduler,"scout",fail)
+    result=scheduler.discover_daily(repo,store,now=now)
+    assert result["status"]=="FAILED"
+    assert result["error"]=="reproduction detail"
+    assert "ValueError: reproduction detail" in result["traceback"]
+    with store.connect() as db:
+        event=db.execute("SELECT payload FROM dev_events WHERE kind='SCHEDULE_FAILURE'").fetchone()
+    assert "ValueError: reproduction detail" in json.loads(event[0])["traceback"]
+
+
 def test_principle_code_removal_detected(monkeypatch):
     import importlib.util
     spec=importlib.util.spec_from_file_location("development_guard_mutation",ROOT/"scripts/check_development_agent.py")
